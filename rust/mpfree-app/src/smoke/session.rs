@@ -94,16 +94,16 @@ impl Hits {
 }
 
 impl time::Pads for Hits {
-    fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
+    fn hit_at(&mut self, _track: u16, pad: usize, velocity: u8, offset: u32) -> bool {
         self.on.push((pad, velocity));
         self.queued.push((pad, velocity, offset));
         true
     }
-    fn release_at(&mut self, pad: usize, offset: u32) {
+    fn release_at(&mut self, _track: u16, pad: usize, offset: u32) {
         self.released.push((pad, offset));
     }
     fn stop_all(&mut self) {}
-    fn pressure_at(&mut self, _pad: usize, _value: u8, _offset: u32) {}
+    fn pressure_at(&mut self, _track: u16, _pad: usize, _value: u8, _offset: u32) {}
     // A pad's sound or an instrument takes its locks, as main.rs's pads do.
     fn lock_at(
         &mut self,
@@ -204,14 +204,20 @@ pub struct Session {
     pub heard: Option<Vec<f32>>,
     /// Controls a walk pressed that did nothing (see `walk.rs`).
     pub dead: Vec<String>,
-    /// The kit the pads play (the synth is the last).
+    /// The kit the pads play: the armed track's (the synth is the last).
     pub kit: usize,
+    /// Whether the armed track plays the synth (the pads play it then).
     pub synth_on: bool,
+    /// What each track plays, as main.rs keeps it.
+    pub track_kits: crate::sampler::TrackKits,
     /// Messages for the screen that found it gone (none expected).
     pub quit: bool,
     kits: usize,
     /// STEP SEQ's pads held as steps (step_keys.rs).
     step_keys: crate::step_keys::StepKeys,
+    /// The pads pressed as TRACK MUTE's keys, so their release is theirs
+    /// too.
+    mute_pressed: [bool; 16],
     out: Out,
     to_screen: Receiver<ToUi>,
     fx: Vec<Effect>,
@@ -310,9 +316,11 @@ impl Session {
             dead: Vec::new(),
             kit: 0,
             synth_on: false,
+            track_kits: crate::sampler::TrackKits::new(n),
             quit: false,
             kits: n,
             step_keys: crate::step_keys::StepKeys::default(),
+            mute_pressed: [false; 16],
             out,
             to_screen,
             fx: Vec::new(),
@@ -468,6 +476,22 @@ impl Session {
     }
 
     /// Press `t` as a finger would, and let the session run a few periods.
+    /// Picks the synth from the kit chip's list (its last row) for the
+    /// armed track, as taps on the chip and the row would.
+    pub fn pick_synth(&mut self) -> &mut Session {
+        let chip = self
+            .control("header", "chip", "")
+            .expect("the kit chip")
+            .target;
+        self.press_target(&chip);
+        let row = self
+            .controls()
+            .into_iter()
+            .rfind(|c| c.widget == "kits" && c.target.id == "row")
+            .expect("the synth's row");
+        self.press_target(&row.target).run_for(0.2)
+    }
+
     pub fn press_target(&mut self, t: &mpfree_ui::Target) -> &mut Session {
         let acts = super::press(&mut self.screen, t);
         for a in acts {
@@ -670,6 +694,7 @@ impl Session {
         self.fx.extend(held);
         let fx = self.app.button(note, down, t);
         self.fx.extend(fx);
+        crate::live_erase_let_go(&self.app, &mut self.time);
         self.run_periods(2)
     }
 
@@ -737,19 +762,28 @@ impl Session {
             self.out.show(ToUi::PadUp(pad));
             return;
         }
-        if self.app.mute_keys() != app::MuteKeys::Off {
-            if down {
-                let line = crate::mute_key(
-                    self.app.mute_keys(),
-                    self.app.mute_bank(),
-                    pad,
-                    &mut self.time,
-                    &mut self.mix,
-                );
-                self.out.note(&line);
-            } else {
-                self.out.show(ToUi::PadUp(pad));
-            }
+        if down && pad < 16 && self.app.pads_mute() {
+            self.mute_pressed[pad] = true;
+            let (tap, more) = self.app.mute_tap();
+            self.fx.extend(more);
+            let other = crate::other_kit(&self.track_kits, self.app.track());
+            let line = crate::mute_key(tap, pad, other, &mut self.time, &mut self.mix);
+            self.out.note(&line);
+            return;
+        }
+        if !down && pad < 16 && std::mem::take(&mut self.mute_pressed[pad]) {
+            self.out.show(ToUi::PadUp(pad));
+            return;
+        }
+        // Live erase: ERASE held while recording.
+        if down && crate::live_erase_starts(&self.app, &self.time) {
+            let tell = crate::live_erase(&mut self.time, pad);
+            self.fx.extend(tell);
+            return;
+        }
+        if !down && self.time.erases(pad as u8) {
+            self.time.erase_sound(pad as u8, false);
+            self.out.show(ToUi::PadUp(pad));
             return;
         }
         if let Some(ev) = self.app.pressed_event(pad, velocity, down) {
@@ -811,6 +845,13 @@ impl Session {
         self.change_kit();
         // The time engine, as player_session runs it.
         self.app.set_rolling(self.time.info().state.rolling());
+        if self.app.set_perform(self.time.perform()) {
+            self.out.show(ToUi::Rec(self.app.rec));
+        }
+        let taking = crate::desk::rec_now(&self.time, &self.looper).taking();
+        if let Some(line) = self.time.take_follows(taking) {
+            self.out.note(&format!("time: {line}"));
+        }
         self.app.set_track_count(self.time.track_count());
         let (loop_rec, loop_dub) = self.looper.recording();
         let info = self.time.info();
@@ -833,6 +874,8 @@ impl Session {
         if armed != self.app.track() {
             let fx = self.app.set_track(armed);
             self.fx.extend(fx);
+            // The pads play what the newly armed track plays.
+            self.kit_to = Some(self.track_kits.entry(armed));
         }
         if let Some(Effect::Arp(v)) = self.app.arp_poll() {
             self.out.show(ToUi::Arp(Box::new(v)));
@@ -910,6 +953,9 @@ impl Session {
             self.out.note(&line);
         }
         let (mut ll, mut lr) = ([0f32; PERIOD], [0f32; PERIOD]);
+        for line in self.looper.follow_plan(&self.time.loop_plan()) {
+            self.out.note(&line);
+        }
         if let Some(line) = self.looper.run(self.time.block(), &mut ll, &mut lr) {
             self.out.note(&line);
         }
@@ -925,6 +971,15 @@ impl Session {
         }
         for line in self.looper.changes(|| self.time.position_text()) {
             self.out.note(&line);
+        }
+        if let Some(now) = self.looper.grid_now() {
+            for line in self.time.loops_are(&now) {
+                self.out.note(&format!("time: {line}"));
+            }
+        }
+        if let Some(end) = self.looper.copy_ended() {
+            let fx = crate::desk::copy_ended(&mut self.time, end);
+            self.fx.extend(fx);
         }
         if self.periods.is_multiple_of(11) {
             let view = self.looper.view(self.app.settings.bpm);
@@ -1100,6 +1155,7 @@ impl Session {
             synth: crate::project::synth_text(&self.app.synth_settings(), &self.synth.sounds()),
             arp: self.app.arp_part(),
             instruments: crate::project::instruments_text(&self.mix.instruments),
+            track_kits: self.track_kits.text(),
             loops,
             audio,
         };
@@ -1160,6 +1216,17 @@ impl Session {
             self.out.show(ToUi::Synth(self.synth.state()));
             o.synth = Some((options, sounds));
         }
+        // What each track plays, as main.rs takes it.
+        self.track_kits = crate::sampler::TrackKits::new(self.kits);
+        for &(track, kit) in &o.track_kits {
+            if kit.is_some_and(|k| k >= self.kits)
+                || !self.track_kits.set(track, kit.unwrap_or(self.kits))
+            {
+                self.out
+                    .note(&format!("project: track {} plays kit 1", track + 1));
+            }
+        }
+        self.kit_to = Some(self.track_kits.entry(self.app.track()));
         let (notes, fx) = self.app.open_arp(o.arp.as_deref());
         for line in notes {
             self.out.note(&line);
@@ -1190,6 +1257,7 @@ impl Session {
         if crate::step_turn(&a) {
             self.step_keys.turned();
         }
+        crate::record_knob(&a, &self.app, &self.mix, &mut self.time);
         let mut fx = std::mem::take(&mut self.fx);
         let rest = {
             let (mut d, out) = self.desk();
@@ -1208,6 +1276,8 @@ impl Session {
                 self.pad_edge(pad, v, down);
             }
             FromUi::Pad { .. } => {}
+            // A scale row's note: no sound is rendered here.
+            FromUi::Audition { .. } => {}
             FromUi::Kit(k) => self.kit_to = Some(k.min(self.kits)),
             FromUi::Synth(mpfree_synth_ui::SynthAction::Set { id, value }) => {
                 let from = self.synth.value(id);
@@ -1267,6 +1337,18 @@ impl Session {
             FromUi::TrackInstrument(track) => {
                 self.out.note(&format!("arrange: no track {}", track + 1))
             }
+            // A MIDI file from BROWSE, as main.rs.
+            FromUi::MidiFile(m) => {
+                let (synth, kits) = (&*self.synth, &self.track_kits);
+                let own = &self.mix.instruments;
+                let r = crate::midi_file::put(&mut self.time, &m, |t, n| {
+                    let synth_has = kits.plays_synth(t).then_some(synth);
+                    crate::midi_file::pad_on_track(own, synth_has, t, n)
+                });
+                let (Ok(line) | Err(line)) = r;
+                self.out.note(&line);
+                self.out.show(ToUi::Tell(line));
+            }
             FromUi::SaveProject => self.save_asked = true,
             FromUi::OpenProject(o) => self.open_project(o),
             FromUi::OpenLoops(l) => self.looper.open(*l),
@@ -1284,7 +1366,7 @@ impl Session {
                     &self.mix,
                     mpfree_export::Rig::default(),
                     &|_| false,
-                    pads,
+                    &|_| pads,
                     &crate::export::audio_heard(&self.tracks.host.tracks),
                 );
                 self.out.show(ToUi::ExportFacts(Box::new(f)));
@@ -1427,11 +1509,14 @@ impl Session {
                         }
                     }
                     Effect::StopSounds => self.synth.stop(),
+                    // As main.rs: opening a page changes what no track plays.
                     Effect::Show(v) => {
-                        if v == View::Synth && !self.synth_on {
-                            self.kit_to = Some(self.kits);
-                        } else if v.sampler() && self.synth_on {
-                            self.kit_to = Some(self.kit);
+                        if v == View::Synth
+                            && !self.kit_to.map_or(self.synth_on, |k| k == self.kits)
+                            && !self.mix.instruments.holds(self.app.track())
+                        {
+                            self.out
+                                .show(ToUi::Tell(crate::synth_tab_hint(self.app.track())));
                         }
                         self.out.show(ToUi::Show(v));
                     }
@@ -1494,20 +1579,22 @@ impl Session {
         }
     }
 
-    /// A kit (or the synth) picked this period, as player_session takes it.
+    /// A kit (or the synth) picked this period for the armed track, or
+    /// the pads following the armed track, as main.rs takes it.
     fn change_kit(&mut self) {
         let Some(k) = self.kit_to.take() else { return };
         let playing = if self.synth_on { self.kits } else { self.kit };
         if k == playing {
             return;
         }
+        if self.track_kits.set(self.app.track(), k) {
+            self.out
+                .show(ToUi::TrackKits(Box::new(self.track_kits.clone())));
+        }
         if k == self.kits {
             self.synth_on = true;
         } else {
-            if self.synth_on {
-                self.synth_on = false;
-                self.synth.all_off();
-            }
+            self.synth_on = false;
             self.kit = k;
         }
         self.app

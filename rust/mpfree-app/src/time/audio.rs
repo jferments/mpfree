@@ -12,6 +12,7 @@
 //! (`Recent::catch_up`); one that cannot goes back with a request to
 //! compile again, and the view that holds everything plays on.
 
+use mpfree_notefx::{Chain, TrackFx};
 use mpfree_play::{Event, Out, PlayView, Player, Rec, Recent, Recorder, TrackArps};
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::mpfree_moves::{Input, Kind};
@@ -41,6 +42,11 @@ pub struct TimeAudio {
     pub(super) recent: Box<Recent>,
     /// The tracks' settings, as the control half last sent them.
     tracks: Tracks,
+    /// The tracks' MIDI effects, as the control half last sent them.
+    note_fx: Box<[TrackFx; MAX_TRACKS]>,
+    /// Chains for the tracks' MIDI effects the control half sent, until
+    /// [`TimeAudio::dress_arps`] hands them to the arps.
+    chains_in: [Option<Box<Chain>>; MAX_TRACKS],
     /// Another device's clock, when the transport follows one, and its
     /// counts as last sent.
     follower: Follower,
@@ -112,6 +118,8 @@ impl TimeAudio {
             view: Box::new(PlayView::empty()),
             recent: Box::new(Recent::new()),
             tracks,
+            note_fx: Box::new([TrackFx::default(); MAX_TRACKS]),
+            chains_in: std::array::from_fn(|_| None),
             follower: Follower::new(rate),
             follow_sent: FollowCounts::default(),
             click: Click::new(rate),
@@ -159,6 +167,22 @@ impl TimeAudio {
                         *set = s;
                     }
                 }
+                ToAudio::NoteFx { track, place, slot } => {
+                    if let Some(fx) = self.note_fx.get_mut(usize::from(track)) {
+                        if let Some(s) = fx.slots.get_mut(usize::from(place)) {
+                            *s = slot;
+                        }
+                    }
+                }
+                ToAudio::NoteArp { track, at } => {
+                    if let Some(fx) = self.note_fx.get_mut(usize::from(track)) {
+                        fx.arp_at = at;
+                    }
+                }
+                ToAudio::Chain(t, c) => match self.chains_in.get_mut(usize::from(t)) {
+                    Some(slot @ None) => *slot = Some(c),
+                    _ => self.free_chain(c),
+                },
                 ToAudio::Edit {
                     track,
                     slot,
@@ -219,6 +243,16 @@ impl TimeAudio {
                     std::mem::forget(v);
                 }
             }
+        }
+    }
+
+    /// A chain to free on the control half; while the queue is full it is
+    /// kept for good rather than freed on this thread (counted: it should
+    /// never happen, the control half sends one chain a track).
+    fn free_chain(&mut self, c: Box<Chain>) {
+        if let Err(ToControl::Chain(c)) = self.tx.send(ToControl::Chain(c)) {
+            self.kept += 1;
+            std::mem::forget(c);
         }
     }
 
@@ -375,6 +409,27 @@ impl TimeAudio {
         self.recorder.touch_dropped()
     }
 
+    /// Live erase: sound `note` erased on the armed track while the
+    /// transport records (`on`), or not any more.
+    pub fn erase_sound(&mut self, note: u8, on: bool) {
+        let Some(bit) = 1u128.checked_shl(u32::from(note)) else {
+            return;
+        };
+        let now = self.player.erasing();
+        self.player
+            .set_erasing(if on { now | bit } else { now & !bit });
+    }
+
+    /// Live erase off for every sound.
+    pub fn erase_none(&mut self) {
+        self.player.set_erasing(0);
+    }
+
+    /// The sounds live erase erases, a bit each.
+    pub fn erasing(&self) -> u128 {
+        self.player.erasing()
+    }
+
     pub fn knob(&mut self, offset: u32, addr: mpfree_play::mpfree_param::ParamAddr, value: f32) {
         self.recorder.input(offset, Event::Lock { addr, value });
     }
@@ -467,11 +522,19 @@ impl TimeAudio {
         })
     }
 
-    /// The per-track arps take each track's switch and destination.
-    pub fn dress_arps(&self, arps: &mut TrackArps) {
+    /// The per-track arps take each track's switch, destination and MIDI
+    /// effects, and a chain to run the effects in once the control half
+    /// has sent one.
+    pub fn dress_arps(&mut self, arps: &mut TrackArps) {
         for t in 0..self.tracks.n {
             arps.set_through(t, self.tracks.set[t].through_arp);
             arps.set_dest(t, self.tracks.set[t].dest);
+            if let Some(c) = self.chains_in[t].take() {
+                if let Some(back) = arps.give_chain(t, c) {
+                    self.free_chain(back);
+                }
+            }
+            arps.set_notes(t, &self.note_fx[t]);
         }
     }
 
@@ -533,12 +596,12 @@ impl TimeAudio {
             }
             match o.event {
                 Event::NoteOn { note, velocity } => {
-                    pads.hit_at(usize::from(note), velocity, o.offset);
+                    pads.hit_at(o.track, usize::from(note), velocity, o.offset);
                 }
-                Event::NoteOff { note } => pads.release_at(usize::from(note), o.offset),
+                Event::NoteOff { note } => pads.release_at(o.track, usize::from(note), o.offset),
                 Event::AllOff => pads.stop_all(),
                 Event::Pressure { note, value } => {
-                    pads.pressure_at(usize::from(note), value, o.offset)
+                    pads.pressure_at(o.track, usize::from(note), value, o.offset)
                 }
                 // Parameter locks: a kit pad's sound and an instrument
                 // take theirs on the frame (`Pads::lock_at`); the rest go
@@ -583,6 +646,12 @@ impl TimeAudio {
         for i in 0..self.player.started().len() {
             let st = self.player.started()[i];
             self.send(ToControl::Started(st));
+        }
+        // Mute cues that landed on their line: the control half applies
+        // the queue.
+        for i in 0..self.player.mutes_landed().len() {
+            let l = self.player.mutes_landed()[i];
+            self.send(ToControl::MuteLanded(l));
         }
         // Recorded and erased notes, locks and gestures go into the view
         // in place (unless it has no room left), numbered in this order,

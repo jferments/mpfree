@@ -5,8 +5,11 @@
 
 use std::sync::Arc;
 
-pub use mpfree_grain::{Params as GrainParams, TempoSync, Window as GrainWindow};
+pub use mpfree_grain::{
+    Params as GrainParams, SprayShape as GrainSprayShape, TempoSync, Window as GrainWindow,
+};
 
+use crate::dsp::{as_i16, Sample};
 pub use crate::dsp::{Ahdsr, Filter, FilterKind};
 
 /// Pads in a program: 8 banks of 16.
@@ -26,6 +29,8 @@ pub enum ModelError {
     TooManySlices,
     BadSlice,
     BadMasterFx,
+    /// A name with nothing in it.
+    BadName,
 }
 
 impl std::fmt::Display for ModelError {
@@ -46,15 +51,138 @@ impl std::fmt::Display for SourceId {
     }
 }
 
-/// Recorded or imported audio. Never changed after it is made.
+/// A sound's samples as it holds them, interleaved when stereo: 16-bit
+/// integers when every sample is a 16-bit value exactly (a 16-bit WAV or
+/// AIFF, and what is cut from one), at half the memory; 32-bit floats
+/// otherwise. Either reads as the same floats ([`Sample::f`]).
+#[derive(Clone, Debug)]
+pub enum Pcm {
+    F32(Arc<[f32]>),
+    I16(Arc<[i16]>),
+}
+
+impl Pcm {
+    /// As 16 bits if every sample is 16-bit exactly ([`as_i16`]), else as
+    /// they are.
+    pub fn new(data: Vec<f32>) -> Pcm {
+        if !data.iter().all(|&x| as_i16(x).is_some()) {
+            return Pcm::F32(data.into());
+        }
+        Pcm::I16(data.iter().map(|&x| as_i16(x).unwrap_or(0)).collect())
+    }
+
+    /// Samples, not frames.
+    pub fn len(&self) -> usize {
+        match self {
+            Pcm::F32(d) => d.len(),
+            Pcm::I16(d) => d.len(),
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// Whether it is held as 16 bits.
+    pub fn is_16_bit(&self) -> bool {
+        matches!(self, Pcm::I16(_))
+    }
+    /// The bytes it takes.
+    pub fn bytes(&self) -> usize {
+        match self {
+            Pcm::F32(d) => d.len() * 4,
+            Pcm::I16(d) => d.len() * 2,
+        }
+    }
+    /// Sample `i`. Panics past the end, as indexing does.
+    #[inline]
+    pub fn get(&self, i: usize) -> f32 {
+        match self {
+            Pcm::F32(d) => d[i],
+            Pcm::I16(d) => d[i].f(),
+        }
+    }
+    /// Every sample, as floats.
+    pub fn iter(&self) -> impl Iterator<Item = f32> + '_ {
+        let (a, b) = match self {
+            Pcm::F32(d) => (Some(d.iter().copied()), None),
+            Pcm::I16(d) => (None, Some(d.iter().map(|x| x.f()))),
+        };
+        a.into_iter().flatten().chain(b.into_iter().flatten())
+    }
+    /// Samples `range` as floats: borrowed when it holds floats, converted
+    /// (a copy) when it holds 16 bits. None past the end.
+    pub fn f32s(&self, range: std::ops::Range<usize>) -> Option<std::borrow::Cow<'_, [f32]>> {
+        match self {
+            Pcm::F32(d) => d.get(range).map(std::borrow::Cow::Borrowed),
+            Pcm::I16(d) => d
+                .get(range)
+                .map(|s| std::borrow::Cow::Owned(s.iter().map(|x| x.f()).collect())),
+        }
+    }
+    /// Every sample as floats ([`Pcm::f32s`] of all of it).
+    pub fn all_f32(&self) -> std::borrow::Cow<'_, [f32]> {
+        self.f32s(0..self.len()).expect("the whole range")
+    }
+    /// A copy of every sample, as floats.
+    pub fn to_vec(&self) -> Vec<f32> {
+        self.all_f32().into_owned()
+    }
+    /// Whether both are the same shared samples (not just equal ones).
+    pub fn ptr_eq(&self, other: &Pcm) -> bool {
+        match (self, other) {
+            (Pcm::F32(a), Pcm::F32(b)) => Arc::ptr_eq(a, b),
+            (Pcm::I16(a), Pcm::I16(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+    /// Where the samples are in memory: the same for every clone, so
+    /// memory counts can tell shared sounds apart.
+    pub fn addr(&self) -> usize {
+        match self {
+            Pcm::F32(d) => d.as_ptr() as usize,
+            Pcm::I16(d) => d.as_ptr() as usize,
+        }
+    }
+    /// The mix of `channels` (1 or 2, interleaved) to one: what
+    /// `mpfree_analysis::mono` gives for the floats, bit for bit, without
+    /// a float copy of the whole sound first.
+    pub fn mono(&self, channels: usize) -> Vec<f32> {
+        let channels = channels.max(1);
+        match self {
+            Pcm::F32(d) => mpfree_analysis::mono(d, channels).unwrap_or_default(),
+            Pcm::I16(d) => d
+                .chunks_exact(channels)
+                .map(|f| f.iter().map(|x| x.f()).sum::<f32>() / channels as f32)
+                .collect(),
+        }
+    }
+}
+
+impl mpfree_analysis::Samples for Pcm {
+    fn len(&self) -> usize {
+        Pcm::len(self)
+    }
+    #[inline]
+    fn at(&self, i: usize) -> f32 {
+        self.get(i)
+    }
+}
+
+impl From<Vec<f32>> for Pcm {
+    fn from(data: Vec<f32>) -> Pcm {
+        Pcm::new(data)
+    }
+}
+
+/// Recorded or imported audio. Its audio never changes after it is made;
+/// its name can ([`Project::rename`]).
 #[derive(Clone, Debug)]
 pub struct Source {
     id: SourceId,
     pub name: String,
     rate: u32,
     channels: u8,
-    /// Interleaved when stereo.
-    data: Arc<[f32]>,
+    /// Interleaved when stereo; 16 bits when it can be ([`Pcm::new`]).
+    data: Pcm,
     /// Its octave copies, for reading it more than an octave up
     /// ([`crate::bandlimit`]), shared by every clone. Made when a pad
     /// that can play it that high asks for them.
@@ -97,7 +225,7 @@ impl Source {
             name: name.to_string(),
             rate,
             channels,
-            data: data.into(),
+            data: Pcm::new(data),
             octaves: Arc::default(),
         })
     }
@@ -124,8 +252,19 @@ impl Source {
     pub fn frames(&self) -> u64 {
         (self.data.len() / usize::from(self.channels)) as u64
     }
-    pub fn data(&self) -> &Arc<[f32]> {
+    /// Its samples, interleaved when stereo.
+    pub fn data(&self) -> &Pcm {
         &self.data
+    }
+    /// The same sound (the same id) held as floats, as every sound was
+    /// before 16-bit sounds were kept as 16 bits: for tests and benches
+    /// that compare the two.
+    pub fn held_as_floats(&self) -> Source {
+        Source {
+            data: Pcm::F32(self.data.to_vec().into()),
+            octaves: Arc::default(),
+            ..self.clone()
+        }
     }
     /// Where its octave copies are kept ([`crate::bandlimit::prepare`]
     /// makes them).
@@ -147,7 +286,8 @@ impl Source {
         let data = if rate == self.rate {
             self.data.to_vec()
         } else {
-            mpfree_stretch::convert_rate(&self.data, usize::from(self.channels), self.rate, rate)
+            let from = self.data.all_f32();
+            mpfree_stretch::convert_rate(&from, usize::from(self.channels), self.rate, rate)
         };
         let to = Source::new(&self.name, rate, self.channels, data)?;
         let r = Rescale {
@@ -293,6 +433,29 @@ pub enum ChannelPick {
     MonoSum,
     Left,
     Right,
+}
+
+/// How a granular region's Grain page starts and which of its controls it
+/// shows (the granular engine plan's decision 1). The grains underneath
+/// are the same in every mode: a mode is a starting point and a set of
+/// controls, and its settings stay when another mode is picked until that
+/// mode's own are put in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GrainMode {
+    /// A scattered cloud: every control.
+    #[default]
+    Cloud,
+    /// A time stretch and freeze: grains in step reading at a speed of
+    /// their own, the pitch apart.
+    Stretch,
+    /// Repeats of the spot under the position, locked to the tempo: a
+    /// stutter.
+    Repeat,
+    /// The sound as an oscillator: short grains of one spot, regular, so
+    /// the grain rate (the density) is the note heard, and the keys and
+    /// tune move it (with the grains' size, so each keeps as many cycles);
+    /// the grains' own pitch colours it.
+    Tone,
 }
 
 /// What a pad hit does with a region.
@@ -726,6 +889,9 @@ pub struct Region {
     /// Grain settings, used when `mode` is [`PlayMode::Granular`]. Kept
     /// with the region in every mode, so switching modes loses nothing.
     pub grain: GrainParams,
+    /// Which controls the Grain page shows for `grain`, and where it
+    /// started them.
+    pub grain_mode: GrainMode,
     /// Plays at the project tempo (not in granular mode, whose grains have
     /// their own tempo sync).
     pub warp: Option<Warp>,
@@ -787,6 +953,7 @@ impl Region {
             tune_cents: 0,
             mode: PlayMode::OneShot,
             grain: GrainParams::default(),
+            grain_mode: GrainMode::Cloud,
             warp: None,
         }
     }
@@ -806,7 +973,7 @@ impl Region {
             self.start as usize,
             (self.end as usize).min(source.frames() as usize),
         );
-        let Some(frames) = source.data().get(start * ch..end.max(start) * ch) else {
+        let Some(frames) = source.data().f32s(start * ch..end.max(start) * ch) else {
             return 0.0;
         };
         let pick = if ch == 2 {
@@ -1481,6 +1648,11 @@ enum Undo {
     PadsPlay {
         before: PadsPlay,
     },
+    /// A sound named: its name before.
+    Rename {
+        id: SourceId,
+        before: String,
+    },
     /// Several steps made by one command (chop to pads), undone together.
     Group(Vec<Undo>),
 }
@@ -1503,6 +1675,7 @@ impl Undo {
             Undo::AddSource { .. } => i.sources += 1,
             Undo::AddChop { .. } => i.chop = true,
             Undo::PadsPlay { .. } => i.pads_play = true,
+            Undo::Rename { .. } => i.named += 1,
             Undo::Group(steps) => steps.iter().for_each(|u| u.add_info(i)),
         }
     }
@@ -1523,6 +1696,8 @@ pub struct StepInfo {
     pub chop: bool,
     /// It changes what the pads play.
     pub pads_play: bool,
+    /// How many sounds it names.
+    pub named: usize,
 }
 
 /// The sampler's project: its sources, chop sets, pads and undo history.
@@ -1710,6 +1885,64 @@ impl Project {
         let mut p = self.pad(index).cloned().ok_or(ModelError::BadPad)?;
         f(&mut p);
         self.set_pad(index, Some(p), gesture)
+    }
+
+    /// Names pad `pad`, the sound `sound`, or both, as one undo step (the
+    /// Sample tab's text keyboard). Each name is trimmed of spaces at its
+    /// ends and must keep a character; a name already the same changes
+    /// nothing. A sound's name is every pad's that plays it, and goes with
+    /// the sound when the project is saved.
+    pub fn rename(
+        &mut self,
+        pad: Option<(usize, &str)>,
+        sound: Option<(SourceId, &str)>,
+    ) -> Result<(), ModelError> {
+        let pad = pad.map(|(i, n)| (i, n.trim()));
+        let sound = sound.map(|(id, n)| (id, n.trim()));
+        if let Some((i, n)) = pad {
+            if self.pad(i).is_none() {
+                return Err(ModelError::BadPad);
+            }
+            if n.is_empty() {
+                return Err(ModelError::BadName);
+            }
+        }
+        if let Some((id, n)) = sound {
+            if self.source(id).is_none() {
+                return Err(ModelError::UnknownSource);
+            }
+            if n.is_empty() {
+                return Err(ModelError::BadName);
+            }
+        }
+        let mut steps = Vec::new();
+        if let Some((index, n)) = pad {
+            if let Some(p) = self.pads[index].as_mut().filter(|p| p.name != n) {
+                let before = p.clone();
+                p.name = n.to_string();
+                steps.push(Undo::Pad {
+                    index,
+                    before: Some(Box::new(before)),
+                    gesture: None,
+                });
+            }
+        }
+        if let Some((id, n)) = sound {
+            if let Some(s) = self
+                .sources
+                .iter_mut()
+                .find(|s| s.id() == id && s.name != n)
+            {
+                let before = std::mem::replace(&mut s.name, n.to_string());
+                steps.push(Undo::Rename { id, before });
+            }
+        }
+        match steps.len() {
+            0 => {}
+            1 => self.push_undo(steps.remove(0)),
+            _ => self.push_undo(Undo::Group(steps)),
+        }
+        Ok(())
     }
 
     pub fn master(&self) -> &MasterFx {
@@ -2366,6 +2599,18 @@ impl Project {
             Undo::PadsPlay { before } => Undo::PadsPlay {
                 before: std::mem::replace(&mut self.pads_play, before),
             },
+            Undo::Rename { id, before } => {
+                let s = self
+                    .sources
+                    .iter_mut()
+                    .chain(self.removed.iter_mut())
+                    .find(|s| s.id() == id);
+                let before = match s {
+                    Some(s) => std::mem::replace(&mut s.name, before),
+                    None => before,
+                };
+                Undo::Rename { id, before }
+            }
             Undo::Group(steps) => {
                 Undo::Group(steps.into_iter().rev().map(|u| self.reverse(u)).collect())
             }

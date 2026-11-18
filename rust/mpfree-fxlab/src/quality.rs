@@ -1,7 +1,9 @@
 //! The FX quality report: every measured target of one class of effect
 //! (delay, EQ, reverb; in the second round drive, crush, compressor,
 //! filter and lo-fi, in `quality/round2.rs`; in the third the modulation
-//! effects, in `quality/modulation.rs`), for each mode of its family
+//! effects, in `quality/modulation.rs`; in the fourth the rest of the
+//! dynamics, in `quality/round4.rs`; in the fifth the movement, pitch and
+//! voice effects, in `quality/round5.rs`), for each mode of its family
 //! at its defaults and,
 //! for the cheaper measures, at each factory preset. Each row is a number
 //! with the plan's target id, which way is better, the target where the
@@ -28,6 +30,8 @@ use crate::{
 
 mod modulation;
 mod round2;
+mod round4;
+mod round5;
 
 /// A class of effect the plan covers so far.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,10 +46,20 @@ pub enum Class {
     Lofi,
     Amp,
     Modulation,
+    Limiter,
+    Gate,
+    Deesser,
+    Multiband,
+    Ducker,
+    Transient,
+    Strip,
+    Movement,
+    Pitch,
+    Voice,
 }
 
 impl Class {
-    pub const ALL: [Class; 10] = [
+    pub const ALL: [Class; 20] = [
         Class::Delay,
         Class::Eq,
         Class::Reverb,
@@ -56,6 +70,16 @@ impl Class {
         Class::Lofi,
         Class::Amp,
         Class::Modulation,
+        Class::Limiter,
+        Class::Gate,
+        Class::Deesser,
+        Class::Multiband,
+        Class::Ducker,
+        Class::Transient,
+        Class::Strip,
+        Class::Movement,
+        Class::Pitch,
+        Class::Voice,
     ];
 
     pub fn name(self) -> &'static str {
@@ -70,6 +94,16 @@ impl Class {
             Class::Lofi => "lofi",
             Class::Amp => "amp",
             Class::Modulation => "modulation",
+            Class::Limiter => "limiter",
+            Class::Gate => "gate",
+            Class::Deesser => "deesser",
+            Class::Multiband => "multiband",
+            Class::Ducker => "ducker",
+            Class::Transient => "transient",
+            Class::Strip => "strip",
+            Class::Movement => "movement",
+            Class::Pitch => "pitch",
+            Class::Voice => "voice",
         }
     }
 
@@ -194,6 +228,16 @@ pub fn report(class: Class, rate: u32) -> Report {
         Class::Lofi => round2::lofi(&mut r),
         Class::Amp => round2::amp(&mut r),
         Class::Modulation => modulation::modulation(&mut r),
+        Class::Limiter => round4::limiter(&mut r),
+        Class::Gate => round4::gate(&mut r),
+        Class::Deesser => round4::deesser(&mut r),
+        Class::Multiband => round4::multiband(&mut r),
+        Class::Ducker => round4::ducker(&mut r),
+        Class::Transient => round4::transient(&mut r),
+        Class::Strip => round4::strip(&mut r),
+        Class::Movement => round5::movement(&mut r),
+        Class::Pitch => round5::pitch(&mut r),
+        Class::Voice => round5::voice(&mut r),
     }
     r
 }
@@ -947,14 +991,21 @@ fn reverb(r: &mut Report) {
         let mut d = wet();
         let frames = (d.node().tail_frames() as usize).clamp(rate as usize, 12 * rate as usize);
         let ir = room::impulse_response(&mut d, frames, 0.5);
-        let hall = matches!(name, "reverb/hall" | "reverb/cloud");
+        // Hall and Cloud may build slower (up to 1.6); Echoes is a pattern
+        // of echoes over 600 ms before its tail, so its early decay is
+        // slower by design and only reported, as its density and colour.
+        let one_slope = match name {
+            "reverb/hall" | "reverb/cloud" => Some(1.6f64.log2()),
+            "reverb/echoes" => None,
+            _ => Some(1.25f64.log2()),
+        };
         r.put(
             "R3",
             name,
             "edt_t30_log2",
             clarity::edt_over_t30(&ir).map(f64::log2),
             Better::Near(0.0),
-            Some(if hall { 1.6f64.log2() } else { 1.25f64.log2() }),
+            one_slope,
             0.02,
         );
         r.put(

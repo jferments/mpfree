@@ -56,7 +56,7 @@ pub const WHEEL: &str = "smp-wheel";
 /// and the app's hint line.
 pub const LAYOUT: &str = "col(header:60, row(smp-bar:*, smp-send:330):60, \
                           row(col(smp-overview:56, row(smp-wave:*, col(smp-region:*, smp-wheel:56):360):*):*, \
-                          col(smp-q1, smp-q2, smp-q3, smp-q4):168):*, hint:26)";
+                          col(smp-q1, smp-q2, smp-q3, smp-q4):128):*, hint:26)";
 
 /// The pad editor's tabs: the editors for the pad picked. The kit's pads
 /// (to pick one and set it up) are the app's own Pads tab since 12 Nov
@@ -1152,6 +1152,14 @@ fn short_id(id: SourceId) -> String {
 }
 
 /// The markers in the waveform's order: Start and End, then the loop's.
+/// The Q-Link (0 to 3) that moves the waveform's marker `index`, as the
+/// widget numbers its markers: a finger held on that marker's tab turns it
+/// as that Q-Link does (Jay, 17 Nov: hold a control and turn the wheel).
+pub fn marker_knob(st: &WaveState, index: usize) -> Option<usize> {
+    let m = *markers_order(&st.region).get(index)?;
+    Mark::ALL.iter().position(|k| *k == m)
+}
+
 fn markers_order(r: &Region) -> Vec<Mark> {
     Mark::ALL
         .iter()

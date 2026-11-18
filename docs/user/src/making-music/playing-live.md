@@ -46,6 +46,14 @@ Hold **ERASE** and tap a row's name to delete that sound's steps from the patter
 
 **TRACK MUTE** turns the pads into mute buttons over whatever page you are on, so you can drop parts in and out without leaving the screen you are using. Pads 1-16 are tracks 1-16: green while the track plays a clip, dim green when it has nothing playing, red while it is muted, and dark where there is no track. Tap a pad to mute or unmute its track; the track's clip keeps its place, so it comes back in time. With more than 16 tracks, the **PAD BANK** buttons pick which 16 the pads are, as on Akai's MPC: A is tracks 1-16, B is 17-32, and so on up to H, 113-128 (SHIFT or a second press gives E-H, as when you pick kits). The kit playing stays the same, and TRACK MUTE remembers the bank for next time. **SHIFT + TRACK MUTE** does the same for the pads of the kit: a pad lit in the kit's colour plays, a red one is muted. Press the same button again to play the pads as usual. The hint line at the bottom of the screen says which mode the pads are in. **TRACK MUTE**, **STEP SEQ** and **16 LEVEL** each take the pads over, one at a time: pressing one gives the pads up from the others.
 
+**When a mute lands.** In Make a tap mutes or unmutes at once. In Perform it waits for the next launch line (the Record panel's **Launch**, one bar unless you change it), so parts drop out on the beat: the pad blinks amber while it waits, the track's name on the Clips grid is striped amber and says how soon ("mutes in 2 beats"), and the transport bar starts with **WAITING** and the tracks and bar it lands on ("WAITING Hats, Vox at 18.1"). Tap more pads and they all land together on the same line; tap a waiting pad again to take its change back. Hold **SHIFT** while you tap for the other timing: at once in Perform, on the line in Make. With the transport stopped, or Launch at once, a tap acts at once, and **STOP** lands whatever is waiting.
+
+{{shot: clips-mutes | In Perform: Track 2's mute and Track 3's solo wait for bar 4, their names striped amber, and the transport bar says WAITING.}}
+
+**Solo.** Hold **TRACK MUTE** and tap a pad: that track plays alone and the others go quiet. The soloed pad is lit blue, and the tracks it silences are red, like muted ones. Tap more pads while you hold it to solo more tracks, and tap a soloed pad to let go of its solo. A quick press of TRACK MUTE still turns the mute keys on and off; after a hold with a pad tapped, the pads are left as they were before you pressed it. A solo lands at once or on the line, just like a mute, and the project saves it. A soloed track's name on the Clips grid is outlined.
+
+Mutes and solos aren't undo steps, and with **Rec song** on they go into the song: a track muted for a stretch leaves a gap there. The kit's pads (**SHIFT + TRACK MUTE**) always mute at once and have no solo yet.
+
 ## 16 Levels
 
 **16 LEVEL** spreads one sound over all 16 pads: the pad you hit last plays on every pad, each one a step of something else. Press **16 LEVEL** and the 16 Levels panel opens on the Play page, under the transport bar:
@@ -66,6 +74,37 @@ The **Beats** view has a **Your timing** strip under the pattern: it reads the l
 The strip takes a little room from the pattern. To give the pattern more rows, press **MENU** on Play and set **Timing strip** to **Off**; set it back to **On** to see your timing again. MPFree remembers the choice.
 
 {{shot: play-beats | The Beats view: the pattern, your timing (7 ms early on average) and the throws.}}
+
+## Make and Perform
+
+MPFree has two ways of answering your hands, for the same project: **Make**, for building, where everything acts at once and **UNDO** is the safety net, and **Perform**, for a stage. The chip at the left of the top bar's chips says which one you're in: **MAKE**, or **PERFORM** in the second accent colour. Tap it, or press **SHIFT + MAIN**, to switch. The hint line says what changed.
+
+Switching never stops or changes anything playing. The project keeps it, so a set opens as you left it; a new project starts in Make.
+
+What Perform changes today:
+
+- **MAIN** goes to the Arrange tab's Clips grid, not the Play page. Pressed again, it shows the Song view, then the song list, then the grid again.
+- **The arm is pinned**: opening a page doesn't move what REC records; only a tap on an Arm pill does. The REC chip says PINNED. Back in Make, the arm follows the page again.
+- **TRACK MUTE's pads wait for the launch line** before a mute or solo lands, and SHIFT + a pad acts at once (see [Muting tracks and pads](#muting-tracks-and-pads)).
+- **REC brings Rec song with it**: each take also records what the grid plays into the song, for as long as it lasts, and the REC chip says "+ Rec song". Tap the chip and turn off **Rec song with REC** to leave one take out (see [Recording a performance into the song](arranging.md#recording-a-performance-into-the-song)).
+- **Buttons that delete need a hold**: the Song view's **Delete** and **Erase**, the note editor's **Delete**, the Looper's **Clear**, a layer's **×** and **½ length**, the step's **Clear** and the song list's **Remove** take half a second in Perform. A red fill crosses the button while you hold it, and it acts once the fill is across; let go early, or slide off, and nothing happens, and the hint line says "Hold to delete". In Make one tap does it, and UNDO brings it back. **ERASE** + a tap works as before, since it already takes two hands.
+- **The Clips grid shows 5 big rows**, and a clip waiting to start counts down: an amber bar along its foot fills as its line comes near.
+- **NEXT** on the transport bar says what comes next and how soon, while the music plays: a scene you launched ("NEXT Drop in 2 beats"), the clips waiting ("Drop bass in 1 bar", "Bass stops in 3 beats"), the song list's next step ("Verse in 2 bars", "Stop all in 1 bar"), the next scene a follow action plays ("Verse in 3 bars", or "Drop or stay" when it is down to chance), or in song mode the next section ("Chorus in 4 bars"). When mutes are waiting too, WAITING comes first.
+
+{{shot: clips-perform | In Perform: five big rows, the chords waiting for bar 6 with their countdown bar, the glitch stopping there, NEXT on the transport bar, and Back to song on the grid's title line.}}
+
+Clips and scenes start on the line the Record panel's **Launch** sets, in Make and Perform alike (see [Recording a clip](clips.md#recording-a-clip)), and the transport bar shows it.
+
+Two more things help on a stage, in Make and Perform alike:
+
+- **Back to song.** With **Song on**, a clip you launch takes its track over from the song. While any clip plays over the song, **Back to song** shows on the grid's title line: tap it and every clip stops on the next Launch line, and the song plays every track from there, on the beat (see [The song](arranging.md#the-song)).
+- **Reload a clip.** Before you take a pattern apart live, tap **Save state** on the Clip tab (see [Clip settings](clips.md#clip-settings)). Add steps, change its speed, erase half of it; then tap **Reload clip** on the morph bar, and the pattern comes back as you saved it on the next Launch line, so it lands on the beat. In Perform, NEXT says when ("Verse B reloads in 2 beats"). Tap Reload clip again before then to take it back, and **UNDO** puts the wrecked version back if you liked it after all.
+
+- **The song list.** Line your scenes up in the order they play, each so many times ("Intro × 2, Verse × 4, Drop × 4"), and let the list play them on the bar while your hands are free (see [The song list](arranging.md#the-song-list)).
+
+{{shot: arrange-list | The song list in Perform: seven steps, the Drop playing its third pass of four, the Break picked.}}
+
+Coming next: a scene editor and live transpose.
 
 ## The Q-Links on the Play page
 

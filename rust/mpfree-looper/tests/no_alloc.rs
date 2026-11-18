@@ -179,6 +179,12 @@ fn commands_and_periods_never_allocate() {
                 j.is_multiple_of(2),
             );
         }
+        // Launches, on a bar line ahead and at once (Loop tracks).
+        if i >= 290 && i.is_multiple_of(97) {
+            let j = (i / 97) as usize;
+            let at = j.is_multiple_of(2).then_some((j as i64 % 9) * 3_840);
+            let _ = l.launch(j % (MAX_LOOPS + 1), !j.is_multiple_of(3), at);
+        }
         // Each layer's controls; deletes only in the second half, so the
         // first half fills the memory and overdubs are refused.
         if i >= 290 && i % 53 == 0 {

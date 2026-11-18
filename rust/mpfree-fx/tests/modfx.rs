@@ -1,7 +1,7 @@
 //! Chorus, flanger and phaser: Mix 0 is the input, each does what its
 //! controls say (delay, voices and width; the feedback comb; the phaser's
-//! notches), count changes never click, and the tail estimate covers the
-//! ring-out.
+//! notches), count and shape changes never click, and the tail estimate
+//! covers the ring-out.
 
 use std::f32::consts::PI;
 
@@ -144,16 +144,157 @@ fn the_flanger_feedback_is_a_comb() {
         l[0] = 1.0;
         let mut r = l.clone();
         run(f.as_mut(), &mut l, &mut r, &[]);
-        // Echoes every 2 ms (96 frames), each the last times the feedback.
+        // Echoes every 2 ms (96 frames), each the last times the feedback,
+        // all trimmed by sqrt(1 - g²) (the level trim at Mix 100 %). The
+        // flat read spreads each echo over a few frames, summing to it.
+        let g = fb / 100.0;
+        let trim = (1.0 - g * g).sqrt();
         for k in 1..5 {
-            let want = (fb / 100.0).powi(k as i32 - 1);
+            let want = trim * g.powi(k as i32 - 1);
+            let echo: f32 = l[96 * k - 30..96 * k + 30].iter().sum();
             assert!(
-                (l[96 * k] - want).abs() < 1e-3,
-                "feedback {fb}: echo {k} is {}, want {want}",
-                l[96 * k]
+                (echo - want).abs() < 1e-3,
+                "feedback {fb}: echo {k} is {echo}, want {want}"
+            );
+            let peak = (96 * k - 30..96 * k + 30)
+                .max_by(|&a, &b| l[a].abs().total_cmp(&l[b].abs()))
+                .unwrap();
+            assert_eq!(peak, 96 * k, "feedback {fb}: echo {k}");
+        }
+    }
+}
+
+/// The response in dB at `hz` of an impulse response.
+fn response_db(h: &[f32], hz: f64) -> f64 {
+    let w = 2.0 * std::f64::consts::PI * hz / f64::from(RATE);
+    let (mut re, mut im) = (0.0f64, 0.0f64);
+    for (n, &v) in h.iter().enumerate() {
+        re += f64::from(v) * (w * n as f64).cos();
+        im -= f64::from(v) * (w * n as f64).sin();
+    }
+    10.0 * (re * re + im * im).max(1e-30).log10()
+}
+
+#[test]
+fn the_flanger_draws_what_it_plays() {
+    // Held (Depth 0), the comb heard is the comb drawn, through the read
+    // it is made with: at whole and half frames, near the write (where
+    // the read fades to a cubic), at either Feedback and at two Mixes.
+    use ids::flanger::{DELAY, DEPTH, FEEDBACK, MIX, WIDTH};
+    let frame = 1000.0 / RATE as f32;
+    let delays = [
+        0.1,
+        3.5 * frame,
+        2.5 * frame,
+        1.5,
+        1.5 + 0.5 * frame,
+        7.0 + 0.25 * frame,
+    ];
+    for delay in delays {
+        for fb in [-90.0f32, 0.0, 90.0] {
+            for mix in [50.0f32, 100.0] {
+                let values = [
+                    (DEPTH, 0.0),
+                    (DELAY, delay),
+                    (FEEDBACK, fb),
+                    (MIX, mix),
+                    (WIDTH, 0.0),
+                ];
+                let mut f = set_up(Box::new(Flanger::new()), &values);
+                let mut l = vec![0.0f32; 1 << 15];
+                l[0] = 1.0;
+                let mut r = l.clone();
+                run(f.as_mut(), &mut l, &mut r, &[]);
+                let mut drawn = Flanger::new();
+                drawn.prepare(RATE, MAX_BLOCK);
+                for (id, v) in values {
+                    drawn.set_param(id, v);
+                }
+                for k in 1..=90 {
+                    let hz = 200.0 * k as f64;
+                    let want = f64::from(drawn.response_db(hz as f32, 0.0));
+                    if want < -20.0 {
+                        continue;
+                    }
+                    let got = response_db(&l, hz);
+                    assert!(
+                        (got - want).abs() < 0.05,
+                        "Delay {delay} ms, Feedback {fb}, Mix {mix}: {hz} Hz heard {got:.2} dB, drawn {want:.2}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_flanger_goes_in_at_the_dry_level_at_any_feedback() {
+    // The trim holds a noise's level within 1 dB at any Feedback and Mix,
+    // sweeping as it does by default. The noise is dulled a little, as
+    // music is (6 dB down at 12 kHz, nothing at 24): the read rolls off
+    // the last few kHz, so round a loop at 95 % white noise's top octave
+    // loses more.
+    use ids::flanger::{FEEDBACK, MIX};
+    let white = noise(3 * RATE as usize + 2, 17);
+    let x: Vec<f32> = white
+        .windows(3)
+        .map(|w| 0.25 * (w[0] + 2.0 * w[1] + w[2]))
+        .collect();
+    let start = RATE as usize / 2;
+    let dry = rms(&x[start..]);
+    for fb in [-95.0f32, -70.0, -30.0, 0.0, 30.0, 70.0, 95.0] {
+        for mix in [25.0f32, 50.0, 100.0] {
+            let mut f = set_up(Box::new(Flanger::new()), &[(FEEDBACK, fb), (MIX, mix)]);
+            let (mut l, mut r) = (x.clone(), x.clone());
+            run(f.as_mut(), &mut l, &mut r, &[]);
+            for (side, y) in [("left", &l), ("right", &r)] {
+                let db = 20.0 * (rms(&y[start..]) / dry).log10();
+                assert!(
+                    db.abs() < 1.0,
+                    "Feedback {fb}, Mix {mix}, {side}: {db:.2} dB against the dry"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_flanger_never_sweeps_past_20_ms() {
+    use ids::flanger::{DELAY, DEPTH};
+    let longest = |delay: f32, depth: f32| {
+        let mut f = Flanger::new();
+        f.prepare(RATE, MAX_BLOCK);
+        f.set_param(DELAY, delay);
+        f.set_param(DEPTH, depth);
+        let ms: Vec<f32> = (0..=400).map(|k| f.delay_ms(k as f32 / 400.0)).collect();
+        (
+            ms.iter().copied().fold(f32::MAX, f32::min),
+            ms.iter().copied().fold(0.0f32, f32::max),
+        )
+    };
+    for delay in [0.1f32, 1.0, 2.5, 5.0, 7.5, 10.0] {
+        for depth in [0.0f32, 50.0, 100.0] {
+            let (lo, hi) = longest(delay, depth);
+            assert!(hi <= 20.0 + 1e-3, "Delay {delay}, Depth {depth}: {hi} ms");
+            // The sweep stays centred on the Delay, in octaves.
+            assert!(
+                ((lo * hi).sqrt() - delay).abs() < 1e-3 * delay,
+                "Delay {delay}, Depth {depth}: {lo} to {hi} ms"
             );
         }
     }
+    // Below 20 ms, Depth keeps its meaning: two octaves each way at 100 %.
+    let (lo, hi) = longest(2.5, 100.0);
+    assert!(
+        (lo - 0.625).abs() < 1e-3 && (hi - 10.0).abs() < 1e-2,
+        "{lo} to {hi}"
+    );
+    // At Delay 10 ms the sweep narrows to an octave each way.
+    let (lo, hi) = longest(10.0, 100.0);
+    assert!(
+        (lo - 5.0).abs() < 1e-2 && (hi - 20.0).abs() < 1e-2,
+        "{lo} to {hi}"
+    );
 }
 
 #[test]
@@ -178,25 +319,119 @@ fn the_phaser_notches_where_the_stages_turn_half_a_cycle() {
         run(p.as_mut(), &mut l, &mut r, &[]);
         20.0 * (rms(&l[12_000..]) / rms(&x[12_000..])).log10()
     };
+    // In phase at the centre, where dry and wet add: the level trim
+    // there, 1 / sqrt(0.25 + 0.25 + 0.5 * 0.3), at Mix 50 % and no
+    // Feedback. The notches are 40 dB under it.
+    let trim_db = -10.0 * 0.65f32.log10();
     assert!(
-        gain_at(414.2) < -40.0,
+        gain_at(414.2) - trim_db < -40.0,
         "notch at 414 Hz: {}",
         gain_at(414.2)
     );
     assert!(
-        gain_at(2414.2) < -40.0,
+        gain_at(2414.2) - trim_db < -40.0,
         "notch at 2414 Hz: {}",
         gain_at(2414.2)
     );
     assert!(
-        gain_at(1000.0).abs() < 0.05,
-        "in phase at the centre: {}",
+        (gain_at(1000.0) - trim_db).abs() < 0.05,
+        "in phase at the centre: {} against {trim_db}",
         gain_at(1000.0)
     );
 }
 
 #[test]
-fn voice_and_stage_changes_do_not_click() {
+fn the_phaser_holds_its_level_at_any_feedback() {
+    // Wet only, the loop is all-pass, so white noise comes out at the
+    // dry's level at any Feedback, held or sweeping: the trim takes off
+    // exactly the loop's noise gain, 1 / (1 - g²).
+    use ids::phaser::{DEPTH, FEEDBACK, MIX, STAGES};
+    let x = noise(4 * RATE as usize, 23);
+    let start = RATE as usize / 2;
+    let dry = rms(&x[start..]);
+    for depth in [0.0f32, 70.0] {
+        for stages in [0.0f32, 1.0, 4.0] {
+            for fb in [-95.0f32, -60.0, 0.0, 30.0, 60.0, 95.0] {
+                let mut p = set_up(
+                    Box::new(Phaser::new()),
+                    &[
+                        (DEPTH, depth),
+                        (STAGES, stages),
+                        (FEEDBACK, fb),
+                        (MIX, 100.0),
+                    ],
+                );
+                let (mut l, mut r) = (x.clone(), x.clone());
+                run(p.as_mut(), &mut l, &mut r, &[]);
+                for (side, y) in [("left", &l), ("right", &r)] {
+                    let db = 20.0 * (rms(&y[start..]) / dry).log10();
+                    assert!(
+                        db.abs() < 0.5,
+                        "Depth {depth}, stages {stages}, Feedback {fb}, {side}: {db:.2} dB"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_phaser_goes_in_near_the_dry_level_at_any_feedback() {
+    // At Mix 50 % the dry and wet add below the first notch and cancel
+    // at it; on a noise dulled as music is (pink-ish: each octave 3 dB
+    // down), the trim keeps the level within 2 dB at any Feedback.
+    use ids::phaser::FEEDBACK;
+    let white = noise(4 * RATE as usize, 29);
+    // A rough pink: three one-poles summed (Paul Kellet's economy filter).
+    let (mut b0, mut b1, mut b2) = (0.0f32, 0.0f32, 0.0f32);
+    let x: Vec<f32> = white
+        .iter()
+        .map(|&w| {
+            b0 = 0.99765 * b0 + w * 0.0990460;
+            b1 = 0.96300 * b1 + w * 0.2965164;
+            b2 = 0.57000 * b2 + w * 1.0526913;
+            0.25 * (b0 + b1 + b2 + w * 0.1848)
+        })
+        .collect();
+    let start = RATE as usize / 2;
+    let dry = rms(&x[start..]);
+    for fb in [-95.0f32, -60.0, 0.0, 30.0, 60.0, 95.0] {
+        let mut p = set_up(Box::new(Phaser::new()), &[(FEEDBACK, fb)]);
+        let (mut l, mut r) = (x.clone(), x.clone());
+        run(p.as_mut(), &mut l, &mut r, &[]);
+        for (side, y) in [("left", &l), ("right", &r)] {
+            let db = 20.0 * (rms(&y[start..]) / dry).log10();
+            assert!(db.abs() < 2.5, "Feedback {fb}, {side}: {db:.2} dB");
+        }
+    }
+}
+
+#[test]
+fn the_phasers_feedback_never_lifts_dc() {
+    // The stages pass DC unturned, so a loop without its high-pass rang
+    // there: at +95 % a DC offset came out six times over. Now DC goes
+    // round the loop to nothing, and comes out at no more than it went in.
+    use ids::phaser::{FEEDBACK, MIX};
+    for fb in [-95.0f32, 95.0] {
+        for mix in [50.0f32, 100.0] {
+            let mut p = set_up(Box::new(Phaser::new()), &[(FEEDBACK, fb), (MIX, mix)]);
+            let x = vec![0.1f32; 2 * RATE as usize];
+            let (mut l, mut r) = (x.clone(), x.clone());
+            run(p.as_mut(), &mut l, &mut r, &[]);
+            for (side, y) in [("left", &l), ("right", &r)] {
+                let tail = &y[3 * RATE as usize / 2..];
+                let dc = tail.iter().sum::<f32>() / tail.len() as f32;
+                assert!(
+                    dc.abs() <= 0.1 + 1e-4,
+                    "Feedback {fb}, Mix {mix}, {side}: DC {dc}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn voice_stage_and_shape_changes_do_not_click() {
     // The largest second difference of a low sine through the effect: a
     // hard switch between settings shows as a spike far above what the
     // effect makes holding still, while a glide's corner stays near it.
@@ -207,10 +442,13 @@ fn voice_and_stage_changes_do_not_click() {
         run(n.as_mut(), &mut l, &mut r, moves);
         l
     };
-    use ids::{chorus, phaser};
+    use ids::{chorus, flanger, phaser};
     let chorus = || -> Box<dyn Node> { Box::new(Chorus::new()) };
+    let flanger = || -> Box<dyn Node> { Box::new(Flanger::new()) };
     let phaser = || -> Box<dyn Node> { Box::new(Phaser::new()) };
-    let cases: [(&str, Make, u16, Vec<f32>); 2] = [
+    // A change of LFO shape crossfades the two shapes.
+    let shapes = vec![0.0, 1.0, 0.0, 1.0];
+    let cases: [(&str, Make, u16, Vec<f32>); 5] = [
         ("chorus", &chorus, chorus::VOICES, vec![2.0, 4.0, 1.0, 3.0]),
         (
             "phaser",
@@ -218,6 +456,9 @@ fn voice_and_stage_changes_do_not_click() {
             phaser::STAGES,
             vec![1.0, 4.0, 0.0, 2.0, 3.0],
         ),
+        ("chorus shape", &chorus, chorus::SHAPE, shapes.clone()),
+        ("flanger shape", &flanger, flanger::SHAPE, shapes.clone()),
+        ("phaser shape", &phaser, phaser::SHAPE, shapes),
     ];
     for (name, make, id, values) in cases {
         let stills: Vec<Vec<f32>> = values
@@ -252,7 +493,7 @@ fn voice_and_stage_changes_do_not_click() {
 #[test]
 fn the_tail_estimate_covers_the_ring_out() {
     use ids::{chorus, flanger, phaser};
-    let cases: [Case; 4] = [
+    let cases: [Case; 5] = [
         (
             "chorus",
             Box::new(Chorus::new()),
@@ -271,6 +512,16 @@ fn the_tail_estimate_covers_the_ring_out() {
             "flanger",
             Box::new(Flanger::new()),
             vec![(flanger::FEEDBACK, -95.0), (flanger::DELAY, 0.1)],
+        ),
+        (
+            "flanger, through zero",
+            Box::new(Flanger::new()),
+            vec![
+                (flanger::THROUGH_ZERO, 1.0),
+                (flanger::FEEDBACK, 95.0),
+                (flanger::DELAY, 10.0),
+                (flanger::DEPTH, 100.0),
+            ],
         ),
         (
             "phaser",
@@ -362,14 +613,38 @@ fn chorus_depth_is_milliseconds_and_the_bend_stays_inside_a_semitone() {
     let (swing, _) = measure(&[(DEPTH, 100.0), (DELAY, 3.0), (ids::chorus::RATE, 0.6)]);
     assert!((swing - 2.7).abs() < 0.01, "{swing}");
     // However fast and deep, the pitch moves less than a semitone: the
-    // delay never changes faster than 1 - 2^(-1/12) seconds a second.
+    // delay never changes faster than 1 - 2^(-1/12) seconds a second, in
+    // either shape.
     let semitone = 1.0 - 2f32.powf(-1.0 / 12.0);
-    for rate in [0.05f32, 0.6, 3.0, 10.0] {
-        for delay in [2.0f32, 12.0, 40.0] {
-            let (_, slope) = measure(&[(DEPTH, 100.0), (DELAY, delay), (ids::chorus::RATE, rate)]);
-            assert!(slope < semitone, "Rate {rate}, Delay {delay}: {slope}");
+    for shape in [0.0f32, 1.0] {
+        for rate in [0.05f32, 0.6, 3.0, 10.0] {
+            for delay in [2.0f32, 12.0, 40.0] {
+                let (_, slope) = measure(&[
+                    (DEPTH, 100.0),
+                    (DELAY, delay),
+                    (ids::chorus::RATE, rate),
+                    (ids::chorus::SHAPE, shape),
+                ]);
+                assert!(
+                    slope < semitone,
+                    "Shape {shape}, Rate {rate}, Delay {delay}: {slope}"
+                );
+            }
         }
     }
+    // The Triangle sweeps as far as the Sine, at a steady bend.
+    let tri = [
+        (DEPTH, 40.0),
+        (ids::chorus::RATE, 1.0),
+        (ids::chorus::SHAPE, 1.0),
+    ];
+    let (swing, slope) = measure(&tri);
+    assert!((swing - 2.0).abs() < 0.01, "Triangle: {swing} ms");
+    // 2 ms each way, 4 / 0.9 of the swing a cycle at 1 Hz.
+    assert!(
+        (slope - 0.002 * 4.0 / 0.9).abs() < 1e-5,
+        "Triangle: {slope}"
+    );
     // Synced to a sixteenth at 120 BPM (8 cycles a second) too.
     let mut c = Chorus::new();
     c.prepare(RATE, MAX_BLOCK);
@@ -433,5 +708,224 @@ fn a_synced_chorus_is_back_on_the_bar_after_a_loop_wraps() {
         worst < 1e-3 * rms(b) * 4.0,
         "{worst} apart against {} RMS",
         rms(b)
+    );
+}
+
+#[test]
+fn through_zero_waits_5_ms_and_says_so() {
+    // The dry waits 5 ms (to the frame), the latency reported, at every
+    // rate; off, nothing waits. Mix 0 is the dry, waited, through the
+    // flat read (so the crossing cancels exactly): within 0.15 dB to
+    // 12 kHz and 1 dB to 16 kHz.
+    use ids::flanger::{MIX, THROUGH_ZERO};
+    for rate in [44_100u32, 48_000, 96_000] {
+        let mut f = Flanger::new();
+        f.prepare(rate, MAX_BLOCK);
+        assert_eq!(f.latency(), 0, "{rate} Hz, off");
+        f.set_param(THROUGH_ZERO, 1.0);
+        f.set_param(MIX, 0.0);
+        f.reset();
+        let want = (0.005 * rate as f32).round() as usize;
+        assert_eq!(f.latency() as usize, want, "{rate} Hz, on");
+        let mut l = vec![0.0f32; 4096];
+        l[0] = 1.0;
+        let mut r = l.clone();
+        f.process(&Ctx::new(rate, 0), &[], &mut l, &mut r);
+        let peak = (0..l.len())
+            .max_by(|&a, &b| l[a].abs().total_cmp(&l[b].abs()))
+            .unwrap();
+        assert_eq!(peak, want, "{rate} Hz: the dry comes out at the latency");
+        assert_eq!(l, r, "{rate} Hz: both sides wait the same");
+        let w = 2.0 * std::f64::consts::PI / f64::from(rate);
+        for k in 1..=80 {
+            let hz = 200.0 * f64::from(k);
+            let (mut re, mut im) = (0.0f64, 0.0f64);
+            for (n, &v) in l.iter().enumerate() {
+                re += f64::from(v) * (w * hz * n as f64).cos();
+                im -= f64::from(v) * (w * hz * n as f64).sin();
+            }
+            let db = 10.0 * (re * re + im * im).log10();
+            let within = if hz <= 12_000.0 { 0.15 } else { 1.0 };
+            assert!(db.abs() < within, "{rate} Hz: {hz} Hz at {db:.3} dB");
+        }
+    }
+}
+
+#[test]
+fn through_zero_cancels_at_the_crossing() {
+    // Held at the crossing (Depth 0) with no Feedback, the copy is the
+    // dry inverted: Mix 50 is silence, exactly.
+    use ids::flanger::{DEPTH, FEEDBACK, MIX, THROUGH_ZERO};
+    let mut f = set_up(
+        Box::new(Flanger::new()),
+        &[
+            (THROUGH_ZERO, 1.0),
+            (DEPTH, 0.0),
+            (FEEDBACK, 0.0),
+            (MIX, 50.0),
+        ],
+    );
+    let (mut l, mut r) = (noise(20_000, 7), noise(20_000, 8));
+    run(f.as_mut(), &mut l, &mut r, &[]);
+    assert!(
+        l.iter().chain(&r).all(|&v| v == 0.0),
+        "{} left, {} right",
+        rms(&l),
+        rms(&r)
+    );
+}
+
+#[test]
+fn through_zero_draws_what_it_plays() {
+    // The right side starts a quarter cycle on (Width 100), where the
+    // copy is furthest behind; at the slowest Rate it holds still for
+    // the impulse's ring. Heard there, the comb is the comb drawn at
+    // phase 0.25, at either Feedback and at two Mixes.
+    use ids::flanger::{DELAY, DEPTH, FEEDBACK, MIX, RATE as LFO_RATE, THROUGH_ZERO, WIDTH};
+    // At the widest reach the ring is long enough for the slow sweep to
+    // move it, so that case is heard without Feedback.
+    let cases = [
+        (3.0f32, 80.0f32, &[-70.0f32, 0.0, 70.0][..]),
+        (1.5, 60.0, &[-70.0, 0.0, 70.0]),
+        (10.0, 100.0, &[0.0]),
+    ];
+    for (delay, depth, fbs) in cases {
+        for &fb in fbs {
+            for mix in [50.0f32, 100.0] {
+                let values = [
+                    (THROUGH_ZERO, 1.0),
+                    (LFO_RATE, 0.02),
+                    (DEPTH, depth),
+                    (DELAY, delay),
+                    (FEEDBACK, fb),
+                    (MIX, mix),
+                    (WIDTH, 100.0),
+                ];
+                let mut f = set_up(Box::new(Flanger::new()), &values);
+                let mut l = vec![0.0f32; 1 << 14];
+                l[0] = 1.0;
+                let mut r = l.clone();
+                run(f.as_mut(), &mut l, &mut r, &[]);
+                let mut drawn = Flanger::new();
+                drawn.prepare(RATE, MAX_BLOCK);
+                for (id, v) in values {
+                    drawn.set_param(id, v);
+                }
+                for k in 1..=90 {
+                    let hz = 200.0 * k as f64;
+                    let want = f64::from(drawn.response_db(hz as f32, 0.25));
+                    if want < -20.0 {
+                        continue;
+                    }
+                    let got = response_db(&r, hz);
+                    assert!(
+                        (got - want).abs() < 0.05,
+                        "Delay {delay} ms, Depth {depth}, Feedback {fb}, Mix {mix}: {hz} Hz heard {got:.2} dB, drawn {want:.2}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn through_zero_sweeps_evenly_either_side_of_the_dry() {
+    // The gap drawn: Delay times Depth either way, never past the wait.
+    use ids::flanger::{DELAY, DEPTH, THROUGH_ZERO};
+    let mut f = Flanger::new();
+    f.prepare(RATE, MAX_BLOCK);
+    f.set_param(THROUGH_ZERO, 1.0);
+    assert!((f.wait_ms() - 5.0).abs() < 1e-4);
+    for (delay, depth, reach) in [
+        (2.0f32, 50.0f32, 1.0f32),
+        (3.0, 80.0, 2.4),
+        (10.0, 100.0, 5.0 - 2.0 / 48.0),
+    ] {
+        f.set_param(DELAY, delay);
+        f.set_param(DEPTH, depth);
+        let gaps: Vec<f32> = (0..=400).map(|k| f.gap_ms(k as f32 / 400.0)).collect();
+        let lo = gaps.iter().copied().fold(f32::MAX, f32::min);
+        let hi = gaps.iter().copied().fold(f32::MIN, f32::max);
+        assert!(
+            (hi - reach).abs() < 1e-3 && (lo + reach).abs() < 1e-3,
+            "Delay {delay}, Depth {depth}: {lo} to {hi} ms"
+        );
+        assert!(f.gap_ms(0.0).abs() < 1e-4, "it starts at the crossing");
+    }
+}
+
+#[test]
+fn switching_through_zero_does_not_click() {
+    // On, off and on again mid-note: the dry and the copy glide across,
+    // far smoother than a cut between the two (the second time on, the
+    // dry's lines have gone stale while off, and fill again first).
+    use ids::flanger::THROUGH_ZERO;
+    let x = sine(110.0, 0.5, 48_000);
+    let render = |on: f32, moves: &[(usize, u16, f32)]| {
+        let mut n = set_up(Box::new(Flanger::new()), &[(THROUGH_ZERO, on)]);
+        let (mut l, mut r) = (x.clone(), x.clone());
+        run(n.as_mut(), &mut l, &mut r, moves);
+        l
+    };
+    let stills = [render(0.0, &[]), render(1.0, &[])];
+    let still = stills
+        .iter()
+        .map(|s| roughness(&s[4000..]))
+        .fold(0.0f32, f32::max);
+    let moving = roughness(
+        &render(
+            0.0,
+            &[
+                (12_000, THROUGH_ZERO, 1.0),
+                (24_000, THROUGH_ZERO, 0.0),
+                (40_000, THROUGH_ZERO, 1.0),
+            ],
+        )[4000..],
+    );
+    let spliced: Vec<f32> = (0..x.len())
+        .map(|i| stills[usize::from((12_000..24_000).contains(&i) || i >= 40_000)][i])
+        .collect();
+    let hard = roughness(&spliced[4000..]);
+    assert!(hard > 0.01, "a hard switch is visible ({hard})");
+    assert!(
+        moving < still + 0.1 * (hard - still),
+        "roughness {moving} switching, {still} holding still, {hard} cutting"
+    );
+}
+
+#[test]
+fn through_zero_goes_in_at_the_dry_level() {
+    // As off: a dulled noise's level within 1 dB at any Feedback and Mix,
+    // sweeping as it does by default.
+    use ids::flanger::{FEEDBACK, MIX, THROUGH_ZERO};
+    let white = noise(3 * RATE as usize + 2, 17);
+    let x: Vec<f32> = white
+        .windows(3)
+        .map(|w| 0.25 * (w[0] + 2.0 * w[1] + w[2]))
+        .collect();
+    let start = RATE as usize / 2;
+    let dry = rms(&x[start..]);
+    let mut worst = (0.0f32, String::new());
+    for fb in [-95.0f32, -70.0, -30.0, 0.0, 30.0, 70.0, 95.0] {
+        for mix in [25.0f32, 50.0, 100.0] {
+            let mut f = set_up(
+                Box::new(Flanger::new()),
+                &[(THROUGH_ZERO, 1.0), (FEEDBACK, fb), (MIX, mix)],
+            );
+            let (mut l, mut r) = (x.clone(), x.clone());
+            run(f.as_mut(), &mut l, &mut r, &[]);
+            for (side, y) in [("left", &l), ("right", &r)] {
+                let db = 20.0 * (rms(&y[start..]) / dry).log10();
+                if db.abs() > worst.0.abs() {
+                    worst = (db, format!("Feedback {fb}, Mix {mix}, {side}"));
+                }
+            }
+        }
+    }
+    assert!(
+        worst.0.abs() < 1.0,
+        "{}: {:.2} dB against the dry",
+        worst.1,
+        worst.0
     );
 }

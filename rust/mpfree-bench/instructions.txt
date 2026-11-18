@@ -15,27 +15,30 @@
 44291	Audio tracks: 6 playing comped takes, 2 recording
 44270	Audio tracks: 8 playing comped takes
 54516	Audio tracks: 8 streaming comped takes
+28533	Auto wah
+21968	Auto-pan
 339781	Chain: drive, filter, delay, comp
 104245	Character (Console)
 120120	Character (Iron)
 97075	Character (Soften)
 149818	Character (Tape)
-103784	Chorus (2 voices)
-173943	Chorus (4 voices)
-908699	Cloud reverb (Cloud)
-254417	Cloud reverb (Cloud, Eco)
-282548	Cloud reverb (Echoes)
-169785	Cloud reverb (Echoes, Eco)
-723627	Cloud reverb (Hall)
-249011	Cloud reverb (Hall, Eco)
-767509	Cloud reverb (Plate)
-225383	Cloud reverb (Plate, Eco)
-554764	Cloud reverb (Room)
-209217	Cloud reverb (Room, Eco)
+99180	Chorus (2 voices)
+147067	Chorus (4 voices)
+991771	Cloud reverb (Cloud)
+274985	Cloud reverb (Cloud, Eco)
+313193	Cloud reverb (Echoes)
+183745	Cloud reverb (Echoes, Eco)
+791153	Cloud reverb (Hall)
+267451	Cloud reverb (Hall, Eco)
+839996	Cloud reverb (Plate)
+247105	Cloud reverb (Plate, Eco)
+607265	Cloud reverb (Room)
+226832	Cloud reverb (Room, Eco)
 20102	Comb
 27650	Compressor
 36221	Crush
 13406	DJ filter
+42431	De-esser
 70889	Delay
 129473	Drawbar Church, 8 keys
 173856	Drawbar Full Organ, 8 keys
@@ -45,39 +48,51 @@
 430284	Drive (HQ 4x)
 572112	Drums Boom Kit, a hit every block
 417001	Drums Init Kit, a hit every 4 blocks
+14765	Ducker (tempo)
 108120	EQ (4 bands and both cuts)
 256118	EQ (4 bands and both cuts), Freq gliding
 188280	EQ (4 bands and both cuts), HQ 2x
-55126	Flanger
+64907	Flanger
+92618	Flanger, through zero
+55287	Frequency shifter
 386476	Fuzz
-434564	Grains FX (dense)
+17437	Gate
+472729	Grains FX (dense)
+99325	Harmonizer
 188538	Keys Dusty Keys, 16 voices
 169967	Keys Init, 16 voices
 117314	Keys Init, 8 voices
 219542	Keys Reed, 16 voices
+44852	Limiter
+98264	Limiter (true peak)
 221974	Lo-fi
 294259	Looper (60 s), 8 loops of 3 layers playing
 417853	Looper (60 s), 8 loops of 3 layers playing, half edited
 25436	Looper (60 s), overdubbing
-28961	Master safety
-210819	Mixer, 12 tracks and 8 pads, routing only
-1475135	Mixer, 12 tracks and 8 pads, with a song's inserts
-999293	Mixer, 12 tracks and 8 pads, with a song's inserts, Eco reverb
-1086930	Mixer, 12 tracks and 8 pads, with a song's inserts, Light reverb
-370832	Mixer, 16 tracks and 32 pads, routing only
-1301290	Mixer, a song's inserts, 6 tracks frozen, printing a bus
-52828	Mixer, idle (63 strips, nothing playing)
+30334	Master safety
+308489	Mixer, 12 tracks and 8 pads, routing only
+1616279	Mixer, 12 tracks and 8 pads, with a song's inserts
+1092142	Mixer, 12 tracks and 8 pads, with a song's inserts, Eco reverb
+1197897	Mixer, 12 tracks and 8 pads, with a song's inserts, Light reverb
+461668	Mixer, 16 tracks and 32 pads, routing only
+1442597	Mixer, a song's inserts, 6 tracks frozen, printing a bus
+44777	Mixer, idle (63 strips, nothing playing)
 107876	Mod: 8 macros x 8, 16 rows, morph, locks
 9033	Moves: 16 lanes playing, the move log taking 3 controls
-8536	Multi filter (LP 12)
-139789	Multi filter (LP 24, drive)
+8590	Multi filter (LP 12)
+80358	Multi filter (LP 12, Hard)
+143678	Multi filter (LP 24, drive)
+92010	Multi filter (ladder)
 95212	Multi-tap delay
+149907	Multiband compressor
 212533	Perform FX, 7 pads held (pitch drop, gate, sweeps, crush, riser, echo)
 61602	Perform FX, a wash throw held
 3388	Perform FX, idle
 37002	Perform FX, the 16 pads in turn
-100523	Phaser (12 stages)
-61610	Phaser (4 stages)
+107805	Phaser (12 stages)
+66460	Phaser (4 stages)
+60128	Pitch correct
+58972	Pitch shifter
 155797	Plate reverb
 307019	Pluck Bell, 16 voices
 249183	Pluck Harp, 16 voices
@@ -93,23 +108,35 @@
 209421	Poly Pluck, 8 voices
 33542	Poly Sub Bass, 8 voices
 374672	Poly Supersaw, 8 voices
+24644	Ring mod
 145867	Room reverb
-1030233	Sampler, 20 pads
-1549872	Sampler, 20 pads + master grains
+115746	Rotary
+546477	Sampler x16 held
+1515282	Sampler x16 held up
+1774420	Sampler x16 held up, 16-bit sound
+548284	Sampler x16 held, 16-bit sound
+1435093	Sampler, 20 pads
+2017919	Sampler, 20 pads + master grains
+75022	Sampler, 4 drum kits, 64 voices
 39166	Sampler, drum kit, 24 voices
+41183	Sampler, drum kit, 24 voices, 16-bit sounds
 74456	Sampler, drum kit, 64 voices
 823688	Sampler, the 16 sample pads alone
-235626	Sampler, the 4 granular pads alone
-3482546	Song: sampler, 2 synths, mixer+FX, time, looper
+630784	Sampler, the 4 granular pads alone
+4085282	Song: sampler, 2 synths, mixer+FX, time, looper
 137967	Spring reverb
 59214	Squelch Acid Line, a line
 61774	Squelch Distorted, a line
 64328	Squelch Square Acid, a line
+37255	Talk box
 87944	Tape delay
 8130	Time with trig conditions and ratchets, 8 clips, arp
 8528	Time: transport, 8 clips, arp
 53727	Track host alone, 16 tracks, 8 events each per block
 406148	Track host, 4 Poly tracks of 4 voices
+26028	Transient shaper
+16713	Tremolo
+32159	Tuner
 476604	Wavetable Digital Bell, 8 voices
 479074	Wavetable FM Keys, 8 voices
 77780	Wavetable Growl Bass, 8 voices

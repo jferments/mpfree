@@ -146,7 +146,7 @@ fn project_name(xpm: &Path, name: Option<&str>, prog_name: &str, fallback: &str)
 /// The size line for the kit's sounds.
 fn kit_line(what: &str, project: &Project, bytes_in: u64) -> String {
     let sources = project.sources();
-    let ram: usize = sources.iter().map(|s| s.data().len() * 4).sum();
+    let ram: usize = sources.iter().map(|s| s.data().bytes()).sum();
     format!(
         "kit: {what}, {} sounds ({:.1} MiB of files, {:.1} MiB in the sampler's memory)",
         sources.len(),

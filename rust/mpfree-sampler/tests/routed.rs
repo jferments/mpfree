@@ -36,7 +36,7 @@ impl Channels {
 }
 
 impl PadOut for Channels {
-    fn pad(&mut self, pad: usize) -> Option<(&mut [f32], &mut [f32])> {
+    fn pad(&mut self, _kit: usize, pad: usize) -> Option<(&mut [f32], &mut [f32])> {
         self.asked.push(pad);
         if pad >= PAIRS || self.off.contains(&pad) {
             return None;

@@ -25,7 +25,7 @@ const RATE: u32 = 44_100;
 struct Channels(Vec<[Vec<f32>; 2]>);
 
 impl PadOut for Channels {
-    fn pad(&mut self, pad: usize) -> Option<(&mut [f32], &mut [f32])> {
+    fn pad(&mut self, _kit: usize, pad: usize) -> Option<(&mut [f32], &mut [f32])> {
         let [l, r] = self.0.get_mut(pad)?;
         Some((&mut l[..], &mut r[..]))
     }

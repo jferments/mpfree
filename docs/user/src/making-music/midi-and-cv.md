@@ -62,7 +62,8 @@ If a track would send nothing, it says why under the track's name: no port is pi
 
 Each port's row in the MIDI section has **Open ›** at its right; it, or a tap on the port's name, opens the port's page. **‹ MIDI** or **BACK** closes it.
 
-- **This port** says what it is (the MPC's 5-pin jacks, or a USB device) and its **Input**: **Both**, **Plays tracks** or **Learn only**, the same setting as on its row.
+- **This port** says what it is (the MPC's 5-pin jacks, or a USB device), its **Name** and its **Input**: **Both**, **Plays tracks** or **Learn only**, the same setting as on its row.
+- **Name** gives a USB device a name of your own, such as *Juno* for a box that calls itself *USB MIDI Interface*. A tap (or +) opens the on-screen keyboard; type the name and tap **Enter**. From then on MPFree uses it everywhere it names the port: its row, Routing, a track's **Plays on**, Sync, Learn, the Monitor and the tempo chip. The page still says the name the device calls itself. A name has at most 24 characters, and two ports can't share one (whatever the capitals). Type the device's own name to go back to it. The name belongs to your setup, not the song, so every project uses it. The 5-pin jacks keep the names on the MPC's panel, **MIDI In** and **MIDI Out**.
 - **Ignore coming in** has four switches: **Clock**, **Program**, **Aftertouch** and **All notes off**. A lit one is ignored: those messages from this port play nothing, teach nothing and move no tempo. The Monitor still lists them, marked *ignored: this port's setting*, so you can see they arrive. **Clock** also covers the Start, Stop and Song Position that come with it. Ignore **Clock** on a drum machine that sends clock you don't want; ignore **Program** on a keyboard that sends one when you change its sound.
 - **What it does** lists, in words, what this port's messages do today and what plays on it: its routes to tracks (*Ch 10 → Drums*) and its thru (*Ch 3 → MIDI out, thru*), where the rest of its notes go, the tracks that play out of it with their channels, thru from other ports, the controls learned from it, and whether the tempo follows it. Change its routes in the Routing section.
 - **Now** shows the newest message in and out and how long ago.
@@ -140,6 +141,10 @@ A button, pad, key or footswitch on your controller can press MPFree's transport
 For the tempo the quick way works too: hold **SHIFT** and touch the tempo on the Play page. To mute a track from a controller, hold **SHIFT** and touch its **M** in the mixer, then press a key: each press mutes or unmutes it.
 
 Transport controls are kept in **Rig**, so they work in every project. Nothing here sends anything to your controller.
+
+## MIDI files
+
+A MIDI file from another sequencer, a computer or an MPC loads from BROWSE as clips, with each note on the pad that plays it: see [Bringing in a MIDI file](clips.md#bringing-in-a-midi-file). **Export** makes a MIDI file of your song for a computer: see [Exporting your music](exporting.md).
 
 ## CV and gate
 

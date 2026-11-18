@@ -8,7 +8,7 @@
 //! - the frame, the same in every view: the transport card (84 px) with
 //!   the view switch at its right end, the view under it, and beside them,
 //!   from under the top bar to the hint line, the master meter (66 px) and
-//!   the four Q-Link cards (168 px) next to the MPC's Q-Link knobs;
+//!   the four Q-Link cards (128 px) next to the MPC's Q-Link knobs;
 //! - **All** (home, F): the looper strip, the pattern, and the throws
 //!   beside the XY pad;
 //! - **Beats** (G): the whole pattern, then (unless Play's options turn
@@ -608,6 +608,17 @@ pub const THROW_LIST: [ThrowDef; 8] = [
 pub struct PadInfo {
     pub label: Option<String>,
     pub color: Option<Color>,
+    /// The synth's pads: where the pad's note sits, for Beats' scale rows
+    /// (None for a kit's sounds and the Drums engine's).
+    pub pitch: Option<PadPitch>,
+}
+
+/// A synth pad's note (a chord pad's root) and whether it is the key's
+/// root (with no scale, a C), as its light shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PadPitch {
+    pub note: u8,
+    pub root: bool,
 }
 
 impl PadInfo {
@@ -646,6 +657,11 @@ pub struct PlayPage {
     pub last_pad: usize,
     pub pads: Vec<PadInfo>,
     pub levels: PlayLevels,
+    /// The armed track plays kit 1, whose pads have channels of their own
+    /// (the mixer's pad strips): its lanes show and change their mutes.
+    /// Another kit plays through its track's channel, so its pads have no
+    /// mutes of their own, as a synth's haven't.
+    pub pad_strips: bool,
     turned_at: Option<Instant>,
     pub transport: TransportInfo,
     hits: VecDeque<HitInfo>,
@@ -667,6 +683,11 @@ pub struct PlayPage {
     /// The inspector's Copy: the step (pad, step in the clip) whose copy
     /// the next step tapped on its lane takes.
     pub copy_from: Option<(usize, usize)>,
+    /// A synth track's scale rows: Fold (only the notes used), and the
+    /// window's lowest row as the octave's ‹ and › left it (None: from
+    /// the root under the lowest note used).
+    pub fold: bool,
+    pub low: Option<usize>,
 }
 
 /// What the step inspector shows (Beats, a step held or picked; the
@@ -737,6 +758,7 @@ impl Default for PlayPage {
                 fx_mix: 1.0,
                 pad_mutes: 0,
             },
+            pad_strips: true,
             turned_at: None,
             transport: TransportInfo::default(),
             hits: VecDeque::new(),
@@ -747,6 +769,8 @@ impl Default for PlayPage {
             bank: HeldBank::Step,
             sound_bank: Default::default(),
             copy_from: None,
+            fold: false,
+            low: None,
         }
     }
 }
@@ -1709,15 +1733,102 @@ impl PlayPage {
         Some((s / PAGE, s % PAGE))
     }
 
+    /// The synth's pads hold notes (not the Drums engine's sounds): Beats
+    /// shows its pattern as scale rows.
+    pub fn pitched(&self) -> bool {
+        self.pads.iter().any(|p| p.pitch.is_some())
+    }
+
+    fn has_notes(&self, p: usize) -> bool {
+        self.steps
+            .clip
+            .as_ref()
+            .is_some_and(|c| c.row(p as u8).iter().any(Option::is_some))
+    }
+
+    fn note_of(&self, p: usize) -> Option<u8> {
+        self.pads.get(p).and_then(|i| i.pitch).map(|x| x.note)
+    }
+
+    /// Scale rows: the pads in pitch order, lowest first (any with notes
+    /// but no note of their own below them); with Fold, only those the
+    /// clip uses, unless it uses none.
+    pub fn note_rows(&self) -> Vec<usize> {
+        let mut v: Vec<usize> = (0..16)
+            .filter(|&p| self.note_of(p).is_some() || self.has_notes(p))
+            .collect();
+        v.sort_by_key(|&p| (self.note_of(p).map_or(-1, i16::from), p));
+        if self.fold && v.iter().any(|&p| self.has_notes(p)) {
+            v.retain(|&p| self.has_notes(p));
+        }
+        v
+    }
+
+    /// Scale rows: the window's lowest row, as the octave's ‹ and › left
+    /// it, else from the root at or under the lowest note used (within an
+    /// octave), else the lowest root.
+    pub fn low_row(&self, rows: &[usize]) -> usize {
+        if let Some(low) = self.low {
+            return low;
+        }
+        let note = |k: usize| self.note_of(rows[k]).map_or(0, i32::from);
+        let root = |k: usize| {
+            self.pads
+                .get(rows[k])
+                .and_then(|i| i.pitch)
+                .is_some_and(|x| x.root)
+        };
+        match rows.iter().position(|&p| self.has_notes(p)) {
+            Some(k) => (0..=k)
+                .rev()
+                .find(|&j| root(j) && note(j) + 12 > note(k))
+                .unwrap_or(k),
+            None => (0..rows.len()).find(|&j| root(j)).unwrap_or(0),
+        }
+    }
+
+    /// The octave's ‹ (`up` false) or ›, with `n` note rows showing: the
+    /// window moves to the row an octave down or up, stopping at the ends.
+    /// False when it did not move.
+    pub fn turn_octave(&mut self, up: bool, n: usize) -> bool {
+        let rows = self.note_rows();
+        let top = rows.len().saturating_sub(n.max(1));
+        let low = self.low_row(&rows).min(top);
+        let note = |k: usize| self.note_of(rows[k]).map_or(0, i32::from);
+        let to = if up {
+            (low + 1..=top)
+                .find(|&j| note(j) >= note(low) + 12)
+                .unwrap_or(top)
+        } else {
+            (0..low)
+                .rev()
+                .find(|&j| note(j) + 12 <= note(low))
+                .unwrap_or(0)
+        };
+        self.low = Some(to);
+        to != low
+    }
+
+    /// Fold on or off: the window starts again from the notes.
+    pub fn toggle_fold(&mut self) {
+        self.fold = !self.fold;
+        self.low = None;
+    }
+
     /// The pattern's lanes, most wanted first: the sounds with notes, the
-    /// pad hit last, then the kit's other sounds, then the rest.
+    /// pad hit last, then the kit's other sounds, then the rest. On a
+    /// synth track, the line (STEP SEQ's) and then the scale rows, lowest
+    /// first (the grid shows them high on top).
     fn lanes(&self) -> Vec<Lane> {
-        let clip = self.steps.clip.as_ref();
-        let has_notes = |p: usize| clip.is_some_and(|c| c.row(p as u8).iter().any(Option::is_some));
+        let has_notes = |p: usize| self.has_notes(p);
         let has_sound = |p: usize| self.pads.get(p).is_some_and(|i| i.label.is_some());
         // The lane on the pads comes first, so it always shows.
         let on_pads = self.on_pads.map(|s| usize::from(s.sound));
         let mut wanted: Vec<usize> = on_pads.into_iter().collect();
+        if self.pitched() {
+            wanted.extend(self.note_rows());
+            return wanted.into_iter().map(|p| self.lane(p)).collect();
+        }
         wanted.extend((0..16).filter(|&p| has_notes(p)));
         if has_sound(self.last_pad) {
             wanted.push(self.last_pad);
@@ -1730,33 +1841,43 @@ impl PlayPage {
                 order.push(p);
             }
         }
+        order.into_iter().map(|p| self.lane(p)).collect()
+    }
+
+    /// Pad `p`'s lane on the page shown.
+    fn lane(&self, p: usize) -> Lane {
+        let clip = self.steps.clip.as_ref();
         let from = self.page * PAGE;
-        order
-            .into_iter()
-            .map(|p| {
-                let row = clip.map_or(&[][..], |c| c.row(p as u8));
-                let locks = clip.map_or(&[][..], |c| c.locks(p as u8));
-                Lane {
-                    pad: p,
-                    name: self.pad_name(p),
-                    // The line (the synth's steps) takes its pen's colour.
-                    color: self
-                        .pads
-                        .get(p)
-                        .or_else(|| {
-                            let pen = self.on_pads.filter(|_| p == usize::from(LINE))?.pen;
-                            self.pads.get(usize::from(*pen.pads().first()?))
-                        })
-                        .and_then(PadInfo::color)
-                        .unwrap_or(draw::FX),
-                    muted: p < 16 && self.levels.pad_mutes & (1 << p) != 0,
-                    steps: (from..from + PAGE)
-                        .map(|i| row.get(i).copied().flatten().map_or(0, |s| s.velocity))
-                        .collect(),
-                    marks: marks(row, locks, from),
-                }
-            })
-            .collect()
+        let row = clip.map_or(&[][..], |c| c.row(p as u8));
+        let locks = clip.map_or(&[][..], |c| c.locks(p as u8));
+        let pitch = self.pads.get(p).and_then(|i| i.pitch);
+        Lane {
+            pad: p,
+            name: self.pad_name(p),
+            // The line (the synth's steps) takes its pen's colour.
+            color: self
+                .pads
+                .get(p)
+                .or_else(|| {
+                    let pen = self.on_pads.filter(|_| p == usize::from(LINE))?.pen;
+                    self.pads.get(usize::from(*pen.pads().first()?))
+                })
+                .and_then(PadInfo::color)
+                .unwrap_or(draw::FX),
+            // A synth's pads have no mutes of their own (the kit's are
+            // the drums'), nor have another kit's (they share their
+            // track's channel).
+            muted: p < 16
+                && !self.pitched()
+                && self.pad_strips
+                && self.levels.pad_mutes & (1 << p) != 0,
+            steps: (from..from + PAGE)
+                .map(|i| row.get(i).copied().flatten().map_or(0, |s| s.velocity))
+                .collect(),
+            marks: marks(row, locks, from),
+            note: pitch.map(|x| x.note),
+            root: pitch.is_some_and(|x| x.root),
+        }
     }
 
     /// Fill the pattern panel.
@@ -1833,6 +1954,13 @@ impl PlayPage {
         let on_pads = self.on_pads.map(|s| usize::from(s.sound));
         if g.on_pads != on_pads {
             g.on_pads = on_pads;
+        }
+        let pitched = self.pitched().then(|| crate::play_widgets::Pitched {
+            fold: self.fold,
+            low: self.low_row(&self.note_rows()),
+        });
+        if g.pitched != pitched {
+            g.pitched = pitched;
         }
     }
 
@@ -2241,6 +2369,131 @@ mod tests {
         assert_eq!((w.label.as_str(), w.x, w.y), ("Off · echo 0 %", 0.5, 0.0));
     }
 
+    /// The synth's pads in A minor, In key from A3 (the roots on pads 1,
+    /// 8 and 15), and a clip with notes on `notes` (pad, step).
+    fn synth_page(notes: &[(u8, usize)]) -> PlayPage {
+        let mut p = PlayPage::default();
+        let scale = [0u8, 2, 3, 5, 7, 8, 10];
+        p.pads = (0..16)
+            .map(|k| {
+                let note = 57 + 12 * (k / 7) as u8 + scale[k % 7];
+                PadInfo {
+                    label: Some(crate::synth::note_name(note)),
+                    color: None,
+                    pitch: Some(PadPitch {
+                        note,
+                        root: k % 7 == 0,
+                    }),
+                }
+            })
+            .collect();
+        let mut rows: Vec<(u8, Vec<Option<Step>>)> = (0..16).map(|p| (p, vec![None; 16])).collect();
+        for &(pad, i) in notes {
+            rows[usize::from(pad)].1[i] = Some(Step {
+                velocity: 100,
+                len: STEP_TICKS,
+                nudge: 0,
+                chance: 100,
+                cond: Default::default(),
+                ratchet: 1,
+                notes: 1,
+                low: pad,
+                high: pad,
+            });
+        }
+        p.steps.clip = Some(crate::time::StepClip {
+            slot: 0,
+            name: "Pattern 1".into(),
+            steps: 16,
+            song_length: 3840.0,
+            song_step: 240.0,
+            origin: None,
+            rows,
+            locks: Vec::new(),
+            lock_values: Vec::new(),
+        });
+        p
+    }
+
+    /// Beats on a synth track (the sequencer design's mockup B): its
+    /// rows are the pads' notes in pitch order from the root under the
+    /// lowest note used; Fold keeps the notes used; the octave's ‹ and ›
+    /// move the window an octave; a kit's lanes are as they were.
+    #[test]
+    fn a_synth_tracks_rows_follow_the_scale_fold_and_the_octave() {
+        // C4, E4 and C5 used.
+        let mut p = synth_page(&[(2, 0), (4, 4), (9, 8)]);
+        assert!(p.pitched());
+        assert_eq!(p.note_rows(), (0..16).collect::<Vec<_>>());
+        // From A3, the root under C4.
+        assert_eq!(p.low_row(&p.note_rows()), 0);
+        let mut g = StepGrid::default();
+        p.fill_steps(&mut g);
+        assert_eq!(
+            g.pitched,
+            Some(crate::play_widgets::Pitched {
+                fold: false,
+                low: 0
+            })
+        );
+        let first: Vec<(usize, Option<u8>, bool)> = g
+            .lanes
+            .iter()
+            .take(3)
+            .map(|l| (l.pad, l.note, l.root))
+            .collect();
+        assert_eq!(
+            first,
+            [
+                (0, Some(57), true),
+                (1, Some(59), false),
+                (2, Some(60), false)
+            ]
+        );
+        // The synth's pads have no mutes: the kit's are the drums'.
+        p.levels.pad_mutes = 0b11;
+        p.fill_steps(&mut g);
+        assert!(g.lanes.iter().all(|l| !l.muted));
+        // An octave up: A4 (pad 8) at the bottom; then as high as it
+        // goes with eight rows; then no further.
+        assert!(p.turn_octave(true, 8));
+        assert_eq!(p.low, Some(7));
+        assert!(p.turn_octave(true, 8));
+        assert_eq!(p.low, Some(8));
+        assert!(!p.turn_octave(true, 8));
+        // Down: an octave under B4 is B3, then the bottom.
+        assert!(p.turn_octave(false, 8));
+        assert_eq!(p.low, Some(1));
+        assert!(p.turn_octave(false, 8));
+        assert!(!p.turn_octave(false, 8));
+        assert_eq!(p.low, Some(0));
+        // Fold: only C4, E4 and C5, from the lowest.
+        p.toggle_fold();
+        assert_eq!((p.fold, p.low), (true, None));
+        assert_eq!(p.note_rows(), vec![2, 4, 9]);
+        assert_eq!(p.low_row(&p.note_rows()), 0);
+        p.fill_steps(&mut g);
+        assert_eq!(g.lanes.iter().map(|l| l.pad).collect::<Vec<_>>(), [2, 4, 9]);
+        // Fold with no notes shows them all.
+        let mut empty = synth_page(&[]);
+        empty.toggle_fold();
+        assert_eq!(empty.note_rows().len(), 16);
+        // With no notes, from the lowest root; a note far above it, from
+        // the note itself.
+        assert_eq!(empty.low_row(&empty.note_rows()), 0);
+        let high = synth_page(&[(10, 0)]);
+        assert_eq!(high.low_row(&high.note_rows()), 7, "A4, the root under D5");
+        let higher = synth_page(&[(13, 0)]);
+        assert_eq!(higher.low_row(&higher.note_rows()), 7, "A4 under G5");
+        // A kit: no scale rows.
+        let mut kit = synth_page(&[(2, 0)]);
+        for pad in &mut kit.pads {
+            pad.pitch = None;
+        }
+        kit.fill_steps(&mut g);
+        assert_eq!(g.pitched, None);
+    }
+
     #[test]
     fn the_swing_card_says_off_when_straight_as_the_transport_bar_does() {
         let mut p = PlayPage::default();
@@ -2273,17 +2526,17 @@ mod tests {
             for spec in [v.layout(), v.quick_layout()].into_iter().chain(timing) {
                 assert_eq!(
                     rect(&spec, TRANSPORT),
-                    Rect::new(12, 84, 998, TRANSPORT_H),
+                    Rect::new(12, 84, 1038, TRANSPORT_H),
                     "{spec}"
                 );
                 assert_eq!(
                     rect(&spec, MASTER),
-                    Rect::new(1022, 84, MASTER_WIDTH, 666),
+                    Rect::new(1062, 84, MASTER_WIDTH, 666),
                     "{spec}"
                 );
                 assert_eq!(
                     rect(&spec, QLINKS),
-                    Rect::new(1100, 84, COLUMN_WIDTH, 666),
+                    Rect::new(1140, 84, COLUMN_WIDTH, 666),
                     "{spec}"
                 );
                 assert_eq!(rect(&spec, "hint").y, 762, "{spec}");
@@ -2296,25 +2549,25 @@ mod tests {
     fn the_views_are_laid_out_as_the_mockups() {
         let all = PlayView::All.layout();
         let strip = crate::looper_page::LOOP_STRIP;
-        assert_eq!(rect(&all, strip), Rect::new(12, 180, 998, 150));
+        assert_eq!(rect(&all, strip), Rect::new(12, 180, 1038, 150));
         // The pattern fills the room the mini pads had (Jay, 12 Nov 15:45Z).
-        assert_eq!(rect(&all, STEPS), Rect::new(12, 342, 998, 276));
-        assert_eq!(rect(&all, THROWS), Rect::new(12, 630, 706, 120));
-        assert_eq!(rect(&all, XY), Rect::new(730, 630, 280, 120));
+        assert_eq!(rect(&all, STEPS), Rect::new(12, 342, 1038, 276));
+        assert_eq!(rect(&all, THROWS), Rect::new(12, 630, 746, 120));
+        assert_eq!(rect(&all, XY), Rect::new(770, 630, 280, 120));
         let beats = PlayView::Beats.layout();
-        assert_eq!(rect(&beats, STEPS), Rect::new(12, 180, 998, 362));
-        assert_eq!(rect(&beats, THROWS), Rect::new(12, 554, 998, 196));
+        assert_eq!(rect(&beats, STEPS), Rect::new(12, 180, 1038, 362));
+        assert_eq!(rect(&beats, THROWS), Rect::new(12, 554, 1038, 196));
         let lp = PlayView::Loop.layout();
-        assert_eq!(rect(&lp, strip), Rect::new(12, 180, 998, 362));
-        assert_eq!(rect(&lp, THROWS), Rect::new(12, 554, 686, 196));
-        assert_eq!(rect(&lp, XY), Rect::new(710, 554, 300, 196));
+        assert_eq!(rect(&lp, strip), Rect::new(12, 180, 1038, 362));
+        assert_eq!(rect(&lp, THROWS), Rect::new(12, 554, 726, 196));
+        assert_eq!(rect(&lp, XY), Rect::new(750, 554, 300, 196));
         // Beats with the timing strip (Jay 13 Nov: the Drum view's
         // timing folded into Beats): the pattern keeps six lanes, as All's.
         let timed = PlayView::Beats.layout_for(true);
-        assert_eq!(rect(&timed, STEPS), Rect::new(12, 180, 998, 278));
+        assert_eq!(rect(&timed, STEPS), Rect::new(12, 180, 1038, 278));
         assert_eq!(
             rect(&timed, TIMING),
-            Rect::new(12, 470, 998, TIMING_STRIP_H)
+            Rect::new(12, 470, 1038, TIMING_STRIP_H)
         );
         assert_eq!(rect(&timed, THROWS), rect(&beats, THROWS));
         const { assert!(TIMING_STRIP_H < crate::play_widgets::YourTiming::FULL_H) };
@@ -2344,8 +2597,8 @@ mod tests {
         let spec = framed(arp_view::ARP_LAYOUT);
         assert!(!slots(&spec).iter().any(|(n, _)| n == PADS), "{spec}");
         let list = rect(&spec, arp_view::LIST);
-        assert_eq!((list.x, list.right()), (12, 1010), "{list:?}");
-        assert_eq!(rect(&spec, QLINKS), Rect::new(1100, 84, COLUMN_WIDTH, 666));
+        assert_eq!((list.x, list.right()), (12, 1050), "{list:?}");
+        assert_eq!(rect(&spec, QLINKS), Rect::new(1140, 84, COLUMN_WIDTH, 666));
         assert_eq!(framed(&spec), spec, "framing twice changes nothing");
         // Any other page body still gets the frame.
         let other = framed("col(header:60, log:*, hint:26)");

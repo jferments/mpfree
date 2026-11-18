@@ -10,13 +10,12 @@ MPFree has nine synths built in. Put one on the pads and they become a keyboard:
 
 ## Put a synth on the pads
 
-There are three ways:
+Each track plays a kit or a synth, and the pads play what the selected track plays. There are two ways to put a synth on a track:
 
-- Give a track its own synth: see [A synth for each track](#a-synth-for-each-track). The pads play it whenever that track is selected, and so do the track's clips.
-- Tap the **Synth** tab. The pads play the synth while you are there and after you leave, until you pick a kit.
-- Or tap the kit chip at the top right and pick the last row, **Synth: Poly** (or the synth it had before tracks got their own). On the Play page, holding **SHIFT** and turning the data wheel past the last kit does the same.
+- Tap the kit chip at the top right and pick the last row, **Synth: Poly** (or the synth it had before tracks got their own). On the Play page, holding **SHIFT** and turning the data wheel past the last kit does the same. The selected track plays the synth from then on: the pads play it whenever that track is selected, and so do the track's clips. The other tracks keep what they play.
+- Give a track its own synth: see [A synth for each track](#a-synth-for-each-track).
 
-To go back to drums, tap the chip (it names the synth now) and pick a kit, or set the track's instrument back to **Kit**. While the synth has the pads, **PAD BANK** changes their layout and **SHIFT** + the wheel their octave, not the kit.
+Opening the **Synth** tab changes nothing that plays: it shows the synth, and if the selected track plays a kit, the line at the bottom of the screen says how to put the synth on it. To go back to drums, tap the chip (it names the synth now) and pick a kit, or set the track's instrument back to **Kit**. While the selected track plays the synth, **PAD BANK** changes the pads' layout and **SHIFT** + the wheel their octave, not the kit.
 
 ## The nine synths
 
@@ -47,8 +46,8 @@ Every track can play its own instrument: Poly on one, FM on another, a plugin sy
 {{shot: synth-instrument | Track 2's instrument set to a plugin synth, with the row's help on the right.}}
 
 - **It starts as a copy** of the synth's sound on the Synth tab, edits included. From then on it is the track's own: the Synth tab edits the selected track's instrument, and its title says whose it is ("Track 2"). Loading a preset gives the track a fresh copy with that preset.
-- **The pads play the selected track.** Select another track and the pads play its instrument, or the kit if it has none. The track's clips play its instrument too, whichever track is selected.
-- **Changing it is smooth.** Notes still sounding on the old instrument finish naturally while the new one starts. **Kit** takes the instrument away, and the track plays the kit again.
+- **The pads play the selected track.** Select another track and the pads play its instrument, or its kit if it has none. The track's clips play its instrument too, whichever track is selected.
+- **Changing it is smooth.** Notes still sounding on the old instrument finish naturally while the new one starts. **Kit** takes the instrument away, and the track plays its kit again.
 - **Up to 16 at once.** Any track can have its own instrument, and up to 16 tracks can at the same time, since each instrument takes its share of the MPC's power. With 16 already, the line along the bottom of the screen says so and the track stays on the kit: set one of the 16 to **Kit** first, and its place is free at once.
 - **Its own mixer channel.** A track with an instrument gets a channel named after it (**Track 1**, **Track 2**) in the mixer's Tracks view, with its own fader, inserts and sends. The channel only shows while the track has an instrument, and its settings stay with the track: set it to Kit and give it an instrument again later, and the channel is as you left it. See [Mixing and effects](mixing-and-effects.md).
 - **Shared options.** The scale, pad layouts, tuning and octave on the Synth tab's options are the same for every track's instrument.
@@ -82,7 +81,7 @@ Coming:
 - **The pictures** sit in the section they belong to and draw the sound as you change it: the oscillator waves over the oscillators, the filter's curve over the filter, the envelope over its faders.
 - **Open ›** by a section's name takes you to the page that section is about. For example, the filter envelope's amount on the Filter page opens the Envelopes page.
 - **A control that does nothing** with the sound as it is, such as a pulse width while the wave is a saw, is drawn faint, and the section's heading says why ("Pulse width · pulse waves only").
-- **The Q-Links** turn the four controls marked **Q1** to **Q4**. The column on the right shows what each one turns on this page, the section it is in and its value. Drag a card there to turn it from the screen. Each Q-Link keeps its colour on its badge and its card, the same as on the Play tab.
+- **The Q-Links** turn the four controls marked **Q1** to **Q4**. The column on the right shows what each one turns on this page and its value. Drag a card there to turn it from the screen. Each Q-Link keeps its colour on its badge and its card, the same as on the Play tab.
 - **Locking a step.** With **STEP SEQ** on, hold a step pad of a track this synth plays and turn a knob here: the knob is locked on that step only, and the sound stays as it was for the other steps. While you hold the step the tab shows its locks; let go and it shows the sound's own values again. See [Your first beat](../getting-started/first-beat.md#program-a-pattern-on-the-pads).
 - **The presets** are listed on the left, under the synth's name. Tap one to load it. Once you change anything, the preset is marked **edited**.
 - **UNDO** takes back the last knob you turned on this tab (a run of turns of one knob is one UNDO), and **SHIFT + UNDO** puts it back. Loading a preset starts the list again.
@@ -183,6 +182,20 @@ The **Chromatic / In key** switch in the pads heading on the Synth tab flips the
 > [!TIP]
 > Drums is a kit rather than a keyboard: pad 1 plays the first drum, pad 2 the second and so on, whatever the scale, layout or octave.
 
+## The synth's notes on Beats
+
+With the synth on the pads, the pattern on Play's **Beats** view (and the **All** view) shows the pads' notes as rows, the highest on top, like a piano roll turned to the scale: with a scale on, the rows are its notes, and the root's rows are shaded and marked **root**.
+
+{{shot: play-beats-synth | Beats on a synth track in C minor: the rows are the scale's notes from C3 to C4, the roots shaded. Step 1 holds a C minor triad, with an accent, a 50 % note and a 1:2 note later on.}}
+
+- **Tap a step in a row** to put that note there, and tap more rows on the same step for a chord. Tap a lit step to pick it for the Q-Links, and again to take it off.
+- **Hold a row's name** to hear its note.
+- **‹** and **›** beside **Oct** show the rows an octave lower or higher. The pattern starts from the root under the lowest note you've used.
+- **Fold** shows only the notes the pattern uses, so a bass line or a chord part fits on one screen. Tap it again for every note.
+- **ERASE** held + a row's name clears that note's steps; **UNDO** brings them back.
+
+Turning Play's **Timing strip** off in Play's options gives the pattern room for eight rows, a whole octave of a seven-note scale.
+
 ## Steps on the synth
 
 Press **STEP SEQ** with the synth on the pads and the 16 pads become the steps of the synth's whole line: each step can hold a note or a chord, and every note on it comes and goes together.
@@ -240,4 +253,4 @@ How hard you hit a pad sets how loud the note plays, as with drums. **FULL LEVEL
 Note Repeat, Latch and the arpeggiator all play the synth too: see [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md).
 
 > [!MPC]
-> The MPC's plugin instruments (such as its bass and electric-piano plugins) and expansions are not in MPFree. MPFree has its own five synths instead, with their controls on one tab and the Q-Links following each preset, and it can host CLAP plugin synths and the MPC plugin instruments people share, such as those in the Open MPC catalog. As on the MPC, where each track plays a program, each track can play its own instrument; a track without one plays the kit on the pads. The scales and chords of the MPC's Pad Perform mode are replaced by the scale settings and the per-bank pad layouts here: switch layouts with the PAD BANK buttons without leaving the page you are on.
+> The MPC's plugin instruments (such as its bass and electric-piano plugins) and expansions are not in MPFree. MPFree has its own five synths instead, with their controls on one tab and the Q-Links following each preset, and it can host CLAP plugin synths and the MPC plugin instruments people share, such as those in the Open MPC catalog. As on the MPC, where each track plays a program, each track can play its own instrument; a track without one plays its kit (see [A kit for each track](sampling.md#a-kit-for-each-track)). The scales and chords of the MPC's Pad Perform mode are replaced by the scale settings and the per-bank pad layouts here: switch layouts with the PAD BANK buttons without leaving the page you are on.

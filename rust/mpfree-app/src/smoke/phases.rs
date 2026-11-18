@@ -389,6 +389,8 @@ mod looper {
             .touch(7, mpfree_ui::Touch::Down, x, y)
             .into_iter()
             .collect();
+        // Held still until it can lift (a move sooner swipes the rows).
+        s.run_for(f64::from(crate::looper_tab::LIFT_HOLD_S) + 0.05);
         for i in 1..=6 {
             let (mx, my) = (x + (tx - x) * i / 6, y + (ty - y) * i / 6);
             acts.extend(s.screen.touch(7, mpfree_ui::Touch::Move, mx, my));
@@ -907,7 +909,7 @@ mod step_seq {
         on_big_stack(|| {
             let mut s = Session::new();
             s.run_for(0.1);
-            s.press("header", "tab", "Synth");
+            s.pick_synth();
             assert!(s.synth_on, "the pads play the synth");
             s.button("STEP SEQ");
             assert!(s.app.step_pads().is_some_and(|p| p.line()));
@@ -1015,7 +1017,7 @@ mod step_seq {
         on_big_stack(|| {
             let mut s = Session::new();
             s.run_for(0.1);
-            s.press("header", "tab", "Synth");
+            s.pick_synth();
             s.button("STEP SEQ");
             // The pen: pad 1 (C3), then steps 1 and 5.
             s.button_edge("STEP SEQ", true);
@@ -1334,7 +1336,7 @@ mod device_log {
         on_big_stack(|| {
             let mut s = Session::new();
             s.run_for(0.1);
-            s.press("header", "tab", "Synth");
+            s.pick_synth();
             let n = s.lines.len();
             s.button("STEP SEQ");
             wrote(&s, n, "STEP SEQ: the pads are the line's steps", "");
@@ -1368,7 +1370,7 @@ mod device_log {
         on_big_stack(|| {
             let mut s = Session::new();
             s.run_for(0.1);
-            s.press("header", "tab", "Synth");
+            s.pick_synth();
             s.button("STEP SEQ");
             s.button_edge("STEP SEQ", true);
             s.pad(0, 100, 0.05);
@@ -1418,6 +1420,106 @@ mod device_log {
     /// the home view REC readies the notes and PLAY records them, played
     /// back on PLAY, UNDO takes the take, and the Loop view arms the loop
     /// for REC.
+    /// The loop-tracks check (`app_checks.py`): a loop recorded on Play's
+    /// Loop view lands on Loops A, row 2's number stops it on its bar line,
+    /// and its cell brings it back on one.
+    #[test]
+    fn loop_tracks_write_their_lines() {
+        use mpfree_looper::Phase;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.press("play-transport", "view", "Loop").settle();
+            let n = s.lines.len();
+            s.button("REC").button("PLAY");
+            s.run_for(0.5);
+            s.pad(0, 100, 0.05);
+            s.run_for(2.0);
+            s.button("REC");
+            s.run_for(2.5);
+            assert_eq!(s.looper.phase(), Phase::Playing);
+            wrote(&s, n, "time: Loop 1 on Loops A, row 1, playing", "");
+            s.press("header", "tab", "Arrange").settle();
+            s.press("clips", "pager", "Tracks after").settle();
+            s.press("clips", "scene", "Scene 2");
+            s.run_for(2.5);
+            let off = wrote(&s, n, "looper: loop 1 off from bar ", "");
+            s.press("clips", "slot", "Loops A slot 1");
+            s.run_for(2.5);
+            let on = wrote(&s, n, "looper: loop 1 on from bar ", "");
+            let bar = |l: &str| l.rsplit(' ').next().and_then(|b| b.parse::<u32>().ok());
+            assert!(bar(&on) > bar(&off), "{off} / {on}");
+            s.button("STOP");
+        });
+    }
+
+    /// `loop-cell`'s lines: SHIFT + "+ Track" adds a Loop track, a tap on
+    /// its row 2 cell arms it, and REC, PLAY and REC record a loop there.
+    #[test]
+    fn loop_cell_writes_its_lines() {
+        use mpfree_looper::Phase;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.press("header", "tab", "Arrange").settle();
+            let n = s.lines.len();
+            s.button_edge("SHIFT", true);
+            s.press("clips", "add-track", "+ Track").settle();
+            s.button_edge("SHIFT", false);
+            wrote(&s, n, "time: Loops A added, a Loop track", "");
+            s.press("clips", "pager", "Tracks after").settle();
+            s.press("clips", "slot", "Loops A slot 2").settle();
+            wrote(&s, n, "time: loop cell: Loops A row 2 armed", "");
+            s.button("REC").button("PLAY");
+            s.run_for(0.5);
+            s.pad(0, 100, 0.05);
+            s.run_for(2.0);
+            s.button("REC");
+            s.run_for(2.5);
+            assert_eq!(s.looper.phase(), Phase::Playing);
+            wrote(&s, n, "time: Loop 1 on Loops A, row 2, playing", "");
+            s.button("STOP");
+        });
+    }
+
+    /// `loop-copy`'s lines: SHIFT + Loops A's cell dropped on Loops B's
+    /// row 3 copies the loop there, its layers all go in, and its cell's
+    /// launch brings the copy in on a bar line.
+    #[test]
+    fn loop_copy_writes_its_lines() {
+        use mpfree_looper::Phase;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.press("play-transport", "view", "Loop").settle();
+            s.button("REC").button("PLAY");
+            s.run_for(0.5);
+            s.pad(0, 100, 0.05);
+            s.run_for(2.0);
+            s.button("REC");
+            s.run_for(2.5);
+            assert_eq!(s.looper.phase(), Phase::Playing);
+            s.press("header", "tab", "Arrange").settle();
+            s.button_edge("SHIFT", true);
+            s.press("clips", "add-track", "+ Track").settle();
+            s.button_edge("SHIFT", false);
+            let n = s.lines.len();
+            s.route(FromUi::Time(TimeAction::DropClip {
+                from: (8, 0),
+                to: (9, 2),
+                copy: true,
+            }));
+            s.run_for(1.0);
+            wrote(&s, n, "clips: Loop 1 copies into Loop 2 on Loops B / 3", "");
+            wrote(&s, n, "looper: loop 2 is a copy of loop 1, 1 layer", "");
+            s.press("clips", "pager", "Tracks after").settle();
+            s.press("clips", "slot", "Loops B slot 3");
+            s.run_for(2.5);
+            wrote(&s, n, "looper: loop 2 on from bar ", "");
+            s.button("STOP");
+        });
+    }
+
     #[test]
     fn rec_arm_writes_its_lines() {
         use mpfree_looper::Phase;
@@ -1482,6 +1584,151 @@ mod device_log {
         });
     }
 
+    /// Live erase (`^ERASE: pad \d+'s notes come out`): ERASE held and a
+    /// pad pressed while recording erases that pad's notes as the playhead
+    /// passes them, and the pad neither sounds nor records; letting go of
+    /// the pad, or of ERASE, stops it; while only playing, ERASE + a pad
+    /// plays the pad as before.
+    #[test]
+    fn live_erase_writes_its_lines() {
+        use mpfree_transport::State;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.button("REC");
+            s.button("PLAY");
+            s.run_for(2.0);
+            assert_eq!(s.time.info().state, State::Recording);
+            s.pad(0, 100, 0.05);
+            s.pad(2, 100, 0.05);
+            s.run_for(2.0);
+            s.button("STOP");
+            s.run_for(0.2);
+            let pads_in = |s: &Session| {
+                let mut n: Vec<u8> = s.time.project().tracks[0]
+                    .slots
+                    .iter()
+                    .flatten()
+                    .flat_map(|c| c.notes.iter().map(|n| n.note))
+                    .collect();
+                n.sort();
+                n.dedup();
+                n
+            };
+            assert_eq!(pads_in(&s), [0, 2]);
+            // Overdub the take, with ERASE + pad 1 held for a while.
+            let n = s.lines.len();
+            s.button("OVERDUB");
+            s.button("PLAY");
+            s.run_for(2.0);
+            assert_eq!(s.time.info().state, State::Recording);
+            wrote(&s, n, "rec: ready, PLAY adds to ", "");
+            let n = s.lines.len();
+            let hits = s.hits.on.len();
+            s.button_edge("ERASE", true);
+            s.pad_edge(0, 100, true);
+            s.run_periods(4);
+            wrote(&s, n, "ERASE: pad 1's notes come out", "");
+            assert!(s.time.erases(0));
+            s.run_for(4.5);
+            assert!(
+                !s.hits.on[hits..].iter().any(|h| h.0 == 0),
+                "pad 1 neither sounds nor plays back"
+            );
+            assert_eq!(pads_in(&s), [2], "pad 1's notes came out");
+            s.pad_edge(0, 0, false);
+            assert!(!s.time.erasing(), "let go of the pad: it stops");
+            // ERASE let go first stops it too.
+            s.pad_edge(2, 100, true);
+            assert!(s.time.erases(2));
+            s.button_edge("ERASE", false);
+            assert!(!s.time.erasing(), "let go of ERASE: it stops");
+            s.pad_edge(2, 0, false);
+            s.button("STOP");
+            assert_eq!(pads_in(&s), [2], "pad 3's notes stay");
+            // The check ends with UNDO twice on Play's All view: both
+            // takes go, so the checks after it find Track 1 as it was.
+            s.press("play-transport", "view", "All");
+            s.run_for(0.2);
+            let n = s.lines.len();
+            s.button("UNDO").run_for(0.2);
+            s.button("UNDO").run_for(0.2);
+            let undid = since(&s, n)
+                .iter()
+                .filter(|l| l.starts_with("Undid take "))
+                .count();
+            assert_eq!(undid, 2, "{:#?}", since(&s, n));
+            assert!(pads_in(&s).is_empty(), "Track 1 has no notes left");
+        });
+    }
+
+    /// Knob recording (sequencer S1): while recording, a knob turned on
+    /// the screen for the armed track (a mixer strip's pan here, an
+    /// instrument's knob) becomes a lock on the note being played; while
+    /// only playing, nothing is recorded.
+    #[test]
+    fn knob_turns_while_recording_become_locks() {
+        use mpfree_fx::ids::mixer;
+        use mpfree_fx::StripId;
+        use mpfree_mixer_ui::MixAction;
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_synth_ui::view::SynthAction;
+        use mpfree_transport::State;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.button("REC");
+            s.button("PLAY");
+            s.run_for(2.0);
+            assert_eq!(s.time.info().state, State::Recording);
+            let locks = |s: &Session| -> Vec<(RelAddr, f32)> {
+                s.time.project().tracks[0]
+                    .slots
+                    .iter()
+                    .flatten()
+                    .flat_map(|c| c.locks.iter().map(|l| (l.addr, l.value)))
+                    .collect()
+            };
+            assert!(locks(&s).is_empty());
+            // Pad 1 held, the Track 1 strip's pan turned, and a knob of
+            // its instrument.
+            s.pad_edge(0, 100, true);
+            s.run_periods(2);
+            s.route(FromUi::Mixer(MixAction::Set {
+                strip: StripId::Track(0),
+                id: mixer::PAN,
+                value: -40.0,
+            }));
+            s.route(FromUi::Synth(SynthAction::Set { id: 3, value: 0.25 }));
+            s.run_periods(2);
+            s.pad_edge(0, 0, false);
+            s.run_for(2.5);
+            let got = locks(&s);
+            assert!(
+                got.contains(&(RelAddr::new(OnTrack::Strip, mixer::PAN), -40.0)),
+                "{got:?}"
+            );
+            assert!(
+                got.contains(&(RelAddr::new(OnTrack::Inst, 3), 0.25)),
+                "{got:?}"
+            );
+            s.button("STOP");
+            s.run_for(0.2);
+            // Playing, not recording: a turn is only a turn.
+            let before = locks(&s).len();
+            s.button("PLAY");
+            s.run_for(0.5);
+            s.route(FromUi::Mixer(MixAction::Set {
+                strip: StripId::Track(0),
+                id: mixer::PAN,
+                value: 20.0,
+            }));
+            s.run_for(2.5);
+            assert_eq!(locks(&s).len(), before);
+            s.button("STOP");
+        });
+    }
+
     /// TRACK MUTE (`^track mute: .* muted`, `^TRACK MUTE \S+ bank [B-H]: `).
     #[test]
     fn track_mute_writes_its_mutes_and_its_bank() {
@@ -1499,6 +1746,79 @@ mod device_log {
             s.button("PAD BANK B/F");
             let l = wrote(&s, n, "TRACK MUTE · bank B: ", "");
             assert_eq!(l, "TRACK MUTE · bank B: pads 1-8 mute tracks 17-24");
+        });
+    }
+
+    /// The mute queue (`^track mute: .* muted on the next `, `^time:
+    /// track mute: at \d+\.1, .* muted`, `^track mute: .* solo on the
+    /// next `, `^time: track mute: at \d+\.1, .* solo`): in Perform a
+    /// pad waits for the bar line and lands on it; TRACK MUTE held solos.
+    #[test]
+    fn mute_queue_writes_its_lines() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.button("PLAY").run_for(0.2);
+            s.button_with("SHIFT", "MAIN").run_for(0.2);
+            s.button("TRACK MUTE");
+            let n = s.lines.len();
+            s.pad(0, 100, 0.05);
+            wrote(&s, n, "track mute: ", " muted on the next ");
+            s.run_for(2.2);
+            let l = wrote(&s, n, "time: track mute: at ", " muted");
+            assert!(l.starts_with("time: track mute: at 2.1, "), "{l}");
+            let n = s.lines.len();
+            s.button_edge("TRACK MUTE", true);
+            s.pad(1, 100, 0.05);
+            s.button_edge("TRACK MUTE", false);
+            wrote(&s, n, "track mute: ", " solo on the next ");
+            s.run_for(2.2);
+            wrote(&s, n, "time: track mute: at ", " solo");
+            s.button("TRACK MUTE");
+            s.button("STOP");
+        });
+    }
+
+    /// Reload clip on the bar (`^time: save state: .* kept`, `^time:
+    /// reload: .* reloads at `, `^time: (.*; )?reload: .* back as saved on
+    /// bar \d+`):
+    /// Save state keeps the clip, Reload clip waits for the bar line and
+    /// the saved pattern comes back on it.
+    #[test]
+    fn reload_on_the_bar_writes_its_lines() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.press("header", "tab", "Arrange").settle();
+            let tab = s
+                .controls()
+                .into_iter()
+                .find(|o| o.widget == "record" && o.target.id == "tab" && o.target.index == 1)
+                .expect("the Record panel's Clip tab")
+                .target;
+            s.press_target(&tab);
+            s.settle();
+            let n = s.lines.len();
+            s.press("clip-card", "button", "Save state").settle();
+            wrote(&s, n, "time: save state: ", " kept");
+            s.press("header", "tab", "Play").settle();
+            s.press("steps", "step", "Kick step 3");
+            s.press("steps", "step", "Kick step 7");
+            s.press("header", "tab", "Arrange").settle();
+            s.button("PLAY").run_for(0.3);
+            let n = s.lines.len();
+            s.press("morph", "button", "Reload clip").settle();
+            wrote(&s, n, "time: reload: ", " reloads at ");
+            s.run_for(2.0);
+            let l = wrote(&s, n, "time: ", " back as saved on bar ");
+            assert!(l.contains("reload: "), "{l}");
+            s.button("STOP");
         });
     }
 

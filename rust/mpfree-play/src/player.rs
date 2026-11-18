@@ -26,6 +26,14 @@
 //! ([`Player::erased_locks`]), trigless ones too, so the new take does not
 //! play the old take's locks.
 //!
+//! **Live erase** (ERASE held on a pad while recording, the MPC's way;
+//! sequencer roadmap S1). While the transport records, the armed track's
+//! notes of the sounds [`Player::set_erasing`] names are erased as the
+//! playhead reaches them, on every pass, with that sound's locks; they
+//! go out through [`Player::erased`] and [`Player::erased_locks`] like a
+//! replace pass's, in the take being recorded, so its undo brings them
+//! back.
+//!
 //! **Chance.** A note with a chance below 100 % rolls each time it comes
 //! round. The roll is a hash of the note and the absolute frame it would
 //! play on, so it is the same for any period size, yet differs on every
@@ -105,7 +113,7 @@ use mpfree_seq::{Cond, DestId, Lock, Note, Speed, Touch, MAX_TRACKS};
 use mpfree_transport::time::{Swing, Tick};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
-use crate::view::{ClipView, NowPlaying, PlayView, Started, Switches, TrackView};
+use crate::view::{ClipView, MuteLanded, NowPlaying, PlayView, Started, Switches, TrackView};
 
 /// Notes sounding at once, across all tracks.
 pub const MAX_ACTIVE: usize = 256;
@@ -449,6 +457,9 @@ pub struct Player {
     n_erased_locks: usize,
     /// Replace recording: the armed clip's pass being replaced.
     replacing: Option<i64>,
+    /// Live erase: the sounds (a bit each, by note) whose notes on the
+    /// armed track are erased while the transport records.
+    erasing: u128,
     /// This take (since the last record-on) has had its replace pass.
     replaced: bool,
     /// Record-ons so far: the number of the latest take.
@@ -457,6 +468,11 @@ pub struct Player {
     switches: Switches,
     started: [Started; MAX_TRACKS],
     n_started: usize,
+    /// The mute cue each track carried out last (the mute queue, S4):
+    /// what it is from then on, while the view still shows that cue.
+    mute_landed: [Option<MuteLanded>; MAX_TRACKS],
+    landed: [MuteLanded; MAX_TRACKS],
+    n_landed: usize,
     lock_starts: [LockStart; MAX_LOCK_STARTS],
     n_lock_starts: usize,
     held: [Held; MAX_LOCKED],
@@ -503,6 +519,32 @@ const NO_ERASED_LOCK: ErasedLock = ErasedLock {
     take: 0,
 };
 
+/// What a clip's span erases: replace recording's pass, and live erase's
+/// sounds (a bit each, by note).
+#[derive(Clone, Copy, Debug)]
+struct Erase {
+    pass: Option<i64>,
+    notes: u128,
+}
+
+const NO_ERASE: Erase = Erase {
+    pass: None,
+    notes: 0,
+};
+
+impl Erase {
+    fn is_none(self) -> bool {
+        self.pass.is_none() && self.notes == 0
+    }
+
+    /// Whether live erase erases sound `note`.
+    fn sound(self, note: u8) -> bool {
+        1u128
+            .checked_shl(u32::from(note))
+            .is_some_and(|b| self.notes & b != 0)
+    }
+}
+
 const NO_ERASED: Erased = Erased {
     track: 0,
     slot: 0,
@@ -540,6 +582,7 @@ impl Player {
             n_erased_locks: 0,
             replacing: None,
             replaced: false,
+            erasing: 0,
             take: 0,
             switches: Switches::new(),
             started: [Started {
@@ -548,8 +591,17 @@ impl Player {
                 slot: None,
                 at: 0,
                 origin: 0,
+                from: 0,
             }; MAX_TRACKS],
             n_started: 0,
+            mute_landed: [None; MAX_TRACKS],
+            landed: [MuteLanded {
+                track: 0,
+                silent: false,
+                at: 0,
+                id: 0,
+            }; MAX_TRACKS],
+            n_landed: 0,
             lock_starts: [NO_LOCK_START; MAX_LOCK_STARTS],
             n_lock_starts: 0,
             held: [NO_HELD; MAX_LOCKED],
@@ -579,6 +631,19 @@ impl Player {
     pub fn anchor_dice(&mut self, on: bool) {
         self.anchored = on;
         self.dice_from = 0;
+    }
+
+    /// Live erase: from the coming period, while the transport records,
+    /// erase the armed track's notes of these sounds (a bit each, by note:
+    /// bit 3 for note 3) as the playhead reaches them, with their sound's
+    /// locks; 0 erases nothing. Real-time safe.
+    pub fn set_erasing(&mut self, notes: u128) {
+        self.erasing = notes;
+    }
+
+    /// The sounds live erase erases (see [`Player::set_erasing`]).
+    pub fn erasing(&self) -> u128 {
+        self.erasing
     }
 
     /// Turn FILL on or off from frame `offset` of the coming period (the
@@ -619,6 +684,14 @@ impl Player {
     /// compile a new view.
     pub fn started(&self) -> &[Started] {
         &self.started[..self.n_started]
+    }
+
+    /// The mute cues that landed in the last [`Player::process`] call, in
+    /// the order they did. The host applies the changes queued with each
+    /// `id` to the project (one queue's land together) and compiles a new
+    /// view without them.
+    pub fn mutes_landed(&self) -> &[MuteLanded] {
+        &self.landed[..self.n_landed]
     }
 
     /// The notes replace recording erased in the last
@@ -667,7 +740,7 @@ impl Player {
             origin,
             song_len: clip.song_len,
             stamp: clip.stamp,
-            muted: self.switches.muted(view, track),
+            muted: self.muted(view, track),
         })
     }
 
@@ -676,6 +749,7 @@ impl Player {
         self.n_erased = 0;
         self.n_erased_locks = 0;
         self.n_started = 0;
+        self.n_landed = 0;
         self.switches.follow(view);
         let markers = block.markers();
         let mut m = 0;
@@ -770,122 +844,19 @@ impl Player {
         self.n_starts = 0;
         self.n_lock_starts = 0;
         let bar = span.meter.bar_ticks();
-        for (i, track) in view.tracks.iter().enumerate() {
-            // A scene's mute switches with its cue, before the view shows it.
-            let muted = self.switches.muted(view, i);
-            let replace = if view.armed == Some(i) {
-                self.replacing
-            } else {
-                None
-            };
-            // A cue starting in this span: the clip so far plays up to it.
-            let switch = self.switches.due(view, i, &ticks, bar);
-            let before = switch.map_or(ticks.clone(), |at| ticks.start..at);
-            let playing = self.switches.playing_from(view, i);
-            // Song mode: a track with no clip launched plays its
-            // placements.
-            let song = view.song && playing.is_none();
-            let region = if song {
-                track
-                    .region_at(ticks.start)
-                    .map(|r| (r.clip.slot, r.clip.start))
-            } else {
-                None
-            };
-            // A clip started since the last span (a launch, not a cue):
-            // the track's last result starts again.
-            let now = playing.map(|(c, _, start)| (c.slot, start)).or(region);
-            if let (Some(seen), Some(last)) = (self.seen.get_mut(i), self.last.get_mut(i)) {
-                if *seen != now {
-                    *seen = now;
-                    *last = false;
+        for i in 0..view.tracks.len() {
+            // A mute cue (the mute queue) splits the track's part of the
+            // span on its line: the track as it was up to it, then as the
+            // cue has it.
+            match self.mute_due(view, i, &ticks, bar) {
+                Some(m) => {
+                    if m > ticks.start {
+                        self.play_track(view, span, i, ticks.start..m);
+                    }
+                    self.land_mute(view, i, m);
+                    self.play_track(view, span, i, m..ticks.end);
                 }
-            }
-            // A track gone quiet lets its locks and ratchets go at once.
-            if muted || (playing.is_none() && region.is_none()) {
-                if self.held[..self.n_held]
-                    .iter()
-                    .any(|h| usize::from(h.track) == i)
-                {
-                    self.end_locks(ticks.start, i as u16, track.dest);
-                }
-                self.cut_hits(i as u16, ticks.start);
-                self.cut_touch(i as u16, ticks.start);
-                self.forget_moves(i);
-            }
-            if let Some((clip, origin, start)) = playing {
-                if !(muted && replace.is_none()) {
-                    self.collect(
-                        clip, origin, start, i as u16, track.dest, span.swing, &before, replace,
-                        !muted, switch,
-                    );
-                }
-                // The clip's moves after its locks: a step's lock on the
-                // same tick takes the parameter first, and the move's value
-                // waits under it.
-                if muted || clip.moves.is_empty() {
-                    self.forget_moves(i);
-                } else {
-                    self.collect_moves(clip, origin, i, track.dest, &before);
-                }
-            } else if song && !muted {
-                self.collect_song(track, i, &before, switch, span.swing);
-            }
-            let Some(at) = switch else { continue };
-            // A track starts one cue a call at most, and there are at most
-            // MAX_TRACKS tracks, so this always fits.
-            if let (Some(s), Some(slot)) = (
-                self.switches.start(view, i, at),
-                self.started.get_mut(self.n_started),
-            ) {
-                *slot = s;
-                self.n_started += 1;
-            }
-            for s in &mut self.sounding[..self.n_sounding] {
-                if usize::from(s.track) == i {
-                    s.off = s.off.min(at);
-                }
-            }
-            self.cut_hits(i as u16, at);
-            self.cut_touch(i as u16, at);
-            // The old clip's locks end on the switch, before the new one's.
-            self.end_locks(at, i as u16, track.dest);
-            // The new clip's last result starts at "not played", on the
-            // switch, after the old clip's notes before it.
-            self.push_start(Start {
-                tick: at,
-                track: i as u16,
-                reset: true,
-                ..NO_START
-            });
-            let playing = self.switches.playing_from(view, i);
-            if let Some(seen) = self.seen.get_mut(i) {
-                *seen = playing.map(|(c, _, start)| (c.slot, start));
-            }
-            if view.armed == Some(i) {
-                self.replacing = None;
-            }
-            if let (Some((clip, origin, start)), false) = (playing, self.switches.muted(view, i)) {
-                self.collect(
-                    clip,
-                    origin,
-                    start,
-                    i as u16,
-                    track.dest,
-                    span.swing,
-                    &(at..ticks.end),
-                    None,
-                    true,
-                    None,
-                );
-                if clip.moves.is_empty() {
-                    self.forget_moves(i);
-                } else {
-                    self.collect_moves(clip, origin, i, track.dest, &(at..ticks.end));
-                }
-            } else if view.song && playing.is_none() && !self.switches.muted(view, i) {
-                // Stopped: the track goes back to the song.
-                self.collect_song(track, i, &(at..ticks.end), None, span.swing);
+                None => self.play_track(view, span, i, ticks.clone()),
             }
         }
         // The song's own lanes, after every track's.
@@ -1007,6 +978,206 @@ impl Player {
             k += 1;
         }
         self.advance(view, ticks.end - 1, true, first, span, out);
+    }
+
+    /// Track `i`'s part of a span, playing `ticks` (the whole span, or
+    /// the part before or after a mute cue's line).
+    fn play_track(&mut self, view: &PlayView, span: &Span, i: usize, ticks: Range<Tick>) {
+        let track = &view.tracks[i];
+        let bar = span.meter.bar_ticks();
+        // A scene's mute switches with its cue, before the view shows it.
+        let muted = self.muted(view, i);
+        let erase = if view.armed == Some(i) {
+            Erase {
+                pass: self.replacing,
+                notes: if span.state == State::Recording {
+                    self.erasing
+                } else {
+                    0
+                },
+            }
+        } else {
+            NO_ERASE
+        };
+        // A cue starting in this span: the clip so far plays up to it.
+        let switch = self.switches.due(view, i, &ticks, bar);
+        let before = switch.map_or(ticks.clone(), |at| ticks.start..at);
+        let playing = self.switches.playing_from(view, i);
+        // Song mode: a track with no clip launched plays its
+        // placements.
+        let song = view.song && playing.is_none();
+        let region = if song {
+            track
+                .region_at(ticks.start)
+                .map(|r| (r.clip.slot, r.clip.start))
+        } else {
+            None
+        };
+        // A clip started since the last span (a launch, not a cue):
+        // the track's last result starts again.
+        let now = playing.map(|(c, _, start)| (c.slot, start)).or(region);
+        if let (Some(seen), Some(last)) = (self.seen.get_mut(i), self.last.get_mut(i)) {
+            if *seen != now {
+                *seen = now;
+                *last = false;
+            }
+        }
+        // A track gone quiet lets its locks and ratchets go at once.
+        if muted || (playing.is_none() && region.is_none()) {
+            if self.held[..self.n_held]
+                .iter()
+                .any(|h| usize::from(h.track) == i)
+            {
+                self.end_locks(ticks.start, i as u16, track.dest);
+            }
+            self.cut_hits(i as u16, ticks.start);
+            self.cut_touch(i as u16, ticks.start);
+            self.forget_moves(i);
+        }
+        if let Some((clip, origin, start)) = playing {
+            if !(muted && erase.is_none()) {
+                self.collect(
+                    clip, origin, start, i as u16, track.dest, span.swing, &before, erase, !muted,
+                    switch,
+                );
+            }
+            // The clip's moves after its locks: a step's lock on the
+            // same tick takes the parameter first, and the move's value
+            // waits under it.
+            if muted || clip.moves.is_empty() {
+                self.forget_moves(i);
+            } else {
+                self.collect_moves(clip, origin, i, track.dest, &before);
+            }
+        } else if song && !muted {
+            self.collect_song(track, i, &before, switch, span.swing);
+        }
+        let Some(at) = switch else { return };
+        // A track starts one cue a call at most, and there are at most
+        // MAX_TRACKS tracks, so this always fits.
+        if let (Some(s), Some(slot)) = (
+            self.switches.start(view, i, at),
+            self.started.get_mut(self.n_started),
+        ) {
+            *slot = s;
+            self.n_started += 1;
+        }
+        for s in &mut self.sounding[..self.n_sounding] {
+            if usize::from(s.track) == i {
+                s.off = s.off.min(at);
+            }
+        }
+        self.cut_hits(i as u16, at);
+        self.cut_touch(i as u16, at);
+        // The old clip's locks end on the switch, before the new one's.
+        self.end_locks(at, i as u16, track.dest);
+        // The new clip's last result starts at "not played", on the
+        // switch, after the old clip's notes before it.
+        self.push_start(Start {
+            tick: at,
+            track: i as u16,
+            reset: true,
+            ..NO_START
+        });
+        let playing = self.switches.playing_from(view, i);
+        if let Some(seen) = self.seen.get_mut(i) {
+            *seen = playing.map(|(c, _, start)| (c.slot, start));
+        }
+        if view.armed == Some(i) {
+            self.replacing = None;
+        }
+        if let (Some((clip, origin, start)), false) = (playing, self.muted(view, i)) {
+            self.collect(
+                clip,
+                origin,
+                start,
+                i as u16,
+                track.dest,
+                span.swing,
+                &(at..ticks.end),
+                NO_ERASE,
+                true,
+                None,
+            );
+            if clip.moves.is_empty() {
+                self.forget_moves(i);
+            } else {
+                self.collect_moves(clip, origin, i, track.dest, &(at..ticks.end));
+            }
+        } else if view.song && playing.is_none() && !self.muted(view, i) {
+            // Stopped: the track goes back to the song.
+            self.collect_song(track, i, &(at..ticks.end), None, span.swing);
+        }
+    }
+
+    /// Whether track `i` is silent now: the latest of a cue's mute (a
+    /// scene's) and a mute cue that landed, while the view doesn't show
+    /// them yet; else as the view has it.
+    fn muted(&self, view: &PlayView, i: usize) -> bool {
+        let landed = self
+            .mute_landed
+            .get(i)
+            .copied()
+            .flatten()
+            .filter(|l| view.mute_cue(i).is_some_and(|c| c.id == l.id));
+        match (landed, self.switches.mute_switch(i)) {
+            (Some(l), Some((m, at))) if at > l.at => m,
+            (Some(l), _) => l.silent,
+            (None, _) => self.switches.muted(view, i),
+        }
+    }
+
+    /// Where the mute cue on track `i` lands in a span playing `ticks`, if
+    /// it does: the first line of its launch quantise among them. A cue
+    /// that landed already waits for the view to show it applied.
+    fn mute_due(&self, view: &PlayView, i: usize, ticks: &Range<Tick>, bar: Tick) -> Option<Tick> {
+        let c = view.mute_cue(i)?;
+        if self
+            .mute_landed
+            .get(i)
+            .copied()
+            .flatten()
+            .is_some_and(|l| l.id >= c.id)
+        {
+            return None;
+        }
+        let at = c.line.next(ticks.start, bar);
+        (at < ticks.end).then_some(at)
+    }
+
+    /// Carry out the mute cue on track `i` at song tick `at`: going
+    /// silent, its notes end there and its locks, ratchets and pressure go,
+    /// as for a cue's switch; heard again, it plays from there on.
+    fn land_mute(&mut self, view: &PlayView, i: usize, at: Tick) {
+        let Some(c) = view.mute_cue(i) else {
+            return;
+        };
+        let was = self.muted(view, i);
+        let l = MuteLanded {
+            track: i,
+            silent: c.silent,
+            at,
+            id: c.id,
+        };
+        if let Some(m) = self.mute_landed.get_mut(i) {
+            *m = Some(l);
+        }
+        if let Some(slot) = self.landed.get_mut(self.n_landed) {
+            *slot = l;
+            self.n_landed += 1;
+        }
+        if c.silent && !was {
+            let t = i as u16;
+            for s in &mut self.sounding[..self.n_sounding] {
+                if s.track == t {
+                    s.off = s.off.min(at);
+                }
+            }
+            self.cut_hits(t, at);
+            self.cut_touch(t, at);
+            self.end_locks(at, t, view.tracks[i].dest);
+            self.forget_moves(i);
+        }
     }
 
     /// Decide this span's notes, in the order they play: each note's trig
@@ -1540,7 +1711,7 @@ impl Player {
                 track.dest,
                 swing,
                 &part,
-                None,
+                NO_ERASE,
                 true,
                 Some(end),
             );
@@ -1563,7 +1734,8 @@ impl Player {
     }
 
     /// The notes of `clip`, from `origin`, whose tick is in `ticks`. With
-    /// `replace`, the notes of that pass are erased instead; without
+    /// `erase`, the notes of its pass, and those of its sounds on any pass,
+    /// are erased instead; without
     /// `sound`, the rest are not played. With `cut`, notes end there at the
     /// latest. Passes count from 1 at `start`, for the trig conditions.
     #[allow(clippy::too_many_arguments)]
@@ -1576,7 +1748,7 @@ impl Player {
         dest: DestId,
         transport_swing: Swing,
         ticks: &Range<Tick>,
-        replace: Option<i64>,
+        erase: Erase,
         sound: bool,
         cut: Option<Tick>,
     ) {
@@ -1624,7 +1796,7 @@ impl Player {
                 if !ticks.contains(&tick) {
                     continue;
                 }
-                if replace == Some(pass as i64) {
+                if erase.pass == Some(pass as i64) || erase.sound(n.note) {
                     if self.n_erased == MAX_ERASED {
                         self.stats.dropped += 1;
                     } else {
@@ -1679,8 +1851,9 @@ impl Player {
                 });
             }
             // The pass's locks, placed as its notes are. A pass being
-            // replaced erases them; a muted track sends none.
-            if sound || replace == Some(pass as i64) {
+            // replaced erases them, and live erase its sounds' own; a
+            // muted track sends none.
+            if sound || erase.pass == Some(pass as i64) || erase.notes != 0 {
                 let first = clip.locks.partition_point(|l| l.local < from);
                 for l in &clip.locks[first..] {
                     if l.local > to {
@@ -1691,7 +1864,9 @@ impl Player {
                     if !ticks.contains(&tick) {
                         continue;
                     }
-                    if replace == Some(pass as i64) {
+                    if erase.pass == Some(pass as i64)
+                        || l.src.sound.is_some_and(|s| erase.sound(s))
+                    {
                         if self.n_erased_locks == MAX_ERASED {
                             self.stats.dropped += 1;
                         } else {
@@ -1704,7 +1879,7 @@ impl Player {
                             self.n_erased_locks += 1;
                             self.stats.erased += 1;
                         }
-                    } else {
+                    } else if sound {
                         self.push_lock(LockStart {
                             kind: LockKind::Step,
                             tick,

@@ -31,6 +31,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::dsp::Sample;
+use crate::model::Pcm;
+
 /// Zero crossings of the read's sinc on each side of the read position,
 /// counted in output frames.
 pub const HALF: usize = 8;
@@ -157,6 +160,20 @@ impl Default for Reach {
 }
 
 impl Reach {
+    /// Its two numbers, to keep elsewhere ([`Reach::from_parts`] makes it
+    /// again): a grain keeps them in its `mpfree_grain::Aim`.
+    pub fn parts(self) -> (u32, u32) {
+        (self.step, self.taps as u32)
+    }
+
+    /// The reach whose [`Reach::parts`] these were.
+    pub fn from_parts(step: u32, taps: u32) -> Reach {
+        Reach {
+            step,
+            taps: i64::from(taps),
+        }
+    }
+
     pub fn new(r: f32) -> Reach {
         let r = r.clamp(1.0, MAX_STRETCH);
         let one = (STEPS << FRAC_BITS) as f64;
@@ -183,9 +200,9 @@ impl Reach {
 /// halves' arithmetic overlaps.
 #[inline]
 #[allow(clippy::too_many_arguments)]
-pub fn read2(
+pub fn read2<S: Sample>(
     k: &Kernel,
-    data: &[f32],
+    data: &[S],
     stereo: bool,
     lo: i64,
     hi: i64,
@@ -212,11 +229,11 @@ pub fn read2(
             for (b, f) in back.chunks_exact(2).rev().zip(fwd.chunks_exact(2)) {
                 let (x, y) = (weight(k, ub), weight(k, uf));
                 wb += x;
-                lb += x * b[0];
-                rb += x * b[1];
+                lb += x * b[0].raw();
+                rb += x * b[1].raw();
                 wf += y;
-                lf += y * f[0];
-                rf += y * f[1];
+                lf += y * f[0].raw();
+                rf += y * f[1].raw();
                 ub += du;
                 uf += du;
             }
@@ -226,11 +243,11 @@ pub fn read2(
                 let jf = (i + 1 + m).clamp(lo, hi) as usize;
                 let (x, y) = (weight(k, ub), weight(k, uf));
                 wb += x;
-                lb += x * data[2 * jb];
-                rb += x * data[2 * jb + 1];
+                lb += x * data[2 * jb].raw();
+                rb += x * data[2 * jb + 1].raw();
                 wf += y;
-                lf += y * data[2 * jf];
-                rf += y * data[2 * jf + 1];
+                lf += y * data[2 * jf].raw();
+                rf += y * data[2 * jf + 1].raw();
                 ub += du;
                 uf += du;
             }
@@ -241,9 +258,9 @@ pub fn read2(
         for (b, f) in back.iter().rev().zip(fwd) {
             let (x, y) = (weight(k, ub), weight(k, uf));
             wb += x;
-            lb += x * b;
+            lb += x * b.raw();
             wf += y;
-            lf += y * f;
+            lf += y * f.raw();
             ub += du;
             uf += du;
         }
@@ -253,19 +270,21 @@ pub fn read2(
             let jf = (i + 1 + m).clamp(lo, hi) as usize;
             let (x, y) = (weight(k, ub), weight(k, uf));
             wb += x;
-            lb += x * data[jb];
+            lb += x * data[jb].raw();
             wf += y;
-            lf += y * data[jf];
+            lf += y * data[jf].raw();
             ub += du;
             uf += du;
         }
     }
+    // The sums are of raw samples: scaled once here, which gives exactly
+    // what summing the scaled samples did.
     let g = 1.0 / (wb + wf);
-    let l = (lb + lf) * g;
+    let l = (lb + lf) * g * S::SCALE;
     if !stereo {
         return (l, l);
     }
-    let r = (rb + rf) * g;
+    let r = (rb + rf) * g * S::SCALE;
     let side = |p: u8| match p {
         0 => l,
         1 => r,
@@ -294,20 +313,28 @@ impl std::fmt::Debug for Octaves {
 impl Octaves {
     /// The copies of `data` (`channels` interleaved): up to [`LEVELS`],
     /// fewer for a sound too short to halve again.
-    pub fn make(data: &[f32], channels: usize) -> Octaves {
+    pub fn make<S: Sample>(data: &[S], channels: usize) -> Octaves {
         let taps = halving_taps();
         let mut levels: Vec<Arc<[f32]>> = Vec::new();
-        let mut prev: Option<Arc<[f32]>> = None;
         for _ in 0..LEVELS {
-            let from: &[f32] = prev.as_deref().unwrap_or(data);
-            if from.len() / channels < 2 * HB_HALF {
-                break;
-            }
-            let next: Arc<[f32]> = halve(from, channels, &taps).into();
-            levels.push(next.clone());
-            prev = Some(next);
+            let next: Vec<f32> = match levels.last() {
+                None if data.len() / channels >= 2 * HB_HALF => halve(data, channels, &taps),
+                Some(from) if from.len() / channels >= 2 * HB_HALF => {
+                    halve(&from[..], channels, &taps)
+                }
+                _ => break,
+            };
+            levels.push(next.into());
         }
         Octaves { levels }
+    }
+
+    /// [`Octaves::make`] for a sound's samples as it holds them.
+    pub fn make_from(data: &Pcm, channels: usize) -> Octaves {
+        match data {
+            Pcm::F32(d) => Octaves::make(d, channels),
+            Pcm::I16(d) => Octaves::make(d, channels),
+        }
     }
 
     /// How many copies there are.
@@ -346,7 +373,7 @@ fn halving_taps() -> Vec<f64> {
 
 /// `data` low-passed and halved: frame `j` is the filter centred on frame
 /// `2j`, with silence beyond the ends.
-fn halve(data: &[f32], channels: usize, h: &[f64]) -> Vec<f32> {
+fn halve<S: Sample>(data: &[S], channels: usize, h: &[f64]) -> Vec<f32> {
     let frames = data.len() / channels;
     let out_frames = frames.div_ceil(2);
     let mut out = vec![0.0f32; out_frames * channels];
@@ -354,7 +381,7 @@ fn halve(data: &[f32], channels: usize, h: &[f64]) -> Vec<f32> {
         if n < 0 || n >= frames as i64 {
             0.0
         } else {
-            f64::from(data[n as usize * channels + c])
+            f64::from(data[n as usize * channels + c].f())
         }
     };
     for j in 0..out_frames {
@@ -401,7 +428,7 @@ impl OctaveCell {
 
 struct Job {
     cell: Arc<OctaveCell>,
-    data: Arc<[f32]>,
+    data: Pcm,
     channels: usize,
 }
 
@@ -415,7 +442,7 @@ fn builder() -> Option<&'static Mutex<Sender<Job>>> {
                 .name("mpfree-octaves".into())
                 .spawn(move || {
                     for job in rx {
-                        let o = Octaves::make(&job.data, job.channels);
+                        let o = Octaves::make_from(&job.data, job.channels);
                         let _ = job.cell.built.set(o);
                     }
                 })
@@ -430,7 +457,7 @@ fn builder() -> Option<&'static Mutex<Sender<Job>>> {
 /// for a longer one, never for one longer than [`MAX_FRAMES`]. Does
 /// nothing if they are made or asked for already. Off the audio thread
 /// only (it may allocate, and briefly wait for the copies' queue).
-pub fn prepare(cell: &Arc<OctaveCell>, data: &Arc<[f32]>, channels: u8) {
+pub fn prepare(cell: &Arc<OctaveCell>, data: &Pcm, channels: u8) {
     if cell.built.get().is_some() {
         return;
     }
@@ -440,7 +467,7 @@ pub fn prepare(cell: &Arc<OctaveCell>, data: &Arc<[f32]>, channels: u8) {
         return;
     }
     if frames <= SYNC_FRAMES {
-        let _ = cell.built.set(Octaves::make(data, channels));
+        let _ = cell.built.set(Octaves::make_from(data, channels));
         return;
     }
     if cell.asked.swap(true, Ordering::AcqRel) {
@@ -462,10 +489,10 @@ pub fn prepare(cell: &Arc<OctaveCell>, data: &Arc<[f32]>, channels: u8) {
 /// Makes a sound's octave copies here and now (any length up to
 /// [`MAX_FRAMES`]), if they aren't made already: for offline renders and
 /// tests, which mustn't depend on a thread's timing.
-pub fn prepare_now(cell: &OctaveCell, data: &[f32], channels: u8) {
+pub fn prepare_now(cell: &OctaveCell, data: &Pcm, channels: u8) {
     let channels = usize::from(channels.max(1));
     if cell.built.get().is_none() && data.len() / channels <= MAX_FRAMES {
-        let _ = cell.built.set(Octaves::make(data, channels));
+        let _ = cell.built.set(Octaves::make_from(data, channels));
     }
 }
 
@@ -614,13 +641,13 @@ mod tests {
 
     #[test]
     fn short_sounds_get_their_copies_at_once_and_long_ones_soon() {
-        let short: Arc<[f32]> = vec![0.1f32; 2 * 1000].into();
+        let short = Pcm::F32(vec![0.1f32; 2 * 1000].into());
         let cell = Arc::new(OctaveCell::default());
         prepare(&cell, &short, 2);
         assert!(cell.get().is_some());
         assert_eq!(cell.get().unwrap().level(1).unwrap().len(), 1000);
 
-        let long: Arc<[f32]> = vec![0.1f32; SYNC_FRAMES + 10].into();
+        let long = Pcm::F32(vec![0.1f32; SYNC_FRAMES + 10].into());
         let cell = Arc::new(OctaveCell::default());
         prepare(&cell, &long, 1);
         let t = std::time::Instant::now();

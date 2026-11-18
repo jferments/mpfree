@@ -9,16 +9,31 @@
 //!
 //! ```text
 //! mpfree-clips 1
+//! perform
+//! launch bars 2
 //! track Drums
 //! dest 0
 //! swing 240 58
+//! solo
+//! notefx 0 1 on chord shape=m7 voicing=close inv=0 below=- vel=90 strum=8 scale=-
+//! notefx 1 2 off echo time=480t repeats=3 fb=70 pitch=0
+//! notearp 1
 //! clip 0 7680 Beat 1
 //! speed 1 1
+//! launch ticks 960
+//! legato
+//! once
 //! touch 0:10 50:40
 //! note 0 240 36 100 100 - 1 0 2
 //! lock 480 36 pad36.4 0.25
 //! lane t:mix.0 -60 6 0 n
 //! point 0 0.5 r
+//! end
+//! track Loops A
+//! dest 1
+//! loops pads
+//! clip 0 15360 Loop 1
+//! loop 0
 //! end
 //! scene 0 Verse
 //! mutes 5
@@ -26,6 +41,9 @@
 //! place 0 0 7680 0 slot 0
 //! marker 0 Intro
 //! morph 0 0 1
+//! list 0 2
+//! list 1 4
+//! listloop
 //! ```
 //!
 //! Reading is careful: every number is checked, every clip and the whole
@@ -37,13 +55,15 @@ use std::fmt::Write as _;
 use std::str::FromStr;
 
 use mpfree_moves::{Kind, Map, Moves, Point, Steps, Target};
+use mpfree_notefx::{Slot, MAX_FX};
 use mpfree_param::{ParamAddr, RelAddr};
 use mpfree_transport::time::{Swing, Tick};
 
 use crate::arrange::{Marker, MorphRows, Placement, Source};
-use crate::scenes::{Follow, FollowAction, Scene, SCENES};
+use crate::scenes::{Follow, FollowAction, ListStep, Scene, MAX_LIST_STEPS, SCENES};
 use crate::{
-    Clip, Cond, Lock, Note, Project, Quantise, Speed, Touch, TouchPoint, Track, MAX_TRACKS, SLOTS,
+    Clip, Cond, LaunchGrid, Lock, LoopInput, Note, Project, Quantise, Speed, Touch, TouchPoint,
+    Track, TrackKind, MAX_TRACKS, SLOTS,
 };
 
 /// The first line.
@@ -56,6 +76,12 @@ pub fn to_text(p: &Project) -> String {
     let mut s = String::with_capacity(4096);
     s.push_str(FORMAT);
     s.push('\n');
+    if p.perform {
+        s.push_str("perform\n");
+    }
+    if p.launch != LaunchGrid::default() {
+        let _ = writeln!(s, "launch {}", launch_text(p.launch));
+    }
     for t in &p.tracks {
         let _ = writeln!(s, "track {}", one_line(&t.name));
         let _ = writeln!(s, "dest {}", t.dest);
@@ -63,8 +89,28 @@ pub fn to_text(p: &Project) -> String {
             let _ = writeln!(s, "swing {} {}", sw.grid, sw.amount);
         }
         let _ = writeln!(s, "mute {}", u8::from(t.mute));
+        if t.solo {
+            let _ = writeln!(s, "solo");
+        }
         let _ = writeln!(s, "arp {}", u8::from(t.through_arp));
         let _ = writeln!(s, "rectouch {}", u8::from(t.record_touch));
+        if let Some(grid) = t.record_quantise {
+            let _ = writeln!(s, "recquant {grid}");
+        }
+        // The track's MIDI effects, each in its place with its id, then
+        // the arp's place.
+        for (place, slot) in t.note_fx.slots.iter().enumerate() {
+            if let Some(slot) = slot {
+                let id = t.note_fx.ids[place];
+                let _ = writeln!(s, "notefx {place} {id} {}", slot.to_words());
+            }
+        }
+        if !t.note_fx.is_empty() || t.note_fx.arp_at != 0 {
+            let _ = writeln!(s, "notearp {}", t.note_fx.arp_at);
+        }
+        if let Some(input) = t.loops() {
+            let _ = writeln!(s, "loops {}", input.word());
+        }
         for (slot, c) in t.slots.iter().enumerate() {
             if let Some(c) = c {
                 let _ = writeln!(s, "clip {slot} {} {}", c.length, one_line(&c.name));
@@ -106,6 +152,12 @@ pub fn to_text(p: &Project) -> String {
     for m in &a.morphs {
         let _ = writeln!(s, "morph {} {} {}", m.at, m.a, m.b);
     }
+    for step in &a.list.steps {
+        let _ = writeln!(s, "list {} {}", step.row, step.times);
+    }
+    if a.list.looped {
+        s.push_str("listloop\n");
+    }
     if !a.lanes.is_empty() {
         s.push_str("songlanes\n");
         lanes_text(&mut s, &a.lanes);
@@ -115,6 +167,9 @@ pub fn to_text(p: &Project) -> String {
 }
 
 fn clip_body(s: &mut String, c: &Clip) {
+    if let Some(n) = c.looped {
+        let _ = writeln!(s, "loop {n}");
+    }
     if c.speed != Speed::NORMAL {
         let _ = writeln!(s, "speed {} {}", c.speed.num, c.speed.den);
     }
@@ -126,6 +181,15 @@ fn clip_body(s: &mut String, c: &Clip) {
     }
     if let Some(f) = c.follow {
         let _ = writeln!(s, "follow {}", follow_text(f));
+    }
+    if let Some(g) = c.launch {
+        let _ = writeln!(s, "launch {}", launch_text(g));
+    }
+    if c.legato {
+        s.push_str("legato\n");
+    }
+    if c.once {
+        s.push_str("once\n");
     }
     // Pressure first: the notes name runs of it.
     for chunk in c.touch.chunks(TOUCH_PER_LINE) {
@@ -236,6 +300,28 @@ fn parse_action(w: &str) -> Option<FollowAction> {
     ACTIONS.iter().find(|x| x.1 == w).map(|x| x.0)
 }
 
+/// A launch quantise as a line's words: `now`, `ticks 240`, `bars 2`.
+fn launch_text(g: LaunchGrid) -> String {
+    match g {
+        LaunchGrid::Now => "now".to_string(),
+        LaunchGrid::Ticks(t) => format!("ticks {t}"),
+        LaunchGrid::Bars(n) => format!("bars {n}"),
+        // Never a setting (`LaunchGrid::ok` refuses it): written as at
+        // once, should one ever reach here.
+        LaunchGrid::At(_) => "now".to_string(),
+    }
+}
+
+fn launch<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<LaunchGrid> {
+    let g = match w.next()? {
+        "now" => LaunchGrid::Now,
+        "ticks" => LaunchGrid::Ticks(num(w.next())?),
+        "bars" => LaunchGrid::Bars(num(w.next())?),
+        _ => return None,
+    };
+    g.ok().then_some(g)
+}
+
 fn follow_text(f: Follow) -> String {
     format!(
         "{} {} {} {}",
@@ -337,11 +423,45 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 last(&mut p).swing = Some(swing(&mut w).ok_or_else(|| bad("swing"))?)
             }
             ("mute", At::Track) => last(&mut p).mute = flag(w.next()).ok_or_else(|| bad("mute"))?,
+            ("solo", At::Track) => last(&mut p).solo = true,
             ("arp", At::Track) => {
                 last(&mut p).through_arp = flag(w.next()).ok_or_else(|| bad("arp"))?
             }
             ("rectouch", At::Track) => {
                 last(&mut p).record_touch = flag(w.next()).ok_or_else(|| bad("rectouch"))?
+            }
+            ("recquant", At::Track) => {
+                let grid: u32 = num(w.next()).ok_or_else(|| bad("recquant"))?;
+                if Quantise::new(grid, 100).is_none() {
+                    return Err(bad("recquant"));
+                }
+                last(&mut p).record_quantise = Some(grid)
+            }
+            ("notefx", At::Track) => {
+                let place: usize = num(w.next()).ok_or_else(|| bad("place"))?;
+                let id: u16 = num(w.next()).ok_or_else(|| bad("notefx id"))?;
+                let fx = &mut last(&mut p).note_fx;
+                if place >= MAX_FX || fx.slots[place].is_some() {
+                    return Err(bad("place"));
+                }
+                // Each effect's id is its own on the track.
+                if id == 0 || fx.place_of(id).is_some() {
+                    return Err(bad("notefx id"));
+                }
+                let slot = Slot::from_words(nth_rest(rest, 2)).map_err(|e| bad(&e))?;
+                fx.slots[place] = Some(slot);
+                fx.ids[place] = id;
+            }
+            ("notearp", At::Track) => {
+                let at: u8 = num(w.next()).ok_or_else(|| bad("notearp"))?;
+                if usize::from(at) > MAX_FX {
+                    return Err(bad("notearp"));
+                }
+                last(&mut p).note_fx.arp_at = at;
+            }
+            ("loops", At::Track) => {
+                let input = w.next().and_then(LoopInput::from_word);
+                last(&mut p).kind = TrackKind::Loops(input.ok_or_else(|| bad("loops"))?)
             }
             ("clip", At::Track) => {
                 let slot: usize = num(w.next()).ok_or_else(|| bad("slot"))?;
@@ -360,6 +480,7 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                     .ok_or_else(|| bad("speed"))?;
             }
             ("swing", At::Clip(c, _)) => c.swing = Some(swing(&mut w).ok_or_else(|| bad("swing"))?),
+            ("loop", At::Clip(c, _)) => c.looped = Some(num(w.next()).ok_or_else(|| bad("loop"))?),
             ("quant", At::Clip(c, _)) => {
                 let (g, s) = (num(w.next()), num(w.next()));
                 c.quantise = Some(
@@ -371,6 +492,12 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             ("follow", At::Clip(c, _)) => {
                 c.follow = Some(follow(&mut w).ok_or_else(|| bad("follow"))?)
             }
+            ("launch", At::Clip(c, _)) => {
+                c.launch = Some(launch(&mut w).ok_or_else(|| bad("launch"))?)
+            }
+            ("legato", At::Clip(c, _)) => c.legato = true,
+            ("once", At::Clip(c, _)) => c.once = true,
+            ("launch", At::Top) => p.launch = launch(&mut w).ok_or_else(|| bad("launch"))?,
             ("touch", At::Clip(c, _)) => {
                 for x in w {
                     let (a, v) = x.split_once(':').ok_or_else(|| bad("touch"))?;
@@ -517,7 +644,26 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 p.arrangement.morphs.push(m);
                 at = At::Top;
             }
+            ("list", At::Top | At::Track | At::Scene) => {
+                let step = (|| {
+                    Some(ListStep {
+                        row: num(w.next())?,
+                        times: num(w.next())?,
+                    })
+                })()
+                .ok_or_else(|| bad("list"))?;
+                if p.arrangement.list.steps.len() >= MAX_LIST_STEPS {
+                    return Err(bad("list"));
+                }
+                p.arrangement.list.steps.push(step);
+                at = At::Top;
+            }
+            ("listloop", At::Top | At::Track | At::Scene) => {
+                p.arrangement.list.looped = true;
+                at = At::Top;
+            }
             ("songlanes", At::Top | At::Track | At::Scene) => at = At::SongLanes(Moves::new()),
+            ("perform", At::Top) => p.perform = true,
             // A newer build's line: skipped.
             _ if !matches!(word, "end" | "lane") => {}
             _ => return Err(bad("out of place")),
@@ -639,8 +785,19 @@ mod tests {
         }
         p.tracks[1].swing = Swing::new(240, 58);
         p.tracks[1].mute = true;
+        p.tracks[2].solo = true;
         p.tracks[2].through_arp = true;
         p.tracks[2].record_touch = false;
+        p.tracks[2].record_quantise = Some(160);
+        p.launch = crate::LaunchGrid::Bars(4);
+        // Board 7's Notes: Scale, Chord, the arp, Humanize (off).
+        let fx = &mut p.tracks[2].note_fx;
+        let all = mpfree_notefx::Fx::all();
+        for (place, (i, on)) in [(0, true), (1, true), (6, false)].into_iter().enumerate() {
+            fx.slots[place] = Some(Slot { fx: all[i], on });
+            fx.ids[place] = [4, 2, 9][place];
+        }
+        fx.arp_at = 2;
         let mut c = Clip::new("Beat with  spaces", 7680);
         c.speed = Speed::new(2, 1).unwrap();
         c.swing = Swing::new(480, 66);
@@ -651,6 +808,9 @@ mod tests {
             other: FollowAction::Any,
             chance: 70,
         });
+        c.launch = Some(crate::LaunchGrid::Ticks(960));
+        c.legato = true;
+        c.once = true;
         let pts: Vec<TouchPoint> = (0..150)
             .map(|k| TouchPoint {
                 at: k * 3,
@@ -714,6 +874,9 @@ mod tests {
             name: "Intro bit".into(),
         });
         p.arrangement.morphs.push(MorphRows { at: 0, a: 0, b: 1 });
+        p.arrangement.list.steps =
+            vec![ListStep { row: 2, times: 4 }, ListStep { row: 0, times: 1 }];
+        p.arrangement.list.looped = true;
         let song = crate::arrange::MORPH_LANE;
         p.arrangement
             .lanes
@@ -752,6 +915,37 @@ mod tests {
             p.tracks.push(Track::new(&format!("Track {}", i + 1), i));
         }
         assert_eq!(from_text(&to_text(&p)).unwrap(), p);
+        // Perform (S4) is saved; Make, a new project's, writes nothing,
+        // so an older build reads the file as before.
+        assert!(!to_text(&p).contains("perform"));
+        p.perform = true;
+        assert_eq!(from_text(&to_text(&p)).unwrap(), p);
+        // In a track it is out of place, and skipped.
+        let text = format!("{FORMAT}\ntrack Drums\ndest 0\nperform\n");
+        assert!(!from_text(&text).unwrap().perform);
+        // The project's launch quantise: 1 bar (the default) writes
+        // nothing; any other reads back; one out of range is refused.
+        let mut p = Project::new();
+        assert!(!to_text(&p).contains("launch"));
+        for g in crate::LAUNCH_GRIDS {
+            p.launch = g;
+            assert_eq!(from_text(&to_text(&p)).unwrap(), p, "{g:?}");
+        }
+        for bad in [
+            "launch bars 0",
+            "launch bars 17",
+            "launch ticks 0",
+            "launch ticks 99999",
+            "launch soon",
+        ] {
+            assert!(from_text(&format!("{FORMAT}\n{bad}\n")).is_err(), "{bad}");
+        }
+        // The song list: an empty one writes nothing; steps out of range
+        // are refused.
+        assert!(!to_text(&Project::new()).contains("list"));
+        for bad in ["list 16 1", "list 0 0", "list 0 100", "list 0", "list x 1"] {
+            assert!(from_text(&format!("{FORMAT}\n{bad}\n")).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -794,8 +988,54 @@ mod tests {
         // Numbers that don't fit.
         let big = text.replace("rectouch 0", "rectouch 2");
         assert!(from_text(&big).is_err());
+        let coarse = text.replace("recquant 160", "recquant 99999");
+        assert!(from_text(&coarse).is_err());
+        // A MIDI effect past the last place, twice in one, out of range,
+        // or one this build doesn't have.
+        assert!(text.contains("notefx 1 2 on chord shape=major"));
+        for (from, to) in [
+            ("notefx 1 2 on", "notefx 8 2 on"),
+            ("notefx 1 2 on", "notefx 0 2 on"),
+            // An id of none, or another effect's on the track.
+            ("notefx 1 2 on", "notefx 1 0 on"),
+            ("notefx 1 2 on", "notefx 1 4 on"),
+            ("notefx 1 2 on", "notefx 1 on"),
+            ("notearp 2", "notearp 9"),
+            ("notefx 1 2 on chord", "notefx 1 2 on sparkle"),
+            ("vel=100", "vel=101"),
+        ] {
+            assert!(from_text(&text.replace(from, to)).is_err(), "{to}");
+        }
+        // A setting this build doesn't know is skipped.
+        let newer = text.replace("notefx 1 2 on chord", "notefx 1 2 on chord glow=3");
+        assert_eq!(from_text(&newer).unwrap(), full());
         let nan = text.replace("lock 480 36 pad36.4 0.1", "lock 480 36 pad36.4 NaN");
         assert!(from_text(&nan).is_err());
+    }
+
+    #[test]
+    fn loop_tracks_and_their_cells_read_back() {
+        let mut p = full();
+        let mut t = Track::new_loops("Loops A", 3);
+        t.kind = TrackKind::Loops(LoopInput::Line);
+        t.slots[0] = Some(Clip::new_loop(0, 7680));
+        t.slots[2] = Some(Clip::new_loop(3, 3840));
+        p.tracks.push(t);
+        p.tracks.push(Track::new_loops("Loops B", 4));
+        p.check().unwrap();
+        let text = to_text(&p);
+        assert!(text.contains("track Loops A\ndest 3\nmute 0\narp 0\nrectouch 1\nloops line\n"));
+        assert!(text.contains("clip 2 3840 Loop 4\nloop 3\nend\n"));
+        assert_eq!(from_text(&text).unwrap(), p);
+        // A build before Loop tracks skips the lines: note tracks with
+        // empty clips. One that names no input, or a loop past the
+        // looper's, is refused; so is a cell on a note track.
+        let bad = text.replace("loops line", "loops tape");
+        assert!(from_text(&bad).is_err());
+        let past = text.replace("loop 3\n", "loop 8\n");
+        assert!(from_text(&past).is_err());
+        let moved = text.replace("loops line\n", "");
+        assert!(from_text(&moved).is_err(), "a loop cell on a note track");
     }
 
     #[test]

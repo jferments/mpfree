@@ -167,7 +167,7 @@ fn drawn_error(r: &[f64], rate: u32, drawn: impl Fn(f64) -> f64) -> f64 {
 /// delay or LFO bends the tone's pitch and a resonance raises its level,
 /// but neither puts energy two octaves up; a stepped control or a click
 /// does.
-fn hf_click(d: &mut NodeDut, id: u16, lo: f64, hi: f64, log: bool) -> f64 {
+pub(super) fn hf_click(d: &mut NodeDut, id: u16, lo: f64, hi: f64, log: bool) -> f64 {
     let rate = d.rate();
     let hz = 997.0;
     let rest = (0.3 * rate as f64) as usize;
@@ -387,6 +387,26 @@ pub(super) fn modulation(r: &mut Report) {
         }
     }
 
+    // M13: a change of LFO shape (M4), Sine to Triangle and back, at the
+    // defaults: the two shapes crossfade, so it should click no more than
+    // a knob does.
+    for (id, name, shape) in [
+        (CHORUS, "chorus", ch::SHAPE),
+        (FLANGER, "flanger", fl::SHAPE),
+        (PHASER, "phaser", ph::SHAPE),
+    ] {
+        let mut d = engine(id, rate, &[]);
+        r.put(
+            "M13",
+            &format!("modulation/{name}"),
+            "click_db_over_6k_shape",
+            Some(hf_click(&mut d, shape, 0.0, 1.0, false)),
+            Better::Lower,
+            Some(-60.0),
+            3.0,
+        );
+    }
+
     // M2: level across Feedback at the default Mix, against Feedback 0.
     for (id, name, fb_id) in [
         (FLANGER, "flanger", fl::FEEDBACK),
@@ -471,6 +491,29 @@ pub(super) fn modulation(r: &mut Report) {
             2.0,
         );
     }
+    // The Triangle (M4) at the fastest and deepest: its bend is steady
+    // between the corners, and no more than the sine's peak.
+    let mut d = engine(
+        CHORUS,
+        rate,
+        &[
+            (ch::VOICES, 1.0),
+            (ch::MIX, 100.0),
+            (ch::DEPTH, 100.0),
+            (ch::RATE, 10.0),
+            (ch::DELAY, 40.0),
+            (ch::SHAPE, 1.0),
+        ],
+    );
+    r.put(
+        "M5",
+        sn,
+        "bend_cents_depth100_r10_d40_triangle",
+        Some(bend(&mut d, 10.0)),
+        Better::Lower,
+        Some(100.0),
+        2.0,
+    );
     let mut d = engine(
         FLANGER,
         rate,
@@ -598,19 +641,24 @@ pub(super) fn modulation(r: &mut Report) {
 
     // M9: drawn against heard, held.
     let n = 1 << 17;
-    for (frac, fb) in [
-        (0.0, 0.0),
-        (0.5, 0.0),
-        (0.5, 90.0),
-        (0.5, -90.0),
-        (0.0, 90.0),
+    // Through zero held at the crossing, heard wet (at Mix 50 it is
+    // silence): the copy at the dry's wait, round its loop.
+    for (frac, fb, tz) in [
+        (0.0, 0.0, false),
+        (0.5, 0.0, false),
+        (0.5, 90.0, false),
+        (0.5, -90.0, false),
+        (0.0, 90.0, false),
+        (0.0, 0.0, true),
+        (0.0, 90.0, true),
     ] {
         let values = [
             (fl::DEPTH, 0.0),
             (fl::FEEDBACK, fb),
-            (fl::MIX, 50.0),
+            (fl::MIX, if tz { 100.0 } else { 50.0 }),
             (fl::WIDTH, 0.0),
             (fl::DELAY, frames_ms(1.5, frac, rate)),
+            (fl::THROUGH_ZERO, if tz { 1.0 } else { 0.0 }),
         ];
         let resp = fine(&mut engine(FLANGER, rate, &values), n);
         let mut node = Flanger::new();
@@ -624,7 +672,13 @@ pub(super) fn modulation(r: &mut Report) {
             "modulation/flanger",
             format!(
                 "drawn_err_db_{}_fb{}{}",
-                if frac == 0.0 { "whole" } else { "half" },
+                if tz {
+                    "tz"
+                } else if frac == 0.0 {
+                    "whole"
+                } else {
+                    "half"
+                },
                 if fb < 0.0 { "m" } else { "p" },
                 fb.abs()
             ),

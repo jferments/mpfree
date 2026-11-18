@@ -38,6 +38,7 @@
 
 use crate::mpfree_moves::{Kind, Map, Moves, Target};
 use crate::mpfree_param::ParamAddr;
+use crate::scenes::SongList;
 use crate::{Clip, Follow, FollowAction, ModelError, Project, Track, SCENES, SLOTS};
 use mpfree_transport::time::Tick;
 
@@ -163,6 +164,11 @@ pub struct Arrangement {
     pub lanes: Moves,
     /// The morph's rows from each tick on, in order.
     pub morphs: Vec<MorphRows>,
+    /// The song list (sequencer S4): scenes in order, each so many times,
+    /// the third way to see the song beside the grid and the timeline.
+    /// It plays on its own (`mpfree-perform`); List → song lays it on the
+    /// timeline ([`list_to_song`]).
+    pub list: SongList,
 }
 
 impl Arrangement {
@@ -183,13 +189,20 @@ impl Arrangement {
         if self.placements.len() > MAX_PLACEMENTS || self.markers.len() > MAX_MARKERS {
             return Err(ModelError::BadPlacement);
         }
+        self.list.check()?;
         for (i, p) in self.placements.iter().enumerate() {
             if p.length <= 0 || p.start < 0 || p.offset < 0 || p.track >= tracks.len() {
                 return Err(ModelError::BadPlacement);
             }
             match &p.source {
                 Source::Slot(s) if *s >= SLOTS => return Err(ModelError::BadPlacement),
-                Source::Own(c) => c.check()?,
+                Source::Own(c) => {
+                    c.check()?;
+                    // A loop's own copy only on a Loop track, a clip's off one.
+                    if c.looped.is_some() != tracks[p.track].is_loops() {
+                        return Err(ModelError::BadLoop);
+                    }
+                }
                 Source::Slot(_) => {}
             }
             if let Some(prev) = i.checked_sub(1).map(|j| &self.placements[j]) {
@@ -397,7 +410,10 @@ impl Arrangement {
     /// to a slot takes its own copy of the clip, as the slot would name
     /// that track's clip. Refused (`BadPlacement`), changing nothing, when
     /// it would overlap a placement there or start before 0, or goes to
-    /// another track linked to an empty slot. Its index now.
+    /// another track linked to an empty slot; and (`BadLoop`) when it goes
+    /// to another track and either is a Loop track: a loop's block stays on
+    /// its Loop track's lane, as its cell stays in its column
+    /// (loop-tracks.md). Its index now.
     pub fn move_placement(
         &mut self,
         tracks: &[Track],
@@ -409,6 +425,10 @@ impl Arrangement {
         let p = self.placements.get(i).ok_or(ModelError::BadPlacement)?;
         if track >= tracks.len() || start < 0 {
             return Err(ModelError::BadPlacement);
+        }
+        let loops = |t: usize| tracks.get(t).is_some_and(Track::is_loops);
+        if track != p.track && (loops(track) || loops(p.track)) {
+            return Err(ModelError::BadLoop);
         }
         let mut moved = p.clone();
         if track != p.track && p.slot().is_some() {
@@ -593,6 +613,41 @@ pub fn scenes_to_song(
         t += length;
     }
     Ok(song)
+}
+
+/// Each step of the song list: where it starts, from tick 0, and how
+/// long it plays (its scene's length, [`scene_length`], times its times),
+/// with bars of `bar` ticks.
+pub fn list_spans(project: &Project, bar: Tick) -> Vec<(Tick, Tick)> {
+    let mut at = 0;
+    project
+        .arrangement
+        .list
+        .steps
+        .iter()
+        .map(|s| {
+            let len = scene_length(project, s.row, bar) * Tick::from(s.times);
+            let span = (at, len);
+            at += len;
+            span
+        })
+        .collect()
+}
+
+/// List → song: the song list laid on the timeline from song tick `at`,
+/// each step its scene's clips for its span (a clip shorter than the span
+/// repeats), with the scene's name above where it starts, as
+/// [`scenes_to_song`] lays rows. The caller adds it to the song.
+pub fn list_to_song(project: &Project, at: Tick, bar: Tick) -> Result<Arrangement, ModelError> {
+    let rows: Vec<(usize, Tick)> = project
+        .arrangement
+        .list
+        .steps
+        .iter()
+        .zip(list_spans(project, bar))
+        .map(|(s, (_, len))| (s.row, len))
+        .collect();
+    scenes_to_song(project, &rows, at)
 }
 
 /// The song's sections: where anything starts or ends and the markers, in
@@ -828,6 +883,47 @@ mod tests {
         assert_eq!(pl.origin(&c), 10 * BAR - 1920, "half speed: twice as far");
     }
 
+    /// The song list: each step's span is its scene's length times its
+    /// times; List → song lays them out in order, a scene that comes
+    /// twice twice; the list checks its steps.
+    #[test]
+    fn the_song_list_has_spans_and_lays_out_as_a_song() {
+        use crate::scenes::{ListStep, MAX_TIMES};
+        let mut p = project();
+        let step = |row, times| ListStep { row, times };
+        p.arrangement.list.steps = vec![step(0, 2), step(1, 1), step(0, 3)];
+        assert_eq!(
+            list_spans(&p, BAR),
+            vec![(0, 2 * BAR), (2 * BAR, 2 * BAR), (4 * BAR, 3 * BAR)]
+        );
+        let song = list_to_song(&p, 8 * BAR, BAR).unwrap();
+        let blocks: Vec<(usize, Tick, Tick)> = song
+            .placements
+            .iter()
+            .filter(|b| b.track == 0)
+            .map(|b| (b.slot().unwrap(), b.start, b.length))
+            .collect();
+        assert_eq!(
+            blocks,
+            vec![
+                (0, 8 * BAR, 2 * BAR),
+                (1, 10 * BAR, 2 * BAR),
+                (0, 12 * BAR, 3 * BAR)
+            ]
+        );
+        assert_eq!(song.markers.len(), 3);
+        assert_eq!(p.check(), Ok(()));
+        // Round: after the last, the first again; else none.
+        assert_eq!(p.arrangement.list.after(1), Some(2));
+        assert_eq!(p.arrangement.list.after(2), None);
+        p.arrangement.list.looped = true;
+        assert_eq!(p.arrangement.list.after(2), Some(0));
+        for bad in [step(SCENES, 1), step(0, 0), step(0, MAX_TIMES + 1)] {
+            p.arrangement.list.steps = vec![bad];
+            assert_eq!(p.check(), Err(ModelError::BadScene), "{bad:?}");
+        }
+    }
+
     #[test]
     fn scenes_become_a_song_and_the_song_becomes_scenes() {
         let mut p = project();
@@ -931,6 +1027,45 @@ mod tests {
             s.move_placement(&p.tracks, 0, 0, 2 * BAR + 100, true),
             Err(ModelError::BadPlacement)
         );
+    }
+
+    /// A loop's block stays on its Loop track's lane and a clip's block
+    /// off a Loop track's (loop-tracks.md part 5); a loop's own copy
+    /// anywhere else doesn't check.
+    #[test]
+    fn a_loops_block_stays_on_its_loop_tracks_lane() {
+        let mut p = project();
+        let mut a = Track::new_loops("Loops A", 2);
+        a.slots[0] = Some(Clip::new_loop(0, BAR));
+        p.tracks.push(a);
+        p.tracks.push(Track::new_loops("Loops B", 3));
+        let mut s = Arrangement::default();
+        s.place(Placement::linked(0, 0, 0, BAR)).unwrap();
+        s.place(Placement::linked(2, 0, 0, BAR)).unwrap();
+        let before = s.clone();
+        for (i, to) in [(1, 0), (1, 3), (0, 2)] {
+            for copy in [false, true] {
+                assert_eq!(
+                    s.move_placement(&p.tracks, i, to, 4 * BAR, copy),
+                    Err(ModelError::BadLoop)
+                );
+                assert_eq!(s, before);
+            }
+        }
+        // Along its own lane it moves as any block does.
+        assert_eq!(s.move_placement(&p.tracks, 1, 2, 2 * BAR, false), Ok(1));
+        assert_eq!(s.check(&p.tracks), Ok(()));
+        // Its own copy on a note track doesn't check, nor a clip's on a
+        // Loop track.
+        let mut bad = s.clone();
+        bad.placements[1].track = 0;
+        bad.placements[1].start = 4 * BAR;
+        bad.placements[1].source = Source::Own(Box::new(Clip::new_loop(0, BAR)));
+        bad.placements.sort_by_key(|p| (p.track, p.start));
+        assert_eq!(bad.check(&p.tracks), Err(ModelError::BadLoop));
+        let mut bad = s.clone();
+        bad.placements[1].source = Source::Own(Box::new(Clip::new("a", BAR)));
+        assert_eq!(bad.check(&p.tracks), Err(ModelError::BadLoop));
     }
 
     #[test]

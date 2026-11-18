@@ -999,9 +999,6 @@ impl MidiOut {
     /// ends every note it left on. Anything else is refused. It never
     /// waits: a message that finds [`GEAR_QUEUE`] full is dropped. Both
     /// are counted for the log. Allocates (its name and `send`).
-    // The sampler thread wires it to `SamplePage::set_gear` with its
-    // auto-sample of outside gear.
-    #[allow(dead_code)]
     pub fn gear_out(&self) -> Option<GearOut> {
         if !self.gear_ready() {
             return None;
@@ -1033,9 +1030,6 @@ impl MidiOut {
     /// Once a period: the Sample tab's MIDI out ([`MidiOut::gear_out`])
     /// when it came or went since the last call (None inside: there is
     /// none now), to hand to `SamplePage::set_gear`. Allocates only then.
-    // The sampler thread wires it to `SamplePage::set_gear` with its
-    // auto-sample of outside gear.
-    #[allow(dead_code)]
     pub fn gear_changed(&mut self) -> Option<Option<GearOut>> {
         let ready = self.gear_ready();
         if self.gear.told == Some(ready) {

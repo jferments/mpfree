@@ -328,6 +328,29 @@ pub enum MuteKeys {
     Pads,
 }
 
+/// A pad tapped as a mute key ([`App::mute_tap`]): what it does and when.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MuteTap {
+    /// Tracks or the kit's pads.
+    pub keys: MuteKeys,
+    /// TRACK MUTE's bank ([`App::mute_bank`]).
+    pub bank: usize,
+    /// The change waits for the launch line (Perform; SHIFT gives the
+    /// other timing).
+    pub wait: bool,
+    /// TRACK MUTE is held: the tap solos the track.
+    pub solo: bool,
+}
+
+/// TRACK MUTE held (sequencer S4): the pad mode before the press, and
+/// whether a pad was tapped while it was held (a solo, after which the
+/// mode goes back to what it was).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MuteHold {
+    before: MuteKeys,
+    used: bool,
+}
+
 /// FULL LEVEL (every hit 127) and Half Level (every hit 64).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PadLevel {
@@ -760,6 +783,8 @@ pub const TUNINGS_FOLDER: &str = "tunings";
 enum PrefsSection {
     Main,
     Touch,
+    /// The backup of the MPC and Akai's kits (setup.rs), for the next start.
+    Setup,
 }
 
 /// One row of a menu.
@@ -772,6 +797,12 @@ pub enum Item {
     FindButtons,
     /// Prefs: opens the touch screen section.
     TouchSection,
+    /// Prefs: opens the backup and Akai kits section (Jay, 17 Nov 18:12Z).
+    SetupSection,
+    /// That section: a new backup of the MPC at the next start.
+    SetupBackup,
+    /// That section: Akai's kits and samples at the next start.
+    SetupAkaiKits,
     /// Prefs: the theme in use; the arrows step through [`THEMES`].
     Appearance,
     /// The touch screen section: back to the other Prefs.
@@ -830,6 +861,9 @@ fn opens_something(item: Item) -> bool {
         item,
         Item::FindButtons
             | Item::TouchSection
+            | Item::SetupSection
+            | Item::SetupBackup
+            | Item::SetupAkaiKits
             | Item::PrefsBack
             | Item::CalibrateTouch
             | Item::TouchLab
@@ -879,6 +913,9 @@ pub struct Status {
     /// ERASE held: the next tap on the screen deletes what it lands on
     /// (Jay after live test 3).
     pub erase: bool,
+    /// COPY held: on Arrange, a tap on a clip copies it and a tap on an
+    /// empty slot pastes the copy (sequencer S3).
+    pub copy: bool,
 }
 
 /// Jay's wheel navigation (live test 2, 13 Nov) on a page with rows: the
@@ -938,6 +975,13 @@ pub enum Effect {
     StopSounds,
     /// The wheel, its push, - or + for the outline ([`Nav`]).
     Nav(Nav),
+    /// The wheel or - / + while a finger rests on a control with a value
+    /// (Jay, 17 Nov: hold a control and turn the wheel): turn that control
+    /// by `delta` detents, `fine` with SHIFT held.
+    Held {
+        delta: i32,
+        fine: bool,
+    },
     /// SHIFT + wheel on Play: move the synth's pads by octaves (the kit, as
     /// before, when a drum kit is playing).
     Octave(i32),
@@ -1057,6 +1101,14 @@ pub enum Effect {
     TouchLab,
     /// Open the Calibrate touch page (four corner taps).
     CalibrateTouch,
+    /// Prefs > Backup and Akai kits: at the next start, a new backup of
+    /// the MPC (`backup`) or Akai's kits and samples, or (`want` false) not
+    /// after all. The first-start setup's store changes (setup.rs); the
+    /// app is told the new state back ([`App::set_setup`]).
+    SetupNextStart {
+        backup: bool,
+        want: bool,
+    },
     /// The Dev tab's Touch page: the wheel picks a value (by detents)...
     TouchWheel(i32),
     /// ...and - / + step it (or run the action picked).
@@ -1078,6 +1130,10 @@ pub enum Effect {
     Looper(LoopAction),
     /// MAIN on the Play page (None: the next view) and STEP SEQ (Beats).
     PlayView(Option<crate::play_page::PlayView>),
+    /// Arrange's view: the Song view (`Some(true)`), the Clips grid
+    /// (`Some(false)`), or the next of the three (`None`: Clips, Song, the
+    /// song list): MAIN in Perform.
+    ArrangeView(Option<bool>),
     /// SAMPLE EDIT: the Sample tab opens on this editor.
     SampleEditor(crate::sample_page::Editor),
     /// PROG EDIT: the sound the pads play: the Synth tab while the synth
@@ -1161,6 +1217,8 @@ pub struct App {
     mute_keys: MuteKeys,
     /// TRACK MUTE's bank: pads 1-16 are tracks 16 * bank + 1 on.
     mute_bank: usize,
+    /// TRACK MUTE held (without SHIFT): a pad tapped solos its track.
+    mute_hold: Option<MuteHold>,
     /// The project's tracks (the audio loop tells it).
     track_count: usize,
     /// The 16 Levels panel shows on Play: the wheel picks its kind.
@@ -1189,6 +1247,10 @@ pub struct App {
     tap_light: bool,
     /// The part of Prefs on screen: the main rows or one of its sections.
     prefs_section: PrefsSection,
+    /// The first-start setup's state for Prefs > Backup and Akai kits;
+    /// None where the stick has no setup (not the creator's, or no data
+    /// folder).
+    setup: Option<crate::setup::PrefsState>,
     /// The wheel's push opened the selected menu row (see `wheel_push`).
     menu_editing: bool,
     /// The wheel's push opened the picked row of a page with rows: the
@@ -1260,6 +1322,9 @@ pub struct App {
     arp_dirty: bool,
     /// The transport is rolling (the audio loop says each period).
     rolling: bool,
+    /// The project is in Perform, not Make (sequencer S4; the audio loop
+    /// says each period, [`App::set_perform`]).
+    perform: bool,
     /// What REC records, and whether the notes wait for PLAY
     /// ([`crate::rec_arm`]). Not saved: a new or opened project arms the
     /// notes.
@@ -1273,6 +1338,9 @@ pub struct App {
     /// A list or pad over the page is open (the number pad, the undo
     /// history): the wheel, its push and - / + go to it.
     overlay: bool,
+    /// A finger rests on a control with a value: the wheel and - / + turn
+    /// it, and the push does nothing ([`crate::gui::FromUi::Held`]).
+    held: bool,
     /// The screen shows the wheel's outline on a control ([`Nav`]).
     outline: bool,
     /// The synth's pad layout while the synth is on the pads
@@ -1338,8 +1406,12 @@ const PREFS_ROWS: &[Item] = &[
     Item::Export,
     Item::ExportFile,
     Item::ExportRate,
+    // Just before Touch screen, which stays last (Jay, 17 Nov 18:12Z).
+    Item::SetupSection,
     Item::TouchSection,
 ];
+/// Prefs' backup and Akai kits section.
+const PREFS_SETUP_ROWS: &[Item] = &[Item::PrefsBack, Item::SetupBackup, Item::SetupAkaiKits];
 /// Prefs' touch screen section.
 const PREFS_TOUCH_ROWS: &[Item] = &[
     Item::PrefsBack,
@@ -1374,6 +1446,7 @@ impl App {
             play_pressed_at: None,
             mute_keys: MuteKeys::Off,
             mute_bank: 0,
+            mute_hold: None,
             track_count: 0,
             levels_open: false,
             levels_on: false,
@@ -1414,10 +1487,12 @@ impl App {
             sent_notes,
             arp_dirty: true,
             rolling: false,
+            perform: false,
             rec: crate::rec_arm::RecArm::default(),
             lights_shown: Self::startup_transport_lights(),
             undo_ready: false,
             overlay: false,
+            held: false,
             outline: false,
             pad_layout: None,
             pad_pressed: [PadNotes::default(); 16],
@@ -1426,6 +1501,7 @@ impl App {
             mapper: mapper::Mapper::default(),
             swallowed: [false; 128],
             prefs_section: PrefsSection::Main,
+            setup: None,
             menu_editing: false,
             page_editing: false,
             theme_files: Vec::new(),
@@ -1464,6 +1540,19 @@ impl App {
     /// Whether the transport rolls, as the audio loop last told it.
     pub fn rolling(&self) -> bool {
         self.rolling
+    }
+
+    /// Make or Perform, as the project has it (the audio loop tells it
+    /// each period). Perform pins the arm (the design's "the arm is pinned
+    /// in Perform"), Make lets it follow the page again; true when that
+    /// changed, so the screen hears the arm.
+    pub fn set_perform(&mut self, on: bool) -> bool {
+        if self.perform == on {
+            return false;
+        }
+        self.perform = on;
+        self.rec.pinned = on;
+        true
     }
 
     /// The tempo, in BPM.
@@ -1548,6 +1637,20 @@ impl App {
     /// ([`crate::gui::FromUi::Overlay`]).
     pub fn set_overlay(&mut self, on: bool) {
         self.overlay = on;
+    }
+
+    /// The screen says whether a finger rests on a control with a value
+    /// ([`crate::gui::FromUi::Held`]): until it lifts the wheel and - / +
+    /// turn that control.
+    pub fn set_held(&mut self, on: bool) {
+        self.held = on;
+    }
+
+    /// The wheel, or - / +, goes to the control a finger rests on: not
+    /// while a list or pad covers the page (no finger can be on the page
+    /// under it then).
+    fn wheel_to_held(&self) -> bool {
+        self.held && !self.overlay && !matches!(self.view, View::Guide | View::System)
     }
 
     /// The screen says whether the wheel's outline is on a control: on the
@@ -1782,6 +1885,56 @@ impl App {
         self.mute_keys
     }
 
+    /// The pads are mute keys: TRACK MUTE's mode is on, or TRACK MUTE is
+    /// held (a pad solos its track).
+    pub fn pads_mute(&self) -> bool {
+        self.mute_keys != MuteKeys::Off || self.mute_hold.is_some()
+    }
+
+    /// A pad tapped as a mute key: what it does. In Make a mute acts at
+    /// once and in Perform it waits for the launch line; SHIFT gives the
+    /// other timing. With TRACK MUTE held the tap solos its track: the
+    /// pads show the tracks while it is held, and letting go leaves the
+    /// mode as it was before the press (the effects say so).
+    pub fn mute_tap(&mut self) -> (MuteTap, Vec<Effect>) {
+        let mut fx = Vec::new();
+        let solo = self.mute_hold.is_some();
+        if let Some(h) = &mut self.mute_hold {
+            h.used = true;
+            if self.mute_keys != MuteKeys::Tracks {
+                fx.extend(self.set_mute_keys(MuteKeys::Tracks));
+            }
+        }
+        let tap = MuteTap {
+            keys: self.mute_keys,
+            bank: self.mute_bank,
+            wait: self.perform != self.shift,
+            solo,
+        };
+        (tap, fx)
+    }
+
+    /// TRACK MUTE let go: after a solo, the mode it had before the press.
+    fn track_mute_up(&mut self) -> Vec<Effect> {
+        match self.mute_hold.take() {
+            Some(h) if h.used && h.before != self.mute_keys => self.set_mute_keys(h.before),
+            _ => Vec::new(),
+        }
+    }
+
+    /// TRACK MUTE's mode set to `keys`: its light, the status and the
+    /// PAD BANK lights follow.
+    fn set_mute_keys(&mut self, keys: MuteKeys) -> Vec<Effect> {
+        self.mute_keys = keys;
+        let mut fx = Vec::new();
+        if let Some(n) = self.map.track_mute {
+            let on = keys != MuteKeys::Off;
+            fx.push(Effect::Light(n, if on { LIGHT_ON } else { LIGHT_OFF }));
+        }
+        fx.extend([self.status(), Effect::BankLights]);
+        fx
+    }
+
     /// NOTE REPEAT is held or Latch is on.
     pub fn repeating(&self) -> bool {
         self.repeat_held || self.latched
@@ -1858,6 +2011,7 @@ impl App {
             mute_bank: self.mute_bank,
             steps: self.step_pads(),
             erase: self.erase_held,
+            copy: self.copy_held(),
         })
     }
 
@@ -1921,6 +2075,9 @@ impl App {
             }
             if Some(note) == self.map.step_seq {
                 fx.extend(self.step_seq_up());
+            }
+            if Some(note) == self.map.track_mute {
+                fx.extend(self.track_mute_up());
             }
             if note == button::COPY && self.copy_held() {
                 fx.extend(self.copy_button(false));
@@ -2108,6 +2265,14 @@ impl App {
             fx.push(Effect::BankLights);
         } else if let Some(k) = self.map.bank_of(note) {
             fx.push(Effect::Bank { button: k, shift });
+        } else if Some(note) == self.map.data_push && self.wheel_to_held() {
+            // A finger on a control: the push does nothing.
+        } else if (Some(note) == self.map.minus || Some(note) == self.map.plus)
+            && self.wheel_to_held()
+        {
+            // A finger on a control: - / + step it, one detent each.
+            let delta = if Some(note) == self.map.plus { 1 } else { -1 };
+            fx.push(Effect::Held { delta, fine: false });
         } else if Some(note) == self.map.data_push && self.browsing() {
             fx.push(Effect::Browse(BrowseKey::Push));
         } else if Some(note) == self.map.data_push {
@@ -2185,6 +2350,20 @@ impl App {
                 return Some(vec![Effect::Browse(BrowseKey::Erase)]);
             }
             return Some(vec![self.status()]);
+        } else if is(m.main) && shift {
+            // SHIFT + MAIN: Make or Perform (sequencer S4), as the top
+            // bar's chip.
+            vec![Effect::Time(TimeAction::Perform(!self.perform))]
+        } else if is(m.main) && self.perform {
+            // MAIN in Perform: Arrange's Clips; on Arrange, the next view
+            // (Clips, Song, the song list).
+            if self.view == View::Arrange {
+                vec![Effect::ArrangeView(None)]
+            } else {
+                let mut fx = self.show(View::Arrange);
+                fx.push(Effect::ArrangeView(Some(false)));
+                fx
+            }
         } else if is(m.main) {
             // MAIN: Play; on Play, the next view (All, Beats, Loop).
             if self.view == View::Play {
@@ -2220,7 +2399,12 @@ impl App {
         } else if is(m.track_mute) {
             // TRACK MUTE: the pads mute tracks; SHIFT + TRACK MUTE: the
             // kit's pads. The same press again leaves; the other one
-            // switches.
+            // switches. Held (without SHIFT), a pad solos its track, and
+            // letting go leaves the mode as it was (`track_mute_up`).
+            self.mute_hold = (!shift).then_some(MuteHold {
+                before: self.mute_keys,
+                used: false,
+            });
             let want = if shift {
                 MuteKeys::Pads
             } else {
@@ -2286,6 +2470,7 @@ impl App {
             // One pad mode at a time: STEP SEQ and TRACK MUTE give the
             // pads up to 16 Levels.
             fx.extend(self.steps_off());
+            self.mute_hold = None;
             if self.mute_keys != MuteKeys::Off {
                 self.mute_keys = MuteKeys::Off;
                 if let Some(n) = self.map.track_mute {
@@ -2424,6 +2609,13 @@ impl App {
     /// The data wheel: rows in a menu or on a page with rows, the outline
     /// on the pages [`outlined`] names ([`Nav`]), each other page's own job.
     pub fn wheel(&mut self, delta: i32) -> Vec<Effect> {
+        if self.wheel_to_held() {
+            // A finger on a control: the wheel turns it (SHIFT: finer).
+            return vec![Effect::Held {
+                delta,
+                fine: self.shift,
+            }];
+        }
         match self.view {
             View::Guide | View::System => Vec::new(),
             // A list or pad over the page: the wheel moves in it.
@@ -2982,6 +3174,27 @@ impl App {
         fx
     }
 
+    /// A Loop cell armed on the grid: the looper records its Loop track's
+    /// `input` (loop-tracks.md part 4). Line in switches the line input
+    /// on as its Settings row does; Resample keeps the source (the desk
+    /// makes REC's Record a Resample, which records the other loops).
+    pub fn loop_input(&mut self, input: mpfree_seq::LoopInput) -> Vec<Effect> {
+        use mpfree_seq::LoopInput;
+        let mut fx = match input {
+            LoopInput::Line if !self.settings.line_input => {
+                return self.looper_setting(Item::LineInput, 1)
+            }
+            LoopInput::Line => self.set_loop_source(LoopSource::Line),
+            LoopInput::Pads => self.set_loop_source(LoopSource::Pads),
+            LoopInput::Resample => Vec::new(),
+        };
+        if !fx.is_empty() {
+            self.save_dirty = true;
+            fx.push(Effect::Settings(self.settings.clone()));
+        }
+        fx
+    }
+
     /// Record from `source`, with the latency that goes with it.
     fn set_loop_source(&mut self, source: LoopSource) -> Vec<Effect> {
         if source == self.settings.loop_source {
@@ -3006,6 +3219,7 @@ impl App {
     fn items(&self) -> &'static [Item] {
         match (self.view, self.back) {
             (View::Prefs, _) if self.prefs_section == PrefsSection::Touch => PREFS_TOUCH_ROWS,
+            (View::Prefs, _) if self.prefs_section == PrefsSection::Setup => PREFS_SETUP_ROWS,
             (View::Prefs, _) => PREFS_ROWS,
             (_, View::Looper) => &[
                 Item::LoopSource,
@@ -3076,6 +3290,9 @@ impl App {
             ),
             Item::FindButtons => ("Find the buttons again", "Start".to_string()),
             Item::TouchSection => ("Touch screen", "Open".to_string()),
+            Item::SetupSection => ("Backup and Akai kits", "Open".to_string()),
+            Item::SetupBackup => ("Backup of your MPC", self.setup_backup_text()),
+            Item::SetupAkaiKits => ("Akai's kits and samples", self.setup_akai_text()),
             Item::Appearance => (
                 "Appearance",
                 self.theme_choices()
@@ -3260,6 +3477,25 @@ impl App {
                 "The touch screen's settings: screen pad",
                 "velocity, Calibrate touch and the Touch lab.",
             ],
+            Item::SetupSection => vec![
+                "A backup of your MPC, and Akai's drum kits",
+                "and samples, if they were left out of the",
+                "first start: each at the next start.",
+            ],
+            Item::SetupBackup => vec![
+                "A full copy of your MPC, kept on the stick,",
+                "so you can always go back. Push or + makes a",
+                "new one at the next start (10 to 20 minutes),",
+                "beside any already there; again, or -, takes",
+                "it back. Restart with the power button.",
+            ],
+            Item::SetupAkaiKits => vec![
+                "The kits and sounds that came with your MPC,",
+                "into BROWSE. Push or + brings them in at the",
+                "next start (about 10 minutes); again, or -,",
+                "takes it back. Without a backup they are read",
+                "from the MPC itself, which is never changed.",
+            ],
             Item::PrefsBack => vec!["Back to the other Prefs. MENU does the same."],
             Item::CalibrateTouch => vec![
                 "Tap a target in each corner to check that",
@@ -3440,6 +3676,9 @@ impl App {
             (View::Prefs, _) if self.prefs_section == PrefsSection::Touch => {
                 "Prefs · Touch screen".to_string()
             }
+            (View::Prefs, _) if self.prefs_section == PrefsSection::Setup => {
+                "Prefs · Backup and Akai kits".to_string()
+            }
             (View::Prefs, _) => "Prefs".to_string(),
             (_, View::Arp) => "Arp options".to_string(),
             (_, View::Debug) => "MIDI log options".to_string(),
@@ -3479,13 +3718,78 @@ impl App {
 
     /// From a Prefs section back to Prefs' main rows, on the row that opened it.
     fn leave_prefs_section(&mut self) -> Vec<Effect> {
+        let opener = match self.prefs_section {
+            PrefsSection::Setup => Item::SetupSection,
+            _ => Item::TouchSection,
+        };
         self.prefs_section = PrefsSection::Main;
         self.menu_editing = false;
-        self.selected = PREFS_ROWS
-            .iter()
-            .position(|&i| i == Item::TouchSection)
-            .unwrap_or(0);
+        self.selected = PREFS_ROWS.iter().position(|&i| i == opener).unwrap_or(0);
         vec![self.menu_view()]
+    }
+
+    /// The first-start setup's state, for Prefs > Backup and Akai kits
+    /// (at start, and after each change there); the menu follows.
+    pub fn set_setup(&mut self, state: Option<crate::setup::PrefsState>) -> Vec<Effect> {
+        self.setup = state;
+        if self.view == View::Prefs {
+            vec![self.menu_view()]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The backup row's value.
+    fn setup_backup_text(&self) -> String {
+        let Some(st) = &self.setup else {
+            return "Not on this stick".to_string();
+        };
+        let b = &st.backup;
+        match (&st.backup_made, b.next_start, b.done, b.left_out) {
+            (Some(_), true, _, _) => "New one at the next start".to_string(),
+            (None, true, _, _) => "At the next start".to_string(),
+            (Some(day), false, true, _) => format!("Made {day}"),
+            (_, false, _, true) => "Left out".to_string(),
+            _ => "Not made yet".to_string(),
+        }
+    }
+
+    /// The Akai kits row's value.
+    fn setup_akai_text(&self) -> String {
+        let Some(st) = &self.setup else {
+            return "Not on this stick".to_string();
+        };
+        let a = &st.akai;
+        if a.done {
+            "In BROWSE".to_string()
+        } else if a.next_start {
+            "At the next start".to_string()
+        } else if a.left_out {
+            "Left out".to_string()
+        } else {
+            "Not in yet".to_string()
+        }
+    }
+
+    /// A push or + on a row of Prefs > Backup and Akai kits asks for it at
+    /// the next start, or takes the ask back; - takes it back.
+    fn setup_step(&mut self, backup: bool, d: i32) -> Vec<Effect> {
+        let Some(st) = &self.setup else {
+            return vec![Effect::Tell(
+                "This stick has no first-start setup: it wasn't made by the USB creator".into(),
+            )];
+        };
+        let c = if backup { &st.backup } else { &st.akai };
+        if !backup && c.done {
+            return vec![Effect::Tell(
+                "Akai's kits and samples are in already: BROWSE, Kits and Samples".into(),
+            )];
+        }
+        let want = d > 0 && !c.next_start;
+        if want == c.next_start {
+            return Vec::new();
+        }
+        vec![Effect::SetupNextStart { backup, want }]
     }
 
     /// A menu row touched.
@@ -3505,6 +3809,11 @@ impl App {
     /// 12 Nov 08:11Z). On a page with rows, the same for the row
     /// highlighted ([`RowKey`]). Elsewhere it does nothing yet.
     pub fn wheel_push(&mut self) -> Vec<Effect> {
+        if self.wheel_to_held() {
+            // A finger on a control: the push does nothing, so a thumb
+            // that slips presses nothing.
+            return Vec::new();
+        }
         if self.overlay {
             // A list or pad over the page: the push is its Enter.
             return vec![Effect::Rows(RowKey::Editing(true))];
@@ -3616,6 +3925,13 @@ impl App {
                 self.selected = 1;
                 return vec![self.menu_view()];
             }
+            Item::SetupSection => {
+                self.prefs_section = PrefsSection::Setup;
+                self.selected = 1;
+                return vec![self.menu_view()];
+            }
+            Item::SetupBackup => return self.setup_step(true, delta),
+            Item::SetupAkaiKits => return self.setup_step(false, delta),
             Item::Appearance => {
                 // A theme file from --theme counts as before the first.
                 let at = themes.iter().position(|t| *t == s.theme);
@@ -4283,6 +4599,43 @@ mod tests {
         assert_eq!(next.settings.theme, "synthwave");
     }
 
+    /// Jay, 17 Nov: while a finger rests on a control with a value, the
+    /// wheel and - / + turn it on every page (SHIFT + wheel finer), the
+    /// push does nothing, and on the lift each goes back to its own job.
+    /// A list or pad over the page keeps them.
+    #[test]
+    fn a_held_control_takes_the_wheel_and_minus_plus_until_it_lifts() {
+        let mut app = ready();
+        let held = |delta, fine| vec![Effect::Held { delta, fine }];
+        for v in [
+            View::Play,
+            View::Sample,
+            View::Synth,
+            View::Mixer,
+            View::Arrange,
+        ] {
+            app.show(v);
+            let before = app.wheel(1);
+            app.set_held(true);
+            assert_eq!(app.wheel(2), held(2, false), "{v:?}");
+            assert_eq!(press(&mut app, button::PLUS), held(1, false), "{v:?}");
+            assert_eq!(press(&mut app, button::MINUS), held(-1, false), "{v:?}");
+            assert!(
+                app.wheel_push().is_empty(),
+                "{v:?}: the push presses nothing"
+            );
+            app.button(button::SHIFT, true, 0.0);
+            assert_eq!(app.wheel(-3), held(-3, true), "{v:?}: SHIFT is finer");
+            app.button(button::SHIFT, false, 0.0);
+            app.set_held(false);
+            assert_eq!(app.wheel(1), before, "{v:?}: let go, the page's own job");
+        }
+        // A list or pad over the page has them, finger or not.
+        app.set_held(true);
+        app.set_overlay(true);
+        assert_eq!(app.wheel(1), vec![Effect::Rows(RowKey::Pick(1))]);
+    }
+
     /// Jay, 12 Nov 08:11Z: in Prefs, a push of the wheel opens a row, the
     /// wheel then picks its value, and a second push sets it and gives the
     /// wheel back to the rows. A row that opens something opens at once.
@@ -4656,6 +5009,126 @@ mod tests {
         assert_eq!(app.view(), View::Play);
         open_prefs(&mut app);
         assert_eq!(app.items(), PREFS_ROWS);
+    }
+
+    /// Prefs > Backup and Akai kits (Jay, 17 Nov 18:12Z): just before
+    /// Touch screen; each row asks for its step at the next start, or takes
+    /// the ask back.
+    #[test]
+    fn prefs_offers_the_backup_and_akais_kits_for_the_next_start() {
+        use crate::setup::{Choice, PrefsState};
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        let rows = app.items();
+        assert_eq!(
+            rows[rows.len() - 2],
+            Item::SetupSection,
+            "just before Touch screen"
+        );
+        assert_eq!(rows.last(), Some(&Item::TouchSection), "which stays last");
+        let fx = app.step_item(row(&app, Item::SetupSection), 1);
+        assert!(
+            matches!(&fx[..], [Effect::Menu(m)] if m.title == "Prefs · Backup and Akai kits" && m.selected == 1
+                         && m.rows[1] == ("Backup of your MPC".to_string(), "Not on this stick".to_string())
+                         && m.rows[2] == ("Akai's kits and samples".to_string(), "Not on this stick".to_string())),
+            "{fx:?}"
+        );
+        // Without a creator's stick it says so and changes nothing.
+        assert!(matches!(&app.step_item(1, 1)[..], [Effect::Tell(_)]));
+        // Both left out at the first start.
+        let left = Choice {
+            left_out: true,
+            done: false,
+            next_start: false,
+        };
+        app.set_setup(Some(PrefsState {
+            backup: left.clone(),
+            akai: left.clone(),
+            backup_made: None,
+        }));
+        assert_eq!(app.item_text(Item::SetupBackup).1, "Left out");
+        assert_eq!(app.item_text(Item::SetupAkaiKits).1, "Left out");
+        assert_eq!(
+            app.step_item(row(&app, Item::SetupAkaiKits), 1),
+            vec![Effect::SetupNextStart {
+                backup: false,
+                want: true
+            }]
+        );
+        assert_eq!(
+            app.step_item(row(&app, Item::SetupBackup), -1),
+            vec![],
+            "- takes back only what was asked"
+        );
+        // Asked: the row says so, and the push takes it back.
+        let asked = Choice {
+            left_out: false,
+            done: false,
+            next_start: true,
+        };
+        let fx = app.set_setup(Some(PrefsState {
+            backup: left.clone(),
+            akai: asked,
+            backup_made: None,
+        }));
+        assert!(
+            matches!(&fx[..], [Effect::Menu(m)] if m.rows[2].1 == "At the next start"),
+            "{fx:?}"
+        );
+        assert_eq!(
+            app.step_item(row(&app, Item::SetupAkaiKits), 1),
+            vec![Effect::SetupNextStart {
+                backup: false,
+                want: false
+            }]
+        );
+        // Done: a backup made, the kits in.
+        let done = Choice {
+            left_out: false,
+            done: true,
+            next_start: false,
+        };
+        app.set_setup(Some(PrefsState {
+            backup: done.clone(),
+            akai: done.clone(),
+            backup_made: Some("17 Nov 2026".into()),
+        }));
+        assert_eq!(app.item_text(Item::SetupBackup).1, "Made 17 Nov 2026");
+        assert_eq!(app.item_text(Item::SetupAkaiKits).1, "In BROWSE");
+        assert!(matches!(
+            &app.step_item(row(&app, Item::SetupAkaiKits), 1)[..],
+            [Effect::Tell(_)]
+        ));
+        assert_eq!(
+            app.step_item(row(&app, Item::SetupBackup), 1),
+            vec![Effect::SetupNextStart {
+                backup: true,
+                want: true
+            }],
+            "a new backup, beside the one there"
+        );
+        app.set_setup(Some(PrefsState {
+            backup: Choice {
+                next_start: true,
+                done: false,
+                left_out: false,
+            },
+            akai: done,
+            backup_made: Some("17 Nov 2026".into()),
+        }));
+        assert_eq!(
+            app.item_text(Item::SetupBackup).1,
+            "New one at the next start"
+        );
+        // MENU goes back to the main rows, on the row that opened the section.
+        let fx = press(&mut app, MENU);
+        assert!(
+            matches!(&fx[..], [Effect::Menu(m)] if m.title == "Prefs" && m.rows[m.selected].0 == "Backup and Akai kits"),
+            "{fx:?}"
+        );
     }
 
     /// Live test 2 (Jay, 13 Nov): on a page with rows the wheel scrolls
@@ -6759,6 +7232,69 @@ mod tests {
         assert_eq!(app.mute_keys(), MuteKeys::Off);
     }
 
+    /// TRACK MUTE held with a pad tapped: a solo, and letting go leaves
+    /// the pad mode as it was before the press. A quick press still
+    /// toggles the mode. In Make a tap acts at once and in Perform it
+    /// waits; SHIFT gives the other timing.
+    #[test]
+    fn track_mute_held_with_a_pad_solos_and_leaves_the_mode_as_it_was() {
+        const SHIFT: u8 = button::SHIFT;
+        const TRACK_MUTE: u8 = 68;
+        let mut app = ready();
+        app.map.learn(mapper::Job::TrackMute, Some(TRACK_MUTE));
+        assert!(!app.pads_mute());
+        // From Off: held, the pads mute; a tap solos; let go, Off again.
+        app.button(TRACK_MUTE, true, 0.0);
+        assert!(app.pads_mute());
+        let (tap, fx) = app.mute_tap();
+        assert!(fx.is_empty(), "the pads show the tracks already");
+        assert_eq!(
+            tap,
+            MuteTap {
+                keys: MuteKeys::Tracks,
+                bank: 0,
+                wait: false,
+                solo: true
+            }
+        );
+        let fx = app.button(TRACK_MUTE, false, 0.0);
+        assert_eq!(app.mute_keys(), MuteKeys::Off);
+        assert_eq!(fx[0], Effect::Light(TRACK_MUTE, LIGHT_OFF));
+        assert!(fx.contains(&Effect::BankLights));
+        assert!(!app.pads_mute());
+        // From Tracks: the press turns them off, a tap while held brings
+        // the tracks back to solo, and letting go leaves them on.
+        press(&mut app, TRACK_MUTE);
+        assert_eq!(app.mute_keys(), MuteKeys::Tracks);
+        app.button(TRACK_MUTE, true, 0.0);
+        assert_eq!(app.mute_keys(), MuteKeys::Off);
+        let (tap, fx) = app.mute_tap();
+        assert!(tap.solo && tap.keys == MuteKeys::Tracks);
+        assert_eq!(fx[0], Effect::Light(TRACK_MUTE, LIGHT_ON));
+        app.button(TRACK_MUTE, false, 0.0);
+        assert_eq!(app.mute_keys(), MuteKeys::Tracks);
+        // Not held: a plain tap mutes, at once in Make, waiting with SHIFT.
+        let (tap, _) = app.mute_tap();
+        assert!(!tap.solo && !tap.wait);
+        app.button(SHIFT, true, 0.0);
+        assert!(app.mute_tap().0.wait);
+        app.button(SHIFT, false, 0.0);
+        // Perform: the tap waits, and SHIFT acts at once.
+        app.set_perform(true);
+        assert!(app.mute_tap().0.wait);
+        app.button(SHIFT, true, 0.0);
+        assert!(!app.mute_tap().0.wait);
+        app.button(SHIFT, false, 0.0);
+        // SHIFT + TRACK MUTE held is no solo: the kit's pads mute.
+        app.button(SHIFT, true, 0.0);
+        app.button(TRACK_MUTE, true, 0.0);
+        app.button(SHIFT, false, 0.0);
+        assert_eq!(app.mute_keys(), MuteKeys::Pads);
+        assert!(!app.mute_tap().0.solo);
+        app.button(TRACK_MUTE, false, 0.0);
+        assert_eq!(app.mute_keys(), MuteKeys::Pads);
+    }
+
     /// TRACK MUTE with more than 16 tracks (up to 128, Jay 14 Nov): PAD
     /// BANK picks which 16 tracks the pads mute, as it picks kits (SHIFT or
     /// a second press for E-H), and the kit playing stays. Out of TRACK
@@ -7033,7 +7569,7 @@ mod tests {
         assert_eq!(app.map.browse, Some(button::BROWSE));
         assert_eq!(app.map.main, Some(button::MAIN));
         assert_eq!(app.map.data_push, Some(button::DATA_PUSH));
-        for section in [PrefsSection::Main, PrefsSection::Touch] {
+        for section in [PrefsSection::Main, PrefsSection::Setup, PrefsSection::Touch] {
             app.open_tab(View::Prefs);
             app.prefs_section = section;
             assert!(press(&mut app, button::BROWSE).contains(&Effect::Show(View::Browser)));
@@ -7126,6 +7662,42 @@ mod tests {
         assert!(shifted(&mut app, 62)
             .iter()
             .any(|e| matches!(e, Effect::Tell(n) if n.contains("In key, C Major"))));
+    }
+
+    /// Make and Perform (sequencer S4, Jay's decision 5): SHIFT + MAIN
+    /// switches, as the top bar's chip does; in Perform MAIN goes to
+    /// Arrange's Clips grid and then steps its views, and the arm is pinned
+    /// until Make again.
+    #[test]
+    fn shift_main_switches_make_and_perform_and_perform_moves_main_home() {
+        const SHIFT: u8 = button::SHIFT;
+        let mut app = ready();
+        app.open_tab(View::Sample);
+        assert!(press(&mut app, button::MAIN).contains(&Effect::Show(View::Play)));
+        // SHIFT + MAIN asks for Perform; the project says so next period.
+        let fx = held(&mut app, SHIFT, |a| press(a, button::MAIN));
+        assert_eq!(fx, [Effect::Time(TimeAction::Perform(true))]);
+        assert!(!app.rec.pinned);
+        assert!(app.set_perform(true));
+        assert!(app.rec.pinned, "Perform pins the arm");
+        assert!(!app.set_perform(true), "no change, nothing to show");
+        // MAIN: Arrange's Clips grid, then the next of its views.
+        let fx = press(&mut app, button::MAIN);
+        assert!(fx.contains(&Effect::Show(View::Arrange)));
+        assert!(fx.contains(&Effect::ArrangeView(Some(false))));
+        assert_eq!(app.view(), View::Arrange);
+        assert_eq!(press(&mut app, button::MAIN), [Effect::ArrangeView(None)]);
+        // A hand-made unpin stays until the mode changes again.
+        app.rec.pinned = false;
+        assert!(!app.set_perform(true));
+        assert!(!app.rec.pinned);
+        // SHIFT + MAIN again: Make, the arm follows the page, MAIN is Play.
+        let fx = held(&mut app, SHIFT, |a| press(a, button::MAIN));
+        assert_eq!(fx, [Effect::Time(TimeAction::Perform(false))]);
+        app.rec.pinned = true;
+        assert!(app.set_perform(false));
+        assert!(!app.rec.pinned);
+        assert!(press(&mut app, button::MAIN).contains(&Effect::Show(View::Play)));
     }
 
     /// STEP SEQ on the synth (the sequencer design's "Synth tracks"): the

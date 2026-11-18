@@ -13,6 +13,15 @@
 //! the tick its last one ends isn't cut short. A note still on at the end
 //! gets its note-off there. Every event has its status byte (no running
 //! status): a few bytes more, read by everything.
+//!
+//! [`read`] is the other way, for MIDI file import: a type 0, 1 or 2 file
+//! as another sequencer, a DAW or the MPC's own MIDI export writes it,
+//! made an [`Smf`] at [`PPQ`] ticks a quarter whatever the file's timing
+//! ([`Timing`]), with what it left out counted ([`Reading`]). It reads
+//! only, from bytes the caller has (no files opened), is bounded
+//! ([`MAX_FILE_BYTES`], [`MAX_FILE_TRACKS`], [`MAX_FILE_EVENTS`]) and
+//! never panics on what it is given: a file it can't read is an
+//! [`SmfError`] that says why.
 
 use crate::msg::Msg;
 
@@ -264,6 +273,400 @@ impl NoteLog {
     }
 }
 
+/// The biggest file [`read`] reads: 4 MiB, far more than any song's notes.
+pub const MAX_FILE_BYTES: usize = 4 << 20;
+/// Track chunks [`read`] reads; any more are counted
+/// ([`Reading::tracks_left`]).
+pub const MAX_FILE_TRACKS: usize = 256;
+/// Channel events [`read`] keeps from a file, all its tracks together.
+pub const MAX_FILE_EVENTS: usize = 1 << 20;
+/// The tempo a file with frame timing ([`Timing::Frames`]) is read at, as
+/// the format leaves it none.
+pub const FRAMES_BPM: f64 = 120.0;
+
+/// A file's timing, from its header.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Timing {
+    /// Ticks a quarter note (most files: 96, 480, 960).
+    Quarter(u16),
+    /// Frames a second (24, 25, 29.97 or 30) and ticks a frame: clock
+    /// time, read at [`FRAMES_BPM`].
+    Frames { fps: f64, ticks: u8 },
+}
+
+/// Why a file couldn't be read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SmfError {
+    /// It doesn't start with `MThd`.
+    NotMidi,
+    /// Past [`MAX_FILE_BYTES`].
+    TooBig(usize),
+    /// A header shorter than the standard's 6 bytes, a format past 2, or
+    /// no ticks.
+    BadHeader,
+    /// Past [`MAX_FILE_EVENTS`].
+    TooManyEvents,
+    /// Something the format doesn't allow, in track `track` (from 1) at
+    /// byte `at` of the file.
+    Bad {
+        track: usize,
+        at: usize,
+        what: &'static str,
+    },
+    /// No track chunk at all.
+    NoTracks,
+}
+
+impl std::fmt::Display for SmfError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SmfError::NotMidi => write!(f, "not a MIDI file (it doesn't start with MThd)"),
+            SmfError::TooBig(n) => write!(
+                f,
+                "too big for a MIDI file: {n} bytes, and {} MiB is the most read",
+                MAX_FILE_BYTES >> 20
+            ),
+            SmfError::BadHeader => write!(f, "its header isn't one the standard allows"),
+            SmfError::TooManyEvents => write!(
+                f,
+                "more than {MAX_FILE_EVENTS} notes and other messages: too many to read"
+            ),
+            SmfError::Bad { track, at, what } => {
+                write!(f, "track {track}, byte {at}: {what}")
+            }
+            SmfError::NoTracks => write!(f, "it has no tracks"),
+        }
+    }
+}
+
+/// What [`read`] found: the file as an [`Smf`] at [`PPQ`], and what it
+/// left out.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reading {
+    pub smf: Smf,
+    /// The header's format: 0 (one track, every channel), 1 (tracks played
+    /// together) or 2 (tracks that are patterns of their own).
+    pub format: u16,
+    pub timing: Timing,
+    /// SysEx messages skipped.
+    pub sysex: usize,
+    /// Metas skipped: lyrics, markers, key signatures and the like (track
+    /// names, tempos, meters and ends are read).
+    pub metas: usize,
+    /// Track chunks past [`MAX_FILE_TRACKS`], not read.
+    pub tracks_left: usize,
+    /// The file ends inside a track (cut short when it was copied, say):
+    /// that track is read up to there.
+    pub cut: bool,
+}
+
+/// Bytes of one track chunk, with where they are in the file for errors.
+struct Body<'a> {
+    b: &'a [u8],
+    i: usize,
+    /// The chunk's first byte in the file.
+    base: usize,
+    track: usize,
+}
+
+impl Body<'_> {
+    /// At the last byte read: the one that is wrong.
+    fn bad(&self, what: &'static str) -> SmfError {
+        SmfError::Bad {
+            track: self.track,
+            at: self.base + self.i.saturating_sub(1),
+            what,
+        }
+    }
+
+    fn byte(&mut self) -> Option<u8> {
+        let c = *self.b.get(self.i)?;
+        self.i += 1;
+        Some(c)
+    }
+
+    /// A variable-length quantity: at most 4 bytes, as the standard says.
+    /// None at the end of the bytes.
+    fn vlq(&mut self) -> Result<Option<u64>, SmfError> {
+        let mut v = 0u64;
+        for _ in 0..4 {
+            let Some(c) = self.byte() else {
+                return Ok(None);
+            };
+            v = (v << 7) | u64::from(c & 0x7F);
+            if c & 0x80 == 0 {
+                return Ok(Some(v));
+            }
+        }
+        Err(self.bad("a number longer than the format's 4 bytes"))
+    }
+
+    /// `n` bytes, or None if the chunk ends first.
+    fn take(&mut self, n: usize) -> Option<&[u8]> {
+        let end = self.i.checked_add(n)?;
+        let s = self.b.get(self.i..end)?;
+        self.i = end;
+        Some(s)
+    }
+}
+
+/// Ticks of the file to [`PPQ`] ticks: exact for whole multiples, else
+/// rounded to the nearest.
+fn to_ppq(tick: u64, timing: Timing) -> u64 {
+    match timing {
+        Timing::Quarter(q) => {
+            let q = u128::from(q.max(1));
+            ((u128::from(tick) * u128::from(PPQ) + q / 2) / q) as u64
+        }
+        Timing::Frames { fps, ticks } => {
+            let secs = tick as f64 / (fps * f64::from(ticks.max(1)));
+            (secs * FRAMES_BPM / 60.0 * f64::from(PPQ)).round() as u64
+        }
+    }
+}
+
+/// One track chunk's events, at the file's ticks, onto `out`.
+#[derive(Default)]
+struct Track {
+    name: Option<String>,
+    events: Vec<(u64, Msg)>,
+    tempos: Vec<(u64, f64)>,
+    meters: Vec<(u64, u8, u8)>,
+    end: u64,
+}
+
+fn text(data: &[u8]) -> String {
+    String::from_utf8_lossy(data).trim().to_string()
+}
+
+fn read_track(
+    body: &mut Body,
+    count: &mut usize,
+    sysex: &mut usize,
+    metas: &mut usize,
+) -> Result<(Track, bool), SmfError> {
+    let mut t = Track::default();
+    let mut tick = 0u64;
+    let mut running: Option<u8> = None;
+    loop {
+        let Some(delta) = body.vlq()? else {
+            // The bytes end without an end of track: lenient, as most
+            // readers are, but said if it is in the middle of an event.
+            return Ok((t, false));
+        };
+        tick += delta;
+        t.end = t.end.max(tick);
+        let Some(first) = body.byte() else {
+            return Ok((t, true));
+        };
+        match first {
+            0xFF => {
+                let Some(kind) = body.byte() else {
+                    return Ok((t, true));
+                };
+                let Some(len) = body.vlq()? else {
+                    return Ok((t, true));
+                };
+                let Some(data) = body.take(len as usize) else {
+                    return Ok((t, true));
+                };
+                match (kind, data.len()) {
+                    (0x2F, _) => return Ok((t, false)),
+                    (0x03, _) if t.name.is_none() => t.name = Some(text(data)),
+                    (0x51, 3) => {
+                        let us = u32::from_be_bytes([0, data[0], data[1], data[2]]);
+                        if us > 0 {
+                            t.tempos.push((tick, 60_000_000.0 / f64::from(us)));
+                        }
+                    }
+                    (0x58, 4..) => {
+                        let den = 1u16 << data[1].min(6);
+                        if data[0] > 0 {
+                            t.meters.push((tick, data[0], den as u8));
+                        }
+                    }
+                    _ => *metas += 1,
+                }
+            }
+            0xF0 | 0xF7 => {
+                let Some(len) = body.vlq()? else {
+                    return Ok((t, true));
+                };
+                if body.take(len as usize).is_none() {
+                    return Ok((t, true));
+                }
+                *sysex += 1;
+            }
+            0xF1..=0xFE => return Err(body.bad("a system message, which a file can't hold")),
+            _ => {
+                let (status, d1) = if first & 0x80 != 0 {
+                    running = Some(first);
+                    let Some(d1) = body.byte() else {
+                        return Ok((t, true));
+                    };
+                    (first, d1)
+                } else {
+                    let Some(s) = running else {
+                        return Err(body.bad("a data byte with no message before it"));
+                    };
+                    (s, first)
+                };
+                let d2 = match status & 0xF0 {
+                    0xC0 | 0xD0 => 0,
+                    _ => {
+                        let Some(d2) = body.byte() else {
+                            return Ok((t, true));
+                        };
+                        d2
+                    }
+                };
+                if d1 & 0x80 != 0 || d2 & 0x80 != 0 {
+                    return Err(body.bad("a message cut short by another"));
+                }
+                if *count >= MAX_FILE_EVENTS {
+                    return Err(SmfError::TooManyEvents);
+                }
+                if let Some(m) = Msg::from_bytes(status, d1, d2) {
+                    t.events.push((tick, m));
+                    *count += 1;
+                }
+            }
+        }
+    }
+}
+
+/// A Standard MIDI File's bytes as an [`Smf`] at [`PPQ`] (see the module
+/// docs). The song's name is the first track's name in a type 1 file whose
+/// first track plays nothing (a conductor track, as most have), or the
+/// only track's in a type 0; each track is named by its first name, or
+/// none. Tempos and meters from every track are the song's, in order; a
+/// file with none plays at 120 BPM in 4/4, as the standard says. The end is
+/// the last end of track or event, whichever is later. Notes and other
+/// channel messages keep their order within a tick.
+pub fn read(bytes: &[u8]) -> Result<Reading, SmfError> {
+    if bytes.len() > MAX_FILE_BYTES {
+        return Err(SmfError::TooBig(bytes.len()));
+    }
+    if bytes.get(0..4) != Some(&b"MThd"[..]) {
+        return Err(SmfError::NotMidi);
+    }
+    let be16 = |at: usize| {
+        bytes
+            .get(at..at + 2)
+            .map(|b| u16::from_be_bytes([b[0], b[1]]))
+    };
+    let be32 = |at: usize| {
+        bytes
+            .get(at..at + 4)
+            .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize)
+    };
+    let head = be32(4).ok_or(SmfError::BadHeader)?;
+    let (Some(format), Some(_), Some(div)) = (be16(8), be16(10), be16(12)) else {
+        return Err(SmfError::BadHeader);
+    };
+    if head < 6 || format > 2 || div == 0 {
+        return Err(SmfError::BadHeader);
+    }
+    let timing = if div & 0x8000 == 0 {
+        Timing::Quarter(div)
+    } else {
+        let fps = match (div >> 8) as u8 as i8 {
+            -24 => 24.0,
+            -25 => 25.0,
+            -29 => 30_000.0 / 1001.0,
+            -30 => 30.0,
+            _ => return Err(SmfError::BadHeader),
+        };
+        let ticks = (div & 0xFF) as u8;
+        if ticks == 0 {
+            return Err(SmfError::BadHeader);
+        }
+        Timing::Frames { fps, ticks }
+    };
+    let mut at = 8usize.checked_add(head).ok_or(SmfError::BadHeader)?;
+    let (mut count, mut sysex, mut metas) = (0usize, 0usize, 0usize);
+    let mut tracks: Vec<Track> = Vec::new();
+    let (mut left, mut cut) = (0usize, false);
+    while at + 8 <= bytes.len() {
+        let id = &bytes[at..at + 4];
+        let len = be32(at + 4).unwrap_or(0);
+        let start = at + 8;
+        let end = start.saturating_add(len);
+        at = end;
+        if id != b"MTrk" {
+            // A chunk of another kind: the standard says to skip it.
+            continue;
+        }
+        if tracks.len() >= MAX_FILE_TRACKS {
+            left += 1;
+            continue;
+        }
+        let short = end > bytes.len();
+        let mut body = Body {
+            b: &bytes[start..end.min(bytes.len())],
+            i: 0,
+            base: start,
+            track: tracks.len() + 1,
+        };
+        let (t, mid) = read_track(&mut body, &mut count, &mut sysex, &mut metas)?;
+        cut |= short || mid;
+        tracks.push(t);
+    }
+    if tracks.is_empty() {
+        return Err(SmfError::NoTracks);
+    }
+    let ppq = |t: u64| to_ppq(t, timing);
+    let mut tempos: Vec<(u64, f64)> = Vec::new();
+    let mut meters: Vec<(u64, u8, u8)> = Vec::new();
+    for t in &tracks {
+        tempos.extend(t.tempos.iter().map(|&(k, b)| (ppq(k), b)));
+        meters.extend(t.meters.iter().map(|&(k, n, d)| (ppq(k), n, d)));
+    }
+    if let Timing::Frames { .. } = timing {
+        // Clock time has one tempo: the one it was read at.
+        tempos.clear();
+        tempos.push((0, FRAMES_BPM));
+    }
+    tempos.sort_by_key(|t| t.0);
+    meters.sort_by_key(|m| m.0);
+    let end = tracks.iter().map(|t| ppq(t.end)).max().unwrap_or(0);
+    // A type 1 file's first track names the song when it plays nothing.
+    let conductor = format == 1 && tracks.len() > 1 && tracks[0].events.is_empty();
+    let name = if format == 0 || conductor {
+        tracks[0].name.clone().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let skip = usize::from(conductor);
+    let tracks = tracks
+        .into_iter()
+        .skip(skip)
+        .map(|t| SmfTrack {
+            name: if format == 0 {
+                String::new()
+            } else {
+                t.name.unwrap_or_default()
+            },
+            events: t.events.into_iter().map(|(k, m)| (ppq(k), m)).collect(),
+        })
+        .collect();
+    Ok(Reading {
+        smf: Smf {
+            name,
+            tempos,
+            meters,
+            tracks,
+            end,
+        },
+        format,
+        timing,
+        sysex,
+        metas,
+        tracks_left: left,
+        cut,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,5 +867,292 @@ mod tests {
             String::from_utf8(tracks[0][0].1[4..].to_vec()).unwrap(),
             long
         );
+    }
+
+    /// A file from its header fields and track bodies.
+    fn file(format: u16, div: u16, tracks: &[&[u8]]) -> Vec<u8> {
+        let mut b = b"MThd".to_vec();
+        b.extend_from_slice(&6u32.to_be_bytes());
+        b.extend_from_slice(&format.to_be_bytes());
+        b.extend_from_slice(&(tracks.len() as u16).to_be_bytes());
+        b.extend_from_slice(&div.to_be_bytes());
+        for t in tracks {
+            chunk(&mut b, t);
+        }
+        b
+    }
+
+    #[test]
+    fn what_the_export_writes_reads_back_the_same() {
+        let smf = Smf {
+            name: "Night drive".into(),
+            tempos: vec![(0, 92.0), (3840, 140.0)],
+            meters: vec![(0, 7, 8)],
+            tracks: vec![
+                SmfTrack {
+                    name: "Drums".into(),
+                    events: vec![(0, on(9, 36, 110)), (240, off(9, 36))],
+                },
+                SmfTrack {
+                    name: "Keys".into(),
+                    events: vec![
+                        (960, on(0, 60, 90)),
+                        (1000, Msg::PitchBend { ch: 0, value: 512 }),
+                        (1920, off(0, 60)),
+                    ],
+                },
+            ],
+            end: 7680,
+        };
+        let r = super::read(&smf.bytes()).unwrap();
+        assert_eq!((r.format, r.timing), (1, Timing::Quarter(PPQ)));
+        assert_eq!(r.smf.name, "Night drive");
+        assert_eq!(r.smf.meters, smf.meters);
+        assert_eq!(r.smf.end, 7680);
+        assert_eq!(r.smf.tracks, smf.tracks);
+        // Tempos go through whole microseconds a quarter.
+        assert_eq!(r.smf.tempos.len(), 2);
+        assert!((r.smf.tempos[0].1 - 92.0).abs() < 1e-3);
+        assert_eq!(r.smf.tempos[1].0, 3840);
+        assert_eq!((r.sysex, r.metas, r.tracks_left, r.cut), (0, 0, 0, false));
+    }
+
+    #[test]
+    fn a_type_0_file_at_96_ticks_with_running_status_is_read_at_960() {
+        let body: Vec<u8> = [
+            &[0x00, 0xFF, 0x03, 4][..],
+            b"Beat",
+            // A SysEx and a marker: skipped and counted.
+            &[0x00, 0xF0, 3, 0x7E, 0x09, 0xF7],
+            &[0x00, 0xFF, 0x06, 1, b'A'],
+            // Kick on channel 10, then a snare by running status.
+            &[0x00, 0x99, 36, 100],
+            &[0x18, 38, 90],
+            // Note-ons at velocity 0 end them.
+            &[0x18, 36, 0],
+            &[0x00, 38, 0],
+            // A bass note on channel 1, and a CC by running status.
+            &[0x00, 0x90, 40, 80, 0x00, 0xB0, 74, 20, 0x10, 75, 30],
+            &[0x81, 0x00, 0x80, 40, 0],
+            &[0x00, 0xFF, 0x2F, 0],
+        ]
+        .concat();
+        let r = super::read(&file(0, 96, &[&body])).unwrap();
+        assert_eq!((r.format, r.timing), (0, Timing::Quarter(96)));
+        assert_eq!(r.smf.name, "Beat");
+        assert_eq!(r.smf.tracks.len(), 1);
+        assert_eq!(r.smf.tracks[0].name, "", "type 0's name is the song's");
+        assert_eq!(
+            r.smf.tracks[0].events,
+            [
+                (0, on(9, 36, 100)),
+                (240, on(9, 38, 90)),
+                (480, off(9, 36)),
+                (480, off(9, 38)),
+                (480, on(0, 40, 80)),
+                (
+                    480,
+                    Msg::Cc {
+                        ch: 0,
+                        cc: 74,
+                        value: 20
+                    }
+                ),
+                (
+                    640,
+                    Msg::Cc {
+                        ch: 0,
+                        cc: 75,
+                        value: 30
+                    }
+                ),
+                (
+                    1920,
+                    Msg::NoteOff {
+                        ch: 0,
+                        note: 40,
+                        vel: 0
+                    }
+                ),
+            ]
+        );
+        assert_eq!(r.smf.end, 1920);
+        assert_eq!((r.sysex, r.metas), (1, 1));
+        // No tempo or meter: the caller takes the standard's 120 and 4/4.
+        assert!(r.smf.tempos.is_empty() && r.smf.meters.is_empty());
+    }
+
+    #[test]
+    fn odd_ticks_round_to_the_nearest_and_frames_are_read_at_120() {
+        assert_eq!(to_ppq(1, Timing::Quarter(480)), 2);
+        assert_eq!(to_ppq(1, Timing::Quarter(1920)), 1, "a half rounds up");
+        assert_eq!(to_ppq(1, Timing::Quarter(3840)), 0);
+        assert_eq!(
+            to_ppq(u64::from(u32::MAX), Timing::Quarter(1)),
+            u64::from(u32::MAX) * 960
+        );
+        // 25 frames of 40 ticks: 1000 ticks a second, two quarters at 120.
+        let body = [
+            0x00, 0x90, 60, 100, 0x87, 0x68, 0x80, 60, 0, 0x00, 0xFF, 0x2F, 0,
+        ];
+        let div = (((-25i8) as u8 as u16) << 8) | 40;
+        let r = super::read(&file(0, div, &[&body])).unwrap();
+        assert_eq!(
+            r.timing,
+            Timing::Frames {
+                fps: 25.0,
+                ticks: 40
+            }
+        );
+        assert_eq!(r.smf.tracks[0].events[1].0, 1920);
+        assert_eq!(r.smf.tempos, [(0, FRAMES_BPM)]);
+    }
+
+    #[test]
+    fn a_conductor_track_names_the_song_and_unknown_chunks_are_skipped() {
+        let conductor: Vec<u8> = [
+            &[0x00, 0xFF, 0x03, 3][..],
+            b"Set",
+            &[0x00, 0xFF, 0x58, 4, 3, 2, 24, 8],
+            &[0x00, 0xFF, 0x51, 3, 0x09, 0x27, 0xC0],
+            &[0x00, 0xFF, 0x2F, 0],
+        ]
+        .concat();
+        let lead: Vec<u8> = [
+            &[0x00, 0xFF, 0x03, 4][..],
+            b"Lead",
+            &[0x00, 0xFF, 0x03, 5],
+            b"Other",
+            &[
+                0x00, 0x92, 72, 64, 0x83, 0x60, 0x82, 72, 0, 0x00, 0xFF, 0x2F, 0,
+            ],
+        ]
+        .concat();
+        let mut b = file(1, 480, &[&conductor]);
+        // A header longer than 6 bytes, and a chunk of another kind.
+        b[7] = 8;
+        b.splice(14..14, [0, 0]);
+        b.extend_from_slice(b"XFIH\0\0\0\x02ab");
+        chunk(&mut b, &lead);
+        let r = super::read(&b).unwrap();
+        assert_eq!(r.smf.name, "Set");
+        assert_eq!(r.smf.meters, [(0, 3, 4)]);
+        assert_eq!(r.smf.tempos, [(0, 100.0)]);
+        assert_eq!(
+            r.smf.tracks.len(),
+            1,
+            "the conductor is the song's, not a track"
+        );
+        assert_eq!(r.smf.tracks[0].name, "Lead", "a track's first name");
+        assert_eq!(
+            r.smf.tracks[0].events[1],
+            (
+                960,
+                Msg::NoteOff {
+                    ch: 2,
+                    note: 72,
+                    vel: 0
+                }
+            )
+        );
+        assert_eq!(r.metas, 1, "the second name");
+    }
+
+    #[test]
+    fn files_it_cant_read_say_why() {
+        assert_eq!(super::read(b"RIFF....WAVE"), Err(SmfError::NotMidi));
+        assert_eq!(
+            super::read(b"MThd\0\0\0\x06\0\x03\0\x01\x01\xE0"),
+            Err(SmfError::BadHeader)
+        );
+        assert_eq!(
+            super::read(b"MThd\0\0\0\x06\0\x01\0\x01\0\0"),
+            Err(SmfError::BadHeader)
+        );
+        assert_eq!(
+            super::read(b"MThd\0\0\0\x06\0\x01\0\x00\x01\xE0"),
+            Err(SmfError::NoTracks)
+        );
+        let big = vec![0u8; MAX_FILE_BYTES + 1];
+        assert_eq!(super::read(&big), Err(SmfError::TooBig(MAX_FILE_BYTES + 1)));
+        let e = super::read(&file(0, 96, &[&[0x00, 40, 100]])).unwrap_err();
+        assert_eq!(
+            e,
+            SmfError::Bad {
+                track: 1,
+                at: 23,
+                what: "a data byte with no message before it"
+            }
+        );
+        assert_eq!(
+            e.to_string(),
+            "track 1, byte 23: a data byte with no message before it"
+        );
+        let e = super::read(&file(0, 96, &[&[0x00, 0xF2, 0, 0]])).unwrap_err();
+        assert!(e.to_string().contains("system message"), "{e}");
+        let e = super::read(&file(0, 96, &[&[0x80, 0x80, 0x80, 0x80, 0x00]])).unwrap_err();
+        assert!(e.to_string().contains("4 bytes"), "{e}");
+        let e = super::read(&file(0, 96, &[&[0x00, 0x90, 60, 0x90, 61, 1]])).unwrap_err();
+        assert!(e.to_string().contains("cut short"), "{e}");
+    }
+
+    #[test]
+    fn a_file_cut_short_keeps_what_came_before() {
+        let body = [0x00, 0x90, 60, 100, 0x60, 0x80, 60, 0, 0x00, 0xFF, 0x2F, 0];
+        let whole = file(0, 96, &[&body]);
+        let r = super::read(&whole[..whole.len() - 6]).unwrap();
+        assert!(r.cut);
+        assert_eq!(r.smf.tracks[0].events, [(0, on(0, 60, 100))]);
+        // A chunk that holds whole events but no end of track: read, and
+        // not cut short.
+        let r = super::read(&file(0, 96, &[&body[..8]])).unwrap();
+        assert!(!r.cut);
+        assert_eq!(r.smf.tracks[0].events.len(), 2);
+        assert_eq!(r.smf.end, 960);
+    }
+
+    #[test]
+    fn no_bytes_make_it_panic() {
+        // Every prefix and every single byte changed of a real file, and
+        // pseudo-random bytes after a good header.
+        let smf = Smf {
+            name: "x".into(),
+            tempos: vec![(0, 120.0)],
+            meters: vec![(0, 4, 4)],
+            tracks: vec![SmfTrack {
+                name: "t".into(),
+                events: vec![
+                    (0, on(0, 60, 100)),
+                    (10, Msg::PitchBend { ch: 1, value: -3 }),
+                    (20, Msg::Program { ch: 2, program: 5 }),
+                    (30, off(0, 60)),
+                ],
+            }],
+            end: 40,
+        };
+        let b = smf.bytes();
+        for n in 0..b.len() {
+            let _ = super::read(&b[..n]);
+        }
+        for i in 0..b.len() {
+            for v in [0x00, 0x7F, 0x80, 0xF0, 0xFF] {
+                let mut c = b.clone();
+                c[i] = v;
+                let _ = super::read(&c);
+            }
+        }
+        let mut x = 0x2545_F491u32;
+        for _ in 0..2000 {
+            let mut c = file(1, 96, &[]);
+            let mut t = Vec::new();
+            for _ in 0..64 {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                t.push(x as u8);
+            }
+            chunk(&mut c, &t);
+            let _ = super::read(&c);
+        }
     }
 }

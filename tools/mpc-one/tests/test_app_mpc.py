@@ -1286,6 +1286,11 @@ class StaticTests(unittest.TestCase):
                     # FILE on partition 4 (backup/<folder>/mmcblk0.img, made by the stick's root service), opened
                     # read-only with File::open; the pad player never names an eMMC device.
                     ("mpfree-app/setup.rs", 'folder.join("mmcblk0.img")'),
+                    # Akai's kits without a backup (setup.rs, the owner's pick of 17 Nov 2026): the one eMMC device
+                    # the pad player ever names, the content partition. The stick's root service makes it readable
+                    # by the pad player's group, 0440, only while its read-only window is open (setup-backup.sh,
+                    # step 3c); the pad player opens it with File::open (read-only), checked below.
+                    ("mpfree-app/setup.rs", 'pub const CONTENT_DEVICE: &str = "/dev/mmcblk0p7";'),
                     # The power card's request (power.rs): one word, `poweroff` or `restart`, written to
                     # power-request.new beside the file given with --power-request (start-app.sh gives
                     # /run/mpfree-app/power-request, in RAM), synced, then renamed over it for the stick's root
@@ -1344,6 +1349,12 @@ class StaticTests(unittest.TestCase):
             # setup.rs: the first start's request for the eMMC backup, an empty file made new in /run/mpfree-app
             # (RAM), which the stick's mpfree-setup-backup.path watches (Paths::on_the_stick, with REPORT_DIR)
             "match OpenOptions::new().write(true).create_new(true).mode(0o644).open(&paths.request) {",
+            # setup.rs, Akai's kits without a backup: the request for the read-only window, the counter the pad
+            # player moves while it reads, and its word that it is done, each made new in /run/mpfree-app (RAM);
+            # the stick's root service removes them
+            "match OpenOptions::new().write(true).create_new(true).mode(0o644).open(&paths.content_request) {",
+            "let alive = OpenOptions::new().write(true).create_new(true).mode(0o644).open(&paths.content_alive);",
+            "let _ = OpenOptions::new().write(true).create_new(true).mode(0o644).open(&self.done);",
             # imagecopy.rs: `mpfree copy-image FROM TO`, run only by the stick's root service setup-backup.sh
             # (never by the pad player). TO is the backup's image file on partition 4, made new: create_new
             # neither overwrites a file nor follows a link. FROM, the eMMC disk, is opened with File::open
@@ -1364,6 +1375,16 @@ class StaticTests(unittest.TestCase):
                                  "mpfree-app/setup.rs", "mpfree-app/imagecopy.rs", "mpfree-store/lib.rs",
                                  "mpfree-library/lib.rs", "mpfree-library/project.rs", "mpfree-library/kit.rs",
                                  "mpfree-mpcstore/install.rs"}, files)
+        # The eMMC's content partition is only ever opened read-only, through its Paths field.
+        setup = dict(self.program_sources())["mpfree-app/setup.rs"]
+        code_lines = [ln.strip() for ln in setup.splitlines() if not ln.strip().startswith("//")]
+        self.assertEqual([ln for ln in code_lines if "CONTENT_DEVICE" in ln],
+                         ['pub const CONTENT_DEVICE: &str = "/dev/mmcblk0p7";',
+                          "content_device: PathBuf::from(CONTENT_DEVICE),"])
+        self.assertEqual(setup.count("File::open(&paths.content_device)"), 1)
+        for line in setup.splitlines():
+            if "content_device" in line:
+                self.assertNotIn("OpenOptions", line, line.strip())
         # The plugin store's folder is files/plugins/ beside the library, in the --data folder.
         gui = dict(self.program_sources())["mpfree-app/gui.rs"]
         self.assertEqual(gui.count("self.plugin_page.set_dir("), 1)
