@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-fx/src/modfx.rs
-checked: 2026-11-17 44eb341
+checked: 2026-11-18 b4fe3b81
 -->
 # Modulation: Chorus, Flanger and Phaser
 
