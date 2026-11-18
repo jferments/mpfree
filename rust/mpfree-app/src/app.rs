@@ -1225,6 +1225,9 @@ pub struct App {
     levels_open: bool,
     /// 16 Levels are on (the screen says, with the panel).
     levels_on: bool,
+    /// 16 Levels' kind is Transpose: the pads move the armed track
+    /// (sequencer S4) instead of playing.
+    levels_transpose: bool,
     /// STEP SEQ: the pads as steps (`app/step_pads.rs`).
     step_seq: step_pads::StepSeq,
     view: View,
@@ -1450,6 +1453,7 @@ impl App {
             track_count: 0,
             levels_open: false,
             levels_on: false,
+            levels_transpose: false,
             step_seq: step_pads::StepSeq::default(),
             view: View::Play,
             back: View::Play,
@@ -1889,6 +1893,13 @@ impl App {
     /// held (a pad solos its track).
     pub fn pads_mute(&self) -> bool {
         self.mute_keys != MuteKeys::Off || self.mute_hold.is_some()
+    }
+
+    /// The pads transpose the armed track (16 Levels' Transpose kind,
+    /// sequencer S4): pad 9 plays as written, each pad either side one
+    /// step more, -8 to +7.
+    pub fn pads_transpose(&self) -> bool {
+        self.levels_on && self.levels_transpose
     }
 
     /// A pad tapped as a mute key: what it does. In Make a mute acts at
@@ -2387,10 +2398,12 @@ impl App {
             vec![Effect::ProgEdit]
         } else if is(m.q_link) {
             // Q-LINK: the column's next bank (Macros 1-4, 5-8, the page's
-            // own knobs), where the column has macro banks (layout spec 4b).
+            // own knobs), where the column has macro banks (layout spec 4b);
+            // on the Looper tab, loops 1-4's levels, 5-8's, the picked
+            // loop's knobs.
             if matches!(
                 self.view,
-                View::Play | View::Arrange | View::Chain | View::Macros
+                View::Play | View::Arrange | View::Chain | View::Macros | View::Looper
             ) {
                 vec![Effect::QLinkBank]
             } else {
@@ -2460,11 +2473,13 @@ impl App {
         Some(fx)
     }
 
-    /// The screen turned 16 Levels on or off (`on`) and shows its panel or
-    /// not (`open`): 16 LEVEL lights while they are on, and the wheel
-    /// turns the panel's kind while it shows.
-    pub fn levels_shown(&mut self, on: bool, open: bool) -> Vec<Effect> {
+    /// The screen turned 16 Levels on or off (`on`), shows its panel or
+    /// not (`open`) and picked Transpose or a kit's levels (`transpose`):
+    /// 16 LEVEL lights while they are on, and the wheel turns the panel's
+    /// kind while it shows.
+    pub fn levels_shown(&mut self, on: bool, open: bool, transpose: bool) -> Vec<Effect> {
         self.levels_open = open;
+        self.levels_transpose = on && transpose;
         let mut fx = Vec::new();
         if on && !self.levels_on {
             // One pad mode at a time: STEP SEQ and TRACK MUTE give the
@@ -3158,6 +3173,22 @@ impl App {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// The Looper tab's Length: the picked loop's first pass (None: free).
+    /// The setting follows, so MENU's First pass length and the next start
+    /// agree with the last choice.
+    pub fn set_loop_bars(&mut self, bars: Option<u32>) -> Vec<Effect> {
+        self.save_dirty = true;
+        self.settings.loop_bars = bars;
+        let mut fx = vec![
+            Effect::Looper(LoopAction::Command(LoopCommand::SetBars(bars))),
+            Effect::Settings(self.settings.clone()),
+        ];
+        if self.in_menu() {
+            fx.push(self.menu_view());
+        }
+        fx
     }
 
     /// The line input could not open (or closed itself): the row and the
@@ -7650,14 +7681,27 @@ mod tests {
         assert!(fx.contains(&Effect::Show(View::Play)), "{fx:?}");
         assert_eq!(fx.last(), Some(&Effect::SixteenLevels));
         assert_eq!(press(&mut app, 62), [Effect::SixteenLevels]);
-        assert_eq!(app.levels_shown(true, true), [Effect::Light(62, LIGHT_ON)]);
+        assert_eq!(
+            app.levels_shown(true, true, false),
+            [Effect::Light(62, LIGHT_ON)]
+        );
         assert_eq!(app.wheel(-1), [Effect::LevelsWheel(-1)]);
-        assert_eq!(app.levels_shown(true, false), [Effect::Light(62, LIGHT_ON)]);
+        assert_eq!(
+            app.levels_shown(true, false, false),
+            [Effect::Light(62, LIGHT_ON)]
+        );
         assert!(!app.wheel(1).contains(&Effect::LevelsWheel(1)));
         assert_eq!(
-            app.levels_shown(false, false),
+            app.levels_shown(false, false, false),
             [Effect::Light(62, LIGHT_OFF)]
         );
+        // Transpose (sequencer S4): the pads move the armed track while
+        // 16 Levels are on with that kind.
+        assert!(!app.pads_transpose());
+        app.levels_shown(true, true, true);
+        assert!(app.pads_transpose());
+        app.levels_shown(false, false, true);
+        assert!(!app.pads_transpose());
         // SHIFT + 16 LEVEL: Chromatic | In key (no scale yet: Major).
         assert!(shifted(&mut app, 62)
             .iter()
@@ -7898,15 +7942,15 @@ mod tests {
         press(&mut app, TRACK_MUTE);
         press(&mut app, TRACK_MUTE);
         click(&mut app, STEP_SEQ);
-        let fx = app.levels_shown(true, true);
+        let fx = app.levels_shown(true, true, false);
         assert!(fx.contains(&Effect::Light(STEP_SEQ, LIGHT_OFF)));
         assert!(!app.pads_are_steps());
         assert!(click(&mut app, STEP_SEQ).contains(&Effect::SixteenLevels));
-        app.levels_shown(false, false);
+        app.levels_shown(false, false, false);
         click(&mut app, STEP_SEQ);
-        app.levels_shown(true, true);
+        app.levels_shown(true, true, false);
         assert!(press(&mut app, TRACK_MUTE).contains(&Effect::SixteenLevels));
-        app.levels_shown(false, false);
+        app.levels_shown(false, false, false);
         press(&mut app, TRACK_MUTE);
         click(&mut app, STEP_SEQ);
         // The chip, or STEP SEQ again: the pads play.

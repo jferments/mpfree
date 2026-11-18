@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looping.rs rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/play_page.rs
-checked: 2026-11-16 873e19d
+checked: 2026-11-17 3a1575d
 -->
 
 # Your first loop
@@ -46,7 +46,7 @@ The looper can record the **INPUTS** on the back of the MPC instead: a synth, a 
 2. Press **SHIFT + MENU** to open Prefs, pick **Line input** and switch it **On**. Press **MENU** to close Prefs.
 3. The loop's heading now says it records from the line input. Record as before.
 
-The **Looper** tab has the full set of loop controls: several loops at once, each layer's level and pan, the recording settings and the input. See [Recording loops](../making-music/looping.md).
+The **Looper** tab (**SHIFT + SAMPLER**) plays the looper as an instrument: all eight loops side by side, each recorded, overdubbed or muted with one tap on its ring, and the picked loop laid out underneath with a lane per layer, its level and pan, and its recording settings. See [Recording loops](../making-music/looping.md).
 
 > [!MPC]
 > On the MPC the Looper is a separate screen with one loop, which can run free of the transport (Sync off) and start when the input passes a threshold. In MPFree loops always follow the song's tempo and bar lines, sit on the Play page next to your pattern, and can record MPFree's own pads and synth as well as the inputs. Up to eight loops can play at once.

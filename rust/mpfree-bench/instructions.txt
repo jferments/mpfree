@@ -15,8 +15,8 @@
 44291	Audio tracks: 6 playing comped takes, 2 recording
 44270	Audio tracks: 8 playing comped takes
 54516	Audio tracks: 8 streaming comped takes
-28533	Auto wah
-21968	Auto-pan
+25491	Auto wah
+21329	Auto-pan
 339781	Chain: drive, filter, delay, comp
 104245	Character (Console)
 120120	Character (Iron)
@@ -108,34 +108,34 @@
 209421	Poly Pluck, 8 voices
 33542	Poly Sub Bass, 8 voices
 374672	Poly Supersaw, 8 voices
-24644	Ring mod
+20295	Ring mod
 145867	Room reverb
 115746	Rotary
 546477	Sampler x16 held
 1515282	Sampler x16 held up
 1774420	Sampler x16 held up, 16-bit sound
 548284	Sampler x16 held, 16-bit sound
-1435093	Sampler, 20 pads
-2017919	Sampler, 20 pads + master grains
+1435285	Sampler, 20 pads
+2018120	Sampler, 20 pads + master grains
 75022	Sampler, 4 drum kits, 64 voices
 39166	Sampler, drum kit, 24 voices
 41183	Sampler, drum kit, 24 voices, 16-bit sounds
 74456	Sampler, drum kit, 64 voices
 823688	Sampler, the 16 sample pads alone
-630784	Sampler, the 4 granular pads alone
-4085282	Song: sampler, 2 synths, mixer+FX, time, looper
+630801	Sampler, the 4 granular pads alone
+4085464	Song: sampler, 2 synths, mixer+FX, time, looper
 137967	Spring reverb
 59214	Squelch Acid Line, a line
 61774	Squelch Distorted, a line
 64328	Squelch Square Acid, a line
-37255	Talk box
+30240	Talk box
 87944	Tape delay
 8130	Time with trig conditions and ratchets, 8 clips, arp
 8528	Time: transport, 8 clips, arp
 53727	Track host alone, 16 tracks, 8 events each per block
 406148	Track host, 4 Poly tracks of 4 voices
 26028	Transient shaper
-16713	Tremolo
+11340	Tremolo
 32159	Tuner
 476604	Wavetable Digital Bell, 8 voices
 479074	Wavetable FM Keys, 8 voices

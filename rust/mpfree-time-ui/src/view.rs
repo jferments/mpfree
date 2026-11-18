@@ -51,7 +51,7 @@ use mpfree_play::{anchored, ClipDrop, Cue, Launch, SongChange, Take, Takes};
 use mpfree_seq::scenes::MAX_FOLLOW_BARS;
 use mpfree_seq::{
     Clip, ClipSettings, Follow, FollowAction, LaunchGrid, Project, Quantise, SceneSettings, Source,
-    Speed, LAUNCH_GRIDS, MAX_CLIP_TICKS, MAX_TRACKS, SLOTS,
+    Speed, Transpose, LAUNCH_GRIDS, MAX_CLIP_TICKS, MAX_TRACKS, MAX_TRANSPOSE, SLOTS,
 };
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
@@ -181,9 +181,22 @@ pub fn edit_hint(lens: Lens) -> &'static str {
     }
 }
 /// The record settings, top to bottom (short, to fit the 250 px panel).
-pub const RECORD_ROWS: [&str; 8] = [
-    "Armed", "Mode", "Count-in", "Loop", "Tempo", "Pressure", "Quantise", "Launch",
+pub const RECORD_ROWS: [&str; 10] = [
+    "Armed",
+    "Mode",
+    "Count-in",
+    "Loop",
+    "Tempo",
+    "Pressure",
+    "Quantise",
+    "Launch",
+    "Transpose",
+    "Follows",
 ];
+/// The Record tab's Transpose and Follows rows (sequencer S4, live
+/// transpose), for the armed track.
+pub const TRANSPOSE_ROW: usize = 8;
+pub const FOLLOWS_ROW: usize = 9;
 /// The scene editor's rows, top to bottom.
 pub const SCENE_ROWS: [&str; 6] = ["Scene", "Follow", "After", "Chance", "Or", "Mutes"];
 /// `TimeAction::SceneSettings`'s card row for a rename.
@@ -396,6 +409,13 @@ pub struct TrackInfo {
     pub record_quantise: Option<u32>,
     /// A Loop track, and what its new loops record (`Track::kind`).
     pub loops: Option<mpfree_seq::LoopInput>,
+    /// Its live transpose and "Follows transpose" (`Track::transpose`,
+    /// `Track::follows`, sequencer S4).
+    pub transpose: Transpose,
+    pub follows: bool,
+    /// It plays notes, not a kit's pads: its own instrument, or the synth
+    /// on the pads. Only such a track transposes. The screen fills it in.
+    pub melodic: bool,
     pub slots: Vec<Option<ClipInfo>>,
 }
 
@@ -736,6 +756,9 @@ impl TimeState {
                 pressure: t.record_touch,
                 record_quantise: t.record_quantise,
                 loops: t.loops(),
+                transpose: t.transpose,
+                follows: t.follows,
+                melodic: false,
                 slots: t
                     .slots
                     .iter()
@@ -890,6 +913,20 @@ pub enum TimeAction {
     /// "Launch" on the record settings (sequencer S4): the project's launch
     /// quantise, when launches, stops and scenes land.
     LaunchGrid(LaunchGrid),
+    /// Live transpose (sequencer S4): the pads' Transpose, or the Record
+    /// tab's row. `track` (the armed one) and every melodic track that
+    /// follows transpose move to `to`, from their next note on; a note
+    /// already sounding keeps its pitch.
+    Transpose {
+        track: usize,
+        to: Transpose,
+    },
+    /// "Follows transpose" for `track`: the pads' Transpose moves it with
+    /// the armed track.
+    FollowsTranspose {
+        track: usize,
+        on: bool,
+    },
     /// Play this clip from the next bar line (see [`clips_after`]).
     Launch {
         track: usize,
@@ -1656,6 +1693,7 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                     let next = (now as i32 + d).clamp(0, LAUNCH_GRIDS.len() as i32 - 1) as usize;
                     (next != now).then_some(TimeAction::LaunchGrid(LAUNCH_GRIDS[next]))
                 }
+                TRANSPOSE_ROW | FOLLOWS_ROW => transpose_step(st, *index, d).ok(),
                 _ => None,
             }
         }
@@ -1763,6 +1801,11 @@ pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
             "Launch is at once already: a tapped clip starts on the next tick",
             "Launch is at its longest, 8 bars",
         )),
+        (RECORD, EventKind::Step { index, delta })
+            if *index == TRANSPOSE_ROW || *index == FOLLOWS_ROW =>
+        {
+            transpose_step(st, *index, *delta).err()
+        }
         (CLIP_CARD, EventKind::Step { index, delta }) => card_step(st, *index, *delta).err(),
         (SCENE_CARD, EventKind::Step { index, delta }) => scene_step(st, *index, *delta).err(),
         (SCENE_CARD, EventKind::Toggle(SCENE_MUTES_NOW)) => scene_mutes_now(st).err(),
@@ -3097,7 +3140,72 @@ pub fn record_rows(st: &TimeState) -> Vec<OptionRow> {
             },
         ),
         row(RECORD_ROWS[7], launch_name(st.launch)),
+        row(
+            RECORD_ROWS[TRANSPOSE_ROW],
+            match st.armed.and_then(|a| st.tracks.get(a)) {
+                Some(tr) if tr.melodic => transpose_text(tr.transpose),
+                _ => "–".to_string(),
+            },
+        ),
+        row(
+            RECORD_ROWS[FOLLOWS_ROW],
+            match st.armed.and_then(|a| st.tracks.get(a)) {
+                Some(tr) if tr.melodic => if tr.follows { "On" } else { "Off" }.to_string(),
+                _ => "–".to_string(),
+            },
+        ),
     ]
+}
+
+/// A track's live transpose as the screens say it: "as written", "+5 st",
+/// "-2 st", "+3 in key" (as 16 Levels' Tune says "-8 st").
+pub fn transpose_text(t: Transpose) -> String {
+    match (t.by, t.in_key) {
+        (0, _) => "as written".to_string(),
+        (n, false) => format!("{n:+} st"),
+        (n, true) => format!("{n:+} in key"),
+    }
+}
+
+/// The Record tab's Transpose (– / + a semitone, or a note of the key when
+/// the track moves in key, within two octaves) and Follows (either way
+/// flips it) for the armed track; why not when it can't.
+fn transpose_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, String> {
+    let Some(a) = st.armed else {
+        return Err("Arm a track first: transpose moves the armed track".to_string());
+    };
+    let tr = st.tracks.get(a).ok_or_else(String::new)?;
+    if !tr.melodic {
+        return Err(format!(
+            "{} plays a kit, whose notes are its pads: transpose moves a track that plays notes",
+            tr.name
+        ));
+    }
+    if index == FOLLOWS_ROW {
+        return Ok(TimeAction::FollowsTranspose {
+            track: a,
+            on: !tr.follows,
+        });
+    }
+    let now = tr.transpose;
+    let by = (i32::from(now.by) + delta.signum())
+        .clamp(-i32::from(MAX_TRANSPOSE), i32::from(MAX_TRANSPOSE)) as i8;
+    if by == now.by {
+        let unit = if now.in_key {
+            "notes of the key"
+        } else {
+            "semitones"
+        };
+        return Err(format!(
+            "Transpose is at its {}, {MAX_TRANSPOSE} {unit} {}",
+            if delta < 0 { "lowest" } else { "highest" },
+            if delta < 0 { "down" } else { "up" }
+        ));
+    }
+    Ok(TimeAction::Transpose {
+        track: a,
+        to: Transpose { by, ..now },
+    })
 }
 
 /// A launch quantise as the screens say it: "at once", "1/16", "1 bar",
@@ -5057,6 +5165,55 @@ mod tests {
             step(&st, 7, 1),
             Some(TimeAction::LaunchGrid(LaunchGrid::Bars(2)))
         );
+        // Transpose and Follows (sequencer S4, live transpose): the armed
+        // track's, a semitone (or a note of the key) a step, within two
+        // octaves; a dash and why not on a kit's track or with none armed.
+        let why = |st: &TimeState, index, delta| {
+            why_not(&ev(RECORD, EventKind::Step { index, delta }), st).unwrap_or_default()
+        };
+        assert_eq!(RECORD_ROWS[TRANSPOSE_ROW], "Transpose");
+        assert_eq!(record_rows(&st)[TRANSPOSE_ROW].value, "–");
+        assert!(why(&st, TRANSPOSE_ROW, 1).starts_with("Arm a track first"));
+        st.armed = Some(1);
+        st.tracks[1].melodic = false;
+        assert_eq!(record_rows(&st)[FOLLOWS_ROW].value, "–");
+        assert_eq!(step(&st, TRANSPOSE_ROW, 1), None);
+        assert!(why(&st, TRANSPOSE_ROW, 1).contains("plays a kit"));
+        st.tracks[1].melodic = true;
+        assert_eq!(record_rows(&st)[TRANSPOSE_ROW].value, "as written");
+        assert_eq!(
+            step(&st, TRANSPOSE_ROW, 1),
+            Some(TimeAction::Transpose {
+                track: 1,
+                to: Transpose::semitones(1)
+            })
+        );
+        st.tracks[1].transpose = Transpose {
+            by: -3,
+            in_key: true,
+        };
+        assert_eq!(record_rows(&st)[TRANSPOSE_ROW].value, "-3 in key");
+        assert_eq!(
+            step(&st, TRANSPOSE_ROW, -1),
+            Some(TimeAction::Transpose {
+                track: 1,
+                to: Transpose {
+                    by: -4,
+                    in_key: true
+                }
+            })
+        );
+        st.tracks[1].transpose = Transpose::semitones(MAX_TRANSPOSE);
+        assert_eq!(record_rows(&st)[TRANSPOSE_ROW].value, "+24 st");
+        assert_eq!(step(&st, TRANSPOSE_ROW, 1), None);
+        assert!(why(&st, TRANSPOSE_ROW, 1).contains("highest, 24 semitones up"));
+        assert_eq!(record_rows(&st)[FOLLOWS_ROW].value, "Off");
+        assert_eq!(
+            step(&st, FOLLOWS_ROW, -1),
+            Some(TimeAction::FollowsTranspose { track: 1, on: true })
+        );
+        st.tracks[1].follows = true;
+        assert_eq!(record_rows(&st)[FOLLOWS_ROW].value, "On");
     }
 
     /// The clip settings card: the focused clip's settings, each row

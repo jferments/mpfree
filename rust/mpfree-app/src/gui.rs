@@ -142,10 +142,9 @@ fn guarded(widget: &str, t: &mpfree_ui::Target) -> bool {
         // and the note editor's Delete.
         (SONG, "button") | (NOTES, "button") => label == "Delete",
         (SONG, "region-button") => label == "Erase",
-        // The Looper tab's Clear loop, a layer's ×, and ½ length.
-        (crate::looper_tab::LOOPS, "clear") => true,
-        (crate::looper_tab::EDITOR, "layer-delete") => true,
-        (crate::looper_tab::EDITOR, "tool") => label == crate::looper_tab::TOOLS[0],
+        // The Looper tab's Clear, a layer's ×, and ½ (a ring's clear is
+        // a second's hold already).
+        (crate::looper_tab::EDITOR, "clear" | "layer-delete" | "half") => true,
         // Play's loop strip's Clear, and the step inspector's Clear.
         (crate::looper_page::LOOP_STRIP, "button") => label == "Clear",
         (play_page::INSPECTOR, "clear") => true,
@@ -217,8 +216,12 @@ struct LevelsUi {
     picking: bool,
     /// The pad held now, lit bright on the panel.
     lit: Option<usize>,
-    /// What the app was last told (on, open), so it hears each change once.
-    told: Option<(bool, bool)>,
+    /// Transpose is the kind (sequencer S4, live transpose): the pads move
+    /// the armed track, not the kit's levels, while 16 Levels are on.
+    transpose: bool,
+    /// What the app was last told (on, open, transpose), so it hears each
+    /// change once.
+    told: Option<(bool, bool, bool)>,
 }
 
 /// The hint while the REC chip's target list is open.
@@ -623,6 +626,9 @@ pub struct KitView {
     /// The synth's pads' notes, for Beats' scale rows (pad 1 first);
     /// empty for a kit and the Drums engine.
     pub pitches: Vec<Option<play_page::PadPitch>>,
+    /// The synth's scale while its pads play In key or chords of it ("A
+    /// Minor"): what Transpose steps through. None for a kit.
+    pub key: Option<String>,
 }
 
 /// Timing numbers from the audio thread.
@@ -650,10 +656,6 @@ pub struct Timing {
 /// What each track plays as its own instrument (None: the kit).
 pub type TrackSounds = [Option<crate::instruments::Held>; crate::instruments::TRACKS];
 
-/// Writes what each track plays under its name: its own instrument's
-/// name, else what it plays of the kit chip's list (`kits`): "Kit" (kit
-/// 1), "Kit 2" and on, or "Synth"; a Loop track's input ("Pads", for the
-/// pads and the synth).
 /// What a pad mute says on a track that plays kit `kit` (counted from
 /// 0, and not kit 1): its pads play through the track's channel, which
 /// has the mute. `what` starts the line ("steps", "pad mute").
@@ -664,10 +666,23 @@ pub fn other_kit_mutes(what: &str, kit: usize) -> String {
     )
 }
 
-fn fill_sounds(st: &mut TimeState, sounds: &TrackSounds, kits: &crate::sampler::TrackKits) {
+/// Writes what each track plays under its name: its own instrument's
+/// name, else what it plays of the kit chip's list (`kits`): "Kit" (kit
+/// 1), "Kit 2" and on, or "Synth"; a Loop track's input ("Pads", for the
+/// pads and the synth). And which tracks play notes, so transpose moves
+/// them (`TrackInfo::melodic`): one with its own instrument (not the drum
+/// engine), or one that plays the synth while it plays notes
+/// (`synth_notes`).
+fn fill_sounds(
+    st: &mut TimeState,
+    sounds: &TrackSounds,
+    kits: &crate::sampler::TrackKits,
+    synth_notes: bool,
+) {
     use std::borrow::Cow;
     for (i, t) in st.tracks.iter_mut().enumerate() {
-        let name: Cow<str> = match (t.loops, sounds.get(i).copied().flatten()) {
+        let own = sounds.get(i).copied().flatten();
+        let name: Cow<str> = match (t.loops, own) {
             (Some(input), _) => input.short().into(),
             (None, Some(h)) => h.name.into(),
             (None, None) if kits.plays_synth(i) => "Synth".into(),
@@ -679,8 +694,16 @@ fn fill_sounds(st: &mut TimeState, sounds: &TrackSounds, kits: &crate::sampler::
         if t.sound != name {
             t.sound = name.into_owned();
         }
+        t.melodic = t.loops.is_none()
+            && match own {
+                Some(h) => h.id != DRUMS_ENGINE,
+                None => synth_notes && kits.plays_synth(i),
+            };
     }
 }
+
+/// The drum synth's id: its notes are drums, so it never transposes.
+const DRUMS_ENGINE: &str = "mpfree.drums";
 
 /// The loops as the Loop tracks' cells show them, from the Looper's view:
 /// each loop's layers and whether it overdubs, how many hold a loop, and
@@ -1130,10 +1153,13 @@ pub enum FromUi {
     /// page too.
     StepPage(usize),
     /// 16 Levels are on the playing kit (`on`; 16 LEVEL lights) and the
-    /// panel shows on Play (`open`; the wheel turns its kind).
+    /// panel shows on Play (`open`; the wheel turns its kind). With
+    /// `transpose` the pads transpose the armed track instead (sequencer
+    /// S4): `on` and no kit levels.
     Levels {
         on: bool,
         open: bool,
+        transpose: bool,
     },
     /// A touch on the transport bar or the Arrange page.
     Time(TimeAction),
@@ -1246,15 +1272,21 @@ pub enum FromUi {
     /// Loop `n`'s mute turned over without picking it (the picked loop's
     /// with None).
     LoopMute(Option<usize>),
+    /// Loop `n`'s level (0 to 2) without picking it: the Looper tab's
+    /// Q-Links, a loop's level bar.
+    LoopLevel(usize, f32),
+    /// The Looper tab's Records from: Loops (true) or the input: a new
+    /// loop resamples the others.
+    LoopRecordLoops(bool),
+    /// The Looper tab's Length: the picked loop's first pass, 1 to 8 bars
+    /// or free (None); MENU's First pass length follows.
+    LoopBars(Option<u32>),
     /// The Looper tab: a command for the picked loop (an edit tool, Fade
     /// old, the seam fade, After recording).
     LoopCommand(mpfree_looper::Command),
     /// The Looper tab's undo history: back (below 0) or forward this many
     /// steps.
     LoopSteps(i32),
-    /// Use the loop's Resample: pick loop `n` (empty) and record the
-    /// other loops into it, as heard.
-    LoopResample(usize),
     /// The Looper tab's Recording and input panel: a setting stepped (the
     /// same settings as the looper's options menu).
     LooperSetting(crate::app::Item, i32),
@@ -1863,7 +1895,7 @@ impl Player {
             arp_panel,
             // 16 Levels start off: the app hears only a change.
             levels: LevelsUi {
-                told: Some((false, false)),
+                told: Some((false, false, false)),
                 ..LevelsUi::default()
             },
             workspace,
@@ -1947,6 +1979,42 @@ impl Player {
         self.refresh_pads_bar();
     }
 
+    /// The synth is not the drum engine: the tracks that play it play
+    /// notes, so they transpose.
+    fn synth_plays_notes(&self) -> bool {
+        !self
+            .synth
+            .as_ref()
+            .is_some_and(|p| p.state.info.id == DRUMS_ENGINE)
+    }
+
+    /// The pads play the synth (the armed track's entry is the synth's),
+    /// and it plays notes: 16 LEVEL transposes.
+    fn synth_has_pads(&self) -> bool {
+        self.synth_plays_notes() && self.kits.get(self.kit).is_some_and(|k| k.synth.is_some())
+    }
+
+    /// What each track plays changed (a kit, the synth, a track's own
+    /// instrument): its name under it, and which tracks transpose, on the
+    /// Record tab and on 16 Levels' Transpose.
+    fn refill_sounds(&mut self) {
+        let synth = self.synth_plays_notes();
+        fill_sounds(&mut self.time, &self.track_sounds, &self.track_kits, synth);
+        self.time_page.update(&mut self.ui, &self.time);
+        if self.levels.transpose {
+            self.refresh_levels();
+        }
+    }
+
+    /// The synth's scale while it has the pads and one ("A Minor"): the
+    /// key Transpose steps through In key; None, it moves by semitones.
+    fn pads_key(&self) -> Option<String> {
+        if !self.synth_has_pads() {
+            return None;
+        }
+        self.kits.get(self.kit).and_then(|k| k.key.clone())
+    }
+
     /// The pads panel's heading: the bank and the kit, or the synth with
     /// its Chromatic | In key switch (not for Drums, whose pads are
     /// sounds). The Synth tab's copy always shows the synth. The Play
@@ -1955,7 +2023,7 @@ impl Player {
         let drums_engine = self
             .synth
             .as_ref()
-            .is_some_and(|p| p.state.info.id == "mpfree.drums");
+            .is_some_and(|p| p.state.info.id == DRUMS_ENGINE);
         let switch = |s: Option<SynthPads>| s.filter(|_| !drums_engine);
         let now = self.kits.get(self.kit);
         let (title, right, synth) = match now {
@@ -2651,6 +2719,13 @@ impl Player {
     /// Q-LINK: the column's next bank where it has macro banks (Play, the
     /// chain editor, the macros panel).
     fn next_qlink_bank(&mut self) {
+        if self.view == View::Looper {
+            // Loops 1-4, loops 5-8, the picked loop.
+            let bank = self.looper_page.next_bank(&mut self.ui);
+            println!("q-link bank: {}", bank.name());
+            self.refresh_hint();
+            return;
+        }
         let play = matches!(self.view, View::Play | View::Arrange) && !self.band_showing();
         if !(play || matches!(self.view, View::Chain | View::Macros)) {
             return;
@@ -3098,12 +3173,16 @@ impl Player {
             .update(&mut self.ui, &self.looper, &self.settings);
     }
 
-    /// A Q-Link on the Looper tab: the picked layer's level and pan, how
-    /// much each overdub fades the old layers, the seam fade.
+    /// A Q-Link on the Looper tab: the loops' levels (Q-LINK: loops 5 to
+    /// 8), then the picked loop's Feedback, its picked layer's level and
+    /// pan, and its seam fade.
     fn looper_qlink(&mut self, k: usize, ticks: i32) {
         use crate::looper_page::LoopTurn;
         let fine = self.status.shift;
         match self.looper_page.qlink(&mut self.ui, k, ticks, fine) {
+            Some(LoopTurn::LoopLevel(n, level)) => {
+                self.outbox.push(FromUi::LoopLevel(n, level));
+            }
             Some(LoopTurn::Layer(l, command)) => {
                 if let Some(info) = self.looper_page.layer_info(l) {
                     self.outbox.push(FromUi::LoopLayer {
@@ -3186,10 +3265,11 @@ impl Player {
     /// the touch, the rest after it. With ERASE held, a layer tapped is
     /// deleted (the looper's UNDO brings it back).
     fn looper_acts(&mut self) -> Option<FromUi> {
-        use crate::looper_tab::LoopAct;
+        use crate::looper_tab::{Ctl, LoopAct};
+        use mpfree_looper::Command as C;
         let mut out = Vec::new();
         let erase = self.status.erase;
-        // A tap on a layer's speaker also picks the row: one delete.
+        // A tap on a layer's speaker also picks the lane: one delete.
         let mut erased = Vec::new();
         for a in crate::looper_tab::take_actions(&mut self.ui) {
             let a = match a {
@@ -3200,45 +3280,85 @@ impl Player {
                     erased.push(k);
                     LoopAct::LayerCmd(k, mpfree_looper::LayerCommand::Delete)
                 }
-                LoopAct::Pick(_) | LoopAct::Clear if erase => {
+                LoopAct::Pick(_)
+                | LoopAct::Tap(_)
+                | LoopAct::Clear(_)
+                | LoopAct::Strip(Ctl::Clear)
+                    if erase =>
+                {
                     self.tell(
-                        "ERASE: a whole loop has no undo yet, so ERASE leaves it; Clear removes it",
+                        "ERASE: a whole loop has no undo yet, so ERASE leaves it; hold its ring to clear it",
                     );
                     continue;
                 }
                 a => a,
             };
+            let s = self.looper.status;
             match a {
                 LoopAct::Pick(n) => out.push(FromUi::LoopPick(n)),
-                LoopAct::NewLoop => {
-                    if let Some(n) = self.looper_page.first_empty() {
-                        out.push(FromUi::LoopPick(n));
+                // A ring: its loop picked, and its next step on the press
+                // (record, play, overdub; armed, cancel; muted, unmute).
+                LoopAct::Tap(n) => {
+                    out.push(FromUi::LoopPick(n));
+                    let l = self.looper.loops.get(n).copied();
+                    if l.is_some_and(|l| l.phase == mpfree_looper::Phase::Playing && l.muted) {
+                        out.push(FromUi::LoopMute(Some(n)));
+                    } else {
+                        out.push(FromUi::Looper(crate::looper_page::B_RECORD));
                     }
                 }
                 LoopAct::Mute(n) => out.push(FromUi::LoopMute(Some(n))),
-                LoopAct::Clear => out.push(FromUi::LoopCommand(mpfree_looper::Command::Clear)),
+                LoopAct::Clear(n) => {
+                    out.push(FromUi::LoopPick(n));
+                    out.push(FromUi::LoopCommand(C::Clear));
+                }
+                LoopAct::Level(n, level) => {
+                    self.looper_page.level_set(n, level);
+                    out.push(FromUi::LoopLevel(n, level));
+                }
                 LoopAct::Layer(k) => self.looper_page.pick_layer(&mut self.ui, k),
                 LoopAct::LayerCmd(k, command) => {
                     if let Some(l) = self.looper_page.layer_info(k) {
                         out.push(FromUi::LoopLayer { id: l.id, command });
                     }
                 }
-                LoopAct::Setting(i, d) => {
-                    if let Some(c) = crate::looper_page::setting_command(i, &self.looper.status) {
-                        out.push(FromUi::LoopCommand(c));
-                    } else if let Some((item, d)) =
-                        crate::looper_page::setting_item(i, d, &self.settings)
-                    {
-                        out.push(FromUi::LooperSetting(item, d));
-                    }
+                LoopAct::Strip(Ctl::Input) => {
+                    // Pads, then the line input, then the other loops.
+                    let next = (crate::looper_page::source_index(&self.looper) + 1) % 3;
+                    self.loop_source(next, &mut out);
                 }
-                LoopAct::Tool(crate::looper_page::TOOL_HISTORY) => {
+                LoopAct::Strip(Ctl::Source(i)) => self.loop_source(i, &mut out),
+                LoopAct::Strip(Ctl::Clear) => out.push(FromUi::LoopCommand(C::Clear)),
+                LoopAct::Strip(Ctl::Monitor) => {
+                    out.push(FromUi::Looper(crate::looper_page::B_MONITOR))
+                }
+                LoopAct::Strip(Ctl::Bars(i)) => {
+                    let bars = crate::looper_tab::BAR_CHOICES
+                        .get(usize::from(i))
+                        .copied()
+                        .flatten();
+                    out.push(FromUi::LoopBars(bars));
+                }
+                LoopAct::Strip(Ctl::Undo) => out.push(FromUi::Looper(crate::looper_page::B_UNDO)),
+                LoopAct::Strip(Ctl::Redo) => out.push(FromUi::Looper(crate::looper_page::B_REDO)),
+                LoopAct::Strip(Ctl::History) => {
                     self.looper_page.toggle_history(&mut self.ui);
                     self.refresh_hint();
                 }
+                LoopAct::Strip(c) => match crate::looper_page::strip_command(c, &s) {
+                    Some(command) => out.push(FromUi::LoopCommand(command)),
+                    None => self.tell(crate::looper_page::why_faint(c, &s)),
+                },
+                // Faint ones say why in place (Jay, 12 Nov).
+                LoopAct::Faint(c) => self.tell(crate::looper_page::why_faint(c, &s)),
+                LoopAct::Feedback(k) => out.push(FromUi::LoopCommand(C::SetFadeOld(k))),
+                LoopAct::Nudge(n) => {
+                    if s.phase == mpfree_looper::Phase::Playing && s.merging.is_none() {
+                        out.push(FromUi::LoopCommand(C::Edit(mpfree_looper::Edit::Nudge(n))));
+                    }
+                }
                 LoopAct::Trim(from, to) => {
-                    if let Some(c) = crate::looper_page::trim_command(from, to, &self.looper.status)
-                    {
+                    if let Some(c) = crate::looper_page::trim_command(from, to, &s) {
                         out.push(FromUi::LoopCommand(c));
                     }
                 }
@@ -3247,21 +3367,9 @@ impl Player {
                         out.push(FromUi::LoopSteps(n));
                     }
                 }
-                LoopAct::Tool(i) => {
-                    let rate = self.looper.rate;
-                    if let Some(c) = crate::looper_page::tool_command(i, &self.looper.status, rate)
-                    {
-                        out.push(FromUi::LoopCommand(c));
-                    }
-                }
-                LoopAct::Use(crate::looper_page::USE_RESAMPLE) => {
-                    if let Some(n) = self.looper_page.first_empty() {
-                        out.push(FromUi::LoopResample(n));
-                    }
-                }
                 // Show in Clips: the Arrange page's grid, with the loop's
                 // cell in view.
-                LoopAct::Use(crate::looper_page::USE_SHOW) => {
+                LoopAct::Send(crate::looper_tab::SEND_SHOW) => {
                     if let Some(p) = self.looper_page.place(self.looper.selected) {
                         self.time_page.show_cell(p.track, p.slot);
                         if self.time.song_view || self.time.list_view {
@@ -3273,23 +3381,14 @@ impl Player {
                         self.time_page.update(&mut self.ui, &self.time);
                     }
                 }
-                // The bounce to a pad or a file comes next.
-                LoopAct::Use(_) => {}
-                // Faint ones say why in place (Jay, 12 Nov).
-                LoopAct::FaintTool(i) => {
-                    self.tell(crate::looper_page::why_no_tool(i, &self.looper.status));
-                }
-                LoopAct::FaintUse(i) => {
-                    self.tell(crate::looper_page::why_no_use(i, &self.looper));
-                }
+                // The bounce to a pad, a track or a file comes next.
+                LoopAct::Send(_) => {}
+                LoopAct::FaintSend(i) => self.tell(crate::looper_page::why_no_send(i)),
                 // A layer dragged onto a loop (SHIFT held as it lifts: a
-                // copy); the loop it went to is picked, to show it there.
-                LoopAct::DropLayer(k, to) => {
-                    let to = match to {
-                        crate::looper_tab::DropTo::Loop(n) => Some(n),
-                        crate::looper_tab::DropTo::NewLoop => self.looper_page.first_empty(),
-                    };
-                    if let (Some(to), Some(l)) = (to, self.looper_page.layer_info(k)) {
+                // copy; onto an empty one, a loop of its own); the loop it
+                // went to is picked, to show it there.
+                LoopAct::DropLayer(k, crate::looper_tab::DropTo::Loop(to)) => {
+                    if let Some(l) = self.looper_page.layer_info(k) {
                         out.push(FromUi::LoopCopy {
                             from: self.looper.selected,
                             id: l.id,
@@ -3305,12 +3404,31 @@ impl Player {
                 }
             }
         }
-        // The list and the card follow a layer dragged out of the editor.
+        // The deck and the card follow a layer dragged out of the lanes.
         self.looper_page.sync_drag(&mut self.ui, self.status.shift);
         let mut it = out.into_iter();
         let first = it.next();
         self.outbox.extend(it);
         first
+    }
+
+    /// Records from `i` (0 Pads, 1 Line in, 2 the other loops), as the
+    /// looper's settings ask for it. Line in opens the line input.
+    fn loop_source(&mut self, i: u8, out: &mut Vec<FromUi>) {
+        use crate::looping::LoopSource;
+        out.push(FromUi::LoopRecordLoops(i == 2));
+        match i {
+            0 if self.settings.loop_source != LoopSource::Pads => {
+                out.push(FromUi::LooperSetting(crate::app::Item::LoopSource, -1))
+            }
+            1 if !self.settings.line_input => {
+                out.push(FromUi::LooperSetting(crate::app::Item::LineInput, 1))
+            }
+            1 if self.settings.loop_source != LoopSource::Line => {
+                out.push(FromUi::LooperSetting(crate::app::Item::LoopSource, 1))
+            }
+            _ => {}
+        }
     }
 
     fn play_qlink(&mut self, k: usize, ticks: i32) {
@@ -3340,6 +3458,19 @@ impl Player {
                     "Pad {} has no sound to {what}: hit a pad with one, or load one on the Pads tab",
                     self.play.last_pad + 1
                 ));
+            }
+            Some(Turn::Transpose(by)) => {
+                // 16 Levels' Transpose: the armed track, as its pads would.
+                if let Some((track, now)) = self
+                    .time
+                    .armed
+                    .and_then(|a| Some((a, self.time.tracks.get(a)?.transpose)))
+                {
+                    self.outbox.push(FromUi::Time(TimeAction::Transpose {
+                        track,
+                        to: mpfree_seq::Transpose { by, ..now },
+                    }));
+                }
             }
             Some(Turn::Pad(knob, d)) => {
                 let pad = self.play.last_pad;
@@ -3478,6 +3609,13 @@ impl Player {
                 self.sample.pad_names(pad).0
             ));
             chips.push(Chip::new(format!("16 Levels · {by}"), Tone::Warn));
+        } else if self.levels.transpose {
+            // Transpose (sequencer S4): the pads move the armed track.
+            why.push(
+                "16 Levels: the pads transpose the armed track, pad 9 as written: 16 LEVEL gives them back"
+                    .to_string(),
+            );
+            chips.push(Chip::new("16 Levels · transpose", Tone::Warn));
         }
         // STEP SEQ: the pads are a sound's steps; a tap gives them back.
         self.steps_chip = None;
@@ -3694,8 +3832,9 @@ impl Player {
                 View::Arrange => CLIPS_HINT.to_string(),
                 View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
                                          drag: scroll   ·   Undo history: close   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
-                View::Looper => format!("Tap: pick   ·   swipe: scroll   ·   hold a layer, drag: to a loop (SHIFT: copy)   ·   REC: record   ·   \
-                                         OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
+                View::Looper => format!("Tap a ring: record, play, overdub   ·   hold it: clear   ·   tap a name: pick   ·   \
+                                         Q-Links: {}   ·   Q-LINK: next bank   ·   hold a layer, drag: to a loop   ·   {stop}",
+                                        self.looper_page.bank().name()),
                 View::Synth if self.skin_showing() => format!("{}'s own screen   ·   tap a control: pick it   ·   Wheel: pick one, push and turn: change it   ·   \
                                         Q-Links 1-4: the skin's knobs   ·   MPFree page: MPFree's own page   ·   {stop}",
                                        self.synth.as_ref().map_or("The plugin", |p| p.state.info.name)),
@@ -4935,6 +5074,9 @@ impl Player {
                 self.set_kit(k);
                 self.sample.set_kit(k);
                 self.sample_changed();
+                // The synth taking the pads (or giving them up) changes
+                // which tracks transpose.
+                self.refill_sounds();
             }
             ToUi::Level { db, .. } => {
                 let text = format!("{db:.1}");
@@ -5224,13 +5366,11 @@ impl Player {
             ToUi::Plugins(p) => self.project_plugins = p,
             ToUi::TrackSounds(s) => {
                 self.track_sounds = *s;
-                fill_sounds(&mut self.time, &self.track_sounds, &self.track_kits);
-                self.time_page.update(&mut self.ui, &self.time);
+                self.refill_sounds();
             }
             ToUi::TrackKits(k) => {
                 self.track_kits = *k;
-                fill_sounds(&mut self.time, &self.track_sounds, &self.track_kits);
-                self.time_page.update(&mut self.ui, &self.time);
+                self.refill_sounds();
                 // The step grid's mutes are kit 1's pads' alone.
                 self.refresh_play();
             }
@@ -5510,6 +5650,9 @@ impl Player {
                     }
                 }
                 self.refresh_pads_bar();
+                // The synth's engine or scale: which tracks transpose, and
+                // the key In key moves through.
+                self.refill_sounds();
             }
             ToUi::TouchLab => self.open_touch_page("touchlab", "Touch lab"),
             ToUi::CalibrateTouch => self.open_touch_page("calibrate", "Calibrate touch"),
@@ -5551,8 +5694,15 @@ impl Player {
             }
             ToUi::SixteenLevels => self.toggle_levels(),
             ToUi::LevelsWheel(d) => {
-                let by = LevelsPanel::wheel(self.levels.by, d);
-                self.levels_by(by);
+                let now = if self.levels.transpose {
+                    levels_panel::Kind::Transpose
+                } else {
+                    levels_panel::Kind::Level(self.levels.by)
+                };
+                match LevelsPanel::wheel(now, d) {
+                    levels_panel::Kind::Level(by) => self.levels_by(by),
+                    levels_panel::Kind::Transpose => self.levels_transpose(),
+                }
             }
             ToUi::Patterns(list) => {
                 self.arp.patterns = list;
@@ -5597,11 +5747,16 @@ impl Player {
                     self.undo_loop = false;
                     self.seen_takes = seen;
                 }
-                fill_sounds(&mut st, &self.track_sounds, &self.track_kits);
+                let synth = self.synth_plays_notes();
+                fill_sounds(&mut st, &self.track_sounds, &self.track_kits, synth);
                 st.loops = loops_info(&self.looper);
                 // The bar's REC chip is the screen's own (refresh_play).
                 st.chips = std::mem::take(&mut self.time.chips);
                 self.time = *st;
+                if self.levels.transpose {
+                    // The armed track, and where it is transposed to.
+                    self.refresh_levels();
+                }
                 // Play's strip and the Looper tab name a loop by its place.
                 let places = time_view::loop_places(&self.time);
                 if self.looper_page.set_places(places) {
@@ -5643,6 +5798,9 @@ impl Player {
             }
             ToUi::Transport(info) => {
                 self.time.transport = info;
+                if self.view == View::Looper {
+                    self.looper_page.set_transport(&mut self.ui, info);
+                }
                 self.sample.set_tempo(info.bpm);
                 self.time_page.update(&mut self.ui, &self.time);
                 let swing = self.play.transport.swing;
@@ -7184,6 +7342,18 @@ impl Player {
     /// 16 LEVEL: on (of the pad hit last, by the kind picked last, with the
     /// panel) or, while on, off.
     fn toggle_levels(&mut self) {
+        if self.levels.transpose {
+            // Off: the pads play again (the transpose stays where it is).
+            self.levels.transpose = false;
+            self.levels.open = false;
+            self.after_levels_change();
+            return;
+        }
+        if self.sample.levels().is_none() && self.synth_has_pads() {
+            // The synth's pads have no kit levels: they transpose.
+            self.levels_transpose();
+            return;
+        }
         let want = match self.sample.levels() {
             Some(_) => None,
             None => Some((self.sample.pad(), self.levels.by)),
@@ -7201,9 +7371,34 @@ impl Player {
         self.after_levels_change();
     }
 
+    /// Transpose is the kind (sequencer S4): the kit's levels go off and
+    /// the pads transpose the armed track, the panel showing it.
+    fn levels_transpose(&mut self) {
+        if self.sample.levels().is_some() {
+            self.sample.set_levels(&mut self.ui, None);
+        }
+        self.levels.transpose = true;
+        self.levels.open = true;
+        self.levels.picking = false;
+        self.levels.lit = None;
+        self.after_levels_change();
+    }
+
     /// The levels step through `by` from now on.
     fn levels_by(&mut self, by: Levels) {
         self.levels.by = by;
+        if self.levels.transpose {
+            // From Transpose back to the kit's levels, of the pad hit last.
+            self.levels.transpose = false;
+            if !self
+                .sample
+                .set_levels(&mut self.ui, Some((self.sample.pad(), by)))
+            {
+                self.tell("16 Levels: there is no kit to play 16 Levels of here");
+            }
+            self.after_levels_change();
+            return;
+        }
         if let Some((pad, _)) = self.sample.levels() {
             self.sample.set_levels(&mut self.ui, Some((pad, by)));
             self.after_levels_change();
@@ -7215,7 +7410,8 @@ impl Player {
     /// A pad down (`down`) or up: lit on the panel while held, and with
     /// Pick pad armed, the pad the levels play from now on.
     fn levels_hit(&mut self, pad: usize, down: bool) {
-        if pad >= 16 || self.sample.levels().is_none() {
+        // Transpose lights the step it is on, not the pad hit.
+        if pad >= 16 || self.sample.levels().is_none() || self.levels.transpose {
             return;
         }
         if down && self.levels.picking {
@@ -7237,7 +7433,7 @@ impl Player {
     /// The kit's pads changed between their own sounds and 16 Levels: the
     /// panel, its page, the names on Play and the edits go out.
     fn after_levels_change(&mut self) {
-        let on = self.sample.levels().is_some();
+        let on = self.sample.levels().is_some() || self.levels.transpose;
         if !on {
             self.levels.open = false;
             self.levels.picking = false;
@@ -7256,7 +7452,7 @@ impl Player {
     /// the panel turned on or off.
     fn refresh_levels(&mut self) {
         let levels = self.sample.levels();
-        if levels.is_none() && self.levels.open {
+        if levels.is_none() && self.levels.open && !self.levels.transpose {
             self.levels.open = false;
             self.levels.picking = false;
             if self.view == View::Play {
@@ -7275,13 +7471,33 @@ impl Player {
             picking: self.levels.picking,
             lit: self.levels.lit,
             colour: crate::akai::kit_colour(self.sample.kit()),
+            transpose: self.levels.transpose.then(|| self.transpose_view()),
         };
         if let Some(w) = self.ui.get_mut::<LevelsPanel>(levels_panel::PANEL) {
             if w.model != model {
                 w.model = model;
             }
         }
-        let now = (levels.is_some(), self.levels.open);
+        // Transpose's Q-Link, in Tune's place while it is the kind.
+        let knob = self
+            .time
+            .armed
+            .and_then(|a| self.time.tracks.get(a))
+            .filter(|t| self.levels.transpose && t.melodic)
+            .map(|t| play_page::TransposeKnob {
+                track: t.name.clone(),
+                by: t.transpose.by,
+                in_key: t.transpose.in_key,
+            });
+        if self.play.transpose != knob {
+            self.play.transpose = knob;
+            self.refresh_qlinks();
+        }
+        let now = (
+            levels.is_some() || self.levels.transpose,
+            self.levels.open,
+            self.levels.transpose,
+        );
         if self.levels.told != Some(now) {
             self.levels.told = Some(now);
             // The 16 Levels chip comes or goes.
@@ -7289,7 +7505,30 @@ impl Player {
             self.outbox.push(FromUi::Levels {
                 on: now.0,
                 open: now.1,
+                transpose: now.2,
             });
+        }
+    }
+
+    /// What 16 Levels' Transpose shows: the armed track, where it is, the
+    /// tracks that follow it, and whether it plays notes.
+    fn transpose_view(&self) -> levels_panel::TransposeView {
+        let st = &self.time;
+        let Some(tr) = st.armed.and_then(|a| st.tracks.get(a)) else {
+            return levels_panel::TransposeView::default();
+        };
+        levels_panel::TransposeView {
+            track: tr.name.clone(),
+            with: st
+                .tracks
+                .iter()
+                .enumerate()
+                .filter(|(i, t)| Some(*i) != st.armed && t.follows && t.melodic)
+                .map(|(_, t)| t.name.clone())
+                .collect(),
+            melodic: tr.melodic,
+            by: tr.transpose.by,
+            key: tr.transpose.in_key.then(|| self.pads_key()).flatten(),
         }
     }
 
@@ -7527,6 +7766,8 @@ impl Player {
             self.time_page.update(&mut self.ui, &self.time);
         }
         if matches!(v, View::Looper | View::Play) {
+            self.looper_page
+                .set_transport(&mut self.ui, self.time.transport);
             self.looper_page
                 .update(&mut self.ui, &self.looper, &self.settings);
         }
@@ -8099,13 +8340,7 @@ impl Player {
             }
             ("controls", EventKind::Select(i)) => Some(FromUi::MapRow(i)),
             ("mapcard", EventKind::Tab(i)) => Some(FromUi::MapButton(i)),
-            (
-                crate::looper_tab::LOOPS
-                | crate::looper_tab::EDITOR
-                | crate::looper_tab::RECORDING
-                | crate::looper_tab::USE,
-                _,
-            ) => self.looper_acts(),
+            (crate::looper_deck::DECK | crate::looper_tab::EDITOR, _) => self.looper_acts(),
             (crate::looper_tab::QLINKS, EventKind::Step { index, delta }) => {
                 self.looper_qlink(index, delta);
                 None
@@ -8411,6 +8646,7 @@ impl Player {
                 for a in actions {
                     match a {
                         LevelsAction::By(by) => self.levels_by(by),
+                        LevelsAction::Transpose => self.levels_transpose(),
                         LevelsAction::PickPad => {
                             self.levels.picking = !self.levels.picking;
                             self.refresh_levels();
@@ -8425,6 +8661,7 @@ impl Player {
                             self.refresh_hint();
                         }
                         LevelsAction::Off => {
+                            self.levels.transpose = false;
                             self.sample.set_levels(&mut self.ui, None);
                             self.after_levels_change();
                         }
@@ -8718,6 +8955,24 @@ impl Player {
         if let Some(fx) = self.play.tick_xy(dt * 1000.0) {
             self.outbox.push(FromUi::PlayFx(fx));
             self.refresh_play();
+        }
+        // A finger held on a loop's ring: a second clears the loop.
+        if self.view == View::Looper
+            && self
+                .ui
+                .get::<crate::looper_deck::LoopDeck>(crate::looper_deck::DECK)
+                .is_some_and(|d| d.holding())
+        {
+            let cleared = self
+                .ui
+                .get_mut::<crate::looper_deck::LoopDeck>(crate::looper_deck::DECK)
+                .is_some_and(|d| d.hold_tick(dt));
+            if cleared {
+                let at = self.outbox.len();
+                if let Some(f) = self.looper_acts() {
+                    self.outbox.insert(at, f);
+                }
+            }
         }
         // A finger held on an effect in the picker opens its presets.
         if self.view == View::Chain && mpfree_chain_ui::chain_hold(&mut self.ui) {
@@ -9333,6 +9588,7 @@ pub fn sample_kits() -> Vec<KitView> {
         chip: None,
         synth: None,
         pitches: Vec::new(),
+        key: None,
     };
     // Kit 2 is the Play mockups' kit (F to I), so the previews show it.
     let mut boom_bap = kit("Boom Bap", [0x00, 0x2A, 0x3F], 16);
@@ -13077,40 +13333,70 @@ mod tests {
         assert_eq!(p.page(), sample_page::PADS_PAGE);
     }
 
-    /// Drag and drop on the Looper tab (approved as drawn, 14 Nov): a
-    /// layer lifted out of the editor lights the loops that take it and
-    /// the New loop button; let go on a loop of another length, the
-    /// screen says why; on New loop it moves into the first empty loop,
-    /// which is picked; with SHIFT held, onto a loop of its length, it
-    /// goes as a copy. The wheel does the same with its push and turns.
+    /// Layer `k`'s lane on the Looper tab, as drawn now.
+    fn lane_of(p: &Player, k: usize) -> mpfree_ui::Rect {
+        use crate::looper_tab::{LoopEditor, EDITOR};
+        let r = p.ui.rect_of(EDITOR).unwrap();
+        let e = p.ui.get::<LoopEditor>(EDITOR).unwrap();
+        e.lane_rects(LoopEditor::parts(r).lanes)
+            .into_iter()
+            .find(|(kk, _)| *kk == k)
+            .map(|(_, rr)| rr)
+            .unwrap()
+    }
+
+    /// Loop `n`'s channel on the Looper tab's deck.
+    fn channel_of(p: &Player, n: usize) -> crate::looper_deck::ChannelParts {
+        use crate::looper_deck::{LoopDeck, DECK};
+        LoopDeck::parts(p.ui.rect_of(DECK).unwrap(), n, mpfree_looper::MAX_LOOPS)
+    }
+
+    fn centre_of(r: mpfree_ui::Rect) -> (i32, i32) {
+        (r.x + r.w / 2, r.y + r.h / 2)
+    }
+
+    /// Drag and drop on the Looper tab (approved as drawn, 14 Nov; the
+    /// deck since the redesign, 17 Nov): a layer lifted out of the lanes
+    /// lights the loops on the deck that take it (the empty ones too); let
+    /// go on a loop of another length, the screen says why; on an empty
+    /// loop it moves there, a loop of its own, which is picked; with SHIFT
+    /// held, onto a loop of its length, it goes as a copy. The wheel does
+    /// the same with its push and turns.
     #[test]
     fn a_layer_dragged_onto_a_loop_moves_or_copies_and_another_length_says_why() {
-        use crate::looper_tab::{DropTo, LoopEditor, LoopList, EDITOR, LOOPS};
+        use crate::looper_deck::{LoopDeck, DECK};
+        use crate::looper_tab::{DropTo, LoopEditor, EDITOR};
         let mut p = sample_looper(Fonts::embedded()).unwrap();
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
         let (_, view) = recorded_loop();
         let chop = view.layers[2].unwrap().id;
-        let r = p.ui.rect_of(EDITOR).unwrap();
-        let e = p.ui.get::<LoopEditor>(EDITOR).unwrap();
-        let (_, rr) = e.row_rects(LoopEditor::parts(r).2)[2];
-        let at = (LoopEditor::row_parts(rr).wave.x + 30, rr.y + rr.h / 2);
-        let lr = p.ui.rect_of(LOOPS).unwrap();
-        let parts = p.ui.get::<LoopList>(LOOPS).unwrap().parts(lr);
-        let (two, new) = (parts.rows[1], parts.new.unwrap());
+        let rr = lane_of(&p, 2);
+        let at = (LoopEditor::lane_parts(rr).wave.x + 30, rr.y + rr.h / 2);
+        let (two, three) = (channel_of(&p, 1).card, channel_of(&p, 2).card);
         let drag = |p: &mut Player, to: mpfree_ui::Rect| {
             p.touch(1, Touch::Down, at.0, at.1);
-            // Held still first: a move sooner would swipe the rows. What
+            // Held still first: a move sooner would swipe the lanes. What
             // the wait sent goes out, as after every screen read.
             p.tick(crate::looper_tab::LIFT_HOLD_S);
             let _ = p.take_actions();
             p.touch(1, Touch::Move, at.0 - 40, at.1);
             p.touch(1, Touch::Move, to.x + 20, to.y + 20)
         };
-        // Loop 2 is 2 bars and loop 1 is 4: lifted over it, the list
-        // shows it refusing and only + New loop lit; let go, it says why.
+        let deck_drag = |p: &Player| p.ui.get::<LoopDeck>(DECK).unwrap().drag.clone();
+        // Let go there: what goes out, in order (the hold's Held aside).
+        let let_go = |p: &mut Player, to: mpfree_ui::Rect| -> Vec<FromUi> {
+            let up = p.touch(1, Touch::Up, to.x + 20, to.y + 20);
+            up.into_iter()
+                .chain(p.take_actions())
+                .filter(|a| !matches!(a, FromUi::Held(_) | FromUi::Outline(_)))
+                .collect()
+        };
+        // Loop 2 is 2 bars and loop 1 is 4: lifted over it, the deck
+        // shows it refusing and the empty loops lit; let go, it says why.
         drag(&mut p, two);
-        let d = p.ui.get::<LoopList>(LOOPS).unwrap().drag.clone().unwrap();
-        assert_eq!(d.lit, [DropTo::NewLoop]);
+        let d = deck_drag(&p).unwrap();
+        assert!(!d.lit.contains(&DropTo::Loop(1)) && d.lit.contains(&DropTo::Loop(2)));
+        assert_eq!(d.lit.len(), 6, "the six empty loops");
         assert_eq!(d.landing, Some((DropTo::Loop(1), false)));
         assert!(
             d.says.contains("Loop 2 is 2 bars and this layer 4"),
@@ -13118,27 +13404,29 @@ mod tests {
             d.says
         );
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
-        assert_eq!(p.touch(1, Touch::Up, two.x + 20, two.y + 20), None);
-        assert!(p.ui.get::<LoopList>(LOOPS).unwrap().drag.is_none());
+        assert_eq!(let_go(&mut p, two), []);
+        assert!(deck_drag(&p).is_none());
         let told = p.told.as_ref().map(|t| t.0.clone()).unwrap_or_default();
         assert!(
             told.contains("a layer goes only onto a loop of its length"),
             "{told}"
         );
-        // On + New loop: the chop moves into loop 3, which is picked.
-        drag(&mut p, new);
-        let d = p.ui.get::<LoopList>(LOOPS).unwrap().drag.clone().unwrap();
+        // On loop 3, empty: the chop moves there, and it is picked.
+        drag(&mut p, three);
+        let d = deck_drag(&p).unwrap();
         assert_eq!(d.says, "Move into Loop 3: a loop of its own");
         assert_eq!(
-            p.touch(1, Touch::Up, new.x + 20, new.y + 20),
-            Some(FromUi::LoopCopy {
-                from: 0,
-                id: chop,
-                to: 2,
-                keep: false
-            })
+            let_go(&mut p, three),
+            [
+                FromUi::LoopCopy {
+                    from: 0,
+                    id: chop,
+                    to: 2,
+                    keep: false
+                },
+                FromUi::LoopPick(2)
+            ]
         );
-        assert_eq!(p.take_actions(), [FromUi::LoopPick(2)]);
         // Loop 2 at loop 1's length takes it: with SHIFT held, a copy.
         let mut v = view.clone();
         let second = p.looper.loops[1];
@@ -13149,19 +13437,21 @@ mod tests {
         p.apply(ToUi::Looper(Box::new(v.clone())));
         p.status.shift = true;
         drag(&mut p, two);
-        let d = p.ui.get::<LoopList>(LOOPS).unwrap().drag.clone().unwrap();
-        assert_eq!(d.lit, [DropTo::Loop(1), DropTo::NewLoop]);
+        let d = deck_drag(&p).unwrap();
+        assert!(d.lit.contains(&DropTo::Loop(1)));
         assert_eq!(d.says, "Copy to Loop 2");
         assert_eq!(
-            p.touch(1, Touch::Up, two.x + 20, two.y + 20),
-            Some(FromUi::LoopCopy {
-                from: 0,
-                id: chop,
-                to: 1,
-                keep: true
-            })
+            let_go(&mut p, two),
+            [
+                FromUi::LoopCopy {
+                    from: 0,
+                    id: chop,
+                    to: 1,
+                    keep: true
+                },
+                FromUi::LoopPick(1)
+            ]
         );
-        assert_eq!(p.take_actions(), [FromUi::LoopPick(1)]);
         p.status.shift = false;
         // The wheel: push on the chop picks it up, a turn points it at
         // loop 2, the push drops it there (a move now).
@@ -13176,7 +13466,7 @@ mod tests {
         p.nav(Nav::Push);
         assert!(p.ui.focus_grabbed(), "the push picks it up");
         p.nav(Nav::Turn(1));
-        let d = p.ui.get::<LoopList>(LOOPS).unwrap().drag.clone().unwrap();
+        let d = deck_drag(&p).unwrap();
         assert_eq!(d.landing, Some((DropTo::Loop(1), true)));
         p.nav(Nav::Push);
         assert!(!p.ui.focus_grabbed());
@@ -13192,7 +13482,7 @@ mod tests {
                 FromUi::LoopPick(1)
             ]
         );
-        assert!(p.ui.get::<LoopList>(LOOPS).unwrap().drag.is_none());
+        assert!(deck_drag(&p).is_none());
         // Picked up by the wheel, it goes back when the page changes.
         assert!(p.ui.focus_at(cx, cy).is_some());
         p.nav(Nav::Push);
@@ -13200,95 +13490,147 @@ mod tests {
         p.show_view(View::Play);
         p.show_view(View::Looper);
         assert!(!p.ui.get::<LoopEditor>(EDITOR).unwrap().wheel_held());
-        assert!(p.ui.get::<LoopList>(LOOPS).unwrap().drag.is_none());
+        assert!(deck_drag(&p).is_none());
         assert!(p.take_actions().is_empty());
     }
 
-    /// The Looper tab (mockup J): a loop tapped is picked, a layer's
-    /// speaker works it by its id, a Q-Link turns the picked layer, and a
-    /// setting steps the looper's option.
+    /// The Looper tab as an instrument (Jay, 17 Nov): a loop's name picks
+    /// it, its ring does its next step on the press and clears it when
+    /// held, its speaker mutes it; a lane's head mutes its layer by its
+    /// id; the Q-Links turn the loops' levels, and Q-LINK steps to the
+    /// picked loop's; an empty loop's controls say how it records.
     #[test]
-    fn the_looper_tab_picks_loops_and_works_layers() {
-        use crate::looper_tab::{LoopEditor, LoopList, LoopSettings, EDITOR, LOOPS, RECORDING};
+    fn the_looper_tab_plays_loops_and_works_layers() {
+        use crate::looper_page::{B_RECORD, LOOPER_PAGE};
+        use crate::looper_tab::{Ctl, LoopEditor, EDITOR};
         let mut p = sample_looper(Fonts::embedded()).unwrap();
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
         assert!(p.take_actions().is_empty());
+        assert_eq!(p.page(), LOOPER_PAGE);
         let tap = |p: &mut Player, (x, y): (i32, i32)| {
             let down = p.touch(1, Touch::Down, x, y);
             down.or(p.touch(1, Touch::Up, x, y))
         };
-        // Loop 2, then a new loop (loop 3, the first empty one).
-        let r = p.ui.rect_of(LOOPS).unwrap();
-        let parts = p.ui.get::<LoopList>(LOOPS).unwrap().parts(r);
-        let rows = parts.rows;
-        assert_eq!(rows.len(), 4);
+        // Loop 2's name picks it; loop 3's ring (empty) records it.
+        let two = channel_of(&p, 1);
         assert_eq!(
-            tap(&mut p, (rows[1].x + 10, rows[1].y + 10)),
+            tap(&mut p, (two.name.x + 30, two.name.y + 10)),
             Some(FromUi::LoopPick(1))
         );
-        let new = parts.new.unwrap();
+        let three = channel_of(&p, 2);
         assert_eq!(
-            tap(&mut p, (new.x + 10, new.y + 10)),
+            tap(&mut p, centre_of(three.ring)),
             Some(FromUi::LoopPick(2))
         );
-        // Loop 2's speaker (it is muted) lets it play, without picking it;
-        // Clear loop clears the picked loop.
-        let (sx, sy) = crate::looper_tab::LoopList::speaker_at(rows[1]);
-        assert_eq!(tap(&mut p, (sx, sy)), Some(FromUi::LoopMute(Some(1))));
-        let clear = parts.clear.expect("loop 1 has sound");
+        assert_eq!(p.take_actions(), [FromUi::Looper(B_RECORD)]);
+        // Loop 2's speaker (it is muted) lets it play, without picking it.
         assert_eq!(
-            tap(&mut p, (clear.x + 10, clear.y + 10)),
+            tap(&mut p, centre_of(two.mute)),
+            Some(FromUi::LoopMute(Some(1)))
+        );
+        // Its ring, muted: unmuted on the press; held a second, cleared.
+        assert_eq!(
+            p.touch(1, Touch::Down, two.ring.x + 46, two.ring.y + 46),
+            Some(FromUi::LoopPick(1))
+        );
+        assert_eq!(p.take_actions(), [FromUi::LoopMute(Some(1))]);
+        p.tick(crate::looper_deck::CLEAR_HOLD_S + 0.01);
+        let acts: Vec<FromUi> = p
+            .take_actions()
+            .into_iter()
+            .filter(|a| !matches!(a, FromUi::UndoReady(_) | FromUi::Outline(_)))
+            .collect();
+        assert_eq!(
+            acts,
+            [
+                FromUi::LoopPick(1),
+                FromUi::LoopCommand(mpfree_looper::Command::Clear)
+            ]
+        );
+        p.touch(1, Touch::Up, two.ring.x + 46, two.ring.y + 46);
+        // The picked loop's Clear clears it.
+        let parts = LoopEditor::parts(p.ui.rect_of(EDITOR).unwrap());
+        assert_eq!(
+            tap(&mut p, centre_of(parts.clear)),
             Some(FromUi::LoopCommand(mpfree_looper::Command::Clear))
         );
-        // The chop's speaker (it is muted) unmutes it by its id.
+        // The chop's head (it is muted) unmutes it by its id.
         let (_, view) = recorded_loop();
         let ids: Vec<u8> = (0..3).map(|k| view.layers[k].unwrap().id).collect();
-        let r = p.ui.rect_of(EDITOR).unwrap();
         let e = p.ui.get::<LoopEditor>(EDITOR).unwrap();
         assert_eq!(e.picked, 1, "the bass is on the Q-Links");
-        let (_, rr) = e.row_rects(LoopEditor::parts(r).2)[2];
-        let parts = LoopEditor::row_parts(rr);
+        let head = LoopEditor::lane_parts(lane_of(&p, 2)).head;
         assert_eq!(
-            tap(&mut p, parts.speaker),
+            tap(&mut p, (head.x + 30, head.y + head.h / 2)),
             Some(FromUi::LoopLayer {
                 id: ids[2],
                 command: mpfree_looper::LayerCommand::Mute(false),
             })
         );
         assert!(p.take_actions().is_empty());
-        // The chop is picked now: Q1 turns its level.
+        // Q1: loop 1's level.
         p.apply(ToUi::LooperQLink(0, 2));
+        let acts = p.take_actions();
+        assert!(
+            matches!(acts.as_slice(), [FromUi::LoopLevel(0, _)]),
+            "{acts:?}"
+        );
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint(&p).contains("Q-Links: Loops 1-4"), "{}", hint(&p));
+        // Q-LINK twice: the picked loop. Q2 turns the bass's level, Q1
+        // how much each overdub keeps of the old layers.
+        p.apply(ToUi::QLinkBank);
+        p.apply(ToUi::QLinkBank);
+        assert!(
+            hint(&p).contains("Q-Links: the picked loop"),
+            "{}",
+            hint(&p)
+        );
+        p.apply(ToUi::LooperQLink(1, 2));
         let acts = p.take_actions();
         assert!(
             matches!(
                 acts.as_slice(),
                 [FromUi::LoopLayer { id, command: mpfree_looper::LayerCommand::Level(_) }]
-                    if *id == ids[2]
+                    if *id == ids[1]
             ),
             "{acts:?}"
         );
-        // Q3 sets how much each overdub fades the old layers.
-        p.apply(ToUi::LooperQLink(2, -1));
+        p.apply(ToUi::LooperQLink(0, -1));
         assert!(matches!(
             p.take_actions().as_slice(),
             [FromUi::LoopCommand(mpfree_looper::Command::SetFadeOld(_))]
         ));
-        // Line input, right half: on.
-        let r = p.ui.rect_of(RECORDING).unwrap();
-        let rects = p.ui.get::<LoopSettings>(RECORDING).unwrap().row_rects(r);
-        let line = rects[5];
-        assert_eq!(
-            tap(&mut p, (line.right() - 6, line.y + 6)),
-            Some(FromUi::LooperSetting(crate::app::Item::LineInput, 1))
-        );
         // The hint says what the tab's controls do.
-        let hint = &p.ui.get::<Label>("hint").unwrap().text;
+        let h = hint(&p);
         assert!(
-            hint.contains("Tap: pick")
-                && hint.contains("swipe: scroll")
-                && hint.contains("hold a layer, drag: to a loop"),
-            "{hint}"
+            h.contains("Tap a ring") && h.contains("hold it: clear") && h.contains("hold a layer"),
+            "{h}"
         );
+        // An empty loop picked: Line in opens the line input; Loops
+        // records the other loops.
+        let mut v = p.looper.clone();
+        v.selected = 3;
+        v.status = v.loops[3];
+        p.apply(ToUi::Looper(Box::new(v)));
+        let e = p.ui.get::<LoopEditor>(EDITOR).unwrap();
+        let s = LoopEditor::parts(p.ui.rect_of(EDITOR).unwrap()).strip;
+        let ctl = |c: Ctl| {
+            e.strip_controls(s)
+                .into_iter()
+                .find(|x| x.0 == c)
+                .map(|x| centre_of(x.1))
+                .unwrap()
+        };
+        let (line, loops, four) = (ctl(Ctl::Source(1)), ctl(Ctl::Source(2)), ctl(Ctl::Bars(3)));
+        assert_eq!(tap(&mut p, line), Some(FromUi::LoopRecordLoops(false)));
+        assert_eq!(
+            p.take_actions(),
+            [FromUi::LooperSetting(crate::app::Item::LineInput, 1)]
+        );
+        assert_eq!(tap(&mut p, loops), Some(FromUi::LoopRecordLoops(true)));
+        assert_eq!(tap(&mut p, four), Some(FromUi::LoopBars(Some(4))));
+        assert!(p.take_actions().is_empty());
     }
 
     /// Jay's wheel navigation (13 Nov): a tap puts the outline on a
@@ -14658,29 +15000,26 @@ mod tests {
         let empty = cell(&p, 1, 0);
         assert_eq!(tap(&mut p, empty), None, "no new clip while erasing");
         assert!(hint(&p).contains("empty"), "{}", hint(&p));
-        // Looper tab: a layer's row or its speaker deletes it; a loop is
-        // left alone (Clear loop has no undo).
-        use crate::looper_tab::{LoopEditor, LoopList, EDITOR, LOOPS};
+        // Looper tab: a layer's lane or its head deletes it; a loop is
+        // left alone (a cleared loop has no undo yet).
+        use crate::looper_tab::LoopEditor;
         let mut p = sample_looper(Fonts::embedded()).unwrap();
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
         erase(&mut p, true);
         let (_, view) = recorded_loop();
         let chop = view.layers[2].unwrap().id;
-        let r = p.ui.rect_of(EDITOR).unwrap();
-        let e = p.ui.get::<LoopEditor>(EDITOR).unwrap();
-        let (_, rr) = e.row_rects(LoopEditor::parts(r).2)[2];
-        let parts = LoopEditor::row_parts(rr);
+        let head = LoopEditor::lane_parts(lane_of(&p, 2)).head;
         assert_eq!(
-            tap(&mut p, parts.speaker),
+            tap(&mut p, (head.x + 30, head.y + head.h / 2)),
             Some(FromUi::LoopLayer {
                 id: chop,
                 command: mpfree_looper::LayerCommand::Delete,
             })
         );
-        let r = p.ui.rect_of(LOOPS).unwrap();
-        let row = p.ui.get::<LoopList>(LOOPS).unwrap().parts(r).rows[1];
-        assert_eq!(tap(&mut p, (row.x + 10, row.y + 10)), None);
-        assert!(hint(&p).contains("Clear"), "{}", hint(&p));
+        let two = channel_of(&p, 1);
+        assert_eq!(tap(&mut p, (two.name.x + 30, two.name.y + 10)), None);
+        assert_eq!(tap(&mut p, centre_of(two.ring)), None);
+        assert!(hint(&p).contains("no undo yet"), "{}", hint(&p));
         assert_eq!(p.take_actions(), vec![]);
     }
 
@@ -19294,7 +19633,7 @@ mod tests {
             acts.iter()
                 .rev()
                 .filter_map(|a| match a {
-                    FromUi::Levels { on, open } => Some((*on, *open)),
+                    FromUi::Levels { on, open, .. } => Some((*on, *open)),
                     _ => None,
                 })
                 .next()
@@ -19372,7 +19711,10 @@ mod tests {
             }
         );
         // A tap on Decay.
-        tap(&mut p, LevelsPanel::kind_rect(r, Levels::Decay));
+        tap(
+            &mut p,
+            LevelsPanel::kind_rect(r, levels_panel::Kind::Level(Levels::Decay)),
+        );
         assert_eq!(
             p.sample.project(0).unwrap().pads_play(),
             PadsPlay::Levels {
@@ -19398,6 +19740,86 @@ mod tests {
         tap(&mut p, LevelsPanel::button_rect(r, 2));
         assert_eq!(p.sample.project(0).unwrap().pads_play(), PadsPlay::Pads);
         assert_ne!(p.page(), LEVELS_PAGE);
+    }
+
+    /// 16 Levels' Transpose (sequencer S4): with the synth on the pads,
+    /// 16 LEVEL opens the Transpose kind. The heading names the armed track
+    /// and where it is, the step it is on is lit, Tune's Q-Link turns it,
+    /// and 16 LEVEL again gives the pads back.
+    #[test]
+    fn sixteen_level_on_the_synth_transposes_the_armed_track() {
+        use mpfree_seq::Transpose;
+        let mut p = sample_beats_synth(Fonts::embedded());
+        p.apply(ToUi::Show(View::Play));
+        // The armed track plays the synth (a kit for each track).
+        let mut kits = crate::sampler::TrackKits::new(sample_kits().len());
+        assert!(kits.set(p.time.armed.unwrap(), kits.synth()));
+        p.apply(ToUi::TrackKits(Box::new(kits)));
+        p.take_actions();
+        p.apply(ToUi::SixteenLevels);
+        let acts = p.take_actions();
+        assert!(
+            acts.iter().any(|a| matches!(
+                a,
+                FromUi::Levels {
+                    on: true,
+                    open: true,
+                    transpose: true
+                }
+            )),
+            "{acts:?}"
+        );
+        let panel = |p: &Player| {
+            p.ui.get::<LevelsPanel>(levels_panel::PANEL)
+                .unwrap()
+                .model
+                .clone()
+        };
+        let armed = p.time.armed.unwrap();
+        let name = p.time.tracks[armed].name.clone();
+        let v = panel(&p).transpose.unwrap();
+        assert_eq!(
+            (v.track.as_str(), v.melodic, v.by),
+            (name.as_str(), true, 0)
+        );
+        assert_eq!(v.pad(), Some(8), "pad 9: as written");
+        assert_eq!(p.play.knobs()[1], Knob::Transpose);
+        let chips: Vec<String> =
+            p.ui.get::<Header>("header")
+                .unwrap()
+                .chips
+                .iter()
+                .map(|c| c.text.clone())
+                .collect();
+        assert!(
+            chips.contains(&"16 Levels · transpose".to_string()),
+            "{chips:?}"
+        );
+        // The time engine moves it 5 notes of the key: the panel follows.
+        let mut st = p.time.clone();
+        st.tracks[armed].transpose = Transpose {
+            by: 5,
+            in_key: true,
+        };
+        p.apply(ToUi::Time(Box::new(st)));
+        let v = panel(&p).transpose.unwrap();
+        assert_eq!((v.by, v.key.as_deref()), (5, Some("C Minor")));
+        assert_eq!(v.pad(), Some(13));
+        // Tune's Q-Link turns it, two octaves either way.
+        p.apply(ToUi::PlayQLink(1, 2));
+        let acts = p.take_actions();
+        assert!(
+            acts.iter().any(|a| matches!(
+                a,
+                FromUi::Time(TimeAction::Transpose { track, to })
+                    if *track == armed && *to == Transpose { by: 7, in_key: true }
+            )),
+            "{acts:?}"
+        );
+        // 16 LEVEL again: the pads play, Tune is back.
+        p.apply(ToUi::SixteenLevels);
+        assert!(!p.levels.transpose);
+        assert_eq!(p.play.knobs()[1], Knob::Tune);
     }
 
     #[test]

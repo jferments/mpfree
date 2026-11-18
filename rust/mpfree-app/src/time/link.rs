@@ -92,13 +92,16 @@ pub struct Tracks {
 }
 
 /// One track's settings for the audio half: whether its clips play
-/// through its arp, where its arp plays, and whether it records pad
-/// pressure.
+/// through its arp, where its arp plays, whether it records pad
+/// pressure, and its live transpose.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TrackSet {
     pub through_arp: bool,
     pub dest: DestId,
     pub record_touch: bool,
+    /// Its live transpose (sequencer S4): the pads' notes shift where they
+    /// become notes ([`crate::time::TimeHost::transpose`]).
+    pub transpose: mpfree_seq::Transpose,
 }
 
 impl Tracks {
@@ -113,6 +116,7 @@ impl Tracks {
                 through_arp: track.through_arp,
                 dest: track.dest,
                 record_touch: track.record_touch,
+                transpose: track.transpose,
             };
         }
         t
