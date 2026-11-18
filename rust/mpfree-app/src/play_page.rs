@@ -2988,7 +2988,11 @@ impl PlayPage {
         }
         self.throws[i] = down;
         Some(match def.fx {
-            Some(fx) => PlayFx::Throw { fx, down },
+            Some(fx) => PlayFx::Throw {
+                fx,
+                down,
+                how: None,
+            },
             None => PlayFx::Drop(if down { self.drum_pads() } else { 0 }),
         })
     }

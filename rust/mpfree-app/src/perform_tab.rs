@@ -15,20 +15,22 @@
 //!   its throw while the finger is down. A hit on the hardware picks the
 //!   pad too, and plays a throw while held: nothing else a pad does
 //!   happens here, so the set can be set up while a song plays.
-//! - **What B2 does**: Throw, Loop key, Loop mute, Track mute or Scene;
-//!   under it the eight choices of that kind (Play's throws, Loops 1 to 8,
-//!   the tracks, the scenes), and the **Pad** list with its settings (a
-//!   throw's effect and Hold) and what a hit does.
-//! - **Copy**, **Paste** and **Clear** work on the pad picked. Each edit is
-//!   one UNDO step; SHIFT + UNDO redoes. The history is this view's own,
-//!   kept until the project changes.
+//! - **What B2 does**: Throw, Macro, Loop key, Loop mute, Track mute or
+//!   Scene; under it the eight choices of that kind (Play's throws, the
+//!   eight macros, Loops 1 to 8, the tracks, the scenes), and the **Pad**
+//!   list with its settings (a throw's effect, Hold, Starts and Let go; a
+//!   macro's value) and what a hit does.
+//! - **Copy**, **Paste** and **Clear** work on the pad picked; **Name
+//!   page** types the page's name on the text keyboard. Each edit is one
+//!   UNDO step; SHIFT + UNDO redoes. The history is this view's own, kept
+//!   until the project changes.
 //!
 //! The screen keeps a copy of the set (the app sends it at the start, when
 //! a project opens and after each edit); an edit goes to the app as
 //! [`FromUi::PerformPad`], which saves it with the project.
 
 use crate::gui::FromUi;
-use crate::perform_pads::{Hold, PadAction, PerformSet, Throw, PADS, PAGES};
+use crate::perform_pads::{Hold, LetGo, PadAction, PerformSet, Starts, Throw, PADS, PAGES};
 use crate::play_page::THROW_LIST;
 use mpfree_sampler_ui::widgets::{
     ButtonRow, KitTracks, PadBar, PadCell, PadMap, SectionChip, SectionChips, Setting, SettingList,
@@ -66,11 +68,22 @@ pub const HINT: &str = "Perform pads: one set for the project   ·   A-H: its pa
 const COPY: usize = 0;
 const PASTE: usize = 1;
 const CLEAR: usize = 2;
+const NAME: usize = 3;
+
+/// The most characters a page's name may have.
+pub const MAX_PAGE_NAME: usize = 24;
+
+/// Macros a pad can hold: the mod engine's.
+const MACROS: usize = mpfree_mod::MACROS;
+
+/// A macro pad's value steps by this much (%) on - / + and the wheel.
+const VALUE_STEP: i32 = 5;
 
 /// What a Perform pad can do, in the type chips' order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Throw,
+    Macro,
     LoopKey,
     LoopMute,
     TrackMute,
@@ -78,8 +91,9 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 5] = [
+    pub const ALL: [Kind; 6] = [
         Kind::Throw,
+        Kind::Macro,
         Kind::LoopKey,
         Kind::LoopMute,
         Kind::TrackMute,
@@ -90,6 +104,7 @@ impl Kind {
     pub fn label(self) -> &'static str {
         match self {
             Kind::Throw => "Throw",
+            Kind::Macro => "Macro",
             Kind::LoopKey => "Loop key",
             Kind::LoopMute => "Loop mute",
             Kind::TrackMute => "Track mute",
@@ -101,6 +116,7 @@ impl Kind {
     fn sub(self) -> &'static str {
         match self {
             Kind::Throw => "an effect",
+            Kind::Macro => "knobs held",
             Kind::LoopKey => "a loop's steps",
             Kind::LoopMute => "a loop's mute",
             Kind::TrackMute => "a track's mute",
@@ -113,6 +129,7 @@ impl Kind {
         Some(match a {
             PadAction::None => return None,
             PadAction::Throw(_) => Kind::Throw,
+            PadAction::Macro { .. } => Kind::Macro,
             PadAction::LoopKey(_) => Kind::LoopKey,
             PadAction::LoopMute(_) => Kind::LoopMute,
             PadAction::Mute(_) => Kind::TrackMute,
@@ -127,10 +144,11 @@ impl Kind {
             (k, a) if Kind::of(a) == Some(k) => a,
             (Kind::LoopKey, PadAction::LoopMute(n)) => PadAction::LoopKey(n),
             (Kind::LoopMute, PadAction::LoopKey(n)) => PadAction::LoopMute(n),
-            (Kind::Throw, _) => PadAction::Throw(Throw {
-                index: 0,
-                hold: Hold::WhileHeld,
-            }),
+            (Kind::Throw, _) => PadAction::Throw(Throw::new(0, Hold::WhileHeld)),
+            (Kind::Macro, _) => PadAction::Macro {
+                card: 0,
+                value: 100,
+            },
             (Kind::LoopKey, _) => PadAction::LoopKey(0),
             (Kind::LoopMute, _) => PadAction::LoopMute(0),
             (Kind::TrackMute, _) => PadAction::Mute(0),
@@ -139,13 +157,16 @@ impl Kind {
     }
 }
 
-/// The project's tracks and scenes as the view names them.
+/// The project's tracks, scenes and macros as the view names them.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Names {
     /// Each track's name and what it plays ("Kit", "FM · Glass Keys").
     pub tracks: Vec<(String, String)>,
     /// Each scene row's name, as far as the project names them.
     pub scenes: Vec<String>,
+    /// Each macro's name ("Macro 3" when not named) and how many knobs it
+    /// moves, as far as the screen knows them.
+    pub macros: Vec<(String, usize)>,
 }
 
 impl Names {
@@ -161,6 +182,42 @@ impl Names {
             None => format!("Scene {}", n + 1),
         }
     }
+
+    /// Macro `m`'s own name, if it has one other than "Macro n".
+    fn macro_own(&self, m: usize) -> Option<&str> {
+        let plain = format!("Macro {}", m + 1);
+        self.macros
+            .get(m)
+            .map(|(n, _)| n.as_str())
+            .filter(|n| !n.is_empty() && *n != plain)
+    }
+
+    /// Macro `m` on its pad: its own name ("Dark"), else "Macro 3".
+    fn macro_name(&self, m: usize) -> String {
+        self.macro_own(m)
+            .map_or_else(|| format!("Macro {}", m + 1), str::to_string)
+    }
+
+    /// Macro `m` in a sentence: "Macro 3 · Dark", or "Macro 3".
+    fn macro_full(&self, m: usize) -> String {
+        match self.macro_own(m) {
+            Some(n) => format!("Macro {} · {n}", m + 1),
+            None => format!("Macro {}", m + 1),
+        }
+    }
+
+    /// The knobs macro `m` moves.
+    fn knobs(&self, m: usize) -> usize {
+        self.macros.get(m).map_or(0, |(_, k)| *k)
+    }
+}
+
+/// "1 knob", "4 knobs".
+fn knobs_text(k: usize) -> String {
+    match k {
+        1 => "1 knob".to_string(),
+        k => format!("{k} knobs"),
+    }
 }
 
 /// Scene rows a pad can launch: the grid's rows.
@@ -168,13 +225,20 @@ const SCENES: usize = mpfree_seq::scenes::SCENES;
 /// Loops a key can be.
 const LOOPS: usize = mpfree_looper::MAX_LOOPS;
 
-/// One edit, for UNDO.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Edit {
-    page: usize,
-    pad: usize,
-    before: PadAction,
-    after: PadAction,
+/// One edit, for UNDO: a pad's action, or a page's name.
+#[derive(Clone, Debug, PartialEq)]
+enum Edit {
+    Pad {
+        page: usize,
+        pad: usize,
+        before: PadAction,
+        after: PadAction,
+    },
+    Name {
+        page: usize,
+        before: String,
+        after: String,
+    },
 }
 
 /// What the view asks of the screen.
@@ -182,9 +246,11 @@ struct Edit {
 pub enum Act {
     /// For the app.
     Send(FromUi),
-    /// Play's throw `i` (in [`THROW_LIST`]) held or let go: a finger on
-    /// the map's pad.
-    Hear(usize, bool),
+    /// A throw or a macro pad (`a`) held or let go: a finger on the
+    /// map's pad.
+    Hear(PadAction, bool),
+    /// Name page `n` (0 is A) on the text keyboard: its name now.
+    Name(usize, String),
     /// A line for the hint and the log.
     Tell(String),
 }
@@ -205,8 +271,8 @@ pub struct PerformTab {
     built: bool,
     copied: Option<PadAction>,
     lit: [bool; PADS],
-    /// The throw a finger on the map's pad plays.
-    hearing: Option<usize>,
+    /// The throw or macro a finger on the map's pad plays.
+    hearing: Option<PadAction>,
     done: Vec<Edit>,
     undone: Vec<Edit>,
 }
@@ -221,6 +287,7 @@ pub fn action_name(a: PadAction, names: &Names) -> String {
     match a {
         PadAction::None => String::new(),
         PadAction::Throw(t) => t.name().to_string(),
+        PadAction::Macro { card, .. } => names.macro_name(usize::from(card)),
         PadAction::LoopKey(n) | PadAction::LoopMute(n) => format!("Loop {}", n + 1),
         PadAction::Mute(t) => names.track(usize::from(t)),
         PadAction::Scene(n) => names.scene(usize::from(n)),
@@ -232,6 +299,41 @@ fn hold_text(h: Hold) -> &'static str {
     match h {
         Hold::WhileHeld => "While held",
         Hold::Latch => "Latch",
+        Hold::Bar => "1 bar",
+    }
+}
+
+/// A throw's Starts in words.
+fn starts_text(s: Starts) -> &'static str {
+    match s {
+        Starts::AtOnce => "At once",
+        Starts::Sixteenth => "Next 1/16",
+        Starts::Beat => "Next beat",
+    }
+}
+
+/// A throw's Let go in words.
+fn let_go_text(l: LetGo) -> &'static str {
+    match l {
+        LetGo::RingOut => "Ring out",
+        LetGo::Cut => "Cut",
+    }
+}
+
+/// When a throw starts, in a sentence: "from the next 1/16".
+fn starts_words(s: Starts) -> &'static str {
+    match s {
+        Starts::AtOnce => "at once",
+        Starts::Sixteenth => "from the next 1/16",
+        Starts::Beat => "from the next beat",
+    }
+}
+
+/// What a throw's tail does when it ends, in a sentence.
+fn let_go_words(l: LetGo) -> &'static str {
+    match l {
+        LetGo::RingOut => "it rings out",
+        LetGo::Cut => "it stops at once, tail and all",
     }
 }
 
@@ -242,7 +344,12 @@ pub fn action_summary(a: PadAction, names: &Names) -> String {
         PadAction::Throw(t) => match t.hold {
             Hold::WhileHeld => "Throw · while held, on the master".to_string(),
             Hold::Latch => "Throw · latched, on the master".to_string(),
+            Hold::Bar => "Throw · for a bar, on the master".to_string(),
         },
+        PadAction::Macro { card, value } => format!(
+            "Macro · {} at {value} % while held",
+            names.macro_full(usize::from(card))
+        ),
         PadAction::LoopKey(n) => format!("Loop key · the looper's Loop {}", n + 1),
         PadAction::LoopMute(n) => format!("Loop mute · the looper's Loop {}", n + 1),
         PadAction::Mute(t) => format!("Track mute · {}", names.track(usize::from(t))),
@@ -256,15 +363,42 @@ pub fn hit_text(label: &str, a: PadAction, names: &Names) -> String {
         PadAction::None => format!("Nothing yet: pick what {label} does above."),
         PadAction::Throw(t) => match t.hold {
             Hold::WhileHeld => format!(
-                "Held, it plays {} on the master; let go, it rings out. Play's throw cards \
-                 play the same effects.",
-                t.name()
+                "Held, it plays {} on the master {}; let go, {}. Play's throw cards play the \
+                 same effects.",
+                t.name(),
+                starts_words(t.starts),
+                let_go_words(t.let_go)
             ),
             Hold::Latch => format!(
-                "A hit starts {} on the master and the next lets it go (it rings out).",
-                t.name()
+                "A hit starts {} on the master {} and the next lets it go ({}).",
+                t.name(),
+                starts_words(t.starts),
+                let_go_words(t.let_go)
+            ),
+            Hold::Bar => format!(
+                "A hit plays {} on the master for a bar {}, however briefly the pad is held, \
+                 and a hit while it plays starts it again; then {}.",
+                t.name(),
+                starts_words(t.starts),
+                let_go_words(t.let_go)
             ),
         },
+        PadAction::Macro { card, value } => {
+            let m = usize::from(card);
+            match names.knobs(m) {
+                0 => format!(
+                    "Held, it turns {} to {value} %, but the macro moves no knobs yet: put \
+                     some on it from an effect's knobs in the chain editor.",
+                    names.macro_full(m)
+                ),
+                k => format!(
+                    "Held, it turns {} to {value} % and its {} with it; let go, they go back \
+                     where they were.",
+                    names.macro_full(m),
+                    knobs_text(k)
+                ),
+            }
+        }
         PadAction::LoopKey(n) => format!(
             "A hit is Loop {}'s next step, as a tap on its ring: record from the next bar \
              line, end the first pass, overdub, play. Held for a second, it clears the loop.",
@@ -299,8 +433,12 @@ fn action_color(a: PadAction) -> Color {
         }
         PadAction::Mute(_) => mpfree_ui::draw::FX,
         PadAction::Scene(_) => mpfree_ui::draw::KNOB[1],
+        PadAction::Macro { .. } => MACRO_COLOR,
     }
 }
+
+/// A macro pad's violet.
+const MACRO_COLOR: Color = Color::rgb(0xB080F0);
 
 /// A pad's cell on the map.
 fn cell(page: usize, pad: usize, a: PadAction, names: &Names) -> PadCell {
@@ -310,9 +448,12 @@ fn cell(page: usize, pad: usize, a: PadAction, names: &Names) -> PadCell {
             match t.hold {
                 Hold::WhileHeld => "master".to_string(),
                 Hold::Latch => "latch · master".to_string(),
+                Hold::Bar => "1 bar · master".to_string(),
             },
             Some("THROW"),
         ),
+        // The knob count is on the chips and the bar: a cell is narrow.
+        PadAction::Macro { value, .. } => (format!("to {value} %"), Some("MACRO")),
         PadAction::LoopKey(_) => ("its key".to_string(), Some("LOOP")),
         PadAction::LoopMute(_) => ("its mute".to_string(), Some("LOOP MUTE")),
         PadAction::Mute(_) => ("track mute".to_string(), Some("MUTE")),
@@ -360,7 +501,10 @@ impl PerformTab {
             ui.add(KITS, KitTracks::new());
         }
         ui.add(MAP, PadMap::new("Perform set"));
-        ui.add(BUTTONS, ButtonRow::new(&["Copy", "Paste", "Clear"]));
+        ui.add(
+            BUTTONS,
+            ButtonRow::new(&["Copy", "Paste", "Clear", "Name page"]),
+        );
         ui.add(TYPE, SectionChips::new(&Kind::ALL.map(Kind::label)));
         ui.add(PICK_A, SectionChips::new(&[]));
         ui.add(PICK_B, SectionChips::new(&[]));
@@ -404,8 +548,13 @@ impl PerformTab {
         match a {
             PadAction::None => {}
             PadAction::Throw(t) => {
-                rows.push(row("Effect", t.name().to_string()));
                 rows.push(row("Hold", hold_text(t.hold).to_string()));
+                rows.push(row("Starts", starts_text(t.starts).to_string()));
+                rows.push(row("Let go", let_go_text(t.let_go).to_string()));
+            }
+            PadAction::Macro { card, value } => {
+                rows.push(row("Macro", names.macro_full(usize::from(card))));
+                rows.push(row("Value", format!("{value} %")));
             }
             PadAction::LoopKey(n) | PadAction::LoopMute(n) => {
                 rows.push(row("Loop", format!("Loop {}", n + 1)));
@@ -433,6 +582,20 @@ impl PerformTab {
                     .collect(),
                 0,
                 Some(usize::from(t.index)),
+            ),
+            PadAction::Macro { card, .. } => (
+                (0..MACROS)
+                    .map(|m| {
+                        let knobs = knobs_text(names.knobs(m));
+                        let sub = match names.macro_own(m) {
+                            Some(n) => format!("{n} · {knobs}"),
+                            None => knobs,
+                        };
+                        chip(format!("Macro {}", m + 1), sub)
+                    })
+                    .collect(),
+                0,
+                Some(usize::from(card)),
             ),
             PadAction::LoopKey(n) | PadAction::LoopMute(n) => (
                 (0..LOOPS)
@@ -510,16 +673,19 @@ impl PerformTab {
                     None => "Paste".to_string(),
                 },
                 "Clear".to_string(),
+                "Name page".to_string(),
             ];
             b.enabled = vec![
                 a != PadAction::None,
                 self.copied.is_some(),
                 a != PadAction::None,
+                true,
             ];
             b.why = vec![
                 format!("{label} has nothing on it to copy"),
                 "Copy a pad first".to_string(),
                 format!("{label} has nothing on it"),
+                String::new(),
             ];
         }
         if let Some(c) = ui.get_mut::<SectionChips>(TYPE) {
@@ -556,7 +722,16 @@ impl PerformTab {
                  pads on Play and the Looper tab, and PAD BANK turns its pages.",
                 (b'A' + page as u8) as char
             );
-            l.footer = Some((format!("{} {live}", hit_text(&label, a, names)), false));
+            // A throw's four rows leave room for what a hit does only.
+            let hit = hit_text(&label, a, names);
+            l.footer = Some((
+                if l.rows.len() > 3 {
+                    hit
+                } else {
+                    format!("{hit} {live}")
+                },
+                false,
+            ));
         }
     }
 
@@ -583,7 +758,7 @@ impl PerformTab {
         if before == after {
             return Vec::new();
         }
-        self.done.push(Edit {
+        self.done.push(Edit::Pad {
             page,
             pad,
             before,
@@ -603,6 +778,33 @@ impl PerformTab {
                 action: after,
             }),
             Act::Tell(line),
+        ]
+    }
+
+    /// Page `page` named `name` (typed on the text keyboard): an UNDO
+    /// step, the app told, and a line for the log.
+    pub fn rename(&mut self, page: usize, name: &str) -> Vec<Act> {
+        let Some(p) = self.set.pages.get_mut(page) else {
+            return Vec::new();
+        };
+        let after: String = name.trim().chars().take(MAX_PAGE_NAME).collect();
+        if p.name == after {
+            return Vec::new();
+        }
+        let before = std::mem::replace(&mut p.name, after.clone());
+        self.done.push(Edit::Name {
+            page,
+            before,
+            after: after.clone(),
+        });
+        self.undone.clear();
+        let letter = (b'A' + page as u8) as char;
+        vec![
+            Act::Send(FromUi::PerformName {
+                page,
+                name: after.clone(),
+            }),
+            Act::Tell(format!("Perform pads: page {letter} named {after}")),
         ]
     }
 
@@ -633,29 +835,61 @@ impl PerformTab {
                 "Nothing to undo on the Perform set".to_string()
             })];
         };
-        to.push(e);
-        let a = if redo { e.after } else { e.before };
-        self.apply(e.page, e.pad, a);
+        to.push(e.clone());
+        let how = if redo { "Redo" } else { "Undo" };
         let mut out = Vec::new();
-        if e.page != self.page {
-            self.page = e.page;
-            out.push(Act::Send(FromUi::PerformPage(e.page)));
-        }
-        self.pad = e.pad;
-        out.push(Act::Send(FromUi::PerformPad {
-            page: e.page,
-            pad: e.pad,
-            action: a,
-        }));
-        let label = pad_label(e.page, e.pad);
-        let what = match a {
-            PadAction::None => "nothing".to_string(),
-            a => edit_text(a, names),
+        let page = match &e {
+            Edit::Pad { page, .. } | Edit::Name { page, .. } => *page,
         };
-        out.push(Act::Tell(format!(
-            "{}: Perform pads {label} back to {what}",
-            if redo { "Redo" } else { "Undo" }
-        )));
+        if page != self.page {
+            self.page = page;
+            out.push(Act::Send(FromUi::PerformPage(page)));
+        }
+        match e {
+            Edit::Pad {
+                page,
+                pad,
+                before,
+                after,
+            } => {
+                let a = if redo { after } else { before };
+                self.apply(page, pad, a);
+                self.pad = pad;
+                out.push(Act::Send(FromUi::PerformPad {
+                    page,
+                    pad,
+                    action: a,
+                }));
+                let label = pad_label(page, pad);
+                let what = match a {
+                    PadAction::None => "nothing".to_string(),
+                    a => edit_text(a, names),
+                };
+                out.push(Act::Tell(format!(
+                    "{how}: Perform pads {label} back to {what}"
+                )));
+            }
+            Edit::Name {
+                page,
+                before,
+                after,
+            } => {
+                let name = if redo { after } else { before };
+                if let Some(p) = self.set.pages.get_mut(page) {
+                    p.name = name.clone();
+                }
+                out.push(Act::Send(FromUi::PerformName {
+                    page,
+                    name: name.clone(),
+                }));
+                let letter = (b'A' + page as u8) as char;
+                out.push(Act::Tell(if name.is_empty() {
+                    format!("{how}: Perform pads page {letter} back to no name")
+                } else {
+                    format!("{how}: Perform pads page {letter} back to {name}")
+                }));
+            }
+        }
         out
     }
 
@@ -663,11 +897,18 @@ impl PerformTab {
     /// steps UNDO takes back, oldest first, then REDO's) and the row that
     /// is now.
     pub fn history_rows(&self, names: &Names) -> (Vec<String>, usize) {
-        let row = |e: &Edit| {
-            let label = pad_label(e.page, e.pad);
-            match e.after {
-                PadAction::None => format!("{label} cleared"),
-                a => format!("{label}: {}", edit_text(a, names)),
+        let row = |e: &Edit| match e {
+            Edit::Pad {
+                page, pad, after, ..
+            } => {
+                let label = pad_label(*page, *pad);
+                match *after {
+                    PadAction::None => format!("{label} cleared"),
+                    a => format!("{label}: {}", edit_text(a, names)),
+                }
+            }
+            Edit::Name { page, after, .. } => {
+                format!("Page {} named {after}", (b'A' + *page as u8) as char)
             }
         };
         let mut rows = vec!["Start: the set as it was".to_string()];
@@ -710,14 +951,34 @@ impl PerformTab {
                     k => Kind::ALL[k as usize - 1].action(a),
                 }
             }
-            (1, PadAction::Throw(t)) => PadAction::Throw(Throw {
-                index: stepped(usize::from(t.index), d, THROW_LIST.len()) as u8,
+            (1, PadAction::Throw(t)) => {
+                const HOLDS: [Hold; 3] = [Hold::WhileHeld, Hold::Latch, Hold::Bar];
+                let at = HOLDS.iter().position(|&h| h == t.hold).unwrap_or(0);
+                PadAction::Throw(Throw {
+                    hold: HOLDS[stepped(at, d, HOLDS.len())],
+                    ..t
+                })
+            }
+            (2, PadAction::Throw(t)) => {
+                const STARTS: [Starts; 3] = [Starts::AtOnce, Starts::Sixteenth, Starts::Beat];
+                let at = STARTS.iter().position(|&s| s == t.starts).unwrap_or(1);
+                PadAction::Throw(Throw {
+                    starts: STARTS[stepped(at, d, STARTS.len())],
+                    ..t
+                })
+            }
+            (3, PadAction::Throw(t)) => PadAction::Throw(Throw {
+                let_go: if d > 0 { LetGo::Cut } else { LetGo::RingOut },
                 ..t
             }),
-            (2, PadAction::Throw(t)) => PadAction::Throw(Throw {
-                hold: if d > 0 { Hold::Latch } else { Hold::WhileHeld },
-                ..t
-            }),
+            (1, PadAction::Macro { card, value }) => PadAction::Macro {
+                card: stepped(usize::from(card), d, MACROS) as u8,
+                value,
+            },
+            (2, PadAction::Macro { card, value }) => PadAction::Macro {
+                card,
+                value: (i32::from(value) + d * VALUE_STEP).clamp(0, 100) as u8,
+            },
             (1, PadAction::LoopKey(n)) => {
                 PadAction::LoopKey(stepped(usize::from(n), d, LOOPS) as u8)
             }
@@ -748,6 +1009,10 @@ impl PerformTab {
                 index: n as u8,
                 ..t
             }),
+            PadAction::Macro { value, .. } => PadAction::Macro {
+                card: n.min(MACROS - 1) as u8,
+                value,
+            },
             PadAction::LoopKey(_) => PadAction::LoopKey(n as u8),
             PadAction::LoopMute(_) => PadAction::LoopMute(n as u8),
             PadAction::Mute(_) => PadAction::Mute(n.min(255) as u8),
@@ -778,10 +1043,20 @@ impl PerformTab {
             }
             (MAP, EventKind::Pad { index, down: true }) => {
                 match self.set.page(self.page).action(*index) {
-                    PadAction::Throw(t) => {
-                        let i = usize::from(t.index);
-                        self.hearing = Some(i);
-                        vec![Act::Hear(i, true)]
+                    a @ (PadAction::Throw(_) | PadAction::Macro { .. }) => {
+                        // A latched throw plays while held here, so
+                        // nothing keeps playing.
+                        let a = match a {
+                            PadAction::Throw(t) if t.hold == Hold::Latch => {
+                                PadAction::Throw(Throw {
+                                    hold: Hold::WhileHeld,
+                                    ..t
+                                })
+                            }
+                            a => a,
+                        };
+                        self.hearing = Some(a);
+                        vec![Act::Hear(a, true)]
                     }
                     PadAction::None => Vec::new(),
                     a => vec![Act::Tell(format!(
@@ -792,7 +1067,7 @@ impl PerformTab {
                 }
             }
             (MAP, EventKind::Pad { down: false, .. }) => match self.hearing.take() {
-                Some(i) => vec![Act::Hear(i, false)],
+                Some(a) => vec![Act::Hear(a, false)],
                 None => Vec::new(),
             },
             (BUTTONS, EventKind::Tab(COPY)) => {
@@ -808,6 +1083,10 @@ impl PerformTab {
                 None => Vec::new(),
             },
             (BUTTONS, EventKind::Tab(CLEAR)) => self.edit(self.pad, PadAction::None, names),
+            (BUTTONS, EventKind::Tab(NAME)) => {
+                let page = self.page.min(PAGES - 1);
+                vec![Act::Name(page, self.set.pages[page].name.clone())]
+            }
             (BUTTONS, EventKind::Select(i)) => ui
                 .get::<ButtonRow>(BUTTONS)
                 .and_then(|b| b.why_faint(*i))
@@ -832,10 +1111,25 @@ impl PerformTab {
 fn edit_text(a: PadAction, names: &Names) -> String {
     match a {
         PadAction::None => "nothing".to_string(),
-        PadAction::Throw(t) => match t.hold {
-            Hold::WhileHeld => format!("{}, while held", t.name()),
-            Hold::Latch => format!("{}, latched", t.name()),
-        },
+        PadAction::Throw(t) => {
+            let mut text = match t.hold {
+                Hold::WhileHeld => format!("{}, while held", t.name()),
+                Hold::Latch => format!("{}, latched", t.name()),
+                Hold::Bar => format!("{}, for a bar", t.name()),
+            };
+            match t.starts {
+                Starts::AtOnce => text.push_str(", at once"),
+                Starts::Sixteenth => {}
+                Starts::Beat => text.push_str(", on the beat"),
+            }
+            if t.let_go == LetGo::Cut {
+                text.push_str(", cut");
+            }
+            text
+        }
+        PadAction::Macro { card, value } => {
+            format!("{} at {value} %", names.macro_full(usize::from(card)))
+        }
         PadAction::LoopKey(n) => format!("Loop {}'s key", n + 1),
         PadAction::LoopMute(n) => format!("Loop {}'s mute", n + 1),
         PadAction::Mute(t) => format!("{}'s mute", names.track(usize::from(t))),
@@ -861,6 +1155,11 @@ mod tests {
                 ("Keys".into(), String::new()),
             ],
             scenes: vec![String::new(), "Drop".into()],
+            macros: vec![
+                ("Macro 1".into(), 0),
+                ("Macro 2".into(), 2),
+                ("Dark".into(), 4),
+            ],
         }
     }
 
@@ -887,10 +1186,7 @@ mod tests {
             Kind::Scene.action(PadAction::LoopKey(5)),
             PadAction::Scene(0)
         );
-        let t = PadAction::Throw(Throw {
-            index: 3,
-            hold: Hold::Latch,
-        });
+        let t = PadAction::Throw(Throw::new(3, Hold::Latch));
         assert_eq!(Kind::Throw.action(t), t);
         assert_eq!(Kind::of(PadAction::None), None);
     }
@@ -935,10 +1231,7 @@ mod tests {
         tab.undo(false, &n);
         assert_eq!(
             tab.picked(),
-            PadAction::Throw(Throw {
-                index: 1,
-                hold: Hold::WhileHeld
-            })
+            PadAction::Throw(Throw::new(1, Hold::WhileHeld))
         );
         let acts = tab.undo(false, &n);
         assert_eq!(
@@ -958,23 +1251,210 @@ mod tests {
             ..PerformTab::default()
         };
         let n = names();
+        // The effect is one of the eight chips; Hold is the list's row 1.
+        tab.choose(1, &n);
         tab.step(1, 1, &n);
-        tab.step(2, 1, &n);
-        assert_eq!(
-            tab.picked(),
-            PadAction::Throw(Throw {
-                index: 1,
-                hold: Hold::Latch
-            })
-        );
-        // The ends hold.
-        assert!(tab.step(2, 1, &n).is_empty());
+        assert_eq!(tab.picked(), PadAction::Throw(Throw::new(1, Hold::Latch)));
+        // Latch, then a bar; the ends hold.
+        tab.step(1, 1, &n);
+        assert!(tab.step(1, 1, &n).is_empty());
+        tab.step(1, -1, &n);
         let a = tab.picked();
         assert_eq!(
             hit_text("B1", a, &n),
-            "A hit starts Reverb wash on the master and the next lets it go (it rings out)."
+            "A hit starts Reverb wash on the master from the next 1/16 and the next lets it go \
+             (it rings out)."
         );
         assert_eq!(action_summary(a, &n), "Throw · latched, on the master");
+    }
+
+    #[test]
+    fn a_throw_steps_its_start_and_let_go_and_says_what_a_hit_does() {
+        let mut tab = PerformTab {
+            page: 1,
+            pad: 1,
+            ..PerformTab::default()
+        };
+        let n = names();
+        let rows = |tab: &PerformTab| {
+            PerformTab::rows(tab.picked(), &n)
+                .into_iter()
+                .map(|r| format!("{}: {}", r.name, r.value))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            rows(&tab),
+            [
+                "Pad does: Throw",
+                "Hold: While held",
+                "Starts: Next 1/16",
+                "Let go: Ring out"
+            ]
+        );
+        // A bar, on the beat, cut.
+        tab.step(1, 1, &n);
+        tab.step(1, 1, &n);
+        tab.step(2, 1, &n);
+        let acts = tab.step(3, 1, &n);
+        assert!(acts.contains(&Act::Tell(
+            "Perform pads B2: Reverb wash, for a bar, on the beat, cut".into()
+        )));
+        assert_eq!(
+            tab.picked(),
+            PadAction::Throw(Throw {
+                starts: Starts::Beat,
+                let_go: LetGo::Cut,
+                ..Throw::new(1, Hold::Bar)
+            })
+        );
+        assert_eq!(
+            hit_text("B2", tab.picked(), &n),
+            "A hit plays Reverb wash on the master for a bar from the next beat, however \
+             briefly the pad is held, and a hit while it plays starts it again; then it stops \
+             at once, tail and all."
+        );
+        assert_eq!(
+            cell(1, 1, tab.picked(), &n).detail,
+            "1 bar · master",
+            "the map says it plays a bar"
+        );
+        // At once, the other way.
+        tab.step(2, -1, &n);
+        tab.step(2, -1, &n);
+        assert!(tab.step(2, -1, &n).is_empty(), "the end holds");
+        assert_eq!(rows(&tab)[2], "Starts: At once");
+    }
+
+    #[test]
+    fn a_macro_pad_picks_its_macro_and_value() {
+        let mut tab = PerformTab {
+            page: 2,
+            ..PerformTab::default()
+        };
+        let n = names();
+        // C1, empty: made a macro pad, Macro 1 at 100 %.
+        let i = Kind::ALL.iter().position(|&k| k == Kind::Macro).unwrap();
+        let mut ui = Ui::new(
+            mpfree_ui::Theme::dark(),
+            mpfree_ui::Fonts::embedded(),
+            1280,
+            800,
+        );
+        let ev = UiEvent {
+            widget: TYPE.to_string(),
+            kind: EventKind::Tab(i),
+        };
+        tab.event(&mut ui, &ev, &n);
+        assert_eq!(
+            tab.picked(),
+            PadAction::Macro {
+                card: 0,
+                value: 100
+            }
+        );
+        // The choices: the eight macros, named and with their knobs.
+        let (chips, first, now) = PerformTab::choices(tab.picked(), &n);
+        assert_eq!((chips.len(), first, now), (8, 0, Some(0)));
+        assert_eq!(chips[1].sub, "2 knobs");
+        assert_eq!(
+            (chips[2].name.as_str(), chips[2].sub.as_str()),
+            ("Macro 3", "Dark · 4 knobs")
+        );
+        assert_eq!(chips[5].sub, "0 knobs");
+        // Macro 3, then down to 90 %.
+        tab.choose(2, &n);
+        tab.step(2, -1, &n);
+        tab.step(2, -1, &n);
+        assert_eq!(tab.picked(), PadAction::Macro { card: 2, value: 90 });
+        assert_eq!(action_name(tab.picked(), &n), "Dark");
+        assert_eq!(
+            action_summary(tab.picked(), &n),
+            "Macro · Macro 3 · Dark at 90 % while held"
+        );
+        assert_eq!(
+            hit_text("C1", tab.picked(), &n),
+            "Held, it turns Macro 3 · Dark to 90 % and its 4 knobs with it; let go, they go \
+             back where they were."
+        );
+        assert_eq!(cell(2, 0, tab.picked(), &n).detail, "to 90 %");
+        // A macro with no knobs says so in place.
+        tab.step(1, 1, &n);
+        assert!(hit_text("C1", tab.picked(), &n).contains("moves no knobs yet"));
+        // A finger on its pad holds it while down.
+        let down = UiEvent {
+            widget: MAP.to_string(),
+            kind: EventKind::Pad {
+                index: 0,
+                down: true,
+            },
+        };
+        let up = UiEvent {
+            widget: MAP.to_string(),
+            kind: EventKind::Pad {
+                index: 0,
+                down: false,
+            },
+        };
+        let a = tab.picked();
+        assert_eq!(tab.event(&mut ui, &down, &n), [Act::Hear(a, true)]);
+        assert_eq!(tab.event(&mut ui, &up, &n), [Act::Hear(a, false)]);
+    }
+
+    #[test]
+    fn name_page_types_the_name_and_undo_takes_it_back() {
+        let mut tab = PerformTab {
+            page: 2,
+            ..PerformTab::default()
+        };
+        let n = names();
+        let mut ui = Ui::new(
+            mpfree_ui::Theme::dark(),
+            mpfree_ui::Fonts::embedded(),
+            1280,
+            800,
+        );
+        let ev = UiEvent {
+            widget: BUTTONS.to_string(),
+            kind: EventKind::Tab(NAME),
+        };
+        assert_eq!(tab.event(&mut ui, &ev, &n), [Act::Name(2, String::new())]);
+        let acts = tab.rename(2, "  Drops  ");
+        assert_eq!(
+            sends(&acts),
+            [&FromUi::PerformName {
+                page: 2,
+                name: "Drops".into()
+            }]
+        );
+        assert!(acts.contains(&Act::Tell("Perform pads: page C named Drops".into())));
+        assert_eq!(tab.set.page_name(2), "Page C · Drops");
+        assert!(
+            tab.rename(2, "Drops").is_empty(),
+            "the same name is no step"
+        );
+        assert_eq!(tab.history_rows(&n).0[1], "Page C named Drops");
+        // UNDO from page A: back on page C, with no name.
+        tab.page = 0;
+        let acts = tab.undo(false, &n);
+        assert_eq!(
+            sends(&acts),
+            [
+                &FromUi::PerformPage(2),
+                &FromUi::PerformName {
+                    page: 2,
+                    name: String::new()
+                }
+            ]
+        );
+        assert!(acts.contains(&Act::Tell(
+            "Undo: Perform pads page C back to no name".into()
+        )));
+        assert_eq!(tab.set.page_name(2), "Page C");
+        tab.undo(true, &n);
+        assert_eq!(tab.set.page_name(2), "Page C · Drops");
+        // A long name is cut to fit.
+        tab.rename(3, &"x".repeat(40));
+        assert_eq!(tab.set.pages[3].name.len(), MAX_PAGE_NAME);
     }
 
     #[test]

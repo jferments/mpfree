@@ -29,6 +29,18 @@
 //! like any other, so a step can lock a stutter on (a parameter lock) and
 //! a recorded move can play a pad back.
 //!
+//! Each pad has three settings for how it plays, read when it is pressed
+//! or let go (the Perform set's throw pads set them for each hit):
+//!
+//! - **Starts** ([`ids::starts`]): on the bank's Punch in grid (the
+//!   default), at once, on the next 1/16 or on the next beat.
+//! - **Let go** ([`ids::let_go`]): Ring out (the default) lets an echo's
+//!   repeats and a wash's tail carry on; Cut fades them out over the Fade
+//!   time, unless another pad still holds them.
+//! - **Plays** ([`ids::plays`]): while held (the default), or for a bar
+//!   (four beats) from its start however briefly it is held. A press while
+//!   it plays starts it again.
+//!
 //! Everything is counted in frames from the moment an effect starts, and
 //! the lengths are fixed (from the tempo) at that moment, so the output is
 //! the same, sample for sample, however a stream is cut into blocks. Entry
@@ -74,6 +86,24 @@ pub mod ids {
     /// After the Holds: the overall mix, 0 to 100 % (0 is the input
     /// exactly, the echo and wash tails included); id 85.
     pub const MIX: u16 = hold(super::SLOTS);
+    /// Pad `k`'s Starts (a choice of [`super::STARTS`]): 0 on the bank's
+    /// Punch in grid, 1 at once, 2 on the next 1/16, 3 on the next beat
+    /// (while the transport plays; stopped, every pad starts at once).
+    /// Read when the pad is pressed; ids 86 to 101.
+    pub const fn starts(k: usize) -> u16 {
+        MIX + 1 + k as u16
+    }
+    /// Pad `k`'s Let go (a choice of [`super::LET_GO`]): 0 rings out, 1
+    /// cuts an echo's repeats or a wash's tail over the Fade time. Read
+    /// when the pad is let go; ids 102 to 117.
+    pub const fn let_go(k: usize) -> u16 {
+        starts(super::SLOTS) + k as u16
+    }
+    /// Pad `k`'s Plays (a choice of [`super::PLAYS`]): 0 while held, 1 for
+    /// a bar from its start. Read when the pad is pressed; ids 118 to 133.
+    pub const fn plays(k: usize) -> u16 {
+        let_go(super::SLOTS) + k as u16
+    }
 }
 
 /// A slot's state, as its read-only STATE parameter reports it.
@@ -123,6 +153,14 @@ pub const AMOUNT_MEANS: &[&str] = &[
 ];
 
 const QUANTISE: &[&str] = &["Off", "1/32", "1/16", "1/8", "1/4", "1/2", "1 bar"];
+/// A pad's Starts choices ([`ids::starts`]).
+pub const STARTS: &[&str] = &["Punch in", "At once", "Next 1/16", "Next beat"];
+/// A pad's Let go choices ([`ids::let_go`]).
+pub const LET_GO: &[&str] = &["Ring out", "Cut"];
+/// A pad's Plays choices ([`ids::plays`]).
+pub const PLAYS: &[&str] = &["While held", "1 bar"];
+/// Beats in the bar a pad set to play for a bar plays for.
+const BAR_BEATS: f64 = 4.0;
 const QUANTISE_BEATS: [f64; 7] = [0.0, 0.125, 0.25, 0.5, 1.0, 2.0, 4.0];
 
 /// Note values for a slot's LENGTH choice.
@@ -298,13 +336,53 @@ macro_rules! bank {
                 curve: Curve::Linear,
                 readonly: false,
             },
+            $(
+                ParamInfo {
+                    id: ids::starts($k),
+                    name: "Starts",
+                    group: $group,
+                    min: 0.0,
+                    max: (STARTS.len() - 1) as f32,
+                    default: 0.0,
+                    unit: Unit::None,
+                    curve: Curve::Choice(STARTS),
+                    readonly: false,
+                },
+            )*
+            $(
+                ParamInfo {
+                    id: ids::let_go($k),
+                    name: "Let go",
+                    group: $group,
+                    min: 0.0,
+                    max: (LET_GO.len() - 1) as f32,
+                    default: 0.0,
+                    unit: Unit::None,
+                    curve: Curve::Choice(LET_GO),
+                    readonly: false,
+                },
+            )*
+            $(
+                ParamInfo {
+                    id: ids::plays($k),
+                    name: "Plays",
+                    group: $group,
+                    min: 0.0,
+                    max: (PLAYS.len() - 1) as f32,
+                    default: 0.0,
+                    unit: Unit::None,
+                    curve: Curve::Choice(PLAYS),
+                    readonly: false,
+                },
+            )*
         ]
     };
 }
 
 /// How many parameters: the two globals, four per pad, then the DJ filter,
-/// the echo and its time, then a Hold per pad, then the mix.
-const COUNT: usize = 2 + 4 * SLOTS + 3 + SLOTS + 1;
+/// the echo and its time, then a Hold per pad, then the mix, then each
+/// pad's Starts, Let go and Plays.
+const COUNT: usize = 2 + 4 * SLOTS + 3 + SLOTS + 1 + 3 * SLOTS;
 /// The ids from here on are not a pad's.
 const PADS_END: u16 = ids::slot(SLOTS);
 /// The first Hold id.
@@ -476,6 +554,10 @@ struct Slot {
     waiting: bool,
     at: i64,
     on: bool,
+    /// Plays for a bar (its Plays when pressed): a finger or Hold letting
+    /// go doesn't end it; frame `until` does.
+    timed: bool,
+    until: i64,
     seq: u32,
     fx: Fx,
     len: u64,
@@ -501,6 +583,8 @@ impl Slot {
             waiting: false,
             at: 0,
             on: false,
+            timed: false,
+            until: i64::MAX,
             seq: 0,
             fx: Fx::Off,
             len: 1,
@@ -680,6 +764,9 @@ pub struct Perform {
     echo_fb: f32,
     echo_awake: bool,
     echo_quiet: u64,
+    /// A Cut let go: the frame the echo's fade out starts on (`i64::MAX`
+    /// when none).
+    echo_cut: i64,
     send: [Vec<f32>; 2],
     /// The continuous echo send (the ECHO parameter), gliding.
     echo_amt: Smooth,
@@ -693,6 +780,9 @@ pub struct Perform {
     wash_last: usize,
     wash_awake: bool,
     wash_quiet: usize,
+    /// A Cut let go: the frame the wash's fade out starts on (`i64::MAX`
+    /// when none).
+    wash_cut: i64,
     /// The overall mix, gliding, and each frame's value this block (the
     /// echo, added later, is scaled by it too).
     mix: Smooth,
@@ -745,6 +835,7 @@ impl Perform {
             echo_fb: f32::NAN,
             echo_awake: false,
             echo_quiet: u64::MAX,
+            echo_cut: i64::MAX,
             send: [
                 vec![0.0; mpfree_node::MAX_BLOCK],
                 vec![0.0; mpfree_node::MAX_BLOCK],
@@ -757,6 +848,7 @@ impl Perform {
             wash_last: 0,
             wash_awake: false,
             wash_quiet: 0,
+            wash_cut: i64::MAX,
             mix: Smooth::new(1.0),
             mixv: vec![1.0; mpfree_node::MAX_BLOCK],
         };
@@ -799,9 +891,15 @@ impl Perform {
     }
 
     /// Holds a pad: works out the frame it starts on (the next grid line
-    /// while the transport plays).
+    /// while the transport plays: the bank's Punch in, or the pad's own
+    /// Starts).
     fn press(&mut self, ctx: &Ctx, k: usize, offset: usize, f: i64) {
-        let q = QUANTISE_BEATS[(self.v[ids::QUANTISE as usize] as usize).min(6)];
+        let q = match self.v[ids::starts(k) as usize] as usize {
+            1 => 0.0,
+            2 => 0.25,
+            3 => 1.0,
+            _ => QUANTISE_BEATS[(self.v[ids::QUANTISE as usize] as usize).min(6)],
+        };
         let at = if q <= 0.0 || !ctx.playing || ctx.bpm <= 0.0 {
             f
         } else {
@@ -812,25 +910,51 @@ impl Perform {
         };
         let s = &mut self.slots[k];
         if s.on {
-            // A press on a held pad starts it again.
-            self.release(k);
+            // A press on a held pad (or one playing its bar) starts it
+            // again.
+            self.end(k, f);
         }
+        let timed = self.v[ids::plays(k) as usize] >= 0.5;
         let s = &mut self.slots[k];
         s.waiting = true;
         s.at = at;
+        s.timed = timed;
+        s.until = i64::MAX;
         self.next_at = self.next_at.min(at);
     }
 
-    fn release(&mut self, k: usize) {
+    /// A finger or a Hold let go of pad `k` at frame `f`: it stops, unless
+    /// it plays for a bar (then its bar, waiting or playing, carries on).
+    fn release(&mut self, k: usize, f: i64) {
+        let s = &self.slots[k];
+        if s.timed && (s.on || s.waiting) {
+            return;
+        }
+        self.end(k, f);
+    }
+
+    /// Pad `k` stops at frame `f`. An echo or a wash no other pad holds
+    /// any more fades out from `f` if the pad's Let go is Cut (and the
+    /// ECHO knob isn't sending into the echo).
+    fn end(&mut self, k: usize, f: i64) {
+        let cut = self.v[ids::let_go(k) as usize] >= 0.5;
         let s = &mut self.slots[k];
         s.waiting = false;
+        s.timed = false;
+        s.until = i64::MAX;
         if s.on {
             s.on = false;
             if s.fx == Fx::Echo {
                 self.echo_on &= !(1 << k);
+                if cut && self.echo_on == 0 && self.echo_awake && self.echo_amt.target == 0.0 {
+                    self.echo_cut = f;
+                }
             }
             if s.fx == Fx::Wash {
                 self.wash_on &= !(1 << k);
+                if cut && self.wash_on == 0 && self.wash_awake {
+                    self.wash_cut = f;
+                }
             }
             self.dirty = true;
         }
@@ -845,29 +969,32 @@ impl Perform {
             NodeEvent::NoteOn { note, velocity } if (note as usize) < SLOTS => {
                 let k = note as usize;
                 if velocity == 0 {
-                    self.note_off(k);
+                    self.note_off(k, f);
                 } else {
                     self.by_note |= 1 << k;
                     self.press(ctx, k, offset, f);
                 }
             }
-            NodeEvent::NoteOff { note } if (note as usize) < SLOTS => self.note_off(note as usize),
-            NodeEvent::AllOff => self.all_off(),
+            NodeEvent::NoteOff { note } if (note as usize) < SLOTS => {
+                self.note_off(note as usize, f)
+            }
+            NodeEvent::AllOff => self.all_off(f),
             _ => {}
         }
     }
 
-    fn note_off(&mut self, k: usize) {
+    fn note_off(&mut self, k: usize, f: i64) {
         self.by_note &= !(1 << k);
         if self.by_param & (1 << k) == 0 {
-            self.release(k);
+            self.release(k, f);
         }
     }
 
-    /// Lets every pad go, fingers and Holds alike.
-    fn all_off(&mut self) {
+    /// Lets every pad go, fingers and Holds alike, and ends the pads
+    /// playing for a bar.
+    fn all_off(&mut self, f: i64) {
         for k in 0..SLOTS {
-            self.release(k);
+            self.end(k, f);
             self.v[ids::hold(k) as usize] = 0.0;
         }
         self.by_note = 0;
@@ -891,17 +1018,26 @@ impl Perform {
         } else {
             self.by_param &= !bit;
             if self.by_note & bit == 0 {
-                self.release(k);
+                self.release(k, f);
             }
         }
     }
 
-    /// Starts the slots whose grid line has come.
+    /// Starts the slots whose grid line has come, and ends those whose
+    /// bar is over.
     fn engage_due(&mut self, ctx: &Ctx, f: i64, piece: &mut usize, i: usize, out: [&mut [f32]; 2]) {
         let bpm = if ctx.bpm > 0.0 { ctx.bpm } else { 120.0 };
         let mut next = i64::MAX;
         let mut echo_started = None;
         for k in 0..SLOTS {
+            if self.slots[k].on && self.slots[k].timed {
+                if self.slots[k].until <= f {
+                    self.end(k, f);
+                } else {
+                    next = next.min(self.slots[k].until);
+                }
+                continue;
+            }
             let s = &mut self.slots[k];
             if !s.waiting {
                 continue;
@@ -923,6 +1059,11 @@ impl Perform {
             s.t = 0;
             s.ph = 0;
             s.hold_ph = 0;
+            if s.timed {
+                let bar = (BAR_BEATS * 60.0 / bpm * self.rate as f64).round() as i64;
+                s.until = f + bar.max(1);
+                next = next.min(s.until);
+            }
             if s.fx.is_tone() {
                 if s.env <= 0.0 {
                     s.svf.reset();
@@ -940,6 +1081,11 @@ impl Perform {
                 echo_started = Some(());
             }
             if s.fx == Fx::Wash {
+                if self.wash_cut != i64::MAX {
+                    // Fed again while a Cut fades it: what was left goes.
+                    self.wash.clear();
+                    self.wash_cut = i64::MAX;
+                }
                 self.wash_on |= 1 << k;
                 self.wash_last = k;
                 self.wash_awake = true;
@@ -954,6 +1100,11 @@ impl Perform {
             // The delay takes the new time from this frame on.
             let [l, r] = out;
             self.wake_echo(ctx, piece, i, l, r);
+            if self.echo_cut != i64::MAX {
+                // Thrown again while a Cut fades it: what was left goes.
+                self.echo.reset();
+                self.echo_cut = i64::MAX;
+            }
         }
     }
 
@@ -1002,9 +1153,31 @@ impl Perform {
         if !self.echo_awake || to <= from {
             return;
         }
+        let fade = if self.echo_cut != i64::MAX {
+            self.fade_frames() as i64
+        } else {
+            0
+        };
         let [sl, sr] = &mut self.send;
         self.echo
             .process(ctx, &[], &mut sl[from..to], &mut sr[from..to]);
+        if self.echo_cut != i64::MAX {
+            // A Cut: the repeats fade out over the Fade time, then the
+            // echo is emptied and sleeps.
+            let at = ctx.frame as i64;
+            for k in from..to {
+                let g = cut_gain(at + k as i64, self.echo_cut, fade);
+                let m = self.mixv[k] * g;
+                l[k] += m * sl[k];
+                r[k] += m * sr[k];
+            }
+            if at + to as i64 >= self.echo_cut + fade {
+                self.echo.reset();
+                self.echo_awake = false;
+                self.echo_cut = i64::MAX;
+            }
+            return;
+        }
         for k in from..to {
             let m = self.mixv[k];
             if m == 1.0 {
@@ -1075,6 +1248,17 @@ impl Perform {
             t = t.max(self.wash.tail_frames());
         }
         t
+    }
+}
+
+/// A Cut's gain at frame `f`: 1 before `start`, then falling to 0 over
+/// `fade` frames.
+#[inline]
+fn cut_gain(f: i64, start: i64, fade: i64) -> f32 {
+    if f < start {
+        1.0
+    } else {
+        (1.0 - (f - start + 1) as f32 / fade.max(1) as f32).max(0.0)
     }
 }
 
@@ -1370,6 +1554,7 @@ impl Node for Perform {
         self.echo_on = 0;
         self.echo_awake = false;
         self.echo_quiet = u64::MAX;
+        self.echo_cut = i64::MAX;
         self.echo_amt.snap(self.echo_amt.target);
         self.dj.reset();
         self.wash.clear();
@@ -1377,6 +1562,7 @@ impl Node for Perform {
         self.wash_on = 0;
         self.wash_awake = false;
         self.wash_quiet = 0;
+        self.wash_cut = i64::MAX;
         self.mix.snap(self.mix.target);
     }
     fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
@@ -1543,8 +1729,20 @@ impl Node for Perform {
                         self.wash_awake = false;
                     }
                 }
-                y[0] += WASH_OUT * w[0];
-                y[1] += WASH_OUT * w[1];
+                let mut g = WASH_OUT;
+                if self.wash_cut != i64::MAX {
+                    // A Cut: the tail fades out over the Fade time, then
+                    // the wash is emptied and sleeps.
+                    let c = cut_gain(f, self.wash_cut, fade as i64);
+                    g *= c;
+                    if c <= 0.0 {
+                        self.wash.clear();
+                        self.wash_awake = false;
+                        self.wash_cut = i64::MAX;
+                    }
+                }
+                y[0] += g * w[0];
+                y[1] += g * w[1];
             }
 
             // The mix: 0 is the input exactly (the echo, added after, is
