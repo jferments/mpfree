@@ -317,6 +317,8 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
          "keys", "Bright Tines", "Strike"),
         ("synth-keys-tone", "Keys · Reed Bite, Tone page: the reed's pickup curve with the stretch a hit swings across",
          "keys", "Reed Bite", "Tone"),
+        ("synth-keys-clav", "Keys · Funk Clav, Clav page: what the bridge pickup hears through the Treble switch, and how long each partial rings",
+         "keys", "Funk Clav", "Clav"),
         ("synth-drawbar", "Drawbar · Jazz Perc, Drawbars page: the registration as bars, the wave it adds up to, third percussion",
          "drawbar", "Jazz Perc", "Drawbars"),
         ("synth-drawbar-rotary", "Drawbar · Gospel, Rotary page: the horn and the drum spinning up to Fast",
