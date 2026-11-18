@@ -51,6 +51,9 @@ Edits never change the clip themselves. They look at the clip and return an `Edi
   - `Chance`, 1 to 100 %.
   - `Cond`, a trig condition (see below). One out of range leaves the step as it is.
   - `Ratchet`, 1 to 8 hits.
+  - `Ramp`, a ratchet's velocity ramp, -126 to 126 (see "Ratchets").
+  - `On`, on or off (see "A step that is off").
+  - `Join`, its own attack, a tie or a slide (see "Ties and slides").
   - `Note`, a melodic step's note: the step's notes move so the lowest is this sound (a pad, or a note number) and the others keep their distance above it, the rows' locks on the step going with them (the step's own stay). On one row, it is refused onto a row the step already sounds; anywhere, past 127.
 
   Values out of range are clamped. An empty step, or one already set, gives an empty edit. `change_all(clip, i, Change)` does the same for every sound in the step, so a chord's velocity or nudge changes in one go, and `change_steps(clip, sound, steps, Change)` for several steps of one sound (step pads held together), joining one undo for a whole turn under `Change::key_steps`.
@@ -107,9 +110,22 @@ A ratchet of N (1 to 8; 1 is a plain note) plays the note N times, evenly spread
 
 - The condition and chance are decided once, on the first hit, so a ratchet plays whole or not at all.
 - Its locks come once, before the first hit.
-- Every hit has the note's velocity.
+- **The velocity ramp** (`Note.ramp`, sequencer S6, Elektron's retrig velocity curve): the last hit's velocity less the first's, -126 to 126. The hits between step evenly (`mpfree_seq::ramped`, rounded), each kept to 1 to 127, so a ramp of -60 on four hits at 100 plays 100, 80, 60, 40. A ramp of 0, the default, gives every hit the note's velocity; on a note with no ratchet it does nothing, and it is kept for when the ratchet comes back.
 - Swing and quantise move the first hit; the others keep their spacing from it. Hits less than a tick apart merge.
 - A switch drops the hits from its bar line on; a stop, a locate or a loop jump drops the rest.
+
+## A step that is off (`Note.on`)
+
+Sequencer S6, for the redesign's Play page (a step grid of the armed track's pads, where a tap turns a step off and on again; agreed with the redesign thread, 18 Nov). A step that is off keeps its notes and everything they hold: velocity, length, nudge, chance, condition, ratchet, ramp, join and its locks. The player leaves it out as it leaves out a note whose chance fails, with its own locks, but it sets no last result for PRE and NEI, and `Stats::off` counts it. `Change::On(false)` turns it off and `Change::On(true)` back on, one undoable edit each; `Step::on` shows it. Turning a step off is not a tap that clears it (`toggle`): nothing is lost.
+
+## Ties and slides (`Note.join`)
+
+Sequencer S6, the 303 way: a step can be joined to the note before it on its track instead of starting with its own attack (`Join::Attack`, the default). Both are set on the step that is joined, as the Elektron boxes set a slide on the trig it slides to.
+
+- **`Join::Tie`** continues the same note: if its track has that note (pitch or pad) sounding as the tie starts, or ending on its tick, started before it, there is no new attack and that note lasts to the tie's end. A run of tied steps is one long note. The locks it holds stay through the tie, and the tie's own locks still play on its tick. With nothing to continue (a gap, or another pitch), it plays as any note.
+- **`Join::Slide`** plays legato into its note: the track's notes sounding as it starts, or ending on its tick, end one tick after its note-on instead, so the two overlap. A synth in mono or legato mode with glide (the Analog engine's Glide, the Squelch engine's Slide, an outside synth's portamento over MIDI) glides there with no new envelope; a poly synth hears the overlap. A slide onto the same pitch ties. A chord of slides starting together doesn't end itself.
+- Both are decided like any note: a tie or slide its condition or chance leaves out joins nothing, and the note before it ends where it would have.
+- **Not STEP SEQ's tie.** Holding a step and tapping a later one stretches the held step's note (`Change::Length`, [step-pads.md](step-pads.md)). A tied step reaches the same long note from the other end, and also over the clip's seam (the last step tied into the first, from the second pass on), and it keeps a step of its own with its own locks, so a lock on a tied step changes the sound in the middle of the note.
 
 ## Parameter locks (`Lock`)
 
@@ -135,8 +151,9 @@ Euclidean rhythms spread a number of hits as evenly as they go over a number of 
 
 ## Tests
 
+- `mpfree-seq` unit tests for the step's own settings (S6): a ratchet's ramp steps its hits' velocity and stays in range, and a clip refuses one past 126; a step turns off keeping its notes' every value and its locks, on every note of its sound, a chord together, and back on as it was; ramp and join changes, each its own undo; `off`, `ramp:` and `tie`/`slide` read back from the saved text, an older note takes the defaults, a newer build's word is skipped and a bad ramp refuses the part.
 - `mpfree-seq` unit tests: each condition on passes before and after the start, FILL, PRE and NEI; which notes are conditional; how conditions show; the order a wheel steps them in (`Cond::all`, `Cond::step`); a clip refuses a condition or ratchet out of range. `steps`: a step takes a condition and a ratchet on every note of its sound, out of range is refused or clamped, and each joins its own undo.
-- `mpfree-play` `tests/trigs.rs` (17) checks how conditions and ratchets play: see [playback.md](playback.md#tests).
+- `mpfree-play` `tests/trigs.rs` (21) checks how conditions, ratchets, steps that are off, ramps, ties and slides play: see [playback.md](playback.md#tests).
 - `mpfree-seq` `steps` unit tests (26), three of them for locks: a lock sits on its step's note (a chord's earliest) or on the line, and replaces the one there; locks go with their steps when they are toggled off, nudged, entered over or copied with a page; a lock out of range is refused. The others: every tick has one step and comes back from it, for every size and odd clip lengths; a row shows the first note of a step and counts the rest; toggle on and off; changes and their limits, nudging a group of notes together; nudges reaching back over the clip's end on step 0; `Clip::apply` is all or nothing, length changes too; pages added (empty and copied, up to 64 steps and on), taken off and set to 13 steps, with an early note staying before the end; a short clip repeating to fill a copied page; a page copied over another; a held chord entered on a step, read back and nudged as one; the whole line, a chord shown as one step and cleared, copied and changed whole with its locks; a step's Note moving its chord (and one row) with the rows' locks, refused past 127 and onto a row the step sounds, and the keys' undo key; Euclidean patterns (named ones, rotation, range, and for every hits-of-steps up to 32, exactly that many hits with gaps at most one step apart); a Euclidean fill writing one row, keeping a step's note, taking off a step's note with its lock, leaving other rows, and undoing.
 - `mpfree-play` `takes` unit tests: step edits are takes; a turn of velocity joins one edit; an edit after an undo starts a new one; a recorded note never joins an edit; pages added and taken off undo and redo to the clip exactly as it was; locks undo and redo with their steps.
 - `mpfree-play` `tests/locks.rs` (9) checks how locks play, and `tests/record.rs` how knob moves are recorded: see [playback.md](playback.md#tests).

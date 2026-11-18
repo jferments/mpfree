@@ -690,6 +690,9 @@ fn notes(list: &[(i64, i64, u8, u8)]) -> Vec<Note> {
             cond: mpfree_seq::Cond::Always,
             ratchet: 1,
             touch: mpfree_seq::Touch::NONE,
+            on: true,
+            ramp: 0,
+            join: mpfree_seq::Join::Attack,
         })
         .collect()
 }
@@ -778,6 +781,9 @@ fn song() -> (Project, Vec<Launch>) {
                 cond: mpfree_seq::Cond::Always,
                 ratchet: 1,
                 touch: mpfree_seq::Touch::NONE,
+                on: true,
+                ramp: 0,
+                join: mpfree_seq::Join::Attack,
             })
         })
         .collect();
