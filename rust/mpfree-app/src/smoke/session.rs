@@ -237,6 +237,9 @@ pub struct Session {
     /// Controls learned on the looper (its footswitch), as player_session
     /// keeps them.
     remote: crate::remote::Remote,
+    /// Keys learned on the Perform pads (Learn a key), as player_session
+    /// keeps them.
+    perform_keys: crate::remote::PerformKeys,
     out: Out,
     to_screen: Receiver<ToUi>,
     /// The app's effects waiting for the desk (a test may add some).
@@ -352,6 +355,7 @@ impl Session {
             stop_dropped: 0,
             waiting_shown: 0,
             keys_held: crate::perform_pads::Held::default(),
+            perform_keys: crate::remote::PerformKeys::default(),
             remote: crate::remote::Remote::new(),
             loop_tempo: None,
             out,
@@ -831,6 +835,35 @@ impl Session {
         self.run_periods(2)
     }
 
+    /// A key learned on Perform parameter `id` (Learn a key) moved to
+    /// `value` (0 to 1), as player_session takes MIDI Learn's: on any page.
+    pub fn perform_key(&mut self, id: u16, value: f32) -> &mut Session {
+        let t = self.t();
+        let set = self.app.perform_set();
+        let act = self
+            .perform_keys
+            .write(id, value, t, |page, pad| set.page(page).action(pad));
+        let fx = crate::desk::perform_remote(
+            &mut self.app,
+            &self.time,
+            &self.looper,
+            &mut self.out,
+            act,
+            0,
+        );
+        self.fx.extend(fx);
+        self.run_periods(2)
+    }
+
+    /// The controller the Perform pads' learned keys came from went away.
+    pub fn unplug_perform_keys(&mut self) -> &mut Session {
+        for action in self.perform_keys.let_go() {
+            let fx = crate::desk::perform_pad_up(&mut self.app, action);
+            self.fx.extend(fx);
+        }
+        self.run_periods(2)
+    }
+
     pub fn pad(&mut self, pad: usize, velocity: u8, hold: f64) -> &mut Session {
         self.pad_edge(pad, velocity, true);
         self.run_for(hold);
@@ -1033,6 +1066,17 @@ impl Session {
             let (fx, line) = crate::desk::perform_pad_held(key);
             self.fx.extend(fx);
             self.out.note(&format!("{line}, from a learned control"));
+        }
+        // And a key learned on a Perform pad that is a loop key.
+        for key in self
+            .perform_keys
+            .holds(t, crate::perform_pads::CLEAR_HOLD_S)
+        {
+            let (fx, line) = crate::desk::perform_pad_held(key);
+            self.fx.extend(fx);
+            if !line.is_empty() {
+                self.out.note(&format!("{line}, from a learned key"));
+            }
         }
         if let Some(e) = self.app.tick(t) {
             self.fx.push(e);

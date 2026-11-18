@@ -29,12 +29,21 @@
 //! The MPC One has no footswitch jack: a footswitch comes in through a
 //! MIDI controller or pedal.
 //!
+//! And the Perform pads (the Play, Pads and Sequencer redesign's board 7,
+//! Learn a key; `Owner::Perform`, its ids in
+//! [`mpfree_play::mpfree_param::perform`]): a learned key, pad or
+//! footswitch plays one Perform pad as a hit on it does, whatever the
+//! MPC's pads show, and lets go of what it pressed ([`PerformKeys`]).
+//!
 //! The MPC's own buttons never come here, and nothing here sends MIDI.
 
 use mpfree_node::{Curve, ParamInfo, Unit};
 use mpfree_play::mpfree_param::clips::{self, Clips};
 use mpfree_play::mpfree_param::looper::{self, Looper, Which};
+use mpfree_play::mpfree_param::perform;
 use mpfree_play::mpfree_param::transport;
+
+use crate::perform_pads::PadAction;
 
 /// The tempo a learned knob sets, over the app's range (`App::set_tempo`).
 /// Shown and read in whole BPM; set to a tenth.
@@ -389,6 +398,85 @@ impl Remote {
     }
 }
 
+/// What a key learned on a Perform pad does (the Play, Pads and
+/// Sequencer redesign's board 7, Learn a key; `Owner::Perform`, its ids
+/// in [`mpfree_play::mpfree_param::perform`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PerformAct {
+    Nothing,
+    /// Pressed: page `page`'s pad `pad` (0 is page A, pad 1) plays
+    /// `action`, as a hit on the pad does.
+    Down {
+        page: u8,
+        pad: u8,
+        action: PadAction,
+    },
+    /// Let go: what it pressed lets go, as the pad's let-go does.
+    Up(PadAction),
+}
+
+/// A Perform pad a learned key holds down: its id, when it went down, in
+/// seconds, whether its hold has cleared its loop, and what it pressed.
+type PerformHeld = (u16, f64, bool, PadAction);
+
+/// The Perform pads learned keys hold down. Each lets go of what it
+/// pressed (the pad changed or the page turned since changes nothing), a
+/// loop key held a second clears its loop as the pad does
+/// ([`PerformKeys::holds`]), and an unplugged controller lets go of all
+/// of them ([`PerformKeys::let_go`]), so no throw stays held.
+#[derive(Debug, Default)]
+pub struct PerformKeys {
+    held: Vec<PerformHeld>,
+}
+
+impl PerformKeys {
+    /// A learned key set Perform parameter `id` to `value` (0 to 1) at
+    /// `t` seconds: past the middle it presses the pad (`action_of` says
+    /// what the pad does now), under it lets go. A value that stays on
+    /// one side presses or lets go once.
+    pub fn write(
+        &mut self,
+        id: u16,
+        value: f32,
+        t: f64,
+        action_of: impl Fn(usize, usize) -> PadAction,
+    ) -> PerformAct {
+        let Some((page, pad)) = perform::of(id) else {
+            return PerformAct::Nothing;
+        };
+        let at = self.held.iter().position(|h| h.0 == id);
+        match (value >= 0.5, at) {
+            (true, None) => {
+                let action = action_of(usize::from(page), usize::from(pad));
+                self.held.push((id, t, false, action));
+                PerformAct::Down { page, pad, action }
+            }
+            (false, Some(i)) => PerformAct::Up(self.held.swap_remove(i).3),
+            _ => PerformAct::Nothing,
+        }
+    }
+
+    /// The loop keys learned keys have held for `hold` seconds by `t`,
+    /// once each hold: each clears its loop, as the pad held does.
+    pub fn holds(&mut self, t: f64, hold: f64) -> Vec<PadAction> {
+        let mut out = Vec::new();
+        for h in &mut self.held {
+            if !h.2 && matches!(h.3, PadAction::LoopKey(_)) && t - h.1 >= hold {
+                h.2 = true;
+                out.push(h.3);
+            }
+        }
+        out
+    }
+
+    /// A controller went away (`MusicIn::take_unplugged`): what its keys
+    /// held lets go now, as their let-go would (a throw stops, a macro
+    /// goes back), since they will never come up.
+    pub fn let_go(&mut self) -> Vec<PadAction> {
+        self.held.drain(..).map(|h| h.3).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -674,5 +762,51 @@ mod tests {
             r.looper_write(looper::mute(0), 1.0, STOPPED, 1.0),
             LooperAct::Mute { n: 0, on: true }
         );
+    }
+
+    /// A key learned on a Perform pad presses it past the middle and lets
+    /// go under it, of what it pressed (a page turned meanwhile changes
+    /// nothing); a loop key held a second clears once; an unplugged
+    /// controller lets go of everything it held.
+    #[test]
+    fn a_learned_key_plays_its_perform_pad_and_lets_go_of_what_it_pressed() {
+        use crate::perform_pads::{Hold, Throw};
+        let throw = PadAction::Throw(Throw::new(1, Hold::WhileHeld));
+        let mut what = throw;
+        let mut k = PerformKeys::default();
+        let b2 = perform::pad(1, 1);
+        assert_eq!(
+            k.write(b2, 1.0, 0.0, |page, pad| {
+                assert_eq!((page, pad), (1, 1));
+                what
+            }),
+            PerformAct::Down {
+                page: 1,
+                pad: 1,
+                action: throw
+            }
+        );
+        assert_eq!(k.write(b2, 0.8, 0.1, |_, _| what), PerformAct::Nothing);
+        // The pad changed while held: the key lets go of the throw.
+        what = PadAction::Scene(2);
+        assert_eq!(k.write(b2, 0.0, 0.2, |_, _| what), PerformAct::Up(throw));
+        assert_eq!(k.write(b2, 0.0, 0.3, |_, _| what), PerformAct::Nothing);
+        assert_eq!(k.write(128, 1.0, 0.3, |_, _| what), PerformAct::Nothing);
+        // A loop key held a second clears its loop, once; a throw's
+        // hold clears nothing.
+        let a1 = perform::pad(0, 0);
+        k.write(a1, 1.0, 1.0, |_, _| PadAction::LoopKey(0));
+        k.write(b2, 1.0, 1.0, |_, _| throw);
+        assert!(k.holds(1.5, 1.0).is_empty());
+        assert_eq!(k.holds(2.0, 1.0), [PadAction::LoopKey(0)]);
+        assert!(k.holds(3.0, 1.0).is_empty());
+        // Unplugged: both let go, and the next press is a press again.
+        let mut gone = k.let_go();
+        gone.sort_by_key(|a| matches!(a, PadAction::LoopKey(_)));
+        assert_eq!(gone, [throw, PadAction::LoopKey(0)]);
+        assert!(matches!(
+            k.write(b2, 1.0, 4.0, |_, _| throw),
+            PerformAct::Down { .. }
+        ));
     }
 }
