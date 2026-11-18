@@ -1756,7 +1756,15 @@ mod tests {
             pl[..PERIOD].iter_mut().zip(&d).for_each(|(o, x)| *o += x);
             pr[..PERIOD].iter_mut().zip(&d).for_each(|(o, x)| *o += x);
             let ctx = Ctx::new(RATE, (p * PERIOD) as u64);
-            h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&z, &z), &mut ol, &mut or);
+            h.period(
+                &ctx,
+                (&z, &z),
+                (&z, &z),
+                (&z, &z),
+                (&z, &z),
+                &mut ol,
+                &mut or,
+            );
         }
         assert!(ol.iter().any(|s| s.abs() > 0.05), "heard through Drums");
     }

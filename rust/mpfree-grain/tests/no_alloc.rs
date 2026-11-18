@@ -109,11 +109,20 @@ fn grains_never_allocate() {
                     reverse: 0.3,
                     spread: 1.0,
                     gain: 0.5,
+                    scan_tempo: k.is_multiple_of(4).then_some(100.0),
                     sync: k.is_multiple_of(3).then_some(TempoSync {
                         frames_per_beat: 24_000.0,
                         grains_per_beat: Some(8.0),
                         size_beats: Some(0.125),
                     }),
+                    timing: (k % 3) as f32 * 0.5,
+                    size_spray: (k % 3) as f32 * 0.5,
+                    level_spray: (k % 2) as f32,
+                    spray_shape: if k.is_multiple_of(2) {
+                        SprayShape::Peaked
+                    } else {
+                        SprayShape::Even
+                    },
                 });
                 if k % 4 == 3 {
                     v.stop()

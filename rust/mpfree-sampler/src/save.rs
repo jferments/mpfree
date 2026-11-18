@@ -575,6 +575,12 @@ fn from_word<T: Copy>(s: &str, words: &[(&str, T)]) -> Option<T> {
     words.iter().find(|(w, _)| *w == s).map(|(_, v)| *v)
 }
 
+const GRAIN_MODES: &[(&str, GrainMode)] = &[
+    ("cloud", GrainMode::Cloud),
+    ("stretch", GrainMode::Stretch),
+    ("repeat", GrainMode::Repeat),
+    ("tone", GrainMode::Tone),
+];
 const PLAY_MODES: &[(&str, PlayMode)] = &[
     ("one-shot", PlayMode::OneShot),
     ("gate", PlayMode::Gate),
@@ -643,12 +649,18 @@ enum WindowKind {
     Tukey,
     Trapezoid,
     Exponential,
+    Shape,
 }
 const WINDOWS: &[(&str, WindowKind)] = &[
     ("hann", WindowKind::Hann),
     ("tukey", WindowKind::Tukey),
     ("trapezoid", WindowKind::Trapezoid),
     ("exponential", WindowKind::Exponential),
+    ("shape", WindowKind::Shape),
+];
+const SPRAY_SHAPES: &[(&str, GrainSprayShape)] = &[
+    ("even", GrainSprayShape::Even),
+    ("peaked", GrainSprayShape::Peaked),
 ];
 
 fn pads_play_text(p: PadsPlay) -> String {
@@ -708,7 +720,13 @@ fn visit_grain<F: Fields>(f: &mut F, g: &mut GrainParams) {
         reverse,
         spread,
         gain,
+        // A Stretch region's comes from its warp tempo as it plays.
+        scan_tempo: _,
         sync,
+        timing,
+        size_spray,
+        level_spray,
+        spray_shape,
     } = g;
     f.num("position", position);
     f.num("spray", spray);
@@ -723,6 +741,7 @@ fn visit_grain<F: Fields>(f: &mut F, g: &mut GrainParams) {
         GrainWindow::Tukey { taper } => (WindowKind::Tukey, taper),
         GrainWindow::Trapezoid { ramp } => (WindowKind::Trapezoid, ramp),
         GrainWindow::Exponential { decay } => (WindowKind::Exponential, decay),
+        GrainWindow::Shape { shape } => (WindowKind::Shape, shape),
     };
     f.word("window", &mut kind, WINDOWS);
     f.num("window_shape", &mut shape);
@@ -731,10 +750,17 @@ fn visit_grain<F: Fields>(f: &mut F, g: &mut GrainParams) {
         WindowKind::Tukey => GrainWindow::Tukey { taper: shape },
         WindowKind::Trapezoid => GrainWindow::Trapezoid { ramp: shape },
         WindowKind::Exponential => GrainWindow::Exponential { decay: shape },
+        WindowKind::Shape => GrainWindow::Shape { shape },
     };
     f.num("reverse", reverse);
     f.num("spread", spread);
     f.num("gain", gain);
+    // Saves before random timing open at the default (a little random).
+    f.num("timing", timing);
+    // Saves before variation open with none (as they played).
+    f.num("size_spray", size_spray);
+    f.num("level_spray", level_spray);
+    f.word("spray_shape", spray_shape, SPRAY_SHAPES);
     let none = TempoSync {
         frames_per_beat: 22_050.0,
         grains_per_beat: None,
@@ -773,6 +799,7 @@ fn visit_region<F: Fields>(f: &mut F, r: &mut Region) {
         tune_cents,
         mode,
         grain,
+        grain_mode,
         warp,
     } = r;
     f.num("start", start);
@@ -807,6 +834,8 @@ fn visit_region<F: Fields>(f: &mut F, r: &mut Region) {
     f.word("channels", channels, PICKS);
     f.num("tune_cents", tune_cents);
     f.word("mode", mode, PLAY_MODES);
+    // Saves before grain modes open as clouds.
+    f.word("grain_mode", grain_mode, GRAIN_MODES);
     f.scope("grain", |f| visit_grain(f, grain));
     f.opt("warp", warp, Warp::new(120.0), |f, w| {
         let Warp { bpm, method, pins } = w;
