@@ -947,9 +947,13 @@ impl MixHost {
                         }
                     }
                 }
-                for &(st, slot, k) in &load.keys {
-                    self.mixer.set_key(st, slot, Some(k));
-                }
+                // A sidechain the mixer refuses is counted and said: the
+                // effect then says "Nothing picked" in red, if it listens.
+                let lost = load
+                    .keys
+                    .iter()
+                    .filter(|&&(st, slot, k)| !self.mixer.set_key(st, slot, Some(k)))
+                    .count();
                 // The pads the project lent channels to.
                 self.pad_channels.clear();
                 for &(st, kit, pad) in &load.lent {
@@ -974,6 +978,9 @@ impl MixHost {
                 let mut line = format!("mixer: the project's mixer is in ({effects} effects)");
                 if skipped > 0 {
                     line += &format!("; {skipped} mod lines skipped");
+                }
+                if lost > 0 {
+                    line += &format!("; {lost} sidechains not restored");
                 }
                 return Some(line);
             }
@@ -1873,6 +1880,7 @@ impl MixHost {
             // The insert pages come with the FX pages; the look is the
             // screen's.
             MixAction::OpenInsert { .. }
+            | MixAction::OpenSidechain { .. }
             | MixAction::AddInsert { .. }
             | MixAction::PickInsert { .. }
             | MixAction::MoveInsert { .. }

@@ -67,6 +67,8 @@ Every engine re-implements parts of the same voice. The core is a set of plain p
 | **Output** | A DC blocker, the level correction for drive, the 3 ms end fade | DC passes through on some presets |
 | **Character** | Seeded per-voice offsets and drift (Analog's voice cards), wow and flutter, labelled amounts; at zero, bit-exact | Analog only |
 
+**Part 1 is built** (`mpfree-synth/src/voice.rs`, 22 unit tests): the note stack with priority, voices and stealing, glide by time or rate, the envelope whose times mean what they say, LFOs (free or synced, delay and fade-in, retrigger), the velocity curve, the play routes and the DC blocker. The pedals live in `mpfree-node` (`pedal::Pedals`), because the hosts use them too. No engine uses part 1 yet; Strings and Bass are the first. The oscillator tables, the drive and Character are part 2, with the engines that need them.
+
 Rules every part keeps, as the node interface asks: no allocation, lock or panic while sounding; the same output for any block size; control work on absolute frames every 16 frames, as today.
 
 **Laid out for speed.** In new engines, the values the inner loops touch are kept in rows across voices, four at a time, rather than one record per voice, so a NEON kernel can later replace a loop without changing the engine ([section 4](#4-voices-the-cpu-and-the-cores)). Existing engines change layout only when they move onto a part.
@@ -156,7 +158,7 @@ A preset today is the engine's settings, a name, tags and its Q-Link sets ([Pres
 
 ### A controller event
 
-`mpfree-node` gets one more event, `NodeEvent::Control { ctl, value }`, for the controllers that belong to the whole instrument: sustain (CC 64), sostenuto (66), soft pedal (67), mod wheel (1), breath (2) and foot controller (11), each 0 to 1. MIDI in sends them to the armed track's instrument (the MIDI thread owns `midi_in.rs`, so the wiring is agreed with it); a plugin gets them as its MIDI controllers.
+`mpfree-node` gets one more event, `NodeEvent::Control { ctl, value }`, for the controllers that belong to the whole instrument: sustain (CC 64), sostenuto (66), soft pedal (67), mod wheel (1), breath (2) and foot controller (11), each 0 to 1. MIDI in sends them to the armed track's instrument (the MIDI thread owns `midi_in.rs`, so the wiring is agreed with it); a plugin gets the wheel, breath and foot as its MIDI controllers, and the pedals as notes the host holds.
 
 - An engine on the voice core handles sustain and sostenuto in its note stack, and routes the rest through its play routes.
 - **An engine that doesn't hear the pedal yet still sustains**: the track host holds its note-offs while the pedal is down and sends them when it comes up. So the pedal works on every engine from the first pull request.
@@ -189,8 +191,7 @@ Three waves, each finished end to end: engine work, then presets, then the check
 | # | Pull request | What it brings |
 |---|---|---|
 | 1 | Wave 1 targets and tests (stage 4) | The targets table for Bass, Keys and Strings with today's numbers, fxlab measures for the new parts, bench cases (note starts, the bank, the Bass voice) |
-| 2 | Voice core, part 1 | Notes with priority and pedals, voices and stealing, glide, envelopes, LFOs, velocity, play routes, DC blocker; unit tests; no engine changes |
-| 3 | The controller event | `NodeEvent::Control`, the host's pedal fallback, MIDI in's controllers (agreed with the MIDI thread) |
+| 2 and 3 | Voice core, part 1, and the controller event (one pull request) | Notes with priority and pedals, voices and stealing, glide, envelopes, LFOs, velocity, play routes, DC blocker, with unit tests and no engine changes; `NodeEvent::Control` and the host's pedal fallback. MIDI in's controllers follow in the MIDI thread's pull request |
 | 4 | Ensemble effect | In `mpfree-fx`, measured the FX way |
 | 5 | Strings engine | Bank, registers, swell, bow noise, the Ensemble; 24 presets |
 | 6 | Bass engine | Synth and 808 bodies, Reese; 32 presets |
