@@ -358,7 +358,8 @@ pub fn feed_input(feed: &mut Feed, seconds: f64, level: f32, rolling: bool) {
             // The bar lines in this period, at whole frames.
             let mut k = (base as f64 / bar).ceil() as u64;
             while ((k as f64 * bar).round() as u64) < base + 128 {
-                feed.bars.mark((k as f64 * bar).round() as u64);
+                feed.bars
+                    .mark_bar((k as f64 * bar).round() as u64, k as u32 + 1);
                 k += 1;
             }
         }

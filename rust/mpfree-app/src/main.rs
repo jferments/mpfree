@@ -5254,6 +5254,13 @@ fn player_session(
     let mut rec_back: Option<Box<sampler::RecFeed>> = None;
     // What the sampler's input records from (the Rec tab's Source).
     let mut rec_source = sampler::RecSource::Line;
+    // Sample Recall (sampler decision 3): the master as heard, its last two
+    // minutes always kept, made here once and never freed; its reading end
+    // goes to the screen as soon as there is room.
+    let (recall_feed, recall_input) =
+        mpfree_sampler::record::input16(sample_page::RECALL_SECONDS, RATE);
+    let mut recall_feed = sampler::RecFeed(recall_feed);
+    let mut recall_out = Some(gui::ToUi::SampleRecall(Box::new(recall_input)));
     // 2. The controller (USB; it may still be starting at power-on).
     let wait = if timed { Duration::ZERO } else { DEVICE_WAIT };
     progress(
@@ -7160,8 +7167,20 @@ fn player_session(
                     let page = app.view();
                     // While the mixer is open they move the selected strip; on the chain
                     // editor and the macros panel, the knobs or macros the column shows. In
-                    // the browser: scroll, filter, preview level, place.
-                    if matches!(
+                    // the browser: scroll, filter, preview level, place. Over any page,
+                    // Sample Recall's: Length, Ends at, Fade and Pad.
+                    if app.recall_open() && knob < 4 {
+                        let k = knob as usize;
+                        let ticks = if public {
+                            let was = qlink_at[k].replace(m.bytes[2]);
+                            was.map_or(0, |w| m.bytes[2] as i32 - w as i32)
+                        } else {
+                            delta as i32
+                        };
+                        if ticks != 0 {
+                            out.show(gui::ToUi::RecallQLink(k, ticks));
+                        }
+                    } else if matches!(
                         page,
                         app::View::Synth
                             | app::View::Sample
@@ -8253,6 +8272,12 @@ fn player_session(
         let t_render = Instant::now();
         // Warped pads play at the transport's tempo.
         player.set_tempo(time.info().bpm);
+        // A synced pad LFO keeps to the beats while the transport rolls.
+        player.set_beat(time.block().spans().first().and_then(|s| {
+            s.state
+                .rolling()
+                .then(|| s.tick_at(s.frame) / f64::from(mpfree_transport::PPQ))
+        }));
         // Each pad of kit 1 into its pad channel (Pad Mix), which all go
         // to the Drums track; another kit into the channel of the first
         // track that plays it.
@@ -8516,6 +8541,14 @@ fn player_session(
             {
                 mix.keep_captured(held, end);
             }
+        }
+        // Sample Recall keeps the master as heard (after Master safety,
+        // before the metronome), with the bar lines as late as it hears them.
+        let t_rec = Instant::now();
+        recall_feed.period(time.block(), &left, &right, mix.mixer.latency());
+        engines.add(engines::SAMPLER, t_rec.elapsed());
+        if let Some(m) = recall_out.take() {
+            recall_out = out.try_show(m).err();
         }
         // The metronome goes on top; it keeps the samples within ±1 itself.
         let p = p.max(time.mix_click(&mut left, &mut right));

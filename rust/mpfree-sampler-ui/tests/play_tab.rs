@@ -141,10 +141,11 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
         chips,
         vec![
             ("Layers", "3 · stacked"),
-            ("Amp", "A 2 · D 310 · S 60 %"),
-            ("Filter", "LP 2-pole · 2.40 kHz"),
+            ("Amp", "A2 D310 S60%"),
+            ("Filter", "LP2 · 2.40 kHz"),
             ("Pitch", "+0 st"),
             ("Mod", "pressure → filter cutoff"),
+            ("Movement", "Off"),
             ("Pad", "4 voices · group 1"),
             ("Slices", "not sliced"),
         ]
@@ -1401,6 +1402,7 @@ fn each_section_shows_its_picture_across_the_page_and_its_controls_on_the_panel(
         (Section::Filter, play_tab::FILTER),
         (Section::Pitch, play_tab::ENV),
         (Section::Mod, play_tab::LAYERS),
+        (Section::Movement, play_tab::MOTION),
         (Section::Pad, play_tab::LAYERS),
     ] {
         if s.tab.section() != section {
@@ -1655,4 +1657,136 @@ fn the_slices_section_sets_each_slices_own_settings() {
     let r = &s.project.pad(PAD).unwrap().layers[0].region;
     assert_eq!(r.slice_set(0), SliceSet::DEFAULT);
     assert_eq!(r.slice_set(5).tune_st, 5);
+}
+
+#[test]
+fn the_movement_section_runs_the_lfo_and_the_pitch_envelope() {
+    use mpfree_sampler::model::{LfoShape, LfoTarget};
+    use mpfree_sampler_ui::play_widgets::MotionView;
+    let mut s = play(false);
+    let before = s.state.settings.clone();
+    open(&mut s, Section::Movement);
+    assert!(s.ui.rect_of(play_tab::MOTION).is_some(), "its picture");
+    let why = |s: &PlaySample, row: Row| {
+        let l = s.ui.get::<SettingList>(play_tab::LIST).unwrap();
+        l.controls[row.place()].why.clone()
+    };
+    let chip = |s: &PlaySample| {
+        let c = s.ui.get::<SectionChips>(play_tab::SECTIONS).unwrap();
+        let i = Section::ALL.iter().position(|x| *x == Section::Movement);
+        c.chips[i.unwrap()].sub.clone()
+    };
+    let caption = |s: &PlaySample| {
+        let m = s.ui.get::<MotionView>(play_tab::MOTION).unwrap();
+        (m.lfo_on, m.env_on, m.caption.clone())
+    };
+    // Off until the LFO is given something to move: its other rows and
+    // its Q-Links wait.
+    assert_eq!(chip(&s), "Off");
+    assert_eq!(
+        why(&s, Row::LfoRate),
+        "The LFO is off: pick what it moves in LFO to"
+    );
+    assert_eq!(
+        why(&s, Row::PitchDecay),
+        "The pitch envelope is off: give Pitch env an amount"
+    );
+    let turn = |s: &mut PlaySample, knob, delta, fine| {
+        let st = s.state.clone();
+        let a = s.tab.qlink(&mut s.ui, &st, knob, delta, fine);
+        if let Some(a) = &a {
+            apply(s, a);
+        }
+        a
+    };
+    assert_eq!(turn(&mut s, 0, 1, false), None);
+    // On Pitch: a vibrato of a tenth, at 5 Hz from each hit.
+    step_apply(&mut s, Row::LfoTo, 1);
+    assert_eq!(s.state.settings.lfo.target, LfoTarget::Pitch);
+    assert_eq!(row_value(&mut s, Row::LfoTo), "Pitch");
+    assert_eq!(row_value(&mut s, Row::LfoRate), "5.0 Hz");
+    assert_eq!(row_value(&mut s, Row::LfoDepth), "+10 %");
+    assert_eq!(why(&s, Row::LfoRate), "");
+    assert_eq!(
+        caption(&s),
+        (
+            true,
+            false,
+            "LFO: sine on pitch, ±1.2 st at 5.0 Hz · pitch envelope off".into()
+        )
+    );
+    assert_eq!(chip(&s), "pitch LFO · 5.0 Hz");
+    // The rate: a step up the list, synced to the tempo (120 BPM: 6 Hz
+    // is an eighth triplet), a step faster, and free again.
+    step_apply(&mut s, Row::LfoRate, 1);
+    assert_eq!(s.state.settings.lfo.rate_hz, 6.0);
+    assert_eq!(s.state.bpm, 120.0);
+    step_apply(&mut s, Row::LfoSync, 1);
+    assert_eq!(row_value(&mut s, Row::LfoRate), "1/8 T");
+    step_apply(&mut s, Row::LfoRate, 1);
+    assert_eq!(row_value(&mut s, Row::LfoRate), "1/16");
+    assert_eq!(s.state.settings.lfo.beats, Some(0.25));
+    step_apply(&mut s, Row::LfoSync, 1);
+    assert_eq!(
+        (s.state.settings.lfo.beats, s.state.settings.lfo.rate_hz),
+        (None, 8.0),
+        "a sixteenth at 120 BPM is 8 Hz"
+    );
+    // Q-Link 1 turns a free rate an octave in six detents.
+    turn(&mut s, 0, 6, false).unwrap();
+    assert_eq!(s.state.settings.lfo.rate_hz, 16.0);
+    assert_eq!(
+        s.ui.get::<KnobCard>(play_tab::QLINKS[0]).unwrap().value,
+        "16.0"
+    );
+    // The wave, the depth (below 0 the other way) and retrigger.
+    step_apply(&mut s, Row::LfoWave, 1);
+    assert_eq!(s.state.settings.lfo.shape, LfoShape::Triangle);
+    step_apply(&mut s, Row::LfoDepth, -3);
+    assert_eq!(row_value(&mut s, Row::LfoDepth), "-5 %");
+    step_apply(&mut s, Row::LfoRetrig, 1);
+    assert!(!s.state.settings.lfo.retrig);
+    assert_eq!(row_value(&mut s, Row::LfoRetrig), "Off");
+    // The pitch envelope: up an octave, back over 200 ms.
+    turn(&mut s, 2, 12, false).unwrap();
+    turn(&mut s, 3, 8, false).unwrap();
+    let e = s.state.settings.pitch_env;
+    assert_eq!((e.semitones, e.decay_ms), (12.0, 200.0));
+    assert_eq!(row_value(&mut s, Row::PitchEnv), "+12 st");
+    assert_eq!(row_value(&mut s, Row::PitchDecay), "200 ms");
+    assert_eq!(
+        caption(&s),
+        (
+            true,
+            true,
+            "LFO: triangle on pitch, ±0.6 st at 16.0 Hz · pitch from +12 st over 200 ms".into()
+        )
+    );
+    assert_eq!(chip(&s), "pitch LFO + env");
+    // SHIFT: a tenth of a semitone a detent.
+    turn(&mut s, 2, -5, true).unwrap();
+    assert_eq!(row_value(&mut s, Row::PitchEnv), "+11.5 st");
+    // Mod: velocity on the cutoff waits for a filter; on the pitch it
+    // goes a semitone a step.
+    open(&mut s, Section::Mod);
+    assert_eq!(
+        why(&s, Row::VelToCutoff),
+        "The filter is off: pick one in the Filter section"
+    );
+    step_apply(&mut s, Row::VelToPitch, 2);
+    assert_eq!(row_value(&mut s, Row::VelToPitch), "+2 st");
+    // It is all the pad's, saved with it, and the log says what moved.
+    let p = s.project.pad(PAD).unwrap();
+    assert_eq!(p.lfo, s.state.settings.lfo);
+    assert_eq!(p.vel_to_pitch, 2.0);
+    let log = describe(&before, p);
+    for part in [
+        "lfo to Off -> Pitch",
+        "lfo wave Sine -> Triangle",
+        "retrigger On -> Off",
+        "pitch env Off -> +11.5 st",
+        "vel → pitch Off -> +2 st",
+    ] {
+        assert!(log.contains(part), "{part} in {log}");
+    }
 }

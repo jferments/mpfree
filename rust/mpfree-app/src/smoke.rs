@@ -386,6 +386,7 @@ mod tests {
     fn swept() -> &'static [Row] {
         static ROWS: std::sync::OnceLock<Vec<Row>> = std::sync::OnceLock::new();
         ROWS.get_or_init(|| {
+            let _alone = crate::gui::all_screens();
             let rows = sweep_all();
             if let Ok(path) = std::env::var("MPFREE_AUDIT_OUT") {
                 std::fs::write(&path, report(&rows)).expect("the audit report is written");
