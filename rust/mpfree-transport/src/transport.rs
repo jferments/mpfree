@@ -453,6 +453,10 @@ enum Queued {
 /// ends it; far above what the limits above allow.
 const MAX_STEPS: usize = 4 * (MAX_SPANS + MAX_MARKERS);
 
+/// Copy: its tables are fixed (no heap), so the sequencer's look-ahead
+/// (S5) copies it in place each period (`*ahead = *real`, one copy with
+/// no temporary on the stack) to play on ahead of the real one.
+#[derive(Clone, Copy)]
 pub struct Transport {
     rate: u32,
     /// First frame of the next period: frames processed since start. It
