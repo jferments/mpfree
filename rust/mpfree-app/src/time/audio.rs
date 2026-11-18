@@ -605,13 +605,21 @@ impl TimeAudio {
                     self.free_chain(back);
                 }
             }
-            // The mod engine's values on top of the track's own.
-            let mut fx = self.note_fx[t];
-            for m in self.note_mods[t].iter().filter(|m| m.id != 0) {
-                fx.set_value(m.id, usize::from(m.k), m.value);
-            }
-            arps.set_notes(t, &fx);
+            arps.set_notes(t, &self.note_fx_now(t));
         }
+    }
+
+    /// Track `t`'s MIDI effects as they play now: the track's own, with
+    /// the mod engine's values on top; none past the last track.
+    pub fn note_fx_now(&self, t: usize) -> TrackFx {
+        let (Some(own), Some(mods)) = (self.note_fx.get(t), self.note_mods.get(t)) else {
+            return TrackFx::default();
+        };
+        let mut fx = *own;
+        for m in mods.iter().filter(|m| m.id != 0) {
+            fx.set_value(m.id, usize::from(m.k), m.value);
+        }
+        fx
     }
 
     /// One place of a track's MIDI effects, as the control half sent it.

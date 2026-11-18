@@ -60,7 +60,7 @@ The Pads tab's **Effects** row opens the chain editor on the pad picked, in the 
 
 ## MIDI effects: a track's Notes
 
-A track that plays notes (not a Loop track) can change its notes before they reach its sound: make each note a chord, keep notes in a scale, move them, set how hard they play, make them all as long, echo them, loosen them up, let some through only by chance, strum a chord, hold notes after you let go, or move notes at random. These are its **MIDI effects**, and with the track's arp they are its **Notes**. They work on the pads, a keyboard and the track's clips, and on what the track sends out of MIDI.
+A track that plays notes (not a Loop track) can change its notes before they reach its sound: make each note a chord, keep notes in a scale, move them, set how hard they play, make them all as long, echo them, loosen them up, let some through only by chance, strum a chord, hold notes after you let go, or move notes at random; and, for a track that plays a synth on MIDI out, fit its controllers into a range or smooth their steps. These are its **MIDI effects**, and with the track's arp they are its **Notes**. They work on the pads, a keyboard and the track's clips, and on what the track sends out of MIDI.
 
 {{shot: chain-notes | A track's chain: NOTES above SOUND, with Scale, Chord, the arp and Humanize (off) in order. Chord's page shows its shapes, what goes in and what comes out on a keyboard, and its settings; the Q-Links turn Chord, Voicing, Inversion and Velocity.}}
 
@@ -70,7 +70,7 @@ Open a track's chain in the chain editor (its strip's **+ FX**, or an effect in 
 - **Plays on**, between the groups, says where the track's notes go: **Its own sound**, or a MIDI out port and channel. Tap it to change that in the mixer's I/O view, in the MIDI section's **Tracks out** (see [Playing a synth from a track](midi-and-cv.md#playing-a-synth-from-a-track)).
 - **SOUND**, the effects on the track's sound, as before.
 
-**+ MIDI effect** opens the eleven MIDI effects as tiles, each with what it does. Tap one to add it, just above the arp, with its page open. **Cancel** closes the tiles.
+**+ MIDI effect** opens the thirteen MIDI effects as tiles, each with what it does. Tap one to add it, just above the arp, with its page open. **Cancel** closes the tiles.
 
 | MIDI effect | What it does |
 |---|---|
@@ -85,6 +85,8 @@ Open a track's chain in the chain editor (its strip's **+ FX**, or an effect in 
 | **Strum** | Plays the notes of a chord one after another, 1 to 200 ms apart: **Up** (lowest first), **Down** or **As played**. Notes that start within 40 ms of each other are one chord. Up and Down sort a chord from a clip, the pads or a Chord effect above; keys you play by hand strum in the order you play them. Each note keeps its length |
 | **Latch** | Keeps notes on after you let go. **Next chord**: they end when you next play with no key held, and the new notes stay instead. **Toggle**: press a note to turn it on, press it again to turn it off. Switch Latch off or remove it to end what it holds |
 | **Randomize** | Moves some notes up or down at random (**Pitch**, up to 24 semitones, on **How often** of them), spreads how hard they play (**Velocity**) and makes them last a little longer (**Longer by**, up to 1 second), never the same way twice. A setting at 0 leaves that part alone |
+| **CC scale** | Fits a controller the track sends to MIDI out into a range: 0 to 127 becomes **Lowest** to **Highest** (Lowest above Highest turns it upside down). **Controller** is one CC, 0 to 119, or **All**. It changes what the track's CC lanes, locks, macros, LFOs and learned knobs send to the synth, not the notes |
+| **CC smooth** | Glides a controller the track sends to MIDI out to each new value over **Glide** (1 to 2000 ms), so a lane's steps sweep instead of jumping. **Controller** is one CC or **All**. **With a note**: **Jumps** (the value goes out at once, ahead of a note that starts with it, as some synths read the controller when the note starts) or **Glides** |
 
 Tap a MIDI effect's row for its page. Its choices are along the top as buttons (Chord's shapes, Scale's root), a keyboard shows what goes in and what comes out (for Chord, Scale and Transpose), and its settings sit in sections under it: tap a choice, or – and + to step a value, or rest a finger on a setting's row and turn the data wheel (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)). The four with a **Q1** to **Q4** badge are on the Q-Links. The page's line under its name says where it is among the Notes ("after Scale, before Arp").
 
@@ -94,6 +96,7 @@ Tap a MIDI effect's row for its page. Its choices are along the top as buttons (
 - A key held while you change an effect ends as it started, so nothing hangs.
 - The track's MIDI effects are saved with the project.
 - On a drum track, the pads go through them but the track's clips don't.
+- **CC scale** and **CC smooth** leave the notes alone and work only on what goes out of MIDI out: while the track plays its own sound, their page's line says they send nothing. On the 5-pin MIDI Out, a gliding controller sends at most one message every 4 ms, so the notes and the clock keep their room. When the song starts, or the track's port changes, each controller goes straight to its value.
 - On a drum track the MIDI effects see pads, not notes: **Transpose** by 1 plays the next pad, a pad moved off the kit doesn't play, and **Randomize**'s Pitch plays other pads at random. Velocity, Note length, Echo, Humanize, Chance, Strum and Latch work the same on any track.
 
 Touch a MIDI effect's setting and the **Modulate** row under the page works on it, as it does for a sound's knob: tap a macro number to put it on that macro, **Learn** to put it on the next Q-Link you turn, or **+ LFO** to sweep it (a choice, such as Chord's shape, takes a macro but not an LFO). A step can lock it, and while you record, a Q-Link turn of it records with the clip and plays back with it. What these do is heard from the next note; a note already playing keeps what it started as. Until you touch a setting, the row says which settings the Q-Links turn. Returns, submixes, the master and Loop tracks have no Notes.

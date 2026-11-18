@@ -2797,16 +2797,23 @@ impl Player {
     /// What track `t` plays on, for its Notes stage's Plays on row: its own
     /// sound, or a MIDI out port and channel (the MIDI section's Tracks
     /// out), and where to change it.
-    fn plays_on(&self, t: usize) -> (String, String) {
+    /// A note track's Plays on row: where its notes play and the line
+    /// under it, and why the controllers it sends to MIDI out would send
+    /// nothing (it plays its own sound), for the CC effects' pages.
+    fn plays_on(&self, t: usize) -> (String, String, Option<String>) {
         let out = self.io_model.as_ref().and_then(|m| {
             let m = m.lock().unwrap_or_else(|e| e.into_inner());
             m.setup.tracks.get(t).cloned().flatten()
         });
-        let on = match out {
-            Some(o) => o.label(),
-            None => "Its own sound".to_string(),
-        };
-        (on, "Change it in MIDI, Tracks out".to_string())
+        let change = "Change it in MIDI, Tracks out".to_string();
+        match out {
+            Some(o) => (o.label(), change, None),
+            None => (
+                "Its own sound".to_string(),
+                change,
+                Some("sends nothing: the track plays its own sound".to_string()),
+            ),
+        }
     }
 
     /// Opens the mixer's I/O view on the section titled `title` (the tempo
@@ -5900,7 +5907,8 @@ impl Player {
             ToUi::Chain(mut st) => {
                 // A note track's Plays on, from the MIDI set-up's Tracks out.
                 if let Some(ns) = st.notes.as_mut() {
-                    (ns.plays_on, ns.plays_detail) = self.plays_on(usize::from(ns.track));
+                    (ns.plays_on, ns.plays_detail, ns.ccs_send_nothing) =
+                        self.plays_on(usize::from(ns.track));
                 }
                 self.chain_page.set_chain(&mut self.ui, *st);
                 if self.chain_page.drives(self.view) {

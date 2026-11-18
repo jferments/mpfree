@@ -89,6 +89,7 @@ use mpfree_midi::profile::{PadOut, KIT_NOTES, KIT_PADS};
 use mpfree_midi::setup::{ClockOut, TrackOut, DIN_NAME};
 use mpfree_midi_clock::{ClockOut as Pulses, Messages, PULSE_TICKS};
 use mpfree_midi_ui::{IoModel, PortSend, Shared, ToPort};
+use mpfree_notefx::TrackFx;
 use mpfree_play::mpfree_param::midi::{self as ctl, Midi};
 use mpfree_play::mpfree_param::{Owner, ParamAddr};
 use mpfree_play::{Event, Out};
@@ -219,7 +220,20 @@ const UNSET: i16 = i16::MIN;
 /// Each track's controls out ([`MidiOut::control`]): the value last
 /// given, and which went out this period or wait for the next.
 struct Controls {
+    /// The value last given, raw (before the track's CC effects).
     value: Box<[[i16; CTLS]; MAX_TRACKS]>,
+    /// The value that last went out, after the track's CC effects
+    /// (`UNSET` before any): where a glide starts, and what a change of
+    /// the effects compares with.
+    out: Box<[[i16; CTLS]; MAX_TRACKS]>,
+    /// Each control's glide to its value (CC smooth), stepped once a
+    /// period ([`MidiOut::glides`]).
+    glide: Box<[[Glide; CTLS]; MAX_TRACKS]>,
+    /// Tracks with a control gliding.
+    gliding: u128,
+    /// Tracks whose CC effects changed: their controls' values go out
+    /// again where the effects now make them something else.
+    remap: u128,
     /// Sent this period: a second value waits ([`Controls::waiting`]).
     sent: [[u64; CTL_WORDS]; MAX_TRACKS],
     /// Given again after this period's message: sent at the next
@@ -238,6 +252,10 @@ impl Controls {
     fn new() -> Controls {
         Controls {
             value: Box::new([[UNSET; CTLS]; MAX_TRACKS]),
+            out: Box::new([[UNSET; CTLS]; MAX_TRACKS]),
+            glide: Box::new([[Glide::IDLE; CTLS]; MAX_TRACKS]),
+            gliding: 0,
+            remap: 0,
             sent: [[0; CTL_WORDS]; MAX_TRACKS],
             waiting: [[0; CTL_WORDS]; MAX_TRACKS],
             touched: 0,
@@ -246,10 +264,9 @@ impl Controls {
         }
     }
 
-    /// Control `id` of a track as a message on channel 1 (the router puts
-    /// it on the track's), if it has a value.
-    fn msg(&self, t: usize, id: usize) -> Option<Msg> {
-        let v = self.value[t][id];
+    /// Control `id` at `v` as a message on channel 1 (the router puts it
+    /// on the track's).
+    fn msg(id: usize, v: i16) -> Option<Msg> {
         if v == UNSET {
             return None;
         }
@@ -270,6 +287,34 @@ impl Controls {
         })
     }
 }
+
+/// A control gliding to its value (CC smooth).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Glide {
+    /// Where it started and where it goes.
+    from: f32,
+    to: i16,
+    /// Frames it takes, and frames left (0: not gliding).
+    total: u32,
+    left: u32,
+    /// Frames since its last message went out, for the jacks' floor.
+    since: u32,
+}
+
+impl Glide {
+    const IDLE: Glide = Glide {
+        from: 0.0,
+        to: 0,
+        total: 0,
+        left: 0,
+        since: 0,
+    };
+}
+
+/// The least time between one control's glide messages on the 5-pin
+/// jacks, whose wire carries about 1,000 messages a second, so gliding
+/// controls leave room for the notes and the clock. None on USB.
+const DIN_GLIDE_FLOOR: Duration = Duration::from_millis(4);
 
 /// A track's output as it was taken from the project.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -774,10 +819,22 @@ pub struct MidiOut {
     gear: Gear,
     /// The tracks' controllers, bend and pressure out.
     controls: Controls,
+    /// Each track's MIDI effects as they are now (the mod engine's values
+    /// on them too), for its CC scale and CC smooth
+    /// ([`MidiOut::set_note_fx`]).
+    note_fx: Box<[TrackFx; MAX_TRACKS]>,
+    /// Frames in a period (the last one's), for the glides' steps.
+    period: u32,
     /// Where each kit pad that plays a port of its own sent its note
     /// ([`MidiOut::pad_to`]), per track and pad, so its end and pressure
     /// follow it there.
     pad_out: Box<[Option<(OutRoute, u8)>]>,
+}
+
+/// Where glide `g` is now, `left` frames from its end.
+fn glide_at(g: &Glide) -> f32 {
+    let k = g.left as f32 / g.total.max(1) as f32;
+    f32::from(g.to) + (g.from - f32::from(g.to)) * k
 }
 
 /// The port page's test note: C4, held half a second.
@@ -828,6 +885,8 @@ impl MidiOut {
             sent_back: 0,
             gear: Gear::new(),
             controls: Controls::new(),
+            note_fx: Box::new([TrackFx::default(); MAX_TRACKS]),
+            period: (rate / 375).max(1),
             pad_out: vec![None; MAX_TRACKS * PADS].into_boxed_slice(),
         }
     }
@@ -1020,7 +1079,9 @@ impl MidiOut {
 
     /// At a period's start, after the programs: the controls that waited
     /// from the last period, and every control with a value of a track
-    /// whose port or channel was set or whose song started.
+    /// whose port or channel was set or whose song started (straight to
+    /// its value, no glide); then the glides' next steps, and the controls
+    /// a change of their track's CC effects moves.
     fn controls_due(&mut self) {
         let due = std::mem::take(&mut self.controls.due);
         let mut tracks = self.controls.touched | due;
@@ -1040,11 +1101,197 @@ impl MidiOut {
                     self.controls.sent[t][w] |= bit;
                     self.controls.touched |= 1 << t;
                 }
-                if waited || due & (1 << t) != 0 {
-                    if let Some(m) = self.controls.msg(t, id) {
+                if due & (1 << t) != 0 {
+                    self.send_ctl(t, id, 0, true);
+                } else if waited {
+                    self.send_ctl(t, id, 0, false);
+                }
+            }
+        }
+        self.glides();
+        let mut tracks = std::mem::take(&mut self.controls.remap);
+        while tracks != 0 {
+            let t = tracks.trailing_zeros() as usize;
+            tracks &= tracks - 1;
+            if !self.takes(t as u16) {
+                continue;
+            }
+            for id in 0..CTLS {
+                let v = self.controls.value[t][id];
+                if v == UNSET {
+                    continue;
+                }
+                let (to, _) = self.shaped(t, id, v);
+                let g = self.controls.glide[t][id];
+                let goes = if g.total > 0 {
+                    g.to
+                } else {
+                    self.controls.out[t][id]
+                };
+                if to == goes {
+                    continue;
+                }
+                let (w, bit) = (id / 64, 1u64 << (id % 64));
+                self.controls.touched |= 1 << t;
+                if self.controls.sent[t][w] & bit != 0 {
+                    self.controls.waiting[t][w] |= bit;
+                } else {
+                    self.controls.sent[t][w] |= bit;
+                    self.send_ctl(t, id, 0, false);
+                }
+            }
+        }
+    }
+
+    /// Control `id`'s raw value `v` on track `t` as it goes out: through
+    /// the track's CC effects (a CC's scale), and the CC smooth that
+    /// takes it, if any.
+    fn shaped(&self, t: usize, id: usize, v: i16) -> (i16, Option<mpfree_notefx::CcSmooth>) {
+        match ctl::of(id as u16) {
+            Some(Midi::Cc(cc)) => {
+                let (v, smooth) = self.note_fx[t].cc_out(cc, v.clamp(0, 127) as u8);
+                (i16::from(v), smooth)
+            }
+            _ => (v, None),
+        }
+    }
+
+    /// Whether track `t` has a note starting at `offset` this period.
+    fn note_at(&self, t: usize, offset: u32) -> bool {
+        let Some(port) = self.tracks[t].map(|a| usize::from(a.port.0)) else {
+            return false;
+        };
+        self.queue[port].as_slice().iter().any(|m| {
+            let b = m.bytes();
+            m.offset == offset
+                && m.track() == Some(t as u8)
+                && b.len() == 3
+                && b[0] & 0xF0 == 0x90
+                && b[2] > 0
+        })
+    }
+
+    /// Control `id` of track `t` goes out at `offset` as its effects make
+    /// it: at once, or gliding there from where it is (CC smooth), from
+    /// the next period's start. `jump`: at once whatever the effects say
+    /// (a new port, the song's start). A value that comes with one of the
+    /// track's notes jumps too unless the smooth glides on notes, so the
+    /// gear reads it as the note starts.
+    fn send_ctl(&mut self, t: usize, id: usize, offset: u32, jump: bool) {
+        let v = self.controls.value[t][id];
+        if v == UNSET {
+            return;
+        }
+        let (to, smooth) = self.shaped(t, id, v);
+        let was = self.controls.out[t][id];
+        let g = self.controls.glide[t][id];
+        let glide = smooth.filter(|s| {
+            !jump
+                && was != UNSET
+                && (to != was || g.total > 0)
+                && (s.glide_on_note || !self.note_at(t, offset))
+        });
+        match glide {
+            Some(s) => {
+                // From where it is now, mid-glide or not.
+                let from = if g.total > 0 {
+                    glide_at(&g)
+                } else {
+                    f32::from(was)
+                };
+                let total = (u64::from(s.ms) * u64::from(self.rate) / 1000).max(1) as u32;
+                self.controls.glide[t][id] = Glide {
+                    from,
+                    to,
+                    total,
+                    left: total,
+                    // A glide from rest may step at once.
+                    since: if g.total > 0 { g.since } else { u32::MAX / 2 },
+                };
+                self.controls.gliding |= 1 << t;
+            }
+            None => {
+                self.controls.glide[t][id].left = 0;
+                self.controls.glide[t][id].total = 0;
+                if let Some(m) = Controls::msg(id, to) {
+                    self.controls.out[t][id] = to;
+                    self.ctl_msg(t, m, offset);
+                }
+            }
+        }
+    }
+
+    /// The gliding controls' next steps, at the period's start: a message
+    /// only when the value that goes out changes, none for a control that
+    /// already sent one this period, and on the 5-pin jacks none sooner
+    /// than [`DIN_GLIDE_FLOOR`] after the last.
+    fn glides(&mut self) {
+        let floor = (DIN_GLIDE_FLOOR.as_secs_f64() * f64::from(self.rate)) as u32;
+        let mut tracks = self.controls.gliding;
+        while tracks != 0 {
+            let t = tracks.trailing_zeros() as usize;
+            tracks &= tracks - 1;
+            if !self.takes(t as u16) {
+                for g in self.controls.glide[t].iter_mut() {
+                    *g = Glide::IDLE;
+                }
+                self.controls.gliding &= !(1 << t);
+                continue;
+            }
+            let din = self.tracks[t].is_some_and(|a| a.port == DIN);
+            let mut busy = false;
+            for id in 0..CTLS {
+                let mut g = self.controls.glide[t][id];
+                if g.total == 0 {
+                    continue;
+                }
+                let out = self.controls.out[t][id];
+                g.left = g.left.saturating_sub(self.period);
+                g.since = g.since.saturating_add(self.period);
+                let v = if g.left == 0 {
+                    g.to
+                } else {
+                    glide_at(&g).round() as i16
+                };
+                let (w, bit) = (id / 64, 1u64 << (id % 64));
+                let free = self.controls.sent[t][w] & bit == 0 && (!din || g.since >= floor);
+                if v != out && free {
+                    if let Some(m) = Controls::msg(id, v) {
+                        self.controls.out[t][id] = v;
+                        self.controls.sent[t][w] |= bit;
+                        self.controls.touched |= 1 << t;
+                        g.since = 0;
                         self.ctl_msg(t, m, 0);
                     }
                 }
+                if g.left == 0 && self.controls.out[t][id] == g.to {
+                    // There: idle.
+                    g.total = 0;
+                } else {
+                    busy = true;
+                }
+                self.controls.glide[t][id] = g;
+            }
+            if !busy {
+                self.controls.gliding &= !(1 << t);
+            }
+        }
+    }
+
+    /// Each track's MIDI effects as they are now, with the mod engine's
+    /// values on them (`TimeHost::note_fx_now`), once a period: a track's
+    /// CC scale and CC smooth shape its controllers from the next
+    /// message, and a change sends again the controllers whose value out
+    /// it changes. Never allocates.
+    pub fn set_note_fx(&mut self, t: usize, fx: &TrackFx) {
+        let Some(now) = self.note_fx.get_mut(t) else {
+            return;
+        };
+        if now != fx {
+            let shaped = now.shapes_ccs() || fx.shapes_ccs();
+            *now = *fx;
+            if shaped {
+                self.controls.remap |= 1 << t;
             }
         }
     }
@@ -1075,9 +1322,7 @@ impl MidiOut {
             return;
         }
         self.controls.sent[t][w] |= bit;
-        if let Some(m) = self.controls.msg(t, id) {
-            self.ctl_msg(t, m, offset);
-        }
+        self.send_ctl(t, id, offset, false);
     }
 
     /// A control's message from track `t`, put before the notes already
@@ -1696,6 +1941,7 @@ impl MidiOut {
     /// sound is heard `lead` later. A port with no writer drops what it
     /// was given.
     pub fn period_end(&mut self, frames: u32, t0: Instant) {
+        self.period = frames.max(1);
         self.gear_period();
         let at = t0 + self.lead;
         let rate = f64::from(self.rate);
@@ -2854,6 +3100,177 @@ mod tests {
         assert_eq!(sink.bytes(), want);
     }
 
+    fn cc_fx(fx: &[mpfree_notefx::Fx]) -> TrackFx {
+        let mut t = TrackFx::default();
+        for f in fx {
+            t.add(*f);
+        }
+        t
+    }
+
+    fn smooth(ms: u16, glide_on_note: bool) -> mpfree_notefx::Fx {
+        mpfree_notefx::Fx::CcSmooth(mpfree_notefx::CcSmooth {
+            cc: None,
+            ms,
+            glide_on_note,
+        })
+    }
+
+    fn sent_bytes(mo: &MidiOut) -> Vec<Vec<u8>> {
+        mo.sent().map(|(_, _, t)| t.bytes().to_vec()).collect()
+    }
+
+    /// CC scale fits a track's controllers into its range as they go out
+    /// (the bend isn't a controller); a change of the effect sends again
+    /// only the values it changes, once, and taking it away sends the
+    /// raw value again.
+    #[test]
+    fn cc_scale_fits_a_tracks_controllers_and_a_change_sends_them_again() {
+        use mpfree_notefx::{CcScale, Fx};
+        let (mut mo, _sink) = open(Duration::ZERO);
+        let m = model(&[(0, TrackOut::new(DIN_NAME, 0))]);
+        let scale = |low, high| {
+            cc_fx(&[Fx::CcScale(CcScale {
+                cc: Some(74),
+                low,
+                high,
+            })])
+        };
+        mo.set_note_fx(0, &scale(20, 100));
+        mo.sync(&m, true);
+        mo.control(0, ctl(0, 74), 127.0);
+        mo.control(0, ctl(0, 1), 127.0);
+        mo.control(0, ctl(0, ctl::BEND), 8191.0);
+        mo.period_end(PERIOD, Instant::now());
+        assert_eq!(
+            sent_bytes(&mo),
+            [
+                vec![0xB0, 74, 100],
+                vec![0xB0, 1, 127],
+                vec![0xE0, 0x7F, 0x7F]
+            ]
+        );
+        let period = |mo: &mut MidiOut, fx: &TrackFx| {
+            mo.set_note_fx(0, fx);
+            mo.sync(&m, true);
+            mo.period_end(PERIOD, Instant::now());
+            sent_bytes(mo)
+        };
+        assert_eq!(period(&mut mo, &scale(0, 64)), [vec![0xB0, 74, 64]]);
+        assert!(period(&mut mo, &scale(0, 64)).is_empty(), "no change");
+        assert!(period(&mut mo, &scale(10, 64)).is_empty(), "64 still");
+        assert_eq!(
+            period(&mut mo, &TrackFx::default()),
+            [vec![0xB0, 74, 127]],
+            "raw again"
+        );
+        assert!(mo.close());
+    }
+
+    /// CC smooth glides a controller to each new value: a message a
+    /// period at most, only when the value changes, ending on the value;
+    /// on the jacks none sooner than 4 ms after the last, on USB every
+    /// period. The first value ever, and a resend at the song's start,
+    /// go at once.
+    #[test]
+    fn cc_smooth_glides_to_each_value_and_spares_the_jacks() {
+        // 20 ms at 44.1 kHz is 882 frames: 7 periods of 128.
+        let glide = |usb: bool| -> Vec<(usize, u8)> {
+            let (mut mo, _din) = open(Duration::ZERO);
+            let port = if usb { "Digitone" } else { DIN_NAME };
+            let (sink, opens) = (Sink::default(), Arc::default());
+            if usb {
+                mo.plugged(USB, "Digitone", opener(&sink, &opens));
+            }
+            let m = model(&[(0, TrackOut::new(port, 0))]);
+            if usb {
+                with_digitone(&m);
+            }
+            mo.set_note_fx(0, &cc_fx(&[smooth(20, false)]));
+            mo.sync(&m, true);
+            assert!(mo.takes(0));
+            mo.control(0, ctl(0, 74), 0.0);
+            mo.period_end(PERIOD, Instant::now());
+            assert_eq!(sent_bytes(&mo), [vec![0xB0, 74, 0]], "the first at once");
+            mo.sync(&m, true);
+            mo.control(0, ctl(0, 74), 127.0);
+            mo.period_end(PERIOD, Instant::now());
+            assert!(sent_bytes(&mo).is_empty(), "from the next period");
+            let mut got = Vec::new();
+            for p in 0..12 {
+                mo.sync(&m, true);
+                mo.period_end(PERIOD, Instant::now());
+                for b in sent_bytes(&mo) {
+                    assert_eq!(b[..2], [0xB0, 74]);
+                    got.push((p, b[2]));
+                }
+            }
+            // While it glides, the song starts again: straight there.
+            mo.control(0, ctl(0, 74), 0.0);
+            mo.period_end(PERIOD, Instant::now());
+            mo.sync(&m, false);
+            mo.period_end(PERIOD, Instant::now());
+            mo.sync(&m, true);
+            mo.period_end(PERIOD, Instant::now());
+            assert_eq!(sent_bytes(&mo), [vec![0xB0, 74, 0]], "a resend jumps");
+            mo.sync(&m, true);
+            mo.period_end(PERIOD, Instant::now());
+            assert!(sent_bytes(&mo).is_empty(), "and stays");
+            got
+        };
+        for usb in [false, true] {
+            let got = glide(usb);
+            assert_eq!(got.last().map(|g| g.1), Some(127), "{got:?}");
+            assert!(got.windows(2).all(|w| w[0].1 < w[1].1), "{got:?}");
+            assert!(got[0].1 > 0 && got[0].0 == 0, "{got:?}");
+            let gaps: Vec<usize> = got.windows(2).map(|w| w[1].0 - w[0].0).collect();
+            if usb {
+                assert_eq!(got.len(), 7, "every period: {got:?}");
+            } else {
+                // 4 ms is 176 frames: every other period.
+                assert!(gaps.iter().all(|&g| g >= 2), "{got:?}");
+                assert!(got.len() <= 4, "{got:?}");
+            }
+        }
+    }
+
+    /// A value that comes with one of the track's notes (a step's lock)
+    /// goes out at once, ahead of the note, unless the smooth glides on
+    /// notes too.
+    #[test]
+    fn a_smoothed_value_with_a_note_goes_ahead_of_it_unless_told_to_glide() {
+        let (mut mo, _sink) = open(Duration::ZERO);
+        let m = model(&[(0, TrackOut::new(DIN_NAME, 0))]);
+        mo.set_note_fx(0, &cc_fx(&[smooth(50, false)]));
+        mo.sync(&m, true);
+        mo.control(0, ctl(0, 74), 0.0);
+        mo.period_end(PERIOD, Instant::now());
+        mo.sync(&m, true);
+        assert!(mo.send(&ev(0, 10, on(60, 100)), NoteIs::Note));
+        mo.control(10, ctl(0, 74), 127.0);
+        mo.period_end(PERIOD, Instant::now());
+        assert_eq!(
+            sent_bytes(&mo)[..2],
+            [vec![0xB0, 74, 127], vec![0x90, 60, 100]]
+        );
+        // Told to glide with notes too: the note goes alone.
+        mo.set_note_fx(0, &cc_fx(&[smooth(50, true)]));
+        mo.sync(&m, true);
+        assert!(mo.send(&ev(0, 20, on(62, 100)), NoteIs::Note));
+        mo.control(20, ctl(0, 74), 0.0);
+        mo.period_end(PERIOD, Instant::now());
+        let b = sent_bytes(&mo);
+        assert!(b.iter().all(|m| m[0] != 0xB0), "{b:02X?}");
+        mo.sync(&m, true);
+        mo.period_end(PERIOD, Instant::now());
+        let b = sent_bytes(&mo);
+        assert!(
+            matches!(b[..], [ref m] if m[..2] == [0xB0, 74] && m[2] < 127),
+            "{b:?}"
+        );
+        assert!(mo.close());
+    }
+
     /// A panic ends exactly the notes that are on, is left to the pads too
     /// (false), and nothing is left on for close to end.
     #[test]
@@ -3507,5 +3924,43 @@ mod tests {
         assert_eq!(calls, 0, "allocations or frees in the sound loop");
         assert!(mo.close());
         assert_eq!(sink.bytes().len(), 1050 * 6);
+    }
+
+    /// CC scale and CC smooth on a track's lanes, with the effects
+    /// changing and controls gliding every period, allocate nothing.
+    #[test]
+    fn shaped_and_gliding_controls_never_allocate() {
+        use mpfree_notefx::{CcScale, Fx};
+        let (mut mo, _sink) = open(Duration::ZERO);
+        let m = model(&[(0, TrackOut::new(DIN_NAME, 0))]);
+        mo.sync(&m, true);
+        let fx: [TrackFx; 2] = std::array::from_fn(|i| {
+            cc_fx(&[
+                Fx::CcScale(CcScale {
+                    cc: None,
+                    low: 10 * i as u8,
+                    high: 100,
+                }),
+                smooth(30, i == 1),
+            ])
+        });
+        let run = |mo: &mut MidiOut, periods: u32| {
+            for i in 0..periods {
+                mo.set_note_fx(0, &fx[(i / 7 % 2) as usize]);
+                mo.sync(&m, true);
+                mo.send(&ev(0, 0, on(60, 100)), NoteIs::Note);
+                for cc in [1u16, 74, 71] {
+                    let v = ((i * 37 + u32::from(cc)) % 128) as f32;
+                    mo.control((i % 3) * 10, ctl(0, cc), v);
+                }
+                mo.send(&ev(0, 64, Event::NoteOff { note: 60 }), NoteIs::Note);
+                mo.period_end(PERIOD, Instant::now());
+            }
+        };
+        run(&mut mo, 50);
+        thread::sleep(Duration::from_millis(50));
+        let ((), calls) = crate::sys::alloc_count::calls(|| run(&mut mo, 1000));
+        assert_eq!(calls, 0, "allocations or frees in the sound loop");
+        assert!(mo.close());
     }
 }

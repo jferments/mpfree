@@ -629,6 +629,13 @@ impl TimeHost {
             .modulate_note_fx(usize::from(track), id, k, value);
     }
 
+    /// Track `track`'s MIDI effects as they play now, with the mod
+    /// engine's values on them (for MIDI out's CC scale and CC smooth).
+    /// Never allocates.
+    pub fn note_fx_now(&self, track: usize) -> mpfree_notefx::TrackFx {
+        self.audio.note_fx_now(track)
+    }
+
     /// The tracks' MIDI effects as the sound loop has them, once after
     /// each change (for the mod engine's view of their settings).
     pub fn note_fx_moved(&mut self) -> Option<&[mpfree_notefx::TrackFx; mpfree_seq::MAX_TRACKS]> {
@@ -2862,6 +2869,9 @@ mod tests {
             fx,
             "the project keeps its own"
         );
+        // As they play now (MIDI out's view): with the mod engine's value.
+        assert_eq!(h.note_fx_now(1).value(id, 0), Some(7));
+        assert_eq!(h.note_fx_now(99), mpfree_notefx::TrackFx::default());
         // Kept in range; a setting or an effect the track hasn't got is not.
         h.modulate_note_fx(addr, Some(99.0));
         assert_eq!(press(&mut h, &mut pads, &mut arps), Some(52));
