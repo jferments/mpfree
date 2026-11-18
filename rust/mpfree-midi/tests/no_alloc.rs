@@ -11,6 +11,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use mpfree_midi::blocks::Blocks;
 use mpfree_midi::cv::{CvAssign, CvEngine, Priority, Scale};
 use mpfree_midi::input::{ChanFilter, In, InputMode, InputRouter, Listen, PortFilter, Route, Thru};
 use mpfree_midi::monitor::{Dir, Event, Feed, Monitor, Mpc, To, KEEP};
@@ -76,11 +77,13 @@ fn routing_pacing_and_cv_never_allocate() {
                 port: PortFilter::One(DIN),
                 channel: ChanFilter::One(0),
                 track: 40,
+                blocks: Blocks::NONE,
             },
             Route {
                 port: PortFilter::One(PortId(1)),
                 channel: ChanFilter::Omni,
                 track: 3,
+                blocks: Blocks::NONE,
             },
         ],
         0,
@@ -92,6 +95,7 @@ fn routing_pacing_and_cv_never_allocate() {
             port: PortFilter::One(PortId(1)),
             channel: ChanFilter::One(1),
             to: DIN,
+            blocks: Blocks::NONE,
         }],
         0,
         |_| {},

@@ -15,9 +15,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use mpfree_midi::blocks::Blocks;
 use mpfree_midi::learn::Takeover;
 use mpfree_midi::setup::{
-    ClockOut, IgnoreSet, Ignored, Kept, ThruRoute, TrackOut, TrackRoute, DIN_NAME,
+    ClockOut, IgnoreSet, Ignored, Kept, PortInput, ThruRoute, TrackOut, TrackRoute, DIN_NAME,
 };
 use mpfree_midi_ui::{sample, sections, Built, IoModel, LearnLive};
 use mpfree_mixer_ui::sample::{name, play, screen, song_mixer};
@@ -160,6 +161,7 @@ fn shots() -> Vec<Shot> {
         port: port.into(),
         channel: Some(channel),
         track,
+        blocks: Blocks::NONE,
     };
     routing.setup.routes = vec![
         route(DIN_NAME, 9, 0),
@@ -175,8 +177,19 @@ fn shots() -> Vec<Shot> {
             from: "Keystep 37".into(),
             channel: Some(c),
             to: DIN_NAME.into(),
+            blocks: Blocks::NONE,
         })
         .collect();
+    // Blocks: the keyboard plays the armed track an octave down, softer
+    // playing louder, its program changes dropped; the drum machine's
+    // route to Drums keeps its notes between C1 and B2.
+    let mut blocks = routing.clone();
+    blocks.setup.set_port("Keystep 37", |p| {
+        p.input = PortInput::Both;
+        p.blocks = Blocks::parse("filter program; transpose -12; velocity soft 20 127")
+            .expect("three blocks");
+    });
+    blocks.setup.routes[0].blocks = Blocks::parse("split 24 47").expect("a block");
     vec![
         Shot {
             name: "io-midi",
@@ -222,6 +235,17 @@ fn shots() -> Vec<Shot> {
             at: 1,
             open: None,
             pick: Some("Keystep 37 → MIDI out"),
+        },
+        Shot {
+            name: "io-routing-blocks",
+            about: "Routing: the keyboard's Armed track square picked: its notes reach the armed track through three blocks (Filter, Transpose, Velocity), shown as tiles with + Block; the last line waits for a note",
+            section: 2,
+            model: blocks,
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: None,
+            pick: Some("Keystep 37 → Armed"),
         },
         Shot {
             name: "io-sync",

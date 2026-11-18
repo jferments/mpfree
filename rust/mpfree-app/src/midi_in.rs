@@ -288,6 +288,47 @@ fn follow(s: &mut Saved, landed: &crate::fxmodes::Landed) -> bool {
     }
 }
 
+/// What Learn and MIDI Follow do with a message as it came in on `port`
+/// (before any route's blocks): true when one of them took it, so it
+/// plays nothing and goes nowhere else.
+#[allow(clippy::too_many_arguments)]
+fn learn_or_follow(
+    learn: &mut LearnMap,
+    knobs: &mut Knobs,
+    learning: &mut Vec<Learning>,
+    sets: &mut Vec<LearnedSet>,
+    port: PortId,
+    raw: &Msg,
+    t: f64,
+    learns: bool,
+    to: &mut To,
+    learned: &mut Option<usize>,
+) -> bool {
+    if learns && learn.takes(port, raw) {
+        if let Some(target) = learn.target_of(port, raw) {
+            *to = To::Learned(target);
+        }
+        learn.input(port, raw, |i| match i {
+            Input::Learned(i) => *learned = Some(i),
+            Input::Write(w) => {
+                *to = To::Learned(w.target);
+                note_set(sets, w.target, w.value, t);
+                learning.push(Learning::Set(w))
+            }
+        });
+        return true;
+    }
+    // MIDI Follow: the controller's knob turns a Q-Link (a learned
+    // control above wins), and plays nothing.
+    if let Msg::Cc { cc, value, .. } = *raw {
+        if let Some(k) = knobs.cc(port, cc, value) {
+            *to = To::QLink(k);
+            return true;
+        }
+    }
+    false
+}
+
 fn note_set(sets: &mut Vec<LearnedSet>, target: ParamAddr, unit: f32, at: f64) {
     let room = sets.len() < sets.capacity();
     match sets.iter_mut().find(|s| s.target == target) {
@@ -786,6 +827,7 @@ impl MusicIn {
                     *i = set.input;
                 }
                 self.router.set_ignore(p.id, set.ignore);
+                self.router.set_port_blocks(p.id, set.blocks);
             }
             // Routes to tracks, on this run's port numbers: a route whose
             // port hasn't been plugged in yet waits for it (plugging a
@@ -799,6 +841,7 @@ impl MusicIn {
                         port: PortFilter::One(id),
                         channel: r.channel.map_or(ChanFilter::Omni, ChanFilter::One),
                         track: r.track,
+                        blocks: r.blocks,
                     })
                 }),
                 0,
@@ -816,6 +859,7 @@ impl MusicIn {
                         port: PortFilter::One(from),
                         channel: r.channel.map_or(ChanFilter::Omni, ChanFilter::One),
                         to,
+                        blocks: r.blocks,
                     })
                 }),
                 0,
@@ -1115,9 +1159,10 @@ impl MusicIn {
             );
             let (thru, dropped) = (&mut self.thru, &mut self.thru_dropped);
             let knobs = &mut self.knobs;
-            // The message Learn took: it reaches nothing else, however
-            // many routes and thru name its channel.
-            let mut took: Option<Msg> = None;
+            // Learn or MIDI Follow took the message: it reaches nothing
+            // else, however many routes and thru name its channel. They
+            // hear it as it came, before any route's blocks.
+            let mut took = false;
             self.router.feed(port, b, 0, |e| match e {
                 In::Seen { msg, .. } => seen = Some(msg),
                 // The port's "Ignore coming in": listed, nothing else.
@@ -1132,32 +1177,24 @@ impl MusicIn {
                     if let In::Track { msg, .. } | In::Routed { msg, .. } | In::Thru { msg, .. } =
                         &other
                     {
-                        if took == Some(*msg) {
+                        if took {
                             return;
                         }
-                        if learns && learn.takes(port, msg) {
-                            took = Some(*msg);
-                            if let Some(target) = learn.target_of(port, msg) {
-                                to = To::Learned(target);
-                            }
-                            learn.input(port, msg, |i| match i {
-                                Input::Learned(i) => learned = Some(i),
-                                Input::Write(w) => {
-                                    to = To::Learned(w.target);
-                                    note_set(sets, w.target, w.value, t);
-                                    learning.push(Learning::Set(w))
-                                }
-                            });
+                        let raw = seen.unwrap_or(*msg);
+                        if learn_or_follow(
+                            learn,
+                            knobs,
+                            learning,
+                            sets,
+                            port,
+                            &raw,
+                            t,
+                            learns,
+                            &mut to,
+                            &mut learned,
+                        ) {
+                            took = true;
                             return;
-                        }
-                        // MIDI Follow: the controller's knob turns a
-                        // Q-Link (a learned control above wins), and
-                        // plays nothing.
-                        if let Msg::Cc { cc, value, .. } = *msg {
-                            if let Some(k) = knobs.cc(port, cc, value) {
-                                to = To::QLink(k);
-                                return;
-                            }
                         }
                     }
                     // Thru sends it on as it came, whatever the port's
@@ -1190,6 +1227,22 @@ impl MusicIn {
                     }
                 }
             });
+            // Nothing played it (a route's blocks dropped it, or no track
+            // takes it): Learn and MIDI Follow still hear it.
+            if let (Some(raw), false) = (seen, got) {
+                learn_or_follow(
+                    &mut self.learn,
+                    &mut self.knobs,
+                    &mut self.learning,
+                    &mut self.learn_sets,
+                    port,
+                    &raw,
+                    t,
+                    learns,
+                    &mut to,
+                    &mut learned,
+                );
+            }
             if listed {
                 let to = match self.feed.listed() {
                     Some(What::Channel { .. }) => match learned.and_then(|i| self.learn.get(i)) {
@@ -1630,6 +1683,7 @@ mod tests {
                 from: "Keystep 37".to_string(),
                 channel: Some(9),
                 to: DIN_NAME.to_string(),
+                blocks: mpfree_midi::blocks::Blocks::NONE,
             }];
             let cutoff =
                 Saved::parse("port Keystep 37 | ch 10 | cc 74 | t1.fx1.0 | 0 1 | absolute | jump")
@@ -1711,6 +1765,71 @@ mod tests {
         assert!(passed(&mut m).is_empty());
     }
 
+    /// A route's blocks shape what it plays and its Split leaves the rest
+    /// of the keys to the armed track; the port's own blocks shape the
+    /// armed track's keys; Learn hears a knob as it came, even one the
+    /// port's Filter drops.
+    #[test]
+    fn blocks_shape_a_route_and_the_armed_track_and_learn_hears_what_came() {
+        use mpfree_midi::blocks::Blocks;
+        use mpfree_midi::setup::{TrackRoute, DIN_NAME};
+        let mut m = MusicIn::new();
+        let io = model();
+        {
+            let mut v = io.lock().unwrap();
+            v.setup.routes = vec![TrackRoute {
+                port: DIN_NAME.to_string(),
+                channel: Some(9),
+                track: 40,
+                blocks: Blocks::parse("split 36 47; transpose 12").unwrap(),
+            }];
+            v.setup.set_port(DIN_NAME, |p| {
+                p.blocks = Blocks::parse("filter controls program; velocity fixed 100").unwrap();
+            });
+            v.gen += 1;
+        }
+        m.sync(&io, 0.5);
+        // In the split: track 41, an octave up. Outside it: the armed
+        // track, at the port's fixed velocity.
+        let (keys, _) = run(&mut m, DIN, &[0x99, 36, 64, 0x99, 60, 30]);
+        assert_eq!(
+            m.take_routed().collect::<Vec<_>>(),
+            vec![(
+                40,
+                Key::Down {
+                    note: 48,
+                    velocity: 64
+                }
+            )]
+        );
+        assert_eq!(
+            keys,
+            vec![Key::Down {
+                note: 60,
+                velocity: 100
+            }]
+        );
+        let (keys, _) = run(&mut m, DIN, &[0x89, 36, 0, 0x89, 60, 0]);
+        assert_eq!(
+            m.take_routed().collect::<Vec<_>>(),
+            vec![(40, Key::Up { note: 48 })]
+        );
+        assert_eq!(keys, vec![Key::Up { note: 60 }]);
+        // A knob the port's Filter drops still reaches Learn, as it came.
+        m.arm_from(cutoff(), ArmedBy::Touch);
+        let (keys, _) = run(&mut m, DIN, &[0xB0, 74, 64]);
+        assert!(keys.is_empty());
+        let got: Vec<_> = m.learning().collect();
+        assert!(
+            matches!(got[..], [Learning::Took { target, .. }] if target == cutoff()),
+            "{got:?}"
+        );
+        m.sync(&io, 0.75);
+        let v = io.lock().unwrap();
+        assert_eq!(v.setup.learn.len(), 1);
+        assert_eq!(v.setup.learn[0].source, mpfree_midi::learn::Source::Cc(74));
+    }
+
     #[test]
     fn a_route_plays_its_track_whatever_the_ports_input_and_the_rest_play_the_armed_one() {
         use mpfree_midi::setup::{TrackRoute, DIN_NAME};
@@ -1725,11 +1844,13 @@ mod tests {
                     port: DIN_NAME.to_string(),
                     channel: Some(9),
                     track: 40,
+                    blocks: mpfree_midi::blocks::Blocks::NONE,
                 },
                 TrackRoute {
                     port: "Keystep 37".to_string(),
                     channel: None,
                     track: 2,
+                    blocks: mpfree_midi::blocks::Blocks::NONE,
                 },
             ];
             v.setup

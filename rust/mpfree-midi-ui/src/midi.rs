@@ -295,6 +295,7 @@ impl Form for Midi {
                         from: name,
                         channel: None,
                         to: out,
+                        blocks: mpfree_midi::blocks::Blocks::NONE,
                     });
                 }
                 return true;
@@ -567,6 +568,7 @@ mod tests {
                 from: DIN_NAME.to_string(),
                 channel: None,
                 to: DIN_NAME.to_string(),
+                blocks: mpfree_midi::blocks::Blocks::NONE,
             });
         }
         let r = rows(&s);
@@ -629,6 +631,7 @@ mod tests {
                 from: "Keystep 37".into(),
                 channel: None,
                 to: DIN_NAME.into(),
+                blocks: mpfree_midi::blocks::Blocks::NONE,
             }]
         );
         assert_eq!(row(&rows(&s), "port:Keystep 37").fields[1].text, DIN_NAME);
@@ -656,6 +659,7 @@ mod tests {
             from: "Launchkey".into(),
             channel: None,
             to: DIN_NAME.into(),
+            blocks: mpfree_midi::blocks::Blocks::NONE,
         });
         let r = rows(&s);
         assert_eq!(

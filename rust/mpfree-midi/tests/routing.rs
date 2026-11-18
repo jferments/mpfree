@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 
+use mpfree_midi::blocks::Blocks;
 use mpfree_midi::cv::{Calibration, CvAssign, CvChange, CvEngine, Priority, Scale};
 use mpfree_midi::input::{
     ChanFilter, In, InputMode, InputRouter, Listen, PortFilter, Route, Thru, MAX_ROUTES, MAX_THRU,
@@ -1165,6 +1166,7 @@ fn route(port: PortId, ch: Option<u8>, track: u8) -> Route {
         port: PortFilter::One(port),
         channel: ch.map_or(ChanFilter::Omni, ChanFilter::One),
         track,
+        blocks: Blocks::NONE,
     }
 }
 
@@ -1316,6 +1318,7 @@ fn thru(port: PortId, ch: Option<u8>, to: PortId) -> Thru {
         port: PortFilter::One(port),
         channel: ch.map_or(ChanFilter::Omni, ChanFilter::One),
         to,
+        blocks: Blocks::NONE,
     }
 }
 
