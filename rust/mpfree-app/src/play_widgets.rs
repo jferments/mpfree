@@ -65,12 +65,38 @@ pub struct PadsPlay {
     pub what: String,
     /// The track's colour, for the dot before the text.
     pub color: Color,
+    /// Between the track and the rest: " · ", or in controller mode the
+    /// Controller chip's own " → " or ": ".
+    pub join: &'static str,
+    /// Controller mode: the dot in the theme's warn colour, as the chip.
+    pub warn: bool,
 }
 
 impl PadsPlay {
     /// The whole line: "Drums · Boom Bap · A".
     pub fn text(&self) -> String {
-        format!("{} · {}", self.track, self.what)
+        format!("{}{}{}", self.track, self.join, self.what)
+    }
+
+    /// In controller mode, the Controller chip's words ("Controller →
+    /// Juno-X · ch 3 · A", "Controller: pick its port on I/O"): "Controller"
+    /// in the track's place, so a line too long keeps the gear and bank.
+    pub fn controller(chip: &str) -> PadsPlay {
+        let (join, what) = match (
+            chip.strip_prefix("Controller → "),
+            chip.strip_prefix("Controller: "),
+        ) {
+            (Some(w), _) => (" → ", w),
+            (None, Some(w)) => (": ", w),
+            (None, None) => (" · ", chip),
+        };
+        PadsPlay {
+            track: "Controller".to_string(),
+            what: what.to_string(),
+            color: Color::rgb(0xFFC145),
+            join,
+            warn: true,
+        }
     }
 }
 
@@ -312,7 +338,7 @@ fn paint_pads_play(cx: &mut PaintCx, r: Rect, p: &PadsPlay) {
     cx.canvas.fill_round_rect(
         Rect::new(line.x, line.y + (line.h - 8) / 2, 8, 8),
         4,
-        p.color,
+        if p.warn { t.warn } else { p.color },
     );
     let text = Rect::new(line.x + 14, line.y, line.w - 14, line.h);
     // Too long: the track goes first (Play's rows name it), then the
@@ -1019,6 +1045,10 @@ pub struct Marks {
     pub tie: bool,
     /// An empty step a note before it lasts over: a thin bar through it.
     pub held_over: bool,
+    /// Switched off but kept (the redesign's step 3b; `Note::on`): an
+    /// outline in the lane's colour with "off" in it, its lock dots still
+    /// there, since a tap brings it all back.
+    pub off: bool,
 }
 
 /// The pattern: a lane per sound (as many as fit, the ones that play
@@ -1107,12 +1137,13 @@ struct Swipe {
     tap: Option<EventKind>,
 }
 
-/// Play's head: the track switch's ‹ and ›, Follow, and the Sequencer
-/// tab, as `Tab` indices; bank A's button is `HEAD_BANK`, B to H after it.
+/// Play's head: the track switch's ‹ and ›, and Follow, as `Tab`
+/// indices; bank A's button is `HEAD_BANK`, B to H after it. (Its
+/// "Sequencer tab ›" button went on 18 Nov 2026: the Sequencer tab is in
+/// the top bar, Jay 07:28Z.)
 pub const HEAD_TRACK_PREV: usize = 7;
 pub const HEAD_TRACK_NEXT: usize = 8;
 pub const HEAD_FOLLOW: usize = 9;
-pub const HEAD_SEQUENCER: usize = 10;
 pub const HEAD_BANK: usize = 16;
 /// A swipe on Play's rows: `Step { index: ROWS, delta }`, the rows to
 /// move the first one shown by.
@@ -1239,8 +1270,9 @@ impl Head {
 
 /// Play's head over the armed track's pads ([`BankHead`]), left to
 /// right after the Arm pill: the track with ‹ and › at its ends (each half
-/// of it goes that way), the banks A to H, the page with ‹ and ›, Follow,
-/// then the Sequencer tab to the right edge.
+/// of it goes that way), the banks A to H, the page with ‹ and ›, then
+/// Follow. The room the Sequencer tab's button had (18 Nov 2026) goes to
+/// the page's ‹ and › (60 px, a fingertip), Follow, then the banks.
 struct BankLayout {
     track: Rect,
     banks: [Rect; 8],
@@ -1248,7 +1280,6 @@ struct BankLayout {
     page: Rect,
     next: Rect,
     follow: Rect,
-    sequencer: Rect,
 }
 
 impl BankLayout {
@@ -1256,6 +1287,17 @@ impl BankLayout {
         let (h, body) = card_head(r);
         let band = Rect::new(h.x, r.y, h.w, body.y - 2 - r.y);
         let mut x = h.x + ARM_PILL_W + 8;
+        // The narrowest each can be, and the room left beside them.
+        let least = 196 + 10 + 8 * BANK_BTN_W + 7 * 4 + 10 + 40 + 92 + 40 + 8 + 76;
+        let mut slack = (h.right() - x - least).max(0);
+        let mut grow = |want: i32| {
+            let g = want.min(slack);
+            slack -= g;
+            g
+        };
+        let arrow = 40 + grow(40) / 2;
+        let follow_w = 76 + grow(20);
+        let bank_w = BANK_BTN_W + grow(8 * 14) / 8;
         let mut take = |w: i32, gap: i32| {
             let b = Rect::new(x, band.y, w, band.h);
             x += w + gap;
@@ -1264,13 +1306,12 @@ impl BankLayout {
         let track = take(196, 10);
         let mut banks = [Rect::new(0, 0, 0, 0); 8];
         for (i, b) in banks.iter_mut().enumerate() {
-            *b = take(BANK_BTN_W, if i == 7 { 10 } else { 4 });
+            *b = take(bank_w, if i == 7 { 10 } else { 4 });
         }
-        let prev = take(40, 0);
+        let prev = take(arrow, 0);
         let page = take(92, 0);
-        let next = take(40, 8);
-        let follow = take(76, 8);
-        let sequencer = Rect::new(x, band.y, (h.right() - x).max(0), band.h);
+        let next = take(arrow, 8);
+        let follow = take(follow_w, 8);
         BankLayout {
             track,
             banks,
@@ -1278,7 +1319,6 @@ impl BankLayout {
             page,
             next,
             follow,
-            sequencer,
         }
     }
 
@@ -1299,7 +1339,6 @@ impl BankLayout {
             (self.prev, HEAD_PREV),
             (self.next, HEAD_NEXT),
             (self.follow, HEAD_FOLLOW),
-            (self.sequencer, HEAD_SEQUENCER),
         ]
         .into_iter()
         .find(|(b, _)| b.contains(x, y))
@@ -1558,8 +1597,8 @@ impl StepGrid {
     }
 
     /// Play's head ([`BankHead`]): the track with ‹ and ›, the banks (the
-    /// one shown lit), the steps shown of how many with ‹ and ›, Follow
-    /// (lit while on), and the Sequencer tab.
+    /// one shown lit), the steps shown of how many with ‹ and ›, and
+    /// Follow (lit while on).
     fn paint_bank_head(&self, cx: &mut PaintCx, r: Rect, b: &BankHead) {
         let t = cx.theme.clone();
         let l = BankLayout::of(r);
@@ -1634,7 +1673,7 @@ impl StepGrid {
             t.text_dim,
             &format!("{from}–{to} of {total}"),
         );
-        // Follow, lit while on; then the way to the Sequencer tab.
+        // Follow, lit while on.
         let f = face(l.follow);
         let (fill, ink) = if b.follow {
             (t.accent, t.bg)
@@ -1643,16 +1682,6 @@ impl StepGrid {
         };
         cx.canvas.fill_round_rect(f, 8, fill);
         cx.text(FontId::Bold, 13.0, f, Align::Center, ink, "Follow");
-        let f = face(l.sequencer);
-        cx.canvas.fill_round_rect(f, 8, t.raised);
-        cx.text(
-            FontId::Bold,
-            13.0,
-            f,
-            Align::Center,
-            t.text,
-            "Sequencer tab ›",
-        );
     }
 
     /// The lanes shown on a page this tall (for the app's tests).
@@ -1687,7 +1716,6 @@ impl StepGrid {
             HEAD_PREV => l.prev,
             HEAD_NEXT => l.next,
             HEAD_FOLLOW => l.follow,
-            HEAD_SEQUENCER => l.sequencer,
             k => l.banks[k - HEAD_BANK],
         };
         (b.x + b.w / 2, b.y + b.h / 2)
@@ -1726,6 +1754,28 @@ fn paint_cell(
             f
         }
     };
+    if v > 0 && m.off {
+        // Off but kept (board 1's "off" step): the empty step's fill, an
+        // outline and the word in the lane's colour, and its locks' dots.
+        let base = if beat {
+            t.raised
+        } else {
+            t.raised.mix(t.surface, 0.45)
+        };
+        cx.canvas.fill_round_rect(sr, 5, base);
+        let ink = if muted {
+            t.raised.mix(c, 0.5)
+        } else {
+            c.mix(t.text, 0.15)
+        };
+        cx.canvas.stroke_round_rect(sr, 5, 2, ink);
+        cx.text(FontId::Bold, 12.0, sr, Align::Center, ink, "off");
+        for k in 0..i32::from(m.locks.min(3)) {
+            let dx = sr.right() - 8 - k * 9;
+            dot(cx, dx, sr.y + 8, 4, LOCKED);
+        }
+        return;
+    }
     if v == 0 {
         let base = if beat {
             t.raised
@@ -2020,8 +2070,8 @@ impl Widget for StepGrid {
         let h = Head::of(r, self.pitched.is_some());
         let (prev, next, shorter, longer) = self.usable();
         if let Some(b) = &self.bank {
-            // Play's head: the track's ‹ and ›, the banks, the pages,
-            // Follow and the Sequencer tab.
+            // Play's head: the track's ‹ and ›, the banks, the pages and
+            // Follow.
             let l = BankLayout::of(r);
             let (left, right) = l.track.take_left(l.track.w / 2);
             out.push(
@@ -2040,12 +2090,6 @@ impl Widget for StepGrid {
             out.push(Target::tap("head", HEAD_PREV, "Previous page", l.prev).disabled_if(!prev));
             out.push(Target::tap("head", HEAD_NEXT, "Next page", l.next).disabled_if(!next));
             out.push(Target::tap("head", HEAD_FOLLOW, "Follow", l.follow));
-            out.push(Target::tap(
-                "head",
-                HEAD_SEQUENCER,
-                "Sequencer tab",
-                l.sequencer,
-            ));
         }
         // The head: ‹ › turn the pages of 16, - + halve or double the
         // steps (faint when they can't; a tap then says why).
@@ -2229,14 +2273,22 @@ impl StepGrid {
 pub const INSPECT_COPY: usize = 10;
 pub const INSPECT_CLEAR: usize = 11;
 pub const INSPECT_CLOSE: usize = 12;
+/// On and Off (the step plays, or is switched off and kept) and the Tie /
+/// Slide chip (a tap steps it).
+pub const INSPECT_ON: usize = 13;
+pub const INSPECT_OFF: usize = 14;
+pub const INSPECT_JOIN: usize = 15;
 
 /// The step held or picked on Beats, under the pattern in the throws'
 /// place (the sequencer design's mockup A): its settings as chips, the
 /// ones the Q-Links turn outlined; Q-LINK's banks, a tap picks one
 /// (`Tab(0..=2)`: Step, Trig, Sound); its locks, each with a × that takes
-/// it off (`Toggle(k)`); Copy (`Tab(INSPECT_COPY)`) and Clear
-/// (`Tab(INSPECT_CLEAR)`); for a step picked (not held), × at the head's
-/// right (`Tab(INSPECT_CLOSE)`) picks it off, the step kept.
+/// it off (`Toggle(k)`); On and Off (`Tab(INSPECT_ON)`, `Tab(INSPECT_OFF)`:
+/// the step plays, or is switched off and keeps all it holds), Copy
+/// (`Tab(INSPECT_COPY)`) and Clear (`Tab(INSPECT_CLEAR)`); the Tie / Slide
+/// chip steps with a tap (`Tab(INSPECT_JOIN)`); for a step picked (not
+/// held), × at the head's right (`Tab(INSPECT_CLOSE)`) picks it off, the
+/// step kept.
 #[derive(Default)]
 pub struct StepInspector {
     pub inspect: crate::play_page::Inspect,
@@ -2247,10 +2299,12 @@ struct InspectGeom {
     head: Rect,
     banks: [Rect; 3],
     close: Rect,
-    chips: [Rect; 6],
+    chips: [Rect; crate::play_page::INSPECT_N],
     label: Rect,
     locks: Vec<Rect>,
     hint: Rect,
+    /// On and Off, side by side.
+    on: [Rect; 2],
     copy: Rect,
     clear: Rect,
 }
@@ -2259,6 +2313,7 @@ const BANK_W: i32 = 84;
 const CLOSE_W: i32 = 52;
 const LOCK_W: i32 = 196;
 const BUTTON_W: i32 = 100;
+const ON_W: i32 = 76;
 
 impl StepInspector {
     fn geom(&self, r: Rect) -> InspectGeom {
@@ -2274,21 +2329,24 @@ impl StepInspector {
             )
         });
         let gap = 10;
-        let cw = (body.w - 5 * gap) / 6;
+        let n = crate::play_page::INSPECT_N as i32;
+        let cw = (body.w - (n - 1) * gap) / n;
         let chips =
             std::array::from_fn(|k| Rect::new(body.x + k as i32 * (cw + gap), body.y, cw, 58));
         let label = Rect::new(body.x, body.y + 58 + 12, body.w, 14);
         let row = Rect::new(body.x, label.bottom() + 4, body.w, 44);
         let clear = Rect::new(row.right() - BUTTON_W, row.y, BUTTON_W, row.h);
         let copy = Rect::new(clear.x - gap - BUTTON_W, row.y, BUTTON_W, row.h);
-        let room = copy.x - gap - row.x;
+        let off = Rect::new(copy.x - gap - ON_W, row.y, ON_W, row.h);
+        let on = [Rect::new(off.x - 4 - ON_W, row.y, ON_W, row.h), off];
+        let room = on[0].x - gap - row.x;
         let fit = ((room + gap) / (LOCK_W + gap)).max(0) as usize;
         let n = self.inspect.locks.len().min(fit);
         let locks: Vec<Rect> = (0..n)
             .map(|k| Rect::new(row.x + k as i32 * (LOCK_W + gap), row.y, LOCK_W, row.h))
             .collect();
         let hx = locks.last().map_or(row.x, |l| l.right() + gap);
-        let hint = Rect::new(hx, row.y, (copy.x - gap - hx).max(0), row.h);
+        let hint = Rect::new(hx, row.y, (on[0].x - gap - hx).max(0), row.h);
         InspectGeom {
             head: h,
             banks,
@@ -2297,6 +2355,7 @@ impl StepInspector {
             label,
             locks,
             hint,
+            on,
             copy,
             clear,
         }
@@ -2354,10 +2413,11 @@ impl Widget for StepInspector {
         }
         // The settings: name over value, the ones the Q-Links turn outlined.
         if i.chips.is_empty() {
+            let last = g.chips[g.chips.len() - 1];
             let r0 = Rect::new(
                 g.chips[0].x,
                 g.chips[0].y,
-                g.chips[5].right() - g.chips[0].x,
+                last.right() - g.chips[0].x,
                 g.chips[0].h,
             );
             cx.canvas
@@ -2371,15 +2431,35 @@ impl Widget for StepInspector {
                 "No note on this step: its locks play with no note",
             );
         }
-        for (k, (name, value)) in i.chips.iter().enumerate().take(6) {
+        for (k, (name, value)) in i.chips.iter().enumerate().take(g.chips.len()) {
             let c = g.chips[k];
             cx.canvas.fill_round_rect(c, 8, t.raised);
             if i.turned[k] {
                 cx.canvas.stroke_round_rect(c, 8, 2, t.accent);
             }
-            let (top, bottom) = c.inset_xy(14, 6).take_top(20);
+            let (top, bottom) = c.inset_xy(12, 6).take_top(20);
             cx.text(FontId::Sans, 13.0, top, Align::Left, t.text_dim, name);
             cx.text(FontId::Bold, 20.0, bottom, Align::Left, t.text, value);
+            if k == crate::play_page::INSPECT_JOIN_CHIP {
+                // A tap steps it: a small › at its top right says so.
+                let mark = Rect::new(c.right() - 26, c.y + 4, 20, 18);
+                cx.text(FontId::Bold, 13.0, mark, Align::Center, t.text_dim, "›");
+            }
+        }
+        // On and Off: the one the step is lit (Off in the warn colour, as
+        // the step's "off" outline says it).
+        if let Some(on) = i.on {
+            for (k, b) in g.on.iter().enumerate() {
+                let lit = (k == 0) == on;
+                let fill = match (lit, k) {
+                    (true, 0) => t.accent,
+                    (true, _) => t.warn,
+                    _ => t.raised,
+                };
+                cx.canvas.fill_round_rect(*b, 8, fill);
+                let ink = if lit { t.bg } else { t.button_ink(true) };
+                cx.text(FontId::Bold, 15.0, *b, Align::Center, ink, ["On", "Off"][k]);
+            }
         }
         // The locks: a pill each with its ×, then how to add one.
         cx.text(
@@ -2485,6 +2565,16 @@ impl Widget for StepInspector {
                 g.close,
             ));
         }
+        if self.inspect.on.is_some() {
+            out.push(Target::tap("on", INSPECT_ON, "Step on", g.on[0]));
+            out.push(Target::tap("off", INSPECT_OFF, "Step off, kept", g.on[1]));
+            out.push(Target::tap(
+                "join",
+                INSPECT_JOIN,
+                "Tie or slide",
+                g.chips[crate::play_page::INSPECT_JOIN_CHIP],
+            ));
+        }
         let one = self.inspect.one;
         out.push(Target::tap("copy", INSPECT_COPY, "Copy the step", g.copy).disabled_if(!one));
         out.push(Target::tap("clear", INSPECT_CLEAR, "Clear the step", g.clear).disabled_if(!one));
@@ -2504,6 +2594,17 @@ impl Widget for StepInspector {
         }
         if let Some(k) = g.locks.iter().position(|l| l.contains(x, y)) {
             return Some(EventKind::Toggle(k));
+        }
+        if self.inspect.on.is_some() {
+            if g.on[0].contains(x, y) {
+                return Some(EventKind::Tab(INSPECT_ON));
+            }
+            if g.on[1].contains(x, y) {
+                return Some(EventKind::Tab(INSPECT_OFF));
+            }
+            if g.chips[crate::play_page::INSPECT_JOIN_CHIP].contains(x, y) {
+                return Some(EventKind::Tab(INSPECT_JOIN));
+            }
         }
         if g.copy.contains(x, y) {
             return Some(EventKind::Tab(INSPECT_COPY));
@@ -2670,9 +2771,13 @@ impl Widget for Throws {
 /// The two-way effect pad: hold and move. Gives `Xy { x, y, down }` (0 to
 /// 1, left to right and bottom to top) while the finger is on it, and
 /// once more with `down: false` when it lifts. It keeps a short trail of
-/// where the finger was.
+/// where the finger was. Its head is a chip naming what it plays ("XY ·
+/// Filter + echo ▾"): a tap anywhere on the head gives `Select(0)`, and
+/// the screen opens the list to pick another (Jay, 18 Nov 2026 07:34Z).
 pub struct XyPad {
     pub title: String,
+    /// What it plays, on its chip: "Filter + echo", "Wash".
+    pub chip: String,
     pub right: String,
     pub x_axis: String,
     pub y_axis: String,
@@ -2688,7 +2793,8 @@ pub struct XyPad {
 impl Default for XyPad {
     fn default() -> Self {
         XyPad {
-            title: "XY · DJ filter + echo".into(),
+            title: "XY pad".into(),
+            chip: "Filter + echo".into(),
             right: "hold to play".into(),
             x_axis: "LP  ←  off  →  HP".into(),
             y_axis: "↑ echo".into(),
@@ -2710,6 +2816,24 @@ impl XyPad {
         body.take_bottom(18).1
     }
 
+    /// The head over the pad, all of it the chip's target (a fingertip
+    /// across the card's width).
+    fn head(r: Rect) -> Rect {
+        let pad = XyPad::pad(r);
+        Rect::new(r.x, r.y, r.w, (pad.y - 4 - r.y).max(0))
+    }
+
+    /// The chip as drawn: "XY · Filter + echo" and its ▾, in the head.
+    fn chip_rect(&self, cx: &mut PaintCx, r: Rect) -> Rect {
+        let (h, _) = card_head(r);
+        let w = cx.measure(FontId::Bold, draw::HEAD_PX, &self.chip_text()) + 42;
+        Rect::new(h.x - 4, h.y - 5, w.min(h.w + 4), h.h + 10)
+    }
+
+    fn chip_text(&self) -> String {
+        format!("XY · {}", self.chip)
+    }
+
     /// Where the finger has been, oldest first (the previews draw one).
     pub fn set_trail(&mut self, points: &[(f32, f32)]) {
         self.trail = points.iter().rev().take(TRAIL).rev().copied().collect();
@@ -2720,7 +2844,23 @@ impl Widget for XyPad {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
-        let body = card(cx, r, &self.title, &self.right);
+        let body = card(cx, r, "", &self.right);
+        // The chip: what the pad plays, and a ▾ for the list.
+        let chip = self.chip_rect(cx, r);
+        cx.canvas.fill_round_rect(chip, chip.h / 2, t.raised);
+        cx.text(
+            FontId::Bold,
+            draw::HEAD_PX,
+            Rect::new(chip.x + 12, chip.y, chip.w - 30, chip.h),
+            Align::Left,
+            t.text,
+            &self.chip_text(),
+        );
+        let (cx0, cy0) = (chip.right() - 16, chip.y + chip.h / 2 - 2);
+        for k in 0..5 {
+            cx.canvas
+                .fill_rect(Rect::new(cx0 - 4 + k, cy0 + k, 9 - 2 * k, 1), t.text_dim);
+        }
         let (axis, pad) = body.take_bottom(18);
         cx.canvas.fill_round_rect(pad, 10, t.bg.mix(t.surface, 0.4));
         for k in 1..4 {
@@ -2804,13 +2944,19 @@ impl Widget for XyPad {
         if pad.w <= 0 || pad.h <= 0 {
             return Vec::new();
         }
-        vec![Target::drag("xy", 0, self.title.clone(), pad)]
+        vec![
+            Target::tap("xy-chip", 0, self.chip_text(), XyPad::head(r)),
+            Target::drag("xy", 0, self.title.clone(), pad),
+        ]
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let pad = XyPad::pad(r);
         if pad.w <= 0 || pad.h <= 0 {
             return None;
+        }
+        if phase == Touch::Down && self.finger.is_none() && XyPad::head(r).contains(x, y) {
+            return Some(EventKind::Select(0));
         }
         match phase {
             Touch::Down | Touch::Move => {
@@ -3173,7 +3319,7 @@ mod tests {
     /// Play's rows (the Play, Pads and Sequencer redesign's board 1): the
     /// bank's pads in order from the swipe's top, a tap that waits for the
     /// finger to lift, a swipe that moves the rows instead, an empty pad
-    /// with no mute, and the head's track switch, banks and Sequencer tab.
+    /// with no mute, and the head's track switch, banks and Follow.
     #[test]
     fn play_rows_show_the_bank_in_order_and_a_swipe_moves_them() {
         let mut g = StepGrid {
@@ -3254,13 +3400,7 @@ mod tests {
         let ts = g.targets(r);
         assert!(!ts.iter().any(|t| t.id == "mute" && t.index == 15));
         // The head: on the press.
-        for k in [
-            HEAD_TRACK_PREV,
-            HEAD_TRACK_NEXT,
-            HEAD_BANK + 2,
-            HEAD_FOLLOW,
-            HEAD_SEQUENCER,
-        ] {
+        for k in [HEAD_TRACK_PREV, HEAD_TRACK_NEXT, HEAD_BANK + 2, HEAD_FOLLOW] {
             let (x, y) = StepGrid::bank_head_at(r, k);
             assert_eq!(
                 g.touch(1, Touch::Down, x, y, r),

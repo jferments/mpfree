@@ -94,6 +94,10 @@ impl App {
         out.set_bool("metronome", s.metronome);
         out.set_i64("metronome-level", i64::from(s.metronome_db));
         out.set_bool("timing-strip", s.timing_strip);
+        out.set_str(
+            "xy-pad",
+            crate::play_page::XY_CHOICES[s.xy_effect.map_or(0, |k| k + 1)],
+        );
         out.set_i64("audio-memory", i64::from(s.audio_memory.seconds()));
         out.set_str("start-with", if s.open_last { "last" } else { "new" });
         out.set_str("export", s.export_mode.key());
@@ -192,6 +196,11 @@ impl App {
                     .map(|&d| s.metronome_db = d)
                     .is_some(),
                 "timing-strip" => app.get_bool(k).map(|b| s.timing_strip = b).is_some(),
+                "xy-pad" => crate::play_page::XY_CHOICES
+                    .iter()
+                    .position(|c| c.eq_ignore_ascii_case(v))
+                    .map(|i| s.xy_effect = i.checked_sub(1))
+                    .is_some(),
                 "audio-memory" => crate::audiotracks::AudioMemory::parse(v)
                     .map(|m| s.audio_memory = m)
                     .is_some(),

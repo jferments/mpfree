@@ -17,15 +17,15 @@ Every page in MPFree is laid out the same way, so once you know one, you know th
 | Tab | What it is for |
 |---|---|
 | **Play** | The home page: finger drumming, beats and live looping. |
-| **Pads** | The kit's 16 pads beside the pad's settings: set each pad up, and **Browse for** a sound to put on it. |
 | **Sequencer** | The armed track's clip, as steps (**Steps**) or as notes (**Notes**, the note editor). **STEP SEQ** opens it. |
-| **Arrange** | Clips: recording them, keeping takes and launching them. |
-| **Synth** | MPFree's synths and their sounds, or an MPC plugin's own screen ([The plugin's own screen](../making-music/synths.md#the-plugins-own-screen)). |
 | **Looper** | Up to eight loops side by side: record, overdub and mute each with a tap, and edit the layers of the one you pick. |
 | **Sample** | Recording, chopping and shaping the sound on one pad. |
+| **Synth** | MPFree's synths and their sounds, or an MPC plugin's own screen ([The plugin's own screen](../making-music/synths.md#the-plugins-own-screen)). |
+| **Arrange** | Clips: recording them, keeping takes and launching them. |
+| **Pads** | The kit's 16 pads beside the pad's settings: set each pad up, and **Browse for** a sound to put on it. |
 | **Mix** | The mixer and every sound's effects (next build). See [Mixing and effects](../making-music/mixing-and-effects.md). |
 
-**The status chips** on the right show what is going on: how much of the processor (**CPU**) and memory (**RAM**) is in use, whether Full Level is on, and anything that needs your attention. When memory runs so short that new sounds can't load, the hint line says so (see [Sampling](../making-music/sampling.md#the-pads-tab-sounds-onto-pads)). What the pads play is on the Play page's transport bar (below). Two of the chips do something when tapped:
+**The status chips** on the right show what is going on: how much of the processor (**CPU**) and memory (**RAM**) is in use (these two keep their width as the numbers change, so the chips beside them stay put), whether Full Level is on, and anything that needs your attention. When memory runs so short that new sounds can't load, the hint line says so (see [Sampling](../making-music/sampling.md#the-pads-tab-sounds-onto-pads)). What the pads play is on the Play page's transport bar (below). Two of the chips do something when tapped:
 
 - **The Full level or Half level chip** turns that level off, as pressing **FULL LEVEL** again would: the pads play as hard as you hit them again.
 - **The Pads: steps chip** (such as **Pads: steps · Kick**) shows while **STEP SEQ** has made the pads the steps of a sound. With a synth on the pads it names the synth and the note or chord new steps play (**Pads: steps · Poly · C3 + G3**). Tap it to play the pads again, as pressing **STEP SEQ** again would. See [Program a pattern on the pads](first-beat.md#program-a-pattern-on-the-pads).
@@ -38,7 +38,7 @@ The small **folder** at the far right opens the browser over the page, as **BROW
 
 On the Play page and the Sequencer tab, a bar under the tabs shows time: whether MPFree is stopped, playing or recording, the position (bar, beat and step), the tempo in BPM (tap it in time to set the tempo, as with **TAP TEMPO**, or hold a finger on it to type the tempo), and what **REC** records. On the right of it is the view switch: **All** and **Loop** on Play (see [Playing live](../making-music/playing-live.md)), **Steps** and **Notes** on the Sequencer.
 
-On Play, **PADS PLAY** before the switch says what the pads play: the selected track, its kit and the pad bank, such as **Drums · Boom Bap · A** (or the synth, such as **Keys · Poly · C3 to D#4**). Tap it for the list of kits. On the Sequencer, dots that light up with each bar and beat stand there instead.
+On Play, **PADS PLAY** before the switch says what the pads play: the selected track, its kit and the pad bank, such as **Drums · Boom Bap · A** (or the synth, such as **Keys · Poly · C3 to D#4**). Tap it for the list of kits. While controller mode is on, the pads play your outside gear, so it says what the **Controller** chip at the top says, such as **Controller → Juno-X · ch 3 · A** (see [Controller mode](../making-music/midi-and-cv.md#controller-mode-the-pads-and-q-links-play-your-gear)). On the Sequencer, dots that light up with each bar and beat stand there instead.
 
 **The list of kits** opens over the page from **PADS PLAY** on Play or **Kit** on the Pads tab. Tap a kit to load it on the pads; the list closes and you are back where you were. The synth comes after the kits, and the last row, **New kit**, puts an empty kit on the selected track. **Back** or any tab closes the list and keeps the kit that is playing.
 
