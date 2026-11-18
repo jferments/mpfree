@@ -18,8 +18,9 @@
 //! - **Sound** beside them (the one Sample page, Jay 18 Nov 2026;
 //!   [`crate::sound_panel`]): how the pad plays its sound, four controls at
 //!   a time (Amp, Filter, Pitch, Movement), each change a
-//!   [`WaveAction::Play`]. Warping is the Warp page's, and the pad's tune
-//!   is Sound's (Pitch), so the page has one Tune.
+//!   [`WaveAction::Play`]. Warping is the Warp tool's
+//!   ([`crate::warp_tool`]), and the pad's tune is Sound's (Pitch), so the
+//!   page has one Tune.
 //! - **Q-Links 1 to 4** move Start, End, Loop start and Loop end: one pixel
 //!   of the current zoom per detent (so zooming in makes them finer), snapped
 //!   in the direction of the turn; with SHIFT, one frame per detent, never
@@ -44,7 +45,9 @@ use mpfree_sampler::model::{
 };
 use mpfree_ui::layout;
 use mpfree_ui::numpad::NumberAsk;
-use mpfree_ui::wave::{Beats, Marker, MarkerKind, Peaks, WaveOverview, WaveView, Waveform};
+use mpfree_ui::wave::{
+    Beats, GrainSpan, Marker, MarkerKind, Peaks, WaveOverview, WaveView, Waveform,
+};
 use mpfree_ui::{Color, EventKind, Rect, Ui, UiEvent};
 
 use crate::grain_tab::{self, CloudNow};
@@ -53,6 +56,7 @@ use crate::panel::{Control, Item, Look, Panel, Section};
 use crate::play_tab::{PlayAction, PlayState};
 use crate::sound_panel::{self, SoundPanel};
 use crate::source::SourceView;
+use crate::warp_tool::{self, Tapped, WarpTool};
 use crate::widgets::{InfoCard, KnobCard, PadBar, Setting, SettingList, ToolStrip};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
@@ -81,10 +85,10 @@ pub const LAYOUT: &str = "col(header:60, row(smp-bar:*, smp-send:330):60, \
 /// FX left them on 18 Nov 2026 (Jay: a pad's effects are in Mix, which
 /// the Pads tab's Effects row opens).
 /// Grain left them on 18 Nov 2026 too: it is a tool on this page
-/// ([`Tool::Grain`]).
-pub const TABS: [&str; 5] = ["Wave", "Warp", "Chop", "Play", "Rec"];
+/// ([`Tool::Grain`]), and so did Warp ([`Tool::Warp`]).
+pub const TABS: [&str; 4] = ["Wave", "Chop", "Play", "Rec"];
 /// The tabs built so far; the others are drawn faint.
-pub const BUILT: [&str; 5] = ["Wave", "Warp", "Chop", "Play", "Rec"];
+pub const BUILT: [&str; 4] = ["Wave", "Chop", "Play", "Rec"];
 /// The Wave tab's place in [`TABS`].
 pub const TAB: usize = 0;
 
@@ -119,7 +123,7 @@ pub enum Tool {
     Trim,
     /// The cuts and where they land (the Chop page's for now).
     Slice,
-    /// Hits and pins (the Warp page's for now).
+    /// Hits and pins ([`crate::warp_tool`]).
     Warp,
     /// The grain window ([`crate::grain_tool`]).
     Grain,
@@ -144,8 +148,7 @@ impl Tool {
         match self {
             Tool::Trim => None,
             Tool::Slice => Some(crate::chop_tab::TAB),
-            Tool::Warp => Some(crate::warp_tab::TAB),
-            Tool::Grain => None,
+            Tool::Warp | Tool::Grain => None,
         }
     }
 
@@ -153,6 +156,7 @@ impl Tool {
     pub fn hint(self) -> &'static str {
         match self {
             Tool::Grain => GRAIN_HINT,
+            Tool::Warp => WARP_HINT,
             _ => HINT,
         }
     }
@@ -161,6 +165,11 @@ impl Tool {
 /// The hint line with the Grain tool.
 pub const GRAIN_HINT: &str = "Drag GRAIN to move where grains start, SIZE for their length · tap the wave: \
                               grains start there · hit the pad to hear the cloud · SHIFT + Q-Link 1 / 4: the sprays";
+
+/// The hint line with the Warp tool.
+pub const WARP_HINT: &str =
+    "Tap a hit to pin it to the grid · drag a pin's tab along the beats · Pin hits pins \
+                             them all · Q-Link 1 picks a pin, 2 nudges it · SHIFT + - / + zoom";
 
 /// Why the tools are faint while a take records (the mockup's "tools wait
 /// for the take").
@@ -336,6 +345,7 @@ impl WaveState {
             first: 0.0,
             frames_per_beat: fpb,
             per_bar: 4,
+            per_beat: 1,
         })
     }
 }
@@ -647,6 +657,8 @@ enum Key {
     /// A Grain tool row, or the grain window ([`grain_tab::Row::Position`]
     /// and [`grain_tab::Row::Size`] for its tabs).
     Grain(grain_tab::Row),
+    /// A Warp tool edit ([`warp_tool::Key`]).
+    Warp(warp_tool::Key),
 }
 
 /// The Wave tab's widgets and what their touches mean. It keeps the snap
@@ -679,6 +691,11 @@ pub struct WaveTab {
     grain_part: GrainPart,
     /// What the engine last said of the cloud playing, and how many grains.
     cloud: (CloudNow, usize),
+    /// The Warp tool's settings and pin picked.
+    warp: WarpTool,
+    /// The wave as drawn ([`warp_tool::bend`]: as it plays with the Warp
+    /// tool, else empty), to put playheads where they are drawn.
+    bend: Vec<(f64, f64)>,
 }
 
 impl WaveTab {
@@ -728,6 +745,8 @@ impl WaveTab {
             tool: Tool::default(),
             grain_part: GrainPart::default(),
             cloud: (CloudNow::default(), 0),
+            warp: WarpTool::default(),
+            bend: Vec::new(),
         };
         tab.update(ui, st);
         Ok(tab)
@@ -742,8 +761,9 @@ impl WaveTab {
         self.tool
     }
 
-    /// Picks tool `tool` (the app's way in: SAMPLE EDIT, a device check).
-    /// A tool not on the page yet stays where it is.
+    /// Picks tool `tool` (the app's way in: SAMPLE EDIT, a device check,
+    /// the old Warp page's way in). A tool not on the page yet stays where
+    /// it is.
     pub fn set_tool(&mut self, ui: &mut Ui, st: &WaveState, tool: Tool) {
         if tool.page().is_some() || tool == self.tool {
             return;
@@ -760,6 +780,33 @@ impl WaveTab {
     /// The Grain tool's part open.
     pub fn grain_part(&self) -> GrainPart {
         self.grain_part
+    }
+
+    /// The Warp tool's settings and pin picked.
+    pub fn warp(&self) -> &WarpTool {
+        &self.warp
+    }
+
+    /// A Process runs and has got this far (0 to 1), or none runs: the
+    /// Warp section's Process button says so, and stops it while it runs.
+    pub fn set_processing(&mut self, ui: &mut Ui, st: &WaveState, done: Option<f32>) {
+        if self.warp.set_processing(done) && self.tool == Tool::Warp && !self.rec.recording {
+            self.show_list(ui, st);
+        }
+    }
+
+    /// A number typed for the field `key` asked for ([`WaveAction::Ask`]):
+    /// the change, as an undo step of its own.
+    pub fn typed(&mut self, st: &WaveState, key: &str, value: f64) -> Option<WaveAction> {
+        let r = WarpTool::typed(st, key, value)?;
+        self.gesture = None;
+        let out = self.edit(
+            st,
+            Key::Warp(warp_tool::Key::Row(warp_tool::Row::WarpTempo)),
+            r,
+        );
+        self.gesture = None;
+        out
     }
 
     /// Opens part `part` of the Grain section.
@@ -866,7 +913,15 @@ impl WaveTab {
     /// strips are redrawn.
     pub fn set_playheads(&self, ui: &mut Ui, frames: &[u64]) {
         if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
-            w.set_playheads(frames);
+            if self.bend.is_empty() {
+                w.set_playheads(frames);
+            } else {
+                let drawn: Vec<u64> = frames
+                    .iter()
+                    .map(|&f| warp_tool::played(&self.bend, f).round().max(0.0) as u64)
+                    .collect();
+                w.set_playheads(&drawn);
+            }
         }
     }
 
@@ -949,10 +1004,9 @@ impl WaveTab {
             }
             self.shown = Some((src.id, src.peaks.clone()));
             w.set_region(Some((r.start, r.end)));
-            w.set_loop(r.sustain_loop.map(|l| (l.start, l.end)));
             w.set_fades(u64::from(r.fade_in.frames), u64::from(r.fade_out.frames));
-            w.set_beats(st.beats());
         }
+        self.warp.follow(st);
         self.show_wave(ui, st);
         if let Some(o) = ui.get_mut::<WaveOverview>(OVERVIEW) {
             o.set_peaks(Some(src.peaks.clone()));
@@ -968,21 +1022,57 @@ impl WaveTab {
     /// picked has tabs in the strip; the other tools' marks are faint
     /// lines with no tab ([`Marker::line_only`]). Trim's are the region's
     /// and the loop's (a sliced sound's cuts are the Slice tool's); the
-    /// Grain tool's the grain window and its two tabs. A sound playing as
-    /// grains shows its window with every tool.
-    fn show_wave(&self, ui: &mut Ui, st: &WaveState) {
+    /// Grain tool's the grain window and its two tabs; the Warp tool's the
+    /// pins, with the wave drawn as it plays and the bar lines from the
+    /// region's start at its warp tempo. The hits found are ticks along
+    /// the wave's foot with every tool. A sound playing as grains shows its
+    /// window with every tool.
+    fn show_wave(&mut self, ui: &mut Ui, st: &WaveState) {
         let r = &st.region;
+        let warp = self.tool == Tool::Warp;
+        self.bend = if warp {
+            warp_tool::bend(st)
+        } else {
+            Vec::new()
+        };
+        let bend = &self.bend;
+        let drawn = |f: u64| warp_tool::played(bend, f).round().max(0.0) as u64;
         let grains = self.tool == Tool::Grain || r.mode == PlayMode::Granular;
         let span = grains
-            .then(|| grain_tool::span(r, st.rate, st.bpm, self.cloud.0.state.map(|c| c.spray)));
+            .then(|| grain_tool::span(r, st.rate, st.bpm, self.cloud.0.state.map(|c| c.spray)))
+            .map(|s| GrainSpan {
+                at: drawn(s.at),
+                ..s
+            });
         let mut all = markers(r);
+        if self.tool != Tool::Trim {
+            all = all
+                .into_iter()
+                .map(|m| Marker {
+                    frame: drawn(m.frame),
+                    ..m.faint().line_only()
+                })
+                .collect();
+        }
         if let (Tool::Grain, Some(s)) = (self.tool, span.as_ref()) {
-            all = all.into_iter().map(|m| m.faint().line_only()).collect();
             all.extend(grain_tool::markers(s));
         }
+        let t = ui.theme.clone();
+        all.extend(self.warp.markers(st, bend, warp, t.warn, t.text));
+        let hits: Vec<u64> = self.warp.hits_of(st).iter().map(|&h| drawn(h)).collect();
+        let beats = if warp {
+            Some(warp_tool::beats(st, self.warp.grid))
+        } else {
+            st.beats()
+        };
+        let lp = r.sustain_loop.map(|l| (drawn(l.start), drawn(l.end)));
         if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
+            w.set_bend(self.bend.clone());
             w.set_markers(all);
             w.set_window(span);
+            w.set_ticks(hits, warp);
+            w.set_beats(beats);
+            w.set_loop(lp);
         }
     }
 
@@ -1028,6 +1118,10 @@ impl WaveTab {
         }
         if self.tool == Tool::Grain {
             self.show_grain_cards(ui, st);
+            return;
+        }
+        if self.tool == Tool::Warp {
+            self.show_warp_cards(ui, st);
             return;
         }
         let (r, src) = (&st.region, &st.source);
@@ -1078,6 +1172,42 @@ impl WaveTab {
         }
     }
 
+    /// The Q-Link cards with the Warp tool: Pin, Pin beat, Warp tempo and
+    /// Scroll ([`WarpTool::cards`]).
+    fn show_warp_cards(&self, ui: &mut Ui, st: &WaveState) {
+        let scroll = self.view(ui).map_or((0.0, false), |v| {
+            let whole = st.frames as f64 / f64::from(self.wave_w.max(1));
+            (
+                warp_tool::beat_drawn(st, v.start),
+                v.frames_per_px < whole * 0.999,
+            )
+        });
+        let row = self.warp_row(ui);
+        let rows = [
+            warp_tool::Row::Pin,
+            warp_tool::Row::PinBeat,
+            warp_tool::Row::WarpTempo,
+        ];
+        for (k, c) in self.warp.cards(st, scroll).into_iter().enumerate() {
+            let Some(card) = ui.get_mut::<KnobCard>(QLINKS[k]) else {
+                continue;
+            };
+            card.label = c.label;
+            card.value = c.value;
+            card.sub = c.sub;
+            card.pos = c.pos;
+            card.enabled = c.enabled;
+            card.why = c.why;
+            card.focused = rows.get(k).is_some_and(|r| Some(*r) == row);
+        }
+    }
+
+    /// The Warp tool's row picked on the panel.
+    fn warp_row(&self, ui: &Ui) -> Option<warp_tool::Row> {
+        let i = ui.get::<SettingList>(REGION)?.selected;
+        warp_tool::Row::ALL.get(i).copied()
+    }
+
     /// The Grain tool's row picked on the panel, if one is.
     fn grain_row(&self, ui: &Ui, st: &WaveState) -> Option<grain_tab::Row> {
         let i = ui.get::<SettingList>(REGION)?.selected;
@@ -1124,6 +1254,30 @@ impl WaveTab {
                 list.typed = Vec::new();
                 list.buttons = Vec::new();
                 list.selected = list.selected.min(INPUT_ROWS.len() - 1);
+            }
+            return;
+        }
+        if self.tool == Tool::Warp {
+            let no_hits = self
+                .warp
+                .clone()
+                .hits_of(st)
+                .iter()
+                .all(|&h| h <= st.region.start || h >= st.region.end);
+            let (rows, controls, panel) = self.warp.section(st, no_hits);
+            let n = rows.len();
+            if let Some(list) = ui.get_mut::<SettingList>(REGION) {
+                list.right = self.warp.grid.label().to_string();
+                list.rows = rows;
+                list.controls = controls;
+                list.panel = Some(panel);
+                list.typed = if st.region.warp.is_some() {
+                    vec![warp_tool::Row::WarpTempo.index()]
+                } else {
+                    Vec::new()
+                };
+                list.buttons = warp_tool::Row::BUTTONS.iter().map(|k| k.index()).collect();
+                list.selected = list.selected.min(n - 1);
             }
             return;
         }
@@ -1260,8 +1414,13 @@ impl WaveTab {
         let Some(view) = self.view(ui) else { return };
         let whole = st.frames.max(1) as f64 / f64::from(self.wave_w.max(1));
         let zoom = whole / view.frames_per_px.max(1e-9);
+        let round = match (self.tool, self.warp.selected()) {
+            (Tool::Warp, Some(i)) => format!("pin {}", i + 1),
+            (Tool::Warp, None) => "middle".to_string(),
+            _ => self.focus.label().to_lowercase(),
+        };
         if let Some(card) = ui.get_mut::<InfoCard>(WHEEL) {
-            card.text = format!("{zoom:.1}× · {}", self.focus.label().to_lowercase());
+            card.text = format!("{zoom:.1}× · {round}");
         }
     }
 
@@ -1315,6 +1474,54 @@ impl WaveTab {
                     }
                 }
             }
+            (WAVE, EventKind::Marker { index, frame }) if self.tool == Tool::Warp => {
+                self.warp_marker(ui, st, *index, *frame)
+            }
+            (WAVE, EventKind::Frame(f)) if self.tool == Tool::Warp => {
+                let at = warp_tool::source(&self.bend, *f);
+                match self.warp.tap(st, at) {
+                    Tapped::Picked => {
+                        self.show_warp(ui, st);
+                        None
+                    }
+                    Tapped::Pinned(r) => self.edit(st, Key::Warp(warp_tool::Key::Tap), *r),
+                    Tapped::Say(why) => Some(WaveAction::Say(why.to_string())),
+                }
+            }
+            (REGION, EventKind::Step { index, delta }) if self.tool == Tool::Warp => {
+                let row = *warp_tool::Row::ALL.get(*index)?;
+                let after = self.warp.step(st, row, *delta);
+                self.warp_edit(ui, st, warp_tool::Key::Row(row), after)
+            }
+            (REGION, EventKind::Type(index))
+                if self.tool == Tool::Warp
+                    && warp_tool::Row::ALL.get(*index) == Some(&warp_tool::Row::WarpTempo) =>
+            {
+                warp_tempo_ask(&st.region).map(WaveAction::Ask)
+            }
+            (REGION, EventKind::Tab(index)) if self.tool == Tool::Warp => {
+                let row = *warp_tool::Row::ALL.get(*index)?;
+                // A press is a step of its own.
+                self.gesture = None;
+                if row == warp_tool::Row::Process {
+                    return Some(match self.warp.processing() {
+                        Some(_) => WaveAction::StopProcess,
+                        None => WaveAction::Process {
+                            pad: st.pad,
+                            layer: st.layer,
+                            semitones: self.warp.shift,
+                        },
+                    });
+                }
+                let after = self.warp.button(st, row);
+                let out = self.warp_edit(ui, st, warp_tool::Key::Button(row), after);
+                self.gesture = None;
+                out
+            }
+            (REGION, EventKind::Select(_)) if self.tool == Tool::Warp => {
+                self.show_warp_cards(ui, st);
+                None
+            }
             (WAVE, EventKind::Marker { index, frame }) if self.tool == Tool::Grain => {
                 self.grain_marker(ui, st, *index, *frame)
             }
@@ -1346,6 +1553,9 @@ impl WaveTab {
             (WAVE, EventKind::View { .. }) => {
                 self.sync_overview(ui);
                 self.update_wheel(ui, st);
+                if self.tool == Tool::Warp {
+                    self.show_warp_cards(ui, st);
+                }
                 None
             }
             (WAVE, EventKind::Frame(_)) => Some(WaveAction::Audition { pad: st.pad }),
@@ -1370,6 +1580,11 @@ impl WaveTab {
                     pad: st.pad,
                     layer: st.layer,
                 })
+            }
+            (name, EventKind::Select(_)) if QLINKS.contains(&name) && self.tool == Tool::Warp => {
+                let k = QLINKS.iter().position(|q| *q == name)?;
+                self.pick_warp_row(ui, st, k);
+                None
             }
             (name, EventKind::Select(_)) if QLINKS.contains(&name) && self.tool == Tool::Grain => {
                 let k = QLINKS.iter().position(|q| *q == name)?;
@@ -1402,6 +1617,41 @@ impl WaveTab {
     ) -> Option<WaveAction> {
         if self.rec.recording {
             return recorder::qlink_action(knob, delta, fine).map(WaveAction::Rec);
+        }
+        if self.tool == Tool::Warp {
+            self.pick_warp_row(ui, st, knob);
+            if delta == 0 {
+                return None;
+            }
+            use warp_tool::Key as K;
+            return match knob {
+                0 => {
+                    self.warp.pick(delta, st);
+                    self.show_warp(ui, st);
+                    None
+                }
+                1 => {
+                    let r = self.warp.nudged(st, delta, fine)?;
+                    self.edit(st, Key::Warp(K::Nudge), r)
+                }
+                2 => {
+                    let r = WarpTool::tempo_turned(st, delta, fine)?;
+                    self.edit(st, Key::Warp(K::Tempo), r)
+                }
+                3 => {
+                    let width = self.wave_w;
+                    if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
+                        let v = w.view();
+                        let start =
+                            v.start + f64::from(delta) * v.frames_per_px * f64::from(width) / 16.0;
+                        w.set_view(WaveView { start, ..v }, width);
+                    }
+                    self.sync_overview(ui);
+                    self.show_warp_cards(ui, st);
+                    None
+                }
+                _ => None,
+            };
         }
         if self.tool == Tool::Grain {
             // Position, Size, Density, Pitch; with
@@ -1445,6 +1695,11 @@ impl WaveTab {
         let width = self.wave_w;
         let at = match self.tool {
             Tool::Grain => Some(grain_tool::span(&st.region, st.rate, st.bpm, None).at),
+            Tool::Warp => self
+                .warp
+                .selected()
+                .and_then(|i| st.region.warp.as_ref()?.pins.get(i).copied())
+                .map(|p| warp_tool::played(&self.bend, p.frame).round().max(0.0) as u64),
             _ => self.focus.frame(&st.region),
         };
         if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
@@ -1459,6 +1714,84 @@ impl WaveTab {
         }
         self.sync_overview(ui);
         self.update_wheel(ui, st);
+        if self.tool == Tool::Warp {
+            self.show_warp_cards(ui, st);
+        }
+    }
+
+    /// Shows what the Warp tool's own settings change: the pins (the one
+    /// picked), the hits, the section, the cards and the wheel's card.
+    fn show_warp(&mut self, ui: &mut Ui, st: &WaveState) {
+        self.show_wave(ui, st);
+        if !self.rec.recording {
+            self.show_list(ui, st);
+            self.show_cards(ui, st);
+        }
+        self.update_wheel(ui, st);
+    }
+
+    /// A Warp tool edit: the region changed (one undo step per `key`), or
+    /// only the tool's own settings, which show at once.
+    fn warp_edit(
+        &mut self,
+        ui: &mut Ui,
+        st: &WaveState,
+        key: warp_tool::Key,
+        after: Option<Region>,
+    ) -> Option<WaveAction> {
+        let out = after.and_then(|r| self.edit(st, Key::Warp(key), r));
+        if out.is_none() {
+            self.show_warp(ui, st);
+        }
+        out
+    }
+
+    /// Q-Link `knob`'s row picked on the Warp section (Pin, Pin beat,
+    /// Warp tempo; Scroll has none), and its card lit.
+    fn pick_warp_row(&self, ui: &mut Ui, st: &WaveState, knob: usize) {
+        let rows = [
+            warp_tool::Row::Pin,
+            warp_tool::Row::PinBeat,
+            warp_tool::Row::WarpTempo,
+        ];
+        if let Some(row) = rows.get(knob) {
+            if let Some(list) = ui.get_mut::<SettingList>(REGION) {
+                list.selected = row.index();
+            }
+        }
+        self.show_warp_cards(ui, st);
+    }
+
+    /// A pin's tab touched or dragged with the Warp tool (the other tools'
+    /// marks have no tab to touch): the pin is picked, and moves to the
+    /// grid line nearest the beat under the finger.
+    fn warp_marker(
+        &mut self,
+        ui: &mut Ui,
+        st: &WaveState,
+        index: usize,
+        frame: u64,
+    ) -> Option<WaveAction> {
+        let r = &st.region;
+        let i = index.checked_sub(markers(r).len())?;
+        let w = r.warp.as_ref()?;
+        if w.method != mpfree_sampler::model::WarpMethod::Stretch {
+            return Some(WaveAction::Say(warp_tool::REPITCH_NOTE.to_string()));
+        }
+        let p = *w.pins.get(i)?;
+        let now = warp_tool::played(&self.bend, p.frame).round().max(0.0) as u64;
+        if frame == now {
+            // Touched, not moved: picked, where it is (on the grid or not).
+            if self.warp.selected() != Some(i) {
+                self.warp.select(Some(i));
+                self.show_warp(ui, st);
+            }
+            return None;
+        }
+        let after = self
+            .warp
+            .dragged(st, i, warp_tool::beat_drawn(st, frame as f64));
+        self.warp_edit(ui, st, warp_tool::Key::Drag(i), after)
     }
 
     /// A grain window's tab touched or dragged with the Grain tool (the
