@@ -73,7 +73,7 @@ The ring you tap also picks that loop. To pick a loop without starting anything,
 
 The **speaker** under a ring mutes the loop without picking it: it is kept and keeps its place in the song, but stays silent, through STOP and PLAY too, until you tap it again. The **level bar** beside the ring sets how loud the loop plays (-24 to +6 dB, with a meter of what it plays now): drag it, or rest a finger on it and turn the data wheel (half a decibel a click, SHIFT for a tenth).
 
-Every loop plays at once, in time with the song, but only one records at a time: starting to record in one loop ends the recording in the others.
+Every loop plays at once, in time with the song, but only one records at a time: starting to record in one loop ends the recording in the others. The pads can do all of this too: see [The pads as loop keys](#the-pads-as-loop-keys).
 
 Over the loops, the song's clock (a dot a beat, the bar and beat, the tempo) and the loop memory every loop shares ("1:42 of 5 min").
 
@@ -137,6 +137,24 @@ Press **MENU** on the Looper tab for the rarer settings as a list, with an expla
 | **The picked loop** | **Feedback**, the picked layer's **level** and **pan**, and the **seam fade**: how smoothly the loop's end joins its start, from a hard cut to the looper's longest fade, a millisecond a click. |
 
 Press **Q-LINK** to step from one bank to the next; the line at the bottom names the bank.
+
+### The pads as loop keys
+
+The pads can play the loops instead of the kit, so you can record, overdub and mute any loop without looking at the screen. Press **SHIFT + SAMPLER** again while the Looper tab is open (or tap **Pads as loop keys** over the loops) and the pads become the **loop keys**:
+
+| Pads | Column 1 | Column 2 | Column 3 | Column 4 |
+|---|---|---|---|---|
+| Top row (13-16) | Loop 1's key | Loop 2's key | Loop 3's key | Loop 4's key |
+| Second row (9-12) | Loop 5's key | Loop 6's key | Loop 7's key | Loop 8's key |
+| Third row (5-8) | Loop 1's mute | Loop 2's mute | Loop 3's mute | Loop 4's mute |
+| Bottom row (1-4) | Loop 5's mute | Loop 6's mute | Loop 7's mute | Loop 8's mute |
+
+- **A loop's key** does what a tap on its ring does, on the moment you hit it: record from the next bar line, cancel, end the first pass, overdub, end the overdub, or let a muted loop play. It picks the loop too. **Hold a key for a second** to clear the loop.
+- **A loop's mute** mutes the loop at once, and unmutes it. On an empty loop it does nothing.
+
+The pads light as the rings do: a key is dark while its loop is empty, blinks red while it waits for its bar, is red while it records the first pass and amber while it overdubs, and has the loop's colour while it plays, flashing brighter on the loop's first beat. A muted loop's key is faint and its mute is red.
+
+The pads stay loop keys on the Looper tab and the Play page, so you can play the loops beside your patterns; on Play a **Pads: loop keys** chip in the top bar says so, and a tap on it gives the pads back. On the other tabs the pads play the kit as usual, and they are loop keys again when you come back. **SHIFT + SAMPLER** on the Looper tab, or **Pads as loop keys** again, gives the pads back for good. So do **TRACK MUTE**, **STEP SEQ** and **16 Levels**, since the pads do one job at a time.
 
 ### Moving a layer to another loop
 

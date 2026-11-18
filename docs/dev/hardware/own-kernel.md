@@ -1,6 +1,6 @@
 # MPFree's own kernel on the MPC One (plan)
 
-**As of 2026-11-17** · **Status:** step 1's read-only survey ran on 2026-11-17 ([results](#step-1-results-2026-11-17)) and our kernel's settings were corrected from it, then the built kernel was compared with Akai's symbol by symbol ([what changed](#step-2-the-built-settings-against-akais-2026-11-17)); step 2's build (script, pinned compiler, CI workflow) is built, and CI built the first kernel on 2026-11-17: `6.18.57-rt9-mpfree` with gcc 14.4.0, all pinned. The owner chose this as the next step on the chain route on 2026-11-15 ("merge #374, then our own kernel"), and made the [three choices](#the-owners-decisions-2026-11-16) on 2026-11-16: 6.18 long-term with the RT patch, no request to inMusic for now, builds on the CI runners in a pinned container. · **Builds on:** the chain to the stick's own device tree ([step 7](stick-autoboot.md#the-chain-to-the-sticks-own-device-tree-step-7-opt-in), #374) and its one-try guard ([step 7b](stick-autoboot.md#step-7b-round-2026-11-15-zip-215433z-the-guard-passed), #381), both merged and opt-in.
+**As of 2026-11-18** · **Status:** step 1's read-only survey ran on 2026-11-17 ([results](#step-1-results-2026-11-17)) and our kernel's settings were corrected from it, then the built kernel was compared with Akai's symbol by symbol ([what changed](#step-2-the-built-settings-against-akais-2026-11-17)); step 2's build (script, pinned compiler, CI workflow) is built, and CI built the first kernel on 2026-11-17: `6.18.57-rt9-mpfree` with gcc 14.4.0, all pinned. Its first power-on is [blocks K2.1 to K2.4](#step-2-the-first-power-on-with-our-kernel-blocks-for-the-owner) (RAM only, checked over SSH: no picture or sound yet), on `main` since 2026-11-18 and **not run yet**; the owner copied the kernel's folder to the workstation on 2026-11-17, so K2.1 can start at its `git fetch`. After K2: step 3 (sound) if our kernel stays up, or keeping a failed boot's messages (ramoops) if it does not. The owner chose this as the next step on the chain route on 2026-11-15 ("merge #374, then our own kernel"), and made the [three choices](#the-owners-decisions-2026-11-16) on 2026-11-16: 6.18 long-term with the RT patch, no request to inMusic for now, builds on the CI runners in a pinned container. · **Builds on:** the chain to the stick's own device tree ([step 7](stick-autoboot.md#the-chain-to-the-sticks-own-device-tree-step-7-opt-in), #374) and its one-try guard ([step 7b](stick-autoboot.md#step-7b-round-2026-11-15-zip-215433z-the-guard-passed), #381), both merged and opt-in.
 
 ## Goal
 
@@ -60,7 +60,7 @@ Each step is its own small PR with owner blocks, verified before the owner gets 
    - Linux 6.18.y with the matching PREEMPT_RT patch, Akai's config as the starting point, minus Akai's own drivers, with the MMC drivers as modules (not loaded; the device tree still disables both controllers in this step), and `vfat` and `exfat`.
    - Built by CI on the mpfree-ci runners by [`tools/kernel/build.sh`](../../../tools/kernel/build.sh) ([how it runs](../guides/testing-and-ci.md#mpfrees-kernel-build)), with kernel.org's crosstool gcc 14 as the compiler; in the pinned container where Docker or Podman works, otherwise on the runner itself (the runners have neither). It checks the sources and the compiler (kernel.org's PGP signatures the first time, then the sha256 pinned in `tools/kernel/versions.env`), builds from the kernel's `multi_v7_defconfig` plus MPFree's own settings ([`tools/kernel/mpfree.config`](../../../tools/kernel/mpfree.config)), and stops if a setting did not take or the MMC drivers are built in. The owner fetches the result and checks its hash before the stick builder takes it. **Built 2026-11-17** (the script, the pinned compiler, the container and the workflow). The first kernel, the same day: Linux 6.18.57 with patch-6.18.57-rt9 (signed by Greg Kroah-Hartman and Sebastian Andrzej Siewior), built with kernel.org's gcc 14.4.0 (signed by Arnd Bergmann), all three now pinned by sha256; release `6.18.57-rt9-mpfree`, a 12.5 MB `zImage` and 914 modules, about 2.5 minutes on a runner. The settings start from mainline's ARM defaults rather than Akai's config, and were compared with Akai's on 2026-11-17 ([step 1's results](#step-1-results-2026-11-17)): every mainline driver Akai's kernel binds on the MPC One is now built in, and the job log lists every built setting ([`config-digest.py`](../../../tools/kernel/config-digest.py), a hash on each line so a copy can be checked), so the next comparisons need no owner block.
    - The stick builder takes it with an opt-in option, **built 2026-11-17**: `offline-kexec-stick.py --kexec-file --loadpin-off --chain --own-kernel DIR`, where DIR is a kernel folder from the CI VM's store (`/srv/mpfree-store/kernel/main`, copied with `scp -r`). It checks the folder against its `SHA256SUMS` and refuses a kernel that is not ours (release `<x.y.z>[-rtN]-mpfree`, pinned, `CONFIG-OK`), has kexec on or LoadPin not enforcing, or has the eMMC and SD card drivers built in, and a modules tarball with anything but plain files and folders under `lib/modules/<release>/`. Then `/boot/mpfree-kexec/zImage` is our zImage (a file in place of the link to Akai's, with its hash in that folder's `SHA256SUMS`, which `chain.sh` checks before the load), the modules go to `/usr/lib/modules/<release>/` on the stick's root (where LoadPin pins), `/boot/mpfree-kexec/build-info.txt` says which kernel it is, and `/etc/modprobe.d/mpfree-own-kernel.conf` keeps udev from loading the eMMC and SD card modules by alias (the two power-sequence nodes stay in the device tree; MPFree can still load the modules by name). The root filesystem grows by what the modules need. The hook, `chain.sh`, the guard, `kexec.dtb` and `cmdline.txt` are unchanged. The USB creator does not have the option yet.
-   - Passes when it boots on two power-ons with Ethernet and SSH, LoadPin enforcing, no `mmcblk`, the `--app-user` privileges and unchanged boot hashes. No picture is expected (the panel's driver is Akai's own, step 4) and no sound (step 3), so the round checks over SSH and the stick's logs.
+   - Passes when it boots on two power-ons with Ethernet and SSH, LoadPin enforcing, no `mmcblk`, the `--app-user` privileges and unchanged boot hashes. No picture is expected (the panel's driver is Akai's own, step 4) and no sound (step 3), so the round checks over SSH and the stick's logs: [blocks K2.1 to K2.4](#step-2-the-first-power-on-with-our-kernel-blocks-for-the-owner), with the kernel CI built from `main` on 2026-11-17 (run 44114092739).
 3. **Sound.** A replacement for Akai's sound driver (`simple-audio-card` plus a small codec driver for the enable, mute and reset pins), with care over pops at start and stop. Passes with the same latency and underrun measurements as step 7 (8.70 ms pad to sound, 0 underruns) and no audible pop.
 4. **Display, if needed.** If the panel is not mainline, port its start-up sequence from Akai's device tree or source.
 5. **Tuning.** Trim modules, add any firmware the hardware needs, and set the real-time options (timer, CPU frequency, IRQ threads) for MPFree.
@@ -76,12 +76,12 @@ Each step is its own small PR with owner blocks, verified before the owner gets 
 
 ## Step 1: blocks for the owner
 
-Both blocks are **read-only**: the first runs on the workstation only, the second reads the MPC over SSH and changes nothing on it. They need no stick. The MPC runs Akai's 3.10.1 with developer mode on, on the direct Ethernet cable, with developer mode's host key recorded (block Q1). Neither asks for a password. Until this pull request is merged, they fetch its branch; after that, `main` works the same.
+Both blocks are **read-only**: the first runs on the workstation only, the second reads the MPC over SSH and changes nothing on it. They need no stick. The MPC runs Akai's 3.10.1 with developer mode on, on the direct Ethernet cable, with developer mode's host key recorded (block Q1). Neither asks for a password. They run from `main`.
 
 **Block K1.1: update, check, the offline survey** (workstation only; nothing contacts the MPC). It reads the image the stick is built from (the newest `~/mpfree-work/akai-unpacked-*` folder) with `debugfs`, read-only.
 
 ```bash
-cd /home/jesse/code/mpfree-hardware-survey && git fetch origin claude/project-thread-5ua3l6:refs/remotes/origin/claude/project-thread-5ua3l6 && git switch --no-track -C own-kernel origin/claude/project-thread-5ua3l6 && git log --oneline -1 && python3 tools/mpc-one/results.py run local-checks -- bash -c 'MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_own_kernel_survey.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_drivers.py && echo LOCAL-CHECKS-OK' && python3 tools/mpc-one/results.py run own-kernel-survey -- python3 tools/mpc-one/offline-own-kernel-survey.py
+cd /home/jesse/code/mpfree-hardware-survey && git fetch origin main:refs/remotes/origin/main && git switch --no-track -C own-kernel origin/main && git log --oneline -1 && python3 tools/mpc-one/results.py run local-checks -- bash -c 'MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_own_kernel_survey.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_drivers.py && echo LOCAL-CHECKS-OK' && python3 tools/mpc-one/results.py run own-kernel-survey -- python3 tools/mpc-one/offline-own-kernel-survey.py
 ```
 
 It must say `LOCAL-CHECKS-OK`, then `kernel: /boot/zImage-6.18.44-az01-2026-08-10-rt6, …` and end with `END OF OWN KERNEL SURVEY`. On `STOP: …`, send the zip (below) anyway.
@@ -131,6 +131,87 @@ Left different on purpose:
 - Modules where Akai builds in (Bluetooth, some crypto, I2C over GPIO, SPI, the PWM fan, simple sound cards, another board's touch chip): none of these devices is on the MPC One, and the crypto API loads its modules when asked.
 - Small things nothing here uses: ext2 (ext4 mounts it), device-tree overlays, polled GPIO keys (the power key has an interrupt), the key-agreement crypto that Wi-Fi tools use, RAID offload, dynamic USB minor numbers.
 - Numbers that change nothing here: `NR_CPUS`, the largest allocation order, the 8250 port count, the mmap floor (4096 against 65536), the SysRq mask, and the panic timeout (the stick's command line says `panic=10`).
+
+## Step 2: the first power-on with our kernel (blocks for the owner)
+
+Two power-ons with a `--chain --own-kernel` stick. The kernel is the one CI built from `main` after #459 (run 44114092739, commit 359c6eef): `6.18.57-rt9-mpfree`, kept on the CI VM in `/srv/mpfree-store/kernel/runs/44114092739.1`. The hook on the MPC is the one installed in block 7.3: an own-kernel stick lists the same files for it as any `--chain` stick, so there is no install step. The MPC runs Akai's 3.10.1 with developer mode on, on the direct Ethernet cable. An SD card can stay in its slot: the stick's device tree leaves the slot out. The round asks for your password twice, at the stick write and at the log read.
+
+**What to expect.** This kernel has no driver for the panel (step 4) or the sound card (step 3), so:
+- **No picture from our kernel.** After the MPC logo the screen stays as the first kernel left it, or goes dark, or shows noise. Nothing on the screen says our kernel is up; SSH does, about a minute after power-on.
+- **No sound, and the pads stay dark.** The pad player starts, waits 30 s for the sound card, stops and starts again, every half minute or so. That is expected and harmless.
+- **The sound card's pins stay as the first kernel left them**, since no driver drives them. Before each power-on: volume knob all the way down, headphones out, monitors off.
+- **The pad player on the screen means the fallback.** If our kernel panics or can't reach the stick, the MPC restarts by itself, and the next start skips the chain once: MPFree's pad player appears, on Akai's kernel, about one to two minutes after power-on. Let it run a minute, then switch off; the logs say why.
+- **Switching off:** hold the power button until the MPC goes off. The pad player's power card needs the screen. Wait at least a minute after power-on first, so the guard's 30 s have passed.
+
+**Block K2.1: copy the kernel, update, check, build** (workstation only; nothing contacts the MPC). First copy the kernel's folder off the CI VM with the `scp` line in ci-infrastructure's `docs/mpfree-runner.md` ("The store"), so that `~/mpfree-work/own-kernel/44114092739.1` holds `zImage`, the modules, `config`, `System.map`, `build-info.txt` and `SHA256SUMS`. Then:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && git fetch origin main:refs/remotes/origin/main && git switch --no-track -C own-kernel-k2 origin/main && git log --oneline -1 && python3 tools/mpc-one/results.py run local-checks -- bash -c 'MPFREE_REQUIRE_OFFLINE_TOOLS=1 MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_boot_hook.py && python3 tools/mpc-one/tests/test_write_test_stick.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_mpc.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_drivers.py && python3 tools/kernel/tests/test_check_config.py && echo LOCAL-CHECKS-OK' && python3 tools/mpc-one/results.py run build-arm -- bash -c 'export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" && cargo build --manifest-path rust/Cargo.toml --release --locked --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log -p mpfree-startup -p mpfree-app' && python3 tools/mpc-one/results.py run build-stick -- python3 tools/mpc-one/offline-kexec-stick.py --splash rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-startup --app rust/target/armv7-unknown-linux-gnueabihf/release/mpfree --app-user --kexec-file --loadpin-off --chain --own-kernel "$HOME/mpfree-work/own-kernel/44114092739.1"
+```
+
+The build report must say:
+- `LOCAL-CHECKS-OK` and `pad player user: mpfree (--app-user)`;
+- `its own kernel release: 6.18.57-rt9-mpfree (--own-kernel: the chain's second kernel)`;
+- `--own-kernel: source commit: 359c6eef…` and `--own-kernel: built from this checkout's tools/kernel/mpfree.config (the same sha256)`;
+- `--own-kernel: its whole config sha256 …` (K2.3's drivers surveys must show the same hash);
+- `its command line: root=PARTUUID=… rootwait=60 ro panic=10 rfkill.default_state=0 loadpin.enforce=0 mpfree.chain=1`.
+
+On `STOP: --own-kernel: …`, send the zip (`python3 tools/mpc-one/results.py zip`); nothing was written.
+
+**Block K2.2: write the stick** (**state-changing, the stick only**: erases partitions 1 to 3, keeps partition 4; asks for `WRITE`). Partition 1 is bigger with the modules (tens of MiB), but partitions 1 to 3 should still end before 1 GiB, where partition 4 starts, so it stays in place; the builder stops in K2.1 if they would not. Undo: write an older build the same way.
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run write-stick -- python3 tools/mpc-one/write-test-stick.py
+```
+
+**Block K2.3: two power-ons** (**state-changing**, RAM only: Akai's programs are stopped at about 6 s and the MPC restarts twice, into Akai's kernel and then into ours; nothing is written to the eMMC or SD card). First, with Akai's system running and the stick in the MPC, read the boot map (**read-only**):
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run boot-map-before -- env MPC_PORT=22 bash tools/mpc-one/collect-over-ssh.sh --boot-map
+```
+
+Then switch off and wait 10 s. Twice: volume down, switch on with the stick in, and note what the screen does. About 90 s after power-on, read our kernel's drivers (**read-only**, over SSH on port 2222). On the first power-on, also read the privileges (**read-only**; press `q` at the first phase if it asks):
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run drivers-own-kernel -- bash tools/mpc-one/collect-over-ssh.sh --stick-drivers ; python3 tools/mpc-one/results.py run privileges-own-kernel -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app bash tools/mpc-one/collect-over-ssh.sh --app
+```
+
+On the second power-on, the first command only. If it says `MPC does not answer direct-interface ICMP`, wait 30 s and run it again once. Then let the MPC run at least a minute in all, hold the power button to switch off, and wait 10 s. If SSH never answers, or the MPC restarts by itself more than three times, or nothing has changed three minutes after power-on, hold the power button to switch off and go on: the stick's logs say what happened. If Akai's app comes up instead, leave the stick in and run `--hook-report` (as in block 6.4) before switching off.
+
+**Block K2.4: what happened** (read-only). Take the stick out, switch on into Akai's system, then:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run hook-report -- env MPC_PORT=22 bash tools/mpc-one/collect-over-ssh.sh --hook-report ; python3 tools/mpc-one/results.py run boot-map-after -- env MPC_PORT=22 bash tools/mpc-one/collect-over-ssh.sh --boot-map
+```
+
+Then put the stick in the workstation:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run stick-logs -- python3 tools/mpc-one/read-stick-logs.py ; python3 tools/mpc-one/results.py zip
+```
+
+Send the zip, with a line on what the screen did and whether anything sounded at the restart.
+
+**Passes when:**
+- **The chain ran both times:** four boots in the stick's logs, in pairs: a `chain.txt` boot ending `restart into them (kexec.target)`, then a boot of our kernel whose `dmesg.txt` has `Linux version 6.18.57-rt9-mpfree` and `chain-pending taken away`. No boot falls back.
+- **It is our kernel, as built:** both `drivers-own-kernel` reports say `release: 6.18.57-rt9-mpfree` and `loadpin enforce: 1`, and their `sha256 of the whole config` is the build report's `its whole config sha256`. Their `command line:` is the build's `cmdline.txt` followed by `isolcpus=2-3 regulator_ignore_unused clk_ignore_unused` (our kernel's own words).
+- **The eMMC and SD card stayed off:** no `mmcblk` line in our kernel's `dmesg.txt`, `mpfree-internal-off: started at … (after kexec)` with nothing switched off, and no `ff0c0000` or `ff0f0000` device in the drivers reports (the stick's device tree leaves both controllers out).
+- **The board came up:** the drivers reports' device list has these drivers bound, as on Akai's system (block K1.2): the power chips (`act8865`, `fan53555-regulator` twice, `rtc-hym8563`), the USB PHY and the three USB controllers (`rockchip-usb-phy`, `ehci-platform`, `dwc2` twice), Ethernet (`rk_gmac-dwmac`), the I2C buses (`rk3x-i2c`), the power domains (`rockchip-pm-domain`), the reboot mode (`syscon-reboot-mode`), the watchdog (`dw_wdt`) and the GPU (`panfrost`).
+- **Ethernet and SSH:** both drivers surveys answered on port 2222.
+- **Without root:** the `privileges:` lines show `Uid: 960`, `CapEff: 0000000000000000`, `NoNewPrivs: 1`, `Max realtime priority 70` and `Max locked memory unlimited`. `privileges: no mpfree process` only means the read fell between two of the pad player's starts: run that command again once.
+- **Storage stayed safe:** the boot maps before and after have the same boot-area hashes, with 0 sectors written to p1 to p6 and boot0/1.
+
+Record, without a pass rule:
+- the failed units on our kernel's boots (expected: the startup screen, and the pad player between its starts);
+- the deferred and failed probes in `dmesg.txt` (expected: the display chain, the backlight and the sound card), and the LoadPin lines (expected: `ready to pin (currently enforcing)`, then the stick's root pinned at the first module);
+- the touch node our device tree carries and whether `ili210x` bound to it (step 4);
+- whether the controller's MIDI card appeared (the pad player's log, `controller MIDI card:`);
+- the time from power-on to SSH (each drivers report's `uptime:` is our kernel's alone), and the Ethernet link-up time;
+- what the screen did, and any sound at the restart.
+
+**Undo, always:** switch off, take the stick out, switch on: Akai's system starts as before. To go back to the chain on Akai's kernel, run block K2.1's build without `--own-kernel`, then block K2.2.
+
+If our kernel dies before it mounts the stick, its messages are lost, and only the fallback's `chain.txt` says it did not stay up. The next round would then keep them in RAM for the next boot to save (ramoops, which our kernel has; the stick's device tree would need a reserved memory region for it).
 
 ## Risks
 

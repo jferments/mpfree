@@ -50,6 +50,19 @@
 //! - **G1 again, variation (step B1):** full size, level and peaked
 //!   spray, each against the same cloud without it, on pink and the pad:
 //!   the cloud keeps its loudness.
+//! - **G12, a stretch keeps its hits (step B5):** "drums" (noise bursts
+//!   from silence every quarter second, each decaying 40 ms) stretched as
+//!   the Stretch mode sets it (90 ms grains, 45 a second, regular, from
+//!   the start) to half speed and to double, with the bursts' starts as
+//!   its hits: around each hit's time, the loudest millisecond in the
+//!   30 ms before it against the hit's (a slowed stretch plays each hit
+//!   early, from every grain that reads ahead), how long after it the
+//!   level first reaches half the hit's (a sped-up stretch's grains
+//!   reach it late, one by one), and how far the level rises again in
+//!   the 60 ms after the hit's loudest millisecond (a second attack: a
+//!   flam, over 4 ms a millisecond at a time); the medians over the hits.
+//!   Shown: the stretch's loudness against the drums' (louder sped up,
+//!   with more whole hits a second) and the same without hits.
 //!
 //! Cost is the bench's (`mpfree-bench`'s "Sampler grains (per grain)"
 //! scaling case, on CI by the instruction gate and on the MPC in the
@@ -63,7 +76,7 @@ use mpfree_sampler::grain_clip::GrainClip;
 use crate::fft::Fft;
 use crate::loudness;
 use crate::quality::{Better, Row};
-use crate::signals::{pink, sine};
+use crate::signals::{pink, sine, white};
 use crate::wav::Stereo;
 
 /// The ratchet file's header.
@@ -91,6 +104,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     onsets(&mut rows, &lab);
     variation(&mut rows, &lab);
     tone(&mut rows, &lab);
+    hits(&mut rows, &lab);
     rows
 }
 
@@ -866,5 +880,168 @@ fn tone(rows: &mut Vec<Row>, lab: &Lab) {
             Some(5.0),
             0.5,
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// G12: a stretch keeps its hits (step B5).
+
+/// Bursts of white noise from silence every `every` seconds, each
+/// decaying with a 40 ms time constant from 0.5: (the sound, each burst's
+/// start).
+fn drums(secs: f64, every: f64, rate: u32) -> (Vec<f32>, Vec<u64>) {
+    let n = (secs * f64::from(rate)) as usize;
+    let gap = (every * f64::from(rate)) as usize;
+    let noise = white(n, 0.5, 12);
+    let mut out = vec![0.0f32; n];
+    let mut starts = Vec::new();
+    for (i, x) in out.iter_mut().enumerate() {
+        let k = i % gap;
+        if k == 0 {
+            starts.push(i as u64);
+        }
+        *x = (noise[i] * (-(k as f64) / (0.04 * f64::from(rate))).exp()) as f32;
+    }
+    (out, starts)
+}
+
+fn hits(rows: &mut Vec<Row>, lab: &Lab) {
+    let rate = lab.rate;
+    let (src, starts) = drums(4.0, 0.25, rate);
+    let src_lufs = source_lufs(&src, rate);
+    for (name, scan, secs) in [("half speed", 0.5f32, 3.5f64), ("double speed", 2.0, 1.9)] {
+        let p = Params {
+            position: 0.0,
+            scan,
+            size_ms: 90.0,
+            density: 45.0,
+            timing: 0.0,
+            ..Params::default()
+        };
+        for keep in [true, false] {
+            let marks: &[u64] = if keep { &starts } else { &[] };
+            let clip = GrainClip::new(&src, 1, rate)
+                .expect("a lab clip")
+                .clean(None)
+                .with_hits(marks);
+            let mut v = GrainVoice::new(rate, 12);
+            v.set_params(p);
+            v.start();
+            let mut budget = Budget::new(256);
+            let n = (secs * f64::from(rate)) as usize;
+            let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+            for s in (0..n).step_by(128) {
+                let e = (s + 128).min(n);
+                v.render(&clip, &mut budget, s as u64, &mut l[s..e], &mut r[s..e]);
+            }
+            let mono: Vec<f64> = l
+                .iter()
+                .zip(&r)
+                .map(|(&a, &b)| 0.5 * (f64::from(a) + f64::from(b)))
+                .collect();
+            let ms = |t: f64| (t * f64::from(rate) / 1000.0) as isize;
+            let level = |a: isize, b: isize| {
+                let (a, b) = (a.max(0) as usize, (b.max(0) as usize).min(mono.len()));
+                rms(&mono[a..b.max(a)])
+            };
+            // The loudest millisecond from `a` to `b`, stepping 0.25 ms.
+            let loudest = |a: isize, b: isize| {
+                let mut best = (0.0f64, a);
+                let mut t = a;
+                while t + ms(1.0) <= b {
+                    let x = level(t, t + ms(1.0));
+                    if x > best.0 {
+                        best = (x, t);
+                    }
+                    t += ms(0.25);
+                }
+                best
+            };
+            let (mut pre, mut attack, mut flam) = (Vec::new(), Vec::new(), Vec::new());
+            for &h in &starts[1..] {
+                let at = (h as f64 / f64::from(scan)).round() as isize;
+                if at + ms(80.0) > mono.len() as isize {
+                    break;
+                }
+                let (peak, peak_at) = loudest(at, at + ms(30.0));
+                pre.push(db(loudest(at - ms(30.0), at - ms(2.0)).0 / peak));
+                // Half the hit's level, in half-millisecond steps.
+                let mut t = at;
+                while t < at + ms(60.0) && level(t, t + ms(0.5)) < 0.5 * peak {
+                    t += ms(0.5);
+                }
+                attack.push((t + ms(0.5) - at) as f64 * 1000.0 / f64::from(rate));
+                // The largest rise of the level (over 4 ms, a millisecond
+                // at a time) over the lowest since the peak.
+                let (mut low, mut rise) = (f64::INFINITY, 0.0f64);
+                let mut t = peak_at;
+                while t + ms(4.0) <= at + ms(60.0) {
+                    let x = level(t, t + ms(4.0));
+                    low = low.min(x);
+                    rise = rise.max(db(x / low));
+                    t += ms(1.0);
+                }
+                flam.push(rise);
+            }
+            let median = |mut v: Vec<f64>| {
+                v.sort_by(f64::total_cmp);
+                v[v.len() / 2]
+            };
+            let out = Stereo::new(
+                l.iter().map(|&x| f64::from(x)).collect(),
+                r.iter().map(|&x| f64::from(x)).collect(),
+                rate,
+            );
+            let lu = lufs(&out) - src_lufs;
+            let subject = if keep {
+                format!("hits[drums, {name}]")
+            } else {
+                format!("hits[drums, {name}, without hits]")
+            };
+            let info = |b: Better| if keep { b } else { Better::Info };
+            let target = |t: f64| keep.then_some(t);
+            put(
+                rows,
+                "G12",
+                subject.clone(),
+                "pre_db",
+                median(pre),
+                info(Better::Lower),
+                target(-24.0),
+                1.0,
+            );
+            put(
+                rows,
+                "G12",
+                subject.clone(),
+                "attack_ms",
+                median(attack),
+                info(Better::Lower),
+                target(1.0),
+                0.25,
+            );
+            put(
+                rows,
+                "G12",
+                subject.clone(),
+                "flam_db",
+                median(flam),
+                info(Better::Lower),
+                target(3.0),
+                0.5,
+            );
+            // Shown: a stretch keeping its hits has as many a second as
+            // its tempo, each whole, so it is louder sped up.
+            put(
+                rows,
+                "G12",
+                subject,
+                "level_change_lu",
+                lu,
+                Better::Info,
+                None,
+                0.2,
+            );
+        }
     }
 }

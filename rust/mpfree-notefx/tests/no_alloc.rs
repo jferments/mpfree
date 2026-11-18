@@ -10,7 +10,8 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_notefx::{
-    Chain, Chord, Echo, Ev, Fx, Notes, Period, Scale, Shape, Slot, Snap, Time, Velocity, Voicing,
+    Chain, Chord, Echo, Ev, Fx, LatchMode, Notes, Period, Randomize, Scale, Shape, Slot, Snap,
+    Strum, StrumOrder, Time, Velocity, Voicing,
 };
 
 struct Counting;
@@ -103,6 +104,38 @@ fn a_chain_never_allocates_once_made() {
                 Some(Slot {
                     fx: Fx::Transpose { semitones: 7 },
                     on: k % 1000 == 250,
+                }),
+            );
+        }
+        if k == 1200 {
+            // Strum, Latch and Randomize in place of three others.
+            let more = [
+                Fx::Strum(Strum {
+                    time_ms: 12,
+                    order: StrumOrder::Down,
+                }),
+                Fx::Latch {
+                    mode: LatchMode::NextChord,
+                },
+                Fx::Randomize(Randomize {
+                    pitch: 7,
+                    often: 50,
+                    velocity: 12,
+                    longer_ms: 40,
+                }),
+            ];
+            for (i, fx) in more.into_iter().enumerate() {
+                chain.set(4 + i, Some(Slot { fx, on: true }));
+            }
+        }
+        if k == 1700 {
+            chain.set(
+                5,
+                Some(Slot {
+                    fx: Fx::Latch {
+                        mode: LatchMode::Toggle,
+                    },
+                    on: true,
                 }),
             );
         }

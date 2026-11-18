@@ -331,6 +331,8 @@ impl App {
         self.step_seq.on = true;
         self.step_seq.sound = sound.min(127);
         let mut fx = Vec::new();
+        // The loop keys give the pads up too.
+        fx.extend(self.loop_keys_off());
         if self.mute_keys != MuteKeys::Off {
             self.mute_keys = MuteKeys::Off;
             if let Some(n) = self.map.track_mute {
