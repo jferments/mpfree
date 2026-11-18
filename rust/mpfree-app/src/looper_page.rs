@@ -12,7 +12,7 @@
 //! do the strip's buttons on Play.
 
 use crate::app::Settings;
-use crate::looper_deck::{Channel, DeckHead, LoopDeck, RingState, DECK};
+use crate::looper_deck::{CaptureButton, Channel, DeckHead, LoopDeck, RingState, DECK};
 use crate::looper_tab::{
     level_frac, level_text, Chip, ChipKind, Ctl, DropSpot, DropTo, EmptyLook, HistoryList,
     LayerDrag, LayerRow, LoopEditor, Strip, BAR_CHOICES, EDITOR, LOOP_COLOURS, QLINKS, SEND_SHOW,
@@ -29,7 +29,6 @@ use mpfree_ui::draw;
 use mpfree_ui::qlink::{QLinkCard, QLinkColumn};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Tone, Touch, Ui, Widget};
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -688,11 +687,6 @@ impl LoopBank {
 /// group of sounds went into it.
 type Take = (usize, usize, Vec<(&'static str, u32)>);
 
-/// The input's level history the empty loop shows: a value every few
-/// views, about five seconds of them.
-const INPUT_HISTORY: usize = 120;
-const INPUT_EVERY: u32 = 2;
-
 /// A level in dBFS along the input meter, 0 to 1 (-48 dB to 0).
 fn input_frac(db: f32) -> f32 {
     if !db.is_finite() {
@@ -705,9 +699,6 @@ pub struct LooperPage {
     /// The input's peak, held for about 2 s of updates.
     hold: f32,
     hold_age: u32,
-    /// The input's level, oldest first, for an empty loop's look.
-    input: VecDeque<f32>,
-    input_age: u32,
     /// Each loop's layers' names, by what was played into each ("Drums",
     /// "Bass"); kept past an undo, so a redo finds its name again.
     names: Vec<Vec<String>>,
@@ -753,8 +744,6 @@ impl LooperPage {
         let mut p = LooperPage {
             hold: f32::NEG_INFINITY,
             hold_age: 0,
-            input: VecDeque::with_capacity(INPUT_HISTORY),
-            input_age: 0,
             names: vec![Vec::new(); MAX_LOOPS],
             take: None,
             layers: [None; MAX_LAYERS],
@@ -1324,6 +1313,7 @@ impl LooperPage {
             tempo: format!("{:.0} BPM", t.bpm),
             memory: memory(v),
             pads: self.pads_keys,
+            capture: capture_button(v),
         };
         // An armed loop starts on the next bar line (on the bar PLAY
         // starts while stopped).
@@ -1343,6 +1333,20 @@ impl LooperPage {
                 let level = self.level_of(n, l);
                 let (position, ring_bars, centre) = match state {
                     RingState::Empty => (0.0, 0, ("+".to_string(), String::new())),
+                    // Capture: on the bar line coming, or copying in.
+                    RingState::Waiting(b) if l.capturing.is_some() => {
+                        let p = l.capturing.unwrap_or(0.0);
+                        (
+                            p,
+                            0,
+                            match b {
+                                Some(b) if p == 0.0 && v.heard.waits => {
+                                    (b.to_string(), "Capture on bar".to_string())
+                                }
+                                _ => ("+".to_string(), "Capturing".to_string()),
+                            },
+                        )
+                    }
                     RingState::Waiting(b) => (
                         0.0,
                         0,
@@ -1592,8 +1596,12 @@ impl LooperPage {
             }
         };
         let empty_look = (layers.is_empty()).then(|| EmptyLook {
-            title: format!("INPUT · {}", source.to_uppercase()),
+            title: format!("WHAT YOU PLAYED · {}", source.to_uppercase()),
             says: match s.phase {
+                _ if s.capturing.is_some() => format!(
+                    "Capture: Loop {} plays once what you played is in (Capture again: stop)",
+                    n + 1
+                ),
                 Phase::Armed => format!("Loop {} records from the next bar line", n + 1),
                 _ if s.kept => format!(
                     "Loop {} cleared: UNDO brings it back, or tap its ring to record",
@@ -1613,7 +1621,19 @@ impl LooperPage {
                 }),
                 _ => None,
             },
-            input: self.input.iter().copied().collect(),
+            input: v.heard.cols.iter().map(|&db| input_frac(db)).collect(),
+            bars: v.heard.lines[..v.heard.n_lines].to_vec(),
+            take: v
+                .heard
+                .take
+                .filter(|_| s.capturing.is_none() && v.capture_into.is_some_and(|c| c.0 == n))
+                .map(|(a, b, first, bars)| {
+                    (
+                        a,
+                        b,
+                        format!("Capture {}", crate::looping::bars_words(first, bars)),
+                    )
+                }),
         });
         let history = self
             .history_open
@@ -1711,22 +1731,12 @@ impl LooperPage {
         self.layers = v.layers;
         self.layer = self.layer.min(v.status.layers.saturating_sub(1));
         let v = &v;
-        // The input's peak, held for about 2 s of updates, and its level
-        // over the last few seconds.
+        // The input's peak, held for about 2 s of updates.
         self.hold_age += 1;
         let peak = v.meter_db[0].max(v.meter_db[1]);
         if self.hold_age > 8 || peak > self.hold {
             self.hold = peak;
             self.hold_age = 0;
-        }
-        self.input_age += 1;
-        if self.input_age >= INPUT_EVERY {
-            self.input_age = 0;
-            if self.input.len() >= INPUT_HISTORY {
-                self.input.pop_front();
-            }
-            self.input
-                .push_back((input_frac(peak) * 16.0).round() / 16.0);
         }
         self.refresh_deck(ui, v);
         self.refresh_editor(ui, v);
@@ -1917,6 +1927,33 @@ fn bars_word(bars: usize) -> String {
 }
 
 /// The memory every loop shares: "37 s of 5 min", and how full, 0 to 1.
+/// The deck's Capture: lit while the picked loop captures (a tap calls it
+/// off), faint when there is nothing to take or nowhere to put it.
+pub fn capture_button(v: &LooperView) -> CaptureButton {
+    let picked = &v.loops[v.selected.min(MAX_LOOPS - 1)];
+    if picked.capturing.is_some() {
+        return CaptureButton {
+            label: "Capturing".to_string(),
+            works: true,
+            lit: true,
+        };
+    }
+    let bars = match (v.capture_into, v.heard.take) {
+        (Some(_), Some((_, _, _, bars))) => Some(bars),
+        (Some((_, asked)), None) if v.heard.waits => Some(asked),
+        _ => None,
+    };
+    CaptureButton {
+        label: match bars {
+            Some(1) => "Capture last bar".to_string(),
+            Some(b) => format!("Capture last {b} bars"),
+            None => "Capture".to_string(),
+        },
+        works: bars.is_some(),
+        lit: false,
+    }
+}
+
 fn memory(v: &LooperView) -> (String, f32) {
     let rate = f64::from(v.rate.max(1));
     (
@@ -2133,7 +2170,7 @@ mod tests {
         assert_eq!(e.sub, "empty · records the pads");
         assert!(e.layers.is_empty() && !e.has_sound);
         let look = e.empty.as_ref().unwrap();
-        assert_eq!(look.title, "INPUT · PADS");
+        assert_eq!(look.title, "WHAT YOU PLAYED · PADS");
         assert!(look.says.contains("ring"), "{}", look.says);
         assert!(
             matches!(
@@ -2149,6 +2186,74 @@ mod tests {
             e.strip
         );
         assert_eq!(ui.get::<LoopDeck>(DECK).unwrap().picked, 5);
+        ui.paint(&mut SoftCanvas::new(1280, 800));
+    }
+
+    /// An empty loop picked shows What you played: the bars heard, and
+    /// Capture over the last ones when it is where Capture goes. The
+    /// deck's Capture says how many bars, is faint with nothing to take,
+    /// and lit while the picked loop captures.
+    #[test]
+    fn what_you_played_and_the_decks_capture() {
+        let (mut ui, mut page) = page();
+        let mut v = two_loops();
+        v.selected = 4;
+        v.status = v.loops[4];
+        v.heard.lines[..3].copy_from_slice(&[(9, 0.2), (10, 0.45), (11, 0.7)]);
+        v.heard.n_lines = 3;
+        v.heard.take = Some((0.2, 0.7, 9, 2));
+        v.capture_into = Some((4, 2));
+        page.update(&mut ui, &v, &Settings::default());
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        let look = e.empty.as_ref().unwrap();
+        assert_eq!(look.bars, vec![(9, 0.2), (10, 0.45), (11, 0.7)]);
+        assert_eq!(
+            look.take,
+            Some((0.2, 0.7, "Capture bars 9 and 10".to_string()))
+        );
+        assert_eq!(look.input.len(), crate::looping::HEARD_COLS);
+        let d = ui.get::<LoopDeck>(DECK).unwrap();
+        assert_eq!(
+            d.head.capture,
+            CaptureButton {
+                label: "Capture last 2 bars".into(),
+                works: true,
+                lit: false
+            }
+        );
+        // Capture goes elsewhere: no button over the bars here.
+        v.capture_into = Some((5, 2));
+        page.update(&mut ui, &v, &Settings::default());
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert_eq!(e.empty.as_ref().unwrap().take, None);
+        // Nothing heard on the bars: faint.
+        v.heard.take = None;
+        page.update(&mut ui, &v, &Settings::default());
+        let d = ui.get::<LoopDeck>(DECK).unwrap();
+        assert_eq!(
+            (d.head.capture.label.as_str(), d.head.capture.works),
+            ("Capture", false)
+        );
+        // Waiting for the bar line: it takes the bars it asks for then.
+        v.heard.waits = true;
+        assert_eq!(capture_button(&v).label, "Capture last 2 bars");
+        // The picked loop captures: lit.
+        v.status.capturing = Some(0.3);
+        v.loops[4] = v.status;
+        page.update(&mut ui, &v, &Settings::default());
+        let d = ui.get::<LoopDeck>(DECK).unwrap();
+        assert!(d.head.capture.lit && d.head.capture.label == "Capturing");
+        // Its ring waits, as an armed loop's (a tap calls it off).
+        let c = &d.channels[4];
+        assert_eq!((c.state, c.position), (RingState::Waiting(None), 0.3));
+        assert_eq!(c.centre.1, "Capturing");
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert!(e
+            .empty
+            .as_ref()
+            .unwrap()
+            .says
+            .starts_with("Capture: Loop 5 plays"));
         ui.paint(&mut SoftCanvas::new(1280, 800));
     }
 
@@ -2182,7 +2287,7 @@ mod tests {
         let e = ui.get::<LoopEditor>(EDITOR).unwrap();
         let look = e.empty.as_ref().unwrap();
         assert_eq!(look.waits.as_deref(), Some("REC starts on bar 13"));
-        assert_eq!(look.title, "INPUT · LINE IN");
+        assert_eq!(look.title, "WHAT YOU PLAYED · LINE IN");
         assert_eq!(
             e.strip,
             Strip::Records {

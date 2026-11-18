@@ -40,6 +40,11 @@ pub const CLEAR_HOLD_S: f32 = 1.0;
 
 /// The header's height, the channels' margins and the space between them.
 const HEAD_H: i32 = 46;
+/// The header's right end kept for the memory gauge, and its buttons'
+/// widths.
+const MEMORY_W: i32 = 250;
+const CAPTURE_W: i32 = 200;
+const PADS_W: i32 = 160;
 const SIDE: i32 = 14;
 const GAP: i32 = 8;
 /// A channel's name row and its ring (a fingertip and a half).
@@ -72,6 +77,8 @@ impl RingState {
     pub fn of(l: &mpfree_looper::Status, next_bar: Option<i64>) -> RingState {
         use mpfree_looper::Phase;
         match l.phase {
+            // A Capture waits for its bar line or copies in: as armed.
+            Phase::Empty if l.capturing.is_some() => RingState::Waiting(next_bar),
             Phase::Empty => RingState::Empty,
             Phase::Armed => RingState::Waiting(next_bar),
             Phase::Recording => RingState::Recording,
@@ -152,6 +159,19 @@ pub struct DeckHead {
     pub memory: (String, f32),
     /// The pads are the loop keys (SHIFT + SAMPLER): the Pads switch lit.
     pub pads: bool,
+    pub capture: CaptureButton,
+}
+
+/// The header's Capture button: the last bars heard become a loop.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CaptureButton {
+    /// "Capture last 2 bars", "Capture on the bar line", "Capturing".
+    pub label: String,
+    /// It has something to take now (else faint: a tap says why).
+    pub works: bool,
+    /// A capture waits for its bar line or copies in: lit, and a tap
+    /// calls it off.
+    pub lit: bool,
 }
 
 /// Where a channel's parts are.
@@ -222,11 +242,23 @@ impl LoopDeck {
         Rect::new(r.x, r.y, r.w, HEAD_H)
     }
 
-    /// The Pads switch in the header, in the middle: the pads as loop
+    /// The Pads switch in the header, left of Capture: the pads as loop
     /// keys (SHIFT + SAMPLER does the same).
     pub fn pads_rect(r: Rect) -> Rect {
+        let c = LoopDeck::capture_rect(r);
+        Rect::new(c.x - 12 - PADS_W, c.y, PADS_W, c.h)
+    }
+
+    /// Capture in the header, left of the memory gauge (SHIFT + REC does
+    /// the same on the Looper tab).
+    pub fn capture_rect(r: Rect) -> Rect {
         let h = LoopDeck::head_rect(r);
-        Rect::new(h.x + h.w / 2 - 70, h.y + 5, 160, HEAD_H - 6)
+        Rect::new(
+            h.right() - 16 - MEMORY_W - CAPTURE_W,
+            h.y + 5,
+            CAPTURE_W,
+            HEAD_H - 6,
+        )
     }
 
     /// Channel `i`'s parts, of `n`, in the deck at `r`.
@@ -322,6 +354,21 @@ impl LoopDeck {
 
 /// The ring's wave, arc, ticks and hand, the middle's words, and while a
 /// hold clears it the arc draining in red.
+/// Capture's mark in `b`: a circle going back on itself, round a dot
+/// (what was just played, taken back).
+pub fn capture_icon(cx: &mut PaintCx, b: Rect, c: Color) {
+    let (x, y) = (b.x as f32 + b.w as f32 / 2.0, b.y as f32 + b.h as f32 / 2.0);
+    let r = b.w.min(b.h) as f32 / 2.0 - 1.5;
+    let mut s = Shape::new(b.inset(-2));
+    s.arc(x, y, r, 0.6 * PI, 2.35 * PI, 2.0);
+    // The arrowhead where the circle ends, at its upper left.
+    let (ex, ey) = (x + r * (0.6 * PI).cos(), y + r * (0.6 * PI).sin());
+    s.segment((ex, ey), (ex - 4.0, ey - 1.0), 2.0);
+    s.segment((ex, ey), (ex + 1.0, ey - 4.0), 2.0);
+    s.disc(x, y, 2.6);
+    s.draw(cx.canvas, c);
+}
+
 fn paint_ring(cx: &mut PaintCx, b: Rect, ch: &Channel, clearing: Option<f32>) {
     let t = cx.theme.clone();
     let c = b.w.min(b.h) as f32 / 2.0;
@@ -518,6 +565,32 @@ impl LoopDeck {
             },
             "Pads as loop keys",
         );
+        // Capture: the last bars heard become a loop.
+        let cap = &self.head.capture;
+        let pill = LoopDeck::capture_rect(r).inset_xy(0, 3);
+        let (bg, fg) = if cap.lit {
+            (t.accent, t.on_accent)
+        } else if cap.works {
+            (t.raised, t.text)
+        } else {
+            (t.raised, t.text_faint)
+        };
+        cx.canvas.fill_round_rect(pill, 8, bg);
+        let icon = Rect::new(pill.x + 12, pill.y + pill.h / 2 - 8, 16, 16);
+        capture_icon(cx, icon, fg);
+        cx.text(
+            FontId::Bold,
+            13.0,
+            Rect::new(
+                icon.right() + 8,
+                pill.y,
+                pill.right() - icon.right() - 14,
+                pill.h,
+            ),
+            Align::Left,
+            fg,
+            &cap.label,
+        );
         // The memory every loop shares, on the right.
         let (text, full) = &self.head.memory;
         let tw = cx.measure(FontId::Sans, 12.0, text);
@@ -701,16 +774,25 @@ impl Widget for LoopDeck {
 
     fn targets(&self, r: Rect) -> Vec<Target> {
         let n = self.channels.len();
-        let mut out = vec![Target::tap(
-            "pads-keys",
-            0,
-            if self.head.pads {
-                "Pads as loop keys (on)"
-            } else {
-                "Pads as loop keys"
-            },
-            LoopDeck::pads_rect(r),
-        )];
+        let mut out = vec![
+            Target::tap(
+                "pads-keys",
+                0,
+                if self.head.pads {
+                    "Pads as loop keys (on)"
+                } else {
+                    "Pads as loop keys"
+                },
+                LoopDeck::pads_rect(r),
+            ),
+            Target::tap(
+                "capture",
+                0,
+                self.head.capture.label.clone(),
+                LoopDeck::capture_rect(r),
+            )
+            .disabled_if(!self.head.capture.works && !self.head.capture.lit),
+        ];
         for (i, ch) in self.channels.iter().enumerate() {
             let p = LoopDeck::parts(r, i, n);
             out.push(Target::tap("loop", i, ch.name.clone(), p.name));
@@ -788,6 +870,10 @@ impl Widget for LoopDeck {
                 if LoopDeck::pads_rect(r).contains(x, y) {
                     self.acts.push(LoopAct::PadKeys);
                     return Some(EventKind::Toggle(0));
+                }
+                if LoopDeck::capture_rect(r).contains(x, y) {
+                    self.acts.push(LoopAct::Capture);
+                    return Some(EventKind::Tab(0));
                 }
                 let i = (0..n).find(|&i| LoopDeck::parts(r, i, n).card.contains(x, y))?;
                 let p = LoopDeck::parts(r, i, n);
@@ -896,6 +982,41 @@ mod tests {
             a.level_hit.x > a.ring.right() - 8,
             "the level bar is beside the ring"
         );
+    }
+
+    /// Capture sits left of the memory, the Pads switch left of it; a
+    /// tap on Capture asks for it (faint too: the screen says why), and
+    /// its target is off while it has nothing to take.
+    #[test]
+    fn capture_in_the_header_asks_for_the_last_bars() {
+        let (mut d, r) = deck();
+        let c = LoopDeck::capture_rect(r);
+        let p = LoopDeck::pads_rect(r);
+        assert!(p.right() < c.x && c.right() < r.right() - MEMORY_W);
+        assert!(c.h >= 40, "a fingertip tall: {c:?}");
+        let target = |d: &LoopDeck| {
+            d.targets(r)
+                .into_iter()
+                .find(|t| t.id == "capture")
+                .expect("Capture's target")
+        };
+        d.head.capture = CaptureButton {
+            label: "Capture".into(),
+            works: false,
+            lit: false,
+        };
+        assert!(!target(&d).enabled);
+        d.head.capture = CaptureButton {
+            label: "Capture last 2 bars".into(),
+            works: true,
+            lit: false,
+        };
+        let t = target(&d);
+        assert!(t.enabled && t.label == "Capture last 2 bars");
+        let (x, y) = (c.x + c.w / 2, c.y + c.h / 2);
+        assert!(d.touch(1, Touch::Down, x, y, r).is_some());
+        assert_eq!(d.take(), vec![LoopAct::Capture]);
+        d.touch(1, Touch::Up, x, y, r);
     }
 
     #[test]

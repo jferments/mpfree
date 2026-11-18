@@ -137,6 +137,13 @@ fn commands_and_periods_never_allocate() {
         L::Overdub,
         L::Edit(E::Speed(0)),
         L::Forget,
+        // A capture of the last bars heard, cleared; one called off; and
+        // the input changing.
+        L::Capture(2),
+        L::Forget,
+        L::Capture(1),
+        L::Capture(1),
+        L::NewInput,
     ];
     let mut seen_playing = false;
     let mut layers = 0usize;

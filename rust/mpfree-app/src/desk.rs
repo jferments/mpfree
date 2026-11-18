@@ -333,6 +333,9 @@ impl Desk<'_> {
             }
             gui::FromUi::LoopBars(bars) => fx.extend(app.set_loop_bars(bars)),
             gui::FromUi::LoopKeys => fx.extend(app.toggle_loop_keys()),
+            gui::FromUi::LoopCapture => {
+                fx.push(app::Effect::Looper(looping::LoopAction::Capture))
+            }
             gui::FromUi::LooperSetting(item, d) => fx.extend(app.looper_setting(item, d)),
             gui::FromUi::LoopCommand(c) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Command(c)))
@@ -594,6 +597,10 @@ pub fn perform_pad(
             if s.is_some_and(|s| s.phase == mpfree_looper::Phase::Playing && s.muted) {
                 fx.push(app::Effect::Looper(LoopAction::ToggleMute(Some(n))));
                 format!("loop keys: Loop {} plays again", n + 1)
+            } else if s.is_some_and(|s| s.capturing.is_some()) {
+                // Capturing: its key calls it off.
+                fx.push(app::Effect::Looper(LoopAction::Capture));
+                format!("loop keys: Loop {}'s key calls its Capture off", n + 1)
             } else {
                 if !app.rec.armed(crate::rec_arm::Target::Loop) {
                     app.rec.ready = None;
