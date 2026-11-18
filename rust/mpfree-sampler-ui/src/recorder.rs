@@ -31,6 +31,14 @@
 //!   a hold opens Sample Recall over the page, to pick another length.
 //!   It says what a tap keeps now ([`KeepView`]): 4 bars while the music
 //!   plays (fewer early on), 10 s while it is stopped.
+//! - **Sources that play** (step 2e, the plan's decision 5): Source can
+//!   also be **Flatten A5**, the page's pad, hit once and recorded until
+//!   it goes quiet (the Rec page's Flatten), or **Auto-sample**, the synth
+//!   or gear note by note, which REC opens over the page ([`Plays`]).
+//!   With the pad, the Starts card is the hit's velocity and the Ends
+//!   card how long it is held, and Gain, Threshold, Pre-roll and Monitor
+//!   are faint ([`FLATTEN_STARTS`]); with Auto-sample, the Starts and
+//!   Ends cards are faint ([`AUTO_SETS`]): its own page sets them.
 
 use std::cell::RefCell;
 
@@ -48,8 +56,41 @@ use crate::widgets::Setting;
 pub const RECORDER: &str = "smp-recorder";
 
 /// The cards that step, in their order on the row (the
-/// [`EventKind::Step`] index).
+/// [`EventKind::Step`] index), while the source listens.
 pub const STEPS: [Row; 3] = [Row::Source, Row::Start, Row::End];
+
+/// The cards while the source is the page's pad: the hit's velocity and
+/// how long it is held (the Rec page's Flatten velocity and hold).
+pub const PAD_STEPS: [Row; 3] = [Row::Source, Row::FlattenVelocity, Row::FlattenHold];
+
+/// What the source is (one-page step 2e, the plan's decision 5): an input
+/// it listens to, or something REC plays.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Plays {
+    /// The line input or a point in the mix.
+    #[default]
+    Nothing,
+    /// The page's pad, hit once and recorded until it goes quiet: the
+    /// Rec page's Flatten.
+    Pad,
+    /// The synth or gear, note by note: REC opens Auto-sample.
+    Notes,
+}
+
+/// Why the Threshold and Pre-roll are faint while the source is the pad.
+pub const FLATTEN_STARTS: &str = "Flatten starts on the pad's first sound";
+
+/// Why the Starts and Ends cards are faint while the source is
+/// Auto-sample.
+pub const AUTO_SETS: &str = "Auto-sample sets how it plays: REC opens it";
+
+/// The cards' rows for `v`'s source.
+pub fn steps(v: &RecorderView) -> [Row; 3] {
+    match v.plays {
+        Plays::Pad => PAD_STEPS,
+        _ => STEPS,
+    }
+}
 
 /// A row of the Input section: one of the Rec page's settings, or the
 /// line input's Monitor.
@@ -145,6 +186,8 @@ pub struct QLinkCard {
 pub fn qlink_card(v: &RecorderView, k: usize) -> Option<QLinkCard> {
     let s = &v.settings;
     let faint = v.line_only.clone();
+    // A Flatten starts on the pad's first sound.
+    let starts = (v.plays == Plays::Pad).then(|| FLATTEN_STARTS.to_string());
     Some(match *QLINK_ROWS.get(k)? {
         QLinkRow::Set(row) => QLinkCard {
             name: row.label(),
@@ -154,7 +197,7 @@ pub fn qlink_card(v: &RecorderView, k: usize) -> Option<QLinkCard> {
                 _ => 0.0,
             },
             sub: String::new(),
-            faint: if row == Row::Gain { faint } else { None },
+            faint: if row == Row::Gain { faint } else { starts },
         },
         QLinkRow::MonitorLevel => QLinkCard {
             name: "Monitor",
@@ -220,6 +263,8 @@ pub struct RecorderView {
     /// Why Gain and Monitor do nothing now (the source is a point in the
     /// mix: [`LINE_ONLY`]); None while the source is the line input.
     pub line_only: Option<String>,
+    /// Whether the source is something REC plays (step 2e).
+    pub plays: Plays,
 }
 
 /// What the row asks for. The app does it.
@@ -275,10 +320,13 @@ pub fn input_list(v: &RecorderView) -> (Vec<Setting>, Vec<Control>, Panel) {
         .collect();
     let busy = "Stop the take first";
     let line_only = v.line_only.as_deref();
+    let pad = v.plays == Plays::Pad;
     let controls = INPUT_ROWS
         .iter()
         .map(|r| match r {
-            InputRow::Set(row @ (Row::Threshold | Row::PreRoll)) => rec_tab::knob(s, *row),
+            InputRow::Set(row @ (Row::Threshold | Row::PreRoll)) => {
+                rec_tab::knob(s, *row).faint_because(pad, FLATTEN_STARTS)
+            }
             InputRow::Set(Row::Gain) => rec_tab::knob(s, Row::Gain)
                 .faint_because(line_only.is_some(), line_only.unwrap_or("")),
             // A take being made keeps its source.
@@ -417,31 +465,64 @@ impl Recorder {
     fn values(&self) -> [(String, String); 3] {
         let v = &self.view;
         let s = &v.settings;
-        [
-            (
-                "Source".to_string(),
-                format!(
-                    "{} · {}",
-                    rec_tab::value_text(s, Row::Source, &v.sources),
-                    match s.pick {
-                        mpfree_sampler::record::Pick::Stereo => "stereo",
-                        mpfree_sampler::record::Pick::Left => "left",
-                        mpfree_sampler::record::Pick::Right => "right",
-                        mpfree_sampler::record::Pick::Mono => "mono",
-                    }
+        let source = rec_tab::value_text(s, Row::Source, &v.sources);
+        let pick = match s.pick {
+            mpfree_sampler::record::Pick::Stereo => "stereo",
+            mpfree_sampler::record::Pick::Left => "left",
+            mpfree_sampler::record::Pick::Right => "right",
+            mpfree_sampler::record::Pick::Mono => "mono",
+        };
+        let source = (
+            "Source".to_string(),
+            match v.plays {
+                // A pad's name says enough on the card (the Input section
+                // shows its Channels); Auto-sample sets its own.
+                Plays::Pad | Plays::Notes => source,
+                Plays::Nothing => format!("{source} · {pick}"),
+            },
+        );
+        match v.plays {
+            Plays::Pad => [
+                source,
+                (
+                    "Velocity".to_string(),
+                    rec_tab::value_text(s, Row::FlattenVelocity, &v.sources),
                 ),
-            ),
-            (
-                if v.recording && !v.waiting {
-                    "Started"
-                } else {
-                    "Starts"
-                }
-                .to_string(),
-                starts_text(s),
-            ),
-            ("Ends".to_string(), ends_text(s)),
-        ]
+                (
+                    "Held for".to_string(),
+                    rec_tab::value_text(s, Row::FlattenHold, &v.sources),
+                ),
+            ],
+            Plays::Notes => [
+                source,
+                ("Plays".to_string(), "Note by note".to_string()),
+                ("Makes".to_string(), "An instrument".to_string()),
+            ],
+            Plays::Nothing => [
+                source,
+                (
+                    if v.recording && !v.waiting {
+                        "Started"
+                    } else {
+                        "Starts"
+                    }
+                    .to_string(),
+                    starts_text(s),
+                ),
+                ("Ends".to_string(), ends_text(s)),
+            ],
+        }
+    }
+
+    /// Card `k` doesn't step now: the source while a take is made, and
+    /// Auto-sample's cards (its own page sets them).
+    fn card_busy(&self, k: usize) -> bool {
+        let v = &self.view;
+        if k == 0 {
+            v.recording
+        } else {
+            v.plays == Plays::Notes
+        }
     }
 }
 
@@ -491,7 +572,7 @@ impl Widget for Recorder {
         // The three cards: ‹ name over value ›.
         for (k, (name, value)) in self.values().iter().enumerate() {
             let c = Recorder::card_rect(r, k);
-            let busy = k == 0 && v.recording;
+            let busy = self.card_busy(k);
             cx.canvas.fill_round_rect(c, 10, t.raised);
             let ink = if busy { t.text_faint } else { t.text };
             let arrow = if busy { t.text_faint } else { t.text_dim };
@@ -537,7 +618,7 @@ impl Widget for Recorder {
         for (k, (name, _)) in self.values().iter().enumerate() {
             let c = Recorder::card_rect(r, k);
             let (left, right) = c.take_left(c.w / 2);
-            let busy = k == 0 && self.view.recording;
+            let busy = self.card_busy(k);
             out.push(Target::tap("less", k, format!("{name} ‹"), left).disabled_if(busy));
             out.push(Target::tap("more", k, format!("{name} ›"), right).disabled_if(busy));
         }
@@ -650,7 +731,9 @@ pub fn action(v: &RecorderView, kind: &EventKind) -> Option<RecorderAction> {
         EventKind::Tab(0) if v.recording => Some(RecorderAction::Stop),
         EventKind::Tab(0) => Some(RecorderAction::Record),
         EventKind::Tab(1) => Some(RecorderAction::Keep),
-        EventKind::Step { index, delta } => Some(RecorderAction::Step(*STEPS.get(*index)?, *delta)),
+        EventKind::Step { index, delta } => {
+            Some(RecorderAction::Step(*steps(v).get(*index)?, *delta))
+        }
         _ => None,
     }
 }
@@ -843,5 +926,47 @@ mod tests {
             .map(|k| qlink_card(&v, k).unwrap().faint.is_some())
             .collect();
         assert_eq!(faint, [true, false, false, true]);
+    }
+
+    #[test]
+    fn a_pad_source_steps_its_velocity_and_hold_and_auto_sample_its_page() {
+        let mut w = Recorder::new();
+        let r = row();
+        w.view.sources = vec!["Line in".into(), "Master".into(), "Flatten A5".into()];
+        w.view.settings.source = 2;
+        w.view.plays = Plays::Pad;
+        let names: Vec<(String, String)> = w.values().to_vec();
+        assert_eq!(
+            names,
+            [
+                ("Source".to_string(), "Flatten A5".to_string()),
+                ("Velocity".to_string(), "127".to_string()),
+                ("Held for".to_string(), "1 s".to_string()),
+            ]
+        );
+        let tap = |w: &mut Recorder, x, y| w.touch(1, Touch::Down, x, y, r);
+        for (k, row) in PAD_STEPS.iter().enumerate() {
+            let c = Recorder::card_rect(r, k);
+            let on = tap(&mut w, c.right() - 4, c.y + 10).unwrap();
+            assert_eq!(action(&w.view, &on), Some(RecorderAction::Step(*row, 1)));
+        }
+        // While a Flatten records: Gain and Monitor are the line input's,
+        // the Threshold and Pre-roll the pad's first sound's.
+        w.view.recording = true;
+        w.view.line_only = Some(LINE_ONLY.to_string());
+        let (_, controls, _) = input_list(&w.view);
+        assert!((3..7).all(|k| controls[k].faint));
+        assert_eq!(controls[4].why, FLATTEN_STARTS);
+        assert!(!controls[1].faint && !controls[2].faint, "Channels, Onto");
+        assert!((0..4).all(|k| qlink_card(&w.view, k).unwrap().faint.is_some()));
+        // Auto-sample: its own page sets how it plays.
+        w.view.recording = false;
+        w.view.sources.push("Auto-sample".into());
+        w.view.settings.source = 3;
+        w.view.plays = Plays::Notes;
+        assert_eq!(w.values()[0].1, "Auto-sample");
+        let t = w.targets(r);
+        let enabled: Vec<bool> = t[1..7].iter().map(|t| t.enabled).collect();
+        assert_eq!(enabled, [true, true, false, false, false, false]);
     }
 }
