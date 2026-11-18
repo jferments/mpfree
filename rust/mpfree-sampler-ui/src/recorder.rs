@@ -16,8 +16,15 @@
 //! - While REC is on, the panel under the wave is **Input** instead of
 //!   the region's settings ([`INPUT_ROWS`]): the source, its channels,
 //!   where the take goes when it stops (Onto: Stay here, the default,
-//!   keeps it on the page; one-page step 2b), the threshold and the
-//!   pre-roll.
+//!   keeps it on the page; one-page step 2b), Gain, the threshold, the
+//!   pre-roll and Monitor (step 2d). The Q-Links turn Gain, Threshold,
+//!   Pre-roll and how loud Monitor plays the input ([`QLINK_ROWS`]).
+//! - **Gain** (step 2d) turns the line input up or down before the meter,
+//!   the threshold and the take see it; what you hear is left as it is.
+//!   **Monitor** is the line input's one monitor, the Looper's "Monitor
+//!   the input" ([`MonitorView`]), and its level is the Mix tab's Input 1
+//!   fader. Both are the line input's: resampling a point in the mix,
+//!   they are faint and say why ([`RecorderView::line_only`]).
 //! - **Keep last 4 bars** (step 2c, the plan's decision 4) is Sample
 //!   Recall in one tap: what just played (the master, as Recall keeps
 //!   it) becomes a new take, where Onto says, as REC's would. A tap keeps;
@@ -44,23 +51,124 @@ pub const RECORDER: &str = "smp-recorder";
 /// [`EventKind::Step`] index).
 pub const STEPS: [Row; 3] = [Row::Source, Row::Start, Row::End];
 
+/// A row of the Input section: one of the Rec page's settings, or the
+/// line input's Monitor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputRow {
+    Set(Row),
+    /// The line input heard or not (the Looper's "Monitor the input").
+    Monitor,
+}
+
+impl InputRow {
+    pub fn label(self) -> &'static str {
+        match self {
+            InputRow::Set(r) => r.label(),
+            InputRow::Monitor => "Monitor",
+        }
+    }
+}
+
 /// The rows of the Input section the panel shows while REC is on, in its
-/// order (the [`EventKind::Step`] index on the panel).
-pub const INPUT_ROWS: [Row; 5] = [
-    Row::Source,
-    Row::Input,
-    Row::Threshold,
-    Row::PreRoll,
-    Row::Onto,
+/// order (the [`EventKind::Step`] index on the panel): the chips, then
+/// the knobs and Monitor's switch.
+pub const INPUT_ROWS: [InputRow; 7] = [
+    InputRow::Set(Row::Source),
+    InputRow::Set(Row::Input),
+    InputRow::Set(Row::Onto),
+    InputRow::Set(Row::Gain),
+    InputRow::Set(Row::Threshold),
+    InputRow::Set(Row::PreRoll),
+    InputRow::Monitor,
 ];
 
-/// What the Q-Links turn while REC is on (the plan's step 2a): Q-Link 2
-/// the Threshold, Q-Link 3 the Pre-roll. Q-Links 1 and 4 are faint until
-/// the recorder has a Gain and a Monitor level (step 2d).
-pub const QLINK_ROWS: [Option<Row>; 4] = [None, Some(Row::Threshold), Some(Row::PreRoll), None];
+/// What a Q-Link turns while REC is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QLinkRow {
+    Set(Row),
+    /// How loud Monitor plays the line input: the Mix tab's Input 1
+    /// fader.
+    MonitorLevel,
+}
 
-/// Why Q-Links 1 and 4 are faint while REC is on.
-pub const QLINK_IDLE: &str = "While REC is on, Q-Links 2 and 3 turn Threshold and Pre-roll";
+/// What the Q-Links turn while REC is on (the mockup's Recording board):
+/// Gain, Threshold, Pre-roll and Monitor's level.
+pub const QLINK_ROWS: [QLinkRow; 4] = [
+    QLinkRow::Set(Row::Gain),
+    QLinkRow::Set(Row::Threshold),
+    QLinkRow::Set(Row::PreRoll),
+    QLinkRow::MonitorLevel,
+];
+
+/// Under Q-Link 4's knob while the line input isn't heard.
+pub const MONITOR_OFF: &str = "monitor off";
+
+/// Why Gain and Monitor are faint while the source is a point in the mix.
+pub const LINE_ONLY: &str =
+    "Gain and Monitor are the line input's: a point in the mix records as you hear it";
+
+/// The line input's monitor (one-page step 2d): the switch is the
+/// Looper's "Monitor the input", one setting for the line input wherever
+/// it shows; the level is the Mix tab's Input 1 fader.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MonitorView {
+    pub on: bool,
+    /// The level as the mixer writes it ("0.0 dB", "-6.0 dB", "off").
+    pub level: String,
+    /// Where the level sits on a fader, 0 to 1 (Q-Link 4's knob).
+    pub pos: f32,
+}
+
+impl Default for MonitorView {
+    fn default() -> Self {
+        MonitorView {
+            on: false,
+            level: "0.0 dB".to_string(),
+            pos: 0.8,
+        }
+    }
+}
+
+/// A Q-Link card while REC is on: its name, value, knob and why it is
+/// faint (None: it turns).
+#[derive(Clone, Debug, PartialEq)]
+pub struct QLinkCard {
+    pub name: &'static str,
+    pub value: String,
+    /// Under the knob: "monitor off" while the level is not heard.
+    pub sub: String,
+    pub pos: f32,
+    pub faint: Option<String>,
+}
+
+/// Q-Link `k`'s card while REC is on ([`QLINK_ROWS`]).
+pub fn qlink_card(v: &RecorderView, k: usize) -> Option<QLinkCard> {
+    let s = &v.settings;
+    let faint = v.line_only.clone();
+    Some(match *QLINK_ROWS.get(k)? {
+        QLinkRow::Set(row) => QLinkCard {
+            name: row.label(),
+            value: rec_tab::value_text(s, row, &v.sources),
+            pos: match rec_tab::knob(s, row).look {
+                Look::Knob { pos, .. } => pos,
+                _ => 0.0,
+            },
+            sub: String::new(),
+            faint: if row == Row::Gain { faint } else { None },
+        },
+        QLinkRow::MonitorLevel => QLinkCard {
+            name: "Monitor",
+            value: v.monitor.level.clone(),
+            sub: if v.monitor.on {
+                String::new()
+            } else {
+                MONITOR_OFF.to_string()
+            },
+            pos: v.monitor.pos,
+            faint,
+        },
+    })
+}
 
 /// What the Keep card says: what a tap keeps now, and where it goes.
 #[derive(Clone, Debug, PartialEq)]
@@ -107,6 +215,11 @@ pub struct RecorderView {
     pub status: String,
     /// The Keep card.
     pub keep: KeepView,
+    /// The line input's monitor.
+    pub monitor: MonitorView,
+    /// Why Gain and Monitor do nothing now (the source is a point in the
+    /// mix: [`LINE_ONLY`]); None while the source is the line input.
+    pub line_only: Option<String>,
 }
 
 /// What the row asks for. The app does it.
@@ -121,6 +234,11 @@ pub enum RecorderAction {
     /// A finger came down on the Keep card: the app keeps the last bars
     /// when it lifts, or opens Sample Recall when it stays.
     Keep,
+    /// Monitor's switch: the line input heard, or not.
+    Monitor,
+    /// Q-Link 4: Monitor's level turned by `delta` detents, `fine` with
+    /// SHIFT held.
+    MonitorLevel { delta: i32, fine: bool },
 }
 
 /// What the Starts card says.
@@ -148,17 +266,26 @@ pub fn input_list(v: &RecorderView) -> (Vec<Setting>, Vec<Control>, Panel) {
         .iter()
         .map(|r| Setting {
             name: r.label().to_string(),
-            value: rec_tab::value_text(s, *r, &v.sources),
+            value: match r {
+                InputRow::Set(row) => rec_tab::value_text(s, *row, &v.sources),
+                InputRow::Monitor if v.monitor.on => v.monitor.level.clone(),
+                InputRow::Monitor => "Off".to_string(),
+            },
         })
         .collect();
     let busy = "Stop the take first";
+    let line_only = v.line_only.as_deref();
     let controls = INPUT_ROWS
         .iter()
         .map(|r| match r {
-            Row::Threshold | Row::PreRoll => rec_tab::knob(s, *r),
+            InputRow::Set(row @ (Row::Threshold | Row::PreRoll)) => rec_tab::knob(s, *row),
+            InputRow::Set(Row::Gain) => rec_tab::knob(s, Row::Gain)
+                .faint_because(line_only.is_some(), line_only.unwrap_or("")),
             // A take being made keeps its source.
-            Row::Source => Control::new(Look::Chip).faint_because(v.recording, busy),
-            _ => Control::new(Look::Chip),
+            InputRow::Set(Row::Source) => Control::new(Look::Chip).faint_because(v.recording, busy),
+            InputRow::Set(_) => Control::new(Look::Chip),
+            InputRow::Monitor => Control::new(Look::Toggle(v.monitor.on))
+                .faint_because(line_only.is_some(), line_only.unwrap_or("")),
         })
         .collect();
     let it = |k: usize| Item::new(k);
@@ -167,13 +294,34 @@ pub fn input_list(v: &RecorderView) -> (Vec<Setting>, Vec<Control>, Panel) {
             "Input",
             1,
             vec![
-                vec![it(0).labelled(), it(1).labelled(), it(4).labelled()],
-                vec![it(2), it(3)],
+                vec![it(0).labelled(), it(1).labelled(), it(2).labelled()],
+                vec![it(3), it(4), it(5), it(6)],
             ],
         )
         .note("while REC is on")],
     };
     (rows, controls, panel)
+}
+
+/// What a touch on the Input section asks for: a setting stepped, or
+/// Monitor's switch.
+pub fn input_action(index: usize, delta: i32) -> Option<RecorderAction> {
+    Some(match *INPUT_ROWS.get(index)? {
+        InputRow::Set(row) => RecorderAction::Step(row, delta),
+        InputRow::Monitor => RecorderAction::Monitor,
+    })
+}
+
+/// What Q-Link `knob` turned by `delta` detents asks for while REC is on
+/// (`fine`: SHIFT held).
+pub fn qlink_action(knob: usize, delta: i32, fine: bool) -> Option<RecorderAction> {
+    if delta == 0 {
+        return None;
+    }
+    Some(match *QLINK_ROWS.get(knob)? {
+        QLinkRow::Set(row) => RecorderAction::Step(row, delta),
+        QLinkRow::MonitorLevel => RecorderAction::MonitorLevel { delta, fine },
+    })
 }
 
 const GAP: i32 = 10;
@@ -618,8 +766,8 @@ mod tests {
     }
 
     #[test]
-    fn the_input_section_has_the_source_channels_threshold_pre_roll_and_onto() {
-        let v = RecorderView {
+    fn the_input_section_has_the_source_channels_onto_gain_threshold_pre_roll_and_monitor() {
+        let mut v = RecorderView {
             sources: vec!["Line in".into(), "Master".into()],
             recording: true,
             ..Default::default()
@@ -628,13 +776,72 @@ mod tests {
         let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(
             names,
-            ["Source", "Channels", "Threshold", "Pre-roll", "Onto"]
+            [
+                "Source",
+                "Channels",
+                "Onto",
+                "Gain",
+                "Threshold",
+                "Pre-roll",
+                "Monitor"
+            ]
         );
-        assert_eq!(rows[4].value, "Stay here", "a take stays on the page");
+        assert_eq!(rows[2].value, "Stay here", "a take stays on the page");
         assert_eq!(rows[0].value, "Line in");
-        assert_eq!(rows[2].value, "-30 dB");
+        assert_eq!(rows[3].value, "+0 dB");
+        assert_eq!(rows[4].value, "-30 dB");
+        assert_eq!(rows[6].value, "Off");
         assert!(controls[0].faint, "a take keeps its source");
-        assert!(matches!(controls[2].look, Look::Knob { .. }));
+        assert!(matches!(
+            controls[3].look,
+            Look::Knob { bipolar: true, pos, .. } if (pos - 0.5).abs() < 1e-6
+        ));
+        assert!(matches!(controls[4].look, Look::Knob { .. }));
+        assert!(matches!(controls[6].look, Look::Toggle(false)));
+        assert!(!controls[3].faint && !controls[6].faint);
         assert_eq!(panel.sections[0].title, "Input");
+        assert_eq!(input_action(6, 1), Some(RecorderAction::Monitor));
+        assert_eq!(
+            input_action(3, -1),
+            Some(RecorderAction::Step(Row::Gain, -1))
+        );
+        // Resampling a point in the mix: Gain and Monitor say why they
+        // are faint.
+        v.line_only = Some(LINE_ONLY.to_string());
+        v.monitor.on = true;
+        let (rows, controls, _) = input_list(&v);
+        assert_eq!(rows[6].value, "0.0 dB");
+        assert!(controls[3].faint && controls[6].faint);
+        assert_eq!(controls[6].why, LINE_ONLY);
+    }
+
+    #[test]
+    fn the_q_links_turn_gain_threshold_pre_roll_and_how_loud_monitor_plays() {
+        let mut v = RecorderView::default();
+        let names: Vec<&str> = (0..4).map(|k| qlink_card(&v, k).unwrap().name).collect();
+        assert_eq!(names, ["Gain", "Threshold", "Pre-roll", "Monitor"]);
+        assert_eq!(qlink_card(&v, 0).unwrap().value, "+0 dB");
+        assert_eq!(qlink_card(&v, 3).unwrap().value, "0.0 dB");
+        assert_eq!(qlink_card(&v, 3).unwrap().sub, MONITOR_OFF);
+        v.monitor.on = true;
+        assert_eq!(qlink_card(&v, 3).unwrap().sub, "");
+        assert!((0..4).all(|k| qlink_card(&v, k).unwrap().faint.is_none()));
+        assert_eq!(
+            qlink_action(0, 2, false),
+            Some(RecorderAction::Step(Row::Gain, 2))
+        );
+        assert_eq!(
+            qlink_action(3, -1, true),
+            Some(RecorderAction::MonitorLevel {
+                delta: -1,
+                fine: true
+            })
+        );
+        assert_eq!(qlink_action(1, 0, false), None, "a touch turns nothing");
+        v.line_only = Some(LINE_ONLY.to_string());
+        let faint: Vec<bool> = (0..4)
+            .map(|k| qlink_card(&v, k).unwrap().faint.is_some())
+            .collect();
+        assert_eq!(faint, [true, false, false, true]);
     }
 }

@@ -35,7 +35,6 @@
 //! The mockup is `mpfree-claude/sampler/mockups` (Wave). The header and the
 //! hint line are the app's; the tab adds its own widgets and its layout.
 
-use crate::rec_tab;
 use crate::recorder::{self, Recorder, RecorderAction, RecorderView, INPUT_ROWS, RECORDER};
 use std::sync::Arc;
 
@@ -813,36 +812,24 @@ impl WaveTab {
     }
 
     /// The Q-Link cards: the markers, or while REC is on the Input's
-    /// Threshold and Pre-roll on Q-Links 2 and 3
+    /// Gain, Threshold, Pre-roll and Monitor's level
     /// ([`recorder::QLINK_ROWS`]).
     fn show_cards(&self, ui: &mut Ui, st: &WaveState) {
         if self.rec.recording {
-            let s = &self.rec.settings;
-            for (k, row) in recorder::QLINK_ROWS.iter().enumerate() {
-                let Some(card) = ui.get_mut::<KnobCard>(QLINKS[k]) else {
+            for (k, name) in QLINKS.iter().enumerate() {
+                let (Some(card), Some(q)) = (
+                    ui.get_mut::<KnobCard>(name),
+                    recorder::qlink_card(&self.rec, k),
+                ) else {
                     continue;
                 };
                 card.focused = false;
-                match row {
-                    Some(row) => {
-                        card.label = format!("Q-Link {} · {}", k + 1, row.label());
-                        card.value = rec_tab::value_text(s, *row, &self.rec.sources);
-                        card.sub = String::new();
-                        card.pos = match rec_tab::knob(s, *row).look {
-                            Look::Knob { pos, .. } => pos,
-                            _ => 0.0,
-                        };
-                        card.enabled = true;
-                    }
-                    None => {
-                        card.label = format!("Q-Link {}", k + 1);
-                        card.value = String::new();
-                        card.sub = String::new();
-                        card.pos = 0.0;
-                        card.enabled = false;
-                        card.why = recorder::QLINK_IDLE.to_string();
-                    }
-                }
+                card.label = format!("Q-Link {} · {}", k + 1, q.name);
+                card.value = q.value;
+                card.sub = q.sub;
+                card.pos = q.pos;
+                card.enabled = q.faint.is_none();
+                card.why = q.faint.unwrap_or_default();
             }
             return;
         }
@@ -1026,10 +1013,9 @@ impl WaveTab {
         if ev.widget == REGION && self.rec.recording {
             // The panel is the Input section while REC is on.
             return match &ev.kind {
-                EventKind::Step { index, delta } => Some(WaveAction::Rec(RecorderAction::Step(
-                    *INPUT_ROWS.get(*index)?,
-                    *delta,
-                ))),
+                EventKind::Step { index, delta } => {
+                    recorder::input_action(*index, *delta).map(WaveAction::Rec)
+                }
                 _ => None,
             };
         }
@@ -1090,8 +1076,8 @@ impl WaveTab {
 
     /// A Q-Link turned: `knob` 0 to 3 moves Start, End, Loop start or Loop
     /// end by `delta` detents; `fine` (SHIFT held) moves one frame per
-    /// detent, unsnapped. While REC is on, Q-Links 2 and 3 step the
-    /// Threshold and the Pre-roll a step a detent instead
+    /// detent, unsnapped. While REC is on, they turn Gain, the Threshold,
+    /// the Pre-roll and Monitor's level instead
     /// ([`recorder::QLINK_ROWS`]).
     pub fn qlink(
         &mut self,
@@ -1102,8 +1088,7 @@ impl WaveTab {
         fine: bool,
     ) -> Option<WaveAction> {
         if self.rec.recording {
-            let row = (*recorder::QLINK_ROWS.get(knob)?)?;
-            return (delta != 0).then_some(WaveAction::Rec(RecorderAction::Step(row, delta)));
+            return recorder::qlink_action(knob, delta, fine).map(WaveAction::Rec);
         }
         let m = *Mark::ALL.get(knob)?;
         let now = m.frame(&st.region)?;

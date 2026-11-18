@@ -466,6 +466,7 @@ impl Desk<'_> {
             | gui::FromUi::SampleView(_)
             | gui::FromUi::SampleInput(_)
             | gui::FromUi::SampleSource(_)
+            | gui::FromUi::SampleGain(_)
             | gui::FromUi::SampleGrains(_)
             | gui::FromUi::SaveProject
             | gui::FromUi::OpenProject(_)
