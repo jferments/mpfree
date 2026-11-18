@@ -200,6 +200,22 @@ The pads light as the rings do: a key is dark while its loop is empty, blinks re
 
 The pads stay loop keys on the Looper tab and the Play page, so you can play the loops beside your patterns; on Play a **Pads: loop keys** chip in the top bar says so, and a tap on it gives the pads back. On the other tabs the pads play the kit as usual, and they are loop keys again when you come back. **SHIFT + SAMPLER** on the Looper tab, or **Pads as loop keys** again, gives the pads back for good. So do **TRACK MUTE**, **STEP SEQ** and **16 Levels**, since the pads do one job at a time.
 
+### More pages: the Perform set
+
+The loop keys are page A of the project's **Perform set**: eight pages of pad actions, kept apart from the kit's sounds and saved with the project. While the pads are the set (SHIFT + SAMPLER on the Looper tab), the **PAD BANK** buttons pick its page, as they pick a kit's banks: **A** to **D**, and **SHIFT** or a second press for **E** to **H**. The lit button is the page on the pads.
+
+| Page | What its pads do |
+|---|---|
+| **A · Loop keys** | The loop keys and mutes above. |
+| **B · Throws** | Pads 1 to 8 are Play's eight [throws](playing-live.md#throws), in the order of their tiles: Delay throw, Reverb wash, Stutter, Tape stop, Filter dip, Beat repeat, Drop drums and Vinyl brake. Hold a pad and its throw plays; let go and it stops, as a tile on Play. Drop drums drops the kicks, snares and hats of the kit the selected track plays. |
+| **C to H** | Empty for now: their pads are dark and do nothing. |
+
+A throw pad is dim in its tile's colour and lights up fully while its throw plays. The Pads tab's Perform page will let you put your own actions on any page: a throw that **latches** (a hit starts it and the next hit lets it go), a **track's mute** (red while the track is muted; in Perform it waits for the launch line, as **TRACK MUTE**'s pads do) or a **scene** (a hit launches that row of the grid).
+
+On a page other than A, the **Pads as loop keys** switch is dark, since the pads aren't the loop keys; tap it to go back to page A. The hint line names the page, and on Play the chip in the top bar says **Pads: Perform B** (or the page's letter): a tap on it gives the pads back. **SHIFT + SAMPLER** brings the set back on the page you left it on. When the pads go back to the kit, any throw a pad was playing stops.
+
+{{shot: looper-perform-throws | The Looper tab with the Perform set's page B on the pads: the hint line names the page.}}
+
 ### Moving a layer to another loop
 
 Drag a layer out of the lanes to give it to another loop. **Press and hold** the layer's lane for a moment, until it gets a blue outline, then move your finger: a card with the layer's name follows it, and the loops on the deck that can take it light up. The card says what will happen if you let go there.
