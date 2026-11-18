@@ -3588,7 +3588,8 @@ fn learned_set(
 /// mixer's and its effects' ([`modmix::describe`]), a track's synth's
 /// (`Owner::Inst`): its own instrument while it holds one, else the synth
 /// on the pads, as the Synth tab shows it; or the transport's tempo and
-/// PLAY and STOP ([`remote::describe`], from `now`).
+/// PLAY and STOP ([`remote::describe`], from `now`), or a track's mute or
+/// solo on the Clips grid ([`remote::describe_clips`]).
 fn learn_describe(
     mix: &mixing::MixHost,
     synth: &synth::Synth,
@@ -3599,6 +3600,7 @@ fn learn_describe(
     let t = match addr.owner {
         Owner::Inst(t) => t,
         Owner::Transport => return remote::describe(addr.param, now),
+        Owner::Clips => return remote::describe_clips(addr.param, now),
         _ => return modmix::describe(&mix.mixer, addr),
     };
     let t = usize::from(t);
@@ -3612,17 +3614,20 @@ fn learn_describe(
 
 /// What a learned control moves, named for the I/O view and the hint line:
 /// "Poly cutoff (Track 2)" for a synth's knob, "PLAY and STOP" or "Tempo"
-/// for the transport, else as the chain editor names it
+/// for the transport, "Launch Bass · row 2" or "Mute Bass" on the Clips
+/// grid ([`clips_label`]), else as the chain editor names it
 /// ([`modpanels::label`]).
 fn learn_label(
     mix: &mixing::MixHost,
     synth: &synth::Synth,
+    time: &time::TimeHost,
     addr: mpfree_play::mpfree_param::ParamAddr,
 ) -> String {
     use mpfree_play::mpfree_param::{transport, Owner};
     let t = match addr.owner {
         Owner::Inst(t) => t,
         Owner::Transport => return transport::name(addr.param).unwrap_or("?").to_string(),
+        Owner::Clips => return clips_label(time.project(), addr.param),
         _ => return modpanels::label(mix, addr),
     };
     // As the time engine and the I/O view name the tracks.
@@ -3646,6 +3651,34 @@ fn learn_label(
         ),
     };
     format!("{engine} {} ({track})", param.unwrap_or("?").to_lowercase())
+}
+
+/// A Clips grid parameter named as the Learn section and the hint line
+/// show it: "Launch Bass · row 2", "Scene 3 · Verse", "Stop Bass", "Mute
+/// Bass", "Solo Bass", "Arm Bass", "Stop all", "Back to song". A track
+/// past the project's is named by its number.
+fn clips_label(project: &mpfree_seq::Project, id: u16) -> String {
+    use mpfree_play::mpfree_param::clips::{self, Clips};
+    let track = |t: u8| {
+        project.tracks.get(usize::from(t)).map_or_else(
+            || format!("Track {}", u16::from(t) + 1),
+            |tr| tr.name.clone(),
+        )
+    };
+    match clips::of(id) {
+        None => "?".to_string(),
+        Some(Clips::StopAll) => "Stop all".to_string(),
+        Some(Clips::BackToSong) => "Back to song".to_string(),
+        Some(Clips::Scene(r)) => match project.scenes.get(usize::from(r)).map(|s| &s.name) {
+            Some(name) if !name.is_empty() => format!("Scene {} · {name}", u16::from(r) + 1),
+            _ => format!("Scene {}", u16::from(r) + 1),
+        },
+        Some(Clips::Clip(t, r)) => format!("Launch {} · row {}", track(t), u16::from(r) + 1),
+        Some(Clips::Stop(t)) => format!("Stop {}", track(t)),
+        Some(Clips::Mute(t)) => format!("Mute {}", track(t)),
+        Some(Clips::Solo(t)) => format!("Solo {}", track(t)),
+        Some(Clips::Arm(t)) => format!("Arm {}", track(t)),
+    }
 }
 
 /// A learned control's 0 to 1 on a track's synth (`Owner::Inst`), set as
@@ -6028,7 +6061,7 @@ fn player_session(
                 // SHIFT + a touch armed it: the line in place of the hint
                 // says what the control moves now.
                 midi_in::Learning::Took { target, control } if by_touch => {
-                    let name = learn_label(&mix, &synth, target);
+                    let name = learn_label(&mix, &synth, &time, target);
                     out.show(gui::ToUi::Tell(format!("Learned: {control} moves {name}")));
                 }
                 // The I/O view's Learn again: its section says so.
@@ -6041,6 +6074,7 @@ fn player_session(
                     let now = remote::Now {
                         rolling: app.rolling(),
                         bpm: app.bpm(),
+                        ..remote::Now::default()
                     };
                     match remote.write(w.target.param, w.value, now) {
                         remote::Act::Nothing => {}
@@ -6068,6 +6102,48 @@ fn player_session(
                                     .into_iter()
                                     .filter(|e| !matches!(e, app::Effect::Note(_))),
                             );
+                        }
+                    }
+                }
+                // The Clips grid (sequencer S5): a press does what a tap on
+                // the grid does now; a mute or solo goes as TRACK MUTE's
+                // pads do, on the launch line in Perform.
+                midi_in::Learning::Set(w)
+                    if w.target.owner == mpfree_play::mpfree_param::Owner::Clips =>
+                {
+                    let (muted, soloed) = time.mute_bits();
+                    let now = remote::Now {
+                        muted,
+                        soloed,
+                        ..remote::Now::default()
+                    };
+                    match remote.clips_write(w.target.param, w.value, now) {
+                        remote::ClipsAct::Nothing => {}
+                        remote::ClipsAct::Mute { track, solo, .. } => {
+                            let wait = time.perform();
+                            out.note(
+                                &time
+                                    .mute_or_solo(track, wait, solo)
+                                    .unwrap_or_else(|e| format!("track mute: {e}")),
+                            );
+                        }
+                        remote::ClipsAct::Press(c) => {
+                            let st = time.state();
+                            match mpfree_time_ui::view::clips_press(&st, c) {
+                                Some(a) => fx.extend(time_action(
+                                    out,
+                                    &mut time,
+                                    &mut tracks,
+                                    &looper,
+                                    &mut app,
+                                    &mut mix,
+                                    a,
+                                )),
+                                None => out.note(&format!(
+                                    "MIDI Learn: {} isn't on the Clips grid",
+                                    clips_label(time.project(), w.target.param)
+                                )),
+                            }
                         }
                     }
                 }
@@ -6115,9 +6191,12 @@ fn player_session(
         }
         // Where each learned control's parameter stands, when something
         // else moved it: an endless encoder steps on from there.
+        let (muted, soloed) = time.mute_bits();
         let remote_now = remote::Now {
             rolling: app.rolling(),
             bpm: app.bpm(),
+            muted,
+            soloed,
         };
         music.observe_learned(mt, |addr| learn_describe(&mix, &synth, remote_now, addr));
         // The I/O view names what each learned control moves, whenever
@@ -6130,7 +6209,7 @@ fn player_session(
                 learn_names_gen = Some(*gen);
                 live.learn_names = setup
                     .all_learned()
-                    .map(|(_, l)| learn_label(&mix, &synth, l.target))
+                    .map(|(_, l)| learn_label(&mix, &synth, &time, l.target))
                     .collect();
                 // The ends of each one's range, in its units (the Learn
                 // section's card).
@@ -6164,7 +6243,7 @@ fn player_session(
             let armed = music.armed().zip(music.armed_by());
             if armed != learning_shown {
                 learning_shown = armed;
-                live.learning = armed.map(|(a, _)| learn_label(&mix, &synth, a));
+                live.learning = armed.map(|(a, _)| learn_label(&mix, &synth, &time, a));
                 let touched = armed.filter(|(_, by)| *by == midi_in::ArmedBy::Touch);
                 out.show(gui::ToUi::Learning(touched.and(live.learning.clone())));
             }
@@ -9359,7 +9438,8 @@ mod tests {
                 "{unit}: {got} != {want}"
             );
         }
-        let name = learn_label(&mix, &synth, knob);
+        let time = time::TimeHost::new(44_100, 120.0).unwrap();
+        let name = learn_label(&mix, &synth, &time, knob);
         assert!(name.starts_with(synth.engine_name()), "{name}");
         assert!(name.ends_with("(Track 2)"), "{name}");
         let nothing = Write {
@@ -9376,6 +9456,69 @@ mod tests {
         }
     }
 
+    /// The Clips grid's learned controls (sequencer S5) are named by
+    /// where they are, and a track's mute and solo read from the bits the
+    /// time engine gives.
+    #[test]
+    fn the_clips_grid_is_named_and_read_for_learn() {
+        use mpfree_play::mpfree_param::{clips, Owner, ParamAddr};
+        let mix = mixing::MixHost::new(44_100, 0.0, 6.0);
+        let synth = synth::Synth::new(44_100);
+        let mut time = time::TimeHost::new(44_100, 120.0).unwrap();
+        let at = |id| ParamAddr::new(Owner::Clips, id);
+        let name = |time: &time::TimeHost, id| learn_label(&mix, &synth, time, at(id));
+        let second = time.project().tracks[1].name.clone();
+        assert_eq!(
+            name(&time, clips::clip(1, 2)),
+            format!("Launch {second} · row 3")
+        );
+        assert_eq!(name(&time, clips::mute(1)), format!("Mute {second}"));
+        assert_eq!(name(&time, clips::solo(1)), format!("Solo {second}"));
+        assert_eq!(name(&time, clips::arm(1)), format!("Arm {second}"));
+        assert_eq!(name(&time, clips::stop(1)), format!("Stop {second}"));
+        assert_eq!(
+            name(&time, clips::stop(127)),
+            "Stop Track 128",
+            "past the tracks"
+        );
+        assert_eq!(name(&time, clips::STOP_ALL), "Stop all");
+        assert_eq!(name(&time, clips::BACK_TO_SONG), "Back to song");
+        assert_eq!(name(&time, clips::scene(2)), "Scene 3");
+        time.act(TimeAction::SceneSettings {
+            row: 2,
+            card_row: mpfree_time_ui::view::SCENE_NAME,
+            settings: mpfree_seq::scenes::SceneSettings {
+                name: "Verse".into(),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        assert_eq!(name(&time, clips::scene(2)), "Scene 3 · Verse");
+        assert_eq!(name(&time, 9), "?");
+        // Track 2 muted at once (stopped): read as on.
+        time.mute_or_solo(1, false, false).unwrap();
+        let (muted, soloed) = time.mute_bits();
+        let now = remote::Now {
+            muted,
+            soloed,
+            ..remote::Now::default()
+        };
+        let (info, v) = learn_describe(&mix, &synth, now, at(clips::mute(1))).unwrap();
+        assert_eq!(
+            (info.name, info.curve, v),
+            ("Mute", mpfree_node::Curve::Toggle, 1.0)
+        );
+        assert_eq!(
+            learn_describe(&mix, &synth, now, at(clips::solo(1)))
+                .unwrap()
+                .1,
+            0.0
+        );
+        assert!(learn_describe(&mix, &synth, now, at(clips::clip(1, 2))).is_none());
+        assert!(midi_in::key_toggles(at(clips::mute(1))));
+        assert!(!midi_in::key_toggles(at(clips::clip(1, 2))));
+    }
+
     /// The transport's learned controls are named for the I/O view and
     /// read from where the transport stands; a mute reads from the mixer.
     #[test]
@@ -9383,17 +9526,19 @@ mod tests {
         use mpfree_play::mpfree_param::{transport, Owner, ParamAddr, Strip};
         let mix = mixing::MixHost::new(44_100, 0.0, 6.0);
         let synth = synth::Synth::new(44_100);
+        let time = time::TimeHost::new(44_100, 120.0).unwrap();
         let now = remote::Now {
             rolling: true,
             bpm: 98.5,
+            ..remote::Now::default()
         };
         let at = |id| ParamAddr::new(Owner::Transport, id);
         assert_eq!(
-            learn_label(&mix, &synth, at(transport::PLAYING)),
+            learn_label(&mix, &synth, &time, at(transport::PLAYING)),
             "PLAY and STOP"
         );
         assert_eq!(
-            learn_label(&mix, &synth, at(transport::TAP_TEMPO)),
+            learn_label(&mix, &synth, &time, at(transport::TAP_TEMPO)),
             "TAP TEMPO"
         );
         let (info, bpm) = learn_describe(&mix, &synth, now, at(transport::TEMPO)).unwrap();

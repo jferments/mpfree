@@ -158,12 +158,13 @@ pub enum Learning {
 
 /// Whether a key learned on `target` flips it on each press (as the MPC's
 /// TRACK MUTE pads do) rather than holding it while held: PLAY and STOP,
-/// and a mixer strip's mute and solo. Works as changes it on the Learn
-/// section.
+/// a mixer strip's mute and solo, and a track's mute and solo on the Clips
+/// grid. Works as changes it on the Learn section.
 pub fn key_toggles(target: ParamAddr) -> bool {
     use mpfree_fx::ids::mixer as mx;
     match target.owner {
         Owner::Transport => target.param == transport::PLAYING,
+        Owner::Clips => mpfree_play::mpfree_param::clips::is_value(target.param),
         Owner::Strip(_) => matches!(target.param, mx::MUTE | mx::SOLO),
         _ => false,
     }

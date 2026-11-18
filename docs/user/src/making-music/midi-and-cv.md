@@ -128,7 +128,7 @@ Tap a row, or turn the data wheel, to pick it. The card under the list sets it:
 - **Learn again**: the next control you move takes this one's place, with the same range, takeover and **Kept in**. The banner at the top says what it waits for; **Cancel** stops it and keeps the old control.
 - **Remove** takes the control off.
 
-Learned controls kept in **Project** are saved with the song; those kept in **Rig** stay when you open another project and come back at the next start (with a data folder on the stick). Still to come: learning the values on the Play page, the Pads and Sample tabs, the arpeggiator and a plugin's own page; recording a learned synth knob's moves into a clip; and launching clips and scenes from a controller.
+Learned controls kept in **Project** are saved with the song; those kept in **Rig** stay when you open another project and come back at the next start (with a data folder on the stick). Still to come: learning the values on the Play page, the Pads and Sample tabs, the arpeggiator and a plugin's own page; and recording a learned synth knob's moves into a clip.
 
 ### Playing and stopping from your controller
 
@@ -141,6 +141,19 @@ A button, pad, key or footswitch on your controller can press MPFree's transport
 For the tempo the quick way works too: hold **SHIFT** and touch the tempo on the Play page. To mute a track from a controller, hold **SHIFT** and touch its **M** in the mixer, then press a key: each press mutes or unmutes it.
 
 Transport controls are kept in **Rig**, so they work in every project. Nothing here sends anything to your controller.
+
+### Launching clips and scenes from your controller
+
+A pad, key or button on your controller can do what a tap on the Clips grid does, so a grid controller can launch your song. On the **Arrange** tab's Clips grid, hold **SHIFT** and tap one of these, then press the pad, key or button:
+
+- **A clip** (or an empty cell): the control does what a tap there does at that moment. It launches the clip, stops it while it plays, takes back a launch that is waiting, or in an empty cell makes a clip and starts recording into it. The control belongs to the cell, not to the clip: whatever clip you put in that track's row later, the same pad launches it.
+- **A row's number**: the control launches that whole row as a scene.
+- **Stop all** or **Back to song**.
+- **A track's name**: the control arms the track, as a tap on its name does (pressed again, it lets go).
+
+Launches land where a tap's would: on the next **Launch** line (the Record tab's, or the clip's own). While MIDI Learn waits, the line under the screen says what for, then what the control launches; SHIFT and the same tap again cancels. SHIFT and a drag still copies a clip or a row, and SHIFT + **+ Track** still adds a Loop track.
+
+The Learn section lists them by where they are: **Launch Bass · row 2**, **Scene 3 · Verse**, **Arm Bass**, **Stop all**. They're kept with the song (**Project**); set **Kept in** to **Rig** to keep a grid controller's layout in every project. Still to come: a **Clips and scenes** card in the Learn section for a track's mute, solo and stop. A key on a track's mute flips it on each press, and in Perform it waits for the launch line, as TRACK MUTE's pads do.
 
 ## MIDI files
 

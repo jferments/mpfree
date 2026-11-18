@@ -901,6 +901,12 @@ impl TimeHost {
         self.control.muted(t)
     }
 
+    /// The tracks muted and soloed once the mute queue lands, a bit a
+    /// track ([`TimeControl::mute_bits`]), for MIDI Learn.
+    pub fn mute_bits(&self) -> (u128, u128) {
+        self.control.mute_bits()
+    }
+
     /// What TRACK MUTE's pad for track `t` shows (None: no such track).
     pub fn mute_light(&self, t: usize) -> Option<MuteLight> {
         self.control.mute_light(t)
@@ -3633,6 +3639,8 @@ mod tests {
         );
         let l = h.mute_light(1).unwrap();
         assert!(l.waiting && !l.silent, "it plays until the line");
+        // MIDI Learn reads a mute as it will land (sequencer S5).
+        assert_eq!(h.mute_bits(), (1 << 1, 0));
         assert!(!h.mute_light(0).unwrap().waiting);
         let st = h.state();
         assert_eq!(st.mute_wait.as_ref().unwrap().want, vec![(1, true, false)]);
@@ -3649,6 +3657,7 @@ mod tests {
             h.mute_or_solo(2, true, true).unwrap(),
             "track mute: Track 3 solo on the next bar"
         );
+        assert_eq!(h.mute_bits(), (1 << 1, 1 << 2));
         run(&mut h, &mut pads, 2 * BAR + BAR / 2 - 1000, &[]);
         assert!(h.mute_light(0).unwrap().silent && h.mute_light(2).unwrap().solo);
         // Its solo off waits, and STOP lands it.
