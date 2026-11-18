@@ -4758,6 +4758,8 @@ fn time_action(
         TimeAction::DeleteClip { .. }
             | TimeAction::ClipSettings { .. }
             | TimeAction::ClipLength { .. }
+            | TimeAction::Mutate { .. }
+            | TimeAction::Restore { .. }
             | TimeAction::CopyClip { .. }
             | TimeAction::PasteClip { .. }
             | TimeAction::DropClip { .. }

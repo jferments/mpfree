@@ -225,13 +225,24 @@ pub struct Take {
     /// COPY + an empty slot put a copy there ([`Takes::paste_clip`]): the
     /// clip is in `made`.
     pub pasted: bool,
-    /// Reload clip put a saved state in place of the clip
-    /// ([`Takes::reload_clip`]): the clip it replaced is in `removed`, the
-    /// saved state in `made`.
-    pub reloaded: bool,
+    /// A whole clip put in place of the clip there
+    /// ([`Takes::replace_clip`]), and why: the clip it replaced is in
+    /// `removed`, the new one in `made`.
+    pub replaced: Option<Replaced>,
     /// A scene's name, mutes or follow action changed
     /// ([`Takes::set_scene`]).
     pub scene: Option<Box<SceneEdit>>,
+}
+
+/// Why a take put a whole clip in place of another ([`Take::replaced`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Replaced {
+    /// Reload clip: its saved state (sequencer S4).
+    Reload,
+    /// Mutate: a variation, the clip as it was kept beside it (S6).
+    Mutate,
+    /// Restore: the clip as it was before its first Mutate (S6).
+    Restore,
 }
 
 /// A scene editor change: row `row`'s settings before and after.
@@ -583,10 +594,7 @@ impl Takes {
 
     /// Reload clip (sequencer S4, Elektron's temp save and reload): put
     /// `saved`, a state of clip `slot` of `track` kept earlier, in place of
-    /// the clip there now, as an edit of its own. Undo puts back the clip
-    /// as it was before the reload, redo the saved state again. The edit's
-    /// number. `BadSlot` if the slot is empty; the saved clip's own
-    /// refusals as they are. Nothing changes on an error.
+    /// the clip there now ([`Takes::replace_clip`]).
     pub fn reload_clip(
         &mut self,
         project: &mut Project,
@@ -594,19 +602,35 @@ impl Takes {
         slot: usize,
         saved: Clip,
     ) -> Result<u32, ModelError> {
-        saved.check()?;
+        self.replace_clip(project, track, slot, saved, Replaced::Reload)
+    }
+
+    /// Put `clip` in place of clip `slot` of `track`, as an edit of its
+    /// own, for `why`: a reload, a Mutate or a Restore (S6,
+    /// [`mpfree_seq::mutate`]). Undo puts back the clip as it was, redo
+    /// `clip` again. The edit's number. `BadSlot` if the slot is empty;
+    /// `clip`'s own refusals as they are. Nothing changes on an error.
+    pub fn replace_clip(
+        &mut self,
+        project: &mut Project,
+        track: usize,
+        slot: usize,
+        clip: Clip,
+        why: Replaced,
+    ) -> Result<u32, ModelError> {
+        clip.check()?;
         let s = slot_mut(project, track, slot)
             .filter(|s| s.is_some())
             .ok_or(ModelError::BadSlot)?;
-        let now = s.replace(saved.clone()).expect("checked");
+        let now = s.replace(clip.clone()).expect("checked");
         self.edits += 1;
         let number = self.edits;
         self.push(Take {
             number,
             edited: true,
-            reloaded: true,
+            replaced: Some(why),
             removed: vec![(track, slot, now)],
-            made: vec![(track, slot, saved)],
+            made: vec![(track, slot, clip)],
             ..Take::default()
         });
         Ok(number)
@@ -1435,11 +1459,46 @@ mod tests {
         assert_eq!(t.reload_clip(&mut p, 0, 0, saved.clone()), Ok(1));
         assert_eq!(p.tracks[0].slots[0].as_ref(), Some(&saved));
         let take = &t.done()[0];
-        assert!(take.reloaded && take.edited && !take.pasted);
+        assert!(take.replaced == Some(Replaced::Reload) && take.edited && !take.pasted);
         assert_eq!(t.undo(&mut p), Some(1));
         assert_eq!(p.tracks[0].slots[0].as_ref(), Some(&mangled));
         assert_eq!(t.redo(&mut p), Some(1));
         assert_eq!(p.tracks[0].slots[0].as_ref(), Some(&saved));
+    }
+
+    /// Mutate and Restore (S6) are takes of their own: undo puts back the
+    /// clip before each, its original with it.
+    #[test]
+    fn mutate_and_restore_are_takes_undo_takes_back() {
+        use mpfree_seq::{Amount, Pitches};
+        let mut p = project();
+        let mut t = Takes::default();
+        let c = p.tracks[0].slots[0].as_mut().unwrap();
+        c.add_note(Note::new(0, 240, 36, 100)).unwrap();
+        let plain = c.clone();
+        let v = plain.mutated(4, Amount::Little, Pitches::Pads).unwrap();
+        assert_eq!(
+            t.replace_clip(&mut p, 0, 0, v.clone(), Replaced::Mutate),
+            Ok(1)
+        );
+        let r = v.restored().unwrap();
+        assert_eq!(
+            t.replace_clip(&mut p, 0, 0, r.clone(), Replaced::Restore),
+            Ok(2)
+        );
+        assert_eq!(p.tracks[0].slots[0].as_ref(), Some(&plain));
+        assert_eq!(t.done()[1].replaced, Some(Replaced::Restore));
+        assert_eq!(t.undo(&mut p), Some(2));
+        assert_eq!(p.tracks[0].slots[0].as_ref(), Some(&v));
+        assert_eq!(t.undo(&mut p), Some(1));
+        assert_eq!(p.tracks[0].slots[0].as_ref(), Some(&plain));
+        let mut broken = v.clone();
+        broken.original.as_mut().unwrap().length = 0;
+        assert_eq!(
+            t.replace_clip(&mut p, 0, 0, broken, Replaced::Mutate),
+            Err(ModelError::ClipLength)
+        );
+        assert_eq!(p.tracks[0].slots[0].as_ref(), Some(&plain));
     }
 
     #[test]

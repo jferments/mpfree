@@ -34,6 +34,11 @@
 //! lock 480 36 pad36.4 0.25
 //! lane t:mix.0 -60 6 0 n
 //! point 0 0.5 r
+//! original 7680 3
+//! original note 0 240 36 100 100 - 1 0 2
+//! original lock 480 36 pad36.4 0.25
+//! original lane t:mix.0 -60 6 0 n
+//! original point 0 0.5 r
 //! end
 //! track Loops A
 //! dest 1
@@ -62,6 +67,13 @@
 //! `reverse`, `pingpong` or `random`; none for forward); an older build
 //! skips it, and a word it doesn't know, and plays the clip forward.
 //!
+//! A mutated clip's `original` lines (sequencer S6, [`crate::mutate`])
+//! are the clip as it was before its first Mutate, which Restore puts
+//! back: `original <length> <variation>` first, then its notes, locks,
+//! lanes and points, each line as the clip's own with `original` before
+//! it (their pressure is the clip's). An older build skips them all and
+//! keeps the variation playing; a broken original refuses the part.
+//!
 //! A scene's `program <track> <program>[ bank <bank>]` lines are the
 //! program changes it sends as it starts (sequencer S5), one a track, in
 //! order of track; an older build skips them.
@@ -82,7 +94,7 @@ use mpfree_transport::time::{Swing, Tick};
 use crate::arrange::{Marker, MorphRows, Placement, Source};
 use crate::scenes::{Follow, FollowAction, ListStep, Scene, MAX_LIST_STEPS, SCENES};
 use crate::{
-    Clip, Cond, Join, LaunchGrid, Lock, LoopInput, Note, Project, Quantise, Speed, Touch,
+    Clip, Cond, Join, LaunchGrid, Lock, LoopInput, Note, Original, Project, Quantise, Speed, Touch,
     TouchPoint, Track, TrackKind, MAX_TRACKS, SLOTS,
 };
 
@@ -190,7 +202,7 @@ pub fn to_text(p: &Project) -> String {
     }
     if !a.lanes.is_empty() {
         s.push_str("songlanes\n");
-        lanes_text(&mut s, &a.lanes);
+        lanes_text(&mut s, "", &a.lanes);
         s.push_str("end\n");
     }
     s
@@ -235,10 +247,26 @@ fn clip_body(s: &mut String, c: &Clip) {
         }
         s.push('\n');
     }
-    for n in &c.notes {
+    notes_text(s, "", &c.notes);
+    locks_text(s, "", &c.locks);
+    lanes_text(s, "", &c.moves);
+    // What Restore puts back (S6's mutate): after everything else, each
+    // line marked, so an older build skips them all.
+    if let Some(o) = &c.original {
+        let _ = writeln!(s, "original {} {}", o.length, o.variation);
+        notes_text(s, "original ", &o.notes);
+        locks_text(s, "original ", &o.locks);
+        lanes_text(s, "original ", &o.moves);
+    }
+    s.push_str("end\n");
+}
+
+/// A clip's notes, a line each, every line starting with `prefix`.
+fn notes_text(s: &mut String, prefix: &str, notes: &[Note]) {
+    for n in notes {
         let _ = write!(
             s,
-            "note {} {} {} {} {} {} {} {} {}",
+            "{prefix}note {} {} {} {} {} {} {} {} {}",
             n.tick,
             n.len,
             n.note,
@@ -260,15 +288,18 @@ fn clip_body(s: &mut String, c: &Clip) {
         }
         s.push('\n');
     }
-    for l in &c.locks {
-        let sound = l.sound.map_or("-".to_string(), |x| x.to_string());
-        let _ = writeln!(s, "lock {} {sound} {} {}", l.tick, l.addr, l.value);
-    }
-    lanes_text(s, &c.moves);
-    s.push_str("end\n");
 }
 
-fn lanes_text(s: &mut String, moves: &Moves) {
+/// A clip's locks, a line each, every line starting with `prefix`.
+fn locks_text(s: &mut String, prefix: &str, locks: &[Lock]) {
+    for l in locks {
+        let sound = l.sound.map_or("-".to_string(), |x| x.to_string());
+        let _ = writeln!(s, "{prefix}lock {} {sound} {} {}", l.tick, l.addr, l.value);
+    }
+}
+
+/// Lanes and their points, every line starting with `prefix`.
+fn lanes_text(s: &mut String, prefix: &str, moves: &Moves) {
     for lane in moves.lanes() {
         let target = match lane.target {
             Target::Track(r) => format!("t:{r}"),
@@ -281,7 +312,7 @@ fn lanes_text(s: &mut String, moves: &Moves) {
         };
         let _ = writeln!(
             s,
-            "lane {target} {} {} {} {steps}",
+            "{prefix}lane {target} {} {} {} {steps}",
             lane.map.min,
             lane.map.max,
             u8::from(lane.map.log)
@@ -292,7 +323,7 @@ fn lanes_text(s: &mut String, moves: &Moves) {
                 Kind::Step => "s",
                 Kind::End => "e",
             };
-            let _ = writeln!(s, "point {} {} {kind}", p.tick, p.u);
+            let _ = writeln!(s, "{prefix}point {} {} {kind}", p.tick, p.u);
         }
     }
 }
@@ -441,6 +472,8 @@ pub fn from_text(text: &str) -> Result<Project, String> {
     let mut p = Project::new();
     let mut at = At::Top;
     let mut lane: Option<LaneAt> = None;
+    // The lane open in a clip's original.
+    let mut orig_lane: Option<LaneAt> = None;
     for (i, raw) in lines {
         let line = raw.trim_end();
         if line.trim().is_empty() || line.starts_with('#') {
@@ -452,19 +485,19 @@ pub fn from_text(text: &str) -> Result<Project, String> {
         // Lane points belong to the lane open now, in a clip or the song.
         if word == "point" {
             let l = lane.as_mut().ok_or_else(|| bad("a point outside a lane"))?;
-            let tick: u32 = num(w.next()).ok_or_else(|| bad("tick"))?;
-            let u: f32 = num(w.next()).ok_or_else(|| bad("value"))?;
-            let kind = match w.next() {
-                Some("r") => Kind::Ramp,
-                Some("s") => Kind::Step,
-                Some("e") => Kind::End,
-                _ => return Err(bad("kind")),
-            };
-            if !u.is_finite() || l.points.last().is_some_and(|q| q.tick >= tick) {
-                return Err(bad("point out of order"));
-            }
-            l.points.push(Point { tick, u, kind });
+            point(l, &mut w).map_err(bad)?;
             continue;
+        }
+        // A clip's original (S6's mutate) closes its last lane at the
+        // clip's end.
+        if word == "end" {
+            if let (Some(l), At::Clip(c, _)) = (orig_lane.take(), &mut at) {
+                let o = c
+                    .original
+                    .as_mut()
+                    .ok_or_else(|| bad("a lane outside a clip"))?;
+                put_lane(&mut o.moves, l).map_err(|e| bad(&e))?;
+            }
         }
         if word == "lane" || word == "end" {
             if let Some(l) = lane.take() {
@@ -602,41 +635,62 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 }
             }
             ("note", At::Clip(c, _)) => {
-                let n = (|| {
-                    Some(Note {
-                        tick: num(w.next())?,
-                        len: num(w.next())?,
-                        note: num(w.next())?,
-                        velocity: num(w.next())?,
-                        chance: num(w.next())?,
-                        cond: parse_cond(w.next()?)?,
-                        ratchet: num(w.next())?,
-                        touch: Touch {
-                            first: num(w.next())?,
-                            len: num(w.next())?,
-                        },
-                        on: true,
-                        ramp: 0,
-                        join: Join::Attack,
-                    })
-                })()
-                .and_then(|n| step_words(n, w.by_ref()))
-                .ok_or_else(|| bad("note"))?;
+                let n = note(&mut w).ok_or_else(|| bad("note"))?;
                 c.add_note(n).map_err(|e| bad(&format!("{e:?}")))?;
             }
             ("lock", At::Clip(c, _)) => {
-                let l = (|| {
-                    let tick = num(w.next())?;
-                    let sound = match w.next()? {
-                        "-" => None,
-                        x => Some(x.parse().ok()?),
-                    };
-                    let addr = RelAddr::from_str(w.next()?).ok()?;
-                    Some(Lock::new(tick, sound, addr, num(w.next())?))
-                })()
-                .ok_or_else(|| bad("lock"))?;
+                let l = lock(&mut w).ok_or_else(|| bad("lock"))?;
                 c.add_lock(l).map_err(|e| bad(&format!("{e:?}")))?;
             }
+            // The clip as it was before its first Mutate (S6): its length
+            // and variation open it, then its notes, locks and lanes,
+            // checked with the clip at its end.
+            ("original", At::Clip(c, _)) => match w.next() {
+                Some("note") => {
+                    let n = note(&mut w).ok_or_else(|| bad("note"))?;
+                    let o = c.original.as_mut().ok_or_else(|| bad("original"))?;
+                    if o.notes.len() >= crate::MAX_NOTES {
+                        return Err(bad("too many notes"));
+                    }
+                    o.notes.push(n);
+                }
+                Some("lock") => {
+                    let l = lock(&mut w).ok_or_else(|| bad("lock"))?;
+                    let o = c.original.as_mut().ok_or_else(|| bad("original"))?;
+                    if o.locks.len() >= crate::MAX_LOCKS {
+                        return Err(bad("too many locks"));
+                    }
+                    o.locks.push(l);
+                }
+                Some("lane") => {
+                    let o = c.original.as_mut().ok_or_else(|| bad("original"))?;
+                    if let Some(l) = orig_lane.take() {
+                        put_lane(&mut o.moves, l).map_err(|e| bad(&e))?;
+                    }
+                    orig_lane = Some(lane_head(&mut w).ok_or_else(|| bad("lane"))?);
+                }
+                Some("point") => {
+                    let l = orig_lane
+                        .as_mut()
+                        .ok_or_else(|| bad("a point outside a lane"))?;
+                    point(l, &mut w).map_err(bad)?;
+                }
+                Some(x) => {
+                    let length: Tick = x.parse().map_err(|_| bad("length"))?;
+                    let variation: u32 = num(w.next()).ok_or_else(|| bad("variation"))?;
+                    if c.original.is_some() {
+                        return Err(bad("a second original"));
+                    }
+                    c.original = Some(Box::new(Original {
+                        length,
+                        notes: Vec::new(),
+                        locks: Vec::new(),
+                        moves: Moves::new(),
+                        variation,
+                    }));
+                }
+                None => return Err(bad("original")),
+            },
             ("lane", At::Clip(..) | At::SongLanes(_)) => {
                 lane = Some(lane_head(&mut w).ok_or_else(|| bad("lane"))?);
             }
@@ -859,6 +913,56 @@ fn follow<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<Follow> {
 /// (`off`, `ramp:<n>`, `tie`, `slide`). A ramp out of range or not a
 /// number refuses the line (None); a word this build doesn't know is
 /// skipped, as unknown lines are, so a newer build's notes still open.
+/// A `note` line's words after `note`.
+fn note<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<Note> {
+    let n = Note {
+        tick: num(w.next())?,
+        len: num(w.next())?,
+        note: num(w.next())?,
+        velocity: num(w.next())?,
+        chance: num(w.next())?,
+        cond: parse_cond(w.next()?)?,
+        ratchet: num(w.next())?,
+        touch: Touch {
+            first: num(w.next())?,
+            len: num(w.next())?,
+        },
+        on: true,
+        ramp: 0,
+        join: Join::Attack,
+    };
+    step_words(n, w)
+}
+
+/// A `lock` line's words after `lock`.
+fn lock<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<Lock> {
+    let tick = num(w.next())?;
+    let sound = match w.next()? {
+        "-" => None,
+        x => Some(x.parse().ok()?),
+    };
+    let addr = RelAddr::from_str(w.next()?).ok()?;
+    Some(Lock::new(tick, sound, addr, num(w.next())?))
+}
+
+/// A `point` line's words after `point`, onto lane `l`; what is wrong
+/// with them if they don't hold.
+fn point<'a>(l: &mut LaneAt, w: &mut impl Iterator<Item = &'a str>) -> Result<(), &'static str> {
+    let tick: u32 = num(w.next()).ok_or("tick")?;
+    let u: f32 = num(w.next()).ok_or("value")?;
+    let kind = match w.next() {
+        Some("r") => Kind::Ramp,
+        Some("s") => Kind::Step,
+        Some("e") => Kind::End,
+        _ => return Err("kind"),
+    };
+    if !u.is_finite() || l.points.last().is_some_and(|q| q.tick >= tick) {
+        return Err("point out of order");
+    }
+    l.points.push(Point { tick, u, kind });
+    Ok(())
+}
+
 fn step_words<'a>(mut n: Note, w: impl Iterator<Item = &'a str>) -> Option<Note> {
     for word in w {
         match word {
@@ -1227,6 +1331,72 @@ mod tests {
             crate::Direction::Forward
         );
         assert!(from_text(&text.replace("direction pingpong", "direction")).is_err());
+    }
+
+    /// A mutated clip keeps its original (S6), lanes and all, read back
+    /// whole; an older build skips its lines and keeps the variation; a
+    /// broken original refuses the part.
+    #[test]
+    fn a_mutated_clips_original_reads_back() {
+        let mut p = Project::new();
+        p.tracks.push(Track::new("Drums", 0));
+        let mut c = full().tracks[0].slots[0].clone().unwrap();
+        c.notes[1].on = true;
+        let mut v = c
+            .mutated(9, crate::Amount::More, crate::Pitches::Pads)
+            .unwrap();
+        // Edited since: shorter, its lanes gone.
+        v.length = 3840;
+        v.moves = Moves::new();
+        v.check().unwrap();
+        p.tracks[0].slots[3] = Some(v.clone());
+        p.arrangement.placements.push(Placement {
+            track: 0,
+            start: 0,
+            length: 3840,
+            offset: 0,
+            source: Source::Own(Box::new(v.clone())),
+        });
+        let text = to_text(&p);
+        assert!(
+            text.contains("\noriginal 7680 1\noriginal note 0 240 36 "),
+            "{text}"
+        );
+        assert!(text.contains("\noriginal lane t:"), "{text}");
+        assert!(text.contains("\noriginal point 100 0.75 s\n"), "{text}");
+        let back = from_text(&text).unwrap();
+        assert_eq!(back, p);
+        let r = back.tracks[0].slots[3]
+            .as_ref()
+            .unwrap()
+            .restored()
+            .unwrap();
+        assert_eq!((r.length, &r.notes, &r.moves), (7680, &c.notes, &c.moves));
+        // An older build: the variation, with no original.
+        let older: String = text
+            .lines()
+            .filter(|l| !l.starts_with("original"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let o = from_text(&older).unwrap();
+        let w = o.tracks[0].slots[3].as_ref().unwrap();
+        assert_eq!((w.original.as_ref(), &w.notes), (None, &v.notes));
+        // Broken: a note before its head, a bad note, a second head.
+        let head = "original 7680 1\n";
+        let swapped = text.replacen(head, "", 1).replacen(
+            "original lane",
+            &format!("{head}original lane"),
+            1,
+        );
+        assert!(from_text(&swapped).is_err());
+        assert!(from_text(&text.replacen(
+            "original note 0 240 36 ",
+            "original note 0 240 36 0 ",
+            1
+        ))
+        .is_err());
+        assert!(from_text(&text.replacen(head, &format!("{head}{head}"), 1)).is_err());
+        assert!(from_text(&text.replacen(head, "original 7680\n", 1)).is_err());
     }
 
     #[test]

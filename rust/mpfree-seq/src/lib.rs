@@ -47,17 +47,22 @@
 //! The note editors (the Grid View and List Edit) make their edits with
 //! [`notes`], Timing Correct among them.
 //!
+//! **Mutate** ([`mutate`]) makes a variation of a clip's notes and keeps
+//! the clip as it was beside it ([`Clip::original`]), for Restore.
+//!
 //! Audio clips come in a later roadmap step.
 #![forbid(unsafe_code)]
 
 pub mod arrange;
 pub mod loops;
+pub mod mutate;
 pub mod notes;
 pub mod save;
 pub mod scenes;
 pub mod steps;
 
 pub use arrange::{Arrangement, Marker, MorphRows, Placement, Source};
+pub use mutate::{Amount, Original, Pitches};
 pub use scenes::{
     Follow, FollowAction, ListStep, Scene, SceneSettings, SongList, TrackProgram, MAX_SCENE_NAME,
     SCENES,
@@ -563,7 +568,7 @@ pub fn direction_steps(direction: Direction, length: Tick) -> Option<u32> {
 }
 
 /// splitmix64's finish: spreads a word over every bit.
-fn mix64(mut z: u64) -> u64 {
+pub(crate) fn mix64(mut z: u64) -> u64 {
     z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -783,6 +788,10 @@ pub struct Clip {
     pub program: Option<ClipProgram>,
     /// The order it plays its steps in (sequencer S6).
     pub direction: Direction,
+    /// Its notes, locks, length and moves as they were before its first
+    /// Mutate (sequencer S6, [`mutate`]): what Restore puts back and each
+    /// Mutate varies. None until it is mutated, and again once restored.
+    pub original: Option<Box<Original>>,
 }
 
 /// A clip's settings that are not its notes: how fast it plays, its own
@@ -935,6 +944,7 @@ impl Clip {
             once: false,
             program: None,
             direction: Direction::Forward,
+            original: None,
         }
     }
 
@@ -1085,8 +1095,12 @@ impl Clip {
                 || !self.locks.is_empty()
                 || !self.touch.is_empty()
                 || !self.moves.is_empty()
+                || self.original.is_some()
         }) {
             return Err(ModelError::BadLoop);
+        }
+        if let Some(o) = &self.original {
+            o.check(&self.touch)?;
         }
         let len = u32::try_from(self.length).map_err(|_| ModelError::ClipLength)?;
         self.moves.check(len).map_err(|_| ModelError::BadMoves)
