@@ -3,9 +3,9 @@
 //!
 //! Tremolo, auto-pan and the ring modulator's sweep share the LFO in
 //! [`crate::kit`]: free in Hz or synced to the tempo (1/32 to 4 bars,
-//! triplets and dotted), six shapes, and a restart in time with the bar
-//! when the transport starts. Every level that moves glides, so nothing
-//! clicks when a knob turns under a loop.
+//! triplets and dotted), six shapes, on the bar when the transport starts
+//! and following the song through a loop wrap or a locate. Every level
+//! that moves glides, so nothing clicks when a knob turns under a loop.
 
 use mpfree_node::{Ctx, Kind, NodeInfo, ParamInfo, Smooth};
 
@@ -30,6 +30,15 @@ pub mod tremolo {
 }
 
 const TREMOLO_MODES: &[&str] = &["Volume", "Harmonic"];
+
+/// The Mode control's value as Volume (0) or Harmonic (1).
+fn harmonic(mode: f32) -> f32 {
+    if mode >= 0.5 {
+        1.0
+    } else {
+        0.0
+    }
+}
 /// Where Harmonic mode splits the sound (the 1960s amps' split).
 const HARMONIC_HZ: f32 = 700.0;
 
@@ -129,6 +138,8 @@ pub struct Tremolo {
     lows: Svf,
     depth: Smooth,
     width: Smooth,
+    /// Volume (0) to Harmonic (1), gliding on a Mode change.
+    harmonic: Smooth,
 }
 
 impl Default for Tremolo {
@@ -147,6 +158,7 @@ impl Tremolo {
             lows: Svf::default(),
             depth: Smooth::new(v[3] / 100.0),
             width: Smooth::new(v[4] / 100.0),
+            harmonic: Smooth::new(harmonic(v[5])),
         };
         t.setup(48_000);
         t
@@ -155,26 +167,49 @@ impl Tremolo {
         match id {
             tremolo::DEPTH => self.depth.target = v / 100.0,
             tremolo::WIDTH => self.width.target = v / 100.0,
+            tremolo::MODE => {
+                // The split has been idle in Volume: start it clean.
+                if self.harmonic.value == 0.0 {
+                    self.lows.reset();
+                }
+                self.harmonic.target = harmonic(v);
+            }
             _ => {}
         }
     }
-    fn begin(&mut self, ctx: &Ctx) {
-        self.lfo.begin(ctx, self.v[1] as usize);
-    }
-    fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
+    fn begin(&mut self, _ctx: &Ctx) {}
+    fn run(&mut self, ctx: &Ctx, from: usize, l: &mut [f32], r: &mut [f32]) {
+        self.lfo.follow(ctx, from, self.v[1] as usize);
         self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
-        let shape = self.v[2] as usize;
-        let harmonic = self.v[5] >= 0.5;
+        self.lfo.set_shape(self.v[2] as usize);
+        let still = |s: &Smooth| s.value == 0.0 && s.target == 0.0;
+        if still(&self.harmonic) && still(&self.width) {
+            // The usual case, Volume with both sides together: one value
+            // of the LFO a frame.
+            for i in 0..l.len() {
+                let depth = self.depth.glide();
+                let [m] = self.lfo.step([0.0]);
+                let g = 1.0 - depth * (0.5 - 0.5 * m);
+                l[i] *= g;
+                r[i] *= g;
+            }
+            return;
+        }
         for i in 0..l.len() {
-            let p = self.lfo.step();
             let depth = self.depth.glide();
             let off = 0.5 * self.width.glide();
-            let ml = self.lfo.shape(shape, p, 0.0);
-            let mr = self.lfo.shape(shape, p, off);
-            if harmonic {
+            let [ml, mr] = self.lfo.step([0.0, off]);
+            let harmonic = self.harmonic.glide();
+            if harmonic > 0.0 {
                 // Lows and highs swap places: one is up while the other
-                // is down, so the level stays nearly even.
-                let g = |m: f32| (1.0 - depth * (0.5 - 0.5 * m), 1.0 - depth * (0.5 + 0.5 * m));
+                // is down, so the level stays nearly even. A Mode change
+                // moves between that and Volume's one gain (the lows'
+                // here) over 20 ms.
+                let g = |m: f32| {
+                    let lo = 1.0 - depth * (0.5 - 0.5 * m);
+                    let hi = 1.0 - depth * (0.5 + 0.5 * m);
+                    (lo, lerp(lo, hi, harmonic))
+                };
                 for (ch, (x, m)) in [(&mut l[i], ml), (&mut r[i], mr)].into_iter().enumerate() {
                     let lo = self.lows.run(ch, *x);
                     let hi = *x - lo;
@@ -193,12 +228,14 @@ impl Tremolo {
         self.lows.set(SvfMode::LowPass, HARMONIC_HZ, q, 0.0, rate);
         self.depth.set_time(rate, 20.0);
         self.width.set_time(rate, 20.0);
+        self.harmonic.set_time(rate, 20.0);
     }
     fn clear(&mut self) {
         self.lfo.reset();
         self.lows.reset();
         self.depth.snap(self.depth.target);
         self.width.snap(self.width.target);
+        self.harmonic.snap(self.harmonic.target);
     }
     fn tail(&self) -> u32 {
         0
@@ -294,16 +331,14 @@ impl AutoPan {
             _ => {}
         }
     }
-    fn begin(&mut self, ctx: &Ctx) {
-        self.lfo.begin(ctx, self.v[1] as usize);
-    }
-    fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
+    fn begin(&mut self, _ctx: &Ctx) {}
+    fn run(&mut self, ctx: &Ctx, from: usize, l: &mut [f32], r: &mut [f32]) {
+        self.lfo.follow(ctx, from, self.v[1] as usize);
         self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
-        let shape = self.v[2] as usize;
+        self.lfo.set_shape(self.v[2] as usize);
         for i in 0..l.len() {
-            let p = self.lfo.step();
-            let pos = (self.centre.glide() + self.depth.glide() * self.lfo.shape(shape, p, 0.0))
-                .clamp(-1.0, 1.0);
+            let [m] = self.lfo.step([0.0]);
+            let pos = (self.centre.glide() + self.depth.glide() * m).clamp(-1.0, 1.0);
             // A quarter cycle from hard left (0) to hard right (0.25):
             // both sides at unity in the middle.
             let a = (pos + 1.0) * 0.125;
@@ -443,17 +478,23 @@ impl RingMod {
             _ => {}
         }
     }
-    fn begin(&mut self, ctx: &Ctx) {
-        self.lfo.begin(ctx, self.v[4] as usize);
-    }
-    fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
+    fn begin(&mut self, _ctx: &Ctx) {}
+    fn run(&mut self, ctx: &Ctx, from: usize, l: &mut [f32], r: &mut [f32]) {
+        self.lfo.follow(ctx, from, self.v[4] as usize);
         self.lfo.set(self.v[3], self.v[4] as usize, self.rate);
         let wave = self.v[1] as usize;
         let per = 1.0 / self.rate as f32;
         let top = 0.45 * self.rate as f32;
+        // With Sweep at 0 the LFO only keeps time.
+        let swept = self.sweep.value != 0.0 || self.sweep.target != 0.0;
         for i in 0..l.len() {
-            let p = self.lfo.step();
-            let sweep = self.sweep.glide() * (0.5 + 0.5 * kit::sine(p));
+            let sweep = if swept {
+                let [m] = self.lfo.step([0.0]);
+                self.sweep.glide() * (0.5 + 0.5 * m)
+            } else {
+                self.lfo.tick();
+                0.0
+            };
             let hz = fast_exp2(self.pitch.glide() + sweep).min(top);
             self.phase = kit::wrap(self.phase + hz * per);
             let dt = hz * per;
