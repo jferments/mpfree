@@ -569,10 +569,26 @@ fn profile_says(p: Option<&mpfree_midi::profile::Profile>, pick: &ProfilePick) -
             n => parts.push(format!("{n} {what}s")),
         }
     }
-    if parts.is_empty() {
-        return "It names nothing: usual names for controls.".to_string();
+    // A drum machine's: its kit pads too, in a shorter list that fits.
+    if p.pads() > 0 {
+        let mut short = Vec::new();
+        for (n, one, many) in [
+            (cc, "CC", "CCs"),
+            (nrpn, "NRPN", "NRPNs"),
+            (programs, "program", "programs"),
+            (p.pads(), "kit pad", "pads"),
+        ] {
+            match n {
+                0 => {}
+                1 => short.push(format!("1 {one}")),
+                n => short.push(format!("{n} {many}")),
+            }
+        }
+        return format!("Covers {}.", short.join(", "));
     }
-    let last = parts.pop().unwrap_or_default();
+    let Some(last) = parts.pop() else {
+        return "It names nothing: usual names for controls.".to_string();
+    };
     let list = if parts.is_empty() {
         last
     } else {
@@ -1660,6 +1676,41 @@ mod tests {
         let mut fonts = mpfree_ui::Fonts::embedded();
         let px = mpfree_ui::Theme::dark().size_small;
         let gm = mpfree_midi::profile::Profiles::builtin();
+        // A drum machine's: its controls, programs and 128 pads.
+        let mut drums = mpfree_midi::profile::Profile::new("Drum box");
+        for k in 0..128u8 {
+            drums.set_cc(k, "Level");
+            drums.set_program(k, "Kit");
+            let out = mpfree_midi::profile::PadOut {
+                note: k,
+                channel: Some(9),
+            };
+            drums.set_pad(k, out);
+        }
+        drums.set_nrpn(0, 1, "Tune");
+        assert_eq!(
+            profile_says(Some(&drums), &ProfilePick::Auto),
+            "Covers 128 CCs, 1 NRPN, 128 programs, 128 pads."
+        );
+        drums.set_pad(
+            0,
+            mpfree_midi::profile::PadOut {
+                note: 36,
+                channel: None,
+            },
+        );
+        let mut pads_only = mpfree_midi::profile::Profile::new("Pads");
+        pads_only.set_pad(
+            0,
+            mpfree_midi::profile::PadOut {
+                note: 36,
+                channel: None,
+            },
+        );
+        assert_eq!(
+            profile_says(Some(&pads_only), &ProfilePick::Auto),
+            "Covers 1 kit pad."
+        );
         // And the line under Divide and Nudge, whatever it says.
         let mut v = PortPage::new(m.clone(), DIN_NAME).view();
         v.out_on = true;
@@ -1681,6 +1732,7 @@ mod tests {
             profile_says(None, &ProfilePick::Auto),
             profile_says(None, &ProfilePick::Named("Juno 106 rack".into())),
             profile_says(gm.get("General MIDI"), &ProfilePick::Auto),
+            profile_says(Some(&drums), &ProfilePick::Auto),
         ] {
             let sw = fonts.measure(FontId::Sans, px, &says);
             assert!(sw <= w, "{says:?} is {sw} wide, the line {w}");

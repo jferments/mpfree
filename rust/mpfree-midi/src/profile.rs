@@ -17,6 +17,8 @@
 //! nrpn.0.23 = Osc 1 shape
 //! program.1 = Init
 //! knobs = 74 71 76 77
+//! pad.A1 = 36 ch 10
+//! pad.B3 = F#1
 //! ```
 //!
 //! `match` (any number of them) is a USB name the profile is for: a port
@@ -25,7 +27,11 @@
 //! names a parameter by its two numbers (CC 99 and CC 98); programs count
 //! from 1, as everywhere on screen. `knobs` is a controller's knobs' CCs
 //! in order, which MIDI Follow turns the Q-Links with
-//! ([`crate::setup::FollowSetup`]). A line that can't be read is skipped
+//! ([`crate::setup::FollowSetup`]). `pad.A1` to `pad.H16` (or `pad.1` to
+//! `pad.128`) is the note a kit pad plays on a drum machine, as a number
+//! or a name (C4 is 60), with its own channel after `ch` if it has one
+//! (Jay's card 17 Nov 23:28Z: drum pads out by the gear's profile); a pad
+//! it leaves out plays [`kit_note`]. A line that can't be read is skipped
 //! with a warning; a file without a name isn't a profile.
 //!
 //! [`Profiles`] holds the built-in profiles ([`Profiles::builtin`]: General
@@ -57,6 +63,61 @@ pub const MAX_KNOBS: usize = 16;
 /// The largest profile file read, in bytes.
 pub const MAX_FILE_BYTES: usize = 64 * 1024;
 
+/// A kit's pads: 8 banks (A to H) of 16.
+pub const KIT_PADS: usize = 128;
+
+/// Pads in a bank.
+const BANK_PADS: usize = 16;
+
+/// Each kit pad's note on MIDI Out when the port's profile names none:
+/// bank A as the MPC sends its pads (pad 1 is C#2, 37), and banks B to H
+/// the other 112 notes in turn from 35 (B1, the General MIDI kit's
+/// lowest drum) up, then from 0. So every pad has a note of its own, and
+/// banks B and C hold the General MIDI drums bank A lacks.
+pub const KIT_NOTES: [u8; KIT_PADS] = kit_notes();
+
+const fn kit_notes() -> [u8; KIT_PADS] {
+    let a = mpfree_controller::mpc_one::PAD_NOTES;
+    let mut out = [0u8; KIT_PADS];
+    let mut used = [false; 128];
+    let mut i = 0;
+    while i < BANK_PADS {
+        out[i] = a[i];
+        used[a[i] as usize] = true;
+        i += 1;
+    }
+    let mut k = 0;
+    while k < 128 {
+        let n = (35 + k) % 128;
+        if !used[n] {
+            out[i] = n as u8;
+            i += 1;
+        }
+        k += 1;
+    }
+    out
+}
+
+/// Kit pad `pad`'s note when no profile names one ([`KIT_NOTES`]; pads
+/// past the last play none).
+pub fn kit_note(pad: usize) -> Option<u8> {
+    KIT_NOTES.get(pad).copied()
+}
+
+/// A pad's name on screen: A1 to H16.
+pub fn pad_name(pad: usize) -> String {
+    let bank = (b'A' + (pad / BANK_PADS).min(7) as u8) as char;
+    format!("{bank}{}", pad % BANK_PADS + 1)
+}
+
+/// What a profile has a kit pad play: a note, and a channel of its own
+/// (0 to 15) or the track's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PadOut {
+    pub note: u8,
+    pub channel: Option<u8>,
+}
+
 /// What one piece of gear calls its controls and programs.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Profile {
@@ -71,6 +132,9 @@ pub struct Profile {
     programs: Vec<(u8, String)>,
     /// A controller's knobs' CCs, in order (MIDI Follow's).
     pub knobs: Vec<u8>,
+    /// What a drum machine's kit pads play, by pad (0 is A1), in pad
+    /// order.
+    pads: Vec<(u8, PadOut)>,
 }
 
 impl Profile {
@@ -100,6 +164,32 @@ impl Profile {
     /// How many CCs, NRPNs and programs it names.
     pub fn counts(&self) -> (usize, usize, usize) {
         (self.cc.len(), self.nrpn.len(), self.programs.len())
+    }
+
+    /// What kit pad `pad` (0 is A1) plays, if it says.
+    pub fn pad(&self, pad: usize) -> Option<PadOut> {
+        let pad = u8::try_from(pad).ok()?;
+        self.pads
+            .binary_search_by_key(&pad, |e| e.0)
+            .ok()
+            .map(|i| self.pads[i].1)
+    }
+
+    /// How many kit pads it maps.
+    pub fn pads(&self) -> usize {
+        self.pads.len()
+    }
+
+    /// Has kit pad `pad` (0 is A1, up to 127) play `out`.
+    pub fn set_pad(&mut self, pad: u8, out: PadOut) {
+        let out = PadOut {
+            note: out.note.min(127),
+            channel: out.channel.map(|c| c.min(15)),
+        };
+        match self.pads.binary_search_by_key(&pad, |e| e.0) {
+            Ok(i) => self.pads[i].1 = out,
+            Err(i) => self.pads.insert(i, (pad, out)),
+        }
     }
 
     /// Names CC `cc` (a later name for the same CC replaces it).
@@ -142,6 +232,13 @@ impl Profile {
         if !self.knobs.is_empty() {
             let k: Vec<String> = self.knobs.iter().map(u8::to_string).collect();
             let _ = writeln!(s, "knobs = {}", k.join(" "));
+        }
+        for (pad, o) in &self.pads {
+            let _ = write!(s, "pad.{} = {}", pad_name(usize::from(*pad)), o.note);
+            if let Some(c) = o.channel {
+                let _ = write!(s, " ch {}", c + 1);
+            }
+            s.push('\n');
         }
         s
     }
@@ -225,10 +322,77 @@ impl Profile {
                 }
                 self.knobs = k;
             }
+            ["pad", which] => {
+                let pad = pad_number(which)?;
+                let mut w = v.split_whitespace();
+                let note = w.next().ok_or("no note")?;
+                let note = note_number(note)?;
+                let channel = match (w.next(), w.next(), w.next()) {
+                    (None, ..) => None,
+                    (Some(c), Some(n), None) if c.eq_ignore_ascii_case("ch") => {
+                        Some(number(n, 1, 16)? as u8 - 1)
+                    }
+                    _ => return Err("expected a note, then \"ch\" and a channel".into()),
+                };
+                self.set_pad(pad, PadOut { note, channel });
+            }
             _ => return Err("unknown key".into()),
         }
         Ok(())
     }
+}
+
+/// A pad by its name (A1 to H16) or number (1 to 128): 0 is A1.
+fn pad_number(w: &str) -> Result<u8, String> {
+    if let Ok(n) = w.parse::<u32>() {
+        return match n {
+            1..=128 => Ok((n - 1) as u8),
+            _ => Err(format!("no pad {n}: pads are 1 to 128, or A1 to H16")),
+        };
+    }
+    let mut c = w.chars();
+    let bank = c.next().map(|b| b.to_ascii_uppercase());
+    let pad = c.as_str().parse::<usize>().ok();
+    match (bank, pad) {
+        (Some(b @ 'A'..='H'), Some(p @ 1..=16)) => {
+            Ok(((b as u8 - b'A') as usize * BANK_PADS + p - 1) as u8)
+        }
+        _ => Err(format!("no pad \"{w}\": pads are A1 to H16, or 1 to 128")),
+    }
+}
+
+/// A note by number (0 to 127) or name (C-1 to G9, C4 is 60; sharps with
+/// #, flats with b).
+fn note_number(w: &str) -> Result<u8, String> {
+    if let Ok(n) = w.parse::<u32>() {
+        return match n {
+            0..=127 => Ok(n as u8),
+            _ => Err(format!("no note {n}: notes are 0 to 127")),
+        };
+    }
+    let bad = || format!("\"{w}\" is not a note (a number from 0 to 127, or a name such as C#2)");
+    let mut c = w.chars();
+    let base: i32 = match c.next().map(|l| l.to_ascii_uppercase()) {
+        Some('C') => 0,
+        Some('D') => 2,
+        Some('E') => 4,
+        Some('F') => 5,
+        Some('G') => 7,
+        Some('A') => 9,
+        Some('B') => 11,
+        _ => return Err(bad()),
+    };
+    let rest = c.as_str();
+    let (shift, octave) = match rest.strip_prefix('#') {
+        Some(o) => (1, o),
+        None => match rest.strip_prefix('b') {
+            Some(o) => (-1, o),
+            None => (0, rest),
+        },
+    };
+    let octave: i32 = octave.parse().map_err(|_| bad())?;
+    let n = (octave + 1) * 12 + base + shift;
+    u8::try_from(n).ok().filter(|&n| n < 128).ok_or_else(bad)
 }
 
 /// The names the port page's Profile choices use for themselves.
@@ -610,6 +774,63 @@ mod tests {
         // Written and read back as it was.
         let (back, w) = Profile::parse(&p.to_text()).unwrap();
         assert_eq!((back, w), (p, vec![]));
+    }
+
+    /// A drum machine's profile gives kit pads their notes and channels,
+    /// by bank name or number, by note number or name; what it can't read
+    /// is skipped with why, and it writes back as it read.
+    #[test]
+    fn a_drum_machines_profile_gives_kit_pads_notes_and_channels() {
+        let text = "mpfree-profile 1\nname = Drum box\n\
+            pad.A1 = 36 ch 10\npad.a2 = D2\npad.17 = F#1 CH 11\npad.H16 = 127\n\
+            pad.B2 = Bb-1\npad.I1 = 36\npad.0 = 36\npad.129 = 36\npad.A17 = 36\n\
+            pad.A3 = 128\npad.A4 = H2\npad.A5 = 36 ch 17\npad.A6 = 36 ch\n\
+            pad.A7 = G9\npad.A8 = G#9\npad.A9\n";
+        let (p, warn) = Profile::parse(text).unwrap();
+        let out = |note, channel| Some(PadOut { note, channel });
+        assert_eq!(p.pad(0), out(36, Some(9)));
+        assert_eq!(p.pad(1), out(38, None));
+        assert_eq!(p.pad(16), out(30, Some(10)), "pad 17 is B1");
+        assert_eq!(p.pad(17), out(10, None), "Bb-1");
+        assert_eq!(p.pad(127), out(127, None));
+        assert_eq!(p.pad(6), out(127, None), "G9 is the top note");
+        assert_eq!(p.pad(2), None);
+        assert_eq!(p.pad(128), None);
+        assert_eq!(p.pads(), 6);
+        // I1, 0, 129, A17, 128, H2, ch 17, a bare ch, G#9, no value.
+        assert_eq!(warn.len(), 10, "{warn:?}");
+        assert!(warn[0].contains("no pad \"I1\""), "{warn:?}");
+        assert!(warn[4].contains("no note 128"), "{warn:?}");
+        assert!(warn[9].contains("not \"key = value\""), "{warn:?}");
+        let (back, w) = Profile::parse(&p.to_text()).unwrap();
+        assert!(
+            p.to_text().contains("pad.B1 = 30 ch 11\n"),
+            "{}",
+            p.to_text()
+        );
+        assert_eq!((back, w), (p, vec![]));
+    }
+
+    /// Without a profile's note, bank A plays the MPC's own pad notes and
+    /// banks B to H every other note once, from 35 up then from 0.
+    #[test]
+    fn every_kit_pad_has_a_note_of_its_own() {
+        assert_eq!(KIT_NOTES[..16], mpfree_controller::mpc_one::PAD_NOTES);
+        let mut seen = [false; 128];
+        for n in KIT_NOTES {
+            assert!(
+                !std::mem::replace(&mut seen[usize::from(n)], true),
+                "{n} twice"
+            );
+        }
+        assert_eq!(KIT_NOTES[16..19], [35, 39, 41]);
+        assert_eq!(kit_note(16), Some(35));
+        assert_eq!(kit_note(127), Some(34));
+        assert_eq!(kit_note(128), None);
+        assert_eq!(
+            (pad_name(0), pad_name(16), pad_name(127)),
+            ("A1".into(), "B1".into(), "H16".into())
+        );
     }
 
     #[test]

@@ -159,6 +159,7 @@ use mpfree_controller::midi::{Message, Parser};
 use mpfree_controller::mpc_one::{self, ControlEvent, OBSERVED_KEEPALIVE_TOKEN};
 use mpfree_core::{float_to_s32, ClickConfig, ClickEngine};
 use mpfree_midi::monitor::{Dir, Event, Mpc, To};
+use mpfree_midi::profile::KIT_PADS;
 use mpfree_screen_log::Rotation;
 use mpfree_synth_ui::{SynthAction, SynthState};
 use mpfree_time_ui::view::AudioAction;
@@ -3642,12 +3643,14 @@ fn synth_tab_values(synth: &synth::Synth, mix: &mixing::MixHost, track: usize) -
     }
 }
 
-/// The notes pad `pad` plays on MIDI Out: the synth's pad layout while the
-/// synth has the pads, else the MPC's own pad note.
-fn pad_notes(synth: Option<&synth::Synth>, pad: usize) -> &[u8] {
+/// What pad `pad` plays on MIDI Out, CV and an export: the synth's pad
+/// layout's notes while the synth has the pads, else the kit's pad (the
+/// note its port's device profile gives it, or its own,
+/// [`midi_out::kit_notes`]).
+fn pad_is(synth: Option<&synth::Synth>, pad: usize) -> midi_out::NoteIs<'_> {
     match synth {
-        Some(s) => s.notes(pad),
-        None => midi_out::kit_notes(pad),
+        Some(s) => midi_out::NoteIs::Pad(s.notes(pad)),
+        None => midi_out::NoteIs::Kit,
     }
 }
 
@@ -3959,12 +3962,11 @@ impl time::Pads for SeqPads<'_> {
         // transpose (S4); a note-off goes to what its note-on sent.
         let shift = self.shift(o.track);
         let mut buf = [0; MAX_PAD_NOTES];
-        let notes = shifted(
-            pad_notes(synth_seen(self.kits, self.synth, o.track), pad),
+        let is = shifted_is(
+            pad_is(synth_seen(self.kits, self.synth, o.track), pad),
             &shift,
             &mut buf,
         );
-        let is = midi_out::NoteIs::Pad(notes);
         self.cv.send(o, is);
         self.tap.send(o, is);
         let taken = self.midi.send(o, is) || self.clip_own(o, &shift);
@@ -4206,11 +4208,11 @@ impl SeqPads<'_> {
         let mut buf = [0; MAX_PAD_NOTES];
         let is = match (notes, event) {
             (true, _) => NoteIs::Note,
-            (false, Event::NoteOn { .. }) if pad < 16 => NoteIs::Pad(shifted(
-                pad_notes(synth_seen(self.kits, self.synth, o.track), pad),
+            (false, Event::NoteOn { .. }) if pad < KIT_PADS => shifted_is(
+                pad_is(synth_seen(self.kits, self.synth, o.track), pad),
                 shift,
                 &mut buf,
-            )),
+            ),
             // A pad's note-off and pressure go to what its note-on sent.
             (false, _) => NoteIs::Pad(&[]),
         };
@@ -4249,7 +4251,7 @@ impl SeqPads<'_> {
                     self.live.pad_of_note(note)?
                 } else {
                     let pad = usize::from(note);
-                    if pad >= 16 {
+                    if pad >= KIT_PADS {
                         return None;
                     }
                     let played = mpfree_play::Out {
@@ -4257,12 +4259,12 @@ impl SeqPads<'_> {
                         ..*o
                     };
                     let mut buf = [0; MAX_PAD_NOTES];
-                    let notes = shifted(
-                        pad_notes(synth_seen(self.kits, self.synth, o.track), pad),
+                    let is = shifted_is(
+                        pad_is(synth_seen(self.kits, self.synth, o.track), pad),
                         shift,
                         &mut buf,
                     );
-                    self.midi.send(&played, NoteIs::Pad(notes));
+                    self.midi.send(&played, is);
                     pad
                 };
                 if self.n_live < MAX_LIVE_HITS {
@@ -4299,6 +4301,19 @@ impl SeqPads<'_> {
             (Event::NoteOn { .. }, _)
             | (Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. }, _) => None,
         }
+    }
+}
+
+/// [`shifted`] on a synth pad layout's notes; a kit's pad (`NoteIs::Kit`)
+/// isn't moved (its track's shift is none, [`SeqPads::shift`]).
+fn shifted_is<'a>(
+    is: midi_out::NoteIs<'a>,
+    shift: &Shift,
+    buf: &'a mut [u8; MAX_PAD_NOTES],
+) -> midi_out::NoteIs<'a> {
+    match is {
+        midi_out::NoteIs::Pad(notes) => midi_out::NoteIs::Pad(shifted(notes, shift, buf)),
+        is => is,
     }
 }
 
