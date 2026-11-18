@@ -399,6 +399,37 @@ impl ThrowFx {
     }
 }
 
+/// A throw's own settings on the Perform FX of the strip it plays on
+/// ([`MixHost::throw_knobs`]): what the Perform view's Q-Links turn. They
+/// are the Perform FX pad's, so every throw of that effect on that strip
+/// shares them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ThrowKnobs {
+    pub on: StripId,
+    pub fx: ThrowFx,
+    /// The Perform FX insert's slot id (`Chain::uid`); `None` while the
+    /// strip has none.
+    pub uid: Option<u16>,
+    /// The pad's Effect (an index into `mpfree_fx::PERFORM_EFFECTS`), its
+    /// Length (an index into `mpfree_fx::PERFORM_LENGTHS`) and Amount (0
+    /// to 100).
+    pub effect: u8,
+    pub length: f32,
+    pub amount: f32,
+}
+
+impl ThrowKnobs {
+    /// Parameter `o` of the pad (`perf::LENGTH`, `perf::AMOUNT`) for the
+    /// mod engine, while the strip has its Perform FX.
+    pub fn addr(&self, o: u16) -> Option<ParamAddr> {
+        let strip = crate::modmix::strip_of(self.on)?;
+        Some(ParamAddr::new(
+            Owner::Insert(strip, self.uid?),
+            perf::slot(self.fx.pad()) + o,
+        ))
+    }
+}
+
 /// A period of stereo sound.
 pub type Stereo<'a> = (&'a [f32; PERIOD], &'a [f32; PERIOD]);
 
@@ -1421,9 +1452,35 @@ impl MixHost {
             .map(|n| n.param(id))
     }
 
+    /// Throw `fx`'s settings on strip `on`'s Perform FX, for the Perform
+    /// view's Q-Links: the pad that plays it there, its Effect, Length and
+    /// Amount, and the insert's slot id (`None`, with zeros, while the
+    /// strip has no Perform FX: still going in, or taken off on the Mix
+    /// tab).
+    pub fn throw_knobs(&self, on: StripId, fx: ThrowFx) -> ThrowKnobs {
+        let pad = fx.pad();
+        let uid = self
+            .perform_slot(on)
+            .and_then(|slot| self.mixer.chain(on)?.uid(slot));
+        let v = |o: u16| match uid {
+            Some(_) => self
+                .perform_param_on(on, perf::slot(pad) + o)
+                .unwrap_or(0.0),
+            None => 0.0,
+        };
+        ThrowKnobs {
+            on,
+            fx,
+            uid,
+            effect: v(perf::EFFECT).round().max(0.0) as u8,
+            length: v(perf::LENGTH),
+            amount: v(perf::AMOUNT),
+        }
+    }
+
     /// Strip `on`'s Perform FX: the first on its chain (the master's own
     /// is its first insert), if it has one.
-    fn perform_slot(&self, on: StripId) -> Option<usize> {
+    pub fn perform_slot(&self, on: StripId) -> Option<usize> {
         let c = self.mixer.chain(on)?;
         (0..c.len()).find(|&i| c.node(i).is_some_and(|n| n.info().id == PERFORM_FX))
     }
@@ -3128,6 +3185,36 @@ mod tests {
     /// nothing. When no throw plays on a strip any more, the Perform FX
     /// the set put there comes off; a project's set changes nothing; a
     /// full chain says why nothing went on.
+    #[test]
+    fn a_throws_knobs_are_its_pad_on_its_strips_perform_fx() {
+        use mpfree_play::mpfree_param::Strip;
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        run(&mut h, 10, 0.0, 0.0);
+        let drums = StripId::Track(DRUMS);
+        // The master's Perform FX, its default bank: the Delay throw's pad
+        // is an Echo throw, 1/8 dotted, 55 % feedback.
+        let k = h.throw_knobs(StripId::Master, ThrowFx::Delay);
+        assert!(k.uid.is_some());
+        assert_eq!((k.effect, k.length, k.amount), (12, 8.0, 55.0));
+        assert_eq!(
+            k.addr(perf::AMOUNT),
+            Some(ParamAddr::new(
+                Owner::Insert(Strip::Master, k.uid.unwrap()),
+                perf::slot(ThrowFx::Delay.pad()) + perf::AMOUNT
+            ))
+        );
+        // Drums has none until a throw's On picks it.
+        let none = h.throw_knobs(drums, ThrowFx::Reverb);
+        assert_eq!((none.uid, none.addr(perf::AMOUNT)), (None, None));
+        h.perform_strips(&[drums], false);
+        run(&mut h, 10, 0.0, 0.0);
+        let _ = h.poll_built();
+        run(&mut h, 2, 0.0, 0.0);
+        let k = h.throw_knobs(drums, ThrowFx::Reverb);
+        assert!(k.uid.is_some());
+        assert_eq!((k.effect, k.amount), (14, 70.0));
+    }
+
     #[test]
     fn picking_a_throws_strip_puts_a_perform_fx_there_and_it_plays_on_it() {
         let mut h = MixHost::new(RATE, 0.0, 0.0);

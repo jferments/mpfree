@@ -135,6 +135,14 @@ impl Throw {
         }
     }
 
+    /// The performance effect it holds (none for Drop drums, which mutes
+    /// the drums rather than playing an effect).
+    pub fn fx(self) -> Option<crate::mixing::ThrowFx> {
+        crate::play_page::THROW_LIST
+            .get(usize::from(self.index))
+            .and_then(|t| t.fx)
+    }
+
     /// Its name on Play's card ("Reverb wash").
     pub fn name(self) -> &'static str {
         crate::play_page::THROW_LIST
