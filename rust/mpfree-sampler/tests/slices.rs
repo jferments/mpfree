@@ -239,3 +239,206 @@ fn a_stretched_sliced_pad_plays_each_slice_of_its_copy() {
         assert!((heard - hz).abs() < 2.0, "slice {slice}: {heard} Hz");
     }
 }
+
+// R4 part 5: settings per slice.
+
+/// `sliced(s, slice)` with slice `i`'s own settings `set`.
+fn with_set(s: &Source, slice: u8, i: usize, set: SliceSet) -> Pad {
+    let mut p = sliced(s, slice);
+    p.layers[0].region.set_slice_set(i, set);
+    p
+}
+
+/// What a hit on pad 0 of `p` plays, to the end of its voice.
+fn whole_hit(p: &Project) -> Vec<f32> {
+    let mut e = engine(p);
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 127,
+    });
+    let mut out = Vec::new();
+    let (mut l, mut r) = (vec![0.0; 128], vec![0.0; 128]);
+    while e.active_voices() > 0 && out.len() < 4 * RATE as usize {
+        e.render(&mut l, &mut r);
+        out.extend_from_slice(&l);
+    }
+    let end = out
+        .iter()
+        .rposition(|v| v.abs() > 1e-6)
+        .map_or(0, |i| i + 1);
+    out.truncate(end);
+    out
+}
+
+fn hz(x: &[f32]) -> f32 {
+    let m = x.len() / 2;
+    mpfree_analysis::yin(&x[m - 4096..m + 4096], RATE, 4096, 60.0, 2000.0, 0.15)
+        .expect("pitched")
+        .0
+}
+
+#[test]
+fn a_slices_own_level_and_reverse_change_that_slice_alone() {
+    let s = ramp();
+    let quiet = SliceSet {
+        level_db: -6.0,
+        ..SliceSet::DEFAULT
+    };
+    let plain = project(&s, &[(0, sliced(&s, 2)), (1, sliced(&s, 3))]);
+    let p = project(
+        &s,
+        &[
+            (0, with_set(&s, 2, 2, quiet)),
+            (1, with_set(&s, 3, 2, quiet)),
+        ],
+    );
+    let (a, b) = (hit(&p, 0, &[]), hit(&plain, 0, &[]));
+    let g = 10f32.powf(-6.0 / 20.0);
+    assert!(b.iter().any(|x| x.abs() > 0.01));
+    for (x, y) in a.iter().zip(&b) {
+        assert!((x - y * g).abs() < 1e-5, "{x} against {y} at -6 dB");
+    }
+    assert_eq!(hit(&p, 1, &[]), hit(&plain, 1, &[]), "slice 4 as it was");
+    // Reversed, slice 3 plays as Chop to pads' reversed pad for it.
+    let back = SliceSet {
+        reverse: true,
+        ..SliceSet::DEFAULT
+    };
+    let mut pad = chopped(&s, 2);
+    pad.layers[0].region.reverse = true;
+    let p = project(&s, &[(0, with_set(&s, 2, 2, back)), (1, pad)]);
+    assert_eq!(hit(&p, 0, &[]), hit(&p, 1, &[]));
+}
+
+#[test]
+fn a_slices_own_pitch_repitches_it_and_plays_to_takes_it_on_to_the_end() {
+    // Two slices of a second each: 220 Hz, then 440 Hz.
+    let s = two_tones();
+    let mut r = Region::whole(&s);
+    r.slices = vec![44_100];
+    let pad = |set: SliceSet| {
+        let mut r = r.clone();
+        r.set_slice_set(0, set);
+        Pad::new("two", Layer::new(r))
+    };
+    let plain = whole_hit(&project(&s, &[(0, pad(SliceSet::DEFAULT))]));
+    assert!(
+        (plain.len() as f64 - 44_100.0).abs() < 300.0,
+        "{}",
+        plain.len()
+    );
+    assert!((hz(&plain) - 220.0).abs() < 2.0);
+    let up = whole_hit(&project(
+        &s,
+        &[(
+            0,
+            pad(SliceSet {
+                tune_st: 12,
+                ..SliceSet::DEFAULT
+            }),
+        )],
+    ));
+    assert!((up.len() as f64 - 22_050.0).abs() < 300.0, "{}", up.len());
+    assert!((hz(&up) - 440.0).abs() < 2.0, "{} Hz", hz(&up));
+    let on = whole_hit(&project(
+        &s,
+        &[(
+            0,
+            pad(SliceSet {
+                to_end: true,
+                ..SliceSet::DEFAULT
+            }),
+        )],
+    ));
+    assert!((on.len() as f64 - 88_200.0).abs() < 300.0, "{}", on.len());
+    assert_eq!(on[..40_000], plain[..40_000], "the same slice, on further");
+}
+
+#[test]
+fn a_slices_own_fade_and_cutoff_shape_it() {
+    let s = ramp();
+    let plain = hit(&project(&s, &[(0, sliced(&s, 2))]), 0, &[]);
+    let fade = SliceSet {
+        fade_out_ms: Some(20.0),
+        ..SliceSet::DEFAULT
+    };
+    let faded = hit(&project(&s, &[(0, with_set(&s, 2, 2, fade))]), 0, &[]);
+    let n = LEN / SLICES;
+    assert_eq!(
+        faded[..n - 900],
+        plain[..n - 900],
+        "the same until the fade"
+    );
+    let tail = |x: &[f32]| x[n - 300..n].iter().map(|v| v.abs()).sum::<f32>();
+    assert!(tail(&faded) < 0.2 * tail(&plain), "faded out");
+    // A low cutoff on the 440 Hz slice takes most of it away.
+    let s = two_tones();
+    let mut r = Region::whole(&s);
+    r.slices = vec![44_100];
+    let pad = |cutoff_hz: Option<f32>| {
+        let mut r = r.clone();
+        r.set_slice_set(
+            1,
+            SliceSet {
+                cutoff_hz,
+                ..SliceSet::DEFAULT
+            },
+        );
+        let mut p = Pad::new("two", Layer::new(r));
+        p.slice = 1;
+        p
+    };
+    let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+    let open = hit(&project(&s, &[(0, pad(None))]), 0, &[]);
+    let low = hit(&project(&s, &[(0, pad(Some(100.0)))]), 0, &[]);
+    assert!(rms(&low[2000..]) < 0.25 * rms(&open[2000..]), "filtered");
+}
+
+#[test]
+fn slice_settings_are_saved_kept_by_a_chop_onto_the_pad_and_checked() {
+    let s = ramp();
+    let set = SliceSet {
+        tune_st: -5,
+        level_db: -3.5,
+        reverse: true,
+        cutoff_hz: Some(1200.0),
+        fade_out_ms: Some(15.0),
+        to_end: true,
+    };
+    let pad = with_set(&s, 0, 3, set);
+    let mut r = pad.layers[0].region.clone();
+    assert_eq!(r.slice_sets.len(), 4, "defaults up to slice 4");
+    assert_eq!(r.slice_set(3), set);
+    assert_eq!(r.slice_set(7), SliceSet::DEFAULT);
+    r.set_slice_set(3, SliceSet::DEFAULT);
+    assert!(r.slice_sets.is_empty(), "no default entries at the end");
+    let p = project(&s, &[(0, pad), (1, chopped(&s, 0))]);
+    let text = save::to_text(&[("kit", &p)], 0, &|_| "break.wav".into());
+    assert!(text.contains("region.slice_sets = yes"), "{text}");
+    assert!(text.contains("region.slice_sets = no"), "the plain pad");
+    let opened = save::from_text(&text, &mut |_| Ok(s.clone())).unwrap();
+    let (_, q) = &opened.kits[0];
+    let back = &q.pad(0).unwrap().layers[0].region;
+    assert_eq!(
+        back.slice_sets,
+        p.pad(0).unwrap().layers[0].region.slice_sets
+    );
+    assert!(q.pad(1).unwrap().layers[0].region.slice_sets.is_empty());
+    // Chopped again onto itself (the pad as the template), it keeps them.
+    let mut p = p;
+    let c = ChopSet::grid("break", &s, SLICES).unwrap();
+    let own = p.pad(0).cloned();
+    p.chop_to_one_pad(c, 0, SLICES, 0, own.as_ref()).unwrap();
+    assert_eq!(p.pad(0).unwrap().layers[0].region.slice_set(3), set);
+    // Out of range: refused.
+    let mut bad = Region::whole(&s);
+    bad.slices = vec![1000];
+    bad.set_slice_set(
+        0,
+        SliceSet {
+            tune_st: 30,
+            ..SliceSet::DEFAULT
+        },
+    );
+    assert!(bad.check(&s).is_err());
+}

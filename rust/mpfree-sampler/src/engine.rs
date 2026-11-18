@@ -99,7 +99,8 @@ use crate::grain_clip::GrainClip;
 use crate::hits::{self, HitCell};
 use crate::model::{
     edge_gain, ChannelPick, Fade, GrainMode, GrainParams, Keys, LayerSelect, Levels, LoopMode,
-    MasterFx, PadsPlay, Pcm, PlayMode, PressureRoute, PressureTarget, Project, WarpMethod, PADS,
+    MasterFx, PadsPlay, Pcm, PlayMode, PressureRoute, PressureTarget, Project, SliceSet,
+    WarpMethod, PADS,
 };
 use crate::warp::{CopyMap, Warps};
 
@@ -314,6 +315,50 @@ pub struct ViewLayer {
     /// A sliced region's boundaries inside it, in the frames it reads
     /// (R4); empty when it isn't sliced or plays as grains.
     cuts: Vec<i64>,
+    /// Its slices' own settings, by slice number (R4 part 5), ready to
+    /// use: built with the view, so a hit only reads them. Empty when
+    /// none has any or it isn't sliced.
+    slice_sets: Vec<ViewSlice>,
+}
+
+/// A slice's own settings as a voice uses them ([`SliceSet`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ViewSlice {
+    /// Cents from the pad's pitch.
+    cents: f32,
+    /// Its level as a gain.
+    gain: f32,
+    reverse: bool,
+    /// A low-pass cutoff in place of the pad's filter's, Hz; 0 for none.
+    cutoff_hz: f32,
+    /// Its fade out, in the frames the layer reads; None: the region's.
+    fade_out: Option<u32>,
+    to_end: bool,
+}
+
+impl ViewSlice {
+    const PLAIN: ViewSlice = ViewSlice {
+        cents: 0.0,
+        gain: 1.0,
+        reverse: false,
+        cutoff_hz: 0.0,
+        fade_out: None,
+        to_end: false,
+    };
+
+    /// `s` for a layer reading `rate` frames a second.
+    fn of(s: &SliceSet, rate: u32) -> ViewSlice {
+        ViewSlice {
+            cents: f32::from(s.tune_st) * 100.0,
+            gain: db_to_gain(s.level_db),
+            reverse: s.reverse,
+            cutoff_hz: s.cutoff_hz.unwrap_or(0.0),
+            fade_out: s
+                .fade_out_ms
+                .map(|ms| (f64::from(ms) * f64::from(rate) / 1000.0).round() as u32),
+            to_end: s.to_end,
+        }
+    }
 }
 
 impl ViewLayer {
@@ -512,6 +557,15 @@ impl EngineView {
                             } else {
                                 r.cuts().map(|x| x as i64).collect()
                             },
+                            slice_sets: if r.mode == PlayMode::Granular || r.slice_count() < 2 {
+                                Vec::new()
+                            } else {
+                                r.slice_sets
+                                    .iter()
+                                    .take(r.slice_count())
+                                    .map(|x| ViewSlice::of(x, s.rate()))
+                                    .collect()
+                            },
                         };
                         if r.mode == PlayMode::Granular && r.grain_mode == GrainMode::Stretch {
                             hits::prepare(s.hits(), s.data(), s.channels(), s.rate());
@@ -526,7 +580,9 @@ impl EngineView {
                                 let semis = g.pitch.max(0.0) + g.pitch_spray.clamp(0.0, 24.0);
                                 ratio * f64::from(semis / 12.0).exp2()
                             } else {
-                                ratio
+                                // A slice's own pitch up (R4 part 5).
+                                let st = r.slice_sets.iter().map(|x| x.tune_st).max();
+                                ratio * (f64::from(st.unwrap_or(0).max(0)) / 12.0).exp2()
                             };
                             if may_pass_an_octave(p, up, project.pads_play()) {
                                 bandlimit::prepare(s.octaves(), s.data(), s.channels());
@@ -2647,22 +2703,30 @@ impl Engine {
                 .chain(l.cuts.iter().copied())
                 .chain(std::iter::once(l.end));
             match (edges.nth(k), edges.next()) {
-                (Some(a), Some(b)) if a < b => Some((a, b)),
+                (Some(a), Some(b)) if a < b => Some((a, b, k)),
                 _ => return,
             }
         } else {
             None
         };
-        // What the voice reads: the layer's region, the slice of it, or
-        // the audition's frames once. A slice doesn't loop.
+        // The slice's own settings (R4 part 5).
+        let own = cut
+            .and_then(|(_, _, k)| l.slice_sets.get(k))
+            .copied()
+            .unwrap_or(ViewSlice::PLAIN);
+        let level = level * own.gain;
+        // What the voice reads: the layer's region, the slice of it (on to
+        // the region's end, if the slice says so), or the audition's
+        // frames once. A slice doesn't loop.
         let (start, end, reverse, mode) = match (slice, cut) {
             (Some((a, b)), _) => (a, b, false, PlayMode::OneShot),
-            (None, Some((a, b))) => {
+            (None, Some((a, b, _))) => {
                 let mode = match l.mode {
                     PlayMode::Loop => PlayMode::Gate,
                     m => m,
                 };
-                (a, b, l.reverse, mode)
+                let b = if own.to_end { l.end } else { b };
+                (a, b, l.reverse != own.reverse, mode)
             }
             (None, None) => (l.start, l.end, l.reverse, l.mode),
         };
@@ -2701,7 +2765,14 @@ impl Engine {
         let (fade_in, fade_out) = if slice.is_some() {
             (None, None)
         } else {
-            (fit(l.fade_in), fit(l.fade_out))
+            let out = match own.fade_out {
+                Some(frames) => Fade {
+                    frames,
+                    ..l.fade_out
+                },
+                None => l.fade_out,
+            };
+            (fit(l.fade_in), fit(out))
         };
         // The pad's live settings and locks, where set, in place of its own.
         let kit_live = &self.lives[at];
@@ -2729,7 +2800,12 @@ impl Engine {
         if let Some(ms) = vary.decay_ms {
             (amp.decay_ms, amp.sustain) = (ms, 0.0);
         }
-        let filter = match vary.cutoff_hz {
+        // A slice's own cutoff in place of the pad's, unless the hit has
+        // one (16 Levels by Cutoff).
+        let cutoff = vary
+            .cutoff_hz
+            .or((own.cutoff_hz > 0.0).then_some(own.cutoff_hz));
+        let filter = match cutoff {
             Some(hz) if vp.filter.kind == FilterKind::Off => Some(Filter {
                 kind: FilterKind::LowPass,
                 poles: 2,
@@ -2762,6 +2838,8 @@ impl Engine {
                 program[ProgramField::Tune as usize],
             )
         };
+        // A slice's own pitch repitches it, warped or not.
+        let tune = tune + own.cents;
         let mut grain = pitched_grain(l.grain, semis as f32, l.tone);
         if tune != 0.0 {
             grain = pitched_grain(grain, tune / 100.0, l.tone);

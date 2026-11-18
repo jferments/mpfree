@@ -201,6 +201,21 @@ Each slice plays as it would on a pad of its own: from its cut to the next, with
 
 A sliced pad shows its slices everywhere: numbered lines on the **Wave** page (move them on the Chop page), "15 slices" under its name on the **Pads** tab, and the **Chop** page opens on its own slices, so you can move a cut and chop it again.
 
+#### Each slice its own sound
+
+{{shot: sample-play-slices | The Play page's Slices section on a break sliced in 8: slice 3 is picked and shaded, up 5 semitones with its own 2.4 kHz filter.}}
+
+The Play page's **Slices** section gives each slice of a sliced pad its own settings, on top of the pad's. Tap a slice on the picture (or turn **Slice**, Q-Link 1) to pick it, then set:
+
+- **Pitch**: up or down, in semitones (±24), so one snare can sit a fifth higher.
+- **Level**: louder or quieter, in dB.
+- **Reverse**: that slice alone backwards.
+- **Filter**: a low-pass of its own, in place of the pad's filter for that slice. **Off** (all the way up) uses the pad's.
+- **Fade out**: a fade at its end, to cut off a tail that runs into the next hit. **Region's** keeps the pad's own fade.
+- **Plays to**: **Its end** (the next cut), or **Sound end**, so the slice plays on through the rest of the break.
+
+Q-Links 2 to 4 turn the picked slice's pitch, level and filter. The **Slices** chip says how many slices have settings of their own ("8 · 1 set"). Each change is one **UNDO** step. Chopping the pad again onto itself keeps the settings of the slices that are still there, by number.
+
 ### Live: chop by playing
 
 {{shot: sample-chop-live | Live chop: the break playing, with a cut dropped at each pad hit so far.}}

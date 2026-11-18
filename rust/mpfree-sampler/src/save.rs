@@ -802,6 +802,7 @@ fn visit_region<F: Fields>(f: &mut F, r: &mut Region) {
         grain_mode,
         warp,
         slices,
+        slice_sets,
     } = r;
     f.num("start", start);
     f.num("end", end);
@@ -854,6 +855,75 @@ fn visit_region<F: Fields>(f: &mut F, r: &mut Region) {
     });
     // R4: a sliced region's boundaries (an older build plays it whole).
     f.list("slices", slices);
+    // R4 part 5: its slices' own settings, a list each, by slice number
+    // (`slice_sets = no` when none has any; an older build skips them).
+    let mut lists = (!slice_sets.is_empty()).then(|| SliceLists::of(slice_sets));
+    f.opt("slice_sets", &mut lists, SliceLists::default(), |f, l| {
+        f.list("tune_st", &mut l.tune_st);
+        f.list("level_db", &mut l.level_db);
+        f.list("reverse", &mut l.reverse);
+        f.list("cutoff_hz", &mut l.cutoff_hz);
+        f.list("fade_out_ms", &mut l.fade_out_ms);
+        f.list("to_end", &mut l.to_end);
+    });
+    *slice_sets = lists.map(|l| l.sets()).unwrap_or_default();
+}
+
+/// A region's [`SliceSet`]s as one list a setting, for the text: a flag
+/// is 0 or 1, and a cutoff or fade the region's own is 0 or -1.
+#[derive(Clone, Debug, Default)]
+struct SliceLists {
+    tune_st: Vec<i32>,
+    level_db: Vec<f32>,
+    reverse: Vec<u8>,
+    cutoff_hz: Vec<f32>,
+    fade_out_ms: Vec<f32>,
+    to_end: Vec<u8>,
+}
+
+impl SliceLists {
+    fn of(sets: &[SliceSet]) -> SliceLists {
+        SliceLists {
+            tune_st: sets.iter().map(|s| i32::from(s.tune_st)).collect(),
+            level_db: sets.iter().map(|s| s.level_db).collect(),
+            reverse: sets.iter().map(|s| u8::from(s.reverse)).collect(),
+            cutoff_hz: sets.iter().map(|s| s.cutoff_hz.unwrap_or(0.0)).collect(),
+            fade_out_ms: sets.iter().map(|s| s.fade_out_ms.unwrap_or(-1.0)).collect(),
+            to_end: sets.iter().map(|s| u8::from(s.to_end)).collect(),
+        }
+    }
+
+    /// The settings back: as many as the longest list, a missing or
+    /// unusable number at its default (the region's check refuses the
+    /// rest).
+    fn sets(&self) -> Vec<SliceSet> {
+        let n = [
+            self.tune_st.len(),
+            self.level_db.len(),
+            self.reverse.len(),
+            self.cutoff_hz.len(),
+            self.fade_out_ms.len(),
+            self.to_end.len(),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0)
+        .min(MAX_SLICES);
+        let d = SliceSet::DEFAULT;
+        (0..n)
+            .map(|i| SliceSet {
+                tune_st: self
+                    .tune_st
+                    .get(i)
+                    .map_or(d.tune_st, |&t| t.clamp(-128, 127) as i8),
+                level_db: self.level_db.get(i).copied().unwrap_or(d.level_db),
+                reverse: self.reverse.get(i).is_some_and(|&x| x != 0),
+                cutoff_hz: self.cutoff_hz.get(i).copied().filter(|&hz| hz > 0.0),
+                fade_out_ms: self.fade_out_ms.get(i).copied().filter(|&ms| ms >= 0.0),
+                to_end: self.to_end.get(i).is_some_and(|&x| x != 0),
+            })
+            .collect()
+    }
 }
 
 /// A layer, but for its region's source.

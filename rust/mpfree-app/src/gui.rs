@@ -12879,6 +12879,50 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         links.take_actions();
         out.push(("sample-play-links", links));
     }
+    // The Play tab's Slices on a pad sliced in 8 (R4 part 5): slice 3
+    // picked, up 5 semitones and filtered.
+    {
+        use mpfree_sampler::model::SliceSet;
+        use mpfree_sampler_ui::play_tab::{self, Section};
+        let mut sliced = sample_sampler(fonts());
+        let (mut project, _) = mpfree_sampler_ui::sample::project();
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let _ = project.edit_pad(pad, None, |p| {
+            let r = &mut p.layers[0].region;
+            let (a, b) = (r.start, r.end);
+            r.slices = (1..8).map(|k| a + (b - a) * k / 8).collect();
+            r.set_slice_set(
+                2,
+                SliceSet {
+                    tune_st: 5,
+                    cutoff_hz: Some(2400.0),
+                    ..SliceSet::DEFAULT
+                },
+            );
+        });
+        sliced.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        sliced.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(play_tab::TAB),
+        });
+        let i = Section::ALL
+            .iter()
+            .position(|s| *s == Section::Slices)
+            .unwrap_or(0);
+        sliced.on_event(UiEvent {
+            widget: play_tab::SECTIONS.into(),
+            kind: EventKind::Tab(i),
+        });
+        sliced.on_event(UiEvent {
+            widget: play_tab::SLICES.into(),
+            kind: EventKind::Marker { index: 2, frame: 0 },
+        });
+        sliced.take_actions();
+        out.push(("sample-play-slices", sliced));
+    }
     // The Play tab with the pads playing 16 Levels of the pad, by tune.
     {
         use mpfree_sampler_ui::play_tab::{Row, LIST};

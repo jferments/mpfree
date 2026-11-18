@@ -127,6 +127,20 @@ fn render_and_events_never_allocate() {
         // knobs pick their slices.
         if i % 4 == 2 || i == 5 {
             r.slices = (1..8).map(|k| k * 2500).collect();
+            // Some slices with their own settings (R4 part 5).
+            for k in (0..8).step_by(3) {
+                r.set_slice_set(
+                    k,
+                    SliceSet {
+                        tune_st: (k as i8) - 3,
+                        level_db: -2.0,
+                        reverse: k == 3,
+                        cutoff_hz: (k > 0).then_some(900.0),
+                        fade_out_ms: Some(5.0),
+                        to_end: k == 6,
+                    },
+                );
+            }
         }
         // Some at the project tempo: repitched, or stretched (no copy is
         // made here, so those repitch too).

@@ -1,6 +1,7 @@
 //! The pad editor's Play tab: how a pad plays its sound.
 //!
-//! - **Section chips** (Layers, Amp, Filter, Pitch, Mod, Pad, [`Section`])
+//! - **Section chips** (Layers, Amp, Filter, Pitch, Mod, Pad, Slices,
+//!   [`Section`])
 //!   split the pad's rows: a tap on one shows its picture across the page
 //!   ([`Section::view`]: the layer map, the envelope, the filter beside its
 //!   envelope, or the keyboard), its rows as a panel of controls under it
@@ -39,6 +40,13 @@
 //!   each pad a semitone up, played by the keygroups that hold them; or
 //!   **16 Levels** of the pad, each pad a step of what **Levels by** says
 //!   (velocity, tune, cutoff, decay or start).
+//! - **Slices** (R4 part 5), on a sliced pad: its sound across the page
+//!   with each slice numbered, the slice picked shaded. A tap on a slice
+//!   (or the Slice row) picks it, and its own **Pitch**, **Level**,
+//!   **Reverse**, **Filter** (a low-pass cutoff in place of the pad's),
+//!   **Fade out** and **Plays to** (its own end, or on to the sound's)
+//!   change it alone ([`SliceSet`]). On a pad that isn't sliced they are
+//!   faint, saying how to slice it.
 //! - The **scenes**, beside the panel on every section, hold the kit's scenes
 //!   (`mpfree_sampler::scene`): **Store A** and **Store B** keep the pads
 //!   as they are, the **crossfader** morphs every pad's level, pan, tune,
@@ -62,10 +70,12 @@ use std::sync::Arc;
 use mpfree_analysis::note_name;
 use mpfree_sampler::model::{
     Ahdsr, Filter, FilterKind, Keys, LayerSelect, Levels, ModelError, Pad, PadsPlay, PlayMode,
-    PressureTarget, Project, Source, SourceId, KEYGROUP_POLYPHONY, MAX_KEY_FADE, MAX_LAYERS,
-    MAX_VEL_FADE, PADS,
+    PressureTarget, Project, SliceSet, Source, SourceId, KEYGROUP_POLYPHONY, MAX_KEY_FADE,
+    MAX_LAYERS, MAX_VEL_FADE, PADS, SLICE_CUTOFF_HZ, SLICE_FADE_MS, SLICE_LEVEL_DB, SLICE_TUNE,
 };
-use mpfree_ui::{Color, EventKind, Ui, UiEvent};
+use mpfree_ui::layout;
+use mpfree_ui::wave::{Marker, MarkerKind, WaveView, Waveform};
+use mpfree_ui::{Color, EventKind, Rect, Ui, UiEvent};
 
 use crate::chop_tab::pad_text;
 use crate::keys_widgets::{KeyZones, Zone};
@@ -83,11 +93,15 @@ pub const ENV: &str = "smp-play-env";
 pub const FILTER: &str = "smp-play-filter";
 pub const LIST: &str = "smp-play-list";
 pub const KEYS: &str = "smp-play-keys";
+/// The Slices section's picture: the sliced layer's sound, its slices
+/// numbered (R4 part 5).
+pub const SLICES: &str = "smp-play-slices";
 pub const QLINKS: [&str; 4] = ["smp-play-q1", "smp-play-q2", "smp-play-q3", "smp-play-q4"];
 /// The scenes, beside the section's controls: Store A, Store B and
 /// Return to A, and the crossfader (a panel of its own, [`SCENE_ROWS`]).
 pub const SCENES: &str = "smp-play-scenes";
-/// The section chips over the page: Layers, Amp, Filter, Pitch, Mod, Pad.
+/// The section chips over the page: Layers, Amp, Filter, Pitch, Mod, Pad,
+/// Slices.
 pub const SECTIONS: &str = "smp-play-sections";
 /// The scenes' rows: Store A, Store B, Return to A (buttons, whose taps
 /// are [`EventKind::Tab`] with the row) and the crossfader
@@ -231,10 +245,21 @@ pub enum Row {
     AddLayer,
     /// The layer picked taken out ([`PlayAction::RemoveLayer`]): a button.
     RemoveLayer,
+    /// The Slices section's slice picked: the one its other rows set (R4
+    /// part 5). What the tab shows, not a setting.
+    SlicePick,
+    /// The slice picked's own settings ([`SliceSet`]): pitch, level,
+    /// reverse, its low-pass cutoff, fade out and where it plays to.
+    SliceTune,
+    SliceLevel,
+    SliceReverse,
+    SliceCutoff,
+    SliceFade,
+    SliceTo,
 }
 
 impl Row {
-    pub const ALL: [Row; 46] = [
+    pub const ALL: [Row; 53] = [
         Row::Polyphony,
         Row::MuteGroup,
         Row::Chokes,
@@ -281,6 +306,13 @@ impl Row {
         Row::EnvRelease,
         Row::AddLayer,
         Row::RemoveLayer,
+        Row::SlicePick,
+        Row::SliceTune,
+        Row::SliceLevel,
+        Row::SliceReverse,
+        Row::SliceCutoff,
+        Row::SliceFade,
+        Row::SliceTo,
     ];
 
     pub fn label(self) -> &'static str {
@@ -331,6 +363,13 @@ impl Row {
             Row::EnvRelease => "Env release",
             Row::AddLayer => "Add layer",
             Row::RemoveLayer => "Remove layer",
+            Row::SlicePick => "Slice",
+            Row::SliceTune => "Pitch",
+            Row::SliceLevel => "Level",
+            Row::SliceReverse => "Reverse",
+            Row::SliceCutoff => "Filter",
+            Row::SliceFade => "Fade out",
+            Row::SliceTo => "Plays to",
         }
     }
 
@@ -364,6 +403,19 @@ impl Row {
         )
     }
 
+    /// Whether the row is the slice picked's own setting (R4 part 5).
+    pub fn of_slice(self) -> bool {
+        matches!(
+            self,
+            Row::SliceTune
+                | Row::SliceLevel
+                | Row::SliceReverse
+                | Row::SliceCutoff
+                | Row::SliceFade
+                | Row::SliceTo
+        )
+    }
+
     /// Whether the row is the kit's, not the pad's.
     pub fn of_kit(self) -> bool {
         matches!(
@@ -391,16 +443,19 @@ pub enum Section {
     /// Voices, mute group, stops, also plays, latch, and what the kit's
     /// pads play.
     Pad,
+    /// A sliced pad's slices, each with its own settings (R4 part 5).
+    Slices,
 }
 
 impl Section {
-    pub const ALL: [Section; 6] = [
+    pub const ALL: [Section; 7] = [
         Section::Layers,
         Section::Amp,
         Section::Filter,
         Section::Pitch,
         Section::Mod,
         Section::Pad,
+        Section::Slices,
     ];
 
     pub fn label(self) -> &'static str {
@@ -411,6 +466,7 @@ impl Section {
             Section::Pitch => "Pitch",
             Section::Mod => "Mod",
             Section::Pad => "Pad",
+            Section::Slices => "Slices",
         }
     }
 
@@ -470,6 +526,15 @@ impl Section {
                 Row::PadsFrom,
                 Row::LevelsBy,
             ],
+            Section::Slices => &[
+                Row::SlicePick,
+                Row::SliceTune,
+                Row::SliceLevel,
+                Row::SliceReverse,
+                Row::SliceCutoff,
+                Row::SliceFade,
+                Row::SliceTo,
+            ],
         }
     }
 
@@ -482,15 +547,23 @@ impl Section {
             Section::Pitch => [Row::Tune, Row::Wow, Row::LowKey, Row::HighKey],
             Section::Mod => [Row::VelToLevel, Row::VelToStart, Row::Pressure, Row::Depth],
             Section::Pad => [Row::Polyphony, Row::MuteGroup, Row::PadsPlay, Row::PadsFrom],
+            Section::Slices => [
+                Row::SlicePick,
+                Row::SliceTune,
+                Row::SliceLevel,
+                Row::SliceCutoff,
+            ],
         }
     }
 
     /// The picture the section shows across the page: the layer map
     /// (Layers, Mod, Pad), the envelope over the sound (Amp, Pitch), the
-    /// filter beside its envelope (Filter), or the keyboard on Pitch and
-    /// Pad while `keys` (the pad is a keygroup or the pads play notes).
+    /// filter beside its envelope (Filter), the sound with its slices
+    /// (Slices), or the keyboard on Pitch and Pad while `keys` (the pad is
+    /// a keygroup or the pads play notes).
     pub fn view(self, keys: bool) -> &'static str {
         match self {
+            Section::Slices => SLICES,
             Section::Pitch | Section::Pad if keys => KEYS,
             Section::Layers | Section::Mod | Section::Pad => LAYERS,
             Section::Amp | Section::Pitch => ENV,
@@ -845,7 +918,11 @@ impl PlayAction {
         }
         let mut next = (**after).clone();
         for (l, n) in next.layers.iter_mut().zip(&now.layers) {
+            // A sliced region's slices' own settings are the tab's (R4
+            // part 5); the rest of a region is the other tabs'.
+            let sets = std::mem::take(&mut l.region.slice_sets);
             l.region = n.region.clone();
+            l.region.slice_sets = sets;
         }
         p.set_pad(*pad, Some(next), Some(*gesture))
     }
@@ -905,6 +982,8 @@ pub struct PlayTab {
     fade: f32,
     /// The section open.
     section: Section,
+    /// The Slices section's slice picked, from 0 (R4 part 5).
+    slice: usize,
 }
 
 impl PlayTab {
@@ -924,6 +1003,7 @@ impl PlayTab {
         ui.add(ENV, env);
         ui.add(FILTER, FilterCurve::new("Filter"));
         ui.add(KEYS, KeyZones::new("Keys"));
+        ui.add(SLICES, Waveform::new());
         let labels: Vec<&str> = Section::ALL.iter().map(|s| s.label()).collect();
         ui.add(SECTIONS, SectionChips::new(&labels));
         ui.add(LIST, SettingList::new("Layers"));
@@ -953,6 +1033,7 @@ impl PlayTab {
             laid_out: (Section::Layers, false),
             fade: 0.0,
             section: Section::Layers,
+            slice: 0,
         };
         tab.update(ui, st);
         Ok(tab)
@@ -984,9 +1065,10 @@ impl PlayTab {
         let mut said_layer = false;
         let rows = self.section.qlinks().map(|r| {
             let label = r.label().to_lowercase();
-            if r.of_layer() && !said_layer {
+            if (r.of_layer() || r.of_slice()) && !said_layer {
                 said_layer = true;
-                format!("layer {label}")
+                let of = if r.of_slice() { "slice" } else { "layer" };
+                format!("{of} {label}")
             } else {
                 label
             }
@@ -997,6 +1079,42 @@ impl PlayTab {
     /// The layer picked on the map, from 0.
     pub fn layer(&self) -> usize {
         self.layer
+    }
+
+    /// The Slices section's slice picked, from 0.
+    pub fn slice(&self) -> usize {
+        self.slice
+    }
+
+    /// Row `row`'s value as the list and its Q-Link card show it: the
+    /// slice picked's for the Slices rows, the layer picked's for a
+    /// layer's.
+    fn text(&self, st: &PlayState, row: Row) -> String {
+        if row == Row::SlicePick || row.of_slice() {
+            slice_text(&st.settings, self.slice, row)
+        } else {
+            st.layer_text(self.layer, row)
+        }
+    }
+
+    /// How far round row `row`'s knob is lit, 0 to 1.
+    fn pos(&self, st: &PlayState, row: Row) -> f32 {
+        if row == Row::SlicePick || row.of_slice() {
+            slice_pos(&st.settings, self.slice, row)
+        } else {
+            knob_pos(st, self.layer, row)
+        }
+    }
+
+    /// The Slice row (or a tap on the picture) picked slice `k`: its
+    /// settings show, and the next edit is a new undo step.
+    fn pick_slice(&mut self, ui: &mut Ui, st: &PlayState, k: usize) {
+        let k = k.min(slices(&st.settings) - 1);
+        if k != self.slice {
+            self.slice = k;
+            self.lift();
+        }
+        self.show(ui, st);
     }
 
     /// The layer picked on the map while it showed pad `pad`; None if it
@@ -1034,8 +1152,11 @@ impl PlayTab {
             self.shown_pad = Some(st.pad);
             self.layer = 0;
             self.last_velocity = None;
+            // A sliced pad's Slices open on the slice a hit plays.
+            self.slice = usize::from(st.settings.slice);
         }
         self.layer = self.layer.min(st.settings.layers.len().saturating_sub(1));
+        self.slice = self.slice.min(slices(&st.settings) - 1);
         self.lay_out(ui, st.shows_keys());
         self.show(ui, st);
     }
@@ -1281,6 +1402,7 @@ impl PlayTab {
         if let Some(z) = ui.get_mut::<KeyZones>(KEYS) {
             self.show_zones(z, st);
         }
+        self.show_slices(ui, st);
         let rows = self
             .section
             .rows()
@@ -1290,7 +1412,7 @@ impl PlayTab {
                 value: match r {
                     Row::Chokes => pads_text(self.bank, &p.chokes),
                     Row::Links => pads_text(self.bank, &p.links),
-                    _ => st.layer_text(self.layer, *r),
+                    _ => self.text(st, *r),
                 },
             })
             .collect();
@@ -1315,6 +1437,13 @@ impl PlayTab {
                 ),
                 Section::Layers => ("Layer 1".into(), sound.to_string()),
                 Section::Pad => ("Pad".into(), "and the kit's pads".into()),
+                Section::Slices => match slices(p) {
+                    1 => ("Slices".into(), "not sliced".into()),
+                    n => (
+                        format!("Slice {} of {n}", self.slice + 1),
+                        "its own settings".into(),
+                    ),
+                },
                 s => (s.label().into(), "the whole pad".into()),
             };
         }
@@ -1348,7 +1477,7 @@ impl PlayTab {
             .iter()
             .map(|&row| {
                 let knob = |steps: u32, bipolar: bool| Look::Knob {
-                    pos: knob_pos(st, self.layer, row),
+                    pos: self.pos(st, row),
                     steps,
                     bipolar,
                 };
@@ -1398,6 +1527,19 @@ impl PlayTab {
                     | Row::KeyFade
                     | Row::PadsFrom => Look::Stepper,
                     Row::AddLayer | Row::RemoveLayer => Look::Button(row.label().into()),
+                    Row::SlicePick => Look::Stepper,
+                    Row::SliceTune => knob(48, true),
+                    Row::SliceLevel => knob(level, false),
+                    Row::SliceReverse => {
+                        Look::Toggle(slice_on(p, self.slice).is_some_and(|s| s.reverse))
+                    }
+                    Row::SliceCutoff => knob(30, false),
+                    Row::SliceFade => knob(SLICE_FADES.len() as u32, false),
+                    Row::SliceTo => Look::Choice {
+                        options: vec!["Its end".into(), "Sound end".into()],
+                        on: usize::from(slice_on(p, self.slice).is_some_and(|s| s.to_end)),
+                        off: Vec::new(),
+                    },
                     Row::Sound
                     | Row::VelFade
                     | Row::Filter
@@ -1580,8 +1722,81 @@ impl PlayTab {
                 )
                 .note("every pad"),
             ],
+            Section::Slices => vec![
+                part("Slice", 200, vec![vec![it(Row::SlicePick).labelled()]]).note(
+                    &match slices(p) {
+                        1 => "not sliced".to_string(),
+                        n => format!("{} of {n}", self.slice + 1),
+                    },
+                ),
+                part(
+                    "Sound",
+                    260,
+                    vec![
+                        vec![it(Row::SliceTune), it(Row::SliceLevel)],
+                        vec![it(Row::SliceReverse)],
+                    ],
+                )
+                .note("this slice alone"),
+                part(
+                    "Shape",
+                    300,
+                    vec![
+                        vec![it(Row::SliceCutoff), it(Row::SliceFade)],
+                        vec![it(Row::SliceTo).labelled()],
+                    ],
+                )
+                .note("on top of the pad's"),
+            ],
         };
         Panel { sections }
+    }
+
+    /// The Slices picture: the sliced layer's sound from its start to its
+    /// end, a fixed line numbered at each slice's start, the slice picked
+    /// shaded; the first layer's sound, faint, on a pad that isn't sliced.
+    fn show_slices(&self, ui: &mut Ui, st: &PlayState) {
+        let p = &st.settings;
+        let layer = sliced_layer(p).unwrap_or(0);
+        let (Some(l), Some(sound)) = (p.layers.get(layer), st.sounds.get(layer)) else {
+            return;
+        };
+        let r = &l.region;
+        let width = slices_width(ui);
+        let Some(w) = ui.get_mut::<Waveform>(SLICES) else {
+            return;
+        };
+        w.set_peaks(Some(sound.view.peaks.clone()), width);
+        let frames = r.frames().max(1) as f64;
+        w.set_view(
+            WaveView {
+                start: r.start as f64,
+                frames_per_px: frames / f64::from(width.max(1)),
+            },
+            width,
+        );
+        w.set_region(Some((r.start, r.end)));
+        w.set_fades(0, 0);
+        let n = r.slice_count();
+        if n < 2 {
+            w.set_markers(Vec::new());
+            w.set_loop(None);
+            return;
+        }
+        w.set_markers(
+            (0..n)
+                .filter_map(|k| {
+                    let (a, _) = r.slice_bounds(k)?;
+                    let kind = if k == self.slice {
+                        MarkerKind::Cue
+                    } else {
+                        MarkerKind::Slice
+                    };
+                    Some(Marker::new(a, &(k + 1).to_string(), kind).fixed())
+                })
+                .collect(),
+        );
+        w.set_loop(r.slice_bounds(self.slice));
     }
 
     fn show_zones(&self, z: &mut KeyZones, st: &PlayState) {
@@ -1653,6 +1868,8 @@ impl PlayTab {
             };
             c.label = if matches!(r, Row::LayerLevel | Row::LayerPan | Row::LayerTune) {
                 format!("Q-Link {} · Layer {}", k + 1, r.label().to_lowercase())
+            } else if r.of_slice() {
+                format!("Q-Link {} · Slice {}", k + 1, r.label().to_lowercase())
             } else if *r == Row::Wow {
                 format!("Q-Link {} · Wow", k + 1)
             } else {
@@ -1660,8 +1877,8 @@ impl PlayTab {
             };
             c.scope = self.section.label().to_string();
             c.focused = *r == row;
-            (c.value, c.sub) = card_text(&st.layer_text(self.layer, *r));
-            c.pos = knob_pos(st, self.layer, *r);
+            (c.value, c.sub) = card_text(&self.text(st, *r));
+            c.pos = self.pos(st, *r);
             let why = faint_why(st, *r);
             c.enabled = why.is_none();
             c.why = why.unwrap_or_default().to_string();
@@ -1749,6 +1966,16 @@ impl PlayTab {
                     self.edit(st, Key::Env(*index), after)
                 }
             }
+            (SLICES, EventKind::Frame(f)) => {
+                let k = slice_at(&st.settings, *f)?;
+                self.pick_slice(ui, st, k);
+                None
+            }
+            (SLICES, EventKind::Marker { index, .. }) => {
+                // The lines stay put: a touch on one picks its slice.
+                self.pick_slice(ui, st, *index);
+                None
+            }
             (FILTER, EventKind::Marker { frame, .. }) => {
                 let mut after = st.settings.clone();
                 after.filter.cutoff_hz =
@@ -1762,7 +1989,7 @@ impl PlayTab {
             },
             (LIST, EventKind::Step { index, delta }) => {
                 let row = *self.section.rows().get(*index)?;
-                let a = self.step(st, row, *delta);
+                let a = self.step_on(ui, st, row, *delta);
                 self.show_cards(ui, st);
                 a
             }
@@ -1808,8 +2035,13 @@ impl PlayTab {
         if delta == 0 || faint_why(st, row).is_some() {
             return None;
         }
-        let Some(after) = turned(&st.settings, self.layer, row, delta, fine) else {
-            let a = self.step(st, row, delta);
+        let turn = if row.of_slice() {
+            turned_slice(&st.settings, self.slice, row, delta, fine)
+        } else {
+            turned(&st.settings, self.layer, row, delta, fine)
+        };
+        let Some(after) = turn else {
+            let a = self.step_on(ui, st, row, delta);
             self.show_cards(ui, st);
             return a;
         };
@@ -1819,9 +2051,22 @@ impl PlayTab {
     /// The data wheel: steps the row picked by `delta` detents.
     pub fn wheel(&mut self, ui: &mut Ui, st: &PlayState, delta: i32) -> Option<PlayAction> {
         let row = self.row(ui);
-        let a = self.step(st, row, delta);
+        let a = self.step_on(ui, st, row, delta);
         self.show_cards(ui, st);
         a
+    }
+
+    /// Row `row` stepped by `delta`, the Slice row picking a slice (which
+    /// changes what the tab shows, not the pad).
+    fn step_on(&mut self, ui: &mut Ui, st: &PlayState, row: Row, delta: i32) -> Option<PlayAction> {
+        if row == Row::SlicePick {
+            if delta != 0 && slices(&st.settings) > 1 {
+                let k = (self.slice as i32 + delta).max(0) as usize;
+                self.pick_slice(ui, st, k);
+            }
+            return None;
+        }
+        self.step(st, row, delta)
     }
 
     /// Whether a hit on a pad edits the row picked rather than picking
@@ -1915,6 +2160,13 @@ impl PlayTab {
         }
         if row.of_layer() {
             let p = stepped_layer(&st.settings, self.layer, row, delta);
+            return self.edit(st, Key::Row(row), p);
+        }
+        if row.of_slice() {
+            if slices(&st.settings) < 2 {
+                return None;
+            }
+            let p = stepped_slice(&st.settings, self.slice, row, delta);
             return self.edit(st, Key::Row(row), p);
         }
         let mut p = stepped(&st.settings, row, delta, st.granular());
@@ -2104,7 +2356,16 @@ fn faint_why(st: &PlayState, row: Row) -> Option<&'static str> {
         Row::LevelsBy if !matches!(st.pads_play, PadsPlay::Levels { .. }) => {
             Some("Set Pads play to 16 Levels first")
         }
-        Row::Slice if slices(p) < 2 => {
+        Row::Slice
+        | Row::SlicePick
+        | Row::SliceTune
+        | Row::SliceLevel
+        | Row::SliceReverse
+        | Row::SliceCutoff
+        | Row::SliceFade
+        | Row::SliceTo
+            if slices(p) < 2 =>
+        {
             Some("The pad isn't sliced: chop it on the Chop tab with Put on at 1 pad")
         }
         _ => None,
@@ -2185,6 +2446,25 @@ fn card_text(text: &str) -> (String, String) {
 fn section_text(st: &PlayState, s: Section) -> String {
     let p = &st.settings;
     match s {
+        Section::Slices => match slices(p) {
+            1 => "not sliced".into(),
+            n => {
+                let own = sliced_layer(p)
+                    .and_then(|i| p.layers.get(i))
+                    .map_or(0, |l| {
+                        l.region
+                            .slice_sets
+                            .iter()
+                            .take(n)
+                            .filter(|s| **s != SliceSet::DEFAULT)
+                            .count()
+                    });
+                match own {
+                    0 => format!("{n} slices"),
+                    k => format!("{n} · {k} set"),
+                }
+            }
+        },
         Section::Layers => match p.layers.len() {
             1 => "1 layer".into(),
             n => format!("{n} · {}", select_label(p.select).to_lowercase()),
@@ -2249,6 +2529,183 @@ pub fn slices(p: &Pad) -> usize {
         .map(|l| l.region.slice_count())
         .max()
         .unwrap_or(1)
+}
+
+/// The layer whose slices the Slices section shows and sets: the most
+/// sliced (the first of those); None when no layer is sliced.
+pub fn sliced_layer(p: &Pad) -> Option<usize> {
+    let most = slices(p);
+    (most > 1)
+        .then(|| p.layers.iter().position(|l| l.region.slice_count() == most))
+        .flatten()
+}
+
+/// Slice `k`'s own settings on the pad's sliced layer; None when it
+/// isn't sliced.
+pub fn slice_on(p: &Pad, k: usize) -> Option<SliceSet> {
+    let l = p.layers.get(sliced_layer(p)?)?;
+    Some(l.region.slice_set(k))
+}
+
+/// The slice of the sliced layer that frame `f` of its sound is in.
+fn slice_at(p: &Pad, f: u64) -> Option<usize> {
+    let r = &p.layers.get(sliced_layer(p)?)?.region;
+    if f < r.start || f >= r.end {
+        return None;
+    }
+    Some(r.cuts().take_while(|&x| x <= f).count())
+}
+
+/// Where the Slices picture's waveform sits on the page, its width.
+fn slices_width(ui: &Ui) -> i32 {
+    let Ok(node) = layout::parse(&layout(Section::Slices, false)) else {
+        return 800;
+    };
+    let (w, h) = ui.size();
+    let g = ui.theme.gap;
+    layout::solve(&node, Rect::new(0, 0, w, h).inset(g), g)
+        .into_iter()
+        .find(|(n, _)| n == SLICES)
+        .map_or(800, |(_, r)| Waveform::wave_rect(r).w)
+}
+
+/// A slice's fade outs the Fade out row steps through, ms, after the
+/// region's own.
+const SLICE_FADES: [f32; 12] = [
+    0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0,
+];
+const _: () = assert!(SLICE_FADES[SLICE_FADES.len() - 1] == *SLICE_FADE_MS.end());
+
+/// A Slices row's value with slice `k` picked: "3 of 16", "+5 st",
+/// "-3.0 dB", "On", "1.2 kHz" or "Off", "20 ms" or "Region's", "Its end"
+/// or "Sound end"; "–" on a pad that isn't sliced.
+pub fn slice_text(p: &Pad, k: usize, row: Row) -> String {
+    let n = slices(p);
+    let Some(s) = slice_on(p, k) else {
+        return "–".into();
+    };
+    match row {
+        Row::SlicePick => format!("{} of {n}", k + 1),
+        Row::SliceTune => format!("{:+} st", s.tune_st),
+        Row::SliceLevel => format!("{:+.1} dB", s.level_db),
+        Row::SliceReverse => if s.reverse { "On" } else { "Off" }.into(),
+        Row::SliceCutoff => s.cutoff_hz.map_or_else(|| "Off".into(), hz_text),
+        Row::SliceFade => s.fade_out_ms.map_or_else(|| "Region's".into(), ms_text),
+        Row::SliceTo => if s.to_end { "Sound end" } else { "Its end" }.into(),
+        _ => value_text(p, row),
+    }
+}
+
+/// How far round a Slices row's knob is lit, 0 to 1.
+fn slice_pos(p: &Pad, k: usize, row: Row) -> f32 {
+    let n = slices(p);
+    let s = slice_on(p, k).unwrap_or_default();
+    let (lo, hi) = (*SLICE_CUTOFF_HZ.start(), *SLICE_CUTOFF_HZ.end());
+    let x = match row {
+        Row::SlicePick if n > 1 => k as f32 / (n - 1) as f32,
+        Row::SliceTune => {
+            (f32::from(s.tune_st) - f32::from(*SLICE_TUNE.start()))
+                / f32::from(SLICE_TUNE.end() - SLICE_TUNE.start())
+        }
+        Row::SliceLevel => {
+            (s.level_db - SLICE_LEVEL_DB.start()) / (SLICE_LEVEL_DB.end() - SLICE_LEVEL_DB.start())
+        }
+        Row::SliceCutoff => s
+            .cutoff_hz
+            .map_or(1.0, |hz| (hz / lo).ln() / (hi / lo).ln()),
+        Row::SliceFade => fade_step(s.fade_out_ms) as f32 / SLICE_FADES.len() as f32,
+        _ => 0.0,
+    };
+    x.clamp(0.0, 1.0)
+}
+
+/// The Fade out row's step for a fade: 0 for the region's own, then
+/// the nearest of [`SLICE_FADES`] from 1.
+fn fade_step(ms: Option<f32>) -> usize {
+    ms.map_or(0, |ms| {
+        1 + SLICE_FADES
+            .iter()
+            .enumerate()
+            .min_by(|a, b| (a.1 - ms).abs().total_cmp(&(b.1 - ms).abs()))
+            .map_or(0, |(i, _)| i)
+    })
+}
+
+/// `p` with its slice `k`'s row `row` set by `f`, on its sliced layer.
+fn with_slice(p: &Pad, k: usize, f: impl FnOnce(&mut SliceSet)) -> Pad {
+    let mut p = p.clone();
+    if let Some(l) = sliced_layer(&p).and_then(|i| p.layers.get_mut(i)) {
+        let mut s = l.region.slice_set(k);
+        f(&mut s);
+        l.region.set_slice_set(k, s);
+    }
+    p
+}
+
+/// `p` with slice `k`'s row `row` stepped by `delta` steps (an arrow or
+/// the wheel): a semitone, half a dB, a third of an octave (from Off at
+/// the top), a fade step; Reverse and Plays to flip.
+pub fn stepped_slice(p: &Pad, k: usize, row: Row, delta: i32) -> Pad {
+    let d = delta as f32;
+    with_slice(p, k, |s| match row {
+        Row::SliceTune => {
+            s.tune_st = (i32::from(s.tune_st) + delta)
+                .clamp(i32::from(*SLICE_TUNE.start()), i32::from(*SLICE_TUNE.end()))
+                as i8
+        }
+        Row::SliceLevel => {
+            s.level_db = round_to(s.level_db + d * LEVEL_STEP_DB, LEVEL_STEP_DB)
+                .clamp(*SLICE_LEVEL_DB.start(), *SLICE_LEVEL_DB.end())
+        }
+        Row::SliceReverse => s.reverse = !s.reverse,
+        Row::SliceTo => s.to_end = !s.to_end,
+        Row::SliceCutoff => s.cutoff_hz = cutoff_stepped(s.cutoff_hz, d * 4.0),
+        Row::SliceFade => {
+            let at = fade_step(s.fade_out_ms) as i32 + delta;
+            s.fade_out_ms = match at.clamp(0, SLICE_FADES.len() as i32) {
+                0 => None,
+                i => Some(SLICE_FADES[i as usize - 1]),
+            };
+        }
+        _ => {}
+    })
+}
+
+/// A slice's cutoff moved `semis` semitones. Off is the top: up from Off
+/// stays Off, down from Off starts below 20 kHz, and up to 20 kHz is Off
+/// again.
+fn cutoff_stepped(hz: Option<f32>, semis: f32) -> Option<f32> {
+    let (lo, hi) = (*SLICE_CUTOFF_HZ.start(), *SLICE_CUTOFF_HZ.end());
+    let moved = |from: f32| (from * (semis / 12.0).exp2()).round();
+    match hz {
+        None if semis >= 0.0 => None,
+        None => Some(moved(hi).clamp(lo, hi)),
+        Some(hz) => {
+            let to = moved(hz);
+            (to < hi).then(|| to.max(lo))
+        }
+    }
+}
+
+/// `p` with slice `k`'s row `row` turned by a Q-Link `delta` detents
+/// (finer with `fine`): a semitone (no finer), 0.5 dB (0.1), a semitone
+/// of cutoff (a tenth); None for the rows that step as their arrows do.
+fn turned_slice(p: &Pad, k: usize, row: Row, delta: i32, fine: bool) -> Option<Pad> {
+    if slices(p) < 2 {
+        return None;
+    }
+    let d = delta as f32;
+    match row {
+        Row::SliceLevel => Some(with_slice(p, k, |s| {
+            let step = if fine { 0.1 } else { LEVEL_STEP_DB };
+            s.level_db = round_to(s.level_db + d * step, 0.1)
+                .clamp(*SLICE_LEVEL_DB.start(), *SLICE_LEVEL_DB.end());
+        })),
+        Row::SliceCutoff => Some(with_slice(p, k, |s| {
+            s.cutoff_hz = cutoff_stepped(s.cutoff_hz, if fine { d * 0.1 } else { d });
+        })),
+        _ => None,
+    }
 }
 
 /// `p` with row `row` stepped by `delta` steps, within its limits.
@@ -2397,6 +2854,14 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
         | Row::LayerTune => {}
         // Buttons: see [`PlayTab::action`].
         Row::AddLayer | Row::RemoveLayer => {}
+        // The slice picked's: the tab steps them ([`stepped_slice`]).
+        Row::SlicePick
+        | Row::SliceTune
+        | Row::SliceLevel
+        | Row::SliceReverse
+        | Row::SliceCutoff
+        | Row::SliceFade
+        | Row::SliceTo => {}
     }
     p
 }
@@ -2535,6 +3000,14 @@ pub fn value_text(p: &Pad, row: Row) -> String {
         // A layer's rows show the first layer's (the tab shows the layer
         // picked's: [`PlayState::layer_text`]).
         Row::Sound | Row::AddLayer | Row::RemoveLayer => String::new(),
+        // The slice a hit plays's, here ([`slice_text`] for another).
+        Row::SlicePick
+        | Row::SliceTune
+        | Row::SliceLevel
+        | Row::SliceReverse
+        | Row::SliceCutoff
+        | Row::SliceFade
+        | Row::SliceTo => slice_text(p, usize::from(p.slice), row),
         Row::VelLow | Row::VelHigh | Row::LayerLevel | Row::LayerPan | Row::LayerTune => {
             let Some(l) = p.layers.first() else {
                 return "–".into();
