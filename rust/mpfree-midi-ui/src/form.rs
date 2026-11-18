@@ -746,7 +746,7 @@ impl<F: Form> FormSection<F> {
 }
 
 /// The hint line under the view while a section shows.
-pub(crate) const HINT: &str = "Tap a setting to change it  ·  wheel: select a row  ·  - and +: step it  ·  Q-Links: the row's settings  ·  the I/O icon or TRACK MIX closes";
+pub(crate) const HINT: &str = "Tap a setting to change it  ·  wheel: select a row  ·  - and +: step it  ·  Q-Links: the row's settings  ·  TRACK MIX: back";
 /// The hint line while a picker is open.
 pub(crate) const HINT_PICKER: &str = "Tap a choice  ·  Done or Back closes";
 
