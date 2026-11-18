@@ -637,7 +637,8 @@ CHECKS = (
         ["the_perform_sets_pages_throw_mute_and_launch",
          "pad_bank_pages_the_perform_set_and_its_throws_let_go_with_it",
          "the_pads_switch_and_chip_turn_the_loop_keys_on_and_off",
-         "throws_mutes_and_scenes_light_by_what_they_do"],
+         "throws_mutes_and_scenes_light_by_what_they_do",
+         "perform_pages_record_nothing_while_the_notes_record"],
         needs=['SHIFT', 'SAMPLER', 'PAD BANK B/F']),
     Check(
         "live-erase", "Live erase: ERASE held and a pad pressed while recording takes that pad's hits out",
