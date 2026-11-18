@@ -119,6 +119,7 @@ mod modpanels;
 mod pace;
 mod parts;
 mod perf;
+mod perform_pads;
 mod play_page;
 mod play_widgets;
 mod plugin_page;
@@ -5129,6 +5130,8 @@ fn player_session(
     // steps (their release plays nothing), and the colours the mute keys
     // show (None: the pads show as usual).
     let mut mute_pressed = [false; 16];
+    // The loop keys held (SHIFT + SAMPLER on the Looper tab).
+    let mut keys_held = perform_pads::Held::default();
     let mut mute_shown: Option<[[u8; 3]; 16]> = None;
     // Live transpose (S4): each track's arp notes by number, and where its
     // shift took them (SeqPads::sounding).
@@ -5278,6 +5281,18 @@ fn player_session(
                 gui::FromUi::Pad { pad, down: false } if pad < 16 && step_keys.held(pad) => {
                     let r = step_keys.release(pad, &mut time);
                     let_go_of_step(r, out, &mut player, &mut synth, synth_on);
+                    out.show(gui::ToUi::PadUp(pad));
+                }
+                gui::FromUi::Pad { pad, down: true } if pad < 16 && app.pads_are_loop_keys() => {
+                    keys_held.press(pad, t);
+                    let action = app.perform_page().action(pad);
+                    let (more, line) = desk::perform_pad(&mut app, &time, &looper, out, action);
+                    fx.extend(more);
+                    if !line.is_empty() {
+                        out.note(&line);
+                    }
+                }
+                gui::FromUi::Pad { pad, down: false } if pad < 16 && keys_held.release(pad) => {
                     out.show(gui::ToUi::PadUp(pad));
                 }
                 gui::FromUi::Pad { pad, down: true } if pad < 16 && app.pads_mute() => {
@@ -6216,6 +6231,21 @@ fn player_session(
                     out.show(gui::ToUi::PadUp(pad as usize));
                 }
                 Some(ControlEvent::PadDown { pad, .. })
+                    if (pad as usize) < 16 && app.pads_are_loop_keys() =>
+                {
+                    let pad = pad as usize;
+                    keys_held.press(pad, t);
+                    let action = app.perform_page().action(pad);
+                    let (more, line) = desk::perform_pad(&mut app, &time, &looper, out, action);
+                    fx.extend(more);
+                    if !line.is_empty() {
+                        out.note(&line);
+                    }
+                }
+                Some(ControlEvent::PadUp { pad }) if keys_held.release(pad as usize) => {
+                    out.show(gui::ToUi::PadUp(pad as usize));
+                }
+                Some(ControlEvent::PadDown { pad, .. })
                     if (pad as usize) < 16 && app.pads_mute() =>
                 {
                     mute_pressed[pad as usize] = true;
@@ -6386,6 +6416,17 @@ fn player_session(
             out.show(gui::ToUi::QLinkTouch(k, false));
             if app.view().sampler() {
                 out.show(gui::ToUi::SampleLift);
+            }
+        }
+        // A loop key held for a second clears its loop, as a ring held on
+        // the Looper tab does.
+        for pad in keys_held.holds(t) {
+            if app.pads_are_loop_keys() {
+                let (more, line) = desk::perform_pad_held(app.perform_page().action(pad));
+                fx.extend(more);
+                if !line.is_empty() {
+                    out.note(&line);
+                }
             }
         }
         fx.extend(app.tick(t));
@@ -7185,6 +7226,18 @@ fn player_session(
                 }
                 pages_shown = Some(pages);
             }
+        } else if app.pads_are_loop_keys() {
+            // The loop keys, lit by their loops' states.
+            pages_shown = None;
+            let blink = ((t * 4.0) as u64).is_multiple_of(2);
+            let want =
+                perform_pads::colours(app.perform_page(), &perform_pads::lights(&looper), blink);
+            for pad in 0..16 {
+                if mute_shown.is_none_or(|s| s[pad] != want[pad]) {
+                    ports.send(false, &akai::pad_colour(pad as u8, want[pad]))?;
+                }
+            }
+            mute_shown = Some(want);
         } else if keys != app::MuteKeys::Off {
             pages_shown = None;
             let kit = player.kit();

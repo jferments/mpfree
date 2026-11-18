@@ -908,6 +908,9 @@ pub struct Status {
     pub mute_keys: MuteKeys,
     /// TRACK MUTE's bank (A = 0: tracks 1-16).
     pub mute_bank: usize,
+    /// The loop keys are on (SHIFT + SAMPLER on the Looper tab): the pads
+    /// are the loop keys on the Looper tab and Play.
+    pub loop_keys: bool,
     /// STEP SEQ: the pads as steps, or STEP SEQ held to pick the sound.
     pub steps: Option<StepPads>,
     /// ERASE held: the next tap on the screen deletes what it lands on
@@ -1219,6 +1222,11 @@ pub struct App {
     mute_bank: usize,
     /// TRACK MUTE held (without SHIFT): a pad tapped solos its track.
     mute_hold: Option<MuteHold>,
+    /// The Perform pads' page on the pads (SHIFT + SAMPLER on the Looper
+    /// tab), and the page: the loop keys
+    /// ([`crate::perform_pads::PerformPage::loop_keys`]).
+    loop_keys: bool,
+    perform_page: crate::perform_pads::PerformPage,
     /// The project's tracks (the audio loop tells it).
     track_count: usize,
     /// The 16 Levels panel shows on Play: the wheel picks its kind.
@@ -1450,6 +1458,8 @@ impl App {
             mute_keys: MuteKeys::Off,
             mute_bank: 0,
             mute_hold: None,
+            loop_keys: false,
+            perform_page: crate::perform_pads::PerformPage::loop_keys(),
             track_count: 0,
             levels_open: false,
             levels_on: false,
@@ -1902,6 +1912,66 @@ impl App {
         self.levels_on && self.levels_transpose
     }
 
+    /// The pads are the loop keys now: turned on (SHIFT + SAMPLER on the
+    /// Looper tab, or the deck's Pads switch), on the Looper tab or Play.
+    /// Elsewhere they play the kit, and come back as loop keys on return.
+    pub fn pads_are_loop_keys(&self) -> bool {
+        self.loop_keys && matches!(self.view, View::Looper | View::Play)
+    }
+
+    /// The Perform pads' page the pads show as loop keys.
+    pub fn perform_page(&self) -> &crate::perform_pads::PerformPage {
+        &self.perform_page
+    }
+
+    /// The loop keys on or off (SHIFT + SAMPLER on the Looper tab, the
+    /// deck's Pads switch). One pad mode at a time: STEP SEQ, TRACK MUTE
+    /// and 16 Levels give the pads up to them.
+    pub fn toggle_loop_keys(&mut self) -> Vec<Effect> {
+        self.set_loop_keys(!self.loop_keys)
+    }
+
+    fn set_loop_keys(&mut self, on: bool) -> Vec<Effect> {
+        if on == self.loop_keys {
+            return Vec::new();
+        }
+        let mut fx = Vec::new();
+        if on {
+            fx.extend(self.steps_off());
+            self.mute_hold = None;
+            if self.mute_keys != MuteKeys::Off {
+                fx.extend(self.set_mute_keys(MuteKeys::Off));
+            }
+            if self.levels_on {
+                // 16 Levels give the pads up too (the screen says back).
+                fx.push(Effect::SixteenLevels);
+            }
+            fx.retain(|e| !matches!(e, Effect::Status(_) | Effect::Note(_)));
+        }
+        self.loop_keys = on;
+        fx.extend([
+            self.status(),
+            Effect::Note(if on {
+                "SHIFT + SAMPLER: the pads are the loop keys (top two rows: \
+                 each loop's key; bottom two: its mute)"
+                    .to_string()
+            } else {
+                "SHIFT + SAMPLER: the pads play again".to_string()
+            }),
+        ]);
+        fx
+    }
+
+    /// Another pad mode took the pads (STEP SEQ, TRACK MUTE, 16 Levels):
+    /// the loop keys go off.
+    fn loop_keys_off(&mut self) -> Vec<Effect> {
+        if !self.loop_keys {
+            return Vec::new();
+        }
+        self.loop_keys = false;
+        vec![self.status()]
+    }
+
     /// A pad tapped as a mute key: what it does. In Make a mute acts at
     /// once and in Perform it waits for the launch line; SHIFT gives the
     /// other timing. With TRACK MUTE held the tap solos its track: the
@@ -2020,6 +2090,7 @@ impl App {
             bpm: self.settings.bpm,
             mute_keys: self.mute_keys,
             mute_bank: self.mute_bank,
+            loop_keys: self.loop_keys,
             steps: self.step_pads(),
             erase: self.erase_held,
             copy: self.copy_held(),
@@ -2389,7 +2460,13 @@ impl App {
         } else if is(m.next_seq) {
             self.go(View::Arrange)
         } else if is(m.sampler) {
-            self.go(if shift { View::Looper } else { View::Sample })
+            // SHIFT + SAMPLER: the Looper tab; pressed again there, the
+            // pads become the loop keys, or play again.
+            if shift && self.view == View::Looper {
+                self.toggle_loop_keys()
+            } else {
+                self.go(if shift { View::Looper } else { View::Sample })
+            }
         } else if is(m.sample_edit) {
             let mut fx = vec![Effect::SampleEditor(crate::sample_page::Editor::Wave)];
             fx.extend(self.go(View::Sample));
@@ -2423,8 +2500,10 @@ impl App {
             } else {
                 MuteKeys::Tracks
             };
-            // One pad mode at a time: STEP SEQ gives the pads up.
+            // One pad mode at a time: STEP SEQ and the loop keys give the
+            // pads up.
             let mut off = self.steps_off();
+            off.extend(self.loop_keys_off());
             self.mute_keys = if self.mute_keys == want {
                 MuteKeys::Off
             } else {
@@ -2482,9 +2561,10 @@ impl App {
         self.levels_transpose = on && transpose;
         let mut fx = Vec::new();
         if on && !self.levels_on {
-            // One pad mode at a time: STEP SEQ and TRACK MUTE give the
-            // pads up to 16 Levels.
+            // One pad mode at a time: STEP SEQ, TRACK MUTE and the loop
+            // keys give the pads up to 16 Levels.
             fx.extend(self.steps_off());
+            fx.extend(self.loop_keys_off());
             self.mute_hold = None;
             if self.mute_keys != MuteKeys::Off {
                 self.mute_keys = MuteKeys::Off;
@@ -7261,6 +7341,74 @@ mod tests {
         press(&mut app, TRACK_MUTE);
         press(&mut app, TRACK_MUTE);
         assert_eq!(app.mute_keys(), MuteKeys::Off);
+    }
+
+    /// SHIFT + SAMPLER pressed again on the Looper tab: the pads are the
+    /// loop keys (the Looper as an instrument, step 2), on the Looper tab
+    /// and Play and not elsewhere, until SHIFT + SAMPLER again. One pad
+    /// mode at a time: the loop keys take the pads from TRACK MUTE and
+    /// STEP SEQ, and give them up to either.
+    #[test]
+    fn shift_sampler_again_on_the_looper_tab_makes_the_pads_loop_keys() {
+        const SHIFT: u8 = button::SHIFT;
+        const SAMPLER: u8 = button::SAMPLER;
+        const STEP_SEQ: u8 = button::STEP_SEQ;
+        let mut app = ready();
+        // SHIFT + SAMPLER elsewhere opens the Looper tab and leaves the
+        // pads as they were.
+        held(&mut app, SHIFT, |a| press(a, SAMPLER));
+        assert_eq!(app.view(), View::Looper);
+        assert!(!app.pads_are_loop_keys());
+        // Again, there: the loop keys.
+        let fx = held(&mut app, SHIFT, |a| press(a, SAMPLER));
+        assert!(app.pads_are_loop_keys());
+        assert!(app.status_now().loop_keys);
+        assert!(
+            fx.iter()
+                .any(|e| matches!(e, Effect::Note(n) if n.contains("the pads are the loop keys"))),
+            "{fx:?}"
+        );
+        assert_eq!(
+            app.perform_page().action(12),
+            crate::perform_pads::PadAction::LoopKey(0),
+            "pad 13 is Loop 1's key"
+        );
+        // On Play they stay keys; on Sample the pads play, and back on
+        // the Looper tab they are keys again.
+        app.open_tab(View::Play);
+        assert!(app.pads_are_loop_keys());
+        app.open_tab(View::Sample);
+        assert!(!app.pads_are_loop_keys());
+        app.open_tab(View::Looper);
+        assert!(app.pads_are_loop_keys());
+        // TRACK MUTE takes the pads, and the loop keys go off.
+        const TRACK_MUTE: u8 = 68;
+        app.map.learn(mapper::Job::TrackMute, Some(TRACK_MUTE));
+        press(&mut app, TRACK_MUTE);
+        assert_eq!(app.mute_keys(), MuteKeys::Tracks);
+        assert!(!app.pads_are_loop_keys());
+        // The loop keys take them back from TRACK MUTE.
+        held(&mut app, SHIFT, |a| press(a, SAMPLER));
+        assert!(app.pads_are_loop_keys());
+        assert_eq!(app.mute_keys(), MuteKeys::Off);
+        // STEP SEQ takes them too (and opens Play's Beats, as always).
+        click(&mut app, STEP_SEQ);
+        assert!(app.pads_are_steps());
+        assert!(!app.pads_are_loop_keys());
+        assert_eq!(app.view(), View::Play);
+        // SHIFT + SAMPLER on Play opens the Looper tab; again there, the
+        // loop keys.
+        held(&mut app, SHIFT, |a| press(a, SAMPLER));
+        assert_eq!(app.view(), View::Looper);
+        assert!(!app.pads_are_loop_keys());
+        held(&mut app, SHIFT, |a| press(a, SAMPLER));
+        assert!(app.pads_are_loop_keys());
+        assert!(!app.pads_are_steps(), "and give STEP SEQ's pads back");
+        // SHIFT + SAMPLER again: the pads play.
+        let fx = held(&mut app, SHIFT, |a| press(a, SAMPLER));
+        assert!(!app.pads_are_loop_keys());
+        assert!(fx.contains(&Effect::Note("SHIFT + SAMPLER: the pads play again".into())));
+        assert_eq!(app.view(), View::Looper);
     }
 
     /// TRACK MUTE held with a pad tapped: a solo, and letting go leaves

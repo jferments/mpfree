@@ -722,6 +722,8 @@ pub struct LooperPage {
     transport: TransportInfo,
     /// What the Q-Links turn.
     bank: LoopBank,
+    /// The pads are the loop keys: the deck's Pads switch is lit.
+    pads_keys: bool,
 }
 
 impl LooperPage {
@@ -749,6 +751,7 @@ impl LooperPage {
             places: Default::default(),
             transport: TransportInfo::default(),
             bank: LoopBank::default(),
+            pads_keys: false,
         };
         p.update(ui, &LooperView::default(), &Settings::default());
         Ok(p)
@@ -836,6 +839,17 @@ impl LooperPage {
         if let Some(l) = self.levelled.get_mut(n) {
             *l = Some((level, Instant::now()));
         }
+    }
+
+    /// Whether the pads are the loop keys (the app's status): the deck's
+    /// Pads switch follows.
+    pub fn set_pads_keys(&mut self, ui: &mut Ui, on: bool) {
+        if self.pads_keys == on {
+            return;
+        }
+        self.pads_keys = on;
+        let v = self.view.clone();
+        self.refresh_deck(ui, &v);
     }
 
     /// The Q-Links' bank now.
@@ -1292,6 +1306,7 @@ impl LooperPage {
             },
             tempo: format!("{:.0} BPM", t.bpm),
             memory: memory(v),
+            pads: self.pads_keys,
         };
         // An armed loop starts on the next bar line (on the bar PLAY
         // starts while stopped).
@@ -1307,15 +1322,7 @@ impl LooperPage {
                 } else {
                     bars_word(bars)
                 };
-                let state = match l.phase {
-                    Phase::Empty => RingState::Empty,
-                    Phase::Armed => RingState::Waiting(next_bar),
-                    Phase::Recording => RingState::Recording,
-                    Phase::Overdubbing => RingState::Overdubbing,
-                    Phase::Playing if l.muted => RingState::Muted,
-                    Phase::Playing if !l.on => RingState::Off,
-                    Phase::Playing => RingState::Playing,
-                };
+                let state = RingState::of(l, next_bar);
                 let level = self.level_of(n, l);
                 let (position, ring_bars, centre) = match state {
                     RingState::Empty => (0.0, 0, ("+".to_string(), String::new())),
