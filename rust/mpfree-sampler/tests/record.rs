@@ -562,6 +562,35 @@ fn a_threshold_recording_keeps_its_pre_roll_and_lasts_its_length() {
     assert_eq!(rec.started_at(), Some(2_501));
 }
 
+/// Threshold and Pre-roll turned while a take waits for its sound: it
+/// listens for the new level from there on, with the new pre-roll; once
+/// it has started (or when it doesn't start on a threshold) it can't.
+#[test]
+fn a_waiting_threshold_hears_a_new_level_and_pre_roll() {
+    let (mut f, i) = input(10, RATE);
+    feed_periods(&mut f, 10, 1_000_000, 0);
+    let mut rec = Recording::new(
+        &i,
+        Start::Threshold {
+            level: 1e9,
+            pre_roll: 100,
+        },
+        End::Frames(1_000),
+        RATE as u64 * 60,
+    );
+    feed_periods(&mut f, 10, 1_000_000, 0);
+    assert_eq!(rec.poll(&i), Ok(Progress::Waiting));
+    // Everything heard so far was under 1e9; the next frame is over 0.5.
+    let heard = f.audio.written();
+    assert!(rec.set_threshold(0.5, 300));
+    feed_periods(&mut f, 40, 1_000_000, 0);
+    assert_eq!(rec.poll(&i), Ok(Progress::Done { frames: 1_000 }));
+    assert_eq!(rec.started_at(), Some(heard - 300));
+    assert!(!rec.set_threshold(1e9, 0), "it has started");
+    let mut bar = Recording::new(&i, Start::NextBar, End::Bars(1), RATE as u64 * 60);
+    assert!(!bar.set_threshold(0.5, 300), "it starts on a bar line");
+}
+
 #[test]
 fn a_recording_put_on_a_pad_is_one_undo_step() {
     let mut p = Project::new();

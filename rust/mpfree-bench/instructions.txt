@@ -95,6 +95,7 @@
 92010	Multi filter (ladder)
 95212	Multi-tap delay
 149907	Multiband compressor
+406695	Pad synths: 16 Instrument pads of Poly, a hit each per 0.5 s
 212533	Perform FX, 7 pads held (pitch drop, gate, sweeps, crush, riser, echo)
 61602	Perform FX, a wash throw held
 3388	Perform FX, idle
