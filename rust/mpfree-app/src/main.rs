@@ -11087,24 +11087,48 @@ mod tests {
             loops_muted: 1 << 2,
             ..remote::Now::default()
         };
-        let (info, v) = learn_describe(&mix, &synth, &app, now, at(looper::mute(2))).unwrap();
+        let (info, v) = learn_describe(
+            &mix,
+            &synth,
+            &app,
+            &|_, _, _| None,
+            now,
+            at(looper::mute(2)),
+        )
+        .unwrap();
         assert_eq!(
             (info.name, info.curve, v),
             ("Mute", mpfree_node::Curve::Toggle, 1.0)
         );
         assert_eq!(
-            learn_describe(&mix, &synth, &app, now, at(looper::PICKED_MUTE))
-                .unwrap()
-                .1,
+            learn_describe(
+                &mix,
+                &synth,
+                &app,
+                &|_, _, _| None,
+                now,
+                at(looper::PICKED_MUTE)
+            )
+            .unwrap()
+            .1,
             1.0
         );
         assert_eq!(
-            learn_describe(&mix, &synth, &app, now, at(looper::mute(0)))
-                .unwrap()
-                .1,
+            learn_describe(
+                &mix,
+                &synth,
+                &app,
+                &|_, _, _| None,
+                now,
+                at(looper::mute(0))
+            )
+            .unwrap()
+            .1,
             0.0
         );
-        assert!(learn_describe(&mix, &synth, &app, now, at(looper::key(2))).is_none());
+        assert!(
+            learn_describe(&mix, &synth, &app, &|_, _, _| None, now, at(looper::key(2))).is_none()
+        );
         assert!(midi_in::key_toggles(at(looper::mute(2))));
         assert!(!midi_in::key_toggles(at(looper::key(2))));
         // A footswitch's CC on a press works while held; on a mute, as a
