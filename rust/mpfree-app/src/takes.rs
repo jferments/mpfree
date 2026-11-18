@@ -917,6 +917,7 @@ mod tests {
         let strip = StripId::Track(TRACKS);
         let job = crate::control::InstrumentJob {
             track: 0,
+            pad: None,
             id: "mpfree.poly",
             extras: Vec::new(),
             values: crate::synth::engine_node("mpfree.poly", RATE)

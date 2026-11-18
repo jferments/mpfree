@@ -119,6 +119,7 @@ mod mixturns;
 mod modmix;
 mod modpanels;
 mod pace;
+mod pad_synths;
 mod parts;
 mod perf;
 mod perform_pads;
@@ -3828,6 +3829,8 @@ struct SeqPads<'a> {
     /// Tracks with their own instrument play it (instruments.rs), not the
     /// pads.
     own: &'a mut instruments::Instruments,
+    /// Synth-voice pads play their own synths (pad_synths.rs).
+    pad_synths: &'a mut pad_synths::PadSynths,
     /// While an export runs, every event goes to its MIDI file too, as
     /// MIDI Out would send it (export.rs).
     tap: &'a mut export::Tap,
@@ -3860,6 +3863,7 @@ fn play_routed(
     midi: &mut midi_out::MidiOut,
     cv: &mut cv_out::CvOut,
     own: &mut instruments::Instruments,
+    pad_synths: &mut pad_synths::PadSynths,
     synth: &mut synth::Synth,
     plays_synth: bool,
     player: &mut sampler::Player,
@@ -3951,7 +3955,45 @@ fn play_routed(
         event
     {
         let pad = profile::kit_pad_of_note(note);
-        play_routed_pad(track, pad, event, midi, synth, player, kit);
+        play_routed_pad(track, pad, event, midi, (pad_synths, synth), player, kit);
+    }
+}
+
+/// A synth-voice pad's (the Pads tab's Instrument pad's) hit, let-go or
+/// pressure, track `track`'s on pad `pad` of kit `kit`: on the pad's own
+/// copy of its engine, into the pad's strip (`pad_synths.rs`), or on the
+/// shared synth's engine (the Synth channel) while the pad has none (past
+/// the sixteen, or while its copy is being made; counted). A hit ends what
+/// the same track's last hit on the pad started on either. Never
+/// allocates.
+fn pad_voice(
+    pads: &mut pad_synths::PadSynths,
+    synth: &mut synth::Synth,
+    track: u16,
+    (kit, pad): (usize, usize),
+    (engine, note): (synth::Engine, u8),
+    event: mpfree_play::Event,
+    offset: u32,
+) {
+    use mpfree_play::Event;
+    match event {
+        Event::NoteOn { velocity, .. } => {
+            if pads.note_on(track, kit, pad, engine, note, velocity, offset) {
+                synth.pad_voice_off(track, pad, offset);
+            } else {
+                pads.note_off(track, pad, offset);
+                synth.pad_voice_on(track, pad, (engine, note), velocity, offset);
+            }
+        }
+        Event::NoteOff { .. } => {
+            pads.note_off(track, pad, offset);
+            synth.pad_voice_off(track, pad, offset);
+        }
+        // The pad's own copy takes it, else the shared synth.
+        Event::Pressure { value, .. } if !pads.pressure(track, pad, value, offset) => {
+            synth.pad_voice_pressure(track, pad, value, offset);
+        }
+        _ => {}
     }
 }
 
@@ -3967,7 +4009,7 @@ fn play_routed_pad(
     pad: usize,
     event: mpfree_play::Event,
     midi: &mut midi_out::MidiOut,
-    synth: &mut synth::Synth,
+    (pad_synths, synth): (&mut pad_synths::PadSynths, &mut synth::Synth),
     player: &mut sampler::Player,
     kit: usize,
 ) {
@@ -3996,14 +4038,17 @@ fn play_routed_pad(
             };
             midi.pad_to(&o, port, *channel, *note);
         }
-        Some(&sampler::PadRoute::Voice(engine, note)) => match event {
-            Event::NoteOn { velocity, .. } => {
-                synth.pad_voice_on(track, pad, (engine, note), velocity, 0);
-            }
-            Event::NoteOff { .. } => synth.pad_voice_off(track, pad, 0),
-            Event::Pressure { value, .. } => synth.pad_voice_pressure(track, pad, value, 0),
-            _ => {}
-        },
+        Some(&sampler::PadRoute::Voice(engine, note)) => {
+            pad_voice(
+                pad_synths,
+                synth,
+                track,
+                (kit, pad),
+                (engine, note),
+                event,
+                0,
+            );
+        }
         None => match event {
             Event::NoteOn { velocity, .. } => {
                 player.hit_kit_at(kit, pad, velocity, 0);
@@ -4356,6 +4401,96 @@ fn instrument_name(plugins: &plugins::Plugins, id: &'static str) -> &'static str
         .unwrap_or(id)
 }
 
+/// How often (in periods) the synth-voice pads that want a synth of
+/// their own are looked at again: about every 93 ms at 128 frames.
+const PAD_SYNTH_PLAN: u64 = 32;
+
+/// Asks the builder for the synth-voice pads' copies they lack
+/// (`PadSynths::plan`): each a copy of its engine as the Synth tab has it
+/// now. One past the sixteen is logged and said once, as it starts
+/// playing through the Synth channel. Allocates only to ask.
+fn plan_pad_synths(
+    player: &sampler::Player,
+    synth: &synth::Synth,
+    mix: &mut mixing::MixHost,
+    out: &mut Out,
+) {
+    let plan = mix.pad_synths.plan(player.voice_pads(), synth);
+    for p in plan.asks.iter().flatten() {
+        let (id, extras, values) = synth.sound_of(p.engine);
+        let job = control::InstrumentJob {
+            track: 0,
+            pad: Some(*p),
+            id,
+            extras,
+            values,
+            pads: synth.pads_for(p.engine),
+            tuning: synth.tuning_now(),
+        };
+        // Busy: asked again at the next look.
+        if !mix.build_instrument(job) {
+            mix.pad_synths.unask(*p);
+        }
+    }
+    if let Some((kit, pad)) = plan.newly_over {
+        let s = format!(
+            "Kit {} pad {} plays through the Synth channel: {} synth-voice pads already have a synth of their own, the most ({} past them now)",
+            kit + 1,
+            profile::pad_name(pad),
+            pad_synths::SLOTS,
+            plan.over
+        );
+        out.note(&format!("pads: {s}"));
+        out.show(gui::ToUi::Tell(s));
+    }
+    // The Pads tab says under such a pad where it plays.
+    if plan.changed {
+        let on: Vec<(u8, u8)> = mix
+            .pad_synths
+            .on_synth()
+            .iter()
+            .enumerate()
+            .flat_map(|(k, bits)| {
+                (0..128u8)
+                    .filter(move |p| bits & 1 << p != 0)
+                    .map(move |p| (k as u8, p))
+            })
+            .collect();
+        out.show(gui::ToUi::PadsOnSynth(on));
+    }
+}
+
+/// The log's line for a synth-voice pad's copy the builder made.
+fn note_pad_landed(landed: mixing::PadLanded, out: &mut Out) {
+    let name = |p: &pad_synths::PadFor| {
+        format!(
+            "kit {} pad {}",
+            p.kit + 1,
+            profile::pad_name(usize::from(p.pad))
+        )
+    };
+    match landed {
+        mixing::PadLanded::Playing { pad, name: synth } => out.note(&format!(
+            "pads: {} plays its own {synth}, through the pad's own channel",
+            name(&pad)
+        )),
+        mixing::PadLanded::Failed { pad } => {
+            let s = format!(
+                "{}: its own {} couldn't be made (see the Console); it plays through the Synth channel",
+                name(&pad),
+                pad.engine.name()
+            );
+            out.note(&format!("pads: {s}"));
+            out.show(gui::ToUi::Tell(s));
+        }
+        mixing::PadLanded::Unwanted { pad } => out.note(&format!(
+            "pads: {}'s own {} came after the pad changed; dropped",
+            name(&pad),
+            pad.engine.name()
+        )),
+    }
+}
+
 /// A job for track `track`'s own instrument `id`: an engine's copy of the
 /// shared synth's sound with its design (or `preset`, a factory preset's
 /// design lines and values, [`synth::Synth::preset_values`]), or a plugin
@@ -4377,6 +4512,7 @@ fn instrument_job(
     };
     control::InstrumentJob {
         track,
+        pad: None,
         id,
         extras,
         values,
@@ -4433,6 +4569,7 @@ impl time::Pads for SeqPads<'_> {
     /// A panic: every kit, the synth and every track's own instrument.
     fn stop_all(&mut self) {
         self.synth.all_off();
+        self.pad_synths.all_off();
         self.player.stop_all();
         self.own.all_off_every();
         // Every note ends, wherever its shift took it.
@@ -4724,7 +4861,6 @@ impl SeqPads<'_> {
     /// sends nothing, as the Pads tab says); false leaves it to the
     /// sampler. Never allocates.
     fn routed(&mut self, track: u16, pad: usize, event: mpfree_play::Event, offset: u32) -> bool {
-        use mpfree_play::Event;
         let kit = self.kit_of(track);
         let Some(route) = self.player.pad_route(kit, pad) else {
             return false;
@@ -4744,17 +4880,15 @@ impl SeqPads<'_> {
                 };
                 self.midi.pad_to(&o, port, *channel, *note);
             }
-            &sampler::PadRoute::Voice(engine, note) => match event {
-                Event::NoteOn { velocity, .. } => {
-                    self.synth
-                        .pad_voice_on(track, pad, (engine, note), velocity, offset);
-                }
-                Event::NoteOff { .. } => self.synth.pad_voice_off(track, pad, offset),
-                Event::Pressure { value, .. } => {
-                    self.synth.pad_voice_pressure(track, pad, value, offset);
-                }
-                _ => {}
-            },
+            &sampler::PadRoute::Voice(engine, note) => pad_voice(
+                self.pad_synths,
+                self.synth,
+                track,
+                (kit, pad),
+                (engine, note),
+                event,
+                offset,
+            ),
         }
         true
     }
@@ -7442,6 +7576,7 @@ fn player_session(
                 &mut midi_out,
                 &mut cv_out,
                 &mut mix.instruments,
+                &mut mix.pad_synths,
                 &mut synth,
                 track_kits.plays_synth(usize::from(track)),
                 &mut player,
@@ -7867,6 +8002,7 @@ fn player_session(
                 {
                     if synth.shift_octave(d) {
                         own_follow_synth(&synth, &mut mix.instruments);
+                        mix.pad_synths.set_tuning(&synth.tuning_now());
                         if synth_on {
                             app.set_pad_layout(Some(synth.pad_layout()));
                         }
@@ -7908,6 +8044,7 @@ fn player_session(
                         out.show(gui::ToUi::Synth(synth.state()));
                     }
                     own_follow_synth(&synth, &mut mix.instruments);
+                    mix.pad_synths.set_tuning(&synth.tuning_now());
                     out.note(&synth_pads_note(&synth));
                     out.show(gui::ToUi::KitChanged {
                         kit: synth_kit,
@@ -7972,6 +8109,7 @@ fn player_session(
                     player.stop_all();
                     synth.stop();
                     mix.instruments.stop();
+                    mix.pad_synths.stop();
                 }
                 app::Effect::Audio(p) => audio_change = Some(p),
                 app::Effect::Quit => stop = true,
@@ -8336,6 +8474,18 @@ fn player_session(
             | mixing::Landed::Full { track, .. }) = landed;
             app.set_track_sound(track, mix.instruments.held(track));
         }
+        // The synth-voice pads' own synths: what the builder made goes in,
+        // a few times a second the pads that want one are looked at again
+        // (a pad made or changed on the Pads tab, a kit loaded, a new
+        // design on the Synth tab), and the copies follow the Synth tab's
+        // values.
+        if let Some(landed) = mix.take_pad_landed() {
+            note_pad_landed(landed, out);
+        }
+        if i.is_multiple_of(PAD_SYNTH_PLAN) {
+            plan_pad_synths(&player, &synth, &mut mix, out);
+        }
+        mix.pad_synths.follow(&synth);
         // A plugin synth's presets listed, or one loaded, on the builder
         // thread. A plugin may load in the background and send its new
         // values over the next blocks, so the Synth tab looks again a
@@ -8462,6 +8612,7 @@ fn player_session(
         for t in (0..128).filter(|t| went & 1 << t != 0) {
             midi_out.end_pads(t, 0);
             synth.end_pad_voices(t as u16, 0);
+            mix.pad_synths.end_track(t as u16, 0);
         }
         let key = synth.transpose_key();
         let mut seq = SeqPads {
@@ -8478,6 +8629,7 @@ fn player_session(
             midi: &mut midi_out,
             cv: &mut cv_out,
             own: &mut mix.instruments,
+            pad_synths: &mut mix.pad_synths,
             only: export.only(),
             tap: &mut export.tap,
             shifts: time.transposes(),
@@ -9419,6 +9571,9 @@ fn player_session(
             }
             if let Some(line) = mix.instruments.describe() {
                 out.note(&format!("status: tracks' own instruments: {line}"));
+            }
+            if let Some(line) = mix.pad_synths.describe() {
+                out.note(&format!("status: synth-voice pads' own synths: {line}"));
             }
             out.note(&format!(
                 "status: {}",

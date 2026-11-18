@@ -1749,6 +1749,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| moves(rate)));
     v.push(measured(|| track_host(rate, 4, 4)));
     v.push(measured(|| track_host_alone(rate, 16)));
+    v.push(measured(|| pad_synths(rate, 16)));
     v.push(measured(|| time(rate, 8, false)));
     v.push(measured(|| time(rate, 8, true)));
     v.push(measured(|| time_ahead(rate, 8, 4)));
@@ -3075,6 +3076,60 @@ fn track_host(rate: u32, tracks: usize, voices: usize) -> Case {
                     for n in chord(t, g / half, voices) {
                         notes.push(n);
                         host.note_on(t, at, n, 96);
+                    }
+                }
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            host.render(&Ctx::new(rate, f0), l.len(), &mut Sum { left: l, right: r });
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// Synth-voice pads with synths of their own (`mpfree-app`'s
+/// `pad_synths.rs`, the redesign's 6b): `pads` copies of Poly as the
+/// Synth tab starts it, in a host of twice as many slots (the rest for
+/// ring-outs) as the app has it, each pad hit once every half second
+/// (the pads a 1/16 of it apart) and let go after a quarter of it, so
+/// every copy is playing or ringing out at once: the most the app lets
+/// play this way (16).
+fn pad_synths(rate: u32, pads: usize) -> Case {
+    let max = MAX_BLOCK.min(1024);
+    let mut host = TrackHost::new(2 * pads, rate, max);
+    for p in 0..pads {
+        host.swap(
+            p,
+            Some(Instrument::new(Box::new(Poly::new(rate)), rate, max)),
+        )
+        .expect("a free slot");
+        host.route(p, Some(p));
+    }
+    for s in pads..2 * pads {
+        host.route(s, None);
+    }
+    let half = u64::from(rate / 2);
+    Case {
+        name: format!("Pad synths: {pads} Instrument pads of Poly, a hit each per 0.5 s"),
+        module: "synth",
+        what: "each pad's own Poly playing and ringing out at once",
+        block: Box::new(move |b, l, r| {
+            let len = l.len() as u64;
+            let f0 = b * len;
+            for p in 0..pads {
+                let note = 48 + (p as u8 * 5) % 24;
+                let start = half * p as u64 / pads as u64;
+                // The hit and the let-go, each at its frame in this block.
+                for (at, on) in [(start, true), (start + half / 4, false)] {
+                    // The frames from the block's start to the next one.
+                    let to = (at % half + half - f0 % half) % half;
+                    if to < len {
+                        let k = to as u32;
+                        if on {
+                            host.note_on(p, k, note, 100);
+                        } else {
+                            host.note_off(p, k, note);
+                        }
                     }
                 }
             }

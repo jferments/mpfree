@@ -636,6 +636,20 @@ impl Player {
         self.routes.get(kit)?.get(pad)?.as_ref()
     }
 
+    /// Every synth-voice pad (the Instrument kind) of every kit, as the
+    /// kits' views have them: kit, pad and engine, kit by kit in pad
+    /// order (`pad_synths.rs` gives each its own synth). Never allocates.
+    pub fn voice_pads(
+        &self,
+    ) -> impl Iterator<Item = (usize, usize, crate::synth::Engine)> + Clone + '_ {
+        self.routes.iter().enumerate().flat_map(|(k, r)| {
+            r.iter().enumerate().filter_map(move |(p, x)| match x {
+                Some(PadRoute::Voice(e, _)) => Some((k, p, *e)),
+                _ => None,
+            })
+        })
+    }
+
     /// Where the playing kit's voices are. Never allocates.
     pub fn playheads(&self) -> Playheads {
         let mut p = Playheads {
