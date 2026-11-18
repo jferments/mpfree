@@ -942,6 +942,9 @@ mod tests {
         .unwrap();
         c.add_lock(Lock::new(0, None, RelAddr::new(OnTrack::Strip, 0), -3.25))
             .unwrap();
+        // Outside gear's CC 74 on the track's MIDI out (S6's CC lanes).
+        c.add_lock(Lock::new(240, None, RelAddr::new(OnTrack::Midi, 74), 20.0))
+            .unwrap();
         let map = Map::linear(-60.0, 6.0);
         let target = Target::Track(RelAddr::new(OnTrack::Strip, 0));
         c.moves.reserve(target, map, 4).unwrap();

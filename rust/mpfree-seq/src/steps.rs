@@ -310,6 +310,7 @@ pub fn lock_key(sound: Option<u8>, i: usize, addr: RelAddr) -> u64 {
         OnTrack::Pad(p) => 0x100 | u64::from(p),
         OnTrack::Insert(uid) => 0x1_0000 | u64::from(uid),
         OnTrack::NoteFx(id) => 0x2_0000 | u64::from(id),
+        OnTrack::Midi => 5,
     };
     let a = (on.wrapping_mul(0x9E37_79B9) ^ u64::from(addr.param)) & 0xFF_FFFF;
     (5 << 56) | (u64::from(sound.unwrap_or(ALL)) << 48) | (a << 24) | (i as u64 & 0xFF_FFFF)

@@ -470,6 +470,29 @@ impl ModEngine {
         Ok(())
     }
 
+    /// As [`ModEngine::add_target`], but the engine takes `value` as
+    /// already where it is, so nothing is sent until something moves it: a
+    /// control of outside gear (`Owner::Midi`), whose value MPFree only
+    /// knows once it has sent one, is never sent its default unasked. A
+    /// lock's end still goes back to `value`. One already there keeps
+    /// what it has.
+    pub fn add_quiet_target(
+        &mut self,
+        addr: ParamAddr,
+        info: ParamInfo,
+        value: f32,
+    ) -> Result<(), ModError> {
+        if self.find(addr).is_some() {
+            return Ok(());
+        }
+        self.add_target(addr, info, value)?;
+        if let Some(t) = self.targets.last_mut() {
+            t.sent = t.base;
+            t.dirty = false;
+        }
+        Ok(())
+    }
+
     pub fn is_target(&self, addr: ParamAddr) -> bool {
         self.find(addr).is_some()
     }

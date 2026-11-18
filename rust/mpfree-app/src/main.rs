@@ -3751,6 +3751,12 @@ fn learn_describe(
         Owner::Inst(t) => t,
         Owner::Transport => return remote::describe(addr.param, now),
         Owner::Clips => return remote::describe_clips(addr.param, now),
+        // A track's controller, bend or pressure out: where the engine has
+        // it, else its default.
+        Owner::Midi(_) => {
+            let (info, d) = modmix::midi_param(addr)?;
+            return Some((info, mix.modu.engine().value(addr).unwrap_or(d)));
+        }
         _ => return modmix::describe(&mix.mixer, addr),
     };
     let t = usize::from(t);
@@ -7591,25 +7597,9 @@ fn player_session(
             by_note: &mut by_note,
         };
         time.period_arps(PERIOD as u32, &mut seq, &mut app.arps);
-        seq.midi.period_end(PERIOD as u32, t_read);
+        // MIDI out's period ends after the mixer's (below), which has the
+        // tracks' controllers out.
         seq.cv.period_end(PERIOD as u32, t_read);
-        // The MIDI monitor: what went out, when it leaves.
-        for (due, port, m) in seq.midi.sent() {
-            let to = if m.is_from_page() {
-                To::PortPage
-            } else if m.is_from_sampler() {
-                To::Sampler
-            } else if m.is_from_controller() {
-                To::Controller
-            } else if m.is_sent_back() {
-                To::SentBack
-            } else if let Some(from) = m.thru_from() {
-                To::ThruFrom(from)
-            } else {
-                m.track().map_or(To::Clock, To::SentBy)
-            };
-            music.feed.sent(port, ports.at(due), m.bytes(), to);
-        }
         for (due, out, value) in seq.cv.sent() {
             music
                 .feed
@@ -8152,6 +8142,31 @@ fn player_session(
         // The kit's pads whose mute or solo came due land from the next
         // period, which holds their line.
         land_pads(&mut time, &mut mix);
+        // MIDI out's period: the tracks' controllers, bend and pressure the
+        // mod engine moved in the mixer's (a step's lock, a lane, a macro,
+        // a learned knob) join this period's notes on their frames, a
+        // step's ahead of its note.
+        for (offset, addr, value) in mix.modu.take_midi_values() {
+            midi_out.control(offset, addr, value);
+        }
+        midi_out.period_end(PERIOD as u32, t_read);
+        // The MIDI monitor: what went out, when it leaves.
+        for (due, port, m) in midi_out.sent() {
+            let to = if m.is_from_page() {
+                To::PortPage
+            } else if m.is_from_sampler() {
+                To::Sampler
+            } else if m.is_from_controller() {
+                To::Controller
+            } else if m.is_sent_back() {
+                To::SentBack
+            } else if let Some(from) = m.thru_from() {
+                To::ThruFrom(from)
+            } else {
+                m.track().map_or(To::Clock, To::SentBy)
+            };
+            music.feed.sent(port, ports.at(due), m.bytes(), to);
+        }
         // The metronome goes on top; it keeps the samples within ±1 itself.
         let p = p.max(time.mix_click(&mut left, &mut right));
         engines.stop(engines::MIX, t_mix);
