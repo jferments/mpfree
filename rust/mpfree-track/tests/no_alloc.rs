@@ -5,7 +5,7 @@
 use mpfree_fx::{Mixer, MixerConfig};
 use mpfree_node::Ctx;
 use mpfree_play::{Event, Out, Sink, ALL};
-use mpfree_prof::alloc::{installed, thread_count, CountingAlloc};
+use mpfree_prof::alloc::{installed, thread_count, total_count, CountingAlloc};
 use mpfree_synth::{Fm, Poly};
 use mpfree_track::{Instrument, TrackHost};
 
@@ -16,6 +16,13 @@ const RATE: u32 = 44_100;
 
 #[test]
 fn the_audio_threads_part_never_allocates() {
+    // Here, and with two lanes (whose workers are counted too: the one
+    // test in this program, so nothing else allocates meanwhile).
+    run(0);
+    run(2);
+}
+
+fn run(lanes: usize) {
     assert!(installed(), "the counting allocator is on for this test");
     let cfg = MixerConfig {
         inputs: 0,
@@ -57,7 +64,11 @@ fn the_audio_threads_part_never_allocates() {
         rate: RATE,
     });
     let mut thawed = Vec::with_capacity(2);
-    let before = thread_count();
+    if lanes > 0 {
+        host.set_lanes(vec![mpfree_lanes::Config::default(); lanes]);
+        host.set_deadline(None);
+    }
+    let (before, all_before) = (thread_count(), total_count());
     let mut frame = 0u64;
     for p in 0..3000usize {
         if p % 7 == 0 {
@@ -142,6 +153,7 @@ fn the_audio_threads_part_never_allocates() {
         }
         let c = Ctx::new(RATE, frame);
         host.render(&c, 128, &mut mixer);
+        host.settle(std::time::Instant::now());
         l.fill(0.0);
         r.fill(0.0);
         mixer.process(&c, &mut l, &mut r);
@@ -165,6 +177,11 @@ fn the_audio_threads_part_never_allocates() {
     }
     let calls = thread_count() - before;
     assert_eq!(calls, 0, "allocations or frees on the audio thread's path");
+    if lanes > 0 {
+        let all = total_count() - all_before;
+        assert_eq!(all, 0, "allocations or frees on a lane");
+        assert!(host.lane_counts(0).unwrap().periods > 1000);
+    }
     assert!(host.stats(0).notes + host.stats(1).notes > 300);
     assert!(!retired.is_empty(), "swapped-out instruments came back");
     assert!(host.stats(1).rested > 500, "track 1's instrument rested");

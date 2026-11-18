@@ -312,6 +312,7 @@ impl Rig {
         mix.follow(looper.line.is_open(), looper.monitor);
         let ctx = mixing::ctx(RATE, i * PERIOD as u64, time.info().bpm, time.block());
         mix.mixer.set_lane_deadline(Some(until));
+        mix.instruments.set_lane_deadline(Some(until));
         let (p, _) = mix.period(
             &ctx,
             (synth_l, synth_r),
@@ -338,6 +339,7 @@ impl Rig {
         self.peak = self.peak.max(p);
         // After the write, in the loop.
         synth.settle(until);
+        mix.instruments.settle(until);
     }
 }
 
@@ -350,6 +352,7 @@ fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
     // starts the lanes' threads).
     let mut c = cores::Cores::start_unpinned(sound_cores, &mut rig.player, &mut rig.synth);
     c.start_mixer(&mut rig.mix.mixer);
+    c.start_tracks(&mut rig.mix.instruments);
     let lanes = matches!(
         sound_cores,
         cores::SoundCores::Two | cores::SoundCores::Three
@@ -414,7 +417,7 @@ fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
     // played every period on its lane. (Late parts are allowed here: under
     // qemu or a busy machine a lane can be slow, and a late part allocates
     // nothing either.)
-    let n = cores::Counts::read(&rig.player, &rig.mix.mixer, &rig.synth);
+    let n = cores::Counts::read(&rig.player, &rig.mix, &rig.synth);
     if lanes {
         // The reverb ran a block late on its lane the whole time.
         assert!(n.returns_blocks > 12_000, "{n:?}");
@@ -435,7 +438,20 @@ fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
 /// nothing on the sound path.
 #[test]
 fn a_track_with_its_own_instrument_plays_it_and_never_allocates() {
+    own_instrument(cores::SoundCores::Shared);
+}
+
+/// The same on two cores: the Poly plays on the tracks' lane on core 2.
+#[test]
+fn a_tracks_own_instrument_plays_on_another_core_and_never_allocates() {
+    own_instrument(cores::SoundCores::Two);
+}
+
+fn own_instrument(sound_cores: cores::SoundCores) {
     let mut rig = Rig::new(false);
+    let mut c = cores::Cores::start_unpinned(sound_cores, &mut rig.player, &mut rig.synth);
+    c.start_mixer(&mut rig.mix.mixer);
+    c.start_tracks(&mut rig.mix.instruments);
     // Setup, which may allocate: Poly made for track 1 (no builder here,
     // so made at once) and put in on the next period.
     let job = crate::instrument_job(&rig.synth, 0, "mpfree.poly", None);
@@ -485,6 +501,15 @@ fn a_track_with_its_own_instrument_plays_it_and_never_allocates() {
     assert_eq!(names, vec![mixing::TRACK_1, "Synth", "Loop", "Audio"]);
     assert_eq!(st.strips[0].id, mpfree_fx::StripId::Track(mixing::DRUMS));
     assert!(st.strips[0].peak[0] > 0.0, "{:?}", st.strips[0].peak);
+    // On two cores the lane played it every period (late ones allowed, as
+    // above: they allocate nothing either).
+    let n = cores::Counts::read(&rig.player, &rig.mix, &rig.synth);
+    if sound_cores == cores::SoundCores::Two {
+        assert_eq!(rig.mix.instruments.lanes(), 1);
+        assert!(n.track_periods > 12_000, "{n:?}");
+    } else {
+        assert_eq!(n.track_periods, 0, "{n:?}");
+    }
 }
 
 /// A send reverb that goes a block late on the returns lane (cores.rs):
@@ -568,6 +593,7 @@ fn track_on_midi_out_never_allocates(usb: bool, delay_tenths: u16) {
     let mut c =
         cores::Cores::start_unpinned(cores::SoundCores::Shared, &mut rig.player, &mut rig.synth);
     c.start_mixer(&mut rig.mix.mixer);
+    c.start_tracks(&mut rig.mix.instruments);
     rig.time
         .act(TimeAction::NewClip { track: 0, slot: 0 })
         .unwrap();
@@ -1180,6 +1206,7 @@ fn cv_follows_a_track_and_never_allocates() {
     let mut c =
         cores::Cores::start_unpinned(cores::SoundCores::Shared, &mut rig.player, &mut rig.synth);
     c.start_mixer(&mut rig.mix.mixer);
+    c.start_tracks(&mut rig.mix.instruments);
     rig.time
         .act(TimeAction::NewClip { track: 0, slot: 0 })
         .unwrap();

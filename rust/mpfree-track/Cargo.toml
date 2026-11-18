@@ -10,6 +10,7 @@ mpfree-node = { path = "../mpfree-node" }
 mpfree-play = { path = "../mpfree-play" }
 mpfree-fx = { path = "../mpfree-fx" }
 mpfree-prof = { path = "../mpfree-prof" }
+mpfree-lanes = { path = "../mpfree-lanes" }
 
 [dev-dependencies]
 mpfree-synth = { path = "../mpfree-synth" }
