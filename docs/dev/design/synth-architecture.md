@@ -192,7 +192,7 @@ Three waves, each finished end to end: engine work, then presets, then the check
 |---|---|---|
 | 1 | Wave 1 targets and tests (stage 4) | The targets table for Bass, Keys and Strings with today's numbers, fxlab measures for the new parts, bench cases (note starts, the bank, the Bass voice) |
 | 2 and 3 | Voice core, part 1, and the controller event (one pull request) | Notes with priority and pedals, voices and stealing, glide, envelopes, LFOs, velocity, play routes, DC blocker, with unit tests and no engine changes; `NodeEvent::Control` and the host's pedal fallback. MIDI in's controllers follow in the MIDI thread's pull request |
-| 4 | Ensemble effect | In `mpfree-fx`, measured the FX way |
+| 4 | Ensemble effect | In `mpfree-fx`, measured the FX way. Built 18 Nov ([fx-modulation.md](fx-modulation.md#ensemble)): S1 to S4 and every FX row met; a mode of the Chorus family |
 | 5 | Strings engine | Bank, registers, swell, bow noise, the Ensemble; 24 presets |
 | 6 | Bass engine | Synth and 808 bodies, Reese; 32 presets |
 | 7 | Keys | Velocity range and tone, sustain, the clav; presets to 32 |

@@ -282,6 +282,20 @@ pub static MAIN_PAGES: &[MainPage] = &[
         ["Rate", "Depth", "Delay", "Mix"],
     ),
     main(
+        "mpfree.fx.ensemble",
+        &[
+            "Slow depth",
+            "Fast depth",
+            "Tone",
+            "Mix",
+            "Slow rate",
+            "Fast rate",
+            "Lines",
+            "Width",
+        ],
+        ["Slow depth", "Fast depth", "Tone", "Mix"],
+    ),
+    main(
         "mpfree.fx.flanger",
         &[
             "Rate",

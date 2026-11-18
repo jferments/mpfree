@@ -9,8 +9,8 @@ use mpfree_audiotracks::{
 use mpfree_fx::ids;
 use mpfree_fx::{
     Amp, AutoPan, AutoWah, CapturePoint, Chain, Character, Chorus, Cloud, Comb, Compressor, Crush,
-    DeEsser, Delay, DjFilter, Drive, Ducker, Eq, Flanger, FreqShifter, Frozen, Fuzz, Gate,
-    Harmonizer, Limiter, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter, MultiTap,
+    DeEsser, Delay, DjFilter, Drive, Ducker, Ensemble, Eq, Flanger, FreqShifter, Frozen, Fuzz,
+    Gate, Harmonizer, Limiter, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter, MultiTap,
     MultibandCompressor, Perform, Phaser, PitchCorrect, PitchShifter, Plate, Print, PrintJob,
     PrintState, RingMod, Room, Rotary, Spring, StripId, Tail, TalkBox, TapeDelay, TransientShaper,
     Tremolo, Tuner, Vocoder,
@@ -1328,6 +1328,17 @@ pub fn all(rate: u32) -> Vec<Case> {
             rate,
             Box::new(Chorus::new()),
             &[(ids::chorus::VOICES, 4.0)],
+        )
+    }));
+    v.push(measured(|| {
+        effect("Ensemble (3 lines)", rate, Box::new(Ensemble::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect(
+            "Ensemble (4 lines)",
+            rate,
+            Box::new(Ensemble::new()),
+            &[(ids::ensemble::LINES, 1.0)],
         )
     }));
     v.push(measured(|| {

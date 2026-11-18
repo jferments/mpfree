@@ -52,6 +52,8 @@
 108120	EQ (4 bands and both cuts)
 256118	EQ (4 bands and both cuts), Freq gliding
 188280	EQ (4 bands and both cuts), HQ 2x
+137727	Ensemble (3 lines)
+173444	Ensemble (4 lines)
 64907	Flanger
 92618	Flanger, through zero
 53403	Frequency shifter
