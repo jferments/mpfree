@@ -4217,7 +4217,7 @@ fn learned_synth(
     synth: &mut synth::Synth,
     mix: &mut mixing::MixHost,
     w: mpfree_midi::learn::Write,
-) -> Option<()> {
+) -> Option<f32> {
     use mpfree_play::mpfree_param::Owner;
     let Owner::Inst(t) = w.target.owner else {
         return None;
@@ -4232,10 +4232,40 @@ fn learned_synth(
         return mix
             .instruments
             .param(t, w.target.param, value)
-            .then_some(());
+            .then_some(value);
     }
     synth.set(w.target.param, value);
-    Some(())
+    Some(value)
+}
+
+/// Knob recording for a learned control (the MIDI plan's 2.5): while the
+/// transport records, the value it set goes to the recorder as a screen
+/// knob's turn does ([`record_knob`]), for a parameter on a track that a
+/// clip's lock plays: a synth's knob, a kit pad's own setting, a track
+/// strip's control or its insert's knob, a MIDI effect's setting or the
+/// track's MIDI out. The recorder keeps the armed track's, as a lock on
+/// the step it belongs to; the arp's settings, the transport, the Clips
+/// grid, the looper, the mixer's other strips and the macros record
+/// nothing.
+fn record_learned(
+    time: &mut time::TimeHost,
+    addr: mpfree_play::mpfree_param::ParamAddr,
+    value: f32,
+    recording: bool,
+) {
+    use mpfree_play::mpfree_param::{Owner, Strip};
+    let locks = matches!(
+        addr.owner,
+        Owner::Inst(_)
+            | Owner::Pad(..)
+            | Owner::Strip(Strip::Track(_))
+            | Owner::Insert(Strip::Track(_), _)
+            | Owner::NoteFx(..)
+            | Owner::Midi(_)
+    );
+    if recording && locks && value.is_finite() {
+        time.knob(0, addr, value);
+    }
 }
 
 /// The values the Synth tab shows for track `track`: its own instrument's
@@ -7068,6 +7098,7 @@ fn player_session(
                     match to {
                         Some((((info, _), kit), field)) => {
                             let value = info.from_unit(w.value);
+                            record_learned(&mut time, w.target, value, recording);
                             match pads_learned
                                 .iter_mut()
                                 .find(|(k, p, f, _)| (*k, *p, *f) == (kit, pad, field))
@@ -7104,7 +7135,10 @@ fn player_session(
                     if matches!(w.target.owner, mpfree_play::mpfree_param::Owner::Inst(_)) =>
                 {
                     match learned_synth(&mut synth, &mut mix, w) {
-                        Some(()) => synth_learned = true,
+                        Some(value) => {
+                            synth_learned = true;
+                            record_learned(&mut time, w.target, value, recording);
+                        }
                         None => {
                             learn_misses += 1;
                             if learn_misses == 1 {
@@ -7118,7 +7152,9 @@ fn player_session(
                     }
                 }
                 midi_in::Learning::Set(w) => {
-                    if learned_set(&mut panels, &mut mix, w, recording).is_none() {
+                    if let Some(value) = learned_set(&mut panels, &mut mix, w, recording) {
+                        record_learned(&mut time, w.target, value, recording);
+                    } else {
                         learn_misses += 1;
                         if learn_misses == 1 {
                             out.midi(&format!(
@@ -10996,7 +11032,10 @@ mod tests {
                 target: knob,
                 value: unit,
             };
-            assert_eq!(learned_synth(&mut synth, &mut mix, w), Some(()));
+            assert_eq!(
+                learned_synth(&mut synth, &mut mix, w),
+                Some(info.from_unit(unit))
+            );
             let (got_info, got) = learn_describe(
                 &mix,
                 &synth,
@@ -11029,6 +11068,69 @@ mod tests {
             };
             assert_eq!(learned_synth(&mut synth, &mut mix, reading), None);
         }
+    }
+
+    /// A learned control's moves record as a screen knob's do (the MIDI
+    /// plan's 2.5): while the transport records, a value it sets on the
+    /// armed track's synth becomes a lock on the note being played. The
+    /// arp's settings and the transport record nothing, and nothing
+    /// records while the transport only plays.
+    #[test]
+    fn a_learned_controls_moves_record_into_the_clip() {
+        use mpfree_play::mpfree_param::{arp, transport, OnTrack, Owner, ParamAddr, RelAddr};
+        use mpfree_play::Event;
+        struct Quiet;
+        impl time::Pads for Quiet {
+            fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                true
+            }
+            fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+            fn stop_all(&mut self) {}
+            fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        }
+        let run = |h: &mut time::TimeHost, periods: usize| {
+            for _ in 0..periods {
+                h.period(PERIOD as u32, &mut Quiet);
+            }
+        };
+        let locks = |h: &time::TimeHost| -> Vec<(RelAddr, f32)> {
+            h.project().tracks[2]
+                .slots
+                .iter()
+                .flatten()
+                .flat_map(|c| c.locks.iter().map(|l| (l.addr, l.value)))
+                .collect()
+        };
+        let mut h = time::TimeHost::new(44_100, 120.0).unwrap();
+        h.act(TimeAction::NewClip { track: 2, slot: 0 }).unwrap();
+        run(&mut h, 12);
+        assert_eq!(h.info().state, mpfree_transport::State::Recording);
+        h.pad(
+            0,
+            Event::NoteOn {
+                note: 4,
+                velocity: 100,
+            },
+        );
+        run(&mut h, 2);
+        let cutoff = RelAddr::new(OnTrack::Inst, 1);
+        record_learned(&mut h, cutoff.on(2), 0.25, true);
+        record_learned(&mut h, cutoff.on(2), 0.6, true);
+        // The arp and the transport have no locks.
+        record_learned(&mut h, ParamAddr::new(Owner::Arp(2), arp::GATE), 30.0, true);
+        record_learned(
+            &mut h,
+            ParamAddr::new(Owner::Transport, transport::TEMPO),
+            90.0,
+            true,
+        );
+        // Not recording: only a turn.
+        record_learned(&mut h, RelAddr::new(OnTrack::Inst, 2).on(2), 0.5, false);
+        run(&mut h, 2);
+        h.pad(0, Event::NoteOff { note: 4 });
+        // Past the bar, so the lock's step has gone by.
+        run(&mut h, 2 * 88_200 / PERIOD);
+        assert_eq!(locks(&h), vec![(cutoff, 0.6)]);
     }
 
     /// The Clips grid's learned controls (sequencer S5) are named by
