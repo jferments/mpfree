@@ -4,12 +4,13 @@
 
 use mpfree_sampler::model::Project;
 use mpfree_sampler::record::{Pick, Progress};
+use mpfree_sampler_ui::panel::Look;
 use mpfree_sampler_ui::rec_tab::{self, EndAt, Onto, RecAction, Row, Skip, StartAt};
 use mpfree_sampler_ui::rec_widgets::InputView;
 use mpfree_sampler_ui::sample::{
     self, bar_frames, feed_input, kit_project, rec_samples, RecSample, RATE,
 };
-use mpfree_sampler_ui::widgets::{ButtonRow, InfoCard, PadBar, SettingList};
+use mpfree_sampler_ui::widgets::{PadBar, SettingList};
 use mpfree_ui::{EventKind, Fonts, SoftCanvas, UiEvent};
 
 fn screen(name: &str) -> RecSample {
@@ -23,15 +24,28 @@ fn screen(name: &str) -> RecSample {
     s
 }
 
+/// The panel's buttons ([`Row::BUTTONS`]): what each says, and whether
+/// it can be pressed.
 fn buttons(s: &RecSample) -> (Vec<String>, Vec<bool>) {
-    let b = s.ui.get::<ButtonRow>(rec_tab::BUTTONS).unwrap();
-    (b.labels.clone(), b.enabled.clone())
+    let l = s.ui.get::<SettingList>(rec_tab::LIST).unwrap();
+    Row::BUTTONS
+        .iter()
+        .map(|r| {
+            let c = &l.controls[r.index()];
+            let text = match &c.look {
+                Look::Button(t) | Look::Primary(t) => t.clone(),
+                other => panic!("{r:?} is no button: {other:?}"),
+            };
+            (text, !c.faint)
+        })
+        .unzip()
 }
 
+/// Button `button` of [`Row::BUTTONS`] pressed.
 fn press(s: &mut RecSample, button: usize) -> Option<RecAction> {
     let ev = UiEvent {
-        widget: rec_tab::BUTTONS.into(),
-        kind: EventKind::Tab(button),
+        widget: rec_tab::LIST.into(),
+        kind: EventKind::Tab(Row::BUTTONS[button].index()),
     };
     let st = s.state.clone();
     s.tab.action(&mut s.ui, &ev, &st)
@@ -100,10 +114,7 @@ fn the_tab_shows_the_input_the_bar_lines_and_what_skip_back_keeps() {
     assert!(v.note.is_empty() && v.threshold.is_none());
     assert_eq!(v.caption, "40 s held");
     let (labels, enabled) = buttons(&s);
-    assert_eq!(
-        labels,
-        ["Record", "Skip back 10 s", "Flatten", "Auto-sample"]
-    );
+    assert_eq!(labels, ["Record", "Skip back", "Flatten", "Auto-sample"]);
     assert_eq!(enabled, [true, true, true, true]);
     let list = s.ui.get::<SettingList>(rec_tab::LIST).unwrap();
     let rows: Vec<(&str, &str)> = list
@@ -121,14 +132,29 @@ fn the_tab_shows_the_input_the_bar_lines_and_what_skip_back_keeps() {
             ("Pre-roll", "20 ms"),
             ("End", "Stop"),
             ("Length", "4 bars"),
-            ("Tail", "Cut"),
             ("Silence for", "1 s"),
+            ("Tail", "Cut"),
+            ("Record", ""),
+            ("Skip back now", ""),
             ("Skip back", "10 s"),
             ("Onto", "Next empty"),
+            ("Flatten", ""),
+            ("Auto-sample", ""),
             ("Flatten velocity", "127"),
             ("Flatten hold", "1 s"),
         ]
     );
+    // Every row is on the panel, once.
+    let panel = list.panel.as_ref().unwrap();
+    let mut placed: Vec<usize> = panel
+        .sections
+        .iter()
+        .flat_map(|s| s.lines.iter().flatten().map(|i| i.row))
+        .collect();
+    placed.sort_unstable();
+    assert_eq!(placed, (0..Row::ALL.len()).collect::<Vec<_>>());
+    let titles: Vec<&str> = panel.sections.iter().map(|s| s.title.as_str()).collect();
+    assert_eq!(titles, ["Input", "Start", "End", "Take", "Resample"]);
 }
 
 #[test]
@@ -139,10 +165,7 @@ fn a_take_on_the_next_bar_is_drawn_as_it_grows_and_the_button_stops_it() {
     assert!(v.bars.contains(&take.start), "it started on a bar line");
     assert!(take.label.starts_with("● "));
     let (labels, enabled) = buttons(&s);
-    assert_eq!(
-        labels,
-        ["Stop", "Skip back 2 bars", "Flatten", "Auto-sample"]
-    );
+    assert_eq!(labels, ["Stop", "Skip back", "Flatten", "Auto-sample"]);
     assert_eq!(
         enabled,
         [true, false, false, false],
@@ -198,9 +221,10 @@ fn a_threshold_take_from_the_wheel_waits_for_the_input_and_ends_after_its_bars()
     let st = s.state.clone();
     s.tab.wheel(&mut s.ui, &st, 1);
     assert_eq!(s.tab.settings.start, StartAt::Threshold);
+    assert_eq!(s.tab.row(&s.ui), Row::Start);
     assert_eq!(
-        s.ui.get::<InfoCard>(rec_tab::WHEEL).unwrap().text,
-        "Start: Threshold"
+        s.ui.get::<SettingList>(rec_tab::LIST).unwrap().rows[Row::Start.index()].value,
+        "Threshold"
     );
     step(&mut s, Row::End, 2);
     step(&mut s, Row::Length, -2);
@@ -249,7 +273,8 @@ fn skip_back_by_bars_and_onto_this_pad() {
     assert_eq!(s.tab.settings.skip, Skip::Bars(4));
     step(&mut s, Row::Onto, 1);
     assert_eq!(s.tab.settings.onto, Onto::ThisPad);
-    assert_eq!(buttons(&s).0[1], "Skip back 4 bars");
+    let list = s.ui.get::<SettingList>(rec_tab::LIST).unwrap();
+    assert_eq!(list.rows[Row::SkipBack.index()].value, "4 bars");
     assert_eq!(press(&mut s, 1), Some(RecAction::SkipBack));
     // The app cuts the last four bars on the bar lines.
     let data = s.input.last_bars(4).unwrap();
@@ -313,8 +338,14 @@ fn the_source_row_resamples_the_mix_and_waits_while_a_take_is_made() {
     assert_eq!(turn(&mut s, 1), None);
     assert_eq!(s.tab.settings.source, 0);
     assert_eq!(
-        s.ui.get::<InfoCard>(rec_tab::WHEEL).unwrap().text,
-        "Source: stop the take first"
+        s.tab.take_note().as_deref(),
+        Some("Source: stop the take first")
+    );
+    let l = s.ui.get::<SettingList>(rec_tab::LIST).unwrap();
+    assert_eq!(
+        l.why_faint(Row::Source.index()),
+        Some("Stop the take first"),
+        "a tap on it says why"
     );
 }
 
@@ -328,7 +359,7 @@ fn the_master_screen_shows_what_it_resamples() {
     assert!(((skip.end - skip.start) as f64 - 4.0 * bar_frames()).abs() <= 2.0);
     assert_eq!(
         buttons(&s).0,
-        ["Record", "Skip back 4 bars", "Flatten", "Auto-sample"]
+        ["Record", "Skip back", "Flatten", "Auto-sample"]
     );
 }
 

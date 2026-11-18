@@ -163,7 +163,7 @@ impl Desk<'_> {
                     out.show(gui::ToUi::Level { db: **level_db });
                 }
             }
-            gui::FromUi::IoIcon => fx.extend(app.toggle_io(crate::io_shown(mix))),
+            gui::FromUi::FolderIcon => fx.extend(app.toggle_browser()),
             gui::FromUi::OpenIo => fx.extend(app.open_io()),
             // The Play page: filters, sends, faders, speakers, throws, XY.
             gui::FromUi::PlayFx(p) => mix.play(p),
@@ -329,6 +329,7 @@ impl Desk<'_> {
                 fx.push(app::Effect::Looper(looping::LoopAction::RecordLoops(on)))
             }
             gui::FromUi::LoopBars(bars) => fx.extend(app.set_loop_bars(bars)),
+            gui::FromUi::LoopKeys => fx.extend(app.toggle_loop_keys()),
             gui::FromUi::LooperSetting(item, d) => fx.extend(app.looper_setting(item, d)),
             gui::FromUi::LoopCommand(c) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Command(c)))
@@ -336,14 +337,13 @@ impl Desk<'_> {
             gui::FromUi::LoopSteps(n) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Steps(n)))
             }
-            // The Pads tab's switch: the browser or the pad's settings.
-            gui::FromUi::PadsView(v) => {
-                app.set_pads_browse(v == mpfree_sampler_ui::pads_tab::BROWSE)
-            }
+            // The Pads tab's Browse for: the browser, as BROWSE opens it.
+            gui::FromUi::PadsBrowse => fx.extend(app.open_browser()),
             // The audio loop's own: named one by one, so a new action has
             // to be given a home here or there.
             a @ (gui::FromUi::Pad { .. }
             | gui::FromUi::Audition { .. }
+            | gui::FromUi::PadBank(_)
             | gui::FromUi::Kit(_)
             | gui::FromUi::SaveTouch(_)
             | gui::FromUi::Synth(_)
@@ -563,6 +563,86 @@ fn arm(
         )));
     }
     fx
+}
+
+/// A Perform pad pressed (the pads as loop keys, SHIFT + SAMPLER on the
+/// Looper tab): what a tap on the loop's ring on the Looper tab does. A
+/// key picks its loop and takes its next step (a muted loop plays again;
+/// otherwise Record: record from the next bar line, cancel, end the first
+/// pass, overdub, play), arming the loop for REC as the ring does; a mute
+/// pad mutes or unmutes its loop without picking it. The line for the log.
+pub fn perform_pad(
+    app: &mut app::App,
+    time: &time::TimeHost,
+    looper: &looping::LoopHost,
+    out: &mut Out,
+    action: crate::perform_pads::PadAction,
+) -> (Vec<app::Effect>, String) {
+    use crate::perform_pads::PadAction;
+    use looping::LoopAction;
+    let mut fx = Vec::new();
+    let line = match action {
+        PadAction::None => return (fx, String::new()),
+        PadAction::LoopKey(n) => {
+            let n = usize::from(n);
+            fx.push(app::Effect::Looper(LoopAction::Select(n)));
+            let s = looper.loop_status(n);
+            if s.is_some_and(|s| s.phase == mpfree_looper::Phase::Playing && s.muted) {
+                fx.push(app::Effect::Looper(LoopAction::ToggleMute(Some(n))));
+                format!("loop keys: Loop {} plays again", n + 1)
+            } else {
+                if !app.rec.armed(crate::rec_arm::Target::Loop) {
+                    app.rec.ready = None;
+                    fx.extend(arm(
+                        app,
+                        time,
+                        looper,
+                        out,
+                        crate::rec_arm::Target::Loop,
+                        crate::rec_arm::Mover::Tap,
+                    ));
+                }
+                fx.extend(app.looper_tap(crate::looper_page::B_RECORD));
+                format!("loop keys: Loop {}'s key", n + 1)
+            }
+        }
+        PadAction::LoopMute(n) => {
+            let n = usize::from(n);
+            let s = looper.loop_status(n);
+            if s.is_none_or(|s| s.phase == mpfree_looper::Phase::Empty) {
+                format!("loop keys: Loop {} is empty, nothing to mute", n + 1)
+            } else {
+                fx.push(app::Effect::Looper(LoopAction::ToggleMute(Some(n))));
+                format!(
+                    "loop keys: Loop {} {}",
+                    n + 1,
+                    if s.is_some_and(|s| s.muted) {
+                        "plays again"
+                    } else {
+                        "muted"
+                    }
+                )
+            }
+        }
+    };
+    (fx, line)
+}
+
+/// A loop key held for [`crate::perform_pads::CLEAR_HOLD_S`]: its loop
+/// cleared, as a ring held on the Looper tab clears it.
+pub fn perform_pad_held(action: crate::perform_pads::PadAction) -> (Vec<app::Effect>, String) {
+    use crate::perform_pads::PadAction;
+    use looping::LoopAction;
+    match action {
+        PadAction::LoopKey(n) => (
+            vec![
+                app::Effect::Looper(LoopAction::Select(usize::from(n))),
+                app::Effect::Looper(LoopAction::Command(mpfree_looper::Command::Clear)),
+            ],
+            format!("loop keys: Loop {} cleared (its key held)", n + 1),
+        ),
+        _ => (Vec::new(), String::new()),
+    }
 }
 
 /// An empty Loop cell tapped on the grid (loop-tracks.md part 4): the

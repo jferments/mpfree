@@ -441,8 +441,7 @@ mod tests {
     fn the_pads_tab_effects_row_opens_the_pads_chain_in_mix() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("header", "tab", "Pads");
-            s.press("smp-pads-bar", "tab", "Pad").run_for(0.3);
+            s.press("header", "tab", "Pads").run_for(0.3);
             assert_eq!(s.view(), View::Pads);
             // A pad with no effects: + FX, and the picker up in Mix.
             s.press("smp-pads-list", "row-button", "+ FX").run_for(0.2);
@@ -817,7 +816,8 @@ mod tests {
     fn the_io_view_follows_its_section_and_says_why_a_setting_stays() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("header", "io-icon", "");
+            s.press("header", "tab", "Mix");
+            s.press("mixer", "view", "I/O");
             assert_eq!(s.view(), View::Mixer);
             let audio_hint = s.hint();
             s.press("mixer", "io-section", "Sync");
@@ -1408,6 +1408,63 @@ mod tests {
         });
     }
 
+    /// PAD BANK B pages the kit: pad 5 is then the kit's pad B5 (pad 20),
+    /// REC records note 20 and the clip plays pad 20 back, while pad 5
+    /// (A5) stays as it was.
+    #[test]
+    fn pad_bank_b_records_and_plays_the_kits_next_pads() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            s.press("steps", "step", "Snare step 1");
+            s.button("PAD BANK B/F");
+            assert_eq!(s.app.pad_page(), 1, "bank B");
+            s.button("REC");
+            s.button("PLAY");
+            s.run_for(0.55);
+            s.pad(4, 100, 0.05);
+            s.run_for(0.4);
+            s.button("STOP").run_for(0.2);
+            assert_eq!(on(&clip_row(&s, 20)).len(), 1, "the take has pad B5");
+            assert!(on(&clip_row(&s, 4)).is_empty(), "and not A5");
+
+            let from = s.hits.on.len();
+            s.button("PLAY");
+            s.run_for(2.2);
+            s.button("STOP").run_for(0.1);
+            assert!(hits_on(&s, 20, from) > 0, "the clip plays pad B5");
+            assert_eq!(hits_on(&s, 4, from), 0, "not A5");
+        });
+    }
+
+    /// The Pads tab's strip of banks turns the kit's bank as PAD BANK
+    /// does: the pads, the log, the kit chip and the tab all go to B, and
+    /// a hit on pad 5 is then B5.
+    #[test]
+    fn the_pads_tabs_strip_puts_bank_b_on_the_pads() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Pads");
+            let n = s.lines.len();
+            s.press(mpfree_sampler_ui::pads_tab::MAP, "bank", "Bank B")
+                .run_for(0.1);
+            assert_eq!(s.app.pad_page(), 1);
+            assert!(
+                s.lines[n..].iter().any(|l| l == "pad bank B: pads B1-B16"),
+                "{:?}",
+                &s.lines[n..]
+            );
+            assert!(kit_chip(&mut s).label.ends_with("Bank B"));
+            assert_eq!(s.screen.sample.pad() / 16, 1, "the tab is on bank B");
+            s.pad(4, 100, 0.05);
+            assert_eq!(s.screen.sample.pad(), 20, "pad 5 is B5");
+            s.press(mpfree_sampler_ui::pads_tab::MAP, "bank", "Bank A")
+                .run_for(0.1);
+            assert_eq!(s.app.pad_page(), 0);
+            assert_eq!(s.screen.sample.pad(), 4, "and back to A5");
+        });
+    }
+
     /// The Kick's speaker on Play and Pad 1's M in the pad mixer are one
     /// mute: each shows what the other did.
     #[test]
@@ -1843,7 +1900,8 @@ mod tests {
             s.wheel_with("SHIFT", 1).run_for(0.2);
             assert_eq!(s.kit, 1, "the next kit plays");
             assert_ne!(chip(&mut s), first, "the header names it");
-            assert!(chip(&mut s).ends_with("Bank B"), "{}", chip(&mut s));
+            // The pad bank is the app's, not the kit's: still A.
+            assert!(chip(&mut s).ends_with("Bank A"), "{}", chip(&mut s));
             s.wheel_with("SHIFT", -1).run_for(0.2);
             assert_eq!(s.kit, 0);
             assert_eq!(chip(&mut s), first);
@@ -1884,7 +1942,7 @@ mod tests {
             assert_eq!(s.kit, 2, "the kit tapped plays");
             assert_eq!(s.page(), play, "and Play is back");
             assert!(
-                kit_chip(&mut s).label.ends_with("Bank C"),
+                kit_chip(&mut s).label.ends_with("Bank A"),
                 "{}",
                 kit_chip(&mut s).label
             );

@@ -218,6 +218,8 @@ pub struct Session {
     /// The pads pressed as TRACK MUTE's keys, so their release is theirs
     /// too.
     mute_pressed: [bool; 16],
+    /// The loop keys held (SHIFT + SAMPLER on the Looper tab).
+    keys_held: crate::perform_pads::Held,
     out: Out,
     to_screen: Receiver<ToUi>,
     fx: Vec<Effect>,
@@ -321,6 +323,7 @@ impl Session {
             kits: n,
             step_keys: crate::step_keys::StepKeys::default(),
             mute_pressed: [false; 16],
+            keys_held: crate::perform_pads::Held::default(),
             out,
             to_screen,
             fx: Vec::new(),
@@ -763,12 +766,32 @@ impl Session {
             self.out.show(ToUi::PadUp(pad));
             return;
         }
+        if down && pad < 16 && self.app.pads_are_loop_keys() {
+            self.keys_held.press(pad, self.t());
+            let action = self.app.perform_page().action(pad);
+            let (fx, line) = crate::desk::perform_pad(
+                &mut self.app,
+                &self.time,
+                &self.looper,
+                &mut self.out,
+                action,
+            );
+            self.fx.extend(fx);
+            if !line.is_empty() {
+                self.out.note(&line);
+            }
+            return;
+        }
+        if !down && self.keys_held.release(pad) {
+            self.out.show(ToUi::PadUp(pad));
+            return;
+        }
         if down && pad < 16 && self.app.pads_mute() {
             self.mute_pressed[pad] = true;
             let (tap, more) = self.app.mute_tap();
             self.fx.extend(more);
-            let other = crate::other_kit(&self.track_kits, self.app.track());
-            let line = crate::mute_key(tap, pad, other, &mut self.time, &mut self.mix);
+            let why = crate::no_mutes(&self.track_kits, self.app.track(), self.app.pad_page());
+            let line = crate::mute_key(tap, pad, why, &mut self.time, &mut self.mix);
             self.out.note(&line);
             return;
         }
@@ -788,12 +811,13 @@ impl Session {
         }
         // Live erase: ERASE held while recording.
         if down && crate::live_erase_starts(&self.app, &self.time) {
-            let tell = crate::live_erase(&mut self.time, pad);
+            let tell = crate::live_erase(&mut self.time, self.app.kit_pad(pad));
             self.fx.extend(tell);
             return;
         }
-        if !down && self.time.erases(pad as u8) {
-            self.time.erase_sound(pad as u8, false);
+        let kit_pad = self.app.kit_pad(pad) as u8;
+        if !down && self.time.erases(kit_pad) {
+            self.time.erase_sound(kit_pad, false);
             self.out.show(ToUi::PadUp(pad));
             return;
         }
@@ -849,6 +873,17 @@ impl Session {
     fn period(&mut self) {
         self.settle();
         let t = self.t();
+        // A loop key held for a second clears its loop, as player_session.
+        for pad in self.keys_held.holds(t) {
+            if self.app.pads_are_loop_keys() {
+                let action = self.app.perform_page().action(pad);
+                let (fx, line) = crate::desk::perform_pad_held(action);
+                self.fx.extend(fx);
+                if !line.is_empty() {
+                    self.out.note(&line);
+                }
+            }
+        }
         if let Some(e) = self.app.tick(t) {
             self.fx.push(e);
         }
@@ -1295,6 +1330,18 @@ impl Session {
             FromUi::Pad { .. } => {}
             // A scale row's note: no sound is rendered here.
             FromUi::Audition { .. } => {}
+            // The Pads tab's strip, as main.rs turns the page.
+            FromUi::PadBank(b) if b < app::KIT_PAGES && !self.synth_on => {
+                self.app.set_pad_page(b);
+                self.out.note(&format!(
+                    "pad bank {}: pads {}-{}",
+                    app::bank_letter(b),
+                    app::kit_pad_name(b * 16),
+                    app::kit_pad_name(b * 16 + 15)
+                ));
+                self.out.show(ToUi::PadPage(b));
+            }
+            FromUi::PadBank(_) => {}
             FromUi::Kit(k) => self.kit_to = Some(k.min(self.kits)),
             FromUi::Synth(mpfree_synth_ui::SynthAction::Set { id, value }) => {
                 let from = self.synth.value(id);
@@ -1542,9 +1589,6 @@ impl Session {
                         if synth_now {
                             later.extend(self.app.open_tab(View::Synth));
                         } else {
-                            self.app.set_pads_browse(false);
-                            self.out
-                                .show(ToUi::PadsView(mpfree_sampler_ui::pads_tab::PAD_VIEW));
                             later.extend(self.app.open_tab(View::Pads));
                         }
                     }
@@ -1555,11 +1599,16 @@ impl Session {
                                 app::bank_target(self.synth.settings().bank % 8, button, shift);
                             later.extend(self.app.synth_bank(target));
                         } else {
-                            let group = now / 8 * 8;
-                            let target = group + app::bank_target(now % 8, button, shift);
-                            if target < self.kits {
-                                self.kit_to = Some(target);
-                            }
+                            // The kit's page, as main.rs turns it.
+                            let page = app::bank_target(self.app.pad_page(), button, shift);
+                            self.app.set_pad_page(page);
+                            self.out.note(&format!(
+                                "pad bank {}: pads {}-{}",
+                                app::bank_letter(page),
+                                app::kit_pad_name(page * 16),
+                                app::kit_pad_name(page * 16 + 15)
+                            ));
+                            self.out.show(ToUi::PadPage(page));
                         }
                     }
                     Effect::Bank { .. } => {}

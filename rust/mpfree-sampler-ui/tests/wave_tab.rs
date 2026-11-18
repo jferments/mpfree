@@ -611,3 +611,199 @@ fn normalize_is_a_button_that_asks_the_app_to_set_the_gain() {
     };
     assert_ne!(gesture, next);
 }
+
+// ---------------------------------------------------------------- the panel
+
+/// The panel's control `id` labelled `label`.
+fn control(s: &Sample, id: &str, label: &str) -> mpfree_ui::Target {
+    s.ui.targets()
+        .into_iter()
+        .find(|t| t.widget == wave_tab::REGION && t.target.id == id && t.target.label == label)
+        .unwrap_or_else(|| panic!("no {id} \"{label}\""))
+        .target
+}
+
+/// A finger's tap on a panel control, as the app hands it to the tab.
+fn tap(s: &mut Sample, id: &str, label: &str) -> Vec<WaveAction> {
+    let (x, y) = control(s, id, label).centre();
+    let st = s.state.clone();
+    let mut out = Vec::new();
+    for phase in [Touch::Down, Touch::Up] {
+        if let Some(ev) = s.ui.touch(7, phase, x, y) {
+            out.extend(s.tab.action(&mut s.ui, &ev, &st));
+        }
+    }
+    s.tab.lift();
+    out
+}
+
+fn tap_apply(s: &mut Sample, id: &str, label: &str) {
+    for a in tap(s, id, label) {
+        apply(s, &a);
+    }
+}
+
+#[test]
+fn the_settings_are_a_panel_of_controls_under_a_full_width_wave() {
+    let s = sample();
+    let wave = s.ui.rect_of(wave_tab::WAVE).unwrap();
+    let band = s.ui.rect_of(wave_tab::REGION).unwrap();
+    let q = s.ui.rect_of(wave_tab::QLINKS[0]).unwrap();
+    // The wave runs the width up to the Q-Link column; the panel is under
+    // it, as wide, 242 pixels high.
+    assert!(wave.w >= 1100, "{wave:?}");
+    assert!(wave.right() < q.x);
+    assert_eq!((band.x, band.w, band.h), (wave.x, wave.w, 242));
+    assert!(band.y > wave.bottom());
+    let list = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
+    let panel = list
+        .panel
+        .as_ref()
+        .expect("the Wave page's list is a panel");
+    let titles: Vec<&str> = panel.sections.iter().map(|s| s.title.as_str()).collect();
+    assert_eq!(titles, ["Mode", "Level", "Fades", "Warp", "Options"]);
+    // Every setting is on it once, in the order the wheel walks them:
+    // section by section, line by line, left to right.
+    let placed: Vec<usize> = panel
+        .place(band, &list.controls)
+        .iter()
+        .map(|p| p.row)
+        .collect();
+    assert_eq!(placed, (0..Row::ALL.len()).collect::<Vec<_>>());
+    // Its controls sit inside it and never overlap.
+    let targets: Vec<_> =
+        s.ui.targets()
+            .into_iter()
+            .filter(|t| t.widget == wave_tab::REGION)
+            .map(|t| t.target)
+            .collect();
+    assert!(targets.len() > 20);
+    for (i, a) in targets.iter().enumerate() {
+        assert_eq!(band.intersect(a.rect), a.rect, "{} sticks out", a.label);
+        for b in &targets[i + 1..] {
+            assert!(
+                a.rect.intersect(b.rect).is_empty(),
+                "{} overlaps {}",
+                a.label,
+                b.label
+            );
+        }
+    }
+    // What can't be used now is faint: Loop mode keeps its loop, and
+    // there's no warp tempo without warp.
+    assert!(!control(&s, "choice", "Loop: Off").enabled);
+    assert!(control(&s, "choice", "Loop: Ping-pong").enabled);
+    assert!(!control(&s, "choice", "Mode: Loop").enabled, "on already");
+    assert!(!control(&s, "less", "Warp tempo ‹").enabled);
+    assert!(control(&s, "knob", "Crossfade").enabled);
+    assert!(control(&s, "less", "Channels ‹").enabled);
+}
+
+#[test]
+fn the_panel_answers_a_finger_as_its_controls_look() {
+    let mut s = sample();
+    // A choice's button picks its option straight away: from a one-shot
+    // without a loop to Granular, without passing Loop mode (which would
+    // make a loop).
+    tap_apply(&mut s, "choice", "Mode: One shot");
+    assert_eq!(region(&s).mode, PlayMode::OneShot);
+    tap_apply(&mut s, "choice", "Loop: Off");
+    assert_eq!(region(&s).sustain_loop, None);
+    assert!(!control(&s, "knob", "Crossfade").enabled, "no loop");
+    tap_apply(&mut s, "choice", "Mode: Granular");
+    let r = region(&s);
+    assert_eq!((r.mode, r.sustain_loop), (PlayMode::Granular, None));
+    // A knob dragged up steps as far as the finger goes, as one undo step.
+    let gain = region(&s).gain_db;
+    let (x, y) = control(&s, "knob", "Gain").centre();
+    let px = mpfree_sampler_ui::panel::step_px(144);
+    let st = s.state.clone();
+    let down = s.ui.touch(7, Touch::Down, x, y).unwrap();
+    assert_eq!(s.tab.action(&mut s.ui, &down, &st), None, "picked");
+    let mut gestures = Vec::new();
+    for to in [y - 4 * px, y - 6 * px] {
+        let ev = s.ui.touch(7, Touch::Move, x, to).unwrap();
+        let st = s.state.clone();
+        let a = s.tab.action(&mut s.ui, &ev, &st).unwrap();
+        let WaveAction::Region { gesture, .. } = a else {
+            panic!("{a:?}")
+        };
+        gestures.push(gesture);
+        apply(&mut s, &a);
+    }
+    s.ui.touch(7, Touch::Up, x, y - 6 * px);
+    s.tab.lift();
+    assert_eq!(region(&s).gain_db, gain + 3.0);
+    assert_eq!(gestures[0], gestures[1], "one undo step");
+    let list = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
+    assert_eq!(list.selected, Row::Gain.index(), "the wheel is on it now");
+    // The switch turns Reverse over; the button asks for Normalize.
+    tap_apply(&mut s, "switch", "Reverse");
+    assert!(region(&s).reverse);
+    assert_eq!(
+        tap(&mut s, "button", wave_tab::NORMALIZE_BUTTON),
+        [WaveAction::Normalize { pad: PAD, layer: 0 }]
+    );
+    // Selectors step round; Snap changes nothing in the project.
+    tap_apply(&mut s, "more", "Channels ›");
+    assert_eq!(
+        region(&s).channels,
+        mpfree_sampler::model::ChannelPick::MonoSum
+    );
+    let rev = s.project.revision();
+    assert!(tap(&mut s, "more", "Snap ›").is_empty());
+    assert_eq!(s.tab.snap(), Snap::Sixteenths);
+    assert_eq!(s.project.revision(), rev);
+    // Warp on: its tempo steps, and its value, tapped, asks for a number
+    // when the finger lifts.
+    tap_apply(&mut s, "choice", "Warp: Stretch");
+    let bpm = region(&s).warp.unwrap().bpm;
+    tap_apply(&mut s, "more", "Warp tempo ›");
+    assert_eq!(region(&s).warp.unwrap().bpm, bpm + 1.0);
+    let asked = tap(&mut s, "value", "Warp tempo");
+    assert!(
+        matches!(asked.as_slice(), [WaveAction::Ask(a)] if a.key == wave_tab::TYPED_WARP_TEMPO),
+        "{asked:?}"
+    );
+}
+
+#[test]
+fn a_finger_resting_on_a_panel_control_puts_it_under_the_wheel() {
+    let mut s = sample();
+    // On Gain's knob: each detent a step of Gain, and the finger may move
+    // on the knob and keep the wheel.
+    let gain = region(&s).gain_db;
+    let (x, y) = control(&s, "knob", "Gain").centre();
+    let down = s.ui.touch(9, Touch::Down, x, y).unwrap();
+    let st = s.state.clone();
+    s.tab.action(&mut s.ui, &down, &st);
+    assert_eq!(s.ui.held().map(|h| h.widget), Some(wave_tab::REGION.into()));
+    for _ in 0..2 {
+        let ev = s.ui.held_step(1, false).expect("a step");
+        assert_eq!(
+            ev.kind,
+            EventKind::Step {
+                index: Row::Gain.index(),
+                delta: 1
+            }
+        );
+        let st = s.state.clone();
+        let a = s.tab.action(&mut s.ui, &ev, &st).unwrap();
+        apply(&mut s, &a);
+    }
+    s.ui.touch(9, Touch::Up, x, y);
+    s.tab.lift();
+    assert_eq!(region(&s).gain_db, gain + 1.0);
+    assert!(!s.ui.holding(), "let go with the finger");
+    // A choice's button holds its row: the wheel steps Mode.
+    let (x, y) = control(&s, "choice", "Mode: Gate").centre();
+    s.ui.touch(9, Touch::Down, x, y);
+    let ev = s.ui.held_step(-1, false).expect("a step");
+    assert!(matches!(ev.kind, EventKind::Step { index, .. } if index == Row::Mode.index()));
+    s.ui.touch(9, Touch::Cancel, x, y);
+    // A button has no value to turn.
+    let (x, y) = control(&s, "button", "Normalize to 0 dB").centre();
+    s.ui.touch(9, Touch::Down, x, y);
+    assert!(!s.ui.holding());
+    s.ui.touch(9, Touch::Cancel, x, y);
+}
