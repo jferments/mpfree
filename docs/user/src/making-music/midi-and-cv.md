@@ -290,6 +290,14 @@ In the Learn section, tap **Looper** by the heading, tap one, then press the foo
 
 These work on every page, whatever the pads are doing. A **Key** or a press starts as **Button: while held**, so a footswitch goes down and comes up as a pad does; leave it so. The Learn section lists each one by what it plays: **Looper · Loop 3 key**, **Looper · picked loop's key**, **Looper · Next loop**. Looper controls are kept in **Rig**, so your pedalboard works in every project.
 
+### Playing a Perform pad from your gear
+
+A key, pad or footswitch on your gear can play one of the project's [Perform pads](looping.md#setting-up-the-perform-set-on-the-pads-tab), so a pedal can throw an echo while both hands play. On the **Pads** tab, tap **Perform pads**, pick the pad (page **B**, pad 2, say), tap **Learn a key** under its settings, then press the key or the footswitch. Holding **SHIFT** and tapping a pad on the map does the same.
+
+The key plays the pad as hitting it does, on every page, whatever the MPC's pads are doing: a throw plays while you hold it (or for its bar, or until the next press, as the pad's **Hold** says), a macro pad holds its macro, a loop key takes its loop's next step (hold it a second to clear the loop), a mute pad mutes its track and a scene pad launches its row. It plays whatever is on that pad now, so change the pad and the key follows. A key on an empty pad plays nothing, and the log says so.
+
+A key starts as **Button: while held**, so a footswitch goes down and comes up as a pad does; leave it so. The Learn section lists each one by its pad: **Perform pads B2**. They are kept in **Rig**, as the looper's are, so your pedalboard plays the same pads in every project. If the controller is unplugged while you hold a key, its throw lets go.
+
 ### MIDI Follow: your controller's knobs on the Q-Links
 
 With MIDI Follow on, four knobs on one controller turn whatever the MPC's four Q-Links turn on the screen you're looking at: the synth's knobs on the Synth tab, an effect's knobs in the chain editor, the picked strip in the mixer, and so on. Go to another page and the same knobs turn that page's Q-Links, in every song, with nothing to learn.

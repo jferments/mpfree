@@ -498,3 +498,20 @@ fn finite_at_the_extremes() {
         }
     }
 }
+
+/// A note held while its level falls to nothing goes to exact zeros and
+/// never through the denormals (which would make each sample many times
+/// slower on a processor without flush-to-zero), whatever the body.
+#[test]
+fn a_note_held_at_no_level_ends_in_exact_zeros_not_denormals() {
+    for name in ["808 Kick Bass", "Synth Pop", "Short 808"] {
+        let mut b = preset(name);
+        b.set_param(DECAY, 5.0);
+        b.set_param(SUSTAIN, 0.0);
+        let x = render(&mut b, RATE as usize * 4, &[(0, on(36, 100))]);
+        let first = x.iter().position(|v| v.is_subnormal());
+        assert_eq!(first, None, "{name}: a denormal at frame {first:?}");
+        assert!(peak(&x[..RATE as usize / 100]) > 0.01, "{name} plays");
+        assert!(x[x.len() - 512..].iter().all(|&v| v == 0.0), "{name}");
+    }
+}
