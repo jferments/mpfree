@@ -49,6 +49,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub use learn::control_text;
+pub use midi::sends_nothing;
 pub use monitor::words as monitor_words;
 pub use monitor::words_named as monitor_words_named;
 pub use monitor::DevMonitor;

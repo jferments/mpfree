@@ -449,6 +449,91 @@ impl Default for Randomize {
     }
 }
 
+/// The highest controller number the CC effects take: MIDI out sends CC
+/// 0 to 119 for a track (120 to 127 are channel mode messages).
+pub const CC_MOST: u8 = 119;
+
+/// CC scale: a controller the track sends to MIDI out, fitted into
+/// `low` to `high` (`low` above `high` turns it upside down). It leaves
+/// the notes alone; MIDI out applies it to the values the track's lanes,
+/// locks, LFOs, macros and learned knobs send.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CcScale {
+    /// The controller it takes (0 to [`CC_MOST`]), or every one.
+    pub cc: Option<u8>,
+    /// What 0 becomes.
+    pub low: u8,
+    /// What 127 becomes.
+    pub high: u8,
+}
+
+impl Default for CcScale {
+    fn default() -> Self {
+        CcScale {
+            cc: None,
+            low: 20,
+            high: 100,
+        }
+    }
+}
+
+impl CcScale {
+    /// Whether it takes controller `cc`.
+    pub fn takes(&self, cc: u8) -> bool {
+        self.cc.is_none_or(|c| c == cc)
+    }
+
+    /// `value` (0 to 127) fitted into its range, to the nearest step.
+    pub fn apply(&self, value: u8) -> u8 {
+        let (lo, hi) = (i32::from(self.low), i32::from(self.high));
+        let v = i32::from(value.min(127));
+        let d = (hi - lo) * v;
+        // Rounded half away from zero, either way up.
+        let q = if d >= 0 {
+            (d + 63) / 127
+        } else {
+            (d - 63) / 127
+        };
+        (lo + q).clamp(0, 127) as u8
+    }
+}
+
+/// CC smooth: a controller the track sends to MIDI out glides to each new
+/// value over `ms` instead of jumping, so a lane's steps sweep. A value
+/// that comes with one of the track's notes jumps unless `on_note` says
+/// glide, since some synths read the controller as the note starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CcSmooth {
+    /// The controller it takes (0 to [`CC_MOST`]), or every one.
+    pub cc: Option<u8>,
+    /// How long a glide takes (1 to 2000 ms).
+    pub ms: u16,
+    /// A value that comes with a note glides too (else it jumps).
+    pub glide_on_note: bool,
+}
+
+impl Default for CcSmooth {
+    fn default() -> Self {
+        CcSmooth {
+            cc: None,
+            ms: 100,
+            glide_on_note: false,
+        }
+    }
+}
+
+impl CcSmooth {
+    /// Whether it takes controller `cc`.
+    pub fn takes(&self, cc: u8) -> bool {
+        self.cc.is_none_or(|c| c == cc)
+    }
+}
+
+/// "all CCs" or "CC 74".
+fn cc_words(cc: Option<u8>) -> String {
+    cc.map_or_else(|| "all CCs".to_string(), |c| format!("CC {c}"))
+}
+
 /// One MIDI effect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fx {
@@ -485,11 +570,13 @@ pub enum Fx {
         mode: LatchMode,
     },
     Randomize(Randomize),
+    CcScale(CcScale),
+    CcSmooth(CcSmooth),
 }
 
 impl Fx {
     /// The effects a track can add, with their settings at first.
-    pub fn all() -> [Fx; 11] {
+    pub fn all() -> [Fx; 13] {
         [
             Fx::Scale {
                 scale: Scale::new(0, mpfree_scale::MAJOR),
@@ -512,7 +599,15 @@ impl Fx {
                 mode: LatchMode::NextChord,
             },
             Fx::Randomize(Randomize::default()),
+            Fx::CcScale(CcScale::default()),
+            Fx::CcSmooth(CcSmooth::default()),
         ]
+    }
+
+    /// Whether it acts on the controllers the track sends to MIDI out
+    /// (and so leaves the notes alone).
+    pub fn is_cc(&self) -> bool {
+        matches!(self, Fx::CcScale(_) | Fx::CcSmooth(_))
     }
 
     pub fn name(&self) -> &'static str {
@@ -528,6 +623,8 @@ impl Fx {
             Fx::Strum(_) => "Strum",
             Fx::Latch { .. } => "Latch",
             Fx::Randomize(_) => "Randomize",
+            Fx::CcScale(_) => "CC scale",
+            Fx::CcSmooth(_) => "CC smooth",
         }
     }
 
@@ -577,6 +674,17 @@ impl Fx {
                     parts.join(" · ")
                 }
             }
+            Fx::CcScale(c) => format!("{} · {} to {}", cc_words(c.cc), c.low, c.high),
+            Fx::CcSmooth(c) => format!(
+                "{} · {} ms{}",
+                cc_words(c.cc),
+                c.ms,
+                if c.glide_on_note {
+                    ""
+                } else {
+                    " · jumps on a note"
+                }
+            ),
         }
     }
 }

@@ -1088,13 +1088,16 @@ impl App {
 
     pub(crate) fn press_pad(&mut self, slot: usize, velocity: u8) {
         let Some(layout) = &self.pad_layout else {
-            // A kit: the pad of the page, kept until it is let go.
-            let pad = self.kit_pad(slot) as u8;
-            if let Some(h) = self.kit_held.get_mut(slot) {
-                *h = Some(pad);
-                self.kit_last = Some(slot);
+            // A kit: the pad of the page, kept until it is let go (a pad
+            // pressed again first lets go of what it pressed).
+            if slot >= self.kit_held.len() {
+                return;
             }
-            self.arps.engine_at_mut(self.track).press(pad, velocity);
+            self.release_pad(slot);
+            let pad = self.kit_pad(slot) as u8;
+            self.kit_held[slot] = Some(pad);
+            self.kit_last = Some(slot);
+            self.hold_kit_pad(pad, velocity);
             return;
         };
         let Some(&pad) = layout.get(slot) else { return };
@@ -1132,6 +1135,69 @@ impl App {
         *holds = holds.saturating_add(1);
     }
 
+    /// A key on a MIDI keyboard (MIDI In or USB) while the armed track
+    /// plays a kit: it hits kit pad `pad` (0 is A1, up to 127,
+    /// `mpfree_midi::profile::kit_pad_of_note`), whatever bank PAD BANK
+    /// shows, through the track's arp as a pad would, so NOTE REPEAT and
+    /// Latch work from a keyboard too, and it writes a step while a pattern
+    /// records. Keys and pads share the hold count: a pad held on both ends
+    /// when both let go. A key already held is ignored, and while a pattern
+    /// records in Free time a key only writes its step, as a pad does. A
+    /// key plays: it doesn't pick STEP SEQ's sound, mute a track or
+    /// transpose, as a key on the synth doesn't (main.rs).
+    pub fn kit_key_down(&mut self, pad: u8, velocity: u8) -> Vec<Effect> {
+        let pad = pad & 0x7F;
+        let p = usize::from(pad);
+        if self.pad_layout.is_some() || self.keys_held[p] {
+            return Vec::new();
+        }
+        if !self.free_time_recording() {
+            self.keys_held[p] = true;
+            self.hold_kit_pad(pad, velocity.max(1));
+        }
+        self.record_press(pad, velocity)
+    }
+
+    /// The key on kit pad `pad` let go: the pad ends unless a pad of the
+    /// MPC still holds it.
+    pub fn kit_key_up(&mut self, pad: u8) -> Vec<Effect> {
+        let pad = pad & 0x7F;
+        if self.pad_layout.is_some() {
+            return Vec::new();
+        }
+        if std::mem::take(&mut self.keys_held[usize::from(pad)]) {
+            self.let_go_kit_pad(pad);
+        }
+        self.record_release(pad)
+    }
+
+    /// A held key's pressure on kit pad `pad`, for the arp's notes on it.
+    pub fn kit_key_pressure(&mut self, pad: u8, value: u8) {
+        let pad = pad & 0x7F;
+        if self.pad_layout.is_none() && self.keys_held[usize::from(pad)] {
+            self.arps.engine_at_mut(self.track).pressure(pad, value);
+        }
+    }
+
+    /// Kit pad `pad` held by one more pad or key: the arp gets it once.
+    fn hold_kit_pad(&mut self, pad: u8, velocity: u8) {
+        let holds = &mut self.note_holds[usize::from(pad & 0x7F)];
+        if *holds == 0 {
+            self.arps.engine_at_mut(self.track).press(pad, velocity);
+        }
+        *holds = holds.saturating_add(1);
+    }
+
+    /// One pad or key on kit pad `pad` let go: the arp lets go of it with
+    /// the last.
+    fn let_go_kit_pad(&mut self, pad: u8) {
+        let holds = &mut self.note_holds[usize::from(pad & 0x7F)];
+        *holds = holds.saturating_sub(1);
+        if *holds == 0 {
+            self.arps.engine_at_mut(self.track).release(pad);
+        }
+    }
+
     /// The key let go; the note ends unless a pad still holds it.
     pub fn key_up(&mut self, note: u8) {
         let n = usize::from(note & 0x7F);
@@ -1154,8 +1220,10 @@ impl App {
 
     pub(crate) fn release_pad(&mut self, slot: usize) {
         if self.pad_layout.is_none() {
-            let pad = self.kit_pad(slot) as u8;
-            self.arps.engine_at_mut(self.track).release(pad);
+            // The kit pad it pressed, once.
+            if let Some(pad) = self.kit_held.get_mut(slot).and_then(Option::take) {
+                self.let_go_kit_pad(pad);
+            }
             return;
         }
         let Some(pad) = self.pad_pressed.get_mut(slot).map(std::mem::take) else {
@@ -1269,13 +1337,19 @@ impl App {
                 self.release_pad(slot);
             }
             self.release_keys();
-        } else if !self.latched {
-            // Pad slots: what the old track's engine holds is the pads held.
-            for slot in 0..16u8 {
-                if self.arps.engine_at(self.track).active().contains(slot) {
-                    self.arps.engine_at_mut(self.track).release(slot);
+        } else {
+            // A kit: what the old track's engine holds is the kit pads the
+            // pads and keys hold, in any bank. Their hold counts start
+            // again on the new track.
+            if !self.latched {
+                for pad in 0..mpfree_midi::profile::KIT_PADS as u8 {
+                    if self.arps.engine_at(self.track).active().contains(pad) {
+                        self.arps.engine_at_mut(self.track).release(pad);
+                    }
                 }
             }
+            self.keys_held = [false; 128];
+            self.note_holds = [0; 128];
         }
         self.track_ui[self.track] = self.current_ui();
         self.track = track;

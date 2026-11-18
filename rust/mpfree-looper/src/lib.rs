@@ -152,6 +152,9 @@ const NONE: u16 = u16::MAX;
 /// An overdub whose input never went over this (-60 dB) took silence, and
 /// leaves no layer ([`Overdubs`]).
 pub const SILENT: f32 = 0.001;
+/// A loop waiting for you to play ([`Starts::Play`]) by ear starts on the
+/// first input sample at or over this (-40 dB).
+pub const PLAY_LEVEL: f32 = 0.01;
 static SILENCE: f32 = 0.0;
 
 /// What the looper's buttons and screen ask for. Each applies to the
@@ -190,6 +193,18 @@ pub enum Command {
     SetBars(Option<u32>),
     /// What the loop does when its first pass ends (see [`After`]).
     SetAfter(After),
+    /// When the loop's next first pass starts once armed (see [`Starts`]).
+    SetStarts(Starts),
+    /// A note played on song frame `frame` (a pad hit, which the host
+    /// sees before the looper hears it): starts a loop armed to start
+    /// when you play ([`Starts::Play`]) that isn't listening by ear
+    /// ([`Command::StartsByEar`]). For every loop.
+    Played(u64),
+    /// Whether a loop armed to start when you play listens to its input
+    /// (true: the line input, the first sample at or over [`PLAY_LEVEL`]
+    /// is the note) or waits for [`Command::Played`] (false, the default:
+    /// the pads, whose sound includes the song's own). For every loop.
+    StartsByEar(bool),
     /// Fade old: the share of the older audio that stays each time the loop
     /// comes round while overdubbing, 0 to 1 (1, the default, fades
     /// nothing; 0.88 keeps 88 % a pass). The older layers turn down by it
@@ -457,6 +472,25 @@ pub enum After {
     Overdub,
 }
 
+/// When an armed loop's first pass starts: the Looper tab's Starts
+/// setting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Starts {
+    /// On the next bar line (stopped: on the one PLAY starts on).
+    #[default]
+    Bar,
+    /// When you play: the loop waits for the first note (a pad hit, or
+    /// the line input over [`PLAY_LEVEL`]). With the song playing, it
+    /// starts on the bar line nearest that note: a note in the first half
+    /// of a bar starts it on that bar's line, what came between taken
+    /// from what the looper heard; a note in the second half, on the next
+    /// line, and the notes before that line play at the loop's end,
+    /// leading into its first bar each time round. With the song stopped
+    /// the host starts the song on the note ([`Looper::take_start`]), so
+    /// bar 1 is where you started. A resample starts on the bar.
+    Play,
+}
+
 /// How an overdub records: the Looper tab's Overdubs setting.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Overdubs {
@@ -589,6 +623,16 @@ pub struct Status {
     /// line and its last frames, then how much has copied in, to 1. The
     /// loop is empty and silent until it is all in.
     pub capturing: Option<f32>,
+    /// When its next first pass starts ([`Command::SetStarts`]).
+    pub starts: Starts,
+    /// Armed to start when you play, and no note yet: it is listening.
+    /// Once a note comes it waits for its bar line (or for the song to
+    /// start) as an armed loop does.
+    pub listening: bool,
+    /// Frames of the first pass played before its first bar line (a
+    /// pickup, [`Starts::Play`]): they play at the loop's end, leading
+    /// into its first bar. 0 otherwise.
+    pub lead: usize,
 }
 
 /// The memory gauge: all the loops together.
@@ -1477,6 +1521,47 @@ struct Loop {
     /// A load from what was heard (a capture copying in): the frame heard
     /// that is the loop's first.
     ld_heard: Option<u64>,
+    /// When the next first pass starts ([`Starts`]), and whether a loop
+    /// waiting for you to play listens to its input
+    /// ([`Command::StartsByEar`]).
+    starts: Starts,
+    by_ear: bool,
+    /// Armed to start when you play: the song frame a note was played on,
+    /// not placed on a bar line yet ([`Looper::place_hits`]).
+    hit: Option<u64>,
+    /// A note placed: the first pass starts on the next bar line, with
+    /// its first frame played on this song frame, and whether that line
+    /// stays the loop's start (a pickup: the frames before it lead into
+    /// the first bar) or the note is the start (the song started on it).
+    pending: Option<(u64, bool)>,
+    /// The song is stopped and a note came: the host is asked to start
+    /// it ([`Looper::take_start`]).
+    want_start: bool,
+    /// The song frame the first pass's first frame was played on: its
+    /// start, or before it with a pickup or a start from a note.
+    rec_from: u64,
+    /// A pickup's frames: the first pass's view starts that far in, so
+    /// they play at the loop's end ([`Status::lead`]).
+    lead: usize,
+    /// The first pass's frames heard before it started, copying in from
+    /// what was heard.
+    fill: Option<Fill>,
+}
+
+/// The start of a first pass that was heard before the pass began (its
+/// bar line had passed, or a pickup came before it): copied in from what
+/// was heard at [`LOAD_SPEED`], with the input before it for the loop
+/// point (`pre`), while the writer takes the input from `to` on.
+#[derive(Clone, Copy, Debug)]
+struct Fill {
+    /// The frame heard that is the pass's first.
+    from: u64,
+    done: usize,
+    to: usize,
+    /// The frame it began on (its pace counts from there).
+    at: u64,
+    /// The input before the first frame is still to be read.
+    pre: bool,
 }
 
 /// A capture waiting ([`Command::Capture`]): the bars asked for, the bar
@@ -1617,7 +1702,31 @@ impl Loop {
         lend: None,
         capture: None,
         ld_heard: None,
+        starts: Starts::Bar,
+        by_ear: false,
+        hit: None,
+        pending: None,
+        want_start: false,
+        rec_from: 0,
+        lead: 0,
+        fill: None,
     };
+
+    /// Armed to start when you play, and no note yet.
+    fn listening(&self) -> bool {
+        self.phase == Phase::Armed
+            && self.starts == Starts::Play
+            && !self.resample
+            && self.hit.is_none()
+            && self.pending.is_none()
+    }
+
+    /// Forget a note heard or placed (the loop listens again, if armed).
+    fn unhear(&mut self) {
+        self.hit = None;
+        self.pending = None;
+        self.want_start = false;
+    }
 
     /// Recording or about to: armed, the first pass, or an overdub.
     fn recording(&self) -> bool {
@@ -1821,6 +1930,9 @@ impl Looper {
                 (l.loading && l.ld_heard.is_some())
                     .then(|| l.ld_done as f32 / l.ld_frames.max(1) as f32)
             },
+            starts: l.starts,
+            listening: l.listening(),
+            lead: l.lead,
         })
     }
 
@@ -1879,6 +1991,7 @@ impl Looper {
             muted: l.muted,
             bars: l.bars,
             after: l.after,
+            starts: l.starts,
             fade_old: l.fade_old,
             speed: l.speed,
             rate: l.rate,
@@ -1973,6 +2086,7 @@ impl Looper {
         l.muted = f.muted;
         l.bars = f.bars.filter(|&b| b > 0);
         l.after = f.after;
+        l.starts = f.starts;
         l.fade_old = f.fade_old.clamp(0.0, 1.0);
         l.speed = f.speed.clamp(-1, 1);
         l.rate = f.rate.clamp(-2, 2);
@@ -2219,6 +2333,7 @@ impl Looper {
         self.now = block.start_frame;
         self.heard.hear(block, input, n);
         self.apply_commands();
+        self.place_hits(block);
         self.tend_captures();
         // A loop with sound soloed: the others fall silent.
         let any_solo = self.loops.iter().any(|l| l.solo && l.phase != Phase::Empty);
@@ -2270,6 +2385,9 @@ impl Looper {
                 } else if l.ld_heard.is_some() {
                     l.render_heard(store, stats, k, heard, end);
                 }
+            }
+            if l.fill.is_some() {
+                l.render_fill(store, stats, k, heard, end);
             }
         }
         if let Some(b) = bounce.as_mut().filter(|b| b.complete.is_none()) {
@@ -2393,6 +2511,114 @@ impl Looper {
         }
     }
 
+    /// A loop waiting for you to play heard a note while the song was
+    /// stopped: the host should start the song now (bar 1 from the bar it
+    /// stopped in, at the next period's first frame), and the loop's first
+    /// pass starts with it, on the note ([`Starts::Play`]). Some(loop)
+    /// once per note; [`Looper::start_refused`] if the song can't start.
+    pub fn take_start(&mut self) -> Option<usize> {
+        let n = self.loops.iter().position(|l| l.want_start)?;
+        self.loops[n].want_start = false;
+        Some(n)
+    }
+
+    /// The song couldn't start on the note ([`Looper::take_start`]): the
+    /// loop forgets it and listens again. (The host counts it, and says
+    /// why.)
+    pub fn start_refused(&mut self) {
+        for l in &mut self.loops {
+            if l.phase == Phase::Armed && l.pending.is_some_and(|(_, pickup)| !pickup) {
+                l.unhear();
+            }
+        }
+    }
+
+    /// Each loop waiting for you to play that a note came to: where its
+    /// first pass starts ([`Starts::Play`]). Song stopped: it asks for the
+    /// song to start ([`Looper::take_start`]) and starts with it. Counting
+    /// in: the note leads into bar 1. Playing: on the bar line nearest the
+    /// note: in the first half of a bar, that bar's line (passed: the
+    /// frames since are copied in from what was heard), else the next
+    /// line, with the note and what followed it as a pickup.
+    fn place_hits(&mut self, block: &Block) {
+        for k in 0..self.loops.len() {
+            let Some(p) = self.loops[k].hit.take() else {
+                continue;
+            };
+            if self.loops[k].phase != Phase::Armed {
+                continue;
+            }
+            let Some(span) = block.spans().first() else {
+                continue;
+            };
+            match span.state {
+                State::Playing | State::Recording => self.place_hit(k, p, block),
+                State::CountIn => self.loops[k].pending = Some((p, true)),
+                State::Stopped => {
+                    self.loops[k].pending = Some((p, false));
+                    self.loops[k].want_start = true;
+                }
+            }
+        }
+    }
+
+    /// [`Looper::place_hits`] for loop `k`, a note played on song frame
+    /// `p`, the song playing.
+    fn place_hit(&mut self, k: usize, p: u64, block: &Block) {
+        let Some(span) = block
+            .spans()
+            .iter()
+            .find(|s| matches!(s.state, State::Playing | State::Recording))
+        else {
+            return;
+        };
+        let bar = span.meter.bar_ticks();
+        let now = block.start_frame;
+        let (before, after) = self.heard.around(p).unwrap_or((None, None));
+        // The line to start on, and whether the note is a pickup before it.
+        let (line, pickup) = match before {
+            Some((t, f)) => {
+                let next = after.unwrap_or_else(|| (t + bar, span.frame_of((t + bar) as f64)));
+                if p - f >= next.1.saturating_sub(f) / 2 {
+                    (next, true)
+                } else if next.1 <= now {
+                    // Its bar is over already (a note heard that late is
+                    // not a start): listen again.
+                    return;
+                } else {
+                    ((t, f), false)
+                }
+            }
+            None => match after {
+                Some(next) => (next, true),
+                // No line heard yet in this run: the next one.
+                None => {
+                    self.loops[k].pending = Some((p, true));
+                    return;
+                }
+            },
+        };
+        if line.1 > now {
+            // Still to come: the bar line starts it.
+            self.loops[k].pending = Some((p, pickup));
+            return;
+        }
+        // Passed: it starts there now, from what was heard.
+        let half = span.frame_of((line.0 + bar) as f64).saturating_sub(line.1) / 2;
+        let (rec_from, lead) = if pickup {
+            let early = line.1.saturating_sub(p);
+            if early > half {
+                // Too long before the line to be its pickup: listen again.
+                return;
+            }
+            (line.1 - early, early as usize)
+        } else {
+            (line.1, 0)
+        };
+        let l = &mut self.loops[k];
+        l.begin_first(&mut self.store, k, span, line, rec_from, lead, now);
+    }
+
     fn apply_commands(&mut self) {
         // Commands that would cut a fade short wait for it, in order. Once
         // a selection waits, everything after it waits too, so no command
@@ -2501,6 +2727,18 @@ impl Looper {
                 }
             }
             Queued::Loop(Command::NewInput) => self.heard.forget(),
+            Queued::Loop(Command::Played(f)) => {
+                for l in &mut self.loops {
+                    if l.listening() && !l.by_ear {
+                        l.hit = Some(f);
+                    }
+                }
+            }
+            Queued::Loop(Command::StartsByEar(on)) => {
+                for l in &mut self.loops {
+                    l.by_ear = on;
+                }
+            }
             // A capture under way: again, Undo or Clear call it off.
             Queued::Loop(
                 Command::Capture(_) | Command::Undo | Command::Clear | Command::Forget,
@@ -2868,7 +3106,10 @@ impl Looper {
                 continue;
             }
             match l.phase {
-                Phase::Armed => l.phase = Phase::Empty,
+                Phase::Armed => {
+                    l.phase = Phase::Empty;
+                    l.unhear();
+                }
                 Phase::Recording => {
                     l.ending = true;
                     l.end_tick = None;
@@ -3150,6 +3391,9 @@ impl Loop {
                 | Command::SetOverdubs(_)
                 | Command::SetBars(_)
                 | Command::SetAfter(_)
+                | Command::SetStarts(_)
+                | Command::Played(_)
+                | Command::StartsByEar(_)
                 | Command::SetFadeOld(_)
                 | Command::SetLatency(_)
                 | Command::SetLevel(_)
@@ -3164,6 +3408,7 @@ impl Loop {
                 Phase::Empty => {
                     self.phase = Phase::Armed;
                     self.ring = [0.0; 2 * FADE];
+                    self.unhear();
                     // A new loop plays once recorded.
                     self.on = true;
                     self.cue = None;
@@ -3171,6 +3416,7 @@ impl Loop {
                 Phase::Armed => {
                     self.phase = Phase::Empty;
                     self.resample = false;
+                    self.unhear();
                 }
                 Phase::Recording => self.ending = true,
                 Phase::Playing | Phase::Overdubbing => {
@@ -3232,6 +3478,14 @@ impl Loop {
             Command::SetOverdubs(o) => self.overdubs = o,
             Command::SetBars(b) => self.bars = b.filter(|&b| b > 0),
             Command::SetAfter(a) => self.after = a,
+            Command::SetStarts(w) => {
+                self.starts = w;
+                if w == Starts::Bar {
+                    self.unhear();
+                }
+            }
+            // The looper hands these to every loop.
+            Command::Played(_) | Command::StartsByEar(_) => {}
             Command::SetFadeOld(k) if k.is_finite() => self.fade_old = k.clamp(0.0, 1.0),
             Command::SetFadeOld(_) => {}
             Command::SetLatency(l) => self.latency = l,
@@ -4169,6 +4423,9 @@ impl Loop {
         self.capture = None;
         self.adding = false;
         self.lend = None;
+        self.unhear();
+        self.lead = 0;
+        self.fill = None;
     }
 
     fn abort(&mut self, stats: &mut Stats) {
@@ -4216,6 +4473,17 @@ impl Loop {
     }
 
     fn marker(&mut self, store: &mut Store, stats: &mut Stats, me: usize, mark: Mark, frame: u64) {
+        // A pickup waiting for its bar line is no pickup once the song
+        // stops or jumps: the loop listens again.
+        if self.phase == Phase::Armed
+            && self.pending.is_some_and(|(_, pickup)| pickup)
+            && matches!(
+                mark,
+                Mark::Stopped { .. } | Mark::Located { .. } | Mark::Looped { .. } | Mark::Panic
+            )
+        {
+            self.unhear();
+        }
         if self.phase != Phase::Recording {
             return;
         }
@@ -4265,24 +4533,132 @@ impl Loop {
                 self.next_bar = span.frame_of((t + self.bar) as f64);
             }
             Phase::Armed if t >= 0 && matches!(span.state, State::Playing | State::Recording) => {
-                // The new loop takes the place of one kept for Undo.
-                store.drop_kept(me);
-                self.phase = Phase::Recording;
-                self.origin = t;
-                self.start_frame = f;
-                self.bar = span.meter.bar_ticks();
-                self.last_bar = (t, f);
-                self.next_bar = span.frame_of((t + self.bar) as f64);
-                self.end_tick = self.bars.map(|b| t + i64::from(b) * self.bar);
-                self.ending = false;
-                self.then_overdub = self.after == After::Overdub && !self.resample;
-                self.first_open = true;
-                self.rec_latency = if self.resample { 0 } else { self.latency };
-                self.len = 0;
-                self.written = 0;
+                if let Some((rec_from, lead)) = self.starts_on(span, t, f) {
+                    self.begin_first(store, me, span, (t, f), rec_from, lead, f);
+                }
             }
             _ => {}
         }
+    }
+
+    /// An armed loop at bar line `t` (frame `f`): whether its first pass
+    /// starts here, and if so the song frame its first frame was played
+    /// on and the frames of a pickup before the line. On the bar: here,
+    /// on the line. Waiting for you to play: once a note has come (a
+    /// pickup no more than half a bar before this line; a start from a
+    /// note the song started on, unless the song started a quarter of a
+    /// bar or more after it). A pickup from longer ago is forgotten and
+    /// the loop listens again.
+    fn starts_on(&mut self, span: &Span, t: Tick, f: u64) -> Option<(u64, usize)> {
+        if self.starts == Starts::Bar || self.resample {
+            return Some((f, 0));
+        }
+        let (p, pickup) = self.pending?;
+        let bar = span
+            .frame_of((t + span.meter.bar_ticks()) as f64)
+            .saturating_sub(f);
+        let early = f.saturating_sub(p);
+        if pickup && early > bar / 2 {
+            self.unhear();
+            return None;
+        }
+        Some(match pickup {
+            true => (f - early, early as usize),
+            false if early >= bar / 4 => (f, 0),
+            false => (f - early, 0),
+        })
+    }
+
+    /// The first pass starts on bar line `t` at frame `f` (`line`), its
+    /// first frame played on song frame `rec_from` (`f`, or before it
+    /// with a pickup of `lead` frames or a start from a note). The writer
+    /// takes the input from frame `write_at` on; what was heard before
+    /// that copies in ([`Fill`]).
+    #[allow(clippy::too_many_arguments)]
+    fn begin_first(
+        &mut self,
+        store: &mut Store,
+        me: usize,
+        span: &Span,
+        line: (Tick, u64),
+        rec_from: u64,
+        lead: usize,
+        write_at: u64,
+    ) {
+        let (t, f) = line;
+        // The new loop takes the place of one kept for Undo.
+        store.drop_kept(me);
+        self.phase = Phase::Recording;
+        self.origin = t;
+        self.start_frame = f;
+        self.bar = span.meter.bar_ticks();
+        self.last_bar = (t, f);
+        self.next_bar = span.frame_of((t + self.bar) as f64);
+        self.end_tick = self.bars.map(|b| t + i64::from(b) * self.bar);
+        self.ending = false;
+        self.then_overdub = self.after == After::Overdub && !self.resample;
+        self.first_open = true;
+        self.rec_latency = if self.resample { 0 } else { self.latency };
+        self.len = 0;
+        self.written = 0;
+        self.rec_from = rec_from;
+        self.lead = lead;
+        self.unhear();
+        let from = rec_from + u64::from(self.rec_latency);
+        self.fill = (from < write_at).then(|| Fill {
+            from,
+            done: 0,
+            to: (write_at - from) as usize,
+            at: write_at,
+            pre: true,
+        });
+    }
+
+    /// The first pass's frames heard before it began, copied in at
+    /// [`LOAD_SPEED`] from what was heard, and the input before them for
+    /// the loop point. Thrown away (counted) if what was heard has moved
+    /// past them or there is no memory.
+    fn render_fill(
+        &mut self,
+        store: &mut Store,
+        stats: &mut Stats,
+        me: usize,
+        heard: &Heard,
+        end: u64,
+    ) {
+        let Some(mut fl) = self.fill else {
+            return;
+        };
+        if fl.pre {
+            for k in 0..FADE {
+                let back = (FADE - k) as u64;
+                let x = fl
+                    .from
+                    .checked_sub(back)
+                    .map_or([0.0; 2], |g| heard.frame(g));
+                self.pre[2 * k] = x[0];
+                self.pre[2 * k + 1] = x[1];
+            }
+            fl.pre = false;
+        }
+        let due = end.saturating_sub(fl.at).saturating_mul(LOAD_SPEED as u64);
+        let target = fl.to.min(due.min(usize::MAX as u64) as usize);
+        if fl.done < target {
+            if !heard.holds(fl.from + fl.done as u64)
+                || !store.grow(me, 0, (target - 1) / BLOCK + 1)
+            {
+                stats.aborted += 1;
+                self.reset();
+                self.reclaim(store, me);
+                return;
+            }
+            for q in fl.done..target {
+                store.set(me, 0, q, heard.frame(fl.from + q as u64));
+            }
+            fl.done = target;
+            self.written = self.written.max(target);
+        }
+        self.fill = (fl.done < fl.to).then_some(fl);
     }
 
     fn finish_first(&mut self, store: &mut Store, stats: &mut Stats, me: usize, t: Tick, f: u64) {
@@ -4316,7 +4692,7 @@ impl Loop {
         self.then_overdub = false;
         self.end_tick = Some(end_t);
         if self.finish_len(store, stats, me, end_t, len) {
-            self.cut = len.min(f.saturating_sub(self.start_frame) as usize);
+            self.cut = len.min(f.saturating_sub(self.rec_from) as usize);
             self.slots[0].valid = (0, self.cut);
         }
     }
@@ -4351,6 +4727,13 @@ impl Loop {
             ..Slot::NEW
         };
         self.views[0] = View::whole(len);
+        // A pickup plays at the loop's end, leading into its first bar.
+        if self.lead > 0 {
+            match View::whole(len).rotate(-(self.lead as i64)) {
+                Some(v) if self.lead < len => self.views[0] = v,
+                _ => self.lead = 0,
+            }
+        }
         self.n_done = 0;
         self.n_undone = 0;
         self.ending = false;
@@ -4377,25 +4760,30 @@ impl Loop {
     ) {
         let before = match self.phase {
             Phase::Armed => true,
-            _ if self.first_open => f < self.start_frame + u64::from(self.rec_latency),
+            _ if self.first_open => f < self.rec_from + u64::from(self.rec_latency),
             _ => return,
         };
         if before {
+            // Waiting for you to play, by ear: the first note over
+            // PLAY_LEVEL, as played (the latency before it came in).
+            if self.by_ear && self.listening() && x[0].abs().max(x[1].abs()) >= PLAY_LEVEL {
+                self.hit = Some(f.saturating_sub(u64::from(self.latency)));
+            }
             self.ring[2 * self.ring_at] = x[0];
             self.ring[2 * self.ring_at + 1] = x[1];
             self.ring_at = (self.ring_at + 1) % FADE;
             return;
         }
-        let j = (f - self.start_frame - u64::from(self.rec_latency)) as usize;
+        let j = (f - self.rec_from - u64::from(self.rec_latency)) as usize;
         if j == 0 {
-            for k in 0..FADE {
-                let r = (self.ring_at + k) % FADE;
-                self.pre[2 * k] = self.ring[2 * r];
-                self.pre[2 * k + 1] = self.ring[2 * r + 1];
-            }
+            self.keep_pre();
         }
         if self.len > 0 && j >= self.cut {
-            self.seal(store, me);
+            // The loop point waits for a start heard before the pass to be
+            // in.
+            if self.fill.is_none() {
+                self.seal(store, me);
+            }
             return;
         }
         if !store.grow(me, 0, j / BLOCK + 1) {
@@ -4406,6 +4794,22 @@ impl Loop {
         }
         store.set(me, 0, j, x);
         self.written = self.written.max(j + 1);
+    }
+
+    /// The first pass's first frame: the input just before it, for the
+    /// loop point (unless what was heard before the pass copies it in,
+    /// [`Fill`]). Out of line: it runs once a pass, and the writer around
+    /// it runs every frame.
+    #[inline(never)]
+    fn keep_pre(&mut self) {
+        if self.fill.is_some() {
+            return;
+        }
+        for k in 0..FADE {
+            let r = (self.ring_at + k) % FADE;
+            self.pre[2 * k] = self.ring[2 * r];
+            self.pre[2 * k + 1] = self.ring[2 * r + 1];
+        }
     }
 
     /// The loop point: the end fades into the input from just before the
