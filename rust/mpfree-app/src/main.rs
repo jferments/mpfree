@@ -2541,6 +2541,17 @@ fn mute_key(
     }
 }
 
+/// The drum pads of kit `k` that a Perform pad's Drop drums mutes.
+fn kit_drums(kits: &[kit::Kit], k: usize) -> u16 {
+    kits.get(k).map_or(0, |kit| {
+        perform_pads::drum_pads(
+            kit.sounds
+                .iter()
+                .filter_map(|s| Some((usize::from(mpc_one::pad_index(s.note)?), s.name.as_str()))),
+        )
+    })
+}
+
 /// The kit the armed track `track` plays when it isn't kit 1 (whose pads
 /// alone have the mixer's pad strips): see [`mute_key`].
 fn other_kit(kits: &sampler::TrackKits, track: usize) -> Option<usize> {
@@ -5785,15 +5796,22 @@ fn player_session(
                     out.show(gui::ToUi::PadUp(pad));
                 }
                 gui::FromUi::Pad { pad, down: true } if pad < 16 && app.pads_are_loop_keys() => {
-                    keys_held.press(pad, t);
                     let action = app.perform_page().action(pad);
-                    let (more, line) = desk::perform_pad(&mut app, &time, &looper, out, action);
+                    keys_held.press_action(pad, t, action);
+                    let drums = kit_drums(&kits, player.kit());
+                    let (more, line) =
+                        desk::perform_pad_on(&mut app, &time, &looper, out, action, drums);
                     fx.extend(more);
                     if !line.is_empty() {
                         out.note(&line);
                     }
                 }
-                gui::FromUi::Pad { pad, down: false } if pad < 16 && keys_held.release(pad) => {
+                gui::FromUi::Pad { pad, down: false }
+                    if pad < 16 && keys_held.action(pad).is_some() =>
+                {
+                    if let Some(action) = keys_held.release_action(pad) {
+                        fx.extend(desk::perform_pad_up(&mut app, action));
+                    }
                     out.show(gui::ToUi::PadUp(pad));
                 }
                 gui::FromUi::Pad { pad, down: true } if pad < 16 && app.pads_mute() => {
@@ -6229,6 +6247,12 @@ fn player_session(
                         out.note(&line);
                     }
                     fx.extend(arp_fx);
+                    // The Perform set: the project's, or a new project's.
+                    let (notes, perform_fx) = app.open_perform(o.perform.as_deref());
+                    for line in notes {
+                        out.note(&line);
+                    }
+                    fx.extend(perform_fx);
                     if o.clear_loops {
                         out.note(&looper.clear_all());
                     }
@@ -6978,15 +7002,20 @@ fn player_session(
                     if (pad as usize) < 16 && app.pads_are_loop_keys() =>
                 {
                     let pad = pad as usize;
-                    keys_held.press(pad, t);
                     let action = app.perform_page().action(pad);
-                    let (more, line) = desk::perform_pad(&mut app, &time, &looper, out, action);
+                    keys_held.press_action(pad, t, action);
+                    let drums = kit_drums(&kits, player.kit());
+                    let (more, line) =
+                        desk::perform_pad_on(&mut app, &time, &looper, out, action, drums);
                     fx.extend(more);
                     if !line.is_empty() {
                         out.note(&line);
                     }
                 }
-                Some(ControlEvent::PadUp { pad }) if keys_held.release(pad as usize) => {
+                Some(ControlEvent::PadUp { pad }) if keys_held.action(pad as usize).is_some() => {
+                    if let Some(action) = keys_held.release_action(pad as usize) {
+                        fx.extend(desk::perform_pad_up(&mut app, action));
+                    }
                     out.show(gui::ToUi::PadUp(pad as usize));
                 }
                 Some(ControlEvent::PadDown { pad, .. })
@@ -7180,7 +7209,8 @@ fn player_session(
         // the Looper tab does.
         for pad in keys_held.holds(t) {
             if app.pads_are_loop_keys() {
-                let (more, line) = desk::perform_pad_held(app.perform_page().action(pad));
+                let action = keys_held.action(pad).unwrap_or_default();
+                let (more, line) = desk::perform_pad_held(action);
                 fx.extend(more);
                 if !line.is_empty() {
                     out.note(&line);
@@ -7544,6 +7574,9 @@ fn player_session(
         } else if bank_lights {
             let bank = Some(if app.mute_keys() == app::MuteKeys::Tracks {
                 app.mute_bank() % 4
+            } else if app.pads_are_loop_keys() {
+                // The Perform set's page.
+                app.perform_bank() % 4
             } else if synth_on {
                 synth.settings().bank % 4
             } else {
@@ -8052,8 +8085,18 @@ fn player_session(
             // The loop keys, lit by their loops' states.
             pages_shown = None;
             let blink = ((t * 4.0) as u64).is_multiple_of(2);
-            let want =
-                perform_pads::colours(app.perform_page(), &perform_pads::lights(&looper), blink);
+            let lit = perform_pads::Lit {
+                throws: app.throws_on(),
+                muted: (0..time.project().tracks.len().min(128))
+                    .filter(|&t| time.muted(t) == Some(true))
+                    .fold(0u128, |m, t| m | 1 << t),
+            };
+            let want = perform_pads::colours(
+                app.perform_page(),
+                &perform_pads::lights(&looper),
+                &lit,
+                blink,
+            );
             for pad in 0..16 {
                 if mute_shown.is_none_or(|s| s[pad] != want[pad]) {
                     ports.send(false, &akai::pad_colour(pad as u8, want[pad]))?;
@@ -8344,6 +8387,7 @@ fn player_session(
                 modu: mix.modu.save(),
                 synth: project::synth_text(&app.synth_settings(), &synth.sounds()),
                 arp: app.arp_part(),
+                perform: app.perform_set().text(),
                 instruments: project::instruments_text(&mix.instruments),
                 track_kits: track_kits.text(),
                 loops,

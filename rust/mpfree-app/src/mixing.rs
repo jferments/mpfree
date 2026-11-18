@@ -1293,6 +1293,16 @@ impl MixHost {
             .queue_insert(strip, slot, Timed::new(0, NodeEvent::Param { id, value }));
     }
 
+    /// Whether throw `fx` holds its Perform FX pad on the master now (the
+    /// tests').
+    #[cfg(test)]
+    pub fn throw_held(&self, fx: ThrowFx) -> bool {
+        self.mixer
+            .chain(StripId::Master)
+            .and_then(|c| c.node(PERFORM_SLOT))
+            .is_some_and(|n| n.param(perf::hold(fx.pad())) > 0.5)
+    }
+
     /// The master's XY FX, the first on its chain, if it has one.
     fn xy_slot(&self) -> Option<usize> {
         let c = self.mixer.chain(StripId::Master)?;
