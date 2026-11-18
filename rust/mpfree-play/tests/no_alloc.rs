@@ -119,6 +119,9 @@ fn playing_never_allocates() {
                 ][k as usize % 6],
                 ratchet: 1 + (k % 3) as u8,
                 touch: mpfree_seq::Touch::NONE,
+                on: true,
+                ramp: 0,
+                join: mpfree_seq::Join::Attack,
             })
             .collect();
         // Pressure on every note: four values over its length.

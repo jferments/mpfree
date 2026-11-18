@@ -32,6 +32,17 @@
 //!   ([`ModMix::take_note_values`], `TimeHost::modulate_note_fx`), which
 //!   puts them on the track's chain from the next period.
 //!
+//! - A track's controllers, pitch bend and pressure out to its outside
+//!   gear (`Owner::Midi`, the CC lanes of sequencer S6) are targets too,
+//!   held quietly ([`ModEngine::add_quiet_target`]): nothing goes to the
+//!   gear until a lock, a lane, a macro, a row, the morph or a hand moves
+//!   one, since MPFree can't know where the gear's knob is. Each starts at
+//!   General MIDI 2's value (`mpfree_param::midi::default`), which a lock's
+//!   end goes back to until a hand or a saved project sets another. Their
+//!   values go to MIDI out in the same period, on their frames
+//!   ([`ModMix::take_midi_values`], `MidiOut::control`). A value set by
+//!   hand is saved with the set-up (`base.t3.midi.74 = 90`).
+//!
 //! Locks, turns and [`ModMix::process`] don't allocate after
 //! [`ModMix::new`]; set-up changes and saving run on the same loop between
 //! periods, as the mixer panel's edits do, and may.
@@ -53,6 +64,9 @@ const EVENTS: usize = 256;
 /// MIDI effect values one period can send on.
 const NOTE_VALUES: usize = 256;
 
+/// Values for the tracks' MIDI out controls one period can send on.
+const MIDI_VALUES: usize = 512;
+
 pub struct ModMix {
     engine: ModEngine,
     events: Vec<ModTimed>,
@@ -62,6 +76,9 @@ pub struct ModMix {
     note_fx: Box<[TrackFx; MAX_TRACKS]>,
     /// This period's values on MIDI effect settings, for the time engine.
     note_values: Vec<(ParamAddr, f32)>,
+    /// This period's values on the tracks' MIDI out controls, with their
+    /// frames, for MIDI out.
+    midi_values: Vec<(u32, ParamAddr, f32)>,
     /// The macros' names on their cards ("Wash", "Grit"), saved with the
     /// set-up.
     names: Vec<String>,
@@ -124,6 +141,7 @@ impl ModMix {
             dropped: 0,
             note_fx: Box::new([TrackFx::default(); MAX_TRACKS]),
             note_values: Vec::with_capacity(NOTE_VALUES),
+            midi_values: Vec::with_capacity(MIDI_VALUES),
             names: (1..=MACROS).map(|m| format!("Macro {m}")).collect(),
         }
     }
@@ -140,6 +158,7 @@ impl ModMix {
     pub fn param(&self, mixer: &Mixer, addr: ParamAddr) -> Option<(ParamInfo, f32)> {
         match addr.owner {
             Owner::NoteFx(..) => note_param(&self.note_fx, addr),
+            Owner::Midi(_) => midi_param(addr),
             _ => describe(mixer, addr),
         }
     }
@@ -169,6 +188,13 @@ impl ModMix {
     /// for `TimeHost::modulate_note_fx`, then cleared.
     pub fn take_note_values(&mut self) -> std::vec::Drain<'_, (ParamAddr, f32)> {
         self.note_values.drain(..)
+    }
+
+    /// This period's values on the tracks' MIDI out controls
+    /// (`Owner::Midi`), each with its frame in the period: for
+    /// `MidiOut::control`, then cleared.
+    pub fn take_midi_values(&mut self) -> std::vec::Drain<'_, (u32, ParamAddr, f32)> {
+        self.midi_values.drain(..)
     }
 
     pub fn engine(&self) -> &ModEngine {
@@ -239,12 +265,13 @@ impl ModMix {
     }
 
     /// Holds `addr` for a lock or a lane. False only for a MIDI effect
-    /// setting the engine can't hold (its effect isn't on the track, or
-    /// the engine is full): its lock is dropped, since a plain value
-    /// would hold the setting in the time engine with nothing to let go
-    /// of it. Anything else passes through as a plain value when not held.
+    /// setting or a MIDI out control the engine can't hold (its effect
+    /// isn't on the track, a channel mode message, or the engine is full):
+    /// its lock is dropped, since a plain value would hold it with nothing
+    /// to let go of it. Anything else passes through as a plain value when
+    /// not held.
     fn hold_or_skip(&mut self, mixer: &Mixer, addr: ParamAddr) -> bool {
-        self.hold(mixer, addr) || !matches!(addr.owner, Owner::NoteFx(..))
+        self.hold(mixer, addr) || !matches!(addr.owner, Owner::NoteFx(..) | Owner::Midi(_))
     }
 
     /// Makes a mixer parameter a target, with the value the mixer has now,
@@ -254,8 +281,14 @@ impl ModMix {
         if self.engine.is_target(addr) {
             return true;
         }
-        self.param(mixer, addr)
-            .is_some_and(|(info, now)| self.engine.add_target(addr, info, now).is_ok())
+        let Some((info, now)) = self.param(mixer, addr) else {
+            return false;
+        };
+        match addr.owner {
+            // Outside gear: nothing is sent until something moves it.
+            Owner::Midi(_) => self.engine.add_quiet_target(addr, info, now).is_ok(),
+            _ => self.engine.add_target(addr, info, now).is_ok(),
+        }
     }
 
     /// A hand on a control (a knob on the chain editor, a macro, the
@@ -264,6 +297,10 @@ impl ModMix {
     /// hold `addr`: then the host sets it itself (nothing can lock or
     /// modulate a parameter the engine doesn't hold).
     pub fn hand(&mut self, addr: ParamAddr, value: f32, recording: bool) -> bool {
+        // A learned knob on outside gear: only the engine sends it.
+        if matches!(addr.owner, Owner::Midi(_)) {
+            self.hold_midi(addr);
+        }
         if !self.engine.is_target(addr) {
             return false;
         }
@@ -303,7 +340,9 @@ impl ModMix {
     }
 
     /// The set-up as `key = value` lines: [`ModEngine::save`]'s, then the
-    /// macros' names (`name.0 = Wash`) for any not called "Macro n".
+    /// macros' names (`name.0 = Wash`) for any not called "Macro n", then
+    /// each MIDI out control whose own value isn't its default
+    /// (`base.t3.midi.74 = 90`).
     // Saved and opened with the project (project.rs).
     pub fn save(&self) -> String {
         use std::fmt::Write as _;
@@ -311,6 +350,18 @@ impl ModMix {
         for (m, n) in self.names.iter().enumerate() {
             if *n != format!("Macro {}", m + 1) {
                 let _ = writeln!(out, "name.{m} = {n}");
+            }
+        }
+        for a in self.engine.targets() {
+            let Owner::Midi(_) = a.owner else { continue };
+            let (Some(base), Some(d)) = (
+                self.engine.base(a),
+                mpfree_play::mpfree_param::midi::default(a.param),
+            ) else {
+                continue;
+            };
+            if base != f32::from(d) {
+                let _ = writeln!(out, "base.{a} = {base}");
             }
         }
         out
@@ -323,11 +374,25 @@ impl ModMix {
     pub fn load(&mut self, mixer: &Mixer, text: &str) -> usize {
         let mut rest = String::new();
         let mut names: Vec<String> = (1..=MACROS).map(|m| format!("Macro {m}")).collect();
+        let mut bases = Vec::new();
+        let mut skipped = 0;
         for line in text.lines() {
             let named = line.trim().strip_prefix("name.").and_then(|l| {
                 let (m, n) = l.split_once('=')?;
                 Some((m.trim().parse::<usize>().ok()?, n.trim()))
             });
+            if let Some(b) = line.trim().strip_prefix("base.") {
+                let base = b.split_once('=').and_then(|(a, v)| {
+                    let a: ParamAddr = a.trim().parse().ok()?;
+                    let v: f32 = v.trim().parse().ok()?;
+                    (matches!(a.owner, Owner::Midi(_)) && v.is_finite()).then_some((a, v))
+                });
+                match base {
+                    Some(b) => bases.push(b),
+                    None => skipped += 1,
+                }
+                continue;
+            }
             match named {
                 Some((m, n)) if m < MACROS && !n.is_empty() => names[m] = n.to_string(),
                 _ => {
@@ -338,10 +403,21 @@ impl ModMix {
         }
         self.names = names;
         let note_fx = &*self.note_fx;
-        self.engine.load(&rest, &|a| match a.owner {
+        skipped += self.engine.load(&rest, &|a| match a.owner {
             Owner::NoteFx(..) => note_param(note_fx, a),
+            Owner::Midi(_) => midi_param(a),
             _ => describe(mixer, a),
-        })
+        });
+        // A MIDI out control's own value: held, and set, so it goes to the
+        // gear once its track plays there (MidiOut keeps it until then).
+        for (a, v) in bases {
+            if self.hold_midi(a) {
+                self.queue(0, ModEvent::Set { addr: a, value: v });
+            } else {
+                skipped += 1;
+            }
+        }
+        skipped
     }
 
     /// The scene morph (`mpfree_perform::SceneMorph`): put rows `a` and
@@ -414,13 +490,27 @@ impl ModMix {
     }
 
     /// A turn of a mixer control by the host. Returns false when the engine
-    /// doesn't hold it: then the host sets the mixer itself.
+    /// doesn't hold it: then the host sets the mixer itself. A track's MIDI
+    /// out control (a learned knob on outside gear) is held first: only the
+    /// engine sends it.
     pub fn set(&mut self, addr: ParamAddr, value: f32) -> bool {
+        if matches!(addr.owner, Owner::Midi(_)) {
+            self.hold_midi(addr);
+        }
         if !self.engine.is_target(addr) {
             return false;
         }
         self.queue(0, ModEvent::Set { addr, value });
         true
+    }
+
+    /// Holds a MIDI out control (it needs no mixer).
+    fn hold_midi(&mut self, addr: ParamAddr) -> bool {
+        if self.engine.is_target(addr) {
+            return true;
+        }
+        midi_param(addr)
+            .is_some_and(|(info, now)| self.engine.add_quiet_target(addr, info, now).is_ok())
     }
 
     fn queue(&mut self, offset: u32, ev: ModEvent) {
@@ -437,6 +527,7 @@ impl ModMix {
     pub fn process(&mut self, ctx: &Ctx, len: usize, mixer: &mut Mixer) {
         let unrouted = &mut self.unrouted;
         let notes = &mut self.note_values;
+        let midi = &mut self.midi_values;
         self.engine.process(
             ctx,
             len,
@@ -447,6 +538,14 @@ impl ModMix {
                 (Owner::NoteFx(..), NodeEvent::Param { value, .. }) => {
                     if notes.len() < notes.capacity() {
                         notes.push((addr, value));
+                    } else {
+                        *unrouted += 1;
+                    }
+                }
+                // Outside gear: MIDI out's, on its frame of this period.
+                (Owner::Midi(_), NodeEvent::Param { value, .. }) => {
+                    if midi.len() < midi.capacity() {
+                        midi.push((t.offset, addr, value));
                     } else {
                         *unrouted += 1;
                     }
@@ -467,6 +566,38 @@ fn note_param(fx: &[TrackFx; MAX_TRACKS], addr: ParamAddr) -> Option<(ParamInfo,
     let slot = fx.slots[fx.place_of(id)?]?;
     let info = mpfree_chain_ui::notes::info(&slot.fx, usize::from(addr.param))?;
     Some((info, info.default))
+}
+
+/// A track's MIDI out control (`Owner::Midi`): its range and its value
+/// before anything sets it (`mpfree_param::midi`), in whole steps.
+pub fn midi_param(addr: ParamAddr) -> Option<(ParamInfo, f32)> {
+    use mpfree_fx::mpfree_node::{Curve, Unit};
+    use mpfree_play::mpfree_param::midi::{self, Midi};
+    let Owner::Midi(t) = addr.owner else {
+        return None;
+    };
+    if usize::from(t) >= MAX_TRACKS {
+        return None;
+    }
+    let (min, max) = midi::range(addr.param)?;
+    let default = f32::from(midi::default(addr.param)?);
+    let name = match midi::of(addr.param)? {
+        Midi::Cc(_) => "Controller",
+        Midi::Bend => "Pitch bend",
+        Midi::Pressure => "Pressure",
+    };
+    let info = ParamInfo {
+        id: addr.param,
+        name,
+        group: "MIDI out",
+        min: f32::from(min),
+        max: f32::from(max),
+        default,
+        unit: Unit::None,
+        curve: Curve::Stepped,
+        readonly: false,
+    };
+    Some((info, default))
 }
 
 fn route(mixer: &mut Mixer, addr: ParamAddr, t: Timed, unrouted: &mut u64) {
@@ -614,6 +745,59 @@ mod tests {
         // The effect leaves its track: its settings go.
         h.modu.forget(Owner::NoteFx(2, id));
         assert!(!h.modu.engine().is_target(chance));
+    }
+
+    /// A track's CC out (S6's CC lanes): held quietly, so nothing goes to
+    /// the gear until a lock moves it, on the lock's frame; its end goes
+    /// back to General MIDI's value; a hand's value is saved and read back
+    /// (and sent then); a macro moves it through its range.
+    #[test]
+    fn a_tracks_cc_out_is_held_quietly_locked_on_its_frame_and_saved() {
+        use mpfree_mod::{MacroMap, MapCurve};
+        let mut h = MixHost::new(RATE, 0.0, 6.0);
+        let cc = ParamAddr::new(Owner::Midi(2), 74);
+        let values = |h: &mut MixHost| h.modu.take_midi_values().collect::<Vec<_>>();
+        h.lock(37, cc, Some(20.0));
+        run(&mut h, 4, 0);
+        assert!(h.modu.engine().is_target(cc));
+        assert_eq!(values(&mut h), [(37, cc, 20.0)], "no default first");
+        h.lock(5, cc, None);
+        run(&mut h, 4, 4);
+        assert_eq!(values(&mut h), [(5, cc, 64.0)], "General MIDI's 64");
+        // A channel mode message isn't a control.
+        let mode = ParamAddr::new(Owner::Midi(2), 123);
+        h.lock(0, mode, Some(0.0));
+        run(&mut h, 4, 8);
+        assert!(!h.modu.engine().is_target(mode));
+        assert!(values(&mut h).is_empty());
+        // A hand (a learned knob): held if it wasn't, and sent.
+        let bend = ParamAddr::new(Owner::Midi(0), mpfree_play::mpfree_param::midi::BEND);
+        assert!(h.modu.hand(bend, -4000.0, false));
+        assert!(h.modu.set(cc, 90.0));
+        run(&mut h, 4, 12);
+        assert_eq!(values(&mut h), [(0, bend, -4000.0), (0, cc, 90.0)]);
+        // Saved where it isn't its default, and sent again once read back.
+        let text = h.modu.save();
+        assert!(text.contains("base.t2.midi.74 = 90"), "{text}");
+        assert!(text.contains("base.t0.midi.128 = -4000"), "{text}");
+        let mut fresh = MixHost::new(RATE, 0.0, 6.0);
+        assert_eq!(fresh.modu.load(&fresh.mixer, &text), 0);
+        run(&mut fresh, 4, 0);
+        let mut got = values(&mut fresh);
+        got.sort_by_key(|v| v.1);
+        assert_eq!(got, [(0, bend, -4000.0), (0, cc, 90.0)]);
+        // A macro across its range: 0 to 127 in whole steps.
+        let map = MacroMap {
+            target: cc,
+            from: 0.0,
+            to: 1.0,
+            curve: MapCurve::Linear,
+        };
+        assert!(h.modu.change(&h.mixer, Change::Map { m: 0, map }).is_ok());
+        h.modu.set(ParamAddr::macro_value(0), 0.25);
+        run(&mut h, 4, 16);
+        assert_eq!(values(&mut h).last(), Some(&(0, cc, 32.0)));
+        assert_eq!(h.modu.unrouted(), 0);
     }
 
     #[test]

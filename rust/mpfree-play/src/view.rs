@@ -1233,6 +1233,9 @@ mod tests {
                 cond: mpfree_seq::Cond::Always,
                 ratchet: 1,
                 touch: mpfree_seq::Touch::NONE,
+                on: true,
+                ramp: 0,
+                join: mpfree_seq::Join::Attack,
             },
             Note {
                 tick: 0,
@@ -1243,6 +1246,9 @@ mod tests {
                 cond: mpfree_seq::Cond::Always,
                 ratchet: 1,
                 touch: mpfree_seq::Touch::NONE,
+                on: true,
+                ramp: 0,
+                join: mpfree_seq::Join::Attack,
             },
             Note {
                 tick: 950,
@@ -1253,6 +1259,9 @@ mod tests {
                 cond: mpfree_seq::Cond::Always,
                 ratchet: 1,
                 touch: mpfree_seq::Touch::NONE,
+                on: true,
+                ramp: 0,
+                join: mpfree_seq::Join::Attack,
             },
         ];
         c.quantise = Quantise::new(240, 100);

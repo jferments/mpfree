@@ -261,8 +261,7 @@ impl Rig {
             by_note: &mut [mpfree_arp::scale::Held::new(); 2],
         };
         time.period(PERIOD as u32, &mut seq);
-        seq.midi
-            .period_end(PERIOD as u32, std::time::Instant::now());
+        // MIDI out's period ends after the mixer's, as in the loop.
         seq.cv.period_end(PERIOD as u32, std::time::Instant::now());
         seq.tap.take();
         *clip_hits += seq.hits;
@@ -312,6 +311,11 @@ impl Rig {
             left,
             right,
         );
+        // The tracks' controllers out, as the loop sends them.
+        for (offset, addr, value) in mix.modu.take_midi_values() {
+            midi.control(offset, addr, value);
+        }
+        midi.period_end(PERIOD as u32, std::time::Instant::now());
         // Freeze and Print's check of the frozen strips, each period.
         let n_tracks = time.project().tracks.len();
         let said = mix.takes_period(&ctx, n_tracks, &|t| time.now_playing(t));
@@ -572,6 +576,21 @@ fn track_on_midi_out_never_allocates(usb: bool) {
             .set_port(port, |p| p.clock_out = ClockOut::WhilePlaying);
         m.gen += 1;
     }
+    // An LFO on the track's CC 74 (its outside gear's brightness), set up
+    // first as the chain editor would: its values go out with the notes.
+    let cc =
+        mpfree_play::mpfree_param::ParamAddr::new(mpfree_play::mpfree_param::Owner::Midi(0), 74);
+    let row = mpfree_mod::Row {
+        source: mpfree_mod::Source::Lfo(0),
+        via: None,
+        target: cc,
+        depth: 0.5,
+    };
+    assert!(rig
+        .mix
+        .modu
+        .change(&rig.mix.mixer, mpfree_mod::Change::AddRow(row))
+        .is_ok());
     for _ in 0..200 {
         rig.pads(i);
         rig.period(i);
@@ -617,10 +636,13 @@ fn track_on_midi_out_never_allocates(usb: bool) {
     let pulses = count(0xF8);
     assert!((550..=620).contains(&pulses), "pulses: {pulses}");
     assert_eq!(count(0xFC), 1);
+    // The LFO's CC 74 on channel 10, at most once a period (4,200).
+    let ccs = msgs.iter().filter(|m| m.starts_with(&[0xB9, 74])).count();
+    assert!((20..=4_200).contains(&ccs), "CC 74: {ccs}");
     assert_eq!(
         msgs.len(),
-        2 * ons + pulses + 3,
-        "only notes and clock went out: {bytes:02X?}"
+        2 * ons + pulses + 3 + ccs,
+        "only notes, clock and the CC went out: {bytes:02X?}"
     );
     if usb {
         assert!(din.0.lock().unwrap().is_empty(), "the jacks got none of it");
