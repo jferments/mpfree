@@ -200,6 +200,10 @@ pub struct NoteLog {
     events: Vec<(u64, u16, Msg)>,
     /// Events past the capacity, not kept.
     pub dropped: u64,
+    /// Controller, bend and pressure values that were outside what MIDI
+    /// can carry: the file has the nearest it can (counted for the
+    /// summary).
+    pub out_of_range: u64,
 }
 
 impl NoteLog {
@@ -208,6 +212,7 @@ impl NoteLog {
         NoteLog {
             events: Vec::with_capacity(n),
             dropped: 0,
+            out_of_range: 0,
         }
     }
 
@@ -233,6 +238,7 @@ impl NoteLog {
     pub fn clear(&mut self) {
         self.events.clear();
         self.dropped = 0;
+        self.out_of_range = 0;
     }
 
     /// The file: a track for each MPFree track that played, in track
