@@ -257,6 +257,25 @@ const ANALOG: &[Curated] = &[
     set("Voice", [ea::AGE, ea::OSC2_FINE, ea::UNI_DETUNE, ea::LEVEL]),
 ];
 
+use mpfree_synth::strings_params as est;
+
+/// Strings: the four registers players balance most, the tone and the
+/// swell, and the ensemble.
+const STRINGS: &[Curated] = &[
+    set(
+        "Registers",
+        [est::VIOLIN, est::VIOLA, est::CELLO, est::HORN],
+    ),
+    set(
+        "Swell",
+        [est::BRIGHTNESS, est::CRESCENDO, est::SUSTAIN, est::NOISE],
+    ),
+    set(
+        "Ensemble",
+        [est::ENSEMBLE, est::DEPTH, est::SLOW_RATE, est::WIDTH],
+    ),
+];
+
 use mpfree_synth::drum_params::{field as df, pad_id, PADS, STRIDE};
 
 /// Drums, on pad 1 ([`on_pad`] moves them): the hit, its body, its mix.
@@ -302,6 +321,7 @@ fn curated(id: &str) -> Option<&'static [Curated]> {
         "mpfree.drawbar" => Some(DRAWBAR),
         "mpfree.squelch" => Some(SQUELCH),
         "mpfree.analog" => Some(ANALOG),
+        "mpfree.strings" => Some(STRINGS),
         DRUMS_ID => Some(DRUMS),
         _ => None,
     }
@@ -497,11 +517,14 @@ mod tests {
     use super::*;
     use mpfree_mod::Bindings;
     use mpfree_node::{Curve, Kind, Node, Unit};
-    use mpfree_synth::{Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Wavetable};
+    use mpfree_synth::{
+        Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable,
+    };
 
     fn engines() -> Vec<Box<dyn Node>> {
         vec![
             Box::new(Analog::new(48_000)),
+            Box::new(Strings::new(48_000)),
             Box::new(Squelch::new(48_000)),
             Box::new(Drawbar::new(48_000)),
             Box::new(Keys::new(48_000)),

@@ -1,6 +1,6 @@
 # Synth library: architecture and roadmap
 
-**Status:** design, 2026-11-18 (synth library stage 3). Nothing on this page is built yet; the roadmap at the end names the pull request each part comes in. It rests on the research pages ([What every type shares](../research/synth-topics.md) and the type pages it links) and on the measured baseline ([Synth quality](synth-quality.md)). Plan: "Synth library: stock-take and research plan" (https://claude.ai/artifact/36gY5Lf3qTVZp21RM9pzUp). **Nothing here has run on the MPC**: every cost is the workstation's or an estimate, and voice counts wait for the device round asked for in the project files (`synth-library/device-round-asks.md`).
+**Status:** design, 2026-11-18 (synth library stage 3), now being built: the voice core's part 1 and the controller event (PR #579), the Ensemble (PR #591) and Strings (wave 1) are in; the roadmap at the end names the pull request each other part comes in. It rests on the research pages ([What every type shares](../research/synth-topics.md) and the type pages it links) and on the measured baseline ([Synth quality](synth-quality.md)). Plan: "Synth library: stock-take and research plan" (https://claude.ai/artifact/36gY5Lf3qTVZp21RM9pzUp). **Nothing here has run on the MPC**: every cost is the workstation's or an estimate, and voice counts wait for the device round asked for in the project files (`synth-library/device-round-asks.md`).
 
 Where a point is our own reading or estimate, it says so. Changes to the shared screen layout are only proposals here ([layout spec](layout-spec.md)); this page needs none for wave 1.
 
@@ -28,7 +28,7 @@ Twelve engines when the three waves are done, five of them new or merged, and tw
 | Bass and 808 | **Bass** (new, one voice) | Synth body: a table oscillator (saw, pulse, triangle, sine), a sub that divides it (one octave down, two, two as a narrow pulse) so it stays in phase, a Fifth, noise, into the transistor ladder, then drive with a low-pass after it. 808 body: a sine or triangle with a pitch drop (Punch, up to an octave for a few ms; Drop and Drop time), Decay or Sustain, an optional pitch wander, drive and the low-pass. Both settle exactly on the note | Reese: two detuned saws over a clean sub, a mode of the synth body | 1 |
 | Acid | Squelch (as built) | Diode ladder, accent, slide | | |
 | Electric piano and keys | **Keys** (extended) | Tine and reed (built) | Clav: a waveguide string struck by a shaped pulse, the pickup as a comb and a curve, a pitch drop at release (Gabrielli et al.). Electric grand later | 1 |
-| String machine | **Strings** (new) | A divide-down bank: 12 band-limited oscillators for the top octave, every lower octave divided from them, so the cost is the same however many keys are held. Registers (violin, viola, cello, bass, horn, trumpet) as mixes of octaves through fixed tone filters; a swell per key or shared; bow noise. The **Ensemble** inside it | | 1 |
+| String machine | **Strings** (new, built 18 Nov: [synths.md](synths.md#strings-mpfree-synth-strings)) | A bank with a band-limited saw for every note, each octave's phase locked to twice the octave below as when the top octave is divided down; only the notes heard are rendered. Registers (violin, viola, cello, contrabass, horn, trumpet) as mixes of three footages through fixed tone filters on shared buses; a swell per key or shared; bow noise. The **Ensemble** inside it | | 1 |
 | Ensemble | **Ensemble** (new, in `mpfree-fx`) | Three bucket-brigade lines, each moved by a slow and a fast LFO 120° apart (0.66 and 6.25 Hz), or four lines in the later Roland pattern; the line is Analog's chorus line | | 1 |
 | Poly and wavetable | **Poly** (Wavetable folded in) | Per oscillator: Classic (from tables), Table (today's Wavetable) or Supersaw (seven saws on the detune curve and mix); the ladder and state-variable filters as today; a second LFO | | 2 |
 | Vintage poly | Analog (as built) | Voice cards that differ and drift, the OTA filter, the bucket-brigade chorus | | |
@@ -44,8 +44,8 @@ Twelve engines when the three waves are done, five of them new or merged, and tw
 Why these choices (our reading of the research pages):
 
 - **Bass is its own engine**, not Poly in mono: its parts (a dividing sub, the Fifth, note priority, a glide at a constant rate, the 808 body, a low-pass after the drive) are what make it a bass, and it costs one voice. It is built from the shared voice core, so it is mostly assembly.
-- **Strings is the cheapest rich sound in the library.** A bank whose cost is nearly flat with keys held (Drawbar's adds 0.4 to 1.2 µs a key held on the workstation) is how the string machines worked, and it means every key can sound. The same bank later gives the combo organ.
-- **Tunings and the bank.** Dividing keeps octaves exact, so any tuning of 12 notes that repeats at the octave (12-TET at any A4, Just, Pythagorean, meantone, a 12-note Scala file) tunes the 12 top-octave oscillators and the whole bank follows. Any other tuning (24-TET, a scale of another size, a stretched octave) switches the bank to an oscillator per key held, whose cost grows with the keys, and says so on the Synth tab (the research's S6).
+- **Strings is the cheapest rich sound in the library.** Every key can sound, as on the string machines. Planned as a bank whose cost is flat with keys held; as built (18 Nov) it renders only the notes heard, so its cost grows with the notes, but slowly: the filters run on shared buses, not per key, and on the workstation one key costs 154k instructions a block (most of it the Ensemble) and 49 keys about 2.5 times that. A track at rest stops running. The same bank later gives the combo organ.
+- **Tunings and the bank.** Locking keeps octaves exact, so in any tuning whose octaves are pure (12-TET at any A4, Just, Pythagorean, meantone, a 12-note Scala file) each octave is locked to the one below and keys an octave apart never beat. In any other tuning (24-TET, a scale of another size, a stretched octave) each note runs free at its own pitch, at the same cost, so every key is still in tune (the research's S6). As built, nothing on the Synth tab needs to say which.
 - **The Ensemble is an effect**, so any track can use it: a Poly pad or a choir through it is half of the string-machine sound.
 - **Keys gets the clav, not a piano.** A full modelled grand is the heaviest instrument in the research and doesn't fit the budget (Bank et al.); FM pianos stay in FM, and a light electric grand comes after wave 3 if the device numbers leave room.
 
@@ -128,11 +128,11 @@ Stable Rust can't get float NEON code on the MPC from the compiler: LLVM vectori
 | Nightly Rust | The real intrinsics | The whole project on a nightly compiler |
 | Whole numbers (phase counters as `u32`) | LLVM does vectorise whole-number loops; dividers and phase counters are whole numbers anyway | Only part of the work |
 
-**Decision:** inline assembly kernels with plain twins, plus whole-number phase counters, **once a bench shows the gain**. The first candidates are the supersaw's seven saws, the Strings bank's 12 oscillators and the Choir's five formants a voice. The bench runs the kernel and its twin under qemu-arm, checks they agree, and the device round times both. `mpfree-synth` keeps `#![forbid(unsafe_code)]`; only `mpfree-simd` holds unsafe code.
+**Decision:** inline assembly kernels with plain twins, plus whole-number phase counters, **once a bench shows the gain**. The first candidates are the supersaw's seven saws, the Strings bank's oscillators (one per note heard) and the Choir's five formants a voice. The bench runs the kernel and its twin under qemu-arm, checks they agree, and the device round times both. `mpfree-synth` keeps `#![forbid(unsafe_code)]`; only `mpfree-simd` holds unsafe code.
 
 ### Cheap by design (lever 7)
 
-Each new engine is chosen for its cost: the Strings and combo organ banks cost the same for one key or sixty; modulation runs every 16 frames; unison voices sit side by side for the kernels; modal banks keep few modes; silent voices are skipped; load shedding stays the safety net, never the budget.
+Each new engine is chosen for its cost: the Strings bank's filters and the Ensemble cost the same for one key or sixty, and only its oscillators grow with the notes heard; modulation runs every 16 frames; unison voices sit side by side for the kernels; modal banks keep few modes; silent voices are skipped; load shedding stays the safety net, never the budget.
 
 ## 5. What a preset carries
 
@@ -193,7 +193,7 @@ Three waves, each finished end to end: engine work, then presets, then the check
 | 1 | Wave 1 targets and tests (stage 4) | The targets table for Bass, Keys and Strings with today's numbers, fxlab measures for the new parts, bench cases (note starts, the bank, the Bass voice) |
 | 2 and 3 | Voice core, part 1, and the controller event (one pull request) | Notes with priority and pedals, voices and stealing, glide, envelopes, LFOs, velocity, play routes, DC blocker, with unit tests and no engine changes; `NodeEvent::Control` and the host's pedal fallback. MIDI in's controllers follow in the MIDI thread's pull request |
 | 4 | Ensemble effect | In `mpfree-fx`, measured the FX way. Built 18 Nov ([fx-modulation.md](fx-modulation.md#ensemble)): S1 to S4 and every FX row met; a mode of the Chorus family |
-| 5 | Strings engine | Bank, registers, swell, bow noise, the Ensemble; 24 presets |
+| 5 | Strings engine | Bank, registers, swell, bow noise, the Ensemble; 24 presets. Built 18 Nov ([synths.md](synths.md#strings-mpfree-synth-strings)): S6 to S9 met, S5 not (its cost grows with the notes heard; see [Synth quality](synth-quality.md#wave-1-targets-bass-keys-and-strings-stage-4)) |
 | 6 | Bass engine | Synth and 808 bodies, Reese; 32 presets |
 | 7 | Keys | Velocity range and tone, sustain, the clav; presets to 32 |
 | 8 | Sounds | The Sound wrapper, macros and effects in presets, the macros page; factory presets as files |

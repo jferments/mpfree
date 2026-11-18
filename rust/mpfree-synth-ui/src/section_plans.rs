@@ -145,6 +145,7 @@ pub fn plan(info: &NodeInfo, params: &[ParamInfo], page: &str) -> Option<Arrange
         "mpfree.drawbar" => drawbar(page)?,
         "mpfree.squelch" => squelch(page)?,
         "mpfree.analog" => analog(page)?,
+        "mpfree.strings" => strings(page)?,
         _ => return None,
     };
     Some(build(params, spec, list))
@@ -965,6 +966,59 @@ fn analog(page: &str) -> Option<Plan> {
                 .labels(&[(UNI_DETUNE, "Detune")]),
                 s("tuning", "Tuning", Voice, &[TRANSPOSE, BEND_RANGE, FINE]),
                 s("output", "Output", Voice, &[LEVEL, PAN]),
+            ],
+        ),
+        _ => return None,
+    })
+}
+
+fn strings(page: &str) -> Option<Plan> {
+    use mpfree_synth::strings_params::*;
+    let regs = [VIOLIN, VIOLA, CELLO, CONTRABASS, HORN, TRUMPET];
+    Some(match page {
+        "Registers" => (
+            "row(regs:62*, col(tone:*, octave:150):38*)",
+            vec![
+                s("regs", "Registers", Source, &regs)
+                    .faders(&regs)
+                    .note("any mix sounds at once"),
+                s("tone", "The tone", Tone, &[]).draw("Tone").link("Tone"),
+                s("octave", "Octave", Voice, &[OCTAVE]),
+            ],
+        ),
+        "Tone" => (
+            "row(tone:*, swell:*)",
+            vec![
+                s("tone", "Tone", Tone, &[BRIGHTNESS, BODY, NOISE])
+                    .hero(&[BRIGHTNESS])
+                    .draw("Tone"),
+                s(
+                    "swell",
+                    "Swell",
+                    Shape,
+                    &[CRESCENDO, SUSTAIN, SWELL, VELOCITY],
+                )
+                .labels(&[(SWELL, "Envelope")])
+                .draw("Swell")
+                .note("how a held key comes in and dies away"),
+            ],
+        ),
+        "Ensemble" => (
+            "row(ens:*, sweeps:*)",
+            vec![
+                s("ens", "Ensemble", Motion, &[ENSEMBLE, LINES, WIDTH])
+                    .hero(&[ENSEMBLE])
+                    .labels(&[(ENSEMBLE, "Amount")])
+                    .draw("Ensemble"),
+                s("sweeps", "Sweeps", Motion, &[SLOW_RATE, FAST_RATE, DEPTH])
+                    .note("the lines' slow and fast wobble"),
+            ],
+        ),
+        "Voice" => (
+            "row(tuning:*, output:*)",
+            vec![
+                s("tuning", "Tuning", Voice, &[TRANSPOSE, FINE, BEND_RANGE]),
+                s("output", "Output", Voice, &[LEVEL, METER_KEYS]),
             ],
         ),
         _ => return None,
