@@ -1615,14 +1615,21 @@ mod tests {
         // kit, and gives it back on Back when nothing was put on it.
         p.open_pad(&mut app, &mut r.h, 0, 16, false);
         assert_eq!(app.view(), View::Chain);
-        let st = p.chain_state(&r.h).unwrap();
+        let st = p.chain_state(&r.h, &|_| None).unwrap();
         assert_eq!(st.title, "B1 · Kit 1 FX");
         assert_eq!(st.scopes, ["B1 · Kit 1", "Drums"]);
         assert_eq!(
             r.h.pad_channels.channel(0, 16),
             Some(StripId::Pad(mixing::PADS))
         );
-        p.chain(&mut app, &mut r.h, &ChainAction::Back, false, &mut quiet);
+        p.chain(
+            &mut app,
+            &mut r.h,
+            &mut time,
+            &ChainAction::Back,
+            false,
+            &mut quiet,
+        );
         assert_eq!(app.view(), View::Sample);
         assert_eq!(r.h.pad_channels.channel(0, 16), None, "given back");
         // With every channel lent, another pad gets none, and is told why.
@@ -1638,7 +1645,7 @@ mod tests {
         // + Add effect: the editor with its picker up.
         p.open_pad(&mut app, &mut r.h, 0, 4, true);
         assert_eq!(app.view(), View::Chain);
-        assert!(p.chain_state(&r.h).is_some_and(|st| st.picking));
+        assert!(p.chain_state(&r.h, &|_| None).is_some_and(|st| st.picking));
     }
 
     /// The Sample tab's FX tab: pad 5's channel as pedals while the Sample
@@ -1648,19 +1655,29 @@ mod tests {
     fn the_sample_tabs_pedals_show_the_pads_effects_and_take_their_switches_and_knobs() {
         let mut r = Rig::new();
         let mut app = App::new(RATE, false);
+        let mut time = TimeHost::new(RATE, 120.0).unwrap();
         app.start();
         app.open_tab(View::Sample);
         let mut p = Panels::new();
         p.show_pedals(&mut r.h, Some((0, 4)));
         let mut quiet = |_: ToUi| {};
         for id in ["mpfree.fx.drive", "mpfree.fx.filter"] {
-            p.chain(&mut app, &mut r.h, &ChainAction::Add(id), false, &mut quiet);
+            p.chain(
+                &mut app,
+                &mut r.h,
+                &mut time,
+                &ChainAction::Add(id),
+                false,
+                &mut quiet,
+            );
             r.run(20);
         }
         assert_eq!(app.view(), View::Sample, "the pedals open no editor");
         let poll = |p: &mut Panels, r: &Rig, t: Instant| {
             let mut sent = Vec::new();
-            p.poll(View::Sample, &r.h, 120.0, t, &mut |m| sent.push(m));
+            p.poll(View::Sample, &r.h, &|_| None, 120.0, t, &mut |m| {
+                sent.push(m)
+            });
             sent
         };
         let t0 = Instant::now();
@@ -1685,6 +1702,7 @@ mod tests {
         p.chain(
             &mut app,
             &mut r.h,
+            &mut time,
             &ChainAction::SetOn { slot: 0, on: false },
             false,
             &mut quiet,
@@ -1695,6 +1713,7 @@ mod tests {
         p.chain(
             &mut app,
             &mut r.h,
+            &mut time,
             &ChainAction::Set {
                 addr: k.addr,
                 value,
@@ -1725,11 +1744,11 @@ mod tests {
             (1, 4, false, true, "Drums")
         );
         assert!(said.list.is_empty());
-        assert!(p.chain_state(&r.h).is_none());
+        assert!(p.chain_state(&r.h, &|_| None).is_none());
         // Let go: nothing more, and no chain for a stray touch.
         p.show_pedals(&mut r.h, None);
         assert!(poll(&mut p, &r, t0 + PANELS_EVERY * 5).is_empty());
-        assert!(p.chain_state(&r.h).is_none());
+        assert!(p.chain_state(&r.h, &|_| None).is_none());
     }
 
     /// The audio loop's side: the mixer's insert row opens the editor in the
