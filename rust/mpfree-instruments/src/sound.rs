@@ -838,6 +838,15 @@ pub fn is_design_key(k: &str) -> bool {
     rest.is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// Whether preset `text` has design lines (effects or macros of its own),
+/// so it loads as a sound rather than on the bare engine. Reads the text
+/// only; never allocates.
+pub fn has_design(text: &str) -> bool {
+    text.lines()
+        .filter_map(|l| l.split_once('='))
+        .any(|(k, _)| is_design_key(k.trim()))
+}
+
 /// `key from to curve` (the curve may be left out: linear).
 fn parse_map(params: &[ParamInfo], line: &str) -> Option<MacroMap> {
     let mut w = line.split_whitespace();

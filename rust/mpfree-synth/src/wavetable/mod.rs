@@ -442,7 +442,7 @@ impl Wavetable {
     }
 
     pub fn presets() -> &'static [Preset] {
-        PRESETS
+        crate::factory::presets!("wavetable.presets", &INFO, PARAMS)
     }
 
     /// Loads a user table into oscillator `o` (0 = A, 1 = B); the Table
@@ -1402,7 +1402,7 @@ mod tests {
         for p in PARAMS {
             assert!((p.id as usize) < ID_SPACE);
         }
-        for preset in PRESETS {
+        for preset in Wavetable::presets() {
             for &(id, _) in preset.values {
                 assert!(info(id).is_some(), "{}: id {id}", preset.name);
             }

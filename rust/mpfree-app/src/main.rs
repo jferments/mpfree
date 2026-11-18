@@ -4299,18 +4299,18 @@ fn instrument_name(plugins: &plugins::Plugins, id: &'static str) -> &'static str
 }
 
 /// A job for track `track`'s own instrument `id`: an engine's copy of the
-/// shared synth's sound with its design (or `values`, a factory preset's,
-/// which brings none), or a plugin synth, with the pad layout and tuning
-/// now.
+/// shared synth's sound with its design (or `preset`, a factory preset's
+/// design lines and values, [`synth::Synth::preset_values`]), or a plugin
+/// synth, with the pad layout and tuning now.
 fn instrument_job(
     synth: &synth::Synth,
     track: usize,
     id: &'static str,
-    values: Option<Vec<f32>>,
+    preset: Option<synth::SoundCopy>,
 ) -> control::InstrumentJob {
     let engine = synth::Engine::from_node_id(id);
-    let (extras, values) = match (values, engine) {
-        (Some(v), _) => (Vec::new(), v),
+    let (extras, values) = match (preset, engine) {
+        (Some(p), _) => p,
         (None, Some(e)) => {
             let (_, extras, values) = synth.sound_of(e);
             (extras, values)
@@ -6748,8 +6748,8 @@ fn player_session(
                     let held = mix.instruments.held(track);
                     let engine = held.and_then(|h| synth::Engine::from_node_id(h.id));
                     match (held, engine.and_then(|e| synth.preset_values(e, k))) {
-                        (Some(h), Some((name, values))) => {
-                            let job = instrument_job(&synth, track, h.id, Some(values));
+                        (Some(h), Some((name, extras, values))) => {
+                            let job = instrument_job(&synth, track, h.id, Some((extras, values)));
                             if mix.build_instrument(job) {
                                 if let Some(p) = track_presets.get_mut(track) {
                                     *p = Some(k);

@@ -34,7 +34,7 @@
 
 use std::fmt;
 
-use mpfree_node::{Curve, Node, NodeInfo, ParamInfo};
+use crate::{Curve, Node, NodeInfo, ParamInfo};
 
 /// The first line's key.
 pub const FORMAT: &str = "mpfree-preset";
@@ -431,7 +431,7 @@ fn clean_tags<'a>(tags: impl Iterator<Item = &'a str>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mpfree_node::{Kind, Unit};
+    use crate::{Kind, Unit};
 
     static INFO: NodeInfo = NodeInfo {
         id: "test.plugin",

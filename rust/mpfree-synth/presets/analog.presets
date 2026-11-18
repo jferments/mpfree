@@ -1,0 +1,266 @@
+mpfree-preset = 1
+engine = mpfree.analog
+name = Init
+
+mpfree-preset = 1
+engine = mpfree.analog
+name = Poly Brass
+
+# Osc
+osc.osc-2-fine = 9
+osc.osc-2 = 100
+
+# Filter
+filter.filter = LP 12
+filter.cutoff = 420
+filter.resonance = 15
+filter.env-amount = 55
+filter.vel-filter = 40
+
+# Envelopes
+envelopes.f-attack = 70
+envelopes.f-decay = 900
+envelopes.f-sustain = 55
+envelopes.f-release = 350
+envelopes.a-attack = 25
+envelopes.a-release = 320
+
+# Voice
+voice.age = 40
+
+# Output
+output.level = -1
+
+mpfree-preset = 1
+engine = mpfree.analog
+name = Warm Pad
+
+# Osc
+osc.osc-2-fine = 8
+osc.osc-2 = 90
+
+# Filter
+filter.cutoff = 900
+filter.resonance = 20
+filter.env-amount = 25
+
+# Envelopes
+envelopes.f-attack = 1200
+envelopes.f-decay = 2500
+envelopes.f-sustain = 60
+envelopes.f-release = 2000
+envelopes.a-attack = 900
+envelopes.a-release = 2500
+envelopes.vel-amp = 20
+
+# Voice
+voice.age = 45
+voice.chorus = Slow
+
+# Output
+output.level = 2
+
+mpfree-preset = 1
+engine = mpfree.analog
+name = Sync Lead
+
+# Osc
+osc.sync = on
+osc.osc-2 = 40
+
+# Filter
+filter.cutoff = 2600
+filter.resonance = 25
+filter.env-amount = 25
+
+# Envelopes
+envelopes.f-decay = 800
+envelopes.f-sustain = 15
+
+# Mod
+mod.lfo-delay = 600
+mod.vibrato = 18
+mod.pmod-env = 45
+
+# Voice
+voice.mode = Unison
+voice.voices = 2
+voice.detune = 15
+voice.glide = 40
+
+# Output
+output.level = -2
+
+mpfree-preset = 1
+engine = mpfree.analog
+name = Chorus Strings
+
+# Osc
+osc.osc-1-wave = Saw+Pulse
+
+# Filter
+filter.cutoff = 3500
+filter.key-track = 70
+
+# Envelopes
+envelopes.a-attack = 260
+envelopes.a-release = 1300
+envelopes.vel-amp = 20
+
+# Mod
+mod.lfo-rate = 0.7
+mod.lfo-pw = 35
+
+# Voice
+voice.age = 35
+voice.chorus = Fast
+
+# Output
+output.level = 3
+
+mpfree-preset = 1
+engine = mpfree.analog
+name = Square Keys
+
+# Osc
+osc.osc-1-wave = Pulse
+osc.sub = 60
+
+# Filter
+filter.cutoff = 1100
+filter.resonance = 15
+filter.env-amount = 40
+filter.vel-filter = 40
+
+# Envelopes
+envelopes.f-decay = 500
+envelopes.f-sustain = 20
+envelopes.a-decay = 1600
+envelopes.a-sustain = 40
+envelopes.a-release = 420
+
+# Voice
+voice.chorus = Slow
+
+mpfree-preset = 1
+engine = mpfree.analog
+name = Clang Bell
+
+# Osc
+osc.osc-1-wave = Triangle
+osc.osc-2-wave = Triangle
+osc.osc-2-oct = 1
+osc.osc-2-semi = 7
+osc.osc-2-fine = 0
+
+# Filter
+filter.cutoff = 7000
+
+# Envelopes
+envelopes.a-decay = 2600
+envelopes.a-sustain = 0
+envelopes.a-release = 1600
+envelopes.vel-amp = 70
+
+# Mod
+mod.pmod-osc-2 = 45
+
+# Voice
+voice.age = 15
+
+mpfree-preset = 1
+engine = mpfree.analog
+name = Unison Bass
+
+# Osc
+osc.osc-1-oct = -1
+osc.osc-2-oct = -2
+osc.osc-2 = 80
+
+# Filter
+filter.cutoff = 280
+filter.resonance = 35
+filter.env-amount = 45
+filter.key-track = 30
+filter.drive = 30
+
+# Envelopes
+envelopes.f-decay = 320
+envelopes.f-sustain = 10
+envelopes.a-release = 120
+
+# Voice
+voice.mode = Unison
+voice.voices = 4
+voice.detune = 25
+
+# Output
+output.level = -3
+
+mpfree-preset = 1
+engine = mpfree.analog
+name = Slow Sweep
+
+# Osc
+osc.osc-2-fine = 12
+osc.osc-2 = 100
+
+# Filter
+filter.cutoff = 650
+filter.resonance = 60
+
+# Envelopes
+envelopes.a-attack = 600
+envelopes.a-release = 2200
+envelopes.vel-amp = 20
+
+# Mod
+mod.lfo-rate = 0.15
+mod.lfo-cutoff = 45
+
+# Voice
+voice.chorus = Slow
+
+mpfree-preset = 1
+engine = mpfree.analog
+name = Hollow Pulse
+
+# Osc
+osc.osc-1-wave = Pulse
+osc.osc-1-pw = 22
+
+# Filter
+filter.filter = BP 12
+filter.cutoff = 1300
+filter.resonance = 40
+
+# Envelopes
+envelopes.a-attack = 30
+envelopes.a-release = 600
+
+# Mod
+mod.lfo-rate = 0.4
+mod.lfo-pw = 25
+
+# Voice
+voice.chorus = Vibe
+
+mpfree-preset = 1
+engine = mpfree.analog
+name = Worn Cards
+
+# Osc
+osc.osc-2-fine = 4
+osc.osc-2 = 70
+
+# Filter
+filter.cutoff = 1800
+filter.resonance = 20
+filter.env-amount = 30
+
+# Envelopes
+envelopes.f-decay = 1200
+envelopes.a-release = 700
+
+# Voice
+voice.age = 100

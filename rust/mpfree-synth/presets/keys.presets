@@ -1,0 +1,629 @@
+mpfree-preset = 1
+engine = mpfree.keys
+name = Init
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Soft Tines
+
+# Tone
+tone.hardness = 30
+tone.bell = 25
+tone.voicing = 65
+tone.bark = 25
+tone.tone = -25
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Bright Tines
+
+# Tone
+tone.hardness = 70
+tone.bell = 60
+tone.voicing = 50
+tone.tone = 20
+
+# Output
+output.level = -1.5
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Barking Tines
+
+# Tone
+tone.hardness = 75
+tone.bell = 45
+tone.voicing = 60
+tone.bark = 90
+tone.vel-tone = 80
+
+# Amp
+amp.drive = 25
+
+# Output
+output.level = -5
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Bell Keys
+
+# Model
+model.decay = 10000
+
+# Tone
+tone.hardness = 85
+tone.bell = 95
+tone.voicing = 75
+tone.bark = 15
+tone.tone = 5
+
+# Output
+output.level = -2.5
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Hollow Tines
+
+# Tone
+tone.bell = 30
+tone.voicing = 25
+tone.bark = 40
+tone.tone = -10
+
+# Output
+output.level = 0
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Pan Tines
+
+# Tone
+tone.bell = 45
+tone.tone = 10
+
+# Amp
+amp.tremolo = 70
+amp.trem-rate = 4
+
+# Output
+output.level = 0
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Ballad
+
+# Model
+model.decay = 12000
+model.release = 350
+
+# Tone
+tone.hardness = 25
+tone.bell = 20
+tone.voicing = 70
+tone.bark = 15
+tone.tone = -35
+
+# Amp
+amp.key-noise = 10
+
+# Output
+output.level = -2.5
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Dusty Keys
+
+# Tone
+tone.hardness = 40
+tone.bell = 30
+tone.voicing = 40
+tone.bark = 55
+tone.tone = -45
+
+# Amp
+amp.tremolo = 25
+amp.trem-rate = 3
+amp.trem-mode = Amp
+amp.drive = 30
+amp.key-noise = 45
+
+# Output
+output.level = -6.5
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Reed
+
+# Model
+model.model = Reed
+model.decay = 3500
+model.release = 90
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Reed Bite
+
+# Model
+model.model = Reed
+model.decay = 3000
+model.release = 80
+
+# Tone
+tone.hardness = 75
+tone.voicing = 25
+tone.bark = 85
+tone.tone = 20
+
+# Amp
+amp.drive = 30
+
+# Output
+output.level = 2
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Trem Reed
+
+# Model
+model.model = Reed
+model.decay = 3500
+model.release = 100
+
+# Tone
+tone.tone = -10
+
+# Amp
+amp.tremolo = 55
+amp.trem-rate = 5.6
+amp.trem-mode = Amp
+
+# Output
+output.level = 2.5
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Mellow Tines
+
+# Tone
+tone.hardness = 20
+tone.bell = 15
+tone.voicing = 80
+tone.bark = 10
+tone.tone = -20
+tone.vel-tone = 40
+
+# Output
+output.level = -0.5
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Hard Tines
+
+# Tone
+tone.hardness = 90
+tone.bell = 50
+tone.voicing = 50
+tone.bark = 70
+tone.vel-tone = 90
+
+# Output
+output.level = -2.5
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Long Tines
+
+# Model
+model.decay = 16000
+model.release = 800
+
+# Tone
+tone.hardness = 45
+tone.bell = 35
+tone.tone = -15
+
+# Output
+output.level = -2
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Lo-fi Tines
+
+# Tone
+tone.voicing = 45
+tone.tone = -45
+
+# Amp
+amp.tremolo = 20
+amp.trem-rate = 2.5
+amp.trem-mode = Amp
+amp.drive = 30
+amp.key-noise = 60
+
+# Output
+output.level = -7.5
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Stage Tines
+
+# Tone
+tone.hardness = 60
+tone.bell = 50
+tone.bark = 60
+tone.tone = 10
+
+# Amp
+amp.tremolo = 40
+amp.trem-rate = 5
+
+# Output
+output.level = 0
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Soft Reed
+
+# Model
+model.model = Reed
+model.decay = 4000
+model.release = 120
+
+# Tone
+tone.hardness = 30
+tone.bark = 20
+tone.tone = -15
+
+# Output
+output.level = -0.5
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Dirty Reed
+
+# Model
+model.model = Reed
+model.decay = 3000
+model.release = 80
+
+# Tone
+tone.hardness = 70
+tone.voicing = 30
+tone.bark = 85
+
+# Amp
+amp.drive = 28
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Bright Reed
+
+# Model
+model.model = Reed
+model.decay = 3500
+model.release = 90
+
+# Tone
+tone.hardness = 70
+tone.bell = 70
+tone.tone = 30
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Pan Reed
+
+# Model
+model.model = Reed
+model.decay = 3500
+model.release = 90
+
+# Amp
+amp.tremolo = 60
+amp.trem-rate = 4.5
+
+# Output
+output.level = 2
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Mellow Reed
+
+# Model
+model.model = Reed
+model.decay = 4000
+model.release = 110
+
+# Tone
+tone.hardness = 35
+tone.voicing = 70
+tone.bark = 25
+tone.tone = -15
+
+# Output
+output.level = -1.5
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Clav
+
+# Model
+model.model = Clav
+model.decay = 4000
+model.release = 60
+
+# Tone
+tone.hardness = 60
+
+# Output
+output.level = -2
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Funk Clav
+
+# Model
+model.model = Clav
+model.decay = 3000
+model.release = 40
+
+# Tone
+tone.hardness = 70
+tone.bark = 60
+
+# Clav
+clav.pickup = Bridge
+clav.clav-tone = Treble
+
+# Output
+output.level = -0.5
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Muted Clav
+
+# Model
+model.model = Clav
+model.decay = 3000
+model.release = 40
+
+# Tone
+tone.hardness = 65
+
+# Clav
+clav.clav-tone = Treble
+clav.mute = 55
+
+# Output
+output.level = 0.5
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Soft Clav
+
+# Model
+model.model = Clav
+model.decay = 5000
+model.release = 90
+
+# Tone
+tone.hardness = 35
+
+# Clav
+clav.pickup = Neck
+clav.clav-tone = Soft
+
+# Output
+output.level = -4
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Thin Clav
+
+# Model
+model.model = Clav
+model.decay = 4000
+model.release = 50
+
+# Tone
+tone.hardness = 65
+
+# Clav
+clav.pickup = Out of phase
+clav.clav-tone = Treble
+
+# Output
+output.level = -2.5
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Brilliant Clav
+
+# Model
+model.model = Clav
+model.decay = 3500
+model.release = 50
+
+# Tone
+tone.hardness = 75
+
+# Clav
+clav.pickup = Bridge
+clav.clav-tone = Brilliant
+
+# Output
+output.level = -1.5
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Driven Clav
+
+# Model
+model.model = Clav
+model.decay = 3500
+model.release = 50
+
+# Tone
+tone.hardness = 70
+tone.bark = 70
+
+# Clav
+clav.clav-tone = Treble
+
+# Amp
+amp.drive = 25
+
+# Output
+output.level = -7
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Stab Clav
+
+# Model
+model.model = Clav
+model.decay = 2500
+model.release = 25
+
+# Tone
+tone.hardness = 70
+
+# Clav
+clav.mute = 30
+clav.release-drop = 5
+
+# Output
+output.level = 0.5
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Trem Clav
+
+# Model
+model.model = Clav
+model.decay = 4000
+model.release = 60
+
+# Clav
+clav.pickup = Neck
+
+# Amp
+amp.tremolo = 50
+amp.trem-rate = 6
+amp.trem-mode = Amp
+
+# Output
+output.level = 1
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Pan Clav
+
+# Model
+model.model = Clav
+model.decay = 4000
+model.release = 60
+
+# Tone
+tone.tone = -10
+
+# Amp
+amp.tremolo = 60
+amp.trem-rate = 3.5
+
+# Output
+output.level = 1.5
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Phase Tines
+fx.1 = mpfree.fx.phaser
+fx.2 = mpfree.fx.plate
+macro.1 = Tone
+macro.1.map = tone.tone -50 50
+macro.1.map = tone.hardness 35 85
+macro.2 = Bark
+macro.2.map = tone.bark 10 90
+macro.3 = Tremolo
+macro.3.map = amp.tremolo 0 80
+macro.4 = Effects
+macro.4.map = fx-1.mix 0 60
+macro.4.map = fx-2.mix 5 40
+
+# Macros
+macros.tone = 60
+macros.bark = 60
+macros.tremolo = 0
+macros.effects = 60
+
+# Tone
+tone.hardness = 65
+tone.bell = 50
+tone.bark = 58
+tone.tone = 10
+
+# Amp
+amp.trem-rate = 5
+
+# FX 1: a slow phaser
+fx-1.rate = 0.35
+fx-1.depth = 60
+fx-1.feedback = 15
+fx-1.mix = 36
+
+# FX 2: a short plate
+fx-2.pre-delay = 15
+fx-2.decay = 1800
+fx-2.low-cut = 150
+fx-2.mix = 26
+
+mpfree-preset = 1
+engine = mpfree.keys
+name = Wah Clav
+fx.1 = mpfree.fx.autowah
+fx.2 = mpfree.fx.delay
+macro.1 = Tone
+macro.1.map = tone.tone -50 50
+macro.2 = Wah
+macro.2.map = fx-1.mix 0 75
+macro.2.map = fx-1.resonance 30 60
+macro.3 = Mute
+macro.3.map = clav.mute 0 70
+macro.4 = Effects
+macro.4.map = fx-2.mix 0 35
+
+# Macros
+macros.tone = 50
+macros.wah = 80
+macros.mute = 0
+macros.effects = 40
+
+# Model
+model.model = Clav
+model.decay = 3000
+model.release = 40
+
+# Tone
+tone.hardness = 70
+tone.bark = 60
+
+# Clav
+clav.pickup = Bridge
+clav.clav-tone = Treble
+
+# FX 1: an envelope wah
+fx-1.sensitivity = 60
+fx-1.attack = 4
+fx-1.release = 120
+fx-1.center = 55
+fx-1.low = 300
+fx-1.high = 5000
+fx-1.resonance = 54
+fx-1.mix = 60
+
+# FX 2: a dotted-eighth echo
+fx-2.feedback = 25
+fx-2.tone = 4500
+fx-2.mix = 14
+
+# Output
+output.level = -3.5

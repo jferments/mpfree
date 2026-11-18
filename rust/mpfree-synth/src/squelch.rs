@@ -539,7 +539,7 @@ impl Squelch {
     }
 
     pub fn presets() -> &'static [Preset] {
-        PRESETS
+        crate::factory::presets!("squelch.presets", &INFO, PARAMS)
     }
 
     /// One while anything can be heard, else none.
