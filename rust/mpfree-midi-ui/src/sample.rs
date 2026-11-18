@@ -24,6 +24,7 @@ pub fn rig() -> IoModel {
         has_out: true,
         sending: false,
         last_in: None,
+        clock_measured: None,
     });
     live.tracks = ["Drums", "Bass", "Pads", "Lead", "Vox chops", "Perc"]
         .iter()
@@ -65,6 +66,7 @@ pub fn rig() -> IoModel {
         gen: 0,
         monitor: Default::default(),
         asks: Default::default(),
+        profiles: Default::default(),
     }
 }
 
@@ -88,6 +90,39 @@ fn learn_cutoff(m: &mut IoModel) -> To {
 /// 5-pin jacks on channel 2 (program 5 first); clock arriving on the 5-pin
 /// jacks at 120 BPM (the tempo follows it) and an Akai SysEx. Each line
 /// says where it went.
+/// CV 2 an envelope of Drums' keys, CV 3 a Drift LFO on the song's bar
+/// snapped to A minor pentatonic, CV 4 a free sine; CV out sending, with
+/// each output's volts now.
+pub fn moving_cv(mut m: IoModel) -> IoModel {
+    use mpfree_midi::cv_mod::{Env, Lfo, Notes, Rate, Shape};
+    m.live.built.cv_outs = 4;
+    m.setup.cv[1] = CvAssign::Envelope(Env {
+        attack_ms: 2.0,
+        decay_ms: 500.0,
+        sustain: 0.4,
+        ..Env::new(0)
+    });
+    m.setup.cv[2] = CvAssign::Lfo(Lfo {
+        shape: Shape::Drift,
+        rate: Rate::Beats(4.0),
+        low_volts: 0.0,
+        high_volts: 2.0,
+        restart: None,
+        notes: Notes {
+            mask: 0x4A9,
+            root: 9,
+        },
+    });
+    m.setup.cv[3] = CvAssign::Lfo(Lfo {
+        rate: Rate::Hz(0.5),
+        low_volts: 1.0,
+        high_volts: 4.0,
+        ..Lfo::default()
+    });
+    m.live.cv_volts = [2.0, 3.1, 0.75, 2.6, 5.0, 0.0, 0.0, 0.0];
+    m
+}
+
 pub fn monitored(mut m: IoModel) -> IoModel {
     let learned = learn_cutoff(&mut m);
     let mut ports = Ports::new();
@@ -262,5 +297,29 @@ pub fn held_now(mut m: IoModel) -> IoModel {
     to(&mut f, keys, 44.6, &[0xB0, 1, 47], bass);
     to(&mut f, keys, 44.8, &[0xB0, 74, 88], learned);
     f.drain_into(&mut m.monitor, HELD_AT);
+    m
+}
+
+/// `m` with controller mode on (powerhouse 3.10): the pads and Q-Links
+/// play a Juno-X on the 5-pin jacks, channel 3, its profile naming the
+/// four CCs of the first bank; the pads send poly pressure; MIDI out is
+/// on.
+pub fn controlling(mut m: IoModel) -> IoModel {
+    use mpfree_midi::profile::Profile;
+    use mpfree_midi::setup::ProfilePick;
+    let juno = "mpfree-profile 1\nname = Juno-X\ncc.74 = Filter cutoff\n\
+                cc.71 = Filter resonance\ncc.73 = Env attack\ncc.72 = Env release\n";
+    let (juno, _) = Profile::parse(juno).expect("a profile");
+    let _ = m.profiles.add(juno);
+    m.setup.set_port(DIN_NAME, |p| {
+        p.profile = ProfilePick::Named("Juno-X".into())
+    });
+    m.live.built.notes_out = true;
+    let c = &mut m.setup.controller;
+    c.on = true;
+    c.port = DIN_NAME.into();
+    c.channel = 2;
+    c.pressure = mpfree_midi::setup::PadPressure::Poly;
+    c.ccs[..4].copy_from_slice(&[74, 71, 73, 72]);
     m
 }

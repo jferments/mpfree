@@ -454,6 +454,13 @@ impl TrackHost {
         }
     }
 
+    /// Whether slot `slot` holds note `note` (a note-on not yet ended).
+    pub fn holds_note(&self, slot: usize, note: u8) -> bool {
+        self.slots
+            .get(slot)
+            .is_some_and(|s| s.held[usize::from(note & 0x7F)] > 0)
+    }
+
     pub fn note_on(&mut self, slot: usize, offset: u32, note: u8, velocity: u8) -> bool {
         self.event(
             slot,

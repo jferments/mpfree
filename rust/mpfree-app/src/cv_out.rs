@@ -25,7 +25,11 @@
 //!   ([`crate::port_writer`]), each due when its frame is heard. None of
 //!   them allocates, waits or writes to the port.
 //! - Each change is its two control changes, written together. Several
-//!   changes of one output on one frame send only the last.
+//!   changes of one output on one frame send only the last, and a change
+//!   to the 14-bit value an output already has sends nothing.
+//! - LFO and envelope outputs (`mpfree_midi::cv_mod`) move every 4 ms
+//!   while they move: up to 250 changes a second an output. [`CvOut::clock`]
+//!   gives the engine the song's place and tempo for LFOs that follow it.
 //! - The app's button lights share the Private port. While CV out is
 //!   open they go through its writer ([`CvOut::light`]), so a light's
 //!   bytes never land inside a CV pair.
@@ -38,6 +42,7 @@ use std::time::{Duration, Instant};
 
 use mpfree_midi::cv::{CvAssign, CvChange, CvEngine, CV_OUTS};
 use mpfree_midi::cv_wire;
+use mpfree_midi::expr_out::{self, ExprOut};
 use mpfree_midi::output::MAX_TRACKS;
 use mpfree_midi::setup::MAX_VOLTS;
 use mpfree_midi_ui::{IoModel, Shared};
@@ -102,6 +107,9 @@ impl Changes {
 pub struct CvOut {
     engine: CvEngine,
     chords: Chords,
+    /// Each track's keys' expression, as one bend, pressure and CC 74
+    /// ([`CvOut::expression`]).
+    expr: Box<[ExprOut]>,
     rate: u32,
     lead: Duration,
     writer: Option<Writer>,
@@ -128,6 +136,9 @@ pub struct CvOut {
     lost: bool,
     /// The engine knows the song plays (run is up).
     playing: bool,
+    /// Each output's last value handed to the writer, so a step of an LFO
+    /// or an envelope that lands on the same 14-bit value sends nothing.
+    last: [Option<u16>; CV_OUTS],
     /// The last period's values the writer took, for the MIDI monitor in
     /// debug mode ([`CvOut::sent`]): frame, output and 14-bit value; and
     /// when frame 0 is heard.
@@ -143,6 +154,7 @@ impl CvOut {
         CvOut {
             engine: CvEngine::new(rate),
             chords: Chords::new(),
+            expr: vec![ExprOut::new(); MAX_TRACKS].into_boxed_slice(),
             rate: rate.max(1),
             lead,
             writer: None,
@@ -167,6 +179,7 @@ impl CvOut {
             overran: 0,
             lost: false,
             playing: false,
+            last: [None; CV_OUTS],
             sent: [(0, 0, 0); CHANGES],
             n_sent: 0,
             sent_at: Instant::now(),
@@ -216,6 +229,7 @@ impl CvOut {
         self.applied_gen = None;
         self.lost = false;
         self.playing = false;
+        self.last = [None; CV_OUTS];
     }
 
     pub fn is_open(&self) -> bool {
@@ -277,8 +291,8 @@ impl CvOut {
     }
 
     /// One of a track's events, as MIDI Out reads it (`is`: what its note
-    /// number is). Pitch, gate, trigger and velocity outputs of that track
-    /// follow it; the event still plays wherever the track plays. A panic
+    /// number is). Pitch, gate, trigger, velocity and pressure outputs of
+    /// that track follow it; the event still plays wherever the track plays. A panic
     /// (`AllOff`) lets every gate fall.
     pub fn send(&mut self, o: &Out, is: NoteIs) {
         if self.writer.is_none() {
@@ -288,6 +302,12 @@ impl CvOut {
         match o.event {
             Event::AllOff => {
                 self.chords.clear();
+                // The keys' bend and pressure back to rest.
+                for (t, e) in self.expr.iter_mut().enumerate() {
+                    e.release(|m| {
+                        engine.track_msg(t as u8, m, o.offset, &mut |c| changes.push(c));
+                    });
+                }
                 engine.release_all(o.offset, &mut |c| changes.push(c));
             }
             Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => {}
@@ -300,6 +320,46 @@ impl CvOut {
                     engine.track_msg(t as u8, m, o.offset, &mut |c| changes.push(c));
                 });
             }
+        }
+    }
+
+    /// A key's expression for track `track`'s outputs, at the start of
+    /// this period: a keyboard's wheel and pressure, an MPE controller's
+    /// slide, pressure and tone on each of its notes, and its keys going
+    /// down and up (which say whose count). As for gear without MPE
+    /// ([`ExprOut`]): a Pitch output bends by the wheel plus the newest
+    /// key's slide, over its own bend range; a Pressure output follows the
+    /// hardest key's; a CC output on CC 74 the newest key's tone.
+    pub fn expression(&mut self, track: u16, i: expr_out::In) {
+        let t = usize::from(track);
+        if self.writer.is_none() || t >= MAX_TRACKS {
+            return;
+        }
+        // The track's first Pitch output's bend range.
+        let semis = (0..CV_OUTS)
+            .find_map(|o| match self.engine.assign(o) {
+                CvAssign::Pitch {
+                    track: pt,
+                    bend_semis,
+                    ..
+                } if usize::from(pt) == t => Some(bend_semis),
+                _ => None,
+            })
+            .unwrap_or(0);
+        let (engine, changes) = (&mut self.engine, &mut self.changes);
+        self.expr[t].take(i, semis, |m| {
+            engine.track_msg(t as u8, m, 0, &mut |c| changes.push(c));
+        });
+    }
+
+    /// Track `track`'s bend and pressure back to rest (another track is
+    /// armed), at the start of this period.
+    pub fn rest_expression(&mut self, track: usize) {
+        let (engine, changes) = (&mut self.engine, &mut self.changes);
+        if let Some(e) = self.expr.get_mut(track) {
+            e.release(|m| {
+                engine.track_msg(track as u8, m, 0, &mut |c| changes.push(c));
+            });
         }
     }
 
@@ -328,6 +388,15 @@ impl CvOut {
             }
         }
         for span in block.spans() {
+            // The song's place and tempo, for LFOs that follow it.
+            let rate = f64::from(span.rate.max(1));
+            engine.song(
+                span.offset,
+                span.len,
+                span.tick_at(span.frame) / f64::from(PPQ),
+                span.bpm / 60.0 / rate,
+                matches!(span.state, State::Playing | State::Recording),
+            );
             if !matches!(span.state, State::Playing | State::Recording) {
                 continue;
             }
@@ -379,12 +448,16 @@ impl CvOut {
                 continue;
             }
             let counts = cv_wire::counts(c.volts, MAX_VOLTS);
+            if self.last[usize::from(c.out)] == Some(counts) {
+                continue;
+            }
             let Some([hi, lo]) = cv_wire::encode(c.out, counts) else {
                 continue;
             };
             let pair = [hi[0], hi[1], hi[2], lo[0], lo[1], lo[2]];
             let due = at + Duration::from_secs_f64(f64::from(c.offset) / rate);
             if w.send(Wire::new(due, &pair)) {
+                self.last[usize::from(c.out)] = Some(counts);
                 self.queued += 1;
                 if self.n_sent < CHANGES {
                     self.sent[self.n_sent] = (c.offset, c.out, counts);
@@ -467,8 +540,12 @@ impl CvOut {
         self.shown_outs = None;
     }
 
-    /// CV 1 to 4 to 0 V, handed to the writer.
+    /// CV 1 to 4 to 0 V, handed to the writer; the keys' bend and
+    /// pressure forgotten.
     fn zero_outputs(&mut self) {
+        for t in 0..MAX_TRACKS {
+            self.rest_expression(t);
+        }
         let changes = &mut self.changes;
         for o in 0..CHECKED_OUTS {
             self.engine
@@ -661,6 +738,54 @@ mod tests {
         assert_eq!(w, want);
     }
 
+    /// Expression out on CV: the wheel bends a track's pitch output over
+    /// its own bend range, a Pressure output follows the hardest key, and
+    /// a panic puts both back at rest.
+    #[test]
+    fn the_keys_bend_the_pitch_and_press_the_pressure_output() {
+        use mpfree_midi::expr_out::In;
+        let (mut cv, sink) = open();
+        let pressure = CvAssign::Pressure {
+            track: 0,
+            max_volts: 5.0,
+        };
+        let m = model(&[(0, PITCH), (1, pressure)]);
+        cv.sync(&m);
+        cv.period_end(PERIOD, Instant::now());
+        cv.expression(0, In::Down { note: 48 });
+        cv.send(&ev(0, 0, on(48)), NoteIs::Note);
+        cv.period_end(PERIOD, Instant::now());
+        // Half the wheel: a semitone of PITCH's two.
+        cv.expression(0, In::Wheel(0.5));
+        cv.expression(
+            0,
+            In::Pressure {
+                note: 48,
+                value: 127,
+            },
+        );
+        cv.expression(1, In::Wheel(1.0));
+        cv.period_end(PERIOD, Instant::now());
+        cv.send(&ev(0, 0, Event::AllOff), NoteIs::Note);
+        cv.period_end(PERIOD, Instant::now());
+        assert!(cv.close());
+        let c = |v: f32| cv_wire::counts(v, MAX_VOLTS);
+        let want = vec![
+            pair(0, 0),
+            pair(1, 0),
+            pair(2, 0),
+            pair(3, 0),
+            pair(0, 3277),
+            pair(0, c(13.0 / 12.0)),
+            pair(1, cv_wire::FULL_SCALE),
+            // The panic: the pitch unbent, the pressure off.
+            pair(0, 3277),
+            pair(1, 0),
+            pair(0, 0),
+        ];
+        assert_eq!(sink.writes(), want);
+    }
+
     /// The MIDI monitor (debug mode) gets each value the writer took, with
     /// its output and when it is due; the next period starts empty.
     #[test]
@@ -805,6 +930,62 @@ mod tests {
         assert_eq!(of(0), [0, full, 0, full, 0]);
         assert_eq!(of(1), [0, full, 0]);
         assert_eq!(of(2), [0, full, 0]);
+    }
+
+    /// An LFO on the song: a beat's ramp at 120 BPM rises twice a second,
+    /// a value every 4 ms, each a new one; an envelope rises at a note and
+    /// falls when it lets go.
+    #[test]
+    fn an_lfo_follows_the_song_and_an_envelope_its_track() {
+        use mpfree_midi::cv_mod::{Env, Lfo, Rate, Shape};
+        let (mut cv, sink) = open();
+        let lfo = CvAssign::Lfo(Lfo {
+            shape: Shape::RampUp,
+            rate: Rate::Beats(1.0),
+            ..Lfo::default()
+        });
+        let env = CvAssign::Envelope(Env {
+            attack_ms: 0.0,
+            release_ms: 20.0,
+            ..Env::new(0)
+        });
+        let m = model(&[(0, lfo), (1, env)]);
+        let mut t = Transport::new(RATE, 120.0).unwrap();
+        let mut block = Block::new();
+        cv.sync(&m);
+        t.command(t.frame(), Command::Play);
+        let periods = RATE / PERIOD; // just under a second
+        let past = Instant::now() - Duration::from_secs(1);
+        for p in 0..periods {
+            t.process(PERIOD, &mut block);
+            cv.clock(&block);
+            if p == 10 {
+                cv.send(&ev(0, 0, on(60)), NoteIs::Note);
+            }
+            if p == 100 {
+                cv.send(&ev(0, 0, Event::NoteOff { note: 60 }), NoteIs::Note);
+            }
+            cv.period_end(PERIOD, past);
+        }
+        assert!(cv.close());
+        let w = sink.writes();
+        let of = |o: u8| -> Vec<u16> {
+            w.iter()
+                .filter(|p| p[1] == 2 * o)
+                .map(|p| cv_wire::decode(p[2], p[5]))
+                .collect()
+        };
+        let ramp = of(0);
+        // 4 ms is 176 frames at 44.1 kHz: about 249 in the second, and the
+        // ramp starts again on the second beat, half a second in.
+        assert!((240..260).contains(&ramp.len()), "{}", ramp.len());
+        let wraps = ramp.windows(2).filter(|p| p[1] < p[0]).count();
+        assert_eq!(wraps, 1 + 1, "the second beat, then 0 at close: {ramp:?}");
+        assert!(ramp.windows(2).all(|p| p[0] != p[1]));
+        let e = of(1);
+        assert_eq!(e[..2], [0, cv_wire::FULL_SCALE]);
+        assert!(e[2..].windows(2).all(|p| p[1] < p[0]), "{e:?}");
+        assert_eq!(*e.last().unwrap(), 0);
     }
 
     /// Lights go through the writer while CV out is open, and are left to
