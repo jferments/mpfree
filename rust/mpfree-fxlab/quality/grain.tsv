@@ -1,34 +1,51 @@
 # The grain engine's quality ratchet: every number may stay or get better, never worse.
 # Written by `MPFREE_QUALITY_BLESS=1 cargo test --locked -p mpfree-fxlab --test grain`;
 # see docs/dev/design/fx-quality.md ("The grain engine"). key<TAB>value
-grain/cap[2 s grains, 50 a second]/level_change_lu	0.0104
-grain/cap[2 s grains, 80 a second]/level_change_lu	0.1641
-grain/coherent[pink, overlap 16]/stretch_over_sprayed_lu	0.4154
-grain/coherent[pink, overlap 64]/stretch_over_sprayed_lu	0.3851
-grain/frozen[1 kHz, density 15 to 60]/swing_db	27.5575
-grain/frozen[pad, density 15 to 60]/swing_db	8.1299
-grain/level[pad, defaults]/offset_lu	-0.2459
-grain/level[pad]/range_lu	0.9941
-grain/level[pink, defaults]/offset_lu	0.153
-grain/level[pink]/range_lu	0.8414
-grain/onset[pad, 1000 ms grains]/ms	214.5351
-grain/onset[pad, 200 ms grains]/ms	49.9093
-grain/onset[pad, 500 ms grains]/ms	124.7392
-grain/pitch[13.5 kHz a fifth down]/spur_db	-43.0806
-grain/pitch[15 kHz an octave up]/heard_db	0
-grain/pitch[2 kHz three octaves up]/spur_db	-100.932
-grain/pitch[6 kHz two octaves up]/heard_db	-65.9068
-grain/pitch[9 kHz a fifth up]/spur_db	-30.2235
-grain/pitch[9 kHz a semitone up]/spur_db	-29.1751
-grain/smooth[Hann, overlap 2]/modulation_db	-78.6093
-grain/smooth[Hann, overlap 2]/ripple_db	0.0082
-grain/smooth[Tukey 0.5, overlap 2]/modulation_db	-77.7025
-grain/smooth[Tukey 0.5, overlap 2]/ripple_db	0.0081
-grain/smooth[defaults, 1 kHz]/sideband_db	-20.8644
-grain/smooth[defaults]/modulation_db	-82.6078
-grain/smooth[defaults]/ripple_db	0.0062
-grain/smooth[trapezoid 0.1, overlap 2]/modulation_db	-77.8115
-grain/smooth[trapezoid 0.1, overlap 2]/ripple_db	0.008
-grain/spread[full]/correlation	0.7546
-grain/spread[full]/level_change_lu	-1.7477
-grain/spread[full]/mono_fold_lu	0.5811
+grain/cap[2 s grains, 50 a second]/level_change_lu	0.1701
+grain/cap[2 s grains, 80 a second]/level_change_lu	0.2227
+grain/coherent[pink, overlap 16]/stretch_over_sprayed_lu	0.3802
+grain/coherent[pink, overlap 64]/stretch_over_sprayed_lu	0.4197
+grain/frozen[1 kHz, density 15 to 60]/swing_db	2.4223
+grain/frozen[pad, density 15 to 60]/swing_db	2.7254
+grain/level[pad, defaults]/offset_lu	-0.5097
+grain/level[pad]/range_lu	0.6416
+grain/level[pink, defaults]/offset_lu	0.3452
+grain/level[pink]/range_lu	0.6294
+grain/onset[pad, 1000 ms grains]/ms	10
+grain/onset[pad, 200 ms grains]/ms	10
+grain/onset[pad, 500 ms grains]/ms	10
+grain/pitch[13.5 kHz a fifth down]/spur_db	-44.1886
+grain/pitch[15 kHz an octave up]/heard_db	-82.462
+grain/pitch[2 kHz three octaves up]/spur_db	-85.6694
+grain/pitch[6 kHz two octaves up]/heard_db	-86.0717
+grain/pitch[9 kHz a fifth up]/spur_db	-70.9836
+grain/pitch[9 kHz a semitone up]/spur_db	-29.0479
+grain/smooth[Hann, overlap 2]/modulation_db	-83.1461
+grain/smooth[Hann, overlap 2]/ripple_db	0.0055
+grain/smooth[Tukey 0.5, overlap 2]/modulation_db	-84.6457
+grain/smooth[Tukey 0.5, overlap 2]/ripple_db	0.0042
+grain/smooth[defaults, 1 kHz]/sideband_db	-19.4878
+grain/smooth[defaults]/modulation_db	-83.1461
+grain/smooth[defaults]/ripple_db	0.0055
+grain/smooth[shape 0 %, square, overlap 2]/modulation_db	-83.274
+grain/smooth[shape 0 %, square, overlap 2]/ripple_db	0.0046
+grain/smooth[shape 100 %, pluck, overlap 2]/modulation_db	-71.425
+grain/smooth[shape 100 %, pluck, overlap 2]/ripple_db	0.1584
+grain/smooth[shape 40 %, triangle, overlap 2]/modulation_db	-81.187
+grain/smooth[shape 40 %, triangle, overlap 2]/ripple_db	0.0066
+grain/smooth[shape 80 %, swell, overlap 2]/modulation_db	-85.9917
+grain/smooth[shape 80 %, swell, overlap 2]/ripple_db	0.0041
+grain/smooth[trapezoid 0.1, overlap 2]/modulation_db	-83.83
+grain/smooth[trapezoid 0.1, overlap 2]/ripple_db	0.004
+grain/spread[full]/correlation	0.441
+grain/spread[full]/level_change_lu	0.0482
+grain/spread[full]/mono_fold_lu	1.3834
+grain/tone[A2]/pitch_cents	0.0098
+grain/tone[A4]/pitch_cents	-0.0052
+grain/tone[B5]/pitch_cents	-0.0019
+grain/vary[pad, level spray full]/level_change_lu	-0.0137
+grain/vary[pad, peaked spray]/level_change_lu	-0.2522
+grain/vary[pad, size spray full]/level_change_lu	0.1402
+grain/vary[pink, level spray full]/level_change_lu	-0.0771
+grain/vary[pink, peaked spray]/level_change_lu	0.1088
+grain/vary[pink, size spray full]/level_change_lu	-0.0527

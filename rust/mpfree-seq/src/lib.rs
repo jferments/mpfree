@@ -861,6 +861,11 @@ pub struct Track {
     /// played; none (the default) keeps them as played. The clip's own
     /// quantise ([`Clip::quantise`]) still applies on playback.
     pub record_quantise: Option<u32>,
+    /// The track's MIDI effects (its Notes stage) and where its arp sits
+    /// among them. They change what reaches the arp (the live pads, and the
+    /// clips with [`Track::through_arp`] on) and what it plays, by the same
+    /// rule: a part is never put through them twice.
+    pub note_fx: mpfree_notefx::TrackFx,
     /// A note track (the pads play it and its clips hold notes), or a Loop
     /// track, whose cells launch the looper's loops ([`loops`]).
     pub kind: TrackKind,
@@ -933,6 +938,7 @@ impl Track {
             through_arp: false,
             record_touch: true,
             record_quantise: None,
+            note_fx: mpfree_notefx::TrackFx::default(),
             kind: TrackKind::Notes,
             slots: Default::default(),
         }

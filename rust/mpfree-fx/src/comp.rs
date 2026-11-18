@@ -378,7 +378,7 @@ fn covered(a: f32, b: f32, two: bool, t: f32) -> f32 {
 /// way back in the labelled time. Where the attack alone already takes
 /// longer than the release, the hold lets go at once and the attack sets
 /// the pace.
-fn release_tau(attack: f32, two: bool, release: f32) -> f32 {
+pub(crate) fn release_tau(attack: f32, two: bool, release: f32) -> f32 {
     let goal = 1.0 - (-1.0f32).exp();
     let (mut lo, mut hi) = (1e-6 * release, release);
     if covered(lo, attack, two, release) < goal {

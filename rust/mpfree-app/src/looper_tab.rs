@@ -8,11 +8,14 @@
 //! they are given ([`crate::looper_page::LooperPage::update`] fills them).
 //!
 //! A layer's row drags out of the editor (drag and drop, approved as drawn
-//! 14 Nov): moved a fingertip ([`LIFT_PX`]), a card of it follows the
-//! finger, the loops that can take it light up ([`DropSpot`]), and letting
-//! go on one asks for [`LoopAct::DropLayer`]. A tap on the row picks it on
-//! the lift. The page tells the list what the editor's drag is doing
-//! ([`LayerDrag`]), so the card and the lit loops show over both.
+//! 14 Nov): held still for [`LIFT_HOLD_S`], then moved a fingertip
+//! ([`LIFT_PX`]), a card of it follows the finger, the loops that can take
+//! it light up ([`DropSpot`]), and letting go on one asks for
+//! [`LoopAct::DropLayer`]. A finger that moves before the hold swipes the
+//! rows up and down instead (Jay, 17 Nov: a swipe must scroll the layers).
+//! A tap on the row picks it on the lift. The page tells the list what the
+//! editor's drag is doing ([`LayerDrag`]), so the card and the lit loops
+//! show over both.
 
 use crate::looping::LoopWave;
 use mpfree_looper::LayerCommand;
@@ -83,9 +86,14 @@ pub enum LoopAct {
     NoDrop(DropTo),
 }
 
-/// A finger moves this far before a layer's row lifts out of the editor
-/// (less is a tap).
+/// A finger held on a layer's row moves this far before the row lifts out
+/// of the editor (less is a tap).
 pub const LIFT_PX: i32 = 12;
+/// How long a finger stays still on a layer's row before the row can lift
+/// out (a press and hold); a finger that moves sooner swipes the rows.
+pub const LIFT_HOLD_S: f32 = 0.4;
+/// A finger moves this far (either way) before the hold to swipe the rows.
+const SWIPE_PX: i32 = mpfree_ui::qlink::DRAG_DETENT;
 /// The card a lifted layer shows under the finger.
 const CARD_W: i32 = 280;
 const CARD_H: i32 = 58;
@@ -608,6 +616,9 @@ pub struct LoopEditor {
     history_press: Option<(u64, i32, usize, bool)>,
     /// The first row shown, when there are more layers than fit.
     top: usize,
+    /// The rows were swiped while this layer was picked: they stay where
+    /// the swipe left them until another layer is picked.
+    swiped: Option<usize>,
     /// A finger on a level bar: its layer.
     dragging: Option<(u64, usize)>,
     /// Where a dragged layer can be let go, on the screen (the page fills
@@ -616,8 +627,9 @@ pub struct LoopEditor {
     /// What letting the dragged layer go now does, as its card says it
     /// (the page words it, SHIFT and all).
     pub says: String,
-    /// A finger on a layer's row: it picks the layer on the lift, or once
-    /// it moves [`LIFT_PX`], drags it.
+    /// A finger on a layer's row: it picks the layer on the lift; moved
+    /// before [`LIFT_HOLD_S`], it swipes the rows; held that long and then
+    /// moved [`LIFT_PX`], it drags the layer.
     press: Option<Press>,
     /// The wheel has picked layer `k` up and points at `drops[at]` (None:
     /// back in its place).
@@ -646,11 +658,14 @@ struct EditorLook {
     trim: Option<i64>,
     trimming: Option<(i64, i64)>,
     drag: Option<(usize, Rect, String, Option<DropSpot>)>,
+    ready: Option<usize>,
 }
 
 /// A finger on a layer's row ([`LoopEditor`]): the layer, where the finger
-/// went down and is now, where it holds the card, and whether it has
-/// lifted.
+/// went down and is now, where it holds the card, how long it has been
+/// held still, whether the hold is long enough to lift the row, whether
+/// it has lifted, and, once it moved before the hold, the first row shown
+/// when it went down (a swipe).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Press {
     finger: u64,
@@ -658,7 +673,10 @@ struct Press {
     from: (i32, i32),
     at: (i32, i32),
     grip: (i32, i32),
+    held: f32,
+    ready: bool,
     lifted: bool,
+    swipe: Option<usize>,
 }
 
 /// Where a layer row's parts are.
@@ -770,10 +788,16 @@ impl LoopEditor {
         ((rows.h + Self::ROW_GAP) / (Self::ROW_H + Self::ROW_GAP)).max(1) as usize
     }
 
+    /// A row's height in `rows`.
+    fn row_h(rows: Rect) -> i32 {
+        let fit = LoopEditor::fit(rows);
+        ((rows.h - (fit as i32 - 1) * Self::ROW_GAP) / fit as i32).min(Self::ROW_H)
+    }
+
     /// The rows shown: (layer, its rectangle).
     pub(crate) fn row_rects(&self, rows: Rect) -> Vec<(usize, Rect)> {
         let fit = LoopEditor::fit(rows);
-        let h = ((rows.h - (fit as i32 - 1) * Self::ROW_GAP) / fit as i32).min(Self::ROW_H);
+        let h = LoopEditor::row_h(rows);
         (self.top..self.layers.len().min(self.top + fit))
             .enumerate()
             .map(|(i, k)| {
@@ -883,10 +907,38 @@ impl LoopEditor {
         self.wheel.is_some()
     }
 
-    /// Keep the picked layer in view, with the editor in `r`.
+    /// Time passed: a finger held still on a layer's row for
+    /// [`LIFT_HOLD_S`] can now lift it (the row is outlined to say so).
+    /// True when that just happened.
+    pub fn held(&mut self, dt: f32) -> bool {
+        let Some(p) = self.press.as_mut() else {
+            return false;
+        };
+        if p.ready || p.lifted || p.swipe.is_some() {
+            return false;
+        }
+        p.held += dt.max(0.0);
+        p.ready = p.held >= LIFT_HOLD_S;
+        p.ready
+    }
+
+    /// Whether a finger is held on a layer's row, waiting to lift it (so
+    /// time passing matters to the editor).
+    pub fn holding(&self) -> bool {
+        self.press
+            .is_some_and(|p| !p.ready && !p.lifted && p.swipe.is_none())
+    }
+
+    /// Keep the picked layer in view, with the editor in `r`; rows a swipe
+    /// moved stay where it left them until another layer is picked.
     pub fn follow_in(&mut self, r: Rect) {
         let fit = LoopEditor::fit(LoopEditor::parts(r).2);
         let n = self.layers.len();
+        if self.swiped == Some(self.picked) {
+            self.top = self.top.min(n.saturating_sub(fit));
+            return;
+        }
+        self.swiped = None;
         if self.picked < self.top {
             self.top = self.picked;
         } else if self.picked >= self.top + fit {
@@ -923,6 +975,7 @@ impl LoopEditor {
             drag: self
                 .drag()
                 .map(|(k, card)| (k, card, self.says.clone(), self.landing().cloned())),
+            ready: self.press.filter(|p| p.ready && !p.lifted).map(|p| p.k),
         }
     }
 }
@@ -1011,6 +1064,10 @@ impl Widget for LoopEditor {
             );
             if picked {
                 cx.canvas.stroke_round_rect(rr, 10, 2, draw::KNOB[0]);
+            }
+            // Held long enough to lift: raised, ready to drag.
+            if self.press.is_some_and(|p| p.k == k && p.ready && !p.lifted) {
+                cx.canvas.stroke_round_rect(rr.inset(-2), 12, 3, t.accent);
             }
             let c = if l.heard { l.colour } else { t.text_faint };
             let ink = if l.heard { t.text } else { t.text_faint };
@@ -1102,7 +1159,7 @@ impl Widget for LoopEditor {
         }
         if self.layers.len() > LoopEditor::fit(rows) {
             let more = format!(
-                "layers {} to {} of {}",
+                "swipe for more · layers {} to {} of {}",
                 self.top + 1,
                 (self.top + LoopEditor::fit(rows)).min(self.layers.len()),
                 self.layers.len()
@@ -1289,7 +1346,10 @@ impl Widget for LoopEditor {
                             (x - rr.x).clamp(24, CARD_W - 24),
                             (y - rr.y).clamp(12, CARD_H - 12),
                         ),
+                        held: 0.0,
+                        ready: false,
                         lifted: false,
+                        swipe: None,
                     });
                     return None;
                 }
@@ -1344,16 +1404,35 @@ impl Widget for LoopEditor {
                 None
             }
             Touch::Move if self.press.is_some_and(|p| p.finger == finger) => {
+                let top = self.top;
                 let p = self.press.as_mut()?;
                 let (dx, dy) = (x - p.from.0, y - p.from.1);
-                p.lifted |= dx * dx + dy * dy >= LIFT_PX * LIFT_PX;
                 p.at = (x, y);
-                // The page follows the drag (the list lights its loops).
-                p.lifted.then_some(EventKind::Xy {
-                    x: x as f32,
-                    y: y as f32,
-                    down: true,
-                })
+                if p.ready {
+                    p.lifted |= dx * dx + dy * dy >= LIFT_PX * LIFT_PX;
+                    // The page follows the drag (the list lights its loops).
+                    return p.lifted.then_some(EventKind::Xy {
+                        x: x as f32,
+                        y: y as f32,
+                        down: true,
+                    });
+                }
+                // Moved before the hold: a swipe, the rows following the
+                // finger a row at a time.
+                if p.swipe.is_none() && dx.abs().max(dy.abs()) < SWIPE_PX {
+                    return None;
+                }
+                let top0 = *p.swipe.get_or_insert(top);
+                let fit = LoopEditor::fit(rows);
+                let last = self.layers.len().saturating_sub(fit);
+                let step = LoopEditor::row_h(rows) + Self::ROW_GAP;
+                let to = (top0 as i32 - dy / step.max(1)).clamp(0, last as i32) as usize;
+                self.swiped = Some(self.picked);
+                if to == self.top {
+                    return None;
+                }
+                self.top = to;
+                Some(EventKind::Value(to as f32))
             }
             Touch::Move => {
                 let (f, k) = self.dragging?;
@@ -1381,6 +1460,9 @@ impl Widget for LoopEditor {
                     });
                     if phase == Touch::Cancel {
                         return p.lifted.then_some(gone?);
+                    }
+                    if p.swipe.is_some() {
+                        return None;
                     }
                     if !p.lifted {
                         // A tap: the layer goes on the Q-Links.
@@ -1812,6 +1894,80 @@ mod tests {
         }
     }
 
+    /// Time passes with a finger on the editor; true when a row became
+    /// ready to lift.
+    fn hold(ui: &mut Ui, s: f32) -> bool {
+        ui.get_mut::<LoopEditor>(EDITOR).unwrap().held(s)
+    }
+
+    /// The first layer shown.
+    fn top_of(ui: &Ui) -> usize {
+        let r = ui.rect_of(EDITOR).unwrap();
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        e.row_rects(LoopEditor::parts(r).2)[0].0
+    }
+
+    /// Jay, 17 Nov: with more layers than fit, a swipe on the rows
+    /// scrolls them (a finger that moved lifted the row before). The rows
+    /// follow the finger a row at a time, stop at both ends, pick nothing
+    /// and lift nothing, and stay where the swipe left them while the
+    /// playhead moves on; picking another layer brings it into view.
+    #[test]
+    fn a_swipe_on_the_layers_scrolls_them_and_lifts_nothing() {
+        let mut ui = page_of(EDITOR, editor(6));
+        let r = ui.rect_of(EDITOR).unwrap();
+        let rows = LoopEditor::parts(r).2;
+        let fit = LoopEditor::fit(rows);
+        assert!(fit < 6, "more layers than fit");
+        let step = LoopEditor::row_h(rows) + LoopEditor::ROW_GAP;
+        let p = parts_of(&ui, 0);
+        let (x, y) = (p.wave.x + 40, p.wave.y + 10);
+        assert_eq!(top_of(&ui), 0);
+        // Up by two rows: two more layers show.
+        ui.touch(1, Touch::Down, x, y);
+        ui.touch(1, Touch::Move, x, y - step);
+        assert_eq!(top_of(&ui), 1);
+        ui.touch(1, Touch::Move, x, y - 2 * step - 3);
+        assert_eq!(top_of(&ui), 2);
+        // A hold mid-swipe doesn't make it a drag.
+        assert!(!hold(&mut ui, 1.0));
+        ui.touch(1, Touch::Move, x - 60, y - 2 * step - 3);
+        assert!(ui.get::<LoopEditor>(EDITOR).unwrap().drag().is_none());
+        // Past the end: the last rows, no further.
+        ui.touch(1, Touch::Move, x, y - 20 * step);
+        assert_eq!(top_of(&ui), 6 - fit);
+        ui.touch(1, Touch::Up, x, y - 20 * step);
+        assert!(take_actions(&mut ui).is_empty(), "a swipe picks nothing");
+        // The page follows the playhead: the rows stay put.
+        {
+            let e = ui.get_mut::<LoopEditor>(EDITOR).unwrap();
+            e.position = Some(0.5);
+            e.follow_in(r);
+        }
+        assert_eq!(top_of(&ui), 6 - fit);
+        // Down past the start: the first rows.
+        let p = parts_of(&ui, 6 - fit);
+        let (x, y) = (p.wave.x + 40, p.wave.y + 10);
+        ui.touch(1, Touch::Down, x, y);
+        ui.touch(1, Touch::Move, x, y + 20 * step);
+        ui.touch(1, Touch::Up, x, y + 20 * step);
+        assert_eq!(top_of(&ui), 0);
+        // Another layer picked (the wheel, the Q-Links): it comes into view.
+        {
+            let e = ui.get_mut::<LoopEditor>(EDITOR).unwrap();
+            e.picked = 5;
+            e.follow_in(r);
+        }
+        assert_eq!(top_of(&ui), 6 - fit);
+        // A small wobble is still a tap.
+        let p = parts_of(&ui, 5);
+        let (x, y) = (p.wave.x + 40, p.wave.y + 10);
+        ui.touch(1, Touch::Down, x, y);
+        ui.touch(1, Touch::Move, x + 3, y - 4);
+        ui.touch(1, Touch::Up, x + 3, y - 4);
+        assert_eq!(take_actions(&mut ui), [LoopAct::Layer(5)]);
+    }
+
     /// Layer `k`'s parts, as drawn.
     fn parts_of(ui: &Ui, k: usize) -> RowParts {
         let r = ui.rect_of(EDITOR).unwrap();
@@ -1868,11 +2024,12 @@ mod tests {
         assert_eq!(ui.get::<LoopEditor>(EDITOR).unwrap().picked, 1);
     }
 
-    /// A row moved a fingertip lifts out: the card follows the finger,
-    /// and letting go on a place that takes it asks for the drop; on one
-    /// that doesn't, for why not; anywhere else, nothing. A small wobble
-    /// is still a tap, which picks the layer on the lift. The wheel picks
-    /// a layer up, turns round the places and drops it with its push.
+    /// A finger held still on a row for [`LIFT_HOLD_S`] and then moved a
+    /// fingertip lifts the row out: the card follows the finger, and
+    /// letting go on a place that takes it asks for the drop; on one that
+    /// doesn't, for why not; anywhere else, nothing. A small wobble is
+    /// still a tap, which picks the layer on the lift. The wheel picks a
+    /// layer up, turns round the places and drops it with its push.
     #[test]
     fn a_layer_drags_out_to_a_loop_and_a_tap_still_picks_it() {
         let mut ui = page_of(EDITOR, editor(3));
@@ -1909,9 +2066,12 @@ mod tests {
             Some(EventKind::Select(1))
         );
         assert_eq!(take_actions(&mut ui), [LoopAct::Layer(1)]);
-        // Moved more: lifted, the card under the finger, held where it
-        // was picked up.
+        // Held, then moved more: lifted, the card under the finger, held
+        // where it was picked up. Held, it is outlined before it lifts.
         ui.touch(1, Touch::Down, x, y);
+        assert!(!hold(&mut ui, LIFT_HOLD_S / 2.0));
+        assert!(hold(&mut ui, LIFT_HOLD_S / 2.0));
+        assert!(!hold(&mut ui, 1.0), "once a press");
         assert!(ui.touch(1, Touch::Move, x - 30, y).is_some());
         let e = ui.get::<LoopEditor>(EDITOR).unwrap();
         let (k, card) = e.drag().unwrap();
@@ -1930,14 +2090,17 @@ mod tests {
         assert!(ui.get::<LoopEditor>(EDITOR).unwrap().drag().is_none());
         // On the one that doesn't: why not.
         ui.touch(1, Touch::Down, x, y);
+        hold(&mut ui, LIFT_HOLD_S);
         ui.touch(1, Touch::Move, no.x + 10, no.y + 10);
         ui.touch(1, Touch::Up, no.x + 10, no.y + 10);
         assert_eq!(take_actions(&mut ui), [LoopAct::NoDrop(DropTo::NewLoop)]);
         // Back on its own row, or cancelled: nothing.
         ui.touch(1, Touch::Down, x, y);
+        hold(&mut ui, LIFT_HOLD_S);
         ui.touch(1, Touch::Move, x + 40, y);
         ui.touch(1, Touch::Up, x, y);
         ui.touch(1, Touch::Down, x, y);
+        hold(&mut ui, LIFT_HOLD_S);
         ui.touch(1, Touch::Move, ok.x + 10, ok.y + 10);
         ui.touch(1, Touch::Cancel, ok.x + 10, ok.y + 10);
         assert!(take_actions(&mut ui).is_empty());

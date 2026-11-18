@@ -37,15 +37,19 @@ fn undo_steps(p: &Project) -> usize {
     n
 }
 
+/// Where `row` is in the list the layer's grain mode shows.
+fn index(s: &GrainSample, row: Row) -> usize {
+    row.index_in(s.state.region.grain_mode)
+        .unwrap_or_else(|| panic!("{row:?} isn't shown"))
+}
+
 fn row_value(s: &GrainSample, row: Row) -> String {
     let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
-    list.rows[Row::ALL.iter().position(|r| *r == row).unwrap()]
-        .value
-        .clone()
+    list.rows[index(s, row)].value.clone()
 }
 
 fn step(s: &mut GrainSample, row: Row, delta: i32) -> Option<GrainAction> {
-    let index = Row::ALL.iter().position(|r| *r == row).unwrap();
+    let index = index(s, row);
     let ev = UiEvent {
         widget: grain_tab::LIST.into(),
         kind: EventKind::Step { index, delta },
@@ -120,8 +124,11 @@ fn the_tab_shows_the_layers_grain_settings_and_the_engines_cloud() {
         (Row::Mode, "Granular"),
         (Row::Scan, "0.25×"),
         (Row::Spray, "16 %"),
+        (Row::SprayShape, "Even"),
+        (Row::SizeSpray, "0 %"),
         (Row::PitchSpray, "±0.5 st"),
-        (Row::Window, "Tukey 0.5"),
+        (Row::LevelSpray, "0 %"),
+        (Row::Shape, "Tukey 0.5"),
         (Row::Reverse, "15 %"),
         (Row::Spread, "70 %"),
         (Row::Quantise, "Minor"),
@@ -300,8 +307,18 @@ fn arrows_step_each_row_and_a_run_of_taps_on_one_row_is_one_undo_step() {
         (Row::Scan, 1, "0.5×"),
         (Row::Scan, -3, "Frozen"),
         (Row::PitchSpray, 2, "±1.5 st"),
-        (Row::Window, 1, "Tukey 0.2"),
-        (Row::Window, -9, "Hann"),
+        (Row::SprayShape, 1, "Peaked"),
+        (Row::SprayShape, -1, "Even"),
+        (Row::SizeSpray, 3, "15 %"),
+        (Row::SizeSpray, 30, "100 %"),
+        (Row::LevelSpray, 10, "50 %"),
+        (Row::LevelSpray, -11, "0 %"),
+        // From the old Tukey window (as a trapezoid, 20 %) onto the knob.
+        (Row::Shape, 1, "25 % · Trapezoid"),
+        (Row::Shape, -9, "0 % · Square"),
+        (Row::Shape, 12, "60 % · Hann"),
+        (Row::Shape, 4, "80 % · Swell"),
+        (Row::Shape, 9, "100 % · Pluck"),
         (Row::Spread, 7, "100 %"),
         (Row::Quantise, 1, "Pentatonic"),
         (Row::Quantise, -9, "Off"),
@@ -320,10 +337,147 @@ fn arrows_step_each_row_and_a_run_of_taps_on_one_row_is_one_undo_step() {
         step(&mut s, Row::Density, 1).is_none(),
         "200 grains a second is the most"
     );
+    assert!(
+        step(&mut s, Row::SprayShape, -1).is_none(),
+        "Even is the first"
+    );
     assert_eq!(
         s.project.pad(PAD).unwrap().layers[0].region.grain.window,
-        GrainWindow::Hann
+        GrainWindow::Shape { shape: 1.0 }
     );
+}
+
+#[test]
+fn a_grain_mode_starts_from_its_own_settings_and_shows_its_rows() {
+    let mut s = grain(true);
+    let steps = undo_steps(&s.project);
+    let names = |s: &GrainSample| -> Vec<String> {
+        let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
+        list.rows.iter().map(|r| r.name.clone()).collect()
+    };
+    assert_eq!(row_value(&s, Row::GrainMode), "Cloud");
+    assert_eq!(names(&s).len(), Row::ALL.len());
+    let (position, gain) = {
+        let g = &s.state.region.grain;
+        (g.position, g.gain)
+    };
+    // Pitch picked: it stays picked in a mode that shows it.
+    let st = s.state.clone();
+    s.tab.qlink(&mut s.ui, &st, 3, 0, false);
+    assert_eq!(s.tab.row(&s.ui), Row::Pitch);
+
+    step_apply(&mut s, Row::GrainMode, 1);
+    assert_eq!(row_value(&s, Row::GrainMode), "Stretch");
+    assert_eq!(
+        names(&s),
+        [
+            "Mode",
+            "Grain mode",
+            "Scan speed",
+            "Position",
+            "Size",
+            "Density",
+            "Pitch",
+            "Shape",
+            "Stereo spread",
+            "Level"
+        ]
+    );
+    for (row, value) in [
+        (Row::Scan, "1×"),
+        (Row::Size, "90 ms"),
+        (Row::Density, "45 /s"),
+        (Row::Pitch, "+0 st"),
+        (Row::Shape, "Hann"),
+        (Row::Spread, "0 %"),
+    ] {
+        assert_eq!(row_value(&s, row), value, "{row:?}");
+    }
+    let g = s.state.region.grain;
+    assert_eq!((g.position, g.gain), (position, gain), "kept");
+    assert_eq!(
+        (g.spray, g.pitch_spray, g.reverse, g.timing, g.scale),
+        (0.0, 0.0, 0.0, 0.0, 0),
+        "nothing random, so the grains stay in step"
+    );
+    assert_eq!(s.tab.row(&s.ui), Row::Pitch);
+    // A sound with a tempo (from the Warp page) stretches in time.
+    let mut r = s.state.region.clone();
+    r.warp = Some(mpfree_sampler::model::Warp::new(92.0));
+    assert_eq!(grain_tab::value_text(&r, Row::Scan), "1× · in time");
+
+    step_apply(&mut s, Row::GrainMode, 1);
+    assert_eq!(row_value(&s, Row::GrainMode), "Repeat");
+    assert_eq!(names(&s).len(), 10);
+    assert_eq!(row_value(&s, Row::Density), "4 /beat");
+    assert_eq!(row_value(&s, Row::Size), "1/4 beat");
+    assert_eq!(row_value(&s, Row::Shape), "10 % · Trapezoid");
+    let g = s.state.region.grain;
+    assert_eq!((g.scan, g.timing), (0.0, 0.0), "the same spot, on the grid");
+    // Its rate steps through beat divisions.
+    step_apply(&mut s, Row::Density, 1);
+    assert_eq!(row_value(&s, Row::Density), "6 /beat");
+
+    // Back to a cloud: every row again, scattered a little.
+    step_apply(&mut s, Row::GrainMode, -2);
+    assert_eq!(row_value(&s, Row::GrainMode), "Cloud");
+    assert_eq!(names(&s).len(), Row::ALL.len());
+    let g = s.state.region.grain;
+    assert!(g.sync.is_none() && g.spray > 0.0 && g.spread > 0.0 && g.timing > 0.0);
+    assert_eq!(s.tab.row(&s.ui), Row::Pitch);
+    // A row the next mode hides gives way to the Grain mode row.
+    let timing = index(&s, Row::Timing);
+    s.ui.get_mut::<SettingList>(grain_tab::LIST)
+        .unwrap()
+        .selected = timing;
+    step_apply(&mut s, Row::GrainMode, 1);
+    assert_eq!(s.tab.row(&s.ui), Row::GrainMode);
+    // A run of switches is one undo step (as for any row), and undo
+    // brings the settings back.
+    assert_eq!(undo_steps(&s.project), steps + 3);
+    for _ in 0..3 {
+        s.project.undo();
+    }
+    let r = &s.project.pad(PAD).unwrap().layers[0].region;
+    assert_eq!(r.grain_mode, mpfree_sampler::model::GrainMode::Cloud);
+    assert_eq!(r.grain.spray, 0.16);
+}
+
+#[test]
+fn a_tone_plays_a_note_that_steps_by_semitones_and_keeps_its_cycles() {
+    let mut s = grain(true);
+    step_apply(&mut s, Row::GrainMode, 3);
+    assert_eq!(row_value(&s, Row::GrainMode), "Tone");
+    assert!(
+        step(&mut s, Row::GrainMode, 1).is_none(),
+        "Tone is the last mode"
+    );
+    let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
+    assert_eq!(list.rows.len(), 12);
+    assert_eq!(list.rows[2].name, "Density");
+    assert_eq!(row_value(&s, Row::Density), "A2 · 110 Hz");
+    assert_eq!(row_value(&s, Row::Size), "36 ms · 4.0 cycles");
+    let g = s.state.region.grain;
+    assert_eq!(
+        (g.timing, g.scan, g.spray),
+        (0.0, 0.0, 0.0),
+        "regular and still"
+    );
+    for (row, delta, value) in [
+        (Row::Density, 3, "C3 · 131 Hz"),
+        (Row::Size, 0, "31 ms · 4.0 cycles"),
+        (Row::Size, 2, "38 ms · 5.0 cycles"),
+        (Row::Density, 12, "C4 · 262 Hz"),
+        (Row::Size, 0, "19 ms · 5.0 cycles"),
+        (Row::Density, -60, "A0 · 27.5 Hz"),
+        (Row::Density, 99, "B5 · 988 Hz"),
+        (Row::Size, -20, "1 ms · 1.0 cycles"),
+    ] {
+        if delta != 0 {
+            step_apply(&mut s, row, delta);
+        }
+        assert_eq!(row_value(&s, row), value, "{row:?} {delta:+}");
+    }
 }
 
 #[test]
