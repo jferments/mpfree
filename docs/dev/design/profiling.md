@@ -249,10 +249,12 @@ worth it?), or for a change against main on the same machine.
 ### What can we afford? (`--afford`)
 
 ```text
-cargo run --release -p mpfree-bench -- --afford [--calibration FILE]
+cargo run --release -p mpfree-bench -- --afford [--filter TEXT] [--calibration FILE]
 ```
 
-It plays each Poly preset at 1, 2, 4, 8 and 16 voices, the sampler with
+It plays each factory preset of every keyboard engine (Poly, Analog, FM,
+Wavetable, Keys, Pluck) at 1, 2, 4, 8 and 16 voices, the organ (Drawbar)
+with 1 to 16 keys held, each Squelch preset once on its line, the sampler with
 1, 4, 8, 16 and 32 looping pads held (tuned an octave down to just under an
 octave up, and again all 3 to 14.5 semitones up, so every voice takes the
 clean pitched-up read), the same counts of pads through a resonant 4-pole
@@ -266,7 +268,11 @@ voice`, and prints how many voices fit in the module's budget (synth 20 %,
 sampler 25 %). That is for one engine alone; several synth tracks share the
 synth budget, so two Supersaw tracks get half each. "16+ (75)" means every
 count measured fits and the line runs out at 75. Mono and legato presets
-play one voice, so they show one cost. In the grains row a "voice" is one
+play one voice, so they show one cost; the organ's wheels turn whatever is
+held, so its cost per key is near 0. "worst/mean" is the worst block over
+the mean at the most voices: the room spikes take that steady work doesn't.
+`--filter TEXT` keeps the rows whose name holds TEXT (a device round can
+measure one engine at a time). In the grains row a "voice" is one
 live grain, so its per-voice cost is the cost of a grain; 256 is the
 sampler's whole grain budget. With `--calibration` the times and
 counts are MPC estimates (the kernel range in brackets); on the MPC they are

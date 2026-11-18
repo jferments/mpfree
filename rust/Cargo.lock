@@ -996,6 +996,7 @@ dependencies = [
  "mpfree-grain",
  "mpfree-node",
  "mpfree-sampler",
+ "mpfree-synth",
 ]
 
 [[package]]

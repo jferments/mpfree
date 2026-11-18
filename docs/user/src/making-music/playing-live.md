@@ -34,7 +34,7 @@ The pattern's length, the step inspector and your timing are on the **Sequencer*
 
 ## Throws
 
-**Throws** are effects you play like an instrument: hold one and the effect comes in, let go and it stops. They are **Delay throw** (a dotted echo), **Reverb wash**, **Stutter**, **Tape stop**, **Filter dip** (a low-pass sweep), **Beat repeat**, **Drop drums** and **Vinyl brake**. Each tile shows its timing or length. While the music plays, a throw starts on the next sixteenth note, so it lands in time even if you press a little early. Hold one at the end of a phrase and let go on the next downbeat.
+**Throws** are effects you play like an instrument: hold one and the effect comes in, let go and it stops. They are **Delay throw** (a dotted echo), **Reverb wash**, **Stutter**, **Tape stop**, **Filter dip** (a low-pass sweep), **Beat repeat**, **Drop drums** and **Vinyl brake**. Each tile shows its timing or length. While the music plays, a throw starts on the next sixteenth note, so it lands in time even if you press a little early. Hold one at the end of a phrase and let go on the next downbeat. The pads can play them too: page B of the [Perform set](looping.md#more-pages-the-perform-set) has the eight throws on pads 1 to 8.
 
 **Drop drums** mutes the kick, snare and hi-hats while you hold it: the classic breakdown move.
 

@@ -67,6 +67,8 @@ The four tabs along the top are the four **modes**:
 
 Along the bottom of the panel, the notes the arp is about to play light up in turn, with their octave.
 
+To turn rate, gate, swing or octaves from a knob on your keyboard or controller, hold **SHIFT**, touch the slider, then move the knob (see [MIDI Learn](midi-and-cv.md#midi-learn)). The same works on the Q-Link cards while NOTE REPEAT is held or latched.
+
 ### Orders
 
 In Arp mode the data wheel picks the **order** the held notes play in:
