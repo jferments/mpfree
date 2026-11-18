@@ -299,3 +299,27 @@ pub fn held_now(mut m: IoModel) -> IoModel {
     f.drain_into(&mut m.monitor, HELD_AT);
     m
 }
+
+/// `m` with controller mode on (powerhouse 3.10): the pads and Q-Links
+/// play a Juno-X on the 5-pin jacks, channel 3, its profile naming the
+/// four CCs of the first bank; the pads send poly pressure; MIDI out is
+/// on.
+pub fn controlling(mut m: IoModel) -> IoModel {
+    use mpfree_midi::profile::Profile;
+    use mpfree_midi::setup::ProfilePick;
+    let juno = "mpfree-profile 1\nname = Juno-X\ncc.74 = Filter cutoff\n\
+                cc.71 = Filter resonance\ncc.73 = Env attack\ncc.72 = Env release\n";
+    let (juno, _) = Profile::parse(juno).expect("a profile");
+    let _ = m.profiles.add(juno);
+    m.setup.set_port(DIN_NAME, |p| {
+        p.profile = ProfilePick::Named("Juno-X".into())
+    });
+    m.live.built.notes_out = true;
+    let c = &mut m.setup.controller;
+    c.on = true;
+    c.port = DIN_NAME.into();
+    c.channel = 2;
+    c.pressure = mpfree_midi::setup::PadPressure::Poly;
+    c.ccs[..4].copy_from_slice(&[74, 71, 73, 72]);
+    m
+}

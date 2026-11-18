@@ -623,6 +623,8 @@ pub struct MidiOut {
     said: Vec<String>,
     /// Messages thru couldn't send (MIDI out off, or no output there).
     thru_unsent: u64,
+    /// Messages controller mode couldn't send, as for thru.
+    controller_unsent: u64,
     /// The Sample tab's auto-sample of outside gear, out of the jacks.
     gear: Gear,
 }
@@ -669,6 +671,7 @@ impl MidiOut {
             sent_at: Instant::now(),
             said: Vec::new(),
             thru_unsent: 0,
+            controller_unsent: 0,
             gear: Gear::new(),
         }
     }
@@ -1100,6 +1103,20 @@ impl MidiOut {
         true
     }
 
+    /// A message controller mode sends to the output `to` (the MPC's pads
+    /// and Q-Links), at the start of this period. False when nothing can
+    /// send it: MIDI out is off, or `to` isn't plugged in or its output
+    /// didn't open.
+    pub fn controller(&mut self, to: PortId, msg: Msg) -> bool {
+        let i = usize::from(to.0);
+        if !self.sending || !self.ports.get(i).is_some_and(|p| p.writer.is_some()) {
+            self.controller_unsent += 1;
+            return false;
+        }
+        self.router.controller(to, msg, 0, &mut self.queue);
+        true
+    }
+
     fn end_chords(&mut self, t: usize, offset: u32) {
         let (router, queue) = (&mut self.router, &mut self.queue);
         self.chords
@@ -1470,6 +1487,12 @@ impl MidiOut {
             lines.push(format!(
                 "Thru: {} messages not sent (MIDI out off, or no output to send them to)",
                 self.thru_unsent
+            ));
+        }
+        if self.controller_unsent > 0 {
+            lines.push(format!(
+                "Controller mode: {} messages not sent (MIDI out off, or no output to send them to)",
+                self.controller_unsent
             ));
         }
         let g = &self.gear;

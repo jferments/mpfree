@@ -213,6 +213,8 @@ pub enum To {
     ThruFrom(PortId),
     /// Out: the Sample tab's auto-sample played it on outside gear.
     Sampler,
+    /// Out: controller mode sent it (the MPC's pads and Q-Links).
+    Controller,
 }
 
 /// The monitor's filter groups, as bits of [`Filter::kinds`].

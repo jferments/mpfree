@@ -1,5 +1,5 @@
-//! The MIDI, Routing, Learn, Sync, CV and Monitor sections of the mixer's
-//! I/O view.
+//! The MIDI, Routing, Learn, Controller, Sync, CV and Monitor sections of
+//! the mixer's I/O view.
 //!
 //! The owner's calls (2026-11-12): a project's routing lives in an I/O view
 //! inside the mixer, opened by the I/O icon beside the mixer icon. The
@@ -56,6 +56,7 @@ pub use mpfree_midi::monitor::Monitor;
 pub use mpfree_midi::profile::{Profile, Profiles};
 pub use mpfree_midi::setup::MidiSetup;
 
+mod controller;
 mod cv;
 mod form;
 mod learn;
@@ -358,17 +359,22 @@ pub type Shared = Arc<Mutex<IoModel>>;
 pub const MIDI: &str = "MIDI";
 pub const ROUTING: &str = "Routing";
 pub const LEARN: &str = "Learn";
+pub const CONTROLLER: &str = "Controller";
 pub const SYNC: &str = "Sync";
 pub const CV: &str = "CV";
 pub const MONITOR: &str = "Monitor";
 
-/// The six sections, in the order the I/O view lists them, all on one
+/// The seven sections, in the order the I/O view lists them, all on one
 /// model. Hand each to `mpfree_mixer_ui::add_io_section`.
 pub fn sections(model: &Shared) -> Vec<Box<dyn mpfree_mixer_ui::IoSection>> {
     vec![
         Box::new(form::FormSection::new(midi::Midi, model.clone())),
         Box::new(routing::Routing::new(model.clone())),
         Box::new(learn_section::Learn::new(model.clone())),
+        Box::new(form::FormSection::new(
+            controller::Controller,
+            model.clone(),
+        )),
         Box::new(form::FormSection::new(sync::Sync, model.clone())),
         Box::new(form::FormSection::new(cv::Cv, model.clone())),
         Box::new(monitor::MonitorSection::new(model.clone())),

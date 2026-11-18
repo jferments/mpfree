@@ -373,7 +373,7 @@ fn pad_number(w: &str) -> Result<u8, String> {
 
 /// A note by number (0 to 127) or name (C-1 to G9, C4 is 60; sharps with
 /// #, flats with b).
-fn note_number(w: &str) -> Result<u8, String> {
+pub(crate) fn note_number(w: &str) -> Result<u8, String> {
     if let Ok(n) = w.parse::<u32>() {
         return match n {
             0..=127 => Ok(n as u8),

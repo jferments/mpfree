@@ -372,7 +372,9 @@ impl Desk<'_> {
             | gui::FromUi::UndoHistory(_)
             | gui::FromUi::UndoOn { .. }
             | gui::FromUi::ExportAsk
-            | gui::FromUi::Export(_)) => return Some(a),
+            | gui::FromUi::Export(_)
+            // Controller mode's chip: the I/O model and MIDI out's.
+            | gui::FromUi::ControllerOff) => return Some(a),
         }
         None
     }

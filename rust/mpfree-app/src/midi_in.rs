@@ -482,6 +482,10 @@ pub struct MusicIn {
     knobs: Knobs,
     /// Per port: its pitch wheel, channel pressure and MPE.
     mpe: Vec<MpeIn>,
+    /// Controller mode's plan as the setup last gave it (None: off), and
+    /// whether the app has it yet.
+    controller: Option<crate::controller_out::Plan>,
+    controller_new: bool,
 }
 
 impl Default for MusicIn {
@@ -536,6 +540,8 @@ impl MusicIn {
             thru_dropped: 0,
             knobs: Knobs::new(),
             mpe: (0..MAX_PORTS).map(|_| MpeIn::new()).collect(),
+            controller: None,
+            controller_new: false,
         }
     }
 
@@ -575,6 +581,12 @@ impl MusicIn {
     /// track is armed), each with its track, from 0.
     pub fn take_routed(&mut self) -> std::vec::Drain<'_, (u8, Key)> {
         self.routed.drain(..)
+    }
+
+    /// Controller mode's plan, once each time the setup changes it (None
+    /// inside: off).
+    pub fn take_controller(&mut self) -> Option<Option<crate::controller_out::Plan>> {
+        std::mem::take(&mut self.controller_new).then(|| self.controller.clone())
     }
 
     /// What thru passed on since the app last took it, in the order it
@@ -941,6 +953,25 @@ impl MusicIn {
             let ccs = f.knobs_of(m.profile(&f.port));
             self.knobs.ccs = std::array::from_fn(|i| ccs.get(i).copied());
             self.knobs.at = [None; FOLLOW_KNOBS];
+            // Controller mode: its output by name (on this run's number,
+            // None until it is plugged in) and the profile that names its
+            // notes and controls.
+            let c = &m.setup.controller;
+            let plan = c.on.then(|| crate::controller_out::Plan {
+                setup: c.clone(),
+                to: self
+                    .ports
+                    .all()
+                    .iter()
+                    .find(|p| p.name == c.port && p.has_out)
+                    .map(|p| p.id),
+                profile: m.profile(&c.port).cloned(),
+                shown: m.setup.shown(&c.port).to_string(),
+            });
+            if plan != self.controller {
+                self.controller = plan;
+                self.controller_new = true;
+            }
             // The app follows a clock now (M4).
             m.live.built.clock_in = true;
             self.applied = Some(m.gen);

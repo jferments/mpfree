@@ -631,6 +631,26 @@ pub struct KitView {
     pub key: Option<String>,
 }
 
+/// Controller mode as the screen shows it (controller_out.rs): the
+/// header's chip and the Q-Link column on every page.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ControllerShow {
+    /// The chip: "Controller → Juno-X · ch 3 · A", or why nothing goes.
+    pub chip: String,
+    /// The Q-Links' bank, from 0 (Q-Links 1 to 4).
+    pub bank: usize,
+    /// The bank's four Q-Links: the name of what each moves (its profile's,
+    /// the MIDI spec's, else "CC 16"), its CC, and the value it sent last.
+    pub knobs: [(String, u8, Option<u8>); 4],
+}
+
+impl ControllerShow {
+    /// "1-4", "5-8" ...
+    pub fn bank_words(&self) -> String {
+        format!("{}-{}", self.bank * 4 + 1, self.bank * 4 + 4)
+    }
+}
+
 /// Timing numbers from the audio thread.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Timing {
@@ -733,6 +753,8 @@ fn loops_info(v: &crate::looping::LooperView) -> mpfree_time_ui::view::LoopsInfo
 }
 
 pub enum ToUi {
+    /// Controller mode (controller_out.rs) is on, as shown, or off.
+    Controller(Option<ControllerShow>),
     /// The MIDI out the Sample tab's auto-sample plays outside gear
     /// through (the 5-pin jacks, while they are open and Prefs' Send MIDI
     /// and CV out is on), when it comes (Some) or goes (None)
@@ -1149,6 +1171,9 @@ pub enum FromUi {
     PadLevelOff,
     /// A tap on the "Pads: steps" chip: the pads play again.
     StepsOff,
+    /// A tap on the Controller chip: controller mode off, the pads and
+    /// Q-Links MPFree's again.
+    ControllerOff,
     /// The pattern's ‹ or › while the pads are steps: the pads show this
     /// page too.
     StepPage(usize),
@@ -1520,6 +1545,10 @@ pub struct Player {
     level_chip: Option<usize>,
     /// The "Pads: steps" chip's place: a tap gives the pads back.
     steps_chip: Option<usize>,
+    /// Controller mode, while it is on: its chip and the Q-Link column.
+    controller: Option<ControllerShow>,
+    /// The Controller chip's place: a tap turns controller mode off.
+    controller_chip: Option<usize>,
     /// The MAKE or PERFORM chip's place: a tap switches (sequencer S4).
     perform_chip: Option<usize>,
     /// The list of kits is open over the page (the kit chip); the view
@@ -1907,6 +1936,8 @@ impl Player {
             kit_chip: None,
             level_chip: None,
             steps_chip: None,
+            controller: None,
+            controller_chip: None,
             perform_chip: None,
             kit_list: false,
             chip_why: Vec::new(),
@@ -2258,7 +2289,17 @@ impl Player {
             .then(|| self.chain_page.cards(&self.ui.theme));
         let audio = self.audio_cards().map(|k| (k.title(), k));
         let held_title;
-        let (title, cards) = if let Some((title, cards)) = &chain {
+        let (title, cards) = if let Some(c) = &self.controller {
+            // Controller mode: the Q-Links send their CCs on every page.
+            let cards: [QLinkCard; 4] = std::array::from_fn(|i| {
+                let (name, cc, value) = &c.knobs[i];
+                let text = value.map_or_else(|| "–".to_string(), |v| v.to_string());
+                let pos = value.map_or(0.0, |v| f32::from(v) / 127.0);
+                QLinkCard::new(name, &format!("CC {cc}"), &text, pos)
+            });
+            held_title = format!("Q-Links · Controller {}", c.bank_words());
+            (held_title.as_str(), cards)
+        } else if let Some((title, cards)) = &chain {
             (title.as_str(), cards.clone())
         } else if let Some(knobs) = self
             .io_showing()
@@ -3578,10 +3619,22 @@ impl Player {
             ));
             chips.push(Chip::new(self.session.0.clone(), self.session.1));
         }
+        // Controller mode (powerhouse 3.10): the pads and Q-Links play
+        // outside gear, not the kit, so its chip takes the kit chip's place
+        // (the header has room for few); a tap gives them back.
+        self.controller_chip = None;
+        if let Some(c) = &self.controller {
+            self.controller_chip = Some(chips.len());
+            chips.push(Chip::new(c.chip.clone(), Tone::Warn));
+        }
         // A tap on the kit chip opens the list of kits (Jay's card, 13 Nov
         // 14:57Z).
-        self.kit_chip = self.kits.get(self.kit).map(|_| chips.len());
-        match self.kits.get(self.kit) {
+        let kit = self
+            .kits
+            .get(self.kit)
+            .filter(|_| self.controller.is_none());
+        self.kit_chip = kit.map(|_| chips.len());
+        match kit {
             Some(KitView {
                 chip: Some(chip), ..
             }) => chips.push(Chip::new(chip.clone(), Tone::Normal)),
@@ -3822,6 +3875,15 @@ impl Player {
             && self.time.edit.is_none()
         {
             time_view::copy_hint(&self.time)
+        } else if let Some(c) = self.controller.as_ref().filter(|_| self.view == View::Play) {
+            // Controller mode: the pads, PAD BANK, the Q-Links and Q-LINK
+            // are the gear's.
+            let next = ControllerShow {
+                bank: (c.bank + 1) % (mpfree_midi::setup::CONTROLLER_KNOBS / 4),
+                ..c.clone()
+            };
+            format!("Controller mode: the pads and Q-Links play your gear   ·   PAD BANK: its pads A-H   ·   \
+                     Q-LINK: Q-Links {}   ·   tap its chip: off   ·   {stop}", next.bank_words())
         } else if let Some(s) = self.status.steps.filter(|s| s.copying && !s.picking) {
             step_copy_hint(s)
         } else if let (Some(name), Some(_)) = (self.play.held_name(), self.status.steps) {
@@ -3964,6 +4026,12 @@ impl Player {
                 }
                 View::Browser => mpfree_browser_ui::BROWSER_HINT.to_string(),
             }
+        };
+        // Controller mode: the Q-Links send the gear's CCs on every page,
+        // so a page's own word for them would be wrong.
+        let text = match &self.controller {
+            Some(_) => controller_qlinks_hint(&text),
+            None => text,
         };
         let (text, tone) = match &self.told {
             Some((t, _)) => (t.clone(), Tone::Warn),
@@ -5249,6 +5317,14 @@ impl Player {
             ToUi::Session(text, tone) => {
                 self.session = (text, tone);
                 self.refresh_chips();
+            }
+            ToUi::Controller(c) => {
+                if self.controller != c {
+                    self.controller = c;
+                    self.refresh_chips();
+                    self.refresh_qlinks();
+                    self.refresh_hint();
+                }
             }
             ToUi::Timing(t) => {
                 self.timing = t;
@@ -8766,6 +8842,9 @@ impl Player {
             ("header", EventKind::Select(i)) if Some(i) == self.steps_chip => {
                 Some(FromUi::StepsOff)
             }
+            ("header", EventKind::Select(i)) if Some(i) == self.controller_chip => {
+                Some(FromUi::ControllerOff)
+            }
             ("header", EventKind::Select(i)) if Some(i) == self.perform_chip => {
                 Some(FromUi::Time(TimeAction::Perform(!self.time.perform)))
             }
@@ -10943,6 +11022,43 @@ pub fn on_screens_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
     })
 }
 
+/// `hint` with what it says the Q-Links do ("Q-Links: rate, gate ...",
+/// "Q-Links 1-4: the marked knobs") changed to what they do in controller
+/// mode, which takes them on every page.
+fn controller_qlinks_hint(hint: &str) -> String {
+    let sep = if hint.contains("   ·   ") {
+        "   ·   "
+    } else {
+        "  ·  "
+    };
+    hint.split(sep)
+        .map(|part| {
+            if part.starts_with("Q-Links") && !part.starts_with("Q-Links: your gear") {
+                "Q-Links: your gear's CCs"
+            } else {
+                part
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
+/// Controller mode as the sample screens show it: the pads and Q-Links
+/// playing a Juno-X on the 5-pin jacks' channel 3, the first two Q-Links
+/// turned (`mpfree_midi_ui::sample::controlling`).
+fn sample_controller() -> ControllerShow {
+    ControllerShow {
+        chip: "Controller → MIDI · ch 3 · A".into(),
+        bank: 0,
+        knobs: [
+            ("Filter cutoff".into(), 74, Some(96)),
+            ("Filter resonance".into(), 71, Some(40)),
+            ("Env attack".into(), 73, None),
+            ("Env release".into(), 72, None),
+        ],
+    }
+}
+
 /// A sample screen of the mixer's I/O view on the section titled
 /// `section`, with `model` (its own function, so `sample_screens`' frame
 /// doesn't grow with each screen).
@@ -11214,6 +11330,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             mpfree_midi_ui::CV,
         ),
     ));
+    // The Controller section (powerhouse 3.10): controller mode on, the
+    // pads and Q-Links playing a Juno-X on the 5-pin jacks' channel 3,
+    // its profile naming the first bank's four CCs.
+    let mut ctl = io_section_screen(
+        fonts(),
+        &io_state,
+        mpfree_midi_ui::sample::controlling(mpfree_midi_ui::sample::rig()),
+        mpfree_midi_ui::CONTROLLER,
+    );
+    ctl.apply(ToUi::Controller(Some(sample_controller())));
+    ctl.ui.invalidate();
+    out.push(("mixer-io-controller", ctl));
     // The FX chain editor in the mixer's place (a strip's insert row): the
     // drum bus, Drive selected, Tone touched; and the macros panel over the
     // page (a long press on a macro card), layout spec 4b.
@@ -11233,6 +11361,12 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     )));
     macros.apply(ToUi::QLinkBank);
     out.push(("play-macros", macros));
+    // Controller mode on Play: the chip in the top bar (a tap turns it
+    // off) and the Q-Link column's cards sending CCs to the gear, the
+    // first two turned.
+    let mut ctl = sample_player(fonts());
+    ctl.apply(ToUi::Controller(Some(sample_controller())));
+    out.push(("play-controller", ctl));
     // Dev › MIDI: the monitor in debug mode, fed as though the app had run
     // for a second and a half (mpfree_midi_ui::sample::debugged).
     let mut debug = sample_player(fonts());
@@ -15630,9 +15764,9 @@ mod tests {
         assert_eq!(p.touch(2, Touch::Down, cr.x + 5, cr.y + 5), None);
         assert_eq!(p.take_actions(), [FromUi::OpenIo]);
         assert!(!p.open_io_section("Sync"), "no Sync section yet");
-        // The model arrives (once, at start): MIDI, Routing, Learn, Sync,
-        // CV and Monitor join the list after Audio, and the chip's tap
-        // opens Sync.
+        // The model arrives (once, at start): MIDI, Routing, Learn,
+        // Controller, Sync, CV and Monitor join the list after Audio, and
+        // the chip's tap opens Sync.
         // A second model adds nothing.
         let model = std::sync::Arc::new(std::sync::Mutex::new(mpfree_midi_ui::sample::rig()));
         p.apply(ToUi::IoModel(model.clone()));
@@ -15643,6 +15777,7 @@ mod tests {
                 mpfree_midi_ui::MIDI,
                 mpfree_midi_ui::ROUTING,
                 mpfree_midi_ui::LEARN,
+                mpfree_midi_ui::CONTROLLER,
                 mpfree_midi_ui::SYNC,
                 mpfree_midi_ui::CV,
                 mpfree_midi_ui::MONITOR
@@ -15653,8 +15788,8 @@ mod tests {
             p.ui.get::<mpfree_mixer_ui::MixerView>(mpfree_mixer_ui::MIXER);
         assert_eq!(
             v.map(|v| v.io_section()),
-            Some(4),
-            "Audio, MIDI, Routing, Learn, Sync"
+            Some(5),
+            "Audio, MIDI, Routing, Learn, Controller, Sync"
         );
         let fx = app.open_io();
         assert_eq!(
@@ -21838,6 +21973,80 @@ mod tests {
         // The Pressure page's live bars.
         p.apply(ToUi::SynthPressures(vec![0.5, 0.25]));
         assert_eq!(p.synth.as_ref().unwrap().state.pressures, vec![0.5, 0.25]);
+    }
+
+    /// Controller mode (powerhouse 3.10): its chip takes the kit chip's
+    /// place, a tap on it turns it off, and the Q-Link column shows what
+    /// the Q-Links send on every page; off, the kit chip is back.
+    #[test]
+    fn controller_mode_shows_its_chip_and_its_qlinks() {
+        let mut p = sample_player(Fonts::embedded());
+        let chips = |p: &Player| -> Vec<String> {
+            p.ui.get::<Header>("header")
+                .unwrap()
+                .chips
+                .iter()
+                .map(|c| c.text.clone())
+                .collect()
+        };
+        let kit = "Classic House · Bank A".to_string();
+        assert!(chips(&p).contains(&kit), "{:?}", chips(&p));
+        let show = ControllerShow {
+            chip: "Controller → MIDI · ch 3 · A".into(),
+            bank: 1,
+            knobs: [
+                ("Filter cutoff".into(), 74, Some(127)),
+                ("CC 21".into(), 21, None),
+                ("Volume".into(), 7, Some(0)),
+                ("CC 23".into(), 23, None),
+            ],
+        };
+        p.apply(ToUi::Controller(Some(show.clone())));
+        let now = chips(&p);
+        assert!(!now.contains(&kit), "{now:?}");
+        assert_eq!(now[p.controller_chip.unwrap()], show.chip);
+        let column = |p: &Player| {
+            let q = p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap();
+            (q.title.clone(), q.cards.clone())
+        };
+        for view in [View::Play, View::Synth] {
+            p.apply(ToUi::Show(view));
+            let (title, cards) = column(&p);
+            assert_eq!(title, "Q-Links · Controller 5-8", "{view:?}");
+            let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
+            assert_eq!(names, ["Filter cutoff", "CC 21", "Volume", "CC 23"]);
+            assert_eq!(cards[0].value, "127");
+            assert_eq!(cards[1].value, "–");
+            assert_eq!(cards[0].pos, 1.0);
+        }
+        p.apply(ToUi::Show(View::Play));
+        p.apply(ToUi::Show(View::Synth));
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("Q-Links: your gear's CCs"), "{hint}");
+        assert!(!hint.contains("marked knobs"), "{hint}");
+        p.apply(ToUi::Show(View::Play));
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.starts_with("Controller mode: the pads"), "{hint}");
+        assert!(hint.contains("Q-LINK: Q-Links 9-12"), "{hint}");
+        // The chip, once drawn, turns it off.
+        let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
+        p.ui.paint(&mut c);
+        let chip =
+            p.ui.get::<Header>("header")
+                .unwrap()
+                .chip_rect(p.controller_chip.unwrap())
+                .unwrap();
+        assert_eq!(
+            p.touch(8, Touch::Down, chip.x + 10, chip.y + 10),
+            Some(FromUi::ControllerOff)
+        );
+        p.touch(8, Touch::Up, chip.x + 10, chip.y + 10);
+        p.apply(ToUi::Controller(None));
+        assert!(chips(&p).contains(&kit), "{:?}", chips(&p));
+        assert_eq!(p.controller_chip, None);
+        assert!(!column(&p).0.contains("Controller"));
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("PAD BANK: kit"), "{hint}");
     }
 
     #[test]
