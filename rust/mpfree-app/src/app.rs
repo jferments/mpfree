@@ -153,12 +153,12 @@ pub enum View {
 pub fn tabs(dev: bool) -> Vec<View> {
     let mut t = vec![
         View::Play,
-        View::Pads,
         View::Sequencer,
-        View::Arrange,
-        View::Synth,
         View::Looper,
         View::Sample,
+        View::Synth,
+        View::Arrange,
+        View::Pads,
         View::Mixer,
     ];
     if dev {
@@ -704,6 +704,10 @@ pub struct Settings {
     /// Play's options "Timing strip": the Beats view shows Your timing
     /// under the pattern (Jay 13 Nov folded the Drum view into Beats).
     pub timing_strip: bool,
+    /// What Play's XY pad plays, picked from its chip's list: None, the
+    /// DJ filter and echo; `Some(k)`, the XY FX's effect `k`
+    /// (`mpfree_fx::xyfx::EFFECTS`; Jay, 18 Nov 2026 07:34Z).
+    pub xy_effect: Option<usize>,
     /// Prefs "Audio track memory": the audio tracks' size from the next
     /// start.
     pub audio_memory: crate::audiotracks::AudioMemory,
@@ -768,6 +772,7 @@ impl Default for Settings {
             metronome: false,
             metronome_db: crate::time::CLICK_DB as i8,
             timing_strip: true,
+            xy_effect: None,
             audio_memory: crate::audiotracks::AudioMemory::default(),
             open_last: true,
             export_mode: mpfree_export::Mode::Fast,
@@ -1868,11 +1873,24 @@ impl App {
         velocity: u8,
         down: bool,
     ) -> Option<mpfree_play::Event> {
-        if self.free_time_recording() || slot >= 16 {
+        if slot >= 16 {
             return None;
         }
         // A kit's pad on the page (or the one it pressed), else the slot.
-        let note = self.kit_pad(slot) as u8;
+        self.pressed_pad_event(self.kit_pad(slot) as u8, velocity, down)
+    }
+
+    /// The same for kit pad `pad` (0 to 127) itself: a key on a kit
+    /// ([`App::kit_key_down`]).
+    pub fn pressed_pad_event(
+        &self,
+        note: u8,
+        velocity: u8,
+        down: bool,
+    ) -> Option<mpfree_play::Event> {
+        if self.free_time_recording() {
+            return None;
+        }
         Some(if down {
             mpfree_play::Event::NoteOn {
                 note,
@@ -3363,6 +3381,17 @@ impl App {
         }
     }
 
+    /// What the XY pad plays, picked on its chip's list: kept with Prefs.
+    pub fn set_xy_effect(&mut self, pick: Option<usize>) -> Vec<Effect> {
+        let pick = pick.filter(|&k| k < mpfree_fx::xyfx::EFFECTS.len());
+        if self.settings.xy_effect == pick {
+            return Vec::new();
+        }
+        self.save_dirty = true;
+        self.settings.xy_effect = pick;
+        vec![Effect::Settings(self.settings.clone())]
+    }
+
     /// The Looper tab's Length: the picked loop's first pass (None: free).
     /// The setting follows, so MENU's First pass length and the next start
     /// agree with the last choice.
@@ -4643,6 +4672,51 @@ mod tests {
         app.set_pad_layout(Some(pads));
         app.key_up(50);
         assert!(app.eng().active().is_empty(), "nothing was left to let go");
+    }
+
+    /// With a kit, a key hits the kit pad its note names (A1 to H16,
+    /// `profile::kit_pad_of_note`), whatever bank the pads show. It shares
+    /// the hold with a pad of the MPC on the same kit pad, and a track
+    /// change lets go of the old track's kit pads in every bank.
+    #[test]
+    fn keys_hit_a_kits_pads_in_every_bank() {
+        let mut app = ready();
+        // Bank C on the pads: a key on B5 (kit pad 20) still hits B5.
+        app.set_pad_page(2);
+        app.kit_key_down(20, 100);
+        assert_eq!(notes(&mut app, 64), [20]);
+        assert!(matches!(
+            app.pressed_pad_event(20, 100, true),
+            Some(mpfree_play::Event::NoteOn { note: 20, .. })
+        ));
+        // Bank B: pad 6 and the key on B6 (21) hold it together.
+        app.set_pad_page(1);
+        app.kit_key_down(21, 100);
+        app.pad_down(5, 100);
+        app.kit_key_up(21);
+        assert!(app.eng().active().contains(21), "pad 6 still holds B6");
+        app.pad_up(5);
+        assert!(!app.eng().active().contains(21));
+        // A second note-on for a held key is ignored; one note-off ends it.
+        app.kit_key_down(40, 90);
+        app.kit_key_down(40, 90);
+        app.kit_key_up(40);
+        assert!(!app.eng().active().contains(40));
+        // A pad pressed again before it was let go: one let-go ends it.
+        app.pad_down(0, 100);
+        app.pad_down(0, 100);
+        app.pad_up(0);
+        assert!(!app.eng().active().contains(16));
+        // B5's key is still down, and H16's (127) goes down: a track
+        // change lets both go on the old track, and their keys' let-go
+        // later changes nothing on the new one.
+        app.kit_key_down(127, 100);
+        assert!(app.eng().active().contains(20) && app.eng().active().contains(127));
+        app.set_track(1);
+        assert!(app.arps.engine_at(0).active().is_empty());
+        app.kit_key_up(20);
+        app.kit_key_up(127);
+        assert!(app.eng().active().is_empty());
     }
 
     fn ons(app: &mut App, frames: u32) -> Vec<(u32, u8, u8)> {
@@ -6019,17 +6093,17 @@ mod tests {
             tabs(false),
             vec![
                 View::Play,
-                View::Pads,
                 View::Sequencer,
-                View::Arrange,
-                View::Synth,
                 View::Looper,
                 View::Sample,
+                View::Synth,
+                View::Arrange,
+                View::Pads,
                 View::Mixer
             ]
         );
-        assert_eq!(View::Sample.tab_index(true), Some(6));
-        assert_eq!(app.tab(6), vec![Effect::Show(View::Sample)]);
+        assert_eq!(View::Sample.tab_index(true), Some(3));
+        assert_eq!(app.tab(3), vec![Effect::Show(View::Sample)]);
         assert_eq!(app.view(), View::Sample);
         // The wheel picks a row (RowKey); SHIFT + wheel picks the pad.
         assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
@@ -6074,8 +6148,8 @@ mod tests {
     #[test]
     fn the_pads_tab_follows_play_and_takes_the_sample_tabs_controls() {
         let mut app = ready();
-        assert_eq!(View::Pads.tab_index(false), Some(1));
-        assert_eq!(app.tab(1), vec![Effect::Show(View::Pads)]);
+        assert_eq!(View::Pads.tab_index(false), Some(6));
+        assert_eq!(app.tab(6), vec![Effect::Show(View::Pads)]);
         assert!(View::Pads.sampler() && View::Sample.sampler() && !View::Play.sampler());
         app.map.data_push = Some(111);
         assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
@@ -6105,7 +6179,7 @@ mod tests {
         app.map.browse = Some(120);
         app.map.erase = Some(121);
         app.map.data_push = Some(111);
-        app.tab(3);
+        app.tab(View::Arrange.tab_index(false).unwrap());
         assert_eq!(app.view(), View::Arrange);
         assert_eq!(press(&mut app, 120), vec![Effect::Show(View::Browser)]);
         assert_eq!(View::Browser.tab_index(false), None);
@@ -6200,12 +6274,12 @@ mod tests {
             tabs(false),
             vec![
                 View::Play,
-                View::Pads,
                 View::Sequencer,
-                View::Arrange,
-                View::Synth,
                 View::Looper,
                 View::Sample,
+                View::Synth,
+                View::Arrange,
+                View::Pads,
                 View::Mixer
             ]
         );

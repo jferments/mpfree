@@ -2,19 +2,47 @@
 //!
 //! - The **cloud** shows the layer's region with the grains playing now
 //!   over it: a band where grains may start (the position, spread by the
-//!   spray), a line at the position, the voice's reading place, and a bar
-//!   for each grain. A tap or drag on it moves the position.
+//!   spray as it plays now, its middle stronger when peaked), a line at
+//!   the position, the voice's reading place with its path over the last
+//!   second and an arrow the way the scan goes, a bar for each grain, and
+//!   a "thinned" tag while the cloud wants more grains than a voice keeps
+//!   ([`CloudNow`]). A tap or drag on it moves the position.
+//! - The **section chips** over the cloud, as the Play tab's, pick what the
+//!   panel holds ([`View`]): **Grains**, **Movement**, **Filter and keys**
+//!   and **Presets**, each with a line of what is in it now.
 //! - The **touch pad** moves the position (across) and the grain size (up)
-//!   together, on a log scale from 2 ms to 2 s.
-//! - The **panel** beside the touch pad ([`crate::panel`]) has two
-//!   sections: **Cloud** (how grains scatter: scan speed, spray, size,
-//!   pitch and level spray, timing, reverse chance, stereo spread and the
-//!   cloud's level as knobs, and the spray's shape) and **Shape** (the play
-//!   mode, only Granular playing grains; the grain mode; the grains' Shape
-//!   knob; pitch quantise; tempo sync). A grain mode other than Cloud
-//!   shows only its own rows ([`Row::shown`]), and names the first section
-//!   after itself. Position, size, density and pitch are the Q-Links' (and
-//!   the touch pad's). A touch on a control or a Q-Link card picks it; the
+//!   together, on a log scale from 2 ms to 2 s. It stays beside the panel
+//!   on every section.
+//! - The **panel** beside the touch pad ([`crate::panel`]):
+//!   - **Grains** has two sections: **Cloud** (how grains scatter: scan
+//!     speed, spray, size, pitch and level spray, timing, reverse chance,
+//!     stereo spread and the cloud's level as knobs, and the spray's shape)
+//!     and **Shape** (the play mode, only Granular playing grains; the
+//!     grain mode; the grains' Shape knob; pitch quantise; tempo sync). A
+//!     grain mode other than Cloud shows only its own rows, and names the
+//!     first section after itself.
+//!   - **Movement**: an **LFO** and an **Envelope**, each moving one
+//!     setting (position, size, density, pitch, spray or the filter's
+//!     cutoff) of the grains as they are made, by up to its depth either
+//!     way. The LFO runs free in Hz or once every so many beats of the
+//!     project tempo; the envelope rises over its attack and falls over its
+//!     decay to its sustain. Both start again with each hit.
+//!   - **Filter and keys**: a **Filter** on each grain (off, low, band or
+//!     high pass; cutoff, resonance, and a spray that gives each grain its
+//!     own cutoff), and **Keys**: played from keys (or tuned) the grains
+//!     move in pitch (a Tone's note); **Size follows key** shortens them as
+//!     much and **Scan follows key** speeds the scan as much, as a
+//!     sampler's whole sound would move. **Glide** slides to each new key:
+//!     on a mono pad the cloud playing moves there, and with more voices
+//!     each new one slides from the last key.
+//!   - **Presets**: the eight of [`mpfree_sampler::grain_presets`] as
+//!     buttons, the one the layer matches lit. A tap puts its mode,
+//!     settings, keys, glide and movement on the layer (the sound, position
+//!     and level stay).
+//!
+//!   A grain mode shows only the rows it uses ([`Row::shown`]). Position,
+//!   size, density and pitch are the Q-Links' (and the touch pad's), on
+//!   every section. A touch on a control or a Q-Link card picks it; the
 //!   **wheel** and - / + step the one picked (Scan, until another is), and
 //!   a finger resting on a control lets the wheel turn it.
 //! - **Tempo sync** locks the density, the size or both to the project
@@ -37,10 +65,12 @@
 use std::sync::Arc;
 
 use mpfree_analysis::pitch::note_name;
-use mpfree_sampler::engine::GrainView;
+use mpfree_sampler::engine::{CloudState, GrainView, MAX_GRAINS};
+use mpfree_sampler::grain_presets;
 use mpfree_sampler::model::{
-    GrainMode, GrainParams, GrainSprayShape, GrainWindow, ModelError, Pad, PlayMode, Project,
-    Region, Source, TempoSync,
+    GrainFilter, GrainFilterKind, GrainMode, GrainParams, GrainSprayShape, GrainWindow, LfoShape,
+    ModelError, MotionTarget, Pad, PlayMode, Project, Region, Source, TempoSync,
+    GRAIN_CUTOFF_MAX_HZ, GRAIN_CUTOFF_MIN_HZ, GRAIN_FILTER_SPRAY_OCTAVES,
 };
 use mpfree_ui::{Color, EventKind, Ui, UiEvent};
 
@@ -50,13 +80,14 @@ use crate::panel::{Control, Item, Look, Panel, Section};
 use crate::play_tab::LayerSound;
 use crate::source::SourceView;
 use crate::wave_tab::{self, duration_text, mode_label, pad_color, TABS};
-use crate::widgets::{KnobCard, PadBar, Setting, SettingList};
+use crate::widgets::{KnobCard, PadBar, SectionChip, SectionChips, Setting, SettingList};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
 pub const BAR: &str = "smp-grain-bar";
 pub const CLOUD: &str = "smp-grain-cloud";
 pub const XY: &str = "smp-grain-xy";
 pub const LIST: &str = "smp-grain-list";
+pub const SECTIONS: &str = "smp-grain-sections";
 pub const QLINKS: [&str; 4] = [
     "smp-grain-q1",
     "smp-grain-q2",
@@ -64,17 +95,19 @@ pub const QLINKS: [&str; 4] = [
     "smp-grain-q4",
 ];
 
-/// The tab's page: the cloud across the page, and under it the touch pad
-/// beside the panel, between the pad bar and the Q-Link cards.
+/// The tab's page: the section chips, the cloud across the page, and under
+/// it the touch pad beside the panel, between the pad bar and the Q-Link
+/// cards.
 pub const LAYOUT: &str = "col(header:60, row(smp-grain-bar:*, smp-send:330):60, \
-                          row(col(smp-grain-cloud:*, row(smp-grain-xy:236, smp-grain-list:*):260):*, \
+                          row(col(smp-grain-sections:56, smp-grain-cloud:*, \
+                          row(smp-grain-xy:236, smp-grain-list:*):260):*, \
                           col(smp-grain-q1, smp-grain-q2, smp-grain-q3, smp-grain-q4):128):*, hint:26)";
 
 /// The tab's place in [`TABS`].
 pub const TAB: usize = 4;
 
 /// The hint line the app shows under the tab.
-pub const HINT: &str = "Hit the pad to hear the cloud · drag the sound for the position, the touch pad for position \
+pub const HINT: &str = "Hit the pad to hear the cloud · tap a section for its controls · the touch pad: position \
                         and size · touch a control, then turn the wheel · SHIFT + Q-Link 1 / 4: the sprays";
 
 /// Grain sizes the arrows step through, in ms.
@@ -151,12 +184,63 @@ pub const LEVEL_RANGE_DB: (f32, f32) = (-24.0, 12.0);
 /// Gesture ids the tab hands out start here, clear of other screens'.
 const GESTURE_BASE: u64 = 0x4752_4149_0000_0000;
 
-/// The Grain list's rows: the panel's, in its order (which the wheel
-/// walks), then the Q-Links'.
+/// What the engine reports of the layer's cloud beside its grains, for
+/// [`GrainTab::set_cloud`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CloudNow {
+    /// Where its first voice reads, 0 to 1 across the region, while one
+    /// plays.
+    pub playhead: Option<f32>,
+    /// How it plays now ([`mpfree_sampler::engine::Engine::cloud_of`]):
+    /// the spray as moved, and whether it is thinned.
+    pub state: Option<CloudState>,
+    /// Grains playing on every pad.
+    pub live: usize,
+}
+
+/// What the panel holds: the section chip open over the cloud.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum View {
+    /// How grains scatter and their shape (the cloud's own settings).
+    #[default]
+    Grains,
+    /// The LFO and the envelope.
+    Movement,
+    /// The filter on each grain, key tracking and glide.
+    FilterKeys,
+    /// The eight starting points.
+    Presets,
+}
+
+impl View {
+    /// The chips, left to right.
+    pub const ALL: [View; 4] = [
+        View::Grains,
+        View::Movement,
+        View::FilterKeys,
+        View::Presets,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            View::Grains => "Grains",
+            View::Movement => "Movement",
+            View::FilterKeys => "Filter and keys",
+            View::Presets => "Presets",
+        }
+    }
+}
+
+/// The Grain list's rows: each view's panel's, in its order (which the
+/// wheel walks), then the Q-Links'.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
     Mode,
     GrainMode,
+    /// The first four presets, as buttons ([`View::Presets`]).
+    Preset,
+    /// The other four.
+    PresetMore,
     Scan,
     Spray,
     SprayShape,
@@ -174,13 +258,44 @@ pub enum Row {
     Density,
     Pitch,
     Level,
+    Filter,
+    Cutoff,
+    Resonance,
+    FilterSpray,
+    KeySize,
+    KeyScan,
+    Glide,
+    LfoTo,
+    LfoShape,
+    LfoRate,
+    LfoSync,
+    LfoDepth,
+    EnvTo,
+    EnvDepth,
+    EnvAttack,
+    EnvDecay,
+    EnvSustain,
 }
 
+/// The movement rows, in the Movement panel's order.
+pub const MOTION_ROWS: [Row; 10] = [
+    Row::LfoTo,
+    Row::LfoShape,
+    Row::LfoRate,
+    Row::LfoDepth,
+    Row::LfoSync,
+    Row::EnvTo,
+    Row::EnvDepth,
+    Row::EnvAttack,
+    Row::EnvDecay,
+    Row::EnvSustain,
+];
+
 impl Row {
-    /// Every row, in the panel's order (which the wheel walks): Cloud's,
-    /// then Shape's, then the Q-Links'. A grain mode shows some of them
-    /// ([`Row::shown`]), in this order.
-    pub const ALL: [Row; 19] = [
+    /// The Grains view's rows for a cloud, in the panel's order (which the
+    /// wheel walks): Cloud's, then Shape's, then the Q-Links'. A grain
+    /// mode shows some of them ([`Row::shown`]), in this order.
+    pub const GRAINS: [Row; 19] = [
         Row::Scan,
         Row::Spray,
         Row::SizeSpray,
@@ -223,43 +338,183 @@ impl Row {
             Row::Density => "Density",
             Row::Pitch => "Pitch",
             Row::Level => "Level",
+            Row::Preset | Row::PresetMore => "Preset",
+            Row::Filter => "Filter",
+            Row::Cutoff => "Cutoff",
+            Row::Resonance => "Resonance",
+            Row::FilterSpray => "Filter spray",
+            Row::KeySize => "Size follows key",
+            Row::KeyScan => "Scan follows key",
+            Row::Glide => "Glide",
+            Row::LfoTo => "LFO to",
+            Row::LfoShape => "LFO wave",
+            Row::LfoRate => "LFO rate",
+            Row::LfoSync => "LFO sync",
+            Row::LfoDepth => "LFO depth",
+            Row::EnvTo => "Envelope to",
+            Row::EnvDepth => "Env depth",
+            Row::EnvAttack => "Env attack",
+            Row::EnvDecay => "Env decay",
+            Row::EnvSustain => "Env sustain",
         }
     }
 
     /// Its name over its knob on the panel (and in the list's rows): the
-    /// label, shorter where a knob is too narrow for it.
+    /// label, shorter where a knob is too narrow for it, or where its
+    /// section already says whose it is.
     pub fn short(self) -> &'static str {
         match self {
             Row::Scan => "Scan",
             Row::Reverse => "Reverse",
             Row::Spread => "Stereo",
+            Row::LfoShape => "Wave",
+            Row::LfoRate => "Rate",
+            Row::LfoSync => "Sync to tempo",
+            Row::EnvAttack => "Attack",
+            Row::EnvDecay => "Decay",
+            Row::EnvSustain => "Sustain",
             other => other.label(),
         }
     }
 
-    /// The rows a grain mode shows, in the panel's order: every row for a
-    /// cloud; for a stretch, what moves it (no randomness, so its grains
-    /// stay in step); for a repeat, its tempo-locked rate and length.
-    pub fn shown(mode: GrainMode) -> &'static [Row] {
-        match mode {
-            GrainMode::Cloud => &Row::ALL,
-            GrainMode::Stretch => &STRETCH_ROWS,
-            GrainMode::Repeat => &REPEAT_ROWS,
-            GrainMode::Tone => &TONE_ROWS,
+    /// The section chip whose panel holds this row (the Q-Links' rows are
+    /// on every one; this says Grains for them).
+    pub fn view(self) -> View {
+        match self {
+            Row::Preset | Row::PresetMore => View::Presets,
+            Row::Filter
+            | Row::Cutoff
+            | Row::Resonance
+            | Row::FilterSpray
+            | Row::KeySize
+            | Row::KeyScan
+            | Row::Glide => View::FilterKeys,
+            r if MOTION_ROWS.contains(&r) => View::Movement,
+            _ => View::Grains,
         }
     }
 
-    /// Where this row is in `mode`'s list, if it shows there.
-    pub fn index_in(self, mode: GrainMode) -> Option<usize> {
-        Row::shown(mode).iter().position(|r| *r == self)
+    /// The rows `view` shows for a grain mode, in its panel's order, then
+    /// the Q-Links'. On Grains: every row for a cloud; for a stretch, what
+    /// moves it (no randomness, so its grains stay in step); for a repeat,
+    /// its tempo-locked rate and length. On Filter and keys, a stretch has
+    /// no filter spray (nothing random), a repeat no key tracking (its
+    /// grains are its beat) and a tone no size following (its size follows
+    /// its note already).
+    pub fn shown(view: View, mode: GrainMode) -> &'static [Row] {
+        match (view, mode) {
+            (View::Grains, GrainMode::Cloud) => &Row::GRAINS,
+            (View::Grains, GrainMode::Stretch) => &STRETCH_ROWS,
+            (View::Grains, GrainMode::Repeat) => &REPEAT_ROWS,
+            (View::Grains, GrainMode::Tone) => &TONE_ROWS,
+            (View::Movement, _) => &MOVEMENT_ROWS,
+            (View::FilterKeys, GrainMode::Cloud) => &FILTER_ROWS,
+            (View::FilterKeys, GrainMode::Stretch) => &STRETCH_FILTER_ROWS,
+            (View::FilterKeys, GrainMode::Repeat) => &REPEAT_FILTER_ROWS,
+            (View::FilterKeys, GrainMode::Tone) => &TONE_FILTER_ROWS,
+            (View::Presets, _) => &PRESET_ROWS,
+        }
+    }
+
+    /// Where this row is in `view`'s list for `mode`, if it shows there.
+    pub fn index_in(self, view: View, mode: GrainMode) -> Option<usize> {
+        Row::shown(view, mode).iter().position(|r| *r == self)
+    }
+
+    /// Whether `mode` shows this row on any section.
+    pub fn used_in(self, mode: GrainMode) -> bool {
+        View::ALL.iter().any(|v| self.index_in(*v, mode).is_some())
     }
 }
 
-/// The order [`describe`] says the changes in: the modes first, the level
-/// last (the log's, which the panel's order doesn't change).
-const LOG_ORDER: [Row; 19] = [
+/// The Movement view's rows: the LFO's, the envelope's, the Q-Links'.
+const MOVEMENT_ROWS: [Row; 14] = [
+    Row::LfoTo,
+    Row::LfoShape,
+    Row::LfoRate,
+    Row::LfoDepth,
+    Row::LfoSync,
+    Row::EnvTo,
+    Row::EnvDepth,
+    Row::EnvAttack,
+    Row::EnvDecay,
+    Row::EnvSustain,
+    Row::Position,
+    Row::Size,
+    Row::Density,
+    Row::Pitch,
+];
+/// Filter and keys for a cloud: the filter's, the keys', the Q-Links'.
+const FILTER_ROWS: [Row; 11] = [
+    Row::Filter,
+    Row::Cutoff,
+    Row::Resonance,
+    Row::FilterSpray,
+    Row::KeySize,
+    Row::KeyScan,
+    Row::Glide,
+    Row::Position,
+    Row::Size,
+    Row::Density,
+    Row::Pitch,
+];
+/// A stretch's: one cutoff for every grain.
+const STRETCH_FILTER_ROWS: [Row; 10] = [
+    Row::Filter,
+    Row::Cutoff,
+    Row::Resonance,
+    Row::KeySize,
+    Row::KeyScan,
+    Row::Glide,
+    Row::Position,
+    Row::Size,
+    Row::Density,
+    Row::Pitch,
+];
+/// A repeat's: its grains are its beat, so keys move only its pitch.
+const REPEAT_FILTER_ROWS: [Row; 9] = [
+    Row::Filter,
+    Row::Cutoff,
+    Row::Resonance,
+    Row::FilterSpray,
+    Row::Glide,
+    Row::Position,
+    Row::Size,
+    Row::Density,
+    Row::Pitch,
+];
+/// A tone's: its size follows its note already.
+const TONE_FILTER_ROWS: [Row; 10] = [
+    Row::Filter,
+    Row::Cutoff,
+    Row::Resonance,
+    Row::FilterSpray,
+    Row::KeyScan,
+    Row::Glide,
+    Row::Position,
+    Row::Size,
+    Row::Density,
+    Row::Pitch,
+];
+/// The Presets view's rows: two lines of four, the Q-Links'.
+const PRESET_ROWS: [Row; 6] = [
+    Row::Preset,
+    Row::PresetMore,
+    Row::Position,
+    Row::Size,
+    Row::Density,
+    Row::Pitch,
+];
+/// Presets a line of the Presets view holds.
+const PRESETS_A_LINE: usize = 4;
+
+/// The order [`describe`] says the changes in: the modes and the preset
+/// first, the level last (the log's, which the panels' order doesn't
+/// change), then the filter, keys and movement.
+const LOG_ORDER: [Row; 37] = [
     Row::Mode,
     Row::GrainMode,
+    Row::Preset,
     Row::Scan,
     Row::Spray,
     Row::SprayShape,
@@ -277,6 +532,23 @@ const LOG_ORDER: [Row; 19] = [
     Row::Density,
     Row::Pitch,
     Row::Level,
+    Row::Filter,
+    Row::Cutoff,
+    Row::Resonance,
+    Row::FilterSpray,
+    Row::KeySize,
+    Row::KeyScan,
+    Row::Glide,
+    Row::LfoTo,
+    Row::LfoShape,
+    Row::LfoRate,
+    Row::LfoSync,
+    Row::LfoDepth,
+    Row::EnvTo,
+    Row::EnvDepth,
+    Row::EnvAttack,
+    Row::EnvDecay,
+    Row::EnvSustain,
 ];
 
 /// A stretch's rows: how fast it moves through the sound (Scan speed),
@@ -331,6 +603,53 @@ const GRAIN_MODES: [(&str, GrainMode); 4] = [
     ("Repeat", GrainMode::Repeat),
     ("Tone", GrainMode::Tone),
 ];
+/// What the LFO and the envelope can move, as the rows step (a tone's
+/// density is its note).
+const MOTION_TARGETS: [MotionTarget; 7] = [
+    MotionTarget::Off,
+    MotionTarget::Position,
+    MotionTarget::Size,
+    MotionTarget::Density,
+    MotionTarget::Pitch,
+    MotionTarget::Spray,
+    MotionTarget::Cutoff,
+];
+/// The grain filter's passes, as the Filter row steps.
+const FILTERS: [(&str, GrainFilterKind); 4] = [
+    ("Off", GrainFilterKind::Off),
+    ("Low pass", GrainFilterKind::Low),
+    ("Band pass", GrainFilterKind::Band),
+    ("High pass", GrainFilterKind::High),
+];
+/// Octaves the Cutoff row moves a step.
+const CUTOFF_STEP_OCT: f32 = 1.0 / 6.0;
+/// The LFO's waves, as the LFO shape row steps.
+const LFO_SHAPES: [(&str, LfoShape); 7] = [
+    ("Sine", LfoShape::Sine),
+    ("Triangle", LfoShape::Triangle),
+    ("Saw up", LfoShape::SawUp),
+    ("Saw down", LfoShape::SawDown),
+    ("Square", LfoShape::Square),
+    ("Hold", LfoShape::Hold),
+    ("Drift", LfoShape::Drift),
+];
+/// Free LFO rates the row steps through, Hz.
+const LFO_RATES: [f32; 20] = [
+    0.05, 0.1, 0.2, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 16.0,
+    20.0, 30.0, 40.0,
+];
+/// A synced LFO's cycle, in beats, as the row steps.
+const LFO_BEATS: [f32; 10] = [0.25, 0.5, 1.0, 2.0, 3.0, 4.0, 8.0, 16.0, 32.0, 64.0];
+/// Glide times the row steps through, ms (0 is off).
+const GLIDES_MS: [f32; 13] = [
+    0.0, 10.0, 20.0, 50.0, 100.0, 150.0, 200.0, 300.0, 500.0, 750.0, 1000.0, 2000.0, 5000.0,
+];
+/// The envelope's attack and decay times the rows step through, ms.
+const ENV_TIMES_MS: [f32; 20] = [
+    0.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 300.0, 500.0, 750.0, 1000.0, 1500.0, 2000.0, 3000.0,
+    5000.0, 7500.0, 10_000.0, 15_000.0, 20_000.0, 30_000.0,
+];
+
 /// A tone's notes: A0 to B5 (the grain voice plays up to 1,000 grains a
 /// second), as MIDI notes.
 const TONE_NOTES: (f32, f32) = (21.0, 83.0);
@@ -452,6 +771,8 @@ pub struct GrainTab {
     /// The bank letter shown in pad names, as [`wave_tab::WaveTab::bank`].
     pub bank: Option<char>,
     shown: Option<(usize, usize)>,
+    /// The section chip open: what the panel holds.
+    view: View,
     /// The grain mode whose rows the list shows.
     mode: GrainMode,
     gesture: Option<(Key, u64)>,
@@ -467,13 +788,17 @@ impl GrainTab {
         bar.enabled = TABS.iter().map(|t| wave_tab::BUILT.contains(t)).collect();
         bar.active = TAB;
         ui.add(BAR, bar);
+        let labels: Vec<&str> = View::ALL.iter().map(|v| v.label()).collect();
+        ui.add(SECTIONS, SectionChips::new(&labels));
         let mut cloud = GrainCloud::new("Grains over the sound");
         cloud.right = "drag for the position".into();
         ui.add(CLOUD, cloud);
         ui.add(XY, XyPad::new("Touch", "position", "size"));
         let mut list = SettingList::new("Grain");
         list.right = "this layer".into();
-        list.selected = Row::Scan.index_in(GrainMode::Cloud).unwrap_or(0);
+        list.selected = Row::Scan
+            .index_in(View::Grains, GrainMode::Cloud)
+            .unwrap_or(0);
         ui.add(LIST, list);
         let t = ui.theme.clone();
         let colors = [Color::rgb(GRAIN_COLOR), t.accent, t.good, t.warn];
@@ -489,6 +814,7 @@ impl GrainTab {
             name: name.to_string(),
             bank: None,
             shown: None,
+            view: View::Grains,
             mode: GrainMode::Cloud,
             gesture: None,
             next_gesture: GESTURE_BASE,
@@ -500,8 +826,29 @@ impl GrainTab {
     /// The row picked: a control on the panel, or a Q-Link card.
     pub fn row(&self, ui: &Ui) -> Row {
         ui.get::<SettingList>(LIST)
-            .and_then(|l| Row::shown(self.mode).get(l.selected).copied())
+            .and_then(|l| Row::shown(self.view, self.mode).get(l.selected).copied())
             .unwrap_or(Row::Scan)
+    }
+
+    /// The section chip open.
+    pub fn view(&self) -> View {
+        self.view
+    }
+
+    /// Opens section `view`: the panel shows its controls, and the row
+    /// picked stays if it shows there (a Q-Link's), else its first.
+    pub fn open(&mut self, ui: &mut Ui, st: &GrainState, view: View) {
+        if view == self.view {
+            return;
+        }
+        let row = self.row(ui);
+        self.view = view;
+        self.lift();
+        let i = row.index_in(view, self.mode).unwrap_or(0);
+        if let Some(list) = ui.get_mut::<SettingList>(LIST) {
+            list.selected = i;
+        }
+        self.show(ui, st);
     }
 
     /// Ends the drag, turn or run of taps being made: the next edit is a
@@ -515,17 +862,18 @@ impl GrainTab {
     pub fn update(&mut self, ui: &mut Ui, st: &GrainState) {
         if self.shown != Some((st.pad, st.layer)) {
             self.shown = Some((st.pad, st.layer));
-            self.set_cloud(ui, st, &[], None, 0);
+            self.set_cloud(ui, st, &[], CloudNow::default());
         }
         let mode = st.region.grain_mode;
         if mode != self.mode {
             // The same row stays picked if the new mode shows it, else the
-            // Grain mode row, which changed it.
+            // Grain mode row, which changed it (or, on another section,
+            // its first row).
             let row = self.row(ui);
             self.mode = mode;
             let i = row
-                .index_in(mode)
-                .or(Row::GrainMode.index_in(mode))
+                .index_in(self.view, mode)
+                .or(Row::GrainMode.index_in(self.view, mode))
                 .unwrap_or(0);
             if let Some(list) = ui.get_mut::<SettingList>(LIST) {
                 list.selected = i;
@@ -535,16 +883,10 @@ impl GrainTab {
     }
 
     /// The grains the engine plays now for the layer shown (positions 0 to
-    /// 1 across its region), the voice's reading place, and how many
-    /// grains play in all, out of how many may.
-    pub fn set_cloud(
-        &self,
-        ui: &mut Ui,
-        st: &GrainState,
-        grains: &[GrainView],
-        playhead: Option<f32>,
-        live: usize,
-    ) {
+    /// 1 across its region), and what else it says of that cloud
+    /// ([`CloudNow`]): call it each time the engine reports, so the cloud
+    /// can draw the path the reading place took.
+    pub fn set_cloud(&self, ui: &mut Ui, st: &GrainState, grains: &[GrainView], now: CloudNow) {
         let g = &st.region.grain;
         let Some(c) = ui.get_mut::<GrainCloud>(CLOUD) else {
             return;
@@ -552,10 +894,13 @@ impl GrainTab {
         let playing = !grains.is_empty();
         c.grains.clear();
         c.grains.extend_from_slice(grains);
-        c.playhead = playhead;
+        c.follow(now.playhead);
+        c.spray_now = now.state.map(|s| s.spray);
+        c.thinned = now.state.is_some_and(|s| s.thinned);
+        let spray = c.spray_now.unwrap_or(g.spray);
         let mut caption = vec![
             format!("position {} %", percent(g.position)),
-            format!("spray ±{} %", percent(g.spray * 0.5)),
+            format!("spray ±{} %", percent(spray * 0.5)),
         ];
         if st.granular() {
             caption.push(match (playing, grains.len()) {
@@ -564,10 +909,13 @@ impl GrainTab {
                 (true, n) => format!("{n} grains playing"),
             });
         }
+        if c.thinned {
+            caption.push(format!("thinned to fit {MAX_GRAINS}"));
+        }
         caption.push(format!("scan {}", scan_text(g.scan)));
         c.caption = caption.join(" · ");
-        c.right = if live > 0 {
-            format!("{live} grains on all pads")
+        c.right = if now.live > 0 {
+            format!("{} grains on all pads", now.live)
         } else {
             "drag for the position".into()
         };
@@ -611,6 +959,8 @@ impl GrainTab {
             );
             c.position = g.position;
             c.spray = g.spray;
+            c.peaked = g.spray_shape == GrainSprayShape::Peaked;
+            c.scan = g.scan;
             c.grain_len = st.size_ms() * 0.001 * rate / st.region.frames().max(1) as f32;
             c.granular = st.granular();
             c.note = format!(
@@ -631,7 +981,7 @@ impl GrainTab {
                 value_text(&st.region, Row::Size)
             );
         }
-        let rows = Row::shown(self.mode)
+        let rows = Row::shown(self.view, self.mode)
             .iter()
             .map(|r| Setting {
                 name: r.short().into(),
@@ -640,8 +990,18 @@ impl GrainTab {
             .collect();
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.rows = rows;
-            list.controls = controls(&st.region, self.mode);
-            list.panel = Some(panel(self.mode));
+            list.controls = controls(&st.region, self.view, self.mode);
+            list.panel = Some(panel(&st.region, self.view, self.mode));
+        }
+        if let Some(c) = ui.get_mut::<SectionChips>(SECTIONS) {
+            c.selected = View::ALL.iter().position(|v| *v == self.view).unwrap_or(0);
+            c.chips = View::ALL
+                .iter()
+                .map(|v| SectionChip {
+                    name: v.label().into(),
+                    sub: section_text(&st.region, *v),
+                })
+                .collect();
         }
         self.show_cards(ui, st);
     }
@@ -698,8 +1058,50 @@ impl GrainTab {
                 }
                 self.edit(st, Key::Touch, r)
             }
+            (SECTIONS, EventKind::Tab(i)) => {
+                let view = *View::ALL.get(*i)?;
+                self.open(ui, st, view);
+                None
+            }
+            // A tap on a preset's button: that one (the line's lit one
+            // is `delta` from it, or none is lit and the line's end is).
+            (LIST, EventKind::Step { index, delta })
+                if matches!(
+                    Row::shown(self.view, self.mode).get(*index),
+                    Some(Row::Preset | Row::PresetMore)
+                ) =>
+            {
+                let row = Row::shown(self.view, self.mode)[*index];
+                let first = if row == Row::Preset {
+                    0
+                } else {
+                    PRESETS_A_LINE
+                };
+                let on = preset_on(&st.region, row);
+                let i = first as i32 + on as i32 + delta;
+                let n = grain_presets::presets().len() as i32;
+                if !(0..n).contains(&i) {
+                    return None;
+                }
+                let r = grain_presets::apply(&st.region, i as usize);
+                let a = self.edit(st, Key::Row(Row::Preset), r);
+                self.show_cards(ui, st);
+                a
+            }
+            // A tap on a switch flips it.
+            (LIST, EventKind::Step { index, .. })
+                if Row::shown(self.view, self.mode)
+                    .get(*index)
+                    .is_some_and(|r| is_switch(*r)) =>
+            {
+                let row = Row::shown(self.view, self.mode)[*index];
+                let delta = if switch_on(&st.region, row) { -1 } else { 1 };
+                let a = self.step(st, row, delta);
+                self.show_cards(ui, st);
+                a
+            }
             (LIST, EventKind::Step { index, delta }) => {
-                let row = *Row::shown(self.mode).get(*index)?;
+                let row = *Row::shown(self.view, self.mode).get(*index)?;
                 let a = self.step(st, row, *delta);
                 self.show_cards(ui, st);
                 a
@@ -719,7 +1121,10 @@ impl GrainTab {
     }
 
     fn pick_row(&self, ui: &mut Ui, row: Row) {
-        if let (Some(list), Some(i)) = (ui.get_mut::<SettingList>(LIST), row.index_in(self.mode)) {
+        if let (Some(list), Some(i)) = (
+            ui.get_mut::<SettingList>(LIST),
+            row.index_in(self.view, self.mode),
+        ) {
             list.selected = i;
         }
     }
@@ -791,9 +1196,9 @@ impl GrainTab {
     }
 }
 
-/// How each row `mode` shows looks on the panel, in [`Row::shown`]'s
-/// order (the Q-Links' rows aren't on it, and are chips).
-fn controls(r: &Region, mode: GrainMode) -> Vec<Control> {
+/// How each row `view` shows for `mode` looks on the panel, in
+/// [`Row::shown`]'s order (the Q-Links' rows aren't on it, and are chips).
+fn controls(r: &Region, view: View, mode: GrainMode) -> Vec<Control> {
     let g = &r.grain;
     let knob = |pos: f32, steps: u32, bipolar: bool| {
         Control::new(Look::Knob {
@@ -803,7 +1208,21 @@ fn controls(r: &Region, mode: GrainMode) -> Vec<Control> {
         })
     };
     let (lo, hi) = LEVEL_RANGE_DB;
-    Row::shown(mode)
+    let names = grain_presets::presets().map(|p| p.name.to_string());
+    let presets = |row: Row| {
+        let first = if row == Row::Preset {
+            0
+        } else {
+            PRESETS_A_LINE
+        };
+        Control::new(Look::Choice {
+            options: names[first..first + PRESETS_A_LINE].to_vec(),
+            on: preset_on(r, row),
+            off: Vec::new(),
+        })
+    };
+    let cutoff_octaves = (GRAIN_CUTOFF_MAX_HZ / GRAIN_CUTOFF_MIN_HZ).log2();
+    Row::shown(view, mode)
         .iter()
         .map(|row| match row {
             Row::Scan => knob(
@@ -824,11 +1243,64 @@ fn controls(r: &Region, mode: GrainMode) -> Vec<Control> {
                 false,
             ),
             Row::Shape => knob(g.window.shape_value(), 20, false),
+            Row::Preset | Row::PresetMore => presets(*row),
+            Row::Filter => Control::new(Look::Choice {
+                options: FILTERS.iter().map(|f| f.0.to_string()).collect(),
+                on: FILTERS
+                    .iter()
+                    .position(|f| f.1 == g.filter.kind)
+                    .unwrap_or(0),
+                off: Vec::new(),
+            }),
+            Row::Cutoff => knob(
+                (g.filter.cutoff_hz / GRAIN_CUTOFF_MIN_HZ).log2() / cutoff_octaves,
+                (cutoff_octaves / CUTOFF_STEP_OCT).round() as u32,
+                false,
+            ),
+            Row::Resonance => knob(g.filter.resonance, 20, false),
+            Row::FilterSpray => knob(g.filter.spray, 20, false),
+            Row::KeySize => Control::new(Look::Toggle(r.grain_keys.size)),
+            Row::KeyScan => Control::new(Look::Toggle(r.grain_keys.scan)),
+            Row::Glide => knob(
+                list_place(&GLIDES_MS, Some(r.grain_glide_ms)),
+                GLIDES_MS.len() as u32 - 1,
+                false,
+            ),
+            // A step up is faster: a shorter cycle when synced.
+            Row::LfoRate => match g.lfo.beats {
+                Some(b) => knob(
+                    1.0 - list_place(&LFO_BEATS, Some(b)),
+                    LFO_BEATS.len() as u32 - 1,
+                    false,
+                ),
+                None => knob(
+                    list_place(&LFO_RATES, Some(g.lfo.rate_hz)),
+                    LFO_RATES.len() as u32 - 1,
+                    false,
+                ),
+            },
+            Row::LfoDepth => knob((g.lfo.depth + 1.0) / 2.0, 200, true),
+            Row::LfoSync => Control::new(Look::Toggle(g.lfo.beats.is_some())),
+            Row::EnvDepth => knob((g.env.depth + 1.0) / 2.0, 200, true),
+            Row::EnvAttack => knob(
+                list_place(&ENV_TIMES_MS, Some(g.env.attack_ms)),
+                ENV_TIMES_MS.len() as u32 - 1,
+                false,
+            ),
+            Row::EnvDecay => knob(
+                list_place(&ENV_TIMES_MS, Some(g.env.decay_ms)),
+                ENV_TIMES_MS.len() as u32 - 1,
+                false,
+            ),
+            Row::EnvSustain => knob(g.env.sustain, 20, false),
             Row::Mode
             | Row::GrainMode
             | Row::SprayShape
             | Row::Quantise
             | Row::Sync
+            | Row::LfoTo
+            | Row::LfoShape
+            | Row::EnvTo
             | Row::Position
             | Row::Size
             | Row::Density
@@ -837,29 +1309,232 @@ fn controls(r: &Region, mode: GrainMode) -> Vec<Control> {
         .collect()
 }
 
-/// The panel for a grain mode: the mode's own section (Cloud: how grains
-/// scatter) and Shape beside the touch pad, as the mockup Jay approved
-/// (17 Nov), with the play mode in Shape. A mode's rows that it doesn't
-/// show are left out ([`Row::shown`]).
-fn panel(mode: GrainMode) -> Panel {
-    // (row, labelled, width: 0 shares the line).
-    let lines = |lines: &[&[(Row, bool, i32)]]| -> Vec<Vec<Item>> {
-        lines
-            .iter()
-            .map(|line| {
-                line.iter()
-                    .filter_map(|&(row, labelled, width)| {
-                        let mut it = Item::new(row.index_in(mode)?);
-                        if labelled {
-                            it = it.labelled();
-                        }
-                        Some(if width > 0 { it.wide(width) } else { it })
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .filter(|line| !line.is_empty())
-            .collect()
+/// Which of a line of preset buttons is lit: the preset the layer
+/// matches, if it is on `row`'s line; else one past the line's end (none).
+fn preset_on(r: &Region, row: Row) -> usize {
+    let first = if row == Row::Preset {
+        0
+    } else {
+        PRESETS_A_LINE
     };
+    match grain_presets::matching(r) {
+        Some(i) if (first..first + PRESETS_A_LINE).contains(&i) => i - first,
+        _ => PRESETS_A_LINE,
+    }
+}
+
+/// Lines of a section's rows for `view` and `mode`: (row, labelled,
+/// width; 0 shares the line). Rows the mode doesn't show are left out,
+/// and so are lines left empty.
+fn lines(view: View, mode: GrainMode, lines: &[&[(Row, bool, i32)]]) -> Vec<Vec<Item>> {
+    lines
+        .iter()
+        .map(|line| {
+            line.iter()
+                .filter_map(|&(row, labelled, width)| {
+                    let mut it = Item::new(row.index_in(view, mode)?);
+                    if labelled {
+                        it = it.labelled();
+                    }
+                    Some(if width > 0 { it.wide(width) } else { it })
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+/// The panel for section `view` and grain mode `mode`, beside the touch
+/// pad. Grains: the mode's own section and Shape, as the mockup Jay
+/// approved (17 Nov). Movement: the LFO and the envelope. Filter and
+/// keys: the filter on each grain, and what keys do. Presets: two lines
+/// of four buttons.
+fn panel(r: &Region, view: View, mode: GrainMode) -> Panel {
+    let g = &r.grain;
+    match view {
+        View::Grains => grains_panel(mode),
+        View::Movement => {
+            let lfo = if g.lfo.target == MotionTarget::Off {
+                "off: pick what it moves"
+            } else {
+                "over and over, from each hit"
+            };
+            let env = if g.env.target == MotionTarget::Off {
+                "off: pick what it moves"
+            } else {
+                "once, from each hit"
+            };
+            Panel {
+                sections: vec![
+                    Section::new(
+                        "LFO",
+                        430,
+                        lines(
+                            view,
+                            mode,
+                            &[
+                                &[(Row::LfoTo, true, 0), (Row::LfoShape, true, 0)],
+                                &[
+                                    (Row::LfoRate, false, 0),
+                                    (Row::LfoDepth, false, 0),
+                                    (Row::LfoSync, false, 180),
+                                ],
+                            ],
+                        ),
+                    )
+                    .note(lfo),
+                    Section::new(
+                        "Envelope",
+                        430,
+                        lines(
+                            view,
+                            mode,
+                            &[
+                                &[(Row::EnvTo, true, 240)],
+                                &[
+                                    (Row::EnvDepth, false, 0),
+                                    (Row::EnvAttack, false, 0),
+                                    (Row::EnvDecay, false, 0),
+                                    (Row::EnvSustain, false, 0),
+                                ],
+                            ],
+                        ),
+                    )
+                    .note(env),
+                ],
+            }
+        }
+        View::FilterKeys => {
+            let filter = if g.filter.kind == GrainFilterKind::Off {
+                "off: pick a pass"
+            } else {
+                "set as each grain starts"
+            };
+            Panel {
+                sections: vec![
+                    Section::new(
+                        "Filter",
+                        480,
+                        lines(
+                            view,
+                            mode,
+                            &[
+                                &[(Row::Filter, false, 0)],
+                                &[
+                                    (Row::Cutoff, false, 0),
+                                    (Row::Resonance, false, 0),
+                                    (Row::FilterSpray, false, 0),
+                                ],
+                            ],
+                        ),
+                    )
+                    .note(filter),
+                    Section::new(
+                        "Keys",
+                        380,
+                        lines(
+                            view,
+                            mode,
+                            &[
+                                &[(Row::KeySize, false, 0), (Row::KeyScan, false, 0)],
+                                &[(Row::Glide, false, 0)],
+                            ],
+                        ),
+                    )
+                    .note("when keys or tune move it"),
+                ],
+            }
+        }
+        // The note says what the lit one sounds like.
+        View::Presets => Panel {
+            sections: vec![Section::new(
+                "Presets",
+                860,
+                lines(
+                    view,
+                    mode,
+                    &[&[(Row::Preset, false, 0)], &[(Row::PresetMore, false, 0)]],
+                ),
+            )
+            .note(grain_presets::matching(r).map_or(
+                "a starting point: the sound, its position and level stay",
+                |i| grain_presets::presets()[i].about,
+            ))],
+        },
+    }
+}
+
+/// The line under section chip `view`: what is in it now.
+fn section_text(r: &Region, view: View) -> String {
+    let g = &r.grain;
+    match view {
+        View::Grains if r.mode != PlayMode::Granular => {
+            format!("Mode {}: no grains", mode_label(r.mode))
+        }
+        View::Grains => format!(
+            "{} · scan {} · spray {} %",
+            value_text(r, Row::GrainMode),
+            scan_text(g.scan),
+            percent(g.spray)
+        ),
+        View::Movement => {
+            let mut parts = Vec::new();
+            if g.lfo.target != MotionTarget::Off {
+                parts.push(format!(
+                    "LFO to {}",
+                    target_text(g.lfo.target, r.grain_mode)
+                ));
+            }
+            if g.env.target != MotionTarget::Off {
+                parts.push(format!(
+                    "envelope to {}",
+                    target_text(g.env.target, r.grain_mode)
+                ));
+            }
+            if parts.is_empty() {
+                "nothing moves".into()
+            } else {
+                parts.join(" · ")
+            }
+        }
+        View::FilterKeys => {
+            let mut parts = vec![if g.filter.kind == GrainFilterKind::Off {
+                "no filter".to_string()
+            } else {
+                format!(
+                    "{} {}",
+                    value_text(r, Row::Filter),
+                    hz_text(g.filter.cutoff_hz)
+                )
+            }];
+            // One thing keys do: the glide, else what follows them.
+            let keys = &r.grain_keys;
+            if r.grain_glide_ms > 0.0 {
+                parts.push(format!("glide {}", ms_text(r.grain_glide_ms)));
+            } else if keys.size || keys.scan {
+                parts.push(
+                    match (keys.size, keys.scan) {
+                        (true, true) => "size, scan follow key",
+                        (true, false) => "size follows key",
+                        _ => "scan follows key",
+                    }
+                    .into(),
+                );
+            }
+            parts.join(" · ")
+        }
+        View::Presets => match grain_presets::matching(r) {
+            Some(i) => grain_presets::presets()[i].name.into(),
+            None => "your own settings".into(),
+        },
+    }
+}
+
+/// The Grains section's panel for a grain mode: the mode's own section
+/// (Cloud: how grains scatter) and Shape, with the play mode in Shape. A
+/// mode's rows that it doesn't show are left out ([`Row::shown`]).
+fn grains_panel(mode: GrainMode) -> Panel {
+    let lines = |l: &[&[(Row, bool, i32)]]| lines(View::Grains, mode, l);
     let (title, note) = match mode {
         GrainMode::Cloud => ("Cloud", "how grains scatter"),
         GrainMode::Stretch => ("Stretch", "how it moves"),
@@ -911,6 +1586,16 @@ fn panel(mode: GrainMode) -> Panel {
 /// turning Tempo sync on starts: the beats nearest the size and density
 /// heard.
 pub fn stepped(r: &Region, row: Row, delta: i32, bpm: f64) -> Region {
+    if matches!(row, Row::Preset | Row::PresetMore) {
+        // From a preset to the next; from none, to the first (or the last).
+        let n = grain_presets::presets().len();
+        let i = match grain_presets::matching(r) {
+            Some(i) => shift(i, delta, n),
+            None if delta > 0 => 0,
+            None => n - 1,
+        };
+        return grain_presets::apply(r, i);
+    }
     let mut r = r.clone();
     let g = &mut r.grain;
     let d = delta as f32;
@@ -939,6 +1624,24 @@ pub fn stepped(r: &Region, row: Row, delta: i32, bpm: f64) -> Region {
             g.size_ms = cycles * 1000.0 / g.density;
         }
         Row::Level => g.gain = level_gain(level_db(g.gain) + d * 0.5),
+        Row::Filter => {
+            let i = FILTERS
+                .iter()
+                .position(|f| f.1 == g.filter.kind)
+                .unwrap_or(0);
+            g.filter.kind = FILTERS[shift(i, delta, FILTERS.len())].1;
+        }
+        Row::Cutoff => {
+            g.filter.cutoff_hz = (g.filter.cutoff_hz * (d * CUTOFF_STEP_OCT).exp2())
+                .round()
+                .clamp(GRAIN_CUTOFF_MIN_HZ, GRAIN_CUTOFF_MAX_HZ)
+        }
+        Row::Resonance => {
+            g.filter.resonance = round_to(g.filter.resonance + d * 0.05, 0.01).clamp(0.0, 1.0)
+        }
+        Row::FilterSpray => {
+            g.filter.spray = round_to(g.filter.spray + d * 0.05, 0.01).clamp(0.0, 1.0)
+        }
         Row::Mode => {
             let i = MODES.iter().position(|m| *m == r.mode).unwrap_or(0);
             r.mode = MODES[shift(i, delta, MODES.len())];
@@ -993,8 +1696,66 @@ pub fn stepped(r: &Region, row: Row, delta: i32, bpm: f64) -> Region {
         Row::Size => g.size_ms = step_list(&SIZES_MS, g.size_ms, delta),
         Row::Density => g.density = step_list(&DENSITIES, g.density, delta),
         Row::Pitch => g.pitch = round_to(g.pitch + d, 1.0).clamp(-PITCH_LIMIT, PITCH_LIMIT),
+        // Put on above.
+        Row::Preset | Row::PresetMore => {}
+        Row::KeySize => r.grain_keys.size = delta > 0,
+        Row::KeyScan => r.grain_keys.scan = delta > 0,
+        Row::Glide => r.grain_glide_ms = step_list(&GLIDES_MS, r.grain_glide_ms, delta),
+        Row::LfoTo => g.lfo.target = step_target(g.lfo.target, delta),
+        Row::LfoShape => {
+            let i = LFO_SHAPES
+                .iter()
+                .position(|s| s.1 == g.lfo.shape)
+                .unwrap_or(0);
+            g.lfo.shape = LFO_SHAPES[shift(i, delta, LFO_SHAPES.len())].1;
+        }
+        Row::LfoRate => match g.lfo.beats {
+            // A step up is faster, as for the free rate: a shorter cycle.
+            Some(b) => g.lfo.beats = Some(step_list(&LFO_BEATS, b, -delta)),
+            None => g.lfo.rate_hz = step_list(&LFO_RATES, g.lfo.rate_hz, delta),
+        },
+        // On, the cycle nearest the rate heard at `bpm`; off, the rate
+        // nearest the cycle's.
+        Row::LfoSync => match (g.lfo.beats, delta > 0) {
+            (None, true) => {
+                let beats = bpm as f32 / 60.0 / g.lfo.rate_hz.max(0.01);
+                g.lfo.beats = Some(nearest(&LFO_BEATS, beats));
+            }
+            (Some(b), false) => {
+                g.lfo.rate_hz = nearest(&LFO_RATES, bpm as f32 / 60.0 / b.max(0.01));
+                g.lfo.beats = None;
+            }
+            _ => {}
+        },
+        Row::LfoDepth => g.lfo.depth = round_to(g.lfo.depth + d * 0.01, 0.01).clamp(-1.0, 1.0),
+        Row::EnvTo => g.env.target = step_target(g.env.target, delta),
+        Row::EnvDepth => g.env.depth = round_to(g.env.depth + d * 0.01, 0.01).clamp(-1.0, 1.0),
+        Row::EnvAttack => g.env.attack_ms = step_list(&ENV_TIMES_MS, g.env.attack_ms, delta),
+        Row::EnvDecay => g.env.decay_ms = step_list(&ENV_TIMES_MS, g.env.decay_ms, delta),
+        Row::EnvSustain => g.env.sustain = round_to(g.env.sustain + d * 0.05, 0.01).clamp(0.0, 1.0),
     }
     r
+}
+
+/// Whether `row` is a switch on the panel: a tap flips it.
+fn is_switch(row: Row) -> bool {
+    matches!(row, Row::KeySize | Row::KeyScan | Row::LfoSync)
+}
+
+/// Whether switch `row` is on in `r`.
+fn switch_on(r: &Region, row: Row) -> bool {
+    match row {
+        Row::KeySize => r.grain_keys.size,
+        Row::KeyScan => r.grain_keys.scan,
+        Row::LfoSync => r.grain.lfo.beats.is_some(),
+        _ => false,
+    }
+}
+
+/// What the LFO or the envelope moves, `delta` steps on.
+fn step_target(t: MotionTarget, delta: i32) -> MotionTarget {
+    let i = MOTION_TARGETS.iter().position(|x| *x == t).unwrap_or(0);
+    MOTION_TARGETS[shift(i, delta, MOTION_TARGETS.len())]
 }
 
 /// `g` with a Q-Link's row turned by `d` detents (`fine`: Size a
@@ -1174,9 +1935,14 @@ fn per_beat_text(g: f32) -> String {
 /// density) with grains four cycles long, regular and frozen, so it holds
 /// one spot's colour at that note.
 pub fn mode_settings(g: &GrainParams, mode: GrainMode, bpm: f64) -> GrainParams {
+    // The movement and the filter stay: they are how the sound moves and
+    // its colour, whatever plays it.
     let kept = GrainParams {
         position: g.position,
         gain: g.gain,
+        lfo: g.lfo,
+        env: g.env,
+        filter: g.filter,
         ..GrainParams::default()
     };
     match mode {
@@ -1186,11 +1952,16 @@ pub fn mode_settings(g: &GrainParams, mode: GrainMode, bpm: f64) -> GrainParams 
             size_ms: 100.0,
             ..kept
         },
+        // No randomness, its filter's spray included.
         GrainMode::Stretch => GrainParams {
             scan: 1.0,
             size_ms: 90.0,
             density: 45.0,
             timing: 0.0,
+            filter: GrainFilter {
+                spray: 0.0,
+                ..g.filter
+            },
             ..kept
         },
         GrainMode::Tone => GrainParams {
@@ -1275,6 +2046,9 @@ pub fn value_text(r: &Region, row: Row) -> String {
             .find(|m| m.1 == r.grain_mode)
             .map_or("Cloud", |m| m.0)
             .into(),
+        Row::Preset | Row::PresetMore => grain_presets::matching(r)
+            .map_or("—", |i| grain_presets::presets()[i].name)
+            .into(),
         Row::Scan if r.grain_mode == GrainMode::Stretch && r.warp.is_some() && g.scan != 0.0 => {
             format!("{} · in time", scan_text(g.scan))
         }
@@ -1319,6 +2093,62 @@ pub fn value_text(r: &Region, row: Row) -> String {
         },
         Row::Pitch => format!("{:+} st", g.pitch.round() as i32),
         Row::Level => format!("{:+.1} dB", level_db(g.gain)),
+        Row::Filter => FILTERS
+            .iter()
+            .find(|f| f.1 == g.filter.kind)
+            .map_or("Off", |f| f.0)
+            .into(),
+        Row::Cutoff => hz_text(g.filter.cutoff_hz),
+        Row::Resonance => format!("{} %", percent(g.filter.resonance)),
+        Row::FilterSpray if g.filter.spray <= 0.0 => "Off".into(),
+        Row::FilterSpray => format!(
+            "±{} oct",
+            trim(round_to(g.filter.spray * GRAIN_FILTER_SPRAY_OCTAVES, 0.01))
+        ),
+        Row::KeySize => on_off(r.grain_keys.size).into(),
+        Row::KeyScan => on_off(r.grain_keys.scan).into(),
+        Row::Glide if r.grain_glide_ms <= 0.0 => "Off".into(),
+        Row::Glide => ms_text(r.grain_glide_ms),
+        Row::LfoTo => target_text(g.lfo.target, r.grain_mode).into(),
+        Row::LfoShape => LFO_SHAPES
+            .iter()
+            .find(|s| s.1 == g.lfo.shape)
+            .map_or("Sine", |s| s.0)
+            .into(),
+        Row::LfoRate => match g.lfo.beats {
+            Some(b) => beats_text(b),
+            None if g.lfo.rate_hz < 1.0 => format!("{:.2} Hz", g.lfo.rate_hz),
+            None => format!("{:.1} Hz", g.lfo.rate_hz),
+        },
+        Row::LfoSync => on_off(g.lfo.beats.is_some()).into(),
+        Row::LfoDepth => format!("{:+} %", percent(g.lfo.depth)),
+        Row::EnvTo => target_text(g.env.target, r.grain_mode).into(),
+        Row::EnvDepth => format!("{:+} %", percent(g.env.depth)),
+        Row::EnvAttack => ms_text(g.env.attack_ms),
+        Row::EnvDecay => ms_text(g.env.decay_ms),
+        Row::EnvSustain => format!("{} %", percent(g.env.sustain)),
+    }
+}
+
+fn on_off(on: bool) -> &'static str {
+    if on {
+        "On"
+    } else {
+        "Off"
+    }
+}
+
+/// What a movement row moves, in words (a tone's density is its note).
+fn target_text(t: MotionTarget, mode: GrainMode) -> &'static str {
+    match t {
+        MotionTarget::Off => "Off",
+        MotionTarget::Position => "Position",
+        MotionTarget::Size => "Size",
+        MotionTarget::Density if mode == GrainMode::Tone => "Note",
+        MotionTarget::Density => "Density",
+        MotionTarget::Pitch => "Pitch",
+        MotionTarget::Spray => "Spray",
+        MotionTarget::Cutoff => "Cutoff",
     }
 }
 

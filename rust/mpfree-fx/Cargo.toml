@@ -6,6 +6,7 @@ publish = false
 description = "MPFree's effects on the shared mpfree-node interface: filters, drive, crush, delay, compressor, the Master safety stage and a click-free insert chain; real-time safe and block-size independent"
 
 [dependencies]
+mpfree-grain = { path = "../mpfree-grain" }
 mpfree-node = { path = "../mpfree-node" }
 mpfree-prof = { path = "../mpfree-prof" }
 mpfree-lanes = { path = "../mpfree-lanes" }

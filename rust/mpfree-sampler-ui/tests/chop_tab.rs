@@ -1117,3 +1117,140 @@ fn pitch_chops_a_sung_line_where_its_notes_change() {
     method(&mut d, Method::Pitch);
     assert!(d.tab.slices() <= 3, "{:?}", d.tab.bounds(&d.state));
 }
+
+#[test]
+fn put_on_new_kit_chops_onto_an_empty_kit_for_a_new_track_in_one_undo_step() {
+    use mpfree_sampler::model::Project;
+    let mut s = chop();
+    let value = |s: &ChopSample, row: Row| {
+        s.ui.get::<SettingList>(chop_tab::LIST).unwrap().rows[row.index()]
+            .value
+            .clone()
+    };
+    let shown = |s: &mut ChopSample| {
+        let st = s.state.clone();
+        s.tab.update(&mut s.ui, &st);
+    };
+    // Until the app offers it, Put on has no New kit: Pads, One pad,
+    // Keys and round again.
+    for _ in 0..3 {
+        step(&mut s, Row::Put, 1);
+        assert_ne!(value(&s, Row::Put), "New kit");
+    }
+    // Offered, it comes after Keys.
+    s.state.new_kit = Some(Ok(()));
+    shown(&mut s);
+    assert_eq!(value(&s, Row::Put), "Pads");
+    for _ in 0..3 {
+        step(&mut s, Row::Put, 1);
+    }
+    assert_eq!(value(&s, Row::Put), "New kit");
+    method(&mut s, Method::Grid);
+    for _ in 0..4 {
+        step(&mut s, Row::Amount, -1);
+    }
+    let n = s.tab.slices();
+    let b = s.tab.bounds(&s.state);
+    assert_eq!(
+        s.tab.pads(&s.state),
+        Some(0..n),
+        "the new kit's pads from A1"
+    );
+    // Q-Link 4 (First pad) has nothing to move: they start on A1.
+    qlink(&mut s, 3, 2, false);
+    assert_eq!(s.tab.pads(&s.state), Some(0..n));
+    let q4 = s.ui.get::<KnobCard>(chop_tab::QLINKS[3]).unwrap();
+    assert!(!q4.enabled && q4.why == "On a new kit the slices start on A1");
+    assert!(s.tab.replaced(&s.state).is_empty());
+    assert_eq!(list_right(&s), "on a new track");
+    let (labels, enabled) = buttons(&s);
+    assert_eq!((labels[2].as_str(), enabled[2]), ("Chop to new kit", true));
+    // With a phrase, the button says so.
+    step(&mut s, Row::Phrase, 1);
+    assert_eq!(buttons(&s).0[2], "Phrase to new kit");
+    let a = press(&mut s, Button::ToPads).unwrap();
+    let ChopAction::ToPads {
+        to_pad,
+        new_kit,
+        one_pad,
+        keys_from,
+        phrase,
+        ..
+    } = a
+    else {
+        panic!("{a:?}")
+    };
+    assert_eq!(
+        (to_pad, new_kit, one_pad, keys_from),
+        (0, true, false, None)
+    );
+    assert!(phrase.is_some());
+    // The slices go on the empty kit with the sound, and the chopped pad's
+    // kit stays as it was.
+    let kit = |p: &Project| {
+        let pads: Vec<_> = (0..128).map(|i| p.pad(i).cloned()).collect();
+        (pads, p.chop_sets.len(), p.history())
+    };
+    let before = kit(&s.project);
+    let mut to = Project::new();
+    assert_eq!(a.apply_to(&s.project, &mut to), Ok(0..n));
+    assert!(
+        kit(&s.project) == before,
+        "the chopped pad's kit doesn't change"
+    );
+    let template = s.project.pad(PAD).unwrap().clone();
+    let id = template.layers[0].region.source;
+    assert!(to.source(id).is_some(), "the sound came with the slices");
+    for k in 0..n {
+        let pad = to.pad(k).unwrap();
+        assert_eq!(pad.name, format!("Break 92 {}", k + 1));
+        let r = &pad.layers[0].region;
+        assert_eq!((r.source, r.start, r.end), (id, b[k], b[k + 1]));
+        assert_eq!(pad.level_db, template.level_db);
+    }
+    assert!(to.pad(n).is_none());
+    // They play.
+    let mut e = Engine::new(RATE, 32);
+    e.set_view(EngineView::build(&to, RATE));
+    assert!(e.schedule(
+        0,
+        Event::NoteOn {
+            pad: 1,
+            velocity: 127
+        }
+    ));
+    let (mut l, mut r) = (vec![0.0; 4096], vec![0.0; 4096]);
+    for (a, b) in l.chunks_mut(128).zip(r.chunks_mut(128)) {
+        e.render(a, b);
+    }
+    assert!(
+        l.iter().any(|x| x.abs() > 0.01),
+        "pad A2 of the new kit sounds"
+    );
+    // One undo takes the pads, the chop and the sound back out.
+    assert!(to.undo());
+    assert!(to.pad(0).is_none() && to.chop_sets.is_empty() && to.source(id).is_none());
+    // Not now: the button is faint and says why; the note says so too.
+    let why = "No empty kit is left for a new track: chop to this kit's pads";
+    s.state.new_kit = Some(Err(why.to_string()));
+    shown(&mut s);
+    assert_eq!(value(&s, Row::Put), "New kit");
+    assert!(!buttons(&s).1[2]);
+    let l = s.ui.get::<SettingList>(chop_tab::LIST).unwrap();
+    assert_eq!(l.controls[Row::Chop.index()].why, why);
+    assert_eq!(list_right(&s), "not now");
+    assert_eq!(press(&mut s, Button::ToPads), None);
+    // A phrase goes with a new kit, not keys.
+    step(&mut s, Row::Put, -1);
+    assert!(value(&s, Row::Put).starts_with("Keys"));
+    let l = s.ui.get::<SettingList>(chop_tab::LIST).unwrap();
+    assert_eq!(
+        l.controls[Row::Phrase.index()].why,
+        "A phrase goes with Pads, One pad or New kit, not keys or files"
+    );
+    // No longer offered, Put on is back on Pads.
+    step(&mut s, Row::Put, 1);
+    s.state.new_kit = None;
+    shown(&mut s);
+    assert_eq!(value(&s, Row::Put), "Pads");
+}

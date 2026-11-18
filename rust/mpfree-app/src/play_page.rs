@@ -42,7 +42,7 @@ use mpfree_node::{Curve, ParamInfo};
 use mpfree_play::mpfree_param::RelAddr;
 use mpfree_sampler_ui::wave_tab::pad_label;
 use mpfree_seq::steps::{Change, Step, PAGE};
-use mpfree_seq::Cond;
+use mpfree_seq::{Cond, Join};
 use mpfree_time_ui::view::TransportInfo;
 use mpfree_transport::time::{Tick, PPQ};
 use mpfree_transport::State;
@@ -397,9 +397,12 @@ pub enum Knob {
     /// A step of the synth's line (STEP SEQ on the synth): its notes move
     /// along the pads, the chord keeping its shape (`Change::Note`).
     Note,
-    /// No knob: an empty card (the Trig bank's fourth, for the ratchet's
-    /// ramp to come).
-    Empty,
+    /// The Trig bank's fourth (S6): a ratchet's velocity ramp, its last
+    /// hit's velocity less its first's.
+    Ramp,
+    /// No Q-Link of its own: the inspector's Tie / Slide chip (S6's
+    /// `Note::join`), a tap steps it.
+    Join,
     /// The step pads held, Q-LINK twice (their Sound bank): knob `k` of
     /// [`PlayPage::sound_bank`], a lock on the held steps.
     Sound(u8),
@@ -407,6 +410,34 @@ pub enum Knob {
     /// transpose, two octaves (or 24 notes of the key) either way, in
     /// Tune's place.
     Transpose,
+}
+
+impl Knob {
+    /// The mixer value MIDI Learn takes for this knob (SHIFT + a touch on
+    /// its Q-Link card), as the mixer's Faders look learns it: a send or a
+    /// level of a strip. None for a knob that turns no strip value (swing,
+    /// tune, transpose, the DJ filters, which are the Perform FX insert,
+    /// and a step's values).
+    pub fn learn_addr(self) -> Option<mpfree_play::mpfree_param::ParamAddr> {
+        use mpfree_play::mpfree_param::{Owner, ParamAddr};
+        let (strip, param) = match self {
+            Knob::DrumsSend => (
+                StripId::Track(mixing::DRUMS),
+                mixer_ids::send(mixing::DELAY_RETURN),
+            ),
+            Knob::LoopSend => (
+                StripId::Track(mixing::LOOP),
+                mixer_ids::send(mixing::DELAY_RETURN),
+            ),
+            Knob::LoopLevel => (StripId::Track(mixing::LOOP), mixer_ids::VOLUME),
+            Knob::LineLevel => (mixing::LINE, mixer_ids::VOLUME),
+            _ => return None,
+        };
+        Some(ParamAddr::new(
+            Owner::Strip(crate::modmix::strip_of(strip)?),
+            param,
+        ))
+    }
 }
 
 /// Which bank the Q-Links show while step pads are held: Q-LINK steps
@@ -701,8 +732,13 @@ pub struct PlayPage {
     hits: VecDeque<HitInfo>,
     pub throws: [bool; 8],
     /// The XY pad's logic: the Perform FX pad (the DJ filter across, the
-    /// echo up), gliding home when the finger lifts.
+    /// echo up), gliding home when the finger lifts; or, with an effect
+    /// picked from its chip, the XY FX's X and Y, staying where the finger
+    /// lifts (the effect lets go and rings out).
     pub xy: mpfree_fx::XyPad,
+    /// What the XY pad plays: None, Filter + echo; `Some(k)`, the XY FX's
+    /// effect `k` ([`XY_CHOICES`]; Prefs keeps it).
+    pub xy_effect: Option<usize>,
     /// STEP SEQ: the sound whose steps the pads are, and their page.
     pub on_pads: Option<crate::app::StepPads>,
     /// STEP SEQ: the step pads held (their sound, and the steps, the first
@@ -770,7 +806,10 @@ pub struct Inspect {
     /// none for steps held with no note.
     pub chips: Vec<(String, String)>,
     /// Which chips the bank's Q-Links turn.
-    pub turned: [bool; 6],
+    pub turned: [bool; INSPECT_N],
+    /// The step plays (on) or is switched off but kept; None with no
+    /// note (the redesign's step 3b; `Note::on`).
+    pub on: Option<bool>,
     /// The step's locks: (parameter, name, value).
     pub locks: Vec<(RelAddr, String, String)>,
     /// One step: Copy and Clear can be used.
@@ -779,15 +818,24 @@ pub struct Inspect {
     pub copying: bool,
 }
 
-/// The inspector's chips, in order.
-pub const INSPECT_CHIPS: [Knob; 6] = [
+/// How many chips the inspector shows.
+pub const INSPECT_N: usize = 8;
+
+/// The inspector's chips, in order: the mockup's six, then S6's ratchet
+/// ramp and tie or slide.
+pub const INSPECT_CHIPS: [Knob; INSPECT_N] = [
     Knob::Velocity,
     Knob::Length,
     Knob::Nudge,
     Knob::Chance,
     Knob::Cond,
     Knob::Ratchet,
+    Knob::Ramp,
+    Knob::Join,
 ];
+
+/// Where the Tie / Slide chip is in [`INSPECT_CHIPS`]: a tap steps it.
+pub const INSPECT_JOIN_CHIP: usize = 7;
 
 /// A tap on the step inspector.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -803,6 +851,11 @@ pub enum InspectTap {
     /// × on a step picked: picked off, the step kept (the throws come
     /// back).
     Close,
+    /// On or Off: the step plays, or is switched off and keeps all it
+    /// holds (every step held takes it).
+    On(bool),
+    /// The Tie / Slide chip: off, tie, slide and round.
+    Join,
 }
 
 impl Default for PlayPage {
@@ -832,6 +885,7 @@ impl Default for PlayPage {
             hits: VecDeque::new(),
             throws: [false; 8],
             xy: mpfree_fx::XyPad::perform(),
+            xy_effect: None,
             on_pads: None,
             held: None,
             bank: HeldBank::Step,
@@ -849,8 +903,9 @@ impl Default for PlayPage {
 
 /// The marks of the page of `row` from step `from` (its locks counted in
 /// `locks`): each step's condition, chance, ratchet, nudge and locks, a
-/// note that lasts into the next step (a tie), and the empty steps a note
-/// lasts over.
+/// note that lasts into the next step (a tie), the empty steps a note
+/// lasts over, and a step switched off but kept. An off step's note
+/// doesn't play, so it lasts over nothing.
 fn marks(row: &[Option<Step>], locks: &[usize], from: usize) -> Vec<Marks> {
     let size = STEP_TICKS;
     // Where the last note so far ends, from the row's start.
@@ -861,7 +916,7 @@ fn marks(row: &[Option<Step>], locks: &[usize], from: usize) -> Vec<Marks> {
         if s.is_none() && line < reach {
             held[i] = true;
         }
-        if let Some(s) = s {
+        if let Some(s) = s.filter(|s| s.on) {
             reach = reach.max(line + s.nudge + s.len);
         }
     }
@@ -875,8 +930,9 @@ fn marks(row: &[Option<Step>], locks: &[usize], from: usize) -> Vec<Marks> {
                     chance: s.chance,
                     ratchet: s.ratchet,
                     nudge: s.nudge.signum() as i8,
-                    tie: s.nudge + s.len > size,
+                    tie: s.on && s.nudge + s.len > size,
                     held_over: false,
+                    off: !s.on,
                 },
                 None => Marks {
                     locks: n,
@@ -911,6 +967,34 @@ fn send_db(pos: f32) -> f32 {
 
 /// A DJ filter's position as the card writes it: "Off", "LP 8.2 kHz",
 /// "HP 400 Hz" (the filter's own mapping, `mpfree_fx::DjFilter`).
+/// What the XY pad can play, as its chip's list names them: the Perform
+/// FX's DJ filter and echo (as it always has), then the XY FX's nine
+/// effects in their order (Jay, 18 Nov 2026 07:34Z: "pick from a list
+/// using the chip").
+pub const XY_CHOICES: [&str; 10] = [
+    "Filter + echo",
+    "Filter",
+    "Echo",
+    "Dub echo",
+    "Wash",
+    "Crush",
+    "Flanger",
+    "Phaser",
+    "Ring mod",
+    "Gate",
+];
+
+/// What across and up do in XY choice `i` ([`XY_CHOICES`]).
+pub fn xy_choice_detail(i: usize) -> String {
+    match i.checked_sub(1) {
+        None => "across: low-pass, off, high-pass · up: echo".to_string(),
+        Some(k) => {
+            let (x, y) = mpfree_fx::xyfx::axes(k);
+            format!("across: {} · up: {}", x.name, y.name)
+        }
+    }
+}
+
 pub fn filter_text(pos: f32) -> String {
     let a = (pos.abs() / 100.0).clamp(0.0, 1.0);
     if a < 0.01 {
@@ -943,6 +1027,29 @@ fn db_text(db: f32) -> String {
 }
 
 /// A step's length as a note value where it is one ("1/32"), else ticks.
+/// A step's joins in the order the Tie / Slide chip steps them.
+pub const JOINS: [Join; 3] = [Join::Attack, Join::Tie, Join::Slide];
+
+/// A step's join as the inspector says it: "off" (its own attack), "tie"
+/// or "slide".
+pub fn join_text(j: Join) -> &'static str {
+    match j {
+        Join::Attack => "off",
+        Join::Tie => "tie",
+        Join::Slide => "slide",
+    }
+}
+
+/// A ratchet's velocity ramp as the inspector says it: "flat", or the last
+/// hit's velocity less the first's ("+24", "−40").
+pub fn ramp_text(r: i8) -> String {
+    match r {
+        0 => "flat".to_string(),
+        r if r > 0 => format!("+{r}"),
+        r => format!("\u{2212}{}", i16::from(r).abs()),
+    }
+}
+
 pub fn length_text(t: Tick) -> String {
     match t {
         30 => "1/128".into(),
@@ -981,7 +1088,7 @@ impl PlayPage {
     pub fn knobs(&self) -> [Knob; 4] {
         if self.held.is_some() {
             return match self.held_bank() {
-                HeldBank::Trig => [Knob::Cond, Knob::Ratchet, Knob::NudgeTicks, Knob::Empty],
+                HeldBank::Trig => [Knob::Cond, Knob::Ratchet, Knob::NudgeTicks, Knob::Ramp],
                 HeldBank::Sound => [
                     Knob::Sound(0),
                     Knob::Sound(1),
@@ -994,7 +1101,7 @@ impl PlayPage {
         match self.view {
             PlayView::Beats if self.selected_step().is_some() => match self.bank {
                 // The inspector's Trig bank, or Q-LINK on a picked step.
-                HeldBank::Trig => [Knob::Cond, Knob::Ratchet, Knob::NudgeTicks, Knob::Empty],
+                HeldBank::Trig => [Knob::Cond, Knob::Ratchet, Knob::NudgeTicks, Knob::Ramp],
                 _ => self.step_bank(),
             },
             PlayView::All | PlayView::Beats => {
@@ -1179,11 +1286,18 @@ impl PlayPage {
             String::new()
         };
         let name = if notes.is_empty() { name } else { notes };
+        let target = self.target_step();
+        let has_note = target.is_some();
+        let on = target.map(|(_, _, s)| s.on);
         let title = match (held, self.held_name()) {
             (true, Some(steps)) => format!("{steps} · {name} · held"),
             _ => format!("Step {} · {name}", i + 1),
         };
-        let has_note = self.target_step().is_some();
+        let title = if on == Some(false) {
+            format!("{title} · off")
+        } else {
+            title
+        };
         let chips = if has_note {
             INSPECT_CHIPS
                 .iter()
@@ -1198,10 +1312,12 @@ impl PlayPage {
         let bank = if held { self.held_bank() } else { self.bank };
         let turned = match bank {
             // On the line, Note (in the title) takes the nudge's Q-Link.
-            HeldBank::Step if pad == usize::from(LINE) => [true, true, false, true, false, false],
-            HeldBank::Step => [true, true, true, true, false, false],
-            HeldBank::Trig => [false, false, true, false, true, true],
-            HeldBank::Sound => [false; 6],
+            HeldBank::Step if pad == usize::from(LINE) => {
+                [true, true, false, true, false, false, false, false]
+            }
+            HeldBank::Step => [true, true, true, true, false, false, false, false],
+            HeldBank::Trig => [false, false, true, false, true, true, true, false],
+            HeldBank::Sound => [false; INSPECT_N],
         };
         let locks = self
             .steps
@@ -1228,6 +1344,7 @@ impl PlayPage {
             locks,
             one: one && has_note,
             copying: self.copy_from == Some((pad, i)),
+            on,
         })
     }
 
@@ -1320,7 +1437,47 @@ impl PlayPage {
                 None
             }
             InspectTap::Copy | InspectTap::Clear | InspectTap::Close => None,
+            InspectTap::On(on) => {
+                let (_, _, s) = self.target_step()?;
+                if s.on == on && !held {
+                    return None;
+                }
+                self.step_change(pad, i, held, steps, Change::On(on))
+            }
+            InspectTap::Join => {
+                let (_, _, s) = self.target_step()?;
+                let at = JOINS.iter().position(|&j| j == s.join).unwrap_or(0);
+                let to = JOINS[(at + 1) % JOINS.len()];
+                self.step_change(pad, i, held, steps, Change::Join(to))
+            }
         }
+    }
+
+    /// `change` on the step inspected: the step picked, or every step
+    /// held (as one undo), shown at once.
+    fn step_change(
+        &mut self,
+        pad: usize,
+        i: usize,
+        held: bool,
+        steps: u128,
+        change: Change,
+    ) -> Option<StepAction> {
+        let a = if held && steps.count_ones() > 1 {
+            StepAction::ChangeSteps {
+                pad: pad as u8,
+                steps,
+                change,
+            }
+        } else {
+            StepAction::Change {
+                pad: pad as u8,
+                step: i,
+                change,
+            }
+        };
+        self.apply_locally(a);
+        Some(a)
     }
 
     /// The step picked, if it still holds notes.
@@ -1442,7 +1599,6 @@ impl PlayPage {
                 &db_text(l.line_db),
                 ((l.line_db + 60.0) / 66.0).clamp(0.0, 1.0),
             ),
-            Knob::Empty => return QLinkCard::default(),
             Knob::Sound(k) => {
                 let Some((sk, v, locked)) = self.sound_value(usize::from(k)) else {
                     return QLinkCard::default();
@@ -1472,6 +1628,8 @@ impl PlayPage {
             | Knob::Cond
             | Knob::Ratchet
             | Knob::NudgeTicks
+            | Knob::Ramp
+            | Knob::Join
             | Knob::Note => {
                 let Some((pad, i, s)) = self.target_step() else {
                     return QLinkCard::default();
@@ -1517,6 +1675,25 @@ impl PlayPage {
                         f32::from(s.ratchet.saturating_sub(1))
                             / f32::from(mpfree_seq::MAX_RATCHET - 1),
                     ),
+                    Knob::Ramp => {
+                        let mut c = QLinkCard::new(
+                            "Ramp",
+                            &scope,
+                            &ramp_text(s.ramp),
+                            0.5 + f32::from(s.ramp) / f32::from(mpfree_seq::MAX_RAMP) / 2.0,
+                        );
+                        c.bipolar = true;
+                        c
+                    }
+                    Knob::Join => {
+                        let at = JOINS.iter().position(|&j| j == s.join).unwrap_or(0);
+                        QLinkCard::new(
+                            "Tie / Slide",
+                            &scope,
+                            join_text(s.join),
+                            at as f32 / (JOINS.len() - 1) as f32,
+                        )
+                    }
                     Knob::NudgeTicks => {
                         let mut c = QLinkCard::new(
                             "Nudge",
@@ -1641,7 +1818,6 @@ impl PlayPage {
                     value: *db,
                 })
             }
-            Knob::Empty => return None,
             Knob::Sound(k) => {
                 // Every step held takes the lock, with a note or not.
                 let (sk, v, _) = self.sound_value(usize::from(k))?;
@@ -1663,6 +1839,8 @@ impl PlayPage {
             | Knob::Cond
             | Knob::Ratchet
             | Knob::NudgeTicks
+            | Knob::Ramp
+            | Knob::Join
             | Knob::Note => {
                 let (pad, i, s) = self.target_step()?;
                 let change = match knob {
@@ -1685,6 +1863,23 @@ impl PlayPage {
                     ),
                     Knob::NudgeTicks => {
                         Change::Nudge(s.nudge + Tick::from(ticks) * if fine { 1 } else { 2 })
+                    }
+                    Knob::Ramp => {
+                        let max = i32::from(mpfree_seq::MAX_RAMP);
+                        let to = (i32::from(s.ramp) + ticks * if fine { 1 } else { 6 })
+                            .clamp(-max, max) as i8;
+                        if to == s.ramp {
+                            return None;
+                        }
+                        Change::Ramp(to)
+                    }
+                    Knob::Join => {
+                        let at = JOINS.iter().position(|&j| j == s.join).unwrap_or(0) as i32;
+                        let to = (at + ticks.signum()).clamp(0, JOINS.len() as i32 - 1) as usize;
+                        if to as i32 == at {
+                            return None;
+                        }
+                        Change::Join(JOINS[to])
                     }
                     Knob::Velocity => Change::Velocity(
                         (i32::from(s.velocity) + ticks * if fine { 1 } else { 2 }).clamp(1, 127)
@@ -2207,9 +2402,15 @@ impl PlayPage {
         }
     }
 
-    /// A tap on step `col` of the page shown, on `pad`'s lane. In Beats a
-    /// tap on a step with notes picks it (for the Q-Links), a second tap
-    /// clears it; elsewhere a tap turns it on or off.
+    /// A tap on step `col` of the page shown, on `pad`'s lane. A tap never
+    /// takes a step's settings away (the Play, Pads and Sequencer
+    /// redesign's step 3b): an empty step gets a note, and a step switched
+    /// off comes back on as it was. On Play a lit step goes off, keeping
+    /// its note, velocity, length, settings and locks. On the Sequencer's
+    /// Steps a lit step's first tap picks it (for the inspector and the
+    /// Q-Links), and a tap on the step picked switches it off or on, the
+    /// pick kept. ERASE + a tap, or the inspector's Clear, takes a step
+    /// out ([`Self::erase_step`]).
     pub fn tap_step(&mut self, pad: usize, col: usize) -> Option<StepAction> {
         let i = self.page * PAGE + col;
         if pad == usize::from(LINE) {
@@ -2228,32 +2429,25 @@ impl PlayPage {
             }
             return None;
         }
-        let on = self
+        let step = self
             .steps
             .clip
             .as_ref()
-            .and_then(|c| c.row(pad as u8).get(i).copied().flatten())
-            .is_some();
-        if self.view == PlayView::Beats && on && self.selected != Some((pad, i)) {
-            self.selected = Some((pad, i));
-            if self.held.is_none() {
-                self.bank = HeldBank::Step;
-            }
-            return None;
+            .and_then(|c| c.row(pad as u8).get(i).copied().flatten());
+        match step {
+            Some(s) => self.switch_or_pick(pad, i, s.on),
+            None => Some(StepAction::Tap {
+                pad: pad as u8,
+                step: i,
+                velocity: TAP_VELOCITY,
+            }),
         }
-        if self.selected == Some((pad, i)) {
-            self.selected = None;
-        }
-        Some(StepAction::Tap {
-            pad: pad as u8,
-            step: i,
-            velocity: TAP_VELOCITY,
-        })
     }
 
     /// A tap on step `i` of the line's lane (STEP SEQ on the synth): on
-    /// an empty step the pen goes on; on a lit one, in Beats, the first
-    /// tap picks it and a second takes it off, as on a sound's lane.
+    /// an empty step the pen goes on; a step with notes switches off or
+    /// on, or on the Sequencer's Steps is picked first, as on a sound's
+    /// lane.
     fn tap_line(&mut self, i: usize) -> Option<StepAction> {
         let line = usize::from(LINE);
         if let Some((from_pad, from)) = self.copy_from.take() {
@@ -2264,32 +2458,60 @@ impl PlayPage {
                 count: 1,
             });
         }
-        let on = self
+        let step = self
             .steps
             .clip
             .as_ref()
-            .and_then(|c| c.row(LINE).get(i).copied().flatten())
-            .is_some();
-        if on {
-            if self.view == PlayView::Beats && self.selected != Some((line, i)) {
-                self.selected = Some((line, i));
-                if self.held.is_none() {
-                    self.bank = HeldBank::Step;
-                }
-                return None;
-            }
-            if self.selected == Some((line, i)) {
-                self.selected = None;
-            }
-            return Some(StepAction::ClearSteps {
-                pad: LINE,
-                from: i,
-                to: i + 1,
-            });
+            .and_then(|c| c.row(LINE).get(i).copied().flatten());
+        if let Some(s) = step {
+            return self.switch_or_pick(line, i, s.on);
         }
         let pen = self.on_pads.filter(|s| s.line())?.pen;
         let (keys, n) = pen.keys(TAP_VELOCITY);
         (n > 0).then_some(StepAction::Enter { step: i, keys, n })
+    }
+
+    /// A tap on step `i` of `pad`'s lane, which holds notes (`on`, or
+    /// switched off): on the Sequencer's Steps a lit step not yet picked
+    /// is picked; otherwise it switches off or back on, keeping all it
+    /// holds (`Change::On`), and shows so at once.
+    fn switch_or_pick(&mut self, pad: usize, i: usize, on: bool) -> Option<StepAction> {
+        if self.view == PlayView::Beats && on && self.selected != Some((pad, i)) {
+            self.selected = Some((pad, i));
+            if self.held.is_none() {
+                self.bank = HeldBank::Step;
+            }
+            return None;
+        }
+        let a = StepAction::Change {
+            pad: pad as u8,
+            step: i,
+            change: Change::On(!on),
+        };
+        self.apply_locally(a);
+        Some(a)
+    }
+
+    /// ERASE held + a tap on step `col` of the page shown, on `pad`'s lane:
+    /// the step comes out, its locks too, as one take (UNDO brings it
+    /// back). Nothing on an empty step without locks.
+    pub fn erase_step(&mut self, pad: usize, col: usize) -> Option<StepAction> {
+        let i = self.page * PAGE + col;
+        let clip = self.steps.clip.as_ref()?;
+        let note = clip.row(pad as u8).get(i).copied().flatten().is_some();
+        let locked = clip.locks(pad as u8).get(i).copied().unwrap_or(0) > 0;
+        if !note && !locked {
+            return None;
+        }
+        if self.selected == Some((pad, i)) {
+            self.selected = None;
+            self.copy_from = None;
+        }
+        Some(StepAction::ClearSteps {
+            pad: pad as u8,
+            from: i,
+            to: i + 1,
+        })
     }
 
     /// The throws' panel: the list, lit while held.
@@ -2356,11 +2578,73 @@ impl PlayPage {
         })
     }
 
-    /// The XY pad's label ("LP 1.2 kHz · echo 40 %") and, with no finger
-    /// on it, where its dot is.
+    /// Picks what the XY pad plays (its chip's list): the pad's logic
+    /// follows, and it starts from where it rests.
+    pub fn set_xy_effect(&mut self, pick: Option<usize>) {
+        let pick = pick.filter(|&k| k < mpfree_fx::xyfx::EFFECTS.len());
+        self.xy_effect = pick;
+        self.xy = match pick {
+            None => mpfree_fx::XyPad::perform(),
+            Some(k) => {
+                use mpfree_fx::xyfx::ids as xy;
+                let (ax, ay) = mpfree_fx::xyfx::axes(k);
+                let axis = |param, name, rest| mpfree_fx::XyAxis {
+                    param,
+                    name,
+                    from: 0.0,
+                    to: 100.0,
+                    rest,
+                };
+                let mut pad =
+                    mpfree_fx::XyPad::new(axis(xy::X, ax.name, 0.5), axis(xy::Y, ay.name, 0.25));
+                pad.set_hold(true);
+                pad
+            }
+        };
+    }
+
+    /// The XY pad's label ("LP 1.2 kHz · echo 40 %", "Decay 2.4 s ·
+    /// Amount 40 %"), its chip, its axes and, with no finger on it, where
+    /// its dot is.
     pub fn fill_xy(&self, p: &mut XyPad) {
-        let [(_, dj), (_, echo)] = self.xy.values();
-        let label = format!("{} · echo {echo:.0} %", filter_text(dj));
+        let (chip, x_axis, y_axis, label) = match self.xy_effect {
+            None => {
+                let [(_, dj), (_, echo)] = self.xy.values();
+                (
+                    "Filter + echo".to_string(),
+                    "LP  ←  off  →  HP".to_string(),
+                    "↑ echo".to_string(),
+                    format!("{} · echo {echo:.0} %", filter_text(dj)),
+                )
+            }
+            Some(k) => {
+                let (ax, ay) = mpfree_fx::xyfx::axes(k);
+                let (x, y) = self.xy.position();
+                let text = |a, pos| {
+                    let (v, unit) = mpfree_fx_ui::xyfx::axis_text(a, pos);
+                    if unit.is_empty() {
+                        v
+                    } else {
+                        format!("{v} {unit}")
+                    }
+                };
+                (
+                    XY_CHOICES[k + 1].to_string(),
+                    format!("{}  →", ax.name),
+                    format!("↑ {}", ay.name),
+                    format!("{} {} · {} {}", ax.name, text(ax, x), ay.name, text(ay, y)),
+                )
+            }
+        };
+        if p.chip != chip {
+            p.chip = chip;
+        }
+        if p.x_axis != x_axis {
+            p.x_axis = x_axis;
+        }
+        if p.y_axis != y_axis {
+            p.y_axis = y_axis;
+        }
         if p.label != label {
             p.label = label;
         }
@@ -2608,6 +2892,111 @@ mod tests {
             lock_values: Vec::new(),
         });
         p
+    }
+
+    /// The redesign's step 3b: a tap never takes a step's settings away.
+    /// On Play a lit step switches off (kept, drawn "off", no tie), a tap
+    /// brings it back, an empty step gets a note; on the Sequencer's Steps
+    /// a lit step is picked first and the picked one switches, staying
+    /// picked; ERASE + a tap takes a step out.
+    #[test]
+    fn a_tap_switches_a_step_off_and_keeps_it() {
+        let mut p = synth_page(&[(0, 0), (0, 4)]);
+        p.pads.iter_mut().for_each(|i| i.pitch = None);
+        let on = |p: &PlayPage, i: usize| p.steps.clip.as_ref().unwrap().row(0)[i].map(|s| s.on);
+        assert!(p.on_play_rows());
+        assert_eq!(
+            p.tap_step(0, 0),
+            Some(StepAction::Change {
+                pad: 0,
+                step: 0,
+                change: Change::On(false)
+            })
+        );
+        assert_eq!(on(&p, 0), Some(false), "shown at once");
+        let m = &marks(p.steps.clip.as_ref().unwrap().row(0), &[], 0)[0];
+        assert!(m.off && !m.tie);
+        assert_eq!(
+            p.tap_step(0, 0),
+            Some(StepAction::Change {
+                pad: 0,
+                step: 0,
+                change: Change::On(true)
+            })
+        );
+        assert_eq!(on(&p, 0), Some(true));
+        assert!(matches!(
+            p.tap_step(0, 1),
+            Some(StepAction::Tap {
+                pad: 0,
+                step: 1,
+                ..
+            })
+        ));
+
+        // The Sequencer's Steps: a pick first, then on and off, picked.
+        p.view = PlayView::Beats;
+        p.sequencer = true;
+        assert_eq!(p.tap_step(0, 4), None);
+        assert_eq!(p.selected, Some((0, 4)));
+        assert_eq!(p.inspect().unwrap().on, Some(true));
+        assert!(matches!(
+            p.tap_step(0, 4),
+            Some(StepAction::Change {
+                change: Change::On(false),
+                ..
+            })
+        ));
+        assert_eq!(p.selected, Some((0, 4)), "still picked");
+        let i = p.inspect().unwrap();
+        assert!(i.title.ends_with("· off") && i.on == Some(false), "{i:?}");
+        assert!(matches!(
+            p.inspector_tap(InspectTap::On(true)),
+            Some(StepAction::Change {
+                change: Change::On(true),
+                ..
+            })
+        ));
+        assert!(matches!(
+            p.inspector_tap(InspectTap::Join),
+            Some(StepAction::Change {
+                change: Change::Join(Join::Tie),
+                ..
+            })
+        ));
+        // A step off and not picked comes back on with one tap.
+        p.tap_step(0, 4);
+        p.selected = None;
+        assert!(matches!(
+            p.tap_step(0, 4),
+            Some(StepAction::Change {
+                change: Change::On(true),
+                ..
+            })
+        ));
+
+        // ERASE + a tap: the step out; nothing on an empty one.
+        p.selected = Some((0, 4));
+        assert_eq!(
+            p.erase_step(0, 4),
+            Some(StepAction::ClearSteps {
+                pad: 0,
+                from: 4,
+                to: 5
+            })
+        );
+        assert_eq!(p.selected, None);
+        assert_eq!(p.erase_step(0, 9), None);
+    }
+
+    /// The ramp and Tie / Slide as the inspector writes them.
+    #[test]
+    fn ramp_and_join_read_as_words() {
+        assert_eq!(ramp_text(0), "flat");
+        assert_eq!(ramp_text(24), "+24");
+        assert_eq!(ramp_text(-40), "\u{2212}40");
+        assert_eq!(join_text(Join::Attack), "off");
+        assert_eq!(join_text(Join::Slide), "slide");
     }
 
     /// Beats on a synth track (the sequencer design's mockup B): its

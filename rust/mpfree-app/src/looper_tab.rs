@@ -80,9 +80,15 @@ pub enum Ctl {
     Monitor,
     /// Length: 0 Free, then 1, 2, 4 and 8 bars.
     Bars(u8),
+    /// Starts: 0 On the bar, 1 When I play.
+    Starts(u8),
     /// Then: 0 Play, 1 Overdub.
     Then(u8),
 }
+
+/// The Starts choices: on the next bar line, or when you play (the first
+/// pad hit, or the line input's first note).
+pub const STARTS_CHOICES: [&str; 2] = ["On the bar", "When I play"];
 
 /// The Overdubs choices: on top until Overdub again, in place of what was
 /// there, or one pass.
@@ -413,6 +419,9 @@ pub enum Strip {
         monitor: Option<bool>,
         /// Into [`BAR_CHOICES`].
         bars: u8,
+        /// Into [`STARTS_CHOICES`], and whether it can change (not for
+        /// Loops: a resample starts on the bar).
+        starts: (u8, bool),
         /// 0 Play, 1 Overdub.
         then: u8,
     },
@@ -424,6 +433,7 @@ impl Default for Strip {
             source: 0,
             monitor: None,
             bars: 0,
+            starts: (0, true),
             then: 0,
         }
     }
@@ -909,17 +919,19 @@ impl LoopEditor {
                     merge.1,
                 ));
             }
-            Strip::Records { monitor, .. } => {
+            Strip::Records {
+                monitor, starts, ..
+            } => {
                 let x = s.x;
                 for (i, l) in ["Pads", "Line in", "Loops"].iter().enumerate() {
                     out.push((
                         Ctl::Source(i as u8),
-                        Rect::new(x + 3 + i as i32 * 92, y + 3, 88, CTRL_H - 6),
+                        Rect::new(x + 3 + i as i32 * 86, y + 3, 82, CTRL_H - 6),
                         l.to_string(),
                         true,
                     ));
                 }
-                let mut x2 = x + 290;
+                let mut x2 = x + 270;
                 if let Some(on) = monitor {
                     out.push((
                         Ctl::Monitor,
@@ -928,10 +940,10 @@ impl LoopEditor {
                         true,
                     ));
                 }
-                x2 += 100;
+                x2 += 90;
                 for (i, l) in ["Free", "1", "2", "4", "8 bars"].iter().enumerate() {
-                    let w = if i == 4 { 80 } else { 56 };
-                    let bx = x2 + 3 + [0, 60, 120, 180, 240][i];
+                    let w = if i == 4 { 78 } else { 54 };
+                    let bx = x2 + 3 + [0, 58, 116, 174, 232][i];
                     out.push((
                         Ctl::Bars(i as u8),
                         Rect::new(bx, y + 3, w, CTRL_H - 6),
@@ -939,11 +951,20 @@ impl LoopEditor {
                         true,
                     ));
                 }
-                let x3 = x2 + 340;
+                let x3 = x2 + 330;
+                for (i, l) in STARTS_CHOICES.iter().enumerate() {
+                    out.push((
+                        Ctl::Starts(i as u8),
+                        Rect::new(x3 + 3 + i as i32 * 110, y + 3, 106, CTRL_H - 6),
+                        l.to_string(),
+                        starts.1,
+                    ));
+                }
+                let x4 = x3 + 232;
                 for (i, l) in ["Play", "Overdub"].iter().enumerate() {
                     out.push((
                         Ctl::Then(i as u8),
-                        Rect::new(x3 + 3 + i as i32 * 100, y + 3, 96, CTRL_H - 6),
+                        Rect::new(x4 + 3 + i as i32 * 78, y + 3, 74, CTRL_H - 6),
                         l.to_string(),
                         true,
                     ));
@@ -1157,6 +1178,27 @@ fn segments(cx: &mut PaintCx, items: &[(Rect, &str, bool)]) {
         }
         let ink = if *chosen { t.on_accent } else { t.text };
         cx.text(FontId::Bold, 14.0, *r, Align::Center, ink, label);
+    }
+}
+
+/// [`segments`] drawn faint: they can't change now (a tap says why).
+fn faint_segments(cx: &mut PaintCx, items: &[(Rect, &str, bool)]) {
+    let t = cx.theme.clone();
+    if let (Some(a), Some(b)) = (items.first(), items.last()) {
+        let well = Rect::new(
+            a.0.x - 3,
+            a.0.y - 3,
+            b.0.right() + 3 - (a.0.x - 3),
+            a.0.h + 6,
+        );
+        cx.canvas
+            .fill_round_rect(well, 11, t.bg.mix(t.surface, 0.35));
+    }
+    for (r, label, chosen) in items {
+        if *chosen {
+            cx.canvas.stroke_round_rect(*r, 8, 1, t.text_dim);
+        }
+        cx.text(FontId::Bold, 14.0, *r, Align::Center, t.text_dim, label);
     }
 }
 
@@ -1803,6 +1845,7 @@ impl LoopEditor {
                 source,
                 monitor,
                 bars,
+                starts,
                 then,
             } => {
                 group_label(cx, s.x, s.y, "RECORDS FROM");
@@ -1836,6 +1879,21 @@ impl LoopEditor {
                     group_label(cx, first.0.x - 3, s.y, "LENGTH");
                 }
                 segments(cx, &len);
+                let st: Vec<(Rect, &str, bool)> = ctls
+                    .iter()
+                    .filter_map(|c| match c.0 {
+                        Ctl::Starts(i) => Some((c.1, c.2.as_str(), i == starts.0)),
+                        _ => None,
+                    })
+                    .collect();
+                if let Some(first) = st.first() {
+                    group_label(cx, first.0.x - 3, s.y, "STARTS");
+                }
+                if starts.1 {
+                    segments(cx, &st);
+                } else {
+                    faint_segments(cx, &st);
+                }
                 let th: Vec<(Rect, &str, bool)> = ctls
                     .iter()
                     .filter_map(|c| match c.0 {
@@ -1944,12 +2002,14 @@ impl Widget for LoopEditor {
                 Ctl::Source(i) => Target::tap("source", i as usize, label, b),
                 Ctl::Monitor => Target::tap("monitor", 0, label, b),
                 Ctl::Bars(i) => Target::tap("bars", i as usize, label, b),
+                Ctl::Starts(i) => Target::tap("starts", i as usize, label, b),
                 Ctl::Then(i) => Target::tap("then", i as usize, label, b),
                 Ctl::Input | Ctl::Send | Ctl::Clear => continue,
             };
             let chosen = match (&self.strip, c) {
                 (Strip::Records { source, .. }, Ctl::Source(i)) => *source == i,
                 (Strip::Records { bars, .. }, Ctl::Bars(i)) => *bars == i,
+                (Strip::Records { starts, .. }, Ctl::Starts(i)) => starts.0 == i,
                 (Strip::Records { then, .. }, Ctl::Then(i)) => *then == i,
                 (Strip::Plays { overdubs, .. }, Ctl::Overdubs(i)) => *overdubs == i,
                 (Strip::Plays { speed, .. }, Ctl::Speed(i)) => *speed == i,
@@ -2649,6 +2709,7 @@ mod tests {
             source: 1,
             monitor: Some(false),
             bars: 2,
+            starts: (0, true),
             then: 0,
         };
         let ts = e.targets(r);

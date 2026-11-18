@@ -54,6 +54,9 @@ pub struct SectionState {
     /// The page a tap on its title opens (an index into
     /// [`PageView::pages`]).
     pub link: Option<usize>,
+    /// The action a tap on its title takes instead, by the plan's name
+    /// for it ("Capture": [`crate::ChainAction::Capture`]).
+    pub action: Option<&'static str>,
     /// The effect's drawings it shows, by card title.
     pub drawings: Vec<String>,
     /// Its controls two to a line (every one of them is a choice, a switch
@@ -205,6 +208,7 @@ fn planned(
             link: sec
                 .link
                 .and_then(|l| plan.pages.iter().position(|p| p.name == l)),
+            action: sec.action,
             drawings: sec.drawings.iter().map(|d| d.to_string()).collect(),
             rows,
             controls,
@@ -270,6 +274,7 @@ fn by_groups(
             job: sec.job,
             note: String::new(),
             link: None,
+            action: None,
             drawings: Vec::new(),
             rows: sec.rows,
             controls,

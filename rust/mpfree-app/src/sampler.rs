@@ -37,8 +37,8 @@ use std::time::Instant;
 
 use mpfree_sampler::dsp::Ahdsr;
 use mpfree_sampler::engine::{
-    Engine, EngineView, Event, GrainView, LaneConfig, LaneSetup, LaneStats, PadField, PadOut,
-    MAX_GRAINS,
+    CloudState, Engine, EngineView, Event, GrainView, LaneConfig, LaneSetup, LaneStats, PadField,
+    PadOut, MAX_GRAINS,
 };
 use mpfree_sampler::model::{
     GrainParams, Layer, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region, Source, PADS,
@@ -255,6 +255,9 @@ pub struct Cloud {
     pub head: Option<u64>,
     /// Grains playing on every pad, and how many may.
     pub live: usize,
+    /// How that layer plays now: its spray as moved, and whether it is
+    /// thinned ([`mpfree_sampler::engine::Engine::cloud_of`]).
+    pub state: Option<CloudState>,
 }
 
 impl Default for Cloud {
@@ -267,6 +270,7 @@ impl Default for Cloud {
             grains: [GrainView::default(); CLOUD_GRAINS],
             head: None,
             live: 0,
+            state: None,
         }
     }
 }
@@ -607,13 +611,14 @@ impl Player {
     /// kit. Never allocates.
     pub fn fill_cloud(&self, c: &mut Cloud) {
         c.live = self.engine.live_grains();
-        (c.len, c.head) = (0, None);
+        (c.len, c.head, c.state) = (0, None, None);
         if c.kit >= self.engine.kits() {
             return;
         }
         c.len = self
             .engine
             .kit_grains_of(c.kit, c.pad, c.layer, &mut c.grains);
+        c.state = self.engine.kit_cloud_of(c.kit, c.pad, c.layer);
         c.head = self
             .engine
             .kit_playheads(c.kit)

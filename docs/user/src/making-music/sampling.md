@@ -34,12 +34,13 @@ Q-Links 1 to 4 turn level, pan, tune and voices. **Put on** places the sound pic
 
 **Browse for A5** at the top right of the Pads tab (it names the pad picked) opens the browser over the page. **BROWSE**, and the folder at the right end of the top bar, open the same browser from any page. **BROWSE**, the folder or a tab closes it again.
 
-{{shot: browser-samples | The browser opened from Browse for A5: Samples / Drums, with Kick 01 picked, its waveform, and Load on A5 and Next pad hit under it.}}
+{{shot: browser-samples | The browser opened from Browse for A5: Samples / Drums, with Kick 01 picked, its waveform, the kit's pads with A5 picked, and Load on A5 and Next pad hit under them.}}
 
 Pick a place on the left (**Samples**, **Kits** or **Recordings**, say, or **Recent** and **Favourites**). Tap a folder to open it, and tap a sound to pick it and see its length, format and waveform. Then:
 
 - **Load on A5** puts it on the pad picked (so does a second tap on it). Hit another pad and the button names that pad instead: browse, hit a pad, load, hit the next pad, load again.
 - **Next pad hit** puts it on the next pad you hit.
+- **The kit's pads**, under the sound, show what each pad of the kit holds, a bank at a time, with the pad picked outlined. Put a finger on one to pick it, as a hit on the MPC's pad does, and hear what is on it until you lift your finger; **Load on** then names it. The map opens on the bank of the pad picked, and **‹** and **›** beside its heading show the kit's other banks.
 - **Audition**, or **PLAY**, lets you hear it first, at the level Q-Link 3 sets.
 - The **star** at the right end of each row adds it to Favourites; tap it again to take it out.
 
@@ -185,7 +186,7 @@ Pins only work while the sound is stretched. With Warp on Repitch, the sound pla
 1. Under the wave, tap a **Method**: **Transient** cuts at each hit, **Beat** on the beats, **Grid** into equal pieces, **Silence** at the gaps, **Pitch** where the note changes (below), **Manual** leaves the cuts to you, and **Live** cuts where you play (below).
 2. Drag the **Sensitivity** knob up for more slices, down for fewer (on Beat, Grid, Silence and Pitch the knob sets the slice length, the number of slices, the threshold or the change).
 3. Tap a slice to hear it. **Split** and **Merge** add or remove a cut by hand; drag a cut's tab, or turn the Q-Links, to move it. The first marker and **END** are the pad's own start and end, so they stay put here: move them on the Wave page.
-4. Tap the big **Chop to** button to put the slices on the pads. They go on the first empty pads after the one you chopped, running on past A16 into bank B (and so on, up to H16), so the pad itself and the sounds around it stay; the button names the pads ("Chop to A6–B4"), and **PAD BANK B** plays the ones on bank B. To start somewhere else, turn **Pads** (or Q-Link 4); the list says which pads already have a sound. Chop the same pad again and the new slices replace the ones you just made. **Put on** picks where they go: the **Pads**, **1 pad** (every slice on one pad, below), the pads and **Keys**, or **Files**. Turn **Phrase** on to get a clip that plays the slices in time as well (for a sound with a beat, on Pads or 1 pad).
+4. Tap the big **Chop to** button to put the slices on the pads. They go on the first empty pads after the one you chopped, running on past A16 into bank B (and so on, up to H16), so the pad itself and the sounds around it stay; the button names the pads ("Chop to A6–B4"), and **PAD BANK B** plays the ones on bank B. To start somewhere else, turn **Pads** (or Q-Link 4); the list says which pads already have a sound. Chop the same pad again and the new slices replace the ones you just made. **Put on** picks where they go: the **Pads**, **1 pad** (every slice on one pad, below), the pads and **Keys**, a **New kit** on a new track (below), or **Files**. Turn **Phrase** on to get a clip that plays the slices in time as well (for a sound with a beat, on Pads, 1 pad or New kit).
 
 **Your chop stays with the sound.** Once you change the cuts (a method, a split, a cut moved, a live take), MPFree keeps them for that sound: pick another pad and come back, or open the project tomorrow, and the Chop page shows your slices as you left them, not a fresh chop. Keeping them isn't an edit, so **UNDO** leaves them be; they go on pads only when you tap **Chop to**.
 
@@ -200,6 +201,16 @@ With **Put on** at **1 pad**, every slice goes on one pad instead of a pad each,
 - On a **keyboard** (the Play page's keys, or a kit playing notes), C2 plays slice 1, C#2 slice 2 and so on up, each at the sound's own pitch.
 
 Each slice plays as it would on a pad of its own: from its cut to the next, with **Gate** or **One shot** as the pad is set (a **Loop** pad plays each slice as Gate). **UNDO** gives the pad back as it was.
+
+### New kit: the slices on a track of their own
+
+{{shot: sample-chop-new-kit | The Chop page with Put on at New kit and Phrase on: the break's 15 slices are ready to go on an empty kit from A1, for a new track, and the button reads Phrase to new kit.}}
+
+With **Put on** at **New kit**, the slices don't touch the kit you chopped. They go on an empty kit from pad A1 (up to 128 slices, running on through banks B to H), MPFree adds a new track at the end of the song, arms it and gives it that kit, named after the pad ("Break 92 chops"). The button reads **Chop to new kit**, or **Phrase to new kit** with **Phrase** on, and then the phrase goes in the new track's first slot, ready to launch. The pads play the new kit straight away, and the Sample tab shows its first slice.
+
+- **UNDO** on the Sample tab takes the slices back off the new kit. The track stays, playing the now empty kit.
+- **Pads** and Q-Link 4 have nothing to move: a new kit's slices always start on A1.
+- New kit is faint, and a tap says why, when no empty kit is left, when the song already has 128 tracks, or for the moment while the last new track is on its way.
 
 A sliced pad shows its slices everywhere: numbered lines on the **Wave** page (move them on the Chop page), "15 slices" under its name on the **Pads** tab, and the **Chop** page opens on its own slices, so you can move a cut and chop it again.
 

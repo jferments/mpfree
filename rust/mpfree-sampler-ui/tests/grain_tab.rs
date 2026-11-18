@@ -2,17 +2,19 @@
 //! the engine plays, and how its arrows, the wheel, the Q-Links and its
 //! drags change the region in a real project, one undo step each.
 
-use mpfree_sampler::engine::{Engine, EngineView, Event};
-use mpfree_sampler::model::{GrainMode, GrainWindow, PlayMode, Project};
-use mpfree_sampler_ui::grain_tab::{
-    self, describe, size_at, size_place, GrainAction, GrainState, Row,
+use mpfree_sampler::engine::{CloudState, Engine, EngineView, Event};
+use mpfree_sampler::model::{
+    GrainFilter, GrainFilterKind, GrainMode, GrainWindow, LfoShape, MotionTarget, PlayMode, Project,
 };
-use mpfree_sampler_ui::grain_widgets::{GrainCloud, XyPad};
+use mpfree_sampler_ui::grain_tab::{
+    self, describe, size_at, size_place, CloudNow, GrainAction, GrainState, Row, View,
+};
+use mpfree_sampler_ui::grain_widgets::{GrainCloud, XyPad, TRAIL};
 use mpfree_sampler_ui::panel::Look;
 use mpfree_sampler_ui::sample::{
     self, grain_project, grain_samples, grains_after, GrainSample, PAD, RATE,
 };
-use mpfree_sampler_ui::widgets::{KnobCard, PadBar, SettingList};
+use mpfree_sampler_ui::widgets::{KnobCard, PadBar, SectionChips, SettingList};
 use mpfree_ui::{EventKind, Fonts, Rect, SoftCanvas, Touch, UiEvent};
 
 /// The Grain tab on the granular pad (or on the loop, not granular yet),
@@ -38,18 +40,48 @@ fn undo_steps(p: &Project) -> usize {
     n
 }
 
-/// Where `row` is in the list the layer's grain mode shows.
+/// Where `row` is in the list the section open shows for the layer's
+/// grain mode.
 fn index(s: &GrainSample, row: Row) -> usize {
-    row.index_in(s.state.region.grain_mode)
+    row.index_in(s.tab.view(), s.state.region.grain_mode)
         .unwrap_or_else(|| panic!("{row:?} isn't shown"))
 }
 
-fn row_value(s: &GrainSample, row: Row) -> String {
+/// Taps the section chip `view`, as a finger would.
+fn open(s: &mut GrainSample, view: View) {
+    let i = View::ALL.iter().position(|v| *v == view).unwrap();
+    let ev = UiEvent {
+        widget: grain_tab::SECTIONS.into(),
+        kind: EventKind::Tab(i),
+    };
+    let st = s.state.clone();
+    assert!(s.tab.action(&mut s.ui, &ev, &st).is_none());
+    assert_eq!(s.tab.view(), view);
+}
+
+/// Opens the section whose panel holds `row`, unless the one open shows it
+/// (the Q-Links' rows are on every one).
+fn open_for(s: &mut GrainSample, row: Row) {
+    if row
+        .index_in(s.tab.view(), s.state.region.grain_mode)
+        .is_none()
+    {
+        open(s, row.view());
+    }
+}
+
+/// What the list shows for `row` (its section opened first).
+fn row_value(s: &mut GrainSample, row: Row) -> String {
+    open_for(s, row);
     let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
     list.rows[index(s, row)].value.clone()
 }
 
+/// A step of `row` from the panel (its section opened first): a knob's
+/// drag, a selector's arrow, a choice's button `delta` from the lit one, a
+/// switch's tap (which flips it whatever `delta` is).
 fn step(s: &mut GrainSample, row: Row, delta: i32) -> Option<GrainAction> {
+    open_for(s, row);
     let index = index(s, row);
     let ev = UiEvent {
         widget: grain_tab::LIST.into(),
@@ -110,7 +142,7 @@ fn rect(s: &GrainSample, name: &str) -> Rect {
 
 #[test]
 fn the_tab_shows_the_layers_grain_settings_and_the_engines_cloud() {
-    let s = grain(true);
+    let mut s = grain(true);
     let bar = s.ui.get::<PadBar>(grain_tab::BAR).unwrap();
     assert_eq!(bar.title, "Pad A5 · Break 92");
     assert!(
@@ -140,7 +172,7 @@ fn the_tab_shows_the_layers_grain_settings_and_the_engines_cloud() {
         (Row::Pitch, "-5 st"),
         (Row::Level, "+0.0 dB"),
     ] {
-        assert_eq!(row_value(&s, row), value, "{row:?}");
+        assert_eq!(row_value(&mut s, row), value, "{row:?}");
     }
     let cards: Vec<(String, String)> = grain_tab::QLINKS
         .iter()
@@ -163,7 +195,7 @@ fn the_tab_shows_the_layers_grain_settings_and_the_engines_cloud() {
         Row::Scan,
         "the wheel starts on the scan speed"
     );
-    assert_eq!(row_value(&s, Row::Scan), "0.25×");
+    assert_eq!(row_value(&mut s, Row::Scan), "0.25×");
     // The panel: Cloud's knobs and Shape's selectors; the Q-Links' rows
     // are on their cards and the touch pad.
     let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
@@ -173,7 +205,7 @@ fn the_tab_shows_the_layers_grain_settings_and_the_engines_cloud() {
     let placed: Vec<Row> = panel
         .sections
         .iter()
-        .flat_map(|s| s.lines.iter().flatten().map(|i| Row::ALL[i.row]))
+        .flat_map(|s| s.lines.iter().flatten().map(|i| Row::GRAINS[i.row]))
         .collect();
     assert_eq!(
         placed,
@@ -198,13 +230,30 @@ fn the_tab_shows_the_layers_grain_settings_and_the_engines_cloud() {
     assert!(grain_tab::QLINK_ROWS.iter().all(|r| !placed.contains(r)));
     let cloud = GrainMode::Cloud;
     assert!(matches!(
-        list.controls[Row::Scan.index_in(cloud).unwrap()].look,
+        list.controls[Row::Scan.index_in(View::Grains, cloud).unwrap()].look,
         Look::Knob { bipolar: true, .. }
     ));
     assert!(matches!(
-        list.controls[Row::Shape.index_in(cloud).unwrap()].look,
+        list.controls[Row::Shape.index_in(View::Grains, cloud).unwrap()].look,
         Look::Knob { .. }
     ));
+    // The section chips: Grains open, each saying what is in it.
+    let chips = s.ui.get::<SectionChips>(grain_tab::SECTIONS).unwrap();
+    assert_eq!(chips.selected, 0);
+    let chips: Vec<(&str, &str)> = chips
+        .chips
+        .iter()
+        .map(|c| (c.name.as_str(), c.sub.as_str()))
+        .collect();
+    assert_eq!(
+        chips,
+        [
+            ("Grains", "Cloud · scan 0.25× · spray 16 %"),
+            ("Movement", "nothing moves"),
+            ("Filter and keys", "no filter"),
+            ("Presets", "your own settings")
+        ]
+    );
     let xy = s.ui.get::<XyPad>(grain_tab::XY).unwrap();
     assert_eq!((xy.x, xy.y), (0.56, size_place(150.0)));
     // The cloud: the engine's own grains, all inside the region.
@@ -232,12 +281,141 @@ fn the_tab_shows_the_layers_grain_settings_and_the_engines_cloud() {
 }
 
 #[test]
+fn the_cloud_shows_the_scans_path_the_spray_as_it_plays_and_when_it_is_thinned() {
+    let mut s = grain(true);
+    // The sample screen: a second of reports, 25 of them, behind the
+    // reading place, a quarter speed scan moving it on.
+    let (_, now, path) = sample::cloud_reports(&s.project, 1.5);
+    let cloud = s.ui.get::<GrainCloud>(grain_tab::CLOUD).unwrap();
+    assert_eq!(cloud.trail(), &path[..]);
+    assert_eq!(path.len(), TRAIL);
+    assert!(path.windows(2).all(|w| w[1] > w[0]), "{path:?}");
+    assert!(now.playhead.is_some_and(|h| h > path[TRAIL - 1]));
+    assert!(cloud.scan > 0.0 && !cloud.peaked && !cloud.thinned);
+    let state = now.state.expect("it plays");
+    assert_eq!(cloud.spray_now, Some(state.spray));
+    // A report of a moved spray and a thinned cloud.
+    let st = s.state.clone();
+    let grains = cloud.grains.clone();
+    let moved = CloudNow {
+        state: Some(CloudState {
+            spray: 0.5,
+            thinned: true,
+        }),
+        ..now
+    };
+    s.tab.set_cloud(&mut s.ui, &st, &grains, moved);
+    let cloud = s.ui.get::<GrainCloud>(grain_tab::CLOUD).unwrap();
+    assert_eq!(cloud.spray_now, Some(0.5));
+    assert!(cloud.thinned);
+    assert!(cloud.caption.contains("spray ±25 %"), "{}", cloud.caption);
+    assert!(
+        cloud.caption.contains("thinned to fit 64"),
+        "{}",
+        cloud.caption
+    );
+    // The voice stops: the path and the spray as played go.
+    s.tab.set_cloud(&mut s.ui, &st, &[], CloudNow::default());
+    let cloud = s.ui.get::<GrainCloud>(grain_tab::CLOUD).unwrap();
+    assert!(cloud.trail().is_empty() && cloud.playhead.is_none());
+    assert_eq!((cloud.spray_now, cloud.thinned), (None, false));
+    // A peaked spray draws its middle stronger.
+    step_apply(&mut s, Row::SprayShape, 1);
+    assert!(s.ui.get::<GrainCloud>(grain_tab::CLOUD).unwrap().peaked);
+}
+
+/// The rows each section's panel places, in its order.
+fn placed(s: &GrainSample) -> Vec<Row> {
+    let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
+    let shown = Row::shown(s.tab.view(), s.state.region.grain_mode);
+    list.panel
+        .as_ref()
+        .unwrap()
+        .sections
+        .iter()
+        .flat_map(|sec| sec.lines.iter().flatten().map(|i| shown[i.row]))
+        .collect()
+}
+
+#[test]
+fn the_section_chips_open_each_panel_and_the_touch_pad_and_qlinks_stay() {
+    let mut s = grain(true);
+    let xy = rect(&s, grain_tab::XY);
+    for (k, view, titles) in [
+        (1, View::Movement, &["LFO", "Envelope"][..]),
+        (2, View::FilterKeys, &["Filter", "Keys"][..]),
+        (3, View::Presets, &["Presets"][..]),
+        (0, View::Grains, &["Cloud", "Shape"][..]),
+    ] {
+        open(&mut s, view);
+        assert_eq!(
+            s.ui.get::<SectionChips>(grain_tab::SECTIONS)
+                .unwrap()
+                .selected,
+            k
+        );
+        let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
+        let got: Vec<&str> = list
+            .panel
+            .as_ref()
+            .unwrap()
+            .sections
+            .iter()
+            .map(|sec| sec.title.as_str())
+            .collect();
+        assert_eq!(got, titles, "{view:?}");
+        // The touch pad keeps its place; the Q-Links turn their four.
+        let mut c = SoftCanvas::new(sample::SCREEN.0, sample::SCREEN.1);
+        s.ui.paint(&mut c);
+        assert_eq!(rect(&s, grain_tab::XY), xy, "{view:?}");
+        let a = qlink(&mut s, 2, 1, false).expect("density moves");
+        apply(&mut s, &a);
+        assert_eq!(s.tab.row(&s.ui), Row::Density, "{view:?}");
+        assert_eq!(s.tab.view(), view);
+        s.tab.lift();
+    }
+    // In every grain mode each section places every row it shows but the
+    // Q-Links', once.
+    for mode in ["Cloud", "Stretch", "Repeat", "Tone"] {
+        if mode != "Cloud" {
+            step_apply(&mut s, Row::GrainMode, 1);
+        }
+        assert_eq!(row_value(&mut s, Row::GrainMode), mode);
+        for view in View::ALL {
+            open_for(&mut s, Row::Position);
+            if s.tab.view() != view {
+                open(&mut s, view);
+            }
+            let m = s.state.region.grain_mode;
+            let want: Vec<Row> = Row::shown(view, m)
+                .iter()
+                .copied()
+                .filter(|r| !grain_tab::QLINK_ROWS.contains(r))
+                .collect();
+            let mut got = placed(&s);
+            assert_eq!(got.len(), want.len(), "{mode} {view:?}: {got:?}");
+            got.sort_by_key(|r| want.iter().position(|w| w == r));
+            assert_eq!(got, want, "{mode} {view:?}");
+            for r in Row::shown(view, m) {
+                assert!(
+                    r.view() == view || grain_tab::QLINK_ROWS.contains(r),
+                    "{r:?}"
+                );
+            }
+        }
+    }
+    // Every sample screen fits its controls: none is drawn past its panel.
+    let mut c = SoftCanvas::new(sample::SCREEN.0, sample::SCREEN.1);
+    s.ui.paint(&mut c);
+}
+
+#[test]
 fn a_layer_that_doesnt_play_grains_says_how_and_mode_turns_it_on() {
     let mut s = grain(false);
     let cloud = s.ui.get::<GrainCloud>(grain_tab::CLOUD).unwrap();
     assert!(!cloud.granular);
     assert_eq!(cloud.note, "Mode is Loop: tap to play this pad as grains");
-    assert_eq!(row_value(&s, Row::Mode), "Loop");
+    assert_eq!(row_value(&mut s, Row::Mode), "Loop");
     step_apply(&mut s, Row::Mode, 1);
     assert_eq!(
         s.project.pad(PAD).unwrap().layers[0].region.mode,
@@ -281,7 +459,7 @@ fn the_mode_row_reaches_granular_from_a_pad_with_no_loop() {
         };
         apply(&mut s, &a);
     }
-    assert_eq!(row_value(&s, Row::Mode), "One shot");
+    assert_eq!(row_value(&mut s, Row::Mode), "One shot");
     for want in [
         PlayMode::Gate,
         PlayMode::Toggle,
@@ -328,7 +506,7 @@ fn arrows_step_each_row_and_a_run_of_taps_on_one_row_is_one_undo_step() {
     let b = step(&mut s, Row::Spray, 1).unwrap();
     assert_eq!(gesture(&b), g, "the same row again is the same undo step");
     apply(&mut s, &b);
-    assert_eq!(row_value(&s, Row::Spray), "26 %");
+    assert_eq!(row_value(&mut s, Row::Spray), "26 %");
     assert_eq!(undo_steps(&s.project), steps + 1);
     let c = step(&mut s, Row::Reverse, -1).unwrap();
     assert_ne!(gesture(&c), g, "another row is a new step");
@@ -370,7 +548,7 @@ fn arrows_step_each_row_and_a_run_of_taps_on_one_row_is_one_undo_step() {
         (Row::Mode, -1, "Loop"),
     ] {
         step_apply(&mut s, row, delta);
-        assert_eq!(row_value(&s, row), value, "{row:?} {delta:+}");
+        assert_eq!(row_value(&mut s, row), value, "{row:?} {delta:+}");
     }
     assert!(
         step(&mut s, Row::Density, 1).is_none(),
@@ -394,8 +572,8 @@ fn a_grain_mode_starts_from_its_own_settings_and_shows_its_rows() {
         let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
         list.rows.iter().map(|r| r.name.clone()).collect()
     };
-    assert_eq!(row_value(&s, Row::GrainMode), "Cloud");
-    assert_eq!(names(&s).len(), Row::ALL.len());
+    assert_eq!(row_value(&mut s, Row::GrainMode), "Cloud");
+    assert_eq!(names(&s).len(), Row::GRAINS.len());
     let (position, gain) = {
         let g = &s.state.region.grain;
         (g.position, g.gain)
@@ -406,7 +584,7 @@ fn a_grain_mode_starts_from_its_own_settings_and_shows_its_rows() {
     assert_eq!(s.tab.row(&s.ui), Row::Pitch);
 
     step_apply(&mut s, Row::GrainMode, 1);
-    assert_eq!(row_value(&s, Row::GrainMode), "Stretch");
+    assert_eq!(row_value(&mut s, Row::GrainMode), "Stretch");
     assert_eq!(
         names(&s),
         [
@@ -444,7 +622,7 @@ fn a_grain_mode_starts_from_its_own_settings_and_shows_its_rows() {
         (Row::Shape, "Hann"),
         (Row::Spread, "0 %"),
     ] {
-        assert_eq!(row_value(&s, row), value, "{row:?}");
+        assert_eq!(row_value(&mut s, row), value, "{row:?}");
     }
     let g = s.state.region.grain;
     assert_eq!((g.position, g.gain), (position, gain), "kept");
@@ -460,21 +638,21 @@ fn a_grain_mode_starts_from_its_own_settings_and_shows_its_rows() {
     assert_eq!(grain_tab::value_text(&r, Row::Scan), "1× · in time");
 
     step_apply(&mut s, Row::GrainMode, 1);
-    assert_eq!(row_value(&s, Row::GrainMode), "Repeat");
+    assert_eq!(row_value(&mut s, Row::GrainMode), "Repeat");
     assert_eq!(names(&s).len(), 10);
-    assert_eq!(row_value(&s, Row::Density), "4 /beat");
-    assert_eq!(row_value(&s, Row::Size), "1/4 beat");
-    assert_eq!(row_value(&s, Row::Shape), "10 % · Trapezoid");
+    assert_eq!(row_value(&mut s, Row::Density), "4 /beat");
+    assert_eq!(row_value(&mut s, Row::Size), "1/4 beat");
+    assert_eq!(row_value(&mut s, Row::Shape), "10 % · Trapezoid");
     let g = s.state.region.grain;
     assert_eq!((g.scan, g.timing), (0.0, 0.0), "the same spot, on the grid");
     // Its rate steps through beat divisions.
     step_apply(&mut s, Row::Density, 1);
-    assert_eq!(row_value(&s, Row::Density), "6 /beat");
+    assert_eq!(row_value(&mut s, Row::Density), "6 /beat");
 
     // Back to a cloud: every row again, scattered a little.
     step_apply(&mut s, Row::GrainMode, -2);
-    assert_eq!(row_value(&s, Row::GrainMode), "Cloud");
-    assert_eq!(names(&s).len(), Row::ALL.len());
+    assert_eq!(row_value(&mut s, Row::GrainMode), "Cloud");
+    assert_eq!(names(&s).len(), Row::GRAINS.len());
     let g = s.state.region.grain;
     assert!(g.sync.is_none() && g.spray > 0.0 && g.spread > 0.0 && g.timing > 0.0);
     assert_eq!(s.tab.row(&s.ui), Row::Pitch);
@@ -497,10 +675,339 @@ fn a_grain_mode_starts_from_its_own_settings_and_shows_its_rows() {
 }
 
 #[test]
+fn the_key_rows_set_key_tracking_and_glide() {
+    let mut s = grain(true);
+    for (row, delta, value) in [
+        (Row::KeySize, 0, "Off"),
+        (Row::KeyScan, 0, "Off"),
+        (Row::Glide, 0, "Off"),
+        (Row::KeySize, 1, "On"),
+        (Row::KeyScan, 1, "On"),
+        // A tap on a switch flips it.
+        (Row::KeyScan, 1, "Off"),
+        (Row::Glide, 4, "100 ms"),
+        (Row::Glide, 20, "5.00 s"),
+        (Row::Glide, -7, "150 ms"),
+    ] {
+        if delta != 0 {
+            step_apply(&mut s, row, delta);
+        }
+        assert_eq!(row_value(&mut s, row), value, "{row:?} {delta:+}");
+    }
+    assert_eq!(s.tab.view(), View::FilterKeys);
+    let r = &s.state.region;
+    assert!(r.grain_keys.size && !r.grain_keys.scan);
+    assert_eq!(r.grain_glide_ms, 150.0);
+    // The wheel turns a switch on and off, not round.
+    let i = index(&s, Row::KeySize);
+    s.ui.get_mut::<SettingList>(grain_tab::LIST)
+        .unwrap()
+        .selected = i;
+    let st = s.state.clone();
+    assert!(s.tab.wheel(&mut s.ui, &st, 1).is_none(), "already on");
+    let a = s.tab.wheel(&mut s.ui, &st, -1).unwrap();
+    apply(&mut s, &a);
+    assert_eq!(row_value(&mut s, Row::KeySize), "Off");
+    step_apply(&mut s, Row::KeySize, 1);
+    // A tone's size follows its note anyway: no row for it, and the
+    // settings stay across modes.
+    step_apply(&mut s, Row::GrainMode, 3);
+    assert!(!Row::KeySize.used_in(GrainMode::Tone));
+    assert_eq!(row_value(&mut s, Row::Glide), "150 ms");
+    assert!(!placed(&s).contains(&Row::KeySize));
+    assert!(s.state.region.grain_keys.size);
+    // The chip says what keys do.
+    let chips = s.ui.get::<SectionChips>(grain_tab::SECTIONS).unwrap();
+    assert_eq!(chips.chips[2].sub, "no filter · glide 150 ms");
+}
+
+#[test]
+fn the_movement_rows_set_the_lfo_and_the_envelope() {
+    let mut s = grain(true);
+    for (row, value) in [
+        (Row::LfoTo, "Off"),
+        (Row::LfoShape, "Sine"),
+        (Row::LfoRate, "1.0 Hz"),
+        (Row::LfoSync, "Off"),
+        (Row::LfoDepth, "+50 %"),
+        (Row::EnvTo, "Off"),
+        (Row::EnvDepth, "+50 %"),
+        (Row::EnvAttack, "1.00 s"),
+        (Row::EnvDecay, "1.00 s"),
+        (Row::EnvSustain, "100 %"),
+    ] {
+        assert_eq!(row_value(&mut s, row), value, "{row:?}");
+    }
+    let note = |s: &GrainSample, k: usize| {
+        let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
+        list.panel.as_ref().unwrap().sections[k].note.clone()
+    };
+    assert_eq!(note(&s, 0), "off: pick what it moves");
+    for (row, delta, value) in [
+        (Row::LfoTo, 1, "Position"),
+        (Row::LfoTo, 3, "Pitch"),
+        (Row::LfoTo, 9, "Cutoff"),
+        (Row::LfoTo, -1, "Spray"),
+        (Row::LfoTo, -2, "Density"),
+        (Row::LfoShape, 5, "Hold"),
+        (Row::LfoShape, 9, "Drift"),
+        (Row::LfoRate, 2, "2.0 Hz"),
+        (Row::LfoRate, -6, "0.20 Hz"),
+        (Row::LfoRate, 8, "4.0 Hz"),
+        // Synced at 120 BPM: the cycle nearest 4 Hz, then a step faster.
+        (Row::LfoSync, 1, "On"),
+        (Row::LfoRate, 0, "1/2 beat"),
+        (Row::LfoRate, -2, "2 beats"),
+        (Row::LfoRate, 1, "1 beat"),
+        (Row::LfoSync, 1, "Off"),
+        (Row::LfoRate, 0, "2.0 Hz"),
+        (Row::LfoDepth, -60, "-10 %"),
+        (Row::LfoDepth, -200, "-100 %"),
+        (Row::EnvTo, 2, "Size"),
+        (Row::EnvDepth, 25, "+75 %"),
+        (Row::EnvAttack, -1, "750 ms"),
+        (Row::EnvAttack, -30, "0 ms"),
+        (Row::EnvDecay, 2, "2.00 s"),
+        (Row::EnvSustain, -10, "50 %"),
+    ] {
+        if delta != 0 {
+            step_apply(&mut s, row, delta);
+        }
+        assert_eq!(row_value(&mut s, row), value, "{row:?} {delta:+}");
+    }
+    assert_eq!(note(&s, 0), "over and over, from each hit");
+    let chips = s.ui.get::<SectionChips>(grain_tab::SECTIONS).unwrap();
+    assert_eq!(chips.chips[1].sub, "LFO to Density · envelope to Size");
+    let g = s.state.region.grain;
+    assert_eq!(
+        (
+            g.lfo.target,
+            g.lfo.shape,
+            g.lfo.rate_hz,
+            g.lfo.beats,
+            g.lfo.depth
+        ),
+        (MotionTarget::Density, LfoShape::Drift, 2.0, None, -1.0)
+    );
+    assert_eq!(
+        (
+            g.env.target,
+            g.env.depth,
+            g.env.attack_ms,
+            g.env.decay_ms,
+            g.env.sustain
+        ),
+        (MotionTarget::Size, 0.75, 0.0, 2000.0, 0.5)
+    );
+    // Every grain mode shows them, and keeps them: a tone's density is its
+    // note.
+    step_apply(&mut s, Row::GrainMode, 3);
+    open(&mut s, View::Movement);
+    let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
+    let names: Vec<&str> = list.rows.iter().map(|r| r.name.as_str()).collect();
+    let motion: Vec<&str> = grain_tab::MOTION_ROWS.iter().map(|r| r.short()).collect();
+    assert!(names.starts_with(&motion), "{names:?}");
+    assert_eq!(s.state.region.grain.lfo, g.lfo);
+    assert_eq!(s.state.region.grain.env, g.env);
+    assert_eq!(row_value(&mut s, Row::LfoTo), "Note");
+}
+
+/// Taps preset `k`'s button (0 to 7) on the Presets section, as the panel
+/// reports it: a step from its line's lit button (or the line's end) to it.
+fn tap_preset(s: &mut GrainSample, k: usize) -> Option<GrainAction> {
+    let row = if k < 4 { Row::Preset } else { Row::PresetMore };
+    open_for(s, row);
+    let index = index(s, row);
+    let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
+    let Look::Choice { on, .. } = list.controls[index].look else {
+        panic!("a preset's line is a choice")
+    };
+    let ev = UiEvent {
+        widget: grain_tab::LIST.into(),
+        kind: EventKind::Step {
+            index,
+            delta: (k % 4) as i32 - on as i32,
+        },
+    };
+    let st = s.state.clone();
+    s.tab.action(&mut s.ui, &ev, &st)
+}
+
+/// The preset buttons' two lines: their names and the one lit (4: none).
+fn preset_lines(s: &GrainSample) -> Vec<(Vec<String>, usize)> {
+    let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
+    [Row::Preset, Row::PresetMore]
+        .iter()
+        .map(|r| match &list.controls[index(s, *r)].look {
+            Look::Choice { options, on, .. } => (options.clone(), *on),
+            other => panic!("{other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn the_presets_section_puts_a_starting_point_on_the_pad() {
+    let mut s = grain(true);
+    let steps = undo_steps(&s.project);
+    let (position, gain) = {
+        let g = &s.state.region.grain;
+        (g.position, g.gain)
+    };
+    open(&mut s, View::Presets);
+    assert_eq!(
+        preset_lines(&s),
+        vec![
+            (
+                vec![
+                    "Glass pad".to_string(),
+                    "Frozen choir".into(),
+                    "Tape stretch".into(),
+                    "Stutter 1/16".into()
+                ],
+                4
+            ),
+            (
+                vec![
+                    "Shimmer fifths".to_string(),
+                    "Grit cloud".into(),
+                    "Swarm".into(),
+                    "Sub drone".into()
+                ],
+                4
+            )
+        ],
+        "none lit: the pad's settings are its own"
+    );
+    assert_eq!(row_value(&mut s, Row::Preset), "—");
+    let a = tap_preset(&mut s, 0).unwrap();
+    apply(&mut s, &a);
+    assert_eq!(row_value(&mut s, Row::Preset), "Glass pad");
+    assert_eq!(row_value(&mut s, Row::Pitch), "+12 st");
+    assert_eq!(preset_lines(&s)[0].1, 0);
+    let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
+    let presets = mpfree_sampler::grain_presets::presets();
+    assert_eq!(
+        list.panel.as_ref().unwrap().sections[0].note,
+        presets[0].about
+    );
+    // Each tap puts on that one, in its mode; the section stays open.
+    for (k, name, mode) in [
+        (2, "Tape stretch", "Stretch"),
+        (3, "Stutter 1/16", "Repeat"),
+        (7, "Sub drone", "Tone"),
+    ] {
+        let a = tap_preset(&mut s, k).unwrap();
+        apply(&mut s, &a);
+        assert_eq!(row_value(&mut s, Row::Preset), name);
+        assert_eq!(grain_tab::value_text(&s.state.region, Row::GrainMode), mode);
+        assert_eq!(s.tab.view(), View::Presets);
+        let lit = preset_lines(&s);
+        assert_eq!(
+            (lit[0].1, lit[1].1),
+            if k < 4 { (k, 4) } else { (4, k - 4) }
+        );
+    }
+    let chips = s.ui.get::<SectionChips>(grain_tab::SECTIONS).unwrap();
+    assert_eq!(chips.chips[3].sub, "Sub drone");
+    assert_eq!(
+        grain_tab::value_text(&s.state.region, Row::Density),
+        "A1 · 55.0 Hz"
+    );
+    assert_eq!(grain_tab::value_text(&s.state.region, Row::Glide), "150 ms");
+    let g = s.state.region.grain;
+    assert_eq!((g.position, g.gain), (position, gain), "kept");
+    // The wheel steps from one to the next; past the last, nothing.
+    let st = s.state.clone();
+    assert!(
+        s.tab.wheel(&mut s.ui, &st, 1).is_none(),
+        "Sub drone is the last"
+    );
+    let a = s.tab.wheel(&mut s.ui, &st, -1).unwrap();
+    apply(&mut s, &a);
+    assert_eq!(row_value(&mut s, Row::Preset), "Swarm");
+    // A turn of any control leaves the preset as a starting point.
+    step_apply(&mut s, Row::Density, 1);
+    assert_eq!(row_value(&mut s, Row::Preset), "—");
+    // The run of taps and turns was one undo step.
+    assert_eq!(undo_steps(&s.project), steps + 2);
+    s.project.undo();
+    s.project.undo();
+    let r = &s.project.pad(PAD).unwrap().layers[0].region;
+    assert_eq!(r.grain_mode, GrainMode::Cloud);
+    assert_eq!(grain_tab::value_text(r, Row::Preset), "—");
+    // From none, a step down picks the last.
+    let r = grain_tab::stepped(r, Row::Preset, -1, 120.0);
+    assert_eq!(grain_tab::value_text(&r, Row::Preset), "Sub drone");
+}
+
+#[test]
+fn the_filter_rows_colour_each_grain_and_a_new_mode_keeps_them() {
+    let mut s = grain(true);
+    for (row, value) in [
+        (Row::Filter, "Off"),
+        (Row::Cutoff, "2.00 kHz"),
+        (Row::Resonance, "0 %"),
+        (Row::FilterSpray, "Off"),
+    ] {
+        assert_eq!(row_value(&mut s, row), value, "{row:?}");
+    }
+    for (row, delta, value) in [
+        (Row::Filter, 1, "Low pass"),
+        (Row::Filter, 9, "High pass"),
+        (Row::Filter, -1, "Band pass"),
+        // A sixth of an octave a step.
+        (Row::Cutoff, 6, "4.00 kHz"),
+        (Row::Cutoff, -12, "1.00 kHz"),
+        (Row::Cutoff, -200, "20.0 Hz"),
+        (Row::Cutoff, 200, "20.00 kHz"),
+        (Row::Cutoff, -18, "2.50 kHz"),
+        (Row::Resonance, 9, "45 %"),
+        (Row::FilterSpray, 10, "±1.5 oct"),
+        (Row::FilterSpray, 20, "±3 oct"),
+    ] {
+        step_apply(&mut s, row, delta);
+        assert_eq!(row_value(&mut s, row), value, "{row:?} {delta:+}");
+    }
+    let f = s.state.region.grain.filter;
+    assert_eq!(
+        f,
+        GrainFilter {
+            kind: GrainFilterKind::Band,
+            cutoff_hz: 2_500.0,
+            resonance: 0.45,
+            spray: 1.0,
+        }
+    );
+    // The choice lights the pass, the chip says it.
+    let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
+    assert!(matches!(
+        &list.controls[index(&s, Row::Filter)].look,
+        Look::Choice { on: 2, .. }
+    ));
+    let chips = s.ui.get::<SectionChips>(grain_tab::SECTIONS).unwrap();
+    assert_eq!(chips.chips[2].sub, "Band pass 2.50 kHz");
+    // The LFO can sweep it.
+    step_apply(&mut s, Row::LfoTo, 6);
+    assert_eq!(row_value(&mut s, Row::LfoTo), "Cutoff");
+    // A stretch keeps the filter but not its spray (nothing random).
+    step_apply(&mut s, Row::GrainMode, 1);
+    assert_eq!(s.state.region.grain.filter, GrainFilter { spray: 0.0, ..f });
+    assert_eq!(s.state.region.grain.lfo.target, MotionTarget::Cutoff);
+    assert!(!Row::FilterSpray.used_in(GrainMode::Stretch));
+    // A repeat and a tone keep all of it.
+    step_apply(&mut s, Row::GrainMode, 1);
+    assert_eq!(row_value(&mut s, Row::FilterSpray), "Off");
+    step_apply(&mut s, Row::FilterSpray, 2);
+    step_apply(&mut s, Row::GrainMode, 1);
+    assert_eq!(row_value(&mut s, Row::GrainMode), "Tone");
+    assert_eq!(row_value(&mut s, Row::FilterSpray), "±0.3 oct");
+}
+
+#[test]
 fn a_tone_plays_a_note_that_steps_by_semitones_and_keeps_its_cycles() {
     let mut s = grain(true);
     step_apply(&mut s, Row::GrainMode, 3);
-    assert_eq!(row_value(&s, Row::GrainMode), "Tone");
+    assert_eq!(row_value(&mut s, Row::GrainMode), "Tone");
     assert!(
         step(&mut s, Row::GrainMode, 1).is_none(),
         "Tone is the last mode"
@@ -508,11 +1015,14 @@ fn a_tone_plays_a_note_that_steps_by_semitones_and_keeps_its_cycles() {
     let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
     assert_eq!(list.rows.len(), 12);
     assert_eq!(
-        list.rows[Row::Density.index_in(GrainMode::Tone).unwrap()].name,
+        list.rows[Row::Density
+            .index_in(View::Grains, GrainMode::Tone)
+            .unwrap()]
+        .name,
         "Density"
     );
-    assert_eq!(row_value(&s, Row::Density), "A2 · 110 Hz");
-    assert_eq!(row_value(&s, Row::Size), "36 ms · 4.0 cycles");
+    assert_eq!(row_value(&mut s, Row::Density), "A2 · 110 Hz");
+    assert_eq!(row_value(&mut s, Row::Size), "36 ms · 4.0 cycles");
     let g = s.state.region.grain;
     assert_eq!(
         (g.timing, g.scan, g.spray),
@@ -532,7 +1042,7 @@ fn a_tone_plays_a_note_that_steps_by_semitones_and_keeps_its_cycles() {
         if delta != 0 {
             step_apply(&mut s, row, delta);
         }
-        assert_eq!(row_value(&s, row), value, "{row:?} {delta:+}");
+        assert_eq!(row_value(&mut s, row), value, "{row:?} {delta:+}");
     }
 }
 
@@ -542,23 +1052,27 @@ fn tempo_sync_locks_density_and_size_to_beats_and_level_sets_the_cloud() {
     let before = undo_steps(&s.project);
     // 120 grains a second of 150 ms at 120 BPM: 60 a beat, 0.3 of a beat.
     step_apply(&mut s, Row::Sync, 1);
-    assert_eq!(row_value(&s, Row::Sync), "Density");
-    assert_eq!(row_value(&s, Row::Density), "32 /beat", "the most a beat");
-    assert_eq!(row_value(&s, Row::Size), "150 ms");
-    step_apply(&mut s, Row::Sync, 1);
-    assert_eq!(row_value(&s, Row::Sync), "Size");
-    assert_eq!(row_value(&s, Row::Density), "120 /s", "free again");
+    assert_eq!(row_value(&mut s, Row::Sync), "Density");
     assert_eq!(
-        row_value(&s, Row::Size),
+        row_value(&mut s, Row::Density),
+        "32 /beat",
+        "the most a beat"
+    );
+    assert_eq!(row_value(&mut s, Row::Size), "150 ms");
+    step_apply(&mut s, Row::Sync, 1);
+    assert_eq!(row_value(&mut s, Row::Sync), "Size");
+    assert_eq!(row_value(&mut s, Row::Density), "120 /s", "free again");
+    assert_eq!(
+        row_value(&mut s, Row::Size),
         "1/4 beat",
         "nearest 0.3 of a beat"
     );
     step_apply(&mut s, Row::Sync, 1);
-    assert_eq!(row_value(&s, Row::Sync), "Both");
+    assert_eq!(row_value(&mut s, Row::Sync), "Both");
     step_apply(&mut s, Row::Density, -3);
-    assert_eq!(row_value(&s, Row::Density), "12 /beat");
+    assert_eq!(row_value(&mut s, Row::Density), "12 /beat");
     step_apply(&mut s, Row::Size, 1);
-    assert_eq!(row_value(&s, Row::Size), "1/2 beat");
+    assert_eq!(row_value(&mut s, Row::Size), "1/2 beat");
     let g = s.project.pad(PAD).unwrap().layers[0].region.grain;
     let t = g.sync.unwrap();
     assert_eq!((t.grains_per_beat, t.size_beats), (Some(12.0), Some(0.5)));
@@ -571,7 +1085,7 @@ fn tempo_sync_locks_density_and_size_to_beats_and_level_sets_the_cloud() {
     assert_eq!(s.state.size_ms(), 500.0);
     let a = qlink(&mut s, 1, 2, false).unwrap();
     apply(&mut s, &a);
-    assert_eq!(row_value(&s, Row::Size), "2 beats");
+    assert_eq!(row_value(&mut s, Row::Size), "2 beats");
     let card = s.ui.get::<KnobCard>(grain_tab::QLINKS[1]).unwrap();
     assert_eq!((card.value.as_str(), card.sub.as_str()), ("2", "beats"));
     let card = s.ui.get::<KnobCard>(grain_tab::QLINKS[2]).unwrap();
@@ -585,19 +1099,23 @@ fn tempo_sync_locks_density_and_size_to_beats_and_level_sets_the_cloud() {
     );
     apply(&mut s, acts.last().unwrap());
     lift(&mut s);
-    assert_eq!(row_value(&s, Row::Size), "4 beats", "the top of the pad");
+    assert_eq!(
+        row_value(&mut s, Row::Size),
+        "4 beats",
+        "the top of the pad"
+    );
     // Level: the cloud's gain, half a dB a step.
     step_apply(&mut s, Row::Level, -4);
-    assert_eq!(row_value(&s, Row::Level), "-2.0 dB");
+    assert_eq!(row_value(&mut s, Row::Level), "-2.0 dB");
     let gain = s.project.pad(PAD).unwrap().layers[0].region.grain.gain;
     assert!((gain - 0.794).abs() < 1e-3, "{gain}");
     step_apply(&mut s, Row::Level, 99);
-    assert_eq!(row_value(&s, Row::Level), "+12.0 dB");
+    assert_eq!(row_value(&mut s, Row::Level), "+12.0 dB");
     // Off frees both, back to what they were.
     step_apply(&mut s, Row::Sync, -3);
-    assert_eq!(row_value(&s, Row::Sync), "Off");
-    assert_eq!(row_value(&s, Row::Size), "150 ms");
-    assert_eq!(row_value(&s, Row::Density), "120 /s");
+    assert_eq!(row_value(&mut s, Row::Sync), "Off");
+    assert_eq!(row_value(&mut s, Row::Size), "150 ms");
+    assert_eq!(row_value(&mut s, Row::Density), "120 /s");
     assert!(s.project.pad(PAD).unwrap().layers[0]
         .region
         .grain
@@ -625,45 +1143,45 @@ fn qlinks_turn_their_four_and_shift_turns_the_sprays() {
     let a = qlink(&mut s, 0, 4, false).unwrap();
     apply(&mut s, &a);
     assert_eq!(
-        row_value(&s, Row::Position),
+        row_value(&mut s, Row::Position),
         "58.0 %",
         "half a per cent a detent"
     );
     let a = qlink(&mut s, 1, 8, false).unwrap();
     apply(&mut s, &a);
     assert_eq!(
-        row_value(&s, Row::Size),
+        row_value(&mut s, Row::Size),
         "300 ms",
         "eight detents double it"
     );
     let a = qlink(&mut s, 1, -3, true).unwrap();
     apply(&mut s, &a);
     assert_eq!(
-        row_value(&s, Row::Size),
+        row_value(&mut s, Row::Size),
         "297 ms",
         "SHIFT: a millisecond a detent"
     );
     let a = qlink(&mut s, 2, -8, false).unwrap();
     apply(&mut s, &a);
-    assert_eq!(row_value(&s, Row::Density), "60 /s");
+    assert_eq!(row_value(&mut s, Row::Density), "60 /s");
     let a = qlink(&mut s, 3, -40, false).unwrap();
     apply(&mut s, &a);
     assert_eq!(
-        row_value(&s, Row::Pitch),
+        row_value(&mut s, Row::Pitch),
         "-36 st",
         "pitch stops at three octaves"
     );
     let a = qlink(&mut s, 0, 5, true).unwrap();
     apply(&mut s, &a);
     assert_eq!(
-        (row_value(&s, Row::Spray), s.tab.row(&s.ui)),
+        (row_value(&mut s, Row::Spray), s.tab.row(&s.ui)),
         ("21 %".into(), Row::Spray),
         "SHIFT + Q-Link 1: spray"
     );
     let a = qlink(&mut s, 3, 15, true).unwrap();
     apply(&mut s, &a);
     assert_eq!(
-        row_value(&s, Row::PitchSpray),
+        row_value(&mut s, Row::PitchSpray),
         "±2.0 st",
         "SHIFT + Q-Link 4: pitch spray"
     );
@@ -685,7 +1203,7 @@ fn the_wheel_steps_the_row_picked() {
     let st = s.state.clone();
     let a = s.tab.wheel(&mut s.ui, &st, -1).unwrap();
     apply(&mut s, &a);
-    assert_eq!(row_value(&s, Row::Scan), "0.125×");
+    assert_eq!(row_value(&mut s, Row::Scan), "0.125×");
     // A tap on a Q-Link's card picks its row for the wheel.
     let ev = UiEvent {
         widget: grain_tab::QLINKS[2].into(),
@@ -697,7 +1215,7 @@ fn the_wheel_steps_the_row_picked() {
     let st = s.state.clone();
     let a = s.tab.wheel(&mut s.ui, &st, 1).unwrap();
     apply(&mut s, &a);
-    assert_eq!(row_value(&s, Row::Density), "150 /s");
+    assert_eq!(row_value(&mut s, Row::Density), "150 /s");
     assert!(
         s.ui.get::<KnobCard>(grain_tab::QLINKS[2]).unwrap().focused,
         "its card shows the wheel is on it"

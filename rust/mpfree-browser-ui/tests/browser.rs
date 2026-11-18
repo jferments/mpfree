@@ -1194,3 +1194,107 @@ fn a_tap_on_a_rows_star_toggles_the_favourite() {
         );
     }
 }
+
+/// The pad map (the Play, Pads and Sequencer redesign's board 8): under a
+/// sound, the kit's bank with the pad picked; a finger on a pad picks it
+/// and plays it while held, as a hit on the MPC's pad; the arrows turn
+/// the bank. Not in a picker, nor under a folder or a kit.
+#[test]
+fn the_pad_map_picks_a_pad_and_plays_it_while_held() {
+    use mpfree_browser_ui::PadMap;
+    let (mut b, _) = browser();
+    let mut ui = mpfree_ui::Ui::new(mpfree_ui::Theme::dark(), Fonts::embedded(), 1280, 800);
+    ui.add("header", mpfree_ui::widgets::Header::app("Play"));
+    mpfree_browser_ui::add(&mut ui, &b).unwrap();
+    ui.show(mpfree_browser_ui::BROWSER_PAGE).unwrap();
+    let mut pads = vec![None; 128];
+    pads[16] = Some("Kick soft".to_string());
+    pads[28] = Some("Volca kick".to_string());
+    b.set_pad_map(Some(PadMap {
+        kit: "Drums' kit".into(),
+        pads,
+        picked: 29,
+    }));
+    // A folder selected: no map.
+    assert!(b.screen().pad_map.is_none());
+    b.go_source(src("Samples"));
+    b.input(Input::Row(0));
+    select(&mut b, "Kick 01.wav");
+    let m = b.screen().pad_map.expect("the map under a sound");
+    assert_eq!(m.title, "Drums' kit · bank B · tap a pad");
+    assert_eq!((m.bank, m.banks), (1, 8));
+    assert_eq!(m.cells[0].label, "B1");
+    assert_eq!(m.cells[0].name.as_deref(), Some("Kick soft"));
+    assert_eq!(m.cells[12].name.as_deref(), Some("Volca kick"));
+    assert!(m.cells[13].picked && m.cells[13].name.is_none());
+    // Painted: a target for each pad, pad 13 (B13) top left.
+    step(&mut ui, &mut b);
+    let mut c = SoftCanvas::new(1280, 800);
+    ui.paint(&mut c);
+    let targets: Vec<_> = ui
+        .targets()
+        .into_iter()
+        .filter(|t| t.widget == BROWSER && t.target.id == "pad-map")
+        .collect();
+    assert_eq!(targets.len(), 16);
+    assert_eq!(targets[12].target.label, "B13 Volca kick");
+    let (t13, t1) = (targets[12].target.rect, targets[0].target.rect);
+    assert!(t13.y < t1.y && t13.x == t1.x, "pad 13 over pad 1");
+    assert!(t1.h >= 50, "a fingertip's pad: {}", t1.h);
+    // A finger on B13: picked and played while it is down, let go on the
+    // lift.
+    b.take_actions();
+    let r = ui.rect_of(BROWSER).unwrap();
+    let (x, y) = BrowserView::map_point(r, &b.screen(), 12).unwrap();
+    ui.touch(1, Touch::Down, x, y);
+    assert_eq!(
+        step(&mut ui, &mut b),
+        [BrowseAction::PadPress {
+            pad: 28,
+            down: true
+        }]
+    );
+    ui.touch(1, Touch::Up, x, y);
+    assert_eq!(
+        step(&mut ui, &mut b),
+        [BrowseAction::PadPress {
+            pad: 28,
+            down: false
+        }]
+    );
+    // The arrows turn the bank, round from H to A; a pad picked in
+    // another bank brings that bank.
+    b.input(Input::MapBank(1));
+    assert_eq!(b.screen().pad_map.unwrap().bank, 2);
+    b.input(Input::MapBank(-3));
+    assert_eq!(b.screen().pad_map.unwrap().bank, 7);
+    b.input(Input::MapPad { pad: 3, down: true });
+    b.input(Input::MapPad {
+        pad: 0,
+        down: false,
+    });
+    assert_eq!(
+        b.take_actions(),
+        [
+            BrowseAction::PadPress {
+                pad: 115,
+                down: true
+            },
+            BrowseAction::PadPress {
+                pad: 115,
+                down: false
+            }
+        ]
+    );
+    let mut pads = vec![None; 128];
+    pads[3] = Some("Hat".to_string());
+    b.set_pad_map(Some(PadMap {
+        kit: "Drums' kit".into(),
+        pads,
+        picked: 3,
+    }));
+    assert_eq!(b.screen().pad_map.unwrap().bank, 0);
+    // A kit selected, or no kit on the pads: no map.
+    b.set_pad_map(None);
+    assert!(b.screen().pad_map.is_none());
+}

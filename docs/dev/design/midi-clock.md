@@ -71,7 +71,7 @@ A clock that stops arriving for 0.5 s lets go of the tempo. The transport plays 
 
 The status line gets a "following a clock" part once a count isn't 0: jumps to the leader's position, clocks lost while playing, and commands the transport's queue refused.
 
-**Timing.** Starting takes the pulse's own tick, so the first note plays, a period late at most, and the loop closes that. Bytes that are read once a period seem to come at the period's start, up to a period after they did. Followed that way, the transport plays about half a period behind the leader (1.5 ms at 128 frames), within a period. Stamping the bytes half a period earlier would take that off.
+**Timing.** Starting takes the pulse's own tick, so the first note plays, a period late at most, and the loop closes that. The app reads the bytes once a period, at its top, so they came during the period before, up to a period before it read them. Stamped with the period's start, the transport played about half a period behind the leader (1.5 ms at 128 frames). The app stamps them half a period earlier (`follow::read_stamp`, through `TimeHost::clock_read`), when they came on average, so the transport sits on the leader's beats, within half a period (18 Nov 2026).
 
 **Measured** (the tests, 44.1 kHz):
 
@@ -79,7 +79,7 @@ The status line gets a "following a clock" part once a count isn't 0: jumps to t
 |---|---|
 | Steady 128 BPM, clock sent before Start, exact stamps, periods of 16 to 1024 frames | within a tick of the leader after four beats |
 | No clock before Start (100 BPM, the transport at 120) | within a tick after six beats |
-| Bytes read once a period, 64 to 256 frames | within a period; 128 frames: about 3 ticks behind |
+| Bytes read once a period, 64 to 256 frames, stamped half a period back | within half a period, centred (0.02 ticks behind on average; stamped at the period's start: 1.5 ticks behind at 64 frames, half a period) |
 | The leader's tempo steps by +1.5 %, +10 % and -25 % | at most about 7, 50 and 170 ticks off, with no jump; within a tick again after 4, 5 and 8 beats |
 
 **Not yet.** The app's wiring (the MIDI thread's M4). Measuring it on the MPC with a real leader. A leader that changes tempo in big steps while playing is off for a few beats; a quicker change detector would need to know the period's jitter.
