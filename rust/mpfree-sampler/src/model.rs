@@ -6,7 +6,10 @@
 use std::sync::Arc;
 
 pub use mpfree_grain::{
+    FilterKind as GrainFilterKind, GrainEnv, GrainFilter, GrainLfo, LfoShape, MotionTarget,
     Params as GrainParams, SprayShape as GrainSprayShape, TempoSync, Window as GrainWindow,
+    CUTOFF_MAX_HZ as GRAIN_CUTOFF_MAX_HZ, CUTOFF_MIN_HZ as GRAIN_CUTOFF_MIN_HZ,
+    FILTER_SPRAY_OCTAVES as GRAIN_FILTER_SPRAY_OCTAVES,
 };
 
 use crate::dsp::{as_i16, Sample};
@@ -473,6 +476,21 @@ pub enum GrainMode {
     Tone,
 }
 
+/// What else a key moves on a granular region besides the grains' pitch
+/// (a Tone region's note): a key a semitone up makes the grains a
+/// semitone's worth shorter (`size`, so each holds as much of the sound
+/// at its pitch, as a sampler's whole sound moves up) and the scan that
+/// much faster (`scan`, as a tape played faster). Off, the keys move the
+/// pitch alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GrainKeys {
+    pub size: bool,
+    pub scan: bool,
+}
+
+/// The longest glide a granular region takes to a new key, ms.
+pub const GRAIN_GLIDE_MAX_MS: f32 = 5_000.0;
+
 /// What a pad hit does with a region.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlayMode {
@@ -907,6 +925,14 @@ pub struct Region {
     /// Which controls the Grain page shows for `grain`, and where it
     /// started them.
     pub grain_mode: GrainMode,
+    /// What the keys move besides the grains' pitch.
+    pub grain_keys: GrainKeys,
+    /// How long, in ms, a granular voice takes to glide to a new key (0,
+    /// none; up to [`GRAIN_GLIDE_MAX_MS`]): on a mono pad (polyphony 1) a
+    /// key played while one holds moves the playing cloud there, without
+    /// a new start; with more voices each new one glides from the pad's
+    /// last key.
+    pub grain_glide_ms: f32,
     /// Plays at the project tempo (not in granular mode, whose grains have
     /// their own tempo sync).
     pub warp: Option<Warp>,
@@ -1046,6 +1072,8 @@ impl Region {
             mode: PlayMode::OneShot,
             grain: GrainParams::default(),
             grain_mode: GrainMode::Cloud,
+            grain_keys: GrainKeys::default(),
+            grain_glide_ms: 0.0,
             warp: None,
             slices: Vec::new(),
             slice_sets: Vec::new(),
@@ -1168,6 +1196,9 @@ impl Region {
         if !grain_ok(&self.grain) {
             return Err(ModelError::BadRegion("grain settings"));
         }
+        if !(0.0..=GRAIN_GLIDE_MAX_MS).contains(&self.grain_glide_ms) {
+            return Err(ModelError::BadRegion("grain glide"));
+        }
         if let Some(w) = &self.warp {
             if !WARP_BPM.contains(&w.bpm) {
                 return Err(ModelError::BadRegion("warp tempo"));
@@ -1193,7 +1224,19 @@ fn grain_ok(g: &GrainParams) -> bool {
         g.reverse,
         g.spread,
         g.gain,
+        g.lfo.rate_hz,
+        g.lfo.depth,
+        g.env.attack_ms,
+        g.env.decay_ms,
+        g.env.sustain,
+        g.env.depth,
+        g.filter.cutoff_hz,
+        g.filter.resonance,
+        g.filter.spray,
     ];
+    if g.lfo.beats.is_some_and(|b| !b.is_finite()) {
+        return false;
+    }
     let sync_ok = g.sync.is_none_or(|t| {
         t.frames_per_beat.is_finite()
             && t.grains_per_beat.is_none_or(f32::is_finite)

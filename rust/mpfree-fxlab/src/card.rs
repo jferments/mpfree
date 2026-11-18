@@ -63,6 +63,7 @@ pub const MOVES_FREQUENCIES: &[&str] = &[
     "mpfree.fx.pitch_correct",
     "mpfree.fx.harmonizer",
     "mpfree.fx.granulator",
+    "mpfree.grains",
 ];
 
 /// A fresh device for `entry` with `preset` applied.

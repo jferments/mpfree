@@ -112,6 +112,192 @@ fn a_granular_pad_plays_the_grain_engine_with_tune_and_reverse_folded_in() {
 }
 
 #[test]
+fn the_cloud_says_its_spray_as_moved_and_when_it_is_thinned() {
+    let s = ramp(441_000);
+    // 2 s grains, 80 a second: 160 wanted at once, more than a voice keeps.
+    let mut pad = granular_pad(
+        &s,
+        GrainParams {
+            position: 0.5,
+            size_ms: 2_000.0,
+            density: 80.0,
+            spray: 0.2,
+            lfo: GrainLfo {
+                shape: LfoShape::Square,
+                rate_hz: 0.25,
+                beats: None,
+                target: MotionTarget::Spray,
+                depth: 0.5,
+            },
+            ..GrainParams::default()
+        },
+    );
+    let mut e = engine_for(&[(0, pad.clone())], &s, 4);
+    assert_eq!(e.cloud_of(0, 0), None, "nothing plays");
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 100,
+    });
+    run(&mut e, 22_050, 128);
+    let c = e.cloud_of(0, 0).expect("it plays");
+    // The square's first half: the spray moved up by half.
+    assert!((c.spray - 0.7).abs() < 1e-6, "{c:?}");
+    assert!(c.thinned, "{c:?}");
+    assert_eq!(e.cloud_of(0, 1), None, "no such layer");
+    // 100 ms grains at the same density fit.
+    pad.layers[0].region.grain.size_ms = 100.0;
+    let mut e = engine_for(&[(0, pad)], &s, 4);
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 100,
+    });
+    run(&mut e, 22_050, 128);
+    assert!(!e.cloud_of(0, 0).expect("it plays").thinned);
+}
+
+#[test]
+fn key_tracking_moves_the_grains_size_and_the_scan_with_the_pitch() {
+    let s = ramp(44_100);
+    let base = GrainParams {
+        position: 0.5,
+        size_ms: 10.0,
+        density: 1.0,
+        scan: 0.25,
+        ..GrainParams::default()
+    };
+    for (keys, want) in [
+        (
+            GrainKeys {
+                size: true,
+                scan: false,
+            },
+            GrainParams {
+                pitch: 12.0,
+                size_ms: 5.0,
+                ..base
+            },
+        ),
+        (
+            GrainKeys {
+                size: false,
+                scan: true,
+            },
+            GrainParams {
+                pitch: 12.0,
+                scan: 0.5,
+                ..base
+            },
+        ),
+    ] {
+        let mut pad = granular_pad(&s, base);
+        pad.layers[0].region.tune_cents = 1200;
+        pad.layers[0].region.grain_keys = keys;
+        let mut e = engine_for(&[(0, pad)], &s, 4);
+        e.apply(Event::NoteOn {
+            pad: 0,
+            velocity: 127,
+        });
+        let (l, _) = run(&mut e, 600, 128);
+        let reference = reference(&s, want, 600);
+        for k in 0..600 {
+            assert!(
+                (l[k] - C * reference[k]).abs() < 1e-6,
+                "{keys:?} frame {k}: {} vs {}",
+                l[k],
+                C * reference[k]
+            );
+        }
+        assert!(l[100] != 0.0);
+    }
+}
+
+/// A keygroup pad over the whole keyboard (root 60) whose scan follows the
+/// key, gliding a second to each new key, with `voices` voices.
+fn gliding_keys(s: &Source, voices: u8) -> Engine {
+    let mut pad = granular_pad(
+        s,
+        GrainParams {
+            scan: 0.25,
+            ..GrainParams::default()
+        },
+    );
+    pad.keys = Some(Keys::all(60));
+    pad.polyphony = voices;
+    let r = &mut pad.layers[0].region;
+    r.grain_keys.scan = true;
+    r.grain_glide_ms = 1000.0;
+    engine_for(&[(0, pad)], s, 8)
+}
+
+/// How far the playhead moves over the next `frames`, a frame (the
+/// scan's speed), and how many voices play.
+fn scan_speed(e: &mut Engine, frames: usize) -> (f64, usize) {
+    let at = |e: &Engine| e.playheads().map(|h| h.2).max().unwrap_or(0);
+    let from = at(e);
+    run(e, frames, 128);
+    let n = e.playheads().count();
+    ((at(e) as f64 - from as f64) / frames as f64, n)
+}
+
+#[test]
+fn a_mono_pad_glides_its_cloud_to_each_new_key() {
+    let s = ramp(441_000);
+    let mut e = gliding_keys(&s, 1);
+    e.apply(Event::Key {
+        note: 60,
+        velocity: 100,
+    });
+    let (v, n) = scan_speed(&mut e, 4_410);
+    assert!((v - 0.25).abs() < 0.01 && n == 1, "{v} {n}");
+    // An octave up while it holds: the same voice, sliding there over a
+    // second, the scan's speed twice as fast at the end. The slide is even
+    // in semitones, so the speed rises by a power of two: on average 0.299
+    // over the first half second and 0.423 over the second.
+    e.apply(Event::Key {
+        note: 72,
+        velocity: 100,
+    });
+    let (v, n) = scan_speed(&mut e, 22_050);
+    assert!((v - 0.299).abs() < 0.01 && n == 1, "first half: {v} {n}");
+    let (v, n) = scan_speed(&mut e, 22_050);
+    assert!((v - 0.423).abs() < 0.01 && n == 1, "second half: {v} {n}");
+    let (v, _) = scan_speed(&mut e, 4_410);
+    assert!((v - 0.5).abs() < 0.01, "there: {v}");
+    // Letting go of the first key leaves it playing; the second's stops it.
+    e.apply(Event::KeyOff { note: 60 });
+    run(&mut e, 4_410, 128);
+    assert!(e.playheads().count() == 1);
+    e.apply(Event::KeyOff { note: 72 });
+    run(&mut e, 44_100, 128);
+    assert_eq!(e.playheads().count(), 0);
+}
+
+#[test]
+fn with_more_voices_each_new_one_glides_from_the_last_key() {
+    let s = ramp(441_000);
+    let mut e = gliding_keys(&s, 4);
+    e.apply(Event::Key {
+        note: 72,
+        velocity: 100,
+    });
+    let (v, _) = scan_speed(&mut e, 4_410);
+    assert!((v - 0.5).abs() < 0.01, "the first key plays as it is: {v}");
+    e.apply(Event::KeyOff { note: 72 });
+    run(&mut e, 44_100, 128);
+    assert_eq!(e.playheads().count(), 0);
+    // The next starts from the key before and slides down to its own.
+    e.apply(Event::Key {
+        note: 60,
+        velocity: 100,
+    });
+    let (v, _) = scan_speed(&mut e, 4_410);
+    assert!(v > 0.42, "it starts near the last key: {v}");
+    run(&mut e, 44_100, 128);
+    let (v, _) = scan_speed(&mut e, 4_410);
+    assert!((v - 0.25).abs() < 0.01, "and lands on its own: {v}");
+}
+
+#[test]
 fn a_tone_pads_tune_moves_its_note_not_its_grains_pitch() {
     let s = ramp(44_100);
     // A2 with grains four cycles long, regular, frozen.
@@ -359,6 +545,46 @@ fn bursts(x: &[f32]) -> Vec<usize> {
     (0..x.len())
         .filter(|&i| x[i] != 0.0 && (i == 0 || x[i - 1] == 0.0))
         .collect()
+}
+
+#[test]
+fn a_pads_lfo_moves_its_grains_with_the_tempo_and_starts_again_each_hit() {
+    let s = ramp(44_100);
+    let g = GrainParams {
+        position: 0.5,
+        lfo: GrainLfo {
+            shape: LfoShape::Square,
+            rate_hz: 1.0,
+            beats: Some(1.0),
+            target: MotionTarget::Position,
+            depth: 0.25,
+        },
+        ..GrainParams::default()
+    };
+    let mut e = engine_for(&[(0, granular_pad(&s, g))], &s, 4);
+    let head = |e: &Engine| e.playheads().next().map(|h| h.2);
+    let hit = |e: &mut Engine| {
+        e.apply(Event::NoteOn {
+            pad: 0,
+            velocity: 100,
+        })
+    };
+    // 120 BPM: up a quarter of the sound for half a beat, then down.
+    hit(&mut e);
+    run(&mut e, 5_000, 128);
+    assert_eq!(head(&e), Some(33_075));
+    run(&mut e, 8_000, 128);
+    assert_eq!(head(&e), Some(11_025));
+    // At 60 BPM the beat is twice as long; a new hit starts the LFO again.
+    e.apply(Event::NoteOff { pad: 0 });
+    run(&mut e, 22_050, 128);
+    assert_eq!(head(&e), None, "the first hit is over");
+    e.set_tempo(60.0);
+    hit(&mut e);
+    run(&mut e, 20_000, 128);
+    assert_eq!(head(&e), Some(33_075));
+    run(&mut e, 5_000, 128);
+    assert_eq!(head(&e), Some(11_025));
 }
 
 #[test]
