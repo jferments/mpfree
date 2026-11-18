@@ -1565,6 +1565,25 @@ pub fn all(rate: u32) -> Vec<Case> {
             ],
         )
     }));
+    // The same cloud in Tape and in Lo-fi (step C5).
+    for (name, q) in [
+        ("Grains FX (dense, tape)", 1.0),
+        ("Grains FX (dense, lo-fi)", 2.0),
+    ] {
+        v.push(measured(|| {
+            effect(
+                name,
+                rate,
+                Box::new(GrainNode::new(5)),
+                &[
+                    (mpfree_grain::node::param::MIX, 100.0),
+                    (mpfree_grain::node::param::DENSITY, 200.0),
+                    (mpfree_grain::node::param::SPRAY, 50.0),
+                    (mpfree_grain::node::param::QUALITY, q),
+                ],
+            )
+        }));
+    }
     v.push(measured(|| {
         mixer(
             "Mixer, idle (63 strips, nothing playing)",
