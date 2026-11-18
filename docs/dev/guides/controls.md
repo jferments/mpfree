@@ -147,8 +147,8 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 
 - **`smp-grain-cloud/position`**: drag along the sound for where the grains play from. *Test:* `the_grain_tab_sets_the_grains_and_draws_the_cloud_the_audio_thread_fills`.
 - **`smp-grain-xy/xy`**: drag for position (across) and grain size (up); with the size synced, its length in beats.
-- **`smp-grain-list/knob`**: the Cloud section's Scan, Spray, Pitch spray, Reverse, Stereo and Level. Drag up or down. *Test:* `tempo_sync_locks_density_and_size_to_beats_and_level_sets_the_cloud`.
-- **`smp-grain-list/less`**, **`smp-grain-list/more`**: the ‹ › of the Shape section's Mode, Window, Pitch quantise and Tempo sync (density, size or both on the beat). *Test:* `the_mode_row_reaches_granular_from_a_pad_with_no_loop`.
+- **`smp-grain-list/knob`**: the Cloud section's Scan, Spray, Size spray, Pitch spray, Level spray, Timing, Reverse, Stereo and Level, and the Shape section's Shape (the grains' window, 0 to 100 %). A grain mode other than Cloud shows only its own. Drag up or down. *Test:* `tempo_sync_locks_density_and_size_to_beats_and_level_sets_the_cloud`.
+- **`smp-grain-list/less`**, **`smp-grain-list/more`**: the ‹ › of Cloud's Spray shape and the Shape section's Mode, Grain mode (Cloud, Stretch, Repeat, Tone), Pitch quantise and Tempo sync (density, size or both on the beat). *Test:* `the_mode_row_reaches_granular_from_a_pad_with_no_loop`.
 
 ### Rec and Auto
 

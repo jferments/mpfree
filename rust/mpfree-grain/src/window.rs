@@ -20,6 +20,71 @@ pub enum Window {
     /// Percussive: a 2 % attack, then an exponential decay to zero.
     /// `decay` is the steepness (1 to 20).
     Exponential { decay: f32 },
+    /// One control from square to plucked, `shape` 0 to 1 (the Shape
+    /// knob): square at 0 (1 % linear fades), the fades lengthening to a
+    /// triangle at 0.4, its corners rounding to Hann at 0.6, the peak
+    /// moving late to a swell at 0.8 (slow attack, fast decay: peak at
+    /// 92 %), then sweeping back to a pluck at 1 (fast attack, slow decay:
+    /// peak at 4 %). See [`shaped`].
+    Shape { shape: f32 },
+}
+
+impl Window {
+    /// Where this window sits on the Shape control (0 to 1): exactly for a
+    /// [`Window::Shape`], Hann and a trapezoid; the nearest for a Tukey
+    /// window (the trapezoid with its fades' length) and the exponential
+    /// (a pluck).
+    pub fn shape_value(self) -> f32 {
+        let trapezoid = |ramp: f32| ((ramp.clamp(0.01, 0.5) - 0.01) / 0.49 * 0.4).clamp(0.0, 0.4);
+        match self {
+            Window::Shape { shape } => clean_shape(shape),
+            Window::Hann => 0.6,
+            Window::Trapezoid { ramp } => trapezoid(ramp),
+            Window::Tukey { taper } if taper >= 1.0 => 0.6,
+            Window::Tukey { taper } => trapezoid(taper * 0.5),
+            Window::Exponential { .. } => 1.0,
+        }
+    }
+}
+
+/// A Shape value in 0 to 1 (Hann's for one that isn't a number).
+fn clean_shape(shape: f32) -> f32 {
+    if shape.is_finite() {
+        shape.clamp(0.0, 1.0)
+    } else {
+        0.6
+    }
+}
+
+/// [`Window::Shape`]'s window at `x` in 0..1.
+pub fn shaped(shape: f32, x: f32) -> f32 {
+    let s = clean_shape(shape);
+    let x = x.clamp(0.0, 1.0);
+    if s <= 0.4 {
+        // Square to triangle: linear fades from 1 % to half the grain.
+        let r = 0.01 + 0.49 * (s / 0.4);
+        return (x / r).min((1.0 - x) / r).clamp(0.0, 1.0);
+    }
+    if s <= 0.6 {
+        // Triangle to Hann.
+        let u = (s - 0.4) / 0.2;
+        let tri = 1.0 - (2.0 * x - 1.0).abs();
+        let hann = 0.5 - 0.5 * (2.0 * PI * x).cos();
+        return (1.0 - u) * tri + u * hann;
+    }
+    // Hann to swell (peak 0.5 to 0.92), then the peak sweeps back to a
+    // pluck (0.92 to 0.04): a raised-cosine rise to the peak and fall
+    // after it, which is Hann when the peak is in the middle.
+    let p = if s <= 0.8 {
+        0.5 + 0.42 * (s - 0.6) / 0.2
+    } else {
+        0.92 - 0.88 * (s - 0.8) / 0.2
+    };
+    if x < p {
+        0.5 - 0.5 * (PI * x / p).cos()
+    } else {
+        0.5 + 0.5 * (PI * (x - p) / (1.0 - p)).cos()
+    }
 }
 
 /// The window's value at `x` in 0..1. Every shape is 0 at both ends, so
@@ -42,6 +107,7 @@ pub fn value(shape: Window, x: f32) -> f32 {
             let r = ramp.clamp(0.01, 0.5);
             (x / r).min((1.0 - x) / r).clamp(0.0, 1.0)
         }
+        Window::Shape { shape } => shaped(shape, x),
         Window::Exponential { decay } => {
             let a = 0.02;
             let k = decay.clamp(1.0, 20.0);

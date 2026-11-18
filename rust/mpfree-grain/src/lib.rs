@@ -29,11 +29,13 @@ pub mod rng;
 pub mod voice;
 pub mod window;
 
-pub use buffer::{Clip, GrainSource, LiveBuffer};
+pub use buffer::{Aim, Clip, GrainSource, LiveBuffer};
 pub use fx::GrainFx;
 pub use node::GrainNode;
 pub use rng::Rng;
-pub use voice::{quantise, Budget, GrainView, GrainVoice, Params, Stats, TempoSync, MAX_GRAINS};
+pub use voice::{
+    quantise, Budget, GrainView, GrainVoice, Params, SprayShape, Stats, TempoSync, MAX_GRAINS,
+};
 pub use window::{Window, WindowTable};
 
 /// Four-point Hermite interpolation between `x1` and `x2`, `t` in 0..1.

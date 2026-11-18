@@ -160,6 +160,20 @@ impl Default for Reach {
 }
 
 impl Reach {
+    /// Its two numbers, to keep elsewhere ([`Reach::from_parts`] makes it
+    /// again): a grain keeps them in its `mpfree_grain::Aim`.
+    pub fn parts(self) -> (u32, u32) {
+        (self.step, self.taps as u32)
+    }
+
+    /// The reach whose [`Reach::parts`] these were.
+    pub fn from_parts(step: u32, taps: u32) -> Reach {
+        Reach {
+            step,
+            taps: i64::from(taps),
+        }
+    }
+
     pub fn new(r: f32) -> Reach {
         let r = r.clamp(1.0, MAX_STRETCH);
         let one = (STEPS << FRAC_BITS) as f64;
