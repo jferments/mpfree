@@ -172,9 +172,11 @@ pub enum To {
     #[default]
     Unsaid,
     /// Played the armed track (its number from 0): as a note, or as the
-    /// kit pad (0 to 15) that note plays.
+    /// kit pad that note plays (0 is A1, up to 127, H16).
     Track { track: u8, pad: Option<u8> },
-    /// The armed track plays a kit and no pad has this note.
+    /// The armed track plays its 16 pads (the synth, or its own
+    /// instrument, without a pad layout) and none has this note. (A kit's
+    /// 128 pads have every note.)
     NoPad { track: u8 },
     /// A route (the Routing section's Tracks by channel) played this track
     /// (from 0), whichever track is armed.

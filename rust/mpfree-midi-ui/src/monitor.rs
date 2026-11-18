@@ -32,7 +32,7 @@ use mpfree_controller::mpc_one::{button_name, ControlEvent};
 use mpfree_midi::monitor::{
     Dir, Event, Filter, Kind, Monitor, Mpc, Seen, Steady, To, What, MPC, SYSTEM,
 };
-use mpfree_midi::profile::{cc_name, Profile};
+use mpfree_midi::profile::{cc_name, pad_name, Profile};
 use mpfree_midi::{Msg, PortId};
 use mpfree_mixer_ui::{IoInput, IoReply, IoSection};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Theme, Touch, Widget};
@@ -465,7 +465,10 @@ pub(crate) fn went_to(m: &IoModel, to: To) -> (String, Went) {
         To::Track {
             track: t,
             pad: Some(p),
-        } => (format!("{}, pad {}", track(t), p + 1), Went::Took),
+        } => (
+            format!("{}, pad {}", track(t), pad_name(usize::from(p))),
+            Went::Took,
+        ),
         To::NoPad { track: t } => (format!("nothing: no pad on {}", track(t)), Went::Nothing),
         To::Routed { track: t } => (format!("{}, by its route", track(t)), Went::Took),
         // Thru sends only while MIDI out is on.
@@ -2014,7 +2017,7 @@ mod tests {
                 "ignored",
                 "Learn: Cutoff (Filter, Bass)",
                 "Bass, the armed track",
-                "Drums, pad 1",
+                "Drums, pad A1",
             ]
         );
         assert_eq!(went[5].1, Went::Learn);
