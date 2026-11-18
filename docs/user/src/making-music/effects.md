@@ -105,11 +105,11 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | Effect | What it does |
 |---|---|
 | **Compressor** | Evens out levels and adds punch or glue. **Attack** is how long it takes to get most of the way down (63 %, the usual convention) and **Release** how long to come most of the way back. **Style** sets how it moves: **Clean** does exactly what the knobs say; **Opto** eases in and comes back slowly after long, heavy compression, for smooth levelling (vocals, bass); **Bus** comes back quickly after a hit and slower under a steady mix, for glue; **FET** adds a little grit as it turns down, more the harder it works, for drums and aggressive vocals. **Auto makeup** turns it back up by what it takes from a sound at a mix level, so comparing it with bypass is fair (**Makeup** still adds on top). **Range** limits how far it turns down; **Link** at 100 % moves both sides together, lower lets each side follow itself. It can be keyed from another strip, for side-chain pumping. **SC filter** keeps low end (a kick) from pushing it, so a whole mix doesn't pump; **Detect** picks **Peak**, which catches every hit, or **RMS**, which follows the loudness and is smoother on a bus or a vocal. |
-| **Ducker** | The pump: turns the sound down on each kick (keyed from another strip) or on every 1/16, 1/8, 1/4, 1/2 or bar of the tempo, and brings it back on a curve you shape. |
+| **Ducker** | The pump: turns the sound down on each kick (keyed from another strip) or on every 1/16, 1/8, 1/4, 1/2, bar, dotted or triplet beat of the tempo, and brings it back on a curve you shape. |
 | **Transient shaper** | More or less punch at the start of each hit and more or less ring after it, at any level, with no threshold to set. |
 | **Limiter** | A brick wall: nothing gets past the ceiling. **True peak** also catches the peaks a converter makes between samples; **Auto release** keeps a loud mix from pumping. See [The Limiter](#the-limiter). |
-| **Gate** | Silences (or turns down) what falls under the threshold, so drums stop ringing. It can open from another strip's sound, for rhythmic gating. |
-| **De-esser** | Turns down harsh "s" and "t" sounds. **Listen** plays only what it hears, to find the right frequency. |
+| **Gate** | Silences (or turns down) what falls under the threshold, so drums stop ringing; as an **Expander** it turns quiet sound down gently instead. It can open from another strip's sound, for rhythmic gating. |
+| **De-esser** | Turns down harsh "s" and "t" sounds ([more](#the-de-esser)). **Listen** plays only what it hears, to find the right frequency. |
 | **Multiband comp** | Three compressors, on the lows, mids and highs ([more](#the-multiband-comp)). |
 | **Channel strip** | A gate, a compressor and an EQ in one, as on a mixing desk. Its first page, **Main**, shows the three as sections, each with its switch, then the **Signal path** (**Order**: the EQ before or after the gate and compressor) and **Output**; then a page each for the gate, the compressor and the EQ. |
 | **EQ** | Shapes the tone with up to eight bands (each a bell, a shelf or a notch) and low and high cuts: cut mud, add air, take out a ring, thin out a sound. Its page is a graph with a dot for each band (see [The EQ's page](#the-eqs-page)); each band can be on (**ON**), switched off with its settings kept (**OFF**), or removed. Bands 1 to 4 start on and bands 5 to 8 start removed. |
@@ -302,12 +302,57 @@ It holds the sound back about 1.8 ms to see the peaks coming, and the mixer hold
 > [!NOTE]
 > Projects saved before this change sound a little different through the Limiter: pushed hard, it is cleaner on bass and a little quieter (about 0.6 dB on a mix pushed 6 dB), and Auto release now acts.
 
+### The De-esser
+
+**Freq** is where the "s" sounds start; the De-esser listens above it, on whichever side is louder, so a doubled vocal panned to one side is caught as well as one in the centre. **Threshold** is how far that band has to stand out: with **Detect** on **Relative** (the default) it is measured against the whole sound, so it works the same on a quiet take and a loud one; **Absolute** uses the band's own level. **Range** is the most it turns down. **Split** turns down only what is above Freq and never touches the voice under it; **Wide** turns the whole sound down, which some voices like better. **Listen** plays only the band it hears, to find the right Freq.
+
+It holds the sound back 2 ms so it is already turning down when each "s" arrives; the mixer holds everything else back to match.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through the De-esser: in Split it no longer lifts the voice under Freq, it turns the "s" down as far as Range says (it used to fall well short), it catches each "s" from its start, and an "s" on one side is turned down as much as one in the centre.
+
 ### The Multiband comp
 
 **Low | mid** and **Mid | high** split the sound into three bands, and each band has its own **Threshold**, **Ratio** and **Gain**; **Attack** and **Release** are shared and mean the same as on the Compressor (most of the way, 63 %, in the time shown). **Solo** plays one band alone while you set it up. **Mix** blends in the sound before compression for parallel squash, and any Mix stays even across the bands (the blend no longer dips at the split points). **Auto makeup** turns each band back up by what it takes from a sound at a mix level, so comparing it with bypass is fair; it is off at first and on in every preset, and **Gain** still adds on top.
 
 > [!NOTE]
 > Projects saved before this change sound a little different through the Multiband comp: it compresses as far as its curve says (it used to fall short, and react about 1.7 times slower than Attack showed), a Mix under 100 % no longer dips around the split points, and turning a threshold or ratio is smooth. The Drum crush preset now uses Auto makeup instead of +6 dB on each band.
+
+### The Gate
+
+**Threshold** is the level that opens it. It shuts again 4 dB under, so a sound hovering at the threshold doesn't flutter, once the sound has stayed under that for **Hold**. Hold is at least 20 ms even at 0, so a bass note never shuts it between the peaks of its waves. **Attack** is how fast it opens; it looks 1 ms ahead, so the front of a hit is kept. **Release** is how long it takes to fall to **Range**, the most it turns down (at the bottom, silence). Moving Range while the gate is shut takes effect at once.
+
+**Mode** picks how it turns down. **Gate** shuts all the way to Range. **Expander** turns the sound down gradually under the threshold, by **Ratio**: at 2, a sound 3 dB under the threshold comes out 6 dB under, at most down to Range. It is a gentler clean-up for guitars, vocals and room noise; the Soft cleanup preset uses it.
+
+**Key HP** and **Key LP** filter what it listens to, so a kick's thump or a hi-hat's hiss doesn't open it, and **Key** picks the strip's own sound or another strip's (**Sidechain**), for rhythmic gating. **Listen** plays what it listens to, so you can set the filters by ear.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through the Gate: with Hold under 20 ms it now stays open through low notes (it used to flutter on bass under 100 Hz), it shuts closer to 4 dB under the threshold, and a Range moved while it is shut takes effect. Saved gates stay gates.
+
+### The Channel strip
+
+The **Gate**, **Comp** and **EQ** switches fade their stage in or out over 20 ms, so switching one mid-note doesn't click; the gate comes back on open and shuts from there if the sound is quiet. Changing **Order** dips the sound for a moment (about 20 ms) and swaps the stages in the gap. The compressor has the Compressor's **Style** (Clean, Opto, Bus, FET) and **Auto makeup**, which turns it back up by what it takes from a sound at a mix level, so comparing with bypass is fair; Auto makeup is off at first and on in every preset. Its gate holds open through low notes as the Gate does.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through the Channel strip: its gate stays open through bass notes and shuts closer to 4 dB under its threshold. They keep the Clean style and their own Makeup. The presets now use Auto makeup instead of their own makeup, and a style each: Vocal and Bass Opto, Snare FET, Gentle glue Bus, Kick Clean.
+
+### The Ducker
+
+**Source** picks what makes it duck. On **Sidechain** it listens to another strip (usually the kick) and ducks when that goes over **Threshold**; **Key HP** and **Key LP** filter what it listens to, so with Key LP around 120 Hz it ducks on the kick of a whole drum bus and not on the hats (the Kick from drums preset). On **Tempo** it ducks on every step of **Rate**, from 1/16 to a bar, or a dotted or triplet eighth or quarter, in time with the song, and it is already down when each beat lands: it starts going down **Attack** before the beat. **Nudge** moves the duck up to 20 ms later or earlier, for a kick that sits behind or ahead of the beat.
+
+**Depth** is how far it turns down, **Hold** how long it stays there, and **Release** how long it takes to come back, on a curve **Shape** bends from straight to a slow start and fast finish, the classic pump. If the Release is longer than the step, the duck never comes all the way back before the next one, and the drawing shows it as you hear it.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through a Ducker on Tempo: each duck now starts Attack earlier, so it is fully down on the beat (2 ms earlier at the default Attack), and one with a Release longer than its step pumps as its drawing shows.
+
+### The Transient shaper
+
+It has no threshold: it follows the shape of the sound, so the same setting does the same to a quiet hit and a loud one. **Attack** turns the start of each hit up (more punch, more click) or down (softer, further away); **Sustain** turns up or down what rings on after it (more room and body, or a tighter, drier hit). **Speed** is how long the start lasts: short for a snappy click, long to take in the whole thump of a kick. **Output** sets the level after it and **Mix** blends it with the dry sound. A steady sound, a held pad or bass note, passes untouched.
+
+At the default (Attack 50) every hit's front comes up by the same amount, about half of what Attack 100 gives; turn Attack to 0 for no change.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through a Transient shaper: quiet hits now get as much lift (or softening) as loud ones. At Attack 50 a loud hit's front comes up about 7 dB less than it did, and a quiet one's a little more.
 
 ### Master safety
 
