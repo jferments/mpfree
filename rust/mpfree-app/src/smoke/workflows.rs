@@ -1971,6 +1971,51 @@ mod tests {
     /// the notes are armed, REC makes them ready and PLAY records them; a
     /// take that records keeps the arm where it is; the Loop view arms the
     /// loop, and the ready goes with the arm when it moves.
+    /// Following another device's Start and Stop (sequencer S5): PLAY
+    /// waits while the leader is stopped and says so; REC readies a take
+    /// and PLAY keeps it ready; the leader's Start records it from its
+    /// first pulse, and its Stop stops.
+    #[test]
+    fn following_a_clock_play_waits_and_a_ready_take_records_from_its_start() {
+        use mpfree_midi_clock::{CLOCK, START, STOP};
+        use mpfree_transport::State;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let all = Some(crate::time::Follow {
+                start_stop: true,
+                position: true,
+            });
+            s.clock(all, &[CLOCK]).settle();
+            s.button("PLAY").settle();
+            assert_eq!(s.time.info().state, State::Stopped);
+            assert_eq!(
+                s.lines.last().map(String::as_str),
+                Some("Waiting for clock: PLAY starts when the leader starts")
+            );
+            s.button("REC").button("PLAY").settle();
+            assert!(s.app.rec.ready.is_some());
+            let said = s.lines.last().cloned().unwrap_or_default();
+            assert!(
+                said.starts_with("Waiting for clock: ")
+                    && said.ends_with(" records when the leader starts"),
+                "{said}"
+            );
+            assert_eq!(s.time.info().state, State::Stopped);
+            s.clock(all, &[START, CLOCK]).run_periods(2);
+            assert_eq!(s.time.info().state, State::Recording);
+            assert_eq!(s.app.rec.ready, None);
+            assert!(
+                s.lines
+                    .iter()
+                    .any(|l| l.starts_with("rec: the take started with the clock")),
+                "{:?}",
+                s.lines
+            );
+            s.clock(all, &[CLOCK, STOP]).run_periods(2);
+            assert_eq!(s.time.info().state, State::Stopped);
+        });
+    }
+
     #[test]
     fn rec_records_what_is_armed_and_play_starts_a_ready_take() {
         use crate::play_widgets::{PlayTransport, RecChip, RecState};

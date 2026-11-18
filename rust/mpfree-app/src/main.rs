@@ -4565,6 +4565,17 @@ fn time_action(
             | TimeAction::DeletePlacement(_)
             | TimeAction::Perform(_)
     );
+    // PLAY or PLAY START while the transport follows another device's
+    // Start and Stop and it is stopped: its Start plays, and the screen
+    // says so.
+    let waiting = match a {
+        TimeAction::Transport(Command::Play | Command::PlayStart)
+            if !time.info().state.rolling() =>
+        {
+            time.waiting_for().map(str::to_string)
+        }
+        _ => None,
+    };
     let r = match a {
         // The scene morph runs on the mixer's mod engine.
         TimeAction::MorphRows { .. }
@@ -4574,6 +4585,12 @@ fn time_action(
         | TimeAction::SaveScene(_) => time.morph(a, &mut mix.modu, &mix.mixer),
         _ => time.act(a),
     };
+    if let (Ok(line), Some(leader)) = (&r, waiting) {
+        out.note(&format!("time: {line}"));
+        return vec![app::Effect::Tell(format!(
+            "Waiting for clock: PLAY starts when {leader} starts"
+        ))];
+    }
     match r {
         Ok(line) | Err(line) if erase => return vec![app::Effect::Tell(line)],
         Ok(line) | Err(line) if undo => return vec![app::Effect::Tell(undo_said(&line))],
@@ -6941,18 +6958,30 @@ fn player_session(
         }
         // Another device's clock, when the project's tempo is from a port
         // (M4): the leader's bytes read this period go to the follower
-        // before the transport runs, as read at the period's top.
+        // before the transport runs, as read at the period's top. A take
+        // ready now records from the leader's Start (sequencer S5).
+        time.set_leader(music.leader_name());
+        time.take_waits(app.rec.ready.map(|take| take == rec_arm::Take::Add));
+        let mut took = None;
         music.leader_clock(|follow, bytes| {
             time.follow(follow);
             if !bytes.is_empty() {
                 let frame = time.next_frame();
-                time.clock_in(frame, bytes);
+                took = time.clock_in(frame, bytes);
             }
         });
+        if let Some(line) = took {
+            out.note(&line);
+        }
         // Ignored while a followed clock arrives.
         time.follow_tempo(app.settings.bpm);
         // The transport runs first; the clips and the arps follow its clock.
         time.advance(PERIOD as u32);
+        // A take the leader's Start began isn't ready any more.
+        if app.rec.ready.is_some() && time.info().state == mpfree_transport::State::Recording {
+            app.rec.ready = None;
+            out.show(gui::ToUi::Rec(app.rec));
+        }
         // A followed clock's tempo becomes the app's (the tempo chip, Note
         // Repeat, the arps, tempo-synced effects) when it has moved more
         // than 0.08 BPM from it, so the chip doesn't flicker.

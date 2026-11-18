@@ -8,7 +8,9 @@
 //!   MPC's way, so REC held and PLAY pressed records at once. While playing,
 //!   REC punches in replacing and OVERDUB adding; while recording, REC
 //!   punches out and OVERDUB switches between replacing and adding. STOP
-//!   lets go of ready.
+//!   lets go of ready. Following another device's Start and Stop while it
+//!   is stopped ([`Now::clock`]), the ready take records from its Start
+//!   (time/follow.rs), so PLAY keeps it ready and says so.
 //! - **A loop** records as the looper does already: REC arms the picked
 //!   loop (its first pass starts with PLAY, or on the next bar line while
 //!   playing) and OVERDUB overdubs it. The looper's armed loop is its
@@ -95,6 +97,9 @@ pub struct Now {
     pub loop_armed: bool,
     /// The armed track's name, for what is said ("Drums").
     pub notes: String,
+    /// Following another device's Start and Stop while it is stopped:
+    /// its name ("MIDI In"). A ready take records from its Start.
+    pub clock: Option<String>,
 }
 
 impl Now {
@@ -186,9 +191,21 @@ impl RecArm {
                 return Vec::new();
             }
             Press::Play { from_start } => {
-                let Some(take) = self.ready.take() else {
+                let Some(take) = self.ready else {
                     return Vec::new();
                 };
+                if let Some(leader) = &now.clock {
+                    let mut out = Vec::new();
+                    if from_start {
+                        out.push(Do::Transport(Command::Locate(0)));
+                    }
+                    out.push(Do::Tell(format!(
+                        "Waiting for clock: {} records when {leader} starts",
+                        now.notes
+                    )));
+                    return out;
+                }
+                self.ready = None;
                 let mut out: Vec<Do> = mode(take, now.overdub).into_iter().collect();
                 if from_start {
                     out.push(Do::Transport(Command::Locate(0)));
@@ -416,6 +433,7 @@ mod tests {
             loop_taking: false,
             loop_armed: false,
             notes: "Drums".into(),
+            clock: None,
         }
     }
 
@@ -448,6 +466,32 @@ mod tests {
         assert!(a
             .press(Press::Play { from_start: false }, &stopped)
             .is_empty());
+    }
+
+    /// Following another device's Start and Stop while it is stopped, a
+    /// ready take records from its Start: PLAY keeps it ready and says so,
+    /// PLAY START moves to bar 1 first, and STOP still lets go.
+    #[test]
+    fn play_keeps_a_take_ready_while_it_waits_for_the_clock() {
+        let mut a = RecArm::default();
+        let waiting = Now {
+            clock: Some("MIDI In".into()),
+            ..now(State::Stopped)
+        };
+        a.press(Press::Overdub, &waiting);
+        let said = Do::Tell("Waiting for clock: Drums records when MIDI In starts".into());
+        assert_eq!(
+            a.press(Press::Play { from_start: false }, &waiting),
+            std::slice::from_ref(&said)
+        );
+        assert_eq!(a.ready, Some(Take::Add));
+        assert_eq!(
+            a.press(Press::Play { from_start: true }, &waiting),
+            [t(Command::Locate(0)), said]
+        );
+        assert_eq!(a.ready, Some(Take::Add));
+        a.press(Press::Stop, &waiting);
+        assert_eq!(a.ready, None);
     }
 
     #[test]

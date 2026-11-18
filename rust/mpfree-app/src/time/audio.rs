@@ -313,6 +313,13 @@ impl TimeAudio {
     /// A transport command, from the next period on. False if the
     /// transport's queue is full.
     pub fn command(&mut self, cmd: Command) -> bool {
+        // Following another device's position, a loop waits for that to
+        // stop (follow.rs).
+        if let Command::SetLoop(range) = cmd {
+            if self.follower.keep_loop(range) {
+                return true;
+            }
+        }
         let at = self.transport.frame();
         self.transport.command(at, cmd)
     }
@@ -471,9 +478,26 @@ impl TimeAudio {
         self.follower.bpm()
     }
 
+    /// Following another device's Start and Stop while it is stopped:
+    /// PLAY waits for it.
+    pub fn clock_waits(&self) -> bool {
+        self.follower.waits()
+    }
+
+    /// A take the app has ready, adding (true) or replacing: the leader's
+    /// start records it.
+    pub fn take_waits(&mut self, take: Option<bool>) {
+        self.follower.take_waits(take);
+    }
+
+    /// True once after the leader's start began a take.
+    pub fn took(&mut self) -> bool {
+        self.follower.took()
+    }
+
     /// The transport runs the coming period, after the follower's turn.
     fn process(&mut self, frames: u32) -> bool {
-        self.follower.period(&self.transport);
+        self.follower.period(&mut self.transport);
         self.transport.process(frames, &mut self.block)
     }
 
@@ -782,6 +806,10 @@ impl TimeAudio {
         let mut info = TransportInfo::of(&self.transport);
         if let Some(bpm) = self.follower.bpm() {
             info.bpm = bpm;
+        }
+        if let Some(held) = self.follower.held_loop() {
+            info.follows_position = true;
+            info.loop_range = held;
         }
         info
     }
