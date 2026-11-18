@@ -4299,8 +4299,9 @@ fn instrument_name(plugins: &plugins::Plugins, id: &'static str) -> &'static str
 }
 
 /// A job for track `track`'s own instrument `id`: an engine's copy of the
-/// shared synth's sound (or `values`), or a plugin synth, with the pad
-/// layout and tuning now.
+/// shared synth's sound with its design (or `values`, a factory preset's,
+/// which brings none), or a plugin synth, with the pad layout and tuning
+/// now.
 fn instrument_job(
     synth: &synth::Synth,
     track: usize,
@@ -4308,14 +4309,18 @@ fn instrument_job(
     values: Option<Vec<f32>>,
 ) -> control::InstrumentJob {
     let engine = synth::Engine::from_node_id(id);
-    let values = match (values, engine) {
-        (Some(v), _) => v,
-        (None, Some(e)) => synth.sound_of(e).1,
-        (None, None) => Vec::new(),
+    let (extras, values) = match (values, engine) {
+        (Some(v), _) => (Vec::new(), v),
+        (None, Some(e)) => {
+            let (_, extras, values) = synth.sound_of(e);
+            (extras, values)
+        }
+        (None, None) => (Vec::new(), Vec::new()),
     };
     control::InstrumentJob {
         track,
         id,
+        extras,
         values,
         pads: synth.pads_for(engine.unwrap_or(synth::Engine::Poly)),
         tuning: synth.tuning_now(),

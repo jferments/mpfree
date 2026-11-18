@@ -18,4 +18,4 @@ pub mod preset;
 pub mod sound;
 
 pub use preset::{Error, Preset};
-pub use sound::{Design, Macro, MacroMap, Sound, SoundError};
+pub use sound::{Design, Designed, Macro, MacroMap, Sound, SoundError};

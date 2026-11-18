@@ -41,13 +41,15 @@ use mpfree_track::{Instrument, Outputs, SlotStats, TrackHost};
 
 /// Makes the instrument `id` for a track, ready for the audio thread:
 /// a plugin synth (`clap:`...) in its own process, from `plugins`, or a
-/// copy of a synth engine with `values` (its sound, as
-/// [`crate::synth::Synth::sound_of`] gives it). None if it can't be made
+/// copy of a synth engine's sound, its design in `extras` and its
+/// `values` (as [`crate::synth::Synth::sound_of`] gives them). None if it
+/// can't be made
 /// (the plugins' lines say why for a plugin). Allocates and, for a
 /// plugin, waits for its process: the builder thread's job.
 pub fn make(
     plugins: &crate::plugins::Plugins,
     id: &'static str,
+    extras: &[(String, String)],
     values: &[f32],
     rate: u32,
     max_block: usize,
@@ -57,7 +59,7 @@ pub fn make(
         let (instance, node) = plugins.make_instance(id).ok()?;
         (node, name, instance)
     } else {
-        let node = crate::synth::fresh_node(id, values, rate)?;
+        let node = crate::synth::fresh_node(id, extras, values, rate)?;
         let name = node.info().name;
         (node, name, 0)
     };
@@ -870,9 +872,9 @@ mod tests {
     #[test]
     fn a_clips_lock_on_a_tracks_instrument_plays_and_its_end_puts_the_sound_back() {
         let synth = crate::synth::Synth::new(RATE);
-        let (id, values) = synth.sound_of(crate::synth::Engine::Poly);
+        let (id, extras, values) = synth.sound_of(crate::synth::Engine::Poly);
         let plugins = crate::plugins::Plugins::none();
-        let inst = make(&plugins, id, &values, RATE, BLOCK).expect("made");
+        let inst = make(&plugins, id, &extras, &values, RATE, BLOCK).expect("made");
         let mut i = Instruments::new(RATE, BLOCK);
         assert!(!i.lock(1, 0, Some(0.5), 0), "no instrument on the track");
         i.put(
@@ -921,17 +923,17 @@ mod tests {
     #[test]
     fn a_track_takes_a_copy_of_the_synth_tabs_sound_and_plays_it_as_the_synth_does() {
         let synth = crate::synth::Synth::new(RATE);
-        let (id, values) = synth.sound_of(crate::synth::Engine::Poly);
+        let (id, extras, values) = synth.sound_of(crate::synth::Engine::Poly);
         assert_eq!(id, "mpfree.poly");
         let plugins = crate::plugins::Plugins::none();
-        let (inst, held) = make(&plugins, id, &values, RATE, BLOCK).expect("made");
+        let (inst, held) = make(&plugins, id, &extras, &values, RATE, BLOCK).expect("made");
         assert_eq!(held.name, "Poly");
         assert!(
-            make(&plugins, id, &values[1..], RATE, BLOCK).is_none(),
+            make(&plugins, id, &extras, &values[1..], RATE, BLOCK).is_none(),
             "not its values"
         );
         assert!(
-            make(&plugins, "clap:none", &[], RATE, BLOCK).is_none(),
+            make(&plugins, "clap:none", &[], &[], RATE, BLOCK).is_none(),
             "no such plugin"
         );
         let mut i = Instruments::new(RATE, BLOCK);
