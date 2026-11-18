@@ -3470,13 +3470,15 @@ fn play_routed(
 ) {
     use mpfree_play::Event;
     let t = usize::from(track);
-    // Expression out: the track's gear on MIDI out takes the keys' wheel,
-    // pressure and MPE, and their going down (before the note, so its bend
-    // leads it) and up (after the note-off, below).
-    let gear = !matches!(key, midi_in::Key::Up { .. })
-        && key
-            .expr_out()
-            .is_some_and(|i| midi.expression(u16::from(track), i));
+    // Expression out: the track's gear on MIDI out and its CV outputs take
+    // the keys' wheel, pressure and MPE, and their going down (before the
+    // note, so its bend leads it) and up (after the note-off, below).
+    let expr = key.expr_out();
+    let up = matches!(key, midi_in::Key::Up { .. });
+    if let Some(i) = expr.filter(|_| !up) {
+        cv.expression(u16::from(track), i);
+    }
+    let gear = !up && expr.is_some_and(|i| midi.expression(u16::from(track), i));
     let event = match key {
         midi_in::Key::Down { note, velocity } => Event::NoteOn {
             note,
@@ -3485,8 +3487,8 @@ fn play_routed(
         midi_in::Key::Up { note } => Event::NoteOff { note },
         midi_in::Key::Pressure { note, value } => Event::Pressure { note, value },
         // The wheel and an MPE note's own slide and tone: the track's
-        // gear (above), else its instrument, else the synth (CV takes none
-        // yet; Thru passes a keyboard's on as it came).
+        // gear (above), else its instrument, else the synth (Thru passes a
+        // keyboard's on as it came).
         midi_in::Key::Bend { value } => {
             if !gear && !own.bend(t, value) {
                 if let Some(s) = synth {
@@ -3511,13 +3513,19 @@ fn play_routed(
         dest: Default::default(),
         event,
     };
-    cv.send(&o, midi_out::NoteIs::Note);
+    // A key's pressure reached the CV outputs above, as the hardest key's.
+    if !matches!(event, Event::Pressure { .. }) {
+        cv.send(&o, midi_out::NoteIs::Note);
+    }
+    if let Some(i) = expr.filter(|_| up) {
+        cv.expression(u16::from(track), i);
+    }
     if gear && matches!(event, Event::Pressure { .. }) {
         return;
     }
     if midi.send(&o, midi_out::NoteIs::Note) {
-        if let midi_in::Key::Up { note } = key {
-            midi.expression(u16::from(track), mpfree_midi::expr_out::In::Up { note });
+        if let Some(i) = expr.filter(|_| up) {
+            midi.expression(u16::from(track), i);
         }
         return;
     }
@@ -6280,15 +6288,18 @@ fn player_session(
         let key_notes = synth_on && app.arp_plays_notes();
         if armed != expr_track {
             midi_out.rest_expression(expr_track);
+            cv_out.rest_expression(expr_track);
             expr_track = armed;
         }
         for k in keys.drain(..) {
-            // Expression out: the armed track's gear on MIDI out takes the
-            // keys' wheel, pressure and MPE (the keys going down and up
-            // say whose count).
-            let to_gear = key_notes
-                && k.expr_out()
-                    .is_some_and(|i| midi_out.expression(armed as u16, i));
+            // Expression out: the armed track's CV outputs, and its gear on
+            // MIDI out, take the keys' wheel, pressure and MPE (the keys
+            // going down and up say whose count).
+            let expr = k.expr_out().filter(|_| key_notes);
+            if let Some(i) = expr {
+                cv_out.expression(armed as u16, i);
+            }
+            let to_gear = expr.is_some_and(|i| midi_out.expression(armed as u16, i));
             let pad_event = match k {
                 midi_in::Key::Down { note, velocity } if key_notes => {
                     app.key_down(note, velocity);

@@ -85,6 +85,10 @@ pub enum CvAssign {
     },
     /// The last note-on's velocity, 0 to `max_volts`.
     Velocity { track: u8, max_volts: f32 },
+    /// The track's pressure, 0 to `max_volts`: its last channel pressure
+    /// (a keyboard's, or the hardest key's, `crate::expr_out`) or a key's
+    /// or pad's own pressure, whichever came last.
+    Pressure { track: u8, max_volts: f32 },
     /// A CC of the track, `min_volts` at 0 to `max_volts` at 127.
     Cc {
         track: u8,
@@ -485,6 +489,20 @@ impl CvEngine {
             Msg::PitchBend { value, .. } => {
                 self.voices[t].bend = value;
                 self.track_changed(track, offset, false, emit);
+            }
+            Msg::ChanPressure { value, .. } | Msg::PolyPressure { value, .. } => {
+                for o in 0..CV_OUTS {
+                    if let CvAssign::Pressure {
+                        track: tt,
+                        max_volts,
+                    } = self.assign[o]
+                    {
+                        if tt == track {
+                            let v = f32::from(value.min(127)) / 127.0 * max_volts;
+                            self.set(o, v, offset, emit);
+                        }
+                    }
+                }
             }
             Msg::Cc { cc, value, .. } => {
                 for o in 0..CV_OUTS {

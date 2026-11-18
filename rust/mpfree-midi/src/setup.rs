@@ -1560,6 +1560,9 @@ fn cv_text(a: &CvAssign) -> String {
         CvAssign::Velocity { track, max_volts } => {
             format!("velocity track={} max-volts={}", track + 1, f(max_volts))
         }
+        CvAssign::Pressure { track, max_volts } => {
+            format!("pressure track={} max-volts={}", track + 1, f(max_volts))
+        }
         CvAssign::Cc {
             track,
             cc,
@@ -1663,7 +1666,7 @@ fn parse_cv(v: &str) -> Result<CvAssign, String> {
             "pitch" => &["track", "zero", "bend", "priority", "v/oct", "hz/v"],
             "gate" => &["track", "volts", "retrigger-ms"],
             "trigger" => &["track", "note", "volts", "ms"],
-            "velocity" => &["track", "max-volts"],
+            "velocity" | "pressure" => &["track", "max-volts"],
             "cc" => &["track", "cc", "min-volts", "max-volts"],
             "clock" => &["ppqn", "volts", "ms"],
             "run" => &["volts"],
@@ -1741,6 +1744,10 @@ fn parse_cv(v: &str) -> Result<CvAssign, String> {
             ms: ms("ms")?,
         },
         "velocity" => CvAssign::Velocity {
+            track: track()?,
+            max_volts: volts("max-volts")?,
+        },
+        "pressure" => CvAssign::Pressure {
             track: track()?,
             max_volts: volts("max-volts")?,
         },
@@ -2395,7 +2402,15 @@ mod tests {
             sustain: 0.35,
             ..Env::new(9)
         });
+        m.cv[3] = CvAssign::Pressure {
+            track: 1,
+            max_volts: 5.0,
+        };
         let text = m.to_text();
+        assert!(
+            text.contains("cv.4 = pressure track=2 max-volts=5\n"),
+            "{text}"
+        );
         assert!(
             text.contains("cv.2 = lfo shape=sine hz=0.25 low=0 high=5\n"),
             "{text}"

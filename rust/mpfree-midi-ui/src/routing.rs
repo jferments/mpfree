@@ -271,6 +271,7 @@ fn cv_of(m: &IoModel, t: u8) -> Vec<(usize, &'static str)> {
                 CvAssign::Gate { track, .. } => (track, "gate"),
                 CvAssign::Trigger { track, .. } => (track, "trigger"),
                 CvAssign::Velocity { track, .. } => (track, "velocity"),
+                CvAssign::Pressure { track, .. } => (track, "pressure"),
                 CvAssign::Cc { track, .. } => (track, "CC"),
                 _ => return None,
             };

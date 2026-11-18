@@ -31,7 +31,7 @@ An **MPE** controller (an expressive keyboard that gives each finger its own cha
 
 Most MPE controllers say they are MPE when they start, and MPFree hears it: its log says *MPE lower zone, channels 2 to 16 (it said so)*. If yours doesn't, give its port a [profile](#device-profiles) with an **mpe** line.
 
-The wheel, pressure and MPE play MPFree's own sounds: the synth and a track's own instrument (a kit's pads take pressure only). They go into the arpeggiator's and the MIDI effects' notes only while those notes are the keys as they came: a note the MIDI effects moved, or one the arpeggiator plays, takes the wheel but not its key's slide or tone. A track that plays a synth through MIDI out sends them to that synth ([The wheel, pressure and MPE on a synth](#the-wheel-pressure-and-mpe-on-a-synth)). The CV outputs don't take them yet, and recording them into a clip comes later.
+The wheel, pressure and MPE play MPFree's own sounds: the synth and a track's own instrument (a kit's pads take pressure only). They go into the arpeggiator's and the MIDI effects' notes only while those notes are the keys as they came: a note the MIDI effects moved, or one the arpeggiator plays, takes the wheel but not its key's slide or tone. A track that plays a synth through MIDI out sends them to that synth ([The wheel, pressure and MPE on a synth](#the-wheel-pressure-and-mpe-on-a-synth)), and its [CV outputs](#cv-and-gate) take them too. Recording them into a clip comes later.
 
 ## Playing several tracks from your keyboards
 
@@ -288,7 +288,7 @@ The **CV/Gate** jacks play modular synths. Each of the eight outputs has one job
 
 - a track's **pitch**, 1 V per octave (or Hz per volt, for older Korg and Yamaha synths), with the lowest, highest or last note winning when several are held;
 - a track's **gate**, high while a note is held, or a short **trigger** on each note (of every note, or of one note, for a drum module);
-- a track's **velocity**, or one of its **CCs**, as a voltage;
+- a track's **velocity**, its **pressure**, or one of its **CCs**, as a voltage;
 - an **LFO** or an **envelope** that moves on its own (see [LFOs and envelopes](#lfos-and-envelopes));
 - a **clock** at the rate you pick, **run** (high while the song plays) or **reset** (a pulse when the song starts from the top);
 - or a **fixed** voltage.
@@ -296,6 +296,8 @@ The **CV/Gate** jacks play modular synths. Each of the eight outputs has one job
 The outputs are set in the mixer's I/O view, under CV. A track that drives CV still plays its own sound too, so turn it down in the mixer if you only want the module.
 
 When one note ends just as the next starts, as a sequence's notes do, the gate drops for 2 ms between them, so the module's envelope starts again. Hold two notes at once for a legato line instead.
+
+Your keyboard's [wheel, pressure and MPE](#the-pitch-wheel-pressure-and-mpe) reach the outputs of the track it plays, as they reach a synth through MIDI out: a **pitch** output bends by the wheel, plus the slide of the key you played last, over its own bend range; a **pressure** output follows the hardest-pressed key (or a pad's pressure in a clip); and a **CC** output on CC 74 follows the tone of the key you played last. A stop or a panic unbends the pitch and drops the pressure to 0 V.
 
 ### LFOs and envelopes
 
