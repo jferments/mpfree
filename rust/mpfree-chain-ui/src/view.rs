@@ -44,6 +44,9 @@ use crate::state::{macro_color, ChainState, ParamView, StripList, STRIP_GROUPS};
 /// The section widget's `Tab` number for a heading's action (pages are
 /// numbered from 0, far below it).
 const ACTION_TAB: usize = 1 << 16;
+/// Its `Tab` for the Vocoder's "Voice: Mic ›" in its Carrier heading: the
+/// sidechain list opens.
+const SIDECHAIN_TAB: usize = ACTION_TAB + 1;
 
 /// What a touch on the chain editor meant, for the app to apply.
 #[derive(Clone, Debug, PartialEq)]
@@ -132,6 +135,22 @@ pub enum ChainAction {
     /// A strip in the list: its chain, in the editor's place (its Back
     /// stays where it was).
     OpenStrip(Strip),
+    /// The sidechain list (layout spec 4b, "Sidechain"): the selected
+    /// effect's Sidechain row opened it on group `g` (of
+    /// [`crate::STRIP_GROUPS`]), a group was picked, or it shut (None).
+    /// The app keeps it, as the strip list, and fills its [`StripList`]
+    /// with the `sidechain` words.
+    SidechainList(Option<usize>),
+    /// What the selected effect listens to. `control` is its sidechain
+    /// control (`mpfree_fx::sidechain::listens`), on the insert it names.
+    /// A strip: the mixer feeds the effect that strip (`Mixer::set_key`)
+    /// and the control turns on. None: the control turns off (its own
+    /// sound, or Tempo) and the strip stays fed, so a tap on its button
+    /// goes back to it.
+    SetSidechain {
+        control: ParamAddr,
+        strip: Option<Strip>,
+    },
     /// "+ Add effect" opened the effect picker (`true`), or its Cancel
     /// closed it (`false`). The app keeps the picker's state, so it must
     /// hear both, or the next state it sends undoes the tap.
@@ -707,7 +726,10 @@ const SLOT_SLOP: i32 = 12;
 
 /// The strip list over the editor: the groups down the left, a page of
 /// strip tiles (four a row), its Back, and arrows when a group has more
-/// strips than a page.
+/// strips than a page. As the sidechain list it has Off (or Tempo) above
+/// the groups, only the groups that can feed the effect (a group it
+/// leaves out is an empty rect), the line under them that says why, and
+/// what the effect hears now beside Back.
 pub struct ListLayout {
     pub panel: Rect,
     pub groups: [Rect; 6],
@@ -716,24 +738,60 @@ pub struct ListLayout {
     pub prev: Rect,
     pub next: Rect,
     pub tiles: Vec<Rect>,
+    pub off: Option<Rect>,
+    pub note: Rect,
+    pub now: Option<Rect>,
+}
+
+/// What the sidechain list shows that the strip list doesn't: the groups
+/// it shows, and whether it has an Off button (Tempo on the Ducker; the
+/// Vocoder's carriers are its own buttons).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScParts {
+    pub shown: [bool; 6],
+    pub off: bool,
 }
 
 /// Tiles a row in the strip list.
 const LIST_COLS: i32 = 4;
 const TILE_H: i32 = 72;
+/// The sidechain list's Off button, and what it hears now beside Back.
+const OFF_H: i32 = 60;
+const NOW_W: i32 = 200;
 
-/// Where the strip list goes in `r`, with room for `per_page` tiles at
-/// most (see [`list_page`]).
+/// Where the strip list goes in `r`.
 pub fn list_layout(r: Rect) -> ListLayout {
+    list_layout_for(r, None)
+}
+
+/// Where the strip list goes in `r`, or the sidechain list with its parts
+/// `sc`.
+pub fn list_layout_for(r: Rect, sc: Option<ScParts>) -> ListLayout {
     let panel = r.inset_xy(0, 4);
     let inner = panel.inset(14);
     let (left, right) = inner.take_left(200);
     let right = right.take_left(14).1;
-    let groups =
-        std::array::from_fn(|i| Rect::new(left.x, left.y + 36 + i as i32 * 56, left.w, 48));
+    let off = sc
+        .filter(|p| p.off)
+        .map(|_| Rect::new(left.x, left.y + 36, left.w, OFF_H));
+    // Below Off and a rule under it, the groups the list shows, packed.
+    let top = off.map_or(left.y + 36, |o| o.bottom() + 17);
+    let mut at = 0;
+    let groups = std::array::from_fn(|i| {
+        if sc.is_some_and(|p| !p.shown[i]) {
+            return Rect::default();
+        }
+        let g = Rect::new(left.x, top + at * 56, left.w, 48);
+        at += 1;
+        g
+    });
+    let note_y = top + at * 56 + 4;
+    let note = Rect::new(left.x, note_y, left.w, (left.bottom() - note_y).max(0));
     let (head, grid) = right.take_top(36);
     let back = Rect::new(head.right() - 96, head.y, 96, 36);
-    let next = Rect::new(back.x - 12 - 44, head.y, 44, 36);
+    let now = sc.map(|_| Rect::new(back.x - 12 - NOW_W, head.y, NOW_W, 36));
+    let arrows_x = now.map_or(back.x, |n| n.x);
+    let next = Rect::new(arrows_x - 12 - 44, head.y, 44, 36);
     let prev = Rect::new(next.x - 6 - 44, head.y, 44, 36);
     let title = Rect::new(head.x, head.y, prev.x - 8 - head.x, 36);
     let grid = grid.take_top(10).1;
@@ -757,6 +815,9 @@ pub fn list_layout(r: Rect) -> ListLayout {
         prev,
         next,
         tiles,
+        off,
+        note: if sc.is_some() { note } else { Rect::default() },
+        now,
     }
 }
 
@@ -798,6 +859,9 @@ pub struct ChainView {
     /// the app fills it), and the first tile shown.
     list_open: Option<usize>,
     list_first: usize,
+    /// The list open is the sidechain list (the selected effect's
+    /// Sidechain row opened it), not the strip list.
+    list_sidechain: bool,
     /// What is open over the page.
     open: Open,
     /// The EQ's page, while the EQ is selected ([`ChainState::eq`]).
@@ -824,6 +888,7 @@ impl ChainView {
             picker: PickerView::default(),
             list_open: None,
             list_first: 0,
+            list_sidechain: false,
             open: Open::default(),
             eq: EqPage::default(),
             last: std::cell::Cell::new(Rect::default()),
@@ -876,6 +941,20 @@ impl ChainView {
     /// opens it too). The mod matrix rows stay open on the same control,
     /// the list of modes on the same effect.
     pub fn update(&mut self, st: ChainState) {
+        // The app opens the sidechain list itself when a Ducker is added
+        // (it starts listening, with nothing picked).
+        if self.list_open.is_none() {
+            if let Some(l) = st.list.as_ref().filter(|l| l.sidechain.is_some()) {
+                self.list_open = Some(l.group);
+                self.list_first = 0;
+                self.list_sidechain = true;
+            }
+        }
+        // It shuts when the effect it was for has gone.
+        if self.list_sidechain && st.sidechain.is_none() {
+            self.list_open = None;
+            self.list_sidechain = false;
+        }
         let opening = st.picking && !self.state.picking;
         let picking = st.picking || self.state.picking;
         let old = self.state.list.take();
@@ -901,10 +980,13 @@ impl ChainView {
         self.state.picking = picking;
         // The strip list stays as the view has it: open on its group (the
         // app's strips once they come), or shut.
+        let sc = self.list_sidechain;
+        let mine = |l: &StripList, g: usize| l.group == g && l.sidechain.is_some() == sc;
         self.state.list = self.list_open.map(|g| match self.state.list.take() {
-            Some(l) if l.group == g => l,
-            _ => old.filter(|l| l.group == g).unwrap_or(StripList {
+            Some(l) if mine(&l, g) => l,
+            _ => old.filter(|l| mine(l, g)).unwrap_or(StripList {
                 group: g,
+                sidechain: sc.then(Default::default),
                 ..StripList::default()
             }),
         });
@@ -957,13 +1039,14 @@ impl ChainView {
         self.list_open
     }
 
-    /// Opens the strip list on group `g`, or shuts it (None), and tells
-    /// the app.
+    /// Opens the strip list (or the sidechain list) on group `g`, or
+    /// shuts it (None), and tells the app.
     fn show_list(&mut self, g: Option<usize>) {
         if g != self.list_open {
             self.list_first = 0;
         }
         self.list_open = g;
+        let sc = self.list_sidechain;
         self.state.list = g.map(|g| match self.state.list.take() {
             Some(mut l) => {
                 if l.group != g {
@@ -974,28 +1057,155 @@ impl ChainView {
             }
             None => StripList {
                 group: g,
+                sidechain: sc.then(Default::default),
                 ..StripList::default()
             },
         });
-        self.push(ChainAction::Strips(g));
+        if g.is_none() {
+            self.list_sidechain = false;
+        }
+        self.push(if sc {
+            ChainAction::SidechainList(g)
+        } else {
+            ChainAction::Strips(g)
+        });
+    }
+
+    /// The selected effect's sidechain, when its page shows it.
+    fn sidechain(&self) -> Option<&crate::state::SidechainView> {
+        let st = &self.state;
+        st.sidechain
+            .as_ref()
+            .filter(|sc| st.selected == Some(sc.slot) && !st.picking)
+    }
+
+    /// The selected effect's sidechain control: its index in
+    /// [`ChainState::params`].
+    fn sidechain_control(&self) -> Option<usize> {
+        let sc = self.sidechain()?;
+        self.state
+            .params
+            .iter()
+            .position(|p| p.addr.param == sc.listens.param)
+    }
+
+    /// Opens the sidechain list for the selected effect: on the group of
+    /// the track it listens to, else the strip's own (layout spec 4b).
+    fn open_sidechain(&mut self) {
+        let Some(sc) = self.sidechain() else {
+            return;
+        };
+        let g = crate::state::sidechain_group(self.state.strip, sc.track.as_ref().map(|t| t.0));
+        self.list_open = None;
+        self.list_sidechain = true;
+        self.state.list = None;
+        self.show_list(Some(g));
+    }
+
+    /// What the sidechain list shows that the strip list doesn't, while it
+    /// is the list open: the groups that can feed the effect (and the one
+    /// shown), and whether it has Off (or Tempo).
+    fn sc_parts(&self, list: &StripList) -> Option<ScParts> {
+        list.sidechain.as_ref()?;
+        let off = self
+            .state
+            .sidechain
+            .as_ref()
+            .is_some_and(|sc| sc.listens.off.is_some());
+        Some(ScParts {
+            shown: std::array::from_fn(|i| list.counts[i] > 0 || i == list.group),
+            off,
+        })
+    }
+
+    /// Where the list open goes in `r`.
+    fn list_geom(&self, r: Rect) -> ListLayout {
+        let sc = self.state.list.as_ref().and_then(|l| self.sc_parts(l));
+        list_layout_for(r, sc)
+    }
+
+    /// The sidechain list's choice: `strip` (None: Off, or Tempo). The
+    /// list shuts and the page shows it at once.
+    fn set_sidechain(&mut self, strip: Option<(Strip, String)>) {
+        let control = self
+            .sidechain_control()
+            .and_then(|k| self.state.params.get(k))
+            .map(|p| p.addr);
+        self.list_open = None;
+        self.list_sidechain = false;
+        self.state.list = None;
+        let Some(control) = control else {
+            return;
+        };
+        self.push(ChainAction::SetSidechain {
+            control,
+            strip: strip.as_ref().map(|s| s.0),
+        });
+        if let Some(sc) = self.state.sidechain.as_mut() {
+            match strip {
+                Some(t) => {
+                    sc.track = Some(t);
+                    sc.listening = true;
+                }
+                None => sc.listening = false,
+            }
+        }
+        self.fill_page();
     }
 
     /// The strip list over the editor.
     fn paint_list(&self, cx: &mut PaintCx, r: Rect, list: &StripList) {
         let t = cx.theme.clone();
-        let ll = list_layout(r);
+        let ll = self.list_geom(r);
+        let sc = list.sidechain.as_ref();
+        let listens = self.state.sidechain.as_ref();
         cx.canvas.fill_round_rect(ll.panel, 14, t.surface);
         cx.canvas.stroke_round_rect(ll.panel, 14, 1, t.outline);
-        let label = Rect::new(ll.groups[0].x, ll.panel.y + 14, ll.groups[0].w, 28);
+        let left = ll.panel.inset(14).take_left(200).0;
+        let label = Rect::new(left.x, ll.panel.y + 14, left.w, 28);
         cx.text(
             FontId::Bold,
             t.size_small - 2.0,
             label,
             Align::Left,
             t.text_dim,
-            "STRIPS",
+            if sc.is_some() { "LISTEN TO" } else { "STRIPS" },
         );
+        // The sidechain list's Off (the Ducker's Tempo), lit while the
+        // effect hears its own sound, with a rule under it.
+        if let (Some(b), Some(l)) = (ll.off, listens) {
+            let lit = !l.listening;
+            cx.canvas
+                .fill_round_rect(b, 10, if lit { t.accent } else { t.raised });
+            let (name, about) = match l.listens.row {
+                mpfree_fx::sidechain::Row::Source => ("Tempo", "ducks on the beat"),
+                _ => ("Off", "listens to its own track"),
+            };
+            let inner = b.inset_xy(14, 8);
+            let (top, bottom) = inner.take_top(inner.h / 2 + 2);
+            cx.text(
+                FontId::Bold,
+                t.size_body - 2.0,
+                top,
+                Align::Left,
+                if lit { t.on_accent } else { t.text },
+                name,
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small - 3.0,
+                bottom,
+                Align::Left,
+                if lit { t.on_accent } else { t.text_dim },
+                about,
+            );
+            cx.canvas
+                .fill_rect(Rect::new(b.x, b.bottom() + 8, b.w, 1), t.outline);
+        }
         for (i, (b, name)) in ll.groups.iter().zip(STRIP_GROUPS).enumerate() {
+            if b.is_empty() {
+                continue;
+            }
             let on = i == list.group;
             cx.canvas.fill_round_rect(
                 *b,
@@ -1031,14 +1241,51 @@ impl ChainView {
             }
         }
         let group = STRIP_GROUPS[list.group.min(STRIP_GROUPS.len() - 1)];
+        let title = match sc {
+            Some(sc) => sc.title.clone(),
+            None => format!("{} · TAP ONE TO OPEN ITS CHAIN", group.to_uppercase()),
+        };
         cx.text(
             FontId::Bold,
             t.size_small - 2.0,
             ll.title,
             Align::Left,
             t.text_dim,
-            &format!("{} · TAP ONE TO OPEN ITS CHAIN", group.to_uppercase()),
+            &title,
         );
+        if let Some(sc) = sc {
+            // Why the groups left out can't feed it, under the groups.
+            let mut y = ll.note.y;
+            for line in wrap(cx, t.size_small - 3.0, &sc.note, ll.note.w) {
+                if y + 18 > ll.note.bottom() {
+                    break;
+                }
+                cx.text(
+                    FontId::Sans,
+                    t.size_small - 3.0,
+                    Rect::new(ll.note.x, y, ll.note.w, 18),
+                    Align::Left,
+                    t.text_dim,
+                    &line,
+                );
+                y += 18;
+            }
+            if let (Some(b), false) = (ll.now, sc.now.is_empty()) {
+                cx.canvas
+                    .fill_round_rect(b, 10, t.surface.mix(t.raised, 0.5));
+                let tone = sc.current.map_or(t.text_faint, |s| strip_color(&t, s));
+                cx.canvas
+                    .fill_round_rect(Rect::new(b.x + 10, b.y + 9, 4, b.h - 18), 2, tone);
+                cx.text(
+                    FontId::Sans,
+                    t.size_small - 2.0,
+                    Rect::new(b.x + 22, b.y, b.w - 30, b.h),
+                    Align::Left,
+                    t.text,
+                    &sc.now,
+                );
+            }
+        }
         cx.canvas.fill_round_rect(ll.back, 10, t.raised);
         cx.text(
             FontId::Bold,
@@ -1070,8 +1317,23 @@ impl ChainView {
         let numbered = list.group <= 1;
         for (i, tile) in self.list_tiles(&ll) {
             let p = &list.strips[i];
-            cx.canvas.fill_round_rect(tile, 10, t.raised);
-            if p.strip == self.state.strip {
+            // In the sidechain list a strip it can't hear is greyed with
+            // why, and the one it hears now is outlined.
+            let refused = p.refused.is_some();
+            cx.canvas.fill_round_rect(
+                tile,
+                10,
+                if refused {
+                    t.surface.mix(t.raised, 0.35)
+                } else {
+                    t.raised
+                },
+            );
+            let current = match sc {
+                Some(sc) => sc.current == Some(p.strip),
+                None => p.strip == self.state.strip,
+            };
+            if current {
                 cx.canvas.stroke_round_rect(tile, 10, 2, t.accent);
             }
             cx.canvas.fill_round_rect(
@@ -1092,7 +1354,13 @@ impl ChainView {
                 t.size_small,
                 top,
                 Align::Left,
-                if muted { t.text_dim } else { t.text },
+                if refused {
+                    t.text_faint
+                } else if muted {
+                    t.text_dim
+                } else {
+                    t.text
+                },
                 &name,
             );
             cx.text(
@@ -1100,8 +1368,8 @@ impl ChainView {
                 t.size_small - 3.0,
                 bottom,
                 Align::Left,
-                t.text_dim,
-                &p.sub,
+                if refused { t.text_faint } else { t.text_dim },
+                p.refused.unwrap_or(&p.sub),
             );
         }
         if n == 0 {
@@ -1141,11 +1409,17 @@ impl ChainView {
     }
 
     /// A tap while the strip list is open: a group, a strip (its chain),
-    /// the arrows, or Back (anywhere off the panel shuts it too).
+    /// the arrows, or Back (anywhere off the panel shuts it too). In the
+    /// sidechain list a strip is what the effect listens to (one greyed
+    /// does nothing), and Off (or Tempo) its own sound.
     fn tap_list(&mut self, r: Rect, x: i32, y: i32) {
-        let ll = list_layout(r);
+        let ll = self.list_geom(r);
         if !ll.panel.contains(x, y) || ll.back.contains(x, y) {
             self.show_list(None);
+            return;
+        }
+        if ll.off.is_some_and(|b| b.contains(x, y)) {
+            self.set_sidechain(None);
             return;
         }
         if let Some(g) = ll.groups.iter().position(|b| b.contains(x, y)) {
@@ -1171,12 +1445,18 @@ impl ChainView {
             .into_iter()
             .find(|(_, t)| t.contains(x, y))
             .map(|(i, _)| i);
-        let strip = hit.and_then(|i| self.state.list.as_ref()?.strips.get(i).map(|p| p.strip));
-        if let Some(s) = strip {
-            self.list_open = None;
-            self.state.list = None;
-            self.push(ChainAction::OpenStrip(s));
+        let Some(p) = hit.and_then(|i| self.state.list.as_ref()?.strips.get(i).cloned()) else {
+            return;
+        };
+        if self.list_sidechain {
+            if p.refused.is_none() {
+                self.set_sidechain(Some((p.strip, p.name)));
+            }
+            return;
         }
+        self.list_open = None;
+        self.state.list = None;
+        self.push(ChainAction::OpenStrip(p.strip));
     }
 
     /// Shows the selected effect's drawings ([`crate::state::picture`]:
@@ -1234,11 +1514,83 @@ impl ChainView {
                 b
             })
             .collect();
+        let mut boxes: Vec<SectionBox> = boxes;
+        self.sidechain_row(&mut boxes);
+        let st = &self.state;
         self.page.spec = st.spec.clone();
         self.page.sections = boxes;
         self.page.selected = st
             .focus
             .and_then(|f| st.params.iter().position(|p| p.addr == f));
+    }
+
+    /// The selected effect's sidechain on its page (layout spec 4b,
+    /// "Sidechain"): its control as one row, "Off | Kick ›" (the Ducker's
+    /// "Kick › | Tempo"), or on the Vocoder on Input "Voice: Mic ›" in its
+    /// Carrier heading; and, set to listen with nothing picked, its
+    /// section's note in red.
+    fn sidechain_row(&self, boxes: &mut [SectionBox]) {
+        use mpfree_fx::sidechain::Row;
+        let (Some(sc), Some(k)) = (self.sidechain(), self.sidechain_control()) else {
+            return;
+        };
+        for b in boxes.iter_mut() {
+            if !b.controls.iter().any(|c| c.index == k) {
+                continue;
+            }
+            match sc.listens.row {
+                Row::Switch | Row::Source => {
+                    let (names, index) = if sc.listens.row == Row::Switch {
+                        (vec!["Off".to_string(), sc.button()], sc.listening as usize)
+                    } else {
+                        (
+                            vec![sc.button(), "Tempo".to_string()],
+                            !sc.listening as usize,
+                        )
+                    };
+                    for c in b.controls.iter_mut().filter(|c| c.index == k) {
+                        c.value = names[index].clone();
+                        c.unit.clear();
+                        c.kind = Kind::Choice {
+                            names: names.clone(),
+                            index,
+                        };
+                    }
+                }
+                Row::Voice if sc.listening => {
+                    b.link = Some(SIDECHAIN_TAB);
+                    b.link_text = Some(sc.button());
+                }
+                Row::Voice => {}
+            }
+            if sc.missing() {
+                b.note = sc.listens.nothing.to_string();
+                b.note_warn = true;
+            }
+        }
+    }
+
+    /// Whether a finger lifted at `x`, `y` on the page is on the
+    /// Sidechain row's track button while a tap there opens the list: it
+    /// is lit (to change the track), or nothing is picked yet. While Off
+    /// is lit a tap on a track already picked goes back to it, as the
+    /// row's other button does.
+    fn on_sidechain_button(&self, l: &Layout, x: i32, y: i32) -> bool {
+        use mpfree_fx::sidechain::Row;
+        let (Some(sc), Some(k)) = (self.sidechain(), self.sidechain_control()) else {
+            return false;
+        };
+        let part = match sc.listens.row {
+            Row::Switch => 1,
+            Row::Source => 0,
+            Row::Voice => return false,
+        };
+        if !sc.listening && sc.track.is_some() {
+            return false;
+        }
+        self.page
+            .control_geom(l.page, k)
+            .is_some_and(|(_, g)| !g.chip && g.parts.get(part).is_some_and(|p| p.contains(x, y)))
     }
 
     /// The data wheel while the picker is open: through the section's
@@ -1888,12 +2240,14 @@ impl ChainView {
             EventKind::Tab(n) if n < self.state.groups.len() && n != self.state.group => {
                 self.push(ChainAction::Group(n));
             }
-            // A heading's action: the only one is Capture.
+            // A heading's action: Capture.
             EventKind::Tab(ACTION_TAB) => {
                 if let Some(slot) = self.state.selected {
                     self.push(ChainAction::Capture(slot));
                 }
             }
+            // The Vocoder's "Voice: Mic ›": the sidechain list.
+            EventKind::Tab(SIDECHAIN_TAB) => self.open_sidechain(),
             _ => {}
         }
     }
@@ -2027,12 +2381,14 @@ fn paint_slot(
     } else {
         "bypassed".to_string()
     };
+    // "Nothing picked": set to listen to a sidechain with no track.
+    let warn = s.on && s.warn;
     cx.text(
-        FontId::Sans,
+        if warn { FontId::Bold } else { FontId::Sans },
         t.size_small - 2.0,
         Rect::new(bottom.x, bottom.y, dx - 4 - bottom.x, 20),
         Align::Left,
-        t.text_dim,
+        if warn { t.bad } else { t.text_dim },
         &sub,
     );
     let pill = Rect::new(power.x + 4, power.y + (power.h - 24) / 2, 40, 24);
@@ -2146,8 +2502,18 @@ impl Widget for ChainView {
         let mut out = Vec::new();
         if let Some(list) = &st.list {
             // The strip list takes the editor while it is open.
-            let ll = list_layout(r);
+            let ll = self.list_geom(r);
+            if let Some(b) = ll.off {
+                let name = match st.sidechain.as_ref().map(|s| s.listens.row) {
+                    Some(mpfree_fx::sidechain::Row::Source) => "Tempo",
+                    _ => "Off",
+                };
+                out.push(Target::tap("sidechain-off", 0, name, b));
+            }
             for (i, (b, name)) in ll.groups.iter().zip(STRIP_GROUPS).enumerate() {
+                if b.is_empty() {
+                    continue;
+                }
                 out.push(Target::tap("strips-group", i, name, *b).disabled_if(i == list.group));
             }
             let (n, page) = (list.strips.len(), ll.tiles.len().max(1));
@@ -2161,12 +2527,10 @@ impl Widget for ChainView {
                 );
             }
             for (i, tile) in self.list_tiles(&ll) {
-                out.push(Target::tap(
-                    "strips-pick",
-                    i,
-                    list.strips[i].name.clone(),
-                    tile,
-                ));
+                out.push(
+                    Target::tap("strips-pick", i, list.strips[i].name.clone(), tile)
+                        .disabled_if(list.strips[i].refused.is_some()),
+                );
             }
             out.push(Target::tap("strips-back", 0, "Back", ll.back));
             return out;
@@ -2710,7 +3074,15 @@ impl ChainView {
                 }
                 match self.drag.take() {
                     Some((_, Drag::Page { mut turned })) => {
-                        if let Some(ev) = self.page.touch(finger, phase, x, y, l.page) {
+                        let ev = self.page.touch(finger, phase, x, y, l.page);
+                        if phase == Touch::Up
+                            && turned.is_none()
+                            && self.on_sidechain_button(&l, x, y)
+                        {
+                            // The track's button: the sidechain list, in
+                            // place of the step the row would take.
+                            self.open_sidechain();
+                        } else if let Some(ev) = ev {
                             self.page_event(ev, &mut turned);
                         }
                         if let Some(addr) = turned {

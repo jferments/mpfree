@@ -77,6 +77,10 @@ impl Desk<'_> {
             gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::OpenInsert { strip, slot }) => {
                 fx.extend(panels.open_insert(app, mix, strip, Some(slot)))
             }
+            // Its "SC from ..." or "Nothing picked": the sidechain list too.
+            gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::OpenSidechain { strip, slot }) => {
+                fx.extend(panels.open_sidechain(app, mix, strip, slot))
+            }
             gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::AddInsert { strip }) => {
                 fx.extend(panels.open_insert(app, mix, strip, None))
             }
