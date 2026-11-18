@@ -114,6 +114,11 @@ pub struct Player {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackKits {
     entries: [u8; mpfree_seq::MAX_TRACKS],
+    /// The entries of the tracks UNDO took away, by their places, while
+    /// REDO can bring them back with their kits (0: none). Not played and
+    /// not saved; the kits they hold are no new track's, and the list of
+    /// kits leaves them out ([`TrackKits::set_aside`]).
+    aside: [u8; mpfree_seq::MAX_TRACKS],
     /// The synth's entry: the one after the kits.
     synth: u8,
 }
@@ -130,6 +135,7 @@ impl TrackKits {
     pub fn new(kits: usize) -> TrackKits {
         TrackKits {
             entries: [0; mpfree_seq::MAX_TRACKS],
+            aside: [0; mpfree_seq::MAX_TRACKS],
             synth: kits.min(usize::from(u8::MAX)) as u8,
         }
     }
@@ -151,19 +157,41 @@ impl TrackKits {
         }
     }
 
-    /// Only `tracks` tracks are left (UNDO took a new track away): every
-    /// place from there on plays kit 1 again, so a track added there later
-    /// starts on kit 1, never on the kit the one before it had (which
-    /// stays in its slot). True if any changed. Never allocates.
-    pub fn forget_past(&mut self, tracks: usize) -> bool {
+    /// The song has `tracks` tracks now. A track UNDO took away is set
+    /// aside with its kit, its place on kit 1, so a track added there later
+    /// starts on kit 1; one a REDO brings back (`redone`: a REDO came since
+    /// the last call) plays its kit again, so UNDO and REDO take a track
+    /// and its kit together. Once REDO can't bring them back (`can_redo`
+    /// false), the kits are set aside no more: they are the project's
+    /// kits, played by no track. True if any changed. Never allocates.
+    pub fn follow(&mut self, tracks: usize, redone: bool, can_redo: bool) -> bool {
         let mut changed = false;
-        for e in self.entries.iter_mut().skip(tracks) {
+        if redone {
+            for (e, a) in self.entries.iter_mut().zip(&mut self.aside).take(tracks) {
+                if *a != 0 {
+                    *e = std::mem::take(a);
+                    changed = true;
+                }
+            }
+        }
+        for (e, a) in self.entries.iter_mut().zip(&mut self.aside).skip(tracks) {
             if *e != 0 {
-                *e = 0;
+                *a = std::mem::take(e);
                 changed = true;
             }
         }
+        if !can_redo && self.aside.iter().any(|&a| a != 0) {
+            self.aside = [0; mpfree_seq::MAX_TRACKS];
+            changed = true;
+        }
         changed
+    }
+
+    /// Whether entry `entry` is a kit only a track UNDO took away plays
+    /// (REDO can bring them back together): no new track's, and not in
+    /// the list of kits.
+    pub fn set_aside(&self, entry: usize) -> bool {
+        entry != 0 && !self.plays(entry) && self.aside.iter().any(|&a| usize::from(a) == entry)
     }
 
     /// Whether any track plays entry `entry` (a kit, or the synth).
@@ -1110,6 +1138,33 @@ impl RecFeed {
         self.0.audio.push_planar(&left[..n], &right[..n]);
     }
 
+    /// [`RecFeed::period`] with the input turned by the recorder's Gain
+    /// (one-page step 2d): `from` at the period's start moving evenly to
+    /// `to` at its end, so a Gain turned while a take records never
+    /// clicks. Unity both ends appends the input as it is. Never
+    /// allocates: the turned period is made on the stack.
+    pub fn period_gain(
+        &mut self,
+        block: &Block,
+        left: &[f32],
+        right: &[f32],
+        latency: u32,
+        (from, to): (f32, f32),
+    ) {
+        if from == 1.0 && to == 1.0 {
+            return self.period(block, left, right, latency);
+        }
+        let n = left.len().min(right.len()).min(PERIOD);
+        let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
+        let step = (to - from) / n.max(1) as f32;
+        for i in 0..n {
+            let g = from + step * (i + 1) as f32;
+            l[i] = left[i] * g;
+            r[i] = right[i] * g;
+        }
+        self.period(block, &l[..n], &r[..n], latency);
+    }
+
     /// The input comes from another source from now on: Skip back and
     /// takes stop here.
     pub fn restart(&mut self) {
@@ -1716,14 +1771,32 @@ mod tests {
     }
 
     /// Only 3 tracks left (UNDO took the rest away): every place from
-    /// track 4 on plays kit 1 again; the tracks left keep theirs.
+    /// track 4 on plays kit 1 again, and the tracks left keep theirs. The
+    /// kits they had are set aside (out of the list, nobody's spare) while
+    /// REDO can bring them back; a REDO gives them back; a new track there
+    /// (no REDO) starts on kit 1, and they're set aside no more once REDO
+    /// can't bring them back.
     #[test]
-    fn a_place_past_the_tracks_plays_kit_1_again() {
-        let mut k = TrackKits::new(3);
+    fn a_track_undo_takes_away_sets_its_kit_aside_until_redo_brings_it_back() {
+        let mut k = TrackKits::new(4);
         assert!(k.set(1, 2) && k.set(3, 1) && k.set(9, 3));
-        assert!(k.forget_past(3));
+        assert!(k.follow(3, false, true));
         assert_eq!((k.entry(1), k.entry(3), k.entry(9)), (2, 0, 0));
-        assert!(!k.forget_past(3), "nothing more to forget");
+        assert!(k.set_aside(1) && k.set_aside(3));
+        assert!(!k.set_aside(2), "track 2 plays it");
+        assert!(!k.set_aside(0), "kit 1 is never set aside");
+        assert!(!k.text().contains("track 4"), "not saved");
+        assert!(!k.follow(3, false, true), "nothing more to set aside");
+        // REDO brings track 4 back: with its kit.
+        assert!(k.follow(4, true, true));
+        assert_eq!(k.entry(3), 1);
+        assert!(!k.set_aside(1));
+        // UNDO again, then a new track instead (no REDO): kit 1, and with
+        // nothing left to redo, nothing is set aside.
+        k.follow(3, false, true);
+        assert!(k.follow(4, false, false));
+        assert_eq!(k.entry(3), 0);
+        assert!(!k.set_aside(1) && !k.set_aside(3));
     }
 
     /// Every track plays kit 1 until a pick; a track picks a kit or the
@@ -1885,6 +1958,33 @@ mod tests {
         }
         assert_eq!(inp.bars.bar_frames(), None);
         assert_eq!(inp.bars.count(), 3);
+    }
+
+    /// The recorder's Gain (one-page step 2d): the input goes into the
+    /// buffer turned, a turn ramped over one period with no step, and at
+    /// unity as it came.
+    #[test]
+    fn the_feed_turns_the_input_by_the_gain_without_a_step() {
+        use mpfree_sampler::record::input;
+        let rate = 44_100;
+        let (feed, inp) = input(2, rate);
+        let mut feed = RecFeed(feed);
+        let block = Block::new();
+        let (l, r) = ([0.5f32; PERIOD], [-0.5f32; PERIOD]);
+        feed.period_gain(&block, &l, &r, 0, (1.0, 1.0));
+        assert_eq!(inp.last_frames(1).unwrap(), [0.5, -0.5]);
+        // +6 dB: a period's ramp up from unity, then twice as loud.
+        feed.period_gain(&block, &l, &r, 0, (1.0, 2.0));
+        let ramp = inp.last_frames(PERIOD as u64).unwrap();
+        let lefts: Vec<f32> = ramp.chunks_exact(2).map(|f| f[0]).collect();
+        assert!(lefts.windows(2).all(|w| w[1] > w[0]), "rises evenly");
+        assert!((lefts[0] - 0.5).abs() < 0.5 / PERIOD as f32 + 1e-6);
+        assert_eq!(lefts[PERIOD - 1], 1.0);
+        let biggest = lefts.windows(2).map(|w| w[1] - w[0]).fold(0.0, f32::max);
+        assert!(biggest <= 0.5 / PERIOD as f32 + 1e-6, "no step: {biggest}");
+        feed.period_gain(&block, &l, &r, 0, (2.0, 2.0));
+        assert_eq!(inp.last_frames(1).unwrap(), [1.0, -1.0]);
+        assert_eq!(feed.written(), 3 * PERIOD as u64);
     }
 
     /// The Pads tab's pad types go to the audio thread with the kit's

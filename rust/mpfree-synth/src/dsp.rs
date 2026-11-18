@@ -649,7 +649,15 @@ impl Env {
                     self.stage = Stage::Decay;
                 }
             }
-            Stage::Decay => self.level += (self.sustain - self.level) * self.cd,
+            Stage::Decay => {
+                self.level += (self.sustain - self.level) * self.cd;
+                // Toward a sustain of 0 the level would sink through the
+                // denormals for as long as the key is held, and every frame
+                // it scales would be slow; under -400 dB it is exact 0.
+                if self.level < 1e-20 {
+                    self.level = 0.0;
+                }
+            }
             Stage::Release => {
                 self.level += (-0.01 - self.level) * self.cr;
                 if self.level <= 0.0 {
@@ -717,6 +725,19 @@ pub fn note_hz(note: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_decay_to_no_sustain_lands_on_exact_zero_not_the_denormals() {
+        let mut e = super::Env::default();
+        e.set(1.0, 5.0, 0.0, 100.0, 44_100.0);
+        e.gate_on();
+        for _ in 0..44_100 * 3 {
+            let x = e.next();
+            assert!(!x.is_subnormal());
+        }
+        assert_eq!(e.level, 0.0);
+        assert_eq!(e.stage, super::Stage::Decay, "still held");
+    }
+
     #[test]
     fn the_four_point_step_correction_is_continuous_and_meets_the_step() {
         let dt = 0.01;

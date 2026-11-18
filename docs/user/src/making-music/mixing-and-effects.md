@@ -20,13 +20,15 @@ Along the top are the mixer's five views:
 
 | View | Shows |
 |---|---|
-| **Tracks** | One strip per instrument: **Drums** (the kit on the pads), **Synth**, **Loop** and **Audio** (every audio track on the Song view, summed), then a strip for each track that has its own instrument (**Track 1**, **Track 2** ...), shown only while it has one (see [A synth for each track](synths.md#a-synth-for-each-track)). A kit other than kit 1 plays into the strip of the first track that plays it, so it shows there too (see [A kit for each track](sampling.md#a-kit-for-each-track)). |
+| **Tracks** | One strip per instrument: **Drums** (the kit on the pads, and track 1's strip), **Synth**, **Loop** and **Audio** (every audio track on the Song view, summed), then a strip for each other track that has its own instrument (**Track 2**, **Track 3** ...), shown only while it has one (see [A synth for each track](synths.md#a-synth-for-each-track)). A track has one strip whatever it plays: track 1's is **Drums**, so when you give track 1 its own instrument it plays there, and the strip is called **Track 1** while it does. Kit 1's pads still play through it too, from whichever track plays them. A kit other than kit 1 plays into the strip of the first track that plays it, so it shows there too (see [A kit for each track](sampling.md#a-kit-for-each-track)). |
 | **Pads** | A strip for each of kit 1's pads A1 to A16, so you can set the kick's level or put an effect on just the snare, then one for each other pad that has effects of its own, named by its pad and kit ("B5 · Kit 2"; see [Effects on one pad](shaping-a-pad.md#effects-on-one-pad-or-on-the-whole-kit)). |
 | **Inputs** | The line input. |
 | **Submixes** | Eight submixes for grouping, then the four send returns A to D. |
 | **I/O** | Where everything goes, as a list: see [The I/O view](#the-io-view). |
 
-{{shot: mixer-instruments | The Tracks view with tracks 1 and 2 playing their own instruments (Poly and FM): their strips come after Drums, Synth, Loop and Audio.}}
+{{shot: mixer-instruments | The Tracks view with tracks 1 and 2 playing their own instruments (Poly and FM): track 1's plays in the first strip, called Track 1 while it does, and track 2's has its own strip after Synth, Loop and Audio.}}
+
+**Projects saved before track 1 played through Drums** open as they sounded. If track 1 had its own instrument in such a project, or you changed anything on its own strip (its fader, an effect, a send), track 1 keeps that strip, called **Track 1 (old)**, and the log says so when the project opens. It stays that way when you save the project again.
 
 The **< >** buttons page through the strips when there are more than fit.
 
@@ -111,7 +113,7 @@ Both record in real time while the song plays, so the strip shows **Freezing** o
 **What a strip records.** A take is one pass of a loop:
 
 - A track with its own instrument records the clip playing on that track.
-- **Drums**, **Synth** and the pad strips record what the tracks that play on the pads play: the longest clip there. To freeze, every other clip playing there must fit into that one a whole number of times, so a 1-bar and a 4-bar clip freeze as 4 bars, but a 3-bar and a 4-bar clip don't freeze.
+- **Drums** records track 1 and the tracks that play kit 1; **Synth** and the pad strips record what the tracks that play on the pads play. Each takes the longest clip there. To freeze, every other clip playing there must fit into that one a whole number of times, so a 1-bar and a 4-bar clip freeze as 4 bars, but a 3-bar and a 4-bar clip don't freeze.
 - **Loop** and **Audio** follow no clip, so they can't be frozen, only printed. A print of them, of a submix, a return, the line input or the master records the longest clip playing on any track.
 - A clip that plays its steps in another order (its **Direction**, see [Clip settings](clips.md#clip-settings)) records all of its order: a reversed clip one pass, a **Ping pong** clip every pass until it comes round the same. A clip in **Random** order never repeats, so it can't be frozen, only printed (one pass).
 - A take is at most 64 seconds long.

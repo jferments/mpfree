@@ -266,6 +266,9 @@ pub struct TimeControl {
     editor: Option<Editor>,
     pub(super) armed: Option<usize>,
     takes: Takes,
+    /// REDOs done so far: a track that comes back with one is the one UNDO
+    /// took away, and its kit comes back with it (`TrackKits::follow`).
+    redos: u64,
     /// The clip COPY + a clip copied last, for COPY + an empty slot.
     clipboard: Option<Clip>,
     /// The take a step lock's turn went into last: a turn that joins it
@@ -413,6 +416,7 @@ impl TimeControl {
             editor: None,
             armed: tracks.armed,
             takes: Takes::default(),
+            redos: 0,
             clipboard: None,
             lock_take: 0,
             costs: Costs::default(),
@@ -1709,6 +1713,7 @@ impl TimeControl {
             },
             TimeAction::Redo => match self.takes.redo(&mut self.project) {
                 Some(_) => {
+                    self.redos += 1;
                     let row = self.takes.done().last().map(TakeRow::of);
                     if let Some(d) = row.and_then(|r| r.dropped) {
                         self.follow_launches(d, false);
@@ -4278,6 +4283,16 @@ impl TimeControl {
             }
         }
         lines
+    }
+
+    /// REDOs done so far (`TimeHost::redos`).
+    pub fn redos(&self) -> u64 {
+        self.redos
+    }
+
+    /// Whether REDO has anything to do.
+    pub fn can_redo(&self) -> bool {
+        !self.takes.undone().is_empty()
     }
 
     /// The project's tracks, for TRACK MUTE's banks.

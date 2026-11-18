@@ -655,6 +655,7 @@ const FILTERS: &[(&str, FilterKind)] = &[
     ("notch", FilterKind::Notch),
     ("ladder", FilterKind::Ladder),
     ("vowel", FilterKind::Vowel),
+    ("comb", FilterKind::Comb),
 ];
 const PRESSURE: &[(&str, PressureTarget)] = &[
     ("off", PressureTarget::Off),

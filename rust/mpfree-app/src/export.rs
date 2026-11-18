@@ -108,18 +108,21 @@ pub struct TrackStem {
 /// Stems by Track: one per track that sounds, in track order, then one
 /// per audio track, then the other channels (the looper, the returns:
 /// `rest`).
-/// - A track with its own instrument has its own strip: the first pass
-///   hears it alone.
-/// - Tracks on the pads play into their kit's (or the synth's) strip,
-///   `pads(track)` with whether it is frozen. Those that share one each
-///   get a replay, unless it is the only one there (then the first pass
-///   hears it alone) or the strip is frozen (it plays its take whatever
-///   the tracks do: one stem for the strip, named after it).
+/// - Each track that sounds plays into a strip, `strip(track)` with
+///   whether it is frozen: its own instrument into its track's channel
+///   (`MixHost::track_channel`), the pads into their kit's (or the
+///   synth's) strip.
+/// - A track alone on its strip: the first pass hears it alone (a track's
+///   own instrument so even while frozen, named after the track).
+/// - Tracks that share a strip each get a replay, unless the strip is
+///   frozen (it plays its take whatever the tracks do: one stem for the
+///   strip, named after it). Track 1's own instrument shares the Drums
+///   strip with the tracks on kit 1 (sampler R3 part 4b).
 /// - The audio tracks that sound share the Audio strip the same way.
 /// - A track on outside gear, a muted one and one with no notes get none.
 pub fn track_stems(
     tracks: &[(String, Plays)],
-    pads: &dyn Fn(usize) -> (StripId, bool),
+    strip: &dyn Fn(usize) -> (StripId, bool),
     audio: &[(u8, String)],
     audio_frozen: bool,
     rest: &[(String, StripId)],
@@ -131,39 +134,38 @@ pub fn track_stems(
         audio,
     };
     let mut out = Vec::new();
-    let on_pads: Vec<(usize, StripId, bool)> = tracks
+    // Each track that sounds: its strip, whether frozen, and whether it is
+    // its own instrument.
+    let sounding: Vec<(usize, StripId, bool, bool)> = tracks
         .iter()
         .enumerate()
-        .filter(|(_, t)| t.1 == Plays::Pads)
-        .map(|(k, _)| {
-            let (strip, frozen) = pads(k);
-            (k, strip, frozen)
+        .filter(|(_, t)| matches!(t.1, Plays::Pads | Plays::Own))
+        .map(|(k, t)| {
+            let (s, frozen) = strip(k);
+            (k, s, frozen, t.1 == Plays::Own)
         })
         .collect();
-    let sharing = |s: StripId| on_pads.iter().filter(|p| p.1 == s).count();
-    for (k, (name, plays)) in tracks.iter().enumerate() {
-        match plays {
-            Plays::Own => out.push(stem(name, StripId::Track(TRACKS + k), None, false)),
-            Plays::Pads => {
-                let Some(&(_, strip, frozen)) = on_pads.iter().find(|p| p.0 == k) else {
-                    continue;
-                };
-                if frozen {
-                } else if sharing(strip) == 1 {
-                    out.push(stem(name, strip, None, false));
-                } else {
-                    out.push(stem(name, strip, Some(Only::Track(k as u16)), false));
-                }
-            }
-            Plays::Outside | Plays::Nothing => {}
+    let sharing = |s: StripId| sounding.iter().filter(|p| p.1 == s).count();
+    // A track's own instrument alone on its strip: its stem, frozen or not.
+    let alone_own = |p: &(usize, StripId, bool, bool)| p.3 && sharing(p.1) == 1;
+    for &p in &sounding {
+        let (k, s, frozen, _) = p;
+        let name = &tracks[k].0;
+        if alone_own(&p) {
+            out.push(stem(name, s, None, false));
+        } else if frozen {
+        } else if sharing(s) == 1 {
+            out.push(stem(name, s, None, false));
+        } else {
+            out.push(stem(name, s, Some(Only::Track(k as u16)), false));
         }
     }
     // Each frozen strip the tracks play into, once.
     let mut frozen: Vec<StripId> = Vec::new();
-    for &(_, strip, _) in on_pads.iter().filter(|p| p.2) {
-        if !frozen.contains(&strip) {
-            frozen.push(strip);
-            out.push(stem(&mixing::name(strip), strip, None, false));
+    for p in sounding.iter().filter(|p| p.2 && !alone_own(p)) {
+        if !frozen.contains(&p.1) {
+            frozen.push(p.1);
+            out.push(stem(&mixing::name(p.1), p.1, None, false));
         }
     }
     let a = StripId::Track(mixing::AUDIO);
@@ -202,8 +204,9 @@ pub fn audio_heard(audio: &mpfree_audiotracks::AudioTracks) -> Vec<(u8, String)>
 /// play as in the first pass) is kept quiet. Only the other tracks on the
 /// pads are: the replay's strip is theirs, and everything else plays as
 /// before, so an effect keyed from another strip hears what it heard.
-/// `on_pads`: the track plays the pads (not its own instrument, not
-/// outside gear).
+/// `on_pads`: the track plays the pads (not outside gear), or it is track
+/// 1 playing its own instrument into the Drums strip, which the tracks on
+/// kit 1 share (sampler R3 part 4b).
 pub fn quiets(only: Option<Only>, track: u16, on_pads: bool, event: Event) -> bool {
     let note = matches!(
         event,
@@ -263,7 +266,7 @@ impl Facts {
         let info = time.info();
         let project = time.project();
         let tracks = track_names(time);
-        let stems = stem_strips(&mix.mixer, mix.channels_in_use(), &tracks);
+        let stems = stem_strips(&mix.mixer, mix.own_channels_in_use(), &tracks);
         let plays: Vec<(String, Plays)> = project
             .tracks
             .iter()
@@ -288,9 +291,18 @@ impl Facts {
             .cloned()
             .collect();
         let frozen = |s: StripId| mix.mixer.frozen(s).is_some();
+        // Each track's strip: its own instrument's channel, or where its
+        // pads play.
+        let strip = |k: usize| {
+            if mix.instruments.holds(k) {
+                StripId::Track(mix.track_channel(k))
+            } else {
+                pads(k)
+            }
+        };
         let by_track = track_stems(
             &plays,
-            &|k| (pads(k), frozen(pads(k))),
+            &|k| (strip(k), frozen(strip(k))),
             audio,
             frozen(StripId::Track(mixing::AUDIO)),
             &rest,
@@ -868,8 +880,8 @@ impl Running {
 }
 
 /// The mixer strips that can have a stem: the engines' tracks, each
-/// track's own instrument in use (named after its track), and the
-/// returns.
+/// track's own channel in use (`in_use`: `MixHost::own_channels_in_use`,
+/// named after its track), and the returns.
 pub fn stem_strips(mixer: &Mixer, in_use: u128, tracks: &[String]) -> Vec<(String, StripId)> {
     let mut out = Vec::new();
     for s in mixer.strips() {
@@ -946,7 +958,12 @@ mod tests {
                     ("Bass".into(), Plays::Own),
                     ("Hats".into(), Plays::Pads),
                 ],
-                &|_| (StripId::Track(mixing::DRUMS), false),
+                // Bass (track 2) plays its own instrument, into its own
+                // channel; Kick and Hats the kit, into Drums.
+                &|k| {
+                    let t = if k == 1 { TRACKS + 1 } else { mixing::DRUMS };
+                    (StripId::Track(t), false)
+                },
                 &[(0, "Audio 1".into()), (2, "Audio 3".into())],
                 false,
                 &[("Return A".into(), StripId::Return(0))],
@@ -1150,7 +1167,7 @@ mod tests {
                 bar_ticks: info.meter.bar_ticks(),
                 tempos: vec![(0, 120.0)],
                 tracks: vec!["Track 1".into()],
-                stems: stem_strips(&self.mix.mixer, self.mix.channels_in_use(), &[]),
+                stems: stem_strips(&self.mix.mixer, self.mix.own_channels_in_use(), &[]),
                 by_track: Vec::new(),
                 song_on: false,
                 rig: Rig::default(),
@@ -1408,7 +1425,10 @@ mod tests {
             ("Hats".to_string(), Plays::Pads),
         ];
         let audio = [(1, "Audio 2".to_string()), (4, "Audio 5".to_string())];
-        let got = track_stems(&tracks, &|_| (drums, false), &audio, false, &rest);
+        // Keys (track 2) plays its own instrument, into its own channel.
+        let keys = StripId::Track(TRACKS + 1);
+        let on = |k: usize, s: StripId| if k == 1 { keys } else { s };
+        let got = track_stems(&tracks, &|k| (on(k, drums), false), &audio, false, &rest);
         let short: Vec<(&str, StripId, Option<Only>)> = got
             .iter()
             .map(|t| (t.name.as_str(), t.strip, t.only))
@@ -1428,20 +1448,26 @@ mod tests {
         assert!(got[3].audio && !got[0].audio);
         // One track on the pads, one audio track: the first pass hears
         // each alone.
-        let got = track_stems(&tracks[..4], &|_| (drums, false), &audio[..1], false, &[]);
+        let got = track_stems(
+            &tracks[..4],
+            &|k| (on(k, drums), false),
+            &audio[..1],
+            false,
+            &[],
+        );
         assert_eq!(got[0].only, None);
         assert_eq!((got[0].name.as_str(), got[0].strip), ("Kick", drums));
         assert_eq!((got[2].name.as_str(), got[2].only), ("Audio 2", None));
         // A frozen kit plays its take whatever the tracks do: one stem,
         // the kit's.
-        let got = track_stems(&tracks, &|_| (drums, true), &audio, true, &[]);
+        let got = track_stems(&tracks, &|k| (on(k, drums), true), &audio, true, &[]);
         let names: Vec<&str> = got.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["Keys", "Drums", "Audio"]);
         assert!(got.iter().all(|t| t.only.is_none()));
         // Hats on a kit of its own, on its own channel: each track is alone
         // on its strip, so neither needs a replay.
         let hats = StripId::Track(TRACKS + 4);
-        let strip = |k: usize| (if k == 4 { hats } else { drums }, false);
+        let strip = |k: usize| (on(k, if k == 4 { hats } else { drums }), false);
         let got = track_stems(&tracks, &strip, &[], false, &[]);
         let short: Vec<(&str, StripId, Option<Only>)> = got
             .iter()
@@ -1456,12 +1482,33 @@ mod tests {
             ]
         );
         // Only the Drums strip frozen: its one stem, and Hats as before.
-        let frozen = |k: usize| (if k == 4 { hats } else { drums }, k != 4);
+        let frozen = |k: usize| (on(k, if k == 4 { hats } else { drums }), k != 4);
         let names: Vec<String> = track_stems(&tracks, &frozen, &[], false, &[])
             .into_iter()
             .map(|t| t.name)
             .collect();
         assert_eq!(names, ["Keys", "Hats", "Drums"]);
+        // Track 1 playing its own instrument shares Drums with Hats on kit
+        // 1 (R3 part 4b): each gets a replay there.
+        let tracks = [
+            ("Lead".to_string(), Plays::Own),
+            ("Hats".to_string(), Plays::Pads),
+        ];
+        let got = track_stems(&tracks, &|_| (drums, false), &[], false, &[]);
+        let short: Vec<(&str, StripId, Option<Only>)> = got
+            .iter()
+            .map(|t| (t.name.as_str(), t.strip, t.only))
+            .collect();
+        assert_eq!(
+            short,
+            [
+                ("Lead", drums, Some(Only::Track(0))),
+                ("Hats", drums, Some(Only::Track(1))),
+            ]
+        );
+        // Alone there, it is heard alone in the first pass.
+        let got = track_stems(&tracks[..1], &|_| (drums, false), &[], false, &[]);
+        assert_eq!((got[0].strip, got[0].only), (drums, None));
     }
 
     #[test]
