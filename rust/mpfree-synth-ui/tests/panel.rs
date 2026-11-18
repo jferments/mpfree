@@ -898,8 +898,8 @@ fn keys_drawbar_squelch_and_analog_draw_inside_their_sections() {
 }
 
 #[test]
-fn keys_drawbar_squelch_and_analog_headings_fit() {
-    use mpfree_synth::{Analog, Drawbar, Keys, Preset, Squelch};
+fn keys_drawbar_squelch_analog_and_strings_headings_fit() {
+    use mpfree_synth::{Analog, Drawbar, Keys, Preset, Squelch, Strings};
     /// Every factory preset, then every parameter on its own at its
     /// minimum and maximum (each choice at each of its values).
     fn each<N: Node>(
@@ -974,6 +974,12 @@ fn keys_drawbar_squelch_and_analog_headings_fit() {
         Analog::load_preset,
         &mut check,
     );
+    each(
+        || Strings::new(48_000),
+        Strings::presets(),
+        Strings::load_preset,
+        &mut check,
+    );
     // The longest captions each drawing can have.
     use mpfree_synth::{analog_params as an, drawbar_params as db, keys_params as kp};
     let mut keys = Keys::new(48_000);
@@ -1011,6 +1017,14 @@ fn keys_drawbar_squelch_and_analog_headings_fit() {
         poly.set_param(id, v);
     }
     check(&poly, "longest");
+    let mut strings = Strings::new(48_000);
+    for (id, v) in mpfree_synth::strings_params::REGISTERS {
+        let _ = v;
+        strings.set_param(id, 100.0);
+    }
+    strings.set_param(mpfree_synth::strings_params::LINES, 1.0);
+    strings.set_param(mpfree_synth::strings_params::SWELL, 1.0);
+    check(&strings, "longest");
     let list: Vec<String> = misfits
         .iter()
         .map(|(what, preset)| format!("{what} ({preset})"))

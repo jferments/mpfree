@@ -238,6 +238,9 @@ pub enum LoopAction {
     /// Loop `n`'s mute turned over without picking it, or the picked
     /// loop's (None): a muted loop stays silent when PLAY starts.
     ToggleMute(Option<usize>),
+    /// Loop `n` muted (true) or let play, without picking it: a learned
+    /// control's mute.
+    Mute(usize, bool),
     /// Loop `n`'s solo turned over without picking it: while any loop
     /// with sound is soloed only the soloed ones play.
     ToggleSolo(usize),
@@ -2220,15 +2223,23 @@ impl LoopHost {
     }
 
     pub fn toggle_mute(&mut self, n: Option<usize>) -> String {
+        let n = n.unwrap_or(self.picked).min(MAX_LOOPS - 1);
+        let on = !self.looper.loop_status(n).is_some_and(|s| s.muted);
+        self.set_mute(n, on)
+    }
+
+    /// Loop `n` muted (`on`) or let play, leaving the pick as it was: a
+    /// learned control's mute (MIDI Learn), which says which way, so two
+    /// moves before the looper takes the first can't undo each other.
+    pub fn set_mute(&mut self, n: usize, on: bool) -> String {
         let picked = self.picked;
-        let n = n.unwrap_or(picked).min(MAX_LOOPS - 1);
+        let n = n.min(MAX_LOOPS - 1);
         let Some(s) = self.looper.loop_status(n) else {
             return format!("looper: loop {}: not there", n + 1);
         };
         if s.phase == Phase::Empty {
             return format!("looper: loop {}: empty, nothing to mute", n + 1);
         }
-        let on = !s.muted;
         // Pick it, mute, pick the old one back: all three or none.
         let need = if n == picked { 1 } else { 3 };
         if self.looper.room() < need {
@@ -2816,6 +2827,23 @@ impl LoopHost {
     /// Loop `n` as the looper has it (the loop keys' lights and steps).
     pub fn loop_status(&self, n: usize) -> Option<Status> {
         self.looper.loop_status(n)
+    }
+
+    /// The loop picked (0 is Loop 1): the buttons and a learned control's
+    /// picked loop act on it.
+    pub fn picked(&self) -> usize {
+        self.picked
+    }
+
+    /// The loops muted, bit `n` for loop `n`, as MIDI Learn reads them.
+    pub fn mute_bits(&self) -> u8 {
+        (0..MAX_LOOPS.min(8)).fold(0, |bits, n| {
+            let muted = self
+                .looper
+                .loop_status(n)
+                .is_some_and(|s| s.muted && s.phase != Phase::Empty);
+            bits | (u8::from(muted) << n)
+        })
     }
 
     /// The `status: looper: ...` line.

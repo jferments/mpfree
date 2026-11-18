@@ -31,7 +31,9 @@ use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
 use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
 use mpfree_synth::wavetable::params::{self as wt, PRESETS as WT_PRESETS};
-use mpfree_synth::{Analog, Drawbar, Drums, Keys, Pluck, Poly, Squelch, Wavetable, PRESETS};
+use mpfree_synth::{
+    Analog, Drawbar, Drums, Keys, Pluck, Poly, Squelch, Strings, Wavetable, PRESETS,
+};
 use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
 use mpfree_transport::{Block as TBlock, Command as T, Transport};
@@ -1056,6 +1058,25 @@ pub fn all(rate: u32) -> Vec<Case> {
             )
         }));
     }
+    // Strings: the bank with one key, a chord and every key a big chord
+    // can hold (it renders only the notes heard, so its cost grows with
+    // them, S5), and the orchestra's five registers.
+    for (name, keys) in [("Init", 1), ("Init", 6), ("Init", 49), ("Orchestra", 6)] {
+        v.push(measured(|| {
+            let p = Strings::presets()
+                .iter()
+                .find(|p| p.name == name)
+                .unwrap_or_else(|| panic!("strings preset {name}"));
+            chords(
+                format!("Strings {name}, {keys} keys"),
+                rate,
+                Box::new(Strings::new(rate)),
+                p.values,
+                None,
+                keys,
+            )
+        }));
+    }
     // Squelch: the classic line, the square, and the drive on top.
     for name in ["Acid Line", "Square Acid", "Distorted"] {
         v.push(measured(|| {
@@ -1786,6 +1807,16 @@ fn engine_scaling(rate: u32) -> Vec<Scaling> {
             format!("Drawbar {} (keys held)", p.name),
             rate,
             || Box::new(Drawbar::new(rate)),
+            p.values,
+            None,
+            false,
+        ));
+    }
+    for p in Strings::presets() {
+        v.push(preset_scaling(
+            format!("Strings {} (keys held)", p.name),
+            rate,
+            || Box::new(Strings::new(rate)),
             p.values,
             None,
             false,

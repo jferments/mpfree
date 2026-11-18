@@ -30,7 +30,7 @@ use std::f64::consts::{PI, TAU};
 
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_synth::{
-    drum_params, Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Wavetable,
+    drum_params, Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Strings, Wavetable,
 };
 
 use crate::fft::{hann_f64, power_spectrum};
@@ -61,10 +61,11 @@ pub enum Engine {
     Keys,
     Drawbar,
     Pluck,
+    Strings,
 }
 
 impl Engine {
-    pub const ALL: [Engine; 8] = [
+    pub const ALL: [Engine; 9] = [
         Engine::Poly,
         Engine::Analog,
         Engine::Squelch,
@@ -73,6 +74,7 @@ impl Engine {
         Engine::Keys,
         Engine::Drawbar,
         Engine::Pluck,
+        Engine::Strings,
     ];
 
     pub fn name(self) -> &'static str {
@@ -85,6 +87,7 @@ impl Engine {
             Engine::Keys => "Keys",
             Engine::Drawbar => "Drawbar",
             Engine::Pluck => "Pluck",
+            Engine::Strings => "Strings",
         }
     }
 
@@ -102,6 +105,7 @@ impl Engine {
             Engine::Keys => names(Keys::presets()),
             Engine::Drawbar => names(Drawbar::presets()),
             Engine::Pluck => names(Pluck::presets()),
+            Engine::Strings => names(Strings::presets()),
         }
     }
 
@@ -148,6 +152,11 @@ impl Engine {
                 n.load_preset(&Pluck::presets()[preset]);
                 Box::new(n)
             }
+            Engine::Strings => {
+                let mut n = Strings::new(rate);
+                n.load_preset(&Strings::presets()[preset]);
+                Box::new(n)
+            }
         }
     }
 
@@ -191,6 +200,17 @@ impl Engine {
                 (30, 0.0),
                 (31, 0.0),
                 (32, 0.0),
+            ],
+            // The Viola (the 8' alone) with its filter an octave up, no
+            // body, bow noise, velocity or ensemble.
+            Engine::Strings => &[
+                (0, 0.0),
+                (1, 100.0),
+                (10, 100.0),
+                (11, 0.0),
+                (12, 0.0),
+                (23, 0.0),
+                (30, 0.0),
             ],
             Engine::Fm | Engine::Keys | Engine::Pluck => &[],
         };
@@ -756,6 +776,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     filters(&mut rows, rate);
     fm(&mut rows, rate);
     drums(&mut rows, rate);
+    strings(&mut rows, rate);
     rows
 }
 
@@ -1350,6 +1371,13 @@ fn alias_cases() -> Vec<AliasCase> {
             Engine::Wavetable,
             vec![(1, 100.0)],
         ),
+        ("Strings viola", Engine::Strings, vec![]),
+        // The Violin's 4' over its 8'.
+        (
+            "Strings violin",
+            Engine::Strings,
+            vec![(0, 100.0), (1, 0.0)],
+        ),
         // Algorithm 32, operator 6 alone with full feedback.
         (
             "FM feedback 7",
@@ -1912,6 +1940,73 @@ fn drums(rows: &mut Vec<Row>, rate: u32) {
                 Better::Info,
                 None,
                 0.0,
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Strings.
+
+/// S7: the swell against its labels on the plain patch at C6, per key and
+/// shared: Crescendo from silence to full level, Sustain 60 dB down from
+/// full.
+fn strings(rows: &mut Vec<Row>, rate: u32) {
+    let key = 84;
+    let err = |measured: f64, label_ms: f64| (measured * 1000.0 - label_ms) / label_ms * 100.0;
+    for (mode, shared) in [("per key", 0.0), ("shared", 1.0)] {
+        let run = |cresc: f32, sus: f32, held: f64| {
+            let mut n = Engine::Strings.plain(rate);
+            n.set_param(20, cresc);
+            n.set_param(21, sus);
+            n.set_param(22, shared);
+            let tail = f64::from(sus) * 0.0016 + 0.2;
+            let s = note(n.as_mut(), rate, key, 127, held, held + tail);
+            let x = s.mid();
+            let f = freq_near(&x, rate, hz(key), 0).unwrap_or(hz(key));
+            sine_amp(&x, f, rate, 22)
+        };
+        let mean = |a: &[(f64, f64)], lo: f64, hi: f64| {
+            let v: Vec<f64> = a
+                .iter()
+                .filter(|(t, _)| (lo..hi).contains(t))
+                .map(|p| p.1)
+                .collect();
+            v.iter().sum::<f64>() / v.len().max(1) as f64
+        };
+        for cresc in [400.0f32, 1_500.0] {
+            let held = f64::from(cresc) / 1000.0 + 1.0;
+            let a = run(cresc, 1_000.0, held);
+            let full = mean(&a, held - 0.5, held - 0.1);
+            let t = a.iter().find(|p| p.1 >= 0.99 * full).map_or(held, |p| p.0);
+            put(
+                rows,
+                "S7",
+                &format!("swell[Strings {mode}, crescendo {cresc} ms]"),
+                "time_err_pct",
+                err(t, f64::from(cresc)),
+                Better::Near(0.0),
+                Some(10.0),
+                1.0,
+            );
+        }
+        for sus in [300.0f32, 1_500.0] {
+            let held = 0.5;
+            let r = run(5.0, sus, held);
+            let full = mean(&r, 0.3, 0.45);
+            let t = r
+                .iter()
+                .find(|p| p.0 > held && p.1 <= 0.001 * full)
+                .map_or(held + 2.0 * f64::from(sus) / 1000.0, |p| p.0);
+            put(
+                rows,
+                "S7",
+                &format!("swell[Strings {mode}, sustain {sus} ms]"),
+                "time_err_pct",
+                err(t - held, f64::from(sus)),
+                Better::Near(0.0),
+                Some(10.0),
+                1.0,
             );
         }
     }

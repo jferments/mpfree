@@ -1,19 +1,19 @@
 //! The pad player's synth: MPFree's Poly, FM, Drums, Pluck, Wavetable,
-//! Keys, Drawbar, Squelch or Analog (`mpfree-synth`) on the pads, edited on the
+//! Keys, Drawbar, Squelch, Analog or Strings (`mpfree-synth`) on the pads, edited on the
 //! Synth tab
 //! (`mpfree-synth-ui`).
 //!
 //! - The kit list ends with one more entry, "Synth: Poly" (or FM, Drums,
-//!   Pluck, Wavetable, Keys, Drawbar, Squelch, Analog). Picking it, or opening the Synth tab, makes the pads play the
+//!   Pluck, Wavetable, Keys, Drawbar, Squelch, Analog, Strings). Picking it, or opening the Synth tab, makes the pads play the
 //!   synth. The Synth tab's options (MENU) pick the engine; a note still
 //!   ringing on another engine finishes its release.
 //! - Drums is a kit, not a keyboard: pad 1 plays the kit's Pad 1 note (a
 //!   Kit page knob, C2 by default) and each pad after it a semitone higher,
 //!   whatever the scale, layout, bank or octave. The pads are named by the
 //!   sound on them ("Kick", "Closed hat"), and the Synth tab shows the page
-//!   of the pad hit last. Pluck, Wavetable, Keys, Drawbar, Squelch and
-//!   Analog play the pad layouts as Poly and FM do (Squelch one note at a
-//!   time).
+//!   of the pad hit last. Pluck, Wavetable, Keys, Drawbar, Squelch,
+//!   Analog and Strings play the pad layouts as Poly and FM do (Squelch one
+//!   note at a time).
 //! - The pads are laid out by `mpfree_scale::pads` (owner, 2026-11-11):
 //!   with no scale, pad 1 plays C3 and each pad after it a semitone higher
 //!   (C3 to D#4), as in round 6. With a scale, each bank has its own
@@ -47,7 +47,9 @@ use mpfree_node::pedal::Pedals;
 use mpfree_node::{Ctl, Ctx, Cull, Node, NodeEvent, ParamInfo, Timed};
 use mpfree_synth::drum_params;
 use mpfree_synth::fm_params::FmPreset;
-use mpfree_synth::{Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Wavetable};
+use mpfree_synth::{
+    Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Strings, Wavetable,
+};
 use mpfree_synth_ui::format::value_line;
 use mpfree_synth_ui::SynthState;
 pub use mpfree_tuning::Builtin;
@@ -71,6 +73,8 @@ pub const DRAWBAR_START_PRESET: &str = "Init";
 pub const SQUELCH_START_PRESET: &str = "Acid Line";
 /// The vintage poly's preset at the start.
 pub const ANALOG_START_PRESET: &str = "Init";
+/// The string machine's preset at the start.
+pub const STRINGS_START_PRESET: &str = "Init";
 /// How far SHIFT + wheel moves the pads: pad 1 from C0 to C6.
 pub const MIN_OCTAVE: i32 = -3;
 pub const MAX_OCTAVE: i32 = 3;
@@ -103,7 +107,7 @@ fn black(note: u8) -> bool {
 }
 
 /// How many engines there are.
-const ENGINES: usize = 9;
+const ENGINES: usize = 10;
 
 /// The synth engines the pads can play.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -127,6 +131,8 @@ pub enum Engine {
     Squelch,
     /// The vintage analog poly: voice cards that differ, poly-mod, chorus.
     Analog,
+    /// The string machine: a divide-down bank, registers, swell, Ensemble.
+    Strings,
 }
 
 impl Engine {
@@ -140,6 +146,7 @@ impl Engine {
         Engine::Drawbar,
         Engine::Squelch,
         Engine::Analog,
+        Engine::Strings,
     ];
 
     pub fn name(self) -> &'static str {
@@ -153,6 +160,7 @@ impl Engine {
             Engine::Drawbar => "Drawbar",
             Engine::Squelch => "Squelch",
             Engine::Analog => "Analog",
+            Engine::Strings => "Strings",
         }
     }
 
@@ -173,6 +181,7 @@ impl Engine {
             Engine::Drawbar => "mpfree.drawbar",
             Engine::Squelch => "mpfree.squelch",
             Engine::Analog => "mpfree.analog",
+            Engine::Strings => "mpfree.strings",
         }
     }
 
@@ -408,6 +417,7 @@ pub struct Synth {
     drawbar: Drawbar,
     squelch: Squelch,
     analog: Analog,
+    strings: Strings,
     fm_presets: Vec<FmPreset>,
     rate: u32,
     /// Note events for each engine (in [`Engine::ALL`]'s order) this period.
@@ -487,6 +497,7 @@ fn static_presets(engine: Engine) -> &'static [Preset] {
         Engine::Drawbar => Drawbar::presets(),
         Engine::Squelch => Squelch::presets(),
         Engine::Analog => Analog::presets(),
+        Engine::Strings => Strings::presets(),
         Engine::Poly | Engine::Fm => Poly::presets(),
     }
 }
@@ -524,6 +535,7 @@ pub fn engine_node(id: &str, rate: u32) -> Option<Box<dyn Node>> {
         "mpfree.drawbar" => Box::new(Drawbar::new(rate)),
         "mpfree.squelch" => Box::new(Squelch::new(rate)),
         "mpfree.analog" => Box::new(Analog::new(rate)),
+        "mpfree.strings" => Box::new(Strings::new(rate)),
         _ => return None,
     })
 }
@@ -609,6 +621,11 @@ impl Synth {
         if let Some(p) = Analog::presets().get(analog_preset) {
             analog.load_preset(p);
         }
+        let mut strings = Strings::new(rate);
+        let strings_preset = start_preset(Strings::presets(), STRINGS_START_PRESET);
+        if let Some(p) = Strings::presets().get(strings_preset) {
+            strings.load_preset(p);
+        }
         let mut fm = Fm::new(rate);
         let fm_presets = Fm::presets();
         let fm_preset = fm_presets
@@ -628,6 +645,7 @@ impl Synth {
             meters_of(&drawbar),
             meters_of(&squelch),
             meters_of(&analog),
+            meters_of(&strings),
         ];
         let settings = PadSettings::default();
         Synth {
@@ -640,6 +658,7 @@ impl Synth {
             drawbar,
             squelch,
             analog,
+            strings,
             fm_presets,
             rate,
             events: [[Timed::new(0, NodeEvent::AllOff); MAX_EVENTS]; ENGINES],
@@ -664,6 +683,7 @@ impl Synth {
                 drawbar_preset,
                 squelch_preset,
                 analog_preset,
+                strings_preset,
             ],
             pads_changed: false,
             fade: 0,
@@ -695,6 +715,7 @@ impl Synth {
             Engine::Drawbar => &self.drawbar,
             Engine::Squelch => &self.squelch,
             Engine::Analog => &self.analog,
+            Engine::Strings => &self.strings,
         }
     }
 
@@ -736,6 +757,7 @@ impl Synth {
             Engine::Drawbar => &mut self.drawbar,
             Engine::Squelch => &mut self.squelch,
             Engine::Analog => &mut self.analog,
+            Engine::Strings => &mut self.strings,
         }
     }
 
@@ -750,6 +772,7 @@ impl Synth {
             Engine::Drawbar => &self.drawbar,
             Engine::Squelch => &self.squelch,
             Engine::Analog => &self.analog,
+            Engine::Strings => &self.strings,
         }
     }
 
@@ -764,6 +787,7 @@ impl Synth {
             Engine::Drawbar => &mut self.drawbar,
             Engine::Squelch => &mut self.squelch,
             Engine::Analog => &mut self.analog,
+            Engine::Strings => &mut self.strings,
         }
     }
 
@@ -843,6 +867,7 @@ impl Synth {
             Engine::Drawbar => self.drawbar.active_voices(),
             Engine::Squelch => self.squelch.active_voices(),
             Engine::Analog => self.analog.active_voices(),
+            Engine::Strings => self.strings.keys_sounding(),
         }
     }
 
@@ -949,6 +974,7 @@ impl Synth {
         self.drawbar.set_tuning(&t);
         self.squelch.set_tuning(&t);
         self.analog.set_tuning(&t);
+        self.strings.set_tuning(&t);
         self.wt.set_tuning(&t);
     }
 
@@ -1526,6 +1552,7 @@ impl Synth {
                     Engine::Drawbar => &mut self.drawbar,
                     Engine::Squelch => &mut self.squelch,
                     Engine::Analog => &mut self.analog,
+                    Engine::Strings => &mut self.strings,
                 };
                 node.process(&ctx, &self.events[k][first..e[k]], sl, sr);
                 if !sl.iter().chain(sr.iter()).all(|s| s.is_finite()) {
@@ -1598,10 +1625,12 @@ impl Synth {
             Engine::Wavetable => self.wt.cull(),
             Engine::Keys => self.keys.cull(),
             // The organ's wheels turn whatever the keys do, so a key given
-            // up saves little; Squelch is one voice. Neither offers one.
+            // up saves little; the string machine's keys share its notes;
+            // Squelch is one voice. None of them offers one.
             Engine::Drawbar => self.drawbar.cull(),
             Engine::Squelch => self.squelch.cull(),
             Engine::Analog => self.analog.cull(),
+            Engine::Strings => self.strings.cull(),
         }
     }
 
@@ -1629,6 +1658,8 @@ impl Synth {
             // One note at a time.
             Engine::Squelch => 1.0,
             Engine::Analog => self.analog.param(mpfree_synth::analog_params::POLYPHONY),
+            // Every key plays, as on the string machines.
+            Engine::Strings => mpfree_synth::strings::NOTES as f32,
         }
     }
 
@@ -1645,7 +1676,8 @@ impl Synth {
             | Engine::Keys
             | Engine::Drawbar
             | Engine::Squelch
-            | Engine::Analog => 0,
+            | Engine::Analog
+            | Engine::Strings => 0,
         }
     }
 
@@ -1721,6 +1753,7 @@ impl Synth {
             Engine::Drawbar => self.drawbar.load_preset(p),
             Engine::Squelch => self.squelch.load_preset(p),
             Engine::Analog => self.analog.load_preset(p),
+            Engine::Strings => self.strings.load_preset(p),
             Engine::Poly | Engine::Fm => self.poly.load_preset(p),
         }
         self.presets[e.index()] = i;
@@ -1983,6 +2016,11 @@ impl Synth {
                 n.load_preset(p);
                 values(&n)
             }
+            Engine::Strings => {
+                let mut n = Strings::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
             Engine::Poly | Engine::Fm => {
                 let mut n = Poly::new(rate);
                 n.load_preset(p);
@@ -2175,6 +2213,7 @@ mod tests {
             Engine::Drawbar,
             Engine::Squelch,
             Engine::Analog,
+            Engine::Strings,
         ] {
             with(&mut s, |p| p.engine = engine);
             // A preset other than the first, with a value changed after.
@@ -2580,10 +2619,19 @@ mod tests {
                 l[..10].iter().all(|&x| x == 0.25),
                 "{engine:?}: nothing before the note's frame"
             );
-            assert!(
-                l.iter().any(|&x| x != 0.25),
-                "{engine:?} adds to what is there"
-            );
+            // Strings' ensemble lines run a few ms behind the keys, so
+            // its first sound can fall in the next block.
+            let mut added = l.iter().any(|&x| x != 0.25);
+            if engine == Engine::Strings && !added {
+                let mut l2 = [0.25f32; 128];
+                let mut r2 = [0.25f32; 128];
+                for _ in 0..3 {
+                    s.render(frame, 120.0, &mut l2, &mut r2);
+                    frame += 128;
+                    added |= l2.iter().any(|&x| x != 0.25);
+                }
+            }
+            assert!(added, "{engine:?} adds to what is there");
             assert_eq!(s.active_voices(), 1);
             let sound = run(&mut s, &mut frame, 40, 128);
             let p = peak(&sound);
@@ -2681,7 +2729,8 @@ mod tests {
         // Folders are engines' names, in any case; the Q-Link sets ride
         // along in a saved preset.
         assert_eq!(Engine::from_folder("wavetable"), Some(Engine::Wavetable));
-        assert_eq!(Engine::from_folder("Strings"), None);
+        assert_eq!(Engine::from_folder("Strings"), Some(Engine::Strings));
+        assert_eq!(Engine::from_folder("Favourites"), None);
         let qset = [("qset".to_string(), "31 32 - 33 Tone".to_string())];
         let (_, text) = s.save_preset("Q", &[], &qset);
         assert!(text.contains("\nqset = 31 32 - 33 Tone\n"), "{text}");
