@@ -369,3 +369,10 @@ At the thread's handoff (2026-11-12), M1 to M6 are built on the host, and nothin
 - **Not built yet.**
   - USB-B as a MIDI device to a computer: the read-only check above comes first, then its own rule zero review for anything that writes ([USB-B MIDI](../hardware/usb-b-midi.md)).
   - Expression recorded into a clip for a synth track and for MPE gear (gear without MPE records its bend, pressure and wheels as lanes since 18 Nov 2026). MPE gear and the CV outputs take it live already.
+  - The MPC's own MIDI features MPFree doesn't have yet, checked against the MPC Standalone 3.10.1 guide (18 Nov 2026):
+    - Sending MMC. It is SysEx, and nothing is sent as SysEx on the jacks, so it waits for the owner to change that rule.
+    - MIDI Time Code, in and out.
+    - Ableton Link, as a separate helper (its library is GPL).
+    - Bluetooth MIDI. The MPC One's radio hasn't been checked.
+    - A velocity range on a route, as the MPC's Key Ranges have a Velocity Min and Max. A route's Split block lets a range of keys through, and its Velocity block reshapes velocities but lets every one through.
+    - A program change that picks a track. The MPC's Program Change setting picks a Sequence or a Track; MPFree's Program change in launches a scene, its nearest to a Sequence.
