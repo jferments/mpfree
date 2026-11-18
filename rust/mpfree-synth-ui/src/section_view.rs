@@ -82,6 +82,9 @@ pub struct SectionBox {
     /// Beside the name: a note, the drawing's caption, or why a control
     /// is dim.
     pub note: String,
+    /// The note is a warning (an effect set to listen to a sidechain with
+    /// no track picked): drawn in the theme's bad colour.
+    pub note_warn: bool,
     /// `Tab(n)` for a tap on the name ("Open ›" shows).
     pub link: Option<usize>,
     /// What the link says, where not "Open ›" (an action: "Capture ›").
@@ -105,6 +108,7 @@ impl SectionBox {
             title: title.to_string(),
             job,
             note: String::new(),
+            note_warn: false,
             link: None,
             link_text: None,
             cards: Vec::new(),
@@ -1296,11 +1300,15 @@ fn paint_section(
     }
     if right.w > 24 {
         cx.text(
-            FontId::Sans,
+            if s.note_warn {
+                FontId::Bold
+            } else {
+                FontId::Sans
+            },
             LABEL_PX,
             right,
             Align::Right,
-            t.text_dim,
+            if s.note_warn { t.bad } else { t.text_dim },
             &s.note,
         );
     }

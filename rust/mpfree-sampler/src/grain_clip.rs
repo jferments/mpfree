@@ -10,7 +10,7 @@
 //! out instead. Grains at or under two semitones up keep the Hermite read
 //! and its cost.
 
-use mpfree_grain::buffer::first_hit;
+use mpfree_grain::buffer::{first_hit, read_run_each, run_frames, small_run};
 use mpfree_grain::{hermite, Aim, GrainSource};
 
 use crate::bandlimit::{self, Kernel, Octaves, Reach};
@@ -82,6 +82,28 @@ impl<'a, S: Sample> GrainClip<'a, S> {
         self.hits = hits;
         self
     }
+
+    /// The Hermite read between frames `first + 1` and `first + 2`, at
+    /// `t`, from frames `first ..= first + 3`, all inside the sound.
+    #[inline(always)]
+    fn read_inside(&self, first: usize, t: f32) -> [f32; 2] {
+        let at = first * self.channels;
+        if self.channels == 2 {
+            let w: &[S; 8] = self.data[at..at + 8]
+                .try_into()
+                .expect("four stereo frames");
+            let w = w.map(S::f);
+            [
+                hermite(w[0], w[2], w[4], w[6], t),
+                hermite(w[1], w[3], w[5], w[7], t),
+            ]
+        } else {
+            let w: &[S; 4] = self.data[at..at + 4].try_into().expect("four mono frames");
+            let w = w.map(S::f);
+            let l = hermite(w[0], w[1], w[2], w[3], t);
+            [l, l]
+        }
+    }
 }
 
 impl<S: Sample> GrainSource for GrainClip<'_, S> {
@@ -121,22 +143,27 @@ impl<S: Sample> GrainSource for GrainClip<'_, S> {
             let l = at(0);
             return [l, if self.channels == 2 { at(1) } else { l }];
         }
-        let at = (frame - 1) as usize * self.channels;
-        if self.channels == 2 {
-            let w: &[S; 8] = self.data[at..at + 8]
-                .try_into()
-                .expect("four stereo frames");
-            let w = w.map(S::f);
-            [
-                hermite(w[0], w[2], w[4], w[6], t),
-                hermite(w[1], w[3], w[5], w[7], t),
-            ]
-        } else {
-            let w: &[S; 4] = self.data[at..at + 4].try_into().expect("four mono frames");
-            let w = w.map(S::f);
-            let l = hermite(w[0], w[1], w[2], w[3], t);
-            [l, l]
+        self.read_inside((frame - 1) as usize, t)
+    }
+
+    /// [`GrainSource::read`] for a run of frames, the same values: when
+    /// every frame the run reads is inside the region, it skips the
+    /// edges' test frame by frame.
+    #[inline]
+    fn read_run(&self, pos: f64, inc: f64, out: &mut [[f32; 2]]) {
+        if small_run(pos, inc, out.len()) {
+            let (lo, hi) = run_frames(pos, inc, out.len());
+            if lo > self.start && hi + 2 < self.end {
+                let mut pos = pos;
+                for o in out {
+                    let f = pos as i32;
+                    *o = self.read_inside(f as usize - 1, (pos - f64::from(f)) as f32);
+                    pos += inc;
+                }
+                return;
+            }
         }
+        read_run_each(self, pos, inc, out);
     }
 
     /// Clean (unless Vintage) past [`CLEAN_ABOVE`]: the octave copy that
@@ -190,5 +217,74 @@ impl<S: Sample> GrainSource for GrainClip<'_, S> {
             _ => bandlimit::read2(kernel, self.data, stereo, lo, hi, at, reach, (0, 1)),
         };
         [l, r]
+    }
+
+    /// [`GrainSource::read_aimed`] for a run of frames, the same values:
+    /// the copy, its frames' range, the stereo test and the reach once for
+    /// the run, and the fixed-point position without a 64-bit conversion.
+    #[inline]
+    fn read_aimed_run(&self, pos: f64, inc: f64, aim: Aim, out: &mut [[f32; 2]]) {
+        let Some(kernel) = self.kernel else {
+            let mut pos = pos;
+            for o in out {
+                *o = self.read_aimed(pos, aim);
+                pos += inc;
+            }
+            return;
+        };
+        if self.end <= self.start {
+            out.fill([0.0; 2]);
+            return;
+        }
+        let k = u32::from(aim.octave);
+        let (lo, hi) = (self.start >> k, (self.end - 1) >> k);
+        let reach = Reach::from_parts(aim.step, aim.taps);
+        let stereo = self.channels == 2;
+        match self.octaves.and_then(|o| o.level(k as usize)) {
+            Some(copy) if k > 0 => {
+                clean_run(kernel, &copy[..], stereo, lo, hi, k, reach, pos, inc, out)
+            }
+            _ => clean_run(kernel, self.data, stereo, lo, hi, k, reach, pos, inc, out),
+        }
+    }
+}
+
+/// The frames of a clean run from `data` (the sound, or its octave copy
+/// `k`): [`bandlimit::read2`] at each position, as `read_aimed` reads it.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn clean_run<T: Sample>(
+    kernel: &Kernel,
+    data: &[T],
+    stereo: bool,
+    lo: i64,
+    hi: i64,
+    k: u32,
+    reach: Reach,
+    mut pos: f64,
+    inc: f64,
+    out: &mut [[f32; 2]],
+) {
+    // A small run's position in 32.32 fixed point without a 64-bit
+    // conversion (a library call on ARMv7): the whole frames through an
+    // `i32` and the fraction through a `u32`, one instruction each. It is
+    // the same number: `pos * ONE` is exact, and so is `pos` less its
+    // whole frames.
+    if small_run(pos, inc, out.len()) {
+        for o in out.iter_mut() {
+            let f = pos as i32;
+            let frac = ((pos - f64::from(f)) * ONE) as u32;
+            let at = ((i64::from(f) << 32) | i64::from(frac)) >> k;
+            let (l, r) = bandlimit::read2(kernel, data, stereo, lo, hi, at, reach, (0, 1));
+            *o = [l, r];
+            pos += inc;
+        }
+    } else {
+        for o in out.iter_mut() {
+            let at = ((pos * ONE) as i64) >> k;
+            let (l, r) = bandlimit::read2(kernel, data, stereo, lo, hi, at, reach, (0, 1));
+            *o = [l, r];
+            pos += inc;
+        }
     }
 }

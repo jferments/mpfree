@@ -53,8 +53,12 @@ impl MixView {
 pub struct InsertView {
     pub name: String,
     pub on: bool,
-    /// The strip keying it, by name ("Kick"), for a sidechain.
+    /// The strip it listens to, by name ("Kick"), while it listens to a
+    /// sidechain (its control on: `mpfree_fx::sidechain::listens`).
     pub key: Option<String>,
+    /// Set to listen to a sidechain with no strip picked: it says
+    /// "Nothing picked" in red (layout spec 4a, Effects).
+    pub nothing_picked: bool,
     /// Its share of a period while profiling, per cent.
     pub cost_pct: Option<f32>,
     /// The parametric EQ's values, by parameter id, when this insert is
@@ -385,6 +389,19 @@ fn read_strip(m: &mut Mixer, s: StripId, name: &dyn Fn(StripId) -> String) -> St
     let keys: Vec<Option<StripId>> = (0..m.chain(s).map_or(0, |c| c.len()))
         .map(|slot| m.key(s, slot))
         .collect();
+    // Whether each effect listens to its sidechain: its control on (an
+    // effect without one listens whenever it is fed).
+    let listening: Vec<bool> = (0..keys.len())
+        .map(|slot| {
+            let Some(n) = m.chain(s).and_then(|c| c.node(slot)) else {
+                return false;
+            };
+            match mpfree_fx::sidechain::listens(n.info().id) {
+                Some(l) => l.listening(n.param(l.param)),
+                None => keys[slot].is_some(),
+            }
+        })
+        .collect();
     if let Some(c) = m.chain_mut(s) {
         v.slots = c.capacity();
         v.inserts = (0..c.len())
@@ -395,7 +412,8 @@ fn read_strip(m: &mut Mixer, s: StripId, name: &dyn Fn(StripId) -> String) -> St
                     .node(slot)
                     .map_or_else(|| "?".to_string(), mpfree_fx::families::insert_name),
                 on: c.is_on(slot),
-                key: keys[slot].map(name),
+                key: keys[slot].filter(|_| listening[slot]).map(name),
+                nothing_picked: listening[slot] && keys[slot].is_none(),
                 eq: c
                     .node(slot)
                     .filter(|n| n.info().id == EQ_ID)

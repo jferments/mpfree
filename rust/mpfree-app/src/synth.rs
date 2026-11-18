@@ -43,7 +43,8 @@ use mpfree_arp::scale::pads::{
 };
 use mpfree_arp::scale::{Scale, Shift, NOTE_NAMES};
 use mpfree_instruments::preset::{engine_of, Error as PresetError, Preset as SoundPreset};
-use mpfree_node::{Ctx, Cull, Node, NodeEvent, ParamInfo, Timed};
+use mpfree_node::pedal::Pedals;
+use mpfree_node::{Ctl, Ctx, Cull, Node, NodeEvent, ParamInfo, Timed};
 use mpfree_synth::drum_params;
 use mpfree_synth::fm_params::FmPreset;
 use mpfree_synth::{Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Wavetable};
@@ -413,6 +414,9 @@ pub struct Synth {
     events: [[Timed; MAX_EVENTS]; ENGINES],
     len: [usize; ENGINES],
     dropped_events: u64,
+    /// The sustain and sostenuto pedals, holding the notes of the engine on
+    /// the pads while it doesn't hear them itself (`Node::hears`).
+    pedals: Pedals,
     left: [f32; SCRATCH],
     right: [f32; SCRATCH],
     settings: PadSettings,
@@ -641,6 +645,7 @@ impl Synth {
             events: [[Timed::new(0, NodeEvent::AllOff); MAX_EVENTS]; ENGINES],
             len: [0; ENGINES],
             dropped_events: 0,
+            pedals: Pedals::new(),
             left: [0.0; SCRATCH],
             right: [0.0; SCRATCH],
             settings,
@@ -1128,7 +1133,24 @@ impl Synth {
         out
     }
 
+    /// Queues `ev` for `engine`. The engine on the pads gets it through the
+    /// pedals, which hold its note-offs while a pedal keeps the notes,
+    /// unless it hears the pedals itself.
     fn push(&mut self, engine: Engine, offset: u32, ev: NodeEvent) {
+        if engine == self.settings.engine && !self.engine_node(engine).hears(Ctl::Sustain) {
+            if self.pedals.pass(&ev) {
+                self.push_raw(engine, offset, ev);
+                return;
+            }
+            let mut pedals = self.pedals;
+            pedals.filter(ev, |e| self.push_raw(engine, offset, e));
+            self.pedals = pedals;
+        } else {
+            self.push_raw(engine, offset, ev);
+        }
+    }
+
+    fn push_raw(&mut self, engine: Engine, offset: u32, ev: NodeEvent) {
         let k = engine.index();
         if self.len[k] < MAX_EVENTS {
             self.events[k][self.len[k]] = Timed::new(offset, ev);
@@ -1362,6 +1384,22 @@ impl Synth {
                 NodeEvent::Pressure {
                     note,
                     value: value.min(127),
+                },
+            );
+        }
+    }
+
+    /// A controller for the engine on the pads (a pedal, the mod wheel,
+    /// breath), 0 to 1. The pedals hold its notes ([`Synth::push`]).
+    #[allow(dead_code)] // MIDI in's controller wiring calls it (the MIDI thread)
+    pub fn control(&mut self, ctl: Ctl, value: f32, offset: u32) {
+        if !value.is_nan() {
+            self.push(
+                self.settings.engine,
+                offset,
+                NodeEvent::Control {
+                    ctl,
+                    value: value.clamp(0.0, 1.0),
                 },
             );
         }
@@ -2054,6 +2092,38 @@ mod tests {
 
     fn queued(s: &Synth) -> Vec<NodeEvent> {
         s.queued()
+    }
+
+    #[test]
+    fn the_sustain_pedal_holds_the_pads_engines_notes_until_it_comes_up() {
+        let mut s = Synth::new(44_100);
+        s.note_on_note(60, 100, 0);
+        s.control(Ctl::Sustain, 1.0, 1);
+        s.note_off_note(60, 2);
+        s.control(Ctl::ModWheel, 0.25, 3);
+        // The note-off waits for the pedal; the wheel goes through.
+        assert_eq!(
+            queued(&s),
+            vec![
+                NodeEvent::NoteOn {
+                    note: 60,
+                    velocity: 100
+                },
+                NodeEvent::Control {
+                    ctl: Ctl::ModWheel,
+                    value: 0.25
+                },
+            ]
+        );
+        s.control(Ctl::Sustain, 0.0, 4);
+        assert_eq!(queued(&s).last(), Some(&NodeEvent::NoteOff { note: 60 }));
+        // An engine switch ends what the pedal held on the old one.
+        s.control(Ctl::Sustain, 1.0, 5);
+        s.note_on_note(62, 100, 6);
+        s.note_off_note(62, 7);
+        with(&mut s, |p| p.engine = Engine::Fm);
+        s.control(Ctl::Sustain, 0.0, 8);
+        assert!(!queued(&s).contains(&NodeEvent::NoteOff { note: 62 }));
     }
 
     fn scale(name: &str, root: u8) -> Option<Scale> {

@@ -943,6 +943,9 @@ pub struct Status {
     /// The Perform set is on the pads at a page past A (PAD BANK): its
     /// name ("Page B · Throws"), for the chip and the hint.
     pub perform: Option<String>,
+    /// The Perform set's page (PAD BANK A = 0 to H = 7): the one on the
+    /// pads, and the one the Pads tab's Perform view shows.
+    pub perform_bank: usize,
     /// STEP SEQ: the pads as steps, or STEP SEQ held to pick the sound.
     pub steps: Option<StepPads>,
     /// ERASE held: the next tap on the screen deletes what it lands on
@@ -1195,6 +1198,12 @@ pub enum Effect {
     Looper(LoopAction),
     /// A Perform pad's throw held or let go, for the mixer.
     PlayFx(crate::mixing::PlayFx),
+    /// The project's Perform set changed: the screen's copy, after an
+    /// edit or a project's (`opened`: a project opened or New).
+    PerformSet {
+        set: Box<crate::perform_pads::PerformSet>,
+        opened: bool,
+    },
     /// A Perform pad's track mute: track `track` (0 is Track 1) muted or
     /// unmuted, at the launch line when `wait`.
     TrackMute {
@@ -1303,6 +1312,9 @@ pub struct App {
     /// The set's page on the pads (PAD BANK A = 0 to H = 7), kept while
     /// the set is off, so SHIFT + SAMPLER brings it back.
     perform_bank: usize,
+    /// The Pads tab shows the Perform set (its Perform view): there the
+    /// pads pick the set's pads and PAD BANK its pages.
+    perform_shown: bool,
     /// The throws a Perform pad plays (held or latched), a bit for each
     /// place in [`crate::play_page::THROW_LIST`].
     throws_on: u8,
@@ -1555,6 +1567,7 @@ impl App {
             loop_keys: false,
             perform_set: crate::perform_pads::PerformSet::default(),
             perform_bank: 0,
+            perform_shown: false,
             throws_on: 0,
             pad_page: 0,
             kit_held: [None; 16],
@@ -1801,7 +1814,7 @@ impl App {
             || self.step_pads().is_some()
             || self.levels_on
             || self.pads_mute()
-            || self.pads_are_loop_keys()
+            || self.pads_are_perform()
         {
             return None;
         }
@@ -2117,6 +2130,96 @@ impl App {
         self.loop_keys && matches!(self.view, View::Looper | View::Play)
     }
 
+    /// The Pads tab shows the Perform set: the pads pick its pads (a
+    /// throw plays while held, so it can be heard) and PAD BANK turns its
+    /// pages. The kit's pads don't play.
+    pub fn perform_editing(&self) -> bool {
+        self.perform_shown && self.view == View::Pads
+    }
+
+    /// The pads are the Perform set's: on the pads (Play, the Looper
+    /// tab) or being edited (the Pads tab's Perform view). PAD BANK turns
+    /// its pages and the pads light by it.
+    pub fn pads_are_perform(&self) -> bool {
+        self.pads_are_loop_keys() || self.perform_editing()
+    }
+
+    /// The Pads tab shows the Perform set (`shown`), or the kit's pads
+    /// again: PAD BANK's lights follow.
+    pub fn show_perform(&mut self, shown: bool) -> Vec<Effect> {
+        if shown == self.perform_shown {
+            return Vec::new();
+        }
+        self.perform_shown = shown;
+        vec![
+            self.status(),
+            Effect::BankLights,
+            Effect::Note(if shown {
+                format!(
+                    "Pads tab: the Perform set, {} (the pads pick its pads; PAD BANK: its pages)",
+                    self.perform_set.page_name(self.perform_bank)
+                )
+            } else {
+                "Pads tab: the kit's pads again".to_string()
+            }),
+        ]
+    }
+
+    /// The Perform view's bank strip: page `page` shown, and on the pads
+    /// (as PAD BANK picks it).
+    pub fn perform_page_to(&mut self, page: usize) -> Vec<Effect> {
+        let page = page.min(crate::perform_pads::PAGES - 1);
+        if page == self.perform_bank {
+            return Vec::new();
+        }
+        self.perform_bank = page;
+        vec![self.status(), Effect::BankLights]
+    }
+
+    /// The Perform view's On the pads switch turned on: the set on the
+    /// pads at the page shown (SHIFT + SAMPLER keeps the page too).
+    pub fn perform_on(&mut self) -> Vec<Effect> {
+        self.set_loop_keys(true)
+    }
+
+    /// Pad `pad` of page `page` of the Perform set does `action` now (the
+    /// Perform view's edits and its UNDO). A throw the pad played is let
+    /// go, so nothing keeps playing that no pad holds. The project is
+    /// unsaved; the screen gets the new set.
+    pub fn set_perform_pad(
+        &mut self,
+        page: usize,
+        pad: usize,
+        action: crate::perform_pads::PadAction,
+    ) -> Vec<Effect> {
+        use crate::perform_pads::PadAction;
+        let Some(slot) = self
+            .perform_set
+            .pages
+            .get_mut(page)
+            .and_then(|p| p.pads.get_mut(pad))
+        else {
+            return Vec::new();
+        };
+        let before = std::mem::replace(slot, action);
+        let mut fx = Vec::new();
+        if let PadAction::Throw(t) = before {
+            let bit = 1u8.checked_shl(u32::from(t.index)).unwrap_or(0);
+            if before != action && self.throws_on & bit != 0 {
+                self.throws_on &= !bit;
+                fx.extend(
+                    crate::perform_pads::throw_fx(usize::from(t.index), false, 0)
+                        .map(Effect::PlayFx),
+                );
+            }
+        }
+        fx.push(Effect::PerformSet {
+            set: Box::new(self.perform_set.clone()),
+            opened: false,
+        });
+        fx
+    }
+
     /// The Perform set's page on the pads.
     pub fn perform_page(&self) -> &crate::perform_pads::PerformPage {
         self.perform_set.page(self.perform_bank)
@@ -2141,6 +2244,10 @@ impl App {
         if self.loop_keys {
             fx.push(self.status());
         }
+        fx.push(Effect::PerformSet {
+            set: Box::new(self.perform_set.clone()),
+            opened: true,
+        });
         fx
     }
 
@@ -2432,6 +2539,7 @@ impl App {
             loop_keys: self.loop_keys && self.perform_bank == 0,
             perform: (self.loop_keys && self.perform_bank != 0)
                 .then(|| self.perform_set.page_name(self.perform_bank)),
+            perform_bank: self.perform_bank,
             steps: self.step_pads(),
             erase: self.erase_held,
             copy: self.copy_held(),
@@ -2730,8 +2838,9 @@ impl App {
             self.mute_bank = bank_target(self.mute_bank, k, shift);
             fx.push(Effect::Note(self.mute_bank_line()));
             fx.push(Effect::BankLights);
-        } else if let Some(k) = self.map.bank_of(note).filter(|_| self.pads_are_loop_keys()) {
-            // The Perform set on the pads: PAD BANK picks its page.
+        } else if let Some(k) = self.map.bank_of(note).filter(|_| self.pads_are_perform()) {
+            // The Perform set on the pads, or on the Pads tab: PAD BANK
+            // picks its page.
             fx.extend(self.perform_bank_button(k, shift));
         } else if let Some(k) = self.map.bank_of(note) {
             fx.push(Effect::Bank { button: k, shift });
@@ -8183,6 +8292,72 @@ mod tests {
         assert_eq!(
             app.perform_set(),
             &crate::perform_pads::PerformSet::default()
+        );
+    }
+
+    /// The Pads tab's Perform view (board 7): while it shows, PAD BANK
+    /// turns the set's pages (the kit's bank stays) and the pads are the
+    /// set's; an edit changes the set, gives the screen the new one and
+    /// lets go of a throw the pad had latched; On the pads puts the set on
+    /// at the page shown. Another tab, or the kit's view, gives PAD BANK
+    /// back to the kit.
+    #[test]
+    fn the_perform_view_pages_and_edits_the_set() {
+        use crate::perform_pads::{Hold, PadAction, Throw};
+        const BANK_C: u8 = 37;
+        let mut app = ready();
+        app.map.learn(mapper::Job::Bank(2), Some(BANK_C));
+        app.open_tab(View::Pads);
+        assert!(!app.perform_editing());
+        assert!(!app.show_perform(true).is_empty());
+        assert!(app.perform_editing());
+        assert!(app.pads_are_perform());
+        assert!(!app.pads_are_loop_keys(), "not on the pads for Play");
+        // PAD BANK C: page C of the set, no kit bank.
+        let fx = press(&mut app, BANK_C);
+        assert_eq!(app.perform_bank(), 2);
+        assert!(
+            fx.contains(&Effect::Note("Perform: Page C".into())),
+            "{fx:?}"
+        );
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Bank { .. })));
+        assert_eq!(app.status_now().perform_bank, 2);
+        // The strip's page B.
+        assert!(!app.perform_page_to(1).is_empty());
+        assert!(app.perform_page_to(1).is_empty(), "already there");
+        // B8, Vinyl brake, latched and playing: made a scene, it lets go.
+        let brake = Throw {
+            index: 7,
+            hold: Hold::Latch,
+        };
+        app.set_perform_pad(1, 7, PadAction::Throw(brake));
+        app.perform_throw(brake, true);
+        let fx = app.set_perform_pad(1, 7, PadAction::Scene(2));
+        let let_go = crate::perform_pads::throw_fx(7, false, 0).unwrap();
+        assert!(fx.contains(&Effect::PlayFx(let_go)), "{fx:?}");
+        assert_eq!(app.throws_on(), 0);
+        assert!(fx.iter().any(
+            |e| matches!(e, Effect::PerformSet { set, opened: false } if set.page(1).action(7) == PadAction::Scene(2))
+        ));
+        assert!(app.perform_set().text().contains("pad B8 = scene 3"));
+        // On the pads: the set on at page B.
+        app.perform_on();
+        assert_eq!(app.status_now().perform.as_deref(), Some("Page B · Throws"));
+        // The Looper tab: the set plays there; PAD BANK still pages it.
+        app.open_tab(View::Looper);
+        assert!(!app.perform_editing());
+        assert!(app.pads_are_loop_keys());
+        app.perform_off();
+        // The kit's view again: PAD BANK picks kit banks.
+        app.open_tab(View::Pads);
+        app.show_perform(false);
+        assert!(!app.pads_are_perform());
+        assert_eq!(
+            press(&mut app, BANK_C),
+            vec![Effect::Bank {
+                button: 2,
+                shift: false
+            }]
         );
     }
 
