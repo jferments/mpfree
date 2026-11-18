@@ -793,6 +793,85 @@ mod looper {
         });
     }
 
+    /// A footswitch (the looper redesign, step 5): controls learned on the
+    /// looper play it from any page. On Play, with the pads playing the
+    /// kit, Loop 1's key records from the bar line and ends the pass,
+    /// a fader on its mute mutes it from the middle up, Next loop picks
+    /// Loop 2, the picked loop's key arms Loop 2 and lets it go, Undo
+    /// and Clear are the Looper tab's on the picked loop, and Loop 1's
+    /// key held a second clears it.
+    #[test]
+    fn a_footswitch_plays_the_looper_from_any_page() {
+        use mpfree_play::mpfree_param::looper as fs;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Play");
+            assert!(!s.app.pads_are_loop_keys());
+            s.button("PLAY").run_for(0.3);
+            let status = |s: &Session, n| s.looper.looper.loop_status(n).unwrap();
+            // Loop 1's key: armed for the bar line, recording, and pressed
+            // again it ends on the bar line.
+            s.footswitch(fs::key(0), 1.0).footswitch(fs::key(0), 0.0);
+            assert_eq!(status(&s, 0).phase, Phase::Armed);
+            assert!(s.app.rec.armed(crate::rec_arm::Target::Loop));
+            until_phase(&mut s, Phase::Recording, 2.5);
+            s.run_for(2.0);
+            s.footswitch(fs::key(0), 1.0).footswitch(fs::key(0), 0.0);
+            assert!(status(&s, 0).ending);
+            until_phase(&mut s, Phase::Playing, 2.5);
+            assert!(s
+                .said()
+                .iter()
+                .any(|l| l.contains("Loop 1's key, from a learned control")));
+            // A fader on Loop 1's mute: muted from the middle up, and
+            // playing again under it.
+            s.footswitch(fs::mute(0), 0.8);
+            assert!(status(&s, 0).muted);
+            s.footswitch(fs::mute(0), 0.9);
+            assert!(status(&s, 0).muted, "still up: nothing more");
+            s.footswitch(fs::mute(0), 0.1);
+            assert!(!status(&s, 0).muted);
+            // Next loop: Loop 2 picked; its key (the picked loop's) arms
+            // it, and again lets it go.
+            s.footswitch(fs::NEXT_LOOP, 1.0)
+                .footswitch(fs::NEXT_LOOP, 0.0);
+            assert_eq!(s.looper.looper.selected(), 1);
+            s.footswitch(fs::PICKED_KEY, 1.0)
+                .footswitch(fs::PICKED_KEY, 0.0);
+            assert_eq!(status(&s, 1).phase, Phase::Armed);
+            s.footswitch(fs::PICKED_KEY, 1.0)
+                .footswitch(fs::PICKED_KEY, 0.0);
+            assert_eq!(status(&s, 1).phase, Phase::Empty);
+            // Clear on the picked loop (Loop 1 again), and Undo brings it
+            // back.
+            s.footswitch(fs::NEXT_LOOP, 1.0)
+                .footswitch(fs::NEXT_LOOP, 0.0);
+            for _ in 0..6 {
+                s.footswitch(fs::NEXT_LOOP, 1.0)
+                    .footswitch(fs::NEXT_LOOP, 0.0);
+            }
+            assert_eq!(s.looper.looper.selected(), 0, "round after Loop 8");
+            s.footswitch(fs::CLEAR, 1.0).footswitch(fs::CLEAR, 0.0);
+            s.run_for(0.3);
+            assert_eq!(status(&s, 0).phase, Phase::Empty);
+            s.footswitch(fs::UNDO, 1.0).footswitch(fs::UNDO, 0.0);
+            s.run_for(0.3);
+            assert_eq!(status(&s, 0).phase, Phase::Playing, "Undo brought it back");
+            // Loop 1's key held a second clears it; the pads never moved.
+            s.footswitch(fs::key(0), 1.0);
+            s.run_for(1.3);
+            s.footswitch(fs::key(0), 0.0);
+            s.run_periods(4);
+            assert_eq!(status(&s, 0).phase, Phase::Empty, "the held key cleared it");
+            assert!(s
+                .said()
+                .iter()
+                .any(|l| l.contains("Loop 1 cleared (its key held), from a learned control")));
+            assert!(!s.app.pads_are_loop_keys());
+            s.button("STOP");
+        });
+    }
+
     /// Overdubs: Replace (step 3b): an overdub with a pad in it takes the
     /// place of what was there for as long as it records; its lane says
     /// "replace", and UNDO takes it away.

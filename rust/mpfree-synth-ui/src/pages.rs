@@ -391,6 +391,34 @@ const ANALOG: &[PlanPage] = &[
     ),
 ];
 
+use mpfree_synth::strings_params as st;
+
+/// Strings: the registers (their levels on the Q-Links, as the old
+/// machines' sliders), the tone with the swell, the ensemble, then the
+/// voice.
+const STRINGS: &[PlanPage] = &[
+    pg(
+        "Registers",
+        &["Registers"],
+        &[st::VIOLIN, st::VIOLA, st::CELLO, st::CONTRABASS],
+    ),
+    pg(
+        "Tone",
+        &["Tone", "Swell"],
+        &[st::BRIGHTNESS, st::CRESCENDO, st::SUSTAIN, st::NOISE],
+    ),
+    pg(
+        "Ensemble",
+        &["Ensemble"],
+        &[st::ENSEMBLE, st::DEPTH, st::SLOW_RATE, st::WIDTH],
+    ),
+    pg(
+        "Voice",
+        &["Voice", "Output"],
+        &[st::TRANSPOSE, st::FINE, st::BEND_RANGE, st::LEVEL],
+    ),
+];
+
 fn known(id: &str) -> Option<&'static [PlanPage]> {
     match id {
         "mpfree.poly" => Some(POLY),
@@ -402,6 +430,7 @@ fn known(id: &str) -> Option<&'static [PlanPage]> {
         "mpfree.drawbar" => Some(DRAWBAR),
         "mpfree.squelch" => Some(SQUELCH),
         "mpfree.analog" => Some(ANALOG),
+        "mpfree.strings" => Some(STRINGS),
         _ => None,
     }
 }
@@ -695,6 +724,22 @@ mod tests {
                 assert!(tile_label(&p.name, &params[i]).len() <= 20);
             }
         }
+    }
+
+    #[test]
+    fn strings_has_its_own_pages() {
+        use mpfree_node::Node;
+        let s = mpfree_synth::Strings::new(48_000);
+        let params = s.params();
+        let pages = plan(s.info(), params);
+        let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Registers", "Tone", "Ensemble", "Voice"]);
+        every_param_once(&pages, params.len());
+        let q: Vec<&str> = qlink_targets(&pages[0], params)
+            .iter()
+            .map(|&i| params[i].name)
+            .collect();
+        assert_eq!(q, ["Violin", "Viola", "Cello", "Contrabass"]);
     }
 
     #[test]

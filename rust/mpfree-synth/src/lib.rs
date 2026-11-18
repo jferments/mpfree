@@ -36,6 +36,11 @@
 //!   or two-pole state-variable filter, the CEM3310's envelope curve and a
 //!   bucket-brigade chorus, with factory presets.
 //!
+//! - [`Strings`]: a string machine, a divide-down bank with every key
+//!   sounding, six registers (violin to trumpet) through their own
+//!   filters, a swell per key or shared, bow noise and the Ensemble, with
+//!   factory presets.
+//!
 //! - [`pressure`]: what pad pressure drives in each engine. Both run it
 //!   through the shared shaper in [`mpfree_node::pressure`].
 //! - [`voice`]: the shared voice core the new engines are built on (held
@@ -67,6 +72,8 @@ pub mod poly;
 pub mod pressure;
 pub mod squelch;
 pub mod squelch_params;
+pub mod strings;
+pub mod strings_params;
 pub mod voice;
 pub mod wavetable;
 
@@ -79,4 +86,5 @@ pub use params::{Preset, PARAMS, PRESETS};
 pub use pluck::Pluck;
 pub use poly::Poly;
 pub use squelch::Squelch;
+pub use strings::Strings;
 pub use wavetable::Wavetable;
