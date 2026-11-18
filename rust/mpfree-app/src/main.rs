@@ -3809,6 +3809,31 @@ fn learn_label(
     format!("{engine} {} ({track})", param.unwrap_or("?").to_lowercase())
 }
 
+/// The I/O view's track names (`Live::tracks`, one a track it counts) as
+/// the project names its tracks; a track the project hasn't got, or one
+/// without a name, is "Track N". Allocates only for a name that changed.
+fn io_track_names(shown: &mut [String], tracks: &[mpfree_seq::Track]) {
+    for (i, s) in shown.iter_mut().enumerate() {
+        match tracks
+            .get(i)
+            .map(|t| t.name.as_str())
+            .filter(|n| !n.is_empty())
+        {
+            Some(name) if s != name => *s = name.to_string(),
+            Some(_) => {}
+            None => {
+                let numbered = s
+                    .strip_prefix("Track ")
+                    .and_then(|n| n.parse::<usize>().ok())
+                    == Some(i + 1);
+                if !numbered {
+                    *s = format!("Track {}", i + 1);
+                }
+            }
+        }
+    }
+}
+
 /// A Clips grid parameter named as the Learn section and the hint line
 /// show it: "Launch Bass · row 2", "Scene 3 · Verse", "Stop Bass", "Mute
 /// Bass", "Solo Bass", "Arm Bass", "Stop all", "Back to song". A track
@@ -5340,6 +5365,7 @@ fn player_session(
     let mut remote_tempo_waits = false;
     let mut learn_names_gen: Option<u64> = None;
     let mut learn_now_at = 0.0_f64;
+    let mut track_names_at = 0.0_f64;
     let mut learning_shown: Option<(mpfree_play::mpfree_param::ParamAddr, midi_in::ArmedBy)> = None;
     // A learned control moved a synth's knob: the Synth tab is told, at
     // most every 50 ms.
@@ -6551,6 +6577,14 @@ fn player_session(
                     )
                     .collect();
                 learn_now_at = 0.0;
+            }
+            // The project's tracks by name, for the sections that name
+            // them (the MIDI section, Routing, CV and the Learn section's
+            // Clips and scenes card): twice a second, allocating only when
+            // a track was renamed.
+            if mt >= track_names_at {
+                track_names_at = mt + 0.5;
+                io_track_names(&mut live.tracks, &time.project().tracks);
             }
             // Where each one's parameter stands, a few times a second, in
             // place (no allocation).
@@ -9249,6 +9283,29 @@ mod tests {
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
+    }
+
+    /// The I/O view names the project's tracks as the project does (the
+    /// Learn section's Clips and scenes card, Routing, CV), "Track N" past
+    /// them or for a track without a name.
+    #[test]
+    fn the_io_view_names_the_projects_tracks() {
+        let model = midi_in::io_model();
+        let mut shown = model.lock().unwrap().live.tracks.clone();
+        assert_eq!(shown.len(), 16);
+        let mut tracks = vec![
+            mpfree_seq::Track::new("Drums", 0),
+            mpfree_seq::Track::new("", 1),
+            mpfree_seq::Track::new("Bass", 2),
+        ];
+        io_track_names(&mut shown, &tracks);
+        assert_eq!(shown[..4], ["Drums", "Track 2", "Bass", "Track 4"]);
+        assert_eq!(shown[15], "Track 16");
+        // Renamed, and one fewer: the rest go back to their numbers.
+        tracks[0].name = "Kit".into();
+        tracks.pop();
+        io_track_names(&mut shown, &tracks);
+        assert_eq!(shown[..3], ["Kit", "Track 2", "Track 3"]);
     }
 
     /// UNDO on the Synth tab and the mixer names the knob or fader.
