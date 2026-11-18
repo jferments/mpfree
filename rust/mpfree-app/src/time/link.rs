@@ -9,12 +9,16 @@
 //! and show the counts (the fallback rule), and keep a view that could
 //! not go back to be freed until it can.
 //!
-//! Every message but a view is a fixed size with nothing to free, so the
-//! audio half sends and receives without allocating. A view comes boxed
-//! and goes back boxed, so it is made and freed on the control half.
+//! Every message but a view and a chain is a fixed size with nothing to
+//! free, so the audio half sends and receives without allocating. A view
+//! comes boxed and goes back boxed, so it is made and freed on the control
+//! half; so is a track's chain of MIDI effects (`mpfree_notefx::Chain`,
+//! about 400 KB), which the control half sends the first time the track
+//! has an effect, and which stays with the track's arp from then on.
 
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 
+use mpfree_notefx::{Chain, Slot};
 use mpfree_play::{Event, MuteLanded, PlayView, Rec, Started};
 use mpfree_seq::mpfree_moves::{Input, Kind};
 use mpfree_seq::{DestId, Lock, Note, TouchPoint, MAX_TRACKS};
@@ -88,13 +92,16 @@ pub struct Tracks {
 }
 
 /// One track's settings for the audio half: whether its clips play
-/// through its arp, where its arp plays, and whether it records pad
-/// pressure.
+/// through its arp, where its arp plays, whether it records pad
+/// pressure, and its live transpose.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TrackSet {
     pub through_arp: bool,
     pub dest: DestId,
     pub record_touch: bool,
+    /// Its live transpose (sequencer S4): the pads' notes shift where they
+    /// become notes ([`crate::time::TimeHost::transpose`]).
+    pub transpose: mpfree_seq::Transpose,
 }
 
 impl Tracks {
@@ -109,6 +116,7 @@ impl Tracks {
                 through_arp: track.through_arp,
                 dest: track.dest,
                 record_touch: track.record_touch,
+                transpose: track.transpose,
             };
         }
         t
@@ -140,6 +148,16 @@ pub enum ToAudio {
     Tracks { n: usize, armed: Option<usize> },
     /// One track's settings changed.
     Track(usize, TrackSet),
+    /// One place of a track's MIDI effects changed (`Track::note_fx`).
+    NoteFx {
+        track: u16,
+        place: u8,
+        slot: Option<Slot>,
+    },
+    /// Where a track's arp sits among its MIDI effects changed.
+    NoteArp { track: u16, at: u8 },
+    /// A chain for a track's MIDI effects, the first time it has one.
+    Chain(u16, Box<Chain>),
     /// A step edit made to clip `slot` of `track`, one change a message,
     /// in the order the clip took them ([`InPlace`]).
     Edit {
@@ -226,6 +244,9 @@ pub enum ToControl {
     Period(PeriodEnd),
     /// A view the audio half no longer plays, to free here.
     Done(Box<PlayView>),
+    /// A chain the audio half had no use for (its track had one), to free
+    /// here.
+    Chain(Box<Chain>),
 }
 
 #[cfg(test)]

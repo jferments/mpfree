@@ -1172,10 +1172,21 @@ pub(super) fn multiband(r: &mut Report) {
         );
     }
 
-    // X7: the insert's loudness on pink (Auto makeup's target once built).
+    // X7: the insert's loudness on pink at -18 dBFS: with Auto makeup on
+    // it stays near the dry; off (as saved), reported.
     let pink18 = pink_rms(rate, -18.0, 6.0);
     for s in std::iter::once(&main).chain(&presets) {
-        let mut d = make(s, rate);
+        let mut d = make_with(s, rate, &[(mb::AUTO_MAKEUP, 1.0)]);
+        r.put(
+            "X7",
+            &s.name,
+            "lu_pink_auto",
+            Some(lu_change(&mut d, &pink18)),
+            Better::Near(0.0),
+            Some(1.5),
+            0.1,
+        );
+        let mut d = make_with(s, rate, &[(mb::AUTO_MAKEUP, 0.0)]);
         r.put(
             "X7",
             &s.name,

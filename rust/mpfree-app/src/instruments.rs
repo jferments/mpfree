@@ -35,6 +35,7 @@
 //! Everything after [`Instruments::new`] never allocates, frees or locks.
 
 use mpfree_arp::scale::pads::{Pad, MAX_PAD_NOTES, PADS};
+use mpfree_arp::scale::Shift;
 use mpfree_node::{Ctx, NodeEvent, Timed, Tuning};
 use mpfree_track::{Instrument, Outputs, SlotStats, TrackHost};
 
@@ -125,11 +126,16 @@ struct Started {
 }
 
 impl Started {
-    fn of(pad: &Pad) -> Started {
+    /// The pad's notes, each moved by its track's live transpose (one off
+    /// the keyboard is left out).
+    fn of(pad: &Pad, shift: &Shift) -> Started {
         let mut s = Started::default();
-        for (i, &n) in pad.notes().iter().take(MAX_PAD_NOTES).enumerate() {
-            s.notes[i] = n;
-            s.len = i as u8 + 1;
+        for n in pad.notes().iter().filter_map(|&n| shift.apply(n)) {
+            if usize::from(s.len) == MAX_PAD_NOTES {
+                break;
+            }
+            s.notes[usize::from(s.len)] = n;
+            s.len += 1;
         }
         s
     }
@@ -223,6 +229,13 @@ impl Instruments {
     /// Whether track `track` plays its own instrument.
     pub fn holds(&self, track: usize) -> bool {
         self.slot(track).is_some()
+    }
+
+    /// Track `track`'s own instrument plays notes (not the Drums engine's
+    /// sounds), so it transposes (sequencer S4).
+    pub fn plays_notes(&self, track: usize) -> bool {
+        self.held(track)
+            .is_some_and(|h| h.id != crate::synth::Engine::Drums.node_id())
     }
 
     /// How many tracks play their own instrument.
@@ -374,9 +387,25 @@ impl Instruments {
         )
     }
 
-    /// Pad `pad` down on track `track`, `offset` frames into the next
-    /// block. False if the track holds no instrument (it plays the pads).
+    /// [`Instruments::pad_on_shifted`] as written (the tests').
+    #[cfg(test)]
     pub fn pad_on(&mut self, track: usize, pad: usize, velocity: u8, offset: u32) -> bool {
+        self.pad_on_shifted(track, pad, velocity, offset, &Shift::NONE)
+    }
+
+    /// Pad `pad` down on track `track`, `offset` frames into the next
+    /// block, its notes moved by the track's live transpose (sequencer S4,
+    /// `shift`). False if the track holds no instrument (it plays the
+    /// pads). Its note-off and pressure reach the notes it started,
+    /// whatever the shift is by then.
+    pub fn pad_on_shifted(
+        &mut self,
+        track: usize,
+        pad: usize,
+        velocity: u8,
+        offset: u32,
+        shift: &Shift,
+    ) -> bool {
         let Some(s) = self.slot(track) else {
             return false;
         };
@@ -384,7 +413,7 @@ impl Instruments {
         let Some(p) = slot.pads.get(pad) else {
             return true;
         };
-        let started = Started::of(p);
+        let started = Started::of(p, shift);
         slot.started[pad] = started;
         for &n in started.notes() {
             self.host.note_on(s, offset, n, velocity.max(1));

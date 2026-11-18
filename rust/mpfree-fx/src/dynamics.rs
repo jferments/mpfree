@@ -13,15 +13,25 @@ use crate::kit::{
 };
 use crate::limit::PeakLimit;
 use crate::svf::{Svf, SvfMode};
-use crate::{
-    db_to_gain, defaults, fast_db_to_gain, fast_level_db, flush, gain_to_db, lerp, Preset,
-};
+use crate::{db_to_gain, defaults, fast_db_to_gain, fast_level_db, flush, gain_to_db, Preset};
 
 /// The soft-knee gain reduction in dB for `over` dB above the threshold at
 /// `ratio`, with a knee `knee` dB wide.
 #[inline]
 fn knee_reduction(over: f32, ratio: f32, knee: f32) -> f32 {
-    let slope = 1.0 - 1.0 / ratio.max(1.0);
+    slope_reduction(over, ratio_slope(ratio), knee)
+}
+
+/// The curve's slope above the knee for `ratio`: the share of each dB
+/// over the threshold that is taken off.
+#[inline]
+fn ratio_slope(ratio: f32) -> f32 {
+    1.0 - 1.0 / ratio.max(1.0)
+}
+
+/// [`knee_reduction`] with the slope given (so it can glide).
+#[inline]
+fn slope_reduction(over: f32, slope: f32, knee: f32) -> f32 {
     let h = 0.5 * knee;
     if over <= -h {
         0.0
@@ -703,6 +713,8 @@ pub mod multiband {
     pub const fn reduction(b: usize) -> u16 {
         16 + b as u16
     }
+    /// Adds back what each band's curve takes from a mix-level sound.
+    pub const AUTO_MAKEUP: u16 = 19;
     pub const BANDS: usize = 3;
 }
 
@@ -713,7 +725,7 @@ static MULTIBAND_INFO: NodeInfo = NodeInfo {
     name: "Multiband comp",
     kind: Kind::Effect,
 };
-static MULTIBAND_PARAMS: [ParamInfo; 19] = [
+static MULTIBAND_PARAMS: [ParamInfo; 20] = [
     param(0, "Low/mid", "Bands", 40.0, 1000.0, 200.0, Hz, Log),
     param(1, "Mid/high", "Bands", 1000.0, 12_000.0, 2500.0, Hz, Log),
     param(2, "Low thresh", "Low", -60.0, 0.0, -18.0, Db, Linear),
@@ -733,7 +745,17 @@ static MULTIBAND_PARAMS: [ParamInfo; 19] = [
     meter(16, "Low red.", "Low", 0.0, 30.0, Db),
     meter(17, "Mid red.", "Mid", 0.0, 30.0, Db),
     meter(18, "High red.", "High", 0.0, 30.0, Db),
+    param(19, "Auto makeup", "Bands", 0.0, 1.0, 0.0, NONE, Toggle),
 ];
+
+/// The bands' knee, dB.
+const MB_KNEE: f32 = 6.0;
+
+/// Where Auto makeup reads each band's curve: about the peak level the
+/// detector reads from pink noise at -18 dBFS RMS (a mix level), less the
+/// band's share of it by octaves. A dB under the Compressor's -10, which
+/// left the heavy ratios (Drum crush's 8:1) 1.7 LU loud on pink.
+const AUTO_REF_DB: f32 = -11.0;
 
 use multiband as mb;
 
@@ -750,6 +772,7 @@ pub static MULTIBAND_PRESETS: &[Preset] = &[
             (mb::ratio(2), 2.0),
             (mb::ATTACK, 20.0),
             (mb::RELEASE, 200.0),
+            (mb::AUTO_MAKEUP, 1.0),
         ],
     },
     Preset {
@@ -761,6 +784,7 @@ pub static MULTIBAND_PRESETS: &[Preset] = &[
             (mb::gain(0), 2.0),
             (mb::ratio(1), 1.0),
             (mb::ratio(2), 1.0),
+            (mb::AUTO_MAKEUP, 1.0),
         ],
     },
     Preset {
@@ -773,6 +797,7 @@ pub static MULTIBAND_PRESETS: &[Preset] = &[
             (mb::threshold(2), -26.0),
             (mb::ratio(2), 4.0),
             (mb::ATTACK, 3.0),
+            (mb::AUTO_MAKEUP, 1.0),
         ],
     },
     Preset {
@@ -780,15 +805,13 @@ pub static MULTIBAND_PRESETS: &[Preset] = &[
         values: &[
             (mb::threshold(0), -30.0),
             (mb::ratio(0), 8.0),
-            (mb::gain(0), 6.0),
             (mb::threshold(1), -30.0),
             (mb::ratio(1), 8.0),
-            (mb::gain(1), 6.0),
             (mb::threshold(2), -30.0),
             (mb::ratio(2), 8.0),
-            (mb::gain(2), 6.0),
             (mb::ATTACK, 1.0),
             (mb::RELEASE, 60.0),
+            (mb::AUTO_MAKEUP, 1.0),
         ],
     },
 ];
@@ -796,10 +819,16 @@ pub static MULTIBAND_PRESETS: &[Preset] = &[
 /// A three-band compressor: two Linkwitz-Riley crossovers split the sound,
 /// each band has its own threshold, ratio and gain, and the bands sum back
 /// flat (the low band passes an all-pass at the upper crossover, so all
-/// three stay in phase). Attack and release are shared; Solo plays one
-/// band alone while setting up.
+/// three stay in phase). The dry is the bands' sum at unity (the input
+/// through the crossovers' all-passes), so any Mix adds the two in phase.
+/// Each band's detector is the
+/// Compressor's (the smooth decoupled peak detector on the reduction in
+/// decibels, its release solved through the attack), so the curve, Attack
+/// and Release mean what they say. Thresholds and ratios glide. Attack and
+/// release are shared; Solo plays one band alone while setting up; Auto
+/// makeup adds back what each band's curve takes from a mix-level sound.
 pub struct MultibandCompressor {
-    v: [f32; 19],
+    v: [f32; 20],
     rate: u32,
     lo_x: kit::Crossover,
     hi_x: kit::Crossover,
@@ -808,7 +837,15 @@ pub struct MultibandCompressor {
     x_lo: Smooth,
     x_hi: Smooth,
     tick: u32,
-    env: [kit::Follower; 3],
+    /// Per band: the threshold (dB) and the curve's slope (1 - 1/ratio).
+    thr: [Smooth; 3],
+    slope: [Smooth; 3],
+    /// Per band, in positive dB of reduction: the detector's hold (up at
+    /// once, down at the release) and the attack's smoothing after it.
+    hold: [f32; 3],
+    env: [f32; 3],
+    att: f32,
+    rel: f32,
     makeup: [Smooth; 3],
     mix: Smooth,
     out: Smooth,
@@ -824,6 +861,8 @@ impl Default for MultibandCompressor {
 impl MultibandCompressor {
     pub fn new() -> MultibandCompressor {
         let v = defaults(&MULTIBAND_PARAMS);
+        let thr = |b: usize| Smooth::new(v[mb::threshold(b) as usize]);
+        let slope = |b: usize| Smooth::new(ratio_slope(v[mb::ratio(b) as usize]));
         let mut m = MultibandCompressor {
             v,
             rate: 48_000,
@@ -833,7 +872,12 @@ impl MultibandCompressor {
             x_lo: Smooth::new(v[0].log2()),
             x_hi: Smooth::new(v[1].log2()),
             tick: 0,
-            env: [kit::Follower::default(); 3],
+            thr: [thr(0), thr(1), thr(2)],
+            slope: [slope(0), slope(1), slope(2)],
+            hold: [0.0; 3],
+            env: [0.0; 3],
+            att: 0.0,
+            rel: 0.0,
             makeup: [Smooth::new(1.0), Smooth::new(1.0), Smooth::new(1.0)],
             mix: Smooth::new(1.0),
             out: Smooth::new(1.0),
@@ -842,6 +886,42 @@ impl MultibandCompressor {
         m.setup(48_000);
         m
     }
+
+    /// Band `b`'s edges, Hz: 20 Hz, the two crossovers (the upper at least
+    /// an octave over the lower), 20 kHz.
+    fn edges(&self, b: usize) -> (f32, f32) {
+        let lo = self.v[mb::LOW_X as usize];
+        let hi = self.v[mb::HIGH_X as usize].max(2.0 * lo);
+        match b {
+            0 => (20.0, lo),
+            1 => (lo, hi),
+            _ => (hi, 20_000.0),
+        }
+    }
+
+    /// Auto makeup for band `b`, dB (0 when it is off): what the band's
+    /// curve takes at its share of a mix-level sound, the share by octaves
+    /// (pink noise has the same power in each).
+    pub fn auto_db(&self, b: usize) -> f32 {
+        if self.v[mb::AUTO_MAKEUP as usize] < 0.5 {
+            return 0.0;
+        }
+        let (lo, hi) = self.edges(b);
+        let share = (hi / lo).log2() / (20_000.0f32 / 20.0).log2();
+        let at = AUTO_REF_DB + 10.0 * share.log10();
+        knee_reduction(
+            at - self.v[mb::threshold(b) as usize],
+            self.v[mb::ratio(b) as usize],
+            MB_KNEE,
+        )
+    }
+
+    fn set_makeup(&mut self) {
+        for b in 0..mb::BANDS {
+            self.makeup[b].target = db_to_gain(self.v[mb::gain(b) as usize] + self.auto_db(b));
+        }
+    }
+
     fn apply(&mut self, id: u16, v: f32) {
         match id {
             mb::LOW_X => self.x_lo.target = v.log2(),
@@ -850,20 +930,28 @@ impl MultibandCompressor {
             mb::MIX => self.mix.target = v / 100.0,
             mb::OUTPUT => self.out.target = db_to_gain(v),
             _ => {
-                for b in 0..3 {
-                    if id == mb::gain(b) {
-                        self.makeup[b].target = db_to_gain(v);
+                for b in 0..mb::BANDS {
+                    if id == mb::threshold(b) {
+                        self.thr[b].target = v;
+                    } else if id == mb::ratio(b) {
+                        self.slope[b].target = ratio_slope(v);
                     }
                 }
             }
         }
+        // A gain, Auto makeup, a threshold, a ratio or a crossover moves
+        // what each band gets back.
+        self.set_makeup();
     }
+
     fn set_times(&mut self) {
-        let (a, r) = (self.v[mb::ATTACK as usize], self.v[mb::RELEASE as usize]);
-        for e in &mut self.env {
-            e.set(a, r, self.rate);
-        }
+        let fs = self.rate as f32;
+        let attack = self.v[mb::ATTACK as usize] * 0.001;
+        let release = self.v[mb::RELEASE as usize] * 0.001;
+        self.att = (-1.0 / (attack * fs)).exp();
+        self.rel = (-1.0 / (crate::comp::release_tau(attack, false, release) * fs)).exp();
     }
+
     fn set_crossovers(&mut self) {
         // The upper crossover stays at least an octave over the lower.
         let lo = crate::fast_exp2(self.x_lo.value);
@@ -872,11 +960,12 @@ impl MultibandCompressor {
         self.hi_x.set(hi, self.rate);
         self.lo_ap.set(hi, self.rate);
     }
+
     fn begin(&mut self, _ctx: &Ctx) {}
+
     fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
         let solo = self.v[mb::SOLO as usize] as usize;
-        let thr = [0, 1, 2].map(|b| self.v[mb::threshold(b) as usize]);
-        let ratio = [0, 1, 2].map(|b| self.v[mb::ratio(b) as usize]);
+        let (att, rel) = (self.att, self.rel);
         for i in 0..l.len() {
             // The crossovers follow gliding frequencies every 16 frames,
             // and land on them the frame the glides end (as a reset would
@@ -902,35 +991,52 @@ impl MultibandCompressor {
                 bands[1][ch] = mid;
                 bands[2][ch] = hi;
             }
+            // The dry is the bands at unity, so each band's weight is its
+            // gain mixed with 1 (a band soloed out keeps only the dry's).
+            let mix = self.mix.glide();
+            let dry = 1.0 - mix;
             let mut y = [0.0f32; 2];
             for b in 0..3 {
                 let level = bands[b][0].abs().max(bands[b][1].abs());
-                let db = fast_level_db(self.env[b].run(level));
-                let red = knee_reduction(db - thr[b], ratio[b], 6.0);
+                let t = self.thr[b].glide();
+                let k = self.slope[b].glide();
+                let want = slope_reduction(fast_level_db(level) - t, k, MB_KNEE);
+                // The Compressor's detector: the hold jumps to what the
+                // curve asks for and lets go at the release, toward it; the
+                // attack smooths the hold.
+                self.hold[b] = flush(want.max(rel * self.hold[b] + (1.0 - rel) * want));
+                self.env[b] = flush(att * self.env[b] + (1.0 - att) * self.hold[b]);
+                let red = self.env[b];
                 self.most[b] = self.most[b].max(red);
                 let g = fast_db_to_gain(-red) * self.makeup[b].glide();
-                if solo == 0 || solo == b + 1 {
-                    y[0] += bands[b][0] * g;
-                    y[1] += bands[b][1] * g;
-                }
+                let w = if solo == 0 || solo == b + 1 {
+                    dry + mix * g
+                } else {
+                    dry
+                };
+                y[0] += bands[b][0] * w;
+                y[1] += bands[b][1] * w;
             }
-            let mix = self.mix.glide();
             let out = self.out.glide();
-            // Dry is the input itself: the mix is for parallel squash, so a
-            // little phase difference between the two is part of the sound.
-            l[i] = lerp(x[0], y[0], mix) * out;
-            r[i] = lerp(x[1], y[1], mix) * out;
+            l[i] = y[0] * out;
+            r[i] = y[1] * out;
         }
         for b in 0..3 {
             self.v[mb::reduction(b) as usize] = self.most[b];
             self.most[b] = 0.0;
         }
     }
+
     fn setup(&mut self, rate: u32) {
         self.rate = rate;
         self.x_lo.set_time(rate, 30.0);
         self.x_hi.set_time(rate, 30.0);
-        for s in self.makeup.iter_mut() {
+        for s in self
+            .makeup
+            .iter_mut()
+            .chain(self.thr.iter_mut())
+            .chain(self.slope.iter_mut())
+        {
             s.set_time(rate, 20.0);
         }
         self.mix.set_time(rate, 20.0);
@@ -938,6 +1044,7 @@ impl MultibandCompressor {
         self.set_times();
         self.clear();
     }
+
     fn clear(&mut self) {
         self.x_lo.snap(self.x_lo.target);
         self.x_hi.snap(self.x_hi.target);
@@ -945,12 +1052,14 @@ impl MultibandCompressor {
         self.lo_x.reset();
         self.hi_x.reset();
         self.lo_ap.reset();
-        for e in &mut self.env {
-            e.reset();
-        }
-        for (b, s) in self.makeup.iter_mut().enumerate() {
-            s.target = db_to_gain(self.v[mb::gain(b) as usize]);
-            s.snap(s.target);
+        self.hold = [0.0; 3];
+        self.env = [0.0; 3];
+        self.set_makeup();
+        for b in 0..mb::BANDS {
+            self.thr[b].snap(self.v[mb::threshold(b) as usize]);
+            self.slope[b].snap(ratio_slope(self.v[mb::ratio(b) as usize]));
+            let m = self.makeup[b].target;
+            self.makeup[b].snap(m);
         }
         self.mix.target = self.v[mb::MIX as usize] / 100.0;
         self.mix.snap(self.mix.target);
@@ -962,14 +1071,17 @@ impl MultibandCompressor {
             self.v[mb::reduction(b) as usize] = 0.0;
         }
     }
+
     fn tail(&self) -> u32 {
         0
     }
+
     fn rest(&self) -> u32 {
         // Ten of the bands' release, and the crossovers settling.
         let ms = 10.0 * self.v[mb::RELEASE as usize] + 100.0;
         (ms * 0.001 * self.rate as f32) as u32
     }
+
     fn lat(&self) -> u32 {
         0
     }
