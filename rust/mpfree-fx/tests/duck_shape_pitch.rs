@@ -376,6 +376,35 @@ fn the_transient_shaper_lifts_and_softens_the_front() {
     assert!(g.abs() < 0.3, "steady tone untouched: {g} dB");
 }
 
+#[test]
+fn the_transient_shaper_lifts_a_quiet_hit_as_much_as_a_loud_one() {
+    // The same plucks at 0, -12, -24 and -36 dB: the front's gain (out
+    // against in, over its first 5 ms) is the same at every level, since
+    // the gap a hit opens no longer depends on how far it is above a
+    // fixed floor (FX quality round 4, T1).
+    let frames = RATE as usize;
+    let front = |y: &[f32]| rms(&y[12_000..12_000 + 240]);
+    for attack in [50.0, 100.0] {
+        let gains: Vec<f32> = [0.0f32, -12.0, -24.0, -36.0]
+            .iter()
+            .map(|db| {
+                let g = 10f32.powf(db / 20.0);
+                let x: Vec<f32> = hits(frames).iter().map(|v| v * g).collect();
+                let mut t = set_up(TransientShaper::new(), &[(transient::ATTACK, attack)]);
+                let y = run(&mut t, &x, None, 120.0, false);
+                20.0 * (front(&y) / front(&x)).log10()
+            })
+            .collect();
+        let most = gains.iter().cloned().fold(f32::MIN, f32::max);
+        let least = gains.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(
+            most - least < 1.0,
+            "Attack {attack}: fronts {gains:?} dB by level"
+        );
+        assert!(least > 3.0, "Attack {attack} lifts the front: {gains:?}");
+    }
+}
+
 /// The tone's frequency from its zero crossings over `y`.
 fn freq(y: &[f32]) -> f32 {
     let crossings = y.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
