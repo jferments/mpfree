@@ -43,6 +43,12 @@
 //! was tapped; SHIFT + a tap is refused. The recorder is the Sample tab's
 //! ([`PadDo`] out, [`PadNow`] back): it starts on its threshold, else once
 //! the music plays ([`RecArm::rolled`]).
+//!
+//! **The Wave page's REC** ([`RecArm::rec_here`], the one Sample page's
+//! step 2a, the sequencer thread's line of 18 Nov) is a pad take too, onto
+//! the pad the recorder row names, that goes at once instead of waiting
+//! for PLAY. So REC on the MPC, STOP and UNDO end it or throw it away as
+//! they do a held pad's, and nothing moves the arm until it ends.
 
 use mpfree_looper::Command as LoopCommand;
 use mpfree_transport::{Command, State};
@@ -87,6 +93,10 @@ pub struct PadTake {
     pub started: bool,
     /// The take records (the recorder said so, [`PadNow::Recording`]).
     pub recording: bool,
+    /// Started by the Wave page's REC ([`RecArm::rec_here`]): it went at
+    /// once, and may replace the pad's sound (the Rec settings' Onto
+    /// picked the pad).
+    pub here: bool,
 }
 
 impl PadTake {
@@ -109,6 +119,10 @@ pub enum PadDo {
     /// Threshold it waits for the threshold now; otherwise for
     /// [`PadDo::Start`].
     Arm { kit: usize, pad: usize },
+    /// The Wave page's REC: a take onto the pad its row names, with the
+    /// Rec settings, which may replace the pad's sound (Onto This pad).
+    /// [`PadDo::Start`] follows at once.
+    ArmHere { kit: usize, pad: usize },
     /// The music plays: the go (the Rec tab's Start then applies: at once,
     /// or the next bar line).
     Start,
@@ -419,7 +433,15 @@ impl RecArm {
 
     /// What a tap says while a take records.
     fn busy(&self, now: &Now) -> Do {
-        let what = if let Some(take) = self.pad.filter(|t| t.recording) {
+        Do::Tell(format!(
+            "Finish the take first: REC records {} until it stops",
+            self.taking_what(now)
+        ))
+    }
+
+    /// What the take counting in or recording records.
+    fn taking_what(&self, now: &Now) -> String {
+        if let Some(take) = self.pad.filter(|t| t.recording) {
             take.name()
         } else if self.both {
             format!("{} and the loop", now.notes)
@@ -427,10 +449,7 @@ impl RecArm {
             now.notes.clone()
         } else {
             "the loop".to_string()
-        };
-        Do::Tell(format!(
-            "Finish the take first: REC records {what} until it stops"
-        ))
+        }
     }
 
     /// SHIFT + a tap on Arm: add `target` to what REC records, or, with
@@ -560,6 +579,7 @@ impl RecArm {
             pad,
             started: false,
             recording: false,
+            here: false,
         };
         self.pad = Some(take);
         out.push(Do::Pad(PadDo::Arm { kit, pad }));
@@ -570,6 +590,51 @@ impl RecArm {
             self.back(now)
         )));
         out
+    }
+
+    /// The Wave page's REC (the one Sample page's step 2a): a pad take onto
+    /// pad `pad` of kit `kit` (the one the recorder row names) that goes at
+    /// once instead of waiting for PLAY: the recorder gets
+    /// [`PadDo::ArmHere`] and its go together, and applies its own Starts
+    /// (Next bar waits for the music's next bar line, so stopped it waits
+    /// for PLAY). With a pad take recording, or this one waiting, it is
+    /// REC: it ends it, keeping what recorded. A held pad's take still
+    /// waiting for PLAY moves here. Refused while another take counts in or
+    /// records: `Err` says why, for the row's second line. A notes ready
+    /// and a loop waiting for PLAY let go, as for a held pad.
+    pub fn rec_here(&mut self, kit: usize, pad: usize, now: &Now) -> Result<Vec<Do>, String> {
+        let mut out = Vec::new();
+        if let Some(take) = self.pad {
+            if take.recording || take.here || (take.kit, take.pad) == (kit, pad) {
+                return Ok(self.press_pad(take, Press::Rec, now));
+            }
+            out.push(Do::Pad(PadDo::End));
+        } else if now.taking() {
+            return Err(format!(
+                "Finish the take first: {} records",
+                self.taking_what(now)
+            ));
+        }
+        self.ready = None;
+        if now.loop_armed {
+            out.push(Do::StopWaiting);
+        }
+        let take = PadTake {
+            kit,
+            pad,
+            started: true,
+            recording: false,
+            here: true,
+        };
+        self.pad = Some(take);
+        out.push(Do::Pad(PadDo::ArmHere { kit, pad }));
+        out.push(Do::Pad(PadDo::Start));
+        out.push(Do::Tell(format!(
+            "REC → {}: one take · REC or STOP keeps it, UNDO throws it away, then REC records {} again",
+            take.name(),
+            self.back(now)
+        )));
+        Ok(out)
     }
 
     /// REC, OVERDUB, PLAY or STOP while a pad take is armed. REC and STOP
@@ -1161,5 +1226,73 @@ mod tests {
         assert!(a.pad_now(PadNow::Ended));
         assert_eq!(a, RecArm::default());
         assert!(!a.pad_now(PadNow::Ended), "nothing to end");
+    }
+
+    /// The Wave page's REC (the one Sample page's step 2a): a pad take that
+    /// goes at once, which REC on the MPC, STOP and UNDO end or throw as
+    /// they do a held pad's; refused, with why, while another take counts
+    /// in or records.
+    #[test]
+    fn the_wave_pages_rec_is_a_pad_take_that_goes_at_once() {
+        let (stopped, playing) = (now(State::Stopped), now(State::Playing));
+        let mut a = RecArm {
+            ready: Some(Take::Replace),
+            ..RecArm::default()
+        };
+        // Stopped: armed and told to go together (the recorder's Starts
+        // still waits for the bar line, if it says so); the ready lets go.
+        let out = a.rec_here(0, 5, &stopped).unwrap();
+        assert_eq!(
+            &out[..2],
+            [pad(PadDo::ArmHere { kit: 0, pad: 5 }), pad(PadDo::Start)]
+        );
+        assert!(said(&out).contains("REC → Pad A6: one take"));
+        assert_eq!(a.ready, None);
+        let take = a.pad.unwrap();
+        assert!(take.here && take.started && !take.recording);
+        assert!(a.rolled(&playing).is_empty(), "it has its go already");
+        // Nothing moves the arm meanwhile: a page or a track leave it.
+        let was = a;
+        a.move_to(Target::Loop, Mover::Page, &stopped);
+        assert_eq!(a, was);
+        // REC on the MPC ends it, keeping what recorded; REC then records
+        // the notes again.
+        assert!(a.pad_now(PadNow::Recording));
+        let out = a.press(Press::Rec, &playing);
+        assert_eq!(out[0], pad(PadDo::End));
+        assert!(said(&out).contains("the take ends and lands on the pad"));
+        assert_eq!(a.pad, None);
+        // The row's REC again does the same; before it records, it calls
+        // the take off.
+        a.rec_here(0, 5, &playing).unwrap();
+        let out = a.rec_here(0, 6, &playing).unwrap();
+        assert_eq!(out[0], pad(PadDo::End));
+        assert!(said(&out).contains("Pad A6 take called off"));
+        assert_eq!(a.pad, None);
+        // STOP keeps it with the music playing on; UNDO throws it away.
+        a.rec_here(0, 5, &playing).unwrap();
+        a.pad_now(PadNow::Recording);
+        assert_eq!(a.press(Press::Stop, &playing)[0], pad(PadDo::End));
+        a.rec_here(0, 5, &playing).unwrap();
+        a.pad_now(PadNow::Recording);
+        assert_eq!(a.throw(&playing).unwrap()[0], pad(PadDo::Throw));
+        assert_eq!(a.pad, None);
+        // A held pad's take still waiting for PLAY moves here.
+        a.arm_pad(0, 20, &stopped);
+        let out = a.rec_here(0, 5, &stopped).unwrap();
+        assert_eq!(
+            &out[..3],
+            [
+                pad(PadDo::End),
+                pad(PadDo::ArmHere { kit: 0, pad: 5 }),
+                pad(PadDo::Start)
+            ]
+        );
+        assert!(a.pad.unwrap().here);
+        a.pad_now(PadNow::Ended);
+        // Refused while the notes count in or record, with why.
+        let err = a.rec_here(0, 5, &now(State::CountIn)).unwrap_err();
+        assert_eq!(err, "Finish the take first: Drums records");
+        assert_eq!(a.pad, None);
     }
 }
