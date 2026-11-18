@@ -9565,8 +9565,13 @@ fn player_session(
         // a learned knob) join this period's notes on their frames, a
         // step's ahead of its note.
         // Each track's CC scale and CC smooth as they are now (macros and
-        // LFOs on their settings too) shape its controls from here.
-        for t in 0..mpfree_midi::output::MAX_TRACKS {
+        // LFOs on their settings too) shape its controls from here: only
+        // the tracks with a port and channel, so 128 tracks cost what
+        // the routed ones do.
+        let mut routed = midi_out.routed();
+        while routed != 0 {
+            let t = routed.trailing_zeros() as usize;
+            routed &= routed - 1;
             midi_out.set_note_fx(t, &time.note_fx_now(t));
         }
         // An export's MIDI file takes them too, as the lanes give them.

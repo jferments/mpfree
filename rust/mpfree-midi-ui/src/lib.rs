@@ -119,7 +119,8 @@ pub struct Built {
 pub struct Live {
     /// The ports plugged in now, the 5-pin jacks first.
     pub ports: Vec<PortLive>,
-    /// The project's tracks by name, in order (at most 16).
+    /// The project's tracks by name, in order (at most 128, as many as
+    /// MIDI out serves).
     pub tracks: Vec<String>,
     /// Clock arriving now: the port's name and its tempo.
     pub clock_in: Option<(String, f32)>,
