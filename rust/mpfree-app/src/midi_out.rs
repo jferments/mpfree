@@ -67,10 +67,10 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, TryLockError};
 use std::time::{Duration, Instant};
 
-use mpfree_controller::mpc_one::PAD_NOTES;
 use mpfree_midi::msg::Msg;
 use mpfree_midi::output::{DinPacer, OutQueue, OutRoute, OutputRouter, Timed, MAX_TRACKS};
 use mpfree_midi::port::{PortId, DIN, MAX_PORTS};
+use mpfree_midi::profile::{PadOut, KIT_NOTES, KIT_PADS};
 use mpfree_midi::setup::{ClockOut, TrackOut, DIN_NAME};
 use mpfree_midi_clock::{ClockOut as Pulses, Messages, PULSE_TICKS};
 use mpfree_midi_ui::{IoModel, PortSend, Shared, ToPort};
@@ -82,7 +82,8 @@ use crate::sample_page::GearOut;
 
 /// Notes one pad can start (a synth pad's chord); more are not sent.
 const CHORD: usize = 8;
-const PADS: usize = 16;
+/// A track's pads: a kit's 128 ([`KIT_PADS`]), a synth layout's 16.
+const PADS: usize = KIT_PADS;
 /// The most messages a period lists for the MIDI monitor, over every port.
 const SENT: usize = 1024;
 /// The most messages the Sample tab's auto-sample of outside gear can have
@@ -159,10 +160,13 @@ pub enum NoteIs<'a> {
     /// A MIDI note (the arps' notes while a synth's pad layout plays
     /// notes).
     Note,
-    /// A pad, 0 to 15, that plays these notes: a synth pad's notes, or the
-    /// MPC's own note for the pad with a kit ([`kit_notes`]). A pad's
-    /// note-off and pressure go to the notes its note-on sent.
+    /// A pad, 0 to 15, that plays these notes: a synth pad's notes. A
+    /// pad's note-off and pressure go to the notes its note-on sent.
     Pad(&'a [u8]),
+    /// A kit's pad, 0 (A1) to 127: the note, and the channel, its port's
+    /// device profile gives it, else its own note ([`kit_notes`]). Ends
+    /// and pressure go where its note-on went.
+    Kit,
 }
 
 /// When a message heard at `heard` leaves for gear that sounds `early`
@@ -181,10 +185,11 @@ fn test_off(ch: u8) -> Msg {
     }
 }
 
-/// A kit pad's note on MIDI Out: the MPC's own pad notes (pad 1 is C#2,
-/// note 37), as Akai's MPC sends them.
+/// A kit pad's note on MIDI Out when its port's profile names none: bank
+/// A as Akai's MPC sends its pads (pad 1 is C#2, note 37), banks B to H a
+/// note each of the rest ([`KIT_NOTES`]).
 pub fn kit_notes(pad: usize) -> &'static [u8] {
-    PAD_NOTES.get(pad).map_or(&[], std::slice::from_ref)
+    KIT_NOTES.get(pad).map_or(&[], std::slice::from_ref)
 }
 
 /// A track's output as it was taken from the project.
@@ -210,11 +215,13 @@ impl Applied {
     }
 }
 
-/// The notes a pad's note-on sent.
+/// The notes a pad's note-on sent, and the channel of its own a kit pad
+/// sent them on.
 #[derive(Clone, Copy, Debug, Default)]
 struct Chord {
     notes: [u8; CHORD],
     len: u8,
+    ch: Option<u8>,
 }
 
 impl Chord {
@@ -224,10 +231,11 @@ impl Chord {
 }
 
 /// What each track's pads' note-ons sent, so a pad's note-off and
-/// pressure go to the same notes even if its layout changed in between.
-/// MIDI Out and CV out each keep one.
+/// pressure go to the same notes even if its layout (or its port's
+/// profile) changed in between. MIDI Out, CV out and an export's tap each
+/// keep one. Boxed: 128 pads of 128 tracks.
 #[derive(Clone, Debug)]
-pub struct Chords([[Chord; PADS]; MAX_TRACKS]);
+pub struct Chords(Box<[[Chord; PADS]]>);
 
 impl Default for Chords {
     fn default() -> Self {
@@ -237,16 +245,47 @@ impl Default for Chords {
 
 impl Chords {
     pub fn new() -> Chords {
-        Chords([[Chord::default(); PADS]; MAX_TRACKS])
+        Chords(vec![[Chord::default(); PADS]; MAX_TRACKS].into_boxed_slice())
     }
 
     /// The note messages (on channel 0) one note event of track `t` makes,
     /// in order, to `f`. A pad hit again ends its earlier notes first, as
     /// the synth does. Velocity 0 sounds as 1, so a note-on is never read
-    /// as a note-off. Other events make none.
+    /// as a note-off. Other events make none. A kit's pads play their own
+    /// notes ([`kit_notes`]).
     pub fn messages(&mut self, t: usize, event: Event, is: NoteIs, mut f: impl FnMut(Msg)) {
+        self.messages_on(t, event, is, |_| None, |m, _| f(m));
+    }
+
+    /// [`Chords::messages`], with what a kit's pad plays from `kit` (its
+    /// port's profile; None: its own note), and each message's channel
+    /// of its own (None: the track's) to `f`.
+    pub fn messages_on(
+        &mut self,
+        t: usize,
+        event: Event,
+        is: NoteIs,
+        kit: impl Fn(usize) -> Option<PadOut>,
+        mut f: impl FnMut(Msg, Option<u8>),
+    ) {
         let Some(pads) = self.0.get_mut(t) else {
             return;
+        };
+        // A kit's pad: its notes and channel, as a pad layout's.
+        let kit_note;
+        let (is, ch) = match (is, event) {
+            (NoteIs::Kit, Event::NoteOn { note, .. }) => {
+                let pad = usize::from(note);
+                match kit(pad) {
+                    Some(o) => {
+                        kit_note = [o.note];
+                        (NoteIs::Pad(&kit_note), o.channel)
+                    }
+                    None => (NoteIs::Pad(kit_notes(pad)), None),
+                }
+            }
+            (NoteIs::Kit, _) => (NoteIs::Pad(&[]), None),
+            (is, _) => (is, None),
         };
         let off = |note| Msg::NoteOff {
             ch: 0,
@@ -254,51 +293,65 @@ impl Chords {
             vel: 64,
         };
         match (event, is) {
-            (Event::NoteOn { note, velocity }, NoteIs::Note) => f(Msg::NoteOn {
-                ch: 0,
-                note: note & 0x7F,
-                vel: velocity.clamp(1, 127),
-            }),
+            (Event::NoteOn { note, velocity }, NoteIs::Note) => f(
+                Msg::NoteOn {
+                    ch: 0,
+                    note: note & 0x7F,
+                    vel: velocity.clamp(1, 127),
+                },
+                None,
+            ),
             (Event::NoteOn { note, velocity }, NoteIs::Pad(notes)) => {
                 let Some(c) = pads.get_mut(usize::from(note)) else {
                     return;
                 };
-                for &n in std::mem::take(c).notes() {
-                    f(off(n));
+                let was = std::mem::take(c);
+                for &n in was.notes() {
+                    f(off(n), was.ch);
                 }
+                c.ch = ch;
                 for &n in notes.iter().filter(|&&n| n < 128).take(CHORD) {
                     c.notes[usize::from(c.len)] = n;
                     c.len += 1;
                 }
                 for &n in c.notes() {
-                    f(Msg::NoteOn {
-                        ch: 0,
-                        note: n,
-                        vel: velocity.clamp(1, 127),
-                    });
+                    f(
+                        Msg::NoteOn {
+                            ch: 0,
+                            note: n,
+                            vel: velocity.clamp(1, 127),
+                        },
+                        ch,
+                    );
                 }
             }
-            (Event::NoteOff { note }, NoteIs::Note) => f(off(note & 0x7F)),
+            (Event::NoteOff { note }, NoteIs::Note) => f(off(note & 0x7F), None),
             (Event::NoteOff { note }, NoteIs::Pad(_)) => {
                 if let Some(c) = pads.get_mut(usize::from(note)).map(std::mem::take) {
                     for &n in c.notes() {
-                        f(off(n));
+                        f(off(n), c.ch);
                     }
                 }
             }
-            (Event::Pressure { note, value }, NoteIs::Note) => f(Msg::PolyPressure {
-                ch: 0,
-                note: note & 0x7F,
-                value,
-            }),
+            (Event::Pressure { note, value }, NoteIs::Note) => f(
+                Msg::PolyPressure {
+                    ch: 0,
+                    note: note & 0x7F,
+                    value,
+                },
+                None,
+            ),
             (Event::Pressure { note, value }, NoteIs::Pad(_)) => {
                 if let Some(c) = pads.get(usize::from(note)) {
                     for &n in c.notes() {
-                        f(Msg::PolyPressure {
-                            ch: 0,
-                            note: n,
-                            value,
-                        });
+                        f(
+                            Msg::PolyPressure {
+                                ch: 0,
+                                note: n,
+                                value,
+                            },
+                            c.ch,
+                        );
                     }
                 }
             }
@@ -307,23 +360,32 @@ impl Chords {
     }
 
     /// Note-offs for every pad of track `t` that is on.
-    pub fn end_track(&mut self, t: usize, mut f: impl FnMut(Msg)) {
+    /// Note-offs for every pad of track `t` that is on, each with the
+    /// channel of its own it started on.
+    pub fn end_track(&mut self, t: usize, mut f: impl FnMut(Msg, Option<u8>)) {
         let Some(pads) = self.0.get_mut(t) else {
             return;
         };
         for c in pads.iter_mut() {
-            for &n in std::mem::take(c).notes() {
-                f(Msg::NoteOff {
-                    ch: 0,
-                    note: n,
-                    vel: 64,
-                });
+            let c = std::mem::take(c);
+            for &n in c.notes() {
+                f(
+                    Msg::NoteOff {
+                        ch: 0,
+                        note: n,
+                        vel: 64,
+                    },
+                    c.ch,
+                );
             }
         }
     }
 
+    /// Forgets every pad's notes, in place (no allocation).
     pub fn clear(&mut self) {
-        *self = Chords::new();
+        for pads in self.0.iter_mut() {
+            pads.fill(Chord::default());
+        }
     }
 }
 
@@ -467,6 +529,9 @@ struct PortOut {
     early: Duration,
     /// Its clock's nudge (`PortSetup::clock_nudge_tenths`): later above 0.
     nudge_tenths: i16,
+    /// What its device profile has each kit pad play (None: the pad's own
+    /// note on the track's channel), by pad.
+    pads: Box<[Option<PadOut>]>,
     clock: PortClock,
     /// Its page's test note still on: its channel and the frames until its
     /// note-off.
@@ -490,6 +555,7 @@ impl PortOut {
             closing: None,
             early: Duration::ZERO,
             nudge_tenths: 0,
+            pads: vec![None; KIT_PADS].into_boxed_slice(),
             clock: PortClock::new(),
             test_off: None,
             queued: 0,
@@ -842,6 +908,11 @@ impl MidiOut {
             p.early = s.map_or(Duration::ZERO, |s| {
                 Duration::from_micros(u64::from(s.delay_tenths) * 100)
             });
+            // Its profile's kit pads, in place.
+            let profile = m.profile(&p.name);
+            for (pad, out) in p.pads.iter_mut().enumerate() {
+                *out = profile.and_then(|f| f.pad(pad));
+            }
         }
         for t in 0..MAX_TRACKS {
             let want = m.setup.tracks[t]
@@ -955,7 +1026,7 @@ impl MidiOut {
             if self.tracks[t].is_some_and(|a| a.port == port) {
                 // The router sends the note-offs; the pads' chords only
                 // forget.
-                self.chords.end_track(t, |_| {});
+                self.chords.end_track(t, |_, _| {});
             }
         }
         self.router.port_off(port, offset, &mut self.queue);
@@ -998,10 +1069,20 @@ impl MidiOut {
             return false;
         }
         let t = usize::from(o.track);
+        // A kit's pads play what the track's port's profile says.
+        let kit = self
+            .router
+            .route(t as u8)
+            .and_then(|r| self.ports.get(usize::from(r.port.0)))
+            .map(|p| &p.pads[..]);
         let (router, queue) = (&mut self.router, &mut self.queue);
-        self.chords.messages(t, o.event, is, |m| {
-            router.send(t as u8, m, o.offset, queue);
-        });
+        self.chords.messages_on(
+            t,
+            o.event,
+            is,
+            |pad| kit.and_then(|k| k.get(pad).copied().flatten()),
+            |m, ch| router.send_on(t as u8, m, ch, o.offset, queue),
+        );
         true
     }
 
@@ -1022,7 +1103,7 @@ impl MidiOut {
     fn end_chords(&mut self, t: usize, offset: u32) {
         let (router, queue) = (&mut self.router, &mut self.queue);
         self.chords
-            .end_track(t, |m| router.send(t as u8, m, offset, queue));
+            .end_track(t, |m, ch| router.send_on(t as u8, m, ch, offset, queue));
     }
 
     /// Ends every note MIDI out has on, on every port (a panic, a stop),
@@ -1546,6 +1627,54 @@ mod tests {
         assert!(mo.close());
         // Pad 1 is C#2, note 37 (0x25), on channel 10.
         assert_eq!(sink.bytes(), [0x99, 0x25, 100, 0x89, 0x25, 64]);
+    }
+
+    /// A kit track on a drum machine's port: each pad plays what the
+    /// port's device profile says, on a channel of its own when it gives
+    /// one, else its own note on the track's channel, in every bank. A
+    /// note ends where it started, though the profile changed meanwhile.
+    #[test]
+    fn a_kit_pad_plays_what_the_drum_machines_profile_says() {
+        use mpfree_midi::profile::Profile;
+        use mpfree_midi::setup::ProfilePick;
+        let (mut mo, sink) = open(Duration::ZERO);
+        let m = model(&[(1, TrackOut::new(DIN_NAME, 9))]);
+        let pick = |m: &Shared, to: ProfilePick| {
+            let mut g = m.lock().unwrap();
+            g.setup.set_port(DIN_NAME, |p| p.profile = to.clone());
+            g.gen += 1;
+        };
+        {
+            let mut p = Profile::new("Drum box");
+            let out = |note, channel| PadOut { note, channel };
+            p.set_pad(0, out(36, Some(2)));
+            p.set_pad(17, out(40, None));
+            m.lock().unwrap().profiles.add(p).unwrap();
+        }
+        pick(&m, ProfilePick::Named("Drum box".into()));
+        mo.sync(&m, false);
+        // A1, B2, and B5, which the profile leaves to its own note.
+        assert!(mo.send(&ev(1, 0, on(0, 100)), NoteIs::Kit));
+        assert!(mo.send(&ev(1, 1, on(17, 90)), NoteIs::Kit));
+        assert!(mo.send(&ev(1, 2, on(20, 80)), NoteIs::Kit));
+        // No profile now: A1's end still goes to 36 on channel 3, and its
+        // next hit is its own note, on the track's channel.
+        pick(&m, ProfilePick::Off);
+        mo.sync(&m, false);
+        assert!(mo.send(&ev(1, 3, Event::NoteOff { note: 0 }), NoteIs::Kit));
+        assert!(mo.send(&ev(1, 4, on(0, 70)), NoteIs::Kit));
+        mo.period_end(PERIOD, Instant::now());
+        // Closing ends what is still on, on the track's channel.
+        assert!(mo.close());
+        let b5 = KIT_NOTES[20];
+        assert_eq!(b5, 52);
+        assert_eq!(
+            sink.bytes(),
+            [
+                0x92, 36, 100, 0x99, 40, 90, 0x99, b5, 80, 0x82, 36, 64, 0x99, 37, 70, 0x89, 37,
+                64, 0x89, 40, 64, 0x89, b5, 64
+            ]
+        );
     }
 
     /// The MIDI monitor gets what the writer took, each with when it is

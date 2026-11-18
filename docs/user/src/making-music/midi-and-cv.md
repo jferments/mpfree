@@ -58,13 +58,22 @@ If a track would send nothing, it says why under the track's name: no port is pi
 > [!MPC]
 > On the MPC, a MIDI track needs two settings with nearly the same name before a note leaves the jack: the track's MIDI output channel and its MIDI Out routing. In MPFree it's one setting, the port and the channel together.
 
+### A kit on a drum machine
+
+A track that plays a kit sends each pad as a note, so the kit can play a drum machine: set the track's **Plays on** to the drum machine's port and channel. Each pad plays its own note:
+
+- Bank A's pads play the MPC's own pad notes, as an MPC sends them: pad A1 is C#2 (37), A2 is C2 (36), A3 is F#2 (42), and so on.
+- Banks B to H play the other 112 notes, one each, upwards from B1 (35, the General MIDI kit's lowest drum): B1 is 35, B2 is 39, B3 is 41, and so on up to 127, then from 0. So every one of a kit's 128 pads plays a note no other pad plays, and banks B and C hold the General MIDI drums bank A doesn't.
+
+If your drum machine listens for other notes, or has a channel per drum (as many do), give it a [device profile](#device-profiles) with a **pad** line for each pad you use, and pick the profile on its port's page: `pad.A1 = 36 ch 1`, `pad.A2 = 38 ch 2`, and so on. Every kit on that port then plays those notes and channels. A note always ends where it started, even if you change the profile while it sounds. The port's page says how many pads its profile covers.
+
 ## A port's page
 
 Each port's row in the MIDI section has **Open ›** at its right; it, or a tap on the port's name, opens the port's page. **‹ MIDI** or **BACK** closes it.
 
 - **This port** says what it is (the MPC's 5-pin jacks, or a USB device), its **Name**, its **Input** (**Both**, **Plays tracks** or **Learn only**, the same setting as on its row) and its **Profile**.
 - **Name** gives a USB device a name of your own, such as *Juno* for a box that calls itself *USB MIDI Interface*. A tap (or +) opens the on-screen keyboard; type the name and tap **Enter**. From then on MPFree uses it everywhere it names the port: its row, Routing, a track's **Plays on**, Sync, Learn, the Monitor and the tempo chip. The page still says the name the device calls itself. A name has at most 24 characters, and two ports can't share one (whatever the capitals). Type the device's own name to go back to it. The name belongs to your setup, not the song, so every project uses it. The 5-pin jacks keep the names on the MPC's panel, **MIDI In** and **MIDI Out**.
-- **Profile** picks the [device profile](#device-profiles) that names this port's controls and programs: the Monitor then shows *CC 74 Filter cutoff* where it would show *CC 74*, and the Learn section *CC 1 Mod wheel*. A tap steps through **Auto**, **None** and each profile by name (– and + step too). **Auto** takes a profile made for the name the device calls itself, if there is one, and the box says which (*Auto · Juno-X*). **None** names only the controls most gear agrees on, such as *CC 7 Volume* and *CC 64 Sustain*. The line under it says how many controls and programs the profile names. Like the name, the profile belongs to your setup, so every project uses it.
+- **Profile** picks the [device profile](#device-profiles) that names this port's controls and programs (and, for a drum machine, gives a kit's pads their notes): the Monitor then shows *CC 74 Filter cutoff* where it would show *CC 74*, and the Learn section *CC 1 Mod wheel*. A tap steps through **Auto**, **None** and each profile by name (– and + step too). **Auto** takes a profile made for the name the device calls itself, if there is one, and the box says which (*Auto · Juno-X*). **None** names only the controls most gear agrees on, such as *CC 7 Volume* and *CC 64 Sustain*. The line under it says how many controls and programs the profile names. Like the name, the profile belongs to your setup, so every project uses it.
 - **Ignore coming in** has four switches: **Clock**, **Program**, **Aftertouch** and **All notes off**. A lit one is ignored: those messages from this port play nothing, teach nothing and move no tempo. The Monitor still lists them, marked *ignored: this port's setting*, so you can see they arrive. **Clock** also covers the Start, Stop and Song Position that come with it. Ignore **Clock** on a drum machine that sends clock you don't want; ignore **Program** on a keyboard that sends one when you change its sound.
 - **What it does** lists, in words, what this port's messages do today and what plays on it: its routes to tracks (*Ch 10 → Drums*) and its thru (*Ch 3 → MIDI out, thru*), where the rest of its notes go, the tracks that play out of it with their channels, thru from other ports, the controls learned from it, and whether the tempo follows it. Change its routes in the Routing section.
 - **Now** shows the newest message in and out and how long ago.
@@ -79,7 +88,7 @@ The wheel picks a setting on the page, – and + change it, and Q-Links 1 to 4 t
 
 ### Device profiles
 
-A device profile is a list of what one synth or controller calls its controls (CCs), its NRPN parameters and its programs. MPFree has **General MIDI** built in: the 128 General MIDI sounds by number (*Program 34 Electric Bass (finger)*) and the controllers General MIDI gear answers to, such as *CC 91 Reverb* and *CC 93 Chorus*. Pick it on the page of a port with a General MIDI sound module.
+A device profile is a list of what one synth or controller calls its controls (CCs), its NRPN parameters and its programs, and for a drum machine, the note (and channel) each of a kit's pads plays on it. MPFree has **General MIDI** built in: the 128 General MIDI sounds by number (*Program 34 Electric Bass (finger)*) and the controllers General MIDI gear answers to, such as *CC 91 Reverb* and *CC 93 Chorus*. Pick it on the page of a port with a General MIDI sound module.
 
 You can write your own for any gear, as a text file, and put it on the MPC's data partition in `files/midi-profiles/`, with a name ending `.txt`. MPFree reads that folder when it starts; it only reads the files, never changes them. A profile looks like this:
 
@@ -97,9 +106,10 @@ program.1 = Init
 - **match** is a name a USB device calls itself (the page says it: *it calls itself …*). A port set to **Auto** takes the first profile with its name. Put up to 8 **match** lines in one profile, or none.
 - **cc.N** names CC N (0 to 127); **nrpn.MSB.LSB** names the NRPN parameter sent as CC 99 = MSB and CC 98 = LSB; **program.N** names program N, counted from 1 as everywhere on screen. Each name has at most 32 characters.
 - **knobs** lists a controller's knobs by their CCs, in order, up to 16 (`knobs = 74 71 76 77`). [MIDI Follow](#midi-follow-your-controllers-knobs-on-the-q-links) turns Q-Links 1 to 4 with the first four, unless you taught it the controller's knobs yourself.
+- **pad.A1** to **pad.H16** (or **pad.1** to **pad.128**) is the note a kit's pad plays on a drum machine on this port, as a number (0 to 127) or a name (*C2*, *F#1*, *Bb0*; C4 is 60), and after **ch**, a channel of its own (1 to 16): `pad.A1 = 36 ch 10`. A pad without a line plays its usual note on the track's channel (see [A kit on a drum machine](#a-kit-on-a-drum-machine)).
 - A line starting with `#` is a note to yourself. A line MPFree can't read is skipped, and the rest of the profile still works; a file with no **name** isn't a profile. MPFree's log says what it skipped and which profiles it found.
 
-A port's profile names what comes in from it and what goes out to it. Profiles change no MIDI: they only name it.
+A port's profile names what comes in from it and what goes out to it. Only its **pad** lines change what MPFree sends: the notes and channels a kit's pads play there. Everything else only names.
 
 ## Staying in time with other gear
 

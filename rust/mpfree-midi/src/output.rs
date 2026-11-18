@@ -347,10 +347,14 @@ const NOTES: usize = 128;
 /// MIDI tracks to ports, with what is sounding on each port and channel.
 pub struct OutputRouter {
     routes: [Option<OutRoute>; MAX_TRACKS],
-    /// Note-ons not yet ended at the track's current route, per track and
-    /// note (a count, as a track may play the same note twice). A route
-    /// change ends them all first, so the route is all the rest it needs.
+    /// Note-ons not yet ended at the track's current route, per track,
+    /// channel and note (a count, as a track may play the same note
+    /// twice). A route change ends them all first, so the route's port is
+    /// all the rest it needs; the channel is kept, as a kit pad may play
+    /// on a channel of its own ([`OutputRouter::send_on`]).
     sounding: Box<[u8]>,
+    /// Notes on per track, so a panic skips the tracks with none.
+    track_on: [u32; MAX_TRACKS],
     /// Thru's note-ons not yet ended, per output port, channel and note.
     thru_sounding: Box<[u8]>,
     /// The input port each of thru's notes came in on, for the monitor's
@@ -368,11 +372,11 @@ impl Default for OutputRouter {
     }
 }
 
-fn idx(track: usize, note: u8) -> usize {
-    track * NOTES + usize::from(note & 0x7F)
-}
-
 const CHANNELS: usize = 16;
+
+fn idx(track: usize, ch: Channel, note: u8) -> usize {
+    (track * CHANNELS + usize::from(ch & 0x0F)) * NOTES + usize::from(note & 0x7F)
+}
 
 fn thru_idx(port: usize, ch: Channel, note: u8) -> usize {
     (port * CHANNELS + usize::from(ch & 0x0F)) * NOTES + usize::from(note & 0x7F)
@@ -382,7 +386,8 @@ impl OutputRouter {
     pub fn new() -> OutputRouter {
         OutputRouter {
             routes: [None; MAX_TRACKS],
-            sounding: vec![0u8; MAX_TRACKS * NOTES].into_boxed_slice(),
+            sounding: vec![0u8; MAX_TRACKS * CHANNELS * NOTES].into_boxed_slice(),
+            track_on: [0; MAX_TRACKS],
             thru_sounding: vec![0u8; MAX_PORTS * CHANNELS * NOTES].into_boxed_slice(),
             thru_src: vec![0u8; MAX_PORTS * CHANNELS * NOTES].into_boxed_slice(),
             thru_on: [0; MAX_PORTS],
@@ -415,6 +420,20 @@ impl OutputRouter {
     /// arp), at `offset` in the period. Its channel is replaced by the
     /// route's. `queues` is indexed by port.
     pub fn send(&mut self, track: u8, msg: Msg, offset: u32, queues: &mut [OutQueue]) {
+        self.send_on(track, msg, None, offset, queues);
+    }
+
+    /// [`OutputRouter::send`], on `channel` (0 to 15) rather than the
+    /// route's when there is one: a kit pad the port's profile gives a
+    /// channel of its own. A note ends on the channel it started on.
+    pub fn send_on(
+        &mut self,
+        track: u8,
+        msg: Msg,
+        channel: Option<Channel>,
+        offset: u32,
+        queues: &mut [OutQueue],
+    ) {
         let t = usize::from(track);
         let Some(r) = self.routes.get(t).copied().flatten() else {
             return;
@@ -423,18 +442,23 @@ impl OutputRouter {
             self.dropped += 1;
             return;
         };
-        let m = msg.on_channel(r.channel);
+        let ch = channel.map_or(r.channel, |c| c & 0x0F);
+        let m = msg.on_channel(ch);
         match m {
             Msg::NoteOn { note, .. } => {
-                let c = &mut self.sounding[idx(t, note)];
-                *c = c.saturating_add(1);
+                let c = &mut self.sounding[idx(t, ch, note)];
+                if *c < u8::MAX {
+                    *c += 1;
+                    self.track_on[t] += 1;
+                }
             }
             Msg::NoteOff { note, .. } => {
-                let c = &mut self.sounding[idx(t, note)];
+                let c = &mut self.sounding[idx(t, ch, note)];
                 if *c == 0 {
                     return; // never started here (route changed meanwhile)
                 }
                 *c -= 1;
+                self.track_on[t] -= 1;
             }
             _ => {}
         }
@@ -504,17 +528,17 @@ impl OutputRouter {
 
     fn track_off(&mut self, t: usize, offset: u32, queues: &mut [OutQueue]) {
         let Some(r) = self.routes[t] else { return };
-        for note in 0..NOTES as u8 {
-            let i = idx(t, note);
-            let n = std::mem::take(&mut self.sounding[i]);
-            if let Some(q) = queues.get_mut(usize::from(r.port.0)) {
-                for _ in 0..n {
-                    let off = Msg::NoteOff {
-                        ch: r.channel,
-                        note,
-                        vel: 64,
-                    };
-                    q.push(Timed::msg(offset, off).by(t as u8));
+        if std::mem::take(&mut self.track_on[t]) == 0 {
+            return;
+        }
+        for ch in 0..CHANNELS as Channel {
+            for note in 0..NOTES as u8 {
+                let n = std::mem::take(&mut self.sounding[idx(t, ch, note)]);
+                if let Some(q) = queues.get_mut(usize::from(r.port.0)) {
+                    for _ in 0..n {
+                        let off = Msg::NoteOff { ch, note, vel: 64 };
+                        q.push(Timed::msg(offset, off).by(t as u8));
+                    }
                 }
             }
         }
@@ -640,6 +664,63 @@ mod tests {
         assert!(q[0].as_slice().iter().all(|t| t.track() == Some(2)));
         assert_eq!(Timed::realtime(0, 0xF8).track(), None);
         assert!(q[1].is_empty());
+        assert_eq!(r.sounding(), 0);
+    }
+
+    /// A kit pad on a channel of its own ends there, by its note-off, a
+    /// panic or a route change, however many share its note.
+    #[test]
+    fn a_note_on_a_channel_of_its_own_ends_there() {
+        let mut r = OutputRouter::new();
+        let mut q = queues();
+        let route = |ch| {
+            Some(OutRoute {
+                port: PortId(0),
+                channel: ch,
+            })
+        };
+        r.set_route(0, route(1), 0, &mut q);
+        let on = Msg::NoteOn {
+            ch: 0,
+            note: 36,
+            vel: 100,
+        };
+        let off = Msg::NoteOff {
+            ch: 0,
+            note: 36,
+            vel: 64,
+        };
+        r.send_on(0, on, Some(9), 0, &mut q);
+        r.send(0, on, 0, &mut q);
+        r.send_on(0, off, Some(9), 1, &mut q);
+        // A note-off on a channel it never started on goes nowhere.
+        r.send_on(0, off, Some(4), 1, &mut q);
+        r.send_on(0, on, Some(9), 2, &mut q);
+        let bytes = |q: &[OutQueue]| -> Vec<Vec<u8>> {
+            q[0].as_slice().iter().map(|t| t.bytes().to_vec()).collect()
+        };
+        assert_eq!(
+            bytes(&q),
+            vec![
+                vec![0x99, 36, 100],
+                vec![0x91, 36, 100],
+                vec![0x89, 36, 64],
+                vec![0x99, 36, 100],
+            ]
+        );
+        assert_eq!(r.sounding(), 2);
+        q[0].clear();
+        // A new channel for the track ends both where they sound.
+        r.set_route(0, route(2), 3, &mut q);
+        let mut ended = bytes(&q);
+        ended.sort();
+        assert_eq!(ended, vec![vec![0x81, 36, 64], vec![0x89, 36, 64]]);
+        assert_eq!(r.sounding(), 0);
+        q[0].clear();
+        r.send_on(0, on, Some(15), 4, &mut q);
+        q[0].clear();
+        r.all_off(5, &mut q);
+        assert_eq!(bytes(&q), vec![vec![0x8F, 36, 64]]);
         assert_eq!(r.sounding(), 0);
     }
 
