@@ -1123,3 +1123,67 @@ fn the_recorder_row_records_and_the_panel_is_input_while_rec_is_on() {
         Some(WaveAction::Region { .. })
     ));
 }
+
+#[test]
+fn the_tools_strip_sits_over_the_wave_and_opens_the_tools_old_pages_for_now() {
+    use mpfree_sampler_ui::recorder::RecorderView;
+    use mpfree_sampler_ui::wave_tab::Tool;
+    use mpfree_sampler_ui::widgets::ToolStrip;
+    let mut s = sample();
+    let st = s.state.clone();
+    // Trim, Slice, Warp and Grain, at the left of the overview's row,
+    // between the recorder row and the wave; Trim (the page) is in use.
+    let strip = s.ui.rect_of(wave_tab::TOOLS).unwrap();
+    let over = s.ui.rect_of(wave_tab::OVERVIEW).unwrap();
+    let wave = s.ui.rect_of(wave_tab::WAVE).unwrap();
+    assert_eq!((strip.y, strip.h), (over.y, over.h));
+    assert!(strip.right() <= over.x && strip.bottom() <= wave.y);
+    assert_eq!(strip.x, wave.x);
+    let w = s.ui.get::<ToolStrip>(wave_tab::TOOLS).unwrap();
+    assert_eq!(w.tools, ["Trim", "Slice", "Warp", "Grain"]);
+    assert_eq!((w.active, w.enabled), (0, true));
+    assert_eq!(s.tab.tool(), Tool::Trim);
+    // Trim is in use: a tap on it changes nothing. The others aren't on the
+    // page yet, so each opens its old page: Slice the Chop page, Warp the
+    // Warp page, Grain the Grain page.
+    let tap = |s: &mut Sample, i: usize| {
+        let st = s.state.clone();
+        let w = s.ui.get::<ToolStrip>(wave_tab::TOOLS).unwrap();
+        let r = w.tool_rect(strip, i);
+        let got =
+            s.ui.touch(9, Touch::Down, r.x + r.w / 2, r.y + r.h / 2)
+                .and_then(|ev| s.tab.action(&mut s.ui, &ev, &st));
+        s.ui.touch(9, Touch::Up, 0, 0);
+        got
+    };
+    assert_eq!(tap(&mut s, 0), None);
+    assert_eq!(tap(&mut s, 1), Some(WaveAction::Tab(chop_tab::TAB)));
+    assert_eq!(tap(&mut s, 2), Some(WaveAction::Tab(warp_tab::TAB)));
+    assert_eq!(tap(&mut s, 3), Some(WaveAction::Tab(grain_tab::TAB)));
+    assert_eq!(s.tab.tool(), Tool::Trim, "the page stays on Trim");
+    // Each tool is a target the device checks can find by its name.
+    let names: Vec<String> =
+        s.ui.targets()
+            .into_iter()
+            .filter(|t| t.widget == wave_tab::TOOLS)
+            .map(|t| t.target.label)
+            .collect();
+    assert_eq!(names, ["Trim", "Slice", "Warp", "Grain"]);
+    // While a take records the tools wait for it: faint, and a tap says why.
+    let on = RecorderView {
+        sources: vec!["Line in".into()],
+        recording: true,
+        ..Default::default()
+    };
+    s.tab.set_recorder(&mut s.ui, on, &st);
+    let w = s.ui.get::<ToolStrip>(wave_tab::TOOLS).unwrap();
+    assert!(!w.enabled);
+    assert_eq!(w.why_faint(2), Some(wave_tab::TOOLS_WAIT));
+    let r = w.tool_rect(strip, 2);
+    let ev = s.ui.touch(9, Touch::Down, r.x + 5, r.y + 5).unwrap();
+    assert_eq!(ev.kind, EventKind::Select(2));
+    assert_eq!(s.tab.action(&mut s.ui, &ev, &st), None);
+    s.ui.touch(9, Touch::Up, 0, 0);
+    s.tab.set_recorder(&mut s.ui, RecorderView::default(), &st);
+    assert!(s.ui.get::<ToolStrip>(wave_tab::TOOLS).unwrap().enabled);
+}
