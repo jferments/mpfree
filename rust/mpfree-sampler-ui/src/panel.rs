@@ -143,6 +143,9 @@ pub struct Section {
     pub lines: Vec<Vec<Item>>,
     /// The lines from the top rather than centred.
     pub from_top: bool,
+    /// Outlined in the accent: the section picked (the FX page's effect
+    /// on the Q-Links).
+    pub lit: bool,
 }
 
 impl Section {
@@ -153,6 +156,7 @@ impl Section {
             width,
             lines,
             from_top: false,
+            lit: false,
         }
     }
 
@@ -163,6 +167,11 @@ impl Section {
 
     pub fn from_top(mut self) -> Section {
         self.from_top = true;
+        self
+    }
+
+    pub fn lit(mut self, lit: bool) -> Section {
+        self.lit = lit;
         self
     }
 }
@@ -690,7 +699,11 @@ pub fn paint(
     let t = cx.theme.clone();
     for (s, sr) in panel.sections.iter().zip(panel.section_rects(r)) {
         cx.canvas.fill_round_rect(sr, 12, t.surface);
-        cx.canvas.stroke_round_rect(sr, 12, 1, t.outline);
+        if s.lit {
+            cx.canvas.stroke_round_rect(sr, 12, 2, t.accent);
+        } else {
+            cx.canvas.stroke_round_rect(sr, 12, 1, t.outline);
+        }
         let head = sr.inset(PAD).take_top(HEAD_H).0;
         cx.text(
             FontId::Bold,

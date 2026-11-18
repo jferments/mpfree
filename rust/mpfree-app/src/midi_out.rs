@@ -67,10 +67,11 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, TryLockError};
 use std::time::{Duration, Instant};
 
-use mpfree_controller::mpc_one::PAD_NOTES;
+use mpfree_midi::expr_out::{self, ExprOut};
 use mpfree_midi::msg::Msg;
 use mpfree_midi::output::{DinPacer, OutQueue, OutRoute, OutputRouter, Timed, MAX_TRACKS};
 use mpfree_midi::port::{PortId, DIN, MAX_PORTS};
+use mpfree_midi::profile::{PadOut, KIT_NOTES, KIT_PADS};
 use mpfree_midi::setup::{ClockOut, TrackOut, DIN_NAME};
 use mpfree_midi_clock::{ClockOut as Pulses, Messages, PULSE_TICKS};
 use mpfree_midi_ui::{IoModel, PortSend, Shared, ToPort};
@@ -82,7 +83,8 @@ use crate::sample_page::GearOut;
 
 /// Notes one pad can start (a synth pad's chord); more are not sent.
 const CHORD: usize = 8;
-const PADS: usize = 16;
+/// A track's pads: a kit's 128 ([`KIT_PADS`]), a synth layout's 16.
+const PADS: usize = KIT_PADS;
 /// The most messages a period lists for the MIDI monitor, over every port.
 const SENT: usize = 1024;
 /// The most messages the Sample tab's auto-sample of outside gear can have
@@ -159,10 +161,13 @@ pub enum NoteIs<'a> {
     /// A MIDI note (the arps' notes while a synth's pad layout plays
     /// notes).
     Note,
-    /// A pad, 0 to 15, that plays these notes: a synth pad's notes, or the
-    /// MPC's own note for the pad with a kit ([`kit_notes`]). A pad's
-    /// note-off and pressure go to the notes its note-on sent.
+    /// A pad, 0 to 15, that plays these notes: a synth pad's notes. A
+    /// pad's note-off and pressure go to the notes its note-on sent.
     Pad(&'a [u8]),
+    /// A kit's pad, 0 (A1) to 127: the note, and the channel, its port's
+    /// device profile gives it, else its own note ([`kit_notes`]). Ends
+    /// and pressure go where its note-on went.
+    Kit,
 }
 
 /// When a message heard at `heard` leaves for gear that sounds `early`
@@ -181,10 +186,11 @@ fn test_off(ch: u8) -> Msg {
     }
 }
 
-/// A kit pad's note on MIDI Out: the MPC's own pad notes (pad 1 is C#2,
-/// note 37), as Akai's MPC sends them.
+/// A kit pad's note on MIDI Out when its port's profile names none: bank
+/// A as Akai's MPC sends its pads (pad 1 is C#2, note 37), banks B to H a
+/// note each of the rest ([`KIT_NOTES`]).
 pub fn kit_notes(pad: usize) -> &'static [u8] {
-    PAD_NOTES.get(pad).map_or(&[], std::slice::from_ref)
+    KIT_NOTES.get(pad).map_or(&[], std::slice::from_ref)
 }
 
 /// A track's output as it was taken from the project.
@@ -210,11 +216,13 @@ impl Applied {
     }
 }
 
-/// The notes a pad's note-on sent.
+/// The notes a pad's note-on sent, and the channel of its own a kit pad
+/// sent them on.
 #[derive(Clone, Copy, Debug, Default)]
 struct Chord {
     notes: [u8; CHORD],
     len: u8,
+    ch: Option<u8>,
 }
 
 impl Chord {
@@ -224,10 +232,11 @@ impl Chord {
 }
 
 /// What each track's pads' note-ons sent, so a pad's note-off and
-/// pressure go to the same notes even if its layout changed in between.
-/// MIDI Out and CV out each keep one.
+/// pressure go to the same notes even if its layout (or its port's
+/// profile) changed in between. MIDI Out, CV out and an export's tap each
+/// keep one. Boxed: 128 pads of 128 tracks.
 #[derive(Clone, Debug)]
-pub struct Chords([[Chord; PADS]; MAX_TRACKS]);
+pub struct Chords(Box<[[Chord; PADS]]>);
 
 impl Default for Chords {
     fn default() -> Self {
@@ -237,16 +246,49 @@ impl Default for Chords {
 
 impl Chords {
     pub fn new() -> Chords {
-        Chords([[Chord::default(); PADS]; MAX_TRACKS])
+        Chords(vec![[Chord::default(); PADS]; MAX_TRACKS].into_boxed_slice())
     }
 
     /// The note messages (on channel 0) one note event of track `t` makes,
     /// in order, to `f`. A pad hit again ends its earlier notes first, as
     /// the synth does. Velocity 0 sounds as 1, so a note-on is never read
-    /// as a note-off. Other events make none.
+    /// as a note-off. A clip's program change (S5) makes its bank select,
+    /// CC 0 then CC 32, when it has a bank, then the program change, as
+    /// the track's own program goes (`MidiOut::program`). Other events
+    /// make none. A kit's pads play their own notes ([`kit_notes`]).
     pub fn messages(&mut self, t: usize, event: Event, is: NoteIs, mut f: impl FnMut(Msg)) {
+        self.messages_on(t, event, is, |_| None, |m, _| f(m));
+    }
+
+    /// [`Chords::messages`], with what a kit's pad plays from `kit` (its
+    /// port's profile; None: its own note), and each message's channel
+    /// of its own (None: the track's) to `f`.
+    pub fn messages_on(
+        &mut self,
+        t: usize,
+        event: Event,
+        is: NoteIs,
+        kit: impl Fn(usize) -> Option<PadOut>,
+        mut f: impl FnMut(Msg, Option<u8>),
+    ) {
         let Some(pads) = self.0.get_mut(t) else {
             return;
+        };
+        // A kit's pad: its notes and channel, as a pad layout's.
+        let kit_note;
+        let (is, ch) = match (is, event) {
+            (NoteIs::Kit, Event::NoteOn { note, .. }) => {
+                let pad = usize::from(note);
+                match kit(pad) {
+                    Some(o) => {
+                        kit_note = [o.note];
+                        (NoteIs::Pad(&kit_note), o.channel)
+                    }
+                    None => (NoteIs::Pad(kit_notes(pad)), None),
+                }
+            }
+            (NoteIs::Kit, _) => (NoteIs::Pad(&[]), None),
+            (is, _) => (is, None),
         };
         let off = |note| Msg::NoteOff {
             ch: 0,
@@ -254,82 +296,125 @@ impl Chords {
             vel: 64,
         };
         match (event, is) {
-            (Event::NoteOn { note, velocity }, NoteIs::Note) => f(Msg::NoteOn {
-                ch: 0,
-                note: note & 0x7F,
-                vel: velocity.clamp(1, 127),
-            }),
+            (Event::NoteOn { note, velocity }, NoteIs::Note) => f(
+                Msg::NoteOn {
+                    ch: 0,
+                    note: note & 0x7F,
+                    vel: velocity.clamp(1, 127),
+                },
+                None,
+            ),
             (Event::NoteOn { note, velocity }, NoteIs::Pad(notes)) => {
                 let Some(c) = pads.get_mut(usize::from(note)) else {
                     return;
                 };
-                for &n in std::mem::take(c).notes() {
-                    f(off(n));
+                let was = std::mem::take(c);
+                for &n in was.notes() {
+                    f(off(n), was.ch);
                 }
+                c.ch = ch;
                 for &n in notes.iter().filter(|&&n| n < 128).take(CHORD) {
                     c.notes[usize::from(c.len)] = n;
                     c.len += 1;
                 }
                 for &n in c.notes() {
-                    f(Msg::NoteOn {
-                        ch: 0,
-                        note: n,
-                        vel: velocity.clamp(1, 127),
-                    });
+                    f(
+                        Msg::NoteOn {
+                            ch: 0,
+                            note: n,
+                            vel: velocity.clamp(1, 127),
+                        },
+                        ch,
+                    );
                 }
             }
-            (Event::NoteOff { note }, NoteIs::Note) => f(off(note & 0x7F)),
+            (Event::NoteOff { note }, NoteIs::Note) => f(off(note & 0x7F), None),
             (Event::NoteOff { note }, NoteIs::Pad(_)) => {
                 if let Some(c) = pads.get_mut(usize::from(note)).map(std::mem::take) {
                     for &n in c.notes() {
-                        f(off(n));
+                        f(off(n), c.ch);
                     }
                 }
             }
-            (Event::Pressure { note, value }, NoteIs::Note) => f(Msg::PolyPressure {
-                ch: 0,
-                note: note & 0x7F,
-                value,
-            }),
+            (Event::Pressure { note, value }, NoteIs::Note) => f(
+                Msg::PolyPressure {
+                    ch: 0,
+                    note: note & 0x7F,
+                    value,
+                },
+                None,
+            ),
             (Event::Pressure { note, value }, NoteIs::Pad(_)) => {
                 if let Some(c) = pads.get(usize::from(note)) {
                     for &n in c.notes() {
-                        f(Msg::PolyPressure {
-                            ch: 0,
-                            note: n,
-                            value,
-                        });
+                        f(
+                            Msg::PolyPressure {
+                                ch: 0,
+                                note: n,
+                                value,
+                            },
+                            c.ch,
+                        );
                     }
                 }
+            }
+            (Event::Program { program, bank }, _) => {
+                if let Some(b) = bank {
+                    for (cc, value) in [(0, (b >> 7) as u8 & 0x7F), (32, (b & 0x7F) as u8)] {
+                        f(Msg::Cc { ch: 0, cc, value }, None);
+                    }
+                }
+                f(
+                    Msg::Program {
+                        ch: 0,
+                        program: program & 0x7F,
+                    },
+                    None,
+                );
             }
             _ => {}
         }
     }
 
     /// Note-offs for every pad of track `t` that is on.
-    pub fn end_track(&mut self, t: usize, mut f: impl FnMut(Msg)) {
+    /// Note-offs for every pad of track `t` that is on, each with the
+    /// channel of its own it started on.
+    pub fn end_track(&mut self, t: usize, mut f: impl FnMut(Msg, Option<u8>)) {
         let Some(pads) = self.0.get_mut(t) else {
             return;
         };
         for c in pads.iter_mut() {
-            for &n in std::mem::take(c).notes() {
-                f(Msg::NoteOff {
-                    ch: 0,
-                    note: n,
-                    vel: 64,
-                });
+            let c = std::mem::take(c);
+            for &n in c.notes() {
+                f(
+                    Msg::NoteOff {
+                        ch: 0,
+                        note: n,
+                        vel: 64,
+                    },
+                    c.ch,
+                );
             }
         }
     }
 
+    /// Forgets every pad's notes, in place (no allocation).
     pub fn clear(&mut self) {
-        *self = Chords::new();
+        for pads in self.0.iter_mut() {
+            pads.fill(Chord::default());
+        }
     }
 }
 
 /// One port's clock out: its setting and the clock it makes.
 struct PortClock {
     mode: ClockOut,
+    /// Its clock runs this many times slower (`PortSetup::clock_divide`):
+    /// the gear's ticks are the transport's divided by it.
+    divide: i64,
+    /// The divide changed while it ran: Stop, then it joins again at the
+    /// next sixteenth at the new rate.
+    restart: bool,
     pulses: Pulses,
     /// Always, while stopped: frames from this period's start to the next
     /// pulse.
@@ -340,9 +425,25 @@ impl PortClock {
     fn new() -> PortClock {
         PortClock {
             mode: ClockOut::Off,
+            divide: 1,
+            restart: false,
             pulses: Pulses::new(),
             free_next: 0.0,
         }
+    }
+
+    /// The divide the setup asks for (1 and up).
+    fn set_divide(&mut self, divide: u8) {
+        let d = i64::from(divide.max(1));
+        if d != self.divide {
+            self.restart = self.pulses.running();
+            self.divide = d;
+        }
+    }
+
+    /// A transport tick as the gear's, at this port's divide.
+    fn tick(&self, tick: i64) -> i64 {
+        tick.div_euclid(self.divide)
     }
 
     /// The transport's period as this port's clock: its messages to `out`,
@@ -353,6 +454,9 @@ impl PortClock {
             // Turned off while playing: the other device stops too.
             self.stop(out);
             return;
+        }
+        if std::mem::take(&mut self.restart) {
+            self.stop(out);
         }
         let markers = block.markers();
         let mut next = 0;
@@ -372,14 +476,14 @@ impl PortClock {
 
     fn mark(&mut self, m: &Marker, out: &mut Messages) {
         match m.mark {
-            Mark::Started { tick } => self.pulses.started(m.offset, tick, out),
+            Mark::Started { tick } => self.pulses.started(m.offset, self.tick(tick), out),
             Mark::Stopped { .. } => {
                 self.pulses.stopped(m.offset, out);
                 // Always: pulses go on from here at the tempo.
                 self.free_next = f64::from(m.offset);
             }
-            Mark::Located { to, .. } => self.pulses.located(m.offset, to, out),
-            Mark::Looped { start, .. } => self.pulses.located(m.offset, start, out),
+            Mark::Located { to, .. } => self.pulses.located(m.offset, self.tick(to), out),
+            Mark::Looped { start, .. } => self.pulses.located(m.offset, self.tick(start), out),
             // Back to bar 1 while stopped: the other device's position too.
             Mark::Rewound => self.pulses.located(m.offset, 0, out),
             _ => {}
@@ -392,17 +496,19 @@ impl PortClock {
                 // Clock turned on (or the port opened) while playing: the
                 // other device joins from the next sixteenth.
                 if !self.pulses.running() {
-                    let tick = span.ticks().start;
+                    let tick = self.tick(span.ticks().start);
                     self.pulses.started(span.offset, tick, out);
                 }
-                for (tick, offset) in span.lines(PULSE_TICKS) {
-                    self.pulses.pulse(tick, offset, out);
+                // Divided: a pulse every `divide` of the transport's.
+                for (tick, offset) in span.lines(PULSE_TICKS * self.divide) {
+                    self.pulses.pulse(self.tick(tick), offset, out);
                 }
             }
             // Nothing until playback starts, when Started comes.
             State::CountIn => {}
             State::Stopped if self.mode == ClockOut::Always && !self.pulses.running() => {
-                let every = 60.0 * f64::from(span.rate) / (span.bpm.max(1.0) * 24.0);
+                let every =
+                    60.0 * f64::from(span.rate) * self.divide as f64 / (span.bpm.max(1.0) * 24.0);
                 let (start, end) = (f64::from(span.offset), f64::from(span.offset + span.len));
                 self.free_next = self.free_next.max(start);
                 while self.free_next < end {
@@ -438,6 +544,15 @@ struct PortOut {
     /// Its gear's delay ("This gear's delay" on its page): messages leave
     /// this much before their frame is heard, at most the sound's lead.
     early: Duration,
+    /// Its clock's nudge (`PortSetup::clock_nudge_tenths`): later above 0.
+    nudge_tenths: i16,
+    /// What its device profile has each kit pad play (None: the pad's own
+    /// note on the track's channel), by pad.
+    pads: Box<[Option<PadOut>]>,
+    /// Its profile's bend range in semitones (0: it doesn't say), and
+    /// whether its gear takes each note's own pressure (`pressure = poly`).
+    bend: u8,
+    poly_pressure: bool,
     clock: PortClock,
     /// Its page's test note still on: its channel and the frames until its
     /// note-off.
@@ -460,6 +575,10 @@ impl PortOut {
             writer: None,
             closing: None,
             early: Duration::ZERO,
+            nudge_tenths: 0,
+            pads: vec![None; KIT_PADS].into_boxed_slice(),
+            bend: 0,
+            poly_pressure: false,
             clock: PortClock::new(),
             test_off: None,
             queued: 0,
@@ -511,6 +630,9 @@ pub struct MidiOut {
     /// Bank and program to send before this period's notes.
     program_due: [bool; MAX_TRACKS],
     chords: Chords,
+    /// Each track's keys' expression for its gear, made one bend, pressure
+    /// and CC 74 ([`MidiOut::expression`]).
+    expr: Box<[ExprOut]>,
     applied_gen: Option<u64>,
     shown_on: Option<bool>,
     rolling: bool,
@@ -527,6 +649,10 @@ pub struct MidiOut {
     said: Vec<String>,
     /// Messages thru couldn't send (MIDI out off, or no output there).
     thru_unsent: u64,
+    /// Messages controller mode couldn't send, as for thru.
+    controller_unsent: u64,
+    /// MIDI Follow's values sent back to its controller.
+    sent_back: u64,
     /// The Sample tab's auto-sample of outside gear, out of the jacks.
     gear: Gear,
 }
@@ -564,6 +690,7 @@ impl MidiOut {
             tracks: [None; MAX_TRACKS],
             program_due: [false; MAX_TRACKS],
             chords: Chords::new(),
+            expr: vec![ExprOut::new(); MAX_TRACKS].into_boxed_slice(),
             applied_gen: None,
             shown_on: None,
             rolling: false,
@@ -573,6 +700,8 @@ impl MidiOut {
             sent_at: Instant::now(),
             said: Vec::new(),
             thru_unsent: 0,
+            controller_unsent: 0,
+            sent_back: 0,
             gear: Gear::new(),
         }
     }
@@ -769,10 +898,20 @@ impl MidiOut {
         // Which ports MIDI out sends to now, for their rows and pages (the
         // port list is rebuilt when a port comes or goes).
         for lp in m.live.ports.iter_mut() {
-            lp.sending = self
+            let p = self
                 .ports
                 .iter()
-                .any(|p| p.here && p.writer.is_some() && p.name == lp.name);
+                .find(|p| p.here && p.writer.is_some() && p.name == lp.name);
+            lp.sending = p.is_some();
+            // The clock as it left, to a tenth of a ms.
+            let tenth = |x: f32| (x * 10.0).round() / 10.0;
+            let measured = p
+                .and_then(|p| p.writer.as_ref())
+                .and_then(Writer::clock_measured)
+                .map(|(g, s)| (tenth(g), tenth(s)));
+            if lp.clock_measured != measured {
+                lp.clock_measured = measured;
+            }
         }
         if let Some(ask) = m.asks.port_send.take() {
             let (said, sent) = self.port_send(&ask);
@@ -797,9 +936,18 @@ impl MidiOut {
             // Found in place: `MidiSetup::port` would make a copy.
             let s = m.setup.ports.iter().find(|s| s.name == p.name);
             p.clock.mode = s.map_or(ClockOut::default(), |s| s.clock_out);
+            p.clock.set_divide(s.map_or(1, |s| s.clock_divide));
+            p.nudge_tenths = s.map_or(0, |s| s.clock_nudge_tenths);
             p.early = s.map_or(Duration::ZERO, |s| {
                 Duration::from_micros(u64::from(s.delay_tenths) * 100)
             });
+            // Its profile's kit pads, in place.
+            let profile = m.profile(&p.name);
+            for (pad, out) in p.pads.iter_mut().enumerate() {
+                *out = profile.and_then(|f| f.pad(pad));
+            }
+            p.bend = profile.and_then(|f| f.bend).unwrap_or(0);
+            p.poly_pressure = profile.is_some_and(|f| f.poly_pressure);
         }
         for t in 0..MAX_TRACKS {
             let want = m.setup.tracks[t]
@@ -818,8 +966,10 @@ impl MidiOut {
             });
             if route != was {
                 // Another port or channel, or none: what is on ends where
-                // it started. A new program alone leaves held notes alone.
+                // it started, and its gear's bend and pressure go back to
+                // rest. A new program alone leaves held notes alone.
                 self.end_chords(t, 0);
+                self.release_expression(t, 0);
                 self.router.set_route(t as u8, route, 0, &mut self.queue);
             }
             self.tracks[t] = want;
@@ -913,7 +1063,7 @@ impl MidiOut {
             if self.tracks[t].is_some_and(|a| a.port == port) {
                 // The router sends the note-offs; the pads' chords only
                 // forget.
-                self.chords.end_track(t, |_| {});
+                self.chords.end_track(t, |_, _| {});
             }
         }
         self.router.port_off(port, offset, &mut self.queue);
@@ -956,10 +1106,20 @@ impl MidiOut {
             return false;
         }
         let t = usize::from(o.track);
+        // A kit's pads play what the track's port's profile says.
+        let kit = self
+            .router
+            .route(t as u8)
+            .and_then(|r| self.ports.get(usize::from(r.port.0)))
+            .map(|p| &p.pads[..]);
         let (router, queue) = (&mut self.router, &mut self.queue);
-        self.chords.messages(t, o.event, is, |m| {
-            router.send(t as u8, m, o.offset, queue);
-        });
+        self.chords.messages_on(
+            t,
+            o.event,
+            is,
+            |pad| kit.and_then(|k| k.get(pad).copied().flatten()),
+            |m, ch| router.send_on(t as u8, m, ch, o.offset, queue),
+        );
         true
     }
 
@@ -977,17 +1137,98 @@ impl MidiOut {
         true
     }
 
+    /// A message controller mode sends to the output `to` (the MPC's pads
+    /// and Q-Links), at the start of this period. False when nothing can
+    /// send it: MIDI out is off, or `to` isn't plugged in or its output
+    /// didn't open.
+    pub fn controller(&mut self, to: PortId, msg: Msg) -> bool {
+        let i = usize::from(to.0);
+        if !self.sending || !self.ports.get(i).is_some_and(|p| p.writer.is_some()) {
+            self.controller_unsent += 1;
+            return false;
+        }
+        self.router.controller(to, msg, 0, &mut self.queue);
+        true
+    }
+
+    /// A value MIDI Follow sends back to its controller on `to` (a knob's
+    /// CC, so its lights or motor fader show the Q-Link's value), at the
+    /// start of this period. False when nothing can send it, as for
+    /// [`MidiOut::controller`]; it isn't counted then, since the next
+    /// change sends again.
+    pub fn send_back(&mut self, to: PortId, msg: Msg) -> bool {
+        let i = usize::from(to.0);
+        if !self.sending || !self.ports.get(i).is_some_and(|p| p.writer.is_some()) {
+            return false;
+        }
+        let Some(q) = self.queue.get_mut(i) else {
+            return false;
+        };
+        q.push(Timed::msg(0, msg).sent_back());
+        self.sent_back += 1;
+        true
+    }
+
+    /// A key's expression for track `t`'s gear, at the start of this
+    /// period: a keyboard's wheel and pressure, an MPE controller's slide,
+    /// pressure and tone on each of its notes, and its keys going down and
+    /// up (which say whose count). Gear without MPE takes them as one bend
+    /// (over its profile's `bend` range), one pressure and one CC 74
+    /// ([`ExprOut`]); gear whose profile says `pressure = poly` takes each
+    /// key's pressure on its note. True when MIDI out takes the track, so
+    /// the pads and instruments don't.
+    pub fn expression(&mut self, track: u16, i: expr_out::In) -> bool {
+        if !self.takes(track) {
+            return false;
+        }
+        let t = usize::from(track);
+        let (bend, poly) = self.tracks[t]
+            .and_then(|a| self.ports.get(usize::from(a.port.0)))
+            .map_or((0, false), |p| (p.bend, p.poly_pressure));
+        let (router, queue) = (&mut self.router, &mut self.queue);
+        match i {
+            expr_out::In::Pressure { note, value } if poly => {
+                let m = Msg::PolyPressure {
+                    ch: 0,
+                    note: note & 0x7F,
+                    value: value.min(127),
+                };
+                router.send(t as u8, m, 0, queue);
+            }
+            _ => self.expr[t].take(i, bend, |m| router.send(t as u8, m, 0, queue)),
+        }
+        true
+    }
+
+    /// Track `track`'s gear's bend and pressure back to rest (another
+    /// track is armed), at the start of this period.
+    pub fn rest_expression(&mut self, track: usize) {
+        self.release_expression(track, 0);
+    }
+
+    /// Track `t`'s gear's bend and pressure back to rest, at `offset`.
+    fn release_expression(&mut self, t: usize, offset: u32) {
+        let (router, queue) = (&mut self.router, &mut self.queue);
+        if let Some(e) = self.expr.get_mut(t) {
+            e.release(|m| router.send(t as u8, m, offset, queue));
+        }
+    }
+
     fn end_chords(&mut self, t: usize, offset: u32) {
         let (router, queue) = (&mut self.router, &mut self.queue);
         self.chords
-            .end_track(t, |m| router.send(t as u8, m, offset, queue));
+            .end_track(t, |m, ch| router.send_on(t as u8, m, ch, offset, queue));
     }
 
     /// Ends every note MIDI out has on, on every port (a panic, a stop),
     /// at `offset`: only the notes that are on, never 2048 blind
-    /// note-offs.
+    /// note-offs. A gear bent or pressed by the keys goes back to rest.
     pub fn all_off(&mut self, offset: u32) {
         self.chords.clear();
+        // Bend and pressure back to rest, where they aren't.
+        for t in 0..MAX_TRACKS {
+            self.release_expression(t, offset);
+        }
         self.router.all_off(offset, &mut self.queue);
         self.gear_off(offset);
     }
@@ -1131,18 +1372,35 @@ impl MidiOut {
                 continue;
             }
             // The clock went in first (`clock` runs before the notes), in
-            // the order it must leave.
+            // the order it must leave; nudged, it leaves that much later
+            // or earlier than the notes on its frame.
             q.sort_by_frame();
+            let nudge = i64::from(p.nudge_tenths) * i64::from(self.rate) / 10_000;
+            if nudge != 0 {
+                q.sort_by_due(|m| if m.is_clock() { nudge } else { 0 });
+            }
             let early = p.early;
             let writer = p.writer.as_ref();
             let sent = &mut self.sent;
             let (mut queued, mut full) = (0u64, 0u64);
             let mut each = |m: &Timed| {
                 let Some(w) = writer else { return };
-                let heard = at + Duration::from_secs_f64(f64::from(m.offset) / rate);
+                let frames = i64::from(m.offset) + if m.is_clock() { nudge } else { 0 };
+                let heard = if frames >= 0 {
+                    at + Duration::from_secs_f64(frames as f64 / rate)
+                } else {
+                    at.checked_sub(Duration::from_secs_f64(-frames as f64 / rate))
+                        .unwrap_or(t0)
+                };
                 // The gear's delay: each message leaves that much before
                 // its frame is heard, never before the period was made.
-                if w.send(Wire::new(leave_at(heard, early, t0), m.bytes())) {
+                let leave = leave_at(heard, early, t0);
+                let wire = if nudge != 0 && m.is_clock() {
+                    Wire::nudged(leave, m.bytes())
+                } else {
+                    Wire::new(leave, m.bytes())
+                };
+                if w.send(wire) {
                     queued += 1;
                     if sent.len() < SENT {
                         sent.push((PortId(i as u8), *m));
@@ -1332,6 +1590,18 @@ impl MidiOut {
                 self.thru_unsent
             ));
         }
+        if self.sent_back > 0 {
+            lines.push(format!(
+                "MIDI Follow: {} values sent back to its controller",
+                self.sent_back
+            ));
+        }
+        if self.controller_unsent > 0 {
+            lines.push(format!(
+                "Controller mode: {} messages not sent (MIDI out off, or no output to send them to)",
+                self.controller_unsent
+            ));
+        }
         let g = &self.gear;
         let (refused, full) = (
             g.refused.load(Ordering::Relaxed),
@@ -1489,6 +1759,134 @@ mod tests {
         assert_eq!(sink.bytes(), [0x99, 0x25, 100, 0x89, 0x25, 64]);
     }
 
+    /// A kit track on a drum machine's port: each pad plays what the
+    /// port's device profile says, on a channel of its own when it gives
+    /// one, else its own note on the track's channel, in every bank. A
+    /// note ends where it started, though the profile changed meanwhile.
+    #[test]
+    fn a_kit_pad_plays_what_the_drum_machines_profile_says() {
+        use mpfree_midi::profile::Profile;
+        use mpfree_midi::setup::ProfilePick;
+        let (mut mo, sink) = open(Duration::ZERO);
+        let m = model(&[(1, TrackOut::new(DIN_NAME, 9))]);
+        let pick = |m: &Shared, to: ProfilePick| {
+            let mut g = m.lock().unwrap();
+            g.setup.set_port(DIN_NAME, |p| p.profile = to.clone());
+            g.gen += 1;
+        };
+        {
+            let mut p = Profile::new("Drum box");
+            let out = |note, channel| PadOut { note, channel };
+            p.set_pad(0, out(36, Some(2)));
+            p.set_pad(17, out(40, None));
+            m.lock().unwrap().profiles.add(p).unwrap();
+        }
+        pick(&m, ProfilePick::Named("Drum box".into()));
+        mo.sync(&m, false);
+        // A1, B2, and B5, which the profile leaves to its own note.
+        assert!(mo.send(&ev(1, 0, on(0, 100)), NoteIs::Kit));
+        assert!(mo.send(&ev(1, 1, on(17, 90)), NoteIs::Kit));
+        assert!(mo.send(&ev(1, 2, on(20, 80)), NoteIs::Kit));
+        // No profile now: A1's end still goes to 36 on channel 3, and its
+        // next hit is its own note, on the track's channel.
+        pick(&m, ProfilePick::Off);
+        mo.sync(&m, false);
+        assert!(mo.send(&ev(1, 3, Event::NoteOff { note: 0 }), NoteIs::Kit));
+        assert!(mo.send(&ev(1, 4, on(0, 70)), NoteIs::Kit));
+        mo.period_end(PERIOD, Instant::now());
+        // Closing ends what is still on, on the track's channel.
+        assert!(mo.close());
+        let b5 = KIT_NOTES[20];
+        assert_eq!(b5, 52);
+        assert_eq!(
+            sink.bytes(),
+            [
+                0x92, 36, 100, 0x99, 40, 90, 0x99, b5, 80, 0x82, 36, 64, 0x99, 37, 70, 0x89, 37,
+                64, 0x89, 40, 64, 0x89, b5, 64
+            ]
+        );
+    }
+
+    /// Expression out: a track's keys bend and press its gear, as one
+    /// bend over its profile's range, the hardest key's channel pressure
+    /// and the newest key's tone on CC 74; a panic puts the gear back at
+    /// rest, keeping the wheel, as closing does; a profile that says poly
+    /// gets each key's pressure on its note. A track not on MIDI out isn't
+    /// taken.
+    #[test]
+    fn the_keys_bend_and_press_the_gear() {
+        use mpfree_midi::expr_out::In;
+        use mpfree_midi::profile::Profile;
+        use mpfree_midi::setup::ProfilePick;
+        let (mut mo, sink) = open(Duration::ZERO);
+        let m = model(&[(1, TrackOut::new(DIN_NAME, 2))]);
+        let pick = |m: &Shared, p: Profile| {
+            let mut g = m.lock().unwrap();
+            let name = p.name.clone();
+            g.profiles.add(p).unwrap();
+            g.setup
+                .set_port(DIN_NAME, |p| p.profile = ProfilePick::Named(name.clone()));
+            g.gen += 1;
+        };
+        let mut juno = Profile::new("Juno");
+        juno.bend = Some(12);
+        pick(&m, juno);
+        mo.sync(&m, false);
+        assert!(!mo.expression(0, In::Wheel(0.5)), "not on MIDI out");
+        assert!(mo.expression(1, In::Wheel(0.5)));
+        assert!(mo.expression(1, In::Down { note: 60 }));
+        assert!(mo.expression(
+            1,
+            In::Slide {
+                note: 60,
+                semis: 3.0
+            }
+        ));
+        assert!(mo.expression(
+            1,
+            In::Pressure {
+                note: 60,
+                value: 50
+            }
+        ));
+        assert!(mo.expression(
+            1,
+            In::Tone {
+                note: 60,
+                value: 0.5
+            }
+        ));
+        mo.all_off(0);
+        mo.period_end(PERIOD, Instant::now());
+        let mut osmose = Profile::new("Osmose");
+        osmose.poly_pressure = true;
+        pick(&m, osmose);
+        mo.sync(&m, false);
+        assert!(mo.expression(1, In::Down { note: 62 }));
+        assert!(mo.expression(
+            1,
+            In::Pressure {
+                note: 62,
+                value: 70
+            }
+        ));
+        mo.period_end(PERIOD, Instant::now());
+        assert!(mo.close());
+        assert_eq!(
+            sink.bytes(),
+            [
+                // The wheel halfway (4096), then a quarter of the 12
+                // semitones more (6144), on channel 3.
+                0xE2, 0, 96, 0xE2, 0, 112, // The pressure, and the tone on CC 74.
+                0xD2, 50, 0xB2, 74, 64, // The panic: bend and pressure at rest.
+                0xE2, 0, 64, 0xD2, 0, // The wheel still held bends the next key.
+                0xE2, 0, 96, // Each key's own pressure, on its note.
+                0xA2, 62, 70, // Closing puts the bend back at rest too.
+                0xE2, 0, 64
+            ]
+        );
+    }
+
     /// The MIDI monitor gets what the writer took, each with when it is
     /// due and the track that sent it; the clock has none. A period that
     /// sends nothing leaves the list empty.
@@ -1556,6 +1954,7 @@ mod tests {
             has_out: true,
             sending: false,
             last_in: None,
+            clock_measured: None,
         });
     }
 
@@ -1876,6 +2275,28 @@ mod tests {
         let mut want = program.to_vec();
         want.extend(program);
         want.extend([0x92, 0x25, 100, 0x82, 0x25, 64]);
+        assert_eq!(sink.bytes(), want);
+    }
+
+    /// A clip's program change (S5) goes after the track's own at the
+    /// song's start, on the track's channel: bank select when it has one,
+    /// then the program; a track on the pads leaves it to them.
+    #[test]
+    fn a_clips_program_goes_after_the_tracks_own() {
+        let (mut mo, sink) = open(Duration::ZERO);
+        let mut o = TrackOut::new(DIN_NAME, 2);
+        o.program = Some(4);
+        let m = model(&[(0, o)]);
+        mo.sync(&m, true);
+        let clip = |bank| Event::Program { program: 9, bank };
+        assert!(mo.send(&ev(0, 0, clip(Some(258))), NoteIs::Pad(&[])));
+        assert!(mo.send(&ev(0, 0, on(0, 100)), NoteIs::Pad(kit_notes(0))));
+        assert!(mo.send(&ev(0, 10, clip(None)), NoteIs::Note));
+        assert!(!mo.send(&ev(1, 0, clip(None)), NoteIs::Note), "on the pads");
+        mo.period_end(PERIOD, Instant::now());
+        assert!(mo.close());
+        let mut want = vec![0xC2, 4, 0xB2, 0, 2, 0xB2, 32, 2, 0xC2, 9];
+        want.extend([0x92, 0x25, 100, 0xC2, 9, 0x82, 0x25, 64]);
         assert_eq!(sink.bytes(), want);
     }
 
@@ -2325,6 +2746,70 @@ mod tests {
         assert!(b[4..].iter().all(|&x| x == 0xF8));
         set(&mut r, ClockOut::Off);
         assert_eq!(r.run(0.5), [0xFC]);
+    }
+
+    /// Divided by 2: half the pulses, and a locate's Song Position in the
+    /// gear's sixteenths; back to 1 while playing: Stop, then it joins
+    /// again at the tempo.
+    #[test]
+    fn clock_out_divided() {
+        use mpfree_transport::Command;
+        let mut r = ClockRig::new(ClockOut::WhilePlaying);
+        let divide = |r: &mut ClockRig, d| {
+            let mut g = r.m.lock().unwrap();
+            g.setup.set_port(DIN_NAME, |p| p.clock_divide = d);
+            g.gen += 1;
+        };
+        divide(&mut r, 2);
+        r.command(Command::Play);
+        let b = r.run(1.0);
+        assert_eq!(b[0], 0xFA, "{b:02X?}");
+        assert!((24..=25).contains(&pulses(&b)), "{}", pulses(&b));
+        // Bar 2 is 16 sixteenths in; the gear is at its 8th.
+        r.command(Command::Locate(3840));
+        let b = r.run(0.1);
+        assert_eq!(&b[..5], [0xFC, 0xF2, 8, 0, 0xFB], "{b:02X?}");
+        divide(&mut r, 1);
+        let b = r.run(0.5);
+        assert_eq!(b[0], 0xFC, "{b:02X?}");
+        assert_eq!((b[1], b[4]), (0xF2, 0xFB), "{b:02X?}");
+        assert!((21..=25).contains(&pulses(&b)), "{}", pulses(&b));
+    }
+
+    /// Nudged later, the clock leaves after the notes on its frame;
+    /// nudged earlier, before them.
+    #[test]
+    fn a_nudged_clock_leaves_later_or_earlier_than_the_notes() {
+        let note = Timed::msg(
+            0,
+            Msg::NoteOn {
+                ch: 0,
+                note: 60,
+                vel: 100,
+            },
+        );
+        let pulse = Timed::realtime(0, 0xF8);
+        for (nudge, pushed, first) in [
+            (0, [pulse, note], 0xF8),
+            (20, [pulse, note], 0x90),
+            (0, [note, pulse], 0x90),
+            (-20, [note, pulse], 0xF8),
+        ] {
+            let (mut mo, sink) = open(Duration::ZERO);
+            let m = model(&[]);
+            m.lock()
+                .unwrap()
+                .setup
+                .set_port(DIN_NAME, |p| p.clock_nudge_tenths = nudge);
+            mo.sync(&m, false);
+            for t in pushed {
+                mo.queue[0].push(t);
+            }
+            mo.period_end(PERIOD, Instant::now());
+            wait_for(&sink, 4);
+            assert_eq!(sink.bytes()[0], first, "nudge {nudge}");
+            assert!(mo.close());
+        }
     }
 
     /// Steady playing on MIDI Out allocates and frees nothing in the sound

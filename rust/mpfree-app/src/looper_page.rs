@@ -12,15 +12,16 @@
 //! do the strip's buttons on Play.
 
 use crate::app::Settings;
-use crate::looper_deck::{Channel, DeckHead, LoopDeck, RingState, DECK};
+use crate::looper_deck::{CaptureButton, Channel, DeckHead, LoopDeck, RingState, DECK};
 use crate::looper_tab::{
     level_frac, level_text, Chip, ChipKind, Ctl, DropSpot, DropTo, EmptyLook, HistoryList,
     LayerDrag, LayerRow, LoopEditor, Strip, BAR_CHOICES, EDITOR, LOOP_COLOURS, QLINKS, SEND_SHOW,
+    SPEED_CHOICES,
 };
 use crate::looping::{LoopSource, LoopWave, LooperView};
 use mpfree_looper::{
-    After, Command, Edit, History, LayerCommand, LayerInfo, Phase, Status, Step, MAX_LAYERS,
-    MAX_LOOPS, MAX_SEAM,
+    After, Command, Edit, History, LayerCommand, LayerInfo, Overdubs, Phase, Status, Step,
+    MAX_LAYERS, MAX_LOOPS, MAX_SEAM,
 };
 use mpfree_time_ui::view::{LoopPlace, TransportInfo};
 use mpfree_transport::State;
@@ -28,7 +29,6 @@ use mpfree_ui::draw;
 use mpfree_ui::qlink::{QLinkCard, QLinkColumn};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Tone, Touch, Ui, Widget};
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -511,7 +511,13 @@ fn edit_text(e: Edit, rate: u32) -> String {
         Edit::Nudge(n) => format!("Nudge {} →", sixteenths(n)),
         Edit::Trim { .. } => "Trim".to_string(),
         Edit::SeamFade(f) => format!("Seam fade {}", seam_text(f as usize, rate)),
+        Edit::Speed(v) => format!("Speed {}", speed_text(v)),
     }
+}
+
+/// A loop's speed as the strip names it: "½×", "1×", "2×".
+pub fn speed_text(speed: i8) -> &'static str {
+    SPEED_CHOICES[(speed.clamp(-1, 1) + 1) as usize]
 }
 
 /// A step as the undo history names it: layers by their place in the
@@ -530,8 +536,9 @@ fn step_text(s: Step, layers: &[Option<LayerInfo>], rate: u32) -> String {
         }
         Step::Edit(e) => edit_text(e, rate),
         Step::Merge(_) => "Merge layers".to_string(),
-        // Overdub or Record over a print fits the loop to the tempo.
-        Step::Fit(_) => "Fit to the tempo".to_string(),
+        // Overdub or Record over a print fits the loop to the tempo and
+        // its speed.
+        Step::Fit(_) => "Fit to tempo and speed".to_string(),
         // Dragged here from another loop, or from here to another.
         Step::Added(id, from) => name(id).map_or_else(
             || format!("From loop {}", from + 1),
@@ -573,11 +580,20 @@ pub fn strip_command(c: Ctl, s: &Status) -> Option<Command> {
         Ctl::Reverse if editable(s) => Some(Command::Edit(Edit::Reverse)),
         Ctl::Half if editable(s) => Some(Command::Edit(Edit::Half)),
         Ctl::Double if editable(s) => Some(Command::Edit(Edit::Double)),
+        Ctl::Speed(i) if editable(s) && i as i8 - 1 != s.speed => {
+            Some(Command::Edit(Edit::Speed(i as i8 - 1)))
+        }
         Ctl::Merge if editable(s) && s.layers > 1 => Some(Command::Merge),
         Ctl::Then(i) => Some(Command::SetAfter(if i == 0 {
             After::Play
         } else {
             After::Overdub
+        })),
+        // The next overdub's way, even while one records.
+        Ctl::Overdubs(i) => Some(Command::SetOverdubs(match i {
+            0 => Overdubs::Add,
+            1 => Overdubs::Replace,
+            _ => Overdubs::Once,
         })),
         _ => None,
     }
@@ -671,11 +687,6 @@ impl LoopBank {
 /// group of sounds went into it.
 type Take = (usize, usize, Vec<(&'static str, u32)>);
 
-/// The input's level history the empty loop shows: a value every few
-/// views, about five seconds of them.
-const INPUT_HISTORY: usize = 120;
-const INPUT_EVERY: u32 = 2;
-
 /// A level in dBFS along the input meter, 0 to 1 (-48 dB to 0).
 fn input_frac(db: f32) -> f32 {
     if !db.is_finite() {
@@ -688,9 +699,6 @@ pub struct LooperPage {
     /// The input's peak, held for about 2 s of updates.
     hold: f32,
     hold_age: u32,
-    /// The input's level, oldest first, for an empty loop's look.
-    input: VecDeque<f32>,
-    input_age: u32,
     /// Each loop's layers' names, by what was played into each ("Drums",
     /// "Bass"); kept past an undo, so a redo finds its name again.
     names: Vec<Vec<String>>,
@@ -736,8 +744,6 @@ impl LooperPage {
         let mut p = LooperPage {
             hold: f32::NEG_INFINITY,
             hold_age: 0,
-            input: VecDeque::with_capacity(INPUT_HISTORY),
-            input_age: 0,
             names: vec![Vec::new(); MAX_LOOPS],
             take: None,
             layers: [None; MAX_LAYERS],
@@ -1307,6 +1313,7 @@ impl LooperPage {
             tempo: format!("{:.0} BPM", t.bpm),
             memory: memory(v),
             pads: self.pads_keys,
+            capture: capture_button(v),
         };
         // An armed loop starts on the next bar line (on the bar PLAY
         // starts while stopped).
@@ -1326,6 +1333,20 @@ impl LooperPage {
                 let level = self.level_of(n, l);
                 let (position, ring_bars, centre) = match state {
                     RingState::Empty => (0.0, 0, ("+".to_string(), String::new())),
+                    // Capture: on the bar line coming, or copying in.
+                    RingState::Waiting(b) if l.capturing.is_some() => {
+                        let p = l.capturing.unwrap_or(0.0);
+                        (
+                            p,
+                            0,
+                            match b {
+                                Some(b) if p == 0.0 && v.heard.waits => {
+                                    (b.to_string(), "Capture on bar".to_string())
+                                }
+                                _ => ("+".to_string(), "Capturing".to_string()),
+                            },
+                        )
+                    }
                     RingState::Waiting(b) => (
                         0.0,
                         0,
@@ -1352,7 +1373,18 @@ impl LooperPage {
                             ),
                         }
                     }
-                    RingState::Off => (l.position, bars, ("off".to_string(), String::new())),
+                    RingState::Off => (
+                        l.position,
+                        bars,
+                        (
+                            "off".to_string(),
+                            if l.solo_out {
+                                "by solo".to_string()
+                            } else {
+                                String::new()
+                            },
+                        ),
+                    ),
                     _ => {
                         let at = ((l.position * bars as f32) as usize).min(bars.saturating_sub(1));
                         (
@@ -1387,9 +1419,13 @@ impl LooperPage {
                     meter: (meter * 20.0).round() / 20.0,
                     foot: if state.has_sound() {
                         String::new()
+                    } else if l.kept && state == RingState::Empty {
+                        // Cleared: UNDO on it brings it back.
+                        "Cleared · UNDO".to_string()
                     } else {
                         foot.clone()
                     },
+                    solo: l.solo,
                 }
             })
             .collect();
@@ -1461,6 +1497,8 @@ impl LooperPage {
                     Some(l) if l.muted => "muted".to_string(),
                     // Feedback has turned it down under the overdubs since.
                     Some(l) if l.faded < 0.995 => format!("at {:.0} %", 100.0 * l.faded),
+                    // In place of what was under it.
+                    Some(l) if l.replace => "replace".to_string(),
                     Some(l) => level_text(l.level),
                     None => String::new(),
                 };
@@ -1531,7 +1569,13 @@ impl LooperPage {
             };
             Strip::Plays {
                 feedback: s.fade_old,
+                overdubs: match s.overdubs {
+                    Overdubs::Add => 0,
+                    Overdubs::Replace => 1,
+                    Overdubs::Once => 2,
+                },
                 reversed,
+                speed: (s.speed.clamp(-1, 1) + 1) as u8,
                 length: bars_word(bars_of(s.ticks, v.beats_per_bar)),
                 edits: editable(s),
                 chips,
@@ -1552,9 +1596,17 @@ impl LooperPage {
             }
         };
         let empty_look = (layers.is_empty()).then(|| EmptyLook {
-            title: format!("INPUT · {}", source.to_uppercase()),
+            title: format!("WHAT YOU PLAYED · {}", source.to_uppercase()),
             says: match s.phase {
+                _ if s.capturing.is_some() => format!(
+                    "Capture: Loop {} plays once what you played is in (Capture again: stop)",
+                    n + 1
+                ),
                 Phase::Armed => format!("Loop {} records from the next bar line", n + 1),
+                _ if s.kept => format!(
+                    "Loop {} cleared: UNDO brings it back, or tap its ring to record",
+                    n + 1
+                ),
                 _ => format!("Tap Loop {}'s ring or press REC: it {records}", n + 1),
             },
             waits: match s.phase {
@@ -1569,7 +1621,19 @@ impl LooperPage {
                 }),
                 _ => None,
             },
-            input: self.input.iter().copied().collect(),
+            input: v.heard.cols.iter().map(|&db| input_frac(db)).collect(),
+            bars: v.heard.lines[..v.heard.n_lines].to_vec(),
+            take: v
+                .heard
+                .take
+                .filter(|_| s.capturing.is_none() && v.capture_into.is_some_and(|c| c.0 == n))
+                .map(|(a, b, first, bars)| {
+                    (
+                        a,
+                        b,
+                        format!("Capture {}", crate::looping::bars_words(first, bars)),
+                    )
+                }),
         });
         let history = self
             .history_open
@@ -1667,22 +1731,12 @@ impl LooperPage {
         self.layers = v.layers;
         self.layer = self.layer.min(v.status.layers.saturating_sub(1));
         let v = &v;
-        // The input's peak, held for about 2 s of updates, and its level
-        // over the last few seconds.
+        // The input's peak, held for about 2 s of updates.
         self.hold_age += 1;
         let peak = v.meter_db[0].max(v.meter_db[1]);
         if self.hold_age > 8 || peak > self.hold {
             self.hold = peak;
             self.hold_age = 0;
-        }
-        self.input_age += 1;
-        if self.input_age >= INPUT_EVERY {
-            self.input_age = 0;
-            if self.input.len() >= INPUT_HISTORY {
-                self.input.pop_front();
-            }
-            self.input
-                .push_back((input_frac(peak) * 16.0).round() / 16.0);
         }
         self.refresh_deck(ui, v);
         self.refresh_editor(ui, v);
@@ -1873,6 +1927,33 @@ fn bars_word(bars: usize) -> String {
 }
 
 /// The memory every loop shares: "37 s of 5 min", and how full, 0 to 1.
+/// The deck's Capture: lit while the picked loop captures (a tap calls it
+/// off), faint when there is nothing to take or nowhere to put it.
+pub fn capture_button(v: &LooperView) -> CaptureButton {
+    let picked = &v.loops[v.selected.min(MAX_LOOPS - 1)];
+    if picked.capturing.is_some() {
+        return CaptureButton {
+            label: "Capturing".to_string(),
+            works: true,
+            lit: true,
+        };
+    }
+    let bars = match (v.capture_into, v.heard.take) {
+        (Some(_), Some((_, _, _, bars))) => Some(bars),
+        (Some((_, asked)), None) if v.heard.waits => Some(asked),
+        _ => None,
+    };
+    CaptureButton {
+        label: match bars {
+            Some(1) => "Capture last bar".to_string(),
+            Some(b) => format!("Capture last {b} bars"),
+            None => "Capture".to_string(),
+        },
+        works: bars.is_some(),
+        lit: false,
+    }
+}
+
 fn memory(v: &LooperView) -> (String, f32) {
     let rate = f64::from(v.rate.max(1));
     (
@@ -1973,6 +2054,7 @@ mod tests {
             audible: true,
             recording: false,
             faded: 1.0,
+            replace: false,
         }
     }
 
@@ -2088,7 +2170,7 @@ mod tests {
         assert_eq!(e.sub, "empty · records the pads");
         assert!(e.layers.is_empty() && !e.has_sound);
         let look = e.empty.as_ref().unwrap();
-        assert_eq!(look.title, "INPUT · PADS");
+        assert_eq!(look.title, "WHAT YOU PLAYED · PADS");
         assert!(look.says.contains("ring"), "{}", look.says);
         assert!(
             matches!(
@@ -2104,6 +2186,74 @@ mod tests {
             e.strip
         );
         assert_eq!(ui.get::<LoopDeck>(DECK).unwrap().picked, 5);
+        ui.paint(&mut SoftCanvas::new(1280, 800));
+    }
+
+    /// An empty loop picked shows What you played: the bars heard, and
+    /// Capture over the last ones when it is where Capture goes. The
+    /// deck's Capture says how many bars, is faint with nothing to take,
+    /// and lit while the picked loop captures.
+    #[test]
+    fn what_you_played_and_the_decks_capture() {
+        let (mut ui, mut page) = page();
+        let mut v = two_loops();
+        v.selected = 4;
+        v.status = v.loops[4];
+        v.heard.lines[..3].copy_from_slice(&[(9, 0.2), (10, 0.45), (11, 0.7)]);
+        v.heard.n_lines = 3;
+        v.heard.take = Some((0.2, 0.7, 9, 2));
+        v.capture_into = Some((4, 2));
+        page.update(&mut ui, &v, &Settings::default());
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        let look = e.empty.as_ref().unwrap();
+        assert_eq!(look.bars, vec![(9, 0.2), (10, 0.45), (11, 0.7)]);
+        assert_eq!(
+            look.take,
+            Some((0.2, 0.7, "Capture bars 9 and 10".to_string()))
+        );
+        assert_eq!(look.input.len(), crate::looping::HEARD_COLS);
+        let d = ui.get::<LoopDeck>(DECK).unwrap();
+        assert_eq!(
+            d.head.capture,
+            CaptureButton {
+                label: "Capture last 2 bars".into(),
+                works: true,
+                lit: false
+            }
+        );
+        // Capture goes elsewhere: no button over the bars here.
+        v.capture_into = Some((5, 2));
+        page.update(&mut ui, &v, &Settings::default());
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert_eq!(e.empty.as_ref().unwrap().take, None);
+        // Nothing heard on the bars: faint.
+        v.heard.take = None;
+        page.update(&mut ui, &v, &Settings::default());
+        let d = ui.get::<LoopDeck>(DECK).unwrap();
+        assert_eq!(
+            (d.head.capture.label.as_str(), d.head.capture.works),
+            ("Capture", false)
+        );
+        // Waiting for the bar line: it takes the bars it asks for then.
+        v.heard.waits = true;
+        assert_eq!(capture_button(&v).label, "Capture last 2 bars");
+        // The picked loop captures: lit.
+        v.status.capturing = Some(0.3);
+        v.loops[4] = v.status;
+        page.update(&mut ui, &v, &Settings::default());
+        let d = ui.get::<LoopDeck>(DECK).unwrap();
+        assert!(d.head.capture.lit && d.head.capture.label == "Capturing");
+        // Its ring waits, as an armed loop's (a tap calls it off).
+        let c = &d.channels[4];
+        assert_eq!((c.state, c.position), (RingState::Waiting(None), 0.3));
+        assert_eq!(c.centre.1, "Capturing");
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert!(e
+            .empty
+            .as_ref()
+            .unwrap()
+            .says
+            .starts_with("Capture: Loop 5 plays"));
         ui.paint(&mut SoftCanvas::new(1280, 800));
     }
 
@@ -2137,7 +2287,7 @@ mod tests {
         let e = ui.get::<LoopEditor>(EDITOR).unwrap();
         let look = e.empty.as_ref().unwrap();
         assert_eq!(look.waits.as_deref(), Some("REC starts on bar 13"));
-        assert_eq!(look.title, "INPUT · LINE IN");
+        assert_eq!(look.title, "WHAT YOU PLAYED · LINE IN");
         assert_eq!(
             e.strip,
             Strip::Records {
@@ -2271,6 +2421,8 @@ mod tests {
         assert_eq!(text(Step::Edit(Edit::Nudge(2))), "Nudge 2 × 1/16 →");
         assert_eq!(text(Step::Edit(Edit::SeamFade(441))), "Seam fade 10 ms");
         assert_eq!(text(Step::Edit(Edit::Half)), "½ length");
+        assert_eq!(text(Step::Edit(Edit::Speed(-1))), "Speed ½×");
+        assert_eq!(text(Step::Edit(Edit::Speed(1))), "Speed 2×");
         assert_eq!(text(Step::Merge(id(0))), "Merge layers");
         let (mut ui, mut page) = page();
         page.update(&mut ui, &v, &Settings::default());
@@ -2328,6 +2480,36 @@ mod tests {
             Some(Command::SetAfter(After::Overdub))
         );
         assert_eq!(strip_command(Ctl::Undo, &s), None, "UNDO's own");
+        // Overdubs: Add, Replace (in place of what was there), or Once (one
+        // pass, then back to playing).
+        assert_eq!(
+            strip_command(Ctl::Overdubs(1), &s),
+            Some(Command::SetOverdubs(Overdubs::Replace))
+        );
+        assert_eq!(
+            strip_command(Ctl::Overdubs(2), &s),
+            Some(Command::SetOverdubs(Overdubs::Once))
+        );
+        assert_eq!(
+            strip_command(Ctl::Overdubs(0), &s),
+            Some(Command::SetOverdubs(Overdubs::Add))
+        );
+        // Speed: half, as recorded, double; the speed it has does nothing.
+        assert_eq!(
+            strip_command(Ctl::Speed(0), &s),
+            Some(Command::Edit(Edit::Speed(-1)))
+        );
+        assert_eq!(
+            strip_command(Ctl::Speed(2), &s),
+            Some(Command::Edit(Edit::Speed(1)))
+        );
+        assert_eq!(strip_command(Ctl::Speed(1), &s), None);
+        let mut half = s;
+        half.speed = -1;
+        assert_eq!(
+            strip_command(Ctl::Speed(1), &half),
+            Some(Command::Edit(Edit::Speed(0)))
+        );
         // One layer has nothing to merge, and says so.
         s.layers = 1;
         assert_eq!(strip_command(Ctl::Merge, &s), None);
@@ -2352,6 +2534,16 @@ mod tests {
             (merge.0.as_str(), merge.1, *edits),
             ("Merging 40 %", false, false)
         );
+        // The strip shows the loop's speed, its length in bars with it.
+        let mut v = two_loops();
+        v.status.speed = -1;
+        v.status.ticks *= 2;
+        page.update(&mut ui, &v, &Settings::default());
+        let Strip::Plays { speed, length, .. } = &ui.get::<LoopEditor>(EDITOR).unwrap().strip
+        else {
+            panic!("plays");
+        };
+        assert_eq!((*speed, length.as_str()), (0, "8 bars"));
     }
 
     #[test]

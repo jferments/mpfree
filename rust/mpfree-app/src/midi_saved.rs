@@ -4,8 +4,8 @@
 //! apart from system-wide ones):
 //!
 //! - **The rig** (`MidiSetup::rig`): each port's input (Plays tracks, Learn
-//!   only, Both), what it ignores, its gear's delay and the name given to
-//!   it, and the controls learned for every project. They describe the gear on the desk, so they
+//!   only, Both), what it ignores, its gear's delay, the name given to it
+//!   and its device profile, and the controls learned for every project. They describe the gear on the desk, so they
 //!   are kept here for every project, in the store as `files/midi/rig.txt`.
 //! - **The project** (`MidiSetup::project`): each track's "Plays on", the
 //!   routes and thru, Tempo from and following, each port's clock out, the
@@ -14,7 +14,9 @@
 //!
 //! [`restore`] reads the rig once at start, before the sound loop syncs the
 //! model (lines it can't read are kept as warnings, shown in the MIDI
-//! section and logged). [`Saver::take`] runs a few times a second in the
+//! section and logged). [`load_profiles`] reads the musician's device
+//! profiles (`files/midi-profiles/NAME.txt`, read only) into the model
+//! beside the built-in ones, at start. [`Saver::take`] runs a few times a second in the
 //! sound loop: it only `try_lock`s the model, and hands back the rig's text
 //! when it changed since it was last kept; the store's own thread writes it.
 
@@ -39,6 +41,57 @@ pub fn restore(model: &Shared, rig: Option<&str>) -> Vec<String> {
     }
     m.warnings = warnings.clone();
     warnings
+}
+
+/// The store owner whose files are the device profiles folder: profiles
+/// the musician puts in `files/midi-profiles/` (`NAME.txt`,
+/// `mpfree_midi::profile`).
+pub const PROFILES_FOLDER: &str = "midi-profiles";
+
+/// Reads the profiles folder's `.txt` files, in name order, into `model`
+/// after the built-in profiles. A file that isn't a profile, or whose name
+/// another profile has, is left out; a line a profile can't read is
+/// skipped. Gives a line for the log about each, and one naming what was
+/// found. Only reads.
+pub fn load_profiles(store: &mpfree_store::Store, model: &Shared) -> Vec<String> {
+    use mpfree_midi::profile::{Profile, MAX_FILE_BYTES};
+    let mut notes = Vec::new();
+    let mut found = Vec::new();
+    let mut m = model.lock().unwrap_or_else(|e| e.into_inner());
+    for file in store.list(PROFILES_FOLDER) {
+        if !file.ends_with(".txt") {
+            continue;
+        }
+        let Some(bytes) = store.read(PROFILES_FOLDER, &file) else {
+            notes.push(format!("profiles: {file} left out: it can't be read"));
+            continue;
+        };
+        if bytes.len() > MAX_FILE_BYTES {
+            notes.push(format!(
+                "profiles: {file} left out: larger than {} KB",
+                MAX_FILE_BYTES / 1024
+            ));
+            continue;
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        match Profile::parse(&text) {
+            Ok((p, warn)) => {
+                for w in warn {
+                    notes.push(format!("profiles: {file}: {w}"));
+                }
+                let name = p.name.clone();
+                match m.profiles.add(p) {
+                    Ok(()) => found.push(name),
+                    Err(e) => notes.push(format!("profiles: {file} left out: {e}")),
+                }
+            }
+            Err(e) => notes.push(format!("profiles: {file} left out: {e}")),
+        }
+    }
+    if !found.is_empty() {
+        notes.push(format!("profiles: found {}", found.join(", ")));
+    }
+    notes
 }
 
 /// Hands the store the rig when it has changed.
@@ -93,6 +146,52 @@ mod tests {
         let mut m = model.lock().unwrap();
         f(&mut m);
         m.gen += 1;
+    }
+
+    /// The profiles folder: each `.txt` that is a profile joins the
+    /// built-in ones; one without a name, one whose name is taken and
+    /// anything else are left out, each said.
+    #[test]
+    fn the_profiles_folder_adds_the_musicians_profiles() {
+        let d = std::env::temp_dir().join(format!("mpfree-profiles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let f = d.join("files").join(PROFILES_FOLDER);
+        std::fs::create_dir_all(&f).unwrap();
+        std::fs::write(d.join("FORMAT"), "mpfree-data 1\n").unwrap();
+        let w = |n: &str, t: &str| std::fs::write(f.join(n), t).unwrap();
+        w(
+            "juno.txt",
+            "mpfree-profile 1\nname = Juno-X\nmatch = Juno-X\ncc.74 = Filter cutoff\nbad line\n",
+        );
+        w("gm.txt", "mpfree-profile 1\nname = General MIDI\n");
+        w("blank.txt", "mpfree-profile 1\ncc.1 = Mod\n");
+        w("readme.md", "not a profile");
+        let store = mpfree_store::Store::at(&d, |_| {});
+        let model = crate::midi_in::io_model();
+        let notes = load_profiles(&store, &model);
+        let m = model.lock().unwrap();
+        let names: Vec<&str> = m.profiles.all().iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["General MIDI", "Juno-X"]);
+        assert_eq!(
+            m.profile("Juno-X").and_then(|p| p.cc_name(74)),
+            Some("Filter cutoff")
+        );
+        assert_eq!(notes.len(), 4, "{notes:?}");
+        assert!(
+            notes[0].starts_with("profiles: blank.txt left out: no name"),
+            "{notes:?}"
+        );
+        assert!(
+            notes[1].contains("gm.txt left out: another profile is called"),
+            "{notes:?}"
+        );
+        assert!(
+            notes[2].starts_with("profiles: juno.txt: line 5"),
+            "{notes:?}"
+        );
+        assert_eq!(notes[3], "profiles: found Juno-X");
+        drop(m);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

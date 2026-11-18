@@ -25,6 +25,7 @@
 //! launch ticks 960
 //! legato
 //! once
+//! program 4 bank 2
 //! touch 0:10 50:40
 //! note 0 240 36 100 100 - 1 0 2
 //! lock 480 36 pad36.4 0.25
@@ -200,6 +201,13 @@ fn clip_body(s: &mut String, c: &Clip) {
     if c.once {
         s.push_str("once\n");
     }
+    if let Some(p) = c.program {
+        let _ = write!(s, "program {}", p.program);
+        if let Some(b) = p.bank {
+            let _ = write!(s, " bank {b}");
+        }
+        s.push('\n');
+    }
     // Pressure first: the notes name runs of it.
     for chunk in c.touch.chunks(TOUCH_PER_LINE) {
         s.push_str("touch");
@@ -331,6 +339,19 @@ fn launch<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<LaunchGrid> {
     g.ok().then_some(g)
 }
 
+/// `program 4`, or `program 4 bank 2`: the rest of a clip's `program`
+/// line, in range ([`crate::ClipProgram::ok`]).
+fn program<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<crate::ClipProgram> {
+    let program = num(w.next())?;
+    let bank = match w.next() {
+        None => None,
+        Some("bank") => Some(num(w.next())?),
+        Some(_) => return None,
+    };
+    let p = crate::ClipProgram { program, bank };
+    p.ok().then_some(p)
+}
+
 fn follow_text(f: Follow) -> String {
     format!(
         "{} {} {} {}",
@@ -353,7 +374,7 @@ enum At {
     /// The last track's settings and clips.
     Track,
     /// A clip's body: into the last track's slot, or a placement's own.
-    Clip(Clip, ClipHome),
+    Clip(Box<Clip>, ClipHome),
     Scene,
     /// The song's own lanes, until `end`.
     SongLanes(Moves),
@@ -493,7 +514,7 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                     return Err(bad("slot"));
                 }
                 let name = nth_rest(rest, 2);
-                at = At::Clip(Clip::new(name, length), ClipHome::Slot(slot));
+                at = At::Clip(Box::new(Clip::new(name, length)), ClipHome::Slot(slot));
             }
             ("speed", At::Clip(c, _)) => {
                 let (a, b) = (num(w.next()), num(w.next()));
@@ -520,6 +541,9 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             }
             ("legato", At::Clip(c, _)) => c.legato = true,
             ("once", At::Clip(c, _)) => c.once = true,
+            ("program", At::Clip(c, _)) => {
+                c.program = Some(program(&mut w).ok_or_else(|| bad("program"))?)
+            }
             ("launch", At::Top) => p.launch = launch(&mut w).ok_or_else(|| bad("launch"))?,
             ("touch", At::Clip(c, _)) => {
                 for x in w {
@@ -576,7 +600,7 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 c.check().map_err(|e| bad(&format!("clip {e:?}")))?;
                 at = match home {
                     ClipHome::Slot(slot) => {
-                        last(&mut p).slots[slot] = Some(c);
+                        last(&mut p).slots[slot] = Some(*c);
                         At::Track
                     }
                     ClipHome::Own(track, start, length, offset) => {
@@ -585,7 +609,7 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                             start,
                             length,
                             offset,
-                            source: Source::Own(Box::new(c)),
+                            source: Source::Own(c),
                         });
                         At::Top
                     }
@@ -640,7 +664,7 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                         let clip_len: Tick = num(w.next()).ok_or_else(|| bad("length"))?;
                         let name = nth_rest(rest, 6);
                         at = At::Clip(
-                            Clip::new(name, clip_len),
+                            Box::new(Clip::new(name, clip_len)),
                             ClipHome::Own(track, start, length, offset),
                         );
                     }
@@ -840,6 +864,10 @@ mod tests {
         c.launch = Some(crate::LaunchGrid::Ticks(960));
         c.legato = true;
         c.once = true;
+        c.program = Some(crate::ClipProgram {
+            program: 4,
+            bank: Some(300),
+        });
         let pts: Vec<TouchPoint> = (0..150)
             .map(|k| TouchPoint {
                 at: k * 3,
@@ -1061,6 +1089,20 @@ mod tests {
         assert_eq!(from_text(&newer).unwrap(), full());
         let nan = text.replace("lock 480 36 pad36.4 0.1", "lock 480 36 pad36.4 NaN");
         assert!(from_text(&nan).is_err());
+        // A clip's program change: past 127, a bank past 16383, or junk.
+        assert!(text.contains("program 4 bank 300\n"));
+        let no_bank = from_text(&text.replace("program 4 bank 300", "program 4")).unwrap();
+        let first = &no_bank.tracks[0].slots[0].as_ref().unwrap().program;
+        assert_eq!(first.map(|p| (p.program, p.bank)), Some((4, None)));
+        for bad in [
+            "program 128",
+            "program 4 bank 16384",
+            "program 4 300",
+            "program",
+        ] {
+            let t = text.replace("program 4 bank 300", bad);
+            assert!(from_text(&t).is_err(), "{bad}");
+        }
     }
 
     #[test]

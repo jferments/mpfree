@@ -84,11 +84,15 @@
 
 #![forbid(unsafe_code)]
 
+pub mod heard;
 pub mod print;
 pub mod save;
 mod view;
 
+pub use heard::{Take, HEARD_SECONDS};
 pub use save::{LayerFile, LoopFile};
+
+use heard::Heard;
 
 use view::{Cursor, View};
 
@@ -145,6 +149,9 @@ const STEP: f32 = 1.0 / FADE as f32;
 pub const HANDOFF_FADE: usize = 32;
 /// A table entry with no block.
 const NONE: u16 = u16::MAX;
+/// An overdub whose input never went over this (-60 dB) took silence, and
+/// leaves no layer ([`Overdubs`]).
+pub const SILENT: f32 = 0.001;
 static SILENCE: f32 = 0.0;
 
 /// What the looper's buttons and screen ask for. Each applies to the
@@ -164,9 +171,21 @@ pub enum Command {
     Undo,
     /// Bring back the overdub undone last.
     Redo,
-    /// Fade out and forget the loop.
+    /// Fade out the loop, every layer and the first pass. Undo on the
+    /// empty loop brings it back as it was, fading in, until the loop
+    /// records, loads or takes a layer again, or another loop needs the
+    /// memory it holds ([`Status::kept`]); the gauge counts that memory
+    /// as free ([`Looper::memory`]).
     Clear,
+    /// As Clear, with no undo: the loop and what Undo could bring back go
+    /// for good (a project closing).
+    Forget,
     Mute(bool),
+    /// While any loop with sound is soloed, only soloed loops play (each
+    /// fading out and in as a mute does). Clear lets go of the solo.
+    Solo(bool),
+    /// How the loop's next overdubs record (see [`Overdubs`]).
+    SetOverdubs(Overdubs),
     /// Bars in the next first pass; None records until Record again.
     SetBars(Option<u32>),
     /// What the loop does when its first pass ends (see [`After`]).
@@ -206,6 +225,18 @@ pub enum Command {
     /// the loop's one layer, at the print's length (see the module notes).
     /// Undo takes it back. Refused when no print plays.
     Fit,
+    /// Empty: the last this many whole bars heard become the loop
+    /// ([`heard`]), ending on the bar line just passed, or, pressed in a
+    /// bar's last beat, on the one coming. Fewer bars (halving) when fewer
+    /// were played since the song started or jumped, or since the input
+    /// changed. It copies in at [`LOAD_SPEED`] while the loop stays
+    /// silent, then plays in time with the song, fading in, as a load
+    /// does ([`Status::capturing`]). Again, Undo or Clear call it off.
+    /// Refused when the loop isn't empty or no whole bar was heard.
+    Capture(u32),
+    /// The input is another source now: Capture forgets what it heard
+    /// before. For every loop.
+    NewInput,
 }
 
 /// A loop rendered out ([`Looper::bounce`]), for a pad or a WAV file.
@@ -229,6 +260,9 @@ pub struct Bounce {
     /// A print's bounce ([`Looper::bounce_print`]): without the loop's
     /// level.
     pub dry: bool,
+    /// The octaves the audio plays faster than it is ([`Status::rate`]):
+    /// a print makes it so ([`print`]).
+    pub rate: i8,
 }
 
 /// A loop made to fit another tempo with its pitch kept: one pass of its
@@ -319,6 +353,12 @@ pub enum Edit {
     /// included), up to [`MAX_SEAM`]; 0 is a straight cut. [`FADE`] until
     /// changed.
     SeamFade(u32),
+    /// The loop's speed, like tape, in octaves from as it was recorded:
+    /// -1 is half speed (an octave down, twice the bars), 0 as recorded,
+    /// 1 double speed (an octave up, half the bars). Only the length in
+    /// ticks changes; the audio plays faster or slower to fit it, until a
+    /// print made at that speed is in ([`Status::rate`]).
+    Speed(i8),
 }
 
 /// What one layer's controls ask for ([`Looper::layer_command`]). Each
@@ -399,6 +439,9 @@ pub struct LayerInfo {
     /// How far Fade old has turned it down, 0 to 1 (1: not at all). It
     /// plays at `level * faded`.
     pub faded: f32,
+    /// Recorded with Overdubs: Replace: the layers under it are silent
+    /// where it was written ([`Overdubs::Replace`]).
+    pub replace: bool,
 }
 
 /// What a loop does when its first pass ends: the Looper tab's "After
@@ -412,6 +455,23 @@ pub enum After {
     /// cancels it, and presses again bring it back). Not after a
     /// resample, whose overdub would take the input.
     Overdub,
+}
+
+/// How an overdub records: the Looper tab's Overdubs setting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Overdubs {
+    /// On top, for as long as it records (until Overdub again).
+    #[default]
+    Add,
+    /// In place of what was there, for as long as it records: the layers
+    /// under it are silent over the frames it wrote (crossfading at its
+    /// ends), and the rest of the loop plays as before. Nothing is erased:
+    /// Undo takes the overdub away and they are back. A second pass
+    /// replaces the first.
+    Replace,
+    /// One pass, then the loop plays by itself: the overdub ends where it
+    /// started, its end crossfading into its start.
+    Once,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -510,12 +570,32 @@ pub struct Status {
     /// STOP cut the first pass short: the frames of it that hold sound.
     /// The rest, to `frames`, is silent. None otherwise.
     pub cut: Option<usize>,
+    /// Cleared, and Undo can bring it back ([`Command::Clear`]).
+    pub kept: bool,
+    /// Soloed ([`Command::Solo`]).
+    pub solo: bool,
+    /// Silent because another loop is soloed.
+    pub solo_out: bool,
+    /// How its overdubs record ([`Command::SetOverdubs`]).
+    pub overdubs: Overdubs,
+    /// Its speed ([`Edit::Speed`]): -1 half, 0 as recorded, 1 double.
+    pub speed: i8,
+    /// The octaves its layers' audio plays faster than it was recorded
+    /// (its speed, until a fit makes the audio play as it is: then 0).
+    /// Not 0, the loop plays like tape until a print is in, and an
+    /// overdub waits for that print and fits the loop to it first.
+    pub rate: i8,
+    /// A capture ([`Command::Capture`]): 0 while it waits for its bar
+    /// line and its last frames, then how much has copied in, to 1. The
+    /// loop is empty and silent until it is all in.
+    pub capturing: Option<f32>,
 }
 
 /// The memory gauge: all the loops together.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Memory {
-    /// Frames held by every loop, in whole blocks.
+    /// Frames held by every loop, in whole blocks (not counting cleared
+    /// loops kept for Undo, whose memory goes when it is needed).
     pub used: usize,
     /// Frames the loops share.
     pub capacity: usize,
@@ -745,6 +825,8 @@ struct Shape {
     len_ticks: Tick,
     origin: Tick,
     seam: usize,
+    speed: i8,
+    rate: i8,
     views: [View; MAX_LAYERS],
     order: [u8; MAX_LAYERS],
     in_order: usize,
@@ -755,6 +837,8 @@ const NO_SHAPE: Shape = Shape {
     len_ticks: 0,
     origin: 0,
     seam: FADE,
+    speed: 0,
+    rate: 0,
     views: [View::EMPTY; MAX_LAYERS],
     order: [0; MAX_LAYERS],
     in_order: 0,
@@ -778,6 +862,14 @@ struct Slot {
     leaving: bool,
     /// How far Fade old has turned it down: 1 not at all.
     age: f32,
+    /// Recorded with Overdubs: Replace: its fade-in and fade-out in frames.
+    /// The layers before it in the play order are silent where it was
+    /// written, crossfading over those fades ([`Slot::cover`]).
+    replace: Option<(u32, u32)>,
+    /// How much it silences the layers under it now, 0 to 1: it moves to
+    /// 0 while the layer is muted or left out by a solo, and back, a step
+    /// a frame.
+    duck: f32,
 }
 
 impl Slot {
@@ -792,7 +884,38 @@ impl Slot {
         presence: 1.0,
         leaving: false,
         age: 1.0,
+        replace: None,
+        duck: 1.0,
     };
+
+    /// Heard: not muted, and not left out by another layer's solo.
+    fn heard(&self, any_solo: bool) -> bool {
+        !self.mute && (!any_solo || self.solo)
+    }
+
+    /// How far a Replace layer covers audio frame `a` of its `size`: 1
+    /// where it was written, 0 where not, and between over its fades. 0
+    /// for a layer that is not a Replace.
+    fn cover(&self, a: usize, size: usize) -> f32 {
+        let Some((fin, fout)) = self.replace else {
+            return 0.0;
+        };
+        let (start, count) = self.valid;
+        if size == 0 || count == 0 {
+            return 0.0;
+        }
+        if count >= size {
+            return 1.0;
+        }
+        // Frames from the first one written.
+        let d = (a + size - start % size) % size;
+        if d >= count {
+            return 0.0;
+        }
+        let up = (d as f32 + 0.5) / fin.max(1) as f32;
+        let down = ((count - d) as f32 - 0.5) / fout.max(1) as f32;
+        up.min(down).min(1.0)
+    }
 
     /// The gains the settings ask for.
     fn target(&self, any_solo: bool) -> (f32, f32) {
@@ -820,6 +943,13 @@ struct Store {
     free: Vec<u16>,
     n_free: usize,
     n_blocks: usize,
+    /// Each loop as it was when cleared, for Undo ([`Command::Clear`]):
+    /// the slots whose blocks it keeps (none: nothing kept), and when it
+    /// was kept (the oldest goes first when the memory is needed).
+    kept: Vec<Loop>,
+    kept_mask: [u16; MAX_LOOPS],
+    kept_at: [u64; MAX_LOOPS],
+    kept_seq: u64,
 }
 
 impl Store {
@@ -831,6 +961,10 @@ impl Store {
             free: (0..n_blocks as u16).rev().collect(),
             n_free: n_blocks,
             n_blocks,
+            kept: vec![Loop::NEW; MAX_LOOPS],
+            kept_mask: [0; MAX_LOOPS],
+            kept_at: [0; MAX_LOOPS],
+            kept_seq: 0,
         }
     }
 
@@ -898,10 +1032,19 @@ impl Store {
 
     /// Give a slot blocks until it holds `n`. False, with what it got, if
     /// the memory ran out.
+    /// A loop kept for Undo gives its blocks up first, the oldest kept
+    /// first. Inline, since a first pass asks on every frame and nearly
+    /// always holds them already.
+    #[inline]
     fn grow(&mut self, lp: usize, slot: usize, n: usize) -> bool {
+        (self.held[lp][slot] as usize) >= n || self.grow_to(lp, slot, n)
+    }
+
+    #[inline(never)]
+    fn grow_to(&mut self, lp: usize, slot: usize, n: usize) -> bool {
         let t = self.table(lp, slot);
         while (self.held[lp][slot] as usize) < n {
-            if self.n_free == 0 {
+            if self.n_free == 0 && !self.drop_oldest_kept(lp) {
                 return false;
             }
             self.n_free -= 1;
@@ -938,6 +1081,73 @@ impl Store {
     fn blocks(&self, lp: usize) -> usize {
         self.held[lp].iter().map(|&h| h as usize).sum()
     }
+
+    /// Keep loop `lp` as it is (cleared, faded out) for Undo, with the
+    /// blocks its slots hold. Copies, never allocates.
+    fn keep(&mut self, lp: usize, l: &Loop) {
+        self.drop_kept(lp);
+        self.kept[lp].clone_from(l);
+        let mut mask = 0u16;
+        for k in 0..MAX_LAYERS {
+            if self.held[lp][k] > 0 {
+                mask |= 1 << k;
+            }
+        }
+        self.kept_seq += 1;
+        self.kept_mask[lp] = mask;
+        self.kept_at[lp] = self.kept_seq;
+    }
+
+    /// Loop `lp` is kept for Undo.
+    fn has_kept(&self, lp: usize) -> bool {
+        self.kept_mask[lp] != 0
+    }
+
+    /// Slot `k` of loop `lp` holds blocks the loop kept for Undo needs.
+    fn kept_holds(&self, lp: usize, k: usize) -> bool {
+        self.kept_mask[lp] & (1 << k) != 0
+    }
+
+    /// Forget loop `lp`'s kept loop: its blocks go back.
+    fn drop_kept(&mut self, lp: usize) {
+        let mask = std::mem::take(&mut self.kept_mask[lp]);
+        for k in 0..MAX_LAYERS {
+            if mask & (1 << k) != 0 {
+                self.release(lp, k);
+            }
+        }
+    }
+
+    /// Forget the oldest kept loop but `lp`'s. False if there is none.
+    #[cold]
+    fn drop_oldest_kept(&mut self, lp: usize) -> bool {
+        let oldest = (0..MAX_LOOPS)
+            .filter(|&n| n != lp && self.kept_mask[n] != 0)
+            .min_by_key(|&n| self.kept_at[n]);
+        match oldest {
+            Some(n) => {
+                self.drop_kept(n);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Blocks loop `lp` keeps for Undo.
+    fn kept_blocks_of(&self, lp: usize) -> usize {
+        (0..MAX_LAYERS)
+            .filter(|&k| self.kept_holds(lp, k))
+            .map(|k| self.held[lp][k] as usize)
+            .sum()
+    }
+
+    /// Blocks free, or free once the kept loops give theirs up.
+    fn available(&self) -> usize {
+        self.n_free
+            + (0..MAX_LOOPS)
+                .map(|lp| self.kept_blocks_of(lp))
+                .sum::<usize>()
+    }
 }
 
 /// Blocks for `frames` frames.
@@ -954,12 +1164,24 @@ fn n_blocks(rate: u32, seconds: u32) -> usize {
 }
 
 /// The memory [`Looper::new`] sets aside for `seconds` at `rate`, in
-/// bytes: the sound itself and its tables of blocks. For showing what a
+/// bytes: the sound itself and its tables of blocks, and the last
+/// [`HEARD_SECONDS`] of input that Capture takes from. For showing what a
 /// size costs before it is made.
 pub fn bytes_for(rate: u32, seconds: u32) -> usize {
     let per_block = 2 * BLOCK * std::mem::size_of::<f32>()
         + (MAX_LOOPS * MAX_LAYERS + 1) * std::mem::size_of::<u16>();
     n_blocks(rate, seconds) * per_block
+        + 2 * heard_frames(rate, seconds) * std::mem::size_of::<f32>()
+}
+
+/// The frames of input kept for Capture: [`HEARD_SECONDS`], with any
+/// memory for loops at all.
+fn heard_frames(rate: u32, seconds: u32) -> usize {
+    if seconds > 0 {
+        rate as usize * HEARD_SECONDS as usize
+    } else {
+        0
+    }
 }
 
 /// Playback frame `p` of a layer through its view: the audio frame the
@@ -1078,6 +1300,10 @@ struct Loop {
     len_ticks: Tick,
     /// Frames; 0 until the first pass ends.
     len: usize,
+    /// [`Edit::Speed`]'s speed, and the octaves the audio plays faster
+    /// than recorded ([`Status::rate`]).
+    speed: i8,
+    rate: i8,
     /// The play order: slots, first pass first. Leaving layers stay until
     /// they are silent.
     order: [u8; MAX_LAYERS],
@@ -1128,9 +1354,25 @@ struct Loop {
     od_fade: usize,
     od_stop_in: Option<u32>,
     od_out: usize,
+    /// Frames of the writer's fade-out (an overdub of one pass ends with
+    /// its fade-in's length, so its end and start crossfade).
+    od_out_len: usize,
+    /// How overdubs record, and whether this one ends after a pass.
+    overdubs: Overdubs,
+    od_once: bool,
+    /// The loudest input sample this overdub took, and whether Fade old
+    /// turned the older layers down during it: an overdub of silence that
+    /// faded nothing leaves no layer.
+    od_peak: f32,
+    od_faded: bool,
     // Gains.
     gain: f32,
     clearing: bool,
+    /// The clear fading out keeps the loop for Undo ([`Command::Clear`]).
+    keep_clear: bool,
+    /// Soloed, and silent because another loop is.
+    solo: bool,
+    solo_out: bool,
     pos: f64,
     /// A jump's crossfade: frames left, and where the old place is now.
     jump: usize,
@@ -1184,6 +1426,9 @@ struct Loop {
     fitting: bool,
     /// An overdub starts when the fit takes over.
     fit_overdub: bool,
+    /// Overdub pressed at another speed before its print was in: the fit
+    /// (and the overdub) start once it is.
+    print_wait: bool,
     fit_slot: usize,
     fit_shape: usize,
     fit_done: usize,
@@ -1227,6 +1472,22 @@ struct Loop {
     ad_origin: Tick,
     /// Another loop is copying one of this loop's layers.
     lend: Option<Lend>,
+    /// A capture waiting for its bar line or its last frames.
+    capture: Option<Capture>,
+    /// A load from what was heard (a capture copying in): the frame heard
+    /// that is the loop's first.
+    ld_heard: Option<u64>,
+}
+
+/// A capture waiting ([`Command::Capture`]): the bars asked for, the bar
+/// line it ends on (counted as [`Heard`] counts them), whether that line
+/// is still to come, and once it has come, the take.
+#[derive(Clone, Copy, Debug)]
+struct Capture {
+    bars: u32,
+    end: u64,
+    wait: bool,
+    take: Option<Take>,
 }
 
 /// One of a loop's layers being copied into another loop: its slot, the
@@ -1253,6 +1514,8 @@ impl Loop {
         origin: 0,
         len_ticks: 0,
         len: 0,
+        speed: 0,
+        rate: 0,
         order: [0; MAX_LAYERS],
         in_order: 0,
         slots: [Slot::NEW; MAX_LAYERS],
@@ -1282,8 +1545,16 @@ impl Loop {
         od_fade: FADE,
         od_stop_in: None,
         od_out: 0,
+        od_out_len: FADE,
+        overdubs: Overdubs::Add,
+        od_once: false,
+        od_peak: 0.0,
+        od_faded: false,
         gain: 0.0,
         clearing: false,
+        keep_clear: false,
+        solo: false,
+        solo_out: false,
         pos: 0.0,
         jump: 0,
         jump_pos: 0.0,
@@ -1313,6 +1584,7 @@ impl Loop {
         pjump_pos: 0.0,
         fitting: false,
         fit_overdub: false,
+        print_wait: false,
         fit_slot: 0,
         fit_shape: 0,
         fit_done: 0,
@@ -1343,11 +1615,28 @@ impl Loop {
         ad_ticks: 0,
         ad_origin: 0,
         lend: None,
+        capture: None,
+        ld_heard: None,
     };
 
     /// Recording or about to: armed, the first pass, or an overdub.
     fn recording(&self) -> bool {
         matches!(self.phase, Phase::Armed | Phase::Recording) || self.od_open
+    }
+
+    /// A capture waiting, or copying in.
+    fn capturing(&self) -> bool {
+        self.capture.is_some() || (self.loading && self.ld_heard.is_some())
+    }
+
+    /// The capture is called off: the loop stays empty (its memory goes
+    /// back with the reclaim after the command).
+    fn call_off_capture(&mut self) {
+        self.capture = None;
+        if self.ld_heard.is_some() {
+            self.loading = false;
+            self.ld_heard = None;
+        }
     }
 }
 
@@ -1367,6 +1656,8 @@ pub struct Looper {
     /// Each loop's saved loop being loaded, or loaded and waiting for
     /// [`Looper::take_loaded`].
     loads: Vec<Option<LoopFile>>,
+    /// The last [`HEARD_SECONDS`] of input and its bar lines, for Capture.
+    heard: Heard,
 }
 
 impl Looper {
@@ -1390,6 +1681,7 @@ impl Looper {
             bounce: None,
             prints: (0..MAX_LOOPS).map(|_| Prints::default()).collect(),
             loads: (0..MAX_LOOPS).map(|_| None).collect(),
+            heard: Heard::new(heard_frames(rate, seconds)),
         }
     }
 
@@ -1488,7 +1780,7 @@ impl Looper {
                 0.0
             },
             ending: l.ending,
-            overdub_next: l.then_overdub || l.fit_overdub,
+            overdub_next: l.then_overdub || l.fit_overdub || l.print_wait,
             after: l.after,
             fade_old: l.fade_old,
             latency: l.latency,
@@ -1500,14 +1792,13 @@ impl Looper {
             merging: l.merging.then(|| l.mg_done as f32 / l.len.max(1) as f32),
             resampling: l.resample && (l.first_in_progress() || l.phase == Phase::Armed),
             capacity: self.capacity,
-            used: self.store.blocks(n) * BLOCK,
+            used: (self.store.blocks(n) - self.store.kept_blocks_of(n)) * BLOCK,
             version: l.version,
             printed: l.print_on > 0.0,
             fitting: l
                 .fitting
                 .then(|| l.fit_done as f32 / l.fit_frames.max(1) as f32),
-            loading: l
-                .loading
+            loading: (l.loading && l.ld_heard.is_none())
                 .then(|| l.ld_done as f32 / (l.ld_frames * l.ld_layers).max(1) as f32),
             copying: l
                 .adding
@@ -1518,6 +1809,18 @@ impl Looper {
                 0
             },
             cut: (l.len > 0 && l.cut < l.len).then_some(l.cut),
+            kept: self.store.has_kept(n),
+            solo: l.solo,
+            solo_out: l.solo_out,
+            overdubs: l.overdubs,
+            speed: l.speed,
+            rate: l.rate,
+            capturing: if l.capture.is_some() {
+                Some(0.0)
+            } else {
+                (l.loading && l.ld_heard.is_some())
+                    .then(|| l.ld_done as f32 / l.ld_frames.max(1) as f32)
+            },
         })
     }
 
@@ -1577,12 +1880,15 @@ impl Looper {
             bars: l.bars,
             after: l.after,
             fade_old: l.fade_old,
+            speed: l.speed,
+            rate: l.rate,
             layers,
         })
     }
 
     /// Frames `from` on of layer `k` of loop `n` (in play order) as it
-    /// plays, through the loop's edits and their seam fades, at gain 1,
+    /// plays, through the loop's edits and their seam fades, at gain 1
+    /// (silent where a Replace layer after it covers it, as heard),
     /// into `out` (interleaved stereo, wrapping round the loop). Gives the
     /// loop's version ([`Status::version`]), so that a save read across
     /// several periods can tell that the layers changed; None, writing
@@ -1596,8 +1902,18 @@ impl Looper {
         let slot = l.listed(k)?;
         let blocks = self.store.blocks_of(n, slot);
         let (valid, view) = (l.slots[slot].valid, &l.views[slot]);
+        // Under a Replace layer it is saved as heard: silent where that
+        // covers it, so the loop loads sounding the same.
+        let replacing = l.replacing();
+        let any_solo = l.any_solo();
+        let strength = |s: &Slot| if s.heard(any_solo) { 1.0 } else { 0.0 };
         for (i, y) in out.chunks_exact_mut(2).enumerate() {
-            let x = layer_frame(&self.store, blocks, valid, view, l.seam, (from + i) % l.len);
+            let p = (from + i) % l.len;
+            let mut x = layer_frame(&self.store, blocks, valid, view, l.seam, p);
+            if replacing {
+                let d = l.ducks(&l.views, l.len, p, strength)[slot];
+                x = x.map(|v| v * d);
+            }
             y.copy_from_slice(&x);
         }
         Some(l.version)
@@ -1631,11 +1947,13 @@ impl Looper {
         if !ok {
             return Err(f);
         }
-        l.reclaim(&mut self.store, n);
         let need = f.layers.len() * blocks_for(f.frames);
-        if self.store.n_free < need {
+        if self.store.available() < need {
             return Err(f);
         }
+        // A loaded loop takes the place of one kept for Undo.
+        self.store.drop_kept(n);
+        l.reclaim(&mut self.store, n);
         for (k, y) in f.layers.iter().enumerate() {
             self.store.grow(n, k, blocks_for(f.frames));
             let mut s = Slot {
@@ -1656,6 +1974,8 @@ impl Looper {
         l.bars = f.bars.filter(|&b| b > 0);
         l.after = f.after;
         l.fade_old = f.fade_old.clamp(0.0, 1.0);
+        l.speed = f.speed.clamp(-1, 1);
+        l.rate = f.rate.clamp(-2, 2);
         l.loading = true;
         l.ld_layers = f.layers.len();
         l.ld_frames = f.frames;
@@ -1666,6 +1986,36 @@ impl Looper {
         l.ld_at = self.now + (f.layers.len() * f.frames).div_ceil(LOAD_SPEED) as u64;
         self.loads[n] = Some(f);
         Ok(())
+    }
+
+    /// What a Capture of `bars` would take now ([`Command::Capture`]):
+    /// the bars ending on the last bar line heard (pressed in a bar's last
+    /// beat, it waits for the next one instead), read with the selected
+    /// loop's latency. None when not even one whole bar was heard.
+    pub fn capture_take(&self, bars: u32) -> Option<Take> {
+        let end = self.heard.lines().checked_sub(1)?;
+        self.heard
+            .take(end, bars, self.loops[self.selected].latency)
+    }
+
+    /// A Capture now would wait for the bar line coming: the song plays
+    /// and is in a bar's last beat.
+    pub fn capture_waits(&self) -> bool {
+        self.heard.in_last_beat()
+    }
+
+    /// The bar lines of the song as it last played on unbroken (since it
+    /// started, jumped or looped), the newest up to `out.len()`, oldest
+    /// first: each one's tick and the frame it fell on. Returns how many.
+    /// With [`Looper::heard_at`], where What you played puts its bars.
+    pub fn heard_lines(&self, out: &mut [(Tick, u64)]) -> usize {
+        self.heard.recent(out)
+    }
+
+    /// The frame after the last one the looper heard (the end of the
+    /// period it last ran).
+    pub fn heard_at(&self) -> u64 {
+        self.heard.at()
     }
 
     /// The saved loop loop `n` has loaded (or called off), to drop away
@@ -1762,13 +2112,14 @@ impl Looper {
             complete,
             version: b.version,
             dry: b.dry,
+            rate: l.rate,
         })
     }
 
     /// The memory gauge.
     pub fn memory(&self) -> Memory {
         Memory {
-            used: (self.store.n_blocks - self.store.n_free) * BLOCK,
+            used: (self.store.n_blocks - self.store.available()) * BLOCK,
             capacity: self.capacity,
         }
     }
@@ -1854,6 +2205,7 @@ impl Looper {
             audible: !s.mute && (!any_solo || s.solo),
             recording: l.od_open && l.od_layer == slot,
             faded: s.age,
+            replace: s.replace.is_some(),
         })
     }
 
@@ -1865,7 +2217,14 @@ impl Looper {
             .min(input.len() / 2)
             .min(out.len() / 2);
         self.now = block.start_frame;
+        self.heard.hear(block, input, n);
         self.apply_commands();
+        self.tend_captures();
+        // A loop with sound soloed: the others fall silent.
+        let any_solo = self.loops.iter().any(|l| l.solo && l.phase != Phase::Empty);
+        for l in &mut self.loops {
+            l.solo_out = any_solo && !l.solo;
+        }
         let end = block.start_frame + n as u64;
         for k in 0..self.loops.len() {
             if self.loops[k].adding {
@@ -1879,6 +2238,7 @@ impl Looper {
             bounce,
             prints,
             loads,
+            heard,
             ..
         } = self;
         let end = block.start_frame + n as u64;
@@ -1890,6 +2250,9 @@ impl Looper {
                 pr.old = pr.now.take();
                 pr.now = pr.next.take().flatten();
                 l.take_print(pr.now.as_ref());
+            }
+            if l.print_wait {
+                l.tend_print_wait(store, stats, k, pr, block.start_frame);
             }
             if l.merging {
                 l.render_merge(store, k, end);
@@ -1904,6 +2267,8 @@ impl Looper {
             if l.loading {
                 if let Some(f) = loads[k].as_ref() {
                     l.render_load(store, k, f, end);
+                } else if l.ld_heard.is_some() {
+                    l.render_heard(store, stats, k, heard, end);
                 }
             }
         }
@@ -2048,6 +2413,12 @@ impl Looper {
                     self.loops[s].fit_overdub = false;
                     continue;
                 }
+                // Waiting for the print at another speed: a second press
+                // calls it off.
+                if l.print_wait {
+                    self.loops[s].print_wait = false;
+                    continue;
+                }
                 let p = self.prints[s].now.as_ref();
                 let live = p.filter(|p| l.print_live(p, self.prints[s].next.is_some()));
                 let lent = l.adding || l.lend.is_some();
@@ -2058,6 +2429,18 @@ impl Looper {
                         l.fit_overdub = true;
                         continue;
                     }
+                }
+                // At another speed the audio plays faster or slower than
+                // it would record: the overdub waits for the print made at
+                // that speed, and fits the loop to it first.
+                let l = &self.loops[s];
+                if l.rate != 0 && l.phase == Phase::Playing && !l.od_open {
+                    if lent {
+                        self.stats.refused += 1;
+                    } else {
+                        self.loops[s].print_wait = true;
+                    }
+                    continue;
                 }
             }
             let deferrable = matches!(
@@ -2070,6 +2453,7 @@ impl Looper {
                         | Command::Edit(_)
                         | Command::Merge
                         | Command::Resample
+                        | Command::Capture(_)
                 ) | Queued::Layer(_, LayerCommand::Delete)
                     | Queued::Copy { .. }
             ) || (self.loops[self.selected].busy()
@@ -2116,13 +2500,21 @@ impl Looper {
                     lp.latency = l;
                 }
             }
+            Queued::Loop(Command::NewInput) => self.heard.forget(),
+            // A capture under way: again, Undo or Clear call it off.
+            Queued::Loop(
+                Command::Capture(_) | Command::Undo | Command::Clear | Command::Forget,
+            ) if self.loops[s].capturing() => {
+                self.loops[s].call_off_capture();
+            }
+            Queued::Loop(Command::Capture(bars)) => self.start_capture(s, bars),
             Queued::Copy { from, id, to, keep } => self.start_copy(from, id, to, keep),
-            Queued::Loop(Command::Clear) if self.loops[s].loading => {
+            Queued::Loop(Command::Clear | Command::Forget) if self.loops[s].loading => {
                 // Called off: the memory goes back (below).
                 self.loops[s].loading = false;
             }
             // A copy in or out of the loop is called off, then it clears.
-            Queued::Loop(Command::Clear)
+            Queued::Loop(Command::Clear | Command::Forget)
                 if self.loops[s].adding || self.loops[s].lend.is_some() =>
             {
                 self.call_off_copy(s);
@@ -2185,6 +2577,108 @@ impl Looper {
         self.loops[s].reclaim(&mut self.store, s);
     }
 
+    /// Capture into loop `s` ([`Command::Capture`]): it waits for its bar
+    /// line (the last one heard, or, pressed in a bar's last beat, the one
+    /// coming); [`Looper::tend_captures`] takes it from there.
+    fn start_capture(&mut self, s: usize, bars: u32) {
+        let wait = self.heard.in_last_beat();
+        let lines = self.heard.lines();
+        let l = &mut self.loops[s];
+        if l.phase != Phase::Empty
+            || l.clearing
+            || l.loading
+            || l.adding
+            || self.loads[s].is_some()
+            || bars == 0
+            || (lines == 0 && !wait)
+        {
+            self.stats.refused += 1;
+            return;
+        }
+        l.capture = Some(Capture {
+            bars,
+            end: if wait { lines } else { lines - 1 },
+            wait,
+            take: None,
+        });
+        // A new loop plays once it is in.
+        l.on = true;
+        l.cue = None;
+    }
+
+    /// Each capture waiting: once its bar line is heard, the take; once
+    /// the take's last frame is heard (`latency` after the bar line), it
+    /// copies in, as a load does, from what was heard.
+    fn tend_captures(&mut self) {
+        for k in 0..self.loops.len() {
+            if let Some(c) = self.loops[k].capture {
+                self.loops[k].capture = self.tend_capture(k, c);
+            }
+        }
+    }
+
+    /// [`Looper::tend_captures`] for loop `k`: the capture as it is now,
+    /// or None once it copies in or is refused.
+    fn tend_capture(&mut self, k: usize, mut c: Capture) -> Option<Capture> {
+        let h = &self.heard;
+        if c.wait {
+            if h.lines() > c.end {
+                c.wait = false;
+            } else if h.playing() {
+                return Some(c);
+            } else if c.end > 0 {
+                // The song stopped before that bar line: the bars before.
+                c.wait = false;
+                c.end -= 1;
+            } else {
+                self.stats.refused += 1;
+                return None;
+            }
+        }
+        let Some(t) = c
+            .take
+            .or_else(|| h.take(c.end, c.bars, self.loops[k].latency))
+        else {
+            self.stats.refused += 1;
+            return None;
+        };
+        c.take = Some(t);
+        if h.at() < t.start + t.frames as u64 {
+            // Its last frames are still to be heard.
+            return Some(c);
+        }
+        let need = blocks_for(t.frames);
+        if self.store.available() < need {
+            self.stats.refused += 1;
+            return None;
+        }
+        // It takes the place of the loop kept for Undo.
+        self.store.drop_kept(k);
+        let l = &mut self.loops[k];
+        l.reclaim(&mut self.store, k);
+        if !self.store.grow(k, 0, need) {
+            self.stats.refused += 1;
+            l.reclaim(&mut self.store, k);
+            return None;
+        }
+        l.slots[0] = Slot {
+            valid: (0, t.frames),
+            ..Slot::NEW
+        };
+        l.loading = true;
+        l.ld_heard = Some(t.start);
+        l.ld_layers = 1;
+        l.ld_frames = t.frames;
+        l.ld_ticks = t.ticks;
+        l.ld_origin = t.origin;
+        l.ld_done = 0;
+        // From the frame its last frame was heard on, when that is in
+        // this period, so the period size changes nothing.
+        l.ld_from = self.now.max(t.start + t.frames as u64);
+        l.ld_at = l.ld_from + t.frames.div_ceil(LOAD_SPEED) as u64;
+        None
+    }
+
     /// Start a layer's copy between loops ([`Looper::copy_layer`]).
     fn start_copy(&mut self, from: usize, id: u8, to: usize, keep: bool) {
         let slot = id as usize;
@@ -2210,11 +2704,14 @@ impl Looper {
         }
         let s = src.slots[slot];
         let (len, ticks, origin, layers) = (src.len, src.len_ticks, src.origin, src.layers());
+        let (speed, rate) = (src.speed, src.rate);
         let l = &mut self.loops[to];
         let k = if empty {
+            // The layer's loop takes the place of one kept for Undo.
+            self.store.drop_kept(to);
             l.reclaim(&mut self.store, to);
             let need = blocks_for(len);
-            (self.store.n_free >= need && self.store.grow(to, 0, need)).then_some(0)
+            (self.store.available() >= need && self.store.grow(to, 0, need)).then_some(0)
         } else {
             l.free_slot(&mut self.store, to)
         };
@@ -2224,6 +2721,11 @@ impl Looper {
             return;
         };
         let frames = if empty { len } else { l.len };
+        if empty {
+            // It takes the layer's loop's speed with its length.
+            l.speed = speed;
+            l.rate = rate;
+        }
         let mut new = Slot {
             valid: (0, frames),
             level: s.level,
@@ -2446,6 +2948,7 @@ impl Loop {
     fn reclaim(&self, store: &mut Store, me: usize) {
         for k in 0..MAX_LAYERS {
             let in_use = self.holds(k)
+                || store.kept_holds(me, k)
                 || (k == 0 && self.first_in_progress())
                 || (self.od_open && self.od_layer == k)
                 || (self.merging && self.mg_slot == k)
@@ -2460,6 +2963,9 @@ impl Loop {
 
     fn must_wait(&self, q: Queued) -> bool {
         match q {
+            // A capture: again, or Undo, calls it off; the rest waits.
+            Queued::Loop(Command::Capture(_) | Command::Undo) if self.capturing() => false,
+            _ if self.capture.is_some() => true,
             // Everything waits for a bounce (Clear stops it) and a load
             // (Clear calls it off).
             _ if self.bouncing || self.loading => true,
@@ -2640,6 +3146,8 @@ impl Loop {
         if !matches!(
             c,
             Command::Mute(_)
+                | Command::Solo(_)
+                | Command::SetOverdubs(_)
                 | Command::SetBars(_)
                 | Command::SetAfter(_)
                 | Command::SetFadeOld(_)
@@ -2647,6 +3155,7 @@ impl Loop {
                 | Command::SetLevel(_)
                 | Command::Merge
                 | Command::Fit
+                | Command::NewInput
         ) {
             self.touch();
         }
@@ -2677,31 +3186,19 @@ impl Loop {
             },
             Command::Undo => match self.phase {
                 Phase::Armed | Phase::Recording => self.abort(stats),
-                Phase::Overdubbing | Phase::Playing if self.od_open => {
-                    // Throw the overdub away (recording, or still writing
-                    // its tail): it stops and fades out, and Redo can
-                    // bring back what it recorded.
-                    self.od_open = false;
-                    self.phase = Phase::Playing;
-                    let slot = self.od_layer;
-                    if !self.drop_empty_overdub() {
-                        if let Some(i) = self.done[..self.n_done]
-                            .iter()
-                            .rposition(|a| a.kind == Kind::Overdub && a.slot as usize == slot)
-                        {
-                            let mut a = self.take_done(i);
-                            self.swap_ages(&mut a);
-                            self.push_undone(a);
-                        }
-                        self.slots[slot].leaving = true;
-                    }
-                }
+                Phase::Overdubbing | Phase::Playing if self.od_open => self.undo_open_overdub(),
                 Phase::Playing if self.merging => self.merging = false,
                 Phase::Playing if self.fitting => {
                     self.fitting = false;
                     self.fit_overdub = false;
+                    self.print_wait = false;
                 }
+                // An overdub waiting for its print is called off.
+                Phase::Playing if self.print_wait => self.print_wait = false,
                 Phase::Playing => self.undo(),
+                Phase::Empty if store.has_kept(me) && !self.loading && !self.adding => {
+                    self.unclear(store, me)
+                }
                 _ => {}
             },
             Command::Redo => {
@@ -2709,15 +3206,30 @@ impl Loop {
                     self.redo();
                 }
             }
-            Command::Clear => match self.phase {
-                Phase::Empty => {}
-                Phase::Armed | Phase::Recording => self.abort(stats),
-                Phase::Playing | Phase::Overdubbing => {
-                    self.od_open = false;
-                    self.clearing = true;
+            Command::Clear | Command::Forget => {
+                let keep = c == Command::Clear;
+                if !keep {
+                    store.drop_kept(me);
                 }
-            },
+                match self.phase {
+                    Phase::Empty => {}
+                    Phase::Armed | Phase::Recording => self.abort(stats),
+                    Phase::Playing | Phase::Overdubbing => {
+                        // An overdub under way is undone first, so UNDO
+                        // brings the loop back as it was before it (a key
+                        // held to clear started one on its press), and
+                        // Redo then brings what it recorded.
+                        if self.od_open {
+                            self.undo_open_overdub();
+                        }
+                        self.clearing = true;
+                        self.keep_clear = keep;
+                    }
+                }
+            }
             Command::Mute(m) => self.muted = m,
+            Command::Solo(o) => self.solo = o,
+            Command::SetOverdubs(o) => self.overdubs = o,
             Command::SetBars(b) => self.bars = b.filter(|&b| b > 0),
             Command::SetAfter(a) => self.after = a,
             Command::SetFadeOld(k) if k.is_finite() => self.fade_old = k.clamp(0.0, 1.0),
@@ -2731,8 +3243,9 @@ impl Loop {
                 }
             }
             Command::Edit(e) => self.edit(stats, e),
-            // The looper starts these, with the time and the print.
-            Command::Merge | Command::Fit => {}
+            // The looper starts these, with the time, the print and what
+            // it heard.
+            Command::Merge | Command::Fit | Command::Capture(_) | Command::NewInput => {}
             Command::Resample => match self.phase {
                 Phase::Empty => {
                     self.apply(store, stats, me, Command::Record);
@@ -2753,6 +3266,8 @@ impl Loop {
             len_ticks: self.len_ticks,
             origin: self.origin,
             seam: self.seam,
+            speed: self.speed,
+            rate: self.rate,
             views: self.views,
             order: self.order,
             in_order: self.in_order,
@@ -2764,6 +3279,8 @@ impl Loop {
         self.len_ticks = s.len_ticks;
         self.origin = s.origin;
         self.seam = s.seam;
+        self.speed = s.speed;
+        self.rate = s.rate;
         self.views = s.views;
     }
 
@@ -2853,6 +3370,25 @@ impl Loop {
                 s.origin += from;
             }
             Edit::SeamFade(f) => s.seam = (f as usize).min(MAX_SEAM),
+            Edit::Speed(to) => {
+                let to = to.clamp(-1, 1);
+                let by = to - s.speed;
+                if by == 0 || (s.rate + by).abs() > 2 {
+                    return None;
+                }
+                // Faster is fewer ticks for the same audio, slower more.
+                let m: Tick = 1 << by.unsigned_abs();
+                if by > 0 {
+                    if ticks % m != 0 || ticks / m < SIXTEENTH {
+                        return None;
+                    }
+                    s.len_ticks = ticks / m;
+                } else {
+                    s.len_ticks = ticks.checked_mul(m).filter(|t| *t <= Tick::MAX / 4)?;
+                }
+                s.speed = to;
+                s.rate += by;
+            }
         }
         // Every layer plays the loop's length (a check that costs nothing).
         if (0..MAX_LAYERS).any(|k| live[k] && s.views[k].len() != s.len) {
@@ -3037,11 +3573,55 @@ impl Loop {
         self.ld_done = self.ld_done.max(target);
     }
 
-    /// The saved loop is all in: it plays from now on (fading in), in
-    /// time with the song.
+    /// A capture copying in from what was heard, as far as the period
+    /// ending before frame `end` is due. Its loop point fades into what
+    /// was heard just before its first frame, as a first pass's does. Were
+    /// what it reads gone by (the room [`Heard::take`] leaves keeps it),
+    /// the capture would be thrown away.
+    fn render_heard(
+        &mut self,
+        store: &mut Store,
+        stats: &mut Stats,
+        me: usize,
+        heard: &Heard,
+        end: u64,
+    ) {
+        let Some(from) = self.ld_heard else {
+            return;
+        };
+        let total = self.ld_frames;
+        let due = (end - self.ld_from).saturating_mul(LOAD_SPEED as u64);
+        let target = total.min(due.min(usize::MAX as u64) as usize);
+        if self.ld_done < target && !heard.holds(from + self.ld_done as u64) {
+            stats.aborted += 1;
+            self.loading = false;
+            self.ld_heard = None;
+            self.reclaim(store, me);
+            return;
+        }
+        let fade = FADE.min(total / 2);
+        for q in self.ld_done..target {
+            let mut x = heard.frame(from + q as u64);
+            if q + fade >= total {
+                let k = q + fade - total;
+                let w = (k as f32 + 0.5) / fade as f32;
+                let p = (from + k as u64)
+                    .checked_sub(fade as u64)
+                    .map_or([0.0; 2], |f| heard.frame(f));
+                x = [x[0] * (1.0 - w) + p[0] * w, x[1] * (1.0 - w) + p[1] * w];
+            }
+            store.set(me, 0, q, x);
+        }
+        self.ld_done = self.ld_done.max(target);
+    }
+
+    /// The saved loop (or a capture) is all in: it plays from now on
+    /// (fading in), in time with the song.
     fn finish_load(&mut self) {
         self.loading = false;
+        self.ld_heard = None;
         self.len = self.ld_frames;
+        self.cut = self.len;
         self.len_ticks = self.ld_ticks;
         self.origin = self.ld_origin;
         self.in_order = self.ld_layers;
@@ -3132,9 +3712,45 @@ impl Loop {
         self.touch();
     }
 
+    /// An overdub waiting for the print at another speed
+    /// ([`Loop::print_wait`]): once the print plays, the fit starts and
+    /// the overdub with it; back at the speed it was recorded at (no print
+    /// needed), the overdub starts at once.
+    fn tend_print_wait(
+        &mut self,
+        store: &mut Store,
+        stats: &mut Stats,
+        me: usize,
+        pr: &Prints,
+        now: u64,
+    ) {
+        if self.phase != Phase::Playing || self.od_open || self.fitting {
+            self.print_wait = false;
+            return;
+        }
+        if self.adding || self.lend.is_some() || self.busy() {
+            return;
+        }
+        let live = pr
+            .now
+            .as_ref()
+            .filter(|p| self.print_on > 0.0 && self.print_live(p, pr.next.is_some()));
+        if let Some(frames) = live.map(|p| p.frames) {
+            self.print_wait = false;
+            self.start_fit(store, stats, me, frames, now);
+            if self.fitting {
+                self.fit_overdub = true;
+            }
+        } else if self.rate == 0 && self.print_on == 0.0 {
+            self.print_wait = false;
+            self.open_overdub(store, stats, me, FADE);
+        }
+    }
+
     fn cancel_fit(&mut self, stats: &mut Stats) {
         self.fitting = false;
         self.fit_overdub = false;
+        self.print_wait = false;
         stats.refused += 1;
     }
 
@@ -3153,6 +3769,8 @@ impl Loop {
         self.shapes[i] = self.shape();
         let old = self.len as f64;
         self.len = self.fit_frames;
+        // The print was made at the loop's speed: its audio plays as it is.
+        self.rate = 0;
         self.views[k] = View::whole(self.len);
         self.pos = (self.pos / old * self.len as f64).min(self.len as f64 - 1e-6);
         self.order[0] = k as u8;
@@ -3259,6 +3877,29 @@ impl Loop {
     /// Frames `from..` of every layer, as heard (at the gains in `mg_g`),
     /// added into `acc`.
     fn render_layers(&self, store: &Store, me: usize, from: usize, acc: &mut [[f32; 2]]) {
+        if self.replacing() {
+            // Frame by frame, each layer at its share under the Replace
+            // layers after it, as they are heard.
+            let any_solo = self.any_solo();
+            let strength = |s: &Slot| if s.heard(any_solo) { 1.0 } else { 0.0 };
+            for (j, a) in acc.iter_mut().enumerate() {
+                let p = from + j;
+                let d = self.ducks(&self.views, self.len, p, strength);
+                for &k in &self.order[..self.in_order] {
+                    let k = k as usize;
+                    let g = self.mg_g[k];
+                    let v = &self.views[k];
+                    if g == [0.0, 0.0] || v.size() == 0 || d[k] == 0.0 {
+                        continue;
+                    }
+                    let blocks = store.blocks_of(me, k);
+                    let x = layer_frame(store, blocks, self.slots[k].valid, v, self.seam, p);
+                    a[0] += g[0] * x[0] * d[k];
+                    a[1] += g[1] * x[1] * d[k];
+                }
+            }
+            return;
+        }
         for &k in &self.order[..self.in_order] {
             let k = k as usize;
             let g = self.mg_g[k];
@@ -3386,6 +4027,7 @@ impl Loop {
             Kind::Added if self.layers() <= 1 => {
                 self.od_open = false;
                 self.clearing = true;
+                self.keep_clear = false;
             }
             Kind::Added => self.slots[a.slot as usize].leaving = true,
             Kind::Edit => self.swap_shape(a.slot as usize),
@@ -3414,6 +4056,7 @@ impl Loop {
     /// silent.
     fn fade_older(&mut self) {
         self.touch();
+        self.od_faded = true;
         let k = self.od_layer;
         for &s in &self.order[..self.in_order] {
             if s as usize != k {
@@ -3492,10 +4135,13 @@ impl Loop {
         self.print_on = 0.0;
         self.fitting = false;
         self.fit_overdub = false;
+        self.print_wait = false;
         self.swapping = false;
         self.phase = Phase::Empty;
         self.len = 0;
         self.len_ticks = 0;
+        self.speed = 0;
+        self.rate = 0;
         self.in_order = 0;
         self.n_done = 0;
         self.n_undone = 0;
@@ -3507,6 +4153,9 @@ impl Loop {
         self.written = 0;
         self.od_open = false;
         self.clearing = false;
+        self.keep_clear = false;
+        // A cleared loop lets go of its solo, so the others play.
+        self.solo = false;
         self.gain = 0.0;
         self.pos = 0.0;
         self.jump = 0;
@@ -3516,6 +4165,8 @@ impl Loop {
         self.bouncing = false;
         self.resample = false;
         self.loading = false;
+        self.ld_heard = None;
+        self.capture = None;
         self.adding = false;
         self.lend = None;
     }
@@ -3525,6 +4176,43 @@ impl Loop {
             stats.aborted += 1;
         }
         self.reset();
+    }
+
+    /// Undo on a cleared loop: it comes back as it was kept, fading in,
+    /// at the song's place, with today's latency and launch. Whatever was
+    /// under way when it was cleared (an overdub, a merge) stays stopped;
+    /// a print is made again.
+    fn unclear(&mut self, store: &mut Store, me: usize) {
+        let (latency, on, cue) = (self.latency, self.on, self.cue);
+        self.clone_from(&store.kept[me]);
+        // The blocks are the loop's again.
+        store.kept_mask[me] = 0;
+        self.latency = latency;
+        self.on = on;
+        self.cue = cue;
+        self.clearing = false;
+        self.keep_clear = false;
+        self.gain = 0.0;
+        self.od_open = false;
+        if self.phase == Phase::Overdubbing {
+            self.phase = Phase::Playing;
+        }
+        self.jump = 0;
+        self.xf = 0;
+        self.merging = false;
+        self.fitting = false;
+        self.fit_overdub = false;
+        self.print_wait = false;
+        self.swapping = false;
+        self.bouncing = false;
+        self.loading = false;
+        self.adding = false;
+        self.lend = None;
+        self.print_on = 0.0;
+        self.p_frames = 0;
+        self.mixing = true;
+        self.touch();
+        self.reclaim(store, me);
     }
 
     fn marker(&mut self, store: &mut Store, stats: &mut Stats, me: usize, mark: Mark, frame: u64) {
@@ -3577,6 +4265,8 @@ impl Loop {
                 self.next_bar = span.frame_of((t + self.bar) as f64);
             }
             Phase::Armed if t >= 0 && matches!(span.state, State::Playing | State::Recording) => {
+                // The new loop takes the place of one kept for Undo.
+                store.drop_kept(me);
                 self.phase = Phase::Recording;
                 self.origin = t;
                 self.start_frame = f;
@@ -3782,7 +4472,7 @@ impl Loop {
                 .map(|k| store.held[me][k] as usize)
                 .sum();
             let slot = (0..MAX_LAYERS).find(|&k| !self.live(k));
-            if let Some(k) = slot.filter(|_| store.n_free + redo_blocks >= need) {
+            if let Some(k) = slot.filter(|_| store.available() + redo_blocks >= need) {
                 self.n_undone = 0;
                 self.reclaim(store, me);
                 return store.grow(me, k, need).then_some(k);
@@ -3830,7 +4520,16 @@ impl Loop {
         self.od_in = 0;
         self.od_fade = fade;
         self.od_stop_in = None;
-        self.od_out = FADE;
+        self.od_once = self.overdubs == Overdubs::Once;
+        // One pass ends with a fade as long as its start's: the two
+        // crossfade where they meet.
+        self.od_out_len = if self.od_once { fade.max(1) } else { FADE };
+        if self.overdubs == Overdubs::Replace {
+            self.slots[k].replace = Some((fade.max(1) as u32, self.od_out_len as u32));
+        }
+        self.od_out = self.od_out_len;
+        self.od_peak = 0.0;
+        self.od_faded = false;
         self.phase = Phase::Overdubbing;
     }
 
@@ -3845,11 +4544,37 @@ impl Loop {
 
     /// An overdub that never wrote a frame leaves no layer behind, and
     /// nothing to undo. True if it was dropped.
+    /// Throw the overdub away (recording, or still writing its tail): it
+    /// stops and fades out, and Redo can bring back what it recorded.
+    fn undo_open_overdub(&mut self) {
+        self.od_open = false;
+        self.phase = Phase::Playing;
+        let slot = self.od_layer;
+        if !self.drop_empty_overdub() {
+            if let Some(i) = self.done[..self.n_done]
+                .iter()
+                .rposition(|a| a.kind == Kind::Overdub && a.slot as usize == slot)
+            {
+                let mut a = self.take_done(i);
+                self.swap_ages(&mut a);
+                self.push_undone(a);
+            }
+            self.slots[slot].leaving = true;
+        }
+    }
+
     fn drop_empty_overdub(&mut self) -> bool {
-        let k = self.od_layer;
-        if self.slots[k].valid.1 != 0 {
+        if self.slots[self.od_layer].valid.1 != 0 {
             return false;
         }
+        self.drop_overdub();
+        true
+    }
+
+    /// Take the overdub's layer out of the play order and its step out of
+    /// the history.
+    fn drop_overdub(&mut self) {
+        let k = self.od_layer;
         if let Some(at) = self.order[..self.in_order]
             .iter()
             .position(|&s| s as usize == k)
@@ -3862,14 +4587,20 @@ impl Loop {
         {
             self.take_done(i);
         }
-        true
     }
 
     fn close_overdub(&mut self, store: &mut Store, me: usize) {
         self.mixing = true;
         self.touch();
         self.od_open = false;
-        self.drop_empty_overdub();
+        // An overdub that took only silence (below [`SILENT`]) and faded
+        // nothing leaves no layer and no step to undo. It goes at once:
+        // what it holds is too quiet to click.
+        // A Replace of silence stays: it silences what was there.
+        let replace = self.slots[self.od_layer].replace.is_some();
+        if !self.drop_empty_overdub() && self.od_peak < SILENT && !self.od_faded && !replace {
+            self.drop_overdub();
+        }
         if self.phase == Phase::Overdubbing {
             self.phase = Phase::Playing;
         }
@@ -3899,16 +4630,25 @@ impl Loop {
 
     fn write_overdub(&mut self, store: &mut Store, me: usize, x: [f32; 2]) {
         let len = self.len;
+        // One pass: it punches out `latency` frames early, so that its
+        // fade-out starts on the frame it started on.
+        if self.od_once
+            && self.od_stop_in.is_none()
+            && self.od_in >= len.saturating_sub(self.latency as usize).max(1)
+        {
+            self.punch_out();
+        }
         let mut g = if self.od_in < self.od_fade {
             (self.od_in as f32 + 0.5) / self.od_fade as f32
         } else {
             1.0
         };
         self.od_in += 1;
+        self.od_peak = self.od_peak.max(x[0].abs()).max(x[1].abs());
         let mut last = false;
         match self.od_stop_in {
             Some(0) => {
-                g *= (self.od_out as f32 - 0.5) * STEP;
+                g *= (self.od_out as f32 - 0.5) / self.od_out_len as f32;
                 self.od_out -= 1;
                 last = self.od_out == 0;
             }
@@ -3928,6 +4668,16 @@ impl Loop {
         } else if count < len {
             self.slots[k].valid = (start, count + 1);
             store.set(me, k, q, y);
+        } else if self.slots[k].replace.is_some() {
+            // Replace: a later pass takes the place of the earlier ones,
+            // crossfading into them as it fades out.
+            let was = store.get(me, k, q);
+            store.set(
+                me,
+                k,
+                q,
+                [was[0] * (1.0 - g) + y[0], was[1] * (1.0 - g) + y[1]],
+            );
         } else if self.fade_old < 1.0 {
             // Fade old: this layer's earlier passes keep their share.
             let was = store.get(me, k, q);
@@ -4049,12 +4799,54 @@ impl Loop {
             && self.gain == 1.0
             && self.on
             && !self.muted
+            && !self.solo_out
             && !self.clearing
             && self.jump == 0
             && self.xf == 0
             && self.len > 0
             && self.print_on == settled
             && !self.swapping
+            && !self.replacing()
+    }
+
+    /// A Replace layer plays: the layers under it are read frame by frame
+    /// ([`Loop::sample_at`]), with how far it covers each.
+    fn replacing(&self) -> bool {
+        self.order[..self.in_order]
+            .iter()
+            .any(|&k| self.slots[k as usize].replace.is_some())
+    }
+
+    /// How much of each layer is heard at loop frame `p` under the Replace
+    /// layers after it in the play order (1: all of it), through a shape's
+    /// views; `strength` is how much each Replace layer silences.
+    fn ducks(
+        &self,
+        views: &[View; MAX_LAYERS],
+        len: usize,
+        p: usize,
+        strength: impl Fn(&Slot) -> f32,
+    ) -> [f32; MAX_LAYERS] {
+        let mut out = [1.0f32; MAX_LAYERS];
+        let mut d = 1.0f32;
+        for &k in self.order[..self.in_order].iter().rev() {
+            let k = k as usize;
+            out[k] = d;
+            let s = &self.slots[k];
+            if s.replace.is_none() {
+                continue;
+            }
+            let v = &views[k];
+            let (a, size) = if v.is_whole() {
+                (p, len)
+            } else if v.size() == 0 {
+                continue;
+            } else {
+                (v.at(p), v.size())
+            };
+            d *= 1.0 - strength(s) * s.cover(a, size);
+        }
+        out
     }
 
     /// Frames of a still loop ([`Loop::still`]): the same sums as `read`
@@ -4188,6 +4980,7 @@ impl Loop {
             && playing
             && self.on
             && !self.muted
+            && !self.solo_out
             && !self.clearing
             && !self.swapping;
         if audible {
@@ -4196,6 +4989,9 @@ impl Loop {
             self.gain = (self.gain - STEP).max(0.0);
         }
         if self.clearing && self.gain == 0.0 {
+            if self.keep_clear {
+                store.keep(me, self);
+            }
             self.reset();
             self.reclaim(store, me);
             return [0.0; 2];
@@ -4306,7 +5102,9 @@ impl Loop {
             let (l, r) = s.target(any_solo);
             s.gl += (l - s.gl).clamp(-STEP, STEP);
             s.gr += (r - s.gr).clamp(-STEP, STEP);
-            settled &= !s.leaving && s.presence == 1.0 && s.gl == l && s.gr == r;
+            let d = if s.heard(any_solo) { 1.0 } else { 0.0 };
+            s.duck += (d - s.duck).clamp(-STEP, STEP);
+            settled &= !s.leaving && s.presence == 1.0 && s.gl == l && s.gr == r && s.duck == d;
             p += 1;
         }
         self.mixing = !settled;
@@ -4328,17 +5126,28 @@ impl Loop {
         let i1 = if i0 + 1 == len { 0 } else { i0 + 1 };
         let (b0, o0, b1, o1) = (i0 / BLOCK, i0 % BLOCK, i1 / BLOCK, i1 % BLOCK);
         let mut y = [0.0f32; 2];
+        // Under a Replace layer, each layer at its share of i0 and i1.
+        let (d0, d1) = if self.replacing() {
+            let strength = |s: &Slot| s.duck * s.presence;
+            (
+                self.ducks(views, len, i0, strength),
+                self.ducks(views, len, i1, strength),
+            )
+        } else {
+            ([1.0; MAX_LAYERS], [1.0; MAX_LAYERS])
+        };
         for &k in &self.order[..self.in_order] {
             let k = k as usize;
             let s = &self.slots[k];
             let g = [s.gl * s.presence, s.gr * s.presence];
-            if g == [0.0, 0.0] {
+            if g == [0.0, 0.0] || (d0[k] == 0.0 && d1[k] == 0.0) {
                 continue;
             }
             if !views[k].is_whole() {
                 let blocks = store.blocks_of(me, k);
                 let a = layer_frame(store, blocks, s.valid, &views[k], seam, i0);
                 let b = layer_frame(store, blocks, s.valid, &views[k], seam, i1);
+                let (a, b) = (a.map(|v| v * d0[k]), b.map(|v| v * d1[k]));
                 for (c, v) in y.iter_mut().enumerate() {
                     *v += g[c] * (a[c] + (b[c] - a[c]) * frac);
                 }
@@ -4362,6 +5171,11 @@ impl Loop {
             } else {
                 [0.0; 2]
             };
+            let (a, b) = if d0[k] == 1.0 && d1[k] == 1.0 {
+                (a, b)
+            } else {
+                (a.map(|v| v * d0[k]), b.map(|v| v * d1[k]))
+            };
             for (c, v) in y.iter_mut().enumerate() {
                 *v += g[c] * (a[c] + (b[c] - a[c]) * frac);
             }
@@ -4382,7 +5196,7 @@ mod tests {
         for seconds in [0, 1, 7, 60] {
             let l = Looper::new(44_100, seconds);
             let s = &l.store;
-            let real = s.pool.len() * 4 + s.tables.len() * 2 + s.free.len() * 2;
+            let real = s.pool.len() * 4 + s.tables.len() * 2 + s.free.len() * 2 + l.heard.bytes();
             assert_eq!(bytes_for(44_100, seconds), real, "{seconds} s");
             assert!(l.memory().capacity >= 44_100 * seconds as usize);
         }
@@ -4391,8 +5205,9 @@ mod tests {
             assert!(n < NONE as usize && n * BLOCK >= rate as usize * 1200);
         }
         assert_eq!(n_blocks(44_100, 3600), NONE as usize);
-        // Five minutes: about 109 MB, a fifth of it per minute.
-        assert_eq!(bytes_for(44_100, 300) / 1_000_000, 109);
+        // Five minutes: about 109 MB, a fifth of it per minute, and 10.6 MB
+        // for the 30 seconds Capture takes from.
+        assert_eq!(bytes_for(44_100, 300) / 1_000_000, 119);
     }
 
     /// Bit for bit what `rem_euclid` gives, over song positions and loop

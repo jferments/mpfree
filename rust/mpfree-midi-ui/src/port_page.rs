@@ -6,8 +6,11 @@
 //!   through [`Asks::name_port`]: "Juno" for a "USB MIDI Interface", shown
 //!   on every screen; the 5-pin jacks keep the panel's MIDI In and MIDI
 //!   Out), what it is (the 5-pin jacks, or a USB device and which of its
-//!   ports, and the name it calls itself) and its **Input** (Plays tracks,
-//!   Learn only, Both), the same setting as on its row.
+//!   ports, and the name it calls itself), its **Input** (Plays tracks,
+//!   Learn only, Both), the same setting as on its row, and its
+//!   **Profile** ([`mpfree_midi::profile`]): Auto (the first profile made
+//!   for the name it calls itself), None, or one by name, which names its
+//!   CCs and programs in the Monitor and Learn.
 //! - **Ignore coming in:** Clock, Program, Aftertouch and All notes off
 //!   ([`IgnoreSet`]). Ignored messages still show in the Monitor, marked
 //!   "ignored: this port's setting"; nothing else gets them.
@@ -26,7 +29,7 @@
 //!   ([`PortLive::sending`]: MIDI out on, the port plugged in and its
 //!   output open).
 //!
-//! The name, Input, Ignore coming in and the delay belong to the rig (kept
+//! The name, Input, Profile, Ignore coming in and the delay belong to the rig (kept
 //! for every project, `MidiSetup::rig`); Clock to this port belongs to the
 //! project.
 //! The wheel picks a control, - and + step it, and the Q-Links take Input,
@@ -40,7 +43,8 @@ use std::time::Duration;
 
 use mpfree_midi::monitor::{Dir, What};
 use mpfree_midi::setup::{
-    ClockOut, Ignored, PortInput, PortSetup, TempoSource, DELAY_STEP_TENTHS, MAX_DELAY_TENTHS,
+    ClockOut, Ignored, PortInput, PortSetup, ProfilePick, TempoSource, DELAY_STEP_TENTHS,
+    MAX_CLOCK_DIVIDE, MAX_DELAY_TENTHS, MAX_NUDGE_TENTHS, NUDGE_STEP_TENTHS,
 };
 use mpfree_mixer_ui::{IoInput, IoKnob, IoReply, IoSection};
 use mpfree_ui::{Align, Color, FontId, PaintCx, Rect, Target, Touch};
@@ -58,30 +62,52 @@ const STEP_W: i32 = 44;
 const LINE_H: i32 = 19;
 /// The Name row's word, left of its box.
 const NAME_W: i32 = 72;
+/// The narrowest Ignore chip in a row of four, for "All notes off" in
+/// the smaller letters; from [`CHIP_W`] the usual ones.
+const CHIP_MIN_W: i32 = 80;
+const CHIP_W: i32 = 96;
+/// The clock card's Divide and Nudge, side by side: their labels, - and
+/// + and values.
+const DIVIDE_LABEL_W: i32 = 54;
+const NUDGE_LABEL_W: i32 = 56;
+const SMALL_STEP_W: i32 = 30;
+const DIVIDE_W: i32 = 30;
+const NUDGE_W: i32 = 66;
+/// Divide and Nudge fit on one line from this card width in: their
+/// labels, values and four steps, the four gaps inside the steppers,
+/// Nudge's gap after its label and at least as much between the two.
+const CLOCK_ROW_W: i32 =
+    DIVIDE_LABEL_W + DIVIDE_W + NUDGE_LABEL_W + NUDGE_W + 4 * SMALL_STEP_W + 6 * 4;
 
 /// The hint line while a port's page shows.
-pub(crate) const HINT: &str = "Tap a setting to change it (Name: type one)  ·  wheel: pick one  ·  - and +: step it  ·  Q-Links: Input, Clock, Delay  ·  ‹ MIDI or Back closes";
+pub(crate) const HINT: &str = "Tap a setting to change it (Name: type one)  ·  wheel: pick one  ·  - and +: step it  ·  Q-Links: Input, Clock, Delay, Divide  ·  ‹ MIDI or Back closes";
 
 /// What the wheel picks, in its order down the page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Sel {
     Name,
     Input,
+    Profile,
     Ignore(usize),
     Clock,
+    Divide,
+    Nudge,
     Delay,
     TestNote,
     AllOff,
 }
 
-const SELS: [Sel; 10] = [
+const SELS: [Sel; 13] = [
     Sel::Name,
     Sel::Input,
+    Sel::Profile,
     Sel::Ignore(0),
     Sel::Ignore(1),
     Sel::Ignore(2),
     Sel::Ignore(3),
     Sel::Clock,
+    Sel::Divide,
+    Sel::Nudge,
     Sel::Delay,
     Sel::TestNote,
     Sel::AllOff,
@@ -93,8 +119,11 @@ enum Hit {
     Back,
     Name,
     Input,
+    Profile,
     Ignore(usize),
     Clock,
+    Divide(i32),
+    Nudge(i32),
     Delay(i32),
     TestNote,
     AllOff,
@@ -107,12 +136,24 @@ struct Layout {
     this: Rect,
     name: Rect,
     input: Rect,
+    profile: Rect,
     ignore: Rect,
     chips: [Rect; 4],
+    /// The chips are in one row (a wide page), with Ignore's note in its
+    /// heading, leaving What it does room for five lines.
+    one_row: bool,
     does: Rect,
     now: Rect,
     clock: Rect,
     clock_box: Rect,
+    /// Divide's and Nudge's labels and their -, value and +: on one line
+    /// in a wide card, else a line each.
+    divide_label: Rect,
+    divide: [Rect; 3],
+    nudge_label: Rect,
+    nudge: [Rect; 3],
+    /// The clock card's last line: what was measured, or why it waits.
+    clock_line: Rect,
     delay: Rect,
     delay_down: Rect,
     delay_value: Rect,
@@ -131,8 +172,11 @@ fn layout(r: Rect) -> Layout {
     let rx = r.x + lw + GAP;
     let rw = r.w - lw - GAP;
     // Left: this port, ignore coming in, what it does.
-    let this = Rect::new(r.x, body_y, lw, 196);
-    let ignore = Rect::new(r.x, this.bottom() + GAP, lw, 158);
+    let this = Rect::new(r.x, body_y, lw, 256);
+    // Four chips in a row where each has room for "All notes off".
+    let one_row = lw - 28 >= 4 * CHIP_MIN_W + 3 * 8;
+    let ignore_h = if one_row { 38 + BOX_H + 12 } else { 158 };
+    let ignore = Rect::new(r.x, this.bottom() + GAP, lw, ignore_h);
     let does = Rect::new(
         r.x,
         ignore.bottom() + GAP,
@@ -143,17 +187,62 @@ fn layout(r: Rect) -> Layout {
     let ti = inner(this);
     let name = Rect::new(ti.x + NAME_W, ti.y, ti.w - NAME_W, BOX_H);
     let input = Rect::new(ti.right() - VALUE_W, ti.y + BOX_H + 8, VALUE_W, BOX_H);
+    // Under Input's line: its profile, as wide as the name.
+    let profile = Rect::new(
+        ti.x + NAME_W,
+        input.bottom() + 6 + LINE_H + 8,
+        ti.w - NAME_W,
+        BOX_H,
+    );
     let ii = inner(ignore);
-    let cw = (ii.w - 8) / 2;
+    let per_row = if one_row { 4 } else { 2 };
+    let cw = (ii.w - 8 * (per_row - 1)) / per_row;
     let chips = std::array::from_fn(|k| {
-        let (col, row) = ((k % 2) as i32, (k / 2) as i32);
+        let (col, row) = ((k as i32 % per_row), (k as i32 / per_row));
         Rect::new(ii.x + col * (cw + 8), ii.y + row * (BOX_H + 6), cw, BOX_H)
     });
     // Right: now, clock to this port, this gear's delay, send to it.
-    let now = Rect::new(rx, body_y, rw, 96);
-    let clock = Rect::new(rx, now.bottom() + GAP, rw, 112);
+    let now = Rect::new(rx, body_y, rw, 84);
+    let one_line = rw - 28 >= CLOCK_ROW_W;
+    let rows = if one_line { 2 } else { 3 };
+    let clock_h = 38 + rows * BOX_H + (rows - 1) * 5 + 6 + LINE_H + 8;
+    let clock = Rect::new(rx, now.bottom() + GAP, rw, clock_h);
     let ci = inner(clock);
     let clock_box = Rect::new(ci.right() - VALUE_W, ci.y, VALUE_W, BOX_H);
+    // -, value, + ending at `right`.
+    let stepper = |right: i32, y: i32, value_w: i32, step_w: i32| {
+        let up = Rect::new(right - step_w, y, step_w, BOX_H);
+        let value = Rect::new(up.x - 4 - value_w, y, value_w, BOX_H);
+        let down = Rect::new(value.x - 4 - step_w, y, step_w, BOX_H);
+        [down, value, up]
+    };
+    let row1 = clock_box.bottom() + 5;
+    let (divide_label, divide, nudge_label, nudge) = if one_line {
+        let divide = stepper(
+            ci.x + DIVIDE_LABEL_W + 2 * SMALL_STEP_W + DIVIDE_W + 8,
+            row1,
+            DIVIDE_W,
+            SMALL_STEP_W,
+        );
+        let nudge = stepper(ci.right(), row1, NUDGE_W, SMALL_STEP_W);
+        (
+            Rect::new(ci.x, row1, DIVIDE_LABEL_W, BOX_H),
+            divide,
+            Rect::new(nudge[0].x - 4 - NUDGE_LABEL_W, row1, NUDGE_LABEL_W, BOX_H),
+            nudge,
+        )
+    } else {
+        let row2 = row1 + BOX_H + 5;
+        let divide = stepper(ci.right(), row1, NUDGE_W, STEP_W);
+        let nudge = stepper(ci.right(), row2, NUDGE_W, STEP_W);
+        (
+            Rect::new(ci.x, row1, divide[0].x - ci.x, BOX_H),
+            divide,
+            Rect::new(ci.x, row2, nudge[0].x - ci.x, BOX_H),
+            nudge,
+        )
+    };
+    let clock_line = Rect::new(ci.x, nudge[0].bottom() + 6, ci.w, LINE_H);
     let delay = Rect::new(rx, clock.bottom() + GAP, rw, 132);
     let di = inner(delay);
     let delay_up = Rect::new(di.right() - STEP_W, di.y, STEP_W, BOX_H);
@@ -175,12 +264,19 @@ fn layout(r: Rect) -> Layout {
         this,
         name,
         input,
+        profile,
         ignore,
         chips,
+        one_row,
         does,
         now,
         clock,
         clock_box,
+        divide_label,
+        divide,
+        nudge_label,
+        nudge,
+        clock_line,
         delay,
         delay_down,
         delay_value,
@@ -197,6 +293,12 @@ struct View {
     /// Its name on screen ([`mpfree_midi::setup::MidiSetup::shown`]).
     shown: String,
     setup: PortSetup,
+    /// The profiles' names, in the order - and + step through them.
+    profiles: Vec<String>,
+    /// Profile's value: "Auto · Juno-X", "None", "General MIDI".
+    profile_label: String,
+    /// What the profile names, in words, under it.
+    profile_says: String,
     plugged: bool,
     usb: bool,
     about: String,
@@ -206,6 +308,9 @@ struct View {
     out_on: bool,
     /// MIDI out sends to it now.
     sending: bool,
+    /// Its clock as it left: the gap between pulses and their spread
+    /// either side, in ms ([`crate::PortLive::clock_measured`]).
+    measured: Option<(f32, f32)>,
     early_ms: f32,
     /// The channel the test note goes on: the first track that plays on
     /// this port's, else 1.
@@ -357,7 +462,15 @@ fn view(m: &IoModel, name: &str, now: f64) -> View {
     if setup.clock_out != ClockOut::Off {
         does.push((
             false,
-            format!("MPFree's clock: {}", setup.clock_out.label()),
+            if setup.clock_divide > 1 {
+                format!(
+                    "MPFree's clock: {}, divided by {}",
+                    setup.clock_out.label(),
+                    setup.clock_divide
+                )
+            } else {
+                format!("MPFree's clock: {}", setup.clock_out.label())
+            },
         ));
     }
     let has_out = live.is_none_or(|l| l.has_out);
@@ -386,7 +499,7 @@ fn view(m: &IoModel, name: &str, now: f64) -> View {
                     .map_or(String::new(), |c| format!("ch {} ", c + 1));
                 last.push((
                     dir,
-                    format!("{ch}{}", crate::monitor_words(s)),
+                    format!("{ch}{}", crate::monitor_words_named(s, m.profile(name))),
                     (now - s.t).max(0.0),
                 ));
             }
@@ -411,12 +524,95 @@ fn view(m: &IoModel, name: &str, now: f64) -> View {
         has_out,
         out_on: m.live.built.notes_out,
         sending: live.is_some_and(|l| l.sending),
+        measured: live.and_then(|l| l.clock_measured),
         early_ms: m.live.early_ms,
         test_channel: tracks.first().map_or(0, |t| t.1),
         does,
         last,
+        profiles: m.profiles.all().iter().map(|p| p.name.clone()).collect(),
+        profile_label: profile_label(m, name, &setup.profile),
+        profile_says: profile_says(m.profile(name), &setup.profile),
         setup,
     }
+}
+
+/// Profile's value on the page.
+fn profile_label(m: &IoModel, name: &str, pick: &ProfilePick) -> String {
+    match pick {
+        ProfilePick::Auto => match m.profiles.matching(name) {
+            Some(p) => format!("Auto · {}", p.name),
+            None => "Auto · none made for it".to_string(),
+        },
+        ProfilePick::Off => "None".to_string(),
+        ProfilePick::Named(n) => match m.profiles.get(n) {
+            Some(p) => p.name.clone(),
+            None => format!("{n} (not found)"),
+        },
+    }
+}
+
+/// The line under Profile: what the port's profile names.
+fn profile_says(p: Option<&mpfree_midi::profile::Profile>, pick: &ProfilePick) -> String {
+    let Some(p) = p else {
+        return match pick {
+            // Its name shows in the box above, with "(not found)".
+            ProfilePick::Named(_) => "Not found: usual names for controls.".to_string(),
+            _ => "Usual names for controls (CC 7 Volume).".to_string(),
+        };
+    };
+    let (cc, nrpn, programs) = p.counts();
+    let mut parts = Vec::new();
+    for (n, what) in [(cc, "control"), (nrpn, "NRPN"), (programs, "program")] {
+        match n {
+            0 => {}
+            1 => parts.push(format!("1 {what}")),
+            n => parts.push(format!("{n} {what}s")),
+        }
+    }
+    // A drum machine's: its kit pads too, in a shorter list that fits.
+    if p.pads() > 0 {
+        let mut short = Vec::new();
+        for (n, one, many) in [
+            (cc, "CC", "CCs"),
+            (nrpn, "NRPN", "NRPNs"),
+            (programs, "program", "programs"),
+            (p.pads(), "kit pad", "pads"),
+        ] {
+            match n {
+                0 => {}
+                1 => short.push(format!("1 {one}")),
+                n => short.push(format!("{n} {many}")),
+            }
+        }
+        return format!("Covers {}.", short.join(", "));
+    }
+    let Some(last) = parts.pop() else {
+        return "It names nothing: usual names for controls.".to_string();
+    };
+    let list = if parts.is_empty() {
+        last
+    } else {
+        format!("{} and {last}", parts.join(", "))
+    };
+    format!("Names {list}.")
+}
+
+/// The profile choice `d` steps to from `now`: Auto, None, then each
+/// profile by name. A tap goes round; - and + stop at either end. A
+/// profile no longer there steps from Auto.
+fn step_profile(names: &[String], now: &ProfilePick, d: i32, tap: bool) -> ProfilePick {
+    let all: Vec<ProfilePick> = [ProfilePick::Auto, ProfilePick::Off]
+        .into_iter()
+        .chain(names.iter().map(|n| ProfilePick::Named(n.clone())))
+        .collect();
+    let n = all.len() as i32;
+    let i = all.iter().position(|x| x == now).unwrap_or(0) as i32;
+    let to = if tap {
+        (i + d).rem_euclid(n)
+    } else {
+        (i + d).clamp(0, n - 1)
+    };
+    all[to as usize].clone()
 }
 
 /// "CC 74, CC 71 and 2 more".
@@ -475,11 +671,24 @@ impl PortPage {
         if l.input.contains(x, y) {
             return Some(Hit::Input);
         }
+        if l.profile.contains(x, y) {
+            return Some(Hit::Profile);
+        }
         if let Some(k) = l.chips.iter().position(|c| c.contains(x, y)) {
             return Some(Hit::Ignore(k));
         }
         if l.clock_box.contains(x, y) {
             return Some(Hit::Clock);
+        }
+        for (rr, d) in [(l.divide[0], -1), (l.divide[2], 1)] {
+            if rr.contains(x, y) {
+                return Some(Hit::Divide(d));
+            }
+        }
+        for (rr, d) in [(l.nudge[0], -1), (l.nudge[2], 1)] {
+            if rr.contains(x, y) {
+                return Some(Hit::Nudge(d));
+            }
         }
         if l.delay_down.contains(x, y) {
             return Some(Hit::Delay(-1));
@@ -533,7 +742,8 @@ impl PortPage {
             return IoReply::Redraw;
         }
         let no_in = matches!(s, Sel::Input | Sel::Ignore(_)) && !v.has_in;
-        if no_in || (s == Sel::Clock && !v.has_out) {
+        let clock = matches!(s, Sel::Clock | Sel::Divide | Sel::Nudge);
+        if no_in || (clock && !v.has_out) {
             self.note = Some(format!(
                 "{} has no {}: nothing to set",
                 v.shown,
@@ -546,6 +756,14 @@ impl PortPage {
                 let c = self.set(|p| p.input = choose(&PortInput::ALL, p.input, d, tap));
                 if !c {
                     self.note = Some(at_end("Input", v.setup.input.label(), d));
+                }
+                c
+            }
+            Sel::Profile => {
+                let to = step_profile(&v.profiles, &v.setup.profile, d, tap);
+                let c = self.set(|p| p.profile = to);
+                if !c {
+                    self.note = Some(at_end("Profile", &v.profile_label, d));
                 }
                 c
             }
@@ -572,6 +790,36 @@ impl PortPage {
                 let c = self.set(|p| p.clock_out = choose(&ClockOut::ALL, p.clock_out, d, tap));
                 if !c {
                     self.note = Some(at_end("Clock to this port", v.setup.clock_out.label(), d));
+                }
+                c
+            }
+            Sel::Divide => {
+                let c = self.set(|p| {
+                    let to = i32::from(p.clock_divide) + d;
+                    p.clock_divide = to.clamp(1, i32::from(MAX_CLOCK_DIVIDE)) as u8;
+                });
+                if !c {
+                    self.note = Some(if d > 0 {
+                        format!("Divide is at its most, {MAX_CLOCK_DIVIDE}: - speeds the clock up")
+                    } else {
+                        "Divide is at 1, the tempo itself: + slows the clock down".to_string()
+                    });
+                }
+                c
+            }
+            Sel::Nudge => {
+                let c = self.set(|p| {
+                    let to = i32::from(p.clock_nudge_tenths) + d * i32::from(NUDGE_STEP_TENTHS);
+                    let max = i32::from(MAX_NUDGE_TENTHS);
+                    p.clock_nudge_tenths = to.clamp(-max, max) as i16;
+                });
+                if !c {
+                    let max = f32::from(MAX_NUDGE_TENTHS) / 10.0;
+                    self.note = Some(if d > 0 {
+                        format!("The clock's nudge is at its latest, +{max:.1} ms")
+                    } else {
+                        format!("The clock's nudge is at its earliest, -{max:.1} ms")
+                    });
                 }
                 c
             }
@@ -635,14 +883,20 @@ impl PortPage {
             }
             Hit::Name => Sel::Name,
             Hit::Input => Sel::Input,
+            Hit::Profile => Sel::Profile,
             Hit::Ignore(k) => Sel::Ignore(k),
             Hit::Clock => Sel::Clock,
+            Hit::Divide(_) => Sel::Divide,
+            Hit::Nudge(_) => Sel::Nudge,
             Hit::Delay(_) => Sel::Delay,
             Hit::TestNote => Sel::TestNote,
             Hit::AllOff => Sel::AllOff,
         };
         self.sel = SELS.iter().position(|s| *s == sel).unwrap_or(0);
-        let d = if let Hit::Delay(d) = h { d } else { 1 };
+        let d = match h {
+            Hit::Delay(d) | Hit::Divide(d) | Hit::Nudge(d) => d,
+            _ => 1,
+        };
         self.step(sel, d, true).max(IoReply::Redraw)
     }
 
@@ -735,11 +989,41 @@ fn delay_text(tenths: u16) -> String {
     format!("{:.1} ms", f32::from(tenths) / 10.0)
 }
 
+/// "+1.0 ms", "0.0 ms", "-1.5 ms".
+fn nudge_text(tenths: i16) -> String {
+    if tenths == 0 {
+        "0.0 ms".to_string()
+    } else {
+        format!("{:+.1} ms", f32::from(tenths) / 10.0)
+    }
+}
+
 fn test_text(v: &View) -> String {
     format!("Test note C4 · ch {}", v.test_channel + 1)
 }
 
 /// What the delay card says under its value.
+/// The clock card's line: why its clock waits, or what was measured as
+/// it left.
+fn clock_words(v: &View) -> String {
+    if !v.out_on {
+        return "Kept: MIDI out is off (Prefs).".to_string();
+    }
+    if !v.has_out {
+        return "Kept: this port has no output.".to_string();
+    }
+    if !v.sending {
+        return "Kept: its output didn't open.".to_string();
+    }
+    match v.measured {
+        Some((gap, spread)) if v.setup.clock_out != ClockOut::Off => {
+            format!("Pulses leave every {gap:.1} ms, ±{spread:.1} ms.")
+        }
+        // Clock is the Sync section's setting; Nudge is the gear's.
+        _ => "Clock as on Sync; Nudge kept for every project.".to_string(),
+    }
+}
+
 fn delay_words(v: &View) -> [String; 2] {
     let d = v.setup.delay_ms();
     if !v.out_on {
@@ -834,6 +1118,28 @@ impl IoSection for PortPage {
             }],
             t.text_faint,
         );
+        let row = Rect::new(body.x, l.profile.y, NAME_W, BOX_H);
+        cx.text(
+            FontId::Sans,
+            t.size_body,
+            row,
+            Align::Left,
+            t.text,
+            "Profile",
+        );
+        value_box(
+            cx,
+            l.profile,
+            &v.profile_label,
+            picked == Sel::Profile,
+            true,
+        );
+        lines(
+            cx,
+            Rect::new(body.x, l.profile.bottom() + 6, body.w, LINE_H),
+            &[&v.profile_says],
+            t.text_faint,
+        );
         let calls = if v.shown != v.name {
             format!("{} · it calls itself {}", v.about, v.name)
         } else {
@@ -841,7 +1147,7 @@ impl IoSection for PortPage {
         };
         lines(
             cx,
-            Rect::new(body.x, l.input.bottom() + 6 + LINE_H + 4, body.w, LINE_H),
+            Rect::new(body.x, l.profile.bottom() + 6 + LINE_H + 4, body.w, LINE_H),
             &[&calls],
             t.text_dim,
         );
@@ -851,7 +1157,11 @@ impl IoSection for PortPage {
             cx,
             l.ignore,
             "IGNORE COMING IN",
-            "lit = ignored",
+            if l.one_row {
+                "lit = ignored · still in the Monitor"
+            } else {
+                "lit = ignored"
+            },
             t.text_faint,
         );
         for (k, kind) in Ignored::ALL.iter().enumerate() {
@@ -866,21 +1176,23 @@ impl IoSection for PortPage {
             if picked == Sel::Ignore(k) {
                 cx.canvas.stroke_round_rect(cr, 10, 2, t.accent);
             }
-            cx.text(
-                FontId::Bold,
-                t.size_small,
-                cr,
-                Align::Center,
-                ink,
-                kind.label(),
+            // A narrow chip takes the smaller letters, so "All notes off"
+            // fits.
+            let px = if cr.w < CHIP_W {
+                t.size_small * 0.9
+            } else {
+                t.size_small
+            };
+            cx.text(FontId::Bold, px, cr, Align::Center, ink, kind.label());
+        }
+        if !l.one_row {
+            lines(
+                cx,
+                Rect::new(body.x, l.chips[3].bottom() + 6, body.w, LINE_H),
+                &["Ignored messages still show in the Monitor."],
+                t.text_faint,
             );
         }
-        lines(
-            cx,
-            Rect::new(body.x, l.chips[3].bottom() + 6, body.w, LINE_H),
-            &["Ignored messages still show in the Monitor."],
-            t.text_faint,
-        );
 
         // What it does.
         let body = card(cx, l.does, "WHAT IT DOES", "", t.text_faint);
@@ -978,21 +1290,54 @@ impl IoSection for PortPage {
             picked == Sel::Clock,
             v.has_out,
         );
-        let clock_note = if !v.out_on {
-            "Kept: MIDI out is off (Prefs)."
-        } else if !v.has_out {
-            "Kept: this port has no output."
-        } else if !v.sending {
-            "Kept: its output didn't open."
-        } else {
-            "The same setting as on the Sync section."
+        let label = |cx: &mut PaintCx, r: Rect, s: &str| {
+            cx.text(FontId::Sans, t.size_body, r, Align::Left, t.text, s);
         };
-        lines(
+        let one_line = l.divide_label.y == l.nudge_label.y;
+        label(
             cx,
-            Rect::new(body.x, l.clock_box.bottom() + 6, body.w, LINE_H),
-            &[clock_note],
-            t.text_faint,
+            l.divide_label,
+            if one_line { "Divide" } else { "Divide by" },
         );
+        let (div, nudge) = (v.setup.clock_divide, v.setup.clock_nudge_tenths);
+        button(cx, l.divide[0], "−", false, v.has_out && div > 1);
+        value_box(
+            cx,
+            l.divide[1],
+            &div.to_string(),
+            picked == Sel::Divide,
+            v.has_out,
+        );
+        button(
+            cx,
+            l.divide[2],
+            "+",
+            false,
+            v.has_out && div < MAX_CLOCK_DIVIDE,
+        );
+        label(cx, l.nudge_label, "Nudge");
+        button(
+            cx,
+            l.nudge[0],
+            "−",
+            false,
+            v.has_out && nudge > -MAX_NUDGE_TENTHS,
+        );
+        value_box(
+            cx,
+            l.nudge[1],
+            &nudge_text(nudge),
+            picked == Sel::Nudge,
+            v.has_out,
+        );
+        button(
+            cx,
+            l.nudge[2],
+            "+",
+            false,
+            v.has_out && nudge < MAX_NUDGE_TENTHS,
+        );
+        lines(cx, l.clock_line, &[&clock_words(&v)], t.text_faint);
 
         // This gear's delay.
         let body = card(
@@ -1077,6 +1422,12 @@ impl IoSection for PortPage {
                 l.input,
             )
             .disabled_if(!v.has_in),
+            Target::tap(
+                "port-profile",
+                0,
+                format!("Profile: {}", v.profile_label),
+                l.profile,
+            ),
         ];
         for (k, kind) in Ignored::ALL.iter().enumerate() {
             out.push(
@@ -1091,6 +1442,23 @@ impl IoSection for PortPage {
                 l.clock_box,
             )
             .disabled_if(!v.has_out),
+        );
+        let (div, nudge) = (v.setup.clock_divide, v.setup.clock_nudge_tenths);
+        out.push(
+            Target::tap("port-divide", 0, "Divide −", l.divide[0])
+                .disabled_if(!v.has_out || div <= 1),
+        );
+        out.push(
+            Target::tap("port-divide", 1, "Divide +", l.divide[2])
+                .disabled_if(!v.has_out || div >= MAX_CLOCK_DIVIDE),
+        );
+        out.push(
+            Target::tap("port-nudge", 0, "Nudge −", l.nudge[0])
+                .disabled_if(!v.has_out || nudge <= -MAX_NUDGE_TENTHS),
+        );
+        out.push(
+            Target::tap("port-nudge", 1, "Nudge +", l.nudge[2])
+                .disabled_if(!v.has_out || nudge >= MAX_NUDGE_TENTHS),
         );
         out.push(
             Target::tap("port-delay", 0, "Delay −", l.delay_down)
@@ -1217,10 +1585,10 @@ impl IoSection for PortPage {
                 enabled: true,
             },
             IoKnob {
-                label: String::new(),
-                text: String::new(),
-                pos: 0.0,
-                enabled: false,
+                label: "Divide".to_string(),
+                text: format!("÷ {}", v.setup.clock_divide),
+                pos: f32::from(v.setup.clock_divide - 1) / f32::from(MAX_CLOCK_DIVIDE - 1),
+                enabled: v.has_out,
             },
         ])
     }
@@ -1234,6 +1602,7 @@ impl IoSection for PortPage {
             0 => self.step(Sel::Input, d.signum(), false),
             1 => self.step(Sel::Clock, d.signum(), false),
             2 => self.step(Sel::Delay, d, false),
+            3 => self.step(Sel::Divide, d.signum(), false),
             _ => IoReply::Ignored,
         }
     }
@@ -1264,27 +1633,246 @@ mod tests {
         m.lock().unwrap().setup.port(name)
     }
 
+    /// The page as the I/O view gives it on the MPC's 1280 x 800 screen
+    /// in the preview, and in the app, beside the Q-Link column.
+    const WIDE: Rect = Rect::new(194, 136, 912, 614);
+    const APP: Rect = Rect::new(194, 136, 772, 614);
+
     #[test]
     fn every_control_fits_and_says_what_it_is() {
         let m = model();
-        for name in [DIN_NAME, "Keystep 37"] {
-            let p = PortPage::new(m.clone(), name);
-            let _ = paint(&p);
-            let ts = p.targets(AREA);
-            assert_eq!(ts.len(), 12, "{name}");
-            for t in ts {
-                let r = t.rect;
-                assert!(
-                    r.x >= AREA.x
-                        && r.y >= AREA.y
-                        && r.right() <= AREA.right()
-                        && r.y + r.h <= AREA.y + AREA.h,
-                    "{name}: {} \"{}\" at {r:?} is outside {AREA:?}",
-                    t.id,
-                    t.label
-                );
+        for area in [AREA, WIDE, APP] {
+            for name in [DIN_NAME, "Keystep 37"] {
+                let p = PortPage::new(m.clone(), name);
+                let _ = crate::form::testing::paint_in(&p, area);
+                let ts = p.targets(area);
+                assert_eq!(ts.len(), 17, "{name}");
+                for t in ts {
+                    let r = t.rect;
+                    assert!(
+                        r.x >= area.x
+                            && r.y >= area.y
+                            && r.right() <= area.right()
+                            && r.y + r.h <= area.y + area.h,
+                        "{name}: {} \"{}\" at {r:?} is outside {area:?}",
+                        t.id,
+                        t.label
+                    );
+                }
             }
         }
+        // On the MPC's screen Divide and Nudge share a line, and the
+        // Ignore chips sit in a row.
+        for area in [WIDE, APP] {
+            let l = layout(area);
+            assert_eq!(l.divide[1].y, l.nudge[1].y);
+            assert!(l.one_row);
+            assert!(l.divide[2].right() < l.nudge_label.x);
+        }
+        // The line under Profile fits the app's page, with or without a
+        // profile.
+        let l = layout(APP);
+        let w = l.input.right() - l.name.x + NAME_W;
+        let mut fonts = mpfree_ui::Fonts::embedded();
+        let px = mpfree_ui::Theme::dark().size_small;
+        let gm = mpfree_midi::profile::Profiles::builtin();
+        // A drum machine's: its controls, programs and 128 pads.
+        let mut drums = mpfree_midi::profile::Profile::new("Drum box");
+        for k in 0..128u8 {
+            drums.set_cc(k, "Level");
+            drums.set_program(k, "Kit");
+            let out = mpfree_midi::profile::PadOut {
+                note: k,
+                channel: Some(9),
+            };
+            drums.set_pad(k, out);
+        }
+        drums.set_nrpn(0, 1, "Tune");
+        assert_eq!(
+            profile_says(Some(&drums), &ProfilePick::Auto),
+            "Covers 128 CCs, 1 NRPN, 128 programs, 128 pads."
+        );
+        drums.set_pad(
+            0,
+            mpfree_midi::profile::PadOut {
+                note: 36,
+                channel: None,
+            },
+        );
+        let mut pads_only = mpfree_midi::profile::Profile::new("Pads");
+        pads_only.set_pad(
+            0,
+            mpfree_midi::profile::PadOut {
+                note: 36,
+                channel: None,
+            },
+        );
+        assert_eq!(
+            profile_says(Some(&pads_only), &ProfilePick::Auto),
+            "Covers 1 kit pad."
+        );
+        // And the line under Divide and Nudge, whatever it says.
+        let mut v = PortPage::new(m.clone(), DIN_NAME).view();
+        v.out_on = true;
+        v.has_out = true;
+        v.sending = true;
+        v.setup.clock_out = ClockOut::Always;
+        let idle = clock_words(&v);
+        v.measured = Some((20.8, 12.4));
+        let measured = clock_words(&v);
+        for says in [idle, measured] {
+            let sw = fonts.measure(FontId::Sans, px, &says);
+            assert!(
+                sw <= l.clock_line.w,
+                "{says:?} is {sw} wide, the line {}",
+                l.clock_line.w
+            );
+        }
+        for says in [
+            profile_says(None, &ProfilePick::Auto),
+            profile_says(None, &ProfilePick::Named("Juno 106 rack".into())),
+            profile_says(gm.get("General MIDI"), &ProfilePick::Auto),
+            profile_says(Some(&drums), &ProfilePick::Auto),
+        ] {
+            let sw = fonts.measure(FontId::Sans, px, &says);
+            assert!(sw <= w, "{says:?} is {sw} wide, the line {w}");
+        }
+        let l = layout(AREA);
+        assert!(l.nudge[1].y > l.divide[1].y && !l.one_row);
+    }
+
+    /// The clock card: Divide (the song's) slows the port's clock, Nudge
+    /// (the gear's) moves it later or earlier, each stopping at its ends;
+    /// the line under them says what was measured as the clock left.
+    #[test]
+    fn the_clock_card_divides_nudges_and_says_what_it_measured() {
+        let m = model();
+        m.lock().unwrap().live.built.notes_out = true;
+        {
+            let mut g = m.lock().unwrap();
+            let p = g
+                .live
+                .ports
+                .iter_mut()
+                .find(|p| p.name == DIN_NAME)
+                .unwrap();
+            p.sending = true;
+        }
+        let mut p = PortPage::new(m.clone(), DIN_NAME);
+        let l = layout(AREA);
+        for _ in 0..3 {
+            let (x, y) = centre(l.divide[2]);
+            tap(&mut p, x, y);
+        }
+        assert_eq!(port(&m, DIN_NAME).clock_divide, 4);
+        let (x, y) = centre(l.divide[0]);
+        tap(&mut p, x, y);
+        assert_eq!(port(&m, DIN_NAME).clock_divide, 3);
+        // Q-Link 4 turns it, and stops at 8.
+        for _ in 0..9 {
+            p.qlink_turn(3, 1, false);
+        }
+        assert_eq!(port(&m, DIN_NAME).clock_divide, MAX_CLOCK_DIVIDE);
+        assert!(p.take_note().unwrap().contains("at its most"));
+        // Nudge: two steps earlier.
+        for _ in 0..2 {
+            let (x, y) = centre(l.nudge[0]);
+            tap(&mut p, x, y);
+        }
+        assert_eq!(
+            port(&m, DIN_NAME).clock_nudge_tenths,
+            -2 * NUDGE_STEP_TENTHS
+        );
+        assert_eq!(nudge_text(-10), "-1.0 ms");
+        assert_eq!(nudge_text(5), "+0.5 ms");
+        // The wheel goes Clock, Divide, Nudge; - and + step the nudge to
+        // its latest.
+        p.sel = SELS.iter().position(|s| *s == Sel::Nudge).unwrap();
+        for _ in 0..100 {
+            p.input(IoInput::Step(1));
+        }
+        assert_eq!(port(&m, DIN_NAME).clock_nudge_tenths, MAX_NUDGE_TENTHS);
+        assert!(p.take_note().unwrap().contains("at its latest"));
+        // The song keeps the divide; the rig, the nudge.
+        let g = m.lock().unwrap();
+        assert_eq!(g.setup.project().port(DIN_NAME).clock_divide, 8);
+        assert_eq!(
+            g.setup.rig().port(DIN_NAME).clock_nudge_tenths,
+            MAX_NUDGE_TENTHS
+        );
+        drop(g);
+        // What was measured, while clock goes out.
+        let words = |m: &Shared| clock_words(&view(&m.lock().unwrap(), DIN_NAME, 0.0));
+        m.lock()
+            .unwrap()
+            .setup
+            .set_port(DIN_NAME, |p| p.clock_out = ClockOut::Always);
+        assert_eq!(words(&m), "Clock as on Sync; Nudge kept for every project.");
+        {
+            let mut g = m.lock().unwrap();
+            let p = g
+                .live
+                .ports
+                .iter_mut()
+                .find(|p| p.name == DIN_NAME)
+                .unwrap();
+            p.clock_measured = Some((20.83, 0.31));
+        }
+        assert_eq!(words(&m), "Pulses leave every 20.8 ms, ±0.3 ms.");
+        m.lock().unwrap().live.built.notes_out = false;
+        assert_eq!(words(&m), "Kept: MIDI out is off (Prefs).");
+    }
+
+    /// Profile: Auto takes the profile made for the name the port calls
+    /// itself; a tap steps to None, then each profile by name, and round;
+    /// minus stops at Auto. The rig keeps it, and a profile that has gone
+    /// says so.
+    #[test]
+    fn the_profile_names_the_ports_controls() {
+        use mpfree_midi::profile::Profile;
+        let m = model();
+        let text = "mpfree-profile 1\nname = KeyStep\nmatch = Keystep 37\ncc.74 = Knob 1\n";
+        let (keystep, _) = Profile::parse(text).unwrap();
+        m.lock().unwrap().profiles.add(keystep).unwrap();
+        let mut p = PortPage::new(m.clone(), "Keystep 37");
+        let v = p.view();
+        assert_eq!(v.profile_label, "Auto · KeyStep");
+        assert_eq!(v.profile_says, "Names 1 control.");
+        let used = |m: &Shared| {
+            m.lock()
+                .unwrap()
+                .profile("Keystep 37")
+                .map(|p| p.name.clone())
+        };
+        assert_eq!(used(&m).as_deref(), Some("KeyStep"));
+        let l = layout(AREA);
+        let (x, y) = centre(l.profile);
+        tap(&mut p, x, y);
+        assert_eq!(port(&m, "Keystep 37").profile, ProfilePick::Off);
+        assert_eq!(used(&m), None);
+        assert!(p.view().profile_says.contains("Usual names for controls"));
+        tap(&mut p, x, y);
+        let gm = ProfilePick::Named("General MIDI".into());
+        assert_eq!(port(&m, "Keystep 37").profile, gm);
+        assert_eq!(p.view().profile_says, "Names 17 controls and 128 programs.");
+        tap(&mut p, x, y);
+        tap(&mut p, x, y);
+        assert_eq!(port(&m, "Keystep 37").profile, ProfilePick::Auto, "round");
+        assert_eq!(SELS[p.sel], Sel::Profile);
+        assert_eq!(p.input(IoInput::Step(-1)), IoReply::Handled);
+        assert!(p.take_note().unwrap().contains("Profile is at its first"));
+        // Gone since it was picked; the rig keeps the pick.
+        let gone = ProfilePick::Named("Gone".into());
+        m.lock()
+            .unwrap()
+            .setup
+            .set_port("Keystep 37", |p| p.profile = gone.clone());
+        assert_eq!(p.view().profile_label, "Gone (not found)");
+        assert!(p.view().profile_says.starts_with("Not found"));
+        assert_eq!(
+            m.lock().unwrap().setup.rig().port("Keystep 37").profile,
+            gone
+        );
     }
 
     /// Taps and the wheel set the rig's settings for the port; a change
@@ -1316,8 +1904,9 @@ mod tests {
         assert_eq!(port(&m, "Keystep 37").delay_tenths, 2 * DELAY_STEP_TENTHS);
         // The wheel picks Clock, + steps it.
         p.sel = 0;
-        p.input(IoInput::Wheel(6));
+        p.input(IoInput::Wheel(7));
         assert_eq!(SELS[p.sel], Sel::Clock);
+        assert_eq!(SELS[p.sel + 1], Sel::Divide);
         let was = port(&m, "Keystep 37").clock_out;
         p.input(IoInput::Step(1));
         assert_ne!(port(&m, "Keystep 37").clock_out, was);
@@ -1472,6 +2061,7 @@ mod tests {
             port: "Keystep 37".into(),
             channel: Some(1),
             track: 1,
+            blocks: mpfree_midi::blocks::Blocks::NONE,
         }];
         let v = view(&m.lock().unwrap(), "Keystep 37", 0.0);
         let words: Vec<&str> = v.does.iter().map(|d| d.1.as_str()).collect();
@@ -1485,6 +2075,7 @@ mod tests {
             from: "Keystep 37".into(),
             channel: Some(9),
             to: DIN_NAME.into(),
+            blocks: mpfree_midi::blocks::Blocks::NONE,
         }];
         let v = view(&m.lock().unwrap(), "Keystep 37", 0.0);
         assert_eq!(
