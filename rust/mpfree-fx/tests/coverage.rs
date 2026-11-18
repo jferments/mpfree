@@ -37,6 +37,7 @@ const COVERED: &[&str] = &[
     "mpfree.fx.sample_delay",
     "mpfree.fx.channel_strip",
     "mpfree.fx.granulator",
+    "mpfree.fx.ensemble",
 ];
 
 fn make(id: &str) -> Box<dyn Node> {
@@ -586,7 +587,7 @@ fn the_expander_turns_down_by_its_ratio_under_the_threshold() {
 
 #[test]
 fn gate_listen_plays_the_filtered_key() {
-    // Key HP at 1 kHz: Listen plays the 5 kHz part of the sound, not the
+    // SC low cut at 1 kHz: Listen plays the 5 kHz part of the sound, not the
     // 100 Hz part.
     let x: Vec<f32> = sine(100.0, 24_000)
         .iter()

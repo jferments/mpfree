@@ -44,6 +44,28 @@ Touch a control on the page and the **Modulate** row under the page names it. Th
 - Tap **Learn**, then turn a Q-Link, or move a knob or fader on your keyboard, to give the control a control of its own (see [MIDI Learn](midi-and-cv.md#midi-learn)).
 - Tap **+ LFO** or **+ Follower** to have an LFO or an envelope follower move it. A ring round the knob shows how far it moves. The row opens the control's **mod rows** over the page: drag a row's bar to set how far and which way it moves the control, and tap **x** to take it off. The line under the control's name says what moves it ("LFO 1 · +30 %"); tap it to open the rows again. A touch anywhere else closes them. A switch takes macros only.
 
+### Listening to another track: the sidechain
+
+A **sidechain** lets an effect listen to another track's sound while it works on its own: a compressor on the bass that pumps with the kick, a gate on the pads that opens on the hats, a Ducker that dips the keys under the kick, a Vocoder that speaks with a voice from another track. Four effects can: the **Compressor**, the **Gate**, the **Ducker** and the **Vocoder** (on **Input**).
+
+{{shot: chain-sidechain | The keys' Compressor listening to the kick pad: Sidechain reads Off or Kick, and Kick is lit.}}
+
+Each has one row for it on its page. The Compressor's and the Gate's read **Sidechain: Off | Kick ›**, and the Ducker's **Source: Kick › | Tempo**; the button with **›** names the track it listens to.
+
+- Tap the track's button while it is lit, or while it reads **Pick a track ›**, to open the **sidechain list**.
+- Tap **Off** (on the Ducker, **Tempo**) to have it hear its own sound again. The track stays picked, so a tap on its button switches back to it, to compare the two.
+- On the Vocoder, set **Carrier** to **Input**: its Carrier heading then reads **Voice: Mic ›** (or **Pick a voice ›**), and a tap there opens the list. The track the Vocoder is on is what speaks, and the track picked is the voice.
+
+{{shot: chain-sidechain-list | The sidechain list: Off above the groups, only the groups that can feed a track, and the tracks it can't hear greyed with why.}}
+
+The list shows the strips by group, as the strip list does, with **Off** above them. A strip can only listen to sound that comes earlier in the mix: inputs, pads and tracks can feed anything after them, and a submix can hear lower-numbered submixes. So only the groups that can feed this strip are listed, and a line under them says which can't and why. A strip it can't hear is greyed, with the reason under its name: **this strip**, or **it listens to this one** when the two would wait for each other. Tap a strip to pick it: the effect turns on its sidechain and listens to it. **Back** keeps things as they were.
+
+It listens before the other track's fader and mute, so a muted kick still pumps the bass. The track picked is saved with the project.
+
+If an effect is set to listen and no track is picked (a Ducker just added, or a project whose track is gone), its section says so in red ("Nothing picked: it won't duck") and its row in the chain reads **Nothing picked**, so it never quietly does something else. Adding a Ducker opens the list at once.
+
+The Mix tab's **Effects** look shows the same: **SC from Kick** under an effect that listens to the kick, **Nothing picked** in red, and a tap on that line opens the effect with the list up (see [Every chain at once: Effects](mixing-and-effects.md#every-chain-at-once-effects)).
+
 ### Choosing an effect
 
 **+ FX** on a strip, or **+ Add effect** in the chain editor, opens the list of effects over the chain editor. The line at its top says where the effect will go: which strip, and which slot of its chain.
@@ -56,7 +78,7 @@ Touch a control on the page and the **Modulate** row under the page names it. Th
 
 **Cancel** closes the list without adding anything.
 
-The Pads tab's **Effects** row opens the chain editor on the pad picked, in the Mix tab, and **‹** comes back to the Pads tab (see [Sampling](sampling.md#the-pads-tab-sounds-onto-pads)). The Sample tab's **FX** page shows the pad's effects as pedals, with their switches and first knobs, and its **Whole chain** opens the same chain editor on the pad you are editing, with a switch between the pad's own channel and the Drums track (see [Shaping how a pad plays](shaping-a-pad.md#fx-effects-on-one-pad-or-on-the-whole-kit)).
+The Pads tab's **Effects** row opens the chain editor on the pad picked, in the Mix tab, and **‹** comes back to the Pads tab (see [Sampling](sampling.md#the-pads-tab-sounds-onto-pads)). An effect there plays on that pad alone; one on the kit's track (**Drums** for kit 1) plays on the whole kit (see [Shaping how a pad plays](shaping-a-pad.md#effects-on-one-pad-or-on-the-whole-kit)).
 
 ## MIDI effects: a track's Notes
 
@@ -107,8 +129,8 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 
 | Effect | What it does |
 |---|---|
-| **Compressor** | Evens out levels and adds punch or glue. **Attack** is how long it takes to get most of the way down (63 %, the usual convention) and **Release** how long to come most of the way back. **Style** sets how it moves: **Clean** does exactly what the knobs say; **Opto** eases in and comes back slowly after long, heavy compression, for smooth levelling (vocals, bass); **Bus** comes back quickly after a hit and slower under a steady mix, for glue; **FET** adds a little grit as it turns down, more the harder it works, for drums and aggressive vocals. **Auto makeup** turns it back up by what it takes from a sound at a mix level, so comparing it with bypass is fair (**Makeup** still adds on top). **Range** limits how far it turns down; **Link** at 100 % moves both sides together, lower lets each side follow itself. It can be keyed from another strip, for side-chain pumping. **SC filter** keeps low end (a kick) from pushing it, so a whole mix doesn't pump; **Detect** picks **Peak**, which catches every hit, or **RMS**, which follows the loudness and is smoother on a bus or a vocal. |
-| **Ducker** | The pump: turns the sound down on each kick (keyed from another strip) or on every 1/16, 1/8, 1/4, 1/2, bar, dotted or triplet beat of the tempo, and brings it back on a curve you shape. |
+| **Compressor** | Evens out levels and adds punch or glue. **Attack** is how long it takes to get most of the way down (63 %, the usual convention) and **Release** how long to come most of the way back. **Style** sets how it moves: **Clean** does exactly what the knobs say; **Opto** eases in and comes back slowly after long, heavy compression, for smooth levelling (vocals, bass); **Bus** comes back quickly after a hit and slower under a steady mix, for glue; **FET** adds a little grit as it turns down, more the harder it works, for drums and aggressive vocals. **Auto makeup** turns it back up by what it takes from a sound at a mix level, so comparing it with bypass is fair (**Makeup** still adds on top). **Range** limits how far it turns down; **Link** at 100 % moves both sides together, lower lets each side follow itself. It can listen to another track, for sidechain pumping (**Sidechain** in its Detector section; see [the sidechain](#listening-to-another-track-the-sidechain)). **SC filter** keeps low end (a kick) from pushing it, so a whole mix doesn't pump; **Detect** picks **Peak**, which catches every hit, or **RMS**, which follows the loudness and is smoother on a bus or a vocal. |
+| **Ducker** | The pump: turns the sound down on each kick (it listens to the kick's track) or on every 1/16, 1/8, 1/4, 1/2, bar, dotted or triplet beat of the tempo, and brings it back on a curve you shape. |
 | **Transient shaper** | More or less punch at the start of each hit and more or less ring after it, at any level, with no threshold to set. |
 | **Limiter** | A brick wall: nothing gets past the ceiling. **True peak** also catches the peaks a converter makes between samples; **Auto release** keeps a loud mix from pumping. See [The Limiter](#the-limiter). |
 | **Gate** | Silences (or turns down) what falls under the threshold, so drums stop ringing; as an **Expander** it turns quiet sound down gently instead. It can open from another strip's sound, for rhythmic gating. |
@@ -125,7 +147,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Exciter** | Adds sparkle and air to the top end. |
 | **Crush** | Bit and sample-rate reduction, from a touch of grit to a broken toy. **Bits** and **Rate** are the sound of old samplers and game consoles. **Tails**: **Cut** silences whatever falls under the smallest step, as most crushers do; **Buzz** keeps quiet tails as a buzz instead. **Filters** adds the low-passes an old sampler had before and after its converter (**Before**, **After** or **Both**), for a rounder, darker sound; the vintage presets have them on. **Jitter** wobbles the sampling clock. **Dither** turns the distortion of a few bits into a steady hiss. **Output** sets the crushed sound's level. |
 | **Lo-fi** | Worn tape and dusty vinyl under one **Amount** knob, from a hint of age to a broken machine. **Wow** is slow pitch drift that wanders like a worn tape, not a steady wobble, at about **Rate**; **Stereo** lets the two sides drift apart; **Flutter** is a fast waver; **Saturation** is the tape's soft grit; **Dropouts** are short dips in level where the tape is worn. **Crackle**, **Noise** (hiss) and **Hum** (at your country's **Mains**, 50 or 60 Hz) follow the music while **Follow** is at 100 %: they come in with the sound and fade about a second after it stops, so a stopped track is silent. Turn Follow down for a bed of noise that keeps going. **Low cut**, **High cut** and **Width** set the tone. At Amount 0 it is exactly the sound going in (see [Lo-fi](#lo-fi)). |
-| **Chorus**, **Flanger**, **Phaser** | Movement and width. Each is below. |
+| **Chorus**, **Flanger**, **Phaser** | Movement and width. Each is below. The Chorus has a second mode, **Ensemble**: the shimmer of a 1970s string machine, for pads and strings. |
 | **Tremolo** | Volume (**Volume**) or position (**Auto-pan**) moved in time with the music. **Harmonic** is the swirl of 1960s amps. Every **Shape** is smooth: a Square chops crisply at any speed without a click, and the ramps return in a few milliseconds. Synced, it stays on the beat when a loop starts again or you jump in the song, and changing Shape, Sync or Mode while it plays glides instead of clicking. |
 | **Ring mod** | Bells, clangs and robot voices. **Sine** is the purest; **Triangle** and **Square** are buzzier but stay clean even with a high **Freq**. All three are about as loud, and you can change **Wave** while it plays without a click. |
 | **Rotary** | A spinning organ speaker: switch **Speed** between Slow and Fast and it ramps up or down like the real one, the small horn first and the big drum after, slowing down more gently than it speeds up. **Ramp** is how long the drum takes. The horn's top end swirls the most, and it sounds as loud as the dry signal. |
@@ -147,7 +169,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 
 ### A delay's, reverb's or chorus's Mix
 
-**Mix** sets how much of the echoes, the room or the chorus you hear against the sound going in: 0 is the sound alone and 100 % the effect alone. Every delay and reverb mode, and the Chorus, also has a **Mix curve** in its Output section, a small choice you step with its arrows, for how the two blend in between. Touch it and the hint line at the bottom of the screen says what the choice does.
+**Mix** sets how much of the echoes, the room or the chorus you hear against the sound going in: 0 is the sound alone and 100 % the effect alone. Every delay and reverb mode, and the Chorus and Ensemble, also has a **Mix curve** in its Output section, a small choice you step with its arrows, for how the two blend in between. Touch it and the hint line at the bottom of the screen says what the choice does.
 
 - **Equal** (equal power, the default): the level stays the same as you turn Mix, so the effect comes in without the sound dipping half way.
 - **Dry first**: up to half way, Mix only adds the effect, with the sound going in at full level; from half way the dry sound fades out.
@@ -177,6 +199,19 @@ Projects saved before Shape open on Sine, as they sounded.
 
 > [!NOTE]
 > Choruses saved before this change sound a little different: at the same Mix they are about 3 dB louder (pick **Linear** for the old blend), with three or four voices they are wide, and Depth now means the same swing at every Delay, so a chorus with a long Delay wobbles less than it did and one with a short Delay a little more. The presets keep the swing they had.
+
+### The Ensemble
+
+The Chorus's **Ensemble** mode is the sound that made a 1970s string machine sound like a string section: three copies of the sound (four with **Lines** at 4), each wobbling in pitch in its own way, spread from left to right. Put it on a pad, an organ or the Strings sound.
+
+- Each copy wobbles two ways at once: slowly (**Slow rate**, about two-thirds of a wobble a second) and quickly, like a vibrato (**Fast rate**, about six a second).
+- **Slow depth** and **Fast depth** are how far each wobble bends the pitch, in cents (a hundredth of a semitone), up and down. A depth means the same at any rate: 12 cents is 12 cents however fast it goes.
+- **Width** spreads the copies from left to right. At 0 the sound stays in the middle. It still sounds full when the mix is played in mono.
+- **Tone** takes the top off the copies, as the old machines did: lower is warmer.
+- **Mix** is 100 % by default, all ensemble, as on the old machines. Turn it down to keep some of the sound as it went in.
+- Turning any knob, or switching between 3 and 4 lines, glides, so it doesn't click while you play.
+
+Presets: String machine, Four lines, Slow shimmer, Vibrato strings, Pad widener and Mono ensemble.
 
 ### The Flanger
 
@@ -318,7 +353,7 @@ The Vocoder splits a voice into bands, from low to high, and lets each band's le
 
 It sounds about as loud as the voice going in, and it adds no delay, so you can sing through it live. Changing **Carrier** or **Bands** dips the sound for a moment; every other control glides.
 
-**Input** is the classic vocoder on a synth: the track's own sound is the carrier and the voice comes from another track, as the effect's sidechain key. MPFree can't choose that key yet, except from a project that sets one, so on Input with no key the vocoder is silent and **Voice level** stays at the bottom. The presets all use Saw or Noise, so they work on a voice track as they are.
+**Input** is the classic vocoder on a synth: the track's own sound is the carrier and the voice comes from another track, picked with **Voice: Mic ›** in the Carrier heading (see [the sidechain](#listening-to-another-track-the-sidechain)). On Input with no voice picked it is silent, **Voice level** stays at the bottom, and the section says so in red. The presets all use Saw or Noise, so they work on a voice track as they are.
 
 ### Lo-fi
 
@@ -358,7 +393,7 @@ It holds the sound back 2 ms so it is already turning down when each "s" arrives
 
 **Mode** picks how it turns down. **Gate** shuts all the way to Range. **Expander** turns the sound down gradually under the threshold, by **Ratio**: at 2, a sound 3 dB under the threshold comes out 6 dB under, at most down to Range. It is a gentler clean-up for guitars, vocals and room noise; the Soft cleanup preset uses it.
 
-**Key HP** and **Key LP** filter what it listens to, so a kick's thump or a hi-hat's hiss doesn't open it, and **Key** picks the strip's own sound or another strip's (**Sidechain**), for rhythmic gating. **Listen** plays what it listens to, so you can set the filters by ear.
+What opens it is in its **TRIGGER** section. **Sidechain** picks the strip's own sound (**Off**) or another track's, for rhythmic gating (see [the sidechain](#listening-to-another-track-the-sidechain)). **SC low cut** and **SC high cut** filter what it listens to, so a kick's thump or a hi-hat's hiss doesn't open it. **Listen** plays what it listens to, so you can set the filters by ear.
 
 > [!NOTE]
 > Projects saved before this change sound a little different through the Gate: with Hold under 20 ms it now stays open through low notes (it used to flutter on bass under 100 Hz), it shuts closer to 4 dB under the threshold, and a Range moved while it is shut takes effect. Saved gates stay gates.
@@ -372,7 +407,7 @@ The **Gate**, **Comp** and **EQ** switches fade their stage in or out over 20 ms
 
 ### The Ducker
 
-**Source** picks what makes it duck. On **Sidechain** it listens to another strip (usually the kick) and ducks when that goes over **Threshold**; **Key HP** and **Key LP** filter what it listens to, so with Key LP around 120 Hz it ducks on the kick of a whole drum bus and not on the hats (the Kick from drums preset). On **Tempo** it ducks on every step of **Rate**, from 1/16 to a bar, or a dotted or triplet eighth or quarter, in time with the song, and it is already down when each beat lands: it starts going down **Attack** before the beat. **Nudge** moves the duck up to 20 ms later or earlier, for a kick that sits behind or ahead of the beat.
+**Source** picks what makes it duck: a track (usually the kick; see [the sidechain](#listening-to-another-track-the-sidechain)) or **Tempo**. On a track it ducks when that track goes over **Threshold**; **SC low cut** and **SC high cut** filter what it listens to, so with SC high cut around 120 Hz it ducks on the kick of a whole drum bus and not on the hats (the Kick from drums preset). A Ducker starts on a track, so adding one opens the list to pick it. On **Tempo** it ducks on every step of **Rate**, from 1/16 to a bar, or a dotted or triplet eighth or quarter, in time with the song, and it is already down when each beat lands: it starts going down **Attack** before the beat. **Nudge** moves the duck up to 20 ms later or earlier, for a kick that sits behind or ahead of the beat.
 
 **Depth** is how far it turns down, **Hold** how long it stays there, and **Release** how long it takes to come back, on a curve **Shape** bends from straight to a slow start and fast finish, the classic pump. If the Release is longer than the step, the duck never comes all the way back before the next one, and the drawing shows it as you hear it.
 
@@ -403,7 +438,7 @@ Changing the mode crossfades, so it doesn't click. **Trim** turns the whole mix 
 
 ## Effects with modes
 
-**Reverb**, **Delay**, **Drive**, **Filter** and **Tremolo** each show once in the list of effects, and come in several modes. Hold one (or tap its presets line) to see every mode's presets, with the mode under each name; a preset adds the effect in its mode. A tap adds it in its first mode (a Room, a Digital delay, a Soft drive).
+**Reverb**, **Delay**, **Drive**, **Filter**, **Chorus** and **Tremolo** each show once in the list of effects, and come in several modes. Hold one (or tap its presets line) to see every mode's presets, with the mode under each name; a preset adds the effect in its mode. A tap adds it in its first mode (a Room, a Digital delay, a Soft drive).
 
 In the chain editor the **mode chooser** sits beside the effect's name, with the mode it is in lit: tap a mode to switch to it. Drive has too many to fit, so it shows the one it is in, with **‹** and **›** to step to the mode before or after: tap the mode's name for the list of all ten, and tap one. When you switch:
 

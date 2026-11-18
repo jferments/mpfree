@@ -106,6 +106,10 @@ pub fn song_mixer() -> Mixer {
     m.chain_mut(t(5)).unwrap().push(Box::new(Eq::new()));
     m.chain_mut(t(5)).unwrap().push(Box::new(Delay::new()));
     m.set_now(t(6), mx::MUTE, 1.0);
+    // A Ducker just added on track 8: it listens, with nothing picked yet
+    // (the Effects look says so in red).
+    let ducker = mpfree_fx::registry::make("mpfree.fx.ducker").expect("the Ducker");
+    m.chain_mut(t(7)).unwrap().push(ducker);
     m.set_now(t(8), mx::PAN, 40.0);
     m.set_now(t(8), mx::VOLUME, -6.5);
     m.set_now(t(11), mx::VOLUME, -12.0);

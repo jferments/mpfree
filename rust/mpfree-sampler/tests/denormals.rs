@@ -56,6 +56,7 @@ fn a_filter_ringing_out_on_silence_reaches_exact_zeros() {
                         cutoff_hz,
                         resonance,
                         env_octaves: 0.0,
+                        drive_db: 0.0,
                     };
                     p.set_pad(0, Some(pad), None).unwrap();
                     let mut e = Engine::new(RATE, 4);

@@ -9,14 +9,17 @@
 //!   tempo, and the Start, End and loop markers as tabs to drag. Dragging
 //!   the wave scrolls it, pinching zooms, and a tap plays the pad.
 //! - The **panel** under the wave holds the settings as an instrument's
-//!   controls (Jay, 17 Nov 2026; [`crate::panel`]), in five sections:
-//!   **Mode** (how a hit plays, the loop and its crossfade), **Level**
-//!   (gain, tune, and **Normalize**, which sets the gain so the region's
-//!   loudest frame plays at 0 dBFS: [`WaveAction::Normalize`], the app reads
-//!   the audio), **Fades**, **Warp** (to the project tempo by stretching or
-//!   repitching, from the region's own tempo) and **Options** (reverse, how
-//!   markers snap, channels). The wheel walks them in that order
-//!   ([`Row::ALL`]).
+//!   controls (Jay, 17 Nov 2026; [`crate::panel`]), in three sections:
+//!   **Mode** (how a hit plays, the loop and its crossfade), **Gain and
+//!   fades** (the sound's gain, its fades, and **Normalize**, which sets
+//!   the gain so the region's loudest frame plays at 0 dBFS:
+//!   [`WaveAction::Normalize`], the app reads the audio) and **Options**
+//!   (reverse, how markers snap, channels). [`Row::ALL`] is their order.
+//! - **Sound** beside them (the one Sample page, Jay 18 Nov 2026;
+//!   [`crate::sound_panel`]): how the pad plays its sound, four controls at
+//!   a time (Amp, Filter, Pitch, Movement), each change a
+//!   [`WaveAction::Play`]. Warping is the Warp page's, and the pad's tune
+//!   is Sound's (Pitch), so the page has one Tune.
 //! - **Q-Links 1 to 4** move Start, End, Loop start and Loop end: one pixel
 //!   of the current zoom per detent (so zooming in makes them finer), snapped
 //!   in the direction of the turn; with SHIFT, one frame per detent, never
@@ -36,8 +39,7 @@ use std::sync::Arc;
 
 use mpfree_analysis::{nearest_zero_crossing, previous_zero_crossing};
 use mpfree_sampler::model::{
-    ChannelPick, Fade, Loop, LoopMode, ModelError, PlayMode, Project, Region, SourceId, Warp,
-    WarpMethod, WARP_BPM,
+    ChannelPick, Fade, Loop, LoopMode, ModelError, PlayMode, Project, Region, SourceId, WARP_BPM,
 };
 use mpfree_ui::layout;
 use mpfree_ui::numpad::NumberAsk;
@@ -45,6 +47,8 @@ use mpfree_ui::wave::{Beats, Marker, MarkerKind, Peaks, WaveOverview, WaveView, 
 use mpfree_ui::{Color, EventKind, Rect, Ui, UiEvent};
 
 use crate::panel::{Control, Item, Look, Panel, Section};
+use crate::play_tab::{PlayAction, PlayState};
+use crate::sound_panel::{self, SoundPanel};
 use crate::source::SourceView;
 use crate::widgets::{InfoCard, KnobCard, PadBar, Setting, SettingList};
 
@@ -58,20 +62,21 @@ pub const WHEEL: &str = "smp-wheel";
 
 /// The tab's page: the app's header, the pad bar, the overview with the
 /// zoom card, the waveform across the page, the panel of settings under
-/// it, the Q-Link cards on the right, and the app's hint line.
+/// it with the Sound section on its right, the Q-Link cards on the right,
+/// and the app's hint line.
 pub const LAYOUT: &str = "col(header:60, row(smp-bar:*, smp-send:330):60, \
-                          row(col(row(smp-overview:*, smp-wheel:240):56, smp-wave:*, smp-region:242):*, \
+                          row(col(row(smp-overview:*, smp-wheel:240):56, smp-wave:*, \
+                          row(smp-region:*, smp-sound:340):242):*, \
                           col(smp-q1, smp-q2, smp-q3, smp-q4):128):*, hint:26)";
 
 /// The pad editor's tabs: the editors for the pad picked. The kit's pads
 /// (to pick one and set it up) are the app's own Pads tab since 12 Nov
 /// 2026 ([`crate::pads_tab`]).
-pub const TABS: [&str; 7] = ["Wave", "Warp", "Chop", "Play", "Grain", "FX", "Rec"];
+/// FX left them on 18 Nov 2026 (Jay: a pad's effects are in Mix, which
+/// the Pads tab's Effects row opens).
+pub const TABS: [&str; 6] = ["Wave", "Warp", "Chop", "Play", "Grain", "Rec"];
 /// The tabs built so far; the others are drawn faint.
-pub const BUILT: [&str; 7] = ["Wave", "Warp", "Chop", "Play", "Grain", "FX", "Rec"];
-/// The FX tab's place in [`TABS`]: it opens the app's chain editor on the
-/// pad's channel (no page of the sampler's own).
-pub const FX_TAB: usize = 5;
+pub const BUILT: [&str; 6] = ["Wave", "Warp", "Chop", "Play", "Grain", "Rec"];
 /// The Wave tab's place in [`TABS`].
 pub const TAB: usize = 0;
 
@@ -253,6 +258,9 @@ pub enum WaveAction {
     },
     /// Stop the Process under way; nothing changes.
     StopProcess,
+    /// The Sound section changed the pad ([`crate::sound_panel`]): the
+    /// app applies it as the Play page's.
+    Play(PlayAction),
 }
 
 /// The key a typed Warp tempo comes back with ([`NumberAsk::key`]).
@@ -303,6 +311,7 @@ impl WaveAction {
                     pd.layers[layer].region = region
                 })
             }
+            WaveAction::Play(a) => a.apply(p),
             _ => Ok(()),
         }
     }
@@ -317,9 +326,6 @@ pub enum Row {
     Crossfade,
     Gain,
     Normalize,
-    Tune,
-    Warp,
-    WarpTempo,
     Reverse,
     Channels,
     FadeIn,
@@ -328,17 +334,14 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 13] = [
+    pub const ALL: [Row; 10] = [
         Row::Mode,
         Row::Loop,
         Row::Crossfade,
         Row::Gain,
-        Row::Tune,
-        Row::Normalize,
         Row::FadeIn,
         Row::FadeOut,
-        Row::Warp,
-        Row::WarpTempo,
+        Row::Normalize,
         Row::Reverse,
         Row::Snap,
         Row::Channels,
@@ -351,9 +354,6 @@ impl Row {
             Row::Crossfade => "Crossfade",
             Row::Gain => "Gain",
             Row::Normalize => "Normalize",
-            Row::Tune => "Tune",
-            Row::Warp => "Warp",
-            Row::WarpTempo => "Warp tempo",
             Row::Reverse => "Reverse",
             Row::Channels => "Channels",
             Row::FadeIn => "Fade in",
@@ -393,10 +393,8 @@ pub const NORMALIZE_TEXT: &str = "To 0 dB";
 /// What the Normalize button says on the panel.
 pub const NORMALIZE_BUTTON: &str = "Normalize to 0 dB";
 const LOOPS: [&str; 3] = ["Off", "Forward", "Ping-pong"];
-const WARPS: [&str; 3] = ["Off", "Stretch", "Repitch"];
 /// The Gain row's range, in dB (Normalize keeps to it too).
 pub const GAIN_RANGE_DB: (f32, f32) = (-48.0, 24.0);
-const TUNE_LIMIT_CENTS: i32 = 4800;
 
 pub fn mode_label(m: PlayMode) -> &'static str {
     match m {
@@ -547,6 +545,8 @@ pub struct WaveTab {
     shown: Option<(SourceId, Arc<dyn Peaks>)>,
     /// The waveform's width in pixels (its views are measured in it).
     wave_w: i32,
+    /// The Sound section beside the panel.
+    sound: SoundPanel,
 }
 
 impl WaveTab {
@@ -576,6 +576,7 @@ impl WaveTab {
             );
         }
         ui.add(WHEEL, InfoCard::new("SHIFT + - / + · zoom"));
+        let sound = SoundPanel::add(ui);
         ui.add_page(name, LAYOUT)?;
         let wave = slot(ui, WAVE).ok_or("no waveform slot")?;
         let mut tab = WaveTab {
@@ -587,6 +588,7 @@ impl WaveTab {
             next_gesture: GESTURE_BASE,
             shown: None,
             wave_w: Waveform::wave_rect(wave).w,
+            sound,
         };
         tab.update(ui, st);
         Ok(tab)
@@ -610,19 +612,18 @@ impl WaveTab {
     /// Call it when a finger lifts and when a Q-Link is let go.
     pub fn lift(&mut self) {
         self.gesture = None;
+        self.sound.lift();
     }
 
-    /// A number typed for the field `key` asked for ([`WaveAction::Ask`]):
-    /// the change, as an undo step of its own.
-    pub fn typed(&mut self, st: &WaveState, key: &str, value: f64) -> Option<WaveAction> {
-        let r = match key {
-            TYPED_WARP_TEMPO => with_warp_tempo(st, &st.region, value)?,
-            _ => return None,
-        };
-        self.lift();
-        let out = self.edit(st, Key::Row(Row::WarpTempo), r);
-        self.lift();
-        out
+    /// Shows pad `st` in the Sound section (the app makes it as for the
+    /// Play page; None while it has none).
+    pub fn set_sound(&mut self, ui: &mut Ui, st: Option<PlayState>) {
+        self.sound.update(ui, st);
+    }
+
+    /// The Sound section.
+    pub fn sound(&self) -> &SoundPanel {
+        &self.sound
     }
 
     /// Where the pad's voices are playing, in source frames. Only their
@@ -736,17 +737,13 @@ impl WaveTab {
         let r = &st.region;
         let rows = self.rows(st);
         let controls = self.controls(st);
-        let panel = panel(r);
+        let panel = panel();
         if let Some(list) = ui.get_mut::<SettingList>(REGION) {
             list.right = mode_label(r.mode).to_string();
             list.rows = rows;
             list.controls = controls;
             list.panel = Some(panel);
-            list.typed = if r.warp.is_some() {
-                vec![Row::WarpTempo.index()]
-            } else {
-                Vec::new()
-            };
+            list.typed = Vec::new();
             list.buttons = vec![Row::Normalize.index()];
         }
     }
@@ -795,21 +792,6 @@ impl WaveTab {
                     bipolar: false,
                 }),
                 Row::Normalize => Control::new(Look::Button(NORMALIZE_BUTTON.into())),
-                Row::Tune => Control::new(Look::Knob {
-                    pos: (r.tune_cents + TUNE_LIMIT_CENTS) as f32 / (2 * TUNE_LIMIT_CENTS) as f32,
-                    steps: (2 * TUNE_LIMIT_CENTS / 100) as u32,
-                    bipolar: true,
-                }),
-                Row::Warp => Control::new(Look::Choice {
-                    options: names(&WARPS),
-                    on: match r.warp.as_ref().map(|w| w.method) {
-                        None => 0,
-                        Some(WarpMethod::Stretch) => 1,
-                        Some(WarpMethod::Repitch) => 2,
-                    },
-                    off: Vec::new(),
-                }),
-                Row::WarpTempo => Control::new(Look::Stepper).faint_if(r.warp.is_none()),
                 Row::Reverse => Control::new(Look::Toggle(r.reverse)),
                 Row::Channels => Control::new(Look::Chip).faint_if(st.channels == 1),
                 Row::FadeIn => Control::new(knob(&FADE_MS, u64::from(r.fade_in.frames), false)),
@@ -843,12 +825,6 @@ impl WaveTab {
                     },
                     Row::Gain => format!("{:+.1} dB", r.gain_db).replace("+0.0", "0.0"),
                     Row::Normalize => NORMALIZE_TEXT.into(),
-                    Row::Tune => tune_text(r.tune_cents),
-                    Row::Warp => warp_label(r.warp.as_ref()).into(),
-                    Row::WarpTempo => match &r.warp {
-                        Some(w) => format!("{:.1} BPM", w.bpm),
-                        None => "—".into(),
-                    },
                     Row::Reverse => {
                         if r.reverse {
                             "On".into()
@@ -892,6 +868,11 @@ impl WaveTab {
     /// What a touch on one of the tab's widgets asks for; None for touches
     /// on other widgets, or that only change what the tab shows.
     pub fn action(&mut self, ui: &mut Ui, ev: &UiEvent, st: &WaveState) -> Option<WaveAction> {
+        if ev.widget == sound_panel::SOUND {
+            // The Sound section's own undo steps; the panel's ends.
+            self.gesture = None;
+            return self.sound.action(ui, ev).map(WaveAction::Play);
+        }
         match (ev.widget.as_str(), &ev.kind) {
             (BAR, EventKind::Tab(i)) => Some(WaveAction::Tab(*i)),
             (WAVE, EventKind::Marker { index, frame }) => {
@@ -926,9 +907,6 @@ impl WaveTab {
             }
             (REGION, EventKind::Step { index, delta }) => {
                 self.step(ui, st, *Row::ALL.get(*index)?, *delta)
-            }
-            (REGION, EventKind::Type(index)) if Row::ALL.get(*index) == Some(&Row::WarpTempo) => {
-                warp_tempo_ask(&st.region).map(WaveAction::Ask)
             }
             (REGION, EventKind::Tab(index)) if Row::ALL.get(*index) == Some(&Row::Normalize) => {
                 // A press ends the turn before it: Normalize is a step of
@@ -1127,31 +1105,6 @@ impl WaveTab {
             }
             // A button: pressed, not stepped.
             Row::Normalize => return None,
-            Row::Tune => {
-                r.tune_cents = (r.tune_cents + 100 * d).clamp(-TUNE_LIMIT_CENTS, TUNE_LIMIT_CENTS)
-            }
-            Row::Warp => {
-                // Off, Stretch, Repitch.
-                let states = [None, Some(WarpMethod::Stretch), Some(WarpMethod::Repitch)];
-                let now = states
-                    .iter()
-                    .position(|m| *m == r.warp.as_ref().map(|w| w.method))
-                    .unwrap_or(0) as i32;
-                let next = states[(now + d).rem_euclid(3) as usize];
-                let was = r
-                    .warp
-                    .clone()
-                    .unwrap_or_else(|| Warp::new(region_tempo(st, &r)));
-                r.warp = next.map(|method| Warp { method, ..was });
-            }
-            Row::WarpTempo => {
-                let mut w = r.warp.clone()?;
-                // A BPM at a time, keeping the tenths a detected tempo has;
-                // pins the new tempo leaves no room for go.
-                w.bpm = (w.bpm + d as f32).clamp(*WARP_BPM.start(), *WARP_BPM.end());
-                w.fit(r.start, r.end, st.rate);
-                r.warp = Some(w);
-            }
             // An arrow or the switch: each step turns it over.
             Row::Reverse => r.reverse ^= d % 2 != 0,
             Row::Channels => {
@@ -1193,9 +1146,11 @@ impl WaveTab {
     }
 }
 
-/// The panel: the settings in five sections across the band under the
-/// wave, at the widths of the mockup Jay approved (17 Nov).
-fn panel(r: &Region) -> Panel {
+/// The panel: the settings in three sections across the band under the
+/// wave, left of the Sound section (the one Sample page, 18 Nov; the
+/// widths of the mockup Jay approved on 17 Nov, the Warp section gone to
+/// the Warp page and Options shared out).
+fn panel() -> Panel {
     let it = |k: Row| Item::new(k.index());
     Panel {
         sections: vec![
@@ -1209,17 +1164,13 @@ fn panel(r: &Region) -> Panel {
             )
             .note("how a hit plays"),
             Section::new(
-                "Level",
-                186,
-                vec![vec![it(Row::Gain), it(Row::Tune)], vec![it(Row::Normalize)]],
+                "Gain and fades",
+                234,
+                vec![
+                    vec![it(Row::Gain), it(Row::FadeIn), it(Row::FadeOut)],
+                    vec![it(Row::Normalize)],
+                ],
             ),
-            Section::new("Fades", 156, vec![vec![it(Row::FadeIn), it(Row::FadeOut)]]),
-            Section::new(
-                "Warp",
-                220,
-                vec![vec![it(Row::Warp)], vec![it(Row::WarpTempo).labelled()]],
-            )
-            .note(&warp_label(r.warp.as_ref()).to_lowercase()),
             Section::new(
                 "Options",
                 174,
@@ -1246,14 +1197,6 @@ fn ms_place(list: &[f64], now: u64, rate: u32) -> f32 {
     i as f32 / (list.len().max(2) - 1) as f32
 }
 
-fn warp_label(w: Option<&Warp>) -> &'static str {
-    match w.map(|w| w.method) {
-        None => "Off",
-        Some(WarpMethod::Stretch) => "Stretch",
-        Some(WarpMethod::Repitch) => "Repitch",
-    }
-}
-
 /// The tempo a region turned to warp starts at: the source's detected
 /// tempo, made exact when the region is whole beats of it (within 2 %);
 /// with no tempo detected, whole beats near 120 BPM.
@@ -1276,16 +1219,6 @@ pub fn default_loop(r: &Region) -> Loop {
         end: r.end - q,
         crossfade: 0,
         mode: LoopMode::Forward,
-    }
-}
-
-fn tune_text(cents: i32) -> String {
-    let (st, ct) = (cents / 100, cents % 100);
-    match (st, ct) {
-        (0, 0) => "0 st".into(),
-        (s, 0) => format!("{s:+} st"),
-        (0, c) => format!("{c:+} ct"),
-        (s, c) => format!("{s:+} st {c:+} ct"),
     }
 }
 

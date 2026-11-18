@@ -179,7 +179,7 @@ static PARAMS: [ParamInfo; 13] = [
     },
     p(
         10,
-        "Key HP",
+        "SC low cut",
         "Trigger",
         20.0,
         2000.0,
@@ -189,7 +189,7 @@ static PARAMS: [ParamInfo; 13] = [
     ),
     p(
         11,
-        "Key LP",
+        "SC high cut",
         "Trigger",
         50.0,
         20_000.0,

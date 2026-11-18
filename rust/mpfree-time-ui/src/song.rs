@@ -77,6 +77,12 @@ pub const SONG_BUTTONS: [&str; 6] = [
 /// The buttons along the bottom while an audio region is picked (layout
 /// spec 4c). SHIFT + Undo redoes.
 pub const AUDIO_BUTTONS: [&str; 6] = ["Split", "Erase", "Fades", "Gain", "Takes", "Undo"];
+/// The last two buttons while a tempo point is picked (tempo ramps).
+pub const TEMPO_BUTTONS: [&str; 2] = ["Ramp", "Delete"];
+/// The tempo lane, as the row of [`EventKind::Place`] (a point added, with
+/// index [`NONE`], or point `index` moved to `at`) and of
+/// [`EventKind::Cell`] (point `col` picked).
+pub const TEMPO_ROW: usize = 0x500;
 /// What Tab reports for a tap on section `k`'s name on the ruler: this
 /// plus `k` (fewer than `mpfree_seq::arrange::MAX_MARKERS`, 256).
 pub const SECTION_TAP: usize = 0x200;
@@ -278,6 +284,15 @@ pub struct SongLanes {
     pub section: Option<usize>,
     /// A finger holding a block, its end grip or a section's name.
     pub(crate) grip: Option<Grip>,
+    /// The song's tempo points, in order: tick, tempo and whether it
+    /// glides to the next (tempo ramps). The tempo lane under the ruler
+    /// draws them.
+    pub tempo: Vec<(Tick, f64, bool)>,
+    /// The project's tempo, before the first point.
+    pub tempo_base: f64,
+    /// The tempo point picked (an index into `tempo`), for the wheel and
+    /// Ramp and Delete. The app sets it.
+    pub tempo_pick: Option<usize>,
 }
 
 /// What a finger holds on the Song view, and where in it (song ticks from
@@ -290,6 +305,9 @@ pub(crate) enum Held {
     End { index: usize, dt: Tick },
     /// Section `k`'s name on the ruler.
     Section { k: usize, dt: Tick },
+    /// Tempo point `k`, or the tempo lane where there is none (`None`: a
+    /// tap there adds one).
+    Tempo { k: Option<usize>, dt: Tick },
 }
 
 /// A finger holding something on the Song view.
@@ -322,6 +340,10 @@ const NAME_W: i32 = 96;
 /// The least lane height that shows what a track plays under its name.
 const SOUND_LANE_H: i32 = 34;
 const RULER_H: i32 = 26;
+/// The tempo lane's height, under the ruler.
+const TEMPO_H: i32 = 24;
+/// How near a point a finger picks it up, across.
+const TEMPO_HIT: i32 = 14;
 const TOOLS_H: i32 = 48;
 const LANE_MAX: i32 = 56;
 const GAP: i32 = 6;
@@ -384,12 +406,17 @@ impl Default for SongLanes {
             drag: None,
             section: None,
             grip: None,
+            tempo: Vec::new(),
+            tempo_base: 120.0,
+            tempo_pick: None,
         }
     }
 }
 
 struct Geo {
     ruler: Rect,
+    /// The tempo lane, the name column included.
+    tempo: Rect,
     lanes: Rect,
     /// The height of every lane but the take lanes.
     lane_h: i32,
@@ -548,6 +575,9 @@ impl SongLanes {
             drag: self.drag,
             section: self.section,
             grip: self.grip,
+            tempo: self.tempo.clone(),
+            tempo_base: self.tempo_base,
+            tempo_pick: self.tempo_pick,
         }
     }
 
@@ -625,8 +655,14 @@ impl SongLanes {
             Rect::new(body.x, body.y, body.w, body.h - TOOLS_H - GAP),
             Rect::new(body.x, body.bottom() - TOOLS_H, body.w, TOOLS_H),
         );
-        let (ruler, lanes) = rest.take_top(RULER_H);
-        let lanes = Rect::new(lanes.x, lanes.y + GAP, lanes.w, lanes.h - GAP);
+        let (ruler, below) = rest.take_top(RULER_H);
+        let tempo = Rect::new(below.x, below.y + 2, below.w, TEMPO_H);
+        let lanes = Rect::new(
+            below.x,
+            tempo.bottom() + GAP,
+            below.w,
+            below.h - 2 - TEMPO_H - GAP,
+        );
         // Take lanes keep their height; the others share what is left.
         let takes = self.take_count() as i32;
         let n = (self.lane_count() as i32 - takes).max(1);
@@ -634,6 +670,7 @@ impl SongLanes {
         let lane_h = (room / n).clamp(MIN_LANE.min(lanes.h.max(8)), LANE_MAX);
         Geo {
             ruler,
+            tempo,
             lanes,
             lane_h,
             tools,
@@ -1218,6 +1255,165 @@ impl SongLanes {
             Held::Section { k, .. } => self
                 .section_gap(r, gr)
                 .map(|gap| EventKind::Drop { from: k, to: gap }),
+            Held::Tempo { k: Some(k), .. } if !gr.lifted => Some(EventKind::Cell {
+                row: TEMPO_ROW,
+                col: k,
+            }),
+            Held::Tempo { k: None, .. } if !gr.lifted => Some(EventKind::Place {
+                index: NONE,
+                row: TEMPO_ROW,
+                at: self.tempo_landing(r, gr),
+            }),
+            Held::Tempo { k: Some(k), .. } => {
+                let at = self.tempo_landing(r, gr);
+                (self.tempo.get(k)?.0 != at).then_some(EventKind::Place {
+                    index: k,
+                    row: TEMPO_ROW,
+                    at,
+                })
+            }
+            // A swipe along the empty lane does nothing.
+            Held::Tempo { k: None, .. } => None,
+        }
+    }
+
+    /// Where a held tempo point lands, or where a tap on the tempo lane
+    /// adds one: the nearest bar line, never before bar 1.
+    fn tempo_landing(&self, r: Rect, gr: &Grip) -> Tick {
+        let Held::Tempo { dt, .. } = gr.held else {
+            return 0;
+        };
+        let bar = self.bar.max(1);
+        let t = self.tick_at(self.geo(r).lanes, gr.at.0) - dt;
+        ((t + bar / 2).div_euclid(bar) * bar).max(0)
+    }
+
+    /// The tempo lane where the points go (right of the name column).
+    pub fn tempo_rect(&self, r: Rect) -> Rect {
+        let g = self.geo(r);
+        Rect::new(g.tempo.x + NAME_W, g.tempo.y, g.tempo.w - NAME_W, g.tempo.h)
+    }
+
+    /// The lowest and highest tempo the lane shows: the song's, with room
+    /// around them (10 BPM each way when they are all one).
+    fn tempo_range(&self) -> (f64, f64) {
+        let all = self
+            .tempo
+            .iter()
+            .map(|p| p.1)
+            .chain(std::iter::once(self.tempo_base));
+        let lo = all.clone().fold(f64::INFINITY, f64::min);
+        let hi = all.fold(f64::NEG_INFINITY, f64::max);
+        if hi - lo < 1.0 {
+            (lo - 10.0, hi + 10.0)
+        } else {
+            (lo, hi)
+        }
+    }
+
+    /// The height in the lane of a tempo.
+    fn tempo_y(&self, lane: Rect, bpm: f64) -> f32 {
+        let (lo, hi) = self.tempo_range();
+        let k = ((bpm - lo) / (hi - lo)).clamp(0.0, 1.0) as f32;
+        (lane.bottom() - 5) as f32 - k * (lane.h - 10) as f32
+    }
+
+    /// Tempo point `k`'s dot, if it shows, and the area around it a
+    /// finger picks it up by.
+    pub fn tempo_point_rect(&self, r: Rect, k: usize) -> Option<Rect> {
+        let lane = self.tempo_rect(r);
+        let (at, bpm, _) = *self.tempo.get(k)?;
+        let x = self.x_of(self.geo(r).lanes, at);
+        if x < lane.x || x > lane.right() {
+            return None;
+        }
+        let y = self.tempo_y(lane, bpm).round() as i32;
+        Some(
+            Rect::new(x - TEMPO_HIT, y - TEMPO_HIT, 2 * TEMPO_HIT, 2 * TEMPO_HIT).intersect(
+                Rect::new(lane.x - TEMPO_HIT, lane.y, lane.w + 2 * TEMPO_HIT, lane.h),
+            ),
+        )
+    }
+
+    /// The tempo lane: "Tempo" in the name column, the song's tempo as a
+    /// line across the bars (flat from each point, sloping where it
+    /// ramps), a dot on each point with its tempo beside it, the picked
+    /// one ringed.
+    fn paint_tempo(&self, cx: &mut PaintCx, g: &Geo) {
+        let t = cx.theme.clone();
+        cx.text(
+            FontId::Sans,
+            t.size_small - 2.0,
+            Rect::new(g.tempo.x, g.tempo.y, NAME_W - 8, g.tempo.h),
+            Align::Left,
+            t.text_dim,
+            "Tempo",
+        );
+        let lane = Rect::new(g.tempo.x + NAME_W, g.tempo.y, g.tempo.w - NAME_W, g.tempo.h);
+        cx.canvas
+            .fill_round_rect(lane, 4, t.raised.mix(t.surface, 0.6));
+        let from = self.first_bar * self.bar;
+        let to = from + self.bars.max(1) * self.bar.max(1);
+        // The line: a stretch from each change to the next.
+        let mut pts: Vec<(f32, f32)> = Vec::new();
+        let first = self.tempo.first().map_or(Tick::MAX, |p| p.0);
+        let mut stretches = Vec::with_capacity(self.tempo.len() + 1);
+        if first > 0 {
+            stretches.push((Tick::MIN, first, self.tempo_base, self.tempo_base));
+        }
+        for (i, &(at, bpm, ramp)) in self.tempo.iter().enumerate() {
+            let next = self.tempo.get(i + 1);
+            let end = next.map_or(Tick::MAX, |n| n.0);
+            let goal = match next {
+                Some(n) if ramp => n.1,
+                _ => bpm,
+            };
+            stretches.push((at, end, bpm, goal));
+        }
+        for (a, b, b0, b1) in stretches {
+            let (x0t, x1t) = (a.max(from), b.min(to));
+            if x1t <= x0t {
+                continue;
+            }
+            let at = |tick: Tick| {
+                if b == Tick::MAX || a == Tick::MIN {
+                    b0
+                } else {
+                    b0 + (b1 - b0) * (tick - a) as f64 / (b - a) as f64
+                }
+            };
+            pts.push((self.x_of(g.lanes, x0t) as f32, self.tempo_y(lane, at(x0t))));
+            pts.push((self.x_of(g.lanes, x1t) as f32, self.tempo_y(lane, at(x1t))));
+        }
+        let mut line = mpfree_ui::Shape::new(lane);
+        line.polyline(&pts, 2.0);
+        line.draw(cx.canvas, t.accent2);
+        for (k, &(at, bpm, _)) in self.tempo.iter().enumerate() {
+            let x = self.x_of(g.lanes, at);
+            if x < lane.x || x > lane.right() {
+                continue;
+            }
+            let y = self.tempo_y(lane, bpm);
+            let mut dot = mpfree_ui::Shape::new(lane.inset_xy(-6, 0));
+            dot.disc(x as f32, y, 4.0);
+            dot.draw(cx.canvas, t.text);
+            if self.tempo_pick == Some(k) {
+                let mut ring = mpfree_ui::Shape::new(lane.inset_xy(-10, -2));
+                ring.arc(x as f32, y, 7.0, 0.0, std::f32::consts::TAU, 2.0);
+                ring.draw(cx.canvas, t.accent);
+            }
+            let label = format!("{}", (bpm * 10.0).round() / 10.0);
+            let w = cx.measure(FontId::Bold, t.size_small - 4.0, &label) + 4;
+            let above = y > (lane.y + lane.h / 2) as f32;
+            let ly = if above { lane.y } else { lane.bottom() - 13 };
+            cx.text(
+                FontId::Bold,
+                t.size_small - 4.0,
+                Rect::new(x + 7, ly, w, 13),
+                Align::Left,
+                t.text_dim,
+                &label,
+            );
         }
     }
 
@@ -1327,6 +1523,21 @@ impl SongLanes {
                     let text = self.bars_text(length);
                     self.paint_tag(cx, (l.right() - 60).max(l.x), l.y - 24, &text);
                 }
+            }
+            Held::Tempo { k: None, .. } => {}
+            Held::Tempo { k: Some(k), .. } => {
+                // A line where it lands, and its tempo and bar on a tag.
+                let at = self.tempo_landing(r, gr);
+                let lane = self.tempo_rect(r);
+                let x = self.x_of(g.lanes, at);
+                if x >= lane.x && x <= lane.right() {
+                    let h = g.lanes.bottom() - g.ruler.y;
+                    cx.canvas
+                        .fill_round_rect(Rect::new(x - 1, g.ruler.y, 2, h), 1, t.accent);
+                }
+                let bpm = self.tempo.get(k).map_or(0.0, |p| p.1);
+                let text = format!("{} BPM · bar {}", (bpm * 10.0).round() / 10.0, at / bar + 1);
+                self.paint_tag(cx, x + 6, lane.bottom() + 2, &text);
             }
             Held::Section { k, .. } => {
                 let (Some(a), Some(b)) = (self.edge_tick(k), self.edge_tick(k + 1)) else {
@@ -1579,6 +1790,7 @@ impl Widget for SongLanes {
                 name,
             );
         }
+        self.paint_tempo(cx, &g);
         // A scroll bar at the left edge when the lanes scroll.
         let n = self.lane_count();
         let shown = self.shown(&g);
@@ -1778,9 +1990,14 @@ impl Widget for SongLanes {
         }
         let audio = self.region.is_some();
         let selected = self.selected.is_some();
+        // A tempo point picked: Ramp (lit while it ramps) and Delete.
+        let tempo = self
+            .tempo_pick
+            .and_then(|i| self.tempo.get(i))
+            .filter(|_| !audio);
         for (k, br) in self.button_rects(r).iter().enumerate() {
-            let lit = k == 1 && self.on && !audio;
-            let live = audio || !(k >= 4 && !selected);
+            let lit = (k == 1 && self.on && !audio) || (k == 4 && tempo.is_some_and(|p| p.2));
+            let live = audio || tempo.is_some() || !(k >= 4 && !selected);
             let fill = if lit {
                 t.good
             } else if live {
@@ -1804,6 +2021,8 @@ impl Widget for SongLanes {
                 } else {
                     "Song off"
                 }
+            } else if k >= 4 && tempo.is_some() {
+                TEMPO_BUTTONS[k - 4]
             } else {
                 SONG_BUTTONS[k]
             };
@@ -1828,15 +2047,35 @@ impl Widget for SongLanes {
             .iter()
             .enumerate()
             .map(|(k, b)| {
-                let word = if audio {
-                    AUDIO_BUTTONS[k]
+                let tempo = !audio && k >= 4 && self.tempo_pick.is_some();
+                let (id, word) = if audio {
+                    ("region-button", AUDIO_BUTTONS[k])
+                } else if tempo {
+                    ("tempo-button", TEMPO_BUTTONS[k - 4])
                 } else {
-                    SONG_BUTTONS[k]
+                    ("button", SONG_BUTTONS[k])
                 };
-                let id = if audio { "region-button" } else { "button" };
                 Target::tap(id, k, word, *b)
             })
             .collect();
+        // The tempo lane: each point, and the lane after the last (a tap
+        // there adds one).
+        let lane = self.tempo_rect(r);
+        let mut free = lane;
+        for k in 0..self.tempo.len() {
+            if let Some(p) = self.tempo_point_rect(r, k) {
+                out.push(Target::tap(
+                    "tempo-point",
+                    k,
+                    format!("{:.1} BPM", self.tempo[k].1),
+                    p,
+                ));
+                free = Rect::new(p.right(), lane.y, (lane.right() - p.right()).max(0), lane.h);
+            }
+        }
+        if free.w >= 2 * TEMPO_HIT {
+            out.push(Target::tap("tempo-lane", 0, "Tempo", free));
+        }
         out.push(Target::tap("rec-song", 0, "Rec song", self.rec_rect(r)));
         out.push(Target::tap("list", 0, "List", self.list_rect(r)));
         if let Some(b) = self.add_track_rect(r) {
@@ -2072,6 +2311,21 @@ impl Widget for SongLanes {
             if let Some(b) = self.block(i).filter(|_| e.contains(x, y)) {
                 let dt = self.tick_at(g.lanes, x) - (b.start + b.length);
                 self.grip = Some(Grip::new(Held::End { index: i, dt }, x, y));
+                return None;
+            }
+        }
+        // The tempo lane: a point (nearest first) or the lane itself, held
+        // to tap (on the lift) or drag.
+        if self.tempo_rect(r).inset_xy(-TEMPO_HIT, 0).contains(x, y) {
+            let k = (0..self.tempo.len())
+                .filter(|&k| {
+                    self.tempo_point_rect(r, k)
+                        .is_some_and(|p| p.contains(x, y))
+                })
+                .min_by_key(|&k| (self.x_of(g.lanes, self.tempo[k].0) - x).abs());
+            if k.is_some() || self.tempo_rect(r).contains(x, y) {
+                let dt = k.map_or(0, |k| self.tick_at(g.lanes, x) - self.tempo[k].0);
+                self.grip = Some(Grip::new(Held::Tempo { k, dt }, x, y));
                 return None;
             }
         }
@@ -2335,6 +2589,87 @@ mod tests {
         );
         let t = s.targets(r);
         assert_eq!(t.iter().filter(|t| t.id == "section").count(), 3);
+    }
+
+    /// Tempo ramps: the tempo lane sits under the ruler, above the lanes;
+    /// a tap on it adds a point on the nearest bar, a tap on a point picks
+    /// it, a drag moves it to the bar; a picked point turns the last two
+    /// buttons into Ramp (lit while it ramps) and Delete.
+    #[test]
+    fn the_tempo_lane_adds_picks_and_moves_points() {
+        let mut s = lanes();
+        let bar = 3840;
+        s.tempo_base = 92.0;
+        s.tempo = vec![(4 * bar, 100.0, true), (8 * bar, 140.0, false)];
+        let r = Rect::new(12, 140, 814, 534);
+        let g = s.geo(r);
+        let lane = s.tempo_rect(r);
+        assert!(lane.y >= g.ruler.bottom() && lane.bottom() < g.lanes.y);
+        assert_eq!(
+            (lane.x, lane.right()),
+            (g.lanes.x + NAME_W, g.lanes.right())
+        );
+        let bar_px = f64::from(lane.w) / 16.0;
+        let x_at = |b: f64| lane.x + (b * bar_px).round() as i32;
+        let y = lane.y + lane.h / 2;
+        // A tap a little past bar 13's line: a point on bar 13.
+        s.touch(1, Touch::Down, x_at(12.2), lane.y + 3, r);
+        assert_eq!(
+            s.touch(1, Touch::Up, x_at(12.2), lane.y + 3, r),
+            Some(EventKind::Place {
+                index: NONE,
+                row: TEMPO_ROW,
+                at: 12 * bar
+            })
+        );
+        // A tap on the second point picks it.
+        let p = s.tempo_point_rect(r, 1).unwrap();
+        assert!(p.contains(x_at(8.0), p.y + p.h / 2));
+        s.touch(1, Touch::Down, x_at(8.0) + 3, p.y + p.h / 2, r);
+        assert_eq!(
+            s.touch(1, Touch::Up, x_at(8.0) + 3, p.y + p.h / 2, r),
+            Some(EventKind::Cell {
+                row: TEMPO_ROW,
+                col: 1
+            })
+        );
+        // Dragged two bars on: it lands on bar 11.
+        s.touch(1, Touch::Down, x_at(8.0), p.y + p.h / 2, r);
+        s.touch(1, Touch::Move, x_at(10.1), y, r);
+        assert_eq!(
+            s.touch(1, Touch::Up, x_at(10.1), y, r),
+            Some(EventKind::Place {
+                index: 1,
+                row: TEMPO_ROW,
+                at: 10 * bar
+            })
+        );
+        // Dragged and brought back: nothing.
+        s.touch(1, Touch::Down, x_at(8.0), p.y + p.h / 2, r);
+        s.touch(1, Touch::Move, x_at(9.5), y, r);
+        s.touch(1, Touch::Move, x_at(8.1), y, r);
+        assert_eq!(s.touch(1, Touch::Up, x_at(8.1), y, r), None);
+        // The faster point sits higher in the lane than the slower one.
+        let (p0, p1) = (s.tempo_point_rect(r, 0).unwrap(), p);
+        assert!(p1.y < p0.y);
+        // Picked: it paints, with Ramp and Delete in the bottom row.
+        s.tempo_pick = Some(0);
+        let mut ui = mpfree_ui::Ui::new(
+            mpfree_ui::Theme::dark(),
+            mpfree_ui::Fonts::embedded(),
+            1280,
+            800,
+        );
+        ui.add("song", s.clone());
+        ui.add_page("p", "song").unwrap();
+        ui.show("p").unwrap();
+        let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
+        assert!(!ui.paint(&mut c).is_empty());
+        let b = s.button_rects(r);
+        assert_eq!(
+            s.touch(1, Touch::Down, b[4].x + 3, b[4].y + 3, r),
+            Some(EventKind::Tab(4))
+        );
     }
 
     fn audio_lane(track: usize, name: &str, blocks: Vec<AudioBlock>) -> AudioLane {

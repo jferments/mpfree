@@ -427,7 +427,14 @@ pub static PLANS: &[Plan] = &[
                         "trigger",
                         "Trigger",
                         Shape,
-                        &["Source", "Rate", "Threshold", "Nudge", "Key HP", "Key LP"],
+                        &[
+                            "Source",
+                            "Rate",
+                            "Threshold",
+                            "Nudge",
+                            "SC low cut",
+                            "SC high cut",
+                        ],
                     )
                 },
                 s("output", "Output", Voice, &["Mix"]),
@@ -435,7 +442,7 @@ pub static PLANS: &[Plan] = &[
         )],
         dims: &[
             Dim {
-                controls: &["Threshold", "Key HP", "Key LP"],
+                controls: &["Threshold", "SC low cut", "SC high cut"],
                 by: "Source",
                 when: When::Is(&[1.0]),
                 reason: "Tempo ducks on the beat",
@@ -513,9 +520,14 @@ pub static PLANS: &[Plan] = &[
                     )
                 },
                 Section {
-                    rows: &["Key", "Listen"],
+                    rows: &["Sidechain", "Listen"],
                     note: Some("what opens it"),
-                    ..s("key", "Key", Tone, &["Key", "Key HP", "Key LP", "Listen"])
+                    ..s(
+                        "key",
+                        "Trigger",
+                        Tone,
+                        &["Sidechain", "SC low cut", "SC high cut", "Listen"],
+                    )
                 },
             ],
         )],
@@ -1146,6 +1158,36 @@ pub static PLANS: &[Plan] = &[
             ],
         )],
         dims: &[sync_dim(&["Rate"], "Sync")],
+    },
+    Plan {
+        id: "mpfree.fx.ensemble",
+        qlinks: &["Slow depth", "Fast depth", "Tone", "Mix"],
+        pages: &[page(
+            "row(lfo:520, col(lines:252, row(tone, output)))",
+            &[
+                Section {
+                    hero: &["Slow depth", "Fast depth"],
+                    drawings: &["Sweep"],
+                    note: Some("depth is how far each wobble bends the pitch"),
+                    ..s(
+                        "lfo",
+                        "Movement",
+                        Motion,
+                        &["Slow depth", "Slow rate", "Fast depth", "Fast rate"],
+                    )
+                },
+                Section {
+                    rows: &["Lines"],
+                    ..s("lines", "Lines", Source, &["Lines", "Width"])
+                },
+                s("tone", "Tone", Tone, &["Tone"]),
+                Section {
+                    trim: &["Mix curve"],
+                    ..s("output", "Output", Voice, &["Mix", "Mix curve"])
+                },
+            ],
+        )],
+        dims: &[],
     },
     Plan {
         id: "mpfree.fx.flanger",

@@ -50,6 +50,7 @@ fn kit_with(cutoff: f32, level: f32) -> Project {
                 cutoff_hz: cutoff,
                 resonance: 0.3,
                 env_octaves: 0.0,
+                drive_db: 0.0,
             };
             pad.level_db = level;
             pad.pan = 0.2;

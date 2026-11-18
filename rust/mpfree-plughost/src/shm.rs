@@ -30,6 +30,9 @@ pub const EV_RESET: u32 = 7;
 /// A per-note expression: `a` the note, `b` the kind (0 slide, 1 tone, 2
 /// release velocity), `value` its value.
 pub const EV_EXPRESSION: u32 = 8;
+/// A controller for the whole instrument: `a` its MIDI controller number
+/// (`mpfree_node::Ctl::cc`), `value` 0 to 1.
+pub const EV_CONTROL: u32 = 9;
 
 /// One event, flattened.
 #[repr(C)]

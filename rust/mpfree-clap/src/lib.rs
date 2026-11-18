@@ -57,7 +57,7 @@ pub mod sys;
 pub mod testplug;
 
 use mpfree_node::{
-    Ctx, Curve, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Unit, MAX_BLOCK,
+    Ctl, Ctx, Curve, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Unit, MAX_BLOCK,
 };
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr, CString};
@@ -1480,6 +1480,21 @@ impl ClapNode {
                         }
                     }
                 }
+            }
+            NodeEvent::Control { ctl, value } if notes && self.midi => {
+                let Some(v) = Ctl::clamp(value) else {
+                    return;
+                };
+                let midi = clap_event_midi {
+                    header: Self::header(
+                        CLAP_EVENT_MIDI,
+                        std::mem::size_of::<clap_event_midi>(),
+                        time,
+                    ),
+                    port_index: 0,
+                    data: [0xB0, ctl.cc(), (v * 127.0).round() as u8],
+                };
+                self.push_ev(EvSlot { midi });
             }
             NodeEvent::AllOff if notes => {
                 for k in 0..128u8 {

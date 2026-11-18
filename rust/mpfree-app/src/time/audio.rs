@@ -18,7 +18,7 @@ use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::mpfree_moves::{Input, Kind};
 use mpfree_seq::{TouchPoint, MAX_TRACKS};
 use mpfree_time_ui::view::TransportInfo;
-use mpfree_transport::time::Tick;
+use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, Mark, State, Transport};
 
 use super::follow::{Follow, FollowCounts, Follower};
@@ -112,6 +112,11 @@ pub struct TimeAudio {
     /// run: [`TimeAudio::follow_tempo`] compares the app's tempo with it,
     /// so it doesn't ask again for what is on its way.
     tempo_asked: Option<(u64, f64)>,
+    /// The song's tempo map (song mode with tempo points: the view's),
+    /// queued and not in the transport yet, so
+    /// [`TimeAudio::follow_tempo`] doesn't queue it again. A tempo queued
+    /// after it replaces it, so that forgets it.
+    map_asked: Option<TempoMap>,
     /// Starts on a note refused ([`TimeAudio::start_at`]).
     starts_refused: u64,
 }
@@ -174,6 +179,7 @@ impl TimeAudio {
             missed: 0,
             asked: false,
             tempo_asked: None,
+            map_asked: None,
             starts_refused: 0,
         }
     }
@@ -357,6 +363,7 @@ impl TimeAudio {
         let at = self.transport.frame();
         if let Command::SetTempo(bpm) = cmd {
             self.tempo_asked = Some((at, bpm));
+            self.map_asked = None;
         }
         self.transport.command(at, cmd)
     }
@@ -374,21 +381,52 @@ impl TimeAudio {
         let at = at.max(self.transport.frame());
         if let Command::SetTempo(bpm) = cmd {
             self.tempo_asked = Some((at, bpm));
+            self.map_asked = None;
         }
         self.transport.command(at, cmd)
     }
 
-    /// The app's tempo, unless the transport follows another device's
-    /// clock that is arriving. A tempo asked for and not applied yet
-    /// counts as the transport's.
+    /// The app's tempo `bpm`, unless the transport follows another
+    /// device's clock that is arriving. While song mode plays the song's
+    /// tempo points, the song's tempo map instead (the view's, which has
+    /// the app's tempo before the first point): it takes over as a live
+    /// tempo does, on the next 1/16 while rolling. Once song mode stops
+    /// playing them, the app's tempo throughout again. A tempo or map
+    /// asked for and not applied yet counts as the transport's.
     pub fn follow_tempo(&mut self, bpm: f64) {
         if self.follower.bpm().is_some() {
+            // The follower's tempo replaces a map waiting.
+            self.map_asked = None;
+            return;
+        }
+        if let Some(&map) = self.view.tempo_map() {
+            let have = self
+                .map_asked
+                .as_ref()
+                .unwrap_or(self.transport.tempo_map());
+            if *have != map {
+                if self.transport.change_tempo_map(self.transport.frame(), map) {
+                    self.map_asked = Some(map);
+                    self.tempo_asked = None;
+                } else {
+                    self.refused += 1;
+                }
+            }
             return;
         }
         let now = self.tempo_asked.map_or(self.transport.bpm(), |(_, b)| b);
-        if (now - bpm).abs() > 1e-9 {
+        // A song's map still in the transport, or on its way, goes too.
+        let flat = self.tempo_asked.is_some()
+            || (self.map_asked.is_none() && self.transport.tempo_map().segments().len() == 1);
+        if (now - bpm).abs() > 1e-9 || !flat {
             self.command(Command::SetTempo(bpm));
         }
+    }
+
+    /// Song mode plays the song's tempo points (the view carries their
+    /// map).
+    pub fn song_tempo(&self) -> bool {
+        self.view.tempo_map().is_some()
     }
 
     /// Start the song on frame `at` of the transport's clock (the next
@@ -412,6 +450,8 @@ impl TimeAudio {
         bpm: Option<f64>,
         take: Option<bool>,
     ) -> Result<(), &'static str> {
+        // While song mode plays the song's tempo points, they lead.
+        let bpm = bpm.filter(|_| !self.song_tempo());
         if let Some(why) = self.start_refusal(bpm, take) {
             self.starts_refused += 1;
             if why == QUEUE_FULL {
@@ -427,6 +467,7 @@ impl TimeAudio {
         }
         if let Some(bpm) = bpm {
             self.tempo_asked = Some((at, bpm));
+            self.map_asked = None;
             sent &= self.transport.command(at, Command::SetTempo(bpm));
         }
         if take.is_some_and(|add| add != self.transport.overdub()) {
@@ -449,6 +490,7 @@ impl TimeAudio {
     /// Why [`TimeAudio::start_at`] would refuse a start with this tempo
     /// and take now, or None. Changes nothing and counts nothing.
     pub fn start_refusal(&self, bpm: Option<f64>, take: Option<bool>) -> Option<&'static str> {
+        let bpm = bpm.filter(|_| !self.song_tempo());
         let why = match self.transport.state() {
             _ if self.follower.bpm().is_some() => Some("the song follows another device's clock"),
             _ if self.follower.waits() => Some("PLAY waits for the leader's Start"),
@@ -658,6 +700,10 @@ impl TimeAudio {
                 && ((self.transport.bpm() - bpm).abs() <= 1e-9 || !self.transport.state().rolling())
         }) {
             self.tempo_asked = None;
+        }
+        // The song's map is in once the transport has it.
+        if self.map_asked.as_ref() == Some(self.transport.tempo_map()) {
+            self.map_asked = None;
         }
         ok
     }

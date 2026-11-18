@@ -142,11 +142,6 @@ impl PadChannels {
         })
     }
 
-    /// A channel is free to lend.
-    pub fn spare(&self) -> bool {
-        self.holder.iter().any(Option::is_none)
-    }
-
     /// Lends kit `kit`'s pad `pad` a channel: the one it has, or the first
     /// free one (true: new). None when all are lent.
     fn lend(&mut self, kit: usize, pad: usize) -> Option<(StripId, bool)> {
@@ -947,9 +942,13 @@ impl MixHost {
                         }
                     }
                 }
-                for &(st, slot, k) in &load.keys {
-                    self.mixer.set_key(st, slot, Some(k));
-                }
+                // A sidechain the mixer refuses is counted and said: the
+                // effect then says "Nothing picked" in red, if it listens.
+                let lost = load
+                    .keys
+                    .iter()
+                    .filter(|&&(st, slot, k)| !self.mixer.set_key(st, slot, Some(k)))
+                    .count();
                 // The pads the project lent channels to.
                 self.pad_channels.clear();
                 for &(st, kit, pad) in &load.lent {
@@ -974,6 +973,9 @@ impl MixHost {
                 let mut line = format!("mixer: the project's mixer is in ({effects} effects)");
                 if skipped > 0 {
                     line += &format!("; {skipped} mod lines skipped");
+                }
+                if lost > 0 {
+                    line += &format!("; {lost} sidechains not restored");
                 }
                 return Some(line);
             }
@@ -1610,8 +1612,8 @@ impl MixHost {
     }
 
     /// Gives back every lent channel that is plain again: no effects, and
-    /// every control but its output at its default. Called when the pedals
-    /// or the chain editor let a pad go, and before a save.
+    /// every control but its output at its default. Called when the chain
+    /// editor lets a pad go, and before a save.
     pub fn give_back_plain(&mut self) {
         for i in 0..LENT {
             let s = StripId::Pad(PADS + i);
@@ -1873,6 +1875,7 @@ impl MixHost {
             // The insert pages come with the FX pages; the look is the
             // screen's.
             MixAction::OpenInsert { .. }
+            | MixAction::OpenSidechain { .. }
             | MixAction::AddInsert { .. }
             | MixAction::PickInsert { .. }
             | MixAction::MoveInsert { .. }
@@ -2376,7 +2379,6 @@ mod tests {
         for pad in 0..LENT {
             assert!(h.lend_pad(2, pad).is_some());
         }
-        assert!(!h.pad_channels.spare());
         assert_eq!(h.lend_pad(2, LENT), None);
     }
 

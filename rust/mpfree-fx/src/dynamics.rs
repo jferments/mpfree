@@ -238,7 +238,9 @@ pub mod gate {
 
 const GATE_MODES: &[&str] = &["Gate", "Expander"];
 
-const KEYS: &[&str] = &["Self", "Sidechain"];
+/// The Sidechain switch's values: its own sound, or the strip the mixer
+/// feeds it (`crate::sidechain`).
+const KEYS: &[&str] = &["Off", "On"];
 const GATE_AHEAD_MS: f32 = 1.0;
 /// The gate shuts this far under the threshold it opens at, so a level
 /// hovering at the threshold doesn't chatter.
@@ -265,11 +267,20 @@ static GATE_PARAMS: [ParamInfo; 12] = [
     param(2, "Attack", "Gate", 0.1, 50.0, 0.5, Ms, Log),
     param(3, "Hold", "Gate", 0.0, 500.0, 30.0, Ms, Linear),
     param(4, "Release", "Gate", 5.0, 2000.0, 120.0, Ms, Log),
-    param(5, "Key HP", "Key", 20.0, 2000.0, 20.0, Hz, Log),
-    param(6, "Key LP", "Key", 500.0, 20_000.0, 20_000.0, Hz, Log),
-    param(7, "Key", "Key", 0.0, 1.0, 0.0, NONE, Choice(KEYS)),
+    param(5, "SC low cut", "Trigger", 20.0, 2000.0, 20.0, Hz, Log),
+    param(
+        6,
+        "SC high cut",
+        "Trigger",
+        500.0,
+        20_000.0,
+        20_000.0,
+        Hz,
+        Log,
+    ),
+    param(7, "Sidechain", "Trigger", 0.0, 1.0, 0.0, NONE, Choice(KEYS)),
     meter(8, "Gain", "Gate", -80.0, 0.0, Db),
-    param(9, "Listen", "Key", 0.0, 1.0, 0.0, NONE, Toggle),
+    param(9, "Listen", "Trigger", 0.0, 1.0, 0.0, NONE, Toggle),
     param(10, "Mode", "Gate", 0.0, 1.0, 0.0, NONE, Choice(GATE_MODES)),
     param(11, "Ratio", "Gate", 1.2, 10.0, 2.0, NONE, Log),
 ];

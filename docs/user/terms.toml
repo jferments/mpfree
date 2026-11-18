@@ -17,9 +17,14 @@
 "Prefs tab" = "Prefs (SHIFT + MENU; it is not a tab)"
 "mixer icon" = "the Mix tab (the sliders icon is gone, 2026-11-14)"
 "MPCFree" = "MPFree"
+"FX page" = "the Pads tab's Effects row (the Sample tab's FX page went with the one Sample page, 2026-11-18)"
+"Loop view" = "Play's loop row (the Loop view went in the looper redesign's step 5, 2026-11-18)"
+"loop strip" = "the loop row (Play's, since the looper redesign's step 5, 2026-11-18)"
+"Key HP" = "SC low cut (renamed 2026-11-18)"
+"Key LP" = "SC high cut (renamed 2026-11-18)"
 
 [names]
 tabs = ["Play", "Pads", "Arrange", "Synth", "Looper", "Sample", "Mix", "Dev"]
-play_views = ["All", "Beats", "Loop"]
-sample_pages = ["Pads", "Wave", "Chop", "Play", "Grain", "FX"]
+play_views = ["All"]
+sample_pages = ["Wave", "Warp", "Chop", "Play", "Grain", "Rec"]
 overlays = ["Prefs", "the Arp panel", "the button guide", "the browser", "the list of kits"]

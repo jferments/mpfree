@@ -1404,7 +1404,7 @@ pub(super) fn ducker(r: &mut Report) {
         );
     }
 
-    // U3: a drum key through Key LP at 120 Hz: the hats alone don't duck
+    // U3: a drum key through SC high cut at 120 Hz: the hats alone don't duck
     // the tone, and each kick still takes it down by Depth.
     {
         let n0 = 4 * rate as usize;

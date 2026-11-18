@@ -31,7 +31,7 @@ use mpfree_seq::{
     touch_fits, Clip, ClipProgram, DestId, Direction, LaunchGrid, Lock, ModelError, Note, Project,
     Quantise, Source, Speed, Touch, TouchPoint, MAX_LOCKS, MAX_NOTES, MAX_TRACKS, SLOTS,
 };
-use mpfree_transport::time::{Swing, Tick};
+use mpfree_transport::time::{Swing, TempoMap, Tick};
 
 use crate::recorded::{Includes, Rec};
 
@@ -494,12 +494,26 @@ pub struct PlayView {
     pub(crate) song_lanes: Option<ClipView>,
     /// What it includes, when its host says ([`PlayView::set_includes`]).
     pub(crate) includes: Option<Includes>,
+    /// The song's tempo map while song mode plays its tempo points
+    /// ([`PlayView::set_tempo_map`]), for the host's transport.
+    pub(crate) tempo: Option<TempoMap>,
 }
 
 impl PartialEq for PlayView {
     fn eq(&self, other: &Self) -> bool {
-        (&self.tracks, self.armed, self.song, &self.song_lanes)
-            == (&other.tracks, other.armed, other.song, &other.song_lanes)
+        (
+            &self.tracks,
+            self.armed,
+            self.song,
+            &self.song_lanes,
+            &self.tempo,
+        ) == (
+            &other.tracks,
+            other.armed,
+            other.song,
+            &other.song_lanes,
+            &other.tempo,
+        )
     }
 }
 
@@ -571,7 +585,22 @@ impl PlayView {
             song: false,
             song_lanes: None,
             includes: None,
+            tempo: None,
         })
+    }
+
+    /// The tempo map the song plays (song mode with tempo points, made by
+    /// `mpfree_seq::arrange::Arrangement::tempo_map` with the project's
+    /// tempo), or None for the project's tempo throughout. The view only
+    /// carries it, so it reaches the audio thread with the song it goes
+    /// with; the host hands it to the transport
+    /// (`Transport::change_tempo_map`).
+    pub fn set_tempo_map(&mut self, map: Option<TempoMap>) {
+        self.tempo = map;
+    }
+
+    pub fn tempo_map(&self) -> Option<&TempoMap> {
+        self.tempo.as_ref()
     }
 
     /// Song mode on (the arrangement's placements compiled in: a track

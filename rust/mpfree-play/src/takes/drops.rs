@@ -319,6 +319,7 @@ fn relink(
         lanes: song.lanes.clone(),
         morphs: song.morphs.clone(),
         list: song.list.clone(),
+        tempo: song.tempo.clone(),
     };
     for p in &song.placements {
         let mut q = p.clone();

@@ -35,6 +35,7 @@
 #![forbid(unsafe_code)]
 
 pub mod held;
+pub mod pedal;
 pub mod pressure;
 
 pub use held::{Held, HeldStep, HELD_VALUES};
@@ -87,6 +88,80 @@ pub enum NodeEvent {
         id: u16,
         value: f32,
     },
+    /// A controller for the whole instrument (a pedal, the mod wheel,
+    /// breath), 0 to 1: see [`Ctl`]. A node that doesn't use one ignores
+    /// it; for the pedals the host holds the notes itself when the node
+    /// doesn't hear them ([`Node::hears`], [`pedal::Pedals`]).
+    Control {
+        ctl: Ctl,
+        value: f32,
+    },
+}
+
+/// What a [`NodeEvent::Control`] moves. Values are 0 to 1 (out of range
+/// is clamped, not a number ignored); a pedal is down from 0.5 up, as a
+/// MIDI controller is from 64.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ctl {
+    /// The sustain (damper) pedal, MIDI CC 64: a note let go while it is
+    /// down sounds on until it comes up.
+    Sustain,
+    /// The sostenuto pedal, CC 66: the notes down when it goes down sound
+    /// on until it comes up; notes played after it are not held.
+    Sostenuto,
+    /// The soft pedal, CC 67.
+    Soft,
+    /// The mod wheel, CC 1.
+    ModWheel,
+    /// A breath controller, CC 2.
+    Breath,
+    /// A foot controller (expression pedal), CC 11.
+    Foot,
+}
+
+impl Ctl {
+    /// Every controller, in the order above.
+    pub const ALL: [Ctl; 6] = [
+        Ctl::Sustain,
+        Ctl::Sostenuto,
+        Ctl::Soft,
+        Ctl::ModWheel,
+        Ctl::Breath,
+        Ctl::Foot,
+    ];
+
+    /// The MIDI controller number that sends it.
+    pub fn cc(self) -> u8 {
+        match self {
+            Ctl::Sustain => 64,
+            Ctl::Sostenuto => 66,
+            Ctl::Soft => 67,
+            Ctl::ModWheel => 1,
+            Ctl::Breath => 2,
+            Ctl::Foot => 11,
+        }
+    }
+
+    /// The controller a MIDI controller number sends, if it is one of
+    /// these.
+    pub fn from_cc(cc: u8) -> Option<Ctl> {
+        Ctl::ALL.into_iter().find(|c| c.cc() == cc)
+    }
+
+    /// Whether it is a pedal (down or up, not a position).
+    pub fn is_pedal(self) -> bool {
+        matches!(self, Ctl::Sustain | Ctl::Sostenuto | Ctl::Soft)
+    }
+
+    /// `value` clamped to 0 to 1, or `None` for not a number.
+    pub fn clamp(value: f32) -> Option<f32> {
+        (!value.is_nan()).then(|| value.clamp(0.0, 1.0))
+    }
+
+    /// Whether a pedal at `value` is down (0.5 and up).
+    pub fn down(value: f32) -> bool {
+        value >= 0.5
+    }
 }
 
 /// What a [`NodeEvent::Expression`] moves. Values out of range are
@@ -414,6 +489,14 @@ pub trait Node: Send {
     /// again (a plugin's file name). The default: none.
     fn save_extras(&self) -> Vec<(String, String)> {
         Vec::new()
+    }
+    /// Whether the node handles controller `ctl` itself. For the pedals
+    /// it decides who holds the notes: a node that says no gets its
+    /// note-offs held by the host while the pedal is down
+    /// ([`pedal::Pedals`]), so every instrument sustains. The default: no.
+    fn hears(&self, ctl: Ctl) -> bool {
+        let _ = ctl;
+        false
     }
     /// Voices sounding or fading now, for the host's counts and its load
     /// shedding. Effects and anything without voices keep the default, 0.
