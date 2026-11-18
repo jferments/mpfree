@@ -276,7 +276,11 @@ Tap a row, or turn the data wheel, to pick it. The card under the list sets it:
 - **Learn again**: the next control you move takes this one's place, with the same range, takeover and **Kept in**. The banner at the top says what it waits for; **Cancel** stops it and keeps the old control.
 - **Remove** takes the control off.
 
-Learned controls kept in **Project** are saved with the song; those kept in **Rig** stay when you open another project and come back at the next start (with a data folder on the stick). Still to come: learning the values on the Play page, the Pads and Sample tabs, the arpeggiator and a plugin's own page; and recording a learned synth knob's moves into a clip.
+Learned controls kept in **Project** are saved with the song; those kept in **Rig** stay when you open another project and come back at the next start (with a data folder on the stick). Still to come: learning Swing, the filters and the XY pad on the Play page.
+
+### Recording a learned control
+
+While you record, a learned control that turns something on the armed track (a synth's knob, a pad's own setting, the track's fader, pan or sends, an effect on the track, a MIDI effect's setting) records into the clip as if you turned that knob on the screen: each move becomes a lock on the note you are playing, or on the nearest step ([Knob moves while you record](clips.md#knob-moves-while-you-record)). The arpeggiator's settings, the tempo, the transport, the looper and the macros only move; they don't record.
 
 ### Playing and stopping from your controller
 
