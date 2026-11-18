@@ -678,10 +678,7 @@ mod looper {
         on_big_stack(|| {
             let mut s = Session::new();
             let mut set = PerformSet::default();
-            set.pages[1].pads[7] = PadAction::Throw(Throw {
-                index: 7,
-                hold: Hold::Latch,
-            });
+            set.pages[1].pads[7] = PadAction::Throw(Throw::new(7, Hold::Latch));
             set.pages[2].pads[0] = PadAction::Mute(0);
             set.pages[2].pads[4] = PadAction::Scene(0);
             // Only the screen's copy: nothing played to let go.
