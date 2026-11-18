@@ -147,6 +147,42 @@ mod tests {
     /// scenes' follow actions, each section with its own tracks (the Perc
     /// track sits the Break out by the scene's mutes), and the Outro stops
     /// it.
+    /// Other gear drives the song (the Sync section's MMC in and Program
+    /// change in): MMC Locate moves the playhead while stopped, a program
+    /// change launches its scene and MMC Play plays it, and MMC Stop
+    /// stops.
+    #[test]
+    fn other_gears_program_change_and_mmc_play_a_scene() {
+        use mpfree_midi::setup::ProgramIn;
+        on_big_stack(|| {
+            let song = songs::night_market();
+            let mut l = lab("night-mmc");
+            let s = &mut l.s;
+            open(s, song.name);
+            s.midi_in_setup(true, ProgramIn::Scene);
+            // Locate to 1 s (25 fps): where the song is a second in.
+            s.midi_from_gear(&[
+                0xF0, 0x7F, 0x7F, 0x06, 0x44, 0x06, 0x01, 0x20, 0, 1, 0, 0, 0xF7,
+            ]);
+            let want = s.time.tempo_map().tick_after(0.0, 44_100.0, 44_100).round() as Tick;
+            assert_eq!(s.time.info().position, want);
+            s.midi_from_gear(&[0xF0, 0x7F, 0x7F, 0x06, 0x01, 0xF7]);
+            let verse = song.scene("Verse");
+            let from = s.t();
+            s.midi_from_gear(&[0xC0, verse as u8]);
+            s.midi_from_gear(&[0xF0, 0x7F, 0x7F, 0x06, 0x02, 0xF7]);
+            assert!(s.time.info().state.rolling());
+            s.run_for(4.0 * bar(&song));
+            let t0 = first_note_after(s, from);
+            assert_eq!(
+                section(s, &song, t0, 0.0, 4.0),
+                set(&["Drums", "Perc", "Bass"])
+            );
+            s.midi_from_gear(&[0xF0, 0x7F, 0x7F, 0x06, 0x01, 0xF7]);
+            assert!(!s.time.info().state.rolling());
+        });
+    }
+
     #[test]
     fn night_market_plays_its_five_sections_by_follow_actions() {
         on_big_stack(|| {

@@ -7113,6 +7113,9 @@ fn player_session(
                 fx.extend(desk::perform_pad_up(&mut app, action));
             }
         }
+        // Other gear's MMC and program changes (the Sync section's MMC in
+        // and Program change in).
+        fx.extend(desk::remote_in(&mut music, &time, &mut app, out));
         for l in music.learning() {
             match l {
                 midi_in::Learning::Took { .. } if panels.learning() => {
