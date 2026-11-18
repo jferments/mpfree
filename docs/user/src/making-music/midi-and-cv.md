@@ -290,7 +290,14 @@ A pad, key or button on your controller can do what a tap on the Clips grid does
 
 Launches land where a tap's would: on the next **Launch** line (the Record tab's, or the clip's own). While MIDI Learn waits, the line under the screen says what for, then what the control launches; SHIFT and the same tap again cancels. SHIFT and a drag still copies a clip or a row, and SHIFT + **+ Track** still adds a Loop track.
 
-The Learn section lists them by where they are: **Launch Bass · row 2**, **Scene 3 · Verse**, **Arm Bass**, **Stop all**. They're kept with the song (**Project**); set **Kept in** to **Rig** to keep a grid controller's layout in every project. Still to come: a **Clips and scenes** card in the Learn section for a track's mute, solo and stop. A key on a track's mute flips it on each press, and in Perform it waits for the launch line, as TRACK MUTE's pads do.
+The Learn section lists them by where they are: **Launch Bass · row 2**, **Scene 3 · Verse**, **Arm Bass**, **Stop all**. They're kept with the song (**Project**); set **Kept in** to **Rig** to keep a grid controller's layout in every project.
+
+A track's mute, solo and stop aren't on the grid, so they're learned in the Learn section: tap **Clips and scenes** by the section's heading (the button is lit while its card shows; tap it again, a row or **Back** to go back). On the card:
+
+- Pick the track with **–** and **+** beside its name (or the MPC's **-** and **+**).
+- Tap **Mute**, **Solo** or **Stop** for that track, or **Stop all** or **Back to song**, then press the pad, key or button on your controller.
+
+They're kept with the song, as the grid's are. A key on a track's mute or solo flips it on each press, and in Perform it waits for the launch line, as TRACK MUTE's pads do. **Stop** stops the clip the track plays, as a tap on that clip does.
 
 ## MIDI files
 
