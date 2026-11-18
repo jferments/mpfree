@@ -29,9 +29,9 @@ use crate::{note_name, IoModel};
 pub(crate) struct Cv;
 
 /// The jobs in the order the Job field steps through them.
-const JOBS: [&str; 12] = [
-    "Off", "Pitch", "Gate", "Trigger", "Velocity", "CC", "LFO", "Envelope", "Clock", "Run",
-    "Reset", "Fixed",
+const JOBS: [&str; 13] = [
+    "Off", "Pitch", "Gate", "Trigger", "Velocity", "Pressure", "CC", "LFO", "Envelope", "Clock",
+    "Run", "Reset", "Fixed",
 ];
 
 /// An LFO's rates on the tempo: quarter notes a cycle, and their names.
@@ -85,13 +85,14 @@ fn job(a: &CvAssign) -> usize {
         CvAssign::Gate { .. } => 2,
         CvAssign::Trigger { .. } => 3,
         CvAssign::Velocity { .. } => 4,
-        CvAssign::Cc { .. } => 5,
-        CvAssign::Lfo(_) => 6,
-        CvAssign::Envelope(_) => 7,
-        CvAssign::Clock { .. } => 8,
-        CvAssign::Run { .. } => 9,
-        CvAssign::Reset { .. } => 10,
-        CvAssign::Fixed { .. } => 11,
+        CvAssign::Pressure { .. } => 5,
+        CvAssign::Cc { .. } => 6,
+        CvAssign::Lfo(_) => 7,
+        CvAssign::Envelope(_) => 8,
+        CvAssign::Clock { .. } => 9,
+        CvAssign::Run { .. } => 10,
+        CvAssign::Reset { .. } => 11,
+        CvAssign::Fixed { .. } => 12,
     }
 }
 
@@ -139,6 +140,7 @@ fn track(a: &CvAssign) -> Option<u8> {
         | CvAssign::Gate { track, .. }
         | CvAssign::Trigger { track, .. }
         | CvAssign::Velocity { track, .. }
+        | CvAssign::Pressure { track, .. }
         | CvAssign::Cc { track, .. }
         | CvAssign::Envelope(Env { track, .. }) => Some(track),
         CvAssign::Lfo(l) => l.restart,
@@ -171,31 +173,35 @@ fn fresh(j: usize, track: u8) -> CvAssign {
             track,
             max_volts: MAX_VOLTS,
         },
-        5 => CvAssign::Cc {
+        5 => CvAssign::Pressure {
+            track,
+            max_volts: MAX_VOLTS,
+        },
+        6 => CvAssign::Cc {
             track,
             cc: 1,
             min_volts: 0.0,
             max_volts: MAX_VOLTS,
         },
-        6 => CvAssign::Lfo(Lfo {
+        7 => CvAssign::Lfo(Lfo {
             high_volts: MAX_VOLTS,
             ..Lfo::default()
         }),
-        7 => CvAssign::Envelope(Env {
+        8 => CvAssign::Envelope(Env {
             volts: MAX_VOLTS,
             ..Env::new(track)
         }),
-        8 => CvAssign::Clock {
+        9 => CvAssign::Clock {
             ppqn: 4,
             volts: MAX_VOLTS,
             ms: 5.0,
         },
-        9 => CvAssign::Run { volts: MAX_VOLTS },
-        10 => CvAssign::Reset {
+        10 => CvAssign::Run { volts: MAX_VOLTS },
+        11 => CvAssign::Reset {
             volts: MAX_VOLTS,
             ms: 10.0,
         },
-        11 => CvAssign::Fixed { volts: 0.0 },
+        12 => CvAssign::Fixed { volts: 0.0 },
         _ => CvAssign::Off,
     }
 }
@@ -221,7 +227,7 @@ fn setting(a: &CvAssign) -> Option<(String, &'static str, usize, usize)> {
             note.map_or(0, |n| n as usize + 1),
             129,
         ),
-        CvAssign::Velocity { max_volts, .. } => {
+        CvAssign::Velocity { max_volts, .. } | CvAssign::Pressure { max_volts, .. } => {
             let (i, n) = volts(max_volts);
             (format!("up to {max_volts:.1} V"), "Top", i, n)
         }
@@ -276,7 +282,9 @@ fn step_setting(a: &mut CvAssign, d: i32) {
         CvAssign::Gate { volts, .. } | CvAssign::Run { volts } | CvAssign::Fixed { volts } => {
             step_volts(volts, d)
         }
-        CvAssign::Velocity { max_volts, .. } => step_volts(max_volts, d),
+        CvAssign::Velocity { max_volts, .. } | CvAssign::Pressure { max_volts, .. } => {
+            step_volts(max_volts, d)
+        }
         CvAssign::Trigger { note, .. } => {
             let at = note.map_or(0, |n| n as usize + 1);
             let to = clamp_step(at, d, 129);
@@ -317,6 +325,7 @@ fn set_track(a: &mut CvAssign, t: u8) {
         | CvAssign::Gate { track, .. }
         | CvAssign::Trigger { track, .. }
         | CvAssign::Velocity { track, .. }
+        | CvAssign::Pressure { track, .. }
         | CvAssign::Cc { track, .. }
         | CvAssign::Envelope(Env { track, .. }) => *track = t,
         _ => {}
@@ -653,7 +662,7 @@ mod tests {
         assert!(Cv.step(&mut m, "cv:3", 0, 1));
         assert_eq!(m.setup.cv[3], fresh(3, 6));
         // Volts stop at the jack's top.
-        m.setup.cv[3] = fresh(11, 0);
+        m.setup.cv[3] = fresh(12, 0);
         Cv.step(&mut m, "cv:3", 2, 100);
         assert_eq!(m.setup.cv[3], CvAssign::Fixed { volts: MAX_VOLTS });
         assert!(!Cv.step(&mut m, "cv:3", 2, 1));
@@ -661,7 +670,7 @@ mod tests {
         Cv.step(&mut m, "cv:3", 0, 1);
         assert_eq!(m.setup.cv[3], CvAssign::Off);
         // What the section sets reads back from the project's text.
-        m.setup.cv[5] = fresh(8, 0);
+        m.setup.cv[5] = fresh(9, 0);
         Cv.step(&mut m, "cv:5", 2, 1);
         let (back, warn) = MidiSetup::parse(&m.setup.to_text());
         assert!(warn.is_empty(), "{warn:?}");
@@ -730,7 +739,7 @@ mod tests {
     fn an_lfo_gets_two_more_rows_and_its_settings_step() {
         let s = model();
         let mut m = s.lock().unwrap();
-        m.setup.cv[1] = fresh(6, 0);
+        m.setup.cv[1] = fresh(7, 0);
         let rows = Cv.rows(&m, Duration::ZERO);
         assert_eq!(rows.len(), 1 + CV_OUTS + 2);
         let texts = |r: &Row| r.fields.iter().map(|f| f.text.clone()).collect::<Vec<_>>();
@@ -778,7 +787,7 @@ mod tests {
     fn an_envelope_gets_two_more_rows_on_its_track() {
         let s = model();
         let mut m = s.lock().unwrap();
-        m.setup.cv[0] = fresh(7, 2);
+        m.setup.cv[0] = fresh(8, 2);
         let rows = Cv.rows(&m, Duration::ZERO);
         let texts = |r: &Row| r.fields.iter().map(|f| f.text.clone()).collect::<Vec<_>>();
         assert_eq!(texts(&rows[1]), ["Envelope", "Track 3", "up to 5.0 V"]);
@@ -826,7 +835,7 @@ mod tests {
         let s = model();
         let mut m = s.lock().unwrap();
         m.setup.cv[0] = fresh(2, 0);
-        m.setup.cv[4] = fresh(8, 0);
+        m.setup.cv[4] = fresh(9, 0);
         let rows = Cv.rows(&m, Duration::ZERO);
         assert_eq!(rows[1].note, "sends nothing: CV out is off");
         assert!(Cv
