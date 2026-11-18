@@ -281,16 +281,31 @@ pub enum Learning {
 
 /// Whether a key learned on `target` flips it on each press (as the MPC's
 /// TRACK MUTE pads do) rather than holding it while held: PLAY and STOP,
-/// a mixer strip's mute and solo, and a track's mute and solo on the Clips
-/// grid. Works as changes it on the Learn section.
+/// a mixer strip's mute and solo, a track's mute and solo on the Clips
+/// grid, and a loop's mute. Works as changes it on the Learn section.
 pub fn key_toggles(target: ParamAddr) -> bool {
     use mpfree_fx::ids::mixer as mx;
     match target.owner {
         Owner::Transport => target.param == transport::PLAYING,
         Owner::Clips => mpfree_play::mpfree_param::clips::is_value(target.param),
+        Owner::Looper => mpfree_play::mpfree_param::looper::is_value(target.param),
         Owner::Strip(_) => matches!(target.param, mx::MUTE | mx::SOLO),
         _ => false,
     }
+}
+
+/// How a control learned on `target` from `source` works, where it isn't
+/// Learn's own choice (a key: while held; anything else: a knob or
+/// fader): a key on a switch you flip flips it ([`key_toggles`]), and
+/// the looper's presses (a loop's key, Next loop, Undo ...) work while
+/// held whatever sends them, so a footswitch's CC goes down and lets go
+/// as a pad does.
+pub fn learned_mode(source: &Source, target: ParamAddr) -> Option<Mode> {
+    use mpfree_play::mpfree_param::looper;
+    if matches!(source, Source::Note(_)) && key_toggles(target) {
+        return Some(Mode::Toggle);
+    }
+    (target.owner == Owner::Looper && !looper::is_value(target.param)).then_some(Mode::Momentary)
 }
 
 /// Clock counted as "stopped" this long after its last tick.
@@ -944,9 +959,9 @@ impl MusicIn {
         };
         if !self.unsaved.is_empty() {
             for mut l in self.unsaved.drain(..) {
-                // The transport and the tempo work in every song; the rest
-                // belongs to this one.
-                let mut kept = if l.target.owner == Owner::Transport {
+                // The transport, the tempo and the looper's footswitch
+                // work in every song; the rest belongs to this one.
+                let mut kept = if matches!(l.target.owner, Owner::Transport | Owner::Looper) {
                     Kept::Rig
                 } else {
                     Kept::Project
@@ -1540,13 +1555,15 @@ impl MusicIn {
                 self.feed.to(to);
             }
             // A key learned on a switch you flip (PLAY and STOP, a mute,
-            // a solo) flips it on each press, before the key comes up.
+            // a solo) flips it on each press, before the key comes up; a
+            // looper press works while held ([`learned_mode`]).
             if let Some(i) = learned {
-                let flips = self.learn.get(i).is_some_and(|m| {
-                    matches!(m.control.source, Source::Note(_)) && key_toggles(m.target)
-                });
-                if flips {
-                    self.learn.set_mode(i, Mode::Toggle);
+                let mode = self
+                    .learn
+                    .get(i)
+                    .and_then(|m| learned_mode(&m.control.source, m.target));
+                if let Some(mode) = mode {
+                    self.learn.set_mode(i, mode);
                 }
             }
             if let Some(m) = learned.and_then(|i| self.learn.get(i).copied()) {

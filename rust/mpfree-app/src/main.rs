@@ -3907,8 +3907,9 @@ fn learned_set(
 /// (`Owner::Inst`, [`synth_describe`]); a track's arp's rate, gate, swing
 /// and octaves (`Owner::Arp`, [`app::App::arp_param`]); or the
 /// transport's tempo and PLAY and STOP ([`remote::describe`], from
-/// `now`), or a track's mute or solo on the Clips grid
-/// ([`remote::describe_clips`]).
+/// `now`), a track's mute or solo on the Clips grid
+/// ([`remote::describe_clips`]), or a loop's mute
+/// ([`remote::describe_looper`]).
 fn learn_describe(
     mix: &mixing::MixHost,
     synth: &synth::Synth,
@@ -3922,6 +3923,7 @@ fn learn_describe(
         Owner::Arp(t) => return app.arp_param(usize::from(t), addr.param),
         Owner::Transport => return remote::describe(addr.param, now),
         Owner::Clips => return remote::describe_clips(addr.param, now),
+        Owner::Looper => return remote::describe_looper(addr.param, now),
         // A track's controller, bend or pressure out: where the engine has
         // it, else its default.
         Owner::Midi(_) => {
@@ -3954,15 +3956,16 @@ fn synth_describe(
 /// What a learned control moves, named for the I/O view and the hint line:
 /// "Poly cutoff (Track 2)" for a synth's knob, "Arp gate (Bass)" for a
 /// track's arp, "PLAY and STOP" or "Tempo" for the transport, "Launch
-/// Bass · row 2" or "Mute Bass" on the Clips grid ([`clips_label`]), else
-/// as the chain editor names it ([`modpanels::label`]).
+/// Bass · row 2" or "Mute Bass" on the Clips grid ([`clips_label`]),
+/// "Looper · Loop 3 key" or "Looper · picked loop's key" on the looper,
+/// else as the chain editor names it ([`modpanels::label`]).
 fn learn_label(
     mix: &mixing::MixHost,
     synth: &synth::Synth,
     time: &time::TimeHost,
     addr: mpfree_play::mpfree_param::ParamAddr,
 ) -> String {
-    use mpfree_play::mpfree_param::{arp, transport, Owner};
+    use mpfree_play::mpfree_param::{arp, looper, transport, Owner};
     let t = match addr.owner {
         Owner::Inst(t) => t,
         Owner::Arp(t) => {
@@ -3974,6 +3977,10 @@ fn learn_label(
         }
         Owner::Transport => return transport::name(addr.param).unwrap_or("?").to_string(),
         Owner::Clips => return clips_label(time.project(), addr.param),
+        Owner::Looper => {
+            let name = looper::name(addr.param);
+            return format!("Looper · {}", name.as_deref().unwrap_or("?"));
+        }
         _ => return modpanels::label(mix, addr),
     };
     // As the time engine and the I/O view name the tracks.
@@ -4941,6 +4948,10 @@ fn looper_action(
         }
         looping::LoopAction::ToggleMute(n) => {
             out.note(&looper.toggle_mute(n));
+            Vec::new()
+        }
+        looping::LoopAction::Mute(n, on) => {
+            out.note(&looper.set_mute(n, on));
             Vec::new()
         }
         looping::LoopAction::ToggleSolo(n) => {
@@ -6850,6 +6861,16 @@ fn player_session(
                         }
                     }
                 }
+                // The looper (its footswitch): a loop's key does what its
+                // pad does, a mute mutes or lets the loop play, and the
+                // presses are the Looper tab's buttons, on the picked loop.
+                midi_in::Learning::Set(w)
+                    if w.target.owner == mpfree_play::mpfree_param::Owner::Looper =>
+                {
+                    let now = desk::looper_now(&looper);
+                    let act = remote.looper_write(w.target.param, w.value, now, t);
+                    fx.extend(desk::looper_remote(&mut app, &time, &looper, out, act));
+                }
                 // A synth's knob: as the Synth tab turns it, and the tab
                 // follows (a few times a second at most).
                 midi_in::Learning::Set(w)
@@ -6900,6 +6921,7 @@ fn player_session(
             bpm: app.bpm(),
             muted,
             soloed,
+            ..desk::looper_now(&looper)
         };
         music.observe_learned(mt, |addr| {
             learn_describe(&mix, &synth, &app, remote_now, addr)
@@ -7471,6 +7493,13 @@ fn player_session(
                     out.note(&line);
                 }
             }
+        }
+        // And a learned loop key (a footswitch), on any page.
+        for n in remote.loop_holds(t, perform_pads::CLEAR_HOLD_S) {
+            let key = perform_pads::PadAction::LoopKey(n as u8);
+            let (more, line) = desk::perform_pad_held(key);
+            fx.extend(more);
+            out.note(&format!("{line}, from a learned control"));
         }
         fx.extend(app.tick(t));
         // As set, not rounded: the song plays at it, and a project saves it
@@ -10713,6 +10742,79 @@ mod tests {
         assert!(learn_describe(&mix, &synth, &app, now, at(clips::clip(1, 2))).is_none());
         assert!(midi_in::key_toggles(at(clips::mute(1))));
         assert!(!midi_in::key_toggles(at(clips::clip(1, 2))));
+    }
+
+    /// The looper's learned controls (its footswitch) are named so the
+    /// picked loop's never looks like a loop's number, and a loop's mute
+    /// reads from the loops' bits.
+    #[test]
+    fn the_loopers_footswitch_is_named_and_read_for_learn() {
+        use mpfree_play::mpfree_param::{looper, Owner, ParamAddr};
+        let mix = mixing::MixHost::new(44_100, 0.0, 6.0);
+        let synth = synth::Synth::new(44_100);
+        let time = time::TimeHost::new(44_100, 120.0).unwrap();
+        let app = app::App::new(44_100, false);
+        let at = |id| ParamAddr::new(Owner::Looper, id);
+        let name = |id| learn_label(&mix, &synth, &time, at(id));
+        assert_eq!(name(looper::key(2)), "Looper · Loop 3 key");
+        assert_eq!(name(looper::PICKED_KEY), "Looper · picked loop's key");
+        assert_eq!(name(looper::mute(0)), "Looper · Loop 1 mute");
+        assert_eq!(name(looper::PICKED_MUTE), "Looper · picked loop's mute");
+        assert_eq!(name(looper::NEXT_LOOP), "Looper · Next loop");
+        assert_eq!(name(looper::CLEAR), "Looper · Clear");
+        assert_eq!(name(99), "Looper · ?");
+        let now = remote::Now {
+            picked: 2,
+            loops_muted: 1 << 2,
+            ..remote::Now::default()
+        };
+        let (info, v) = learn_describe(&mix, &synth, &app, now, at(looper::mute(2))).unwrap();
+        assert_eq!(
+            (info.name, info.curve, v),
+            ("Mute", mpfree_node::Curve::Toggle, 1.0)
+        );
+        assert_eq!(
+            learn_describe(&mix, &synth, &app, now, at(looper::PICKED_MUTE))
+                .unwrap()
+                .1,
+            1.0
+        );
+        assert_eq!(
+            learn_describe(&mix, &synth, &app, now, at(looper::mute(0)))
+                .unwrap()
+                .1,
+            0.0
+        );
+        assert!(learn_describe(&mix, &synth, &app, now, at(looper::key(2))).is_none());
+        assert!(midi_in::key_toggles(at(looper::mute(2))));
+        assert!(!midi_in::key_toggles(at(looper::key(2))));
+        // A footswitch's CC on a press works while held; on a mute, as a
+        // knob or fader (on from the middle up); a key on a mute flips it.
+        use mpfree_midi::learn::{Mode, Source};
+        let cc = Source::Cc(64);
+        let key = Source::Note(40);
+        assert_eq!(
+            midi_in::learned_mode(&cc, at(looper::key(2))),
+            Some(Mode::Momentary)
+        );
+        assert_eq!(
+            midi_in::learned_mode(&cc, at(looper::UNDO)),
+            Some(Mode::Momentary)
+        );
+        assert_eq!(midi_in::learned_mode(&cc, at(looper::mute(2))), None);
+        assert_eq!(
+            midi_in::learned_mode(&key, at(looper::mute(2))),
+            Some(Mode::Toggle)
+        );
+        assert_eq!(
+            midi_in::learned_mode(&key, at(looper::PICKED_KEY)),
+            Some(Mode::Momentary)
+        );
+        let tempo = ParamAddr::new(
+            Owner::Transport,
+            mpfree_play::mpfree_param::transport::TEMPO,
+        );
+        assert_eq!(midi_in::learned_mode(&cc, tempo), None);
     }
 
     /// The transport's learned controls are named for the I/O view and

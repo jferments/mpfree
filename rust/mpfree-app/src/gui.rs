@@ -13943,6 +13943,30 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let _ = clips.take_actions();
     clips.ui.invalidate();
     out.push(("mixer-io-learn-clips", clips));
+    // The Learn section's Looper card (the looper's footswitch): a
+    // footswitch on Loop 1's key kept in the rig, and the card open on
+    // the picked loop.
+    let footswitch = "port FS-7 | ch 1 | cc 64 | looper.256 | 0 1 | momentary | jump";
+    let l = mpfree_midi::learn::Saved::parse(footswitch).expect("a learned control");
+    let mut rig = learn_rig();
+    rig.setup.learned_in(mpfree_midi::setup::Kept::Rig, l);
+    rig.live.learn_names.push("Looper · Loop 1 key".into());
+    let mut looper_card = io_section_screen(fonts(), &io_state, rig, mpfree_midi_ui::LEARN);
+    let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
+    looper_card.ui.paint(&mut c);
+    if let Some(t) = looper_card
+        .ui
+        .targets()
+        .into_iter()
+        .find(|t| t.widget == mpfree_mixer_ui::MIXER && t.target.id == "learn-looper")
+    {
+        let (x, y) = t.target.centre();
+        looper_card.touch(1, Touch::Down, x, y);
+        looper_card.touch(1, Touch::Up, x, y);
+    }
+    let _ = looper_card.take_actions();
+    looper_card.ui.invalidate();
+    out.push(("mixer-io-learn-looper", looper_card));
     // The CV section with an envelope and two LFOs, each with its two
     // more rows.
     out.push((
@@ -28295,6 +28319,14 @@ mod tests {
                         assert!(
                             p.ui.targets().iter().any(|t| t.target.id == "learn-row"),
                             "{name}: the Learn section shows"
+                        );
+                    }
+                    if name == "mixer-io-learn-looper" {
+                        assert!(
+                            p.ui.targets()
+                                .iter()
+                                .any(|t| t.target.id == "learn-looper-pick"),
+                            "{name}: the Looper card shows"
                         );
                     }
                     if name == "mixer-io-routing" {

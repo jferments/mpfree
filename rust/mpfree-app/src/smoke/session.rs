@@ -227,6 +227,9 @@ pub struct Session {
     mute_pressed: [bool; 16],
     /// The loop keys held (SHIFT + SAMPLER on the Looper tab).
     keys_held: crate::perform_pads::Held,
+    /// Controls learned on the looper (its footswitch), as player_session
+    /// keeps them.
+    remote: crate::remote::Remote,
     out: Out,
     to_screen: Receiver<ToUi>,
     /// The app's effects waiting for the desk (a test may add some).
@@ -338,6 +341,7 @@ impl Session {
             step_keys: crate::step_keys::StepKeys::default(),
             mute_pressed: [false; 16],
             keys_held: crate::perform_pads::Held::default(),
+            remote: crate::remote::Remote::new(),
             loop_tempo: None,
             out,
             to_screen,
@@ -804,6 +808,18 @@ impl Session {
     }
 
     /// Hit a pad on the controller (down, then up after `hold` seconds).
+    /// A control learned on looper parameter `id` (a footswitch) moved to
+    /// `value` (0 to 1), as player_session takes MIDI Learn's: on any page.
+    pub fn footswitch(&mut self, id: u16, value: f32) -> &mut Session {
+        let now = crate::desk::looper_now(&self.looper);
+        let t = self.t();
+        let act = self.remote.looper_write(id, value, now, t);
+        let fx =
+            crate::desk::looper_remote(&mut self.app, &self.time, &self.looper, &mut self.out, act);
+        self.fx.extend(fx);
+        self.run_periods(2)
+    }
+
     pub fn pad(&mut self, pad: usize, velocity: u8, hold: f64) -> &mut Session {
         self.pad_edge(pad, velocity, true);
         self.run_for(hold);
@@ -985,6 +1001,13 @@ impl Session {
                     self.out.note(&line);
                 }
             }
+        }
+        // And a learned loop key (a footswitch), on any page.
+        for n in self.remote.loop_holds(t, crate::perform_pads::CLEAR_HOLD_S) {
+            let key = crate::perform_pads::PadAction::LoopKey(n as u8);
+            let (fx, line) = crate::desk::perform_pad_held(key);
+            self.fx.extend(fx);
+            self.out.note(&format!("{line}, from a learned control"));
         }
         if let Some(e) = self.app.tick(t) {
             self.fx.push(e);
