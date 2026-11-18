@@ -2313,22 +2313,26 @@ impl Player {
     }
 
     /// Whether kit `k` is one of the empty kits kept for New kit and
-    /// still out of use: no sounds, no track playing it, not on the pads.
+    /// still out of use: no sounds, no track playing it, not on the pads,
+    /// and not set aside with a track UNDO took away (REDO brings it back).
     fn spare_kit(&self, k: usize) -> bool {
         self.kits.get(k).is_some_and(|v| {
             v.user
                 && k != self.kit
                 && !self.track_kits.plays(k)
+                && !self.track_kits.set_aside(k)
                 && v.pads.iter().all(Option::is_none)
         })
     }
 
     /// The list of kits (Play's "pads play", the Pads tab's Kit): every
-    /// kit and the synth, but
-    /// the spare user kits, then **New kit** while one is left (None).
+    /// kit and the synth, but the spare user kits and the kits set aside
+    /// with a track UNDO took away (unless on the pads), then **New kit**
+    /// while one is left (None).
     fn kit_rows(&self) -> Vec<Option<usize>> {
         let mut rows: Vec<Option<usize>> = (0..self.kits.len())
             .filter(|&k| !self.spare_kit(k))
+            .filter(|&k| k == self.kit || !self.track_kits.set_aside(k))
             .map(Some)
             .collect();
         if (0..self.kits.len()).any(|k| self.spare_kit(k)) {
@@ -21641,6 +21645,61 @@ mod tests {
             None
         );
         assert_eq!(p.page(), "Loading");
+    }
+
+    /// A kit set aside with a track UNDO took away is out of the list of
+    /// kits and no New kit's, until REDO gives it back to its track.
+    #[test]
+    fn a_kit_set_aside_by_a_track_undo_is_out_of_the_list_until_redo() {
+        use crate::sampler::TrackKits;
+        let mut p = sample_player(Fonts::embedded());
+        let synth = crate::synth::Synth::new(44_100);
+        let mut kits = sample_kits();
+        let n = kits.len();
+        for k in 0..2 {
+            kits.push(KitView {
+                name: format!("Kit {}", n + k + 1),
+                pads: vec![None; 128],
+                colour: [0x10, 0x10, 0x10],
+                chip: None,
+                synth: None,
+                pitches: Vec::new(),
+                user: true,
+                key: None,
+                tags: Vec::new(),
+            });
+        }
+        kits.push(synth.kit_view());
+        p.apply(ToUi::Kits(kits));
+        let names = |p: &Player| -> Vec<String> {
+            p.ui.get::<ListView>("kits")
+                .unwrap()
+                .items
+                .iter()
+                .map(|i| i.text.clone())
+                .collect()
+        };
+        // Track 4 played the first user kit; UNDO took the track away.
+        let mut tk = TrackKits::new(n + 2);
+        assert!(tk.set(3, n));
+        assert!(tk.follow(3, false, true));
+        p.apply(ToUi::TrackKits(Box::new(tk.clone())));
+        let l = names(&p);
+        assert!(!l.contains(&format!("Kit {}", n + 1)), "{l:?}");
+        assert_eq!(l.len(), n + 2, "the kits, the synth, New kit: {l:?}");
+        assert_eq!(l[n + 1], NEW_KIT);
+        // New kit takes the other user kit, never the one set aside.
+        let new_kit = p.on_event(UiEvent {
+            widget: "kits".into(),
+            kind: EventKind::Select(n + 1),
+        });
+        assert_eq!(new_kit, Some(FromUi::Kit(n + 1)));
+        // REDO: the track and its kit are back, and the kit is listed.
+        assert!(tk.follow(4, true, true));
+        p.apply(ToUi::TrackKits(Box::new(tk)));
+        let l = names(&p);
+        assert_eq!(l[n], format!("Kit {}", n + 1), "{l:?}");
+        assert_eq!(l.len(), n + 3, "{l:?}");
     }
 
     #[test]

@@ -114,6 +114,11 @@ pub struct Player {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackKits {
     entries: [u8; mpfree_seq::MAX_TRACKS],
+    /// The entries of the tracks UNDO took away, by their places, while
+    /// REDO can bring them back with their kits (0: none). Not played and
+    /// not saved; the kits they hold are no new track's, and the list of
+    /// kits leaves them out ([`TrackKits::set_aside`]).
+    aside: [u8; mpfree_seq::MAX_TRACKS],
     /// The synth's entry: the one after the kits.
     synth: u8,
 }
@@ -130,6 +135,7 @@ impl TrackKits {
     pub fn new(kits: usize) -> TrackKits {
         TrackKits {
             entries: [0; mpfree_seq::MAX_TRACKS],
+            aside: [0; mpfree_seq::MAX_TRACKS],
             synth: kits.min(usize::from(u8::MAX)) as u8,
         }
     }
@@ -151,19 +157,41 @@ impl TrackKits {
         }
     }
 
-    /// Only `tracks` tracks are left (UNDO took a new track away): every
-    /// place from there on plays kit 1 again, so a track added there later
-    /// starts on kit 1, never on the kit the one before it had (which
-    /// stays in its slot). True if any changed. Never allocates.
-    pub fn forget_past(&mut self, tracks: usize) -> bool {
+    /// The song has `tracks` tracks now. A track UNDO took away is set
+    /// aside with its kit, its place on kit 1, so a track added there later
+    /// starts on kit 1; one a REDO brings back (`redone`: a REDO came since
+    /// the last call) plays its kit again, so UNDO and REDO take a track
+    /// and its kit together. Once REDO can't bring them back (`can_redo`
+    /// false), the kits are set aside no more: they are the project's
+    /// kits, played by no track. True if any changed. Never allocates.
+    pub fn follow(&mut self, tracks: usize, redone: bool, can_redo: bool) -> bool {
         let mut changed = false;
-        for e in self.entries.iter_mut().skip(tracks) {
+        if redone {
+            for (e, a) in self.entries.iter_mut().zip(&mut self.aside).take(tracks) {
+                if *a != 0 {
+                    *e = std::mem::take(a);
+                    changed = true;
+                }
+            }
+        }
+        for (e, a) in self.entries.iter_mut().zip(&mut self.aside).skip(tracks) {
             if *e != 0 {
-                *e = 0;
+                *a = std::mem::take(e);
                 changed = true;
             }
         }
+        if !can_redo && self.aside.iter().any(|&a| a != 0) {
+            self.aside = [0; mpfree_seq::MAX_TRACKS];
+            changed = true;
+        }
         changed
+    }
+
+    /// Whether entry `entry` is a kit only a track UNDO took away plays
+    /// (REDO can bring them back together): no new track's, and not in
+    /// the list of kits.
+    pub fn set_aside(&self, entry: usize) -> bool {
+        entry != 0 && !self.plays(entry) && self.aside.iter().any(|&a| usize::from(a) == entry)
     }
 
     /// Whether any track plays entry `entry` (a kit, or the synth).
@@ -1702,14 +1730,32 @@ mod tests {
     }
 
     /// Only 3 tracks left (UNDO took the rest away): every place from
-    /// track 4 on plays kit 1 again; the tracks left keep theirs.
+    /// track 4 on plays kit 1 again, and the tracks left keep theirs. The
+    /// kits they had are set aside (out of the list, nobody's spare) while
+    /// REDO can bring them back; a REDO gives them back; a new track there
+    /// (no REDO) starts on kit 1, and they're set aside no more once REDO
+    /// can't bring them back.
     #[test]
-    fn a_place_past_the_tracks_plays_kit_1_again() {
-        let mut k = TrackKits::new(3);
+    fn a_track_undo_takes_away_sets_its_kit_aside_until_redo_brings_it_back() {
+        let mut k = TrackKits::new(4);
         assert!(k.set(1, 2) && k.set(3, 1) && k.set(9, 3));
-        assert!(k.forget_past(3));
+        assert!(k.follow(3, false, true));
         assert_eq!((k.entry(1), k.entry(3), k.entry(9)), (2, 0, 0));
-        assert!(!k.forget_past(3), "nothing more to forget");
+        assert!(k.set_aside(1) && k.set_aside(3));
+        assert!(!k.set_aside(2), "track 2 plays it");
+        assert!(!k.set_aside(0), "kit 1 is never set aside");
+        assert!(!k.text().contains("track 4"), "not saved");
+        assert!(!k.follow(3, false, true), "nothing more to set aside");
+        // REDO brings track 4 back: with its kit.
+        assert!(k.follow(4, true, true));
+        assert_eq!(k.entry(3), 1);
+        assert!(!k.set_aside(1));
+        // UNDO again, then a new track instead (no REDO): kit 1, and with
+        // nothing left to redo, nothing is set aside.
+        k.follow(3, false, true);
+        assert!(k.follow(4, false, false));
+        assert_eq!(k.entry(3), 0);
+        assert!(!k.set_aside(1) && !k.set_aside(3));
     }
 
     /// Every track plays kit 1 until a pick; a track picks a kit or the

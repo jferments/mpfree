@@ -217,6 +217,8 @@ pub struct Session {
     pub synth_on: bool,
     /// What each track plays, as main.rs keeps it.
     pub track_kits: crate::sampler::TrackKits,
+    /// The time engine's REDOs seen so far, as player_session keeps them.
+    redos_seen: u64,
     /// Messages for the screen that found it gone (none expected).
     pub quit: bool,
     kits: usize,
@@ -343,6 +345,7 @@ impl Session {
             kit: 0,
             synth_on: false,
             track_kits: crate::sampler::TrackKits::new(n),
+            redos_seen: 0,
             quit: false,
             kits: n,
             step_keys: crate::step_keys::StepKeys::default(),
@@ -1052,8 +1055,15 @@ impl Session {
             self.out.note(&format!("time: {line}"));
         }
         self.app.set_track_count(self.time.track_count());
-        // A track UNDO took away gives its kit back (as player_session).
-        if self.track_kits.forget_past(self.time.track_count()) {
+        // A track UNDO took away sets its kit aside, and REDO gives it back
+        // (as player_session).
+        let (redos, can_redo) = self.time.redos();
+        let redone = redos != self.redos_seen;
+        self.redos_seen = redos;
+        if self
+            .track_kits
+            .follow(self.time.track_count(), redone, can_redo)
+        {
             self.out
                 .show(ToUi::TrackKits(Box::new(self.track_kits.clone())));
         }
