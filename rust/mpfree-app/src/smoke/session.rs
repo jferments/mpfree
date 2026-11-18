@@ -456,6 +456,22 @@ impl Session {
         })
     }
 
+    /// Show the steps (`"Beats"`: the Sequencer tab's Steps, which were
+    /// Play's Beats view) or Play's view `"All"` or `"Loop"`, as a
+    /// musician would: the tab, then the view on Play's switch.
+    pub fn play_view(&mut self, name: &str) -> &mut Session {
+        if name == "Beats" {
+            return self.press("header", "tab", "Sequencer");
+        }
+        if self.view() != View::Play {
+            self.press("header", "tab", "Play");
+        }
+        if self.control("play-transport", "view", name).is_some() {
+            self.press("play-transport", "view", name);
+        }
+        self
+    }
+
     /// Press the control `widget/id` labelled `label` the way its gesture
     /// says (a tap, a drag or a long press), then let the session run a few
     /// periods. Panics, naming what the page has, when it is not there.
@@ -647,7 +663,7 @@ impl Session {
     pub fn qlink(&mut self, knob: usize, delta: i32) -> &mut Session {
         let page = self.app.view();
         if let Some(m) = crate::desk::qlink_to_screen(page, knob, delta)
-            .filter(|_| !matches!(page, View::Play | View::Arrange))
+            .filter(|_| !matches!(page, View::Play | View::Sequencer | View::Arrange))
         {
             self.out.show(m);
         } else if let Some(e) = self.app.qlink(knob, delta, None) {

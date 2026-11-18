@@ -61,7 +61,7 @@ use mpfree_sampler::model::Project;
 use mpfree_sampler_ui::levels_panel::{self, LevelsAction, LevelsModel, LevelsPanel};
 use mpfree_synth_ui::view as synth_view;
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
-use mpfree_time_ui::editor::Lens;
+use mpfree_time_ui::editor::{EditAction, Lens};
 use mpfree_time_ui::view::{
     self as time_view, AudioAction, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE,
 };
@@ -1649,6 +1649,9 @@ pub struct Player {
     /// The REC chip's target list is open in place of Play's view
     /// ([`crate::rec_list`]).
     rec_list: bool,
+    /// Play's own view (All or Loop) while the Sequencer's Steps borrow
+    /// Beats' pages: Play shows it again.
+    play_own: PlayView,
     undo_ready: bool,
     /// How many times something was said in place (the control audit
     /// counts a tell as a press that did something, even when the same
@@ -1868,6 +1871,7 @@ impl Player {
             rec: crate::rec_arm::RecArm::default(),
             arm_page: None,
             rec_list: false,
+            play_own: PlayView::All,
             undo_ready: false,
             tells: 0,
             outline_told: false,
@@ -2467,7 +2471,7 @@ impl Player {
         if self.play.held.is_some() {
             self.play.sound_bank = self.held_sound_bank();
         }
-        let play_like = matches!(self.view, View::Play | View::Arrange);
+        let play_like = matches!(self.view, View::Play | View::Sequencer | View::Arrange);
         let arp = self.view == View::Arp || (play_like && self.band_showing());
         // The chain editor, the macros panel, and Play on a macro bank.
         let steps_held = play_like && self.play.held.is_some();
@@ -2943,7 +2947,8 @@ impl Player {
             self.refresh_hint();
             return;
         }
-        let play = matches!(self.view, View::Play | View::Arrange) && !self.band_showing();
+        let play = matches!(self.view, View::Play | View::Sequencer | View::Arrange)
+            && !self.band_showing();
         if !(play || matches!(self.view, View::Chain | View::Macros)) {
             return;
         }
@@ -2980,6 +2985,18 @@ impl Player {
 
     /// One tap on the switch: the Play page shows view `v`.
     fn show_play_view(&mut self, v: PlayView) {
+        self.set_play_view(v);
+        if self.play_frame() {
+            self.arm_for_page();
+        }
+        if self.ready && self.play_frame() {
+            self.show_view(self.view);
+        }
+    }
+
+    /// The play page's view is `v` (its panels follow), without showing
+    /// it.
+    fn set_play_view(&mut self, v: PlayView) {
         if v != self.play.view {
             println!("play view: {}", v.name());
         }
@@ -2989,9 +3006,6 @@ impl Player {
         if v != PlayView::Beats {
             self.play.selected = None;
         }
-        if self.view == View::Play {
-            self.arm_for_page();
-        }
         self.refresh_pads_bar();
         self.refresh_play();
         self.refresh_qlinks();
@@ -2999,17 +3013,60 @@ impl Player {
         let _ = self
             .arp_panel
             .set_quick_layout(&mut self.ui, &v.quick_layout_for(timing));
-        if self.ready && self.view == View::Play {
-            self.show_view(View::Play);
-        }
     }
 
-    /// Open or close the REC chip's target list in place of Play's view.
+    /// Play's frame shows: Play, or the Sequencer's Steps (Beats' pages,
+    /// with the transport card and the Q-Link column).
+    fn play_frame(&self) -> bool {
+        self.view == View::Play || (self.view == View::Sequencer && self.time.edit.is_none())
+    }
+
+    /// The tab `v` is about to show: the Sequencer's Steps are Beats'
+    /// pages, so the play page goes to Beats there (Play's own view kept)
+    /// and back to Play's own view on Play; the Clips page shows the note
+    /// editor only on the Sequencer (its Notes view).
+    /// Only the state moves here (the page is picked after it); true when
+    /// the play page's panels must be filled again once `v` shows.
+    fn play_follows(&mut self, v: View) -> bool {
+        let seq = v == View::Sequencer;
+        let want = if seq {
+            Some(PlayView::Beats)
+        } else if v == View::Play && self.play.view == PlayView::Beats {
+            Some(self.play_own)
+        } else {
+            None
+        };
+        let mut moved = false;
+        if let Some(w) = want.filter(|&w| w != self.play.view) {
+            if seq {
+                self.play_own = self.play.view;
+            }
+            println!("play view: {}", w.name());
+            self.play.view = w;
+            if w != PlayView::Beats {
+                self.play.selected = None;
+            }
+            let timing = self.settings.timing_strip;
+            let _ = self
+                .arp_panel
+                .set_quick_layout(&mut self.ui, &w.quick_layout_for(timing));
+            moved = true;
+        }
+        if self.play.sequencer != seq {
+            self.play.sequencer = seq;
+            moved = true;
+        }
+        self.time_page.edit_hidden = !seq;
+        moved
+    }
+
+    /// Open or close the REC chip's target list in place of Play's or the
+    /// Sequencer's view.
     fn toggle_rec_list(&mut self) {
         self.rec_list = !self.rec_list;
         self.refresh_rec_list();
-        if self.view == View::Play {
-            self.show_view(View::Play);
+        if self.play_frame() {
+            self.show_view(self.view);
         }
         self.refresh_hint();
     }
@@ -3231,7 +3288,7 @@ impl Player {
         }
         self.arm_page = Some(page);
         let target = match page {
-            (View::Play, PlayView::Beats) => Target::Notes,
+            (View::Play | View::Sequencer, PlayView::Beats) => Target::Notes,
             (View::Play, PlayView::Loop) | (View::Looper, _) => Target::Loop,
             _ => return,
         };
@@ -3246,7 +3303,7 @@ impl Player {
     /// Whether Your timing is on screen: Play's Beats view with the
     /// timing strip on.
     fn timing_shown(&self) -> bool {
-        self.view == View::Play && self.play.view == PlayView::Beats && self.settings.timing_strip
+        self.play_frame() && self.play.view == PlayView::Beats && self.settings.timing_strip
     }
 
     /// The Play view showing (for tests and the app check's log).
@@ -3356,7 +3413,7 @@ impl Player {
                 w.inspect = inspect;
             }
         }
-        if self.ready && self.view == View::Play && !self.band_showing() && !self.levels.open {
+        if self.ready && self.play_frame() && !self.band_showing() && !self.levels.open {
             let want = if self.rec_list {
                 crate::rec_list::REC_PAGE
             } else {
@@ -3365,7 +3422,7 @@ impl Player {
                     .page_with(self.settings.timing_strip, self.play.inspecting())
             };
             if self.ui.page() != want && self.ui.page().starts_with("Play") {
-                self.show_view(View::Play);
+                self.show_view(self.view);
             }
         }
         if self.timing_shown() {
@@ -3889,7 +3946,7 @@ impl Player {
         // REC chip in the header (sequencer decision 1).
         let rec = self.rec_chip();
         if rec.state != play_widgets::RecState::Armed
-            && !matches!(self.view, View::Play | View::Arrange)
+            && !matches!(self.view, View::Play | View::Sequencer | View::Arrange)
         {
             why.push(format!(
                 "REC records {}: the REC chip on Play lists what can record",
@@ -4000,7 +4057,7 @@ impl Player {
             STEP_ERASE_HINT.to_string()
         } else if self.status.erase && self.ready {
             ERASE_HINT.to_string()
-        } else if self.ready && self.view == View::Play && self.rec_list {
+        } else if self.ready && self.play_frame() && self.rec_list {
             REC_LIST_HINT.to_string()
         } else if self.ready && self.rec.ready.is_some() {
             rec_ready_hint(&self.rec_chip())
@@ -4016,7 +4073,7 @@ impl Player {
         } else if let Some(s) = self.status.steps.filter(|s| s.copying && !s.picking) {
             step_copy_hint(s)
         } else if let (Some(name), Some(_)) = (self.play.held_name(), self.status.steps) {
-            let place = if matches!(self.view, View::Play | View::Arrange) {
+            let place = if matches!(self.view, View::Play | View::Sequencer | View::Arrange) {
                 HeldPlace::QLinks
             } else if self.view == View::Synth && self.held_plays_synth() {
                 HeldPlace::Synth
@@ -4030,25 +4087,27 @@ impl Player {
             track_mute_hint(self.status.mute_bank, self.time.tracks.len())
         } else if self.status.mute_keys == MuteKeys::Pads {
             PAD_MUTE_HINT.to_string()
-        } else if self.view == View::Play && self.band_showing() && self.status.latched {
+        } else if self.play_frame() && self.band_showing() && self.status.latched {
             format!("Latched: {}   ·   NOTE REPEAT: let go   ·   hold NOTE REPEAT for the wheel, - / + and Q-Links   ·   \
                      {stop}", crate::app::mode_label(mode))
-        } else if self.view == View::Play && self.band_showing() {
+        } else if self.play_frame() && self.band_showing() {
             format!("Wheel: {wheel}   ·   - / +: Repeat, Arp, Pattern   ·   Q-Links: rate, gate, swing, octaves   ·   \
                      + MENU: Arp panel")
         } else if self.view == View::Play && self.levels.open {
             LEVELS_HINT.to_string()
-        } else if self.view == View::Play && self.chain_page.drives(View::Play) {
+        } else if self.play_frame() && self.chain_page.drives(self.view) {
             format!("Q-Links: {}   ·   Q-LINK: next bank   ·   hold a macro's card: the macros panel   ·   \
                      {WHEEL_HINT}   ·   {stop}", self.chain_page.bind.title())
         } else {
             match self.view {
-                View::Play => format!("Tap All, Beats or Loop: the view   ·   {WHEEL_HINT}   ·   PAD BANK: bank   ·   \
+                View::Play => format!("Tap All or Loop: the view   ·   {WHEEL_HINT}   ·   PAD BANK: bank   ·   \
                                        NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
-                View::Arrange if self.time.edit.is_some() => {
+                View::Sequencer if self.time.edit.is_some() => {
                     time_view::edit_hint(self.time.edit.as_ref().map_or(Lens::Grid, |e| e.editor.lens))
                         .to_string()
                 }
+                View::Sequencer => format!("Tap Notes: the clip's notes   ·   {WHEEL_HINT}   ·   STEP SEQ: steps on the pads   ·   \
+                                            PAD BANK: bank   ·   MENU: options   ·   {stop}"),
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
                 View::Arrange if self.time_page.clip_card => time_view::CLIPS_CARD_HINT.to_string(),
@@ -4267,8 +4326,8 @@ impl Player {
                 &v.quick_layout_for(self.settings.timing_strip),
             );
             self.refresh_play();
-            if self.ready && self.view == View::Play {
-                self.show_view(View::Play);
+            if self.ready && self.play_frame() {
+                self.show_view(self.view);
             }
         }
         // The sampler keeps the line input only while it is on.
@@ -4357,7 +4416,7 @@ impl Player {
     /// Synth tab and the mixer. None elsewhere.
     fn undo_source(&self) -> Option<HistoryOf> {
         Some(match self.view {
-            View::Play => match self.play.view {
+            View::Play | View::Sequencer => match self.play.view {
                 PlayView::Loop => HistoryOf::Loop,
                 PlayView::Beats => HistoryOf::Takes,
                 PlayView::All if self.undo_loop => HistoryOf::Loop,
@@ -4556,9 +4615,12 @@ impl Player {
 
     /// The page showing has the wheel's outline: the pages
     /// [`outlined`] names, but not the mixer's I/O view, whose wheel and
-    /// - / + keep moving through its rows.
+    /// the – and + buttons keep moving through its rows, nor the
+    /// Sequencer's Notes (the note editor's rows).
     fn outline_here(&self) -> bool {
-        outlined(self.view) && !(self.view == View::Mixer && self.io_showing())
+        outlined(self.view)
+            && !(self.view == View::Mixer && self.io_showing())
+            && !(self.view == View::Sequencer && self.time.edit.is_some())
     }
 
     /// The outlined control is a value the wheel can turn.
@@ -5348,7 +5410,7 @@ impl Player {
             ToUi::Steps(st) => {
                 self.play.set_steps(*st);
                 self.refresh_play();
-                if self.view == View::Play {
+                if matches!(self.view, View::Play | View::Sequencer) {
                     self.refresh_qlinks();
                 }
             }
@@ -5377,13 +5439,15 @@ impl Player {
                 if self.play.levels != l {
                     self.play.set_levels(l);
                     self.refresh_play();
-                    if self.view == View::Play {
+                    if matches!(self.view, View::Play | View::Sequencer) {
                         self.refresh_qlinks();
                     }
                 }
             }
             ToUi::PlayQLink(k, ticks) => {
-                if self.play.held.is_some() && matches!(self.view, View::Play | View::Arrange) {
+                if self.play.held.is_some()
+                    && matches!(self.view, View::Play | View::Sequencer | View::Arrange)
+                {
                     // The step pads held: the Q-Links set them.
                     self.play_qlink(k, ticks);
                 } else if self.chain_page.drives(self.view) {
@@ -5391,7 +5455,7 @@ impl Player {
                     self.chain_qlink(k, ticks);
                 } else if self.audio_qlink(k, ticks) {
                     // An audio region's knobs.
-                } else if matches!(self.view, View::Play | View::Arrange) {
+                } else if matches!(self.view, View::Play | View::Sequencer | View::Arrange) {
                     self.play_qlink(k, ticks);
                 }
             }
@@ -5413,10 +5477,8 @@ impl Player {
                 }
             }
             ToUi::PlayView(v) => {
-                let v = v.unwrap_or_else(|| {
-                    let at = PlayView::ALL.iter().position(|&x| x == self.play.view);
-                    PlayView::from_index(at.map_or(0, |i| (i + 1) % PlayView::ALL.len()))
-                });
+                // MAIN on Play: All and Loop in turn.
+                let v = v.unwrap_or_else(|| self.play.view.next_on_play());
                 self.show_play_view(v);
             }
             ToUi::ArrangeView(v) => {
@@ -5686,9 +5748,9 @@ impl Player {
                     self.refresh_qlinks();
                 }
                 self.refresh_pads_bar();
-                if self.ready && self.view == View::Play {
+                if self.ready && self.play_frame() {
                     // The quick band comes and goes with NOTE REPEAT.
-                    self.show_view(View::Play);
+                    self.show_view(self.view);
                 }
                 self.refresh_chips();
                 self.refresh_hint();
@@ -5981,6 +6043,9 @@ impl Player {
                     || st.list_view != self.time.list_view
                     || lens(&st) != lens(&self.time);
                 let switched = st.perform != self.time.perform;
+                // The note editor opened or closed: the Sequencer's Notes
+                // or Steps.
+                let notes = st.edit.is_some() != self.time.edit.is_some();
                 // A take made, undone or redone: UNDO on All takes the takes.
                 let seen = (st.done.len(), st.undone.len());
                 if seen != self.seen_takes {
@@ -6026,6 +6091,9 @@ impl Player {
                     // MAKE or PERFORM on the top bar.
                     self.refresh_chips();
                 }
+                if notes && self.ready && self.view == View::Sequencer {
+                    self.show_view(View::Sequencer);
+                }
             }
             ToUi::AudioLevels(levels) => {
                 let mut moved = false;
@@ -6048,7 +6116,9 @@ impl Player {
                 let swing = self.play.transport.swing;
                 self.play.set_transport(info);
                 self.refresh_play();
-                if self.view == View::Play && self.play.transport.swing != swing {
+                if matches!(self.view, View::Play | View::Sequencer)
+                    && self.play.transport.swing != swing
+                {
                     self.refresh_qlinks();
                 }
             }
@@ -6149,7 +6219,7 @@ impl Player {
                 }
             }
             (View::Synth, RowKey::Step(d)) => self.apply(ToUi::SynthWheel(d)),
-            (View::Arrange, RowKey::Pick(d)) => {
+            (View::Arrange | View::Sequencer, RowKey::Pick(d)) => {
                 let list = self.time_page.wheel_list(&self.ui);
                 let Some(l) = self.ui.get_mut::<OptionList>(list) else {
                     return;
@@ -6167,7 +6237,7 @@ impl Player {
                 }
             }
             (View::Arrange, RowKey::Step(d)) if self.song_grab && self.song_wheel(d) => {}
-            (View::Arrange, RowKey::Step(d)) => self.apply(ToUi::ClipsWheel {
+            (View::Arrange | View::Sequencer, RowKey::Step(d)) => self.apply(ToUi::ClipsWheel {
                 delta: d,
                 scroll: false,
             }),
@@ -7915,17 +7985,26 @@ impl Player {
 
     fn show_view(&mut self, v: View) {
         self.close_touch_page();
-        // Any page change closes the list of kits; another tab, the REC
-        // chip's target list.
+        // Any page change closes the list of kits; another tab or the
+        // note editor, the REC chip's target list (Play's and the
+        // Sequencer's transport both have the chip).
         self.kit_list = false;
-        if v != View::Play {
+        let notes = v == View::Sequencer && self.time.edit.is_some();
+        if v != self.view || notes || !matches!(v, View::Play | View::Sequencer) {
             self.rec_list = false;
         }
+        let followed = self.play_follows(v);
         let page = match v {
-            View::Play if self.band_showing() && self.ready => QUICK_PAGE.to_string(),
+            // The Sequencer's Notes: the note editor on the Clips page.
+            View::Sequencer if self.time.edit.is_some() => CLIPS_PAGE.to_string(),
+            View::Play | View::Sequencer if self.band_showing() && self.ready => {
+                QUICK_PAGE.to_string()
+            }
             View::Play if self.levels.open && self.ready => LEVELS_PAGE.to_string(),
-            View::Play if self.rec_list && self.ready => crate::rec_list::REC_PAGE.to_string(),
-            View::Play => self
+            View::Play | View::Sequencer if self.rec_list && self.ready => {
+                crate::rec_list::REC_PAGE.to_string()
+            }
+            View::Play | View::Sequencer => self
                 .play
                 .view
                 .page_with(self.settings.timing_strip, self.play.inspecting())
@@ -8003,6 +8082,11 @@ impl Player {
         self.switch_page(&page);
         let tab = self.view != v;
         self.view = v;
+        if followed {
+            // The play page took the Sequencer's Beats, or Play's own view.
+            self.refresh_pads_bar();
+            self.refresh_play();
+        }
         self.arm_for_page();
         if tab {
             // The header's REC chip shows on the pages without a transport
@@ -8019,8 +8103,9 @@ impl Player {
             // The list's rows fit the room the browser has now.
             self.step_browser();
         }
-        if v == View::Arrange {
-            // How many slots fit is known once the grid is on screen.
+        if matches!(v, View::Arrange | View::Sequencer) {
+            // How many slots fit is known once the grid is on screen; the
+            // page has the grid or the note editor as the tab has it.
             self.time_page.update(&mut self.ui, &self.time);
         }
         if matches!(v, View::Looper | View::Play) {
@@ -8233,7 +8318,10 @@ impl Player {
                 return Some(FromUi::LearnValue(v));
             }
         }
-        if matches!(self.view, View::Play | View::Arrange | View::Chain) {
+        if matches!(
+            self.view,
+            View::Play | View::Sequencer | View::Arrange | View::Chain
+        ) {
             self.watch_card_press(finger, phase, x, y);
         }
         if phase == Touch::Down && finger != WHEEL_FINGER {
@@ -8638,11 +8726,12 @@ impl Player {
             (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_BPM)) => {
                 Some(FromUi::TapTempo)
             }
-            // The REC chip, on Play's card or Arrange's bar (its only chip).
-            // The REC chip on Play opens and closes its target list (mockup
-            // H); on Arrange's bar it says what REC records.
+            // The REC chip, on Play's and the Sequencer's card or Arrange's
+            // bar (its only chip). On the card it opens and closes its
+            // target list (mockup H); on Arrange's bar it says what REC
+            // records.
             (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_REC)) => {
-                if self.view == View::Play {
+                if self.play_frame() {
                     self.toggle_rec_list();
                 } else {
                     // The Arp panel and the pattern workspace keep their
@@ -8697,8 +8786,14 @@ impl Player {
                 None
             }
             (HISTORY, _) => None,
+            // The Sequencer's switch: Steps shows already; Notes opens the
+            // note editor on the clip the steps show (the armed track's).
+            (play_page::TRANSPORT, EventKind::Tab(i)) if self.view == View::Sequencer => (i
+                == play_page::SEQ_NOTES)
+                .then_some(FromUi::Time(TimeAction::Edit(EditAction::Open))),
             (play_page::TRANSPORT, EventKind::Tab(i)) => {
-                self.show_play_view(PlayView::from_index(i));
+                let v = play_page::PLAY_VIEWS.get(i).copied().unwrap_or_default();
+                self.show_play_view(v);
                 None
             }
             (play_page::MASTER, EventKind::Value(v)) => {
@@ -8726,7 +8821,8 @@ impl Player {
                 None
             }
             (play_page::QLINKS, EventKind::Step { index, delta })
-                if matches!(self.view, View::Play | View::Arrange) && !self.band_showing() =>
+                if matches!(self.view, View::Play | View::Sequencer | View::Arrange)
+                    && !self.band_showing() =>
             {
                 if !self.audio_qlink(index, delta) {
                     self.play_qlink(index, delta);
@@ -9191,7 +9287,7 @@ impl Player {
             let held = held + dt.max(0.0);
             if held >= TEMPO_HOLD {
                 self.tempo_press = None;
-                if self.view == View::Play && self.typing.is_none() {
+                if self.play_frame() && self.typing.is_none() {
                     self.type_tempo();
                 }
             } else {
@@ -10297,7 +10393,7 @@ pub fn sample_beats_synth(fonts: Fonts) -> Player {
     h.period(128, &mut q);
     p.apply(ToUi::Time(Box::new(h.state())));
     p.apply(ToUi::Steps(Box::new(h.steps())));
-    p.show_play_view(PlayView::Beats);
+    p.apply(ToUi::Show(View::Sequencer));
     p.outbox.retain(|a| !matches!(a, FromUi::Arm(_)));
     let _ = p.take_actions();
     p.ui.invalidate();
@@ -10428,7 +10524,12 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
     }
     probes.publish();
     p.apply(ToUi::Engines(shared));
-    p.show_play_view(v);
+    if v == PlayView::Beats {
+        // Beats' pages are the Sequencer's Steps.
+        p.apply(ToUi::Show(View::Sequencer));
+    } else {
+        p.show_play_view(v);
+    }
     // (The view arming what it shows, for a desk there is none of here.)
     p.outbox.retain(|a| !matches!(a, FromUi::Arm(_)));
     match v {
@@ -11256,10 +11357,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut kits = sample_player(fonts());
     kits.toggle_kit_list();
     out.push(("kits", kits));
-    // The Play page's views, as mockups F to I.
+    // The Play page's views and the Sequencer's Steps (Beats' pages), as
+    // mockups F to I.
     for (name, v) in [
         ("play-all-loop", PlayView::All),
-        ("play-beats", PlayView::Beats),
+        ("sequencer-steps", PlayView::Beats),
         ("play-loop", PlayView::Loop),
     ] {
         let mut p = sample_play(fonts(), v);
@@ -11288,10 +11390,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     synth.apply(ToUi::Kit(synth_kit));
     sample_loop(&mut synth);
     out.push(("play-synth-in-key", synth));
-    // Beats on a synth track (the sequencer design's mockup B): C minor
-    // in key, the scale rows high on top with the roots shaded, a triad on
-    // step 1.
-    out.push(("play-beats-synth", sample_beats_synth(fonts())));
+    // The Sequencer's Steps on a synth track (the sequencer design's
+    // mockup B): C minor in key, the scale rows high on top with the roots
+    // shaded, a triad on step 1.
+    out.push(("sequencer-steps-synth", sample_beats_synth(fonts())));
     // The mixer over Play (TRACK MIX), a strip selected for the Q-Links.
     let mut mixer = sample_player(fonts());
     let mut m = mpfree_mixer_ui::sample::song_mixer();
@@ -11553,11 +11655,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     power.power_press();
     power.power_show(crate::power::Step::Going(crate::power::Action::ShutDown));
     out.push(("power-going", power));
-    // UNDO held on Play's Beats view: the takes' history, two undone, the
-    // wheel's outline one step back from now.
+    // UNDO held on the Sequencer's Steps: the takes' history, two undone,
+    // the wheel's outline one step back from now.
     let mut undo = sample_player(fonts());
-    undo.apply(ToUi::Show(View::Play));
-    undo.apply(ToUi::PlayView(Some(PlayView::Beats)));
+    undo.apply(ToUi::Show(View::Sequencer));
     let mut st = undo.time.clone();
     let take = |n: u32, track: usize, captured: bool, edited: bool| mpfree_time_ui::view::TakeRow {
         number: n,
@@ -11993,12 +12094,12 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             Err(e) => eprintln!("{name} sample: {e}"),
         }
     }
-    // The note editor on the Arrange page: the piano roll, the list, then
-    // the tracker on a bar of drums.
+    // The note editor, the Sequencer's Notes: the piano roll, the list,
+    // then the tracker on a bar of drums.
     for (name, lens) in [
-        ("arrange-notes", Some(Lens::Grid)),
-        ("arrange-notes-list", Some(Lens::List)),
-        ("arrange-notes-tracker", None),
+        ("sequencer-notes", Some(Lens::Grid)),
+        ("sequencer-notes-list", Some(Lens::List)),
+        ("sequencer-notes-tracker", None),
     ] {
         let state = match lens {
             Some(lens) => mpfree_time_ui::sample::notes_state(lens),
@@ -12008,7 +12109,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             Ok(state) => {
                 let mut p = quiet_player(fonts());
                 p.apply(ToUi::Time(Box::new(state)));
-                p.apply(ToUi::Show(View::Arrange));
+                p.apply(ToUi::Show(View::Sequencer));
                 out.push((name, p));
             }
             Err(e) => eprintln!("{name} sample: {e}"),
@@ -13470,8 +13571,9 @@ mod tests {
             tap(&mut p, (edit.x + edit.w / 2, edit.y + edit.h / 2)),
             Some(FromUi::Time(TimeAction::Edit(EditAction::Open)))
         );
-        // Open, the piano roll takes the grid's place: a tap on a note
-        // picks it, and TC corrects the timing.
+        // Open, the app shows the Sequencer, whose Notes are the piano
+        // roll in the grid's place: a tap on a note picks it, and TC
+        // corrects the timing.
         let mut clip = mpfree_seq::Clip::new("Beat", 3840);
         clip.notes = vec![
             mpfree_seq::Note::new(0, 240, 0, 100),
@@ -13484,6 +13586,14 @@ mod tests {
             bar: 3840,
         }));
         p.time_page.update(&mut p.ui, &p.time);
+        assert_eq!(
+            p.ui.layout_of(CLIPS_PAGE),
+            Some(time_view::CLIPS_LAYOUT),
+            "Arrange keeps its grid while the editor is open"
+        );
+        p.apply(ToUi::Show(View::Sequencer));
+        assert_eq!(p.page(), CLIPS_PAGE);
+        assert_eq!(p.ui.layout_of(CLIPS_PAGE), Some(time_view::EDIT_LAYOUT));
         p.ui.paint(&mut SoftCanvas::new(1280, 800));
         let area = p.ui.rect_of(time_view::NOTES).unwrap();
         let grid = p.ui.get::<NoteGrid>(time_view::NOTES).unwrap();
@@ -13507,6 +13617,19 @@ mod tests {
         let hint = &p.ui.get::<Label>("hint").unwrap().text;
         assert_eq!(hint, time_view::EDIT_TRACKER_HINT);
         assert!(hint.contains("SHIFT + wheel: scroll"));
+        // Closed (‹ Steps), the Sequencer shows its Steps again; Arrange
+        // its grid.
+        let mut st = p.time.clone();
+        st.edit = None;
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(p.page(), play_page::BEATS_TIMING_PAGE);
+        let card = p.ui.rect_of(play_page::TRANSPORT).unwrap();
+        let (_, segs) = PlayTransport::switch(card, 2);
+        assert_eq!(
+            tap(&mut p, (segs[1].x + 10, segs[1].y + 10)),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Open))),
+            "Notes opens it again"
+        );
     }
 
     /// Jay, 12 Nov 08:11Z: Record has a red dot, Stop a square and Play a
@@ -13521,8 +13644,8 @@ mod tests {
             down.or(p.touch(1, Touch::Up, x, y))
         };
         let card = p.ui.rect_of(play_page::TRANSPORT).unwrap();
-        let (_, segs) = PlayTransport::switch(card);
-        tap(&mut p, (segs[2].x + 10, segs[2].y + 10));
+        let (_, segs) = PlayTransport::switch(card, play_page::PLAY_SWITCH.len());
+        tap(&mut p, (segs[1].x + 10, segs[1].y + 10));
         // (The Loop view arming the loop, for a desk there is none of here.)
         p.take_actions();
         sample_loop(&mut p);
@@ -13577,8 +13700,8 @@ mod tests {
             down.or(p.touch(1, Touch::Up, x, y))
         };
         let card = p.ui.rect_of(play_page::TRANSPORT).unwrap();
-        let (_, segs) = PlayTransport::switch(card);
-        tap(&mut p, (segs[2].x + 10, segs[2].y + 10));
+        let (_, segs) = PlayTransport::switch(card, play_page::PLAY_SWITCH.len());
+        tap(&mut p, (segs[1].x + 10, segs[1].y + 10));
         // (The Loop view arming the loop, for a desk there is none of here.)
         p.take_actions();
         sample_loop(&mut p);
@@ -13624,15 +13747,13 @@ mod tests {
         );
     }
 
-    /// MAIN steps the Play page's views; STEP SEQ goes to Beats; SAMPLE
-    /// EDIT opens the Sample tab's editors; PROG EDIT the Pads tab's Pad
-    /// view.
+    /// MAIN steps the Play page's views (All and Loop: Beats is the
+    /// Sequencer's Steps); SAMPLE EDIT opens the Sample tab's editors;
+    /// PROG EDIT the Pads tab's Pad view.
     #[test]
     fn the_mode_buttons_pick_play_views_and_sample_editors() {
         let mut p = sample_player(Fonts::embedded());
         assert_eq!(p.play_view(), PlayView::All);
-        p.apply(ToUi::PlayView(None));
-        assert_eq!(p.play_view(), PlayView::Beats);
         p.apply(ToUi::PlayView(None));
         assert_eq!(p.play_view(), PlayView::Loop);
         p.apply(ToUi::PlayView(None));
@@ -15118,15 +15239,16 @@ mod tests {
         st.undone.push(st.done.pop().unwrap());
         p.apply(ToUi::Time(Box::new(st)));
         assert_eq!(undo(&mut p, true), takes(TimeAction::Redo));
-        // The Loop view: the loop; Beats: the takes; Arrange: the takes.
+        // The Loop view: the loop; the Sequencer: the takes; Arrange: the
+        // takes.
         p.apply(ToUi::PlayView(Some(PlayView::Loop)));
         assert_eq!(undo(&mut p, false), looper(L::Undo));
-        p.apply(ToUi::PlayView(Some(PlayView::Beats)));
+        p.apply(ToUi::Show(View::Sequencer));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
         p.apply(ToUi::Show(View::Arrange));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
         // The pages that arm what they show: Play's Loop view and the
-        // Looper tab the loop, Beats the notes; All leaves the arm.
+        // Looper tab the loop, the Sequencer the notes; All leaves the arm.
         use crate::rec_arm::Target;
         let armed = |p: &mut Player| {
             p.take_actions()
@@ -15138,18 +15260,18 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         p.take_actions();
-        // Play opens on Beats, and the notes are armed already.
+        // Play opens on its Loop view again, the loop armed.
         p.apply(ToUi::Show(View::Play));
-        assert_eq!(armed(&mut p), []);
+        assert_eq!(armed(&mut p), [Target::Loop]);
         p.apply(ToUi::PlayView(Some(PlayView::All)));
         assert_eq!(armed(&mut p), []);
         p.apply(ToUi::PlayView(Some(PlayView::Loop)));
-        assert_eq!(armed(&mut p), [Target::Loop]);
-        p.apply(ToUi::PlayView(Some(PlayView::Beats)));
+        assert_eq!(armed(&mut p), [], "the loop is armed already");
+        p.apply(ToUi::Show(View::Sequencer));
         assert_eq!(armed(&mut p), [Target::Notes]);
         p.apply(ToUi::Show(View::Looper));
         assert_eq!(armed(&mut p), [Target::Loop]);
-        p.apply(ToUi::Show(View::Play));
+        p.apply(ToUi::Show(View::Sequencer));
         assert_eq!(armed(&mut p), [Target::Notes]);
         // The Synth tab and the mixer: their own turns.
         p.apply(ToUi::Show(View::Synth));
@@ -15337,6 +15459,9 @@ mod tests {
         assert_eq!(p.take_actions(), vec![]);
     }
 
+    /// Play's switch is All | Loop; the Sequencer's Steps are Beats'
+    /// pages (the Play, Pads and Sequencer redesign), with Steps | Notes
+    /// in the same place.
     #[test]
     fn one_tap_switches_the_play_view_and_the_q_links_follow_it() {
         let mut p = sample_player(Fonts::embedded());
@@ -15345,8 +15470,14 @@ mod tests {
             down.or(p.touch(1, Touch::Up, x, y))
         };
         let card = p.ui.rect_of(play_page::TRANSPORT).unwrap();
-        let (_, segs) = PlayTransport::switch(card);
+        let (_, segs) = PlayTransport::switch(card, play_page::PLAY_SWITCH.len());
         let seg = |i: usize| (segs[i].x + segs[i].w / 2, segs[i].y + segs[i].h / 2);
+        let look = |p: &Player| {
+            p.ui.get::<PlayTransport>(play_page::TRANSPORT)
+                .unwrap()
+                .look
+                .clone()
+        };
         let names = |p: &Player| -> Vec<String> {
             p.ui.get::<QLinkColumn>(play_page::QLINKS)
                 .unwrap()
@@ -15356,7 +15487,8 @@ mod tests {
                 .collect()
         };
         assert_eq!(names(&p), ["Swing", "Tune", "Filter", "Delay send"]);
-        assert_eq!(tap(&mut p, seg(2)), None, "the screen's own choice");
+        assert_eq!(segs.len(), 2, "All, Loop: Beats is the Sequencer's");
+        assert_eq!(tap(&mut p, seg(1)), None, "the screen's own choice");
         assert_eq!((p.page(), p.play_view()), ("Play · Loop", PlayView::Loop));
         assert!(p.ui.rect_of(crate::looper_page::LOOP_STRIP).is_some());
         assert_eq!(
@@ -15364,36 +15496,51 @@ mod tests {
             ["Loop level", "Delay send", "Line level", "Filter"]
         );
         assert_eq!(
-            p.ui.get::<PlayTransport>(play_page::TRANSPORT)
-                .unwrap()
-                .look
-                .view,
-            2
+            (look(&p).views, look(&p).view),
+            (&play_page::PLAY_SWITCH[..], 1)
         );
-        // Beats, with Your timing as a strip under the pattern (Jay 13
-        // Nov: the Drum view folded into Beats).
-        assert_eq!(segs.len(), 3, "All, Beats, Loop: no Drum view");
-        assert_eq!(tap(&mut p, seg(1)), None);
+        // The Sequencer's Steps: Beats, with Your timing as a strip under
+        // the pattern (Jay 13 Nov: the Drum view folded into Beats), and
+        // the switch is Steps | Notes with Steps lit.
+        p.apply(ToUi::Show(View::Sequencer));
         assert_eq!(p.page(), play_page::BEATS_TIMING_PAGE);
         assert!(p.ui.rect_of(play_page::TIMING).is_some());
         assert_eq!(names(&p), ["Swing", "Tune", "Filter", "Delay send"]);
-        // Another tab and back: the view is kept.
+        assert_eq!(
+            (look(&p).views, look(&p).view),
+            (&play_page::SEQ_SWITCH[..], 0)
+        );
+        // Another tab and back: each keeps its view.
         p.apply(ToUi::Show(View::Synth));
-        p.apply(ToUi::Show(View::Play));
+        p.apply(ToUi::Show(View::Sequencer));
         assert_eq!(p.page(), play_page::BEATS_TIMING_PAGE);
+        p.apply(ToUi::Show(View::Play));
+        assert_eq!((p.page(), p.play_view()), ("Play · Loop", PlayView::Loop));
+        assert_eq!(look(&p).views, &play_page::PLAY_SWITCH[..]);
+        p.apply(ToUi::Show(View::Sequencer));
         // Play's options turn the strip off: the pattern has the room.
         let mut s = p.settings.clone();
         s.timing_strip = false;
         p.apply(ToUi::Settings(s));
         assert_eq!(p.page(), "Play · Beats");
         assert!(p.ui.rect_of(play_page::TIMING).is_none());
+        // Steps shows already; Notes asks for the note editor.
+        p.take_actions(); // the arms the views asked for
+        assert_eq!(tap(&mut p, seg(0)), None);
+        assert_eq!(
+            tap(&mut p, seg(1)),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Open)))
+        );
         // Each view fits under the transport card, left of the master.
-        for v in PlayView::ALL {
-            tap(&mut p, seg(v.index()));
+        for (v, i) in [(View::Sequencer, 0), (View::Play, 0), (View::Play, 1)] {
+            p.apply(ToUi::Show(v));
+            if v == View::Play {
+                tap(&mut p, seg(i));
+            }
             let throws = p.ui.rect_of(play_page::THROWS).unwrap();
             assert!(
                 throws.y > 168 && throws.bottom() <= 750 && throws.right() <= 1050,
-                "{v:?}: {throws:?}"
+                "{v:?} {i}: {throws:?}"
             );
             assert!(p.ui.rect_of(play_page::PADS).is_none(), "{v:?}: no pads");
         }
@@ -15905,12 +16052,12 @@ mod tests {
         app.button(70, false, 0.0);
         // The Mix tab, last in the bar, opens the mixer on the view it
         // showed last (the audio thread remembers it).
-        let fx = app.tab(6);
+        let fx = app.tab(7);
         assert_eq!(fx.first(), Some(&crate::app::Effect::MixerLast), "{fx:?}");
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), MIXER_PAGE);
         // A tab leaves it; SHIFT + TRACK MIX opens it on Pad Mix.
-        let fx = app.tab(2);
+        let fx = app.tab(3);
         assert!(fx.contains(&crate::app::Effect::Mixer(None)), "{fx:?}");
         apply_effects(&mut p, fx);
         app.button(mpfree_controller::mpc_one::button::SHIFT, true, 0.0);
@@ -16078,7 +16225,7 @@ mod tests {
         sample_panels(&mut p, View::Chain);
         assert_eq!(p.page(), mpfree_chain_ui::CHAIN_PAGE);
         // The chain editor is the Mix tab's: its tab stays lit.
-        assert_eq!(p.ui.get::<Header>("header").unwrap().active, 6);
+        assert_eq!(p.ui.get::<Header>("header").unwrap().active, 7);
         let q = p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap();
         assert!(q.title.starts_with("Q-Links · "), "{}", q.title);
         assert!(!q.cards[1].is_free(), "{:?}", q.cards);
@@ -16733,7 +16880,7 @@ mod tests {
         q_link(&mut p);
         assert_eq!(title(&p), "Q-Links · Play");
         // On the Synth tab Q-LINK does nothing yet.
-        apply_effects(&mut p, app.tab(3));
+        apply_effects(&mut p, app.tab(4));
         let fx = app.button(71, true, 0.0);
         assert!(!fx.contains(&Effect::QLinkBank), "{fx:?}");
     }
@@ -16750,7 +16897,7 @@ mod tests {
         use mpfree_time_ui::song::{AudioBlock, AudioLane};
         let mut p = sample_player(Fonts::embedded());
         let mut app = sample_app();
-        apply_effects(&mut p, app.tab(2));
+        apply_effects(&mut p, app.tab(3));
         assert_eq!(p.view, View::Arrange);
         let title = |p: &Player| {
             p.ui.get::<QLinkColumn>(play_page::QLINKS)
@@ -16960,7 +17107,7 @@ mod tests {
                 .clone()
         };
         let play_cards = cards(&p);
-        apply_effects(&mut p, app.tab(2));
+        apply_effects(&mut p, app.tab(3));
         assert_eq!(p.view, View::Arrange);
         assert_eq!(title(&p), "Q-Links · Arrange");
         assert_eq!(cards(&p), play_cards, "Play's knobs");
@@ -19578,7 +19725,7 @@ mod tests {
         assert_eq!(p.page(), sample_page::PAGE);
         assert_eq!(
             p.ui.get::<Header>("header").unwrap().active,
-            5,
+            6,
             "the Sample tab, after Looper"
         );
         assert_eq!(p.ui.get::<PadBar>(BAR).unwrap().title, "Pad A5 · Break 92");
@@ -22569,12 +22716,12 @@ mod tests {
                 .label,
             "C#3"
         );
-        // The Synth tab is the fourth; the app decides, then the page shows.
+        // The Synth tab is the fifth; the app decides, then the page shows.
         let header = p.ui.rect_of("header").unwrap();
-        let synth_tab = p.ui.get::<Header>("header").unwrap().tab_rect(header, 3);
+        let synth_tab = p.ui.get::<Header>("header").unwrap().tab_rect(header, 4);
         assert_eq!(
             p.touch(1, Touch::Down, synth_tab.x + 20, synth_tab.y + 20),
-            Some(FromUi::Tab(3))
+            Some(FromUi::Tab(4))
         );
         p.apply(ToUi::Show(View::Synth));
         assert_eq!(p.page(), "Synth");

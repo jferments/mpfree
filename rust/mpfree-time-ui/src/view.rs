@@ -3399,6 +3399,10 @@ pub struct TimePage {
     pub clip_card: bool,
     /// The Record panel shows its Scene tab: the scene editor.
     pub scene_card: bool,
+    /// The note editor shows on another page (the app's Sequencer tab):
+    /// while it is open the Clips page keeps the grid, the song or the
+    /// list, and the editor's layout comes back once this is false again.
+    pub edit_hidden: bool,
 }
 
 impl TimePage {
@@ -3635,7 +3639,8 @@ impl TimePage {
             }
         }
         // The grid, the song or the note editor, as the app has it.
-        let want = match (st.edit.is_some(), st.song_view, self.clip_card) {
+        let editing = st.edit.is_some() && !self.edit_hidden;
+        let want = match (editing, st.song_view, self.clip_card) {
             (true, ..) => EDIT_LAYOUT,
             _ if st.list_view && self.scene_card => LIST_SCENE_LAYOUT,
             _ if st.list_view && self.clip_card => LIST_CARD_LAYOUT,

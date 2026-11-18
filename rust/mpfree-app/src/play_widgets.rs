@@ -15,7 +15,7 @@
 //! in and decides what the events do. Each redraws only what changed where
 //! that matters on the MPC (the transport's numbers, a pad, a step).
 
-use crate::play_page::{SynthPads, LAYOUT_SWITCH, LOCKED, VIEWS};
+use crate::play_page::{SynthPads, LAYOUT_SWITCH, LOCKED, PLAY_SWITCH};
 use mpfree_arp::scale::pads::PadLayout;
 use mpfree_seq::Cond;
 use mpfree_ui::draw::{self, card, card_head, dot, pill, speaker, KNOB};
@@ -41,6 +41,9 @@ pub struct TransportLook {
     /// The bar playing within `bars` (the loop's, or 4).
     pub bar: usize,
     pub bars: usize,
+    /// The switch's views: All | Loop on Play, Steps | Notes on the
+    /// Sequencer.
+    pub views: &'static [&'static str],
     /// The view lit in the switch.
     pub view: usize,
     /// The REC chip: what REC records ([`crate::rec_arm`]).
@@ -277,6 +280,7 @@ impl Default for TransportLook {
             step: None,
             bar: 0,
             bars: 4,
+            views: &PLAY_SWITCH,
             view: 0,
             rec: None,
         }
@@ -323,24 +327,26 @@ impl PlayTransport {
         r.inset_xy(16, 12)
     }
 
-    /// The view switch's box and its segments.
-    pub fn switch(r: Rect) -> (Rect, [Rect; VIEWS.len()]) {
+    /// The view switch's box and its `n` segments.
+    pub fn switch(r: Rect, n: usize) -> (Rect, Vec<Rect>) {
         let inner = PlayTransport::inner(r);
-        let w = VIEWS.len() as i32 * SWITCH_SEG_W + 8;
+        let w = n as i32 * SWITCH_SEG_W + 8;
         let b = Rect::new(
             inner.right() - w,
             inner.y + (inner.h - SWITCH_SEG_H - 8) / 2,
             w,
             SWITCH_SEG_H + 8,
         );
-        let segs = std::array::from_fn(|i| {
-            Rect::new(
-                b.x + 4 + i as i32 * SWITCH_SEG_W,
-                b.y + 4,
-                SWITCH_SEG_W,
-                SWITCH_SEG_H,
-            )
-        });
+        let segs = (0..n)
+            .map(|i| {
+                Rect::new(
+                    b.x + 4 + i as i32 * SWITCH_SEG_W,
+                    b.y + 4,
+                    SWITCH_SEG_W,
+                    SWITCH_SEG_H,
+                )
+            })
+            .collect();
         (b, segs)
     }
 
@@ -476,7 +482,7 @@ impl Widget for PlayTransport {
             "BPM",
         );
         // The view switch at the right end: one tap each.
-        let (b, segs) = PlayTransport::switch(r);
+        let (b, segs) = PlayTransport::switch(r, self.look.views.len());
         // The REC chip between the tempo and where the bar is.
         let gw = 16 * DOT_CELL + 3 * 6;
         let mut rec = Rect::default();
@@ -491,7 +497,7 @@ impl Widget for PlayTransport {
             }
         }
         cx.canvas.fill_round_rect(b, 12, t.bg.mix(t.surface, 0.3));
-        for (i, (sr, name)) in segs.iter().zip(VIEWS).enumerate() {
+        for (i, (sr, name)) in segs.iter().zip(self.look.views).enumerate() {
             let on = i == self.look.view;
             if on {
                 cx.canvas.fill_round_rect(*sr, 10, t.accent);
@@ -524,11 +530,14 @@ impl Widget for PlayTransport {
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
-        let (_, segs) = PlayTransport::switch(r);
+        let (_, segs) = PlayTransport::switch(r, self.look.views.len());
         let mut out: Vec<Target> = segs
             .iter()
+            .zip(self.look.views)
             .enumerate()
-            .map(|(i, s)| Target::tap("view", i, VIEWS[i], *s).disabled_if(i == self.look.view))
+            .map(|(i, (s, name))| {
+                Target::tap("view", i, *name, *s).disabled_if(i == self.look.view)
+            })
             .collect();
         if let Some((pr, _, a)) = self.painted.borrow().as_ref() {
             if *pr == r && !a.bpm.is_empty() {
@@ -550,7 +559,7 @@ impl Widget for PlayTransport {
         if phase != Touch::Down {
             return None;
         }
-        let (_, segs) = PlayTransport::switch(r);
+        let (_, segs) = PlayTransport::switch(r, self.look.views.len());
         if let Some(i) = segs.iter().position(|s| s.contains(x, y)) {
             return Some(EventKind::Tab(i));
         }
@@ -2567,15 +2576,24 @@ mod tests {
     fn the_switch_taps_give_the_views() {
         let mut tr = PlayTransport::default();
         let r = Rect::new(12, 84, 998, 84);
-        let (_, segs) = PlayTransport::switch(r);
+        let (_, segs) = PlayTransport::switch(r, tr.look.views.len());
         for (i, s) in segs.iter().enumerate() {
             assert_eq!(
                 tr.touch(1, Touch::Down, s.x + s.w / 2, s.y + s.h / 2, r),
                 Some(EventKind::Tab(i))
             );
         }
-        assert_eq!(segs.len(), 3, "All, Beats, Loop");
-        assert!(segs[2].right() <= r.right() - 16);
+        assert_eq!(segs.len(), 2, "All, Loop");
+        assert!(segs[1].right() <= r.right() - 16);
+        // The Sequencer's switch: Steps and Notes, named as the targets.
+        tr.look.views = &crate::play_page::SEQ_SWITCH;
+        let names: Vec<String> = tr
+            .targets(r)
+            .into_iter()
+            .filter(|t| t.id == "view")
+            .map(|t| t.label)
+            .collect();
+        assert_eq!(names, ["Steps", "Notes"]);
     }
 
     #[test]
