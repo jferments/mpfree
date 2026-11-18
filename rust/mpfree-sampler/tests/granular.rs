@@ -112,6 +112,50 @@ fn a_granular_pad_plays_the_grain_engine_with_tune_and_reverse_folded_in() {
 }
 
 #[test]
+fn the_cloud_says_its_spray_as_moved_and_when_it_is_thinned() {
+    let s = ramp(441_000);
+    // 2 s grains, 80 a second: 160 wanted at once, more than a voice keeps.
+    let mut pad = granular_pad(
+        &s,
+        GrainParams {
+            position: 0.5,
+            size_ms: 2_000.0,
+            density: 80.0,
+            spray: 0.2,
+            lfo: GrainLfo {
+                shape: LfoShape::Square,
+                rate_hz: 0.25,
+                beats: None,
+                target: MotionTarget::Spray,
+                depth: 0.5,
+            },
+            ..GrainParams::default()
+        },
+    );
+    let mut e = engine_for(&[(0, pad.clone())], &s, 4);
+    assert_eq!(e.cloud_of(0, 0), None, "nothing plays");
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 100,
+    });
+    run(&mut e, 22_050, 128);
+    let c = e.cloud_of(0, 0).expect("it plays");
+    // The square's first half: the spray moved up by half.
+    assert!((c.spray - 0.7).abs() < 1e-6, "{c:?}");
+    assert!(c.thinned, "{c:?}");
+    assert_eq!(e.cloud_of(0, 1), None, "no such layer");
+    // 100 ms grains at the same density fit.
+    pad.layers[0].region.grain.size_ms = 100.0;
+    let mut e = engine_for(&[(0, pad)], &s, 4);
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 100,
+    });
+    run(&mut e, 22_050, 128);
+    assert!(!e.cloud_of(0, 0).expect("it plays").thinned);
+}
+
+#[test]
 fn key_tracking_moves_the_grains_size_and_the_scan_with_the_pitch() {
     let s = ramp(44_100);
     let base = GrainParams {
