@@ -12,17 +12,20 @@
 //!   sweep from where it was, so nothing clicks.
 //! - The talk box is the MPC's AIR Talk Box idea: three formant filters
 //!   tuned to a vowel (average adult formants from Peterson and Barney,
-//!   1952), so the sound seems to say "ah" or "ee". The envelope and the
-//!   LFO move it along the row of vowels (back to front: OO, OU, AW, AH,
-//!   UH, AE, EH, IH, EE), so it talks as the level moves or in time; the
-//!   formants glide between vowels in pitch, and Formant shifts them all
-//!   for a smaller or bigger mouth.
+//!   1952), so the sound seems to say "ah" or "ee". They are Klatt's
+//!   parallel bank with alternating signs, so they add between formants
+//!   instead of cutting notches, with levels fitted so a saw comes out at
+//!   a sung vowel's and each vowel at the dry's loudness. The envelope and
+//!   the LFO move it along the row of vowels (back to front: OO, OU, AW,
+//!   AH, UH, AE, EH, IH, EE), so it talks as the level moves or in time;
+//!   the formants glide between vowels in pitch, and Formant shifts them
+//!   all for a smaller or bigger mouth. See `docs/dev/design/fx-voice.md`.
 //!
 //! Both are trapezoidal state-variable filters (Simper), retuned every
 //! [`CTRL`] frames from a smoothed position, so a sweep costs a few
-//! tangents a block rather than one a frame; the auto wah's coefficients
-//! glide from one retune to the next, so a fast sweep doesn't buzz at the
-//! retune rate.
+//! tangents a block rather than one a frame; the coefficients glide from
+//! one retune to the next, so a fast sweep doesn't buzz at the retune
+//! rate.
 
 use std::f32::consts::PI;
 
@@ -518,27 +521,38 @@ pub mod talkbox {
 /// The vowels, back to front, so a sweep passes through its neighbours.
 pub const VOWELS: &[&str] = &["OO", "OU", "AW", "AH", "UH", "AE", "EH", "IH", "EE"];
 
-/// Each vowel's three formants in Hz and the second and third formants'
-/// levels in dB under the first (Peterson and Barney's adult averages;
-/// the levels after Fant).
-const FORMANTS: [([f32; 3], [f32; 2]); 9] = [
-    ([300.0, 870.0, 2240.0], [-12.0, -22.0]),  // OO "who'd"
-    ([440.0, 1020.0, 2240.0], [-9.0, -20.0]),  // OU "hood"
-    ([570.0, 840.0, 2410.0], [-4.0, -22.0]),   // AW "hawed"
-    ([730.0, 1090.0, 2440.0], [-5.0, -18.0]),  // AH "father"
-    ([640.0, 1190.0, 2390.0], [-6.0, -16.0]),  // UH "hud"
-    ([660.0, 1720.0, 2410.0], [-6.0, -14.0]),  // AE "had"
-    ([530.0, 1840.0, 2480.0], [-8.0, -12.0]),  // EH "head"
-    ([390.0, 1990.0, 2550.0], [-10.0, -10.0]), // IH "hid"
-    ([270.0, 2290.0, 3010.0], [-14.0, -10.0]), // EE "heed"
+/// Each vowel's three formants in Hz (Peterson and Barney's adult
+/// averages), the second and third formants' gains in dB against the
+/// first's, and the vowel's make-up gain in dB.
+///
+/// The bank is Klatt's parallel one with alternating signs (F1 +, F2 -,
+/// F3 +), so the band-passes add between formants instead of cancelling
+/// (same-sign band-passes cut notches 7 to 16 dB deeper than a mouth's
+/// there). The gains are fitted so a 110 Hz saw comes out with Peterson
+/// and Barney's sung levels under F1 (FX quality V3), and the make-up
+/// puts each vowel at the dry's loudness, halfway between a pink noise's
+/// and a saw's (V4). The fit is mpfree-claude
+/// `fx/quality/tools/talkbox_proto.py`.
+const FORMANTS: [([f32; 3], [f32; 2], f32); 9] = [
+    ([300.0, 870.0, 2240.0], [-8.60, -23.98], 12.13), // OO "who'd"
+    ([440.0, 1020.0, 2240.0], [-3.26, -17.76], 13.16), // OU "hood"
+    ([570.0, 840.0, 2410.0], [-1.08, -22.51], 14.31), // AW "hawed"
+    ([730.0, 1090.0, 2440.0], [-2.58, -18.91], 16.23), // AH "father"
+    ([640.0, 1190.0, 2390.0], [-3.39, -14.69], 15.47), // UH "hud"
+    ([660.0, 1720.0, 2410.0], [-0.13, -9.39], 14.62), // AE "had"
+    ([530.0, 1840.0, 2480.0], [-3.81, -7.47], 14.52), // EH "head"
+    ([390.0, 1990.0, 2550.0], [-10.51, -12.13], 13.94), // IH "hid"
+    ([270.0, 2290.0, 3010.0], [-3.61, -4.97], 11.34), // EE "heed"
 ];
-/// The formants' bandwidths in Hz at Resonance 50 %.
+/// The formants' bandwidths in Hz at Resonance 50 % and Formant 0; they
+/// scale with Formant (a smaller mouth's are wider), so each formant's Q
+/// stays as Resonance sets it.
 const BANDWIDTH: [f32; 3] = [80.0, 100.0, 140.0];
+/// The bank's signs: alternating, so neighbouring formants add between
+/// their peaks.
+const SIGNS: [f32; 3] = [1.0, -1.0, 1.0];
 /// How many vowels the envelope and the LFO move it at full depth.
 const REACH: f32 = 4.0;
-/// Level back for the formant bank (it passes a fraction of a full-band
-/// sound).
-const TALK_GAIN: f32 = 3.0;
 
 static TALKBOX_INFO: NodeInfo = NodeInfo {
     id: "mpfree.fx.talkbox",
@@ -639,21 +653,23 @@ pub static TALKBOX_PRESETS: &[Preset] = &[
     },
 ];
 
-/// The formants (log2 Hz) and their gains at vowel position `v` (0 to 8),
-/// shifted by `shift` octaves.
-fn vowel_at(v: f32, shift: f32) -> ([f32; 3], [f32; 3]) {
+/// The formants (log2 Hz, before Formant's shift) and their signed gains,
+/// make-up included, at vowel position `v` (0 to 8): the frequencies glide
+/// in pitch and the gains in dB from one vowel to the next.
+fn vowel_at(v: f32) -> ([f32; 3], [f32; 3]) {
     let v = v.clamp(0.0, (FORMANTS.len() - 1) as f32);
     let i = (v as usize).min(FORMANTS.len() - 2);
     let t = v - i as f32;
     let (a, b) = (&FORMANTS[i], &FORMANTS[i + 1]);
     let mut f = [0.0; 3];
     for k in 0..3 {
-        f[k] = lerp(fast_log2(a.0[k]), fast_log2(b.0[k]), t) + shift;
+        f[k] = lerp(fast_log2(a.0[k]), fast_log2(b.0[k]), t);
     }
+    let up = lerp(a.2, b.2, t);
     let g = [
-        1.0,
-        fast_db_to_gain(lerp(a.1[0], b.1[0], t)),
-        fast_db_to_gain(lerp(a.1[1], b.1[1], t)),
+        SIGNS[0] * fast_db_to_gain(up),
+        SIGNS[1] * fast_db_to_gain(lerp(a.1[0], b.1[0], t) + up),
+        SIGNS[2] * fast_db_to_gain(lerp(a.1[1], b.1[1], t) + up),
     ];
     (f, g)
 }
@@ -665,9 +681,20 @@ pub struct TalkBox {
     lfo: Lfo,
     env: Follower,
     bank: [Sv; 3],
+    /// Each formant's output gain (sign, level, make-up and its band's
+    /// `k`), ramped a frame at a time to the next retune's.
     gains: [f32; 3],
+    steps: [f32; 3],
     /// The vowel position, 0 to 8 (glides between retunes).
     pos: Smooth,
+    /// The Vowel control, gliding a step a retune, so stepping through
+    /// the vowels doesn't click (V5); the envelope and the LFO move the
+    /// position from here at their own pace.
+    vowel: Smooth,
+    /// Formant in octaves and Resonance's sharpness in octaves (-1 to 1),
+    /// gliding a step a retune.
+    shift: Smooth,
+    sharp: Smooth,
     mix: Smooth,
     ctrl: usize,
     sens: f32,
@@ -689,14 +716,19 @@ impl TalkBox {
             lfo: Lfo::default(),
             env: Follower::default(),
             bank: [Sv::default(); 3],
-            gains: [1.0; 3],
+            gains: [0.0; 3],
+            steps: [0.0; 3],
             pos: Smooth::new(v[0]),
+            vowel: Smooth::new(v[0]),
+            shift: Smooth::new(v[1] / 12.0),
+            sharp: Smooth::new(v[2] / 50.0 - 1.0),
             mix: Smooth::new(v[11] / 100.0),
             ctrl: 0,
             sens: 1.0,
             lfo_now: 0.0,
         };
         t.setup(48_000);
+        t.clear();
         t
     }
     fn apply(&mut self, id: u16, v: f32) {
@@ -705,6 +737,9 @@ impl TalkBox {
             talkbox::ATTACK | talkbox::RELEASE => {
                 self.env.set(self.v[5], self.v[6], self.rate);
             }
+            talkbox::VOWEL => self.vowel.target = v,
+            talkbox::FORMANT => self.shift.target = v / 12.0,
+            talkbox::RESONANCE => self.sharp.target = v / 50.0 - 1.0,
             talkbox::MIX => self.mix.target = v / 100.0,
             _ => {}
         }
@@ -713,18 +748,38 @@ impl TalkBox {
     fn target(&self) -> f32 {
         let env = env_amount(self.env.env) * self.v[3] / 100.0;
         let lfo = self.lfo_now * self.v[10] / 100.0;
-        self.v[0] + REACH * (env + lfo)
+        self.vowel.value + REACH * (env + lfo)
     }
-    fn retune(&mut self) {
-        let (f, g) = vowel_at(self.pos.value, self.v[1] / 12.0);
-        // Resonance 0 to 100 % is half to twice as sharp as speech.
-        let sharp = fast_exp2(self.v[2] / 50.0 - 1.0);
-        for k in 0..3 {
+    /// Each formant's frequency, Q and output gain where the controls are
+    /// now. Resonance 0 to 100 % is half to twice as sharp as speech; a
+    /// sharper band passes less, so its gain rises with the square root of
+    /// the sharpness and the level stays put (V4).
+    fn tuning(&self) -> [(f32, f32, f32); 3] {
+        let (f, g) = vowel_at(self.pos.value);
+        let sharp = fast_exp2(self.sharp.value);
+        let shift = self.shift.value;
+        let up = sharp.sqrt();
+        std::array::from_fn(|k| {
             let hz = fast_exp2(f[k]);
             let q = hz / BANDWIDTH[k] * sharp;
-            self.bank[k].tune(hz, q, self.rate);
+            (hz * fast_exp2(shift), q, g[k] * up / q)
+        })
+    }
+    /// Every [`CTRL`] frames: move the vowel, glide the controls a step,
+    /// and set the filters and gains gliding to where they land.
+    fn retune(&mut self) {
+        let [m] = self.lfo.read([0.0]);
+        self.lfo_now = m;
+        self.vowel.glide();
+        self.pos.target = self.target();
+        self.pos.glide();
+        self.shift.glide();
+        self.sharp.glide();
+        let per = 1.0 / CTRL as f32;
+        for (k, (hz, q, g)) in self.tuning().into_iter().enumerate() {
+            self.bank[k].glide_to(hz, q, self.rate, CTRL);
+            self.steps[k] = (g - self.gains[k]) * per;
         }
-        self.gains = g;
     }
     fn run(&mut self, ctx: &Ctx, from: usize, l: &mut [f32], r: &mut [f32]) {
         self.lfo.follow(ctx, from, self.v[8] as usize);
@@ -735,24 +790,24 @@ impl TalkBox {
             self.env.run(0.5 * (l[i].abs() + r[i].abs()) * self.sens);
             if self.ctrl == 0 {
                 self.ctrl = CTRL;
-                let [m] = self.lfo.read([0.0]);
-                self.lfo_now = m;
-                self.pos.target = self.target();
-                self.pos.glide();
                 self.retune();
             } else {
                 self.pos.glide();
             }
             self.ctrl -= 1;
+            for k in 0..3 {
+                self.bank[k].advance();
+                self.gains[k] += self.steps[k];
+            }
             let mix = self.mix.glide();
             for (ch, s) in [&mut l[i], &mut r[i]].into_iter().enumerate() {
                 let x = *s;
                 let mut y = 0.0;
                 for k in 0..3 {
                     let (_, band) = self.bank[k].run(ch, x);
-                    y += self.bank[k].k * band * self.gains[k];
+                    y += self.gains[k] * band;
                 }
-                *s = lerp(x, y * TALK_GAIN, mix);
+                *s = lerp(x, y, mix);
             }
         }
     }
@@ -760,9 +815,12 @@ impl TalkBox {
         self.rate = rate;
         self.pos.set_time(rate, 6.0);
         self.mix.set_time(rate, 20.0);
+        let retunes = (rate / CTRL as u32).max(1);
+        self.vowel.set_time(retunes, GLIDE_MS);
+        self.shift.set_time(retunes, GLIDE_MS);
+        self.sharp.set_time(retunes, GLIDE_MS);
         self.env.set(self.v[5], self.v[6], rate);
         self.sens = fast_db_to_gain(self.v[4] / 100.0 * SENS_DB);
-        self.retune();
     }
     fn clear(&mut self) {
         self.lfo.reset();
@@ -772,9 +830,17 @@ impl TalkBox {
         }
         self.ctrl = 0;
         self.lfo_now = 0.0;
+        self.vowel.snap(self.vowel.target);
         self.pos.snap(self.target());
+        self.shift.snap(self.shift.target);
+        self.sharp.snap(self.sharp.target);
         self.mix.snap(self.mix.target);
-        self.retune();
+        // The filters and gains start where the first retune puts them.
+        for (k, (hz, q, g)) in self.tuning().into_iter().enumerate() {
+            self.bank[k].tune(hz, q, self.rate);
+            self.gains[k] = g;
+            self.steps[k] = 0.0;
+        }
     }
     fn tail(&self) -> u32 {
         self.rate / 20
@@ -974,16 +1040,60 @@ mod tests {
     }
 
     #[test]
-    fn the_formant_shift_moves_the_vowel_up() {
-        let (f0, _) = vowel_at(3.0, 0.0);
-        let (f1, _) = vowel_at(3.0, 1.0);
+    fn the_formant_shift_moves_the_vowel_up_and_keeps_its_q() {
+        let at = |formant: f32| {
+            let mut t = TalkBox::new();
+            t.set_param(talkbox::FORMANT, formant);
+            t.reset();
+            t.tuning()
+        };
+        let (a, b) = (at(0.0), at(12.0));
         for k in 0..3 {
-            assert!((f1[k] - f0[k] - 1.0).abs() < 1e-5);
+            assert!((b[k].0 / a[k].0 - 2.0).abs() < 1e-3, "{k}: {a:?} {b:?}");
+            assert!((b[k].1 - a[k].1).abs() < 1e-4, "{k}: {a:?} {b:?}");
         }
         // Halfway between two vowels is between them in pitch.
-        let (a, _) = vowel_at(0.0, 0.0);
-        let (m, _) = vowel_at(0.5, 0.0);
-        let (b, _) = vowel_at(1.0, 0.0);
+        let (a, _) = vowel_at(0.0);
+        let (m, _) = vowel_at(0.5);
+        let (b, _) = vowel_at(1.0);
         assert!(m[1] > a[1] && m[1] < b[1]);
+    }
+
+    #[test]
+    fn no_hollow_notch_between_the_first_two_formants() {
+        // FX quality V2: "AE" (660 and 1720 Hz) dips 31 dB under F2 with
+        // same-sign band-passes; a mouth (and the alternating bank) dips
+        // about 15.
+        let mut t = TalkBox::new();
+        t.set_param(talkbox::VOWEL, 5.0);
+        let f2 = sine_level(&mut t, 1720.0, 0.1);
+        let low = (0..12)
+            .map(|i| 700.0 * (1650.0f32 / 700.0).powf(i as f32 / 11.0))
+            .map(|hz| sine_level(&mut t, hz, 0.1))
+            .fold(f32::INFINITY, f32::min);
+        let dip = 20.0 * (low / f2).log10();
+        assert!(dip > -20.0, "dip {dip} dB");
+    }
+
+    #[test]
+    fn the_vowels_and_resonance_keep_the_level() {
+        // FX quality V4 and W17's rule: on white noise, every vowel within
+        // 6 dB of the defaults' level (white noise favours the front
+        // vowels' higher formants; fxlab reads V4 on pink, K-weighted) and
+        // Resonance 0 and 100 within 3 dB.
+        let level = |id: u16, v: f32| {
+            let mut t = TalkBox::new();
+            t.set_param(id, v);
+            20.0 * noise_level(&mut t).log10()
+        };
+        let mid = level(talkbox::VOWEL, 3.0);
+        for v in 0..9 {
+            let db = level(talkbox::VOWEL, v as f32) - mid;
+            assert!(db.abs() < 6.0, "vowel {v}: {db} dB");
+        }
+        for res in [0.0, 100.0] {
+            let db = level(talkbox::RESONANCE, res) - mid;
+            assert!(db.abs() < 3.0, "Resonance {res}: {db} dB");
+        }
     }
 }

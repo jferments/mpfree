@@ -33,6 +33,9 @@
 //!   under a cent from a bass's low B to the top of a voice.
 //! - [`Cloud`]: a lush algorithmic reverb ported from Cloud Seed, with
 //!   five characters (plate, room, hall, cloud, echoes) and freeze.
+//! - [`GrainNode`] (from `mpfree-grain`): Grains, the grain engine as an
+//!   effect: clouds from the last eight seconds of input, with freeze and a
+//!   feedback that can't run away.
 //! - [`MasterSafety`]: the last stage of every output: DC block, trim, a
 //!   look-ahead peak limiter that counts overs, and Soft clip and Raw modes.
 //! - [`Perform`]: sixteen pads of performance effects (stutter, beat
@@ -143,6 +146,7 @@ pub use mixer::{
 };
 pub use modfx::{Chorus, Flanger, Phaser};
 pub use motion::{AutoPan, RingMod, Rotary, Tremolo};
+pub use mpfree_grain::GrainNode;
 pub use oversample::{Down2, IirDown2, IirPhase, IirUp2, Up2};
 pub use perform::{
     state as perform_state, Perform, AMOUNT_MEANS as PERFORM_AMOUNTS, EFFECTS as PERFORM_EFFECTS,
@@ -221,6 +225,7 @@ pub mod ids {
     pub use crate::wah::autowah;
     pub use crate::wah::talkbox;
     pub use crate::xyfx::ids as xyfx;
+    pub use mpfree_grain::node::param as grains;
 }
 
 /// A factory preset: a name and the parameter values that differ from the

@@ -154,8 +154,33 @@ fn busy_kit() -> Project {
         size_spray: 0.45,
         level_spray: 0.7,
         spray_shape: GrainSprayShape::Peaked,
+        lfo: GrainLfo {
+            shape: LfoShape::Drift,
+            rate_hz: 3.5,
+            beats: Some(0.75),
+            target: MotionTarget::Position,
+            depth: -0.25,
+        },
+        env: GrainEnv {
+            attack_ms: 250.0,
+            decay_ms: 4_000.0,
+            sustain: 0.3,
+            target: MotionTarget::Size,
+            depth: 0.6,
+        },
+        filter: GrainFilter {
+            kind: GrainFilterKind::Band,
+            cutoff_hz: 1_250.0,
+            resonance: 0.6,
+            spray: 0.35,
+        },
     };
     g.grain_mode = GrainMode::Repeat;
+    g.grain_keys = GrainKeys {
+        size: true,
+        scan: false,
+    };
+    g.grain_glide_ms = 250.0;
     p.set_pad(5, Some(Pad::new("Cloud", Layer::new(g))), None)
         .unwrap();
     // A keygroup far up the pad list, a toggle and a gate pad.
@@ -183,6 +208,8 @@ fn busy_kit() -> Project {
     m.mix = 0.35;
     m.grain.window = GrainWindow::Shape { shape: 0.85 };
     m.grain.density = 44.0;
+    m.grain.lfo.target = MotionTarget::Cutoff;
+    m.grain.filter.kind = GrainFilterKind::High;
     p.set_master(m, None).unwrap();
     p.set_pads_play(PadsPlay::Levels {
         pad: 5,

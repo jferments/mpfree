@@ -211,9 +211,11 @@ pub enum Event {
     },
     /// A clip's program change as it starts (sequencer S5,
     /// [`mpfree_seq::Clip::program`]): after the clip before it ends its
-    /// notes on that tick, before the clip's first note. For outside gear
-    /// (MIDI Out sends bank select, then the program change); the pads
-    /// take nothing from it.
+    /// notes on that tick, before the clip's first note. A scene's
+    /// ([`crate::SceneProgram`]) goes out the same way on its line, unless
+    /// the clip playing then sends its own. For outside gear (MIDI Out
+    /// sends bank select, then the program change); the pads take nothing
+    /// from it.
     Program {
         program: u8,
         bank: Option<u16>,
@@ -309,8 +311,12 @@ struct Start {
     /// Not a note: the track's clip starts here, so its last result
     /// (for PRE and NEI) starts again at "not played".
     reset: bool,
-    /// With `reset`, the program change the clip starting here sends.
+    /// With `reset`, the program change the clip starting here sends;
+    /// with `scene`, the scene's.
     program: Option<ClipProgram>,
+    /// Not a note and no clip start: a scene's program change on its own
+    /// (sequencer S5, [`crate::SceneProgram`]).
+    scene: bool,
     /// Decided before the span plays: the note plays. A step that is off
     /// ([`Note::on`]) starts out false.
     plays: bool,
@@ -478,6 +484,7 @@ const NO_START: Start = Start {
     join: Join::Attack,
     reset: false,
     program: None,
+    scene: false,
     plays: true,
     touch: Touch::NONE,
     slot: 0,
@@ -530,6 +537,13 @@ pub struct Player {
     /// none to send): its slot and start, as `seen`. A stop or a jump
     /// forgets them, so the gear is set again when the music starts.
     programmed: [Option<(usize, Tick)>; MAX_TRACKS],
+    /// The scene program change ([`crate::SceneProgram`]) each track
+    /// landed: its launch's id. Its line passed, so after a stop it is
+    /// sent where the music plays from.
+    scene_landed: [Option<u32>; MAX_TRACKS],
+    /// The scene program change each track sent (or left to the clip's
+    /// own) since the music last started or jumped: its launch's id.
+    scene_sent: [Option<u32>; MAX_TRACKS],
     fill: bool,
     /// [`Player::anchor_dice`]: chance rolls count frames from `dice_from`,
     /// the frame the transport last started on.
@@ -647,6 +661,8 @@ impl Player {
             last: [false; MAX_TRACKS],
             seen: [None; MAX_TRACKS],
             programmed: [None; MAX_TRACKS],
+            scene_landed: [None; MAX_TRACKS],
+            scene_sent: [None; MAX_TRACKS],
             fill: false,
             anchored: false,
             dice_from: 0,
@@ -839,6 +855,7 @@ impl Player {
                 if !matches!(m.mark, Mark::Looped { .. }) {
                     self.last = [false; MAX_TRACKS];
                     self.programmed = [None; MAX_TRACKS];
+                    self.scene_sent = [None; MAX_TRACKS];
                 }
             }
             Mark::Panic => {
@@ -945,7 +962,7 @@ impl Player {
             let s = self.starts[i];
             // A tie or a slide holds the note before it, before anything
             // on this tick can end it.
-            let tied = !s.reset && s.plays && s.join != Join::Attack && self.join(&s);
+            let tied = !s.reset && !s.scene && s.plays && s.join != Join::Attack && self.join(&s);
             // Locks on or before this tick go first (after the note-offs
             // before them), so a note starts with its step's locks. A note
             // left out leaves out its own locks.
@@ -960,8 +977,8 @@ impl Player {
             // Notes ending on or before this tick end first, and ratchet
             // hits on or before it play.
             self.advance(view, s.tick, true, first, span, out);
-            // A clip starting here sends its program change, after the
-            // notes ending here and before its own.
+            // A clip starting here sends its program change (or a scene
+            // its own), after the notes ending here and before its own.
             if let Some(p) = s.program {
                 let (offset, frame) = place(span, s.tick);
                 out.send(Out {
@@ -975,7 +992,7 @@ impl Player {
                     },
                 });
             }
-            if s.reset || !s.plays {
+            if s.reset || s.scene || !s.plays {
                 continue;
             }
             // A tie goes on as the note it continues: no attack, and the
@@ -1084,6 +1101,18 @@ impl Player {
                 *seen = now;
                 *last = false;
             }
+        }
+        // The scene's program change (S5): on its line, or here once it
+        // landed. The clip playing then (from a switch on or before it,
+        // the cued one) sends its own instead, if it has one.
+        if let Some(at) = self.scene_due(view, i, &ticks, bar) {
+            let own = match switch {
+                Some(s) if s <= at => track.cue.as_ref().and_then(|c| c.clip.as_ref()),
+                _ if song => track.region_at(at).map(|r| &r.clip),
+                _ => playing.map(|(c, _, _)| c),
+            }
+            .and_then(|c| c.program);
+            self.land_scene(view, i, at, own.is_none(), track.dest);
         }
         // Its program change, once: on its start, or here when it
         // started before (the music starting, a jump into it).
@@ -1272,6 +1301,9 @@ impl Player {
         for j in 0..self.n_starts {
             let s = self.starts[j];
             let t = usize::from(s.track);
+            if s.scene {
+                continue;
+            }
             if s.reset {
                 if let Some(last) = self.last.get_mut(t) {
                     *last = false;
@@ -1325,7 +1357,9 @@ impl Player {
         let mut notes = self.starts[from..self.n_starts]
             .iter()
             .take_while(|s| s.tick == l.tick)
-            .filter(|s| !s.reset && s.track == l.track && l.row.is_none_or(|r| r == s.note))
+            .filter(|s| {
+                !s.reset && !s.scene && s.track == l.track && l.row.is_none_or(|r| r == s.note)
+            })
             .peekable();
         notes.peek().is_none() || notes.any(|s| s.plays)
     }
@@ -1337,6 +1371,48 @@ impl Player {
         }
         self.starts[self.n_starts] = s;
         self.n_starts += 1;
+    }
+
+    /// Where track `i`'s scene program change goes in a span playing
+    /// `ticks`, if it does: once a launch, on the first line of its line
+    /// among them (bars of `bar` ticks); once it landed (or with no line),
+    /// on the span's first tick after a stop or a jump.
+    fn scene_due(&self, view: &PlayView, i: usize, ticks: &Range<Tick>, bar: Tick) -> Option<Tick> {
+        let p = view.scene_program(i)?;
+        if self.scene_sent.get(i).copied().flatten() == Some(p.id) {
+            return None;
+        }
+        let landed = self.scene_landed.get(i).copied().flatten() == Some(p.id);
+        let at = match p.line {
+            Some(line) if !landed => line.next(ticks.start, bar),
+            _ => ticks.start,
+        };
+        (at < ticks.end).then_some(at)
+    }
+
+    /// Track `i`'s scene program change lands on song tick `at`: sent
+    /// there with `send`, else left to the clip's own.
+    fn land_scene(&mut self, view: &PlayView, i: usize, at: Tick, send: bool, dest: DestId) {
+        let Some(p) = view.scene_program(i) else {
+            return;
+        };
+        if let (Some(landed), Some(sent)) =
+            (self.scene_landed.get_mut(i), self.scene_sent.get_mut(i))
+        {
+            *landed = Some(p.id);
+            *sent = Some(p.id);
+        }
+        if send {
+            self.push_start(Start {
+                tick: at,
+                track: i as u16,
+                dest,
+                program: Some(p.program),
+                scene: true,
+                plays: false,
+                ..NO_START
+            });
+        }
     }
 
     /// Track `i`'s clip `key` (its slot and the tick it started on) starts
@@ -1995,6 +2071,7 @@ impl Player {
                     join: n.src.join,
                     reset: false,
                     program: None,
+                    scene: false,
                     plays: n.src.on,
                     touch: n.src.touch,
                     slot: clip.slot,

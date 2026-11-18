@@ -120,6 +120,15 @@ impl Desk<'_> {
                     out.show(m)
                 }))
             }
+            // The chain editor's Capture: the copy starts on the mixer and
+            // its box comes back when it ends. One refused at once goes
+            // straight back (a full channel, the screen stalled, would free
+            // it here, between periods, as edits do).
+            gui::FromUi::Capture { slot, held } => {
+                if let Err((held, end)) = panels.capture(mix, slot, held) {
+                    let _ = out.try_show(gui::ToUi::Captured(held, end));
+                }
+            }
             gui::FromUi::ChainLearned => {
                 panels.learned();
                 music.disarm();
@@ -172,7 +181,16 @@ impl Desk<'_> {
             gui::FromUi::FolderIcon => fx.extend(app.toggle_browser()),
             gui::FromUi::OpenIo => fx.extend(app.open_io()),
             // The Play page: filters, sends, faders, speakers, throws, XY.
-            gui::FromUi::PlayFx(p) => mix.play(p),
+            gui::FromUi::PlayFx(p) => {
+                // What the XY pad plays: Prefs keeps the pick.
+                if let crate::mixing::PlayFx::XyEffect(e) = p {
+                    let choices = crate::play_page::XY_CHOICES;
+                    let name = choices.get(e.map_or(0, |k| k + 1)).unwrap_or(&"?");
+                    out.note(&format!("XY pad: plays {name}"));
+                    fx.extend(app.set_xy_effect(e));
+                }
+                mix.play(p)
+            }
             gui::FromUi::Steps(a) => {
                 // ERASE + a lane's name: said in place of the hint.
                 let erase = matches!(a, time::StepAction::ClearPad { .. });

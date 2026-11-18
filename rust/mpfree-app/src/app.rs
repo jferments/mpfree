@@ -153,12 +153,12 @@ pub enum View {
 pub fn tabs(dev: bool) -> Vec<View> {
     let mut t = vec![
         View::Play,
-        View::Pads,
         View::Sequencer,
-        View::Arrange,
-        View::Synth,
         View::Looper,
         View::Sample,
+        View::Synth,
+        View::Arrange,
+        View::Pads,
         View::Mixer,
     ];
     if dev {
@@ -704,6 +704,10 @@ pub struct Settings {
     /// Play's options "Timing strip": the Beats view shows Your timing
     /// under the pattern (Jay 13 Nov folded the Drum view into Beats).
     pub timing_strip: bool,
+    /// What Play's XY pad plays, picked from its chip's list: None, the
+    /// DJ filter and echo; `Some(k)`, the XY FX's effect `k`
+    /// (`mpfree_fx::xyfx::EFFECTS`; Jay, 18 Nov 2026 07:34Z).
+    pub xy_effect: Option<usize>,
     /// Prefs "Audio track memory": the audio tracks' size from the next
     /// start.
     pub audio_memory: crate::audiotracks::AudioMemory,
@@ -768,6 +772,7 @@ impl Default for Settings {
             metronome: false,
             metronome_db: crate::time::CLICK_DB as i8,
             timing_strip: true,
+            xy_effect: None,
             audio_memory: crate::audiotracks::AudioMemory::default(),
             open_last: true,
             export_mode: mpfree_export::Mode::Fast,
@@ -3361,6 +3366,17 @@ impl App {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// What the XY pad plays, picked on its chip's list: kept with Prefs.
+    pub fn set_xy_effect(&mut self, pick: Option<usize>) -> Vec<Effect> {
+        let pick = pick.filter(|&k| k < mpfree_fx::xyfx::EFFECTS.len());
+        if self.settings.xy_effect == pick {
+            return Vec::new();
+        }
+        self.save_dirty = true;
+        self.settings.xy_effect = pick;
+        vec![Effect::Settings(self.settings.clone())]
     }
 
     /// The Looper tab's Length: the picked loop's first pass (None: free).
@@ -6019,17 +6035,17 @@ mod tests {
             tabs(false),
             vec![
                 View::Play,
-                View::Pads,
                 View::Sequencer,
-                View::Arrange,
-                View::Synth,
                 View::Looper,
                 View::Sample,
+                View::Synth,
+                View::Arrange,
+                View::Pads,
                 View::Mixer
             ]
         );
-        assert_eq!(View::Sample.tab_index(true), Some(6));
-        assert_eq!(app.tab(6), vec![Effect::Show(View::Sample)]);
+        assert_eq!(View::Sample.tab_index(true), Some(3));
+        assert_eq!(app.tab(3), vec![Effect::Show(View::Sample)]);
         assert_eq!(app.view(), View::Sample);
         // The wheel picks a row (RowKey); SHIFT + wheel picks the pad.
         assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
@@ -6074,8 +6090,8 @@ mod tests {
     #[test]
     fn the_pads_tab_follows_play_and_takes_the_sample_tabs_controls() {
         let mut app = ready();
-        assert_eq!(View::Pads.tab_index(false), Some(1));
-        assert_eq!(app.tab(1), vec![Effect::Show(View::Pads)]);
+        assert_eq!(View::Pads.tab_index(false), Some(6));
+        assert_eq!(app.tab(6), vec![Effect::Show(View::Pads)]);
         assert!(View::Pads.sampler() && View::Sample.sampler() && !View::Play.sampler());
         app.map.data_push = Some(111);
         assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
@@ -6105,7 +6121,7 @@ mod tests {
         app.map.browse = Some(120);
         app.map.erase = Some(121);
         app.map.data_push = Some(111);
-        app.tab(3);
+        app.tab(View::Arrange.tab_index(false).unwrap());
         assert_eq!(app.view(), View::Arrange);
         assert_eq!(press(&mut app, 120), vec![Effect::Show(View::Browser)]);
         assert_eq!(View::Browser.tab_index(false), None);
@@ -6200,12 +6216,12 @@ mod tests {
             tabs(false),
             vec![
                 View::Play,
-                View::Pads,
                 View::Sequencer,
-                View::Arrange,
-                View::Synth,
                 View::Looper,
                 View::Sample,
+                View::Synth,
+                View::Arrange,
+                View::Pads,
                 View::Mixer
             ]
         );

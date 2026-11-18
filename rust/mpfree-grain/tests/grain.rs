@@ -1317,3 +1317,189 @@ fn many_hits_close_together_still_play() {
     assert!(l.iter().all(|x| x.is_finite()));
     assert!(v.stats().spawned > 100);
 }
+
+fn white(frames: usize) -> Vec<f32> {
+    let mut x = 11u32;
+    (0..frames)
+        .map(|_| {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (x >> 8) as f32 / (1u32 << 23) as f32 - 1.0
+        })
+        .collect()
+}
+
+/// The share of a signal's power in its first difference: about 2 for
+/// white noise, near 0 for a dark one.
+fn brightness(x: &[f32]) -> f32 {
+    let p: f32 = x.iter().map(|v| v * v).sum();
+    let d: f32 = x.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum();
+    d / p.max(1e-20)
+}
+
+fn filtered(kind: FilterKind, cutoff_hz: f32, resonance: f32, spray: f32) -> GrainFilter {
+    GrainFilter {
+        kind,
+        cutoff_hz,
+        resonance,
+        spray,
+    }
+}
+
+#[test]
+fn a_filtered_grain_starts_and_ends_at_zero() {
+    let data = white(48_000);
+    let src = Clip::new(&data, 1, RATE).unwrap();
+    for kind in [FilterKind::Low, FilterKind::Band, FilterKind::High] {
+        let mut v = GrainVoice::new(RATE, 1);
+        v.set_params(Params {
+            position: 0.25,
+            size_ms: 10.0,
+            density: 1.0,
+            filter: filtered(kind, 800.0, 1.0, 0.0),
+            ..Params::default()
+        });
+        v.start();
+        let (l, _) = run(&mut v, &src, &mut Budget::new(256), 0, 2000, 128);
+        assert_eq!(v.stats().spawned, 1);
+        // The filter starts from silence under the window's fade-in, and
+        // the grain still ends at zero.
+        assert_eq!(l[0], 0.0, "{kind:?}");
+        assert!(l[1..479].iter().any(|&x| x != 0.0), "{kind:?}");
+        assert!(l[479].abs() < 1e-3, "{kind:?}: {}", l[479]);
+        assert!(l[480..].iter().all(|&x| x == 0.0), "{kind:?}");
+    }
+}
+
+#[test]
+fn each_pass_colours_the_cloud_and_off_plays_as_before() {
+    let data = white(96_000);
+    let src = Clip::new(&data, 1, RATE).unwrap();
+    let base = Params {
+        spray: 0.5,
+        size_ms: 60.0,
+        density: 80.0,
+        ..Params::default()
+    };
+    let render = |filter| {
+        let mut v = GrainVoice::new(RATE, 7);
+        v.set_params(Params { filter, ..base });
+        v.start();
+        run(&mut v, &src, &mut Budget::new(256), 0, 48_000, 128).0
+    };
+    let dry = render(GrainFilter::default());
+    let bright = brightness(&dry[4_800..]);
+    assert!(bright > 1.5, "{bright}");
+    let low = brightness(&render(filtered(FilterKind::Low, 500.0, 0.0, 0.0))[4_800..]);
+    let band = brightness(&render(filtered(FilterKind::Band, 2_000.0, 0.5, 0.0))[4_800..]);
+    let high = brightness(&render(filtered(FilterKind::High, 8_000.0, 0.0, 0.0))[4_800..]);
+    assert!(low < 0.05, "{low}");
+    assert!(band > low * 4.0 && band < bright * 0.5, "{band}");
+    assert!(high > bright * 1.3, "{high} against {bright}");
+    // A filter that is off changes nothing, whatever its other settings.
+    let off = render(filtered(FilterKind::Off, 300.0, 1.0, 1.0));
+    assert!(dry
+        .iter()
+        .zip(&off)
+        .all(|(a, b)| a.to_bits() == b.to_bits()));
+    // Full resonance on a loud source stays bounded.
+    let loud: Vec<f32> = data.iter().map(|x| x * 4.0).collect();
+    let src = Clip::new(&loud, 1, RATE).unwrap();
+    for kind in [FilterKind::Low, FilterKind::Band, FilterKind::High] {
+        let mut v = GrainVoice::new(RATE, 7);
+        v.set_params(Params {
+            filter: filtered(kind, 20_000.0, 1.0, 1.0),
+            ..base
+        });
+        v.start();
+        let (l, r) = run(&mut v, &src, &mut Budget::new(256), 0, 24_000, 128);
+        assert!(
+            l.iter().chain(&r).all(|x| x.is_finite() && x.abs() < 200.0),
+            "{kind:?}"
+        );
+    }
+}
+
+/// Each separate grain's zero crossings a millisecond: a band pass's
+/// centre frequency, near enough.
+fn crossings(x: &[f32], size: usize) -> Vec<f32> {
+    bursts(x)
+        .into_iter()
+        .filter(|&s| s + size <= x.len())
+        .map(|s| {
+            let g = &x[s + size / 8..s + size * 7 / 8];
+            let n = g
+                .windows(2)
+                .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+                .count();
+            n as f32 / (g.len() as f32 / 48.0)
+        })
+        .collect()
+}
+
+#[test]
+fn filter_spray_gives_each_grain_its_own_cutoff_and_nothing_else_changes() {
+    let data = white(96_000);
+    let src = Clip::new(&data, 1, RATE).unwrap();
+    let base = Params {
+        position: 0.2,
+        spray: 0.5,
+        size_ms: 50.0,
+        density: 5.0,
+        timing: 0.0,
+        pitch_spray: 3.0,
+        spread: 1.0,
+        ..Params::default()
+    };
+    let render = |spray| {
+        let mut v = GrainVoice::new(RATE, 3);
+        v.set_params(Params {
+            filter: filtered(FilterKind::Band, 1_000.0, 1.0, spray),
+            ..base
+        });
+        v.start();
+        run(&mut v, &src, &mut Budget::new(256), 0, 96_000, 128).0
+    };
+    let size = 2_400;
+    let still = crossings(&render(0.0), size);
+    let sprayed = crossings(&render(1.0), size);
+    assert!(
+        still.len() >= 9 && sprayed.len() == still.len(),
+        "{} {}",
+        still.len(),
+        sprayed.len()
+    );
+    let spread = |c: &[f32]| {
+        let lo = c.iter().cloned().fold(f32::INFINITY, f32::min);
+        let hi = c.iter().cloned().fold(0.0, f32::max);
+        hi / lo
+    };
+    // Unsprayed, every grain rings near the cutoff (2 crossings a cycle,
+    // a little more from the noise its skirts let through).
+    assert!(spread(&still) < 1.7, "{still:?}");
+    assert!(still.iter().all(|&c| (1.8..3.6).contains(&c)), "{still:?}");
+    // Sprayed, they land octaves apart.
+    assert!(spread(&sprayed) > 6.0, "{sprayed:?}");
+    // The filter draws from its own stream: the grains read, pan and
+    // pitch as they would without it.
+    let views = |filter| {
+        let mut v = GrainVoice::new(RATE, 3);
+        v.set_params(Params {
+            density: 120.0,
+            filter,
+            ..base
+        });
+        v.start();
+        run(&mut v, &src, &mut Budget::new(256), 0, 12_000, 128);
+        let mut out = [GrainView::default(); MAX_GRAINS];
+        let n = v.grains(&mut out);
+        (out[..n].to_vec(), v.stats().spawned)
+    };
+    let (a, na) = views(GrainFilter::default());
+    let (b, nb) = views(filtered(FilterKind::Low, 700.0, 0.3, 1.0));
+    assert_eq!(na, nb);
+    assert!(a.len() > 3);
+    assert_eq!(
+        a.iter().map(|g| g.position.to_bits()).collect::<Vec<_>>(),
+        b.iter().map(|g| g.position.to_bits()).collect::<Vec<_>>()
+    );
+}
