@@ -91,6 +91,7 @@ You don't have to open the Rec page to record onto a pad. **Hold a pad that has 
 - It starts when the sound crosses the threshold, if the Rec page's **Start** is **Threshold**. Otherwise it starts with the music: press **PLAY**, or, if the music is already playing, it starts at once (**Next bar**: on the next bar line). While it records the chip reads **● REC → Pad A5 · Line in**.
 - **REC** again, or **STOP**, ends it and the take lands on the pad, ready to play. STOP ends the take but leaves the music playing; press STOP again to stop.
 - **UNDO** while it records throws the take away.
+- The recorder runs while the line input is on (**Prefs > Line input**), whatever the Source. If it is off, the take ends at once, the log says why, and REC goes back to what it recorded before.
 - Pressed before the take starts, REC or STOP calls it off. So does a tap on an Arm pill or a row of the REC chip's list, which then arms what you tapped.
 
 It is one take only. When it ends, REC goes straight back to what it recorded before, the notes or a loop, so in the middle of a set REC never stays pointed at a pad. A pad that already has a sound is played as usual: holding it while you press REC is plain REC. It works while the pads play a kit, not while they are steps (STEP SEQ), mute keys (TRACK MUTE), 16 Levels or the loop keys, and not while another take counts in or records.

@@ -124,7 +124,6 @@ pub enum PadDo {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PadNow {
     /// The take records.
-    #[allow(dead_code)] // the sampler's recorder says it (R5.7, its half)
     Recording,
     /// It landed, was called off, or couldn't run (the recorder says why
     /// in the log): REC records what it did before.

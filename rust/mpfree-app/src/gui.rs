@@ -23023,6 +23023,92 @@ mod tests {
     }
 
     #[test]
+    fn a_pad_take_records_onto_its_pad_and_says_when_it_records_and_ends() {
+        use crate::rec_arm::{PadDo, PadNow};
+        use mpfree_sampler_ui::sample::feed_input;
+        let mut p = sample_sampler(Fonts::embedded());
+        // What the recorder told the arm since the last look (views go
+        // back at once).
+        let told = |p: &mut Player| {
+            p.tick(0.033);
+            let (sent, rest) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+            rest.into_iter()
+                .filter_map(|a| match a {
+                    FromUi::PadTake(n) => Some(n),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let said = |p: &Player, want: &str| {
+            let log = events_log(p);
+            assert!(log.iter().any(|l| l.contains(want)), "{want}: {log:?}");
+        };
+        let has_sound = |p: &Player, pad: usize| p.sample.project(0).unwrap().pad(pad).is_some();
+        // No line input: it ends at once, saying why.
+        p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
+        assert_eq!(told(&mut p), [PadNow::Ended]);
+        said(&p, "sample: no take on Pad B5: the line input is off");
+        // The line input on, 2 s in.
+        let mut s = p.settings.clone();
+        s.line_input = true;
+        p.apply(ToUi::Settings(s));
+        let Some(FromUi::SampleInput(Some(mut feed))) = p
+            .take_actions()
+            .into_iter()
+            .find(|a| matches!(a, FromUi::SampleInput(_)))
+        else {
+            panic!("the input's writer");
+        };
+        feed_input(&mut feed.0, 2.0, 0.4, true);
+        // A pad with a sound is refused.
+        p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 4 }));
+        assert_eq!(told(&mut p), [PadNow::Ended]);
+        said(&p, "sample: no take on Pad A5: it has a sound");
+        // Armed, then ended before the music played: called off.
+        p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
+        assert_eq!(told(&mut p), []);
+        said(
+            &p,
+            "sample: take armed for pad B5 (one take, from REC): start now, end stop, left + right",
+        );
+        p.apply(ToUi::PadTake(PadDo::End));
+        assert_eq!(told(&mut p), [PadNow::Ended]);
+        said(
+            &p,
+            "sample: no take on Pad B5: called off before it started",
+        );
+        assert!(!has_sound(&p, 20));
+        // Armed, the go, a second in: it records (said once); UNDO throws
+        // it away and the pad stays empty.
+        p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
+        p.apply(ToUi::PadTake(PadDo::Start));
+        feed_input(&mut feed.0, 1.0, 0.4, true);
+        assert_eq!(told(&mut p), [PadNow::Recording]);
+        feed_input(&mut feed.0, 0.5, 0.4, true);
+        assert_eq!(told(&mut p), [], "said once");
+        p.apply(ToUi::PadTake(PadDo::Throw));
+        assert_eq!(told(&mut p), [PadNow::Ended]);
+        said(&p, "sample: no take on Pad B5: thrown away");
+        assert!(!has_sound(&p, 20));
+        // Again, and REC: 1.5 s lands on B5 as a Rec tab take does.
+        p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
+        p.apply(ToUi::PadTake(PadDo::Start));
+        feed_input(&mut feed.0, 1.5, 0.4, true);
+        assert_eq!(told(&mut p), [PadNow::Recording]);
+        p.apply(ToUi::PadTake(PadDo::End));
+        assert_eq!(told(&mut p), [PadNow::Ended]);
+        let pad = p.sample.project(0).unwrap().pad(20).cloned().unwrap();
+        assert_eq!(pad.name, "Take 1");
+        said(&p, "stereo on pad B5");
+        // Its End again does nothing: the take is over.
+        p.apply(ToUi::PadTake(PadDo::End));
+        assert_eq!(told(&mut p), []);
+    }
+
+    #[test]
     fn the_rec_tab_resamples_the_master_and_lets_go_of_it_for_the_line_input() {
         use crate::sampler::RecSource;
         use mpfree_fx::{CapturePoint, StripId};
