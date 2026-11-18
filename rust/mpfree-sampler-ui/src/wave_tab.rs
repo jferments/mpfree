@@ -164,9 +164,23 @@ impl Snap {
     }
 }
 
-/// Everything the tab shows: one layer of one pad, and its source.
+/// The pad number the page's state carries for a take kept on the page
+/// (the one Sample page's step 2b): no pad at all, so an action naming it
+/// reaches no pad; the app sends a take's edits to the take.
+pub const TAKE: usize = usize::MAX;
+
+/// A take kept on the page, as the bar names it: take `index` of `of`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TakeShown {
+    pub index: usize,
+    pub of: usize,
+}
+
+/// Everything the tab shows: one layer of one pad (or of a take kept on
+/// the page), and its source.
 #[derive(Clone)]
 pub struct WaveState {
+    /// The pad, or [`TAKE`] for a take.
     pub pad: usize,
     pub layer: usize,
     pub pad_name: String,
@@ -177,9 +191,11 @@ pub struct WaveState {
     pub channels: u8,
     /// The source's length.
     pub frames: u64,
-    /// How many pads use the source.
+    /// How many pads (and takes) use the source.
     pub used_by: usize,
     pub source: Arc<SourceView>,
+    /// A take kept on the page, not a pad.
+    pub take: Option<TakeShown>,
 }
 
 impl WaveState {
@@ -191,7 +207,32 @@ impl WaveState {
         layer: usize,
         source: Arc<SourceView>,
     ) -> Option<WaveState> {
-        let pd = p.pad(pad)?;
+        Self::of_sound(p, pad, p.pad(pad)?, layer, source)
+    }
+
+    /// Layer `layer` of take `index` kept on the page (one-page step 2b),
+    /// as [`WaveState::from_project`] shows a pad's; its pad is [`TAKE`].
+    pub fn of_take(
+        p: &Project,
+        index: usize,
+        layer: usize,
+        source: Arc<SourceView>,
+    ) -> Option<WaveState> {
+        let mut st = Self::of_sound(p, TAKE, p.take(index)?, layer, source)?;
+        st.take = Some(TakeShown {
+            index,
+            of: p.takes().len(),
+        });
+        Some(st)
+    }
+
+    fn of_sound(
+        p: &Project,
+        pad: usize,
+        pd: &mpfree_sampler::model::Pad,
+        layer: usize,
+        source: Arc<SourceView>,
+    ) -> Option<WaveState> {
         let region = pd.layers.get(layer)?.region.clone();
         let s = p.source(region.source)?;
         (s.id() == source.id).then(|| WaveState {
@@ -204,8 +245,9 @@ impl WaveState {
             rate: s.rate(),
             channels: s.channels(),
             frames: s.frames(),
-            used_by: p.users_of(s.id()).len(),
+            used_by: p.users_of(s.id()).len() + p.takes_using(s.id()),
             source,
+            take: None,
         })
     }
 
@@ -688,7 +730,10 @@ impl WaveTab {
         if self.snap == Snap::Sixteenths && src.tempo.is_none() && src.ready {
             self.snap = Snap::ZeroCrossing;
         }
-        let pad_color = pad_color(st.pad);
+        let pad_color = match st.take {
+            Some(_) => Color::rgb(crate::rec_widgets::REC_COLOR),
+            None => pad_color(st.pad),
+        };
         if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
             bar.color = pad_color;
             let layer = if st.layers > 1 {
@@ -700,7 +745,11 @@ impl WaveTab {
                 Some(b) => format!("{b}{}", st.pad % 16 + 1),
                 None => pad_label(st.pad),
             };
-            bar.title = format!("Pad {pad} · {}{layer}", st.pad_name);
+            bar.title = match st.take {
+                // The mockup's "Take 3 · new": on the page, on no pad yet.
+                Some(_) => format!("{} · new", st.pad_name),
+                None => format!("Pad {pad} · {}{layer}", st.pad_name),
+            };
             let mut about = vec![if st.source_name == st.pad_name {
                 format!("Source {}", short_id(st.source.id))
             } else {
@@ -726,8 +775,11 @@ impl WaveTab {
                 "mono".into()
             });
             about.push(duration_text(st.frames, st.rate));
-            if st.used_by > 1 {
-                about.push(format!("used by {} pads", st.used_by));
+            match st.take {
+                Some(t) if t.of > 1 => about.push(format!("take {} of {}", t.index + 1, t.of)),
+                Some(_) => {}
+                None if st.used_by > 1 => about.push(format!("used by {} pads", st.used_by)),
+                None => {}
             }
             bar.subtitle = about.join(" · ");
         }

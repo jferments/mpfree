@@ -94,6 +94,10 @@ pub const AUTO_LABEL: &str = "Auto-sample";
 /// The button that keeps what Skip back covers.
 pub const SKIP_LABEL: &str = "Skip back";
 
+/// The bar's title while Onto is on Stay here (one-page step 2b): the take
+/// stays on the Sample page until it is put on a pad.
+pub const STAYS_TITLE: &str = "Record: the take stays here";
+
 /// Flatten's level for silence: under it for the Silence time, the sound
 /// has ended (and a sound starts when it goes over it).
 pub const FLATTEN_SILENCE_DB: f32 = -60.0;
@@ -187,9 +191,13 @@ impl Skip {
     }
 }
 
-/// Which pad a take goes onto.
+/// Where a take goes when it stops.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Onto {
+    /// It stays on the Sample page, on no pad, until it is put somewhere
+    /// (the one Sample page's decision 1: recording never fills a pad the
+    /// musician didn't pick).
+    Stay,
     /// The pad picked if it has no sound, else the next one without.
     NextEmpty,
     /// The pad picked, replacing its sound.
@@ -233,7 +241,7 @@ impl Default for RecSettings {
             tail: TailAt::Cut,
             silence_ms: 1000,
             skip: Skip::Seconds(10),
-            onto: Onto::NextEmpty,
+            onto: Onto::Stay,
             flatten_velocity: 127,
             flatten_hold_ms: 1000,
         }
@@ -449,6 +457,7 @@ pub fn value_text(s: &RecSettings, row: Row, sources: &[String]) -> String {
         Row::Record | Row::Keep | Row::Flatten | Row::Auto => String::new(),
         Row::SkipBack => s.skip.label(),
         Row::Onto => match s.onto {
+            Onto::Stay => "Stay here",
             Onto::NextEmpty => "Next empty",
             Onto::ThisPad => "This pad",
         }
@@ -467,6 +476,9 @@ fn ms_text(ms: u32) -> String {
 fn shift(i: usize, delta: i32, len: usize) -> usize {
     (i as i32 + delta).clamp(0, len as i32 - 1) as usize
 }
+
+/// The Onto row's choices, in order.
+pub const ONTOS: [Onto; 3] = [Onto::Stay, Onto::NextEmpty, Onto::ThisPad];
 
 fn step_in<T: PartialEq + Copy>(list: &[T], now: T, delta: i32) -> T {
     let i = list.iter().position(|x| *x == now).unwrap_or(0);
@@ -500,7 +512,7 @@ pub fn stepped(s: &RecSettings, row: Row, delta: i32, sources: usize) -> RecSett
         Row::Tail => s.tail = step_in(&[TailAt::Cut, TailAt::Ring, TailAt::Loop], s.tail, delta),
         Row::Silence => s.silence_ms = step_in(&SILENCES_MS, s.silence_ms, delta),
         Row::SkipBack => s.skip = step_in(&SKIPS, s.skip, delta),
-        Row::Onto => s.onto = step_in(&[Onto::NextEmpty, Onto::ThisPad], s.onto, delta),
+        Row::Onto => s.onto = step_in(&ONTOS, s.onto, delta),
         Row::FlattenVelocity => {
             s.flatten_velocity = step_in(&VELOCITIES, s.flatten_velocity, delta)
         }
@@ -541,7 +553,9 @@ pub struct RecState {
     /// The pad picked in the editor, and its sound's name if it has one.
     pub pad: usize,
     pub pad_name: Option<String>,
-    /// The pad a take goes onto now (None: no empty pad left).
+    /// The pad a take goes onto now (None: no empty pad left). With the
+    /// settings' Onto on [`Onto::Stay`], where a Flatten goes (the next
+    /// empty pad): a take stays on the page.
     pub target: Option<usize>,
     /// The sources it can record from, by name; the first is the line
     /// input.
@@ -653,6 +667,7 @@ impl RecTab {
                 .collect();
             bar.title = match (&st.flattening, &target) {
                 (Some(f), _) => f.clone(),
+                (None, _) if self.stays() => STAYS_TITLE.to_string(),
                 (None, Some(p)) => format!("Record onto pad {p}"),
                 (None, None) => "Record: no empty pad in this bank".to_string(),
             };
@@ -699,7 +714,11 @@ impl RecTab {
         }
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.rows = rows;
-            list.right = target.map(|p| format!("onto {p}")).unwrap_or_default();
+            list.right = if self.stays() {
+                "stays here".to_string()
+            } else {
+                target.map(|p| format!("onto {p}")).unwrap_or_default()
+            };
         }
         self.flattening = st.flattening.is_some();
         self.sources = st.sources.clone();
@@ -731,10 +750,10 @@ impl RecTab {
     fn controls(&self, st: &RecState, live: bool) -> Vec<Control> {
         let s = &self.settings;
         let busy = self.recording || self.flattening;
-        let can = live && st.target.is_some() && !self.flattening;
+        let can = live && (self.stays() || st.target.is_some()) && !self.flattening;
         let cannot = if !live {
             OFF_NOTE
-        } else if st.target.is_none() {
+        } else if !self.stays() && st.target.is_none() {
             "No empty pad left for a take"
         } else {
             "Wait for Flatten to finish"
@@ -788,10 +807,9 @@ impl RecTab {
                         TailAt::Loop => 2,
                     },
                 ),
-                Row::Onto => choice(
-                    &["Next empty", "This pad"],
-                    usize::from(s.onto == Onto::ThisPad),
-                ),
+                // Three choices don't fit the Take section's width: the
+                // value between arrows, as on the Wave page's Input.
+                Row::Onto => Control::new(Look::Chip),
                 Row::Threshold => knob(
                     place_in(&THRESHOLDS_DB, &s.threshold_db),
                     THRESHOLDS_DB.len(),
@@ -824,10 +842,11 @@ impl RecTab {
     /// their buttons.
     fn panel(&self, st: &RecState) -> Panel {
         let it = |k: Row| Item::new(k.index());
-        let onto = st
-            .target
-            .map(|p| format!("onto {}", pad_text(self.bank, p)))
-            .unwrap_or_else(|| "no empty pad".to_string());
+        let onto = match st.target {
+            _ if self.stays() => "stays here".to_string(),
+            Some(p) => format!("onto {}", pad_text(self.bank, p)),
+            None => "no empty pad".to_string(),
+        };
         Panel {
             sections: vec![
                 Section::new(
@@ -1072,6 +1091,11 @@ impl RecTab {
         self.settings = stepped(&self.settings, row, delta, st.sources.len());
         self.update(ui, st);
         (self.settings.source != was).then_some(RecAction::Source(self.settings.source))
+    }
+
+    /// A take stays on the Sample page when it stops ([`Onto::Stay`]).
+    fn stays(&self) -> bool {
+        self.settings.onto == Onto::Stay
     }
 
     /// A take is being made (the first button says Stop).

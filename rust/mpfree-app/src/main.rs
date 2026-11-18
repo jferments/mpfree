@@ -6391,6 +6391,8 @@ fn player_session(
                         player.release_kit_at(kit, pad, 0);
                     }
                 }
+                // The take the Wave page shows, kept off the pads.
+                gui::FromUi::SampleTake { kit, down } => player.take_at(kit, down, 0),
                 gui::FromUi::SampleKey {
                     kit,
                     note,
