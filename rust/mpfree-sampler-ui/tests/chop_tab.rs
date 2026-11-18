@@ -343,6 +343,129 @@ fn chop_to_pads_puts_each_slice_on_a_pad_in_one_undo_step() {
 }
 
 #[test]
+fn one_pad_puts_every_slice_on_the_chopped_pad_played_by_slice_and_by_note() {
+    let mut s = chop();
+    method(&mut s, Method::Grid);
+    for _ in 0..4 {
+        step(&mut s, Row::Amount, -1);
+    }
+    let b = s.tab.bounds(&s.state);
+    let n = s.tab.slices();
+    assert_eq!(n, 4);
+    let value = |s: &ChopSample, row: Row| {
+        s.ui.get::<SettingList>(chop_tab::LIST).unwrap().rows[row.index()]
+            .value
+            .clone()
+    };
+    step(&mut s, Row::Put, 1);
+    assert_eq!(value(&s, Row::Put), "One pad");
+    // The chopped pad itself, unless a First pad is picked.
+    assert_eq!(value(&s, Row::Pads), "A5");
+    assert_eq!(buttons(&s).0[2], "Slices on A5");
+    assert_eq!(list_right(&s), "replaces A5");
+    let a = press(&mut s, Button::ToPads).unwrap();
+    let ChopAction::ToPads {
+        one_pad,
+        keys_from,
+        to_pad,
+        ..
+    } = a
+    else {
+        panic!("{a:?}")
+    };
+    assert!(one_pad);
+    assert_eq!((keys_from, to_pad), (None, PAD));
+    let others: Vec<bool> = (0..16).map(|i| s.project.pad(i).is_some()).collect();
+    assert_eq!(apply(&mut s, &a), PAD..PAD + 1);
+    let pad = s.project.pad(PAD).unwrap();
+    let r = &pad.layers[0].region;
+    assert_eq!((r.start, r.end), (b[0], b[n]));
+    assert_eq!(r.slice_count(), n);
+    for k in 0..n {
+        assert_eq!(r.slice_bounds(k), Some((b[k], b[k + 1])));
+    }
+    assert_eq!(pad.slice, 0, "a hit plays slice 1");
+    assert_eq!(
+        pad.keys,
+        Some(Keys {
+            lo: 36,
+            hi: 39,
+            root: 36
+        }),
+        "C2 to D#2, a note a slice"
+    );
+    // No other pad changes, and the pads still play their sounds.
+    let now: Vec<bool> = (0..16).map(|i| s.project.pad(i).is_some()).collect();
+    assert_eq!(now, others);
+    assert_eq!(s.project.pads_play(), PadsPlay::Pads);
+    // A hit plays slice 1; D2 (note 38) plays slice 3.
+    let play = |p: &mpfree_sampler::model::Project, ev: Event| {
+        let mut e = Engine::new(RATE, 32);
+        e.set_view(EngineView::build(p, RATE));
+        e.apply(ev);
+        let (mut l, mut r) = (vec![0.0; 4096], vec![0.0; 4096]);
+        for (a, b) in l.chunks_mut(128).zip(r.chunks_mut(128)) {
+            e.render(a, b);
+        }
+        l
+    };
+    let hit = play(
+        &s.project,
+        Event::NoteOn {
+            pad: PAD as u8,
+            velocity: 127,
+        },
+    );
+    assert!(hit.iter().any(|x| x.abs() > 0.01), "a hit sounds");
+    let d2 = play(
+        &s.project,
+        Event::Key {
+            note: 38,
+            velocity: 127,
+        },
+    );
+    assert!(d2.iter().any(|x| x.abs() > 0.01), "D2 sounds");
+    assert_ne!(hit, d2, "another slice");
+    // A First pad picked moves the one pad.
+    qlink(&mut s, 3, 2, false);
+    assert_eq!(value(&s, Row::Pads), "A7");
+    // One undo gives the pad back as it was, and takes the chop away.
+    assert!(s.project.undo());
+    let back = s.project.pad(PAD).unwrap();
+    assert_eq!(back.layers[0].region.slice_count(), 1);
+    assert_eq!(back.keys, None);
+    assert!(s.project.chop_sets.is_empty());
+}
+
+#[test]
+fn phrase_on_one_pad_is_its_slices_in_time() {
+    let mut s = chop();
+    method(&mut s, Method::Beat);
+    step(&mut s, Row::Amount, -1);
+    let n = s.tab.slices();
+    step(&mut s, Row::Put, 1);
+    step(&mut s, Row::Phrase, 1);
+    assert_eq!(buttons(&s).0[2], "Phrase on A5");
+    let a = press(&mut s, Button::ToPads).unwrap();
+    assert!(matches!(
+        a,
+        ChopAction::ToPads {
+            one_pad: true,
+            phrase: Some(_),
+            ..
+        }
+    ));
+    let p = a.phrase(&s.project).unwrap().unwrap();
+    assert_eq!(p.hits.len(), n);
+    assert!(p.hits.iter().enumerate().all(|(k, h)| h.slice == k));
+    assert_eq!(apply(&mut s, &a), PAD..PAD + 1);
+    assert_eq!(
+        s.project.pad(PAD).unwrap().layers[0].region.slice_count(),
+        n
+    );
+}
+
+#[test]
 fn to_keys_puts_each_slice_on_a_note_and_the_pads_play_those_notes() {
     let mut s = chop();
     method(&mut s, Method::Grid);
@@ -350,7 +473,7 @@ fn to_keys_puts_each_slice_on_a_note_and_the_pads_play_those_notes() {
         step(&mut s, Row::Amount, -1);
     }
     let b = s.tab.bounds(&s.state);
-    step(&mut s, Row::Put, 1);
+    step(&mut s, Row::Put, 2);
     let list = s.ui.get::<SettingList>(chop_tab::LIST).unwrap();
     assert_eq!(list.rows[Row::Put.index()].value, "Keys from C2");
     assert_eq!(buttons(&s).0[2], "To keys C2–D#2");
@@ -391,27 +514,44 @@ fn to_keys_puts_each_slice_on_a_note_and_the_pads_play_those_notes() {
 }
 
 #[test]
-fn pads_and_phrase_also_gives_the_slices_in_time_for_a_clip() {
+fn phrase_on_also_gives_the_slices_in_time_for_a_clip() {
     let mut s = chop();
     // Every eighth on the loop's own beat grid: the region starts a
     // sixteenth in, so the first slice is a sixteenth long.
     method(&mut s, Method::Beat);
     step(&mut s, Row::Amount, -1);
     assert_eq!(s.tab.slices(), 15);
-    let list_value = |s: &ChopSample| {
-        s.ui.get::<SettingList>(chop_tab::LIST).unwrap().rows[Row::Put.index()]
+    let value = |s: &ChopSample, row: Row| {
+        s.ui.get::<SettingList>(chop_tab::LIST).unwrap().rows[row.index()]
             .value
             .clone()
     };
-    // Pads, Keys, then Pads + phrase (the loop has a tempo), round again.
-    step(&mut s, Row::Put, 1);
-    step(&mut s, Row::Put, 1);
-    assert_eq!(list_value(&s), "Pads + phrase");
-    assert_eq!(buttons(&s).0[2], "Phrase on A6–B4");
-    step(&mut s, Row::Put, 1);
+    let list_value = |s: &ChopSample| value(s, Row::Put);
+    let faint = |s: &ChopSample, row: Row| {
+        s.ui.get::<SettingList>(chop_tab::LIST).unwrap().controls[row.index()].faint
+    };
+    // The loop has a tempo: Phrase can be turned on, on the pads.
+    assert_eq!(value(&s, Row::Phrase), "Off");
+    assert!(!faint(&s, Row::Phrase));
+    step(&mut s, Row::Phrase, 1);
+    assert_eq!(value(&s, Row::Phrase), "On");
     assert_eq!(list_value(&s), "Pads");
-    step(&mut s, Row::Put, -1);
-    assert_eq!(list_value(&s), "Pads + phrase");
+    assert_eq!(buttons(&s).0[2], "Phrase on A6–B4");
+    // Keys can't have one (a phrase on keys needs a track that plays
+    // notes): Off and faint, and a tap says why.
+    step(&mut s, Row::Put, 2);
+    assert_eq!(list_value(&s), "Keys from C2");
+    assert_eq!(value(&s, Row::Phrase), "Off");
+    assert!(faint(&s, Row::Phrase));
+    step(&mut s, Row::Phrase, 1);
+    assert!(s
+        .tab
+        .take_note()
+        .is_some_and(|n| n.contains("Pads or One pad")));
+    // Back on the pads it is on again.
+    step(&mut s, Row::Put, -2);
+    assert_eq!(list_value(&s), "Pads");
+    assert_eq!(value(&s, Row::Phrase), "On");
     let a = press(&mut s, Button::ToPads).unwrap();
     let ChopAction::ToPads {
         phrase, keys_from, ..
@@ -438,7 +578,7 @@ fn pads_and_phrase_also_gives_the_slices_in_time_for_a_clip() {
     assert_eq!(apply(&mut s, &a), 5..20);
     assert!(s.project.pads_play() == PadsPlay::Pads);
     assert_eq!(a.phrase(&s.project).unwrap(), Some(p));
-    // Without a tempo there is no phrase to make: the row reads Pads.
+    // Without a tempo there is no phrase to make: Phrase reads Off.
     let v = &s.state.source;
     let plain = SourceView {
         id: v.id,
@@ -455,11 +595,15 @@ fn pads_and_phrase_also_gives_the_slices_in_time_for_a_clip() {
     let st = s.state.clone();
     s.tab.update(&mut s.ui, &st);
     assert_eq!(list_value(&s), "Pads");
+    assert_eq!(value(&s, Row::Phrase), "Off");
+    assert!(faint(&s, Row::Phrase));
+    step(&mut s, Row::Phrase, 1);
+    assert!(s.tab.take_note().is_some_and(|n| n.contains("no tempo")));
     let a = press(&mut s, Button::ToPads).unwrap();
     assert!(matches!(a, ChopAction::ToPads { phrase: None, .. }));
     assert_eq!(a.phrase(&s.project), Ok(None));
     step(&mut s, Row::Put, -1);
-    assert_eq!(list_value(&s), "Keys from C2", "Pads, Keys only");
+    assert_eq!(list_value(&s), "Keys from C2", "Pads, One pad, Keys");
     step(&mut s, Row::Put, 1);
     assert_eq!(list_value(&s), "Pads");
 }
@@ -609,19 +753,19 @@ fn put_on_files_exports_the_pad_and_its_slices_where_the_app_can_write() {
             .value
             .clone()
     };
-    // Without files: Pads, Keys, Pads + phrase and round again.
+    // Without files: Pads, One pad, Keys and round again.
     for _ in 0..3 {
         step(&mut s, Row::Put, 1);
         assert_ne!(value(&s, Row::Put), "Files");
     }
     assert_eq!(value(&s, Row::Put), "Pads");
-    // With them, Files comes after Pads + phrase.
+    // With them, Files comes after Keys.
     s.state.files = true;
     let st = s.state.clone();
     s.tab.update(&mut s.ui, &st);
     step(&mut s, Row::Put, -1);
     assert_eq!(value(&s, Row::Put), "Files");
-    assert_eq!(value(&s, Row::Pads), "None (files)");
+    assert_eq!(value(&s, Row::Pads), "None");
     let n = s.tab.slices();
     assert!(n > 1);
     let (labels, enabled) = buttons(&s);

@@ -12932,7 +12932,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             (Row::Method, 1),
             (Row::Method, 1),
             (Row::Amount, -4),
-            (Row::Put, 1i32),
+            (Row::Put, 2i32),
         ] {
             for _ in 0..delta.abs() {
                 keys.on_event(UiEvent {
@@ -12957,7 +12957,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
         });
         let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
-        for (row, delta) in [(Row::Method, 1), (Row::Amount, -1), (Row::Put, -1i32)] {
+        for (row, delta) in [(Row::Method, 1), (Row::Amount, -1), (Row::Phrase, 1i32)] {
             phrase.on_event(UiEvent {
                 widget: LIST.into(),
                 kind: EventKind::Step {
@@ -12968,14 +12968,35 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         phrase.apply(ToUi::SampleQLink(3, -16));
         if let Some(list) = phrase.ui.get_mut::<SettingList>(LIST) {
-            list.selected = index(Row::Put);
+            list.selected = index(Row::Phrase);
         }
         phrase.on_event(UiEvent {
             widget: LIST.into(),
-            kind: EventKind::Select(index(Row::Put)),
+            kind: EventKind::Select(index(Row::Phrase)),
         });
         phrase.take_actions();
         out.push(("sample-chop-phrase", phrase));
+    }
+    // The Chop tab putting every eighth on one pad, the pad chopped (R4).
+    {
+        use mpfree_sampler_ui::chop_tab::{Row, LIST};
+        let mut one = sample_sampler(fonts());
+        one.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
+        });
+        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
+        for (row, delta) in [(Row::Method, 1), (Row::Amount, -1), (Row::Put, 1i32)] {
+            one.on_event(UiEvent {
+                widget: LIST.into(),
+                kind: EventKind::Step {
+                    index: index(row),
+                    delta,
+                },
+            });
+        }
+        one.take_actions();
+        out.push(("sample-chop-one-pad", one));
     }
     // Live chop on the same pad: Start pressed, the break playing halfway,
     // and four pads hit so far.
@@ -20379,6 +20400,68 @@ mod tests {
             .any(|l| l == "sample: live chop stopped on pad A5: 0 cuts made"));
     }
 
+    /// Chop to one pad (sampler R4): the chopped pad becomes one sliced
+    /// pad, nothing else changes, the log says how it plays, and with
+    /// Phrase on the clip's hits are all on it, each with a Slice lock.
+    #[test]
+    fn one_pad_slices_the_chopped_pad_and_its_phrase_locks_each_slice() {
+        use mpfree_sampler::model::{PadsPlay, PADS};
+        use mpfree_sampler_ui::chop_tab::{self, Row};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        p.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(chop_tab::TAB),
+        });
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            let index = Row::ALL.iter().position(|r| *r == row).unwrap();
+            p.on_event(UiEvent {
+                widget: chop_tab::LIST.into(),
+                kind: EventKind::Step { index, delta },
+            });
+        };
+        // Every eighth of the loop's beat grid, on A5 itself, with a phrase.
+        step(&mut p, Row::Method, 1);
+        step(&mut p, Row::Amount, -1);
+        step(&mut p, Row::Put, 1);
+        step(&mut p, Row::Phrase, 1);
+        let used: Vec<bool> = (0..PADS)
+            .map(|i| p.sample.project(0).unwrap().pad(i).is_some())
+            .collect();
+        p.take_actions();
+        p.on_event(UiEvent {
+            widget: chop_tab::LIST.into(),
+            kind: EventKind::Tab(Row::Chop.index()),
+        });
+        let kit = p.sample.project(0).unwrap();
+        let sliced = kit.pad(pad).unwrap();
+        assert_eq!(sliced.layers[0].region.slice_count(), 15);
+        assert_eq!(sliced.keys.map(|k| (k.lo, k.hi)), Some((36, 50)));
+        let now: Vec<bool> = (0..PADS).map(|i| kit.pad(i).is_some()).collect();
+        assert_eq!(now, used, "no other pad changes");
+        assert_eq!(kit.pads_play(), PadsPlay::Pads);
+        assert!(
+            events_log(&p).iter().any(|l| l.starts_with("sample: kit 1 (Breaks) pad A5 Break 92: chopped ")
+                && l.ends_with("into 15 slices (Beat) on pad A5, sliced: a hit plays slice 1, keys C2 to D3 a slice each")),
+            "{:?}",
+            events_log(&p)
+        );
+        let (sent, rest) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        let [FromUi::SamplePhrase(clip)] = &rest[..] else {
+            panic!("{rest:?}")
+        };
+        assert_eq!(clip.notes.len(), 15);
+        assert!(clip.notes.iter().all(|n| usize::from(n.note) == pad));
+        let values: Vec<f32> = clip.locks.iter().map(|l| l.value).collect();
+        assert_eq!(values, (0..15).map(|k| k as f32).collect::<Vec<_>>());
+        assert!(clip
+            .locks
+            .iter()
+            .zip(&clip.notes)
+            .all(|(l, n)| l.tick == n.tick && l.sound == Some(n.note)));
+    }
+
     #[test]
     fn to_keys_puts_slices_on_notes_and_the_play_tab_turns_the_pads_back() {
         use mpfree_sampler::model::{Keys, PadsPlay};
@@ -20416,7 +20499,7 @@ mod tests {
             step(&mut p, Row::Amount, -1);
         }
         p.apply(ToUi::SampleQLink(3, -16));
-        step(&mut p, Row::Put, 1);
+        step(&mut p, Row::Put, 2);
         p.take_actions();
         tap(&mut p, chop_tab::LIST, Row::Chop.index());
         let kit = p.sample.project(0).unwrap();
@@ -20465,7 +20548,7 @@ mod tests {
     }
 
     #[test]
-    fn pads_and_phrase_sends_a_clip_that_lands_in_the_armed_tracks_first_empty_slot() {
+    fn phrase_on_sends_a_clip_that_lands_in_the_armed_tracks_first_empty_slot() {
         use mpfree_sampler_ui::chop_tab::{self, Row};
         use mpfree_sampler_ui::widgets::{PadBar, SettingList};
         let mut p = sample_sampler(Fonts::embedded());
@@ -20495,7 +20578,7 @@ mod tests {
         step(&mut p, Row::Method, 1);
         step(&mut p, Row::Amount, -1);
         p.apply(ToUi::SampleQLink(3, -16));
-        step(&mut p, Row::Put, -1);
+        step(&mut p, Row::Phrase, 1);
         p.take_actions();
         tap(&mut p, chop_tab::LIST, Row::Chop.index());
         let (sent, rest) = views(p.take_actions());
