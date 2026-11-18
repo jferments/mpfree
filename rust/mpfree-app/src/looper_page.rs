@@ -1367,6 +1367,23 @@ impl LooperPage {
                             None => ("▶".to_string(), "REC on PLAY".to_string()),
                         },
                     ),
+                    // Recording free (tempo from the first loop): no bars
+                    // yet, the arc a turn a second.
+                    RingState::Recording if l.free => {
+                        let secs = l.recorded as f64 / f64::from(v.rate.max(1));
+                        (
+                            secs.fract() as f32,
+                            1,
+                            (
+                                "Free".to_string(),
+                                if l.ending {
+                                    "closing".to_string()
+                                } else {
+                                    format!("REC {secs:.1} s")
+                                },
+                            ),
+                        )
+                    }
                     RingState::Recording => {
                         let done = l.recorded as f64 / bar_frames.max(1.0);
                         match l.bars {
@@ -1473,6 +1490,9 @@ impl LooperPage {
                     parts.push(format!("waits for you to play · {records}"))
                 }
                 Phase::Armed => parts.push(format!("waits for the bar line · {records}")),
+                Phase::Recording if s.free => {
+                    parts.push("recording free · its length sets the tempo".to_string())
+                }
                 Phase::Recording => parts.push("recording the first pass".to_string()),
                 _ => {
                     let bars = bars_of(s.ticks, v.beats_per_bar);
@@ -1623,6 +1643,24 @@ impl LooperPage {
                     "Capture: Loop {} plays once what you played is in (Capture again: stop)",
                     n + 1
                 ),
+                Phase::Recording if s.free && s.ending => format!(
+                    "Loop {} closes once it is a bar at 160 BPM: then its length sets the tempo",
+                    n + 1
+                ),
+                Phase::Recording if s.free => format!(
+                    "Loop {} records free: REC again closes it, and its length sets the tempo \
+                     (80 to 160 BPM) and starts the song",
+                    n + 1
+                ),
+                Phase::Armed if s.listening && s.free => format!(
+                    "Loop {} records free when you play: {} starts it, and REC again sets \
+                     the tempo",
+                    n + 1,
+                    match v.source {
+                        LoopSource::Pads => "the first pad you play",
+                        LoopSource::Line => "the line input's first note",
+                    }
+                ),
                 Phase::Armed if s.listening => format!(
                     "Loop {} records when you play: {} starts it {}",
                     n + 1,
@@ -1640,9 +1678,16 @@ impl LooperPage {
                     "Loop {} cleared: UNDO brings it back, or tap its ring to record",
                     n + 1
                 ),
+                Phase::Empty if s.free && !v.resample => format!(
+                    "Tap Loop {}'s ring or press REC: it {records} free, and its length sets \
+                     the tempo",
+                    n + 1
+                ),
                 _ => format!("Tap Loop {}'s ring or press REC: it {records}", n + 1),
             },
             waits: match s.phase {
+                Phase::Recording if s.free && s.ending => Some("Closing at 1 bar".to_string()),
+                Phase::Recording if s.free => Some("REC again sets the tempo".to_string()),
                 Phase::Armed if s.listening => Some("REC starts when you play".to_string()),
                 Phase::Armed => Some(match self.transport.state {
                     State::Playing | State::Recording => {

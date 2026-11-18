@@ -152,6 +152,32 @@ const NONE: u16 = u16::MAX;
 /// An overdub whose input never went over this (-60 dB) took silence, and
 /// leaves no layer ([`Overdubs`]).
 pub const SILENT: f32 = 0.001;
+/// The slowest tempo a free first pass sets ([`Command::TempoFromLoop`]).
+pub const FREE_MIN_BPM: f64 = 80.0;
+/// The fastest: a free first pass shorter than a bar at this tempo waits
+/// to close until it is one.
+pub const FREE_MAX_BPM: f64 = 160.0;
+
+/// The bars and the tempo a free first pass of `len` frames sets
+/// ([`Command::TempoFromLoop`]) at `rate`, with bars of `bar` ticks: the
+/// fewest bars (1, 2, 4, 8 ...) that put it at [`FREE_MIN_BPM`] or more,
+/// which is under [`FREE_MAX_BPM`] once it takes 2 or more. The tempo
+/// makes `bars` bars exactly `len` frames. None while the pass is shorter
+/// than a bar at [`FREE_MAX_BPM`].
+pub fn free_tempo(len: usize, rate: u32, bar: Tick) -> Option<(u32, f64)> {
+    let quarters = bar as f64 / PPQ as f64;
+    let tempo = |bars: u32| 60.0 * f64::from(rate) * quarters * f64::from(bars) / len as f64;
+    // (A NaN or an infinity, for no frames or no bar, is refused here.)
+    if !(tempo(1).is_finite() && tempo(1) > 0.0 && tempo(1) <= FREE_MAX_BPM) {
+        return None;
+    }
+    let mut bars = 1u32;
+    while tempo(bars) < FREE_MIN_BPM {
+        bars = bars.checked_mul(2)?;
+    }
+    Some((bars, tempo(bars)))
+}
+
 /// A loop waiting for you to play ([`Starts::Play`]) by ear starts on the
 /// first input sample at or over this (-40 dB).
 pub const PLAY_LEVEL: f32 = 0.01;
@@ -205,6 +231,22 @@ pub enum Command {
     /// is the note) or waits for [`Command::Played`] (false, the default:
     /// the pads, whose sound includes the song's own). For every loop.
     StartsByEar(bool),
+    /// Tempo from the first loop (for every loop; off by default). With
+    /// the song stopped and every other loop empty, a loop set to Free
+    /// length ([`Command::SetBars`] None) records free: from Record (On
+    /// the bar) or from your note (When I play), with no bars yet. Record
+    /// again closes it on the next period's first frame, or, before it is
+    /// a bar at [`FREE_MAX_BPM`], once it is. Its length then sets the
+    /// tempo ([`free_tempo`]): the bars (1, 2, 4, 8 ...) that put it
+    /// between [`FREE_MIN_BPM`] and [`FREE_MAX_BPM`], from the start of
+    /// the bar the song stopped in. The host starts the song there, on
+    /// the frame the loop comes round, at that tempo
+    /// ([`Looper::take_tempo`]). The song starting under a free pass
+    /// (PLAY, or a count-in) throws the pass away (counted). The host
+    /// turns this off while the song can't take a tempo from a loop
+    /// (another device's clock leads, its tempo map has more than one
+    /// tempo, an export runs).
+    TempoFromLoop(bool),
     /// Fade old: the share of the older audio that stays each time the loop
     /// comes round while overdubbing, 0 to 1 (1, the default, fades
     /// nothing; 0.88 keeps 88 % a pass). The older layers turn down by it
@@ -633,6 +675,11 @@ pub struct Status {
     /// pickup, [`Starts::Play`]): they play at the loop's end, leading
     /// into its first bar. 0 otherwise.
     pub lead: usize,
+    /// Its first pass records free and its length will set the tempo
+    /// ([`Command::TempoFromLoop`]): recording so, or, with the song
+    /// stopped and the setting on, empty (Record would start it so) or
+    /// listening (the note it waits for would).
+    pub free: bool,
 }
 
 /// The memory gauge: all the loops together.
@@ -1546,6 +1593,9 @@ struct Loop {
     /// The first pass's frames heard before it started, copying in from
     /// what was heard.
     fill: Option<Fill>,
+    /// The first pass records free, with the song stopped: no bars yet,
+    /// its length sets the tempo ([`Command::TempoFromLoop`]).
+    free: bool,
 }
 
 /// The start of a first pass that was heard before the pass began (its
@@ -1710,6 +1760,7 @@ impl Loop {
         rec_from: 0,
         lead: 0,
         fill: None,
+        free: false,
     };
 
     /// Armed to start when you play, and no note yet.
@@ -1767,6 +1818,19 @@ pub struct Looper {
     loads: Vec<Option<LoopFile>>,
     /// The last [`HEARD_SECONDS`] of input and its bar lines, for Capture.
     heard: Heard,
+    rate: u32,
+    /// Tempo from the first loop ([`Command::TempoFromLoop`]).
+    free_tempo: bool,
+    /// The song was stopped at the period's start, and its bar's ticks
+    /// then.
+    stopped: bool,
+    bar_ticks: Tick,
+    /// A free first pass closed: its loop, the tempo, and the frame the
+    /// song starts on ([`Looper::take_tempo`]).
+    tempo_out: Option<(usize, f64, u64)>,
+    /// A free first pass may be recording: [`Looper::close_free`] looks
+    /// at the loops only then, not every period.
+    free_open: bool,
 }
 
 impl Looper {
@@ -1791,6 +1855,12 @@ impl Looper {
             prints: (0..MAX_LOOPS).map(|_| Prints::default()).collect(),
             loads: (0..MAX_LOOPS).map(|_| None).collect(),
             heard: Heard::new(heard_frames(rate, seconds)),
+            rate,
+            free_tempo: false,
+            stopped: true,
+            bar_ticks: 4 * PPQ as Tick,
+            tempo_out: None,
+            free_open: false,
         }
     }
 
@@ -1933,6 +2003,8 @@ impl Looper {
             starts: l.starts,
             listening: l.listening(),
             lead: l.lead,
+            free: l.free
+                || ((l.phase == Phase::Empty || l.listening()) && self.stopped && self.frees(n)),
         })
     }
 
@@ -2331,9 +2403,14 @@ impl Looper {
             .min(input.len() / 2)
             .min(out.len() / 2);
         self.now = block.start_frame;
+        if let Some(s) = block.spans().first() {
+            self.stopped = s.state == State::Stopped;
+            self.bar_ticks = s.meter.bar_ticks();
+        }
         self.heard.hear(block, input, n);
         self.apply_commands();
         self.place_hits(block);
+        self.close_free(block);
         self.tend_captures();
         // A loop with sound soloed: the others fall silent.
         let any_solo = self.loops.iter().any(|l| l.solo && l.phase != Phase::Empty);
@@ -2533,6 +2610,90 @@ impl Looper {
         }
     }
 
+    /// A free first pass closed ([`Command::TempoFromLoop`]): its loop, the
+    /// tempo its length sets, and the frame the host starts the song on
+    /// at that tempo (the next period's first, where the loop comes
+    /// round), from the start of the bar it stopped in: the loop's first
+    /// bar. Once per pass. If the song can't start, the loop plays at the
+    /// song's tempo when it does (like tape, until a print is in).
+    pub fn take_tempo(&mut self) -> Option<(usize, f64, u64)> {
+        self.tempo_out.take()
+    }
+
+    /// Whether loop `k`, recording a first pass now, would record free
+    /// ([`Command::TempoFromLoop`]): on, Free length, not resampling, and
+    /// every other loop empty (nothing loading, copying in or capturing).
+    fn frees(&self, k: usize) -> bool {
+        let l = &self.loops[k];
+        self.free_tempo
+            && l.bars.is_none()
+            && !l.resample
+            && self.loops.iter().enumerate().all(|(i, o)| {
+                i == k
+                    || (o.phase == Phase::Empty && !o.loading && !o.adding && o.capture.is_none())
+            })
+    }
+
+    /// Loop `k`'s first pass starts free on song frame `rec_from` (the
+    /// period's first, or a note before it, copied in from what was
+    /// heard).
+    fn begin_free(&mut self, k: usize, rec_from: u64) {
+        let Looper {
+            store,
+            loops,
+            heard,
+            now,
+            bar_ticks,
+            ..
+        } = self;
+        loops[k].begin_free(store, k, heard, rec_from, *now, *bar_ticks);
+        self.free_open = true;
+    }
+
+    /// Each free first pass asked to close ([`Loop::ending`]) closes on
+    /// the next period's first frame, once it is a bar at
+    /// [`FREE_MAX_BPM`]: its bars from the start of the bar the song is
+    /// stopped in, and the tempo for the host ([`Looper::take_tempo`]).
+    fn close_free(&mut self, block: &Block) {
+        if !self.free_open {
+            return;
+        }
+        let end = block.start_frame + u64::from(block.frames);
+        let Some(span) = block.spans().first() else {
+            return;
+        };
+        let bar = span.meter.bar_ticks().max(1);
+        let mut open = false;
+        for k in 0..self.loops.len() {
+            let l = &self.loops[k];
+            if !(l.free && l.phase == Phase::Recording) {
+                continue;
+            }
+            let len = end.saturating_sub(l.rec_from) as usize;
+            let closing = if l.ending {
+                free_tempo(len, self.rate, bar)
+            } else {
+                None
+            };
+            let Some((bars, bpm)) = closing else {
+                open = true;
+                continue;
+            };
+            let pos = span.ticks().start;
+            let origin = pos - pos.rem_euclid(bar);
+            let t = origin + i64::from(bars) * bar;
+            let l = &mut self.loops[k];
+            l.free = false;
+            l.origin = origin;
+            l.bar = bar;
+            l.end_tick = Some(t);
+            if l.finish_len(&mut self.store, &mut self.stats, k, t, len) {
+                self.tempo_out = Some((k, bpm, end));
+            }
+        }
+        self.free_open = open;
+    }
+
     /// Each loop waiting for you to play that a note came to: where its
     /// first pass starts ([`Starts::Play`]). Song stopped: it asks for the
     /// song to start ([`Looper::take_start`]) and starts with it. Counting
@@ -2554,6 +2715,8 @@ impl Looper {
             match span.state {
                 State::Playing | State::Recording => self.place_hit(k, p, block),
                 State::CountIn => self.loops[k].pending = Some((p, true)),
+                // Tempo from the loop: it records free from the note.
+                State::Stopped if self.frees(k) => self.begin_free(k, p),
                 State::Stopped => {
                     self.loops[k].pending = Some((p, false));
                     self.loops[k].want_start = true;
@@ -2739,6 +2902,7 @@ impl Looper {
                     l.by_ear = on;
                 }
             }
+            Queued::Loop(Command::TempoFromLoop(on)) => self.free_tempo = on,
             // A capture under way: again, Undo or Clear call it off.
             Queued::Loop(
                 Command::Capture(_) | Command::Undo | Command::Clear | Command::Forget,
@@ -2799,9 +2963,23 @@ impl Looper {
             }
             Queued::Loop(c) => {
                 let was = self.loops[s].recording();
+                let empty = self.loops[s].phase == Phase::Empty;
                 self.loops[s].apply(&mut self.store, &mut self.stats, s, c);
                 if !was && self.loops[s].recording() {
                     self.others_stop_recording(s);
+                }
+                // Tempo from the loop, on the bar: armed with the song
+                // stopped, it records free from now (there is no bar line
+                // to wait for).
+                let l = &self.loops[s];
+                if c == Command::Record
+                    && empty
+                    && l.phase == Phase::Armed
+                    && l.starts == Starts::Bar
+                    && self.stopped
+                    && self.frees(s)
+                {
+                    self.begin_free(s, self.now);
                 }
             }
             Queued::Layer(id, c) => {
@@ -3394,6 +3572,7 @@ impl Loop {
                 | Command::SetStarts(_)
                 | Command::Played(_)
                 | Command::StartsByEar(_)
+                | Command::TempoFromLoop(_)
                 | Command::SetFadeOld(_)
                 | Command::SetLatency(_)
                 | Command::SetLevel(_)
@@ -3485,7 +3664,7 @@ impl Loop {
                 }
             }
             // The looper hands these to every loop.
-            Command::Played(_) | Command::StartsByEar(_) => {}
+            Command::Played(_) | Command::StartsByEar(_) | Command::TempoFromLoop(_) => {}
             Command::SetFadeOld(k) if k.is_finite() => self.fade_old = k.clamp(0.0, 1.0),
             Command::SetFadeOld(_) => {}
             Command::SetLatency(l) => self.latency = l,
@@ -4426,6 +4605,7 @@ impl Loop {
         self.unhear();
         self.lead = 0;
         self.fill = None;
+        self.free = false;
     }
 
     fn abort(&mut self, stats: &mut Stats) {
@@ -4487,6 +4667,19 @@ impl Loop {
         if self.phase != Phase::Recording {
             return;
         }
+        // A free pass has no bars: the song starting under it (not from
+        // its close) throws it away. Nothing else moves it while stopped.
+        if self.free {
+            if matches!(
+                mark,
+                Mark::Started { .. } | Mark::CountIn { .. } | Mark::Panic
+            ) {
+                stats.aborted += 1;
+                self.reset();
+                self.reclaim(store, me);
+            }
+            return;
+        }
         match mark {
             // The transport looped back at `end`: if that is where the pass
             // ends (or Record asked for the next bar), it ends here.
@@ -4525,6 +4718,8 @@ impl Loop {
             }
         }
         match self.phase {
+            // A free pass has no bar lines (the song is stopped under it).
+            Phase::Recording if self.free => {}
             Phase::Recording if t > self.origin && (self.end_tick == Some(t) || self.ending) => {
                 self.finish_first(store, stats, me, t, f);
             }
@@ -4612,6 +4807,62 @@ impl Loop {
             at: write_at,
             pre: true,
         });
+    }
+
+    /// The first pass starts free ([`Command::TempoFromLoop`]) on song
+    /// frame `rec_from`, `now` being the period's first: no bars or bar
+    /// lines until it closes ([`Looper::close_free`]). A start before
+    /// `now` (a note) copies in from what was heard, as
+    /// [`Loop::begin_first`]'s does; otherwise the input heard just before
+    /// it is the loop point's.
+    fn begin_free(
+        &mut self,
+        store: &mut Store,
+        me: usize,
+        heard: &Heard,
+        rec_from: u64,
+        now: u64,
+        bar: Tick,
+    ) {
+        store.drop_kept(me);
+        self.phase = Phase::Recording;
+        self.free = true;
+        self.origin = 0;
+        self.start_frame = rec_from;
+        self.bar = bar;
+        self.last_bar = (0, rec_from);
+        self.next_bar = u64::MAX;
+        self.end_tick = None;
+        self.ending = false;
+        self.then_overdub = self.after == After::Overdub;
+        self.first_open = true;
+        self.rec_latency = self.latency;
+        self.len = 0;
+        self.written = 0;
+        self.rec_from = rec_from;
+        self.lead = 0;
+        self.unhear();
+        let from = rec_from + u64::from(self.rec_latency);
+        self.fill = (from < now).then(|| Fill {
+            from,
+            done: 0,
+            to: (now - from) as usize,
+            at: now,
+            pre: true,
+        });
+        if self.fill.is_none() {
+            // The writer adds what comes from `now` to the input before the
+            // pass's first frame.
+            for k in 0..FADE {
+                let x = now
+                    .checked_sub((FADE - k) as u64)
+                    .filter(|&g| heard.holds(g))
+                    .map_or([0.0; 2], |g| heard.frame(g));
+                self.ring[2 * k] = x[0];
+                self.ring[2 * k + 1] = x[1];
+            }
+            self.ring_at = 0;
+        }
     }
 
     /// The first pass's frames heard before it began, copied in at
