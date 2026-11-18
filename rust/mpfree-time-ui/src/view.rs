@@ -313,10 +313,16 @@ pub struct TransportInfo {
     pub bpm: f64,
     pub meter: Meter,
     pub swing: Swing,
+    /// The loop set here. While [`TransportInfo::follows_position`] it
+    /// is held off, not played ([`TransportInfo::playing_loop`]).
     pub loop_range: Option<(Tick, Tick)>,
     pub overdub: bool,
     /// Bars of count-in before recording from stopped.
     pub count_in: u8,
+    /// Following another device's position (Sync's Position in the I/O
+    /// view): the leader owns the timeline, so the loop is off, greyed,
+    /// and comes back when following stops (a loop set meanwhile too).
+    pub follows_position: bool,
 }
 
 impl Default for TransportInfo {
@@ -330,11 +336,18 @@ impl Default for TransportInfo {
             loop_range: None,
             overdub: false,
             count_in: 0,
+            follows_position: false,
         }
     }
 }
 
 impl TransportInfo {
+    /// The loop the transport plays: none while following another
+    /// device's position, which holds the loop set here off.
+    pub fn playing_loop(&self) -> Option<(Tick, Tick)> {
+        self.loop_range.filter(|_| !self.follows_position)
+    }
+
     pub fn of(t: &Transport) -> TransportInfo {
         TransportInfo {
             state: t.state(),
@@ -345,6 +358,7 @@ impl TransportInfo {
             loop_range: t.loop_range(),
             overdub: t.overdub(),
             count_in: t.count_in(),
+            follows_position: false,
         }
     }
 }
@@ -1318,7 +1332,7 @@ pub fn clips_after(
 pub fn cue_tick(t: &TransportInfo, line: LaunchGrid) -> Tick {
     let bar = t.meter.bar_ticks();
     let next = line.next(t.position, bar);
-    match t.loop_range {
+    match t.playing_loop() {
         Some((a, b)) if t.state.rolling() && t.position < b && next >= b => line.next(a, bar),
         _ => next,
     }
@@ -2673,6 +2687,17 @@ pub fn length_label(song_ticks: f64, meter: Meter) -> String {
 }
 
 /// The loop as the bar shows it: "off", "1" (one bar), "1–4", or positions.
+/// The Record tab's Loop row: the loop's bars, or, following another
+/// device's position, the loop that comes back after ("1–4, off while
+/// following").
+fn loop_row(t: &TransportInfo) -> String {
+    match (t.follows_position, t.loop_range) {
+        (false, range) => loop_label(range, t.meter),
+        (true, None) => "off while following".to_string(),
+        (true, held) => format!("{}, off while following", loop_label(held, t.meter)),
+    }
+}
+
 pub fn loop_label(range: Option<(Tick, Tick)>, meter: Meter) -> String {
     let Some((a, b)) = range else {
         return "off".to_string();
@@ -2838,10 +2863,11 @@ pub fn bar_of(st: &TimeState) -> TransportBar {
         // tab's Launch row sets it).
         BarItem::new("Launch", launch_name(st.launch), Tone::Normal),
         BarItem::new("Swing", swing, Tone::Normal),
+        // Following another device's position, its loop is off: greyed.
         BarItem::new(
             "Loop",
             loop_label(t.loop_range, t.meter),
-            if t.loop_range.is_some() {
+            if t.playing_loop().is_some() {
                 Tone::Accent
             } else {
                 Tone::Dim
@@ -3301,7 +3327,7 @@ pub fn record_rows(st: &TimeState) -> Vec<OptionRow> {
             if t.overdub { "Overdub" } else { "Replace" }.to_string(),
         ),
         row(RECORD_ROWS[2], count_in),
-        row(RECORD_ROWS[3], loop_label(t.loop_range, t.meter)),
+        row(RECORD_ROWS[3], loop_row(t)),
         row(RECORD_ROWS[4], format!("{:.1}", t.bpm)),
         row(
             RECORD_ROWS[5],
@@ -5315,6 +5341,30 @@ mod tests {
             step(&st, 3, 1),
             Some(TimeAction::Transport(Command::SetLoop(Some((0, 4 * BAR)))))
         );
+        // Following another device's position the transport's loop is off:
+        // the row shows and steps the loop held until that stops.
+        let following = TimeState {
+            transport: TransportInfo {
+                loop_range: Some((0, 2 * BAR)),
+                follows_position: true,
+                ..st.transport
+            },
+            ..st.clone()
+        };
+        assert_eq!(record_rows(&following)[3].value, "1–2, off while following");
+        assert_eq!(
+            step(&following, 3, 1),
+            Some(TimeAction::Transport(Command::SetLoop(Some((0, 4 * BAR)))))
+        );
+        let none_held = TimeState {
+            transport: TransportInfo {
+                loop_range: None,
+                ..following.transport
+            },
+            ..st.clone()
+        };
+        assert_eq!(record_rows(&none_held)[3].value, "off while following");
+        assert_eq!(step(&none_held, 3, -1), None);
         assert_eq!(
             step(&st, 4, 1),
             Some(TimeAction::Transport(Command::SetTempo(121.0)))

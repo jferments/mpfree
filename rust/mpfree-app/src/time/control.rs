@@ -276,6 +276,9 @@ pub struct TimeControl {
     counts: Counts,
     /// What following another device's clock put right or lost.
     follow: FollowCounts,
+    /// Following another device's Start and Stop while it is stopped:
+    /// PLAY waits for its Start (set by the host before each action).
+    pub(super) clock_waits: bool,
     /// The current period's spans, copied from the audio half's.
     block: Box<Block>,
     /// The next span starts a new period's copy.
@@ -408,6 +411,7 @@ impl TimeControl {
             info,
             counts: Counts::default(),
             follow: FollowCounts::default(),
+            clock_waits: false,
             block: Box::new(Block::new()),
             fresh: true,
             spans_lost: 0,
@@ -949,6 +953,15 @@ impl TimeControl {
     /// new clip goes in its first empty slot, as a tap on an empty slot on
     /// Arrange does. Without it the recorder had no clip and REC kept
     /// nothing. Returns what it did, if anything.
+    /// The leader's start began a take (follow.rs): the clip it records
+    /// into, as REC's punch-in readies it. A line for the log.
+    pub(super) fn take_started(&mut self) -> Result<String, String> {
+        Ok(match self.ready_to_record()? {
+            Some(line) => format!("rec: the take started with the clock, {line}"),
+            None => "rec: the take started with the clock".to_string(),
+        })
+    }
+
     fn ready_to_record(&mut self) -> Result<Option<String>, String> {
         let Some(track) = self.armed else {
             return Ok(None);
@@ -1527,6 +1540,17 @@ impl TimeControl {
     pub fn act(&mut self, a: TimeAction) -> Result<String, String> {
         let info = self.info;
         match a {
+            // Waiting for another device's Start, a take records from it
+            // (REC readies it, follow.rs starts it): not now.
+            TimeAction::Transport(Command::Record)
+                if self.clock_waits && info.state == State::Stopped =>
+            {
+                Err(
+                    "transport: the take waits for the clock: REC readies it, and it \
+                     records from the leader's Start"
+                        .into(),
+                )
+            }
             TimeAction::Transport(Command::Record)
                 if !matches!(info.state, State::Recording | State::CountIn) =>
             {
@@ -1543,6 +1567,17 @@ impl TimeControl {
                 if !info.state.rolling() =>
             {
                 let launched = self.ready_to_play()?;
+                // Following another device's Start and Stop, its Start
+                // plays what is ready (from bar 1 after PLAY START).
+                if self.clock_waits {
+                    if cmd == Command::PlayStart && !self.command(Command::Locate(0)) {
+                        return Err("transport: command queue full".into());
+                    }
+                    return Ok(match launched {
+                        Some(line) => format!("transport: {cmd:?} waits for the clock, {line}"),
+                        None => format!("transport: {cmd:?} waits for the clock"),
+                    });
+                }
                 if !self.command(cmd) {
                     return Err("transport: command queue full".into());
                 }
@@ -2959,7 +2994,7 @@ impl TimeControl {
             position: t.position,
             rolling: t.state.rolling(),
             meter: t.meter,
-            loop_range: t.loop_range,
+            loop_range: t.playing_loop(),
         };
         let track = self.armed.unwrap_or(0);
         let name = format!("Capture {}", self.takes.captures() + 1);

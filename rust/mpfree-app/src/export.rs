@@ -737,6 +737,8 @@ impl Host {
         let info = time.info();
         let before = Before {
             song: time.song_on(),
+            // Following another device's position, the loop it holds
+            // (set back, it is held again).
             loop_range: info.loop_range,
             position: info.position,
         };

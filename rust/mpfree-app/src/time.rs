@@ -467,6 +467,8 @@ pub struct TimeHost {
     pub metronome: bool,
     /// The click's level, as a gain ([`click_gain`]).
     pub click_gain: f32,
+    /// The device the transport follows, for what is said while it waits.
+    leader: Option<String>,
 }
 
 /// A step's parameter lock (`value`) or its end (`None`), `offset` frames
@@ -514,6 +516,7 @@ impl TimeHost {
             audio,
             metronome: false,
             click_gain: click_gain(CLICK_DB),
+            leader: None,
         };
         host.audio.receive();
         Ok(host)
@@ -693,9 +696,53 @@ impl TimeHost {
     /// [`TimeHost::advance`], with `frame` = [`TimeHost::next_frame`]
     /// (or earlier, when the bytes have their own time). Anything but
     /// clock, Start, Continue, Stop and Song Position is skipped; the
-    /// options given to [`TimeHost::follow`] say what follows.
-    pub fn clock_in(&mut self, frame: u64, bytes: &[u8]) {
+    /// options given to [`TimeHost::follow`] say what follows. When the
+    /// leader's start began a ready take, the clip it records into is
+    /// made: a line for the log.
+    pub fn clock_in(&mut self, frame: u64, bytes: &[u8]) -> Option<String> {
         self.audio.clock_in(frame, bytes);
+        if !self.audio.took() {
+            return None;
+        }
+        let r = self.control.take_started();
+        // No clip to record into (no empty slot): it plays without
+        // recording, the punch-in taken back on its frame.
+        if r.is_err() {
+            self.control.command(Command::Record);
+        }
+        Some(
+            self.sent(r)
+                .unwrap_or_else(|e| format!("rec: {e}, so it only plays")),
+        )
+    }
+
+    /// Following another device's Start and Stop while it is stopped:
+    /// PLAY waits for its Start, and a ready take records from it.
+    pub fn clock_waits(&self) -> bool {
+        self.audio.clock_waits()
+    }
+
+    /// A take the app has ready (REC pressed while stopped), adding (true)
+    /// or replacing, every period before [`TimeHost::clock_in`]: while
+    /// [`TimeHost::clock_waits`], the leader's start records it.
+    pub fn take_waits(&mut self, take: Option<bool>) {
+        self.audio.take_waits(take);
+    }
+
+    /// The device the transport follows, by name, for what is said while
+    /// it waits (None: "the leader"). Cheap to call every period.
+    pub fn set_leader(&mut self, name: Option<&str>) {
+        if self.leader.as_deref() != name {
+            self.leader = name.map(str::to_string);
+        }
+    }
+
+    /// While PLAY waits for another device's Start
+    /// ([`TimeHost::clock_waits`]): that device's name, for what is said
+    /// ("the leader" when it isn't known).
+    pub fn waiting_for(&self) -> Option<&str> {
+        self.clock_waits()
+            .then(|| self.leader.as_deref().unwrap_or("the leader"))
     }
 
     /// The first frame of the coming period on the transport's frame
@@ -714,6 +761,7 @@ impl TimeHost {
     /// Carry out a touch on the time engine's screens. Returns a line for
     /// the log.
     pub fn act(&mut self, a: TimeAction) -> Result<String, String> {
+        self.control.clock_waits = self.audio.clock_waits();
         let r = self.control.act(a);
         self.sent(r)
     }
@@ -5341,29 +5389,44 @@ mod tests {
         assert!((bpm - 100.0).abs() < 0.1, "{bpm}");
         assert_eq!(h.info().bpm, bpm);
         assert!(!h.describe().contains("following"), "{}", h.describe());
-        // A loop of its own takes the transport away from the leader's
-        // position as it wraps: it jumps back, and the status line says so.
-        // (Twice: the leader's pulse is on the loop's end, so the first
-        // jump lands there and wraps again.)
+        // The leader owns the timeline: a loop set while following its
+        // position is held for later, so nothing wraps or jumps (a jump is
+        // counted by follow.rs's tests), and the screens see it held.
         let bar = h.info().position / 3840 * 3840;
         h.command(Command::SetLoop(Some((bar, bar + 3840))));
         while pads.frame < beat(40) {
             period(&mut h, &mut pads);
         }
-        assert!(
-            h.describe()
-                .contains("following a clock: 2 jumps to its position, 0 times"),
-            "{}",
-            h.describe()
+        assert!(!h.describe().contains("following"), "{}", h.describe());
+        let info = h.info();
+        assert_eq!(
+            (info.loop_range, info.follows_position, info.playing_loop()),
+            (Some((bar, bar + 3840)), true, None)
         );
-        // Not following: the app's tempo applies again.
-        // (Playing, it takes effect on the next sixteenth line.)
+        // A note a beat on and on, none pulled back by a loop.
+        let a_beat = (24.0 * pulse).round() as i64;
+        let gaps: Vec<i64> = pads.hits[31..]
+            .windows(2)
+            .map(|w| w[1].0 as i64 - w[0].0 as i64)
+            .collect();
+        assert!(gaps.len() >= 8, "{gaps:?}");
+        assert!(
+            gaps.iter().all(|g| (g - a_beat).abs() <= 64),
+            "{gaps:?}, a beat {a_beat}"
+        );
+        // Not following: the app's tempo applies again (playing, on the
+        // next sixteenth line), and the loop comes back.
         h.follow(None);
         assert_eq!(h.followed_bpm(), None);
         for _ in 0..100 {
             period(&mut h, &mut pads);
         }
-        assert_eq!(h.info().bpm, 120.0);
+        let info = h.info();
+        assert_eq!(info.bpm, 120.0);
+        assert_eq!(
+            (info.follows_position, info.playing_loop()),
+            (false, Some((bar, bar + 3840)))
+        );
     }
 
     /// A project's clips, saved and read back, make an engine that plays
