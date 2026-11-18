@@ -164,6 +164,7 @@ fn grains_never_allocate() {
                         resonance: (k % 3) as f32 * 0.5,
                         spray: (k % 2) as f32,
                     },
+                    quality: Quality::from_index(k % 3),
                 });
                 if k % 4 == 3 {
                     v.stop()
@@ -238,6 +239,7 @@ fn grains_never_allocate() {
         node.process(&Ctx::new(rate, t), events, &mut nl, &mut nr);
         node.set_param(param::SIZE, 20.0 + (period % 9) as f32 * 30.0);
         node.set_param(param::REPEAT, ((period / 90) % 6) as f32);
+        node.set_param(param::QUALITY, ((period / 70) % 3) as f32);
         node.set_param(param::FILTER, ((period / 70) % 4) as f32);
         node.set_param(param::FILTER_SPRAY, ((period / 50) % 2) as f32 * 100.0);
         // Captures of its memory, one after another.

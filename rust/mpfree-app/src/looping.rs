@@ -1060,6 +1060,9 @@ pub struct LooperView {
     /// Where Capture goes now: the picked loop if it is empty, else the
     /// first empty one (None: none is), and the bars it asks for.
     pub capture_into: Option<(usize, u32)>,
+    /// Tempo from the first loop is on, and the song can take one now
+    /// ([`LoopHost::set_tempo_from_loop`]).
+    pub free_tempo: bool,
 }
 
 impl Default for LooperView {
@@ -1087,6 +1090,7 @@ impl Default for LooperView {
             copy_into: None,
             heard: HeardWave::default(),
             capture_into: None,
+            free_tempo: false,
         }
     }
 }
@@ -1121,6 +1125,12 @@ pub struct LoopHost {
     /// Starts on a note refused ([`LoopHost::start_refused`]): counted,
     /// logged and said on the screen.
     pub starts_refused: u64,
+    /// Tempo from the first loop, as the looper was last told
+    /// ([`LoopHost::set_tempo_from_loop`]).
+    free_tempo: bool,
+    /// Tempos from a free first pass the song couldn't start at
+    /// ([`LoopHost::tempo_refused`]): counted, logged and said.
+    pub tempos_refused: u64,
     input: Vec<f32>,
     out: Vec<f32>,
     last: Status,
@@ -1491,6 +1501,8 @@ impl LoopHost {
             by_ear_set: false,
             played_at: None,
             starts_refused: 0,
+            free_tempo: false,
+            tempos_refused: 0,
             input: vec![0.0; 2 * PERIOD],
             out: vec![0.0; 2 * PERIOD],
             last,
@@ -1832,14 +1844,28 @@ impl LoopHost {
                 format!(
                     "Record: armed, the first pass starts when you play {} ({})",
                     self.first_note(),
-                    bars_text(s.bars)
+                    if s.free {
+                        "free: REC again closes it, and its length sets the tempo".to_string()
+                    } else {
+                        bars_text(s.bars)
+                    }
                 )
+            }
+            (Command::Record, Phase::Empty) if s.free && !self.resample => {
+                "Record: the first pass records free from now: REC again closes it, \
+                 and its length sets the tempo and starts the song"
+                    .to_string()
             }
             (Command::Record, Phase::Empty) => format!(
                 "Record: armed, the first pass starts on the next bar line ({})",
                 bars_text(s.bars)
             ),
             (Command::Record, Phase::Armed) => "Record again: disarmed".to_string(),
+            (Command::Record, Phase::Recording) if s.free => {
+                "Record during the free first pass: it closes (once it is a bar at \
+                 160 BPM), and its length sets the tempo"
+                    .to_string()
+            }
             (Command::Record, Phase::Recording) => {
                 "Record during the first pass: it ends on the next bar line".to_string()
             }
@@ -1928,6 +1954,14 @@ impl LoopHost {
             (Command::StartsByEar(on), _) => format!(
                 "a loop that starts when you play listens to {}",
                 if on { "the line input" } else { "the pads" }
+            ),
+            (Command::TempoFromLoop(on), _) => format!(
+                "tempo from the first loop: {}",
+                if on {
+                    "on (a free first pass with the song stopped sets the tempo)"
+                } else {
+                    "off"
+                }
             ),
             (Command::SetFadeOld(k), _) => format!("fade old: {:.0} % kept a pass", 100.0 * k),
             (Command::SetLatency(l), _) => {
@@ -2809,6 +2843,11 @@ impl LoopHost {
             } else {
                 String::new()
             }
+            + &if self.tempos_refused > 0 {
+                format!("; {} tempos from a loop refused", self.tempos_refused)
+            } else {
+                String::new()
+            }
     }
 
     /// What the Looper tab shows; takes the meter's peaks.
@@ -2860,6 +2899,7 @@ impl LoopHost {
             copy_into: self.copy.map(|c| c.to),
             heard: self.heard_wave(),
             capture_into: self.capture_into(),
+            free_tempo: self.free_tempo,
         }
     }
 
@@ -3061,6 +3101,47 @@ impl LoopHost {
         format!(
             "looper: Loop {} heard you, but the song can't start: {why}. It listens again",
             n + 1
+        )
+    }
+
+    /// Tempo from the first loop on or off ([`Command::TempoFromLoop`]):
+    /// the MENU setting, while the song can take a tempo from a loop.
+    /// Cheap to call every period: the looper is told when it changes.
+    pub fn set_tempo_from_loop(&mut self, on: bool) {
+        if on != self.free_tempo && self.looper.command(Command::TempoFromLoop(on)) {
+            self.free_tempo = on;
+        }
+    }
+
+    /// Loop `n` listening for a pad records free when it hears one
+    /// ([`Status::free`]): the note doesn't start the song; closing the
+    /// pass does.
+    pub fn records_free(&self, n: usize) -> bool {
+        self.looper.loop_status(n).is_some_and(|s| s.free)
+    }
+
+    /// After the looper's period: a free first pass closed, so the song
+    /// starts at the tempo its length sets, on the frame it comes round
+    /// ([`Looper::take_tempo`]): its loop, its bars, the tempo and that
+    /// frame.
+    pub fn take_tempo(&mut self) -> Option<(usize, u32, f64, u64)> {
+        let (n, bpm, at) = self.looper.take_tempo()?;
+        let s = self.looper.loop_status(n)?;
+        let bar = Tick::from(self.beats_per_bar.max(1)) * PPQ as Tick;
+        let bars = u32::try_from(s.ticks / bar.max(1)).unwrap_or(0);
+        Some((n, bars, bpm, at))
+    }
+
+    /// The song can't start at the tempo loop `n` set (`why`): counted;
+    /// the line for the log and the screen. The loop plays at the song's
+    /// tempo when it starts.
+    pub fn tempo_refused(&mut self, n: usize, bars: u32, bpm: f64, why: &str) -> String {
+        self.tempos_refused += 1;
+        format!(
+            "looper: Loop {} is {} at {bpm:.2} BPM, but the song can't start at that tempo: \
+             {why}. The loop plays at the song's tempo when it starts",
+            n + 1,
+            bars_words_n(bars)
         )
     }
 

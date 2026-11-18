@@ -60,6 +60,8 @@ struct Rig {
     cv: cv_out::CvOut,
     /// Export's note tap (export.rs), on as if an export ran.
     tap: crate::export::Tap,
+    /// Sample Recall's master, kept every period (sampler R5 part 1).
+    recall: sampler::RecFeed,
 }
 
 fn tone(frames: usize, f: f32) -> Vec<i16> {
@@ -118,6 +120,9 @@ impl Rig {
             io: midi_in::io_model(),
             cv: cv_out::CvOut::new(RATE, std::time::Duration::ZERO),
             tap: crate::export::Tap::on(),
+            recall: sampler::RecFeed(
+                mpfree_sampler::record::input16(crate::sample_page::SCREEN_RECALL_SECONDS, RATE).0,
+            ),
         }
     }
 
@@ -169,6 +174,7 @@ impl Rig {
             io,
             cv,
             tap,
+            recall,
             ..
         } = self;
         let synth_on = *synth_on;
@@ -320,6 +326,7 @@ impl Rig {
         let n_tracks = time.project().tracks.len();
         let said = mix.takes_period(&ctx, n_tracks, &|t| time.now_playing(t));
         assert!(said.is_none(), "period {i}: a take said something");
+        recall.period(time.block(), &left[..], &right[..], mix.mixer.latency());
         let p = p.max(time.mix_click(left, right));
         self.peak = self.peak.max(p);
         // After the write, in the loop.
@@ -394,6 +401,8 @@ fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
     );
     assert!(rig.peak > 0.01, "silent: peak {}", rig.peak);
     assert!(rig.peak.is_finite());
+    // Sample Recall kept every period of the master.
+    assert_eq!(rig.recall.written(), i * PERIOD as u64);
     // On two cores the lane took its half of the voices; on three the synth
     // played every period on its lane. (Late parts are allowed here: under
     // qemu or a busy machine a lane can be slow, and a late part allocates
@@ -1235,4 +1244,106 @@ fn each_track_plays_its_own_kit_at_once() {
     let (mut l, mut r) = ([0.0f32; PERIOD], [0.0f32; PERIOD]);
     rig.player.render_dry(&mut l, &mut r);
     assert_eq!(rig.player.playing(), 2, "both kits sound at once");
+}
+
+/// A kit's Instrument and MIDI out pads (the Pads tab's pad types, the
+/// redesign's step 6b): a clip's hit on the MIDI out pad goes out on its
+/// own port, channel and note though its track plays the kit, and one on
+/// the Instrument pad starts a voice of its engine, whichever engine is on
+/// the pads; the sampler plays neither, the pads flash, the track's mute
+/// ends both, and none of it allocates or frees.
+#[test]
+fn a_kits_instrument_and_midi_out_pads_play_the_synth_and_the_gear() {
+    use crate::synth::Engine;
+    use mpfree_midi::setup::DIN_NAME;
+    use mpfree_node::NodeEvent;
+    let mut rig = Rig::new(false);
+    let sink = MidiSink::default();
+    rig.midi
+        .open(sink.clone(), std::time::Instant::now())
+        .unwrap();
+    rig.midi.sync(&rig.io, false);
+    // Kit 1's pad 3 sends note 36 on channel 10 to the jacks; pad 4 plays
+    // Analog at C3. They come with the kit's view, as from the Pads tab.
+    let mut routes = vec![None; mpfree_sampler::model::PADS];
+    routes[2] = Some(sampler::PadRoute::Midi {
+        port: DIN_NAME.into(),
+        channel: 9,
+        note: 36,
+    });
+    routes[3] = Some(sampler::PadRoute::Voice(Engine::Analog, 48));
+    let mut swap = sampler::ViewSwap {
+        kit: 0,
+        view: Some(mpfree_sampler::engine::EngineView::build(
+            &mpfree_sampler::model::Project::new(),
+            RATE,
+        )),
+        routes,
+    };
+    assert!(rig.player.swap_view(&mut swap));
+    assert!(
+        swap.routes.iter().all(Option::is_none),
+        "the ones it held go back to be freed"
+    );
+    assert!(rig.player.has_sound(0, 2) && rig.player.has_sound(0, 3));
+    let mut seq = SeqPads {
+        player: &mut rig.player,
+        synth: &mut rig.synth,
+        kits: &rig.track_kits,
+        shown: 0,
+        flashes: [0; 128],
+        hits: 0,
+        live: rig.app.live_map(),
+        live_hits: [(0, 0); MAX_LIVE_HITS],
+        n_live: 0,
+        silent: 0,
+        midi: &mut rig.midi,
+        cv: &mut rig.cv,
+        own: &mut rig.mix.instruments,
+        tap: &mut rig.tap,
+        only: None,
+        shifts: [mpfree_seq::Transpose::NONE; mpfree_seq::MAX_TRACKS],
+        key: None,
+        by_note: &mut [mpfree_arp::scale::Held::new(); 2],
+    };
+    let (sounded, calls) = crate::sys::alloc_count::calls(|| {
+        let sounded = [
+            time::Pads::hit_at(&mut seq, 0, 2, 100, 0),
+            time::Pads::hit_at(&mut seq, 0, 3, 90, 4),
+        ];
+        time::Pads::pressure_at(&mut seq, 0, 3, 60, 8);
+        time::Pads::release_at(&mut seq, 0, 2, 16);
+        // Pad 4 is held on: the track's mute ends it.
+        seq.synth.end_pad_voices(0, 20);
+        sounded
+    });
+    assert_eq!(calls, 0, "allocations or frees playing the pads' types");
+    assert_eq!(sounded, [true, true]);
+    assert_eq!((seq.hits, seq.flashes[2], seq.flashes[3]), (2, 100, 90));
+    assert_eq!(
+        seq.synth.queued_on(Engine::Analog),
+        [
+            NodeEvent::NoteOn {
+                note: 48,
+                velocity: 90
+            },
+            NodeEvent::Pressure {
+                note: 48,
+                value: 60
+            },
+            NodeEvent::NoteOff { note: 48 },
+        ]
+    );
+    assert!(
+        seq.synth.queued().is_empty(),
+        "nothing on the engine on the pads (Poly)"
+    );
+    seq.midi
+        .period_end(PERIOD as u32, std::time::Instant::now());
+    assert!(rig.midi.close());
+    assert_eq!(
+        *sink.0.lock().unwrap(),
+        [0x99, 36, 100, 0x89, 36, 64],
+        "pad 3's own note on channel 10, and its end"
+    );
 }

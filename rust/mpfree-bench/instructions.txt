@@ -59,6 +59,8 @@
 17292	Gate
 472729	Grains FX (dense)
 629770	Grains FX (dense, filtered)
+491230	Grains FX (dense, lo-fi)
+501065	Grains FX (dense, tape)
 99325	Harmonizer
 188538	Keys Dusty Keys, 16 voices
 169967	Keys Init, 16 voices
@@ -116,6 +118,7 @@
 1515282	Sampler x16 held up
 1774420	Sampler x16 held up, 16-bit sound
 548284	Sampler x16 held, 16-bit sound
+1336420	Sampler x16 held, LFO and pitch envelope
 1435285	Sampler, 20 pads
 2018120	Sampler, 20 pads + master grains
 77512	Sampler, 4 drum kits, 64 voices

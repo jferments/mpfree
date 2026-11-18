@@ -729,6 +729,7 @@ mod tests {
             song_length: steps as f64 * 240.0,
             song_step: 240.0,
             origin: None,
+            order: None,
             rows: vec![(0, row)],
             locks: vec![(0, locks)],
             lock_values: Vec::new(),

@@ -68,6 +68,7 @@ pub mod play_tab;
 pub mod play_widgets;
 pub mod rec_tab;
 pub mod rec_widgets;
+pub mod recall;
 pub mod sample;
 pub mod send;
 pub mod source;

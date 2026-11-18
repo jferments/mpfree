@@ -74,6 +74,12 @@ grain/preset[pink, Stutter 1/16]/level_change_lu	-4.4319
 grain/preset[pink, Sub drone]/level_change_lu	-1.2707
 grain/preset[pink, Swarm]/level_change_lu	-0.8313
 grain/preset[pink, Tape stretch]/level_change_lu	-1.2813
+grain/quality[feedback pink -14 dBFS, full, tape]/growth_db	-3.418
+grain/quality[feedback pink -14 dBFS, full, tape]/peak_dbfs	-1.5127
+grain/quality[pad, lofi]/level_lu	0.0093
+grain/quality[pad, tape]/level_lu	-0.1563
+grain/quality[pink, lofi]/level_lu	-0.2219
+grain/quality[pink, tape]/level_lu	-0.8207
 grain/repeat[pink, 1/16]/level_change_db	-0.0521
 grain/repeat[pink, 1/4]/level_change_db	-0.0202
 grain/repeat[tone 110 Hz, 1/16]/join_step_ratio	1.3958

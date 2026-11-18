@@ -30,6 +30,7 @@ pub mod arps;
 pub mod player;
 pub mod record;
 pub mod recorded;
+mod steps;
 pub mod takes;
 pub mod view;
 
@@ -42,8 +43,10 @@ pub use record::{
     TOUCH_ROOM,
 };
 pub use recorded::{Behind, Includes, Rec, Recent, RECENT};
+pub use steps::StepOrder;
 pub use takes::{
-    ClipDrop, MovePut, MoveWrite, Recorded, SceneEdit, SongChange, SongEdit, Take, Takes, TAKE_ROOM,
+    ClipDrop, MovePut, MoveWrite, Recorded, Replaced, SceneEdit, SongChange, SongEdit, Take, Takes,
+    TAKE_ROOM,
 };
 pub use view::{
     anchored, CompileError, Cue, Launch, MuteCue, MuteLanded, NowPlaying, PlayView, SceneProgram,

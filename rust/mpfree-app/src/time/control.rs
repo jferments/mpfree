@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 use mpfree_capture::{keep, moves_for_clip, Capture, KeepError, Kept, Now, Pending};
 use mpfree_notefx::{Chain, TrackFx, MAX_FX};
 use mpfree_perform::{Perform, SceneMorph, SongRecorder, When};
+use mpfree_play::Replaced;
 use mpfree_play::{
     ClipDrop, Cue, Includes, Launch, MuteCue, MuteLanded, PlayView, SongChange, Started, Takes,
 };
@@ -1234,11 +1235,13 @@ impl TimeControl {
                     pitches.push(n.note);
                 }
             }
-            let origin = self
+            let launch = self
                 .launches
                 .iter()
-                .find(|l| l.track == track && l.slot == slot)
-                .map(|l| l.origin);
+                .find(|l| l.track == track && l.slot == slot);
+            let origin = launch.map(|l| l.origin);
+            let order =
+                launch.and_then(|l| mpfree_play::StepOrder::of(c, track, slot, l.origin, l.start));
             Some(StepClip {
                 slot,
                 name: c.name.clone(),
@@ -1246,6 +1249,7 @@ impl TimeControl {
                 song_length: c.speed.to_song(c.length as f64),
                 song_step: c.speed.to_song(STEP_TICKS as f64),
                 origin,
+                order,
                 locks: pitches
                     .iter()
                     .map(|&p| (p, grid.lock_row(c, p)))
@@ -2101,6 +2105,13 @@ impl TimeControl {
             }
             TimeAction::SaveState { track, slot } => self.save_state(track, slot),
             TimeAction::Reload { track, slot } => self.reload(track, slot),
+            TimeAction::Mutate {
+                track,
+                slot,
+                more,
+                melodic,
+            } => self.mutate(track, slot, more, melodic),
+            TimeAction::Restore { track, slot } => self.restore(track, slot),
             TimeAction::DeleteClip { track, slot } => {
                 // A clip the song plays stays: its song blocks would go
                 // silent, and the song's edits have no undo yet.
@@ -3492,6 +3503,94 @@ impl TimeControl {
         Ok(name)
     }
 
+    /// Mutate (sequencer S6, `mpfree_seq::mutate`): clip `slot` of
+    /// `track` becomes a new variation of its notes, made from the clip as
+    /// it was before its first Mutate, which it keeps for Restore; at
+    /// once, as an edit UNDO takes back. `more` (SHIFT) varies about half
+    /// its notes, else a quarter; `melodic` lets a note move to the next
+    /// pitch the clip plays. Each Mutate sounds new: the seed is the edit
+    /// count and the variation.
+    fn mutate(
+        &mut self,
+        track: usize,
+        slot: usize,
+        more: bool,
+        melodic: bool,
+    ) -> Result<String, String> {
+        use mpfree_seq::{Amount, Pitches};
+        let c = self
+            .project
+            .clip(track, slot)
+            .ok_or_else(|| format!("mutate: slot {} of track {} is empty", slot + 1, track + 1))?;
+        let name = c.name.clone();
+        if c.looped.is_some() {
+            return Err("mutate: a loop's cell has no notes to vary".to_string());
+        }
+        if matches!(self.info.state, State::Recording | State::CountIn) {
+            return Err("mutate: not while recording (UNDO takes a take back)".to_string());
+        }
+        let seed = (u64::from(self.takes.edits()) << 32)
+            ^ (u64::from(c.variation().unwrap_or(0)) << 16)
+            ^ ((track as u64) << 8)
+            ^ slot as u64;
+        let amount = if more { Amount::More } else { Amount::Little };
+        let pitches = if melodic { Pitches::Own } else { Pitches::Pads };
+        let v = c
+            .mutated(seed, amount, pitches)
+            .ok_or_else(|| format!("mutate: {name} has no notes on to vary"))?;
+        let n = v.variation().unwrap_or(1);
+        self.replace(track, slot, v, Replaced::Mutate)?;
+        Ok(format!(
+            "mutate: {name} · variant {n} (‹ on Mutate restores; UNDO takes it back)"
+        ))
+    }
+
+    /// Restore (S6): clip `slot` of `track` back as it was before its
+    /// first Mutate, at once, as an edit UNDO takes back.
+    fn restore(&mut self, track: usize, slot: usize) -> Result<String, String> {
+        let c = self
+            .project
+            .clip(track, slot)
+            .ok_or_else(|| format!("restore: slot {} of track {} is empty", slot + 1, track + 1))?;
+        let name = c.name.clone();
+        let r = c
+            .restored()
+            .ok_or_else(|| format!("restore: {name} plays its original: Mutate it first"))?;
+        if matches!(self.info.state, State::Recording | State::CountIn) {
+            return Err("restore: not while recording (UNDO takes a take back)".to_string());
+        }
+        self.replace(track, slot, r, Replaced::Restore)?;
+        Ok(format!(
+            "restore: {name} is back as it was before Mutate (UNDO takes it back)"
+        ))
+    }
+
+    /// Put `clip` in place of clip `slot` of `track`, as an edit for
+    /// `why`, and compile; on a refusal the project is as it was.
+    fn replace(
+        &mut self,
+        track: usize,
+        slot: usize,
+        clip: mpfree_seq::Clip,
+        why: Replaced,
+    ) -> Result<(), String> {
+        let name = clip.name.clone();
+        let what = match why {
+            Replaced::Reload => "reload",
+            Replaced::Mutate => "mutate",
+            Replaced::Restore => "restore",
+        };
+        self.takes
+            .replace_clip(&mut self.project, track, slot, clip, why)
+            .map_err(|e| format!("{what}: {name}: {e:?}"))?;
+        if let Err(e) = self.compile() {
+            self.takes.undo(&mut self.project);
+            self.takes.forget_undone();
+            return Err(e);
+        }
+        Ok(())
+    }
+
     /// The reloads due: each whose line falls in the next period (of
     /// `frames`, as long as the last), or all of them when the transport
     /// stops or jumps back. A reload due while recording is dropped. True
@@ -3753,6 +3852,19 @@ impl TimeControl {
     /// pad lights.
     pub fn muted(&self, t: usize) -> Option<bool> {
         self.project.tracks.get(t).map(|tr| tr.mute)
+    }
+
+    /// The tracks that are silent now, bit `t` for track `t`: muted, or
+    /// not soloed while another track is. Never allocates.
+    pub fn silenced(&self) -> u128 {
+        let tracks = &self.project.tracks;
+        let solo = tracks.iter().any(|t| t.solo);
+        tracks
+            .iter()
+            .take(128)
+            .enumerate()
+            .filter(|(_, t)| t.mute || (solo && !t.solo))
+            .fold(0, |bits, (i, _)| bits | 1 << i)
     }
 
     /// The tracks muted and soloed as they will be once the mute queue

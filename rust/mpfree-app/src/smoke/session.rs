@@ -177,6 +177,9 @@ pub struct Session {
     pub time: time::TimeHost,
     pub panels: modpanels::Panels,
     pub looper: looping::LoopHost,
+    /// The tempo a free first loop set, for the app at the next period
+    /// (main.rs's `loop_tempo`).
+    loop_tempo: Option<f64>,
     /// The audio tracks on the Song view's lanes (a short memory: the
     /// tests record no takes).
     pub tracks: audiotracks::TrackHost,
@@ -226,11 +229,16 @@ pub struct Session {
     keys_held: crate::perform_pads::Held,
     out: Out,
     to_screen: Receiver<ToUi>,
-    fx: Vec<Effect>,
+    /// The app's effects waiting for the desk (a test may add some).
+    pub fx: Vec<Effect>,
     kit_to: Option<usize>,
     /// The boxes the screen lent the audio thread.
     preview: Option<Box<crate::preview::Preview>>,
     rec_feed: Option<Box<crate::sampler::RecFeed>>,
+    /// The line input's sound ([`Session::line_in`]): a sine of this many
+    /// Hz, and where it is in its cycle.
+    line_tone: Option<f32>,
+    line_phase: f32,
     cloud: Option<Box<crate::sampler::Cloud>>,
     /// Simulated time: periods run, and the clock the rate limits read.
     periods: u64,
@@ -330,12 +338,15 @@ impl Session {
             step_keys: crate::step_keys::StepKeys::default(),
             mute_pressed: [false; 16],
             keys_held: crate::perform_pads::Held::default(),
+            loop_tempo: None,
             out,
             to_screen,
             fx: Vec::new(),
             kit_to: None,
             preview: None,
             rec_feed: None,
+            line_tone: None,
+            line_phase: 0.0,
             cloud: None,
             periods: 0,
             t0: Instant::now(),
@@ -914,6 +925,16 @@ impl Session {
 
     /// Run `n` periods: what the screen sent, the app's effects, the time
     /// engine, and the screen taking what came back.
+    /// The line input on, with a sine of `hz` on it at half scale (the
+    /// session has no audio in), or off with None. The sampler's input
+    /// takes it every period, with the bar lines, as main.rs feeds it.
+    pub fn line_in(&mut self, hz: Option<f32>) -> &mut Session {
+        self.line_tone = hz;
+        self.app.settings.line_input = hz.is_some();
+        self.out.show(ToUi::Settings(self.app.settings.clone()));
+        self.settle()
+    }
+
     pub fn run_periods(&mut self, n: u64) -> &mut Session {
         for _ in 0..n {
             self.period();
@@ -956,6 +977,9 @@ impl Session {
         }
         if let Some(e) = self.app.tick(t) {
             self.fx.push(e);
+        }
+        if let Some(bpm) = self.loop_tempo.take() {
+            self.fx.extend(self.app.set_tempo(bpm));
         }
         self.effects();
         self.change_kit();
@@ -1013,6 +1037,9 @@ impl Session {
             self.app.rec.ready = None;
             self.out.show(ToUi::Rec(self.app.rec));
         }
+        let rolled =
+            crate::desk::pad_rolled(&mut self.app, &self.time, &self.looper, &mut self.out);
+        self.fx.extend(rolled);
         let armed = self.time.armed().unwrap_or(0);
         if armed != self.app.track() {
             let fx = self.app.set_track(armed);
@@ -1083,6 +1110,16 @@ impl Session {
         if let Some(c) = self.cloud.take() {
             self.out.show(ToUi::SampleGrains(c));
         }
+        // The sampler's input: the line input's sine, when it is on.
+        if let (Some(feed), Some(hz)) = (self.rec_feed.as_mut(), self.line_tone) {
+            let step = hz / RATE as f32;
+            let mut l = [0f32; PERIOD];
+            for x in l.iter_mut() {
+                *x = 0.5 * (self.line_phase * std::f32::consts::TAU).sin();
+                self.line_phase = (self.line_phase + step).fract();
+            }
+            feed.period(self.time.block(), &l, &l, 0);
+        }
         // The looper's period, as main.rs runs it: the pads as heard in the
         // last period's mix (silence when that can't be had: the session
         // has no dry feed), and the loop out to the mixer's Loop track. It
@@ -1099,6 +1136,12 @@ impl Session {
         for line in self.looper.follow_plan(&self.time.loop_plan()) {
             self.out.note(&line);
         }
+        self.looper
+            .set_tempo_from_loop(crate::tempo_from_loop_allowed(
+                self.app.settings.loop_tempo,
+                &self.time,
+                self.export.running(),
+            ));
         if let Some(line) = self.looper.run(self.time.block(), &mut ll, &mut lr) {
             self.out.note(&line);
         }
@@ -1110,6 +1153,10 @@ impl Session {
         let exporting = self.export.running();
         let said = crate::loop_starts_song(&mut self.looper, &mut self.time, take, exporting);
         self.out.loop_start(said);
+        let (said, tempo) =
+            crate::loop_sets_tempo(&mut self.looper, &mut self.time, take, exporting);
+        self.out.loop_start(said);
+        self.loop_tempo = tempo.or(self.loop_tempo);
         // The Looper tab and the Play page's strip follow the loop, as
         // main.rs shows them: its wave a slice at a time, its changes in
         // the log, and the loop's view about as often as the transport card
@@ -1751,6 +1798,13 @@ impl Session {
                         self.out.note(crate::DRUMS_NO_LEVELS)
                     }
                     Effect::SixteenLevels => self.out.show(ToUi::SixteenLevels),
+                    // As main.rs: an empty kit pad held + REC arms a pad
+                    // take; with no sampler in the session, REC as alone.
+                    Effect::PadRec(held) => later.push(crate::desk::pad_rec(
+                        &held,
+                        self.track_kits.kit_of(self.app.track()),
+                        |k, p| self.sounds.as_ref().is_none_or(|s| s.has_sound(k, p)),
+                    )),
                     // A track's own instrument is built beside the audio
                     // thread, which the session leaves out: the track keeps
                     // what it had, and the screen hears so.

@@ -238,6 +238,7 @@ fn known(info: &NodeInfo, count: u16) -> Option<Vec<Plan>> {
                     grains::FREEZE,
                     grains::MIX,
                     grains::SPREAD,
+                    grains::QUALITY,
                     grains::GRAINS,
                 ],
                 &[grains::SIZE, grains::DENSITY, grains::FEEDBACK, grains::MIX],

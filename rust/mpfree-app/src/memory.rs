@@ -153,7 +153,7 @@ fn mb(bytes: usize) -> String {
 pub fn rows(h: &Held) -> Vec<Row> {
     let s = h.samples;
     let (used, kept) = (h.loops.0 * LOOP_FRAME, h.loops.1 * LOOP_FRAME);
-    let counted = s.sounds + s.copies + s.input + kept + h.synth;
+    let counted = s.sounds + s.copies + s.input + s.recall + kept + h.synth;
     let mut rows = vec![
         ("Memory".to_string(), String::new(), Tone::Dim),
         (
@@ -173,6 +173,13 @@ pub fn rows(h: &Held) -> Vec<Row> {
         rows.push((
             "Sampler: input buffer (Rec)".to_string(),
             mb(s.input),
+            Tone::Normal,
+        ));
+    }
+    if s.recall > 0 {
+        rows.push((
+            "Sampler: Sample Recall (the master, 2 min)".to_string(),
+            mb(s.recall),
             Tone::Normal,
         ));
     }
@@ -298,6 +305,7 @@ mod tests {
                 count: 81,
                 copies: 0,
                 input: 21_168_000,
+                recall: 21_168_000,
             },
             loops: (441_000, 13_230_000),
             synth: 3_000_000,
@@ -313,10 +321,11 @@ mod tests {
                 ("Memory", ""),
                 ("Sampler: every kit's sounds", "24.5 MB · 81 sounds"),
                 ("Sampler: input buffer (Rec)", "21.2 MB"),
+                ("Sampler: Sample Recall (the master, 2 min)", "21.2 MB"),
                 ("Looper: used · set aside", "3.5 · 105.8 MB"),
                 ("Synth: wavetables", "3.0 MB"),
-                // 204.8 MB resident less 154.5 MB counted.
-                ("Everything else", "50.3 MB"),
+                // 204.8 MB resident less 175.7 MB counted.
+                ("Everything else", "29.1 MB"),
                 ("The app in all (resident)", "204.8 MB of 2016.7 MB"),
                 ("Free for loads (keeps 256 MB spare)", "1648.6 MB"),
             ]
