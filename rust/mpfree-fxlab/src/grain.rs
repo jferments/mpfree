@@ -90,6 +90,18 @@
 //!   biggest step from one sample to the next within 10 ms of each join
 //!   (where one repeat fades into the next) against the tone's own (a
 //!   cut with no fade jumps up to 140 times as far).
+//! - **G17, a filter on each grain (step C4):** the default cloud on pink
+//!   through each grain's low pass and high pass at 1 kHz (no
+//!   resonance): the level two octaves past the cutoff (4 kHz and 250 Hz,
+//!   ±1/6 octave) and two octaves inside it, against the same cloud
+//!   unfiltered. A band pass at 1 kHz at full resonance (Q 12) with full
+//!   spray (each grain's centre up to three octaves either way, even in
+//!   octaves), on a cloud reading all over the pink (spray 0.5): how far
+//!   apart its levels at 250 Hz, 1 kHz and 4 kHz (an octave each) are
+//!   against the cloud unfiltered (an even spread colours each octave
+//!   alike). A low pass at 1 kHz at full resonance: its sample peak
+//!   against the unfiltered cloud's (resonance that can't run away).
+//!   Shown: the sprayed band's loudness against its cloud's.
 //!
 //! Cost is the bench's (`mpfree-bench`'s "Sampler grains (per grain)"
 //! scaling case, on CI by the instruction gate and on the MPC in the
@@ -141,6 +153,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     presets(&mut rows, &lab);
     feedback(&mut rows, &lab);
     repeat(&mut rows, &lab);
+    filtered(&mut rows, &lab);
     rows
 }
 
@@ -1386,4 +1399,108 @@ fn repeat(rows: &mut Vec<Row>, lab: &Lab) {
             0.05,
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// G17: a filter on each grain (step C4).
+
+fn filtered(rows: &mut Vec<Row>, lab: &Lab) {
+    use mpfree_grain::{FilterKind, GrainFilter};
+    let cloud = |filter: GrainFilter, secs: f64| {
+        let p = Params { filter, ..base() };
+        steady(&lab.pink, lab.rate, p, secs, 17).0
+    };
+    let filter = |kind, resonance, spray| GrainFilter {
+        kind,
+        cutoff_hz: 1_000.0,
+        resonance,
+        spray,
+    };
+    let dry = cloud(GrainFilter::default(), 5.0);
+    let n = 4096;
+    let dry_sp = welch(&dry.left, n);
+    // Power within `oct` octaves of `hz`, against the dry cloud's, dB.
+    let rel = |sp: &[f64], hz: f64, oct: f64| {
+        let bw = hz * (2f64.powf(oct) - 1.0);
+        10.0 * (band(sp, lab.rate, hz, bw) / band(&dry_sp, lab.rate, hz, bw)).log10()
+    };
+    for (name, kind, stop, pass) in [
+        ("low pass", FilterKind::Low, 4_000.0, 250.0),
+        ("high pass", FilterKind::High, 250.0, 4_000.0),
+    ] {
+        let sp = welch(&cloud(filter(kind, 0.0, 0.0), 5.0).left, n);
+        put(
+            rows,
+            "G17",
+            format!("filter[pink, {name} 1 kHz]"),
+            "stop_db",
+            rel(&sp, stop, 1.0 / 6.0),
+            Better::Lower,
+            Some(-20.0),
+            0.3,
+        );
+        put(
+            rows,
+            "G17",
+            format!("filter[pink, {name} 1 kHz]"),
+            "pass_db",
+            rel(&sp, pass, 1.0 / 6.0),
+            Better::Near(0.0),
+            Some(0.5),
+            0.1,
+        );
+    }
+    // Grains reading all over the pink (position spray 0.5), so each
+    // octave has the same to colour, for 8 s (200 grains), each band
+    // an octave wide; against the same cloud unfiltered.
+    let spread = |filter: GrainFilter| {
+        let p = Params {
+            spray: 0.5,
+            filter,
+            ..base()
+        };
+        steady(&lab.pink, lab.rate, p, 8.0, 17).0
+    };
+    let sprayed = spread(filter(FilterKind::Band, 1.0, 1.0));
+    let (sp, open) = (
+        welch(&sprayed.left, n),
+        welch(&spread(GrainFilter::default()).left, n),
+    );
+    let at = [250.0, 1_000.0, 4_000.0].map(|hz| {
+        let bw = hz * (2f64.sqrt() - 1.0);
+        10.0 * (band(&sp, lab.rate, hz, bw) / band(&open, lab.rate, hz, bw)).log10()
+    });
+    let hi = at.iter().cloned().fold(f64::MIN, f64::max);
+    let lo = at.iter().cloned().fold(f64::MAX, f64::min);
+    put(
+        rows,
+        "G17",
+        "filter[pink, band 1 kHz, Q 12, full spray]".into(),
+        "octave_spread_db",
+        hi - lo,
+        Better::Lower,
+        Some(3.0),
+        0.3,
+    );
+    put(
+        rows,
+        "G17",
+        "filter[pink, band 1 kHz, Q 12, full spray]".into(),
+        "loudness_lu",
+        lufs(&sprayed) - lufs(&spread(GrainFilter::default())),
+        Better::Info,
+        None,
+        0.0,
+    );
+    let ringing = cloud(filter(FilterKind::Low, 1.0, 0.0), 5.0);
+    put(
+        rows,
+        "G17",
+        "filter[pink, low pass 1 kHz, Q 12]".into(),
+        "peak_gain_db",
+        loudness::sample_peak(&ringing) - loudness::sample_peak(&dry),
+        Better::Lower,
+        Some(12.0),
+        0.3,
+    );
 }

@@ -78,6 +78,29 @@ fn an_lfo_moves_its_setting_at_its_rate() {
 }
 
 #[test]
+fn an_lfo_on_cutoff_sweeps_each_new_grains_filter_in_octaves() {
+    let data = noise(48_000);
+    let src = Clip::new(&data, 1, RATE).unwrap();
+    let mut v = GrainVoice::new(RATE, 1);
+    v.set_params(Params {
+        filter: GrainFilter {
+            kind: FilterKind::Low,
+            cutoff_hz: 1_000.0,
+            ..GrainFilter::default()
+        },
+        // Full depth: four octaves either way.
+        lfo: lfo(LfoShape::Square, 2.0, MotionTarget::Cutoff, 1.0),
+        ..Params::default()
+    });
+    v.start();
+    run(&mut v, &src, 6_000, 128);
+    assert!((v.moved_params().filter.cutoff_hz - 16_000.0).abs() < 0.5);
+    run(&mut v, &src, 12_000, 128);
+    assert!((v.moved_params().filter.cutoff_hz - 62.5).abs() < 0.01);
+    assert_eq!(v.params().filter.cutoff_hz, 1_000.0);
+}
+
+#[test]
 fn an_lfo_on_position_moves_where_grains_read() {
     let data = noise(96_000);
     let src = Clip::new(&data, 1, RATE).unwrap();

@@ -26,6 +26,8 @@ pub enum MotionTarget {
     Pitch,
     /// Position spray: up to the whole span more or less.
     Spray,
+    /// Each new grain's filter cutoff: up to four octaves (step C4).
+    Cutoff,
 }
 
 /// The LFO's wave.
@@ -201,5 +203,6 @@ pub(crate) fn moved(p: &mut crate::Params, target: MotionTarget, d: f32) {
         MotionTarget::Density => p.density *= (4.0 * d).exp2(),
         MotionTarget::Pitch => p.pitch += 12.0 * d,
         MotionTarget::Spray => p.spray = (p.spray + d).clamp(0.0, 1.0),
+        MotionTarget::Cutoff => p.filter.cutoff_hz *= (4.0 * d).exp2(),
     }
 }

@@ -136,17 +136,33 @@ fn grains_never_allocate() {
                             MotionTarget::Density,
                             MotionTarget::Pitch,
                             MotionTarget::Spray,
+                            MotionTarget::Cutoff,
                             MotionTarget::Off,
-                        ][k % 6],
+                        ][k % 7],
                         depth: 1.0 - (k % 3) as f32,
                     },
                     env: GrainEnv {
                         attack_ms: (k % 3) as f32 * 20.0,
                         decay_ms: 50.0,
                         sustain: 0.5,
-                        target: [MotionTarget::Size, MotionTarget::Density, MotionTarget::Off]
-                            [k % 3],
+                        target: [
+                            MotionTarget::Size,
+                            MotionTarget::Density,
+                            MotionTarget::Cutoff,
+                            MotionTarget::Off,
+                        ][k % 4],
                         depth: 0.8,
+                    },
+                    filter: GrainFilter {
+                        kind: [
+                            FilterKind::Off,
+                            FilterKind::Low,
+                            FilterKind::Band,
+                            FilterKind::High,
+                        ][k % 4],
+                        cutoff_hz: 200.0 * (1 + k % 6) as f32,
+                        resonance: (k % 3) as f32 * 0.5,
+                        spray: (k % 2) as f32,
                     },
                 });
                 if k % 4 == 3 {
@@ -222,6 +238,8 @@ fn grains_never_allocate() {
         node.process(&Ctx::new(rate, t), events, &mut nl, &mut nr);
         node.set_param(param::SIZE, 20.0 + (period % 9) as f32 * 30.0);
         node.set_param(param::REPEAT, ((period / 90) % 6) as f32);
+        node.set_param(param::FILTER, ((period / 70) % 4) as f32);
+        node.set_param(param::FILTER_SPRAY, ((period / 50) % 2) as f32 * 100.0);
         // Captures of its memory, one after another.
         match node.copy_held(&mut held, 4096) {
             HeldStep::More => {}
