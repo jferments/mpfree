@@ -20,7 +20,7 @@ use crate::{
     GrainNode, Granulator, Harmonizer, Limiter, LoFi, MasterSafety, MultiFilter, MultiTap,
     MultibandCompressor, Perform, Phaser, PitchCorrect, PitchShifter, Plate, Preset, RingMod, Room,
     Rotary, SampleDelay, Spring, StereoWidth, TalkBox, TapeDelay, TransientShaper, Tremolo, Tuner,
-    XyFx,
+    Vocoder, XyFx,
 };
 
 /// Where an effect sits in the picker.
@@ -451,6 +451,14 @@ pub static EFFECTS: &[FxEntry] = &[
         PitchVocal,
         || Box::new(TalkBox::new()),
         crate::wah::TALKBOX_PRESETS,
+    ),
+    e(
+        "mpfree.fx.vocoder",
+        "Vocoder",
+        "A voice laid on a saw or a synth",
+        PitchVocal,
+        || Box::new(Vocoder::new()),
+        crate::vocoder::VOCODER_PRESETS,
     ),
     e(
         "mpfree.fx.perform",

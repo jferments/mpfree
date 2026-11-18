@@ -393,7 +393,7 @@ The pad player (`play` and `app`) carries Poly, FM, Drums, Pluck and Wavetable; 
 
 ## Next
 
-In the order the synth thread left them at its handoff (12 Nov 2026):
+The synth library's plan (18 Nov 2026) supersedes this list where they meet: [Synth library: architecture and roadmap](synth-architecture.md). In the order the synth thread left them at its handoff (12 Nov 2026):
 
 - **Preset Save and the picker on the Synth tab.** The format and the picker's side are built ([Sound presets](presets.md)), and the app links `mpfree-library` since the Pads tab (PR #250). Left: a Save button that takes `Synth::save_preset` (the engine's folder name and the file's text, with the Q-Link sets as `extra` lines) and writes it to `library/Instruments/<engine>/<name>.preset` through `mpfree-library`; the Synth tab opening the browser's preset picker; and `BrowseAction::TryPreset`, `RevertPreset` and `LoadPreset` wired to `Synth::try_preset`, `revert_preset` and `load_preset_file` (the Pads tab's browser says "a preset is not wired" today).
 - **Tone routing**, once MPE comes in over MIDI: two slots on the pressure targets in Poly, FM and Wavetable, on the Pressure page.

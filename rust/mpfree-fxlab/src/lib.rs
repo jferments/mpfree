@@ -22,6 +22,10 @@
 //! - [`sampler`]: the sampler's own quality numbers (pitching, loop seams,
 //!   voice stops, the filter against its analog prototype) with the same
 //!   ratchet, so the voice is held to the bar the effects are.
+//! - [`synth`]: every synth engine and factory preset against the synth
+//!   library's targets (tuning, aliasing, velocity, level, stereo, the
+//!   filter, glide, envelopes, FM sidebands, drum decays), with the same
+//!   ratchet (`docs/dev/design/synth-quality.md`).
 //! - [`programme`]: every stimulus in one recording with a sync chirp and
 //!   a schedule, for capturing a reference device and cutting it back up.
 //! - [`card`]: report cards over the registry, written as JSON.
@@ -53,6 +57,7 @@ pub mod response;
 pub mod room;
 pub mod sampler;
 pub mod signals;
+pub mod synth;
 pub mod wav;
 pub mod wobble;
 pub mod zipper;

@@ -644,6 +644,134 @@ mod looper {
         });
     }
 
+    /// The Perform set's other pages (step 6, board 7): PAD BANK B is
+    /// Play's throws. A pad held plays its throw on the master's Perform
+    /// FX and its lift lets it go; a latched throw plays until its next
+    /// hit, and lets go when the set goes off. On page C a track mute pad
+    /// mutes its track (at once in Make) and a scene pad launches its
+    /// row. PAD BANK A is the loop keys again.
+    #[test]
+    fn the_perform_sets_pages_throw_mute_and_launch() {
+        use crate::mixing::ThrowFx;
+        use crate::perform_pads::{Hold, PadAction, PerformSet, Throw};
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let mut set = PerformSet::default();
+            set.pages[1].pads[7] = PadAction::Throw(Throw {
+                index: 7,
+                hold: Hold::Latch,
+            });
+            set.pages[2].pads[0] = PadAction::Mute(0);
+            set.pages[2].pads[4] = PadAction::Scene(0);
+            let fx = s.app.set_perform_set(set);
+            assert!(fx.is_empty());
+            s.press("header", "tab", "Looper");
+            s.button_with("SHIFT", "SAMPLER");
+            s.run_for(0.1);
+            s.button("PAD BANK B/F");
+            assert_eq!(s.app.perform_bank(), 1);
+            assert!(s.said().iter().any(|l| l == "Perform: Page B · Throws"));
+            assert!(
+                s.hint().starts_with("Pads: Perform set, Page B · Throws"),
+                "{}",
+                s.hint()
+            );
+            // Pad 2 held: Reverb wash, while it is held.
+            s.pad_edge(1, 100, true);
+            s.run_periods(4);
+            assert!(s.mix.throw_held(ThrowFx::Reverb), "held");
+            assert_eq!(s.app.throws_on(), 0b10);
+            s.pad_edge(1, 0, false);
+            s.run_periods(4);
+            assert!(!s.mix.throw_held(ThrowFx::Reverb), "let go with the pad");
+            // Pad 8, latched: Vinyl brake plays on after the lift, and the
+            // next hit lets it go.
+            s.pad(7, 100, 0.05).run_periods(2);
+            assert!(s.mix.throw_held(ThrowFx::VinylBrake), "latched");
+            assert!(s.said().iter().any(|l| l == "perform: Vinyl brake latched"));
+            s.pad(7, 100, 0.05).run_periods(2);
+            assert!(!s.mix.throw_held(ThrowFx::VinylBrake));
+            assert!(s.said().iter().any(|l| l == "perform: Vinyl brake let go"));
+            // Latched again, the set off: it lets go.
+            s.pad(7, 100, 0.05).run_periods(2);
+            assert!(s.mix.throw_held(ThrowFx::VinylBrake));
+            s.button_with("SHIFT", "SAMPLER").run_periods(2);
+            assert!(!s.app.pads_are_loop_keys());
+            assert!(!s.mix.throw_held(ThrowFx::VinylBrake), "the set off");
+            // Back on, at page B; PAD BANK C: Track 1's mute and Scene 1.
+            s.button_with("SHIFT", "SAMPLER");
+            assert_eq!(s.app.perform_bank(), 1);
+            s.button("PAD BANK C/G");
+            assert_eq!(s.app.perform_bank(), 2);
+            assert_eq!(s.time.muted(0), Some(false));
+            s.pad(0, 100, 0.05);
+            assert_eq!(s.time.muted(0), Some(true), "pad 1 muted Track 1");
+            s.pad(0, 100, 0.05);
+            assert_eq!(s.time.muted(0), Some(false));
+            s.pad(4, 100, 0.05);
+            assert!(s.said().iter().any(|l| l == "perform: Scene 1"));
+            // PAD BANK A: the loop keys.
+            s.button("PAD BANK A/E");
+            assert_eq!(s.app.perform_bank(), 0);
+            assert!(s.hint().starts_with("Pads: loop keys"), "{}", s.hint());
+        });
+    }
+
+    /// The Perform set's pages past A are actions, not notes (the
+    /// sequencer thread's rec-arm rule): with the notes armed and
+    /// recording, throw, track mute and scene pads put nothing in the
+    /// clip, and a throw records only what Play's throw tiles do (nothing).
+    #[test]
+    fn perform_pages_record_nothing_while_the_notes_record() {
+        use crate::perform_pads::{PadAction, PerformSet};
+        use crate::rec_arm::Target;
+        use mpfree_transport::State;
+        fn notes(s: &Session) -> usize {
+            s.time.project().tracks[0]
+                .slots
+                .iter()
+                .flatten()
+                .map(|c| c.notes.len())
+                .sum()
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            let mut set = PerformSet::default();
+            set.pages[2].pads[0] = PadAction::Mute(1);
+            set.pages[2].pads[4] = PadAction::Scene(0);
+            s.app.set_perform_set(set);
+            s.press("header", "tab", "Looper");
+            s.button_with("SHIFT", "SAMPLER");
+            s.button("PAD BANK B/F");
+            s.press("header", "tab", "Play");
+            assert!(s.app.pads_are_loop_keys(), "the set stays on Play");
+            // The notes armed (an Arm pill's tap), as the Looper tab had
+            // armed the loop.
+            s.route(crate::gui::FromUi::ArmTap(Target::Notes));
+            s.settle();
+            assert_eq!(s.app.rec.target, Target::Notes);
+            let before = notes(&s);
+            s.button("REC").button("PLAY");
+            let end = s.t() + 5.0;
+            while s.time.info().state != State::Recording && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(s.time.info().state, State::Recording);
+            // Page B: every throw, held a moment.
+            for pad in 0..8 {
+                s.pad(pad, 110, 0.1);
+            }
+            // Page C: a track mute (twice, so it plays again) and a scene.
+            s.button("PAD BANK C/G");
+            s.pad(0, 110, 0.05).pad(0, 110, 0.05).pad(4, 110, 0.05);
+            s.run_for(0.5);
+            s.button("STOP").settle();
+            assert_eq!(notes(&s), before, "no pad of the set is a note");
+            assert!(s.said().iter().any(|l| l == "perform: Reverb wash"));
+        });
+    }
+
     /// Overdubs: Replace (step 3b): an overdub with a pad in it takes the
     /// place of what was there for as long as it records; its lane says
     /// "replace", and UNDO takes it away.
@@ -915,6 +1043,100 @@ mod looper {
                 s.said()
             );
             assert_eq!((l3(&s).phase, l3(&s).capturing), (Phase::Empty, None));
+            s.button("STOP");
+        });
+    }
+
+    /// Starts: When I play (design step 4b). Armed with the song stopped,
+    /// the loop waits for you: nothing starts until the first pad, which
+    /// starts the song and the loop together, bar 1 on the hit. With the
+    /// song playing, a pad early in a bar starts the next loop on that
+    /// bar's line, the pad's sound in it.
+    #[test]
+    fn when_i_play_starts_the_loop_and_the_song_on_the_first_pad() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            let starts = at(&mut s, "leditor", "starts", 1);
+            assert_eq!(starts.label, "When I play");
+            s.press_target(&starts).run_for(0.1);
+            let one = at(&mut s, "leditor", "bars", 1);
+            s.press_target(&one).run_for(0.1);
+            s.button("REC").run_for(0.1);
+            assert!(
+                s.said().iter().any(|l| l
+                    == "looper: Record: armed, the first pass starts when you play \
+                        (the first pad you play) (1 bar)"),
+                "{:?}",
+                s.said()
+            );
+            let ring = at(&mut s, "ldeck", "ring", 0);
+            assert_eq!(ring.label, "Loop 1 ring: cancel");
+            // It waits for you, the song stopped, as long as you like.
+            s.run_for(3.0);
+            let st = status(&s);
+            assert_eq!((st.phase, st.listening), (Phase::Armed, true));
+            assert_eq!(s.time.info().state, mpfree_transport::State::Stopped);
+            // The first pad starts the song and the loop on it.
+            s.pad(0, 120, 0.1);
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l == "looper: Loop 1 starts on your note, and the song with it"),
+                "{:?}",
+                s.said()
+            );
+            assert!(s.time.info().state.rolling(), "the song plays");
+            until_phase(&mut s, Phase::Playing, 2.5);
+            let bar = 4 * PPQ as i64;
+            let st = status(&s);
+            assert_eq!(
+                (st.origin, st.ticks, st.lead),
+                (0, bar, 0),
+                "bar 1, one bar"
+            );
+            let start = {
+                let v = s.looper.looper.loop_layer(0, 0).expect("a layer");
+                let mut f = vec![[0.0f32; 2]; 4_410];
+                v.read(0, &mut f);
+                f.iter().fold(0.0f32, |m, x| m.max(x[0].abs()))
+            };
+            assert!(start > 0.05, "the pad at the loop's start: {start}");
+
+            // The song playing: Loop 2, When I play, and a pad a quarter
+            // of a second into a bar (a bar is 2 s at 120 BPM).
+            let ring = at(&mut s, "ldeck", "ring", 1);
+            s.press_target(&ring).run_for(0.1);
+            let starts = at(&mut s, "leditor", "starts", 1);
+            s.press_target(&starts).run_for(0.1);
+            let one = at(&mut s, "leditor", "bars", 1);
+            s.press_target(&one).run_for(0.1);
+            let l2 = |s: &Session| s.looper.looper.loop_status(1).unwrap();
+            assert!(l2(&s).listening, "{:?}", l2(&s));
+            let pos = |s: &Session| s.time.info().position;
+            let end = s.t() + 2.5;
+            while pos(&s).rem_euclid(bar) < bar / 8 && s.t() < end {
+                s.run_periods(1);
+            }
+            while pos(&s).rem_euclid(bar) >= bar / 8 && s.t() < end {
+                s.run_periods(1);
+            }
+            s.run_for(0.25);
+            let line = pos(&s) - pos(&s).rem_euclid(bar);
+            s.pad(1, 120, 0.1);
+            let end = s.t() + 2.5;
+            while l2(&s).phase != Phase::Playing && s.t() < end {
+                s.run_periods(1);
+            }
+            let st = l2(&s);
+            assert_eq!(st.phase, Phase::Playing, "Loop 2 plays");
+            assert_eq!(
+                (st.origin, st.lead),
+                (line, 0),
+                "on the bar line before the pad"
+            );
+            assert_eq!(status(&s).phase, Phase::Playing, "Loop 1 plays on");
             s.button("STOP");
         });
     }
@@ -1226,6 +1448,50 @@ mod track_mute {
             s.button_with("SHIFT", "TRACK MUTE");
             assert_eq!(s.mix.pad_mutes(), 0);
             assert!(loud(&mut s, 4) > 0.01, "pad 5 sounds again");
+        });
+    }
+}
+
+#[cfg(test)]
+mod track_kits {
+    //! A kit per track as tracks come and go (the sampler review's
+    //! decision 1, and BROWSE's New track with this kit).
+
+    use super::super::{on_big_stack, Session};
+    use crate::gui::FromUi;
+    use mpfree_time_ui::TimeAction;
+
+    /// A new track given a kit of its own (as + Kit track and BROWSE's New
+    /// track with this kit give it one), UNDO, + Track: the new track
+    /// plays kit 1, not the kit the track UNDO took away had.
+    #[test]
+    fn a_track_undo_takes_away_gives_its_kit_back() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            assert!(s.kits() > 1, "a second kit to give");
+            let n = s.time.track_count();
+            s.route(FromUi::Time(TimeAction::AddTrack));
+            s.run_periods(4);
+            assert_eq!(s.time.track_count(), n + 1);
+            assert_eq!(s.time.armed(), Some(n));
+            // Once it is armed, the screen gives it its kit.
+            s.route(FromUi::Kit(1));
+            s.run_periods(4);
+            assert_eq!(s.track_kits.entry(n), 1);
+            assert_eq!(s.kit, 1, "the pads play it");
+            // UNDO takes the track away, and its place plays kit 1 again.
+            s.route(FromUi::Time(TimeAction::Undo));
+            s.run_periods(4);
+            assert_eq!(s.time.track_count(), n);
+            assert_eq!(s.track_kits.entry(n), 0);
+            // + Track: the new track plays kit 1, and the pads with it.
+            s.route(FromUi::Time(TimeAction::AddTrack));
+            s.run_periods(4);
+            assert_eq!(s.time.track_count(), n + 1);
+            assert_eq!(s.time.armed(), Some(n));
+            assert_eq!(s.track_kits.entry(n), 0);
+            assert_eq!(s.kit, 0, "the pads play kit 1");
         });
     }
 }

@@ -135,13 +135,14 @@ Every recording is a **take**, listed under Takes. **UNDO** takes back the newes
 
 You weren't recording, but you just played something great. Tap the **Capture** button under Takes (it says how many bars it would keep), or press **SHIFT + REC**, and MPFree keeps it. (On the Looper tab, SHIFT + REC keeps the sound instead, as a loop: see [Recording loops](looping.md#capture-keep-what-you-just-played).)
 
-MPFree is always listening to the pads. Capture keeps your **last phrase**: everything since the last bar of silence, up to 32 bars, cut to whole bars and with your exact timing.
+MPFree is always listening to the pads, and to keyboards a route plays on other tracks (see [Playing several tracks from your keyboards](midi-and-cv.md#playing-several-tracks-from-your-keyboards)). Capture keeps your **last phrase**: everything since the last bar of silence, up to 32 bars, cut to whole bars and with your exact timing.
 
 - If you played it in time over a clip that was playing, the notes go into that clip.
 - Otherwise it becomes a new clip, named "Capture 1", "Capture 2" and so on, and starts playing in time.
 - It keeps how hard you pressed the pads as you held them, as recording does (see [Pad pressure](#pad-pressure)), unless the track's **Pressure** setting is **Off**.
+- The pads' notes go into the armed track. What a keyboard played on another track through a route goes into that track, so a jam of drums on the pads and bass on a keyboard comes back as two clips that play together. Each key goes in as the pad that plays its note on that track; a note no pad plays there isn't kept. The FX moves you made over the phrase (the XY pad, the DJ knob) go with the armed track's notes; when only a keyboard played, on other tracks, they're left out and the line under the screen says so.
 
-UNDO takes a capture back like any other take.
+UNDO takes a capture back like any other take, every track's part of it at once.
 
 > [!MPC]
 > Capture is like the MPC's Retro Rec, but it keeps whole bars, works whether the music was playing or stopped, and can add to the clip that's playing instead of always making a new one.
@@ -158,7 +159,7 @@ Each track of the file becomes a clip in the first empty slot of a track: the fi
 
 **Its notes go on the pads that play them.** A clip holds pads, as a recording does, so each note goes on the pad of its track that plays that note:
 
-- **On a kit**, by the MPC's pad notes: C#2 is pad 1, C2 pad 2 and so on, as the MPC sends and receives them. So a drum track exported from an MPC comes back on the same pads, and so does a drum part from a computer that uses those notes.
+- **On a kit**, each note on the pad that sends it (see [A kit on a drum machine](midi-and-cv.md#a-kit-on-a-drum-machine)): C#2 is A1, C2 A2 and so on through bank A, as the MPC sends and receives them, and the other notes on banks B to H. So a drum track exported from an MPC comes back on bank A's pads, a drum part from a computer that uses those notes does too, and MPFree's own export of a kit comes back on the pads that played it, in every bank.
 - **On a synth** or a track's own instrument, by its pad layout: a note goes on the pad that plays that note. Set the layout to cover the notes first (a scale, the right octave), then load the file.
 
 A note no pad plays is left out, and counted. A melody that goes past what the 16 pads reach comes in as far as they reach.
@@ -170,7 +171,7 @@ A note no pad plays is left out, and counted. A melody that goes past what the 1
 
 ## Steps
 
-The pattern on the **Sequencer** tab's **Steps** view is a clip shown as a grid of steps, 16 to a page. Each step can have its own **velocity**, **length**, **nudge** (early or late) and **chance** (how often it plays). The **+** and **–** at the top right of the pattern double or halve its steps (16, 32, 64 or 128), and **‹** and **›** turn its pages. See [Your first beat](../getting-started/first-beat.md#program-a-pattern). **STEP SEQ** puts one sound's steps on the pads, a page of 16 at a time, where you hold a step to change it or lock its sound on the Q-Links, hold one and hit a later one for a longer note, and copy steps with **COPY**: see [Program a pattern on the pads](../getting-started/first-beat.md#program-a-pattern-on-the-pads).
+The pattern on the **Sequencer** tab's **Steps** view is a clip shown as a grid of steps, 16 to a page. Each step can have its own **velocity**, **length**, **nudge** (early or late) and **chance** (how often it plays). The **+** and **–** at the top right of the pattern double or halve its steps (16, 32, 64 or 128), and **‹** and **›** turn its pages. Under a sound, a **lock lane** sets one of its settings (or one of the track's, such as a send) step by step: **+ Lane** adds one. See [Your first beat](../getting-started/first-beat.md#program-a-pattern). **STEP SEQ** puts one sound's steps on the pads, a page of 16 at a time, where you hold a step to change it or lock its sound on the Q-Links, hold one and hit a later one for a longer note, and copy steps with **COPY**: see [Program a pattern on the pads](../getting-started/first-beat.md#program-a-pattern-on-the-pads).
 
 ## Editing notes
 

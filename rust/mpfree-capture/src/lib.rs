@@ -8,6 +8,13 @@
 //! allocates: the history is a fixed ring of [`MAX_HITS`] note starts and
 //! ends, minutes of busy playing.
 //!
+//! Keys a MIDI route plays on a track that isn't armed go into the same
+//! history, named by their track ([`Capture::input_on`]); the pads' notes
+//! are the armed track's ([`ARMED`]). The phrase is everything played on
+//! them all, and [`Phrase::split`] parts it by track, so each track's
+//! notes go into a clip of its own, one take for them all
+//! (`Takes::joining`).
+//!
 //! Every note is placed on a clock that never goes back. While the
 //! transport rolls it counts song ticks, and it keeps the bar lines where
 //! the song has them, so a loop of whole bars or a jump from bar line to
@@ -61,6 +68,8 @@
 //! [`MoveLog::phrase`]: mpfree_seq::mpfree_moves::MoveLog::phrase
 #![forbid(unsafe_code)]
 
+use std::collections::HashMap;
+
 use mpfree_play::record::{TOUCH_SETTLE_MS, TOUCH_STEP};
 use mpfree_play::{Event, Launch, MoveWrite, Takes};
 use mpfree_seq::mpfree_moves::{Gesture, Target};
@@ -89,6 +98,13 @@ pub const GAP_BARS: i64 = 1;
 /// The longest phrase CAPTURE keeps, in bars; a longer one keeps its last
 /// bars.
 pub const MAX_BARS: i64 = 32;
+/// The armed track's notes (the pads, and the arp in front of them): they
+/// go into whichever track is armed when CAPTURE is pressed.
+pub const ARMED: u8 = u8::MAX;
+/// Tracks whose notes can be held at once: the armed track's and 31 a
+/// route plays. A note on another track while they all hold notes is
+/// left out ([`Capture::dropped`]).
+pub const MAX_VOICES: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
@@ -105,6 +121,8 @@ struct Hit {
     /// The song tick, while the transport rolled.
     song: f64,
     kind: Kind,
+    /// [`ARMED`], or the track a route played it on.
+    track: u8,
     note: u8,
     velocity: u8,
 }
@@ -113,6 +131,7 @@ const NO_HIT: Hit = Hit {
     at: 0.0,
     song: 0.0,
     kind: Kind::AllOff,
+    track: ARMED,
     note: 0,
     velocity: 0,
 };
@@ -125,6 +144,7 @@ struct TouchHit {
     /// Note starts and ends pushed before it: it came after hit
     /// `after - 1` and before hit `after`.
     after: u64,
+    track: u8,
     note: u8,
     value: u8,
 }
@@ -132,6 +152,7 @@ struct TouchHit {
 const NO_TOUCH: TouchHit = TouchHit {
     at: 0.0,
     after: 0,
+    track: ARMED,
     note: 0,
     value: 0,
 };
@@ -143,6 +164,39 @@ struct Thin {
     kept: u8,
     /// A one-step value and the frame it came on, kept once it lasts.
     wait: Option<(u8, u64)>,
+}
+
+const THIN: Thin = Thin {
+    kept: 0,
+    wait: None,
+};
+
+/// One track's held notes: the armed track's (voice 0), or a routed
+/// track's while it holds notes.
+#[derive(Clone, Copy, Debug)]
+struct Voice {
+    track: u8,
+    held: [bool; 128],
+    n_held: usize,
+    thin: [Thin; 128],
+}
+
+const VOICE: Voice = Voice {
+    track: ARMED,
+    held: [false; 128],
+    n_held: 0,
+    thin: [THIN; 128],
+};
+
+impl Voice {
+    /// Holding nothing, for `track`; in place, so nothing its size goes
+    /// on the stack.
+    fn reset(&mut self, track: u8) {
+        self.track = track;
+        self.held.fill(false);
+        self.n_held = 0;
+        self.thin.fill(THIN);
+    }
 }
 
 /// The phrase being played, kept up to date as notes come.
@@ -173,6 +227,8 @@ pub struct Played {
     pub note: Note,
     /// The song tick it was played on, in time; None when free.
     pub song: Option<f64>,
+    /// [`ARMED`], or the track a route played it on.
+    pub track: u8,
 }
 
 /// The last phrase, as clip notes.
@@ -211,6 +267,60 @@ impl Phrase {
     pub fn touch_of(&self, n: &Note) -> &[TouchPoint] {
         self.touch.get(n.touch.range()).unwrap_or(&[])
     }
+
+    /// The phrase parted by track, with [`ARMED`]'s notes on track
+    /// `armed`: the armed track's part first, then the others in track
+    /// order. Every part keeps the phrase's length, bar, song start and
+    /// id, so their clips play together as they were played; each note
+    /// keeps its pressure.
+    pub fn split(&self, armed: usize) -> Vec<(usize, Phrase)> {
+        let track_of = |p: &Played| {
+            if p.track == ARMED {
+                armed
+            } else {
+                usize::from(p.track)
+            }
+        };
+        let mut tracks: Vec<usize> = self.played.iter().map(track_of).collect();
+        tracks.sort_unstable_by_key(|&t| (t != armed, t));
+        tracks.dedup();
+        tracks
+            .into_iter()
+            .map(|t| {
+                let mut touch = Vec::new();
+                let played = self
+                    .played
+                    .iter()
+                    .filter(|p| track_of(p) == t)
+                    .map(|p| {
+                        let run = self.touch_of(&p.note);
+                        let mut p = *p;
+                        p.note.touch = if run.is_empty() {
+                            Touch::NONE
+                        } else {
+                            let first = touch.len() as u32;
+                            touch.extend_from_slice(run);
+                            Touch {
+                                first,
+                                len: run.len() as u32,
+                            }
+                        };
+                        p
+                    })
+                    .collect();
+                let part = Phrase {
+                    played,
+                    touch,
+                    touch_cut: self.touch_cut,
+                    length: self.length,
+                    bar: self.bar,
+                    song_start: self.song_start,
+                    id: self.id,
+                };
+                (t, part)
+            })
+            .collect()
+    }
 }
 
 pub struct Capture {
@@ -218,16 +328,19 @@ pub struct Capture {
     /// Note starts and ends ever pushed; hit `n` is at `n % MAX_HITS` while
     /// `n + MAX_HITS > pushed`.
     pushed: u64,
-    input: [(u32, Event); MAX_INPUT],
+    /// (offset, track, event), in offset order.
+    input: [(u32, u8, Event); MAX_INPUT],
     n_input: usize,
     touch: Box<[TouchHit]>,
     /// Pressure values ever kept; value `n` is at `n % MAX_TOUCH_HITS`
     /// while `n + MAX_TOUCH_HITS > touch_pushed`.
     touch_pushed: u64,
-    /// (offset, pad, value), in offset order.
-    touch_input: [(u32, u8, u8); MAX_TOUCH_INPUT],
+    /// (offset, track, pad, value), in offset order.
+    touch_input: [(u32, u8, u8, u8); MAX_TOUCH_INPUT],
     n_touch_input: usize,
-    thin: [Thin; 128],
+    /// Voice 0 is the armed track's; the others a routed track's while
+    /// it holds notes.
+    voices: Box<[Voice]>,
     /// The capture clock at the end of the last period.
     clock: f64,
     /// While rolling: clock = song + shift, a whole number of bars.
@@ -236,7 +349,7 @@ pub struct Capture {
     rolling: bool,
     song_end: Tick,
     bar: i64,
-    held: [bool; 128],
+    /// Notes held on all the tracks.
     n_held: usize,
     /// When the last held note ended.
     quiet_since: f64,
@@ -258,19 +371,18 @@ impl Capture {
         Capture {
             hits: vec![NO_HIT; MAX_HITS].into_boxed_slice(),
             pushed: 0,
-            input: [(0, Event::AllOff); MAX_INPUT],
+            input: [(0, ARMED, Event::AllOff); MAX_INPUT],
             n_input: 0,
             touch: vec![NO_TOUCH; MAX_TOUCH_HITS].into_boxed_slice(),
             touch_pushed: 0,
-            touch_input: [(0, 0, 0); MAX_TOUCH_INPUT],
+            touch_input: [(0, ARMED, 0, 0); MAX_TOUCH_INPUT],
             n_touch_input: 0,
-            thin: [Thin::default(); 128],
+            voices: vec![VOICE; MAX_VOICES].into_boxed_slice(),
             clock: 0.0,
             shift: 0,
             rolling: false,
             song_end: 0,
             bar: Meter::default().bar_ticks(),
-            held: [false; 128],
             n_held: 0,
             quiet_since: f64::NEG_INFINITY,
             head: None,
@@ -284,8 +396,16 @@ impl Capture {
     /// and notes on the same offset keep the order they came in. A pad's
     /// pressure ([`Event::Pressure`], the pad and its raw value) has its
     /// own room and comes after the notes on its offset; it is kept while
-    /// its pad's note is held.
+    /// its pad's note is held. The notes are the armed track's
+    /// ([`ARMED`]).
     pub fn input(&mut self, offset: u32, event: Event) {
+        self.input_on(ARMED, offset, event);
+    }
+
+    /// [`Capture::input`], for `track`: [`ARMED`], or a track a route
+    /// plays (0 to 254), whose notes are the pads that played them on it.
+    /// Each track holds its own notes.
+    pub fn input_on(&mut self, track: u8, offset: u32, event: Event) {
         if let Event::Pressure { note, value } = event {
             if self.n_touch_input == MAX_TOUCH_INPUT {
                 self.dropped += 1;
@@ -296,7 +416,7 @@ impl Capture {
                 self.touch_input[i] = self.touch_input[i - 1];
                 i -= 1;
             }
-            self.touch_input[i] = (offset, note, value);
+            self.touch_input[i] = (offset, track, note, value);
             self.n_touch_input += 1;
             return;
         }
@@ -309,8 +429,27 @@ impl Capture {
             self.input[i] = self.input[i - 1];
             i -= 1;
         }
-        self.input[i] = (offset, event);
+        self.input[i] = (offset, track, event);
         self.n_input += 1;
+    }
+
+    /// The voice holding `track`'s notes, if any.
+    fn voice_of(&self, track: u8) -> Option<usize> {
+        if track == ARMED {
+            return Some(0);
+        }
+        (1..MAX_VOICES).find(|&v| self.voices[v].track == track)
+    }
+
+    /// The voice for a note starting on `track`: its own, or one free
+    /// (holding nothing). None when all hold notes.
+    fn voice_for(&mut self, track: u8) -> Option<usize> {
+        if let Some(v) = self.voice_of(track) {
+            return Some(v);
+        }
+        let v = (1..MAX_VOICES).find(|&v| self.voices[v].n_held == 0)?;
+        self.voices[v].reset(track);
+        Some(v)
     }
 
     /// Put the period's notes on the clock, by the transport's `block`.
@@ -344,29 +483,31 @@ impl Capture {
                     .filter(|&o| o < end);
                 if let Some(t) = touch {
                     if note.is_none_or(|a| t < a) {
-                        let (offset, pad, value) = self.touch_input[next_touch];
+                        let (offset, track, pad, value) = self.touch_input[next_touch];
                         next_touch += 1;
                         let frame = span.frame + u64::from(offset.saturating_sub(span.offset));
-                        self.touch_value(span, timed, frame, pad, value);
+                        self.touch_value(span, timed, frame, track, pad, value);
                         continue;
                     }
                 }
                 if note.is_none() {
                     break;
                 }
-                let (offset, event) = self.input[next];
+                let (offset, track, event) = self.input[next];
                 next += 1;
                 let frame = span.frame + u64::from(offset.saturating_sub(span.offset));
                 // Pressure whose time came before this note is kept first.
-                match event {
-                    Event::NoteOn { note, .. } | Event::NoteOff { note } => {
-                        self.settle(usize::from(note & 127), span, timed, frame + 1);
+                if let Some(v) = self.voice_of(track) {
+                    match event {
+                        Event::NoteOn { note, .. } | Event::NoteOff { note } => {
+                            self.settle(v, usize::from(note & 127), span, timed, frame + 1);
+                        }
+                        Event::AllOff => self.settle_voice(v, span, timed, frame + 1),
+                        _ => {}
                     }
-                    Event::AllOff => self.settle_all(span, timed, frame + 1),
-                    _ => {}
                 }
                 let (at, song) = self.place(span, timed, frame);
-                self.hit(at, song, bar as u32, timed, event);
+                self.hit(at, song, bar as u32, timed, track, event);
             }
             // One-step values whose time is up within this span.
             self.settle_all(span, timed, span.frame + u64::from(span.len));
@@ -399,20 +540,20 @@ impl Capture {
         }
     }
 
-    /// Pad `pad`'s pressure `value` on `frame` of `span`: thinned onto its
-    /// held note (see the crate's notes).
-    fn touch_value(&mut self, span: &Span, timed: bool, frame: u64, pad: u8, value: u8) {
+    /// Pad `pad`'s pressure `value` on `track`, on `frame` of `span`:
+    /// thinned onto its held note (see the crate's notes).
+    fn touch_value(&mut self, span: &Span, timed: bool, frame: u64, track: u8, pad: u8, value: u8) {
         let n = usize::from(pad & 127);
-        if !self.held[n] {
+        let Some(voice) = self.voice_of(track).filter(|&v| self.voices[v].held[n]) else {
             return;
-        }
+        };
         // A one-step value whose time came before this one is kept first.
-        self.settle(n, span, timed, frame + 1);
+        self.settle(voice, n, span, timed, frame + 1);
         let v = value.min(127);
-        let t = &mut self.thin[n];
+        let t = &mut self.voices[voice].thin[n];
         if v.abs_diff(t.kept) >= TOUCH_STEP {
             t.wait = None;
-            self.keep_touch(n, span, timed, frame, v);
+            self.keep_touch(voice, n, span, timed, frame, v);
         } else if v == t.kept {
             t.wait = None;
         } else if t.wait.is_none_or(|(w, _)| w != v) {
@@ -420,45 +561,65 @@ impl Capture {
         }
     }
 
-    /// Keep held note `n`'s waiting one-step value if its time is up
-    /// before frame `before` (its time falls in `span`).
-    fn settle(&mut self, n: usize, span: &Span, timed: bool, before: u64) {
-        let Some((v, from)) = self.thin[n].wait else {
+    /// Keep voice `voice`'s held note `n`'s waiting one-step value if its
+    /// time is up before frame `before` (its time falls in `span`).
+    fn settle(&mut self, voice: usize, n: usize, span: &Span, timed: bool, before: u64) {
+        let Some((v, from)) = self.voices[voice].thin[n].wait else {
             return;
         };
         let due = from + u64::from(span.rate) * u64::from(TOUCH_SETTLE_MS) / 1000;
         if due < before {
-            self.thin[n].wait = None;
-            self.keep_touch(n, span, timed, due.max(span.frame), v);
+            self.voices[voice].thin[n].wait = None;
+            self.keep_touch(voice, n, span, timed, due.max(span.frame), v);
         }
     }
 
-    fn settle_all(&mut self, span: &Span, timed: bool, before: u64) {
+    fn settle_voice(&mut self, voice: usize, span: &Span, timed: bool, before: u64) {
         for n in 0..128 {
-            if self.held[n] && self.thin[n].wait.is_some() {
-                self.settle(n, span, timed, before);
+            let x = &self.voices[voice];
+            if x.held[n] && x.thin[n].wait.is_some() {
+                self.settle(voice, n, span, timed, before);
             }
         }
     }
 
-    /// Keep `value` on held note `n`, on `frame` of `span`.
-    fn keep_touch(&mut self, n: usize, span: &Span, timed: bool, frame: u64, value: u8) {
-        self.thin[n].kept = value;
+    fn settle_all(&mut self, span: &Span, timed: bool, before: u64) {
+        for v in 0..MAX_VOICES {
+            if self.voices[v].n_held > 0 {
+                self.settle_voice(v, span, timed, before);
+            }
+        }
+    }
+
+    /// Keep `value` on voice `voice`'s held note `n`, on `frame` of
+    /// `span`.
+    fn keep_touch(
+        &mut self,
+        voice: usize,
+        n: usize,
+        span: &Span,
+        timed: bool,
+        frame: u64,
+        value: u8,
+    ) {
+        self.voices[voice].thin[n].kept = value;
         let (at, _) = self.place(span, timed, frame);
         self.touch[(self.touch_pushed % MAX_TOUCH_HITS as u64) as usize] = TouchHit {
             at,
             after: self.pushed,
+            track: self.voices[voice].track,
             note: n as u8,
             value,
         };
         self.touch_pushed += 1;
     }
 
-    fn hit(&mut self, at: f64, song: f64, bar: u32, timed: bool, event: Event) {
+    fn hit(&mut self, at: f64, song: f64, bar: u32, timed: bool, track: u8, event: Event) {
         let mut h = Hit {
             at,
             song,
             kind: Kind::AllOff,
+            track,
             note: 0,
             velocity: 0,
         };
@@ -473,11 +634,13 @@ impl Capture {
             // A MIDI-style note-on at velocity 0 is a release.
             Event::NoteOn { note, velocity: 0 } | Event::NoteOff { note } => {
                 let n = usize::from(note & 127);
-                if !self.held[n] {
+                let Some(v) = self.voice_of(track).filter(|&v| self.voices[v].held[n]) else {
                     return;
-                }
-                self.held[n] = false;
-                self.thin[n].wait = None;
+                };
+                let x = &mut self.voices[v];
+                x.held[n] = false;
+                x.thin[n].wait = None;
+                x.n_held -= 1;
                 self.n_held -= 1;
                 if self.n_held == 0 {
                     self.quiet_since = at;
@@ -487,6 +650,10 @@ impl Capture {
             }
             Event::NoteOn { note, velocity } => {
                 let n = usize::from(note & 127);
+                let Some(v) = self.voice_for(track) else {
+                    self.dropped += 1;
+                    return;
+                };
                 let gap = (i64::from(bar) * GAP_BARS) as f64;
                 let new = match self.head {
                     None => true,
@@ -496,12 +663,14 @@ impl Capture {
                             || self.n_held == 0 && at - self.quiet_since >= gap
                     }
                 };
-                if !self.held[n] {
-                    self.held[n] = true;
+                let x = &mut self.voices[v];
+                if !x.held[n] {
+                    x.held[n] = true;
+                    x.n_held += 1;
                     self.n_held += 1;
                 }
                 // A new note's pressure starts again, as recording's does.
-                self.thin[n] = Thin::default();
+                x.thin[n] = THIN;
                 let seq = self.pushed;
                 match &mut self.head {
                     Some(p) if !new => {
@@ -523,14 +692,17 @@ impl Capture {
                 h.note = n as u8;
                 h.velocity = velocity.min(127);
             }
+            // The track's notes all end.
             Event::AllOff => {
-                if self.n_held == 0 {
+                let Some(v) = self.voice_of(track).filter(|&v| self.voices[v].n_held > 0) else {
                     return;
+                };
+                let x = &mut self.voices[v];
+                self.n_held -= x.n_held;
+                x.reset(track);
+                if self.n_held == 0 {
+                    self.quiet_since = at;
                 }
-                self.quiet_since = at;
-                self.held = [false; 128];
-                self.thin = [Thin::default(); 128];
-                self.n_held = 0;
             }
         }
         self.hits[(self.pushed % MAX_HITS as u64) as usize] = h;
@@ -600,8 +772,9 @@ impl Capture {
         let mut played: Vec<Played> = Vec::new();
         // Each played note's pressure, as it comes.
         let mut runs: Vec<Vec<TouchPoint>> = Vec::new();
-        // Per note: its index in `played` and its start on the clock.
-        let mut open: [Option<(usize, f64)>; 128] = [None; 128];
+        // Per track and note: its index in `played` and its start on the
+        // clock.
+        let mut open: HashMap<(u8, u8), (usize, f64)> = HashMap::new();
         let close = |played: &mut Vec<Played>, o: (usize, f64), end: f64| {
             played[o.0].note.len = ((end - o.1).round() as Tick).clamp(1, MAX_CLIP_TICKS);
         };
@@ -617,12 +790,12 @@ impl Capture {
         let touch_cut = touch_oldest > 0 && touch_hit(touch_oldest).after > first;
         let take_touch = |upto: u64,
                           ts: &mut u64,
-                          open: &[Option<(usize, f64)>; 128],
+                          open: &HashMap<(u8, u8), (usize, f64)>,
                           runs: &mut Vec<Vec<TouchPoint>>| {
             while *ts < self.touch_pushed && touch_hit(*ts).after <= upto {
                 let x = *touch_hit(*ts);
                 *ts += 1;
-                if let Some((i, from)) = open[usize::from(x.note & 127)] {
+                if let Some(&(i, from)) = open.get(&(x.track, x.note & 127)) {
                     let run = &mut runs[i];
                     let at =
                         ((x.at - from).round().max(0.0) as u32).max(run.last().map_or(0, |p| p.at));
@@ -635,8 +808,7 @@ impl Capture {
             let x = *hit(s);
             match x.kind {
                 Kind::On => {
-                    let n = usize::from(x.note);
-                    if let Some(o) = open[n].take() {
+                    if let Some(o) = open.remove(&(x.track, x.note)) {
                         close(&mut played, o, x.at);
                     }
                     let note = Note {
@@ -652,28 +824,32 @@ impl Capture {
                         ramp: 0,
                         join: mpfree_seq::Join::Attack,
                     };
-                    open[n] = Some((played.len(), x.at));
+                    open.insert((x.track, x.note), (played.len(), x.at));
                     played.push(Played {
                         note,
                         song: h.timed.then_some(x.song),
+                        track: x.track,
                     });
                     runs.push(Vec::new());
                 }
                 Kind::Off => {
-                    if let Some(o) = open[usize::from(x.note)].take() {
+                    if let Some(o) = open.remove(&(x.track, x.note)) {
                         close(&mut played, o, x.at);
                     }
                 }
                 Kind::AllOff => {
-                    for o in open.iter_mut().filter_map(Option::take) {
-                        close(&mut played, o, x.at);
-                    }
+                    open.retain(|&(t, _), &mut o| {
+                        if t == x.track {
+                            close(&mut played, o, x.at);
+                        }
+                        t != x.track
+                    });
                 }
             }
         }
         take_touch(self.pushed, &mut ts, &open, &mut runs);
         // Still held: it ends now.
-        for o in open.iter_mut().filter_map(Option::take) {
+        for (_, o) in open.drain() {
             close(&mut played, o, self.clock);
         }
         if played.len() > MAX_NOTES {
@@ -724,8 +900,9 @@ impl Capture {
     pub fn clear(&mut self) {
         self.pushed = 0;
         self.touch_pushed = 0;
-        self.thin = [Thin::default(); 128];
-        self.held = [false; 128];
+        for v in self.voices.iter_mut() {
+            v.reset(ARMED);
+        }
         self.n_held = 0;
         self.quiet_since = f64::NEG_INFINITY;
         self.head = None;

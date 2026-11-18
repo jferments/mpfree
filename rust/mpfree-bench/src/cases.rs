@@ -13,7 +13,7 @@ use mpfree_fx::{
     Harmonizer, Limiter, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter, MultiTap,
     MultibandCompressor, Perform, Phaser, PitchCorrect, PitchShifter, Plate, Print, PrintJob,
     PrintState, RingMod, Room, Rotary, Spring, StripId, Tail, TalkBox, TapeDelay, TransientShaper,
-    Tremolo, Tuner,
+    Tremolo, Tuner, Vocoder,
 };
 use mpfree_grain::GrainNode;
 use mpfree_lanes::{Config as LaneConfig, Job, Lane};
@@ -1446,6 +1446,11 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| {
         effect("Talk box", rate, Box::new(TalkBox::new()), &[])
     }));
+    // The vocoder at its defaults: 16 bands, the saw following the
+    // voice's pitch (the tracker runs).
+    v.push(measured(|| {
+        effect("Vocoder", rate, Box::new(Vocoder::new()), &[])
+    }));
     // Perform FX: idle (no pad held), the default bank one pad at a time,
     // the heaviest stack (pitch drop with a gate, both sweeps, crush, the
     // riser and an echo throw) and the wash throw on its own.
@@ -1669,9 +1674,121 @@ pub struct Scaling {
     pub points: Vec<(usize, Case)>,
 }
 
-/// Every Poly preset at 1 to 16 voices (chords changing every half second,
-/// as in the synth cases), the sampler at 1 to 32 voices held, and the
-/// sampler's grains at 16 to 256 alive.
+/// One synth preset at 1 to 16 voices of `chords` (or keys held, for an
+/// organ: `polyphony` None), or once on `line` when it plays one note at a
+/// time.
+fn preset_scaling(
+    name: String,
+    rate: u32,
+    make: impl Fn() -> Box<dyn Node>,
+    values: &[(u16, f32)],
+    polyphony: Option<u16>,
+    mono: bool,
+) -> Scaling {
+    if mono {
+        return Scaling {
+            name: format!("{name} (mono)"),
+            module: "synth",
+            points: vec![(1, line(format!("{name}, a line"), rate, make(), values))],
+        };
+    }
+    Scaling {
+        points: [1usize, 2, 4, 8, 16]
+            .iter()
+            .map(|&n| {
+                let case = chords(format!("{name} x{n}"), rate, make(), values, polyphony, n);
+                (n, case)
+            })
+            .collect(),
+        name,
+        module: "synth",
+    }
+}
+
+/// Every factory preset of every keyboard engine but Poly at 1 to 16
+/// voices (keys held, for the organ), the acid line once (it is mono).
+fn engine_scaling(rate: u32) -> Vec<Scaling> {
+    use mpfree_synth::{analog_params, fm_params, keys_params, pluck_params};
+    let mut v = Vec::new();
+    let mode = |values: &[(u16, f32)], id: u16| values.iter().any(|&(i, x)| i == id && x != 0.0);
+    for p in Analog::presets() {
+        // Unison stacks every voice on one note: still a cost per voice.
+        v.push(preset_scaling(
+            format!("Analog {}", p.name),
+            rate,
+            || Box::new(Analog::new(rate)),
+            p.values,
+            Some(analog_params::POLYPHONY),
+            false,
+        ));
+    }
+    for p in Squelch::presets() {
+        v.push(preset_scaling(
+            format!("Squelch {}", p.name),
+            rate,
+            || Box::new(Squelch::new(rate)),
+            p.values,
+            None,
+            true,
+        ));
+    }
+    for p in mpfree_synth::Fm::presets() {
+        v.push(preset_scaling(
+            format!("FM {}", p.name),
+            rate,
+            || Box::new(mpfree_synth::Fm::new(rate)),
+            &p.values,
+            Some(fm_params::POLYPHONY),
+            mode(&p.values, fm_params::VOICE_MODE),
+        ));
+    }
+    for p in WT_PRESETS {
+        v.push(preset_scaling(
+            format!("Wavetable {}", p.name),
+            rate,
+            || Box::new(Wavetable::new(rate)),
+            p.values,
+            Some(wt::POLYPHONY),
+            mode(p.values, wt::VOICE_MODE),
+        ));
+    }
+    for p in Keys::presets() {
+        v.push(preset_scaling(
+            format!("Keys {}", p.name),
+            rate,
+            || Box::new(Keys::new(rate)),
+            p.values,
+            Some(keys_params::POLYPHONY),
+            false,
+        ));
+    }
+    for p in Drawbar::presets() {
+        v.push(preset_scaling(
+            format!("Drawbar {} (keys held)", p.name),
+            rate,
+            || Box::new(Drawbar::new(rate)),
+            p.values,
+            None,
+            false,
+        ));
+    }
+    for p in Pluck::presets() {
+        v.push(preset_scaling(
+            format!("Pluck {}", p.name),
+            rate,
+            || Box::new(Pluck::new(rate)),
+            p.values,
+            Some(pluck_params::POLYPHONY),
+            false,
+        ));
+    }
+    v
+}
+
+/// Every synth preset of every keyboard engine at 1 to 16 voices (chords
+/// changing every half second, as in the synth cases; a mono preset once,
+/// on a line), the sampler at 1 to 32 voices held, and the sampler's
+/// grains at 16 to 256 alive.
 pub fn scaling(rate: u32) -> Vec<Scaling> {
     let mut v: Vec<Scaling> = PRESETS
         .iter()
@@ -1689,6 +1806,7 @@ pub fn scaling(rate: u32) -> Vec<Scaling> {
             }
         })
         .collect();
+    v.extend(engine_scaling(rate));
     v.push(Scaling {
         name: "Sampler, looping pads held".to_string(),
         module: "sampler",

@@ -26,6 +26,8 @@ use mpfree_arp::{
 };
 use mpfree_arp_ui::view::{ArpAction, PatternButton};
 use mpfree_arp_ui::workspace::{Editor, WsAction};
+use mpfree_node::{Curve, ParamInfo, Unit};
+use mpfree_play::mpfree_param::arp as arp_ids;
 
 /// What the arp screens show: the panel, the quick band and the chip.
 #[derive(Clone, Debug, PartialEq)]
@@ -1088,12 +1090,15 @@ impl App {
 
     pub(crate) fn press_pad(&mut self, slot: usize, velocity: u8) {
         let Some(layout) = &self.pad_layout else {
-            // A kit: the pad of the page, kept until it is let go.
-            let pad = self.kit_pad(slot) as u8;
-            if let Some(h) = self.kit_held.get_mut(slot) {
-                *h = Some(pad);
+            // A kit: the pad of the page, kept until it is let go (a pad
+            // pressed again first lets go of what it pressed).
+            if slot >= self.kit_held.len() {
+                return;
             }
-            self.arps.engine_at_mut(self.track).press(pad, velocity);
+            self.release_pad(slot);
+            let pad = self.kit_pad(slot) as u8;
+            self.kit_held[slot] = Some(pad);
+            self.hold_kit_pad(pad, velocity);
             return;
         };
         let Some(&pad) = layout.get(slot) else { return };
@@ -1131,6 +1136,69 @@ impl App {
         *holds = holds.saturating_add(1);
     }
 
+    /// A key on a MIDI keyboard (MIDI In or USB) while the armed track
+    /// plays a kit: it hits kit pad `pad` (0 is A1, up to 127,
+    /// `mpfree_midi::profile::kit_pad_of_note`), whatever bank PAD BANK
+    /// shows, through the track's arp as a pad would, so NOTE REPEAT and
+    /// Latch work from a keyboard too, and it writes a step while a pattern
+    /// records. Keys and pads share the hold count: a pad held on both ends
+    /// when both let go. A key already held is ignored, and while a pattern
+    /// records in Free time a key only writes its step, as a pad does. A
+    /// key plays: it doesn't pick STEP SEQ's sound, mute a track or
+    /// transpose, as a key on the synth doesn't (main.rs).
+    pub fn kit_key_down(&mut self, pad: u8, velocity: u8) -> Vec<Effect> {
+        let pad = pad & 0x7F;
+        let p = usize::from(pad);
+        if self.pad_layout.is_some() || self.keys_held[p] {
+            return Vec::new();
+        }
+        if !self.free_time_recording() {
+            self.keys_held[p] = true;
+            self.hold_kit_pad(pad, velocity.max(1));
+        }
+        self.record_press(pad, velocity)
+    }
+
+    /// The key on kit pad `pad` let go: the pad ends unless a pad of the
+    /// MPC still holds it.
+    pub fn kit_key_up(&mut self, pad: u8) -> Vec<Effect> {
+        let pad = pad & 0x7F;
+        if self.pad_layout.is_some() {
+            return Vec::new();
+        }
+        if std::mem::take(&mut self.keys_held[usize::from(pad)]) {
+            self.let_go_kit_pad(pad);
+        }
+        self.record_release(pad)
+    }
+
+    /// A held key's pressure on kit pad `pad`, for the arp's notes on it.
+    pub fn kit_key_pressure(&mut self, pad: u8, value: u8) {
+        let pad = pad & 0x7F;
+        if self.pad_layout.is_none() && self.keys_held[usize::from(pad)] {
+            self.arps.engine_at_mut(self.track).pressure(pad, value);
+        }
+    }
+
+    /// Kit pad `pad` held by one more pad or key: the arp gets it once.
+    fn hold_kit_pad(&mut self, pad: u8, velocity: u8) {
+        let holds = &mut self.note_holds[usize::from(pad & 0x7F)];
+        if *holds == 0 {
+            self.arps.engine_at_mut(self.track).press(pad, velocity);
+        }
+        *holds = holds.saturating_add(1);
+    }
+
+    /// One pad or key on kit pad `pad` let go: the arp lets go of it with
+    /// the last.
+    fn let_go_kit_pad(&mut self, pad: u8) {
+        let holds = &mut self.note_holds[usize::from(pad & 0x7F)];
+        *holds = holds.saturating_sub(1);
+        if *holds == 0 {
+            self.arps.engine_at_mut(self.track).release(pad);
+        }
+    }
+
     /// The key let go; the note ends unless a pad still holds it.
     pub fn key_up(&mut self, note: u8) {
         let n = usize::from(note & 0x7F);
@@ -1153,8 +1221,10 @@ impl App {
 
     pub(crate) fn release_pad(&mut self, slot: usize) {
         if self.pad_layout.is_none() {
-            let pad = self.kit_pad(slot) as u8;
-            self.arps.engine_at_mut(self.track).release(pad);
+            // The kit pad it pressed, once.
+            if let Some(pad) = self.kit_held.get_mut(slot).and_then(Option::take) {
+                self.let_go_kit_pad(pad);
+            }
             return;
         }
         let Some(pad) = self.pad_pressed.get_mut(slot).map(std::mem::take) else {
@@ -1268,13 +1338,19 @@ impl App {
                 self.release_pad(slot);
             }
             self.release_keys();
-        } else if !self.latched {
-            // Pad slots: what the old track's engine holds is the pads held.
-            for slot in 0..16u8 {
-                if self.arps.engine_at(self.track).active().contains(slot) {
-                    self.arps.engine_at_mut(self.track).release(slot);
+        } else {
+            // A kit: what the old track's engine holds is the kit pads the
+            // pads and keys hold, in any bank. Their hold counts start
+            // again on the new track.
+            if !self.latched {
+                for pad in 0..mpfree_midi::profile::KIT_PADS as u8 {
+                    if self.arps.engine_at(self.track).active().contains(pad) {
+                        self.arps.engine_at_mut(self.track).release(pad);
+                    }
                 }
             }
+            self.keys_held = [false; 128];
+            self.note_holds = [0; 128];
         }
         self.track_ui[self.track] = self.current_ui();
         self.track = track;
@@ -1286,6 +1362,119 @@ impl App {
         )));
         fx
     }
+
+    /// Track `track`'s arp setting `id` (`mpfree_param::arp`) as MIDI
+    /// Learn reads it: its description and its value now (the rate as its
+    /// place in [`Rate::ALL`]). The armed track's as the panel holds it,
+    /// another's as it was left.
+    pub fn arp_param(&self, track: usize, id: u16) -> Option<(ParamInfo, f32)> {
+        let info = arp_info(id)?;
+        let (s, rate) = if track == self.track {
+            (&self.arp, self.settings.rate)
+        } else {
+            let u = self.track_ui.get(track)?;
+            (&u.arp, u.rate)
+        };
+        let v = match id {
+            arp_ids::RATE => Rate::ALL.iter().position(|r| *r == rate).unwrap_or(0) as f32,
+            arp_ids::GATE => f32::from(s.gate),
+            arp_ids::SWING => f32::from(s.swing),
+            _ => f32::from(s.octaves),
+        };
+        Some((info, v))
+    }
+
+    /// A learned control set track `track`'s arp setting `id` to `value`
+    /// (in [`App::arp_param`]'s units): the armed track's as its Q-Link
+    /// sets it, so the panel and the band follow; another track's arp
+    /// plays on with it, and the panel shows it when that track is armed.
+    /// Swing turned this way stops following the transport, as a Q-Link
+    /// turn does. Nothing for a setting it already has.
+    pub fn set_arp_param(&mut self, track: usize, id: u16, value: f32) -> Vec<Effect> {
+        let Some((info, now)) = self.arp_param(track, id) else {
+            return Vec::new();
+        };
+        let value = info.clamp(value);
+        if value == now {
+            return Vec::new();
+        }
+        let set = |s: &mut Settings, rate: &mut Rate| {
+            let v = value as usize;
+            match id {
+                arp_ids::RATE => *rate = Rate::ALL[v.min(Rate::ALL.len() - 1)],
+                arp_ids::GATE => s.gate = v as u8,
+                arp_ids::SWING => s.swing = v as u8,
+                _ => s.octaves = v as u8,
+            }
+            *s = s.clamped();
+        };
+        if track == self.track {
+            let mut s = self.arp;
+            s.rate = self.settings.rate;
+            let mut rate = s.rate;
+            set(&mut s, &mut rate);
+            s.rate = rate;
+            return self.arp_action(ArpAction::Settings(s));
+        }
+        let Some(u) = self.track_ui.get_mut(track) else {
+            return Vec::new();
+        };
+        set(&mut u.arp, &mut u.rate);
+        if id == arp_ids::SWING {
+            u.swing_from_transport = false;
+        }
+        let u = *u;
+        let e = self.arps.engine_at_mut(track);
+        let mut s = u.arp;
+        s.mode = e.settings().mode;
+        s.rate = u.rate;
+        e.set_settings(s);
+        e.set_own_swing(!u.swing_from_transport);
+        self.arp_dirty = true;
+        Vec::new()
+    }
+}
+
+/// The names of [`Rate::ALL`], for MIDI Learn's description of the rate.
+const RATE_NAMES: [&str; 7] = {
+    let mut n = [""; 7];
+    let mut i = 0;
+    while i < 7 {
+        n[i] = Rate::ALL[i].label();
+        i += 1;
+    }
+    n
+};
+
+/// What an arp setting is to MIDI Learn (`Owner::Arp`, ids in
+/// `mpfree_param::arp`): its name, range and units, as the arp's Q-Link
+/// sliders show it. None for an id that isn't one.
+pub fn arp_info(id: u16) -> Option<ParamInfo> {
+    let info = |name, min, max, default, unit, curve| ParamInfo {
+        id,
+        name,
+        group: "Arp",
+        min,
+        max,
+        default,
+        unit,
+        curve,
+        readonly: false,
+    };
+    Some(match id {
+        arp_ids::RATE => info(
+            "Rate",
+            0.0,
+            (RATE_NAMES.len() - 1) as f32,
+            3.0,
+            Unit::None,
+            Curve::Choice(&RATE_NAMES),
+        ),
+        arp_ids::GATE => info("Gate", 1.0, 100.0, 50.0, Unit::Percent, Curve::Stepped),
+        arp_ids::SWING => info("Swing", 50.0, 75.0, 50.0, Unit::Percent, Curve::Stepped),
+        arp_ids::OCTAVES => info("Octaves", 1.0, 4.0, 1.0, Unit::None, Curve::Stepped),
+        _ => return None,
+    })
 }
 
 /// The live treatment's inputs, copied out of the App each period

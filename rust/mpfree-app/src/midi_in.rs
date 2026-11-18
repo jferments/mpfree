@@ -70,6 +70,7 @@ use mpfree_midi_clock::ClockIn;
 use mpfree_midi_ui::{PortLive, Shared};
 use mpfree_node::ParamInfo;
 use mpfree_play::mpfree_param::{transport, Owner, ParamAddr};
+use mpfree_play::Event;
 
 use crate::time::Follow;
 
@@ -202,6 +203,69 @@ impl RoutedHeld {
             Key::Pressure { note, .. } | Key::Expr { note, .. } => *held & bit(note) != 0 || !armed,
             // The wheel bends the track it is routed to, as it is now.
             Key::Bend { .. } => !armed,
+        }
+    }
+}
+
+/// No pad: the key's note plays no pad alone on its track.
+const NO_PAD: u8 = u8::MAX;
+
+/// The pad each key a route played on a track (not the armed one) went to,
+/// for CAPTURE: the key's end and pressure go to the pad its note went to,
+/// even if the track's pads changed while it was held.
+pub struct RoutedPads {
+    /// Per track a pad per note, [`NO_PAD`] for none.
+    pads: Box<[u8]>,
+}
+
+impl Default for RoutedPads {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RoutedPads {
+    pub fn new() -> RoutedPads {
+        RoutedPads {
+            pads: vec![NO_PAD; ROUTE_TRACKS * 128].into_boxed_slice(),
+        }
+    }
+
+    /// What CAPTURE keeps of `key`, routed to `track`: its note as the pad
+    /// `pad_of` says plays it there (`midi_file::pad_on_track`), and its
+    /// end and pressure on that pad. None for the wheel, an MPE note's own
+    /// slide and tone, a note no pad plays alone (as the armed track's
+    /// keys, it plays but isn't kept), and an end or pressure whose note
+    /// went to no pad. Allocates nothing.
+    pub fn event(
+        &mut self,
+        track: u8,
+        key: Key,
+        pad_of: impl FnOnce(u8) -> Option<u8>,
+    ) -> Option<Event> {
+        let t = usize::from(track);
+        if t >= ROUTE_TRACKS {
+            return None;
+        }
+        let at = |note: u8| t * 128 + usize::from(note & 0x7F);
+        match key {
+            Key::Down { note, velocity } => {
+                let pad = pad_of(note).filter(|&p| p < 128);
+                self.pads[at(note)] = pad.unwrap_or(NO_PAD);
+                pad.map(|note| Event::NoteOn {
+                    note,
+                    velocity: velocity.max(1),
+                })
+            }
+            Key::Up { note } => {
+                let pad = std::mem::replace(&mut self.pads[at(note)], NO_PAD);
+                (pad != NO_PAD).then_some(Event::NoteOff { note: pad })
+            }
+            Key::Pressure { note, value } => {
+                let pad = self.pads[at(note)];
+                (pad != NO_PAD).then_some(Event::Pressure { note: pad, value })
+            }
+            Key::Bend { .. } | Key::Expr { .. } => None,
         }
     }
 }
@@ -514,7 +578,7 @@ pub struct MusicIn {
     pub feed: Feed,
     /// The armed track (from 0), and whether keys play it by note (a
     /// synth's pad layout) or as the kit pad each note plays.
-    armed: (u8, bool),
+    armed: (u8, KeysPlay),
     /// The Monitor asked for MIDI Out's note-offs ([`MusicIn::take_note_offs`]).
     note_offs: bool,
     /// Per port: what its page says about it ("USB · port 2 of 4 on
@@ -582,7 +646,7 @@ impl MusicIn {
             leader_sp: 0,
             leader_dropped: 0,
             feed: Feed::new(),
-            armed: (0, true),
+            armed: (0, KeysPlay::Notes),
             note_offs: false,
             about: vec![String::new(); MAX_PORTS],
             routed: Vec::with_capacity(ROUTED_KEYS),
@@ -683,11 +747,10 @@ impl MusicIn {
     }
 
     /// Once a period, before the bytes: the track keys play (from 0), and
-    /// whether they play it by note (`true`) or as the pad each note plays
-    /// (`mpc_one::pad_index`). It only names where the monitor says a key
-    /// went; the app plays the keys itself.
-    pub fn set_armed(&mut self, track: u8, by_note: bool) {
-        self.armed = (track, by_note);
+    /// how ([`KeysPlay`]). It only names where the monitor says a key went;
+    /// the app plays the keys itself.
+    pub fn set_armed(&mut self, track: u8, play: KeysPlay) {
+        self.armed = (track, play);
     }
 
     /// Once a period, before the transport runs: what following another
@@ -1422,7 +1485,7 @@ impl MusicIn {
                         // its note, which they may come with).
                         if let (false, In::Track { msg, .. }) = (learn_only, other) {
                             match mpe.msg(msg, &mut |e| keys.push(expr_key(e))) {
-                                Took::Expr if armed.1 => {
+                                Took::Expr if armed.1 == KeysPlay::Notes => {
                                     to = To::Track {
                                         track: armed.0,
                                         pad: None,
@@ -1617,13 +1680,30 @@ fn key_note(e: &In) -> Option<u8> {
     }
 }
 
+/// How keys play the armed track (main.rs's `keys_play`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KeysPlay {
+    /// By note: the synth's pad layout is on the pads.
+    #[default]
+    Notes,
+    /// A kit: each note its kit pad, A1 to H16
+    /// (`mpfree_midi::profile::kit_pad_of_note`).
+    KitPads,
+    /// As the pad (1 to 16) the MPC gives each note
+    /// (`mpc_one::pad_index`): the synth or a track's own instrument
+    /// without a pad layout.
+    Pads,
+}
+
 /// Where a key went, for the monitor: the armed track, by note or as the
 /// pad its note plays.
-fn armed_to((track, by_note): (u8, bool), note: u8) -> To {
-    if by_note {
-        return To::Track { track, pad: None };
-    }
-    match mpfree_controller::mpc_one::pad_index(note) {
+fn armed_to((track, play): (u8, KeysPlay), note: u8) -> To {
+    let pad = match play {
+        KeysPlay::Notes => return To::Track { track, pad: None },
+        KeysPlay::KitPads => Some(mpfree_midi::profile::kit_pad_of_note(note) as u8),
+        KeysPlay::Pads => mpfree_controller::mpc_one::pad_index(note),
+    };
+    match pad {
         Some(pad) => To::Track {
             track,
             pad: Some(pad),
@@ -2156,6 +2236,106 @@ mod tests {
     }
 
     #[test]
+    fn capture_keeps_a_routed_key_on_the_pad_its_note_went_to() {
+        let mut r = RoutedPads::new();
+        let down = |note| Key::Down { note, velocity: 0 };
+        // Note 60 plays pad 3 on track 5, then the pads change while it is
+        // held: its pressure and end still go to pad 3.
+        let ev = r.event(5, down(60), |n| (n == 60).then_some(3));
+        assert_eq!(
+            ev,
+            Some(Event::NoteOn {
+                note: 3,
+                velocity: 1
+            })
+        );
+        let pressure = Key::Pressure {
+            note: 60,
+            value: 70,
+        };
+        assert_eq!(
+            r.event(5, pressure, |_| Some(9)),
+            Some(Event::Pressure { note: 3, value: 70 })
+        );
+        assert_eq!(
+            r.event(5, Key::Up { note: 60 }, |_| Some(9)),
+            Some(Event::NoteOff { note: 3 })
+        );
+        // Ended: nothing more for it.
+        assert_eq!(r.event(5, Key::Up { note: 60 }, |_| Some(9)), None);
+        assert_eq!(r.event(5, pressure, |_| Some(9)), None);
+        // The same note on another track is its own.
+        assert!(r.event(6, down(60), |_| Some(4)).is_some());
+        assert_eq!(r.event(5, Key::Up { note: 60 }, |_| None), None);
+        // A note no pad plays alone isn't kept, nor its end; nor the wheel,
+        // nor a track past the most a route names.
+        assert_eq!(r.event(5, down(61), |_| None), None);
+        assert_eq!(r.event(5, Key::Up { note: 61 }, |_| Some(1)), None);
+        assert_eq!(r.event(5, Key::Bend { value: 0.5 }, |_| Some(1)), None);
+        assert_eq!(r.event(200, down(60), |_| Some(1)), None);
+    }
+
+    /// A routed key held when its keyboard is unplugged, or when its route
+    /// is taken away, ends in CAPTURE's history too: the key's end comes
+    /// from the router, through `RoutedHeld` and `RoutedPads`, as the
+    /// end of the pad its note went to, so no routed note is left held.
+    #[test]
+    fn a_routed_key_let_go_by_an_unplug_or_a_route_change_ends_for_capture() {
+        use mpfree_midi::setup::TrackRoute;
+        let mut m = MusicIn::new();
+        let io = model();
+        let keystep = m.plugged("Keystep 37").unwrap();
+        {
+            let mut v = io.lock().unwrap();
+            v.setup.routes = vec![TrackRoute {
+                port: "Keystep 37".to_string(),
+                channel: None,
+                track: 2,
+                blocks: mpfree_midi::blocks::Blocks::NONE,
+            }];
+            v.gen += 1;
+        }
+        m.sync(&io, 0.5);
+        let mut held = RoutedHeld::new();
+        let mut pads = RoutedPads::new();
+        // What the app gives CAPTURE for the routed keys so far (track 3
+        // isn't armed; note n plays pad n - 60).
+        let mut capture = |m: &mut MusicIn| -> Vec<(u8, Event)> {
+            let routed: Vec<_> = m.take_routed().collect();
+            routed
+                .into_iter()
+                .filter(|&(t, k)| held.direct(t, k, false))
+                .filter_map(|(t, k)| Some((t, pads.event(t, k, |n| n.checked_sub(60))?)))
+                .collect()
+        };
+        run(&mut m, keystep, &[0x90, 64, 90]);
+        assert_eq!(
+            capture(&mut m),
+            vec![(
+                2,
+                Event::NoteOn {
+                    note: 4,
+                    velocity: 90
+                }
+            )]
+        );
+        m.unplugged(keystep, &mut Vec::new());
+        assert_eq!(capture(&mut m), vec![(2, Event::NoteOff { note: 4 })]);
+        // Back in, a key held, and the route taken away.
+        let keystep = m.plugged("Keystep 37").unwrap();
+        m.sync(&io, 1.0);
+        run(&mut m, keystep, &[0x90, 67, 90]);
+        assert_eq!(capture(&mut m).len(), 1);
+        {
+            let mut v = io.lock().unwrap();
+            v.setup.routes.clear();
+            v.gen += 1;
+        }
+        m.sync(&io, 1.5);
+        assert_eq!(capture(&mut m), vec![(2, Event::NoteOff { note: 7 })]);
+    }
+
+    #[test]
     fn a_busy_screen_skips_the_update_and_counts_it() {
         let mut m = MusicIn::new();
         let io = model();
@@ -2567,11 +2747,15 @@ mod tests {
             .monitor
             .shown_ports()
             .any(|p| p.name == "Keystep 37"));
-        // A kit on track 3: a key plays the pad its note plays, or none.
-        m.set_armed(2, false);
+        // A kit on track 3: a key plays the kit pad that sends its note,
+        // in any bank (20 is H2, 113). On the synth without a pad layout,
+        // the pad the MPC gives it, or none.
+        m.set_armed(2, KeysPlay::KitPads);
         run(&mut m, usb, &[0x99, 37, 100, 0x99, 20, 90]);
+        m.set_armed(2, KeysPlay::Pads);
+        run(&mut m, usb, &[0x99, 20, 90]);
         // A synth on track 2: by note, and its wheel.
-        m.set_armed(1, true);
+        m.set_armed(1, KeysPlay::Notes);
         run(&mut m, usb, &[0x90, 60, 96, 0xE0, 0, 0x50]);
         // Learn: armed, a knob takes the parameter; then it moves it.
         m.arm(cutoff());
@@ -2594,6 +2778,13 @@ mod tests {
                     To::Track {
                         track: 2,
                         pad: Some(0)
+                    }
+                ),
+                (
+                    usb,
+                    To::Track {
+                        track: 2,
+                        pad: Some(113)
                     }
                 ),
                 (usb, To::NoPad { track: 2 }),

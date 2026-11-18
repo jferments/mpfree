@@ -821,8 +821,8 @@ impl Session {
             return;
         }
         if down && pad < 16 && self.app.pads_are_loop_keys() {
-            self.keys_held.press(pad, self.t());
             let action = self.app.perform_page().action(pad);
+            self.keys_held.press_action(pad, self.t(), action);
             let (fx, line) = crate::desk::perform_pad(
                 &mut self.app,
                 &self.time,
@@ -836,7 +836,13 @@ impl Session {
             }
             return;
         }
-        if !down && self.keys_held.release(pad) {
+        if let Some(action) = (!down)
+            .then(|| self.keys_held.release_action(pad))
+            .flatten()
+        {
+            // A held throw lets go with its pad.
+            let fx = crate::desk::perform_pad_up(&mut self.app, action);
+            self.fx.extend(fx);
             self.out.show(ToUi::PadUp(pad));
             return;
         }
@@ -874,6 +880,16 @@ impl Session {
             self.time.erase_sound(kit_pad, false);
             self.out.show(ToUi::PadUp(pad));
             return;
+        }
+        let take = self
+            .app
+            .rec
+            .ready
+            .map(|take| take == crate::rec_arm::Take::Add);
+        if down {
+            let exporting = self.export.running();
+            let said = crate::pad_starts_loop(&mut self.looper, &mut self.time, take, exporting);
+            self.out.loop_start(said);
         }
         if let Some(ev) = self.app.pressed_event(pad, velocity, down) {
             self.time.pad_pressed(0, ev);
@@ -953,6 +969,11 @@ impl Session {
             self.out.note(&format!("time: {line}"));
         }
         self.app.set_track_count(self.time.track_count());
+        // A track UNDO took away gives its kit back (as player_session).
+        if self.track_kits.forget_past(self.time.track_count()) {
+            self.out
+                .show(ToUi::TrackKits(Box::new(self.track_kits.clone())));
+        }
         let (loop_rec, loop_dub) = self.looper.recording();
         let info = self.time.info();
         let lights = self.app.transport_lights(
@@ -1081,6 +1102,14 @@ impl Session {
         if let Some(line) = self.looper.run(self.time.block(), &mut ll, &mut lr) {
             self.out.note(&line);
         }
+        let take = self
+            .app
+            .rec
+            .ready
+            .map(|take| take == crate::rec_arm::Take::Add);
+        let exporting = self.export.running();
+        let said = crate::loop_starts_song(&mut self.looper, &mut self.time, take, exporting);
+        self.out.loop_start(said);
         // The Looper tab and the Play page's strip follow the loop, as
         // main.rs shows them: its wave a slice at a time, its changes in
         // the log, and the loop's view about as often as the transport card
@@ -1294,6 +1323,7 @@ impl Session {
             modu: self.mix.modu.save(),
             synth: crate::project::synth_text(&self.app.synth_settings(), &self.synth.sounds()),
             arp: self.app.arp_part(),
+            perform: self.app.perform_set().text(),
             instruments: crate::project::instruments_text(&self.mix.instruments),
             track_kits: self.track_kits.text(),
             loops,
@@ -1368,6 +1398,11 @@ impl Session {
         }
         self.kit_to = Some(self.track_kits.entry(self.app.track()));
         let (notes, fx) = self.app.open_arp(o.arp.as_deref());
+        for line in notes {
+            self.out.note(&line);
+        }
+        self.fx.extend(fx);
+        let (notes, fx) = self.app.open_perform(o.perform.as_deref());
         for line in notes {
             self.out.note(&line);
         }

@@ -839,7 +839,8 @@ fn a_tracks_transpose_moves_its_notes_and_a_sounding_note_ends_where_it_went() {
 /// A key a route sends to a track that isn't armed (the I/O view's
 /// Routing) plays that track at once, where its clips play: out of MIDI
 /// out on its channel, on its own instrument, or the kit's pad for the
-/// MPC's pad note. None of it allocates.
+/// MPC's pad note. CAPTURE's history takes each as the pad that plays it
+/// there. None of it allocates.
 #[test]
 fn routed_keys_play_their_track_where_its_clips_play() {
     use crate::midi_in::Key;
@@ -870,10 +871,29 @@ fn routed_keys_play_their_track_where_its_clips_play() {
         (2, down(64)),
         (2, up(64)),
         (5, down(PAD_NOTES[0])),
+        (
+            5,
+            Key::Pressure {
+                note: PAD_NOTES[0],
+                value: 50,
+            },
+        ),
         (5, up(PAD_NOTES[0])),
     ];
+    let mut routed_pads = crate::midi_in::RoutedPads::new();
+    let synth = &*rig.synth;
     let ((), calls) = crate::sys::alloc_count::calls(|| {
         for (track, key) in keys {
+            // As the sound loop does: CAPTURE's history first, with the
+            // synth's pad layout for track 4 (as if it played the synth).
+            let t = usize::from(track);
+            let synth_has = (t == 3).then_some(synth);
+            let kept = routed_pads.event(track, key, |n| {
+                crate::midi_file::pad_on_track(&rig.mix.instruments, synth_has, t, n)
+            });
+            if let Some(ev) = kept {
+                rig.time.routed_played(track, 0, ev);
+            }
             crate::play_routed(
                 track,
                 key,
@@ -893,6 +913,7 @@ fn routed_keys_play_their_track_where_its_clips_play() {
     rig.period(0);
     assert_eq!(rig.player.hits(), before + 1, "only track 6 played the kit");
     assert_eq!(rig.mix.instruments.stats(2).notes, notes_before + 1);
+    assert!(rig.time.state().capture.is_some(), "CAPTURE has the keys");
     assert!(rig.midi.close());
     assert_eq!(*sink.0.lock().unwrap(), [0x91, 60, 100, 0x81, 60, 64]);
 }

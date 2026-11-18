@@ -151,8 +151,10 @@ impl Stage {
         }
     }
 
+    /// The effect at work on the notes: on, and not one of the CC
+    /// effects (MIDI out applies those; the notes pass them untouched).
     fn active(&self) -> Option<Fx> {
-        self.slot.filter(|s| s.on).map(|s| s.fx)
+        self.slot.filter(|s| s.on && !s.fx.is_cc()).map(|s| s.fx)
     }
 
     fn busy(&self) -> bool {
@@ -242,6 +244,8 @@ impl Stage {
             // Strum's delay depends on the notes before it ([`Stage::on`]);
             // Latch takes its keys before they get here ([`Stage::take`]).
             Fx::Strum(_) | Fx::Latch { .. } => Held::one(note),
+            // MIDI out's: never active here.
+            Fx::CcScale(_) | Fx::CcSmooth(_) => Held::one(note),
             Fx::Randomize(r) => {
                 let mut to = note;
                 if r.pitch > 0 && rng.upto(99) < u32::from(r.often.min(100)) {

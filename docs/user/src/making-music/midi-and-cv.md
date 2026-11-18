@@ -15,7 +15,7 @@ All of these settings are in one place: the mixer's [I/O view](mixing-and-effect
 Plug a keyboard into **MIDI IN**, or a USB keyboard into the **USB** port, and it plays the armed track, just as the pads do (to play other tracks too, see [Playing several tracks from your keyboards](#playing-several-tracks-from-your-keyboards)). Its knobs, faders and pedals can turn effect knobs with [MIDI Learn](#midi-learn). It listens on every MIDI channel, and you can plug a USB keyboard in or out while MPFree runs. A USB interface with several MIDI ports shows each one as a port of its own, named as the device names it (up to 15 USB ports at once). If a keyboard sends **All notes off** (or **All sound off**), the keys it holds on that channel let go.
 
 - **With a synth on the pads,** each key plays its own note, through the arpeggiator, so **NOTE REPEAT** and Latch work from the keyboard too. A note held on a key and a pad ends when both let go.
-- **With a drum kit,** the keys that match the MPC's own pad notes hit the pads: C#2 is pad 1, C2 is pad 2, and so on. Other keys play nothing.
+- **With a drum kit,** every key hits one of the kit's 128 pads: the pad that sends that note to a drum machine with no [profile](#device-profiles) of its own (see [A kit on a drum machine](#a-kit-on-a-drum-machine)), whichever bank **PAD BANK** shows. C#2 is A1, C2 is A2 and so on through bank A, as the MPC sends its pads; B1 (35) is B1, D#2 (39) is B2 and so on through banks B to H. So a drum machine or another MPFree playing a kit's notes plays the same pads. The keys go through the arpeggiator, so **NOTE REPEAT** and Latch work from the keyboard, and a pad held on a key and on the MPC ends when both let go. Keys only play: in **STEP SEQ**, **TRACK MUTE** or 16 Levels they still play their pads, as keys on a synth do.
 - The pad velocity setting, and Full Level, shape the keys' velocity as they do the pads'.
 
 ### The pitch wheel, pressure and MPE
@@ -41,7 +41,7 @@ The I/O view's **Routing** section shows where each source's MIDI goes, on one g
 
 - **Tracks by channel** sends one channel of a port to one track, whichever track is armed. Tap a port's square and pick the channel and the track on the card below the grid (with – and +, or Q-Links 1 and 2). **+ Route** adds another, **Remove route** takes the picked one away. Two routes from the same channel to two tracks play both, to layer sounds. For example: a drum machine on **MIDI IN**, channel 10, plays **Drums**, while a keyboard on channel 1 plays **Bass** and you work on another track with the pads.
 - Notes a route takes go only to its track, never to the armed track as well, so nothing plays twice. The rest of the port's notes go to the armed track, as before.
-- A track played by a route plays where its clips play: its own sound, its synth or drum machine through MIDI out, and its CV outputs. With a drum kit, the keys that match the MPC's pad notes hit the pads. Only the armed track's notes go through the arpeggiator, and only the armed track records.
+- A track played by a route plays where its clips play: its own sound, its synth or drum machine through MIDI out, and its CV outputs. With a drum kit, each key hits the pad that sends its note, in any bank. Only the armed track's notes go through the arpeggiator, and only the armed track records, but [Capture](clips.md#capture-keep-what-you-just-played) keeps what a route played and puts it in the route's track.
 - **Armed track** and **Learn** are the port's **Input** (Both, Plays tracks or Learn only), the same setting as on its row in the MIDI section. Turning both off isn't allowed: turn the other on first. A port set to **Learn only** still plays its routes.
 - A track's square under a port is its **Plays on**, as in the MIDI section: tap it to play that track on that port, and pick the channel on the card.
 - Routes belong to the song and are saved with it. A route from a device that isn't plugged in waits for it.
@@ -96,6 +96,10 @@ If a track would send nothing, it says why under the track's name: no port is pi
 > [!MPC]
 > On the MPC, a MIDI track needs two settings with nearly the same name before a note leaves the jack: the track's MIDI output channel and its MIDI Out routing. In MPFree it's one setting, the port and the channel together.
 
+### Moving the synth's controls step by step (CC lanes)
+
+On the **Sequencer** tab's **Steps**, a track that plays a synth through MIDI out can lock the synth's own controls step by step: its filter on the downbeats, a bend into the fourth step. **+ Lane** lists the CCs the synth's [device profile](#device-profiles) names (Cutoff, Resonance, whatever its profile calls them), or with no profile the controls most gear shares (Mod wheel, Volume, Pan, Expression, Sustain, Resonance on CC 71, Cutoff on CC 74 and a few more), then **Bend** and **Pressure**. **Another CC** on the list's card takes any CC from 0 to 119 by number. Each control you pick gets a lane under the notes: tap a step on it to lock it at the value the control has before anything moves it (as General MIDI resets it: 64 for the sound controls 70 to 79, such as Cutoff on 74, 100 for Volume, the middle for the bend and 0 for most others), then drag it up or down, 4 a detent (1 with **SHIFT**). The synth gets the CC on that step. The bank select, data entry and RPN numbers aren't on the list, because they change what the synth's other controls mean; **Another CC** still reaches them. See [Your first beat](../getting-started/first-beat.md#program-a-pattern) for lock lanes.
+
 ### The wheel, pressure and MPE on a synth
 
 A track that plays a synth through MIDI out passes your keyboard's [pitch wheel, pressure and MPE](#the-pitch-wheel-pressure-and-mpe) on to it, so the synth answers them as MPFree's own sounds do. Most synths have one bend, one pressure and one tone for all their notes, so MPFree makes one of each from the keys you hold:
@@ -105,6 +109,15 @@ A track that plays a synth through MIDI out passes your keyboard's [pitch wheel,
 - **Tone:** the tone of the key you played last, as CC 74, which most synths have on their filter cutoff.
 
 Each goes out only when it changes. When you let go of the last key, the bend goes back to the wheel's and the pressure to 0, and a stop, a panic or a new **Plays on** puts the synth back at rest. Keys that play a kit's pads send each pad's pressure on its notes, and no bend. To send a synth the keyboard's own messages as they came (an MPE synth's channels and all), use [Thru](#thru-a-keyboard-straight-to-a-synth) instead.
+
+**An MPE synth** (one that takes each note on its own channel: a hardware synth with an MPE mode, or a soft synth set to MPE) gets each note's expression on that note alone. Give the synth's port a [profile](#device-profiles) with an **mpe** line (`mpe = lower 15` for most), and every track that plays on that port plays MPE:
+
+- each note goes out on a channel of its own (channels 2 to 16 for the lower zone), so a slide, pressure or tone on one finger of an MPE controller moves only that note;
+- the wheel bends every note at once on the zone's main channel (channel 1 for the lower zone), and the program, bank and the track's controls go there too;
+- MPFree tells the synth its zone with the track's program, so a synth that listens for it sets itself up;
+- with more notes than channels, a new note shares the channel of the oldest one, as MPE asks.
+
+On the I/O view the track's **Plays on** says *port · MPE* and its note *each note on its own channel*, because there is no channel to pick. A stop, a panic or a new **Plays on** puts every channel back at rest.
 
 ### A kit on a drum machine
 
@@ -182,7 +195,7 @@ program.1 = Init
 - **name** is what the port's page shows: at most 32 characters, and not *Auto* or *None*. Two profiles can't share a name, so one with the name of the built-in General MIDI is left out.
 - **match** is a name a USB device calls itself (the page says it: *it calls itself …*). A port set to **Auto** takes the first profile with its name. Put up to 8 **match** lines in one profile, or none.
 - **cc.N** names CC N (0 to 127); **nrpn.MSB.LSB** names the NRPN parameter sent as CC 99 = MSB and CC 98 = LSB; **program.N** names program N, counted from 1 as everywhere on screen. Each name has at most 32 characters.
-- **mpe** says the controller plays [MPE](#the-pitch-wheel-pressure-and-mpe): `mpe = lower 15` (main channel 1, notes on channels 2 to 16; fewer channels with a smaller number), `mpe = upper 15` (main channel 16) or `mpe = off`.
+- **mpe** says the gear speaks [MPE](#the-pitch-wheel-pressure-and-mpe): `mpe = lower 15` (main channel 1, notes on channels 2 to 16; fewer channels with a smaller number), `mpe = upper 15` (main channel 16) or `mpe = off`. On a controller it says how to read it; on a synth, MPFree plays each note on its own channel ([An MPE synth](#the-wheel-pressure-and-mpe-on-a-synth)).
 - **bend** is a synth's pitch bend range in semitones, 1 to 96 (`bend = 12`), which your keyboard's [wheel and slides](#the-wheel-pressure-and-mpe-on-a-synth) bend it by. Without it MPFree takes 2, the range most synths start with.
 - **pressure** is what a synth takes for your keys' pressure: `pressure = channel` (one value for all its notes, which most synths take, and what MPFree sends without the line) or `pressure = poly` (each note's own).
 - **knobs** lists a controller's knobs by their CCs, in order, up to 16 (`knobs = 74 71 76 77`). [MIDI Follow](#midi-follow-your-controllers-knobs-on-the-q-links) turns Q-Links 1 to 4 with the first four, unless you taught it the controller's knobs yourself.
@@ -205,15 +218,16 @@ MPFree can also send its own clock from **MIDI OUT**, or to a USB device, so a d
 
 ## MIDI Learn
 
-MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controller turn a value in MPFree: a mixer strip's fader, pan or send, its mute or solo, an effect's knob, a macro, a knob on the Synth tab, the tempo, or the transport's buttons (see [Playing and stopping from your controller](#playing-and-stopping-from-your-controller)).
+MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controller turn a value in MPFree: a mixer strip's fader, pan or send, its mute or solo, an effect's knob, a macro, a knob on the Synth tab, the arp's rate, gate, swing and octaves, the tempo, or the transport's buttons (see [Playing and stopping from your controller](#playing-and-stopping-from-your-controller)).
 
 **The quick way: SHIFT + touch.** Hold **SHIFT**, touch the value on the screen, then move the control on your keyboard. Until a control takes it, the hint line reads *LEARNING Volume (Bass): move a knob, a key or a pedal on any controller*; then it says what the control moves (*Learned: CC 74 on Keystep 37 moves Poly cutoff (Track 2)*). While SHIFT is held the touch only picks the value: the fader doesn't move. Touch the same value with SHIFT again to cancel, or another one to learn that instead. It works on:
 
 - the mixer's Faders look: a strip's fader, pan and sends, and its **M** (mute) and **S** (solo);
-- the tempo on the Play page;
+- on the Play page: the tempo, the master bar (the master's level), and the Q-Link cards that set a level or a send (the drums' send; on the Loop view the looper's level and send and the line input's level). The other cards, such as Swing and the filters, learn nothing yet;
 - the [chain editor](effects.md#adding-an-effect-the-chain-editor): an effect's knobs, faders, sliders and drawbars;
 - the macros panel: a macro's knob;
-- the Synth tab: the synth's knobs, faders, sliders and drawbars, for the track it shows (the track's own instrument, or the synth on the pads).
+- the Synth tab: the synth's knobs, faders, sliders and drawbars, for the track it shows (the track's own instrument, or the synth on the pads), and an MPC plugin's own screen (its skin): its knobs, sliders and buttons;
+- the arp: the [Arp panel](note-repeat-and-arp.md#the-arp-panel)'s Rate, Gate, Swing and Octaves sliders, and the Q-Link cards while NOTE REPEAT is held or latched. The control turns the armed track's arp, and keeps turning that track's arp when you arm another. A learned Swing is the arp's own swing from then on, as when you turn Q-Link 3.
 
 Anywhere else SHIFT + a touch keeps its own job, such as SHIFT + drag on an audio region.
 
@@ -345,7 +359,7 @@ The mixer's I/O view has a **Monitor** section: tap **I/O** on the **Mix** tab a
 - **The lights.** Each port has a row with a light for each of the 16 channels: the upper half lights green when something comes in on that channel, the lower half blue when something goes out. The last column shows the tempo of any clock coming in or going out.
 - **The list,** newest at the top: when it happened, the port and which way (*in* or *out*, the outgoing ones in blue), the channel, the message in words (*Note on · C3 · vel 100*, *CC 1 Mod wheel · 64*, *Program 5*), where it went, and its bytes. Clock, active sensing and time code arrive many times a second, so they are counted rather than listed: one line when each starts and one when it stops. A SysEx message is one line with its length and, for well-known makers, the maker's name.
 - **Where it went.** Each line says what took its message, so nothing that arrives goes unexplained:
-  - *Bass, the armed track*: a key played the track on screen. *Drums, by its route*: a route in the Routing section played that track. *thru to MIDI out*: thru sent it straight on (*thru: not sent, MIDI out is off* while Prefs keeps MIDI out off). With a drum kit it says the pad the note plays (*Drums, pad 1*), or *nothing: no pad on Drums* for a note outside the 16 pad notes.
+  - *Bass, the armed track*: a key played the track on screen. *Drums, by its route*: a route in the Routing section played that track. *thru to MIDI out*: thru sent it straight on (*thru: not sent, MIDI out is off* while Prefs keeps MIDI out off). With a drum kit it says the pad the note plays, in any bank (*Drums, pad A1*, *Drums, pad H2*).
   - *Learn: Cutoff (Filter, Bass)*, in purple: a learned control moved that value. *Learn took it* marks the move that taught it.
   - *clock: the tempo follows it*, in green: the clock, Start, Stop or Song Position of the port the tempo comes from (Sync in the I/O view).
   - In yellow, what nothing took: *nothing takes it* (a knob nobody learned, a pitch bend the tracks don't take from a keyboard yet), *not played: Learn only* (the port's input is Learn only), *not followed* (clock on a port the tempo isn't from), *ignored: this port's setting* (switched off under **Ignore coming in** on [the port's page](#a-ports-page)), and *ignored* for messages MPFree never reads, such as SysEx.

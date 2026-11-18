@@ -132,6 +132,7 @@
 61774	Squelch Distorted, a line
 64328	Squelch Square Acid, a line
 31342	Talk box
+111176	Vocoder
 87944	Tape delay
 8572	Time with trig conditions and ratchets, 8 clips, arp
 8882	Time: transport, 8 clips, arp

@@ -51,6 +51,49 @@ struct Geo {
     place_rows: Vec<Rect>,
     detail_buttons: Vec<(Button, Rect)>,
     detail_body: Rect,
+    /// The pad map under a sound, when the Selected column has room.
+    map: Option<MapGeo>,
+}
+
+/// The pad map's places: its heading, its arrows and its 16 pads (pad 1,
+/// bottom left, first), as the MPC's pads lie.
+struct MapGeo {
+    head: Rect,
+    prev: Rect,
+    next: Rect,
+    cells: Vec<Rect>,
+}
+
+/// The pad map's height: its heading and four rows of fingertip pads.
+const MAP_HEAD_H: i32 = 44;
+const MAP_CELL_H: i32 = 54;
+const MAP_GAP: i32 = 6;
+const MAP_H: i32 = 8 + MAP_HEAD_H + 4 * MAP_CELL_H + 3 * MAP_GAP;
+
+fn map_geo(r: Rect) -> MapGeo {
+    let (_, r) = r.take_top(8);
+    let (head, grid) = r.take_top(MAP_HEAD_H);
+    let (next, rest) = head.take_right(56);
+    let (_, rest) = rest.take_right(8);
+    let (prev, head) = rest.take_right(56);
+    let cw = (grid.w - 3 * MAP_GAP) / 4;
+    let cells = (0..16)
+        .map(|i| {
+            let (col, row) = (i % 4, 3 - i / 4);
+            Rect::new(
+                grid.x + col * (cw + MAP_GAP),
+                grid.y + 2 + row * (MAP_CELL_H + MAP_GAP),
+                cw,
+                MAP_CELL_H,
+            )
+        })
+        .collect();
+    MapGeo {
+        head,
+        prev: prev.inset_xy(0, 4),
+        next: next.inset_xy(0, 4),
+        cells,
+    }
 }
 
 fn card_body(r: Rect) -> Rect {
@@ -115,13 +158,21 @@ impl Geo {
         // A filter chip that would run under Search is left out (the
         // narrow form has room for fewer).
         filters.retain(|(_, fr)| fr.right() <= search.x - 8);
-        // Detail.
+        // Detail. Under a sound, the pad map takes the middle and the
+        // buttons go three across (the full width only).
         let db = card_body(detail);
+        let map_on = s.pad_map.is_some() && r.w >= NARROW_BELOW;
         let n = s.detail.buttons.len() as i32;
-        let cols = 2;
+        let cols = if map_on { 3 } else { 2 };
         let lines = (n + cols - 1) / cols;
         let (btns, body) = db.take_bottom(lines * (BUTTON_H + 8));
-        let bw = (btns.w - 8) / cols;
+        let (body, map) = if map_on {
+            let (m, rest) = body.take_bottom(MAP_H);
+            (rest, Some(map_geo(m)))
+        } else {
+            (body, None)
+        };
+        let bw = (btns.w - 8 * (cols - 1)) / cols;
         let detail_buttons = s
             .detail
             .buttons
@@ -156,6 +207,7 @@ impl Geo {
             place_rows,
             detail_buttons,
             detail_body: body,
+            map,
         }
     }
 
@@ -667,6 +719,8 @@ pub struct BrowserView {
     drag: Option<(u64, i32, i32, bool)>,
     /// The last rect drawn in, for the rows that fit.
     visible: usize,
+    /// A finger on the pad map, which lets go of its pad when it lifts.
+    map_finger: Option<u64>,
 }
 
 impl BrowserView {
@@ -676,7 +730,28 @@ impl BrowserView {
             inputs: Vec::new(),
             drag: None,
             visible: 11,
+            map_finger: None,
         }
+    }
+
+    /// The middle of pad `pad` (0 to 15) of the pad map, in a browser
+    /// drawn in `r` showing `screen` (for tests and the touch tools).
+    pub fn map_point(r: Rect, screen: &Screen, pad: usize) -> Option<(i32, i32)> {
+        let c = *Geo::new(r, screen).map?.cells.get(pad)?;
+        Some((c.x + c.w / 2, c.y + c.h / 2))
+    }
+
+    /// The pad map's pad under (x, y), while nothing is over the browser.
+    fn map_hit(&self, r: Rect, x: i32, y: i32) -> Option<usize> {
+        let s = &self.screen;
+        if !matches!(s.modal, Modal::None) || s.export.is_some() || s.plugins.is_some() {
+            return None;
+        }
+        Geo::new(r, s)
+            .map?
+            .cells
+            .iter()
+            .position(|c| c.contains(x, y))
     }
 
     pub fn show(&mut self, screen: Screen) {
@@ -764,6 +839,14 @@ impl BrowserView {
         }
         if let Some((b, _)) = g.detail_buttons.iter().find(|(_, br)| br.contains(x, y)) {
             return Some(Input::Button(*b));
+        }
+        if let (Some(m), Some(map)) = (&g.map, &s.pad_map) {
+            if map.banks > 1 && m.prev.contains(x, y) {
+                return Some(Input::MapBank(-1));
+            }
+            if map.banks > 1 && m.next.contains(x, y) {
+                return Some(Input::MapBank(1));
+            }
         }
         if g.rows.contains(x, y) {
             let k = ((y - g.rows.y) / ROW_H) as usize;
@@ -860,6 +943,19 @@ impl Widget for BrowserView {
             let label = detail_label(s, *b);
             out.push(Target::tap("button", *b as usize, &label, *br));
         }
+        if let (Some(m), Some(map)) = (&g.map, &s.pad_map) {
+            if map.banks > 1 {
+                out.push(Target::tap("pad-map-bank", 0, "‹ Bank", m.prev));
+                out.push(Target::tap("pad-map-bank", 1, "Bank ›", m.next));
+            }
+            for (i, (cell, cr)) in map.cells.iter().zip(&m.cells).enumerate() {
+                let label = match &cell.name {
+                    Some(n) => format!("{} {n}", cell.label),
+                    None => format!("{} empty", cell.label),
+                };
+                out.push(Target::tap("pad-map", i, label, *cr));
+            }
+        }
         // The filter showing is drawn lit: a tap on it changes nothing.
         for (f, fr) in &g.filters {
             out.push(
@@ -896,6 +992,22 @@ impl Widget for BrowserView {
         let on_list = matches!(self.screen.modal, Modal::None)
             && self.screen.export.is_none()
             && rows.contains(x, y);
+        // The pad map's pads are pads: one sounds while a finger holds it.
+        if phase == Touch::Down {
+            if let Some(pad) = self.map_hit(r, x, y) {
+                self.map_finger = Some(finger);
+                self.inputs.push(Input::MapPad { pad, down: true });
+                return Some(EventKind::Value(0.0));
+            }
+        }
+        if matches!(phase, Touch::Up | Touch::Cancel) && self.map_finger == Some(finger) {
+            self.map_finger = None;
+            self.inputs.push(Input::MapPad {
+                pad: 0,
+                down: false,
+            });
+            return Some(EventKind::Value(0.0));
+        }
         match phase {
             Touch::Down => {
                 self.drag = Some((finger, y, 0, false));
@@ -943,14 +1055,18 @@ impl Widget for BrowserView {
 }
 
 /// What a detail button says. For a sound, Load names the pad it goes on
-/// (Load on A5) and Load to pad says when (Next pad hit); Audition says
-/// whether it is on.
+/// (Load on A5) and Load to pad says when (Next pad hit); for a kit, Load
+/// names the track it goes on (Load on Drums); Audition says whether it is
+/// on.
 fn detail_label(s: &Screen, b: Button) -> String {
-    let sound = s
-        .selected
-        .and_then(|i| s.rows.get(i))
-        .is_some_and(|r| matches!(r.kind, Kind::Audio(_)));
+    let row = s.selected.and_then(|i| s.rows.get(i));
+    let sound = row.is_some_and(|r| matches!(r.kind, Kind::Audio(_)));
+    let kit = row.is_some_and(|r| r.kind == Kind::Kit && r.factory.is_none());
     match b {
+        Button::Load if kit => s
+            .kit_on
+            .as_ref()
+            .map_or_else(|| b.label().into(), |track| format!("Load on {track}")),
         Button::Load if sound => s
             .load_on
             .as_ref()
@@ -1353,21 +1469,36 @@ fn paint_files(cx: &mut PaintCx, g: &Geo, s: &Screen) {
         &d.title,
     );
     let (kind, rest) = rest.take_top(28);
+    // With the pad map, the facts go on the kind's line, as one.
+    let summary = g.map.is_some().then(|| {
+        std::iter::once(d.kind.as_str())
+            .chain(
+                d.lines
+                    .iter()
+                    .filter(|(l, _)| l != "In")
+                    .map(|(_, v)| v.as_str()),
+            )
+            .collect::<Vec<_>>()
+            .join(" · ")
+    });
     cx.text(
         FontId::Sans,
         t.size_small,
         kind,
         Align::Left,
         t.text_dim,
-        &d.kind,
+        summary.as_deref().unwrap_or(&d.kind),
     );
     body = rest;
     if let Some(o) = &d.overview {
-        let (wave, rest) = body.take_top(130);
+        let (wave, rest) = body.take_top(130.min(body.h));
         paint_overview(cx, wave.inset_xy(0, 8), o, t.accent);
         body = rest;
     }
-    for (label, value) in &d.lines {
+    if let (Some(m), Some(map)) = (&g.map, &s.pad_map) {
+        paint_map(cx, m, map);
+    }
+    for (label, value) in d.lines.iter().filter(|_| g.map.is_none()) {
         if body.h < 30 {
             break;
         }
@@ -1390,6 +1521,59 @@ fn paint_files(cx: &mut PaintCx, g: &Geo, s: &Screen) {
             _ => false,
         };
         button(cx, *br, &detail_label(s, *b), lit, *b == Button::Delete);
+    }
+}
+
+/// The pad map: the kit's bank, each pad with its sound's colour, the
+/// pad picked outlined.
+fn paint_map(cx: &mut PaintCx, m: &MapGeo, map: &crate::state::MapShown) {
+    let t = cx.theme.clone();
+    cx.text(
+        FontId::Sans,
+        t.size_small,
+        m.head,
+        Align::Left,
+        t.text_dim,
+        &map.title.to_uppercase(),
+    );
+    if map.banks > 1 {
+        button(cx, m.prev, "‹", false, false);
+        button(cx, m.next, "›", false, false);
+    }
+    for (cell, r) in map.cells.iter().zip(&m.cells) {
+        let r = *r;
+        match &cell.name {
+            Some(name) => {
+                cx.canvas.fill_round_rect(r, 8, t.raised);
+                if let Some(c) = draw::sound_color(name) {
+                    cx.canvas.fill_round_rect(
+                        Rect::new(r.x, r.y + 6, 4, r.h - 12),
+                        2,
+                        t.content(c),
+                    );
+                }
+            }
+            None => cx.canvas.stroke_round_rect(r, 8, 1, t.outline),
+        }
+        if cell.picked {
+            cx.canvas.stroke_round_rect(r, 8, 2, t.accent);
+        }
+        let inner = r.inset_xy(10, 6);
+        let (top, bottom) = inner.take_top(inner.h / 2);
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            top,
+            Align::Left,
+            if cell.picked { t.accent } else { t.text_dim },
+            &cell.label,
+        );
+        let (name, ink) = match (&cell.name, cell.picked) {
+            (Some(n), _) => (n.clone(), t.text),
+            (None, true) => ("empty · picked".to_string(), t.accent),
+            (None, false) => ("empty".to_string(), t.text_faint),
+        };
+        cx.text(FontId::Sans, t.size_small, bottom, Align::Left, ink, &name);
     }
 }
 
