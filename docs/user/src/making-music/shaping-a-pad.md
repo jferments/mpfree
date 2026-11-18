@@ -1,12 +1,12 @@
 <!--
 status: changing
-covers: rust/mpfree-sampler/src/model.rs rust/mpfree-sampler-ui/src/play_tab.rs rust/mpfree-sampler-ui/src/grain_tab.rs rust/mpfree-sampler-ui/src/keys_widgets.rs rust/mpfree-grain rust/mpfree-app/src/sample_page.rs
-checked: 2026-11-16 ececc7e
+covers: rust/mpfree-sampler/src/model.rs rust/mpfree-sampler-ui/src/play_tab.rs rust/mpfree-sampler-ui/src/sound_panel.rs rust/mpfree-sampler-ui/src/grain_tab.rs rust/mpfree-sampler-ui/src/keys_widgets.rs rust/mpfree-grain rust/mpfree-app/src/sample_page.rs
+checked: 2026-11-18 ec8cb82
 -->
 
 # Shaping how a pad plays
 
-Once a sound is on a pad (see [Sampling](sampling.md)), the Sample tab's **Play**, **Grain** and **FX** pages decide what happens when you hit it: how loud and how bright, which other pads it stops or brings in, whether it plays as grains, and which effects it goes through. The last part of this chapter turns a whole kit into a keyboard instrument.
+Once a sound is on a pad (see [Sampling](sampling.md)), the Sample tab's **Play** and **Grain** pages, and the effects on the pad's mixer channel, decide what happens when you hit it: how loud and how bright, which other pads it stops or brings in, whether it plays as grains, and which effects it goes through. The Wave page's **Sound** section shows the Play page's envelope, filter, pitch and movement controls four at a time, beside the wave. The last part of this chapter turns a whole kit into a keyboard instrument.
 
 As everywhere on the Sample tab, **hit a pad** to pick the one you are shaping.
 
@@ -184,18 +184,14 @@ The preset that is on stays lit, and the **Presets** button names it, until you 
 
 **Every layer its own cloud.** The Grain page (and the Wave, Warp and Chop pages) work on the layer picked on the Play page's layer map, and the top line says which ("· layer 2"). So a pad can play its sound plainly on soft hits and as a cloud on hard ones.
 
-## FX: effects on one pad, or on the whole kit
+## Effects on one pad, or on the whole kit
 
-**FX**, in the Sample tab's row of pages, shows the effects on the pad you are editing as a row of pedals under its sound.
+A pad's effects are on its own channel in the mixer. The **Effects** row of the [Pads tab](sampling.md#the-pads-tab-sounds-onto-pads) names them (**+ FX** when there are none): tap it, or push the wheel on it, to open the pad's chain in the Mix tab (see [Mixing and effects](effects.md#adding-an-effect-the-chain-editor)), and **‹** brings you back to the Pads tab.
 
-- **The pedals.** Each effect on the pad's own channel is a pedal: its number, its name and what it is set to, an **On** switch, and its first three knobs. Four show at once; with more, **Effects ‹ ›** on the right moves along them. Along the foot of the sound, a line shows the way it goes: the sound, each effect in order (one switched off is faint), then **Drums**.
-- **Turning them.** Touch a pedal to pick it: it is outlined, and **Q-Links 1 to 4** turn its four main knobs. Drag a knob up or down, or touch it and turn the data wheel; a finger resting on a knob lets the wheel turn it until you lift. SHIFT turns a Q-Link finer.
-- **+ Add effect** opens the effect picker on the pad's channel, and **Whole chain** the **chain editor** (see [Mixing and effects](effects.md#adding-an-effect-the-chain-editor)) on it, with every control of every effect, their order, presets and modulation. Both open in the Sample tab's place, and **Back** comes back to the Sample tab.
+- **The pad's own effects.** An effect on the pad's channel plays on that pad alone. Add **Perform FX** for stutters, beat repeats, tape stops and reverse on just that pad, in time with the tempo. Each of its 16 slots (**Slot 1** to **Slot 16**) is a page in the editor, with its effect, its length and a **Hold** switch: Hold on plays it, off lets it go.
+- **The whole kit's effects.** The track the kit plays into (**Drums** for kit 1) has a chain of its own in the Mix tab, so an effect there plays on the whole kit, like a bus effect on the SP-404. To make it a one-knob effect, put its knobs on a macro (see [Macros](effects.md#macros)), and that macro's Q-Link plays them all at once.
 
-- **The pad's own effects.** The pedals are the pad's own channel's, so an effect added there plays on that pad alone. Add **Perform FX** for stutters, beat repeats, tape stops and reverse on just that pad, in time with the tempo. Each of its 16 slots (**Slot 1** to **Slot 16**) is a page in the editor, with its effect, its length and a **Hold** switch: Hold on plays it, off lets it go.
-- **The whole kit's effects.** In **Whole chain**, the switch at the top goes to the track the kit plays into (**Drums** for kit 1), so an effect there plays on the whole kit, like a bus effect on the SP-404. To make it a one-knob effect, put its knobs on a macro (see [Macros](effects.md#macros)), and that macro's Q-Link plays them all at once.
-
-The effects belong to the pad's place in the kit, not to its sound: put another sound on the pad and it plays through the same effects. Kit 1's bank A pads (A1 to A16) always have a channel of their own in the mixer. Any other pad, on any bank of any kit, gets one when you give it an effect with **+ Add effect** or **Whole chain**: the mixer's Pads view then shows it by its pad and kit ("B5 · Kit 2"), playing into its kit's track. Once the pad has nothing on it again, it gives the channel back. There are 48 of these channels; with all of them in use, the FX page says so, and taking another pad's effects off frees one.
+The effects belong to the pad's place in the kit, not to its sound: put another sound on the pad and it plays through the same effects. Kit 1's bank A pads (A1 to A16) always have a channel of their own in the mixer. Any other pad, on any bank of any kit, gets one when you give it an effect: the mixer's Pads view then shows it by its pad and kit ("B5 · Kit 2"), playing into its kit's track. Once the pad has nothing on it again, it gives the channel back. There are 48 of these channels; with all of them in use, MPFree says so, and taking another pad's effects off frees one.
 
 ## Playing a kit on keys
 

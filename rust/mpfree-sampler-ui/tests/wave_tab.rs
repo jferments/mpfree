@@ -3,13 +3,15 @@
 
 use std::sync::Arc;
 
-use mpfree_sampler::model::{LoopMode, PlayMode, Project, Region, Source, WarpMethod};
+use mpfree_sampler::model::{FilterKind, LfoTarget, LoopMode, PlayMode, Project, Region, Source};
+use mpfree_sampler_ui::play_tab::PlayAction;
 use mpfree_sampler_ui::sample::{self, wave_sample, Sample, BPM, PAD, RATE};
+use mpfree_sampler_ui::sound_panel::{self, Part};
 use mpfree_sampler_ui::wave_tab::{
     self, moved, position_text, Mark, Row, Snap, WaveAction, WaveState,
 };
 use mpfree_sampler_ui::widgets::{KnobCard, PadBar, SettingList};
-use mpfree_sampler_ui::{chop_tab, grain_tab, play_tab, warp_tab};
+use mpfree_sampler_ui::{chop_tab, grain_tab, play_tab, rec_tab, warp_tab};
 use mpfree_sampler_ui::{PyramidPeaks, SourceView};
 use mpfree_ui::wave::{Peaks, RawPeaks, Waveform};
 use mpfree_ui::{EventKind, Fonts, SoftCanvas, Touch, UiEvent};
@@ -30,6 +32,8 @@ fn apply(s: &mut Sample, a: &WaveAction) {
     a.apply(&mut s.project).unwrap();
     s.state = WaveState::from_project(&s.project, PAD, 0, s.state.source.clone()).unwrap();
     s.tab.update(&mut s.ui, &s.state);
+    let sound = sample::sound_state(&s.project, &s.state.source);
+    s.tab.set_sound(&mut s.ui, sound);
 }
 
 fn region(s: &Sample) -> Region {
@@ -476,21 +480,26 @@ fn tabs_taps_and_the_sample_screens() {
     let mut s = sample();
     let bar = s.ui.rect_of(wave_tab::BAR).unwrap();
     let pb = s.ui.get::<PadBar>(wave_tab::BAR).unwrap();
-    let (warp_tab_r, chop_tab_r, play_tab_r, grain_tab_r, fx_tab_r) = (
+    let (warp_tab_r, chop_tab_r, play_tab_r, grain_tab_r, rec_tab_r) = (
         pb.tab_rect(bar, warp_tab::TAB),
         pb.tab_rect(bar, chop_tab::TAB),
         pb.tab_rect(bar, play_tab::TAB),
         pb.tab_rect(bar, grain_tab::TAB),
-        pb.tab_rect(bar, wave_tab::FX_TAB),
+        pb.tab_rect(bar, rec_tab::TAB),
     );
     assert_eq!(pb.active, wave_tab::TAB);
-    assert_eq!(pb.tabs[0], "Wave", "the pads are the app's Pads tab now");
+    assert_eq!(
+        pb.tabs,
+        ["Wave", "Warp", "Chop", "Play", "Grain", "Rec"],
+        "the pads are the app's Pads tab, and a pad's effects are in Mix (no FX tab)"
+    );
     let st = s.state.clone();
     for (id, r, tab, what) in [
         (7, warp_tab_r, warp_tab::TAB, "Warp opens"),
         (2, chop_tab_r, chop_tab::TAB, "Chop opens"),
         (4, play_tab_r, play_tab::TAB, "Play opens"),
         (5, grain_tab_r, grain_tab::TAB, "Grain opens"),
+        (6, rec_tab_r, rec_tab::TAB, "Rec opens"),
     ] {
         let ev = s.ui.touch(id, Touch::Down, r.x + 5, r.y + 5).unwrap();
         assert_eq!(
@@ -500,15 +509,6 @@ fn tabs_taps_and_the_sample_screens() {
         );
         s.ui.touch(id, Touch::Up, 0, 0);
     }
-    let ev =
-        s.ui.touch(6, Touch::Down, fx_tab_r.x + 5, fx_tab_r.y + 5)
-            .unwrap();
-    assert_eq!(
-        s.tab.action(&mut s.ui, &ev, &st),
-        Some(WaveAction::Tab(wave_tab::FX_TAB)),
-        "FX opens"
-    );
-    s.ui.touch(6, Touch::Up, 0, 0);
     // A tap on the wave plays the pad.
     let w = Waveform::wave_rect(s.ui.rect_of(wave_tab::WAVE).unwrap());
     s.ui.touch(3, Touch::Down, w.x + 300, w.y + 100);
@@ -522,38 +522,6 @@ fn tabs_taps_and_the_sample_screens() {
         let mut c = SoftCanvas::new(sample::SCREEN.0, sample::SCREEN.1);
         assert!(!s.ui.paint(&mut c).is_empty(), "{}", s.name);
     }
-}
-
-#[test]
-fn warp_turns_on_at_the_regions_own_tempo_and_steps_through_its_methods() {
-    let mut s = sample();
-    let st = s.state.clone();
-    assert_eq!(row_value(&s, Row::Warp), "Off");
-    assert_eq!(row_value(&s, Row::WarpTempo), "—");
-    assert!(
-        step(&mut s, Row::WarpTempo, 1).is_none(),
-        "no tempo to set while off"
-    );
-    let a = step(&mut s, Row::Warp, 1).unwrap();
-    apply(&mut s, &a);
-    let w = region(&s).warp.unwrap();
-    assert_eq!(w.method, WarpMethod::Stretch);
-    // The test loop is whole bars at its tempo, so warp starts there.
-    let want = wave_tab::region_tempo(&st, &region(&s));
-    assert_eq!(w.bpm, want);
-    assert!((f64::from(w.bpm) - BPM).abs() < 0.5, "{} vs {BPM}", w.bpm);
-    assert_eq!(row_value(&s, Row::Warp), "Stretch");
-    assert_eq!(row_value(&s, Row::WarpTempo), format!("{:.1} BPM", w.bpm));
-    let a = step(&mut s, Row::WarpTempo, 1).unwrap();
-    apply(&mut s, &a);
-    assert_eq!(region(&s).warp.unwrap().bpm, w.bpm + 1.0);
-    let a = step(&mut s, Row::Warp, 1).unwrap();
-    apply(&mut s, &a);
-    assert_eq!(region(&s).warp.unwrap().method, WarpMethod::Repitch);
-    assert_eq!(region(&s).warp.unwrap().bpm, w.bpm + 1.0, "the tempo stays");
-    let a = step(&mut s, Row::Warp, 1).unwrap();
-    apply(&mut s, &a);
-    assert_eq!(region(&s).warp, None);
 }
 
 fn row_value(s: &Sample, row: Row) -> String {
@@ -653,15 +621,24 @@ fn the_settings_are_a_panel_of_controls_under_a_full_width_wave() {
     // it, as wide, 242 pixels high.
     assert!(wave.w >= 1100, "{wave:?}");
     assert!(wave.right() < q.x);
-    assert_eq!((band.x, band.w, band.h), (wave.x, wave.w, 242));
+    assert_eq!((band.x, band.h), (wave.x, 242));
     assert!(band.y > wave.bottom());
+    // The Sound section is on the band's right, as tall, up to the wave's
+    // right edge.
+    let sound = s.ui.rect_of(sound_panel::SOUND).unwrap();
+    assert_eq!(
+        (sound.y, sound.h, sound.w),
+        (band.y, band.h, sound_panel::WIDTH)
+    );
+    assert!(sound.x > band.right());
+    assert_eq!(sound.right(), wave.right());
     let list = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
     let panel = list
         .panel
         .as_ref()
         .expect("the Wave page's list is a panel");
     let titles: Vec<&str> = panel.sections.iter().map(|s| s.title.as_str()).collect();
-    assert_eq!(titles, ["Mode", "Level", "Fades", "Warp", "Options"]);
+    assert_eq!(titles, ["Mode", "Gain and fades", "Options"]);
     // Every setting is on it once, in the order the wheel walks them:
     // section by section, line by line, left to right.
     let placed: Vec<usize> = panel
@@ -677,7 +654,7 @@ fn the_settings_are_a_panel_of_controls_under_a_full_width_wave() {
             .filter(|t| t.widget == wave_tab::REGION)
             .map(|t| t.target)
             .collect();
-    assert!(targets.len() > 20);
+    assert!(targets.len() >= 16, "{}", targets.len());
     for (i, a) in targets.iter().enumerate() {
         assert_eq!(band.intersect(a.rect), a.rect, "{} sticks out", a.label);
         for b in &targets[i + 1..] {
@@ -689,12 +666,10 @@ fn the_settings_are_a_panel_of_controls_under_a_full_width_wave() {
             );
         }
     }
-    // What can't be used now is faint: Loop mode keeps its loop, and
-    // there's no warp tempo without warp.
+    // What can't be used now is faint: Loop mode keeps its loop.
     assert!(!control(&s, "choice", "Loop: Off").enabled);
     assert!(control(&s, "choice", "Loop: Ping-pong").enabled);
     assert!(!control(&s, "choice", "Mode: Loop").enabled, "on already");
-    assert!(!control(&s, "less", "Warp tempo ‹").enabled);
     assert!(control(&s, "knob", "Crossfade").enabled);
     assert!(control(&s, "less", "Channels ‹").enabled);
 }
@@ -754,17 +729,6 @@ fn the_panel_answers_a_finger_as_its_controls_look() {
     assert!(tap(&mut s, "more", "Snap ›").is_empty());
     assert_eq!(s.tab.snap(), Snap::Sixteenths);
     assert_eq!(s.project.revision(), rev);
-    // Warp on: its tempo steps, and its value, tapped, asks for a number
-    // when the finger lifts.
-    tap_apply(&mut s, "choice", "Warp: Stretch");
-    let bpm = region(&s).warp.unwrap().bpm;
-    tap_apply(&mut s, "more", "Warp tempo ›");
-    assert_eq!(region(&s).warp.unwrap().bpm, bpm + 1.0);
-    let asked = tap(&mut s, "value", "Warp tempo");
-    assert!(
-        matches!(asked.as_slice(), [WaveAction::Ask(a)] if a.key == wave_tab::TYPED_WARP_TEMPO),
-        "{asked:?}"
-    );
 }
 
 #[test]
@@ -842,4 +806,178 @@ fn a_sliced_region_shows_its_slice_lines_fixed() {
     let st = s.state.clone();
     assert_eq!(s.tab.action(&mut s.ui, &ev, &st), None);
     assert_eq!(region(&s).slices, cuts);
+}
+
+// ---------------------------------------------------------------- Sound
+
+/// The Sound section's control `id` labelled `label`.
+fn sound_control(s: &Sample, id: &str, label: &str) -> mpfree_ui::Target {
+    s.ui.targets()
+        .into_iter()
+        .find(|t| t.widget == sound_panel::SOUND && t.target.id == id && t.target.label == label)
+        .unwrap_or_else(|| panic!("no Sound {id} \"{label}\""))
+        .target
+}
+
+/// A finger's tap on a Sound control, as the app hands it to the tab.
+fn sound_tap(s: &mut Sample, id: &str, label: &str) -> Vec<WaveAction> {
+    let (x, y) = sound_control(s, id, label).centre();
+    let st = s.state.clone();
+    let mut out = Vec::new();
+    for phase in [Touch::Down, Touch::Up] {
+        if let Some(ev) = s.ui.touch(8, phase, x, y) {
+            out.extend(s.tab.action(&mut s.ui, &ev, &st));
+        }
+    }
+    s.tab.lift();
+    out
+}
+
+fn sound_tap_apply(s: &mut Sample, id: &str, label: &str) {
+    for a in sound_tap(s, id, label) {
+        assert!(
+            matches!(a, WaveAction::Play(PlayAction::Pad { .. })),
+            "{a:?}"
+        );
+        apply(s, &a);
+    }
+}
+
+fn sound_names(s: &Sample) -> Vec<String> {
+    let list = s.ui.get::<SettingList>(sound_panel::SOUND).unwrap();
+    list.rows.iter().map(|r| r.name.clone()).collect()
+}
+
+/// The one Sample page (Jay, 18 Nov): the Sound section beside the
+/// panel shows the Play page's own controls, four a part, and its part
+/// buttons only change what it shows.
+#[test]
+fn the_sound_section_shows_four_of_the_play_pages_controls_a_part() {
+    let mut s = sample();
+    assert_eq!(s.tab.sound().part(), Part::Amp);
+    let rev = s.project.revision();
+    for part in Part::ALL {
+        let label = format!("Sound: {}", part.label());
+        let asked = sound_tap(&mut s, "choice", &label);
+        assert!(asked.is_empty(), "{asked:?}");
+        assert_eq!(s.tab.sound().part(), part);
+        let want: Vec<String> = std::iter::once("Sound".to_string())
+            .chain(part.rows().iter().map(|r| r.label().to_string()))
+            .collect();
+        assert_eq!(sound_names(&s), want);
+        // Its controls sit inside it and never overlap.
+        let band = s.ui.rect_of(sound_panel::SOUND).unwrap();
+        let targets: Vec<_> =
+            s.ui.targets()
+                .into_iter()
+                .filter(|t| t.widget == sound_panel::SOUND)
+                .map(|t| t.target)
+                .collect();
+        assert!(targets.len() >= 8, "{part:?}: {}", targets.len());
+        for (i, a) in targets.iter().enumerate() {
+            assert_eq!(band.intersect(a.rect), a.rect, "{} sticks out", a.label);
+            for b in &targets[i + 1..] {
+                assert!(
+                    a.rect.intersect(b.rect).is_empty(),
+                    "{} on {}",
+                    a.label,
+                    b.label
+                );
+            }
+        }
+        let mut c = SoftCanvas::new(sample::SCREEN.0, sample::SCREEN.1);
+        assert!(!s.ui.paint(&mut c).is_empty());
+    }
+    assert_eq!(s.project.revision(), rev, "the parts change nothing");
+    // The page has one Tune: the pad's, on Pitch (the sound's own went with
+    // the Wave page's Level section).
+    sound_tap(&mut s, "choice", "Sound: Pitch");
+    let tunes =
+        s.ui.targets()
+            .into_iter()
+            .filter(|t| t.target.label == "Tune")
+            .count();
+    assert_eq!(tunes, 1);
+}
+
+/// A Sound control changes the pad as the Play page would: a knob's drag
+/// is one undo step; a control with nothing to change says why.
+#[test]
+fn the_sound_section_turns_the_pad_as_the_play_page_does() {
+    let mut s = sample();
+    let pad = |s: &Sample| s.project.pad(PAD).unwrap().clone();
+    // Amp: Attack dragged up, one undo step.
+    let attack = pad(&s).amp.attack_ms;
+    let (x, y) = sound_control(&s, "knob", "Attack").centre();
+    let px = mpfree_sampler_ui::panel::step_px(14);
+    let st = s.state.clone();
+    let down = s.ui.touch(7, Touch::Down, x, y).unwrap();
+    assert_eq!(s.tab.action(&mut s.ui, &down, &st), None, "picked");
+    let mut gestures = Vec::new();
+    for to in [y - 2 * px, y - 4 * px] {
+        let ev = s.ui.touch(7, Touch::Move, x, to).unwrap();
+        let st = s.state.clone();
+        let a = s.tab.action(&mut s.ui, &ev, &st).unwrap();
+        let WaveAction::Play(PlayAction::Pad {
+            pad: p, gesture, ..
+        }) = &a
+        else {
+            panic!("{a:?}")
+        };
+        assert_eq!(*p, PAD);
+        gestures.push(*gesture);
+        apply(&mut s, &a);
+    }
+    s.ui.touch(7, Touch::Up, x, y - 4 * px);
+    s.tab.lift();
+    assert!(pad(&s).amp.attack_ms > attack);
+    assert_eq!(gestures[0], gestures[1], "one undo step");
+    assert_eq!(
+        pad(&s).layers[0].region,
+        region(&s),
+        "the sound is as it was"
+    );
+    // Filter: off, so its knobs are faint and say why; its type steps on.
+    sound_tap(&mut s, "choice", "Sound: Filter");
+    assert_eq!(pad(&s).filter.kind, FilterKind::Off);
+    assert!(!sound_control(&s, "knob", "Cutoff").enabled);
+    assert!(sound_tap(&mut s, "knob", "Cutoff").is_empty());
+    sound_tap_apply(&mut s, "more", "Filter ›");
+    assert_eq!(pad(&s).filter.kind, FilterKind::LowPass);
+    assert!(sound_control(&s, "knob", "Cutoff").enabled);
+    // Pitch: Vintage is a switch.
+    sound_tap(&mut s, "choice", "Sound: Pitch");
+    let vintage = pad(&s).vintage;
+    sound_tap_apply(&mut s, "switch", "Vintage");
+    assert_eq!(pad(&s).vintage, !vintage);
+    // Movement: what the LFO moves is a selector; its rate waits for it.
+    sound_tap(&mut s, "choice", "Sound: Movement");
+    assert_eq!(pad(&s).lfo.target, LfoTarget::Off);
+    assert!(!sound_control(&s, "knob", "LFO rate").enabled);
+    sound_tap_apply(&mut s, "more", "LFO to ›");
+    assert_eq!(pad(&s).lfo.target, LfoTarget::Pitch);
+    assert!(sound_control(&s, "knob", "LFO rate").enabled);
+    // A touch on Sound ends the panel's turn: Gain after it is a new
+    // undo step.
+    let Some(WaveAction::Region { gesture: g1, .. }) = step(&mut s, Row::Gain, 1) else {
+        panic!()
+    };
+    let ev = UiEvent {
+        widget: sound_panel::SOUND.into(),
+        kind: EventKind::Step {
+            index: 0,
+            delta: -3,
+        },
+    };
+    let st = s.state.clone();
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        None,
+        "a part opened is no edit"
+    );
+    assert_eq!(s.tab.sound().part(), Part::Amp, "three before Movement");
+    let Some(WaveAction::Region { gesture: g2, .. }) = step(&mut s, Row::Gain, 1) else {
+        panic!()
+    };
+    assert_ne!(g1, g2);
 }
