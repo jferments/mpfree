@@ -247,8 +247,8 @@ runs again after the second boot it already makes to check saved settings;
 | --- | --- | --- | --- |
 | `shared` | SCHED_FIFO 70, wherever the kernel puts it (cores 0 and 1 on the test stick) | idle | shared with the rest |
 | `core3` | pinned to core 3, SCHED_FIFO 70 | idle | the rest |
-| `two` | pinned to core 3, SCHED_FIFO 70 | three lanes at SCHED_FIFO 69: the sampler's second voice pool (`Engine::split`, half the voices), about half the pad channels' and tracks' inserts (`Mixer::set_lane`), and the tracks' own instruments placed there (`TrackHost::set_lanes`); and the reverb returns a block late at SCHED_FIFO 68 (`Mixer::set_pipelined_returns`) | the rest |
-| `three` (a test) | pinned to core 3, SCHED_FIFO 70 | as `two` | two lanes at SCHED_FIFO 69: the synth's (`SynthSlot`) and the tracks' own instruments placed there, beside the rest |
+| `two` | pinned to core 3, SCHED_FIFO 70 | three lanes at SCHED_FIFO 69: the sampler's second voice pool (`Engine::split`, half the voices), about half the pad channels' and tracks' inserts (`Mixer::set_lane`), and the tracks' own instruments and the Instrument pads' own synths placed there (`TrackHost::set_lanes`, a lane each); and the reverb returns a block late at SCHED_FIFO 68 (`Mixer::set_pipelined_returns`) | the rest |
+| `three` (a test) | pinned to core 3, SCHED_FIFO 70 | as `two` | three lanes at SCHED_FIFO 69: the synth's (`SynthSlot`), and the tracks' own instruments and the pads' own synths placed there, beside the rest |
 
 Core 0 is never asked for: Linux on ARM sends hardware interrupts to core 0
 unless something moves them (an assumption for the MPC until a read-only
@@ -293,16 +293,29 @@ there. Jay (12 Nov): keep one core for interrupts.
   moves"); the late ones are in the log within a second and in the 30 s
   status.
 
+- **The Instrument pads' own synths on the sound cores** (`two` and
+  `three`, 18 Nov; `pad_synths.rs`, see
+  [sampler-architecture.md](sampler-architecture.md)). The pads' copies are
+  a second track host, so `Cores::start_pads` gives it lanes of its own on
+  the same cores ("mpfree-lane-pad" on core 2, "mpfree-lane-pad1" on core 1
+  in `three`), placed by cost the same way. They render right after the
+  tracks' instruments, so the two hosts' lanes never run at once. The same
+  deadline, `PadSynths::settle` after the write, and their own Dev rows
+  ("Pad synths lane (core N)", "Pad synths on lanes · late · waited ·
+  moves"); a late lane's pads are left out of that period and counted with
+  the tracks' in the late line ("tracks' or pads' own synths left out").
+
 - **When.** The audio thread pins itself and splits the sampler just before
   the sound card opens, and the mixer's lane starts right after the mixer is
   made, all before the first period. Nothing changes while the sound plays.
   An audio buffer change in Prefs reopens the sound card on the same thread,
   which keeps its core.
-- **One core for four lanes.** Each lane has its own worker thread (the
-  sampler, the tracks' instruments, the mixer's inserts and the reverb
-  returns each own theirs), all on core 2. The sampler's lane never runs at
-  the same time as the others: within a period it is joined before the
-  tracks' instruments are posted, and those are joined before the mixer
+- **One core for five lanes.** Each lane has its own worker thread (the
+  sampler, the tracks' instruments, the pads' synths, the mixer's inserts
+  and the reverb returns each own theirs), all on core 2. The sampler's
+  lane never runs at the same time as the others: within a period it is
+  joined before the tracks' instruments are posted, those are joined
+  before the pads' synths are posted, and those before the mixer
   posts. The returns'
   lane is posted at the start of the mixer's block and joined at the
   returns, after the pad channels, tracks and submixes, so it overlaps the
@@ -372,7 +385,9 @@ there. Jay (12 Nov): keep one core for interrupts.
   tracks' instruments a lane on each other core; mpfree-track checks that
   instruments on lanes sound the same to the bit, that a late lane's
   instruments are left out and come back, and that two costly ones sharing a
-  core are parted; mpfree-lanes checks strict lanes, and the
+  core are parted; `cores.rs` checks the pads' synths get the same lanes
+  and rows, and `rt_safety.rs` that a pad's own synth plays on another core
+  with no allocation; mpfree-lanes checks strict lanes, and the
   mixer's tests that a block's deadline holds for every join in it and only
   that block; `rt_safety.rs`
   runs the sound path for 35 s on two cores, and with the synth on three
