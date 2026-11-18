@@ -7206,6 +7206,13 @@ fn player_session(
                     out.note(DRUMS_NO_LEVELS)
                 }
                 app::Effect::SixteenLevels => out.show(gui::ToUi::SixteenLevels),
+                // REC with kit pads held: an empty one arms a pad take
+                // (sampler R5.7); otherwise REC as alone.
+                app::Effect::PadRec(held) => later.push(desk::pad_rec(
+                    &held,
+                    track_kits.kit_of(app.track()),
+                    |k, p| player.has_sound(k, p),
+                )),
                 app::Effect::SaveProject => save_asked = true,
                 // Prefs > Backup and Akai kits: the first-start setup's store.
                 app::Effect::SetupNextStart { backup, want } => {
@@ -7454,6 +7461,8 @@ fn player_session(
             app.rec.ready = None;
             out.show(gui::ToUi::Rec(app.rec));
         }
+        // A pad take gets its go once the music plays.
+        fx.extend(desk::pad_rolled(&mut app, &time, &looper, out));
         // A followed clock's tempo becomes the app's (the tempo chip, Note
         // Repeat, the arps, tempo-synced effects) when it has moved more
         // than 0.08 BPM from it, so the chip doesn't flicker.

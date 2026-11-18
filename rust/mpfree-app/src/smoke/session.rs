@@ -226,7 +226,8 @@ pub struct Session {
     keys_held: crate::perform_pads::Held,
     out: Out,
     to_screen: Receiver<ToUi>,
-    fx: Vec<Effect>,
+    /// The app's effects waiting for the desk (a test may add some).
+    pub fx: Vec<Effect>,
     kit_to: Option<usize>,
     /// The boxes the screen lent the audio thread.
     preview: Option<Box<crate::preview::Preview>>,
@@ -992,6 +993,9 @@ impl Session {
             self.app.rec.ready = None;
             self.out.show(ToUi::Rec(self.app.rec));
         }
+        let rolled =
+            crate::desk::pad_rolled(&mut self.app, &self.time, &self.looper, &mut self.out);
+        self.fx.extend(rolled);
         let armed = self.time.armed().unwrap_or(0);
         if armed != self.app.track() {
             let fx = self.app.set_track(armed);
@@ -1716,6 +1720,13 @@ impl Session {
                         self.out.note(crate::DRUMS_NO_LEVELS)
                     }
                     Effect::SixteenLevels => self.out.show(ToUi::SixteenLevels),
+                    // As main.rs: an empty kit pad held + REC arms a pad
+                    // take; with no sampler in the session, REC as alone.
+                    Effect::PadRec(held) => later.push(crate::desk::pad_rec(
+                        &held,
+                        self.track_kits.kit_of(self.app.track()),
+                        |k, p| self.sounds.as_ref().is_none_or(|s| s.has_sound(k, p)),
+                    )),
                     // A track's own instrument is built beside the audio
                     // thread, which the session leaves out: the track keeps
                     // what it had, and the screen hears so.
