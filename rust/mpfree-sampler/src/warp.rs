@@ -196,11 +196,11 @@ impl Warps {
     }
 
     /// Every copy the project's warped regions need at the tempo, once
-    /// each, in pad order.
+    /// each, in pad order, then the takes kept on the Sample page.
     pub fn wanted(&self, project: &Project) -> Vec<CopyKey> {
         let mut out: Vec<CopyKey> = Vec::new();
-        for i in 0..PADS {
-            let Some(p) = project.pad(i) else { continue };
+        let pads = (0..PADS).filter_map(|i| project.pad(i));
+        for p in pads.chain(project.takes()) {
             for l in &p.layers {
                 if let Some(k) = self.key_for(&l.region, l.tune_cents + p.tune_cents) {
                     if !out.contains(&k) {
@@ -326,6 +326,7 @@ impl Warps {
         }
         (0..PADS)
             .filter_map(|i| project.pad(i))
+            .chain(project.takes())
             .flat_map(|p| &p.layers)
             .map(|l| &l.region)
             .filter(|r| (r.source, r.start, r.end) == (key.source, key.start, key.end))

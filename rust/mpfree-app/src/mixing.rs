@@ -71,6 +71,34 @@ pub const LOOP: usize = 2;
 /// level, pan, mute and solo.
 pub const AUDIO: usize = 3;
 pub const TRACKS: usize = 4;
+// The parameter addresses count the engines' tracks the same way.
+const _: () = assert!(mpfree_play::mpfree_param::ENGINE_STRIPS as usize == TRACKS);
+
+/// Sequencer track `t`'s mixer channel (0 is track 1), where its own
+/// instrument and a kit homed on it play, and what its clips' "this
+/// track's strip" locks reach (`mpfree_param::track_strip`, the same
+/// numbers): track 1's is the Drums strip (sampler R3 part 4b), so a
+/// track has one strip whatever it plays; every other track's is its own,
+/// past the engines' ([`crate::instruments::first_track`]` + t`). The
+/// mixer track that was track 1's own (`TRACKS`) is no track's, but for a
+/// project saved with settings on it ([`MixHost::old_first`]).
+pub const fn track_channel(t: usize) -> usize {
+    if t == 0 {
+        DRUMS
+    } else {
+        crate::instruments::first_track() + t
+    }
+}
+
+/// The Drums strip's name while track 1's own instrument plays there,
+/// like every other track's own channel ("Track 2"): the strip is named
+/// for what track 1 plays. Kit 1's pads, from whichever track plays them,
+/// still sound there too (the manual's mixer page says so); the strip's
+/// name has no room for both words.
+pub const TRACK_1: &str = "Track 1";
+/// The name of track 1's old own channel, in a project saved with
+/// settings on it ([`MixHost::old_first`]).
+pub const OLD_TRACK_1: &str = "Track 1 (old)";
 /// Pad channels: the playing kit's pads.
 pub const PADS: usize = 16;
 /// [`Pads::played`]'s bit for kit 1's pads past [`PADS`], which play
@@ -308,12 +336,66 @@ static XY_START: [[(u16, f32); 2]; 9] = {
 /// once, 2 on the next 1/16, 3 on the next beat; 0 its own Punch in), Let
 /// go (cut, else ring out) and Plays (for a bar, else while held), set
 /// for the pad's hit and put back after it, so Play's throw cards and the
-/// Perform FX page keep the pad's own settings.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Perform FX page keep the pad's own settings; and the strip it plays on
+/// (`on`: the master, a track or a submix), whose Perform FX it holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ThrowHow {
     pub starts: u8,
     pub cut: bool,
     pub bar: bool,
+    pub on: StripId,
+}
+
+impl Default for ThrowHow {
+    fn default() -> ThrowHow {
+        ThrowHow {
+            starts: 0,
+            cut: false,
+            bar: false,
+            on: StripId::Master,
+        }
+    }
+}
+
+/// The Perform FX's id: on the master from the start, and put on a track
+/// or a submix the first time a Perform pad's throw plays there.
+pub const PERFORM_FX: &str = "mpfree.fx.perform";
+
+/// Throws held while the Perform FX they play on is being put on their
+/// strip, at most: each plays when it lands.
+const WAITING: usize = 4;
+
+/// A Perform pad's throw held while its strip's Perform FX is being put
+/// on ([`MixHost::play`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Waiting {
+    fx: ThrowFx,
+    how: ThrowHow,
+}
+
+/// The strips a Perform pad's throw can play on, named as the Mix tab
+/// names them: the master, the engines' tracks, each track's own channel
+/// in use (named after its track, as the stems are), and the submixes.
+pub fn throw_strips(mixer: &Mixer, in_use: u128, tracks: &[String]) -> Vec<(String, StripId)> {
+    let mut out = vec![(name(StripId::Master), StripId::Master)];
+    let mut subs = Vec::new();
+    for s in mixer.strips() {
+        match s {
+            StripId::Track(t) if t < TRACKS => out.push((name(s), s)),
+            StripId::Track(t) if t - TRACKS < 128 && in_use & (1 << (t - TRACKS)) != 0 => {
+                let named = tracks
+                    .get(t - TRACKS)
+                    .filter(|n| !n.trim().is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| name(s));
+                out.push((named, s));
+            }
+            StripId::Bus(_) => subs.push((name(s), s)),
+            _ => {}
+        }
+    }
+    out.extend(subs);
+    out
 }
 
 /// The performance effects a throw holds.
@@ -345,6 +427,37 @@ impl ThrowFx {
     }
 }
 
+/// A throw's own settings on the Perform FX of the strip it plays on
+/// ([`MixHost::throw_knobs`]): what the Perform view's Q-Links turn. They
+/// are the Perform FX pad's, so every throw of that effect on that strip
+/// shares them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ThrowKnobs {
+    pub on: StripId,
+    pub fx: ThrowFx,
+    /// The Perform FX insert's slot id (`Chain::uid`); `None` while the
+    /// strip has none.
+    pub uid: Option<u16>,
+    /// The pad's Effect (an index into `mpfree_fx::PERFORM_EFFECTS`), its
+    /// Length (an index into `mpfree_fx::PERFORM_LENGTHS`) and Amount (0
+    /// to 100).
+    pub effect: u8,
+    pub length: f32,
+    pub amount: f32,
+}
+
+impl ThrowKnobs {
+    /// Parameter `o` of the pad (`perf::LENGTH`, `perf::AMOUNT`) for the
+    /// mod engine, while the strip has its Perform FX.
+    pub fn addr(&self, o: u16) -> Option<ParamAddr> {
+        let strip = crate::modmix::strip_of(self.on)?;
+        Some(ParamAddr::new(
+            Owner::Insert(strip, self.uid?),
+            perf::slot(self.fx.pad()) + o,
+        ))
+    }
+}
+
 /// A period of stereo sound.
 pub type Stereo<'a> = (&'a [f32; PERIOD], &'a [f32; PERIOD]);
 
@@ -367,6 +480,7 @@ pub fn name(s: StripId) -> String {
         StripId::Track(SYNTH) => "Synth".into(),
         StripId::Track(LOOP) => "Loop".into(),
         StripId::Track(AUDIO) => "Audio".into(),
+        StripId::Track(TRACKS) => OLD_TRACK_1.into(),
         StripId::Track(t) if t >= TRACKS => format!("Track {}", t - TRACKS + 1),
         LINE => "Line in".into(),
         s => default_name(s),
@@ -415,6 +529,19 @@ pub struct MixHost {
     pad_solos: u16,
     /// What the XY pad plays ([`PlayFx::XyEffect`]).
     xy_effect: Option<usize>,
+    /// Perform pads' throws held while their strip's Perform FX is being
+    /// put on: each plays when it lands ([`MixHost::poll_built`]).
+    waiting: [Option<Waiting>; WAITING],
+    /// What the Perform set's throws on tracks and submixes said, for the
+    /// log and the screen: a Perform FX put on or taken off, or why a
+    /// throw couldn't play.
+    throw_said: Vec<String>,
+    /// The tracks and submixes the Perform set's throws play on
+    /// ([`MixHost::perform_strips`]), the ones whose Perform FX the set put
+    /// on this session, and the ones being put on now.
+    perform_want: Vec<StripId>,
+    perform_added: Vec<StripId>,
+    perform_building: Vec<StripId>,
     /// The pad strips' mutes as `apply_mutes` last set them (a bit each):
     /// a strip's parameter reads its old value until the next period, so
     /// two changes in one period compare with what was sent.
@@ -445,6 +572,9 @@ pub struct MixHost {
     /// How long the tracks' own instruments took in the last period (0
     /// when no track has one), for load shedding's cost a voice (shed.rs).
     pub instrument_time: Duration,
+    /// Projects opened whose track 1 kept its old own channel
+    /// ([`MixHost::old_first`]).
+    pub old_first_opens: u64,
     /// Instruments made without a builder (the tests), waiting to go in.
     made: Vec<crate::control::MadeInstrument>,
     /// Each plugin synth's own presets, once listed (or why not), by its
@@ -643,6 +773,11 @@ impl MixHost {
             pad_solos: 0,
             mutes_sent: 0,
             xy_effect: None,
+            waiting: [None; WAITING],
+            throw_said: Vec::new(),
+            perform_want: Vec::new(),
+            perform_added: Vec::new(),
+            perform_building: Vec::new(),
             builder: None,
             landing: None,
             plugins: Arc::new(Plugins::none()),
@@ -652,6 +787,7 @@ impl MixHost {
             homes: [0; KITS],
             pad_channels: PadChannels::default(),
             instrument_time: Duration::ZERO,
+            old_first_opens: 0,
             made: Vec::new(),
             plugin_presets: Vec::new(),
             presets_asked: Vec::new(),
@@ -990,7 +1126,33 @@ impl MixHost {
                     Some(text) => self.modu.load(&self.mixer, text),
                     None => 0,
                 };
+                // Track 1 plays where the project says (its `track1`
+                // line). A project saved before Drums was track 1's strip
+                // keeps track 1 on its old own channel when its instrument
+                // played there or the channel has settings, so the project
+                // sounds as it did (counted, said, and shown as
+                // OLD_TRACK_1); otherwise nothing played there, and track 1
+                // moves to Drums.
+                let settings =
+                    !crate::project::untouched_channel(&self.mixer, StripId::Track(TRACKS));
+                let old = match load.track1 {
+                    Some(st) => st == StripId::Track(TRACKS),
+                    None => settings || load.track1_own,
+                };
+                self.instruments
+                    .set_first_channel(if old { TRACKS } else { track_channel(0) });
                 let mut line = format!("mixer: the project's mixer is in ({effects} effects)");
+                if old {
+                    self.old_first_opens += 1;
+                    let why = match (load.track1, load.track1_own) {
+                        (Some(_), _) => "saved so",
+                        (None, true) => "its instrument played there",
+                        (None, false) => "the project has settings on it",
+                    };
+                    line += &format!(
+                        "; track 1 keeps its old own channel (\"{OLD_TRACK_1}\": {why}), not Drums"
+                    );
+                }
                 if skipped > 0 {
                     line += &format!("; {skipped} mod lines skipped");
                 }
@@ -1203,6 +1365,14 @@ impl MixHost {
             }
         }
         crate::fxmodes::land(self);
+        let unwanted = self
+            .perform_added
+            .iter()
+            .any(|s| !self.perform_want.contains(s));
+        if !self.perform_building.is_empty() || unwanted {
+            self.play_waiting();
+            self.take_off_unwanted();
+        }
         said
     }
 
@@ -1228,32 +1398,10 @@ impl MixHost {
                 self.insert(strip, FILTER_SLOT, dj_filter::POSITION, position);
             }
             PlayFx::Throw { fx, down, how } => {
-                // The throw holds its Perform FX pad (the default bank's,
-                // as the FX thread laid it out for the throws). A Perform
-                // pad's settings go on the pad for the hit (the node reads
-                // Starts and Plays on the press, Let go on the release, in
-                // the order they come) and the pad's own come back after.
-                let k = fx.pad();
-                let own = how.map(|h| {
-                    let set = [
-                        (perf::starts(k), f32::from(h.starts)),
-                        (perf::let_go(k), if h.cut { 1.0 } else { 0.0 }),
-                        (perf::plays(k), if h.bar { 1.0 } else { 0.0 }),
-                    ];
-                    let own = set.map(|(id, _)| (id, self.perform_param(id).unwrap_or(0.0)));
-                    for (id, v) in set {
-                        self.insert(StripId::Master, PERFORM_SLOT, id, v);
-                    }
-                    own
-                });
-                self.insert(
-                    StripId::Master,
-                    PERFORM_SLOT,
-                    perf::hold(k),
-                    if down { 1.0 } else { 0.0 },
-                );
-                for (id, v) in own.into_iter().flatten() {
-                    self.insert(StripId::Master, PERFORM_SLOT, id, v);
+                let on = how.map_or(StripId::Master, |h| h.on);
+                match self.perform_slot(on) {
+                    Some(slot) => self.throw(slot, fx, down, how),
+                    None => self.throw_waits(fx, down, how.unwrap_or_default()),
                 }
             }
             PlayFx::Macro { card, value } => {
@@ -1349,10 +1497,17 @@ impl MixHost {
     }
 
     /// A parameter of the master's Perform FX as it is now.
+    #[cfg(test)]
     fn perform_param(&self, id: u16) -> Option<f32> {
+        self.perform_param_on(StripId::Master, id)
+    }
+
+    /// A parameter of strip `on`'s Perform FX as it is now.
+    fn perform_param_on(&self, on: StripId, id: u16) -> Option<f32> {
+        let slot = self.perform_slot(on)?;
         self.mixer
-            .chain(StripId::Master)
-            .and_then(|c| c.node(PERFORM_SLOT))
+            .chain(on)
+            .and_then(|c| c.node(slot))
             .map(|n| n.param(id))
     }
 
@@ -1379,12 +1534,213 @@ impl MixHost {
             None => {
                 let pad = mpfree_fx::XyPad::perform();
                 let at = |a: mpfree_fx::XyAxis| {
-                    self.perform_param(a.param)
-                        .map_or(a.rest, |v| a.position(v))
+                    self.mixer
+                        .chain(StripId::Master)
+                        .and_then(|c| c.node(PERFORM_SLOT))
+                        .map_or(a.rest, |n| a.position(n.param(a.param)))
                 };
                 (at(pad.x), at(pad.y))
             }
         }
+    }
+
+    /// Throw `fx`'s settings on strip `on`'s Perform FX, for the Perform
+    /// view's Q-Links: the pad that plays it there, its Effect, Length and
+    /// Amount, and the insert's slot id (`None`, with zeros, while the
+    /// strip has no Perform FX: still going in, or taken off on the Mix
+    /// tab).
+    pub fn throw_knobs(&self, on: StripId, fx: ThrowFx) -> ThrowKnobs {
+        let pad = fx.pad();
+        let uid = self
+            .perform_slot(on)
+            .and_then(|slot| self.mixer.chain(on)?.uid(slot));
+        let v = |o: u16| match uid {
+            Some(_) => self
+                .perform_param_on(on, perf::slot(pad) + o)
+                .unwrap_or(0.0),
+            None => 0.0,
+        };
+        ThrowKnobs {
+            on,
+            fx,
+            uid,
+            effect: v(perf::EFFECT).round().max(0.0) as u8,
+            length: v(perf::LENGTH),
+            amount: v(perf::AMOUNT),
+        }
+    }
+
+    /// Strip `on`'s Perform FX: the first on its chain (the master's own
+    /// is its first insert), if it has one.
+    pub fn perform_slot(&self, on: StripId) -> Option<usize> {
+        let c = self.mixer.chain(on)?;
+        (0..c.len()).find(|&i| c.node(i).is_some_and(|n| n.info().id == PERFORM_FX))
+    }
+
+    /// Throw `fx` held (`down`) or let go on the Perform FX in `slot` of
+    /// its strip (`how.on`; the master's for Play's cards). It holds the
+    /// Perform FX pad the FX thread laid out for it in the default bank.
+    /// A Perform pad's settings go on the pad for the hit (the node reads
+    /// Starts and Plays on the press, Let go on the release, in the order
+    /// they come) and the pad's own come back after.
+    fn throw(&mut self, slot: usize, fx: ThrowFx, down: bool, how: Option<ThrowHow>) {
+        let on = how.map_or(StripId::Master, |h| h.on);
+        let k = fx.pad();
+        let own = how.map(|h| {
+            let set = [
+                (perf::starts(k), f32::from(h.starts)),
+                (perf::let_go(k), if h.cut { 1.0 } else { 0.0 }),
+                (perf::plays(k), if h.bar { 1.0 } else { 0.0 }),
+            ];
+            let own = set.map(|(id, _)| (id, self.perform_param_on(on, id).unwrap_or(0.0)));
+            for (id, v) in set {
+                self.insert(on, slot, id, v);
+            }
+            own
+        });
+        self.insert(on, slot, perf::hold(k), if down { 1.0 } else { 0.0 });
+        for (id, v) in own.into_iter().flatten() {
+            self.insert(on, slot, id, v);
+        }
+    }
+
+    /// A throw on a track or a submix with no Perform FX there: while the
+    /// one its On put on is still being built, it waits and plays when it
+    /// lands (let go before that, a held throw doesn't play at all; a
+    /// bar's still does). With none coming, it doesn't play: a throw never
+    /// changes the mix, picking On does ([`MixHost::perform_strips`]).
+    fn throw_waits(&mut self, fx: ThrowFx, down: bool, how: ThrowHow) {
+        let on = how.on;
+        let same = |w: &Option<Waiting>| w.is_some_and(|w| w.how.on == on && w.fx == fx);
+        if !down {
+            if !how.bar {
+                for w in self.waiting.iter_mut().filter(|w| same(w)) {
+                    *w = None;
+                }
+            }
+            return;
+        }
+        if !self.perform_building.contains(&on) {
+            self.throw_said.push(format!(
+                "perform: {} has no Perform FX for the throw: pick the pad's On again on the \
+                 Pads tab",
+                name(on)
+            ));
+            return;
+        }
+        let held = Waiting { fx, how };
+        match self.waiting.iter_mut().find(|w| same(w) || w.is_none()) {
+            Some(w) => *w = Some(held),
+            None => {
+                self.waiting.rotate_left(1);
+                self.waiting[WAITING - 1] = Some(held);
+            }
+        }
+    }
+
+    /// The tracks and submixes the Perform set's throws play on (`want`),
+    /// after the set changed: each gets a Perform FX at the end of its
+    /// chain if it has none (it shows on the Mix tab, is saved with the
+    /// project and can be taken off there), and one this set put on that
+    /// no throw plays on any more comes off again, so stepping a pad's On
+    /// through the strips leaves nothing behind. One that was there
+    /// already, or that a project brought, stays. `opened`: a project's
+    /// set, whose mixer brings its own: nothing is put on or taken off.
+    pub fn perform_strips(&mut self, want: &[StripId], opened: bool) {
+        self.perform_want = want.to_vec();
+        if opened {
+            self.perform_added.clear();
+            self.perform_building.clear();
+            return;
+        }
+        for &on in want {
+            if self.perform_slot(on).is_some() || self.perform_building.contains(&on) {
+                continue;
+            }
+            if self.mixer.chain(on).map_or(SLOTS, |c| c.len()) >= SLOTS {
+                self.throw_said.push(format!(
+                    "perform: {} has no free effect slot for the throw's Perform FX",
+                    name(on)
+                ));
+                continue;
+            }
+            match self.add_insert_with(on, PERFORM_FX, &[]) {
+                Ok(()) => {
+                    self.perform_building.push(on);
+                    self.perform_added.push(on);
+                    self.throw_said.push(format!(
+                        "perform: Perform FX put on {} for the Perform pads' throws (the Mix \
+                         tab shows it)",
+                        name(on)
+                    ));
+                }
+                Err(e) => self
+                    .throw_said
+                    .push(format!("perform: {e}: no Perform FX on {}", name(on))),
+            }
+        }
+        self.take_off_unwanted();
+    }
+
+    /// The Perform FX the set put on that no throw plays on now, taken off
+    /// once they are in (one still being built comes off when it lands).
+    /// Allocates only to say what came off.
+    fn take_off_unwanted(&mut self) {
+        let mut i = 0;
+        while i < self.perform_building.len() {
+            if self.perform_slot(self.perform_building[i]).is_some() {
+                self.perform_building.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        let mut i = 0;
+        while i < self.perform_added.len() {
+            let on = self.perform_added[i];
+            if self.perform_want.contains(&on) || self.perform_building.contains(&on) {
+                i += 1;
+                continue;
+            }
+            let Some(at) = self.perform_slot(on) else {
+                self.perform_added.swap_remove(i);
+                continue;
+            };
+            if self.mixer.edit(Edit::Remove { strip: on, at }).is_err() {
+                // The mixer's edits are full: the next poll tries again.
+                i += 1;
+                continue;
+            }
+            self.perform_added.swap_remove(i);
+            for w in self.waiting.iter_mut() {
+                if w.is_some_and(|w| w.how.on == on) {
+                    *w = None;
+                }
+            }
+            self.throw_said.push(format!(
+                "perform: Perform FX taken off {} (no Perform pad throws there now)",
+                name(on)
+            ));
+        }
+    }
+
+    /// The throws held while their Perform FX was being put on, played on
+    /// it once it is there.
+    fn play_waiting(&mut self) {
+        for i in 0..WAITING {
+            let Some(w) = self.waiting[i] else {
+                continue;
+            };
+            if let Some(slot) = self.perform_slot(w.how.on) {
+                self.waiting[i] = None;
+                self.throw(slot, w.fx, true, Some(w.how));
+            }
+        }
+    }
+
+    /// What the Perform set's throws on tracks and submixes said since
+    /// last asked.
+    pub fn take_throw_said(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.throw_said)
     }
 
     /// The master's XY FX, the first on its chain, if it has one.
@@ -1586,6 +1942,12 @@ impl MixHost {
         self.mixer.param(StripId::Master, mx::VOLUME)
     }
 
+    /// How loud Monitor plays the line input: its strip's fader, dB (the
+    /// Sample page's recorder shows and turns it; one-page step 2d).
+    pub fn line_level(&self) -> f32 {
+        self.mixer.param(LINE, mx::VOLUME)
+    }
+
     /// Follows the looper: whether the line input is open, and whether it
     /// is heard (Monitor). Cheap to call every period.
     pub fn follow(&mut self, line_open: bool, monitor_on: bool) {
@@ -1641,6 +2003,7 @@ impl MixHost {
             self.route_lent();
         }
         Pads {
+            first: self.instruments.channel(0),
             mixer: &mut self.mixer,
             channels: &self.pad_channels,
             played: 0,
@@ -1653,7 +2016,7 @@ impl MixHost {
     pub fn kit_track(&self, kit: usize) -> usize {
         match self.homes.get(kit).copied().unwrap_or(0) {
             0 => DRUMS,
-            h => crate::instruments::first_track() + usize::from(h) - 1,
+            h => self.track_channel(usize::from(h) - 1),
         }
     }
 
@@ -1737,7 +2100,8 @@ impl MixHost {
     pub fn mixer_text(&mut self) -> String {
         self.give_back_plain();
         let lent: Vec<(StripId, usize, usize)> = self.pad_channels.lent().collect();
-        crate::project::mixer_text_lent(&self.mixer, self.pad_mutes, self.pad_solos, &lent)
+        let track1 = StripId::Track(self.track_channel(0));
+        crate::project::mixer_text_lent(&self.mixer, self.pad_mutes, self.pad_solos, &lent, track1)
     }
 
     /// The tracks whose own channels are in use, a bit each: playing their
@@ -1745,6 +2109,36 @@ impl MixHost {
     /// ([`MixHost::pads_homed`]).
     pub fn channels_in_use(&self) -> u128 {
         self.instruments.in_use() | self.kit_tracks
+    }
+
+    /// Sequencer track `t`'s mixer channel: [`track_channel`], but track
+    /// 1's old own one in a project saved with settings there
+    /// ([`MixHost::old_first`]).
+    pub fn track_channel(&self, t: usize) -> usize {
+        self.instruments.channel(t)
+    }
+
+    /// Whether track 1 plays into its old own channel (a project saved
+    /// before Drums was track 1's strip, with settings on that channel)
+    /// rather than Drums: shown as [`OLD_TRACK_1`] while in use, said in
+    /// the log when the project opens and counted
+    /// ([`MixHost::old_first_opens`]).
+    pub fn old_first(&self) -> bool {
+        self.instruments.channel(0) != DRUMS
+    }
+
+    /// The own channels in use, a bit each by their place past the
+    /// engines' tracks (bit `k`: mixer track `TRACKS + k`), as the Tracks
+    /// view, the stems and the throws list them: [`MixHost::channels_in_use`]
+    /// but track 1's, which plays into Drums ([`track_channel`]) unless it
+    /// keeps its old channel.
+    pub fn own_channels_in_use(&self) -> u128 {
+        let used = self.channels_in_use();
+        if self.old_first() {
+            used
+        } else {
+            used & !1
+        }
     }
 
     /// The drums as the sampler made them: the pads that played (`played`,
@@ -1980,7 +2374,7 @@ impl MixHost {
     /// The tracks' strips as the mixer's Tracks view shows them: the
     /// engines' tracks, then each track's own instrument's while in use.
     pub fn track_strips(&self) -> Vec<StripId> {
-        let used = self.channels_in_use();
+        let used = self.own_channels_in_use();
         (0..self.mixer.tracks())
             .filter(|&t| t < TRACKS || used & (1 << (t - TRACKS)) != 0)
             .map(StripId::Track)
@@ -1997,8 +2391,10 @@ impl MixHost {
         }
         self.state_at = Some(now);
         // Tracks' own channels show only while in use (an instrument or a
-        // kit plays there); the others aren't read.
-        let used = self.channels_in_use();
+        // kit plays there); the others aren't read. Track 1's is Drums,
+        // named "Track 1" while its own instrument plays there.
+        let used = self.own_channels_in_use();
+        let first_own = self.instruments.channel(0) == DRUMS && self.instruments.holds(0);
         let ch = &self.pad_channels;
         // Lent pad channels show while lent.
         let shown = |s: StripId| match s {
@@ -2006,7 +2402,10 @@ impl MixHost {
             StripId::Pad(p) if p >= PADS => ch.holder(s).is_some(),
             _ => true,
         };
-        let named = |s: StripId| strip_name(ch, s);
+        let named = |s: StripId| match s {
+            StripId::Track(DRUMS) if first_own => TRACK_1.to_string(),
+            s => strip_name(ch, s),
+        };
         let mut st = MixState::from_mixer_where(&mut self.mixer, view, &named, &shown);
         st.counts[0] = TRACKS + used.count_ones() as usize;
         st.counts[1] = PADS + ch.lent().count();
@@ -2114,6 +2513,8 @@ impl MixHost {
 /// track's channel (`homes`, [`MixHost::pads_homed`]), or into pad
 /// channel `p` if no track has it. It notes which pad channels played.
 pub struct Pads<'a> {
+    /// Track 1's channel ([`MixHost::track_channel`]).
+    first: usize,
     mixer: &'a mut Mixer,
     channels: &'a PadChannels,
     played: u128,
@@ -2148,9 +2549,8 @@ impl PadOut for Pads<'_> {
                 self.played |= DRUMS_DIRECT;
                 self.mixer.track_input(DRUMS)
             }
-            home => self
-                .mixer
-                .track_input(crate::instruments::first_track() + usize::from(home) - 1),
+            1 => self.mixer.track_input(self.first),
+            home => self.mixer.track_input(track_channel(usize::from(home) - 1)),
         }
     }
 }
@@ -2357,6 +2757,114 @@ mod tests {
         let _ = h.pads_homed(&[0, 0]);
         assert_eq!(h.channels_in_use(), 0);
         assert!(!h.track_strips().contains(&StripId::Track(track)));
+    }
+
+    /// A track's channel (R3 part 4b): Drums for track 1, its own past
+    /// the engines' for the rest, the same numbers the clips' "this
+    /// track's strip" locks reach.
+    #[test]
+    fn track_1s_channel_is_drums_and_the_rest_their_own() {
+        use mpfree_play::mpfree_param::{strip_track, track_strip, Strip};
+        assert_eq!(track_channel(0), DRUMS);
+        assert_eq!(track_channel(1), TRACKS + 1);
+        for t in 0..crate::instruments::TRACKS {
+            let ch = track_channel(t);
+            assert_eq!(track_strip(t as u8), Strip::Track(ch as u8), "track {t}");
+            assert_eq!(strip_track(Strip::Track(ch as u8)), Some(t as u8));
+        }
+        // A kit homed on track 1 plays into Drums, and no own channel
+        // shows for it.
+        let mut h = MixHost::new(RATE, -6.0, -6.0);
+        let mut pads = h.pads_homed(&[0, 1]);
+        pads.pad(1, 5).unwrap().0[0] = 0.5;
+        assert_eq!(h.mixer.track_input(DRUMS).unwrap().0[0], 0.5);
+        assert_eq!(h.kit_track(1), DRUMS);
+        assert_eq!(h.channels_in_use(), 1);
+        assert_eq!(h.own_channels_in_use(), 0);
+        assert!(!h.track_strips().contains(&StripId::Track(TRACKS)));
+        assert!(!h.old_first());
+    }
+
+    /// A project saved with settings on track 1's old own channel opens
+    /// with track 1 kept there, so it sounds as it did: said in the log,
+    /// counted, and the strip named so while in use. One without them
+    /// opens with track 1 on Drums.
+    #[test]
+    fn an_old_project_keeps_track_1_on_its_old_channel() {
+        let open = |text: &str, own: bool| {
+            let mut h = MixHost::new(RATE, -6.0, 0.0);
+            let mut load =
+                crate::project::mixer_load(text, None, RATE, &crate::plugins::Plugins::none())
+                    .unwrap();
+            load.track1_own = own;
+            let notes = load.notes.join("; ");
+            h.open(Box::new(load));
+            let mut said = None;
+            for _ in 0..400 {
+                if let Some(l) = h.tend_open() {
+                    said = Some(l);
+                }
+                h.run_silent_period();
+            }
+            (h, said.unwrap_or_default() + &notes)
+        };
+        // A project saved before Drums was track 1's strip has no track1
+        // line.
+        let before = |text: String| -> String {
+            assert!(text.contains("\ntrack1 t0\n"), "{text}");
+            text.lines()
+                .filter(|l| !l.starts_with("track1 "))
+                .map(|l| format!("{l}\n"))
+                .collect()
+        };
+        // Settings on its old own channel: track 1 keeps it.
+        let mut a = MixHost::new(RATE, -6.0, 0.0);
+        a.mixer.set_now(StripId::Track(TRACKS), mx::VOLUME, -9.0);
+        let (h, said) = open(&before(a.mixer_text()), false);
+        assert!(h.old_first());
+        assert_eq!(h.track_channel(0), TRACKS);
+        assert_eq!(h.track_channel(2), TRACKS + 2);
+        assert_eq!(h.old_first_opens, 1);
+        assert!(
+            said.contains("track 1 keeps its old own channel (\"Track 1 (old)\": the project has settings on it)"),
+            "{said}"
+        );
+        assert_eq!(name(StripId::Track(TRACKS)), OLD_TRACK_1);
+        // A kit homed on track 1 plays there, and it shows.
+        let mut h = h;
+        let mut pads = h.pads_homed(&[0, 1]);
+        pads.pad(1, 5).unwrap().0[0] = 0.5;
+        assert_eq!(h.mixer.track_input(TRACKS).unwrap().0[0], 0.5);
+        assert_eq!(h.own_channels_in_use(), 1);
+        assert!(h.track_strips().contains(&StripId::Track(TRACKS)));
+        // Saved again, it says so, and opens the same.
+        let text = h.mixer_text();
+        assert!(text.contains("\ntrack1 t4\n"), "{text}");
+        let (h, said) = open(&text, false);
+        assert_eq!(h.track_channel(0), TRACKS);
+        assert!(said.contains("(\"Track 1 (old)\": saved so)"), "{said}");
+        // Its own instrument played there, with nothing set: it keeps it
+        // too, so it sounds through no effects of Drums'.
+        let plain = MixHost::new(RATE, -6.0, 0.0).mixer_text();
+        let (h, said) = open(&before(plain.clone()), true);
+        assert_eq!(h.track_channel(0), TRACKS);
+        assert!(said.contains("its instrument played there"), "{said}");
+        // Nothing played there: Drums.
+        let (h, said) = open(&before(plain.clone()), false);
+        assert!(!h.old_first());
+        assert!(!said.contains("old own channel"), "{said}");
+        // A project saved since: where it says, whatever track 1 plays.
+        let (h, said) = open(&plain, true);
+        assert_eq!(h.track_channel(0), DRUMS);
+        assert_eq!(h.old_first_opens, 0);
+        assert!(!said.contains("old own channel"), "{said}");
+        // A strip track 1 can't be: Drums, and said.
+        let (h, said) = open(&plain.replace("track1 t0", "track1 t9"), true);
+        assert_eq!(h.track_channel(0), DRUMS);
+        assert!(
+            said.contains("track 1 can't play into t9; it plays into Drums"),
+            "{said}"
+        );
     }
 
     /// Kit 1's pads past its first 16 (PAD BANK B to H) have no pad
@@ -2874,6 +3382,7 @@ mod tests {
                 starts: 1,
                 cut: true,
                 bar: true,
+                on: StripId::Master,
             }),
         });
         run(&mut h, 2, 0.0, 0.0);
@@ -2890,6 +3399,7 @@ mod tests {
                 starts: 1,
                 cut: true,
                 bar: true,
+                on: StripId::Master,
             }),
         });
         run(&mut h, 2, 0.0, 0.0);
@@ -2913,6 +3423,170 @@ mod tests {
             h.perform_param(perf::slot(ThrowFx::Delay.pad()) + 3),
             Some(0.0)
         );
+    }
+
+    /// A Perform pad's throw on a track or a submix: picking its On puts a
+    /// Perform FX at the end of that strip's chain (said), and the throw
+    /// plays there, the master's at rest. A hit while it is still going in
+    /// waits for it; a hit on a strip with none says so and changes
+    /// nothing. When no throw plays on a strip any more, the Perform FX
+    /// the set put there comes off; a project's set changes nothing; a
+    /// full chain says why nothing went on.
+    #[test]
+    fn a_throws_knobs_are_its_pad_on_its_strips_perform_fx() {
+        use mpfree_play::mpfree_param::Strip;
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        run(&mut h, 10, 0.0, 0.0);
+        let drums = StripId::Track(DRUMS);
+        // The master's Perform FX, its default bank: the Delay throw's pad
+        // is an Echo throw, 1/8 dotted, 55 % feedback.
+        let k = h.throw_knobs(StripId::Master, ThrowFx::Delay);
+        assert!(k.uid.is_some());
+        assert_eq!((k.effect, k.length, k.amount), (12, 8.0, 55.0));
+        assert_eq!(
+            k.addr(perf::AMOUNT),
+            Some(ParamAddr::new(
+                Owner::Insert(Strip::Master, k.uid.unwrap()),
+                perf::slot(ThrowFx::Delay.pad()) + perf::AMOUNT
+            ))
+        );
+        // Drums has none until a throw's On picks it.
+        let none = h.throw_knobs(drums, ThrowFx::Reverb);
+        assert_eq!((none.uid, none.addr(perf::AMOUNT)), (None, None));
+        h.perform_strips(&[drums], false);
+        run(&mut h, 10, 0.0, 0.0);
+        let _ = h.poll_built();
+        run(&mut h, 2, 0.0, 0.0);
+        let k = h.throw_knobs(drums, ThrowFx::Reverb);
+        assert!(k.uid.is_some());
+        assert_eq!((k.effect, k.amount), (14, 70.0));
+    }
+
+    #[test]
+    fn picking_a_throws_strip_puts_a_perform_fx_there_and_it_plays_on_it() {
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        // The inserts go in once each strip has ducked out (about 10 ms).
+        run(&mut h, 10, 0.0, 0.0);
+        let drums = StripId::Track(DRUMS);
+        let sub = StripId::Bus(1);
+        let k = ThrowFx::Delay.pad();
+        let how = |on| ThrowHow {
+            starts: 1,
+            on,
+            ..ThrowHow::default()
+        };
+        let throw = |h: &mut MixHost, on, down: bool| {
+            h.play(PlayFx::Throw {
+                fx: ThrowFx::Delay,
+                down,
+                how: Some(how(on)),
+            })
+        };
+        let settle = |h: &mut MixHost| {
+            run(h, 10, 0.0, 0.0);
+            assert_eq!(h.poll_built(), None);
+            run(h, 2, 0.0, 0.0);
+        };
+        // A hit on Drums before anything put a Perform FX there: said, and
+        // nothing goes on.
+        let before = h.mixer.chain(drums).map_or(0, |c| c.len());
+        throw(&mut h, drums, true);
+        assert_eq!(
+            h.take_throw_said(),
+            [
+                "perform: Drums has no Perform FX for the throw: pick the pad's On again on the \
+              Pads tab"
+            ]
+        );
+        settle(&mut h);
+        assert_eq!(h.mixer.chain(drums).map_or(0, |c| c.len()), before);
+        throw(&mut h, drums, false);
+        // On picks Drums: a Perform FX at the end of its chain.
+        h.perform_strips(&[drums], false);
+        assert_eq!(
+            h.take_throw_said(),
+            [
+                "perform: Perform FX put on Drums for the Perform pads' throws (the Mix tab \
+              shows it)"
+            ]
+        );
+        settle(&mut h);
+        assert_eq!(h.perform_slot(drums), Some(before));
+        throw(&mut h, drums, true);
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(h.perform_param_on(drums, perf::hold(k)), Some(1.0));
+        assert_eq!(
+            h.perform_param(perf::hold(k)),
+            Some(0.0),
+            "not the master's"
+        );
+        throw(&mut h, drums, false);
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(h.perform_param_on(drums, perf::hold(k)), Some(0.0));
+        // Sub 2 picked too, and hit while its Perform FX goes in: the hit
+        // waits and plays once it is there. The same set again changes
+        // nothing.
+        h.perform_strips(&[drums, sub], false);
+        throw(&mut h, sub, true);
+        assert_eq!(h.take_throw_said().len(), 1, "Sub 2's put on");
+        h.perform_strips(&[drums, sub], false);
+        assert!(h.take_throw_said().is_empty());
+        settle(&mut h);
+        assert_eq!(h.perform_param_on(sub, perf::hold(k)), Some(1.0));
+        throw(&mut h, sub, false);
+        // No throw on Drums any more: its Perform FX comes off.
+        h.perform_strips(&[sub], false);
+        assert_eq!(
+            h.take_throw_said(),
+            ["perform: Perform FX taken off Drums (no Perform pad throws there now)"]
+        );
+        settle(&mut h);
+        assert_eq!(h.perform_slot(drums), None);
+        assert_eq!(h.mixer.chain(drums).map_or(0, |c| c.len()), before);
+        // A project's set: its mixer brings its own, so nothing goes on or
+        // comes off, and Sub 2's stays as the project's.
+        let synth = StripId::Track(SYNTH);
+        h.perform_strips(&[synth], true);
+        settle(&mut h);
+        assert_eq!(h.perform_slot(synth), None);
+        assert!(h.perform_slot(sub).is_some());
+        h.perform_strips(&[], false);
+        settle(&mut h);
+        assert!(
+            h.perform_slot(sub).is_some(),
+            "not this session's to take off"
+        );
+        assert!(h.take_throw_said().is_empty());
+        // A full chain: said, and nothing put on.
+        while h.mixer.chain(synth).map_or(SLOTS, |c| c.len()) < SLOTS {
+            h.add_insert(synth, "mpfree.fx.compressor").unwrap();
+            run(&mut h, 10, 0.0, 0.0);
+        }
+        h.perform_strips(&[synth], false);
+        assert_eq!(
+            h.take_throw_said(),
+            ["perform: Synth has no free effect slot for the throw's Perform FX"]
+        );
+        settle(&mut h);
+        assert_eq!(h.perform_slot(synth), None);
+    }
+
+    /// The strips a throw can play on: the master, the engines' tracks, a
+    /// track's own channel only while in use (by its track's name), and
+    /// the submixes.
+    #[test]
+    fn a_throw_plays_on_the_master_a_track_or_a_submix() {
+        let h = MixHost::new(RATE, 0.0, 0.0);
+        let names = ["Breaks".to_string(), "Keys".to_string()];
+        let strips = throw_strips(&h.mixer, 0b10, &names);
+        let named: Vec<&str> = strips.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            named[..6],
+            ["Master", "Drums", "Synth", "Loop", "Audio", "Keys"]
+        );
+        assert_eq!(strips[5].1, StripId::Track(TRACKS + 1));
+        assert_eq!(strips[6], ("Sub 1".to_string(), StripId::Bus(0)));
+        assert_eq!(strips.len(), 6 + 8, "eight submixes");
     }
 
     /// A macro pad holds its macro at its value while held, then lets go

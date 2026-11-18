@@ -307,15 +307,21 @@ pub fn key_toggles(target: ParamAddr) -> bool {
 /// How a control learned on `target` from `source` works, where it isn't
 /// Learn's own choice (a key: while held; anything else: a knob or
 /// fader): a key on a switch you flip flips it ([`key_toggles`]), and
-/// the looper's presses (a loop's key, Next loop, Undo ...) work while
-/// held whatever sends them, so a footswitch's CC goes down and lets go
-/// as a pad does.
+/// the looper's presses (a loop's key, Next loop, Undo ...) and the
+/// Perform pads work while held whatever sends them, so a footswitch's CC
+/// goes down and lets go as a pad does.
 pub fn learned_mode(source: &Source, target: ParamAddr) -> Option<Mode> {
     use mpfree_play::mpfree_param::looper;
     if matches!(source, Source::Note(_)) && key_toggles(target) {
         return Some(Mode::Toggle);
     }
-    (target.owner == Owner::Looper && !looper::is_value(target.param)).then_some(Mode::Momentary)
+    let press = match target.owner {
+        Owner::Looper => !looper::is_value(target.param),
+        // A Perform pad plays while held, as the pad does.
+        Owner::Perform => true,
+        _ => false,
+    };
+    press.then_some(Mode::Momentary)
 }
 
 /// Clock counted as "stopped" this long after its last tick.
@@ -978,12 +984,12 @@ impl MusicIn {
         };
         if !self.unsaved.is_empty() {
             for mut l in self.unsaved.drain(..) {
-                // The transport, the tempo, the looper's footswitch and
-                // Play's own controls work in every song; the rest
-                // belongs to this one.
+                // The transport, the tempo, the looper's footswitch, the
+                // Perform pads' keys and Play's own controls work in every
+                // song; the rest belongs to this one.
                 let mut kept = if matches!(
                     l.target.owner,
-                    Owner::Transport | Owner::Looper | Owner::Play
+                    Owner::Transport | Owner::Looper | Owner::Perform | Owner::Play
                 ) {
                     Kept::Rig
                 } else {
@@ -3557,6 +3563,47 @@ mod tests {
             Owner::Transport,
             transport::REC
         )));
+    }
+
+    /// Learn a key (board 7): SHIFT + a Perform pad arms Learn on it; a
+    /// footswitch's CC takes it, kept for every project as the looper's
+    /// footswitch is, and works while held: down past the middle, up under.
+    #[test]
+    fn a_footswitch_learned_on_a_perform_pad_is_the_rigs_and_works_while_held() {
+        use mpfree_midi::learn::Mode;
+        let mut m = MusicIn::new();
+        let usb = m.plugged("FS-7").unwrap();
+        let s = model();
+        m.sync(&s, 0.0);
+        let b2 = ParamAddr::new(
+            Owner::Perform,
+            mpfree_play::mpfree_param::perform::pad(1, 1),
+        );
+        m.arm_from(b2, ArmedBy::Touch);
+        run(&mut m, usb, &[0xB0, 64, 127]);
+        run(&mut m, usb, &[0xB0, 64, 0]);
+        // Took, then the pedal's lift (a let-go of nothing held).
+        let got: Vec<_> = m.learning().collect();
+        assert!(
+            matches!(got[..], [Learning::Took { target, .. }, Learning::Set(w)]
+                if target == b2 && w.value == 0.0),
+            "{got:?}"
+        );
+        m.sync(&s, 0.1);
+        {
+            let v = s.lock().unwrap();
+            assert!(v.setup.learn.is_empty());
+            assert_eq!(v.setup.rig_learn.len(), 1);
+            assert_eq!(v.setup.rig_learn[0].mode, Mode::Momentary);
+        }
+        for (cc, want) in [(127, 1.0), (0, 0.0)] {
+            run(&mut m, usb, &[0xB0, 64, cc]);
+            let got: Vec<_> = m.learning().collect();
+            assert!(
+                matches!(got[..], [Learning::Set(w)] if w.target == b2 && w.value == want),
+                "{got:?}"
+            );
+        }
     }
 
     /// A switch of mode moves a control learned on the insert to the new

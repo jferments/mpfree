@@ -13,11 +13,15 @@
 //!   channel, and the slot is free again once it is quiet. With twice as
 //!   many slots as instruments, a ring-out is cut short only when more than
 //!   [`SLOTS`] ring out at once (counted).
-//! - **Mixer channels.** Track `t`'s instrument feeds mixer track
-//!   [`first_track`]` + t`, made with the mixer after the engines' tracks
-//!   ([`crate::mixing::TRACKS`]), so the channel's fader, sends and effects
-//!   stay with the track, whichever slot it was lent. The mixer panel shows
-//!   only the ones in use ([`Instruments::in_use`]).
+//! - **Mixer channels.** Track `t`'s instrument feeds its track's mixer
+//!   channel, [`crate::mixing::track_channel`]: track 1's is the Drums
+//!   strip (sampler R3 part 4b, so a track has one strip whatever it
+//!   plays), every other track's its own, [`first_track`]` + t`, made with
+//!   the mixer after the engines' tracks ([`crate::mixing::TRACKS`]). The
+//!   channel's fader, sends and effects stay with the track, whichever
+//!   slot it was lent. A project saved with settings on track 1's old own
+//!   channel keeps track 1 there ([`Instruments::set_first_channel`]). The
+//!   mixer panel shows only the own channels in use.
 //! - **Notes.** A clip's notes and the pads are pads (0 to 15). A slot turns
 //!   a pad into notes with its own pad map, set when the instrument went in
 //!   (the Synth tab's layout, or Drums' kit notes), and remembers the notes
@@ -41,13 +45,15 @@ use mpfree_track::{Instrument, Outputs, SlotStats, TrackHost};
 
 /// Makes the instrument `id` for a track, ready for the audio thread:
 /// a plugin synth (`clap:`...) in its own process, from `plugins`, or a
-/// copy of a synth engine with `values` (its sound, as
-/// [`crate::synth::Synth::sound_of`] gives it). None if it can't be made
+/// copy of a synth engine's sound, its design in `extras` and its
+/// `values` (as [`crate::synth::Synth::sound_of`] gives them). None if it
+/// can't be made
 /// (the plugins' lines say why for a plugin). Allocates and, for a
 /// plugin, waits for its process: the builder thread's job.
 pub fn make(
     plugins: &crate::plugins::Plugins,
     id: &'static str,
+    extras: &[(String, String)],
     values: &[f32],
     rate: u32,
     max_block: usize,
@@ -57,7 +63,7 @@ pub fn make(
         let (instance, node) = plugins.make_instance(id).ok()?;
         (node, name, instance)
     } else {
-        let node = crate::synth::fresh_node(id, values, rate)?;
+        let node = crate::synth::fresh_node(id, extras, values, rate)?;
         let name = node.info().name;
         (node, name, 0)
     };
@@ -188,6 +194,9 @@ pub struct Instruments {
     /// The values under the clips' locks on the instruments' parameters
     /// ([`Instruments::lock`]), keyed by track and parameter.
     locks: crate::locks::Under,
+    /// Track 1's mixer channel: Drums, or its old own channel for a
+    /// project saved with settings there ([`Instruments::set_first_channel`]).
+    first: usize,
 }
 
 /// The key of track `track`'s parameter `id` in the lock table.
@@ -210,6 +219,31 @@ impl Instruments {
             refused: 0,
             cut: 0,
             locks: crate::locks::Under::new(),
+            first: crate::mixing::track_channel(0),
+        }
+    }
+
+    /// Track `track`'s mixer channel, where its instrument plays.
+    pub fn channel(&self, track: usize) -> usize {
+        if track == 0 {
+            self.first
+        } else {
+            crate::mixing::track_channel(track)
+        }
+    }
+
+    /// Track 1's mixer channel from now on (the Drums strip, or its old
+    /// own channel: `MixHost::tend_open`); an instrument it has, or one
+    /// ringing out for it, moves there. Never allocates.
+    pub fn set_first_channel(&mut self, ch: usize) {
+        if ch == self.first {
+            return;
+        }
+        self.first = ch;
+        for s in 0..HOST_SLOTS {
+            if self.slots[s].track == Some(0) {
+                self.host.route(s, Some(ch));
+            }
         }
     }
 
@@ -325,7 +359,7 @@ impl Instruments {
         self.cut += u64::from(cuts);
         self.host.set_tuning(s, tuning);
         if lend {
-            self.host.route(s, Some(first_track() + track));
+            self.host.route(s, Some(self.channel(track)));
             self.slots[s].track = Some(track);
             self.slots[s].base = self.host.stats(s);
             self.slot_of[track] = s as u8;
@@ -797,6 +831,30 @@ mod tests {
         assert_eq!(level(&t, first_track() + 2), 0.0);
     }
 
+    /// Track 1's instrument plays into the Drums strip, its mixer channel;
+    /// an old project that keeps track 1 on its old own channel moves it
+    /// there, held note and all.
+    #[test]
+    fn track_1s_instrument_plays_into_drums_or_its_old_channel() {
+        let mut i = Instruments::new(RATE, BLOCK);
+        assert_eq!(i.channel(0), crate::mixing::DRUMS);
+        assert_eq!(i.channel(1), first_track() + 1);
+        let pads = std::array::from_fn(|p| Pad::single(60 + p as i16));
+        i.put(0, hum(), pads, &Tuning::standard()).unwrap();
+        assert!(i.pad_on(0, 0, 100, 0));
+        let mut t = tracks();
+        i.render(&Ctx::new(RATE, 0), BLOCK, &mut t);
+        assert_eq!(level(&t, crate::mixing::DRUMS), 0.5);
+        assert_eq!(level(&t, first_track()), 0.0, "the old own channel");
+
+        i.set_first_channel(first_track());
+        assert_eq!(i.channel(0), first_track());
+        let mut t = tracks();
+        i.render(&Ctx::new(RATE, 0), BLOCK, &mut t);
+        assert_eq!(level(&t, first_track()), 0.5, "the held note moved");
+        assert_eq!(level(&t, crate::mixing::DRUMS), 0.0);
+    }
+
     /// A keyboard's wheel, pressure and an MPE note's tone reach a track's
     /// own instrument; a note's own reach it only while it holds the note.
     #[test]
@@ -865,7 +923,12 @@ mod tests {
         i.pad_off(0, 3, 10);
         let mut t = tracks();
         i.render(&Ctx::new(RATE, 0), BLOCK, &mut t);
-        assert_eq!(level(&t, first_track()), 0.0, "note 63 ended, not 43");
+        // Track 1's instrument plays into the Drums strip.
+        assert_eq!(
+            level(&t, crate::mixing::DRUMS),
+            0.0,
+            "note 63 ended, not 43"
+        );
         assert_eq!(i.stats(0).stray_offs, 0);
     }
 
@@ -894,9 +957,9 @@ mod tests {
     #[test]
     fn a_clips_lock_on_a_tracks_instrument_plays_and_its_end_puts_the_sound_back() {
         let synth = crate::synth::Synth::new(RATE);
-        let (id, values) = synth.sound_of(crate::synth::Engine::Poly);
+        let (id, extras, values) = synth.sound_of(crate::synth::Engine::Poly);
         let plugins = crate::plugins::Plugins::none();
-        let inst = make(&plugins, id, &values, RATE, BLOCK).expect("made");
+        let inst = make(&plugins, id, &extras, &values, RATE, BLOCK).expect("made");
         let mut i = Instruments::new(RATE, BLOCK);
         assert!(!i.lock(1, 0, Some(0.5), 0), "no instrument on the track");
         i.put(
@@ -945,17 +1008,17 @@ mod tests {
     #[test]
     fn a_track_takes_a_copy_of_the_synth_tabs_sound_and_plays_it_as_the_synth_does() {
         let synth = crate::synth::Synth::new(RATE);
-        let (id, values) = synth.sound_of(crate::synth::Engine::Poly);
+        let (id, extras, values) = synth.sound_of(crate::synth::Engine::Poly);
         assert_eq!(id, "mpfree.poly");
         let plugins = crate::plugins::Plugins::none();
-        let (inst, held) = make(&plugins, id, &values, RATE, BLOCK).expect("made");
+        let (inst, held) = make(&plugins, id, &extras, &values, RATE, BLOCK).expect("made");
         assert_eq!(held.name, "Poly");
         assert!(
-            make(&plugins, id, &values[1..], RATE, BLOCK).is_none(),
+            make(&plugins, id, &extras, &values[1..], RATE, BLOCK).is_none(),
             "not its values"
         );
         assert!(
-            make(&plugins, "clap:none", &[], RATE, BLOCK).is_none(),
+            make(&plugins, "clap:none", &[], &[], RATE, BLOCK).is_none(),
             "no such plugin"
         );
         let mut i = Instruments::new(RATE, BLOCK);
@@ -972,7 +1035,7 @@ mod tests {
             let mut t = tracks();
             i.render(&Ctx::new(RATE, b * BLOCK as u64), BLOCK, &mut t);
             heard = heard.max(
-                t.bufs[first_track()]
+                t.bufs[crate::mixing::DRUMS]
                     .0
                     .iter()
                     .fold(0.0, |m, x| m.max(x.abs())),
@@ -1078,7 +1141,7 @@ mod tests {
         );
         let mut t = tracks();
         i.render(&Ctx::new(RATE, 0), BLOCK, &mut t);
-        assert_eq!(level(&t, first_track() + next), 0.5);
+        assert_eq!(level(&t, i.channel(next)), 0.5);
         assert_eq!(
             i.describe().map(|d| d.contains("refused")),
             Some(!tracks_with.contains(&other))

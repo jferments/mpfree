@@ -1,10 +1,10 @@
 //! The pad player's synth: MPFree's Poly, FM, Drums, Pluck, Wavetable,
-//! Keys, Drawbar, Squelch, Analog or Strings (`mpfree-synth`) on the pads, edited on the
+//! Keys, Drawbar, Squelch, Analog, Strings or Bass (`mpfree-synth`) on the pads, edited on the
 //! Synth tab
 //! (`mpfree-synth-ui`).
 //!
 //! - The kit list ends with one more entry, "Synth: Poly" (or FM, Drums,
-//!   Pluck, Wavetable, Keys, Drawbar, Squelch, Analog, Strings). Picking it, or opening the Synth tab, makes the pads play the
+//!   Pluck, Wavetable, Keys, Drawbar, Squelch, Analog, Strings, Bass). Picking it, or opening the Synth tab, makes the pads play the
 //!   synth. The Synth tab's options (MENU) pick the engine; a note still
 //!   ringing on another engine finishes its release.
 //! - Drums is a kit, not a keyboard: pad 1 plays the kit's Pad 1 note (a
@@ -12,8 +12,8 @@
 //!   whatever the scale, layout, bank or octave. The pads are named by the
 //!   sound on them ("Kick", "Closed hat"), and the Synth tab shows the page
 //!   of the pad hit last. Pluck, Wavetable, Keys, Drawbar, Squelch,
-//!   Analog and Strings play the pad layouts as Poly and FM do (Squelch one
-//!   note at a time).
+//!   Analog, Strings and Bass play the pad layouts as Poly and FM do
+//!   (Squelch and Bass one note at a time).
 //! - The pads are laid out by `mpfree_scale::pads` (owner, 2026-11-11):
 //!   with no scale, pad 1 plays C3 and each pad after it a semitone higher
 //!   (C3 to D#4), as in round 6. With a scale, each bank has its own
@@ -42,13 +42,15 @@ use mpfree_arp::scale::pads::{
     self, InKeyRows, Pad, PadLayout, PadRole, PadSetup, DEFAULT_BANKS, MAX_PAD_NOTES, PADS,
 };
 use mpfree_arp::scale::{Scale, Shift, NOTE_NAMES};
-use mpfree_instruments::preset::{engine_of, Error as PresetError, Preset as SoundPreset};
+use mpfree_instruments::preset::{engine_of, Error as PresetError};
+use mpfree_instruments::sound::{has_design, is_design_key};
+use mpfree_instruments::{Design, Designed, Sound, SoundError};
 use mpfree_node::pedal::Pedals;
 use mpfree_node::{Ctl, Ctx, Cull, Node, NodeEvent, ParamInfo, Timed};
 use mpfree_synth::drum_params;
 use mpfree_synth::fm_params::FmPreset;
 use mpfree_synth::{
-    Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Strings, Wavetable,
+    Analog, Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Strings, Wavetable,
 };
 use mpfree_synth_ui::format::value_line;
 use mpfree_synth_ui::SynthState;
@@ -75,6 +77,8 @@ pub const SQUELCH_START_PRESET: &str = "Acid Line";
 pub const ANALOG_START_PRESET: &str = "Init";
 /// The string machine's preset at the start.
 pub const STRINGS_START_PRESET: &str = "Init";
+/// The bass engine's preset at the start.
+pub const BASS_START_PRESET: &str = "Init";
 /// How far SHIFT + wheel moves the pads: pad 1 from C0 to C6.
 pub const MIN_OCTAVE: i32 = -3;
 pub const MAX_OCTAVE: i32 = 3;
@@ -107,7 +111,7 @@ fn black(note: u8) -> bool {
 }
 
 /// How many engines there are.
-const ENGINES: usize = 10;
+const ENGINES: usize = 11;
 
 /// The synth engines the pads can play.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -133,6 +137,8 @@ pub enum Engine {
     Analog,
     /// The string machine: a divide-down bank, registers, swell, Ensemble.
     Strings,
+    /// The one-voice bass: synth basses, 808s and reeses.
+    Bass,
 }
 
 impl Engine {
@@ -147,6 +153,7 @@ impl Engine {
         Engine::Squelch,
         Engine::Analog,
         Engine::Strings,
+        Engine::Bass,
     ];
 
     pub fn name(self) -> &'static str {
@@ -161,6 +168,7 @@ impl Engine {
             Engine::Squelch => "Squelch",
             Engine::Analog => "Analog",
             Engine::Strings => "Strings",
+            Engine::Bass => "Bass",
         }
     }
 
@@ -182,6 +190,7 @@ impl Engine {
             Engine::Squelch => "mpfree.squelch",
             Engine::Analog => "mpfree.analog",
             Engine::Strings => "mpfree.strings",
+            Engine::Bass => "mpfree.bass",
         }
     }
 
@@ -408,16 +417,20 @@ impl Held {
 }
 
 pub struct Synth {
-    poly: Poly,
-    fm: Fm,
-    drums: Drums,
-    pluck: Pluck,
-    wt: Wavetable,
-    keys: Keys,
-    drawbar: Drawbar,
-    squelch: Squelch,
-    analog: Analog,
-    strings: Strings,
+    // Each engine as a sound ([`Sound`]): the engine, and the effects and
+    // macros a preset brings (none for a factory preset yet). The engine's
+    // own calls reach it through the sound.
+    poly: Sound<Poly>,
+    fm: Sound<Fm>,
+    drums: Sound<Drums>,
+    pluck: Sound<Pluck>,
+    wt: Sound<Wavetable>,
+    keys: Sound<Keys>,
+    drawbar: Sound<Drawbar>,
+    squelch: Sound<Squelch>,
+    analog: Sound<Analog>,
+    strings: Sound<Strings>,
+    bass: Sound<Bass>,
     fm_presets: Vec<FmPreset>,
     rate: u32,
     /// Note events for each engine (in [`Engine::ALL`]'s order) this period.
@@ -452,9 +465,10 @@ pub struct Synth {
     resets: u64,
     /// Indices of the read-only parameters (meters), per engine.
     meters: [Vec<usize>; ENGINES],
-    /// The sound from before the preset picker's first try, to put back if
-    /// the picker is cancelled ([`Synth::try_preset`]).
-    audition: Option<SoundPreset>,
+    /// The sound from before the preset picker's first try (as preset
+    /// text, with its design), to put back if the picker is cancelled
+    /// ([`Synth::try_preset`]).
+    audition: Option<String>,
     /// The tuning files offered after the built-in tunings.
     tuning_files: Vec<TuningFile>,
     /// The values under the clips' locks on the engines' parameters
@@ -498,18 +512,43 @@ fn static_presets(engine: Engine) -> &'static [Preset] {
         Engine::Squelch => Squelch::presets(),
         Engine::Analog => Analog::presets(),
         Engine::Strings => Strings::presets(),
+        Engine::Bass => Bass::presets(),
         Engine::Poly | Engine::Fm => Poly::presets(),
     }
 }
 
+/// An engine as a sound with nothing added, its effects (none until a
+/// preset brings some) ready for the synth's rate and blocks. Allocates.
+fn plain<E: Node>(engine: E, rate: u32) -> Sound<E> {
+    let mut s = Sound::new(Box::new(engine), &Design::default())
+        .expect("every engine's setting ids are below a sound's own");
+    s.prepare_effects(rate, SCRATCH);
+    s
+}
+
 /// A new instrument of the engine `id` (its [`mpfree_node::NodeInfo::id`])
-/// at `rate`, with `values` (every parameter, in the node's order, as
-/// [`Synth::values`] and the Synth tab's state hold them) set: a copy of
-/// the patch for auto-sampling off the audio thread, which keeps playing
-/// its own. The meters are left alone. None for an engine it doesn't know
-/// or values that aren't its.
-pub fn fresh_node(id: &str, values: &[f32], rate: u32) -> Option<Box<dyn Node>> {
-    let mut node = engine_node(id, rate)?;
+/// at `rate`, as the sound `extras` describe (its design lines, as
+/// [`Node::save_extras`] gives them: none for a plain engine), with
+/// `values` (every parameter, in the node's order, as [`Synth::values`]
+/// and the Synth tab's state hold them) set: a copy of the patch for a
+/// track or for auto-sampling off the audio thread, which keeps playing its
+/// own. The meters are left alone. None for an engine it doesn't know, a
+/// design it can't build, or values that aren't its.
+pub fn fresh_node(
+    id: &str,
+    extras: &[(String, String)],
+    values: &[f32],
+    rate: u32,
+) -> Option<Box<dyn Node>> {
+    let engine = engine_node(id, rate)?;
+    let mut node: Box<dyn Node> = if extras.iter().any(|(k, _)| is_design_key(k)) {
+        let mut s = Sound::new(engine, &Design::default()).ok()?;
+        s.set_design_lines(extras).ok()?;
+        s.prepare_effects(rate, mpfree_node::MAX_BLOCK);
+        Box::new(s)
+    } else {
+        engine
+    };
     let params = node.params();
     if params.len() != values.len() {
         return None;
@@ -536,9 +575,18 @@ pub fn engine_node(id: &str, rate: u32) -> Option<Box<dyn Node>> {
         "mpfree.squelch" => Box::new(Squelch::new(rate)),
         "mpfree.analog" => Box::new(Analog::new(rate)),
         "mpfree.strings" => Box::new(Strings::new(rate)),
+        "mpfree.bass" => Box::new(Bass::new(rate)),
         _ => return None,
     })
 }
+
+/// A preset as a track's own copy takes it: its name, design lines and
+/// values ([`Synth::preset_values`]).
+pub type PresetSound = (String, Vec<(String, String)>, Vec<f32>);
+
+/// A sound as a track's own copy is built from it ([`fresh_node`]): its
+/// design lines and every value in the node's order.
+pub type SoundCopy = (Vec<(String, String)>, Vec<f32>);
 
 /// The index of the preset called `name`, or 0.
 fn start_preset(presets: &[Preset], name: &str) -> usize {
@@ -626,6 +674,11 @@ impl Synth {
         if let Some(p) = Strings::presets().get(strings_preset) {
             strings.load_preset(p);
         }
+        let mut bass = Bass::new(rate);
+        let bass_preset = start_preset(Bass::presets(), BASS_START_PRESET);
+        if let Some(p) = Bass::presets().get(bass_preset) {
+            bass.load_preset(p);
+        }
         let mut fm = Fm::new(rate);
         let fm_presets = Fm::presets();
         let fm_preset = fm_presets
@@ -646,19 +699,21 @@ impl Synth {
             meters_of(&squelch),
             meters_of(&analog),
             meters_of(&strings),
+            meters_of(&bass),
         ];
         let settings = PadSettings::default();
         Synth {
-            poly,
-            fm,
-            drums,
-            pluck,
-            wt,
-            keys,
-            drawbar,
-            squelch,
-            analog,
-            strings,
+            poly: plain(poly, rate),
+            fm: plain(fm, rate),
+            drums: plain(drums, rate),
+            pluck: plain(pluck, rate),
+            wt: plain(wt, rate),
+            keys: plain(keys, rate),
+            drawbar: plain(drawbar, rate),
+            squelch: plain(squelch, rate),
+            analog: plain(analog, rate),
+            strings: plain(strings, rate),
+            bass: plain(bass, rate),
             fm_presets,
             rate,
             events: [[Timed::new(0, NodeEvent::AllOff); MAX_EVENTS]; ENGINES],
@@ -684,6 +739,7 @@ impl Synth {
                 squelch_preset,
                 analog_preset,
                 strings_preset,
+                bass_preset,
             ],
             pads_changed: false,
             fade: 0,
@@ -705,7 +761,12 @@ impl Synth {
     }
 
     fn node_of(&self, engine: Engine) -> &dyn Node {
-        match engine {
+        self.sound(engine)
+    }
+
+    /// Engine `e` as a sound: the engine with what its preset added.
+    fn sound(&self, e: Engine) -> &dyn Designed {
+        match e {
             Engine::Poly => &self.poly,
             Engine::Fm => &self.fm,
             Engine::Drums => &self.drums,
@@ -716,16 +777,51 @@ impl Synth {
             Engine::Squelch => &self.squelch,
             Engine::Analog => &self.analog,
             Engine::Strings => &self.strings,
+            Engine::Bass => &self.bass,
+        }
+    }
+
+    fn sound_mut(&mut self, e: Engine) -> &mut dyn Designed {
+        match e {
+            Engine::Poly => &mut self.poly,
+            Engine::Fm => &mut self.fm,
+            Engine::Drums => &mut self.drums,
+            Engine::Pluck => &mut self.pluck,
+            Engine::Wavetable => &mut self.wt,
+            Engine::Keys => &mut self.keys,
+            Engine::Drawbar => &mut self.drawbar,
+            Engine::Squelch => &mut self.squelch,
+            Engine::Analog => &mut self.analog,
+            Engine::Strings => &mut self.strings,
+            Engine::Bass => &mut self.bass,
+        }
+    }
+
+    /// Engine `e`'s design changed: its settings' list did, so the meters
+    /// are found again.
+    fn redesigned(&mut self, e: Engine) {
+        self.meters[e.index()] = meters_of(self.sound(e));
+    }
+
+    /// Engine `e` plays a plain preset (a factory one with no effects or
+    /// macros of its own): the effects and macros an earlier preset brought
+    /// go.
+    fn make_plain(&mut self, e: Engine) {
+        if !self.sound(e).is_plain() {
+            // An empty design always builds.
+            let _ = self.sound_mut(e).set_design(&Design::default());
+            self.redesigned(e);
         }
     }
 
     /// Engine `engine`'s sound as it is now, for a copy a track plays as
-    /// its own instrument ([`fresh_node`], `instruments.rs`): the node's id
-    /// and every value in its parameter order. Allocates.
-    pub fn sound_of(&self, engine: Engine) -> (&'static str, Vec<f32>) {
+    /// its own instrument ([`fresh_node`], `instruments.rs`): the node's
+    /// id, its design lines (none for a plain engine) and every value in
+    /// its parameter order. Allocates.
+    pub fn sound_of(&self, engine: Engine) -> (&'static str, Vec<(String, String)>, Vec<f32>) {
         let node = self.node_of(engine);
         let values = node.params().iter().map(|p| node.param(p.id)).collect();
-        (node.info().id, values)
+        (node.info().id, node.save_extras(), values)
     }
 
     /// The pads' notes for engine `engine` with the settings now: Drums'
@@ -747,48 +843,15 @@ impl Synth {
     }
 
     fn node_mut(&mut self) -> &mut dyn Node {
-        match self.settings.engine {
-            Engine::Poly => &mut self.poly,
-            Engine::Fm => &mut self.fm,
-            Engine::Drums => &mut self.drums,
-            Engine::Pluck => &mut self.pluck,
-            Engine::Wavetable => &mut self.wt,
-            Engine::Keys => &mut self.keys,
-            Engine::Drawbar => &mut self.drawbar,
-            Engine::Squelch => &mut self.squelch,
-            Engine::Analog => &mut self.analog,
-            Engine::Strings => &mut self.strings,
-        }
+        self.sound_mut(self.settings.engine)
     }
 
     fn engine_node(&self, e: Engine) -> &dyn Node {
-        match e {
-            Engine::Poly => &self.poly,
-            Engine::Fm => &self.fm,
-            Engine::Drums => &self.drums,
-            Engine::Pluck => &self.pluck,
-            Engine::Wavetable => &self.wt,
-            Engine::Keys => &self.keys,
-            Engine::Drawbar => &self.drawbar,
-            Engine::Squelch => &self.squelch,
-            Engine::Analog => &self.analog,
-            Engine::Strings => &self.strings,
-        }
+        self.sound(e)
     }
 
     fn engine_node_mut(&mut self, e: Engine) -> &mut dyn Node {
-        match e {
-            Engine::Poly => &mut self.poly,
-            Engine::Fm => &mut self.fm,
-            Engine::Drums => &mut self.drums,
-            Engine::Pluck => &mut self.pluck,
-            Engine::Wavetable => &mut self.wt,
-            Engine::Keys => &mut self.keys,
-            Engine::Drawbar => &mut self.drawbar,
-            Engine::Squelch => &mut self.squelch,
-            Engine::Analog => &mut self.analog,
-            Engine::Strings => &mut self.strings,
-        }
+        self.sound_mut(e)
     }
 
     /// Every engine's sound now, as preset text, for a project's `synth`
@@ -797,7 +860,6 @@ impl Synth {
         Engine::ALL
             .iter()
             .map(|&e| {
-                let node = self.engine_node(e);
                 let name = match e {
                     Engine::Fm => self
                         .fm_presets
@@ -807,10 +869,7 @@ impl Synth {
                         .get(self.presets[e.index()])
                         .map_or("", |p| p.name),
                 };
-                (
-                    e,
-                    SoundPreset::capture(node, name, &[]).to_text(node.params()),
-                )
+                (e, self.sound(e).to_text(name, &[], &[]))
             })
             .collect()
     }
@@ -821,25 +880,18 @@ impl Synth {
     pub fn set_sounds(&mut self, sounds: &[(Engine, String)]) -> Vec<String> {
         let mut notes = Vec::new();
         for (e, text) in sounds {
-            let node = self.engine_node(*e);
-            let p = match SoundPreset::parse(text, node.info(), node.params()) {
+            let names = self.drum_names();
+            let p = match self.sound_mut(*e).load_text(text) {
                 Ok(p) => p,
                 Err(err) => {
                     notes.push(format!(
-                        "synth: the project's {} sound didn't read ({err:?})",
+                        "synth: the project's {} sound didn't read ({err})",
                         e.name()
                     ));
                     continue;
                 }
             };
-            let names = self.drum_names();
-            if let Err(err) = p.apply(self.engine_node_mut(*e)) {
-                notes.push(format!(
-                    "synth: the project's {} sound didn't fit ({err:?})",
-                    e.name()
-                ));
-                continue;
-            }
+            self.redesigned(*e);
             if *e == Engine::Drums {
                 self.drums_moved(names);
             }
@@ -868,6 +920,7 @@ impl Synth {
             Engine::Squelch => self.squelch.active_voices(),
             Engine::Analog => self.analog.active_voices(),
             Engine::Strings => self.strings.keys_sounding(),
+            Engine::Bass => self.bass.active_voices(),
         }
     }
 
@@ -975,6 +1028,7 @@ impl Synth {
         self.squelch.set_tuning(&t);
         self.analog.set_tuning(&t);
         self.strings.set_tuning(&t);
+        self.bass.set_tuning(&t);
         self.wt.set_tuning(&t);
     }
 
@@ -1552,6 +1606,7 @@ impl Synth {
                     Engine::Squelch => &mut self.squelch,
                     Engine::Analog => &mut self.analog,
                     Engine::Strings => &mut self.strings,
+                    Engine::Bass => &mut self.bass,
                 };
                 node.process(&ctx, &self.events[k][first..e[k]], sl, sr);
                 if !sl.iter().chain(sr.iter()).all(|s| s.is_finite()) {
@@ -1580,15 +1635,9 @@ impl Synth {
             if self.fading {
                 self.fade = fade0.saturating_sub((end - start) as u32);
                 if self.fade == 0 {
-                    self.poly.reset();
-                    self.fm.reset();
-                    self.drums.reset();
-                    self.pluck.reset();
-                    self.wt.reset();
-                    self.keys.reset();
-                    self.drawbar.reset();
-                    self.squelch.reset();
-                    self.analog.reset();
+                    for e in Engine::ALL {
+                        self.engine_node_mut(e).reset();
+                    }
                     self.playing = [Held::default(); PADS];
                     self.holders = [0; 128];
                     self.fading = false;
@@ -1625,11 +1674,12 @@ impl Synth {
             Engine::Keys => self.keys.cull(),
             // The organ's wheels turn whatever the keys do, so a key given
             // up saves little; the string machine's keys share its notes;
-            // Squelch is one voice. None of them offers one.
+            // Squelch and Bass are one voice. None of them offers one.
             Engine::Drawbar => self.drawbar.cull(),
             Engine::Squelch => self.squelch.cull(),
             Engine::Analog => self.analog.cull(),
             Engine::Strings => self.strings.cull(),
+            Engine::Bass => self.bass.cull(),
         }
     }
 
@@ -1659,6 +1709,7 @@ impl Synth {
             Engine::Analog => self.analog.param(mpfree_synth::analog_params::POLYPHONY),
             // Every key plays, as on the string machines.
             Engine::Strings => mpfree_synth::strings::NOTES as f32,
+            Engine::Bass => 1.0,
         }
     }
 
@@ -1676,7 +1727,8 @@ impl Synth {
             | Engine::Drawbar
             | Engine::Squelch
             | Engine::Analog
-            | Engine::Strings => 0,
+            | Engine::Strings
+            | Engine::Bass => 0,
         }
     }
 
@@ -1733,13 +1785,30 @@ impl Synth {
     /// preset's. A Drums kit can move or rename the pads.
     pub fn load_preset(&mut self, i: usize) -> Option<&str> {
         let e = self.settings.engine;
+        let count = match e {
+            Engine::Fm => self.fm_presets.len(),
+            _ => static_presets(e).len(),
+        };
+        if i >= count {
+            return None;
+        }
         if e == Engine::Fm {
+            self.make_plain(e);
             let p = self.fm_presets.get(i)?;
             self.fm.load_preset(p);
             self.presets[e.index()] = i;
             return Some(&p.name);
         }
         let p = static_presets(e).get(i)?;
+        if has_design(p.text) {
+            // A factory sound with its own effects and macros loads as a
+            // user's preset does. Every factory preset loads (the tests
+            // load each one), so this never fails.
+            self.put_text(p.text).ok()?;
+            self.presets[e.index()] = i;
+            return Some(p.name);
+        }
+        self.make_plain(e);
         match e {
             Engine::Drums => {
                 let names = self.drum_names();
@@ -1753,6 +1822,7 @@ impl Synth {
             Engine::Squelch => self.squelch.load_preset(p),
             Engine::Analog => self.analog.load_preset(p),
             Engine::Strings => self.strings.load_preset(p),
+            Engine::Bass => self.bass.load_preset(p),
             Engine::Poly | Engine::Fm => self.poly.load_preset(p),
         }
         self.presets[e.index()] = i;
@@ -1813,35 +1883,36 @@ impl Synth {
 /// picker in with the browser page.
 #[allow(dead_code)]
 impl Synth {
-    /// The preset in `text` (a `.preset` file from `folder` under the
-    /// library's Instruments place, where the folder is the engine's name)
-    /// for the engine on the pads, read and checked; nothing changes.
-    fn read_preset(&self, folder: &str, text: &str) -> Result<SoundPreset, PresetError> {
-        let node = self.node();
-        let info = node.info();
-        // The folder must be this engine's, if the file sits in one; the
-        // file's own engine line is checked by `parse` either way.
-        if let Some(e) = Engine::from_folder(folder) {
-            if e != self.settings.engine {
-                return Err(PresetError::WrongEngine {
+    /// Whether a `.preset` file from `folder` under the library's
+    /// Instruments place (where the folder is the engine's name) may play
+    /// on the engine on the pads: the folder must be this engine's, if the
+    /// file sits in one; the file's own engine line is checked as it loads.
+    fn check_folder(&self, folder: &str, text: &str) -> Result<(), SoundError> {
+        match Engine::from_folder(folder) {
+            Some(e) if e != self.settings.engine => {
+                Err(SoundError::Preset(PresetError::WrongEngine {
                     file: engine_of(text).unwrap_or(folder).to_string(),
-                    node: info.id.to_string(),
-                });
+                    node: self.node().info().id.to_string(),
+                }))
             }
+            _ => Ok(()),
         }
-        SoundPreset::parse(text, info, node.params())
     }
 
-    /// Puts a preset on the engine on the pads (notes keep sounding, values
-    /// glide), as a factory preset does. Drums' pads follow their kit.
-    fn put_preset(&mut self, p: &SoundPreset) -> Result<(), PresetError> {
+    /// Puts preset text on the engine on the pads (notes keep sounding,
+    /// values glide), as a factory preset does, with the effects and macros
+    /// it brings. Drums' pads follow their kit. On an error nothing
+    /// changes. Returns the preset's name.
+    fn put_text(&mut self, text: &str) -> Result<String, SoundError> {
+        let e = self.settings.engine;
         let names = self.drum_names();
-        p.apply(self.node_mut())?;
-        if self.settings.engine == Engine::Drums {
+        let p = self.sound_mut(e).load_text(text)?;
+        self.redesigned(e);
+        if e == Engine::Drums {
             self.drums_moved(names);
         }
         self.preset_under_locks();
-        Ok(())
+        Ok(p.name)
     }
 
     /// The preset picker turned to a preset (`BrowseAction::TryPreset`):
@@ -1849,33 +1920,37 @@ impl Synth {
     /// try is kept, for [`Synth::revert_preset`]. Returns the preset's
     /// name. A file for another engine, or one this build can't read,
     /// changes nothing.
-    pub fn try_preset(&mut self, folder: &str, text: &str) -> Result<String, PresetError> {
-        let p = self.read_preset(folder, text)?;
-        if self.audition.is_none() {
-            self.audition = Some(SoundPreset::capture(self.node(), "", &[]));
+    pub fn try_preset(&mut self, folder: &str, text: &str) -> Result<String, SoundError> {
+        self.check_folder(folder, text)?;
+        let before = self
+            .audition
+            .is_none()
+            .then(|| self.sound(self.settings.engine).to_text("", &[], &[]));
+        let name = self.put_text(text)?;
+        if before.is_some() {
+            self.audition = before;
         }
-        self.put_preset(&p)?;
-        Ok(p.name)
+        Ok(name)
     }
 
     /// The preset picker was cancelled (`BrowseAction::RevertPreset`): the
     /// sound from before its first try comes back, every setting as it
     /// was. Nothing happens if nothing was tried.
     pub fn revert_preset(&mut self) {
-        if let Some(p) = self.audition.take() {
-            // The capture is this engine's, so applying it can't fail.
-            let _ = self.put_preset(&p);
+        if let Some(text) = self.audition.take() {
+            // The capture is this engine's, so it always loads.
+            let _ = self.put_text(&text);
         }
     }
 
     /// Loads a user preset (`BrowseAction::LoadPreset`, or the picker's
     /// Load after trying): the engine on the pads plays it from now on, and
     /// the sound from before any try is forgotten. Returns its name.
-    pub fn load_preset_file(&mut self, folder: &str, text: &str) -> Result<String, PresetError> {
-        let p = self.read_preset(folder, text)?;
-        self.put_preset(&p)?;
+    pub fn load_preset_file(&mut self, folder: &str, text: &str) -> Result<String, SoundError> {
+        self.check_folder(folder, text)?;
+        let name = self.put_text(text)?;
         self.audition = None;
-        Ok(p.name)
+        Ok(name)
     }
 
     /// Whether the preset picker is trying presets (a sound is kept to go
@@ -1893,10 +1968,8 @@ impl Synth {
         tags: &[&str],
         extra: &[(String, String)],
     ) -> (&'static str, String) {
-        let node = self.node();
-        let mut p = SoundPreset::capture(node, name, tags);
-        p.extra.extend_from_slice(extra);
-        (self.settings.engine.name(), p.to_text(node.params()))
+        let e = self.settings.engine;
+        (e.name(), self.sound(e).to_text(name, tags, extra))
     }
 }
 
@@ -1964,10 +2037,11 @@ impl Synth {
         }
     }
 
-    /// Preset `i` of engine `engine` as every value in the node's order
-    /// (and its name), for a track's own copy of the engine: loaded into a
+    /// Preset `i` of engine `engine` as a track's own copy of the engine
+    /// takes it ([`fresh_node`]): its name, its design lines (none for a
+    /// plain preset) and every value in the node's order. Loaded into a
     /// scratch engine, so this synth's sound is left alone. Allocates.
-    pub fn preset_values(&self, engine: Engine, i: usize) -> Option<(String, Vec<f32>)> {
+    pub fn preset_values(&self, engine: Engine, i: usize) -> Option<PresetSound> {
         fn values(n: &dyn Node) -> Vec<f32> {
             n.params().iter().map(|p| n.param(p.id)).collect()
         }
@@ -1976,9 +2050,15 @@ impl Synth {
             let p = self.fm_presets.get(i)?;
             let mut n = Fm::new(rate);
             n.load_preset(p);
-            return Some((p.name.clone(), values(&n)));
+            return Some((p.name.clone(), Vec::new(), values(&n)));
         }
         let p = static_presets(engine).get(i)?;
+        if has_design(p.text) {
+            let mut s =
+                Sound::new(engine_node(engine.node_id(), rate)?, &Design::default()).ok()?;
+            s.load_text(p.text).ok()?;
+            return Some((p.name.to_string(), s.save_extras(), values(&s)));
+        }
         let v = match engine {
             Engine::Drums => {
                 let mut n = Drums::new(rate);
@@ -2020,13 +2100,18 @@ impl Synth {
                 n.load_preset(p);
                 values(&n)
             }
+            Engine::Bass => {
+                let mut n = Bass::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
             Engine::Poly | Engine::Fm => {
                 let mut n = Poly::new(rate);
                 n.load_preset(p);
                 values(&n)
             }
         };
-        Some((p.name.to_string(), v))
+        Some((p.name.to_string(), Vec::new(), v))
     }
 
     /// What the Synth tab shows for a track's own instrument `node`
@@ -2213,6 +2298,7 @@ mod tests {
             Engine::Squelch,
             Engine::Analog,
             Engine::Strings,
+            Engine::Bass,
         ] {
             with(&mut s, |p| p.engine = engine);
             // A preset other than the first, with a value changed after.
@@ -2228,7 +2314,7 @@ mod tests {
                 s.set(id, v);
             }
             let st = s.state();
-            let mut copy = fresh_node(st.info.id, &st.values, 48_000).unwrap();
+            let mut copy = fresh_node(st.info.id, &st.extras, &st.values, 48_000).unwrap();
             assert_eq!(copy.info().id, st.info.id);
             for (p, v) in st.params.iter().zip(&st.values) {
                 assert_eq!(copy.param(p.id), *v, "{} {}", st.info.name, p.name);
@@ -2240,8 +2326,8 @@ mod tests {
             assert!(peak(&theirs) > 0.001, "{} sounds", st.info.name);
             assert_eq!(ours, theirs, "{} plays the same", st.info.name);
         }
-        assert!(fresh_node("mpfree.nothing", &[], 48_000).is_none());
-        assert!(fresh_node("mpfree.poly", &[0.5], 48_000).is_none());
+        assert!(fresh_node("mpfree.nothing", &[], &[], 48_000).is_none());
+        assert!(fresh_node("mpfree.poly", &[], &[0.5], 48_000).is_none());
     }
 
     #[test]
@@ -2673,6 +2759,143 @@ mod tests {
         s
     }
 
+    /// A Keys sound with its own Ensemble and a macro moving the tone and
+    /// the Ensemble's mix, as a user preset's text.
+    fn space_keys(rate: u32) -> String {
+        use mpfree_instruments::sound::{FX_BASE, MACRO_BASE};
+        use mpfree_instruments::{Macro, MacroMap};
+        let design = Design {
+            fx: vec!["mpfree.fx.ensemble".into()],
+            macros: vec![Macro {
+                name: "Space".into(),
+                maps: vec![
+                    MacroMap {
+                        target: mpfree_synth::keys_params::TONE,
+                        from: -20.0,
+                        to: 20.0,
+                        curve: mpfree_mod::MapCurve::Linear,
+                    },
+                    MacroMap {
+                        target: FX_BASE + mpfree_fx::ids::ensemble::MIX,
+                        from: 0.0,
+                        to: 80.0,
+                        curve: mpfree_mod::MapCurve::Linear,
+                    },
+                ],
+            }],
+        };
+        let mut sound = Sound::new(Box::new(Keys::new(rate)), &design).unwrap();
+        sound.set_param(MACRO_BASE, 60.0);
+        sound.set_param(mpfree_synth::keys_params::DECAY, 3200.0);
+        sound.to_text("Space Keys", &[], &[])
+    }
+
+    /// A user preset with its own effects and macros plays them on the
+    /// pads; Cancel brings the plain sound back, a factory preset takes
+    /// them away, and a project keeps them.
+    #[test]
+    fn a_sound_with_its_own_effects_plays_on_the_pads_and_is_kept() {
+        use mpfree_instruments::sound::MACRO_BASE;
+        let rate = 44_100;
+        let mut s = on_engine(Engine::Keys);
+        let plain = sound(&s);
+        let n = s.node().params().len();
+        let text = space_keys(rate);
+        assert_eq!(s.try_preset("Keys", &text).as_deref(), Ok("Space Keys"));
+        assert_eq!(s.value(MACRO_BASE), 60.0);
+        assert_eq!(s.state().params[0].name, "Space", "the macros first");
+        assert!(s.node().params().len() > n, "the Ensemble's settings");
+        assert!(
+            s.state()
+                .extras
+                .iter()
+                .any(|(k, v)| k == "fx.1" && v == "mpfree.fx.ensemble"),
+            "{:?}",
+            s.state().extras
+        );
+        // The macro turned on the pads moves the Ensemble.
+        let mix = mpfree_instruments::sound::FX_BASE + mpfree_fx::ids::ensemble::MIX;
+        s.set(MACRO_BASE, 100.0);
+        assert_eq!(s.value(mix), 80.0);
+        s.revert_preset();
+        assert_eq!(sound(&s), plain, "Cancel: the plain sound, to the bit");
+        // Loaded, saved with the project and put back.
+        s.load_preset_file("Keys", &text).unwrap();
+        let saved = s.sounds();
+        let want = sound(&s);
+        let mut t = on_engine(Engine::Keys);
+        assert!(t.set_sounds(&saved).is_empty());
+        assert_eq!(sound(&t), want, "the project's sound, effects and all");
+        // A factory preset is plain.
+        s.load_preset(0);
+        assert_eq!(s.node().params().len(), n);
+        assert!(s.state().extras.is_empty());
+    }
+
+    /// A track's copy of a sound with effects and macros plays it as the
+    /// pads do.
+    #[test]
+    fn a_fresh_copy_of_a_sound_plays_it_as_the_pads_do() {
+        let rate = 48_000;
+        let mut s = Synth::new(rate);
+        with(&mut s, |p| p.engine = Engine::Keys);
+        s.load_preset_file("Keys", &space_keys(rate)).unwrap();
+        let st = s.state();
+        let mut copy = fresh_node(st.info.id, &st.extras, &st.values, rate).unwrap();
+        for (p, v) in st.params.iter().zip(&st.values) {
+            assert_eq!(copy.param(p.id).to_bits(), v.to_bits(), "{}", p.name);
+        }
+        let n = s.notes(0)[0];
+        let theirs = note(s.node_mut(), n);
+        let ours = note(copy.as_mut(), n);
+        assert!(peak(&theirs) > 0.001);
+        assert_eq!(ours, theirs);
+        // A design it can't build makes nothing.
+        let mut bad = st.extras.clone();
+        bad.push(("fx.2".into(), "mpfree.fx.nothing".into()));
+        assert!(fresh_node(st.info.id, &bad, &st.values, rate).is_none());
+    }
+
+    /// A factory sound brings its own effects and macros, on the pads and
+    /// to a track's copy; a plain factory preset after it takes them away.
+    #[test]
+    fn a_factory_sound_brings_its_effects_and_macros() {
+        let rate = 48_000;
+        let mut s = Synth::new(rate);
+        with(&mut s, |p| p.engine = Engine::Keys);
+        let n = s.node().params().len();
+        let i = s
+            .preset_names(Engine::Keys)
+            .iter()
+            .position(|p| p == "Phase Tines")
+            .unwrap();
+        assert_eq!(s.load_preset(i), Some("Phase Tines"));
+        assert_eq!(s.preset_name(), "Phase Tines");
+        let st = s.state();
+        assert_eq!(st.params[0].name, "Tone", "the macros first");
+        assert!(
+            st.extras
+                .iter()
+                .any(|(k, v)| k == "fx.1" && v == "mpfree.fx.phaser"),
+            "{:?}",
+            st.extras
+        );
+        // A track's copy plays the same sound.
+        let (name, extras, values) = s.preset_values(Engine::Keys, i).unwrap();
+        assert_eq!(name, "Phase Tines");
+        assert_eq!(extras, st.extras);
+        assert_eq!(values, st.values);
+        let mut copy = fresh_node("mpfree.keys", &extras, &values, rate).unwrap();
+        let k = s.notes(0)[0];
+        let theirs = note(s.node_mut(), k);
+        assert!(peak(&theirs) > 0.001);
+        assert_eq!(note(copy.as_mut(), k), theirs);
+        // A plain factory preset takes them away.
+        assert_eq!(s.load_preset(0), Some("Init"));
+        assert_eq!(s.node().params().len(), n);
+        assert!(s.state().extras.is_empty());
+    }
+
     #[test]
     fn the_preset_picker_tries_reverts_and_loads_user_presets() {
         let mut s = Synth::new(44_100);
@@ -2711,7 +2934,7 @@ mod tests {
         assert_eq!(fm_folder, "FM");
         assert!(matches!(
             s.try_preset("FM", &bell),
-            Err(PresetError::WrongEngine { .. })
+            Err(SoundError::Preset(PresetError::WrongEngine { .. }))
         ));
         assert!(s.try_preset("", &bell).is_err(), "FM's engine line");
         assert!(
@@ -2729,6 +2952,7 @@ mod tests {
         // along in a saved preset.
         assert_eq!(Engine::from_folder("wavetable"), Some(Engine::Wavetable));
         assert_eq!(Engine::from_folder("Strings"), Some(Engine::Strings));
+        assert_eq!(Engine::from_folder("bass"), Some(Engine::Bass));
         assert_eq!(Engine::from_folder("Favourites"), None);
         let qset = [("qset".to_string(), "31 32 - 33 Tone".to_string())];
         let (_, text) = s.save_preset("Q", &[], &qset);
@@ -2876,6 +3100,31 @@ mod tests {
         // A pad let go after STOP sends nothing.
         s.note_off(0, 0);
         assert_eq!(s.len, [0; ENGINES]);
+    }
+
+    /// Every engine, on the pads with a chord ringing, is silent after
+    /// STOP's fade: nothing comes back once the fade ends (a release tail,
+    /// a string machine's ensemble).
+    #[test]
+    fn stop_silences_every_engine() {
+        for e in Engine::ALL {
+            let mut s = Synth::new(44_100);
+            with(&mut s, |p| p.engine = e);
+            let mut frame = 0;
+            for pad in [0, 4, 7] {
+                s.note_on(pad, 120, 0);
+            }
+            let before = run(&mut s, &mut frame, 40, 128);
+            assert!(peak(&before) > 1e-3, "{e:?} plays");
+            s.stop();
+            let out = run(&mut s, &mut frame, 200, 128);
+            assert!(
+                out[2 * FADE as usize..].iter().all(|&x| x == 0.0),
+                "{e:?} rings on after STOP: {}",
+                peak(&out[2 * FADE as usize..])
+            );
+            assert_eq!(s.active_voices(), 0, "{e:?}");
+        }
     }
 
     #[test]

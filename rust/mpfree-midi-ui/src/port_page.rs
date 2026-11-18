@@ -1044,9 +1044,11 @@ fn delay_words(v: &View) -> [String; 2] {
             "early, so they land on the beat.".to_string(),
         ]
     } else {
+        // Past the sound's lead only the clips can go early: they play
+        // ahead (the sequencer's look-ahead).
         [
-            format!("MPFree sends up to {:.1} ms early today;", v.early_ms),
-            "the rest waits for the sequencer.".to_string(),
+            format!("Clips send their notes {d:.1} ms early;"),
+            format!("live playing and clock up to {:.1} ms.", v.early_ms),
         ]
     }
 }
@@ -2109,6 +2111,8 @@ mod tests {
             .setup
             .set_port(DIN_NAME, |p| p.delay_tenths = 200);
         let v = view(&m.lock().unwrap(), DIN_NAME, 0.0);
-        assert!(delay_words(&v)[0].contains("up to 8.7 ms"));
+        let words = delay_words(&v);
+        assert!(words[0].contains("20.0 ms"), "{words:?}");
+        assert!(words[1].contains("up to 8.7 ms"), "{words:?}");
     }
 }

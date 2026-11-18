@@ -183,6 +183,7 @@ impl Rig {
         time.advance(PERIOD as u32);
         midi.sync(io, time.info().state.rolling());
         midi.clock(time.block());
+        time.set_ahead(&midi.ahead());
         cv.sync(io);
         cv.clock(time.block());
         app.set_clock(time.arp_clock());
@@ -426,11 +427,11 @@ fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
 }
 
 /// Track 1 with its own Poly (instruments.rs): the pads (through its arp)
-/// and its clip play the Poly into its own mixer channel, not the kit, and
-/// half a minute of it allocates and frees nothing on the sound path.
+/// and its clip play the Poly into its mixer channel (the Drums strip,
+/// R3 part 4b), not the kit, and half a minute of it allocates and frees
+/// nothing on the sound path.
 #[test]
 fn a_track_with_its_own_instrument_plays_it_and_never_allocates() {
-    use crate::instruments::first_track;
     let mut rig = Rig::new(false);
     // Setup, which may allocate: Poly made for track 1 (no builder here,
     // so made at once) and put in on the next period.
@@ -473,13 +474,14 @@ fn a_track_with_its_own_instrument_plays_it_and_never_allocates() {
         "the live pads played the kit"
     );
     assert!(rig.peak > 0.01, "silent: peak {}", rig.peak);
-    // Its own mixer channel shows on the panel; the others don't.
+    // Track 1's own instrument plays into the Drums strip (R3 part 4b),
+    // which says so; no own channel shows.
     rig.mix.show(Some(mpfree_mixer_ui::MixView::Tracks));
     let st = rig.mix.poll_state(std::time::Instant::now()).unwrap();
     let names: Vec<&str> = st.strips.iter().map(|v| v.name.as_str()).collect();
-    assert_eq!(names, vec!["Drums", "Synth", "Loop", "Audio", "Track 1"]);
-    assert_eq!(st.strips[4].id, mpfree_fx::StripId::Track(first_track()));
-    assert!(st.strips[4].peak[0] > 0.0, "{:?}", st.strips[4].peak);
+    assert_eq!(names, vec![mixing::TRACK_1, "Synth", "Loop", "Audio"]);
+    assert_eq!(st.strips[0].id, mpfree_fx::StripId::Track(mixing::DRUMS));
+    assert!(st.strips[0].peak[0] > 0.0, "{:?}", st.strips[0].peak);
 }
 
 /// A send reverb that goes a block late on the returns lane (cores.rs):
@@ -537,17 +539,27 @@ impl std::io::Write for MidiSink {
 /// sound path still never allocates or frees.
 #[test]
 fn a_track_on_midi_out_plays_there_and_never_allocates() {
-    track_on_midi_out_never_allocates(false);
+    track_on_midi_out_never_allocates(false, 0);
 }
 
 /// The same with the track and the clock on a USB device's output: its
 /// own writer, and the jacks get nothing.
 #[test]
 fn a_track_on_a_usb_device_plays_there_and_never_allocates() {
-    track_on_midi_out_never_allocates(true);
+    track_on_midi_out_never_allocates(true, 0);
 }
 
-fn track_on_midi_out_never_allocates(usb: bool) {
+/// The same on gear slower than the sound's lead (sequencer S5): the
+/// track's clip plays ahead, a copy of the transport and the player
+/// forecasting each period, and still nothing allocates and every note
+/// ends once.
+#[test]
+fn a_track_on_slow_gear_plays_ahead_and_never_allocates() {
+    track_on_midi_out_never_allocates(false, 400);
+}
+
+/// `delay_tenths`: the gear's delay on the port's page, in tenths of a ms.
+fn track_on_midi_out_never_allocates(usb: bool, delay_tenths: u16) {
     use mpfree_midi::setup::{ClockOut, TrackOut, DIN_NAME};
     let mut rig = Rig::new(false);
     let mut c =
@@ -584,8 +596,10 @@ fn track_on_midi_out_never_allocates(usb: bool) {
     {
         let mut m = rig.io.lock().unwrap();
         m.setup.tracks[0] = Some(TrackOut::new(port, 9));
-        m.setup
-            .set_port(port, |p| p.clock_out = ClockOut::WhilePlaying);
+        m.setup.set_port(port, |p| {
+            p.clock_out = ClockOut::WhilePlaying;
+            p.delay_tenths = delay_tenths;
+        });
         m.gen += 1;
     }
     // An LFO on the track's CC 74 (its outside gear's brightness), set up
@@ -622,6 +636,13 @@ fn track_on_midi_out_never_allocates(usb: bool) {
         rig.clip_hits, clip_before,
         "the clip's notes reached the pads"
     );
+    let ahead = rig.time.ahead_counts();
+    if delay_tenths > 0 {
+        assert!(ahead.ahead > 20, "{ahead:?}");
+        assert_eq!(ahead.dropped, 0, "{ahead:?}");
+    } else {
+        assert_eq!(ahead, Default::default());
+    }
     // Closing ends whatever is still on.
     assert!(rig.midi.close());
     let bytes = sink.0.lock().unwrap().clone();
@@ -976,13 +997,12 @@ fn routed_keys_play_their_track_where_its_clips_play() {
         (5, up(PAD_NOTES[0])),
     ];
     let mut routed_pads = crate::midi_in::RoutedPads::new();
-    let synth = &*rig.synth;
     let ((), calls) = crate::sys::alloc_count::calls(|| {
         for (track, key) in keys {
             // As the sound loop does: CAPTURE's history first, with the
             // synth's pad layout for track 4 (as if it played the synth).
             let t = usize::from(track);
-            let synth_has = (t == 3).then_some(synth);
+            let synth_has = (t == 3).then_some(&*rig.synth);
             let kept = routed_pads.event(track, key, |n| {
                 crate::midi_file::pad_on_track(&rig.mix.instruments, synth_has, t, n)
             });
@@ -995,7 +1015,8 @@ fn routed_keys_play_their_track_where_its_clips_play() {
                 &mut rig.midi,
                 &mut rig.cv,
                 &mut rig.mix.instruments,
-                None,
+                &mut rig.synth,
+                false,
                 &mut rig.player,
                 0,
             );
@@ -1426,6 +1447,113 @@ fn a_kits_instrument_and_midi_out_pads_play_the_synth_and_the_gear() {
     );
     seq.midi
         .period_end(PERIOD as u32, std::time::Instant::now());
+    assert!(rig.midi.close());
+    assert_eq!(
+        *sink.0.lock().unwrap(),
+        [0x99, 36, 100, 0x89, 36, 64],
+        "pad 3's own note on channel 10, and its end"
+    );
+}
+
+/// Keys a route sends to a track that plays a kit (the I/O view's
+/// Routing) play its pads as their kinds have them, as its clips' notes
+/// do: the MIDI out pad's key goes out on that pad's own port, channel
+/// and note, and the Instrument pad's key starts a voice of its engine
+/// (with its pressure and its end); the sampler plays neither, and none
+/// of it allocates or frees.
+#[test]
+fn routed_keys_play_a_kits_midi_out_and_instrument_pads_by_their_kind() {
+    use crate::midi_in::Key;
+    use crate::synth::Engine;
+    use mpfree_midi::profile::kit_pad_of_note;
+    use mpfree_midi::setup::DIN_NAME;
+    use mpfree_node::NodeEvent;
+    let mut rig = Rig::new(false);
+    let sink = MidiSink::default();
+    rig.midi
+        .open(sink.clone(), std::time::Instant::now())
+        .unwrap();
+    rig.midi.sync(&rig.io, false);
+    // Kit 1's pad 3 sends note 36 on channel 10 to the jacks; pad 4 plays
+    // Analog at C3.
+    let mut routes = vec![None; mpfree_sampler::model::PADS];
+    routes[2] = Some(sampler::PadRoute::Midi {
+        port: DIN_NAME.into(),
+        channel: 9,
+        note: 36,
+    });
+    routes[3] = Some(sampler::PadRoute::Voice(Engine::Analog, 48));
+    let mut swap = sampler::ViewSwap {
+        kit: 0,
+        view: Some(mpfree_sampler::engine::EngineView::build(
+            &mpfree_sampler::model::Project::new(),
+            RATE,
+        )),
+        routes,
+    };
+    assert!(rig.player.swap_view(&mut swap));
+    // The keys that hit pads 3 and 4 (the MPC's pad notes).
+    let (out_key, voice_key) = (PAD_NOTES[2], PAD_NOTES[3]);
+    assert_eq!(
+        (kit_pad_of_note(out_key), kit_pad_of_note(voice_key)),
+        (2, 3)
+    );
+    let hits = rig.player.hits();
+    let keys = [
+        Key::Down {
+            note: out_key,
+            velocity: 100,
+        },
+        Key::Down {
+            note: voice_key,
+            velocity: 90,
+        },
+        Key::Pressure {
+            note: voice_key,
+            value: 60,
+        },
+        Key::Up { note: out_key },
+        Key::Up { note: voice_key },
+    ];
+    let ((), calls) = crate::sys::alloc_count::calls(|| {
+        for key in keys {
+            // Track 6, not armed, playing kit 1.
+            crate::play_routed(
+                5,
+                key,
+                &mut rig.midi,
+                &mut rig.cv,
+                &mut rig.mix.instruments,
+                &mut rig.synth,
+                false,
+                &mut rig.player,
+                0,
+            );
+        }
+        rig.midi
+            .period_end(PERIOD as u32, std::time::Instant::now());
+    });
+    assert_eq!(calls, 0, "allocations or frees playing the pads' kinds");
+    assert_eq!(
+        rig.synth.queued_on(Engine::Analog),
+        [
+            NodeEvent::NoteOn {
+                note: 48,
+                velocity: 90
+            },
+            NodeEvent::Pressure {
+                note: 48,
+                value: 60
+            },
+            NodeEvent::NoteOff { note: 48 },
+        ]
+    );
+    assert!(
+        rig.synth.queued().is_empty(),
+        "nothing on the engine on the pads (Poly)"
+    );
+    rig.period(0);
+    assert_eq!(rig.player.hits(), hits, "the sampler played neither");
     assert!(rig.midi.close());
     assert_eq!(
         *sink.0.lock().unwrap(),

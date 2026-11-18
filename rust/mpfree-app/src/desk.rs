@@ -262,7 +262,8 @@ impl Desk<'_> {
                     out.note(&format!("XY pad: plays {name}"));
                     fx.extend(app.set_xy_effect(e));
                 }
-                mix.play(p)
+                mix.play(p);
+                let _ = tell_throw_said(mix, out);
             }
             gui::FromUi::Steps(a) => {
                 // ERASE + a lane's name: said in place of the hint.
@@ -380,6 +381,43 @@ impl Desk<'_> {
                     out.show(gui::ToUi::Rec(app.rec));
                 }
             }
+            // The Wave page's REC (the one Sample page's step 2a): a pad
+            // take there that goes at once, or the one running ends; while
+            // another take counts in or records, the row says why.
+            gui::FromUi::RecHere { kit, pad } => {
+                let now = rec_now(time, looper);
+                match app.rec.rec_here(kit, pad, &now) {
+                    Ok(done) => {
+                        if let Some(p) = app.rec.pad.filter(|p| p.here) {
+                            out.note(&format!(
+                                "rec: {} of kit {} for one take, from the Wave page's REC",
+                                p.name(),
+                                p.kit + 1
+                            ));
+                        }
+                        fx.extend(rec_effects(done, time, looper));
+                        out.show(gui::ToUi::Rec(app.rec));
+                    }
+                    Err(why) => {
+                        out.note(&format!("rec: the Wave page's REC refused: {why}"));
+                        out.show(gui::ToUi::RecHereNo(why));
+                    }
+                }
+            }
+            // The Wave page's Keep card (one-page step 2c): Sample Recall's
+            // rule, for its tap and for its hold.
+            gui::FromUi::KeepLast => {
+                if take_waits(app, time, looper) {
+                    let s = KEEP_WAITS.to_string();
+                    out.note(&s);
+                    out.show(gui::ToUi::Tell(s));
+                } else {
+                    out.show(gui::ToUi::KeepLast);
+                }
+            }
+            gui::FromUi::RecallOpen { pad } => {
+                fx.push(app::Effect::Recall(app::RecallKey::Open { pad }))
+            }
             gui::FromUi::RecPin(on) => {
                 app.rec.pinned = on;
                 out.note(if on {
@@ -440,7 +478,23 @@ impl Desk<'_> {
             gui::FromUi::LoopKeys => fx.extend(app.toggle_loop_keys()),
             gui::FromUi::PerformOff => fx.extend(app.perform_off()),
             gui::FromUi::PerformOn => fx.extend(app.perform_on()),
-            gui::FromUi::PerformShown(on) => fx.extend(app.show_perform(on)),
+            gui::FromUi::PerformShown(on) => {
+                if on {
+                    out.show(throw_strips(mix, time));
+                    out.show(throw_knobs(mix, app.perform_set()));
+                }
+                fx.extend(app.show_perform(on))
+            }
+            // The Perform view's Q-Links: a throw's setting on its strip's
+            // Perform FX, as the chain editor's knobs set theirs.
+            gui::FromUi::ThrowKnob { addr, value } => {
+                let recording = time.info().state == mpfree_transport::State::Recording;
+                modpanels::set_param(mix, addr, value, recording);
+            }
+            gui::FromUi::ThrowKnobLift(addr) => mix.modu.release(addr),
+            gui::FromUi::ThrowEffect { on, fx: throw } => {
+                fx.extend(panels.open_throw_mix(app, mix, on, throw))
+            }
             gui::FromUi::PerformPage(page) => fx.extend(app.perform_page_to(page)),
             gui::FromUi::PerformPad { page, pad, action } => {
                 fx.extend(app.set_perform_pad(page, pad, action))
@@ -472,6 +526,7 @@ impl Desk<'_> {
             | gui::FromUi::Slice { .. }
             | gui::FromUi::SampleLiveChop { .. }
             | gui::FromUi::SampleHit { .. }
+            | gui::FromUi::SampleTake { .. }
             | gui::FromUi::SampleKey { .. }
             | gui::FromUi::SamplePadLive { .. }
             | gui::FromUi::Preview(_)
@@ -481,6 +536,7 @@ impl Desk<'_> {
             | gui::FromUi::SampleView(_)
             | gui::FromUi::SampleInput(_)
             | gui::FromUi::SampleSource(_)
+            | gui::FromUi::SampleGain(_)
             | gui::FromUi::SampleGrains(_)
             | gui::FromUi::SaveProject
             | gui::FromUi::OpenProject(_)
@@ -593,13 +649,8 @@ impl Desk<'_> {
             // mustn't take that (the sequencer thread, 18 Nov). A pad take
             // armed or recording holds REC for that take the same way.
             app::Effect::Recall(app::RecallKey::Open { pad }) => {
-                let now = rec_now(time, looper);
-                if now.taking()
-                    || now.loop_armed
-                    || app.rec.ready.is_some()
-                    || app.rec.pad.is_some()
-                {
-                    let s = "Finish the take first: Sample Recall opens once it stops".to_string();
+                if take_waits(app, time, looper) {
+                    let s = RECALL_WAITS.to_string();
                     out.note(&s);
                     out.show(gui::ToUi::Tell(s));
                 } else {
@@ -659,9 +710,19 @@ impl Desk<'_> {
                 later.extend(crate::looper_action(out, looper, app, *card, a))
             }
             // A Perform pad's throw, and its track mute.
-            app::Effect::PlayFx(p) => mix.play(p),
+            app::Effect::PlayFx(p) => {
+                mix.play(p);
+                let _ = tell_throw_said(mix, out);
+            }
+            // The set changed: the strips its throws play on get their
+            // Perform FX (picking On is where the mix changes, never a hit).
             app::Effect::PerformSet { set, opened } => {
-                out.show(gui::ToUi::PerformSet { set, opened })
+                mix.perform_strips(&set.throw_strips(), opened);
+                let _ = tell_throw_said(mix, out);
+                let knobs = throw_knobs(mix, &set);
+                out.show(gui::ToUi::PerformSet { set, opened });
+                out.show(throw_strips(mix, time));
+                out.show(knobs);
             }
             app::Effect::TrackMute { track, wait } => {
                 let line = time
@@ -693,6 +754,20 @@ impl Desk<'_> {
 
 /// What the arm finds ([`crate::rec_arm::Now`]): the transport, the loops
 /// and the armed track's name.
+/// Whether a take is ready, counting in or recording (the notes, a loop,
+/// or a pad take): Sample Recall waits for it (the sequencer thread, 18
+/// Nov; REC arm rule 6), as the Wave page's Keep card does (one-page step
+/// 2c), since REC mid-take punches out and neither may take that.
+pub fn take_waits(app: &app::App, time: &time::TimeHost, looper: &looping::LoopHost) -> bool {
+    let now = rec_now(time, looper);
+    now.taking() || now.loop_armed || app.rec.ready.is_some() || app.rec.pad.is_some()
+}
+
+/// What Sample Recall and the Keep card say while a take waits
+/// ([`take_waits`]).
+pub const RECALL_WAITS: &str = "Finish the take first: Sample Recall opens once it stops";
+pub const KEEP_WAITS: &str = "Finish the take first: Keep keeps what just played once it stops";
+
 pub fn rec_now(time: &time::TimeHost, looper: &looping::LoopHost) -> crate::rec_arm::Now {
     let info = time.info();
     let (loop_taking, loop_armed) = looper.rec_now();
@@ -793,6 +868,50 @@ pub fn perform_pad(
 /// playing). A throw pad plays its throw (held, or latched until the next
 /// hit); a track mute pad mutes or unmutes its track, at the launch line
 /// in Perform; a scene pad launches its row.
+/// The strips a Perform pad's throw can play on now, for the screen.
+pub fn throw_strips(mix: &mixing::MixHost, time: &time::TimeHost) -> gui::ToUi {
+    gui::ToUi::ThrowStrips(mixing::throw_strips(
+        &mix.mixer,
+        mix.own_channels_in_use(),
+        &crate::export::track_names(time),
+    ))
+}
+
+/// What the Perform set's throws on tracks and submixes said (a Perform
+/// FX put on or taken off, or why a throw couldn't play), in the log and
+/// on the screen. Whether there was anything (a Perform FX may have come
+/// or gone: [`throw_knobs`] again).
+pub fn tell_throw_said(mix: &mut mixing::MixHost, out: &mut Out) -> bool {
+    let said = mix.take_throw_said();
+    let any = !said.is_empty();
+    for line in said {
+        out.note(&line);
+        out.show(gui::ToUi::Tell(line));
+    }
+    any
+}
+
+/// Each throw of `set` (one per effect and strip) as its strip's Perform
+/// FX has it: what the Perform view's Q-Links show and turn.
+pub fn throw_knobs(mix: &mixing::MixHost, set: &crate::perform_pads::PerformSet) -> gui::ToUi {
+    use crate::perform_pads::PadAction;
+    let mut knobs: Vec<mixing::ThrowKnobs> = Vec::new();
+    for page in &set.pages {
+        for a in &page.pads {
+            let PadAction::Throw(t) = *a else {
+                continue;
+            };
+            let Some(fx) = t.fx() else {
+                continue;
+            };
+            if !knobs.iter().any(|k| k.on == t.on && k.fx == fx) {
+                knobs.push(mix.throw_knobs(t.on, fx));
+            }
+        }
+    }
+    gui::ToUi::ThrowKnobs(knobs)
+}
+
 pub fn perform_pad_on(
     app: &mut app::App,
     time: &time::TimeHost,
@@ -927,6 +1046,44 @@ pub fn perform_pad_up(
             ))]
         }
         _ => Vec::new(),
+    }
+}
+
+/// A key learned on a Perform pad (Learn a key; `remote::PerformAct`), on
+/// any page: pressed, the pad's action plays as a hit on it does
+/// ([`perform_pad_on`], with the drum pads Drop drums mutes, `drums`), and
+/// the log says which pad; let go, its let-go ([`perform_pad_up`]). A
+/// loop key's hold clears its loop through [`perform_pad_held`].
+pub fn perform_remote(
+    app: &mut app::App,
+    time: &time::TimeHost,
+    looper: &looping::LoopHost,
+    out: &mut Out,
+    act: crate::remote::PerformAct,
+    drums: u16,
+) -> Vec<app::Effect> {
+    use crate::perform_pads::PadAction;
+    use crate::remote::PerformAct;
+    match act {
+        PerformAct::Nothing => Vec::new(),
+        PerformAct::Down { page, pad, action } => {
+            let label = crate::perform_tab::pad_label(usize::from(page), usize::from(pad));
+            if action == PadAction::None {
+                out.note(&format!(
+                    "perform: Perform pads {label} has nothing on it, from a learned key"
+                ));
+                return Vec::new();
+            }
+            out.note(&format!(
+                "perform: Perform pads {label}, from a learned key"
+            ));
+            let (fx, line) = perform_pad_on(app, time, looper, out, action, drums);
+            if !line.is_empty() {
+                out.note(&line);
+            }
+            fx
+        }
+        PerformAct::Up(action) => perform_pad_up(app, action),
     }
 }
 
@@ -1364,5 +1521,30 @@ mod tests {
         let strip = ParamAddr::new(Owner::Strip(mpfree_play::mpfree_param::Strip::Track(0)), 0);
         assert!(ask(&mut mix, Ask::AddLfo(strip)).is_empty());
         assert!(mix.modu.rows_on(strip).is_empty());
+    }
+
+    /// Sample Recall and the Wave page's Keep card wait while a take is
+    /// ready, counting in or recording: the notes' take ready, or a pad
+    /// take armed (one-page step 2c, the sequencer thread's rule).
+    #[test]
+    fn recall_and_keep_wait_for_a_take_that_is_ready_or_recording() {
+        let mut app = app::App::new(44_100, false);
+        let time = time::TimeHost::new(44_100, 92.0).unwrap();
+        let looper = looping::LoopHost::new(44_100, 8);
+        assert!(!take_waits(&app, &time, &looper), "nothing taking");
+        app.rec.ready = Some(crate::rec_arm::Take::Replace);
+        assert!(take_waits(&app, &time, &looper), "the notes' take ready");
+        app.rec.ready = None;
+        app.rec.pad = Some(crate::rec_arm::PadTake {
+            kit: 0,
+            pad: 5,
+            id: 1,
+            started: false,
+            recording: false,
+            here: true,
+        });
+        assert!(take_waits(&app, &time, &looper), "a pad take armed");
+        assert!(KEEP_WAITS.starts_with("Finish the take first"));
+        assert!(RECALL_WAITS.starts_with("Finish the take first"));
     }
 }

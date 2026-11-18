@@ -36,6 +36,7 @@
 
 pub mod held;
 pub mod pedal;
+pub mod preset;
 pub mod pressure;
 
 pub use held::{Held, HeldStep, HELD_VALUES};

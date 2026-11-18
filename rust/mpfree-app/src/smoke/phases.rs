@@ -701,7 +701,7 @@ mod looper {
             s.pad_edge(1, 100, true);
             s.run_periods(4);
             assert!(s.mix.throw_held(ThrowFx::Reverb), "held");
-            assert_eq!(s.app.throws_on(), 0b10);
+            assert_eq!(s.app.throws_on(), [(1, mpfree_fx::StripId::Master)]);
             s.pad_edge(1, 0, false);
             s.run_periods(4);
             assert!(!s.mix.throw_held(ThrowFx::Reverb), "let go with the pad");
@@ -735,6 +735,210 @@ mod looper {
             s.button("PAD BANK A/E");
             assert_eq!(s.app.perform_bank(), 0);
             assert!(s.hint().starts_with("Pads: loop keys"), "{}", s.hint());
+        });
+    }
+
+    /// A Perform pad's throw on the Drums track (board 7's On): picking
+    /// On puts a Perform FX on Drums and says so, a hit plays the throw
+    /// there and not on the master, and On back to the master takes it off
+    /// again.
+    #[test]
+    fn a_throw_on_drums_plays_on_a_perform_fx_its_on_put_there() {
+        use crate::gui::FromUi;
+        use crate::perform_pads::{Hold, PadAction, Throw};
+        use mpfree_fx::StripId;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let drums = StripId::Track(crate::mixing::DRUMS);
+            let perform_on = |s: &Session| {
+                let c = s.mix.mixer.chain(drums)?;
+                (0..c.len()).find(|&i| {
+                    c.node(i)
+                        .is_some_and(|n| n.info().id == crate::mixing::PERFORM_FX)
+                })
+            };
+            let delay = Throw::new(0, Hold::WhileHeld);
+            let on_drums = Throw { on: drums, ..delay };
+            assert_eq!(perform_on(&s), None);
+            s.route(FromUi::PerformPad {
+                page: 1,
+                pad: 0,
+                action: PadAction::Throw(on_drums),
+            });
+            s.run_for(0.1);
+            assert!(s.said().iter().any(|l| l
+                == "perform: Perform FX put on Drums for the Perform pads' throws (the Mix tab \
+                    shows it)"));
+            let slot = perform_on(&s).expect("a Perform FX on Drums");
+            // The set on the pads at page B: pad 1 throws on Drums.
+            s.press("header", "tab", "Looper");
+            s.button_with("SHIFT", "SAMPLER");
+            s.button("PAD BANK B/F");
+            s.pad_edge(0, 100, true);
+            s.run_periods(4);
+            let held = |s: &Session, strip: StripId, slot: usize| {
+                s.mix
+                    .mixer
+                    .chain(strip)
+                    .and_then(|c| c.node(slot))
+                    .is_some_and(|n| n.param(mpfree_fx::ids::perform::hold(9)) > 0.5)
+            };
+            assert!(held(&s, drums, slot), "on Drums");
+            assert!(
+                !s.mix.throw_held(crate::mixing::ThrowFx::Delay),
+                "not the master"
+            );
+            s.pad_edge(0, 0, false);
+            s.run_periods(4);
+            assert!(!held(&s, drums, slot));
+            // On back to the master: the Perform FX comes off Drums.
+            s.route(FromUi::PerformPad {
+                page: 1,
+                pad: 0,
+                action: PadAction::Throw(delay),
+            });
+            s.run_for(0.1);
+            assert!(s
+                .said()
+                .iter()
+                .any(|l| l
+                    == "perform: Perform FX taken off Drums (no Perform pad throws there now)"));
+            assert_eq!(perform_on(&s), None);
+        });
+    }
+
+    /// Learn a key (board 7): a key learned on a Perform pad plays it on
+    /// any page, whatever the MPC's pads show. On Play, with the pads
+    /// playing the kit, B2's key plays Reverb wash while held and lets it
+    /// go; an empty pad's key says so; and a controller unplugged with the
+    /// key held lets the throw go.
+    #[test]
+    fn a_key_learned_on_a_perform_pad_plays_it_from_any_page() {
+        use mpfree_play::mpfree_param::perform;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Play");
+            assert!(!s.app.pads_are_perform());
+            let b2 = perform::pad(1, 1);
+            s.perform_key(b2, 1.0);
+            assert_eq!(s.app.throws_on().len(), 1, "Reverb wash plays");
+            let said = s.said();
+            assert!(said
+                .iter()
+                .any(|l| l == "perform: Perform pads B2, from a learned key"));
+            assert!(said.iter().any(|l| l == "perform: Reverb wash"));
+            s.perform_key(b2, 0.0);
+            assert!(s.app.throws_on().is_empty(), "let go");
+            // An empty pad: nothing plays, and the log says why.
+            s.perform_key(perform::pad(1, 15), 1.0);
+            assert!(s.app.throws_on().is_empty());
+            assert!(s
+                .said()
+                .iter()
+                .any(|l| l == "perform: Perform pads B16 has nothing on it, from a learned key"));
+            s.perform_key(perform::pad(1, 15), 0.0);
+            // Unplugged while held: the throw lets go.
+            s.perform_key(b2, 1.0);
+            assert_eq!(s.app.throws_on().len(), 1);
+            s.unplug_perform_keys();
+            assert!(s.app.throws_on().is_empty(), "nothing stays held");
+            assert!(!s.app.pads_are_perform(), "the pads never moved");
+        });
+    }
+
+    /// The Perform view's Q-Links on a throw that plays on Drums turn its
+    /// Feedback on the Drums track's Perform FX, through the desk to the
+    /// mixer; a run of turns is one UNDO step there; Edit the effect opens
+    /// that Perform FX in the chain editor on the Delay throw's page.
+    #[test]
+    fn the_perform_views_q_links_turn_a_throw_on_its_strips_perform_fx() {
+        use crate::gui::FromUi;
+        use crate::perform_pads::{Hold, PadAction, Throw};
+        use mpfree_fx::ids::perform as pf;
+        use mpfree_fx::StripId;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let drums = StripId::Track(crate::mixing::DRUMS);
+            let on_drums = Throw {
+                on: drums,
+                ..Throw::new(0, Hold::WhileHeld)
+            };
+            s.route(FromUi::PerformPad {
+                page: 1,
+                pad: 0,
+                action: PadAction::Throw(on_drums),
+            });
+            s.run_for(0.1);
+            let feedback = |s: &Session| {
+                let c = s.mix.mixer.chain(drums).expect("Drums' chain");
+                (0..c.len())
+                    .filter_map(|i| c.node(i))
+                    .find(|n| n.info().id == crate::mixing::PERFORM_FX)
+                    .map(|n| n.param(pf::slot(crate::mixing::ThrowFx::Delay.pad()) + pf::AMOUNT))
+            };
+            assert_eq!(feedback(&s), Some(55.0));
+            // The Pads tab's Perform view, page B, pad 1.
+            s.press("header", "tab", "Pads");
+            s.press(mpfree_sampler_ui::pads_tab::KITS, "perform", "Perform pads");
+            s.button("PAD BANK B/F");
+            s.pad_edge(0, 100, true);
+            s.run_periods(2);
+            s.pad_edge(0, 0, false);
+            s.run_periods(4);
+            let cards = |s: &Session| {
+                s.screen
+                    .ui
+                    .get::<mpfree_ui::qlink::QLinkColumn>(crate::play_page::QLINKS)
+                    .map(|q| {
+                        q.cards
+                            .each_ref()
+                            .map(|c| (c.name.clone(), c.value.clone()))
+                    })
+            };
+            assert_eq!(
+                cards(&s).map(|c| [c[0].clone(), c[1].clone()]),
+                Some([
+                    ("Time".to_string(), "1/8D".to_string()),
+                    ("Feedback".to_string(), "55 %".to_string())
+                ])
+            );
+            // Q2 turned up 5, then 3 more: on the mixer, one UNDO step.
+            s.qlink(1, 5);
+            s.qlink(1, 3);
+            s.run_periods(4);
+            assert_eq!(feedback(&s), Some(63.0));
+            s.screen.apply(crate::gui::ToUi::QLinkTouch(1, false));
+            s.run_periods(4);
+            assert!(s
+                .said()
+                .iter()
+                .any(|l| l == "perform: Perform pads: Delay throw on Drums: Feedback 63 %"));
+            s.button("UNDO");
+            s.run_periods(10);
+            assert_eq!(feedback(&s), Some(55.0));
+            assert!(s
+                .said()
+                .iter()
+                .any(|l| l == "perform: Undo: Delay throw's Feedback on Drums back to 55 %"));
+            // Q3 turns nothing, and says why.
+            s.qlink(2, 1);
+            assert!(s.said().iter().any(|l| l.ends_with(
+                "A throw has two settings, on Q1 and Q2: Delay throw has no others here"
+            )));
+            // Edit the effect: the Drums Perform FX on its Slots 9-12 page.
+            let slot = s.mix.perform_slot(drums);
+            s.press(crate::perform_tab::ACTS, "button", "Edit the effect ›");
+            s.run_periods(4);
+            assert_eq!(s.app.view(), crate::app::View::Chain);
+            let page = s
+                .screen
+                .ui
+                .get::<mpfree_chain_ui::ChainView>(mpfree_chain_ui::CHAIN)
+                .map(|v| {
+                    let st = v.state();
+                    (st.groups.get(st.group).cloned(), st.selected)
+                });
+            assert_eq!(page, Some((Some("Slots 9-12".to_string()), slot)));
         });
     }
 
@@ -1683,6 +1887,35 @@ mod track_kits {
             assert_eq!(s.time.armed(), Some(n));
             assert_eq!(s.track_kits.entry(n), 0);
             assert_eq!(s.kit, 0, "the pads play kit 1");
+            assert!(!s.track_kits.set_aside(1), "the kit is the project's again");
+        });
+    }
+
+    /// A new track given a kit of its own, UNDO, REDO: one UNDO takes the
+    /// track and its kit (set aside, out of the list of kits), and one
+    /// REDO brings both back.
+    #[test]
+    fn redo_brings_a_track_back_with_its_kit() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            assert!(s.kits() > 1, "a second kit to give");
+            let n = s.time.track_count();
+            s.route(FromUi::Time(TimeAction::AddTrack));
+            s.run_periods(4);
+            s.route(FromUi::Kit(1));
+            s.run_periods(4);
+            assert_eq!(s.track_kits.entry(n), 1);
+            s.route(FromUi::Time(TimeAction::Undo));
+            s.run_periods(4);
+            assert_eq!(s.time.track_count(), n);
+            assert_eq!(s.track_kits.entry(n), 0);
+            assert!(s.track_kits.set_aside(1), "kit 2 waits for REDO");
+            s.route(FromUi::Time(TimeAction::Redo));
+            s.run_periods(4);
+            assert_eq!(s.time.track_count(), n + 1);
+            assert_eq!(s.track_kits.entry(n), 1, "back on its kit");
+            assert!(!s.track_kits.set_aside(1));
         });
     }
 }

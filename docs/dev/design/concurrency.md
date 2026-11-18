@@ -205,6 +205,15 @@ match lane.join(deadline) {
   could not be pinned keeps the core set of the thread that made it, which
   is the audio thread's own core 3, and would fight the audio thread for it
   while the audio thread spins in `join`.
+- **Flush-to-zero** (`Config::flush_to_zero`, off by default): the worker
+  turns the processor's flush-to-zero mode on as it starts
+  (`mpfree_lanes::fpu`: ARMv7's FPSCR, AArch64's FPCR, x86's MXCSR), so a
+  part renders on a lane as it does on an audio thread that has the mode
+  on; `Setup::flush_to_zero` says whether it took. The app's audio thread
+  and all its lanes have it on in every Sound cores mode, so a tail
+  decaying through denormals costs no more than any other sound
+  ([synth-architecture](synth-architecture.md#flatter-worst-periods-lever-5)).
+  On Linux a thread starts with the mode of the thread that started it.
 - **Linux first.** Other systems poll with short sleeps instead of a futex,
   and report that pinning and SCHED_FIFO are not supported yet.
 
@@ -328,7 +337,8 @@ there. Jay (12 Nov): keep one core for interrupts.
   worker starts with the audio thread's cores. A refused priority for the
   audio thread is reported and the sound plays on.
 - **Safety.** Only the program's own threads change: their allowed cores
-  (`sched_setaffinity`) and priority (`sched_setscheduler`), in RAM. The
+  (`sched_setaffinity`), priority (`sched_setscheduler`) and floating-point
+  mode (flush-to-zero), in RAM. The
   only thing written is the Prefs row's line in the app's settings on the
   stick's data partition (never the MPC's own storage). Setting the row
   back to Shared undoes it from the next start; on the workstation,

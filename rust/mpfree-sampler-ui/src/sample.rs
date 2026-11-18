@@ -642,6 +642,7 @@ pub fn wave_sample(fonts: Fonts) -> Result<Sample, String> {
     let mut ui = app_ui(fonts, &project);
     let mut tab = WaveTab::add(&mut ui, PAGE, &state)?;
     tab.set_sound(&mut ui, sound_state(&project, &view));
+    tab.set_recorder(&mut ui, recorder_idle(), &state);
     ui.show(PAGE)?;
     Ok(Sample {
         name: "wave",
@@ -651,6 +652,21 @@ pub fn wave_sample(fonts: Fonts) -> Result<Sample, String> {
         project,
         state,
     })
+}
+
+/// The recorder row as the app shows it with the line input on and pad
+/// A2 empty (one-page step 2a), the music playing (Keep, step 2c).
+fn recorder_idle() -> crate::recorder::RecorderView {
+    crate::recorder::RecorderView {
+        sources: vec!["Line in".into(), "Master".into()],
+        status: "next take onto A2".into(),
+        keep: crate::recorder::KeepView {
+            title: "Keep last 4 bars".into(),
+            line: "what just played, onto A2".into(),
+            ready: true,
+        },
+        ..Default::default()
+    }
 }
 
 /// The Chop tab on the sample project's pad, chopped by transients.
@@ -1167,6 +1183,21 @@ pub fn melody_project() -> (Project, Arc<SourceView>) {
 pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let mut out = Vec::new();
     out.push(wave_sample(fonts())?);
+
+    // REC on (one-page step 2a): the recorder row lit and counting, the
+    // meter up, and the panel the Input section.
+    let mut s = wave_sample(fonts())?;
+    s.name = "wave-recording";
+    s.about = "REC on: the take recording onto A2 from the line input, starting on the input over -30 dB, ending on STOP; the panel is Input";
+    let mut on = recorder_idle();
+    on.settings.start = crate::rec_tab::StartAt::Threshold;
+    on.recording = true;
+    on.status = "0:05.1 · onto A2".into();
+    on.keep.line = "finish the take first".into();
+    on.keep.ready = false;
+    s.tab.set_recorder(&mut s.ui, on, &s.state.clone());
+    s.tab.meter(&mut s.ui, [0.5, 0.4], 0.0);
+    out.push(s);
 
     // Zoomed in round the loop start, snapping to sixteenths, after a
     // Q-Link turn.

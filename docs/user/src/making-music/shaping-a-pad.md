@@ -43,7 +43,7 @@ On the **Filter** section the drawing shows the filter's own envelope instead of
 
 A cutoff or resonance change reaches a sound that is still playing, gliding there, and so does Drive; a new envelope or filter type plays from the next hit.
 
-### Filter types: low pass to vowel
+### Filter types: low pass to comb
 
 The **Filter** selector steps through the types:
 
@@ -51,6 +51,7 @@ The **Filter** selector steps through the types:
 - **Notch** (2-pole or 4-pole): the opposite of band pass. It takes out a band around the cutoff and leaves the rest, for a hollow, phasey sound; sweep it with the envelope or the LFO. 4-pole takes out a wider band.
 - **Ladder**: a 4-pole low pass in the style of the classic analog synth filter, warm and round. Its Resonance sings: turned right up, it rings at the cutoff on its own, at a steady level, however long you hold the note. **Drive** pushes the sound into the filter harder, from Off up to 24 dB, for grit and growl. It keeps the level of an ordinary sound about the same as you turn it, so turning it up adds bite rather than volume, and it stays clean of the harsh, out-of-tune fizz cheap drives add on high notes. Drive is the Ladder's alone: on another type its knob is faint and says so.
 - **Vowel**: two narrow peaks where a voice has them, so the sound "says" a vowel. Cutoff picks the vowel: from 200 Hz and below it says "oo", then "oh", "ah" and "eh", up to "ee" from 5 kHz, sliding smoothly between them, and the Cutoff's value names the vowel ("1.00 kHz · ah"). Resonance makes the peaks narrower and more nasal. Sweep the Cutoff with the filter envelope or the LFO and a pad talks: "oo-ah" on each hit. It works best on rich sounds (pads, saws, choirs, breaks); a pure tone right on a peak comes out louder.
+- **Comb**: the sound plus an echo of itself one cycle of the Cutoff later, over and over, so the pad rings at a pitch: the Cutoff's note, with its overtones. The Cutoff's value names the note ("220 Hz · A3"), so you can tune the ring to your song's key. Resonance is how long it rings: low, a metallic tint; turned right up, a hit rings on like a plucked string for about a second (longer on low notes), even after the sample itself has ended. Sweep the Cutoff with the filter envelope for a zap or a flanged hit. Noise and full sounds keep about their level; a tone right on the comb's note comes out louder. Hitting another pad of the same mute group, or the same pad again at Polyphony 1, stops the ringing.
 
 {{shot: sample-play-ladder | The Filter section with the Ladder: a 1 kHz cutoff, Resonance at 70 %, so the curve peaks at the cutoff, and 12 dB of Drive.}}
 

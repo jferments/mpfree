@@ -816,16 +816,28 @@ fn every_sample_takes_its_colours_from_the_theme() {
 }
 
 #[test]
-fn keys_drawbar_squelch_and_analog_draw_inside_their_sections() {
+fn keys_drawbar_squelch_analog_and_bass_draw_inside_their_sections() {
     // Each page's drawings, and the sections that open another page.
     type Pages<'a> = &'a [(&'a str, &'a [&'a str])];
     type Links<'a> = &'a [(&'a str, &'a str, &'a str)];
-    let engines: [(&str, Pages, Links); 4] = [
+    let engines: [(&str, Pages, Links); 6] = [
         (
             "synth-keys-strike",
             &[
                 ("Strike", &["Hammer", "Decay"]),
                 ("Tone", &["Pickup"]),
+                ("Clav", &[]),
+                ("Amp", &["Tremolo"]),
+                ("Voice", &[]),
+            ],
+            &[],
+        ),
+        (
+            "synth-keys-clav",
+            &[
+                ("Strike", &["Hammer", "Decay"]),
+                ("Tone", &["Pickup"]),
+                ("Clav", &["Pickups", "Mute"]),
                 ("Amp", &["Tremolo"]),
                 ("Voice", &[]),
             ],
@@ -864,6 +876,17 @@ fn keys_drawbar_squelch_and_analog_draw_inside_their_sections() {
             ],
             &[("Filter", "fenv", "Envelopes")],
         ),
+        (
+            "synth-bass",
+            &[
+                ("Source", &["Wave"]),
+                ("Filter", &["Filter"]),
+                ("Shape", &["Drop"]),
+                ("Play", &[]),
+                ("Output", &["Drive"]),
+            ],
+            &[],
+        ),
     ];
     for (name, pages, links) in engines {
         let mut s = sample(name);
@@ -898,8 +921,8 @@ fn keys_drawbar_squelch_and_analog_draw_inside_their_sections() {
 }
 
 #[test]
-fn keys_drawbar_squelch_analog_and_strings_headings_fit() {
-    use mpfree_synth::{Analog, Drawbar, Keys, Preset, Squelch, Strings};
+fn keys_drawbar_squelch_analog_strings_and_bass_headings_fit() {
+    use mpfree_synth::{Analog, Bass, Drawbar, Keys, Preset, Squelch, Strings};
     /// Every factory preset, then every parameter on its own at its
     /// minimum and maximum (each choice at each of its values).
     fn each<N: Node>(
@@ -980,6 +1003,12 @@ fn keys_drawbar_squelch_analog_and_strings_headings_fit() {
         Strings::load_preset,
         &mut check,
     );
+    each(
+        || Bass::new(48_000),
+        Bass::presets(),
+        Bass::load_preset,
+        &mut check,
+    );
     // The longest captions each drawing can have.
     use mpfree_synth::{analog_params as an, drawbar_params as db, keys_params as kp};
     let mut keys = Keys::new(48_000);
@@ -1025,6 +1054,23 @@ fn keys_drawbar_squelch_analog_and_strings_headings_fit() {
     strings.set_param(mpfree_synth::strings_params::LINES, 1.0);
     strings.set_param(mpfree_synth::strings_params::SWELL, 1.0);
     check(&strings, "longest");
+    let mut bass = Bass::new(48_000);
+    {
+        use mpfree_synth::bass_params as bp;
+        for (id, v) in [
+            (bp::BODY, bp::REESE),
+            (bp::WAVE, bp::TRIANGLE),
+            (bp::SUB, 100.0),
+            (bp::DROP, 24.0),
+            (bp::DROP_TIME, 1_000.0),
+            (bp::PUNCH, 100.0),
+            (bp::DRIVE, 100.0),
+            (bp::CUTOFF, 12_000.0),
+        ] {
+            bass.set_param(id, v);
+        }
+    }
+    check(&bass, "longest");
     let list: Vec<String> = misfits
         .iter()
         .map(|(what, preset)| format!("{what} ({preset})"))

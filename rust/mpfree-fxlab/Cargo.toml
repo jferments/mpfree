@@ -9,5 +9,6 @@ description = "Offline measurement of MPFree's effects (and of captured referenc
 mpfree-node = { path = "../mpfree-node" }
 mpfree-fx = { path = "../mpfree-fx" }
 mpfree-grain = { path = "../mpfree-grain" }
+mpfree-instruments = { path = "../mpfree-instruments" }
 mpfree-sampler = { path = "../mpfree-sampler" }
 mpfree-synth = { path = "../mpfree-synth" }
