@@ -576,6 +576,11 @@ pub struct SettingList {
     pub outlined: bool,
     /// A knob being dragged on the panel.
     drag: Option<panel::Drag>,
+    /// A line or two said under the rows, wrapped to the list's width
+    /// (the Pads tab's MIDI out pad: where its note goes, or why it
+    /// would send nothing), and whether it warns. Drawn only as a list,
+    /// and only where the rows leave room.
+    pub footer: Option<(String, bool)>,
 }
 
 const SET_ROW_H: i32 = 44;
@@ -597,6 +602,7 @@ impl SettingList {
             controls: Vec::new(),
             outlined: true,
             drag: None,
+            footer: None,
         }
     }
 
@@ -655,6 +661,48 @@ impl SettingList {
             row,
             Rect::new(row.right() - vw - 4, row.y + 4, vw, row.h - 8),
         ))
+    }
+
+    /// [`SettingList::footer`] under the last row in view, word-wrapped
+    /// to the body's width: as many lines as fit.
+    fn paint_footer(&self, cx: &mut PaintCx, r: Rect, text: &str, warn: bool) {
+        let t = cx.theme.clone();
+        let body = SettingList::body(r);
+        let visible = (body.h / SET_ROW_H).max(0) as usize;
+        let shown = self.rows.len().min(visible) as i32;
+        let px = t.size_small;
+        let line_h = (px * 1.5) as i32;
+        let (x, w) = (body.x + 14, (body.w - 28).max(0));
+        let mut y = body.y + shown * SET_ROW_H + 8;
+        let mut line = String::new();
+        let mut lines = Vec::new();
+        for word in text.split(' ') {
+            let longer = if line.is_empty() {
+                word.to_string()
+            } else {
+                format!("{line} {word}")
+            };
+            if !line.is_empty() && cx.measure(FontId::Sans, px, &longer) > w {
+                lines.push(std::mem::replace(&mut line, word.to_string()));
+            } else {
+                line = longer;
+            }
+        }
+        lines.push(line);
+        for l in lines {
+            if y + line_h > body.bottom() {
+                break;
+            }
+            cx.text(
+                FontId::Sans,
+                px,
+                Rect::new(x, y, w, line_h),
+                Align::Left,
+                if warn { t.warn } else { t.text_dim },
+                &l,
+            );
+            y += line_h;
+        }
     }
 }
 
@@ -754,6 +802,9 @@ impl Widget for SettingList {
                     x += 8;
                 }
             }
+        }
+        if let Some((text, warn)) = &self.footer {
+            self.paint_footer(cx, r, text, *warn);
         }
     }
 
@@ -1121,9 +1172,16 @@ impl Widget for SectionChips {
             }
             let inner = b.inset_xy(14, 6);
             let (top, bottom) = inner.take_top(inner.h / 2 + 2);
+            // A name a little too long for its chip ("Instrument" on the
+            // Pads tab's type switch) is drawn smaller before it is cut.
+            let name_px = if cx.measure(FontId::Bold, t.size_body, &chip.name) > top.w {
+                t.size_body - 3.0
+            } else {
+                t.size_body
+            };
             cx.text(
                 FontId::Bold,
-                t.size_body,
+                name_px,
                 top,
                 Align::Left,
                 if open { t.text } else { t.text_dim },
@@ -1396,6 +1454,9 @@ pub struct PadCell {
     /// The clip the pad launches, if any.
     pub clip: Option<String>,
     pub color: Color,
+    /// What kind of pad it is when not a plain sample ("Loop", "Synth",
+    /// "MIDI"), drawn small at the top right where no clip is.
+    pub badge: Option<String>,
 }
 
 /// A kit's pads, four to a row as on the MPC (pad 1 bottom left), small
@@ -1560,6 +1621,15 @@ impl Widget for PadMap {
                     Align::Right,
                     t.good,
                     &format!("▶ {clip}"),
+                );
+            } else if let Some(badge) = c.badge.as_ref().filter(|_| filled) {
+                cx.text(
+                    FontId::Bold,
+                    t.size_small - 3.0,
+                    top,
+                    Align::Right,
+                    c.color,
+                    badge,
                 );
             }
             let (name, detail) = rest.take_top(rest.h / 2 + 4);

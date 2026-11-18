@@ -670,6 +670,9 @@ pub struct PadInfo {
     /// The synth's pads: where the pad's note sits, for Beats' scale rows
     /// (None for a kit's sounds and the Drums engine's).
     pub pitch: Option<PadPitch>,
+    /// Its type's tag under its lane's name ("LOOP", "SYNTH", "MIDI");
+    /// None for a sample.
+    pub tag: Option<&'static str>,
 }
 
 /// A synth pad's note (a chord pad's root) and whether it is the key's
@@ -2229,6 +2232,7 @@ impl PlayPage {
             root: pitch.is_some_and(|x| x.root),
             label: None,
             empty: false,
+            tag: self.pads.get(p).and_then(|i| i.tag),
         }
     }
 
@@ -2869,6 +2873,7 @@ mod tests {
                         note,
                         root: k % 7 == 0,
                     }),
+                    tag: None,
                 }
             })
             .collect();

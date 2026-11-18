@@ -620,6 +620,9 @@ pub struct SamplePage {
     /// Pad list's Effects row ([`SamplePage::set_pad_fx`]); None until the
     /// mixer says.
     pad_fx: Option<Vec<PadFx>>,
+    /// The MIDI outputs a MIDI out pad can send to, for the Pads tab
+    /// ([`SamplePage::set_pad_ports`]).
+    pad_ports: Vec<pads_tab::OutPort>,
     /// The Grain tab, added the first time it is opened.
     grain: Option<GrainTab>,
     grain_state: Option<GrainState>,
@@ -801,6 +804,16 @@ pub struct NewKitTrack {
     pub phrase: Option<Box<Clip>>,
 }
 
+/// A kit's pads for the Play page ([`SamplePage::take_renamed`]): each
+/// pad's name while it is in use, and its type's tag ("LOOP", "SYNTH",
+/// "MIDI"; none for a sample), pad 1 first.
+#[derive(Debug, PartialEq)]
+pub struct KitPads {
+    pub kit: usize,
+    pub names: Vec<Option<String>>,
+    pub tags: Vec<Option<&'static str>>,
+}
+
 impl SamplePage {
     /// Adds the page for a pad without a sound to `ui` (the Wave tab's page
     /// is added with the first sound shown).
@@ -827,6 +840,7 @@ impl SamplePage {
             pads: None,
             pads_state: None,
             pad_fx: None,
+            pad_ports: Vec::new(),
             grain: None,
             grain_state: None,
             cloud: Some(Box::default()),
@@ -1098,6 +1112,17 @@ impl SamplePage {
         self.play
             .as_ref()
             .map_or_else(String::new, PlayTab::qlinks_text)
+    }
+
+    /// What Q-Links 1 to 4 turn on the Pads tab's pad picked, for the
+    /// hint line: a sample's level, pan, tune and voices; a loop's tempo
+    /// for its voices; an instrument's note and engine; a MIDI out pad's
+    /// note, channel and port.
+    pub fn pads_qlinks_text(&self) -> String {
+        self.pads_state.as_ref().map_or_else(
+            || "level, pan, tune, voices".to_string(),
+            PadsTab::qlinks_text,
+        )
     }
 
     /// The pad hit last was hit at `velocity` (after [`SamplePage::hit`]):
@@ -1622,6 +1647,14 @@ impl SamplePage {
         };
         let mut st = PadsState::from_project(project, self.pad);
         st.effects = self.pad_effects(self.kit, self.pad);
+        // What the type switch needs: the tempo a new loop is warped to,
+        // the Synth tab's engines and the MIDI outputs.
+        st.bpm = self.tempo();
+        st.engines = crate::synth::Engine::ALL
+            .iter()
+            .map(|e| e.name().to_string())
+            .collect();
+        st.ports.clone_from(&self.pad_ports);
         let kit = match self.names.get(self.kit) {
             Some(n) => format!("Kit {} · {n}", self.kit + 1),
             None => format!("Kit {}", self.kit + 1),
@@ -2396,6 +2429,20 @@ impl SamplePage {
         }
     }
 
+    /// The MIDI outputs plugged in now, and why each would send nothing,
+    /// for the Pads tab's MIDI out pads: shown again only when they
+    /// changed.
+    pub fn set_pad_ports(&mut self, ui: &mut Ui, ports: Vec<pads_tab::OutPort>) {
+        if self.pad_ports == ports {
+            return;
+        }
+        self.pad_ports = ports;
+        if let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_mut()) {
+            st.ports.clone_from(&self.pad_ports);
+            tab.update(ui, st);
+        }
+    }
+
     /// The effects on kit `kit`'s pad `pad`'s channel, for the Pad list's
     /// Effects row: none for a pad with no channel of its own (its + FX
     /// lends it one); None until the mixer has said.
@@ -2973,24 +3020,25 @@ impl SamplePage {
         }
     }
 
-    /// A kit whose pads were renamed or replaced since the last call, with
-    /// its pads' names, for the Play page.
-    pub fn take_renamed(&mut self) -> Option<(usize, Vec<Option<String>>)> {
+    /// A kit whose pads were renamed, replaced or given another type
+    /// since the last call, with its pads in use (a sound, or a synth
+    /// voice or note out to play), for the Play page.
+    pub fn take_renamed(&mut self) -> Option<KitPads> {
         if self.renamed.is_empty() {
             return None;
         }
         let kit = self.renamed.remove(0);
         let p = self.projects.get(kit)?;
-        Some((
+        let used = |i| p.pad(i).filter(|pd| pads_tab::in_use(pd));
+        Some(KitPads {
             kit,
-            (0..mpfree_sampler::model::PADS)
-                .map(|i| {
-                    p.pad(i)
-                        .filter(|pd| !pd.layers.is_empty())
-                        .map(|pd| pd.name.clone())
-                })
+            names: (0..mpfree_sampler::model::PADS)
+                .map(|i| used(i).map(|pd| pd.name.clone()))
                 .collect(),
-        ))
+            tags: (0..mpfree_sampler::model::PADS)
+                .map(|i| used(i).and_then(pads_tab::type_tag))
+                .collect(),
+        })
     }
 
     /// Q-Link `knob` (0-3) turned by `ticks` detents; `fine` (SHIFT held)
@@ -5880,6 +5928,7 @@ impl SamplePage {
         Some(FromUi::SampleView(Box::new(ViewSwap {
             kit,
             view: Some(view),
+            routes: crate::sampler::pad_routes(&self.projects[kit]),
         })))
     }
 
@@ -6045,7 +6094,14 @@ impl SamplePage {
 pub fn describe_slot(before: Option<&Pad>, after: Option<&Pad>) -> String {
     match (before, after) {
         (None, None) => String::new(),
-        (None, Some(a)) => format!("now plays {}", a.name),
+        (None, Some(a)) => match pads_tab::kind_text(&a.kind) {
+            Some(k) => format!(
+                "now plays {} ({} pad: {k})",
+                a.name,
+                pads_tab::PadType::of(a).label()
+            ),
+            None => format!("now plays {}", a.name),
+        },
         (Some(b), None) => format!("cleared (was {})", b.name),
         (Some(b), Some(a))
             if b.layers.first().map(|l| l.region.source)
@@ -6062,6 +6118,10 @@ pub fn describe_slot(before: Option<&Pad>, after: Option<&Pad>) -> String {
             let settings = play_tab::describe(b, a);
             if !settings.is_empty() {
                 what.push(settings);
+            }
+            let typed = pads_tab::describe_type(b, a);
+            if !typed.is_empty() {
+                what.push(typed);
             }
             if what.is_empty() && b != a {
                 what.push(format!("now a copy of {}", a.name));
