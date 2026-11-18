@@ -1,6 +1,7 @@
 //! The grain voice: schedules grains and mixes them.
 
 use crate::buffer::{Aim, GrainSource};
+use crate::filter::{GrainFilter, Svf};
 use crate::motion::{env_level, moved, GrainEnv, GrainLfo, LfoState, MotionTarget};
 use crate::rng::Rng;
 use crate::window::{Window, WindowTable};
@@ -50,6 +51,9 @@ const VARY_SEED: u64 = 0x5EED_0B1A_C0DE_2611;
 /// Mixed into the seed of the LFO's own random sequence (its Hold and
 /// Drift values), for the same reason.
 const LFO_SEED: u64 = 0x1F0D_5EED_0A7E_B3B3;
+/// The per-grain filter's cutoff spray has a random sequence of its own,
+/// so turning it on leaves every other draw where it was.
+const FILTER_SEED: u64 = 0xF117_E25E_ED00_C4C4;
 /// A grain varied all the way down in level (`Params::level_spray` 1) is
 /// this many decibels down.
 const LEVEL_SPRAY_DB: f32 = 24.0;
@@ -148,6 +152,9 @@ pub struct Params {
     /// The voice's movement envelope, moving one setting from the voice's
     /// start (see [`crate::motion`]).
     pub env: GrainEnv,
+    /// Each grain's own filter, set when it is born (see
+    /// [`crate::filter`]). Off by default.
+    pub filter: GrainFilter,
 }
 
 impl Default for Params {
@@ -173,6 +180,7 @@ impl Default for Params {
             spray_shape: SprayShape::Even,
             lfo: GrainLfo::default(),
             env: GrainEnv::default(),
+            filter: GrainFilter::default(),
         }
     }
 }
@@ -244,6 +252,9 @@ struct Grain {
     pr: f32,
     /// How the source reads it ([`GrainSource::aim`]).
     aim: Aim,
+    /// Its own filter, when the voice's is on as it is born.
+    filtered: bool,
+    svf: Svf,
 }
 
 /// What a part's grains add up to, frame by frame, before the level is
@@ -386,6 +397,8 @@ pub struct GrainVoice {
     trng: Rng,
     /// The size and level variation's own (see [`VARY_SEED`]).
     vrng: Rng,
+    /// The filter's cutoff spray's own (see [`FILTER_SEED`]).
+    frng: Rng,
     /// The gap to the next free-running grain, in density periods.
     gap: f64,
     /// Set by [`GrainVoice::start`]: the next grain comes with the ones a
@@ -460,6 +473,7 @@ impl GrainVoice {
             rng: Rng::new(seed),
             trng: Rng::new(seed ^ TIMING_SEED),
             vrng: Rng::new(seed ^ VARY_SEED),
+            frng: Rng::new(seed ^ FILTER_SEED),
             gap: 1.0,
             prefill: false,
             fit_size: 2.0,
@@ -535,6 +549,7 @@ impl GrainVoice {
         self.rng = Rng::new(seed);
         self.trng = Rng::new(seed ^ TIMING_SEED);
         self.vrng = Rng::new(seed ^ VARY_SEED);
+        self.frng = Rng::new(seed ^ FILTER_SEED);
         self.lfo = LfoState::new(Rng::new(seed ^ LFO_SEED));
     }
 
@@ -1062,6 +1077,15 @@ impl GrainVoice {
         self.active = 0;
     }
 
+    /// A new grain's filter, its cutoff `r_cut` (-1 to 1) of the spray
+    /// from the cutoff; `None` while the filter is off.
+    fn grain_filter(&self, f: &GrainFilter, r_cut: f32) -> Option<Svf> {
+        if !f.on() {
+            return None;
+        }
+        Svf::new(f, f.cutoff_for(r_cut), self.out_rate)
+    }
+
     /// Starts the grain on a hit at source frame `hit`, `frac` of an output
     /// frame ago (see [`GrainVoice::render`], "Hits").
     fn spawn_hit<S: GrainSource>(
@@ -1104,6 +1128,8 @@ impl GrainVoice {
             return;
         }
         let dphase = ((1.0 - peak) / frames) as f32;
+        // At the cutoff itself, as it is at the cloud's pitch and centred.
+        let svf = self.grain_filter(&p.filter, 0.0);
         self.grains[self.active] = Grain {
             pos: hit + speed * frac,
             inc: speed,
@@ -1115,6 +1141,8 @@ impl GrainVoice {
             pl: 1.0,
             pr: 1.0,
             aim: src.aim(speed),
+            filtered: svf.is_some(),
+            svf: svf.unwrap_or_default(),
         };
         self.active += 1;
         budget.live += 1;
@@ -1224,6 +1252,7 @@ impl GrainVoice {
         let r_pan = self.rng.bipolar();
         let r_size = self.vrng.bipolar();
         let r_level = self.vrng.unit();
+        let r_cut = self.frng.bipolar();
         if self.active >= MAX_GRAINS || budget.live >= budget.limit {
             self.stats.skipped += 1;
             budget.skipped += 1;
@@ -1302,6 +1331,7 @@ impl GrainVoice {
         } else {
             1.0
         };
+        let svf = self.grain_filter(&p.filter, r_cut);
         self.grains[self.active] = Grain {
             pos: pos + inc * (f64::from(age) + frac),
             inc,
@@ -1313,6 +1343,8 @@ impl GrainVoice {
             pl: angle.cos() * std::f32::consts::SQRT_2,
             pr: angle.sin() * std::f32::consts::SQRT_2,
             aim: src.aim(speed),
+            filtered: svf.is_some(),
+            svf: svf.unwrap_or_default(),
         };
         self.active += 1;
         budget.live += 1;
@@ -1380,47 +1412,74 @@ fn mix<S: GrainSource, const LEVEL: bool>(
         }
         let small = pos.min(last) >= 0.0 && pos.max(last) < SMALL_FRAMES;
         let aim = g.aim;
-        match (small, measure) {
-            // A grain the source reads its own way (band-limited).
-            _ if aim.clean => {
-                if measure {
-                    for k in 0..m {
-                        frame!(k, src.read_aimed(pos, aim), true);
+        // A filtered grain (step C4) runs its read through its filter,
+        // before the window; the rest read as they always did.
+        let mut svf = g.svf;
+        macro_rules! plain {
+            ($x:expr) => {
+                $x
+            };
+        }
+        macro_rules! filtered {
+            ($x:expr) => {
+                svf.tick($x)
+            };
+        }
+        macro_rules! reads {
+            ($through:ident) => {
+                match (small, measure) {
+                    // A grain the source reads its own way (band-limited).
+                    _ if aim.clean => {
+                        if measure {
+                            for k in 0..m {
+                                frame!(k, $through!(src.read_aimed(pos, aim)), true);
+                            }
+                        } else {
+                            for k in 0..m {
+                                frame!(k, $through!(src.read_aimed(pos, aim)), false);
+                            }
+                        }
                     }
-                } else {
-                    for k in 0..m {
-                        frame!(k, src.read_aimed(pos, aim), false);
+                    (true, false) => {
+                        for k in 0..m {
+                            let f = pos as i32;
+                            frame!(
+                                k,
+                                $through!(src.read(i64::from(f), (pos - f64::from(f)) as f32)),
+                                false
+                            );
+                        }
+                    }
+                    (true, true) => {
+                        for k in 0..m {
+                            let f = pos as i32;
+                            frame!(
+                                k,
+                                $through!(src.read(i64::from(f), (pos - f64::from(f)) as f32)),
+                                true
+                            );
+                        }
+                    }
+                    (false, false) => {
+                        for k in 0..m {
+                            let f = pos as i64;
+                            frame!(k, $through!(src.read(f, (pos - f as f64) as f32)), false);
+                        }
+                    }
+                    (false, true) => {
+                        for k in 0..m {
+                            let f = pos as i64;
+                            frame!(k, $through!(src.read(f, (pos - f as f64) as f32)), true);
+                        }
                     }
                 }
-            }
-            (true, false) => {
-                for k in 0..m {
-                    let f = pos as i32;
-                    frame!(
-                        k,
-                        src.read(i64::from(f), (pos - f64::from(f)) as f32),
-                        false
-                    );
-                }
-            }
-            (true, true) => {
-                for k in 0..m {
-                    let f = pos as i32;
-                    frame!(k, src.read(i64::from(f), (pos - f64::from(f)) as f32), true);
-                }
-            }
-            (false, false) => {
-                for k in 0..m {
-                    let f = pos as i64;
-                    frame!(k, src.read(f, (pos - f as f64) as f32), false);
-                }
-            }
-            (false, true) => {
-                for k in 0..m {
-                    let f = pos as i64;
-                    frame!(k, src.read(f, (pos - f as f64) as f32), true);
-                }
-            }
+            };
+        }
+        if g.filtered {
+            reads!(filtered);
+            g.svf = svf;
+        } else {
+            reads!(plain);
         }
         g.pos = pos;
         g.age = age;

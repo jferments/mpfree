@@ -1600,7 +1600,7 @@ pub static PLANS: &[Plan] = &[
     // The grain engine as an effect: where the grains read, how big and
     // how many on Main, with the pitch beside them and what holds the
     // sound under them (Feedback, Repeat, Freeze); how each grain is
-    // shaped and varied on Texture.
+    // shaped, varied and filtered on Texture.
     Plan {
         id: "mpfree.grains",
         qlinks: &["Size", "Density", "Feedback", "Mix"],
@@ -1638,22 +1638,35 @@ pub static PLANS: &[Plan] = &[
             ),
             Page {
                 name: "Texture",
-                spec: "row(texture)",
-                sections: &[Section {
-                    rows: &["Peaked spray"],
-                    ..s(
-                        "texture",
-                        "Texture",
-                        Tone,
-                        &[
-                            "Timing",
-                            "Shape",
-                            "Size spray",
-                            "Level spray",
-                            "Peaked spray",
-                        ],
-                    )
-                }],
+                spec: "row(texture:560, filter)",
+                sections: &[
+                    Section {
+                        rows: &["Peaked spray"],
+                        ..s(
+                            "texture",
+                            "Texture",
+                            Tone,
+                            &[
+                                "Timing",
+                                "Shape",
+                                "Size spray",
+                                "Level spray",
+                                "Peaked spray",
+                            ],
+                        )
+                    },
+                    // Each grain's own filter (step C4).
+                    Section {
+                        hero: &["Cutoff", "Resonance"],
+                        rows: &["Filter"],
+                        ..s(
+                            "filter",
+                            "Filter",
+                            Tone,
+                            &["Filter", "Cutoff", "Resonance", "Filter spray"],
+                        )
+                    },
+                ],
             },
         ],
         dims: &[],

@@ -24,6 +24,7 @@
 #![forbid(unsafe_code)]
 
 pub mod buffer;
+pub mod filter;
 pub mod fx;
 pub mod motion;
 pub mod node;
@@ -32,6 +33,9 @@ pub mod voice;
 pub mod window;
 
 pub use buffer::{Aim, Clip, GrainSource, LiveBuffer};
+pub use filter::{
+    FilterKind, GrainFilter, CUTOFF_MAX_HZ, CUTOFF_MIN_HZ, FILTER_SPRAY_OCTAVES, Q_MAX, Q_MIN,
+};
 pub use fx::GrainFx;
 pub use motion::{GrainEnv, GrainLfo, LfoShape, MotionTarget};
 pub use node::GrainNode;

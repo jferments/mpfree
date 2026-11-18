@@ -58,6 +58,7 @@
 386476	Fuzz
 17292	Gate
 472729	Grains FX (dense)
+629770	Grains FX (dense, filtered)
 99325	Harmonizer
 188538	Keys Dusty Keys, 16 voices
 169967	Keys Init, 16 voices

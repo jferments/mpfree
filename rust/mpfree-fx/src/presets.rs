@@ -1071,4 +1071,33 @@ pub static GRAINS: &[Preset] = &[
             (grains::FEEDBACK, 60.0),
         ],
     },
+    // Each grain a different colour (step C4).
+    Preset {
+        name: "Glass spray",
+        values: &[
+            (grains::SIZE, 90.0),
+            (grains::DENSITY, 30.0),
+            (grains::SPRAY, 30.0),
+            (grains::PITCH, 12.0),
+            (grains::SPREAD, 70.0),
+            (grains::FILTER, 3.0),
+            (grains::CUTOFF, 3000.0),
+            (grains::RESONANCE, 20.0),
+            (grains::FILTER_SPRAY, 70.0),
+        ],
+    },
+    Preset {
+        name: "Gnarl",
+        values: &[
+            (grains::SIZE, 40.0),
+            (grains::DENSITY, 50.0),
+            (grains::SPRAY, 20.0),
+            (grains::TIMING, 60.0),
+            (grains::SHAPE, 20.0),
+            (grains::FILTER, 1.0),
+            (grains::CUTOFF, 600.0),
+            (grains::RESONANCE, 85.0),
+            (grains::FILTER_SPRAY, 50.0),
+        ],
+    },
 ];
