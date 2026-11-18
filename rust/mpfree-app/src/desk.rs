@@ -445,6 +445,9 @@ impl Desk<'_> {
             gui::FromUi::PerformPad { page, pad, action } => {
                 fx.extend(app.set_perform_pad(page, pad, action))
             }
+            gui::FromUi::PerformName { page, name } => {
+                fx.extend(app.set_perform_name(page, &name))
+            }
             gui::FromUi::LoopCapture => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Capture))
             }
@@ -805,16 +808,23 @@ pub fn perform_pad_on(
         PadAction::None => return (fx, String::new()),
         PadAction::Throw(t) => match app.perform_throw(t, true) {
             Some(on) => {
-                let i = usize::from(t.index);
-                fx.extend(crate::perform_pads::throw_fx(i, on, drums).map(app::Effect::PlayFx));
+                fx.extend(crate::perform_pads::pad_throw_fx(t, on, drums).map(app::Effect::PlayFx));
                 match (t.hold, on) {
                     (Hold::WhileHeld, _) => format!("perform: {}", t.name()),
+                    (Hold::Bar, _) => format!("perform: {} for a bar", t.name()),
                     (Hold::Latch, true) => format!("perform: {} latched", t.name()),
                     (Hold::Latch, false) => format!("perform: {} let go", t.name()),
                 }
             }
             None => String::new(),
         },
+        PadAction::Macro { card, value } => {
+            app.perform_macro(card, true);
+            fx.push(app::Effect::PlayFx(crate::perform_pads::macro_fx(
+                card, value, true,
+            )));
+            format!("perform: Macro {} at {value} %", u16::from(card) + 1)
+        }
         PadAction::Mute(t) => {
             fx.push(app::Effect::TrackMute {
                 track: usize::from(t),
@@ -896,7 +906,8 @@ pub fn perform_pad_on(
 }
 
 /// A Perform pad let go (`action`, what it pressed): a held throw lets
-/// go. Latched throws, keys, mutes and scenes do nothing on the lift.
+/// go (a bar's plays its bar out), a macro goes back to where it was.
+/// Latched throws, keys, mutes and scenes do nothing on the lift.
 pub fn perform_pad_up(
     app: &mut app::App,
     action: crate::perform_pads::PadAction,
@@ -905,11 +916,66 @@ pub fn perform_pad_up(
     match action {
         PadAction::Throw(t) => app
             .perform_throw(t, false)
-            .and_then(|on| crate::perform_pads::throw_fx(usize::from(t.index), on, 0))
+            .and_then(|on| crate::perform_pads::pad_throw_fx(t, on, 0))
             .map(app::Effect::PlayFx)
             .into_iter()
             .collect(),
+        PadAction::Macro { card, value } => {
+            app.perform_macro(card, false);
+            vec![app::Effect::PlayFx(crate::perform_pads::macro_fx(
+                card, value, false,
+            ))]
+        }
         _ => Vec::new(),
+    }
+}
+
+/// A learned control on the looper (its footswitch; `remote::LooperAct`),
+/// on any page: a loop's key does what its pad does ([`perform_pad_on`]),
+/// a mute mutes the loop or lets it play, Next loop picks the next one,
+/// Capture is the Looper tab's, and Undo, Redo and Clear are the Looper
+/// tab's buttons, on the picked loop. Its hold clears the loop through
+/// [`perform_pad_held`].
+pub fn looper_remote(
+    app: &mut app::App,
+    time: &time::TimeHost,
+    looper: &looping::LoopHost,
+    out: &mut Out,
+    act: crate::remote::LooperAct,
+) -> Vec<app::Effect> {
+    use crate::looper_page::{B_CLEAR, B_REDO, B_UNDO};
+    use crate::remote::LooperAct;
+    use looping::LoopAction;
+    use mpfree_play::mpfree_param::looper::Looper;
+    match act {
+        LooperAct::Nothing => Vec::new(),
+        LooperAct::Key(n) => {
+            let key = crate::perform_pads::PadAction::LoopKey(n as u8);
+            let (fx, line) = perform_pad_on(app, time, looper, out, key, 0);
+            out.note(&format!("{line}, from a learned control"));
+            fx
+        }
+        LooperAct::Mute { n, on } => vec![app::Effect::Looper(LoopAction::Mute(n, on))],
+        LooperAct::Press(Looper::NextLoop) => {
+            let n = (looper.picked() + 1) % mpfree_looper::MAX_LOOPS;
+            vec![app::Effect::Looper(LoopAction::Select(n))]
+        }
+        LooperAct::Press(Looper::Capture) => vec![app::Effect::Looper(LoopAction::Capture)],
+        LooperAct::Press(Looper::Undo) => app.looper_tap(B_UNDO),
+        LooperAct::Press(Looper::Redo) => app.looper_tap(B_REDO),
+        LooperAct::Press(Looper::Clear) => app.looper_tap(B_CLEAR),
+        // Keys and mutes come as Key and Mute.
+        LooperAct::Press(Looper::Key(_) | Looper::Mute(_)) => Vec::new(),
+    }
+}
+
+/// What the looper's learned controls read (`remote::Now`): the loop
+/// picked and the loops muted.
+pub fn looper_now(looper: &looping::LoopHost) -> crate::remote::Now {
+    crate::remote::Now {
+        picked: looper.picked(),
+        loops_muted: looper.mute_bits(),
+        ..crate::remote::Now::default()
     }
 }
 

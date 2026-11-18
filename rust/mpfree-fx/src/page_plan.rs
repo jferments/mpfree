@@ -300,6 +300,30 @@ macro_rules! slot {
     };
 }
 
+/// A Perform FX pad's timing: when it starts, how it lets go, and whether
+/// it plays while held or for a bar.
+macro_rules! timing {
+    ($n:literal) => {
+        Section {
+            rows: &[
+                concat!("Slot ", $n, "/Starts"),
+                concat!("Slot ", $n, "/Let go"),
+                concat!("Slot ", $n, "/Plays"),
+            ],
+            ..s(
+                concat!("t", $n),
+                concat!("Slot ", $n),
+                Motion,
+                &[
+                    concat!("Slot ", $n, "/Starts"),
+                    concat!("Slot ", $n, "/Let go"),
+                    concat!("Slot ", $n, "/Plays"),
+                ],
+            )
+        }
+    };
+}
+
 macro_rules! slot_dim {
     ($n:literal) => {
         Dim {
@@ -1930,6 +1954,34 @@ pub static PLANS: &[Plan] = &[
                 name: "Slots 13-16",
                 spec: "row(s13, s14, s15, s16)",
                 sections: &[slot!(13), slot!(14), slot!(15), slot!(16)],
+            },
+            Page {
+                name: "Timing 1-8",
+                spec: "col(row(t1, t2, t3, t4), row(t5, t6, t7, t8))",
+                sections: &[
+                    timing!(1),
+                    timing!(2),
+                    timing!(3),
+                    timing!(4),
+                    timing!(5),
+                    timing!(6),
+                    timing!(7),
+                    timing!(8),
+                ],
+            },
+            Page {
+                name: "Timing 9-16",
+                spec: "col(row(t9, t10, t11, t12), row(t13, t14, t15, t16))",
+                sections: &[
+                    timing!(9),
+                    timing!(10),
+                    timing!(11),
+                    timing!(12),
+                    timing!(13),
+                    timing!(14),
+                    timing!(15),
+                    timing!(16),
+                ],
             },
         ],
         dims: &[

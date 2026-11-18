@@ -316,6 +316,17 @@ fn shots() -> Vec<Shot> {
             pick: Some("Clips and scenes"),
         },
         Shot {
+            name: "io-learn-looper",
+            about: "Learn with Looper tapped (the looper's footswitch): the Loop stepper on the picked loop with its Key and Mute, Next loop, then Undo, Redo, Capture and Clear, beside MIDI Follow",
+            section: 3,
+            model: learn.clone(),
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: None,
+            pick: Some("Looper controls"),
+        },
+        Shot {
             name: "io-learn-learning",
             about: "Learn after Learn again on the Bass volume: the banner says what the next control moved will take, with Cancel",
             section: 3,

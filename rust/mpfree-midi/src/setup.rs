@@ -2306,6 +2306,43 @@ mod tests {
         assert!(m.forget_at(0).is_none());
     }
 
+    /// A footswitch learned on the looper (the looper redesign, step 5)
+    /// is the rig's and reads back by the looper's fixed numbers: a loop's
+    /// key, the picked loop's key and a loop's mute.
+    #[test]
+    fn a_looper_footswitch_reads_back_from_the_rig() {
+        use crate::learn::{Mode, Source};
+        use mpfree_param::{looper, Owner, ParamAddr};
+        let at = |id| ParamAddr::new(Owner::Looper, id);
+        let mut m = MidiSetup::default();
+        let mut key = learned(Some("FS-7"), 64);
+        key.target = at(looper::key(2));
+        key.mode = Mode::Momentary;
+        let mut picked = learned(Some("FS-7"), 65);
+        picked.target = at(looper::PICKED_KEY);
+        picked.mode = Mode::Momentary;
+        let mut mute = learned(None, 0);
+        mute.source = Source::Note(40);
+        mute.channel = 9;
+        mute.target = at(looper::mute(7));
+        mute.mode = Mode::Toggle;
+        let undo = Saved {
+            target: at(looper::UNDO),
+            ..learned(Some("FS-7"), 66)
+        };
+        for l in [&key, &picked, &mute, &undo] {
+            assert!(m.learned_in(Kept::Rig, l.clone()));
+        }
+        let text = m.rig_text();
+        assert!(text.contains("looper.258"), "{text}");
+        assert!(text.contains("looper.0"), "{text}");
+        assert!(text.contains("looper.519"), "{text}");
+        assert!(text.contains("looper.3"), "{text}");
+        let (back, w) = MidiSetup::parse(&text);
+        assert!(w.is_empty(), "{w:?}\n{text}");
+        assert_eq!(back.rig_learn, [key, picked, mute, undo]);
+    }
+
     #[test]
     fn a_new_project_writes_only_the_header() {
         assert_eq!(MidiSetup::default().to_text(), "mpfree-midi 1\n");

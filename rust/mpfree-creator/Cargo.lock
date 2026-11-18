@@ -1532,10 +1532,42 @@ name = "mpfree-flac"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-fx"
+version = "0.1.0"
+dependencies = [
+ "mpfree-grain",
+ "mpfree-lanes",
+ "mpfree-node",
+ "mpfree-prof",
+]
+
+[[package]]
+name = "mpfree-grain"
+version = "0.1.0"
+dependencies = [
+ "mpfree-node",
+]
+
+[[package]]
+name = "mpfree-lanes"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "mpfree-prof",
+]
+
+[[package]]
 name = "mpfree-node"
 version = "0.1.0"
 dependencies = [
  "mpfree-tuning",
+]
+
+[[package]]
+name = "mpfree-prof"
+version = "0.1.0"
+dependencies = [
+ "mpfree-node",
 ]
 
 [[package]]
@@ -1559,6 +1591,7 @@ name = "mpfree-synth"
 version = "0.1.0"
 dependencies = [
  "mpfree-analysis",
+ "mpfree-fx",
  "mpfree-node",
 ]
 
