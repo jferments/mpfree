@@ -37,11 +37,16 @@
 //!   left out, as the channel will play them again).
 //! - **Auto-sample** opens the mode that plays the synth on the pads note
 //!   by note and makes a keygroup instrument of it ([`crate::auto_tab`]).
-//! - The **Record** list holds the settings: which channels (both, left,
-//!   right, or both mixed to mono), how a take starts and ends, the
-//!   threshold, pre-roll, length, tail and silence, how far Skip back goes,
-//!   which pad a take goes onto, and how Flatten plays the pad. A tap on a row picks it and its arrows
-//!   step it; the **wheel** steps the row picked.
+//! - The **panel** under the input ([`crate::panel`]) holds the settings
+//!   and the buttons in five sections: **Input** (the source and which
+//!   channels: both, left, right, or both mixed to mono), **Start** (how
+//!   a take starts, the threshold and pre-roll), **End** (how it ends,
+//!   its length, the silence it waits for and its tail), **Take** (Record
+//!   or Stop, Skip back with how far it goes, and which pad a take goes
+//!   onto) and **Resample** (Flatten and Auto-sample, and how Flatten
+//!   plays the pad). A touch on a control picks it; the **wheel** (and
+//!   the - / + keys) step the control picked, and a finger resting on one
+//!   lets the wheel turn it.
 //!
 //! The settings live in the tab ([`RecTab::settings`]); the app makes the
 //! [`Recording`] from them on [`RecAction::Record`], polls it, and puts the
@@ -53,39 +58,41 @@ use mpfree_sampler::record::{
 use mpfree_ui::{EventKind, Ui, UiEvent};
 
 use crate::chop_tab::pad_text;
+use crate::panel::{Control, Item, Look, Panel, Section};
 use crate::rec_widgets::{InputView, Span, Strip};
 use crate::wave_tab::{self, duration_text, pad_color, TABS};
-use crate::widgets::{ButtonRow, InfoCard, PadBar, Setting, SettingList};
+use crate::widgets::{PadBar, Setting, SettingList};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
 pub const BAR: &str = "smp-rec-bar";
 pub const VIEW: &str = "smp-rec-view";
+/// The settings and buttons, drawn as the panel under the input.
 pub const LIST: &str = "smp-rec-list";
-pub const BUTTONS: &str = "smp-rec-buttons";
 /// The Q-Link column, as on every page: the Q-Links turn nothing here,
 /// so its four cards are free.
 pub const QLINKS: &str = "smp-rec-qlinks";
-pub const WHEEL: &str = "smp-rec-wheel";
 
-/// The tab's page: the input beside the Record list, the buttons under
-/// them.
+/// The tab's page: the input across the page, the panel under it, and
+/// the Q-Link column on the right.
 pub const LAYOUT: &str = "col(header:60, row(smp-rec-bar:*, smp-send:330):60, \
-                          row(col(row(smp-rec-view:*, smp-rec-list:340):*, \
-                          row(smp-rec-buttons:*, smp-rec-wheel:340):88):*, smp-rec-qlinks:128):*, hint:26)";
+                          row(col(smp-rec-view:*, smp-rec-list:242):*, smp-rec-qlinks:128):*, hint:26)";
 
 /// The tab's place in [`TABS`].
 pub const TAB: usize = 6;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str =
-    "Record, or keep what just came in with Skip back · Flatten resamples the pad picked · the wheel picks a \
-                        row, - / + change it · UNDO takes a take off its pad again";
+    "Record, or keep what just came in with Skip back · Flatten resamples the pad picked · touch a control, \
+                        then the wheel or - / + change it · UNDO takes a take off its pad again";
 
-/// The third button: resample the pad picked.
+/// The button that resamples the pad picked.
 pub const FLATTEN_LABEL: &str = "Flatten";
 
-/// The fourth button: the Auto-sample mode.
+/// The button that opens the Auto-sample mode.
 pub const AUTO_LABEL: &str = "Auto-sample";
+
+/// The button that keeps what Skip back covers.
+pub const SKIP_LABEL: &str = "Skip back";
 
 /// Flatten's level for silence: under it for the Silence time, the sound
 /// has ended (and a sound starts when it goes over it).
@@ -326,7 +333,8 @@ impl RecSettings {
     }
 }
 
-/// The Record list's rows, in order.
+/// The settings and the buttons, in the panel's order (which the wheel
+/// walks).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
     Source,
@@ -336,16 +344,24 @@ pub enum Row {
     PreRoll,
     End,
     Length,
-    Tail,
     Silence,
+    Tail,
+    /// The button: Record, or Stop while a take (or a Flatten) runs.
+    Record,
+    /// The button that keeps what Skip back covers, now.
+    Keep,
     SkipBack,
     Onto,
+    /// The button: resample the pad picked.
+    Flatten,
+    /// The button: the Auto-sample mode.
+    Auto,
     FlattenVelocity,
     FlattenHold,
 }
 
 impl Row {
-    pub const ALL: [Row; 13] = [
+    pub const ALL: [Row; 17] = [
         Row::Source,
         Row::Input,
         Row::Start,
@@ -353,13 +369,20 @@ impl Row {
         Row::PreRoll,
         Row::End,
         Row::Length,
-        Row::Tail,
         Row::Silence,
+        Row::Tail,
+        Row::Record,
+        Row::Keep,
         Row::SkipBack,
         Row::Onto,
+        Row::Flatten,
+        Row::Auto,
         Row::FlattenVelocity,
         Row::FlattenHold,
     ];
+
+    /// The buttons, pressed rather than stepped.
+    pub const BUTTONS: [Row; 4] = [Row::Record, Row::Keep, Row::Flatten, Row::Auto];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -376,10 +399,15 @@ impl Row {
             Row::Onto => "Onto",
             Row::FlattenVelocity => "Flatten velocity",
             Row::FlattenHold => "Flatten hold",
+            Row::Record => "Record",
+            Row::Keep => "Skip back now",
+            Row::Flatten => FLATTEN_LABEL,
+            Row::Auto => AUTO_LABEL,
         }
     }
 
-    fn index(self) -> usize {
+    /// Its place in [`Row::ALL`]: the list's row.
+    pub fn index(self) -> usize {
         Row::ALL.iter().position(|r| *r == self).unwrap_or(0)
     }
 }
@@ -417,6 +445,8 @@ pub fn value_text(s: &RecSettings, row: Row, sources: &[String]) -> String {
         Row::Silence => ms_text(s.silence_ms),
         Row::FlattenVelocity => s.flatten_velocity.to_string(),
         Row::FlattenHold => ms_text(s.flatten_hold_ms),
+        // The buttons say what they do.
+        Row::Record | Row::Keep | Row::Flatten | Row::Auto => String::new(),
         Row::SkipBack => s.skip.label(),
         Row::Onto => match s.onto {
             Onto::NextEmpty => "Next empty",
@@ -475,8 +505,15 @@ pub fn stepped(s: &RecSettings, row: Row, delta: i32, sources: usize) -> RecSett
             s.flatten_velocity = step_in(&VELOCITIES, s.flatten_velocity, delta)
         }
         Row::FlattenHold => s.flatten_hold_ms = step_in(&HOLDS_MS, s.flatten_hold_ms, delta),
+        Row::Record | Row::Keep | Row::Flatten | Row::Auto => {}
     }
     s
+}
+
+/// Where `now` is in `list`, 0 to 1 along it (a knob's place).
+fn place_in<T: PartialEq>(list: &[T], now: &T) -> f32 {
+    let i = list.iter().position(|x| x == now).unwrap_or(0);
+    i as f32 / (list.len().max(2) - 1) as f32
 }
 
 /// What the tab shows besides the input: the pad picked and where a take
@@ -536,6 +573,11 @@ pub struct RecTab {
     flattening: bool,
     /// The sources' names, as last shown.
     sources: Vec<String>,
+    /// What the tab showed last ([`RecTab::update`]): the panel's buttons
+    /// follow a take starting and ending from it.
+    shown: Option<RecState>,
+    /// A line for the app to show ([`RecTab::take_note`]).
+    note: Option<String>,
     /// Seconds since [`RecTab::feed`] last had the input view redrawn.
     since_drawn: f32,
 }
@@ -554,11 +596,8 @@ impl RecTab {
         ui.add(VIEW, InputView::new("Line input", strip, rate));
         let mut list = SettingList::new("Record");
         list.selected = Row::Start.index();
+        list.buttons = Row::BUTTONS.map(Row::index).to_vec();
         ui.add(LIST, list);
-        let mut buttons = ButtonRow::new(&["Record", "Skip back", FLATTEN_LABEL, AUTO_LABEL]);
-        buttons.primary = Some(0);
-        ui.add(BUTTONS, buttons);
-        ui.add(WHEEL, InfoCard::new("The row picked"));
         ui.add(QLINKS, mpfree_ui::qlink::QLinkColumn::new());
         ui.add_page(name, LAYOUT)?;
         let mut tab = RecTab {
@@ -568,13 +607,15 @@ impl RecTab {
             recording: false,
             flattening: false,
             sources: st.sources.clone(),
+            shown: None,
+            note: None,
             since_drawn: f32::INFINITY,
         };
         tab.update(ui, st);
         Ok(tab)
     }
 
-    /// The row picked in the Record list.
+    /// The control picked on the panel.
     pub fn row(&self, ui: &Ui) -> Row {
         ui.get::<SettingList>(LIST)
             .and_then(|l| Row::ALL.get(l.selected).copied())
@@ -643,60 +684,185 @@ impl RecTab {
             list.right = target.map(|p| format!("onto {p}")).unwrap_or_default();
         }
         self.flattening = st.flattening.is_some();
-        let can = st.live && st.target.is_some() && !self.flattening;
-        let recording = self.recording || self.flattening;
-        let skip = self.settings.skip.label();
-        if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
-            b.labels = vec![
-                if recording { "Stop" } else { "Record" }.to_string(),
-                format!("Skip back {skip}"),
-                FLATTEN_LABEL.to_string(),
-                AUTO_LABEL.to_string(),
-            ];
-            b.enabled = vec![
-                recording || can,
-                can && !recording,
-                st.can_flatten && !recording,
-                !recording,
-            ];
-            let cannot = if !st.live {
-                OFF_NOTE
-            } else if st.target.is_none() {
-                "No empty pad left for a take"
-            } else {
-                "Wait for Flatten to finish"
-            };
-            b.why = vec![
-                cannot.to_string(),
-                if recording {
-                    "Stop the take first"
-                } else {
-                    cannot
-                }
-                .to_string(),
-                if recording {
-                    "Stop the take first"
-                } else {
-                    "Flatten needs a pad with a sound, and an empty pad to put it on"
-                }
-                .to_string(),
-                "Stop the take first".to_string(),
-            ];
-        }
         self.sources = st.sources.clone();
-        self.show_wheel(ui);
+        self.shown = Some(st.clone());
+        self.show_panel(ui, st.live);
     }
 
-    fn show_wheel(&self, ui: &mut Ui) {
-        let row = self.row(ui);
-        let text = format!(
-            "{}: {}",
-            row.label(),
-            value_text(&self.settings, row, &self.sources)
-        );
-        if let Some(card) = ui.get_mut::<InfoCard>(WHEEL) {
-            card.text = text;
+    /// The panel's controls and sections for what was shown last, with
+    /// the source coming in or not (`live`). Changes the list only when
+    /// they differ, as it is called every frame while there is no input.
+    fn show_panel(&self, ui: &mut Ui, live: bool) {
+        let Some(st) = self.shown.as_ref() else {
+            return;
+        };
+        let controls = self.controls(st, live);
+        let panel = self.panel(st);
+        let same = ui
+            .get::<SettingList>(LIST)
+            .is_some_and(|l| l.controls == controls && l.panel.as_ref() == Some(&panel));
+        if !same {
+            if let Some(list) = ui.get_mut::<SettingList>(LIST) {
+                list.controls = controls;
+                list.panel = Some(panel);
+            }
         }
+    }
+
+    /// How each row looks on the panel, in [`Row::ALL`]'s order.
+    fn controls(&self, st: &RecState, live: bool) -> Vec<Control> {
+        let s = &self.settings;
+        let busy = self.recording || self.flattening;
+        let can = live && st.target.is_some() && !self.flattening;
+        let cannot = if !live {
+            OFF_NOTE
+        } else if st.target.is_none() {
+            "No empty pad left for a take"
+        } else {
+            "Wait for Flatten to finish"
+        };
+        let stop_first = "Stop the take first";
+        let choice = |options: &[&str], on: usize| {
+            Control::new(Look::Choice {
+                options: options.iter().map(|o| o.to_string()).collect(),
+                on,
+                off: Vec::new(),
+            })
+        };
+        let knob = |pos: f32, len: usize| {
+            Control::new(Look::Knob {
+                pos,
+                steps: len.saturating_sub(1) as u32,
+                bipolar: false,
+            })
+        };
+        Row::ALL
+            .iter()
+            .map(|row| match row {
+                Row::Source => Control::new(Look::Chip).faint_because(busy, stop_first),
+                Row::Input
+                | Row::Length
+                | Row::Silence
+                | Row::SkipBack
+                | Row::FlattenVelocity
+                | Row::FlattenHold => Control::new(Look::Chip),
+                Row::Start => choice(
+                    &["Now", "Threshold", "Next bar"],
+                    match s.start {
+                        StartAt::Now => 0,
+                        StartAt::Threshold => 1,
+                        StartAt::NextBar => 2,
+                    },
+                ),
+                Row::End => choice(
+                    &["Stop", "Silence", "Length"],
+                    match s.end {
+                        EndAt::Press => 0,
+                        EndAt::Silence => 1,
+                        EndAt::Length => 2,
+                    },
+                ),
+                Row::Tail => choice(
+                    &["Cut", "Ring out", "Loop"],
+                    match s.tail {
+                        TailAt::Cut => 0,
+                        TailAt::Ring => 1,
+                        TailAt::Loop => 2,
+                    },
+                ),
+                Row::Onto => choice(
+                    &["Next empty", "This pad"],
+                    usize::from(s.onto == Onto::ThisPad),
+                ),
+                Row::Threshold => knob(
+                    place_in(&THRESHOLDS_DB, &s.threshold_db),
+                    THRESHOLDS_DB.len(),
+                ),
+                Row::PreRoll => knob(place_in(&PRE_ROLLS_MS, &s.pre_roll_ms), PRE_ROLLS_MS.len()),
+                Row::Record => Control::new(Look::Primary(
+                    if busy { "Stop" } else { "Record" }.to_string(),
+                ))
+                .faint_because(!(busy || can), cannot),
+                Row::Keep => Control::new(Look::Button(SKIP_LABEL.to_string()))
+                    .faint_because(!can || busy, if busy { stop_first } else { cannot }),
+                Row::Flatten => Control::new(Look::Button(FLATTEN_LABEL.to_string()))
+                    .faint_because(
+                        !st.can_flatten || busy,
+                        if busy {
+                            stop_first
+                        } else {
+                            "Flatten needs a pad with a sound, and an empty pad to put it on"
+                        },
+                    ),
+                Row::Auto => Control::new(Look::Button(AUTO_LABEL.to_string()))
+                    .faint_because(busy, stop_first),
+            })
+            .collect()
+    }
+
+    /// The panel: Input, Start, End, Take and Resample across the band
+    /// under the input, as the mockup Jay approved (17 Nov), with the
+    /// settings it left out (Onto, Skip back's length, Flatten's) beside
+    /// their buttons.
+    fn panel(&self, st: &RecState) -> Panel {
+        let it = |k: Row| Item::new(k.index());
+        let onto = st
+            .target
+            .map(|p| format!("onto {}", pad_text(self.bank, p)))
+            .unwrap_or_else(|| "no empty pad".to_string());
+        Panel {
+            sections: vec![
+                Section::new(
+                    "Input",
+                    170,
+                    vec![
+                        vec![it(Row::Source).labelled()],
+                        vec![it(Row::Input).labelled()],
+                    ],
+                ),
+                Section::new(
+                    "Start",
+                    250,
+                    vec![
+                        vec![it(Row::Start)],
+                        vec![it(Row::Threshold), it(Row::PreRoll)],
+                    ],
+                ),
+                Section::new(
+                    "End",
+                    280,
+                    vec![
+                        vec![it(Row::End)],
+                        vec![it(Row::Length).labelled(), it(Row::Silence).labelled()],
+                        vec![it(Row::Tail)],
+                    ],
+                ),
+                Section::new(
+                    "Take",
+                    240,
+                    vec![
+                        vec![it(Row::Record)],
+                        vec![it(Row::Keep), it(Row::SkipBack).wide(100)],
+                        vec![it(Row::Onto)],
+                    ],
+                )
+                .note(&onto),
+                Section::new(
+                    "Resample",
+                    260,
+                    vec![
+                        vec![it(Row::Flatten), it(Row::Auto)],
+                        vec![it(Row::FlattenVelocity).labelled()],
+                        vec![it(Row::FlattenHold).labelled()],
+                    ],
+                ),
+            ],
+        }
+    }
+
+    /// A line for the app to show, once.
+    pub fn take_note(&mut self) -> Option<String> {
+        self.note.take()
     }
 
     /// Reads what came into `input` since the last call (`dt` seconds ago)
@@ -804,15 +970,7 @@ impl RecTab {
             self.since_drawn = 0.0;
         }
         if was != self.recording {
-            if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
-                b.labels[0] = if self.recording { "Stop" } else { "Record" }.to_string();
-                if self.recording {
-                    b.enabled[0] = true;
-                    b.enabled[1] = false;
-                    b.enabled[2] = false;
-                    b.enabled[3] = false;
-                }
-            }
+            self.show_panel(ui, live);
         }
     }
 
@@ -848,19 +1006,8 @@ impl RecTab {
                 v.right.clear();
             }
         }
-        let third = ui
-            .get::<ButtonRow>(BUTTONS)
-            .is_some_and(|b| b.enabled.get(2) == Some(&true));
-        let enabled = vec![false, false, third, true];
-        let buttons = ui.get::<ButtonRow>(BUTTONS).is_none_or(|b| {
-            b.labels.first().is_some_and(|l| l == "Record") && b.enabled == enabled
-        });
-        if !buttons {
-            if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
-                b.labels[0] = "Record".to_string();
-                b.enabled = enabled;
-            }
-        }
+        // Record and Skip back wait for the input.
+        self.show_panel(ui, false);
     }
 
     /// What a touch on one of the tab's widgets asks for; None for touches
@@ -868,27 +1015,10 @@ impl RecTab {
     pub fn action(&mut self, ui: &mut Ui, ev: &UiEvent, st: &RecState) -> Option<RecAction> {
         match (ev.widget.as_str(), &ev.kind) {
             (BAR, EventKind::Tab(i)) => Some(RecAction::Tab(*i)),
-            (BUTTONS, EventKind::Tab(0)) => Some(if self.recording || self.flattening {
-                RecAction::Stop
-            } else {
-                RecAction::Record
-            }),
-            (BUTTONS, EventKind::Tab(1)) => Some(RecAction::SkipBack),
-            (BUTTONS, EventKind::Tab(2))
-                if !self.recording && !self.flattening && st.can_flatten =>
-            {
-                Some(RecAction::Flatten)
-            }
-            (BUTTONS, EventKind::Tab(3)) if !self.recording && !self.flattening => {
-                Some(RecAction::Auto)
-            }
+            (LIST, EventKind::Tab(i)) => self.press(st, *Row::ALL.get(*i)?),
             (LIST, EventKind::Step { index, delta }) => {
                 let row = *Row::ALL.get(*index)?;
                 self.step(ui, st, row, *delta)
-            }
-            (LIST, EventKind::Select(_)) => {
-                self.show_wheel(ui);
-                None
             }
             _ => None,
         }
@@ -901,12 +1031,23 @@ impl RecTab {
         self.step(ui, st, row, delta)
     }
 
+    /// Button `row` pressed (a tap, or the wheel's push).
+    fn press(&mut self, st: &RecState, row: Row) -> Option<RecAction> {
+        let busy = self.recording || self.flattening;
+        match row {
+            Row::Record if busy => Some(RecAction::Stop),
+            Row::Record => Some(RecAction::Record),
+            Row::Keep => Some(RecAction::SkipBack),
+            Row::Flatten if !busy && st.can_flatten => Some(RecAction::Flatten),
+            Row::Auto if !busy => Some(RecAction::Auto),
+            _ => None,
+        }
+    }
+
     fn step(&mut self, ui: &mut Ui, st: &RecState, row: Row, delta: i32) -> Option<RecAction> {
         if row == Row::Source && (self.recording || self.flattening) {
             // A take keeps its source until it ends.
-            if let Some(card) = ui.get_mut::<InfoCard>(WHEEL) {
-                card.text = "Source: stop the take first".to_string();
-            }
+            self.note = Some("Source: stop the take first".to_string());
             return None;
         }
         let was = self.settings.source;

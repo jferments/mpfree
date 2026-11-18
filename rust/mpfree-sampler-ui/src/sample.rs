@@ -204,7 +204,10 @@ pub fn warp_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<WarpSample>, String
             delta: -1,
         },
     )?;
-    s.event(warp_tab::BUTTONS, mpfree_ui::EventKind::Tab(0))?;
+    s.event(
+        warp_tab::LIST,
+        mpfree_ui::EventKind::Tab(warp_tab::Row::PinHits.index()),
+    )?;
     s.event(warp_tab::VIEW, mpfree_ui::EventKind::Select(4))?;
     s.tab
         .set_playheads(&mut s.ui, &[(f64::from(RATE) * 60.0 / BPM * 3.3) as u64]);
@@ -215,7 +218,10 @@ pub fn warp_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<WarpSample>, String
     s.name = "warp-zoomed";
     s.about =
         "Zoomed round the fifth pin (wheel), nudged 2/64 of a beat late by Q-Link 2, 1/16 grid";
-    s.event(warp_tab::BUTTONS, mpfree_ui::EventKind::Tab(0))?;
+    s.event(
+        warp_tab::LIST,
+        mpfree_ui::EventKind::Tab(warp_tab::Row::PinHits.index()),
+    )?;
     s.event(warp_tab::VIEW, mpfree_ui::EventKind::Select(4))?;
     let st = s.state.clone();
     for _ in 0..6 {
@@ -782,8 +788,10 @@ pub fn play_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<PlaySample>, String
     let mut s = play_on(fonts(), p, view)?;
     (s.name, s.about) = (
         "play-keys",
-        "A kit mapped to keys: eight keygroups over the keyboard, pad A5's zone picked with its handles, E4 held",
+        "A kit mapped to keys, on the Pitch section: eight keygroups over the keyboard, pad A5's zone picked with its handles, E4 held",
     );
+    let st = s.state.clone();
+    s.tab.open_section(&mut s.ui, &st, play_tab::Section::Pitch);
     if let Some(z) =
         s.ui.get_mut::<crate::keys_widgets::KeyZones>(play_tab::KEYS)
     {
@@ -908,7 +916,6 @@ pub fn pads_sample(fonts: Fonts, pad: usize) -> Result<PadsSample, String> {
     }
     let mut tab = PadsTab::add(&mut ui, PADS_PAGE, &state)?;
     tab.kit = "Kit 1 · Breaks".into();
-    tab.view = pads_tab::PAD_VIEW;
     tab.update(&mut ui, &state);
     ui.show(PADS_PAGE)?;
     Ok(PadsSample {

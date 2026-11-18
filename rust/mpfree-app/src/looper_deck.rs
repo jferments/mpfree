@@ -65,6 +65,21 @@ pub enum RingState {
 }
 
 impl RingState {
+    /// A loop's state from its status; an armed loop starts on
+    /// `next_bar` (None while stopped).
+    pub fn of(l: &mpfree_looper::Status, next_bar: Option<i64>) -> RingState {
+        use mpfree_looper::Phase;
+        match l.phase {
+            Phase::Empty => RingState::Empty,
+            Phase::Armed => RingState::Waiting(next_bar),
+            Phase::Recording => RingState::Recording,
+            Phase::Overdubbing => RingState::Overdubbing,
+            Phase::Playing if l.muted => RingState::Muted,
+            Phase::Playing if !l.on => RingState::Off,
+            Phase::Playing => RingState::Playing,
+        }
+    }
+
     /// The loop has sound (it can be muted, cleared and levelled).
     pub fn has_sound(self) -> bool {
         !matches!(self, RingState::Empty | RingState::Waiting(_))
@@ -127,6 +142,8 @@ pub struct DeckHead {
     pub tempo: String,
     /// "37 s of 5 min", and how full, 0 to 1.
     pub memory: (String, f32),
+    /// The pads are the loop keys (SHIFT + SAMPLER): the Pads switch lit.
+    pub pads: bool,
 }
 
 /// Where a channel's parts are.
@@ -193,6 +210,13 @@ impl LoopDeck {
     /// The header's strip.
     pub fn head_rect(r: Rect) -> Rect {
         Rect::new(r.x, r.y, r.w, HEAD_H)
+    }
+
+    /// The Pads switch in the header, in the middle: the pads as loop
+    /// keys (SHIFT + SAMPLER does the same).
+    pub fn pads_rect(r: Rect) -> Rect {
+        let h = LoopDeck::head_rect(r);
+        Rect::new(h.x + h.w / 2 - 70, h.y + 5, 160, HEAD_H - 6)
     }
 
     /// Channel `i`'s parts, of `n`, in the deck at `r`.
@@ -444,6 +468,42 @@ impl LoopDeck {
             t.text_dim,
             &self.head.tempo,
         );
+        // The Pads switch: lit while the pads are the loop keys.
+        let pads = LoopDeck::pads_rect(r);
+        let pill = pads.inset_xy(0, 3);
+        if self.head.pads {
+            cx.canvas.fill_round_rect(pill, pill.h / 2, t.accent);
+        } else {
+            cx.canvas.fill_round_rect(pill, pill.h / 2, t.raised);
+        }
+        let dot = Rect::new(pill.x + 14, pill.y + pill.h / 2 - 5, 10, 10);
+        let mut s = Shape::new(dot.inset(-2));
+        s.disc(dot.x as f32 + 5.0, dot.y as f32 + 5.0, 5.0);
+        s.draw(
+            cx.canvas,
+            if self.head.pads {
+                t.on_accent
+            } else {
+                t.text_faint
+            },
+        );
+        cx.text(
+            FontId::Bold,
+            13.0,
+            Rect::new(
+                dot.right() + 8,
+                pill.y,
+                pill.right() - dot.right() - 14,
+                pill.h,
+            ),
+            Align::Left,
+            if self.head.pads {
+                t.on_accent
+            } else {
+                t.text_dim
+            },
+            "Pads as loop keys",
+        );
         // The memory every loop shares, on the right.
         let (text, full) = &self.head.memory;
         let tw = cx.measure(FontId::Sans, 12.0, text);
@@ -619,7 +679,16 @@ impl Widget for LoopDeck {
 
     fn targets(&self, r: Rect) -> Vec<Target> {
         let n = self.channels.len();
-        let mut out = Vec::new();
+        let mut out = vec![Target::tap(
+            "pads-keys",
+            0,
+            if self.head.pads {
+                "Pads as loop keys (on)"
+            } else {
+                "Pads as loop keys"
+            },
+            LoopDeck::pads_rect(r),
+        )];
         for (i, ch) in self.channels.iter().enumerate() {
             let p = LoopDeck::parts(r, i, n);
             out.push(Target::tap("loop", i, ch.name.clone(), p.name));
@@ -688,6 +757,10 @@ impl Widget for LoopDeck {
         let n = self.channels.len();
         match phase {
             Touch::Down => {
+                if LoopDeck::pads_rect(r).contains(x, y) {
+                    self.acts.push(LoopAct::PadKeys);
+                    return Some(EventKind::Toggle(0));
+                }
                 let i = (0..n).find(|&i| LoopDeck::parts(r, i, n).card.contains(x, y))?;
                 let p = LoopDeck::parts(r, i, n);
                 let state = self.channels[i].state;

@@ -129,6 +129,8 @@ pub fn value(shape: Window, x: f32) -> f32 {
 pub struct WindowTable {
     shape: Window,
     t: [f32; TABLE + 1],
+    /// Where the window first reaches its top, 0 to 1.
+    peak: f32,
 }
 
 impl WindowTable {
@@ -136,6 +138,7 @@ impl WindowTable {
         let mut w = WindowTable {
             shape,
             t: [0.0; TABLE + 1],
+            peak: 0.5,
         };
         w.fill();
         w
@@ -153,6 +156,19 @@ impl WindowTable {
         for (i, v) in self.t.iter_mut().enumerate() {
             *v = value(self.shape, i as f32 / TABLE as f32);
         }
+        let top = self.t.iter().fold(0.0f32, |a, &b| a.max(b));
+        let i = self
+            .t
+            .iter()
+            .position(|&v| v >= top * 0.999)
+            .unwrap_or(TABLE / 2);
+        self.peak = i as f32 / TABLE as f32;
+    }
+
+    /// Where the window first reaches its top (0 to 1): the middle of a
+    /// Hann window, the end of a square's fade-in, early in a pluck.
+    pub fn peak(&self) -> f32 {
+        self.peak
     }
 
     pub fn shape(&self) -> Window {

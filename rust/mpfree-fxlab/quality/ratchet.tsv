@@ -1149,33 +1149,33 @@ movement/ringmod/wave_click_db_sine-to-triangle	5.8398
 movement/ringmod/wave_click_db_square-to-sine	0
 movement/ringmod/wave_click_db_triangle-to-square	0.0063
 movement/ringmod/wave_spread_lu	4.9968
-movement/rotary/alias_db_5khz_drive100	-13.3488
-movement/rotary/alias_db_5khz_drive50	-30.7833
-movement/rotary/beam_db	-1.6842
-movement/rotary/click_db_balance	-98.1474
-movement/rotary/click_db_mix	-105.0676
-movement/rotary/click_db_ramp	-95.0848
-movement/rotary/click_db_speed	-99.3214
-movement/rotary/click_db_width	-100.8996
-movement/rotary/drum_doppler_cents	8.0518
-movement/rotary/drum_hz_fast	5.7003
-movement/rotary/drum_hz_slow	0.6685
-movement/rotary/horn_doppler_cents	36.8434
-movement/rotary/horn_hz_fast	6.6996
-movement/rotary/horn_hz_slow	0.7973
-movement/rotary/lu_hits_fast	-3.0061
-movement/rotary/lu_hits_slow	-3.2284
-movement/rotary/lu_pink_fast	-3.1862
-movement/rotary/lu_pink_slow	-3.1719
-movement/rotary/opposite_rotation	0
-movement/rotary/ramp_down_over_up_drum	1.0366
-movement/rotary/ramp_down_over_up_horn	1.0488
-movement/rotary/ramp_up_s_drum	3.28
-movement/rotary/ramp_up_s_horn	0.82
-movement/rotary[Chorale]/lu_pink	-3.1703
-movement/rotary[Gritty organ]/lu_pink	0.2001
-movement/rotary[Quick ramp]/lu_pink	-3.1862
-movement/rotary[Tremolo fast]/lu_pink	-3.1862
+movement/rotary/alias_db_5khz_drive100	-55.5517
+movement/rotary/alias_db_5khz_drive50	-96.3459
+movement/rotary/beam_db	5.2708
+movement/rotary/click_db_balance	-92.9543
+movement/rotary/click_db_mix	-104.2524
+movement/rotary/click_db_ramp	-96.5428
+movement/rotary/click_db_speed	-91.1297
+movement/rotary/click_db_width	-91.1791
+movement/rotary/drum_doppler_cents	8.3423
+movement/rotary/drum_hz_fast	5.7
+movement/rotary/drum_hz_slow	0.6676
+movement/rotary/horn_doppler_cents	37.5973
+movement/rotary/horn_hz_fast	6.6987
+movement/rotary/horn_hz_slow	0.7961
+movement/rotary/lu_hits_fast	0.2838
+movement/rotary/lu_hits_slow	-0.2681
+movement/rotary/lu_pink_fast	-0.0181
+movement/rotary/lu_pink_slow	-0.0338
+movement/rotary/opposite_rotation	1
+movement/rotary/ramp_down_over_up_drum	1.2532
+movement/rotary/ramp_down_over_up_horn	1.4211
+movement/rotary/ramp_up_s_drum	4.66
+movement/rotary/ramp_up_s_horn	1.14
+movement/rotary[Chorale]/lu_pink	-0.037
+movement/rotary[Gritty organ]/lu_pink	-0.1928
+movement/rotary[Quick ramp]/lu_pink	-0.0181
+movement/rotary[Tremolo fast]/lu_pink	-0.0181
 movement/tremolo/click_db_depth	-105.4405
 movement/tremolo/click_db_mode	-83.6522
 movement/tremolo/click_db_rate	-106.0162
