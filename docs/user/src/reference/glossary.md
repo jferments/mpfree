@@ -124,7 +124,7 @@ checked: 2026-11-14 b76c3c7
 
 **Velocity** — How hard a pad is hit, from 1 (softest) to 127 (hardest).
 
-**View** — One of a page's layouts: the Play page's All and Loop, or the Sequencer tab's Steps and Notes.
+**View** — One of a page's layouts: the Sequencer tab's Steps and Notes, or the Arrange tab's Clips grid, Song view and song list.
 
 **Warp** — Playing a sample in time with the project's tempo: Stretch keeps its pitch, Repitch changes it like a record.
 
