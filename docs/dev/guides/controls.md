@@ -86,6 +86,19 @@ A control that can't do anything right now is drawn faint, and a tap on it says 
 - **`smp-pads-list/row-button`**: the Effects row's button: "+ FX", or the effects on the pad's mixer channel. Tap it for the pad's chain in the Mix tab (the picker on an empty chain); ‹ comes back. A pad with no channel of its own (any but kit 1's A1 to A16) is lent one, given back if it is left plain. "—" until the mixer has said. *Tests:* `the_pads_tab_effects_row_opens_the_pads_chain_in_mix`, `a_pad_past_a16_is_lent_a_channel_and_gives_it_back_plain`.
 - **`smp-pads-sounds/row`**: the kit's sounds. Tap one to choose it for Put.
 - **`smp-pads-put/button`**: Put on (pad): puts the chosen sound on the picked pad, whole. If the pad already plays all of it, it says so.
+- **`smp-pads-kits/perform`**: Perform pads, at the right end of the Pads of row: the project's Perform set in place of the kit's pads (the Perform view, below). Outlined while it shows; then a tap on any track's chip goes back to the kit's pads. *Example:* tap Perform pads, tap Track 1: the kit's pads again. *Tests:* `the_pads_tabs_perform_view_edits_the_set_and_undo_takes_it_back`.
+
+### The Perform view
+
+The Pads tab's Perform set (board 7): the project's action pads, eight pages of 16. While it shows, a pad hit on the MPC picks that pad (a throw plays while held), PAD BANK turns the pages, and the kit's pads don't play.
+
+- **`prf-bar/button`**: On the pads: off or on. On puts the set on the pads at the page shown, as SHIFT + SAMPLER pressed again on the Looper tab does: Play and the Looper tab play it. *Example:* show page B, tap On the pads, go to Play and hit pad 2: Reverb wash. *Tests:* `the_pads_tabs_perform_view_edits_the_set_and_undo_takes_it_back`, `the_perform_view_pages_and_edits_the_set`.
+- **`prf-map/pad`**: the page's 16 pads, each with what it does (THROW, LOOP, MUTE, SCENE in its corner). Tap a pad to pick it; tap the picked throw again and hold to hear it. *Example:* tap B2, hold it: Reverb wash plays until you lift. *Tests:* `the_pads_tabs_perform_view_edits_the_set_and_undo_takes_it_back`.
+- **`prf-map/bank`**: the set's pages A to H (A is the looper's loop keys, B Play's throws), a dot for each pad with an action. Tap one to show it, as PAD BANK does here. *Tests:* `the_pads_tabs_perform_view_edits_the_set_and_undo_takes_it_back`, `the_perform_view_pages_and_edits_the_set`.
+- **`prf-buttons/button`**: Copy, Paste and Clear on the pad picked, each one UNDO step. Faint buttons say why. *Example:* pick B2, Copy, pick B9, Paste B9. *Test:* `the_pads_tabs_perform_view_edits_the_set_and_undo_takes_it_back`.
+- **`prf-type/chip`**: what the pad does: Throw, Loop key, Loop mute, Track mute or Scene. Tap one to make the picked pad that kind (a loop's key and its mute keep the loop), one UNDO step. *Tests:* `the_pads_tabs_perform_view_edits_the_set_and_undo_takes_it_back`, `a_kind_keeps_the_loop_and_starts_the_rest_at_the_first`.
+- **`prf-pick-a/chip`**, **`prf-pick-b/chip`**: the eight choices of the pad's kind, four a row: Play's throws, Loops 1 to 8, the song's tracks or the scene rows (eight round the one picked). Tap one to put it on the pad. *Example:* make B13 a Scene, tap Scene 6: a hit on B13 launches row 6. *Tests:* `the_pads_tabs_perform_view_edits_the_set_and_undo_takes_it_back`, `the_track_and_scene_choices_show_eight_round_the_one_picked`.
+- **`prf-list/row`**, **`prf-list/row-less`**, **`prf-list/row-more`**: the Pad list: Pad does (Nothing or a kind), then a throw's Effect and Hold (While held or Latch), a loop key's or mute's Loop, a track mute's Track, a scene pad's Scene. Tap a row to pick it; ‹ and › step it (the wheel and - / + too). Under the rows: what a hit does. *Example:* pick B8, step Hold to Latch: a hit starts Vinyl brake and the next lets it go. *Tests:* `the_pads_tabs_perform_view_edits_the_set_and_undo_takes_it_back`, `a_throw_steps_its_effect_and_hold`.
 
 ## The browser
 

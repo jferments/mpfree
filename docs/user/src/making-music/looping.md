@@ -208,13 +208,28 @@ The loop keys are page A of the project's **Perform set**: eight pages of pad ac
 |---|---|
 | **A · Loop keys** | The loop keys and mutes above. |
 | **B · Throws** | Pads 1 to 8 are Play's eight [throws](playing-live.md#throws), in the order of their tiles: Delay throw, Reverb wash, Stutter, Tape stop, Filter dip, Beat repeat, Drop drums and Vinyl brake. Hold a pad and its throw plays; let go and it stops, as a tile on Play. Drop drums drops the kicks, snares and hats of the kit the selected track plays. |
-| **C to H** | Empty for now: their pads are dark and do nothing. |
+| **C to H** | Empty to start with: their pads are dark and do nothing until you [put actions on them](#setting-up-the-perform-set-on-the-pads-tab). |
 
-A throw pad is dim in its tile's colour and lights up fully while its throw plays. The Pads tab's Perform page will let you put your own actions on any page: a throw that **latches** (a hit starts it and the next hit lets it go), a **track's mute** (red while the track is muted; in Perform it waits for the launch line, as **TRACK MUTE**'s pads do) or a **scene** (a hit launches that row of the grid).
+A throw pad is dim in its tile's colour and lights up fully while its throw plays. A **track mute** pad is red while its track is muted (in Perform it waits for the launch line, as **TRACK MUTE**'s pads do), and a **scene** pad is dim green (a hit launches that row of the grid). You set up what each pad does on the Pads tab (below).
 
 On a page other than A, the **Pads as loop keys** switch is dark, since the pads aren't the loop keys; tap it to go back to page A. The hint line names the page, and on Play the chip in the top bar says **Pads: Perform B** (or the page's letter): a tap on it gives the pads back. **SHIFT + SAMPLER** brings the set back on the page you left it on. When the pads go back to the kit, any throw a pad was playing stops.
 
 {{shot: looper-perform-throws | The Looper tab with the Perform set's page B on the pads: the hint line names the page.}}
+
+### Setting up the Perform set on the Pads tab
+
+On the **Pads** tab, tap **Perform pads** at the right end of the **Pads of** row: the project's Perform set takes the kit's place. Tap a track's chip to go back to its kit.
+
+- On the left are the page's 16 pads, each with what it does in its corner (**THROW**, **LOOP**, **LOOP MUTE**, **MUTE** or **SCENE**). The pages **A** to **H** are over them, with a dot for each pad that does something: tap one to show it. **PAD BANK** picks the page here too, and the set comes back on the pads at that page.
+- **Hit a pad** on the MPC, or tap it on the screen, to pick it. A throw plays while you hold its pad (here always while held, even one that latches), so you can hear it; any other pad is only picked. Nothing records, mutes or launches, so you can set up the set while a song plays, and the kit's pads don't play while the set shows.
+- Over the pad's settings, five chips say **what it does**: **Throw**, **Loop key**, **Loop mute**, **Track mute** or **Scene**. Under them are the eight choices for that kind: Play's eight throws, Loops 1 to 8, the song's tracks, or the scene rows (eight at a time, around the one picked). Tap one to put it on the pad.
+- The **Pad** list under them has the same settings for the wheel and **-** / **+**: **Pad does** (or Nothing), then a throw's **Effect** and **Hold** (**While held**, or **Latch**: a hit starts it and the next hit lets it go), a loop pad's **Loop**, a mute pad's **Track** or a scene pad's **Scene**. Under the list a line says what a hit does.
+- **Copy**, **Paste** and **Clear** work on the pad picked. Each change is one step: **UNDO** takes it back and **SHIFT + UNDO** puts it back. The set is saved with the project.
+- **On the pads** at the top right puts the set on the pads at the page shown, as **SHIFT + SAMPLER** pressed again on the Looper tab does: Play and the Looper tab play it. Tap it again to give the pads back to the kit.
+
+Throws play on the master and ring out when you let go, as Play's tiles do. Choosing where a throw plays, when it starts and how it stops, and pads that move a macro, come later.
+
+{{shot: pads-perform | The Pads tab showing the Perform set: page B's throws, two track mutes, a loop key and a scene, with Reverb wash on B2 picked.}}
 
 ### Moving a layer to another loop
 
