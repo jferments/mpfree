@@ -8,16 +8,19 @@
 //! makeup; and an EQ of a low cut, a low shelf, a mid bell and a high
 //! shelf. Order puts the EQ before or after the dynamics.
 //!
-//! Each stage's switch crossfades it in and out over 20 ms (no click),
-//! and a stage that is off and faded out isn't run at all, so a strip
-//! with only its EQ on costs about what the EQ does. The gate looks 1 ms
-//! ahead, and the strip keeps that latency whether the gate is on or
-//! not (its dry path is delayed to match), so turning the gate on never
-//! moves the latency.
+//! Each stage's switch crossfades it in and out over 20 ms on an S-curve
+//! (no click: the fade starts and ends at rest), and a stage that is off
+//! and faded out isn't run at all, so a strip with only its EQ on costs
+//! about what the EQ does. The gate looks 1 ms ahead, and the strip keeps
+//! that latency whether the gate is on or not (its dry path is delayed to
+//! match, and the gate's look-ahead keeps filling while it is off, so it
+//! comes back on open and without a gap). Changing Order fades the output
+//! out over 8 ms, swaps the stages at silence, waits for the gate's
+//! look-ahead and 2 ms more, and comes back over 8 ms.
 
 use mpfree_node::{Ctx, Kind, Node, NodeInfo, ParamInfo, Smooth};
 
-use crate::comp::ids as comp;
+use crate::comp::{ids as comp, STYLE_NAMES};
 use crate::dynamics::gate;
 use crate::eq::ids as eq;
 use crate::kit::{
@@ -54,6 +57,11 @@ pub mod ids {
     pub const GATE_GAIN: u16 = 22;
     /// Meter: the compressor's gain reduction now, in dB (0 or below).
     pub const REDUCTION: u16 = 23;
+    /// The compressor's Style, as on the Compressor.
+    pub const STYLE: u16 = 24;
+    /// The compressor's Auto makeup, as on the Compressor: adds back what
+    /// the curve takes from a sound at a mix level, on top of Makeup.
+    pub const AUTO_MAKEUP: u16 = 25;
 }
 
 /// The orders the stages can run in.
@@ -66,7 +74,7 @@ static INFO: NodeInfo = NodeInfo {
     name: "Channel strip",
     kind: Kind::Effect,
 };
-static PARAMS: [ParamInfo; 24] = [
+static PARAMS: [ParamInfo; 26] = [
     param(0, "Gate", "Strip", 0.0, 1.0, 0.0, NONE, Toggle),
     param(1, "Gate thresh", "Gate", -80.0, 0.0, -50.0, Db, Linear),
     param(2, "Gate range", "Gate", -80.0, 0.0, -30.0, Db, Linear),
@@ -118,6 +126,17 @@ static PARAMS: [ParamInfo; 24] = [
     param(21, "Output", "Strip", -24.0, 12.0, 0.0, Db, Linear),
     meter(22, "Gate gain", "Gate", -80.0, 0.0, Db),
     meter(23, "Reduction", "Compressor", -60.0, 0.0, Db),
+    param(
+        24,
+        "Style",
+        "Compressor",
+        0.0,
+        3.0,
+        0.0,
+        NONE,
+        Choice(STYLE_NAMES),
+    ),
+    param(25, "Auto makeup", "Compressor", 0.0, 1.0, 0.0, NONE, Toggle),
 ];
 
 /// Channel strip factory presets.
@@ -128,7 +147,8 @@ pub static PRESETS: &[Preset] = &[
             (ids::LOW_CUT, 90.0),
             (ids::COMP_THRESHOLD, -22.0),
             (ids::RATIO, 3.0),
-            (ids::MAKEUP, 4.0),
+            (ids::STYLE, comp::OPTO),
+            (ids::AUTO_MAKEUP, 1.0),
             (ids::MID_FREQ, 350.0),
             (ids::MID_GAIN, -2.5),
             (ids::HIGH_FREQ, 10_000.0),
@@ -145,7 +165,7 @@ pub static PRESETS: &[Preset] = &[
             (ids::COMP_THRESHOLD, -16.0),
             (ids::RATIO, 4.0),
             (ids::COMP_ATTACK, 20.0),
-            (ids::MAKEUP, 3.0),
+            (ids::AUTO_MAKEUP, 1.0),
             (ids::LOW_FREQ, 60.0),
             (ids::LOW_GAIN, 3.0),
             (ids::MID_FREQ, 400.0),
@@ -163,7 +183,8 @@ pub static PRESETS: &[Preset] = &[
             (ids::COMP_THRESHOLD, -18.0),
             (ids::RATIO, 4.0),
             (ids::COMP_ATTACK, 5.0),
-            (ids::MAKEUP, 3.0),
+            (ids::STYLE, comp::FET),
+            (ids::AUTO_MAKEUP, 1.0),
             (ids::MID_FREQ, 200.0),
             (ids::MID_GAIN, 2.0),
             (ids::HIGH_FREQ, 6000.0),
@@ -177,7 +198,8 @@ pub static PRESETS: &[Preset] = &[
             (ids::COMP_THRESHOLD, -20.0),
             (ids::RATIO, 5.0),
             (ids::COMP_ATTACK, 15.0),
-            (ids::MAKEUP, 4.0),
+            (ids::STYLE, comp::OPTO),
+            (ids::AUTO_MAKEUP, 1.0),
             (ids::MID_FREQ, 800.0),
             (ids::MID_GAIN, 2.0),
         ],
@@ -189,37 +211,70 @@ pub static PRESETS: &[Preset] = &[
             (ids::RATIO, 2.0),
             (ids::COMP_ATTACK, 30.0),
             (ids::COMP_RELEASE, 250.0),
-            (ids::MAKEUP, 1.5),
+            (ids::STYLE, comp::BUS),
+            (ids::AUTO_MAKEUP, 1.0),
         ],
     },
 ];
 
 /// Frames a stage is run in at a time (its dry copy lives on the stack).
 const CHUNK: usize = 64;
+/// How long a stage's switch takes to fade it in or out.
+const SWITCH_MS: f32 = 20.0;
+/// How long an Order change takes to dip out (and again to come back).
+const DIP_MS: f32 = 8.0;
+/// How long it stays silent after swapping the stages, on top of the
+/// gate's look-ahead (which still holds sound from the old order): long
+/// enough for the EQ's filters to settle on their new input.
+const DIP_QUIET_MS: f32 = 2.0;
 
-/// One stage's switch: how far in it is now, and whether it ran last.
+/// An S-curve from 0 to 1 (zero slope at both ends).
+fn smoothstep(t: f32) -> f32 {
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// One stage's switch: how far in it is now (a straight ramp, heard on an
+/// S-curve), and whether it ran last.
 #[derive(Clone, Copy, Debug)]
 struct Switch {
-    on: Smooth,
+    pos: f32,
+    target: f32,
+    step: f32,
     ran: bool,
 }
 
 impl Switch {
     fn new(on: bool) -> Switch {
+        let at = if on { 1.0 } else { 0.0 };
         Switch {
-            on: Smooth::new(if on { 1.0 } else { 0.0 }),
+            pos: at,
+            target: at,
+            step: 1.0,
             ran: on,
         }
     }
     /// Off and faded out: the stage needn't run.
     fn idle(&self) -> bool {
-        self.on.value == 0.0 && self.on.target == 0.0
+        self.pos == 0.0 && self.target == 0.0
+    }
+    /// On and faded in: the stage's output is all there is.
+    fn full(&self) -> bool {
+        self.pos == 1.0 && self.target == 1.0
+    }
+    /// The stage's share for the next frame.
+    fn next(&mut self) -> f32 {
+        if self.pos < self.target {
+            self.pos = (self.pos + self.step).min(self.target);
+        } else if self.pos > self.target {
+            self.pos = (self.pos - self.step).max(self.target);
+        }
+        smoothstep(self.pos)
     }
 }
 
 /// A gate, a compressor and an EQ in one insert.
 pub struct ChannelStrip {
-    v: [f32; 24],
+    v: [f32; 26],
     rate: u32,
     gate: Gate,
     comp: Compressor,
@@ -229,6 +284,16 @@ pub struct ChannelStrip {
     /// The gate's dry path, delayed as the gate delays.
     dry: [Line; 2],
     output: Smooth,
+    /// The order the stages run in now (true: EQ first); an Order change
+    /// waits for the dip to reach silence.
+    eq_first: bool,
+    /// The dip around an Order change: frames left of the way to silence
+    /// (`dip_frames` is full level, 0 silence).
+    dip: u32,
+    dip_frames: u32,
+    /// Frames left at silence after the swap, and how many it starts with.
+    quiet: u32,
+    quiet_frames: u32,
 }
 
 impl Default for ChannelStrip {
@@ -253,6 +318,11 @@ impl ChannelStrip {
             ],
             dry: [Line::default(), Line::default()],
             output: Smooth::new(1.0),
+            eq_first: v[ids::ORDER as usize] >= 0.5,
+            dip: 1,
+            dip_frames: 1,
+            quiet: 0,
+            quiet_frames: 0,
         };
         // The EQ's bands as the strip uses them: a low shelf, a bell, an
         // unused bell and a high shelf; no high cut.
@@ -262,8 +332,8 @@ impl ChannelStrip {
         s.eq.set_param(eq::band_type(3), 2.0);
         s.eq.set_param(eq::HIGH_SLOPE, 0.0);
         s.gate.set_param(gate::RANGE, v[2]);
-        for id in 0..ids::GATE_GAIN {
-            s.apply(id, v[id as usize]);
+        for p in PARAMS.iter().filter(|p| !p.readonly) {
+            s.apply(p.id, v[p.id as usize]);
         }
         s.setup(48_000);
         s.clear();
@@ -277,7 +347,7 @@ impl ChannelStrip {
                     ids::COMP => 1,
                     _ => 2,
                 };
-                self.switch[k].on.target = if v >= 0.5 { 1.0 } else { 0.0 };
+                self.switch[k].target = if v >= 0.5 { 1.0 } else { 0.0 };
             }
             ids::GATE_THRESHOLD => self.gate.set_param(gate::THRESHOLD, v),
             ids::GATE_RANGE => self.gate.set_param(gate::RANGE, v),
@@ -288,6 +358,8 @@ impl ChannelStrip {
             ids::COMP_ATTACK => self.comp.set_param(comp::ATTACK, v),
             ids::COMP_RELEASE => self.comp.set_param(comp::RELEASE, v),
             ids::MAKEUP => self.comp.set_param(comp::MAKEUP, v),
+            ids::STYLE => self.comp.set_param(comp::STYLE, v),
+            ids::AUTO_MAKEUP => self.comp.set_param(comp::AUTO_MAKEUP, v),
             ids::LOW_CUT => {
                 let on = v > LOW_CUT_OFF;
                 self.eq.set_param(eq::LOW_CUT, v);
@@ -327,6 +399,9 @@ impl ChannelStrip {
         let sw = &mut self.switch[k];
         if sw.idle() {
             if k == 0 {
+                // Keep the gate's look-ahead filled, so it comes back on
+                // without a gap.
+                self.gate.feed(l, r);
                 l.copy_from_slice(&dl[..n]);
                 r.copy_from_slice(&dr[..n]);
             }
@@ -334,10 +409,11 @@ impl ChannelStrip {
             return;
         }
         if !sw.ran {
-            // Back on after a rest: start the stage fresh rather than
-            // from where it stopped.
+            // Back on after a rest: the gate open (it lets through what
+            // passed while it was off, then shuts if the key is quiet), the
+            // others fresh rather than from where they stopped.
             match k {
-                0 => self.gate.reset(),
+                0 => self.gate.resume_open(),
                 1 => self.comp.reset(),
                 _ => self.eq.reset(),
             }
@@ -349,26 +425,33 @@ impl ChannelStrip {
             _ => self.eq.process(ctx, &[], l, r),
         }
         let sw = &mut self.switch[k];
-        if sw.on.settled() && sw.on.value == 1.0 {
+        if sw.full() {
             return;
         }
         for i in 0..n {
-            let g = sw.on.glide();
+            let g = sw.next();
             l[i] = dl[i] + (l[i] - dl[i]) * g;
             r[i] = dr[i] + (r[i] - dr[i]) * g;
         }
     }
     fn run(&mut self, ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
-        let order: [usize; 3] = if self.v[20] >= 0.5 {
-            [2, 0, 1]
-        } else {
-            [0, 1, 2]
-        };
+        let want = self.v[ids::ORDER as usize] >= 0.5;
         let mut gate_gain = 0.0f32;
         let mut reduction = 0.0f32;
         let mut at = 0;
         while at < l.len() {
-            let to = (at + CHUNK).min(l.len());
+            // An Order change swaps the stages once the dip is silent.
+            if self.dip == 0 && want != self.eq_first {
+                self.eq_first = want;
+                self.quiet = self.quiet_frames;
+            }
+            let leaving = want != self.eq_first;
+            let mut to = (at + CHUNK).min(l.len());
+            if leaving {
+                // End the chunk where the dip reaches silence.
+                to = to.min(at + self.dip as usize);
+            }
+            let order: [usize; 3] = if self.eq_first { [2, 0, 1] } else { [0, 1, 2] };
             for &k in &order {
                 self.stage(k, ctx, &mut l[at..to], &mut r[at..to]);
             }
@@ -378,10 +461,26 @@ impl ChannelStrip {
             if self.switch[1].ran {
                 reduction = reduction.min(self.comp.param(comp::REDUCTION));
             }
-            for i in at..to {
-                let g = self.output.glide();
-                l[i] *= g;
-                r[i] *= g;
+            if !leaving && self.dip == self.dip_frames {
+                for i in at..to {
+                    let g = self.output.glide();
+                    l[i] *= g;
+                    r[i] *= g;
+                }
+            } else {
+                let full = self.dip_frames as f32;
+                for i in at..to {
+                    if leaving {
+                        self.dip -= 1;
+                    } else if self.quiet > 0 {
+                        self.quiet -= 1;
+                    } else if self.dip < self.dip_frames {
+                        self.dip += 1;
+                    }
+                    let g = self.output.glide() * smoothstep(self.dip as f32 / full);
+                    l[i] *= g;
+                    r[i] *= g;
+                }
             }
             at = to;
         }
@@ -398,8 +497,12 @@ impl ChannelStrip {
         }
         self.rate = rate;
         for s in &mut self.switch {
-            s.on.set_time(rate, 20.0 / 3.0);
+            s.step = 1.0 / (SWITCH_MS * 0.001 * rate as f32);
         }
+        self.dip_frames = ((DIP_MS * 0.001 * rate as f32) as u32).max(1);
+        self.dip = self.dip_frames;
+        self.quiet_frames = self.gate.latency() + (DIP_QUIET_MS * 0.001 * rate as f32) as u32;
+        self.quiet = 0;
         self.output.set_time(rate, 20.0);
     }
     fn clear(&mut self) {
@@ -410,9 +513,12 @@ impl ChannelStrip {
             d.clear();
         }
         for s in &mut self.switch {
-            s.on.snap(s.on.target);
-            s.ran = s.on.value > 0.0;
+            s.pos = s.target;
+            s.ran = s.pos > 0.0;
         }
+        self.eq_first = self.v[ids::ORDER as usize] >= 0.5;
+        self.dip = self.dip_frames;
+        self.quiet = 0;
         self.output.snap(self.output.target);
         self.v[ids::GATE_GAIN as usize] = 0.0;
         self.v[ids::REDUCTION as usize] = 0.0;
@@ -544,6 +650,46 @@ mod tests {
         let slope = 0.4 * 220.0 / 48_000.0 * std::f32::consts::TAU;
         for i in 4000..n {
             assert!((l[i] - l[i - 1]).abs() < 1.5 * slope, "{i}");
+        }
+    }
+
+    /// The tone's largest second difference over `from..`, against a
+    /// steady tone's.
+    fn bend(y: &[f32], from: usize, amp: f32, hz: f32) -> f32 {
+        let w = hz / 48_000.0 * std::f32::consts::TAU;
+        let k = 2.0 * (1.0 - w.cos()) * amp;
+        (from..y.len() - 1)
+            .map(|i| (y[i + 1] - 2.0 * y[i] + y[i - 1]).abs() / k)
+            .fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn switching_the_gate_on_or_changing_order_does_not_click() {
+        for (id, to) in [(ids::GATE, 1.0), (ids::ORDER, 1.0)] {
+            let mut s = ChannelStrip::new();
+            s.prepare(48_000, 128);
+            s.set_param(ids::MID_GAIN, 6.0);
+            s.set_param(ids::MID_FREQ, 220.0);
+            s.set_param(ids::COMP, 0.0);
+            s.reset();
+            let n = 14_400;
+            let mut l: Vec<f32> = (0..n)
+                .map(|i| 0.1 * (i as f32 * 220.0 / 48_000.0 * std::f32::consts::TAU).sin())
+                .collect();
+            let mut r = l.clone();
+            let ctx = Ctx::new(48_000, 0);
+            s.process(&ctx, &[], &mut l[..4800], &mut r[..4800]);
+            let before = bend(&l[..4800], 2400, 0.2, 220.0);
+            s.set_param(id, to);
+            for k in (4800..n).step_by(128) {
+                let e = (k + 128).min(n);
+                s.process(&ctx, &[], &mut l[k..e], &mut r[k..e]);
+            }
+            let after = bend(&l, 4800, 0.2, 220.0);
+            assert!(
+                after < 1.4 * before.max(1.0),
+                "{id}: {after} against {before}"
+            );
         }
     }
 }

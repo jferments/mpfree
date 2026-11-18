@@ -1082,9 +1082,15 @@ impl Session {
         }
         let (view, bpm) = (self.app.view(), self.time.info().bpm);
         let Session {
-            panels, mix, out, ..
+            panels,
+            mix,
+            out,
+            app,
+            time,
+            ..
         } = self;
-        panels.poll(view, mix, bpm, now, &mut |m| out.show(m));
+        let notes = |t| crate::modpanels::NotesSource::of(app, time, t);
+        panels.poll(view, mix, &notes, bpm, now, &mut |m| out.show(m));
         self.out.show(ToUi::PlayLevels(self.mix.play_levels()));
         self.periods += 1;
         self.feed_screen();

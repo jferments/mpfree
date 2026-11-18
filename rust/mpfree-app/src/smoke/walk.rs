@@ -359,7 +359,9 @@ pub fn check(s: &mut Session) -> Vec<String> {
     // The chain editor shows the strip's chain as the mixer has it: its
     // inserts (name, on or bypassed), the one selected, and its knobs.
     if s.app.view() == crate::app::View::Chain {
-        let truth = s.panels.chain_state(&s.mix);
+        let truth = s.panels.chain_state(&s.mix, &|t| {
+            crate::modpanels::NotesSource::of(&s.app, &s.time, t)
+        });
         let shown = s
             .screen
             .ui
@@ -382,6 +384,20 @@ pub fn check(s: &mut Session) -> Vec<String> {
                     bad.push(format!(
                         "the chain editor has insert {:?} picked but the panel {:?}",
                         v.selected, t.selected
+                    ));
+                }
+                // A note track's Notes stage: its rows, the one whose page
+                // shows and the MIDI effect picker, as the project has them.
+                let notes = |c: &mpfree_chain_ui::ChainState| {
+                    c.notes
+                        .as_ref()
+                        .map(|n| (n.fx, n.arp.clone(), n.selected, n.picking))
+                };
+                if notes(&t) != notes(&v) {
+                    bad.push(format!(
+                        "the Notes stage shows {:?} but the track has {:?}",
+                        notes(&v),
+                        notes(&t)
                     ));
                 }
                 if t.selected == v.selected

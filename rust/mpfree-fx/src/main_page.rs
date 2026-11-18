@@ -83,6 +83,20 @@ pub static MAIN_PAGES: &[MainPage] = &[
         ["Depth", "Release", "Shape", "Mix"],
     ),
     main(
+        "mpfree.fx.gate",
+        &[
+            "Threshold",
+            "Range",
+            "Attack",
+            "Release",
+            "Hold",
+            "Mode",
+            "Ratio",
+            "Key HP",
+        ],
+        ["Threshold", "Range", "Attack", "Release"],
+    ),
+    main(
         "mpfree.fx.multiband",
         &[
             "Low thresh",

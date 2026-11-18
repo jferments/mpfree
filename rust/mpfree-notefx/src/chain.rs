@@ -1,6 +1,6 @@
 //! A track's MIDI effects in order, run on one period's notes at a time.
 
-use crate::fx::{Fx, MAX_MAP};
+use crate::fx::{Fx, LatchMode, StrumOrder, Time, MAX_MAP, STRUM_MOST, STRUM_TOGETHER_MS};
 use crate::notes::{Ev, Kind, Notes, MAX_EVENTS};
 use crate::track::TrackFx;
 
@@ -63,6 +63,8 @@ struct Held {
     pct: u8,
     /// Echo repeats' velocity, in percent of the one before.
     feedback: u8,
+    /// Frames the key's off comes later (Randomize's Longer by).
+    extra: u32,
     tail: Tail,
 }
 
@@ -75,6 +77,7 @@ const IDLE: Held = Held {
     played: 0,
     pct: 100,
     feedback: 100,
+    extra: 0,
     tail: Tail::None,
 };
 
@@ -123,6 +126,14 @@ struct Stage {
     sounding: [u8; 128],
     /// A cut waiting for the period it falls in.
     cut: Option<u64>,
+    /// Strum: where the chord being strummed started, and how many of its
+    /// notes have come.
+    group: Option<(u64, u8)>,
+    /// Latch: the notes it holds on, the keys down while it latched, and
+    /// how many keys that is.
+    latched: [bool; 128],
+    keys: [u8; 128],
+    keys_down: u16,
 }
 
 impl Stage {
@@ -133,6 +144,10 @@ impl Stage {
             pending: Notes::new(),
             sounding: [0; 128],
             cut: None,
+            group: None,
+            latched: [false; 128],
+            keys: [0; 128],
+            keys_down: 0,
         }
     }
 
@@ -141,7 +156,15 @@ impl Stage {
     }
 
     fn busy(&self) -> bool {
-        self.active().is_some() || !self.pending.is_empty() || self.held.iter().any(|h| h.count > 0)
+        self.active().is_some()
+            || !self.pending.is_empty()
+            || self.held.iter().any(|h| h.count > 0)
+            || self.latching()
+    }
+
+    /// Latch holds notes on, or keys it took are down.
+    fn latching(&self) -> bool {
+        self.keys_down > 0 || self.latched.iter().any(|&l| l)
     }
 
     /// Ons stop being put in while half the list waits, so the offs of
@@ -216,7 +239,43 @@ impl Stage {
                     IDLE
                 }
             }
+            // Strum's delay depends on the notes before it ([`Stage::on`]);
+            // Latch takes its keys before they get here ([`Stage::take`]).
+            Fx::Strum(_) | Fx::Latch { .. } => Held::one(note),
+            Fx::Randomize(r) => {
+                let mut to = note;
+                if r.pitch > 0 && rng.upto(99) < u32::from(r.often.min(100)) {
+                    let most = i16::from(r.pitch.min(24));
+                    let m = i16::from(note) + rng.upto(2 * most as u32) as i16 - most;
+                    if (0..=127).contains(&m) {
+                        to = m as u8;
+                    }
+                }
+                let mut h = Held::one(to);
+                if r.longer_ms > 0 {
+                    let most = Time::Ms(r.longer_ms.min(1000)).frames(p.rate, p.bpm);
+                    h.extra = rng.upto(most.min(u64::from(u32::MAX)) as u32);
+                }
+                h
+            }
         }
+    }
+
+    /// Strum: how long after `at` a note that starts there waits, as the
+    /// next of the chord being strummed (a new chord when the last began
+    /// more than [`STRUM_TOGETHER_MS`] before).
+    fn strum_delay(&mut self, p: &Period, at: u64, time_ms: u16) -> u32 {
+        let together = STRUM_TOGETHER_MS * u64::from(p.rate) / 1000;
+        let (start, count) = match self.group {
+            Some((s, c)) if at >= s && at - s <= together => (s, c),
+            _ => (at, 0),
+        };
+        self.group = Some((start, count.saturating_add(1)));
+        let rank = u64::from(count).min(STRUM_MOST as u64 - 1);
+        let gap = Time::Ms(time_ms.clamp(1, 200)).frames(p.rate, p.bpm);
+        (start + rank * gap)
+            .saturating_sub(at)
+            .min(u64::from(u32::MAX)) as u32
     }
 
     fn on(&mut self, p: &Period, at: u64, note: u8, velocity: u8, rng: &mut Rng) {
@@ -228,6 +287,9 @@ impl Stage {
         let first = self.held[n].count == 0;
         if first {
             self.held[n] = Self::map(fx, p, note, rng);
+            if let Some(Fx::Strum(st)) = fx {
+                self.held[n].delay[0] = self.strum_delay(p, at, st.time_ms);
+            }
         }
         self.held[n].count += 1;
         let h = self.held[n];
@@ -252,7 +314,8 @@ impl Stage {
             };
             v = match fx {
                 Some(Fx::Velocity(c)) => c.apply(v),
-                Some(Fx::Humanize { velocity: r, .. }) => {
+                Some(Fx::Humanize { velocity: r, .. })
+                | Some(Fx::Randomize(crate::fx::Randomize { velocity: r, .. })) => {
                     let r = u32::from(r.min(64));
                     let shift = rng.upto(2 * r) as i32 - r as i32;
                     (i32::from(v) + shift).clamp(1, 127) as u8
@@ -315,8 +378,8 @@ impl Stage {
         }
         if !silent && !matches!(h.tail, Tail::Length { .. }) {
             for i in 0..usize::from(h.len) {
-                self.pending
-                    .push(Ev::off(at + u64::from(h.delay[i]), h.notes[i]));
+                let t = at + u64::from(h.delay[i]) + u64::from(h.extra);
+                self.pending.push(Ev::off(t, h.notes[i]));
             }
         }
         if h.count == 1 {
@@ -339,19 +402,20 @@ impl Stage {
     }
 
     fn run(&mut self, p: &Period, input: &[Ev], out: &mut Notes, rng: &mut Rng) {
+        // Latch switched off, changed or taken out: its notes end, and the
+        // keys still down from it end nothing.
+        if !matches!(self.active(), Some(Fx::Latch { .. })) && self.latching() {
+            self.unlatch(p.start);
+        }
         // A cut from a period not run lands at this one's start.
         let cut = self.cut.filter(|&c| c < p.end()).map(|c| c.max(p.start));
         let split = cut.map_or(input.len(), |c| input.partition_point(|e| e.at < c));
-        for e in &input[..split] {
-            self.take(p, e, rng);
-        }
+        self.take_all(p, &input[..split], rng);
         if let Some(c) = cut {
             self.cut = None;
             self.cut_at(c);
         }
-        for e in &input[split..] {
-            self.take(p, e, rng);
-        }
+        self.take_all(p, &input[split..], rng);
         let first = out.len();
         self.pending.drain_before(p.end(), out);
         for e in &out.as_slice()[first..] {
@@ -363,11 +427,118 @@ impl Stage {
         }
     }
 
-    fn take(&mut self, p: &Period, e: &Ev, rng: &mut Rng) {
-        match e.kind {
-            Kind::On { note, velocity } => self.on(p, e.at, note, velocity, rng),
-            Kind::Off { note } => self.off(e.at, note),
+    /// The notes in time order. Strum Up or Down takes notes that start on
+    /// the same frame lowest (or highest) first, so a chord from the pads
+    /// or a clip strums in pitch order.
+    fn take_all(&mut self, p: &Period, input: &[Ev], rng: &mut Rng) {
+        let order = match self.active() {
+            Some(Fx::Strum(st)) if st.order != StrumOrder::Played => st.order,
+            _ => {
+                for e in input {
+                    self.take(p, e, rng);
+                }
+                return;
+            }
+        };
+        let mut i = 0;
+        while i < input.len() {
+            let at = input[i].at;
+            let mut run = [(0u8, 0u8); STRUM_MOST];
+            let mut len = 0;
+            while let Some(Kind::On { note, velocity }) = input.get(i).map(|e| e.kind) {
+                if input[i].at != at || len == STRUM_MOST {
+                    break;
+                }
+                run[len] = (note, velocity);
+                len += 1;
+                i += 1;
+            }
+            if len == 0 {
+                self.take(p, &input[i], rng);
+                i += 1;
+                continue;
+            }
+            let run = &mut run[..len];
+            run.sort_unstable_by_key(|&(n, _)| n);
+            if order == StrumOrder::Down {
+                run.reverse();
+            }
+            for &(note, velocity) in run.iter() {
+                self.on(p, at, note, velocity, rng);
+            }
         }
+    }
+
+    fn take(&mut self, p: &Period, e: &Ev, rng: &mut Rng) {
+        match (self.active(), e.kind) {
+            (Some(Fx::Latch { mode }), Kind::On { note, velocity }) => {
+                self.latch_on(e.at, note, velocity, mode)
+            }
+            (Some(Fx::Latch { .. }), Kind::Off { note }) => self.latch_off(e.at, note),
+            (_, Kind::On { note, velocity }) => self.on(p, e.at, note, velocity, rng),
+            (_, Kind::Off { note }) => self.off(e.at, note),
+        }
+    }
+
+    /// Latch: a key down. With Next chord, the first key down after all
+    /// were up ends the notes held; the note then stays on. With Toggle, a
+    /// note held on ends instead.
+    fn latch_on(&mut self, at: u64, note: u8, velocity: u8, mode: LatchMode) {
+        let n = usize::from(note & 0x7F);
+        if mode == LatchMode::NextChord && self.keys_down == 0 {
+            self.release_latched(at);
+        }
+        if self.latched[n] {
+            if mode == LatchMode::Toggle {
+                self.pending.push(Ev::off(at, note & 0x7F));
+                self.latched[n] = false;
+            }
+        } else if self.room_for_ons(2) {
+            self.pending.push(Ev::on(at, note & 0x7F, velocity));
+            self.latched[n] = true;
+        } else {
+            self.pending.dropped += 1;
+        }
+        self.keys[n] = self.keys[n].saturating_add(1);
+        self.keys_down = self.keys_down.saturating_add(1);
+    }
+
+    /// Latch: a key let go. Its note stays on; a key that went down before
+    /// Latch came ends as it would have.
+    fn latch_off(&mut self, at: u64, note: u8) {
+        let n = usize::from(note & 0x7F);
+        if self.keys[n] == 0 {
+            self.off(at, note);
+            return;
+        }
+        self.keys[n] -= 1;
+        self.keys_down = self.keys_down.saturating_sub(1);
+    }
+
+    /// Ends every note Latch holds on, at `at`.
+    fn release_latched(&mut self, at: u64) {
+        for n in 0..128 {
+            if self.latched[n] {
+                self.pending.push(Ev::off(at, n as u8));
+                self.latched[n] = false;
+            }
+        }
+    }
+
+    /// Latch went away: its notes end at `at`, and the keys still down
+    /// from it end nothing when they let go.
+    fn unlatch(&mut self, at: u64) {
+        self.release_latched(at);
+        for n in 0..128 {
+            let k = self.keys[n];
+            if k > 0 {
+                let h = &mut self.held[n];
+                h.count = h.count.saturating_add(k);
+                h.silent = h.silent.saturating_add(k);
+                self.keys[n] = 0;
+            }
+        }
+        self.keys_down = 0;
     }
 
     /// From frame `c` nothing waiting plays: every note this stage has on
@@ -387,6 +558,9 @@ impl Stage {
                 self.pending.push(Ev::off(c, n as u8));
             }
         }
+        // Latch's notes ended with the rest; its keys end nothing.
+        self.latched = [false; 128];
+        self.group = None;
         for h in self.held.iter_mut().filter(|h| h.count > 0) {
             h.silent = h.count;
             if let Tail::Echo { gap, pitch, .. } = h.tail {
@@ -404,6 +578,10 @@ impl Stage {
         self.pending.clear();
         self.sounding = [0; 128];
         self.cut = None;
+        self.group = None;
+        self.latched = [false; 128];
+        self.keys = [0; 128];
+        self.keys_down = 0;
     }
 }
 
