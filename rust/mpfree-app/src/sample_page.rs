@@ -645,6 +645,9 @@ pub struct SamplePage {
     /// The MIDI outputs a MIDI out pad can send to, for the Pads tab
     /// ([`SamplePage::set_pad_ports`]).
     pad_ports: Vec<pads_tab::OutPort>,
+    /// The synth-voice pads that play through the Synth channel, by kit
+    /// and pad ([`SamplePage::set_pads_on_synth`]).
+    pads_on_synth: Vec<(u8, u8)>,
     /// The Grain tab, added the first time it is opened.
     grain: Option<GrainTab>,
     grain_state: Option<GrainState>,
@@ -883,6 +886,7 @@ impl SamplePage {
             pads_state: None,
             pad_fx: None,
             pad_ports: Vec::new(),
+            pads_on_synth: Vec::new(),
             grain: None,
             grain_state: None,
             cloud: Some(Box::default()),
@@ -1722,6 +1726,7 @@ impl SamplePage {
             .map(|e| e.name().to_string())
             .collect();
         st.ports.clone_from(&self.pad_ports);
+        st.on_synth = self.on_synth_bits();
         let kit = match self.names.get(self.kit) {
             Some(n) => format!("Kit {} · {n}", self.kit + 1),
             None => format!("Kit {}", self.kit + 1),
@@ -2313,6 +2318,29 @@ impl SamplePage {
             st.effects = effects;
             tab.update(ui, st);
         }
+    }
+
+    /// The synth-voice pads that play through the Synth channel now (past
+    /// the sixteen with a synth of their own, or whose own couldn't be
+    /// made), by kit and pad: the Pad list says so under such a pad.
+    pub fn set_pads_on_synth(&mut self, ui: &mut Ui, on: Vec<(u8, u8)>) {
+        if self.pads_on_synth == on {
+            return;
+        }
+        self.pads_on_synth = on;
+        let bits = self.on_synth_bits();
+        if let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_mut()) {
+            st.on_synth = bits;
+            tab.update(ui, st);
+        }
+    }
+
+    /// The shown kit's pads in [`SamplePage::pads_on_synth`], a bit each.
+    fn on_synth_bits(&self) -> u128 {
+        self.pads_on_synth
+            .iter()
+            .filter(|(k, p)| usize::from(*k) == self.kit && *p < 128)
+            .fold(0, |m, (_, p)| m | 1 << p)
     }
 
     /// The MIDI outputs plugged in now, and why each would send nothing,
