@@ -893,6 +893,7 @@ fn thru_passes_a_keyboards_channel_out_as_it_came() {
             from: "Keystep 37".to_string(),
             channel: Some(9),
             to: DIN_NAME.to_string(),
+            blocks: mpfree_midi::blocks::Blocks::NONE,
         }];
         v.gen += 1;
     }

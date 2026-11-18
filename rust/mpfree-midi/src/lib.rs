@@ -31,6 +31,7 @@
 //! (docs/dev/design/midi-io.md).
 #![forbid(unsafe_code)]
 
+pub mod blocks;
 pub mod cv;
 pub mod cv_wire;
 pub mod input;

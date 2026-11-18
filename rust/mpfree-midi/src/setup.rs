@@ -27,6 +27,7 @@
 //!   returns, for the app to log and show: a project never fails to open
 //!   over its MIDI part, and nothing is dropped silently.
 
+use crate::blocks::Blocks;
 use crate::cv::{CvAssign, Priority, Scale, CV_OUTS};
 use crate::learn::Saved;
 use crate::msg::{Channel, Msg};
@@ -285,6 +286,10 @@ pub struct PortSetup {
     /// Which device profile names its controls (board 6's Profile): the
     /// rig's.
     pub profile: ProfilePick,
+    /// What its messages go through on their way to the tracks (the
+    /// Routing section's Armed track square, board 5): the song's, as the
+    /// routes' blocks.
+    pub blocks: Blocks,
 }
 
 /// A port's device profile ([`crate::profile`]).
@@ -337,6 +342,7 @@ impl PortSetup {
             delay_tenths: 0,
             shown: String::new(),
             profile: ProfilePick::Auto,
+            blocks: Blocks::NONE,
         }
     }
 
@@ -409,6 +415,9 @@ pub struct TrackRoute {
     pub channel: Option<Channel>,
     /// The track, from 0, below [`ROUTE_TRACKS`].
     pub track: u8,
+    /// What it does to what it takes, in order (board 5), saved on the
+    /// line after it as `route.blocks = transpose -12; velocity soft 20 127`.
+    pub blocks: Blocks,
 }
 
 impl TrackRoute {
@@ -434,6 +443,11 @@ impl TrackRoute {
         format!("track {} < {}", u16::from(self.track) + 1, self.source())
     }
 
+    /// The same port, channel and track (whatever its blocks).
+    pub fn same_route(&self, other: &TrackRoute) -> bool {
+        self.port == other.port && self.channel == other.channel && self.track == other.track
+    }
+
     fn parse(v: &str) -> Result<TrackRoute, String> {
         let shape = || "not \"track N < port · ch N\"".to_string();
         let (t, from) = v.split_once(" < ").ok_or_else(shape)?;
@@ -454,6 +468,7 @@ impl TrackRoute {
             port: port.to_string(),
             channel,
             track,
+            blocks: Blocks::NONE,
         })
     }
 }
@@ -477,6 +492,9 @@ pub struct ThruRoute {
     pub channel: Option<Channel>,
     /// The port it leaves by, by name.
     pub to: String,
+    /// What it does to what it sends, in order (board 5), saved on the
+    /// line after it as `thru.blocks = channel 2`.
+    pub blocks: Blocks,
 }
 
 impl ThruRoute {
@@ -502,6 +520,11 @@ impl ThruRoute {
         format!("{} < {}", self.to, self.source())
     }
 
+    /// The same ports and channel (whatever its blocks).
+    pub fn same_route(&self, other: &ThruRoute) -> bool {
+        self.from == other.from && self.channel == other.channel && self.to == other.to
+    }
+
     fn parse(v: &str) -> Result<ThruRoute, String> {
         let shape = || "not \"port < port · ch N\"".to_string();
         let (to, from) = v.split_once(" < ").ok_or_else(shape)?;
@@ -520,6 +543,7 @@ impl ThruRoute {
             from: from.to_string(),
             channel,
             to: to.to_string(),
+            blocks: Blocks::NONE,
         };
         r.check()?;
         Ok(r)
@@ -973,6 +997,9 @@ impl MidiSetup {
             if p.profile != ProfilePick::Auto {
                 line(&mut s, &format!("{k}.profile"), p.profile.word());
             }
+            if !p.blocks.is_empty() {
+                line(&mut s, &format!("{k}.blocks"), &p.blocks.to_text());
+            }
         }
         for (i, t) in self.tracks.iter().enumerate() {
             let Some(t) = t else { continue };
@@ -992,9 +1019,15 @@ impl MidiSetup {
         }
         for r in &self.routes {
             line(&mut s, "route", &r.text());
+            if !r.blocks.is_empty() {
+                line(&mut s, "route.blocks", &r.blocks.to_text());
+            }
         }
         for r in &self.thru {
             line(&mut s, "thru", &r.text());
+            if !r.blocks.is_empty() {
+                line(&mut s, "thru.blocks", &r.blocks.to_text());
+            }
         }
         for (i, a) in self.cv.iter().enumerate() {
             if *a != CvAssign::Off {
@@ -1029,6 +1062,8 @@ impl MidiSetup {
         // Ports by their number in the file, so a port's lines may come in
         // any order.
         let mut ports: Vec<(usize, PortSetup)> = Vec::new();
+        // The route or thru line read last, for its blocks' line.
+        let mut last: Option<&str> = None;
         let mut lines = text.lines().enumerate();
         match lines.next() {
             Some((_, h)) if h.trim() == HEADER => {}
@@ -1049,8 +1084,25 @@ impl MidiSetup {
                 continue;
             };
             let (k, v) = (k.trim(), v.trim());
-            if let Err(e) = m.apply(k, v, &mut ports) {
-                warn.push(format!("line {n}: {k}: {e}"));
+            // Blocks belong to the route or thru line just before them:
+            // none when that line was refused.
+            let (owner, blocks) = match k {
+                "route" | "thru" => (Some(k), false),
+                "route.blocks" => (None, last != Some("route")),
+                "thru.blocks" => (None, last != Some("thru")),
+                _ => (None, false),
+            };
+            if blocks {
+                warn.push(format!("line {n}: {k}: not after its route: skipped"));
+                continue;
+            }
+            match m.apply(k, v, &mut ports) {
+                Err(e) => {
+                    warn.push(format!("line {n}: {k}: {e}"));
+                    last = None;
+                }
+                Ok(()) if owner.is_some() => last = owner,
+                Ok(()) => {}
             }
         }
         ports.sort_by_key(|p| p.0);
@@ -1126,6 +1178,7 @@ impl MidiSetup {
                     ["clock-nudge-ms"] => p.clock_nudge_tenths = parse_nudge(v)?,
                     ["shown"] => p.shown = parse_shown(v)?,
                     ["profile"] => p.profile = ProfilePick::from_word(v)?,
+                    ["blocks"] => p.blocks = Blocks::parse(v)?,
                     _ => return Err("unknown key".into()),
                 }
             }
@@ -1142,7 +1195,7 @@ impl MidiSetup {
             }
             ["route"] => {
                 let r = TrackRoute::parse(v)?;
-                if self.routes.contains(&r) {
+                if self.routes.iter().any(|x| x.same_route(&r)) {
                     return Err("the same route twice: the first kept".into());
                 }
                 if self.routes.len() >= MAX_TRACK_ROUTES {
@@ -1152,13 +1205,25 @@ impl MidiSetup {
             }
             ["thru"] => {
                 let r = ThruRoute::parse(v)?;
-                if self.thru.contains(&r) {
+                if self.thru.iter().any(|x| x.same_route(&r)) {
                     return Err("the same thru twice: the first kept".into());
                 }
                 if self.thru.len() >= MAX_THRU_ROUTES {
                     return Err(format!("more than {MAX_THRU_ROUTES} thru routes"));
                 }
                 self.thru.push(r);
+            }
+            // A route's or a thru's blocks, on the line after it
+            // ([`MidiSetup::parse`] skips them when that line was refused).
+            ["route", "blocks"] => {
+                let b = Blocks::parse(v)?;
+                let r = self.routes.last_mut().ok_or("no route before it")?;
+                r.blocks = b;
+            }
+            ["thru", "blocks"] => {
+                let b = Blocks::parse(v)?;
+                let r = self.thru.last_mut().ok_or("no thru before it")?;
+                r.blocks = b;
             }
             ["cv", i] => {
                 let i = index(i, CV_OUTS)?;
@@ -1497,17 +1562,24 @@ mod tests {
                     port: DIN_NAME.to_string(),
                     channel: Some(9),
                     track: 0,
+                    blocks: Blocks::parse("transpose -12; velocity soft 20 127").unwrap(),
                 },
                 TrackRoute {
                     port: "Keystep 37".to_string(),
                     channel: None,
                     track: 127,
+                    blocks: Blocks::NONE,
                 },
             ],
             ..MidiSetup::default()
         };
         let text = m.to_text();
-        assert!(text.contains("route = track 1 < MIDI · ch 10\n"), "{text}");
+        assert!(
+            text.contains(
+                "route = track 1 < MIDI · ch 10\nroute.blocks = transpose -12; velocity soft 20 127\n"
+            ),
+            "{text}"
+        );
         assert!(
             text.contains("route = track 128 < Keystep 37 · all channels\n"),
             "{text}"
@@ -1531,6 +1603,56 @@ mod tests {
         assert!(warn[3].contains("the same route twice"), "{warn:?}");
     }
 
+    /// A route's, a thru's and a port's blocks read back with the song; a
+    /// blocks line after a refused route (or none) is skipped, never given
+    /// to the route before it.
+    #[test]
+    fn blocks_belong_to_their_route_and_the_song() {
+        let mut m = MidiSetup::default();
+        m.set_port("Keystep 37", |p| {
+            p.blocks = Blocks::parse("filter program; velocity hard 1 127").unwrap();
+            p.input = PortInput::Both;
+        });
+        m.thru.push(ThruRoute {
+            from: "Keystep 37".to_string(),
+            channel: None,
+            to: DIN_NAME.to_string(),
+            blocks: Blocks::parse("channel 2").unwrap(),
+        });
+        let text = m.to_text();
+        assert!(text.contains("thru.blocks = channel 2\n"), "{text}");
+        assert!(
+            text.contains(".blocks = filter program; velocity hard 1 127\n"),
+            "{text}"
+        );
+        let (back, warn) = MidiSetup::parse(&text);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(back, m);
+        // The song's, not the rig's.
+        assert_eq!(
+            m.project().port("Keystep 37").blocks,
+            m.port("Keystep 37").blocks
+        );
+        assert!(m.rig().port("Keystep 37").blocks.is_empty());
+        let mut kept = m.clone();
+        kept.set_rig(&MidiSetup::default());
+        assert_eq!(kept.port("Keystep 37").blocks, m.port("Keystep 37").blocks);
+        let (back, warn) = MidiSetup::parse(
+            "mpfree-midi 1\nroute.blocks = transpose 1\nroute = track 1 < MIDI · ch 1\n\
+             route = track 1 < MIDI · ch 1\nroute.blocks = transpose 2\n\
+             route = track 2 < MIDI · ch 2\nroute.blocks = transpose 99\n",
+        );
+        assert_eq!(back.routes.len(), 2);
+        assert!(
+            back.routes.iter().all(|r| r.blocks.is_empty()),
+            "{:?}",
+            back.routes
+        );
+        assert_eq!(warn.len(), 4, "{warn:?}");
+        assert!(warn[0].contains("not after its route"), "{warn:?}");
+        assert!(warn[2].contains("not after its route"), "{warn:?}");
+    }
+
     #[test]
     fn thru_reads_back_belongs_to_the_song_and_an_old_port_switch_is_dropped() {
         let m = MidiSetup {
@@ -1539,11 +1661,13 @@ mod tests {
                     from: "Keystep 37".to_string(),
                     channel: Some(9),
                     to: DIN_NAME.to_string(),
+                    blocks: Blocks::NONE,
                 },
                 ThruRoute {
                     from: DIN_NAME.to_string(),
                     channel: None,
                     to: DIN_NAME.to_string(),
+                    blocks: Blocks::NONE,
                 },
             ],
             ..MidiSetup::default()

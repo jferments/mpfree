@@ -2061,6 +2061,7 @@ mod tests {
             port: "Keystep 37".into(),
             channel: Some(1),
             track: 1,
+            blocks: mpfree_midi::blocks::Blocks::NONE,
         }];
         let v = view(&m.lock().unwrap(), "Keystep 37", 0.0);
         let words: Vec<&str> = v.does.iter().map(|d| d.1.as_str()).collect();
@@ -2074,6 +2075,7 @@ mod tests {
             from: "Keystep 37".into(),
             channel: Some(9),
             to: DIN_NAME.into(),
+            blocks: mpfree_midi::blocks::Blocks::NONE,
         }];
         let v = view(&m.lock().unwrap(), "Keystep 37", 0.0);
         assert_eq!(

@@ -11145,16 +11145,42 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         port: mpfree_midi::setup::DIN_NAME.to_string(),
         channel: Some(9),
         track: 0,
+        blocks: mpfree_midi::blocks::Blocks::NONE,
     });
     rig.setup.thru.push(mpfree_midi::setup::ThruRoute {
         from: "Keystep 37".to_string(),
         channel: Some(2),
         to: mpfree_midi::setup::DIN_NAME.to_string(),
+        blocks: mpfree_midi::blocks::Blocks::NONE,
     });
     out.push((
         "mixer-io-routing",
         io_section_screen(fonts(), &io_state, rig, mpfree_midi_ui::ROUTING),
     ));
+    // Blocks on a route (board 5): the keyboard's Armed track square
+    // picked, its notes going through a Filter, a Transpose and a soft
+    // Velocity curve.
+    let mut rig = mpfree_midi_ui::sample::rig();
+    rig.setup.set_port("Keystep 37", |p| {
+        p.input = mpfree_midi::setup::PortInput::Both;
+        p.blocks = mpfree_midi::blocks::Blocks::parse(
+            "filter program; transpose -12; velocity soft 20 127",
+        )
+        .unwrap_or_default();
+    });
+    let mut blocks = io_section_screen(fonts(), &io_state, rig, mpfree_midi_ui::ROUTING);
+    if let Some(t) = blocks.ui.targets().into_iter().find(|t| {
+        t.widget == mpfree_mixer_ui::MIXER
+            && t.target.id == "routing-square"
+            && t.target.label.starts_with("Keystep 37 → Armed")
+    }) {
+        let (x, y) = t.target.centre();
+        blocks.touch(1, Touch::Down, x, y);
+        blocks.touch(1, Touch::Up, x, y);
+    }
+    let _ = blocks.take_actions();
+    blocks.ui.invalidate();
+    out.push(("mixer-io-routing-blocks", blocks));
     // The Learn section (board 8, without MIDI Follow): the keyboard's
     // filter knob for this song, picking up over part of its range, and
     // the drum machine's mute key kept for every project.
@@ -22265,6 +22291,12 @@ mod tests {
                                 .iter()
                                 .any(|t| t.target.id == "routing-square"),
                             "{name}: the Routing section shows"
+                        );
+                    }
+                    if name == "mixer-io-routing-blocks" {
+                        assert!(
+                            p.ui.targets().iter().any(|t| t.target.id == "routing-tile"),
+                            "{name}: the keyboard's blocks show"
                         );
                     }
                     if name == "mixer-io-port" {

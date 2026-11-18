@@ -22,7 +22,7 @@ Plug a keyboard into **MIDI IN**, or a USB keyboard into the **USB** port, and i
 
 {{shot: mixer-io-routing | The I/O view's Routing section: channel 10 of MIDI IN plays Drums, whichever track is armed, and the rest of its notes play the armed track. The keyboard's channel 3 goes thru to MIDI out; with MIDI out off in Prefs, its square says so.}}
 
-The I/O view's **Routing** section shows where each source's MIDI goes, on one grid. Down the side are your ports (the 5-pin **MIDI in** and each USB device), **The pads**, and the tracks. Across the top: **Armed track**, **Tracks by channel**, **Learn**, each MIDI out port and **CV out**. A square with a green bar plays something in MPFree; a blue bar sends something out. **+** means a tap sets it up, **—** means nothing can go there, and **later** marks what isn't built yet.
+The I/O view's **Routing** section shows where each source's MIDI goes, on one grid. Down the side are your ports (the 5-pin **MIDI in** and each USB device), **The pads**, and the tracks. Across the top: **Armed track**, **Tracks by channel**, **Learn**, each MIDI out port and **CV out**. A square with a green bar plays something in MPFree; a blue bar sends something out. **+** means a tap sets it up, and **—** means nothing can go there (a tap says why). A small number in a square's corner counts its [blocks](#blocks-on-a-route).
 
 - **Tracks by channel** sends one channel of a port to one track, whichever track is armed. Tap a port's square and pick the channel and the track on the card below the grid (with – and +, or Q-Links 1 and 2). **+ Route** adds another, **Remove route** takes the picked one away. Two routes from the same channel to two tracks play both, to layer sounds. For example: a drum machine on **MIDI IN**, channel 10, plays **Drums**, while a keyboard on channel 1 plays **Bass** and you work on another track with the pads.
 - Notes a route takes go only to its track, never to the armed track as well, so nothing plays twice. The rest of the port's notes go to the armed track, as before.
@@ -32,7 +32,30 @@ The I/O view's **Routing** section shows where each source's MIDI goes, on one g
 - Routes belong to the song and are saved with it. A route from a device that isn't plugged in waits for it.
 - Up to 32 routes in a project.
 
-Not yet: the pads to an output, and the blocks between a source and where it goes (an arpeggiator or a transpose on a route). Their squares say **later**.
+The pads always play the armed track. When that track plays out of a port (its **Plays on**), the pads play the gear there too, a kit's pads by the gear's [profile](#a-kit-on-a-drum-machine); their squares under the outputs say so.
+
+### Blocks on a route
+
+{{shot: mixer-io-routing-blocks | The keyboard's Armed track square picked: its notes reach the armed track through a Filter that drops program changes, a Transpose an octave down and a soft Velocity curve from 20 to 127, with + Block for a fourth.}}
+
+Each route can change what it takes before it plays: up to four **blocks**, one after another, as tiles on the card under the grid.
+
+- **Filter** drops kinds of message: notes, bend and pressure, controls (CCs) or program changes. Its Q-Links 1 to 4 each let one by (turn left) or drop it (turn right).
+- **Channel** sends everything on one channel (Q-Link 1). Useful on thru, for a synth that listens on its own channel.
+- **Split** takes only the keys from its lowest to its highest (Q-Links 1 and 2). The keys outside it aren't the route's: they go on to another route on the same channel, or to the armed track. Two routes from one keyboard to two tracks, each with a Split, make a split keyboard: bass on the left hand, chords on the right.
+- **Transpose** moves notes by semitones (Q-Link 1) or octaves (Q-Link 2). A note moved off the keyboard is dropped.
+- **Velocity** shapes how hard you play: a curve (Q-Link 1: **soft** makes gentle playing louder, **hard** takes a harder hit to sound loud), then the lowest and highest velocity that come out (Q-Links 2 and 3), or one velocity for every note (Q-Link 4, **Fixed**; turned fully left it is off).
+
+Where the blocks are:
+
+- A port's **Armed track** square shows its blocks on the card at once: they shape everything the port plays on the armed track (or, with tracks that listen to their own ports, on those).
+- A route under **Tracks by channel**, and a thru under a MIDI out port, has a **Blocks ›** button on its line. Tap it for that route's blocks; **‹ Routes** goes back.
+
+On the card, **+ Block** lists the five kinds: tap one to add it at the end. A tap on a tile picks it, and the Q-Links turn it. The **›** between two tiles swaps them, and the picked tile's **×** (or **–**) takes it away. Blocks run in order from left to right, so a Transpose before a Split moves the notes first and the Split then looks at the moved notes.
+
+The card's last line shows what last went through and what it became: *Last through Note on C4 vel 96 → C3 vel 104 played the armed track · 2 s ago*, or that a block dropped it. [MIDI Learn](#midi-learn) and MIDI Follow hear a port's messages as they came, before any block, so a Filter never hides a knob from them. A key you hold while you change a block still ends on the note it started.
+
+Blocks belong to the song and are saved with it, with their routes.
 
 ### Thru: a keyboard straight to a synth
 
