@@ -1277,7 +1277,7 @@ impl Default for Motion {
 }
 
 /// The pitch envelope's fall over its decay: e^-9.21 is 1e-4, as the
-/// Grain page's envelope (24 semitones come back to under a cent).
+/// grain envelope (24 semitones come back to under a cent).
 const ENV_FALL: f32 = 9.21;
 
 impl Motion {

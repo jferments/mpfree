@@ -30,7 +30,7 @@
 //! The approved mockups are the design canvas "Sample tab as an
 //! instrument" (`sampler/sample-tab-panel/` in the project files).
 
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Shape, Target, Touch};
+use mpfree_ui::{Align, Color, EventKind, FontId, Fonts, PaintCx, Rect, Shape, Target, Touch};
 use std::f32::consts::PI;
 
 /// How one row looks in the panel.
@@ -109,6 +109,9 @@ pub struct Item {
     /// The row's name over a choice, selector, stepper or button (a knob
     /// always has it; a switch has it beside it).
     pub label: bool,
+    /// A knob's name on two lines where one is too narrow for it ("Size /
+    /// spray"), so every name reads whole; the knob sits a line lower.
+    pub tall: bool,
 }
 
 impl Item {
@@ -117,6 +120,7 @@ impl Item {
             row,
             width: 0,
             label: false,
+            tall: false,
         }
     }
 
@@ -127,6 +131,12 @@ impl Item {
 
     pub fn labelled(mut self) -> Item {
         self.label = true;
+        self
+    }
+
+    /// A knob with room for its name on two lines ([`Item::tall`]).
+    pub fn two_lines(mut self) -> Item {
+        self.tall = true;
         self
     }
 }
@@ -228,6 +238,8 @@ pub struct Placed {
     pub row: usize,
     /// The whole item, with its name.
     pub rect: Rect,
+    /// A knob's name has two lines ([`Item::tall`]).
+    pub tall: bool,
     /// The control itself (under the name).
     pub control: Rect,
     /// A choice's buttons.
@@ -278,9 +290,9 @@ impl Placed {
     }
 }
 
-fn item_h(look: &Look, label: bool) -> i32 {
+fn item_h(look: &Look, label: bool, tall: bool) -> i32 {
     match look {
-        Look::Knob { .. } => KNOB_H,
+        Look::Knob { .. } => KNOB_H + if tall { LABEL_H } else { 0 },
         Look::Toggle(_) => SWITCH_H,
         Look::Primary(_) => PRIMARY_H + if label { LABEL_H + LABEL_GAP } else { 0 },
         _ => CTRL_H + if label { LABEL_H + LABEL_GAP } else { 0 },
@@ -371,7 +383,7 @@ impl Panel {
                 .iter()
                 .map(|line| {
                     line.iter()
-                        .filter_map(|it| look(it.row).map(|l| item_h(l, it.label)))
+                        .filter_map(|it| look(it.row).map(|l| item_h(l, it.label, it.tall)))
                         .max()
                         .unwrap_or(0)
                 })
@@ -401,7 +413,7 @@ impl Panel {
                 for it in line {
                     let Some(l) = look(it.row) else { continue };
                     let w = if it.width > 0 { it.width } else { each };
-                    let ih = item_h(l, it.label);
+                    let ih = item_h(l, it.label, it.tall);
                     let rect = Rect::new(x, y + (h - ih) / 2, w, ih);
                     let control = match l {
                         Look::Knob { .. } | Look::Toggle(_) => rect,
@@ -415,6 +427,7 @@ impl Panel {
                     out.push(Placed {
                         row: it.row,
                         rect,
+                        tall: it.tall && matches!(l, Look::Knob { .. }),
                         control,
                         options,
                     });
@@ -646,6 +659,35 @@ pub fn held(
 }
 
 /// The largest size from `px` down to `min` at which `s` fits in `w`.
+/// A knob's name as drawn over it, `w` pixels wide: whole on one line if
+/// it fits; with `two` lines, split at the space that leaves the longer
+/// half shortest; cut with "…" (the last line) only if it still doesn't
+/// fit.
+pub fn knob_name_lines(fonts: &mut Fonts, name: &str, w: i32, two: bool) -> Vec<String> {
+    const PX: f32 = 13.0;
+    if fonts.measure(FontId::Sans, PX, name) <= w || !two {
+        return vec![fit_text(fonts, name, w)];
+    }
+    let split = name
+        .char_indices()
+        .filter(|(_, c)| *c == ' ')
+        .map(|(i, _)| (&name[..i], &name[i + 1..]))
+        .min_by_key(|(a, b)| {
+            fonts
+                .measure(FontId::Sans, PX, a)
+                .max(fonts.measure(FontId::Sans, PX, b))
+        });
+    match split {
+        Some((a, b)) => vec![fit_text(fonts, a, w), fit_text(fonts, b, w)],
+        None => vec![fit_text(fonts, name, w)],
+    }
+}
+
+/// `s` cut with "…" to `w` pixels at the knob names' size.
+fn fit_text(fonts: &mut Fonts, s: &str, w: i32) -> String {
+    fonts.face(FontId::Sans).fit(13.0, s, w)
+}
+
 fn fit(cx: &mut PaintCx, font: FontId, px: f32, min: f32, s: &str, w: i32) -> f32 {
     let mut size = px;
     while size > min && cx.measure(font, size, s) > w {
@@ -733,9 +775,21 @@ pub fn paint(
         let (label, _) = p.rect.take_top(LABEL_H);
         match &c.look {
             Look::Knob { pos, bipolar, .. } => {
-                cx.text(FontId::Sans, 13.0, label, Align::Center, dim, name);
+                let lines = knob_name_lines(cx.fonts, name, p.rect.w, p.tall);
+                // One line sits on the lower of two, by the knob.
+                let first = if p.tall { 2 - lines.len() as i32 } else { 0 };
+                for (i, line) in lines.iter().enumerate() {
+                    let at = Rect::new(
+                        label.x,
+                        label.y + (first + i as i32) * LABEL_H,
+                        label.w,
+                        LABEL_H,
+                    );
+                    cx.text(FontId::Sans, 13.0, at, Align::Center, dim, line);
+                }
+                let name_h = if p.tall { 2 * LABEL_H } else { LABEL_H };
                 let mid_x = p.rect.x as f32 + p.rect.w as f32 / 2.0;
-                let mid_y = (p.rect.y + LABEL_H + 5) as f32 + KNOB_D as f32 / 2.0;
+                let mid_y = (p.rect.y + name_h + 5) as f32 + KNOB_D as f32 / 2.0;
                 knob(
                     cx,
                     (mid_x, mid_y),
