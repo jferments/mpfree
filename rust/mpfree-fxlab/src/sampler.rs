@@ -23,8 +23,15 @@
 //! - **S5, the filter and the read:** the pad's response from a sweep
 //!   ([`response`]) with each filter type against its analog prototype
 //!   (the state-variable filter's `1 / (s² + ks + 1)`, `k = 2 - 1.95 ×
-//!   resonance`), from 30 Hz to 8 kHz wherever the prototype is above
-//!   −30 dB; and with no filter, how flat the read is.
+//!   resonance`; the Notch's `(1 + s²)` over it; the Ladder's `m / ((1 +
+//!   s)⁴ + k)`; the Vowel's two band-passes in parallel), from 30 Hz to
+//!   8 kHz wherever the prototype is above −30 dB; and with no filter, how
+//!   flat the read is.
+//! - **S6, Drive's aliases:** a 2.5 and a 5 kHz sine at 0 dBFS on a pad
+//!   whose Ladder is open (20 kHz) and driven 12 and 24 dB: the loudest
+//!   bin that is no harmonic of the tone, from 20 Hz to 20 kHz, against
+//!   the tone (sampler R5.6; the Drive runs its curve at twice the rate
+//!   with first-order ADAA, as the effects' Drive does).
 //!
 //! Cost per voice is the bench's: `mpfree-bench`'s sampler cases, counted
 //! on CI by the instruction gate. Design: `docs/dev/design/fx-quality.md`
@@ -62,6 +69,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     seams(&mut rows, rate);
     stops(&mut rows, rate);
     filters(&mut rows, rate);
+    drive(&mut rows, rate);
     rows
 }
 
@@ -517,19 +525,58 @@ fn stage_db(kind: FilterKind, resonance: f64, x: f64) -> f64 {
     let k = 2.0 - 1.95 * resonance.clamp(0.0, 1.0);
     let den = ((1.0 - x * x).powi(2) + (k * x).powi(2)).sqrt();
     let num = match kind {
-        FilterKind::Off => return 0.0,
+        FilterKind::Off | FilterKind::Ladder | FilterKind::Vowel => return 0.0,
         FilterKind::LowPass => 1.0,
         FilterKind::BandPass => x,
         FilterKind::HighPass => x * x,
+        FilterKind::Notch => (1.0 - x * x).abs(),
     };
     20.0 * (num / den).log10()
 }
 
+/// The Ladder's prototype (dB): four one-poles in a loop with feedback
+/// `k = 4.2 × resonance`, then the make-up `1 + k / 2`, `m / ((1 + s)⁴ +
+/// k)`, written out here rather than taken from the engine.
+fn ladder_prototype_db(resonance: f64, x: f64) -> f64 {
+    let k = 4.2 * resonance.clamp(0.0, 1.0);
+    // (1 + jx)^4 by repeated products, as (re, im).
+    let (mut re, mut im) = (1.0f64, 0.0f64);
+    for _ in 0..4 {
+        (re, im) = (re - im * x, re * x + im);
+    }
+    re += k;
+    20.0 * ((1.0 + 0.5 * k) / (re * re + im * im).sqrt()).log10()
+}
+
+/// The Vowel's prototype (dB): two band-passes `k s / (s² + k s + 1)` at
+/// its formants, the second at 0.6, then its gain `1.1 / sqrt k`, with `k =
+/// 0.2 × 0.4^resonance` (the engine's formant table, written out here).
+fn vowel_prototype_db(f: &Filter, hz: f64) -> f64 {
+    let (f1, f2) = mpfree_sampler::dsp::vowel_formants(f.cutoff_hz);
+    let k = 0.2 * 0.4f64.powf(f64::from(f.resonance).clamp(0.0, 1.0));
+    let band = |fc: f32| {
+        let x = hz / f64::from(fc);
+        let (re, im) = (1.0 - x * x, k * x);
+        let d = re * re + im * im;
+        (k * x * im / d, k * x * re / d)
+    };
+    let (a, b) = (band(f1), band(f2));
+    let g = 1.1 / k.sqrt();
+    let (re, im) = (g * (a.0 + 0.6 * b.0), g * (a.1 + 0.6 * b.1));
+    10.0 * (re * re + im * im).max(1e-30).log10()
+}
+
 /// The prototype of a filter: one stage, or two for 4 poles (the second
-/// at half the resonance, as the engine sets it).
+/// at half the resonance, as the engine sets it); the Ladder's and the
+/// Vowel's own.
 fn prototype_db(f: &Filter, hz: f64) -> f64 {
     let x = hz / f64::from(f.cutoff_hz);
     let r = f64::from(f.resonance);
+    match f.kind {
+        FilterKind::Ladder => return ladder_prototype_db(r, x),
+        FilterKind::Vowel => return vowel_prototype_db(f, hz),
+        _ => {}
+    }
     let mut db = stage_db(f.kind, r, x);
     if f.poles >= 4 {
         db += stage_db(f.kind, r * 0.5, x);
@@ -585,6 +632,10 @@ fn filters(rows: &mut Vec<Row>, rate: u32) {
             2,
             0.5,
         ),
+        ("notch 2-pole", FilterKind::Notch, 2, 0.0),
+        ("ladder", FilterKind::Ladder, 4, 0.0),
+        ("ladder, resonance 0.5", FilterKind::Ladder, 4, 0.5),
+        ("vowel ah, resonance 0.5", FilterKind::Vowel, 2, 0.5),
     ] {
         let f = Filter {
             kind,
@@ -592,6 +643,7 @@ fn filters(rows: &mut Vec<Row>, rate: u32) {
             cutoff_hz: 1_000.0,
             resonance,
             env_octaves: 0.0,
+            drive_db: 0.0,
         };
         let r = measure(Some(f));
         let error = r
@@ -614,6 +666,61 @@ fn filters(rows: &mut Vec<Row>, rate: u32) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// S6: Drive's aliases.
+
+/// The loudest bin that is no harmonic of a coherent sine at `bin`, from
+/// 20 Hz to 20 kHz, against the sine (dB).
+fn worst_alias_db(x: &[f64], bin: usize, rate: u32) -> f64 {
+    let n = x.len();
+    let ps = power_spectrum(x);
+    let hz = |k: usize| k as f64 * f64::from(rate) / n as f64;
+    let fund = ps[bin].max(1e-300);
+    let worst = (1..=n / 2)
+        .filter(|&k| k % bin != 0 && hz(k) >= 20.0 && hz(k) <= 20_000.0)
+        .map(|k| ps[k])
+        .fold(0.0, f64::max);
+    floor(10.0 * (worst / fund).max(1e-30).log10())
+}
+
+fn drive(rows: &mut Vec<Row>, rate: u32) {
+    let settle = 4096;
+    let n = harmonics::N;
+    for out_hz in [2_500.0, 5_000.0] {
+        let (bin, f) = coherent(out_hz, n, rate);
+        let x = sine(f, 1.0, settle + n + 64, rate);
+        for drive_db in [12.0f32, 24.0] {
+            let s = sound(&x, rate);
+            let p = pad(&s, |p| {
+                p.filter = Filter {
+                    kind: FilterKind::Ladder,
+                    poles: 4,
+                    cutoff_hz: 20_000.0,
+                    resonance: 0.0,
+                    env_octaves: 0.0,
+                    drive_db,
+                };
+            });
+            let out = play(&kit(vec![(s, p)]), rate, &[(0, hit(0))], settle + n);
+            put(
+                rows,
+                "S6",
+                format!(
+                    "drive[ladder open, {drive_db} dB, {} kHz at 0 dBFS]",
+                    out_hz / 1000.0
+                ),
+                "alias_worst_db",
+                worst_alias_db(&out.left[settle..settle + n], bin, rate),
+                Better::Lower,
+                // The effects' smooth curves' target (fx-quality.md G1)
+                // at 12 dB; 24 dB drives hard on purpose (as G3).
+                (drive_db <= 12.0).then_some(-65.0),
+                0.5,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -626,6 +733,7 @@ mod tests {
             cutoff_hz: 1_000.0,
             resonance: 0.0,
             env_octaves: 0.0,
+            drive_db: 0.0,
         };
         // k = 2 (Q 0.5): -6 dB at the cutoff, -12 dB an octave per octave
         // far above.

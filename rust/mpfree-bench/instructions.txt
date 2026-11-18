@@ -52,6 +52,8 @@
 108120	EQ (4 bands and both cuts)
 256118	EQ (4 bands and both cuts), Freq gliding
 188280	EQ (4 bands and both cuts), HQ 2x
+137727	Ensemble (3 lines)
+173444	Ensemble (4 lines)
 64907	Flanger
 92618	Flanger, through zero
 53403	Frequency shifter
@@ -119,6 +121,8 @@
 1774420	Sampler x16 held up, 16-bit sound
 548284	Sampler x16 held, 16-bit sound
 1336420	Sampler x16 held, LFO and pitch envelope
+1544133	Sampler x16 held, driven ladder
+650988	Sampler x16 held, vowel
 1435285	Sampler, 20 pads
 2018120	Sampler, 20 pads + master grains
 77512	Sampler, 4 drum kits, 64 voices

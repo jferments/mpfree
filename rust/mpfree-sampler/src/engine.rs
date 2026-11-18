@@ -103,16 +103,16 @@ use mpfree_node::Cull;
 
 use crate::bandlimit::{self, OctaveCell, Reach};
 use crate::dsp::{
-    db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Sample,
-    Svf, TINY,
+    db_to_gain, equal_power, hermite, pan_gains, vowel_formants, vowel_gain, vowel_resonance,
+    Ahdsr, Envelope, Filter, FilterKind, Ladder, Rng, Sample, Svf, FORMANT_2, TINY,
 };
 use crate::grain_clip::GrainClip;
 use crate::hits::{self, HitCell};
 use crate::model::{
     edge_gain, ChannelPick, Fade, GrainMode, GrainParams, Keys, LayerSelect, Levels, LfoShape,
-    LfoTarget, LoopMode, MasterFx, PadLfo, PadsPlay, Pcm, PitchEnv, PlayMode, PressureRoute,
-    PressureTarget, Project, SliceSet, WarpMethod, GRAIN_GLIDE_MAX_MS, LFO_BEATS, LFO_RATE_HZ,
-    PADS, PITCH_DECAY_MS, PITCH_ENV_ST,
+    LfoTarget, LoopMode, MasterFx, Mono, PadLfo, PadsPlay, Pcm, PitchEnv, PlayMode, PressureRoute,
+    PressureTarget, Project, SliceSet, WarpMethod, GLIDE_MS, GRAIN_GLIDE_MAX_MS, LFO_BEATS,
+    LFO_RATE_HZ, PADS, PITCH_DECAY_MS, PITCH_ENV_ST,
 };
 use crate::warp::{CopyMap, Warps};
 
@@ -152,6 +152,56 @@ impl Target {
     }
 }
 
+/// The most keys a mono pad keeps held (sampler R5.5); a key past that
+/// forgets the oldest.
+const MONO_KEYS: usize = 10;
+
+/// A mono pad's keys held, oldest first, each with its velocity, so letting
+/// go of the newest goes back to the one before (sampler R5.5).
+#[derive(Clone, Copy)]
+struct HeldKeys {
+    n: u8,
+    keys: [(u8, u8); MONO_KEYS],
+}
+
+impl HeldKeys {
+    const NONE: HeldKeys = HeldKeys {
+        n: 0,
+        keys: [(0, 0); MONO_KEYS],
+    };
+
+    fn held(&self) -> impl Iterator<Item = (u8, u8)> + '_ {
+        self.keys[..usize::from(self.n)].iter().copied()
+    }
+
+    /// The newest key held and its velocity.
+    fn top(&self) -> Option<(u8, u8)> {
+        self.held().last()
+    }
+
+    /// Key `note` is held: the newest now.
+    fn press(&mut self, note: u8, velocity: u8) {
+        self.lift(note);
+        if usize::from(self.n) == MONO_KEYS {
+            self.keys.copy_within(1.., 0);
+            self.n -= 1;
+        }
+        self.keys[usize::from(self.n)] = (note, velocity);
+        self.n += 1;
+    }
+
+    /// Key `note` lets go; true if it was the newest.
+    fn lift(&mut self, note: u8) -> bool {
+        let n = usize::from(self.n);
+        let Some(i) = self.keys[..n].iter().position(|k| k.0 == note) else {
+            return false;
+        };
+        self.keys.copy_within(i + 1..n, i);
+        self.n -= 1;
+        i + 1 == n
+    }
+}
+
 /// What a hit changes in the voices it starts: a keygroup's semitones, or
 /// a 16 Levels step.
 #[derive(Clone, Copy, Default)]
@@ -170,6 +220,9 @@ struct Vary {
     cut: Option<usize>,
     /// The pad hit, when it is not the pad playing (a link).
     by: Option<u8>,
+    /// A mono pad's glide: the cents the voice starts from its pitch, and
+    /// slides back from over the pad's glide time (sampler R5.5).
+    glide_cents: f32,
 }
 
 impl Vary {
@@ -231,6 +284,7 @@ const OPEN_FILTER: Filter = Filter {
     cutoff_hz: 22_000.0,
     resonance: 0.0,
     env_octaves: 0.0,
+    drive_db: 0.0,
 };
 const ONE: i64 = 1 << 32;
 
@@ -419,9 +473,16 @@ pub struct ViewPad {
     pitch_env: PitchEnv,
     vel_to_cutoff: f32,
     vel_to_pitch: f32,
+    /// Mono, Legato and Glide for its keys (sampler R5.5).
+    mono: Mono,
 }
 
 impl ViewPad {
+    /// Whether its keys play one note at a time.
+    fn mono(&self) -> bool {
+        self.mono.on && self.keys.is_some()
+    }
+
     /// Whether a layer of it is sliced: a note on keys picks a slice, at
     /// the sound's own pitch.
     fn sliced(&self) -> bool {
@@ -728,6 +789,10 @@ impl EngineView {
                     },
                     vel_to_cutoff: p.vel_to_cutoff.clamp(0.0, 1.0),
                     vel_to_pitch: p.vel_to_pitch.clamp(-12.0, 12.0),
+                    mono: Mono {
+                        glide_ms: p.mono.glide_ms.clamp(*GLIDE_MS.start(), *GLIDE_MS.end()),
+                        ..p.mono
+                    },
                 }
             }));
         }
@@ -1083,6 +1148,11 @@ struct Motion {
     /// The hit's velocity on its pitch (cents) and on its cutoff (a factor).
     vel_cents: f32,
     vel_fc: f32,
+    /// A mono pad's glide (sampler R5.5): cents still to slide, and how
+    /// many a step slides (a straight line in cents, so every interval
+    /// takes the pad's glide time).
+    glide_cents: f32,
+    glide_inc: f32,
     /// What it all comes to: cents on the pitch, a factor on the cutoff,
     /// and a gain on each side, gliding to the next over the step.
     cents: f32,
@@ -1113,6 +1183,8 @@ impl Default for Motion {
             env_k: 0.0,
             vel_cents: 0.0,
             vel_fc: 1.0,
+            glide_cents: 0.0,
+            glide_inc: 0.0,
             cents: 0.0,
             fc: 1.0,
             side: [1.0; 2],
@@ -1127,6 +1199,20 @@ impl Default for Motion {
 const ENV_FALL: f32 = 9.21;
 
 impl Motion {
+    /// Slides the pitch in from `cents` over `ms` at output rate `rate`
+    /// (sampler R5.5); 0 ms jumps.
+    fn glide(&mut self, cents: f32, ms: f32, rate: f32) {
+        let steps = (ms * 0.001 * rate / FILTER_STEP as f32).round();
+        if steps < 1.0 || !self.pitched {
+            self.glide_cents = 0.0;
+            self.glide_inc = 0.0;
+            return;
+        }
+        self.glide_cents = cents;
+        self.glide_inc = cents.abs() / steps;
+        self.on = true;
+    }
+
     /// Takes `lfo`'s wave, target and rate (and `depth` in place of its
     /// own), keeping where it is in its cycle: a new voice, or an edit of
     /// the pad while it plays. `bpm` is the project tempo.
@@ -1236,6 +1322,10 @@ struct Voice {
     fenv: Option<Envelope>,
     filter: Option<Filter>,
     svf: [Svf; 2],
+    /// The ladder's state, for a Ladder filter, and a Vowel's gain after
+    /// its formants (sampler R5.6).
+    ladder: Ladder,
+    vowel_gain: f32,
     filter_count: u32,
     /// The envelope level and pressure factor (as bits) the filter was
     /// last set for.
@@ -1791,6 +1881,11 @@ pub struct Engine {
     /// Each pad's last granular key (its voice's semitones), which a
     /// gliding layer's next voice starts from, [`PADS`] a kit.
     last_key: Vec<Option<f32>>,
+    /// Each mono pad's keys held (sampler R5.5), [`PADS`] a kit.
+    mono_keys: Vec<HeldKeys>,
+    /// Each mono pad's last note, which Glide on every note slides from
+    /// when nothing sounds, [`PADS`] a kit.
+    mono_at: Vec<Option<f32>>,
     rng: Rng,
     clock: u64,
     fixed_velocity: Option<u8>,
@@ -1876,6 +1971,8 @@ impl Engine {
             cycle: vec![0; PADS * kits],
             held: vec![0; PADS * kits],
             last_key: vec![None; PADS * kits],
+            mono_keys: vec![HeldKeys::NONE; PADS * kits],
+            mono_at: vec![None; PADS * kits],
             rng: Rng::new(0x5A4D_5052),
             clock: 0,
             fixed_velocity: None,
@@ -2405,12 +2502,12 @@ impl Engine {
                     self.note_on(p, velocity, LEVEL_NOTE + k, Vary::level(by, k))
                 }
             },
-            Event::NoteOff { pad } => {
-                let t = self.target(pad);
-                self.release(|v| t.played(v));
-            }
+            Event::NoteOff { pad } => match self.target(pad) {
+                Target::Key(note) => self.key_off(note),
+                t => self.release(|v| t.played(v)),
+            },
             Event::Key { note, velocity } => self.key(note.min(127), velocity),
-            Event::KeyOff { note } => self.release(|v| v.note == note),
+            Event::KeyOff { note } => self.key_off(note),
             Event::Pressure { pad, value } => {
                 let t = self.target(pad);
                 for (v, _) in self.pool.iter_mut() {
@@ -2420,6 +2517,7 @@ impl Engine {
                 }
             }
             Event::AllOff => {
+                self.mono_keys.fill(HeldKeys::NONE);
                 for (v, g) in self.pool.iter_mut() {
                     if v.active {
                         v.held = false;
@@ -2691,33 +2789,176 @@ impl Engine {
     /// Every keygroup holding `note` plays it.
     fn key(&mut self, note: u8, velocity: u8) {
         if velocity == 0 {
-            self.release(|v| v.note == note);
+            self.key_off(note);
             return;
         }
         for p in 0..self.views[self.at].pads.len() {
-            let Some(k) = self.views[self.at].pads[p].as_ref().and_then(|vp| vp.keys) else {
+            let Some((vary, sliced)) = self.key_vary(p, note) else {
                 continue;
             };
-            if k.contains(note) {
-                // A sliced pad: one note a slice from its lowest, each at
-                // the sound's own pitch.
-                let sliced = self.views[self.at].pads[p]
-                    .as_ref()
-                    .is_some_and(ViewPad::sliced);
-                let vary = if sliced {
-                    Vary {
-                        cut: Some(usize::from(note - k.lo)),
-                        ..Vary::default()
-                    }
-                } else {
-                    Vary {
-                        semis: i32::from(note) - i32::from(k.root),
-                        ..Vary::default()
-                    }
-                };
+            if self.views[self.at].pads[p]
+                .as_ref()
+                .is_some_and(ViewPad::mono)
+            {
+                self.mono_on(p, note, velocity, vary, sliced);
+            } else {
                 self.note_on(p as u8, velocity, note, vary);
             }
         }
+    }
+
+    /// What key `note` changes in pad `p`'s voices, and whether the pad is
+    /// sliced; None if its keys don't hold the note.
+    fn key_vary(&self, p: usize, note: u8) -> Option<(Vary, bool)> {
+        let vp = self.views[self.at].pads.get(p)?.as_ref()?;
+        let k = vp.keys.filter(|k| k.contains(note))?;
+        // A sliced pad: one note a slice from its lowest, each at the
+        // sound's own pitch.
+        let sliced = vp.sliced();
+        let vary = if sliced {
+            Vary {
+                cut: Some(usize::from(note - k.lo)),
+                ..Vary::default()
+            }
+        } else {
+            Vary {
+                semis: i32::from(note) - i32::from(k.root),
+                ..Vary::default()
+            }
+        };
+        Some((vary, sliced))
+    }
+
+    /// Key `note` lets go. A mono pad that was playing it goes back to its
+    /// newest key still held (sampler R5.5); the rest let go of it.
+    fn key_off(&mut self, note: u8) {
+        let at = self.at;
+        for p in 0..self.views[at].pads.len() {
+            let mono = self.views[at].pads[p].as_ref().is_some_and(ViewPad::mono);
+            let i = at * PADS + p;
+            if !mono || !self.mono_keys[i].lift(note) {
+                continue;
+            }
+            let Some((back, velocity)) = self.mono_keys[i].top() else {
+                continue;
+            };
+            if let Some((vary, sliced)) = self.key_vary(p, back) {
+                self.mono_play(p, back, velocity, vary, sliced, true);
+            }
+        }
+        self.release(|v| v.note == note);
+    }
+
+    /// Key `note` on mono pad `p` (sampler R5.5): it is the newest key held,
+    /// and the pad plays it.
+    fn mono_on(&mut self, p: usize, note: u8, velocity: u8, vary: Vary, sliced: bool) {
+        let keys = &mut self.mono_keys[self.at * PADS + p];
+        let over = keys.held().any(|(k, _)| k != note);
+        keys.press(note, velocity);
+        self.mono_play(p, note, velocity, vary, sliced, over);
+    }
+
+    /// Mono pad `p` plays `note` alone. `over`: another key is held, so
+    /// with Legato the sounding note moves there, and with Glide on held
+    /// keys only, it glides. Otherwise the pad's voices stop and the note
+    /// starts, gliding from where the pad's pitch is with Glide.
+    fn mono_play(
+        &mut self,
+        p: usize,
+        note: u8,
+        velocity: u8,
+        mut vary: Vary,
+        sliced: bool,
+        over: bool,
+    ) {
+        let at = self.at;
+        let Some(m) = self.views[at].pads[p].as_ref().map(|vp| vp.mono) else {
+            return;
+        };
+        let pad = p as u8;
+        // A sliced pad plays each note's slice at its own pitch.
+        let glide = m.glide_ms > 0.0 && !sliced && (over || !m.glide_held);
+        if m.legato && over && !sliced && self.legato_to(p, note, vary, glide) {
+            self.mono_at[at * PADS + p] = Some(f32::from(note));
+            return;
+        }
+        let from = self.mono_pitch(pad).or(self.mono_at[at * PADS + p]);
+        for (v, _) in self.pool.iter_mut() {
+            if v.active && usize::from(v.kit) == at && v.pad == pad {
+                Self::kill(v);
+            }
+        }
+        if glide {
+            if let Some(from) = from {
+                vary.glide_cents = (from - f32::from(note)) * 100.0;
+            }
+        }
+        self.note_on(pad, velocity, note, vary);
+        self.mono_at[at * PADS + p] = Some(f32::from(note));
+    }
+
+    /// Where mono pad `pad`'s pitch is now, as a note (with what is left
+    /// of a glide): a sounding, pitched voice of a key's.
+    fn mono_pitch(&self, pad: u8) -> Option<f32> {
+        let at = self.at;
+        self.pool.iter().find_map(|(v, _)| {
+            (v.active
+                && v.kill_left == 0
+                && usize::from(v.kit) == at
+                && v.pad == pad
+                && v.note != NO_NOTE
+                && v.motion.pitched)
+                .then(|| f32::from(v.note) + v.motion.glide_cents / 100.0)
+        })
+    }
+
+    /// Legato on mono pad `p`: its sounding voices of a key's move to
+    /// `note` without starting again, gliding there with `glide`. A grain
+    /// layer's cloud moves with its own glide; a warped layer keeps its
+    /// pitch. False if none sounds.
+    fn legato_to(&mut self, p: usize, note: u8, vary: Vary, glide: bool) -> bool {
+        let at = self.at;
+        let pad = p as u8;
+        let Some((layers, ms)) = self.views[at].pads[p]
+            .as_ref()
+            .map(|vp| (vp.layers.len(), vp.mono.glide_ms))
+        else {
+            return false;
+        };
+        let mut moved = false;
+        for li in 0..layers {
+            moved |= self.glide_held(pad, li, note, vary);
+        }
+        let rate = self.rate;
+        for (v, _) in self.pool.iter_mut() {
+            if !v.active
+                || v.granular
+                || v.kill_left > 0
+                || usize::from(v.kit) != at
+                || v.pad != pad
+                || v.note == NO_NOTE
+            {
+                continue;
+            }
+            if v.motion.pitched {
+                let from = (f32::from(v.note) - f32::from(note)) * 100.0 + v.motion.glide_cents;
+                let octaves = (f64::from(note) - f64::from(v.note)) / 12.0;
+                v.plain_step = ((v.plain_step as f64 * octaves.exp2()).round() as i64).max(1);
+                v.base_step = v.plain_step;
+                let m = &mut v.motion;
+                let was = m.glide_cents;
+                if glide {
+                    m.glide(from, ms, rate);
+                } else {
+                    m.glide_cents = 0.0;
+                }
+                m.cents += m.glide_cents - was;
+                retime(v);
+            }
+            v.note = note;
+            moved = true;
+        }
+        moved
     }
 
     /// Lets go of the held voices `which` picks, of the kit being played.
@@ -2939,7 +3180,7 @@ impl Engine {
         // A mono pad's gliding granular layers: a key played while one
         // holds moves that cloud there, without a new start (legato).
         let mut legato = [false; crate::model::MAX_LAYERS];
-        if polyphony == 1 {
+        if polyphony == 1 && !vp.mono() {
             for (li, l) in vp.layers.iter().enumerate().take(count) {
                 legato[li] = l.glide > 0 && l.mode == PlayMode::Granular;
             }
@@ -3023,13 +3264,15 @@ impl Engine {
     /// (from the start of its cycle, or where the pad's cycle is with
     /// Retrig off), its pitch envelope, and velocity `vel` (0 to 1) on its
     /// pitch and cutoff, under the pad's `live` row. `pitched`: its pitch
-    /// may move.
+    /// may move. `glide`: cents it slides in from, over the pad's glide
+    /// time (a mono pad's next note, sampler R5.5).
     fn motion_for(
         &self,
         vp: &ViewPad,
         live: &[f32; PadField::COUNT],
         vel: f32,
         pitched: bool,
+        glide: f32,
     ) -> Motion {
         let set = |f: PadField| Some(live[f as usize]).filter(|x| !x.is_nan());
         let rate = self.rate;
@@ -3062,9 +3305,12 @@ impl Engine {
         if !vp.lfo.retrig && m.to != LfoTarget::Off {
             m.phase = self.free_phase(&m);
         }
-        m.cents = m.vel_cents + m.env_cents;
+        if pitched && glide != 0.0 {
+            m.glide(glide, vp.mono.glide_ms, rate);
+        }
+        m.cents = m.vel_cents + m.env_cents + m.glide_cents;
         m.fc = m.vel_fc;
-        m.on |= m.env_cents != 0.0;
+        m.on |= m.env_cents != 0.0 || m.glide_cents != 0.0;
         m
     }
 
@@ -3234,6 +3480,7 @@ impl Engine {
                 cutoff_hz: hz,
                 resonance: 0.0,
                 env_octaves: 0.0,
+                drive_db: 0.0,
             }),
             Some(hz) => Some(Filter {
                 cutoff_hz: hz,
@@ -3319,7 +3566,7 @@ impl Engine {
         // The pad's LFO, pitch envelope and velocity on pitch and cutoff
         // (R5 part 4), with a live or locked depth and envelope. A warped
         // layer and a grain voice keep their pitch.
-        let motion = self.motion_for(vp, &live, vel, !granular && !warped);
+        let motion = self.motion_for(vp, &live, vel, !granular && !warped, vary.glide_cents);
         // A plain one-shot (as a kit's drum hits are) can take one of the
         // voices past the full-voice limit: it costs a fraction of a full
         // voice once it plays (`plain_now`, `render_plain`).
@@ -3410,6 +3657,8 @@ impl Engine {
             fenv: filter.map(|_| Envelope::start(&vp.filter_env, self.rate)),
             filter,
             svf: [Svf::default(); 2],
+            ladder: Ladder::default(),
+            vowel_gain: 1.0,
             filter_count: 0,
             filter_key: None,
             kill_left: 0,
@@ -4025,6 +4274,7 @@ fn retarget(v: &mut Voice, live: &[f32; PadField::COUNT], program: &[f32; Progra
         v.filter = Some(OPEN_FILTER);
         v.fenv = Some(Envelope::idle());
         v.svf = [Svf::default(); 2];
+        v.ladder = Ladder::default();
         v.filter_key = None;
         f.own_fc = OPEN_FILTER.cutoff_hz;
     }
@@ -4121,6 +4371,7 @@ fn follow_edit(
             });
             v.fenv = Some(Envelope::idle());
             v.svf = [Svf::default(); 2];
+            v.ladder = Ladder::default();
             v.filter_key = None;
             (pf.cutoff_hz, pf.resonance)
         }
@@ -4129,6 +4380,16 @@ fn follow_edit(
     if fc != f.own_fc || res != f.own_res {
         (v.follow.own_fc, v.follow.own_res) = (fc, res);
         moved = true;
+    }
+    // A ladder's Drive at once (it keeps its level as it turns).
+    if let Some(cur) = v.filter.as_mut() {
+        if cur.kind == FilterKind::Ladder
+            && pf.kind == FilterKind::Ladder
+            && cur.drive_db != pf.drive_db
+        {
+            cur.drive_db = pf.drive_db;
+            v.filter_key = None;
+        }
     }
 
     // Tune: the layer's speed against the one it played at. A warped
@@ -4432,12 +4693,19 @@ fn follow_motion(v: &mut Voice) {
 #[inline(never)]
 fn motion_step(v: &mut Voice) {
     let m = &mut v.motion;
-    let mut cents = m.vel_cents + m.env_cents;
+    let mut cents = m.vel_cents + m.env_cents + m.glide_cents;
     if m.env_cents != 0.0 {
         m.env_cents *= m.env_k;
         if m.env_cents.abs() < 0.01 {
             m.env_cents = 0.0;
         }
+    }
+    if m.glide_cents != 0.0 {
+        m.glide_cents = if m.glide_cents.abs() <= m.glide_inc {
+            0.0
+        } else {
+            m.glide_cents - m.glide_inc.copysign(m.glide_cents)
+        };
     }
     let mut fc = m.vel_fc;
     let mut side = [1.0f32; 2];
@@ -4493,9 +4761,15 @@ fn motion_step(v: &mut Voice) {
 /// loop, it costs nothing measurable).
 #[inline(never)]
 fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
-    v.svf[0].flush();
-    if f.poles >= 4 {
-        v.svf[1].flush();
+    match f.kind {
+        FilterKind::Ladder => v.ladder.flush(),
+        FilterKind::Vowel => v.svf.iter_mut().for_each(Svf::flush),
+        _ => {
+            v.svf[0].flush();
+            if f.poles >= 4 {
+                v.svf[1].flush();
+            }
+        }
     }
     let moved = v.press_fc * v.motion.fc;
     let key = (e.to_bits(), moved.to_bits());
@@ -4504,9 +4778,22 @@ fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
     }
     v.filter_key = Some(key);
     let fc = f.cutoff_hz * (f.env_octaves * e).exp2() * moved;
-    v.svf[0].set(fc, f.resonance, rate);
-    if f.poles >= 4 {
-        v.svf[1].set(fc, f.resonance * 0.5, rate);
+    match f.kind {
+        FilterKind::Ladder => v.ladder.set(fc, f.resonance, f.drive_db, rate),
+        // The cutoff picks the vowel: its two formants, in parallel.
+        FilterKind::Vowel => {
+            let (f1, f2) = vowel_formants(fc);
+            let res = vowel_resonance(f.resonance);
+            v.svf[0].set(f1, res, rate);
+            v.svf[1].set(f2, res, rate);
+            v.vowel_gain = vowel_gain(f.resonance);
+        }
+        _ => {
+            v.svf[0].set(fc, f.resonance, rate);
+            if f.poles >= 4 {
+                v.svf[1].set(fc, f.resonance * 0.5, rate);
+            }
+        }
     }
 }
 
@@ -4550,11 +4837,25 @@ fn finish<const FOLLOW: bool>(
             retune(v, f, e, rate);
         }
         v.filter_count = (v.filter_count + 1) % FILTER_STEP;
-        l = v.svf[0].process(0, l, f.kind);
-        r = v.svf[0].process(1, r, f.kind);
-        if f.poles >= 4 {
-            l = v.svf[1].process(0, l, f.kind);
-            r = v.svf[1].process(1, r, f.kind);
+        match f.kind {
+            FilterKind::Ladder => {
+                l = v.ladder.process(0, l);
+                r = v.ladder.process(1, r);
+            }
+            FilterKind::Vowel => {
+                let [a, b] = &mut v.svf;
+                let g = v.vowel_gain;
+                l = g * (a.process(0, l, f.kind) + FORMANT_2 * b.process(0, l, f.kind));
+                r = g * (a.process(1, r, f.kind) + FORMANT_2 * b.process(1, r, f.kind));
+            }
+            _ => {
+                l = v.svf[0].process(0, l, f.kind);
+                r = v.svf[0].process(1, r, f.kind);
+                if f.poles >= 4 {
+                    l = v.svf[1].process(0, l, f.kind);
+                    r = v.svf[1].process(1, r, f.kind);
+                }
+            }
         }
     }
 

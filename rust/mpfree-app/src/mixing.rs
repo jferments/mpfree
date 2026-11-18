@@ -142,11 +142,6 @@ impl PadChannels {
         })
     }
 
-    /// A channel is free to lend.
-    pub fn spare(&self) -> bool {
-        self.holder.iter().any(Option::is_none)
-    }
-
     /// Lends kit `kit`'s pad `pad` a channel: the one it has, or the first
     /// free one (true: new). None when all are lent.
     fn lend(&mut self, kit: usize, pad: usize) -> Option<(StripId, bool)> {
@@ -1617,8 +1612,8 @@ impl MixHost {
     }
 
     /// Gives back every lent channel that is plain again: no effects, and
-    /// every control but its output at its default. Called when the pedals
-    /// or the chain editor let a pad go, and before a save.
+    /// every control but its output at its default. Called when the chain
+    /// editor lets a pad go, and before a save.
     pub fn give_back_plain(&mut self) {
         for i in 0..LENT {
             let s = StripId::Pad(PADS + i);
@@ -2384,7 +2379,6 @@ mod tests {
         for pad in 0..LENT {
             assert!(h.lend_pad(2, pad).is_some());
         }
-        assert!(!h.pad_channels.spare());
         assert_eq!(h.lend_pad(2, LENT), None);
     }
 

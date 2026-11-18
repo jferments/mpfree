@@ -1210,7 +1210,8 @@ pub enum Effect {
         track: usize,
         wait: bool,
     },
-    /// MAIN on the Play page (None: the next view) and STEP SEQ (Beats).
+    /// MAIN on the Play page (None: the next view; Play has one, All,
+    /// since the looper redesign's step 5) and STEP SEQ (Beats).
     PlayView(Option<crate::play_page::PlayView>),
     /// Arrange's view: the Song view (`Some(true)`), the Clips grid
     /// (`Some(false)`), or the next of the three (`None`: Clips, Song, the
@@ -2943,7 +2944,7 @@ impl App {
                 fx
             }
         } else if is(m.main) {
-            // MAIN: Play; on Play, the next view (All, Loop).
+            // MAIN: Play; on Play, the next view (one, All: it stays).
             if self.view == View::Play {
                 vec![Effect::PlayView(None)]
             } else {
@@ -8810,7 +8811,7 @@ mod tests {
         assert!(press(&mut app, 65).contains(&Effect::Show(View::Sample)));
         assert!(shifted(&mut app, 65).contains(&Effect::Show(View::Looper)));
         assert_eq!(app.view(), View::Looper);
-        // MAIN: Play, and on Play the next view.
+        // MAIN: Play, and on Play the next view (the screen keeps All).
         assert!(press(&mut app, 61).contains(&Effect::Show(View::Play)));
         assert_eq!(press(&mut app, 61), [Effect::PlayView(None)]);
         // STEP SEQ: the pads become steps and the Sequencer shows its

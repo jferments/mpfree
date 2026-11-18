@@ -109,6 +109,14 @@ pub static FAMILIES: &[Family] = &[
         ],
     },
     Family {
+        name: "Chorus",
+        about: "Width, shimmer or a string ensemble",
+        modes: &[
+            m("Chorus", "mpfree.fx.chorus", &[]),
+            m("Ensemble", "mpfree.fx.ensemble", &[]),
+        ],
+    },
+    Family {
         name: "Tremolo",
         about: "Wobble, chop or side to side",
         modes: &[
@@ -155,6 +163,9 @@ pub fn hidden(id: &str, value: impl Fn(u16) -> f32) -> &'static [(u16, f32)] {
 /// mode, else the engine's own name ("Cloud reverb", "Compressor").
 pub fn insert_name(n: &dyn Node) -> String {
     match node_mode(n) {
+        // A mode named as its family (the Chorus's own) reads as the
+        // family alone, not "Chorus · Chorus".
+        Some((f, Some(i))) if f.modes[i].label == f.name => f.name.to_string(),
         Some((f, Some(i))) => format!("{} · {}", f.name, f.modes[i].label),
         _ => n.info().name.to_string(),
     }
@@ -423,7 +434,11 @@ mod tests {
                 }
                 assert_eq!(node_mode(n.as_ref()).unwrap().1, Some(i));
                 let name = insert_name(n.as_ref());
-                assert_eq!(name, format!("{} · {}", f.name, m.label));
+                if m.label == f.name {
+                    assert_eq!(name, f.name);
+                } else {
+                    assert_eq!(name, format!("{} · {}", f.name, m.label));
+                }
             }
         }
         // The Cloud reverb's own Plate is in no mode, and hides nothing.
@@ -433,6 +448,14 @@ mod tests {
         assert!(hidden(CLOUD, |p| c.param(p)).is_empty());
         assert_eq!(insert_name(c.as_ref()), "Cloud reverb");
         assert!(mode_of("mpfree.fx.compressor", |_| 0.0).is_none());
+    }
+
+    #[test]
+    fn a_chorus_reads_as_a_chorus_and_an_ensemble_as_its_mode() {
+        let c = defaults("mpfree.fx.chorus");
+        assert_eq!(insert_name(c.as_ref()), "Chorus");
+        let e = defaults("mpfree.fx.ensemble");
+        assert_eq!(insert_name(e.as_ref()), "Chorus · Ensemble");
     }
 
     #[test]

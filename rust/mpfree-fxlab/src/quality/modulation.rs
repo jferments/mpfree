@@ -1,9 +1,9 @@
 //! The third round's class of the quality report: modulation (the Chorus,
-//! Flanger and Phaser). The plan's target ids are M1 to M13; the targets
+//! Flanger and Phaser, and the Ensemble from the synth library's wave 1). The plan's target ids are M1 to M13; the targets
 //! and why each was chosen are in `docs/dev/design/fx-quality.md`. The
 //! rows, the report and the ratchet are the first round's (`super`).
 
-use mpfree_fx::ids::{chorus as ch, flanger as fl, phaser as ph};
+use mpfree_fx::ids::{chorus as ch, ensemble as ens, flanger as fl, phaser as ph};
 use mpfree_fx::mpfree_node::{Ctx, Curve, Node};
 use mpfree_fx::{Chorus, Flanger, Phaser};
 
@@ -17,6 +17,7 @@ use crate::{flutter, mixlaw};
 const CHORUS: &str = "mpfree.fx.chorus";
 const FLANGER: &str = "mpfree.fx.flanger";
 const PHASER: &str = "mpfree.fx.phaser";
+const ENSEMBLE: &str = "mpfree.fx.ensemble";
 
 fn db_pow(p: f64) -> f64 {
     10.0 * p.max(1e-30).log10()
@@ -55,6 +56,7 @@ fn mix_id(id: &str) -> u16 {
     match id {
         FLANGER => fl::MIX,
         PHASER => ph::MIX,
+        ENSEMBLE => ens::MIX,
         _ => ch::MIX,
     }
 }
@@ -312,7 +314,12 @@ pub(super) fn modulation(r: &mut Report) {
     let rate = r.rate;
     let pink = pink_stim(rate, 6.0);
     let hits = mixlaw::hits(6.0, rate);
-    let engines = [(CHORUS, "chorus"), (FLANGER, "flanger"), (PHASER, "phaser")];
+    let engines = [
+        (CHORUS, "chorus"),
+        (FLANGER, "flanger"),
+        (PHASER, "phaser"),
+        (ENSEMBLE, "ensemble"),
+    ];
 
     // Per engine and preset: M1 level, M4 mono fold-down, M13 zipper.
     for (id, name) in engines {
@@ -449,6 +456,42 @@ pub(super) fn modulation(r: &mut Report) {
             0.05,
         );
     }
+    // The Ensemble (wave 1 target S3, docs/dev/design/synth-quality.md):
+    // a string machine's width, between 0.2 and 0.6, with three lines and
+    // four; then its level across Mix, the FX method's mix law.
+    for (lines, tag) in [(0.0, "3"), (1.0, "4")] {
+        let mut d = engine(ENSEMBLE, rate, &[(ens::LINES, lines), (ens::MIX, 100.0)]);
+        r.put(
+            "S3",
+            "modulation/ensemble",
+            format!("wet_corr_300hz_{tag}lines"),
+            Some(width(&mut d, rate)),
+            Better::Near(0.4),
+            Some(0.2),
+            0.05,
+        );
+    }
+    let mut mk = || -> Box<dyn Dut> { Box::new(engine(ENSEMBLE, rate, &[])) };
+    let pts = mixlaw::measure(&mut mk, ens::MIX, &mixlaw::MIXES);
+    let (dip, bump) = mixlaw::dip_and_bump(&pts);
+    r.put(
+        "M1",
+        "modulation/ensemble",
+        "mix_dip_lu",
+        Some(dip),
+        Better::Higher,
+        Some(-1.0),
+        0.05,
+    );
+    r.put(
+        "M1",
+        "modulation/ensemble",
+        "mix_bump_lu",
+        Some(bump),
+        Better::Lower,
+        Some(1.5),
+        0.05,
+    );
     for (id, name) in [(FLANGER, "flanger"), (PHASER, "phaser")] {
         let mut d = engine(id, rate, &[(mix_id(id), 100.0)]);
         r.put(
