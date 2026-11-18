@@ -133,14 +133,17 @@ pub enum PadDo {
     Throw,
 }
 
-/// What the recorder says back (`SamplePage::take_pad_now`).
+/// What the recorder says back (`SamplePage::take_pad_now`), naming the
+/// take's kit and pad: a take moved to another pad may still be heard
+/// ending after the arm holds the new one, and must not end that one
+/// ([`RecArm::pad_now`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PadNow {
     /// The take records.
-    Recording,
+    Recording { kit: usize, pad: usize },
     /// It landed, was called off, or couldn't run (the recorder says why
     /// in the log): REC records what it did before.
-    Ended,
+    Ended { kit: usize, pad: usize },
 }
 
 /// How a take records: over what was there, or adding to it.
@@ -689,14 +692,17 @@ impl RecArm {
     }
 
     /// The recorder said how the pad take is going. True when the arm
-    /// changed (the screen is told).
+    /// changed (the screen is told). Word of another take than the one
+    /// armed (one that was moved, heard late) changes nothing.
     pub fn pad_now(&mut self, n: PadNow) -> bool {
+        let (PadNow::Recording { kit, pad } | PadNow::Ended { kit, pad }) = n;
         match (n, &mut self.pad) {
-            (PadNow::Recording, Some(t)) if !t.recording => {
+            (_, Some(t)) if (t.kit, t.pad) != (kit, pad) => false,
+            (PadNow::Recording { .. }, Some(t)) if !t.recording => {
                 t.recording = true;
                 true
             }
-            (PadNow::Ended, Some(_)) => {
+            (PadNow::Ended { .. }, Some(_)) => {
                 self.pad = None;
                 true
             }
@@ -1047,6 +1053,24 @@ mod tests {
         Do::Pad(d)
     }
 
+    /// The recorder says the armed pad take records.
+    fn records(a: &mut RecArm) -> bool {
+        let t = a.pad.expect("a pad take");
+        a.pad_now(PadNow::Recording {
+            kit: t.kit,
+            pad: t.pad,
+        })
+    }
+
+    /// The recorder says the armed pad take ended.
+    fn ended(a: &mut RecArm) -> bool {
+        let t = a.pad.expect("a pad take");
+        a.pad_now(PadNow::Ended {
+            kit: t.kit,
+            pad: t.pad,
+        })
+    }
+
     fn said(out: &[Do]) -> String {
         out.iter()
             .filter_map(|d| match d {
@@ -1080,8 +1104,8 @@ mod tests {
         assert_eq!(a.rolled(&playing), [pad(PadDo::Start)]);
         assert!(a.rolled(&playing).is_empty());
         // The recorder says it records; REC ends it and the arm goes back.
-        assert!(a.pad_now(PadNow::Recording));
-        assert!(!a.pad_now(PadNow::Recording), "said once");
+        assert!(records(&mut a));
+        assert!(!records(&mut a), "said once");
         let out = a.press(Press::Rec, &playing);
         assert_eq!(out[0], pad(PadDo::End));
         assert!(said(&out).contains("Pad A5: the take ends and lands on the pad"));
@@ -1123,7 +1147,7 @@ mod tests {
         // While it records a tap is refused, naming the pad.
         let mut b = RecArm::default();
         b.arm_pad(0, 4, &stopped);
-        b.pad_now(PadNow::Recording);
+        records(&mut b);
         let out = b.move_to(Target::Loop, Mover::Tap, &now(State::Playing));
         assert_eq!(
             out,
@@ -1178,7 +1202,7 @@ mod tests {
             [pad(PadDo::End), pad(PadDo::Arm { kit: 0, pad: 5 })]
         );
         assert_eq!(a.pad.map(|p| p.pad), Some(5));
-        a.pad_now(PadNow::Recording);
+        records(&mut a);
         assert!(said(&a.arm_pad(0, 6, &stopped)).starts_with("Finish the take first"));
         assert_eq!(a.pad.map(|p| p.pad), Some(5));
         // Both armed: REC records both again afterwards.
@@ -1202,7 +1226,7 @@ mod tests {
         assert_eq!(a.pad, None);
         // Recording: STOP keeps it.
         a.arm_pad(0, 4, &playing);
-        a.pad_now(PadNow::Recording);
+        records(&mut a);
         let out = a.press(Press::Stop, &playing);
         assert_eq!(out[0], pad(PadDo::End));
         assert!(said(&out).contains("the take ends and lands on the pad"));
@@ -1216,16 +1240,19 @@ mod tests {
         assert!(a.pad.is_some());
         // UNDO before it records is the page's; while it records it throws.
         assert_eq!(a.throw(&playing), None);
-        a.pad_now(PadNow::Recording);
+        records(&mut a);
         let out = a.throw(&playing).unwrap();
         assert_eq!(out[0], pad(PadDo::Throw));
         assert!(said(&out).contains("Pad A5's take is thrown away"));
         assert_eq!(a.pad, None);
         // The recorder ends it itself (a length, silence, or it couldn't run).
         a.arm_pad(0, 4, &stopped);
-        assert!(a.pad_now(PadNow::Ended));
+        assert!(ended(&mut a));
         assert_eq!(a, RecArm::default());
-        assert!(!a.pad_now(PadNow::Ended), "nothing to end");
+        assert!(
+            !a.pad_now(PadNow::Ended { kit: 0, pad: 4 }),
+            "nothing to end"
+        );
     }
 
     /// The Wave page's REC (the one Sample page's step 2a): a pad take that
@@ -1257,7 +1284,7 @@ mod tests {
         assert_eq!(a, was);
         // REC on the MPC ends it, keeping what recorded; REC then records
         // the notes again.
-        assert!(a.pad_now(PadNow::Recording));
+        assert!(records(&mut a));
         let out = a.press(Press::Rec, &playing);
         assert_eq!(out[0], pad(PadDo::End));
         assert!(said(&out).contains("the take ends and lands on the pad"));
@@ -1271,10 +1298,10 @@ mod tests {
         assert_eq!(a.pad, None);
         // STOP keeps it with the music playing on; UNDO throws it away.
         a.rec_here(0, 5, &playing).unwrap();
-        a.pad_now(PadNow::Recording);
+        records(&mut a);
         assert_eq!(a.press(Press::Stop, &playing)[0], pad(PadDo::End));
         a.rec_here(0, 5, &playing).unwrap();
-        a.pad_now(PadNow::Recording);
+        records(&mut a);
         assert_eq!(a.throw(&playing).unwrap()[0], pad(PadDo::Throw));
         assert_eq!(a.pad, None);
         // A held pad's take still waiting for PLAY moves here.
@@ -1289,7 +1316,13 @@ mod tests {
             ]
         );
         assert!(a.pad.unwrap().here);
-        a.pad_now(PadNow::Ended);
+        // The old take's word, heard late, leaves the row's take armed;
+        // the row's own ends it.
+        assert!(!a.pad_now(PadNow::Ended { kit: 0, pad: 20 }));
+        assert!(!a.pad_now(PadNow::Recording { kit: 0, pad: 20 }));
+        assert!(a.pad.is_some_and(|t| t.here && t.pad == 5 && !t.recording));
+        assert!(a.pad_now(PadNow::Ended { kit: 0, pad: 5 }));
+        assert_eq!(a.pad, None);
         // Refused while the notes count in or record, with why.
         let err = a.rec_here(0, 5, &now(State::CountIn)).unwrap_err();
         assert_eq!(err, "Finish the take first: Drums records");

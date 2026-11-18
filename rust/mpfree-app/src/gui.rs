@@ -11416,7 +11416,7 @@ impl Player {
         let before = self.sample.page();
         self.sample.tick(&mut self.ui, dt, self.view.sampler());
         // The pad take (sampler R5.7): recording, or over.
-        if let Some(n) = self.sample.take_pad_now() {
+        while let Some(n) = self.sample.take_pad_now() {
             self.outbox.push(FromUi::PadTake(n));
         }
         // The Wave page's REC: a pad take there, or the one running ends.
@@ -25853,6 +25853,56 @@ mod tests {
             "{}",
             hint(&p)
         );
+        // A held pad's take waiting for PLAY shows on the row with REC lit,
+        // and the row's REC calls it off; REC again takes onto A7. The old
+        // take's end, heard late, leaves the row's take armed.
+        for d in arm.arm_pad(0, 20, &stopped) {
+            if let crate::rec_arm::Do::Pad(d) = d {
+                p.apply(ToUi::PadTake(d));
+            }
+        }
+        p.tick(0.033);
+        assert_eq!(row(&p).status, "Onto B5 · waits for PLAY");
+        assert!(row(&p).recording && row(&p).waiting);
+        ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert_eq!(arm.pad, None);
+        p.tick(0.033);
+        assert_eq!(row(&p).status, "Next take onto A7");
+        ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        feed_input(&mut feed.0, 1.0, 0.4, true);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert!(!arm.pad_now(crate::rec_arm::PadNow::Ended { kit: 0, pad: 20 }));
+        assert!(
+            arm.pad.is_some_and(|t| t.here && t.pad == 6 && t.recording),
+            "{arm:?}"
+        );
+        assert!(
+            row(&p).status.starts_with("Recording onto A7"),
+            "{}",
+            row(&p).status
+        );
+        ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert_eq!(arm.pad, None);
+        let name = p
+            .sample
+            .project(0)
+            .unwrap()
+            .pad(6)
+            .map(|pd| pd.name.clone());
+        assert_eq!(name.as_deref(), Some("Take 2"));
+        assert!(
+            p.sample.project(0).unwrap().pad(20).is_none(),
+            "B5 stays empty"
+        );
         // While the notes count in, the arm refuses it and the row says
         // why for a while.
         ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
@@ -25957,7 +26007,7 @@ mod tests {
         let has_sound = |p: &Player, pad: usize| p.sample.project(0).unwrap().pad(pad).is_some();
         // No line input: it ends at once, saying why.
         p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
-        assert_eq!(told(&mut p), [PadNow::Ended]);
+        assert_eq!(told(&mut p), [PadNow::Ended { kit: 0, pad: 20 }]);
         said(&p, "sample: no take on Pad B5: the line input is off");
         // The line input on, 2 s in.
         let mut s = p.settings.clone();
@@ -25973,7 +26023,7 @@ mod tests {
         feed_input(&mut feed.0, 2.0, 0.4, true);
         // A pad with a sound is refused.
         p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 4 }));
-        assert_eq!(told(&mut p), [PadNow::Ended]);
+        assert_eq!(told(&mut p), [PadNow::Ended { kit: 0, pad: 4 }]);
         said(&p, "sample: no take on Pad A5: it has a sound");
         // Armed, then ended before the music played: called off.
         p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
@@ -25983,7 +26033,7 @@ mod tests {
             "sample: take armed for pad B5 (one take, from REC): start now, end stop, left + right",
         );
         p.apply(ToUi::PadTake(PadDo::End));
-        assert_eq!(told(&mut p), [PadNow::Ended]);
+        assert_eq!(told(&mut p), [PadNow::Ended { kit: 0, pad: 20 }]);
         said(
             &p,
             "sample: no take on Pad B5: called off before it started",
@@ -25994,20 +26044,20 @@ mod tests {
         p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
         p.apply(ToUi::PadTake(PadDo::Start));
         feed_input(&mut feed.0, 1.0, 0.4, true);
-        assert_eq!(told(&mut p), [PadNow::Recording]);
+        assert_eq!(told(&mut p), [PadNow::Recording { kit: 0, pad: 20 }]);
         feed_input(&mut feed.0, 0.5, 0.4, true);
         assert_eq!(told(&mut p), [], "said once");
         p.apply(ToUi::PadTake(PadDo::Throw));
-        assert_eq!(told(&mut p), [PadNow::Ended]);
+        assert_eq!(told(&mut p), [PadNow::Ended { kit: 0, pad: 20 }]);
         said(&p, "sample: no take on Pad B5: thrown away");
         assert!(!has_sound(&p, 20));
         // Again, and REC: 1.5 s lands on B5 as a Rec tab take does.
         p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
         p.apply(ToUi::PadTake(PadDo::Start));
         feed_input(&mut feed.0, 1.5, 0.4, true);
-        assert_eq!(told(&mut p), [PadNow::Recording]);
+        assert_eq!(told(&mut p), [PadNow::Recording { kit: 0, pad: 20 }]);
         p.apply(ToUi::PadTake(PadDo::End));
-        assert_eq!(told(&mut p), [PadNow::Ended]);
+        assert_eq!(told(&mut p), [PadNow::Ended { kit: 0, pad: 20 }]);
         let pad = p.sample.project(0).unwrap().pad(20).cloned().unwrap();
         assert_eq!(pad.name, "Take 1");
         said(&p, "stereo on pad B5");

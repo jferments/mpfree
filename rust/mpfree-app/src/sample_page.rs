@@ -669,8 +669,10 @@ pub struct SamplePage {
     play_turn: Option<(usize, PadKnob, u64)>,
     shown_heads: Vec<u64>,
     lines: Vec<String>,
-    /// What the pad take ([`SamplePage::pad_take`]) tells the arm next.
-    pad_said: Option<crate::rec_arm::PadNow>,
+    /// What the pad take ([`SamplePage::pad_take`]) tells the arm next,
+    /// oldest first (a take moved to another pad ends, then the new one
+    /// records, in one frame).
+    pad_said: std::collections::VecDeque<crate::rec_arm::PadNow>,
     /// The Wave page's REC asks the arm for a pad take on this kit and pad,
     /// or to end the one running ([`SamplePage::take_rec_here`]).
     rec_here: Option<(usize, usize)>,
@@ -866,7 +868,7 @@ impl SamplePage {
             play_turn: None,
             shown_heads: Vec::new(),
             lines: Vec::new(),
-            pad_said: None,
+            pad_said: std::collections::VecDeque::new(),
             rec_here: None,
             here_no: None,
             pad_run: None,
@@ -962,8 +964,11 @@ impl SamplePage {
             self.lines
                 .push("sample: the take was dropped (the kits were loaded again)".to_string());
         }
-        if self.pad_run.take().is_some() {
-            self.pad_said = Some(crate::rec_arm::PadNow::Ended);
+        if let Some(run) = self.pad_run.take() {
+            self.pad_said.push_back(crate::rec_arm::PadNow::Ended {
+                kit: run.kit,
+                pad: run.pad,
+            });
         }
         if let Some(j) = self.auto_job.take() {
             if let Some(end) = &j.end {
@@ -6675,21 +6680,22 @@ impl SamplePage {
         self.pad_run.is_some()
     }
 
-    /// What the recorder has to say about the pad take since last asked:
-    /// it records, or it ended.
+    /// What the recorder has to say about the pad take since last asked,
+    /// a word at a time, oldest first: it records, or it ended.
     pub fn take_pad_now(&mut self) -> Option<crate::rec_arm::PadNow> {
-        self.pad_said.take()
+        self.pad_said.pop_front()
     }
 
     /// The pad take ends without a take: the log says why, and the arm
     /// hears it ended.
-    fn no_pad_take(&mut self, pad: usize, why: &str) {
+    fn no_pad_take(&mut self, kit: usize, pad: usize, why: &str) {
         self.lines.push(format!(
             "sample: no take on {}: {why}",
             crate::rec_arm::pad_name(pad)
         ));
         self.pad_run = None;
-        self.pad_said = Some(crate::rec_arm::PadNow::Ended);
+        self.pad_said
+            .push_back(crate::rec_arm::PadNow::Ended { kit, pad });
     }
 
     /// Arms a take onto `pad` of kit `kit`, refused (and ended at once)
@@ -6716,7 +6722,7 @@ impl SamplePage {
             None
         };
         if let Some(why) = why {
-            self.no_pad_take(pad, why);
+            self.no_pad_take(kit, pad, why);
             return;
         }
         let settings = self.rec_settings_now();
@@ -6746,11 +6752,11 @@ impl SamplePage {
             return;
         };
         if self.take.is_some() || self.flatten.is_some() {
-            self.no_pad_take(run.pad, "the Rec tab is recording");
+            self.no_pad_take(run.kit, run.pad, "the Rec tab is recording");
             return;
         }
         let Some(input) = self.input.as_ref() else {
-            self.no_pad_take(run.pad, "the line input is off");
+            self.no_pad_take(run.kit, run.pad, "the line input is off");
             return;
         };
         let rec = run.settings.recording(input, self.bar_frames(input));
@@ -6780,7 +6786,7 @@ impl SamplePage {
             return;
         };
         if !run.begun {
-            self.no_pad_take(run.pad, "called off before it started");
+            self.no_pad_take(run.kit, run.pad, "called off before it started");
             return;
         }
         if let (Some(t), Some(input)) = (self.take.as_mut(), self.input.as_ref()) {
@@ -6802,7 +6808,7 @@ impl SamplePage {
         if self.take.as_ref().is_some_and(|t| t.pad_take) {
             self.take = None;
         }
-        self.no_pad_take(run.pad, "thrown away");
+        self.no_pad_take(run.kit, run.pad, "thrown away");
         self.refresh_rec_state(ui);
         self.feed_rec(ui, 0.0);
     }
@@ -6817,13 +6823,19 @@ impl SamplePage {
         match self.take.as_ref().filter(|t| t.pad_take) {
             Some(t) => {
                 if !run.said && matches!(t.rec.progress(), Progress::Recording { .. }) {
-                    self.pad_said = Some(PadNow::Recording);
+                    self.pad_said.push_back(PadNow::Recording {
+                        kit: run.kit,
+                        pad: run.pad,
+                    });
                     self.pad_run = Some(PadRun { said: true, ..run });
                 }
             }
             None => {
                 self.pad_run = None;
-                self.pad_said = Some(PadNow::Ended);
+                self.pad_said.push_back(PadNow::Ended {
+                    kit: run.kit,
+                    pad: run.pad,
+                });
             }
         }
     }
