@@ -28,8 +28,8 @@ use mpfree_param::RelAddr;
 use mpfree_seq::arrange::SONG_LANE_LEN;
 use mpfree_seq::mpfree_moves::{Kind, Map, Moves, Target};
 use mpfree_seq::{
-    touch_fits, Clip, ClipProgram, DestId, LaunchGrid, Lock, ModelError, Note, Project, Quantise,
-    Source, Speed, Touch, TouchPoint, MAX_LOCKS, MAX_NOTES, MAX_TRACKS, SLOTS,
+    touch_fits, Clip, ClipProgram, DestId, Direction, LaunchGrid, Lock, ModelError, Note, Project,
+    Quantise, Source, Speed, Touch, TouchPoint, MAX_LOCKS, MAX_NOTES, MAX_TRACKS, SLOTS,
 };
 use mpfree_transport::time::{Swing, Tick};
 
@@ -229,6 +229,11 @@ pub(crate) struct ClipView {
     /// The program change it sends as it starts (S5, [`Clip::program`]):
     /// outside gear's alone, so not in the stamp.
     pub program: Option<ClipProgram>,
+    /// The order it plays its steps in (S6, [`Clip::direction`]).
+    pub direction: Direction,
+    /// The steps its direction moves ([`Clip::direction_steps`]); 0 when
+    /// it plays forward ([`crate::steps`]).
+    pub steps: u32,
 }
 
 impl ClipView {
@@ -619,6 +624,8 @@ impl PlayView {
                 touch: Vec::new(),
                 stamp: 0,
                 program: None,
+                direction: Direction::Forward,
+                steps: 0,
             };
             // Recorded moves land here in place too: keep it as they would.
             song.stamp = stamp_of(&song);
@@ -967,7 +974,7 @@ fn clip_view(
 }
 
 /// `clip` compiled, named `slot`, on a track whose swing is `track_swing`.
-fn view_of(
+pub(crate) fn view_of(
     clip: &Clip,
     track_swing: Option<Swing>,
     slot: usize,
@@ -989,6 +996,8 @@ fn view_of(
         touch: clip.touch.clone(),
         stamp: 0,
         program: clip.program,
+        direction: clip.direction,
+        steps: clip.direction_steps().unwrap_or(0),
     };
     view.notes = clip.notes.iter().map(|n| view.note_view(n)).collect();
     view.notes.sort_by(|a, b| a.local.total_cmp(&b.local));
@@ -1064,7 +1073,15 @@ fn lane_hash(l: &mpfree_seq::mpfree_moves::Lane) -> u64 {
 /// A sum, so a recorded note or lock changes it by its own share alone
 /// (the same as a compile of the clip with it would give).
 fn stamp_of(v: &ClipView) -> u64 {
-    let head = debug_hash(&(v.length, v.speed, v.quantise, v.song_len, v.swing));
+    let head = debug_hash(&(
+        v.length,
+        v.speed,
+        v.quantise,
+        v.song_len,
+        v.swing,
+        v.direction,
+        v.steps,
+    ));
     let notes = v.notes.iter().map(debug_hash);
     let locks = v.locks.iter().map(debug_hash);
     let touch = v.touch.iter().enumerate().map(|(i, p)| touch_hash(i, *p));
@@ -1082,16 +1099,21 @@ fn stamp_of(v: &ClipView) -> u64 {
 pub struct NowPlaying {
     /// The clip's slot on its track (a placement's clip in song mode).
     pub slot: usize,
-    /// The song tick its tick 0 falls on; it repeats every `song_len`.
+    /// A song tick its loop starts on; it repeats every `song_len`.
     pub origin: Tick,
-    /// One pass, in song ticks.
+    /// Its loop, in song ticks: one pass, or for a clip that plays
+    /// ping-pong (S6) the passes before its steps come round the same
+    /// again.
     pub song_len: f64,
     /// Changes with any edit to what the clip plays (its notes, locks,
-    /// moves, pressure, length, speed, quantise or swing), not with where
-    /// it plays.
+    /// moves, pressure, length, speed, quantise, swing or direction), not
+    /// with where it plays.
     pub stamp: u64,
     /// The track is muted.
     pub muted: bool,
+    /// False for a clip that plays its steps in random order (S6): it
+    /// never comes round the same, so it has no loop to freeze.
+    pub repeats: bool,
 }
 
 /// A cue carried out on the audio thread that the view does not show yet.

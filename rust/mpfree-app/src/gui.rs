@@ -892,6 +892,9 @@ pub enum ToUi {
     /// What REC records and whether the notes wait for PLAY
     /// ([`crate::rec_arm`]), after a press or a move of the arm.
     Rec(crate::rec_arm::RecArm),
+    /// For the Sample tab's recorder: a pad take (sampler R5.7,
+    /// [`SamplePage::pad_take`]).
+    PadTake(crate::rec_arm::PadDo),
     /// The wheel, its push, - or + for the outline ([`Player::nav`]).
     Nav(Nav),
     /// The wheel or - / + turned the control a finger rests on by `delta`
@@ -1211,6 +1214,9 @@ pub enum FromUi {
     ArmAdd(crate::rec_arm::Target),
     /// The target list's Pin the arm: only a tap on Arm moves it.
     RecPin(bool),
+    /// The Sample tab's recorder on the pad take: it records, or it ended
+    /// ([`SamplePage::take_pad_now`]).
+    PadTake(crate::rec_arm::PadNow),
     /// Save the project: the audio loop sends its engines' parts back
     /// (`ToUi::ProjectParts`).
     SaveProject,
@@ -4121,6 +4127,15 @@ impl Player {
     /// What REC records, and what arms another target, on the hint line.
     fn tell_rec(&mut self) {
         let c = self.rec_chip();
+        if self.rec.pad.is_some() {
+            let line = format!(
+                "REC records {} for one take: REC again or STOP ends it, UNDO while it records \
+                 throws it away; then REC records what it did before",
+                c.what
+            );
+            self.tell(&line);
+            return;
+        }
         let line = format!(
             "REC records {}. The Beats view and picking a track arm the notes; the Loop view and \
              the Looper tab arm the loop; SHIFT + Arm records both",
@@ -4185,6 +4200,20 @@ impl Player {
     /// recording; "PINNED" while pinned.
     fn rec_chip(&self) -> play_widgets::RecChip {
         use crate::rec_arm::Target;
+        // A pad take (sampler R5.7): "REC → Pad A5 · Line in" while it
+        // waits, "● REC → Pad A5 · Line in" while it records.
+        if let Some(p) = self.rec.pad {
+            return play_widgets::RecChip {
+                state: if p.recording {
+                    play_widgets::RecState::Recording
+                } else {
+                    play_widgets::RecState::Armed
+                },
+                what: format!("{} · {}", p.name(), self.sample.source_name()),
+                add: false,
+                pinned: false,
+            };
+        }
         let mut chip = if self.rec.both {
             let (n, l) = (
                 self.rec_chip_of(Target::Notes),
@@ -4959,7 +4988,7 @@ impl Player {
         // REC ready or recording, on a page without a transport bar: the
         // REC chip in the header (sequencer decision 1).
         let rec = self.rec_chip();
-        if rec.state != play_widgets::RecState::Armed
+        if (rec.state != play_widgets::RecState::Armed || self.rec.pad.is_some())
             && !matches!(self.view, View::Play | View::Sequencer | View::Arrange)
         {
             why.push(format!(
@@ -4968,6 +4997,8 @@ impl Player {
             ));
             // Short, beside the kit: "READY → Track 1", "● REC → Loop 1".
             let head = match (rec.state, rec.add) {
+                // A pad take waiting for its start.
+                (play_widgets::RecState::Armed, _) => "REC",
                 (play_widgets::RecState::Ready, false) => "READY",
                 (play_widgets::RecState::Ready, true) => "READY TO ADD",
                 (_, false) => "● REC",
@@ -6513,6 +6544,7 @@ impl Player {
                     self.refresh_chips();
                 }
             }
+            ToUi::PadTake(d) => self.sample.pad_take(&mut self.ui, d),
             ToUi::Nav(n) => self.nav(n),
             ToUi::Held { delta, fine } => self.held_turn(delta, fine),
             ToUi::TurnsReady { synth, mixer } => self.turns_ready = (synth, mixer),
@@ -11033,6 +11065,10 @@ impl Player {
         // A take records on, whatever shows; it lands on its pad here.
         let before = self.sample.page();
         self.sample.tick(&mut self.ui, dt, self.view.sampler());
+        // The pad take (sampler R5.7): recording, or over.
+        if let Some(n) = self.sample.take_pad_now() {
+            self.outbox.push(FromUi::PadTake(n));
+        }
         // The browser: its touches and the worker's answers (a save's too,
         // made from another page); a preview's file and an opened
         // project's loops once read.
@@ -12419,7 +12455,8 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::Undo { redo } => p.apply(ToUi::Undo(redo)),
             Effect::UndoButton(down) => p.apply(ToUi::UndoButton(down)),
             // The desk carries it out (the transport and the looper).
-            Effect::Rec(_) => {}
+            Effect::Rec(_) | Effect::PadRec(_) | Effect::PadArm { .. } => {}
+            Effect::PadTake(d) => p.apply(ToUi::PadTake(d)),
             Effect::Recall(k) => p.apply(ToUi::Recall(k)),
             Effect::Nav(n) => p.apply(ToUi::Nav(n)),
             Effect::Held { delta, fine } => p.apply(ToUi::Held { delta, fine }),
@@ -13199,6 +13236,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         ..Default::default()
     }));
     out.push(("play-rec-both", both));
+    // An empty pad held + REC (sampler R5.7): one take onto B5, recording.
+    let mut pad = sample_player(fonts());
+    pad.apply(ToUi::Rec(crate::rec_arm::RecArm {
+        pad: Some(crate::rec_arm::PadTake {
+            kit: 0,
+            pad: 20,
+            started: true,
+            recording: true,
+        }),
+        ..Default::default()
+    }));
+    out.push(("play-rec-pad", pad));
     // The REC chip's target list (mockup H), the loop pinned.
     let mut list = sample_player(fonts());
     list.apply(ToUi::Rec(crate::rec_arm::RecArm {
@@ -13693,7 +13742,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         song: None,
         settings: false,
         pasted: false,
-        reloaded: false,
+        replaced: None,
+        variant: None,
         scene: None,
     };
     st.done = vec![
@@ -13935,9 +13985,42 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                     Some(mpfree_seq::Follow::after(4, mpfree_seq::FollowAction::Next));
             }
             p.time_page.clip_card = true;
-            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Time(Box::new(st.clone())));
             p.apply(ToUi::Show(View::Arrange));
             out.push(("clips-card", p));
+            // The same clip playing its steps in reverse (S6), scrolled to
+            // its Direction row.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                if let Some(c) = st
+                    .focus()
+                    .and_then(|(t, s)| st.tracks.get_mut(t)?.slots.get_mut(s)?.as_mut())
+                {
+                    c.settings.direction = mpfree_seq::Direction::Reverse;
+                }
+                p.time_page.clip_card = true;
+                p.apply(ToUi::Time(Box::new(st.clone())));
+                p.apply(ToUi::Show(View::Arrange));
+                if let Some(l) = p.ui.get_mut::<OptionList>(time_view::CLIP_CARD) {
+                    l.selected = time_view::CLIP_DIRECTION;
+                }
+                out.push(("clips-card-direction", p));
+            }
+            // Mutated (S6): it plays a variant, its original kept for ‹.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                if let Some(c) = st
+                    .focus()
+                    .and_then(|(t, s)| st.tracks.get_mut(t)?.slots.get_mut(s)?.as_mut())
+                {
+                    c.variation = Some(2);
+                }
+                p.time_page.clip_card = true;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                if let Some(l) = p.ui.get_mut::<OptionList>(time_view::CLIP_CARD) {
+                    l.selected = time_view::CLIP_MUTATE;
+                }
+                out.push(("clips-card-mutate", p));
+            }
         }
         Err(e) => eprintln!("clips-card sample: {e}"),
     }
@@ -17274,7 +17357,8 @@ mod tests {
             song: None,
             settings: false,
             pasted: false,
-            reloaded: false,
+            replaced: None,
+            variant: None,
             scene: None,
         };
         let mut st = p.time.clone();
@@ -17771,7 +17855,8 @@ mod tests {
             song: None,
             settings: false,
             pasted: false,
-            reloaded: false,
+            replaced: None,
+            variant: None,
             scene: None,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));
@@ -24924,6 +25009,92 @@ mod tests {
             p.ui.get::<InputView>(rec_tab::VIEW).unwrap().note,
             rec_tab::OFF_NOTE
         );
+    }
+
+    #[test]
+    fn a_pad_take_records_onto_its_pad_and_says_when_it_records_and_ends() {
+        use crate::rec_arm::{PadDo, PadNow};
+        use mpfree_sampler_ui::sample::feed_input;
+        let mut p = sample_sampler(Fonts::embedded());
+        // What the recorder told the arm since the last look (views go
+        // back at once).
+        let told = |p: &mut Player| {
+            p.tick(0.033);
+            let (sent, rest) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+            rest.into_iter()
+                .filter_map(|a| match a {
+                    FromUi::PadTake(n) => Some(n),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let said = |p: &Player, want: &str| {
+            let log = events_log(p);
+            assert!(log.iter().any(|l| l.contains(want)), "{want}: {log:?}");
+        };
+        let has_sound = |p: &Player, pad: usize| p.sample.project(0).unwrap().pad(pad).is_some();
+        // No line input: it ends at once, saying why.
+        p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
+        assert_eq!(told(&mut p), [PadNow::Ended]);
+        said(&p, "sample: no take on Pad B5: the line input is off");
+        // The line input on, 2 s in.
+        let mut s = p.settings.clone();
+        s.line_input = true;
+        p.apply(ToUi::Settings(s));
+        let Some(FromUi::SampleInput(Some(mut feed))) = p
+            .take_actions()
+            .into_iter()
+            .find(|a| matches!(a, FromUi::SampleInput(_)))
+        else {
+            panic!("the input's writer");
+        };
+        feed_input(&mut feed.0, 2.0, 0.4, true);
+        // A pad with a sound is refused.
+        p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 4 }));
+        assert_eq!(told(&mut p), [PadNow::Ended]);
+        said(&p, "sample: no take on Pad A5: it has a sound");
+        // Armed, then ended before the music played: called off.
+        p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
+        assert_eq!(told(&mut p), []);
+        said(
+            &p,
+            "sample: take armed for pad B5 (one take, from REC): start now, end stop, left + right",
+        );
+        p.apply(ToUi::PadTake(PadDo::End));
+        assert_eq!(told(&mut p), [PadNow::Ended]);
+        said(
+            &p,
+            "sample: no take on Pad B5: called off before it started",
+        );
+        assert!(!has_sound(&p, 20));
+        // Armed, the go, a second in: it records (said once); UNDO throws
+        // it away and the pad stays empty.
+        p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
+        p.apply(ToUi::PadTake(PadDo::Start));
+        feed_input(&mut feed.0, 1.0, 0.4, true);
+        assert_eq!(told(&mut p), [PadNow::Recording]);
+        feed_input(&mut feed.0, 0.5, 0.4, true);
+        assert_eq!(told(&mut p), [], "said once");
+        p.apply(ToUi::PadTake(PadDo::Throw));
+        assert_eq!(told(&mut p), [PadNow::Ended]);
+        said(&p, "sample: no take on Pad B5: thrown away");
+        assert!(!has_sound(&p, 20));
+        // Again, and REC: 1.5 s lands on B5 as a Rec tab take does.
+        p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
+        p.apply(ToUi::PadTake(PadDo::Start));
+        feed_input(&mut feed.0, 1.5, 0.4, true);
+        assert_eq!(told(&mut p), [PadNow::Recording]);
+        p.apply(ToUi::PadTake(PadDo::End));
+        assert_eq!(told(&mut p), [PadNow::Ended]);
+        let pad = p.sample.project(0).unwrap().pad(20).cloned().unwrap();
+        assert_eq!(pad.name, "Take 1");
+        said(&p, "stereo on pad B5");
+        // Its End again does nothing: the take is over.
+        p.apply(ToUi::PadTake(PadDo::End));
+        assert_eq!(told(&mut p), []);
     }
 
     #[test]

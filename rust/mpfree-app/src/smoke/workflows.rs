@@ -2317,6 +2317,104 @@ mod tests {
     /// armed, that REC records them and the Loop view arms the loop; with
     /// the loop armed, that REC records the pads into it. Once a notes take
     /// is done, the strip's own Record arms the loop for REC.
+    /// Sampler R5.7: an empty kit pad held + REC arms one take onto it
+    /// (a pad with a sound held is plain REC). The chip names the pad and
+    /// the source; the take waits for the music, and when the recorder
+    /// says it ended REC records the notes again.
+    #[test]
+    fn holding_an_empty_pad_and_rec_arms_one_take_onto_it() {
+        use crate::play_widgets::{PlayTransport, RecChip, RecState};
+        use crate::rec_arm::Target;
+        use mpfree_transport::State;
+        fn chip(s: &Session) -> RecChip {
+            s.screen
+                .ui
+                .get::<PlayTransport>(crate::play_page::TRANSPORT)
+                .and_then(|t| t.look.rec.clone())
+                .expect("the REC chip")
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            // A pad with a sound held: REC readies the notes, as alone.
+            s.pad_edge(4, 100, true);
+            s.button("REC").settle();
+            assert_eq!(chip(&s).state, RecState::Ready);
+            assert_eq!(s.app.rec.pad, None);
+            s.pad_edge(4, 0, false);
+            s.button("REC").settle();
+            assert_eq!(s.app.rec.ready, None);
+            // With the line input off, the recorder ends the take at once
+            // and says why: REC records the notes again.
+            s.button("PAD BANK B/F").settle();
+            s.pad_edge(4, 100, true);
+            let t = s.t();
+            let note = s.button_note("REC");
+            let fx = s.app.button(note, true, t);
+            assert_eq!(fx, [crate::app::Effect::PadRec(vec![20])]);
+            s.fx.extend(fx);
+            s.settle();
+            let take = s.app.rec.pad.expect("a pad take");
+            assert_eq!((take.kit, take.pad, take.started), (0, 20, false));
+            assert_eq!(chip(&s).line(), "REC → Pad B5 · Line in");
+            assert_eq!(s.app.rec.target, Target::Notes, "the arm is kept");
+            let fx = s.app.button(note, false, t);
+            s.fx.extend(fx);
+            s.run_periods(4);
+            s.pad_edge(4, 0, false);
+            s.settle();
+            assert_eq!(s.app.rec.pad, None);
+            assert_eq!(chip(&s).state, RecState::Armed);
+            assert_eq!(chip(&s).what, "Track 1 · new clip");
+            let said = s.said();
+            assert!(
+                said.iter()
+                    .any(|l| l.contains("Pad B5 of kit 1 armed for one take")),
+                "{said:?}"
+            );
+            assert!(
+                said.iter()
+                    .any(|l| l.ends_with("no take on Pad B5: the line input is off")),
+                "{said:?}"
+            );
+            // The line input on: B5 held + REC arms the take, PLAY starts
+            // it, and REC lands it on B5 with the music playing on.
+            s.line_in(Some(220.0));
+            s.pad_edge(4, 100, true);
+            let t = s.t();
+            let fx = s.app.button(note, true, t);
+            s.fx.extend(fx);
+            s.settle();
+            let fx = s.app.button(note, false, t);
+            s.fx.extend(fx);
+            s.run_periods(4);
+            s.pad_edge(4, 0, false);
+            s.settle();
+            let take = s.app.rec.pad.expect("armed, waiting for the music");
+            assert_eq!((take.started, take.recording), (false, false));
+            assert_eq!(chip(&s).line(), "REC → Pad B5 · Line in");
+            s.button("PLAY").settle();
+            s.run_periods(40);
+            let take = s.app.rec.pad.expect("recording");
+            assert_eq!((take.started, take.recording), (true, true));
+            assert_eq!(chip(&s).line(), "● REC → Pad B5 · Line in");
+            s.button("REC").settle();
+            s.run_periods(4);
+            assert_eq!(s.app.rec.pad, None, "one take");
+            assert_eq!(chip(&s).what, "Track 1 · new clip");
+            assert_eq!(s.time.info().state, State::Playing, "the music plays on");
+            let pad = s.screen.sample.project(0).unwrap().pad(20).cloned();
+            assert_eq!(pad.map(|p| p.name).as_deref(), Some("Take 1"));
+            let said = s.said();
+            for want in [
+                "sample: take armed for pad B5 (one take, from REC): start now, end stop, left + right",
+                "stereo on pad B5",
+            ] {
+                assert!(said.iter().any(|l| l.contains(want)), "{want}: {said:?}");
+            }
+        });
+    }
+
     #[test]
     fn the_loop_strip_says_what_rec_records_and_its_record_arms_the_loop() {
         use crate::looper_page::{LoopStrip, LOOP_STRIP};

@@ -33,6 +33,17 @@
 //! The arm isn't saved and isn't an undo step; a new or opened project
 //! starts with the notes armed, unpinned. SHIFT + REC is still Capture,
 //! whatever is armed.
+//!
+//! **A pad take** ([`RecArm::arm_pad`], sampler R5.7, Jay 18 Nov 2026
+//! 08:52Z, one take only): an empty kit pad held + REC arms the sampler's
+//! recorder onto that pad for one take, over the arm ([`RecArm::pad`]).
+//! The target and both are never touched, so when the take ends (REC or
+//! STOP keeps it, UNDO mid-take throws it away, or the recorder ends it
+//! itself) REC records what it did before. While it is armed or records
+//! it holds like a pin; a tap before it starts calls it off and arms what
+//! was tapped; SHIFT + a tap is refused. The recorder is the Sample tab's
+//! ([`PadDo`] out, [`PadNow`] back): it starts on its threshold, else once
+//! the music plays ([`RecArm::rolled`]).
 
 use mpfree_looper::Command as LoopCommand;
 use mpfree_transport::{Command, State};
@@ -63,6 +74,60 @@ impl Target {
             Target::Loop => Target::Notes,
         }
     }
+}
+
+/// A pad take armed by holding an empty kit pad + REC: one take onto that
+/// pad by the sampler's recorder, over the arm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PadTake {
+    /// The sampler's kit slot (the armed track's kit) and its pad, 0 (A1)
+    /// to 127 (H16).
+    pub kit: usize,
+    pub pad: usize,
+    /// The music plays: the recorder was told to go ([`PadDo::Start`]).
+    pub started: bool,
+    /// The take records (the recorder said so, [`PadNow::Recording`]).
+    pub recording: bool,
+}
+
+impl PadTake {
+    /// "Pad A5".
+    pub fn name(&self) -> String {
+        pad_name(self.pad)
+    }
+}
+
+/// A kit pad as the banks name it: "Pad A5" (pad 4), "Pad B1" (pad 16).
+pub fn pad_name(pad: usize) -> String {
+    format!("Pad {}", crate::app::kit_pad_name(pad))
+}
+
+/// What the arm asks of the sampler's recorder (the screen's Sample tab,
+/// `SamplePage::pad_take`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PadDo {
+    /// A take onto the pad with the Rec tab's settings. With its Start on
+    /// Threshold it waits for the threshold now; otherwise for
+    /// [`PadDo::Start`].
+    Arm { kit: usize, pad: usize },
+    /// The music plays: the go (the Rec tab's Start then applies: at once,
+    /// or the next bar line).
+    Start,
+    /// REC or STOP: keep what recorded (it lands on the pad), or call the
+    /// take off if nothing has.
+    End,
+    /// UNDO while it records: throw it away.
+    Throw,
+}
+
+/// What the recorder says back (`SamplePage::take_pad_now`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PadNow {
+    /// The take records.
+    Recording,
+    /// It landed, was called off, or couldn't run (the recorder says why
+    /// in the log): REC records what it did before.
+    Ended,
 }
 
 /// How a take records: over what was there, or adding to it.
@@ -131,6 +196,8 @@ pub enum Do {
     ThrowTake,
     /// Let go of a loop that waits for PLAY ([`crate::looping::LoopAction::StopWaiting`]).
     StopWaiting,
+    /// To the sampler's recorder, for a pad take.
+    Pad(PadDo),
     /// Said on the hint line and in the log.
     Tell(String),
     /// Written to the log only (the hint line says it already).
@@ -150,6 +217,8 @@ pub struct RecArm {
     pub ready: Option<Take>,
     /// Only a tap moves the arm (the target list's Pin the arm).
     pub pinned: bool,
+    /// A pad take, for one take over the arm ([`RecArm::arm_pad`]).
+    pub pad: Option<PadTake>,
 }
 
 /// The transport's mode set for `take`, if it isn't already.
@@ -168,11 +237,12 @@ fn looped(take: Take) -> Do {
 impl RecArm {
     /// Whether REC records `t` (alone or with the other).
     pub fn armed(&self, t: Target) -> bool {
-        self.both || self.target == t
+        self.pad.is_none() && (self.both || self.target == t)
     }
 
     /// What REC records, for what is said: "the notes", "the loop", or
-    /// "the notes and the loop".
+    /// "the notes and the loop" (with a pad take armed, what it records
+    /// after it).
     pub fn name(&self) -> &'static str {
         if self.both {
             "the notes and the loop"
@@ -183,6 +253,9 @@ impl RecArm {
 
     /// A press of REC, OVERDUB, PLAY or STOP, as it finds the transport.
     pub fn press(&mut self, p: Press, now: &Now) -> Vec<Do> {
+        if let Some(take) = self.pad {
+            return self.press_pad(take, p, now);
+        }
         let take = match p {
             Press::Rec => Take::Replace,
             Press::Overdub => Take::Add,
@@ -290,6 +363,25 @@ impl RecArm {
     /// tap. A ready goes with the arm: the notes' to the loop as Record (or
     /// Overdub), an armed loop's to the notes.
     pub fn move_to(&mut self, target: Target, by: Mover, now: &Now) -> Vec<Do> {
+        // A pad take holds like a pin; a tap before it records calls it
+        // off and arms what was tapped.
+        let mut out = Vec::new();
+        if let Some(take) = self.pad {
+            if by != Mover::Tap {
+                return Vec::new();
+            }
+            if take.recording {
+                return vec![self.busy(now)];
+            }
+            self.pad = None;
+            out.push(Do::Pad(PadDo::End));
+            out.push(Do::Tell(format!("{} take called off", take.name())));
+        }
+        out.extend(self.move_arm(target, by, now));
+        out
+    }
+
+    fn move_arm(&mut self, target: Target, by: Mover, now: &Now) -> Vec<Do> {
         if self.pinned && by != Mover::Tap {
             return Vec::new();
         }
@@ -327,7 +419,9 @@ impl RecArm {
 
     /// What a tap says while a take records.
     fn busy(&self, now: &Now) -> Do {
-        let what = if self.both {
+        let what = if let Some(take) = self.pad.filter(|t| t.recording) {
+            take.name()
+        } else if self.both {
             format!("{} and the loop", now.notes)
         } else if self.target == Target::Notes {
             now.notes.clone()
@@ -345,6 +439,12 @@ impl RecArm {
     /// too, the notes added to an armed loop get ready. Refused while a take
     /// records, pinned or not.
     pub fn add(&mut self, target: Target, now: &Now) -> Vec<Do> {
+        if let Some(take) = self.pad {
+            return vec![Do::Tell(format!(
+                "A pad take records alone: REC ends {}'s, then SHIFT + Arm adds",
+                take.name()
+            ))];
+        }
         if now.taking() {
             return vec![self.busy(now)];
         }
@@ -394,6 +494,16 @@ impl RecArm {
     /// music plays on (the notes punch out; a loop's first pass or overdub
     /// is undone). None when nothing records: UNDO is the page's.
     pub fn throw(&mut self, now: &Now) -> Option<Vec<Do>> {
+        if let Some(take) = self.pad.filter(|t| t.recording) {
+            self.pad = None;
+            return Some(vec![
+                Do::Pad(PadDo::Throw),
+                Do::Tell(format!(
+                    "UNDO: {}'s take is thrown away; the music plays on",
+                    take.name()
+                )),
+            ]);
+        }
         let notes = matches!(now.state, State::Recording | State::CountIn);
         if !notes && !now.loop_taking {
             return None;
@@ -412,11 +522,128 @@ impl RecArm {
         Some(out)
     }
 
+    /// What REC records once a pad take ends, for what is said: "Drums",
+    /// "the loop", "Drums and the loop".
+    fn back(&self, now: &Now) -> String {
+        match (self.both, self.target) {
+            (true, _) => format!("{} and the loop", now.notes),
+            (false, Target::Notes) => now.notes.clone(),
+            (false, Target::Loop) => "the loop".to_string(),
+        }
+    }
+
+    /// An empty kit pad held + REC: arm the sampler's recorder onto pad
+    /// `pad` of kit `kit` for one take. Refused while a take counts in or
+    /// records (a pad take too); a notes ready and a loop waiting for PLAY
+    /// let go and don't come back (one take at a time). REC with the same
+    /// pad again calls it off; another empty pad moves it there. With the
+    /// music playing the recorder gets its go at once.
+    pub fn arm_pad(&mut self, kit: usize, pad: usize, now: &Now) -> Vec<Do> {
+        let mut out = Vec::new();
+        if let Some(take) = self.pad {
+            if take.recording {
+                return vec![self.busy(now)];
+            }
+            if (take.kit, take.pad) == (kit, pad) {
+                return self.press_pad(take, Press::Rec, now);
+            }
+            out.push(Do::Pad(PadDo::End));
+        } else if now.taking() {
+            return vec![self.busy(now)];
+        }
+        self.ready = None;
+        if now.loop_armed {
+            out.push(Do::StopWaiting);
+        }
+        let take = PadTake {
+            kit,
+            pad,
+            started: false,
+            recording: false,
+        };
+        self.pad = Some(take);
+        out.push(Do::Pad(PadDo::Arm { kit, pad }));
+        out.extend(self.rolled(now));
+        out.push(Do::Tell(format!(
+            "REC → {}: one take, then REC records {} again · REC: off",
+            take.name(),
+            self.back(now)
+        )));
+        out
+    }
+
+    /// REC, OVERDUB, PLAY or STOP while a pad take is armed. REC and STOP
+    /// end it (what recorded lands on the pad; nothing recorded calls it
+    /// off), and REC records what it did before. STOP while it records
+    /// leaves the music playing (the app doesn't stop the transport);
+    /// while only armed, STOP also stops as usual. PLAY does its own job:
+    /// the take gets its go once the music plays ([`RecArm::rolled`]).
+    fn press_pad(&mut self, take: PadTake, p: Press, now: &Now) -> Vec<Do> {
+        let name = take.name();
+        let back = self.back(now);
+        let ended = |kept: &str| {
+            vec![
+                Do::Pad(PadDo::End),
+                Do::Tell(format!("{kept} · REC records {back} again")),
+            ]
+        };
+        match p {
+            Press::Rec | Press::Stop if take.recording => {
+                self.pad = None;
+                ended(&format!("{name}: the take ends and lands on the pad"))
+            }
+            Press::Rec => {
+                self.pad = None;
+                ended(&format!("{name} take called off"))
+            }
+            Press::Stop => {
+                self.pad = None;
+                vec![
+                    Do::Pad(PadDo::End),
+                    Do::Note(format!("rec: {name} take called off by STOP")),
+                ]
+            }
+            Press::Overdub => vec![Do::Tell(format!(
+                "OVERDUB doesn't add to a pad take: REC ends {name}'s"
+            ))],
+            Press::Play { .. } => Vec::new(),
+        }
+    }
+
+    /// Every period: a pad take waiting for the music gets its go once
+    /// the transport plays (PLAY, PLAY START, Arrange's Play, another
+    /// device's Start; not during a count-in).
+    pub fn rolled(&mut self, now: &Now) -> Vec<Do> {
+        match &mut self.pad {
+            Some(t) if !t.started && matches!(now.state, State::Playing | State::Recording) => {
+                t.started = true;
+                vec![Do::Pad(PadDo::Start)]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The recorder said how the pad take is going. True when the arm
+    /// changed (the screen is told).
+    pub fn pad_now(&mut self, n: PadNow) -> bool {
+        match (n, &mut self.pad) {
+            (PadNow::Recording, Some(t)) if !t.recording => {
+                t.recording = true;
+                true
+            }
+            (PadNow::Ended, Some(_)) => {
+                self.pad = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The lights: the notes ready to replace (REC blinks) or to add
     /// (OVERDUB blinks), PLAY blinking with either.
     pub fn ready_lights(&self) -> (bool, bool) {
         (
-            self.ready == Some(Take::Replace),
+            self.ready == Some(Take::Replace) || self.pad.is_some(),
             self.ready == Some(Take::Add),
         )
     }
@@ -749,5 +976,190 @@ mod tests {
         };
         let said = a.throw(&both).unwrap();
         assert_eq!(&said[..2], [Do::ThrowTake, Do::Looper(LoopCommand::Undo)]);
+    }
+
+    fn pad(d: PadDo) -> Do {
+        Do::Pad(d)
+    }
+
+    fn said(out: &[Do]) -> String {
+        out.iter()
+            .filter_map(|d| match d {
+                Do::Tell(l) | Do::Note(l) => Some(l.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+
+    /// An empty kit pad held + REC (sampler R5.7, one take only): the
+    /// notes' ready lets go, the take waits for the music, records, and
+    /// REC then records the notes again.
+    #[test]
+    fn an_empty_pad_and_rec_arm_one_take_and_then_rec_records_what_it_did() {
+        let stopped = now(State::Stopped);
+        let mut a = RecArm::default();
+        a.press(Press::Rec, &stopped);
+        assert_eq!(a.ready, Some(Take::Replace));
+        let out = a.arm_pad(0, 4, &stopped);
+        assert_eq!(out[0], pad(PadDo::Arm { kit: 0, pad: 4 }));
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert!(said(&out).contains("REC → Pad A5: one take, then REC records Drums"));
+        assert_eq!(a.ready, None, "the notes' ready lets go");
+        assert!(!a.armed(Target::Notes) && !a.armed(Target::Loop));
+        assert_eq!(a.ready_lights(), (true, false), "REC blinks");
+        // Stopped or counting in: no go yet; once the music plays, one go.
+        assert!(a.rolled(&stopped).is_empty());
+        assert!(a.rolled(&now(State::CountIn)).is_empty());
+        let playing = now(State::Playing);
+        assert_eq!(a.rolled(&playing), [pad(PadDo::Start)]);
+        assert!(a.rolled(&playing).is_empty());
+        // The recorder says it records; REC ends it and the arm goes back.
+        assert!(a.pad_now(PadNow::Recording));
+        assert!(!a.pad_now(PadNow::Recording), "said once");
+        let out = a.press(Press::Rec, &playing);
+        assert_eq!(out[0], pad(PadDo::End));
+        assert!(said(&out).contains("Pad A5: the take ends and lands on the pad"));
+        assert!(said(&out).contains("REC records Drums again"));
+        assert_eq!(a, RecArm::default());
+        // REC records the notes as before.
+        assert_eq!(a.press(Press::Rec, &playing), [t(Command::Record)]);
+        // Armed with the music playing: the go comes with it.
+        let mut b = RecArm::default();
+        let out = b.arm_pad(2, 17, &playing);
+        assert_eq!(
+            &out[..2],
+            [pad(PadDo::Arm { kit: 2, pad: 17 }), pad(PadDo::Start)]
+        );
+        assert!(said(&out).contains("Pad B2"));
+    }
+
+    #[test]
+    fn a_pad_take_holds_like_a_pin_and_a_tap_before_it_records_calls_it_off() {
+        let stopped = now(State::Stopped);
+        let mut a = RecArm::default();
+        a.arm_pad(0, 4, &stopped);
+        // Pages and track picks leave it; the user's pin is untouched.
+        assert!(a.move_to(Target::Loop, Mover::Page, &stopped).is_empty());
+        assert!(a.move_to(Target::Notes, Mover::Track, &stopped).is_empty());
+        assert!(a.pad.is_some() && !a.pinned);
+        // SHIFT + a tap is refused.
+        let out = a.add(Target::Loop, &stopped);
+        assert!(
+            said(&out).starts_with("A pad take records alone"),
+            "{out:?}"
+        );
+        assert!(a.pad.is_some() && !a.both);
+        // A tap calls it off and arms what was tapped.
+        let out = a.move_to(Target::Loop, Mover::Tap, &stopped);
+        assert_eq!(out[0], pad(PadDo::End));
+        assert!(said(&out).contains("Pad A5 take called off"));
+        assert_eq!((a.pad, a.target), (None, Target::Loop));
+        // While it records a tap is refused, naming the pad.
+        let mut b = RecArm::default();
+        b.arm_pad(0, 4, &stopped);
+        b.pad_now(PadNow::Recording);
+        let out = b.move_to(Target::Loop, Mover::Tap, &now(State::Playing));
+        assert_eq!(
+            out,
+            [Do::Tell(
+                "Finish the take first: REC records Pad A5 until it stops".into()
+            )]
+        );
+        assert!(b.pad.is_some() && b.target == Target::Notes);
+    }
+
+    #[test]
+    fn a_pad_take_waits_for_other_takes_and_lets_go_of_a_waiting_loop() {
+        let stopped = now(State::Stopped);
+        // Refused while a take counts in or records, notes or loop.
+        for busy in [
+            now(State::Recording),
+            now(State::CountIn),
+            Now {
+                loop_taking: true,
+                ..now(State::Playing)
+            },
+        ] {
+            let mut a = RecArm::default();
+            let out = a.arm_pad(0, 4, &busy);
+            assert!(said(&out).starts_with("Finish the take first"), "{out:?}");
+            assert_eq!(a.pad, None);
+        }
+        // A loop waiting for PLAY lets go; REC goes back to the loop.
+        let waiting = Now {
+            loop_armed: true,
+            ..stopped.clone()
+        };
+        let mut a = RecArm {
+            target: Target::Loop,
+            ..RecArm::default()
+        };
+        let out = a.arm_pad(0, 4, &waiting);
+        assert_eq!(
+            &out[..2],
+            [Do::StopWaiting, pad(PadDo::Arm { kit: 0, pad: 4 })]
+        );
+        // REC with the same pad again calls it off.
+        let out = a.arm_pad(0, 4, &stopped);
+        assert_eq!(out[0], pad(PadDo::End));
+        assert!(said(&out).contains("Pad A5 take called off · REC records the loop again"));
+        assert_eq!((a.pad, a.target), (None, Target::Loop));
+        // Another empty pad moves it there; while it records, refused.
+        a.arm_pad(0, 4, &stopped);
+        let out = a.arm_pad(0, 5, &stopped);
+        assert_eq!(
+            &out[..2],
+            [pad(PadDo::End), pad(PadDo::Arm { kit: 0, pad: 5 })]
+        );
+        assert_eq!(a.pad.map(|p| p.pad), Some(5));
+        a.pad_now(PadNow::Recording);
+        assert!(said(&a.arm_pad(0, 6, &stopped)).starts_with("Finish the take first"));
+        assert_eq!(a.pad.map(|p| p.pad), Some(5));
+        // Both armed: REC records both again afterwards.
+        let mut b = RecArm::default();
+        b.add(Target::Loop, &stopped);
+        let out = b.arm_pad(0, 4, &stopped);
+        assert!(said(&out).contains("then REC records Drums and the loop again"));
+        b.press(Press::Rec, &stopped);
+        assert!(b.both && b.pad.is_none());
+    }
+
+    #[test]
+    fn stop_keeps_a_pad_take_undo_throws_it_and_the_recorder_can_end_it() {
+        let (stopped, playing) = (now(State::Stopped), now(State::Playing));
+        let mut a = RecArm::default();
+        // Armed only: STOP calls it off (and stops as usual, the app's).
+        a.arm_pad(0, 4, &stopped);
+        let out = a.press(Press::Stop, &stopped);
+        assert_eq!(out[0], pad(PadDo::End));
+        assert!(said(&out).contains("called off by STOP"));
+        assert_eq!(a.pad, None);
+        // Recording: STOP keeps it.
+        a.arm_pad(0, 4, &playing);
+        a.pad_now(PadNow::Recording);
+        let out = a.press(Press::Stop, &playing);
+        assert_eq!(out[0], pad(PadDo::End));
+        assert!(said(&out).contains("the take ends and lands on the pad"));
+        // OVERDUB says what it doesn't do; PLAY is its own.
+        a.arm_pad(0, 4, &playing);
+        let out = a.press(Press::Overdub, &playing);
+        assert!(said(&out).starts_with("OVERDUB doesn't add to a pad take"));
+        assert!(a
+            .press(Press::Play { from_start: true }, &playing)
+            .is_empty());
+        assert!(a.pad.is_some());
+        // UNDO before it records is the page's; while it records it throws.
+        assert_eq!(a.throw(&playing), None);
+        a.pad_now(PadNow::Recording);
+        let out = a.throw(&playing).unwrap();
+        assert_eq!(out[0], pad(PadDo::Throw));
+        assert!(said(&out).contains("Pad A5's take is thrown away"));
+        assert_eq!(a.pad, None);
+        // The recorder ends it itself (a length, silence, or it couldn't run).
+        a.arm_pad(0, 4, &stopped);
+        assert!(a.pad_now(PadNow::Ended));
+        assert_eq!(a, RecArm::default());
+        assert!(!a.pad_now(PadNow::Ended), "nothing to end");
     }
 }

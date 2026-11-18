@@ -1,6 +1,6 @@
 # REC records what is armed
 
-**Status:** sequencer roadmap S2, first to third parts (`rust/mpfree-app`, 2026-11-17). Jay's sequencer decision 1 (16 Nov 2026, "REC records what is armed"): REC, OVERDUB and PLAY act on one armed target from every page, and the transport bar always names it. Design: the sequencer review (mpfree-claude `sequencer/rethink/README.md`, "REC, OVERDUB and PLAY", mockups F to H). Not run on the MPC One yet: the `rec-arm` device check goes into the next combined round, and the `transport` check now opens the Loop view first.
+**Status:** sequencer roadmap S2, first to third parts (`rust/mpfree-app`, 2026-11-17); the one-take pad take (sampler R5.7) on 18 Nov. Jay's sequencer decision 1 (16 Nov 2026, "REC records what is armed"): REC, OVERDUB and PLAY act on one armed target from every page, and the transport bar always names it. Design: the sequencer review (mpfree-claude `sequencer/rethink/README.md`, "REC, OVERDUB and PLAY", mockups F to H). Not run on the MPC One yet: the `rec-arm` device check goes into the next combined round, and the `transport` check now opens the Loop view first.
 
 Until now the page decided what REC recorded: the looper on Play's All and Loop views and on the Looper tab, a clip on Beats and Arrange. The home view showed the loop strip and the pattern together and REC went to the loop, so in the 16 Nov round the pattern stayed silent; nothing on screen said which.
 
@@ -41,6 +41,18 @@ With a loop armed, REC is the looper's Record and OVERDUB its Overdub, as the Lo
 
 With both armed (`RecArm::press_both`), each does what it does alone, in step. Stopped, REC readies the notes and arms the loop (REC again or STOP lets go of both); PLAY starts the notes' take and, with it, the loop's first pass, after the count-in (the looper waits for the transport to start, not for the count-in). Playing with nothing recording, REC punches the notes in and the loop starts on the next bar line (or overdubs, if it has a take). While either records, REC goes only to what records: the notes punch out and the loop's first pass closes on the bar line (an overdub punches out). OVERDUB does the same with the notes' added take and the looper's Overdub.
 
+## A pad take
+
+Sampler R5.7 (the sampler's R5 plan, mpfree-claude `sampler/r5/plan.md`; Jay's card of 18 Nov 2026 08:52Z, one take only). **An empty kit pad held + REC** arms the Sample tab's recorder onto that pad for one take, over the arm (`RecArm::pad`, a `PadTake`): the target and both are never touched, so when the take ends REC records what it did before. Plain REC never stays pointed at a pad. The rule for musicians: SHIFT + REC means the past (Capture, the looper's last bars), a pad + REC records from now.
+
+- **The gesture** (`App::held_kit_pads`, `Effect::PadRec`): REC without SHIFT while kit pads are held, and only while the pads play the kit (not the synth's layouts, STEP SEQ, TRACK MUTE, 16 Levels or the loop keys). The audio loop knows which pads have a sound (`sampler::Player::has_sound`), so it picks the first held pad with none on the armed track's kit (`desk::pad_rec`) and gives `Effect::PadArm`, or plain REC when every held pad has a sound or the track plays the synth. The kit is the sampler's kit slot.
+- **Arming** (`RecArm::arm_pad`): refused while a take counts in or records, the notes' or a loop's or another pad take's ("Finish the take first"). A notes ready lets go and doesn't come back (rule 8), and a loop waiting for PLAY lets go too (`StopWaiting`): one take at a time. The same pad + REC again calls it off; another empty pad moves it there.
+- **It holds like a pin** (rules 2, 3 and 5): pages and track picks leave it, and the user's pin is untouched. A tap on an Arm pill or a row of the target list before it records calls it off ("Pad A5 take called off") and arms what was tapped (rule 1); while it records the tap is refused. SHIFT + a tap is refused ("A pad take records alone", rule 7). While it is armed no Arm pill is red (`RecArm::armed` is false for both targets).
+- **The presses** (`RecArm::press` with a pad take): REC or STOP end it (`PadDo::End`): what recorded lands on the pad, and nothing recorded calls it off. STOP while it records leaves the music playing (the app doesn't stop the transport, as for Sample Recall); while it only waits, STOP also stops as usual. OVERDUB says it doesn't add to a pad take. PLAY does its own job. UNDO while it records throws it away (`PadDo::Throw`), on every page, the Sample tab's too.
+- **The go** (`RecArm::rolled`, `desk::pad_rolled`, every period after the transport runs): once the transport plays (PLAY, PLAY START, Arrange's Play, another device's Start; not during a count-in), the recorder gets `PadDo::Start`, once; armed while the music plays, at once. The recorder applies the Rec tab's own Start from there (Now: at once; Next bar: the next bar line); with Start on Threshold it waits for the threshold from the moment it is armed, music or not. A count-in before a pad take started by PLAY waits for a count-in on PLAY in the transport.
+- **The wire**: the desk sends `gui::ToUi::PadTake(PadDo)` (`Arm { kit, pad }`, `Start`, `End`, `Throw`) to the Sample tab (`SamplePage::pad_take`); the screen polls `SamplePage::take_pad_now` each frame and answers `gui::FromUi::PadTake(PadNow)` (`Recording`, `Ended`), which the desk gives `RecArm::pad_now`. `Ended` comes when the take landed, was called off, ended by itself (silence, a length) or couldn't run (the line input off, a take or a Flatten already running, a pad that plays an instrument); the recorder says why in the log.
+- **How it shows**: the REC chip reads "REC → Pad A5 · Line in" (the Rec tab's source, `SamplePage::source_name`) while it waits and "● REC → Pad A5 · Line in" while it records, and the header chip shows "REC → Pad A5" or "● REC → Pad A5" on pages without a transport bar; REC blinks. A tap on the chip says what the take does.
+
 ## UNDO while recording
 
 While a take records, UNDO throws it away (`RecArm::throw`, from the desk's `Effect::Undo`): the notes punch out (`TimeAction::ThrowTake`) and, once the punch out lands and the take's last changes have come (`TimeControl::period`, `throw_pass`), their take is undone and forgotten, so REDO can't bring it back; the log says "undo: take 3 thrown away". During the count-in it stops. A loop recording its first pass or overdubbing gets the looper's Undo. Otherwise UNDO is the page's, as before.
@@ -57,7 +69,7 @@ While a take records, UNDO throws it away (`RecArm::throw`, from the desk's `Eff
 
 ## Where it lives
 
-- `rec_arm.rs`: `Target`, `Take`, `Mover`, `RecArm` (`press`, `move_to`, `add`, `armed`, `throw`, `ready_lights`), `Now` (what a press finds) and `Do` (what it does, in order).
+- `rec_arm.rs`: `Target`, `Take`, `Mover`, `RecArm` (`press`, `move_to`, `add`, `armed`, `throw`, `ready_lights`, and for a pad take `arm_pad`, `rolled`, `pad_now`), `PadTake`, `PadDo`, `PadNow`, `Now` (what a press finds) and `Do` (what it does, in order).
 - `rec_list.rs`: the chip's target list (`RecList`, `ListRow`).
 - `time/control.rs`: `TimeAction::ThrowTake`, `throw_pass`.
 - `app.rs`: REC and OVERDUB (without SHIFT) on every page give `Effect::Rec`; PLAY, PLAY START and STOP do too while the notes are ready; `transport_lights` blinks for ready.
@@ -66,7 +78,7 @@ While a take records, UNDO throws it away (`RecArm::throw`, from the desk's `Eff
 
 ## Later in S2
 
-Pin on in Perform (S4), a blinking chip, the pass number on the chip while recording ("● REC · pass 2"), a target that can't record (a full looper, no free clip slot) dimmed in the list with the reason, the sampler's recorder as a target (the sampler thread to confirm how it readies), and audio tracks. With more than two targets, `RecArm::both` becomes a set.
+Pin on in Perform (S4), a blinking chip, the pass number on the chip while recording ("● REC · pass 2"), a target that can't record (a full looper, no free clip slot) dimmed in the list with the reason, and audio tracks. With more than two targets, `RecArm::both` becomes a set. The sampler's recorder is a one-take pad take rather than a target (above). In Perform a pad take is to start on the launch line for a set number of bars and loop warped (the sampler's R5.3). While a pad take is armed the loop strip's empty text still says what REC records once it ends ("REC records the notes now"); it could name the pad.
 
 ## Tests
 
@@ -82,4 +94,7 @@ Pin on in Perform (S4), a blinking chip, the pass number on the chip while recor
 - `rec_arm::tests::shift_arm_adds_the_other_target_and_rec_records_both_in_step`, `a_plain_tap_keeps_one_of_two_and_shift_lets_go_of_one`.
 - `smoke::workflows::tests::shift_arm_records_the_notes_and_a_loop_in_one_pass`: SHIFT + the strip's Arm arms both, Beats leaves them, REC readies the notes and arms the loop, PLAY after a bar's count-in starts both (the loop not during the count-in), a tap while they record is refused, REC closes both with the pad in the clip and the loop playing, and a plain tap keeps only the notes.
 - `smoke::phases::device_log::rec_arm_writes_its_lines`: the lines the `rec-arm` device check looks for ([device checks](../hardware/device-checks.md)), and the take heard back on PLAY.
-- The screen fingerprints: the Play screens with the chip, `play-rec-ready`, `play-rec-both`, `play-rec-list` (pinned), and Arrange's bar.
+- `rec_arm::tests::an_empty_pad_and_rec_arm_one_take_and_then_rec_records_what_it_did`, `a_pad_take_holds_like_a_pin_and_a_tap_before_it_records_calls_it_off`, `a_pad_take_waits_for_other_takes_and_lets_go_of_a_waiting_loop`, `stop_keeps_a_pad_take_undo_throws_it_and_the_recorder_can_end_it`; `app::tests::rec_with_kit_pads_held_asks_for_a_pad_take`.
+- `smoke::workflows::tests::holding_an_empty_pad_and_rec_arms_one_take_onto_it`: a pad with a sound held is plain REC; B5 (empty) held + REC arms the take, the chip reads "REC → Pad B5 · Line in" and the arm is kept; with the line input off the recorder ends it at once ("no take on Pad B5: the line input is off") and REC records the notes again. With the line input on (a 220 Hz tone), the take waits for PLAY, records ("● REC → Pad B5 · Line in"), and REC lands it on B5 as "Take 1" with the music playing on.
+- `gui::tests::a_pad_take_records_onto_its_pad_and_says_when_it_records_and_ends`: the recorder's side alone. No input, a pad with a sound and a call-off before the go each end it with the reason; Recording is said once; UNDO throws the take and the pad stays empty; REC lands "Take 1" on the pad.
+- The screen fingerprints: the Play screens with the chip, `play-rec-ready`, `play-rec-both`, `play-rec-pad` (a pad take recording onto B5), `play-rec-list` (pinned), and Arrange's bar.

@@ -113,9 +113,10 @@ Both record in real time while the song plays, so the strip shows **Freezing** o
 - A track with its own instrument records the clip playing on that track.
 - **Drums**, **Synth** and the pad strips record what the tracks that play on the pads play: the longest clip there. To freeze, every other clip playing there must fit into that one a whole number of times, so a 1-bar and a 4-bar clip freeze as 4 bars, but a 3-bar and a 4-bar clip don't freeze.
 - **Loop** and **Audio** follow no clip, so they can't be frozen, only printed. A print of them, of a submix, a return, the line input or the master records the longest clip playing on any track.
+- A clip that plays its steps in another order (its **Direction**, see [Clip settings](clips.md#clip-settings)) records all of its order: a reversed clip one pass, a **Ping pong** clip every pass until it comes round the same. A clip in **Random** order never repeats, so it can't be frozen, only printed (one pass).
 - A take is at most 64 seconds long.
 
-**When a frozen strip thaws by itself.** A frozen strip plays the loop it recorded. If what it recorded changes, it thaws and says so: another clip launched or stopped, a note or step edited in the clip, an effect put in, taken out or switched on or off, or a different instrument on the track. A clip launched again somewhere else just moves the frozen loop with it. Muting a track with its own instrument silences its frozen strip without thawing it. Turning an effect's knobs on a frozen strip changes nothing until you thaw it, and playing the pads live isn't heard through a frozen pad strip.
+**When a frozen strip thaws by itself.** A frozen strip plays the loop it recorded. If what it recorded changes, it thaws and says so: another clip launched or stopped, a note or step edited in the clip, its Direction changed, an effect put in, taken out or switched on or off, or a different instrument on the track. A clip launched again somewhere else just moves the frozen loop with it. Muting a track with its own instrument silences its frozen strip without thawing it. Turning an effect's knobs on a frozen strip changes nothing until you thaw it, and playing the pads live isn't heard through a frozen pad strip.
 
 > [!NOTE]
 > Frozen strips aren't saved with the project. Opening a project thaws everything.

@@ -3316,6 +3316,7 @@ mod tests {
             song_length: 3840.0,
             song_step: 240.0,
             origin: None,
+            order: None,
             rows,
             locks: Vec::new(),
             lock_values: Vec::new(),

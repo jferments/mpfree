@@ -291,6 +291,22 @@ struct Take {
     pick: record::Pick,
     /// Whole bars at the tempo: it lands warped at the project tempo.
     bars: bool,
+    /// A pad take's (sampler R5.7), not the Rec tab's own.
+    pad_take: bool,
+}
+
+/// A pad take (sampler R5.7: an empty kit pad held + REC): the pad it
+/// lands on and the Rec tab's settings as they were when it was armed,
+/// waiting for its go, then recording in [`SamplePage::take`].
+#[derive(Clone, Copy, Debug)]
+struct PadRun {
+    kit: usize,
+    pad: usize,
+    settings: rec_tab::RecSettings,
+    /// Its take began (it may still wait for the threshold or the bar).
+    begun: bool,
+    /// The arm was told it records.
+    said: bool,
 }
 
 /// A Flatten running (the Rec tab's third button): the pad's own mixer
@@ -337,6 +353,24 @@ fn flatten_lift(f: &Flatten) -> FromUi {
         velocity: f.velocity,
         down: f.toggle,
     }
+}
+
+/// How a take with `settings` records, for the log: "start now, end
+/// stop, left + right".
+fn take_plan(settings: &rec_tab::RecSettings, sources: &[String]) -> String {
+    format!(
+        "start {}, end {}, {}",
+        rec_tab::value_text(settings, rec_tab::Row::Start, sources).to_lowercase(),
+        match settings.end {
+            rec_tab::EndAt::Length => format!(
+                "{} then {}",
+                rec_tab::value_text(settings, rec_tab::Row::Length, sources),
+                rec_tab::value_text(settings, rec_tab::Row::Tail, sources).to_lowercase()
+            ),
+            _ => rec_tab::value_text(settings, rec_tab::Row::End, sources).to_lowercase(),
+        },
+        settings.pick.label().to_lowercase(),
+    )
 }
 
 /// What a finished take did after its bars, for its log line: "recorded",
@@ -666,6 +700,10 @@ pub struct SamplePage {
     play_turn: Option<(usize, PadKnob, u64)>,
     shown_heads: Vec<u64>,
     lines: Vec<String>,
+    /// What the pad take ([`SamplePage::pad_take`]) tells the arm next.
+    pad_said: Option<crate::rec_arm::PadNow>,
+    /// The pad take armed, if any.
+    pad_run: Option<PadRun>,
     /// Refused edits, for the screen to say in place.
     told: Vec<String>,
     /// Edits applied, and views sent to the audio thread.
@@ -850,6 +888,8 @@ impl SamplePage {
             play_turn: None,
             shown_heads: Vec::new(),
             lines: Vec::new(),
+            pad_said: None,
+            pad_run: None,
             told: Vec::new(),
             edits: 0,
             views_sent: 0,
@@ -944,6 +984,9 @@ impl SamplePage {
         if self.take.take().is_some() {
             self.lines
                 .push("sample: the take was dropped (the kits were loaded again)".to_string());
+        }
+        if self.pad_run.take().is_some() {
+            self.pad_said = Some(crate::rec_arm::PadNow::Ended);
         }
         if let Some(j) = self.auto_job.take() {
             if let Some(end) = &j.end {
@@ -4048,7 +4091,7 @@ impl SamplePage {
     }
 
     /// The source's name, as the Source row shows it.
-    fn source_name(&self) -> String {
+    pub(crate) fn source_name(&self) -> String {
         self.rec_sources
             .iter()
             .find(|(_, s)| *s == self.source)
@@ -4073,6 +4116,13 @@ impl SamplePage {
         if self.take.is_some() || self.flatten.is_some() {
             return;
         }
+        if let Some(run) = self.pad_run {
+            self.lines.push(format!(
+                "sample: no take: {} is armed for one take (REC or STOP ends it)",
+                crate::rec_arm::pad_name(run.pad)
+            ));
+            return;
+        }
         let st = self.rec_state_now();
         let (Some(input), Some(tab)) = (self.input.as_ref(), self.rec.as_ref()) else {
             self.lines
@@ -4087,18 +4137,9 @@ impl SamplePage {
         let settings = tab.settings;
         let rec = settings.recording(input, self.bar_frames(input));
         self.lines.push(format!(
-            "sample: take armed for pad {}: start {}, end {}, {}",
+            "sample: take armed for pad {}: {}",
             self.pad_text(self.kit, pad),
-            rec_tab::value_text(&settings, rec_tab::Row::Start, &st.sources).to_lowercase(),
-            match settings.end {
-                rec_tab::EndAt::Length => format!(
-                    "{} then {}",
-                    rec_tab::value_text(&settings, rec_tab::Row::Length, &st.sources),
-                    rec_tab::value_text(&settings, rec_tab::Row::Tail, &st.sources).to_lowercase()
-                ),
-                _ => rec_tab::value_text(&settings, rec_tab::Row::End, &st.sources).to_lowercase(),
-            },
-            settings.pick.label().to_lowercase(),
+            take_plan(&settings, &st.sources)
         ));
         if self.source != RecSource::Line {
             self.lines
@@ -4110,6 +4151,7 @@ impl SamplePage {
             pad,
             pick: settings.pick,
             bars: settings.in_bars(),
+            pad_take: false,
         });
         self.feed_rec(ui, 0.0);
     }
@@ -4869,6 +4911,7 @@ impl SamplePage {
                     pad: f.target,
                     pick: record::Pick::Stereo,
                     bars: false,
+                    pad_take: false,
                 });
                 self.hits.push(hit);
                 if let Some(f) = self.flatten.as_mut() {
@@ -5376,6 +5419,31 @@ impl SamplePage {
     /// its pad) and, while the Rec tab `showing`, moves its picture `dt`
     /// seconds on.
     pub fn tick(&mut self, ui: &mut Ui, dt: f32, showing: bool) {
+        self.poll_take(ui);
+        self.watch_pad_run();
+        self.poll_flatten(ui, dt);
+        if showing && self.editor == Editor::Rec && self.rec_state.is_some() {
+            self.feed_rec(ui, dt);
+        }
+        self.poll_auto(ui, showing);
+        self.poll_process(ui, showing);
+        self.poll_open(ui);
+        self.poll_kit(ui);
+        self.poll_load(ui);
+        // A sound's view came in from the worker: the page shows it (now,
+        // or when it is next shown).
+        if self.sources.take_done() {
+            if showing && self.state.is_some() {
+                self.refresh(ui);
+            } else {
+                self.stale = true;
+            }
+        }
+    }
+
+    /// The take running: what came in since the last poll, and it lands
+    /// on its pad once done.
+    fn poll_take(&mut self, ui: &mut Ui) {
         if let (Some(t), Some(input)) = (self.take.as_mut(), self.input.as_ref()) {
             match t.rec.poll(input) {
                 Ok(Progress::Done { .. }) if self.flatten.is_some() => self.keep_flatten(ui),
@@ -5403,24 +5471,6 @@ impl SamplePage {
                     self.take = None;
                     self.lines.push(format!("sample: take lost ({e:?})"));
                 }
-            }
-        }
-        self.poll_flatten(ui, dt);
-        if showing && self.editor == Editor::Rec && self.rec_state.is_some() {
-            self.feed_rec(ui, dt);
-        }
-        self.poll_auto(ui, showing);
-        self.poll_process(ui, showing);
-        self.poll_open(ui);
-        self.poll_kit(ui);
-        self.poll_load(ui);
-        // A sound's view came in from the worker: the page shows it (now,
-        // or when it is next shown).
-        if self.sources.take_done() {
-            if showing && self.state.is_some() {
-                self.refresh(ui);
-            } else {
-                self.stale = true;
             }
         }
     }
@@ -6641,6 +6691,177 @@ fn read_kit_file(
         let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
         wav::read(f, &bytes)
     })
+}
+
+// ------------------------------------------------------------ pad take
+
+/// The pad take's recorder (sampler R5.7): an empty kit pad held + REC
+/// ([`crate::rec_arm::RecArm::arm_pad`]) records one take onto that pad
+/// with the Rec tab's settings (its source, start, end and channels), and
+/// it lands there as a Rec tab take does. It is the Rec tab's take while it
+/// runs: the tab shows it, and its Stop ends it too.
+impl SamplePage {
+    /// What the arm asks of the recorder.
+    pub fn pad_take(&mut self, ui: &mut Ui, d: crate::rec_arm::PadDo) {
+        use crate::rec_arm::PadDo;
+        match d {
+            PadDo::Arm { kit, pad } => self.arm_pad_take(ui, kit, pad),
+            // A take on the threshold began when it was armed.
+            PadDo::Start => self.begin_pad_take(ui),
+            PadDo::End => self.end_pad_take(ui),
+            PadDo::Throw => self.throw_pad_take(ui),
+        }
+    }
+
+    /// What the recorder has to say about the pad take since last asked:
+    /// it records, or it ended.
+    pub fn take_pad_now(&mut self) -> Option<crate::rec_arm::PadNow> {
+        self.pad_said.take()
+    }
+
+    /// The pad take ends without a take: the log says why, and the arm
+    /// hears it ended.
+    fn no_pad_take(&mut self, pad: usize, why: &str) {
+        self.lines.push(format!(
+            "sample: no take on {}: {why}",
+            crate::rec_arm::pad_name(pad)
+        ));
+        self.pad_run = None;
+        self.pad_said = Some(crate::rec_arm::PadNow::Ended);
+    }
+
+    /// Arms a take onto `pad` of kit `kit`, refused (and ended at once)
+    /// while the recorder is busy, the pad has a sound or there is no
+    /// input. On the threshold it waits for the sound now; otherwise for
+    /// the music ([`crate::rec_arm::PadDo::Start`]).
+    fn arm_pad_take(&mut self, ui: &mut Ui, kit: usize, pad: usize) {
+        let busy = self.take.is_some() || self.flatten.is_some() || self.pad_run.is_some();
+        let has_sound = self
+            .projects
+            .get(kit)
+            .map(|p| p.pad(pad).is_some_and(|pd| !pd.layers.is_empty()));
+        let why = if busy {
+            Some("the Rec tab is recording")
+        } else if has_sound.is_none() || pad >= mpfree_sampler::model::PADS {
+            Some("no such pad")
+        } else if has_sound == Some(true) {
+            Some("it has a sound")
+        } else if self.input.is_none() {
+            Some("the line input is off")
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            self.no_pad_take(pad, why);
+            return;
+        }
+        let settings = self.rec.as_ref().map(|t| t.settings).unwrap_or_default();
+        let sources: Vec<String> = self.rec_sources.iter().map(|(n, _)| n.clone()).collect();
+        self.lines.push(format!(
+            "sample: take armed for pad {} (one take, from REC): {}",
+            crate::app::kit_pad_name(pad),
+            take_plan(&settings, &sources)
+        ));
+        self.pad_run = Some(PadRun {
+            kit,
+            pad,
+            settings,
+            begun: false,
+            said: false,
+        });
+        if settings.start == rec_tab::StartAt::Threshold {
+            self.begin_pad_take(ui);
+        }
+    }
+
+    /// The pad take's go: its take begins (at once, on the next bar line
+    /// or on the threshold, as the Rec tab's Start says).
+    fn begin_pad_take(&mut self, ui: &mut Ui) {
+        let Some(run) = self.pad_run.filter(|r| !r.begun) else {
+            return;
+        };
+        if self.take.is_some() || self.flatten.is_some() {
+            self.no_pad_take(run.pad, "the Rec tab is recording");
+            return;
+        }
+        let Some(input) = self.input.as_ref() else {
+            self.no_pad_take(run.pad, "the line input is off");
+            return;
+        };
+        let rec = run.settings.recording(input, self.bar_frames(input));
+        self.take = Some(Take {
+            rec,
+            kit: run.kit,
+            pad: run.pad,
+            pick: run.settings.pick,
+            bars: run.settings.in_bars(),
+            pad_take: true,
+        });
+        self.pad_run = Some(PadRun { begun: true, ..run });
+        if self.source != RecSource::Line {
+            self.lines
+                .push(format!("sample: the take resamples {}", self.source_name()));
+        }
+        self.poll_take(ui);
+        self.watch_pad_run();
+        self.refresh_rec_state(ui);
+        self.feed_rec(ui, 0.0);
+    }
+
+    /// REC or STOP: what recorded lands on the pad; a take that hasn't
+    /// started is called off.
+    fn end_pad_take(&mut self, ui: &mut Ui) {
+        let Some(run) = self.pad_run else {
+            return;
+        };
+        if !run.begun {
+            self.no_pad_take(run.pad, "called off before it started");
+            return;
+        }
+        if let (Some(t), Some(input)) = (self.take.as_mut(), self.input.as_ref()) {
+            if t.pad_take {
+                t.rec.stop(input);
+            }
+        }
+        self.poll_take(ui);
+        self.watch_pad_run();
+        self.refresh_rec_state(ui);
+        self.feed_rec(ui, 0.0);
+    }
+
+    /// UNDO while it records: the take goes, and the pad stays empty.
+    fn throw_pad_take(&mut self, ui: &mut Ui) {
+        let Some(run) = self.pad_run else {
+            return;
+        };
+        if self.take.as_ref().is_some_and(|t| t.pad_take) {
+            self.take = None;
+        }
+        self.no_pad_take(run.pad, "thrown away");
+        self.refresh_rec_state(ui);
+        self.feed_rec(ui, 0.0);
+    }
+
+    /// After a poll: the arm hears once that the pad take records, and
+    /// that it ended once its take has gone (landed, cancelled or lost).
+    fn watch_pad_run(&mut self) {
+        use crate::rec_arm::PadNow;
+        let Some(run) = self.pad_run.filter(|r| r.begun) else {
+            return;
+        };
+        match self.take.as_ref().filter(|t| t.pad_take) {
+            Some(t) => {
+                if !run.said && matches!(t.rec.progress(), Progress::Recording { .. }) {
+                    self.pad_said = Some(PadNow::Recording);
+                    self.pad_run = Some(PadRun { said: true, ..run });
+                }
+            }
+            None => {
+                self.pad_run = None;
+                self.pad_said = Some(PadNow::Ended);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
