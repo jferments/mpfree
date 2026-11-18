@@ -6,7 +6,7 @@
 //! commands on the exact frame of a loop jump and a tempo change) is cut
 //! into periods of 1 to 8192 frames, and into random sizes, and compared.
 //! So is a session through two tempo ramps, with a locate into the middle
-//! of one.
+//! of one, and one where a ramp's map takes over while playing.
 
 use mpfree_transport::time::{Segment, Swing, TempoMap};
 use mpfree_transport::transport::MAX_PERIOD;
@@ -82,11 +82,24 @@ fn run(script: &[(u64, Command)], next_size: impl FnMut() -> u32) -> Log {
     run_with(map, script, next_size)
 }
 
-fn run_with(map: TempoMap, script: &[(u64, Command)], mut next_size: impl FnMut() -> u32) -> Log {
+fn run_with(map: TempoMap, script: &[(u64, Command)], next_size: impl FnMut() -> u32) -> Log {
+    run_maps(map, script, &[], next_size)
+}
+
+/// [`run_with`], with new tempo maps queued on their frames too.
+fn run_maps(
+    map: TempoMap,
+    script: &[(u64, Command)],
+    maps: &[(u64, TempoMap)],
+    mut next_size: impl FnMut() -> u32,
+) -> Log {
     let mut t = Transport::new(RATE, 120.0).unwrap();
     t.set_tempo_map(map).unwrap();
     for &(at, cmd) in script {
         assert!(t.command(at, cmd));
+    }
+    for &(at, m) in maps {
+        assert!(t.change_tempo_map(at, m));
     }
     let mut b = Block::new();
     let mut log = Log::default();
@@ -384,6 +397,76 @@ fn a_tempo_ramp_plays_the_maps_staircase_for_every_period_size() {
     for seed in [1u64, 0x9e37_79b9, 12_345_678] {
         assert!(
             run_with(map, &script, random(seed, 2048)) == reference,
+            "random sizes (seed {seed}) differ"
+        );
+    }
+}
+
+#[test]
+fn a_tempo_map_changed_while_playing_is_the_same_for_every_period_size() {
+    let flat = TempoMap::constant(120.0).unwrap();
+    let ramps = ramp_map();
+    let script = [(1_000, Command::Play)];
+    let maps = [
+        (150_000, ramps),
+        (450_000, TempoMap::constant(100.0).unwrap()),
+    ];
+    let reference = run_maps(flat, &script, &maps, fixed(128));
+
+    // The ramps' map takes over on the 1/16 after frame 150 000 (tick
+    // 6720, inside the first ramp), on its staircase.
+    let tempos: Vec<(u64, f64)> = reference
+        .marks
+        .iter()
+        .filter_map(|m| match m.1 {
+            Mark::Tempo(b) => Some((m.0, b)),
+            _ => None,
+        })
+        .collect();
+    let frames = first_frames(&reference, 450_000);
+    assert_eq!(tempos[0], (frames[&6720], ramps.play_bpm(6720, RATE)));
+    assert_eq!(frames[&6720], 1_000 + 154_350, "1.75 bars at 120 BPM");
+
+    // From there every line keeps the map's spacing exactly.
+    let lines: Vec<(Tick, u64)> = frames
+        .range(6720..)
+        .filter(|(k, _)| (**k - 3840) % 240 == 0 && **k <= 19_200)
+        .map(|(k, f)| (*k, *f))
+        .collect();
+    assert!(lines.len() > 20);
+    for w in lines.windows(2) {
+        let gap = ramps.frames_between(w[0].0 as f64, w[1].0 as f64, RATE);
+        assert_eq!(
+            (w[1].1 - w[0].1) as f64,
+            gap,
+            "lines {} to {}",
+            w[0].0,
+            w[1].0
+        );
+    }
+
+    // The flat 100 BPM map takes over on the 1/16 after frame 450 000.
+    let (f, bpm) = *tempos.last().unwrap();
+    assert_eq!(bpm, 100.0);
+    assert!(f >= 450_000);
+    let k = reference
+        .ticks
+        .iter()
+        .find(|&&(_, at)| at == f)
+        .map(|&(k, _)| k)
+        .unwrap();
+    assert_eq!(k % 240, 0);
+    assert!(tempos[..tempos.len() - 1].iter().all(|&(at, _)| at < f));
+
+    for n in [1, 2, 7, 64, 127, 333, 1024, 4096, MAX_PERIOD] {
+        assert!(
+            run_maps(flat, &script, &maps, fixed(n)) == reference,
+            "period size {n} differs"
+        );
+    }
+    for seed in [1u64, 0x9e37_79b9, 12_345_678] {
+        assert!(
+            run_maps(flat, &script, &maps, random(seed, 2048)) == reference,
             "random sizes (seed {seed}) differ"
         );
     }
