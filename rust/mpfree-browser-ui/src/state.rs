@@ -524,6 +524,9 @@ pub struct Screen {
     pub export: Option<ExportPanel>,
     /// The Plugins place, while it is the place shown.
     pub plugins: Option<PluginsScreen>,
+    /// The track a kit's Load gives the kit to (the armed track's name,
+    /// `"Drums"`), named on the button: Load on Drums.
+    pub kit_on: Option<String>,
     /// The pad Load puts a sound on (`"A5"`, the pad picked), named on
     /// the button: Load on A5.
     pub load_on: Option<String>,
@@ -554,6 +557,7 @@ impl Screen {
             sort: Sort::Name,
             export: None,
             plugins: None,
+            kit_on: None,
             load_on: None,
         }
     }
@@ -656,6 +660,8 @@ pub struct Browser {
     /// The sounds MPFree has put in the library, by their version
     /// (`bundled = ...` in the lists): the app adds them once.
     bundled: Option<String>,
+    /// The track a kit's Load gives the kit to, as the app last gave it.
+    kit_target: Option<String>,
     /// The pad Load puts a sound on, as the app last gave it.
     pad_target: Option<String>,
 }
@@ -715,6 +721,7 @@ impl Browser {
             plugin_rows: 8,
             kit_into: None,
             bundled: None,
+            kit_target: None,
             pad_target: None,
         };
         b.refresh();
@@ -1811,7 +1818,10 @@ impl Browser {
                         });
                         self.status = Some((
                             if r.kind == Kind::Kit {
-                                format!("Loading the kit {}", r.name)
+                                match &self.kit_target {
+                                    Some(t) => format!("Loading the kit {} on {t}", r.name),
+                                    None => format!("Loading the kit {}", r.name),
+                                }
                             } else if to_pad {
                                 format!("{}: hit a pad to put it there", r.name)
                             } else if let Some(pad) = &self.pad_target {
@@ -2463,8 +2473,17 @@ impl Browser {
             sort: self.sort,
             export: self.export.clone().filter(|_| self.pick.is_none()),
             plugins: self.plugins_shown().then(|| self.plugins.clone()),
+            kit_on: self.kit_target.clone(),
             load_on: self.pad_target.clone(),
         }
+    }
+
+    /// The track a kit's Load gives the kit to (the armed track's name:
+    /// the kit it plays is the one replaced), so the button says where it
+    /// goes: Load on Drums. None (no track armed, or the pads play an
+    /// instrument) says plain Load.
+    pub fn set_kit_target(&mut self, track: Option<String>) {
+        self.kit_target = track;
     }
 
     /// The pad Load puts a sound on (`"A5"`: the pad picked, which a pad

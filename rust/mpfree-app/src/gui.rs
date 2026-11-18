@@ -2152,9 +2152,17 @@ impl Player {
 
     /// As + Kit track, with the kit folder `load` (the browser's New track
     /// with this kit) loaded into the new track's empty kit once it is
-    /// armed. One at a time: a second ask while a track is on its way is
-    /// refused and said.
+    /// armed. Refused and said with no room for a track or no empty kit
+    /// left, and one at a time: a second ask while a track is on its way
+    /// is refused and said too.
     fn add_track_for_kit(&mut self, load: Option<std::path::PathBuf>) -> Option<FromUi> {
+        if self.time.tracks.len() >= mpfree_seq::MAX_TRACKS {
+            self.tell(&format!(
+                "{} tracks is the most a project holds: no room for a new track",
+                mpfree_seq::MAX_TRACKS
+            ));
+            return None;
+        }
         if !(0..self.kits.len()).any(|k| self.spare_kit(k)) {
             self.tell(
                 "No empty kit is left for a new track: pick one of the kits on a track instead",
@@ -6847,12 +6855,19 @@ impl Player {
     /// the app (once a frame while it shows, and after a control).
     pub(crate) fn step_browser(&mut self) {
         // Load names the pad it puts a sound on: the pad picked, which a
-        // pad hit moves (none while the pads play an instrument).
+        // pad hit moves (none while the pads play an instrument). A kit's
+        // Load names the armed track, whose kit it replaces.
         let target = self.sample.load_target();
+        let kit_on = self
+            .kit_page()
+            .and(self.time.armed)
+            .and_then(|t| self.time.tracks.get(t))
+            .map(|t| t.name.clone());
         let Some(b) = self.browser.as_mut() else {
             return;
         };
         b.set_pad_target(target);
+        b.set_kit_target(kit_on);
         for a in mpfree_browser_ui::step(&mut self.ui, b) {
             self.browse_action(a);
         }
@@ -11718,9 +11733,9 @@ fn browser_samples(fonts: Fonts) -> Result<Player, String> {
 }
 
 /// The whole browser (BROWSE) in Kits with the Boom bap kit picked: Load
-/// and New track with this kit. Over a library filled in a scratch folder
-/// (removed again once the browser has read what it shows). For the
-/// manual's Sampling chapter.
+/// on Drums (the armed track) and New track with this kit. Over a library
+/// filled in a scratch folder (removed again once the browser has read
+/// what it shows). For the manual's Sampling chapter.
 fn browser_kits(fonts: Fonts) -> Result<Player, String> {
     use mpfree_browser_ui::sample::{fill, select, source};
     let nanos = std::time::SystemTime::now()
@@ -11736,6 +11751,11 @@ fn browser_kits(fonts: Fonts) -> Result<Player, String> {
         let lib = fill(&dir)?;
         let mut p = sample_sampler(fonts);
         p.set_browser(mpfree_browser_ui::Browser::inline(lib), "");
+        sample_kit_tracks(&mut p);
+        let mut st = p.time.clone();
+        let armed = st.armed.ok_or("no track armed")?;
+        st.tracks[armed].name = "Drums".to_string();
+        p.apply(ToUi::Time(Box::new(st)));
         p.take_actions();
         p.apply(ToUi::Show(View::Browser));
         let b = p.browser.as_mut().ok_or("no browser")?;
@@ -19421,6 +19441,14 @@ mod tests {
         let on_the_pads = pads(&p, 0);
         assert!(on_the_pads.iter().any(Option::is_some));
         assert!(pads(&p, n).iter().all(Option::is_none));
+        // A kit's Load names the armed track, whose kit it replaces.
+        let kit_on = |p: &mut Player| {
+            p.step_browser();
+            p.browser.as_ref().unwrap().screen().kit_on
+        };
+        let armed = p.time.armed.expect("a track is armed");
+        let name = p.time.tracks[armed].name.clone();
+        assert_eq!(kit_on(&mut p), Some(name));
         p.browse_action(A::SaveKitRequested);
         let kit = Loc::new(Place::Kits, &["Breaks"]).unwrap();
         let ask = A::NewTrackWithKit {
@@ -19450,6 +19478,25 @@ mod tests {
         tick_until(&mut p, |p| events_log(p).contains(&now));
         assert_eq!(pads(&p, n), on_the_pads);
         assert_eq!(pads(&p, 0), on_the_pads, "the pads' kit is as it was");
+        assert_eq!(kit_on(&mut p), Some(format!("Track {}", before + 1)));
+        // With no room for another track, it says so and adds nothing.
+        let mut full = p.time.clone();
+        let more = full.tracks[0].clone();
+        full.tracks.resize(mpfree_seq::MAX_TRACKS, more);
+        p.apply(ToUi::Time(Box::new(full)));
+        p.take_actions();
+        p.browse_action(A::NewTrackWithKit {
+            loc: kit.clone(),
+            path: lib.kit_path(&kit).unwrap(),
+        });
+        assert!(p.take_actions().is_empty());
+        assert!(
+            p.told
+                .as_ref()
+                .is_some_and(|(t, _)| t.contains("no room for a new track")),
+            "{:?}",
+            p.told
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

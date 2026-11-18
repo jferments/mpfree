@@ -943,14 +943,18 @@ impl Widget for BrowserView {
 }
 
 /// What a detail button says. For a sound, Load names the pad it goes on
-/// (Load on A5) and Load to pad says when (Next pad hit); Audition says
-/// whether it is on.
+/// (Load on A5) and Load to pad says when (Next pad hit); for a kit, Load
+/// names the track it goes on (Load on Drums); Audition says whether it is
+/// on.
 fn detail_label(s: &Screen, b: Button) -> String {
-    let sound = s
-        .selected
-        .and_then(|i| s.rows.get(i))
-        .is_some_and(|r| matches!(r.kind, Kind::Audio(_)));
+    let row = s.selected.and_then(|i| s.rows.get(i));
+    let sound = row.is_some_and(|r| matches!(r.kind, Kind::Audio(_)));
+    let kit = row.is_some_and(|r| r.kind == Kind::Kit && r.factory.is_none());
     match b {
+        Button::Load if kit => s
+            .kit_on
+            .as_ref()
+            .map_or_else(|| b.label().into(), |track| format!("Load on {track}")),
         Button::Load if sound => s
             .load_on
             .as_ref()

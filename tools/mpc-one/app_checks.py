@@ -1095,8 +1095,8 @@ CHECKS = (
         "browser-new-track", "BROWSE's New track with this kit: a kit on a new track, the pads' kit kept",
         "The Play, Pads and Sequencer redesign's step 1 (board 8): a kit from BROWSE on a track of its own "
         "(state-changing only in the app: it adds a track to the work, which needn't be kept)", "hands",
-        ["1. Press BROWSE and tap Kits, then the MPFree folder. Tap a kit once to pick it: Load and New track",
-         "   with this kit are under it.",
+        ["1. Press BROWSE and tap Kits, then the MPFree folder. Tap a kit once to pick it: under it are Load on",
+         "   and the selected track's name (Load on Track 1, say), and New track with this kit.",
          "2. Tap New track with this kit. Press BROWSE to close the browser and tap Arrange: a new track is at",
          "   the bottom, armed.",
          "3. Hit pads 1 to 8: they play the kit you picked. Tap track 1's name and hit them again: they play",
