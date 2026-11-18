@@ -60,6 +60,7 @@ use mpfree_play::mpfree_param::ParamAddr;
 use mpfree_sampler::model::Levels;
 use mpfree_sampler::model::Project;
 use mpfree_sampler_ui::levels_panel::{self, LevelsAction, LevelsModel, LevelsPanel};
+use mpfree_sampler_ui::recall::RecallFrom;
 use mpfree_synth_ui::view as synth_view;
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
 use mpfree_time_ui::editor::{EditAction, Lens};
@@ -401,6 +402,15 @@ const SHIFT_SYNTH_HINT: &str =
     "SHIFT +   touch a knob: MIDI Learn   ·   wheel: page   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_SAMPLE_HINT: &str =
     "SHIFT +   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: back to bar 1";
+/// SHIFT held on the Sample tab's Play page, where a touch on a knob arms
+/// MIDI Learn on the pad's setting.
+const SHIFT_SAMPLE_LEARN_HINT: &str =
+    "SHIFT +   touch a knob: MIDI Learn   ·   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: back to bar 1";
+/// SHIFT held on the Pads tab, where a touch on Level, Pan or Tune arms
+/// MIDI Learn on the pad's setting.
+const SHIFT_PADS_HINT: &str =
+    "SHIFT +   touch Level, Pan or Tune: MIDI Learn   ·   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   \
+     NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_MENU_HINT: &str =
     "SHIFT +   wheel: change the value   ·   MENU: Prefs   ·   STOP: back to bar 1";
 /// The browser's hint without a library (no --data).
@@ -998,6 +1008,18 @@ pub enum ToUi {
     /// What the chain editor shows (a few times a second while it is open,
     /// and after each change), boxed as the mixer's state is.
     Chain(Box<ChainState>),
+    /// A gear lane's mod rows (LFO to CC, layout spec 4m), after a
+    /// [`FromUi::LaneRows`]: the matrix rows aimed at `target`, each its
+    /// place in the matrix, its source's name and depth (-1 to 1), and
+    /// whether + LFO has room.
+    LaneRows {
+        target: ParamAddr,
+        rows: Vec<(usize, String, f32)>,
+        can_add: bool,
+    },
+    /// The tracks' MIDI out controls the mod matrix moves (an LFO on a
+    /// gear lane): their lanes' pink ~. Sent when it changes.
+    GearMoved(Vec<ParamAddr>),
     /// An insert switched to another engine with its mode: Q-Links learned
     /// on its controls follow them (`fxmodes::Landed`).
     ParamsMoved(Box<crate::fxmodes::Landed>),
@@ -1062,6 +1084,11 @@ pub enum ToUi {
     },
     /// Every value of the synth, in its parameter order (after a preset).
     SynthValues(Vec<f32>),
+    /// Learned MIDI controls moved kit pads' own settings (MIDI Learn,
+    /// `Owner::Pad`): `(kit, pad, setting, value)`, each in the setting's
+    /// units, set on the kit as the Play tab's knob sets it
+    /// ([`sample_page::SamplePage::learned`]).
+    PadsLearned(Vec<(usize, u8, mpfree_sampler::engine::PadField, f32)>),
     /// The synth's meters, by parameter index.
     SynthMeters(Vec<(usize, f32)>),
     /// Each sounding voice's pressure, 0 to 1, for the Pressure page's
@@ -1203,6 +1230,14 @@ pub enum ToUi {
     Hit(HitInfo),
     /// The mixer's values the Play page's Q-Links and speakers show.
     PlayLevels(PlayLevels),
+    /// Learned controls moved the XY pad (the Learn section's Play card):
+    /// where it is now, and whether it is held away from where it rests.
+    /// The pad on the Play page follows, as it would a finger.
+    PlayXy {
+        x: f32,
+        y: f32,
+        down: bool,
+    },
     /// On the Play page (no arp): Q-Link `0` turned by `1` detents.
     PlayQLink(usize, i32),
     /// The master meter: each side's peak and Master safety's gain
@@ -1234,6 +1269,25 @@ pub enum ToUi {
     /// turn. With the set, when the view shows, and when a Perform FX goes
     /// on or comes off.
     ThrowKnobs(Vec<crate::mixing::ThrowKnobs>),
+}
+
+/// A touch on a gear lane's mod rows (LFO to CC, layout spec 4m): what
+/// it asks the mod matrix. A row is its place in the matrix, as
+/// [`ToUi::LaneRows`] gave it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LaneRowsAsk {
+    /// The rows aimed at this control, to show.
+    Show(ParamAddr),
+    /// + LFO: a row from LFO 1 at the chain editor's depth.
+    AddLfo(ParamAddr),
+    /// A row's depth, -1 to 1.
+    Depth {
+        target: ParamAddr,
+        row: usize,
+        depth: f32,
+    },
+    /// A row's ×: it comes off.
+    Remove { target: ParamAddr, row: usize },
 }
 
 /// Not `Clone`: [`FromUi::SampleInput`] carries the one writer of the
@@ -1575,6 +1629,9 @@ pub enum FromUi {
     /// A touch on the chain editor, or a Q-Link turned while its knobs
     /// show (`modpanels::ChainHost::action`).
     Chain(ChainAction),
+    /// A gear lane's mod rows on the Sequencer's Steps (LFO to CC): the
+    /// matrix answers with [`ToUi::LaneRows`].
+    LaneRows(LaneRowsAsk),
     /// A touch on the macros panel, or a macro bank's Q-Link turned
     /// (`modpanels::MacrosHost::action`).
     Macros(MacroAction),
@@ -1661,6 +1718,9 @@ pub enum LearnValue {
     /// One of the armed track's arp settings its Q-Links turn, by its id
     /// in `mpfree_param::arp`.
     Arp(u16),
+    /// A setting of a pad of the kit the Sample and Pads tabs show (the
+    /// armed track's): the pad, and the setting's `PadField` number.
+    Pad { pad: u8, field: u16 },
 }
 
 /// A track asked of the time engine for a kit: by "+ Kit track", or by a
@@ -1700,7 +1760,7 @@ pub struct Player {
     menu_editing: bool,
     /// The Sample page's Play tab showed its keyboard, a row that pad hits
     /// edit, and the Wave page's REC on (each changes its hint).
-    sample_keys: (bool, bool, bool, bool),
+    sample_keys: (bool, bool, bool, bool, bool),
     /// What the REC chip last called the Wave page's REC take.
     here_chip: Option<String>,
     /// What the Play page's Q-Links turn, as its hint names them.
@@ -2236,7 +2296,7 @@ impl Player {
             screen_row: ("-".to_string(), Tone::Dim),
             timed,
             menu_editing: false,
-            sample_keys: (false, false, false, false),
+            sample_keys: (false, false, false, false, false),
             here_chip: None,
             sample_qlinks: String::new(),
             sample_live: false,
@@ -4196,6 +4256,7 @@ impl Player {
         }
         if self.play.sequencer != seq {
             self.play.sequencer = seq;
+            self.play.lane_rows = None;
             moved = true;
         }
         self.time_page.edit_hidden = !seq;
@@ -4663,6 +4724,7 @@ impl Player {
             g.pitched = old.pitched;
             g.bank.clone_from(&old.bank);
             (g.top, g.add_lane) = (old.top, old.add_lane);
+            g.rows_open.clone_from(&old.rows_open);
         }
         self.refresh_lock_knobs();
         self.play.fill_steps(&mut g);
@@ -4682,6 +4744,7 @@ impl Player {
                     && old.pitched == g.pitched
                     && old.bank == g.bank
                     && (old.top, old.add_lane) == (g.top, g.add_lane)
+                    && old.rows_open == g.rows_open
             });
         if !same {
             if let Some(w) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
@@ -4697,6 +4760,7 @@ impl Player {
                 w.pitched = g.pitched;
                 w.bank = g.bank;
                 (w.top, w.add_lane) = (g.top, g.add_lane);
+                w.rows_open = g.rows_open;
             }
         }
         if self.lane_list {
@@ -5416,10 +5480,23 @@ impl Player {
             SHIFT_SYNTH_HINT.to_string()
         } else if self.status.shift && self.ready && self.clips_showing() {
             SHIFT_CLIPS_HINT.to_string()
+        } else if self.status.shift
+            && self.ready
+            && self.view == View::Sample
+            && self.sample.page() == sample_page::PLAY_PAGE
+        {
+            SHIFT_SAMPLE_LEARN_HINT.to_string()
         } else if self.status.shift && self.ready && self.perform_showing() {
             SHIFT_PERFORM_HINT.to_string()
         } else if self.status.shift && self.ready && self.view == View::Sample {
             SHIFT_SAMPLE_HINT.to_string()
+        } else if self.status.shift
+            && self.ready
+            && self.view == View::Pads
+            && self.sample.page() == sample_page::PADS_PAGE
+            && self.sample.pads_learnable()
+        {
+            SHIFT_PADS_HINT.to_string()
         } else if self.status.shift && self.ready && self.status.steps.is_some_and(|s| !s.picking) {
             SHIFT_STEPS_HINT.to_string()
         } else if self.status.shift
@@ -5556,6 +5633,12 @@ impl Player {
                     format!("Tap the wave: hear the take   ·   Send to pad, then hit a pad: put it there   ·   \
                      SHIFT + wheel: another sound   ·   Q-Links 1-4: Start, End, loop   ·   {ROWS_HINT}")
                 }
+                // The Grain tool (one Sample page step 5): the grain window
+                // on the wave, the Grain section's parts.
+                View::Sample if self.sample.grain_tool() => {
+                    format!("Drag GRAIN: where grains start, SIZE: how long   ·   Q-Links 1-4: position, size, \
+                     density, pitch (SHIFT: sprays, finer)   ·   {ROWS_HINT}   ·   SHIFT + - / +: zoom")
+                }
                 View::Sample if self.sample.page() == sample_page::PAGE => {
                     format!("Hit a pad to edit it   ·   Q-Links 1-4: Start, End, loop   ·   {ROWS_HINT}   ·   \
                      SHIFT + - / +: zoom")
@@ -5593,10 +5676,6 @@ impl Player {
                 View::Sample if self.sample.page() == sample_page::PLAY_PAGE => {
                     format!("Hit a pad: its velocity shows on the layers   ·   tap a section for its controls   ·   \
                      Q-Links 1-4: {}   ·   {ROWS_HINT}", self.sample.play_qlinks_text())
-                }
-                View::Sample if self.sample.page() == sample_page::GRAIN_PAGE => {
-                    format!("Tap a section for its controls   ·   Q-Links 1-4: position, size, density, pitch \
-                     (SHIFT: sprays, finer)   ·   {ROWS_HINT}")
                 }
                 View::Sample if self.sample.page() == sample_page::REC_PAGE => {
                     format!("Record or Skip back: the Onto row says where the take goes   ·   {ROWS_HINT}   ·   \
@@ -6409,7 +6488,8 @@ impl Player {
         }
         let back = self.ui.page().to_string();
         let r = Recall::open(input, pad, onto, filled.len());
-        let page = RecallPage::open(&mut self.ui, input, r, self.sample.tempo(), filled);
+        let second = self.sample.recall_second();
+        let page = RecallPage::open(&mut self.ui, input, r, self.sample.tempo(), filled, second);
         if self.ui.show(PAGE).is_err() {
             return;
         }
@@ -6448,10 +6528,10 @@ impl Player {
     /// change goes on).
     fn recall_input(&mut self, msg: &ToUi) -> bool {
         use crate::app::{RecallKey, RowKey};
-        let Some(input) = self.sample.recall() else {
+        let Some(open) = self.recall.as_mut() else {
             return false;
         };
-        let Some(open) = self.recall.as_mut() else {
+        let Some(input) = self.sample.recall_from(open.page.recall.from) else {
             return false;
         };
         let ask = match msg {
@@ -6492,6 +6572,21 @@ impl Player {
         let r = open.page.recall;
         match ask {
             Ask::Nothing => {}
+            // From: the other buffer, when there is one.
+            Ask::Switch(from) => match self.sample.recall_from(from) {
+                Some(input) => {
+                    open.page.switch(&mut self.ui, input, from);
+                    let what = match from {
+                        RecallFrom::Master => "the master".to_string(),
+                        RecallFrom::Source => self.sample.source_name(),
+                    };
+                    self.say(format!("sample: Sample Recall reads {what}"));
+                }
+                None => {
+                    let why = self.sample.recall_second().err().unwrap_or_default();
+                    self.tell(&why);
+                }
+            },
             Ask::Audition => match self.sample.recall_audition(&r) {
                 Ok(src) => {
                     open.heard = true;
@@ -6521,10 +6616,10 @@ impl Player {
     /// A touch on Sample Recall's panel or Q-Link cards.
     fn recall_event(&mut self, ev: &UiEvent) {
         use mpfree_sampler_ui::recall::{Ask, LIST, QLINKS};
-        let Some(input) = self.sample.recall() else {
+        let Some(open) = self.recall.as_mut() else {
             return;
         };
-        let Some(open) = self.recall.as_mut() else {
+        let Some(input) = self.sample.recall_from(open.page.recall.from) else {
             return;
         };
         let ask = match (ev.widget.as_str(), &ev.kind) {
@@ -6533,12 +6628,17 @@ impl Player {
             }
             (LIST, EventKind::Tab(k)) => open.page.step(&mut self.ui, input, *k, 0),
             (LIST, EventKind::Select(k)) => {
-                // A faint control says why.
+                // A faint control says why, as does From with no Source to
+                // read (a tap on its faint choice).
+                use mpfree_sampler_ui::panel::Look;
                 let why = self
                     .ui
                     .get::<mpfree_sampler_ui::widgets::SettingList>(LIST)
                     .and_then(|l| l.controls.get(*k))
-                    .filter(|c| c.faint && !c.why.is_empty())
+                    .filter(|c| {
+                        let off = matches!(&c.look, Look::Choice { off, .. } if !off.is_empty());
+                        (c.faint || off) && !c.why.is_empty()
+                    })
                     .map(|c| c.why.clone());
                 if let Some(why) = why {
                     self.tell(&why);
@@ -7119,9 +7219,11 @@ impl Player {
             ToUi::Steps(st) => {
                 if st.track != self.play.steps.track {
                     // Another track's pads: from their first row (and
-                    // the Sequencer's lanes from the top).
+                    // the Sequencer's lanes from the top, a gear lane's
+                    // mod rows closed).
                     self.play.rows_top = 0;
                     self.play.steps_top = 0;
+                    self.play.lane_rows = None;
                 }
                 self.play.set_steps(*st);
                 self.play.track = self.track_look();
@@ -7150,6 +7252,11 @@ impl Player {
                 if self.timing_shown() {
                     self.refresh_play();
                 }
+            }
+            ToUi::PlayXy { x, y, down } => {
+                // The sound has it already: only the pad's dot moves.
+                let _ = self.play.xy(x, y, down);
+                self.refresh_play();
             }
             ToUi::PlayLevels(l) => {
                 if self.play.levels != l {
@@ -7308,6 +7415,24 @@ impl Player {
                 self.refresh_qlinks();
             }
             ToUi::IoInput(ev) => self.io_input(ev),
+            // A gear lane's mod rows: what the matrix holds for the
+            // control open (an answer for one since closed is dropped).
+            ToUi::LaneRows {
+                target,
+                rows,
+                can_add,
+            } => {
+                if let Some(o) = self.play.lane_rows.as_mut().filter(|o| o.target == target) {
+                    (o.rows, o.can_add) = (rows, can_add);
+                    self.refresh_play();
+                }
+            }
+            ToUi::GearMoved(v) => {
+                if self.play.gear_moved != v {
+                    self.play.gear_moved = v;
+                    self.refresh_play();
+                }
+            }
             ToUi::Chain(mut st) => {
                 // A note track's Plays on, from the MIDI set-up's Tracks out.
                 if let Some(ns) = st.notes.as_mut() {
@@ -7567,6 +7692,11 @@ impl Player {
                         w.render();
                     }
                     self.refresh_qlinks();
+                }
+            }
+            ToUi::PadsLearned(sets) => {
+                for (kit, pad, field, value) in sets {
+                    self.sample.learned(kit, usize::from(pad), field, value);
                 }
             }
             ToUi::SynthValues(values) => {
@@ -8200,14 +8330,15 @@ impl Player {
         }
         // The keyboard came or went on the Play tab, a row that pad hits
         // edit was picked, another section (with its own Q-Links) opened,
-        // the Chop tab went live, the Wave page's REC went on or off, or a
-        // take kept on the page came or went on the Wave page: its hint
-        // with it.
+        // the Chop tab went live, the Wave page's REC went on or off, a
+        // take kept on the page came or went on the Wave page, or its
+        // Grain tool was picked or put down: its hint with it.
         let keys = (
             self.sample.play_keys_shown(),
             self.sample.play_takes_pads(&self.ui),
             self.sample.recorder_on(),
             self.sample.take_shown().is_some(),
+            self.sample.grain_tool(),
         );
         // The Wave page's REC take is named on the REC chip by where it
         // goes, which its Onto can change while it records.
@@ -10102,7 +10233,7 @@ impl Player {
             let mut rows = crate::cores::rows(&shared.cores);
             rows.extend(crate::parts::rows(&shared.parts));
             let (rss_kb, total_kb, free_kb) = self.debug.memory_kb();
-            let memory = crate::memory::rows(&crate::memory::Held {
+            let mut memory = crate::memory::rows(&crate::memory::Held {
                 samples: self.sample.memory(),
                 loops: (self.looper.memory.used, self.looper.memory.capacity),
                 synth: mpfree_synth::wavetable::factory::factory_bytes(),
@@ -10110,6 +10241,14 @@ impl Player {
                 total_kb,
                 free_kb,
             });
+            let fell = self.sample.recall_fallbacks();
+            if fell > 0 {
+                memory.push((
+                    "Sampler: Recall fell back to the master".to_string(),
+                    format!("{fell}×"),
+                    Tone::Warn,
+                ));
+            }
             DebugPages::set_engines(&mut self.ui, &snap, memory, rows);
         }
     }
@@ -10341,6 +10480,14 @@ impl Player {
             let r = self.ui.rect_of(skin_page::SKIN)?;
             let skin = self.ui.get::<skin_page::SkinWidget>(skin_page::SKIN)?;
             return skin.param_id_at(x, y, r).map(LearnValue::Synth);
+        }
+        // A pad's own setting: a knob of the Sample tab's Play page, or
+        // the Pads tab's Level, Pan or Tune.
+        if let Some((pad, field)) = self.sample.learn_field(w, t) {
+            return Some(LearnValue::Pad {
+                pad: u8::try_from(pad).ok()?,
+                field: field as u16,
+            });
         }
         mpfree_chain_ui::param_of(&self.ui, w, t).map(LearnValue::Param)
     }
@@ -10970,6 +11117,54 @@ impl Player {
                 self.toggle_lane_list();
                 None
             }
+            // A gear lane's mod rows (LFO to CC, layout spec 4m): its name
+            // opens them over the pattern; + LFO adds a row from LFO 1, a
+            // finger on a row's bar sets its depth, its × takes it off,
+            // and a touch anywhere else closes them.
+            (play_page::STEPS, EventKind::Tab(play_widgets::LANE_ROWS_CLOSE)) => {
+                self.play.lane_rows = None;
+                self.refresh_play();
+                None
+            }
+            (play_page::STEPS, EventKind::Tab(play_widgets::LANE_ROWS_ADD)) => {
+                let target = self.play.lane_rows.as_ref()?.target;
+                self.mark_unsaved();
+                Some(FromUi::LaneRows(LaneRowsAsk::AddLfo(target)))
+            }
+            (play_page::STEPS, EventKind::Tab(k))
+                if (play_widgets::LANE_NAME..play_widgets::LANE_ROWS_CLOSE).contains(&k) =>
+            {
+                let open = self.play.lane_rows_for(k - play_widgets::LANE_NAME)?;
+                let target = open.target;
+                self.play.lane_rows = Some(open);
+                self.refresh_play();
+                Some(FromUi::LaneRows(LaneRowsAsk::Show(target)))
+            }
+            (play_page::STEPS, EventKind::Toggle(k)) if k >= play_widgets::LANE_ROWS => {
+                let open = self.play.lane_rows.as_ref()?;
+                let row = open.rows.get(k - play_widgets::LANE_ROWS)?.0;
+                let target = open.target;
+                self.mark_unsaved();
+                Some(FromUi::LaneRows(LaneRowsAsk::Remove { target, row }))
+            }
+            (play_page::STEPS, EventKind::Step { index, delta })
+                if index >= play_widgets::LANE_ROWS =>
+            {
+                let open = self.play.lane_rows.as_mut()?;
+                let target = open.target;
+                let r = open.rows.get_mut(index - play_widgets::LANE_ROWS)?;
+                let depth = (delta as f32 / 100.0).clamp(-1.0, 1.0);
+                if r.2 == depth {
+                    return None;
+                }
+                // At once, so the bar follows the finger; the matrix's
+                // answer confirms it.
+                r.2 = depth;
+                let row = r.0;
+                self.refresh_play();
+                self.mark_unsaved();
+                Some(FromUi::LaneRows(LaneRowsAsk::Depth { target, row, depth }))
+            }
             (play_page::STEPS, EventKind::Cell { row, col }) if row >= play_widgets::LOCK_LANE => {
                 let r = self.play.tap_lock(row - play_widgets::LOCK_LANE, col);
                 self.lock_done(r)
@@ -11535,9 +11730,24 @@ impl Player {
             h.ask_in -= dt.max(0.0);
             self.refresh_history();
         }
-        // Sample Recall open: it follows the master as it comes in.
-        if let (Some(open), Some(input)) = (self.recall.as_mut(), self.sample.recall()) {
-            open.page.tick(&mut self.ui, input, dt.max(0.0));
+        // Sample Recall open: it follows what it reads as it comes in. The
+        // Source's buffer gone (the line input off): back to the master, a
+        // fallback counted, logged and shown (Dev > CPU by engine).
+        if let Some(open) = self.recall.as_mut() {
+            match self.sample.recall_from(open.page.recall.from) {
+                Some(input) => open.page.tick(&mut self.ui, input, dt.max(0.0)),
+                None => {
+                    if let Some(input) = self.sample.recall() {
+                        open.page.second = self.sample.recall_second();
+                        open.page.switch(&mut self.ui, input, RecallFrom::Master);
+                        let line = self.sample.recall_fell_back();
+                        self.say(line);
+                        self.tell(
+                            "Sample Recall: the Source isn't kept now, so it reads the master",
+                        );
+                    }
+                }
+            }
         }
         // A finger held on the Keep card: Sample Recall, on the page's pad.
         if let Some((f, held, x, y)) = self.keep_press {
@@ -14170,9 +14380,35 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
     }
     gear_lanes.refresh_play();
+    // LFO to CC (layout spec 4m): the Cutoff lane's name tapped, its mod
+    // rows over the pattern with LFO 1 on it, and its pink ~.
+    let mut gear_lfo = gear();
+    {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        let cutoff = RelAddr::new(OnTrack::Midi, 43);
+        if let Some(c) = gear_lfo.play.steps.clip.as_mut() {
+            c.lock_values.extend(
+                [(0, 20.0), (8, 84.0)].map(|(step, v)| (crate::time::LINE, step, cutoff, v)),
+            );
+        }
+        // The lane on screen first, named by the gear's profile.
+        gear_lfo.refresh_play();
+        let id = gear_lfo
+            .play
+            .lock_lanes()
+            .iter()
+            .position(|l| l.addr == cutoff);
+        if let Some(mut open) = id.and_then(|id| gear_lfo.play.lane_rows_for(id)) {
+            open.rows = vec![(0, "LFO 1".to_string(), 0.25)];
+            gear_lfo.play.gear_moved = vec![open.target];
+            gear_lfo.play.lane_rows = Some(open);
+        }
+    }
+    gear_lfo.refresh_play();
     let mut gear_list = gear();
     gear_list.toggle_lane_list();
     out.push(("sequencer-gear-lanes", gear_lanes));
+    out.push(("sequencer-gear-lane-lfo", gear_lfo));
     out.push(("sequencer-gear-lanes-list", gear_list));
     // Play's loop row with the loop armed (REC records it) and the chop
     // layer muted from its chip, as mockup H had it.
@@ -14411,6 +14647,29 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let _ = looper_card.take_actions();
     looper_card.ui.invalidate();
     out.push(("mixer-io-learn-looper", looper_card));
+    // The Learn section's Play card (Jay's pick, 18 Nov 2026): a knob on
+    // Play's Swing kept in the rig, and the card open.
+    let swing = "port Knobs | ch 1 | cc 21 | play.0 | 0 1 | absolute | pickup";
+    let l = mpfree_midi::learn::Saved::parse(swing).expect("a learned control");
+    let mut rig = learn_rig();
+    rig.setup.learned_in(mpfree_midi::setup::Kept::Rig, l);
+    rig.live.learn_names.push("Play · Swing".into());
+    let mut play_card = io_section_screen(fonts(), &io_state, rig, mpfree_midi_ui::LEARN);
+    let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
+    play_card.ui.paint(&mut c);
+    if let Some(t) = play_card
+        .ui
+        .targets()
+        .into_iter()
+        .find(|t| t.widget == mpfree_mixer_ui::MIXER && t.target.id == "learn-play")
+    {
+        let (x, y) = t.target.centre();
+        play_card.touch(1, Touch::Down, x, y);
+        play_card.touch(1, Touch::Up, x, y);
+    }
+    let _ = play_card.take_actions();
+    play_card.ui.invalidate();
+    out.push(("mixer-io-learn-play", play_card));
     // The CV section with an envelope and two LFOs, each with its two
     // more rows.
     out.push((
@@ -14758,6 +15017,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         mem_total_kb: Some(1_969_436),
         ..ProcView::default()
     });
+    // One Sample Recall fallback, so the picture shows its row.
+    let _ = eng.sample.recall_fell_back();
     eng.apply(ToUi::Engines(probes.shared()));
     eng.apply(ToUi::Show(View::Engines));
     eng.refresh_engines();
@@ -15660,18 +15921,33 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         scenes.take_actions();
         out.push(("sample-play-scenes", scenes));
     }
-    // The Grain tab on the same pad, set to play grains: the engine's own
+    // The Grain tool on the same pad, set to play grains: the engine's own
     // cloud 1.5 s after a hit, as the audio thread sends it. Then its
-    // other sections, a section chip tapped: Movement, with an LFO and the
-    // envelope moving the cloud; Filter and keys, a sprayed band pass with
-    // glide and Quality Tape; and Presets, with one put on the pad.
+    // other parts, tapped on the Grain section's switch: LFO, with an LFO
+    // and the envelope moving the cloud; Filter, a sprayed band pass;
+    // Shape, with Quality Tape; and Presets, with one put on the pad.
     {
-        use mpfree_sampler_ui::grain_tab::{View as GrainView, SECTIONS};
-        for (name, section) in [
-            ("sample-grain", GrainView::Grains),
-            ("sample-grain-movement", GrainView::Movement),
-            ("sample-grain-filter", GrainView::FilterKeys),
-            ("sample-grain-presets", GrainView::Presets),
+        use mpfree_sampler_ui::grain_tab::View as GrainView;
+        use mpfree_sampler_ui::grain_tool::{GrainPart, PARTS_ROW};
+        use mpfree_sampler_ui::wave_tab::Tool;
+        for (name, section, part) in [
+            ("sample-grain", GrainView::Grains, GrainPart::Grains),
+            ("sample-grain-movement", GrainView::Movement, GrainPart::Lfo),
+            (
+                "sample-grain-filter",
+                GrainView::FilterKeys,
+                GrainPart::Filter,
+            ),
+            (
+                "sample-grain-shape",
+                GrainView::FilterKeys,
+                GrainPart::Shape,
+            ),
+            (
+                "sample-grain-presets",
+                GrainView::Presets,
+                GrainPart::Presets,
+            ),
         ] {
             let mut grain = sample_sampler(fonts());
             let Ok((project, _)) = mpfree_sampler_ui::sample::grain_section_project(section) else {
@@ -15686,14 +15962,19 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                 projects: vec![project],
                 rate: mpfree_sampler_ui::sample::RATE,
             });
-            grain.on_event(UiEvent {
-                widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-                kind: EventKind::Tab(mpfree_sampler_ui::grain_tab::TAB),
-            });
-            if let Some(i) = GrainView::ALL.iter().position(|v| *v == section) {
+            if let Some(i) = Tool::ALL.iter().position(|t| *t == Tool::Grain) {
                 grain.on_event(UiEvent {
-                    widget: SECTIONS.into(),
+                    widget: mpfree_sampler_ui::wave_tab::TOOLS.into(),
                     kind: EventKind::Tab(i),
+                });
+            }
+            if part != GrainPart::Grains {
+                grain.on_event(UiEvent {
+                    widget: mpfree_sampler_ui::wave_tab::REGION.into(),
+                    kind: EventKind::Step {
+                        index: PARTS_ROW,
+                        delta: part.index() as i32,
+                    },
                 });
             }
             if let Some(FromUi::SampleGrains(mut c)) = grain
@@ -15824,6 +16105,45 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         recall.take_actions();
     }
     out.push(("sample-recall", recall));
+    // Sample Recall's From on the recorder's Source (one-page step 2f):
+    // the line input on, 30 s of it playing along, read in place of the
+    // master.
+    let mut from = sample_sampler(fonts());
+    {
+        use crate::sample_page::SCREEN_RECALL_SECONDS;
+        use mpfree_sampler_ui::recall::{Row, LIST};
+        use mpfree_sampler_ui::sample::{feed_input, BPM, PAD, RATE};
+        from.apply(ToUi::Transport(TransportInfo {
+            bpm: BPM,
+            ..TransportInfo::default()
+        }));
+        settle_views(&mut from);
+        let (mut feed, input) = mpfree_sampler::record::input16(SCREEN_RECALL_SECONDS, RATE);
+        from.apply(ToUi::SampleRecall(Box::new(input)));
+        feed_input(&mut feed, 40.0, 0.4, true);
+        let mut s = from.settings.clone();
+        s.line_input = true;
+        from.apply(ToUi::Settings(s));
+        let line = from.take_actions().into_iter().find_map(|a| match a {
+            FromUi::SampleInput(Some(f)) => Some(f),
+            _ => None,
+        });
+        if let Some(mut line) = line {
+            feed_input(&mut line.0, 30.0, 0.25, true);
+        }
+        from.apply(ToUi::Show(View::Play));
+        from.apply(ToUi::Recall(crate::app::RecallKey::Open { pad: PAD }));
+        from.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Step {
+                index: Row::From.index(),
+                delta: 1,
+            },
+        });
+        from.tick(0.2);
+        from.take_actions();
+    }
+    out.push(("sample-recall-from", from));
     // The Rec tab's Auto-sample mode on the Synth tab's patch: every 5
     // semitones, 10 notes onto the empty pads after the break.
     let mut auto = sample_sampler(fonts());
@@ -18586,6 +18906,145 @@ mod tests {
     /// SHIFT + a touch on the Arp panel's sliders, or on the Q-Link
     /// column's cards while they turn the arp (NOTE REPEAT held), arms
     /// MIDI Learn on that arp setting; without SHIFT a slider moves.
+    /// SHIFT + a touch on a knob of the Sample tab's Play page, or on the
+    /// Pads tab's Level, Pan or Tune, arms MIDI Learn on the picked pad's
+    /// setting; a learned control's values set it on the kit, one undo
+    /// step a turn, and the kit's new view goes to the audio thread.
+    #[test]
+    fn shift_and_a_touch_on_a_pads_setting_arms_midi_learn() {
+        use mpfree_sampler::engine::PadField;
+        use mpfree_sampler_ui::{pads_tab, play_tab};
+        use mpfree_ui::Rect;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let centre = |r: Rect| (r.x + r.w / 2, r.y + r.h / 2);
+        let value_at = |p: &Player, widget: &str, index: usize| {
+            p.ui.targets()
+                .into_iter()
+                .find(|pt| {
+                    pt.widget == widget
+                        && pt.target.index == index
+                        && play_tab::is_value_target(&pt.target)
+                })
+                .map(|pt| centre(pt.target.rect))
+                .unwrap()
+        };
+        let press = |p: &mut Player, (x, y): (i32, i32)| {
+            let mut acts: Vec<FromUi> =
+                [p.touch(1, Touch::Down, x, y), p.touch(1, Touch::Up, x, y)]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+            acts.extend(p.take_actions());
+            acts
+        };
+        let learn = |field: PadField| {
+            [FromUi::LearnValue(LearnValue::Pad {
+                pad: pad as u8,
+                field: field as u16,
+            })]
+        };
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        // The Play page's Tune knob.
+        open_sample(&mut p, sample_page::Editor::Play);
+        let index = play_row(&mut p, play_tab::Row::Tune);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        let tune = value_at(&p, play_tab::LIST, index);
+        p.status.shift = true;
+        p.refresh_hint();
+        assert!(
+            hint(&p).starts_with("SHIFT +   touch a knob: MIDI Learn"),
+            "{}",
+            hint(&p)
+        );
+        assert_eq!(press(&mut p, tune), learn(PadField::Tune));
+        p.status.shift = false;
+        // A turn of the learned control: the kit's pad follows, and its
+        // view goes out once.
+        let was = p.sample.project(0).unwrap().pad(pad).unwrap().tune_cents;
+        p.apply(ToUi::PadsLearned(vec![(
+            0,
+            pad as u8,
+            PadField::Tune,
+            700.0,
+        )]));
+        p.apply(ToUi::PadsLearned(vec![(
+            0,
+            pad as u8,
+            PadField::Tune,
+            1_200.4,
+        )]));
+        assert_eq!(
+            p.sample.project(0).unwrap().pad(pad).unwrap().tune_cents,
+            1_200
+        );
+        let (sent, _) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // The same value again changes nothing, and sends nothing.
+        p.apply(ToUi::PadsLearned(vec![(
+            0,
+            pad as u8,
+            PadField::Tune,
+            1_200.0,
+        )]));
+        assert!(views(p.take_actions()).0.is_empty());
+        // One undo step takes the whole turn back.
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(
+            p.sample.project(0).unwrap().pad(pad).unwrap().tune_cents,
+            was
+        );
+        // The Pads tab: Level, Pan and Tune learn; Voices doesn't.
+        open_pads(&mut p);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        p.status.shift = true;
+        p.refresh_hint();
+        assert!(
+            hint(&p).starts_with("SHIFT +   touch Level, Pan or Tune: MIDI Learn"),
+            "{}",
+            hint(&p)
+        );
+        let row = |r: pads_tab::Row| pads_tab::Row::ALL.iter().position(|x| *x == r).unwrap();
+        let level = value_at(&p, pads_tab::LIST, row(pads_tab::Row::Level));
+        assert_eq!(press(&mut p, level), learn(PadField::Level));
+        let voices = value_at(&p, pads_tab::LIST, row(pads_tab::Row::Polyphony));
+        assert!(!press(&mut p, voices)
+            .iter()
+            .any(|a| matches!(a, FromUi::LearnValue(_))));
+        p.status.shift = false;
+        // A MIDI out pad has no Level, Pan or Tune rows: nothing on its
+        // list learns, and SHIFT's hint doesn't offer it.
+        let midi = pads_tab::PadType::ALL
+            .iter()
+            .position(|t| *t == pads_tab::PadType::MidiOut)
+            .unwrap();
+        p.on_event(UiEvent {
+            widget: pads_tab::TYPE.into(),
+            kind: EventKind::Tab(midi),
+        });
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        p.status.shift = true;
+        p.refresh_hint();
+        assert!(!p.sample.pads_learnable());
+        assert!(!hint(&p).contains("MIDI Learn"), "{}", hint(&p));
+        let rows: Vec<Rect> =
+            p.ui.targets()
+                .into_iter()
+                .filter(|pt| pt.widget == pads_tab::LIST && play_tab::is_value_target(&pt.target))
+                .map(|pt| pt.target.rect)
+                .collect();
+        assert!(!rows.is_empty());
+        for r in rows {
+            let (x, y) = centre(r);
+            assert_eq!(p.learnable_at(x, y), None);
+        }
+        p.status.shift = false;
+    }
+
     #[test]
     fn shift_and_a_touch_on_the_arps_sliders_arms_midi_learn() {
         use mpfree_controller::mpc_one::button::NOTE_REPEAT;
@@ -20174,6 +20633,124 @@ mod tests {
                 "Pressure · Mono synth · pressure · showing",
             ]
         );
+    }
+
+    /// LFO to CC (layout spec 4m): a tap on a gear lane's name opens its
+    /// mod rows over the pattern; + LFO, a row's bar and its × ask the mod
+    /// matrix; the lane's pink ~ follows what the matrix moves; a touch
+    /// elsewhere closes them. A sound's lock lane keeps its label.
+    #[test]
+    fn an_lfo_on_a_gear_lane_moves_its_cc() {
+        use mpfree_midi::setup::{TrackOut, DIN_NAME};
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        let mut p = sample_beats_synth(Fonts::embedded());
+        let mut rig = mpfree_midi_ui::sample::rig();
+        rig.setup.tracks[0] = Some(TrackOut::new(DIN_NAME, 1));
+        let mut prof = mpfree_midi::profile::Profile::new("Mono synth");
+        prof.matches = vec![DIN_NAME.to_string()];
+        prof.set_cc(43, "Cutoff");
+        rig.profiles.add(prof).unwrap();
+        p.apply(ToUi::IoModel(std::sync::Arc::new(std::sync::Mutex::new(
+            rig,
+        ))));
+        let cutoff = RelAddr::new(OnTrack::Midi, 43);
+        let tune = RelAddr::new(OnTrack::Inst, 0);
+        if let Some(c) = p.play.steps.clip.as_mut() {
+            c.lock_values.push((crate::time::LINE, 0, cutoff, 20.0));
+            c.lock_values.push((crate::time::LINE, 2, tune, 0.5));
+        }
+        p.refresh_play();
+        let target = cutoff.on(p.play.steps.track as u8);
+        let grid = |p: &Player| p.ui.get::<StepGrid>(play_page::STEPS).unwrap().clone_look();
+        let lane_of = |p: &Player, name: &str| {
+            grid(p)
+                .0
+                .iter()
+                .find(|l| l.name == name && l.lock.is_some())
+                .map(|l| l.pad - play_widgets::LOCK_LANE)
+                .unwrap_or_else(|| panic!("{name}: {:?}", lock_lane_names(p)))
+        };
+        let id = lane_of(&p, "Cutoff");
+        // Only the gear's lane opens rows; the synth's keeps its label.
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let rows_targets: Vec<usize> = {
+            use mpfree_ui::Widget as _;
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .targets(r)
+                .into_iter()
+                .filter(|t| t.id == "lane-rows")
+                .map(|t| t.index)
+                .collect()
+        };
+        assert_eq!(rows_targets, [id]);
+        p.take_actions();
+        let b = steps_target(&p, "lane-rows", id);
+        let a = steps_tap(&mut p, b);
+        assert_eq!(a, Some(FromUi::LaneRows(LaneRowsAsk::Show(target))));
+        let open = grid(&p).1.expect("the rows open");
+        assert_eq!(open.title, "Cutoff · CC 43");
+        assert!(open.rows.is_empty() && open.can_add);
+        // + LFO: LFO 1 on it; the matrix's answer shows its row.
+        let b = steps_target(&p, "rows-add", 0);
+        let a = steps_tap(&mut p, b);
+        assert_eq!(a, Some(FromUi::LaneRows(LaneRowsAsk::AddLfo(target))));
+        p.apply(ToUi::LaneRows {
+            target,
+            rows: vec![(3, "LFO 1".to_string(), 0.25)],
+            can_add: true,
+        });
+        p.apply(ToUi::GearMoved(vec![target]));
+        assert_eq!(grid(&p).1.unwrap().rows, [("LFO 1".to_string(), 0.25)]);
+        let moved = |p: &Player, name: &str| {
+            grid(p)
+                .0
+                .iter()
+                .find(|l| l.name == name)
+                .and_then(|l| l.lock.as_ref())
+                .is_some_and(|lk| lk.moved)
+        };
+        assert!(moved(&p, "Cutoff"));
+        assert!(!moved(&p, "Tune"));
+        // A finger at the bar's left end: the row (the matrix's 3) to
+        // -100 %, the bar following at once.
+        let bar = steps_target(&p, "row-depth", 0);
+        let a = steps_tap(&mut p, mpfree_ui::Rect::new(bar.x, bar.y, 8, bar.h));
+        assert_eq!(
+            a,
+            Some(FromUi::LaneRows(LaneRowsAsk::Depth {
+                target,
+                row: 3,
+                depth: -1.0
+            }))
+        );
+        assert_eq!(grid(&p).1.unwrap().rows[0].1, -1.0);
+        // Its ×: the row off.
+        let x = steps_target(&p, "row-off", 0);
+        let a = steps_tap(&mut p, x);
+        assert_eq!(
+            a,
+            Some(FromUi::LaneRows(LaneRowsAsk::Remove { target, row: 3 }))
+        );
+        // An answer for another control is dropped.
+        let other = RelAddr::new(OnTrack::Midi, 44).on(0);
+        p.apply(ToUi::LaneRows {
+            target: other,
+            rows: vec![(0, "LFO 1".to_string(), 0.5)],
+            can_add: true,
+        });
+        assert_eq!(grid(&p).1.unwrap().rows.len(), 1);
+        // A touch on the pattern under them closes them, and does nothing
+        // else.
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let a = steps_tap(
+            &mut p,
+            mpfree_ui::Rect::new(r.right() - 30, r.bottom() - 30, 20, 20),
+        );
+        assert_eq!(a, None);
+        assert!(grid(&p).1.is_none());
+        p.apply(ToUi::GearMoved(Vec::new()));
+        assert!(!moved(&p, "Cutoff"));
     }
 
     #[test]
@@ -25831,11 +26408,13 @@ mod tests {
     }
 
     #[test]
-    fn the_wave_and_grain_tabs_edit_the_layer_picked_on_play() {
+    fn the_wave_page_and_its_grain_tool_edit_the_layer_picked_on_play() {
         use mpfree_sampler::model::PlayMode;
+        use mpfree_sampler_ui::grain_tab::Row as G;
+        use mpfree_sampler_ui::grain_tool::{GrainPart, PARTS_ROW};
         use mpfree_sampler_ui::play_tab::{self, Row, LAYERS, LIST};
+        use mpfree_sampler_ui::wave_tab::{self, Tool};
         use mpfree_sampler_ui::widgets::PadBar;
-        use mpfree_sampler_ui::{grain_tab, wave_tab};
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         let ev = |p: &mut Player, widget: &str, kind: EventKind| {
@@ -25855,20 +26434,36 @@ mod tests {
         let add = play_row(&mut p, Row::AddLayer);
         ev(&mut p, LIST, EventKind::Tab(add));
         back(&mut p);
-        ev(&mut p, play_tab::BAR, EventKind::Tab(grain_tab::TAB));
+        // The Wave page's Grain tool, its Shape part.
+        ev(&mut p, play_tab::BAR, EventKind::Tab(wave_tab::TAB));
+        let grain = Tool::ALL.iter().position(|t| *t == Tool::Grain).unwrap();
+        ev(&mut p, wave_tab::TOOLS, EventKind::Tab(grain));
+        assert!(p.sample.grain_tool());
         assert_eq!(
-            p.ui.get::<PadBar>(grain_tab::BAR).unwrap().title,
-            "Pad A5 · Break 92 · layer 2"
+            p.ui.get::<PadBar>(wave_tab::BAR).unwrap().title,
+            "Pad A5 · Break 92 · layer 2 of 2"
         );
-        let row = |r: grain_tab::Row| grain_tab::Row::GRAINS.iter().position(|x| *x == r).unwrap();
-        for r in [grain_tab::Row::Mode, grain_tab::Row::Sync] {
+        ev(
+            &mut p,
+            wave_tab::REGION,
+            EventKind::Step {
+                index: PARTS_ROW,
+                delta: GrainPart::Shape.index() as i32,
+            },
+        );
+        for r in [G::Mode, G::Sync] {
+            let region = p.sample.project(0).unwrap().pad(pad).unwrap().layers[1]
+                .region
+                .clone();
+            let index = 1 + GrainPart::Shape
+                .rows(&region)
+                .iter()
+                .position(|x| *x == r)
+                .unwrap();
             ev(
                 &mut p,
-                grain_tab::LIST,
-                EventKind::Step {
-                    index: row(r),
-                    delta: 1,
-                },
+                wave_tab::REGION,
+                EventKind::Step { index, delta: 1 },
             );
             p.apply(ToUi::SampleLift);
         }
@@ -25891,15 +26486,7 @@ mod tests {
             "{:?}",
             events_log(&p)
         );
-        // The Wave tab shows the same layer; back on Play, picking layer 1
-        // moves every tab to it.
-        ev(&mut p, grain_tab::BAR, EventKind::Tab(0));
-        assert!(p
-            .ui
-            .get::<PadBar>(wave_tab::BAR)
-            .unwrap()
-            .title
-            .ends_with("· layer 2 of 2"));
+        // Back on Play, picking layer 1 moves every tab to it.
         ev(&mut p, wave_tab::BAR, EventKind::Tab(play_tab::TAB));
         ev(&mut p, LAYERS, EventKind::Select(0));
         ev(&mut p, play_tab::BAR, EventKind::Tab(0));
@@ -27634,6 +28221,147 @@ mod tests {
         assert!(p.take_actions().contains(&FromUi::Recall(false)));
     }
 
+    /// From (one-page step 2f; Jay 18 Nov 19:48Z: Skip back moves into
+    /// Sample Recall as a second source): Sample Recall reads the master,
+    /// or what the recorder's Source has kept, and keeps from it as from
+    /// the master. The Source's buffer gone, it reads the master again;
+    /// with the master as the Source, From says it has it.
+    #[test]
+    fn sample_recall_reads_the_recorders_source_as_skip_back_did() {
+        use crate::app::RecallKey;
+        use crate::sample_page::SCREEN_RECALL_SECONDS;
+        use mpfree_sampler_ui::recall::{self, RecallView, Row};
+        use mpfree_sampler_ui::recorder;
+        use mpfree_sampler_ui::sample::{feed_input, PAD, RATE};
+        use mpfree_sampler_ui::widgets::SettingList;
+        let mut p = sample_sampler(Fonts::embedded());
+        open_sample(&mut p, sample_page::Editor::Wave);
+        let (mut master, input) = mpfree_sampler::record::input16(SCREEN_RECALL_SECONDS, RATE);
+        p.apply(ToUi::SampleRecall(Box::new(input)));
+        feed_input(&mut master, 20.0, 0.4, true);
+        let take = |p: &mut Player| {
+            let (sent, rest) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+            rest
+        };
+        let line_in = |p: &mut Player, on: bool| {
+            let mut s = p.settings.clone();
+            s.line_input = on;
+            p.apply(ToUi::Settings(s));
+        };
+        line_in(&mut p, true);
+        let Some(FromUi::SampleInput(Some(mut line))) = take(&mut p).pop() else {
+            panic!("the input's writer");
+        };
+        // The line input plays quieter than the master.
+        feed_input(&mut line.0, 20.0, 0.1, true);
+        p.tick(0.033);
+        let from = Row::From.index();
+        let row = |p: &Player| {
+            let list = p.ui.get::<SettingList>(recall::LIST).unwrap();
+            let c = &list.controls[from];
+            (list.rows[from].value.clone(), c.faint, c.why.clone())
+        };
+        let step = |p: &mut Player, delta: i32| {
+            p.on_event(UiEvent {
+                widget: recall::LIST.into(),
+                kind: EventKind::Step { index: from, delta },
+            })
+        };
+        let next = crate::app::kit_pad_name(PAD + 1);
+        // Opened on the master; From Line in reads the line input.
+        p.apply(ToUi::Recall(RecallKey::Open { pad: PAD }));
+        assert_eq!(row(&p), ("Master".to_string(), false, String::new()));
+        step(&mut p, 1);
+        assert_eq!(row(&p).0, "Line in");
+        let v = p.ui.get::<RecallView>(recall::VIEW).unwrap();
+        assert_eq!(v.chip, format!("REC → Pad {next} · Line in"));
+        assert_eq!(v.sub, "Line in's last 1:15, kept while it is the Source");
+        assert!(v.caption.starts_with("Bars "), "{}", v.caption);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: Sample Recall reads Line in"));
+        // REC keeps the line input's last bars on the next free pad.
+        p.apply(ToUi::Recall(RecallKey::Keep));
+        assert_ne!(p.ui.page(), recall::PAGE);
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l.starts_with("sample: recall bars ")
+                && l.contains(" of Line in: Recall 1, ")
+                && l.contains(&format!(" stereo on pad {next}, warped at "))),
+            "{log:?}"
+        );
+        let project = p.sample.project(0).unwrap();
+        let layer = &project.pad(PAD + 1).unwrap().layers[0];
+        let peak = project
+            .source(layer.region.source)
+            .unwrap()
+            .data()
+            .iter()
+            .fold(0.0f32, |m, x| m.max(x.abs()));
+        // A quarter of the master's level: the line input's, not the master's.
+        assert!(peak > 0.02 && peak < 0.3, "the line input's: {peak}");
+        // The line input off while it reads it: back to the master.
+        p.apply(ToUi::Recall(RecallKey::Open { pad: PAD }));
+        step(&mut p, 1);
+        line_in(&mut p, false);
+        take(&mut p);
+        p.tick(0.2);
+        assert_eq!(p.ui.page(), recall::PAGE);
+        assert_eq!(
+            row(&p),
+            (
+                "Master".to_string(),
+                false,
+                sample_page::RECORDER_OFF.to_string()
+            )
+        );
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert_eq!(
+            hint,
+            tell_text("Sample Recall: the Source isn't kept now, so it reads the master")
+        );
+        // A fallback: counted and logged as well as said.
+        assert_eq!(p.sample.recall_fallbacks(), 1);
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l
+                == "sample: fallback: Sample Recall's Source (Line in) isn't kept now, \
+                    so it reads the master (1 so far)"),
+            "{log:?}"
+        );
+        // A step to it now says why, and it stays on the master.
+        step(&mut p, 1);
+        assert_eq!(row(&p).0, "Master");
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert_eq!(hint, tell_text(sample_page::RECORDER_OFF));
+        // The master as the recorder's Source: From has it already.
+        p.apply(ToUi::Recall(RecallKey::Close));
+        p.on_event(UiEvent {
+            widget: recorder::RECORDER.into(),
+            kind: EventKind::Step { index: 0, delta: 1 },
+        });
+        take(&mut p);
+        p.apply(ToUi::Recall(RecallKey::Open { pad: PAD }));
+        assert_eq!(
+            row(&p),
+            (
+                "Master".to_string(),
+                false,
+                sample_page::RECALL_SOURCE_MASTER.to_string()
+            )
+        );
+        // A tap on From says so.
+        p.on_event(UiEvent {
+            widget: recall::LIST.into(),
+            kind: EventKind::Select(from),
+        });
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert_eq!(hint, tell_text(sample_page::RECALL_SOURCE_MASTER));
+    }
+
     #[test]
     fn the_rec_tabs_master_reads_what_sample_recall_keeps_with_no_buffer_of_its_own() {
         use crate::sample_page::{master_source, SCREEN_RECALL_SECONDS};
@@ -28031,20 +28759,50 @@ mod tests {
             .any(|a| matches!(a, FromUi::SampleSource(RecSource::Line))));
     }
 
+    /// Taps tool `tool` on the Sample page's tools strip.
+    fn pick_tool(p: &mut Player, tool: mpfree_sampler_ui::wave_tab::Tool) {
+        use mpfree_sampler_ui::wave_tab::{self, Tool};
+        let i = Tool::ALL.iter().position(|t| *t == tool).unwrap();
+        p.on_event(UiEvent {
+            widget: wave_tab::TOOLS.into(),
+            kind: EventKind::Tab(i),
+        });
+    }
+
+    /// Taps part `part` on the Grain section's switch.
+    fn grain_part(p: &mut Player, part: mpfree_sampler_ui::grain_tool::GrainPart) {
+        use mpfree_sampler_ui::grain_tool::PARTS_ROW;
+        let delta = part.index() as i32 - p.sample.grain_part().index() as i32;
+        if delta != 0 {
+            p.on_event(UiEvent {
+                widget: mpfree_sampler_ui::wave_tab::REGION.into(),
+                kind: EventKind::Step {
+                    index: PARTS_ROW,
+                    delta,
+                },
+            });
+        }
+        assert_eq!(p.sample.grain_part(), part);
+    }
+
+    /// What the Grain section's note says.
+    fn grain_note(p: &Player) -> String {
+        let l = p
+            .ui
+            .get::<mpfree_sampler_ui::widgets::SettingList>(mpfree_sampler_ui::wave_tab::REGION)
+            .unwrap();
+        l.panel.as_ref().unwrap().sections[0].note.clone()
+    }
+
     #[test]
-    fn the_grain_tab_sets_the_grains_and_draws_the_cloud_the_audio_thread_fills() {
+    fn the_grain_tool_sets_the_grains_and_says_what_the_audio_thread_plays() {
         use mpfree_sampler::model::PlayMode;
-        use mpfree_sampler_ui::grain_tab::{self, Row};
-        use mpfree_sampler_ui::grain_widgets::GrainCloud;
+        use mpfree_sampler_ui::grain_tab::Row;
+        use mpfree_sampler_ui::grain_tool::GrainPart;
+        use mpfree_sampler_ui::wave_tab::{self, Tool};
         use mpfree_sampler_ui::widgets::PadBar;
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
-        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
-            p.on_event(UiEvent {
-                widget: widget.into(),
-                kind,
-            })
-        };
         // Takes the actions: the kit views (sent back at once) and the cloud.
         let take = |p: &mut Player| {
             let (sent, rest) = views(p.take_actions());
@@ -28059,17 +28817,11 @@ mod tests {
             }
             clouds
         };
-        assert!(take(&mut p).is_empty(), "no cloud off the Grain tab");
-        // The pad bar's Grain tab opens the Grain page on the same pad.
-        ev(
-            &mut p,
-            mpfree_sampler_ui::wave_tab::BAR,
-            EventKind::Tab(grain_tab::TAB),
-        );
-        assert_eq!(
-            (p.page(), p.sample.editor()),
-            (sample_page::GRAIN_PAGE, sample_page::Editor::Grain)
-        );
+        assert!(take(&mut p).is_empty(), "no cloud with Trim");
+        // Grain on the tools strip: the Grain tool on the same pad.
+        pick_tool(&mut p, Tool::Grain);
+        assert_eq!(p.page(), sample_page::PAGE);
+        assert!(p.sample.grain_tool());
         assert!(p
             .ui
             .get::<Label>("hint")
@@ -28077,25 +28829,29 @@ mod tests {
             .text
             .contains("Q-Links 1-4: position, size, density, pitch"));
         assert_eq!(
-            p.ui.get::<PadBar>(grain_tab::BAR).unwrap().title,
+            p.ui.get::<PadBar>(wave_tab::BAR).unwrap().title,
             "Pad A5 · Break 92"
         );
-        // Mode, stepped from the list, makes the loop play grains: one log line.
-        let mode = Row::GRAINS.iter().position(|r| *r == Row::Mode).unwrap();
-        ev(
-            &mut p,
-            grain_tab::LIST,
-            EventKind::Step {
-                index: mode,
-                delta: 1,
-            },
-        );
-        p.apply(ToUi::SampleLift);
         let region = |p: &Player| {
             p.sample.project(0).unwrap().pad(pad).unwrap().layers[0]
                 .region
                 .clone()
         };
+        // Mode, on Shape, makes the loop play grains: one log line.
+        grain_part(&mut p, GrainPart::Shape);
+        let mode = 1 + GrainPart::Shape
+            .rows(&region(&p))
+            .iter()
+            .position(|r| *r == Row::Mode)
+            .unwrap();
+        p.on_event(UiEvent {
+            widget: wave_tab::REGION.into(),
+            kind: EventKind::Step {
+                index: mode,
+                delta: 1,
+            },
+        });
+        p.apply(ToUi::SampleLift);
         assert_eq!(region(&p).mode, PlayMode::Granular);
         assert!(
             events_log(&p)
@@ -28110,7 +28866,7 @@ mod tests {
         let mut c = clouds.pop().unwrap();
         assert_eq!((c.kit, c.pad, c.layer), (0, pad as u8, 0));
         assert!(take(&mut p).is_empty(), "the box is away");
-        // Filled there, it comes back and the cloud draws it.
+        // Filled there, it comes back and the Grain section says it.
         let r = region(&p);
         c.len = 3;
         for (k, g) in c.grains[..3].iter_mut().enumerate() {
@@ -28120,39 +28876,23 @@ mod tests {
         c.head = Some(r.start + r.frames() / 2);
         c.live = 7;
         p.apply(ToUi::SampleGrains(c));
-        let cloud = p.ui.get::<GrainCloud>(grain_tab::CLOUD).unwrap();
-        assert_eq!(cloud.grains.len(), 3);
-        assert!((cloud.playhead.unwrap() - 0.5).abs() < 0.01);
-        assert_eq!(cloud.right, "7 grains on all pads");
-        assert!(
-            cloud.caption.contains("3 grains playing"),
-            "{}",
-            cloud.caption
-        );
+        assert_eq!(grain_note(&p), "3 grains playing");
         // Back again for the next fill; a full channel keeps it here.
         let mut clouds = take(&mut p);
         assert_eq!(clouds.len(), 1);
         p.unsent(FromUi::SampleGrains(clouds.pop().unwrap()));
         assert_eq!(take(&mut p).len(), 1);
-        // A cloud for another pad isn't drawn (the pad changed on the way).
+        // A cloud for another pad isn't said (the pad changed on the way).
         let mut other = Box::<crate::sampler::Cloud>::default();
         other.pad = 2;
         other.len = 1;
         p.apply(ToUi::SampleGrains(other));
-        assert_eq!(
-            p.ui.get::<GrainCloud>(grain_tab::CLOUD)
-                .unwrap()
-                .grains
-                .len(),
-            3
-        );
+        assert_eq!(grain_note(&p), "3 grains playing");
         // Q-Link 1 turns the position; letting go writes the line; undo takes it back.
         p.apply(ToUi::SampleQLink(0, 4));
         p.apply(ToUi::SampleLift);
         assert!((region(&p).grain.position - 0.02).abs() < 1e-6);
-        let (tab, st) = p.sample.grain().unwrap();
-        assert_eq!(tab.row(&p.ui), Row::Position, "Q-Link 1 picks its row");
-        assert_eq!(st.region, region(&p));
+        assert_eq!(p.sample.state().unwrap().region, region(&p));
         assert!(
             events_log(&p)
                 .iter()
@@ -28171,20 +28911,17 @@ mod tests {
         assert_eq!(region(&p).grain.position, 0.0);
         p.apply(ToUi::SampleUndo(false));
         assert_eq!(region(&p).mode, PlayMode::Loop);
-        // Still on Grain: the tab says how to make the loop play grains.
-        assert_eq!(p.page(), sample_page::GRAIN_PAGE);
-        assert!(!p.ui.get::<GrainCloud>(grain_tab::CLOUD).unwrap().granular);
-        // Off the tab, the box stays on the screen thread.
-        ev(
-            &mut p,
-            grain_tab::BAR,
-            EventKind::Tab(mpfree_sampler_ui::wave_tab::TAB),
-        );
+        // Still the Grain tool: the section says how to make the loop play grains.
+        assert!(p.sample.grain_tool());
+        assert_eq!(grain_note(&p), "Mode is Loop: pick Granular in Shape");
+        // Back on Trim, the box stays on the screen thread.
+        pick_tool(&mut p, Tool::Trim);
         assert_eq!(p.page(), sample_page::PAGE);
+        assert!(!p.sample.grain_tool());
         assert!(take(&mut p).is_empty());
     }
 
-    /// The Grain page's device checks (R7, round 2: `grain-stretch-hits`,
+    /// The Grain tool's device checks (R7, round 2: `grain-stretch-hits`,
     /// `grain-movement`, `grain-cloud-view`, `grain-filter`,
     /// `grain-quality`, `grain-keys` and `grain-presets` in
     /// tools/mpc-one/app_checks.py), step by step on a granular pad as a
@@ -28192,12 +28929,15 @@ mod tests {
     /// the log line its check looks for, and each check's last step leaves
     /// the pad as it found it, so the next one starts the same.
     #[test]
-    fn the_grain_pages_device_checks_log_what_they_set_and_end_where_they_began() {
+    fn the_grain_tools_device_checks_log_what_they_set_and_end_where_they_began() {
         use crate::app::RowKey;
         use mpfree_sampler::model::{GrainMode, GrainQuality, MotionTarget, PlayMode};
-        use mpfree_sampler_ui::grain_tab::{self, Row, View};
-        use mpfree_sampler_ui::play_tab;
-        use mpfree_sampler_ui::widgets::{SectionChips, SettingList};
+        use mpfree_sampler_ui::grain_tab::Row;
+        use mpfree_sampler_ui::grain_tool::GrainPart;
+        use mpfree_sampler_ui::panel::Look;
+        use mpfree_sampler_ui::wave_tab::{self, Tool};
+        use mpfree_sampler_ui::widgets::SettingList;
+        use mpfree_sampler_ui::{grain_tool, play_tab};
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         let ev = |p: &mut Player, widget: &str, kind: EventKind| {
@@ -28207,7 +28947,7 @@ mod tests {
             })
         };
         // The kit views go back to the screen at once, as the audio thread
-        // sends them; the clouds stay (nothing here draws them).
+        // sends them; the clouds stay (nothing here fills them).
         let take = |p: &mut Player| {
             let (sent, _) = views(p.take_actions());
             for v in sent {
@@ -28219,27 +28959,29 @@ mod tests {
                 .region
                 .clone()
         };
-        // A tap on a section chip.
-        let open = |p: &mut Player, view: View| {
-            let i = View::ALL.iter().position(|v| *v == view).unwrap();
-            ev(p, grain_tab::SECTIONS, EventKind::Tab(i));
+        // A tap on a part of the Grain section's switch.
+        let open = |p: &mut Player, part: GrainPart| {
+            grain_part(p, part);
             take(p);
         };
-        // Where `row` is on its section (opened first if it isn't showing).
+        // Where `row` is on the Grain section (its part opened first if it
+        // isn't showing).
         let place = |p: &mut Player, row: Row| {
-            let mode = region(p).grain_mode;
-            let view = p.sample.grain().unwrap().0.view();
-            if row.index_in(view, mode).is_none() {
-                open(p, row.view());
+            let r = region(p);
+            if !p.sample.grain_part().rows(&r).contains(&row) {
+                open(p, GrainPart::of(row).unwrap());
             }
-            row.index_in(row.view(), mode)
-                .unwrap_or_else(|| panic!("{row:?} isn't on {:?} in {mode:?}", row.view()))
+            let rows = p.sample.grain_part().rows(&r);
+            1 + rows
+                .iter()
+                .position(|x| *x == row)
+                .unwrap_or_else(|| panic!("{row:?} isn't on {:?}", p.sample.grain_part()))
         };
         // A tap on a row's arrow, a choice's button `delta` from the one
         // lit, or a switch.
         let tap = |p: &mut Player, row: Row, delta: i32| {
             let index = place(p, row);
-            ev(p, grain_tab::LIST, EventKind::Step { index, delta });
+            ev(p, wave_tab::REGION, EventKind::Step { index, delta });
             p.apply(ToUi::SampleLift);
             take(p);
         };
@@ -28247,10 +28989,10 @@ mod tests {
         // touch does); - or + then step it.
         let press = |p: &mut Player, row: Row, delta: i32| {
             let index = place(p, row);
-            p.ui.get_mut::<SettingList>(grain_tab::LIST)
+            p.ui.get_mut::<SettingList>(wave_tab::REGION)
                 .unwrap()
                 .selected = index;
-            ev(p, grain_tab::LIST, EventKind::Select(index));
+            ev(p, wave_tab::REGION, EventKind::Select(index));
             for _ in 0..delta.abs() {
                 p.apply(ToUi::Rows(RowKey::Step(delta.signum())));
             }
@@ -28280,20 +29022,17 @@ mod tests {
                 assert!(log.contains(&line), "{line:?} not in {log:#?}");
             }
         };
-        // The Grain tab on the pad, made to play grains, as the Grains
+        // The Grain tool on the pad, made to play grains, as the Grains
         // kit's pads are on the MPC.
-        ev(
-            &mut p,
-            mpfree_sampler_ui::wave_tab::BAR,
-            EventKind::Tab(grain_tab::TAB),
-        );
+        pick_tool(&mut p, Tool::Grain);
         take(&mut p);
         tap(&mut p, Row::Mode, 1);
         assert_eq!(region(&p).mode, PlayMode::Granular);
         let start = region(&p);
 
-        // grain-stretch-hits: Grain mode's right arrow (Stretch at 1x),
-        // Scan - twice (0.5x) and + four times (2x), UNDO back to Cloud.
+        // grain-stretch-hits: on Shape, Grain mode's right arrow (Stretch
+        // at 1x); on Grains, Scan - twice (0.5x) and + four times (2x);
+        // UNDO back to Cloud.
         tap(&mut p, Row::GrainMode, 1);
         assert_eq!(region(&p).grain_mode, GrainMode::Stretch);
         press(&mut p, Row::Scan, -2);
@@ -28311,9 +29050,10 @@ mod tests {
         );
         undo_to(&mut p, &start);
 
-        // grain-movement: LFO to Position, Rate - twice (0.50 Hz);
-        // Envelope to Size, Attack - twice (500 ms); UNDO until both Off.
-        open(&mut p, View::Movement);
+        // grain-movement: on LFO, LFO to Position, Rate - twice (0.50 Hz);
+        // on Envelope, Envelope to Size, Attack - twice (500 ms); UNDO
+        // until both Off.
+        open(&mut p, GrainPart::Lfo);
         tap(&mut p, Row::LfoTo, 1);
         press(&mut p, Row::LfoRate, -2);
         tap(&mut p, Row::EnvTo, 1);
@@ -28335,7 +29075,8 @@ mod tests {
 
         // grain-cloud-view: LFO to Spray (its right arrow five times), then
         // Q-Link 2 (Size) all the way up and Q-Link 3 (Density) to 50 /s:
-        // more grains than a voice keeps, so the cloud thins.
+        // more grains than a voice keeps, so the cloud thins; on Grains
+        // the note says so.
         for _ in 0..5 {
             tap(&mut p, Row::LfoTo, 1);
         }
@@ -28356,11 +29097,26 @@ mod tests {
                 "density 25 /s -> 50 /s",
             ],
         );
+        open(&mut p, GrainPart::Grains);
+        let mut c = Box::<crate::sampler::Cloud>::default();
+        c.pad = pad as u8;
+        c.len = 1;
+        c.state = Some(mpfree_sampler::engine::CloudState {
+            spray: 0.4,
+            thinned: true,
+        });
+        p.apply(ToUi::SampleGrains(c));
+        assert!(
+            grain_note(&p).ends_with("thinned to fit 64"),
+            "{}",
+            grain_note(&p)
+        );
         undo_to(&mut p, &start);
 
-        // grain-filter: Band pass, Resonance and Filter spray dragged up,
-        // LFO to Cutoff (its right arrow six times); UNDO back.
-        open(&mut p, View::FilterKeys);
+        // grain-filter: on Filter, Band pass, Resonance and Filter spray
+        // dragged up; on LFO, LFO to Cutoff (its right arrow six times);
+        // UNDO back.
+        open(&mut p, GrainPart::Filter);
         tap(&mut p, Row::Filter, 2);
         press(&mut p, Row::Resonance, 12);
         press(&mut p, Row::FilterSpray, 20);
@@ -28381,14 +29137,25 @@ mod tests {
                 "lfo to Spray -> Cutoff",
             ],
         );
-        let chips = p.ui.get::<SectionChips>(grain_tab::SECTIONS).unwrap();
-        assert_eq!(chips.chips[2].sub, "Band pass 2.00 kHz");
+        open(&mut p, GrainPart::Filter);
+        assert_eq!(grain_note(&p), "set as each grain starts");
         undo_to(&mut p, &start);
+        assert_eq!(grain_note(&p), "off: pick a pass");
 
-        // grain-quality: Quality's right arrow twice (Tape, Lo-fi), left
-        // twice and right twice while it plays, then left twice: Clean.
-        for d in [1, 1, -1, -1, 1, 1, -1, -1] {
-            tap(&mut p, Row::Quality, d);
+        // grain-quality: on Shape, Quality's Tape, then Lo-fi; while it
+        // plays Clean, then Lo-fi; then Tape and Clean, as it began.
+        let lit = |p: &mut Player| {
+            let index = place(p, Row::Quality);
+            match &p.ui.get::<SettingList>(wave_tab::REGION).unwrap().controls[index].look {
+                Look::Choice { options, on, .. } => (options.clone(), *on as i32),
+                _ => panic!("Quality is three buttons"),
+            }
+        };
+        let (options, _) = lit(&mut p);
+        assert_eq!(options, ["Clean", "Tape", "Lo-fi"]);
+        for to in [1, 2, 0, 2, 1, 0] {
+            let (_, on) = lit(&mut p);
+            tap(&mut p, Row::Quality, to - on);
         }
         assert_eq!(region(&p), start, "Clean, as it began");
         said(
@@ -28396,20 +29163,23 @@ mod tests {
             &[
                 "quality Clean -> Tape",
                 "quality Tape -> Lo-fi",
+                "quality Lo-fi -> Clean",
+                "quality Clean -> Lo-fi",
                 "quality Lo-fi -> Tape",
                 "quality Tape -> Clean",
             ],
         );
 
         // grain-keys: on the Play tab's Pitch section, a tap on Tune and +
-        // twelve times (+12 st); on the Grain tab Size follows key on, then
-        // off; Tune - twelve times.
+        // twelve times (+12 st); back on the Sample page (the Grain tool
+        // still picked), on Keys, Size follows key on, then off; Tune -
+        // twelve times.
         let pitch = play_tab::Section::ALL
             .iter()
             .position(|s| *s == play_tab::Section::Pitch)
             .unwrap();
         let tune = |p: &mut Player, delta: i32| {
-            ev(p, grain_tab::BAR, EventKind::Tab(play_tab::TAB));
+            ev(p, wave_tab::BAR, EventKind::Tab(play_tab::TAB));
             take(p);
             ev(p, play_tab::SECTIONS, EventKind::Tab(pitch));
             let index = play_tab::Section::Pitch
@@ -28425,14 +29195,16 @@ mod tests {
                 p.apply(ToUi::Rows(RowKey::Step(delta.signum())));
             }
             p.apply(ToUi::SampleLift);
-            ev(p, play_tab::BAR, EventKind::Tab(grain_tab::TAB));
+            ev(p, play_tab::BAR, EventKind::Tab(wave_tab::TAB));
             take(p);
+            assert!(p.sample.grain_tool(), "the Grain tool stays picked");
         };
         let tuned = |p: &Player| p.sample.project(0).unwrap().pad(pad).unwrap().tune_cents;
         tune(&mut p, 12);
         assert_eq!(tuned(&p), 1200);
         tap(&mut p, Row::KeySize, 1);
         assert!(region(&p).grain_keys.size);
+        assert_eq!(p.sample.grain_part(), GrainPart::Keys);
         tap(&mut p, Row::KeySize, 1);
         tune(&mut p, -12);
         assert_eq!((tuned(&p), region(&p)), (0, start.clone()));
@@ -28446,27 +29218,30 @@ mod tests {
             ],
         );
 
-        // grain-presets: the Presets chip, each of the eight tapped in
-        // turn, then UNDO eight times: the pad's own settings again.
-        open(&mut p, View::Presets);
+        // grain-presets: Presets, each of the eight tapped in turn, then
+        // UNDO eight times: the pad's own settings again, none lit.
+        open(&mut p, GrainPart::Presets);
         let names: Vec<&str> = mpfree_sampler::grain_presets::presets()
             .iter()
             .map(|pr| pr.name)
             .collect();
         assert_eq!(names.len(), 8);
+        let on = |p: &mut Player, row: Row| {
+            let index = place(p, row);
+            match &p.ui.get::<SettingList>(wave_tab::REGION).unwrap().controls[index].look {
+                Look::Choice { on, .. } => (index, *on as i32),
+                _ => panic!("a preset's line is a choice"),
+            }
+        };
         for k in 0..8 {
             let row = if k < 4 { Row::Preset } else { Row::PresetMore };
-            let index = place(&mut p, row);
-            let on = match &p.ui.get::<SettingList>(grain_tab::LIST).unwrap().controls[index].look {
-                mpfree_sampler_ui::panel::Look::Choice { on, .. } => *on as i32,
-                _ => panic!("a preset's line is a choice"),
-            };
+            let (index, lit) = on(&mut p, row);
             ev(
                 &mut p,
-                grain_tab::LIST,
+                wave_tab::REGION,
                 EventKind::Step {
                     index,
-                    delta: k % 4 - on,
+                    delta: k % 4 - lit,
                 },
             );
             p.apply(ToUi::SampleLift);
@@ -28484,8 +29259,15 @@ mod tests {
             take(&mut p);
         }
         assert_eq!(region(&p), start, "eight UNDOs");
-        let chips = p.ui.get::<SectionChips>(grain_tab::SECTIONS).unwrap();
-        assert_eq!(chips.chips[3].sub, "your own settings");
+        assert_eq!(
+            (on(&mut p, Row::Preset).1, on(&mut p, Row::PresetMore).1),
+            (4, 4),
+            "none lit"
+        );
+        assert_eq!(
+            grain_note(&p),
+            grain_tool::part_note(&start, GrainPart::Presets).unwrap()
+        );
         assert_eq!(region(&p).grain.quality, GrainQuality::Clean);
     }
 
@@ -28834,13 +29616,9 @@ mod tests {
         use mpfree_sampler_ui::wave_tab::{self, Tool};
         let mut p = sample_sampler(Fonts::embedded());
         assert_eq!(p.page(), sample_page::PAGE);
-        // Slice, Warp and Grain aren't on the page yet: each opens its old
-        // page, and the pad bar's first tab comes back to Trim.
-        for (i, page) in [
-            (1, sample_page::CHOP_PAGE),
-            (2, sample_page::WARP_PAGE),
-            (3, sample_page::GRAIN_PAGE),
-        ] {
+        // Slice and Warp aren't on the page yet: each opens its old page,
+        // and the pad bar's first tab comes back to Trim.
+        for (i, page) in [(1, sample_page::CHOP_PAGE), (2, sample_page::WARP_PAGE)] {
             p.on_event(UiEvent {
                 widget: wave_tab::TOOLS.into(),
                 kind: EventKind::Tab(i),
@@ -28848,15 +29626,22 @@ mod tests {
             assert_eq!(p.page(), page, "{:?}", Tool::ALL[i]);
             let bar = match page {
                 sample_page::CHOP_PAGE => "smp-chop-bar",
-                sample_page::WARP_PAGE => "smp-warp-bar",
-                _ => "smp-grain-bar",
+                _ => "smp-warp-bar",
             };
             p.on_event(UiEvent {
                 widget: bar.into(),
                 kind: EventKind::Tab(wave_tab::TAB),
             });
             assert_eq!(p.page(), sample_page::PAGE);
+            assert_eq!(p.sample.tool(), Tool::Trim);
         }
+        // Grain is: it stays on the page, with its hint.
+        pick_tool(&mut p, Tool::Grain);
+        assert_eq!(p.page(), sample_page::PAGE);
+        assert_eq!(p.sample.tool(), Tool::Grain);
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.starts_with("Drag GRAIN"), "{hint}");
+        pick_tool(&mut p, Tool::Trim);
         // While a take records the tools are faint and a tap says why.
         let strip =
             p.ui.get_mut::<mpfree_sampler_ui::widgets::ToolStrip>(wave_tab::TOOLS)
@@ -30303,6 +31088,14 @@ mod tests {
                                 .iter()
                                 .any(|t| t.target.id == "learn-looper-pick"),
                             "{name}: the Looper card shows"
+                        );
+                    }
+                    if name == "mixer-io-learn-play" {
+                        assert!(
+                            p.ui.targets()
+                                .iter()
+                                .any(|t| t.target.id == "learn-play-pick"),
+                            "{name}: the Play card shows"
                         );
                     }
                     if name == "mixer-io-routing" {

@@ -29,10 +29,11 @@
 //!   amp envelope drawn over the sound, the filter's curve and the pad's
 //!   other settings, each change a [`PlayAction`]. Its pictures are in
 //!   [`play_widgets`].
-//! - [`grain_tab`]: the pad editor's Grain tab: the layer's region with the
-//!   grain cloud the engine plays over it, a touch pad for position and
-//!   size, and every grain setting, each change a [`GrainAction`]. Its
-//!   pictures are in [`grain_widgets`].
+//! - [`grain_tool`]: the Sample page's Grain tool: the grain window on the
+//!   wave (where grains start, one grain long, the spray's band) and the
+//!   Grain section's parts, each change a [`WaveAction`]. The rows, their
+//!   values and how they step are [`grain_tab`]'s, the Grain page's own
+//!   (the page went on 18 Nov 2026).
 //! - [`recorder`]: the one Sample page's recorder row (REC, Source,
 //!   Starts, Ends) on the Wave page, with the Input section while REC is on.
 //! - [`rec_tab`]: the pad editor's Rec tab: the line input's meters and
@@ -60,6 +61,7 @@ pub mod auto_tab;
 pub mod auto_widgets;
 pub mod chop_tab;
 pub mod grain_tab;
+pub mod grain_tool;
 pub mod grain_widgets;
 pub mod keys_widgets;
 pub mod levels_panel;
@@ -82,7 +84,6 @@ pub mod widgets;
 
 pub use auto_tab::{AutoAction, AutoState, AutoTab};
 pub use chop_tab::{ChopAction, ChopState, ChopTab};
-pub use grain_tab::{GrainAction, GrainState, GrainTab};
 pub use mpfree_analysis::note_name;
 pub use pads_tab::{PadsAction, PadsState, PadsTab};
 pub use play_tab::{PlayAction, PlayState, PlayTab};

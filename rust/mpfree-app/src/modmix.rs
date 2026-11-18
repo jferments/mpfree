@@ -50,7 +50,7 @@
 use mpfree_fx::mpfree_node::{Ctx, NodeEvent, ParamInfo, Timed};
 use mpfree_fx::{mixer_param_applies as param_applies, strip_params, Mixer, StripId};
 use mpfree_mod::{
-    Change, ModEngine, ModError, ModEvent, ModTimed, DEFAULT_TICK, FOLLOWERS, MACROS,
+    Change, ModEngine, ModError, ModEvent, ModTimed, Source, DEFAULT_TICK, FOLLOWERS, MACROS,
 };
 use mpfree_notefx::TrackFx;
 use mpfree_perform::morph::Loaded;
@@ -199,6 +199,36 @@ impl ModMix {
 
     pub fn engine(&self) -> &ModEngine {
         &self.engine
+    }
+
+    /// The mod matrix rows aimed at `addr`: each one's place in the
+    /// matrix (for a depth change or removal), source and depth.
+    pub fn rows_on(&self, addr: ParamAddr) -> Vec<(usize, Source, f32)> {
+        self.engine
+            .rows()
+            .enumerate()
+            .filter(|(_, r)| r.target == addr)
+            .map(|(i, r)| (i, r.source, r.depth))
+            .collect()
+    }
+
+    /// The tracks' MIDI out controls (`Owner::Midi`) a matrix row moves
+    /// (an LFO on a gear's CC lane), each once, in matrix order.
+    pub fn midi_moved(&self) -> Vec<ParamAddr> {
+        let mut v = Vec::new();
+        self.midi_moved_into(&mut v);
+        v
+    }
+
+    /// [`ModMix::midi_moved`] into `v`, cleared first: no allocation once
+    /// it has the room (the audio loop checks a few times a second).
+    pub fn midi_moved_into(&self, v: &mut Vec<ParamAddr>) {
+        v.clear();
+        for r in self.engine.rows() {
+            if matches!(r.target.owner, Owner::Midi(_)) && !v.contains(&r.target) {
+                v.push(r.target);
+            }
+        }
     }
 
     pub fn names(&self) -> &[String] {
@@ -745,6 +775,44 @@ mod tests {
         // The effect leaves its track: its settings go.
         h.modu.forget(Owner::NoteFx(2, id));
         assert!(!h.modu.engine().is_target(chance));
+    }
+
+    /// LFO to CC: an LFO row on a track's CC lane holds it quietly and
+    /// sweeps it round its value, every tick; the lane's rows and the
+    /// controls something moves are listed; the row taken off, the CC
+    /// goes back to its value.
+    #[test]
+    fn an_lfo_row_sweeps_a_gear_cc_and_is_listed() {
+        use mpfree_mod::Row;
+        let mut h = MixHost::new(RATE, 0.0, 6.0);
+        let cc = ParamAddr::new(Owner::Midi(1), 74);
+        let row = Row {
+            source: Source::Lfo(0),
+            via: None,
+            target: cc,
+            depth: 0.25,
+        };
+        assert!(h.modu.change(&h.mixer, Change::AddRow(row)).is_ok());
+        assert_eq!(h.modu.rows_on(cc), [(0, Source::Lfo(0), 0.25)]);
+        assert_eq!(h.modu.midi_moved(), [cc]);
+        assert!(h.modu.rows_on(ParamAddr::new(Owner::Midi(1), 1)).is_empty());
+        let mut got = Vec::new();
+        for p in 0..400 {
+            run(&mut h, 1, p);
+            got.extend(h.modu.take_midi_values().map(|(_, a, v)| (a, v)));
+        }
+        assert!(got.iter().all(|(a, _)| *a == cc));
+        let (lo, hi) = got.iter().fold((f32::MAX, f32::MIN), |(lo, hi), (_, v)| {
+            (lo.min(*v), hi.max(*v))
+        });
+        // Round General MIDI's 64, a quarter of the travel each way.
+        assert!(lo < 50.0 && hi > 78.0, "{lo} to {hi}");
+        assert!(lo >= 30.0 && hi <= 98.0, "{lo} to {hi}");
+        assert!(h.modu.change(&h.mixer, Change::RemoveRow(0)).is_ok());
+        assert!(h.modu.midi_moved().is_empty());
+        run(&mut h, 4, 400);
+        let last = h.modu.take_midi_values().next_back().map(|(_, _, v)| v);
+        assert_eq!(last, Some(64.0), "back to its value");
     }
 
     /// A track's CC out (S6's CC lanes): held quietly, so nothing goes to

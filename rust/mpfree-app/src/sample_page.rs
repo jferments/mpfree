@@ -2,13 +2,12 @@
 //! player's kits. It has the Pads tab (the kit's pads on a compact map, to
 //! pick one, copy, paste or clear it, set it up and put the kit's sounds on
 //! it), the Wave tab (Start, End, the loop, the fades and the region's
-//! settings), the Chop tab (slices by transients, beats, a
-//! grid, silence or by hand, put on the kit's pads) and the Play tab (the
-//! layers' velocities, the amp envelope, the filter, voices, mute group,
-//! pressure) and the Grain tab (the first layer's grain settings, the
-//! engine's grains over the sound, a touch pad for position and size) and
-//! the Rec tab (the line input onto a pad); FX comes later. The pad bar's
-//! tabs switch between them.
+//! settings, and the tools strip's Grain tool: the grain window on the
+//! wave and every grain setting), the Chop tab (slices by transients,
+//! beats, a grid, silence or by hand, put on the kit's pads) and the Play
+//! tab (the layers' velocities, the amp envelope, the filter, voices, mute
+//! group, pressure) and the Rec tab (the line input onto a pad). The pad
+//! bar's tabs switch between them.
 //!
 //! - The screen thread owns every kit's project, handed over by
 //!   `sampler::Player::take_projects` when the kits are loaded.
@@ -30,9 +29,10 @@
 //!   changes the row picked (a turn, like a Q-Link's, is one undo step).
 //! - Chop to pads changes the kit like any edit (one undo step), and the
 //!   Play page's pad names follow ([`SamplePage::take_renamed`]).
-//! - On the Grain tab the cloud shows the grains the audio thread plays for
-//!   the pad: one boxed [`Cloud`] goes there, is filled and comes back
-//!   about 25 times a second, only while the tab shows
+//! - With the Grain tool the Grain section says how many grains the audio
+//!   thread plays for the pad, and the window draws the spray as it plays:
+//!   one boxed [`Cloud`] goes there, is filled and comes back about 25
+//!   times a second, only while the tool shows
 //!   ([`SamplePage::take_cloud`], [`SamplePage::cloud_back`]).
 //! - The Rec tab records the line input onto a pad. While the line input
 //!   is on, the page keeps the sampler's input (the last 75 s, about
@@ -88,11 +88,12 @@ use mpfree_sampler_ui::auto_tab::{
     self, AutoAction, AutoSettings, AutoState, AutoTab, Onto, Running,
 };
 use mpfree_sampler_ui::chop_tab::{self, ChopAction, ChopState, ChopTab};
-use mpfree_sampler_ui::grain_tab::{self, CloudNow, GrainAction, GrainState, GrainTab};
+use mpfree_sampler_ui::grain_tab::{self, CloudNow};
 use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
 use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab, SceneAction};
 use mpfree_sampler_ui::rec_tab::{self, RecAction, RecState, RecTab, Skip};
 use mpfree_sampler_ui::rec_widgets::Strip;
+use mpfree_sampler_ui::recall::RecallFrom;
 use mpfree_sampler_ui::recorder::{
     self, KeepView, MonitorView, Plays, RecorderAction, RecorderView, KEEP_NOT_YET, LINE_ONLY,
 };
@@ -100,7 +101,7 @@ use mpfree_sampler_ui::send;
 use mpfree_sampler_ui::source::{cache_file, SourceView};
 use mpfree_sampler_ui::warp_tab::{self, WarpTab};
 use mpfree_sampler_ui::wave_tab::{
-    self, duration_text, mode_label, WaveAction, WaveState, WaveTab,
+    self, duration_text, mode_label, Tool, WaveAction, WaveState, WaveTab,
 };
 use mpfree_sampler_ui::widgets::SettingList;
 use mpfree_seq::{Clip, Lock, Note};
@@ -122,8 +123,6 @@ pub const CHOP_PAGE: &str = "Sample · Chop";
 pub const PLAY_PAGE: &str = "Sample · Play";
 /// The Pads tab: the pads, the pad's settings and the kit's sounds.
 pub const PADS_PAGE: &str = "Pads · Pad";
-/// The Grain tab's page.
-pub const GRAIN_PAGE: &str = "Sample · Grain";
 /// The Rec tab's page.
 pub const REC_PAGE: &str = "Sample · Rec";
 /// The Warp tab's page.
@@ -154,13 +153,7 @@ pub const EMPTY_LAYOUT: &str = "col(header:60, sample-empty:*, hint:26)";
 /// `smp-chop-`, the Play tab's with `smp-play-`).
 pub const PREFIX: &str = "smp-";
 /// The editors whose pad bar's title names the pad and its sound.
-const NAMED_BARS: [&str; 5] = [
-    wave_tab::BAR,
-    warp_tab::BAR,
-    chop_tab::BAR,
-    play_tab::BAR,
-    grain_tab::BAR,
-];
+const NAMED_BARS: [&str; 4] = [wave_tab::BAR, warp_tab::BAR, chop_tab::BAR, play_tab::BAR];
 /// The text keyboard's keys for a pad's name and its sound's.
 pub const NAME_PAD: &str = "pad";
 pub const NAME_SOUND: &str = "sound";
@@ -170,7 +163,6 @@ pub const NAME_MAX: usize = 32;
 const CHOP_PREFIX: &str = "smp-chop-";
 const PLAY_PREFIX: &str = "smp-play-";
 const PADS_PREFIX: &str = "smp-pads-";
-const GRAIN_PREFIX: &str = "smp-grain-";
 const REC_PREFIX: &str = "smp-rec-";
 const WARP_PREFIX: &str = "smp-warp-";
 const AUTO_PREFIX: &str = "smp-auto-";
@@ -189,13 +181,8 @@ struct Gesture {
 }
 
 enum Before {
-    /// A layer's region on the Wave, Warp or Chop tab.
+    /// A layer's region on the Wave (any tool), Warp or Chop tab.
     Region {
-        layer: usize,
-        region: Box<Region>,
-    },
-    /// A layer's region on the Grain tab.
-    Grain {
         layer: usize,
         region: Box<Region>,
     },
@@ -223,7 +210,6 @@ pub enum Editor {
     Warp,
     Chop,
     Play,
-    Grain,
     Rec,
     /// The Rec tab's Auto-sample mode.
     Auto,
@@ -345,6 +331,10 @@ fn flatten_point(pad: usize, target: Option<usize>) -> CapturePoint {
 /// Why the recorder row's REC can't take while the line input is off
 /// (the Rec page's [`rec_tab::OFF_NOTE`], as short as the row needs).
 pub const RECORDER_OFF: &str = "Line in off: Looper tab, MENU";
+
+/// Why Sample Recall's From offers no second choice while the recorder
+/// listens to the master: Master is it.
+pub const RECALL_SOURCE_MASTER: &str = "The recorder's Source is the master: From Master has it";
 
 /// The Keep card's line while a take is ready, counting in or recording:
 /// it waits, as Sample Recall does (REC arm rule 6).
@@ -707,9 +697,6 @@ pub struct SamplePage {
     /// The synth-voice pads that play through the Synth channel, by kit
     /// and pad ([`SamplePage::set_pads_on_synth`]).
     pads_on_synth: Vec<(u8, u8)>,
-    /// The Grain tab, added the first time it is opened.
-    grain: Option<GrainTab>,
-    grain_state: Option<GrainState>,
     /// The cloud's box, while it is here and not on the audio thread.
     cloud: Option<Box<Cloud>>,
     /// The last cloud shown had grains, a playhead or grains on other pads.
@@ -746,6 +733,9 @@ pub struct SamplePage {
     /// A Play page Q-Link turning a pad: the pad, the knob and the turn's
     /// undo id (one undo step a turn).
     play_turn: Option<(usize, PadKnob, u64)>,
+    /// A learned MIDI control turning a pad's setting (MIDI Learn): the
+    /// kit, the pad, the setting and the turn's undo id.
+    learn_turn: Option<(usize, usize, PadField, u64)>,
     shown_heads: Vec<u64>,
     lines: Vec<String>,
     /// What the pad take ([`SamplePage::pad_take`]) tells the arm next,
@@ -828,6 +818,9 @@ pub struct SamplePage {
     /// `input` is the master Sample Recall keeps (`recall`), read while
     /// the source is the master: no buffer of its own, nothing to hand back.
     input_shared: bool,
+    /// Times Sample Recall read the Source and its buffer went, so it read
+    /// the master again (a fallback: counted, logged and shown).
+    recall_fallbacks: u32,
     /// The master's last two minutes, always kept (Sample Recall), once
     /// the audio thread has sent its reading end.
     recall: Option<Input>,
@@ -961,8 +954,6 @@ impl SamplePage {
             pad_fx: None,
             pad_ports: Vec::new(),
             pads_on_synth: Vec::new(),
-            grain: None,
-            grain_state: None,
             cloud: Some(Box::default()),
             cloud_shown: false,
             renamed: Vec::new(),
@@ -977,6 +968,7 @@ impl SamplePage {
             last_turn: None,
             gesture: None,
             play_turn: None,
+            learn_turn: None,
             shown_heads: Vec::new(),
             lines: Vec::new(),
             pad_said: std::collections::VecDeque::new(),
@@ -1013,6 +1005,7 @@ impl SamplePage {
             input: None,
             feed: None,
             input_shared: false,
+            recall_fallbacks: 0,
             recall: None,
             feeding: false,
             want_back: false,
@@ -1325,6 +1318,14 @@ impl SamplePage {
         self.state.as_ref()
     }
 
+    /// The Grain tool's part open on the Grain section.
+    #[cfg(test)]
+    pub fn grain_part(&self) -> mpfree_sampler_ui::grain_tool::GrainPart {
+        self.tab
+            .as_ref()
+            .map_or_else(Default::default, WaveTab::grain_part)
+    }
+
     /// What the sounds hold in memory: every kit's sounds (a sound two
     /// kits share counted once), the stretched copies, the input buffer.
     pub fn memory(&self) -> SampleMemory {
@@ -1473,9 +1474,14 @@ impl SamplePage {
         self.play.as_ref().zip(self.play_state.as_ref())
     }
 
-    #[cfg(test)]
-    pub fn grain(&self) -> Option<(&GrainTab, &GrainState)> {
-        self.grain.as_ref().zip(self.grain_state.as_ref())
+    /// The Wave page's tool in use (Trim until the page is built).
+    pub fn tool(&self) -> Tool {
+        self.tab.as_ref().map_or(Tool::Trim, WaveTab::tool)
+    }
+
+    /// The Wave page shows with the Grain tool.
+    pub fn grain_tool(&self) -> bool {
+        self.page() == PAGE && self.tool() == Tool::Grain
     }
 
     #[cfg(test)]
@@ -1494,7 +1500,6 @@ impl SamplePage {
             },
             Editor::Chop if self.chop_state.is_some() && self.chop.is_some() => CHOP_PAGE,
             Editor::Play if self.play_state.is_some() && self.play.is_some() => PLAY_PAGE,
-            Editor::Grain if self.grain_state.is_some() && self.grain.is_some() => GRAIN_PAGE,
             Editor::Rec if self.rec_state.is_some() && self.rec.is_some() => REC_PAGE,
             Editor::Auto if self.auto_state.is_some() && self.auto.is_some() => AUTO_PAGE,
             Editor::Wave if self.state.is_some() && self.tab.is_some() => PAGE,
@@ -1522,7 +1527,6 @@ impl SamplePage {
             WARP_PAGE => warp_tab::LIST,
             CHOP_PAGE => chop_tab::LIST,
             PLAY_PAGE => play_tab::LIST,
-            GRAIN_PAGE => grain_tab::LIST,
             REC_PAGE => rec_tab::LIST,
             AUTO_PAGE => auto_tab::LIST,
             PADS_PAGE => pads_tab::LIST,
@@ -1657,10 +1661,6 @@ impl SamplePage {
                 }
             }
             _ => {}
-        }
-        self.grain_state = None;
-        if self.editor == Editor::Grain {
-            self.refresh_grain(ui, bank);
         }
         if self.editor == Editor::Warp {
             self.refresh_warp(ui, bank);
@@ -1883,42 +1883,6 @@ impl SamplePage {
         }
     }
 
-    fn refresh_grain(&mut self, ui: &mut Ui, bank: Option<char>) {
-        if self.state.is_none() {
-            return;
-        }
-        let layer = self.layer();
-        let bpm = self.tempo();
-        let Some(project) = self.projects.get(self.kit) else {
-            return;
-        };
-        let sources = &mut self.sources;
-        self.grain_state = GrainState::from_project(project, self.pad, layer, |s| sources.get(s));
-        if let Some(gs) = self.grain_state.as_mut() {
-            gs.bpm = bpm;
-        }
-        let Some(gs) = self.grain_state.as_ref() else {
-            return;
-        };
-        match self.grain.as_mut() {
-            Some(tab) => {
-                tab.bank = bank;
-                tab.update(ui, gs);
-            }
-            None => match GrainTab::add(ui, GRAIN_PAGE, gs) {
-                Ok(mut tab) => {
-                    tab.bank = bank;
-                    tab.update(ui, gs);
-                    self.grain = Some(tab);
-                }
-                Err(e) => {
-                    self.lines.push(format!("sample: no Grain page ({e})"));
-                    self.grain_state = None;
-                }
-            },
-        }
-    }
-
     fn build_state(&mut self) -> Option<WaveState> {
         let layer = self.layer();
         let take = self.shown_take();
@@ -1929,10 +1893,13 @@ impl SamplePage {
         };
         let source = p.source(sound.layers.get(layer)?.region.source)?;
         let view = self.sources.get(source);
-        match take {
+        let mut st = match take {
             Some(i) => WaveState::of_take(p, i, layer, view),
             None => WaveState::from_project(p, self.pad, layer, view),
-        }
+        }?;
+        // A grain size synced to the tempo is the project's.
+        st.bpm = self.warps.tempo();
+        Some(st)
     }
 
     /// The layer the Wave, Warp, Chop and Grain tabs edit: the one picked
@@ -2208,16 +2175,6 @@ impl SamplePage {
             }
             return;
         }
-        if ev.widget.starts_with(GRAIN_PREFIX) {
-            let (Some(tab), Some(st)) = (self.grain.as_mut(), self.grain_state.as_ref()) else {
-                return;
-            };
-            let a = tab.action(ui, ev, st);
-            if let Some(a) = self.took(a) {
-                self.act_grain(ui, a);
-            }
-            return;
-        }
         if ev.widget.starts_with(REC_PREFIX) {
             let (Some(tab), Some(st)) = (self.rec.as_mut(), self.rec_state.as_ref()) else {
                 return;
@@ -2352,14 +2309,13 @@ impl SamplePage {
         ));
     }
 
-    /// Opens the editor's tab `i` (Wave, Warp, Chop, Play, Grain, FX or Rec).
+    /// Opens the editor's tab `i` (Wave, Warp, Chop, Play or Rec).
     fn open(&mut self, ui: &mut Ui, i: usize) {
         let editor = match i {
             wave_tab::TAB => Editor::Wave,
             warp_tab::TAB => Editor::Warp,
             chop_tab::TAB => Editor::Chop,
             play_tab::TAB => Editor::Play,
-            grain_tab::TAB => Editor::Grain,
             rec_tab::TAB => Editor::Rec,
             _ => return,
         };
@@ -2962,57 +2918,6 @@ impl SamplePage {
         }
     }
 
-    fn act_grain(&mut self, ui: &mut Ui, a: GrainAction) {
-        match &a {
-            GrainAction::Tab(i) => self.open(ui, *i),
-            GrainAction::Region {
-                pad,
-                layer,
-                gesture,
-                ..
-            } => {
-                let (kit, pad, layer, gesture) = (self.kit, *pad, *layer, *gesture);
-                if self.gesture.as_ref().is_some_and(|g| g.id != gesture) {
-                    self.lift();
-                }
-                if self.gesture.is_none() {
-                    if let Some(st) = self.grain_state.as_ref() {
-                        self.gesture = Some(Gesture {
-                            id: gesture,
-                            kit,
-                            pad,
-                            take: None,
-                            before: Before::Grain {
-                                layer,
-                                region: Box::new(st.region.clone()),
-                            },
-                        });
-                    }
-                }
-                let Some(project) = self.projects.get_mut(kit) else {
-                    return;
-                };
-                match a.apply(project) {
-                    Ok(()) => {
-                        self.edits += 1;
-                        if let Some(d) = self.dirty.get_mut(kit) {
-                            *d = true;
-                        }
-                    }
-                    Err(e) => {
-                        let line = format!(
-                            "sample: edit of pad {} not made ({e:?})",
-                            self.pad_text(kit, pad)
-                        );
-                        self.told.push(line.clone());
-                        self.lines.push(line);
-                    }
-                }
-                self.refresh(ui);
-            }
-        }
-    }
-
     /// Kit `kit`'s pad names changed: the Play page is told
     /// ([`SamplePage::take_renamed`]).
     fn mark_renamed(&mut self, kit: usize) {
@@ -3046,7 +2951,7 @@ impl SamplePage {
     /// turns finer. On Wave they move Start, End, Loop start and Loop end
     /// (one frame a detent with SHIFT); on Chop the slice, its start, the
     /// setting and the first pad; on Play the open section's four rows;
-    /// on Grain position, size, density and pitch (with SHIFT
+    /// with the Grain tool position, size, density and pitch (with SHIFT
     /// the sprays, and size and density finer).
     pub fn qlink(&mut self, ui: &mut Ui, knob: usize, ticks: i32, fine: bool) {
         self.turned();
@@ -3065,15 +2970,6 @@ impl SamplePage {
             };
             if let Some(a) = tab.qlink(ui, st, knob, ticks, fine) {
                 self.act_play(ui, a, &mut Vec::new());
-            }
-            return;
-        }
-        if self.editor == Editor::Grain {
-            let (Some(tab), Some(st)) = (self.grain.as_mut(), self.grain_state.as_ref()) else {
-                return;
-            };
-            if let Some(a) = tab.qlink(ui, st, knob, ticks, fine) {
-                self.act_grain(ui, a);
             }
             return;
         }
@@ -3231,6 +3127,88 @@ impl SamplePage {
         }
     }
 
+    /// A learned MIDI control (MIDI Learn) set kit `kit`'s pad `pad`'s own
+    /// `field` to `value`, in the field's units ([`scene::own`]'s), as the
+    /// Play tab's knob sets it: one undo step a turn, a turn after a rest
+    /// ([`TURN_REST`]) or of another setting a new one. The kit's new view
+    /// goes to the audio thread; the engine's live rows (the Q-Links'
+    /// values, the clips' locks) are left alone. Nothing for a pad without
+    /// a sound, or a value it has already.
+    pub fn learned(&mut self, kit: usize, pad: usize, field: PadField, value: f32) {
+        let Some(before) = self.projects.get(kit).and_then(|p| p.pad(pad)).cloned() else {
+            return;
+        };
+        let mut after = before.clone();
+        scene::set_own(&mut after, field, value);
+        if after == before {
+            return;
+        }
+        self.turned();
+        if self
+            .learn_turn
+            .is_some_and(|(k, p, f, _)| (k, p, f) != (kit, pad, field))
+            || (self.learn_turn.is_none() && self.gesture.is_some())
+        {
+            self.lift();
+        }
+        let id = match self.learn_turn {
+            Some((.., id)) => id,
+            None => {
+                // "LEARN" and the edit count: a new undo step.
+                let id = 0x4C45_4152_4E00_0000 | (self.edits & 0xFF_FFFF);
+                self.learn_turn = Some((kit, pad, field, id));
+                self.gesture = Some(Gesture {
+                    id,
+                    kit,
+                    pad,
+                    take: None,
+                    before: Before::Pad(Box::new(before)),
+                });
+                id
+            }
+        };
+        match self.projects[kit].edit_pad(pad, Some(id), |p| *p = after) {
+            Ok(()) => {
+                self.edits += 1;
+                if let Some(dirty) = self.dirty.get_mut(kit) {
+                    *dirty = true;
+                }
+                self.stale = true;
+            }
+            Err(e) => self.lines.push(format!(
+                "sample: pad {} not changed by MIDI Learn ({e:?})",
+                self.pad_text(kit, pad)
+            )),
+        }
+    }
+
+    /// The pad setting under a touch for SHIFT + a touch (MIDI Learn): a
+    /// knob or row of the Play tab's panel, or the Pads tab's Level, Pan
+    /// or Tune, on the pad the page edits ([`SamplePage::pad`]). None for
+    /// anything else.
+    pub fn learn_field(&self, widget: &str, t: &mpfree_ui::Target) -> Option<(usize, PadField)> {
+        let field = if widget == play_tab::LIST {
+            self.play.as_ref()?.field_at(t)?
+        } else if widget == pads_tab::LIST {
+            pads_tab::Row::field_at(self.pads_state.as_ref()?, t)?
+        } else {
+            return None;
+        };
+        Some((self.pad, field))
+    }
+
+    /// Whether the Pads tab's picked pad has the Level, Pan and Tune rows
+    /// SHIFT + a touch learns: a Sample or Loop pad, not an Instrument or
+    /// MIDI out pad ([`pads_tab::PadType::rows`]).
+    pub fn pads_learnable(&self) -> bool {
+        self.pads_state.as_ref().is_some_and(|st| {
+            matches!(
+                st.picked_type(),
+                pads_tab::PadType::Sample | pads_tab::PadType::Loop
+            )
+        })
+    }
+
     /// A Q-Link or the wheel turned: a turn after a rest is a new undo step.
     fn turned(&mut self) {
         let now = Instant::now();
@@ -3265,15 +3243,6 @@ impl SamplePage {
                 };
                 if let Some(a) = tab.wheel(ui, st, delta) {
                     self.act_play(ui, a, &mut Vec::new());
-                }
-            }
-            Editor::Grain => {
-                self.turned();
-                let (Some(tab), Some(st)) = (self.grain.as_mut(), self.grain_state.as_ref()) else {
-                    return;
-                };
-                if let Some(a) = tab.wheel(ui, st, delta) {
-                    self.act_grain(ui, a);
                 }
             }
             Editor::Chop => {
@@ -3383,6 +3352,8 @@ impl SamplePage {
                 }
             }
             WaveAction::Rec(a) => self.act_recorder(ui, a),
+            // A faint mark touched: which tool moves it.
+            WaveAction::Say(text) => self.told.push(text),
         }
     }
 
@@ -4195,11 +4166,9 @@ impl SamplePage {
         if let Some(tab) = self.pads.as_mut() {
             tab.lift();
         }
-        if let Some(tab) = self.grain.as_mut() {
-            tab.lift();
-        }
         self.last_turn = None;
         self.play_turn = None;
+        self.learn_turn = None;
         let Some(g) = self.gesture.take() else { return };
         if let Some(i) = g.take {
             self.lift_take(&g, i);
@@ -4226,12 +4195,6 @@ impl SamplePage {
                     return;
                 };
                 describe(region, &l.region, self.rate)
-            }
-            Before::Grain { layer, region } => {
-                let Some(l) = after.layers.get(*layer) else {
-                    return;
-                };
-                grain_tab::describe(region, &l.region)
             }
             Before::Pad(before) => play_tab::describe(before, after),
             Before::Slot(_) => String::new(),
@@ -6230,6 +6193,45 @@ impl SamplePage {
         self.recall.as_ref()
     }
 
+    /// What Sample Recall reads `from` (one-page step 2f): the master's
+    /// last two minutes, or what the sampler's Source has kept (the Rec
+    /// page's Skip back), while it has a buffer of its own.
+    pub fn recall_from(&self, from: RecallFrom) -> Option<&Input> {
+        match from {
+            RecallFrom::Master => self.recall.as_ref(),
+            RecallFrom::Source => self.input.as_ref().filter(|_| !self.input_shared),
+        }
+    }
+
+    /// Sample Recall read the Source and its buffer went, so it reads the
+    /// master again: counted, and its log line (the screen says it too).
+    pub fn recall_fell_back(&mut self) -> String {
+        self.recall_fallbacks += 1;
+        format!(
+            "sample: fallback: Sample Recall's Source ({}) isn't kept now, so it reads the master ({} so far)",
+            self.source_name(),
+            self.recall_fallbacks
+        )
+    }
+
+    /// Times Sample Recall fell back from the Source to the master.
+    pub fn recall_fallbacks(&self) -> u32 {
+        self.recall_fallbacks
+    }
+
+    /// Sample Recall's From, second choice: the recorder's Source by name,
+    /// or why there is nothing of it to read.
+    pub fn recall_second(&self) -> Result<String, String> {
+        if self.source == master_source() {
+            return Err(RECALL_SOURCE_MASTER.to_string());
+        }
+        match self.recall_from(RecallFrom::Source) {
+            Some(_) => Ok(self.source_name()),
+            None if self.source == RecSource::Line => Err(RECORDER_OFF.to_string()),
+            None => Err(format!("{} isn't kept now", self.source_name())),
+        }
+    }
+
     /// Sample Recall opened on pad `pad` of the kit the pads play: the pad
     /// it lands on (the held pad when it has no sound, else the next empty
     /// one in its bank, as the Rec tab's Next empty; in a full bank the
@@ -6252,7 +6254,12 @@ impl SamplePage {
         name: &str,
         faded: bool,
     ) -> Result<Source, String> {
-        let input = self.recall.as_ref().ok_or("the master isn't kept yet")?;
+        let input = match r.from {
+            RecallFrom::Master => self.recall.as_ref().ok_or("the master isn't kept yet")?,
+            RecallFrom::Source => self
+                .recall_from(r.from)
+                .ok_or("the Source isn't kept now")?,
+        };
         let b = r
             .bracket(input)
             .ok_or("the bracket reaches past what is kept")?;
@@ -6302,7 +6309,12 @@ impl SamplePage {
         r: &mpfree_sampler_ui::recall::Recall,
         onto: Option<usize>,
     ) -> Result<String, String> {
-        let input = self.recall.as_ref().ok_or(KEEP_NOT_YET)?;
+        let input = match r.from {
+            RecallFrom::Master => self.recall.as_ref().ok_or(KEEP_NOT_YET)?,
+            RecallFrom::Source => self
+                .recall_from(r.from)
+                .ok_or("the Source isn't kept now")?,
+        };
         let b = r
             .bracket(input)
             .ok_or("the bracket reaches past what is kept")?;
@@ -6310,11 +6322,14 @@ impl SamplePage {
         let fade = recall_fade(r, rate).min(b.frames() as u32 / 2);
         self.recalls += 1;
         let src = self.recall_source(r, &format!("Recall {}", self.recalls), false)?;
-        let what = match b.bars {
+        let mut what = match b.bars {
             Some((a, z)) if a == z => format!("recall bar {a}"),
             Some((a, z)) => format!("recall bars {a} to {z}"),
             None => format!("recall {}", duration_text(b.frames(), rate)),
         };
+        if r.from == RecallFrom::Source {
+            what = format!("{what} of {}", self.source_name());
+        }
         let kit = self.kit;
         let edits = self.edits;
         let bpm = r.warps().then(|| self.tempo());
@@ -6691,9 +6706,8 @@ impl SamplePage {
                     tab.set_playheads(ui, &frames);
                 }
             }
-            // The Play, Pads and Rec tabs (and Auto-sample) draw no playheads; the Grain
-            // tab's come with its cloud.
-            Editor::Play | Editor::Pads | Editor::Grain | Editor::Rec | Editor::Auto => {}
+            // The Play, Pads and Rec tabs (and Auto-sample) draw no playheads.
+            Editor::Play | Editor::Pads | Editor::Rec | Editor::Auto => {}
         }
         self.shown_heads = frames;
     }
@@ -6735,13 +6749,14 @@ impl SamplePage {
         std::mem::take(&mut self.unsaved)
     }
 
-    /// The cloud's box, naming the Grain tab's pad and layer, for the audio
-    /// thread to fill; None unless the Grain tab shows and the box is here.
+    /// The cloud's box, naming the pad and layer the Grain tool shows, for
+    /// the audio thread to fill; None unless the Grain tool shows a pad
+    /// (a take plays on no pad) and the box is here.
     pub fn take_cloud(&mut self) -> Option<FromUi> {
-        if self.page() != GRAIN_PAGE {
+        if !self.grain_tool() || self.shown_take().is_some() {
             return None;
         }
-        let st = self.grain_state.as_ref()?;
+        let st = self.state.as_ref()?;
         let mut c = self.cloud.take()?;
         c.kit = self.kit;
         c.pad = st.pad.min(usize::from(u8::MAX)) as u8;
@@ -6754,13 +6769,12 @@ impl SamplePage {
         self.cloud = Some(c);
     }
 
-    /// The audio thread filled the box: the Grain tab draws its grains if
-    /// they are still the ones it shows. The box stays here until the next
-    /// [`SamplePage::take_cloud`].
+    /// The audio thread filled the box: the Grain tool says how many grains
+    /// play and draws the spray as it plays, if they are still the ones it
+    /// shows. The box stays here until the next [`SamplePage::take_cloud`].
     pub fn cloud_back(&mut self, ui: &mut Ui, c: Box<Cloud>) {
-        let shows = self.page() == GRAIN_PAGE && c.kit == self.kit;
-        if let (true, Some(tab), Some(st)) = (shows, self.grain.as_ref(), self.grain_state.as_ref())
-        {
+        let shows = self.grain_tool() && self.shown_take().is_none() && c.kit == self.kit;
+        if let (true, Some(tab), Some(st)) = (shows, self.tab.as_mut(), self.state.as_ref()) {
             if usize::from(c.pad) == st.pad && usize::from(c.layer) == st.layer {
                 let busy = c.len > 0 || c.head.is_some() || c.live > 0;
                 // An idle cloud is drawn once, not 25 times a second.
@@ -6774,7 +6788,7 @@ impl SamplePage {
                         state: c.state,
                         live: c.live,
                     };
-                    tab.set_cloud(ui, st, c.grains(), now);
+                    tab.set_cloud(ui, st, c.grains().len(), now);
                 }
                 self.cloud_shown = busy;
             }
@@ -6991,6 +7005,18 @@ pub fn describe(a: &Region, b: &Region, rate: u32) -> String {
             channels(a.channels),
             channels(b.channels)
         ));
+    }
+    // The Grain tool's settings, as the Grain page said them (the play
+    // mode is said above).
+    let grains = grain_tab::describe(
+        &Region {
+            mode: b.mode,
+            ..a.clone()
+        },
+        b,
+    );
+    if !grains.is_empty() {
+        out.push(grains);
     }
     out.join(", ")
 }
@@ -7551,7 +7577,8 @@ impl SamplePage {
             a @ (WaveAction::Tab(_)
             | WaveAction::Ask(_)
             | WaveAction::StopProcess
-            | WaveAction::Rec(_)) => Some(a),
+            | WaveAction::Rec(_)
+            | WaveAction::Say(_)) => Some(a),
         }
     }
 
@@ -7588,7 +7615,7 @@ impl SamplePage {
                 .get(*layer)
                 .map(|l| describe(region, &l.region, self.rate)),
             Before::Pad(before) => Some(play_tab::describe(before, after)),
-            Before::Grain { .. } | Before::Slot(_) => None,
+            Before::Slot(_) => None,
         };
         let Some(what) = what.filter(|w| !w.is_empty()) else {
             return;

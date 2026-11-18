@@ -421,9 +421,9 @@ class JudgeTests(unittest.TestCase):
         got = dict((what, ok) for ok, what in self.judge("sample-gear", checks.Window(lines(on, *run))))
         self.assertFalse(got["sending was turned off again"])
 
-    def test_the_grain_page_checks_read_the_grains_kits_pad_2(self):
-        """Each Grain page check passes on the lines the app writes for its steps (the lines of the app's
-        the_grain_pages_device_checks_log_what_they_set_and_end_where_they_began, on the Grains kit's pad 2,
+    def test_the_grain_tool_checks_read_the_grains_kits_pad_2(self):
+        """Each Grain tool check passes on the lines the app writes for its steps (the lines of the app's
+        the_grain_tools_device_checks_log_what_they_set_and_end_where_they_began, on the Grains kit's pad 2,
         with - and + run together or one press a line), and not on another kit's pad or another pad."""
         head = "sample: kit 3 (Grains: House) pad A2 Snare: "
         x, pm, dash = "×", "±", "—"
@@ -447,8 +447,8 @@ class JudgeTests(unittest.TestCase):
                 "grain mode Repeat -> Cloud, preset Stutter 1/16 -> Shimmer fifths",
                 "preset Shimmer fifths -> Grit cloud", "preset Grit cloud -> Swarm",
                 "grain mode Cloud -> Tone, preset Swarm -> Sub drone, glide Off -> 150 ms"],
-            "grain-quality": ["quality Clean -> Tape", "quality Tape -> Lo-fi", "quality Lo-fi -> Tape",
-                              "quality Tape -> Clean"],
+            "grain-quality": ["quality Clean -> Tape", "quality Tape -> Lo-fi", "quality Lo-fi -> Clean",
+                              "quality Clean -> Lo-fi", "quality Lo-fi -> Tape", "quality Tape -> Clean"],
         }
         for name, items in runs.items():
             got = self.judge(name, checks.Window(lines(*[head + i for i in items], undo)))

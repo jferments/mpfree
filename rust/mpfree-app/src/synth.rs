@@ -1491,7 +1491,6 @@ impl Synth {
 
     /// A controller for the engine on the pads (a pedal, the mod wheel,
     /// breath), 0 to 1. The pedals hold its notes ([`Synth::push`]).
-    #[allow(dead_code)] // MIDI in's controller wiring calls it (the MIDI thread)
     pub fn control(&mut self, ctl: Ctl, value: f32, offset: u32) {
         if !value.is_nan() {
             self.push(

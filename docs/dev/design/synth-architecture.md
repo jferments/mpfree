@@ -88,11 +88,13 @@ Today every track's instrument renders one after another on the audio thread (`T
 - **Groups on lanes.** The track host splits its slots into groups: one on the audio thread (core 3), one on core 2's lane, one on core 1's lane (in `three`). Each period it posts the lanes with their slots' events, renders its own group, joins the lanes by the period's one deadline, and adds every slot's output into its mixer track on the audio thread. A slot owns its instrument, buffers and event queue, so a group moves whole, and nothing is shared between cores ([Lanes](concurrency.md#lanes-rustmpfree-lanes)).
 - **Placed by cost.** Each slot's probe already times its renders. Twice a second the host places the slots, the most costly first, on the core with the most room left; a slot moves only between periods, while every lane is home, and only when the gain is clear, so slots don't hop back and forth. A newly picked instrument starts where there is most room.
 - **Late is counted, never silent without a trace.** A lane that misses the deadline leaves its slots out of that period, counted, logged and shown, like the sampler's half and the pad synth today.
-- **Order within a period** (our reading of `cores.rs`): core 2's synth group runs in the same window as the sampler's half, and both are joined before the mixer's lanes start, so core 2's room for synths is what the sampler's half leaves; core 1 has only synths and the pad player's helpers.
+- **Order within a period** (as built): the synth groups run after the drums (and the pad synth on core 1 in `three`) are joined and before the mixer's lanes start, so each lane has its core to itself while they render; core 1 has only synths and the pad player's helpers. Running them in the drums' window too is for later, if the device asks.
 - **Budgets per core.** "20 % of one core" becomes "each core's worst period under its line". Core 3 keeps the 60 % line for everything on it. The lanes' lines come from the device round (Sound cores A/B); until then the design assumes 60 % on cores 2 and 1 too.
 - **Gain** (our estimate): about three times today's synth room in `three`, without any engine getting cheaper.
 
-The pad synth becomes one more slot, so it is placed like any track.
+The pad synth becomes one more slot, so it is placed like any track (not yet: it keeps its own lane in `three`).
+
+**Built 18 Nov (C1).** `TrackHost::set_lanes` splits the slots into groups, and `Cores::start_tracks` gives it a lane on core 2 in `two` and on cores 2 and 1 in `three`; `shared` and `core3` are unchanged, and `shared` stays the default. A slot's instrument, buffers and events move to its lane whole each period and come back after the join, so between periods every slot is home and the rest of the app sees the host as before. Each render is timed while the host has lanes (a smoothed cost per slot); every 172 renders (half a second) the slots are placed again, the most costly first, each on the group with the least placed so far, the lanes before the audio thread on a tie, and the new placement is taken only if its busiest group costs at most 0.8 of the busiest now. A newly picked instrument goes where the least is placed. A lane past the period's deadline leaves its slots out of that period (counted), and `settle` after the write takes them back. The Dev page shows each lane and the counts (periods, late, waited, moves). `mpfree-bench --lanes` has the eight synth tracks case on one, two and three cores ([Concurrency](concurrency.md#measuring-it-mpfree-bench---lanes)); on the cloud VM the mean block went from 214 µs to 112 µs on two cores and 92 µs on three. The device round says what the lines per core are and whether `two` becomes the default.
 
 ### One heavy synth across two cores
 
@@ -212,7 +214,7 @@ Drums' own knobs, effects per drum, accent and variation, the shared 808 body; P
 
 | # | Pull request | When |
 |---|---|---|
-| C1 | Synth tracks on the sound cores (groups, placement by cost, per-core counts), off by default behind the Sound cores modes, with a `--lanes` bench of eight synth tracks | Wave 1; on by default only after the device round and Jay's pick |
+| C1 | Synth tracks on the sound cores (groups, placement by cost, per-core counts), off by default behind the Sound cores modes, with a `--lanes` bench of eight synth tracks (built 18 Nov) | Wave 1; on by default only after the device round and Jay's pick |
 | C2 | Flush-to-zero on the audio threads (built 18 Nov), the note-start bench, spreading start work | Wave 1 |
 | C3 | `mpfree-simd`: one kernel (the supersaw's saws) and its twin, checked under qemu-arm; kept only if it wins | Wave 2 |
 | C4 | A heavy synth split across two cores | If the device asks for it |

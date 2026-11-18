@@ -3264,6 +3264,90 @@ fn track_host(rate: u32, tracks: usize, voices: usize) -> Case {
     }
 }
 
+/// The synth tracks cases' instruments: a busy song's, a factory preset
+/// each from eight engines.
+pub const SONG_TRACKS: [&str; 8] = [
+    "Wavetable Morph Pad",
+    "Poly Supersaw",
+    "FM Glass Keys",
+    "Analog Warm Pad",
+    "Strings Hall Strings",
+    "Keys Mellow Tines",
+    "Drawbar Gospel",
+    "Bass Amp Bass",
+];
+
+/// The tracks' own instruments as a song plays them (`--lanes`): the eight
+/// of [`SONG_TRACKS`] in the track host, each a four-note chord (the bass
+/// one note) changing every half second, the tracks a beat apart. With no
+/// `lanes` they all render on this thread; with lanes the host splits them
+/// over this thread and the lanes (`TrackHost::set_lanes`), placing them
+/// by what they cost, and the sound is the same to the bit while no lane
+/// is late. `wait` is how long a lane is waited for.
+fn synth_tracks(name: &str, rate: u32, lanes: Vec<LaneConfig>, wait: Duration) -> Case {
+    let max = MAX_BLOCK.min(1024);
+    let presets = keyboard_presets(rate);
+    let tracks = SONG_TRACKS.len();
+    let mut host = TrackHost::new(tracks, rate, max);
+    let mut voices = Vec::with_capacity(tracks);
+    for (t, want) in SONG_TRACKS.iter().enumerate() {
+        let p = presets
+            .iter()
+            .find(|p| p.name == *want)
+            .expect("a factory preset");
+        let mut inst = Instrument::new((p.make)(), rate, max);
+        for &(id, v) in &p.values {
+            inst.node_mut().set_param(id, v);
+        }
+        voices.push(if p.mono { 1 } else { 4 });
+        host.swap(t, Some(inst)).expect("a free slot");
+    }
+    let split = !lanes.is_empty();
+    if split {
+        host.set_lanes(lanes);
+    }
+    let mut held: Vec<Vec<u8>> = voices.iter().map(|&v| Vec::with_capacity(v)).collect();
+    Case {
+        name: name.to_string(),
+        module: "lanes",
+        what: "8 synth tracks of 8 engines, chords changing every 0.5 s",
+        block: Box::new(move |b, l, r| {
+            let len = l.len() as u64;
+            let f0 = b * len;
+            let half = u64::from(rate / 2);
+            for (t, notes) in held.iter_mut().enumerate() {
+                let shift = half * t as u64 / tracks as u64;
+                let g = f0 + half - shift;
+                if g % half + len > half || b == 0 {
+                    let at = if b == 0 {
+                        0
+                    } else {
+                        ((half - g % half) % len) as u32
+                    };
+                    for &n in notes.iter() {
+                        host.note_off(t, at, n);
+                    }
+                    notes.clear();
+                    for n in chord(t, g / half, voices[t]) {
+                        notes.push(n + 12);
+                        host.note_on(t, at, n + 12, 96);
+                    }
+                }
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            if split {
+                host.set_deadline(Some(Instant::now() + wait));
+            }
+            host.render(&Ctx::new(rate, f0), l.len(), &mut Sum { left: l, right: r });
+            if split {
+                host.settle(Instant::now() + wait);
+            }
+        }),
+        mem_bytes: 0,
+    }
+}
+
 /// Synth-voice pads with synths of their own (`mpfree-app`'s
 /// `pad_synths.rs`, the redesign's 6b): `pads` copies of Poly as the
 /// Synth tab starts it, in a host of twice as many slots (the rest for
@@ -3595,9 +3679,9 @@ fn moves(rate: u32) -> Case {
 /// The lane cases (`--lanes`): the same work on one core and split over
 /// two with a lane (`mpfree-lanes`), so the gain and the handoff's cost
 /// can be read side by side. `worker` pins each lane's worker to that
-/// core. Each lane is closed when its case is dropped, before the next
-/// case starts.
-pub fn lanes(rate: u32, worker: Option<usize>) -> Vec<Case> {
+/// core, and `third` the second lane of the three-core case. Each lane is
+/// closed when its case is dropped, before the next case starts.
+pub fn lanes(rate: u32, worker: Option<usize>, third: Option<usize>) -> Vec<Case> {
     let config = |spin: bool| LaneConfig {
         name: "mpfree-bench-ln".into(),
         core: worker,
@@ -3738,6 +3822,36 @@ pub fn lanes(rate: u32, worker: Option<usize>) -> Vec<Case> {
                 "Sampler 24 voices + Poly Init 8 voices, 2 cores",
                 rate,
                 Some(config(false)),
+                lane_wait(),
+            )
+        }),
+        measured(|| {
+            synth_tracks(
+                "Synth tracks: 8 instruments, one core",
+                rate,
+                vec![],
+                lane_wait(),
+            )
+        }),
+        measured(|| {
+            synth_tracks(
+                "Synth tracks: 8 instruments, 2 cores",
+                rate,
+                vec![config(false)],
+                lane_wait(),
+            )
+        }),
+        measured(|| {
+            // A worker left unpinned would start on this thread's core.
+            let second = LaneConfig {
+                name: "mpfree-bench-ln2".into(),
+                core: third,
+                ..config(false)
+            };
+            synth_tracks(
+                "Synth tracks: 8 instruments, 3 cores",
+                rate,
+                vec![config(false), second],
                 lane_wait(),
             )
         }),
@@ -3998,12 +4112,18 @@ mod tests {
             mixer_with("two", 44_100, 12, 8, Inserts::Song, tracks()),
             600,
         );
+        // Past the first placement by cost (half a second), on two lanes.
+        same_blocks(
+            synth_tracks("one", 44_100, vec![], wait),
+            synth_tracks("three", 44_100, vec![LaneConfig::default(); 2], wait),
+            600,
+        );
     }
 
     #[test]
     fn the_lane_cases_cover_one_core_and_two() {
-        let mut cases = lanes(44_100, None);
-        assert_eq!(cases.len(), 16);
+        let mut cases = lanes(44_100, None, None);
+        assert_eq!(cases.len(), 19);
         assert!(cases.iter().any(|c| c.name.contains("one core")));
         assert!(cases.iter().any(|c| c.name.contains("2 cores")));
         for c in &mut cases {

@@ -483,6 +483,8 @@ pub(crate) fn went_to(m: &IoModel, to: To) -> (String, Went) {
         To::LearnOnly => ("not played: Learn only".to_string(), Went::Nothing),
         To::Follows => ("clock: the tempo follows it".to_string(), Went::Clock),
         To::NotFollowed => ("not followed".to_string(), Went::Nothing),
+        To::Transport => ("MMC: the transport".to_string(), Went::Clock),
+        To::Scene(k) => (format!("launched scene {}", u16::from(k) + 1), Went::Took),
         To::Nothing => ("nothing takes it".to_string(), Went::Nothing),
         To::Ignored => ("ignored".to_string(), Went::Nothing),
         To::PortIgnores => ("ignored: this port's setting".to_string(), Went::Nothing),

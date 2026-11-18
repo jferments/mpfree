@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use mpfree_ui::wave::{
-    Beats, Marker, MarkerKind, Peaks, RawPeaks, WaveOverview, WaveView, Waveform,
+    Beats, Marker, MarkerKind, Peaks, RawPeaks, TabSide, WaveOverview, WaveView, Waveform,
 };
 use mpfree_ui::{
     Canvas, Color, EventKind, Fonts, PaintCx, Rect, SoftCanvas, Theme, Touch, Ui, Widget,
@@ -205,6 +205,39 @@ fn markers_drag_by_their_tabs() {
     w.touch(3, Touch::Up, x_of(&w, 2_000.0), R.y + 15, R);
     w.set_marker_frame(0, 10_000);
     assert_eq!(w.markers()[0].frame, 10_000);
+}
+
+#[test]
+fn a_pair_of_tabs_hugging_a_span_keep_clear_of_each_other() {
+    // Two marks 2 000 frames apart (about 45 px at the whole view): tabs
+    // centred on them would cover each other; one before its line and one
+    // after keep both clear, each grabbed on its own side.
+    let c0 = Color::rgb(0xC77DFF);
+    let mut w = wave(1);
+    w.set_markers(vec![
+        Marker::new(20_000, "GRAIN", MarkerKind::Cue)
+            .colored(c0)
+            .tab_on(TabSide::Before),
+        Marker::new(22_000, "SIZE", MarkerKind::Cue)
+            .colored(c0)
+            .tab_on(TabSide::After),
+    ]);
+    let c = paint(&w, R);
+    let (a, b) = (x_of(&w, 20_000.0), x_of(&w, 22_000.0));
+    assert!(b - a < 60, "close enough to collide centred: {}", b - a);
+    // Between the lines the strip is clear; each tab is drawn on its side.
+    let mid = (a + b) / 2;
+    assert_ne!(c.pixel(mid, R.y + 8), c0, "nothing between the two");
+    assert_eq!(c.pixel(a - 8, R.y + 8), c0, "GRAIN's tab left of its line");
+    assert_eq!(c.pixel(b + 8, R.y + 8), c0, "SIZE's tab right of its line");
+    for (x, index, frame) in [(a - 10, 0, 20_000), (b + 10, 1, 22_000)] {
+        assert_eq!(
+            w.touch(1, Touch::Down, x, R.y + 15, R),
+            Some(EventKind::Marker { index, frame }),
+            "the tab at {x}"
+        );
+        w.touch(1, Touch::Up, x, R.y + 15, R);
+    }
 }
 
 #[test]

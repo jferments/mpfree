@@ -46,9 +46,12 @@
 //!   model the mode.
 //!
 //! - `--lanes` runs only the lane cases: the same work on one core and split
-//!   over two with a lane (`mpfree-lanes`), plus the handoff alone. With
+//!   over two with a lane (`mpfree-lanes`), plus the handoff alone, and
+//!   eight synth tracks in the track host on one, two and three cores. With
 //!   `--lane-cores A,B` this thread pins itself to core A and each lane's
-//!   worker to core B (on the MPC: 3,2); without it nothing is pinned.
+//!   worker to core B (on the MPC: 3,2), and the three-core case's second
+//!   lane to the first core from 1 that is neither (1 on the MPC); without
+//!   it nothing is pinned.
 //! - `--count` runs each case for N blocks (200 by default) between two
 //!   callgrind client requests, so a run under `valgrind --tool=callgrind`
 //!   writes one count of instructions per case. `tools/ci/instr_gate.py`
@@ -344,6 +347,12 @@ fn soak(o: &Options) -> ExitCode {
 }
 
 /// `A,B`: this thread's core and the lanes' worker core.
+/// The core for the three-core case's second lane: the first from 1 that
+/// is neither this thread's nor the worker's (1 on the MPC, with 3,2).
+fn third_core(here: usize, worker: usize) -> usize {
+    (1..).find(|c| *c != here && *c != worker).unwrap_or(1)
+}
+
 fn lane_cores(text: &str) -> Result<(usize, usize), String> {
     let bad = || format!("--lane-cores takes two core numbers, such as 3,2 (not {text:?})");
     let (a, b) = text.split_once(',').ok_or_else(bad)?;
@@ -948,7 +957,11 @@ fn main() -> ExitCode {
                 Err(e) => println!("This thread: not pinned to core {here} ({e})."),
             }
         }
-        cases::lanes(MPC.rate, o.lane_cores.map(|(_, worker)| worker))
+        cases::lanes(
+            MPC.rate,
+            o.lane_cores.map(|(_, worker)| worker),
+            o.lane_cores.map(|(here, worker)| third_core(here, worker)),
+        )
     } else {
         cases::all(MPC.rate)
     };
@@ -1097,6 +1110,14 @@ mod tests {
         };
         assert!(quiet.line("Song", period).contains("(101.4 min of sound)"));
         assert!(quiet.line("Song", period).ends_with("no block allocated"));
+    }
+
+    #[test]
+    fn the_third_lane_core_is_neither_of_the_two_nor_core_0() {
+        assert_eq!(third_core(3, 2), 1);
+        assert_eq!(third_core(1, 2), 3);
+        assert_eq!(third_core(2, 1), 3);
+        assert_eq!(third_core(0, 1), 2);
     }
 
     #[test]

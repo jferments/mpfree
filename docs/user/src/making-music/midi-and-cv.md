@@ -12,7 +12,7 @@ All of these settings are in one place: the mixer's [I/O view](mixing-and-effect
 
 ## Playing MPFree from a keyboard
 
-Plug a keyboard into **MIDI IN**, or a USB keyboard into the **USB** port, and it plays the armed track, just as the pads do (to play other tracks too, see [Playing several tracks from your keyboards](#playing-several-tracks-from-your-keyboards)). Its knobs, faders and pedals can turn effect knobs with [MIDI Learn](#midi-learn). It listens on every MIDI channel, and you can plug a USB keyboard in or out while MPFree runs. A USB interface with several MIDI ports shows each one as a port of its own, named as the device names it (up to 15 USB ports at once). If a keyboard sends **All notes off** (or **All sound off**), the keys it holds on that channel let go.
+Plug a keyboard into **MIDI IN**, or a USB keyboard into the **USB** port, and it plays the armed track, just as the pads do (to play other tracks too, see [Playing several tracks from your keyboards](#playing-several-tracks-from-your-keyboards)). Its sustain pedal and mod wheel play the sound ([Pedals and the mod wheel](#pedals-and-the-mod-wheel)), and its knobs, faders and other pedals can turn effect knobs with [MIDI Learn](#midi-learn). It listens on every MIDI channel, and you can plug a USB keyboard in or out while MPFree runs. A USB interface with several MIDI ports shows each one as a port of its own, named as the device names it (up to 15 USB ports at once). If a keyboard sends **All notes off** (or **All sound off**), the keys it holds on that channel let go.
 
 - **With a synth on the pads,** each key plays its own note, through the arpeggiator, so **NOTE REPEAT** and Latch work from the keyboard too. A note held on a key and a pad ends when both let go.
 - **With a drum kit,** every key hits one of the kit's 128 pads: the pad that sends that note to a drum machine with no [profile](#device-profiles) of its own (see [A kit on a drum machine](#a-kit-on-a-drum-machine)), whichever bank **PAD BANK** shows. C#2 is A1, C2 is A2 and so on through bank A, as the MPC sends its pads; B1 (35) is B1, D#2 (39) is B2 and so on through banks B to H. So a drum machine or another MPFree playing a kit's notes plays the same pads. The keys go through the arpeggiator, so **NOTE REPEAT** and Latch work from the keyboard, and a pad held on a key and on the MPC ends when both let go. Keys only play: in **STEP SEQ**, **TRACK MUTE** or 16 Levels they still play their pads, as keys on a synth do.
@@ -31,7 +31,17 @@ An **MPE** controller (an expressive keyboard that gives each finger its own cha
 
 Most MPE controllers say they are MPE when they start, and MPFree hears it: its log says *MPE lower zone, channels 2 to 16 (it said so)*. If yours doesn't, give its port a [profile](#device-profiles) with an **mpe** line.
 
-The wheel, pressure and MPE play MPFree's own sounds: the synth and a track's own instrument (a kit's pads take pressure only). They go into the arpeggiator's and the MIDI effects' notes only while those notes are the keys as they came: a note the MIDI effects moved, or one the arpeggiator plays, takes the wheel but not its key's slide or tone. A track that plays a synth through MIDI out sends them to that synth ([The wheel, pressure and MPE on a synth](#the-wheel-pressure-and-mpe-on-a-synth)), and its [CV outputs](#cv-and-gate) take them too. Recording them into a clip comes later.
+The wheel, pressure and MPE play MPFree's own sounds: the synth and a track's own instrument (a kit's pads take pressure only). They go into the arpeggiator's and the MIDI effects' notes only while those notes are the keys as they came: a note the MIDI effects moved, or one the arpeggiator plays, takes the wheel but not its key's slide or tone. A track that plays a synth through MIDI out sends them to that synth ([The wheel, pressure and MPE on a synth](#the-wheel-pressure-and-mpe-on-a-synth)), and its [CV outputs](#cv-and-gate) take them too. On such a track a recording keeps the wheel, the pressure and the mod wheel in the clip ([Recording the wheel and pressure](#recording-the-wheel-and-pressure)); recording them on MPFree's own sounds comes later.
+
+### Pedals and the mod wheel
+
+A **sustain pedal** on your keyboard holds the notes of the armed track's sound, as on a piano: a key you let go keeps sounding until the pedal comes up, and a key you play again under the pedal plays again. A **sostenuto pedal** (the middle pedal) holds only the keys that are down when you press it. Both work on the synth, on a track's own instrument and on plugins.
+
+The **mod wheel**, a **breath controller**, an **expression pedal** (the kind with a rocker, sending CC 11) and the **soft pedal** go to the sound too. Plugins get them as MIDI. MPFree's own synths don't use them yet; the new synths will.
+
+A track that plays a synth through MIDI out sends all of them to that synth as they came, on its channel.
+
+So that no note hangs, a pedal that is down comes up on the track it was holding when you arm another track or unplug the keyboard, and the notes it held end. The mod wheel stays where you left it. Keys that play a kit's pads take no pedal, and a route's track takes its port's pedals and mod wheel too. A pedal or wheel you gave to something with [MIDI Learn](#midi-learn) moves that instead of the sound.
 
 ## Playing several tracks from your keyboards
 
@@ -100,6 +110,10 @@ If a track would send nothing, it says why under the track's name: no port is pi
 
 On the **Sequencer** tab's **Steps**, a track that plays a synth through MIDI out can lock the synth's own controls step by step: its filter on the downbeats, a bend into the fourth step. **+ Lane** lists the CCs the synth's [device profile](#device-profiles) names (Cutoff, Resonance, whatever its profile calls them), or with no profile the controls most gear shares (Mod wheel, Volume, Pan, Expression, Sustain, Resonance on CC 71, Cutoff on CC 74 and a few more), then **Bend** and **Pressure**. **Another CC** on the list's card takes any CC from 0 to 119 by number. Each control you pick gets a lane under the notes: tap a step on it to lock it at the value the control has before anything moves it (as General MIDI resets it: 64 for the sound controls 70 to 79, such as Cutoff on 74, 100 for Volume, the middle for the bend and 0 for most others), then drag it up or down, 4 a detent (1 with **SHIFT**). The synth gets the CC on that step. The bank select, data entry and RPN numbers aren't on the list, because they change what the synth's other controls mean; **Another CC** still reaches them. See [Your first beat](../getting-started/first-beat.md#program-a-pattern) for lock lanes.
 
+**Sweeping a control with an LFO.** Tap the name of a CC lane (or of **Bend** or **Pressure**) and its **mod rows** open over the pattern, as they do for an effect's knob. **+ LFO** sweeps the control with LFO 1, a quarter of its travel each way. Drag the row's bar to set how far and which way it sweeps, and tap **×** to take it off. A touch anywhere else closes the rows. A pink **~** after the lane's name shows that something sweeps it. The sweep goes round the lane's locks: a locked step sets the middle and the LFO moves either side of it; with no lock it moves round the control's own value. On the MIDI jacks a control goes out only when its value changes, and at most once every 4 ms, so a fast sweep doesn't crowd out the notes; over USB every change goes.
+
+{{shot: sequencer-gear-lane-lfo | The Cutoff lane's mod rows open over the pattern, with LFO 1 sweeping it 25 % each way, and the pink ~ after the lane's name.}}
+
 ### The wheel, pressure and MPE on a synth
 
 A track that plays a synth through MIDI out passes your keyboard's [pitch wheel, pressure and MPE](#the-pitch-wheel-pressure-and-mpe) on to it, so the synth answers them as MPFree's own sounds do. Most synths have one bend, one pressure and one tone for all their notes, so MPFree makes one of each from the keys you hold:
@@ -108,7 +122,7 @@ A track that plays a synth through MIDI out passes your keyboard's [pitch wheel,
 - **Pressure:** the hardest-pressed key's, as channel pressure (aftertouch). A synth that takes each note's own pressure (polyphonic aftertouch) gets each key's on its note instead when its profile says `pressure = poly`.
 - **Tone:** the tone of the key you played last, as CC 74, which most synths have on their filter cutoff.
 
-Each goes out only when it changes. When you let go of the last key, the bend goes back to the wheel's and the pressure to 0, and a stop, a panic or a new **Plays on** puts the synth back at rest. Keys that play a kit's pads send each pad's pressure on its notes, and no bend. To send a synth the keyboard's own messages as they came (an MPE synth's channels and all), use [Thru](#thru-a-keyboard-straight-to-a-synth) instead.
+Each goes out only when it changes. When you let go of the last key, the bend goes back to the wheel's and the pressure to 0, and a stop, a panic or a new **Plays on** puts the synth back at rest, with any [pedal](#pedals-and-the-mod-wheel) the keys put down back up. Keys that play a kit's pads send each pad's pressure on its notes, and no bend. To send a synth the keyboard's own messages as they came (an MPE synth's channels and all), use [Thru](#thru-a-keyboard-straight-to-a-synth) instead.
 
 **An MPE synth** (one that takes each note on its own channel: a hardware synth with an MPE mode, or a soft synth set to MPE) gets each note's expression on that note alone. Give the synth's port a [profile](#device-profiles) with an **mpe** line (`mpe = lower 15` for most), and every track that plays on that port plays MPE:
 
@@ -118,6 +132,12 @@ Each goes out only when it changes. When you let go of the last key, the bend go
 - with more notes than channels, a new note shares the channel of the oldest one, as MPE asks.
 
 On the I/O view the track's **Plays on** says *port · MPE* and its note *each note on its own channel*, because there is no channel to pick. A stop, a panic or a new **Plays on** puts every channel back at rest.
+
+#### Recording the wheel and pressure
+
+When you record on a track that plays a synth through MIDI out, the clip keeps what you do with the pitch wheel, the pressure, the mod wheel, a breath controller and a foot controller (expression pedal), as the synth was sent them. They play back to the synth on every pass, as the track's pitch bend, pressure and CC 1, 2 and 11. Each move is one gesture: it starts when the wheel leaves the middle (or the pressure, mod wheel or breath leaves 0) and ends when it is back, so between moves the lane leaves the synth alone. A foot controller can rest anywhere, so its move lasts until you stop recording. MPFree keeps a value whenever it moves by a step or more, so a lane stays small however fast your wheel sends. Played while the music runs without recording, the moves are kept for [Capture](clips.md#capture-keep-what-you-just-played) too.
+
+Not yet: an MPE synth (each note's own slide), the pedals, and the wheel on MPFree's own sounds.
 
 ### A kit on a drum machine
 
@@ -214,20 +234,30 @@ MPFree can follow another device's MIDI clock. In the mixer's I/O view, under **
 - With **Position** on, MPFree plays from the same bar as the device, and goes back in step if it drifts away. The device owns the song's timeline, so MPFree's own loop is off while Position is on: the Record tab's **Loop** row reads *off while following*, and what you set there comes back when you turn Position off. Clips and scenes you launch still land on the bar line, which is the device's bar line too.
 - If its clock stops arriving, MPFree keeps playing at the last tempo.
 
+### Playing, stopping and picking scenes from other gear
+
+Under **From other gear** in the **Sync** section, two settings let another device run MPFree. Both are off until you turn them on, and both are kept with the project.
+
+- **MMC in**: a computer's DAW, a hard disk recorder or a tape deck can play, stop, record and locate MPFree with **MIDI Machine Control** (MMC). Turn it on, and turn on "Send MMC" (or "MMC out") on the other device, on the port it reaches MPFree through. As on an MPC: **Play** (and **Deferred Play**) presses PLAY, **Stop** and **Pause** press STOP, **Record Strobe** presses REC, and **Locate** moves the playhead to its time (00:00:00:00 is the start of the song, along its tempo). **Locate zero then Play** is PLAY START. They do what the buttons do with what is armed: Record Strobe records what is armed, a ready take starts on Play, and Stop keeps a pad take that is recording. Play while MPFree plays does nothing (it is not FILL). Record Exit, fast forward and rewind do nothing. MPFree doesn't send MMC.
+- **Program change in**: set it to **Launches a scene**, and a program change from any port launches that scene of the [Clips grid](clips.md): program 1 launches scene 1, program 2 scene 2, and so on, on any channel, as a tap on the scene's launch button does (on the next bar line while playing). A program past the grid's last scene does nothing, and the log says so. A port set to ignore program changes (its page's **Ignore coming in**) launches nothing.
+
+The MIDI monitor shows where each went: *MMC: the transport*, or *launched scene 3*.
+
 MPFree can also send its own clock from **MIDI OUT**, or to a USB device, so a drum machine or an arpeggiator plays in time with it. Each port's **Clock out** is **Off**, **While playing** or **Always**, and each port with a delay gets its clock that much early. On a port's page, **Divide** slows the clock one port gets and **Nudge** moves it a little later or earlier than its notes (see [A port's page](#a-ports-page)).
 
 ## MIDI Learn
 
-MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controller turn a value in MPFree: a mixer strip's fader, pan or send, its mute or solo, an effect's knob, a macro, a knob on the Synth tab, the arp's rate, gate, swing and octaves, the tempo, or the transport's buttons (see [Playing and stopping from your controller](#playing-and-stopping-from-your-controller)).
+MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controller turn a value in MPFree: a mixer strip's fader, pan or send, its mute or solo, an effect's knob, a macro, a knob on the Synth tab, the arp's rate, gate, swing and octaves, a pad's level, tune, filter and envelope, the tempo, the transport's buttons (see [Playing and stopping from your controller](#playing-and-stopping-from-your-controller)), or the Play page's Swing, Filter and XY pad (see [Play's swing, filter and XY pad from your controller](#plays-swing-filter-and-xy-pad-from-your-controller)).
 
 **The quick way: SHIFT + touch.** Hold **SHIFT**, touch the value on the screen, then move the control on your keyboard. Until a control takes it, the hint line reads *LEARNING Volume (Bass): move a knob, a key or a pedal on any controller*; then it says what the control moves (*Learned: CC 74 on Keystep 37 moves Poly cutoff (Track 2)*). While SHIFT is held the touch only picks the value: the fader doesn't move. Touch the same value with SHIFT again to cancel, or another one to learn that instead. It works on:
 
 - the mixer's Faders look: a strip's fader, pan and sends, and its **M** (mute) and **S** (solo);
-- on the Play page: the tempo, the master bar (the master's level), and the Q-Link cards that set a level or a send (the drums' delay send; the looper's and the line input's levels are in the mixer, on the Loop and Line strips). The other cards, such as Swing and the filters, learn nothing yet;
+- on the Play page: the tempo, the master bar (the master's level), and the Q-Link cards that set a level or a send (the drums' delay send; the looper's and the line input's levels are in the mixer, on the Loop and Line strips). The other cards, such as Swing and the filters, and the XY pad keep their own jobs with SHIFT: learn Swing, the Filter and the XY pad on the Learn section's **Play** card instead;
 - the [chain editor](effects.md#adding-an-effect-the-chain-editor): an effect's knobs, faders, sliders and drawbars;
 - the macros panel: a macro's knob;
 - the Synth tab: the synth's knobs, faders, sliders and drawbars, for the track it shows (the track's own instrument, or the synth on the pads), and an MPC plugin's own screen (its skin): its knobs, sliders and buttons;
-- the arp: the [Arp panel](note-repeat-and-arp.md#the-arp-panel)'s Rate, Gate, Swing and Octaves sliders, and the Q-Link cards while NOTE REPEAT is held or latched. The control turns the armed track's arp, and keeps turning that track's arp when you arm another. A learned Swing is the arp's own swing from then on, as when you turn Q-Link 3.
+- the arp: the [Arp panel](note-repeat-and-arp.md#the-arp-panel)'s Rate, Gate, Swing and Octaves sliders, and the Q-Link cards while NOTE REPEAT is held or latched. The control turns the armed track's arp, and keeps turning that track's arp when you arm another. A learned Swing is the arp's own swing from then on, as when you turn Q-Link 3;
+- a pad's own settings: the knobs of the [Sample tab's Play page](shaping-a-pad.md#play-layers-envelope-and-filter) (level, pan, tune, cutoff, resonance, attack, decay, release, slice, LFO depth and the pitch envelope), and **Level**, **Pan** and **Tune** on the Pads tab. The control turns the pad you had picked, on the kit the armed track plays, and keeps turning it when you pick another pad or arm another track. The kit changes as if you turned the knob: a turn is one step for **UNDO**, and save the kit to keep it.
 
 Anywhere else SHIFT + a touch keeps its own job, such as SHIFT + drag on an audio region.
 
@@ -257,11 +287,15 @@ Tap a row, or turn the data wheel, to pick it. The card under the list sets it:
   - **Jump**: the value goes straight to where the knob is.
   - **Pick up**: the value waits until the knob passes it, so nothing jumps.
   - **Scale**: the value moves at once, but in step with the knob, so the two meet at the end the knob turns to.
-- **Kept in**: **Project** keeps it with this song; **Rig** keeps it for every project, like a controller's tempo fader or a drum machine's mute key. A control learned on the transport, the tempo or the looper starts in **Rig**, anything else in **Project**. While a song has its own mapping for the same control, the song's wins.
+- **Kept in**: **Project** keeps it with this song; **Rig** keeps it for every project, like a controller's tempo fader or a drum machine's mute key. A control learned on the transport, the tempo, the looper or the Play card starts in **Rig**, anything else in **Project**. While a song has its own mapping for the same control, the song's wins.
 - **Learn again**: the next control you move takes this one's place, with the same range, takeover and **Kept in**. The banner at the top says what it waits for; **Cancel** stops it and keeps the old control.
 - **Remove** takes the control off.
 
-Learned controls kept in **Project** are saved with the song; those kept in **Rig** stay when you open another project and come back at the next start (with a data folder on the stick). Still to come: learning the values on the Play page, the Pads and Sample tabs, the arpeggiator and a plugin's own page; and recording a learned synth knob's moves into a clip.
+Learned controls kept in **Project** are saved with the song; those kept in **Rig** stay when you open another project and come back at the next start (with a data folder on the stick).
+
+### Recording a learned control
+
+While you record, a learned control that turns something on the armed track (a synth's knob, a pad's own setting, the track's fader, pan or sends, an effect on the track, a MIDI effect's setting) records into the clip as if you turned that knob on the screen: each move becomes a lock on the note you are playing, or on the nearest step ([Knob moves while you record](clips.md#knob-moves-while-you-record)). The arpeggiator's settings, the tempo, the transport, the looper, the Play card's controls and the macros only move; they don't record.
 
 ### Playing and stopping from your controller
 
@@ -289,6 +323,18 @@ In the Learn section, tap **Looper** by the heading, tap one, then press the foo
 - **Next loop** picks the next loop (after Loop 8, Loop 1). **Undo**, **Redo** and **Clear** are the Looper tab's buttons, on the picked loop. **Capture** keeps the bars you just played as a loop.
 
 These work on every page, whatever the pads are doing. A **Key** or a press starts as **Button: while held**, so a footswitch goes down and comes up as a pad does; leave it so. The Learn section lists each one by what it plays: **Looper · Loop 3 key**, **Looper · picked loop's key**, **Looper · Next loop**. Looper controls are kept in **Rig**, so your pedalboard works in every project.
+
+### Play's swing, filter and XY pad from your controller
+
+{{shot: mixer-io-learn-play | The Learn section's Play card: Swing, Filter, XY across and XY up, each for a knob to learn.}}
+
+A knob or fader on your controller can turn the Play page's **Swing** and **Filter**, and two of them can move the **XY pad**, so you can play them without looking at the screen. On Play, SHIFT and a touch on these keeps its own job, so they are learned here instead. In the Learn section, tap **Play** by the heading, tap one, then move the knob:
+
+- **Swing**: from straight (50 %) to the most swing (75 %), as Play's Swing Q-Link turns it.
+- **Filter**: the filter Play's Filter Q-Link turns, the same way: track 1's, which Play's card calls Drums, whatever your project names track 1; low-pass below the middle, high-pass above it, and off in the middle.
+- **XY across** and **XY up**: each moves the XY pad one way, as your finger does, and the other way stays where it is. The pad on the Play page follows. Its effect plays until both are back where the pad rests: across in the middle and up at the bottom. Learn one on a joystick's two directions, or on two knobs side by side.
+
+These work on every page. The Learn section lists them as **Play · Swing**, **Play · Filter**, **Play · XY across** and **Play · XY up**. They are kept in **Rig**, so your controller works the same in every project, and they move the sound but don't record into a clip. Touching Play's own cards and pad still works as before.
 
 ### Playing a Perform pad from your gear
 
