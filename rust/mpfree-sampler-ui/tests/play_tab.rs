@@ -1845,7 +1845,7 @@ fn the_pitch_section_plays_a_keyed_pad_one_note_at_a_time() {
 }
 
 #[test]
-fn the_filter_section_offers_a_notch_a_driven_ladder_and_a_vowel() {
+fn the_filter_section_offers_a_notch_a_driven_ladder_a_vowel_and_a_comb() {
     let mut s = play(false);
     open(&mut s, Section::Filter);
     let why = |s: &PlaySample, row: Row| {
@@ -1888,11 +1888,31 @@ fn the_filter_section_offers_a_notch_a_driven_ladder_and_a_vowel() {
         "{cutoff}"
     );
     assert!(chip(&s).starts_with("Vowel · "), "{}", chip(&s));
+    // The comb: its cutoff is the note it rings at.
+    step_apply(&mut s, Row::Filter, 1);
+    assert_eq!(s.state.settings.filter.kind, FilterKind::Comb);
+    assert_eq!(row_value(&mut s, Row::Filter), "Comb");
+    let cutoff = row_value(&mut s, Row::Cutoff);
+    assert!(
+        cutoff.contains(" Hz · ") || cutoff.contains(" kHz · "),
+        "{cutoff}"
+    );
+    assert!(chip(&s).starts_with("Comb · "), "{}", chip(&s));
     // The last; back down to Off.
-    step_apply(&mut s, Row::Filter, -10);
+    step_apply(&mut s, Row::Filter, -11);
     assert_eq!(s.state.settings.filter.kind, FilterKind::Off);
     assert_eq!(
         why(&s, Row::Drive),
         "The filter is off: pick one in the Filter row"
     );
+}
+
+#[test]
+fn a_comb_names_the_note_it_rings_at() {
+    use mpfree_sampler_ui::play_tab::note_of;
+    assert_eq!(note_of(440.0), "A4");
+    assert_eq!(note_of(220.0), "A3");
+    assert_eq!(note_of(261.63), "C4");
+    assert_eq!(note_of(277.18), "C#4");
+    assert_eq!(note_of(20.0), "D#0");
 }
