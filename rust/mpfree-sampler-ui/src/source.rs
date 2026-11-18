@@ -3,9 +3,11 @@
 
 use std::sync::Arc;
 
+/// A sound's pitch over time ([`SourceView::pitch`]).
+pub use mpfree_analysis::PitchTrack;
 use mpfree_analysis::{
-    estimate_tempo, loop_tempo, note_name, root_pitch, Column, OnsetAnalysis, PeakPyramid,
-    PitchSettings,
+    estimate_tempo, loop_tempo, note_name, pitch_track, root_pitch, Column, OnsetAnalysis,
+    PeakPyramid, PitchSettings,
 };
 use mpfree_sampler::model::{Pcm, Source, SourceId};
 use mpfree_ui::wave::{Peaks, WaveColumn};
@@ -55,6 +57,7 @@ impl Peaks for PyramidPeaks {
 }
 
 /// A source as the screens see it.
+#[derive(Clone)]
 pub struct SourceView {
     pub id: SourceId,
     pub peaks: Arc<dyn Peaks>,
@@ -72,6 +75,10 @@ pub struct SourceView {
     /// Where its hits start, for chopping by transients (None if it
     /// couldn't be analysed, or isn't yet).
     pub onsets: Option<Arc<OnsetAnalysis>>,
+    /// Its pitch over time, for the Chop tab's Pitch method (R4.7): only
+    /// followed when that asks for it ([`SourceView::follow_pitch`]; in the
+    /// app, off the screen thread), so None until then.
+    pub pitch: Option<Arc<PitchTrack>>,
     /// Whether the hits, tempo and root note are worked out. A view made
     /// off the screen thread comes in steps: [`SourceView::pending`] (a
     /// flat line of the right length), then [`SourceView::quick`] (the
@@ -107,6 +114,7 @@ impl SourceView {
             root: None,
             root_note: None,
             onsets: None,
+            pitch: None,
             ready: false,
         }
     }
@@ -167,7 +175,27 @@ impl SourceView {
             root,
             root_note,
             onsets,
+            pitch: self.pitch.clone(),
             ready: true,
+        }
+    }
+
+    /// The sound's pitch over time, followed in its mono mix at `rate` (the
+    /// sound's): about a fifth of a second a minute of sound on the
+    /// workstation, so the app runs it on its analysis worker. None while
+    /// there is no mono mix yet.
+    pub fn follow_pitch(&self, rate: u32) -> Option<Arc<PitchTrack>> {
+        if self.mono.is_empty() {
+            return None;
+        }
+        pitch_track(&self.mono, 1, rate).ok().map(Arc::new)
+    }
+
+    /// This view with its pitch followed.
+    pub fn with_pitch(&self, pitch: Arc<PitchTrack>) -> SourceView {
+        SourceView {
+            pitch: Some(pitch),
+            ..self.clone()
         }
     }
 }
@@ -261,6 +289,7 @@ impl SourceView {
             root: root_note.map(note_name),
             root_note,
             onsets,
+            pitch: None,
             ready: true,
         })
     }

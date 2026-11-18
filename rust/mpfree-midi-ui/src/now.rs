@@ -28,8 +28,9 @@ use mpfree_midi::setup::TempoSource;
 use mpfree_midi::PortId;
 use mpfree_ui::{Align, Color, FontId, PaintCx, Rect};
 
-use crate::monitor::{cc_name, port_text, went_ink, went_to};
+use crate::monitor::{port_text, went_ink, went_to};
 use crate::{note_name, IoModel};
+use mpfree_midi::profile::cc_name;
 
 /// The keyboard's keys: white keys drawn, from C.
 const WHITE: [u8; 7] = [0, 2, 4, 5, 7, 9, 11];
@@ -82,6 +83,11 @@ pub(crate) struct NowData {
     /// Each learned controller on this port and channel, with what it
     /// moves in words.
     pub learned: Vec<(u8, String)>,
+    /// The names of the controllers that moved: the port's profile's,
+    /// else the ones most gear agrees on.
+    pub names: Vec<(u8, String)>,
+    /// The last program's name in the port's profile.
+    pub program_name: Option<String>,
     pub clock: Option<Clock>,
     pub still: Vec<StillOn>,
     pub now: f64,
@@ -144,6 +150,15 @@ pub(crate) fn data(m: &IoModel, stream: (PortId, Dir), channel: u8, now: f64) ->
         .cloned()
         .unwrap_or_default();
     let went = went_to(m, held.note_to).0;
+    let profile = m.profile(&own);
+    let names = held
+        .moved()
+        .iter()
+        .filter_map(|&(cc, _, _)| Some((cc, cc_name(profile, cc)?.to_string())))
+        .collect();
+    let program_name = profile
+        .and_then(|p| p.program_name(held.program))
+        .map(str::to_string);
     let learned = m
         .setup
         .learn
@@ -200,6 +215,8 @@ pub(crate) fn data(m: &IoModel, stream: (PortId, Dir), channel: u8, now: f64) ->
         held,
         went,
         learned,
+        names,
+        program_name,
         clock,
         still,
         now,
@@ -470,7 +487,10 @@ fn paint_controls(cx: &mut PaintCx, d: &NowData, r: Rect) {
     let h = &d.held;
     let mut right = Vec::new();
     if h.program_at > NEVER {
-        right.push(format!("PROGRAM {}", u16::from(h.program) + 1));
+        right.push(match &d.program_name {
+            Some(n) => format!("PROGRAM {} {n}", u16::from(h.program) + 1),
+            None => format!("PROGRAM {}", u16::from(h.program) + 1),
+        });
     }
     if let Some((msb, lsb)) = h.bank() {
         right.push(format!("BANK {msb}/{lsb}"));
@@ -499,8 +519,8 @@ fn paint_controls(cx: &mut PaintCx, d: &NowData, r: Rect) {
     let bar_w = 110.min(body.w / 5);
     for (k, &(cc, value, at)) in moved.iter().take(fit).enumerate() {
         let row = Rect::new(body.x, body.y + k as i32 * ROW_H, body.w, ROW_H - 4);
-        let name = match cc_name(cc) {
-            Some(n) => format!("CC {cc} {n}"),
+        let name = match d.names.iter().find(|n| n.0 == cc) {
+            Some((_, n)) => format!("CC {cc} {n}"),
             None => format!("CC {cc}"),
         };
         cx.text(

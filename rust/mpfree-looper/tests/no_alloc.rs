@@ -2,7 +2,8 @@
 //! `layer`) must not allocate or free. A counting global allocator checks
 //! that across a busy session: the first pass, overdubs, undo and redo,
 //! edits, merges, bounces, a resample and layers copied and moved between
-//! loops, clear, mute, level and latency
+//! loops, clear and its undo, one-pass overdubs, a loop solo, mute, level
+//! and latency
 //! changes, a full memory, locates, a transport loop, tempo changes, stop
 //! and count-in, at period sizes from 1 to 4096 frames.
 //!
@@ -15,7 +16,9 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
-use mpfree_looper::{After, Command as L, Edit as E, LayerCommand as Lc, Looper, Phase, MAX_LOOPS};
+use mpfree_looper::{
+    After, Command as L, Edit as E, LayerCommand as Lc, Looper, Overdubs, Phase, MAX_LOOPS,
+};
 use mpfree_transport::{Block, Command as T, Transport};
 
 struct Counting;
@@ -112,6 +115,35 @@ fn commands_and_periods_never_allocate() {
         L::Merge,
         L::Undo,
         L::Redo,
+        // One-pass overdubs, a loop solo, a clear Undo brings back, and
+        // one it doesn't.
+        L::SetOverdubs(Overdubs::Once),
+        L::Overdub,
+        L::Solo(true),
+        L::Clear,
+        L::Undo,
+        L::Solo(false),
+        // A Replace, merged with the layers under it, and undone.
+        L::SetOverdubs(Overdubs::Replace),
+        L::Overdub,
+        L::Overdub,
+        L::Merge,
+        L::Undo,
+        L::SetOverdubs(Overdubs::Add),
+        // Half speed, an overdub that waits for its print and is called
+        // off, and back.
+        L::Edit(E::Speed(-1)),
+        L::Overdub,
+        L::Overdub,
+        L::Edit(E::Speed(0)),
+        L::Forget,
+        // A capture of the last bars heard, cleared; one called off; and
+        // the input changing.
+        L::Capture(2),
+        L::Forget,
+        L::Capture(1),
+        L::Capture(1),
+        L::NewInput,
     ];
     let mut seen_playing = false;
     let mut layers = 0usize;

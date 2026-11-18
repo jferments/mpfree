@@ -79,6 +79,7 @@ fn short(log: &[Out]) -> Vec<(u64, u16, u8, u8)> {
             Event::Unlock { .. } => (o.frame, o.track, 4, 0),
             Event::Lane { .. } => (o.frame, o.track, 5, 0),
             Event::Pressure { note, .. } => (o.frame, o.track, 6, note),
+            Event::Program { program, .. } => (o.frame, o.track, 7, program),
         })
         .collect()
 }
