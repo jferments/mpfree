@@ -28,8 +28,8 @@ use mpfree_param::RelAddr;
 use mpfree_seq::arrange::SONG_LANE_LEN;
 use mpfree_seq::mpfree_moves::{Kind, Map, Moves, Target};
 use mpfree_seq::{
-    touch_fits, Clip, DestId, LaunchGrid, Lock, ModelError, Note, Project, Quantise, Source, Speed,
-    Touch, TouchPoint, MAX_LOCKS, MAX_NOTES, MAX_TRACKS, SLOTS,
+    touch_fits, Clip, ClipProgram, DestId, LaunchGrid, Lock, ModelError, Note, Project, Quantise,
+    Source, Speed, Touch, TouchPoint, MAX_LOCKS, MAX_NOTES, MAX_TRACKS, SLOTS,
 };
 use mpfree_transport::time::{Swing, Tick};
 
@@ -211,6 +211,9 @@ pub(crate) struct ClipView {
     /// ([`NowPlaying::stamp`]). Recording in place keeps it as a compile
     /// of the edited clip would make it ([`stamp_of`]).
     pub stamp: u64,
+    /// The program change it sends as it starts (S5, [`Clip::program`]):
+    /// outside gear's alone, so not in the stamp.
+    pub program: Option<ClipProgram>,
 }
 
 impl ClipView {
@@ -596,6 +599,7 @@ impl PlayView {
                 moves: lanes.clone(),
                 touch: Vec::new(),
                 stamp: 0,
+                program: None,
             };
             // Recorded moves land here in place too: keep it as they would.
             song.stamp = stamp_of(&song);
@@ -947,6 +951,7 @@ fn view_of(
         moves: clip.moves.clone(),
         touch: clip.touch.clone(),
         stamp: 0,
+        program: clip.program,
     };
     view.notes = clip.notes.iter().map(|n| view.note_view(n)).collect();
     view.notes.sort_by(|a, b| a.local.total_cmp(&b.local));

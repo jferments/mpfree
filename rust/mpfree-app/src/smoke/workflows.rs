@@ -472,6 +472,48 @@ mod tests {
         });
     }
 
+    /// A pad past A16 has no channel of its own (R3 part 4a): its + FX
+    /// lends it one, named by its pad and kit; an effect on it keeps it
+    /// (the Pads row names the effect); taken off again, ‹ gives the
+    /// channel back.
+    #[test]
+    fn a_pad_past_a16_is_lent_a_channel_and_gives_it_back_plain() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Pads");
+            s.press(mpfree_sampler_ui::pads_tab::MAP, "bank", "Bank B")
+                .run_for(0.3);
+            s.pad(4, 100, 0.05);
+            s.run_for(0.2);
+            assert_eq!(s.screen.sample.pad(), 20, "B5");
+            assert_eq!(s.mix.pad_channels.channel(0, 20), None, "none yet");
+            s.press("smp-pads-list", "row-button", "+ FX").run_for(0.2);
+            assert_eq!(s.view(), View::Chain);
+            let lent = s.mix.pad_channels.channel(0, 20);
+            assert_eq!(lent, Some(StripId::Pad(crate::mixing::PADS)));
+            let t = engine(&mut s);
+            assert!(t.picking);
+            assert_eq!(t.title, "B5 · Kit 1 FX");
+            s.press("chain", "pick", "Compressor").run_for(0.2);
+            s.press("chain", "back", "").run_for(0.3);
+            assert_eq!(s.view(), View::Pads);
+            assert_eq!(s.mix.pad_channels.channel(0, 20), lent, "kept");
+            assert!(
+                s.control("smp-pads-list", "row-button", "Compressor")
+                    .is_some(),
+                "the row names the pad's effect"
+            );
+            // Taken off: plain again, and ‹ gives the channel back.
+            s.press("smp-pads-list", "row-button", "Compressor")
+                .run_for(0.2);
+            assert_eq!(s.view(), View::Chain);
+            s.press("chain", "remove", "Remove").run_for(0.3);
+            s.press("chain", "back", "").run_for(0.3);
+            assert_eq!(s.mix.pad_channels.channel(0, 20), None, "given back");
+            assert!(s.control("smp-pads-list", "row-button", "+ FX").is_some());
+        });
+    }
+
     #[test]
     fn an_insert_added_on_the_mixer_is_turned_bypassed_moved_and_removed() {
         on_big_stack(|| {
@@ -659,16 +701,19 @@ mod tests {
         });
     }
 
-    /// Sample > FX: the pad's chain first, then a tap on the track's scope
-    /// shows the drum track's chain (its DJ filter); an effect added there
-    /// is on the Drums strip in the mixer. The header's Sample tab goes
-    /// back to the sound editor.
+    /// Sample > FX shows the pad's effects as pedals; its Whole chain opens
+    /// the pad's chain first, then a tap on the track's scope shows the
+    /// drum track's chain (its DJ filter); an effect added there is on the
+    /// Drums strip in the mixer. The header's Sample tab goes back to the
+    /// FX page.
     #[test]
     fn the_sample_tabs_fx_shows_the_pad_then_the_track() {
         on_big_stack(|| {
             let mut s = Session::new();
             s.press("header", "tab", "Sample");
-            s.press("smp-bar", "tab", "FX");
+            s.press("smp-bar", "tab", "FX").run_for(0.1);
+            assert_eq!(s.view(), View::Sample, "the pedals, on the Sample tab");
+            s.press("smp-fx-list", "button", "Whole chain").run_for(0.1);
             assert_eq!(s.view(), View::Chain);
             let t = engine(&mut s);
             assert_eq!(t.title, "Pad 5 FX", "the pad's chain first");
@@ -695,8 +740,8 @@ mod tests {
             s.press("header", "tab", "Sample");
             assert_eq!(s.view(), View::Sample);
             assert!(
-                s.control("smp-bar", "tab", "FX").is_some(),
-                "the sound editor's bar"
+                s.control("smp-fx-bar", "tab", "FX").is_some(),
+                "back on the FX page's pedals"
             );
 
             s.press("header", "tab", "Mix").run_for(0.1);
@@ -2027,6 +2072,51 @@ mod tests {
     /// the notes are armed, REC makes them ready and PLAY records them; a
     /// take that records keeps the arm where it is; the Loop view arms the
     /// loop, and the ready goes with the arm when it moves.
+    /// Following another device's Start and Stop (sequencer S5): PLAY
+    /// waits while the leader is stopped and says so; REC readies a take
+    /// and PLAY keeps it ready; the leader's Start records it from its
+    /// first pulse, and its Stop stops.
+    #[test]
+    fn following_a_clock_play_waits_and_a_ready_take_records_from_its_start() {
+        use mpfree_midi_clock::{CLOCK, START, STOP};
+        use mpfree_transport::State;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let all = Some(crate::time::Follow {
+                start_stop: true,
+                position: true,
+            });
+            s.clock(all, &[CLOCK]).settle();
+            s.button("PLAY").settle();
+            assert_eq!(s.time.info().state, State::Stopped);
+            assert_eq!(
+                s.lines.last().map(String::as_str),
+                Some("Waiting for clock: PLAY starts when the leader starts")
+            );
+            s.button("REC").button("PLAY").settle();
+            assert!(s.app.rec.ready.is_some());
+            let said = s.lines.last().cloned().unwrap_or_default();
+            assert!(
+                said.starts_with("Waiting for clock: ")
+                    && said.ends_with(" records when the leader starts"),
+                "{said}"
+            );
+            assert_eq!(s.time.info().state, State::Stopped);
+            s.clock(all, &[START, CLOCK]).run_periods(2);
+            assert_eq!(s.time.info().state, State::Recording);
+            assert_eq!(s.app.rec.ready, None);
+            assert!(
+                s.lines
+                    .iter()
+                    .any(|l| l.starts_with("rec: the take started with the clock")),
+                "{:?}",
+                s.lines
+            );
+            s.clock(all, &[CLOCK, STOP]).run_periods(2);
+            assert_eq!(s.time.info().state, State::Stopped);
+        });
+    }
+
     #[test]
     fn rec_records_what_is_armed_and_play_starts_a_ready_take() {
         use crate::play_widgets::{PlayTransport, RecChip, RecState};
@@ -2780,7 +2870,8 @@ mod tests {
             assert_eq!(s.time.loop_cell(), Some((8, 0)));
             s.button("OVERDUB");
             until(&mut s, 0, Phase::Overdubbing);
-            s.run_for(1.0);
+            // A pad into it: an overdub of silence leaves no layer.
+            s.pad(0, 120, 0.3).run_for(0.7);
             s.button("OVERDUB");
             until(&mut s, 0, Phase::Playing);
             assert_eq!(s.looper.loop_status(0).map(|l| l.layers), Some(2));
@@ -3126,6 +3217,66 @@ mod tests {
             assert!(s.time.mute_light(0).unwrap().waiting);
             s.button("STOP").run_for(0.1);
             assert_eq!(s.time.muted(0), Some(false), "STOP landed it");
+            assert!(s.time.mute_wait().is_none());
+            s.button("TRACK MUTE");
+        });
+    }
+
+    /// The kit's pad mutes in Perform (sequencer S4): SHIFT + TRACK MUTE's
+    /// pads wait for the bar line as the tracks' do, and land in the mixer
+    /// there; held TRACK MUTE over them solos a pad of the kit (waiting
+    /// too) and leaves the pads the kit's; STOP lands a change that waits.
+    #[test]
+    fn in_perform_a_kit_pad_mute_waits_for_the_bar_and_held_it_solos() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.play_view("Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.button("PLAY").run_for(0.3);
+            s.button_with("SHIFT", "MAIN").run_for(0.2);
+            assert!(s.time.project().perform);
+            s.button_with("SHIFT", "TRACK MUTE");
+            assert_eq!(s.app.mute_keys(), crate::app::MuteKeys::Pads);
+            s.pad(0, 100, 0.05);
+            assert!(s.time.pad_waiting(0), "it waits");
+            assert_eq!(s.mix.pad_mutes(), 0);
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l == "pad mute: pad 1 muted on the next bar"),
+                "{:?}",
+                s.said()
+            );
+            s.run_for(0.1);
+            let reading = s.screen.time.waiting_reading();
+            assert_eq!(reading.as_deref(), Some("Pad 1 at 2.1"));
+            s.run_for(2.0);
+            assert_eq!(s.mix.pad_mutes(), 1, "landed on bar 2");
+            assert!(!s.time.pad_waiting(0) && s.time.mute_wait().is_none());
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l.contains("pad mute: at 2.1, pad 1 muted")),
+                "{:?}",
+                s.said()
+            );
+            // Held TRACK MUTE + pad 3: its solo waits, and the pads stay the
+            // kit's once TRACK MUTE is let go.
+            s.button_edge("TRACK MUTE", true);
+            s.pad(2, 100, 0.05);
+            s.button_edge("TRACK MUTE", false);
+            assert_eq!(s.app.mute_keys(), crate::app::MuteKeys::Pads);
+            assert!(s.time.pad_waiting(2));
+            s.run_for(2.0);
+            assert_eq!(s.mix.pad_solos(), 1 << 2, "soloed on bar 3");
+            assert_eq!(s.mix.solo_silent() & 1, 1, "the kick is silent by it");
+            // STOP lands a change that waits.
+            s.pad(0, 100, 0.05);
+            assert!(s.time.pad_waiting(0));
+            s.button("STOP").run_for(0.1);
+            assert_eq!(s.mix.pad_mutes(), 0, "STOP landed it");
             assert!(s.time.mute_wait().is_none());
             s.button("TRACK MUTE");
         });

@@ -21,7 +21,7 @@ Along the top are the mixer's five views:
 | View | Shows |
 |---|---|
 | **Tracks** | One strip per instrument: **Drums** (the kit on the pads), **Synth**, **Loop** and **Audio** (every audio track on the Song view, summed), then a strip for each track that has its own instrument (**Track 1**, **Track 2** ...), shown only while it has one (see [A synth for each track](synths.md#a-synth-for-each-track)). A kit other than kit 1 plays into the strip of the first track that plays it, so it shows there too (see [A kit for each track](sampling.md#a-kit-for-each-track)). |
-| **Pads** | A strip for each of the kit's 16 pads, so you can set the kick's level or put an effect on just the snare. |
+| **Pads** | A strip for each of kit 1's pads A1 to A16, so you can set the kick's level or put an effect on just the snare, then one for each other pad that has effects of its own, named by its pad and kit ("B5 · Kit 2"; see [FX](shaping-a-pad.md#fx-effects-on-one-pad-or-on-the-whole-kit)). |
 | **Inputs** | The line input. |
 | **Submixes** | Eight submixes for grouping, then the four send returns A to D. |
 | **I/O** | Where everything goes, as a list: see [The I/O view](#the-io-view). |
@@ -86,11 +86,12 @@ Under Audio come more sections, for the gear around the MPC (see [Playing other 
 - **MIDI** lists the ports plugged in, each with what its **Input** does and its **Thru** (the output its messages go straight on to, if any), then **Tracks out**: where each track plays (**Plays on**, the port and the channel together, or **Inside MPFree**) and the **Program** it sends.
 - **Routing** shows where each port's, the pads' and each track's MIDI goes, on one grid, sends a channel of a port to a track of its own (see [Playing several tracks from your keyboards](midi-and-cv.md#playing-several-tracks-from-your-keyboards)), and sends a port straight out of another (see [Thru](midi-and-cv.md#thru-a-keyboard-straight-to-a-synth)).
 - **Learn** lists every control learned with MIDI Learn: what it moves, where it stands, its range, how it takes over, and whether it is kept with the song or for every project (see [The Learn section](midi-and-cv.md#the-learn-section)).
+- **Controller** makes the pads and Q-Links play your gear instead of MPFree: the port and channel, what the pads send and the CC each Q-Link sends (see [Controller mode](midi-and-cv.md#controller-mode-the-pads-and-q-links-play-your-gear)).
 - **Sync** sets **Tempo from** (MPFree itself or a port's clock), what following does with start, stop and the position, the clock arriving now, and which ports send **Clock out**.
 - **CV** has a row for each of the eight CV/gate outputs: its **Job**, the **Track** it follows and its setting, with the volts it gives now.
 - **Monitor** shows every MIDI message in and out as it happens (see [Seeing what comes in and goes out](midi-and-cv.md#seeing-what-comes-in-and-goes-out)).
 
-A setting for a device that isn't plugged in, or for a part of MPFree that doesn't work yet, says so on its own row, and is kept. The MIDI, Routing, Learn, Sync and CV settings are saved with the project (a port's input, ignores and delay, and controls learned for every project, stay with your rig instead), and so is the rest of the mixer: levels, pans, sends, mutes and every effect with its settings (see [Saving your work](saving.md#projects)). The line input's source, monitoring and arming are not part of a project, so opening one never turns the input on.
+A setting for a device that isn't plugged in, or for a part of MPFree that doesn't work yet, says so on its own row, and is kept. The MIDI, Routing, Learn, Sync and CV settings are saved with the project (a port's input, ignores and delay, controls learned for every project and controller mode's settings stay with your rig instead), and so is the rest of the mixer: levels, pans, sends, mutes and every effect with its settings (see [Saving your work](saving.md#projects)). The line input's source, monitoring and arming are not part of a project, so opening one never turns the input on.
 
 ## Using the Q-Links in the mixer
 
