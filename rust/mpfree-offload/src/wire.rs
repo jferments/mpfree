@@ -25,7 +25,7 @@
 //! a value that isn't finite. Nothing a datagram says can make the reader
 //! allocate, panic or run anything.
 
-use mpfree_node::{Expr, NodeEvent, Timed};
+use mpfree_node::{Ctl, Expr, NodeEvent, Timed};
 
 pub const MAGIC: [u8; 4] = *b"MPFO";
 pub const VERSION: u8 = 1;
@@ -261,6 +261,8 @@ pub fn parse(d: &[u8]) -> Result<Block<'_>, WireError> {
 //   kind 5 Expression x note, y the expression (0 slide, 1 tone, 2 release), value
 //   kind 6 AllOff
 //   kind 7 Param      id, value
+//   kind 8 Control    x the MIDI controller number (mpfree_node::Ctl::cc), value
+//                     (since 18 Nov 2026: a server older than that refuses the block)
 
 fn expr_code(e: Expr) -> u8 {
     match e {
@@ -279,6 +281,7 @@ fn write_event(t: &Timed, out: &mut [u8]) -> Result<(), WireError> {
         NodeEvent::Expression { note, kind, value } => (5, note, 0, expr_code(kind), value),
         NodeEvent::AllOff => (6, 0, 0, 0, 0.0),
         NodeEvent::Param { id, value } => (7, 0, id, 0, value),
+        NodeEvent::Control { ctl, value } => (8, ctl.cc(), 0, 0, value),
     };
     if !value.is_finite() {
         return Err(WireError::NotFinite);
@@ -325,6 +328,10 @@ fn read_event(e: &[u8]) -> Result<Timed, WireError> {
         },
         6 => NodeEvent::AllOff,
         7 => NodeEvent::Param { id, value },
+        8 => NodeEvent::Control {
+            ctl: Ctl::from_cc(x).ok_or(WireError::Event)?,
+            value,
+        },
         _ => return Err(WireError::Event),
     };
     Ok(Timed { offset, ev })
@@ -433,6 +440,13 @@ mod tests {
                 note: 61,
                 kind: Expr::Release,
                 value: 0.25,
+            },
+        );
+        events[2] = Timed::new(
+            6,
+            NodeEvent::Control {
+                ctl: Ctl::Sustain,
+                value: 1.0,
             },
         );
         let mut buf = [0u8; MAX_DATAGRAM];

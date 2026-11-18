@@ -427,7 +427,14 @@ pub static PLANS: &[Plan] = &[
                         "trigger",
                         "Trigger",
                         Shape,
-                        &["Source", "Rate", "Threshold", "Nudge", "Key HP", "Key LP"],
+                        &[
+                            "Source",
+                            "Rate",
+                            "Threshold",
+                            "Nudge",
+                            "SC low cut",
+                            "SC high cut",
+                        ],
                     )
                 },
                 s("output", "Output", Voice, &["Mix"]),
@@ -435,7 +442,7 @@ pub static PLANS: &[Plan] = &[
         )],
         dims: &[
             Dim {
-                controls: &["Threshold", "Key HP", "Key LP"],
+                controls: &["Threshold", "SC low cut", "SC high cut"],
                 by: "Source",
                 when: When::Is(&[1.0]),
                 reason: "Tempo ducks on the beat",
@@ -513,9 +520,14 @@ pub static PLANS: &[Plan] = &[
                     )
                 },
                 Section {
-                    rows: &["Key", "Listen"],
+                    rows: &["Sidechain", "Listen"],
                     note: Some("what opens it"),
-                    ..s("key", "Key", Tone, &["Key", "Key HP", "Key LP", "Listen"])
+                    ..s(
+                        "key",
+                        "Trigger",
+                        Tone,
+                        &["Sidechain", "SC low cut", "SC high cut", "Listen"],
+                    )
                 },
             ],
         )],

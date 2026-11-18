@@ -121,6 +121,7 @@ mod pace;
 mod parts;
 mod perf;
 mod perform_pads;
+mod perform_tab;
 mod play_page;
 mod play_widgets;
 mod plugin_page;
@@ -5522,6 +5523,12 @@ fn player_session(
         app.settings.theme = t.clone();
     }
     out.show(gui::ToUi::Settings(app.settings.clone()));
+    // A new project's Perform set, for the Pads tab's Perform view (a
+    // project opened brings its own).
+    out.show(gui::ToUi::PerformSet {
+        set: Box::new(app.perform_set().clone()),
+        opened: true,
+    });
     out.say(&match (&o.data, store.saves()) {
         (None, _) => {
             "saving: off (no --data); settings and found buttons reset at every start".to_string()
@@ -7169,6 +7176,33 @@ fn player_session(
                 Some(ControlEvent::Button { note, .. })
                     if controller.on()
                         && (Some(note) == app.map.q_link || app.map.bank_of(note).is_some()) => {}
+                // The Pads tab's Perform view: a pad picks the set's pad
+                // there; a throw plays while held, so it can be heard (held
+                // even when the pad latches, so nothing keeps playing). The
+                // kit's pads don't play.
+                Some(ControlEvent::PadDown { pad, .. })
+                    if (pad as usize) < 16 && app.perform_editing() =>
+                {
+                    let pad = pad as usize;
+                    out.show(gui::ToUi::PerformHit(pad));
+                    let heard = match app.perform_page().action(pad) {
+                        perform_pads::PadAction::Throw(t) => {
+                            perform_pads::PadAction::Throw(perform_pads::Throw {
+                                hold: perform_pads::Hold::WhileHeld,
+                                ..t
+                            })
+                        }
+                        _ => perform_pads::PadAction::None,
+                    };
+                    keys_held.press_action(pad, t, heard);
+                    let drums = kit_drums(&kits, player.kit());
+                    let (more, line) =
+                        desk::perform_pad_on(&mut app, &time, &looper, out, heard, drums);
+                    fx.extend(more);
+                    if !line.is_empty() {
+                        out.note(&line);
+                    }
+                }
                 Some(ControlEvent::PadDown { pad, velocity })
                     if (pad as usize) < 16 && app.pads_are_steps() =>
                 {
@@ -7264,6 +7298,10 @@ fn player_session(
                     awaiting[pad as usize] = false;
                     out.show(gui::ToUi::PadUp(pad as usize));
                 }
+                // A Perform pad's pressure: it plays no note, so it presses
+                // nothing (and records nothing).
+                Some(ControlEvent::PadPressure { pad, .. })
+                    if keys_held.action(pad as usize).is_some() => {}
                 Some(ControlEvent::PadPressure { pad, pressure }) if (pad as usize) < 16 => {
                     // Recorded onto the pad's note while the armed track
                     // records pressure.
@@ -7782,7 +7820,7 @@ fn player_session(
         } else if bank_lights {
             let bank = Some(if app.mute_keys() == app::MuteKeys::Tracks {
                 app.mute_bank() % 4
-            } else if app.pads_are_loop_keys() {
+            } else if app.pads_are_perform() {
                 // The Perform set's page.
                 app.perform_bank() % 4
             } else if synth_on {
@@ -8305,8 +8343,9 @@ fn player_session(
                 }
                 pages_shown = Some(pages);
             }
-        } else if app.pads_are_loop_keys() {
-            // The loop keys, lit by their loops' states.
+        } else if app.pads_are_perform() {
+            // The loop keys, lit by their loops' states (and the set's
+            // other pads by theirs), on the pads or on the Pads tab.
             pages_shown = None;
             let blink = ((t * 4.0) as u64).is_multiple_of(2);
             let lit = perform_pads::Lit {

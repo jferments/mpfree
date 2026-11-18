@@ -786,6 +786,7 @@ fn flatten(t: &Timed, n: usize) -> ShmEvent {
         }
         NodeEvent::AllOff => e(shm::EV_ALL_OFF, 0, 0, 0.0),
         NodeEvent::Param { id, value } => e(shm::EV_PARAM, u32::from(id), 0, value),
+        NodeEvent::Control { ctl, value } => e(shm::EV_CONTROL, u32::from(ctl.cc()), 0, value),
     }
 }
 

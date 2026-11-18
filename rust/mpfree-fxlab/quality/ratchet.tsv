@@ -786,10 +786,10 @@ gate/gate/shut_error_db_60hz_hold0ms	0.5
 gate/gate/shut_error_db_60hz_hold30ms	0.6111
 gate/gate/zipper_attack	0.0229
 gate/gate/zipper_hold	0.0229
-gate/gate/zipper_key-hp	0.0229
-gate/gate/zipper_key-lp	0.0229
 gate/gate/zipper_range	0.05
 gate/gate/zipper_release	0.0229
+gate/gate/zipper_sc-high-cut	0.0229
+gate/gate/zipper_sc-low-cut	0.0229
 gate/gate/zipper_threshold	0.0229
 gate/gate[Gated snare]/onset_1ms_db	0
 gate/gate[Kick trigger]/onset_1ms_db	0

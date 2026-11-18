@@ -109,6 +109,7 @@ pub mod registry;
 pub mod resample;
 mod rooms;
 mod shift;
+pub mod sidechain;
 mod stereo;
 mod strip;
 mod svf;
