@@ -23494,6 +23494,311 @@ mod tests {
         assert!(take(&mut p).is_empty());
     }
 
+    /// The Grain page's device checks (R7, round 2: `grain-stretch-hits`,
+    /// `grain-movement`, `grain-cloud-view`, `grain-filter`,
+    /// `grain-quality`, `grain-keys` and `grain-presets` in
+    /// tools/mpc-one/app_checks.py), step by step on a granular pad as a
+    /// finger, - and + and the Q-Links do them on the MPC: each step writes
+    /// the log line its check looks for, and each check's last step leaves
+    /// the pad as it found it, so the next one starts the same.
+    #[test]
+    fn the_grain_pages_device_checks_log_what_they_set_and_end_where_they_began() {
+        use crate::app::RowKey;
+        use mpfree_sampler::model::{GrainMode, GrainQuality, MotionTarget, PlayMode};
+        use mpfree_sampler_ui::grain_tab::{self, Row, View};
+        use mpfree_sampler_ui::play_tab;
+        use mpfree_sampler_ui::widgets::{SectionChips, SettingList};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        // The kit views go back to the screen at once, as the audio thread
+        // sends them; the clouds stay (nothing here draws them).
+        let take = |p: &mut Player| {
+            let (sent, _) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+        };
+        let region = |p: &Player| {
+            p.sample.project(0).unwrap().pad(pad).unwrap().layers[0]
+                .region
+                .clone()
+        };
+        // A tap on a section chip.
+        let open = |p: &mut Player, view: View| {
+            let i = View::ALL.iter().position(|v| *v == view).unwrap();
+            ev(p, grain_tab::SECTIONS, EventKind::Tab(i));
+            take(p);
+        };
+        // Where `row` is on its section (opened first if it isn't showing).
+        let place = |p: &mut Player, row: Row| {
+            let mode = region(p).grain_mode;
+            let view = p.sample.grain().unwrap().0.view();
+            if row.index_in(view, mode).is_none() {
+                open(p, row.view());
+            }
+            row.index_in(row.view(), mode)
+                .unwrap_or_else(|| panic!("{row:?} isn't on {:?} in {mode:?}", row.view()))
+        };
+        // A tap on a row's arrow, a choice's button `delta` from the one
+        // lit, or a switch.
+        let tap = |p: &mut Player, row: Row, delta: i32| {
+            let index = place(p, row);
+            ev(p, grain_tab::LIST, EventKind::Step { index, delta });
+            p.apply(ToUi::SampleLift);
+            take(p);
+        };
+        // A finger on a control picks its row (the list marks it, as its
+        // touch does); - or + then step it.
+        let press = |p: &mut Player, row: Row, delta: i32| {
+            let index = place(p, row);
+            p.ui.get_mut::<SettingList>(grain_tab::LIST)
+                .unwrap()
+                .selected = index;
+            ev(p, grain_tab::LIST, EventKind::Select(index));
+            for _ in 0..delta.abs() {
+                p.apply(ToUi::Rows(RowKey::Step(delta.signum())));
+            }
+            p.apply(ToUi::SampleLift);
+            take(p);
+        };
+        let qlink = |p: &mut Player, knob: usize, detents: i32| {
+            p.apply(ToUi::SampleQLink(knob, detents));
+            p.apply(ToUi::SampleLift);
+            take(p);
+        };
+        let undo_to = |p: &mut Player, start: &mpfree_sampler::model::Region| {
+            for _ in 0..40 {
+                if region(p) == *start {
+                    return;
+                }
+                p.apply(ToUi::SampleUndo(false));
+                take(p);
+            }
+            panic!("UNDO didn't bring the pad back");
+        };
+        let head = "sample: kit 1 (Breaks) pad A5 Break 92: ";
+        let said = |p: &Player, lines: &[&str]| {
+            let log = events_log(p);
+            for line in lines {
+                let line = format!("{head}{line}");
+                assert!(log.contains(&line), "{line:?} not in {log:#?}");
+            }
+        };
+        // The Grain tab on the pad, made to play grains, as the Grains
+        // kit's pads are on the MPC.
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(grain_tab::TAB),
+        );
+        take(&mut p);
+        tap(&mut p, Row::Mode, 1);
+        assert_eq!(region(&p).mode, PlayMode::Granular);
+        let start = region(&p);
+
+        // grain-stretch-hits: Grain mode's right arrow (Stretch at 1x),
+        // Scan - twice (0.5x) and + four times (2x), UNDO back to Cloud.
+        tap(&mut p, Row::GrainMode, 1);
+        assert_eq!(region(&p).grain_mode, GrainMode::Stretch);
+        press(&mut p, Row::Scan, -2);
+        assert_eq!(region(&p).grain.scan, 0.5);
+        press(&mut p, Row::Scan, 4);
+        assert_eq!(region(&p).grain.scan, 2.0);
+        said(
+            &p,
+            &[
+                "grain mode Cloud -> Stretch, scan speed Frozen -> 1×, timing 30 % random -> Regular, \
+                 size 80 ms -> 90 ms, density 25 /s -> 45 /s",
+                "scan speed 1× -> 0.5×",
+                "scan speed 0.5× -> 2×",
+            ],
+        );
+        undo_to(&mut p, &start);
+
+        // grain-movement: LFO to Position, Rate - twice (0.50 Hz);
+        // Envelope to Size, Attack - twice (500 ms); UNDO until both Off.
+        open(&mut p, View::Movement);
+        tap(&mut p, Row::LfoTo, 1);
+        press(&mut p, Row::LfoRate, -2);
+        tap(&mut p, Row::EnvTo, 1);
+        tap(&mut p, Row::EnvTo, 1);
+        press(&mut p, Row::EnvAttack, -2);
+        let g = region(&p).grain;
+        assert_eq!((g.lfo.target, g.lfo.rate_hz), (MotionTarget::Position, 0.5));
+        assert_eq!((g.env.target, g.env.attack_ms), (MotionTarget::Size, 500.0));
+        said(
+            &p,
+            &[
+                "lfo to Off -> Position",
+                "lfo rate 1.0 Hz -> 0.50 Hz",
+                "envelope to Position -> Size",
+                "env attack 1.00 s -> 500 ms",
+            ],
+        );
+        undo_to(&mut p, &start);
+
+        // grain-cloud-view: LFO to Spray (its right arrow five times), then
+        // Q-Link 2 (Size) all the way up and Q-Link 3 (Density) to 50 /s:
+        // more grains than a voice keeps, so the cloud thins.
+        for _ in 0..5 {
+            tap(&mut p, Row::LfoTo, 1);
+        }
+        assert_eq!(region(&p).grain.lfo.target, MotionTarget::Spray);
+        qlink(&mut p, 1, 40);
+        qlink(&mut p, 2, 8);
+        let g = region(&p).grain;
+        assert_eq!((g.size_ms, g.density), (2000.0, 50.0));
+        assert!(
+            g.size_ms * 0.001 * g.density > mpfree_grain::MAX_GRAINS as f32,
+            "it thins"
+        );
+        said(
+            &p,
+            &[
+                "lfo to Pitch -> Spray",
+                "size 80 ms -> 2.00 s",
+                "density 25 /s -> 50 /s",
+            ],
+        );
+        undo_to(&mut p, &start);
+
+        // grain-filter: Band pass, Resonance and Filter spray dragged up,
+        // LFO to Cutoff (its right arrow six times); UNDO back.
+        open(&mut p, View::FilterKeys);
+        tap(&mut p, Row::Filter, 2);
+        press(&mut p, Row::Resonance, 12);
+        press(&mut p, Row::FilterSpray, 20);
+        for _ in 0..6 {
+            tap(&mut p, Row::LfoTo, 1);
+        }
+        let g = region(&p).grain;
+        assert_eq!(g.filter.kind, mpfree_sampler::model::GrainFilterKind::Band);
+        assert!((g.filter.resonance - 0.6).abs() < 1e-4);
+        assert_eq!(g.filter.spray, 1.0);
+        assert_eq!(g.lfo.target, MotionTarget::Cutoff);
+        said(
+            &p,
+            &[
+                "filter Off -> Band pass",
+                "resonance 0 % -> 60 %",
+                "filter spray Off -> ±3 oct",
+                "lfo to Spray -> Cutoff",
+            ],
+        );
+        let chips = p.ui.get::<SectionChips>(grain_tab::SECTIONS).unwrap();
+        assert_eq!(chips.chips[2].sub, "Band pass 2.00 kHz");
+        undo_to(&mut p, &start);
+
+        // grain-quality: Quality's right arrow twice (Tape, Lo-fi), left
+        // twice and right twice while it plays, then left twice: Clean.
+        for d in [1, 1, -1, -1, 1, 1, -1, -1] {
+            tap(&mut p, Row::Quality, d);
+        }
+        assert_eq!(region(&p), start, "Clean, as it began");
+        said(
+            &p,
+            &[
+                "quality Clean -> Tape",
+                "quality Tape -> Lo-fi",
+                "quality Lo-fi -> Tape",
+                "quality Tape -> Clean",
+            ],
+        );
+
+        // grain-keys: on the Play tab's Pitch section, a tap on Tune and +
+        // twelve times (+12 st); on the Grain tab Size follows key on, then
+        // off; Tune - twelve times.
+        let pitch = play_tab::Section::ALL
+            .iter()
+            .position(|s| *s == play_tab::Section::Pitch)
+            .unwrap();
+        let tune = |p: &mut Player, delta: i32| {
+            ev(p, grain_tab::BAR, EventKind::Tab(play_tab::TAB));
+            take(p);
+            ev(p, play_tab::SECTIONS, EventKind::Tab(pitch));
+            let index = play_tab::Section::Pitch
+                .rows()
+                .iter()
+                .position(|r| *r == play_tab::Row::Tune)
+                .unwrap();
+            p.ui.get_mut::<SettingList>(play_tab::LIST)
+                .unwrap()
+                .selected = index;
+            ev(p, play_tab::LIST, EventKind::Select(index));
+            for _ in 0..delta.abs() {
+                p.apply(ToUi::Rows(RowKey::Step(delta.signum())));
+            }
+            p.apply(ToUi::SampleLift);
+            ev(p, play_tab::BAR, EventKind::Tab(grain_tab::TAB));
+            take(p);
+        };
+        let tuned = |p: &Player| p.sample.project(0).unwrap().pad(pad).unwrap().tune_cents;
+        tune(&mut p, 12);
+        assert_eq!(tuned(&p), 1200);
+        tap(&mut p, Row::KeySize, 1);
+        assert!(region(&p).grain_keys.size);
+        tap(&mut p, Row::KeySize, 1);
+        tune(&mut p, -12);
+        assert_eq!((tuned(&p), region(&p)), (0, start.clone()));
+        said(
+            &p,
+            &[
+                "tune +0 st -> +12 st",
+                "size follows key Off -> On",
+                "size follows key On -> Off",
+                "tune +12 st -> +0 st",
+            ],
+        );
+
+        // grain-presets: the Presets chip, each of the eight tapped in
+        // turn, then UNDO eight times: the pad's own settings again.
+        open(&mut p, View::Presets);
+        let names: Vec<&str> = mpfree_sampler::grain_presets::presets()
+            .iter()
+            .map(|pr| pr.name)
+            .collect();
+        assert_eq!(names.len(), 8);
+        for k in 0..8 {
+            let row = if k < 4 { Row::Preset } else { Row::PresetMore };
+            let index = place(&mut p, row);
+            let on = match &p.ui.get::<SettingList>(grain_tab::LIST).unwrap().controls[index].look {
+                mpfree_sampler_ui::panel::Look::Choice { on, .. } => *on as i32,
+                _ => panic!("a preset's line is a choice"),
+            };
+            ev(
+                &mut p,
+                grain_tab::LIST,
+                EventKind::Step {
+                    index,
+                    delta: k % 4 - on,
+                },
+            );
+            p.apply(ToUi::SampleLift);
+            take(&mut p);
+            let log = events_log(&p);
+            let last = log.last().unwrap();
+            assert!(
+                last.starts_with(head) && last.contains(&format!(" -> {}", names[k as usize])),
+                "{last}"
+            );
+        }
+        assert_eq!(region(&p).grain_mode, GrainMode::Tone, "Sub drone");
+        for _ in 0..8 {
+            p.apply(ToUi::SampleUndo(false));
+            take(&mut p);
+        }
+        assert_eq!(region(&p), start, "eight UNDOs");
+        let chips = p.ui.get::<SectionChips>(grain_tab::SECTIONS).unwrap();
+        assert_eq!(chips.chips[3].sub, "your own settings");
+        assert_eq!(region(&p).grain.quality, GrainQuality::Clean);
+    }
+
     /// The FX tab (P4 of the Sample tab as an instrument): pad A5's channel
     /// as pedals, a switch and a knob reaching that channel, the picked
     /// effect's four on the Q-Links, and + Add effect and Whole chain
