@@ -6,14 +6,14 @@ checked: 2026-11-16 d7c844c
 
 # Playing live
 
-The **Play** page is MPFree's home: the place for finger drumming, making beats and live looping. It has three **views**, each arranged for a different way of playing. Tap **All**, **Beats** or **Loop** on the right of the transport bar to switch; the page remembers your view while you visit other tabs.
+The **Play** page is MPFree's home: the place for finger drumming, making beats and live looping. It has two **views**, each arranged for a different way of playing. Tap **All** or **Loop** on the right of the transport bar to switch, or press **MAIN** on Play; the page remembers your view while you visit other tabs. The pattern on its own, with your timing under it, is the **Sequencer** tab's **Steps** view, next to Pads (see [Your first beat](../getting-started/first-beat.md)).
 
-## The three views
+## The views
 
 | View | Made for | What's on it |
 |---|---|---|
 | **All** | Everything at once (the home view) | The loop, the pattern across the page, the throws and the XY pad |
-| **Beats** | Programming patterns and practising finger drumming | The whole pattern, your timing under it, and all eight throws |
+| **Steps**, on the **Sequencer** tab | Programming patterns and practising finger drumming | The whole pattern, your timing under it, and all eight throws |
 | **Loop** | Live looping | The loop, large, with its buttons; the throws and the XY pad |
 
 There are no pads on the Play page: you play the real ones, and the room goes to the pattern, the loop and the effects. The pads' own settings and sounds are on the Pads tab, next to Play.
@@ -80,11 +80,11 @@ The last kind in the column, **Transpose**, moves a playing line instead of a so
 
 ## Your timing
 
-The **Beats** view has a **Your timing** strip under the pattern: it reads the last two bars you played against the sixteenth-note grid. **Average** says how early or late you play on average, **Spread** how consistent you are, and **Velocity** how hard you hit; the bars on the right show how your hits spread, from 30 ms early to 30 ms late, with the green bar on the grid.
+The **Sequencer** tab's **Steps** view has a **Your timing** strip under the pattern: it reads the last two bars you played against the sixteenth-note grid. **Average** says how early or late you play on average, **Spread** how consistent you are, and **Velocity** how hard you hit; the bars on the right show how your hits spread, from 30 ms early to 30 ms late, with the green bar on the grid.
 
-The strip takes a little room from the pattern. To give the pattern more rows, press **MENU** on Play and set **Timing strip** to **Off**; set it back to **On** to see your timing again. MPFree remembers the choice.
+The strip takes a little room from the pattern. To give the pattern more rows, press **MENU** there and set **Timing strip** to **Off**; set it back to **On** to see your timing again. MPFree remembers the choice.
 
-{{shot: play-beats | The Beats view: the pattern, your timing (7 ms early on average) and the throws.}}
+{{shot: sequencer-steps | The Sequencer tab's Steps: the pattern, your timing (7 ms early on average) and the throws.}}
 
 ## Make and Perform
 
@@ -122,9 +122,9 @@ The four knobs change with the view:
 
 | View | Q-Link 1 | Q-Link 2 | Q-Link 3 | Q-Link 4 |
 |---|---|---|---|---|
-| All and Beats | Swing | Tune (last pad played) | Drums' filter | Drums' delay send |
-| All and Beats, with 16 Levels on Transpose | Swing | Transpose (the armed track) | Drums' filter | Drums' delay send |
-| Beats, with a step picked | Velocity | Length | Nudge | Chance |
+| All, and the Sequencer's Steps | Swing | Tune (last pad played) | Drums' filter | Drums' delay send |
+| All and Steps, with 16 Levels on Transpose | Swing | Transpose (the armed track) | Drums' filter | Drums' delay send |
+| Steps, with a step picked | Velocity | Length | Nudge | Chance |
 | Loop | Loop level | Loop's delay send | Line input level | Loop filter |
 
 Swing reads **off** at 50 %, which is straight time, as it does in the transport bar. Turn it up for a shuffle.

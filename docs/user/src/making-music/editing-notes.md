@@ -6,9 +6,9 @@ checked: 2026-11-14 b76c3c7
 
 # Editing notes
 
-The note editor shows a clip's notes so you can fix what you played: pull notes into time, move them, change how hard they hit, draw new ones and erase others. Tap **Edit ›** above the clip grid. It opens the clip the Play page's steps show, which is the armed track's playing clip, or its first clip.
+The note editor shows a clip's notes so you can fix what you played: pull notes into time, move them, change how hard they hit, draw new ones and erase others. It is the **Sequencer** tab's **Notes** view: tap **Notes** on the right of the Sequencer's transport bar, or **Edit ›** above the clip grid on Arrange, which takes you there. It opens the clip the Sequencer's Steps show, which is the armed track's playing clip, or its first clip.
 
-{{shot: arrange-notes | The note editor's piano roll, with the melody picked and the Edit options beside it. Two long melody notes show the pressure they were played with.}}
+{{shot: sequencer-notes | The note editor's piano roll, with the melody picked and the Edit options beside it. Two long melody notes show the pressure they were played with.}}
 
 ## The piano roll
 
@@ -21,15 +21,15 @@ The notes are bars on a piano roll: higher notes higher up, time running left to
 - **Duplicate** copies the picked notes to just after them. **Delete** takes them out (in Perform, hold it for half a second).
 - **Grid, List, Tracker.** The second button says which view is showing (**Grid** to begin with) and switches to the next. **List** shows the notes as a list, one row per note, with its position, note, velocity, length and chance. **Tracker** shows every step, described below.
 
-{{shot: arrange-notes-list | The same notes as a list, the picked ones lit.}}
+{{shot: sequencer-notes-list | The same notes as a list, the picked ones lit.}}
 
-Every edit is a take, so **UNDO** takes it back and **SHIFT + UNDO** puts it back again. Tap **‹ Clips** to close the editor.
+Every edit is a take, so **UNDO** takes it back and **SHIFT + UNDO** puts it back again. Tap **‹ Steps**, or press **STEP SEQ**, to close the editor and see the clip as steps again. The editor stays open while you visit other tabs, and the Sequencer tab shows it again when you come back.
 
 ## The tracker
 
 The tracker shows the clip as a list of steps from top to bottom, empty steps included, the way a tracker does. It is handy for drum clips, where you want to read every step's settings at a glance.
 
-{{shot: arrange-notes-tracker | The tracker on a bar of drums: a nudged hat, a 1:2 hat, a FILL open hat, a ratchet, and the picked snare with a lock. The Euclid rows are beside it.}}
+{{shot: sequencer-notes-tracker | The tracker on a bar of drums: a nudged hat, a 1:2 hat, a FILL open hat, a ratchet, and the picked snare with a lock. The Euclid rows are beside it.}}
 
 - **One row per step**, at the snap's size (1/16 to begin with). A step with several notes, such as a kick and a hat together, gives each note a row of its own under the step. An empty step shows dots.
 - **The columns**: the step (bar.beat.step), the pad or note, velocity, length, nudge (how many ticks early or late), chance, condition, ratchet, and how many parameter locks the step has. A setting left at its default shows as a faint dot, so what you changed stands out.

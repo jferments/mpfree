@@ -558,6 +558,11 @@ impl TimeHost {
         self.control.loop_cell()
     }
 
+    /// The note editor is open (the Sequencer tab shows its Notes view).
+    pub fn editing(&self) -> bool {
+        self.control.editing()
+    }
+
     /// The loop playing (or launched) on Loop track `t`, for OVERDUB with
     /// a cell of it armed.
     pub fn loop_on(&self, t: usize) -> Option<usize> {
@@ -4243,7 +4248,7 @@ mod tests {
     /// The note editor on the focused clip: Edit opens it; Timing Correct
     /// with nothing selected moves every note to the 1/16 grid; a tap
     /// selects a note and Delete takes it out; each is one take that Undo
-    /// puts back; ‹ Clips closes it.
+    /// puts back; ‹ Steps closes it.
     #[test]
     fn the_note_editor_edits_the_focused_clip_through_the_take_history() {
         use mpfree_seq::Note;

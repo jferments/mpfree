@@ -18,6 +18,7 @@ Every page in MPFree is laid out the same way, so once you know one, you know th
 |---|---|
 | **Play** | The home page: finger drumming, beats and live looping. |
 | **Pads** | The kit's 16 pads beside the pad's settings: set each pad up, and **Browse for** a sound to put on it. |
+| **Sequencer** | The armed track's clip, as steps (**Steps**) or as notes (**Notes**, the note editor). **STEP SEQ** opens it. |
 | **Arrange** | Clips: recording them, keeping takes and launching them. |
 | **Synth** | MPFree's synths and their sounds, or an MPC plugin's own screen ([The plugin's own screen](../making-music/synths.md#the-plugins-own-screen)). |
 | **Looper** | Up to eight loops side by side: record, overdub and mute each with a tap, and edit the layers of the one you pick. |
@@ -36,7 +37,7 @@ The small **folder** at the far right opens the browser over the page, as **BROW
 
 ## The transport bar
 
-On the Play page, a bar under the tabs shows time: whether MPFree is stopped, playing or recording, the position (bar, beat and step), the tempo in BPM (tap it in time to set the tempo, as with **TAP TEMPO**, or hold a finger on it to type the tempo), and dots that light up with each bar and beat. On the right of it is the view switch; see [Playing live](../making-music/playing-live.md).
+On the Play page and the Sequencer tab, a bar under the tabs shows time: whether MPFree is stopped, playing or recording, the position (bar, beat and step), the tempo in BPM (tap it in time to set the tempo, as with **TAP TEMPO**, or hold a finger on it to type the tempo), and dots that light up with each bar and beat. On the right of it is the view switch: **All** and **Loop** on Play (see [Playing live](../making-music/playing-live.md)), **Steps** and **Notes** on the Sequencer.
 
 ## The Q-Link column and the master bar
 

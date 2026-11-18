@@ -896,7 +896,7 @@ mod step_seq {
             s.press("header", "tab", "Looper");
             s.button("STEP SEQ");
             assert!(s.app.pads_are_steps());
-            assert_eq!(s.view(), View::Play, "STEP SEQ shows Beats");
+            assert_eq!(s.view(), View::Sequencer, "STEP SEQ shows the Steps");
             assert_eq!(s.sent_lights[button::STEP_SEQ as usize], LIGHT_ON);
             assert!(s
                 .lines
@@ -962,7 +962,7 @@ mod step_seq {
             assert!(s.synth_on, "the pads play the synth");
             s.button("STEP SEQ");
             assert!(s.app.step_pads().is_some_and(|p| p.line()));
-            assert_eq!(s.view(), View::Play, "STEP SEQ shows Beats");
+            assert_eq!(s.view(), View::Sequencer, "STEP SEQ shows the Steps");
             // The pen: STEP SEQ held, pads 1 and 5 together.
             s.button_edge("STEP SEQ", true);
             assert!(s.hint().contains("hold a chord"), "{}", s.hint());
@@ -1478,7 +1478,7 @@ mod device_log {
         on_big_stack(|| {
             let mut s = Session::new();
             s.run_for(0.1);
-            s.press("play-transport", "view", "Loop").settle();
+            s.play_view("Loop").settle();
             let n = s.lines.len();
             s.button("REC").button("PLAY");
             s.run_for(0.5);
@@ -1540,7 +1540,7 @@ mod device_log {
         on_big_stack(|| {
             let mut s = Session::new();
             s.run_for(0.1);
-            s.press("play-transport", "view", "Loop").settle();
+            s.play_view("Loop").settle();
             s.button("REC").button("PLAY");
             s.run_for(0.5);
             s.pad(0, 100, 0.05);
@@ -1576,8 +1576,8 @@ mod device_log {
         on_big_stack(|| {
             let mut s = Session::new();
             s.run_for(0.1);
-            s.press("play-transport", "view", "Beats").settle();
-            s.press("play-transport", "view", "All").settle();
+            s.play_view("Beats").settle();
+            s.play_view("All").settle();
             let n = s.lines.len();
             s.button("REC");
             s.run_for(0.1);
@@ -1618,7 +1618,7 @@ mod device_log {
             s.button("STOP");
             s.run_for(0.2);
             let n = s.lines.len();
-            s.press("play-transport", "view", "Loop").settle();
+            s.play_view("Loop").settle();
             s.button("REC");
             s.run_for(0.2);
             assert_eq!(
@@ -1697,7 +1697,7 @@ mod device_log {
             assert_eq!(pads_in(&s), [2], "pad 3's notes stay");
             // The check ends with UNDO twice on Play's All view: both
             // takes go, so the checks after it find Track 1 as it was.
-            s.press("play-transport", "view", "All");
+            s.play_view("All");
             s.run_for(0.2);
             let n = s.lines.len();
             s.button("UNDO").run_for(0.2);
@@ -1806,7 +1806,7 @@ mod device_log {
     fn mute_queue_writes_its_lines() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("play-transport", "view", "Beats");
+            s.play_view("Beats");
             for k in [1, 5, 9, 13] {
                 s.press("steps", "step", &format!("Kick step {k}"));
             }
@@ -1840,7 +1840,7 @@ mod device_log {
     fn reload_on_the_bar_writes_its_lines() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("play-transport", "view", "Beats");
+            s.play_view("Beats");
             for k in [1, 5, 9, 13] {
                 s.press("steps", "step", &format!("Kick step {k}"));
             }
@@ -1907,7 +1907,7 @@ mod device_log {
     fn clip_and_block_moves_write_their_lines() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("play-transport", "view", "Beats");
+            s.play_view("Beats");
             s.press("steps", "step", "Kick step 1");
             s.run_for(0.1);
             assert!(

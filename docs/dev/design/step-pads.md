@@ -15,7 +15,7 @@ This builds on the [step sequencer](steps.md): steps are a view of a clip's note
 
 | Press | Does |
 | --- | --- |
-| STEP SEQ (on its release) | The pads become steps, and Play shows Beats; again, they play |
+| STEP SEQ (on its release) | The pads become steps, and the Sequencer tab shows its Steps (Beats' pages; the note editor closes); again, they play |
 | Hold STEP SEQ, tap a pad | The pads are the kit while it is held (PAD BANK picks the kit's bank); the pad tapped sounds and is the sound when STEP SEQ is let go |
 | SHIFT + STEP SEQ | Follow: the page turns with the playhead |
 | Tap an empty step | A note at the pad's velocity (127 with FULL LEVEL), heard once while the transport is stopped |

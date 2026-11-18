@@ -67,8 +67,16 @@ pub const INSPECTOR: &str = "step-inspector";
 /// The pads heading on the Synth tab, over its presets: always the synth.
 pub const SYNTH_PADS_HEAD: &str = "synth-pads-head";
 
-/// The views, in the switch's order.
-pub const VIEWS: [&str; 3] = ["All", "Beats", "Loop"];
+/// Play's views, in its switch's order (MAIN steps through them). Beats
+/// is the Sequencer tab's Steps view, so it is not one of them.
+pub const PLAY_VIEWS: [PlayView; 2] = [PlayView::All, PlayView::Loop];
+/// Play's switch.
+pub const PLAY_SWITCH: [&str; 2] = ["All", "Loop"];
+/// The Sequencer's switch: Steps (Beats' pages) and Notes (the note
+/// editor).
+pub const SEQ_SWITCH: [&str; 2] = ["Steps", "Notes"];
+/// The Sequencer switch's Notes.
+pub const SEQ_NOTES: usize = 1;
 /// Beats with the Your timing strip (Play's options, Timing strip On).
 pub const BEATS_TIMING_PAGE: &str = "Play · Beats · timing";
 /// Beats with a step held or picked: the step inspector in the throws'
@@ -91,16 +99,20 @@ pub enum PlayView {
 impl PlayView {
     pub const ALL: [PlayView; 3] = [PlayView::All, PlayView::Beats, PlayView::Loop];
 
-    pub fn index(self) -> usize {
-        self as usize
-    }
-
-    pub fn from_index(i: usize) -> PlayView {
-        PlayView::ALL[i.min(PlayView::ALL.len() - 1)]
-    }
-
     pub fn name(self) -> &'static str {
-        VIEWS[self.index()]
+        match self {
+            PlayView::All => "All",
+            PlayView::Beats => "Steps",
+            PlayView::Loop => "Loop",
+        }
+    }
+
+    /// Play's view after this one (MAIN on Play): All and Loop in turn.
+    pub fn next_on_play(self) -> PlayView {
+        match self {
+            PlayView::All => PlayView::Loop,
+            PlayView::Beats | PlayView::Loop => PlayView::All,
+        }
     }
 
     /// The view's page in the `Ui`. All, the home view, is "Play", as
@@ -663,6 +675,9 @@ pub const TAP_VELOCITY: u8 = 100;
 /// draws: the widgets in `play_widgets` do.
 pub struct PlayPage {
     pub view: PlayView,
+    /// The page shows on the Sequencer tab (its Steps view, Beats' pages):
+    /// the transport's switch is Steps | Notes there.
+    pub sequencer: bool,
     pub steps: StepsData,
     /// The page of steps shown (16 a page).
     pub page: usize,
@@ -764,6 +779,7 @@ impl Default for PlayPage {
     fn default() -> Self {
         PlayPage {
             view: PlayView::All,
+            sequencer: false,
             steps: StepsData::default(),
             page: 0,
             selected: None,
@@ -2396,7 +2412,16 @@ impl PlayPage {
             step: rolling.then(|| ((pos % bar_ticks) / STEP_TICKS).clamp(0, 15) as usize),
             bar: (((pos - start).max(0) / bar_ticks) as usize) % bars,
             bars,
-            view: self.view.index(),
+            views: if self.sequencer {
+                &SEQ_SWITCH
+            } else {
+                &PLAY_SWITCH
+            },
+            view: if self.sequencer {
+                0
+            } else {
+                PLAY_VIEWS.iter().position(|&v| v == self.view).unwrap_or(0)
+            },
             rec: None,
         }
     }

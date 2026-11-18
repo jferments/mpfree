@@ -62,7 +62,7 @@ Set up the recording in the Record panel, beside the grid:
 - **Loop:** plays the same bars round and round while you record, so you can keep trying a part. It counts in bars from bar 1.
 - **Tempo:** the song's tempo, in BPM.
 - **Pressure:** whether the armed track records how hard you press the pads while they're held (**Recorded**, the setting for a new track, or **Off**).
-- **Quantise:** puts each note you record on the nearest line of a grid, from **1/4** to **1/32** with triplets, as the MPC's Timing Correct does while recording. **Off** (the setting for a new track) keeps the notes exactly as you played them. It belongs to the armed track, so drums can go in on 1/16 while the bass keeps its feel. The clip's own **Quantise** (see [Clip settings](#clip-settings)) still moves the notes as they play, and you can change that later; this one moves them for good, so they sit on the steps in Beats and the note editor.
+- **Quantise:** puts each note you record on the nearest line of a grid, from **1/4** to **1/32** with triplets, as the MPC's Timing Correct does while recording. **Off** (the setting for a new track) keeps the notes exactly as you played them. It belongs to the armed track, so drums can go in on 1/16 while the bass keeps its feel. The clip's own **Quantise** (see [Clip settings](#clip-settings)) still moves the notes as they play, and you can change that later; this one moves them for good, so they sit on the steps on the Sequencer and in the note editor.
 - **Launch:** when a clip you tap, a stop or a scene starts while the music plays: on the next bar line (**1 bar**, the setting for a new project), the next **2**, **4** or **8** bars for a big change, the next **1/2** to **1/16** note for a quick one, or **at once**. The transport bar shows it as **Launch 1 bar**. A clip with a Launch of its own on the Clip tab (below) keeps it; a scene's clips all start together on this one. Change it while something waits and that still starts where it was going to.
 - **Transpose:** shifts every note the armed track plays, live, without changing its clips: **as written**, or up to 24 semitones either way (**+5 st**). A track set to transpose in key shows **+3 in key** and steps through its scale. Its notes already sounding keep their pitch; the next ones move. 16 Levels' Transpose sets it from the pads (see [Transpose](playing-live.md#transpose)). Only a track that plays notes (the synth, or its own instrument) has it; a kit's track shows **–**.
 - **Follows:** **On** and this track moves with whichever track you transpose from the pads, so a bass and its chords change key together. **Off** (the setting for a new track) keeps its own.
@@ -96,7 +96,7 @@ The pads feel how hard you keep pressing after you hit them. While you record, t
 
 ## Clip settings
 
-The Record panel has three tabs at its top: **Record**, the record settings, **Clip**, the settings of one clip, and **Scene**, a scene's name, follow action and mutes (see [Setting up a scene](arranging.md#setting-up-a-scene)). The Clip tab names the clip it sets, such as "Clip · Verse B": the armed track's playing clip, or its first clip when none is playing, the same clip the Play page's Beats and the note editor show.
+The Record panel has three tabs at its top: **Record**, the record settings, **Clip**, the settings of one clip, and **Scene**, a scene's name, follow action and mutes (see [Setting up a scene](arranging.md#setting-up-a-scene)). The Clip tab names the clip it sets, such as "Clip · Verse B": the armed track's playing clip, or its first clip when none is playing, the same clip the Sequencer's Steps and the note editor show.
 
 {{shot: clips-card | The Record panel's Clip tab: the settings of Bass's clip beside the grid.}}
 
@@ -165,11 +165,11 @@ A note no pad plays is left out, and counted. A melody that goes past what the 1
 
 ## Steps
 
-The pattern on the Play page's **Beats** view is a clip shown as a grid of steps, 16 to a page. Each step can have its own **velocity**, **length**, **nudge** (early or late) and **chance** (how often it plays). The **+** and **–** at the top right of the pattern double or halve its steps (16, 32, 64 or 128), and **‹** and **›** turn its pages. See [Your first beat](../getting-started/first-beat.md#program-a-pattern). **STEP SEQ** puts one sound's steps on the pads, a page of 16 at a time, where you hold a step to change it or lock its sound on the Q-Links, hold one and hit a later one for a longer note, and copy steps with **COPY**: see [Program a pattern on the pads](../getting-started/first-beat.md#program-a-pattern-on-the-pads).
+The pattern on the **Sequencer** tab's **Steps** view is a clip shown as a grid of steps, 16 to a page. Each step can have its own **velocity**, **length**, **nudge** (early or late) and **chance** (how often it plays). The **+** and **–** at the top right of the pattern double or halve its steps (16, 32, 64 or 128), and **‹** and **›** turn its pages. See [Your first beat](../getting-started/first-beat.md#program-a-pattern). **STEP SEQ** puts one sound's steps on the pads, a page of 16 at a time, where you hold a step to change it or lock its sound on the Q-Links, hold one and hit a later one for a longer note, and copy steps with **COPY**: see [Program a pattern on the pads](../getting-started/first-beat.md#program-a-pattern-on-the-pads).
 
 ## Editing notes
 
-To fix what you played (pull notes into time, move them, change how hard they hit, draw new ones), tap **Edit ›** above the clip grid. The note editor has a chapter of its own: [Editing notes](editing-notes.md).
+To fix what you played (pull notes into time, move them, change how hard they hit, draw new ones), tap **Notes** on the Sequencer tab, or **Edit ›** above the clip grid, which takes you there. The note editor has a chapter of its own: [Editing notes](editing-notes.md).
 
 > [!MPC]
 > On the MPC, a sequence holds every track and you switch whole sequences. In MPFree each track has its own clips, launched on their own like Ableton Live's clips, and clips of different lengths play side by side.
