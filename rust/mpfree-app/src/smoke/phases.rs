@@ -976,7 +976,7 @@ mod step_seq {
             assert!(s
                 .lines
                 .iter()
-                .any(|l| l == "STEP SEQ: the pads are pad 3's steps, page 1"));
+                .any(|l| l == "STEP SEQ: the pads are pad A3's steps, page 1"));
             let row = |s: &Session| -> Vec<bool> {
                 let d = s.time.steps();
                 d.clip
@@ -1708,7 +1708,7 @@ mod device_log {
         });
     }
 
-    /// Live erase (`^ERASE: pad \d+'s notes come out`): ERASE held and a
+    /// Live erase (`^ERASE: pad [A-H]?\d+'s notes come out`): ERASE held and a
     /// pad pressed while recording erases that pad's notes as the playhead
     /// passes them, and the pad neither sounds nor records; letting go of
     /// the pad, or of ERASE, stops it; while only playing, ERASE + a pad
@@ -1752,7 +1752,7 @@ mod device_log {
             s.button_edge("ERASE", true);
             s.pad_edge(0, 100, true);
             s.run_periods(4);
-            wrote(&s, n, "ERASE: pad 1's notes come out", "");
+            wrote(&s, n, "ERASE: pad A1's notes come out", "");
             assert!(s.time.erases(0));
             s.run_for(4.5);
             assert!(

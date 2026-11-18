@@ -2,6 +2,7 @@
 //! those, they only show what the page put in their fields and report
 //! touches.
 
+use crate::panel::{self, Control, Look, Panel};
 use mpfree_ui::qlink;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
@@ -468,6 +469,17 @@ pub struct SettingList {
     /// A finger on a typed value: the number pad opens when it lifts, not
     /// when the wheel turned the value while it was held.
     typing: Option<(u64, usize)>,
+    /// Drawn as a panel of knobs, buttons and switches in sections
+    /// instead of a list ([`crate::panel`]): each row's control in
+    /// `controls`, in the row's place. The rows, the picked row and the
+    /// events are the list's own.
+    pub panel: Option<Panel>,
+    pub controls: Vec<Control>,
+    /// Whether the panel outlines the control picked (not on a panel the
+    /// wheel doesn't walk, such as the Play page's scenes).
+    pub outlined: bool,
+    /// A knob being dragged on the panel.
+    drag: Option<panel::Drag>,
 }
 
 const SET_ROW_H: i32 = 44;
@@ -485,7 +497,33 @@ impl SettingList {
             typed: Vec::new(),
             buttons: Vec::new(),
             typing: None,
+            panel: None,
+            controls: Vec::new(),
+            outlined: true,
+            drag: None,
         }
+    }
+
+    /// Where row `k`'s control is on the panel drawn in `r`.
+    pub fn control_rect(&self, r: Rect, k: usize) -> Option<Rect> {
+        self.panel.as_ref()?.control_rect(r, &self.controls, k)
+    }
+
+    /// Why the panel's control for row `k` is faint, when it is and says.
+    pub fn why_faint(&self, k: usize) -> Option<&str> {
+        self.panel.as_ref()?;
+        self.controls
+            .get(k)
+            .filter(|c| c.faint && !c.why.is_empty())
+            .map(|c| c.why.as_str())
+    }
+
+    /// The rows' names and values, for the panel.
+    fn texts(&self) -> (Vec<String>, Vec<String>) {
+        self.rows
+            .iter()
+            .map(|r| (r.name.clone(), r.value.clone()))
+            .unzip()
     }
 
     fn body(r: Rect) -> Rect {
@@ -526,6 +564,25 @@ impl SettingList {
 
 impl Widget for SettingList {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        if let Some(p) = &self.panel {
+            let (names, values) = self.texts();
+            let sel = if self.outlined {
+                self.selected
+            } else {
+                usize::MAX
+            };
+            return panel::paint(
+                cx,
+                r,
+                p,
+                &self.controls,
+                &names,
+                &values,
+                &self.typed,
+                sel,
+                self.editing,
+            );
+        }
         let t = cx.theme.clone();
         cx.titled_panel(r, &self.title, &self.right);
         for k in 0..self.rows.len() {
@@ -605,6 +662,10 @@ impl Widget for SettingList {
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
+        if let Some(p) = &self.panel {
+            let (names, _) = self.texts();
+            return panel::targets(p, &self.controls, &names, &self.typed, r);
+        }
         let mut out = Vec::new();
         for k in 0..self.rows.len() {
             let Some((row, value)) = self.row_rects(r, k) else {
@@ -647,8 +708,12 @@ impl Widget for SettingList {
     }
 
     /// A finger resting on a row (not a button) puts its value under the
-    /// wheel, whichever part of the row it is on.
+    /// wheel, whichever part of the row it is on; on a panel, the control
+    /// under it that has a value ([`panel::held`]).
     fn held(&self, x: i32, y: i32, r: Rect) -> Option<Target> {
+        if let Some(p) = &self.panel {
+            return panel::held(p, &self.controls, &self.texts().0, (x, y), r);
+        }
         let k = (0..self.rows.len()).find(|&k| {
             self.row_rects(r, k)
                 .is_some_and(|(row, _)| row.contains(x, y))
@@ -665,6 +730,10 @@ impl Widget for SettingList {
         if t.index >= self.rows.len() || delta == 0 {
             return None;
         }
+        if let Some(Look::Slider { pos }) = self.controls.get(t.index).map(|c| &c.look) {
+            let v = (pos + delta as f32 * 0.01).clamp(0.0, 1.0);
+            return (v != *pos).then_some(EventKind::Value(v));
+        }
         self.selected = t.index;
         Some(EventKind::Step {
             index: t.index,
@@ -673,6 +742,27 @@ impl Widget for SettingList {
     }
 
     fn touch(&mut self, f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if let Some(p) = &self.panel {
+            let ev = panel::touch(
+                p,
+                &self.controls,
+                &self.typed,
+                &mut self.drag,
+                (f, phase, x, y),
+                r,
+            )?;
+            if let EventKind::Select(k)
+            | EventKind::Step { index: k, .. }
+            | EventKind::Type(k)
+            | EventKind::Tab(k) = ev
+            {
+                // A faint control tapped only says why: the wheel stays.
+                if !self.controls.get(k).is_some_and(|c| c.faint) {
+                    self.selected = k;
+                }
+            }
+            return Some(ev);
+        }
         match phase {
             Touch::Down => {}
             // A typed value opens the number pad on the lift, so a value
@@ -973,6 +1063,222 @@ impl Widget for SectionChips {
     }
 }
 
+// ---------------------------------------------------------- kit tracks
+
+/// A track on the Pads tab's "Kit of" row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KitTrack {
+    /// The track's place (from 0).
+    pub track: usize,
+    /// Its name, such as "Track 3" or "Drums".
+    pub name: String,
+    /// What it plays: the kit's name, or why it has none ("synth, no
+    /// kit").
+    pub kit: String,
+    pub color: Color,
+    /// The armed track: the pads play its kit.
+    pub armed: bool,
+    /// It plays a kit, so a tap arms it; a track without one is faint.
+    pub enabled: bool,
+}
+
+/// The Pads tab's "Kit of" row (the sampler review's mockup 5): the tracks
+/// that play kits, each with its kit, the armed one outlined, and **+ Kit
+/// track** on the right. A tap on an enabled track gives
+/// [`EventKind::Select`] with its place in the project; a tap on + Kit
+/// track gives [`EventKind::Tab`]`(0)`. Tracks that don't fit are left
+/// out, but the armed one always shows (in the last place).
+pub struct KitTracks {
+    pub tracks: Vec<KitTrack>,
+    /// + Kit track can add a track (faint when not).
+    pub can_add: bool,
+}
+
+const KT_CAPTION_W: i32 = 64;
+const KT_ADD_W: i32 = 124;
+const KT_GAP: i32 = 8;
+const KT_CHIP_MIN: i32 = 150;
+const KT_CHIP_MAX: i32 = 220;
+
+impl KitTracks {
+    pub fn new() -> KitTracks {
+        KitTracks {
+            tracks: Vec::new(),
+            can_add: true,
+        }
+    }
+
+    fn inner(r: Rect) -> Rect {
+        r.inset_xy(12, 6)
+    }
+
+    /// + Kit track's button.
+    pub fn add_rect(&self, r: Rect) -> Rect {
+        let b = Self::inner(r);
+        Rect::new(b.right() - KT_ADD_W, b.y, KT_ADD_W, b.h)
+    }
+
+    /// The tracks shown, in order, by their place in [`KitTracks::tracks`],
+    /// and each chip's width.
+    pub fn shown(&self, r: Rect) -> (Vec<usize>, i32) {
+        let b = Self::inner(r);
+        let room = (b.w - KT_CAPTION_W - KT_ADD_W - KT_GAP).max(0);
+        let fit = ((room + KT_GAP) / (KT_CHIP_MIN + KT_GAP)).max(1) as usize;
+        let mut shown: Vec<usize> = (0..self.tracks.len().min(fit)).collect();
+        if let Some(armed) = self.tracks.iter().position(|t| t.armed) {
+            if armed >= fit {
+                shown.pop();
+                shown.push(armed);
+            }
+        }
+        let n = shown.len().max(1) as i32;
+        let w = ((room + KT_GAP) / n - KT_GAP).clamp(0, KT_CHIP_MAX);
+        (shown, w)
+    }
+
+    /// The chip of [`KitTracks::tracks`]`[i]`, if it is shown.
+    pub fn chip_rect(&self, r: Rect, i: usize) -> Option<Rect> {
+        let b = Self::inner(r);
+        let (shown, w) = self.shown(r);
+        let k = shown.iter().position(|&s| s == i)? as i32;
+        Some(Rect::new(
+            b.x + KT_CAPTION_W + k * (w + KT_GAP),
+            b.y,
+            w,
+            b.h,
+        ))
+    }
+}
+
+impl Default for KitTracks {
+    fn default() -> KitTracks {
+        KitTracks::new()
+    }
+}
+
+impl Widget for KitTracks {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        cx.panel(r);
+        let b = Self::inner(r);
+        let caption = Rect::new(b.x, b.y, KT_CAPTION_W, b.h);
+        cx.text(
+            FontId::Bold,
+            t.size_small - 1.0,
+            caption,
+            Align::Left,
+            t.text_dim,
+            "KIT OF",
+        );
+        for (i, k) in self.tracks.iter().enumerate() {
+            let Some(c) = self.chip_rect(r, i) else {
+                continue;
+            };
+            cx.canvas
+                .fill_round_rect(c, 10, if k.armed { t.surface } else { t.raised });
+            if k.armed {
+                cx.canvas.stroke_round_rect(c, 10, 2, t.accent);
+            }
+            let inner = c.inset_xy(12, 0);
+            let dot = Rect::new(inner.x, c.y + c.h / 2 - 4, 8, 8);
+            cx.canvas
+                .fill_round_rect(dot, 4, if k.enabled { k.color } else { t.text_faint });
+            let text = Rect::new(
+                dot.right() + 8,
+                c.y,
+                (inner.right() - dot.right() - 8).max(0),
+                c.h,
+            );
+            let name_w = cx
+                .measure(FontId::Bold, t.size_small, &k.name)
+                .min(text.w * 3 / 5);
+            let (name, rest) = (
+                Rect::new(text.x, text.y, name_w, text.h),
+                Rect::new(
+                    text.x + name_w + 8,
+                    text.y,
+                    (text.w - name_w - 8).max(0),
+                    text.h,
+                ),
+            );
+            let (ink, dim) = if k.enabled {
+                (t.text, t.text_dim)
+            } else {
+                (t.text_faint, t.text_faint)
+            };
+            cx.text(FontId::Bold, t.size_small, name, Align::Left, ink, &k.name);
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                rest,
+                Align::Left,
+                dim,
+                &k.kit,
+            );
+        }
+        let add = self.add_rect(r);
+        // A dashed outline: it makes something new.
+        let c = if self.can_add {
+            t.text_dim
+        } else {
+            t.text_faint
+        };
+        let (dash, gap) = (8, 6);
+        let mut x = add.x + 10;
+        while x + dash <= add.right() - 10 {
+            cx.canvas.fill_rect(Rect::new(x, add.y, dash, 2), c);
+            cx.canvas
+                .fill_rect(Rect::new(x, add.bottom() - 2, dash, 2), c);
+            x += dash + gap;
+        }
+        let mut y = add.y + 8;
+        while y + dash <= add.bottom() - 8 {
+            cx.canvas.fill_rect(Rect::new(add.x, y, 2, dash), c);
+            cx.canvas
+                .fill_rect(Rect::new(add.right() - 2, y, 2, dash), c);
+            y += dash + gap;
+        }
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            add,
+            Align::Center,
+            c,
+            "+ Kit track",
+        );
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let mut out: Vec<Target> = self
+            .tracks
+            .iter()
+            .enumerate()
+            .filter_map(|(i, k)| {
+                let c = self.chip_rect(r, i)?;
+                Some(
+                    Target::tap("track", k.track, k.name.clone(), c)
+                        .disabled_if(!k.enabled || k.armed),
+                )
+            })
+            .collect();
+        out.push(Target::tap("add", 0, "+ Kit track", self.add_rect(r)).disabled_if(!self.can_add));
+        out
+    }
+
+    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if phase != Touch::Down {
+            return None;
+        }
+        if self.add_rect(r).contains(x, y) {
+            return self.can_add.then_some(EventKind::Tab(0));
+        }
+        let i = (0..self.tracks.len())
+            .find(|&i| self.chip_rect(r, i).is_some_and(|c| c.contains(x, y)))?;
+        let k = &self.tracks[i];
+        (k.enabled && !k.armed).then_some(EventKind::Select(k.track))
+    }
+}
+
 // ---------------------------------------------------------------- pad map
 
 /// One pad on the [`PadMap`].
@@ -993,6 +1299,11 @@ pub struct PadCell {
 /// enough to sit beside the pad's settings. A tap on a pad picks it
 /// ([`EventKind::Select`]); a tap on the pad already picked plays it while
 /// the finger is down ([`EventKind::Pad`]).
+///
+/// With [`PadMap::banks`] set, a strip of the kit's banks A to H sits over
+/// the pads, each with a dot for every pad of it that has a sound, and the
+/// bank shown outlined; a tap on a bank is [`EventKind::Tab`] with its
+/// number (the strip answers over its whole width, no gaps).
 pub struct PadMap {
     pub title: String,
     pub right: String,
@@ -1000,11 +1311,20 @@ pub struct PadMap {
     pub selected: usize,
     /// Pads held down now (on the hardware or here).
     pub lit: Vec<bool>,
+    /// Each bank's pads with a sound, pad 1 of the bank the lowest bit;
+    /// empty for no strip.
+    pub banks: Vec<u16>,
+    /// The bank the pads are of, in [`PadMap::banks`].
+    pub bank: usize,
     held: Option<(u64, usize)>,
 }
 
 const MAP_COLS: usize = 4;
 const MAP_GAP: i32 = 8;
+/// The bank strip's height, and the gap under it.
+const BANKS_H: i32 = 52;
+const BANKS_GAP: i32 = 10;
+const BANKS_CELL_GAP: i32 = 4;
 
 impl PadMap {
     pub fn new(title: &str) -> PadMap {
@@ -1014,13 +1334,45 @@ impl PadMap {
             cells: Vec::new(),
             selected: 0,
             lit: Vec::new(),
+            banks: Vec::new(),
+            bank: 0,
             held: None,
         }
     }
 
+    /// The panel's room under its title: the bank strip (if any), then
+    /// the pads.
+    fn body(&self, r: Rect) -> (Rect, Rect) {
+        let b = r.inset(14).take_top(34).1;
+        if self.banks.is_empty() {
+            return (Rect::new(b.x, b.y, b.w, 0), b);
+        }
+        let (strip, rest) = b.take_top(BANKS_H);
+        (strip, rest.take_top(BANKS_GAP).1)
+    }
+
+    /// Bank `k`'s cell on the strip, as drawn, and the slice of the strip
+    /// that answers a tap for it.
+    pub fn bank_rect(&self, r: Rect, k: usize) -> (Rect, Rect) {
+        let strip = self.body(r).0;
+        let n = self.banks.len().max(1) as i32;
+        let (k, gap) = (k as i32, BANKS_CELL_GAP);
+        let w = (strip.w - gap * (n - 1)) / n;
+        let x = strip.x + k * (w + gap);
+        let cell = Rect::new(x, strip.y, w.max(0), strip.h);
+        // The answer runs to the middle of the gaps either side.
+        let left = if k == 0 { strip.x } else { x - gap / 2 };
+        let right = if k == n - 1 {
+            strip.right()
+        } else {
+            x + w + gap - gap / 2
+        };
+        (cell, Rect::new(left, strip.y, right - left, strip.h))
+    }
+
     /// Pad `i`'s rectangle.
     pub fn cell_rect(&self, r: Rect, i: usize) -> Rect {
-        let b = r.inset(14).take_top(34).1;
+        let b = self.body(r).1;
         let rows = self.cells.len().div_ceil(MAP_COLS).max(1) as i32;
         let cols = MAP_COLS as i32;
         let w = (b.w - MAP_GAP * (cols - 1)) / cols;
@@ -1039,6 +1391,37 @@ impl Widget for PadMap {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.titled_panel(r, &self.title, &self.right);
+        for (k, &sounds) in self.banks.iter().enumerate() {
+            let b = self.bank_rect(r, k).0;
+            let shown = k == self.bank;
+            cx.canvas
+                .fill_round_rect(b, 8, if shown { t.surface } else { t.raised });
+            if shown {
+                cx.canvas.stroke_round_rect(b, 8, 2, t.accent);
+            }
+            let inner = b.inset_xy(6, 5);
+            let (top, rest) = inner.take_top(16);
+            let letter = (b'A' + (k % 26) as u8) as char;
+            cx.text(
+                FontId::Bold,
+                t.size_small - 1.0,
+                top,
+                Align::Left,
+                if shown { t.text } else { t.text_dim },
+                &letter.to_string(),
+            );
+            // A 4 x 4 dot per pad, pad 1 bottom left as on the MPC.
+            let (dot, step) = (5, 7);
+            let x0 = rest.right() - 4 * step + (step - dot);
+            let y0 = rest.bottom() - 4 * step + (step - dot);
+            for p in 0..16 {
+                let (col, row) = ((p % 4) as i32, 3 - (p / 4) as i32);
+                let on = sounds & (1 << p) != 0;
+                let d = Rect::new(x0 + col * step, y0 + row * step, dot, dot);
+                let c = crate::wave_tab::pad_color(k * 16 + p);
+                cx.canvas.fill_rect(d, if on { c } else { t.outline });
+            }
+        }
         for (i, c) in self.cells.iter().enumerate() {
             let b = self.cell_rect(r, i);
             let filled = !c.name.is_empty();
@@ -1118,12 +1501,21 @@ impl Widget for PadMap {
                 };
                 Target::tap("pad", k, label, self.cell_rect(r, k))
             })
+            .chain((0..self.banks.len()).map(|k| {
+                let letter = (b'A' + (k % 26) as u8) as char;
+                Target::tap("bank", k, format!("Bank {letter}"), self.bank_rect(r, k).1)
+            }))
             .collect()
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         match phase {
             Touch::Down => {
+                if let Some(k) =
+                    (0..self.banks.len()).find(|&k| self.bank_rect(r, k).1.contains(x, y))
+                {
+                    return Some(EventKind::Tab(k));
+                }
                 let k = (0..self.cells.len()).find(|&k| self.cell_rect(r, k).contains(x, y))?;
                 if k == self.selected {
                     self.held = Some((finger, k));

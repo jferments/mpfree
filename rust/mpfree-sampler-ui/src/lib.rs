@@ -15,6 +15,9 @@
 //!   its beats, with hits pinned to beats by a tap, a drag or Pin hits (a
 //!   loop played loosely made tight), each change a [`WaveAction`]. Its
 //!   picture is in [`warp_widgets`].
+//! - [`panel`]: the Sample tab's control panel: a settings list drawn as
+//!   labelled sections of knobs, buttons, selectors and switches under the
+//!   wave (the Wave page so far).
 //! - [`pads_tab`]: the app's Pads tab: the kit's pads on a compact map to
 //!   pick one, copy, paste and clear it, and a Browse | Pad switch between
 //!   the browser beside them and the pad's main settings with the kit's
@@ -56,6 +59,7 @@ pub mod grain_widgets;
 pub mod keys_widgets;
 pub mod levels_panel;
 pub mod pads_tab;
+pub mod panel;
 pub mod play_tab;
 pub mod play_widgets;
 pub mod rec_tab;

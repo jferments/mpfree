@@ -345,6 +345,7 @@ impl Desk<'_> {
             // to be given a home here or there.
             a @ (gui::FromUi::Pad { .. }
             | gui::FromUi::Audition { .. }
+            | gui::FromUi::PadBank(_)
             | gui::FromUi::Kit(_)
             | gui::FromUi::SaveTouch(_)
             | gui::FromUi::Synth(_)

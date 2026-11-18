@@ -362,7 +362,8 @@ pub enum BrowseAction {
     },
     /// A kit from the library: `path` is its folder, holding `kit.txt`
     /// (`mpfree_library::kit`) and its sounds. The app puts it in place of
-    /// the kit the pads play.
+    /// the kit the pads play, or in an empty kit of its own for the armed
+    /// track when other tracks play that kit.
     LoadKit {
         loc: Loc,
         path: PathBuf,

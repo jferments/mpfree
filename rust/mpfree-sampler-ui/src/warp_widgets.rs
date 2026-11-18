@@ -44,6 +44,8 @@ enum Grab {
 pub struct WarpView {
     pub title: String,
     pub right: String,
+    /// How far it is zoomed, after `right` on the title line.
+    pub zoom: String,
     pub peaks: Option<Arc<dyn Peaks>>,
     /// The source's rate, and the region in it.
     pub rate: u32,
@@ -85,6 +87,7 @@ impl WarpView {
         WarpView {
             title: title.to_string(),
             right: String::new(),
+            zoom: String::new(),
             peaks: None,
             rate: 44_100,
             start: 0,
@@ -217,7 +220,12 @@ pub fn beat_text(beat: f64) -> String {
 impl Widget for WarpView {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        cx.titled_panel(r, &self.title, &self.right);
+        let right = match (self.right.is_empty(), self.zoom.is_empty()) {
+            (_, true) => self.right.clone(),
+            (true, false) => self.zoom.clone(),
+            (false, false) => format!("{} · {}", self.right, self.zoom),
+        };
+        cx.titled_panel(r, &self.title, &right);
         let (ruler, wave, hits) = WarpView::areas(r);
         let small = t.size_small - 1.0;
         cx.canvas.fill_round_rect(wave, 8, t.bg);
