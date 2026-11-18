@@ -25,7 +25,7 @@ bash tools/mpc-one/collect-over-ssh.sh            # baseline inventory
 bash tools/mpc-one/collect-over-ssh.sh --detail   # any mode from the tables below
 ~~~
 
-**Read-only surveys.** These read procfs, sysfs and config files only, except `--boot-map`, which also reads the raw boot partitions with `dd` to hash them (reads only, no writes). `--kexec-preflight` also asks `kexec` and `systemctl` for their version and help text; it never loads a kernel. `--ethernet` also reads debugfs when it is already mounted, and asks `ethtool` (if installed) for its query output only. `--drivers` and `--stick-drivers` read debugfs only when it is already mounted, and the kernel log. They open no audio, MIDI or display devices and change no services.
+**Read-only surveys.** These read procfs, sysfs and config files only, except `--boot-map`, which also reads the raw boot partitions with `dd` to hash them (reads only, no writes). `--kexec-preflight` also asks `kexec` and `systemctl` for their version and help text; it never loads a kernel. `--ethernet` also reads debugfs when it is already mounted, and asks `ethtool` (if installed) for its query output only. `--drivers` and `--stick-drivers` read debugfs only when it is already mounted, and the kernel log. `--usb-device` also reads the small attribute files of the USB gadgets already set up in configfs, which programs hold a gadget or a MIDI or sound device (`/proc/*/fd` links), and greps the start-up files for the gadget. They open no audio, MIDI or display devices and change no services.
 
 | Mode | Script | What it reports |
 |---|---|---|
@@ -33,6 +33,7 @@ bash tools/mpc-one/collect-over-ssh.sh --detail   # any mode from the tables bel
 | `--detail` | [`read-only-detail.sh`](../../../tools/mpc-one/read-only-detail.sh) | Services and resource ownership |
 | `--runtime` | [`read-only-runtime.sh`](../../../tools/mpc-one/read-only-runtime.sh) | Process threads and ALSA PCM state |
 | `--io` | [`read-only-io.sh`](../../../tools/mpc-one/read-only-io.sh) | Ethernet link/PHY and USB host/gadget capabilities |
+| `--usb-device` | [`read-only-usb-device.sh`](../../../tools/mpc-one/read-only-usb-device.sh) | The USB-B socket: its device controller and role, the gadgets set up in configfs and their functions (never a serial number or a network address), the kernel's gadget MIDI and audio build settings, who holds the gadget, the start-up files that set it up and the kernel log. Run it with USB-B unplugged, then cabled to a computer ([USB-B MIDI](../hardware/usb-b-midi.md)) |
 | `--abi` | [`read-only-abi.sh`](../../../tools/mpc-one/read-only-abi.sh) | Userspace ABI, loader and libraries |
 | `--handoff-preflight` | [`read-only-handoff-preflight.sh`](../../../tools/mpc-one/read-only-handoff-preflight.sh) | Factory service map |
 | `--process-map` | [`read-only-process-map.sh`](../../../tools/mpc-one/read-only-process-map.sh) | Process/unit tree and device ownership |
