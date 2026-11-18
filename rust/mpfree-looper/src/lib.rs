@@ -4775,12 +4775,8 @@ impl Loop {
             return;
         }
         let j = (f - self.rec_from - u64::from(self.rec_latency)) as usize;
-        if j == 0 && self.fill.is_none() {
-            for k in 0..FADE {
-                let r = (self.ring_at + k) % FADE;
-                self.pre[2 * k] = self.ring[2 * r];
-                self.pre[2 * k + 1] = self.ring[2 * r + 1];
-            }
+        if j == 0 {
+            self.keep_pre();
         }
         if self.len > 0 && j >= self.cut {
             // The loop point waits for a start heard before the pass to be
@@ -4798,6 +4794,22 @@ impl Loop {
         }
         store.set(me, 0, j, x);
         self.written = self.written.max(j + 1);
+    }
+
+    /// The first pass's first frame: the input just before it, for the
+    /// loop point (unless what was heard before the pass copies it in,
+    /// [`Fill`]). Out of line: it runs once a pass, and the writer around
+    /// it runs every frame.
+    #[inline(never)]
+    fn keep_pre(&mut self) {
+        if self.fill.is_some() {
+            return;
+        }
+        for k in 0..FADE {
+            let r = (self.ring_at + k) % FADE;
+            self.pre[2 * k] = self.ring[2 * r];
+            self.pre[2 * k + 1] = self.ring[2 * r + 1];
+        }
     }
 
     /// The loop point: the end fades into the input from just before the
