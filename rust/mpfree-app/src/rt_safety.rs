@@ -121,7 +121,7 @@ impl Rig {
             cv: cv_out::CvOut::new(RATE, std::time::Duration::ZERO),
             tap: crate::export::Tap::on(),
             recall: sampler::RecFeed(
-                mpfree_sampler::record::input16(crate::sample_page::RECALL_SECONDS, RATE).0,
+                mpfree_sampler::record::input16(crate::sample_page::SCREEN_RECALL_SECONDS, RATE).0,
             ),
         }
     }

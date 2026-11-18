@@ -13203,6 +13203,20 @@ fn add_io_sections(ui: &mut Ui, model: &mpfree_midi_ui::Shared) -> Vec<String> {
 /// come.
 pub const SCREENS_STACK: usize = 16 << 20;
 
+/// Held by each test that builds every sample screen at once, so no two
+/// of them run together: each holds about 0.9 GB in a debug build (the
+/// display-list test, which builds two sets, 1.6 GB), and the ARMv7 tests
+/// run as 32-bit programs, where three at once ran out of room (18 Nov
+/// 2026, "memory allocation of 5632000 bytes failed").
+#[cfg(test)]
+pub(crate) static ALL_SCREENS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// [`ALL_SCREENS`], taken even after a test that held it failed.
+#[cfg(test)]
+pub(crate) fn all_screens() -> std::sync::MutexGuard<'static, ()> {
+    ALL_SCREENS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Run `f` on a thread with [`SCREENS_STACK`], for the commands that draw
 /// every sample screen (`--preview`, `--display-lists`). It may borrow.
 pub fn on_screens_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
@@ -14864,14 +14878,14 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // which has the break, so it lands on A6.
     let mut recall = sample_sampler(fonts());
     {
-        use crate::sample_page::RECALL_SECONDS;
+        use crate::sample_page::SCREEN_RECALL_SECONDS;
         use mpfree_sampler_ui::sample::{feed_input, BPM, PAD, RATE};
         recall.apply(ToUi::Transport(TransportInfo {
             bpm: BPM,
             ..TransportInfo::default()
         }));
         settle_views(&mut recall);
-        let (mut feed, input) = mpfree_sampler::record::input16(RECALL_SECONDS, RATE);
+        let (mut feed, input) = mpfree_sampler::record::input16(SCREEN_RECALL_SECONDS, RATE);
         recall.apply(ToUi::SampleRecall(Box::new(input)));
         feed_input(&mut feed, 40.0, 0.4, true);
         recall.apply(ToUi::Show(View::Play));
@@ -25157,11 +25171,11 @@ mod tests {
     #[test]
     fn sample_recall_opens_over_arrange_and_keeps_the_last_bars_on_the_next_free_pad() {
         use crate::app::{RecallKey, RowKey};
-        use crate::sample_page::RECALL_SECONDS;
+        use crate::sample_page::SCREEN_RECALL_SECONDS;
         use mpfree_sampler_ui::recall::{self, RecallView};
         use mpfree_sampler_ui::sample::{feed_input, PAD, RATE};
         let mut p = sample_sampler(Fonts::embedded());
-        let (mut feed, input) = mpfree_sampler::record::input16(RECALL_SECONDS, RATE);
+        let (mut feed, input) = mpfree_sampler::record::input16(SCREEN_RECALL_SECONDS, RATE);
         p.apply(ToUi::SampleRecall(Box::new(input)));
         feed_input(&mut feed, 20.0, 0.4, true);
         p.apply(ToUi::Show(View::Arrange));
@@ -25236,7 +25250,7 @@ mod tests {
 
     #[test]
     fn the_rec_tabs_master_reads_what_sample_recall_keeps_with_no_buffer_of_its_own() {
-        use crate::sample_page::{master_source, RECALL_SECONDS};
+        use crate::sample_page::{master_source, SCREEN_RECALL_SECONDS};
         use crate::sampler::RecSource;
         use mpfree_sampler_ui::rec_tab::{self, Row};
         use mpfree_sampler_ui::sample::{feed_input, RATE};
@@ -25279,12 +25293,12 @@ mod tests {
         };
         // The audio thread's buffer of the master comes: Master reads it,
         // and its own buffer is asked back to be freed.
-        let (mut recall, input) = mpfree_sampler::record::input16(RECALL_SECONDS, RATE);
+        let (mut recall, input) = mpfree_sampler::record::input16(SCREEN_RECALL_SECONDS, RATE);
         p.apply(ToUi::SampleRecall(Box::new(input)));
         let log = events_log(&p);
         assert!(
             log.iter()
-                .any(|l| l == "sample: Sample Recall keeps the master's last 2:00 (21.2 MB)")
+                .any(|l| l == "sample: Sample Recall keeps the master's last 0:48 (8.5 MB)")
                 && log.iter().any(|l| l
                     == "sample: the sampler resamples the master from what Sample Recall keeps \
                         (nothing more held)"),
@@ -25294,7 +25308,7 @@ mod tests {
         assert!(matches!(acts.pop(), Some(FromUi::SampleInput(None))));
         p.apply(ToUi::SampleInputBack(own));
         let m = p.sample.memory();
-        assert_eq!((m.input, m.recall), (0, 21_168_000));
+        assert_eq!((m.input, m.recall), (0, 8_467_200));
         // What the master played before it was picked is there too: Skip
         // back keeps the last 10 s of it.
         feed_input(&mut recall, 12.0, 0.4, true);
@@ -27431,6 +27445,7 @@ mod tests {
 
     #[test]
     fn every_sample_screen_draws() {
+        let _alone = all_screens();
         // sample_screens builds every screen's Player in one frame, which in
         // a debug build outgrows the 2 MiB test thread, so draw them on a
         // thread with SCREENS_STACK.
@@ -27482,6 +27497,7 @@ mod tests {
     /// each list sends (`--nocapture` prints the table).
     #[test]
     fn every_sample_screen_plays_back_the_same_from_its_display_list() {
+        let _alone = all_screens();
         std::thread::Builder::new()
             .stack_size(SCREENS_STACK)
             .spawn(|| {
@@ -27703,6 +27719,7 @@ mod tests {
     /// every row of it).
     #[test]
     fn no_page_redraws_while_idle() {
+        let _alone = all_screens();
         // The sample screens outgrow the 2 MiB test thread in a debug build
         // (as above).
         std::thread::Builder::new()
