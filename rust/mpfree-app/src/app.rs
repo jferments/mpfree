@@ -7578,13 +7578,14 @@ mod tests {
         held(&mut app, SHIFT, |a| press(a, SAMPLER));
         assert!(app.pads_are_loop_keys());
         assert_eq!(app.mute_keys(), MuteKeys::Off);
-        // STEP SEQ takes them too (and opens Play's Beats, as always).
+        // STEP SEQ takes them too (and opens the Sequencer's Steps, as
+        // always).
         click(&mut app, STEP_SEQ);
         assert!(app.pads_are_steps());
         assert!(!app.pads_are_loop_keys());
-        assert_eq!(app.view(), View::Play);
-        // SHIFT + SAMPLER on Play opens the Looper tab; again there, the
-        // loop keys.
+        assert_eq!(app.view(), View::Sequencer);
+        // SHIFT + SAMPLER on the Sequencer opens the Looper tab; again
+        // there, the loop keys.
         held(&mut app, SHIFT, |a| press(a, SAMPLER));
         assert_eq!(app.view(), View::Looper);
         assert!(!app.pads_are_loop_keys());
