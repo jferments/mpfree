@@ -2425,6 +2425,27 @@ CHECKS = (
          "a_throws_knobs_are_its_pad_on_its_strips_perform_fx"],
         needs=['PAD BANK B/F', 'PLAY', 'STOP', 'UNDO']),
     Check(
+        "perform-learn-key", "A key on a keyboard playing Perform pad B2, learned by Learn a key",
+        "The Play, Pads and Sequencer redesign's board 7, Learn a key: a key, pad or footswitch on outside gear "
+        "plays one Perform pad on every page (read-only on MIDI OUT; the learned key is kept in the rig, on the "
+        "stick's data partition, until Remove takes it off)", "hands",
+        ["Only with a keyboard or pad controller in the MPC's MIDI IN.",
+         "1. Tap Pads in the top bar, then Perform pads. Press PAD BANK B, then tap pad 2 on the screen: B2,",
+         "   Reverb wash, is picked. Tap Learn a key under its settings: the line under the screen says",
+         "   LEARNING. Press a key on the keyboard.",
+         "2. Tap Play in the top bar. Press PLAY. Hold the key for two beats: Reverb wash plays while you hold",
+         "   it, and rings out when you let go. The MPC's pads still play the kit.",
+         "3. Press STOP. TRACK MIX, I/O, Learn: pick the Perform pads B2 row, tap Remove. Change nothing else."],
+        [("Learn took the key for B2", seen(LEARNED + r".+ takes perform\.17")),
+         ("the key played B2", seen(r"^perform: Perform pads B2, from a learned key$")),
+         ("Reverb wash played", seen(r"^perform: Reverb wash$")),
+         ("the app kept running", stayed_up())],
+        "Did Reverb wash play only while you held the key, with the MPC's pads still playing the kit?",
+        ["a_key_learned_on_a_perform_pad_plays_it_from_any_page",
+         "learn_a_key_hands_the_picked_pad_to_midi_learn",
+         "a_footswitch_learned_on_a_perform_pad_is_the_rigs_and_works_while_held"],
+        needs=['PAD BANK B/F', 'PLAY', 'STOP', 'TRACK MIX / PAD MIX']),
+    Check(
         "hour", "An hour of play with no underrun",
         "#273's underruns at 25 and 51 minutes", "auto",
         looks=[("an hour, no underrun, no restart", hour_long())],
