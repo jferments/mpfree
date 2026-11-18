@@ -16,7 +16,7 @@ use mpfree_sampler_ui::play_widgets::{
 };
 use mpfree_sampler_ui::sample::{self, layered_project, play_samples, PlaySample, PAD, RATE};
 use mpfree_sampler_ui::source::SourceView;
-use mpfree_sampler_ui::widgets::{ButtonRow, KnobCard, PadBar, SectionChips, SettingList};
+use mpfree_sampler_ui::widgets::{KnobCard, PadBar, SectionChips, SettingList};
 use mpfree_ui::{EventKind, Fonts, SoftCanvas, Touch, UiEvent};
 
 /// The Play tab on the layered pad (or the plain one), drawn once so every
@@ -148,9 +148,6 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
         ]
     );
     assert_eq!(s.tab.section(), Section::Layers);
-    for section in Section::ALL {
-        assert!(section.rows().len() <= 8, "{section:?} scrolls");
-    }
     for row in Row::ALL {
         let n = Section::ALL
             .iter()
@@ -529,6 +526,11 @@ fn dragging_a_layers_edge_sets_its_velocities() {
 #[test]
 fn dragging_the_envelopes_points_and_the_filters_dot() {
     let mut s = play(true);
+    // Each section shows its own picture: Amp the envelope, Filter the
+    // filter beside its envelope.
+    assert_eq!(s.ui.rect_of(play_tab::ENV), None);
+    open(&mut s, Section::Amp);
+    assert_eq!(s.ui.rect_of(play_tab::LAYERS), None);
     let r = s.ui.rect_of(play_tab::ENV).unwrap();
     let env = s.ui.get::<EnvelopeView>(play_tab::ENV).unwrap();
     let axis = env.axis_ms();
@@ -563,6 +565,8 @@ fn dragging_the_envelopes_points_and_the_filters_dot() {
     );
     lift(&mut s);
     // The cutoff dot a decade down.
+    assert_eq!(s.ui.rect_of(play_tab::FILTER), None);
+    open(&mut s, Section::Filter);
     let r = s.ui.rect_of(play_tab::FILTER).unwrap();
     let f = s.ui.get::<FilterCurve>(play_tab::FILTER).unwrap();
     let (fx, fy) = f.dot_xy(r);
@@ -988,10 +992,12 @@ fn a_keygroup_shows_the_kits_keyboard_to_drag_its_zone_pick_a_pad_and_play_notes
             down: true
         }
     );
-    // Keys off, and the pads play their sounds: the keyboard goes.
+    // Keys off, and the pads play their sounds: the keyboard goes, and
+    // Pitch shows the sound under its envelope.
     step_apply(&mut s, Row::Keys, -1);
     assert!(!s.tab.keys_shown());
-    assert!(s.ui.rect_of(play_tab::LAYERS).is_some());
+    assert_eq!(s.ui.rect_of(play_tab::KEYS), None);
+    assert!(s.ui.rect_of(play_tab::ENV).is_some());
 }
 
 #[test]
@@ -1055,9 +1061,8 @@ fn key_fade_overlaps_the_kits_zones_and_the_keyboard_draws_their_curves() {
 #[test]
 fn the_scene_strip_stores_fades_and_returns() {
     use mpfree_sampler::scene::Scene;
+    use mpfree_sampler_ui::panel::Look;
     use mpfree_sampler_ui::play_tab::SceneAction;
-    use mpfree_sampler_ui::widgets::ButtonRow;
-    use mpfree_ui::widgets::Fader;
     let mut s = play(false);
     let ev = |widget: &str, kind: EventKind| UiEvent {
         widget: widget.into(),
@@ -1067,10 +1072,30 @@ fn the_scene_strip_stores_fades_and_returns() {
         let st = s.state.clone();
         s.tab.action(&mut s.ui, &e, &st)
     };
+    // The scenes' panel: three buttons, then the crossfader, which says
+    // where it is (or, faint, what to store first).
     let strip = |s: &PlaySample| {
-        let b = s.ui.get::<ButtonRow>(play_tab::SCENES).unwrap();
-        let f = s.ui.get::<Fader>(play_tab::FADER).unwrap();
-        (b.labels.clone(), b.enabled.clone(), f.text.clone())
+        let l = s.ui.get::<SettingList>(play_tab::SCENES).unwrap();
+        assert_eq!(l.rows.len(), play_tab::SCENE_ROWS);
+        let labels: Vec<String> = l.controls[..3]
+            .iter()
+            .map(|c| match &c.look {
+                Look::Button(t) => t.clone(),
+                other => panic!("a button, not {other:?}"),
+            })
+            .collect();
+        let enabled: Vec<bool> = l.controls.iter().map(|c| !c.faint).collect();
+        let fader = match l.controls[3].look {
+            Look::Slider { pos } => pos,
+            ref other => panic!("a slider, not {other:?}"),
+        };
+        assert_eq!(fader, s.tab.fade());
+        let text = if l.controls[3].faint {
+            l.panel.as_ref().unwrap().sections[0].note.clone()
+        } else {
+            l.rows[3].value.clone()
+        };
+        (labels, enabled[..3].to_vec(), text)
     };
     let (labels, enabled, text) = strip(&s);
     assert_eq!(labels, ["Store A", "Store B", "Return to A"]);
@@ -1078,7 +1103,7 @@ fn the_scene_strip_stores_fades_and_returns() {
     assert_eq!(text, "store A first");
     // The fader does nothing until A and B are stored.
     assert_eq!(
-        act(&mut s, ev(play_tab::FADER, EventKind::Value(0.5))),
+        act(&mut s, ev(play_tab::SCENES, EventKind::Value(0.5))),
         None
     );
     assert_eq!(s.tab.fade(), 0.0);
@@ -1102,16 +1127,16 @@ fn the_scene_strip_stores_fades_and_returns() {
     assert_eq!(enabled, [true, true, true]);
     assert_eq!(text, "A");
     assert_eq!(
-        act(&mut s, ev(play_tab::FADER, EventKind::Value(0.4))),
+        act(&mut s, ev(play_tab::SCENES, EventKind::Value(0.4))),
         Some(PlayAction::Scene(SceneAction::Fade(0.4)))
     );
     assert_eq!(strip(&s).2, "40 % to B");
     assert_eq!(
-        act(&mut s, ev(play_tab::FADER, EventKind::Value(0.4))),
+        act(&mut s, ev(play_tab::SCENES, EventKind::Value(0.4))),
         None,
         "no move"
     );
-    act(&mut s, ev(play_tab::FADER, EventKind::Value(1.0)));
+    act(&mut s, ev(play_tab::SCENES, EventKind::Value(1.0)));
     assert_eq!(strip(&s).2, "B");
     // Return: the fader back at A.
     assert_eq!(
@@ -1199,11 +1224,16 @@ fn stops_also_plays_and_latch() {
     assert_eq!(s.project.pad(PAD).unwrap().chokes, [3, 9]);
 }
 
-/// A tap on Add layer (0) or Remove layer (1).
+/// A tap on Add layer (0) or Remove layer (1), on the Layers section's
+/// panel.
 fn layer_button(s: &mut PlaySample, i: usize) -> Option<PlayAction> {
+    if s.tab.section() != Section::Layers {
+        open(s, Section::Layers);
+    }
+    let row = [Row::AddLayer, Row::RemoveLayer][i];
     let ev = UiEvent {
-        widget: play_tab::LAYER_EDIT.into(),
-        kind: EventKind::Tab(i),
+        widget: play_tab::LIST.into(),
+        kind: EventKind::Tab(row.place()),
     };
     let st = s.state.clone();
     s.tab.action(&mut s.ui, &ev, &st)
@@ -1221,11 +1251,12 @@ fn ranges(s: &PlaySample) -> Vec<(u8, u8)> {
 #[test]
 fn layers_are_added_and_removed_and_each_has_its_velocities_level_pan_and_tune() {
     let mut s = play(false);
+    open(&mut s, Section::Layers);
     let buttons = |s: &PlaySample| {
-        s.ui.get::<ButtonRow>(play_tab::LAYER_EDIT)
-            .unwrap()
-            .enabled
-            .clone()
+        let l = s.ui.get::<SettingList>(play_tab::LIST).unwrap();
+        [Row::AddLayer, Row::RemoveLayer]
+            .map(|r| !l.controls[r.place()].faint)
+            .to_vec()
     };
     assert_eq!(buttons(&s), vec![true, false], "a pad keeps one layer");
     // Add layer: a copy of the layer picked, taking the upper half of its
@@ -1354,5 +1385,115 @@ fn the_filter_section_steps_and_drags_the_filter_envelope() {
     assert_eq!(
         s.ui.get::<EnvelopeView>(play_tab::ENV).unwrap().env,
         s.state.settings.amp
+    );
+}
+
+#[test]
+fn each_section_shows_its_picture_across_the_page_and_its_controls_on_the_panel() {
+    use mpfree_sampler_ui::panel::Look;
+    let mut s = play(true);
+    let scenes = s.ui.rect_of(play_tab::SCENES).unwrap();
+    for (section, view) in [
+        (Section::Layers, play_tab::LAYERS),
+        (Section::Amp, play_tab::ENV),
+        (Section::Filter, play_tab::FILTER),
+        (Section::Pitch, play_tab::ENV),
+        (Section::Mod, play_tab::LAYERS),
+        (Section::Pad, play_tab::LAYERS),
+    ] {
+        if s.tab.section() != section {
+            open(&mut s, section);
+        }
+        let v = s.ui.rect_of(view).expect("its picture");
+        let r = s.ui.rect_of(play_tab::LIST).unwrap();
+        // The picture spans the panel and the scenes, which sit side by
+        // side under it.
+        assert_eq!(v.x, r.x, "{section:?}");
+        if section != Section::Filter {
+            assert_eq!(v.right(), scenes.right(), "{section:?}");
+        }
+        assert!(v.bottom() < r.y);
+        assert_eq!((r.y, r.h), (scenes.y, scenes.h));
+        assert!(r.right() < scenes.x);
+        let l = s.ui.get::<SettingList>(play_tab::LIST).unwrap();
+        assert_eq!(l.rows.len(), section.rows().len());
+        assert_eq!(l.controls.len(), l.rows.len());
+        let placed: Vec<_> = (0..l.rows.len())
+            .map(|k| {
+                let c = l.control_rect(r, k).expect("on the panel");
+                let row = section.rows()[k];
+                assert!(
+                    c.x >= r.x && c.right() <= r.right() && c.y >= r.y && c.bottom() <= r.bottom(),
+                    "{row:?} inside the panel"
+                );
+                c
+            })
+            .collect();
+        for (i, a) in placed.iter().enumerate() {
+            for b in &placed[i + 1..] {
+                let apart =
+                    a.right() <= b.x || b.right() <= a.x || a.bottom() <= b.y || b.bottom() <= a.y;
+                assert!(apart, "{section:?}: {a:?} and {b:?} overlap");
+            }
+        }
+    }
+    assert_eq!(s.ui.rect_of(play_tab::ENV), None, "Pad shows the layers");
+    // Amp: Level and Pan, then the envelope's five knobs.
+    open(&mut s, Section::Amp);
+    let l = s.ui.get::<SettingList>(play_tab::LIST).unwrap();
+    let p = l.panel.as_ref().unwrap();
+    let titles: Vec<&str> = p.sections.iter().map(|x| x.title.as_str()).collect();
+    assert_eq!(titles, ["Level", "Envelope"]);
+    assert!(l
+        .controls
+        .iter()
+        .all(|c| matches!(c.look, Look::Knob { .. })));
+    // A drag up on Attack's knob steps it up, an undo step.
+    let r = s.ui.rect_of(play_tab::LIST).unwrap();
+    let k = l.control_rect(r, Row::Attack.place()).unwrap();
+    let (x, y) = (k.x + k.w / 2, k.y + k.h / 2);
+    let a = drag(&mut s, (x, y), (x, y - 40)).unwrap();
+    apply(&mut s, &a);
+    lift(&mut s);
+    assert!(s.state.settings.amp.attack_ms > 2.0);
+    assert_eq!(s.tab.row(&s.ui), Row::Attack, "the wheel's now");
+    // Layers: a tap on Cycle picks it.
+    open(&mut s, Section::Layers);
+    let r = s.ui.rect_of(play_tab::LIST).unwrap();
+    let l = s.ui.get::<SettingList>(play_tab::LIST).unwrap();
+    let placed = l
+        .panel
+        .as_ref()
+        .unwrap()
+        .place(r, &l.controls)
+        .into_iter()
+        .find(|p| p.row == Row::Layers.place())
+        .unwrap();
+    let cycle = placed.options[1];
+    let a = drag(
+        &mut s,
+        (cycle.x + 4, cycle.y + 4),
+        (cycle.x + 4, cycle.y + 4),
+    )
+    .unwrap();
+    apply(&mut s, &a);
+    lift(&mut s);
+    assert_eq!(row_value(&mut s, Row::Layers), "Cycle");
+    // Scenes: the crossfader is faint until A and B are stored, and says
+    // why when touched.
+    let r = s.ui.rect_of(play_tab::SCENES).unwrap();
+    let l = s.ui.get::<SettingList>(play_tab::SCENES).unwrap();
+    let fader = l.control_rect(r, 3).unwrap();
+    assert!(l.controls[3].faint);
+    let ev =
+        s.ui.touch(1, Touch::Down, fader.x + fader.w / 2, fader.y + fader.h / 2)
+            .unwrap();
+    s.ui.touch(1, Touch::Up, 0, 0);
+    assert_eq!(ev.kind, EventKind::Select(3));
+    assert_eq!(
+        s.ui.get::<SettingList>(play_tab::SCENES)
+            .unwrap()
+            .why_faint(3),
+        Some("Store A first")
     );
 }

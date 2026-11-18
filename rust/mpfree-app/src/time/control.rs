@@ -522,18 +522,20 @@ impl TimeControl {
                 continue;
             }
             for place in 0..MAX_FX {
-                let slot = now.slots[place];
-                if slot != was.slots[place]
+                let (slot, id) = (now.slots[place], now.ids[place]);
+                if (slot != was.slots[place] || id != was.ids[place])
                     && self
                         .tx
                         .send(ToAudio::NoteFx {
                             track: t as u16,
                             place: place as u8,
                             slot,
+                            id,
                         })
                         .is_ok()
                 {
                     was.slots[place] = slot;
+                    was.ids[place] = id;
                 }
             }
             if now.arp_at != was.arp_at
@@ -548,6 +550,26 @@ impl TimeControl {
                 was.arp_at = now.arp_at;
             }
         }
+    }
+
+    /// A track's MIDI effects (its Notes stage, `Track::note_fx`), as the
+    /// chain editor set them: they reach the sound loop at once, changing
+    /// only the places that changed (`ToAudio::NoteFx`, `ToAudio::NoteArp`).
+    /// False if there is no such track, or it is a Loop track (it plays no
+    /// notes).
+    pub fn set_note_fx(&mut self, track: usize, fx: TrackFx) -> bool {
+        let Some(t) = self.project.tracks.get_mut(track) else {
+            return false;
+        };
+        if t.loops().is_some() {
+            return false;
+        }
+        if t.note_fx != fx {
+            t.note_fx = fx;
+            self.changed = true;
+            self.sync_note_fx();
+        }
+        true
     }
 
     /// Take everything the audio half sent, in order, and do each

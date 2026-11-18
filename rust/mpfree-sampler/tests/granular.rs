@@ -457,3 +457,69 @@ fn the_screen_sees_the_grains_of_the_pad_and_layer_it_shows() {
     assert!(a > 0 && b > 0, "{a} and {b}");
     assert!(a + b <= e.live_grains());
 }
+
+#[test]
+fn a_stretch_keeps_its_sounds_hits_sharp() {
+    // Noise bursts from silence every quarter second, each decaying.
+    let every = RATE as usize / 4;
+    let mut seed = 0x2468_ACE1u32;
+    let data: Vec<f32> = (0..RATE as usize * 2)
+        .map(|i| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let noise = (seed >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0;
+            let k = i % every;
+            0.5 * noise * (-(k as f32) / (0.04 * RATE as f32)).exp()
+        })
+        .collect();
+    let s = Source::new("drums", RATE, 1, data).unwrap();
+    // Found here, not on their thread, so the test doesn't hang on it.
+    s.find_hits();
+    let hits = s.hits().get().expect("found").to_vec();
+    for k in 1..8 {
+        let want = (k * every) as u64;
+        assert!(
+            hits.iter().any(|&h| h.abs_diff(want) <= 64),
+            "burst {k}: {hits:?}"
+        );
+    }
+    let peak = |x: &[f32]| x.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
+    // Half speed, from the start: each burst due at twice its time.
+    let play = |mode: GrainMode| {
+        let mut pad = granular_pad(
+            &s,
+            GrainParams {
+                position: 0.0,
+                scan: 0.5,
+                size_ms: 90.0,
+                density: 45.0,
+                timing: 0.0,
+                ..GrainParams::default()
+            },
+        );
+        pad.layers[0].region.grain_mode = mode;
+        let mut e = engine_for(&[(0, pad)], &s, 4);
+        e.apply(Event::NoteOn {
+            pad: 0,
+            velocity: 100,
+        });
+        run(&mut e, 3 * every * 2, 128).0
+    };
+    let stretch = play(GrainMode::Stretch);
+    let cloud = play(GrainMode::Cloud);
+    for k in 1..3 {
+        let h = hits
+            .iter()
+            .copied()
+            .find(|h| h.abs_diff((k * every) as u64) <= 64)
+            .unwrap() as usize;
+        let at = 2 * h;
+        let (before, after) = (peak(&stretch[at - 2_000..at]), peak(&stretch[at..at + 200]));
+        assert!(before < 0.05 * after, "burst {k}: {before} then {after}");
+        // As a cloud, its grains play it early.
+        let (before, after) = (peak(&cloud[at - 2_000..at]), peak(&cloud[at..at + 200]));
+        assert!(
+            before > 0.3 * after,
+            "cloud, burst {k}: {before} then {after}"
+        );
+    }
+}

@@ -760,6 +760,51 @@ fn a_cloud_sounds_at_once_without_a_bump() {
 }
 
 #[test]
+fn a_scanned_cloud_starts_at_its_position_without_wrapping() {
+    // Noise with a silent half second at one end: a cloud scanning away
+    // from that end sounds at once, its running start read from where it
+    // starts rather than wrapped round to the silence.
+    let mut x = 7u32;
+    let noise: Vec<f32> = (0..72_000)
+        .map(|_| {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (x >> 8) as f32 / (1u32 << 23) as f32 - 1.0
+        })
+        .collect();
+    let silence = vec![0.0f32; 24_000];
+    let forward = [&noise[..], &silence[..]].concat();
+    let back = [&silence[..], &noise[..]].concat();
+    for (data, position, scan) in [(&forward, 0.0f32, 1.0f32), (&back, 0.999, -1.0)] {
+        let src = Clip::new(data, 1, RATE).unwrap();
+        let mut v = GrainVoice::new(RATE, 3);
+        v.set_params(Params {
+            position,
+            scan,
+            size_ms: 200.0,
+            density: 20.0,
+            ..Params::default()
+        });
+        v.start();
+        let frames = RATE as usize;
+        let (l, r) = run(&mut v, &src, &mut Budget::new(1_000), 0, frames, 128);
+        let level = |a: usize, b: usize| {
+            let e: f32 = l[a..b].iter().chain(&r[a..b]).map(|x| x * x).sum();
+            (e / (2 * (b - a)) as f32).sqrt()
+        };
+        let steady = level(RATE as usize / 2, frames);
+        let w = RATE as usize / 100;
+        let first: Vec<f32> = (0..10)
+            .map(|k| level(k * w, (k + 1) * w) / steady)
+            .collect();
+        assert!(first[0] > 0.5, "scan {scan}: {first:?}");
+        assert!(
+            first[1..].iter().all(|&x| x > 0.708),
+            "scan {scan}: {first:?}"
+        );
+    }
+}
+
+#[test]
 fn grains_stay_inside_the_region() {
     // 1.0 inside the region, 1000 outside: any read outside would show.
     let mut data = vec![1000.0f32; 20_000];
@@ -1138,4 +1183,137 @@ fn a_source_reads_each_grain_as_it_aimed_it() {
     assert!((peak(12.0) - 1.0).abs() < 0.01, "{}", peak(12.0));
     // Pitched down the plain read again.
     assert!((peak(-12.0) - 0.25).abs() < 0.01, "{}", peak(-12.0));
+}
+
+/// Silence with 50 ms of a steady 0.5 from each of `hits`.
+fn steps(frames: usize, hits: &[u64]) -> Vec<f32> {
+    let mut x = vec![0.0f32; frames];
+    for &h in hits {
+        let h = h as usize;
+        x[h..(h + 2_400).min(frames)].fill(0.5);
+    }
+    x
+}
+
+fn peak(x: &[f32]) -> f32 {
+    x.iter().fold(0.0f32, |a, &b| a.max(b.abs()))
+}
+
+#[test]
+fn a_stretch_plays_each_hit_once_at_its_time() {
+    let hits = [12_000u64, 36_000];
+    let data = steps(96_000, &hits);
+    // Half speed, as the Stretch mode sets it, from the start.
+    let p = Params {
+        position: 0.0,
+        scan: 0.5,
+        size_ms: 90.0,
+        density: 45.0,
+        timing: 0.0,
+        ..Params::default()
+    };
+    let play = |with: &[u64], block: usize| {
+        let src = Clip::new(&data, 1, RATE).unwrap().with_hits(with);
+        let mut v = GrainVoice::new(RATE, 3);
+        v.set_params(p);
+        v.start();
+        run(&mut v, &src, &mut Budget::new(256), 0, 80_000, block).0
+    };
+    let out = play(&hits, 128);
+    for &h in &hits {
+        let at = 2 * h as usize;
+        // Nothing of it before its time: the grains reading ahead stop
+        // short of it.
+        let before = peak(&out[at - 2_400..at]);
+        assert!(before < 0.02, "{h}: {before} before");
+        // Then the whole step at once, from the grain on the hit.
+        let first = peak(&out[at..at + 2]);
+        assert!(first > 0.45, "{h}: {first} at once");
+    }
+    // Without its hits the slowed stretch plays each step early, from
+    // every grain that reads ahead.
+    let plain = play(&[], 128);
+    assert!(peak(&plain[24_000 - 2_400..24_000]) > 0.2);
+    // However the audio is cut into periods.
+    let other = play(&hits, 37);
+    let d = out
+        .iter()
+        .zip(&other)
+        .fold(0.0f32, |a, (x, y)| a.max((x - y).abs()));
+    assert!(d < 1e-4, "{d}");
+}
+
+#[test]
+fn a_sped_up_stretch_starts_each_hit_on_time() {
+    let hits = [24_000u64, 48_000, 72_000];
+    let data = steps(96_000, &hits);
+    let p = Params {
+        position: 0.0,
+        scan: 2.0,
+        size_ms: 90.0,
+        density: 45.0,
+        timing: 0.0,
+        ..Params::default()
+    };
+    let play = |with: &[u64]| {
+        let src = Clip::new(&data, 1, RATE).unwrap().with_hits(with);
+        let mut v = GrainVoice::new(RATE, 3);
+        v.set_params(p);
+        v.start();
+        run(&mut v, &src, &mut Budget::new(256), 0, 40_000, 128).0
+    };
+    let out = play(&hits);
+    let plain = play(&[]);
+    for &h in &hits {
+        let at = h as usize / 2;
+        assert!(peak(&out[at - 2_400..at]) < 0.02);
+        assert!(peak(&out[at..at + 2]) > 0.45, "{h}");
+        // Without hits, the grains reach it one by one, late.
+        assert!(peak(&plain[at..at + 2]) < 0.3, "{h}");
+    }
+}
+
+#[test]
+fn hits_need_a_forward_scan() {
+    let hits = [12_000u64, 36_000];
+    let data = steps(96_000, &hits);
+    for scan in [0.0, -0.5] {
+        let p = Params {
+            position: 0.5,
+            scan,
+            size_ms: 90.0,
+            density: 45.0,
+            ..Params::default()
+        };
+        let play = |with: &[u64]| {
+            let src = Clip::new(&data, 1, RATE).unwrap().with_hits(with);
+            let mut v = GrainVoice::new(RATE, 3);
+            v.set_params(p);
+            v.start();
+            run(&mut v, &src, &mut Budget::new(256), 0, 48_000, 128).0
+        };
+        assert_eq!(play(&hits), play(&[]), "scan {scan}");
+    }
+}
+
+#[test]
+fn many_hits_close_together_still_play() {
+    // A hit every 40 frames of a short sound, scanned 32 times as fast as
+    // it plays (4 at 8 times its tempo), wrapping round again and again.
+    let data: Vec<f32> = (0..4_000).map(|i| ((i % 40) as f32 / 40.0) - 0.5).collect();
+    let hits: Vec<u64> = (0..100).map(|i| i * 40).collect();
+    let src = Clip::new(&data, 1, RATE).unwrap().with_hits(&hits);
+    let mut v = GrainVoice::new(RATE, 9);
+    v.set_params(Params {
+        scan: 4.0,
+        scan_tempo: Some(30.0),
+        size_ms: 20.0,
+        density: 200.0,
+        ..Params::default()
+    });
+    v.set_tempo(60.0 * f64::from(RATE) / 240.0);
+    v.start();
+    let (l, _) = run(&mut v, &src, &mut Budget::new(256), 0, 24_000, 128);
+    assert!(l.iter().all(|x| x.is_finite()));
+    assert!(v.stats().spawned > 100);
 }

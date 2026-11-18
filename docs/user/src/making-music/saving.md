@@ -101,23 +101,23 @@ MPFree opens the project you last saved or opened: once the sound is going, it o
 
 {{shot: browser | The browser in Projects, with Night drive picked: its tempo and when it was saved on the right, with Earlier saves.}}
 
-**BROWSE** opens the browser over the page you are on, and pressing it again goes back to that page. It is a full file manager for MPFree's stick:
+**BROWSE** opens the browser over the page you are on, and pressing it again goes back to that page. The folder at the right end of the top bar does the same, and the Pads tab's **Browse for** opens it to find a sound for the pad picked. It is a full file manager for MPFree's stick:
 
 - **Places** on the left: Projects, Samples, Kits, Instruments, Patterns and Recordings, plus Recent, Favourites, the Trash, and Factory (read-only kits). **Plugins** finds and installs MPC plugins (see [Getting plugins](plugins.md)).
 - **The list** in the middle, folders first, in natural order (Kick 2 before Kick 10), with filters for audio, projects and kits. Each row has a **star** at its right end: tap it to add the item to Favourites, and again to take it out.
-- **The selected item** on the right: a sound's length and waveform, a project's tempo and when it was saved, and buttons to Load, Load to pad, Audition, Rename, Copy, Cut and Delete.
+- **The selected item** on the right: a sound's length and waveform, a project's tempo and when it was saved, and buttons to Load (for a sound, **Load on A5**: the pad picked), Next pad hit, Audition, Rename, Copy, Cut and Delete.
 
 **Opening things.** Tap a folder to open it. Tap anything else to pick it (a sound plays once), and tap it again to open it (a project) or load it (a sound, a kit, a preset, a MIDI file). Pushing the data wheel does the same as that second tap.
 
 **MIDI files.** A `.mid` file loads as clips, from the armed track on: see [Bringing in a MIDI file](clips.md#bringing-in-a-midi-file). The MIDI file an export makes (in Recordings) loads back the same way.
 
-**Kits.** A kit is kept as a folder with its sounds and a `kit.txt` file listing every pad and its settings, so it reads on any computer. Kits show with a green icon wherever they are. Loading one puts it in place of the kit the pads play; **+** opens it to show its sounds. **Save kit** at the top of the **Kits** place saves the kit the pads play there, named after it. MPFree's own drum kits and its free kits of recorded drums ([Sampling](sampling.md)) are in **Kits > MPFree**.
+**Kits.** A kit is kept as a folder with its sounds and a `kit.txt` file listing every pad and its settings, so it reads on any computer. Kits show with a green icon wherever they are. Loading one puts it in place of the kit the pads play (or in a new kit for the selected track, when other tracks play that kit); **+** opens it to show its sounds. **Save kit** at the top of the **Kits** place saves the kit the pads play there, named after it. MPFree's own drum kits and its free kits of recorded drums ([Sampling](sampling.md)) are in **Kits > MPFree**.
 
 A folder with thousands of sounds lists straight away; the sizes fill in a moment later.
 
 Moving onto a sound plays it once, so you can audition as you scroll. Delete always asks first and moves things to the Trash, which you empty yourself (that asks again).
 
-**Load** puts a sound on the pad you are editing, and **Load to pad** on the next pad you hit. WAV, AIFF and FLAC files load, mono or stereo, at 8 to 192 kHz, whatever their name says. A file that was cut short, by a recorder that lost power say, loads the part it has. A FLAC file with a damaged part doesn't load at all, rather than play it as noise. A pad you exported from the Sample tab loads with its settings: load its sound, and the settings file beside it brings back its trim, loop, layers and slices (see [Exporting a pad as files](sampling.md#exporting-a-pad-as-files)).
+**Load on A5** puts a sound on the pad picked, named on the button: hit another pad and the button follows it. **Next pad hit** puts it on the next pad you hit. WAV, AIFF and FLAC files load, mono or stereo, at 8 to 192 kHz, whatever their name says. A file that was cut short, by a recorder that lost power say, loads the part it has. A FLAC file with a damaged part doesn't load at all, rather than play it as noise. A pad you exported from the Sample tab loads with its settings: load its sound, and the settings file beside it brings back its trim, loop, layers and slices (see [Exporting a pad as files](sampling.md#exporting-a-pad-as-files)).
 
 The data wheel moves through the list and its push opens or loads; the other buttons are in [Buttons and controls](../reference/controls.md#the-browser).
 
@@ -125,7 +125,7 @@ The data wheel moves through the list and its push opens or loads; the other but
 
 Where you need one kind of file, a narrower **picker** shows the same browser with only what fits. A picker only loads; renaming and deleting are in the full browser.
 
-The Pads tab's sound picker stays open beside the pads, with Load, Load to pad and Audition, the stars, and the Kits place with **Save kit**. See [Sampling](sampling.md#the-pads-tab-sounds-onto-pads). A preset picker on the Synth tab (each turn of the wheel lets you play the next preset on the pads before you choose it) comes later.
+The Pads tab's **Browse for** opens the full browser, not a picker: see [Sampling](sampling.md#finding-sounds-browse-for). A preset picker on the Synth tab (each turn of the wheel lets you play the next preset on the pads before you choose it) comes later.
 
 ### Your own synth presets
 

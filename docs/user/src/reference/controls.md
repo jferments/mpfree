@@ -34,11 +34,11 @@ Every button works as soon as MPFree starts, with nothing to learn: the develope
 | **SHIFT + PLAY START** | Metronome on or off (it starts off; MPFree remembers your choice). The click plays while counting in and recording. Its level is in the Play page's options (**MENU**). | Works |
 | **TAP TEMPO** | Tap four times in time to set the tempo. Tapping the tempo on the Play page does the same. | Works |
 | **TRACK MIX** | Opens the mixer (the **Mix** tab) on the tracks; pressed again, back to the page you were on. **SHIFT + TRACK MIX** opens it on the pads. On the current test build it opens and closes the mixer over the page. | Works (the Mix tab: next build) |
-| **PAD BANK A–D** | Switches the pads to bank A, B, C or D. **SHIFT** + a bank button, or a second press, gives banks E–H. With a drum kit on the pads, this is how you change the selected track's kit (on the Play page **SHIFT** + the data wheel also steps through every kit; the kit chip lists them). With a synth on the pads, they pick its pad layout. While **STEP SEQ** has the pads, they turn its pages of steps; while **TRACK MUTE** has them, they pick which 16 tracks. | Works (the kit and the layout: next build) |
+| **PAD BANK A–D** | Switches the pads to bank A, B, C or D. **SHIFT** + a bank button, or a second press, gives banks E–H. With a kit on the pads, each bank is 16 of its 128 pads: A is pads A1–A16, B is B1–B16, up to H; the lit button is the bank on the pads, and it stays when you select another track. To change the selected track's kit, use the kit chip's list or **SHIFT** + the data wheel on the Play page. With a synth on the pads, they pick its pad layout. While **STEP SEQ** has the pads, they turn its pages of steps; while **TRACK MUTE** has them, they pick which 16 tracks. | Works |
 | **FULL LEVEL** | Every pad plays at full velocity, however hard you hit it. Press again to turn it off. **SHIFT + FULL LEVEL** is Half Level (every hit at half velocity). | Works |
 | **16 LEVEL** | 16 Levels: the pad you hit last plays on all 16 pads, each a step of velocity, tune, cutoff, decay or start, and the [16 Levels panel](../making-music/playing-live.md#16-levels) opens on Play. Its last kind, **Transpose**, makes the pads shift the armed track's notes live, pad 9 as written; with the synth on the pads, 16 LEVEL opens it at once (see [Transpose](../making-music/playing-live.md#transpose)). Press again to turn it off. **SHIFT + 16 LEVEL** switches the synth pads between Chromatic and In key (with no scale picked yet, In key picks C Major; the line at the bottom of the screen says which). | Works |
 | **Q-Link knobs 1–4** | Turn the four parameters shown in the Q-Link column at the right of the screen. What they control depends on the page. | Works |
-| **Data wheel** | On a page with settings (the menus, Prefs, the Sample tab, the Pads tab's Pad view, the Synth tab, Arrange): picks a row. On the Play page, the Looper tab, the mixer and the FX chain editor: moves the outline from control to control (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)). It no longer changes the kit. With a finger resting on a value, turns that value instead (see [Hold and turn](../getting-started/the-screen.md#hold-and-turn)). | Works (the outline: next build; hold and turn: next build) |
+| **Data wheel** | On a page with settings (the menus, Prefs, the Sample tab, the Pads tab, the Synth tab, Arrange): picks a row. On the Play page, the Looper tab, the mixer and the FX chain editor: moves the outline from control to control (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)). It no longer changes the kit. With a finger resting on a value, turns that value instead (see [Hold and turn](../getting-started/the-screen.md#hold-and-turn)). | Works (the outline: next build; hold and turn: next build) |
 | **–** and **+** | Step the picked row's value down or up. With the outline on a value, step it; on anything else, move the outline. With a finger resting on a value, step that value. | Works (the outline: next build) |
 | **The data wheel's push** | Opens the picked row: its value is outlined and the wheel changes it. Push again to go back to picking rows. On a row that opens something, opens it. With the outline on a control, does what a tap does; on a value, lets the wheel turn it until you push again. | Works (the outline: next build) |
 
@@ -62,30 +62,20 @@ Every button works as soon as MPFree starts, with nothing to learn: the develope
 
 ## Pads tab
 
-While the Pads tab shows its **Browse** view, the controls work the browser beside the pads. On its **Pad** view they work as on the Sample tab (below): the wheel picks a row, **–** and **+** change it, and **SHIFT** + wheel steps through the pads with a sound. See [Sampling](../making-music/sampling.md#the-pads-tab-sounds-onto-pads).
-
-| Control | What it does | When |
-|---|---|---|
-| **Data wheel** | Moves through the list. | Works |
-| **SHIFT + data wheel** | Moves through the places on the left (Samples, Kits, Recordings, Recent, Favourites). | Works |
-| **The data wheel's push** | Opens the folder picked, loads the sound picked onto the pad picked, or loads the kit picked in place of the kit the pads play. | Works |
-| **–** | Back up one folder. | Works |
-| **+** | Into the folder picked, or into the kit picked to see its sounds. | Works |
-| **PLAY** | Hears the sound picked (press again to stop it). PLAY doesn't start playback while Browse shows. | Works |
-| **Q-Link knobs 1–4** | 1: moves through the list. 3: the level you hear sounds at. 4: the places. | Works |
+On the Pads tab the controls work as on the Sample tab (below): the wheel picks a row, **–** and **+** change it, and **SHIFT** + wheel steps through the pads with a sound. **Browse for** at the top right opens the browser (next section). See [Sampling](../making-music/sampling.md#the-pads-tab-sounds-onto-pads).
 
 ## The browser
 
-While the browser shows (**BROWSE**), the controls work it. See [Saving your work](../making-music/saving.md#the-browser).
+While the browser shows (**BROWSE**, the folder at the right end of the top bar, or the Pads tab's **Browse for**), the controls work it. See [Saving your work](../making-music/saving.md#the-browser).
 
 | Control | What it does | When |
 |---|---|---|
 | **Data wheel** | Moves through the list. | Works |
 | **SHIFT + data wheel** | Moves through the places on the left. | Works |
-| **The data wheel's push** | Opens the folder or project picked, loads anything else (a whole kit, for a kit), or answers yes to the question on screen. | Works |
+| **The data wheel's push** | Opens the folder or project picked, loads anything else (a sound onto the pad picked, a whole kit for a kit), or answers yes to the question on screen. | Works |
 | **–** | Back up one folder. | Works |
 | **+** | Into the folder picked, or into the kit picked to see its sounds. | Works |
-| **PLAY** | Hears the sound picked. | Works |
+| **PLAY** | Hears the sound picked (press again to stop it). PLAY doesn't start playback while the browser shows. | Works |
 | **ERASE** | Moves the item picked to the Trash (asks first). | Works |
 | **Q-Link knobs 1–4** | 1: moves through the list. 2: the filter. 3: the level you hear sounds at. 4: the places. | Works |
 
@@ -113,9 +103,9 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 | **SHIFT + MAIN** | Switches between [Make and Perform](../making-music/playing-live.md#make-and-perform), as the MAKE or PERFORM chip on the top bar does. | Works |
 | **STEP SEQ** | The pads become steps of one sound over any page, and the Play page shows Beats: hit an empty step to put a note there, a lit one to take it off. Press it again to play the pads. Hold **STEP SEQ** and hit a pad to pick the sound. **PAD BANK** turns the pages of steps; **SHIFT + STEP SEQ** turns on Follow. Hold a step pad and turn the Q-Links to change that step, or lock its sound on the Q-Links' Sound bank; hold it and hit a later one to make the note last to there. **SHIFT** + an empty step holds it with no note, for a lock alone. With a synth on the pads, the pads are the steps of its whole line: hold **STEP SEQ** and play a pad or a chord to pick what new steps play; hold a step and turn **Q-Link 1** to move its notes, or play a keyboard to put its keys on it. See [Your first beat](../getting-started/first-beat.md#program-a-pattern-on-the-pads) and [Steps on the synth](../making-music/synths.md#steps-on-the-synth). | Works (new: needs a device check) |
 | **NEXT SEQ** | The Arrange tab. | Works |
-| **SAMPLER** | The Sample tab. **SHIFT + SAMPLER** goes to the Looper tab. | Works |
+| **SAMPLER** | The Sample tab. **SHIFT + SAMPLER** goes to the Looper tab; pressed again there, the pads become the [loop keys](../making-music/looping.md#the-pads-as-loop-keys) (again: they play). | Works |
 | **SAMPLE EDIT** | The Sample tab's Wave page. | Works |
-| **PROG EDIT** | The sound the pads play: the Synth tab while the synth is on the pads, otherwise the Pads tab's Pad view. | Works |
+| **PROG EDIT** | The sound the pads play: the Synth tab while the synth is on the pads, otherwise the Pads tab. | Works |
 | **TRACK MUTE** | The pads become mute keys over any page: pads 1-16 mute and unmute tracks 1-16, and **PAD BANK** picks the next 16 (B: 17-32, up to H: 113-128). **SHIFT + TRACK MUTE**: each pad mutes and unmutes itself in the kit. Press the same button again to play the pads. In Perform a mute waits for the launch line (the pad blinks amber), and SHIFT + the pad mutes at once; in Make it's the other way round. **Hold TRACK MUTE + a pad** to solo that track (lit blue), or over the kit's pads, that pad. See [Playing live](../making-music/playing-live.md#muting-tracks-and-pads). | Works (the timing and solo: next build) |
 | **Q-LINK** | Steps the Q-Links through Macros 1-4, Macros 5-8 and the page's own knobs (the Play page, Arrange and the chain editor). See [Effects](../making-music/effects.md#macros). While you hold a step pad with **STEP SEQ** on, it steps the Q-Links through the step's velocity, length, nudge and chance, its condition, ratchet and fine nudge, and its sound's locks (tune, decay, filter and level, or the synth's first four knobs). With a step picked on the Beats view, it steps between the step's velocity, length, nudge and chance and its condition, ratchet and fine nudge. | Works |
 | **ERASE** | Hold **ERASE** and tap something on the screen to delete it: a clip on the Arrange tab, a pattern row's name on the Play page (that sound's steps), or a layer on the Looper tab. With **STEP SEQ** on, **ERASE** + a step pad clears that step, **ERASE** + a **PAD BANK** button clears that page of steps, and **ERASE** pressed while you hold step pads takes their locks off and keeps their notes. **UNDO** brings it back. The hint line says what you can tap while you hold it. A clip used in the song, a whole loop, effects and macros can't be deleted this way yet. In the browser, **ERASE** moves the item picked to the Trash (asking first). While you record, hold **ERASE** and hold a pad: that pad's hits come out of the clip as the playhead passes them, and the pad makes no sound (see [Erasing while you record](../making-music/clips.md#erasing-while-you-record)). | Works (live erase new: needs a device check) |

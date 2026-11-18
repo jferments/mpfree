@@ -237,10 +237,16 @@ pub fn opening(
         .iter()
         .find(|(k, _)| k == SWING)
         .and_then(|(_, v)| parse_swing(v));
+    let mut note_fx = None;
     let time = snap.part(CLIPS).and_then(|text| {
         let p = mpfree_seq::save::from_text(text)
             .map_err(|e| notes.push(format!("project: the clips weren't opened ({e})")))
             .ok()?;
+        let mut fx = Box::new([mpfree_notefx::TrackFx::default(); mpfree_seq::MAX_TRACKS]);
+        for (t, tr) in p.tracks.iter().enumerate().take(mpfree_seq::MAX_TRACKS) {
+            fx[t] = tr.note_fx;
+        }
+        note_fx = Some(fx);
         TimeHost::with_project(rate, tempo.unwrap_or(120.0), p)
             .map_err(|e| notes.push(format!("project: the clips weren't opened ({e})")))
             .ok()
@@ -250,7 +256,10 @@ pub fn opening(
         mixer_load(text, snap.part(MOD), rate, plugins)
             .map_err(|e| notes.push(format!("project: the mixer wasn't opened ({e})")))
             .ok()
-            .map(Box::new)
+            .map(|mut m| {
+                m.note_fx = note_fx;
+                Box::new(m)
+            })
     });
     let synth = snap.part(SYNTH).and_then(|text| {
         synth_parse(text)
@@ -665,6 +674,9 @@ pub struct MixLoad {
     pub chains: Vec<(StripId, Vec<Keyed>)>,
     /// The mod engine's part, loaded once the inserts are in.
     pub modu: Option<String>,
+    /// The project's tracks' MIDI effects, so the mod engine's part can
+    /// name their settings when it loads (`ModMix::set_note_fx`).
+    pub note_fx: Option<Box<[mpfree_notefx::TrackFx; mpfree_seq::MAX_TRACKS]>>,
     pub notes: Vec<String>,
     /// Keys set once their inserts are in: (strip, slot, key strip).
     /// Filled by the audio loop as it puts them in.
@@ -736,6 +748,7 @@ pub fn mixer_load(
         strips: Vec::new(),
         chains: Vec::new(),
         modu: modu.map(str::to_string),
+        note_fx: None,
         notes: Vec::new(),
         // Room for every key, so the audio loop never grows it.
         keys: Vec::with_capacity(64),

@@ -50,6 +50,13 @@ const VARY_SEED: u64 = 0x5EED_0B1A_C0DE_2611;
 /// this many decibels down.
 const LEVEL_SPRAY_DB: f32 = 24.0;
 
+/// A grain stopped at a hit shorter than this much of its size is not
+/// made (see [`GrainVoice::render`], "Hits").
+const MIN_CUT: f64 = 0.25;
+
+/// How fast the grains playing fade as a hit starts.
+const HIT_FADE_SECS: f64 = 0.003;
+
 /// How [`Params::spray`] spreads grains around the position.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SprayShape {
@@ -345,6 +352,11 @@ pub struct GrainVoice {
     window: WindowTable,
     grains: [Grain; MAX_GRAINS],
     active: usize,
+    /// Grains fading out under a hit (see [`GrainVoice::render`], "Hits"),
+    /// at the level they had: outside the level's sums, so the hit plays
+    /// at its own.
+    fading: [Grain; MAX_GRAINS],
+    fading_n: usize,
     rng: Rng,
     /// The timing's own random sequence (see [`TIMING_SEED`]).
     trng: Rng,
@@ -372,6 +384,9 @@ pub struct GrainVoice {
     scan_offset: f64,
     span: (i64, i64),
     stats: Stats,
+    /// The last hit a grain was started on (see [`GrainVoice::render`],
+    /// "Hits"): its frame in the source, and the voice clock's frame.
+    last_hit: Option<(f64, u64)>,
     /// The transport's frames per beat, set by [`GrainVoice::set_tempo`]:
     /// a synced cloud follows it in place of its own `frames_per_beat`.
     beat: Option<f64>,
@@ -410,6 +425,8 @@ impl GrainVoice {
             window: WindowTable::new(params.window),
             grains: [Grain::default(); MAX_GRAINS],
             active: 0,
+            fading: [Grain::default(); MAX_GRAINS],
+            fading_n: 0,
             rng: Rng::new(seed),
             trng: Rng::new(seed ^ TIMING_SEED),
             vrng: Rng::new(seed ^ VARY_SEED),
@@ -425,6 +442,7 @@ impl GrainVoice {
             scan_offset: 0.0,
             span: (0, 0),
             stats: Stats::default(),
+            last_hit: None,
             beat: None,
             sc: Scratch::new(),
             ey: 0.0,
@@ -482,17 +500,20 @@ impl GrainVoice {
     /// Starts making grains, the first at the start of the next render.
     /// Scanning restarts from `position`. The cloud starts already running:
     /// with the first grain come a few that would be playing had it been
-    /// running for a grain's length (up to 8, each
-    /// part-way through its window), and the voice fades in over 4 ms, so
+    /// running for a grain's length (up to 8, each part-way through its
+    /// window, reading on from where the scan was then, never wrapped round
+    /// the span), and the voice fades in over 4 ms, so
     /// a cloud speaks at its level at once at any size and fills in to its
     /// density over the next grain (a slow swell is the amp envelope's
-    /// attack).
+    /// attack). A start on a hit (see [`GrainVoice::render`], "Hits") has
+    /// only the hit's grain.
     pub fn start(&mut self) {
         self.spawning = true;
         self.prefill = true;
         self.next_at = self.clock as f64;
         self.last_spawn = self.clock as f64;
         self.scan_offset = 0.0;
+        self.last_hit = None;
         // Until the cloud has played long enough to tell, guess how its
         // grains add from the settings: in step only when every grain
         // reads the same audio as the one before it at the same moment.
@@ -520,14 +541,15 @@ impl GrainVoice {
     /// unless the output is already being faded.
     pub fn kill(&mut self, budget: &mut Budget) {
         self.spawning = false;
-        budget.live = budget.live.saturating_sub(self.active);
+        budget.live = budget.live.saturating_sub(self.active + self.fading_n);
         self.active = 0;
+        self.fading_n = 0;
         self.stats.active = 0;
     }
 
     /// True while making grains or while any still play.
     pub fn is_active(&self) -> bool {
-        self.spawning || self.active > 0
+        self.spawning || self.active > 0 || self.fading_n > 0
     }
     pub fn is_spawning(&self) -> bool {
         self.spawning
@@ -554,7 +576,7 @@ impl GrainVoice {
         for (o, g) in out.iter_mut().zip(&self.grains[..n]) {
             *o = GrainView {
                 position: ((g.pos - start as f64) / len).clamp(0.0, 1.0) as f32,
-                level: self.window.at(g.age as f32 * g.dphase),
+                level: self.window.at(g.age as f32 * g.dphase + g.phase0),
                 reverse: g.inc < 0.0,
             };
         }
@@ -686,6 +708,21 @@ impl GrainVoice {
     /// grain, so a cloud's first grains keep their windows, and it glides
     /// back to 1 (in 10 ms) once grains stop, so a cloud's tail fades as
     /// its last grains do.
+    ///
+    /// **Hits.** A source with hits ([`GrainSource::next_hit`]: the sampler
+    /// gives a sound's drum hits to a pad in Stretch mode) keeps them sharp
+    /// while the scan moves forward. Overlapping grains each play a hit
+    /// from their own place, so a stretched drum flams (early when it is
+    /// slowed, late when it is sped up) and loses its attack. Instead, a
+    /// grain reading forward stops at the next hit: its window is fitted
+    /// to end there, and a grain that would be under a quarter of its size
+    /// is not made. When the scan reaches a hit, between frames if it falls
+    /// there, one grain starts on it at its window's peak and plays the
+    /// rest of its window over at least half the size, at the cloud's
+    /// pitch, in the centre and at full level; the free-running grains
+    /// start again a period after it. So each hit plays once, at its time
+    /// and at its own attack; what a slowed stretch has too little of
+    /// just before a hit thins out, as a beat-slicing stretch gaps.
     pub fn render<S: GrainSource>(
         &mut self,
         src: &S,
@@ -698,8 +735,9 @@ impl GrainVoice {
         let (start, end) = src.span();
         if end - start < 8 {
             // Nothing readable: let playing grains fall silent with the source.
-            budget.live = budget.live.saturating_sub(self.active);
+            budget.live = budget.live.saturating_sub(self.active + self.fading_n);
             self.active = 0;
+            self.fading_n = 0;
             self.stats.active = 0;
             self.span = (start, end);
             self.clock += n as u64;
@@ -737,10 +775,21 @@ impl GrainVoice {
             self.sc.clear(m, measure);
             let mut done = 0usize;
             let mut search = 0usize;
+            // At most a few hits a part (they are 30 ms apart or more).
+            let mut hits_left = 4u8;
             while done < m {
                 let next = self.next_spawn(transport_frame + at as u64, search, m);
-                let seg = next.unwrap_or(m);
-                mix(
+                let mut seg = next.unwrap_or(m);
+                let mut hit = None;
+                if scan > 0.0 && hits_left > 0 {
+                    if let Some((k, h, frac)) =
+                        self.hit_between(src, done, seg.min(m - 1), scan, len)
+                    {
+                        seg = k;
+                        hit = Some((h, frac));
+                    }
+                }
+                mix::<S, true>(
                     &mut self.grains,
                     &mut self.active,
                     &self.window,
@@ -751,8 +800,35 @@ impl GrainVoice {
                     seg,
                     measure,
                 );
+                if self.fading_n > 0 {
+                    mix::<S, false>(
+                        &mut self.fading,
+                        &mut self.fading_n,
+                        &self.window,
+                        src,
+                        budget,
+                        &mut self.sc,
+                        done,
+                        seg,
+                        false,
+                    );
+                }
                 self.scan_offset = (self.scan_offset + scan * (seg - done) as f64).rem_euclid(len);
                 done = seg;
+                if let Some((h, frac)) = hit {
+                    // A start on a hit needs no grains from before it.
+                    self.prefill = false;
+                    self.fade_for_hit(budget);
+                    self.spawn_hit(src, budget, src_ratio, h, frac);
+                    let born = self.clock as f64 + seg as f64 - frac;
+                    self.last_spawn = born;
+                    self.gap = gap_factor(self.params.timing, self.trng.unit());
+                    self.next_at = born + self.period() * self.gap;
+                    self.last_hit = Some((h, self.clock + seg as u64));
+                    hits_left -= 1;
+                    search = seg + 1;
+                    continue;
+                }
                 if let Some(off) = next {
                     if self.prefill {
                         self.prefill = false;
@@ -788,6 +864,153 @@ impl GrainVoice {
         self.stats.active = self.active;
         self.stats.thinned =
             self.spawning && self.density() * self.fit_size / f64::from(self.out_rate) > CAP_FIT;
+    }
+
+    /// The first hit the scan reaches on a frame from `from` to `last` of
+    /// this part (see [`GrainVoice::render`], "Hits"): the frame, the hit's
+    /// frame in the source, and how far past it the scan is by then, in
+    /// output frames (0 to 1). The scan moves `scan` source frames an
+    /// output frame, forward. A hit started on this frame or the one
+    /// before is not found again.
+    fn hit_between<S: GrainSource>(
+        &self,
+        src: &S,
+        from: usize,
+        last: usize,
+        scan: f64,
+        len: f64,
+    ) -> Option<(usize, f64, f64)> {
+        if last < from {
+            return None;
+        }
+        let (start, end) = self.span;
+        let now = self.clock + from as u64;
+        let just = self
+            .last_hit
+            .filter(|&(_, at)| now <= at + 1)
+            .map(|(h, _)| h);
+        let find = |lo: f64, hi: f64| match src.next_hit(lo, hi) {
+            Some(h) if Some(h) == just => src.next_hit(h, hi),
+            h => h,
+        };
+        // Where the scan is on frame `from`, and was the frame before.
+        let p = start as f64 + self.base_offset(len);
+        let (lo, hi) = (p - scan, p + scan * (last - from) as f64);
+        let (h, at) = match find(lo, hi) {
+            Some(h) => (h, h),
+            // Past the span's end the scan reads from its start again.
+            None if hi >= end as f64 => {
+                let h = find(lo - len, hi - len)?;
+                (h, h + len)
+            }
+            None => return None,
+        };
+        let k = from + ((at - p) / scan).ceil().max(0.0) as usize;
+        if k > last {
+            return None;
+        }
+        let frac = ((p + scan * (k - from) as f64 - at) / scan).clamp(0.0, 0.999_999);
+        Some((k, h, frac))
+    }
+
+    /// As a hit starts, the grains playing fade out over [`HIT_FADE_SECS`]
+    /// along the rest of their windows (one still rising from where its
+    /// falling side has the same level), at the level the cloud gave them,
+    /// and leave the level's sums: the hit plays alone at its own level.
+    fn fade_for_hit(&mut self, budget: &mut Budget) {
+        let f = (HIT_FADE_SECS * f64::from(self.out_rate)).max(2.0) as u32;
+        let peak = self.window.peak();
+        // The divisor the level law gives them now (see `level`).
+        let (mut s1, mut s2) = (0.0f32, 0.0f32);
+        for g in &self.grains[..self.active] {
+            let a = self.window.at(g.age as f32 * g.dphase + g.phase0) * g.lvl;
+            s1 += a;
+            s2 += a * a;
+        }
+        let c = self.coherence;
+        let divisor = (c * s1 + (1.0 - c) * s2.sqrt()).max(self.floor);
+        for i in 0..self.active {
+            let mut g = self.grains[i];
+            if g.len - g.age > f {
+                let now = g.age as f32 * g.dphase + g.phase0;
+                let q = if now < peak {
+                    peak + (peak - now) * (1.0 - peak) / peak
+                } else {
+                    now
+                };
+                g.dphase = (1.0 - q) / f as f32;
+                g.phase0 = q - g.age as f32 * g.dphase;
+                g.len = g.age + f;
+            }
+            g.lvl /= divisor;
+            if self.fading_n < MAX_GRAINS {
+                self.fading[self.fading_n] = g;
+                self.fading_n += 1;
+            } else {
+                budget.live = budget.live.saturating_sub(1);
+            }
+        }
+        self.active = 0;
+    }
+
+    /// Starts the grain on a hit at source frame `hit`, `frac` of an output
+    /// frame ago (see [`GrainVoice::render`], "Hits").
+    fn spawn_hit<S: GrainSource>(
+        &mut self,
+        src: &S,
+        budget: &mut Budget,
+        src_ratio: f64,
+        hit: f64,
+        frac: f64,
+    ) {
+        if self.active >= MAX_GRAINS || budget.live >= budget.limit {
+            self.stats.skipped += 1;
+            budget.skipped += 1;
+            return;
+        }
+        let p = self.params;
+        let (start, end) = src.span();
+        let hi = end as f64 - 3.0;
+        let mut semis = p.pitch.clamp(-48.0, 48.0);
+        if p.scale & 0xFFF != 0 {
+            semis = quantise(semis, p.scale);
+        }
+        let speed = f64::from((semis / 12.0).exp2()) * src_ratio;
+        if hit < start as f64 || hit >= hi {
+            return;
+        }
+        // From the window's peak to its end, over at least half the size.
+        let peak = f64::from(self.window.peak()).min(0.999);
+        let size = self.size_frames();
+        let mut frames = ((1.0 - peak).max(0.5) * (size - 1.0)).floor();
+        // Not through the next hit, nor past the span.
+        let reach = |f: f64| hit + (f + frac) * speed;
+        if let Some(next) = src.next_hit(hit, reach(frames)) {
+            frames = frames.min(((next - hit) / speed - frac).floor());
+        }
+        if reach(frames) > hi {
+            frames = ((hi - hit) / speed - frac).floor();
+        }
+        if frames < 2.0 {
+            return;
+        }
+        let dphase = ((1.0 - peak) / frames) as f32;
+        self.grains[self.active] = Grain {
+            pos: hit + speed * frac,
+            inc: speed,
+            age: 0,
+            len: frames as u32 + 1,
+            dphase,
+            phase0: peak as f32 + frac as f32 * dphase,
+            lvl: 1.0,
+            pl: 1.0,
+            pr: 1.0,
+            aim: src.aim(speed),
+        };
+        self.active += 1;
+        budget.live += 1;
+        self.stats.spawned += 1;
+        self.stats.peak_active = self.stats.peak_active.max(self.active);
     }
 
     /// Grains a running cloud would have now, besides the one being born:
@@ -929,18 +1152,32 @@ impl GrainVoice {
         if age as f64 >= size - 1.0 {
             return;
         }
-        let pos = start as f64
-            + (self.base_offset(len) - scan * f64::from(age)
-                + f64::from(p.spray.clamp(0.0, 1.0) * spray_draw(p.spray_shape, r_spray))
-                    * len
-                    * 0.5)
-                .rem_euclid(len);
+        let spray = f64::from(p.spray.clamp(0.0, 1.0) * spray_draw(p.spray_shape, r_spray));
+        // A grain of the running start, born `age` frames ago, began where
+        // the scan was then, not wrapped round the span: only what it still
+        // has to play is read, which keeps the start in step with the
+        // cloud to come rather than opening with the sound's far end.
+        let past = f64::from(age);
+        let pos = start as f64 + (self.base_offset(len) + spray * len * 0.5).rem_euclid(len)
+            - scan * past;
         let pos = if reverse {
-            pos.clamp(lo + extent, hi)
+            pos.clamp(lo + extent, hi + speed * past)
         } else {
-            pos.clamp(lo, hi - extent)
+            pos.clamp(lo - speed * past, hi - extent)
         };
         let inc = if reverse { -speed } else { speed };
+        // In a forward scan, a grain reading forward stops at the next hit
+        // (see `render`, "Hits"): its window fitted to end there.
+        let mut size = size;
+        if scan > 0.0 && !reverse {
+            if let Some(h) = src.next_hit(pos, pos + extent - 1e-6) {
+                let cut = ((h - pos) / speed - frac).floor() + 1.0;
+                if cut < (size * MIN_CUT).max(2.0) || f64::from(age) >= cut - 1.0 {
+                    return;
+                }
+                size = cut;
+            }
+        }
 
         // Equal-power pan, 1 on both sides in the centre, so a spread cloud
         // of unrelated grains keeps its level. At full spread the pans
@@ -978,7 +1215,7 @@ impl GrainVoice {
 /// Mixes the grains playing into frames `from..to` of the scratch buffers,
 /// and retires the ones that finish.
 #[allow(clippy::too_many_arguments)]
-fn mix<S: GrainSource>(
+fn mix<S: GrainSource, const LEVEL: bool>(
     grains: &mut [Grain; MAX_GRAINS],
     active: &mut usize,
     window: &WindowTable,
@@ -1021,10 +1258,12 @@ fn mix<S: GrainSource>(
                 let (vl, vr) = (a_l * a * pl, a_r * a * pr);
                 sl_[$k] += vl;
                 sr_[$k] += vr;
-                s1_[$k] += a;
-                s2_[$k] += a * a;
-                if $measure {
-                    q_[$k] += vl * vl + vr * vr;
+                if LEVEL {
+                    s1_[$k] += a;
+                    s2_[$k] += a * a;
+                    if $measure {
+                        q_[$k] += vl * vl + vr * vr;
+                    }
                 }
                 pos += g.inc;
                 age += 1;

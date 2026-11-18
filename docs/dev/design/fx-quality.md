@@ -517,7 +517,7 @@ A mutation check: with Vintage on, S2 reads -3.0 and -4.1 dB and the ratchet fai
 
 ## Round 4: the rest of the dynamics
 
-Measuring built 2026-11-17, by `quality/round4.rs`: the Limiter and Master safety (class `limiter`, ids P), the Gate (`gate`, N), the De-esser (`deesser`, S), the Multiband compressor (`multiband`, X), the Ducker (`ducker`, U), the Transient shaper (`transient`, T) and the Channel strip (`strip`, C). Research and plan: jferments/mpfree-claude `fx/quality/` (research-dynamics.md, plan-4.md, baseline-dynamics-2026-11-17.md). The seven classes take about 2.5 s together. Subjects are `class/engine` at its defaults and presets, and named settings: `limiter/limiter-true-peak`, `limiter/limiter-auto-off`, `limiter/master-safety` (Safe limiter), `limiter/master-soft-clip`, `deesser/split`, `deesser/wide`, `deesser/relative`, `deesser/absolute`, `ducker/tempo`.
+Measuring built 2026-11-17, by `quality/round4.rs`: the Limiter and Master safety (class `limiter`, ids P), the Gate (`gate`, N), the De-esser (`deesser`, S), the Multiband compressor (`multiband`, X), the Ducker (`ducker`, U), the Transient shaper (`transient`, T) and the Channel strip (`strip`, C). Research and plan: jferments/mpfree-claude `fx/quality/` (research-dynamics.md, plan-4.md, baseline-dynamics-2026-11-17.md). The seven classes take about 2.5 s together. Subjects are `class/engine` at its defaults and presets, and named settings: `limiter/limiter-true-peak`, `limiter/limiter-auto-off`, `limiter/master-safety` (Safe limiter), `limiter/master-soft-clip`, `deesser/split`, `deesser/wide`, `deesser/relative`, `deesser/absolute`, `ducker/tempo`, and (from the Ducker PR) `ducker/tempo-dotted8` and `ducker/tempo-triplet4`.
 
 The measures it adds, beside the earlier rounds':
 
@@ -555,6 +555,7 @@ The measures it adds, beside the earlier rounds':
 | N3 | `shut_error_db_<hz>hz_hold<ms>` | Shuts within 1 dB of the threshold less its 4 dB of hysteresis | The stated hysteresis at every pitch |
 | N4 | `release_ratio_<ms>` | Within ±10 %, 50 to 500 ms | The label |
 | N5 | `zipper_<control>`, `range_change_while_shut_error_db` | ≤ 3 dB; Range moved from -80 to -40 dB while shut lands within 1 dB of -40 | Smooth automation, and a control that works while it is shut |
+| N6 | `expander_curve_error_db` | In Expander mode, a steady tone 3, 6 and 12 dB under the threshold (40 Hz and 1 kHz, Ratio 2 and 4) comes out within 0.5 dB of (Ratio - 1) dB down per dB under | The ratio means what it says (added with the mode, by the Gate PR) |
 
 ### De-esser (S)
 
@@ -585,9 +586,10 @@ The measures it adds, beside the earlier rounds':
 | Id | Row | Target | Why |
 |---|---|---|---|
 | U1 | `beat_error_db` | Tempo mode: within 1 dB of full depth from each beat until the hold ends, the defaults and every tempo preset | The kick lands where the bass is already down |
-| U2 | `drawing_error_db` | Within 1 dB of the drawing over the whole step | The page is how it's set |
+| U2 | `drawing_error_db` | Within 1 dB of the drawing over the whole step: of the gains it passes through within a quarter of a millisecond either way (the Ducker PR; before, of its points a quarter of a millisecond apart) | The page is how it's set |
 | U3 | `response_ms_attack<ms>` | Side-chain: the duck reaches -1 dB within 1 ms of the key crossing the threshold | |
-| U4 | `click_db_attack<ms>` | Reported: a 60 Hz tone ducked by the beat (the shortest attacks click by choice) | |
+| U3 | `hats_duck_db_key_lp120`, `kick_depth_error_db_key_lp120` | Key LP at 120 Hz on a drum key: hats at -6 dBFS duck the tone by at most 1 dB, and each 55 Hz kick takes it within 1 dB of Depth (the Ducker PR) | A drum bus keys on its kick |
+| U4 | `click_db_attack<ms>` | Reported: a 60 Hz tone ducked by the beat, the worst of eight starting phases (the shortest attacks click by choice) | |
 | U5 | `drawing_error_db_after_jump`, `_after_wrap` | Within 1 dB of the drawing from 50 ms after the song position jumps into a step or a loop wraps to the start | As M11 |
 | U6 | `zipper_<control>` | ≤ 3 dB, while a long duck holds and releases | Smooth automation |
 
@@ -600,7 +602,7 @@ The measures it adds, beside the earlier rounds':
 | T3 | `hits_peak_change_db`, `hits_lu` | Reported, defaults and presets (decision 11.4) | An insert shouldn't jump unexpectedly |
 | T4 | `zipper_<control>` | ≤ 3 dB | Smooth automation |
 | C1 | `gate_*`, `comp_*` | The strip's gate alone as N1 to N3 (40 Hz and 1 kHz), its compressor alone as K1 to K4 against the compressor engine set as the strip sets it | Each stage as good as on its own |
-| C2 | `lu_pink` | Reported (once Auto makeup is on its page: within ±1.5 LU) | Fair A/B |
+| C2 | `lu_pink_auto`, `lu_pink` | With Auto makeup on, the defaults and presets within ±1.5 LU of the dry on pink at -18 dBFS; off, reported | Fair A/B |
 | C3 | `switch_click_db_<stage>` | ≤ 3 dB: the gate switched on, the compressor off, a 6 dB EQ off and the order changed, under a 220 Hz tone | Switching a stage mid-note |
 | C4 | `latency_spread_frames` | 0 whatever is on | The mixer's compensation |
 
@@ -637,6 +639,41 @@ What changed (design: [fx-dynamics.md](fx-dynamics.md#multiband-comp)): the Mult
 - **Blessed worse, and why:** the zipper rows' floor rose from 0.018 to 0.023 dB and the crossovers' from 0.48 and 0.55 to 0.54 and 0.58, Release's from 0.02 to 0.07: the detector in dB follows the test tone a hair more closely; all far under 3 dB. Drum crush's 50 Hz THD 12 dB over went from -35.9 to -34.5 dB (reported only): at 1 ms and 8:1 the new detector rides closer to its curve inside the bass's cycles.
 - **Cost:** Multiband compressor 141.5k to 149.9k instructions a block (1.06): the detector in dB and the new glides. Taking the dry from the bands' sum made the Mix fix free (a second pair of all-passes on the dry cost 1.22).
 
+### De-esser PR
+
+What changed (design: [fx-dynamics.md](fx-dynamics.md#de-esser); decision 11.2): Split is an eighth-order Linkwitz-Riley split a sixth of an octave under Freq, its low band plus its high band at the gain, which never lifts; detection takes the louder side; the sound is held back 2 ms so the gain is down when each s arrives (the latency, fixed, is 88 frames at 44.1 kHz); Wide passes the split's all-pass too, so switching modes at rest doesn't click. After it: all 20 de-esser targets met (11 before); the other classes are unchanged.
+
+- **Met now:** Split's lift under 0.8 times Freq at full reduction is 0.002 dB (1.3 to 1.8) (S1), and from 1.5 times Freq to 16 kHz it is within 0.10 dB of Range 10 and 0.67 of Range 24 (7.7 and 22.1 short) (S2). An s on one side gets the reduction it gets in the centre within 0.0003 dB in Relative (0.70) and exactly in Absolute (4.40) (S5).
+- **Reported:** Wide's rows are as before within 0.003 dB.
+- **Blessed worse, and why:** Freq's zipper rose from 0.09 to 0.25 dB (the eighth-order split is re-tuned every 16 frames as Freq glides; far under 3 dB). Wide's lift and range rows moved by 0.002 to 0.003 dB and Absolute's voice reduction at -6 dBFS by 0.0001 dB: the all-pass in the path.
+- **Cost:** De-esser 42.4k to 59.0k instructions a block (1.39): the split's five stages a side (one before) and the look-ahead's delay; run a side at a time it was 87.7k.
+
+### Gate and Channel strip PR
+
+What changed (design: [fx-dynamics.md](fx-dynamics.md#gate) and [Channel strip](fx-dynamics.md#channel-strip)): the gate shuts once the key hasn't reached its shut level for Hold, at least 20 ms, so a bass note's cycles never count as gaps; a Range raised while it is shut is reached over about 10 ms; an Expander mode (Mode, Ratio) and Key listen are new. The Channel strip's switches fade on an S-curve, its gate keeps its look-ahead filled while off and comes back open, an Order change dips to silence and swaps there, and its compressor gains the Compressor's Style and Auto makeup (on in every preset). After it: all 31 gate targets met (20 of 30 before; N6 is new) and all 20 strip targets (10 of 14; C2's six Auto makeup rows are targets now it is on the page); the other classes are unchanged.
+
+- **Met now:** no chatter at 40, 60 or 100 Hz with Hold 0 (3.7, 2.3 and 0.41 dB) (N2); it shuts within 0.37 to 0.61 dB of the threshold less 4 dB from 40 Hz to 1 kHz at Hold 0 and 30 (up to 3.8) (N3); Range moved from -80 to -40 dB while shut lands within 0.001 dB (88: it didn't move) (N5); the expander's curve within 0.02 dB (N6). The strip's gate shuts within 0.75 dB at 40 Hz (2.75) (C1); with Auto makeup the strip is within -0.77 to +0.65 LU of the dry at its defaults and presets (C2); switching its gate on reads 0 dB over the tone (12.9), a 6 dB EQ off 0.43 (9.3) and an Order change 2.2 (54.4) (C3).
+- **Blessed worse, and why:** the gate's 1 kHz shut at Hold 30 went from 0.10 to 0.51 dB and the strip gate's from 0.10 to 0.72 (both under the 1 dB target): the old 0.1 was two errors cancelling, the detector falling 1.1 dB early between peaks and the 30 ms Hold making it up; now Hold counts from the last peak, so it shuts Hold's worth of the falling tone late, as it does at every pitch. Range's zipper went from 0 to 0.05 dB (with the gate shut it used to do nothing at all). The strip's compressor switch went from 0.30 to 0.35 dB (the S-curve fades in 20 ms where the one-pole was 95 % there). The gate's release ratios at 120 and 500 ms moved by 0.004 and 0.0005 from 1.
+- **Cost:** Gate 17.4k to 17.3k instructions a block (-0.8 %; the bench's tone sits just over the shut level, so it now stays open, as it should). The strip has no bench case; its idle gate now writes two samples a frame into its look-ahead.
+
+### Ducker PR
+
+What changed (design: [fx-dynamics.md](fx-dynamics.md#ducker); decision 11.3): on Tempo the envelope is the step itself, from where the song is in it: down from the beat through the hold and release, with the next beat's attack running before the beat so the duck is down when it lands; the drawing is the same function; after a jump, a wrap or a turn it catches up at the attack's speed (5 ms at most), and its timing controls glide. Nudge (±20 ms), the 1/8T, 1/8D, 1/4T and 1/4D rates, Key HP and Key LP, and a Kick from drums preset are new. fxlab: U2 compares with the drawing's span within a quarter of a millisecond (it compared with points that far apart, between which a steep attack moves several dB), U4 takes the worst of eight phases of its tone, and rows for the new rates and the key filter are added. After it: all 24 ducker targets met (6 of 18 before); the other classes are unchanged.
+
+- **Met now:** each beat within 0.003 dB of full depth (17.8 at the defaults, 15.4 to 34.4 in the presets) (U1); every tempo setting on its drawing, Slow swell's release longer than its step included (8.4 measured the new way; 8.5 the old) (U2); 50 ms after a jump into a step, on its drawing (17.7) (U5); hats through Key LP 120 Hz don't duck (U3).
+- **Reported:** clicks on a 60 Hz tone, the worst of eight phases, at Attack 0.1, 0.5, 2 and 10 ms: 70.5, 64.1, 50.9 and 38.8 dB (77.1, 64.7, 52.9 and 38.9 measured the same way on the old engine).
+- **Blessed worse, and why:** the Release zipper rose from 0.023 to 0.024 dB: turning Release on Tempo moves where in the step's release the duck is (it glides over 20 ms). Shape's zipper fell from 2.90 to 0.026.
+- **Cost:** Ducker (tempo) 14.8k to 16.1k instructions a block (+8.9 %): the step's value on every frame, where the stage machine sat idle between ducks.
+
+### Transient shaper PR
+
+What changed (design: [fx-dynamics.md](fx-dynamics.md#transient-shaper); decision 11.4): each slow follower is kept within 25 dB of its fast one, so a hit out of silence opens the same gap at any level; the followers' floor moved from -60 to -80 dBFS. Attack 50 stays the default. After it: all 10 transient targets met (8 before); the other classes are unchanged.
+
+- **Met now:** the fronts' gain across hits at 0, -12, -24 and -36 dB spreads 0.50 dB at Attack 50 (8.73) and 0.67 at Attack 100 (3.11) (T1): at Attack 50 the loudest hit's front comes up 7.5 dB (14.2) and the quietest's 7.0 (5.5).
+- **Reported:** Attack -100 takes 11.0 dB off the loudest front and 7.8 off the quietest (9.5 and 5.2), a 3.1 dB spread (4.3): the first millisecond passes before the detector hears it. An insert at the defaults raises hits' peaks 7.5 dB and their loudness 6.9 LU (12.8 and 13.6); the presets' peaks Punchy kick +11.2 (+15.0), Snappy snare +10.7 (+14.6), Tight room -1.3 (+0.6), Soft hits -5.9 (-5.5), Long tails +0.2 (-1.2). Steady tones (T2) and the zippers (T4) as before.
+- **Blessed worse, and why:** none.
+- **Cost:** Transient shaper 26.0k to 27.1k instructions a block (+3.9 %): the two clamps a frame.
+
 ## The grain engine
 
 `mpfree_fxlab::grain` measures `mpfree-grain`'s `GrainVoice` on its own (no amp envelope, filter or effects after it), at 44.1 kHz in 128-frame blocks with fixed seeds, on pink noise and a pad (an A minor chord of detuned band-limited saws, both -20 dBFS RMS), a 1 kHz sine and a steady level (DC, whose output is the sum of the grains' windows). Grains read from 30 % into the source, with the voice's defaults (80 ms, 25 a second, Hann, timing 30 % random, no spray, no scan; before step A3, 20 a second and regular) unless a row says otherwise. `tests/grain.rs` holds every number to `rust/mpfree-fxlab/quality/grain.tsv` as the sampler's ratchet does, and prints the report; it takes under two seconds, so it runs with the workspace's tests. Record a change with `MPFREE_QUALITY_BLESS=1 cargo test --locked -p mpfree-fxlab --test grain`. The targets are the granular engine plan's (sampler roadmap R7, mpfree-claude `sampler/granular/plan.md`).
@@ -646,6 +683,7 @@ What changed (design: [fx-dynamics.md](fx-dynamics.md#multiband-comp)): the Mult
 | G1 | `level[pink]/range_lu`, `level[pad]/range_lu` | 3 LU | Loudness against the source's at 40, 80 and 400 ms grains overlapping 2, 4 and 16 times, sprayed (0.3), scanning (1) and both: largest less smallest. The quietest and loudest are shown, not kept |
 | G1 | `level[..., defaults]/offset_lu` | within 1 LU | The defaults against the source |
 | G11 | `tone[A2, A4, B5]/pitch_cents` | within 5 cents | Short regular grains of one spot of the pad, four cycles long, at the note's density: the spectrum's peak near the note (65536-point transform, parabolic) against the note (step B5) |
+| G12 | `hits[drums, half speed or double speed]/pre_db`, `attack_ms`, `flam_db` | ≤ -24 dB; ≤ 1 ms; ≤ 3 dB | White-noise bursts from silence every 0.25 s, each decaying 40 ms, stretched as Stretch sets it (90 ms, 45 a second, regular, from the start) to half and double speed with the bursts' starts as hits; the medians over the hits of: the loudest millisecond in the 30 ms before each hit's time against the hit's; from its time until the level first reaches half the hit's, in half milliseconds; the largest rise of the level (4 ms, a millisecond at a time) over its lowest since the hit's peak, in the next 60 ms. The loudness against the drums' and the same without hits are shown (step B5) |
 | G1 | `vary[...]/level_change_lu` | within 1 LU | Full size spray, full level spray and peaked spray, each against the same cloud without it (40 a second, spray 0.3), on pink and the pad (step B1) |
 | G2 | `coherent[pink, overlap N]/stretch_over_sprayed_lu` | within 1.5 LU | A granular time stretch (scan 1, no spray) against the same cloud sprayed, at overlaps 16 (200 ms) and 64 (400 ms) |
 | G3 | `smooth[...]/ripple_db`, `modulation_db` | 0.5 dB, -40 dB | The DC level through the grains: largest over smallest, and the RMS of the change against the mean; at the defaults (overlap 1.6) and with each window at overlap 2, including the Shape knob's square, triangle, swell and pluck (step B2). The exponential window is percussive on purpose: shown, not kept |
@@ -733,12 +771,17 @@ Each way grains differ has its own amount: Spray (with Spray shape, Even or Peak
 - **G1 met:** full size spray -0.05 LU on pink and +0.14 on the pad, full level spray -0.08 and -0.01, peaked spray +0.11 and -0.25. Level spray first measured -1.1 LU on pink: the level law's floor (0.3 from overlap 2) held a cloud of quieter grains under its level, so the floor's dense end now comes down with the grains' RMS level.
 - **Unchanged:** every other row, bit for bit (with no variation nothing moves: size and level draw from a sequence of their own).
 
-### Step B5: grain modes and a tone in tune (2026-11-17)
+### Step B5: grain modes, a tone in tune and a stretch that keeps its hits (2026-11-17)
 
 Grain modes (Cloud, Stretch, Repeat, Tone) set which controls the Grain page shows and where they start ([sampler architecture, Granular engine](sampler-architecture.md#granular-engine-mpfree-grain), Modes). Cloud, Stretch and Repeat are today's engine with their own settings. Tone needs the grain rate to be a note in tune, so regular grains now keep their exact times, between frames when the period isn't a whole number of frames (Timing). New rows: G11, a tone's pitch at A2, A4 and B5.
 
 - **G11 met:** A2 +0.01 cents, A4 -0.01, B5 -0.00. Started on whole frames, as before this step, the same tones were -0.4, -13.3 and -13.7 cents flat (each period rounded up to the next frame).
 - **Unchanged:** every other row (only regular, free-running grains start between frames, and the lab's regular rows fall on whole frames).
+
+Part 4, Stretch keeps hits (`GrainSource::next_hit`, `GrainVoice::render` "Hits", the sampler's `hits` module): a pad in Stretch gives its grains the sound's hits as `mpfree-stretch` finds them; a forward grain stops at the next hit (its window fitted to end there, dropped under a quarter of its size), the scan reaching a hit starts one grain on it at its window's peak (to the window's end over at least half the size, at the cloud's pitch, centred, full level), the grains playing fade out under it over 3 ms outside the level's sums, and the regular grains start again a period after it. A scanning cloud's running start no longer wraps round the region: a grain born before the start began where the scan was then, before the region's start if it must, as only what it still has to play is read, so a cloud scanning from the start opens in step with what follows instead of with the region's far end.
+
+- **G12 met:** half speed, the 30 ms before a hit -70.8 dB under it (without hits +2.4: every grain reading ahead plays it early, louder than the hit itself); double speed, half the hit's level 0.5 ms after its time (without hits 20.0 ms: the grains reach it one by one); no second attack (1.9 and 0.4 dB). A stretch keeping its hits is 1.4 LU quieter at half speed (its hits are half as many a second, and what a slowed stretch has too little of just before each thins out) and 1.5 LU louder at double speed (twice as many whole hits).
+- **Unchanged:** every other row.
 
 ## Round 5: movement, pitch and voice
 
@@ -860,3 +903,11 @@ What changed (design: [fx-movement.md](fx-movement.md), [fx.md](fx.md)): the sha
 - **Blessed worse, inside the targets:** a Square's largest step is now 0.0081 to 0.0089 of the range at 0.5 and 4 Hz (W1; 0.0002 and 0.0017), and its click at 0.5 Hz -98.4 dB (-102.5): its edge is 2.36 ms at any rate instead of a share of the cycle, which is the point. A Sync change clicks at -84.3 dB on the tremolo and -75.9 on the auto-pan (W4; -98.0 and -80.3): it now puts the LFO on the song at once and glides there, where before it only changed speed.
 - **Not in this PR:** the auto wah, ring mod and talk box use the same LFO and get its fixes, but their own rows move with their PRs.
 - **Cost** (the instruction gate, rustc 1.97.0, a 128-frame block at 44.1 kHz): Tremolo 16.7k to 11.3k (-32.1 %), Auto-pan 22.0k to 21.3k (-2.9 %), Ring mod 24.6k to 20.3k (-17.6 %), Auto wah 28.5k to 25.5k (-10.7 %), Talk box 37.3k to 30.2k (-18.8 %). The glide after a jump and the wrap into a new cycle are out of line, so a frame with neither costs one compare for both; the Sine is tested first; the tremolo works out one value a frame while its sides move together in Volume mode (Width 0, the default); the auto wah and the talk box step the LFO every frame but read it only when they retune, every 16 frames; the ring mod reads it only while Sweep is up. The first version, with the glide in line and the shape matched for every value, cost the tremolo 45 % more.
+
+### PR 2: the rotary
+
+What changed (design: [fx-movement.md](fx-movement.md), [fx.md](fx.md)): the rotary (plan-5 section 6). The drum turns the other way from the horn; the horn's treble beams (a one-pole low-pass at 2 kHz a microphone, crossfaded to the whole horn as it faces the microphone); Ramp is now the drum's time from Slow to within 10 % of Fast, the horn takes about a quarter of it, and both coast down a quarter more slowly than they speed up; the horn and the drum are set 1.07 and 1.28 times up, so it goes in at the dry's level; Drive runs 2x oversampled with first-order ADAA (round 2's way), its level held, while the plain path waits the same 4 frames so switching it never moves the sound in time. Saved rotaries keep their controls and change sound this way. After it: movement 148 of 171 met (136 after PR W); every rotary row met.
+
+- **Met now:** the horn ramps up in 1.14 s and the drum in 4.66 s (W10; 0.82 and 3.28), and they take 1.42 and 1.25 times as long to slow down (1.05 and 1.04); within 0.3 LU of the dry on pink and hits at Slow and Fast, and every preset within 0.2 (W11; -3.2, and Gritty organ +0.2); the 6 kHz swing 5.3 dB more than the 1.5 kHz one (W12; 1.7 dB less); Drive folds back at -96.3 dB (Drive 50) and -55.6 dB (100) (W13; -30.8 and -13.3); the rotors turn opposite ways (W14; the same way). The horn's Doppler is ±37.6 cents (±36.8).
+- **Blessed worse, inside the targets:** the speeds read through the level swing, which the beam reshapes: Slow 0.796 and 0.668 Hz (W9; 0.797 and 0.669), Fast 6.699 Hz (6.700), the rotors themselves unchanged; the drum's Doppler ±8.3 cents (±8.1). The clicks of Speed, Balance, Width and Mix at -91.1, -93.0, -91.2 and -104.3 dB (W10; -99.3, -98.1, -100.9 and -105.1), all far under -60: a louder cabinet with more movement in it.
+- **Cost** (the instruction gate): 115.7k to 108.2k (-6.5 %). Each rotor's angle at each microphone comes from the rotor's and the spread's sines by the angle sums, six sines a frame instead of eight, more than paying for the beam's two one-poles and the drive's delay.

@@ -564,6 +564,79 @@ mod looper {
             s.button("STOP");
         });
     }
+
+    /// The pads as loop keys (the Looper as an instrument, step 2):
+    /// SHIFT + SAMPLER again on the Looper tab. Pad 13 is Loop 1's key: a hit
+    /// records from the next bar line, a hit ends the first pass on the
+    /// bar line, a hit overdubs, a hit plays on. Pad 5, two rows under it,
+    /// mutes it and lets it play. Pad 14 is Loop 2's key, and a hit picks
+    /// it. Held a second, a key clears its loop. The deck's Pads switch
+    /// gives the pads back, and on the Sample tab they play the kit.
+    #[test]
+    fn the_pads_as_loop_keys_record_overdub_mute_and_clear() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Looper");
+            s.button_with("SHIFT", "SAMPLER");
+            assert!(s.app.pads_are_loop_keys());
+            assert!(s.hint().starts_with("Pads: loop keys"), "{}", s.hint());
+            s.button("PLAY").run_for(0.3);
+            let loop1 = |s: &Session| s.looper.looper.loop_status(0).unwrap();
+            // Pad 13: Loop 1 waits for the bar line, records, and a hit
+            // ends it there.
+            s.pad(12, 100, 0.05);
+            assert_eq!(loop1(&s).phase, Phase::Armed);
+            until_phase(&mut s, Phase::Recording, 2.5);
+            s.run_for(2.0);
+            s.pad(12, 100, 0.05);
+            assert!(
+                loop1(&s).ending,
+                "a hit ends the first pass on the bar line"
+            );
+            until_phase(&mut s, Phase::Playing, 2.5);
+            // A hit overdubs, and another plays on with the layer.
+            s.pad(12, 100, 0.05);
+            let end = s.t() + 2.5;
+            while loop1(&s).phase != Phase::Overdubbing && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(loop1(&s).phase, Phase::Overdubbing);
+            s.run_for(0.5);
+            s.pad(12, 100, 0.05);
+            s.run_for(0.2);
+            assert_eq!(loop1(&s).phase, Phase::Playing);
+            assert_eq!(loop1(&s).layers, 2);
+            // Pad 5 mutes Loop 1 and lets it play again.
+            s.pad(4, 100, 0.05);
+            assert!(loop1(&s).muted, "pad 5 muted Loop 1");
+            s.pad(4, 100, 0.05);
+            assert!(!loop1(&s).muted);
+            // Pad 14 is Loop 2's key: it picks Loop 2 and arms it; a hit
+            // again lets it go.
+            s.pad(13, 100, 0.05);
+            assert_eq!(s.looper.looper.selected(), 1);
+            assert_eq!(s.looper.looper.loop_status(1).unwrap().phase, Phase::Armed);
+            s.pad(13, 100, 0.05);
+            assert_eq!(s.looper.looper.loop_status(1).unwrap().phase, Phase::Empty);
+            // Pad 13 held a second clears Loop 1; a shorter hold doesn't.
+            s.pad(12, 100, 1.3);
+            s.run_periods(4);
+            assert_eq!(loop1(&s).phase, Phase::Empty, "the held key cleared it");
+            assert!(s
+                .said()
+                .iter()
+                .any(|l| l.contains("Loop 1 cleared (its key held)")));
+            // The deck's Pads switch gives the pads back.
+            s.press("ldeck", "pads-keys", "Pads as loop keys (on)");
+            assert!(!s.app.pads_are_loop_keys());
+            s.press("ldeck", "pads-keys", "Pads as loop keys");
+            assert!(s.app.pads_are_loop_keys());
+            // On the Sample tab the pads play the kit again.
+            s.press("header", "tab", "Sample");
+            assert!(!s.app.pads_are_loop_keys());
+            s.button("STOP");
+        });
+    }
 }
 
 #[cfg(test)]
@@ -647,7 +720,9 @@ mod mixer {
     /// The chain the editor stands for, as the mixer has it.
     fn engine(s: &mut Session) -> ChainState {
         s.panels
-            .chain_state(&s.mix)
+            .chain_state(&s.mix, &|t| {
+                crate::modpanels::NotesSource::of(&s.app, &s.time, t)
+            })
             .expect("the chain editor is open")
     }
 
@@ -901,7 +976,7 @@ mod step_seq {
             assert!(s
                 .lines
                 .iter()
-                .any(|l| l == "STEP SEQ: the pads are pad 3's steps, page 1"));
+                .any(|l| l == "STEP SEQ: the pads are pad A3's steps, page 1"));
             let row = |s: &Session| -> Vec<bool> {
                 let d = s.time.steps();
                 d.clip
@@ -1633,7 +1708,7 @@ mod device_log {
         });
     }
 
-    /// Live erase (`^ERASE: pad \d+'s notes come out`): ERASE held and a
+    /// Live erase (`^ERASE: pad [A-H]?\d+'s notes come out`): ERASE held and a
     /// pad pressed while recording erases that pad's notes as the playhead
     /// passes them, and the pad neither sounds nor records; letting go of
     /// the pad, or of ERASE, stops it; while only playing, ERASE + a pad
@@ -1677,7 +1752,7 @@ mod device_log {
             s.button_edge("ERASE", true);
             s.pad_edge(0, 100, true);
             s.run_periods(4);
-            wrote(&s, n, "ERASE: pad 1's notes come out", "");
+            wrote(&s, n, "ERASE: pad A1's notes come out", "");
             assert!(s.time.erases(0));
             s.run_for(4.5);
             assert!(

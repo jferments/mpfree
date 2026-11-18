@@ -14,7 +14,7 @@ The 16 square pads are what you play. Each one plays a sound: a drum, a slice of
 
 The pads are numbered 1 to 16, starting at the bottom left and going across, row by row, to 16 at the top right.
 
-**Pad banks.** Sixteen sounds are not always enough, so the four **PAD BANK** buttons (A, B, C, D) switch the pads to another set of 16. Hold **SHIFT** while pressing one, or press it twice, to reach banks E to H. A drum kit can have a different sound on every pad in every bank.
+**Pad banks.** Sixteen sounds are not always enough, so the four **PAD BANK** buttons (A, B, C, D) switch the pads to another set of 16. Hold **SHIFT** while pressing one, or press it twice, to reach banks E to H. A kit has a pad for every one of them, 128 in all, so it can have a different sound on every pad in every bank.
 
 **Full Level.** Press **FULL LEVEL** when you want every hit at full volume, however you play; press it again to go back. **SHIFT + FULL LEVEL** does the same at half volume.
 

@@ -4,11 +4,18 @@
 //! centerpiece of the MPC, and deserve their own top menu"); until then it
 //! was a sub-page of the Sample tab.
 //!
-//! - The **bar** over everything shows the pad picked and a **Browse |
-//!   Pad** switch ([`VIEWS`]). Browse (the default) puts the app's browser
-//!   beside the pad map ([`browse_layout`]); Pad shows the pad's settings
-//!   and the kit's sounds ([`LAYOUT`]). The switch gives
-//!   [`PadsAction::View`]; the app shows the page.
+//! - The **bar** over everything shows the pad picked and a **Browse for
+//!   A5** button, which gives [`PadsAction::Browse`]: the app opens its
+//!   full-screen browser, whose Load puts a sound on the pad picked. The
+//!   tab has one page ([`LAYOUT`]): the pads, the pad's settings and the
+//!   kit's sounds. (It had a Browse view, the browser in a narrow form
+//!   beside the pads, until the Play, Pads and Sequencer redesign Jay
+//!   approved on 18 Nov 2026 gave browsing a page of its own.)
+//! - The **Kit of** row under it ([`KITS`], the sampler review's mockup
+//!   5) lists the tracks that play kits, each with its kit, the armed one
+//!   outlined, and **+ Kit track**; the app fills it and answers its taps
+//!   (a track: arm it, so the pads play its kit; + Kit track: a new track
+//!   with a new empty kit).
 //! - The **pad map** shows the bank's 16 pads as on the MPC (pad 1 bottom
 //!   left): name, layers and play mode, and the clip a pad launches. A tap
 //!   picks a pad for every tab (Wave, Chop and Play edit it next); a tap on
@@ -33,15 +40,15 @@
 
 use mpfree_sampler::model::{
     ChannelPick, Fade, GrainMode, GrainParams, Layer, ModelError, Pad, PlayMode, Project, Region,
-    SourceId,
+    SourceId, PADS,
 };
 use mpfree_ui::widgets::{ListItem, ListView};
 use mpfree_ui::{EventKind, Ui, UiEvent};
 
-use crate::chop_tab::{bank_of, pad_text};
+use crate::chop_tab::{bank_of, pad_text, BANK};
 use crate::play_tab::{self, stepped, value_text};
 use crate::wave_tab::{default_loop, duration_text, mode_label, pad_color};
-use crate::widgets::{ButtonRow, PadBar, PadCell, PadMap, Setting, SettingList};
+use crate::widgets::{ButtonRow, KitTracks, PadBar, PadCell, PadMap, Setting, SettingList};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
 pub const BAR: &str = "smp-pads-bar";
@@ -50,34 +57,19 @@ pub const BUTTONS: &str = "smp-pads-buttons";
 pub const LIST: &str = "smp-pads-list";
 pub const SOUNDS: &str = "smp-pads-sounds";
 pub const PUT: &str = "smp-pads-put";
+/// The "Kit of" row: the tracks that play kits and + Kit track
+/// ([`KitTracks`]). The app fills it and answers its taps.
+pub const KITS: &str = "smp-pads-kits";
 
-/// The Pad view's page: the pad map with its buttons, the Pad list, and
-/// the kit's sounds with the button that puts one on the pad.
-pub const LAYOUT: &str = "col(header:60, smp-pads-bar:60, \
+/// The tab's page: the pad map with its buttons, the Pad list, and the
+/// kit's sounds with the button that puts one on the pad.
+pub const LAYOUT: &str = "col(header:60, smp-pads-bar:60, smp-pads-kits:52, \
                           row(col(smp-pads-map:*, smp-pads-buttons:64):440, smp-pads-list:*, \
                           col(smp-pads-sounds:*, smp-pads-put:64):340):*, hint:26)";
 
-/// The bar's switch: the browser beside the pads, or the pad's settings.
-pub const VIEWS: [&str; 2] = ["Browse", "Pad"];
-/// The Browse view's place in [`VIEWS`] (the view the tab opens on).
-pub const BROWSE: usize = 0;
-/// The Pad view's place in [`VIEWS`].
-pub const PAD_VIEW: usize = 1;
-/// The width of the pad map and its buttons beside the browser.
-pub const BROWSE_MAP_W: i32 = 400;
-
-/// The Browse view's page: the pad map and its buttons on the left, and
-/// the app's widget `beside` (the browser) in the rest of the room.
-pub fn browse_layout(beside: &str) -> String {
-    format!(
-        "col(header:60, {BAR}:60, row(col({MAP}:*, {BUTTONS}:64):{BROWSE_MAP_W}, \
-         {beside}:*):*, hint:26)"
-    )
-}
-
-/// The hint line the app shows under the Pad view.
+/// The hint line the app shows under the tab.
 pub const HINT: &str =
-    "Tap a pad to pick it, again to hear it · Copy, Paste, Clear, Map to keys · pick a sound, then Put it on \
+    "Tap a pad to pick it, again to hear it · Browse for: a sound for it · pick a sound, then Put it on \
                         the pad · Effects: the pad's chain in Mix · Q-Links: level, pan, tune, voices";
 
 /// Gesture ids the tab hands out start here, clear of other screens'.
@@ -198,6 +190,9 @@ pub struct PadsState {
     /// pad has no strip of its own (only the first 16 pads have one). The
     /// app fills it from the mixer.
     pub effects: Option<Vec<String>>,
+    /// Each of the kit's banks A to H: its pads with a sound, pad 1 of the
+    /// bank the lowest bit.
+    pub banks: Vec<u16>,
 }
 
 impl PadsState {
@@ -219,6 +214,14 @@ impl PadsState {
                 pads: p.users_of(s.id()),
             })
             .collect();
+        let banks = (0..PADS.div_ceil(BANK))
+            .map(|b| {
+                (0..BANK).fold(0u16, |m, i| {
+                    let on = p.pad(b * BANK + i).is_some_and(|pd| !pd.layers.is_empty());
+                    m | (u16::from(on) << i)
+                })
+            })
+            .collect();
         PadsState {
             pad,
             first: bank.start,
@@ -226,6 +229,7 @@ impl PadsState {
             sounds,
             clips: vec![None; bank.len()],
             effects: None,
+            banks,
         }
     }
 
@@ -261,8 +265,12 @@ pub enum PadsAction {
     /// keygroup instrument at their sounds' notes
     /// ([`mpfree_sampler::keymap`], `Project::map_to_keys`).
     MapToKeys { pads: Vec<usize> },
-    /// Show view `i` of [`VIEWS`] (the bar's switch).
-    View(usize),
+    /// The bar's Browse for button: the app opens its browser, whose Load
+    /// puts a sound on the pad picked.
+    Browse,
+    /// A tap on bank `b` (0 to 7, A to H) of the strip over the pads: the
+    /// app puts that bank on the pads, as PAD BANK does.
+    Bank(usize),
     /// The Effects row: open pad `pad`'s chain in the Mix tab.
     Effects(usize),
 }
@@ -366,8 +374,6 @@ pub struct PadsTab {
     pub bank: Option<char>,
     /// A kit name for the map's title, such as "Kit 1 · Breaks".
     pub kit: String,
-    /// The view on show, of [`VIEWS`].
-    pub view: usize,
     copied: Option<(usize, Pad)>,
     sound: usize,
     shown_pad: Option<usize>,
@@ -381,9 +387,10 @@ impl PadsTab {
     /// Adds the widgets and the page `name` to `ui` (the app adds `header`
     /// and `hint` first) and shows `st`.
     pub fn add(ui: &mut Ui, name: &str, st: &PadsState) -> Result<PadsTab, String> {
-        let mut bar = PadBar::new(&VIEWS);
-        bar.active = BROWSE;
+        let mut bar = PadBar::new(&[]);
+        bar.button = Some("Browse".into());
         ui.add(BAR, bar);
+        ui.add(KITS, KitTracks::new());
         ui.add(MAP, PadMap::new("Pads"));
         ui.add(
             BUTTONS,
@@ -402,7 +409,6 @@ impl PadsTab {
             name: name.to_string(),
             bank: None,
             kit: String::new(),
-            view: BROWSE,
             copied: None,
             sound: 0,
             shown_pad: None,
@@ -460,7 +466,7 @@ impl PadsTab {
         let picked = st.picked();
         if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
             bar.color = pad_color(st.pad);
-            bar.active = self.view;
+            bar.button = Some(format!("Browse for {here}"));
             bar.title = match picked {
                 Some(p) => format!("Pad {here} · {}", p.name),
                 None => format!("Pad {here} · no sound"),
@@ -488,10 +494,17 @@ impl PadsTab {
         let kit = self.kit.clone();
         if let Some(m) = ui.get_mut::<PadMap>(MAP) {
             m.title = if kit.is_empty() { "Pads".into() } else { kit };
-            m.right = self.bank.map_or_else(String::new, |b| format!("bank {b}"));
+            // The bank the grid shows: the one given, or the page of its
+            // first pad (A1 to H16).
+            let bank = self
+                .bank
+                .unwrap_or((b'A' + (st.first / 16 % 26) as u8) as char);
+            m.right = format!("bank {bank}");
             m.lit.resize(cells.len(), false);
             m.cells = cells;
             m.selected = st.pad - st.first;
+            m.banks.clone_from(&st.banks);
+            m.bank = st.first / BANK;
         }
         let paste = self
             .copied
@@ -556,7 +569,7 @@ impl PadsTab {
         if let Some(b) = ui.get_mut::<ButtonRow>(PUT) {
             b.labels[0] = format!("Put on {here}");
             b.enabled = vec![!st.sounds.is_empty()];
-            b.why = vec!["The kit has no sounds yet: load one in Browse".to_string()];
+            b.why = vec!["The kit has no sounds yet: Browse for one".to_string()];
         }
     }
 
@@ -564,14 +577,9 @@ impl PadsTab {
     /// that only change what the tab shows.
     pub fn action(&mut self, ui: &mut Ui, ev: &UiEvent, st: &PadsState) -> Option<PadsAction> {
         match (ev.widget.as_str(), &ev.kind) {
-            (BAR, EventKind::Tab(i)) if *i < VIEWS.len() => {
-                self.view = *i;
-                if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
-                    bar.active = *i;
-                }
-                Some(PadsAction::View(*i))
-            }
+            (BAR, EventKind::Tab(0)) => Some(PadsAction::Browse),
             (MAP, EventKind::Select(i)) => Some(PadsAction::Pick(st.first + *i)),
+            (MAP, EventKind::Tab(b)) if *b < st.banks.len() => Some(PadsAction::Bank(*b)),
             (MAP, EventKind::Pad { index, down }) => Some(PadsAction::Audition {
                 pad: st.first + *index,
                 down: *down,
@@ -701,7 +709,7 @@ impl PadsTab {
                     // would put it on whole, quietly dropping the pad's
                     // trim and loop. Say so instead (Jay, 13 Nov).
                     self.note = Some(format!(
-                        "{} plays {}, the kit's only sound: load more on Browse",
+                        "{} plays {}, the kit's only sound: Browse for more",
                         pad_text(self.bank, st.pad),
                         st.sounds[k as usize].name
                     ));

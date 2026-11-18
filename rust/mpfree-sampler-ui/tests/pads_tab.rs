@@ -6,7 +6,7 @@ use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::PlayMode;
 use mpfree_sampler_ui::pads_tab::{self, Button, PadsAction, PadsState, Row};
 use mpfree_sampler_ui::sample::{self, pads_sample, pads_samples, PadsSample, PAD, RATE};
-use mpfree_sampler_ui::widgets::{ButtonRow, PadBar, PadMap, SettingList};
+use mpfree_sampler_ui::widgets::{ButtonRow, KitTrack, KitTracks, PadBar, PadMap, SettingList};
 use mpfree_ui::widgets::ListView;
 use mpfree_ui::{EventKind, Fonts, SoftCanvas, Touch, UiEvent};
 
@@ -70,8 +70,12 @@ fn the_map_shows_the_banks_pads_and_the_list_the_kits_sounds() {
         bar.subtitle,
         "6 of 16 pads with a sound · 3 sounds in the kit"
     );
-    assert_eq!(bar.tabs, ["Browse", "Pad"]);
-    assert_eq!(bar.active, pads_tab::PAD_VIEW);
+    // No Browse | Pad switch: a button that opens the browser for A5.
+    assert!(bar.tabs.is_empty());
+    assert_eq!(bar.button.as_deref(), Some("Browse for A5"));
+    assert!(bar
+        .button_rect(s.ui.rect_of(pads_tab::BAR).unwrap())
+        .is_some());
     let map = s.ui.get::<PadMap>(pads_tab::MAP).unwrap();
     assert_eq!(map.title, "Kit 1 · Breaks");
     let names: Vec<&str> = map.cells.iter().take(9).map(|c| c.name.as_str()).collect();
@@ -149,6 +153,33 @@ fn the_map_shows_the_banks_pads_and_the_list_the_kits_sounds() {
 }
 
 #[test]
+fn browse_for_asks_for_the_browser_and_follows_the_pad_picked() {
+    let mut s = pads(PAD);
+    // A touch on the button gives Tab(0), which asks for the browser.
+    let r = s.ui.rect_of(pads_tab::BAR).unwrap();
+    let b =
+        s.ui.get::<PadBar>(pads_tab::BAR)
+            .unwrap()
+            .button_rect(r)
+            .unwrap();
+    let bar = s.ui.get_mut::<PadBar>(pads_tab::BAR).unwrap();
+    assert_eq!(
+        mpfree_ui::Widget::touch(bar, 1, Touch::Down, b.x + 10, b.y + 10, r),
+        Some(EventKind::Tab(0))
+    );
+    assert_eq!(
+        act(&mut s, pads_tab::BAR, EventKind::Tab(0)),
+        Some(PadsAction::Browse)
+    );
+    // Another pad picked: the button names it.
+    pick(&mut s, 1);
+    assert_eq!(
+        s.ui.get::<PadBar>(pads_tab::BAR).unwrap().button.as_deref(),
+        Some("Browse for A2")
+    );
+}
+
+#[test]
 fn a_tap_picks_a_pad_and_a_tap_on_the_pad_picked_plays_it() {
     let mut s = pads(PAD);
     let r = s.ui.rect_of(pads_tab::MAP).unwrap();
@@ -179,6 +210,105 @@ fn a_tap_picks_a_pad_and_a_tap_on_the_pad_picked_plays_it() {
     let st = s.state.clone();
     s.tab.set_lit(&mut s.ui, &st, 6, true);
     assert!(s.ui.get::<PadMap>(pads_tab::MAP).unwrap().lit[6]);
+}
+
+/// The strip over the pads (sampler R3): the kit's banks A to H, a dot
+/// for each pad with a sound, the bank shown outlined. A tap on a bank,
+/// even in the gap before it, asks the app to put it on the pads; a pad
+/// picked on bank B shows bank B.
+#[test]
+fn the_bank_strip_shows_each_banks_sounds_and_a_tap_turns_the_bank() {
+    let mut s = pads(PAD);
+    let r = s.ui.rect_of(pads_tab::MAP).unwrap();
+    let map = s.ui.get::<PadMap>(pads_tab::MAP).unwrap();
+    assert_eq!(map.banks.len(), 8);
+    assert_eq!(map.banks[0].count_ones(), 6, "bank A's six sounds");
+    assert!(map.banks[1..].iter().all(|&b| b == 0));
+    assert_eq!((map.bank, map.right.as_str()), (0, "bank A"));
+    let (cell, answer) = map.bank_rect(r, 2);
+    assert!(answer.x < cell.x && answer.contains(cell.x - 1, cell.y + 5));
+    assert!(
+        map.cell_rect(r, 12).y >= cell.bottom(),
+        "the pads sit under the strip"
+    );
+    let ev = s.ui.touch(1, Touch::Down, cell.x - 1, cell.y + 5).unwrap();
+    let st = s.state.clone();
+    assert_eq!(s.tab.action(&mut s.ui, &ev, &st), Some(PadsAction::Bank(2)));
+    s.ui.touch(1, Touch::Up, cell.x - 1, cell.y + 5);
+
+    // A sound on B5: bank B gets its dot, and picking B5 shows bank B.
+    let a5 = s.project.pad(PAD).cloned();
+    s.project.set_pad(16 + PAD, a5, None).unwrap();
+    pick(&mut s, 16 + PAD);
+    let map = s.ui.get::<PadMap>(pads_tab::MAP).unwrap();
+    assert_eq!(map.banks[1], 1 << PAD);
+    assert_eq!((map.bank, map.right.as_str()), (1, "bank B"));
+    assert_eq!((map.cells[PAD].label.as_str(), map.selected), ("B5", PAD));
+    let title = &s.ui.get::<PadBar>(pads_tab::BAR).unwrap().title;
+    assert!(title.starts_with("Pad B5 · "), "{title}");
+}
+
+#[test]
+fn the_kit_of_row_shows_the_kit_tracks_and_answers_taps() {
+    let mut s = pads(PAD);
+    let r = s.ui.rect_of(pads_tab::KITS).unwrap();
+    let bar = s.ui.rect_of(pads_tab::BAR).unwrap();
+    let map = s.ui.rect_of(pads_tab::MAP).unwrap();
+    assert!(
+        r.y >= bar.bottom() && map.y >= r.bottom(),
+        "under the bar, over the pads"
+    );
+    let track = |t: usize, kit: &str, armed: bool, enabled: bool| KitTrack {
+        track: t,
+        name: format!("Track {}", t + 1),
+        kit: kit.to_string(),
+        color: mpfree_ui::Color::rgb(0xFF8A3D),
+        armed,
+        enabled,
+    };
+    let w = s.ui.get_mut::<KitTracks>(pads_tab::KITS).unwrap();
+    w.tracks = vec![
+        track(0, "Breaks", false, true),
+        track(2, "Kit 18", true, true),
+        track(3, "synth, no kit", false, false),
+    ];
+    let w = s.ui.get::<KitTracks>(pads_tab::KITS).unwrap();
+    let (shown, width) = w.shown(r);
+    assert_eq!(shown, vec![0, 1, 2]);
+    assert!(width >= 150, "{width}");
+    let chip = |s: &PadsSample, i: usize| {
+        s.ui.get::<KitTracks>(pads_tab::KITS)
+            .unwrap()
+            .chip_rect(r, i)
+            .unwrap()
+    };
+    let add = w.add_rect(r);
+    assert!(chip(&s, 2).right() < add.x, "+ Kit track on the right");
+    // A track with a kit arms it; the armed one and a synth track don't
+    // answer; + Kit track does.
+    let tap = |s: &mut PadsSample, x: i32, y: i32| {
+        let ev = s.ui.touch(1, Touch::Down, x, y).map(|e| e.kind);
+        s.ui.touch(1, Touch::Up, x, y);
+        ev
+    };
+    let c0 = chip(&s, 0);
+    assert_eq!(
+        tap(&mut s, c0.x + 10, c0.y + 10),
+        Some(EventKind::Select(0))
+    );
+    let c1 = chip(&s, 1);
+    assert_eq!(tap(&mut s, c1.x + 10, c1.y + 10), None, "armed already");
+    let c2 = chip(&s, 2);
+    assert_eq!(tap(&mut s, c2.x + 10, c2.y + 10), None, "no kit to show");
+    assert_eq!(tap(&mut s, add.x + 10, add.y + 10), Some(EventKind::Tab(0)));
+    // More tracks than fit: the armed one keeps the last place.
+    let w = s.ui.get_mut::<KitTracks>(pads_tab::KITS).unwrap();
+    w.tracks = (0..12).map(|t| track(t, "Breaks", t == 10, true)).collect();
+    let (shown, _) = w.shown(r);
+    assert!(shown.len() < 12);
+    assert_eq!(shown.last(), Some(&10));
+    let mut c = SoftCanvas::new(sample::SCREEN.0, sample::SCREEN.1);
+    s.ui.paint(&mut c);
 }
 
 #[test]
