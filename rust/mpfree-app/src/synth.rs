@@ -41,7 +41,7 @@
 use mpfree_arp::scale::pads::{
     self, InKeyRows, Pad, PadLayout, PadRole, PadSetup, DEFAULT_BANKS, MAX_PAD_NOTES, PADS,
 };
-use mpfree_arp::scale::{Scale, NOTE_NAMES};
+use mpfree_arp::scale::{Scale, Shift, NOTE_NAMES};
 use mpfree_instruments::preset::{engine_of, Error as PresetError, Preset as SoundPreset};
 use mpfree_node::{Ctx, Cull, Node, NodeEvent, ParamInfo, Timed};
 use mpfree_synth::drum_params;
@@ -527,6 +527,14 @@ fn meters_of(node: &dyn Node) -> Vec<usize> {
 }
 
 impl Synth {
+    /// The events queued for the engine playing, not yet rendered: what
+    /// the pads and the arp asked of it this period (tests).
+    #[cfg(test)]
+    pub(crate) fn queued(&self) -> Vec<NodeEvent> {
+        let k = self.engine().index();
+        self.events[k][..self.len[k]].iter().map(|t| t.ev).collect()
+    }
+
     /// Every engine at `rate`, with its start preset ([`START_PRESET`] and
     /// the ones after it) loaded and Poly on the pads. Allocates: call it
     /// before the sound starts.
@@ -819,6 +827,19 @@ impl Synth {
         self.settings.setup(self.octave)
     }
 
+    /// The pads play notes (not the Drums engine's sounds), so a track
+    /// playing them transposes (sequencer S4).
+    pub fn plays_notes(&self) -> bool {
+        self.settings.engine != Engine::Drums
+    }
+
+    /// The key a live transpose moves through In key: the pads' scale,
+    /// while they play In key or chords of it. None: semitones.
+    pub fn transpose_key(&self) -> Option<Scale> {
+        let s = self.setup();
+        s.scale.filter(|_| s.layout != PadLayout::Chromatic)
+    }
+
     /// New pad settings (from the Synth tab's options). Notes already held
     /// end on their own pad's note-off. A new engine takes the pads; the
     /// old one's notes get their note-off now and finish their release.
@@ -1027,6 +1048,7 @@ impl Synth {
             synth: Some(synth),
             pitches: self.pad_pitches(),
             user: false,
+            key: self.transpose_key().map(|s| scale_name(&s)),
         }
     }
 
@@ -1102,13 +1124,22 @@ impl Synth {
     /// Pad `pad` starts its notes, `offset` frames into the next render. A
     /// pad already sounding ends its notes first (Note Repeat's next hit).
     pub fn note_on(&mut self, pad: usize, velocity: u8, offset: u32) {
+        self.note_on_shifted(pad, velocity, offset, &Shift::NONE);
+    }
+
+    /// [`Synth::note_on`] with its track's live transpose (sequencer S4):
+    /// each of the pad's notes moves by `shift`, and one that falls off the
+    /// keyboard is left out. The pad remembers what it started, so its
+    /// note-off and pressure reach those notes whatever the shift is by
+    /// then.
+    pub fn note_on_shifted(&mut self, pad: usize, velocity: u8, offset: u32, shift: &Shift) {
         if pad >= PADS || velocity == 0 {
             return;
         }
         self.release_pad(pad, offset);
         let p = self.pads[pad];
         let mut held = Held::default();
-        for &note in p.notes() {
+        for note in p.notes().iter().filter_map(|&n| shift.apply(n)) {
             self.push(
                 self.settings.engine,
                 offset,
@@ -1868,8 +1899,7 @@ mod tests {
     }
 
     fn queued(s: &Synth) -> Vec<NodeEvent> {
-        let k = s.engine().index();
-        s.events[k][..s.len[k]].iter().map(|t| t.ev).collect()
+        s.queued()
     }
 
     fn scale(name: &str, root: u8) -> Option<Scale> {
@@ -1974,6 +2004,43 @@ mod tests {
             with(&mut s, |p| p.bank = b);
             assert_eq!(s.notes(0), &[12], "bank {b}");
         }
+    }
+
+    /// Live transpose (sequencer S4): a pad's notes start moved by its
+    /// track's shift, and the pad's note-off and pressure reach the notes
+    /// it started. In key, a pad keeps to the scale; the Drums engine's
+    /// pads never move.
+    #[test]
+    fn a_shifted_pad_starts_its_notes_moved_and_ends_them() {
+        let mut s = Synth::new(44_100);
+        // Pad 0 plays C3 (48): up a fourth, F3.
+        s.note_on_shifted(0, 100, 0, &Shift::semitones(5));
+        s.pressure_at(0, 60, 2);
+        s.note_off(0, 4);
+        assert_eq!(
+            queued(&s),
+            vec![
+                NodeEvent::NoteOn {
+                    note: 53,
+                    velocity: 100
+                },
+                NodeEvent::Pressure {
+                    note: 53,
+                    value: 60
+                },
+                NodeEvent::NoteOff { note: 53 },
+            ]
+        );
+        assert!(s.plays_notes());
+        assert_eq!(s.transpose_key(), None, "Chromatic: semitones");
+        let mut set = s.settings();
+        set.scale = scale("Minor", 0);
+        set.set_layout(PadLayout::InKey);
+        s.set_settings(set);
+        assert!(s.transpose_key().is_some());
+        set.set_layout(PadLayout::Chromatic);
+        s.set_settings(set);
+        assert_eq!(s.transpose_key(), None);
     }
 
     #[test]

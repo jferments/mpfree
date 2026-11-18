@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-mpchost rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
-checked: 2026-11-16 ececc7e
+checked: 2026-11-17 8ac941f3
 -->
 
 # Effects
@@ -70,7 +70,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Limiter** | A brick wall: nothing gets past the ceiling. **True peak** also catches the peaks a converter makes between samples; **Auto release** keeps a loud mix from pumping. See [The Limiter](#the-limiter). |
 | **Gate** | Silences (or turns down) what falls under the threshold, so drums stop ringing. It can open from another strip's sound, for rhythmic gating. |
 | **De-esser** | Turns down harsh "s" and "t" sounds. **Listen** plays only what it hears, to find the right frequency. |
-| **Multiband comp** | Three compressors, on the lows, mids and highs. |
+| **Multiband comp** | Three compressors, on the lows, mids and highs ([more](#the-multiband-comp)). |
 | **Channel strip** | A gate, a compressor and an EQ in one, as on a mixing desk. Its first page, **Main**, shows the three as sections, each with its switch, then the **Signal path** (**Order**: the EQ before or after the gate and compressor) and **Output**; then a page each for the gate, the compressor and the EQ. |
 | **EQ** | Shapes the tone with up to eight bands (each a bell, a shelf or a notch) and low and high cuts: cut mud, add air, take out a ring, thin out a sound. Its page is a graph with a dot for each band (see [The EQ's page](#the-eqs-page)); each band can be on (**ON**), switched off with its settings kept (**OFF**), or removed. Bands 1 to 4 start on and bands 5 to 8 start removed. |
 | **Filter** | **Multi**: low-pass, high-pass, band-pass and more, with resonance. The resonance sings on quiet sounds and holds back on loud ones instead of clipping, as an analog filter does, so a full-Resonance sweep over a whole loop stays under full scale. Changing **Type** or **Slope** crossfades, so it doesn't click. **Drive** pushes the sound into a soft saturator before the filter, cleanly (no fizz on high notes). **Model** picks **Multi** or **Ladder**, a round, Moog-style 24 dB low-pass whose bass thins a little as the resonance rises and which, near the top of **Resonance**, sings on its own at the cutoff: play it like an oscillator by moving **Cutoff**. **Res mode** picks how the resonance holds back on loud sounds, on either model: **Soft** bends (the default, described above); **Hard** clips, for a harder, buzzier scream, as some classic analog synth filters do, while quiet sounds still ring up fully; **Clean** holds nothing back, for the deepest ring, but a loud sound at the cutoff can clip, and the ladder never sings on its own. Changing it while playing doesn't click. **DJ**: one knob, turn left for a low-pass, right for a high-pass. |
@@ -83,7 +83,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Crush** | Bit and sample-rate reduction, from a touch of grit to a broken toy. **Bits** and **Rate** are the sound of old samplers and game consoles. **Tails**: **Cut** silences whatever falls under the smallest step, as most crushers do; **Buzz** keeps quiet tails as a buzz instead. **Filters** adds the low-passes an old sampler had before and after its converter (**Before**, **After** or **Both**), for a rounder, darker sound; the vintage presets have them on. **Jitter** wobbles the sampling clock. **Dither** turns the distortion of a few bits into a steady hiss. **Output** sets the crushed sound's level. |
 | **Lo-fi** | Worn tape and dusty vinyl under one **Amount** knob, from a hint of age to a broken machine. **Wow** is slow pitch drift that wanders like a worn tape, not a steady wobble, at about **Rate**; **Stereo** lets the two sides drift apart; **Flutter** is a fast waver; **Saturation** is the tape's soft grit; **Dropouts** are short dips in level where the tape is worn. **Crackle**, **Noise** (hiss) and **Hum** (at your country's **Mains**, 50 or 60 Hz) follow the music while **Follow** is at 100 %: they come in with the sound and fade about a second after it stops, so a stopped track is silent. Turn Follow down for a bed of noise that keeps going. **Low cut**, **High cut** and **Width** set the tone. At Amount 0 it is exactly the sound going in (see [Lo-fi](#lo-fi)). |
 | **Chorus**, **Flanger**, **Phaser** | Movement and width. Each is below. |
-| **Tremolo** | Volume (**Volume**) or position (**Auto-pan**) moved in time with the music. **Harmonic** is the swirl of 1960s amps. |
+| **Tremolo** | Volume (**Volume**) or position (**Auto-pan**) moved in time with the music. **Harmonic** is the swirl of 1960s amps. Every **Shape** is smooth: a Square chops crisply at any speed without a click, and the ramps return in a few milliseconds. Synced, it stays on the beat when a loop starts again or you jump in the song, and changing Shape, Sync or Mode while it plays glides instead of clicking. |
 | **Ring mod** | Bells, clangs and robot voices. |
 | **Rotary** | A spinning organ speaker: switch **Speed** between Slow and Fast and it ramps up or down like the real one. |
 | **Freq shifter** | Moves every frequency up or down by the same number of hertz, so a sound stops being in tune with itself: a few hertz is a slow, endless swirl, more makes drums metallic and voices robotic. **Feedback** sends it round again, climbing or falling. |
@@ -261,6 +261,13 @@ It holds the sound back about 1.8 ms to see the peaks coming, and the mixer hold
 
 > [!NOTE]
 > Projects saved before this change sound a little different through the Limiter: pushed hard, it is cleaner on bass and a little quieter (about 0.6 dB on a mix pushed 6 dB), and Auto release now acts.
+
+### The Multiband comp
+
+**Low | mid** and **Mid | high** split the sound into three bands, and each band has its own **Threshold**, **Ratio** and **Gain**; **Attack** and **Release** are shared and mean the same as on the Compressor (most of the way, 63 %, in the time shown). **Solo** plays one band alone while you set it up. **Mix** blends in the sound before compression for parallel squash, and any Mix stays even across the bands (the blend no longer dips at the split points). **Auto makeup** turns each band back up by what it takes from a sound at a mix level, so comparing it with bypass is fair; it is off at first and on in every preset, and **Gain** still adds on top.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through the Multiband comp: it compresses as far as its curve says (it used to fall short, and react about 1.7 times slower than Attack showed), a Mix under 100 % no longer dips around the split points, and turning a threshold or ratio is smooth. The Drum crush preset now uses Auto makeup instead of +6 dB on each band.
 
 ### Master safety
 

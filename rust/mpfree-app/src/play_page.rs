@@ -390,6 +390,10 @@ pub enum Knob {
     /// The step pads held, Q-LINK twice (their Sound bank): knob `k` of
     /// [`PlayPage::sound_bank`], a lock on the held steps.
     Sound(u8),
+    /// 16 Levels' Transpose (sequencer S4): the armed track's live
+    /// transpose, two octaves (or 24 notes of the key) either way, in
+    /// Tune's place.
+    Transpose,
 }
 
 /// Which bank the Q-Links show while step pads are held: Q-LINK steps
@@ -540,6 +544,17 @@ pub enum Turn {
     /// The pad's tuning or decay, by this many detents (the Sample page
     /// edits the kit).
     Pad(Knob, i32),
+    /// The armed track's live transpose, to this (sequencer S4).
+    Transpose(i8),
+}
+
+/// What the Transpose Q-Link turns (16 Levels' Transpose on an armed
+/// track that plays notes): the track, and where it is.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TransposeKnob {
+    pub track: String,
+    pub by: i8,
+    pub in_key: bool,
 }
 
 /// One throw: its name, what it does, its colour and the performance
@@ -691,6 +706,9 @@ pub struct PlayPage {
     /// the root under the lowest note used).
     pub fold: bool,
     pub low: Option<usize>,
+    /// 16 Levels' Transpose with an armed track that plays notes: the
+    /// second Q-Link turns its transpose (the screen fills it in).
+    pub transpose: Option<TransposeKnob>,
 }
 
 /// What the step inspector shows (Beats, a step held or picked; the
@@ -775,6 +793,7 @@ impl Default for PlayPage {
             copy_from: None,
             fold: false,
             low: None,
+            transpose: None,
         }
     }
 }
@@ -930,7 +949,13 @@ impl PlayPage {
                 _ => self.step_bank(),
             },
             PlayView::All | PlayView::Beats => {
-                [Knob::Swing, Knob::Tune, Knob::DrumsFilter, Knob::DrumsSend]
+                // 16 Levels' Transpose takes Tune's place.
+                let two = if self.transpose.is_some() {
+                    Knob::Transpose
+                } else {
+                    Knob::Tune
+                };
+                [Knob::Swing, two, Knob::DrumsFilter, Knob::DrumsSend]
             }
             PlayView::Loop => [
                 Knob::LoopLevel,
@@ -1311,6 +1336,27 @@ impl PlayPage {
                     c
                 }
             },
+            Knob::Transpose => {
+                let (scope, text, by) = match &self.transpose {
+                    Some(t) => {
+                        let text = mpfree_time_ui::view::transpose_text(mpfree_seq::Transpose {
+                            by: t.by,
+                            in_key: t.in_key,
+                        });
+                        (t.track.clone(), text, t.by)
+                    }
+                    None => (String::new(), "-".to_string(), 0),
+                };
+                let max = f32::from(mpfree_seq::MAX_TRANSPOSE);
+                let mut c = QLinkCard::new(
+                    "Transpose",
+                    &scope,
+                    &text,
+                    ((f32::from(by) + max) / (2.0 * max)).clamp(0.0, 1.0),
+                );
+                c.bipolar = true;
+                c
+            }
             Knob::DrumsFilter | Knob::LoopFilter => {
                 let (v, scope) = if knob == Knob::DrumsFilter {
                     (l.drums_filter, "Drums")
@@ -1492,6 +1538,16 @@ impl PlayPage {
                 Turn::Swing(a)
             }
             Knob::Tune => Turn::Pad(knob, ticks),
+            Knob::Transpose => {
+                let t = self.transpose.as_mut()?;
+                let max = i32::from(mpfree_seq::MAX_TRANSPOSE);
+                let by = (i32::from(t.by) + ticks).clamp(-max, max) as i8;
+                if by == t.by {
+                    return None;
+                }
+                t.by = by;
+                Turn::Transpose(by)
+            }
             Knob::DrumsFilter | Knob::LoopFilter => {
                 let (v, strip) = if knob == Knob::DrumsFilter {
                     (&mut l.drums_filter, StripId::Track(mixing::DRUMS))

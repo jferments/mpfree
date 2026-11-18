@@ -23,6 +23,7 @@ mpfree-seq = { path = "../mpfree-seq" }
 # Each track's own instrument (instruments.rs).
 mpfree-track = { path = "../mpfree-track" }
 mpfree-play = { path = "../mpfree-play" }
+mpfree-notefx = { path = "../mpfree-notefx" }
 mpfree-time-ui = { path = "../mpfree-time-ui" }
 mpfree-capture = { path = "../mpfree-capture" }
 mpfree-perform = { path = "../mpfree-perform" }

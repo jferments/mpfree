@@ -485,3 +485,289 @@ fn only_the_tracks_in_use_are_visited_and_the_128th_track_plays() {
     assert!(ons(&log, last).len() >= 3, "{:?}", ons(&log, last));
     assert_eq!(CALLS.load(Ordering::Relaxed), 0, "no allocation");
 }
+
+/// A track's MIDI effects as `TrackFx`: `fx` in places 0.., the arp after
+/// the first `arp_at`.
+fn notes_of(fx: &[mpfree_notefx::Fx], arp_at: u8) -> mpfree_notefx::TrackFx {
+    let mut t = mpfree_notefx::TrackFx {
+        arp_at,
+        ..Default::default()
+    };
+    for (i, f) in fx.iter().enumerate() {
+        t.slots[i] = Some(mpfree_notefx::Slot { fx: *f, on: true });
+        t.ids[i] = i as u16 + 1;
+    }
+    t
+}
+
+fn with_chain(arps: &mut TrackArps, track: usize, fx: &mpfree_notefx::TrackFx) {
+    assert!(arps
+        .give_chain(track, Box::new(mpfree_notefx::Chain::new()))
+        .is_none());
+    arps.set_notes(track, fx);
+}
+
+fn offs(log: &[Out], track: usize) -> Vec<(u64, u8)> {
+    log.iter()
+        .filter(|o| usize::from(o.track) == track)
+        .filter_map(|o| match o.event {
+            Event::NoteOff { note } => Some((o.frame, note)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every note on has its off after it, per track.
+fn balanced(log: &[Out]) {
+    let mut on = std::collections::HashMap::<(u16, u8), i32>::new();
+    for o in log {
+        match o.event {
+            Event::NoteOn { note, .. } => *on.entry((o.track, note)).or_default() += 1,
+            Event::NoteOff { note } => {
+                let n = on.entry((o.track, note)).or_default();
+                *n -= 1;
+                assert!(*n >= 0, "an off before its on: {o:?}");
+            }
+            _ => {}
+        }
+    }
+    assert!(on.values().all(|&n| n == 0), "notes left on: {on:?}");
+}
+
+#[test]
+fn midi_effects_above_the_arp_change_what_it_plays_and_those_below_what_it_played() {
+    use mpfree_notefx::{Chord, Fx, Shape};
+    let mut arps = TrackArps::new(44_100, 120.0);
+    arps.engine(KEYS).unwrap().set_settings(up_sixteenths());
+    arps.set_through(KEYS, true);
+    // Transpose up an octave above the arp; a fifth on each arp note below.
+    let fx = notes_of(
+        &[
+            Fx::Transpose { semitones: 12 },
+            Fx::Chord(Chord {
+                shape: Shape::Fifth,
+                ..Chord::default()
+            }),
+        ],
+        1,
+    );
+    with_chain(&mut arps, KEYS, &fx);
+    let log = run(&mut arps, 44_100, || 128, |_, _| {});
+    let at = |k: u64| (k as f64 * 5512.5).round() as u64;
+    assert_eq!(
+        &ons(&log, KEYS)[..6],
+        &[
+            (at(0), 72),
+            (at(0), 79),
+            (at(1), 76),
+            (at(1), 83),
+            (at(2), 79),
+            (at(2), 86)
+        ]
+    );
+    assert!(
+        log.windows(2).all(|w| w[0].frame <= w[1].frame),
+        "frame order"
+    );
+}
+
+#[test]
+fn a_drum_tracks_clip_skips_its_effects_and_its_pads_go_through_them() {
+    use mpfree_notefx::Fx;
+    let mut arps = TrackArps::new(44_100, 120.0);
+    with_chain(
+        &mut arps,
+        DRUMS,
+        &notes_of(&[Fx::Transpose { semitones: 2 }], 0),
+    );
+    let log = run(
+        &mut arps,
+        22_050,
+        || 128,
+        |a, start| {
+            if start == 1024 {
+                a.pad(
+                    DRUMS,
+                    5,
+                    Event::NoteOn {
+                        note: 38,
+                        velocity: 100,
+                    },
+                );
+                a.pad(DRUMS, 50, Event::NoteOff { note: 38 });
+            }
+        },
+    );
+    // The kick as recorded; the live snare a tone up.
+    assert_eq!(ons(&log, DRUMS), [(0, 36), (1029, 40)]);
+    assert_eq!(offs(&log, DRUMS), [(1074, 40), (2297, 36)]);
+}
+
+#[test]
+fn a_track_without_a_chain_yet_plays_as_it_is() {
+    use mpfree_notefx::Fx;
+    let mut arps = TrackArps::new(44_100, 120.0);
+    arps.set_through(KEYS, true);
+    let fx = notes_of(&[Fx::Transpose { semitones: 12 }], 0);
+    arps.set_notes(KEYS, &fx);
+    assert!(!arps.has_chain(KEYS));
+    let sorted = |log: &[Out]| {
+        let mut o = ons(log, KEYS);
+        o.sort();
+        o
+    };
+    let log = run(&mut arps, 2048, || 128, |_, _| {});
+    assert_eq!(sorted(&log), [(0, 60), (0, 64), (0, 67)]);
+    // Given one, it runs from the next settings; a second is handed back.
+    let mut arps = TrackArps::new(44_100, 120.0);
+    arps.set_through(KEYS, true);
+    with_chain(&mut arps, KEYS, &fx);
+    assert!(arps
+        .give_chain(KEYS, Box::new(mpfree_notefx::Chain::new()))
+        .is_some());
+    let log = run(&mut arps, 2048, || 128, |_, _| {});
+    assert_eq!(sorted(&log), [(0, 72), (0, 76), (0, 79)]);
+}
+
+#[test]
+fn a_mute_cuts_the_echoes_waiting_and_a_panic_ends_what_the_effects_added() {
+    use mpfree_notefx::{Chord, Echo, Fx, Shape, Time};
+    let echo = Fx::Echo(Echo {
+        time: Time::Ms(100),
+        repeats: 4,
+        feedback: 100,
+        pitch: 0,
+    });
+    let mut arps = TrackArps::new(44_100, 120.0);
+    with_chain(&mut arps, DRUMS, &notes_of(&[echo], 0));
+    // A pad held 1 000 frames, echoed every 4 410; the mute lands at
+    // 10 000, between the second and third repeats.
+    let log = run(
+        &mut arps,
+        44_100,
+        || 256,
+        |a, start| {
+            if start == 1024 {
+                a.pad(
+                    DRUMS,
+                    0,
+                    Event::NoteOn {
+                        note: 40,
+                        velocity: 100,
+                    },
+                );
+            }
+            if start == 2048 {
+                a.pad(DRUMS, 0, Event::NoteOff { note: 40 });
+            }
+            if start == 9984 {
+                a.cut(DRUMS, 16);
+            }
+        },
+    );
+    let pads: Vec<_> = ons(&log, DRUMS).into_iter().filter(|o| o.1 == 40).collect();
+    assert_eq!(pads, [(1024, 40), (5434, 40), (9844, 40)]);
+    let drums: Vec<Out> = log
+        .into_iter()
+        .filter(|o| o.track == DRUMS as u16)
+        .collect();
+    assert_eq!(offs(&drums, DRUMS).last(), Some(&(10_000, 40)));
+    balanced(&drums);
+
+    // A panic ends the chord the effects made of an arp's note, and
+    // nothing they hold plays after it.
+    let mut arps = TrackArps::new(44_100, 120.0);
+    let chord = Fx::Chord(Chord {
+        shape: Shape::Major,
+        strum_ms: 50,
+        ..Chord::default()
+    });
+    with_chain(&mut arps, 7, &notes_of(&[chord], 0));
+    let mut t = Transport::new(44_100, 120.0).unwrap();
+    t.command(0, Command::Play);
+    let mut block = Block::new();
+    let mut log = Log::default();
+    t.process(256, &mut block);
+    arps.pad(
+        7,
+        0,
+        Event::NoteOn {
+            note: 50,
+            velocity: 90,
+        },
+    );
+    arps.finish(&block, &mut log);
+    t.process(2048, &mut block);
+    arps.through_sink().send(Out {
+        offset: 100,
+        frame: 356,
+        track: ALL,
+        dest: ALL,
+        event: Event::AllOff,
+    });
+    arps.finish(&block, &mut log);
+    t.process(44_100, &mut block);
+    arps.finish(&block, &mut log);
+    // The root started before the panic; the third and the fifth,
+    // strummed 2 205 frames apart, would have started after it.
+    assert_eq!(ons(&log.0, 7), [(0, 50)]);
+    assert_eq!(offs(&log.0, 7), [(356, 50)]);
+    balanced(&log.0);
+}
+
+#[test]
+fn midi_effects_give_the_same_notes_for_any_period_size_without_allocating() {
+    use mpfree_notefx::{Chord, Echo, Fx, Shape, Time};
+    let setup = || {
+        let mut a = TrackArps::new(44_100, 120.0);
+        a.engine(KEYS).unwrap().set_settings(up_sixteenths());
+        a.set_through(KEYS, true);
+        let fx = notes_of(
+            &[
+                Fx::Chord(Chord {
+                    shape: Shape::Minor7,
+                    strum_ms: 7,
+                    ..Chord::default()
+                }),
+                Fx::Echo(Echo {
+                    time: Time::Ticks(320),
+                    ..Echo::default()
+                }),
+                Fx::Humanize {
+                    time_ms: 10,
+                    velocity: 10,
+                },
+            ],
+            1,
+        );
+        with_chain(&mut a, KEYS, &fx);
+        with_chain(
+            &mut a,
+            DRUMS,
+            &notes_of(&[Fx::Transpose { semitones: -1 }], 0),
+        );
+        a
+    };
+    let reference = run(&mut setup(), 60_000, || 128, |_, _| {});
+    let mut x = 11u64;
+    let random = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        (x % 1500) as u32 + 1
+    };
+    CALLS.store(0, Ordering::Relaxed);
+    let other = run(&mut setup(), 60_000, random, |_, _| {});
+    assert_eq!(
+        CALLS.load(Ordering::Relaxed),
+        0,
+        "the audio-thread calls allocated"
+    );
+    let strip = |l: &[Out]| {
+        l.iter()
+            .map(|o| (o.frame, o.track, o.dest, o.event))
+            .collect::<Vec<_>>()
+    };
+    assert!(ons(&reference, KEYS).len() > 20);
+    assert_eq!(strip(&reference), strip(&other));
+}

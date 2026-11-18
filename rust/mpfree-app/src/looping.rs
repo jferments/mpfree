@@ -174,14 +174,17 @@ pub enum LoopAction {
     /// STOP with the transport stopped: an overdub waiting for PLAY is
     /// let go and an armed loop disarmed ([`LoopHost::stop_waiting`]).
     StopWaiting,
-    /// Pick loop `n`, empty, and resample into it: its first pass records
-    /// the other loops as heard ([`Command::Resample`]).
-    Resample(usize),
     /// The undo history: back `n` steps (below 0) or forward (above 0).
     Steps(i32),
     /// Loop `n`'s mute turned over without picking it, or the picked
     /// loop's (None): a muted loop stays silent when PLAY starts.
     ToggleMute(Option<usize>),
+    /// Loop `n`'s level (0 to 2, 1 as recorded), without picking it: the
+    /// Looper tab's Q-Links and a ring held while the wheel turns.
+    Level(usize, f32),
+    /// Records from the other loops (Records from: Loops) or the input:
+    /// Record on an empty loop resamples ([`LoopHost::resample`]).
+    RecordLoops(bool),
     /// Layer `id` of loop `from` dragged onto loop `to` (an empty one: a
     /// loop of its own); `keep`: a copy, else it moves
     /// ([`Looper::copy_layer`]).
@@ -741,18 +744,37 @@ impl WaveBuilder {
 /// peak over every layer, 0 to 255.
 pub type CellWave = [u8; CELL_WAVE];
 
-/// Makes each loop's [`CellWave`] in turn, a slice a period ([`WAVE_BUDGET`]
-/// layer-frames, as the loop's own wave), whenever a loop's frames, layers
-/// or sound (`Status::version`) changed. A loop recording or overdubbing
-/// keeps the one it had until it plays.
+/// Columns in a loop's wave round its ring on the Looper tab's deck: three
+/// to each of a cell's, so a cell's column is the loudest of its three.
+pub const RING_WAVE: usize = 3 * CELL_WAVE;
+
+/// A loop's wave round its ring on the deck: each column's peak over
+/// every layer, 0 to 255.
+pub type RingWave = [u8; RING_WAVE];
+
+/// A cell's wave from a ring's: the loudest of each three columns.
+pub fn cell_of_ring(r: &RingWave) -> CellWave {
+    let mut c = [0u8; CELL_WAVE];
+    for (i, v) in c.iter_mut().enumerate() {
+        *v = r[3 * i].max(r[3 * i + 1]).max(r[3 * i + 2]);
+    }
+    c
+}
+
+/// Makes each loop's [`RingWave`] in turn (and from it its [`CellWave`]),
+/// a slice a period ([`WAVE_BUDGET`] layer-frames, as the loop's own
+/// wave), whenever a loop's frames, layers or sound (`Status::version`)
+/// changed. A loop recording or overdubbing keeps the one it had until it
+/// plays.
 struct CellWaves {
-    /// Each loop's wave, and what it is of: frames, layers and version.
+    /// Each loop's waves, and what they are of: frames, layers and version.
     done: [CellWave; MAX_LOOPS],
+    rings: [RingWave; MAX_LOOPS],
     of: [(usize, usize, u64); MAX_LOOPS],
     /// The loop being made and what of, how far it is, and its peaks.
     making: Option<(usize, (usize, usize, u64))>,
     at: usize,
-    peaks: [f32; CELL_WAVE],
+    peaks: [f32; RING_WAVE],
     buf: Vec<[f32; 2]>,
 }
 
@@ -760,10 +782,11 @@ impl CellWaves {
     fn new() -> CellWaves {
         CellWaves {
             done: [[0; CELL_WAVE]; MAX_LOOPS],
+            rings: [[0; RING_WAVE]; MAX_LOOPS],
             of: [(0, 0, 0); MAX_LOOPS],
             making: None,
             at: 0,
-            peaks: [0.0; CELL_WAVE],
+            peaks: [0.0; RING_WAVE],
             buf: vec![[0.0; 2]; WAVE_SLICE],
         }
     }
@@ -789,12 +812,13 @@ impl CellWaves {
                 }
                 if s.frames == 0 || s.phase == Phase::Empty {
                     self.done[n] = [0; CELL_WAVE];
+                    self.rings[n] = [0; RING_WAVE];
                     self.of[n] = of;
                     continue;
                 }
                 self.making = Some((n, of));
                 self.at = 0;
-                self.peaks = [0.0; CELL_WAVE];
+                self.peaks = [0.0; RING_WAVE];
                 break;
             }
         }
@@ -823,15 +847,16 @@ impl CellWaves {
             }
             let buf = &mut self.buf[..k];
             l.read(from, buf);
-            for (c, r) in runs_in(from, k, len, CELL_WAVE) {
+            for (c, r) in runs_in(from, k, len, RING_WAVE) {
                 self.peaks[c] = peak_of(self.peaks[c], &buf[r]);
             }
         }
         self.at += k;
         if self.at >= len {
-            for (d, p) in self.done[n].iter_mut().zip(&self.peaks) {
+            for (d, p) in self.rings[n].iter_mut().zip(&self.peaks) {
                 *d = (p.min(1.0) * 255.0).round() as u8;
             }
+            self.done[n] = cell_of_ring(&self.rings[n]);
             self.of[n] = of;
             self.making = None;
         }
@@ -933,6 +958,9 @@ pub struct LooperView {
     pub status: Status,
     pub stats: Stats,
     pub source: LoopSource,
+    /// Records from the other loops: Record on an empty loop resamples
+    /// ([`LoopHost::resample`]).
+    pub resample: bool,
     pub line_on: bool,
     pub line: LineStats,
     pub monitor: bool,
@@ -957,6 +985,8 @@ pub struct LooperView {
     pub history: History,
     /// Each loop's small wave, for its cells on the Clips grid.
     pub cell_waves: [CellWave; MAX_LOOPS],
+    /// Each loop's wave round its ring on the Looper tab's deck.
+    pub ring_waves: [RingWave; MAX_LOOPS],
     /// The loop a whole loop copies into ([`LoopHost::copy_loop`]), until
     /// every layer is in.
     pub copy_into: Option<usize>,
@@ -969,6 +999,7 @@ impl Default for LooperView {
             status: l.status(),
             stats: l.stats(),
             source: LoopSource::Pads,
+            resample: false,
             line_on: false,
             line: LineStats::default(),
             monitor: false,
@@ -982,6 +1013,7 @@ impl Default for LooperView {
             rate: 44_100,
             history: l.history(),
             cell_waves: [[0; CELL_WAVE]; MAX_LOOPS],
+            ring_waves: [[0; RING_WAVE]; MAX_LOOPS],
             copy_into: None,
         }
     }
@@ -992,6 +1024,10 @@ pub struct LoopHost {
     pub line: LineIn,
     pub monitor: bool,
     pub source: LoopSource,
+    /// The Looper tab's Records from: Loops. Record on an empty loop
+    /// resamples into it: its first pass records the other loops as heard
+    /// ([`Command::Resample`]).
+    pub resample: bool,
     input_l: [f32; PERIOD],
     input_r: [f32; PERIOD],
     /// The pad player's sound for this period (see [`LoopHost::take_pads`]).
@@ -1352,6 +1388,7 @@ impl LoopHost {
             line: LineIn::closed(),
             monitor: false,
             source: LoopSource::Pads,
+            resample: false,
             input_l: [0.0; PERIOD],
             input_r: [0.0; PERIOD],
             pads_l: [0.0; PERIOD],
@@ -1658,10 +1695,16 @@ impl LoopHost {
     /// A press or a setting, with its `looper:` line for the log.
     pub fn command(&mut self, c: Command) -> String {
         // The app's latency is the line input's; the pads have their own.
+        // Records from: Loops makes a new loop a resample.
+        let empty = self
+            .looper
+            .loop_status(self.picked)
+            .is_some_and(|s| s.phase == Phase::Empty);
         let c = match c {
             Command::SetLatency(_) if self.source == LoopSource::Pads => {
                 Command::SetLatency(self.pads_latency)
             }
+            Command::Record if self.resample && empty => Command::Resample,
             c => c,
         };
         if let Command::SetLatency(l) = c {
@@ -1839,35 +1882,6 @@ impl LoopHost {
         }
     }
 
-    /// Use the loop's Resample: pick loop `n` and queue
-    /// [`Command::Resample`] for it, with one `looper:` line for the log.
-    /// Refused (nothing queued) unless loop `n` is empty.
-    pub fn resample_into(&mut self, n: usize) -> String {
-        self.steps_left = 0;
-        let n = n.min(MAX_LOOPS - 1);
-        if self
-            .looper
-            .loop_status(n)
-            .is_none_or(|s| s.phase != Phase::Empty)
-        {
-            return format!(
-                "looper: Resample into loop {}: refused, it is not empty",
-                n + 1
-            );
-        }
-        if !self.looper.select_loop(n) || !self.looper.command(Command::Resample) {
-            return format!(
-                "looper: Resample into loop {}: NOT done, the command queue is full",
-                n + 1
-            );
-        }
-        self.picked = n;
-        format!(
-            "looper: Resample into loop {}: armed, its first pass records the other loops as heard from the next bar line",
-            n + 1
-        )
-    }
-
     /// Pick loop `n` for the presses and controls after this, with its
     /// `looper:` line for the log ("loop 2 picked (empty)").
     pub fn select(&mut self, n: usize) -> String {
@@ -1930,6 +1944,33 @@ impl LoopHost {
             said.push(format!("loop {}: {what}", n + 1));
         }
         (!said.is_empty()).then(|| format!("looper: STOP: {}", said.join("; ")))
+    }
+
+    /// Loop `n`'s level (0 to 2), leaving the picked loop picked.
+    pub fn set_level(&mut self, n: usize, level: f32) -> String {
+        let picked = self.picked;
+        let n = n.min(MAX_LOOPS - 1);
+        let level = level.clamp(0.0, 2.0);
+        // Pick it, set it, pick the old one back: all three or none.
+        let need = if n == picked { 1 } else { 3 };
+        if self.looper.room() < need {
+            return format!(
+                "looper: loop {} level: NOT set, the command queue is full",
+                n + 1
+            );
+        }
+        if n != picked {
+            self.looper.select_loop(n);
+        }
+        self.looper.command(Command::SetLevel(level));
+        if n != picked {
+            self.looper.select_loop(picked);
+        }
+        format!(
+            "looper: loop {} level {}",
+            n + 1,
+            crate::looper_tab::level_text(level)
+        )
     }
 
     pub fn toggle_mute(&mut self, n: Option<usize>) -> String {
@@ -2564,6 +2605,7 @@ impl LoopHost {
             status: s,
             stats: self.looper.stats(),
             source: self.source,
+            resample: self.resample,
             line_on: self.line.is_open(),
             line: self.line.stats,
             monitor: self.monitor,
@@ -2577,6 +2619,7 @@ impl LoopHost {
             rate: self.rate,
             history: self.looper.history(),
             cell_waves: self.cells.done,
+            ring_waves: self.cells.rings,
             copy_into: self.copy.map(|c| c.to),
         }
     }
@@ -2831,9 +2874,10 @@ mod tests {
 
     /// A layer's speaker: the mute goes to the layer by its id, the log
     /// names it, and the next view shows it muted and not heard.
-    /// Use the loop's Resample: into an empty loop only, picked with it.
+    /// Records from the loops: Record on an empty loop resamples the
+    /// others; on a loop that plays it still overdubs.
     #[test]
-    fn resample_goes_into_an_empty_loop_and_picks_it() {
+    fn records_from_the_loops_resamples_into_an_empty_loop() {
         let mut h = LoopHost::new(44_100, 8);
         let mut t = Transport::new(44_100, 120.0).unwrap();
         let mut b = Block::new();
@@ -2850,12 +2894,18 @@ mod tests {
         };
         run(&mut h, 700);
         assert_eq!(h.view(120.0).status.phase, Phase::Playing);
-        assert!(h.resample_into(0).contains("refused"), "loop 1 has a loop");
-        let line = h.resample_into(1);
-        assert!(line.contains("loop 2: armed"), "{line}");
+        h.resample = true;
+        let line = h.command(Command::Record);
+        assert!(line.contains("overdub"), "loop 1 has a loop: {line}");
+        h.command(Command::Record);
+        run(&mut h, 1);
+        h.select(1);
+        let line = h.command(Command::Record);
+        assert!(line.contains("Resample"), "{line}");
         run(&mut h, 1);
         let v = h.view(120.0);
         assert_eq!(v.selected, 1);
+        assert!(v.resample);
         assert!(v.status.resampling, "{:?}", v.status);
         assert_eq!(v.loops[0].phase, Phase::Playing);
     }

@@ -200,7 +200,11 @@ impl Desk<'_> {
             gui::FromUi::PadLevelOff => fx.extend(app.pad_level_off()),
             gui::FromUi::StepsOff => fx.extend(app.steps_off()),
             gui::FromUi::StepPage(page) => fx.extend(app.set_step_page(page)),
-            gui::FromUi::Levels { on, open } => fx.extend(app.levels_shown(on, open)),
+            gui::FromUi::Levels {
+                on,
+                open,
+                transpose,
+            } => fx.extend(app.levels_shown(on, open, transpose)),
             gui::FromUi::Time(a) => {
                 use crate::rec_arm::Press;
                 use mpfree_time_ui::TimeAction::Transport;
@@ -318,12 +322,16 @@ impl Desk<'_> {
             gui::FromUi::LoopMute(n) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::ToggleMute(n)))
             }
+            gui::FromUi::LoopLevel(n, level) => {
+                fx.push(app::Effect::Looper(looping::LoopAction::Level(n, level)))
+            }
+            gui::FromUi::LoopRecordLoops(on) => {
+                fx.push(app::Effect::Looper(looping::LoopAction::RecordLoops(on)))
+            }
+            gui::FromUi::LoopBars(bars) => fx.extend(app.set_loop_bars(bars)),
             gui::FromUi::LooperSetting(item, d) => fx.extend(app.looper_setting(item, d)),
             gui::FromUi::LoopCommand(c) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Command(c)))
-            }
-            gui::FromUi::LoopResample(n) => {
-                fx.push(app::Effect::Looper(looping::LoopAction::Resample(n)))
             }
             gui::FromUi::LoopSteps(n) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Steps(n)))

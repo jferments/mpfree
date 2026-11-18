@@ -12,6 +12,7 @@
 //! (`Recent::catch_up`); one that cannot goes back with a request to
 //! compile again, and the view that holds everything plays on.
 
+use mpfree_notefx::{Chain, TrackFx};
 use mpfree_play::{Event, Out, PlayView, Player, Rec, Recent, Recorder, TrackArps};
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::mpfree_moves::{Input, Kind};
@@ -41,6 +42,11 @@ pub struct TimeAudio {
     pub(super) recent: Box<Recent>,
     /// The tracks' settings, as the control half last sent them.
     tracks: Tracks,
+    /// The tracks' MIDI effects, as the control half last sent them.
+    note_fx: Box<[TrackFx; MAX_TRACKS]>,
+    /// Chains for the tracks' MIDI effects the control half sent, until
+    /// [`TimeAudio::dress_arps`] hands them to the arps.
+    chains_in: [Option<Box<Chain>>; MAX_TRACKS],
     /// Another device's clock, when the transport follows one, and its
     /// counts as last sent.
     follower: Follower,
@@ -112,6 +118,8 @@ impl TimeAudio {
             view: Box::new(PlayView::empty()),
             recent: Box::new(Recent::new()),
             tracks,
+            note_fx: Box::new([TrackFx::default(); MAX_TRACKS]),
+            chains_in: std::array::from_fn(|_| None),
             follower: Follower::new(rate),
             follow_sent: FollowCounts::default(),
             click: Click::new(rate),
@@ -159,6 +167,22 @@ impl TimeAudio {
                         *set = s;
                     }
                 }
+                ToAudio::NoteFx { track, place, slot } => {
+                    if let Some(fx) = self.note_fx.get_mut(usize::from(track)) {
+                        if let Some(s) = fx.slots.get_mut(usize::from(place)) {
+                            *s = slot;
+                        }
+                    }
+                }
+                ToAudio::NoteArp { track, at } => {
+                    if let Some(fx) = self.note_fx.get_mut(usize::from(track)) {
+                        fx.arp_at = at;
+                    }
+                }
+                ToAudio::Chain(t, c) => match self.chains_in.get_mut(usize::from(t)) {
+                    Some(slot @ None) => *slot = Some(c),
+                    _ => self.free_chain(c),
+                },
                 ToAudio::Edit {
                     track,
                     slot,
@@ -219,6 +243,16 @@ impl TimeAudio {
                     std::mem::forget(v);
                 }
             }
+        }
+    }
+
+    /// A chain to free on the control half; while the queue is full it is
+    /// kept for good rather than freed on this thread (counted: it should
+    /// never happen, the control half sends one chain a track).
+    fn free_chain(&mut self, c: Box<Chain>) {
+        if let Err(ToControl::Chain(c)) = self.tx.send(ToControl::Chain(c)) {
+            self.kept += 1;
+            std::mem::forget(c);
         }
     }
 
@@ -488,11 +522,31 @@ impl TimeAudio {
         })
     }
 
-    /// The per-track arps take each track's switch and destination.
-    pub fn dress_arps(&self, arps: &mut TrackArps) {
+    /// Each track's live transpose (sequencer S4), as the control half
+    /// last sent it; as written past the last track.
+    pub fn transposes(&self) -> [mpfree_seq::Transpose; mpfree_seq::MAX_TRACKS] {
+        std::array::from_fn(|t| {
+            if t < self.tracks.n {
+                self.tracks.set[t].transpose
+            } else {
+                mpfree_seq::Transpose::NONE
+            }
+        })
+    }
+
+    /// The per-track arps take each track's switch, destination and MIDI
+    /// effects, and a chain to run the effects in once the control half
+    /// has sent one.
+    pub fn dress_arps(&mut self, arps: &mut TrackArps) {
         for t in 0..self.tracks.n {
             arps.set_through(t, self.tracks.set[t].through_arp);
             arps.set_dest(t, self.tracks.set[t].dest);
+            if let Some(c) = self.chains_in[t].take() {
+                if let Some(back) = arps.give_chain(t, c) {
+                    self.free_chain(back);
+                }
+            }
+            arps.set_notes(t, &self.note_fx[t]);
         }
     }
 

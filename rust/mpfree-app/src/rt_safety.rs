@@ -256,6 +256,9 @@ impl Rig {
             own: &mut mix.instruments,
             tap,
             only: None,
+            shifts: [mpfree_seq::Transpose::NONE; mpfree_seq::MAX_TRACKS],
+            key: None,
+            by_note: &mut [mpfree_arp::scale::Held::new(); 2],
         };
         time.period(PERIOD as u32, &mut seq);
         seq.midi
@@ -657,6 +660,9 @@ fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
         own: &mut rig.mix.instruments,
         tap: &mut rig.tap,
         only: None,
+        shifts: [mpfree_seq::Transpose::NONE; mpfree_seq::MAX_TRACKS],
+        key: None,
+        by_note: &mut [mpfree_arp::scale::Held::new(); 2],
     };
     let at = |event| Out {
         offset: 0,
@@ -690,6 +696,121 @@ fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
     assert_eq!(
         *sink.0.lock().unwrap(),
         [0x90, PAD_NOTES[2], v, 0x80, PAD_NOTES[2], 64]
+    );
+}
+
+/// Live transpose (sequencer S4): where a track's pads become notes they
+/// move by its shift, a clip's on MIDI Out and on the synth's pads, and a
+/// note already sounding ends where it started when the shift changes.
+/// An arp's notes by number keep what each became the same way.
+#[test]
+fn a_tracks_transpose_moves_its_notes_and_a_sounding_note_ends_where_it_went() {
+    use mpfree_arp::scale::{Held, Shift};
+    use mpfree_midi::setup::{TrackOut, DIN_NAME};
+    use mpfree_play::{Event, Out};
+    use mpfree_seq::{Transpose, MAX_TRACKS};
+    let mut rig = Rig::new(true);
+    let sink = MidiSink::default();
+    rig.midi
+        .open(sink.clone(), std::time::Instant::now())
+        .unwrap();
+    rig.io.lock().unwrap().setup.tracks[0] = Some(TrackOut::new(DIN_NAME, 0));
+    rig.io.lock().unwrap().gen += 1;
+    rig.midi.sync(&rig.io, false);
+    let pad1 = rig.synth.notes(0)[0];
+    let mut shifts = [Transpose::NONE; MAX_TRACKS];
+    shifts[0] = Transpose::semitones(5);
+    shifts[1] = Transpose::semitones(-2);
+    let mut by_note = [Held::new(); 2];
+    let mut seq = SeqPads {
+        player: &mut rig.player,
+        synth: &mut rig.synth,
+        kits: &rig.track_kits,
+        shown: 0,
+        flashes: [0; 128],
+        hits: 0,
+        live: rig.app.live_map(),
+        live_hits: [(0, 0); MAX_LIVE_HITS],
+        n_live: 0,
+        silent: 0,
+        midi: &mut rig.midi,
+        cv: &mut rig.cv,
+        own: &mut rig.mix.instruments,
+        tap: &mut rig.tap,
+        only: None,
+        shifts,
+        key: None,
+        by_note: &mut by_note,
+    };
+    let at = |track, event| Out {
+        offset: 0,
+        frame: 0,
+        track,
+        dest: track,
+        event,
+    };
+    let on = Event::NoteOn {
+        note: 0,
+        velocity: 100,
+    };
+    let off = Event::NoteOff { note: 0 };
+    // Track 1 plays on MIDI Out: pad 1's note, up 5. The shift goes back
+    // to 0 while it sounds, and its end still ends the note it started.
+    assert!(time::Pads::out(&mut seq, &at(0, on)));
+    seq.shifts[0] = Transpose::NONE;
+    assert!(time::Pads::out(&mut seq, &at(0, off)));
+    // Track 2 plays the synth: the pads take its notes, its pad's note
+    // starts moved down 2 and its note-off ends what the pad started.
+    assert!(!time::Pads::out(&mut seq, &at(1, on)));
+    assert!(time::Pads::hit_at(&mut seq, 1, 0, 100, 0));
+    assert!(!time::Pads::out(&mut seq, &at(1, off)));
+    seq.shifts[1] = Transpose::NONE;
+    time::Pads::release_at(&mut seq, 1, 0, 4);
+    // As written, track 3 plays the synth's pads as before.
+    assert!(time::Pads::hit_at(&mut seq, 2, 1, 100, 8));
+    let pad2 = seq.synth.notes(1)[0];
+    let started: Vec<_> = seq
+        .synth
+        .queued()
+        .into_iter()
+        .filter_map(|e| match e {
+            mpfree_node::NodeEvent::NoteOn { note, .. } => Some((note, true)),
+            mpfree_node::NodeEvent::NoteOff { note } => Some((note, false)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        started,
+        [(pad1 - 2, true), (pad1 - 2, false), (pad2, true)],
+        "track 2 down 2, ended where it went; track 3 as written"
+    );
+    // An arp's note by number: where the shift took it when it started.
+    let up = Shift::semitones(7);
+    let note = |n| Event::NoteOn {
+        note: n,
+        velocity: 90,
+    };
+    let sounding = |o: Option<Out>| o.map(|o| o.event);
+    assert_eq!(
+        sounding(seq.sounding(&at(1, note(60)), &up)),
+        Some(note(67))
+    );
+    assert_eq!(
+        sounding(seq.sounding(&at(1, Event::NoteOff { note: 60 }), &Shift::NONE)),
+        Some(Event::NoteOff { note: 67 })
+    );
+    assert_eq!(
+        seq.sounding(&at(1, Event::NoteOff { note: 60 }), &Shift::NONE),
+        None,
+        "ended already"
+    );
+    assert_eq!(sounding(seq.sounding(&at(1, note(125)), &up)), None);
+    seq.midi
+        .period_end(PERIOD as u32, std::time::Instant::now());
+    assert!(rig.midi.close());
+    assert_eq!(
+        *sink.0.lock().unwrap(),
+        [0x90, pad1 + 5, 100, 0x80, pad1 + 5, 64]
     );
 }
 
@@ -838,6 +959,9 @@ fn live_pads_on_a_track_with_its_own_instrument_play_it() {
         own: &mut rig.mix.instruments,
         tap: &mut rig.tap,
         only: None,
+        shifts: [mpfree_seq::Transpose::NONE; mpfree_seq::MAX_TRACKS],
+        key: None,
+        by_note: &mut [mpfree_arp::scale::Held::new(); 2],
     };
     let at = |track, event| Out {
         offset: 0,
@@ -1039,6 +1163,9 @@ fn each_track_plays_its_own_kit_at_once() {
         own: &mut rig.mix.instruments,
         tap: &mut rig.tap,
         only: None,
+        shifts: [mpfree_seq::Transpose::NONE; mpfree_seq::MAX_TRACKS],
+        key: None,
+        by_note: &mut [mpfree_arp::scale::Held::new(); 3],
     };
     let (sounded, calls) = crate::sys::alloc_count::calls(|| {
         [
