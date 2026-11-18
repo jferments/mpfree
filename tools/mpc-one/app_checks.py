@@ -2474,6 +2474,7 @@ AREAS = (
       "tidal_suite_becomes_a_song_from_its_scenes_and_keeps_it",
       "night_market_in_song_mode_follows_its_arrangement",
       "the_morph_crossfader_brings_the_lead_up_from_seed_to_bloom",
+      "other_gears_program_change_and_mmc_play_a_scene",
       "erase_held_deletes_a_clip_a_lanes_steps_or_a_layer"]),
     ("Play: views, steps, throws, XY pad and FILL",
      ["play_has_one_view_and_the_sequencer_switches_steps_and_notes",

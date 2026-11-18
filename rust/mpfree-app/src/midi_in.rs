@@ -60,12 +60,13 @@ use std::time::Duration;
 
 use mpfree_midi::input::{ChanFilter, In, InputRouter, PortFilter, Route, Thru};
 use mpfree_midi::learn::{Input, LearnMap, Mode, Saved, Source, Write};
+use mpfree_midi::mmc::{self, Mmc};
 use mpfree_midi::monitor::{Dir, Feed, Steady, To, What};
 use mpfree_midi::mpe::{MpeIn, Took};
 use mpfree_midi::msg::Msg;
 pub use mpfree_midi::port::DIN;
 use mpfree_midi::port::{PortId, Ports, MAX_PORTS};
-use mpfree_midi::setup::{Ignored, Kept, PortInput, TempoSource, FOLLOW_KNOBS};
+use mpfree_midi::setup::{Ignored, Kept, PortInput, ProgramIn, TempoSource, FOLLOW_KNOBS};
 use mpfree_midi_clock::ClockIn;
 use mpfree_midi_ui::{PortLive, Shared};
 use mpfree_node::{Ctl, ParamInfo};
@@ -638,6 +639,28 @@ pub struct MusicIn {
     /// whether the app has it yet.
     controller: Option<crate::controller_out::Plan>,
     controller_new: bool,
+    /// Per port: the SysEx arriving, kept to read an MMC command.
+    sysex_in: [mmc::Collect; MAX_PORTS],
+    /// The song's Sync settings: other gear's MMC moves the transport,
+    /// and what a program change coming in does.
+    mmc_in: bool,
+    program_in: ProgramIn,
+    /// Other gear's transport commands and scene picks since the app last
+    /// took them ([`MusicIn::take_remote_in`]); fixed room.
+    remote_in: Vec<RemoteIn>,
+}
+
+/// The most MMC commands and program changes kept for the app between
+/// two looks; more are dropped (and the log says so).
+const REMOTE_IN: usize = 32;
+
+/// Other gear moving MPFree: an MMC command, or a program change that
+/// launches a scene (the Sync section's settings).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RemoteIn {
+    Mmc(Mmc),
+    /// Launch scene N (from 0), program N + 1.
+    Scene(u8),
 }
 
 impl Default for MusicIn {
@@ -696,6 +719,10 @@ impl MusicIn {
             mpe: (0..MAX_PORTS).map(|_| MpeIn::new()).collect(),
             controller: None,
             controller_new: false,
+            sysex_in: [mmc::Collect::default(); MAX_PORTS],
+            mmc_in: false,
+            program_in: ProgramIn::Off,
+            remote_in: Vec::with_capacity(REMOTE_IN),
         }
     }
 
@@ -1125,6 +1152,8 @@ impl MusicIn {
                 start_stop: m.setup.follow_start_stop,
                 position: m.setup.follow_position,
             });
+            self.mmc_in = m.setup.mmc_in;
+            self.program_in = m.setup.program_in;
             let was = self.leader;
             self.leader =
                 leader.and_then(|n| self.ports.all().iter().find(|p| &p.name == n).map(|p| p.id));
@@ -1354,6 +1383,13 @@ impl MusicIn {
         std::mem::take(&mut self.unplugged)
     }
 
+    /// The next of other gear's MMC commands and the scenes its program
+    /// changes launch, in the order they came (the Sync section's MMC in
+    /// and Program change in). Never allocates.
+    pub fn next_remote_in(&mut self) -> Option<RemoteIn> {
+        (!self.remote_in.is_empty()).then(|| self.remote_in.remove(0))
+    }
+
     /// Bytes that came in on `port` at `t` seconds: the keys they play go
     /// to `keys`, and the log gets one line per message (clock and active
     /// sensing only counted).
@@ -1397,6 +1433,9 @@ impl MusicIn {
             // went is said below, once the message is routed.
             let listed = self.feed.bytes(port, Dir::In, t, &[b]);
             self.clock[p].byte(frame, b);
+            // An MMC command, once its SysEx ends (the Sync section's MMC in).
+            let mmc_got = self.sysex_in[p].byte(b).and_then(mmc::parse);
+            let mut mmc_took = false;
             let s = &mut self.seen[p];
             match b {
                 0xF8 => {
@@ -1441,8 +1480,29 @@ impl MusicIn {
                     if let Some(n) = s.sysex.take() {
                         s.sysex_messages += 1;
                         s.messages += 1;
+                        let what = match mmc_got {
+                            Some(c) if !self.mmc_in => {
+                                format!("{}: ignored, MMC in is off (the Sync section)", c.name())
+                            }
+                            Some(c) => match mmc_does(c) {
+                                Some(_) if self.remote_in.len() >= REMOTE_IN => {
+                                    format!("{}: dropped, too many at once", c.name())
+                                }
+                                Some(does) => {
+                                    self.remote_in.push(RemoteIn::Mmc(c));
+                                    mmc_took = true;
+                                    format!("{}: {does}", c.name())
+                                }
+                                None => format!(
+                                    "{}: nothing (MPFree takes Play, Stop, Pause, Record \
+                                     Strobe and Locate)",
+                                    c.name()
+                                ),
+                            },
+                            None => "ignored".to_string(),
+                        };
                         log(format!(
-                            "+{t:.3} s {label}: SysEx, {} bytes = ignored",
+                            "+{t:.3} s {label}: SysEx, {} bytes = {what}",
                             n + 1
                         ));
                     }
@@ -1573,6 +1633,18 @@ impl MusicIn {
             if let Some(z) = zone_said {
                 log(format!("+{t:.3} s {label}: {} (it said so)", z.words()));
             }
+            // Program change in (the Sync section): program N launches
+            // scene N, unless the port ignores program changes.
+            let mut scene = None;
+            if let (Some(Msg::Program { program, .. }), false, ProgramIn::Scene) =
+                (seen, ignored, self.program_in)
+            {
+                if self.remote_in.len() < REMOTE_IN {
+                    self.remote_in.push(RemoteIn::Scene(program));
+                    to = To::Scene(program);
+                    scene = Some(program);
+                }
+            }
             // Nothing played it (a route's blocks dropped it, or no track
             // takes it): Learn and MIDI Follow still hear it.
             if let (Some(raw), false) = (seen, got) {
@@ -1607,6 +1679,7 @@ impl MusicIn {
                         follows(led.is_some_and(|f| f.start_stop))
                     }
                     Some(What::SongPosition(_)) => follows(led.is_some_and(|f| f.position)),
+                    Some(What::SysEx { .. }) if mmc_took => To::Transport,
                     _ => To::Ignored,
                 };
                 self.feed.to(to);
@@ -1650,15 +1723,15 @@ impl MusicIn {
             if let Some(msg) = seen {
                 self.seen[p].messages += 1;
                 let (bytes, n) = msg.encode();
+                let after = match (ignored, scene) {
+                    (true, _) => " (ignored: this port's setting)".to_string(),
+                    (false, Some(k)) => format!(" (launches scene {})", u16::from(k) + 1),
+                    (false, None) => String::new(),
+                };
                 log(format!(
-                    "+{t:.3} s {label}: {} = {}{}",
+                    "+{t:.3} s {label}: {} = {}{after}",
                     hex(&bytes[..n]),
                     describe(&msg),
-                    if ignored {
-                        " (ignored: this port's setting)"
-                    } else {
-                        ""
-                    }
                 ));
             }
         }
@@ -1935,6 +2008,20 @@ fn hex(bytes: &[u8]) -> String {
         .map(|b| format!("{b:02X}"))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// What an MMC command does in MPFree, as the MPC's Receive MMC has it
+/// (the 3.10.1 guide's appendix): Play and Deferred Play press PLAY, Stop
+/// and Pause STOP, Record Strobe REC, Locate goes there. None: nothing
+/// (Record Exit, fast forward, rewind…).
+pub fn mmc_does(c: Mmc) -> Option<&'static str> {
+    match c {
+        Mmc::Play | Mmc::DeferredPlay => Some("PLAY"),
+        Mmc::Stop | Mmc::Pause => Some("STOP"),
+        Mmc::RecordStrobe => Some("REC"),
+        Mmc::Locate(_) => Some("goes there"),
+        Mmc::RecordExit | Mmc::Other(_) => None,
+    }
 }
 
 /// A message in words, channels counted from 1 and notes named as the
@@ -3146,6 +3233,86 @@ mod tests {
                 To::PortIgnores,
             ]
         );
+    }
+
+    /// MMC in and Program change in (the Sync section): off, an MMC
+    /// command and a program change do nothing and say why; on, MMC's
+    /// transport commands and Locate reach the app in order, Record Exit
+    /// does nothing, program N launches scene N, and a port that ignores
+    /// program changes launches none. The monitor says where each went.
+    #[test]
+    fn mmc_and_program_changes_from_other_gear() {
+        use mpfree_midi::mmc::{Rate, Smpte};
+        use mpfree_midi::setup::IgnoreSet;
+        let play = [0xF0, 0x7F, 0x7F, 0x06, 0x02, 0xF7];
+        let mut m = MusicIn::new();
+        let s = model();
+        m.sync(&s, 0.0);
+        let (_, lines) = run(&mut m, DIN, &play);
+        assert!(
+            lines.iter().any(|l| l
+                .ends_with("SysEx, 6 bytes = MMC Play: ignored, MMC in is off (the Sync section)")),
+            "{lines:?}"
+        );
+        run(&mut m, DIN, &[0xC0, 2]);
+        assert_eq!(m.next_remote_in(), None);
+        {
+            let mut v = s.lock().unwrap();
+            v.setup.mmc_in = true;
+            v.setup.program_in = ProgramIn::Scene;
+            v.gen += 1;
+        }
+        m.sync(&s, 0.1);
+        let locate = [
+            0xF0, 0x7F, 0x00, 0x06, 0x44, 0x06, 0x01, 0x20, 0, 2, 0, 0, 0xF7,
+        ];
+        let mut bytes = play.to_vec();
+        bytes.extend([0xF0, 0x7F, 0x7F, 0x06, 0x07, 0xF7]);
+        bytes.extend(locate);
+        bytes.extend([0xC3, 2]);
+        let (keys, lines) = run(&mut m, DIN, &bytes);
+        assert!(keys.is_empty(), "{keys:?}");
+        assert_eq!(m.next_remote_in(), Some(RemoteIn::Mmc(Mmc::Play)));
+        let at = Smpte {
+            rate: Rate::Fps25,
+            hours: 0,
+            minutes: 0,
+            seconds: 2,
+            frames: 0,
+            subframes: 0,
+        };
+        assert_eq!(m.next_remote_in(), Some(RemoteIn::Mmc(Mmc::Locate(at))));
+        assert_eq!(m.next_remote_in(), Some(RemoteIn::Scene(2)));
+        assert_eq!(m.next_remote_in(), None);
+        for want in [
+            "SysEx, 6 bytes = MMC Play: PLAY",
+            "SysEx, 6 bytes = MMC Record Exit: nothing (MPFree takes Play, Stop, Pause, \
+             Record Strobe and Locate)",
+            "SysEx, 13 bytes = MMC Locate 00:00:02:00: goes there",
+            "C3 02 = program 3 · ch 4 (launches scene 3)",
+        ] {
+            assert!(lines.iter().any(|l| l.ends_with(want)), "{want}: {lines:?}");
+        }
+        m.sync(&s, 0.2);
+        {
+            let v = s.lock().unwrap();
+            let went: Vec<To> = v.monitor.newest().map(|(_, l)| l.to).take(4).collect();
+            assert_eq!(
+                went,
+                [To::Scene(2), To::Transport, To::Ignored, To::Transport]
+            );
+        }
+        // A port that ignores program changes launches nothing.
+        {
+            let mut v = s.lock().unwrap();
+            v.setup.set_port(mpfree_midi::setup::DIN_NAME, |p| {
+                p.ignore = IgnoreSet::NONE.with(Ignored::Program, true)
+            });
+            v.gen += 1;
+        }
+        m.sync(&s, 0.3);
+        run(&mut m, DIN, &[0xC0, 5]);
+        assert_eq!(m.next_remote_in(), None);
     }
 
     /// The Monitor's "Send note-offs to MIDI out": taken once, and the

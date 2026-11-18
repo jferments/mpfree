@@ -873,6 +873,37 @@ impl Session {
         self.run_periods(2)
     }
 
+    /// The song's Sync settings for MIDI in: other gear's MMC and what a
+    /// program change does (the I/O view's Sync section).
+    pub fn midi_in_setup(
+        &mut self,
+        mmc_in: bool,
+        program_in: mpfree_midi::setup::ProgramIn,
+    ) -> &mut Session {
+        let io = std::sync::Arc::new(std::sync::Mutex::new(mpfree_midi_ui::IoModel::default()));
+        {
+            let mut m = io.lock().unwrap();
+            m.setup.mmc_in = mmc_in;
+            m.setup.program_in = program_in;
+            m.gen += 1;
+        }
+        let t = self.t();
+        self.music.sync(&io, t);
+        self
+    }
+
+    /// Bytes from other gear on the 5-pin MIDI In, as the sound loop takes
+    /// them: what MMC and program changes do (the Sync section's).
+    pub fn midi_from_gear(&mut self, bytes: &[u8]) -> &mut Session {
+        let t = self.t();
+        let mut keys = Vec::new();
+        self.music
+            .bytes(crate::midi_in::DIN, bytes, t, &mut keys, &mut |_| {});
+        let fx = crate::desk::remote_in(&mut self.music, &self.time, &mut self.app, &mut self.out);
+        self.fx.extend(fx);
+        self.run_periods(2)
+    }
+
     /// The controller the Perform pads' learned keys came from went away.
     pub fn unplug_perform_keys(&mut self) -> &mut Session {
         for action in self.perform_keys.let_go() {

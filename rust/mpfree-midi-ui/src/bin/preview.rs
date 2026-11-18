@@ -251,7 +251,7 @@ fn shots() -> Vec<Shot> {
         },
         Shot {
             name: "io-sync",
-            about: "Sync: tempo from the 5-pin jacks with clock arriving, following, and clock out per port; following not built yet",
+            about: "Sync: tempo from the 5-pin jacks with clock arriving, following, MMC in and Program change in (both off), and clock out per port; following not built yet",
             section: 5,
             model: rig.clone(),
             wheel: 0,

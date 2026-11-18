@@ -1713,6 +1713,52 @@ impl App {
         }
     }
 
+    /// Other gear's MMC command (the Sync section's MMC in), as the MPC's
+    /// own PLAY, STOP and REC do, through the arm (`rec_arm::Press`, the
+    /// sequencer thread's rule, 18 Nov): Play and Deferred Play as PLAY
+    /// (the take that is ready starts), Stop and Pause as STOP (an armed
+    /// pad take is called off, one that records keeps recording and the
+    /// music plays on), Record Strobe as REC (what is armed records). Not
+    /// as the buttons: Play while playing is nothing (a DAW's Play is no
+    /// FILL), and nothing depends on the page, SHIFT or held pads. Locate
+    /// is the desk's (`desk::mmc_locate`); the rest do nothing.
+    pub fn mmc(&mut self, c: mpfree_midi::mmc::Mmc) -> Vec<Effect> {
+        use crate::rec_arm::Press;
+        use mpfree_midi::mmc::Mmc;
+        let mut fx = Vec::new();
+        match c {
+            Mmc::Play | Mmc::DeferredPlay if self.rolling => {}
+            Mmc::Play | Mmc::DeferredPlay => {
+                fx.extend(self.fill_off());
+                self.arps.engine_at_mut(self.track).resume();
+                fx.push(if self.rec.ready.is_some() {
+                    Effect::Rec(Press::Play { from_start: false })
+                } else {
+                    Effect::Time(TimeAction::Transport(Command::Play))
+                });
+            }
+            Mmc::Stop | Mmc::Pause => {
+                fx.extend(self.fill_off());
+                if self.rec.ready.is_some() || self.rec.pad.is_some() {
+                    fx.push(Effect::Rec(Press::Stop));
+                }
+                if self.rec.pad.is_some_and(|p| p.recording) {
+                    return fx;
+                }
+                if self.rolling {
+                    fx.push(Effect::Time(TimeAction::Transport(Command::Stop)));
+                    fx.push(Effect::Note("STOP: transport stopped".to_string()));
+                } else {
+                    fx.extend(self.stop());
+                    fx.push(Effect::Time(TimeAction::Transport(Command::Stop)));
+                }
+            }
+            Mmc::RecordStrobe => fx.push(Effect::Rec(Press::Rec)),
+            Mmc::Locate(_) | Mmc::RecordExit | Mmc::Other(_) => {}
+        }
+        fx
+    }
+
     /// The project's tracks, for TRACK MUTE's hint line (the audio loop
     /// tells it each period).
     pub fn set_track_count(&mut self, n: usize) {
@@ -8619,6 +8665,69 @@ mod tests {
             press(&mut app, button::UNDO),
             [Effect::Undo { redo: false }, Effect::UndoButton(true)]
         );
+    }
+
+    /// Other gear's MMC goes through the arm as PLAY, STOP and REC do
+    /// (the sequencer thread's check): the same effects as the buttons in
+    /// each state, a pad take armed and recording too; Play while playing
+    /// is nothing rather than FILL.
+    #[test]
+    fn mmc_goes_through_the_arm_as_play_stop_and_rec_do() {
+        use crate::rec_arm::{PadTake, Press};
+        use mpfree_midi::mmc::Mmc;
+        let mut app = App::new(44_100, false);
+        app.start();
+        let same = |app: &mut App, c: Mmc, b: u8| {
+            let mmc = app.mmc(c);
+            assert_eq!(mmc, press(app, b), "{c:?}");
+            mmc
+        };
+        assert_eq!(
+            same(&mut app, Mmc::Play, button::PLAY),
+            [Effect::Time(TimeAction::Transport(Command::Play))]
+        );
+        assert_eq!(
+            same(&mut app, Mmc::RecordStrobe, button::REC),
+            [Effect::Rec(Press::Rec)]
+        );
+        // The notes ready: Play starts the take; Stop lets it go.
+        app.rec.ready = Some(crate::rec_arm::Take::Replace);
+        assert_eq!(
+            same(&mut app, Mmc::DeferredPlay, button::PLAY),
+            [Effect::Rec(Press::Play { from_start: false })]
+        );
+        app.rec.ready = None;
+        // A pad take armed: REC is REC (the arm decides), Stop calls it
+        // off and stops; while it records, Stop keeps it.
+        app.set_rolling(true);
+        app.rec.pad = Some(PadTake {
+            kit: 0,
+            pad: 4,
+            id: 1,
+            started: true,
+            recording: false,
+            here: false,
+        });
+        assert_eq!(
+            same(&mut app, Mmc::RecordStrobe, button::REC),
+            [Effect::Rec(Press::Rec)]
+        );
+        let stop = app.mmc(Mmc::Stop);
+        assert_eq!(stop[0], Effect::Rec(Press::Stop));
+        assert!(stop.contains(&Effect::Time(TimeAction::Transport(Command::Stop))));
+        assert_eq!(stop, press(&mut app, button::STOP));
+        app.rec.pad = app.rec.pad.map(|p| PadTake {
+            recording: true,
+            ..p
+        });
+        assert_eq!(
+            same(&mut app, Mmc::Pause, button::STOP),
+            [Effect::Rec(Press::Stop)]
+        );
+        // Playing: a DAW's Play is nothing (PLAY would be FILL).
+        app.rec.pad = None;
+        assert!(app.mmc(Mmc::Play).is_empty());
+        assert!(app.mmc(Mmc::RecordExit).is_empty());
     }
 
     /// The device as it starts on a fresh stick: no saved map, no Map

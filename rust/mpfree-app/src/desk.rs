@@ -1431,6 +1431,57 @@ pub fn qlink_to_screen(page: app::View, k: usize, ticks: i32) -> Option<gui::ToU
     })
 }
 
+/// Other gear's MMC commands and program changes since the last pass
+/// (the Sync section's MMC in and Program change in), as effects: MMC as
+/// the MPC's PLAY, STOP and REC through the arm ([`app::App::mmc`]), a
+/// Locate along the tempo map ([`mmc_locate`]), a scene launched as its
+/// button launches it. A program past the Clips grid's last scene is
+/// noted and does nothing.
+pub fn remote_in(
+    music: &mut crate::midi_in::MusicIn,
+    time: &time::TimeHost,
+    app: &mut app::App,
+    out: &mut Out,
+) -> Vec<app::Effect> {
+    use crate::midi_in::RemoteIn;
+    use mpfree_midi::mmc::Mmc;
+    let mut fx = Vec::new();
+    while let Some(r) = music.next_remote_in() {
+        let a = match r {
+            RemoteIn::Mmc(Mmc::Locate(at)) => Some(mmc_locate(at, time.tempo_map())),
+            RemoteIn::Mmc(c) => {
+                fx.extend(app.mmc(c));
+                None
+            }
+            RemoteIn::Scene(k) => {
+                let c = mpfree_play::mpfree_param::clips::Clips::Scene(k);
+                let a = mpfree_time_ui::view::clips_press(&time.state(), c);
+                if a.is_none() {
+                    let n = u16::from(k) + 1;
+                    out.note(&format!(
+                        "Program change {n}: the Clips grid has no scene {n}"
+                    ));
+                }
+                a
+            }
+        };
+        fx.extend(a.map(app::Effect::Time));
+    }
+    fx
+}
+
+/// Where other gear's MMC Locate goes (the Sync section's MMC in): the
+/// tick its time reaches along the tempo map from 0, so 00:00:00:00 is
+/// the start and Locate zero then Play is PLAY START.
+pub fn mmc_locate(
+    at: mpfree_midi::mmc::Smpte,
+    map: &mpfree_transport::TempoMap,
+) -> mpfree_time_ui::TimeAction {
+    let frames = at.secs() * f64::from(crate::RATE);
+    let tick = map.tick_after(0.0, frames, crate::RATE);
+    mpfree_time_ui::TimeAction::Transport(mpfree_transport::Command::Locate(tick.round() as i64))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1521,6 +1572,28 @@ mod tests {
         let strip = ParamAddr::new(Owner::Strip(mpfree_play::mpfree_param::Strip::Track(0)), 0);
         assert!(ask(&mut mix, Ask::AddLfo(strip)).is_empty());
         assert!(mix.modu.rows_on(strip).is_empty());
+    }
+
+    /// Other gear's MMC Locate goes along the tempo map: 0 s is the
+    /// start, 2 s at 120 BPM is beat 4.
+    #[test]
+    fn mmc_locate_goes_along_the_tempo_map() {
+        use mpfree_midi::mmc::{Rate, Smpte};
+        use mpfree_time_ui::TimeAction;
+        use mpfree_transport::Command;
+        let time = time::TimeHost::new(44_100, 120.0).unwrap();
+        let at = |seconds| Smpte {
+            rate: Rate::Fps25,
+            hours: 0,
+            minutes: 0,
+            seconds,
+            frames: 0,
+            subframes: 0,
+        };
+        let go = |s| mmc_locate(at(s), time.tempo_map());
+        assert_eq!(go(0), TimeAction::Transport(Command::Locate(0)));
+        let ticks = 4 * i64::from(mpfree_transport::PPQ);
+        assert_eq!(go(2), TimeAction::Transport(Command::Locate(ticks)));
     }
 
     /// Sample Recall and the Wave page's Keep card wait while a take is
