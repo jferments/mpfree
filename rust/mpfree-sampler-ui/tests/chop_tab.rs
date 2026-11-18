@@ -426,6 +426,17 @@ fn one_pad_puts_every_slice_on_the_chopped_pad_played_by_slice_and_by_note() {
     );
     assert!(d2.iter().any(|x| x.abs() > 0.01), "D2 sounds");
     assert_ne!(hit, d2, "another slice");
+    // The Chop tab opens on the sliced pad's own slices (the sound has no
+    // chop kept).
+    let mut fresh = chop();
+    assert_ne!(fresh.tab.bounds(&fresh.state), b, "a fresh chop differs");
+    fresh.project = s.project.clone();
+    let view = fresh.state.source.clone();
+    fresh.state = ChopState::from_project(&fresh.project, PAD, 0, view).unwrap();
+    let st = fresh.state.clone();
+    fresh.tab.update(&mut fresh.ui, &st);
+    assert_eq!(fresh.tab.method(), Method::Manual);
+    assert_eq!(fresh.tab.bounds(&fresh.state), b);
     // A First pad picked moves the one pad.
     qlink(&mut s, 3, 2, false);
     assert_eq!(value(&s, Row::Pads), "A7");

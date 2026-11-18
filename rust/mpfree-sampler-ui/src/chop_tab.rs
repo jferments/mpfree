@@ -69,7 +69,8 @@ use mpfree_analysis::{
     nearest_zero_crossing, note_name, previous_zero_crossing, sound_spans, SilenceSettings,
 };
 use mpfree_sampler::model::{
-    ChopMode, ChopSet, ModelError, Project, Region, SourceId, MAX_SLICES, PADS, SLICE_KEYS_FROM,
+    ChopMode, ChopSet, ModelError, Project, Region, SourceId, KEPT_CHOP, MAX_SLICES, PADS,
+    SLICE_KEYS_FROM,
 };
 use mpfree_sampler::phrase::{self, Phrase};
 use mpfree_ui::layout;
@@ -316,6 +317,13 @@ impl ChopState {
         let pd = p.pad(pad)?;
         let region = pd.layers.get(layer)?.region.clone();
         let s = p.source(region.source)?;
+        // A sliced pad's own slices (R4) when the sound has no chop kept:
+        // the tab opens on them.
+        let kept = p.kept_chop(s.id()).cloned().or_else(|| {
+            (region.slice_count() > 1)
+                .then(|| ChopSet::from_markers(KEPT_CHOP, s, ChopMode::Manual, region.cuts()).ok())
+                .flatten()
+        });
         (s.id() == source.id).then(|| ChopState {
             pad,
             layer,
@@ -328,7 +336,7 @@ impl ChopState {
             source,
             used: (0..PADS).map(|i| p.pad(i).is_some()).collect(),
             files: false,
-            kept: p.kept_chop(s.id()).cloned(),
+            kept,
         })
     }
 
