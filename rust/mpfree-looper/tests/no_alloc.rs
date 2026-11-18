@@ -123,6 +123,12 @@ fn commands_and_periods_never_allocate() {
         L::Clear,
         L::Undo,
         L::Solo(false),
+        // A Replace, merged with the layers under it, and undone.
+        L::SetOverdubs(Overdubs::Replace),
+        L::Overdub,
+        L::Overdub,
+        L::Merge,
+        L::Undo,
         L::SetOverdubs(Overdubs::Add),
         L::Forget,
     ];

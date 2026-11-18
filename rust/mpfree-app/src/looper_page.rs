@@ -580,10 +580,10 @@ pub fn strip_command(c: Ctl, s: &Status) -> Option<Command> {
             After::Overdub
         })),
         // The next overdub's way, even while one records.
-        Ctl::Overdubs(i) => Some(Command::SetOverdubs(if i == 0 {
-            Overdubs::Add
-        } else {
-            Overdubs::Once
+        Ctl::Overdubs(i) => Some(Command::SetOverdubs(match i {
+            0 => Overdubs::Add,
+            1 => Overdubs::Replace,
+            _ => Overdubs::Once,
         })),
         _ => None,
     }
@@ -1482,6 +1482,8 @@ impl LooperPage {
                     Some(l) if l.muted => "muted".to_string(),
                     // Feedback has turned it down under the overdubs since.
                     Some(l) if l.faded < 0.995 => format!("at {:.0} %", 100.0 * l.faded),
+                    // In place of what was under it.
+                    Some(l) if l.replace => "replace".to_string(),
                     Some(l) => level_text(l.level),
                     None => String::new(),
                 };
@@ -1554,7 +1556,8 @@ impl LooperPage {
                 feedback: s.fade_old,
                 overdubs: match s.overdubs {
                     Overdubs::Add => 0,
-                    Overdubs::Once => 1,
+                    Overdubs::Replace => 1,
+                    Overdubs::Once => 2,
                 },
                 reversed,
                 length: bars_word(bars_of(s.ticks, v.beats_per_bar)),
@@ -2002,6 +2005,7 @@ mod tests {
             audible: true,
             recording: false,
             faded: 1.0,
+            replace: false,
         }
     }
 
@@ -2357,9 +2361,14 @@ mod tests {
             Some(Command::SetAfter(After::Overdub))
         );
         assert_eq!(strip_command(Ctl::Undo, &s), None, "UNDO's own");
-        // Overdubs: Add, or Once (one pass, then back to playing).
+        // Overdubs: Add, Replace (in place of what was there), or Once (one
+        // pass, then back to playing).
         assert_eq!(
             strip_command(Ctl::Overdubs(1), &s),
+            Some(Command::SetOverdubs(Overdubs::Replace))
+        );
+        assert_eq!(
+            strip_command(Ctl::Overdubs(2), &s),
             Some(Command::SetOverdubs(Overdubs::Once))
         );
         assert_eq!(

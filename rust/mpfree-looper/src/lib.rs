@@ -414,6 +414,9 @@ pub struct LayerInfo {
     /// How far Fade old has turned it down, 0 to 1 (1: not at all). It
     /// plays at `level * faded`.
     pub faded: f32,
+    /// Recorded with Overdubs: Replace: the layers under it are silent
+    /// where it was written ([`Overdubs::Replace`]).
+    pub replace: bool,
 }
 
 /// What a loop does when its first pass ends: the Looper tab's "After
@@ -435,6 +438,12 @@ pub enum Overdubs {
     /// On top, for as long as it records (until Overdub again).
     #[default]
     Add,
+    /// In place of what was there, for as long as it records: the layers
+    /// under it are silent over the frames it wrote (crossfading at its
+    /// ends), and the rest of the loop plays as before. Nothing is erased:
+    /// Undo takes the overdub away and they are back. A second pass
+    /// replaces the first.
+    Replace,
     /// One pass, then the loop plays by itself: the overdub ends where it
     /// started, its end crossfading into its start.
     Once,
@@ -813,6 +822,14 @@ struct Slot {
     leaving: bool,
     /// How far Fade old has turned it down: 1 not at all.
     age: f32,
+    /// Recorded with Overdubs: Replace: its fade-in and fade-out in frames.
+    /// The layers before it in the play order are silent where it was
+    /// written, crossfading over those fades ([`Slot::cover`]).
+    replace: Option<(u32, u32)>,
+    /// How much it silences the layers under it now, 0 to 1: it moves to
+    /// 0 while the layer is muted or left out by a solo, and back, a step
+    /// a frame.
+    duck: f32,
 }
 
 impl Slot {
@@ -827,7 +844,38 @@ impl Slot {
         presence: 1.0,
         leaving: false,
         age: 1.0,
+        replace: None,
+        duck: 1.0,
     };
+
+    /// Heard: not muted, and not left out by another layer's solo.
+    fn heard(&self, any_solo: bool) -> bool {
+        !self.mute && (!any_solo || self.solo)
+    }
+
+    /// How far a Replace layer covers audio frame `a` of its `size`: 1
+    /// where it was written, 0 where not, and between over its fades. 0
+    /// for a layer that is not a Replace.
+    fn cover(&self, a: usize, size: usize) -> f32 {
+        let Some((fin, fout)) = self.replace else {
+            return 0.0;
+        };
+        let (start, count) = self.valid;
+        if size == 0 || count == 0 {
+            return 0.0;
+        }
+        if count >= size {
+            return 1.0;
+        }
+        // Frames from the first one written.
+        let d = (a + size - start % size) % size;
+        if d >= count {
+            return 0.0;
+        }
+        let up = (d as f32 + 0.5) / fin.max(1) as f32;
+        let down = ((count - d) as f32 - 0.5) / fout.max(1) as f32;
+        up.min(down).min(1.0)
+    }
 
     /// The gains the settings ask for.
     fn target(&self, any_solo: bool) -> (f32, f32) {
@@ -1732,7 +1780,8 @@ impl Looper {
     }
 
     /// Frames `from` on of layer `k` of loop `n` (in play order) as it
-    /// plays, through the loop's edits and their seam fades, at gain 1,
+    /// plays, through the loop's edits and their seam fades, at gain 1
+    /// (silent where a Replace layer after it covers it, as heard),
     /// into `out` (interleaved stereo, wrapping round the loop). Gives the
     /// loop's version ([`Status::version`]), so that a save read across
     /// several periods can tell that the layers changed; None, writing
@@ -1746,8 +1795,18 @@ impl Looper {
         let slot = l.listed(k)?;
         let blocks = self.store.blocks_of(n, slot);
         let (valid, view) = (l.slots[slot].valid, &l.views[slot]);
+        // Under a Replace layer it is saved as heard: silent where that
+        // covers it, so the loop loads sounding the same.
+        let replacing = l.replacing();
+        let any_solo = l.any_solo();
+        let strength = |s: &Slot| if s.heard(any_solo) { 1.0 } else { 0.0 };
         for (i, y) in out.chunks_exact_mut(2).enumerate() {
-            let x = layer_frame(&self.store, blocks, valid, view, l.seam, (from + i) % l.len);
+            let p = (from + i) % l.len;
+            let mut x = layer_frame(&self.store, blocks, valid, view, l.seam, p);
+            if replacing {
+                let d = l.ducks(&l.views, l.len, p, strength)[slot];
+                x = x.map(|v| v * d);
+            }
             y.copy_from_slice(&x);
         }
         Some(l.version)
@@ -2006,6 +2065,7 @@ impl Looper {
             audible: !s.mute && (!any_solo || s.solo),
             recording: l.od_open && l.od_layer == slot,
             faded: s.age,
+            replace: s.replace.is_some(),
         })
     }
 
@@ -3421,6 +3481,29 @@ impl Loop {
     /// Frames `from..` of every layer, as heard (at the gains in `mg_g`),
     /// added into `acc`.
     fn render_layers(&self, store: &Store, me: usize, from: usize, acc: &mut [[f32; 2]]) {
+        if self.replacing() {
+            // Frame by frame, each layer at its share under the Replace
+            // layers after it, as they are heard.
+            let any_solo = self.any_solo();
+            let strength = |s: &Slot| if s.heard(any_solo) { 1.0 } else { 0.0 };
+            for (j, a) in acc.iter_mut().enumerate() {
+                let p = from + j;
+                let d = self.ducks(&self.views, self.len, p, strength);
+                for &k in &self.order[..self.in_order] {
+                    let k = k as usize;
+                    let g = self.mg_g[k];
+                    let v = &self.views[k];
+                    if g == [0.0, 0.0] || v.size() == 0 || d[k] == 0.0 {
+                        continue;
+                    }
+                    let blocks = store.blocks_of(me, k);
+                    let x = layer_frame(store, blocks, self.slots[k].valid, v, self.seam, p);
+                    a[0] += g[0] * x[0] * d[k];
+                    a[1] += g[1] * x[1] * d[k];
+                }
+            }
+            return;
+        }
         for &k in &self.order[..self.in_order] {
             let k = k as usize;
             let g = self.mg_g[k];
@@ -4039,6 +4122,9 @@ impl Loop {
         // One pass ends with a fade as long as its start's: the two
         // crossfade where they meet.
         self.od_out_len = if self.od_once { fade.max(1) } else { FADE };
+        if self.overdubs == Overdubs::Replace {
+            self.slots[k].replace = Some((fade.max(1) as u32, self.od_out_len as u32));
+        }
         self.od_out = self.od_out_len;
         self.od_peak = 0.0;
         self.od_faded = false;
@@ -4108,7 +4194,9 @@ impl Loop {
         // An overdub that took only silence (below [`SILENT`]) and faded
         // nothing leaves no layer and no step to undo. It goes at once:
         // what it holds is too quiet to click.
-        if !self.drop_empty_overdub() && self.od_peak < SILENT && !self.od_faded {
+        // A Replace of silence stays: it silences what was there.
+        let replace = self.slots[self.od_layer].replace.is_some();
+        if !self.drop_empty_overdub() && self.od_peak < SILENT && !self.od_faded && !replace {
             self.drop_overdub();
         }
         if self.phase == Phase::Overdubbing {
@@ -4178,6 +4266,16 @@ impl Loop {
         } else if count < len {
             self.slots[k].valid = (start, count + 1);
             store.set(me, k, q, y);
+        } else if self.slots[k].replace.is_some() {
+            // Replace: a later pass takes the place of the earlier ones,
+            // crossfading into them as it fades out.
+            let was = store.get(me, k, q);
+            store.set(
+                me,
+                k,
+                q,
+                [was[0] * (1.0 - g) + y[0], was[1] * (1.0 - g) + y[1]],
+            );
         } else if self.fade_old < 1.0 {
             // Fade old: this layer's earlier passes keep their share.
             let was = store.get(me, k, q);
@@ -4306,6 +4404,47 @@ impl Loop {
             && self.len > 0
             && self.print_on == settled
             && !self.swapping
+            && !self.replacing()
+    }
+
+    /// A Replace layer plays: the layers under it are read frame by frame
+    /// ([`Loop::sample_at`]), with how far it covers each.
+    fn replacing(&self) -> bool {
+        self.order[..self.in_order]
+            .iter()
+            .any(|&k| self.slots[k as usize].replace.is_some())
+    }
+
+    /// How much of each layer is heard at loop frame `p` under the Replace
+    /// layers after it in the play order (1: all of it), through a shape's
+    /// views; `strength` is how much each Replace layer silences.
+    fn ducks(
+        &self,
+        views: &[View; MAX_LAYERS],
+        len: usize,
+        p: usize,
+        strength: impl Fn(&Slot) -> f32,
+    ) -> [f32; MAX_LAYERS] {
+        let mut out = [1.0f32; MAX_LAYERS];
+        let mut d = 1.0f32;
+        for &k in self.order[..self.in_order].iter().rev() {
+            let k = k as usize;
+            out[k] = d;
+            let s = &self.slots[k];
+            if s.replace.is_none() {
+                continue;
+            }
+            let v = &views[k];
+            let (a, size) = if v.is_whole() {
+                (p, len)
+            } else if v.size() == 0 {
+                continue;
+            } else {
+                (v.at(p), v.size())
+            };
+            d *= 1.0 - strength(s) * s.cover(a, size);
+        }
+        out
     }
 
     /// Frames of a still loop ([`Loop::still`]): the same sums as `read`
@@ -4561,7 +4700,9 @@ impl Loop {
             let (l, r) = s.target(any_solo);
             s.gl += (l - s.gl).clamp(-STEP, STEP);
             s.gr += (r - s.gr).clamp(-STEP, STEP);
-            settled &= !s.leaving && s.presence == 1.0 && s.gl == l && s.gr == r;
+            let d = if s.heard(any_solo) { 1.0 } else { 0.0 };
+            s.duck += (d - s.duck).clamp(-STEP, STEP);
+            settled &= !s.leaving && s.presence == 1.0 && s.gl == l && s.gr == r && s.duck == d;
             p += 1;
         }
         self.mixing = !settled;
@@ -4583,17 +4724,28 @@ impl Loop {
         let i1 = if i0 + 1 == len { 0 } else { i0 + 1 };
         let (b0, o0, b1, o1) = (i0 / BLOCK, i0 % BLOCK, i1 / BLOCK, i1 % BLOCK);
         let mut y = [0.0f32; 2];
+        // Under a Replace layer, each layer at its share of i0 and i1.
+        let (d0, d1) = if self.replacing() {
+            let strength = |s: &Slot| s.duck * s.presence;
+            (
+                self.ducks(views, len, i0, strength),
+                self.ducks(views, len, i1, strength),
+            )
+        } else {
+            ([1.0; MAX_LAYERS], [1.0; MAX_LAYERS])
+        };
         for &k in &self.order[..self.in_order] {
             let k = k as usize;
             let s = &self.slots[k];
             let g = [s.gl * s.presence, s.gr * s.presence];
-            if g == [0.0, 0.0] {
+            if g == [0.0, 0.0] || (d0[k] == 0.0 && d1[k] == 0.0) {
                 continue;
             }
             if !views[k].is_whole() {
                 let blocks = store.blocks_of(me, k);
                 let a = layer_frame(store, blocks, s.valid, &views[k], seam, i0);
                 let b = layer_frame(store, blocks, s.valid, &views[k], seam, i1);
+                let (a, b) = (a.map(|v| v * d0[k]), b.map(|v| v * d1[k]));
                 for (c, v) in y.iter_mut().enumerate() {
                     *v += g[c] * (a[c] + (b[c] - a[c]) * frac);
                 }
@@ -4616,6 +4768,11 @@ impl Loop {
                 store.frame(blocks, b1, o1)
             } else {
                 [0.0; 2]
+            };
+            let (a, b) = if d0[k] == 1.0 && d1[k] == 1.0 {
+                (a, b)
+            } else {
+                (a.map(|v| v * d0[k]), b.map(|v| v * d1[k]))
             };
             for (c, v) in y.iter_mut().enumerate() {
                 *v += g[c] * (a[c] + (b[c] - a[c]) * frac);
