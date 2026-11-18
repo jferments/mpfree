@@ -15,6 +15,10 @@
 //! - **values:** parameter values stored with it, for the scene morph
 //!   (T10): two scenes on the crossfader morph every parameter they hold
 //!   between their values.
+//! - **programs:** a program change per track (sequencer S5, the
+//!   Elektron's program change per pattern): launching the scene sends
+//!   each track's on the scene's line, to the outside gear its track plays
+//!   on, unless the clip the track starts there sends one of its own.
 //!
 //! A clip can have a follow action of its own: after some bars, its track
 //! plays another clip (the next slot down, any other ...) or stops.
@@ -32,7 +36,7 @@
 
 use mpfree_param::ParamAddr;
 
-use crate::{ModelError, MAX_TRACKS, SLOTS};
+use crate::{ClipProgram, ModelError, MAX_TRACKS, SLOTS};
 
 /// Scenes in a project: one per row of slots.
 pub const SCENES: usize = SLOTS;
@@ -92,21 +96,78 @@ impl SongList {
     }
 }
 
-/// A scene's name, mutes and follow action: what the scene editor (the
-/// Record panel's Scene tab, sequencer S4) sets, apart from its morph
-/// values.
+/// The program change a scene sends one track as it starts (sequencer
+/// S5): see the module notes. A scene holds at most one a track.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TrackProgram {
+    pub track: usize,
+    pub program: ClipProgram,
+}
+
+/// A scene's programs in order of track, one a track, each in range.
+fn check_programs(programs: &[TrackProgram]) -> Result<(), ModelError> {
+    let in_order = programs.windows(2).all(|w| w[0].track < w[1].track);
+    if !in_order
+        || programs
+            .iter()
+            .any(|p| p.track >= MAX_TRACKS || !p.program.ok())
+    {
+        return Err(ModelError::BadScene);
+    }
+    Ok(())
+}
+
+/// Track `track`'s program in `programs`.
+fn program_of(programs: &[TrackProgram], track: usize) -> Option<ClipProgram> {
+    programs
+        .iter()
+        .find(|p| p.track == track)
+        .map(|p| p.program)
+}
+
+/// Give track `track` the program `to` in `programs`, or none, keeping
+/// them in order of track.
+fn put_program(programs: &mut Vec<TrackProgram>, track: usize, to: Option<ClipProgram>) {
+    let k = programs.partition_point(|p| p.track < track);
+    let here = programs.get(k).is_some_and(|p| p.track == track);
+    match (to, here) {
+        (Some(program), true) => programs[k].program = program,
+        (Some(program), false) => programs.insert(k, TrackProgram { track, program }),
+        (None, true) => {
+            programs.remove(k);
+        }
+        (None, false) => {}
+    }
+}
+
+/// A scene's name, mutes, follow action and programs: what the scene
+/// editor (the Record panel's Scene tab, sequencer S4 and S5) sets, apart
+/// from its morph values.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SceneSettings {
     pub name: String,
     pub mutes: Option<u128>,
     pub follow: Option<Follow>,
+    /// The program changes it sends as it starts, in order of track.
+    pub programs: Vec<TrackProgram>,
 }
 
 impl SceneSettings {
+    /// Track `track`'s program change in the scene, if it has one.
+    pub fn program(&self, track: usize) -> Option<ClipProgram> {
+        program_of(&self.programs, track)
+    }
+
+    /// Track `track` gets the program change `to` (None: none).
+    pub fn set_program(&mut self, track: usize, to: Option<ClipProgram>) {
+        put_program(&mut self.programs, track, to);
+    }
+
     pub fn check(&self) -> Result<(), ModelError> {
         if let Some(f) = &self.follow {
             f.check()?;
         }
+        check_programs(&self.programs)?;
         if self
             .mutes
             .and_then(|m| m.checked_shr(MAX_TRACKS as u32))
@@ -184,6 +245,9 @@ pub struct Scene {
     pub follow: Option<Follow>,
     /// Parameter values (in each parameter's own units) for the morph.
     pub values: Vec<(ParamAddr, f32)>,
+    /// Program changes it sends as it starts, in order of track, one a
+    /// track (sequencer S5).
+    pub programs: Vec<TrackProgram>,
 }
 
 impl Scene {
@@ -194,24 +258,41 @@ impl Scene {
         }
     }
 
-    /// What the scene editor sets (sequencer S4): its name, mutes and
-    /// follow action.
+    /// What the scene editor sets (sequencer S4 and S5): its name, mutes,
+    /// follow action and programs.
     pub fn settings(&self) -> SceneSettings {
         SceneSettings {
             name: self.name.clone(),
             mutes: self.mutes,
             follow: self.follow,
+            programs: self.programs.clone(),
         }
     }
 
     /// Give it `s`, its values (the morph's) as they are. `BadScene`, and
     /// nothing changed, for a follow out of range, mutes past the last
-    /// track, or a name too long or with a line break.
+    /// track, a name too long or with a line break, or programs out of
+    /// order or range.
     pub fn set_settings(&mut self, s: &SceneSettings) -> Result<(), ModelError> {
         s.check()?;
         self.name.clone_from(&s.name);
         self.mutes = s.mutes;
         self.follow = s.follow;
+        self.programs.clone_from(&s.programs);
+        Ok(())
+    }
+
+    /// Track `track`'s program change in this scene, if it has one.
+    pub fn program(&self, track: usize) -> Option<ClipProgram> {
+        program_of(&self.programs, track)
+    }
+
+    /// Track `track` gets the program change `to` (None: none).
+    pub fn set_program(&mut self, track: usize, to: Option<ClipProgram>) -> Result<(), ModelError> {
+        if track >= MAX_TRACKS || to.is_some_and(|p| !p.ok()) {
+            return Err(ModelError::BadScene);
+        }
+        put_program(&mut self.programs, track, to);
         Ok(())
     }
 
@@ -226,6 +307,7 @@ impl Scene {
         if let Some(f) = &self.follow {
             f.check()?;
         }
+        check_programs(&self.programs)?;
         if self
             .mutes
             .and_then(|m| m.checked_shr(MAX_TRACKS as u32))
@@ -327,14 +409,19 @@ mod tests {
     /// The scene editor's settings: set together, the morph values left
     /// alone; a bad one changes nothing.
     #[test]
-    fn scene_settings_set_name_mutes_and_follow() {
+    fn scene_settings_set_name_mutes_follow_and_programs() {
         let a = ParamAddr::new(Owner::Inst(0), 1);
         let mut s = Scene::named("Verse");
         s.set_value(a, 0.5).unwrap();
+        let pc = |program, bank| ClipProgram { program, bank };
         let want = SceneSettings {
             name: "Drop".into(),
             mutes: Some(0b10),
             follow: Some(Follow::after(8, FollowAction::Next)),
+            programs: vec![TrackProgram {
+                track: 3,
+                program: pc(9, Some(1)),
+            }],
         };
         s.set_settings(&want).unwrap();
         assert_eq!(s.settings(), want);
@@ -352,10 +439,72 @@ mod tests {
                 follow: Some(Follow::after(0, FollowAction::Next)),
                 ..want.clone()
             },
+            SceneSettings {
+                programs: vec![TrackProgram {
+                    track: MAX_TRACKS,
+                    program: pc(9, None),
+                }],
+                ..want.clone()
+            },
+            SceneSettings {
+                programs: vec![TrackProgram {
+                    track: 0,
+                    program: pc(128, None),
+                }],
+                ..want.clone()
+            },
+            SceneSettings {
+                programs: vec![
+                    TrackProgram {
+                        track: 4,
+                        program: pc(1, None),
+                    },
+                    TrackProgram {
+                        track: 4,
+                        program: pc(2, None),
+                    },
+                ],
+                ..want.clone()
+            },
         ] {
             assert!(s.set_settings(&bad).is_err(), "{bad:?}");
         }
         assert_eq!(s.settings(), want);
+    }
+
+    /// One program a track, kept in order of track; none takes it off.
+    #[test]
+    fn a_scenes_programs_stay_in_order_one_a_track() {
+        let pc = |program| {
+            Some(ClipProgram {
+                program,
+                bank: None,
+            })
+        };
+        let mut s = SceneSettings::default();
+        s.set_program(5, pc(50));
+        s.set_program(1, pc(10));
+        s.set_program(3, pc(30));
+        s.set_program(3, pc(31));
+        let tracks: Vec<_> = s.programs.iter().map(|p| p.track).collect();
+        assert_eq!(tracks, [1, 3, 5]);
+        assert_eq!(s.program(3), pc(31));
+        assert_eq!(s.program(2), None);
+        assert_eq!(s.check(), Ok(()));
+        s.set_program(1, None);
+        s.set_program(2, None);
+        assert_eq!(s.programs.len(), 2);
+        let mut sc = Scene::named("Verse");
+        sc.set_settings(&s).unwrap();
+        assert_eq!(sc.program(5), pc(50));
+        assert_eq!(sc.set_program(MAX_TRACKS, pc(1)), Err(ModelError::BadScene));
+        assert_eq!(sc.set_program(0, pc(128)), Err(ModelError::BadScene));
+        sc.set_program(0, pc(7)).unwrap();
+        assert_eq!(sc.programs[0].track, 0);
+        assert_eq!(sc.check(), Ok(()));
+        // Out of order: refused by the check (a file can't make one).
+        sc.programs.swap(0, 1);
+        assert_eq!(sc.check(), Err(ModelError::BadScene));
     }
 
     #[test]

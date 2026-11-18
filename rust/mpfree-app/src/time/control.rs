@@ -1495,6 +1495,19 @@ impl TimeControl {
                     ..
                 },
             ) => format!("steps: {what}"),
+            // A step switched off and kept, or on again (the redesign's
+            // step 3b): "steps: step 9 of pad 5: On(false)".
+            (
+                None,
+                StepAction::Change {
+                    change: mpfree_seq::steps::Change::On(_),
+                    ..
+                }
+                | StepAction::ChangeSteps {
+                    change: mpfree_seq::steps::Change::On(_),
+                    ..
+                },
+            ) => format!("steps: {what}"),
             (None, StepAction::Length { steps, copy }) => {
                 let bars = steps.div_ceil(16);
                 let s = if bars == 1 { "" } else { "s" };

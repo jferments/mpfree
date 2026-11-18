@@ -90,6 +90,21 @@ pub struct MuteCue {
     pub id: u32,
 }
 
+/// A scene's program change for a track (sequencer S5,
+/// [`mpfree_seq::Scene::programs`]), sent to the gear the track plays on:
+/// once on the first line of `line` the playhead plays (where the scene's
+/// cues land), or with no line (the scene was launched while stopped, or
+/// its cues started) where the music plays from; again after a stop or a
+/// jump, as a clip's own program change is. When the clip playing on the
+/// track then has a program change of its own, that one is sent instead.
+/// Every launch of a scene has a new `id` (they rise).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SceneProgram {
+    pub program: ClipProgram,
+    pub line: Option<LaunchGrid>,
+    pub id: u32,
+}
+
 /// A [`MuteCue`] the player carried out: from song tick `at`, `track` is
 /// `silent` (or heard). The host applies its queue `id` to the project.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -448,6 +463,9 @@ pub(crate) struct TrackView {
     pub record_quantise: Option<u32>,
     /// A mute or solo change waiting for its line ([`PlayView::set_mute_cue`]).
     pub mute_cue: Option<MuteCue>,
+    /// The program change of the scene launched last, for this track
+    /// ([`PlayView::set_scene_program`]).
+    pub scene_program: Option<SceneProgram>,
 }
 
 impl TrackView {
@@ -514,6 +532,7 @@ impl PlayView {
                 regions: Vec::new(),
                 record_quantise: t.record_quantise,
                 mute_cue: None,
+                scene_program: None,
             })
             .collect();
         for l in launches {
@@ -884,6 +903,24 @@ impl PlayView {
     /// The mute cue waiting on `track`, if any.
     pub fn mute_cue(&self, track: usize) -> Option<MuteCue> {
         self.tracks.get(track)?.mute_cue
+    }
+
+    /// Track `track` sends the scene's program change `p` (or none). False
+    /// when there is no such track. Call it on the control thread, after
+    /// compiling.
+    pub fn set_scene_program(&mut self, track: usize, p: Option<SceneProgram>) -> bool {
+        match self.tracks.get_mut(track) {
+            Some(t) => {
+                t.scene_program = p;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The scene's program change for `track`, if any.
+    pub fn scene_program(&self, track: usize) -> Option<SceneProgram> {
+        self.tracks.get(track)?.scene_program
     }
 
     /// Track `track`'s cue lands on `line` in place of its clip's own

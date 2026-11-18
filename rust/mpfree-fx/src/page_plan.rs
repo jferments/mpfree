@@ -87,6 +87,10 @@ pub struct Section {
     pub switch: Option<&'static str>,
     /// Another page of the effect, opened from its heading ("Open ›").
     pub link: Option<&'static str>,
+    /// A button in its heading that acts on the effect rather than set a
+    /// control: "Capture" puts the memory it holds on a pad
+    /// (`Node::copy_held`, the Grains effect). Not with a link.
+    pub action: Option<&'static str>,
     /// A short line beside its heading.
     pub note: Option<&'static str>,
 }
@@ -249,6 +253,7 @@ const fn s(
         meters: &[],
         switch: None,
         link: None,
+        action: None,
         note: None,
     }
 }
@@ -1592,6 +1597,80 @@ pub static PLANS: &[Plan] = &[
         )],
         dims: &[sync_dim(&["Delay"], "Sync")],
     },
+    // The grain engine as an effect: where the grains read, how big and
+    // how many on Main, with the pitch beside them and what holds the
+    // sound under them (Feedback, Repeat, Freeze); how each grain is
+    // shaped, varied and filtered on Texture.
+    Plan {
+        id: "mpfree.grains",
+        qlinks: &["Size", "Density", "Feedback", "Mix"],
+        pages: &[
+            page(
+                "col(row(grains:520, pitch):*, row(hold:400, output):270)",
+                &[
+                    Section {
+                        hero: &["Size", "Density"],
+                        meters: &["Grains"],
+                        link: Some("Texture"),
+                        ..s(
+                            "grains",
+                            "Grains",
+                            Source,
+                            &["Position", "Size", "Density", "Spray"],
+                        )
+                    },
+                    s(
+                        "pitch",
+                        "Pitch",
+                        Source,
+                        &["Pitch", "Pitch spray", "Reverse"],
+                    ),
+                    Section {
+                        rows: &["Repeat", "Freeze"],
+                        action: Some("Capture"),
+                        ..s("hold", "Hold", Motion, &["Feedback", "Repeat", "Freeze"])
+                    },
+                    Section {
+                        trim: &["Spread"],
+                        ..s("output", "Output", Voice, &["Mix", "Spread"])
+                    },
+                ],
+            ),
+            Page {
+                name: "Texture",
+                spec: "row(texture:560, filter)",
+                sections: &[
+                    Section {
+                        rows: &["Peaked spray"],
+                        ..s(
+                            "texture",
+                            "Texture",
+                            Tone,
+                            &[
+                                "Timing",
+                                "Shape",
+                                "Size spray",
+                                "Level spray",
+                                "Peaked spray",
+                            ],
+                        )
+                    },
+                    // Each grain's own filter (step C4).
+                    Section {
+                        hero: &["Cutoff", "Resonance"],
+                        rows: &["Filter"],
+                        ..s(
+                            "filter",
+                            "Filter",
+                            Tone,
+                            &["Filter", "Cutoff", "Resonance", "Filter spray"],
+                        )
+                    },
+                ],
+            },
+        ],
+        dims: &[],
+    },
     // Pitch and vocal.
     Plan {
         id: "mpfree.fx.pitch",
@@ -1950,6 +2029,34 @@ mod tests {
             .iter()
             .flat_map(|s| s.params.iter().copied().chain(s.switch))
             .collect()
+    }
+
+    /// A heading's action is one the chain editor knows, and the effect
+    /// does it: "Capture" copies out the memory it holds once it has heard
+    /// something.
+    #[test]
+    fn actions_are_known_and_the_effect_does_them() {
+        let mut found = 0;
+        for p in PLANS {
+            for sec in p.pages.iter().flat_map(|pg| pg.sections) {
+                let Some(a) = sec.action else { continue };
+                found += 1;
+                assert_eq!(a, "Capture", "{}: {a} isn't an action", p.id);
+                assert!(sec.link.is_none(), "{}: an action and a link", p.id);
+                let mut n = registry::make(p.id).unwrap();
+                n.prepare(44_100, 512);
+                let mut held = mpfree_node::Held::new(2, 44_100 * 10);
+                let (mut l, mut r) = (vec![0.25f32; 512], vec![-0.25f32; 512]);
+                n.process(&mpfree_node::Ctx::new(44_100, 0), &[], &mut l, &mut r);
+                assert_ne!(
+                    n.copy_held(&mut held, 4096),
+                    mpfree_node::HeldStep::Nothing,
+                    "{} can't capture",
+                    p.id
+                );
+            }
+        }
+        assert_eq!(found, 1, "the Grains effect's Capture");
     }
 
     #[test]

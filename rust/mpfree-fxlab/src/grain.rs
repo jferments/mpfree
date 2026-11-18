@@ -63,15 +63,59 @@
 //!   flam, over 4 ms a millisecond at a time); the medians over the hits.
 //!   Shown: the stretch's loudness against the drums' (louder sped up,
 //!   with more whole hits a second) and the same without hits.
+//! - **G13, movement keeps the level (step B3):** a sprayed cloud (80 ms
+//!   grains, 80 a second, spray 0.3) on pink and the pad, with its LFO
+//!   (a sine, 0.5 Hz) on position (full depth), size, density and pitch
+//!   (half depth: 2.8 times, 4 times, 6 semitones either way) and spray
+//!   (from 0.5, full depth), or its envelope on size (half a second up,
+//!   a second down to half): the loudness against the same cloud
+//!   unmoved, and how much further its level swings (over 400 ms, every
+//!   100 ms, as a momentary meter moves).
+//! - **G14, the presets keep the level (step B6):** each grain preset
+//!   (`mpfree_sampler::grain_presets`) on pink and the pad at the same
+//!   position: the loudness against the default cloud's there. A
+//!   stutter's grains fill half of each sixteenth, with their fades, so
+//!   it sits about 4 LU down.
+//! - **G15, feedback can't run away (step C1):** the Grains effect
+//!   (`GrainFx`, 2 s of memory, fully wet, reading half way back) on 4 s
+//!   of pink at -14 dBFS RMS (peaks near full scale), then 16 s of
+//!   silence, at full feedback: its
+//!   sample peak, and how far its level rises from seconds 8-12 to 16-20
+//!   (none, if the loop holds). Half feedback: how fast the trail falls,
+//!   dB a second over seconds 6 to 16, shown.
+//! - **G16, repeat keeps the level and joins smoothly (step C2):** the
+//!   Grains effect fully dry on pink at 120 BPM, repeating a quarter note
+//!   and a sixteenth from 2 s: the level from half a second on against the
+//!   stretch of pink it repeats; and on a 110 Hz tone at -20 dBFS, the
+//!   biggest step from one sample to the next within 10 ms of each join
+//!   (where one repeat fades into the next) against the tone's own (a
+//!   cut with no fade jumps up to 140 times as far).
+//! - **G17, a filter on each grain (step C4):** the default cloud on pink
+//!   through each grain's low pass and high pass at 1 kHz (no
+//!   resonance): the level two octaves past the cutoff (4 kHz and 250 Hz,
+//!   ±1/6 octave) and two octaves inside it, against the same cloud
+//!   unfiltered. A band pass at 1 kHz at full resonance (Q 12) with full
+//!   spray (each grain's centre up to three octaves either way, even in
+//!   octaves), on a cloud reading all over the pink (spray 0.5): how far
+//!   apart its levels at 250 Hz, 1 kHz and 4 kHz (an octave each) are
+//!   against the cloud unfiltered (an even spread colours each octave
+//!   alike). A low pass at 1 kHz at full resonance: its sample peak
+//!   against the unfiltered cloud's (resonance that can't run away).
+//!   Shown: the sprayed band's loudness against its cloud's.
 //!
 //! Cost is the bench's (`mpfree-bench`'s "Sampler grains (per grain)"
 //! scaling case, on CI by the instruction gate and on the MPC in the
 //! device round). Design: `docs/dev/design/fx-quality.md` ("The grain
 //! engine"); plan: mpfree-claude `sampler/granular/plan.md`.
 
-use mpfree_grain::{Budget, GrainVoice, Params, SprayShape, Stats, Window};
+use mpfree_grain::{
+    Budget, GrainEnv, GrainFx, GrainLfo, GrainVoice, LfoShape, MotionTarget, Params, SprayShape,
+    Stats, Window,
+};
 use mpfree_sampler::bandlimit::Octaves;
 use mpfree_sampler::grain_clip::GrainClip;
+use mpfree_sampler::grain_presets;
+use mpfree_sampler::model::GrainMode;
 
 use crate::fft::Fft;
 use crate::loudness;
@@ -105,6 +149,11 @@ pub fn report(rate: u32) -> Vec<Row> {
     variation(&mut rows, &lab);
     tone(&mut rows, &lab);
     hits(&mut rows, &lab);
+    movement(&mut rows, &lab);
+    presets(&mut rows, &lab);
+    feedback(&mut rows, &lab);
+    repeat(&mut rows, &lab);
+    filtered(&mut rows, &lab);
     rows
 }
 
@@ -216,7 +265,19 @@ fn pad_sound(n: usize, rate: u32) -> Vec<f32> {
 /// pitched more than two semitones up read band-limited, from the
 /// sound's octave copies past an octave (made here only for those).
 fn render(src: &[f32], rate: u32, p: Params, secs: f64, seed: u64) -> (Stereo, Stats) {
-    let up = p.pitch.max(0.0) + p.pitch_spray.max(0.0) > 2.0;
+    // As high as the movement takes the pitch, too.
+    let moved = |t: MotionTarget, depth: f32| {
+        if t == MotionTarget::Pitch {
+            12.0 * depth.abs()
+        } else {
+            0.0
+        }
+    };
+    let up = p.pitch.max(0.0)
+        + p.pitch_spray.max(0.0)
+        + moved(p.lfo.target, p.lfo.depth)
+        + moved(p.env.target, p.env.depth)
+        > 2.0;
     let octaves = up.then(|| Octaves::make(src, 1));
     let clip = GrainClip::new(src, 1, rate)
         .expect("a lab clip")
@@ -1044,4 +1105,402 @@ fn hits(rows: &mut Vec<Row>, lab: &Lab) {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// G13: movement keeps the level (step B3).
+
+/// How far the level swings (dB): over 400 ms, every 100 ms, as a
+/// momentary loudness meter moves.
+fn swing(s: &Stereo) -> f64 {
+    let hop = (s.rate / 10) as usize;
+    let levels: Vec<f64> = (0..s.left.len().saturating_sub(4 * hop))
+        .step_by(hop)
+        .map(|i| db(rms(&s.left[i..i + 4 * hop])))
+        .collect();
+    let lo = levels.iter().cloned().fold(f64::MAX, f64::min);
+    let hi = levels.iter().cloned().fold(f64::MIN, f64::max);
+    hi - lo
+}
+
+fn movement(rows: &mut Vec<Row>, lab: &Lab) {
+    let p = Params {
+        density: 80.0,
+        spray: 0.3,
+        ..base()
+    };
+    let lfo = |target, depth| GrainLfo {
+        shape: LfoShape::Sine,
+        rate_hz: 0.5,
+        beats: None,
+        target,
+        depth,
+    };
+    let cases = [
+        (
+            "lfo position",
+            Params {
+                lfo: lfo(MotionTarget::Position, 1.0),
+                ..p
+            },
+        ),
+        (
+            "lfo size",
+            Params {
+                lfo: lfo(MotionTarget::Size, 0.5),
+                ..p
+            },
+        ),
+        (
+            "lfo density",
+            Params {
+                lfo: lfo(MotionTarget::Density, 0.5),
+                ..p
+            },
+        ),
+        (
+            "lfo pitch",
+            Params {
+                lfo: lfo(MotionTarget::Pitch, 0.5),
+                ..p
+            },
+        ),
+        (
+            "lfo spray",
+            Params {
+                spray: 0.5,
+                lfo: lfo(MotionTarget::Spray, 1.0),
+                ..p
+            },
+        ),
+        (
+            "env size",
+            Params {
+                env: GrainEnv {
+                    attack_ms: 500.0,
+                    decay_ms: 1000.0,
+                    sustain: 0.5,
+                    target: MotionTarget::Size,
+                    depth: 0.5,
+                },
+                ..p
+            },
+        ),
+    ];
+    for (name, src) in [("pink", &lab.pink), ("pad", &lab.pad)] {
+        // Two of the LFO's cycles, after the cloud fills in.
+        let (still, _) = steady(src, lab.rate, p, 4.0, 13);
+        let (level, spread) = (lufs(&still), swing(&still));
+        for (what, q) in cases {
+            let (s, _) = steady(src, lab.rate, q, 4.0, 13);
+            put(
+                rows,
+                "G13",
+                format!("move[{name}, {what}]"),
+                "level_change_lu",
+                lufs(&s) - level,
+                Better::Near(0.0),
+                Some(1.0),
+                0.1,
+            );
+            put(
+                rows,
+                "G13",
+                format!("move[{name}, {what}]"),
+                "extra_swing_db",
+                swing(&s) - spread,
+                Better::Lower,
+                Some(3.0),
+                // A random cloud's level wanders a few tenths either way.
+                0.5,
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// G14: the presets (step B6).
+
+fn presets(rows: &mut Vec<Row>, lab: &Lab) {
+    for (name, src) in [("pink", &lab.pink), ("pad", &lab.pad)] {
+        let (plain, _) = steady(src, lab.rate, base(), 4.0, 14);
+        let plain = lufs(&plain);
+        for preset in grain_presets::presets() {
+            let q = Params {
+                position: POSITION,
+                ..preset.grain
+            };
+            let (s, _) = steady(src, lab.rate, q, 4.0, 14);
+            // A stutter's grains fill half of each sixteenth, fading in
+            // and out: its gaps are its sound.
+            let at = if preset.mode == GrainMode::Repeat {
+                -4.0
+            } else {
+                0.0
+            };
+            put(
+                rows,
+                "G14",
+                format!("preset[{name}, {}]", preset.name),
+                "level_change_lu",
+                lufs(&s) - plain,
+                Better::Near(at),
+                Some(1.5),
+                0.1,
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// G15: the Grains effect's feedback (step C1).
+
+/// 4 s of `src` scaled by `gain`, then silence, `secs` in all, through a
+/// fully wet Grains effect with `feedback`.
+fn fed_back(src: &[f32], rate: u32, gain: f32, feedback: f32, secs: usize) -> Stereo {
+    let mut fx = GrainFx::new(rate, 2.0, 15).expect("a lab effect");
+    fx.set_params(Params {
+        position: 0.5,
+        spray: 0.1,
+        ..Params::default()
+    });
+    fx.set_mix(1.0);
+    fx.set_feedback(feedback);
+    let mut budget = Budget::new(64);
+    let n = secs * rate as usize;
+    let k = (4 * rate as usize).min(src.len());
+    let mut l = vec![0.0f32; n];
+    l[..k].iter_mut().zip(src).for_each(|(o, x)| *o = x * gain);
+    let mut r = l.clone();
+    for s in (0..n).step_by(128) {
+        let e = (s + 128).min(n);
+        fx.process(&mut budget, s as u64, &mut l[s..e], &mut r[s..e]);
+    }
+    let f = |x: Vec<f32>| x.into_iter().map(f64::from).collect::<Vec<f64>>();
+    Stereo::new(f(l), f(r), rate)
+}
+
+fn feedback(rows: &mut Vec<Row>, lab: &Lab) {
+    let rate = lab.rate as usize;
+    // The lab's pink is -20 dBFS RMS: twice is -14, peaking near 0 dBFS.
+    let full = fed_back(&lab.pink, lab.rate, 2.0, 1.0, 20);
+    let level = |s: &Stereo, a: usize, b: usize| db(rms(&s.left[a * rate..b * rate]));
+    put(
+        rows,
+        "G15",
+        "feedback[pink -14 dBFS, full]".into(),
+        "peak_dbfs",
+        loudness::sample_peak(&full),
+        Better::Lower,
+        Some(3.0),
+        0.1,
+    );
+    put(
+        rows,
+        "G15",
+        "feedback[pink -14 dBFS, full]".into(),
+        "growth_db",
+        level(&full, 16, 20) - level(&full, 8, 12),
+        Better::Lower,
+        Some(1.0),
+        0.3,
+    );
+    put(
+        rows,
+        "G15",
+        "feedback[pink -14 dBFS, full]".into(),
+        "held_dbfs",
+        level(&full, 16, 20),
+        Better::Info,
+        None,
+        0.0,
+    );
+    let half = fed_back(&lab.pink, lab.rate, 2.0, 0.5, 16);
+    put(
+        rows,
+        "G15",
+        "feedback[pink -14 dBFS, half]".into(),
+        "fall_db_per_s",
+        (level(&half, 5, 7) - level(&half, 14, 16)) / 9.0,
+        Better::Info,
+        None,
+        0.0,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// G16: the Grains effect's repeat (step C2).
+
+/// The Grains effect fully dry on up to 6 s of `src`, at 120 BPM,
+/// repeating `beats` beats from 2 s: its left side, and that frame.
+fn repeated(src: &[f32], rate: u32, beats: f64) -> (Vec<f64>, usize) {
+    let mut fx = GrainFx::new(rate, 2.0, 16).expect("a lab effect");
+    fx.set_tempo(0.5 * f64::from(rate));
+    let mut budget = Budget::new(64);
+    let n = src.len().min(6 * rate as usize);
+    let (mut l, mut r) = (src[..n].to_vec(), src[..n].to_vec());
+    let t0 = 2 * rate as usize;
+    fx.process(&mut budget, 0, &mut l[..t0], &mut r[..t0]);
+    fx.start_repeat(beats);
+    for s in (t0..n).step_by(128) {
+        let e = (s + 128).min(n);
+        fx.process(&mut budget, s as u64, &mut l[s..e], &mut r[s..e]);
+    }
+    (l.into_iter().map(f64::from).collect(), t0)
+}
+
+fn repeat(rows: &mut Vec<Row>, lab: &Lab) {
+    let rate = lab.rate as usize;
+    // A low tone at -20 dBFS: a join that clicks jumps far more in a
+    // sample than the tone ever does.
+    let tone: Vec<f32> = sine(110.0, 0.1, 6 * rate, lab.rate)
+        .into_iter()
+        .map(|v| v as f32)
+        .collect();
+    let step = |x: &[f64]| {
+        x.windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f64::max)
+    };
+    for (name, beats) in [("1/4", 1.0), ("1/16", 0.25)] {
+        let len = beats * 0.5 * f64::from(lab.rate);
+        // The level: the repeats, from half a second on, against the
+        // stretch of pink they repeat.
+        let (out, t0) = repeated(&lab.pink, lab.rate, beats);
+        put(
+            rows,
+            "G16",
+            format!("repeat[pink, {name}]"),
+            "level_change_db",
+            db(rms(&out[t0 + rate / 2..])) - db(rms(&out[t0 - len as usize..t0])),
+            Better::Near(0.0),
+            Some(0.5),
+            0.1,
+        );
+        // The joins: the biggest step from one sample to the next within
+        // 10 ms of where each repeat starts, against the tone's own.
+        let (out, t0) = repeated(&tone, lab.rate, beats);
+        let mut worst = 0.0f64;
+        for k in 1.. {
+            let at = t0 + (k as f64 * len).round() as usize;
+            if at + rate / 100 >= out.len() {
+                break;
+            }
+            worst = worst.max(step(&out[at - rate / 100..at + rate / 100]));
+        }
+        put(
+            rows,
+            "G16",
+            format!("repeat[tone 110 Hz, {name}]"),
+            "join_step_ratio",
+            worst / step(&out[..t0]),
+            Better::Lower,
+            Some(1.5),
+            0.05,
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// G17: a filter on each grain (step C4).
+
+fn filtered(rows: &mut Vec<Row>, lab: &Lab) {
+    use mpfree_grain::{FilterKind, GrainFilter};
+    let cloud = |filter: GrainFilter, secs: f64| {
+        let p = Params { filter, ..base() };
+        steady(&lab.pink, lab.rate, p, secs, 17).0
+    };
+    let filter = |kind, resonance, spray| GrainFilter {
+        kind,
+        cutoff_hz: 1_000.0,
+        resonance,
+        spray,
+    };
+    let dry = cloud(GrainFilter::default(), 5.0);
+    let n = 4096;
+    let dry_sp = welch(&dry.left, n);
+    // Power within `oct` octaves of `hz`, against the dry cloud's, dB.
+    let rel = |sp: &[f64], hz: f64, oct: f64| {
+        let bw = hz * (2f64.powf(oct) - 1.0);
+        10.0 * (band(sp, lab.rate, hz, bw) / band(&dry_sp, lab.rate, hz, bw)).log10()
+    };
+    for (name, kind, stop, pass) in [
+        ("low pass", FilterKind::Low, 4_000.0, 250.0),
+        ("high pass", FilterKind::High, 250.0, 4_000.0),
+    ] {
+        let sp = welch(&cloud(filter(kind, 0.0, 0.0), 5.0).left, n);
+        put(
+            rows,
+            "G17",
+            format!("filter[pink, {name} 1 kHz]"),
+            "stop_db",
+            rel(&sp, stop, 1.0 / 6.0),
+            Better::Lower,
+            Some(-20.0),
+            0.3,
+        );
+        put(
+            rows,
+            "G17",
+            format!("filter[pink, {name} 1 kHz]"),
+            "pass_db",
+            rel(&sp, pass, 1.0 / 6.0),
+            Better::Near(0.0),
+            Some(0.5),
+            0.1,
+        );
+    }
+    // Grains reading all over the pink (position spray 0.5), so each
+    // octave has the same to colour, for 8 s (200 grains), each band
+    // an octave wide; against the same cloud unfiltered.
+    let spread = |filter: GrainFilter| {
+        let p = Params {
+            spray: 0.5,
+            filter,
+            ..base()
+        };
+        steady(&lab.pink, lab.rate, p, 8.0, 17).0
+    };
+    let sprayed = spread(filter(FilterKind::Band, 1.0, 1.0));
+    let (sp, open) = (
+        welch(&sprayed.left, n),
+        welch(&spread(GrainFilter::default()).left, n),
+    );
+    let at = [250.0, 1_000.0, 4_000.0].map(|hz| {
+        let bw = hz * (2f64.sqrt() - 1.0);
+        10.0 * (band(&sp, lab.rate, hz, bw) / band(&open, lab.rate, hz, bw)).log10()
+    });
+    let hi = at.iter().cloned().fold(f64::MIN, f64::max);
+    let lo = at.iter().cloned().fold(f64::MAX, f64::min);
+    put(
+        rows,
+        "G17",
+        "filter[pink, band 1 kHz, Q 12, full spray]".into(),
+        "octave_spread_db",
+        hi - lo,
+        Better::Lower,
+        Some(3.0),
+        0.3,
+    );
+    put(
+        rows,
+        "G17",
+        "filter[pink, band 1 kHz, Q 12, full spray]".into(),
+        "loudness_lu",
+        lufs(&sprayed) - lufs(&spread(GrainFilter::default())),
+        Better::Info,
+        None,
+        0.0,
+    );
+    let ringing = cloud(filter(FilterKind::Low, 1.0, 0.0), 5.0);
+    put(
+        rows,
+        "G17",
+        "filter[pink, low pass 1 kHz, Q 12]".into(),
+        "peak_gain_db",
+        loudness::sample_peak(&ringing) - loudness::sample_peak(&dry),
+        Better::Lower,
+        Some(12.0),
+        0.3,
+    );
 }
