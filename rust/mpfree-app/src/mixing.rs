@@ -73,6 +73,9 @@ pub const AUDIO: usize = 3;
 pub const TRACKS: usize = 4;
 /// Pad channels: the playing kit's pads.
 pub const PADS: usize = 16;
+/// [`Pads::played`]'s bit for kit 1's pads past [`PADS`], which play
+/// straight into the Drums track.
+const DRUMS_DIRECT: u32 = 1 << PADS;
 /// The line input's strip.
 pub const LINE: StripId = StripId::Input(0);
 /// Insert slots each strip has room for.
@@ -1242,18 +1245,25 @@ impl MixHost {
     }
 
     /// The drums as the sampler made them: the pads that played (`played`,
-    /// from [`Pads::played`]) summed from their channels' inputs into
-    /// `left` and `right`, for the looper. Silence when none played.
+    /// from [`Pads::played`]) summed from their channels' inputs (and the
+    /// Drums track's, for kit 1's pads past 16) into `left` and `right`,
+    /// for the looper. Silence when none played.
     pub fn drums(&mut self, played: u32, left: &mut [f32; PERIOD], right: &mut [f32; PERIOD]) {
         left.fill(0.0);
         right.fill(0.0);
-        for p in (0..PADS).filter(|p| played & (1 << p) != 0) {
-            if let Some((l, r)) = self.mixer.pad_input(p) {
+        let mut add = |input: Option<(&mut [f32], &mut [f32])>| {
+            if let Some((l, r)) = input {
                 for f in 0..PERIOD {
                     left[f] += l[f];
                     right[f] += r[f];
                 }
             }
+        };
+        for p in (0..PADS).filter(|p| played & (1 << p) != 0) {
+            add(self.mixer.pad_input(p));
+        }
+        if played & DRUMS_DIRECT != 0 {
+            add(self.mixer.track_input(DRUMS));
         }
     }
 
@@ -1526,7 +1536,8 @@ pub struct Pads<'a> {
 }
 
 impl Pads<'_> {
-    /// The pads that played this period, a bit each.
+    /// The pads that played this period, a bit each (and bit [`PADS`] for
+    /// kit 1's pads past them).
     pub fn played(&self) -> u32 {
         self.played
     }
@@ -1539,7 +1550,12 @@ impl PadOut for Pads<'_> {
                 self.played |= 1 << pad;
                 self.mixer.pad_input(pad)
             }
-            0 => None,
+            // Kit 1's pads past its first 16 (PAD BANK B to H) have no
+            // channel of their own: straight into the Drums track.
+            0 => {
+                self.played |= DRUMS_DIRECT;
+                self.mixer.track_input(DRUMS)
+            }
             home => self
                 .mixer
                 .track_input(crate::instruments::first_track() + usize::from(home) - 1),
@@ -1713,6 +1729,44 @@ mod tests {
         let _ = h.pads_homed(&[0, 0]);
         assert_eq!(h.channels_in_use(), 0);
         assert!(!h.track_strips().contains(&StripId::Track(track)));
+    }
+
+    /// Kit 1's pads past its first 16 (PAD BANK B to H) have no pad
+    /// channel: they play straight into the Drums track, and the looper's
+    /// dry drums take them in.
+    #[test]
+    fn kit_ones_pads_past_16_play_into_the_drums_track() {
+        let mut h = MixHost::new(RATE, -6.0, -6.0);
+        let mut pads = h.pads_homed(&[0]);
+        pads.pad(0, 20).expect("pad B5 is heard").0[0] = 0.5;
+        pads.pad(0, 127).unwrap().0[0] += 0.25;
+        pads.pad(0, 3).unwrap().0[0] = 0.125;
+        assert_eq!(pads.played(), 1 << 3 | DRUMS_DIRECT);
+        let played = pads.played();
+        assert_eq!(h.mixer.track_input(DRUMS).unwrap().0[0], 0.75);
+        let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
+        h.drums(played, &mut l, &mut r);
+        assert_eq!(l[0], 0.875, "pad 4 and B5 and H16");
+        let z = [0f32; PERIOD];
+        let (mut ol, mut or) = ([0f32; PERIOD], [0f32; PERIOD]);
+        for p in 0..8 {
+            let d = tone(110.0, 0.5, p * PERIOD);
+            let mut pads = h.pads_homed(&[0]);
+            let (pl, pr) = pads.pad(0, 20).unwrap();
+            pl[..PERIOD].iter_mut().zip(&d).for_each(|(o, x)| *o += x);
+            pr[..PERIOD].iter_mut().zip(&d).for_each(|(o, x)| *o += x);
+            let ctx = Ctx::new(RATE, (p * PERIOD) as u64);
+            h.period(
+                &ctx,
+                (&z, &z),
+                (&z, &z),
+                (&z, &z),
+                (&z, &z),
+                &mut ol,
+                &mut or,
+            );
+        }
+        assert!(ol.iter().any(|s| s.abs() > 0.05), "heard through Drums");
     }
 
     /// The looper's pads, wet: the master's input without the loops, the
@@ -1941,11 +1995,11 @@ mod tests {
     #[test]
     fn the_pads_go_through_their_channels_into_the_drums_track() {
         let mut h = MixHost::new(RATE, 0.0, 0.0);
-        // The sampler's pads 1 and 3; pad 17 is not there.
+        // The sampler's pads 1 and 3 (kit 1's pads past 16 play into the
+        // Drums track: `kit_ones_pads_past_16_play_into_the_drums_track`).
         let mut pads = h.pads();
         pads.pad(0, 0).unwrap().0[..PERIOD].fill(0.25);
         pads.pad(0, 2).unwrap().0[..PERIOD].fill(0.5);
-        assert!(pads.pad(0, PADS).is_none());
         let played = pads.played();
         assert_eq!(played, 0b101);
         let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);

@@ -217,6 +217,19 @@ class JudgeTests(unittest.TestCase):
         got = dict((what, ok) for ok, what in self.judge("reload-on-the-bar", w))
         self.assertFalse(got["it landed on a bar line"])
 
+    def test_live_transpose_needs_the_move_and_the_way_back(self):
+        w = checks.Window(lines("transpose: Track 1 +5 st", "transpose: Track 1 as written"))
+        self.assertTrue(all(ok for ok, _ in self.judge("live-transpose", w)))
+        # A kit's track doesn't move: neither line.
+        w = checks.Window(lines("transpose: Track 1 plays a kit; arm a track that plays notes"))
+        got = dict((what, ok) for ok, what in self.judge("live-transpose", w))
+        self.assertFalse(got["pad 14 moved the track up a fourth"])
+        self.assertFalse(got["pad 9 put it back as written"])
+        # In key is another line.
+        w = checks.Window(lines("transpose: Track 1 +5 in key"))
+        got = dict((what, ok) for ok, what in self.judge("live-transpose", w))
+        self.assertFalse(got["pad 14 moved the track up a fourth"])
+
     def test_power_reads_the_start_and_counts_the_card(self):
         start = (5.0, "power button: /dev/input/event1; read-only, not grabbed; a short press opens the power card")
         window = [(100.0, "power: the power card is open"), (110.0, "power: the power card is open")]

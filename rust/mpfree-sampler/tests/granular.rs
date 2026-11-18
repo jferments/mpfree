@@ -112,6 +112,47 @@ fn a_granular_pad_plays_the_grain_engine_with_tune_and_reverse_folded_in() {
 }
 
 #[test]
+fn a_tone_pads_tune_moves_its_note_not_its_grains_pitch() {
+    let s = ramp(44_100);
+    // A2 with grains four cycles long, regular, frozen.
+    let base = GrainParams {
+        position: 0.5,
+        density: 110.0,
+        size_ms: 4.0 * 1000.0 / 110.0,
+        timing: 0.0,
+        ..GrainParams::default()
+    };
+    for tune in [1200, -700] {
+        let mut pad = granular_pad(&s, base);
+        pad.layers[0].region.grain_mode = GrainMode::Tone;
+        pad.layers[0].region.tune_cents = tune;
+        let mut e = engine_for(&[(0, pad)], &s, 4);
+        e.apply(Event::NoteOn {
+            pad: 0,
+            velocity: 127,
+        });
+        let (l, _) = run(&mut e, 4_410, 128);
+        // The note (the density) moves, with the size, so each grain keeps
+        // its four cycles; the grains' own pitch doesn't.
+        let k = (tune as f32 / 1200.0).exp2();
+        let want = GrainParams {
+            density: base.density * k,
+            size_ms: base.size_ms / k,
+            ..base
+        };
+        let reference = reference(&s, want, 4_410);
+        for f in 0..4_410 {
+            assert!(
+                (l[f] - C * reference[f]).abs() < 1e-6,
+                "tune {tune} frame {f}: {} vs {}",
+                l[f],
+                C * reference[f]
+            );
+        }
+    }
+}
+
+#[test]
 fn lifting_the_pad_stops_grains_and_releases() {
     let s = ramp(44_100);
     let mut e = engine_for(
@@ -180,7 +221,10 @@ fn stealing_and_the_budget_bound_the_grains() {
             velocity: 100,
         });
     }
-    for _ in 0..40 {
+    // Each cloud starts with a few grains under way and fills in over a
+    // grain (thinned to fit its voice): within 0.35 s they want more than
+    // the budget holds.
+    for _ in 0..120 {
         run(&mut e, 128, 128);
         assert!(e.live_grains() <= GRAIN_BUDGET);
     }
@@ -276,6 +320,38 @@ fn the_playhead_shows_where_grains_read_and_view_swaps_keep_playing() {
     let (l, _) = run(&mut e, 2000, 128);
     assert!(l.iter().any(|&x| x != 0.0));
     assert!(e.live_grains() > 0);
+}
+
+#[test]
+fn a_stretch_of_a_sound_with_a_tempo_plays_in_time() {
+    let s = ramp(441_000);
+    let stretch = |warp: Option<Warp>, bpm: f64| {
+        let mut pad = granular_pad(
+            &s,
+            GrainParams {
+                position: 0.0,
+                scan: 1.0,
+                ..GrainParams::default()
+            },
+        );
+        pad.layers[0].region.grain_mode = GrainMode::Stretch;
+        pad.layers[0].region.warp = warp;
+        let mut e = engine_for(&[(0, pad)], &s, 4);
+        e.set_tempo(bpm);
+        e.apply(Event::NoteOn {
+            pad: 0,
+            velocity: 100,
+        });
+        run(&mut e, 44_100, 128);
+        let heads: Vec<_> = e.playheads().collect();
+        heads[0].2
+    };
+    // Played at 100 BPM: at 120 it reads 1.2 s of sound a second.
+    let at = stretch(Some(Warp::new(100.0)), 120.0);
+    assert!(at.abs_diff(52_920) <= 128, "{at}");
+    // Without a tempo, or as a cloud, the scan is as set.
+    let at = stretch(None, 120.0);
+    assert!(at.abs_diff(44_100) <= 128, "{at}");
 }
 
 /// Where each burst of sound starts (silence before it).

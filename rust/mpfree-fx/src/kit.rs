@@ -117,45 +117,112 @@ pub(crate) const SHAPES: &[&str] = &[
     "Random",
 ];
 
-/// A tempo-aware LFO: free in Hz or synced to the beat, restarting in time
-/// with the bar when the transport starts. Its square is softened (a few
-/// milliseconds per edge at musical rates) and its random steps glide, so
-/// no shape clicks.
+/// How long a Square's edge, and a Ramp's or Random's return, takes at
+/// most: 4 ms (10 to 90 % in 2.4 ms), so a chop is a chop at any rate and
+/// never a click. At fast rates it is at most [`EDGE_CYCLES`] of a cycle.
+const EDGE_MS: f64 = 4.0;
+/// The longest an edge may take, in cycles (an eighth: a Square at 20 Hz
+/// still spends three quarters of its time fully up or down).
+const EDGE_CYCLES: f64 = 0.125;
+/// How long the LFO takes to move from where it was to where it should
+/// be after a jump: a Shape change, a Sync change, a loop wrap or a
+/// locate. The output glides there; the phase is right at once.
+const JUMP_MS: f64 = 20.0;
+/// The largest f32 under 1, so a phase just short of a wrap never rounds
+/// up to the next cycle's start.
+const BELOW_ONE: f32 = 1.0 - f32::EPSILON / 2.0;
+
+/// A tempo-aware LFO: free in Hz or synced to the beat. Synced, it lands
+/// on the bar when the transport starts and follows the song position
+/// while it plays, so a loop wrap or a locate keeps it on the bar. Every
+/// shape is smooth: a Square's edges and a Ramp's return take
+/// [`EDGE_MS`], Random glides from value to value, and a jump (a Shape or
+/// Sync change, a wrap, a locate) glides over [`JUMP_MS`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Lfo {
+    /// Cycles, 0 to 1 (f64, so a long free run never drifts or rounds).
     phase: f64,
     inc: f64,
     bpm: f64,
     playing: bool,
-    held: f32,
-    prev: f32,
+    shape: usize,
+    /// Half an edge, in cycles, and its inverse.
+    half: f32,
+    inv_half: f32,
+    /// Random's values: at this cycle's start, at its end and at the end
+    /// of the next, so a later offset (Width) glides through the same
+    /// values as the first.
+    rand: [f32; 3],
     rng: u32,
+    /// Frames left of a glide after a jump, or [`FRESH`] (nothing put out
+    /// since the reset, so a jump needs no glide) or [`JUMPED`] (a jump
+    /// for the next `step` to take up). 0 most of the time, so a frame
+    /// costs one compare for all of this.
+    fade_left: u32,
+    fade_len: u32,
+    /// The output's offset from the shape when the jump came, fading out
+    /// over `fade_len` frames, and the last values put out.
+    err: [f32; 2],
+    last: [f32; 2],
 }
+
+/// [`Lfo::fade_left`] when nothing has been put out since the reset.
+const FRESH: u32 = u32::MAX;
+/// [`Lfo::fade_left`] when a jump waits for the next frame.
+const JUMPED: u32 = u32::MAX - 1;
+/// The grid a synced phase is put on (2^-40 of a cycle).
+const GRID: f64 = (1u64 << 40) as f64;
 
 impl Default for Lfo {
     fn default() -> Lfo {
-        Lfo {
+        let mut l = Lfo {
             phase: 0.0,
             inc: 0.0,
             bpm: 120.0,
             playing: false,
-            held: 0.0,
-            prev: 0.0,
-            rng: 0x1234_5678,
-        }
+            shape: 0,
+            half: 0.0,
+            inv_half: 0.0,
+            rand: [0.0; 3],
+            rng: 0,
+            fade_left: FRESH,
+            fade_len: 1,
+            err: [0.0; 2],
+            last: [0.0; 2],
+        };
+        l.reset();
+        l
     }
 }
 
 impl Lfo {
-    /// At the start of a block: follow the tempo and, when synced, put the
-    /// phase where the bar says as the transport starts.
-    pub(crate) fn begin(&mut self, ctx: &Ctx, sync: usize) {
+    /// At the start of each stretch of a block (`from` frames in): follow
+    /// the tempo and, when synced, the song position. The phase lands on
+    /// the bar as the transport starts; while it plays, a jump in the song
+    /// (a loop wrap, a locate) or a change of Sync puts the phase where the
+    /// song says at once, and the output glides there over [`JUMP_MS`].
+    /// Rounding between the tempo and the frame count is left alone, so
+    /// the phase steps the same whatever the block size.
+    pub(crate) fn follow(&mut self, ctx: &Ctx, from: usize, sync: usize) {
         if ctx.bpm > 0.0 {
             self.bpm = ctx.bpm;
         }
         let sync = sync.min(SYNC_BEATS.len() - 1);
-        if sync > 0 && ctx.playing && !self.playing {
-            self.phase = (ctx.beats / SYNC_BEATS[sync]).rem_euclid(1.0);
+        if sync > 0 && ctx.playing {
+            let per_frame = self.bpm / (60.0 * f64::from(ctx.rate.max(1)));
+            let beats = ctx.beats + from as f64 * per_frame;
+            let want = (beats / SYNC_BEATS[sync]).rem_euclid(1.0);
+            // On a grid far finer than a frame, so where the block starts
+            // can't change the bits.
+            let want = (want * GRID).round() / GRID % 1.0;
+            // How far the song is from the phase, the short way round.
+            let gap = (want - self.phase + 0.5).rem_euclid(1.0) - 0.5;
+            if gap.abs() > 1e-6 {
+                self.jump();
+                self.phase = want;
+            } else if !self.playing {
+                self.phase = want;
+            }
         }
         self.playing = ctx.playing;
     }
@@ -168,52 +235,205 @@ impl Lfo {
         } else {
             f64::from(hz)
         };
-        self.inc = cps / f64::from(rate.max(1));
+        let rate = f64::from(rate.max(1));
+        self.inc = cps / rate;
+        let edge = (EDGE_MS * 0.001 * cps).min(EDGE_CYCLES);
+        self.half = (0.5 * edge) as f32;
+        self.inv_half = (2.0 / edge.max(1e-9)) as f32;
+        self.fade_len = ((JUMP_MS * 0.001 * rate) as u32).max(1);
     }
 
-    /// Steps one frame and returns the phase (0 to 1).
+    /// Picks the shape (an index into [`SHAPES`]); a change glides over
+    /// [`JUMP_MS`].
+    pub(crate) fn set_shape(&mut self, shape: usize) {
+        let shape = shape.min(SHAPES.len() - 1);
+        if shape != self.shape {
+            self.shape = shape;
+            self.jump();
+        }
+    }
+
+    /// Glides the output from where it is to the new shape or phase
+    /// (unless nothing has been put out yet).
+    fn jump(&mut self) {
+        if self.fade_left != FRESH {
+            self.fade_left = JUMPED;
+        }
+    }
+
+    /// Steps one frame and returns the shape's value (-1 to 1) at each of
+    /// `at` (offsets of 0 to half a cycle; one or two).
     #[inline]
-    pub(crate) fn step(&mut self) -> f32 {
+    pub(crate) fn step<const N: usize>(&mut self, at: [f32; N]) -> [f32; N] {
+        self.tick();
+        self.read(at)
+    }
+
+    /// Steps one frame without reading, for an effect that reads the LFO
+    /// only every few frames ([`Lfo::read`]).
+    #[inline]
+    pub(crate) fn tick(&mut self) {
         self.phase += self.inc;
         if self.phase >= 1.0 {
-            self.phase -= 1.0;
-            // A new random target each cycle.
-            let mut x = self.rng;
-            x ^= x << 13;
-            x ^= x >> 17;
-            x ^= x << 5;
-            self.rng = x;
-            self.prev = self.held;
-            self.held = (x >> 8) as f32 / (1u32 << 23) as f32 - 1.0;
+            self.next_cycle();
         }
-        self.phase as f32
+        if self.fade_left != 0 {
+            self.count_down();
+        }
     }
 
-    /// The shape's value (-1 to 1) at `phase` plus `offset` cycles.
+    /// The shape's value (-1 to 1) this frame at each of `at` (offsets of
+    /// 0 to half a cycle; one or two), with any glide after a jump.
     #[inline]
-    pub(crate) fn shape(&self, shape: usize, phase: f32, offset: f32) -> f32 {
-        let p = wrap(phase + offset);
-        match shape {
-            1 => 1.0 - 4.0 * (p - 0.5).abs(),
-            2 => (sine(p) * 6.0).clamp(-1.0, 1.0),
-            3 => 2.0 * p - 1.0,
-            4 => 1.0 - 2.0 * p,
-            5 => {
-                // A glide from the last random value to this cycle's
-                // (a raised-cosine step over the cycle).
-                let t = 0.5 - 0.5 * cosine(p * 0.5);
-                self.prev + (self.held - self.prev) * t
+    pub(crate) fn read<const N: usize>(&mut self, at: [f32; N]) -> [f32; N] {
+        let p = at_most(self.phase as f32, BELOW_ONE);
+        let mut out = [0.0; N];
+        for i in 0..N {
+            out[i] = self.value(p + at[i]);
+        }
+        if self.fade_left != 0 {
+            self.fade(&mut out);
+        }
+        // One value is kept for both sides when there is only one, so a
+        // jump while a Width offset is 0 glides both.
+        self.last = [out[0], out[N - 1]];
+        out
+    }
+
+    /// A frame of a glide gone by.
+    #[cold]
+    fn count_down(&mut self) {
+        if self.fade_left < JUMPED {
+            self.fade_left -= 1;
+        }
+    }
+
+    /// The wrap into a new cycle: a new random value.
+    #[cold]
+    fn next_cycle(&mut self) {
+        self.phase -= 1.0;
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.rng = x;
+        self.rand = [
+            self.rand[1],
+            self.rand[2],
+            (x >> 8) as f32 / (1u32 << 23) as f32 - 1.0,
+        ];
+    }
+
+    /// The glide after a jump (or the first read after a reset) on this
+    /// frame's values: `out` is the shape's own.
+    #[cold]
+    fn fade(&mut self, out: &mut [f32]) {
+        match self.fade_left {
+            FRESH => {
+                self.fade_left = 0;
+                return;
             }
-            _ => sine(p),
+            JUMPED => {
+                let n = out.len();
+                for i in 0..2 {
+                    self.err[i] = self.last[i] - out[i.min(n - 1)];
+                }
+                self.fade_left = self.fade_len;
+            }
+            _ => {}
+        }
+        // A raised cosine from the whole offset to none, the frames
+        // counted down by `tick`.
+        let t = self.fade_left as f32 / self.fade_len as f32;
+        let w = 0.5 - 0.5 * cosine(0.5 * t);
+        for (i, v) in out.iter_mut().enumerate() {
+            *v += self.err[i] * w;
+        }
+    }
+
+    /// The shape's value at `q` cycles (0 to 1.5: this cycle's phase plus
+    /// an offset).
+    #[inline(always)]
+    fn value(&self, q: f32) -> f32 {
+        if self.shape == 0 {
+            // The default, and the only shape the auto wah and the ring
+            // mod's sweep use: first, so it costs one compare more.
+            return sine(q);
+        }
+        self.other(q)
+    }
+
+    /// [`Lfo::value`] for the shapes other than Sine.
+    #[inline(never)]
+    fn other(&self, q: f32) -> f32 {
+        match self.shape {
+            1 => 1.0 - 4.0 * (wrap(q) - 0.5).abs(),
+            2 => {
+                // Up at 0, down at a half: each edge a quarter of a sine
+                // across `2 half` cycles.
+                let p = wrap(q);
+                let x = if p < 0.25 {
+                    p
+                } else if p < 0.75 {
+                    0.5 - p
+                } else {
+                    p - 1.0
+                };
+                sine(at_most(at_least(x * self.inv_half, -1.0), 1.0) * 0.25)
+            }
+            3 => {
+                let p = wrap(q);
+                let line = 2.0 * p - 1.0;
+                line + (1.0 - line) * self.back(p)
+            }
+            4 => {
+                let p = wrap(q);
+                let line = 1.0 - 2.0 * p;
+                line - (1.0 + line) * self.back(p)
+            }
+            5 => {
+                // A raised-cosine glide over the cycle from one random
+                // value to the next.
+                let (a, b, t) = if q < 1.0 {
+                    (self.rand[0], self.rand[1], q)
+                } else {
+                    (self.rand[1], self.rand[2], q - 1.0)
+                };
+                a + (b - a) * (0.5 - 0.5 * cosine(0.5 * t))
+            }
+            _ => sine(q),
+        }
+    }
+
+    /// How much of a Ramp's return is left: 1 at the wrap (the ramp
+    /// still at the end it reached), falling to 0 along a raised cosine
+    /// over the first `2 half` cycles (the ramp on its line).
+    #[inline]
+    fn back(&self, p: f32) -> f32 {
+        let t = p * self.inv_half * 0.5;
+        if t < 1.0 {
+            0.5 + 0.5 * cosine(0.5 * t)
+        } else {
+            0.0
         }
     }
 
     pub(crate) fn reset(&mut self) {
         self.phase = 0.0;
         self.playing = false;
-        self.held = 0.0;
-        self.prev = 0.0;
         self.rng = 0x1234_5678;
+        self.rand = [0.0; 3];
+        // The first cycle rests at 0 and the second glides to the first
+        // random value.
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.rng = x;
+        self.rand[2] = (x >> 8) as f32 / (1u32 << 23) as f32 - 1.0;
+        self.fade_left = FRESH;
+        self.err = [0.0; 2];
+        self.last = [0.0; 2];
     }
 }
 
@@ -827,13 +1047,149 @@ mod tests {
 
     #[test]
     fn every_shape_stays_in_range() {
+        for s in 0..SHAPES.len() {
+            let mut l = Lfo::default();
+            l.set_shape(s);
+            l.set(3.0, 0, 48_000);
+            for _ in 0..100_000 {
+                for v in l.step([0.0, 0.3]) {
+                    assert!((-1.0..=1.0).contains(&v), "{s} {v}");
+                }
+            }
+        }
+    }
+
+    /// The largest change in one frame of each shape over `secs`, at
+    /// offsets 0 and `off`, with the shape set before the first frame.
+    fn worst_step(shape: usize, hz: f32, rate: u32, off: f32, secs: f32) -> f32 {
         let mut l = Lfo::default();
-        l.set(3.0, 0, 48_000);
-        for _ in 0..100_000 {
-            let p = l.step();
-            for s in 0..SHAPES.len() {
-                let v = l.shape(s, p, 0.3);
-                assert!((-1.0..=1.0).contains(&v), "{s} {v}");
+        l.set_shape(shape);
+        l.set(hz, 0, rate);
+        let mut last = l.step([0.0, off]);
+        let mut worst = 0.0f32;
+        for _ in 0..(secs * rate as f32) as usize {
+            let v = l.step([0.0, off]);
+            worst = worst
+                .max((v[0] - last[0]).abs())
+                .max((v[1] - last[1]).abs());
+            last = v;
+        }
+        worst
+    }
+
+    #[test]
+    fn no_shape_jumps_at_any_rate_or_offset() {
+        // FX quality W1: no change in one frame over 0.05 of the range
+        // (2), at 44.1 and 48 kHz (where a phase lands by a wrap depends
+        // on the rate), with and without a Width offset.
+        for rate in [44_100, 48_000] {
+            for hz in [0.5f32, 4.0, 20.0, 19.7] {
+                for off in [0.0f32, 0.25, 0.5] {
+                    for s in 0..SHAPES.len() {
+                        let w = worst_step(s, hz, rate, off, 4.0);
+                        assert!(
+                            w <= 0.1,
+                            "{} at {hz} Hz, {rate}, offset {off}: {w}",
+                            SHAPES[s]
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_square_edge_takes_a_few_milliseconds_at_any_rate() {
+        // FX quality W2: 10 to 90 % in 1 to 4 ms at 0.5, 4 and 20 Hz.
+        let rate = 48_000;
+        for hz in [0.5f32, 4.0, 20.0] {
+            let mut l = Lfo::default();
+            l.set_shape(2);
+            l.set(hz, 0, rate);
+            // The first falling edge is at half a cycle, the rising one
+            // at a whole.
+            let n = (rate as f32 / hz) as usize;
+            let v: Vec<f32> = (0..n + n / 4).map(|_| l.step([0.0])[0]).collect();
+            let rise = &v[3 * n / 4..];
+            let lo = rise.iter().position(|&x| x > -0.8).unwrap();
+            let hi = rise.iter().position(|&x| x > 0.8).unwrap();
+            let ms = (hi - lo) as f32 * 1000.0 / rate as f32;
+            assert!((1.0..=4.0).contains(&ms), "{hz} Hz: {ms} ms");
+        }
+    }
+
+    fn playing(beats: f64) -> Ctx<'static> {
+        let mut c = Ctx::new(48_000, 0);
+        c.bpm = 120.0;
+        c.beats = beats;
+        c.playing = true;
+        c
+    }
+
+    #[test]
+    fn a_synced_lfo_follows_a_loop_wrap_and_glides_there() {
+        // FX quality W3: after the song jumps back, the LFO is where a
+        // fresh one would be within 20 ms, and it glides there.
+        let rate = 48_000;
+        let block = 128;
+        let beats_per_frame = 2.0 / f64::from(rate);
+        let (mut a, mut fresh) = (Lfo::default(), Lfo::default());
+        // 1 bar sync, a loop of 3.5 bars wrapping back to 0.
+        let sync = 11;
+        let mut beat = 0.0;
+        let mut worst = 0.0f32;
+        let mut last = 0.0f32;
+        let mut after_ms = 0.0f32;
+        let mut wrapped = false;
+        for _ in 0..(8 * rate as usize / block) {
+            if beat >= 14.0 {
+                beat -= 14.0;
+                wrapped = true;
+                fresh = Lfo::default();
+            }
+            a.follow(&playing(beat), 0, sync);
+            a.set(1.0, sync, rate);
+            fresh.follow(&playing(beat), 0, sync);
+            fresh.set(1.0, sync, rate);
+            for _ in 0..block {
+                let v = a.step([0.0])[0];
+                let f = fresh.step([0.0])[0];
+                worst = worst.max((v - last).abs());
+                last = v;
+                if wrapped {
+                    after_ms += 1000.0 / rate as f32;
+                    if after_ms > 20.0 {
+                        assert!((v - f).abs() < 1e-4, "{after_ms} ms after: {v} against {f}");
+                    }
+                }
+            }
+            beat += beats_per_frame * block as f64;
+        }
+        assert!(wrapped);
+        // Half a cycle caught up in 20 ms: no bigger a step than that.
+        assert!(worst < 0.01, "{worst}");
+    }
+
+    #[test]
+    fn a_shape_change_glides() {
+        // FX quality W4: from each shape to each other at its most
+        // different moment, no step over 0.05 of the range.
+        for from in 0..SHAPES.len() {
+            for to in 0..SHAPES.len() {
+                let mut l = Lfo::default();
+                l.set_shape(from);
+                l.set(2.0, 0, 48_000);
+                let mut last = l.step([0.0])[0];
+                let mut worst = 0.0f32;
+                for n in 0..48_000 {
+                    if n % 6_000 == 3_000 {
+                        l.set_shape(if (n / 6_000) % 2 == 0 { to } else { from });
+                    }
+                    let v = l.step([0.0])[0];
+                    worst = worst.max((v - last).abs());
+                    last = v;
+                }
+                assert!(worst <= 0.1, "{} to {}: {worst}", SHAPES[from], SHAPES[to]);
             }
         }
     }
