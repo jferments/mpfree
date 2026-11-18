@@ -85,6 +85,7 @@ mod drive;
 mod ducker;
 mod dynamics;
 mod echoes;
+mod ensemble;
 mod eq;
 pub mod families;
 mod fuzz;
@@ -136,6 +137,7 @@ pub use ducker::{
 };
 pub use dynamics::{DeEsser, Gate, Limiter, MultibandCompressor};
 pub use echoes::{MultiTap, TapeDelay};
+pub use ensemble::Ensemble;
 pub use eq::Eq;
 pub use fuzz::Fuzz;
 pub use grains::Granulator;
@@ -197,6 +199,7 @@ pub mod ids {
     pub use crate::dynamics::multiband;
     pub use crate::echoes::multitap;
     pub use crate::echoes::tape;
+    pub use crate::ensemble::ids as ensemble;
     pub use crate::eq::ids as eq;
     pub use crate::fuzz::fuzz_ids as fuzz;
     pub use crate::grains::ids as granulator;

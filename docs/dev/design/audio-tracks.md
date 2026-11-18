@@ -46,7 +46,7 @@ A region sits on song ticks, so it stays on its bar when the tempo before it cha
 
 The stretch is one ratio over the whole take. That is right for a take recorded at one tempo and played at one tempo. A test records a 441 Hz tone at 240 BPM, halves the tempo and fits the take: the take then fills its bar again, still at 441 Hz.
 
-Positions use the transport's tempo map (`process` takes it), so a tempo map with steps plays audio in the right place: `frames_from` and `tick_after` walk the map's segments.
+Positions use the transport's tempo map (`process` takes it), so a tempo map with steps or ramps plays audio in the right place: `frames_from` and `tick_after` ask the map (`TempoMap::frames_between`, `TempoMap::tick_after`), which follows a ramp's 1/16 staircase exactly as the transport plays it ([transport.md](transport.md#tempo-ramps)).
 
 ## Memory
 

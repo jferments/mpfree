@@ -72,6 +72,7 @@ fn kit(s: &Source) -> Project {
             cutoff_hz: 1000.0,
             resonance: 0.5,
             env_octaves: 3.0,
+            drive_db: 0.0,
         };
         pad.amp = Ahdsr {
             attack_ms: 2.0,

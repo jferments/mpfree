@@ -9,8 +9,8 @@ use mpfree_audiotracks::{
 use mpfree_fx::ids;
 use mpfree_fx::{
     Amp, AutoPan, AutoWah, CapturePoint, Chain, Character, Chorus, Cloud, Comb, Compressor, Crush,
-    DeEsser, Delay, DjFilter, Drive, Ducker, Eq, Flanger, FreqShifter, Frozen, Fuzz, Gate,
-    Harmonizer, Limiter, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter, MultiTap,
+    DeEsser, Delay, DjFilter, Drive, Ducker, Ensemble, Eq, Flanger, FreqShifter, Frozen, Fuzz,
+    Gate, Harmonizer, Limiter, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter, MultiTap,
     MultibandCompressor, Perform, Phaser, PitchCorrect, PitchShifter, Plate, Print, PrintJob,
     PrintState, RingMod, Room, Rotary, Spring, StripId, Tail, TalkBox, TapeDelay, TransientShaper,
     Tremolo, Tuner, Vocoder,
@@ -620,6 +620,7 @@ fn sampler_engine(
             cutoff_hz: 2000.0,
             resonance: 0.3,
             env_octaves: 1.0,
+            drive_db: 0.0,
         };
         p.set_pad(i, Some(pad), None).expect("pad");
     }
@@ -1169,6 +1170,12 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| held_pads(rate, 16, true, true)));
     v.push(measured(|| moving_pads(rate, 16)));
     v.push(measured(|| {
+        new_filter_pads(rate, 16, FilterKind::Ladder, 12.0)
+    }));
+    v.push(measured(|| {
+        new_filter_pads(rate, 16, FilterKind::Vowel, 0.0)
+    }));
+    v.push(measured(|| {
         sampler(
             "Sampler, the 4 granular pads alone",
             rate,
@@ -1328,6 +1335,17 @@ pub fn all(rate: u32) -> Vec<Case> {
             rate,
             Box::new(Chorus::new()),
             &[(ids::chorus::VOICES, 4.0)],
+        )
+    }));
+    v.push(measured(|| {
+        effect("Ensemble (3 lines)", rate, Box::new(Ensemble::new()), &[])
+    }));
+    v.push(measured(|| {
+        effect(
+            "Ensemble (4 lines)",
+            rate,
+            Box::new(Ensemble::new()),
+            &[(ids::ensemble::LINES, 1.0)],
         )
     }));
     v.push(measured(|| {
@@ -1946,6 +1964,7 @@ fn held_pads(rate: u32, n: usize, up: bool, sixteen: bool) -> Case {
             cutoff_hz: 2000.0,
             resonance: 0.3,
             env_octaves: 1.0,
+            drive_db: 0.0,
         };
         p.set_pad(i, Some(pad), None).expect("pad");
     }
@@ -2012,6 +2031,7 @@ fn moving_pads(rate: u32, n: usize) -> Case {
             cutoff_hz: 2000.0,
             resonance: 0.3,
             env_octaves: 1.0,
+            drive_db: 0.0,
         };
         pad.lfo = PadLfo {
             shape: LfoShape::Triangle,
@@ -2036,6 +2056,71 @@ fn moving_pads(rate: u32, n: usize) -> Case {
         name: format!("Sampler x{n} held, LFO and pitch envelope"),
         module: "sampler",
         what: "looping pads held down, each with an LFO and a pitch envelope",
+        block: Box::new(move |b, l, r| {
+            if b == 0 {
+                for pad in 0..n {
+                    e.apply(Event::NoteOn {
+                        pad: pad as u8,
+                        velocity: 100,
+                    });
+                }
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            e.render(l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The sampler with `n` looping pads held down, as [`held_pads`], through
+/// one of sampler R5.6's filters with its envelope moving the cutoff (set
+/// again every 16 frames): the Ladder (with `drive_db` of Drive, its curve
+/// at twice the rate) or the Vowel (two formants).
+fn new_filter_pads(rate: u32, n: usize, kind: FilterKind, drive_db: f32) -> Case {
+    let s = Source::new("noise", rate, 2, bench_sound(rate as usize, false)).expect("source");
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    for i in 0..n {
+        let mut r = Region::whole(&s);
+        r.mode = PlayMode::Loop;
+        r.sustain_loop = Some(Loop {
+            start: 5000,
+            end: 30000,
+            crossfade: 200,
+            mode: LoopMode::Forward,
+        });
+        r.tune_cents = (i as i32 % 24 - 12) * 50;
+        let mut pad = Pad::new("p", Layer::new(r));
+        pad.polyphony = 1;
+        pad.filter = Filter {
+            kind,
+            poles: 4,
+            cutoff_hz: 1000.0,
+            resonance: 0.5,
+            env_octaves: 2.0,
+            drive_db,
+        };
+        pad.filter_env.decay_ms = 2000.0;
+        pad.filter_env.sustain = 0.0;
+        p.set_pad(i, Some(pad), None).expect("pad");
+    }
+    let mut e = Engine::new(rate, n.max(1));
+    e.set_view(EngineView::build(&p, rate));
+    let (name, what) = match kind {
+        FilterKind::Ladder => (
+            format!("Sampler x{n} held, driven ladder"),
+            "looping pads held down through a ladder driven 12 dB, its envelope moving",
+        ),
+        _ => (
+            format!("Sampler x{n} held, vowel"),
+            "looping pads held down through a vowel filter, its envelope moving",
+        ),
+    };
+    Case {
+        name,
+        module: "sampler",
+        what,
         block: Box::new(move |b, l, r| {
             if b == 0 {
                 for pad in 0..n {
@@ -2088,6 +2173,7 @@ fn filtered_pads(rate: u32, n: usize, ringing: bool) -> Case {
             cutoff_hz: 1000.0,
             resonance: 0.5,
             env_octaves: 0.0,
+            drive_db: 0.0,
         };
         p.set_pad(i, Some(pad), None).expect("pad");
     }

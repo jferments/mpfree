@@ -633,6 +633,37 @@ impl Default for PitchEnv {
     }
 }
 
+/// How a pad with keys plays one note at a time (sampler R5.5): Mono,
+/// Legato and Glide, as a mono synth's keys do. Only for notes on the
+/// pad's keys ([`Pad::keys`]); a hit on the pad itself plays as before.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Mono {
+    /// One note at a time, the last key played. Letting go of it goes
+    /// back to the newest key still held; with none held, it lets go.
+    pub on: bool,
+    /// A key played while another is held moves the sounding note there
+    /// without starting it again: its envelopes and its place in the
+    /// sound go on.
+    pub legato: bool,
+    /// How long the pitch takes to slide from one note to the next, in ms
+    /// ([`GLIDE_MS`]); 0 is off. A warped layer, a sliced pad and a grain
+    /// voice keep their pitch (a grain layer has its own glide).
+    pub glide_ms: f32,
+    /// Glide only to a key played while another is held; off, to every
+    /// note, from the last one played.
+    pub glide_held: bool,
+}
+
+/// The longest glide, in ms.
+pub const GLIDE_MS: std::ops::RangeInclusive<f32> = 0.0..=2000.0;
+
+impl Mono {
+    /// Whether it glides.
+    pub fn glides(&self) -> bool {
+        self.on && self.glide_ms > 0.0
+    }
+}
+
 /// How a warped region meets the project tempo.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WarpMethod {
@@ -1757,6 +1788,8 @@ pub struct Pad {
     /// 0, softer hits play higher). A warped layer and a grain voice keep
     /// their pitch.
     pub vel_to_pitch: f32,
+    /// Mono, Legato and Glide for the pad's keys (sampler R5.5).
+    pub mono: Mono,
     /// What a hit does: plays its layers, an engine's voice, or a note out
     /// to gear ([`PadKind`]).
     pub kind: PadKind,
@@ -1986,6 +2019,7 @@ impl Pad {
             pitch_env: PitchEnv::default(),
             vel_to_cutoff: 0.0,
             vel_to_pitch: 0.0,
+            mono: Mono::default(),
             kind: PadKind::Sample,
             on_launch: false,
         }
@@ -2021,6 +2055,7 @@ impl Pad {
             && PITCH_DECAY_MS.contains(&e.decay_ms)
             && (0.0..=1.0).contains(&self.vel_to_cutoff)
             && (-12.0..=12.0).contains(&self.vel_to_pitch)
+            && GLIDE_MS.contains(&self.mono.glide_ms)
     }
 
     /// The pad `old` with `layer` as its only layer and named `name` (its

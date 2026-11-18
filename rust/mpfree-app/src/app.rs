@@ -1210,7 +1210,8 @@ pub enum Effect {
         track: usize,
         wait: bool,
     },
-    /// MAIN on the Play page (None: the next view) and STEP SEQ (Beats).
+    /// MAIN on the Play page (None: the next view; Play has one, All,
+    /// since the looper redesign's step 5) and STEP SEQ (Beats).
     PlayView(Option<crate::play_page::PlayView>),
     /// Arrange's view: the Song view (`Some(true)`), the Clips grid
     /// (`Some(false)`), or the next of the three (`None`: Clips, Song, the
@@ -1970,12 +1971,20 @@ impl App {
 
     /// A pad pressed: it plays, and writes a step while recording a pattern.
     pub fn pad_down(&mut self, slot: usize, velocity: u8) -> Vec<Effect> {
+        self.pad_down_on(slot, None, velocity)
+    }
+
+    /// [`App::pad_down`], on a kit's pad `on` (bank × 16 + place) in place
+    /// of the page's: a Loop pad's hit that waited for the launch line
+    /// plays the pad it was made on, though the bank turned since, and
+    /// its let-go ([`App::pad_up`]) lets go of that one (sampler R5.3b).
+    pub fn pad_down_on(&mut self, slot: usize, on: Option<u8>, velocity: u8) -> Vec<Effect> {
         self.step_pad_played(slot);
-        let pad = self.kit_pad(slot) as u8;
+        let pad = on.unwrap_or(self.kit_pad(slot) as u8);
         if !self.free_time_recording() {
             // In Free time the pads only write steps; the pattern keeps
             // playing the latched notes.
-            self.press_pad(slot, velocity.max(1));
+            self.press_pad_on(slot, on, velocity.max(1));
         }
         self.record_press(pad, velocity)
     }
@@ -2016,6 +2025,13 @@ impl App {
         } else {
             mpfree_play::Event::NoteOff { note }
         })
+    }
+
+    /// The pad hits and let-gos made before the next period land `offset`
+    /// frames into it on the armed track's arp, not at its top: a hit
+    /// that waited for the launch line plays on the line (sampler R5.3b).
+    pub fn pads_at(&mut self, offset: u32) {
+        self.arps.engine_at_mut(self.track).set_at(offset);
     }
 
     pub fn pad_up(&mut self, slot: usize) -> Vec<Effect> {
@@ -2982,7 +2998,7 @@ impl App {
                 fx
             }
         } else if is(m.main) {
-            // MAIN: Play; on Play, the next view (All, Loop).
+            // MAIN: Play; on Play, the next view (one, All: it stays).
             if self.view == View::Play {
                 vec![Effect::PlayView(None)]
             } else {
@@ -8871,7 +8887,7 @@ mod tests {
         assert!(press(&mut app, 65).contains(&Effect::Show(View::Sample)));
         assert!(shifted(&mut app, 65).contains(&Effect::Show(View::Looper)));
         assert_eq!(app.view(), View::Looper);
-        // MAIN: Play, and on Play the next view.
+        // MAIN: Play, and on Play the next view (the screen keeps All).
         assert!(press(&mut app, 61).contains(&Effect::Show(View::Play)));
         assert_eq!(press(&mut app, 61), [Effect::PlayView(None)]);
         // STEP SEQ: the pads become steps and the Sequencer shows its

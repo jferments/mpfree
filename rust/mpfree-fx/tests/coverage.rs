@@ -37,6 +37,7 @@ const COVERED: &[&str] = &[
     "mpfree.fx.sample_delay",
     "mpfree.fx.channel_strip",
     "mpfree.fx.granulator",
+    "mpfree.fx.ensemble",
 ];
 
 fn make(id: &str) -> Box<dyn Node> {

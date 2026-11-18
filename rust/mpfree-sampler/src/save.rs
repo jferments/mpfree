@@ -625,6 +625,9 @@ const FILTERS: &[(&str, FilterKind)] = &[
     ("low-pass", FilterKind::LowPass),
     ("high-pass", FilterKind::HighPass),
     ("band-pass", FilterKind::BandPass),
+    ("notch", FilterKind::Notch),
+    ("ladder", FilterKind::Ladder),
+    ("vowel", FilterKind::Vowel),
 ];
 const PRESSURE: &[(&str, PressureTarget)] = &[
     ("off", PressureTarget::Off),
@@ -1068,6 +1071,7 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
         pitch_env,
         vel_to_cutoff,
         vel_to_pitch,
+        mono,
         kind,
         on_launch,
     } = p;
@@ -1086,12 +1090,14 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
             cutoff_hz,
             resonance,
             env_octaves,
+            drive_db,
         } = filter;
         f.word("kind", kind, FILTERS);
         f.num("poles", poles);
         f.num("cutoff_hz", cutoff_hz);
         f.num("resonance", resonance);
         f.num("env_octaves", env_octaves);
+        f.num("drive_db", drive_db);
     });
     f.scope("filter_env", |f| visit_envelope(f, filter_env));
     f.num("vel_to_level", vel_to_level);
@@ -1148,6 +1154,18 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
     });
     f.num("vel_to_cutoff", vel_to_cutoff);
     f.num("vel_to_pitch", vel_to_pitch);
+    f.scope("mono", |f| {
+        let Mono {
+            on,
+            legato,
+            glide_ms,
+            glide_held,
+        } = mono;
+        f.flag("on", on);
+        f.flag("legato", legato);
+        f.num("glide_ms", glide_ms);
+        f.flag("glide_held", glide_held);
+    });
     visit_kind(f, kind);
     f.flag("on_launch", on_launch);
 }

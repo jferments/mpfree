@@ -78,7 +78,7 @@ pub const LAYOUT: &str = "col(header:60, row(smp-rec-bar:*, smp-send:330):60, \
                           row(col(smp-rec-view:*, smp-rec-list:242):*, smp-rec-qlinks:128):*, hint:26)";
 
 /// The tab's place in [`TABS`].
-pub const TAB: usize = 6;
+pub const TAB: usize = 5;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str =

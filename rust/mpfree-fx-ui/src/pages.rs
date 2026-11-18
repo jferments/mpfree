@@ -12,8 +12,8 @@ use mpfree_fx::ids::{
 };
 use mpfree_fx::ids::{
     character, chorus, cloud, comb, compressor as comp, crush, delay, dj_filter as dj, drive,
-    ducker, eq, filter, flanger, harmonizer as harm, lofi, master, perform, phaser, pitch,
-    pitch_correct as tune, transient, tuner,
+    ducker, ensemble, eq, filter, flanger, harmonizer as harm, lofi, master, perform, phaser,
+    pitch, pitch_correct as tune, transient, tuner,
 };
 use mpfree_node::{NodeInfo, ParamInfo};
 pub use mpfree_synth_ui::pages::Page;
@@ -84,6 +84,12 @@ fn known(info: &NodeInfo, count: u16) -> Option<Vec<Plan>> {
         // (see `qlinks`).
         "mpfree.fx.delay" => one(&[delay::TIME, delay::FEEDBACK, delay::TONE, delay::MIX]),
         "mpfree.fx.chorus" => one(&[chorus::RATE, chorus::DEPTH, chorus::DELAY, chorus::MIX]),
+        "mpfree.fx.ensemble" => one(&[
+            ensemble::SLOW_DEPTH,
+            ensemble::FAST_DEPTH,
+            ensemble::TONE,
+            ensemble::MIX,
+        ]),
         "mpfree.fx.flanger" => one(&[
             flanger::RATE,
             flanger::DEPTH,

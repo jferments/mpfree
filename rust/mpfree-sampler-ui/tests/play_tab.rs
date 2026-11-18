@@ -123,7 +123,7 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
         "3 layers · Loop · stacked · 4 voices · 4.73 s long"
     );
     assert_eq!(bar.active, play_tab::TAB);
-    assert_eq!(bar.enabled, vec![true; 7], "every tab is built");
+    assert_eq!(bar.enabled, vec![true; 6], "every tab is built");
     let map = s.ui.get::<LayerMap>(play_tab::LAYERS).unwrap();
     let ranges: Vec<(u8, u8)> = map.layers.iter().map(|l| (l.lo, l.hi)).collect();
     assert_eq!(ranges, vec![(1, 63), (64, 109), (110, 127)]);
@@ -656,6 +656,7 @@ fn the_envelope_and_filter_pictures_follow_the_engine() {
         cutoff_hz: 1000.0,
         resonance: 0.0,
         env_octaves: 0.0,
+        drive_db: 0.0,
     };
     assert!(
         (filter_db(&f, 1000.0) - (-6.02)).abs() < 0.1,
@@ -1789,4 +1790,109 @@ fn the_movement_section_runs_the_lfo_and_the_pitch_envelope() {
     ] {
         assert!(log.contains(part), "{part} in {log}");
     }
+}
+
+/// Mono, Legato and Glide (sampler R5.5) in the Pitch section: for a pad
+/// with keys, saying why while they do nothing.
+#[test]
+fn the_pitch_section_plays_a_keyed_pad_one_note_at_a_time() {
+    let mut s = play(false);
+    open(&mut s, Section::Pitch);
+    let why = |s: &PlaySample, row: Row| {
+        let l = s.ui.get::<SettingList>(play_tab::LIST).unwrap();
+        l.controls[row.place()].why.clone()
+    };
+    let chip = |s: &PlaySample| {
+        let c = s.ui.get::<SectionChips>(play_tab::SECTIONS).unwrap();
+        let i = Section::ALL.iter().position(|x| *x == Section::Pitch);
+        c.chips[i.unwrap()].sub.clone()
+    };
+    assert_eq!(
+        why(&s, Row::Mono),
+        "Mono plays the pad's keys: turn Keys on"
+    );
+    step_apply(&mut s, Row::Keys, 1);
+    assert!(s.state.settings.keys.is_some());
+    assert_eq!(why(&s, Row::Mono), "");
+    assert_eq!(
+        why(&s, Row::Legato),
+        "These play one note at a time: turn Mono on"
+    );
+    step_apply(&mut s, Row::Mono, 1);
+    assert!(s.state.settings.mono.on);
+    assert_eq!(row_value(&mut s, Row::Mono), "On");
+    assert!(chip(&s).ends_with(" · mono"), "{}", chip(&s));
+    assert_eq!(row_value(&mut s, Row::Glide), "Off");
+    assert_eq!(why(&s, Row::GlideOn), "Glide is off: give it a time");
+    // Glide steps through its list: 10 ms, then up to 200 ms.
+    step_apply(&mut s, Row::Glide, 1);
+    assert_eq!(row_value(&mut s, Row::Glide), "10 ms");
+    step_apply(&mut s, Row::Glide, 4);
+    assert_eq!(s.state.settings.mono.glide_ms, 200.0);
+    assert_eq!(row_value(&mut s, Row::GlideOn), "Every note");
+    assert_eq!(why(&s, Row::GlideOn), "");
+    step_apply(&mut s, Row::GlideOn, 1);
+    assert!(s.state.settings.mono.glide_held);
+    assert_eq!(row_value(&mut s, Row::GlideOn), "Held keys");
+    step_apply(&mut s, Row::Legato, 1);
+    assert!(s.state.settings.mono.legato);
+    assert!(chip(&s).ends_with(" · legato"), "{}", chip(&s));
+    // Down past the shortest is off; up past the longest stays at 2 s.
+    step_apply(&mut s, Row::Glide, -9);
+    assert_eq!(row_value(&mut s, Row::Glide), "Off");
+    step_apply(&mut s, Row::Glide, 20);
+    assert_eq!(row_value(&mut s, Row::Glide), "2.00 s");
+}
+
+#[test]
+fn the_filter_section_offers_a_notch_a_driven_ladder_and_a_vowel() {
+    let mut s = play(false);
+    open(&mut s, Section::Filter);
+    let why = |s: &PlaySample, row: Row| {
+        let l = s.ui.get::<SettingList>(play_tab::LIST).unwrap();
+        l.controls[row.place()].why.clone()
+    };
+    let chip = |s: &PlaySample| {
+        let c = s.ui.get::<SectionChips>(play_tab::SECTIONS).unwrap();
+        let i = Section::ALL.iter().position(|x| *x == Section::Filter);
+        c.chips[i.unwrap()].sub.clone()
+    };
+    // Off, LP2, LP4, HP2, HP4, BP2, BP4, then the new ones.
+    step_apply(&mut s, Row::Filter, 7);
+    assert_eq!(s.state.settings.filter.kind, FilterKind::Notch);
+    assert_eq!(row_value(&mut s, Row::Filter), "Notch 2-pole");
+    assert!(chip(&s).starts_with("Notch2 · "), "{}", chip(&s));
+    assert_eq!(
+        why(&s, Row::Drive),
+        "Drive is the Ladder's: pick Ladder in the Filter row"
+    );
+    step_apply(&mut s, Row::Filter, 2);
+    assert_eq!(s.state.settings.filter.kind, FilterKind::Ladder);
+    assert_eq!(row_value(&mut s, Row::Filter), "Ladder");
+    assert_eq!(why(&s, Row::Drive), "");
+    assert_eq!(row_value(&mut s, Row::Drive), "Off");
+    // The arrows go 3 dB a step, up to 24 dB.
+    step_apply(&mut s, Row::Drive, 2);
+    assert_eq!(s.state.settings.filter.drive_db, 6.0);
+    assert_eq!(row_value(&mut s, Row::Drive), "6.0 dB");
+    step_apply(&mut s, Row::Drive, 20);
+    assert_eq!(row_value(&mut s, Row::Drive), "24.0 dB");
+    // The vowel: its cutoff names the vowel it makes.
+    step_apply(&mut s, Row::Filter, 1);
+    assert_eq!(s.state.settings.filter.kind, FilterKind::Vowel);
+    let cutoff = row_value(&mut s, Row::Cutoff);
+    assert!(
+        ["oo", "oh", "ah", "eh", "ee"]
+            .iter()
+            .any(|v| cutoff.ends_with(&format!(" · {v}"))),
+        "{cutoff}"
+    );
+    assert!(chip(&s).starts_with("Vowel · "), "{}", chip(&s));
+    // The last; back down to Off.
+    step_apply(&mut s, Row::Filter, -10);
+    assert_eq!(s.state.settings.filter.kind, FilterKind::Off);
+    assert_eq!(
+        why(&s, Row::Drive),
+        "The filter is off: pick one in the Filter row"
+    );
 }
