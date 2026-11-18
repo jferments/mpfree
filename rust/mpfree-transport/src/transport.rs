@@ -37,8 +37,8 @@ pub const MAX_RATE: u32 = 192_000;
 pub const MAX_COMMANDS: usize = 64;
 /// Commands applied in one period; the rest wait for the next period.
 pub const MAX_COMMANDS_PER_PERIOD: usize = 16;
-/// Spans and markers one block can hold. Loops and tempo segments are at
-/// least a 1/16 long, which is 827 frames at 400 BPM and 22.05 kHz, so an
+/// Spans and markers one block can hold. Loops, tempo segments and the
+/// steps of a tempo ramp are at least a 1/16 long, which is 827 frames at 400 BPM and 22.05 kHz, so an
 /// 8192-frame period crosses at most about 20 boundaries; with 16 commands
 /// that is under 40 spans and under 90 markers.
 pub const MAX_SPANS: usize = 64;
@@ -130,9 +130,9 @@ pub enum Mark {
         end: Tick,
         start: Tick,
     },
-    /// The tempo is now this, from this frame: a tempo segment, a live
-    /// change, or a jump into another segment. Comes after the marker of
-    /// the jump that caused it.
+    /// The tempo is now this, from this frame: a tempo segment, each 1/16
+    /// step of a tempo ramp, a live change, or a jump into another segment.
+    /// Comes after the marker of the jump that caused it.
     Tempo(f64),
     Swing(Swing),
     LoopSet(Option<(Tick, Tick)>),
@@ -720,11 +720,12 @@ impl Transport {
         }
     }
 
-    /// Start the clock at frame `f` with tick `tick` on it.
+    /// Start the clock at frame `f` with tick `tick` on it. On a ramp the
+    /// tempo is the step's, so the next line lands on its whole frame.
     fn anchor(&mut self, f: u64, tick: Tick) {
         self.anchor_frame = f;
         self.anchor_tick = tick;
-        self.bpm = self.map.bpm_at(tick);
+        self.bpm = self.map.play_bpm(tick, self.rate);
     }
 
     /// The whole song takes one tempo (a live or stopped tempo change).
@@ -736,8 +737,9 @@ impl Transport {
     }
 
     /// The next boundary while rolling, as (frame, kind), seen from frame
-    /// `at`. Every candidate is at or before the next tempo segment, so the
-    /// current tempo places it exactly.
+    /// `at`. Every candidate is at or before the next tempo change (a
+    /// segment, or a ramp's next line), so the current tempo places it
+    /// exactly.
     fn next_boundary(&self, at: u64) -> Option<(u64, Boundary)> {
         if !self.state.rolling() {
             return None;
