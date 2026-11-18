@@ -306,12 +306,8 @@ impl Facts {
             position: info.position,
             meter: (info.meter.beats, info.meter.unit),
             bar_ticks: info.meter.bar_ticks(),
-            tempos: time
-                .tempo_map()
-                .segments()
-                .iter()
-                .map(|s| (s.start, s.bpm))
-                .collect(),
+            // A ramp goes in as a tempo on each of its 1/16 steps.
+            tempos: time.tempo_map().changes().collect(),
             stems,
             by_track,
             song_on: time.song_on(),

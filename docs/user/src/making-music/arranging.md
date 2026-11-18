@@ -79,13 +79,33 @@ You can move the song around with your finger:
 
 - **Drag a block** to move it. Once your finger moves, it lifts and follows you, and its new place is outlined, with a tag saying the bar it starts on. It snaps to the bar. Drag it up or down to put it on another track's lane (a loop's block stays on its Loop track's lane, and a clip's block stays off them). There it plays that track's sound, and it gets its own copy of the clip (like **Make unique**), because the clip belongs to the first track. Hold **SHIFT** as you lift to drop a copy instead, linked to the same clip. Lift it where it started to leave it be. A block can't land on top of another one.
 - **Drag a picked block's end** to make it longer or shorter, a bar at a time. The picked block has a grip (two short bars) at its right end. Past the clip's end, the clip plays again from its top.
-- **Drag a section's name** on the ruler to move the whole section, every track, from its marker to the next one. A line shows where it will go. The sections close up behind it and make room for it, so nothing is written over. Hold **SHIFT** as you lift to put a copy there instead, such as a second verse. A block that runs across a section's edge is cut there, and each part still plays as it did. A section can't move while the song has morph moves recorded in it, because they would stay behind.
+- **Drag a section's name** on the ruler to move the whole section, every track, from its marker to the next one. A line shows where it will go. The sections close up behind it and make room for it, so nothing is written over. Hold **SHIFT** as you lift to put a copy there instead, such as a second verse. A block that runs across a section's edge is cut there, and each part still plays as it did. A section can't move while the song has morph moves recorded in it or tempo points, because they would stay behind.
 - Hold a dragged block or section at the left or right edge and the bars scroll.
 - With the wheel: pick a block, push the wheel to grab it, turn to move it a beat at a time, and push again to let go. Tap a section's name to pick it, then push and turn to move it a section at a time.
 - **UNDO** takes back any of these, one at a time, and **SHIFT + UNDO** puts them back again.
 
 > [!MPC]
 > On the MPC, a song is a list of sequences played one after another. In MPFree, the song is a timeline of clips, and each track can leave the song to play a launched clip and come back.
+
+### The song's tempo
+
+The **Tempo** lane under the ruler shows the song's tempo: a line across the bars, with a dot on each tempo point and its tempo beside it. Before the first point the song plays the project's tempo, the one on Play's transport bar.
+
+{{shot: arrange-song-tempo | The Tempo lane: the project's 92 BPM, then 100 BPM from bar 3 ramping up to 128 at bar 6. The point at bar 3 is picked, so the last two buttons read Ramp (lit) and Delete.}}
+
+- **Tap the lane** where there is no point to add one on the nearest bar line. It starts at the tempo playing there, and it is picked.
+- **Tap a point** to pick it, and tap it again to let it go. Push the wheel to grab it, then turn: its tempo moves 1 BPM a click. Push again to let go.
+- **Drag a point** along the lane to move it to another bar. A tag says its tempo and the bar it lands on.
+- With a point picked, the last two buttons read **Ramp** and **Delete**. **Ramp** makes the tempo glide from this point to the next one's, arriving on the next point: the line slopes, and Ramp is lit. Tap it again to step instead. A ramp on the last point waits for a point after it.
+- **UNDO** takes back any of these, one at a time. Turning the wheel on one point is one undo however far you turn it.
+
+**Song on** plays the points. While it does, turning the tempo (the Tempo row, a tempo you type on Play, or a tempo knob you taught with MIDI Learn) changes the point in effect at the playhead, so what you hear is what you set; before the first point it adds a point on the playhead's bar. Inside a ramp it changes the point the ramp starts from, and the glide follows it. The project's tempo stays as it was, and **TAP TEMPO** still sets it. With Song off, the project's tempo plays throughout and the points wait.
+
+A ramp plays as a quick staircase of tempos, one step every 1/16 note, each step landing where a smooth glide would put it. Effects that follow the tempo, such as a synced delay, and the synth follow it too. A MIDI file exported from the song has a tempo for every step of a ramp.
+
+Points are at least a 1/16 apart, and a song has up to 31.
+
+*Example:* tap the lane at bar 9, push the wheel and turn it to 140, then tap the lane at bar 5 and tap **Ramp**. With Song on, bars 1 to 4 play the project's tempo, bars 5 to 8 speed up to 140, and from bar 9 the song plays at 140.
 
 ### Audio in the song
 
