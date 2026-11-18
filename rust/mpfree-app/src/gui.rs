@@ -110,6 +110,9 @@ const TEXTPAD_LAYOUT: &str = "col(header:60, textpad:*, hint:26)";
 const TEXTPAD_HINT: &str = "Tap the letters, then Enter   ·   wheel or - / +: move the cursor   ·   push the wheel: Enter   ·   Cancel: leave it as it was";
 /// How long a finger stays on Play's BPM to type the tempo, seconds.
 const TEMPO_HOLD: f32 = 0.6;
+/// How long a finger stays on the Sample page's Keep card to open Sample
+/// Recall instead of keeping the last bars (one-page step 2c), seconds.
+pub const KEEP_HOLD: f32 = 0.6;
 /// How long a finger holds a button that deletes or clears in Perform
 /// before it acts (Perform's guard, sequencer decision 5), seconds.
 pub const GUARD_HOLD: f32 = 0.5;
@@ -908,6 +911,10 @@ pub enum ToUi {
     /// records): why, for the recorder row's second line
     /// ([`SamplePage::rec_here_refused`]).
     RecHereNo(String),
+    /// The Keep card's tap may keep: no take is ready, counting in or
+    /// recording ([`desk::take_waits`](crate::desk::take_waits); one-page
+    /// step 2c).
+    KeepLast,
     /// The wheel, its push, - or + for the outline ([`Player::nav`]).
     Nav(Nav),
     /// The wheel or - / + turned the control a finger rests on by `delta`
@@ -1254,6 +1261,15 @@ pub enum FromUi {
     /// ends ([`crate::rec_arm::RecArm::rec_here`]).
     RecHere {
         kit: usize,
+        pad: usize,
+    },
+    /// The Wave page's Keep card tapped (one-page step 2c): keep the last
+    /// bars, unless a take is ready, counting in or recording (the audio
+    /// loop answers `ToUi::KeepLast`, or says why).
+    KeepLast,
+    /// The Keep card held: Sample Recall on kit pad `pad`, by Sample
+    /// Recall's own rule (`app::Effect::Recall`, as a pad + SHIFT + REC).
+    RecallOpen {
         pad: usize,
     },
     /// Save the project: the audio loop sends its engines' parts back
@@ -1888,6 +1904,8 @@ pub struct Player {
     power_request: Option<std::path::PathBuf>,
     /// A finger on Play's BPM: which, how long (s) and where it landed.
     tempo_press: Option<(u64, f32, i32, i32)>,
+    /// A finger on the Sample page's Keep card, as [`Self::tempo_press`].
+    keep_press: Option<(u64, f32, i32, i32)>,
     /// Perform's guard: a finger holding a button that deletes or clears,
     /// and a finger whose hold has acted (the rest of its touch is its
     /// own).
@@ -2168,6 +2186,7 @@ impl Player {
             power: None,
             power_request: None,
             tempo_press: None,
+            keep_press: None,
             guard_press: None,
             guard_done: None,
             learn_finger: None,
@@ -6868,6 +6887,7 @@ impl Player {
             }
             ToUi::PadTake(d) => self.sample.pad_take(&mut self.ui, d),
             ToUi::RecHereNo(why) => self.sample.rec_here_refused(&mut self.ui, why),
+            ToUi::KeepLast => self.keep_last(),
             ToUi::Nav(n) => self.nav(n),
             ToUi::Held { delta, fine } => self.held_turn(delta, fine),
             ToUi::TurnsReady { synth, mixer } => self.turns_ready = (synth, mixer),
@@ -10203,6 +10223,7 @@ impl Player {
             .and_then(|ev| self.on_event(ev));
         self.watch_held(finger, phase);
         self.watch_tempo_press(finger, phase, x, y, &action);
+        self.watch_keep_press(finger, phase, x, y);
         if matches!(phase, Touch::Up | Touch::Cancel) && self.view.sampler() {
             // A drag on the Sample page ends with its finger: one undo step.
             self.sample.lift();
@@ -10512,6 +10533,65 @@ impl Player {
                 self.tempo_press = None;
             }
             _ => {}
+        }
+    }
+
+    /// A finger on the Sample page's Keep card (one-page step 2c): its
+    /// lift keeps the last bars as a take; held still for [`KEEP_HOLD`]
+    /// it opens Sample Recall over the page instead ([`Self::tick`]), to
+    /// pick another length. A slide lets it go.
+    fn watch_keep_press(&mut self, finger: u64, phase: Touch, x: i32, y: i32) {
+        // Asked on every touch, so a press is never left for another.
+        let pressed = self.sample.take_keep_press();
+        let mine = self.keep_press.is_some_and(|p| p.0 == finger);
+        match phase {
+            Touch::Down if pressed => self.keep_press = Some((finger, 0.0, x, y)),
+            Touch::Move if mine => {
+                if let Some((_, _, x0, y0)) = self.keep_press {
+                    if (x - x0).pow(2) + (y - y0).pow(2) > 20 * 20 {
+                        self.keep_press = None;
+                    }
+                }
+            }
+            // The audio loop answers, as it does Sample Recall: no take
+            // may be ready, counting in or recording.
+            Touch::Up if mine => {
+                self.keep_press = None;
+                self.outbox.push(FromUi::KeepLast);
+            }
+            Touch::Cancel if mine => self.keep_press = None,
+            _ => {}
+        }
+    }
+
+    /// A take is ready, counting in or recording, as far as the screen
+    /// knows: the Keep card waits, faint ("finish the take first"). The
+    /// audio loop decides by the same rule ([`crate::desk::take_waits`]).
+    fn take_waits(&self) -> bool {
+        use mpfree_looper::Phase;
+        use mpfree_transport::State;
+        matches!(self.play.transport.state, State::Recording | State::CountIn)
+            || self
+                .looper
+                .loops
+                .iter()
+                .any(|s| matches!(s.phase, Phase::Recording | Phase::Overdubbing))
+            || self.looper.status.phase == Phase::Armed
+            || self.rec.ready.is_some()
+            || self.rec.pad.is_some()
+    }
+
+    /// The Keep card tapped and the audio loop agreed: what just played
+    /// becomes a new take, where Onto says; the hint line says where, or
+    /// why nothing was kept.
+    fn keep_last(&mut self) {
+        let before = self.sample.page();
+        let kept = self.sample.keep_last(&mut self.ui);
+        self.sample_after(before);
+        self.print_sample_lines();
+        match kept {
+            Ok(at) => self.tell(&format!("Kept on {at} · UNDO takes it back")),
+            Err(e) => self.tell(&format!("Nothing kept: {e}")),
         }
     }
 
@@ -11410,6 +11490,17 @@ impl Player {
         if let (Some(open), Some(input)) = (self.recall.as_mut(), self.sample.recall()) {
             open.page.tick(&mut self.ui, input, dt.max(0.0));
         }
+        // A finger held on the Keep card: Sample Recall, on the page's pad.
+        if let Some((f, held, x, y)) = self.keep_press {
+            let held = held + dt.max(0.0);
+            if held >= KEEP_HOLD {
+                self.keep_press = None;
+                let pad = self.sample.pad();
+                self.outbox.push(FromUi::RecallOpen { pad });
+            } else {
+                self.keep_press = Some((f, held, x, y));
+            }
+        }
         // A finger held on Play's BPM: type the tempo.
         if let Some((f, held, x, y)) = self.tempo_press {
             let held = held + dt.max(0.0);
@@ -11532,6 +11623,8 @@ impl Player {
         }
         // A take records on, whatever shows; it lands on its pad here.
         let before = self.sample.page();
+        let waits = self.take_waits();
+        self.sample.set_take_waits(waits);
         self.sample.tick(&mut self.ui, dt, self.view.sampler());
         // The pad take (sampler R5.7): recording, or over.
         while let Some(n) = self.sample.take_pad_now() {
@@ -15258,10 +15351,25 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     mixer.apply(ToUi::Show(View::Mixer));
     mixer.apply(ToUi::Mixer(Box::new(sample_instrument_mixer(&fm))));
     out.push(("mixer-instruments", mixer));
-    // The Sample page: the loop on kit 1's pad 5, then zoomed round the
-    // loop start after a Q-Link 3 turn, then a pad without a sound, then
-    // the Chop tab.
-    out.push(("sample", sample_sampler(fonts())));
+    // The Sample page: the loop on kit 1's pad 5, the music playing for
+    // 40 s so the recorder row's Keep card keeps the last 4 bars
+    // (one-page step 2c); then zoomed round the loop start after a Q-Link
+    // 3 turn, then a pad without a sound, then the Chop tab.
+    let mut sample = sample_sampler(fonts());
+    {
+        use crate::sample_page::SCREEN_RECALL_SECONDS;
+        use mpfree_sampler_ui::sample::{feed_input, BPM, RATE};
+        sample.apply(ToUi::Transport(TransportInfo {
+            bpm: BPM,
+            ..TransportInfo::default()
+        }));
+        let (mut feed, input) = mpfree_sampler::record::input16(SCREEN_RECALL_SECONDS, RATE);
+        sample.apply(ToUi::SampleRecall(Box::new(input)));
+        feed_input(&mut feed, 40.0, 0.4, true);
+        sample.tick(0.033);
+        sample.take_actions();
+    }
+    out.push(("sample", sample));
     let mut zoomed = sample_sampler(fonts());
     zoomed.apply(ToUi::SampleQLink(2, 3));
     for _ in 0..10 {
@@ -26005,7 +26113,7 @@ mod tests {
         p.tick(0.033);
         let v = row(&p);
         assert_eq!(v.cannot, None);
-        assert_eq!(v.status, "Next take stays here");
+        assert_eq!(v.status, "next take stays here");
         let level = p.ui.get::<Recorder>(recorder::RECORDER).unwrap().level();
         assert!(level[0] > 0.5, "{level:?}");
         // REC: a pad take through the arm (the sequencer thread's line,
@@ -26028,7 +26136,7 @@ mod tests {
         let v = row(&p);
         assert!(v.recording && !v.waiting, "{v:?}");
         assert!(
-            v.status.starts_with("Recording · 0:01.") && v.status.ends_with(" · stays here"),
+            v.status.starts_with("0:01.") && v.status.ends_with(" · stays here"),
             "{}",
             v.status
         );
@@ -26045,7 +26153,7 @@ mod tests {
         );
         assert_eq!(p.sample.rec_settings_now().onto, rec_tab::Onto::NextEmpty);
         assert!(
-            row(&p).status.starts_with("Recording onto A6 · 0:01."),
+            row(&p).status.starts_with("0:01.") && row(&p).status.ends_with(" · onto A6"),
             "{}",
             row(&p).status
         );
@@ -26114,14 +26222,14 @@ mod tests {
         }
         let held = arm.pad.unwrap().id;
         p.tick(0.033);
-        assert_eq!(row(&p).status, "Onto B5 · waits for PLAY");
+        assert_eq!(row(&p).status, "for PLAY · onto B5");
         assert!(row(&p).recording && row(&p).waiting);
         ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
         p.tick(0.033);
         rec_desk(&mut p, &mut arm, &stopped);
         assert_eq!(arm.pad, None);
         p.tick(0.033);
-        assert_eq!(row(&p).status, "Next take onto A7");
+        assert_eq!(row(&p).status, "next take onto A7");
         ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
         p.tick(0.033);
         rec_desk(&mut p, &mut arm, &stopped);
@@ -26133,11 +26241,7 @@ mod tests {
             arm.pad.is_some_and(|t| t.here && t.pad == 6 && t.recording),
             "{arm:?}"
         );
-        assert!(
-            row(&p).status.starts_with("Recording onto A7"),
-            "{}",
-            row(&p).status
-        );
+        assert!(row(&p).status.ends_with(" · onto A7"), "{}", row(&p).status);
         ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
         p.tick(0.033);
         rec_desk(&mut p, &mut arm, &stopped);
@@ -26287,7 +26391,7 @@ mod tests {
         };
         feed_input(&mut feed.0, 2.0, 0.4, true);
         p.tick(0.033);
-        assert_eq!(status(&p), "Next take stays here");
+        assert_eq!(status(&p), "next take stays here");
         let before = pads(&p);
         // REC: the take goes at once; the chip names the take it makes.
         let stopped = rec_now_in(mpfree_transport::State::Stopped);
@@ -26332,7 +26436,7 @@ mod tests {
             "one take: no count; {}",
             bar.subtitle
         );
-        assert_eq!(status(&p), "Next take stays here");
+        assert_eq!(status(&p), "next take stays here");
         assert!(
             hint(&p).starts_with("Tap the wave: hear the take"),
             "{}",
@@ -26609,6 +26713,191 @@ mod tests {
             p.ui.get::<InputView>(rec_tab::VIEW).unwrap().note,
             rec_tab::OFF_NOTE
         );
+    }
+
+    /// One-page step 2c (the plan's decision 4): the recorder row's Keep
+    /// card is Sample Recall in one tap. With the music playing a tap
+    /// keeps the last 4 bars of the master, warped, as a new take on the
+    /// page (Onto on Stay here) in one undo step named "Recall take";
+    /// with Onto on Next empty it lands on the next empty pad. A hold
+    /// opens Sample Recall over the page instead, and while a take
+    /// is ready, counting in or recording the card waits ("finish the
+    /// take first"), and the audio loop refuses its tap and its hold, as
+    /// it does Sample Recall's.
+    #[test]
+    fn the_keep_card_keeps_the_last_bars_as_a_take_and_a_hold_opens_sample_recall() {
+        use crate::sample_page::SCREEN_RECALL_SECONDS;
+        use mpfree_sampler::model::PADS;
+        use mpfree_sampler_ui::recall;
+        use mpfree_sampler_ui::recorder::{self, Recorder};
+        use mpfree_sampler_ui::sample::{feed_input, PAD, RATE};
+        use mpfree_sampler_ui::{rec_tab, wave_tab};
+        let mut p = sample_sampler(Fonts::embedded());
+        open_sample(&mut p, sample_page::Editor::Wave);
+        let keep = |p: &Player| {
+            p.ui.get::<Recorder>(recorder::RECORDER)
+                .unwrap()
+                .view
+                .keep
+                .clone()
+        };
+        let card = |p: &Player| {
+            let r = Recorder::keep_rect(p.ui.rect_of(recorder::RECORDER).unwrap());
+            (r.x + r.w / 2, r.y + r.h / 2)
+        };
+        // The audio loop's answer to the card's asks, with no take
+        // waiting (desk::take_waits); the rest of what was sent.
+        let desk = |p: &mut Player| -> Vec<FromUi> {
+            let mut rest = Vec::new();
+            for a in p.take_actions() {
+                match a {
+                    FromUi::KeepLast => p.apply(ToUi::KeepLast),
+                    FromUi::RecallOpen { pad } => {
+                        p.apply(ToUi::Recall(crate::app::RecallKey::Open { pad }))
+                    }
+                    a => rest.push(a),
+                }
+            }
+            rest.extend(p.take_actions());
+            rest
+        };
+        let tap = |p: &mut Player| {
+            let (x, y) = card(p);
+            p.touch(7, Touch::Down, x, y);
+            p.touch(7, Touch::Up, x, y);
+            desk(p)
+        };
+        let pads = |p: &Player| -> Vec<Option<String>> {
+            let kit = p.sample.project(0).unwrap();
+            (0..PADS)
+                .map(|i| kit.pad(i).map(|pd| pd.name.clone()))
+                .collect()
+        };
+        let takes = |p: &Player| p.sample.project(0).unwrap().takes().len();
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        // Before the master is kept: faint, and a tap says why.
+        assert_eq!(
+            (keep(&p).line.as_str(), keep(&p).ready),
+            (recorder::KEEP_NOT_YET, false)
+        );
+        tap(&mut p);
+        assert_eq!(hint(&p), "Keep last 4 bars: the master isn't kept yet");
+        assert_eq!(takes(&p), 0);
+        // 20 s of the master, the music playing.
+        let (mut feed, input) = mpfree_sampler::record::input16(SCREEN_RECALL_SECONDS, RATE);
+        p.apply(ToUi::SampleRecall(Box::new(input)));
+        feed_input(&mut feed, 20.0, 0.4, true);
+        p.tick(0.033);
+        let k = keep(&p);
+        assert_eq!(
+            (k.title.as_str(), k.line.as_str(), k.ready),
+            ("Keep last 4 bars", "what just played, as a new take", true)
+        );
+        // A tap: a new take on the page, no pad filled, one undo step.
+        let before = pads(&p);
+        tap(&mut p);
+        assert_eq!(takes(&p), 1);
+        assert_eq!(pads(&p), before, "no pad filled");
+        assert_eq!(p.sample.take_shown().as_deref(), Some("Recall 1"));
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l.starts_with("sample: recall bars ")
+                && l.contains(": Recall 1, ")
+                && l.contains(" stereo stays on the Sample page, warped at ")),
+            "{log:?}"
+        );
+        assert_eq!(hint(&p), "Kept on the page · UNDO takes it back");
+        let (_, rows, now) = p.sample.history_rows().unwrap();
+        assert_eq!(rows[now], "Recall take");
+        let layer = &p.sample.project(0).unwrap().take(0).unwrap().layers[0];
+        assert!(layer.region.warp.is_some(), "whole bars follow the tempo");
+        assert!(layer.region.fade_in.frames > 0 && layer.region.fade_out.frames > 0);
+        // UNDO takes it back.
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(takes(&p), 0);
+        // Onto on Next empty: the last bars land on the next empty pad.
+        p.on_event(UiEvent {
+            widget: wave_tab::BAR.into(),
+            kind: EventKind::Tab(rec_tab::TAB),
+        });
+        p.on_event(UiEvent {
+            widget: rec_tab::LIST.into(),
+            kind: EventKind::Step {
+                index: rec_tab::Row::Onto.index(),
+                delta: 1,
+            },
+        });
+        open_sample(&mut p, sample_page::Editor::Wave);
+        p.tick(0.033);
+        let next = crate::app::kit_pad_name(PAD + 1);
+        assert_eq!(keep(&p).line, format!("what just played, onto {next}"));
+        tap(&mut p);
+        assert_eq!(takes(&p), 0);
+        assert!(p.sample.project(0).unwrap().pad(PAD + 1).is_some());
+        assert_eq!(hint(&p), format!("Kept on {next} · UNDO takes it back"));
+        let (_, rows, now) = p.sample.history_rows().unwrap();
+        assert_eq!(rows[now], format!("Recall to {next}"));
+        // A hold asks for Sample Recall as a pad + SHIFT + REC does; it
+        // opens over the page and keeps nothing.
+        let back = p.ui.page().to_string();
+        let (x, y) = card(&p);
+        p.touch(7, Touch::Down, x, y);
+        for _ in 0..8 {
+            p.tick(0.1);
+        }
+        // On the pad the page shows: the one just kept onto.
+        let picked = p.sample.pad();
+        assert_eq!(picked, PAD + 1);
+        assert!(p
+            .take_actions()
+            .contains(&FromUi::RecallOpen { pad: picked }));
+        p.apply(ToUi::Recall(crate::app::RecallKey::Open { pad: picked }));
+        assert_eq!(p.ui.page(), recall::PAGE);
+        p.touch(7, Touch::Up, x, y);
+        assert!(desk(&mut p).contains(&FromUi::Recall(true)));
+        assert!(p.sample.project(0).unwrap().pad(PAD + 2).is_none());
+        p.apply(ToUi::Recall(crate::app::RecallKey::Close));
+        assert_eq!(p.ui.page(), back);
+        // A slide off lets it go: nothing kept, nothing opened.
+        p.touch(7, Touch::Down, x, y);
+        p.touch(7, Touch::Move, x - 60, y);
+        p.tick(1.0);
+        p.touch(7, Touch::Up, x - 60, y);
+        let asked = desk(&mut p);
+        assert!(
+            !asked
+                .iter()
+                .any(|a| matches!(a, FromUi::KeepLast | FromUi::RecallOpen { .. })),
+            "nothing asked: {asked:?}"
+        );
+        assert_eq!(p.ui.page(), back);
+        assert!(p.sample.project(0).unwrap().pad(PAD + 2).is_none());
+        // A take ready (the notes', here): the card waits, as Sample
+        // Recall does; a tap says so and asks nothing, a hold neither.
+        p.apply(ToUi::Rec(crate::rec_arm::RecArm {
+            ready: Some(crate::rec_arm::Take::Replace),
+            ..Default::default()
+        }));
+        p.tick(0.033);
+        assert_eq!(
+            (keep(&p).line.as_str(), keep(&p).ready),
+            (sample_page::KEEP_WAITS, false)
+        );
+        let asks = |acts: &[FromUi]| {
+            acts.iter()
+                .any(|a| matches!(a, FromUi::KeepLast | FromUi::RecallOpen { .. }))
+        };
+        assert!(!asks(&tap(&mut p)));
+        assert_eq!(hint(&p), crate::desk::KEEP_WAITS);
+        p.touch(7, Touch::Down, x, y);
+        p.tick(1.0);
+        p.touch(7, Touch::Up, x, y);
+        assert!(!asks(&desk(&mut p)));
+        assert_eq!(p.ui.page(), back);
+        // Let go of: ready again.
+        p.apply(ToUi::Rec(crate::rec_arm::RecArm::default()));
+        p.tick(0.033);
+        assert!(keep(&p).ready);
     }
 
     #[test]

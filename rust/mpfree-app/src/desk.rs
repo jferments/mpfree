@@ -334,6 +334,20 @@ impl Desk<'_> {
                     }
                 }
             }
+            // The Wave page's Keep card (one-page step 2c): Sample Recall's
+            // rule, for its tap and for its hold.
+            gui::FromUi::KeepLast => {
+                if take_waits(app, time, looper) {
+                    let s = KEEP_WAITS.to_string();
+                    out.note(&s);
+                    out.show(gui::ToUi::Tell(s));
+                } else {
+                    out.show(gui::ToUi::KeepLast);
+                }
+            }
+            gui::FromUi::RecallOpen { pad } => {
+                fx.push(app::Effect::Recall(app::RecallKey::Open { pad }))
+            }
             gui::FromUi::RecPin(on) => {
                 app.rec.pinned = on;
                 out.note(if on {
@@ -564,13 +578,8 @@ impl Desk<'_> {
             // mustn't take that (the sequencer thread, 18 Nov). A pad take
             // armed or recording holds REC for that take the same way.
             app::Effect::Recall(app::RecallKey::Open { pad }) => {
-                let now = rec_now(time, looper);
-                if now.taking()
-                    || now.loop_armed
-                    || app.rec.ready.is_some()
-                    || app.rec.pad.is_some()
-                {
-                    let s = "Finish the take first: Sample Recall opens once it stops".to_string();
+                if take_waits(app, time, looper) {
+                    let s = RECALL_WAITS.to_string();
                     out.note(&s);
                     out.show(gui::ToUi::Tell(s));
                 } else {
@@ -674,6 +683,20 @@ impl Desk<'_> {
 
 /// What the arm finds ([`crate::rec_arm::Now`]): the transport, the loops
 /// and the armed track's name.
+/// Whether a take is ready, counting in or recording (the notes, a loop,
+/// or a pad take): Sample Recall waits for it (the sequencer thread, 18
+/// Nov; REC arm rule 6), as the Wave page's Keep card does (one-page step
+/// 2c), since REC mid-take punches out and neither may take that.
+pub fn take_waits(app: &app::App, time: &time::TimeHost, looper: &looping::LoopHost) -> bool {
+    let now = rec_now(time, looper);
+    now.taking() || now.loop_armed || app.rec.ready.is_some() || app.rec.pad.is_some()
+}
+
+/// What Sample Recall and the Keep card say while a take waits
+/// ([`take_waits`]).
+pub const RECALL_WAITS: &str = "Finish the take first: Sample Recall opens once it stops";
+pub const KEEP_WAITS: &str = "Finish the take first: Keep keeps what just played once it stops";
+
 pub fn rec_now(time: &time::TimeHost, looper: &looping::LoopHost) -> crate::rec_arm::Now {
     let info = time.info();
     let (loop_taking, loop_armed) = looper.rec_now();
@@ -1247,4 +1270,34 @@ pub fn qlink_to_screen(page: app::View, k: usize, ticks: i32) -> Option<gui::ToU
         View::Play | View::Sequencer | View::Arrange => gui::ToUi::PlayQLink(k, ticks),
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sample Recall and the Wave page's Keep card wait while a take is
+    /// ready, counting in or recording: the notes' take ready, or a pad
+    /// take armed (one-page step 2c, the sequencer thread's rule).
+    #[test]
+    fn recall_and_keep_wait_for_a_take_that_is_ready_or_recording() {
+        let mut app = app::App::new(44_100, false);
+        let time = time::TimeHost::new(44_100, 92.0).unwrap();
+        let looper = looping::LoopHost::new(44_100, 8);
+        assert!(!take_waits(&app, &time, &looper), "nothing taking");
+        app.rec.ready = Some(crate::rec_arm::Take::Replace);
+        assert!(take_waits(&app, &time, &looper), "the notes' take ready");
+        app.rec.ready = None;
+        app.rec.pad = Some(crate::rec_arm::PadTake {
+            kit: 0,
+            pad: 5,
+            id: 1,
+            started: false,
+            recording: false,
+            here: true,
+        });
+        assert!(take_waits(&app, &time, &looper), "a pad take armed");
+        assert!(KEEP_WAITS.starts_with("Finish the take first"));
+        assert!(RECALL_WAITS.starts_with("Finish the take first"));
+    }
 }
