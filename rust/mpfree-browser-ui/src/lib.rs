@@ -52,7 +52,10 @@ pub use plugins::{
     KindFilter, PluginButton, PluginDetail, PluginInput, PluginRow, PluginsScreen, PluginsView,
     Tone,
 };
-pub use state::{BrowseAction, Browser, Button, Filter, Input, Pick, Screen, Sort, Source};
+pub use state::{
+    BrowseAction, Browser, Button, Filter, Input, MapCell, MapShown, PadMap, Pick, Screen, Sort,
+    Source,
+};
 pub use view::BrowserView;
 
 use mpfree_ui::Ui;
