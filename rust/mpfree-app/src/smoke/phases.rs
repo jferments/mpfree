@@ -1854,6 +1854,35 @@ mod track_kits {
             assert_eq!(s.time.armed(), Some(n));
             assert_eq!(s.track_kits.entry(n), 0);
             assert_eq!(s.kit, 0, "the pads play kit 1");
+            assert!(!s.track_kits.set_aside(1), "the kit is the project's again");
+        });
+    }
+
+    /// A new track given a kit of its own, UNDO, REDO: one UNDO takes the
+    /// track and its kit (set aside, out of the list of kits), and one
+    /// REDO brings both back.
+    #[test]
+    fn redo_brings_a_track_back_with_its_kit() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            assert!(s.kits() > 1, "a second kit to give");
+            let n = s.time.track_count();
+            s.route(FromUi::Time(TimeAction::AddTrack));
+            s.run_periods(4);
+            s.route(FromUi::Kit(1));
+            s.run_periods(4);
+            assert_eq!(s.track_kits.entry(n), 1);
+            s.route(FromUi::Time(TimeAction::Undo));
+            s.run_periods(4);
+            assert_eq!(s.time.track_count(), n);
+            assert_eq!(s.track_kits.entry(n), 0);
+            assert!(s.track_kits.set_aside(1), "kit 2 waits for REDO");
+            s.route(FromUi::Time(TimeAction::Redo));
+            s.run_periods(4);
+            assert_eq!(s.time.track_count(), n + 1);
+            assert_eq!(s.track_kits.entry(n), 1, "back on its kit");
+            assert!(!s.track_kits.set_aside(1));
         });
     }
 }
