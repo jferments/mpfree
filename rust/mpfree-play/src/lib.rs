@@ -39,7 +39,7 @@ mod steps;
 pub mod takes;
 pub mod view;
 
-pub use ahead::{Ahead, AheadCounts, MAX_AHEAD};
+pub use ahead::{is_gear_control, Ahead, AheadCounts, MAX_AHEAD};
 pub use arp::ArpHost;
 pub use arps::{Through, TrackArps};
 pub use mpfree_param;

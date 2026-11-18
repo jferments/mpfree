@@ -14,7 +14,8 @@
 
 use mpfree_notefx::{Chain, Slot, TrackFx, MAX_FX};
 use mpfree_play::{
-    Ahead, AheadCounts, Event, Out, PlayView, Player, Rec, Recent, Recorder, TrackArps,
+    is_gear_control, Ahead, AheadCounts, Event, Out, PlayView, Player, Rec, Recent, Recorder,
+    TrackArps,
 };
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::mpfree_moves::{Input, Kind};
@@ -1056,6 +1057,15 @@ impl TimeAudio {
                 pads.out_sent(&o);
                 continue;
             }
+            // A lock or lane on the controls of a track that plays ahead
+            // that didn't go ahead (the forecast missed it, or MIDI out
+            // refused it then): MIDI out sends it now if it takes it, so
+            // the control stays with the look-ahead; else the mod engine
+            // has it, as for any track.
+            if is_gear_control(&o) && self.ahead.plays_ahead(o.track) && pads.out_ahead(&o) {
+                pads.out_sent(&o);
+                continue;
+            }
             // A track that plays elsewhere (MIDI OUT) takes its clips'
             // events first.
             if pads.out(&o) {
@@ -1111,15 +1121,21 @@ impl TimeAudio {
             }
         }
         // The look-ahead (S5): a note-on sent ahead that this pass didn't
-        // play gets its note-off now; then the coming periods' events of
+        // play gets its note-off now, a control's lock its unlock; then the coming periods' events of
         // the tracks that play ahead go out.
         let start = self.transport.frame().saturating_sub(u64::from(frames));
         self.ahead.check(self.transport.frame(), |o| {
-            pads.out(&Out {
+            let o = Out {
                 offset: 0,
                 frame: start,
                 ..*o
-            });
+            };
+            // A control's unlock goes where its lock went.
+            if is_gear_control(&o) {
+                pads.out_ahead(&o);
+            } else {
+                pads.out(&o);
+            }
         });
         self.ahead
             .forecast(&self.transport, &self.player, &self.view, frames, |o| {
