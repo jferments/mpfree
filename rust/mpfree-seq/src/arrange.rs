@@ -639,10 +639,15 @@ impl Arrangement {
                 .collect();
         }
         let first = spans[0].0;
+        // Everything but the placements and markers stays as it was: the
+        // song list names rows, not ticks.
         let mut song = Arrangement {
+            placements: Vec::new(),
+            markers: Vec::new(),
             lanes: self.lanes.clone(),
             morphs: self.morphs.clone(),
-            ..Arrangement::default()
+            list: self.list.clone(),
+            tempo: self.tempo.clone(),
         };
         song.placements = cut.iter().filter(|p| p.start < first).cloned().collect();
         let mut t = first;
@@ -1358,6 +1363,22 @@ mod tests {
         );
         assert_eq!(s.on_track(1)[4].slot(), Some(1), "linked like the first");
         assert_eq!(s.check(&p.tracks), Ok(()));
+    }
+
+    /// A section move keeps the song list (it names rows, not ticks).
+    #[test]
+    fn a_section_move_keeps_the_song_list() {
+        let mut p = sections_song();
+        p.arrangement
+            .list
+            .steps
+            .push(crate::scenes::ListStep { row: 2, times: 3 });
+        p.arrangement.list.looped = true;
+        let list = p.arrangement.list.clone();
+        p.arrangement
+            .move_section(&p.tracks, 1, 0, false, BAR)
+            .unwrap();
+        assert_eq!(p.arrangement.list, list);
     }
 
     /// Tempo points don't move with a section yet: a song with them
