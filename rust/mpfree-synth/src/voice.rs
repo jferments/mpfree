@@ -523,7 +523,15 @@ impl Adsr {
                     self.stage = Stage::Decay;
                 }
             }
-            Stage::Decay => self.level += (self.sustain - self.level) * self.cd,
+            Stage::Decay => {
+                self.level += (self.sustain - self.level) * self.cd;
+                // Toward a sustain of 0 the level would sink through the
+                // denormals for as long as the key is held; under -400 dB
+                // it is exact 0.
+                if self.level < 1e-20 {
+                    self.level = 0.0;
+                }
+            }
             Stage::Release => {
                 self.level += (RELEASE_AIM - self.level) * self.cr;
                 if self.level <= 0.0 {
@@ -878,6 +886,19 @@ impl DcBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_decay_to_no_sustain_lands_on_exact_zero_not_the_denormals() {
+        let mut e = Adsr::default();
+        // A control step every 16 frames at 44.1 kHz.
+        e.set(1.0, 5.0, 0.0, 100.0, 44_100.0 / 16.0);
+        e.gate_on();
+        for _ in 0..44_100 * 3 / 16 {
+            assert!(!e.next().is_subnormal());
+        }
+        assert_eq!(e.level, 0.0);
+        assert_eq!(e.stage, Stage::Decay, "still held");
+    }
 
     // ---- notes
 

@@ -654,3 +654,24 @@ fn print_preset_levels() {
         }
     }
 }
+
+/// A note held while its level falls to nothing goes to exact zeros and
+/// never through the denormals (which would make each sample many times
+/// slower on a processor without flush-to-zero).
+#[test]
+fn a_note_held_at_no_level_ends_in_exact_zeros_not_denormals() {
+    for name in ["Screamer", "Plucky", "Distorted"] {
+        let mut s = preset(name);
+        // No accent: an accented note's level follows the filter's
+        // envelope too, which falls far slower.
+        s.set_param(AMP_DECAY, 100.0);
+        s.set_param(ACCENT_AT, 127.0);
+        let (l, r) = render(&mut s, RATE as usize * 3, &[(0, on(48, 100))], |_| 128);
+        for x in [&l, &r] {
+            let first = x.iter().position(|v| v.is_subnormal());
+            assert_eq!(first, None, "{name}: a denormal at frame {first:?}");
+            assert!(x[x.len() - 512..].iter().all(|&v| v == 0.0), "{name}");
+        }
+        assert!(peak(&l[..RATE as usize / 100]) > 0.01, "{name} plays");
+    }
+}
