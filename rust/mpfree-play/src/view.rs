@@ -497,6 +497,10 @@ pub struct PlayView {
     /// The song's tempo map while song mode plays its tempo points
     /// ([`PlayView::set_tempo_map`]), for the host's transport.
     pub(crate) tempo: Option<TempoMap>,
+    /// The project's launch quantise ([`Project::launch`]): the line a
+    /// live hit on a pad that starts on the line waits for (sampler
+    /// R5.3b; the host waits, [`PlayView::launch`]).
+    pub(crate) launch: LaunchGrid,
 }
 
 impl PartialEq for PlayView {
@@ -507,12 +511,14 @@ impl PartialEq for PlayView {
             self.song,
             &self.song_lanes,
             &self.tempo,
+            self.launch,
         ) == (
             &other.tracks,
             other.armed,
             other.song,
             &other.song_lanes,
             &other.tempo,
+            other.launch,
         )
     }
 }
@@ -586,6 +592,7 @@ impl PlayView {
             song_lanes: None,
             includes: None,
             tempo: None,
+            launch: project.launch,
         })
     }
 
@@ -601,6 +608,13 @@ impl PlayView {
 
     pub fn tempo_map(&self) -> Option<&TempoMap> {
         self.tempo.as_ref()
+    }
+
+    /// The project's launch quantise as it was compiled: where a live hit
+    /// on a pad that starts on the line (a Loop pad, sampler R5.3b) waits
+    /// for, while the transport plays.
+    pub fn launch(&self) -> LaunchGrid {
+        self.launch
     }
 
     /// Song mode on (the arrangement's placements compiled in: a track
