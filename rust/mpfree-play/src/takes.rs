@@ -162,6 +162,12 @@ pub enum SongChange {
     ListToSong {
         steps: usize,
     },
+    /// A tempo point (tempo ramps) added, moved, given a tempo, made to
+    /// glide or not, or deleted: the one at song tick `at` (where it was,
+    /// for a delete).
+    Tempo {
+        at: Tick,
+    },
 }
 
 /// A Song view edit: what it did, and the song before and after it.
@@ -707,11 +713,40 @@ impl Takes {
     /// takes back and redo does again while nothing else has changed the
     /// song (see the module notes). The edit's number.
     pub fn song_edit(&mut self, project: &Project, change: SongChange, before: Arrangement) -> u32 {
+        self.song_edit_joining(project, change, before, None)
+    }
+
+    /// [`Takes::song_edit`], where `join` names what is being turned (a
+    /// tempo point's tempo on the wheel): the edit joins the latest take
+    /// instead when that is a song edit with the same key, nothing was
+    /// undone since and nothing else changed the song since (it is as that
+    /// take left it), so the wheel turned through many values is one undo.
+    pub fn song_edit_joining(
+        &mut self,
+        project: &Project,
+        change: SongChange,
+        before: Arrangement,
+        join: Option<u64>,
+    ) -> u32 {
+        let joins = join.is_some()
+            && self.undone.is_empty()
+            && self.done.last().is_some_and(|t| {
+                t.join == join && t.song.as_ref().is_some_and(|e| e.after == before)
+            });
+        if joins {
+            let take = self.done.last_mut().expect("checked");
+            if let Some(e) = take.song.as_mut() {
+                e.change = change;
+                e.after = project.arrangement.clone();
+            }
+            return take.number;
+        }
         self.edits += 1;
         let number = self.edits;
         self.push(Take {
             number,
             edited: true,
+            join,
             song: Some(Box::new(SongEdit {
                 change,
                 before,
@@ -1554,6 +1589,37 @@ mod tests {
         let now = p.arrangement.clone();
         assert_eq!(t.undo(&mut p), Some(1));
         assert_eq!(p.arrangement, now);
+    }
+
+    #[test]
+    fn a_tempo_point_turned_on_the_wheel_is_one_undo() {
+        let mut p = project();
+        let mut t = Takes::default();
+        let start = p.arrangement.clone();
+        let change = SongChange::Tempo { at: 3840 };
+        let turn = |p: &mut Project, t: &mut Takes, bpm: f64, join| {
+            let before = p.arrangement.clone();
+            p.arrangement.set_tempo(3840, bpm, None).unwrap();
+            t.song_edit_joining(p, change, before, join)
+        };
+        assert_eq!(turn(&mut p, &mut t, 100.0, Some(7)), 1);
+        assert_eq!(turn(&mut p, &mut t, 101.0, Some(7)), 1);
+        assert_eq!(turn(&mut p, &mut t, 102.0, Some(7)), 1);
+        assert_eq!(t.done().len(), 1);
+        // Another key, or none, is an edit of its own.
+        assert_eq!(turn(&mut p, &mut t, 103.0, Some(8)), 2);
+        assert_eq!(turn(&mut p, &mut t, 104.0, None), 3);
+        assert_eq!(t.undo(&mut p), Some(3));
+        assert_eq!(t.undo(&mut p), Some(2));
+        assert_eq!(p.arrangement.tempo[0].bpm, 102.0);
+        assert_eq!(t.undo(&mut p), Some(1));
+        assert_eq!(p.arrangement, start);
+        // After an undo, a turn starts a new edit.
+        assert_eq!(t.redo(&mut p), Some(1));
+        assert_eq!(turn(&mut p, &mut t, 90.0, Some(7)), 4);
+        // Something else changed the song since: no join.
+        p.arrangement.mark(0, "A").unwrap();
+        assert_eq!(turn(&mut p, &mut t, 91.0, Some(7)), 5);
     }
 
     #[test]

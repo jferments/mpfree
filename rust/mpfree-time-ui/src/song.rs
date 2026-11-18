@@ -2047,15 +2047,35 @@ impl Widget for SongLanes {
             .iter()
             .enumerate()
             .map(|(k, b)| {
-                let word = if audio {
-                    AUDIO_BUTTONS[k]
+                let tempo = !audio && k >= 4 && self.tempo_pick.is_some();
+                let (id, word) = if audio {
+                    ("region-button", AUDIO_BUTTONS[k])
+                } else if tempo {
+                    ("tempo-button", TEMPO_BUTTONS[k - 4])
                 } else {
-                    SONG_BUTTONS[k]
+                    ("button", SONG_BUTTONS[k])
                 };
-                let id = if audio { "region-button" } else { "button" };
                 Target::tap(id, k, word, *b)
             })
             .collect();
+        // The tempo lane: each point, and the lane after the last (a tap
+        // there adds one).
+        let lane = self.tempo_rect(r);
+        let mut free = lane;
+        for k in 0..self.tempo.len() {
+            if let Some(p) = self.tempo_point_rect(r, k) {
+                out.push(Target::tap(
+                    "tempo-point",
+                    k,
+                    format!("{:.1} BPM", self.tempo[k].1),
+                    p,
+                ));
+                free = Rect::new(p.right(), lane.y, (lane.right() - p.right()).max(0), lane.h);
+            }
+        }
+        if free.w >= 2 * TEMPO_HIT {
+            out.push(Target::tap("tempo-lane", 0, "Tempo", free));
+        }
         out.push(Target::tap("rec-song", 0, "Rec song", self.rec_rect(r)));
         out.push(Target::tap("list", 0, "List", self.list_rect(r)));
         if let Some(b) = self.add_track_rect(r) {
