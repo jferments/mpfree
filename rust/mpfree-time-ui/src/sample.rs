@@ -294,6 +294,9 @@ fn clip(name: &str, length: Tick, notes: &[(Tick, u8, u8)]) -> Clip {
             cond: mpfree_seq::Cond::Always,
             ratchet: 1,
             touch: mpfree_seq::Touch::NONE,
+            on: true,
+            ramp: 0,
+            join: mpfree_seq::Join::Attack,
         })
         .expect("sample note in range");
     }

@@ -39,9 +39,10 @@
 //! | morph 0's position | `morph0.0` |
 //! | the transport's tempo (MIDI Learn) | `transport.7` |
 //! | launch scene 3 (MIDI Learn) | `clips.258` |
+//! | track 3's CC 74 / pitch bend out (its outside gear) | `t3.midi.74` / `t3.midi.128` |
 //!
 //! A [`RelAddr`] leaves the track out: `inst.12`, `pad5.2`, `mix.0`,
-//! `fx7.4`, `arp.1`, `seq.0`, `nfx2.4`.
+//! `fx7.4`, `arp.1`, `seq.0`, `nfx2.4`, `midi.74`.
 #![forbid(unsafe_code)]
 
 use std::fmt;
@@ -105,6 +106,85 @@ pub enum Owner {
     /// track. Its parameter ids are in [`clips`]. Locks, macros and the
     /// mod matrix never target it.
     Clips,
+    /// What a track sends its outside gear on MIDI out besides its notes
+    /// (sequencer S6, the CC, pitch bend and pressure lanes): a
+    /// controller, the pitch bend or the channel pressure, on the track's
+    /// own port and channel. Its parameter ids are in [`midi`]. A step's
+    /// lock, a lane, a macro, the morph and the mod matrix move it as they
+    /// move a mixer control; a track that plays on the pads sends nothing.
+    Midi(u8),
+}
+
+/// [`Owner::Midi`]'s parameters: a track's controllers, pitch bend and
+/// channel pressure out. A controller is its own number (CC 74 is 74), so
+/// a project names it as the gear's manual does.
+pub mod midi {
+    /// Controllers 0 to 119 can be sent. 120 to 127 are the channel mode
+    /// messages (All sound off, Reset all controllers, Local control, All
+    /// notes off, omni and mono/poly): they change how the gear listens,
+    /// not its sound, so no lock or lane ever sends them.
+    pub const CONTROLLERS: u16 = 120;
+    /// The pitch bend, -8192 to 8191, 0 in the middle.
+    pub const BEND: u16 = 128;
+    /// The channel pressure (aftertouch), 0 to 127.
+    pub const PRESSURE: u16 = 129;
+    /// One past the last id, for a table of every control of a track.
+    pub const COUNT: u16 = 130;
+
+    /// What an [`Owner::Midi`](super::Owner::Midi) parameter sends.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub enum Midi {
+        /// Control change `n` (0-119).
+        Cc(u8),
+        Bend,
+        Pressure,
+    }
+
+    /// What parameter `id` sends, if it is one.
+    pub const fn of(id: u16) -> Option<Midi> {
+        match id {
+            BEND => Some(Midi::Bend),
+            PRESSURE => Some(Midi::Pressure),
+            n if n < CONTROLLERS => Some(Midi::Cc(n as u8)),
+            _ => None,
+        }
+    }
+
+    /// Its lowest and highest values: -8192 to 8191 for the bend, else 0
+    /// to 127.
+    pub const fn range(id: u16) -> Option<(i16, i16)> {
+        match of(id) {
+            Some(Midi::Bend) => Some((-8192, 8191)),
+            Some(_) => Some((0, 127)),
+            None => None,
+        }
+    }
+
+    /// The value a control has before anything sets it, as General MIDI 2
+    /// has its controllers after Reset all controllers or at power-on:
+    /// volume (7) 100, balance (8) and pan (10) 64, expression (11) 127,
+    /// the sound controllers (70-79) 64, reverb send (91) 40; every other
+    /// controller 0, the bend in the middle (0) and no pressure.
+    pub const fn default(id: u16) -> Option<i16> {
+        match of(id) {
+            Some(Midi::Cc(7)) => Some(100),
+            Some(Midi::Cc(8 | 10 | 70..=79)) => Some(64),
+            Some(Midi::Cc(11)) => Some(127),
+            Some(Midi::Cc(91)) => Some(40),
+            Some(_) => Some(0),
+            None => None,
+        }
+    }
+
+    /// Its name on screens and in the log: "CC 74", "Pitch bend",
+    /// "Pressure".
+    pub fn name(id: u16) -> Option<String> {
+        Some(match of(id)? {
+            Midi::Cc(n) => format!("CC {n}"),
+            Midi::Bend => "Pitch bend".to_string(),
+            Midi::Pressure => "Pressure".to_string(),
+        })
+    }
 }
 
 /// [`Owner::Clips`]' parameters. A clip, a scene and a track are named by
@@ -257,6 +337,8 @@ pub enum OnTrack {
     Seq,
     /// One of the track's MIDI effects, by its id.
     NoteFx(u16),
+    /// The track's controllers, bend and pressure out ([`Owner::Midi`]).
+    Midi,
 }
 
 impl OnTrack {
@@ -270,6 +352,7 @@ impl OnTrack {
             OnTrack::Arp => Owner::Arp(t),
             OnTrack::Seq => Owner::Seq(t),
             OnTrack::NoteFx(id) => Owner::NoteFx(t, id),
+            OnTrack::Midi => Owner::Midi(t),
         }
     }
 }
@@ -286,6 +369,7 @@ impl Owner {
             Owner::Arp(t) => Some((t, OnTrack::Arp)),
             Owner::Seq(t) => Some((t, OnTrack::Seq)),
             Owner::NoteFx(t, id) => Some((t, OnTrack::NoteFx(id))),
+            Owner::Midi(t) => Some((t, OnTrack::Midi)),
             _ => None,
         }
     }
@@ -404,6 +488,7 @@ impl fmt::Display for OnTrack {
             OnTrack::Arp => f.write_str("arp"),
             OnTrack::Seq => f.write_str("seq"),
             OnTrack::NoteFx(id) => write!(f, "nfx{id}"),
+            OnTrack::Midi => f.write_str("midi"),
         }
     }
 }
@@ -486,6 +571,7 @@ fn on_track(word: &str) -> Option<OnTrack> {
         "mix" => Some(OnTrack::Strip),
         "arp" => Some(OnTrack::Arp),
         "seq" => Some(OnTrack::Seq),
+        "midi" => Some(OnTrack::Midi),
         _ => num(word, "pad")
             .map(OnTrack::Pad)
             .or_else(|| num(word, "fx").map(OnTrack::Insert))
@@ -511,8 +597,8 @@ fn owner(words: &[&str]) -> Option<Owner> {
             if let Some(uid) = num(what, "fx") {
                 return Some(Owner::Insert(s, uid));
             }
-            // Instrument, sampler pad, arp, sequencer and MIDI effects:
-            // tracks only.
+            // Instrument, sampler pad, arp, sequencer, MIDI effects and
+            // MIDI out: tracks only.
             let Strip::Track(t) = s else { return None };
             Some(on_track(what)?.on(t))
         }
@@ -567,6 +653,8 @@ mod tests {
             Owner::Seq(2),
             Owner::NoteFx(3, 2),
             Owner::NoteFx(0, u16::MAX),
+            Owner::Midi(0),
+            Owner::Midi(127),
             Owner::Macro(7),
             Owner::Mod(4),
             Owner::Morph(0),
@@ -612,6 +700,8 @@ mod tests {
             ),
             (ParamAddr::new(Owner::Arp(3), 1), "t3.arp.1"),
             (ParamAddr::new(Owner::NoteFx(3, 2), 4), "t3.nfx2.4"),
+            (ParamAddr::new(Owner::Midi(3), 74), "t3.midi.74"),
+            (ParamAddr::new(Owner::Midi(3), midi::BEND), "t3.midi.128"),
             (ParamAddr::macro_value(2), "macro2.0"),
             (ParamAddr::new(Owner::Mod(4), 1), "mod4.1"),
             (ParamAddr::morph_pos(0), "morph0.0"),
@@ -667,6 +757,44 @@ mod tests {
         assert_eq!(seen.len(), 2 + 16 + 4 * 128 + 128 * 16);
     }
 
+    /// A track's MIDI out controls: controllers 0-119 by their own number,
+    /// the bend and the pressure; never the channel mode messages. Each
+    /// starts at General MIDI 2's value.
+    #[test]
+    fn a_tracks_midi_controls_are_named_and_start_where_general_midi_does() {
+        use midi::Midi;
+        assert_eq!(midi::of(0), Some(Midi::Cc(0)));
+        assert_eq!(midi::of(74), Some(Midi::Cc(74)));
+        assert_eq!(midi::of(119), Some(Midi::Cc(119)));
+        for mode in 120..128 {
+            assert_eq!(midi::of(mode), None, "CC {mode} is a channel mode message");
+        }
+        assert_eq!(midi::of(midi::BEND), Some(Midi::Bend));
+        assert_eq!(midi::of(midi::PRESSURE), Some(Midi::Pressure));
+        assert_eq!(midi::of(midi::COUNT), None);
+        assert_eq!(midi::range(midi::BEND), Some((-8192, 8191)));
+        assert_eq!(midi::range(1), Some((0, 127)));
+        assert_eq!(midi::range(121), None);
+        let d = |id| midi::default(id).unwrap();
+        assert_eq!((d(7), d(10), d(11), d(74), d(91)), (100, 64, 127, 64, 40));
+        assert_eq!(
+            (d(1), d(64), d(midi::BEND), d(midi::PRESSURE)),
+            (0, 0, 0, 0)
+        );
+        for id in 0..midi::COUNT {
+            if let (Some((lo, hi)), Some(v)) = (midi::range(id), midi::default(id)) {
+                assert!((lo..=hi).contains(&v), "{id}");
+            }
+        }
+        assert_eq!(midi::name(74).as_deref(), Some("CC 74"));
+        assert_eq!(midi::name(midi::BEND).as_deref(), Some("Pitch bend"));
+        // On a track, and in a clip without it.
+        let a = ParamAddr::new(Owner::Midi(2), 74);
+        assert_eq!(a.rel().map(|r| r.to_string()).as_deref(), Some("midi.74"));
+        assert_eq!("midi.74".parse::<RelAddr>().map(|r| r.on(2)), Ok(a));
+        assert_eq!(a.with_track(5).owner, Owner::Midi(5));
+    }
+
     #[test]
     fn bad_text_is_refused() {
         for s in [
@@ -691,6 +819,8 @@ mod tests {
             "T3.mix.0",
             "transport0.1",
             "t1.transport.0",
+            "bus2.midi.7",
+            "t3.midi3.7",
         ] {
             assert!(s.parse::<ParamAddr>().is_err(), "{s:?} should not parse");
         }

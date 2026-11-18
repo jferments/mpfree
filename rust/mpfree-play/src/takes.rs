@@ -1281,6 +1281,9 @@ mod tests {
                 cond: mpfree_seq::Cond::Always,
                 ratchet: 1,
                 touch: mpfree_seq::Touch::NONE,
+                on: true,
+                ramp: 0,
+                join: mpfree_seq::Join::Attack,
             },
             take,
         }
@@ -1570,6 +1573,9 @@ mod tests {
             cond: mpfree_seq::Cond::Always,
             ratchet: 1,
             touch: mpfree_seq::Touch::NONE,
+            on: true,
+            ramp: 0,
+            join: mpfree_seq::Join::Attack,
         })
         .unwrap();
         assert_eq!(t.capture_clip(&mut p, 0, 1, c.clone()), Ok(1));
@@ -1597,6 +1603,9 @@ mod tests {
                 cond: mpfree_seq::Cond::Always,
                 ratchet: 1,
                 touch: mpfree_seq::Touch::NONE,
+                on: true,
+                ramp: 0,
+                join: mpfree_seq::Join::Attack,
             })
             .unwrap();
         assert_eq!(t.undo(&mut p), Some(1));
@@ -1667,6 +1676,9 @@ mod tests {
             cond: mpfree_seq::Cond::Always,
             ratchet: 1,
             touch: mpfree_seq::Touch::NONE,
+            on: true,
+            ramp: 0,
+            join: mpfree_seq::Join::Attack,
         };
         let pressed = |tick, first| Note {
             touch: Touch { first, len: 2 },

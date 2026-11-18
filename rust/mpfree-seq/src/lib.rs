@@ -25,7 +25,11 @@
 //! A note can also have a **trig condition** ([`Cond`]: play on pass A of
 //! every B, only during a fill, only if the track's last conditional note
 //! played, and so on) and a **ratchet** (it plays several times, evenly
-//! spread over its length). The player (`mpfree-play`) decides them.
+//! spread over its length, with a velocity ramp across the hits if set).
+//! The player (`mpfree-play`) decides them. A step can be **off**
+//! ([`Note::on`]: it keeps everything and is left out), and a note can be
+//! **tied** to the same note before it or **slide** into it legato
+//! ([`Join`]).
 //!
 //! **Scenes** ([`scenes`]) are the rows of the launch grid: launched
 //! together, with mutes, follow actions and stored values for the morph.
@@ -107,6 +111,63 @@ pub struct Note {
     /// The pad pressure played on it, if any: its values in the clip's
     /// [`Clip::touch`]. Edits that copy the note (`..note`) keep it.
     pub touch: Touch,
+    /// The step is on. A step tapped off keeps its note, velocity, length,
+    /// settings and locks, and the player leaves it out, with its locks,
+    /// as if its chance had failed (but it sets no last result for `Pre`
+    /// and `Nei`). Sequencer S6, for the Play page's step grid.
+    pub on: bool,
+    /// A ratchet's velocity ramp: its last hit's velocity less its first's,
+    /// -[`MAX_RAMP`] to [`MAX_RAMP`]; the hits between step evenly, each
+    /// kept to 1 to 127. 0 is every hit at the note's velocity, and a note
+    /// with no ratchet has nothing to ramp (Elektron's retrig velocity
+    /// curve; S6).
+    pub ramp: i8,
+    /// How it starts: with its own attack, or joined to the note before it
+    /// ([`Join`]; S6).
+    pub join: Join,
+}
+
+/// How a note starts ([`Note::join`]): with its own attack, or joined to
+/// the note before it on its track, as a 303 ties and slides.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Join {
+    /// Its own attack.
+    #[default]
+    Attack,
+    /// It continues the same note (pitch) sounding on its track as it
+    /// starts, or ending on its tick: no new attack, that note lasts to
+    /// this one's end. With nothing to continue, it plays as usual.
+    Tie,
+    /// Legato into it: the notes of its track sounding as it starts, or
+    /// ending on its tick, end one tick after it starts, so the two overlap
+    /// and a synth in mono or legato mode with glide slides there. Onto the
+    /// same pitch it ties.
+    Slide,
+}
+
+impl Join {
+    /// As saved and shown: "", "tie", "slide".
+    pub fn word(self) -> &'static str {
+        match self {
+            Join::Attack => "",
+            Join::Tie => "tie",
+            Join::Slide => "slide",
+        }
+    }
+}
+
+/// The velocity of hit `hit` (from 0) of `hits` ratchet hits that start at
+/// `velocity` and ramp by `ramp` ([`Note::ramp`]) to the last: evenly
+/// stepped, rounded, kept to 1 to 127. The first hit, a ramp of 0 or a
+/// note with no ratchet keeps `velocity`.
+pub fn ramped(velocity: u8, ramp: i8, hit: u8, hits: u8) -> u8 {
+    let n = i32::from(hits.max(1));
+    if n < 2 || ramp == 0 {
+        return velocity;
+    }
+    let k = i32::from(hit).min(n - 1);
+    let by = (f32::from(ramp) * k as f32 / (n - 1) as f32).round() as i32;
+    (i32::from(velocity) + by).clamp(1, 127) as u8
 }
 
 /// Where a note's pressure is in its clip: values `first..first + len` of
@@ -143,6 +204,9 @@ pub struct TouchPoint {
 
 /// The most hits a ratchet makes.
 pub const MAX_RATCHET: u8 = 8;
+/// The most a ratchet's velocity ramps ([`Note::ramp`]), either way: from
+/// 1 to 127.
+pub const MAX_RAMP: i8 = 126;
 
 /// A trig condition, the Elektron way: when a note plays. Passes count
 /// from the clip's start on its track (pass 1 starts there), by song
@@ -269,7 +333,7 @@ impl std::fmt::Display for Cond {
 impl Note {
     /// A note that always plays. New code should build notes with this, so
     /// that fields added later take their defaults.
-    pub fn new(tick: Tick, len: Tick, note: u8, velocity: u8) -> Note {
+    pub const fn new(tick: Tick, len: Tick, note: u8, velocity: u8) -> Note {
         Note {
             tick,
             len,
@@ -279,7 +343,16 @@ impl Note {
             cond: Cond::Always,
             ratchet: 1,
             touch: Touch::NONE,
+            on: true,
+            ramp: 0,
+            join: Join::Attack,
         }
+    }
+
+    /// The velocity of hit `hit` (from 0) of its ratchet, with its ramp
+    /// ([`ramped`]).
+    pub fn hit_velocity(&self, hit: u8) -> u8 {
+        ramped(self.velocity, self.ramp, hit, self.ratchet)
     }
 
     /// Whether a clip `length` ticks long whose pad pressure is `touch`
@@ -294,6 +367,7 @@ impl Note {
             && (1..=100).contains(&self.chance)
             && self.cond.ok()
             && (1..=MAX_RATCHET).contains(&self.ratchet)
+            && (-MAX_RAMP..=MAX_RAMP).contains(&self.ramp)
             && (self.touch.is_none() || touch.get(self.touch.range()).is_some_and(run_ok))
     }
 
@@ -579,8 +653,8 @@ pub struct ClipSettings {
 pub enum ModelError {
     ClipLength,
     TooManyNotes,
-    /// A note's tick, length, note number, velocity, chance, condition or
-    /// ratchet is out of range.
+    /// A note's tick, length, note number, velocity, chance, condition,
+    /// ratchet or ramp is out of range.
     BadNote(usize),
     BadSpeed,
     BadSwing,
@@ -1213,6 +1287,9 @@ mod tests {
             cond: Cond::Always,
             ratchet: 1,
             touch: Touch::NONE,
+            on: true,
+            ramp: 0,
+            join: Join::Attack,
         });
         assert_eq!(c.check(), Ok(()));
         c.notes.push(Note {
@@ -1224,6 +1301,9 @@ mod tests {
             cond: Cond::Always,
             ratchet: 1,
             touch: Touch::NONE,
+            on: true,
+            ramp: 0,
+            join: Join::Attack,
         });
         assert_eq!(c.check(), Err(ModelError::BadNote(1)));
         c.notes[1].tick = 100;
@@ -1240,6 +1320,36 @@ mod tests {
         assert!(
             Speed::new(1, 8).is_some() && Speed::new(4, 1).is_some() && Speed::new(5, 4).is_none()
         );
+    }
+
+    #[test]
+    fn a_ratchets_ramp_steps_its_hits_velocity_and_stays_in_range() {
+        let mut n = Note::new(0, 240, 36, 100);
+        n.ratchet = 4;
+        n.ramp = -60;
+        let hits: Vec<u8> = (0..4).map(|h| n.hit_velocity(h)).collect();
+        assert_eq!(hits, vec![100, 80, 60, 40]);
+        // Rounded, kept to 1 to 127, past the last hit the last's.
+        assert_eq!(ramped(100, 50, 1, 3), 125);
+        assert_eq!(ramped(100, 126, 2, 3), 127);
+        assert_eq!(ramped(10, -126, 2, 3), 1);
+        assert_eq!(ramped(90, 7, 9, 3), 97);
+        // No ratchet or no ramp: the note's velocity.
+        assert_eq!(ramped(90, -50, 0, 1), 90);
+        assert_eq!(ramped(90, 0, 3, 4), 90);
+        // A clip refuses a ramp out of range, and every step setting is
+        // a plain note's by default.
+        let mut c = Clip::new("c", 960);
+        assert!(c.add_note(Note { ramp: -127, ..n }).is_err());
+        assert!(c
+            .add_note(Note {
+                ramp: MAX_RAMP,
+                ..n
+            })
+            .is_ok());
+        let plain = Note::new(0, 1, 0, 1);
+        assert!(plain.on && plain.ramp == 0 && plain.join == Join::Attack);
+        assert_eq!(Join::default(), Join::Attack);
     }
 
     #[test]
@@ -1320,6 +1430,9 @@ mod tests {
                 cond: Cond::Always,
                 ratchet: 1,
                 touch: Touch::NONE,
+                on: true,
+                ramp: 0,
+                join: Join::Attack,
             }),
             Ok(())
         );
@@ -1333,6 +1446,9 @@ mod tests {
                 cond: Cond::Always,
                 ratchet: 1,
                 touch: Touch::NONE,
+                on: true,
+                ramp: 0,
+                join: Join::Attack,
             }),
             Err(ModelError::BadNote(1))
         );
@@ -1346,6 +1462,9 @@ mod tests {
                 cond: Cond::Always,
                 ratchet: 1,
                 touch: Touch::NONE,
+                on: true,
+                ramp: 0,
+                join: Join::Attack,
             }),
             Err(ModelError::BadNote(1))
         );
@@ -1360,6 +1479,9 @@ mod tests {
                 cond: Cond::Always,
                 ratchet: 1,
                 touch: Touch::NONE,
+                on: true,
+                ramp: 0,
+                join: Join::Attack,
             };
             MAX_NOTES
         ];
@@ -1373,6 +1495,9 @@ mod tests {
                 cond: Cond::Always,
                 ratchet: 1,
                 touch: Touch::NONE,
+                on: true,
+                ramp: 0,
+                join: Join::Attack,
             }),
             Err(ModelError::TooManyNotes)
         );
@@ -1387,6 +1512,9 @@ mod tests {
             cond: Cond::Always,
             ratchet: 1,
             touch: Touch::NONE,
+            on: true,
+            ramp: 0,
+            join: Join::Attack,
         }));
         assert_eq!(c.notes.len(), MAX_NOTES - 1);
         assert!(!c.remove_note(&Note {
@@ -1398,6 +1526,9 @@ mod tests {
             cond: Cond::Always,
             ratchet: 1,
             touch: Touch::NONE,
+            on: true,
+            ramp: 0,
+            join: Join::Attack,
         }));
     }
 
