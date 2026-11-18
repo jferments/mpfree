@@ -1235,11 +1235,13 @@ impl TimeControl {
                     pitches.push(n.note);
                 }
             }
-            let origin = self
+            let launch = self
                 .launches
                 .iter()
-                .find(|l| l.track == track && l.slot == slot)
-                .map(|l| l.origin);
+                .find(|l| l.track == track && l.slot == slot);
+            let origin = launch.map(|l| l.origin);
+            let order =
+                launch.and_then(|l| mpfree_play::StepOrder::of(c, track, slot, l.origin, l.start));
             Some(StepClip {
                 slot,
                 name: c.name.clone(),
@@ -1247,6 +1249,7 @@ impl TimeControl {
                 song_length: c.speed.to_song(c.length as f64),
                 song_step: c.speed.to_song(STEP_TICKS as f64),
                 origin,
+                order,
                 locks: pitches
                     .iter()
                     .map(|&p| (p, grid.lock_row(c, p)))

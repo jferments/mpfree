@@ -974,7 +974,7 @@ fn clip_view(
 }
 
 /// `clip` compiled, named `slot`, on a track whose swing is `track_swing`.
-fn view_of(
+pub(crate) fn view_of(
     clip: &Clip,
     track_swing: Option<Swing>,
     slot: usize,
