@@ -1269,6 +1269,12 @@ impl Session {
         if let Some(line) = self.mix.poll_built() {
             self.out.note(line);
         }
+        // A Perform FX the Perform set put on came in, or one came off:
+        // said, and the Perform view's Q-Links follow, as in main.rs.
+        if crate::desk::tell_throw_said(&mut self.mix, &mut self.out) {
+            self.out
+                .show(crate::desk::throw_knobs(&self.mix, self.app.perform_set()));
+        }
         // A switch of mode that came in: Q-Links and MIDI controls learned
         // on the insert's controls follow them, as in main.rs.
         for landed in self.mix.modes.take_landed() {
