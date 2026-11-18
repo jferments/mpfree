@@ -629,6 +629,13 @@ impl TimeHost {
             .modulate_note_fx(usize::from(track), id, k, value);
     }
 
+    /// Track `track`'s MIDI effects as they play now, with the mod
+    /// engine's values on them (for MIDI out's CC scale and CC smooth).
+    /// Never allocates.
+    pub fn note_fx_now(&self, track: usize) -> mpfree_notefx::TrackFx {
+        self.audio.note_fx_now(track)
+    }
+
     /// The tracks' MIDI effects as the sound loop has them, once after
     /// each change (for the mod engine's view of their settings).
     pub fn note_fx_moved(&mut self) -> Option<&[mpfree_notefx::TrackFx; mpfree_seq::MAX_TRACKS]> {
@@ -734,9 +741,18 @@ impl TimeHost {
         self.audio.follow(follow);
     }
 
+    /// The bytes read from the followed port at the top of this period of
+    /// `period` frames, before [`TimeHost::advance`]: they came during the
+    /// period before, so they go to [`TimeHost::clock_in`] stamped half a
+    /// period earlier than [`TimeHost::next_frame`]
+    /// ([`follow::read_stamp`]), on average when they came.
+    pub fn clock_read(&mut self, period: u32, bytes: &[u8]) -> Option<String> {
+        self.clock_in(follow::read_stamp(self.next_frame(), period), bytes)
+    }
+
     /// Every byte read from the followed port this period, before
-    /// [`TimeHost::advance`], with `frame` = [`TimeHost::next_frame`]
-    /// (or earlier, when the bytes have their own time). Anything but
+    /// [`TimeHost::advance`], with `frame` when they came, at most
+    /// [`TimeHost::next_frame`]. Anything but
     /// clock, Start, Continue, Stop and Song Position is skipped; the
     /// options given to [`TimeHost::follow`] say what follows. When the
     /// leader's start began a ready take, the clip it records into is
@@ -903,6 +919,15 @@ impl TimeHost {
     /// gives those). It lights the pattern's step either way.
     pub fn pad(&mut self, offset: u32, event: Event) {
         self.audio.pad(offset, event);
+    }
+
+    /// A key a route played on `track`, which isn't armed (the I/O view's
+    /// Routing), in the coming period at `offset`: the pad that plays its
+    /// note there, its end or its pressure; `AllOff` ends every note held
+    /// there. CAPTURE's history keeps it, and CAPTURE puts it in that
+    /// track; nothing records it.
+    pub fn routed_played(&mut self, track: u8, offset: u32, event: Event) {
+        self.audio.routed(track, offset, event);
     }
 
     /// Pad `pad`'s pressure (0 to 127, raw) in the coming period, at
@@ -2885,6 +2910,9 @@ mod tests {
             fx,
             "the project keeps its own"
         );
+        // As they play now (MIDI out's view): with the mod engine's value.
+        assert_eq!(h.note_fx_now(1).value(id, 0), Some(7));
+        assert_eq!(h.note_fx_now(99), mpfree_notefx::TrackFx::default());
         // Kept in range; a setting or an effect the track hasn't got is not.
         h.modulate_note_fx(addr, Some(99.0));
         assert_eq!(press(&mut h, &mut pads, &mut arps), Some(52));
@@ -4780,6 +4808,181 @@ mod tests {
         assert_eq!(h.dropped(), 0);
     }
 
+    /// Keys a route plays on tracks that aren't armed go into CAPTURE's
+    /// phrase with the pads' notes. CAPTURE puts each track's notes in a
+    /// clip of its own, all one take that one UNDO takes back, and says
+    /// which track it left out.
+    #[test]
+    fn capture_keeps_routed_keys_in_their_own_tracks_as_one_take() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let on = |note| Event::NoteOn { note, velocity: 90 };
+        // (frame, track, event): Track 3 in bars 2 and 3, Track 2 in bar
+        // 2, and a track there isn't.
+        let keys = [
+            (BAR + 2000, 2, on(5)),
+            (BAR + 6000, 2, Event::NoteOff { note: 5 }),
+            (2 * BAR + 100, 2, on(6)),
+            (2 * BAR + 4000, 2, Event::NoteOff { note: 6 }),
+            (BAR + 3000, 1, on(7)),
+            (BAR + 9000, 1, Event::NoteOff { note: 7 }),
+            (BAR + 4000, 40, on(1)),
+            (BAR + 5000, 40, Event::NoteOff { note: 1 }),
+        ];
+        let pressed = [(BAR + 1000, 4, 100, 2000)];
+        while pads.frame < 3 * BAR + BAR / 2 {
+            let end = pads.frame + u64::from(PERIOD);
+            for &(at, track, ev) in &keys {
+                if (pads.frame..end).contains(&at) {
+                    h.routed_played(track, (at - pads.frame) as u32, ev);
+                }
+            }
+            let start = pads.frame;
+            run(&mut h, &mut pads, end, &pressed);
+            assert_eq!(pads.frame, end, "one period from {start}");
+        }
+        assert_eq!(h.state().capture.as_deref(), Some("2 bars"));
+        assert!(h.state().done.is_empty(), "nothing was recorded");
+        assert_eq!(
+            h.act(TimeAction::Capture).unwrap(),
+            "capture 1: 1 notes, 2 bars, new clip in slot 1 of Track 1; \
+             1 notes, new clip in slot 1 of Track 2; \
+             2 notes, new clip in slot 1 of Track 3; \
+             track 41 left out: there is no such track"
+        );
+        let st = h.state();
+        for (t, n) in [(0, 1), (1, 1), (2, 2)] {
+            assert_eq!(
+                (
+                    st.clip(t, 0).map(|c| (c.name.as_str(), c.notes)),
+                    st.launch(t).is_some()
+                ),
+                (Some(("Capture 1", n)), true),
+                "track {}",
+                t + 1
+            );
+        }
+        assert_eq!(st.done.len(), 1, "one take");
+        assert_eq!(
+            h.act(TimeAction::Undo).unwrap(),
+            "undo: capture 1 · Track 1 / 1"
+        );
+        let st = h.state();
+        assert!((0..3).all(|t| st.clip(t, 0).is_none() && st.launch(t).is_none()));
+        assert_eq!(
+            st.capture.as_deref(),
+            Some("2 bars"),
+            "it can be kept again"
+        );
+        h.act(TimeAction::Redo).unwrap();
+        let st = h.state();
+        assert!((0..3).all(|t| st.clip(t, 0).is_some()));
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// A routed note whose end never came stops holding CAPTURE's phrase
+    /// open once its track's notes all end (`AllOff`): the next note after
+    /// the quiet starts a phrase of its own.
+    #[test]
+    fn a_routed_all_off_ends_a_held_note_for_capture() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let keys = [
+            (
+                BAR + 1000,
+                Event::NoteOn {
+                    note: 5,
+                    velocity: 90,
+                },
+            ),
+            (2 * BAR, Event::AllOff),
+            (
+                5 * BAR + 100,
+                Event::NoteOn {
+                    note: 6,
+                    velocity: 90,
+                },
+            ),
+            (5 * BAR + 4000, Event::NoteOff { note: 6 }),
+        ];
+        while pads.frame < 6 * BAR + BAR / 2 {
+            let end = pads.frame + u64::from(PERIOD);
+            for &(at, ev) in &keys {
+                if (pads.frame..end).contains(&at) {
+                    h.routed_played(1, (at - pads.frame) as u32, ev);
+                }
+            }
+            run(&mut h, &mut pads, end, &[]);
+        }
+        assert_eq!(
+            h.act(TimeAction::Capture).unwrap(),
+            "capture 1: 1 notes, 1 bar, new clip in slot 1 of Track 2"
+        );
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// The moves made over a phrase go with the armed track's notes; when
+    /// only routed keys played, they stay out, and the line says so.
+    #[test]
+    fn capture_of_routed_keys_alone_leaves_the_moves_out_and_says_so() {
+        use mpfree_play::mpfree_param::{Owner, ParamAddr};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let knob = ParamAddr::new(Owner::Inst(0), 5);
+        let keys = [
+            (
+                BAR + 1000,
+                Event::NoteOn {
+                    note: 5,
+                    velocity: 90,
+                },
+            ),
+            (BAR + 9000, Event::NoteOff { note: 5 }),
+        ];
+        let mut moves: Vec<(u64, Option<f32>)> = (0..5)
+            .map(|i| (BAR + 3000 + i * 1500, Some(0.2 * i as f32)))
+            .collect();
+        moves.push((BAR + 12_000, None));
+        while pads.frame < 3 * BAR {
+            let end = pads.frame + u64::from(PERIOD);
+            for &(at, ev) in &keys {
+                if (pads.frame..end).contains(&at) {
+                    h.routed_played(1, (at - pads.frame) as u32, ev);
+                }
+            }
+            for &(at, v) in &moves {
+                if (pads.frame..end).contains(&at) {
+                    let input = match v {
+                        Some(value) => Input::Move {
+                            addr: knob,
+                            value,
+                            map: mpfree_seq::mpfree_moves::Map::linear(0.0, 1.0),
+                        },
+                        None => Input::End { addr: knob },
+                    };
+                    h.gesture((at - pads.frame) as u32, input);
+                }
+            }
+            h.period(PERIOD, &mut pads);
+            pads.frame = end;
+        }
+        assert_eq!(
+            h.act(TimeAction::Capture).unwrap(),
+            "capture 1: 1 notes, 1 bar, new clip in slot 1 of Track 2; \
+             1 move left out: it goes with the armed track's notes"
+        );
+        let clip = h.control.project.clip(1, 0).expect("Track 2's clip");
+        assert!(clip.moves.is_empty(), "no move went into Track 2's clip");
+        assert!(h.control.project.clip(0, 0).is_none());
+        assert_eq!(h.dropped(), 0);
+    }
+
     /// Pad pressure played without recording goes on its note when
     /// CAPTURE keeps it, and plays back with it; a track that leaves
     /// pressure out keeps the note without it.
@@ -5627,14 +5830,14 @@ mod tests {
         }
     }
 
-    /// Following another device's clock as the app will (the MIDI
+    /// Following another device's clock as the app does (the MIDI
     /// thread's M4): each period, the leader port's bytes read at its top
-    /// go to `clock_in` at `next_frame`, and the app's tempo to
-    /// `follow_tempo`. The leader runs at 100 BPM, the transport at 120.
-    /// A one-bar clip with a note on every beat plays on the leader's
-    /// beats from the third bar on, about half a period after them (bytes
-    /// read once a period come up to a period late); the app's tempo is ignored while
-    /// the clock arrives; the screens and `followed_bpm` show the leader's;
+    /// go to `clock_read`, which stamps them half a period earlier, and the
+    /// app's tempo to `follow_tempo`. The leader runs at 100 BPM, the
+    /// transport at 120. A one-bar clip with a note on every beat plays on
+    /// the leader's beats from the third bar on, within half a period of
+    /// them (bytes read once a period come up to a period after they
+    /// did); the app's tempo is ignored while the clock arrives; the screens and `followed_bpm` show the leader's;
     /// the status line has nothing to add; and following allocates
     /// nothing.
     #[test]
@@ -5680,7 +5883,7 @@ mod tests {
         let mut period = |h: &mut TimeHost, pads: &mut Fake| {
             let p = h.next_frame();
             let n = leader.bytes(p, &mut buf);
-            h.clock_in(p, &buf[..n]);
+            h.clock_read(PERIOD, &buf[..n]);
             h.follow_tempo(120.0);
             h.period(PERIOD, pads);
             pads.frame += u64::from(PERIOD);
@@ -5706,13 +5909,22 @@ mod tests {
                 hit as i64 - b as i64
             })
             .collect();
-        assert_eq!(pads.hits.len(), 32, "a note a beat, from the first");
-        // About half a period late: the bytes are read up to a period
-        // after they came (58 to 72 frames when written).
+        // A note a beat, from the first (beat 32's may have played too, a
+        // little early, in the last period run).
+        let mid = (beat(31) + beat(32)) / 2;
+        let played = pads.hits.iter().filter(|h| h.0 < mid).count();
+        assert_eq!(played, 32, "a note a beat, from the first");
+        // On the beats, within half a period: the bytes are read up to a
+        // period after they came, and stamped half a period back.
         let half = i64::from(PERIOD) / 2;
         assert!(
-            late.iter().all(|&d| (half - 32..=half + 32).contains(&d)),
+            late.iter().all(|&d| (-half..=half).contains(&d)),
             "frames after the leader's beats: {late:?}"
+        );
+        let mean = late.iter().sum::<i64>() / late.len() as i64;
+        assert!(
+            mean.abs() <= 16,
+            "{mean} frames after the beats on average: {late:?}"
         );
         let bpm = h.followed_bpm().unwrap();
         assert!((bpm - 100.0).abs() < 0.1, "{bpm}");
