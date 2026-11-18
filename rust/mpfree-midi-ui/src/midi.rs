@@ -97,9 +97,6 @@ fn thru_field(m: &IoModel, from: &str) -> (String, Option<usize>) {
     }
 }
 
-/// A track's "Plays on" choices in order: inside, then each output port's
-/// 16 channels, or one choice for MPE gear (its zone's master channel),
-/// whose notes each take a channel of their own.
 /// Why nothing sent to the port named `port` would leave, in the Plays on
 /// row's words ("sends nothing: MIDI out is off", "sends nothing: Volca
 /// Kick is not plugged in"); None when it would go out. For whatever else
@@ -116,6 +113,9 @@ pub fn sends_nothing(m: &IoModel, port: &str) -> Option<String> {
     }
 }
 
+/// A track's "Plays on" choices in order: inside, then each output port's
+/// 16 channels, or one choice for MPE gear (its zone's master channel),
+/// whose notes each take a channel of their own.
 fn plays_on_list(m: &IoModel) -> Vec<Option<TrackOut>> {
     let mut v = vec![None];
     for (p, _) in out_ports(m) {
