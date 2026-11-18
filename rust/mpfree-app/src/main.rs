@@ -5580,6 +5580,7 @@ fn player_session(
     // Keys a route sends to a track that isn't armed, played at once.
     let mut routed_keys: Vec<(u8, midi_in::Key)> = Vec::with_capacity(64);
     let mut routed_held = midi_in::RoutedHeld::new();
+    let mut routed_pads = midi_in::RoutedPads::new();
     // The track the keys' expression last went to on MIDI out: when
     // another is armed, its gear's bend and pressure go back to rest.
     let mut expr_track = 0usize;
@@ -6782,6 +6783,16 @@ fn player_session(
             midi_out.thru(p.from, p.to, p.msg);
         }
         for (track, k) in routed_keys.drain(..) {
+            // CAPTURE keeps the key as the pad that plays its note on the
+            // track, and puts it in that track.
+            let t = usize::from(track);
+            let synth_has = track_kits.plays_synth(t).then_some(&*synth);
+            let kept = routed_pads.event(track, k, |n| {
+                midi_file::pad_on_track(&mix.instruments, synth_has, t, n)
+            });
+            if let Some(ev) = kept {
+                time.routed_played(track, 0, ev);
+            }
             play_routed(
                 track,
                 k,

@@ -305,7 +305,8 @@ pub fn clips(
 /// else the synth's pad layout if the track plays the synth (`synth`), or
 /// the kit pad that sends the note on MIDI out, in any of its 8 banks
 /// (`profile::kit_pad_of_note`, every note has one), so a kit's export
-/// comes back on the pads that played it.
+/// comes back on the pads that played it. It allocates nothing: CAPTURE
+/// asks it for each key a route plays.
 pub fn pad_on_track(
     own: &crate::instruments::Instruments,
     synth: Option<&crate::synth::Synth>,
@@ -316,13 +317,13 @@ pub fn pad_on_track(
         return p;
     }
     match synth {
-        Some(s) => pad_playing(note, |p| s.notes(p).to_vec()),
+        Some(s) => pad_playing(note, |p| s.notes(p)),
         None => Some(mpfree_midi::profile::kit_pad_of_note(note) as u8),
     }
 }
 
 /// The pad of `notes(pad)` (pads 0 to 15) that plays `note` alone.
-pub fn pad_playing(note: u8, notes: impl Fn(usize) -> Vec<u8>) -> Option<u8> {
+pub fn pad_playing<'a>(note: u8, notes: impl Fn(usize) -> &'a [u8]) -> Option<u8> {
     (0..16).find(|&p| notes(p) == [note]).map(|p| p as u8)
 }
 
@@ -555,11 +556,14 @@ mod tests {
         // Track 1 a kit (each note the kit pad that sends it, in any
         // bank), track 2 a synth whose pad 5 plays E1 (40) alone.
         let kit = |n: u8| Some(mpfree_midi::profile::kit_pad_of_note(n) as u8);
+        let synth: Vec<[u8; 1]> = (0..16u8)
+            .map(|p| if p == 4 { [40] } else { [p + 70] })
+            .collect();
         let made = clips(&m, 0, 2, |t, n| {
             if t == 0 {
                 kit(n)
             } else {
-                pad_playing(n, |p| if p == 4 { vec![40] } else { vec![p as u8 + 70] })
+                pad_playing(n, |p| &synth[p])
             }
         });
         assert_eq!(made.clips.len(), 2);

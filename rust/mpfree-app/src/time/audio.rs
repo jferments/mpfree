@@ -423,6 +423,18 @@ impl TimeAudio {
         }
     }
 
+    /// A key a route played on `track`, not the armed one, as the pad
+    /// that plays its note there (a note, its end or its pressure), for
+    /// CAPTURE's history only: nothing records it.
+    pub fn routed(&mut self, track: u8, offset: u32, event: Event) {
+        if matches!(
+            event,
+            Event::NoteOn { .. } | Event::NoteOff { .. } | Event::Pressure { .. }
+        ) {
+            self.send(ToControl::PlayedOn(track, offset, event));
+        }
+    }
+
     /// A pad note for CAPTURE's history; a press sends its pad's next
     /// pressure value even when it is the last one sent.
     fn played(&mut self, offset: u32, event: Event) {
