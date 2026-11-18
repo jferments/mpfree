@@ -63,6 +63,7 @@ fn shots() -> Vec<Shot> {
         p.sending = p.has_out;
     }
     built.live.cv_volts = [2.0, 5.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0];
+    let moving = sample::moving_cv(built.clone());
     // Four learned controls: a knob, an endless encoder, a key, and one on
     // the drum machine that isn't plugged in.
     for (text, name) in [
@@ -319,6 +320,17 @@ fn shots() -> Vec<Shot> {
             section: 5,
             model: built.clone(),
             wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: None,
+            pick: None,
+        },
+        Shot {
+            name: "io-cv-moving",
+            about: "CV with an envelope of the Bass track's keys on CV 2 and two LFOs: a Drift on the song's bar snapped to A minor pentatonic, and a free sine",
+            section: 5,
+            model: moving,
+            wheel: 3,
             taps: vec![],
             at: 1,
             open: None,

@@ -90,6 +90,39 @@ fn learn_cutoff(m: &mut IoModel) -> To {
 /// 5-pin jacks on channel 2 (program 5 first); clock arriving on the 5-pin
 /// jacks at 120 BPM (the tempo follows it) and an Akai SysEx. Each line
 /// says where it went.
+/// CV 2 an envelope of Drums' keys, CV 3 a Drift LFO on the song's bar
+/// snapped to A minor pentatonic, CV 4 a free sine; CV out sending, with
+/// each output's volts now.
+pub fn moving_cv(mut m: IoModel) -> IoModel {
+    use mpfree_midi::cv_mod::{Env, Lfo, Notes, Rate, Shape};
+    m.live.built.cv_outs = 4;
+    m.setup.cv[1] = CvAssign::Envelope(Env {
+        attack_ms: 2.0,
+        decay_ms: 500.0,
+        sustain: 0.4,
+        ..Env::new(0)
+    });
+    m.setup.cv[2] = CvAssign::Lfo(Lfo {
+        shape: Shape::Drift,
+        rate: Rate::Beats(4.0),
+        low_volts: 0.0,
+        high_volts: 2.0,
+        restart: None,
+        notes: Notes {
+            mask: 0x4A9,
+            root: 9,
+        },
+    });
+    m.setup.cv[3] = CvAssign::Lfo(Lfo {
+        rate: Rate::Hz(0.5),
+        low_volts: 1.0,
+        high_volts: 4.0,
+        ..Lfo::default()
+    });
+    m.live.cv_volts = [2.0, 3.1, 0.75, 2.6, 5.0, 0.0, 0.0, 0.0];
+    m
+}
+
 pub fn monitored(mut m: IoModel) -> IoModel {
     let learned = learn_cutoff(&mut m);
     let mut ports = Ports::new();
