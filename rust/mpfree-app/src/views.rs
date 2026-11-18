@@ -8,18 +8,45 @@
 //! The sound shown last is worked out first. Views are kept by the sound's
 //! id (a hash of its audio), so the same sound in another kit, or a kit
 //! loaded again, is never analysed twice while it stays loaded.
+//!
+//! A sound's pitch over time (for the Chop tab's Pitch method) is followed
+//! only when asked for ([`Views::follow_pitch`]), on the same worker, and
+//! lands in the sound's view the same way.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 
 use mpfree_sampler::model::{Source, SourceId};
-use mpfree_sampler_ui::source::SourceView;
+use mpfree_sampler_ui::source::{PitchTrack, SourceView};
+
+/// What the worker does for a sound.
+enum Job {
+    /// Its view: the peaks, then the rest.
+    View(Source),
+    /// Its pitch over time, in its view's mono mix at its rate.
+    Pitch(Arc<SourceView>, u32),
+}
+
+impl Job {
+    fn id(&self) -> SourceId {
+        match self {
+            Job::View(s) => s.id(),
+            Job::Pitch(v, _) => v.id,
+        }
+    }
+}
+
+/// What the worker sends back.
+enum Done {
+    View(Arc<SourceView>),
+    Pitch(SourceId, Option<Arc<PitchTrack>>),
+}
 
 /// The sounds waiting for the worker, the first next.
 #[derive(Default)]
 struct Queue {
-    jobs: VecDeque<Source>,
+    jobs: VecDeque<Job>,
     stop: bool,
 }
 
@@ -31,8 +58,10 @@ pub struct Views(Box<Inner>);
 
 pub struct Inner {
     made: HashMap<SourceId, Arc<SourceView>>,
+    /// Sounds whose pitch is asked for and not yet followed.
+    pitch_asked: HashSet<SourceId>,
     queue: Shared,
-    rx: Receiver<Arc<SourceView>>,
+    rx: Receiver<Done>,
     /// False when the worker couldn't start: views are then worked out
     /// in [`Views::get`], as before.
     worker: bool,
@@ -56,6 +85,7 @@ impl Views {
             .is_ok();
         Views(Box::new(Inner {
             made: HashMap::new(),
+            pitch_asked: HashSet::new(),
             queue,
             rx,
             worker,
@@ -122,7 +152,8 @@ impl Inner {
         }
         let (lock, _) = &*self.queue;
         if let Ok(mut q) = lock.lock() {
-            q.jobs.retain(|s| s.id() != v.id);
+            q.jobs
+                .retain(|j| !matches!(j, Job::View(s) if s.id() == v.id));
         }
         self.made.insert(v.id, v);
         self.fresh = true;
@@ -134,17 +165,67 @@ impl Inner {
         self.made.get(&id).filter(|v| v.ready).cloned()
     }
 
+    /// Follows the pitch of `s` (rate and mono mix) on the worker, once,
+    /// for the Chop tab's Pitch method: the view with it lands on a later
+    /// [`Views::take_done`]. Nothing while the sound has no mono mix yet
+    /// (asked again when it has), or once it is followed or asked for.
+    pub fn follow_pitch(&mut self, s: &Source) {
+        let Some(v) = self.made.get(&s.id()).cloned() else {
+            return;
+        };
+        if v.pitch.is_some() || v.mono.is_empty() || self.pitch_asked.contains(&s.id()) {
+            return;
+        }
+        if !self.worker {
+            if let Some(t) = v.follow_pitch(s.rate()) {
+                self.made.insert(s.id(), Arc::new(v.with_pitch(t)));
+                self.fresh = true;
+            }
+            return;
+        }
+        let (lock, cv) = &*self.queue;
+        let Ok(mut q) = lock.lock() else {
+            return;
+        };
+        self.pitch_asked.insert(s.id());
+        // After the sound's own view, if that is waiting: else first.
+        let at = q
+            .jobs
+            .iter()
+            .position(|j| matches!(j, Job::View(w) if w.id() == s.id()))
+            .map_or(0, |i| i + 1);
+        q.jobs.insert(at, Job::Pitch(v, s.rate()));
+        cv.notify_one();
+    }
+
     /// Takes in what the worker finished since the last call. True when a
     /// view changed, for the page to show it.
     pub fn take_done(&mut self) -> bool {
         let mut changed = std::mem::take(&mut self.fresh);
-        while let Ok(v) = self.rx.try_recv() {
-            // A view forgotten since (its sound gone) stays forgotten, and
-            // a step never replaces a later one.
-            if let Some(old) = self.made.get_mut(&v.id) {
-                if !old.ready {
-                    *old = v;
-                    changed = true;
+        while let Ok(d) = self.rx.try_recv() {
+            match d {
+                Done::View(v) => {
+                    // A view forgotten since (its sound gone) stays
+                    // forgotten, and a step never replaces a later one. A
+                    // pitch followed meanwhile stays with it.
+                    if let Some(old) = self.made.get_mut(&v.id) {
+                        if !old.ready {
+                            *old = match (&old.pitch, &v.pitch) {
+                                (Some(p), None) => Arc::new(v.with_pitch(p.clone())),
+                                _ => v,
+                            };
+                            changed = true;
+                        }
+                    }
+                }
+                Done::Pitch(id, t) => {
+                    self.pitch_asked.remove(&id);
+                    if let (Some(old), Some(t)) = (self.made.get_mut(&id), t) {
+                        if old.pitch.is_none() {
+                            *old = Arc::new(old.with_pitch(t));
+                            changed = true;
+                        }
+                    }
                 }
             }
         }
@@ -155,16 +236,17 @@ impl Inner {
     /// them.
     pub fn keep_only(&mut self, keep: &HashSet<SourceId>) {
         self.made.retain(|id, _| keep.contains(id));
+        self.pitch_asked.retain(|id| keep.contains(id));
         let (lock, _) = &*self.queue;
         if let Ok(mut q) = lock.lock() {
-            q.jobs.retain(|s| keep.contains(&s.id()));
+            q.jobs.retain(|j| keep.contains(&j.id()));
         }
     }
 
-    /// Whether any view asked for is still being worked out.
+    /// Whether any view asked for (or pitch) is still being worked out.
     #[allow(dead_code)] // the tests wait on it
     pub fn busy(&self) -> bool {
-        self.made.values().any(|v| !v.ready)
+        self.made.values().any(|v| !v.ready) || !self.pitch_asked.is_empty()
     }
 
     /// Puts `s` first in the worker's queue (once).
@@ -173,13 +255,17 @@ impl Inner {
         let Ok(mut q) = lock.lock() else {
             return;
         };
-        if let Some(i) = q.jobs.iter().position(|j| j.id() == s.id()) {
+        if let Some(i) = q
+            .jobs
+            .iter()
+            .position(|j| matches!(j, Job::View(w) if w.id() == s.id()))
+        {
             if i == 0 {
                 return;
             }
             q.jobs.remove(i);
         }
-        q.jobs.push_front(s.clone());
+        q.jobs.push_front(Job::View(s.clone()));
         cv.notify_one();
     }
 }
@@ -196,18 +282,19 @@ impl Drop for Inner {
     }
 }
 
-/// The worker: each sound's peaks, then the rest, sent as each is done.
-fn work(queue: &Shared, tx: &Sender<Arc<SourceView>>) {
+/// The worker: each sound's peaks, then the rest, sent as each is done;
+/// or a sound's pitch.
+fn work(queue: &Shared, tx: &Sender<Done>) {
     let (lock, cv) = &**queue;
     loop {
-        let s = {
+        let job = {
             let Ok(mut q) = lock.lock() else { return };
             loop {
                 if q.stop {
                     return;
                 }
-                if let Some(s) = q.jobs.pop_front() {
-                    break s;
+                if let Some(j) = q.jobs.pop_front() {
+                    break j;
                 }
                 q = match cv.wait(q) {
                     Ok(q) => q,
@@ -215,11 +302,20 @@ fn work(queue: &Shared, tx: &Sender<Arc<SourceView>>) {
                 };
             }
         };
+        let s = match job {
+            Job::View(s) => s,
+            Job::Pitch(v, rate) => {
+                if tx.send(Done::Pitch(v.id, v.follow_pitch(rate))).is_err() {
+                    return;
+                }
+                continue;
+            }
+        };
         let quick = Arc::new(SourceView::quick(&s));
-        if tx.send(quick.clone()).is_err() {
+        if tx.send(Done::View(quick.clone())).is_err() {
             return;
         }
-        if tx.send(Arc::new(quick.finish(&s))).is_err() {
+        if tx.send(Done::View(Arc::new(quick.finish(&s)))).is_err() {
             return;
         }
     }
@@ -284,6 +380,42 @@ mod tests {
         // Asked again, it is the same view: nothing is worked out twice.
         assert!(Arc::ptr_eq(&done, &v.get(&s)));
         assert!(!v.busy());
+    }
+
+    #[test]
+    fn a_sounds_pitch_is_followed_on_the_worker_once_asked_and_kept_with_its_view() {
+        // A tone at A3 for a second, then A4.
+        let tone = |hz: f32, n: usize| {
+            (0..n).map(move |i| 0.4 * (i as f32 * hz / 44_100.0 * std::f32::consts::TAU).sin())
+        };
+        let data: Vec<f32> = tone(220.0, 44_100).chain(tone(440.0, 44_100)).collect();
+        let s = Source::new("Line", 44_100, 1, data).unwrap();
+        let mut v = Views::new();
+        // Asked before the view is made, nothing is queued.
+        v.follow_pitch(&s);
+        assert!(!v.busy());
+        v.get(&s);
+        // Asked while the view is worked out: followed after it, and kept
+        // when the view's last step lands.
+        let end = Instant::now() + Duration::from_secs(20);
+        while v.get(&s).mono.is_empty() {
+            assert!(Instant::now() < end);
+            std::thread::sleep(Duration::from_millis(1));
+            v.take_done();
+        }
+        v.follow_pitch(&s);
+        assert!(v.busy());
+        settle(&mut v);
+        let done = v.get(&s);
+        assert!(done.ready);
+        let t = done.pitch.clone().expect("the pitch, followed");
+        let cuts = t.changes(1.0, 2_205);
+        assert_eq!(cuts.len(), 1, "{cuts:?}");
+        assert!(cuts[0].abs_diff(44_100) < 441, "{cuts:?}");
+        // Asked again: nothing more to do, the same view.
+        v.follow_pitch(&s);
+        assert!(!v.busy());
+        assert!(Arc::ptr_eq(&done, &v.get(&s)));
     }
 
     #[test]

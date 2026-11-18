@@ -71,6 +71,119 @@ impl ParamView {
     pub fn text(&self) -> String {
         value_text(&self.info, self.value)
     }
+
+    /// Lit from the middle of its ring: a range from below zero to above.
+    pub fn bipolar(&self) -> bool {
+        self.info.min < 0.0 && self.info.max > 0.0
+    }
+
+    /// How many steps take it from one end to the other: one per value of
+    /// a stepped control or a choice, else a Q-Link's detents
+    /// ([`mpfree_mod::bind::DETENTS`]).
+    pub fn steps(&self) -> u32 {
+        match self.info.curve {
+            Curve::Toggle => 1,
+            Curve::Stepped | Curve::Choice(_) => {
+                (self.info.max - self.info.min).round().max(1.0) as u32
+            }
+            _ => mpfree_mod::bind::DETENTS as u32,
+        }
+    }
+
+    /// Its value turned `detents` on, as a Q-Link turns it: a value a
+    /// detent for a stepped control or a choice, on or off for a switch,
+    /// else 1/100 of the knob's travel (1/1000 when `fine`).
+    pub fn nudged(&self, detents: i32, fine: bool) -> f32 {
+        let info = &self.info;
+        let now = info.clamp(self.value);
+        let v = match info.curve {
+            Curve::Toggle => {
+                if detents > 0 {
+                    info.max
+                } else {
+                    info.min
+                }
+            }
+            Curve::Stepped | Curve::Choice(_) => now + detents as f32,
+            _ => {
+                let per = mpfree_mod::bind::DETENTS * if fine { 10.0 } else { 1.0 };
+                let x = (info.to_unit(now) + detents as f32 / per).clamp(0.0, 1.0);
+                info.from_unit(x)
+            }
+        };
+        info.clamp(v)
+    }
+}
+
+/// One effect of a chain as a pedal on the Sample tab's FX page: its name
+/// and summary as the chain editor's list gives them, whether it is on,
+/// and what the editor's Q-Links turn on it (the pedal shows the first
+/// three; the page's Q-Links turn all four).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pedal {
+    pub uid: u16,
+    pub name: String,
+    pub summary: String,
+    pub on: bool,
+    pub knobs: Vec<ParamView>,
+}
+
+/// Every insert of `chain` (on `strip`) as a pedal, in order.
+pub fn pedals(chain: &Chain, strip: Strip, engine: &ModEngine) -> Vec<Pedal> {
+    (0..chain.len())
+        .filter_map(|i| {
+            let (n, uid) = (chain.node(i)?, chain.uid(i)?);
+            let owner = Owner::Insert(strip, uid);
+            let knobs = if n.info().id == EQ_ID {
+                eq_page(n, owner, engine, None).qlinks
+            } else {
+                let hide = match mpfree_fx::families::node_mode(n) {
+                    Some((f, Some(m))) => f.modes[m].fixed,
+                    _ => &[],
+                };
+                crate::sections::page_view(n, owner, engine, hide, 0).qlinks
+            };
+            let name = mpfree_fx::families::insert_name(n);
+            Some(Pedal {
+                uid,
+                summary: pedal_summary(n, owner, engine, &name, &knobs),
+                name,
+                on: chain.is_on(i),
+                knobs,
+            })
+        })
+        .collect()
+}
+
+/// What a pedal's knobs and name don't say: its first choice ("Low-pass",
+/// "Peak") that isn't one of the knobs or already in the name. The EQ's
+/// choices are per band, so it has none.
+fn pedal_summary(
+    n: &dyn Node,
+    owner: Owner,
+    engine: &ModEngine,
+    name: &str,
+    knobs: &[ParamView],
+) -> String {
+    if n.info().id == EQ_ID {
+        return String::new();
+    }
+    n.params()
+        .iter()
+        .filter(|p| {
+            matches!(p.curve, Curve::Choice(_))
+                && !p.readonly
+                && !mpfree_fx::page_keeps(p.name)
+                && !knobs.iter().any(|k| k.info.id == p.id)
+        })
+        .map(|p| {
+            let v = engine
+                .value(ParamAddr::new(owner, p.id))
+                .unwrap_or_else(|| n.param(p.id));
+            value_text(p, v)
+        })
+        .find(|t| !name.contains(t.as_str()))
+        .unwrap_or_default()
 }
 
 /// One insert in the chain list.

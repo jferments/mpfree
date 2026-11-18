@@ -283,6 +283,17 @@ impl Song {
         }
     }
 
+    /// The Drums chain as the Sample tab's FX tab shows it: Filter, Drive,
+    /// Compressor and EQ, the EQ switched off (as in the mockup Jay
+    /// approved, 17 Nov).
+    pub fn pedals(&self) -> Vec<crate::state::Pedal> {
+        let mut p = crate::state::pedals(&self.drums, DRUMS, &self.engine);
+        if let Some(eq) = p.get_mut(3) {
+            eq.on = false;
+        }
+        p
+    }
+
     pub fn chain(&self, s: Strip) -> &Chain {
         match s {
             DRUMS => &self.drums,

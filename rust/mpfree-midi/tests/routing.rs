@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 
+use mpfree_midi::blocks::Blocks;
 use mpfree_midi::cv::{Calibration, CvAssign, CvChange, CvEngine, Priority, Scale};
 use mpfree_midi::input::{
     ChanFilter, In, InputMode, InputRouter, Listen, PortFilter, Route, Thru, MAX_ROUTES, MAX_THRU,
@@ -1165,6 +1166,7 @@ fn route(port: PortId, ch: Option<u8>, track: u8) -> Route {
         port: PortFilter::One(port),
         channel: ch.map_or(ChanFilter::Omni, ChanFilter::One),
         track,
+        blocks: Blocks::NONE,
     }
 }
 
@@ -1316,6 +1318,7 @@ fn thru(port: PortId, ch: Option<u8>, to: PortId) -> Thru {
         port: PortFilter::One(port),
         channel: ch.map_or(ChanFilter::Omni, ChanFilter::One),
         to,
+        blocks: Blocks::NONE,
     }
 }
 
@@ -1494,4 +1497,28 @@ fn thru_notes_out_end_on_a_panic_and_say_where_they_came_from() {
     out.thru(KEYS, DIN, on(51), 0, &mut q);
     out.port_off(PortId(3), 0, &mut q);
     assert_eq!(out.sounding(), 1);
+}
+
+/// A Pressure output follows the track's last pressure, channel or a
+/// key's own, 0 to its top; another track's moves it not.
+#[test]
+fn cv_pressure_follows_the_tracks_last_pressure() {
+    let mut cv = CvEngine::new(48_000);
+    let ch = RefCell::new(Vec::new());
+    let mut emit = |c: CvChange| ch.borrow_mut().push(c);
+    let pressure = CvAssign::Pressure {
+        track: 2,
+        max_volts: 4.0,
+    };
+    cv.set_assign(0, pressure, 0, &mut emit);
+    cv.track_msg(2, Msg::ChanPressure { ch: 0, value: 127 }, 1, &mut emit);
+    cv.track_msg(1, Msg::ChanPressure { ch: 0, value: 10 }, 2, &mut emit);
+    let poly = Msg::PolyPressure {
+        ch: 0,
+        note: 60,
+        value: 0,
+    };
+    cv.track_msg(2, poly, 3, &mut emit);
+    let got: Vec<(u32, f32)> = ch.borrow().iter().map(|c| (c.offset, c.volts)).collect();
+    assert_eq!(got, [(0, 0.0), (1, 4.0), (3, 0.0)]);
 }

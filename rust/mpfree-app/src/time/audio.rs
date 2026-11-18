@@ -335,6 +335,13 @@ impl TimeAudio {
     /// A transport command, from the next period on. False if the
     /// transport's queue is full.
     pub fn command(&mut self, cmd: Command) -> bool {
+        // Following another device's position, a loop waits for that to
+        // stop (follow.rs).
+        if let Command::SetLoop(range) = cmd {
+            if self.follower.keep_loop(range) {
+                return true;
+            }
+        }
         let at = self.transport.frame();
         self.transport.command(at, cmd)
     }
@@ -493,9 +500,26 @@ impl TimeAudio {
         self.follower.bpm()
     }
 
+    /// Following another device's Start and Stop while it is stopped:
+    /// PLAY waits for it.
+    pub fn clock_waits(&self) -> bool {
+        self.follower.waits()
+    }
+
+    /// A take the app has ready, adding (true) or replacing: the leader's
+    /// start records it.
+    pub fn take_waits(&mut self, take: Option<bool>) {
+        self.follower.take_waits(take);
+    }
+
+    /// True once after the leader's start began a take.
+    pub fn took(&mut self) -> bool {
+        self.follower.took()
+    }
+
     /// The transport runs the coming period, after the follower's turn.
     fn process(&mut self, frames: u32) -> bool {
-        self.follower.period(&self.transport);
+        self.follower.period(&mut self.transport);
         self.transport.process(frames, &mut self.block)
     }
 
@@ -673,6 +697,19 @@ impl TimeAudio {
             Some(arps) => {
                 self.player
                     .process(&self.view, &self.block, &mut arps.through_sink());
+                // A track going silent on its line (the mute queue): what
+                // its MIDI effects hold or have waiting ends there.
+                for l in self.player.mutes_landed() {
+                    if l.silent {
+                        let offset = self
+                            .block
+                            .spans()
+                            .iter()
+                            .find_map(|s| s.offset_of(l.at as f64))
+                            .unwrap_or(0);
+                        arps.cut(l.track, offset);
+                    }
+                }
                 let sink = &mut *self.sink;
                 arps.finish_with(&self.block, |o, arp| sink.push(*o, arp));
             }
@@ -743,6 +780,9 @@ impl TimeAudio {
                         self.locks_dropped += 1;
                     }
                 }
+                // A clip's program change goes to outside gear alone
+                // (`Pads::out`, S5): the pads have no programs.
+                Event::Program { .. } => {}
             }
         }
         self.recorder.process(&self.view, &self.block);
@@ -859,6 +899,10 @@ impl TimeAudio {
         let mut info = TransportInfo::of(&self.transport);
         if let Some(bpm) = self.follower.bpm() {
             info.bpm = bpm;
+        }
+        if let Some(held) = self.follower.held_loop() {
+            info.follows_position = true;
+            info.loop_range = held;
         }
         info
     }
