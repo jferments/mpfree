@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 pub use mpfree_grain::{
     FilterKind as GrainFilterKind, GrainEnv, GrainFilter, GrainLfo, LfoShape, MotionTarget,
-    Params as GrainParams, SprayShape as GrainSprayShape, TempoSync, Window as GrainWindow,
-    CUTOFF_MAX_HZ as GRAIN_CUTOFF_MAX_HZ, CUTOFF_MIN_HZ as GRAIN_CUTOFF_MIN_HZ,
-    FILTER_SPRAY_OCTAVES as GRAIN_FILTER_SPRAY_OCTAVES,
+    Params as GrainParams, Quality as GrainQuality, SprayShape as GrainSprayShape, TempoSync,
+    Window as GrainWindow, CUTOFF_MAX_HZ as GRAIN_CUTOFF_MAX_HZ,
+    CUTOFF_MIN_HZ as GRAIN_CUTOFF_MIN_HZ, FILTER_SPRAY_OCTAVES as GRAIN_FILTER_SPRAY_OCTAVES,
 };
 
 use crate::dsp::{as_i16, Sample};

@@ -3,6 +3,7 @@
 use crate::buffer::{Aim, GrainSource};
 use crate::filter::{GrainFilter, Svf};
 use crate::motion::{env_level, moved, GrainEnv, GrainLfo, LfoState, MotionTarget};
+use crate::quality::{Quality, Stage, RUN};
 use crate::rng::Rng;
 use crate::window::{Window, WindowTable};
 
@@ -14,6 +15,8 @@ const SMALL_FRAMES: f64 = 2_147_000_000.0;
 /// A voice renders in parts of at most this many frames, through its own
 /// scratch buffers (see [`GrainVoice::render`], "Level").
 const PART: usize = 64;
+// The quality stage takes a part at a time.
+const _: () = assert!(PART <= RUN);
 /// How fast the voice follows how its grains add up (one-pole, seconds).
 const COHERENCE_SECS: f64 = 0.05;
 /// How fast the floor under the level's divisor rises (seconds). It falls
@@ -155,6 +158,9 @@ pub struct Params {
     /// Each grain's own filter, set when it is born (see
     /// [`crate::filter`]). Off by default.
     pub filter: GrainFilter,
+    /// How the cloud is coloured on its way out: Clean (the default, as
+    /// it is), Tape or Lo-fi ([`crate::quality`]).
+    pub quality: Quality,
 }
 
 impl Default for Params {
@@ -181,6 +187,7 @@ impl Default for Params {
             lfo: GrainLfo::default(),
             env: GrainEnv::default(),
             filter: GrainFilter::default(),
+            quality: Quality::Clean,
         }
     }
 }
@@ -451,6 +458,8 @@ pub struct GrainVoice {
     /// The floor's falling coefficient and the grain size it was made for.
     k_floor_down: f32,
     k_floor_size: f64,
+    /// The quality mode's stage on the way out ([`Params::quality`]).
+    stage: Stage,
 }
 
 impl GrainVoice {
@@ -501,6 +510,7 @@ impl GrainVoice {
             k_floor: coefficient(FLOOR_SECS, out_rate.max(1)),
             k_floor_down: coefficient(FLOOR_SECS, out_rate.max(1)),
             k_floor_size: 0.0,
+            stage: Stage::new(out_rate),
         }
     }
 
@@ -538,9 +548,17 @@ impl GrainVoice {
     /// they started. A new window shape rebuilds the table (1025 values).
     /// The LFO and the envelope move the new settings by as much as they
     /// moved the old (they move on at the next part of the voice's clock).
+    /// A new quality mode crossfades from the old over 10 ms while the
+    /// voice plays, and takes over at once while it is silent.
     pub fn set_params(&mut self, p: Params) {
         self.params = p;
         self.window.set(p.window);
+        // A silent voice switches at once; one playing crossfades.
+        if self.is_active() {
+            self.stage.set(p.quality);
+        } else {
+            self.stage.jump(p.quality);
+        }
         self.apply_motion();
     }
 
@@ -652,6 +670,7 @@ impl GrainVoice {
         self.active = 0;
         self.fading_n = 0;
         self.stats.active = 0;
+        self.stage.jump(self.params.quality);
     }
 
     /// True while making grains or while any still play.
@@ -949,12 +968,28 @@ impl GrainVoice {
                     search = off + 1;
                 }
             }
-            self.level(
-                &mut left[at..at + m],
-                &mut right[at..at + m],
-                floor_to,
-                measure,
-            );
+            if self.stage.is_clean() {
+                self.level::<true>(
+                    &mut left[at..at + m],
+                    &mut right[at..at + m],
+                    floor_to,
+                    measure,
+                );
+            } else {
+                // The part, levelled, through the quality stage.
+                self.level::<false>(
+                    &mut left[at..at + m],
+                    &mut right[at..at + m],
+                    floor_to,
+                    measure,
+                );
+                let (l, r) = (&mut self.sc.l[..m], &mut self.sc.r[..m]);
+                self.stage.process(l, r, self.clock);
+                for i in 0..m {
+                    left[at + i] += l[i];
+                    right[at + i] += r[i];
+                }
+            }
             self.clock += m as u64;
             at += m;
         }
@@ -1187,8 +1222,15 @@ impl GrainVoice {
     }
 
     /// Sets the level of the part in the scratch buffers (see
-    /// [`GrainVoice::render`]) and adds it to `left` and `right`.
-    fn level(&mut self, left: &mut [f32], right: &mut [f32], floor_to: f32, measure: bool) {
+    /// [`GrainVoice::render`]) and adds it to `left` and `right` (`ADD`),
+    /// or leaves it in the scratch's `l` and `r` for the quality stage.
+    fn level<const ADD: bool>(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        floor_to: f32,
+        measure: bool,
+    ) {
         let m = left.len().min(right.len());
         let gain = self.moved.gain;
         let (k, km) = (self.k_coherence, self.k_measure);
@@ -1199,7 +1241,7 @@ impl GrainVoice {
         } else {
             self.k_floor
         };
-        let sc = &self.sc;
+        let sc = &mut self.sc;
         for i in 0..m {
             let (yl, yr, s1, s2) = (sc.l[i], sc.r[i], sc.s1[i], sc.s2[i]);
             self.floor += kf * (floor_to - self.floor);
@@ -1227,8 +1269,13 @@ impl GrainVoice {
                 g *= 1.0 - self.fade_left as f32 / self.fade_len as f32;
                 self.fade_left -= 1;
             }
-            left[i] += yl * g;
-            right[i] += yr * g;
+            if ADD {
+                left[i] += yl * g;
+                right[i] += yr * g;
+            } else {
+                sc.l[i] = yl * g;
+                sc.r[i] = yr * g;
+            }
         }
     }
 

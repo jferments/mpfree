@@ -1217,6 +1217,7 @@ pub fn grain_section_project(
                 scan: false,
             };
             r.grain_glide_ms = 300.0;
+            r.grain.quality = mpfree_sampler::model::GrainQuality::Tape;
         }
         grain_tab::View::Presets => *r = mpfree_sampler::grain_presets::apply(r, 4),
     }
@@ -1369,7 +1370,7 @@ pub fn grain_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<GrainSample>, Stri
         (
             grain_tab::View::FilterKeys,
             "grain-filter",
-            "Filter and keys: a resonant band pass on each grain, its cutoff sprayed; glide and size follow key",
+            "Filter and keys: a resonant band pass on each grain, its cutoff sprayed; glide and size follow key; Quality Tape",
         ),
         (
             grain_tab::View::Presets,

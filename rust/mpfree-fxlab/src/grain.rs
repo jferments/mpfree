@@ -103,14 +103,25 @@
 //!   against the unfiltered cloud's (resonance that can't run away).
 //!   Shown: the sprayed band's loudness against its cloud's.
 //!
+//! - **G18, quality modes (step C5):** Tape and Lo-fi on the default
+//!   cloud on pink and on the pad: each within 1 LU of the same cloud
+//!   Clean (every older row is Clean, and none of them moves, so Clean is
+//!   bit for bit as before). On the 1 kHz tone held in a time stretch
+//!   (scan 1, no randomness: the tone itself comes out), how far Tape's
+//!   wow and flutter move its pitch, peak to peak in cents over 20 ms
+//!   windows (shown; Clean's in the same measure, to show it is the
+//!   tape). On the Grains effect at full feedback in Tape (the trail
+//!   wobbling more each time round), the growth from seconds 8-12 to
+//!   16-20 still at most 1 dB, as G15's Clean loop.
+//!
 //! Cost is the bench's (`mpfree-bench`'s "Sampler grains (per grain)"
 //! scaling case, on CI by the instruction gate and on the MPC in the
 //! device round). Design: `docs/dev/design/fx-quality.md` ("The grain
 //! engine"); plan: mpfree-claude `sampler/granular/plan.md`.
 
 use mpfree_grain::{
-    Budget, GrainEnv, GrainFx, GrainLfo, GrainVoice, LfoShape, MotionTarget, Params, SprayShape,
-    Stats, Window,
+    Budget, GrainEnv, GrainFx, GrainLfo, GrainVoice, LfoShape, MotionTarget, Params, Quality,
+    SprayShape, Stats, Window,
 };
 use mpfree_sampler::bandlimit::Octaves;
 use mpfree_sampler::grain_clip::GrainClip;
@@ -154,6 +165,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     feedback(&mut rows, &lab);
     repeat(&mut rows, &lab);
     filtered(&mut rows, &lab);
+    quality_modes(&mut rows, &lab);
     rows
 }
 
@@ -1258,10 +1270,23 @@ fn presets(rows: &mut Vec<Row>, lab: &Lab) {
 /// 4 s of `src` scaled by `gain`, then silence, `secs` in all, through a
 /// fully wet Grains effect with `feedback`.
 fn fed_back(src: &[f32], rate: u32, gain: f32, feedback: f32, secs: usize) -> Stereo {
+    fed_back_as(src, rate, gain, feedback, secs, Quality::Clean)
+}
+
+/// [`fed_back`] in quality mode `quality`.
+fn fed_back_as(
+    src: &[f32],
+    rate: u32,
+    gain: f32,
+    feedback: f32,
+    secs: usize,
+    quality: Quality,
+) -> Stereo {
     let mut fx = GrainFx::new(rate, 2.0, 15).expect("a lab effect");
     fx.set_params(Params {
         position: 0.5,
         spray: 0.1,
+        quality,
         ..Params::default()
     });
     fx.set_mix(1.0);
@@ -1502,5 +1527,106 @@ fn filtered(rows: &mut Vec<Row>, lab: &Lab) {
         Better::Lower,
         Some(12.0),
         0.3,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// G18: quality modes (step C5).
+
+/// The frequency over each `win` frames of `x`, from its rising zero
+/// crossings (between frames).
+fn frequencies(x: &[f64], rate: u32, win: usize) -> Vec<f64> {
+    let crossings: Vec<f64> = (1..x.len())
+        .filter(|&i| x[i - 1] < 0.0 && x[i] >= 0.0)
+        .map(|i| (i - 1) as f64 - x[i - 1] / (x[i] - x[i - 1]))
+        .collect();
+    let mut out = Vec::new();
+    let mut at = 0.0;
+    while at + win as f64 <= x.len() as f64 {
+        let inside: Vec<f64> = crossings
+            .iter()
+            .copied()
+            .filter(|&c| c >= at && c < at + win as f64)
+            .collect();
+        if inside.len() > 2 {
+            let span = inside[inside.len() - 1] - inside[0];
+            out.push((inside.len() - 1) as f64 / span * f64::from(rate));
+        }
+        at += win as f64;
+    }
+    out
+}
+
+fn quality_modes(rows: &mut Vec<Row>, lab: &Lab) {
+    for (name, src) in [("pink", &lab.pink), ("pad", &lab.pad)] {
+        let level = |quality| {
+            let p = Params { quality, ..base() };
+            lufs(&steady(src, lab.rate, p, 4.0, 18).0)
+        };
+        let clean = level(Quality::Clean);
+        for (mode, q) in [("tape", Quality::Tape), ("lofi", Quality::LoFi)] {
+            put(
+                rows,
+                "G18",
+                format!("quality[{name}, {mode}]"),
+                "level_lu",
+                level(q) - clean,
+                Better::Near(0.0),
+                Some(1.0),
+                0.1,
+            );
+        }
+    }
+    // The tone held in a stretch: it comes out as itself.
+    let wobble = |quality| {
+        let p = Params {
+            position: 0.0,
+            size_ms: 80.0,
+            density: 25.0,
+            scan: 1.0,
+            timing: 0.0,
+            quality,
+            ..Params::default()
+        };
+        let (s, _) = steady(&lab.tone, lab.rate, p, 5.0, 18);
+        let f = frequencies(&s.left, lab.rate, lab.rate as usize / 50);
+        let hi = f.iter().copied().fold(f64::MIN, f64::max);
+        let lo = f.iter().copied().fold(f64::MAX, f64::min);
+        1200.0 * (hi / lo).log2()
+    };
+    for (mode, q) in [("clean", Quality::Clean), ("tape", Quality::Tape)] {
+        put(
+            rows,
+            "G18",
+            format!("quality[1 kHz stretch, {mode}]"),
+            "wobble_cents_pp",
+            wobble(q),
+            Better::Info,
+            None,
+            0.0,
+        );
+    }
+    let rate = lab.rate as usize;
+    let level = |s: &Stereo, a: usize, b: usize| db(rms(&s.left[a * rate..b * rate]));
+    let tape = fed_back_as(&lab.pink, lab.rate, 2.0, 1.0, 20, Quality::Tape);
+    put(
+        rows,
+        "G18",
+        "quality[feedback pink -14 dBFS, full, tape]".into(),
+        "growth_db",
+        level(&tape, 16, 20) - level(&tape, 8, 12),
+        Better::Lower,
+        Some(1.0),
+        0.3,
+    );
+    put(
+        rows,
+        "G18",
+        "quality[feedback pink -14 dBFS, full, tape]".into(),
+        "peak_dbfs",
+        loudness::sample_peak(&tape),
+        Better::Lower,
+        Some(3.0),
+        0.1,
     );
 }

@@ -29,16 +29,18 @@
 //!     decay to its sustain. Both start again with each hit.
 //!   - **Filter and keys**: a **Filter** on each grain (off, low, band or
 //!     high pass; cutoff, resonance, and a spray that gives each grain its
-//!     own cutoff), and **Keys**: played from keys (or tuned) the grains
-//!     move in pitch (a Tone's note); **Size follows key** shortens them as
-//!     much and **Scan follows key** speeds the scan as much, as a
-//!     sampler's whole sound would move. **Glide** slides to each new key:
-//!     on a mono pad the cloud playing moves there, and with more voices
-//!     each new one slides from the last key.
+//!     own cutoff), and **Keys and quality**: played from keys (or tuned)
+//!     the grains move in pitch (a Tone's note); **Size follows key**
+//!     shortens them as much and **Scan follows key** speeds the scan as
+//!     much, as a sampler's whole sound would move. **Glide** slides to
+//!     each new key: on a mono pad the cloud playing moves there, and with
+//!     more voices each new one slides from the last key. **Quality**
+//!     colours the cloud on its way out: Clean, Tape (wow, flutter, a soft
+//!     saturation) or Lo-fi (11 kHz, 8 bits).
 //!   - **Presets**: the eight of [`mpfree_sampler::grain_presets`] as
 //!     buttons, the one the layer matches lit. A tap puts its mode,
-//!     settings, keys, glide and movement on the layer (the sound, position
-//!     and level stay).
+//!     settings, keys, glide and movement on the layer (the sound,
+//!     position, level and quality stay).
 //!
 //!   A grain mode shows only the rows it uses ([`Row::shown`]). Position,
 //!   size, density and pitch are the Q-Links' (and the touch pad's), on
@@ -68,9 +70,9 @@ use mpfree_analysis::pitch::note_name;
 use mpfree_sampler::engine::{CloudState, GrainView, MAX_GRAINS};
 use mpfree_sampler::grain_presets;
 use mpfree_sampler::model::{
-    GrainFilter, GrainFilterKind, GrainMode, GrainParams, GrainSprayShape, GrainWindow, LfoShape,
-    ModelError, MotionTarget, Pad, PlayMode, Project, Region, Source, TempoSync,
-    GRAIN_CUTOFF_MAX_HZ, GRAIN_CUTOFF_MIN_HZ, GRAIN_FILTER_SPRAY_OCTAVES,
+    GrainFilter, GrainFilterKind, GrainMode, GrainParams, GrainQuality, GrainSprayShape,
+    GrainWindow, LfoShape, ModelError, MotionTarget, Pad, PlayMode, Project, Region, Source,
+    TempoSync, GRAIN_CUTOFF_MAX_HZ, GRAIN_CUTOFF_MIN_HZ, GRAIN_FILTER_SPRAY_OCTAVES,
 };
 use mpfree_ui::{Color, EventKind, Ui, UiEvent};
 
@@ -265,6 +267,7 @@ pub enum Row {
     KeySize,
     KeyScan,
     Glide,
+    Quality,
     LfoTo,
     LfoShape,
     LfoRate,
@@ -346,6 +349,7 @@ impl Row {
             Row::KeySize => "Size follows key",
             Row::KeyScan => "Scan follows key",
             Row::Glide => "Glide",
+            Row::Quality => "Quality",
             Row::LfoTo => "LFO to",
             Row::LfoShape => "LFO wave",
             Row::LfoRate => "LFO rate",
@@ -388,7 +392,8 @@ impl Row {
             | Row::FilterSpray
             | Row::KeySize
             | Row::KeyScan
-            | Row::Glide => View::FilterKeys,
+            | Row::Glide
+            | Row::Quality => View::FilterKeys,
             r if MOTION_ROWS.contains(&r) => View::Movement,
             _ => View::Grains,
         }
@@ -444,8 +449,9 @@ const MOVEMENT_ROWS: [Row; 14] = [
     Row::Density,
     Row::Pitch,
 ];
-/// Filter and keys for a cloud: the filter's, the keys', the Q-Links'.
-const FILTER_ROWS: [Row; 11] = [
+/// Filter and keys for a cloud: the filter's, the keys' and the
+/// quality, the Q-Links'.
+const FILTER_ROWS: [Row; 12] = [
     Row::Filter,
     Row::Cutoff,
     Row::Resonance,
@@ -453,44 +459,48 @@ const FILTER_ROWS: [Row; 11] = [
     Row::KeySize,
     Row::KeyScan,
     Row::Glide,
+    Row::Quality,
     Row::Position,
     Row::Size,
     Row::Density,
     Row::Pitch,
 ];
 /// A stretch's: one cutoff for every grain.
-const STRETCH_FILTER_ROWS: [Row; 10] = [
+const STRETCH_FILTER_ROWS: [Row; 11] = [
     Row::Filter,
     Row::Cutoff,
     Row::Resonance,
     Row::KeySize,
     Row::KeyScan,
     Row::Glide,
+    Row::Quality,
     Row::Position,
     Row::Size,
     Row::Density,
     Row::Pitch,
 ];
 /// A repeat's: its grains are its beat, so keys move only its pitch.
-const REPEAT_FILTER_ROWS: [Row; 9] = [
+const REPEAT_FILTER_ROWS: [Row; 10] = [
     Row::Filter,
     Row::Cutoff,
     Row::Resonance,
     Row::FilterSpray,
     Row::Glide,
+    Row::Quality,
     Row::Position,
     Row::Size,
     Row::Density,
     Row::Pitch,
 ];
 /// A tone's: its size follows its note already.
-const TONE_FILTER_ROWS: [Row; 10] = [
+const TONE_FILTER_ROWS: [Row; 11] = [
     Row::Filter,
     Row::Cutoff,
     Row::Resonance,
     Row::FilterSpray,
     Row::KeyScan,
     Row::Glide,
+    Row::Quality,
     Row::Position,
     Row::Size,
     Row::Density,
@@ -511,7 +521,7 @@ const PRESETS_A_LINE: usize = 4;
 /// The order [`describe`] says the changes in: the modes and the preset
 /// first, the level last (the log's, which the panels' order doesn't
 /// change), then the filter, keys and movement.
-const LOG_ORDER: [Row; 37] = [
+const LOG_ORDER: [Row; 38] = [
     Row::Mode,
     Row::GrainMode,
     Row::Preset,
@@ -539,6 +549,7 @@ const LOG_ORDER: [Row; 37] = [
     Row::KeySize,
     Row::KeyScan,
     Row::Glide,
+    Row::Quality,
     Row::LfoTo,
     Row::LfoShape,
     Row::LfoRate,
@@ -1298,6 +1309,7 @@ fn controls(r: &Region, view: View, mode: GrainMode) -> Vec<Control> {
             | Row::SprayShape
             | Row::Quantise
             | Row::Sync
+            | Row::Quality
             | Row::LfoTo
             | Row::LfoShape
             | Row::EnvTo
@@ -1430,18 +1442,18 @@ fn panel(r: &Region, view: View, mode: GrainMode) -> Panel {
                     )
                     .note(filter),
                     Section::new(
-                        "Keys",
+                        "Keys and quality",
                         380,
                         lines(
                             view,
                             mode,
                             &[
                                 &[(Row::KeySize, false, 0), (Row::KeyScan, false, 0)],
-                                &[(Row::Glide, false, 0)],
+                                &[(Row::Glide, false, 0), (Row::Quality, true, 0)],
                             ],
                         ),
                     )
-                    .note("when keys or tune move it"),
+                    .note("how it plays"),
                 ],
             }
         }
@@ -1457,7 +1469,7 @@ fn panel(r: &Region, view: View, mode: GrainMode) -> Panel {
                 ),
             )
             .note(grain_presets::matching(r).map_or(
-                "a starting point: the sound, its position and level stay",
+                "a starting point: the sound, position, level and quality stay",
                 |i| grain_presets::presets()[i].about,
             ))],
         },
@@ -1507,9 +1519,12 @@ fn section_text(r: &Region, view: View) -> String {
                     hz_text(g.filter.cutoff_hz)
                 )
             }];
-            // One thing keys do: the glide, else what follows them.
+            // Then one more: a quality mode other than Clean, else one
+            // thing keys do (the glide, else what follows them).
             let keys = &r.grain_keys;
-            if r.grain_glide_ms > 0.0 {
+            if g.quality != GrainQuality::Clean {
+                parts.push(g.quality.name().into());
+            } else if r.grain_glide_ms > 0.0 {
                 parts.push(format!("glide {}", ms_text(r.grain_glide_ms)));
             } else if keys.size || keys.scan {
                 parts.push(
@@ -1670,6 +1685,10 @@ pub fn stepped(r: &Region, row: Row, delta: i32, bpm: f64) -> Region {
                 .position(|s| s.1 == g.spray_shape)
                 .unwrap_or(0);
             g.spray_shape = SPRAY_SHAPES[shift(i, delta, SPRAY_SHAPES.len())].1;
+        }
+        Row::Quality => {
+            let all = GrainQuality::ALL;
+            g.quality = all[shift(g.quality.index(), delta, all.len())];
         }
         Row::SizeSpray => g.size_spray = round_to(g.size_spray + d * 0.05, 0.01).clamp(0.0, 1.0),
         Row::PitchSpray => {
@@ -1935,14 +1954,15 @@ fn per_beat_text(g: f32) -> String {
 /// density) with grains four cycles long, regular and frozen, so it holds
 /// one spot's colour at that note.
 pub fn mode_settings(g: &GrainParams, mode: GrainMode, bpm: f64) -> GrainParams {
-    // The movement and the filter stay: they are how the sound moves and
-    // its colour, whatever plays it.
+    // The movement, the filter and the quality stay: they are how the
+    // sound moves and its colour, whatever plays it.
     let kept = GrainParams {
         position: g.position,
         gain: g.gain,
         lfo: g.lfo,
         env: g.env,
         filter: g.filter,
+        quality: g.quality,
         ..GrainParams::default()
     };
     match mode {
@@ -2107,6 +2127,7 @@ pub fn value_text(r: &Region, row: Row) -> String {
         ),
         Row::KeySize => on_off(r.grain_keys.size).into(),
         Row::KeyScan => on_off(r.grain_keys.scan).into(),
+        Row::Quality => g.quality.name().into(),
         Row::Glide if r.grain_glide_ms <= 0.0 => "Off".into(),
         Row::Glide => ms_text(r.grain_glide_ms),
         Row::LfoTo => target_text(g.lfo.target, r.grain_mode).into(),

@@ -4,7 +4,8 @@
 
 use mpfree_sampler::engine::{CloudState, Engine, EngineView, Event};
 use mpfree_sampler::model::{
-    GrainFilter, GrainFilterKind, GrainMode, GrainWindow, LfoShape, MotionTarget, PlayMode, Project,
+    GrainFilter, GrainFilterKind, GrainMode, GrainQuality, GrainWindow, LfoShape, MotionTarget,
+    PlayMode, Project,
 };
 use mpfree_sampler_ui::grain_tab::{
     self, describe, size_at, size_place, CloudNow, GrainAction, GrainState, Row, View,
@@ -343,7 +344,7 @@ fn the_section_chips_open_each_panel_and_the_touch_pad_and_qlinks_stay() {
     let xy = rect(&s, grain_tab::XY);
     for (k, view, titles) in [
         (1, View::Movement, &["LFO", "Envelope"][..]),
-        (2, View::FilterKeys, &["Filter", "Keys"][..]),
+        (2, View::FilterKeys, &["Filter", "Keys and quality"][..]),
         (3, View::Presets, &["Presets"][..]),
         (0, View::Grains, &["Cloud", "Shape"][..]),
     ] {
@@ -719,6 +720,41 @@ fn the_key_rows_set_key_tracking_and_glide() {
     // The chip says what keys do.
     let chips = s.ui.get::<SectionChips>(grain_tab::SECTIONS).unwrap();
     assert_eq!(chips.chips[2].sub, "no filter · glide 150 ms");
+}
+
+#[test]
+fn the_quality_row_steps_clean_tape_and_lofi_in_every_mode() {
+    let mut s = grain(true);
+    assert_eq!(row_value(&mut s, Row::Quality), "Clean");
+    for (delta, value) in [(1, "Tape"), (1, "Lo-fi"), (-2, "Clean"), (2, "Lo-fi")] {
+        step_apply(&mut s, Row::Quality, delta);
+        assert_eq!(row_value(&mut s, Row::Quality), value, "{delta:+}");
+    }
+    // Lo-fi is the last: it stops there.
+    assert!(step(&mut s, Row::Quality, 1).is_none());
+    assert_eq!(s.tab.view(), View::FilterKeys);
+    assert_eq!(s.state.region.grain.quality, GrainQuality::LoFi);
+    // The chip says it before what keys do.
+    step_apply(&mut s, Row::Glide, 4);
+    let chips = s.ui.get::<SectionChips>(grain_tab::SECTIONS).unwrap();
+    assert_eq!(chips.chips[2].sub, "no filter · Lo-fi");
+    // Every grain mode has it, and keeps it.
+    for (k, mode) in [GrainMode::Stretch, GrainMode::Repeat, GrainMode::Tone]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(Row::Quality.used_in(mode), "{mode:?}");
+        step_apply(&mut s, Row::GrainMode, 1);
+        assert_eq!(s.state.region.grain_mode, mode, "step {k}");
+        assert_eq!(row_value(&mut s, Row::Quality), "Lo-fi", "{mode:?}");
+        open(&mut s, View::FilterKeys);
+        assert!(placed(&s).contains(&Row::Quality), "{mode:?}");
+    }
+    // A preset keeps it.
+    open(&mut s, View::Presets);
+    let a = tap_preset(&mut s, 0).expect("a preset");
+    apply(&mut s, &a);
+    assert_eq!(s.state.region.grain.quality, GrainQuality::LoFi);
 }
 
 #[test]

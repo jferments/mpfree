@@ -1598,9 +1598,10 @@ pub static PLANS: &[Plan] = &[
         dims: &[sync_dim(&["Delay"], "Sync")],
     },
     // The grain engine as an effect: where the grains read, how big and
-    // how many on Main, with the pitch beside them and what holds the
-    // sound under them (Feedback, Repeat, Freeze); how each grain is
-    // shaped, varied and filtered on Texture.
+    // how many on Main, with the pitch beside them, what holds the sound
+    // under them (Feedback, Repeat, Freeze) and how it comes out (Mix,
+    // Spread, Quality); how each grain is shaped, varied and filtered on
+    // Texture.
     Plan {
         id: "mpfree.grains",
         qlinks: &["Size", "Density", "Feedback", "Mix"],
@@ -1630,9 +1631,11 @@ pub static PLANS: &[Plan] = &[
                         action: Some("Capture"),
                         ..s("hold", "Hold", Motion, &["Feedback", "Repeat", "Freeze"])
                     },
+                    // Quality (step C5): Clean, Tape or Lo-fi on the way out.
                     Section {
                         trim: &["Spread"],
-                        ..s("output", "Output", Voice, &["Mix", "Spread"])
+                        rows: &["Quality"],
+                        ..s("output", "Output", Voice, &["Mix", "Spread", "Quality"])
                     },
                 ],
             ),
