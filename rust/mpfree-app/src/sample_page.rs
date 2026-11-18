@@ -636,6 +636,9 @@ pub struct SampleMemory {
     pub recall: usize,
 }
 
+/// How often the take recording is drawn into the wave, in seconds.
+const LIVE_EVERY: f32 = 0.1;
+
 /// The sampler's input buffer's size: stereo `f32`.
 pub fn input_bytes(rate: u32) -> u64 {
     u64::from(INPUT_SECONDS) * u64::from(rate) * 2 * 4
@@ -821,6 +824,10 @@ pub struct SamplePage {
     /// Times Sample Recall read the Source and its buffer went, so it read
     /// the master again (a fallback: counted, logged and shown).
     recall_fallbacks: u32,
+    /// The take recording as the wave draws it (one-page step 2f, part 3),
+    /// and the time to its next redraw.
+    drawn: Option<mpfree_sampler_ui::live_take::LiveTake>,
+    drawn_in: f32,
     /// The master's last two minutes, always kept (Sample Recall), once
     /// the audio thread has sent its reading end.
     recall: Option<Input>,
@@ -1006,6 +1013,8 @@ impl SamplePage {
             feed: None,
             input_shared: false,
             recall_fallbacks: 0,
+            drawn: None,
+            drawn_in: 0.0,
             recall: None,
             feeding: false,
             want_back: false,
@@ -3352,7 +3361,8 @@ impl SamplePage {
                 }
             }
             WaveAction::Rec(a) => self.act_recorder(ui, a),
-            // A faint mark touched: which tool moves it.
+            // A faint mark touched (which tool moves it), or the wave
+            // while a take draws into it.
             WaveAction::Say(text) => self.told.push(text),
         }
     }
@@ -3772,11 +3782,99 @@ impl SamplePage {
             }
             None => [0.0; 2],
         };
+        self.feed_live(ui, dt);
         let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) else {
             return;
         };
         tab.set_recorder(ui, view, st);
         tab.meter(ui, peak, dt);
+    }
+
+    /// Whether a take is recording now (past its wait for a sound or a
+    /// bar line).
+    fn take_recording(&self) -> bool {
+        self.take
+            .as_ref()
+            .is_some_and(|t| matches!(t.rec.progress(), Progress::Recording { .. }))
+    }
+
+    /// The take drawn into the wave has ended (kept, thrown away or lost):
+    /// the wave shows the page's sound again, the take kept when it stays
+    /// on the page.
+    fn end_live(&mut self, ui: &mut Ui) {
+        if self.drawn.take().is_some() {
+            if let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) {
+                tab.end_live(ui);
+                tab.update(ui, st);
+            }
+        }
+    }
+
+    /// The take recording, drawn into the wave as it comes in (one-page
+    /// step 2f, part 3: the Rec page's half-minute view goes), every
+    /// [`LIVE_EVERY`] s; once it has ended, or before its sound starts,
+    /// the wave is the page's sound's.
+    fn feed_live(&mut self, ui: &mut Ui, dt: f32) {
+        if !self.take_recording() {
+            self.end_live(ui);
+            return;
+        }
+        let Some(t) = self.take.as_ref() else {
+            return;
+        };
+        self.drawn_in -= dt.max(0.0);
+        if self.drawn.is_some() && self.drawn_in > 0.0 {
+            return;
+        }
+        self.drawn_in = LIVE_EVERY;
+        let rate = f64::from(self.rate);
+        let bars = self.input.as_ref().map(|i| &i.bars);
+        let bar = bars.and_then(|b| b.bar_frames());
+        // Its planned length, or four bars (ten seconds stopped).
+        let first = match t.rec.end() {
+            record::End::Frames(n) => n,
+            record::End::Bars(n) => bar.map_or(10.0 * rate, |b| b * f64::from(n)) as u64,
+            _ => bar.map_or(10.0 * rate, |b| 4.0 * b) as u64,
+        };
+        let beats = match (bar, t.rec.started_at(), bars.and_then(|b| b.back(0))) {
+            (Some(b), Some(start), Some(line)) => Some(mpfree_ui::wave::Beats {
+                first: (line as f64 - start as f64).rem_euclid(b),
+                frames_per_beat: b / 4.0,
+                per_bar: 4,
+            }),
+            _ => None,
+        };
+        let (name, lands) = if t.chooses {
+            (
+                self.here_take_name(t.kit)
+                    .unwrap_or_else(|| self.next_take_name()),
+                self.lands_text(t.kit),
+            )
+        } else {
+            (
+                crate::rec_arm::pad_name(t.pad),
+                format!("onto {}", self.pad_text(t.kit, t.pad)),
+            )
+        };
+        let fresh = self.drawn.is_none();
+        let live = self.drawn.get_or_insert_with(Default::default);
+        let before = live.frames();
+        live.update(t.rec.data());
+        // Nothing new (the input has stopped coming): nothing to redraw.
+        if !fresh && live.frames() == before {
+            return;
+        }
+        let so_far = take_time(live.frames(), self.rate);
+        if let Some(tab) = self.tab.as_mut() {
+            tab.show_live(
+                ui,
+                live,
+                first,
+                beats,
+                &format!("{name} · recording"),
+                &format!("{so_far} so far · {lands}"),
+            );
+        }
     }
 
     /// Normalize: layer `layer` of pad `pad` gets the gain that brings its
@@ -6099,6 +6197,9 @@ impl SamplePage {
                     self.lines.push(format!("sample: take lost ({e:?})"));
                 }
             }
+        }
+        if self.drawn.is_some() && !self.take_recording() {
+            self.end_live(ui);
         }
     }
 

@@ -92,6 +92,10 @@ pub const TAB: usize = 0;
 pub const HINT: &str = "Drag markers by their tabs · drag to scroll, pinch or SHIFT + - / + to zoom · tap the wave to \
                         hear the pad · SHIFT + Q-Link: one frame at a time";
 
+/// What a touch on the wave says while a take draws into it.
+pub const LIVE_WHY: &str =
+    "The wave is the take as it records: REC again or STOP keeps it, then trim it here";
+
 /// Shortest region and shortest loop, in frames.
 pub const MIN_FRAMES: u64 = 32;
 /// How far a marker looks for a zero crossing: this many frames, or eight
@@ -679,6 +683,10 @@ pub struct WaveTab {
     grain_part: GrainPart,
     /// What the engine last said of the cloud playing, and how many grains.
     cloud: (CloudNow, usize),
+    /// A take recording, drawn into the wave ([`WaveTab::show_live`]): its
+    /// frames so far and the span shown. The wave and the overview are
+    /// the take's until [`WaveTab::end_live`].
+    live: Option<(u64, u64)>,
 }
 
 impl WaveTab {
@@ -728,6 +736,7 @@ impl WaveTab {
             tool: Tool::default(),
             grain_part: GrainPart::default(),
             cloud: (CloudNow::default(), 0),
+            live: None,
         };
         tab.update(ui, st);
         Ok(tab)
@@ -863,11 +872,75 @@ impl WaveTab {
     }
 
     /// Where the pad's voices are playing, in source frames. Only their
-    /// strips are redrawn.
+    /// strips are redrawn. While a take records, the head is the take's.
     pub fn set_playheads(&self, ui: &mut Ui, frames: &[u64]) {
+        if self.live.is_some() {
+            return;
+        }
         if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
             w.set_playheads(frames);
         }
+    }
+
+    /// A take recording, drawn into the wave and the overview as it comes
+    /// in (the one Sample page's step 2f, part 3): `take` so far across
+    /// its span (`first`, the take's planned length or a few bars,
+    /// doubled while the take outgrows it), the part recorded bright, the
+    /// head where it has got to, `beats` its bar lines; no marks to drag,
+    /// and a touch on the wave does nothing until it ends. The pad bar
+    /// names it (`title`, `subtitle`).
+    pub fn show_live(
+        &mut self,
+        ui: &mut Ui,
+        take: &crate::live_take::LiveTake,
+        first: u64,
+        beats: Option<Beats>,
+        title: &str,
+        subtitle: &str,
+    ) {
+        let span = take.span(first);
+        let frames = take.frames();
+        let peaks = take.peaks(span);
+        let width = self.wave_w;
+        if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
+            w.set_peaks(Some(peaks.clone()), width);
+            w.set_markers(Vec::new());
+            w.set_window(None);
+            w.set_region(Some((0, frames)));
+            w.set_loop(None);
+            w.set_fades(0, 0);
+            w.set_beats(beats);
+            w.set_playheads(&[frames]);
+        }
+        if let Some(o) = ui.get_mut::<WaveOverview>(OVERVIEW) {
+            o.set_peaks(Some(peaks));
+            o.set_region(Some((0, frames)));
+        }
+        if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
+            bar.color = Color::rgb(crate::rec_widgets::REC_COLOR);
+            bar.title = title.to_string();
+            bar.subtitle = subtitle.to_string();
+        }
+        // The next sound shown starts zoomed out.
+        self.shown = None;
+        self.live = Some((frames, span));
+        self.sync_overview(ui);
+    }
+
+    /// The take has ended: the wave is the page's sound's again once
+    /// [`WaveTab::update`] shows it.
+    pub fn end_live(&mut self, ui: &mut Ui) {
+        if self.live.take().is_some() {
+            if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
+                w.set_playheads(&[]);
+            }
+        }
+    }
+
+    /// A take's frames so far and the span the wave shows, while one is
+    /// drawn into it.
+    pub fn live(&self) -> Option<(u64, u64)> {
+        self.live
     }
 
     /// Shows `st`.
@@ -886,7 +959,8 @@ impl WaveTab {
             Some(_) => Color::rgb(crate::rec_widgets::REC_COLOR),
             None => pad_color(st.pad),
         };
-        if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
+        let live = self.live.is_some();
+        if let Some(bar) = ui.get_mut::<PadBar>(BAR).filter(|_| !live) {
             bar.color = pad_color;
             let layer = if st.layers > 1 {
                 format!(" · layer {} of {}", st.layer + 1, st.layers)
@@ -936,7 +1010,7 @@ impl WaveTab {
             bar.subtitle = about.join(" · ");
         }
         let width = self.wave_w;
-        if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
+        if let Some(w) = ui.get_mut::<Waveform>(WAVE).filter(|_| !live) {
             match &self.shown {
                 Some((id, p)) if *id == src.id => {
                     if !std::ptr::addr_eq(Arc::as_ptr(p), Arc::as_ptr(&src.peaks)) {
@@ -954,7 +1028,7 @@ impl WaveTab {
             w.set_beats(st.beats());
         }
         self.show_wave(ui, st);
-        if let Some(o) = ui.get_mut::<WaveOverview>(OVERVIEW) {
+        if let Some(o) = ui.get_mut::<WaveOverview>(OVERVIEW).filter(|_| !live) {
             o.set_peaks(Some(src.peaks.clone()));
             o.set_region(Some((r.start, r.end)));
         }
@@ -971,6 +1045,10 @@ impl WaveTab {
     /// Grain tool's the grain window and its two tabs. A sound playing as
     /// grains shows its window with every tool.
     fn show_wave(&self, ui: &mut Ui, st: &WaveState) {
+        // A take drawing into the wave has no marks.
+        if self.live.is_some() {
+            return;
+        }
         let r = &st.region;
         let grains = self.tool == Tool::Grain || r.mode == PlayMode::Granular;
         let span = grains
@@ -1293,6 +1371,9 @@ impl WaveTab {
         if ev.widget == RECORDER {
             return recorder::action(&self.rec, &ev.kind).map(WaveAction::Rec);
         }
+        if self.live.is_some() && (ev.widget == WAVE || ev.widget == OVERVIEW) {
+            return Some(WaveAction::Say(LIVE_WHY.to_string()));
+        }
         if ev.widget == REGION && self.rec.recording {
             // The panel is the Input section while REC is on.
             return match &ev.kind {
@@ -1442,6 +1523,9 @@ impl WaveTab {
     /// The data wheel: zooms in (turned up) or out round the focused marker,
     /// or round the middle if it is out of view.
     pub fn wheel(&mut self, ui: &mut Ui, st: &WaveState, delta: i32) {
+        if self.live.is_some() {
+            return;
+        }
         let width = self.wave_w;
         let at = match self.tool {
             Tool::Grain => Some(grain_tool::span(&st.region, st.rate, st.bpm, None).at),
