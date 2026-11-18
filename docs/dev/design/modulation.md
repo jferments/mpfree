@@ -145,7 +145,7 @@ Two panels on `mpfree-ui`, drawn with theme tokens only: a macro's colour is the
 - **Macros 1-4 and 5-8** are banks of the Q-Link column; a long press on a macro card opens the **macros panel** over the page under the top bar, no tab lit, with "‹ Back" in its corner (`MacroAction::Back`).
 - The Q-Link column is the Play page's (128 px) beside the panel; the hint line says what the buttons do on the page.
 
-Previews: `cargo run -p mpfree-chain-ui --bin mpfree-chain-preview` (workstation only; writes PNGs to a new folder). The preview draws the app's top bar (`Header::app`) and a stand-in for the Q-Link column in the Play mockups' card shape. Nine screens: the drum bus's Drive, filter and the keys' Delay from the mixer, a pad's chain in Sample > FX, an empty chain, the effect picker, Macros 1-4 and 5-8, and the target editor.
+Previews: `cargo run -p mpfree-chain-ui --bin mpfree-chain-preview` (workstation only; writes PNGs to a new folder). The preview draws the app's top bar (`Header::app`) and a stand-in for the Q-Link column in the Play mockups' card shape. Its first screens: the drum bus's Drive, filter and the keys' Delay from the mixer, an empty chain, the effect picker, Macros 1-4 and 5-8, and the target editor.
 
 - **Chain editor** (`ChainView`):
   - The strip's inserts: number, name, a line about its settings, a dot per macro that moves it, `~` when the matrix does, and a power button that bypasses with spillover. Under them are Up, Down, Remove and + Add effect.
