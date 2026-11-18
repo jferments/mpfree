@@ -27,6 +27,13 @@
 //!   (or the MPC's - and +), and its **Mute**, **Solo** and **Stop**, then
 //!   **Stop all** and **Back to song** (`Owner::Clips`, [`clips`]). The
 //!   control that takes one is kept with the song, as the grid's are.
+//! - **Looper** (the button beside that; the looper redesign's
+//!   footswitch): a **Loop** stepper (the picked loop, or Loop 1 to 8)
+//!   with that loop's **Key** and **Mute**, then **Next loop**, **Undo**,
+//!   **Redo**, **Capture** and **Clear** (`Owner::Looper`, [`looper`]). A
+//!   tap arms Learn on one, as the transport's do; the control that takes
+//!   it works in every project. The MPC One has no footswitch jack, so a
+//!   footswitch comes in through a MIDI controller or pedal.
 //! - **MIDI Follow** (the card beside the picked row's, or in its place
 //!   from the heading's MIDI Follow when the section is narrower than the
 //!   two): the **Controller**, **Follow** Off or On, its **Knobs** (its
@@ -54,6 +61,7 @@ use std::cell::Cell;
 use mpfree_midi::learn::{Encoding, Mode, Saved, Source, Takeover};
 use mpfree_midi::setup::{Kept, PortInput, DIN_NAME, FOLLOW_KNOBS};
 use mpfree_mixer_ui::{IoInput, IoKnob, IoReply, IoSection};
+use mpfree_param::looper::{self, Which};
 use mpfree_param::{clips, transport, Owner, ParamAddr};
 use mpfree_ui::{Align, Color, FontId, PaintCx, Rect, Target, Touch};
 
@@ -75,6 +83,8 @@ const SEG_W: i32 = 104;
 const TRANSPORT_W: i32 = 190;
 /// The heading's Clips and scenes button.
 const CLIPS_W: i32 = 150;
+/// The heading's Looper button.
+const LOOPER_W: i32 = 96;
 /// The Clips and scenes card's track stepper's - and +.
 const CLIP_STEP_W: i32 = 34;
 /// Where the heading's key may start, after its words ("WHAT YOUR
@@ -109,6 +119,9 @@ enum Buttons {
     Transport,
     /// A track's Mute, Solo and Stop, Stop all and Back to song.
     Clips,
+    /// A loop's Key and Mute and the looper's own presses (the
+    /// footswitch).
+    Looper,
 }
 
 /// The Clips and scenes card's buttons, after the track's stepper: the
@@ -126,6 +139,49 @@ fn clip_target(i: usize, track: u8) -> ParamAddr {
         _ => clips::BACK_TO_SONG,
     };
     ParamAddr::new(Owner::Clips, id)
+}
+
+/// The looper card's buttons, after the Loop stepper: that loop's Key
+/// and Mute, then the looper's own (on the loop picked when they are
+/// pressed).
+const LOOPER_BUTTONS: [&str; 7] = [
+    "Key",
+    "Mute",
+    "Next loop",
+    "Undo",
+    "Redo",
+    "Capture",
+    "Clear",
+];
+
+/// What the looper card's Loop stepper steps through: the picked loop,
+/// then Loops 1 to 8.
+fn loop_choices() -> impl Iterator<Item = Which> {
+    std::iter::once(Which::Picked).chain((0..looper::LOOPS as u8).map(Which::Loop))
+}
+
+/// The Loop stepper's words: "Picked loop" never looks like a loop's
+/// number (the owner's naming rule).
+fn loop_words(w: Which) -> String {
+    match w {
+        Which::Picked => "Picked loop".to_string(),
+        Which::Loop(n) => format!("Loop {}", u16::from(n) + 1),
+    }
+}
+
+/// The address the looper card's button `i` arms, with the Loop stepper
+/// on `w`.
+fn looper_target(i: usize, w: Which) -> ParamAddr {
+    let id = match i {
+        0 => looper::key_of(w),
+        1 => looper::mute_of(w),
+        2 => looper::NEXT_LOOP,
+        3 => looper::UNDO,
+        4 => looper::REDO,
+        5 => looper::CAPTURE,
+        _ => looper::CLEAR,
+    };
+    ParamAddr::new(Owner::Looper, id)
 }
 
 /// How a learned control can move its parameter, in the order Works as
@@ -192,6 +248,13 @@ enum Hit {
     ClipTrack(i32),
     /// One of its buttons ([`CLIP_BUTTONS`]).
     Clip(usize),
+    /// The heading's Looper: the card shows the looper's, or the picked
+    /// row again.
+    Looper,
+    /// The looper card's Loop, down or up.
+    LoopStep(i32),
+    /// One of its buttons ([`LOOPER_BUTTONS`]).
+    LooperPick(usize),
     /// The heading's MIDI Follow, in a narrow section: the card shows it,
     /// or the picked row again.
     Follow,
@@ -215,6 +278,8 @@ struct Layout {
     transport: Rect,
     /// The heading's Clips and scenes button, left of it.
     clips: Rect,
+    /// The heading's Looper button, left of Clips and scenes.
+    looper: Rect,
     /// The heading's key (RIG and PROJECT), where there is room for it.
     key: Option<Rect>,
     /// The heading's MIDI Follow button, in a section too narrow for the
@@ -257,11 +322,12 @@ fn layout(r: Rect, learning: bool) -> Layout {
     let right = follow_button.map_or(head.right(), |b| b.x - 8);
     let transport = Rect::new(right - TRANSPORT_W, head.y, TRANSPORT_W, head.h);
     let clips = Rect::new(transport.x - 8 - CLIPS_W, head.y, CLIPS_W, head.h);
+    let looper = Rect::new(clips.x - 8 - LOOPER_W, head.y, LOOPER_W, head.h);
     // The key between the heading's words and the buttons, where they
     // leave it room.
     let key_x = head.x + KEY_FROM;
-    let key = (wide && clips.x - 12 - key_x >= KEY_MIN_W)
-        .then(|| Rect::new(key_x, head.y, clips.x - 12 - key_x, head.h));
+    let key = (wide && looper.x - 12 - key_x >= KEY_MIN_W)
+        .then(|| Rect::new(key_x, head.y, looper.x - 12 - key_x, head.h));
     y += HEAD_H;
     let bottom = Rect::new(r.x, r.bottom() - CARD_H, r.w, CARD_H);
     let (card, follow) = if wide {
@@ -298,6 +364,7 @@ fn layout(r: Rect, learning: bool) -> Layout {
         head,
         transport,
         clips,
+        looper,
         key,
         follow_button,
         table,
@@ -595,6 +662,15 @@ fn clip_rects(l: &Layout) -> ([Rect; 2], [Rect; 5]) {
     (steps, [p[1], p[2], p[3], p[4], p[5]])
 }
 
+/// The looper card's parts, on the same grid: the Loop stepper (- and
+/// +) in the first place, that loop's Key and Mute and Next loop beside
+/// it, then Undo, Redo, Capture and Clear on the second row.
+fn looper_rects(l: &Layout) -> ([Rect; 2], [Rect; 7]) {
+    let (steps, _) = clip_rects(l);
+    let p = pick_rects(l);
+    (steps, [p[1], p[2], p[3], p[4], p[5], p[6], p[7]])
+}
+
 /// The table's columns: Control, Moves, Now, Kept in (x and width).
 fn columns(body: Rect) -> [(i32, i32); 4] {
     let kept = 96;
@@ -732,6 +808,8 @@ pub(crate) struct Learn {
     armed: Option<ParamAddr>,
     /// The Clips and scenes card's track, from 0.
     clip_track: usize,
+    /// The looper card's Loop stepper.
+    loop_which: Which,
     /// The card shows MIDI Follow, in a section too narrow for it beside
     /// the picked row's.
     follow: bool,
@@ -752,6 +830,7 @@ impl Learn {
             buttons: None,
             armed: None,
             clip_track: 0,
+            loop_which: Which::Picked,
             follow: false,
             drawn: (u64::MAX, false, 0),
         }
@@ -820,16 +899,52 @@ impl Learn {
     /// Learn waits for a control to take `target`, named `what` on the
     /// hint line: a button on a card of buttons.
     fn arm(&mut self, target: ParamAddr, what: &str) -> IoReply {
+        self.arm_as(target, what, "press a button or move a knob")
+    }
+
+    /// [`Learn::arm`], saying `how` the control takes it.
+    fn arm_as(&mut self, target: ParamAddr, what: &str, how: &str) -> IoReply {
         let mut m = self.model.lock().unwrap_or_else(|e| e.into_inner());
         m.asks.learn_target = Some(target);
         m.asks.learn_again = None;
         m.asks.cancel_learn = false;
         self.again = None;
         self.armed = Some(target);
-        self.note = Some(format!(
-            "{what}: press a button or move a knob on your controller"
-        ));
+        self.note = Some(format!("{what}: {how} on your controller"));
         IoReply::Redraw
+    }
+
+    /// The looper card's Loop, a step down or up.
+    fn loop_step(&mut self, d: i32) -> IoReply {
+        let all: Vec<Which> = loop_choices().collect();
+        let at = all.iter().position(|w| *w == self.loop_which).unwrap_or(0);
+        let to = (at as i32 + d.signum()).clamp(0, all.len() as i32 - 1) as usize;
+        if to == at {
+            self.note = Some(if d < 0 {
+                "The picked loop is the first".to_string()
+            } else {
+                "Loop 8 is the last".to_string()
+            });
+            return IoReply::Handled;
+        }
+        self.loop_which = all[to];
+        IoReply::Redraw
+    }
+
+    /// The looper card's button `i`: Learn waits for a control to take
+    /// it, for the Loop stepper's loop.
+    fn arm_looper(&mut self, i: usize) -> IoReply {
+        let target = looper_target(i, self.loop_which);
+        let mut name = looper::name(target.param).unwrap_or_default();
+        if let Some(c) = name.get(..1) {
+            name = c.to_uppercase() + &name[1..];
+        }
+        let how = if looper::is_value(target.param) {
+            "press a key or a switch, or move a fader,"
+        } else {
+            "press a footswitch, a button or a key"
+        };
+        self.arm_as(target, &name, how)
     }
 
     fn top_for(&self, rows: usize, shown: usize) -> usize {
@@ -869,6 +984,9 @@ impl Learn {
         if l.clips.contains(x, y) {
             return Some(Hit::Clips);
         }
+        if l.looper.contains(x, y) {
+            return Some(Hit::Looper);
+        }
         if l.follow_button.is_some_and(|b| b.contains(x, y)) {
             return Some(Hit::Follow);
         }
@@ -898,6 +1016,16 @@ impl Learn {
                     match steps.iter().position(|p| p.contains(x, y)) {
                         Some(i) => Some(Hit::ClipTrack(if i == 0 { -1 } else { 1 })),
                         None => buttons.iter().position(|p| p.contains(x, y)).map(Hit::Clip),
+                    }
+                }
+                Buttons::Looper => {
+                    let (steps, buttons) = looper_rects(&l);
+                    match steps.iter().position(|p| p.contains(x, y)) {
+                        Some(i) => Some(Hit::LoopStep(if i == 0 { -1 } else { 1 })),
+                        None => buttons
+                            .iter()
+                            .position(|p| p.contains(x, y))
+                            .map(Hit::LooperPick),
                     }
                 }
             };
@@ -1149,6 +1277,9 @@ impl Learn {
                 };
                 self.arm(clip_target(i, track), &what)
             }
+            Hit::Looper => self.show_buttons(Buttons::Looper),
+            Hit::LoopStep(d) => self.loop_step(d),
+            Hit::LooperPick(i) => self.arm_looper(i),
             Hit::Follow => {
                 self.follow = !self.follow;
                 IoReply::Redraw
@@ -1384,6 +1515,53 @@ impl Learn {
         );
     }
 
+    /// The looper card (the footswitch): the Loop stepper, that loop's
+    /// Key and Mute and the looper's own presses, the one Learn waits for
+    /// lit.
+    fn paint_looper(&self, cx: &mut PaintCx, m: &IoModel, l: &Layout, back: bool) {
+        let t = cx.theme.clone();
+        cx.canvas.fill_round_rect(l.card, 12, t.surface);
+        let ci = l.card.inset(14);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            Rect::new(ci.x, ci.y, l.again.x - ci.x - 8, BUTTON_H),
+            Align::Left,
+            t.text_dim,
+            "LOOPER",
+        );
+        if back {
+            button(cx, l.remove, "Back", false);
+        }
+        para(
+            cx,
+            t.size_small * 0.9,
+            Rect::new(ci.x, ci.y + BUTTON_H, ci.w, 2 * SAYS_LINE_H),
+            t.text_dim,
+            "Tap one, then press a footswitch or a button on your controller. It works in every project.",
+        );
+        let (steps, buttons) = looper_rects(l);
+        stepper(cx, steps[0], steps[1], &loop_words(self.loop_which));
+        for (i, r) in buttons.into_iter().enumerate() {
+            let lit = self.waits_for(m, looper_target(i, self.loop_which));
+            button(cx, r, LOOPER_BUTTONS[i], lit);
+        }
+        let last = pick_rects(l)[7];
+        para(
+            cx,
+            t.size_small * 0.9,
+            Rect::new(
+                ci.x,
+                last.bottom() + 6,
+                ci.w,
+                ci.bottom() - last.bottom() - 6,
+            ),
+            t.text_faint,
+            "A loop's key does what its pad does; held for a second it clears the loop. \
+             The MPC One has no footswitch jack: plug the footswitch into a MIDI controller or pedal.",
+        );
+    }
+
     /// The cards under the list: the picked row's (or a card of buttons)
     /// and MIDI Follow's, side by side or the one asked for.
     fn paint_cards(&self, cx: &mut PaintCx, m: &IoModel, l: &Layout, n: usize) {
@@ -1396,6 +1574,7 @@ impl Learn {
         match self.buttons_shown(n) {
             Some(Buttons::Transport) => self.paint_transport(cx, m, l, n > 0),
             Some(Buttons::Clips) => self.paint_clips(cx, m, l, n > 0),
+            Some(Buttons::Looper) => self.paint_looper(cx, m, l, n > 0),
             None => self.paint_card(cx, m, l, self.pick.min(n - 1)),
         }
     }
@@ -1595,16 +1774,20 @@ impl IoSection for Learn {
         }
         // The heading and the key.
         let all: Vec<(Kept, &Saved)> = m.setup.all_learned().collect();
-        // The words end before the buttons (cut short rather than under
-        // them).
-        let words = Rect::new(l.head.x, l.head.y, l.clips.x - 8 - l.head.x, l.head.h);
+        // The words end before the buttons: "LEARNED · N" where the
+        // long words don't fit (cut short rather than under them).
+        let words = Rect::new(l.head.x, l.head.y, l.looper.x - 8 - l.head.x, l.head.h);
+        let mut heading = format!("WHAT YOUR CONTROLLERS MOVE · {}", all.len());
+        if cx.measure(FontId::Bold, t.size_small, &heading) > words.w {
+            heading = format!("LEARNED · {}", all.len());
+        }
         cx.text(
             FontId::Bold,
             t.size_small,
             words,
             Align::Left,
             t.text_dim,
-            &format!("WHAT YOUR CONTROLLERS MOVE · {}", all.len()),
+            &heading,
         );
         let card = self.buttons_shown(all.len());
         button(
@@ -1619,6 +1802,7 @@ impl IoSection for Learn {
             "Clips and scenes",
             card == Some(Buttons::Clips),
         );
+        button(cx, l.looper, "Looper", card == Some(Buttons::Looper));
         if let Some(b) = l.follow_button {
             button(cx, b, "MIDI Follow", self.follow);
         }
@@ -1811,6 +1995,7 @@ impl IoSection for Learn {
             l.transport,
         ));
         out.push(Target::tap("learn-clips", 0, "Clips and scenes", l.clips));
+        out.push(Target::tap("learn-looper", 0, "Looper controls", l.looper));
         if let Some(b) = l.follow_button {
             out.push(Target::tap("learn-follow", 0, "MIDI Follow", b));
         }
@@ -1867,6 +2052,14 @@ impl IoSection for Learn {
                             _ => CLIP_BUTTONS[i].to_string(),
                         };
                         out.push(Target::tap("learn-clip", i, label, r));
+                    }
+                }
+                Buttons::Looper => {
+                    let (steps, buttons) = looper_rects(&l);
+                    out.push(Target::tap("learn-loop", 0, "Loop −", steps[0]));
+                    out.push(Target::tap("learn-loop", 1, "Loop +", steps[1]));
+                    for (i, r) in buttons.into_iter().enumerate() {
+                        out.push(Target::tap("learn-looper-pick", i, LOOPER_BUTTONS[i], r));
                     }
                 }
             }
@@ -2166,10 +2359,15 @@ mod tests {
         let _ = paint(&s);
         let empty = ids(&s, AREA);
         assert_eq!(
-            empty[..3],
-            ["learn-transport", "learn-clips", "learn-follow"]
+            empty[..4],
+            [
+                "learn-transport",
+                "learn-clips",
+                "learn-looper",
+                "learn-follow"
+            ]
         );
-        assert_eq!(empty[3..], ["learn-pick"; 8]);
+        assert_eq!(empty[4..], ["learn-pick"; 8]);
         // Clips and scenes in its place, and back.
         tap(&mut s, "learn-clips", 0);
         fits(&s, AREA);
@@ -2177,8 +2375,9 @@ mod tests {
         assert!(!ids(&s, AREA).contains(&"learn-back"));
         tap(&mut s, "learn-clips", 0);
         assert!(ids(&s, AREA).contains(&"learn-pick"));
-        // The transport card fits too, and Clips and scenes'.
-        for card in ["learn-transport", "learn-clips"] {
+        // The transport card fits too, and Clips and scenes' and the
+        // looper's.
+        for card in ["learn-transport", "learn-clips", "learn-looper"] {
             let mut s = Learn::new(model());
             assert_eq!(tap(&mut s, card, 0), IoReply::Redraw);
             fits(&s, AREA);
@@ -2488,6 +2687,131 @@ mod tests {
             s.input(IoInput::Step(-1));
         }
         assert_eq!(labels(&s)[0], "Mute Track 1");
+    }
+
+    /// The looper card (the footswitch): the Loop stepper picks the
+    /// picked loop or a loop by number, and each button arms Learn on what
+    /// it says, for that loop.
+    #[test]
+    fn the_looper_card_arms_learn_on_a_loops_key_and_mute_and_the_presses() {
+        let m = model();
+        let mut s = Learn::new(m.clone());
+        let _ = paint(&s);
+        assert!(!ids(&s, AREA).contains(&"learn-looper-pick"));
+        assert_eq!(tap(&mut s, "learn-looper", 0), IoReply::Redraw);
+        let _ = paint(&s);
+        let labels: Vec<String> = s
+            .targets(AREA)
+            .into_iter()
+            .filter(|t| t.id == "learn-looper-pick")
+            .map(|t| t.label)
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Key",
+                "Mute",
+                "Next loop",
+                "Undo",
+                "Redo",
+                "Capture",
+                "Clear"
+            ]
+        );
+        // Nothing for the Q-Links or - and + while it shows.
+        assert!(s.qlinks().unwrap().iter().all(|k| !k.enabled));
+        assert_eq!(s.qlink_turn(0, 1, false), IoReply::Ignored);
+        assert_eq!(s.input(IoInput::Step(1)), IoReply::Handled);
+        let armed = |m: &Shared| m.lock().unwrap().asks.learn_target;
+        let at = |id| Some(ParamAddr::new(Owner::Looper, id));
+        // The picked loop's to start with.
+        assert_eq!(s.loop_which, Which::Picked);
+        tap(&mut s, "learn-looper-pick", 0);
+        assert_eq!(armed(&m), at(looper::PICKED_KEY));
+        assert_eq!(
+            s.take_note().unwrap(),
+            "Picked loop's key: press a footswitch, a button or a key on your controller"
+        );
+        tap(&mut s, "learn-looper-pick", 1);
+        assert_eq!(armed(&m), at(looper::PICKED_MUTE));
+        assert_eq!(
+            s.take_note().unwrap(),
+            "Picked loop's mute: press a key or a switch, or move a fader, on your controller"
+        );
+        // Lit while the app says it waits.
+        assert!(s.waits_for(
+            &m.lock().unwrap(),
+            ParamAddr::new(Owner::Looper, looper::PICKED_MUTE)
+        ));
+        let _ = paint(&s);
+        // Down from the picked loop: it says so.
+        assert_eq!(tap(&mut s, "learn-loop", 0), IoReply::Handled);
+        assert_eq!(s.take_note().unwrap(), "The picked loop is the first");
+        // Loop 3.
+        for _ in 0..3 {
+            assert_eq!(tap(&mut s, "learn-loop", 1), IoReply::Redraw);
+        }
+        assert_eq!(s.loop_which, Which::Loop(2));
+        assert_eq!(loop_words(s.loop_which), "Loop 3");
+        assert_ne!(loop_words(Which::Picked), loop_words(Which::Loop(0)));
+        tap(&mut s, "learn-looper-pick", 0);
+        assert_eq!(armed(&m), at(looper::key(2)));
+        assert_eq!(
+            s.take_note().unwrap(),
+            "Loop 3 key: press a footswitch, a button or a key on your controller"
+        );
+        tap(&mut s, "learn-looper-pick", 1);
+        assert_eq!(armed(&m), at(looper::mute(2)));
+        for (i, id) in [
+            (2, looper::NEXT_LOOP),
+            (3, looper::UNDO),
+            (4, looper::REDO),
+            (5, looper::CAPTURE),
+            (6, looper::CLEAR),
+        ] {
+            tap(&mut s, "learn-looper-pick", i);
+            assert_eq!(armed(&m), at(id));
+            assert_eq!(s.armed, at(id));
+        }
+        // Up to Loop 8 and no further.
+        for _ in 0..5 {
+            tap(&mut s, "learn-loop", 1);
+        }
+        assert_eq!(s.loop_which, Which::Loop(7));
+        assert_eq!(tap(&mut s, "learn-loop", 1), IoReply::Handled);
+        assert_eq!(s.take_note().unwrap(), "Loop 8 is the last");
+        // Transport and tempo from here shows the transport's card; the
+        // Looper button again, or Back, shows the picked row's.
+        tap(&mut s, "learn-transport", 0);
+        assert!(ids(&s, AREA).contains(&"learn-pick"));
+        tap(&mut s, "learn-looper", 0);
+        tap(&mut s, "learn-looper", 0);
+        assert!(ids(&s, AREA).contains(&"learn-again"));
+        tap(&mut s, "learn-looper", 0);
+        tap(&mut s, "learn-back", 0);
+        assert!(ids(&s, AREA).contains(&"learn-again"));
+        // With nothing learned the looper's card shows in the transport's
+        // place, with no Back; Looper again shows the transport's.
+        let mut s = Learn::new(Arc::new(Mutex::new(crate::sample::rig())));
+        tap(&mut s, "learn-looper", 0);
+        let shown = ids(&s, AREA);
+        assert!(shown.contains(&"learn-looper-pick") && !shown.contains(&"learn-back"));
+        tap(&mut s, "learn-looper", 0);
+        assert!(ids(&s, AREA).contains(&"learn-pick"));
+    }
+
+    /// The heading's words keep their room before the buttons: the long
+    /// ones where they fit, else the short.
+    #[test]
+    fn the_heading_says_what_is_learned_in_the_room_it_has() {
+        let s = Learn::new(model());
+        for area in [AREA, WIDE] {
+            let l = layout(area, false);
+            assert!(l.looper.x - 8 > l.head.x + 100, "{area:?}");
+            assert!(l.looper.right() + 8 <= l.clips.x);
+            assert!(l.clips.right() + 8 <= l.transport.x);
+            fits(&s, area);
+        }
     }
 
     #[test]

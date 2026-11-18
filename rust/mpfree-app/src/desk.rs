@@ -843,6 +843,55 @@ pub fn perform_pad_up(
     }
 }
 
+/// A learned control on the looper (its footswitch; `remote::LooperAct`),
+/// on any page: a loop's key does what its pad does ([`perform_pad_on`]),
+/// a mute mutes the loop or lets it play, Next loop picks the next one,
+/// Capture is the Looper tab's, and Undo, Redo and Clear are the Looper
+/// tab's buttons, on the picked loop. Its hold clears the loop through
+/// [`perform_pad_held`].
+pub fn looper_remote(
+    app: &mut app::App,
+    time: &time::TimeHost,
+    looper: &looping::LoopHost,
+    out: &mut Out,
+    act: crate::remote::LooperAct,
+) -> Vec<app::Effect> {
+    use crate::looper_page::{B_CLEAR, B_REDO, B_UNDO};
+    use crate::remote::LooperAct;
+    use looping::LoopAction;
+    use mpfree_play::mpfree_param::looper::Looper;
+    match act {
+        LooperAct::Nothing => Vec::new(),
+        LooperAct::Key(n) => {
+            let key = crate::perform_pads::PadAction::LoopKey(n as u8);
+            let (fx, line) = perform_pad_on(app, time, looper, out, key, 0);
+            out.note(&format!("{line}, from a learned control"));
+            fx
+        }
+        LooperAct::Mute { n, on } => vec![app::Effect::Looper(LoopAction::Mute(n, on))],
+        LooperAct::Press(Looper::NextLoop) => {
+            let n = (looper.picked() + 1) % mpfree_looper::MAX_LOOPS;
+            vec![app::Effect::Looper(LoopAction::Select(n))]
+        }
+        LooperAct::Press(Looper::Capture) => vec![app::Effect::Looper(LoopAction::Capture)],
+        LooperAct::Press(Looper::Undo) => app.looper_tap(B_UNDO),
+        LooperAct::Press(Looper::Redo) => app.looper_tap(B_REDO),
+        LooperAct::Press(Looper::Clear) => app.looper_tap(B_CLEAR),
+        // Keys and mutes come as Key and Mute.
+        LooperAct::Press(Looper::Key(_) | Looper::Mute(_)) => Vec::new(),
+    }
+}
+
+/// What the looper's learned controls read (`remote::Now`): the loop
+/// picked and the loops muted.
+pub fn looper_now(looper: &looping::LoopHost) -> crate::remote::Now {
+    crate::remote::Now {
+        picked: looper.picked(),
+        loops_muted: looper.mute_bits(),
+        ..crate::remote::Now::default()
+    }
+}
+
 /// A loop key held for [`crate::perform_pads::CLEAR_HOLD_S`]: its loop
 /// cleared, as a ring held on the Looper tab clears it.
 pub fn perform_pad_held(action: crate::perform_pads::PadAction) -> (Vec<app::Effect>, String) {

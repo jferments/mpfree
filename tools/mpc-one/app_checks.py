@@ -2428,6 +2428,7 @@ AREAS = (
       "a_ring_acts_on_the_press_and_a_hold_clears_the_loop",
       "the_q_links_turn_the_loops_levels_then_the_picked_loop",
       "the_pads_as_loop_keys_record_overdub_mute_and_clear",
+      "a_footswitch_plays_the_looper_from_any_page",
       "shift_sampler_again_on_the_looper_tab_makes_the_pads_loop_keys",
       "once_solo_and_a_clear_that_undo_brings_back",
       "a_replace_overdub_takes_the_place_of_what_was_there",
