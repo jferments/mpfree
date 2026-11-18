@@ -1098,6 +1098,7 @@ impl App {
             self.release_pad(slot);
             let pad = self.kit_pad(slot) as u8;
             self.kit_held[slot] = Some(pad);
+            self.kit_last = Some(slot);
             self.hold_kit_pad(pad, velocity);
             return;
         };
