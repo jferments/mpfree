@@ -97,6 +97,7 @@ mod desk;
 mod drawing;
 mod engines;
 mod export;
+mod expr_rec;
 mod fxmodes;
 mod gui;
 mod imagecopy;
@@ -6065,6 +6066,9 @@ fn player_session(
     let mut expr_track = 0usize;
     // The pedals the keys put down on it (`expr_track`).
     let mut pedals_down = midi_in::PedalsDown::default();
+    // The keys' expression on its gear, thinned for the recorder and the
+    // move log (the MIDI plan's 3.7).
+    let mut expr_rec = expr_rec::ExprRec::new();
     let mut key_misses = 0u64;
     // Messages each port's MIDI out writer dropped with its queue full, as
     // the monitor was last told.
@@ -7362,9 +7366,13 @@ fn player_session(
                     if key_notes || (ctl.is_pedal() && !mpfree_node::Ctl::down(value)) =>
                 {
                     pedals_down.key(ctl, value);
-                    if !midi_out.keys_control(armed as u16, ctl, value)
-                        && !mix.instruments.control(armed, ctl, value, 0)
-                    {
+                    if midi_out.keys_control(armed as u16, ctl, value) {
+                        // The gear's controller, for recording (a pedal is
+                        // not followed).
+                        if let Some(v) = mpfree_node::Ctl::clamp(value) {
+                            expr_rec.control(ctl.cc(), (v * 127.0).round() as u8);
+                        }
+                    } else if !mix.instruments.control(armed, ctl, value, 0) {
                         synth.control(ctl, value, 0);
                     }
                     None
@@ -7451,6 +7459,16 @@ fn player_session(
                 None => {}
             }
         }
+        // Expression recorded (the MIDI plan's 3.7): the bend, pressure and
+        // controllers the armed track's gear was sent from the keys, as
+        // moves on its MIDI lanes while the transport rolls (the recorder
+        // keeps them while it records, the move log for CAPTURE).
+        let gear = midi_out.expression_sent(armed as u16);
+        if let Some((bend, pressure)) = gear {
+            expr_rec.sent(bend, pressure);
+        }
+        let gear_track = gear.and_then(|_| u8::try_from(armed).ok());
+        expr_rec.period(gear_track, app.rolling(), mt, |i| time.gesture(0, i));
         // MIDI Follow: the controller's knobs turn the Q-Links, as the
         // MPC's own Q-Links turned by as much.
         for (knob, d) in music.take_knob_turns() {

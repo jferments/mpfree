@@ -1831,6 +1831,26 @@ impl MidiOut {
         true
     }
 
+    /// What [`MidiOut::expression`] last sent `track`'s gear from the keys:
+    /// its bend (-8192 to 8191) and, unless the gear takes pressure note
+    /// by note (its profile's poly pressure), its channel pressure, for
+    /// recording them (`expr_rec`). None while the track's events don't go
+    /// to MIDI out, or its gear is MPE, whose notes each bend on their own.
+    pub fn expression_sent(&self, track: u16) -> Option<(i16, Option<u8>)> {
+        if !self.takes(track) {
+            return None;
+        }
+        let t = usize::from(track);
+        if self.mpe.get(t)?.zone() != Zone::Off {
+            return None;
+        }
+        let poly = self.tracks[t]
+            .and_then(|a| self.ports.get(usize::from(a.port.0)))
+            .is_some_and(|p| p.poly_pressure);
+        let (bend, pressure) = self.expr.get(t)?.sent();
+        Some((bend, (!poly).then_some(pressure)))
+    }
+
     /// A keyboard's pedal, mod wheel, breath or foot controller for track
     /// `track`'s gear, at the start of this period: its CC as it came, on
     /// the track's channel (MPE gear's master channel). A pedal it put

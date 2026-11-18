@@ -658,6 +658,89 @@ fn track_on_midi_out_never_allocates(usb: bool) {
     }
 }
 
+/// The keys' wheel and pressure on a track that plays on MIDI Out, while
+/// it records (the MIDI plan's 3.7): what the gear is sent goes through
+/// `ExprRec`'s thinning to `TimeHost::gesture` each period, as the main
+/// loop does, without allocating or freeing; let go, the wheel is a lane
+/// of the clip with far fewer points than the values it was sent.
+#[test]
+fn the_keys_wheel_on_a_midi_out_track_records_and_never_allocates() {
+    use mpfree_midi::expr_out::In;
+    use mpfree_midi::setup::{TrackOut, DIN_NAME};
+    use mpfree_play::mpfree_param::{midi, Owner, ParamAddr};
+    use mpfree_seq::mpfree_moves::Target;
+    let mut rig = Rig::new(false);
+    let mut c =
+        cores::Cores::start_unpinned(cores::SoundCores::Shared, &mut rig.player, &mut rig.synth);
+    c.start_mixer(&mut rig.mix.mixer);
+    rig.time.command(Command::SetLoop(Some((0, 4 * 3840))));
+    rig.time
+        .act(TimeAction::NewClip { track: 0, slot: 0 })
+        .unwrap();
+    let din = MidiSink::default();
+    rig.midi
+        .open(din.clone(), std::time::Instant::now())
+        .unwrap();
+    {
+        let mut m = rig.io.lock().unwrap();
+        m.setup.tracks[0] = Some(TrackOut::new(DIN_NAME, 0));
+        m.gen += 1;
+    }
+    let mut i = 0u64;
+    for _ in 0..200 {
+        rig.period(i);
+        i += 1;
+    }
+    assert!(rig.midi.takes(0));
+    assert_eq!(rig.time.info().state, mpfree_transport::State::Recording);
+    let mut rec = crate::expr_rec::ExprRec::new();
+    let mut sent = 0u32;
+    let mut step = |rig: &mut Rig, rec: &mut crate::expr_rec::ExprRec, i: u64, wheel: f32| {
+        // Four wheel values a period, as a 14-bit wheel can send (the
+        // last of them where it rests).
+        for k in 0..4 {
+            let w = wheel + (3 - k) as f32 * 0.0005;
+            assert!(rig.midi.expression(0, In::Wheel(w)));
+        }
+        let (bend, pressure) = rig.midi.expression_sent(0).unwrap();
+        rec.sent(bend, pressure);
+        let t = i as f64 * PERIOD as f64 / f64::from(RATE);
+        rec.period(Some(0), true, t, |input| rig.time.gesture(0, input));
+        rig.period(i);
+        sent += 4;
+    };
+    let ((), calls) = crate::sys::alloc_count::calls(|| {
+        for n in 0..600 {
+            let wheel = (n as f32 * 0.01).sin() * 0.9;
+            step(&mut rig, &mut rec, i, wheel);
+            i += 1;
+        }
+    });
+    assert_eq!(calls, 0, "allocations or frees on the sound path");
+    // Let go: the wheel back in the middle ends the gesture, and the clip
+    // has its lane.
+    for _ in 0..100 {
+        step(&mut rig, &mut rec, i, 0.0);
+        i += 1;
+    }
+    let bend = ParamAddr::new(Owner::Midi(0), midi::BEND);
+    let points = rig
+        .time
+        .project()
+        .clip(0, 0)
+        .and_then(|c| c.moves.lane(Target::for_track(bend, 0)))
+        .map(|l| l.points.len());
+    assert!(
+        points.is_some_and(|n| n >= 20 && n < sent as usize / 4),
+        "{points:?} points for {sent} values"
+    );
+    assert!(rig.midi.close());
+    assert!(
+        din.0.lock().unwrap().windows(1).any(|b| b[0] == 0xE0),
+        "the wheel went out on channel 1"
+    );
+}
+
 /// An arp's note (the pads played live) on a track that plays on MIDI Out:
 /// it goes out with the pads' velocity, the pads don't sound it, the pad
 /// still shows, and the armed track records the pad as heard.

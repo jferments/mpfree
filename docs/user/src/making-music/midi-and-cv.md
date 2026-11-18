@@ -31,7 +31,7 @@ An **MPE** controller (an expressive keyboard that gives each finger its own cha
 
 Most MPE controllers say they are MPE when they start, and MPFree hears it: its log says *MPE lower zone, channels 2 to 16 (it said so)*. If yours doesn't, give its port a [profile](#device-profiles) with an **mpe** line.
 
-The wheel, pressure and MPE play MPFree's own sounds: the synth and a track's own instrument (a kit's pads take pressure only). They go into the arpeggiator's and the MIDI effects' notes only while those notes are the keys as they came: a note the MIDI effects moved, or one the arpeggiator plays, takes the wheel but not its key's slide or tone. A track that plays a synth through MIDI out sends them to that synth ([The wheel, pressure and MPE on a synth](#the-wheel-pressure-and-mpe-on-a-synth)), and its [CV outputs](#cv-and-gate) take them too. Recording them into a clip comes later.
+The wheel, pressure and MPE play MPFree's own sounds: the synth and a track's own instrument (a kit's pads take pressure only). They go into the arpeggiator's and the MIDI effects' notes only while those notes are the keys as they came: a note the MIDI effects moved, or one the arpeggiator plays, takes the wheel but not its key's slide or tone. A track that plays a synth through MIDI out sends them to that synth ([The wheel, pressure and MPE on a synth](#the-wheel-pressure-and-mpe-on-a-synth)), and its [CV outputs](#cv-and-gate) take them too. On such a track a recording keeps the wheel, the pressure and the mod wheel in the clip ([Recording the wheel and pressure](#recording-the-wheel-and-pressure)); recording them on MPFree's own sounds comes later.
 
 ### Pedals and the mod wheel
 
@@ -132,6 +132,12 @@ Each goes out only when it changes. When you let go of the last key, the bend go
 - with more notes than channels, a new note shares the channel of the oldest one, as MPE asks.
 
 On the I/O view the track's **Plays on** says *port · MPE* and its note *each note on its own channel*, because there is no channel to pick. A stop, a panic or a new **Plays on** puts every channel back at rest.
+
+#### Recording the wheel and pressure
+
+When you record on a track that plays a synth through MIDI out, the clip keeps what you do with the pitch wheel, the pressure, the mod wheel, a breath controller and a foot controller (expression pedal), as the synth was sent them. They play back to the synth on every pass, as the track's pitch bend, pressure and CC 1, 2 and 11. Each move is one gesture: it starts when the wheel leaves the middle (or the pressure, mod wheel or breath leaves 0) and ends when it is back, so between moves the lane leaves the synth alone. A foot controller can rest anywhere, so its move lasts until you stop recording. MPFree keeps a value whenever it moves by a step or more, so a lane stays small however fast your wheel sends. Played while the music runs without recording, the moves are kept for [Capture](clips.md#capture-keep-what-you-just-played) too.
+
+Not yet: an MPE synth (each note's own slide), the pedals, and the wheel on MPFree's own sounds.
 
 ### A kit on a drum machine
 
