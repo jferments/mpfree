@@ -135,6 +135,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Pitch correct** | Tunes a voice to the notes of a key. Pick the **Key** and **Scale**; **Speed** sets how quickly it pulls a note in (0 snaps straight to it, for the hard, stepped sound; 50 ms or more keeps slides and vibrato natural) and **Amount** how far. **Flex-Tune** leaves notes you sing well away from the note alone, so slides and deliberate bends stay yours, and **Humanize** lets a long held note keep its vibrato while quick notes still snap in (both 0 by default, on the Voice page). The **Note** and **Correction** readouts show the note it hears and how far it is moving it. |
 | **Harmonizer** | Sings along with you: up to two extra voices a 3rd, 4th, 5th, 6th or octave above or below each note you sing, that stay in the key (a 3rd is major or minor as the key has it), each with its own level and pan. **Glide** smooths a voice into its next note, and **Dry** is your own voice. The voices stay clean and in tune with you, without a buzz. |
 | **Talk box** | Makes a sound say vowels, from "oo" to "ee". The vowel moves with how loud you play or in time with the music; **Formant** makes the mouth smaller or bigger. Best on rich sounds: synth chords, organs, guitars (see [The Talk box](#the-talk-box)). |
+| **Vocoder** | Makes a sound speak with a voice: the robot voice, a whispering choir, a synth that sings your words. Put it on a voice and it plays a buzzing saw that follows your pitch, or noise for a whisper (see [The Vocoder](#the-vocoder)). |
 | **Perform FX** | The throws, stutters, beat repeats, tape stops and the XY pad, as an effect you can put on any strip. On the master it is what the Play page's throws play (see [Playing live](playing-live.md#throws)); on a pad, its 16 slots play stutters and repeats on that pad alone. |
 | **XY FX** | One effect at a time played from two controls at once, X and Y: see [XY FX](#xy-fx). |
 | **Tuner** | Tunes a guitar, a bass, a voice or a synth: put it on the strip the instrument comes in on (an input, usually) and play one note at a time. It shows the note, how many cents sharp or flat (the needle is green when you're within 3 cents) and the frequency. **Reference** sets the pitch of A, 440 Hz unless your band tunes to something else; **Mute** silences the strip while you tune. It doesn't change the sound and adds no delay. |
@@ -300,6 +301,21 @@ It works best on sounds with plenty of harmonics: a saw lead, a synth chord, an 
 
 > [!NOTE]
 > Projects saved before this change sound different through the Talk box: it goes in at the level of the sound going in, about 6 dB louder than it was (5 to 8 dB in the presets), and the vowels are fuller and clearer, with no hollow dip between their formants. A Formant shift now makes the vowels a little wider or narrower along with the mouth.
+
+### The Vocoder
+
+The Vocoder splits a voice into bands, from low to high, and lets each band's level set the level of the same band of another sound, the carrier, so the carrier seems to speak. Put it on a voice: with **Carrier** on **Saw** (the default) it plays a bright saw that follows the pitch you sing, for the robot voice; **Pitch** moves it up or down in semitones, an octave down for a deep robot. **Noise** turns the voice into a whisper.
+
+- **Bands** sets how many: 16 is clear speech, 8 or fewer sounds vintage, more adds detail. **Low** and **High** set the range they cover; **Bandwidth** narrows them (a ringing, metallic sound) or widens them (smoother).
+- **Formant** moves the carrier's bands up or down against the voice's: a smaller mouth or a bigger one.
+- **Attack** and **Release** set how fast the bands follow the voice: short for crisp speech, longer for a smooth, singing sound.
+- **Unvoiced** mixes in the voice's own highs, so an "s" or a "t" is heard. **Gate** silences the vocoder when the voice is quieter than it, so the mic's hiss doesn't come through; turned fully down it is off.
+- **Spread** sends alternate bands left and right, for a wide choir. **Mix** blends in the dry voice.
+- **Voice level** shows how loud the voice it hears is.
+
+It sounds about as loud as the voice going in, and it adds no delay, so you can sing through it live. Changing **Carrier** or **Bands** dips the sound for a moment; every other control glides.
+
+**Input** is the classic vocoder on a synth: the track's own sound is the carrier and the voice comes from another track, as the effect's sidechain key. MPFree can't choose that key yet, except from a project that sets one, so on Input with no key the vocoder is silent and **Voice level** stays at the bottom. The presets all use Saw or Noise, so they work on a voice track as they are.
 
 ### Lo-fi
 
