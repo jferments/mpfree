@@ -422,6 +422,46 @@ impl Take {
         }
     }
 
+    /// A take ending on silence ends after `frames` of it from here on.
+    /// False once it has ended, or when it doesn't end on silence.
+    pub fn set_silence(&mut self, frames: u64) -> bool {
+        match &mut self.stop {
+            Stop::Silence { frames: f, .. } if self.end.is_none() => {
+                *f = frames;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// What it does after its cut from here on: rings out with `ring`
+    /// (once round, as [`Take::ring_out_once_round`], when `once_round`),
+    /// or ends on it (None). False once its cut has passed (it rings, or
+    /// it has ended), and for a take ending on silence, which has no tail.
+    /// Not for a take stopped by a press, which ends there whatever its
+    /// tail ([`Recording::set_tail`] keeps to that).
+    pub fn set_ring(&mut self, ring: Option<RingOut>, once_round: bool) -> bool {
+        let past = self.cut.is_some_and(|c| self.read_to >= c);
+        if past || matches!(self.stop, Stop::Silence { .. }) {
+            return false;
+        }
+        match ring {
+            Some(r) => {
+                // A length known with no ring ends there: it is the cut now.
+                if self.ring.is_none() && self.cut.is_some() {
+                    self.end = None;
+                }
+                self.ring = Some(r);
+                self.once_round = once_round;
+            }
+            None => {
+                self.once_round = false;
+                self.ring_off();
+            }
+        }
+        true
+    }
+
     /// A take still waiting for its threshold listens for `level` from
     /// here on, keeping `pre_roll` frames from before its start. False
     /// once it has started, or when it isn't armed on a threshold.
@@ -1001,6 +1041,8 @@ pub struct Recording {
     /// The bar line it started on (a [`Start::NextBar`] recording).
     bar0: Option<u64>,
     cancelled: bool,
+    /// Stopped by a press: it ends there, whatever its tail.
+    pressed: bool,
 }
 
 impl Recording {
@@ -1030,6 +1072,7 @@ impl Recording {
             take: None,
             bar0: None,
             cancelled: false,
+            pressed: false,
         };
         match start {
             Start::Now => r.begin(input, Arm::At(armed_at)),
@@ -1200,12 +1243,62 @@ impl Recording {
             .is_some_and(|t| t.set_threshold(level, pre_roll))
     }
 
+    /// A recording ending on silence ends after `frames` of it from here
+    /// on (the Silence for setting turned while it waits or records).
+    /// False once it has ended, or when it doesn't end on silence.
+    pub fn set_silence(&mut self, frames: u64) -> bool {
+        let End::Silence { frames: f, .. } = &mut self.end else {
+            return false;
+        };
+        *f = frames;
+        match self.take.as_mut() {
+            Some(t) => t.set_silence(frames),
+            None => !self.cancelled,
+        }
+    }
+
+    /// What it does after its length or bar line from here on (the Tail
+    /// setting turned while it waits or records). False, keeping the one
+    /// it has, once its length has passed or it has ended. A recording
+    /// that ends on a press or on silence has no tail: true, and it keeps
+    /// it for nothing.
+    pub fn set_tail(&mut self, tail: Tail) -> bool {
+        if self.pressed || self.cancelled {
+            return false;
+        }
+        if matches!(self.end, End::Press | End::Silence { .. }) {
+            self.tail = tail;
+            return true;
+        }
+        let ring = match tail {
+            Tail::Cut => None,
+            Tail::Ring(r) => Some(r),
+            Tail::Loop { level, quiet } => Some(RingOut {
+                level,
+                quiet,
+                max: u64::MAX,
+            }),
+        };
+        let set = match self.take.as_mut() {
+            Some(t) => t.set_ring(ring, matches!(tail, Tail::Loop { .. })),
+            None => true,
+        };
+        if set {
+            self.tail = tail;
+            if !matches!(tail, Tail::Loop { .. }) {
+                self.rang_in = None;
+            }
+        }
+        set
+    }
+
     /// Stops it now: a recording that has started ends here; one still
     /// waiting records nothing.
     pub fn stop(&mut self, input: &Input) {
         match self.progress() {
             Progress::Waiting => self.cancelled = true,
             Progress::Recording { .. } => {
+                self.pressed = true;
                 if let Some(t) = self.take.as_mut() {
                     t.stop_at(input.now());
                 }

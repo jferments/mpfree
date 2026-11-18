@@ -320,6 +320,21 @@ impl RecSettings {
         }
     }
 
+    /// The Tail setting as a recording's tail, whatever the end (a take
+    /// already running hears it: [`Recording::set_tail`]).
+    pub fn tail_as(&self, rate: u32) -> Tail {
+        RecSettings {
+            end: EndAt::Length,
+            ..*self
+        }
+        .tail_at(rate)
+    }
+
+    /// The Silence for time, in frames at `rate`.
+    pub fn silence_frames(&self, rate: u32) -> u64 {
+        ms_frames(self.silence_ms, rate)
+    }
+
     /// Whether a take with these settings is whole bars at the tempo (it
     /// lands warped at it).
     pub fn in_bars(&self) -> bool {
@@ -574,6 +589,7 @@ pub(crate) fn knob(s: &RecSettings, row: Row) -> Control {
             THRESHOLDS_DB.len(),
         ),
         Row::PreRoll => (place_in(&PRE_ROLLS_MS, &s.pre_roll_ms), PRE_ROLLS_MS.len()),
+        Row::Silence => (place_in(&SILENCES_MS, &s.silence_ms), SILENCES_MS.len()),
         _ => return Control::new(Look::Chip),
     };
     Control::new(Look::Knob {
