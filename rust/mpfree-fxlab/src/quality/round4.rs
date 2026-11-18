@@ -65,7 +65,7 @@ pub(super) fn node_with(s: &Subject, rate: u32, values: &[(u16, f64)]) -> Box<dy
 }
 
 /// The song position at 120 BPM with the transport playing from 0.
-fn steady(rate: u32) -> impl Fn(usize) -> f64 {
+pub(super) fn steady(rate: u32) -> impl Fn(usize) -> f64 {
     move |f| f as f64 / rate as f64 * 2.0
 }
 
@@ -73,7 +73,7 @@ fn steady(rate: u32) -> impl Fn(usize) -> f64 {
 /// playing and the song position `beats(frame)` at each block's start,
 /// keyed by `side` when given. Returns the output and the reading of meter
 /// `meter` after each block.
-fn run(
+pub(super) fn run(
     n: &mut dyn Node,
     x: &Stereo,
     side: Option<&Stereo>,

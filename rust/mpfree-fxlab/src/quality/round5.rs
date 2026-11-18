@@ -11,18 +11,19 @@
 use mpfree_fx::ids::{
     autopan as ap, autowah as aw, freqshift as fs, harmonizer as hm, pitch as ps,
     pitch_correct as pc, ringmod as rm, rotary as ro, talkbox as tb, tremolo as tr, tuner as tu,
+    vocoder as vc,
 };
 use mpfree_fx::mpfree_node::{Ctx, Curve, Node};
 
 use super::modulation::hf_click;
 use super::round2::{db_amp, db_pow, engine_subjects, make_with, switch_click};
-use super::round4::node_with;
+use super::round4::{node_with, run as run_keyed, steady};
 use super::{floor, lu_change, make, pink_stim, slug, Better, Report, Subject};
 use crate::dut::{Change, Dut, NodeDut};
 use crate::fft::{hann_f64, xcorr, Fft};
 use crate::signals::{db_to_amp, impulse, pink, rms_of, sine, white};
 use crate::wav::Stereo;
-use crate::{flutter, mixlaw};
+use crate::{flutter, loudness, mixlaw};
 
 const TAU: f64 = std::f64::consts::TAU;
 
@@ -37,6 +38,7 @@ const PITCH_CORRECT: &str = "mpfree.fx.pitch_correct";
 const HARMONIZER: &str = "mpfree.fx.harmonizer";
 const TUNER: &str = "mpfree.fx.tuner";
 const TALKBOX: &str = "mpfree.fx.talkbox";
+const VOCODER: &str = "mpfree.fx.vocoder";
 
 /// The LFO's shapes, in the order of its Shape control.
 const LFO_SHAPES: [&str; 6] = [
@@ -1966,6 +1968,7 @@ const VOWELS: [(&str, [f64; 3], [f64; 2]); 9] = [
 
 pub(super) fn voice(r: &mut Report) {
     talkbox(r);
+    vocoder(r);
 }
 
 /// The talk box (V1 to V5).
@@ -2080,4 +2083,153 @@ fn talkbox(r: &mut Report) {
         );
     }
     clicks(r, &s, &[], &[], "V5", &[]);
+}
+
+/// `x` scaled to `db` dBFS RMS.
+fn at_rms(x: Vec<f64>, db: f64) -> Vec<f64> {
+    let g = db_to_amp(db) / rms_of(&x).max(1e-12);
+    x.into_iter().map(|v| v * g).collect()
+}
+
+/// The vocoder (V6). Keyed, its input (the carrier) is a 110 Hz saw and
+/// its key (the voice) a sung vowel at 220 Hz, both at -18 dBFS RMS, a
+/// voice's usual level.
+fn vocoder(r: &mut Report) {
+    let rate = r.rate;
+    let (s, presets) = engine_subjects(VOCODER, "voice", "vocoder");
+    let n = 4 * rate as usize;
+    let sec = rate as usize;
+    let lat = make(&s, rate).latency() as f64;
+    r.put(
+        "V6",
+        &s.name,
+        "latency_frames",
+        Some(lat),
+        Better::Lower,
+        Some(0.0),
+        0.0,
+    );
+    let input = [(vc::CARRIER, 2.0)];
+    let carrier = mono(at_rms(saw(110.0, 1.0, n, rate, 0.0, 0.0), -18.0), rate);
+    let lu_carrier = loudness::integrated(&carrier.slice(sec, n - sec));
+    let (pc, _) = spec(&carrier.left[sec..], rate);
+    // The bands' spacing at the defaults, in octaves.
+    let spacing = (8000.0f64 / 100.0).log2() / 15.0;
+    for (name, f, _) in VOWELS.iter() {
+        let voice = mono(at_rms(vowel(220.0, *f, n, rate), -18.0), rate);
+        let mut node = node_with(&s, rate, &input);
+        let (y, _) = run_keyed(node.as_mut(), &carrier, Some(&voice), &steady(rate), None);
+        r.put(
+            "V6",
+            &s.name,
+            format!("lu_carrier_{name}"),
+            Some(loudness::integrated(&y.slice(sec, n - sec)) - lu_carrier),
+            Better::Near(0.0),
+            Some(2.0),
+            0.1,
+        );
+        // Near each of F1 and F2 (between it and its neighbours, no more
+        // than 1.5 bands either side), on the 110 Hz grid: where the
+        // voice is loudest, and where the output's gain over the carrier
+        // peaks; how far apart, in bands.
+        let (py, bin) = spec(&y.left[sec..], rate);
+        let (pv, _) = spec(&voice.left[sec..], rate);
+        let gain = |hz: f64| band(&py, bin, hz, 30.0) / band(&pc, bin, hz, 30.0).max(1e-30);
+        let loud = |hz: f64| band(&pv, bin, hz, 30.0);
+        let reach = 2f64.powf(1.5 * spacing);
+        for j in 0..2 {
+            let lo = if j == 0 {
+                f[0] / reach
+            } else {
+                (f[0] * f[1]).sqrt().max(f[1] / reach)
+            };
+            let hi = (f[j] * reach).min((f[j] * f[j + 1]).sqrt());
+            let peak = |of: &dyn Fn(f64) -> f64| {
+                let mut best = (f[j], f64::NEG_INFINITY);
+                let mut k = (lo / 110.0).ceil();
+                while k * 110.0 <= hi {
+                    let g = of(k * 110.0);
+                    if g > best.1 {
+                        best = (k * 110.0, g);
+                    }
+                    k += 1.0;
+                }
+                best.0
+            };
+            r.put(
+                "V6",
+                &s.name,
+                format!("f{}_error_bands_{name}", j + 1),
+                Some((peak(&gain) / peak(&loud)).log2().abs() / spacing),
+                Better::Lower,
+                Some(1.0),
+                0.1,
+            );
+        }
+    }
+    // The defaults and the presets on pink at the strip (the voice): the
+    // saw speaks it at about its level.
+    let pinks = pink_stim(rate, 5.0);
+    for p in std::iter::once(&s).chain(&presets) {
+        let mut d = make(p, rate);
+        r.put(
+            "V6",
+            &p.name,
+            "lu_pink",
+            Some(lu_change(&mut d, &pinks)),
+            Better::Near(0.0),
+            Some(2.0),
+            0.1,
+        );
+    }
+    // An "s": white noise above 4 kHz at -18 dBFS RMS, as the voice on
+    // the strip (the saw) and on the key (the 110 Hz saw through the
+    // input): its level out against in.
+    let ess = mono(
+        at_rms(bandpass(&white(n, 1.0, 11), rate, 4000.0, 20_000.0), -18.0),
+        rate,
+    );
+    let ess_rms = rms_of(&ess.left[sec..]);
+    let mut d = make(&s, rate);
+    let y = d.render(&ess, 0);
+    r.put(
+        "V6",
+        &s.name,
+        "s_level_db",
+        Some(floor(db_amp(rms_of(&y.left[sec..]) / ess_rms))),
+        Better::Higher,
+        Some(-6.0),
+        0.2,
+    );
+    let mut node = node_with(&s, rate, &input);
+    let (y, _) = run_keyed(node.as_mut(), &carrier, Some(&ess), &steady(rate), None);
+    r.put(
+        "V6",
+        &s.name,
+        "s_level_db_keyed",
+        Some(floor(db_amp(rms_of(&y.left[sec..]) / ess_rms))),
+        Better::Higher,
+        Some(-6.0),
+        0.2,
+    );
+    // Clicks: the 997 Hz tone as the voice and the carrier both (keyed by
+    // the input), every control but Carrier (which changes what is heard).
+    let params = make(&s, rate).params();
+    for p in params
+        .iter()
+        .filter(|p| !p.readonly && p.max > p.min && p.id != vc::CARRIER)
+    {
+        let mut d = make_with(&s, rate, &input).keyed_by_input();
+        let log = matches!(p.curve, Curve::Log);
+        let v = hf_click(&mut d, p.id, p.min as f64, p.max as f64, log);
+        r.put(
+            "V6",
+            &s.name,
+            format!("click_db_{}", slug(p.name)),
+            Some(v),
+            Better::Lower,
+            Some(-60.0),
+            3.0,
+        );
+    }
 }

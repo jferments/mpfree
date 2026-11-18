@@ -31,6 +31,7 @@ const COVERED: &[&str] = &[
     "mpfree.fx.xy",
     "mpfree.fx.autowah",
     "mpfree.fx.talkbox",
+    "mpfree.fx.vocoder",
     "mpfree.fx.freqshift",
     "mpfree.fx.width",
     "mpfree.fx.sample_delay",
