@@ -104,6 +104,13 @@ pub struct TimeAudio {
     /// A step edit missed and asked for a compile, which brings it: the
     /// next view taken ends it, so a run of misses asks once.
     asked: bool,
+    /// The tempo last asked for (a SetTempo, or [`TimeAudio::start_at`]'s)
+    /// and the frame it is due on, until the period that applies it has
+    /// run: [`TimeAudio::follow_tempo`] compares the app's tempo with it,
+    /// so it doesn't ask again for what is on its way.
+    tempo_asked: Option<(u64, f64)>,
+    /// Starts on a note refused ([`TimeAudio::start_at`]).
+    starts_refused: u64,
 }
 
 impl TimeAudio {
@@ -163,6 +170,8 @@ impl TimeAudio {
             refused: 0,
             missed: 0,
             asked: false,
+            tempo_asked: None,
+            starts_refused: 0,
         }
     }
 
@@ -343,6 +352,9 @@ impl TimeAudio {
             }
         }
         let at = self.transport.frame();
+        if let Command::SetTempo(bpm) = cmd {
+            self.tempo_asked = Some((at, bpm));
+        }
         self.transport.command(at, cmd)
     }
 
@@ -357,18 +369,86 @@ impl TimeAudio {
     /// full.
     pub fn command_at(&mut self, at: u64, cmd: Command) -> bool {
         let at = at.max(self.transport.frame());
+        if let Command::SetTempo(bpm) = cmd {
+            self.tempo_asked = Some((at, bpm));
+        }
         self.transport.command(at, cmd)
     }
 
     /// The app's tempo, unless the transport follows another device's
-    /// clock that is arriving.
+    /// clock that is arriving. A tempo asked for and not applied yet
+    /// counts as the transport's.
     pub fn follow_tempo(&mut self, bpm: f64) {
         if self.follower.bpm().is_some() {
             return;
         }
-        if (self.transport.bpm() - bpm).abs() > 1e-9 {
+        let now = self.tempo_asked.map_or(self.transport.bpm(), |(_, b)| b);
+        if (now - bpm).abs() > 1e-9 {
             self.command(Command::SetTempo(bpm));
         }
+    }
+
+    /// Start the song on frame `at` of the transport's clock (the next
+    /// period's first frame or later): the looper's Starts: When I play,
+    /// whose first note starts the song. Only while it is stopped. On
+    /// `at`, in this order: back to the start of the bar it stopped in
+    /// (bar 1 after STOP twice), the tempo `bpm` if given (before PLAY, so
+    /// the whole song takes it), then PLAY, with no count-in. With a take
+    /// ready (`take`: adding, true, or replacing), it records from there
+    /// too, as a followed clock's start does: the overdub mode first, then
+    /// PLAY and REC on the one frame, a punch-in with no count-in.
+    ///
+    /// Refused, and counted ([`TimeAudio::starts_refused`]), while the song
+    /// plays or counts in, or while another device's clock leads (its
+    /// tempo arriving, or PLAY waiting for its Start). Returns why.
+    pub fn start_at(
+        &mut self,
+        at: u64,
+        bpm: Option<f64>,
+        take: Option<bool>,
+    ) -> Result<(), &'static str> {
+        let why = match self.transport.state() {
+            _ if self.follower.bpm().is_some() => Some("the song follows another device's clock"),
+            _ if self.follower.waits() => Some("PLAY waits for the leader's Start"),
+            State::CountIn => Some("the song is counting in"),
+            State::Stopped => None,
+            _ => Some("the song is playing already"),
+        };
+        if let Some(why) = why {
+            self.starts_refused += 1;
+            return Err(why);
+        }
+        let at = at.max(self.transport.frame());
+        let pos = self.transport.position();
+        let bar = self.transport.meter().bar_ticks().max(1);
+        let start = pos - pos.rem_euclid(bar);
+        let mut sent = true;
+        if start != pos {
+            sent &= self.transport.command(at, Command::Locate(start));
+        }
+        if let Some(bpm) = bpm {
+            self.tempo_asked = Some((at, bpm));
+            sent &= self.transport.command(at, Command::SetTempo(bpm));
+        }
+        if take.is_some_and(|add| add != self.transport.overdub()) {
+            sent &= self.transport.command(at, Command::ToggleOverdub);
+        }
+        sent &= self.transport.command(at, Command::Play);
+        if take.is_some() {
+            sent &= self.transport.command(at, Command::Record);
+        }
+        if !sent {
+            self.refused += 1;
+            self.starts_refused += 1;
+            return Err("the transport's queue is full");
+        }
+        Ok(())
+    }
+
+    /// Starts on a note refused so far ([`TimeAudio::start_at`]).
+    #[allow(dead_code)]
+    pub fn starts_refused(&self) -> u64 {
+        self.starts_refused
     }
 
     pub fn pad_pressed(&mut self, offset: u32, event: Event) {
@@ -520,7 +600,15 @@ impl TimeAudio {
     /// The transport runs the coming period, after the follower's turn.
     fn process(&mut self, frames: u32) -> bool {
         self.follower.period(&mut self.transport);
-        self.transport.process(frames, &mut self.block)
+        let ok = self.transport.process(frames, &mut self.block);
+        // The period a tempo asked for was due in has run.
+        if self
+            .tempo_asked
+            .is_some_and(|(due, _)| due < self.transport.frame())
+        {
+            self.tempo_asked = None;
+        }
+        ok
     }
 
     pub fn advance(&mut self, frames: u32) -> bool {

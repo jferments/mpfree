@@ -527,6 +527,17 @@ impl Out {
         }
     }
 
+    /// What a loop that starts when you play said ([`LoopStart`]): the
+    /// log, and the screen too for a start refused.
+    fn loop_start(&mut self, said: LoopStart) {
+        if let Some((line, tell)) = said {
+            self.note(&line);
+            if tell {
+                self.show(gui::ToUi::Tell(line));
+            }
+        }
+    }
+
     /// Something for the pad player's screen only (nothing printed).
     fn show(&mut self, msg: gui::ToUi) {
         if let Some(s) = self.sink.as_ref() {
@@ -2595,6 +2606,88 @@ fn erase_held_steps(
         return None;
     }
     keys.erase_locks(time).map(app::Effect::Tell)
+}
+
+/// What a loop that starts when you play (the Looper tab's Starts: When I
+/// play) said: a line for the log, and whether the screen says it too
+/// (a start refused).
+type LoopStart = Option<(String, bool)>;
+
+/// Starts: When I play, a pad played. Pads are read at the period's top,
+/// before the transport runs, so the hit is on the coming period's first
+/// frame: a loop listening for the pads starts on it, and with the song
+/// stopped the song starts on it too (from the bar it stopped in), so
+/// bar 1 is your note. `take`: a take ready on the armed track (as for
+/// [`time::TimeHost::take_waits`]) records from there too.
+fn pad_starts_loop(
+    looper: &mut looping::LoopHost,
+    time: &mut time::TimeHost,
+    take: Option<bool>,
+    exporting: bool,
+) -> LoopStart {
+    let at = time.next_frame();
+    let n = looper.listens_for_pads(at)?;
+    let mut line = format!("looper: Loop {} starts on your note", n + 1);
+    if time.info().state == mpfree_transport::State::Stopped {
+        match start_song_on_note(time, at, take, exporting) {
+            Ok(more) => {
+                line.push_str(", and the song with it");
+                if let Some(m) = more {
+                    line = format!("{line}; {m}");
+                }
+            }
+            Err(why) => return Some((looper.note_refused(n, &why), true)),
+        }
+    }
+    if !looper.played(at) {
+        return Some((
+            format!(
+                "looper: Loop {}: NOT started, the command queue is full",
+                n + 1
+            ),
+            true,
+        ));
+    }
+    Some((line, false))
+}
+
+/// Starts: When I play, after the looper's period: a loop that heard the
+/// line input with the song stopped starts the song on the next period's
+/// first frame (its first pass lines up with that, from your note).
+fn loop_starts_song(
+    looper: &mut looping::LoopHost,
+    time: &mut time::TimeHost,
+    take: Option<bool>,
+    exporting: bool,
+) -> LoopStart {
+    let n = looper.take_start()?;
+    Some(
+        match start_song_on_note(time, time.next_frame(), take, exporting) {
+            Ok(more) => (
+                format!(
+                    "looper: Loop {} heard you: the song starts on your note{}",
+                    n + 1,
+                    more.map(|m| format!("; {m}")).unwrap_or_default()
+                ),
+                false,
+            ),
+            Err(why) => (looper.start_refused(n, &why), true),
+        },
+    )
+}
+
+/// The song starts on a note on frame `at`, unless an export runs (the
+/// transport's own refusals: [`time::TimeHost::start_at`]).
+fn start_song_on_note(
+    time: &mut time::TimeHost,
+    at: u64,
+    take: Option<bool>,
+    exporting: bool,
+) -> Result<Option<String>, String> {
+    if exporting {
+        return Err("an export is running".to_string());
+    }
+    time.start_at(at, None, take)
 }
 
 /// Live erase (sequencer roadmap S1, the MPC's way): whether a pad
@@ -5683,6 +5776,13 @@ fn player_session(
                 }
                 gui::FromUi::Pad { pad, down: true } if pad < 16 => {
                     let v = app.settings.screen_velocity;
+                    let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
+                    out.loop_start(pad_starts_loop(
+                        &mut looper,
+                        &mut time,
+                        take,
+                        export.running(),
+                    ));
                     if let Some(ev) = app.pressed_event(pad, v, true) {
                         time.pad_pressed(0, ev);
                     }
@@ -6602,6 +6702,15 @@ fn player_session(
             let to_gear = expr.is_some_and(|i| midi_out.expression(armed as u16, i));
             let pad_event = match k {
                 midi_in::Key::Down { note, velocity } if key_notes => {
+                    // A key is a note too, for a loop that starts when you
+                    // play (with a kit, keys come back as pads, below).
+                    let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
+                    out.loop_start(pad_starts_loop(
+                        &mut looper,
+                        &mut time,
+                        take,
+                        export.running(),
+                    ));
                     app.key_down(note, velocity);
                     // Step pads of the line held: the key goes on them.
                     let p = step_key(&app, &mut step_keys, &mut time, note, Some(velocity));
@@ -6823,6 +6932,13 @@ fn player_session(
                 }
                 Some(ControlEvent::PadDown { pad, velocity }) if (pad as usize) < 16 => {
                     let pad = pad as usize;
+                    let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
+                    out.loop_start(pad_starts_loop(
+                        &mut looper,
+                        &mut time,
+                        take,
+                        export.running(),
+                    ));
                     if let Some(ev) = app.pressed_event(pad, velocity, true) {
                         time.pad_pressed(0, ev);
                     }
@@ -7994,6 +8110,14 @@ fn player_session(
             out.note(&line);
         }
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
+        // A loop that heard the line input with the song stopped starts it.
+        let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
+        out.loop_start(loop_starts_song(
+            &mut looper,
+            &mut time,
+            take,
+            export.running(),
+        ));
         // The audio tracks record the same line input onto the Song view's
         // lanes, and play into the mixer's Audio track (song mode only).
         tracks.follow_latency(app.settings.loop_latency);

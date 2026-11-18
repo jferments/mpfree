@@ -12782,6 +12782,21 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Ok(p) => out.push(("looper-empty", p)),
         Err(e) => eprintln!("looper sample: {e}"),
     }
+    // Loop 5 armed to start when you play (Starts: When I play), the song
+    // stopped: it listens for the first pad, which starts the song too.
+    match sample_looper_picking(fonts(), 4) {
+        Ok(mut p) => {
+            let mut v = p.looper.clone();
+            let l = &mut v.loops[4];
+            l.phase = mpfree_looper::Phase::Armed;
+            l.starts = mpfree_looper::Starts::Play;
+            l.listening = true;
+            v.status = v.loops[4];
+            p.apply(ToUi::Looper(Box::new(v)));
+            out.push(("looper-listening", p));
+        }
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
     // The same with the undo history open: the bass and the chop overdubs.
     match sample_looper(fonts()) {
         Ok(mut p) => {
@@ -19311,6 +19326,7 @@ mod tests {
                     muted: false,
                     bars: Some(1),
                     after: mpfree_looper::After::Play,
+                    starts: mpfree_looper::Starts::Bar,
                     fade_old: 1.0,
                     speed: 0,
                     rate: 0,

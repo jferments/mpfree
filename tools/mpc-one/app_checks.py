@@ -788,6 +788,7 @@ CHECKS = (
          "the_loop_records_the_pads_with_their_effects",
          "rec_closes_on_the_bar_line_and_stop_stops_the_loop_at_once",
          "capture_turns_what_you_played_into_a_loop",
+         "when_i_play_starts_the_loop_and_the_song_on_the_first_pad",
          "note_repeat_latch_stop_and_the_looper_write_their_lines"],
         needs=['SAMPLER']),
     Check(
