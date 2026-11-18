@@ -68,7 +68,7 @@ mod control;
 mod follow;
 pub mod link;
 
-use mpfree_play::mpfree_param::RelAddr;
+use mpfree_play::mpfree_param::{Owner, ParamAddr, RelAddr};
 use mpfree_play::{Event, Out, Sink, TrackArps};
 use mpfree_seq::mpfree_moves::Input;
 use mpfree_seq::steps::{Change, Step};
@@ -589,6 +589,43 @@ impl TimeHost {
         self.sent(r)
     }
 
+    /// A track's MIDI effects, as the chain editor's Notes stage set them
+    /// (see `TimeControl::set_note_fx`). False if there is no such note
+    /// track.
+    pub fn set_note_fx(&mut self, track: usize, fx: mpfree_notefx::TrackFx) -> bool {
+        let r = self.control.set_note_fx(track, fx);
+        self.sent(r)
+    }
+
+    /// The mod engine's value for a MIDI effect setting (`addr` is an
+    /// `Owner::NoteFx` address): a macro, an LFO or a step's lock moving it
+    /// (`Some`, in the setting's own steps), or letting go (`None`). Its
+    /// track's arp chain takes it from the next period; the project keeps
+    /// the track's own value. Never allocates.
+    pub fn modulate_note_fx(&mut self, addr: ParamAddr, value: Option<f32>) {
+        let Owner::NoteFx(track, id) = addr.owner else {
+            return;
+        };
+        let Ok(k) = u8::try_from(addr.param) else {
+            return;
+        };
+        let value = match value {
+            Some(v) if v.is_finite() => Some(v.round() as i32),
+            Some(_) => return,
+            None => None,
+        };
+        self.audio
+            .modulate_note_fx(usize::from(track), id, k, value);
+    }
+
+    /// The tracks' MIDI effects as the sound loop has them, once after
+    /// each change (for the mod engine's view of their settings).
+    pub fn note_fx_moved(&mut self) -> Option<&[mpfree_notefx::TrackFx; mpfree_seq::MAX_TRACKS]> {
+        self.audio
+            .take_note_fx_moved()
+            .then(|| self.audio.note_fx())
+    }
+
     /// What the Play page's pattern shows. Allocates: called on a change.
     pub fn steps(&self) -> StepsData {
         self.control.steps()
@@ -1037,7 +1074,7 @@ impl TimeHost {
     /// status line says it ([`TimeHost::describe`]); tests read it here.
     #[allow(dead_code)]
     pub fn dropped(&self) -> u64 {
-        self.audio.counts().dropped + self.control.dropped()
+        self.audio.counts().dropped + self.control.dropped() + self.audio.note_mods_dropped()
     }
 
     /// The time engine's part of the status line, with what passing
@@ -2615,11 +2652,94 @@ mod tests {
         };
         assert_eq!(press(&mut h, &mut pads, &mut arps), Some(6));
         assert!(arps.has_chain(1) && !arps.has_chain(0));
-        h.control.project.tracks[1].note_fx.slots[0] = Some(transpose(-3));
+        // As the chain editor's Notes stage sets them.
+        let mut fx = h.project().tracks[1].note_fx;
+        fx.slots[0] = Some(transpose(-3));
+        assert!(h.set_note_fx(1, fx));
         assert_eq!(press(&mut h, &mut pads, &mut arps), Some(1));
         h.control.project.tracks[1].note_fx.slots[0] = None;
         assert_eq!(press(&mut h, &mut pads, &mut arps), Some(4));
         assert!(arps.has_chain(1));
+        assert_eq!((h.dropped(), arps.dropped()), (0, 0));
+        // A Loop track plays no notes, so it has no MIDI effects.
+        h.control
+            .project
+            .tracks
+            .push(Track::new_loops("Loops A", 8));
+        let loops = h.project().tracks.len() - 1;
+        assert!(!h.set_note_fx(loops, fx));
+        assert!(!h.set_note_fx(loops + 1, fx), "no such track");
+    }
+
+    /// The mod engine's value on a MIDI effect setting (a macro, an LFO, a
+    /// step's lock) plays on the track's chain from the next period, over
+    /// the project's own, which stays as it was; letting go brings the own
+    /// value back. An effect that leaves its place takes the value with
+    /// it, even if a new one gets its id.
+    #[test]
+    fn the_mod_engines_value_moves_a_midi_effect_setting_until_it_lets_go() {
+        use mpfree_notefx::Fx;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut arps = TrackArps::new(RATE, 120.0);
+        let mut fx = mpfree_notefx::TrackFx::default();
+        fx.add(Fx::Transpose { semitones: 2 });
+        let id = fx.ids[0];
+        assert!(h.set_note_fx(1, fx));
+        let press = |h: &mut TimeHost, pads: &mut Fake, arps: &mut TrackArps| {
+            h.period_arps(PERIOD, pads, arps);
+            pads.frame += u64::from(PERIOD);
+            arps.pad(
+                1,
+                0,
+                Event::NoteOn {
+                    note: 4,
+                    velocity: 100,
+                },
+            );
+            arps.pad(1, 10, Event::NoteOff { note: 4 });
+            for _ in 0..4 {
+                h.period_arps(PERIOD, pads, arps);
+                pads.frame += u64::from(PERIOD);
+            }
+            pads.hits.last().map(|&(_, pad, _)| pad)
+        };
+        assert_eq!(press(&mut h, &mut pads, &mut arps), Some(6));
+        // The sound loop has the effects with their ids, once.
+        assert_eq!(h.note_fx_moved().map(|f| f[1].ids[0]), Some(id));
+        assert!(h.note_fx_moved().is_none());
+        let addr = ParamAddr::new(Owner::NoteFx(1, id), 0);
+        h.modulate_note_fx(addr, Some(7.4));
+        assert_eq!(press(&mut h, &mut pads, &mut arps), Some(11));
+        assert_eq!(
+            h.project().tracks[1].note_fx,
+            fx,
+            "the project keeps its own"
+        );
+        // Kept in range; a setting or an effect the track hasn't got is not.
+        h.modulate_note_fx(addr, Some(99.0));
+        assert_eq!(press(&mut h, &mut pads, &mut arps), Some(52));
+        h.modulate_note_fx(ParamAddr::new(Owner::NoteFx(1, id + 1), 0), Some(-3.0));
+        h.modulate_note_fx(ParamAddr::new(Owner::NoteFx(1, id), 4), Some(-3.0));
+        assert_eq!(press(&mut h, &mut pads, &mut arps), Some(52));
+        h.modulate_note_fx(addr, None);
+        assert_eq!(press(&mut h, &mut pads, &mut arps), Some(6));
+        // Held again, then the effect leaves and another takes its id.
+        h.modulate_note_fx(addr, Some(-4.0));
+        assert_eq!(press(&mut h, &mut pads, &mut arps), Some(0));
+        let mut other = mpfree_notefx::TrackFx::default();
+        other.add(Fx::Transpose { semitones: 1 });
+        assert_eq!(other.ids[0], id);
+        other.slots[0] = Some(mpfree_notefx::Slot {
+            fx: Fx::Chance { percent: 100 },
+            on: true,
+        });
+        assert!(h.set_note_fx(1, other));
+        assert_eq!(
+            press(&mut h, &mut pads, &mut arps),
+            Some(4),
+            "nothing held now"
+        );
         assert_eq!((h.dropped(), arps.dropped()), (0, 0));
     }
 

@@ -2456,6 +2456,21 @@ impl Player {
         }
     }
 
+    /// What track `t` plays on, for its Notes stage's Plays on row: its own
+    /// sound, or a MIDI out port and channel (the MIDI section's Tracks
+    /// out), and where to change it.
+    fn plays_on(&self, t: usize) -> (String, String) {
+        let out = self.io_model.as_ref().and_then(|m| {
+            let m = m.lock().unwrap_or_else(|e| e.into_inner());
+            m.setup.tracks.get(t).cloned().flatten()
+        });
+        let on = match out {
+            Some(o) => o.label(),
+            None => "Its own sound".to_string(),
+        };
+        (on, "Change it in MIDI, Tracks out".to_string())
+    }
+
     /// Opens the mixer's I/O view on the section titled `title` (the tempo
     /// chip: "Sync"). False, and nothing opens, when there is no such
     /// section.
@@ -2487,6 +2502,24 @@ impl Player {
                 "Tap a strip's name: its Volume, Pan and sends go on the Q-Links"
             }
             View::Mixer => "That strip has nothing on this Q-Link",
+            View::Chain
+                if self
+                    .ui
+                    .get::<mpfree_chain_ui::ChainView>(mpfree_chain_ui::CHAIN)
+                    .and_then(|v| v.state().notes.as_ref())
+                    .is_some_and(|n| n.selected.is_some()) =>
+            {
+                let arp = self
+                    .ui
+                    .get::<mpfree_chain_ui::ChainView>(mpfree_chain_ui::CHAIN)
+                    .and_then(|v| v.state().notes.as_ref())
+                    .is_some_and(|n| n.arp_page());
+                if arp {
+                    "The arp's settings are on its panel: Open the arp"
+                } else {
+                    "This MIDI effect has fewer settings than Q-Links"
+                }
+            }
             View::Chain
                 if self
                     .ui
@@ -5277,7 +5310,11 @@ impl Player {
                 self.refresh_qlinks();
             }
             ToUi::IoInput(ev) => self.io_input(ev),
-            ToUi::Chain(st) => {
+            ToUi::Chain(mut st) => {
+                // A note track's Plays on, from the MIDI set-up's Tracks out.
+                if let Some(ns) = st.notes.as_mut() {
+                    (ns.plays_on, ns.plays_detail) = self.plays_on(usize::from(ns.track));
+                }
                 self.chain_page.set_chain(&mut self.ui, *st);
                 if self.chain_page.drives(self.view) {
                     self.refresh_qlinks();
@@ -8119,6 +8156,14 @@ impl Player {
         if h.widget == synth_view::TILES {
             return self.synth.as_ref()?.wheel_text();
         }
+        if mpfree_chain_ui::ChainView::is_note_setting(&h.target) {
+            // A MIDI effect's setting: the page knows its value.
+            let v = self
+                .ui
+                .get::<mpfree_chain_ui::ChainView>(&h.widget)?
+                .note_setting(h.target.index)?;
+            return Some(format!("{v}{HELD_TOLD}"));
+        }
         let now = self
             .ui
             .targets()
@@ -8670,7 +8715,14 @@ impl Player {
                 None
             }
             (mpfree_chain_ui::CHAIN, _) => {
-                let acts = mpfree_chain_ui::take_chain_actions(&mut self.ui);
+                let mut acts = mpfree_chain_ui::take_chain_actions(&mut self.ui);
+                // A note track's Plays on: the MIDI section, where its
+                // Tracks out are (the app opens the I/O view as it was
+                // left when there is no MIDI section).
+                acts.retain(|a| {
+                    !(matches!(a, ChainAction::Notes(mpfree_chain_ui::NoteAction::PlaysOn))
+                        && self.open_io_section(mpfree_midi_ui::MIDI))
+                });
                 if acts
                     .iter()
                     .any(|a| matches!(a, ChainAction::Strips(_) | ChainAction::OpenStrip(_)))
@@ -10736,6 +10788,28 @@ fn sample_panels(p: &mut Player, view: View) {
     p.apply(ToUi::Macros(Box::new(song.macros_state(0))));
 }
 
+/// The chain editor on a note track (layout spec 4b, board 7): NOTES above
+/// SOUND, the Chord picked, its settings on the Q-Links, as the app sends
+/// them (`ChainHost::dress_notes`).
+fn sample_notes(p: &mut Player) {
+    use mpfree_chain_ui::sample::{Song, KEYS};
+    let song = Song::new();
+    p.apply(ToUi::Show(View::Chain));
+    let mut st = song.chain_state(KEYS, 0, 0, None).without_page();
+    st.back = Some("Mixer".into());
+    st.strip_name = st.title.trim_end_matches(" FX").to_string();
+    st.strip_kind = "Track 5".into();
+    let mut ns = mpfree_chain_ui::notes::example();
+    ns.track = 4;
+    if let Some((_, id, fx)) = ns.page_fx() {
+        (st.params, st.main_four) = mpfree_chain_ui::notes::param_views(ns.track, id, &fx);
+    }
+    st.notes = Some(ns);
+    p.apply(ToUi::Chain(Box::new(st)));
+    p.apply(ToUi::ChainFx(None));
+    p.apply(ToUi::Macros(Box::new(song.macros_state(0))));
+}
+
 /// The Pads tab's Browse view over a library filled in a scratch folder
 /// (removed again once the browser has read what it shows).
 fn pads_browse(fonts: Fonts) -> Result<Player, String> {
@@ -11111,6 +11185,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         sample_panels(&mut p, view);
         out.push((name, p));
     }
+    // A note track's chain with its Notes stage (board 7): the Chord's page.
+    let mut notes = sample_player(fonts());
+    sample_notes(&mut notes);
+    out.push(("chain-notes", notes));
     // Q-LINK on Play: Macros 1-4 in the Q-Link column.
     let mut macros = sample_player(fonts());
     macros.apply(ToUi::Macros(Box::new(

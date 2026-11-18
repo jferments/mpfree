@@ -647,7 +647,9 @@ mod mixer {
     /// The chain the editor stands for, as the mixer has it.
     fn engine(s: &mut Session) -> ChainState {
         s.panels
-            .chain_state(&s.mix)
+            .chain_state(&s.mix, &|t| {
+                crate::modpanels::NotesSource::of(&s.app, &s.time, t)
+            })
             .expect("the chain editor is open")
     }
 

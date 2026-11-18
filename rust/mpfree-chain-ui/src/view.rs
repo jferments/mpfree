@@ -29,14 +29,15 @@ use std::f32::consts::PI;
 
 use mpfree_fx::mpfree_node::Curve;
 use mpfree_mod::{Source, MACROS};
-use mpfree_param::{ParamAddr, Strip};
+use mpfree_param::{Owner, ParamAddr, Strip};
 use mpfree_synth_ui::draw::Mask;
 use mpfree_synth_ui::section_view::{Control, Kind, SectionBox, SectionView};
 use mpfree_synth_ui::sections::Job;
 use mpfree_synth_ui::widgets::Card;
-use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
+use mpfree_ui::{Align, EventKind, FontId, Gesture, PaintCx, Rect, Target, Touch, Widget};
 
 use crate::eq_page::EqPage;
+use crate::notes::{self, NoteAction};
 use crate::picker::{Hit, PickerLayout, PickerView, HOLD};
 use crate::state::{macro_color, ChainState, ParamView, StripList, STRIP_GROUPS};
 
@@ -139,6 +140,9 @@ pub enum ChainAction {
         id: &'static str,
         on: bool,
     },
+    /// The Notes stage above a note track's sound: its rows, its picker,
+    /// its Plays on row and its pages ([`crate::notes`]).
+    Notes(NoteAction),
 }
 
 /// The chain column's width (the effect column takes the rest: 884 px on
@@ -192,6 +196,10 @@ pub struct Open {
     pub modes: bool,
     /// The effect's presets (its name in the header).
     pub presets: bool,
+    /// The first row the Notes group and the Sound group show, when their
+    /// rows don't all fit (a note track's list, [`crate::notes`]).
+    pub notes_from: usize,
+    pub sound_from: usize,
 }
 
 /// Where everything goes, from the widget's rectangle.
@@ -208,9 +216,19 @@ pub struct Layout {
     /// there is room) and Up, Down, Remove.
     pub list: Rect,
     pub caption: Rect,
+    /// A row per effect of the sound's chain; a row its group can't show
+    /// (a note track's list, scrolled) is an empty rect.
     pub rows: Vec<Rect>,
     pub add: Option<Rect>,
     pub buttons: [Rect; 3],
+    /// A note track's Notes group above the sound's (then the caption is
+    /// the Notes group's), and the Sound group's arrows and how many of
+    /// its rows show at once; and the Notes page while a row of the Notes
+    /// group (or its picker) takes the effect column.
+    pub notes: Option<notes::ListLayout>,
+    pub sound_arrows: Option<(Rect, Rect)>,
+    pub sound_fit: usize,
+    pub notes_page: Option<notes::PageLayout>,
     /// The effect column: the header, the page and the Modulate row (the
     /// picker takes all of it).
     pub effect: Rect,
@@ -291,18 +309,63 @@ pub fn layout(r: Rect, st: &ChainState, pv: &PickerView, open: Open) -> Layout {
     let (foot, body) = body.take_bottom(BUTTON_H);
     let mut y = body.y;
     let mut rows = Vec::new();
-    for _ in &st.slots {
-        rows.push(Rect::new(body.x, y, body.w, ROW_H));
-        y += ROW_H + ROW_GAP;
-    }
-    let add = (st.slots.len() < st.room && y + 2 + ADD_H <= body.bottom())
-        .then(|| Rect::new(body.x, y + 2, body.w, ADD_H));
+    let (mut notes_l, mut sound_arrows, mut sound_fit) = (None, None, st.slots.len());
+    let add = match &st.notes {
+        // A note track: the Notes group, Plays on, then the sound's rows,
+        // compact, scrolled when they don't all fit with their Add.
+        Some(ns) => {
+            let nl = notes::list_layout(caption, body, ns, open.notes_from);
+            let area = nl.sound;
+            let n = st.slots.len();
+            let per = notes::ROW_H + notes::ROW_GAP;
+            let want_add = n < st.room;
+            let add_h = if want_add {
+                notes::ADD_H + notes::ROW_GAP
+            } else {
+                0
+            };
+            let fit = (((area.h - add_h + notes::ROW_GAP) / per).max(1) as usize).min(n.max(1));
+            let from = open.sound_from.min(n.saturating_sub(fit));
+            let mut y = area.y;
+            for i in 0..n {
+                if (from..from + fit).contains(&i) {
+                    rows.push(Rect::new(area.x, y, area.w, notes::ROW_H));
+                    y += per;
+                } else {
+                    rows.push(Rect::default());
+                }
+            }
+            if n > fit {
+                sound_arrows = Some(notes::caption_arrows(nl.sound_caption));
+            }
+            sound_fit = fit;
+            let add = (want_add && y + notes::ADD_H <= area.bottom())
+                .then(|| Rect::new(area.x, y, area.w, notes::ADD_H));
+            notes_l = Some(nl);
+            add
+        }
+        None => {
+            for _ in &st.slots {
+                rows.push(Rect::new(body.x, y, body.w, ROW_H));
+                y += ROW_H + ROW_GAP;
+            }
+            (st.slots.len() < st.room && y + 2 + ADD_H <= body.bottom())
+                .then(|| Rect::new(body.x, y + 2, body.w, ADD_H))
+        }
+    };
     let bw = (foot.w - 2 * 6) / 3;
     let buttons = [0, 1, 2].map(|i| Rect::new(foot.x + i * (bw + 6), foot.y, bw, BUTTON_H));
     // ---- The effect column: the header, the page, the Modulate row.
     let (header, rest) = effect.take_top(PAGE_HEAD_H);
     let (modulate, rest) = rest.take_bottom(MOD_H);
     let page = rest.inset_xy(0, PAGE_GAP);
+    // The MIDI effect picker takes the column under the header, as the
+    // effect picker takes all of it.
+    let notes_page = st
+        .notes
+        .as_ref()
+        .filter(|ns| !st.picking && (ns.picking || ns.page_shown()))
+        .map(|ns| notes::page_layout(notes_area(page, modulate, ns), ns));
     let shown = st.selected.is_some() && !st.picking;
     let row = Rect::new(
         header.x + 8,
@@ -386,7 +449,9 @@ pub fn layout(r: Rect, st: &ChainState, pv: &PickerView, open: Open) -> Layout {
     let mod_name = Rect::new(line.x + 4, line.y, (m0 - 12 - line.x - 4).max(0), line.h);
     let rows_link = Rect::new(mod_name.x, mod_name.y + 22, mod_name.w, mod_name.h - 22);
     let (mut rows_panel, mut depth_rows) = (None, Vec::new());
-    if open.rows && shown && st.focus.is_some() {
+    // A MIDI effect's page has the rows of its setting touched too.
+    let notes_shown = notes_page.is_some() && st.notes.as_ref().is_some_and(|n| !n.picking);
+    if open.rows && (shown || notes_shown) && st.focus.is_some() {
         let n = st.rows.len().max(1) as i32;
         let h = (44 + n * (DEPTH_ROW_H + 6) + 8).min(page.h);
         let panel = Rect::new(page.x, page.bottom() - h, ROWS_W.min(page.w), h);
@@ -415,6 +480,10 @@ pub fn layout(r: Rect, st: &ChainState, pv: &PickerView, open: Open) -> Layout {
         rows,
         add,
         buttons,
+        notes: notes_l,
+        sound_arrows,
+        sound_fit,
+        notes_page,
         effect,
         header,
         title,
@@ -565,10 +634,41 @@ fn macro_hit(r: Rect) -> Rect {
 /// The slot a dragged effect's row lands in with the finger at height
 /// `y`: the row under it, or the first or last past the ends.
 fn slot_at(l: &Layout, y: i32) -> usize {
-    let (Some(first), n) = (l.rows.first(), l.rows.len()) else {
+    let (Some(first), Some(last)) = (shown_row(l, false), shown_row(l, true)) else {
         return 0;
     };
-    (((y - first.y) / (ROW_H + ROW_GAP)).max(0) as usize).min(n - 1)
+    let r = l.rows[first];
+    (first + ((y - r.y) / (r.h + ROW_GAP)).max(0) as usize).min(last)
+}
+
+/// The Notes group's selected row, how many rows it has and whether the
+/// row is an effect (not the arp), while its page shows.
+fn notes_selected(st: &ChainState) -> Option<(usize, usize, bool)> {
+    let ns = st.notes.as_ref().filter(|ns| !ns.picking && !st.picking)?;
+    let row = ns.selected?;
+    let items = ns.items();
+    let item = items.get(row)?;
+    Some((row, items.len(), matches!(item, mpfree_notefx::Item::Fx(_))))
+}
+
+/// Where the Notes page goes: the page, or for its picker the page and
+/// the Modulate row's place.
+fn notes_area(page: Rect, modulate: Rect, ns: &notes::NotesState) -> Rect {
+    if ns.picking {
+        Rect::new(page.x, page.y, page.w, modulate.bottom() - page.y)
+    } else {
+        page
+    }
+}
+
+/// The first (or `last`) row the list shows.
+fn shown_row(l: &Layout, last: bool) -> Option<usize> {
+    let mut shown = (0..l.rows.len()).filter(|&i| !l.rows[i].is_empty());
+    if last {
+        shown.next_back()
+    } else {
+        shown.next()
+    }
 }
 
 enum Drag {
@@ -694,6 +794,9 @@ pub struct ChainView {
     open: Open,
     /// The EQ's page, while the EQ is selected ([`ChainState::eq`]).
     eq: EqPage,
+    /// The rectangle it was last drawn or touched in: a row selected out
+    /// of a scrolled group's view scrolls into it.
+    last: std::cell::Cell<Rect>,
 }
 
 impl Default for ChainView {
@@ -715,6 +818,7 @@ impl ChainView {
             list_first: 0,
             open: Open::default(),
             eq: EqPage::default(),
+            last: std::cell::Cell::new(Rect::default()),
         }
     }
 
@@ -778,6 +882,13 @@ impl ChainView {
         if st.focus != self.state.focus || st.focus.is_none() {
             self.open.rows = false;
         }
+        let row = |s: &ChainState| s.notes.as_ref().and_then(|n| n.selected);
+        let reveal = (
+            (row(&st) != row(&self.state)).then(|| row(&st)).flatten(),
+            (st.selected != self.state.selected)
+                .then_some(st.selected)
+                .flatten(),
+        );
         self.state = st;
         self.state.picking = picking;
         // The strip list stays as the view has it: open on its group (the
@@ -795,6 +906,31 @@ impl ChainView {
         self.fill_page();
         if self.state.eq {
             self.eq.update(&self.state.params, self.state.focus);
+        }
+        self.reveal(reveal.0, reveal.1);
+    }
+
+    /// Scrolls a note track's groups so the Notes row `note` and the
+    /// sound's row `slot` (newly selected) show.
+    fn reveal(&mut self, note: Option<usize>, slot: Option<usize>) {
+        let r = self.last.get();
+        if r.is_empty() || self.state.notes.is_none() {
+            return;
+        }
+        let into = |from: &mut usize, first: usize, fit: usize, i: usize| {
+            if i < first {
+                *from = i;
+            } else if i >= first + fit {
+                *from = i + 1 - fit;
+            }
+        };
+        let l = self.layout(r);
+        if let (Some(i), Some(nl)) = (note, &l.notes) {
+            into(&mut self.open.notes_from, nl.from, nl.fit, i);
+        }
+        if let Some(i) = slot {
+            let first = shown_row(&l, false).unwrap_or(0);
+            into(&mut self.open.sound_from, first, l.sound_fit, i);
         }
     }
 
@@ -1367,6 +1503,169 @@ impl ChainView {
         self.state.selected = Some(to);
     }
 
+    /// A touch on the Notes group, its Plays on row, a group's arrows, or
+    /// Up, Down and Remove while a Notes row is selected. True when it
+    /// took the touch.
+    fn tap_notes(&mut self, l: &Layout, x: i32, y: i32) -> bool {
+        let (Some(ns), Some(nl)) = (self.state.notes.clone(), l.notes.as_ref()) else {
+            return false;
+        };
+        if let Some((up, down)) = nl.arrows {
+            if up.contains(x, y) {
+                self.open.notes_from = nl.from.saturating_sub(1);
+                return true;
+            }
+            if down.contains(x, y) {
+                self.open.notes_from = nl.from + 1;
+                return true;
+            }
+        }
+        if let Some((up, down)) = l.sound_arrows {
+            let first = shown_row(l, false).unwrap_or(0);
+            if up.contains(x, y) {
+                self.open.sound_from = first.saturating_sub(1);
+                return true;
+            }
+            if down.contains(x, y) {
+                self.open.sound_from = first + 1;
+                return true;
+            }
+        }
+        if let Some(&(r, row)) = nl.rows.iter().find(|(r, _)| r.contains(x, y)) {
+            let item = ns.item(row);
+            match item {
+                Some(mpfree_notefx::Item::Fx(p)) if notes::pill_of(r).contains(x, y) => {
+                    let on = !ns.fx.slots[p].is_some_and(|s| s.on);
+                    self.push(ChainAction::Notes(NoteAction::SetOn { row, on }));
+                }
+                _ => self.select_note(row),
+            }
+            return true;
+        }
+        if nl.add.is_some_and(|r| r.contains(x, y)) {
+            self.state.picking = false;
+            if let Some(n) = self.state.notes.as_mut() {
+                n.picking = true;
+            }
+            self.push(ChainAction::Notes(NoteAction::Picker(true)));
+            return true;
+        }
+        if nl.plays.contains(x, y) {
+            self.push(ChainAction::Notes(NoteAction::PlaysOn));
+            return true;
+        }
+        let Some((row, n, fx)) = notes_selected(&self.state) else {
+            return false;
+        };
+        let to = if l.buttons[0].contains(x, y) {
+            (row > 0).then(|| row - 1)
+        } else if l.buttons[1].contains(x, y) {
+            (row + 1 < n).then_some(row + 1)
+        } else {
+            if l.buttons[2].contains(x, y) && fx {
+                self.push(ChainAction::Notes(NoteAction::Remove(row)));
+                return true;
+            }
+            return l.buttons.iter().any(|b| b.contains(x, y));
+        };
+        if let Some(to) = to {
+            self.push(ChainAction::Notes(NoteAction::Move { from: row, to }));
+            if let Some(n) = self.state.notes.as_mut() {
+                n.fx.move_row(row, to);
+                n.selected = Some(to);
+            }
+        }
+        true
+    }
+
+    /// Row `row` of the Notes group shows its page (the sound's effect,
+    /// and any picker, give way at once).
+    fn select_note(&mut self, row: usize) {
+        self.state.picking = false;
+        self.state.selected = None;
+        if let Some(n) = self.state.notes.as_mut() {
+            n.selected = Some(row);
+            n.picking = false;
+        }
+        self.open.presets = false;
+        self.open.modes = false;
+        self.open.rows = false;
+        self.push(ChainAction::Notes(NoteAction::Select(row)));
+    }
+
+    /// A sound effect (or its picker) takes the page from the Notes group.
+    fn leave_notes(&mut self) {
+        if let Some(n) = self.state.notes.as_mut() {
+            n.selected = None;
+            n.picking = false;
+        }
+    }
+
+    /// A tap on the Notes page: a setting, the arp's button, or the
+    /// picker's.
+    fn tap_notes_page(&mut self, pl: &notes::PageLayout, x: i32, y: i32) {
+        let Some(ns) = self.state.notes.as_ref() else {
+            return;
+        };
+        // The setting under the finger becomes the one the Modulate row
+        // works on.
+        let touched = notes::setting_at(pl, x, y).and_then(|(k, _)| {
+            let (_, id, _) = ns.page_fx()?;
+            Some(notes::addr(ns.track, id, k))
+        });
+        let a = notes::tap_page(pl, ns, x, y);
+        if let Some(addr) = touched.filter(|f| self.state.focus != Some(*f)) {
+            if self.state.params.iter().any(|p| p.addr == addr) {
+                self.push(ChainAction::Focus(addr));
+            }
+        }
+        let Some(a) = a else {
+            return;
+        };
+        if matches!(a, NoteAction::Picker(false) | NoteAction::Add(_)) {
+            if let Some(n) = self.state.notes.as_mut() {
+                n.picking = false;
+            }
+        }
+        self.set_note(a);
+    }
+
+    /// A MIDI effect's setting is the one touched last: the Modulate row
+    /// under its page is the usual one (its macro, Learn, + LFO, its rows).
+    fn notes_modulate(&self) -> bool {
+        self.state.notes.is_some()
+            && self
+                .state
+                .focused()
+                .is_some_and(|p| matches!(p.addr.owner, Owner::NoteFx(..)))
+    }
+
+    /// Setting `k` of the MIDI effect whose page shows, with its value
+    /// ("Inversion 1"), for the hint line while a finger holds it.
+    pub fn note_setting(&self, k: usize) -> Option<String> {
+        let (_, _, fx) = self.state.notes.as_ref()?.page_fx()?;
+        let name = fx.settings().get(k)?.name;
+        Some(format!("{name} {}", fx.value_text(k)))
+    }
+
+    /// Whether `t` is a MIDI effect's setting held under the wheel
+    /// ([`ChainView::note_setting`] reads it).
+    pub fn is_note_setting(t: &Target) -> bool {
+        t.id == NOTE_SETTING
+    }
+
+    /// A Notes action for the app; a setting shows its new value at once
+    /// (the app's state follows), so turns in a row each step on from the
+    /// last.
+    fn set_note(&mut self, a: NoteAction) {
+        if let (NoteAction::Set { id, k, value }, Some(n)) = (a, self.state.notes.as_mut()) {
+            if let Some(s) = n.fx.place_of(id).and_then(|p| n.fx.slots[p].as_mut()) {
+                s.fx.set(k, value);
+            }
+        }
+        self.push(ChainAction::Notes(a));
+    }
+
     /// The effect whose row (not its ON pill) is under `(x, y)`, when the
     /// chain can be rearranged (not while the picker is up).
     fn slot_under(&self, l: &Layout, x: i32, y: i32) -> Option<usize> {
@@ -1411,6 +1710,9 @@ impl ChainView {
                 return;
             }
         }
+        if self.tap_notes(l, x, y) {
+            return;
+        }
         let st = &self.state;
         for (i, r) in l.rows.iter().enumerate() {
             if r.contains(x, y) {
@@ -1418,17 +1720,20 @@ impl ChainView {
                     let on = !st.slots[i].on;
                     self.push(ChainAction::SetOn { slot: i, on });
                 } else {
+                    self.leave_notes();
                     self.push(ChainAction::Select(i));
                 }
                 return;
             }
         }
         if l.add.is_some_and(|r| r.contains(x, y)) {
+            self.leave_notes();
             self.state.picking = true;
             self.open_picker();
             self.push(ChainAction::Picker(true));
             return;
         }
+        let st = &self.state;
         if let Some(sel) = st.selected {
             let n = st.slots.len();
             if l.buttons[0].contains(x, y) && sel > 0 {
@@ -1483,6 +1788,13 @@ impl ChainView {
             self.open.modes = false;
             return;
         }
+        self.tap_modulate(l, x, y);
+    }
+
+    /// A tap on the Modulate row, for the control touched last: its macro
+    /// (again: off it), Learn, the link to its rows, + LFO or + Follower.
+    fn tap_modulate(&mut self, l: &Layout, x: i32, y: i32) {
+        let st = &self.state;
         let Some(focus) = st.focus else { return };
         if let Some(m) = l.macros.iter().position(|r| macro_hit(*r).contains(x, y)) {
             let now = st.focused().and_then(|p| p.macro_);
@@ -1784,11 +2096,21 @@ impl Widget for ChainView {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         let st = &self.state;
+        self.last.set(r);
         let l = self.layout(r);
         cx.canvas.fill_rect(r, t.bg);
         self.paint_chain(cx, &l);
         if st.picking {
             paint_picker(cx, &l, st, &self.picker);
+        } else if let (Some(ns), Some(pl)) = (&st.notes, &l.notes_page) {
+            // A row of the Notes group (or its picker) has the column.
+            notes::paint_header(cx, &t, l.header, ns);
+            notes::paint_page(cx, &t, notes_area(l.page, l.modulate, ns), pl, ns);
+            if self.notes_modulate() {
+                self.paint_modulate(cx, &l);
+            } else if !ns.picking {
+                notes::paint_modulate(cx, &t, l.modulate, ns);
+            }
         } else {
             self.paint_effect(cx, &l);
         }
@@ -1849,7 +2171,45 @@ impl Widget for ChainView {
                 picker_targets(&self.picker, st, pl, &mut out);
             }
         }
+        if let (Some(ns), Some(nl)) = (&st.notes, &l.notes) {
+            let n = ns.items().len();
+            if let Some((up, down)) = nl.arrows {
+                out.push(Target::tap("notes-up", 0, "Notes ▲", up).disabled_if(nl.from == 0));
+                out.push(
+                    Target::tap("notes-down", 0, "Notes ▼", down)
+                        .disabled_if(nl.from + nl.fit >= n),
+                );
+            }
+            for &(r, row) in &nl.rows {
+                let Some((name, _, _)) = ns.row_view(row) else {
+                    continue;
+                };
+                let is_fx = matches!(ns.item(row), Some(mpfree_notefx::Item::Fx(_)));
+                if is_fx {
+                    let (power, rest) = r.take_right(POWER_W);
+                    out.push(Target::tap("note", row, name.clone(), rest));
+                    out.push(Target::tap("note-on", row, format!("{name} ON"), power));
+                } else {
+                    out.push(Target::tap("note", row, name, r));
+                }
+            }
+            if let Some(a) = nl.add {
+                out.push(Target::tap("notes-add", 0, "+ MIDI effect", a));
+            }
+            out.push(Target::tap("plays-on", 0, "Plays on", nl.plays));
+            if let Some((up, down)) = l.sound_arrows {
+                let first = shown_row(&l, false).unwrap_or(0);
+                out.push(Target::tap("sound-up", 0, "Sound ▲", up).disabled_if(first == 0));
+                out.push(
+                    Target::tap("sound-down", 0, "Sound ▼", down)
+                        .disabled_if(first + l.sound_fit >= st.slots.len()),
+                );
+            }
+        }
         for (i, rr) in l.rows.iter().enumerate() {
+            if rr.is_empty() {
+                continue;
+            }
             let name = st.slots.get(i).map_or(String::new(), |v| v.name.clone());
             let (power, rest) = rr.take_right(POWER_W);
             out.push(
@@ -1871,6 +2231,20 @@ impl Widget for ChainView {
                         .disabled_if(off),
                 );
             }
+        }
+        if let Some((row, n, fx)) = notes_selected(st) {
+            let words = ["Move up", "Move down", "Remove"];
+            for (k, b) in l.buttons.iter().enumerate() {
+                let off = [row == 0, row + 1 >= n, !fx][k];
+                out.push(
+                    Target::tap(["move-up", "move-down", "remove"][k], 0, words[k], *b)
+                        .disabled_if(off),
+                );
+            }
+        }
+        if let (Some(ns), Some(pl)) = (&st.notes, &l.notes_page) {
+            notes::page_targets(pl, ns, &mut out);
+            return out;
         }
         if st.picking || st.selected.is_none() {
             return out;
@@ -2002,9 +2376,31 @@ impl Widget for ChainView {
         self.turn(t, delta, WHEEL_STEP)
     }
 
-    /// Held with SHIFT: a knob, fader or slider moves a tenth as far.
+    /// Held with SHIFT: a knob, fader or slider moves a tenth as far. A
+    /// MIDI effect's setting moves one step a detent either way.
     fn held_step(&mut self, t: &Target, delta: i32, fine: bool, _r: Rect) -> Option<EventKind> {
+        if t.id == NOTE_SETTING {
+            let a = notes::step_setting(self.state.notes.as_ref()?, t.index, delta)?;
+            self.set_note(a);
+            return Some(EventKind::Select(self.actions.len()));
+        }
         self.turn(t, delta, if fine { WHEEL_STEP / 10.0 } else { WHEEL_STEP })
+    }
+
+    /// A finger resting on a MIDI effect's setting puts it under the wheel
+    /// (its whole row: the chips, or a card's row); elsewhere, as for any
+    /// widget, the knob, fader or slider under it.
+    fn held(&self, x: i32, y: i32, r: Rect) -> Option<Target> {
+        let l = self.layout(r);
+        if let (Some(_), Some(pl)) = (&self.state.notes, &l.notes_page) {
+            let (k, rect) = notes::setting_at(pl, x, y)?;
+            return Some(Target::tap(NOTE_SETTING, k, self.note_setting(k)?, rect));
+        }
+        self.targets(r)
+            .into_iter()
+            .filter(|t| t.rect.contains(x, y) && t.enabled)
+            .filter(|t| t.gesture == Gesture::Drag && !t.moves && self.steps(t))
+            .min_by_key(|t| t.rect.w as i64 * t.rect.h as i64)
     }
 
     /// A grabbed effect the wheel moved is listed at its new place.
@@ -2028,6 +2424,10 @@ impl Widget for ChainView {
 
 /// A knob's step per detent of the data wheel, as a share of its travel.
 const WHEEL_STEP: f32 = 0.01;
+
+/// A MIDI effect's setting held under the data wheel ([`Widget::held`]):
+/// its index is the setting's.
+const NOTE_SETTING: &str = "notes-setting";
 
 impl ChainView {
     /// The wheel on control `t` by `delta` detents, `each` of a knob's
@@ -2108,6 +2508,7 @@ impl ChainView {
     }
 
     fn touch_inner(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) {
+        self.last.set(r);
         let l = self.layout(r);
         if self.list_open.is_some() {
             // The strip list takes every touch while it is open.
@@ -2164,6 +2565,17 @@ impl ChainView {
                         self.open.rows = false;
                         return;
                     }
+                }
+                // A MIDI effect's setting touched: the Modulate row works
+                // on it, as on a sound's knob.
+                if l.notes_page.is_some() && l.modulate.contains(x, y) && self.notes_modulate() {
+                    self.tap_modulate(&l, x, y);
+                    return;
+                }
+                if let (Some(pl), true) = (&l.notes_page, l.effect.contains(x, y)) {
+                    let pl = pl.clone();
+                    self.tap_notes_page(&pl, x, y);
+                    return;
                 }
                 let on_page =
                     !self.state.picking && self.state.selected.is_some() && l.page.contains(x, y);
@@ -2377,27 +2789,60 @@ impl ChainView {
             );
         }
         cx.canvas.fill_round_rect(l.list, t.radius, t.surface);
-        let cap = l.caption.inset_xy(6, 0).take_top(CAPTION_H - 6).0;
-        cx.text(
-            FontId::Bold,
-            t.size_small - 1.0,
-            cap,
-            Align::Left,
-            t.text_dim,
-            "EFFECTS",
-        );
         let count = match st.cost_pct {
             Some(c) => format!("{} of {} · {c:.1} %", st.slots.len(), st.room),
             None => format!("{} of {}", st.slots.len(), st.room),
         };
-        cx.text(
-            FontId::Sans,
-            t.size_small - 1.0,
-            cap,
-            Align::Right,
-            t.text_dim,
-            &count,
-        );
+        match (&st.notes, &l.notes) {
+            // A note track: NOTES over its rows and Plays on, then SOUND.
+            (Some(ns), Some(nl)) => {
+                let n = ns.items().len();
+                let shown = format!("{} of {}", ns.fx.count(), mpfree_notefx::MAX_FX);
+                // The Sound caption shares its line with its arrows: no cost.
+                let count = format!("{} of {}", st.slots.len(), st.room);
+                notes::paint_caption(
+                    cx,
+                    &t,
+                    l.caption,
+                    "NOTES",
+                    &shown,
+                    nl.arrows,
+                    nl.from > 0,
+                    nl.from + nl.fit < n,
+                );
+                notes::paint_list(cx, &t, nl, ns);
+                let first = shown_row(l, false).unwrap_or(0);
+                notes::paint_caption(
+                    cx,
+                    &t,
+                    nl.sound_caption,
+                    "SOUND",
+                    &count,
+                    l.sound_arrows,
+                    first > 0,
+                    first + l.sound_fit < st.slots.len(),
+                );
+            }
+            _ => {
+                let cap = l.caption.inset_xy(6, 0).take_top(CAPTION_H - 6).0;
+                cx.text(
+                    FontId::Bold,
+                    t.size_small - 1.0,
+                    cap,
+                    Align::Left,
+                    t.text_dim,
+                    "EFFECTS",
+                );
+                cx.text(
+                    FontId::Sans,
+                    t.size_small - 1.0,
+                    cap,
+                    Align::Right,
+                    t.text_dim,
+                    &count,
+                );
+            }
+        }
         // A row being dragged: its own place empty but outlined, a line
         // where it will land, and the row itself under the finger.
         let lifted = match self.drag {
@@ -2414,6 +2859,9 @@ impl ChainView {
             _ => None,
         };
         for (i, (s, row)) in st.slots.iter().zip(&l.rows).enumerate() {
+            if row.is_empty() {
+                continue;
+            }
             if lifted.is_some_and(|(from, ..)| from == i) {
                 cx.canvas.fill_round_rect(*row, 10, t.surface);
                 cx.canvas.stroke_round_rect(*row, 10, 2, t.outline);
@@ -2421,9 +2869,11 @@ impl ChainView {
             }
             paint_slot(cx, &t, *row, i, s, st.selected == Some(i));
         }
-        if let (Some((from, dy, to)), Some(first), Some(last)) =
-            (lifted, l.rows.first(), l.rows.last())
-        {
+        if let (Some((from, dy, to)), Some(first), Some(last)) = (
+            lifted,
+            shown_row(l, false).map(|i| l.rows[i]),
+            shown_row(l, true).map(|i| l.rows[i]),
+        ) {
             // The row follows the finger within the list, but stays clear
             // of the landing line: below it on the way up, above it on the
             // way down, so the line is never hidden under the row.
@@ -2444,7 +2894,7 @@ impl ChainView {
                 if to < from {
                     lo = y + 14;
                 } else {
-                    hi = y - 10 - ROW_H;
+                    hi = y - 10 - at.h;
                 }
             }
             if let (Some(s), Some(home)) = (st.slots.get(from), l.rows.get(from)) {
@@ -2467,10 +2917,16 @@ impl ChainView {
         }
         let live = st.selected.is_some();
         let sel = st.selected.unwrap_or(0);
+        let mut usable = [live && sel > 0, live && sel + 1 < st.slots.len(), live];
+        // A row of the Notes group: Up, Down and Remove work on it (the
+        // arp moves but stays).
+        if let Some((row, n, fx)) = notes_selected(st) {
+            usable = [row > 0, row + 1 < n, fx];
+        }
         for (b, (label, ok)) in l.buttons.iter().zip([
-            ("Up", live && sel > 0),
-            ("Down", live && sel + 1 < st.slots.len()),
-            ("Remove", live),
+            ("Up", usable[0]),
+            ("Down", usable[1]),
+            ("Remove", usable[2]),
         ]) {
             cx.canvas.fill_round_rect(
                 *b,
