@@ -1249,7 +1249,8 @@ fn draw_rate(ms: f32) -> u32 {
 }
 
 /// The Ducker: its gain over time, played on a steady signal. On Tempo,
-/// two cycles of the Rate at the song's tempo (a trigger at each line); on
+/// two cycles of the Rate at the song's tempo after one played and left
+/// out (so the first beat's attack is in), down at each line; on
 /// Sidechain, one 10 ms key 6 dB over full scale (the dashed pulse), until
 /// the duck has come back.
 fn ducker_card(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
@@ -1264,16 +1265,21 @@ fn ducker_card(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
     let render = |span: f32| {
         let rate = draw_rate(span);
         let frames = (span * 0.001 * rate as f32).ceil().max(2.0) as usize;
+        // On Tempo a cycle first, so the duck is already in step.
+        let pre = if tempo {
+            (0.5 * span * 0.001 * rate as f32).round() as usize
+        } else {
+            0
+        };
         let at = (lead * 0.001 * rate as f32) as usize;
         let key: Vec<f32> = (0..frames)
             .map(|i| (i >= at && i < at + rate as usize / 100) as u8 as f32 * 2.0)
             .collect();
         let mut n = copy_of(st, Box::new(Ducker::new()), rate);
-        let ones = vec![1.0f32; frames];
-        (
-            play(n.as_mut(), rate, bpm, &ones, (!tempo).then_some(&key[..])),
-            rate,
-        )
+        let ones = vec![1.0f32; pre + frames];
+        let mut out = play(n.as_mut(), rate, bpm, &ones, (!tempo).then_some(&key[..]));
+        out.drain(..pre);
+        (out, rate)
     };
     let span = if tempo {
         2.0 * (beats * 60_000.0 / bpm) as f32
