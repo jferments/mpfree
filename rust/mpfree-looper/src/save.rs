@@ -17,6 +17,9 @@
 //! layer level=1 pan=0 muted=0 solo=0 faded=1 file=3f0c...e1.wav
 //! ```
 //!
+//! A loop set to start when you play ([`crate::Starts::Play`]) adds
+//! `starts=play` to its line; one that starts on the bar leaves it out.
+//!
 //! A loop at another speed ([`crate::Edit::Speed`]) adds `speed=` and
 //! `octaves=` to its line (its speed, and the octaves its audio plays
 //! faster than it is, [`crate::Status::rate`]); a loop as recorded leaves
@@ -28,7 +31,7 @@
 
 use mpfree_transport::time::Tick;
 
-use crate::{After, MAX_LAYERS, MAX_LOOPS};
+use crate::{After, Starts, MAX_LAYERS, MAX_LOOPS};
 
 /// The first line of the text.
 pub const FORMAT: &str = "mpfree-looper 1";
@@ -45,6 +48,8 @@ pub struct LoopFile {
     /// The bars setting for the next first pass (None: free length).
     pub bars: Option<u32>,
     pub after: After,
+    /// When its next first pass starts.
+    pub starts: Starts,
     pub fade_old: f32,
     /// Its speed ([`crate::Status::speed`]) and the octaves its layers'
     /// audio plays faster than it is ([`crate::Status::rate`]).
@@ -104,6 +109,10 @@ pub fn to_text(saved: &Saved) -> String {
             flag(l.muted),
             l.fade_old
         ));
+        if l.starts == Starts::Play {
+            s.pop();
+            s.push_str(" starts=play\n");
+        }
         if l.speed != 0 || l.rate != 0 {
             s.pop();
             s.push_str(&format!(" speed={} octaves={}\n", l.speed, l.rate));
@@ -222,6 +231,10 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
                     after: match get(&kv, "after") {
                         Some("overdub") => After::Overdub,
                         _ => After::Play,
+                    },
+                    starts: match get(&kv, "starts") {
+                        Some("play") => Starts::Play,
+                        _ => Starts::Bar,
                     },
                     fade_old: level(&kv, "fade_old", n, 0.0, 1.0).unwrap_or(1.0),
                     speed: small(&kv, "speed", n, 1)?,
@@ -358,6 +371,7 @@ mod tests {
                         muted: true,
                         bars: None,
                         after: After::Overdub,
+                        starts: Starts::Play,
                         fade_old: 0.9,
                         speed: -1,
                         rate: -2,
@@ -374,6 +388,7 @@ mod tests {
                         muted: false,
                         bars: Some(4),
                         after: After::Play,
+                        starts: Starts::Bar,
                         fade_old: 1.0,
                         speed: 0,
                         rate: 0,

@@ -758,6 +758,47 @@ impl TimeHost {
         )
     }
 
+    /// Start the song on frame `at` (see [`TimeHost::next_frame`]): the
+    /// looper's Starts: When I play, whose first note starts the song so
+    /// bar 1 is where you started. Only while it is stopped: back to the
+    /// start of the bar it stopped in, the tempo `bpm` if given (the whole
+    /// song takes it), then PLAY on `at`, with no count-in. With a take
+    /// ready (`take`, as for [`TimeHost::take_waits`]) it records from
+    /// there too, a punch-in with no count-in, into the clip REC readies
+    /// (with no clip to record into it only plays, and the line says so).
+    /// Ok: a line for the log, if there is more to say. Err: why it can't
+    /// start (the song plays or counts in, or another device's clock
+    /// leads), counted ([`TimeHost::starts_refused`]).
+    pub fn start_at(
+        &mut self,
+        at: u64,
+        bpm: Option<f64>,
+        take: Option<bool>,
+    ) -> Result<Option<String>, String> {
+        self.audio.start_at(at, bpm, take)?;
+        if take.is_none() {
+            return Ok(None);
+        }
+        let r = self.control.take_started_on_note();
+        // No clip to record into (no empty slot): it plays without
+        // recording, the punch-in taken back on its frame.
+        if r.is_err() {
+            self.control.command(Command::Record);
+            self.audio.receive();
+        }
+        Ok(Some(
+            self.sent(r)
+                .unwrap_or_else(|e| format!("rec: {e}, so it only plays")),
+        ))
+    }
+
+    /// Starts on a note refused so far ([`TimeHost::start_at`]); the
+    /// looper's status line counts them with its own (an export running).
+    #[allow(dead_code)]
+    pub fn starts_refused(&self) -> u64 {
+        self.audio.starts_refused()
+    }
+
     /// Following another device's Start and Stop while it is stopped:
     /// PLAY waits for its Start, and a ready take records from it.
     pub fn clock_waits(&self) -> bool {
@@ -4939,6 +4980,84 @@ mod tests {
         h.follow_tempo(96.0);
         h.period(PERIOD, &mut pads);
         assert_eq!(h.info().bpm, 96.0);
+    }
+
+    /// The looper's Starts: When I play (start_at): the song starts on
+    /// the frame asked, from the start of the bar it stopped in, with no
+    /// count-in; a tempo given is the whole song's, exactly, and the app's
+    /// tempo following it asks for nothing more; it is refused while the
+    /// song plays or counts in (counted, with why); and a take ready
+    /// records from the same frame.
+    #[test]
+    fn a_note_starts_the_song_on_its_frame_from_the_bar_it_stopped_in() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        // Played into bar 2 (a bar is 88 200 frames at 120 BPM), stopped.
+        assert!(h.command(Command::Play));
+        while pads.frame < 120_000 {
+            h.period(PERIOD, &mut pads);
+            pads.frame += u64::from(PERIOD);
+        }
+        assert!(h.command(Command::Stop));
+        h.period(PERIOD, &mut pads);
+        pads.frame += u64::from(PERIOD);
+        assert_eq!(h.info().state, State::Stopped);
+        let bar = 4 * mpfree_transport::PPQ as i64;
+        let at = h.next_frame() + 40;
+        // The app's tempo moves with it, in the same period (4c's way).
+        assert_eq!(h.start_at(at, Some(117.3456), None), Ok(None));
+        h.follow_tempo(117.3456);
+        h.period(PERIOD, &mut pads);
+        let span = *h.block().spans().last().unwrap();
+        assert_eq!(span.state, State::Playing);
+        assert_eq!(span.frame, at, "on the frame asked");
+        assert_eq!(span.ticks().start, bar, "from bar 2's start");
+        assert_eq!(h.info().bpm, 117.3456);
+        assert_eq!(h.tempo_map().segments().len(), 1, "the whole song's tempo");
+        // Nothing more asked for: no tempo change comes.
+        for _ in 0..20 {
+            h.follow_tempo(117.3456);
+            h.period(PERIOD, &mut pads);
+            assert!(
+                !h.block()
+                    .markers()
+                    .iter()
+                    .any(|m| matches!(m.mark, mpfree_transport::Mark::Tempo(_))),
+                "asked again"
+            );
+        }
+        // A real change still goes in (on the next 1/16 line).
+        for _ in 0..60 {
+            h.follow_tempo(100.0);
+            h.period(PERIOD, &mut pads);
+        }
+        assert_eq!(h.info().bpm, 100.0);
+        // Refused while it plays, and while it counts in.
+        let r = h.start_at(h.next_frame(), None, None);
+        assert_eq!(r, Err("the song is playing already".to_string()));
+        assert!(h.command(Command::StopAndRewind));
+        h.period(PERIOD, &mut pads);
+        assert!(h.command(Command::SetCountIn(1)));
+        assert!(h.command(Command::Record));
+        h.period(PERIOD, &mut pads);
+        assert_eq!(h.info().state, State::CountIn);
+        let r = h.start_at(h.next_frame(), None, None);
+        assert_eq!(r, Err("the song is counting in".to_string()));
+        assert_eq!(h.starts_refused(), 2);
+        // A take ready: it records from the note, with no count-in.
+        assert!(h.command(Command::StopAndRewind));
+        h.period(PERIOD, &mut pads);
+        let at = h.next_frame();
+        let line = h.start_at(at, None, Some(true)).unwrap().unwrap();
+        assert!(
+            line.starts_with("rec: the take started on your note"),
+            "{line}"
+        );
+        h.period(PERIOD, &mut pads);
+        let span = *h.block().spans().last().unwrap();
+        assert_eq!((span.state, span.frame), (State::Recording, at));
+        assert_eq!(span.ticks().start, 0);
+        assert!(h.info().overdub, "adding");
     }
 
     fn xorshift(mut x: u64) -> impl FnMut() -> u64 {
