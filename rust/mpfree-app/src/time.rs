@@ -1197,6 +1197,13 @@ impl TimeHost {
         self.control.track_count()
     }
 
+    /// REDOs done so far, and whether REDO has anything to do: a track
+    /// that comes back with a REDO gets its kit back
+    /// ([`crate::sampler::TrackKits::follow`]).
+    pub fn redos(&self) -> (u64, bool) {
+        (self.control.redos(), self.control.can_redo())
+    }
+
     /// Whether track `t` has a clip launched (playing, or waiting for the
     /// transport); TRACK MUTE's pad lights have it in [`MuteLight`].
     #[cfg(test)]
