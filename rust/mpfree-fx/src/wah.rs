@@ -231,9 +231,7 @@ impl AutoWah {
             _ => {}
         }
     }
-    fn begin(&mut self, ctx: &Ctx) {
-        self.lfo.begin(ctx, self.v[7] as usize);
-    }
+    fn begin(&mut self, _ctx: &Ctx) {}
     /// The position the controls and the modulation ask for, 0 to 1.
     fn target(&self) -> f32 {
         let m = match self.v[0] as usize {
@@ -243,7 +241,8 @@ impl AutoWah {
         };
         (self.v[1] / 100.0 + self.v[2] / 100.0 * m).clamp(0.0, 1.0)
     }
-    fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
+    fn run(&mut self, ctx: &Ctx, from: usize, l: &mut [f32], r: &mut [f32]) {
+        self.lfo.follow(ctx, from, self.v[7] as usize);
         self.lfo.set(self.v[6], self.v[7] as usize, self.rate);
         let (lo, hi) = (self.v[8].log2(), self.v[9].log2());
         let res = self.v[10] / 100.0;
@@ -252,11 +251,12 @@ impl AutoWah {
         // A sharper band-pass gets a little more level back.
         let bp_gain = 1.0 + res;
         for i in 0..l.len() {
-            let p = self.lfo.step();
-            self.lfo_now = kit::sine(p);
+            self.lfo.tick();
             self.env.run(0.5 * (l[i].abs() + r[i].abs()) * self.sens);
             if self.ctrl == 0 {
                 self.ctrl = CTRL;
+                let [m] = self.lfo.read([0.0]);
+                self.lfo_now = m;
                 self.pos.target = self.target();
                 let hz = fast_exp2(lo + (hi - lo) * self.pos.glide());
                 self.filter.tune(hz, q, self.rate);
@@ -519,9 +519,7 @@ impl TalkBox {
             _ => {}
         }
     }
-    fn begin(&mut self, ctx: &Ctx) {
-        self.lfo.begin(ctx, self.v[8] as usize);
-    }
+    fn begin(&mut self, _ctx: &Ctx) {}
     fn target(&self) -> f32 {
         let env = env_amount(self.env.env) * self.v[3] / 100.0;
         let lfo = self.lfo_now * self.v[10] / 100.0;
@@ -538,15 +536,17 @@ impl TalkBox {
         }
         self.gains = g;
     }
-    fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
+    fn run(&mut self, ctx: &Ctx, from: usize, l: &mut [f32], r: &mut [f32]) {
+        self.lfo.follow(ctx, from, self.v[8] as usize);
         self.lfo.set(self.v[7], self.v[8] as usize, self.rate);
-        let shape = self.v[9] as usize;
+        self.lfo.set_shape(self.v[9] as usize);
         for i in 0..l.len() {
-            let p = self.lfo.step();
-            self.lfo_now = self.lfo.shape(shape, p, 0.0);
+            self.lfo.tick();
             self.env.run(0.5 * (l[i].abs() + r[i].abs()) * self.sens);
             if self.ctrl == 0 {
                 self.ctrl = CTRL;
+                let [m] = self.lfo.read([0.0]);
+                self.lfo_now = m;
                 self.pos.target = self.target();
                 self.pos.glide();
                 self.retune();
