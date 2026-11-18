@@ -1629,8 +1629,9 @@ pub struct Player {
     /// The list of kits' rows: each a kit (or the synth), None for New kit.
     kit_rows: Vec<Option<usize>>,
     /// The "+ Kit track" ask for a track: how many tracks there were, and
-    /// when. Once the new track is armed it gets an empty kit.
-    kit_track: Option<(usize, Instant)>,
+    /// when. Once the new track is armed it gets an empty kit, with the
+    /// kit folder (the browser's New track with this kit) loaded into it.
+    kit_track: Option<(usize, Instant, Option<std::path::PathBuf>)>,
     /// What each header chip that only shows (CPU, RAM, session, time
     /// left) says when tapped, by its place; empty for the others.
     chip_why: Vec<String>,
@@ -2146,13 +2147,31 @@ impl Player {
     /// ([`Player::kit_track_armed`]). Refused, and said, with no empty kit
     /// left.
     fn add_kit_track(&mut self) -> Option<FromUi> {
+        self.add_track_for_kit(None)
+    }
+
+    /// As + Kit track, with the kit folder `load` (the browser's New track
+    /// with this kit) loaded into the new track's empty kit once it is
+    /// armed. One at a time: a second ask while a track is on its way is
+    /// refused and said.
+    fn add_track_for_kit(&mut self, load: Option<std::path::PathBuf>) -> Option<FromUi> {
         if !(0..self.kits.len()).any(|k| self.spare_kit(k)) {
             self.tell(
                 "No empty kit is left for a new track: pick one of the kits on a track instead",
             );
             return None;
         }
-        self.kit_track = Some((self.time.tracks.len(), Instant::now()));
+        if self.kit_track.is_some() {
+            self.tell("A new track is still on its way: try again in a moment");
+            return None;
+        }
+        if let Some(name) = load.as_deref().and_then(|d| d.file_name()) {
+            self.say(format!(
+                "browser: a new track for the kit {}",
+                name.to_string_lossy()
+            ));
+        }
+        self.kit_track = Some((self.time.tracks.len(), Instant::now(), load));
         self.refresh_kit_tracks();
         Some(FromUi::Time(TimeAction::AddTrack))
     }
@@ -2162,18 +2181,34 @@ impl Player {
     /// came (128 tracks already: the time engine says why) is given up
     /// after a few seconds.
     fn kit_track_armed(&mut self) {
-        let Some((n, at)) = self.kit_track else {
+        let Some((n, at)) = self.kit_track.as_ref().map(|k| (k.0, k.1)) else {
             return;
         };
-        if self.time.tracks.len() > n {
-            self.kit_track = None;
-            if self.time.armed == Some(n) {
-                if let Some(u) = (0..self.kits.len()).find(|&k| self.spare_kit(k)) {
+        let load = if self.time.tracks.len() > n {
+            let load = self.kit_track.take().and_then(|k| k.2);
+            let spare = (0..self.kits.len()).find(|&k| self.spare_kit(k));
+            match (self.time.armed == Some(n), spare) {
+                (true, Some(u)) => {
+                    if let Some(dir) = load {
+                        self.sample.open_kit_into(dir, u);
+                    }
                     self.outbox.push(FromUi::Kit(u));
+                    return;
                 }
+                _ => load,
             }
         } else if at.elapsed() > Duration::from_secs(3) {
-            self.kit_track = None;
+            self.kit_track.take().and_then(|k| k.2)
+        } else {
+            return;
+        };
+        // The kit asked for found no new track to go on: said, never
+        // dropped quietly.
+        if let Some(name) = load.as_deref().and_then(|d| d.file_name()) {
+            self.say(format!(
+                "browser: the kit {} wasn't loaded (no new track came for it)",
+                name.to_string_lossy()
+            ));
         }
     }
 
@@ -6864,6 +6899,11 @@ impl Player {
                     self.tell(&why);
                 }
             },
+            A::NewTrackWithKit { path, .. } => {
+                if let Some(fx) = self.add_track_for_kit(Some(path)) {
+                    self.outbox.push(fx);
+                }
+            }
             A::SaveKitRequested => self.save_kit(),
             A::Note(line) => self.say(line),
             // Projects (project.rs).
@@ -11677,6 +11717,38 @@ fn browser_samples(fonts: Fonts) -> Result<Player, String> {
     built
 }
 
+/// The whole browser (BROWSE) in Kits with the Boom bap kit picked: Load
+/// and New track with this kit. Over a library filled in a scratch folder
+/// (removed again once the browser has read what it shows). For the
+/// manual's Sampling chapter.
+fn browser_kits(fonts: Fonts) -> Result<Player, String> {
+    use mpfree_browser_ui::sample::{fill, select, source};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "mpfree-browser-kits-{}-{nanos}",
+        std::process::id()
+    ));
+    let built = (|| {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let lib = fill(&dir)?;
+        let mut p = sample_sampler(fonts);
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib), "");
+        p.take_actions();
+        p.apply(ToUi::Show(View::Browser));
+        let b = p.browser.as_mut().ok_or("no browser")?;
+        b.go_source(source("Kits"));
+        select(b, "Boom bap");
+        p.step_browser();
+        p.take_actions();
+        Ok(p)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    built
+}
+
 /// The whole browser over the page (BROWSE), in Projects with a saved
 /// project picked, over a library filled in a scratch folder (removed
 /// again once the browser has read what it shows). For the manual's
@@ -13053,6 +13125,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     match browser_samples(fonts()) {
         Ok(browse) => out.push(("browser-samples", browse)),
         Err(e) => eprintln!("browser-samples: not drawn ({e})"),
+    }
+    // The whole browser in Kits, Boom bap picked: New track with this kit.
+    match browser_kits(fonts()) {
+        Ok(kits) => out.push(("browser-kits", kits)),
+        Err(e) => eprintln!("browser-kits: not drawn ({e})"),
     }
     // The whole browser (BROWSE) in Projects, Night drive picked.
     match browser_projects(fonts()) {
@@ -19285,6 +19362,94 @@ mod tests {
         assert_eq!(pads(&p, 0), before);
         // Loading changed the work.
         assert!(p.sample.edits > 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// New track with this kit (the browser): a track is added as + Kit
+    /// track adds one, and once it is armed the kit folder loads into the
+    /// empty kit it gets, leaving the kit on the pads as it was.
+    #[test]
+    fn new_track_with_this_kit_adds_a_track_that_plays_the_kit() {
+        use mpfree_browser_ui::BrowseAction as A;
+        use mpfree_library::{Loc, Place};
+        let dir = std::env::temp_dir().join(format!("mpfree-kit-track-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = mpfree_library::Library::at(&dir).unwrap();
+        let mut p = sample_sampler(Fonts::embedded());
+        // An empty user kit after the kits, with a sampler kit for each.
+        let mut kits = p.kits.clone();
+        let n = kits
+            .iter()
+            .position(|k| k.synth.is_some())
+            .unwrap_or(kits.len());
+        kits.insert(
+            n,
+            KitView {
+                name: format!("Kit {}", n + 1),
+                pads: vec![None; 128],
+                colour: [0x10, 0x10, 0x10],
+                chip: None,
+                synth: None,
+                pitches: Vec::new(),
+                user: true,
+                key: None,
+            },
+        );
+        p.apply(ToUi::Kits(kits));
+        let (first, _) = mpfree_sampler_ui::sample::project();
+        let mut projects = vec![first];
+        projects.resize_with(n + 1, mpfree_sampler::model::Project::new);
+        p.apply(ToUi::SampleKits {
+            projects,
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        sample_pattern(&mut p, 0);
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
+        p.take_actions();
+        let pads = |p: &Player, k: usize| -> Vec<Option<String>> {
+            (0..16)
+                .map(|i| {
+                    p.sample
+                        .project(k)
+                        .and_then(|pr| pr.pad(i))
+                        .filter(|pd| !pd.layers.is_empty())
+                        .map(|pd| pd.name.clone())
+                })
+                .collect()
+        };
+        let on_the_pads = pads(&p, 0);
+        assert!(on_the_pads.iter().any(Option::is_some));
+        assert!(pads(&p, n).iter().all(Option::is_none));
+        p.browse_action(A::SaveKitRequested);
+        let kit = Loc::new(Place::Kits, &["Breaks"]).unwrap();
+        let ask = A::NewTrackWithKit {
+            loc: kit.clone(),
+            path: lib.kit_path(&kit).unwrap(),
+        };
+        let before = p.time.tracks.len();
+        p.browse_action(ask.clone());
+        assert_eq!(p.take_actions(), vec![FromUi::Time(TimeAction::AddTrack)]);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "browser: a new track for the kit Breaks"));
+        // One at a time.
+        p.browse_action(ask);
+        assert!(p.take_actions().is_empty());
+        // The time engine adds it, armed: it gets the empty kit, and the
+        // kit folder goes into that kit.
+        let mut st = p.time.clone();
+        let mut added = st.tracks[0].clone();
+        added.name = format!("Track {}", before + 1);
+        added.slots.iter_mut().for_each(|s| *s = None);
+        st.tracks.push(added);
+        st.armed = Some(before);
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(p.take_actions(), vec![FromUi::Kit(n)]);
+        let now = format!("sample: kit {} is now Breaks", n + 1);
+        tick_until(&mut p, |p| events_log(p).contains(&now));
+        assert_eq!(pads(&p, n), on_the_pads);
+        assert_eq!(pads(&p, 0), on_the_pads, "the pads' kit is as it was");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

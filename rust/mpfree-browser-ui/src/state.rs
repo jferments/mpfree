@@ -223,6 +223,9 @@ pub enum Button {
     Export,
     /// Saves the kit the pads play as a kit folder here (Kits place).
     SaveKit,
+    /// A kit: a new track (as + Track adds one, armed) that plays it, in
+    /// an empty kit of its own.
+    NewTrack,
 }
 
 impl Button {
@@ -248,6 +251,7 @@ impl Button {
             Button::NewProject => "New project",
             Button::Export => "Export",
             Button::SaveKit => "Save kit",
+            Button::NewTrack => "New track with this kit",
         }
     }
 }
@@ -334,6 +338,13 @@ pub enum BrowseAction {
     /// the kit the pads play, or in an empty kit of its own for the armed
     /// track when other tracks play that kit.
     LoadKit {
+        loc: Loc,
+        path: PathBuf,
+    },
+    /// New track with this kit: the app adds a track, as + Track does,
+    /// and once it is there and armed loads this kit (`path`, as for
+    /// [`BrowseAction::LoadKit`]) into an empty kit for it alone.
+    NewTrackWithKit {
         loc: Loc,
         path: PathBuf,
     },
@@ -1831,6 +1842,22 @@ impl Browser {
                     _ => self.status = Some((format!("{} is not a sound", r.name), true)),
                 }
             }
+            Button::NewTrack => {
+                let Some(r) = row.filter(|r| r.kind == Kind::Kit) else {
+                    return;
+                };
+                let Some(loc) = loc else { return };
+                let Ok(path) = self.library().kit_path(&loc) else {
+                    self.status = Some((format!("{}: {} is not there", b.label(), r.name), true));
+                    return;
+                };
+                self.actions.push(BrowseAction::NewTrackWithKit {
+                    loc: loc.clone(),
+                    path,
+                });
+                self.status = Some((format!("A new track for the kit {}", r.name), false));
+                self.remember(loc);
+            }
             Button::Open => {
                 let Some(r) = row else {
                     return self.pick_first(b);
@@ -2606,9 +2633,12 @@ impl Browser {
                 d.lines
                     .push(("Load".into(), "In place of the kit the pads play".into()));
                 d.lines
+                    .push(("New track".into(), "On a new track, in its own kit".into()));
+                d.lines
                     .push(("Sounds".into(), "+ shows them one by one".into()));
                 d.buttons = vec![
                     Button::Load,
+                    Button::NewTrack,
                     Button::Rename,
                     Button::Copy,
                     Button::Cut,
