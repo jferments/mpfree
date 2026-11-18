@@ -123,6 +123,11 @@ fn render_and_events_never_allocate() {
         });
         r.reverse = i % 5 == 4;
         r.tune_cents = (i as i32 - 8) * 50;
+        // The keygroups and one warped pad are sliced: notes, locks and
+        // knobs pick their slices.
+        if i % 4 == 2 || i == 5 {
+            r.slices = (1..8).map(|k| k * 2500).collect();
+        }
         // Some at the project tempo: repitched, or stretched (no copy is
         // made here, so those repitch too).
         r.warp = match i % 4 {
@@ -450,7 +455,7 @@ fn render_and_events_never_allocate() {
             block * 13 % 128,
             Event::PadLive {
                 pad: (block % 20) as u8,
-                field: PadField::ALL[(block % 8) as usize],
+                field: PadField::ALL[block as usize % PadField::COUNT],
                 value: live_value(block),
             },
         );
@@ -466,7 +471,7 @@ fn render_and_events_never_allocate() {
         if block % 11 == 5 {
             e.apply(Event::PadLive {
                 pad: (block % 20) as u8,
-                field: PadField::ALL[(block / 11 % 8) as usize],
+                field: PadField::ALL[(block / 11) as usize % PadField::COUNT],
                 value: f32::NAN,
             });
         }
@@ -560,9 +565,9 @@ fn live_value(block: u32) -> f32 {
 
 /// Several kits from one pool ([`Engine::with_kits`]), as a kit per track
 /// plays: hits and lifts on every kit, stealing across them, each kit's
-/// live settings and locks, swapping and editing one kit's view while the
-/// others play, and the master effect following another kit, rendered
-/// routed and mixed. None of it allocates or frees.
+/// live settings and locks (a slice among them), swapping and editing one
+/// kit's view while the others play, and the master effect following
+/// another kit, rendered routed and mixed. None of it allocates or frees.
 #[test]
 fn kits_never_allocate() {
     let rate = 44_100;
@@ -589,6 +594,9 @@ fn kits_never_allocate() {
                 mode: LoopMode::Forward,
             });
             r.tune_cents = (i as i32 - 4) * 100 + seed as i32;
+            if i % 4 == 3 {
+                r.slices = vec![2500, 5000, 7500];
+            }
             let mut pad = Pad::new("p", Layer::new(r));
             pad.mute_group = (i % 4 == 0).then_some(1);
             p.set_pad(i, Some(pad), None).unwrap();
@@ -640,10 +648,20 @@ fn kits_never_allocate() {
             e.schedule_for(
                 (k + 3) % KITS,
                 9,
-                Event::PadLock {
-                    pad,
-                    field: PadField::Cutoff,
-                    value: 800.0 + block as f32,
+                if block % 14 == 0 {
+                    // A slice picked for a step (past the last one on
+                    // some: the hit is silent).
+                    Event::PadLock {
+                        pad,
+                        field: PadField::Slice,
+                        value: (block % 6) as f32,
+                    }
+                } else {
+                    Event::PadLock {
+                        pad,
+                        field: PadField::Cutoff,
+                        value: 800.0 + block as f32,
+                    }
                 },
             );
             e.schedule_for(

@@ -320,6 +320,8 @@ pub fn sound_region(old: Option<&Region>, id: SourceId, frames: u64) -> Region {
             start: 0,
             end: frames,
             sustain_loop: None,
+            // Another sound's slices don't fit this one.
+            slices: Vec::new(),
             ..o.clone()
         },
         None => Region {
@@ -337,6 +339,7 @@ pub fn sound_region(old: Option<&Region>, id: SourceId, frames: u64) -> Region {
             grain: GrainParams::default(),
             grain_mode: GrainMode::Cloud,
             warp: None,
+            slices: Vec::new(),
         },
     };
     (r.fade_in, r.fade_out) = (Fade::NONE, Fade::NONE);

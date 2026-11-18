@@ -801,6 +801,7 @@ fn visit_region<F: Fields>(f: &mut F, r: &mut Region) {
         grain,
         grain_mode,
         warp,
+        slices,
     } = r;
     f.num("start", start);
     f.num("end", end);
@@ -851,6 +852,8 @@ fn visit_region<F: Fields>(f: &mut F, r: &mut Region) {
             .map(|(frame, beat)| Pin { frame, beat })
             .collect();
     });
+    // R4: a sliced region's boundaries (an older build plays it whole).
+    f.list("slices", slices);
 }
 
 /// A layer, but for its region's source.
@@ -896,6 +899,7 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
         key_fade,
         vel_fade,
         vintage,
+        slice,
     } = p;
     f.text_field("name", name);
     f.word("select", select, SELECTS);
@@ -945,4 +949,5 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
     f.num("key_fade", key_fade);
     f.num("vel_fade", vel_fade);
     f.flag("vintage", vintage);
+    f.num("slice", slice);
 }
