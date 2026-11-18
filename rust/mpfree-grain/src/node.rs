@@ -26,6 +26,7 @@ use mpfree_node::{
     Ctx, Curve, Held, HeldStep, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Unit,
 };
 
+use crate::filter::{FilterKind, GrainFilter, CUTOFF_MAX_HZ, CUTOFF_MIN_HZ};
 use crate::fx::GrainFx;
 use crate::voice::{Budget, Params, SprayShape};
 use crate::window::Window;
@@ -63,10 +64,23 @@ pub mod param {
     /// each repeat is, a half note to a 32nd ([`super::REPEAT_BEATS`],
     /// [`crate::GrainFx::start_repeat`]).
     pub const REPEAT: u16 = 17;
+    /// Each grain's filter: Off, Low pass, Band pass or High pass
+    /// ([`super::FILTER_NAMES`], [`crate::GrainFilter`]).
+    pub const FILTER: u16 = 18;
+    /// The filter's cutoff, Hz.
+    pub const CUTOFF: u16 = 19;
+    /// The filter's resonance, per cent (Q 0.71 to 12).
+    pub const RESONANCE: u16 = 20;
+    /// How far each grain's cutoff lands from the cutoff, per cent (100:
+    /// three octaves either way).
+    pub const FILTER_SPRAY: u16 = 21;
 }
 
 /// Parameters, counting the meter's id.
-const COUNT: usize = 18;
+const COUNT: usize = 22;
+
+/// The filter's choices, as the page shows them.
+pub const FILTER_NAMES: &[&str] = &["Off", "Low pass", "Band pass", "High pass"];
 
 /// Repeat's choices, as the page shows them.
 pub const REPEAT_NAMES: &[&str] = &["Off", "1/2", "1/4", "1/8", "1/16", "1/32"];
@@ -268,6 +282,46 @@ static PARAMS: [ParamInfo; COUNT] = [
         Unit::None,
         Curve::Choice(REPEAT_NAMES),
     ),
+    p(
+        param::FILTER,
+        "Filter",
+        "Filter",
+        0.0,
+        3.0,
+        0.0,
+        Unit::None,
+        Curve::Choice(FILTER_NAMES),
+    ),
+    p(
+        param::CUTOFF,
+        "Cutoff",
+        "Filter",
+        CUTOFF_MIN_HZ,
+        CUTOFF_MAX_HZ,
+        2000.0,
+        Unit::Hz,
+        Curve::Log,
+    ),
+    p(
+        param::RESONANCE,
+        "Resonance",
+        "Filter",
+        0.0,
+        100.0,
+        0.0,
+        Unit::Percent,
+        Curve::Linear,
+    ),
+    p(
+        param::FILTER_SPRAY,
+        "Filter spray",
+        "Filter",
+        0.0,
+        100.0,
+        0.0,
+        Unit::Percent,
+        Curve::Linear,
+    ),
     ParamInfo {
         id: param::GRAINS,
         name: "Grains",
@@ -306,6 +360,17 @@ fn params_of(v: &[f32; COUNT]) -> Params {
             shape => Window::Shape {
                 shape: shape / 100.0,
             },
+        },
+        filter: GrainFilter {
+            kind: match v[usize::from(param::FILTER)].round() as i32 {
+                1 => FilterKind::Low,
+                2 => FilterKind::Band,
+                3 => FilterKind::High,
+                _ => FilterKind::Off,
+            },
+            cutoff_hz: v[usize::from(param::CUTOFF)],
+            resonance: v[usize::from(param::RESONANCE)] / 100.0,
+            spray: v[usize::from(param::FILTER_SPRAY)] / 100.0,
         },
         ..Params::default()
     }

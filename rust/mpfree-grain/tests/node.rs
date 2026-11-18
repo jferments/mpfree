@@ -2,7 +2,7 @@
 //! through the node interface, and the rules every node keeps.
 
 use mpfree_grain::node::{param, voice_params};
-use mpfree_grain::GrainNode;
+use mpfree_grain::{FilterKind, GrainFilter, GrainNode};
 use mpfree_node::{check_params, Ctx, Held, HeldStep, Kind, Node, NodeEvent, Timed};
 
 const RATE: u32 = 44_100;
@@ -284,6 +284,8 @@ fn its_memory_and_settings_go_out_for_a_capture() {
     n.set_param(param::PITCH, 7.0);
     n.set_param(param::SHAPE, 25.0);
     n.set_param(param::REVERSE, 30.0);
+    n.set_param(param::FILTER, 2.0);
+    n.set_param(param::CUTOFF, 640.0);
     n.set_param(param::FREEZE, 1.0);
     let mut held = Held::new(2, RATE as usize * 9);
     assert_eq!(
@@ -325,4 +327,48 @@ fn its_memory_and_settings_go_out_for_a_capture() {
         cold.copy_held(&mut Held::new(2, 10), 4096),
         HeldStep::Nothing
     );
+}
+
+#[test]
+fn its_filter_reaches_every_grain() {
+    let mut n = node();
+    let filter = |n: &GrainNode| n.fx().unwrap().params().filter;
+    assert_eq!(filter(&n), GrainFilter::default(), "off by default");
+    n.set_param(param::FILTER, 3.0);
+    n.set_param(param::CUTOFF, 5_000.0);
+    n.set_param(param::RESONANCE, 40.0);
+    n.set_param(param::FILTER_SPRAY, 50.0);
+    assert_eq!(
+        filter(&n),
+        GrainFilter {
+            kind: FilterKind::High,
+            cutoff_hz: 5_000.0,
+            resonance: 0.4,
+            spray: 0.5,
+        }
+    );
+    n.set_param(param::CUTOFF, 1.0e6);
+    assert_eq!(n.param(param::CUTOFF), 20_000.0);
+    // A dark filter on a bright input takes its highs away.
+    let mut x = 9u32;
+    let noise: Vec<f32> = (0..RATE as usize)
+        .map(|_| {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (x >> 8) as f32 / (1u32 << 23) as f32 - 1.0
+        })
+        .collect();
+    let bright = |n: &mut GrainNode| {
+        n.set_param(param::MIX, 100.0);
+        let (out, _) = run(n, &noise, 256, &[]);
+        let y = &out[RATE as usize / 2..];
+        let p: f32 = y.iter().map(|v| v * v).sum();
+        let d: f32 = y.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum();
+        d / p
+    };
+    let open = bright(&mut node());
+    let mut dark = node();
+    dark.set_param(param::FILTER, 1.0);
+    dark.set_param(param::CUTOFF, 300.0);
+    let shut = bright(&mut dark);
+    assert!(shut < open / 10.0, "{shut} against {open}");
 }

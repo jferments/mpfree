@@ -168,6 +168,12 @@ fn busy_kit() -> Project {
             target: MotionTarget::Size,
             depth: 0.6,
         },
+        filter: GrainFilter {
+            kind: GrainFilterKind::Band,
+            cutoff_hz: 1_250.0,
+            resonance: 0.6,
+            spray: 0.35,
+        },
     };
     g.grain_mode = GrainMode::Repeat;
     g.grain_keys = GrainKeys {
@@ -202,6 +208,8 @@ fn busy_kit() -> Project {
     m.mix = 0.35;
     m.grain.window = GrainWindow::Shape { shape: 0.85 };
     m.grain.density = 44.0;
+    m.grain.lfo.target = MotionTarget::Cutoff;
+    m.grain.filter.kind = GrainFilterKind::High;
     p.set_master(m, None).unwrap();
     p.set_pads_play(PadsPlay::Levels {
         pad: 5,

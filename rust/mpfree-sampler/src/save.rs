@@ -670,6 +670,13 @@ const MOTION_TARGETS: &[(&str, MotionTarget)] = &[
     ("density", MotionTarget::Density),
     ("pitch", MotionTarget::Pitch),
     ("spray", MotionTarget::Spray),
+    ("cutoff", MotionTarget::Cutoff),
+];
+const GRAIN_FILTERS: &[(&str, GrainFilterKind)] = &[
+    ("off", GrainFilterKind::Off),
+    ("low", GrainFilterKind::Low),
+    ("band", GrainFilterKind::Band),
+    ("high", GrainFilterKind::High),
 ];
 const LFO_SHAPES: &[(&str, LfoShape)] = &[
     ("sine", LfoShape::Sine),
@@ -747,6 +754,7 @@ fn visit_grain<F: Fields>(f: &mut F, g: &mut GrainParams) {
         spray_shape,
         lfo,
         env,
+        filter,
     } = g;
     f.num("position", position);
     f.num("spray", spray);
@@ -809,6 +817,19 @@ fn visit_grain<F: Fields>(f: &mut F, g: &mut GrainParams) {
         f.num("sustain", sustain);
         f.word("target", target, MOTION_TARGETS);
         f.num("depth", depth);
+    });
+    // Saves before the grain filter open with it off.
+    f.scope("filter", |f| {
+        let GrainFilter {
+            kind,
+            cutoff_hz,
+            resonance,
+            spray,
+        } = filter;
+        f.word("kind", kind, GRAIN_FILTERS);
+        f.num("cutoff_hz", cutoff_hz);
+        f.num("resonance", resonance);
+        f.num("spray", spray);
     });
     let none = TempoSync {
         frames_per_beat: 22_050.0,
