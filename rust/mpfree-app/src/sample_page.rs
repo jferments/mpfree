@@ -342,8 +342,6 @@ fn flatten_lift(f: &Flatten) -> FromUi {
     }
 }
 
-/// What a finished take did after its bars, for its log line: "recorded",
-/// with how long it rang out or how it was made a loop.
 /// How a take with `settings` records, for the log: "start now, end
 /// stop, left + right".
 fn take_plan(settings: &rec_tab::RecSettings, sources: &[String]) -> String {
@@ -362,6 +360,8 @@ fn take_plan(settings: &rec_tab::RecSettings, sources: &[String]) -> String {
     )
 }
 
+/// What a finished take did after its bars, for its log line: "recorded",
+/// with how long it rang out or how it was made a loop.
 fn take_what(rec: &Recording) -> String {
     let (Some(cut), Progress::Done { frames }) = (rec.cut_frames(), rec.progress()) else {
         return "recorded".to_string();
