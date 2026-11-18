@@ -26973,6 +26973,223 @@ mod tests {
         assert_eq!(row(&p).line_only.as_deref(), Some(LINE_ONLY));
     }
 
+    /// One-page step 2e (the plan's decision 5): the recorder's Source can
+    /// be the page's pad ("Flatten A5"), which REC plays once at the
+    /// Velocity card's velocity, holds for the Held for card's time and
+    /// records from its channel until it goes quiet, kept where Onto
+    /// says (Stay here: a take on the page); or Auto-sample, which REC
+    /// opens over the page, its second button coming back to it.
+    #[test]
+    fn the_recorders_source_flattens_the_pad_to_a_take_and_opens_auto_sample() {
+        use crate::sampler::RecSource;
+        use mpfree_fx::{CapturePoint, StripId};
+        use mpfree_sampler_ui::recorder::{self, Plays, Recorder, RecorderView};
+        use mpfree_sampler_ui::sample::{feed_input, PAD};
+        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        use mpfree_sampler_ui::{auto_tab, wave_tab};
+        let mut p = sample_sampler(Fonts::embedded());
+        open_sample(&mut p, sample_page::Editor::Wave);
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let row = |p: &Player| -> RecorderView {
+            p.ui.get::<Recorder>(recorder::RECORDER)
+                .unwrap()
+                .view
+                .clone()
+        };
+        let card = |p: &mut Player, index: usize, delta: i32| {
+            ev(p, recorder::RECORDER, EventKind::Step { index, delta });
+        };
+        let sent = |p: &mut Player| {
+            let (views_sent, rest) = views(p.take_actions());
+            for v in views_sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+            rest
+        };
+        // Source › twice: the master, then the page's pad. The sampler
+        // listens to A5's channel, after its inserts (it stays a take).
+        card(&mut p, 0, 1);
+        card(&mut p, 0, 1);
+        p.tick(0.033);
+        let v = row(&p);
+        assert_eq!(v.plays, Plays::Pad);
+        assert_eq!(v.sources[v.settings.source], "Flatten A5");
+        assert_eq!(
+            (v.cannot, v.status.as_str()),
+            (None, "flattens A5 · stays here")
+        );
+        let channel = RecSource::Mix(StripId::Pad(PAD), CapturePoint::BeforeFader);
+        let acts = sent(&mut p);
+        assert!(
+            acts.iter()
+                .any(|a| matches!(a, FromUi::SampleSource(s) if *s == channel)),
+            "{acts:?}"
+        );
+        // The writer goes once the audio thread has the source.
+        let Some(FromUi::SampleInput(Some(mut feed))) = sent(&mut p).pop() else {
+            panic!("the input's writer");
+        };
+        // The Starts and Ends cards are the hit's velocity and hold.
+        card(&mut p, 1, -1);
+        card(&mut p, 2, -1);
+        let s = row(&p).settings;
+        assert_eq!((s.flatten_velocity, s.flatten_hold_ms), (120, 500));
+        // REC: A5 plays at once at 120 and REC waits for its sound.
+        ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
+        assert!(events_log(&p).iter().any(|l| l
+            == "sample: flatten A5 to stay on the page: velocity 120, held 500 ms, from its channel after its inserts"));
+        let v = row(&p);
+        assert!(v.recording && v.waiting);
+        assert_eq!(v.status, "plays A5 · stays here");
+        // While it records the Threshold is the pad's first sound's.
+        p.apply(ToUi::SampleQLink(1, 2));
+        p.apply(ToUi::SampleLift);
+        assert_eq!(row(&p).settings.threshold_db, -30.0, "not turned");
+        p.tick(0.033);
+        let hit = |down| FromUi::SampleHit {
+            kit: 0,
+            pad: PAD,
+            velocity: 120,
+            down,
+        };
+        assert_eq!(sent(&mut p), [hit(true)]);
+        // It sounds for 0.6 s; let go after its 0.5 s hold.
+        feed_input(&mut feed.0, 0.6, 0.5, false);
+        p.tick(0.6);
+        assert_eq!(sent(&mut p), [hit(false)]);
+        assert!(!row(&p).waiting);
+        // A second of silence: kept on the page as a take, one undo step.
+        let edits = p.sample.edits;
+        feed_input(&mut feed.0, 1.2, 0.0, false);
+        p.tick(0.033);
+        let log = events_log(&p);
+        assert!(
+            log.iter()
+                .any(|l| l == "sample: flatten A5 kept on the page"),
+            "{log:?}"
+        );
+        assert!(log
+            .iter()
+            .any(|l| l.starts_with("sample: flatten: Break 92 flat, ")
+                && l.ends_with(" stays on the Sample page")));
+        let take = p.sample.project(0).unwrap().take(0).unwrap();
+        assert_eq!(take.name, "Break 92 flat");
+        assert_eq!(p.sample.edits, edits + 1);
+        assert!(p
+            .sample
+            .project(0)
+            .unwrap()
+            .pad(PAD + 1)
+            .is_none_or(|pd| pd.layers.is_empty()));
+        // The page shows the take: REC flattens a pad, not a take.
+        assert_eq!(p.sample.take_shown().as_deref(), Some("Break 92 flat"));
+        assert_eq!(
+            p.ui.get::<PadBar>(wave_tab::BAR).unwrap().title,
+            "Break 92 flat · new"
+        );
+        let v = row(&p);
+        assert!(!v.recording);
+        assert_eq!(v.cannot.as_deref(), Some(sample_page::FLATTEN_NOT_TAKE));
+        assert_eq!(v.sources[v.settings.source], "Flatten a pad");
+        // Source ›: Auto-sample. Its cards are its page's; REC opens it,
+        // and its second button comes back to the Wave page.
+        card(&mut p, 0, 1);
+        p.tick(0.033);
+        let v = row(&p);
+        assert_eq!(
+            (v.plays, v.status.as_str()),
+            (Plays::Notes, "opens Auto-sample")
+        );
+        assert_eq!(v.cannot, None);
+        let before = row(&p).settings;
+        card(&mut p, 1, 1);
+        assert_eq!(row(&p).settings, before, "Starts is Auto-sample's");
+        ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
+        assert_eq!(p.sample.editor(), sample_page::Editor::Auto);
+        assert_eq!(
+            p.ui.get::<PadBar>(auto_tab::BAR).unwrap().active,
+            wave_tab::TAB
+        );
+        assert_eq!(
+            p.ui.get::<ButtonRow>(auto_tab::BUTTONS).unwrap().labels[1],
+            "Wave"
+        );
+        ev(&mut p, auto_tab::BUTTONS, EventKind::Tab(1));
+        assert_eq!(p.sample.editor(), sample_page::Editor::Wave);
+    }
+
+    /// REC while the recorder flattens the pad: once its sound has begun
+    /// it stops and keeps what recorded (the pad let go), as REC's own
+    /// take does; before that it is called off and nothing is kept.
+    #[test]
+    fn rec_stops_a_flatten_keeping_what_it_recorded_once_its_sound_began() {
+        use mpfree_sampler_ui::recorder;
+        use mpfree_sampler_ui::sample::{feed_input, PAD};
+        let mut p = sample_sampler(Fonts::embedded());
+        open_sample(&mut p, sample_page::Editor::Wave);
+        let ev = |p: &mut Player, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: recorder::RECORDER.into(),
+                kind,
+            })
+        };
+        let sent = |p: &mut Player| {
+            let (views_sent, rest) = views(p.take_actions());
+            for v in views_sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+            rest
+        };
+        for _ in 0..2 {
+            ev(&mut p, EventKind::Step { index: 0, delta: 1 });
+        }
+        p.tick(0.033);
+        sent(&mut p);
+        let Some(FromUi::SampleInput(Some(mut feed))) = sent(&mut p).pop() else {
+            panic!("the input's writer");
+        };
+        let lift = || FromUi::SampleHit {
+            kit: 0,
+            pad: PAD,
+            velocity: 127,
+            down: false,
+        };
+        // Called off before a sound: the pad let go, nothing kept.
+        ev(&mut p, EventKind::Tab(0));
+        p.tick(0.033);
+        assert_eq!(sent(&mut p).len(), 1, "the hit");
+        ev(&mut p, EventKind::Tab(0));
+        assert_eq!(sent(&mut p), [lift()]);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: flatten A5 stopped: nothing kept"));
+        assert!(p.sample.project(0).unwrap().take(0).is_none());
+        // Again, and stopped 0.3 s into its sound: kept on the page.
+        ev(&mut p, EventKind::Tab(0));
+        p.tick(0.033);
+        assert_eq!(sent(&mut p).len(), 1, "the hit");
+        feed_input(&mut feed.0, 0.3, 0.5, false);
+        p.tick(0.3);
+        ev(&mut p, EventKind::Tab(0));
+        assert_eq!(sent(&mut p), [lift()]);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: flatten A5 kept on the page"));
+        assert_eq!(
+            p.sample
+                .project(0)
+                .unwrap()
+                .take(0)
+                .map(|t| t.name.as_str()),
+            Some("Break 92 flat")
+        );
+    }
+
     /// One-page step 2c (the plan's decision 4): the recorder row's Keep
     /// card is Sample Recall in one tap. With the music playing a tap
     /// keeps the last 4 bars of the master, warped, as a new take on the
