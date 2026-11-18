@@ -24,11 +24,15 @@ fn body(r: Rect) -> Rect {
 // ---------------------------------------------------------------- cloud
 
 /// The region's sound with the grain cloud over it: a band where grains
-/// may start (round where the voice reads, spread by the spray), a line at
-/// the position,
-/// and each grain playing now as a short bar where it is reading, brighter
-/// at the top of its window. A tap or drag on it moves the position: it
-/// gives [`EventKind::Value`] with the place across the region, 0 to 1.
+/// may start (round where the voice reads, spread by the spray as it
+/// plays now, its middle fifth stronger when the spray is peaked), a line
+/// at the position, the voice's reading place with the path it took over
+/// the last second along the top (dots, older fainter) and an arrow the
+/// way the scan goes, each grain playing now as a short bar where it is
+/// reading, brighter at the top of its window, and a "thinned" tag while
+/// the cloud wants more grains at once than a voice keeps. A tap or drag
+/// on it moves the position: it gives [`EventKind::Value`] with the place
+/// across the region, 0 to 1.
 pub struct GrainCloud {
     pub title: String,
     pub right: String,
@@ -39,8 +43,21 @@ pub struct GrainCloud {
     /// may stray from it each way (the spray, as a share of the region).
     pub position: f32,
     pub spray: f32,
+    /// The spray as the playing voice has it now (moved by its LFO, its
+    /// envelope or pressure), in place of `spray` while it plays.
+    pub spray_now: Option<f32>,
+    /// Spray peaked at the reading place: most grains start in the middle
+    /// fifth of the band.
+    pub peaked: bool,
+    /// The scan speed set: the arrow's way (none when frozen).
+    pub scan: f32,
     /// Where the voice is reading now (before spray), 0 to 1, while it plays.
     pub playhead: Option<f32>,
+    /// The reading places before it, oldest first ([`GrainCloud::follow`]).
+    trail: Vec<f32>,
+    /// The cloud wants more grains at once than a voice keeps, so the voice
+    /// spaces them out.
+    pub thinned: bool,
     pub grains: Vec<GrainView>,
     /// A grain's length as a share of the region, for the bars' width.
     pub grain_len: f32,
@@ -74,7 +91,12 @@ impl GrainCloud {
             span: (0, 0),
             position: 0.0,
             spray: 0.0,
+            spray_now: None,
+            peaked: false,
+            scan: 0.0,
             playhead: None,
+            trail: Vec::with_capacity(TRAIL),
+            thinned: false,
             grains: Vec::new(),
             grain_len: 0.0,
             caption: String::new(),
@@ -90,6 +112,27 @@ impl GrainCloud {
         self.span = (start, end.max(start + 1));
     }
 
+    /// Where the voice reads now, or None when it stops (which clears the
+    /// path): call it each time the engine reports, about 25 times a
+    /// second, and the path holds the last second.
+    pub fn follow(&mut self, playhead: Option<f32>) {
+        if let Some(h) = self.playhead {
+            if self.trail.len() == TRAIL {
+                self.trail.remove(0);
+            }
+            self.trail.push(h);
+        }
+        if playhead.is_none() {
+            self.trail.clear();
+        }
+        self.playhead = playhead;
+    }
+
+    /// The reading places before the one now, oldest first.
+    pub fn trail(&self) -> &[f32] {
+        &self.trail
+    }
+
     /// The area the sound fills.
     pub fn plot(r: Rect) -> Rect {
         body(r).take_bottom(26).1
@@ -100,6 +143,10 @@ impl GrainCloud {
         ((x - p.x) as f32 / (p.w - 1).max(1) as f32).clamp(0.0, 1.0)
     }
 }
+
+/// Reading places [`GrainCloud`] keeps for its path: a second at the
+/// screen's 25 reports a second.
+pub const TRAIL: usize = 25;
 
 /// A steady small number from `k`, for spreading the grains' bars up and
 /// down the picture.
@@ -127,28 +174,36 @@ impl Widget for GrainCloud {
         // The band grains start in, round where the voice reads (the
         // position, until scanning moves it), wrapping round the ends.
         if self.granular {
-            let band = t.surface.mix(violet, 0.18);
             let centre = self.playhead.unwrap_or(self.position);
-            let lo = centre - self.spray * 0.5;
-            let hi = centre + self.spray * 0.5;
+            let spray = self.spray_now.unwrap_or(self.spray).clamp(0.0, 1.0);
             let x_of = |p: f32| plot.x + (p * plot.w as f32).round() as i32;
-            let mut fill = |a: f32, b: f32| {
-                let (x0, x1) = (x_of(a.clamp(0.0, 1.0)), x_of(b.clamp(0.0, 1.0)));
-                if x1 > x0 {
-                    cx.canvas
-                        .fill_rect(Rect::new(x0, plot.y, x1 - x0, plot.h), band);
+            // A band `width` wide round the centre, wrapping round the ends.
+            let mut band = |width: f32, c: Color| {
+                let mut fill = |a: f32, b: f32| {
+                    let (x0, x1) = (x_of(a.clamp(0.0, 1.0)), x_of(b.clamp(0.0, 1.0)));
+                    if x1 > x0 {
+                        cx.canvas
+                            .fill_rect(Rect::new(x0, plot.y, x1 - x0, plot.h), c);
+                    }
+                };
+                let (lo, hi) = (centre - width * 0.5, centre + width * 0.5);
+                if width >= 1.0 {
+                    fill(0.0, 1.0);
+                } else {
+                    fill(lo, hi);
+                    if lo < 0.0 {
+                        fill(1.0 + lo, 1.0);
+                    }
+                    if hi > 1.0 {
+                        fill(0.0, hi - 1.0);
+                    }
                 }
             };
-            if self.spray >= 1.0 {
-                fill(0.0, 1.0);
-            } else {
-                fill(lo, hi);
-                if lo < 0.0 {
-                    fill(1.0 + lo, 1.0);
-                }
-                if hi > 1.0 {
-                    fill(0.0, hi - 1.0);
-                }
+            band(spray, t.surface.mix(violet, 0.18));
+            if self.peaked && spray > 0.0 {
+                // A peaked spray's offset is an even draw cubed: 58 % of
+                // its grains start in the middle fifth.
+                band(spray * 0.2, t.surface.mix(violet, 0.3));
             }
         }
         // The sound.
@@ -178,10 +233,31 @@ impl Widget for GrainCloud {
             let x = plot.x + (self.position.clamp(0.0, 1.0) * (plot.w - 1) as f32).round() as i32;
             cx.canvas
                 .fill_rect(Rect::new(x - 1, plot.y, 2, plot.h), violet);
+            let x_at = |p: f32| plot.x + (p.clamp(0.0, 1.0) * (plot.w - 1) as f32).round() as i32;
+            // The path the reading place took, along the top: older fainter.
+            let n = self.trail.len();
+            for (k, h) in self.trail.iter().enumerate() {
+                let c = t
+                    .surface
+                    .mix(t.text_dim, 0.25 + 0.75 * (k + 1) as f32 / n as f32);
+                cx.canvas
+                    .fill_rect(Rect::new(x_at(*h) - 1, plot.y + 4, 3, 3), c);
+            }
             if let Some(h) = self.playhead {
-                let x = plot.x + (h.clamp(0.0, 1.0) * (plot.w - 1) as f32).round() as i32;
+                let x = x_at(h);
                 cx.canvas
                     .fill_rect(Rect::new(x, plot.y, 1, plot.h), t.text_dim);
+                // An arrow the way the scan reads, beside the path.
+                if self.scan != 0.0 {
+                    let way = if self.scan > 0.0 { 1 } else { -1 };
+                    for k in 0..5 {
+                        let half = 5 - k;
+                        cx.canvas.fill_rect(
+                            Rect::new(x + way * (2 + k), plot.y + 6 - half, 1, 2 * half - 1),
+                            t.text_dim,
+                        );
+                    }
+                }
             }
             // The grains: a bar each, as long as a grain, brighter while
             // its window is open.
@@ -198,6 +274,19 @@ impl Widget for GrainCloud {
                 let c = t.surface.mix(c, 0.35 + 0.65 * g.level.clamp(0.0, 1.0));
                 let bar = Rect::new(x - w / 2, y - 2, w, 5).intersect(plot);
                 cx.canvas.fill_round_rect(bar, 2, c);
+            }
+            if self.thinned {
+                // More grains wanted at once than a voice keeps.
+                let tag = Rect::new(plot.right() - 92, plot.y + 8, 84, 24);
+                cx.canvas.fill_round_rect(tag, t.radius.min(8), t.warn);
+                cx.text(
+                    FontId::Bold,
+                    t.size_small - 1.0,
+                    tag,
+                    Align::Center,
+                    t.bg,
+                    "thinned",
+                );
             }
         } else if !self.note.is_empty() {
             // A button, not a line: a tap plays the pad as grains.

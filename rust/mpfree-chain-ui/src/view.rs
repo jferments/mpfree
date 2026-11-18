@@ -41,6 +41,10 @@ use crate::notes::{self, NoteAction};
 use crate::picker::{Hit, PickerLayout, PickerView, HOLD};
 use crate::state::{macro_color, ChainState, ParamView, StripList, STRIP_GROUPS};
 
+/// The section widget's `Tab` number for a heading's action (pages are
+/// numbered from 0, far below it).
+const ACTION_TAB: usize = 1 << 16;
+
 /// What a touch on the chain editor meant, for the app to apply.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChainAction {
@@ -51,6 +55,10 @@ pub enum ChainAction {
         slot: usize,
         on: bool,
     },
+    /// Put what insert `slot` holds on a pad: the Grains effect's memory
+    /// (the "Capture ›" in its Hold heading; `Node::copy_held`), where a
+    /// recording would land, playing as grains with its settings.
+    Capture(usize),
     /// Move an insert (`Mixer` `Edit::Move`).
     Move {
         from: usize,
@@ -1204,6 +1212,10 @@ impl ChainView {
                 let mut b = SectionBox::new(&s.key, &s.title, s.job);
                 b.note = s.note.clone();
                 b.link = s.link;
+                if let Some(a) = s.action {
+                    b.link = Some(ACTION_TAB);
+                    b.link_text = Some(format!("{a} ›"));
+                }
                 b.rows = s.rows;
                 b.cards = s
                     .drawings
@@ -1875,6 +1887,12 @@ impl ChainView {
             }
             EventKind::Tab(n) if n < self.state.groups.len() && n != self.state.group => {
                 self.push(ChainAction::Group(n));
+            }
+            // A heading's action: the only one is Capture.
+            EventKind::Tab(ACTION_TAB) => {
+                if let Some(slot) = self.state.selected {
+                    self.push(ChainAction::Capture(slot));
+                }
             }
             _ => {}
         }

@@ -43,7 +43,7 @@
 use mpfree_chain_ui::{ChainAction, ChainState, MacroAction, MacrosState, NoteAction, NotesState};
 use mpfree_fx::{strip_params, Edit, StripId};
 use mpfree_mod::{Change, MacroMap, MapCurve, Row};
-use mpfree_node::{NodeEvent, Timed};
+use mpfree_node::{Held, NodeEvent, Timed};
 use mpfree_notefx::{Fx, Item, TrackFx};
 use mpfree_play::mpfree_param::{Owner, ParamAddr, Strip};
 
@@ -54,7 +54,7 @@ use mpfree_mixer_ui::MixView;
 use crate::app::{App, Effect, View};
 use crate::fxmodes::Switched;
 use crate::gui::ToUi;
-use crate::mixing::{self, MixHost, SLOTS};
+use crate::mixing::{self, Captured, MixHost, SLOTS};
 use crate::modmix::{strip_id, strip_of};
 use crate::time::TimeHost;
 #[cfg(test)]
@@ -627,6 +627,9 @@ impl ChainHost {
                 self.listing = None;
                 return ChainOut::OpenStrip(strip_id(s));
             }
+            // The screen sends a Capture with its buffer, as
+            // `FromUi::Capture` ([`Panels::capture`]); bare, nothing.
+            ChainAction::Capture(_) => {}
         }
         ChainOut::Shown
     }
@@ -1266,6 +1269,21 @@ impl Panels {
             }
             ChainOut::Refused(why) => vec![Effect::Tell(format!("chain: {why}"))],
         }
+    }
+
+    /// The chain editor's Capture on insert `slot` of the chain it shows
+    /// (`FromUi::Capture`): the copy starts on the mixer
+    /// ([`MixHost::capture`]); a box that can't go comes back with why.
+    pub fn capture(
+        &mut self,
+        mix: &mut MixHost,
+        slot: usize,
+        held: Box<Held>,
+    ) -> Result<(), (Box<Held>, Captured)> {
+        let Some(h) = self.chain.as_ref() else {
+            return Err((held, Captured::Gone));
+        };
+        mix.capture(h.sid(), slot, held)
     }
 
     /// A Q-Link took the knob learn was armed for.

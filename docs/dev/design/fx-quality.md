@@ -684,7 +684,12 @@ What changed (design: [fx-dynamics.md](fx-dynamics.md#transient-shaper); decisio
 | G1 | `level[..., defaults]/offset_lu` | within 1 LU | The defaults against the source |
 | G11 | `tone[A2, A4, B5]/pitch_cents` | within 5 cents | Short regular grains of one spot of the pad, four cycles long, at the note's density: the spectrum's peak near the note (65536-point transform, parabolic) against the note (step B5) |
 | G12 | `hits[drums, half speed or double speed]/pre_db`, `attack_ms`, `flam_db` | ≤ -24 dB; ≤ 1 ms; ≤ 3 dB | White-noise bursts from silence every 0.25 s, each decaying 40 ms, stretched as Stretch sets it (90 ms, 45 a second, regular, from the start) to half and double speed with the bursts' starts as hits; the medians over the hits of: the loudest millisecond in the 30 ms before each hit's time against the hit's; from its time until the level first reaches half the hit's, in half milliseconds; the largest rise of the level (4 ms, a millisecond at a time) over its lowest since the hit's peak, in the next 60 ms. The loudness against the drums' and the same without hits are shown (step B5) |
+| G13 | `move[...]/level_change_lu`, `extra_swing_db` | within 1 LU; 3 dB | A sprayed cloud (80 ms, 80 a second, spray 0.3) on pink and the pad moved by its LFO (a 0.5 Hz sine) on position (full depth), size, density, pitch (half depth) and spray (from 0.5, full), or by its envelope on size (0.5 s up, 1 s down to half): the loudness against the cloud unmoved, and how much further its level (400 ms windows every 100 ms) swings over two cycles (step B3) |
 | G1 | `vary[...]/level_change_lu` | within 1 LU | Full size spray, full level spray and peaked spray, each against the same cloud without it (40 a second, spray 0.3), on pink and the pad (step B1) |
+| G14 | `preset[...]/level_change_lu` | within 1.5 LU (the stutter: of -4) | Each grain preset (`mpfree_sampler::grain_presets`) on pink and the pad at the lab's position: the loudness against the default cloud's there. The stutter's grains fill half of each sixteenth with their fades, so it sits about 4 LU down (step B6) |
+| G16 | `repeat[pink, 1/4 and 1/16]/level_change_db`; `repeat[tone 110 Hz, 1/4 and 1/16]/join_step_ratio` | within 0.5 dB; 1.5 | The Grains effect fully dry at 120 BPM, repeating a quarter note and a sixteenth from 2 s: on pink, the level from half a second on against the stretch of pink it repeats; on a 110 Hz tone at -20 dBFS, the biggest step from one sample to the next within 10 ms of each join against the tone's own (a cut with no fade jumps up to 140 times as far) (step C2) |
+| G17 | `filter[pink, low pass and high pass 1 kHz]/stop_db`, `pass_db`; `filter[pink, band 1 kHz, Q 12, full spray]/octave_spread_db`; `filter[pink, low pass 1 kHz, Q 12]/peak_gain_db` | ≤ -20 dB, within 0.5 dB; 3 dB; 12 dB | The default cloud on pink with each grain's low pass and high pass at 1 kHz (no resonance): the level two octaves past the cutoff (4 kHz and 250 Hz, ±1/6 octave) and two octaves inside it against the same cloud unfiltered. A band pass at 1 kHz, full resonance and full spray, on a cloud reading all over the pink (spray 0.5, 8 s): how far apart its levels at 250 Hz, 1 kHz and 4 kHz (an octave each) are against the cloud unfiltered. A low pass at 1 kHz at full resonance: its sample peak against the unfiltered cloud's. The sprayed band's loudness is shown (step C4) |
+| G15 | `feedback[pink -14 dBFS, full]/peak_dbfs`, `growth_db` | 3 dBFS; 1 dB | The Grains effect (`GrainFx`, 2 s of memory, fully wet, reading half way back, spray 0.1) on 4 s of pink at -14 dBFS RMS (peaks near full scale) then 16 s of silence, at full feedback: the sample peak, and how far the level rises from seconds 8-12 to 16-20. The level held (seconds 16-20) and, at half feedback, how fast the trail falls (seconds 5-7 to 14-16) are shown (step C1) |
 | G2 | `coherent[pink, overlap N]/stretch_over_sprayed_lu` | within 1.5 LU | A granular time stretch (scan 1, no spray) against the same cloud sprayed, at overlaps 16 (200 ms) and 64 (400 ms) |
 | G3 | `smooth[...]/ripple_db`, `modulation_db` | 0.5 dB, -40 dB | The DC level through the grains: largest over smallest, and the RMS of the change against the mean; at the defaults (overlap 1.6) and with each window at overlap 2, including the Shape knob's square, triangle, swell and pluck (step B2). The exponential window is percussive on purpose: shown, not kept |
 | G3 | `smooth[defaults, 1 kHz]/sideband_db` | -40 dB | The first grain-rate sideband (1 kHz ± the density, ±3 Hz) of a held sine against the tone, from a 65536-point transform (0.7 Hz bins). Until step A3 it used 8192 points, whose window's main lobe (±21.5 Hz) let the tone itself into the band: the -16.4 and -20.9 dB there were mostly the tone. `flutter_db`, the held sine's 10 ms level against its mean, is shown, not kept |
@@ -782,6 +787,47 @@ Part 4, Stretch keeps hits (`GrainSource::next_hit`, `GrainVoice::render` "Hits"
 
 - **G12 met:** half speed, the 30 ms before a hit -70.8 dB under it (without hits +2.4: every grain reading ahead plays it early, louder than the hit itself); double speed, half the hit's level 0.5 ms after its time (without hits 20.0 ms: the grains reach it one by one); no second attack (1.9 and 0.4 dB). A stretch keeping its hits is 1.4 LU quieter at half speed (its hits are half as many a second, and what a slowed stretch has too little of just before each thins out) and 1.5 LU louder at double speed (twice as many whole hits).
 - **Unchanged:** every other row.
+
+### Step B3: movement per pad (2026-11-17)
+
+Each grain voice has an LFO and an envelope (`mpfree_grain::motion`, `Params::lfo` and `env`), each moving one setting of the grains as they are made: position, size, density, pitch or spray ([sampler architecture, Granular engine](sampler-architecture.md#granular-engine-mpfree-grain), Movement). They are worked out at the start of each 64-frame part of the voice's clock, so a moving cloud renders the same at any period size (`tests/motion.rs`), and the level law plays the moved cloud as any other. New rows: G13.
+
+- **G13 met:** the loudness moves by at most 0.23 LU (the pad with its position swept across the whole sound), and no movement makes the level swing more than 1.3 dB further than the cloud unmoved does (pink with its spray swept from 0 to 1; every other case within 0.4 dB, most a little less than unmoved).
+- **Unchanged:** every other row, bit for bit (with nothing to move, the settings are as set; the LFO's Hold and Drift values come from a random sequence of their own).
+
+### Step B6: presets (2026-11-17)
+
+Eight grain presets (`mpfree_sampler::grain_presets`), each a mode with its settings, key tracking, glide and movement, put on a pad by the Grain list's Preset row; they keep the sound, the position and the level ([sampler architecture, Granular engine](sampler-architecture.md#granular-engine-mpfree-grain), Presets). New rows: G14.
+
+- **G14 met:** every preset within 1.3 LU of the default cloud on pink and the pad (Tape stretch and Sub drone on pink, -1.28 and -1.27, the furthest; Shimmer fifths on the pad +1.07); the stutter 4.43 and 3.66 LU down, its gaps. Grit cloud was 2.2 LU down on pink at first (15 ms grains, 90 a second, half level spray: a sparse cloud keeps its grains' own levels), so it plays 20 ms grains at 100 a second with level spray 0.4 (-0.96 LU).
+- **Unchanged:** every other row, bit for bit (presets are settings; the engine is the same).
+
+### Step C1: Grains effect feedback (2026-11-18)
+
+The Grains effect (`GrainFx`, and the `mpfree.grains` node's Feedback) writes its grains back into its buffer with the input, through a 40 Hz high-pass and a soft saturation that lets back at most half of full scale ([sampler architecture, Granular engine](sampler-architecture.md#granular-engine-mpfree-grain)). New rows: G15.
+
+- **G15 met:** at full feedback a loud input (pink, -14 dBFS RMS) peaks at +2.2 dBFS, and the trail doesn't grow: it falls 2.2 dB from seconds 8-12 to 16-20 and holds near -16.5 dBFS. At half feedback it falls 8.3 dB a second.
+- First try: a ceiling of full scale (knee at half) let a -6 dBFS input peak at +9.6 dBFS (the input's own peaks plus a full-scale loop), so the ceiling is half of full scale.
+- **Unchanged:** every other row, bit for bit (at 0 the buffer holds the input exactly; `tests/fx.rs` checks a feedback of 0 against none).
+
+### Step C2: Grains effect repeat (2026-11-18)
+
+The Grains effect's Repeat (`GrainFx::start_repeat`, the `mpfree.grains` node's Repeat, a choice from a half note to a 32nd) plays the last stretch of the input again and again on the beat grid, in place of the input and the cloud, from a grain voice of its own; one repeat crossfades into the next over 3 ms ([sampler architecture, Granular engine](sampler-architecture.md#granular-engine-mpfree-grain)). New rows: G16.
+
+- **G16 met:** the repeats sit within 0.06 dB of the stretch they repeat (quarter notes -0.02, sixteenths -0.05), and a join steps no further than the tone does (quarter notes 1.0 times, sixteenths 1.4: the fade is 3 ms, a third of the tone's period).
+- First try measured the level against the pink's long-term level, which a 128 ms stretch of pink misses by up to a dB either way, and the joins by their level over the fade, which measures the pink at the slice's two ends rather than the fade; the rows now measure against the stretch itself, and the joins by their steps on a tone.
+- `tests/fx.rs` checks each repeat against the input sample for sample away from the joins, the roll, the 10 ms crossfade back (the input exactly after it at Mix 0), the held memory under a repeat longer than it, and the same output at any period size; `tests/node.rs` checks the start on the grid line and Off on its frame.
+- **Unchanged:** every other row, bit for bit (with Repeat off the effect runs as before).
+
+### Step C4: a filter on each grain (2026-11-18)
+
+Each grain can go through a low, band or high pass of its own (`mpfree_grain::filter`, a trapezoidal state-variable filter with coefficients fixed at the grain's birth), its cutoff sprayed up to three octaves either way, on granular pads and the Grains effect ([sampler architecture, Granular engine](sampler-architecture.md#granular-engine-mpfree-grain)). New rows: G17.
+
+- **G17 met:** two octaves past the cutoff the low pass is 24.5 dB down and the high pass 22.2 dB (the filter's own response is 24.1 and 23.6 dB down there), and two octaves inside both pass within 0.07 dB. Fully sprayed, a band pass at full resonance colours 250 Hz, 1 kHz and 4 kHz within 1.5 dB of each other (even in octaves), 16.6 LU under the open cloud (a Q of 12 passes a twelfth of each octave). A low pass at full resonance peaks 4.0 dB over the open cloud.
+- First try measured the spray's spread on the default cloud, which reads one 80 ms stretch of the pink over and over; that stretch's own spectrum put 250 Hz 6 dB under the rest. The row now reads all over the pink.
+- `tests/grain.rs` checks that a filtered grain still starts and ends at zero, each pass's colour, that a filter set Off (whatever its other settings) plays bit for bit as none, that full resonance on a loud source stays bounded, the spray's spread from grain to grain and that the grains read, pitch and pan as they would unfiltered; `src/filter.rs` checks each pass's response and the resonance peak; `tests/motion.rs` the LFO's sweep in octaves; `tests/node.rs` the effect's four parameters.
+- **Unchanged:** every other row, bit for bit (with the filter off, a grain's reads take the loops they always did, and its cutoff draws come from a sequence of their own).
+- **Cost** (instruction gate, rustc 1.97.0): a new bench case, Grains FX (dense, filtered), the dense case with a sprayed band pass on every grain, counts 629,770 instructions against the unfiltered case's 481,492 (31 % more); every other case stays within the gate's 5 %.
 
 ## Round 5: movement, pitch and voice
 
