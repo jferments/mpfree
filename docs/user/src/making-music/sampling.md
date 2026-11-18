@@ -194,7 +194,7 @@ Kept, the bracket lands on the pad you held if it is empty, or else on the next 
 
 | Control | What it does |
 |---|---|
-| **From** | **Master**, the whole mix as you hear it (its last two minutes), or the recorder's Source ("Line in", or the track or channel the Sample page's **Source** card is on): what came in over its last 1:15, as **Skip back** keeps it. It opens on Master. The Source's choice is faint when there is nothing of it to read (the line input is off: "Line in off: Looper tab, MENU"), or when the Source is the master, which **Master** already is; a tap says so. |
+| **From** | **Master**, the whole mix as you hear it (its last two minutes), or the recorder's Source ("Line in", or the track or channel the Sample page's **Source** card is on): what came in over its last 1:15, as **Skip back** keeps it. It opens on Master. The Source's choice is faint when there is nothing of it to read (the line input is off: "Line in off: Looper tab, MENU"), or when the Source is the master, which **Master** already is; a tap says so. If the line input goes off while it reads it, it goes back to **Master** and says so. |
 | **Length** | 1, 2, 4, 8 or 16 whole bars, ending on the last bar line; or **Free**, a number of seconds ending where Sample Recall opened. |
 | **Lands on** | The pad it keeps onto. Step it to another pad; on a pad that already has a sound it says "replaces its sound". |
 | **Warp** | On: whole bars play in time at the project's tempo. Free always lands as played. |

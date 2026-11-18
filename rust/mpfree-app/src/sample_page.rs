@@ -833,6 +833,9 @@ pub struct SamplePage {
     /// `input` is the master Sample Recall keeps (`recall`), read while
     /// the source is the master: no buffer of its own, nothing to hand back.
     input_shared: bool,
+    /// Times Sample Recall read the Source and its buffer went, so it read
+    /// the master again (a fallback: counted, logged and shown).
+    recall_fallbacks: u32,
     /// The master's last two minutes, always kept (Sample Recall), once
     /// the audio thread has sent its reading end.
     recall: Option<Input>,
@@ -1018,6 +1021,7 @@ impl SamplePage {
             input: None,
             feed: None,
             input_shared: false,
+            recall_fallbacks: 0,
             recall: None,
             feeding: false,
             want_back: false,
@@ -6243,6 +6247,22 @@ impl SamplePage {
             RecallFrom::Master => self.recall.as_ref(),
             RecallFrom::Source => self.input.as_ref().filter(|_| !self.input_shared),
         }
+    }
+
+    /// Sample Recall read the Source and its buffer went, so it reads the
+    /// master again: counted, and its log line (the screen says it too).
+    pub fn recall_fell_back(&mut self) -> String {
+        self.recall_fallbacks += 1;
+        format!(
+            "sample: fallback: Sample Recall's Source ({}) isn't kept now, so it reads the master ({} so far)",
+            self.source_name(),
+            self.recall_fallbacks
+        )
+    }
+
+    /// Times Sample Recall fell back from the Source to the master.
+    pub fn recall_fallbacks(&self) -> u32 {
+        self.recall_fallbacks
     }
 
     /// Sample Recall's From, second choice: the recorder's Source by name,

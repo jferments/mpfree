@@ -10124,7 +10124,7 @@ impl Player {
             let mut rows = crate::cores::rows(&shared.cores);
             rows.extend(crate::parts::rows(&shared.parts));
             let (rss_kb, total_kb, free_kb) = self.debug.memory_kb();
-            let memory = crate::memory::rows(&crate::memory::Held {
+            let mut memory = crate::memory::rows(&crate::memory::Held {
                 samples: self.sample.memory(),
                 loops: (self.looper.memory.used, self.looper.memory.capacity),
                 synth: mpfree_synth::wavetable::factory::factory_bytes(),
@@ -10132,6 +10132,14 @@ impl Player {
                 total_kb,
                 free_kb,
             });
+            let fell = self.sample.recall_fallbacks();
+            if fell > 0 {
+                memory.push((
+                    "Sampler: Recall fell back to the master".to_string(),
+                    format!("{fell}×"),
+                    Tone::Warn,
+                ));
+            }
             DebugPages::set_engines(&mut self.ui, &snap, memory, rows);
         }
     }
@@ -11558,7 +11566,8 @@ impl Player {
             self.refresh_history();
         }
         // Sample Recall open: it follows what it reads as it comes in. The
-        // Source's buffer gone (the line input off): back to the master.
+        // Source's buffer gone (the line input off): back to the master, a
+        // fallback counted, logged and shown (Dev > CPU by engine).
         if let Some(open) = self.recall.as_mut() {
             match self.sample.recall_from(open.page.recall.from) {
                 Some(input) => open.page.tick(&mut self.ui, input, dt.max(0.0)),
@@ -11566,6 +11575,8 @@ impl Player {
                     if let Some(input) = self.sample.recall() {
                         open.page.second = self.sample.recall_second();
                         open.page.switch(&mut self.ui, input, RecallFrom::Master);
+                        let line = self.sample.recall_fell_back();
+                        self.say(line);
                         self.tell(
                             "Sample Recall: the Source isn't kept now, so it reads the master",
                         );
@@ -14792,6 +14803,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         mem_total_kb: Some(1_969_436),
         ..ProcView::default()
     });
+    // One Sample Recall fallback, so the picture shows its row.
+    let _ = eng.sample.recall_fell_back();
     eng.apply(ToUi::Engines(probes.shared()));
     eng.apply(ToUi::Show(View::Engines));
     eng.refresh_engines();
@@ -27808,6 +27821,15 @@ mod tests {
         assert_eq!(
             hint,
             tell_text("Sample Recall: the Source isn't kept now, so it reads the master")
+        );
+        // A fallback: counted and logged as well as said.
+        assert_eq!(p.sample.recall_fallbacks(), 1);
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l
+                == "sample: fallback: Sample Recall's Source (Line in) isn't kept now, \
+                    so it reads the master (1 so far)"),
+            "{log:?}"
         );
         // A step to it now says why, and it stays on the master.
         step(&mut p, 1);
