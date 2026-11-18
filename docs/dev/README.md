@@ -175,6 +175,7 @@ M4 was host-only safety tooling and the [handoff state-machine simulator](../../
 - [Audio runtime](hardware/audio-runtime.md): the live ALSA stream, threads and MIDI routing.
 - [ABI and handoff survey](hardware/abi-handoff-survey.md): userspace ABI, CPU affinity and locked memory.
 - [Ethernet and USB](hardware/ethernet-usb.md): gigabit link, USB roles and measured throughput.
+- [USB-B: MPFree as a USB MIDI device](hardware/usb-b-midi.md): the USB-B socket to a computer, and the read-only check for the next device round (2026-11-18).
 - [Audio and MIDI implementation survey](hardware/audio-midi-survey.md): device tree, ALSA, IRQs, RT limits and USB MIDI descriptors (2026-11-09).
 - [MIDI activity map](hardware/midi-activity-map.md): which internal MIDI port carries pads, knobs and buttons.
 - [Controller protocol](hardware/controller-protocol.md): the internal controller's USB-MIDI messages, observed with passive usbmon.

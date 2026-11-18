@@ -687,6 +687,10 @@ pub struct Settings {
     pub loop_latency: u32,
     pub loop_latency_set: bool,
     pub loop_level_db: f32,
+    /// The looper's options "Tempo from the first loop": with the song
+    /// stopped, a first loop recorded on Free length sets the tempo (and
+    /// starts the song) when it closes. Off by default; kept in Prefs.
+    pub loop_tempo: bool,
     /// Prefs > Appearance: the theme in use, a built-in name (see
     /// [`THEMES`]); `--theme` can also set a theme file for one run.
     pub theme: String,
@@ -766,6 +770,7 @@ impl Default for Settings {
             loop_latency: crate::looping::estimated_latency(3),
             loop_latency_set: false,
             loop_level_db: 0.0,
+            loop_tempo: false,
             theme: "default".to_string(),
             sound_cores: SoundCores::Shared,
             loop_memory: LoopMemory::default(),
@@ -852,6 +857,8 @@ pub enum Item {
     LoopBars,
     LoopLatency,
     LoopLevel,
+    /// The looper's options: tempo from the first loop, on or off.
+    LoopTempo,
     /// Prefs and the looper's options: the looper's size from the next
     /// start.
     LoopMemory,
@@ -944,6 +951,20 @@ pub struct Status {
     /// COPY held: on Arrange, a tap on a clip copies it and a tap on an
     /// empty slot pastes the copy (sequencer S3).
     pub copy: bool,
+}
+
+/// What Sample Recall is asked (sampler R5 part 2, sampler decision 3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecallKey {
+    /// A pad held + SHIFT + REC: open over the page on the kit's pad
+    /// `pad` (a kit pad, 0 to 127).
+    Open { pad: usize },
+    /// PLAY while it is open: hear the bracket.
+    Audition,
+    /// REC while it is open: keep the bracket on its pad.
+    Keep,
+    /// STOP while it is open: close it (the transport plays on).
+    Close,
 }
 
 /// Jay's wheel navigation (live test 2, 13 Nov) on a page with rows: the
@@ -1104,6 +1125,20 @@ pub enum Effect {
     /// armed ([`crate::rec_arm`], sequencer decision 1). The desk finds the
     /// transport and the looper as they are and carries it out.
     Rec(crate::rec_arm::Press),
+    /// REC (without SHIFT) while kit pads are held (the kit's pads, in
+    /// pad order): the audio loop, which knows which pads have a sound,
+    /// gives [`Effect::PadArm`] for the first empty one (sampler R5.7), or
+    /// [`Effect::Rec`] as for REC alone.
+    PadRec(Vec<usize>),
+    /// Arm a pad take onto pad `pad` of the sampler's kit `kit`
+    /// ([`crate::rec_arm::RecArm::arm_pad`]).
+    PadArm {
+        kit: usize,
+        pad: usize,
+    },
+    /// To the Sample tab's recorder, for the pad take
+    /// ([`crate::rec_arm::PadDo`]).
+    PadTake(crate::rec_arm::PadDo),
     /// What the arp screens show: the panel, the quick band and the chip.
     Arp(ArpView),
     /// The arp's pattern list (names and patterns), when it changes.
@@ -1184,6 +1219,10 @@ pub enum Effect {
     /// SHIFT + BROWSE: save the project (the audio loop gathers its
     /// engines' parts and the screen saves them).
     SaveProject,
+    /// Sample Recall (sampler R5 part 2): a pad held + SHIFT + REC opens
+    /// it on that pad; while it is open PLAY auditions, REC keeps and STOP
+    /// closes ([`RecallKey`]).
+    Recall(RecallKey),
     /// The metronome on or off, and its level in dBFS (SHIFT + PLAY
     /// START, Play's options, and at the start from the saved settings).
     Metronome {
@@ -1398,6 +1437,12 @@ pub struct App {
     /// A list or pad over the page is open (the number pad, the undo
     /// history): the wheel, its push and - / + go to it.
     overlay: bool,
+    /// Sample Recall is open over the page: PLAY, REC and STOP are its
+    /// ([`crate::gui::FromUi::Recall`]).
+    recall_open: bool,
+    /// The pad slot pressed last while the pads play the kit, for Sample
+    /// Recall's held pad.
+    kit_last: Option<usize>,
     /// A finger rests on a control with a value: the wheel and - / + turn
     /// it, and the push does nothing ([`crate::gui::FromUi::Held`]).
     held: bool,
@@ -1559,6 +1604,8 @@ impl App {
             lights_shown: Self::startup_transport_lights(),
             undo_ready: false,
             overlay: false,
+            recall_open: false,
+            kit_last: None,
             held: false,
             outline: false,
             pad_layout: None,
@@ -1728,6 +1775,40 @@ impl App {
     /// ([`crate::gui::FromUi::Overlay`]).
     pub fn set_overlay(&mut self, on: bool) {
         self.overlay = on;
+    }
+
+    /// The screen opened (true) or closed Sample Recall
+    /// ([`crate::gui::FromUi::Recall`]): PLAY, REC and STOP are its while
+    /// it is open.
+    pub fn set_recall(&mut self, on: bool) {
+        self.recall_open = on;
+    }
+
+    /// Sample Recall is open over the page.
+    pub fn recall_open(&self) -> bool {
+        self.recall_open
+    }
+
+    /// The kit pad a pad held + SHIFT + REC opens Sample Recall on (sampler
+    /// decision 3): the one pressed last of those held while the pads play
+    /// the kit. None while they are steps (STEP SEQ), mute keys (TRACK
+    /// MUTE), levels or transpose (16 LEVEL), loop keys or the synth's
+    /// notes: SHIFT + REC is Capture there, as with no pad held (the
+    /// sequencer thread, 18 Nov).
+    pub fn recall_pad(&self) -> Option<usize> {
+        if self.pad_layout.is_some()
+            || self.step_pads().is_some()
+            || self.levels_on
+            || self.pads_mute()
+            || self.pads_are_loop_keys()
+        {
+            return None;
+        }
+        let held = |slot: usize| self.kit_held.get(slot).copied().flatten();
+        self.kit_last
+            .and_then(held)
+            .or_else(|| self.kit_held.iter().flatten().next().copied())
+            .map(usize::from)
     }
 
     /// The screen says whether a finger rests on a control with a value
@@ -1998,6 +2079,26 @@ impl App {
     /// held (a pad solos its track).
     pub fn pads_mute(&self) -> bool {
         self.mute_keys != MuteKeys::Off || self.mute_hold.is_some()
+    }
+
+    /// The kit pads held now, in pad order, while the pads play the kit
+    /// (not the synth's layouts, STEP SEQ, TRACK MUTE, 16 Levels or the
+    /// loop keys): REC with an empty one held arms a pad take (sampler
+    /// R5.7).
+    pub fn held_kit_pads(&self) -> Vec<usize> {
+        if self.pad_layout.is_some()
+            || self.pads_are_steps()
+            || self.pads_mute()
+            || self.levels_on
+            || self.pads_are_loop_keys()
+        {
+            return Vec::new();
+        }
+        self.kit_held
+            .iter()
+            .flatten()
+            .map(|&k| usize::from(k))
+            .collect()
     }
 
     /// The pads transpose the armed track (16 Levels' Transpose kind,
@@ -2413,6 +2514,24 @@ impl App {
             return self.copy_button(true);
         }
         let shift = self.shift;
+        if self.recall_open {
+            // Sample Recall over the page: PLAY auditions, REC keeps, STOP
+            // closes it, and the music plays on (the sequencer thread's OK,
+            // 18 Nov). SHIFT + REC goes on as ever: Capture.
+            let key = if note == button::PLAY {
+                Some(RecallKey::Audition)
+            } else if Some(note) == self.map.rec && !shift {
+                Some(RecallKey::Keep)
+            } else if note == button::STOP {
+                Some(RecallKey::Close)
+            } else {
+                None
+            };
+            if let Some(k) = key {
+                fx.push(Effect::Recall(k));
+                return fx;
+            }
+        }
         if note == button::FULL_LEVEL {
             let want = if shift {
                 PadLevel::Half
@@ -2427,8 +2546,13 @@ impl App {
             fx.extend(self.set_pad_level(level));
         } else if note == button::STOP {
             fx.extend(self.fill_off());
-            if self.rec.ready.is_some() {
+            if self.rec.ready.is_some() || self.rec.pad.is_some() {
                 fx.push(Effect::Rec(crate::rec_arm::Press::Stop));
+            }
+            if self.rec.pad.is_some_and(|p| p.recording) {
+                // STOP keeps a pad take; the music plays on (sampler
+                // R5.7, as Sample Recall).
+                return fx;
             }
             if self.timed {
                 fx.push(Effect::Quit);
@@ -2509,6 +2633,12 @@ impl App {
             fx.extend(self.toggle_mixer(shift));
         } else if let Some(e) = self.mode_button(note, shift) {
             fx.extend(e);
+        } else if let (true, true, Some(pad)) =
+            (shift, Some(note) == self.map.rec, self.recall_pad())
+        {
+            // A pad held + SHIFT + REC: Sample Recall onto it, on every
+            // page (sampler decision 3, 16 Nov 2026).
+            fx.push(Effect::Recall(RecallKey::Open { pad }));
         } else if shift && Some(note) == self.map.rec && self.view == View::Looper {
             // SHIFT + REC on the Looper tab: the last bars heard become a
             // loop (the looper's Capture).
@@ -2518,10 +2648,21 @@ impl App {
             fx.push(Effect::Time(TimeAction::Capture));
         } else if Some(note) == self.map.rec {
             // REC records what is armed, on every page (sequencer
-            // decision 1).
-            fx.push(Effect::Rec(crate::rec_arm::Press::Rec));
+            // decision 1); with an empty kit pad held, one take onto it
+            // (sampler R5.7).
+            let held = self.held_kit_pads();
+            fx.push(if held.is_empty() {
+                Effect::Rec(crate::rec_arm::Press::Rec)
+            } else {
+                Effect::PadRec(held)
+            });
         } else if Some(note) == self.map.overdub {
             fx.push(Effect::Rec(crate::rec_arm::Press::Overdub));
+        } else if !shift && Some(note) == self.map.undo && self.rec.pad.is_some_and(|p| p.recording)
+        {
+            // UNDO while a pad take records throws it away, on every page.
+            fx.push(Effect::Undo { redo: false });
+            fx.push(Effect::UndoButton(true));
         } else if self.view == View::Looper && Some(note) == self.map.undo {
             fx.extend(self.looper_tap(if shift {
                 crate::looper_page::B_REDO
@@ -3096,8 +3237,9 @@ impl App {
     fn show(&mut self, v: View) -> Vec<Effect> {
         self.menu_editing = false;
         // The screen closes a list or pad over the page when the page
-        // changes.
+        // changes, and Sample Recall with it.
         self.overlay = false;
+        self.recall_open = false;
         let was_editing = std::mem::take(&mut self.page_editing);
         if self.view != v
             && matches!(
@@ -3637,6 +3779,7 @@ impl App {
                 Item::LoopBars,
                 Item::LoopLatency,
                 Item::LoopLevel,
+                Item::LoopTempo,
                 Item::LoopMemory,
             ],
             (_, View::Debug | View::Perf | View::Engines | View::Procs | View::Map) => {
@@ -3799,6 +3942,10 @@ impl App {
                 ),
             ),
             Item::LoopLevel => ("Loop level", format!("{:+.0} dB", s.loop_level_db)),
+            Item::LoopTempo => (
+                "Tempo from the first loop",
+                if s.loop_tempo { "On" } else { "Off" }.to_string(),
+            ),
             Item::LoopMemory => (
                 "Loop memory",
                 if s.loop_memory == self.loop_memory_now {
@@ -4027,6 +4174,15 @@ impl App {
             Item::LoopLevel => vec![
                 "The loop's playback level, -24 to +6 dB.",
                 "0 dB plays it as it was recorded.",
+            ],
+            Item::LoopTempo => vec![
+                "On: with the song stopped, the first loop",
+                "on Free length records in your own time, and",
+                "its length sets the tempo when REC closes it:",
+                "the bars that make 80 to 160 BPM. The song",
+                "starts at that tempo as the loop comes round.",
+                "Not while another device's clock leads, the",
+                "song has more than one tempo, or an export runs.",
             ],
             Item::LoopMemory => vec![
                 "How much sound the loops can hold, all",
@@ -4499,6 +4655,7 @@ impl App {
                     LoopCommand::SetLatency(s.loop_latency_now()),
                 )));
             }
+            Item::LoopTempo => s.loop_tempo = d > 0,
             Item::LoopLevel => {
                 s.loop_level_db = (s.loop_level_db + d as f32).clamp(-24.0, 6.0);
                 fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetLevel(
@@ -5301,6 +5458,41 @@ mod tests {
             notes.iter().any(|n| n.contains("sound-cores = four")),
             "{notes:?}"
         );
+    }
+
+    /// Looper redesign step 4c: the Looper tab's options turn Tempo from
+    /// the first loop on and off (off at first), kept between starts.
+    #[test]
+    fn tempo_from_the_first_loop_is_in_the_looper_options_and_kept() {
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.open_tab(View::Looper);
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Options);
+        let at = row(&app, Item::LoopTempo);
+        assert_eq!(at, row(&app, Item::LoopLevel) + 1, "before Loop memory");
+        assert_eq!(
+            app.item_text(Item::LoopTempo),
+            ("Tempo from the first loop", "Off".to_string())
+        );
+        assert!(!app.settings.loop_tempo);
+        let fx = app.step_item(at, 1);
+        assert!(app.settings.loop_tempo);
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Settings(s) if s.loop_tempo)));
+        assert_eq!(app.item_text(Item::LoopTempo).1, "On");
+        let kept = app.app_settings();
+        assert_eq!(kept.get_bool("loop-tempo"), Some(true));
+        let mut next = App::new(44_100, false);
+        let notes = next.restore(&kept, &mpfree_store::Settings::default());
+        assert!(next.settings.loop_tempo);
+        assert!(
+            notes[0].contains(", tempo from the first loop on,"),
+            "{notes:?}"
+        );
+        app.step_item(at, -1);
+        assert!(!app.settings.loop_tempo);
     }
 
     /// Live test 2: a minute of loops was too little. Prefs (and the
@@ -8122,6 +8314,59 @@ mod tests {
             .any(|e| matches!(e, Effect::Note(n) if n.contains("bank F"))));
     }
 
+    /// Sampler R5.7: REC with kit pads held asks the audio loop for a pad
+    /// take (it knows which are empty); STOP while one records keeps it
+    /// with the music playing on, and UNDO throws it on every page.
+    #[test]
+    fn rec_with_kit_pads_held_asks_for_a_pad_take() {
+        use crate::rec_arm::{PadTake, Press};
+        let mut app = App::new(44_100, false);
+        app.start();
+        app.set_pad_page(1);
+        app.pad_down(4, 100);
+        app.pad_down(1, 100);
+        assert_eq!(app.held_kit_pads(), [17, 20]);
+        assert_eq!(press(&mut app, button::REC), [Effect::PadRec(vec![17, 20])]);
+        // SHIFT + REC with a kit pad held is Sample Recall onto the first
+        // (sampler R5, layout spec section 6): the past, not a take.
+        app.button(button::SHIFT, true, 0.0);
+        assert_eq!(
+            press(&mut app, button::REC),
+            [Effect::Recall(RecallKey::Open { pad: 17 })]
+        );
+        app.button(button::SHIFT, false, 0.0);
+        // 16 Levels has the pads: REC as alone.
+        app.levels_on = true;
+        assert_eq!(press(&mut app, button::REC), [Effect::Rec(Press::Rec)]);
+        app.levels_on = false;
+        app.pad_up(4);
+        app.pad_up(1);
+        assert_eq!(press(&mut app, button::REC), [Effect::Rec(Press::Rec)]);
+        // A pad take armed: STOP calls it off and stops as usual; while it
+        // records, STOP keeps it and the transport plays on.
+        app.set_rolling(true);
+        app.rec.pad = Some(PadTake {
+            kit: 0,
+            pad: 4,
+            started: true,
+            recording: false,
+        });
+        let fx = press(&mut app, button::STOP);
+        assert_eq!(fx[0], Effect::Rec(Press::Stop));
+        assert!(fx.contains(&Effect::Time(TimeAction::Transport(Command::Stop))));
+        app.rec.pad = app.rec.pad.map(|p| PadTake {
+            recording: true,
+            ..p
+        });
+        assert_eq!(press(&mut app, button::STOP), [Effect::Rec(Press::Stop)]);
+        // UNDO throws it, on the Sample tab too (not the kit's undo).
+        app.open_tab(View::Sample);
+        assert_eq!(
+            press(&mut app, button::UNDO),
+            [Effect::Undo { redo: false }, Effect::UndoButton(true)]
+        );
+    }
+
     /// The device as it starts on a fresh stick: no saved map, no Map
     /// controls. REC, OVERDUB, UNDO and PLAY START must work and light on
     /// their real numbers (the bug Jay hit three times: the tests gave them
@@ -8732,5 +8977,56 @@ mod tests {
         assert!(app.save_dirty, "the toggle is saved");
         let fx = held(&mut app, SHIFT, |a| press(a, 93));
         assert_eq!(fx[0], Effect::Metronome { on: false, db: -24 });
+    }
+
+    /// Sample Recall (sampler R5 part 2): a kit pad held + SHIFT + REC
+    /// opens it on any page; while it is open PLAY, REC and STOP are its,
+    /// and SHIFT + REC alone is still Capture. With STEP SEQ on, a held pad
+    /// is a step, so SHIFT + REC stays Capture (the sequencer thread's
+    /// condition, 18 Nov).
+    #[test]
+    fn a_pad_held_with_shift_rec_opens_sample_recall_and_it_takes_play_rec_and_stop() {
+        const SHIFT: u8 = button::SHIFT;
+        let mut app = ready();
+        app.set_pad_layout(None);
+        app.open_tab(View::Arrange);
+        app.pad_down(5, 100);
+        assert_eq!(app.recall_pad(), Some(5));
+        assert_eq!(
+            held(&mut app, SHIFT, |a| press(a, 90)),
+            [Effect::Recall(RecallKey::Open { pad: 5 })]
+        );
+        app.pad_up(5);
+        assert_eq!(app.recall_pad(), None);
+        // The screen opened it.
+        app.set_overlay(true);
+        app.set_recall(true);
+        assert_eq!(
+            press(&mut app, button::PLAY),
+            [Effect::Recall(RecallKey::Audition)]
+        );
+        assert_eq!(press(&mut app, 90), [Effect::Recall(RecallKey::Keep)]);
+        assert_eq!(
+            press(&mut app, button::STOP),
+            [Effect::Recall(RecallKey::Close)]
+        );
+        assert_eq!(
+            held(&mut app, SHIFT, |a| press(a, 90)),
+            [Effect::Time(TimeAction::Capture)]
+        );
+        // A change of page closes it: PLAY plays again.
+        app.open_tab(View::Play);
+        assert!(!app.recall_open());
+        assert!(!press(&mut app, button::PLAY)
+            .iter()
+            .any(|e| matches!(e, Effect::Recall(_))));
+        // STEP SEQ: the held pad is a step.
+        click(&mut app, button::STEP_SEQ);
+        app.pad_down(5, 100);
+        assert_eq!(app.recall_pad(), None);
+        assert_eq!(
+            held(&mut app, SHIFT, |a| press(a, 90)),
+            [Effect::Time(TimeAction::Capture)]
+        );
     }
 }

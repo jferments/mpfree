@@ -41,7 +41,8 @@ use mpfree_sampler::engine::{
     PadOut, MAX_GRAINS,
 };
 use mpfree_sampler::model::{
-    GrainParams, Layer, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region, Source, PADS,
+    GrainParams, Layer, Pad, PadKind, PlayMode, PressureRoute, PressureTarget, Project, Region,
+    Source, PADS,
 };
 
 use mpfree_fx::{CapturePoint, StripId};
@@ -98,6 +99,9 @@ pub struct Player {
     peak_grains: usize,
     /// Each kit's project, until the screen thread takes them.
     projects: Vec<Project>,
+    /// What each kit's pads of another kind do ([`pad_routes`]), by kit:
+    /// swapped in with the kit's view, never made or freed here.
+    routes: Vec<Vec<Option<PadRoute>>>,
     /// The empty kit slots kept after the others ([`USER_KITS`]).
     users: std::ops::Range<usize>,
 }
@@ -225,6 +229,44 @@ impl TrackKits {
 pub struct ViewSwap {
     pub kit: usize,
     pub view: Option<EngineView>,
+    /// What the kit's pads of another kind do, by pad ([`pad_routes`]):
+    /// they travel with the view and swap with the ones the player held.
+    pub routes: Vec<Option<PadRoute>>,
+}
+
+/// What a hit on a kit pad of another kind does (the Pads tab's
+/// Instrument and MIDI out pads, the redesign's step 6b): the sampler
+/// plays nothing for it, and the pad player sends it here. Worked out off
+/// the audio thread, which only reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PadRoute {
+    /// One voice of the synth's engine at a note.
+    Voice(crate::synth::Engine, u8),
+    /// Note `note` on `channel` (0 to 15) of the MIDI output named `port`.
+    Midi { port: String, channel: u8, note: u8 },
+}
+
+/// Each of `project`'s pads' [`PadRoute`], one per pad: None for a pad the
+/// sampler plays, and for an Instrument pad whose engine isn't one of the
+/// synth's (the Pads tab says it plays nothing). Allocates.
+pub fn pad_routes(project: &Project) -> Vec<Option<PadRoute>> {
+    (0..PADS)
+        .map(|i| match &project.pad(i)?.kind {
+            PadKind::Sample => None,
+            PadKind::Instrument { engine, note } => {
+                crate::synth::Engine::from_folder(engine).map(|e| PadRoute::Voice(e, *note))
+            }
+            PadKind::MidiOut {
+                port,
+                channel,
+                note,
+            } => Some(PadRoute::Midi {
+                port: port.clone(),
+                channel: channel.saturating_sub(1).min(15),
+                note: *note,
+            }),
+        })
+        .collect()
 }
 
 impl PartialEq for ViewSwap {
@@ -496,12 +538,14 @@ impl Player {
         for (k, view) in views.into_iter().enumerate() {
             engine.set_kit_view(k, view.expect("built above"));
         }
+        let routes = projects.iter().map(pad_routes).collect();
         Ok(Player {
             engine,
             kit: 0,
             sounds,
             peak_grains: 0,
             projects,
+            routes,
             users: first_user..kits.len(),
         })
     }
@@ -570,14 +614,26 @@ impl Player {
         let Some(view) = swap.view.take() else {
             return false;
         };
-        // A chop can put sounds on pads that had none (and undo take them away).
+        if let Some(routes) = self.routes.get_mut(swap.kit) {
+            std::mem::swap(routes, &mut swap.routes);
+        }
+        // A chop can put sounds on pads that had none (and undo take them
+        // away); a pad of another kind plays too.
         if let Some(has) = self.sounds.get_mut(swap.kit) {
+            let routes = &self.routes[swap.kit];
             *has = (0..PADS)
-                .filter(|&p| view.has_pad(p))
+                .filter(|&p| view.has_pad(p) || routes.get(p).is_some_and(Option::is_some))
                 .fold(0, |m, p| m | 1 << p);
         }
         swap.view = Some(self.engine.edit_kit_view(swap.kit, view));
         true
+    }
+
+    /// What a hit on kit `kit`'s pad `pad` does when the sampler plays
+    /// nothing for it: an engine's voice or a note out ([`PadRoute`]).
+    /// Never allocates.
+    pub fn pad_route(&self, kit: usize, pad: usize) -> Option<&PadRoute> {
+        self.routes.get(kit)?.get(pad)?.as_ref()
     }
 
     /// Where the playing kit's voices are. Never allocates.
@@ -861,6 +917,14 @@ impl Player {
         self.engine.set_tempo(bpm);
     }
 
+    /// Where the transport is, in beats, at the start of the coming
+    /// render (None while it is stopped): a pad's LFO synced to the tempo,
+    /// with Retrigger off, keeps to the beats (sampler R5 part 4). Every
+    /// period, with the tempo.
+    pub fn set_beat(&mut self, beat: Option<f64>) {
+        self.engine.set_beat(beat);
+    }
+
     /// Fades every sound out (over a few milliseconds; a Grains pad over its
     /// release).
     pub fn stop_all(&mut self) {
@@ -984,7 +1048,8 @@ pub struct RecFeed(pub Feed);
 
 impl RecFeed {
     /// One period: marks the bar lines the transport's `block` crosses
-    /// (from bar 1 on, not the count-in) at their frames in the buffer,
+    /// (from bar 1 on, not the count-in, each with its bar's number) at
+    /// their frames in the buffer,
     /// `latency` frames later (a point in the mix hears the block that
     /// much late), then appends the period's input. Never allocates, locks
     /// or waits.
@@ -998,7 +1063,10 @@ impl RecFeed {
             let ticks = span.meter.bar_ticks();
             for (tick, offset) in span.lines(ticks) {
                 if tick >= 0 {
-                    self.0.bars.mark(base + u64::from(offset));
+                    // The bar the line starts, numbered from 1 as the
+                    // transport shows it (Sample Recall's bar numbers).
+                    let bar = u32::try_from(tick / ticks.max(1) + 1).unwrap_or(u32::MAX);
+                    self.0.bars.mark_bar(base + u64::from(offset), bar);
                 }
             }
             bar = Some(frames_between(0, ticks, span.bpm, span.rate));
@@ -1370,6 +1438,7 @@ mod tests {
         let mut swap = ViewSwap {
             kit: 3,
             view: Some(EngineView::build(&projects[3], 44_100)),
+            routes: pad_routes(&projects[3]),
         };
         assert!(p.swap_view(&mut swap));
         assert!(p.has_sound(3, 16), "B1 of the new kit");
@@ -1405,6 +1474,7 @@ mod tests {
         let mut swap = Box::new(ViewSwap {
             kit: 0,
             view: Some(EngineView::build(&projects[0], 44_100)),
+            routes: pad_routes(&projects[0]),
         });
         let (ok, calls) = crate::sys::alloc_count::calls(|| p.swap_view(&mut swap));
         assert!(ok);
@@ -1422,12 +1492,14 @@ mod tests {
         let mut other = Box::new(ViewSwap {
             kit: 1,
             view: Some(EngineView::build(&projects[1], 44_100)),
+            routes: pad_routes(&projects[1]),
         });
         assert!(p.swap_view(&mut other));
         assert!(other.view.is_some());
         let mut none = Box::new(ViewSwap {
             kit: 7,
             view: Some(EngineView::build(&projects[1], 44_100)),
+            routes: pad_routes(&projects[1]),
         });
         assert!(!p.swap_view(&mut none));
         assert_eq!(
@@ -1453,6 +1525,7 @@ mod tests {
                 let mut swap = ViewSwap {
                     kit,
                     view: Some(EngineView::build(&projects[kit], 44_100)),
+                    routes: pad_routes(&projects[kit]),
                 };
                 assert!(p.swap_view(&mut swap));
             }
@@ -1493,6 +1566,7 @@ mod tests {
         let mut swap = ViewSwap {
             kit: 0,
             view: Some(EngineView::build(project, 44_100)),
+            routes: pad_routes(project),
         };
         assert!(player.swap_view(&mut swap));
         assert!(player.has_sound(0, empty) && player.hit_at(empty, 100, 0));
@@ -1501,6 +1575,7 @@ mod tests {
         let mut swap = ViewSwap {
             kit: 0,
             view: Some(EngineView::build(project, 44_100)),
+            routes: pad_routes(project),
         };
         assert!(player.swap_view(&mut swap));
         assert!(!player.hit_at(empty, 100, 0));
@@ -1521,6 +1596,7 @@ mod tests {
         let mut swap = ViewSwap {
             kit: 0,
             view: Some(EngineView::build(&projects[0], 44_100)),
+            routes: pad_routes(&projects[0]),
         };
         assert!(player.swap_view(&mut swap));
         assert!(player.has_sound(0, 20));
@@ -1553,6 +1629,7 @@ mod tests {
         let mut swap = ViewSwap {
             kit: 0,
             view: Some(EngineView::build(&projects[0], 44_100)),
+            routes: pad_routes(&projects[0]),
         };
         assert!(player.swap_view(&mut swap));
         assert!(player.key_at(60, 100, 0));
@@ -1749,5 +1826,56 @@ mod tests {
         }
         assert_eq!(inp.bars.bar_frames(), None);
         assert_eq!(inp.bars.count(), 3);
+    }
+
+    /// The Pads tab's pad types go to the audio thread with the kit's
+    /// view: a MIDI out pad's channel as MIDI counts it (1 to 16 is 0 to
+    /// 15), an Instrument pad's engine by its id; a Sample pad, and an
+    /// engine there is none of, route nothing.
+    #[test]
+    fn pad_routes_name_each_pads_voice_or_note_out() {
+        use crate::synth::Engine;
+        use mpfree_sampler::model::PadKind;
+        let mut p = Project::new();
+        let blank = |kind| {
+            let src = Source::new("t", 44_100, 1, vec![0.0; 16]).unwrap();
+            let mut pad = Pad::new("x", Layer::new(Region::whole(&src)));
+            pad.layers.clear();
+            pad.kind = kind;
+            pad
+        };
+        let pads = [
+            PadKind::MidiOut {
+                port: "Volca Kick".into(),
+                channel: 10,
+                note: 36,
+            },
+            PadKind::Instrument {
+                engine: "fm".into(),
+                note: 24,
+            },
+            PadKind::Instrument {
+                engine: "theremin".into(),
+                note: 24,
+            },
+        ];
+        for (i, kind) in pads.into_iter().enumerate() {
+            p.set_pad(i, Some(blank(kind)), None).unwrap();
+        }
+        let routes = pad_routes(&p);
+        assert_eq!(routes.len(), PADS);
+        assert_eq!(
+            routes[..4],
+            [
+                Some(PadRoute::Midi {
+                    port: "Volca Kick".into(),
+                    channel: 9,
+                    note: 36
+                }),
+                Some(PadRoute::Voice(Engine::Fm, 24)),
+                None,
+                None
+            ]
+        );
     }
 }

@@ -19,10 +19,11 @@ The **Play** page shapes how the picked pad sounds each time you hit it:
 - **Layers:** different sounds for soft and hard hits. Drag a layer's edges to set its velocity range.
 - **Envelope:** how the volume rises and falls: **attack**, **hold**, **decay**, **sustain** and **release**. Drag the points on the drawing, or use the Q-Links.
 - **Filter:** darken or thin out the sound. Drag the dot.
+- **Movement:** an LFO that wobbles the pitch, filter, level or pan, and a pitch envelope that drops or rises at each hit.
 
-Its settings come in six **sections**, a button each across the top of the page, with what is in each one written under its name: **Layers**, **Amp**, **Filter**, **Pitch**, **Mod** and **Pad**. Tap one and the page shows that section:
+Its settings come in **sections**, a button each across the top of the page, with what is in each one written under its name: **Layers**, **Amp**, **Filter**, **Pitch**, **Mod**, **Movement** and **Pad**, and **Slices** for a sliced pad (see [Sampling](sampling.md)). Tap one and the page shows that section:
 
-- **Its picture, across the page:** the layer map on Layers, Mod and Pad; the volume envelope over the sound on Amp and Pitch; the filter beside its envelope on Filter; and the keyboard on Pitch and Pad while the pad is a keygroup or the pads play notes.
+- **Its picture, across the page:** the layer map on Layers, Mod and Pad; the volume envelope over the sound on Amp and Pitch; the filter beside its envelope on Filter; the LFO's wave beside the pitch envelope on Movement; and the keyboard on Pitch and Pad while the pad is a keygroup or the pads play notes.
 - **Its controls, in the panel under the picture:** knobs (drag up or down), buttons for a choice, ‹ › selectors, − + steppers and switches, in labelled groups as on a hardware sampler. A finger on a control gives it the wheel and **–** / **+**. The scenes sit beside them on every section.
 - **Q-Links 1 to 4** turn that section's four main settings. The hint line names them.
 
@@ -32,7 +33,8 @@ Its settings come in six **sections**, a button each across the top of the page,
 | **Amp** | the pad's Level and Pan, Attack, Hold, Decay, Sustain and Release | attack, decay, sustain, release |
 | **Filter** | the filter's type, Cutoff, Resonance, and its envelope: Env depth, Env attack, Env decay, Env sustain, Env release | cutoff, resonance, env depth, env decay |
 | **Pitch** | Tune, Wow & flutter, Vintage, and the keys: Keys, Low key, High key, Root key, Key fade | tune, wow, low key, high key |
-| **Mod** | Vel → level, Vel → start, Pressure and its Depth | all four |
+| **Mod** | Vel → level, Vel → start, Vel → cutoff, Vel → pitch, Pressure and its Depth | vel → level, vel → start, pressure, depth |
+| **Movement** | LFO to, LFO wave, LFO rate, LFO depth, Sync to tempo, Retrigger, Pitch env and Pitch decay | LFO rate, LFO depth, pitch env, pitch decay |
 | **Pad** | Polyphony, Mute group, Stops, Also plays, Latch, and the kit's Pads play, Pads from and Levels by | voices, mute group, pads play, pads from |
 
 On a Q-Link, SHIFT turns finer. A setting that has nothing to change right now (the filter's while it is off, the keys' while the pad isn't a keygroup) shows its control and its card faint, and a tap on it says why.
@@ -79,6 +81,26 @@ The **Vintage** switch of the Pitch section turns that off for one pad, its grai
 
 Up to two semitones up, clean and Vintage sound exactly the same: what folds back there is above hearing. Past that, a clean pad takes a little more of the MPC's power for each sound it plays, and a Vintage one doesn't.
 
+### Movement: an LFO and a pitch envelope
+
+{{shot: sample-play-movement | The Movement section: a sine LFO on the pitch at 5 Hz, a vibrato, and a pitch envelope that starts an octave up and drops back over 200 ms.}}
+
+The **Movement** section makes a pad move while it plays, the way the LFO and the pitch envelope of a hardware sampler do. Its picture draws two cycles of the LFO's wave beside the pitch envelope, and says what each does. Both start off.
+
+**The LFO** moves one thing over and over:
+
+- **LFO to** picks what: **Pitch** (a vibrato, up to 12 semitones either way), **Cutoff** (a filter wobble, up to 4 octaves either way, on a pad with a filter), **Level** (a tremolo, down to silence at full depth) or **Pan** (from side to side). **Off** stops it.
+- **LFO wave** is the same set as the Grain page's: **Sine**, **Triangle**, **Saw up**, **Saw down**, **Square**, **Hold** (a new random value each cycle, held) and **Drift** (a new random value each cycle, glided to).
+- **LFO rate** runs from 0.05 to 40 Hz. With **Sync to tempo** on, it is a note length instead, from 4 bars to 1/32, with dotted and triplet values, and follows the project tempo.
+- **LFO depth** says how far, up to 100 % either way: a minus depth moves the other way. At 10 % on Pitch the LFO is a gentle vibrato of just over a semitone.
+- **Retrigger**, at **On**, starts the wave from the top at each hit, so every hit wobbles alike. At **Off**, every hit joins one wave that runs on between hits, and a synced one keeps to the beat while the transport plays: a filter that opens on every bar, whichever hit lands where.
+
+**The pitch envelope** bends each hit: **Pitch env** sets where it starts, up to 24 semitones up or down, and **Pitch decay** how long it takes to come back to the pad's pitch, from 1 ms to 10 s. A few semitones down over 50 ms gives a kick its punch; an octave up over a second makes a riser out of any sound.
+
+Velocity can move the pitch and the filter too, on the **Mod** section: **Vel → pitch** sets how many semitones lower the softest hit plays than the hardest (a minus value plays soft hits higher), and **Vel → cutoff** how much darker a soft hit is, up to 4 octaves at 100 %.
+
+A pad that keeps its pitch (warped to the tempo, or played as grains) doesn't follow the pitch envelope, Vel → pitch or an LFO on Pitch, and those controls show faint. A change to the LFO reaches a sound that is still playing; the pitch envelope and the velocity settings play from the next hit. Scenes morph the LFO depth and the pitch envelope with the rest.
+
 ### Scenes: mangle, morph and go back
 
 {{shot: sample-play-scenes | The scenes on the Play page: A and B stored, the crossfader 40 % of the way to B.}}
@@ -86,7 +108,7 @@ Up to two semitones up, clean and Vintage sound exactly the same: what folds bac
 The **Scenes** group, on the right of the **Play** page's panel on every section, holds two **scenes** of the whole kit, as on the Octatrack:
 
 - **Store A** keeps every pad of the kit as it is now: its sound, trim, level, tune, filter, envelope, everything. **Store B** keeps a second version. Make A, change some pads (tune the snare down, close the hats' filter, push the kick), then make B.
-- The **crossfader** (touch or drag it; it moves once A and B are both stored) morphs the kit from A to B as it plays: each pad's level, pan, tune, filter and envelope times move between their values in A and in B. Settings that are the same in both scenes stay as they are. Sliding it changes nothing in the kit itself, so you can perform with it freely.
+- The **crossfader** (touch or drag it; it moves once A and B are both stored) morphs the kit from A to B as it plays: each pad's level, pan, tune, filter, envelope times, LFO depth and pitch envelope move between their values in A and in B. Settings that are the same in both scenes stay as they are. Sliding it changes nothing in the kit itself, so you can perform with it freely.
 - **Return to A** puts every pad back exactly as A stored it and sets the crossfader to A. Mangle the kit as much as you like, then return. **UNDO** takes the return back.
 
 The scenes are saved with the kit.
@@ -99,7 +121,7 @@ The scenes are saved with the kit.
 
 - **Grains**: how the grains scatter and their shape. **Cloud** (the **Scan** knob moves through the sound on its own; **Spray**, **Size spray**, **Pitch spray**, **Level spray**, **Reverse** and **Stereo** scatter the grains' places, lengths, pitches, levels, directions and sides, and **Spray shape** how; **Timing** how evenly they come; **Level**), and **Shape** (**Mode**, **Grain mode**, the grains' **Shape**, **Pitch quantise** and **Tempo sync**). In a grain mode other than Cloud, the first section takes the mode's name and shows only the controls that mode uses.
 - **Movement**: the **LFO** and the **envelope**, which move the cloud as it plays (see Movement below).
-- **Filter and keys**: the filter on each grain, and what the keys do to a cloud: **Size follows key**, **Scan follows key** and **Glide** (see Filter and Playing a cloud from keys below).
+- **Filter and keys**: the filter on each grain; what the keys do to a cloud, **Size follows key**, **Scan follows key** and **Glide**; and **Quality**, the cloud's colour on the way out (see Filter, Playing a cloud from keys and Quality below).
 - **Presets**: eight starting points, one tap each (see Presets below).
 
 The square, the picture and the Q-Links stay as they are on all four. Touch a control and turn the data wheel to change it, or drag a knob up or down. The wheel walks through the controls of the section that is open.
@@ -134,9 +156,11 @@ The preset that is on stays lit, and the **Presets** button names it, until you 
 
 **Playing a cloud from keys.** In Keys mode, or with **Tune**, a key above the root raises the grains' pitch (on a Tone pad, its note). **Size follows key** also makes the grains that much shorter, so the whole sound moves up as a sampled sound would, its grain texture too; **Scan follows key** makes the scan that much faster, as a tape played faster, so a stretch or a scanning cloud moves through the sound quicker on higher keys. Both start **Off**. **Glide** slides to each new key over its time (Off, or 10 ms to 5 s): on a mono pad (**Polyphony** 1 on the Play page), a key played while another is held moves the cloud that is playing there, without starting it again, and letting go of the first key keeps it playing; with more voices, each new note starts from the last one and slides to its own.
 
-{{shot: sample-grain-filter | Filter and keys: a resonant band pass on each grain, its cutoff sprayed so each grain has its own colour; the grains' size follows the keys, and glide slides between them.}}
+{{shot: sample-grain-filter | Filter and keys: a resonant band pass on each grain, its cutoff sprayed so each grain has its own colour; the grains' size follows the keys, glide slides between them, and Quality is Tape.}}
 
 **Filter.** Each grain can go through a filter of its own, set when it starts. **Filter** picks **Low pass** (darker), **Band pass** (a narrower slice of the sound) or **High pass** (thinner, glassier); **Off**, where new pads start, leaves the grains as they are. **Cutoff** sets where it bites, from 20 Hz to 20 kHz, a sixth of an octave a step, and **Resonance** how much it rings there: a little gives a low pass a vocal edge, a lot makes each grain whistle at the cutoff, and it never runs away. **Filter spray** gives each grain a cutoff of its own, up to three octaves either side, so a cloud sounds like many sounds at once; a Stretch pad doesn't show it, so its grains stay alike. Turn the **LFO to** Cutoff for a sweep each grain catches as it starts. Changing grain mode keeps the filter. The Grains effect has the same filter on its Texture page.
+
+**Quality.** **Quality**, beside Glide, colours the whole cloud on its way out. **Clean**, where every pad starts, leaves it as it is. **Tape** plays it as if off a tape: its pitch wavers a little (a slow wow of about five cents and a faster flutter), loud peaks round off softly, and the very top is a touch duller. **Lo-fi** is cold and digital: the sound runs at about a quarter of the sample rate and 8 bits, so the highs fold back into hard, metallic tones and quiet tails step down in grains of their own. Both keep about the same loudness as Clean, and switching while the pad plays crossfades without a click. Changing grain mode or trying a preset keeps the quality. The Grains effect has the same choice in its Output section.
 
 {{shot: sample-grain-movement | The Movement section: a triangle LFO drifts the position, and the envelope opens the grains' size out after each hit.}}
 

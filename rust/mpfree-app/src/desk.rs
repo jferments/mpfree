@@ -217,6 +217,7 @@ impl Desk<'_> {
             }
             gui::FromUi::UndoReady(ready) => app.set_undo_ready(ready),
             gui::FromUi::Overlay(on) => app.set_overlay(on),
+            gui::FromUi::Recall(on) => app.set_recall(on),
             gui::FromUi::Outline(shown) => app.set_outline(shown),
             gui::FromUi::Held(on) => app.set_held(on),
             gui::FromUi::Tab(k) => fx.extend(app.tab(k)),
@@ -303,6 +304,13 @@ impl Desk<'_> {
                 }
                 out.show(gui::ToUi::Rec(app.rec));
                 fx.extend(rec_effects(done, time, looper));
+            }
+            // The Sample tab's recorder: the pad take records, or ended
+            // (REC records what it did before).
+            gui::FromUi::PadTake(n) => {
+                if app.rec.pad_now(n) {
+                    out.show(gui::ToUi::Rec(app.rec));
+                }
             }
             gui::FromUi::RecPin(on) => {
                 app.rec.pinned = on;
@@ -488,6 +496,40 @@ impl Desk<'_> {
                 later.extend(rec_effects(done, time, looper));
                 out.show(gui::ToUi::Rec(app.rec));
             }
+            // An empty kit pad held + REC (sampler R5.7): one take onto it.
+            app::Effect::PadArm { kit, pad } => {
+                let now = rec_now(time, looper);
+                let done = app.rec.arm_pad(kit, pad, &now);
+                if let Some(p) = app.rec.pad {
+                    out.note(&format!(
+                        "rec: {} of kit {} armed for one take",
+                        p.name(),
+                        kit + 1
+                    ));
+                }
+                later.extend(rec_effects(done, time, looper));
+                out.show(gui::ToUi::Rec(app.rec));
+            }
+            app::Effect::PadTake(d) => out.show(gui::ToUi::PadTake(d)),
+            // Sample Recall opens only while no take is ready, counting in
+            // or recording: REC mid-take punches out, and the overlay
+            // mustn't take that (the sequencer thread, 18 Nov). A pad take
+            // armed or recording holds REC for that take the same way.
+            app::Effect::Recall(app::RecallKey::Open { pad }) => {
+                let now = rec_now(time, looper);
+                if now.taking()
+                    || now.loop_armed
+                    || app.rec.ready.is_some()
+                    || app.rec.pad.is_some()
+                {
+                    let s = "Finish the take first: Sample Recall opens once it stops".to_string();
+                    out.note(&s);
+                    out.show(gui::ToUi::Tell(s));
+                } else {
+                    out.show(gui::ToUi::Recall(app::RecallKey::Open { pad }));
+                }
+            }
+            app::Effect::Recall(k) => out.show(gui::ToUi::Recall(k)),
             app::Effect::Nav(n) => out.show(gui::ToUi::Nav(n)),
             app::Effect::Held { delta, fine } => out.show(gui::ToUi::Held { delta, fine }),
             app::Effect::Menu(m) => out.show(gui::ToUi::Menu(m)),
@@ -559,6 +601,7 @@ impl Desk<'_> {
             | app::Effect::SaveProject
             | app::Effect::TrackSound { .. }
             | app::Effect::SixteenLevels
+            | app::Effect::PadRec(_)
             | app::Effect::Bank { .. }
             | app::Effect::BankLights
             | app::Effect::SavePatterns(_)
@@ -585,6 +628,39 @@ pub fn rec_now(time: &time::TimeHost, looper: &looping::LoopHost) -> crate::rec_
         notes,
         clock: time.waiting_for().map(str::to_string),
     }
+}
+
+/// REC with kit pads held ([`app::Effect::PadRec`]): the first of them
+/// with no sound on the armed track's kit `kit` (None: it plays the
+/// synth) arms a pad take; with none, REC as alone.
+pub fn pad_rec(
+    held: &[usize],
+    kit: Option<usize>,
+    has_sound: impl Fn(usize, usize) -> bool,
+) -> app::Effect {
+    match kit.and_then(|k| held.iter().find(|&&p| !has_sound(k, p)).map(|&p| (k, p))) {
+        Some((kit, pad)) => app::Effect::PadArm { kit, pad },
+        None => app::Effect::Rec(crate::rec_arm::Press::Rec),
+    }
+}
+
+/// Every period, after the transport ran: a pad take waiting for the
+/// music gets its go once the music plays ([`crate::rec_arm::RecArm::rolled`]).
+pub fn pad_rolled(
+    app: &mut app::App,
+    time: &time::TimeHost,
+    looper: &looping::LoopHost,
+    out: &mut Out,
+) -> Vec<app::Effect> {
+    if app.rec.pad.is_none_or(|p| p.started) {
+        return Vec::new();
+    }
+    let done = app.rec.rolled(&rec_now(time, looper));
+    if done.is_empty() {
+        return Vec::new();
+    }
+    out.show(gui::ToUi::Rec(app.rec));
+    rec_effects(done, time, looper)
 }
 
 /// Arm `t` (a page that arms what it shows, a track picked), and tell the
@@ -923,6 +999,7 @@ fn rec_effects(
             Do::Looper(c) => fx.extend(loop_take(c, time, looper)),
             Do::StopWaiting => fx.push(app::Effect::Looper(looping::LoopAction::StopWaiting)),
             Do::ThrowTake => fx.push(app::Effect::Time(mpfree_time_ui::TimeAction::ThrowTake)),
+            Do::Pad(d) => fx.push(app::Effect::PadTake(d)),
             Do::Tell(s) => fx.push(app::Effect::Tell(s)),
             Do::Note(s) => fx.push(app::Effect::Note(s)),
         }

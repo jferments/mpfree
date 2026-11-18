@@ -8,6 +8,7 @@ description = "The sampler's screens for the MPC One: the pad editor's Wave tab 
 
 [dependencies]
 mpfree-analysis = { path = "../mpfree-analysis" }
+mpfree-midi = { path = "../mpfree-midi" }
 mpfree-sampler = { path = "../mpfree-sampler" }
 mpfree-ui = { path = "../mpfree-ui" }
 

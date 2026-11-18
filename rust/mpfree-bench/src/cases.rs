@@ -1167,6 +1167,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| held_pads(rate, 16, false, true)));
     v.push(measured(|| held_pads(rate, 16, true, false)));
     v.push(measured(|| held_pads(rate, 16, true, true)));
+    v.push(measured(|| moving_pads(rate, 16)));
     v.push(measured(|| {
         sampler(
             "Sampler, the 4 granular pads alone",
@@ -1564,6 +1565,25 @@ pub fn all(rate: u32) -> Vec<Case> {
             ],
         )
     }));
+    // The same cloud in Tape and in Lo-fi (step C5).
+    for (name, q) in [
+        ("Grains FX (dense, tape)", 1.0),
+        ("Grains FX (dense, lo-fi)", 2.0),
+    ] {
+        v.push(measured(|| {
+            effect(
+                name,
+                rate,
+                Box::new(GrainNode::new(5)),
+                &[
+                    (mpfree_grain::node::param::MIX, 100.0),
+                    (mpfree_grain::node::param::DENSITY, 200.0),
+                    (mpfree_grain::node::param::SPRAY, 50.0),
+                    (mpfree_grain::node::param::QUALITY, q),
+                ],
+            )
+        }));
+    }
     v.push(measured(|| {
         mixer(
             "Mixer, idle (63 strips, nothing playing)",
@@ -1948,6 +1968,74 @@ fn held_pads(rate: u32, n: usize, up: bool, sixteen: bool) -> Case {
         } else {
             "looping pads held down"
         },
+        block: Box::new(move |b, l, r| {
+            if b == 0 {
+                for pad in 0..n {
+                    e.apply(Event::NoteOn {
+                        pad: pad as u8,
+                        velocity: 100,
+                    });
+                }
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            e.render(l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// The sampler with `n` looping pads held down, as [`held_pads`], each
+/// moving (sampler R5 part 4): half with an LFO on the pitch, half on the
+/// cutoff (the dearer: the filter is set again every 16 frames), every one
+/// with a pitch envelope that starts an octave up and comes back over 2 s,
+/// so the blocks counted see it fall.
+fn moving_pads(rate: u32, n: usize) -> Case {
+    let s = Source::new("noise", rate, 2, bench_sound(rate as usize, false)).expect("source");
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    for i in 0..n {
+        let mut r = Region::whole(&s);
+        r.mode = PlayMode::Loop;
+        r.sustain_loop = Some(Loop {
+            start: 5000,
+            end: 30000,
+            crossfade: 200,
+            mode: LoopMode::Forward,
+        });
+        r.tune_cents = (i as i32 % 24 - 12) * 50;
+        let mut pad = Pad::new("p", Layer::new(r));
+        pad.polyphony = 1;
+        pad.filter = Filter {
+            kind: FilterKind::LowPass,
+            poles: 2,
+            cutoff_hz: 2000.0,
+            resonance: 0.3,
+            env_octaves: 1.0,
+        };
+        pad.lfo = PadLfo {
+            shape: LfoShape::Triangle,
+            rate_hz: 3.0 + i as f32 * 0.25,
+            target: if i % 2 == 0 {
+                LfoTarget::Pitch
+            } else {
+                LfoTarget::Cutoff
+            },
+            depth: 0.2,
+            ..PadLfo::default()
+        };
+        pad.pitch_env = PitchEnv {
+            semitones: 12.0,
+            decay_ms: 2000.0,
+        };
+        p.set_pad(i, Some(pad), None).expect("pad");
+    }
+    let mut e = Engine::new(rate, n.max(1));
+    e.set_view(EngineView::build(&p, rate));
+    Case {
+        name: format!("Sampler x{n} held, LFO and pitch envelope"),
+        module: "sampler",
+        what: "looping pads held down, each with an LFO and a pitch envelope",
         block: Box::new(move |b, l, r| {
             if b == 0 {
                 for pad in 0..n {

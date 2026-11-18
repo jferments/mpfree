@@ -5,8 +5,8 @@ use mpfree_sampler::chop::{demo_beat, SourceAnalysis};
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
 use mpfree_sampler::record::{
-    bar_lines, input, rolling, Arm, End, Feed, Input, Looped, Pick, Progress, RecordError,
-    Recording, RingOut, Start, Stop, Tail, Take, TakeState, BAR_LINES,
+    bar_lines, input, input16, rolling, rolling16, Arm, End, Feed, Input, Looped, Pick, Progress,
+    RecordError, Recording, RingOut, Start, Stop, Tail, Take, TakeState, BAR_LINES,
 };
 
 const RATE: u32 = 44_100;
@@ -54,6 +54,80 @@ fn skip_back_and_exact_spans() {
     );
     assert_eq!(r.copy(10, 5, &mut out), Err(RecordError::BadSpan));
     assert_eq!(out.len(), 20, "failed copies leave the output alone");
+}
+
+#[test]
+fn a_16_bit_buffer_keeps_stereo_at_half_the_memory_held_at_full_scale() {
+    let (mut w, r) = rolling16(1_000);
+    let (_, r32) = rolling(2, 1_000);
+    assert_eq!((r.channels(), r.capacity()), (2, 1_000));
+    assert_eq!((r.bytes(), r32.bytes()), (4_000, 8_000));
+    // A ramp from -1 to 1 on the left, its mirror on the right, read back
+    // within half a step.
+    let ramp = |i: usize| i as f32 / 500.0 - 1.0;
+    let left: Vec<f32> = (0..1_000).map(ramp).collect();
+    let right: Vec<f32> = left.iter().map(|v| -v).collect();
+    w.push_planar(&left, &right);
+    let got = r.skip_back(1_000).unwrap();
+    assert_eq!(got.len(), 2_000);
+    for (i, f) in got.chunks_exact(2).enumerate() {
+        assert!((f[0] - left[i]).abs() <= 0.5 / 32_767.0, "frame {i}: {f:?}");
+        assert!(
+            (f[1] - right[i]).abs() <= 0.5 / 32_767.0,
+            "frame {i}: {f:?}"
+        );
+    }
+    // Over full scale is held there, a NaN is silence, and the interleaved
+    // push keeps the same frames.
+    w.push(&[1.5, -3.0, f32::NAN, 0.25]);
+    let got = r.skip_back(2).unwrap();
+    assert_eq!(got[..3], [1.0, -1.0, 0.0]);
+    assert!((got[3] - 0.25).abs() <= 0.5 / 32_767.0);
+    // It rolls like any other: too old is overwritten.
+    assert_eq!(r.written(), 1_002);
+    let mut out = Vec::new();
+    assert_eq!(r.copy(0, 10, &mut out), Err(RecordError::Overwritten));
+    r.copy(2, 4, &mut out).unwrap();
+    assert_eq!(out.len(), 4);
+}
+
+#[test]
+fn a_16_bit_input_cuts_the_last_bars_of_two_minutes() {
+    // Two minutes at 44.1 kHz, as Sample Recall keeps the master: 21 MB.
+    let (mut f, i) = input16(120, RATE);
+    assert_eq!(i.audio.capacity(), 120 * u64::from(RATE));
+    assert_eq!(i.audio.bytes(), 120 * RATE as usize * 4);
+    // 4/4 at 200 BPM: a bar is 52 920 frames, 100 bars in the two minutes,
+    // and every one of their lines is kept.
+    let bar = 52_920;
+    let periods = 2 * 60 * u64::from(RATE) / PERIOD as u64;
+    for _ in 0..periods {
+        let base = f.audio.written();
+        let end = base + PERIOD as u64;
+        let mut b = base.div_ceil(bar) * bar;
+        while b < end {
+            f.bars.mark(b);
+            b += bar;
+        }
+        f.bars.set_bar(Some(bar as f64));
+        // A quiet ramp, so 16 bits keep the frame numbers apart.
+        let v: Vec<f32> = (base..end)
+            .flat_map(|n| {
+                let x = (n % 1_000) as f32 / 1_000.0;
+                [x, -x]
+            })
+            .collect();
+        f.audio.push(&v);
+    }
+    let latest = i.bars.back(0).unwrap();
+    assert_eq!(latest % bar, 0);
+    let (start, end) = i.bars_back(99).unwrap();
+    assert_eq!((start, end), (latest - 99 * bar, latest));
+    assert!(start >= i.audio.oldest(), "99 bars are still held");
+    let four = i.last_bars(4).unwrap();
+    assert_eq!(four.len() as u64, 4 * bar * 2);
+    let first = ((latest - 4 * bar) % 1_000) as f32 / 1_000.0;
+    assert!((four[0] - first).abs() < 1e-4 && (four[1] + first).abs() < 1e-4);
 }
 
 #[test]

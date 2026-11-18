@@ -717,6 +717,9 @@ pub struct PadInfo {
     /// The synth's pads: where the pad's note sits, for Beats' scale rows
     /// (None for a kit's sounds and the Drums engine's).
     pub pitch: Option<PadPitch>,
+    /// Its type's tag under its lane's name ("LOOP", "SYNTH", "MIDI");
+    /// None for a sample.
+    pub tag: Option<&'static str>,
 }
 
 /// A synth pad's note (a chord pad's root) and whether it is the key's
@@ -1456,6 +1459,15 @@ impl PlayPage {
                 }
                 p if p == PadField::Attack as u16 => ("Attack".to_string(), format!("{v:.0} ms")),
                 p if p == PadField::Release as u16 => ("Release".to_string(), format!("{v:.0} ms")),
+                p if p == PadField::LfoDepth as u16 => {
+                    ("LFO depth".to_string(), format!("{:+.0} %", v * 100.0))
+                }
+                p if p == PadField::PitchEnv as u16 => {
+                    ("Pitch env".to_string(), format!("{v:+.1} st"))
+                }
+                p if p == PadField::PitchDecay as u16 => {
+                    ("Pitch decay".to_string(), format!("{v:.0} ms"))
+                }
                 // Slices count from 1 on the screen, from 0 in the engine.
                 p if p == PadField::Slice as u16 => (
                     "Slice".to_string(),
@@ -2390,6 +2402,7 @@ impl PlayPage {
             root: false,
             label: None,
             empty: false,
+            tag: None,
             lock: Some(crate::play_widgets::LockCells {
                 sub,
                 owner: (l.row != LINE).then_some(usize::from(l.row)),
@@ -2632,6 +2645,7 @@ impl PlayPage {
             root: pitch.is_some_and(|x| x.root),
             label: None,
             empty: false,
+            tag: self.pads.get(p).and_then(|i| i.tag),
             lock: None,
         }
     }
@@ -3280,6 +3294,7 @@ mod tests {
                         note,
                         root: k % 7 == 0,
                     }),
+                    tag: None,
                 }
             })
             .collect();
@@ -3307,6 +3322,7 @@ mod tests {
             song_length: 3840.0,
             song_step: 240.0,
             origin: None,
+            order: None,
             rows,
             locks: Vec::new(),
             lock_values: Vec::new(),

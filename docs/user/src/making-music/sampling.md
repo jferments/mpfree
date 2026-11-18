@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/warp_tab.rs rust/mpfree-sampler-ui/src/chop_tab.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
+covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/recall.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/warp_tab.rs rust/mpfree-sampler-ui/src/chop_tab.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
 checked: 2026-11-16 ececc7e
 -->
 
@@ -29,6 +29,23 @@ Beside the pads are the settings of the pad picked:
 - **Effects**: the effects on the pad's own mixer channel (**+ FX** when it has none). Tap it, or push the wheel on it, to open the pad's chain in the Mix tab, and **‹** brings you back (see [Effects](effects.md#adding-an-effect-the-chain-editor)). A pad without a channel of its own (any but kit 1's A1 to A16) gets one when you add an effect, and gives it back once it has none (see [FX](shaping-a-pad.md#fx-effects-on-one-pad-or-on-the-whole-kit)).
 
 Q-Links 1 to 4 turn level, pan, tune and voices. **Put on** places the sound picked on the right onto the pad, the whole of it; the hint line says when the pad plays all of it already.
+
+### What a pad plays: Sample, Loop, Instrument, MIDI out
+
+Over the pad's settings, four tabs set what a hit on the pad does. Each switch is one step: **UNDO** takes it back.
+
+- **Sample** ("its sound") plays the pad's sound with the settings above. Every pad starts as one.
+- **Loop** ("in time") plays the pad's sound as a loop at the project's tempo: a hit starts it and the next hit stops it. MPFree loops the whole sound and warps it to the tempo. A sound that has no tempo of its own yet is taken to be at the project's tempo, so set **Tempo** to the tempo it was played at: a step is a tenth of a BPM, and the row shows how many bars that makes ("92.0 BPM · 2 bars"). Its other settings are the sound, mute group, level, pan, tune and effects, and Q-Links 1 to 4 turn level, pan, tune and tempo. A pad needs a sound to loop: on an empty pad the hint line says to Browse for one first. Back on **Sample**, the pad keeps its loop and its **Mode**, for you to change there.
+- **Instrument** ("a synth voice") plays one note of a synth when you hit the pad: pick the **Engine** (one of the [nine synths](synths.md#the-nine-synths), Poly at first) and the **Note** (C4 at first). The pad plays that engine's sound as the Synth tab has it now, at the pad's velocity, and the note lasts as long as you hold the pad (or as the step's length on the Sequencer). It sounds through the Synth strip on the Mix tab, not through the pad's own channel. Q-Links 1 and 2 turn the note and the engine.
+- **MIDI out** ("to your gear") sends a note to a synth or drum machine plugged into MPFree: pick the **Port**, the **Channel** and the **Note**. A new MIDI out pad starts on the note and channel a kit on that port would send for it: what the port's [device profile](midi-and-cv.md#device-profiles) gives the pad, else the pad's own note (A1 is 37, as the MPC sends it; see [A kit on a drum machine](midi-and-cv.md#a-kit-on-a-drum-machine)) on channel 10, the drum channel on most gear. A hit sends the note at the pad's velocity, and letting go ends it. Q-Links 1 to 3 turn the note, the channel and the port. MIDI out pads play from tracks 1 to 16.
+
+Under the settings a line says what a hit does: "A hit sends note 49 on channel 10 to Volca Kick". When it would play or send nothing, the line is in the warning colour and says why: the port isn't plugged in, MIDI out is off, or there is no engine of that name. An Instrument or MIDI out pad needs no sound, and an empty pad you make one takes the engine's or the port's name. Muting its track, or soloing another, ends its notes.
+
+The pads show their type in the corner (**LOOP**, **SYNTH**, **MIDI**) and what they play under their name ("ch 10 · 49", "Poly C4", "2 bars"). On Play's rows the type shows under the pad's name too.
+
+{{shot: pads-types | A pad of each type: A5 loops Break 92, A11 plays the Poly synth at C4, and A13, picked, sends note 49 on channel 10 to a Volca Kick.}}
+
+On a track whose **Plays on** is a port (see [A kit on a drum machine](midi-and-cv.md#a-kit-on-a-drum-machine)), every pad goes to that port as a note, whatever its type.
 
 ### Finding sounds: Browse for
 
@@ -87,6 +104,20 @@ The picture shows the source's level on two meters, and the last 30 seconds of i
 
 The Rec page is always listening while its source is on. **Skip back** keeps what has already come in, without your having pressed Record: the last 10 seconds to begin with, or whatever the selector beside the **Skip back** button says (5 seconds to a minute, or 1 to 8 whole bars cut on the bar lines). The blue span on the picture shows what it would keep. It is the sampler's version of [Capture](clips.md#capture-keep-what-you-just-played): play something good, then keep it.
 
+### Hold an empty pad and press REC: one take, from any page
+
+You don't have to open the Rec page to record onto a pad. **Hold a pad that has no sound and press REC**, on any page: the Rec page's recorder is armed onto that pad for one take, with the Rec page's settings (its Source, Start and End). The REC chip on the transport bar says so, **REC → Pad A5 · Line in**, and pages without a transport bar show it at the top. Let go of the pad; the take waits.
+
+- It starts when the sound crosses the threshold, if the Rec page's **Start** is **Threshold**. Otherwise it starts with the music: press **PLAY**, or, if the music is already playing, it starts at once (**Next bar**: on the next bar line). While it records the chip reads **● REC → Pad A5 · Line in**.
+- **REC** again, or **STOP**, ends it and the take lands on the pad, ready to play. STOP ends the take but leaves the music playing; press STOP again to stop.
+- **UNDO** while it records throws the take away.
+- The recorder runs while the line input is on (**Prefs > Line input**), whatever the Source. If it is off, the take ends at once, the log says why, and REC goes back to what it recorded before.
+- Pressed before the take starts, REC or STOP calls it off. So does a tap on an Arm pill or a row of the REC chip's list, which then arms what you tapped.
+
+It is one take only. When it ends, REC goes straight back to what it recorded before, the notes or a loop, so in the middle of a set REC never stays pointed at a pad. A pad that already has a sound is played as usual: holding it while you press REC is plain REC. It works while the pads play a kit, not while they are steps (STEP SEQ), mute keys (TRACK MUTE), 16 Levels or the loop keys, and not while another take counts in or records.
+
+The rule to remember: **a pad + REC records from now**; SHIFT + REC keeps what you just played ([Capture](clips.md#capture-keep-what-you-just-played)).
+
 ### How a take starts and ends
 
 The panel under the picture sets up the take, in five sections: **Input** (Source and Channels), **Start**, **End**, **Take** (Record, Skip back and Onto) and **Resample** (Flatten and Auto-sample). Tap a choice's button to pick it, drag a knob up or down, or tap a selector's arrows; the data wheel and **–** / **+** change the control you touched last, and a finger resting on a control lets the wheel turn it.
@@ -115,7 +146,31 @@ A take that starts on the bar line and lasts whole bars lands warped to the proj
 Use it to free up a busy pad, or to chop a sound you have already shaped.
 
 > [!TIP]
-> Resampling is the classic MPC trick: play the loop, the synth or the whole mix into a pad, then chop it and play it again. Pick **Master** as the Source and use **Skip back** after a jam you liked.
+> Resampling is the classic MPC trick: play the loop, the synth or the whole mix into a pad, then chop it and play it again. Pick **Master** as the Source and use **Skip back** after a jam you liked. MPFree always keeps the last two minutes of what you hear, so Skip back on **Master** reaches back to before you picked it. From any other page, [Sample Recall](#sample-recall-keep-what-just-played-from-any-page) does the same without leaving it.
+
+## Sample Recall: keep what just played, from any page
+
+MPFree always keeps the last two minutes of what you hear. When something good just happened (a fill, a lucky loop, a few bars of the whole mix), you can put it on a pad without stopping or leaving the page you're on.
+
+1. **Hold the pad** you want it on and press **SHIFT + REC**.
+2. Sample Recall opens over the page. While the music plays it brackets the **last 4 whole bars**; stopped, the **last 10 seconds**.
+3. Press **PLAY** to hear the bracket over the music, **REC** to keep it, or **STOP** to close without keeping. The music keeps playing either way.
+
+{{shot: sample-recall | Sample Recall opened from Play on pad A5: the last two minutes along the top with their bar numbers, bars 12 to 15 bracketed and drawn large, and Keep landing them on A6, the next free pad.}}
+
+Kept, the bracket lands on the pad you held if it is empty, or else on the next empty pad in its bank (the panel says which: "Pad A6 · next free"). It is cut on the bar lines, with a short fade in and out, and with **Warp** on it plays in time at the project's tempo from then on. The pad is picked, so **SAMPLE EDIT** opens it on the Sample tab, ready to chop. It is one step on the Sample and Pads tabs: **UNDO** there takes it back (the history calls it "Recall to A6").
+
+| Control | What it does |
+|---|---|
+| **Length** | 1, 2, 4, 8 or 16 whole bars, ending on the last bar line; or **Free**, a number of seconds ending where Sample Recall opened. |
+| **Lands on** | The pad it keeps onto. Step it to another pad; on a pad that already has a sound it says "replaces its sound". |
+| **Warp** | On: whole bars play in time at the project's tempo. Free always lands as played. |
+| **Audition**, **Keep** | The same as PLAY and REC. |
+
+The Q-Links turn **Length** (through the bars, then Free's seconds up to two minutes), **Ends at** (a bar further back each step, or a tenth of a second on Free), **Fade** (0 to 50 ms) and **Pad**.
+
+> [!NOTE]
+> **SHIFT + REC** without a pad held is still [Capture](clips.md#capture-keep-what-you-just-played). A held pad only counts while the pads play the kit: with **STEP SEQ**, **TRACK MUTE** or **16 LEVEL** on, or a synth on the pads, SHIFT + REC is Capture too. While a recording is ready, counting in or running, Sample Recall waits: finish the take first.
 
 ## Send to pad and Chop to pads
 

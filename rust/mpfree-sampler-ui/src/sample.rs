@@ -358,7 +358,8 @@ pub fn feed_input(feed: &mut Feed, seconds: f64, level: f32, rolling: bool) {
             // The bar lines in this period, at whole frames.
             let mut k = (base as f64 / bar).ceil() as u64;
             while ((k as f64 * bar).round() as u64) < base + 128 {
-                feed.bars.mark((k as f64 * bar).round() as u64);
+                feed.bars
+                    .mark_bar((k as f64 * bar).round() as u64, k as u32 + 1);
                 k += 1;
             }
         }
@@ -910,6 +911,7 @@ pub fn pads_sample(fonts: Fonts, pad: usize) -> Result<PadsSample, String> {
     } else {
         Vec::new()
     });
+    pad_outs(&mut state);
     let mut ui = app_ui_with(fonts, &project, pads_tab::HINT);
     if let Some(h) = ui.get_mut::<Header>("header") {
         h.active = Header::app("Pads").active;
@@ -926,6 +928,32 @@ pub fn pads_sample(fonts: Fonts, pad: usize) -> Result<PadsSample, String> {
         project,
         state,
     })
+}
+
+/// What the app gives the Pads tab for its pad types: the project at 92
+/// BPM, the Synth tab's engines, and one MIDI output (a Volca Kick)
+/// plugged in.
+pub fn pad_outs(st: &mut PadsState) {
+    st.bpm = 92.0;
+    st.engines = [
+        "Poly",
+        "FM",
+        "Drums",
+        "Pluck",
+        "Wavetable",
+        "Keys",
+        "Drawbar",
+        "Squelch",
+        "Analog",
+    ]
+    .map(String::from)
+    .to_vec();
+    st.ports = vec![pads_tab::OutPort {
+        name: "Volca Kick".into(),
+        shown: "Volca Kick".into(),
+        why: None,
+        pads: Vec::new(),
+    }];
 }
 
 /// The Pads tab's sample screens.
@@ -952,7 +980,52 @@ pub fn pads_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<PadsSample>, String
     s.tab.update(&mut s.ui, &st);
     s.tab.set_lit(&mut s.ui, &st, PAD + 1, true);
     out.push(s);
+    out.push(pads_types(fonts())?);
     Ok(out)
+}
+
+/// The Pads tab with a pad of each type (the redesign's board 6): A5 a
+/// loop, A11 a Poly voice at C2, A13 a MIDI out pad sending note 36 on
+/// channel 10 to a Volca Kick, picked.
+pub fn pads_types(fonts: Fonts) -> Result<PadsSample, String> {
+    use mpfree_sampler::model::PadKind;
+    let mut s = pads_sample(fonts, PAD)?;
+    let st = s.state.clone();
+    let looped = pads_tab::as_loop(st.picked().ok_or("A5 has no sound")?, st.bpm);
+    s.project
+        .set_pad(PAD, Some(looped), None)
+        .map_err(|e| format!("{e:?}"))?;
+    let mut sub = s.project.pad(0).cloned().ok_or("A1 has no sound")?;
+    sub.layers.clear();
+    sub.name = "Sub".into();
+    sub.kind = PadKind::Instrument {
+        engine: "poly".into(),
+        note: 36,
+    };
+    s.project
+        .set_pad(10, Some(sub), None)
+        .map_err(|e| format!("{e:?}"))?;
+    let mut kick = s.project.pad(0).cloned().ok_or("A1 has no sound")?;
+    kick.layers.clear();
+    kick.name = "Volca kick".into();
+    kick.kind = PadKind::MidiOut {
+        port: "Volca Kick".into(),
+        channel: 10,
+        note: 36,
+    };
+    s.project
+        .set_pad(12, Some(kick), None)
+        .map_err(|e| format!("{e:?}"))?;
+    let mut st = PadsState::from_project(&s.project, 12);
+    st.effects = Some(Vec::new());
+    pad_outs(&mut st);
+    s.tab.update(&mut s.ui, &st);
+    s.state = st;
+    (s.name, s.about) = (
+        "pads-types",
+        "A pad of each type: A5 a loop, A11 a Poly voice, A13 MIDI out to a Volca Kick, picked",
+    );
+    Ok(s)
 }
 
 /// The Chop tab's sample screens.
@@ -1217,6 +1290,7 @@ pub fn grain_section_project(
                 scan: false,
             };
             r.grain_glide_ms = 300.0;
+            r.grain.quality = mpfree_sampler::model::GrainQuality::Tape;
         }
         grain_tab::View::Presets => *r = mpfree_sampler::grain_presets::apply(r, 4),
     }
@@ -1369,7 +1443,7 @@ pub fn grain_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<GrainSample>, Stri
         (
             grain_tab::View::FilterKeys,
             "grain-filter",
-            "Filter and keys: a resonant band pass on each grain, its cutoff sprayed; glide and size follow key",
+            "Filter and keys: a resonant band pass on each grain, its cutoff sprayed; glide and size follow key; Quality Tape",
         ),
         (
             grain_tab::View::Presets,

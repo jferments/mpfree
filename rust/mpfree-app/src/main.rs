@@ -2654,8 +2654,12 @@ fn pad_starts_loop(
     let at = time.next_frame();
     let n = looper.listens_for_pads(at)?;
     let mut line = format!("looper: Loop {} starts on your note", n + 1);
-    if time.info().state == mpfree_transport::State::Stopped {
-        match start_song_on_note(time, at, take, exporting) {
+    if looper.records_free(n) {
+        // Tempo from the first loop: it records free, and closing it
+        // starts the song (loop_sets_tempo).
+        line.push_str(", free: REC again closes it and sets the tempo");
+    } else if time.info().state == mpfree_transport::State::Stopped {
+        match start_song_on_note(time, at, None, take, exporting) {
             Ok(more) => {
                 line.push_str(", and the song with it");
                 if let Some(m) = more {
@@ -2688,7 +2692,7 @@ fn loop_starts_song(
 ) -> LoopStart {
     let n = looper.take_start()?;
     Some(
-        match start_song_on_note(time, time.next_frame(), take, exporting) {
+        match start_song_on_note(time, time.next_frame(), None, take, exporting) {
             Ok(more) => (
                 format!(
                     "looper: Loop {} heard you: the song starts on your note{}",
@@ -2702,18 +2706,64 @@ fn loop_starts_song(
     )
 }
 
-/// The song starts on a note on frame `at`, unless an export runs (the
-/// transport's own refusals: [`time::TimeHost::start_at`]).
+/// The song starts on a note on frame `at` (at tempo `bpm`, if given),
+/// unless an export runs (the transport's own refusals:
+/// [`time::TimeHost::start_at`]).
 fn start_song_on_note(
     time: &mut time::TimeHost,
     at: u64,
+    bpm: Option<f64>,
     take: Option<bool>,
     exporting: bool,
 ) -> Result<Option<String>, String> {
     if exporting {
         return Err("an export is running".to_string());
     }
-    time.start_at(at, None, take)
+    time.start_at(at, bpm, take)
+}
+
+/// Tempo from the first loop (the looper's options): whether the song can
+/// take its tempo from a loop now. Not while another device's clock leads
+/// (its tempo arriving, or PLAY waiting for its Start), the song has more
+/// than one tempo, or an export runs. The looper is told every period.
+fn tempo_from_loop_allowed(on: bool, time: &time::TimeHost, exporting: bool) -> bool {
+    on && time.followed_bpm().is_none()
+        && !time.clock_waits()
+        && time.tempo_map().segments().len() <= 1
+        && !exporting
+}
+
+/// Tempo from the first loop, after the looper's period: a free first
+/// pass closed, so the song starts on the frame it comes round, at the
+/// tempo its length sets, from the start of the bar it stopped in (the
+/// loop's first bar). With a take ready it records from there too. The
+/// line for the log (on the screen too when the song can't start: then
+/// the loop plays at the song's tempo when it starts), and the tempo the
+/// app takes from the next period on, so it doesn't ask for its old one.
+fn loop_sets_tempo(
+    looper: &mut looping::LoopHost,
+    time: &mut time::TimeHost,
+    take: Option<bool>,
+    exporting: bool,
+) -> (LoopStart, Option<f64>) {
+    let Some((n, bars, bpm, at)) = looper.take_tempo() else {
+        return (None, None);
+    };
+    match start_song_on_note(time, at, Some(bpm), take, exporting) {
+        Ok(more) => (
+            Some((
+                format!(
+                    "looper: Loop {} is {} at {bpm:.2} BPM: the song starts at that tempo{}",
+                    n + 1,
+                    looping::bars_words_n(bars),
+                    more.map(|m| format!("; {m}")).unwrap_or_default()
+                ),
+                false,
+            )),
+            Some(bpm),
+        ),
+        Err(why) => (Some((looper.tempo_refused(n, bars, bpm, &why), true)), None),
+    }
 }
 
 /// Live erase (sequencer roadmap S1, the MPC's way): whether a pad
@@ -3108,6 +3158,7 @@ fn kit_views(kits: &[kit::Kit], users: Range<usize>, synth: &synth::Synth) -> Ve
                 pitches: Vec::new(),
                 user: users.contains(&k),
                 key: None,
+                tags: Vec::new(),
             }
         })
         .collect();
@@ -4169,13 +4220,19 @@ impl time::Pads for SeqPads<'_> {
         // transpose (S4); the pad remembers the notes it started, so its
         // note-off and pressure reach them.
         let shift = self.shift(track);
-        let sounded = match self.synth_of(track) {
-            Some(s) if pad < 16 => {
+        let on = mpfree_play::Event::NoteOn {
+            note: pad.min(127) as u8,
+            velocity,
+        };
+        let sounded = if let Some(s) = self.synth_of(track) {
+            if pad < 16 {
                 s.note_on_shifted(pad, velocity, offset, &shift);
-                true
             }
-            Some(_) => false,
-            None => self.player.hit_kit_at(kit, pad, velocity, offset),
+            pad < 16
+        } else if self.routed(track, pad, on, offset) {
+            true
+        } else {
+            self.player.hit_kit_at(kit, pad, velocity, offset)
         };
         if sounded {
             self.hits += 1;
@@ -4189,9 +4246,13 @@ impl time::Pads for SeqPads<'_> {
     }
     fn release_at(&mut self, track: u16, pad: usize, offset: u32) {
         let kit = self.kit_of(track);
-        match self.synth_of(track) {
-            Some(s) => s.note_off(pad, offset),
-            None => self.player.release_kit_at(kit, pad, offset),
+        let off = mpfree_play::Event::NoteOff {
+            note: pad.min(127) as u8,
+        };
+        if let Some(s) = self.synth_of(track) {
+            s.note_off(pad, offset);
+        } else if !self.routed(track, pad, off, offset) {
+            self.player.release_kit_at(kit, pad, offset);
         }
     }
     /// A panic: every kit, the synth and every track's own instrument.
@@ -4206,9 +4267,14 @@ impl time::Pads for SeqPads<'_> {
     }
     fn pressure_at(&mut self, track: u16, pad: usize, value: u8, offset: u32) {
         let kit = self.kit_of(track);
-        match self.synth_of(track) {
-            Some(s) => s.pressure_at(pad, value, offset),
-            None => self.player.pressure_kit_at(kit, pad, value, offset),
+        let press = mpfree_play::Event::Pressure {
+            note: pad.min(127) as u8,
+            value,
+        };
+        if let Some(s) = self.synth_of(track) {
+            s.pressure_at(pad, value, offset);
+        } else if !self.routed(track, pad, press, offset) {
+            self.player.pressure_kit_at(kit, pad, value, offset);
         }
     }
 
@@ -4259,8 +4325,15 @@ impl time::Pads for SeqPads<'_> {
                         return None;
                     }
                     let kit = self.kit_of(o.track);
+                    let on = Event::NoteOn {
+                        note: pad as u8,
+                        velocity: v,
+                    };
                     if let Some(s) = self.synth_of(o.track) {
                         s.note_on_shifted(pad, v, o.offset, &shift);
+                        self.hits += 1;
+                    } else if self.routed(o.track, pad, on, o.offset) {
+                        // An Instrument or MIDI out pad: its voice, its note out.
                         self.hits += 1;
                     } else if self.player.live_hit_at(kit, pad, v, o.offset) {
                         // While live chop takes cuts, a hit marks one.
@@ -4288,11 +4361,11 @@ impl time::Pads for SeqPads<'_> {
                 // The synth's note ends; a Grains pad stops when let go;
                 // one-shot sounds ignore it.
                 let kit = self.kit_of(o.track);
-                match self.synth_of(o.track) {
-                    Some(s) => s.note_off(usize::from(note), o.offset),
-                    None => self
-                        .player
-                        .live_release_at(kit, usize::from(note), o.offset),
+                if let Some(s) = self.synth_of(o.track) {
+                    s.note_off(usize::from(note), o.offset);
+                } else if !self.routed(o.track, usize::from(note), o.event, o.offset) {
+                    self.player
+                        .live_release_at(kit, usize::from(note), o.offset);
                 }
                 Some(o.event)
             }
@@ -4410,6 +4483,50 @@ impl SeqPads<'_> {
     /// The kit track `track` plays (kit 1 if it plays the synth).
     fn kit_of(&self, track: u16) -> usize {
         self.kits.kit_of(usize::from(track)).unwrap_or(0)
+    }
+
+    /// A hit, end or pressure (`event`) on pad `pad` of the kit track
+    /// `track` plays, when the pad is of another kind (the Pads tab's
+    /// Instrument and MIDI out pads, [`sampler::PadRoute`]): one voice of
+    /// a synth engine, or a note out to the pad's own port, channel and
+    /// note (`MidiOut::pad_to`, whatever the track's Plays on). True when
+    /// the pad is one of those, sent or not (a port that isn't plugged in
+    /// sends nothing, as the Pads tab says); false leaves it to the
+    /// sampler. Never allocates.
+    fn routed(&mut self, track: u16, pad: usize, event: mpfree_play::Event, offset: u32) -> bool {
+        use mpfree_play::Event;
+        let kit = self.kit_of(track);
+        let Some(route) = self.player.pad_route(kit, pad) else {
+            return false;
+        };
+        match route {
+            sampler::PadRoute::Midi {
+                port,
+                channel,
+                note,
+            } => {
+                let o = mpfree_play::Out {
+                    offset,
+                    frame: 0,
+                    track,
+                    dest: Default::default(),
+                    event,
+                };
+                self.midi.pad_to(&o, port, *channel, *note);
+            }
+            &sampler::PadRoute::Voice(engine, note) => match event {
+                Event::NoteOn { velocity, .. } => {
+                    self.synth
+                        .pad_voice_on(track, pad, (engine, note), velocity, offset);
+                }
+                Event::NoteOff { .. } => self.synth.pad_voice_off(track, pad, offset),
+                Event::Pressure { value, .. } => {
+                    self.synth.pad_voice_pressure(track, pad, value, offset);
+                }
+                _ => {}
+            },
+        }
+        true
     }
 
     /// An export's replay plays one track alone: another track's note on
@@ -4898,6 +5015,8 @@ fn time_action(
         TimeAction::DeleteClip { .. }
             | TimeAction::ClipSettings { .. }
             | TimeAction::ClipLength { .. }
+            | TimeAction::Mutate { .. }
+            | TimeAction::Restore { .. }
             | TimeAction::CopyClip { .. }
             | TimeAction::PasteClip { .. }
             | TimeAction::DropClip { .. }
@@ -5254,6 +5373,13 @@ fn player_session(
     let mut rec_back: Option<Box<sampler::RecFeed>> = None;
     // What the sampler's input records from (the Rec tab's Source).
     let mut rec_source = sampler::RecSource::Line;
+    // Sample Recall (sampler decision 3): the master as heard, its last two
+    // minutes always kept, made here once and never freed; its reading end
+    // goes to the screen as soon as there is room.
+    let (recall_feed, recall_input) =
+        mpfree_sampler::record::input16(sample_page::RECALL_SECONDS, RATE);
+    let mut recall_feed = sampler::RecFeed(recall_feed);
+    let mut recall_out = Some(gui::ToUi::SampleRecall(Box::new(recall_input)));
     // 2. The controller (USB; it may still be starting at power-on).
     let wait = if timed { Duration::ZERO } else { DEVICE_WAIT };
     progress(
@@ -5513,6 +5639,9 @@ fn player_session(
     let (mut synth_learned, mut synth_learned_at) = (false, 0.0f64);
     // A followed clock's tempo for the app, taken at the next turn.
     let mut followed_tempo: Option<f64> = None;
+    // The tempo a free first loop set (tempo from the first loop), for the
+    // app at the next turn, before the transport follows the app's tempo.
+    let mut loop_tempo: Option<f64> = None;
     // The port the tempo chip last said the tempo comes from.
     let mut clock_from: Option<String> = None;
     out.show(gui::ToUi::Macros(Box::new(panels.macros_state(&mix))));
@@ -5620,6 +5749,8 @@ fn player_session(
     // Live transpose (S4): each track's arp notes by number, and where its
     // shift took them (SeqPads::sounding).
     let mut by_note = vec![mpfree_arp::scale::Held::new(); mpfree_seq::MAX_TRACKS];
+    // The tracks silent last period (`TimeHost::silenced`).
+    let mut silent_was = 0u128;
     // STEP SEQ (step_keys.rs): the pads held as steps, the steps the pads
     // show (kept from the last change), and the PAD BANK lights sent while
     // they are pages.
@@ -7160,8 +7291,20 @@ fn player_session(
                     let page = app.view();
                     // While the mixer is open they move the selected strip; on the chain
                     // editor and the macros panel, the knobs or macros the column shows. In
-                    // the browser: scroll, filter, preview level, place.
-                    if matches!(
+                    // the browser: scroll, filter, preview level, place. Over any page,
+                    // Sample Recall's: Length, Ends at, Fade and Pad.
+                    if app.recall_open() && knob < 4 {
+                        let k = knob as usize;
+                        let ticks = if public {
+                            let was = qlink_at[k].replace(m.bytes[2]);
+                            was.map_or(0, |w| m.bytes[2] as i32 - w as i32)
+                        } else {
+                            delta as i32
+                        };
+                        if ticks != 0 {
+                            out.show(gui::ToUi::RecallQLink(k, ticks));
+                        }
+                    } else if matches!(
                         page,
                         app::View::Synth
                             | app::View::Sample
@@ -7271,6 +7414,11 @@ fn player_session(
             }
         }
         fx.extend(app.tick(t));
+        // As set, not rounded: the song plays at it, and a project saves it
+        // as it is.
+        if let Some(bpm) = loop_tempo.take() {
+            fx.extend(app.set_tempo(bpm));
+        }
         if let Some(bpm) = followed_tempo.take() {
             let bpm = (bpm * 10.0).round() / 10.0;
             // Without the log line set_tempo writes: the tempo follows
@@ -7461,6 +7609,13 @@ fn player_session(
                     out.note(DRUMS_NO_LEVELS)
                 }
                 app::Effect::SixteenLevels => out.show(gui::ToUi::SixteenLevels),
+                // REC with kit pads held: an empty one arms a pad take
+                // (sampler R5.7); otherwise REC as alone.
+                app::Effect::PadRec(held) => later.push(desk::pad_rec(
+                    &held,
+                    track_kits.kit_of(app.track()),
+                    |k, p| player.has_sound(k, p),
+                )),
                 app::Effect::SaveProject => save_asked = true,
                 // Prefs > Backup and Akai kits: the first-start setup's store.
                 app::Effect::SetupNextStart { backup, want } => {
@@ -7716,6 +7871,8 @@ fn player_session(
             app.rec.ready = None;
             out.show(gui::ToUi::Rec(app.rec));
         }
+        // A pad take gets its go once the music plays.
+        fx.extend(desk::pad_rolled(&mut app, &time, &looper, out));
         // A followed clock's tempo becomes the app's (the tempo chip, Note
         // Repeat, the arps, tempo-synced effects) when it has moved more
         // than 0.08 BPM from it, so the chip doesn't flicker.
@@ -7892,6 +8049,16 @@ fn player_session(
         // The clips and every track's arp (the pads go through the armed
         // track's) play into the kit or the synth: the clips as recorded,
         // the arps' notes as live playing (SeqPads::live).
+        // A track gone silent (muted, or another soloed) ends the notes its
+        // kit's Instrument and MIDI out pads hold: they sound outside its
+        // mixer strip, so its mute wouldn't reach them.
+        let silent = time.silenced();
+        let went = silent & !silent_was;
+        silent_was = silent;
+        for t in (0..128).filter(|t| went & 1 << t != 0) {
+            midi_out.end_pads(t, 0);
+            synth.end_pad_voices(t as u16, 0);
+        }
         let key = synth.transpose_key();
         let mut seq = SeqPads {
             player: &mut player,
@@ -8253,6 +8420,12 @@ fn player_session(
         let t_render = Instant::now();
         // Warped pads play at the transport's tempo.
         player.set_tempo(time.info().bpm);
+        // A synced pad LFO keeps to the beats while the transport rolls.
+        player.set_beat(time.block().spans().first().and_then(|s| {
+            s.state
+                .rolling()
+                .then(|| s.tick_at(s.frame) / f64::from(mpfree_transport::PPQ))
+        }));
         // Each pad of kit 1 into its pad channel (Pad Mix), which all go
         // to the Drums track; another kit into the channel of the first
         // track that plays it.
@@ -8302,6 +8475,11 @@ fn player_session(
         for line in looper.follow_plan(&time.loop_plan()) {
             out.note(&line);
         }
+        looper.set_tempo_from_loop(tempo_from_loop_allowed(
+            app.settings.loop_tempo,
+            &time,
+            export.running(),
+        ));
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
         // A loop that heard the line input with the song stopped starts it.
         let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
@@ -8311,6 +8489,10 @@ fn player_session(
             take,
             export.running(),
         ));
+        // A free first loop closed: the song starts at its tempo.
+        let (said, tempo) = loop_sets_tempo(&mut looper, &mut time, take, export.running());
+        out.loop_start(said);
+        loop_tempo = tempo.or(loop_tempo);
         // The audio tracks record the same line input onto the Song view's
         // lanes, and play into the mixer's Audio track (song mode only).
         tracks.follow_latency(app.settings.loop_latency);
@@ -8516,6 +8698,14 @@ fn player_session(
             {
                 mix.keep_captured(held, end);
             }
+        }
+        // Sample Recall keeps the master as heard (after Master safety,
+        // before the metronome), with the bar lines as late as it hears them.
+        let t_rec = Instant::now();
+        recall_feed.period(time.block(), &left, &right, mix.mixer.latency());
+        engines.add(engines::SAMPLER, t_rec.elapsed());
+        if let Some(m) = recall_out.take() {
+            recall_out = out.try_show(m).err();
         }
         // The metronome goes on top; it keeps the samples within ±1 itself.
         let p = p.max(time.mix_click(&mut left, &mut right));

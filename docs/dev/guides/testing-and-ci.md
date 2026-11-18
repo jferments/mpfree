@@ -261,7 +261,9 @@ touchscreen, using the list of controls each widget gives
     move back out of both loops; a loop's speaker through STOP and PLAY;
     Clear; x down to the last layer; Starts: When I play, a loop waiting
     with the song stopped until the first pad starts both, and one
-    starting on the bar line before a pad with the song playing.
+    starting on the bar line before a pad with the song playing; Tempo
+    from the first loop, a free first pass from REC whose close sets the
+    tempo (exactly, in the app too) and starts the song.
   - `mixer`: TRACK MIX to the Mix tab and back to the page it came from,
     SHIFT + TRACK MIX on the pads; UNDO and SHIFT + UNDO on strip changes;
     a Room reverb with Damping and Early learned on Q-Links 2 and 3,
