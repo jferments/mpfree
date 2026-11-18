@@ -148,6 +148,8 @@ fn guarded(widget: &str, t: &mpfree_ui::Target) -> bool {
         // Play's loop strip's Clear, and the step inspector's Clear.
         (crate::looper_page::LOOP_STRIP, "button") => label == "Clear",
         (play_page::INSPECTOR, "clear") => true,
+        // A lock lane's ×: the lane and its locks (the Sequencer's Steps).
+        (play_page::STEPS, "lock-lane-off") => true,
         _ => false,
     }
 }
@@ -173,6 +175,11 @@ pub const KITS_PAGE: &str = "Kits";
 pub const NEW_KIT: &str = "New kit";
 pub const KITS_LAYOUT: &str = "col(header:60, row(kits:*, kits-card:400):*, hint:26)";
 const KITS_HINT: &str = "Tap a kit: load it on the pads   ·   Back or a tab: close the list";
+/// The Sequencer's + Lane (the Play, Pads and Sequencer redesign's step
+/// 5, board 3): the settings a lock lane can hold, over the page.
+pub const LANES_PAGE: &str = "Lanes";
+pub const LANES_LAYOUT: &str = "col(header:60, row(lanes:*, lanes-card:400):*, hint:26)";
+const LANES_HINT: &str = "Tap a setting: its lock lane shows   ·   Back or a tab: close the list";
 
 const CONSOLE_HINT: &str =
     "Switch the MPC off with its power switch to return to the stock firmware";
@@ -1632,9 +1639,10 @@ pub struct Player {
     kit_list: bool,
     /// The list of kits' rows: each a kit (or the synth), None for New kit.
     kit_rows: Vec<Option<usize>>,
-    /// The Lanes list is open over the Sequencer's Steps ("+ Lane").
-    /// Work in progress (redesign step 5): nothing opens it yet.
+    /// The Lanes list is open over the Sequencer's Steps (its + Lane).
     lane_list: bool,
+    /// The Lanes list's rows: each a setting, its name, and what it is on.
+    lane_rows: Vec<(play_page::LockLane, String, String)>,
     /// The "+ Kit track" ask for a track: how many tracks there were, and
     /// when. Once the new track is armed it gets an empty kit.
     kit_track: Option<(usize, Instant)>,
@@ -1783,6 +1791,30 @@ impl Player {
         ];
         kits_card.buttons = vec!["Back".to_string()];
         ui.add("kits-card", kits_card);
+        ui.add("lanes", ListView::new("Lanes"));
+        let mut lanes_card = Card::new("Add a lock lane");
+        lanes_card.heading = "Lanes".to_string();
+        lanes_card.lines = vec![
+            (
+                "A lock lane sets one setting step by step.".to_string(),
+                Tone::Normal,
+            ),
+            (
+                "Tap a step on it: a lock at the sound's own value.".to_string(),
+                Tone::Dim,
+            ),
+            (
+                "Drag the lock up or down, or hold it and turn the wheel.".to_string(),
+                Tone::Dim,
+            ),
+            (
+                "Hit a pad first to list its sound's settings.".to_string(),
+                Tone::Dim,
+            ),
+            ("Back adds nothing.".to_string(), Tone::Dim),
+        ];
+        lanes_card.buttons = vec!["Back".to_string()];
+        ui.add("lanes-card", lanes_card);
         ui.add("timing", StatList::new("Timing"));
         ui.add(play_page::TRANSPORT, PlayTransport::default());
         ui.add(play_page::MASTER, MasterBar::new());
@@ -1859,6 +1891,7 @@ impl Player {
         ui.add_page(HISTORY_PAGE, HISTORY_LAYOUT)
             .expect("undo history layout");
         ui.add_page(KITS_PAGE, KITS_LAYOUT).expect("kits layout");
+        ui.add_page(LANES_PAGE, LANES_LAYOUT).expect("lanes layout");
         ui.add_page("System info", SYSTEM_LAYOUT)
             .expect("system info layout");
         let patterns = crate::app::built_in_patterns();
@@ -2047,6 +2080,7 @@ impl Player {
             kit_list: false,
             kit_rows: Vec::new(),
             lane_list: false,
+            lane_rows: Vec::new(),
             kit_track: None,
             chip_why: Vec::new(),
             fingers: Vec::new(),
@@ -2195,11 +2229,100 @@ impl Player {
         }
     }
 
-    /// The Lanes list again. Work in progress (redesign step 5): the
-    /// list page (`PlayPage::lane_choices`, a pick calls
-    /// `PlayPage::add_lock_lane`) is still to build; see the handoff in
-    /// mpfree-claude handoffs/2026-11-18-play-pads-sequencer-redesign.md.
-    fn refresh_lane_list(&mut self) {}
+    /// The Lanes list again: the settings of the pad hit last, then the
+    /// track's, each saying what it is on and whether its lane shows.
+    fn refresh_lane_list(&mut self) {
+        // The knobs as they are now (a kit edited or sliced since).
+        self.play.lock_knobs = self.lock_knobs();
+        let choices = self.play.lane_choices();
+        let items = choices
+            .iter()
+            .map(|(_, name, on, shown)| ListItem {
+                text: name.clone(),
+                detail: if *shown {
+                    format!("{on} · showing")
+                } else {
+                    on.clone()
+                },
+                color: Some(play_page::LOCKED),
+            })
+            .collect();
+        if let Some(l) = self.ui.get_mut::<ListView>("lanes") {
+            l.items = items;
+            l.selected = choices.iter().position(|c| !c.3).unwrap_or(0);
+        }
+        self.lane_rows = choices
+            .into_iter()
+            .map(|(l, name, on, _)| (l, name, on))
+            .collect();
+    }
+
+    /// A lock lane's tap or turn done (or why not): what it said, and the
+    /// step action for the engine.
+    fn lock_done(&mut self, r: Result<(StepAction, String), String>) -> Option<FromUi> {
+        let (a, line) = match r {
+            Ok((a, line)) => (Some(a), line),
+            Err(why) => (None, why),
+        };
+        self.tell(&line);
+        self.refresh_play();
+        self.refresh_qlinks();
+        a.map(FromUi::Steps)
+    }
+
+    /// The Sequencer's + Lane: the Lanes list over the page, or the page
+    /// again.
+    fn toggle_lane_list(&mut self) {
+        if self.lane_list {
+            self.show_view(self.view);
+            return;
+        }
+        if self.play.steps.clip.is_none() {
+            self.tell("+ Lane: tap a step to start a pattern first");
+            return;
+        }
+        self.close_touch_page();
+        self.refresh_lane_list();
+        self.switch_page(LANES_PAGE);
+        self.lane_list = true;
+        self.refresh_hint();
+    }
+
+    /// A setting picked on the Lanes list: its lock lane shows (with no
+    /// locks yet) and the Steps swipe to it.
+    fn add_lane(&mut self, row: usize) {
+        let Some((l, name, _)) = self.lane_rows.get(row).cloned() else {
+            return;
+        };
+        let shown = self.play.lock_lanes().contains(&l);
+        let Some(id) = self.play.add_lock_lane(l) else {
+            self.tell("+ Lane: tap a step to start a pattern first");
+            return;
+        };
+        self.refresh_play();
+        let lane = play_widgets::LOCK_LANE + id;
+        let top = self
+            .ui
+            .rect_of(play_page::STEPS)
+            .zip(self.ui.get::<StepGrid>(play_page::STEPS))
+            .and_then(|(r, g)| g.top_showing(r, lane));
+        if let Some(top) = top.filter(|&t| t != self.play.steps_top) {
+            self.play.steps_top = top;
+            self.refresh_play();
+        }
+        let under = if l.row == crate::time::LINE {
+            "on the track".to_string()
+        } else {
+            format!("under {}", self.play.pad_name(usize::from(l.row)))
+        };
+        let line = if shown {
+            format!("steps: the {name} lane {under} is there already")
+        } else {
+            format!("steps: {name} lane {under}: tap a step on it to lock it")
+        };
+        println!("{line}");
+        self.tell(&line);
+    }
 
     /// The list of kits again: its rows, and the kit on the pads picked
     /// (and the Pads tab's Kit of row, which names the kits).
@@ -3045,6 +3168,7 @@ impl Player {
         use mpfree_fx::ids::mixer as mx;
         use mpfree_fx::StripId;
         use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_sampler::engine::PadField;
         use play_page::{SoundKind, SoundKnob};
         if !self.play.sequencer || self.play.pitched() {
             return Vec::new();
@@ -3059,11 +3183,22 @@ impl Player {
         pads.push(self.play.last_pad);
         pads.sort_unstable();
         pads.dedup();
-        let mut v: Vec<SoundKnob> = pads
-            .into_iter()
-            .flat_map(|p| self.pad_knobs(p))
-            .flatten()
-            .collect();
+        let synth = self.kits.get(self.kit).is_some_and(|k| k.synth.is_some());
+        let mut v: Vec<SoundKnob> = Vec::new();
+        for p in pads {
+            v.extend(self.pad_knobs(p).into_iter().flatten());
+            // A sliced pad's slice (the sampler's R4 Slice lock): its own
+            // lane, a slice a step.
+            let sliced = self.sample.pad_slices(p).filter(|_| !synth);
+            if let (Ok(sound), Some((n, own))) = (u8::try_from(p), sliced) {
+                v.push(SoundKnob {
+                    name: "Slice".to_string(),
+                    addr: RelAddr::new(OnTrack::Pad(sound), PadField::Slice as u16),
+                    kind: SoundKind::Slice(n.min(usize::from(u8::MAX)) as u8),
+                    own,
+                });
+            }
+        }
         let state = self
             .ui
             .get::<mpfree_mixer_ui::MixerView>(mpfree_mixer_ui::MIXER)
@@ -3915,6 +4050,16 @@ impl Player {
     /// yet, so ERASE leaves them alone.
     fn erase_tap(&mut self, ev: &UiEvent) -> Option<Option<FromUi>> {
         match (ev.widget.as_str(), &ev.kind) {
+            // A lock lane's step: its lock comes off (the lane stays).
+            (play_page::STEPS, EventKind::Cell { row, col }) if *row >= play_widgets::LOCK_LANE => {
+                let a = self.play.erase_lock(row - play_widgets::LOCK_LANE, *col);
+                if a.is_none() {
+                    self.tell("ERASE: that step has no lock on this lane");
+                }
+                self.refresh_play();
+                self.refresh_qlinks();
+                Some(a.map(FromUi::Steps))
+            }
             // A step: it comes out, locks too (a tap only switches it off
             // and keeps it, the redesign's step 3b).
             (play_page::STEPS, EventKind::Cell { row, col }) => {
@@ -4473,6 +4618,8 @@ impl Player {
             HISTORY_HINT.to_string()
         } else if self.kit_list {
             KITS_HINT.to_string()
+        } else if self.lane_list {
+            LANES_HINT.to_string()
         } else if let Some(name) = &self.learning {
             learning_hint(name)
         } else if self.status.shift
@@ -4569,6 +4716,11 @@ impl Player {
                     time_view::edit_hint(self.time.edit.as_ref().map_or(Lens::Grid, |e| e.editor.lens))
                         .to_string()
                 }
+                // A kit's Steps: + Lane and the lock lanes (the redesign's
+                // step 5).
+                View::Sequencer if !self.play.pitched() => format!("Tap a step: on or off   ·   a lit step: pick it   ·   \
+                                            + Lane: a lock lane   ·   a lock lane's step: tap it, then drag   ·   \
+                                            STEP SEQ: steps on the pads   ·   PAD BANK: bank   ·   {stop}"),
                 View::Sequencer => format!("Tap a step: on or off   ·   a lit step: pick it   ·   Notes: the clip's notes   ·   \
                                             STEP SEQ: steps on the pads   ·   PAD BANK: bank   ·   MENU: options   ·   {stop}"),
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
@@ -8522,6 +8674,7 @@ impl Player {
         // note editor, the REC chip's target list (Play's and the
         // Sequencer's transport both have the chip).
         self.kit_list = false;
+        self.lane_list = false;
         let notes = v == View::Sequencer && self.time.edit.is_some();
         if v != self.view || notes || !matches!(v, View::Play | View::Sequencer) {
             self.rec_list = false;
@@ -9276,6 +9429,18 @@ impl Player {
                 self.show_view(self.view);
                 None
             }
+            // The Lanes list: a setting gets its lock lane; Back.
+            ("lanes", EventKind::Select(row)) => {
+                if self.lane_list {
+                    self.show_view(self.view);
+                }
+                self.add_lane(row);
+                None
+            }
+            ("lanes-card", EventKind::Tab(_)) => {
+                self.show_view(self.view);
+                None
+            }
             (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_BPM)) => {
                 Some(FromUi::TapTempo)
             }
@@ -9409,6 +9574,61 @@ impl Player {
             (play_page::STEPS, EventKind::Select(0)) => self.arm_tap(crate::rec_arm::Target::Notes),
             (crate::looper_page::LOOP_STRIP, EventKind::Select(0)) => {
                 self.arm_tap(crate::rec_arm::Target::Loop)
+            }
+            // The Sequencer's lock lanes (the redesign's step 5): + Lane
+            // opens the Lanes list; a tap on a lane's step locks it at the
+            // sound's own value, or unlocks it; a drag on it (or the wheel,
+            // the step held) turns it; the lane's × takes it off, its
+            // locks too.
+            (play_page::STEPS, EventKind::Tab(play_widgets::HEAD_LANE)) => {
+                self.toggle_lane_list();
+                None
+            }
+            (play_page::STEPS, EventKind::Cell { row, col }) if row >= play_widgets::LOCK_LANE => {
+                let r = self.play.tap_lock(row - play_widgets::LOCK_LANE, col);
+                self.lock_done(r)
+            }
+            (play_page::STEPS, EventKind::Step { index, delta })
+                if index >= play_widgets::LOCK_LANE =>
+            {
+                let fine = self.status.shift;
+                let r = self
+                    .play
+                    .turn_lock(index - play_widgets::LOCK_LANE, delta, fine);
+                self.lock_done(r)
+            }
+            (play_page::STEPS, EventKind::Toggle(lane)) if lane >= play_widgets::LOCK_LANE => {
+                let id = lane - play_widgets::LOCK_LANE;
+                let name = self
+                    .play
+                    .lock_lanes()
+                    .get(id)
+                    .map(|l| self.play.lock_name(l.addr));
+                let a = self.play.clear_lock_lane(id);
+                if let Some(name) = name {
+                    let line = format!(
+                        "steps: the {name} lane is off{}",
+                        if a.is_some() { ", its locks too" } else { "" }
+                    );
+                    println!("{line}");
+                    self.tell(&line);
+                }
+                self.refresh_play();
+                self.refresh_qlinks();
+                a.map(FromUi::Steps)
+            }
+            // The Sequencer's Steps with lock lanes: a swipe moves them.
+            (play_page::STEPS, EventKind::Step { index, delta })
+                if index == play_widgets::ROWS && !self.play.on_play_rows() =>
+            {
+                let last = self
+                    .ui
+                    .rect_of(play_page::STEPS)
+                    .zip(self.ui.get::<StepGrid>(play_page::STEPS))
+                    .map_or(0, |(r, g)| g.steps_last_top(r));
+                self.play.scroll_steps(delta, last);
+                self.refresh_play();
+                None
             }
             (play_page::STEPS, EventKind::Cell { row, col }) => {
                 let a = self.play.tap_step(row, col);
@@ -12138,6 +12358,34 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         out.push((name, p));
     }
+    // The Sequencer's lock lanes (the Play, Pads and Sequencer redesign's
+    // board 3): Kick's Decay locked on steps 7 and 12, and a Delay send
+    // lane on the track throwing on steps 8, 15 and 16; then the Lanes
+    // list + Lane opens.
+    let mut lanes = sample_play(fonts(), PlayView::Beats);
+    {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_sampler::engine::PadField;
+        let decay = RelAddr::new(OnTrack::Pad(0), PadField::Decay as u16);
+        let send = RelAddr::new(
+            OnTrack::Strip,
+            mpfree_fx::ids::mixer::send(crate::mixing::DELAY_RETURN),
+        );
+        if let Some(c) = lanes.play.steps.clip.as_mut() {
+            c.lock_values.extend([
+                (0, 6, decay, 180.0),
+                (0, 11, decay, 90.0),
+                (crate::time::LINE, 7, send, play_page::send_db(0.9)),
+                (crate::time::LINE, 14, send, 0.0),
+                (crate::time::LINE, 15, send, 0.0),
+            ]);
+        }
+    }
+    lanes.refresh_play();
+    let mut list = sample_play(fonts(), PlayView::Beats);
+    list.toggle_lane_list();
+    out.push(("sequencer-lock-lanes", lanes));
+    out.push(("sequencer-lanes-list", list));
     // The synth on the pads, A minor, In key: the pads panel's switch.
     let mut synth = sample_player(fonts());
     let mut s = crate::synth::Synth::new(44_100);
@@ -17146,6 +17394,231 @@ mod tests {
         assert!(p
             .take_actions()
             .contains(&FromUi::PlayFx(PlayFx::XyEffect(Some(1)))));
+    }
+
+    /// The Sequencer's lock lanes (the redesign's step 5, board 3): the
+    /// clip's Tune locks have lanes; + Lane opens the Lanes list (Kick's
+    /// settings, then the track's); Decay picked hangs under Kick; a tap
+    /// on a step locks it at Kick's own decay, a drag turns it, ERASE
+    /// takes it; the × takes the lane off (held in Perform); a sliced Kick
+    /// offers a Slice lane.
+    #[test]
+    fn the_sequencers_lock_lanes_lock_turn_and_come_off() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_sampler::engine::PadField;
+        use mpfree_ui::{Rect, Widget as _};
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        assert_eq!(p.view, View::Sequencer);
+        let target = |p: &Player, id: &str, index: usize| -> Rect {
+            let r = p.ui.rect_of(play_page::STEPS).unwrap();
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .targets(r)
+                .into_iter()
+                .find(|t| t.id == id && t.index == index)
+                .unwrap_or_else(|| panic!("{id} {index}"))
+                .rect
+        };
+        let mid = |b: Rect| (b.x + b.w / 2, b.y + b.h / 2);
+        // (What waits in the outbox goes first, so a tap's action would
+        // queue behind it.)
+        let tap = |p: &mut Player, b: Rect| {
+            p.take_actions();
+            let (x, y) = (b.x + b.w / 2, b.y + b.h / 2);
+            let down = p.touch(7, Touch::Down, x, y);
+            let up = p.touch(7, Touch::Up, x, y);
+            // A finger on a value the wheel can turn says so first
+            // (Held), so the step action waits behind it.
+            down.or(up).or_else(|| {
+                p.take_actions()
+                    .into_iter()
+                    .find(|a| matches!(a, FromUi::Steps(_)))
+            })
+        };
+        let lanes = |p: &Player| -> Vec<String> {
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .lanes
+                .iter()
+                .filter_map(|l| {
+                    let k = l.lock.as_ref()?;
+                    Some(format!("{} {}", l.name, k.sub))
+                })
+                .collect()
+        };
+        // The pattern's Tune locks: a lane each, under Kick, Snare, Conga.
+        assert_eq!(
+            lanes(&p),
+            ["Tune lock · Kick", "Tune lock · Snare", "Tune lock · Perc"]
+        );
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("+ Lane: a lock lane"), "{hint}");
+        // + Lane: the Lanes list, Kick's settings then the track's.
+        assert_eq!(
+            {
+                let b = target(&p, "head", play_widgets::HEAD_LANE);
+                tap(&mut p, b)
+            },
+            None
+        );
+        assert_eq!(p.page(), LANES_PAGE);
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.starts_with("Tap a setting"), "{hint}");
+        let items: Vec<String> =
+            p.ui.get::<ListView>("lanes")
+                .unwrap()
+                .items
+                .iter()
+                .map(|i| format!("{} · {}", i.text, i.detail))
+                .collect();
+        assert_eq!(
+            items[..4],
+            [
+                "Tune · Kick · the pad hit last · showing",
+                "Decay · Kick · the pad hit last",
+                "Filter · Kick · the pad hit last",
+                "Level · Kick · the pad hit last"
+            ]
+        );
+        assert!(
+            items.contains(&"Volume · Track 1 · track mix".to_string()),
+            "{items:?}"
+        );
+        assert!(
+            items.contains(&"Delay send · Track 1 · track FX".to_string()),
+            "{items:?}"
+        );
+        // Decay: its lane under Kick, the Steps back.
+        assert_eq!(
+            p.on_event(UiEvent {
+                widget: "lanes".into(),
+                kind: EventKind::Select(1),
+            }),
+            None
+        );
+        assert_eq!(p.page(), play_page::PlayView::Beats.page_with(true, true));
+        let shown: Vec<usize> = {
+            let r = p.ui.rect_of(play_page::STEPS).unwrap();
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .lanes_shown(r)
+        };
+        let ll = play_widgets::LOCK_LANE;
+        assert_eq!(shown[..3], [0, ll, ll + 1], "Tune, then Decay, under Kick");
+        // A tap on step 7 (Kick hits there): Kick's own decay.
+        let cell = target(&p, "lock", 16 + 6);
+        let a = tap(&mut p, cell);
+        let addr = RelAddr::new(OnTrack::Pad(0), PadField::Decay as u16);
+        let Some(FromUi::Steps(StepAction::Lock {
+            pad: 0,
+            steps: 64,
+            addr: got,
+            value: Some(own),
+        })) = a
+        else {
+            panic!("{a:?}");
+        };
+        assert_eq!(got, addr);
+        assert_eq!(Some(own), p.sample.pad_sound(0).map(|s| s[1]));
+        // A drag down (Kick's decay is open): two detents shorter.
+        let (x, y) = mid(cell);
+        p.take_actions();
+        p.touch(8, Touch::Down, x, y);
+        p.touch(8, Touch::Move, x, y + 17);
+        p.touch(8, Touch::Up, x, y + 17);
+        let a = p.take_actions();
+        assert!(
+            a.iter().any(|a| matches!(a, FromUi::Steps(StepAction::Lock { steps: 64, value: Some(v), .. }) if *v < own)),
+            "{a:?}"
+        );
+        assert!(
+            !a.iter()
+                .any(|a| matches!(a, FromUi::Steps(StepAction::Lock { value: None, .. }))),
+            "a drag is no tap: {a:?}"
+        );
+        // ERASE + a tap: that lock off; on an empty step, nothing.
+        p.apply(ToUi::Status(Status {
+            erase: true,
+            ..p.status.clone()
+        }));
+        assert!(matches!(
+            tap(&mut p, cell),
+            Some(FromUi::Steps(StepAction::Lock {
+                steps: 64,
+                value: None,
+                ..
+            }))
+        ));
+        assert_eq!(
+            {
+                let b = target(&p, "lock", 16 + 2);
+                tap(&mut p, b)
+            },
+            None
+        );
+        p.apply(ToUi::Status(Status {
+            erase: false,
+            ..p.status.clone()
+        }));
+        // Perform holds the × back (a hold presses it).
+        let off = {
+            let r = p.ui.rect_of(play_page::STEPS).unwrap();
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .targets(r)
+                .into_iter()
+                .find(|t| t.id == "lock-lane-off")
+                .unwrap()
+        };
+        assert!(guarded(play_page::STEPS, &off));
+        // The ×: Decay's lane off (it has no locks left).
+        assert_eq!(
+            {
+                let b = target(&p, "lock-lane-off", 1);
+                tap(&mut p, b)
+            },
+            None
+        );
+        assert_eq!(lanes(&p).len(), 3);
+        // The × on Tune: the lane and its two locks.
+        let a = {
+            let b = target(&p, "lock-lane-off", 0);
+            tap(&mut p, b)
+        };
+        assert!(
+            matches!(a, Some(FromUi::Steps(StepAction::Lock { pad: 0, value: None, steps, .. })) if steps == (1 << 6) | (1 << 9)),
+            "{a:?}"
+        );
+        // A sliced Kick: a Slice lane on the list.
+        let mut bb = boom_bap_project();
+        let _ = bb.edit_pad(0, None, |pad| {
+            let r = &mut pad.layers[0].region;
+            let (a, b) = (r.start, r.end);
+            r.slices = (1..8).map(|k| a + (b - a) * k / 8).collect();
+        });
+        p.apply(ToUi::SampleKits {
+            projects: vec![mpfree_sampler::model::Project::new(), bb],
+            rate: 44_100,
+        });
+        {
+            let b = target(&p, "head", play_widgets::HEAD_LANE);
+            tap(&mut p, b)
+        };
+        let items: Vec<String> =
+            p.ui.get::<ListView>("lanes")
+                .unwrap()
+                .items
+                .iter()
+                .map(|i| i.text.clone())
+                .collect();
+        assert!(items.contains(&"Slice".to_string()), "{items:?}");
+        // Back: nothing added.
+        p.on_event(UiEvent {
+            widget: "lanes-card".into(),
+            kind: EventKind::Tab(0),
+        });
+        assert!(p.page().starts_with("Play"));
     }
 
     #[test]
