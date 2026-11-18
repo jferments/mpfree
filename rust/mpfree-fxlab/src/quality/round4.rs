@@ -1280,7 +1280,11 @@ fn tempo_check(
             drawing.set_param(p.id, n.param(p.id));
         }
     }
-    let drawn = drawing.curve(cycle_ms as f32, (cycle_ms * 4.0) as usize + 1);
+    // Twenty points a millisecond, so a quarter of a millisecond either
+    // way spans ten of them and the steepest attack (0.1 ms) still has two.
+    let per_ms = 20.0;
+    let drawn = drawing.curve(cycle_ms as f32, (cycle_ms * per_ms) as usize + 1);
+    let near = (0.25 * per_ms) as usize;
     // In cosine phase, so the beats (every 100 cycles) land on its peaks.
     let amp = db_to_amp(-12.0);
     let w = std::f64::consts::TAU * 200.0 / rate as f64;
@@ -1299,10 +1303,14 @@ fn tempo_check(
         }
         let g = db_amp((y.left[i] / x[i]).abs());
         let ms = beats(i).rem_euclid(rate_beats) / rate_beats * cycle_ms;
-        let k = ((ms * 4.0).round() as usize).min(drawn.len() - 1);
-        let err = (k.saturating_sub(1)..=(k + 1).min(drawn.len() - 1))
-            .map(|j| (g + depth * drawn[j] as f64).abs())
-            .fold(f64::MAX, f64::min);
+        // The distance from the gains the drawing passes through within a
+        // quarter of a millisecond either way (the step wrapping round).
+        let k = (ms * per_ms).round() as usize;
+        let last = drawn.len() - 1;
+        let (lo, hi) = (k as isize - near as isize..=(k + near) as isize)
+            .map(|j| -depth * drawn[j.rem_euclid(last as isize) as usize] as f64)
+            .fold((f64::MAX, f64::MIN), |(lo, hi), d| (lo.min(d), hi.max(d)));
+        let err = (lo - g).max(g - hi).max(0.0);
         worst = worst.max(err);
         if ms <= hold.max(0.25) {
             beat = beat.max((g + depth).abs());
@@ -1316,7 +1324,20 @@ pub(super) fn ducker(r: &mut Report) {
     let rate = r.rate;
     let (main, presets) = engine_subjects(DUCKER, "ducker", "ducker");
     let tempo = named(DUCKER, "ducker/tempo", &[(du::SOURCE, 1.0)]);
-    let tempo_subjects: Vec<&Subject> = std::iter::once(&tempo)
+    // The dotted eighth and the quarter-note triplet (appended rates 6
+    // and 7).
+    let dotted = named(
+        DUCKER,
+        "ducker/tempo-dotted8",
+        &[(du::SOURCE, 1.0), (du::RATE, 6.0)],
+    );
+    let triplet = named(
+        DUCKER,
+        "ducker/tempo-triplet4",
+        &[(du::SOURCE, 1.0), (du::RATE, 7.0)],
+    );
+    let tempo_subjects: Vec<&Subject> = [&tempo, &dotted, &triplet]
+        .into_iter()
         .chain(presets.iter().filter(|p| preset_sets(p, du::SOURCE, 0.5)))
         .collect();
 
@@ -1383,25 +1404,117 @@ pub(super) fn ducker(r: &mut Report) {
         );
     }
 
+    // U3: a drum key through Key LP at 120 Hz: the hats alone don't duck
+    // the tone, and each kick still takes it down by Depth.
+    {
+        let n0 = 4 * rate as usize;
+        let every = rate as usize / 2;
+        let hiss = white(n0 + 1, 1.0, 9);
+        let (mut hats, mut kicks) = (vec![0.0; n0], vec![0.0; n0]);
+        for at in (every / 4..n0).step_by(every / 2) {
+            for i in 0..(0.03 * rate as f64) as usize {
+                if at + i < n0 {
+                    let env = (-(i as f64) / (0.004 * rate as f64)).exp();
+                    // The noise's first difference: a bright hat at about
+                    // -6 dBFS.
+                    hats[at + i] = 0.25 * (hiss[at + i + 1] - hiss[at + i]) * env;
+                }
+            }
+        }
+        let w = std::f64::consts::TAU * 55.0 / rate as f64;
+        for at in (every / 2..n0).step_by(every) {
+            for i in 0..(0.25 * rate as f64) as usize {
+                if at + i < n0 {
+                    let env = (-(i as f64) / (0.08 * rate as f64)).exp();
+                    kicks[at + i] = 0.5 * (w * i as f64).sin() * env;
+                }
+            }
+        }
+        let tone = sine(200.0, amp, n0, rate);
+        let lp = [(du::KEY_LP, 120.0)];
+        let gains = |key: &[f64]| {
+            let mut n = node_with(&main, rate, &lp);
+            let (y, _) = run(
+                n.as_mut(),
+                &Stereo::mono(tone.clone(), rate),
+                Some(&Stereo::mono(key.to_vec(), rate)),
+                &steady(rate),
+                None,
+            );
+            let depth = n.param(du::DEPTH) as f64;
+            let g: Vec<f64> = (0..n0)
+                .map(|i| {
+                    if tone[i].abs() >= 0.5 * amp {
+                        db_amp((y.left[i] / tone[i]).abs())
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            (g, depth)
+        };
+        let (g, _) = gains(&hats);
+        let most = g.iter().fold(0.0f64, |a, v| a.max(-v));
+        r.put(
+            "U3",
+            &main.name,
+            "hats_duck_db_key_lp120",
+            Some(most),
+            Better::Lower,
+            Some(1.0),
+            0.1,
+        );
+        let both: Vec<f64> = (0..n0).map(|i| hats[i] + kicks[i]).collect();
+        let (g, depth) = gains(&both);
+        let worst = (every / 2..n0)
+            .step_by(every)
+            .filter(|at| at + every / 4 < n0)
+            .map(|at| {
+                let low = g[at..at + (0.03 * rate as f64) as usize]
+                    .iter()
+                    .fold(0.0f64, |a, v| a.min(*v));
+                (low + depth).abs()
+            })
+            .fold(0.0f64, f64::max);
+        r.put(
+            "U3",
+            &main.name,
+            "kick_depth_error_db_key_lp120",
+            Some(worst),
+            Better::Lower,
+            Some(1.0),
+            0.1,
+        );
+    }
+
     // U4: clicks on a 60 Hz tone ducked by the beat, by attack (reported:
-    // the shortest attacks click by choice).
+    // the shortest attacks click by choice). The worst of eight starting
+    // phases of the tone, so where the duck's corners fall on its wave
+    // (at a zero crossing they hide) doesn't decide the number.
     for att in [0.1, 0.5, 2.0, 10.0] {
         let n0 = 2 * rate as usize;
-        let x = sine(60.0, amp, n0, rate);
-        let mut n = node_with(&tempo, rate, &[(du::ATTACK, att)]);
-        let (y, _) = run(
-            n.as_mut(),
-            &Stereo::mono(x, rate),
-            None,
-            &steady(rate),
-            None,
-        );
         let c = rate as usize / 2;
+        let w = std::f64::consts::TAU * 60.0 / rate as f64;
+        let worst = (0..8)
+            .map(|k| {
+                let ph = std::f64::consts::TAU * k as f64 / 8.0;
+                let x: Vec<f64> = (0..n0).map(|i| amp * (w * i as f64 + ph).sin()).collect();
+                let mut n = node_with(&tempo, rate, &[(du::ATTACK, att)]);
+                let (y, _) = run(
+                    n.as_mut(),
+                    &Stereo::mono(x, rate),
+                    None,
+                    &steady(rate),
+                    None,
+                );
+                rel_d2(&y.left, 60.0, rate, c - 3000, c + 3000)
+            })
+            .fold(f64::MIN, f64::max);
         r.put(
             "U4",
             &tempo.name,
             format!("click_db_attack{att}ms"),
-            Some(rel_d2(&y.left, 60.0, rate, c - 1000, c + 3000)),
+            Some(worst),
             Better::Info,
             None,
             0.0,

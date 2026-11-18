@@ -48,7 +48,7 @@
 430284	Drive (HQ 4x)
 572112	Drums Boom Kit, a hit every block
 417001	Drums Init Kit, a hit every 4 blocks
-14765	Ducker (tempo)
+16073	Ducker (tempo)
 108120	EQ (4 bands and both cuts)
 256118	EQ (4 bands and both cuts), Freq gliding
 188280	EQ (4 bands and both cuts), HQ 2x
