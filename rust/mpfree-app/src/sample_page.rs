@@ -308,11 +308,12 @@ fn flatten_lift(f: &Flatten) -> FromUi {
     }
 }
 
-/// How a take with `settings` records, for the log: "start now, end
-/// stop, left + right".
 /// Why the recorder row's REC can't take while the line input is off
 /// (the Rec page's [`rec_tab::OFF_NOTE`], as short as the row needs).
 pub const RECORDER_OFF: &str = "Line input off: Looper tab, MENU";
+
+/// How long the recorder row says why the arm refused its REC.
+const HERE_NO_SECONDS: f32 = 4.0;
 
 /// How long a take has run, as the recorder row says it: "0:05.1".
 fn take_time(frames: u64, rate: u32) -> String {
@@ -320,6 +321,8 @@ fn take_time(frames: u64, rate: u32) -> String {
     format!("{}:{:02}.{}", tenths / 600, tenths / 10 % 60, tenths % 10)
 }
 
+/// How a take with `settings` records, for the log: "start now, end
+/// stop, left + right".
 fn take_plan(settings: &rec_tab::RecSettings, sources: &[String]) -> String {
     format!(
         "start {}, end {}, {}",
@@ -668,6 +671,12 @@ pub struct SamplePage {
     lines: Vec<String>,
     /// What the pad take ([`SamplePage::pad_take`]) tells the arm next.
     pad_said: Option<crate::rec_arm::PadNow>,
+    /// The Wave page's REC asks the arm for a pad take on this kit and pad,
+    /// or to end the one running ([`SamplePage::take_rec_here`]).
+    rec_here: Option<(usize, usize)>,
+    /// Why the arm refused the Wave page's REC, and the seconds it is
+    /// still said on the row.
+    here_no: Option<(String, f32)>,
     /// The pad take armed, if any.
     pad_run: Option<PadRun>,
     /// Refused edits, for the screen to say in place.
@@ -858,6 +867,8 @@ impl SamplePage {
             shown_heads: Vec::new(),
             lines: Vec::new(),
             pad_said: None,
+            rec_here: None,
+            here_no: None,
             pad_run: None,
             told: Vec::new(),
             edits: 0,
@@ -3172,16 +3183,34 @@ impl SamplePage {
     /// Record and Stop; a card or the Input section steps a setting.
     fn act_recorder(&mut self, ui: &mut Ui, a: RecorderAction) {
         match a {
+            // The row's REC is a pad take through the arm (the sequencer
+            // thread, 18 Nov), so REC on the MPC, STOP and UNDO end it or
+            // throw it away too; the arm answers with the take's go.
             RecorderAction::Record => {
-                self.start_take(ui);
-                if self.take.is_none() {
-                    // It said why on the log; the row says it too.
-                    if let Some(why) = self.recorder_view().cannot {
+                self.here_no = None;
+                let why = self.recorder_view().cannot;
+                match (self.rec_state_now().target, why) {
+                    (Some(pad), None) if self.take.is_none() && self.pad_run.is_none() => {
+                        self.rec_here = Some((self.kit, pad));
+                    }
+                    (_, why) => {
+                        let why = why.unwrap_or_else(|| "The take is still going".to_string());
+                        let said = if why == RECORDER_OFF {
+                            "the line input is off".to_string()
+                        } else {
+                            why.clone()
+                        };
+                        self.lines.push(format!("sample: no take: {said}"));
                         self.told.push(why);
                     }
                 }
             }
-            RecorderAction::Stop => self.act_rec(ui, RecAction::Stop),
+            // REC lit: the pad take ends through the arm (what recorded is
+            // kept); a take the Rec page started stops here.
+            RecorderAction::Stop => match self.pad_run {
+                Some(run) => self.rec_here = Some((run.kit, run.pad)),
+                None => self.act_rec(ui, RecAction::Stop),
+            },
             RecorderAction::Step(row, delta) => {
                 if row == rec_tab::Row::Source && self.take.is_some() {
                     self.told
@@ -3215,7 +3244,9 @@ impl SamplePage {
         let st = self.rec_state_now();
         let take = self.take.as_ref();
         let started = take.and_then(|t| t.rec.started_at());
-        let cannot = if !self.input_wanted() {
+        let cannot = if let Some((why, _)) = &self.here_no {
+            Some(why.clone())
+        } else if !self.input_wanted() {
             Some(RECORDER_OFF.to_string())
         } else if self.flatten.is_some() {
             Some("Wait for Flatten to finish".to_string())
@@ -3241,16 +3272,26 @@ impl SamplePage {
                     _ => format!("waits for {:.0} dB", settings.threshold_db),
                 }
             ),
+            // A held pad's take waits for PLAY (or the arm's answer).
+            (None, _) if self.pad_run.is_some() || self.rec_here.is_some() => {
+                let (kit, pad) = self
+                    .pad_run
+                    .map(|r| (r.kit, r.pad))
+                    .or(self.rec_here)
+                    .unwrap_or((self.kit, 0));
+                format!("Onto {} · waits for PLAY", self.pad_text(kit, pad))
+            }
             (None, _) => match st.target {
                 Some(p) => format!("Next take onto {}", self.pad_text(self.kit, p)),
                 None => "No pad for a take".to_string(),
             },
         };
+        let recording = take.is_some() || self.pad_run.is_some();
         RecorderView {
             settings,
             sources: st.sources,
-            recording: take.is_some(),
-            waiting: take.is_some() && started.is_none(),
+            recording,
+            waiting: recording && started.is_none(),
             cannot,
             status,
         }
@@ -5291,6 +5332,12 @@ impl SamplePage {
     pub fn tick(&mut self, ui: &mut Ui, dt: f32, showing: bool) {
         self.poll_take(ui);
         self.watch_pad_run();
+        if let Some((_, left)) = self.here_no.as_mut() {
+            *left -= dt;
+            if *left <= 0.0 {
+                self.here_no = None;
+            }
+        }
         self.poll_flatten(ui, dt);
         if showing && self.editor == Editor::Rec && self.rec_state.is_some() {
             self.feed_rec(ui, dt);
@@ -6597,12 +6644,35 @@ impl SamplePage {
     pub fn pad_take(&mut self, ui: &mut Ui, d: crate::rec_arm::PadDo) {
         use crate::rec_arm::PadDo;
         match d {
-            PadDo::Arm { kit, pad } => self.arm_pad_take(ui, kit, pad),
+            PadDo::Arm { kit, pad } => self.arm_pad_take(ui, kit, pad, false),
+            PadDo::ArmHere { kit, pad } => self.arm_pad_take(ui, kit, pad, true),
             // A take on the threshold began when it was armed.
             PadDo::Start => self.begin_pad_take(ui),
             PadDo::End => self.end_pad_take(ui),
             PadDo::Throw => self.throw_pad_take(ui),
         }
+    }
+
+    /// The Wave page's REC since last asked: a pad take onto this kit and
+    /// pad, or the end of the one running, for the arm
+    /// (`gui::FromUi::RecHere`).
+    pub fn take_rec_here(&mut self) -> Option<(usize, usize)> {
+        self.rec_here.take()
+    }
+
+    /// The arm refused the Wave page's REC (another take counts in or
+    /// records): the row says why for a few seconds, and the hint line.
+    pub fn rec_here_refused(&mut self, ui: &mut Ui, why: String) {
+        self.lines.push(format!("sample: no take: {why}"));
+        self.told.push(why.clone());
+        self.here_no = Some((why, HERE_NO_SECONDS));
+        self.feed_recorder(ui, 0.0);
+    }
+
+    /// The Wave page's recorder row shows a pad take (one its REC started,
+    /// or a held pad's): REC on the MPC, STOP and UNDO act on it.
+    pub fn pad_take_on(&self) -> bool {
+        self.pad_run.is_some()
     }
 
     /// What the recorder has to say about the pad take since last asked:
@@ -6625,8 +6695,10 @@ impl SamplePage {
     /// Arms a take onto `pad` of kit `kit`, refused (and ended at once)
     /// while the recorder is busy, the pad has a sound or there is no
     /// input. On the threshold it waits for the sound now; otherwise for
-    /// the music ([`crate::rec_arm::PadDo::Start`]).
-    fn arm_pad_take(&mut self, ui: &mut Ui, kit: usize, pad: usize) {
+    /// the music ([`crate::rec_arm::PadDo::Start`]). `here`: the Wave
+    /// page's REC, whose row picked the pad with the Rec settings' Onto,
+    /// so This pad replaces its sound.
+    fn arm_pad_take(&mut self, ui: &mut Ui, kit: usize, pad: usize, here: bool) {
         let busy = self.take.is_some() || self.flatten.is_some() || self.pad_run.is_some();
         let has_sound = self
             .projects
@@ -6636,7 +6708,7 @@ impl SamplePage {
             Some("the Rec tab is recording")
         } else if has_sound.is_none() || pad >= mpfree_sampler::model::PADS {
             Some("no such pad")
-        } else if has_sound == Some(true) {
+        } else if has_sound == Some(true) && !here {
             Some("it has a sound")
         } else if self.input.is_none() {
             Some("the line input is off")
@@ -6650,8 +6722,9 @@ impl SamplePage {
         let settings = self.rec_settings_now();
         let sources: Vec<String> = self.rec_sources.iter().map(|(n, _)| n.clone()).collect();
         self.lines.push(format!(
-            "sample: take armed for pad {} (one take, from REC): {}",
+            "sample: take armed for pad {} (one take, from {}): {}",
             crate::app::kit_pad_name(pad),
+            if here { "the Wave page's REC" } else { "REC" },
             take_plan(&settings, &sources)
         ));
         self.pad_run = Some(PadRun {
