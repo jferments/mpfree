@@ -70,15 +70,15 @@ use std::time::{Duration, Instant};
 
 use mpfree_chain_ui::state::Pedal;
 use mpfree_chain_ui::ChainAction;
-use mpfree_node::Node;
+use mpfree_node::{Held, Node};
 use mpfree_play::mpfree_param::{OnTrack, ParamAddr, RelAddr};
 use mpfree_sampler::autosample::{Finished, Gear, Job, Plan, PlanError};
 use mpfree_sampler::engine::{EngineView, PadField};
 use mpfree_sampler::export;
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
-    self as model, ChannelPick, ChopSet, Fade, Levels, LoopMode, Pad, PadsPlay, PlayMode, Project,
-    Region, Source, SourceId, Warp, KEPT_CHOP, PADS, SLICE_KEYS_FROM, WARP_BPM,
+    self as model, ChannelPick, ChopSet, Fade, Layer, Levels, LoopMode, Pad, PadsPlay, PlayMode,
+    Project, Region, Source, SourceId, Warp, KEPT_CHOP, PADS, SLICE_KEYS_FROM, WARP_BPM,
 };
 use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::record::{self, Input, Looped, Progress, Recording};
@@ -108,6 +108,7 @@ use mpfree_ui::widgets::Card;
 use mpfree_ui::{EventKind, Tone, Ui, UiEvent};
 
 use crate::gui::FromUi;
+use crate::mixing::Captured;
 use crate::modpanels::PadFx;
 use crate::sampler::{Cloud, Playheads, RecFeed, RecSource, ViewSwap};
 use mpfree_fx::{CapturePoint, StripId};
@@ -675,6 +676,8 @@ pub struct SamplePage {
     marks_seen: u64,
     /// Takes made, for their names.
     takes: u32,
+    /// Captures of an effect's memory kept, for their names.
+    captures: u32,
     /// The last take, said in a line on the tab.
     last_take: String,
     /// The Auto-sample mode, added the first time it is opened.
@@ -803,6 +806,7 @@ impl SamplePage {
             live: None,
             marks_seen: 0,
             takes: 0,
+            captures: 0,
             last_take: String::new(),
             auto: None,
             auto_state: None,
@@ -3958,6 +3962,53 @@ impl SamplePage {
         }
     }
 
+    /// An effect's memory came back from the audio thread (the chain
+    /// editor's Capture on the Grains effect, step C3): it goes where a
+    /// recording would land (the pad picked if it is empty, else the
+    /// bank's next empty pad, or the pad picked whatever it holds when
+    /// the Rec tab's Onto says so), playing as grains with the settings
+    /// the effect had. One undo step; the buffer is freed here.
+    pub fn captured(&mut self, ui: &mut Ui, held: Held, end: Captured) {
+        if end != Captured::Done {
+            self.lines
+                .push(format!("sample: nothing captured: {}", end.why()));
+            self.told.push(format!("Nothing captured: {}", end.why()));
+            return;
+        }
+        let Some(pad) = self.rec_state_now().target else {
+            self.lines
+                .push("sample: nothing captured: no empty pad in this bank".to_string());
+            self.told
+                .push("Nothing captured: no empty pad in this bank".to_string());
+            return;
+        };
+        let grain = mpfree_grain::node::voice_params(held.values());
+        let (rate, ch) = (held.rate(), held.channels() as u8);
+        self.captures += 1;
+        let name = format!("Grains {}", self.captures);
+        match Source::new(&name, rate, ch, held.into_data()) {
+            Ok(src) => {
+                self.keep_as(
+                    ui,
+                    self.kit,
+                    pad,
+                    src,
+                    "grains capture",
+                    ", playing as grains",
+                    |l| {
+                        l.region.mode = PlayMode::Granular;
+                        l.region.grain = grain;
+                    },
+                );
+                self.told
+                    .push(format!("{name} on pad {}", self.pad_text(self.kit, pad)));
+            }
+            Err(e) => self
+                .lines
+                .push(format!("sample: grains capture not kept ({e:?})")),
+        }
+    }
+
     fn take_name(&mut self) -> String {
         self.takes += 1;
         match self.source {
@@ -3983,18 +4034,38 @@ impl SamplePage {
         what: &str,
         bpm: Option<f64>,
     ) {
+        let warp = bpm.map(|b| Warp::new((b as f32).clamp(*WARP_BPM.start(), *WARP_BPM.end())));
+        let warped = warp
+            .as_ref()
+            .map(|w| format!(", warped at {:.1} BPM", w.bpm))
+            .unwrap_or_default();
+        self.keep_as(ui, kit, pad, src, what, &warped, |layer| {
+            layer.region.warp = warp
+        });
+    }
+
+    /// [`Self::keep`] with `set` changing the new layer first, and `after`
+    /// at the end of the line that says so.
+    // The sound and where it goes, then what to say and do: one call each.
+    #[allow(clippy::too_many_arguments)]
+    fn keep_as(
+        &mut self,
+        ui: &mut Ui,
+        kit: usize,
+        pad: usize,
+        src: Source,
+        what: &str,
+        after: &str,
+        set: impl FnOnce(&mut Layer),
+    ) {
         let (name, frames, rate, ch) = (src.name.clone(), src.frames(), src.rate(), src.channels());
         let Some(project) = self.projects.get_mut(kit) else {
             self.lines
                 .push(format!("sample: {what} not kept (the kit is gone)"));
             return;
         };
-        let warp = bpm.map(|b| Warp::new((b as f32).clamp(*WARP_BPM.start(), *WARP_BPM.end())));
-        let warped = warp
-            .as_ref()
-            .map(|w| format!(", warped at {:.1} BPM", w.bpm));
         match project.put_source_as(pad, src, |name, mut layer, old| {
-            layer.region.warp = warp;
+            set(&mut layer);
             match old {
                 Some(_) => Pad::replacing(name, layer, old),
                 None => crate::sampler::kit_pad_with(name, layer),
@@ -4012,10 +4083,7 @@ impl SamplePage {
                     if ch == 2 { "stereo" } else { "mono" },
                     self.pad_text(kit, pad)
                 );
-                self.lines.push(format!(
-                    "sample: {what}: {text}{}",
-                    warped.unwrap_or_default()
-                ));
+                self.lines.push(format!("sample: {what}: {text}{after}"));
                 self.last_take = text;
                 if kit == self.kit {
                     self.lift();

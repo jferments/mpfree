@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_grain::node::param;
 use mpfree_grain::*;
-use mpfree_node::{Ctx, Node, NodeEvent, Timed};
+use mpfree_node::{Ctx, Held, HeldStep, Node, NodeEvent, Timed};
 
 struct Counting;
 thread_local! {
@@ -85,6 +85,9 @@ fn grains_never_allocate() {
     node.prepare(rate, 128);
     node.set_param(param::DENSITY, 120.0);
     let (mut nl, mut nr) = (vec![0.0f32; 128], vec![0.0f32; 128]);
+    // A capture's buffer, made off the audio thread.
+    let mut held = Held::new(2, rate as usize * 9);
+    let mut captures = 0;
 
     watch(true);
     let mut t = 0u64;
@@ -219,6 +222,16 @@ fn grains_never_allocate() {
         node.process(&Ctx::new(rate, t), events, &mut nl, &mut nr);
         node.set_param(param::SIZE, 20.0 + (period % 9) as f32 * 30.0);
         node.set_param(param::REPEAT, ((period / 90) % 6) as f32);
+        // Captures of its memory, one after another.
+        match node.copy_held(&mut held, 4096) {
+            HeldStep::More => {}
+            HeldStep::Done => {
+                held.keep_values(&node);
+                held.clear();
+                captures += 1;
+            }
+            HeldStep::Nothing | HeldStep::Lost => held.clear(),
+        }
         if period % 700 == 699 {
             node.reset();
         }
@@ -230,6 +243,7 @@ fn grains_never_allocate() {
         0,
         "the grain engine allocated or freed"
     );
+    assert!(captures > 5, "the node's memory was captured: {captures}");
     assert!(
         budget.skipped > 0,
         "the budget was never full; the test is not busy enough"

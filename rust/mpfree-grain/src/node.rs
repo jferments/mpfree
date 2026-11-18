@@ -22,7 +22,9 @@
 //!   is stopped) and ends on the frame it is set Off; a new length while
 //!   it repeats rolls the slice from the next line of the new length.
 
-use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Unit};
+use mpfree_node::{
+    Ctx, Curve, Held, HeldStep, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Unit,
+};
 
 use crate::fx::GrainFx;
 use crate::voice::{Budget, Params, SprayShape};
@@ -279,6 +281,52 @@ static PARAMS: [ParamInfo; COUNT] = [
     },
 ];
 
+/// The grain settings the effect plays with these parameter values, by id.
+fn params_of(v: &[f32; COUNT]) -> Params {
+    Params {
+        position: v[usize::from(param::POSITION)] / 100.0,
+        spray: v[usize::from(param::SPRAY)] / 100.0,
+        size_ms: v[usize::from(param::SIZE)],
+        density: v[usize::from(param::DENSITY)],
+        pitch: v[usize::from(param::PITCH)],
+        pitch_spray: v[usize::from(param::PITCH_SPRAY)],
+        reverse: v[usize::from(param::REVERSE)] / 100.0,
+        spread: v[usize::from(param::SPREAD)] / 100.0,
+        timing: v[usize::from(param::TIMING)] / 100.0,
+        size_spray: v[usize::from(param::SIZE_SPRAY)] / 100.0,
+        level_spray: v[usize::from(param::LEVEL_SPRAY)] / 100.0,
+        spray_shape: if v[usize::from(param::PEAKED)] >= 0.5 {
+            SprayShape::Peaked
+        } else {
+            SprayShape::Even
+        },
+        // 60 % is Hann, kept as such so the default plays as it did.
+        window: match v[usize::from(param::SHAPE)] {
+            60.0 => Window::Hann,
+            shape => Window::Shape {
+                shape: shape / 100.0,
+            },
+        },
+        ..Params::default()
+    }
+}
+
+/// The grain settings a pad plays to sound as the effect did with these
+/// parameter values (id, value; any left out keep their defaults): what
+/// [`Held::keep_values`] kept when the effect's memory was captured.
+pub fn voice_params(values: &[(u16, f32)]) -> Params {
+    let mut v = [0.0; COUNT];
+    for p in &PARAMS {
+        v[usize::from(p.id)] = p.default;
+    }
+    for &(id, x) in values {
+        if let Some(p) = PARAMS.iter().find(|p| p.id == id && !p.readonly) {
+            v[usize::from(id)] = p.clamp(x);
+        }
+    }
+    params_of(&v)
+}
+
 static INFO: NodeInfo = NodeInfo {
     id: "mpfree.grains",
     name: "Grains",
@@ -327,33 +375,7 @@ impl GrainNode {
     }
 
     fn grain_params(&self) -> Params {
-        let v = &self.values;
-        Params {
-            position: v[usize::from(param::POSITION)] / 100.0,
-            spray: v[usize::from(param::SPRAY)] / 100.0,
-            size_ms: v[usize::from(param::SIZE)],
-            density: v[usize::from(param::DENSITY)],
-            pitch: v[usize::from(param::PITCH)],
-            pitch_spray: v[usize::from(param::PITCH_SPRAY)],
-            reverse: v[usize::from(param::REVERSE)] / 100.0,
-            spread: v[usize::from(param::SPREAD)] / 100.0,
-            timing: v[usize::from(param::TIMING)] / 100.0,
-            size_spray: v[usize::from(param::SIZE_SPRAY)] / 100.0,
-            level_spray: v[usize::from(param::LEVEL_SPRAY)] / 100.0,
-            spray_shape: if v[usize::from(param::PEAKED)] >= 0.5 {
-                SprayShape::Peaked
-            } else {
-                SprayShape::Even
-            },
-            // 60 % is Hann, kept as such so the default plays as it did.
-            window: match v[usize::from(param::SHAPE)] {
-                60.0 => Window::Hann,
-                shape => Window::Shape {
-                    shape: shape / 100.0,
-                },
-            },
-            ..Params::default()
-        }
+        params_of(&self.values)
     }
 
     /// Hands every setting to the effect.
@@ -541,5 +563,14 @@ impl Node for GrainNode {
                 .min(u32::MAX as f32 - 1.0)
                 .ceil() as u32
         }
+    }
+
+    /// The memory the cloud plays from ([`GrainFx::copy_held`]), for a
+    /// capture onto a pad; [`voice_params`] turns the values the host
+    /// keeps with it into the pad's grain settings.
+    fn copy_held(&mut self, into: &mut Held, max_frames: usize) -> HeldStep {
+        self.fx
+            .as_ref()
+            .map_or(HeldStep::Nothing, |fx| fx.copy_held(into, max_frames))
     }
 }

@@ -1,9 +1,9 @@
 //! The granular effect as an FX-chain node: its parameters, what it does
 //! through the node interface, and the rules every node keeps.
 
-use mpfree_grain::node::param;
+use mpfree_grain::node::{param, voice_params};
 use mpfree_grain::GrainNode;
-use mpfree_node::{check_params, Ctx, Kind, Node, NodeEvent, Timed};
+use mpfree_node::{check_params, Ctx, Held, HeldStep, Kind, Node, NodeEvent, Timed};
 
 const RATE: u32 = 44_100;
 
@@ -276,4 +276,53 @@ fn repeat_off_crossfades_back_on_its_frame() {
     assert_eq!(l[back..], input[back..], "the input exactly, 10 ms on");
     assert_eq!(n.tail_frames(), 0);
     assert_eq!(n.param(param::REPEAT), 0.0);
+}
+
+#[test]
+fn its_memory_and_settings_go_out_for_a_capture() {
+    let mut n = node();
+    n.set_param(param::PITCH, 7.0);
+    n.set_param(param::SHAPE, 25.0);
+    n.set_param(param::REVERSE, 30.0);
+    n.set_param(param::FREEZE, 1.0);
+    let mut held = Held::new(2, RATE as usize * 9);
+    assert_eq!(
+        n.copy_held(&mut held, 4096),
+        HeldStep::Nothing,
+        "nothing heard yet"
+    );
+    n.set_param(param::FREEZE, 0.0);
+    run(
+        &mut n,
+        &sine(RATE as usize, 440.0, 0.5),
+        256,
+        &[(30_000, set(param::FREEZE, 1.0))],
+    );
+    let mut calls = 1;
+    while n.copy_held(&mut held, 4096) == HeldStep::More {
+        calls += 1;
+    }
+    assert_eq!(
+        held.span(),
+        Some((0, 30_000)),
+        "everything up to the freeze"
+    );
+    assert_eq!(calls, 8);
+    held.keep_values(&n);
+    assert!(
+        held.values().iter().all(|&(id, _)| id != param::GRAINS),
+        "no meter"
+    );
+    let fx = n.fx().unwrap();
+    assert_eq!(
+        &voice_params(held.values()),
+        fx.params(),
+        "the pad plays as the effect did"
+    );
+    // Unprepared, it holds nothing.
+    let mut cold = GrainNode::new(1);
+    assert_eq!(
+        cold.copy_held(&mut Held::new(2, 10), 4096),
+        HeldStep::Nothing
+    );
 }
