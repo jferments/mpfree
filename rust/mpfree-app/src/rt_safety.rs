@@ -183,6 +183,7 @@ impl Rig {
         time.advance(PERIOD as u32);
         midi.sync(io, time.info().state.rolling());
         midi.clock(time.block());
+        time.set_ahead(&midi.ahead());
         cv.sync(io);
         cv.clock(time.block());
         app.set_clock(time.arp_clock());
@@ -534,17 +535,27 @@ impl std::io::Write for MidiSink {
 /// sound path still never allocates or frees.
 #[test]
 fn a_track_on_midi_out_plays_there_and_never_allocates() {
-    track_on_midi_out_never_allocates(false);
+    track_on_midi_out_never_allocates(false, 0);
 }
 
 /// The same with the track and the clock on a USB device's output: its
 /// own writer, and the jacks get nothing.
 #[test]
 fn a_track_on_a_usb_device_plays_there_and_never_allocates() {
-    track_on_midi_out_never_allocates(true);
+    track_on_midi_out_never_allocates(true, 0);
 }
 
-fn track_on_midi_out_never_allocates(usb: bool) {
+/// The same on gear slower than the sound's lead (sequencer S5): the
+/// track's clip plays ahead, a copy of the transport and the player
+/// forecasting each period, and still nothing allocates and every note
+/// ends once.
+#[test]
+fn a_track_on_slow_gear_plays_ahead_and_never_allocates() {
+    track_on_midi_out_never_allocates(false, 400);
+}
+
+/// `delay_tenths`: the gear's delay on the port's page, in tenths of a ms.
+fn track_on_midi_out_never_allocates(usb: bool, delay_tenths: u16) {
     use mpfree_midi::setup::{ClockOut, TrackOut, DIN_NAME};
     let mut rig = Rig::new(false);
     let mut c =
@@ -581,8 +592,10 @@ fn track_on_midi_out_never_allocates(usb: bool) {
     {
         let mut m = rig.io.lock().unwrap();
         m.setup.tracks[0] = Some(TrackOut::new(port, 9));
-        m.setup
-            .set_port(port, |p| p.clock_out = ClockOut::WhilePlaying);
+        m.setup.set_port(port, |p| {
+            p.clock_out = ClockOut::WhilePlaying;
+            p.delay_tenths = delay_tenths;
+        });
         m.gen += 1;
     }
     // An LFO on the track's CC 74 (its outside gear's brightness), set up
@@ -619,6 +632,13 @@ fn track_on_midi_out_never_allocates(usb: bool) {
         rig.clip_hits, clip_before,
         "the clip's notes reached the pads"
     );
+    let ahead = rig.time.ahead_counts();
+    if delay_tenths > 0 {
+        assert!(ahead.ahead > 20, "{ahead:?}");
+        assert_eq!(ahead.dropped, 0, "{ahead:?}");
+    } else {
+        assert_eq!(ahead, Default::default());
+    }
     // Closing ends whatever is still on.
     assert!(rig.midi.close());
     let bytes = sink.0.lock().unwrap().clone();
