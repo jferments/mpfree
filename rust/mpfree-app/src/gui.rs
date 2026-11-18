@@ -1560,6 +1560,9 @@ pub struct Player {
     kit_list: bool,
     /// The list of kits' rows: each a kit (or the synth), None for New kit.
     kit_rows: Vec<Option<usize>>,
+    /// The Lanes list is open over the Sequencer's Steps ("+ Lane").
+    /// Work in progress (redesign step 5): nothing opens it yet.
+    lane_list: bool,
     /// The "+ Kit track" ask for a track: how many tracks there were, and
     /// when. Once the new track is armed it gets an empty kit.
     kit_track: Option<(usize, Instant)>,
@@ -1954,6 +1957,7 @@ impl Player {
             perform_chip: None,
             kit_list: false,
             kit_rows: Vec::new(),
+            lane_list: false,
             kit_track: None,
             chip_why: Vec::new(),
             fingers: Vec::new(),
@@ -2100,6 +2104,12 @@ impl Player {
             self.kit_track = None;
         }
     }
+
+    /// The Lanes list again. Work in progress (redesign step 5): the
+    /// list page (`PlayPage::lane_choices`, a pick calls
+    /// `PlayPage::add_lock_lane`) is still to build; see the handoff in
+    /// mpfree-claude handoffs/2026-11-18-play-pads-sequencer-redesign.md.
+    fn refresh_lane_list(&mut self) {}
 
     /// The list of kits again: its rows, and the kit on the pads picked
     /// (and the Pads tab's Kit of row, which names the kits).
