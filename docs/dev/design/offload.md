@@ -61,7 +61,7 @@ MTU, so a block is never split and a lost datagram loses one block.
 | 27 | 1 | events that follow, 0 to 34 (a reply has none) |
 | 28 | 2 | flags: in a request, CLEAR (reset the node first); in a reply, GAP (requests went missing before this one) and RESET (the node gave a non-finite sample and was reset) |
 | 30 | 2 | the server's render time for the block, µs |
-| 32 | 12 each | events: frame offset, kind, note, parameter id, value |
+| 32 | 12 each | events: frame offset, kind, note, parameter id, value. Kinds 1 to 7 are the node events NoteOn to Param; kind 8 is a controller (`NodeEvent::Control`), its MIDI number in the note's place, added 18 Nov 2026 without a version change, so a server built before that refuses a block that carries one |
 | ... | 4 each | audio: the left channel, then the right, as f32 |
 
 A stereo period of 128 frames is 1,056 bytes each way: 2.9 Mbit/s per

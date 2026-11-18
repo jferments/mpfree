@@ -1,12 +1,12 @@
 <!--
 status: changing
-covers: rust/mpfree-sampler/src/model.rs rust/mpfree-sampler-ui/src/play_tab.rs rust/mpfree-sampler-ui/src/grain_tab.rs rust/mpfree-sampler-ui/src/keys_widgets.rs rust/mpfree-grain rust/mpfree-app/src/sample_page.rs
-checked: 2026-11-16 ececc7e
+covers: rust/mpfree-sampler/src/model.rs rust/mpfree-sampler-ui/src/play_tab.rs rust/mpfree-sampler-ui/src/sound_panel.rs rust/mpfree-sampler-ui/src/grain_tab.rs rust/mpfree-sampler-ui/src/keys_widgets.rs rust/mpfree-grain rust/mpfree-app/src/sample_page.rs
+checked: 2026-11-18 ec8cb82
 -->
 
 # Shaping how a pad plays
 
-Once a sound is on a pad (see [Sampling](sampling.md)), the Sample tab's **Play**, **Grain** and **FX** pages decide what happens when you hit it: how loud and how bright, which other pads it stops or brings in, whether it plays as grains, and which effects it goes through. The last part of this chapter turns a whole kit into a keyboard instrument.
+Once a sound is on a pad (see [Sampling](sampling.md)), the Sample tab's **Play** and **Grain** pages, and the effects on the pad's mixer channel, decide what happens when you hit it: how loud and how bright, which other pads it stops or brings in, whether it plays as grains, and which effects it goes through. The Wave page's **Sound** section shows the Play page's envelope, filter, pitch and movement controls four at a time, beside the wave. The last part of this chapter turns a whole kit into a keyboard instrument.
 
 As everywhere on the Sample tab, **hit a pad** to pick the one you are shaping.
 
@@ -31,8 +31,8 @@ Its settings come in **sections**, a button each across the top of the page, wit
 | --- | --- | --- |
 | **Layers** | how a hit picks layers, Vel fade, the picked layer's Sound, Vel low, Vel high, Level, Pan and Tune, and Add layer and Remove layer | the layer's level, pan, tune and lowest velocity |
 | **Amp** | the pad's Level and Pan, Attack, Hold, Decay, Sustain and Release | attack, decay, sustain, release |
-| **Filter** | the filter's type, Cutoff, Resonance, and its envelope: Env depth, Env attack, Env decay, Env sustain, Env release | cutoff, resonance, env depth, env decay |
-| **Pitch** | Tune, Wow & flutter, Vintage, and the keys: Keys, Low key, High key, Root key, Key fade | tune, wow, low key, high key |
+| **Filter** | the filter's type, Cutoff, Resonance, Drive (the Ladder's), and its envelope: Env depth, Env attack, Env decay, Env sustain, Env release | cutoff, resonance, env depth, env decay |
+| **Pitch** | Tune, Wow & flutter, Vintage, and the keys: Keys, Low key, High key, Root key, Key fade, and Mono, Legato, Glide and Glide on | tune, wow, low key, high key |
 | **Mod** | Vel → level, Vel → start, Vel → cutoff, Vel → pitch, Pressure and its Depth | vel → level, vel → start, pressure, depth |
 | **Movement** | LFO to, LFO wave, LFO rate, LFO depth, Sync to tempo, Retrigger, Pitch env and Pitch decay | LFO rate, LFO depth, pitch env, pitch decay |
 | **Pad** | Polyphony, Mute group, Stops, Also plays, Latch, and the kit's Pads play, Pads from and Levels by | voices, mute group, pads play, pads from |
@@ -41,7 +41,21 @@ On a Q-Link, SHIFT turns finer. Hold **SHIFT** and touch a knob to give it a kno
 
 On the **Filter** section the drawing shows the filter's own envelope instead of the volume's: how far and how fast the cutoff moves on each hit. **Env depth** says how far, up to 4 octaves up or down; drag the points for its times, or turn their knobs.
 
-A cutoff or resonance change reaches a sound that is still playing, gliding there; a new envelope or filter type plays from the next hit.
+A cutoff or resonance change reaches a sound that is still playing, gliding there, and so does Drive; a new envelope or filter type plays from the next hit.
+
+### Filter types: low pass to vowel
+
+The **Filter** selector steps through the types:
+
+- **LP**, **HP** and **BP** (low pass, high pass, band pass), each **2-pole** (gentle, 12 dB an octave) or **4-pole** (steep, 24 dB an octave). Low pass darkens, high pass thins, band pass keeps a slice around the cutoff.
+- **Notch** (2-pole or 4-pole): the opposite of band pass. It takes out a band around the cutoff and leaves the rest, for a hollow, phasey sound; sweep it with the envelope or the LFO. 4-pole takes out a wider band.
+- **Ladder**: a 4-pole low pass in the style of the classic analog synth filter, warm and round. Its Resonance sings: turned right up, it rings at the cutoff on its own, at a steady level, however long you hold the note. **Drive** pushes the sound into the filter harder, from Off up to 24 dB, for grit and growl. It keeps the level of an ordinary sound about the same as you turn it, so turning it up adds bite rather than volume, and it stays clean of the harsh, out-of-tune fizz cheap drives add on high notes. Drive is the Ladder's alone: on another type its knob is faint and says so.
+- **Vowel**: two narrow peaks where a voice has them, so the sound "says" a vowel. Cutoff picks the vowel: from 200 Hz and below it says "oo", then "oh", "ah" and "eh", up to "ee" from 5 kHz, sliding smoothly between them, and the Cutoff's value names the vowel ("1.00 kHz · ah"). Resonance makes the peaks narrower and more nasal. Sweep the Cutoff with the filter envelope or the LFO and a pad talks: "oo-ah" on each hit. It works best on rich sounds (pads, saws, choirs, breaks); a pure tone right on a peak comes out louder.
+
+{{shot: sample-play-ladder | The Filter section with the Ladder: a 1 kHz cutoff, Resonance at 70 %, so the curve peaks at the cutoff, and 12 dB of Drive.}}
+
+> [!MPC]
+> The MPC offers many more filter models. MPFree keeps a smaller set and measures each one in its quality lab against the analog filter it follows.
 
 ### Layers: more than one sound on a pad
 
@@ -170,18 +184,14 @@ The preset that is on stays lit, and the **Presets** button names it, until you 
 
 **Every layer its own cloud.** The Grain page (and the Wave, Warp and Chop pages) work on the layer picked on the Play page's layer map, and the top line says which ("· layer 2"). So a pad can play its sound plainly on soft hits and as a cloud on hard ones.
 
-## FX: effects on one pad, or on the whole kit
+## Effects on one pad, or on the whole kit
 
-**FX**, in the Sample tab's row of pages, shows the effects on the pad you are editing as a row of pedals under its sound.
+A pad's effects are on its own channel in the mixer. The **Effects** row of the [Pads tab](sampling.md#the-pads-tab-sounds-onto-pads) names them (**+ FX** when there are none): tap it, or push the wheel on it, to open the pad's chain in the Mix tab (see [Mixing and effects](effects.md#adding-an-effect-the-chain-editor)), and **‹** brings you back to the Pads tab.
 
-- **The pedals.** Each effect on the pad's own channel is a pedal: its number, its name and what it is set to, an **On** switch, and its first three knobs. Four show at once; with more, **Effects ‹ ›** on the right moves along them. Along the foot of the sound, a line shows the way it goes: the sound, each effect in order (one switched off is faint), then **Drums**.
-- **Turning them.** Touch a pedal to pick it: it is outlined, and **Q-Links 1 to 4** turn its four main knobs. Drag a knob up or down, or touch it and turn the data wheel; a finger resting on a knob lets the wheel turn it until you lift. SHIFT turns a Q-Link finer.
-- **+ Add effect** opens the effect picker on the pad's channel, and **Whole chain** the **chain editor** (see [Mixing and effects](effects.md#adding-an-effect-the-chain-editor)) on it, with every control of every effect, their order, presets and modulation. Both open in the Sample tab's place, and **Back** comes back to the Sample tab.
+- **The pad's own effects.** An effect on the pad's channel plays on that pad alone. Add **Perform FX** for stutters, beat repeats, tape stops and reverse on just that pad, in time with the tempo. Each of its 16 slots (**Slot 1** to **Slot 16**) is a page in the editor, with its effect, its length and a **Hold** switch: Hold on plays it, off lets it go.
+- **The whole kit's effects.** The track the kit plays into (**Drums** for kit 1) has a chain of its own in the Mix tab, so an effect there plays on the whole kit, like a bus effect on the SP-404. To make it a one-knob effect, put its knobs on a macro (see [Macros](effects.md#macros)), and that macro's Q-Link plays them all at once.
 
-- **The pad's own effects.** The pedals are the pad's own channel's, so an effect added there plays on that pad alone. Add **Perform FX** for stutters, beat repeats, tape stops and reverse on just that pad, in time with the tempo. Each of its 16 slots (**Slot 1** to **Slot 16**) is a page in the editor, with its effect, its length and a **Hold** switch: Hold on plays it, off lets it go.
-- **The whole kit's effects.** In **Whole chain**, the switch at the top goes to the track the kit plays into (**Drums** for kit 1), so an effect there plays on the whole kit, like a bus effect on the SP-404. To make it a one-knob effect, put its knobs on a macro (see [Macros](effects.md#macros)), and that macro's Q-Link plays them all at once.
-
-The effects belong to the pad's place in the kit, not to its sound: put another sound on the pad and it plays through the same effects. Kit 1's bank A pads (A1 to A16) always have a channel of their own in the mixer. Any other pad, on any bank of any kit, gets one when you give it an effect with **+ Add effect** or **Whole chain**: the mixer's Pads view then shows it by its pad and kit ("B5 · Kit 2"), playing into its kit's track. Once the pad has nothing on it again, it gives the channel back. There are 48 of these channels; with all of them in use, the FX page says so, and taking another pad's effects off frees one.
+The effects belong to the pad's place in the kit, not to its sound: put another sound on the pad and it plays through the same effects. Kit 1's bank A pads (A1 to A16) always have a channel of their own in the mixer. Any other pad, on any bank of any kit, gets one when you give it an effect: the mixer's Pads view then shows it by its pad and kit ("B5 · Kit 2"), playing into its kit's track. Once the pad has nothing on it again, it gives the channel back. There are 48 of these channels; with all of them in use, MPFree says so, and taking another pad's effects off frees one.
 
 ## Playing a kit on keys
 
@@ -212,6 +222,19 @@ Where one zone ends and the next begins, the sound can switch at a hard edge or 
 The keyboard and the layer map draw each fade as a curve at the ends of its bar.
 
 {{shot: sample-keys-crossfade | Key fade at 4 notes: the zones that met now overlap and blend over four keys.}}
+
+### One note at a time: Mono, Legato and Glide
+
+A bass line or a lead plays one note at a time, sliding from note to note. The Pitch section's Keys part does that for a pad with keys:
+
+- **Mono**: the pad plays one note, the last key you play. Let go of it while an earlier key is still held and the pad goes back to that key.
+- **Legato**: with Mono on, a key played while another is held moves the sounding note to the new pitch without starting it again. Its envelope and its place in the sound carry on, so a slow attack doesn't come in again. A key played on its own starts the sound as usual.
+- **Glide**: how long the pitch takes to slide to the next note, from Off up to 2 s. Every interval takes that long, a semitone or an octave.
+- **Glide on**: **Every note** slides into each note from the last one played, even after you let go. **Held keys** only slides when you play a key while another is held, so separate notes land on their pitch at once.
+
+They work on a pad's keys, from MIDI or with the pads playing notes. A hit on the pad itself plays as before, and while Keys is off the four say so. A warped sound and a sliced pad keep their pitch, and a grain layer slides with its own Glide on the Grain page. The Pitch chip says **mono** or **legato** while Mono is on.
+
+{{shot: sample-play-mono | The Pitch section of a pad with keys: Mono and Legato on, and a 200 ms glide on held keys.}}
 
 > [!MPC]
 > On an MPC a keygroup instrument is a program type of its own. In MPFree keygroups are pads of an ordinary kit, so any kit can become one with Map to keys.

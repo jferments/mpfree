@@ -54,7 +54,7 @@ While the music plays, hold **PLAY** for a fill: notes set to play only in fills
 
 ## Muting
 
-There is no separate mute page. Each pattern row's name is its **mute button**, with a speaker icon in a box: tap anywhere on the name to mute that pad (the box turns red and the speaker shows a ×), and again to bring it back. On the loop strip, each layer's name and speaker are one button that mutes that layer.
+There is no separate mute page. Each pattern row's name is its **mute button**, with a speaker icon in a box: tap anywhere on the name to mute that pad (the box turns red and the speaker shows a ×), and again to bring it back. On Play's loop row, each loop's speaker mutes the loop, and each layer of the picked loop is a chip at the top of the row that mutes that layer.
 
 Hold **ERASE** and tap a row's name to delete that sound's steps from the pattern instead. **UNDO** brings them back.
 
@@ -141,7 +141,6 @@ The four knobs change with the view:
 | All, and the Sequencer's Steps | Swing | Tune (last pad played) | Drums' filter | Drums' delay send |
 | All and Steps, with 16 Levels on Transpose | Swing | Transpose (the armed track) | Drums' filter | Drums' delay send |
 | Steps, with a step picked | Velocity | Length | Nudge | Chance |
-| Loop | Loop level | Loop's delay send | Line input level | Loop filter |
 
 Swing reads **off** at 50 %, which is straight time, as it does in the transport bar. Turn it up for a shuffle.
 

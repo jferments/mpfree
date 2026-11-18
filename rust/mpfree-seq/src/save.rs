@@ -52,11 +52,18 @@
 //! program 1 12 bank 0
 //! place 0 0 7680 0 slot 0
 //! marker 0 Intro
+//! tempo 0 92
+//! tempo 15360 140 ramp
+//! tempo 19200 100
 //! morph 0 0 1
 //! list 0 2
 //! list 1 4
 //! listloop
 //! ```
+//!
+//! A `tempo` line is a song's tempo point (tempo ramps): its tick, its
+//! tempo, and `ramp` when it glides to the next point. An older build
+//! skips them and plays the project's tempo.
 //!
 //! A note's words after its pressure are the step's own settings, written
 //! only when set (sequencer S6): `off` (the step is off), `ramp:<n>` (its
@@ -91,7 +98,7 @@ use mpfree_notefx::{Slot, MAX_FX};
 use mpfree_param::{ParamAddr, RelAddr};
 use mpfree_transport::time::{Swing, Tick};
 
-use crate::arrange::{Marker, MorphRows, Placement, Source};
+use crate::arrange::{Marker, MorphRows, Placement, Source, TempoPoint};
 use crate::scenes::{Follow, FollowAction, ListStep, Scene, MAX_LIST_STEPS, SCENES};
 use crate::{
     Clip, Cond, Join, LaunchGrid, Lock, LoopInput, Note, Original, Project, Quantise, Speed, Touch,
@@ -190,6 +197,10 @@ pub fn to_text(p: &Project) -> String {
     }
     for m in &a.markers {
         let _ = writeln!(s, "marker {} {}", m.at, one_line(&m.name));
+    }
+    for t in &a.tempo {
+        let ramp = if t.ramp { " ramp" } else { "" };
+        let _ = writeln!(s, "tempo {} {}{ramp}", t.at, t.bpm);
     }
     for m in &a.morphs {
         let _ = writeln!(s, "morph {} {} {}", m.at, m.a, m.b);
@@ -790,6 +801,18 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 });
                 at = At::Top;
             }
+            ("tempo", At::Top | At::Track | At::Scene) => {
+                let t = (|| {
+                    let at: Tick = num(w.next())?;
+                    let bpm: f64 = num(w.next())?;
+                    // Words a newer build adds after it are skipped.
+                    let ramp = w.any(|x| x == "ramp");
+                    Some(TempoPoint { at, bpm, ramp })
+                })()
+                .ok_or_else(|| bad("tempo"))?;
+                p.arrangement.tempo.push(t);
+                at = At::Top;
+            }
             ("morph", At::Top | At::Track | At::Scene) => {
                 let m = (|| {
                     Some(MorphRows {
@@ -1207,6 +1230,36 @@ mod tests {
         ] {
             let text = format!("{FORMAT}\ntrack Bass\ndest 0\n{bad}\n");
             assert!(from_text(&text).is_err(), "{bad}");
+        }
+    }
+
+    /// A song's tempo points (tempo ramps): written in order with their
+    /// ramps, read back the same; a newer word after one is skipped; one
+    /// out of range, out of order or too near another refuses the part.
+    #[test]
+    fn a_songs_tempo_points_round_trip() {
+        let mut p = Project::new();
+        assert!(!to_text(&p).contains("tempo"));
+        let a = &mut p.arrangement;
+        a.set_tempo(0, 92.0, None).unwrap();
+        a.set_tempo(15_360, 140.5, Some(true)).unwrap();
+        a.set_tempo(19_200, 100.0, None).unwrap();
+        let text = to_text(&p);
+        assert!(text.contains("tempo 0 92\ntempo 15360 140.5 ramp\ntempo 19200 100\n"));
+        assert_eq!(from_text(&text).unwrap(), p);
+        let newer = format!("{FORMAT}\ntempo 0 92 ramp curve=s\ntempo 960 120\n");
+        let read = from_text(&newer).unwrap();
+        assert_eq!(read.arrangement.tempo.len(), 2);
+        assert!(read.arrangement.tempo[0].ramp);
+        for bad in [
+            "tempo x 90",
+            "tempo 0",
+            "tempo 0 500",
+            "tempo -240 90",
+            "tempo 480 90\ntempo 0 100",
+            "tempo 0 90\ntempo 100 100",
+        ] {
+            assert!(from_text(&format!("{FORMAT}\n{bad}\n")).is_err(), "{bad}");
         }
     }
 

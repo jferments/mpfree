@@ -38,7 +38,7 @@ use crate::list::{
 use crate::song::{
     AudioLane, SongBlock, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, BARS_BACK, BARS_ON, INPUTS,
     MONITORS, NONE, PANEL, PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO,
-    PANEL_TAKES, REC, REGION_SLOTS, SECTION_TAP,
+    PANEL_TAKES, REC, REGION_SLOTS, SECTION_TAP, TEMPO_ROW,
 };
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
@@ -150,10 +150,15 @@ pub const SONG_BLOCK_HINT: &str =
 /// The hint line under the Song view with a section picked.
 pub const SONG_SECTION_HINT: &str =
     "Drag the section's name: move it, the others close up (SHIFT as you lift: copy)   ·   push the wheel: move it a section at a time   ·   SHIFT + wheel: bars";
+/// The hint line under the Song view with a tempo point picked.
+pub const SONG_TEMPO_HINT: &str =
+    "Drag the point: move it a bar at a time   ·   push the wheel: change its tempo   ·   Ramp: glide to the next point   ·   SHIFT + wheel: bars";
 
 /// The hint line under the Song view for what is picked.
 pub fn song_hint(st: &TimeState) -> &'static str {
-    if st.selected.is_some() {
+    if st.tempo_pick.is_some() {
+        SONG_TEMPO_HINT
+    } else if st.selected.is_some() {
         SONG_BLOCK_HINT
     } else if st.section.is_some() {
         SONG_SECTION_HINT
@@ -554,8 +559,8 @@ impl TakeRow {
     /// What it is: "take", "capture", "edit", "delete", "paste",
     /// "settings", "reload", "mutate", "restore", for a drop "move",
     /// "swap" or "copy", and for a Song view edit "move", "copy",
-    /// "length", "delete", "unique" or "scenes", "list" for the song
-    /// list and "scene" for the scene editor.
+    /// "length", "delete", "unique", "scenes" or "tempo", "list" for the
+    /// song list and "scene" for the scene editor.
     pub fn word(&self) -> &'static str {
         if let Some(c) = self.song {
             return match c {
@@ -566,6 +571,7 @@ impl TakeRow {
                 SongChange::Unique { .. } => "unique",
                 SongChange::Scenes { .. } => "scenes",
                 SongChange::List | SongChange::ListToSong { .. } => "list",
+                SongChange::Tempo { .. } => "tempo",
             };
         }
         if let Some(d) = self.dropped {
@@ -731,6 +737,16 @@ pub struct TimeState {
     /// The audio track whose take lanes show under its lane (layout spec
     /// 4c), if any. The app sets it.
     pub audio_takes: Option<usize>,
+    /// The song's tempo points as (tick, tempo, glides to the next), in
+    /// order, and the project's tempo before the first (tempo ramps).
+    pub tempo_points: Vec<(Tick, f64, bool)>,
+    pub tempo_base: f64,
+    /// The tempo point picked on the Song view. The app sets it.
+    pub tempo_pick: Option<usize>,
+    /// While song mode plays the song's tempo points: the tempo of the
+    /// point in effect at the playhead (None before the first), which the
+    /// Tempo row steps from. None otherwise. The app sets it.
+    pub tempo_here: Option<f64>,
 }
 
 /// An audio region: region `index` of audio track `track`
@@ -903,6 +919,15 @@ impl TimeState {
             audio_counts: Vec::new(),
             audio_panel: None,
             audio_takes: None,
+            tempo_points: project
+                .arrangement
+                .tempo
+                .iter()
+                .map(|p| (p.at, p.bpm, p.ramp))
+                .collect(),
+            tempo_base: transport.bpm,
+            tempo_pick: None,
+            tempo_here: None,
         }
     }
 
@@ -1242,6 +1267,41 @@ pub enum TimeAction {
     /// A touch on the Song view's audio lanes, for the audio tracks
     /// (`mpfree_audiotracks`).
     Audio(AudioAction),
+    /// The song's tempo points (tempo ramps): the Song view's tempo lane,
+    /// the wheel on a picked point, and the tempo turned in song mode.
+    SongTempo(TempoEdit),
+}
+
+/// An edit of the song's tempo points (`mpfree_seq::arrange::TempoPoint`),
+/// each one UNDO takes back.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TempoEdit {
+    /// A tap on the tempo lane: a point at song tick `at` (a bar line)
+    /// with the tempo playing there, picked.
+    Add(Tick),
+    /// Point `k` picked (the wheel then sets its tempo, buttons 5 and 6
+    /// read Ramp and Delete), or none.
+    Pick(Option<usize>),
+    /// Point `index` dragged to song tick `at`.
+    Move {
+        index: usize,
+        at: Tick,
+    },
+    /// Point `index` given the tempo `bpm` (the wheel, with it picked).
+    Bpm {
+        index: usize,
+        bpm: f64,
+    },
+    /// Point `index` glides to the next point's tempo, or steps.
+    Ramp {
+        index: usize,
+        on: bool,
+    },
+    Delete(usize),
+    /// The tempo turned in song mode while the song's points play (Jay's
+    /// card, 18 Nov): the point in effect at the playhead takes `bpm`, or
+    /// before the first point a new one at the playhead's bar.
+    AtPlayhead(f64),
 }
 
 /// What a touch on the Song view's audio lanes asks for (layout spec 4c).
@@ -1605,6 +1665,46 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             }))
         }
         (EDIT_OPTIONS, EventKind::Select(i)) => Some(TimeAction::Edit(EditAction::PickRow(*i))),
+        // The tempo lane: a tap adds a point, a tap on one picks it (again:
+        // lets go), a drag moves it.
+        (
+            SONG,
+            EventKind::Place {
+                index: NONE,
+                row: TEMPO_ROW,
+                at,
+            },
+        ) => Some(TimeAction::SongTempo(TempoEdit::Add(*at))),
+        (
+            SONG,
+            EventKind::Place {
+                index,
+                row: TEMPO_ROW,
+                at,
+            },
+        ) => Some(TimeAction::SongTempo(TempoEdit::Move {
+            index: *index,
+            at: *at,
+        })),
+        (
+            SONG,
+            EventKind::Cell {
+                row: TEMPO_ROW,
+                col,
+            },
+        ) => Some(TimeAction::SongTempo(TempoEdit::Pick(
+            (st.tempo_pick != Some(*col)).then_some(*col),
+        ))),
+        // With a point picked, the last two buttons are Ramp and Delete.
+        (SONG, EventKind::Tab(k @ (4 | 5))) if st.region.is_none() && st.tempo_pick.is_some() => {
+            let index = st.tempo_pick?;
+            let (_, _, ramp) = *st.tempo_points.get(index)?;
+            Some(TimeAction::SongTempo(if *k == 4 {
+                TempoEdit::Ramp { index, on: !ramp }
+            } else {
+                TempoEdit::Delete(index)
+            }))
+        }
         (SONG, EventKind::Tab(k)) if *k < AUDIO_BUTTONS.len() && st.region.is_some() => {
             let r = st.region?;
             Some(TimeAction::Audio(match k {
@@ -1795,9 +1895,13 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                     (range != t.loop_range)
                         .then_some(TimeAction::Transport(Command::SetLoop(range)))
                 }
+                // While the song's tempo points play, from the point in
+                // effect at the playhead (a ramp's start, not where it
+                // has glided to); the app gives it to that point.
                 4 => {
-                    let bpm = (t.bpm + f64::from(d)).clamp(MIN_BPM, MAX_BPM);
-                    (bpm != t.bpm).then_some(TimeAction::Transport(Command::SetTempo(bpm)))
+                    let now = st.tempo_here.unwrap_or(t.bpm);
+                    let bpm = (now + f64::from(d)).clamp(MIN_BPM, MAX_BPM);
+                    (bpm != now).then_some(TimeAction::Transport(Command::SetTempo(bpm)))
                 }
                 // Either way flips it, for the armed track.
                 5 => st.armed.and_then(|a| {
@@ -3003,6 +3107,10 @@ pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
                 .map_or("section", |m| m.1.as_str());
             return format!("{word} {} · {name}", row.number);
         }
+        Some(SongChange::Tempo { at }) => {
+            let bar = st.transport.meter.bar_ticks().max(1);
+            return format!("{word} {} · bar {}", row.number, at.div_euclid(bar) + 1);
+        }
         Some(SongChange::Scenes { .. } | SongChange::List | SongChange::ListToSong { .. })
         | None => {}
     }
@@ -3046,6 +3154,7 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
         Some(SongChange::Scenes { rows }) => return format!("{rows} rows"),
         Some(SongChange::List) => return "song list".into(),
         Some(SongChange::ListToSong { steps }) => return format!("{steps} steps → song"),
+        Some(SongChange::Tempo { .. }) => return "tempo point".into(),
         None => {}
     }
     match row.dropped {
@@ -3770,6 +3879,9 @@ pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
         panel: st.audio_panel,
         takes_open: st.audio_takes,
         can_add_track: st.tracks.len() < MAX_TRACKS,
+        tempo: st.tempo_points.clone(),
+        tempo_base: st.tempo_base,
+        tempo_pick: st.tempo_pick.filter(|&k| k < st.tempo_points.len()),
         ..SongLanes::default()
     }
 }
@@ -5098,6 +5210,63 @@ mod tests {
         assert_eq!(song_hint(&st), SONG_SECTION_HINT);
         page.update(&mut ui, &st);
         assert_eq!(ui.get::<SongLanes>(SONG).unwrap().section, Some(1));
+
+        // The tempo lane (tempo ramps): a tap adds a point, a tap on one
+        // picks it and a second lets it go, a drag moves it; picked, the
+        // last two buttons glide it and delete it, the hint says so and
+        // the lanes show the points.
+        let tempo = |index, at| EventKind::Place {
+            index,
+            row: TEMPO_ROW,
+            at,
+        };
+        assert_eq!(
+            song(tempo(NONE, 7680), &st),
+            Some(TimeAction::SongTempo(TempoEdit::Add(7680)))
+        );
+        st.tempo_points = vec![(3840, 100.0, false), (11_520, 140.0, true)];
+        assert_eq!(
+            song(tempo(0, 7680), &st),
+            Some(TimeAction::SongTempo(TempoEdit::Move {
+                index: 0,
+                at: 7680
+            }))
+        );
+        let tap = |k| EventKind::Cell {
+            row: TEMPO_ROW,
+            col: k,
+        };
+        assert_eq!(
+            song(tap(1), &st),
+            Some(TimeAction::SongTempo(TempoEdit::Pick(Some(1))))
+        );
+        st.tempo_pick = Some(1);
+        assert_eq!(
+            song(tap(1), &st),
+            Some(TimeAction::SongTempo(TempoEdit::Pick(None))),
+            "a second tap lets it go"
+        );
+        assert_eq!(
+            song(EventKind::Tab(4), &st),
+            Some(TimeAction::SongTempo(TempoEdit::Ramp {
+                index: 1,
+                on: false
+            }))
+        );
+        assert_eq!(
+            song(EventKind::Tab(5), &st),
+            Some(TimeAction::SongTempo(TempoEdit::Delete(1)))
+        );
+        assert_eq!(song_hint(&st), SONG_TEMPO_HINT);
+        st.tempo_base = 92.0;
+        page.update(&mut ui, &st);
+        let lanes = ui.get::<SongLanes>(SONG).unwrap();
+        assert_eq!(
+            (lanes.tempo.clone(), lanes.tempo_base, lanes.tempo_pick),
+            (st.tempo_points.clone(), 92.0, Some(1))
+        );
+        st.tempo_pick = None;
+        st.tempo_points.clear();
         st.section = None;
         st.selected = Some(0);
         assert_eq!(song_hint(&st), SONG_BLOCK_HINT);
@@ -5642,6 +5811,15 @@ mod tests {
             step(&st, 4, 1),
             Some(TimeAction::Transport(Command::SetTempo(121.0)))
         );
+        // While the song's tempo points play, from the point in effect
+        // (a ramp's start, not where it has glided to).
+        st.tempo_here = Some(90.0);
+        st.transport.bpm = 97.3;
+        assert_eq!(
+            step(&st, 4, 1),
+            Some(TimeAction::Transport(Command::SetTempo(91.0)))
+        );
+        st.tempo_here = None;
         st.transport.bpm = MAX_BPM;
         assert_eq!(step(&st, 4, 1), None);
         // Pad pressure flips for the armed track, either way; with none

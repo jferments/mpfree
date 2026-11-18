@@ -253,7 +253,7 @@ impl Lfo {
 
 /// Taps in [`FlatLine::read`]: the read point sits between the 4th and
 /// 5th.
-const TAPS: usize = 8;
+pub(crate) const TAPS: usize = 8;
 /// Fractions of a frame [`READ_TABLE`] holds; reads between them blend
 /// the two nearest rows.
 const PHASES: usize = 64;
@@ -431,7 +431,7 @@ fn flat_weights(d: f32, longest: f32) -> (usize, [f32; TAPS]) {
 /// highs. Every sample is written twice, a line's length apart, so the
 /// taps of any read sit side by side.
 #[derive(Clone, Debug, Default)]
-struct FlatLine {
+pub(crate) struct FlatLine {
     buf: Vec<f32>,
     /// The line's length, a power of two (`buf` holds two).
     n: usize,
@@ -440,7 +440,7 @@ struct FlatLine {
 
 impl FlatLine {
     /// Room for `frames` of delay (control thread).
-    fn new(frames: usize) -> FlatLine {
+    pub(crate) fn new(frames: usize) -> FlatLine {
         let n = (frames + TAPS).next_power_of_two();
         FlatLine {
             buf: vec![0.0; 2 * n],
@@ -449,15 +449,17 @@ impl FlatLine {
         }
     }
     #[inline]
-    fn push(&mut self, x: f32) {
+    pub(crate) fn push(&mut self, x: f32) {
         self.buf[self.w] = x;
         self.buf[self.w + self.n] = x;
         self.w = (self.w + 1) & (self.n - 1);
     }
     /// The signal `d` frames before the last write (0 is the last write),
-    /// `d` at least half of [`TAPS`].
-    #[inline]
-    fn read(&self, d: f32) -> f32 {
+    /// `d` at least half of [`TAPS`]. Always inlined: the chorus and the
+    /// ensemble both read in their inner loops, and a call there costs
+    /// the chorus 10 to 17 % (instruction gate).
+    #[inline(always)]
+    pub(crate) fn read(&self, d: f32) -> f32 {
         let d = d.clamp((TAPS / 2) as f32, (self.n - TAPS) as f32);
         let i = d as usize;
         let p = (d - i as f32) * PHASES as f32;
@@ -494,7 +496,7 @@ impl FlatLine {
     fn longest(&self) -> f32 {
         (self.n - TAPS) as f32
     }
-    fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.buf.fill(0.0);
         self.w = 0;
     }

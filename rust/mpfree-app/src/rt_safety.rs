@@ -277,7 +277,7 @@ impl Rig {
         // The period's deadline for the lanes, as the loop sets it after
         // each write; far, so a slow machine (qemu in CI) is never late.
         let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        synth.start(i * PERIOD as u64, app.settings.bpm);
+        synth.start(i * PERIOD as u64, time.info().bpm);
         let mut pads = mix.pads();
         player.render_routed_until(PERIOD, &mut pads, until);
         let played = pads.played();
@@ -306,7 +306,7 @@ impl Rig {
             (audio_l, audio_r),
         );
         mix.follow(looper.line.is_open(), looper.monitor);
-        let ctx = mixing::ctx(RATE, i * PERIOD as u64, app.settings.bpm, time.block());
+        let ctx = mixing::ctx(RATE, i * PERIOD as u64, time.info().bpm, time.block());
         mix.mixer.set_lane_deadline(Some(until));
         let (p, _) = mix.period(
             &ctx,

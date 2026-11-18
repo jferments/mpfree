@@ -21,7 +21,7 @@ Along the top are the mixer's five views:
 | View | Shows |
 |---|---|
 | **Tracks** | One strip per instrument: **Drums** (the kit on the pads), **Synth**, **Loop** and **Audio** (every audio track on the Song view, summed), then a strip for each track that has its own instrument (**Track 1**, **Track 2** ...), shown only while it has one (see [A synth for each track](synths.md#a-synth-for-each-track)). A kit other than kit 1 plays into the strip of the first track that plays it, so it shows there too (see [A kit for each track](sampling.md#a-kit-for-each-track)). |
-| **Pads** | A strip for each of kit 1's pads A1 to A16, so you can set the kick's level or put an effect on just the snare, then one for each other pad that has effects of its own, named by its pad and kit ("B5 · Kit 2"; see [FX](shaping-a-pad.md#fx-effects-on-one-pad-or-on-the-whole-kit)). |
+| **Pads** | A strip for each of kit 1's pads A1 to A16, so you can set the kick's level or put an effect on just the snare, then one for each other pad that has effects of its own, named by its pad and kit ("B5 · Kit 2"; see [Effects on one pad](shaping-a-pad.md#effects-on-one-pad-or-on-the-whole-kit)). |
 | **Inputs** | The line input. |
 | **Submixes** | Eight submixes for grouping, then the four send returns A to D. |
 | **I/O** | Where everything goes, as a list: see [The I/O view](#the-io-view). |
@@ -52,7 +52,7 @@ On **Effects** each strip of the view is a row: its name and how many of its eig
 - **+ FX** sits in each strip's first free slot. Tap it to pick an effect; it goes in that slot and opens in the chain editor.
 - **Tap an effect** to pick it (it is outlined): the four Q-Links and the data wheel then turn its first four knobs, as in the chain editor, while the strips stay in view. Tap it again to open it in the chain editor.
 - **Drag an effect along its row** to move it earlier or later in the chain.
-- A green dot means an effect is on; a blue one that it is keyed from another strip (**SC from** says which); a grey one that it is bypassed (**Off**).
+- A green dot means an effect is on; a blue one that it listens to another track (**SC from** says which, see [the sidechain](effects.md#listening-to-another-track-the-sidechain)); a red one with **Nothing picked** that it is set to listen and no track is picked; a grey one that it is bypassed (**Off**). Tap the **SC from** or **Nothing picked** line to open the effect with its sidechain list up.
 - **Tap a strip's name** to select it, as on Faders. Picking a strip or switching back to Faders gives the Q-Links back to the selected strip's level, pan and sends.
 
 Tracks, Pads, Inputs and Submixes work on Effects as on Faders, and **< >** page through the rows.

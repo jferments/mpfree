@@ -17,9 +17,8 @@
 //!   ready.
 //!
 //! What moves the arm ([`RecArm::move_to`]): a tap on an Arm pill or a row
-//! of the target list, opening Play's Beats view (the notes) or Play's
-//! Loop view or the Looper tab (the loop), and picking a track (its
-//! notes). Nothing moves it while a take records (a tap says "Finish the
+//! of the target list, opening the Sequencer's Steps (the notes) or the
+//! Looper tab (the loop), and picking a track (its notes). Nothing moves it while a take records (a tap says "Finish the
 //! take first"). Pinned, only a tap moves it. When the arm moves while
 //! ready, the ready goes with it.
 //!
@@ -177,7 +176,8 @@ impl Now {
 /// What moves the arm, for [`RecArm::move_to`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mover {
-    /// A page with one target opened (Beats, the Loop view, the Looper tab).
+    /// A page with one target opened (the Sequencer's Steps, the Looper
+    /// tab).
     Page,
     /// A track picked: its notes.
     Track,

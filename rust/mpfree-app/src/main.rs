@@ -103,6 +103,7 @@ mod imagecopy;
 mod instruments;
 mod kit;
 mod locks;
+mod loop_row;
 mod looper_deck;
 mod looper_page;
 mod looper_tab;
@@ -121,6 +122,7 @@ mod pace;
 mod parts;
 mod perf;
 mod perform_pads;
+mod perform_tab;
 mod play_page;
 mod play_widgets;
 mod plugin_page;
@@ -166,7 +168,7 @@ use mpfree_midi::profile::{self, KIT_PADS};
 use mpfree_screen_log::Rotation;
 use mpfree_synth_ui::{SynthAction, SynthState};
 use mpfree_time_ui::view::AudioAction;
-use mpfree_time_ui::{TimeAction, TransportInfo};
+use mpfree_time_ui::{TempoEdit, TimeAction, TransportInfo};
 use mpfree_transport::Command;
 use mpfree_ui::fb::FbTarget;
 use mpfree_ui::{Fonts, SoftCanvas, Theme, Tone};
@@ -3681,7 +3683,7 @@ fn io_shown(mix: &mixing::MixHost) -> bool {
 }
 
 /// Whether `view` shows the loop's playhead: the Looper tab, or the Play
-/// page with its loop strip.
+/// page with its loop row.
 fn strip_shown(view: app::View) -> bool {
     matches!(view, app::View::Looper | app::View::Play)
 }
@@ -5021,9 +5023,16 @@ fn time_action(
     mix: &mut mixing::MixHost,
     a: TimeAction,
 ) -> Vec<app::Effect> {
-    if let TimeAction::Transport(Command::SetTempo(bpm)) = a {
-        return app.set_tempo(bpm);
-    }
+    // While song mode plays the song's tempo points, the tempo turned
+    // sets the point in effect at the playhead (Jay's card, 18 Nov) and
+    // the project's tempo stays; otherwise it is the project's.
+    let a = match a {
+        TimeAction::Transport(Command::SetTempo(bpm)) if time.song_tempo_plays() => {
+            TimeAction::SongTempo(TempoEdit::AtPlayhead(bpm))
+        }
+        TimeAction::Transport(Command::SetTempo(bpm)) => return app.set_tempo(bpm),
+        a => a,
+    };
     // The audio lanes' touches go to the audio tracks; a pick stays with
     // the time engine, which keeps the selection.
     if let TimeAction::Audio(aa) = a {
@@ -5060,7 +5069,7 @@ fn time_action(
             | TimeAction::MoveSection { .. }
             | TimeAction::DeletePlacement(_)
             | TimeAction::Perform(_)
-    );
+    ) || matches!(a, TimeAction::SongTempo(e) if !matches!(e, TempoEdit::Pick(_)));
     // PLAY or PLAY START while the transport follows another device's
     // Start and Stop and it is stopped: its Start plays, and the screen
     // says so.
@@ -5556,6 +5565,12 @@ fn player_session(
         app.settings.theme = t.clone();
     }
     out.show(gui::ToUi::Settings(app.settings.clone()));
+    // A new project's Perform set, for the Pads tab's Perform view (a
+    // project opened brings its own).
+    out.show(gui::ToUi::PerformSet {
+        set: Box::new(app.perform_set().clone()),
+        opened: true,
+    });
     out.say(&match (&o.data, store.saves()) {
         (None, _) => {
             "saving: off (no --data); settings and found buttons reset at every start".to_string()
@@ -6764,7 +6779,9 @@ fn player_session(
                 {
                     let now = remote::Now {
                         rolling: app.rolling(),
-                        bpm: app.bpm(),
+                        // While song mode plays the song's tempo points,
+                        // the point's in effect at the playhead.
+                        bpm: time.tempo_here().unwrap_or(app.bpm()),
                         ..remote::Now::default()
                     };
                     match remote.write(w.target.param, w.value, now) {
@@ -6782,6 +6799,17 @@ fn player_session(
                                     "MIDI Learn: the tempo follows another device's clock, \
                                      so a learned tempo control does nothing until it stops",
                                 );
+                            }
+                        }
+                        // While song mode plays the song's tempo points,
+                        // the point in effect at the playhead takes it
+                        // (one undo while the knob turns).
+                        remote::Act::Tempo(bpm) if time.song_tempo_plays() => {
+                            remote_tempo_waits = false;
+                            if let Err(e) =
+                                time.act(TimeAction::SongTempo(TempoEdit::AtPlayhead(bpm)))
+                            {
+                                out.midi(&format!("MIDI Learn: {e}"));
                             }
                         }
                         remote::Act::Tempo(bpm) => {
@@ -7261,6 +7289,33 @@ fn player_session(
                 Some(ControlEvent::Button { note, .. })
                     if controller.on()
                         && (Some(note) == app.map.q_link || app.map.bank_of(note).is_some()) => {}
+                // The Pads tab's Perform view: a pad picks the set's pad
+                // there; a throw plays while held, so it can be heard (held
+                // even when the pad latches, so nothing keeps playing). The
+                // kit's pads don't play.
+                Some(ControlEvent::PadDown { pad, .. })
+                    if (pad as usize) < 16 && app.perform_editing() =>
+                {
+                    let pad = pad as usize;
+                    out.show(gui::ToUi::PerformHit(pad));
+                    let heard = match app.perform_page().action(pad) {
+                        perform_pads::PadAction::Throw(t) => {
+                            perform_pads::PadAction::Throw(perform_pads::Throw {
+                                hold: perform_pads::Hold::WhileHeld,
+                                ..t
+                            })
+                        }
+                        _ => perform_pads::PadAction::None,
+                    };
+                    keys_held.press_action(pad, t, heard);
+                    let drums = kit_drums(&kits, player.kit());
+                    let (more, line) =
+                        desk::perform_pad_on(&mut app, &time, &looper, out, heard, drums);
+                    fx.extend(more);
+                    if !line.is_empty() {
+                        out.note(&line);
+                    }
+                }
                 Some(ControlEvent::PadDown { pad, velocity })
                     if (pad as usize) < 16 && app.pads_are_steps() =>
                 {
@@ -7356,6 +7411,10 @@ fn player_session(
                     awaiting[pad as usize] = false;
                     out.show(gui::ToUi::PadUp(pad as usize));
                 }
+                // A Perform pad's pressure: it plays no note, so it presses
+                // nothing (and records nothing).
+                Some(ControlEvent::PadPressure { pad, .. })
+                    if keys_held.action(pad as usize).is_some() => {}
                 Some(ControlEvent::PadPressure { pad, pressure }) if (pad as usize) < 16 => {
                     // Recorded onto the pad's note while the armed track
                     // records pressure.
@@ -7874,7 +7933,7 @@ fn player_session(
         } else if bank_lights {
             let bank = Some(if app.mute_keys() == app::MuteKeys::Tracks {
                 app.mute_bank() % 4
-            } else if app.pads_are_loop_keys() {
+            } else if app.pads_are_perform() {
                 // The Perform set's page.
                 app.perform_bank() % 4
             } else if synth_on {
@@ -8397,8 +8456,9 @@ fn player_session(
                 }
                 pages_shown = Some(pages);
             }
-        } else if app.pads_are_loop_keys() {
-            // The loop keys, lit by their loops' states.
+        } else if app.pads_are_perform() {
+            // The loop keys, lit by their loops' states (and the set's
+            // other pads by theirs), on the pads or on the Pads tab.
             pages_shown = None;
             let blink = ((t * 4.0) as u64).is_multiple_of(2);
             let lit = perform_pads::Lit {
@@ -8524,7 +8584,10 @@ fn player_session(
         // With a synth lane (Cores 3, 2 and 1) the synth starts on its core
         // now and renders beside the drums; otherwise this only notes the
         // frame and tempo, and it renders below as before.
-        synth.start(i * PERIOD as u64, app.settings.bpm);
+        // The synth's and the effects' tempo is the transport's: the
+        // project's, a followed clock's, or the song's tempo points and
+        // ramps while song mode plays them.
+        synth.start(i * PERIOD as u64, time.info().bpm);
         let homes = track_kits.homes(|t| !mix.instruments.holds(t) && !midi_out.takes(t as u16));
         let mut pads = mix.pads_homed(&homes);
         // With the drums split (Cores 3 and 2), the lane's voices are waited
@@ -8733,7 +8796,7 @@ fn player_session(
         parts.lap(parts::PADS);
         let t_mix = Span::start();
         mix.follow(looper.line.is_open(), looper.monitor);
-        let ctx = mixing::ctx(RATE, i * PERIOD as u64, app.settings.bpm, time.block());
+        let ctx = mixing::ctx(RATE, i * PERIOD as u64, time.info().bpm, time.block());
         // The mixer's lanes (each stage's inserts, the returns) keep the
         // same deadline.
         mix.mixer.set_lane_deadline(Some(lane_until));
@@ -8903,7 +8966,7 @@ fn player_session(
         if let Some(wave) = loop_wave {
             out.show(gui::ToUi::LoopWave(wave));
         }
-        // The Looper tab and the Play page's strip follow the loop as often
+        // The Looper tab and Play's loop row follow the loops as often
         // as the transport card, so the playhead moves smoothly; elsewhere
         // four times a second is enough.
         if strip_shown(app.view()) && loop_shown_at.elapsed() >= TRANSPORT_EVERY {

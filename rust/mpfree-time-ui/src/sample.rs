@@ -716,6 +716,33 @@ pub fn song_state() -> Result<TimeState, String> {
     Ok(state)
 }
 
+/// The Song view with tempo points (arrange.md, the song's tempo): 100 BPM
+/// from bar 3 ramping up to 128 at bar 6, that first point picked so the
+/// lane's buttons show with Ramp lit; the project's 92 BPM plays before
+/// bar 3. The transport bar reads the tempo the ramp plays at 5.3, as the
+/// app's would.
+pub fn song_tempo_state() -> Result<TimeState, String> {
+    let mut s = playing()?;
+    let rows: Vec<(usize, Tick)> = (0..5)
+        .filter(|&r| s.project.row_filled(r))
+        .map(|r| (r, scene_length(&s.project, r, BAR)))
+        .collect();
+    let mut song = scenes_to_song(&s.project, &rows, 0).map_err(|e| format!("{e:?}"))?;
+    song.set_tempo(2 * BAR, 100.0, Some(true))
+        .map_err(|e| format!("{e:?}"))?;
+    song.set_tempo(5 * BAR, 128.0, Some(false))
+        .map_err(|e| format!("{e:?}"))?;
+    let map = song.tempo_map(BPM).map_err(|e| format!("{e:?}"))?;
+    s.project.arrangement = song;
+    let mut state = s.state();
+    state.song_view = true;
+    state.song_on = true;
+    state.tempo_pick = Some(0);
+    state.tempo_here = Some(100.0);
+    state.transport.bpm = (map.bpm_at(state.transport.position) * 10.0).round() / 10.0;
+    Ok(state)
+}
+
 /// Recordings into a real audio tracks engine for the Song view's audio
 /// lanes: "Guitar" (audio track 2, stereo) plays bars 1 to 4; "Vocal"
 /// (audio track 1, the left jack) was recorded over bars 1 to 8 and then

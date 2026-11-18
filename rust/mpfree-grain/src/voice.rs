@@ -9,9 +9,6 @@ use crate::window::{Window, WindowTable};
 
 /// Grains one voice can play at once.
 pub const MAX_GRAINS: usize = 64;
-/// Frame positions below this (2^31 less a margin for rounding) take the
-/// `i32` path in [`mix`].
-const SMALL_FRAMES: f64 = 2_147_000_000.0;
 /// A voice renders in parts of at most this many frames, through its own
 /// scratch buffers (see [`GrainVoice::render`], "Level").
 const PART: usize = 64;
@@ -1424,19 +1421,19 @@ fn mix<S: GrainSource, const LEVEL: bool>(
         &mut sc.s2[from..to],
         &mut sc.q[from..to],
     );
+    // A grain's reads for the part (a part is at most PART frames).
+    let mut run = [[0.0f32; 2]; PART];
     let mut i = 0;
     while i < *active {
         let g = &mut grains[i];
         let m = ((g.len - g.age) as usize).min(n);
         let (mut pos, mut age) = (g.pos, g.age);
         let (lvl, pl, pr, ph0) = (g.lvl, g.pl, g.pr, g.phase0);
-        // Grains are kept inside the span, which never starts below
-        // frame 0, so truncation is floor (and avoids a libm call).
-        // Below 2^31 frames (13 hours at 44.1 kHz, so every sample and
-        // nearly every live buffer) the frame goes through an `i32`,
-        // which ARMv7 converts to and from a double in one instruction
-        // each; an `i64` takes two library calls. Same result either way.
-        let last = pos + g.inc * m as f64;
+        // The source reads the part's frames (`GrainSource::read_run`):
+        // grains are kept inside the span, which never starts below frame
+        // 0, so a frame is its position truncated (no libm call), through
+        // an `i32` below 2^31 frames (`buffer::SMALL_FRAMES`: 13 hours at
+        // 44.1 kHz, so every sample and nearly every live buffer).
         // One frame: read, window, and add to the sums (the grain's own
         // power too, in a measured part).
         macro_rules! frame {
@@ -1457,7 +1454,6 @@ fn mix<S: GrainSource, const LEVEL: bool>(
                 age += 1;
             }};
         }
-        let small = pos.min(last) >= 0.0 && pos.max(last) < SMALL_FRAMES;
         let aim = g.aim;
         // A filtered grain (step C4) runs its read through its filter,
         // before the window; the rest read as they always did.
@@ -1473,54 +1469,25 @@ fn mix<S: GrainSource, const LEVEL: bool>(
             };
         }
         macro_rules! reads {
-            ($through:ident) => {
-                match (small, measure) {
-                    // A grain the source reads its own way (band-limited).
-                    _ if aim.clean => {
-                        if measure {
-                            for k in 0..m {
-                                frame!(k, $through!(src.read_aimed(pos, aim)), true);
-                            }
-                        } else {
-                            for k in 0..m {
-                                frame!(k, $through!(src.read_aimed(pos, aim)), false);
-                            }
-                        }
+            ($through:ident) => {{
+                // The part's frames in one call: band-limited for a grain
+                // the source aimed clean, Hermite for the rest.
+                let run = &mut run[..m];
+                if aim.clean {
+                    src.read_aimed_run(pos, g.inc, aim, run);
+                } else {
+                    src.read_run(pos, g.inc, run);
+                }
+                if measure {
+                    for (k, x) in run.iter().enumerate() {
+                        frame!(k, $through!(*x), true);
                     }
-                    (true, false) => {
-                        for k in 0..m {
-                            let f = pos as i32;
-                            frame!(
-                                k,
-                                $through!(src.read(i64::from(f), (pos - f64::from(f)) as f32)),
-                                false
-                            );
-                        }
-                    }
-                    (true, true) => {
-                        for k in 0..m {
-                            let f = pos as i32;
-                            frame!(
-                                k,
-                                $through!(src.read(i64::from(f), (pos - f64::from(f)) as f32)),
-                                true
-                            );
-                        }
-                    }
-                    (false, false) => {
-                        for k in 0..m {
-                            let f = pos as i64;
-                            frame!(k, $through!(src.read(f, (pos - f as f64) as f32)), false);
-                        }
-                    }
-                    (false, true) => {
-                        for k in 0..m {
-                            let f = pos as i64;
-                            frame!(k, $through!(src.read(f, (pos - f as f64) as f32)), true);
-                        }
+                } else {
+                    for (k, x) in run.iter().enumerate() {
+                        frame!(k, $through!(*x), false);
                     }
                 }
-            };
+            }};
         }
         if g.filtered {
             reads!(filtered);

@@ -147,6 +147,10 @@ impl GrainSource for Slice<'_> {
     fn read(&self, frame: i64, t: f32) -> [f32; 2] {
         self.buf.read(frame, t)
     }
+    #[inline(always)]
+    fn read_run(&self, pos: f64, inc: f64, out: &mut [[f32; 2]]) {
+        self.buf.read_run(pos, inc, out)
+    }
 }
 
 /// The repeat voice's settings: one grain a repeat, on the beat grid from

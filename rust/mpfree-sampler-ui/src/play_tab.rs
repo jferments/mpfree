@@ -68,10 +68,11 @@
 use std::sync::Arc;
 
 use mpfree_analysis::note_name;
+use mpfree_sampler::dsp::{vowel_name, MAX_DRIVE_DB};
 use mpfree_sampler::engine::PadField;
 use mpfree_sampler::model::{
     Ahdsr, Filter, FilterKind, Keys, LayerSelect, Levels, LfoShape, LfoTarget, ModelError, Pad,
-    PadLfo, PadsPlay, PlayMode, PressureTarget, Project, SliceSet, Source, SourceId,
+    PadLfo, PadsPlay, PlayMode, PressureTarget, Project, SliceSet, Source, SourceId, GLIDE_MS,
     KEYGROUP_POLYPHONY, LFO_RATE_HZ, MAX_KEY_FADE, MAX_LAYERS, MAX_VEL_FADE, PADS, PITCH_DECAY_MS,
     PITCH_ENV_ST, SLICE_CUTOFF_HZ, SLICE_FADE_MS, SLICE_LEVEL_DB, SLICE_TUNE,
 };
@@ -152,6 +153,13 @@ const POLYPHONY: [u8; 10] = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32];
 /// The Vel fade row's steps, up to [`MAX_VEL_FADE`].
 const VEL_FADES: [u8; 11] = [0, 2, 4, 6, 8, 12, 16, 24, 32, 48, 64];
 const _: () = assert!(VEL_FADES[VEL_FADES.len() - 1] == MAX_VEL_FADE);
+/// Glide times the arrows step through, in ms (sampler R5.5).
+const GLIDES_MS: [f32; 10] = [
+    0.0, 10.0, 20.0, 50.0, 100.0, 200.0, 300.0, 500.0, 1000.0, 2000.0,
+];
+const _: () = assert!(GLIDES_MS[GLIDES_MS.len() - 1] == *GLIDE_MS.end());
+/// Glide on's choices: every note, or held keys only.
+const GLIDE_ON: [&str; 2] = ["Every note", "Held keys"];
 /// Envelope times the arrows step through, in ms.
 const TIMES_MS: [f32; 15] = [
     0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10_000.0,
@@ -228,6 +236,8 @@ pub enum Row {
     Filter,
     Cutoff,
     Resonance,
+    /// How hard the Ladder is driven, 0 to 24 dB (sampler R5.6).
+    Drive,
     /// How far the filter envelope moves the cutoff, in octaves.
     FilterEnv,
     /// The layer picked's: its sound, one of the kit's.
@@ -276,6 +286,14 @@ pub enum Row {
     /// it takes to come back.
     PitchEnv,
     PitchDecay,
+    /// A pad with keys playing one note at a time (sampler R5.5): Mono;
+    /// Legato (a key played over a held one moves the note without a new
+    /// start); Glide (how long the pitch slides to the next note); and
+    /// Glide on (every note, or held keys only).
+    Mono,
+    Legato,
+    Glide,
+    GlideOn,
 }
 
 impl Row {
@@ -312,7 +330,7 @@ pub fn is_value_target(t: &mpfree_ui::Target) -> bool {
 }
 
 impl Row {
-    pub const ALL: [Row; 63] = [
+    pub const ALL: [Row; 68] = [
         Row::Polyphony,
         Row::MuteGroup,
         Row::Chokes,
@@ -346,6 +364,7 @@ impl Row {
         Row::Filter,
         Row::Cutoff,
         Row::Resonance,
+        Row::Drive,
         Row::FilterEnv,
         Row::Sound,
         Row::VelLow,
@@ -376,6 +395,10 @@ impl Row {
         Row::LfoRetrig,
         Row::PitchEnv,
         Row::PitchDecay,
+        Row::Mono,
+        Row::Legato,
+        Row::Glide,
+        Row::GlideOn,
     ];
 
     pub fn label(self) -> &'static str {
@@ -413,6 +436,7 @@ impl Row {
             Row::Filter => "Filter",
             Row::Cutoff => "Cutoff",
             Row::Resonance => "Resonance",
+            Row::Drive => "Drive",
             Row::FilterEnv => "Env depth",
             Row::Sound => "Sound",
             Row::VelLow => "Vel low",
@@ -443,6 +467,10 @@ impl Row {
             Row::LfoRetrig => "Retrigger",
             Row::PitchEnv => "Pitch env",
             Row::PitchDecay => "Pitch decay",
+            Row::Mono => "Mono",
+            Row::Legato => "Legato",
+            Row::Glide => "Glide",
+            Row::GlideOn => "Glide on",
         }
     }
 
@@ -575,6 +603,7 @@ impl Section {
                 Row::Filter,
                 Row::Cutoff,
                 Row::Resonance,
+                Row::Drive,
                 Row::FilterEnv,
                 Row::EnvAttack,
                 Row::EnvDecay,
@@ -590,6 +619,10 @@ impl Section {
                 Row::HighKey,
                 Row::RootKey,
                 Row::KeyFade,
+                Row::Mono,
+                Row::Legato,
+                Row::Glide,
+                Row::GlideOn,
             ],
             Section::Mod => &[
                 Row::VelToLevel,
@@ -675,8 +708,9 @@ const SELECTS: [LayerSelect; 3] = [LayerSelect::All, LayerSelect::Cycle, LayerSe
 /// What the kit's pads play, as the Pads play row steps through them.
 const PADS_PLAY: [&str; 3] = ["Their sounds", "Notes", "16 Levels"];
 
-/// The filter types the Filter row steps through.
-const FILTERS: [(FilterKind, u8); 7] = [
+/// The filter types the Filter row steps through (the Ladder is 4-pole and
+/// the Vowel two formants, whatever the poles).
+const FILTERS: [(FilterKind, u8); 11] = [
     (FilterKind::Off, 2),
     (FilterKind::LowPass, 2),
     (FilterKind::LowPass, 4),
@@ -684,6 +718,10 @@ const FILTERS: [(FilterKind, u8); 7] = [
     (FilterKind::HighPass, 4),
     (FilterKind::BandPass, 2),
     (FilterKind::BandPass, 4),
+    (FilterKind::Notch, 2),
+    (FilterKind::Notch, 4),
+    (FilterKind::Ladder, 4),
+    (FilterKind::Vowel, 2),
 ];
 
 const PRESSURE: [PressureTarget; 8] = [
@@ -1243,20 +1281,12 @@ impl PlayTab {
     /// slice picked's for the Slices rows, the layer picked's for a
     /// layer's.
     fn text(&self, st: &PlayState, row: Row) -> String {
-        if row == Row::SlicePick || row.of_slice() {
-            slice_text(&st.settings, self.slice, row)
-        } else {
-            st.layer_text(self.layer, row)
-        }
+        text_of(st, self.layer, self.slice, row)
     }
 
     /// How far round row `row`'s knob is lit, 0 to 1.
     fn pos(&self, st: &PlayState, row: Row) -> f32 {
-        if row == Row::SlicePick || row.of_slice() {
-            slice_pos(&st.settings, self.slice, row)
-        } else {
-            knob_pos(st, self.layer, row)
-        }
+        place_of(st, self.layer, self.slice, row)
     }
 
     /// The Slice row (or a tap on the picture) picked slice `k`: its
@@ -1550,6 +1580,15 @@ impl PlayTab {
                     percent(p.filter.resonance),
                     octaves_text(p.filter.env_octaves)
                 );
+                match p.filter.kind {
+                    FilterKind::Ladder if p.filter.drive_db > 0.0 => {
+                        f.caption += &format!(" · drive {:.1} dB", p.filter.drive_db)
+                    }
+                    FilterKind::Vowel => {
+                        f.caption += &format!(" · \"{}\"", vowel_name(p.filter.cutoff_hz))
+                    }
+                    _ => {}
+                }
             }
         }
         if let Some(z) = ui.get_mut::<KeyZones>(KEYS) {
@@ -1626,124 +1665,10 @@ impl PlayTab {
     /// How each of the open section's rows looks on the panel, in its
     /// list's order.
     fn controls(&self, st: &PlayState) -> Vec<Control> {
-        let p = &st.settings;
-        let n = p.layers.len();
-        let source = p.layers.get(self.layer).map(|l| l.region.source);
-        let times = TIMES_MS.len() as u32 - 1;
-        let level = ((LEVEL_RANGE_DB.1 - LEVEL_RANGE_DB.0) / LEVEL_STEP_DB) as u32;
-        let tune = (2 * TUNE_LIMIT_CENTS / 100) as u32;
         self.section
             .rows()
             .iter()
-            .map(|&row| {
-                let knob = |steps: u32, bipolar: bool| Look::Knob {
-                    pos: self.pos(st, row),
-                    steps,
-                    bipolar,
-                };
-                let look = match row {
-                    Row::Layers => Look::Choice {
-                        options: SELECTS.iter().map(|s| select_label(*s).into()).collect(),
-                        on: SELECTS.iter().position(|s| *s == p.select).unwrap_or(0),
-                        off: Vec::new(),
-                    },
-                    Row::PadsPlay => Look::Choice {
-                        options: PADS_PLAY.iter().map(|s| s.to_string()).collect(),
-                        on: match st.pads_play {
-                            PadsPlay::Pads => 0,
-                            PadsPlay::Keys { .. } => 1,
-                            PadsPlay::Levels { .. } => 2,
-                        },
-                        off: Vec::new(),
-                    },
-                    Row::Level | Row::LayerLevel => knob(level, false),
-                    Row::Pan | Row::LayerPan | Row::Depth | Row::LfoDepth => knob(40, true),
-                    Row::Tune | Row::LayerTune => knob(tune, true),
-                    Row::Wow => knob(10, false),
-                    Row::Attack
-                    | Row::Hold
-                    | Row::Decay
-                    | Row::Release
-                    | Row::EnvAttack
-                    | Row::EnvDecay
-                    | Row::EnvRelease => knob(times, false),
-                    Row::Sustain
-                    | Row::EnvSustain
-                    | Row::Resonance
-                    | Row::VelToLevel
-                    | Row::VelToStart
-                    | Row::VelToCutoff => knob(20, false),
-                    Row::VelToPitch => knob((2.0 * VEL_PITCH_ST) as u32, true),
-                    Row::PitchEnv => knob((2.0 * PITCH_ENV_ST) as u32, true),
-                    Row::PitchDecay => knob(times, false),
-                    Row::LfoRate => match p.lfo.beats {
-                        Some(_) => knob(LFO_SYNCS.len() as u32 - 1, false),
-                        None => knob(LFO_RATES.len() as u32 - 1, false),
-                    },
-                    Row::LfoTo => Look::Choice {
-                        options: LFO_TARGETS.iter().map(|t| t.0.to_string()).collect(),
-                        on: LFO_TARGETS
-                            .iter()
-                            .position(|t| t.1 == p.lfo.target)
-                            .unwrap_or(0),
-                        off: Vec::new(),
-                    },
-                    Row::LfoSync => Look::Toggle(p.lfo.beats.is_some()),
-                    Row::LfoRetrig => Look::Toggle(p.lfo.retrig),
-                    // A third of an octave a step, 20 Hz to 20 kHz.
-                    Row::Cutoff => knob(30, false),
-                    Row::FilterEnv => knob((2.0 * ENV_OCTAVES / 0.25) as u32, true),
-                    Row::Vintage => Look::Toggle(p.vintage),
-                    Row::Keys => Look::Toggle(p.keys.is_some()),
-                    Row::Latch => Look::Toggle(p.latch),
-                    Row::Slice => Look::Stepper,
-                    Row::VelLow
-                    | Row::VelHigh
-                    | Row::LowKey
-                    | Row::HighKey
-                    | Row::RootKey
-                    | Row::KeyFade
-                    | Row::PadsFrom => Look::Stepper,
-                    Row::AddLayer | Row::RemoveLayer => Look::Button(row.label().into()),
-                    Row::SlicePick => Look::Stepper,
-                    Row::SliceTune => knob(48, true),
-                    Row::SliceLevel => knob(level, false),
-                    Row::SliceReverse => {
-                        Look::Toggle(slice_on(p, self.slice).is_some_and(|s| s.reverse))
-                    }
-                    Row::SliceCutoff => knob(30, false),
-                    Row::SliceFade => knob(SLICE_FADES.len() as u32, false),
-                    Row::SliceTo => Look::Choice {
-                        options: vec!["Its end".into(), "Sound end".into()],
-                        on: usize::from(slice_on(p, self.slice).is_some_and(|s| s.to_end)),
-                        off: Vec::new(),
-                    },
-                    Row::Sound
-                    | Row::VelFade
-                    | Row::Filter
-                    | Row::Pressure
-                    | Row::Polyphony
-                    | Row::MuteGroup
-                    | Row::Chokes
-                    | Row::Links
-                    | Row::LevelsBy
-                    | Row::LfoWave => Look::Chip,
-                };
-                let why = match row {
-                    Row::AddLayer if n >= MAX_LAYERS => {
-                        Some(format!("{MAX_LAYERS} layers at most"))
-                    }
-                    Row::RemoveLayer if n < 2 => Some("A pad keeps one layer at least".into()),
-                    Row::Sound if !st.kit_sounds.iter().any(|s| Some(s.id) != source) => {
-                        Some("The kit has no other sound".into())
-                    }
-                    Row::KeyFade if st.zones.is_empty() => {
-                        Some("No pad of the kit is a keygroup: turn Keys on".into())
-                    }
-                    _ => faint_why(st, row).map(str::to_string),
-                };
-                Control::new(look).faint_because(why.is_some(), why.as_deref().unwrap_or(""))
-            })
+            .map(|&row| control_of(st, self.layer, self.slice, row))
             .collect()
     }
 
@@ -1814,7 +1739,12 @@ impl PlayTab {
                     390,
                     vec![
                         vec![it(Row::Filter).labelled()],
-                        vec![it(Row::Cutoff), it(Row::Resonance), it(Row::FilterEnv)],
+                        vec![
+                            it(Row::Cutoff),
+                            it(Row::Resonance),
+                            it(Row::Drive),
+                            it(Row::FilterEnv),
+                        ],
                     ],
                 )
                 .note(if p.filter.kind == FilterKind::Off {
@@ -1837,30 +1767,34 @@ impl PlayTab {
             Section::Pitch => vec![
                 part(
                     "Pitch",
-                    300,
+                    230,
                     vec![vec![it(Row::Tune), it(Row::Wow)], vec![it(Row::Vintage)]],
                 )
                 .note("the whole pad"),
+                // The keys a keygroup plays, and how they play: chords, or
+                // one note at a time (sampler R5.5).
                 part(
                     "Keys",
-                    440,
+                    530,
                     vec![
                         vec![
                             it(Row::Keys).wide(150),
-                            it(Row::KeyFade).labelled().wide(150),
+                            it(Row::Mono).wide(150),
+                            it(Row::Legato).wide(150),
                         ],
                         vec![
                             it(Row::LowKey).labelled(),
                             it(Row::HighKey).labelled(),
                             it(Row::RootKey).labelled(),
                         ],
+                        vec![
+                            it(Row::KeyFade).labelled(),
+                            it(Row::Glide).labelled(),
+                            it(Row::GlideOn).labelled().wide(200),
+                        ],
                     ],
                 )
-                .note(if p.keys.is_some() {
-                    "a keygroup"
-                } else {
-                    "on: the pad plays notes"
-                }),
+                .note(keys_note(p)),
             ],
             Section::Mod => vec![
                 part(
@@ -2514,6 +2448,11 @@ fn turned(p: &Pad, layer: usize, row: Row, delta: i32, fine: bool) -> Option<Pad
             p.filter.cutoff_hz = hz.round().clamp(CUTOFF_RANGE_HZ.0, CUTOFF_RANGE_HZ.1);
         }
         Row::Resonance => p.filter.resonance = frac(p.filter.resonance, 0.0),
+        // Half a dB a detent, a tenth with SHIFT.
+        Row::Drive => {
+            let step = if fine { 0.1 } else { 0.5 };
+            p.filter.drive_db = round_to(p.filter.drive_db + d * step, 0.1).clamp(0.0, MAX_DRIVE_DB)
+        }
         Row::FilterEnv => {
             let step = if fine { 0.01 } else { 0.05 };
             p.filter.env_octaves =
@@ -2542,6 +2481,7 @@ fn turned(p: &Pad, layer: usize, row: Row, delta: i32, fine: bool) -> Option<Pad
             let (lo, hi) = (*PITCH_DECAY_MS.start(), *PITCH_DECAY_MS.end());
             p.pitch_env.decay_ms = turn_ms(p.pitch_env.decay_ms, d, fine, lo).min(hi);
         }
+        Row::Glide => p.mono.glide_ms = turn_ms(p.mono.glide_ms, d, fine, 0.0).min(*GLIDE_MS.end()),
         // A free rate: a sixth of an octave a detent, a 24th with SHIFT.
         // A synced one steps its list.
         Row::LfoRate if p.lfo.beats.is_none() => {
@@ -2571,6 +2511,7 @@ fn faint_why(st: &PlayState, row: Row) -> Option<&'static str> {
     match row {
         Row::Cutoff
         | Row::Resonance
+        | Row::Drive
         | Row::FilterEnv
         | Row::EnvAttack
         | Row::EnvDecay
@@ -2579,6 +2520,9 @@ fn faint_why(st: &PlayState, row: Row) -> Option<&'static str> {
             if p.filter.kind == FilterKind::Off =>
         {
             Some("The filter is off: pick one in the Filter row")
+        }
+        Row::Drive if p.filter.kind != FilterKind::Ladder => {
+            Some("Drive is the Ladder's: pick Ladder in the Filter row")
         }
         Row::LowKey | Row::HighKey | Row::RootKey if p.keys.is_none() => {
             Some("The pad is no keygroup: turn Keys on")
@@ -2600,6 +2544,13 @@ fn faint_why(st: &PlayState, row: Row) -> Option<&'static str> {
         Row::PitchDecay if p.pitch_env.semitones == 0.0 => {
             Some("The pitch envelope is off: give Pitch env an amount")
         }
+        Row::Mono | Row::Legato | Row::Glide | Row::GlideOn if p.keys.is_none() => {
+            Some("Mono plays the pad's keys: turn Keys on")
+        }
+        Row::Legato | Row::Glide | Row::GlideOn if !p.mono.on => {
+            Some("These play one note at a time: turn Mono on")
+        }
+        Row::GlideOn if p.mono.glide_ms == 0.0 => Some("Glide is off: give it a time"),
         Row::PadsFrom if !matches!(st.pads_play, PadsPlay::Keys { .. }) => {
             Some("The pads play their sounds: set Pads play to Notes")
         }
@@ -2619,6 +2570,152 @@ fn faint_why(st: &PlayState, row: Row) -> Option<&'static str> {
             Some("The pad isn't sliced: chop it on the Chop tab with Put on at 1 pad")
         }
         _ => None,
+    }
+}
+
+/// How row `row` looks on a panel for pad `st`, with layer `layer` and
+/// slice `slice` picked, faint (saying why) when it changes nothing now.
+/// The Play page's panel and the Sound section beside the wave
+/// ([`crate::sound_panel`]) both draw their rows with it.
+pub fn control_of(st: &PlayState, layer: usize, slice: usize, row: Row) -> Control {
+    let p = &st.settings;
+    let n = p.layers.len();
+    let source = p.layers.get(layer).map(|l| l.region.source);
+    let times = TIMES_MS.len() as u32 - 1;
+    let level = ((LEVEL_RANGE_DB.1 - LEVEL_RANGE_DB.0) / LEVEL_STEP_DB) as u32;
+    let tune = (2 * TUNE_LIMIT_CENTS / 100) as u32;
+    let knob = |steps: u32, bipolar: bool| Look::Knob {
+        pos: place_of(st, layer, slice, row),
+        steps,
+        bipolar,
+    };
+    let look = match row {
+        Row::Layers => Look::Choice {
+            options: SELECTS.iter().map(|s| select_label(*s).into()).collect(),
+            on: SELECTS.iter().position(|s| *s == p.select).unwrap_or(0),
+            off: Vec::new(),
+        },
+        Row::PadsPlay => Look::Choice {
+            options: PADS_PLAY.iter().map(|s| s.to_string()).collect(),
+            on: match st.pads_play {
+                PadsPlay::Pads => 0,
+                PadsPlay::Keys { .. } => 1,
+                PadsPlay::Levels { .. } => 2,
+            },
+            off: Vec::new(),
+        },
+        Row::Level | Row::LayerLevel => knob(level, false),
+        Row::Pan | Row::LayerPan | Row::Depth | Row::LfoDepth => knob(40, true),
+        Row::Tune | Row::LayerTune => knob(tune, true),
+        Row::Wow => knob(10, false),
+        Row::Attack
+        | Row::Hold
+        | Row::Decay
+        | Row::Release
+        | Row::EnvAttack
+        | Row::EnvDecay
+        | Row::EnvRelease => knob(times, false),
+        Row::Sustain
+        | Row::EnvSustain
+        | Row::Resonance
+        | Row::VelToLevel
+        | Row::VelToStart
+        | Row::VelToCutoff => knob(20, false),
+        Row::VelToPitch => knob((2.0 * VEL_PITCH_ST) as u32, true),
+        Row::PitchEnv => knob((2.0 * PITCH_ENV_ST) as u32, true),
+        Row::PitchDecay => knob(times, false),
+        Row::LfoRate => match p.lfo.beats {
+            Some(_) => knob(LFO_SYNCS.len() as u32 - 1, false),
+            None => knob(LFO_RATES.len() as u32 - 1, false),
+        },
+        Row::LfoTo => Look::Choice {
+            options: LFO_TARGETS.iter().map(|t| t.0.to_string()).collect(),
+            on: LFO_TARGETS
+                .iter()
+                .position(|t| t.1 == p.lfo.target)
+                .unwrap_or(0),
+            off: Vec::new(),
+        },
+        Row::LfoSync => Look::Toggle(p.lfo.beats.is_some()),
+        Row::LfoRetrig => Look::Toggle(p.lfo.retrig),
+        Row::Mono => Look::Toggle(p.mono.on),
+        Row::Legato => Look::Toggle(p.mono.legato),
+        Row::Glide => Look::Stepper,
+        Row::GlideOn => Look::Choice {
+            options: GLIDE_ON.iter().map(|g| g.to_string()).collect(),
+            on: usize::from(p.mono.glide_held),
+            off: Vec::new(),
+        },
+        // A third of an octave a step, 20 Hz to 20 kHz.
+        Row::Cutoff => knob(30, false),
+        Row::Drive => knob(MAX_DRIVE_DB as u32, false),
+        Row::FilterEnv => knob((2.0 * ENV_OCTAVES / 0.25) as u32, true),
+        Row::Vintage => Look::Toggle(p.vintage),
+        Row::Keys => Look::Toggle(p.keys.is_some()),
+        Row::Latch => Look::Toggle(p.latch),
+        Row::Slice => Look::Stepper,
+        Row::VelLow
+        | Row::VelHigh
+        | Row::LowKey
+        | Row::HighKey
+        | Row::RootKey
+        | Row::KeyFade
+        | Row::PadsFrom => Look::Stepper,
+        Row::AddLayer | Row::RemoveLayer => Look::Button(row.label().into()),
+        Row::SlicePick => Look::Stepper,
+        Row::SliceTune => knob(48, true),
+        Row::SliceLevel => knob(level, false),
+        Row::SliceReverse => Look::Toggle(slice_on(p, slice).is_some_and(|s| s.reverse)),
+        Row::SliceCutoff => knob(30, false),
+        Row::SliceFade => knob(SLICE_FADES.len() as u32, false),
+        Row::SliceTo => Look::Choice {
+            options: vec!["Its end".into(), "Sound end".into()],
+            on: usize::from(slice_on(p, slice).is_some_and(|s| s.to_end)),
+            off: Vec::new(),
+        },
+        Row::Sound
+        | Row::VelFade
+        | Row::Filter
+        | Row::Pressure
+        | Row::Polyphony
+        | Row::MuteGroup
+        | Row::Chokes
+        | Row::Links
+        | Row::LevelsBy
+        | Row::LfoWave => Look::Chip,
+    };
+    let why = match row {
+        Row::AddLayer if n >= MAX_LAYERS => Some(format!("{MAX_LAYERS} layers at most")),
+        Row::RemoveLayer if n < 2 => Some("A pad keeps one layer at least".into()),
+        Row::Sound if !st.kit_sounds.iter().any(|s| Some(s.id) != source) => {
+            Some("The kit has no other sound".into())
+        }
+        Row::KeyFade if st.zones.is_empty() => {
+            Some("No pad of the kit is a keygroup: turn Keys on".into())
+        }
+        _ => faint_why(st, row).map(str::to_string),
+    };
+    Control::new(look).faint_because(why.is_some(), why.as_deref().unwrap_or(""))
+}
+
+/// Row `row`'s value as a list, a panel or a Q-Link card shows it, with
+/// layer `layer` and slice `slice` picked: the slice's for the Slices
+/// rows, the layer's for a layer's.
+pub fn text_of(st: &PlayState, layer: usize, slice: usize, row: Row) -> String {
+    if row == Row::SlicePick || row.of_slice() {
+        slice_text(&st.settings, slice, row)
+    } else {
+        st.layer_text(layer, row)
+    }
+}
+
+/// How far round row `row`'s knob is lit, 0 to 1, with layer `layer` and
+/// slice `slice` picked.
+pub fn place_of(st: &PlayState, layer: usize, slice: usize, row: Row) -> f32 {
+    if row == Row::SlicePick || row.of_slice() {
+        slice_pos(&st.settings, slice, row)
+    } else {
+        knob_pos(st, layer, row)
     }
 }
 
@@ -2644,6 +2741,7 @@ fn knob_pos(st: &PlayState, layer: usize, row: Row) -> f32 {
             (p.filter.cutoff_hz / lo).ln() / (hi / lo).ln()
         }
         Row::Resonance => p.filter.resonance,
+        Row::Drive => p.filter.drive_db / MAX_DRIVE_DB,
         Row::FilterEnv => (p.filter.env_octaves + ENV_OCTAVES) / (2.0 * ENV_OCTAVES),
         Row::Level => level(p.level_db),
         Row::Pan => (p.pan + 1.0) / 2.0,
@@ -2655,6 +2753,7 @@ fn knob_pos(st: &PlayState, layer: usize, row: Row) -> f32 {
         Row::VelToPitch => (p.vel_to_pitch + VEL_PITCH_ST) / (2.0 * VEL_PITCH_ST),
         Row::PitchEnv => (p.pitch_env.semitones + PITCH_ENV_ST) / (2.0 * PITCH_ENV_ST),
         Row::PitchDecay => time(p.pitch_env.decay_ms),
+        Row::Glide => (1.0 + p.mono.glide_ms).ln() / (1.0 + *GLIDE_MS.end()).ln(),
         Row::LfoDepth => (p.lfo.depth + 1.0) / 2.0,
         // Faster is further round, synced or free.
         Row::LfoRate => match p.lfo.beats {
@@ -2749,9 +2848,10 @@ fn section_text(st: &PlayState, s: Section) -> String {
                 percent(p.amp.sustain)
             )
         }
-        // "LP2 · 2.40 kHz".
+        // "LP2 · 2.40 kHz", "Vowel · ah".
         Section::Filter => match p.filter.kind {
             FilterKind::Off => "Off".into(),
+            FilterKind::Vowel => format!("Vowel · {}", vowel_name(p.filter.cutoff_hz)),
             _ => format!(
                 "{} · {}",
                 filter_label(&p.filter)
@@ -2764,6 +2864,13 @@ fn section_text(st: &PlayState, s: Section) -> String {
             let mut t = tune_text(p.tune_cents);
             if let Some(k) = p.keys {
                 t.push_str(&format!(" · keys {}–{}", note_name(k.lo), note_name(k.hi)));
+                if p.mono.on {
+                    t.push_str(if p.mono.legato {
+                        " · legato"
+                    } else {
+                        " · mono"
+                    });
+                }
             }
             if p.vintage {
                 t.push_str(" · vintage");
@@ -3129,6 +3236,10 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
         },
         Row::LfoDepth => p.lfo.depth = round_to(p.lfo.depth + d * 0.05, 0.05).clamp(-1.0, 1.0),
         Row::LfoRetrig => p.lfo.retrig = !p.lfo.retrig,
+        Row::Mono => p.mono.on = !p.mono.on,
+        Row::Legato => p.mono.legato = !p.mono.legato,
+        Row::Glide => p.mono.glide_ms = step_in(&GLIDES_MS, p.mono.glide_ms, delta),
+        Row::GlideOn => p.mono.glide_held = !p.mono.glide_held,
         // It needs the tempo: see [`PlayTab::step`].
         Row::LfoSync => {}
         Row::PitchEnv => {
@@ -3168,6 +3279,9 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
         }
         Row::Resonance => {
             p.filter.resonance = round_to(p.filter.resonance + d * 0.05, 0.05).clamp(0.0, 1.0)
+        }
+        Row::Drive => {
+            p.filter.drive_db = round_to(p.filter.drive_db + d * 3.0, 3.0).clamp(0.0, MAX_DRIVE_DB)
         }
         Row::FilterEnv => {
             p.filter.env_octaves =
@@ -3218,22 +3332,18 @@ fn round_to(x: f32, step: f32) -> f32 {
 /// An envelope time stepped through [`TIMES_MS`] from the entry nearest it
 /// in the direction of `delta` (a time between entries goes to the next).
 fn step_time(ms: f32, delta: i32, min: f32) -> f32 {
+    step_in(&TIMES_MS, ms, delta).max(min)
+}
+
+/// `x` stepped `delta` entries through the rising `list`, from the entry
+/// nearest it in that direction (a value between entries goes to the next).
+fn step_in(list: &[f32], x: f32, delta: i32) -> f32 {
     let i = if delta > 0 {
-        TIMES_MS
-            .iter()
-            .position(|&t| t > ms)
-            .map_or(TIMES_MS.len(), |i| i) as i32
-            + delta
-            - 1
+        list.iter().position(|&t| t > x).map_or(list.len(), |i| i) as i32 + delta - 1
     } else {
-        TIMES_MS
-            .iter()
-            .rposition(|&t| t < ms)
-            .map_or(-1, |i| i as i32)
-            + delta
-            + 1
+        list.iter().rposition(|&t| t < x).map_or(-1, |i| i as i32) + delta + 1
     };
-    TIMES_MS[i.clamp(0, TIMES_MS.len() as i32 - 1) as usize].max(min)
+    list[i.clamp(0, list.len() as i32 - 1) as usize]
 }
 
 /// An envelope time turned by `d` detents: a doubling every
@@ -3328,14 +3438,27 @@ pub fn value_text(p: &Pad, row: Row) -> String {
         Row::LfoRetrig => if p.lfo.retrig { "On" } else { "Off" }.into(),
         Row::PitchEnv => semis_text(p.pitch_env.semitones),
         Row::PitchDecay => ms_text(p.pitch_env.decay_ms),
+        Row::Mono => if p.mono.on { "On" } else { "Off" }.into(),
+        Row::Legato => if p.mono.legato { "On" } else { "Off" }.into(),
+        Row::Glide if p.mono.glide_ms == 0.0 => "Off".into(),
+        Row::Glide => ms_text(p.mono.glide_ms),
+        Row::GlideOn => GLIDE_ON[usize::from(p.mono.glide_held)].into(),
         Row::Attack => ms_text(p.amp.attack_ms),
         Row::Hold => ms_text(p.amp.hold_ms),
         Row::Decay => ms_text(p.amp.decay_ms),
         Row::Sustain => format!("{} %", percent(p.amp.sustain)),
         Row::Release => ms_text(p.amp.release_ms),
         Row::Filter => filter_label(&p.filter),
+        // A vowel's cutoff picks the vowel: "1.00 kHz · ah".
+        Row::Cutoff if p.filter.kind == FilterKind::Vowel => format!(
+            "{} · {}",
+            hz_text(p.filter.cutoff_hz),
+            vowel_name(p.filter.cutoff_hz)
+        ),
         Row::Cutoff => hz_text(p.filter.cutoff_hz),
         Row::Resonance => format!("{} %", percent(p.filter.resonance)),
+        Row::Drive if p.filter.drive_db == 0.0 => "Off".into(),
+        Row::Drive => format!("{:.1} dB", p.filter.drive_db),
         Row::FilterEnv => octaves_text(p.filter.env_octaves),
         Row::EnvAttack => ms_text(p.filter_env.attack_ms),
         Row::EnvDecay => ms_text(p.filter_env.decay_ms),
@@ -3502,6 +3625,16 @@ fn lfo_note(p: &Pad) -> &'static str {
 }
 
 /// The pitch envelope section's note.
+/// What the Pitch section's Keys part says the keys do (sampler R5.5).
+fn keys_note(p: &Pad) -> &'static str {
+    match (p.keys.is_some(), p.mono.on, p.mono.legato) {
+        (false, ..) => "on: the pad plays notes",
+        (true, false, _) => "a keygroup",
+        (true, true, false) => "one note: the last key",
+        (true, true, true) => "one note, legato",
+    }
+}
+
 fn env_note(st: &PlayState) -> &'static str {
     let p = &st.settings;
     if keeps_pitch(p) {
@@ -3577,6 +3710,9 @@ pub fn filter_label(f: &Filter) -> String {
         FilterKind::LowPass => "LP",
         FilterKind::HighPass => "HP",
         FilterKind::BandPass => "BP",
+        FilterKind::Notch => "Notch",
+        FilterKind::Ladder => return "Ladder".into(),
+        FilterKind::Vowel => return "Vowel".into(),
     };
     format!("{kind} {}-pole", if f.poles >= 4 { 4 } else { 2 })
 }
@@ -3707,6 +3843,10 @@ pub fn describe(a: &Pad, b: &Pad) -> String {
         Row::LfoRetrig,
         Row::PitchEnv,
         Row::PitchDecay,
+        Row::Mono,
+        Row::Legato,
+        Row::Glide,
+        Row::GlideOn,
         Row::Attack,
         Row::Hold,
         Row::Decay,
@@ -3715,6 +3855,7 @@ pub fn describe(a: &Pad, b: &Pad) -> String {
         Row::Filter,
         Row::Cutoff,
         Row::Resonance,
+        Row::Drive,
         Row::FilterEnv,
         Row::EnvAttack,
         Row::EnvDecay,

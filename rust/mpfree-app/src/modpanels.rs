@@ -5,13 +5,13 @@
 //! The panels go on the app's screens after round 9 and the app's rename
 //! (layout spec section 4b, approved 2026-11-11 22:34Z): the mixer's insert
 //! row opens [`ChainHost::from_mixer`] on its slot with "‹ Mixer", the
-//! mixer's "+" opens it with the picker up, the Sample tab's FX sub-tab
-//! opens [`ChainHost::for_pad`], and a long press on a macro card opens
-//! the macros panel ([`MacrosHost`]). The mixer's insert row, its "+" and
-//! the long press are wired (round 10), and Sample > FX
-//! ([`Panels::open_pad`]): stutters and repeats on one pad are Perform FX
-//! on its own channel, bus effects the Drums track's chain with a macro as
-//! their one knob.
+//! mixer's "+" opens it with the picker up, the Pads tab's Effects row
+//! opens it on the pad's own channel ([`Panels::open_pad_mix`]), and a
+//! long press on a macro card opens the macros panel ([`MacrosHost`]).
+//! The mixer's insert row, its "+" and the long press are wired (round
+//! 10): stutters and repeats on one pad are Perform FX on its own
+//! channel, bus effects the Drums track's chain with a macro as their one
+//! knob.
 //!
 //! What each action does:
 //!
@@ -32,11 +32,14 @@
 //!   the engine as `Change`s ([`ModMix::change`]), so the parameter becomes
 //!   a target then.
 //! - Learn, the full effect page and Back are for the app ([`ChainOut`]).
+//! - A sidechain picked in the sidechain list goes to the mixer
+//!   (`Mixer::set_key`) and turns the effect's control on; Off turns it
+//!   off and keeps the strip fed (layout spec 4b, "Sidechain").
 //!
 //! Building a state, adding an effect (its node allocates) and removing one
 //! allocate; they run between periods, as the mixer panel's edits do.
 
-// Sample > FX (`for_pad`) and the audio-thread picture are for later; the
+// `ChainHost::for_pad` and the audio-thread picture are for later; the
 // tests use them now.
 #![allow(dead_code)]
 
@@ -88,10 +91,13 @@ pub enum ChainOut {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChainHost {
     /// The chains it can switch between (one from the mixer; the pad's and
-    /// the track's in Sample > FX), and the one shown.
+    /// the track's from [`ChainHost::for_pad`]), and the one shown.
     scopes: Vec<(Strip, String)>,
     /// The strip list's group while it is open (the strip button).
     listing: Option<usize>,
+    /// The sidechain list's group while it is open (the selected effect's
+    /// Sidechain row, or a Ducker just added).
+    sidechain_list: Option<usize>,
     scope: usize,
     selected: Option<usize>,
     group: usize,
@@ -170,6 +176,7 @@ impl ChainHost {
         ChainHost {
             scopes,
             listing: None,
+            sidechain_list: None,
             scope: 0,
             selected: None,
             group: 0,
@@ -350,8 +357,10 @@ impl ChainHost {
         self
     }
 
-    /// The Sample tab's FX: a pad's own chain first (its pad channel
-    /// `pad`, named `name`), and the track's it plays into.
+    /// A pad's own chain first (its pad channel `pad`, named `name`), and
+    /// the track's it plays into. No screen opens it so now: the Pads
+    /// tab's Effects row opens the pad's chain alone
+    /// ([`Panels::open_pad_mix`]).
     pub fn for_pad(pad: StripId, name: String, track: usize) -> Option<ChainHost> {
         let t = StripId::Track(track);
         let scopes = vec![(strip_of(pad)?, name), (strip_of(t)?, mixing::name(t))];
@@ -381,6 +390,16 @@ impl ChainHost {
                 self.selected = Some(slot);
                 self.landing = None;
                 self.page_shut = false;
+                // A Ducker starts on Sidechain with nothing picked: the
+                // sidechain list opens at once (layout spec 4b).
+                let n = c.node(slot);
+                let waits = n.zip(n.and_then(|n| mpfree_fx::sidechain::listens(n.info().id)));
+                if let Some((n, l)) = waits {
+                    if l.listening(n.param(l.param)) && h.mixer.key(sid, slot).is_none() {
+                        self.sidechain_list =
+                            Some(mpfree_chain_ui::sidechain_group(self.strip(), None));
+                    }
+                }
             }
         }
         let title = format!("{} FX", self.scopes[self.scope].1);
@@ -404,6 +423,12 @@ impl ChainHost {
         if self.page_shut && self.selected.is_none() {
             st = st.without_page();
         }
+        if let Some(c) = h.mixer.chain(sid) {
+            st.set_sidechains(c, |slot| {
+                let k = h.mixer.key(sid, slot)?;
+                Some((strip_of(k)?, mixing::name(k)))
+            });
+        }
         st.macro_names = h.modu.names().to_vec();
         st.plugins = crate::plugins::picks(h.plugins());
         st.learning = self.learning;
@@ -418,8 +443,30 @@ impl ChainHost {
             st.strip_name = mixing::name(sid);
             st.strip_kind = kind(sid);
         }
-        st.list = self.listing.map(|g| strip_list(h, g));
+        st.list = match (self.sidechain_list, &st.sidechain) {
+            (Some(g), Some(sc)) => Some(sidechain_list(h, sid, sc, g)),
+            _ => self.listing.map(|g| strip_list(h, g)),
+        };
         st
+    }
+
+    /// Opens the sidechain list over the selected effect's page (a tap on
+    /// its "SC from ..." or "Nothing picked" on the mixer's Effects look).
+    pub fn list_sidechain(&mut self, h: &MixHost) {
+        let Some(slot) = self.selected else {
+            return;
+        };
+        let sid = self.sid();
+        let listens = h
+            .mixer
+            .chain(sid)
+            .and_then(|c| c.node(slot))
+            .and_then(|n| mpfree_fx::sidechain::listens(n.info().id));
+        if listens.is_some() {
+            let now = h.mixer.key(sid, slot).and_then(strip_of);
+            self.sidechain_list = Some(mpfree_chain_ui::sidechain_group(self.strip(), now));
+            self.listing = None;
+        }
     }
 
     /// Applies one action to the mixer and the engine. `recording`: the
@@ -430,6 +477,7 @@ impl ChainHost {
         match *a {
             ChainAction::Select(i) => {
                 self.selected = Some(i);
+                self.sidechain_list = None;
                 self.page_shut = false;
                 self.group = 0;
                 self.focus = None;
@@ -623,6 +671,15 @@ impl ChainHost {
             }
             ChainAction::Strips(g) => {
                 self.listing = g.filter(|&g| g < mpfree_chain_ui::STRIP_GROUPS.len());
+                self.sidechain_list = None;
+            }
+            ChainAction::SidechainList(g) => {
+                self.sidechain_list = g.filter(|&g| g < mpfree_chain_ui::STRIP_GROUPS.len());
+                self.listing = None;
+            }
+            ChainAction::SetSidechain { control, strip } => {
+                self.sidechain_list = None;
+                return set_sidechain(h, control, strip.map(strip_id), recording);
             }
             ChainAction::OpenStrip(s) => {
                 self.listing = None;
@@ -674,7 +731,48 @@ impl ChainHost {
     }
 }
 
-/// Where slot `s` is after a move from `from` to `to`.
+/// What insert `control.owner` listens to: strip `key` fed to it
+/// (`Mixer::set_key`) with its sidechain control turned on, or (None) the
+/// control turned off and the strip it had left fed, so a tap on its button
+/// goes back to it. Its sidechain list's choice, and UNDO's.
+pub fn set_sidechain(
+    h: &mut MixHost,
+    control: ParamAddr,
+    key: Option<StripId>,
+    recording: bool,
+) -> ChainOut {
+    let Owner::Insert(s, uid) = control.owner else {
+        return ChainOut::Refused("That effect has changed");
+    };
+    let sid = strip_id(s);
+    let found = h.mixer.chain(sid).and_then(|c| {
+        let slot = c.slot_of(uid)?;
+        let l = mpfree_fx::sidechain::listens(c.node(slot)?.info().id)?;
+        (l.param == control.param).then_some((slot, l))
+    });
+    let Some((slot, l)) = found else {
+        return ChainOut::Refused("That effect has changed");
+    };
+    let value = match key {
+        Some(k) => {
+            if let Some(why) = h.mixer.sidechain_refusal(sid, k) {
+                return ChainOut::Refused(why.text());
+            }
+            if !h.mixer.set_key(sid, slot, Some(k)) {
+                return ChainOut::Refused("The mixer is busy");
+            }
+            l.on
+        }
+        None => match l.off {
+            Some(off) => off,
+            None => return ChainOut::Shown,
+        },
+    };
+    set(h, control, value, recording);
+    h.modu.release(control);
+    ChainOut::Shown
+}
+
 /// Which strip `s` is, for the strip button ("Track 4", "Submix 2").
 fn kind(s: StripId) -> String {
     match s {
@@ -687,34 +785,53 @@ fn kind(s: StripId) -> String {
     }
 }
 
-/// The strip list on group `g` (of `mpfree_chain_ui::STRIP_GROUPS`): the
-/// strips each group has (the tracks as the mixer shows them) and the
-/// group's, with what each holds.
-fn strip_list(h: &MixHost, g: usize) -> mpfree_chain_ui::StripList {
-    let groups: [Vec<StripId>; 6] = [
+/// The strips of each group of the strip list
+/// (`mpfree_chain_ui::STRIP_GROUPS`): the tracks as the mixer shows them,
+/// the pads, inputs, returns, submixes and the master.
+fn strip_groups(h: &MixHost) -> [Vec<StripId>; 6] {
+    [
         h.track_strips(),
         (0..mixing::PADS).map(StripId::Pad).collect(),
         (0..h.mixer.inputs()).map(StripId::Input).collect(),
         (0..mpfree_fx::RETURNS).map(StripId::Return).collect(),
         (0..mpfree_fx::BUSES).map(StripId::Bus).collect(),
         vec![StripId::Master],
-    ];
+    ]
+}
+
+/// What strip `id` holds, for its tile: "no effects", "muted · 3 effects".
+fn holds(h: &MixHost, id: StripId) -> String {
+    let n = h.mixer.chain(id).map_or(0, |c| c.len());
+    let fx = match n {
+        0 => "no effects".to_string(),
+        1 => "1 effect".to_string(),
+        n => format!("{n} effects"),
+    };
+    if muted(h, id) {
+        format!("muted · {fx}")
+    } else {
+        fx
+    }
+}
+
+fn muted(h: &MixHost, id: StripId) -> bool {
+    id != StripId::Master && h.mixer.param(id, mpfree_fx::ids::mixer::MUTE) >= 0.5
+}
+
+/// The strip list on group `g` (of `mpfree_chain_ui::STRIP_GROUPS`): the
+/// strips each group has (the tracks as the mixer shows them) and the
+/// group's, with what each holds.
+fn strip_list(h: &MixHost, g: usize) -> mpfree_chain_ui::StripList {
+    let groups = strip_groups(h);
     let counts = std::array::from_fn(|i| groups[i].len());
     let strips = groups[g.min(5)]
         .iter()
         .filter_map(|&id| {
-            let n = h.mixer.chain(id).map_or(0, |c| c.len());
-            let fx = match n {
-                0 => "no effects".to_string(),
-                1 => "1 effect".to_string(),
-                n => format!("{n} effects"),
-            };
-            let muted =
-                id != StripId::Master && h.mixer.param(id, mpfree_fx::ids::mixer::MUTE) >= 0.5;
             Some(mpfree_chain_ui::StripPick {
                 strip: strip_of(id)?,
                 name: mixing::name(id),
-                sub: if muted { format!("muted · {fx}") } else { fx },
+                sub: holds(h, id),
+                refused: None,
             })
         })
         .collect();
@@ -722,9 +839,103 @@ fn strip_list(h: &MixHost, g: usize) -> mpfree_chain_ui::StripList {
         group: g.min(5),
         counts,
         strips,
+        sidechain: None,
     }
 }
 
+/// The sidechain list for the effect `sc` on strip `sid`, on group `g`
+/// (layout spec 4b, "Sidechain"): only the groups that can feed it (a
+/// strip hears those before it in the mix; the master feeds none), each
+/// strip greyed with why when the mixer would refuse it, the line that
+/// says which groups can't and why, and what it hears now.
+fn sidechain_list(
+    h: &MixHost,
+    sid: StripId,
+    sc: &mpfree_chain_ui::SidechainView,
+    g: usize,
+) -> mpfree_chain_ui::StripList {
+    use mpfree_fx::sidechain::{Refusal, Row};
+    let groups = strip_groups(h);
+    let refusal = |k: StripId| h.mixer.sidechain_refusal(sid, k);
+    let can = |k: &StripId| *k != StripId::Master && refusal(*k) != Some(Refusal::Later);
+    let counts: [usize; 6] = std::array::from_fn(|i| groups[i].iter().filter(|k| can(k)).count());
+    let g = g.min(5);
+    let strips = groups[g]
+        .iter()
+        .filter(|k| can(k))
+        .filter_map(|&id| {
+            Some(mpfree_chain_ui::StripPick {
+                strip: strip_of(id)?,
+                name: mixing::name(id),
+                // It is heard before its fader and mute.
+                sub: if muted(h, id) {
+                    "muted · still works".to_string()
+                } else {
+                    holds(h, id)
+                },
+                refused: refusal(id).map(Refusal::text),
+            })
+        })
+        .collect();
+    let effect = h
+        .mixer
+        .chain(sid)
+        .and_then(|c| c.node(sc.slot))
+        .map_or_else(String::new, |n| n.info().name.to_uppercase());
+    let me = mixing::name(sid).to_uppercase();
+    let title = match sc.listens.row {
+        Row::Voice => format!("VOICE FOR {me} · {effect} · TAP THE VOICE IT PLAYS"),
+        _ => format!("SIDECHAIN FOR {me} · {effect} · TAP WHAT IT LISTENS TO"),
+    };
+    let now = match (&sc.track, sc.listening, sc.listens.row) {
+        (Some((_, name)), true, _) => format!("Now: {name}"),
+        (None, true, _) => "Now: nothing picked".to_string(),
+        (_, false, Row::Source) => "Now: Tempo".to_string(),
+        (_, false, _) => "Now: Off".to_string(),
+    };
+    // The groups left out, but for the master (it comes last of all).
+    let out: Vec<String> = mpfree_chain_ui::STRIP_GROUPS[..5]
+        .iter()
+        .zip(counts)
+        .filter(|(_, n)| *n == 0)
+        .map(|(name, _)| name.to_lowercase())
+        .collect();
+    let kind = match sid {
+        StripId::Track(_) => "track",
+        StripId::Pad(_) => "pad",
+        StripId::Input(_) => "input",
+        StripId::Bus(_) => "submix",
+        StripId::Return(_) => "return",
+        StripId::Master => "master",
+    };
+    let note = match out.as_slice() {
+        [] => String::new(),
+        [one] => {
+            format!("{one} come after this {kind} in the mix, so they can't feed its sidechain.")
+        }
+        [rest @ .., last] => format!(
+            "{} and {last} come after this {kind} in the mix, so they can't feed its sidechain.",
+            rest.join(", ")
+        ),
+    };
+    let mut note = note;
+    if let Some(c) = note.get_mut(..1) {
+        c.make_ascii_uppercase();
+    }
+    mpfree_chain_ui::StripList {
+        group: g,
+        counts,
+        strips,
+        sidechain: Some(mpfree_chain_ui::SidechainFor {
+            title,
+            now,
+            note,
+            current: sc.track.as_ref().map(|t| t.0),
+        }),
+    }
+}
+
+/// Where slot `s` is after a move from `from` to `to`.
 fn moved(s: usize, from: usize, to: usize) -> usize {
     if s == from {
         to
@@ -916,11 +1127,6 @@ pub struct Panels {
     /// The pad channels' effects as last sent for the Pads tab's Effects
     /// row.
     pad_fx: Option<Vec<PadFx>>,
-    /// The kit and pad the Sample tab's FX tab shows as pedals
-    /// ([`Panels::show_pedals`]): the chain, when there is one, is its pad
-    /// channel, not the editor, and its effects go to the screen while the
-    /// Sample tab shows.
-    pedals: Option<(usize, usize)>,
 }
 
 impl Default for Panels {
@@ -938,7 +1144,6 @@ impl Panels {
             sent_at: None,
             picked: false,
             pad_fx: None,
-            pedals: None,
         }
     }
 
@@ -994,8 +1199,24 @@ impl Panels {
         self.chain = Some(h);
         self.sent_at = None;
         self.picked = false;
-        self.pedals = None;
         app.open_chain()
+    }
+
+    /// A tap on an effect's "SC from ..." or "Nothing picked" on the
+    /// mixer's Effects look: the effect in the chain editor with its
+    /// sidechain list up (layout spec 4a).
+    pub fn open_sidechain(
+        &mut self,
+        app: &mut App,
+        mix: &MixHost,
+        strip: StripId,
+        slot: usize,
+    ) -> Vec<Effect> {
+        let fx = self.open_insert(app, mix, strip, Some(slot));
+        if let Some(h) = self.chain.as_mut() {
+            h.list_sidechain(mix);
+        }
+        fx
     }
 
     /// An effect picked on the mixer's Effects look (`MixAction::PickInsert`):
@@ -1008,7 +1229,6 @@ impl Panels {
         };
         self.chain = Some(h);
         self.picked = true;
-        self.pedals = None;
         self.sent_at = None;
     }
 
@@ -1111,64 +1331,6 @@ impl Panels {
         self.sent_at = None;
     }
 
-    /// The Sample tab's FX tab's Whole chain (with `add`, its + Add
-    /// effect): the chain editor on kit `kit`'s pad `pad`'s channel (lent
-    /// one if it has none: [`MixHost::lend_pad`]), with the track it plays
-    /// into as its second scope, in the Sample tab's place, and the picker
-    /// up for `add`; its Back comes back to the Sample tab. With every
-    /// channel lent, it opens nothing and says so.
-    pub fn open_pad(
-        &mut self,
-        app: &mut App,
-        mix: &mut MixHost,
-        kit: usize,
-        pad: usize,
-        add: bool,
-    ) -> Vec<Effect> {
-        self.picked = false;
-        self.pedals = None;
-        let host = mix
-            .lend_pad(kit, pad)
-            .and_then(|sid| ChainHost::for_pad(sid, mix.strip_name(sid), mix.kit_track(kit)));
-        let Some(mut h) = host else {
-            return vec![Effect::Tell(no_channel(kit, pad))];
-        };
-        h.picking = add;
-        self.chain = Some(h);
-        self.sent_at = None;
-        app.open_chain()
-    }
-
-    /// The Sample tab's FX tab shows kit `kit`'s pad `pad` (None: no
-    /// longer): its channel, if it has one, is kept as the editor's would
-    /// be, without the editor, so the pedals' switches and knobs
-    /// ([`ChainAction::SetOn`], [`ChainAction::Set`]) reach it, and
-    /// [`Panels::poll`] sends its effects (none, without a channel) while
-    /// the Sample tab shows. None lets go only of the pedals' own chain
-    /// (the editor may have taken its place). Lent channels that are plain
-    /// again go back ([`MixHost::give_back_plain`]).
-    pub fn show_pedals(&mut self, mix: &mut MixHost, pad: Option<(usize, usize)>) {
-        if self.pedals.take().is_some() {
-            self.chain = None;
-        }
-        mix.give_back_plain();
-        let Some((kit, p)) = pad else {
-            return;
-        };
-        self.chain = mix
-            .pad_channels
-            .channel(kit, p)
-            .and_then(|sid| Some(ChainHost::from_mixer(sid, None)?.named(mix, sid)))
-            .map(|mut h| {
-                h.picking = false;
-                h.back = None;
-                h
-            });
-        self.picked = false;
-        self.pedals = Some((kit, p));
-        self.sent_at = None;
-    }
-
     /// The Pads tab's Effects row: kit `kit`'s pad `pad`'s chain in the
     /// Mix tab (lent a channel if it has none), on its first effect, or
     /// the picker when it has none (Jay's Mix tab card, 14 Nov). ‹ comes
@@ -1181,7 +1343,6 @@ impl Panels {
         pad: usize,
     ) -> Vec<Effect> {
         self.picked = false;
-        self.pedals = None;
         let host = mix.lend_pad(kit, pad).and_then(|sid| {
             let first = mix.mixer.chain(sid).filter(|c| !c.is_empty()).map(|_| 0);
             Some(ChainHost::from_mixer(sid, first)?.named(mix, sid))
@@ -1264,7 +1425,6 @@ impl Panels {
                 {
                     nh.back = back;
                     self.chain = Some(nh);
-                    self.pedals = None;
                 }
                 Vec::new()
             }
@@ -1329,35 +1489,6 @@ impl Panels {
         show: &mut impl FnMut(ToUi),
     ) {
         let picked = view == View::Mixer && self.picked && self.chain.is_some();
-        if view == View::Sample {
-            // The FX tab's pedals: the pad channel's effects, each with its
-            // switch and main knobs.
-            let Some((kit, pad)) = self.pedals else {
-                return;
-            };
-            if self
-                .sent_at
-                .is_some_and(|t| now.duration_since(t) < PANELS_EVERY)
-            {
-                return;
-            }
-            self.sent_at = Some(now);
-            let sid = mix.pad_channels.channel(kit, pad);
-            let pedals = match sid.and_then(|s| Some((mix.mixer.chain(s)?, strip_of(s)?))) {
-                Some((c, strip)) => mpfree_chain_ui::state::pedals(c, strip, mix.modu.engine()),
-                None => Vec::new(),
-            };
-            show(ToUi::Pedals(crate::sample_page::PadPedals {
-                kit,
-                pad,
-                list: pedals,
-                own: sid.is_some(),
-                spare: mix.pad_channels.spare(),
-                into: mix.strip_name(StripId::Track(mix.kit_track(kit))),
-                room: SLOTS,
-            }));
-            return;
-        }
         if view == View::Pads {
             if self
                 .sent_at
@@ -1559,40 +1690,22 @@ mod tests {
         StripId::Track(DRUMS)
     }
 
-    /// The Sample tab's FX: the chain editor on the pad's own channel, so an
-    /// effect added there (Perform FX: stutters, repeats, stops) plays on
-    /// that pad alone, and on the Drums track for every pad; Back goes back
-    /// to the Sample tab.
+    /// The Pads tab's Effects row: the chain editor on the pad's own
+    /// channel, so an effect added there (Perform FX: stutters, repeats,
+    /// stops) plays on that pad alone; with every channel lent, another
+    /// pad gets none and is told why.
     #[test]
-    fn the_sample_tabs_fx_edits_the_pads_own_chain_and_goes_back_to_the_sample_tab() {
+    fn a_pads_effects_row_edits_its_own_chain_or_says_why_not() {
         let mut r = Rig::new();
         let mut app = App::new(RATE, false);
         let mut time = TimeHost::new(RATE, 120.0).unwrap();
         app.start();
-        app.open_tab(View::Sample);
+        app.open_tab(View::Pads);
         let mut p = Panels::new();
-        p.open_pad(&mut app, &mut r.h, 0, 4, false);
+        p.open_pad_mix(&mut app, &mut r.h, 0, 4);
         assert_eq!(app.view(), View::Chain);
-        let mut sent = Vec::new();
-        p.poll(
-            app.view(),
-            &r.h,
-            &|_| None,
-            120.0,
-            Instant::now(),
-            &mut |m| sent.push(m),
-        );
-        let title = sent.iter().find_map(|m| match m {
-            ToUi::Chain(st) => Some((st.title.clone(), st.scopes.clone())),
-            _ => None,
-        });
-        assert_eq!(
-            title,
-            Some((
-                "Pad 5 FX".to_string(),
-                vec!["Pad 5".to_string(), "Drums".to_string()]
-            ))
-        );
+        let st = p.chain_state(&r.h, &|_| None).unwrap();
+        assert!(st.picking, "the picker, on a pad with no effects");
         let len = |r: &Rig, s: StripId| r.h.mixer.chain(s).map_or(0, |c| c.len());
         let drums_before = len(&r, drums());
         let mut quiet = |_: ToUi| {};
@@ -1608,171 +1721,14 @@ mod tests {
         assert_eq!(len(&r, StripId::Pad(4)), 1, "Perform on pad 5's channel");
         assert_eq!(len(&r, StripId::Pad(3)), 0);
         assert_eq!(len(&r, drums()), drums_before);
-        p.chain(
-            &mut app,
-            &mut r.h,
-            &mut time,
-            &ChainAction::Scope(1),
-            false,
-            &mut quiet,
-        );
-        p.chain(
-            &mut app,
-            &mut r.h,
-            &mut time,
-            &ChainAction::Add("mpfree.fx.drive"),
-            false,
-            &mut quiet,
-        );
-        r.run(20);
-        assert_eq!(len(&r, drums()), drums_before + 1, "Drive on the Drums bus");
-        p.chain(
-            &mut app,
-            &mut r.h,
-            &mut time,
-            &ChainAction::Back,
-            false,
-            &mut quiet,
-        );
-        assert_eq!(app.view(), View::Sample);
-        // A pad past the 16 channels is lent one, named by its pad and
-        // kit, and gives it back on Back when nothing was put on it.
-        p.open_pad(&mut app, &mut r.h, 0, 16, false);
-        assert_eq!(app.view(), View::Chain);
-        let st = p.chain_state(&r.h, &|_| None).unwrap();
-        assert_eq!(st.title, "B1 · Kit 1 FX");
-        assert_eq!(st.scopes, ["B1 · Kit 1", "Drums"]);
-        assert_eq!(
-            r.h.pad_channels.channel(0, 16),
-            Some(StripId::Pad(mixing::PADS))
-        );
-        p.chain(
-            &mut app,
-            &mut r.h,
-            &mut time,
-            &ChainAction::Back,
-            false,
-            &mut quiet,
-        );
-        assert_eq!(app.view(), View::Sample);
-        assert_eq!(r.h.pad_channels.channel(0, 16), None, "given back");
-        // With every channel lent, another pad gets none, and is told why.
         for pad in 0..mixing::LENT {
             assert!(r.h.lend_pad(1, pad).is_some());
         }
-        let fx = p.open_pad(&mut app, &mut r.h, 2, 0, false);
+        let fx = p.open_pad_mix(&mut app, &mut r.h, 2, 0);
         assert!(
             matches!(&fx[..], [Effect::Tell(n)] if n.contains("are lent")),
             "{fx:?}"
         );
-        assert_eq!(app.view(), View::Sample);
-        // + Add effect: the editor with its picker up.
-        p.open_pad(&mut app, &mut r.h, 0, 4, true);
-        assert_eq!(app.view(), View::Chain);
-        assert!(p.chain_state(&r.h, &|_| None).is_some_and(|st| st.picking));
-    }
-
-    /// The Sample tab's FX tab: pad 5's channel as pedals while the Sample
-    /// tab shows, its switches and knobs reaching that channel only, and
-    /// nothing more once the tab lets go.
-    #[test]
-    fn the_sample_tabs_pedals_show_the_pads_effects_and_take_their_switches_and_knobs() {
-        let mut r = Rig::new();
-        let mut app = App::new(RATE, false);
-        let mut time = TimeHost::new(RATE, 120.0).unwrap();
-        app.start();
-        app.open_tab(View::Sample);
-        let mut p = Panels::new();
-        p.show_pedals(&mut r.h, Some((0, 4)));
-        let mut quiet = |_: ToUi| {};
-        for id in ["mpfree.fx.drive", "mpfree.fx.filter"] {
-            p.chain(
-                &mut app,
-                &mut r.h,
-                &mut time,
-                &ChainAction::Add(id),
-                false,
-                &mut quiet,
-            );
-            r.run(20);
-        }
-        assert_eq!(app.view(), View::Sample, "the pedals open no editor");
-        let poll = |p: &mut Panels, r: &Rig, t: Instant| {
-            let mut sent = Vec::new();
-            p.poll(View::Sample, &r.h, &|_| None, 120.0, t, &mut |m| {
-                sent.push(m)
-            });
-            sent
-        };
-        let t0 = Instant::now();
-        let sent = poll(&mut p, &r, t0);
-        let [ToUi::Pedals(said)] = &sent[..] else {
-            panic!("{} messages", sent.len());
-        };
-        assert_eq!(
-            (said.kit, said.pad, said.own, said.into.as_str(), said.room),
-            (0, 4, true, "Drums", SLOTS)
-        );
-        let pedals = &said.list;
-        let names: Vec<&str> = pedals.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names.len(), 2, "{names:?}");
-        assert!(names[0].starts_with("Drive"), "{names:?}");
-        assert!(pedals.iter().all(|e| e.on && e.knobs.len() >= 3));
-        assert!(
-            poll(&mut p, &r, t0 + PANELS_EVERY / 2).is_empty(),
-            "every 100 ms"
-        );
-        // The switch and a knob reach pad 5's channel.
-        p.chain(
-            &mut app,
-            &mut r.h,
-            &mut time,
-            &ChainAction::SetOn { slot: 0, on: false },
-            false,
-            &mut quiet,
-        );
-        let k = pedals[1].knobs[0].clone();
-        let value = k.nudged(-10, false);
-        assert_ne!(value, k.value);
-        p.chain(
-            &mut app,
-            &mut r.h,
-            &mut time,
-            &ChainAction::Set {
-                addr: k.addr,
-                value,
-            },
-            false,
-            &mut quiet,
-        );
-        r.run(20);
-        let chain = r.h.mixer.chain(StripId::Pad(4)).unwrap();
-        assert!(!chain.is_on(0) && chain.is_on(1));
-        assert!((r.param(k.addr) - value).abs() < 1e-3);
-        assert_eq!(r.h.mixer.chain(StripId::Pad(3)).map_or(0, |c| c.len()), 0);
-        let sent = poll(&mut p, &r, t0 + PANELS_EVERY * 2);
-        assert!(
-            matches!(&sent[..], [ToUi::Pedals(s)] if !s.list[0].on && (s.list[1].knobs[0].value - value).abs() < 1e-3),
-            "{} messages",
-            sent.len()
-        );
-        // Another kit's pad, with no channel yet: no pedals, one free to
-        // lend it, into its kit's track; no chain for a stray touch.
-        p.show_pedals(&mut r.h, Some((1, 4)));
-        let sent = poll(&mut p, &r, t0 + PANELS_EVERY * 3);
-        let [ToUi::Pedals(said)] = &sent[..] else {
-            panic!("{} messages", sent.len());
-        };
-        assert_eq!(
-            (said.kit, said.pad, said.own, said.spare, said.into.as_str()),
-            (1, 4, false, true, "Drums")
-        );
-        assert!(said.list.is_empty());
-        assert!(p.chain_state(&r.h, &|_| None).is_none());
-        // Let go: nothing more, and no chain for a stray touch.
-        p.show_pedals(&mut r.h, None);
-        assert!(poll(&mut p, &r, t0 + PANELS_EVERY * 5).is_empty());
-        assert!(p.chain_state(&r.h, &|_| None).is_none());
     }
 
     /// The audio loop's side: the mixer's insert row opens the editor in the
@@ -2230,6 +2186,137 @@ mod tests {
         );
     }
 
+    /// Layout spec 4b, "Sidechain": a Ducker added opens the sidechain
+    /// list at once (it starts listening, with nothing picked). The list
+    /// has only what can feed a track, the strip itself and one that
+    /// listens to it greyed; a strip picked feeds the effect and turns it
+    /// to listen, Off keeps the strip, and one the mixer would refuse is
+    /// refused with why.
+    #[test]
+    fn a_sidechain_picked_in_the_list_feeds_the_effect() {
+        use mpfree_fx::ids::{compressor, ducker};
+        let mut r = Rig::new();
+        let synth = StripId::Track(mixing::SYNTH);
+        // The synth's compressor listens to the drums: the drums can't
+        // listen to the synth (it would loop).
+        let mut s = ChainHost::from_mixer(synth, None).unwrap();
+        s.action(&mut r.h, &ChainAction::Add("mpfree.fx.compressor"), false);
+        r.run(20);
+        let st = s.state(&r.h);
+        let comp = st.selected.unwrap();
+        let control = st
+            .params
+            .iter()
+            .find(|p| p.addr.param == compressor::SIDECHAIN)
+            .unwrap()
+            .addr;
+        assert_eq!(
+            s.action(
+                &mut r.h,
+                &ChainAction::SetSidechain {
+                    control,
+                    strip: Some(Strip::Track(DRUMS as u8)),
+                },
+                false
+            ),
+            ChainOut::Shown
+        );
+        r.run(4);
+        assert_eq!(r.h.mixer.key(synth, comp), Some(drums()));
+        assert_eq!(r.param(control), 1.0, "it listens");
+        let st = s.state(&r.h);
+        let row = &st.slots[comp];
+        assert!(row.summary.starts_with("SC Drums"), "{}", row.summary);
+        // The Ducker on the drums: the list opens on the tracks.
+        let mut c = ChainHost::from_mixer(drums(), None).unwrap();
+        c.action(&mut r.h, &ChainAction::Add("mpfree.fx.ducker"), false);
+        r.run(20);
+        let st = c.state(&r.h);
+        let slot = st.selected.unwrap();
+        let sc = st.sidechain.clone().expect("the Ducker's sidechain");
+        assert!(sc.missing());
+        assert_eq!(st.slots[slot].summary, "Nothing picked");
+        assert!(st.slots[slot].warn);
+        let list = st.list.clone().expect("the sidechain list, at once");
+        let words = list.sidechain.clone().expect("its words");
+        assert_eq!(list.group, 0);
+        assert_eq!(
+            &list.counts[3..],
+            [0, 0, 0],
+            "returns, submixes, the master"
+        );
+        assert!(list.counts[1] > 0 && list.counts[2] > 0, "pads and inputs");
+        assert_eq!(
+            words.note,
+            "Returns and submixes come after this track in the mix, so they can't feed its sidechain."
+        );
+        assert_eq!(words.now, "Now: nothing picked");
+        assert!(
+            words.title.starts_with("SIDECHAIN FOR DRUMS · DUCKER"),
+            "{}",
+            words.title
+        );
+        let refused = |t: usize| {
+            let p = list
+                .strips
+                .iter()
+                .find(|p| p.strip == Strip::Track(t as u8));
+            p.unwrap().refused
+        };
+        assert_eq!(refused(DRUMS), Some("this strip"));
+        assert_eq!(refused(mixing::SYNTH), Some("it listens to this one"));
+        // A pad picked: it feeds the Ducker, which listens.
+        let control = st
+            .params
+            .iter()
+            .find(|p| p.addr.param == ducker::SOURCE)
+            .unwrap()
+            .addr;
+        let pick = |strip| ChainAction::SetSidechain { control, strip };
+        assert_eq!(
+            c.action(&mut r.h, &pick(Some(Strip::Pad(0))), false),
+            ChainOut::Shown
+        );
+        r.run(4);
+        assert_eq!(r.h.mixer.key(drums(), slot), Some(StripId::Pad(0)));
+        let st = c.state(&r.h);
+        assert!(st.list.is_none(), "the list shut");
+        let sc = st.sidechain.unwrap();
+        assert!(sc.listening && !sc.missing());
+        assert_eq!(sc.track.unwrap().0, Strip::Pad(0));
+        // Off (Tempo on the Ducker): the pad stays fed.
+        c.action(&mut r.h, &pick(None), false);
+        r.run(4);
+        assert_eq!(r.param(control), 1.0, "Tempo");
+        assert_eq!(r.h.mixer.key(drums(), slot), Some(StripId::Pad(0)));
+        let st = c.state(&r.h);
+        assert!(st.slots[slot].summary.starts_with("Tempo"));
+        // Refused: the strip itself, and the synth (it listens to the drums).
+        assert_eq!(
+            c.action(&mut r.h, &pick(Some(Strip::Track(DRUMS as u8))), false),
+            ChainOut::Refused("this strip")
+        );
+        assert_eq!(
+            c.action(
+                &mut r.h,
+                &pick(Some(Strip::Track(mixing::SYNTH as u8))),
+                false
+            ),
+            ChainOut::Refused("it listens to this one")
+        );
+        // The Mix tab's "SC from ..." opens the list on the pad's group.
+        let mut m = ChainHost::from_mixer(drums(), Some(slot)).unwrap();
+        m.list_sidechain(&r.h);
+        let st = m.state(&r.h);
+        assert_eq!(
+            st.list.map(|l| (l.group, l.sidechain.is_some())),
+            Some((1, true))
+        );
+        // The project keeps the pick.
+        let text = crate::project::mixer_text(&r.h.mixer, r.h.pad_mutes(), r.h.pad_solos());
+        assert!(text.contains("key="), "{text}");
+    }
+
     /// Jay, 16 Nov: a reverb or delay added on a send return starts at
     /// Mix 100 %; the same on a track keeps its default, and a preset from
     /// the picker leaves the return wet.
@@ -2673,7 +2760,7 @@ mod tests {
     }
 
     #[test]
-    fn sample_fx_switches_between_the_pads_chain_and_the_tracks() {
+    fn a_pads_chain_switches_between_its_own_and_the_tracks() {
         let mut r = Rig::new();
         let mut c = ChainHost::for_pad(StripId::Pad(0), "Pad 1".into(), DRUMS).unwrap();
         let st = c.state(&r.h);

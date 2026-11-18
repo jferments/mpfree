@@ -287,6 +287,9 @@ pub fn take_actions(ui: &mut Ui) -> Vec<LoopAct> {
     if let Some(w) = ui.get_mut::<LoopEditor>(EDITOR) {
         acts.append(&mut w.acts);
     }
+    if let Some(w) = ui.get_mut::<crate::loop_row::LoopRow>(crate::loop_row::LOOP_ROW) {
+        acts.append(&mut w.take());
+    }
     acts
 }
 
@@ -2441,44 +2444,6 @@ impl Widget for LoopEditor {
                 Some(EventKind::Select(k))
             }
         }
-    }
-}
-
-/// The layers' peaks stacked in their colours across `w`, the part before
-/// the playhead brighter; a layer not heard is grey (the Play page's loop
-/// strip).
-pub fn paint_layers(cx: &mut PaintCx, w: Rect, wave: &LoopWave, play: Option<i32>, heard: &[bool]) {
-    let t = cx.theme.clone();
-    let mid = w.y + w.h / 2;
-    let half = w.h as f32 / 2.0 - 2.0;
-    let cols = crate::looping::WAVE_COLUMNS;
-    let mut x = 0;
-    while x < w.w {
-        let col = (x as usize * cols / w.w.max(1) as usize).min(cols - 1);
-        let past = play.is_some_and(|p| w.x + x < p);
-        let mut acc = 0.0f32;
-        for (li, layer) in wave.layers.iter().enumerate() {
-            let amp = layer.get(col).copied().unwrap_or(0.0);
-            if amp <= 0.001 {
-                continue;
-            }
-            let y0 = (acc * half) as i32;
-            acc += amp;
-            let y1 = (acc * half).min(half) as i32;
-            let c = if heard.get(li).copied().unwrap_or(true) {
-                crate::looper_page::LAYER_COLOURS[li % crate::looper_page::LAYER_COLOURS.len()]
-            } else {
-                t.text_faint.mix(t.surface, 0.45)
-            };
-            let c = if past { c } else { c.mix(t.surface, 0.35) };
-            if y1 > y0 {
-                cx.canvas
-                    .fill_rect(Rect::new(w.x + x, mid - y1, 2, y1 - y0), c);
-                cx.canvas
-                    .fill_rect(Rect::new(w.x + x, mid + y0, 2, y1 - y0), c);
-            }
-        }
-        x += 3;
     }
 }
 
