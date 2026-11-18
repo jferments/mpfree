@@ -244,6 +244,9 @@ pub struct Bounce {
     /// A print's bounce ([`Looper::bounce_print`]): without the loop's
     /// level.
     pub dry: bool,
+    /// The octaves the audio plays faster than it is ([`Status::rate`]):
+    /// a print makes it so ([`print`]).
+    pub rate: i8,
 }
 
 /// A loop made to fit another tempo with its pitch kept: one pass of its
@@ -334,6 +337,12 @@ pub enum Edit {
     /// included), up to [`MAX_SEAM`]; 0 is a straight cut. [`FADE`] until
     /// changed.
     SeamFade(u32),
+    /// The loop's speed, like tape, in octaves from as it was recorded:
+    /// -1 is half speed (an octave down, twice the bars), 0 as recorded,
+    /// 1 double speed (an octave up, half the bars). Only the length in
+    /// ticks changes; the audio plays faster or slower to fit it, until a
+    /// print made at that speed is in ([`Status::rate`]).
+    Speed(i8),
 }
 
 /// What one layer's controls ask for ([`Looper::layer_command`]). Each
@@ -553,6 +562,13 @@ pub struct Status {
     pub solo_out: bool,
     /// How its overdubs record ([`Command::SetOverdubs`]).
     pub overdubs: Overdubs,
+    /// Its speed ([`Edit::Speed`]): -1 half, 0 as recorded, 1 double.
+    pub speed: i8,
+    /// The octaves its layers' audio plays faster than it was recorded
+    /// (its speed, until a fit makes the audio play as it is: then 0).
+    /// Not 0, the loop plays like tape until a print is in, and an
+    /// overdub waits for that print and fits the loop to it first.
+    pub rate: i8,
 }
 
 /// The memory gauge: all the loops together.
@@ -789,6 +805,8 @@ struct Shape {
     len_ticks: Tick,
     origin: Tick,
     seam: usize,
+    speed: i8,
+    rate: i8,
     views: [View; MAX_LAYERS],
     order: [u8; MAX_LAYERS],
     in_order: usize,
@@ -799,6 +817,8 @@ const NO_SHAPE: Shape = Shape {
     len_ticks: 0,
     origin: 0,
     seam: FADE,
+    speed: 0,
+    rate: 0,
     views: [View::EMPTY; MAX_LAYERS],
     order: [0; MAX_LAYERS],
     in_order: 0,
@@ -1248,6 +1268,10 @@ struct Loop {
     len_ticks: Tick,
     /// Frames; 0 until the first pass ends.
     len: usize,
+    /// [`Edit::Speed`]'s speed, and the octaves the audio plays faster
+    /// than recorded ([`Status::rate`]).
+    speed: i8,
+    rate: i8,
     /// The play order: slots, first pass first. Leaving layers stay until
     /// they are silent.
     order: [u8; MAX_LAYERS],
@@ -1370,6 +1394,9 @@ struct Loop {
     fitting: bool,
     /// An overdub starts when the fit takes over.
     fit_overdub: bool,
+    /// Overdub pressed at another speed before its print was in: the fit
+    /// (and the overdub) start once it is.
+    print_wait: bool,
     fit_slot: usize,
     fit_shape: usize,
     fit_done: usize,
@@ -1439,6 +1466,8 @@ impl Loop {
         origin: 0,
         len_ticks: 0,
         len: 0,
+        speed: 0,
+        rate: 0,
         order: [0; MAX_LAYERS],
         in_order: 0,
         slots: [Slot::NEW; MAX_LAYERS],
@@ -1507,6 +1536,7 @@ impl Loop {
         pjump_pos: 0.0,
         fitting: false,
         fit_overdub: false,
+        print_wait: false,
         fit_slot: 0,
         fit_shape: 0,
         fit_done: 0,
@@ -1682,7 +1712,7 @@ impl Looper {
                 0.0
             },
             ending: l.ending,
-            overdub_next: l.then_overdub || l.fit_overdub,
+            overdub_next: l.then_overdub || l.fit_overdub || l.print_wait,
             after: l.after,
             fade_old: l.fade_old,
             latency: l.latency,
@@ -1716,6 +1746,8 @@ impl Looper {
             solo: l.solo,
             solo_out: l.solo_out,
             overdubs: l.overdubs,
+            speed: l.speed,
+            rate: l.rate,
         })
     }
 
@@ -1775,6 +1807,8 @@ impl Looper {
             bars: l.bars,
             after: l.after,
             fade_old: l.fade_old,
+            speed: l.speed,
+            rate: l.rate,
             layers,
         })
     }
@@ -1867,6 +1901,8 @@ impl Looper {
         l.bars = f.bars.filter(|&b| b > 0);
         l.after = f.after;
         l.fade_old = f.fade_old.clamp(0.0, 1.0);
+        l.speed = f.speed.clamp(-1, 1);
+        l.rate = f.rate.clamp(-2, 2);
         l.loading = true;
         l.ld_layers = f.layers.len();
         l.ld_frames = f.frames;
@@ -1973,6 +2009,7 @@ impl Looper {
             complete,
             version: b.version,
             dry: b.dry,
+            rate: l.rate,
         })
     }
 
@@ -2107,6 +2144,9 @@ impl Looper {
                 pr.old = pr.now.take();
                 pr.now = pr.next.take().flatten();
                 l.take_print(pr.now.as_ref());
+            }
+            if l.print_wait {
+                l.tend_print_wait(store, stats, k, pr, block.start_frame);
             }
             if l.merging {
                 l.render_merge(store, k, end);
@@ -2265,6 +2305,12 @@ impl Looper {
                     self.loops[s].fit_overdub = false;
                     continue;
                 }
+                // Waiting for the print at another speed: a second press
+                // calls it off.
+                if l.print_wait {
+                    self.loops[s].print_wait = false;
+                    continue;
+                }
                 let p = self.prints[s].now.as_ref();
                 let live = p.filter(|p| l.print_live(p, self.prints[s].next.is_some()));
                 let lent = l.adding || l.lend.is_some();
@@ -2275,6 +2321,18 @@ impl Looper {
                         l.fit_overdub = true;
                         continue;
                     }
+                }
+                // At another speed the audio plays faster or slower than
+                // it would record: the overdub waits for the print made at
+                // that speed, and fits the loop to it first.
+                let l = &self.loops[s];
+                if l.rate != 0 && l.phase == Phase::Playing && !l.od_open {
+                    if lent {
+                        self.stats.refused += 1;
+                    } else {
+                        self.loops[s].print_wait = true;
+                    }
+                    continue;
                 }
             }
             let deferrable = matches!(
@@ -2427,6 +2485,7 @@ impl Looper {
         }
         let s = src.slots[slot];
         let (len, ticks, origin, layers) = (src.len, src.len_ticks, src.origin, src.layers());
+        let (speed, rate) = (src.speed, src.rate);
         let l = &mut self.loops[to];
         let k = if empty {
             // The layer's loop takes the place of one kept for Undo.
@@ -2443,6 +2502,11 @@ impl Looper {
             return;
         };
         let frames = if empty { len } else { l.len };
+        if empty {
+            // It takes the layer's loop's speed with its length.
+            l.speed = speed;
+            l.rate = rate;
+        }
         let mut new = Slot {
             valid: (0, frames),
             level: s.level,
@@ -2904,7 +2968,10 @@ impl Loop {
                 Phase::Playing if self.fitting => {
                     self.fitting = false;
                     self.fit_overdub = false;
+                    self.print_wait = false;
                 }
+                // An overdub waiting for its print is called off.
+                Phase::Playing if self.print_wait => self.print_wait = false,
                 Phase::Playing => self.undo(),
                 Phase::Empty if store.has_kept(me) && !self.loading && !self.adding => {
                     self.unclear(store, me)
@@ -2975,6 +3042,8 @@ impl Loop {
             len_ticks: self.len_ticks,
             origin: self.origin,
             seam: self.seam,
+            speed: self.speed,
+            rate: self.rate,
             views: self.views,
             order: self.order,
             in_order: self.in_order,
@@ -2986,6 +3055,8 @@ impl Loop {
         self.len_ticks = s.len_ticks;
         self.origin = s.origin;
         self.seam = s.seam;
+        self.speed = s.speed;
+        self.rate = s.rate;
         self.views = s.views;
     }
 
@@ -3075,6 +3146,25 @@ impl Loop {
                 s.origin += from;
             }
             Edit::SeamFade(f) => s.seam = (f as usize).min(MAX_SEAM),
+            Edit::Speed(to) => {
+                let to = to.clamp(-1, 1);
+                let by = to - s.speed;
+                if by == 0 || (s.rate + by).abs() > 2 {
+                    return None;
+                }
+                // Faster is fewer ticks for the same audio, slower more.
+                let m: Tick = 1 << by.unsigned_abs();
+                if by > 0 {
+                    if ticks % m != 0 || ticks / m < SIXTEENTH {
+                        return None;
+                    }
+                    s.len_ticks = ticks / m;
+                } else {
+                    s.len_ticks = ticks.checked_mul(m).filter(|t| *t <= Tick::MAX / 4)?;
+                }
+                s.speed = to;
+                s.rate += by;
+            }
         }
         // Every layer plays the loop's length (a check that costs nothing).
         if (0..MAX_LAYERS).any(|k| live[k] && s.views[k].len() != s.len) {
@@ -3354,9 +3444,45 @@ impl Loop {
         self.touch();
     }
 
+    /// An overdub waiting for the print at another speed
+    /// ([`Loop::print_wait`]): once the print plays, the fit starts and
+    /// the overdub with it; back at the speed it was recorded at (no print
+    /// needed), the overdub starts at once.
+    fn tend_print_wait(
+        &mut self,
+        store: &mut Store,
+        stats: &mut Stats,
+        me: usize,
+        pr: &Prints,
+        now: u64,
+    ) {
+        if self.phase != Phase::Playing || self.od_open || self.fitting {
+            self.print_wait = false;
+            return;
+        }
+        if self.adding || self.lend.is_some() || self.busy() {
+            return;
+        }
+        let live = pr
+            .now
+            .as_ref()
+            .filter(|p| self.print_on > 0.0 && self.print_live(p, pr.next.is_some()));
+        if let Some(frames) = live.map(|p| p.frames) {
+            self.print_wait = false;
+            self.start_fit(store, stats, me, frames, now);
+            if self.fitting {
+                self.fit_overdub = true;
+            }
+        } else if self.rate == 0 && self.print_on == 0.0 {
+            self.print_wait = false;
+            self.open_overdub(store, stats, me, FADE);
+        }
+    }
+
     fn cancel_fit(&mut self, stats: &mut Stats) {
         self.fitting = false;
         self.fit_overdub = false;
+        self.print_wait = false;
         stats.refused += 1;
     }
 
@@ -3375,6 +3501,8 @@ impl Loop {
         self.shapes[i] = self.shape();
         let old = self.len as f64;
         self.len = self.fit_frames;
+        // The print was made at the loop's speed: its audio plays as it is.
+        self.rate = 0;
         self.views[k] = View::whole(self.len);
         self.pos = (self.pos / old * self.len as f64).min(self.len as f64 - 1e-6);
         self.order[0] = k as u8;
@@ -3739,10 +3867,13 @@ impl Loop {
         self.print_on = 0.0;
         self.fitting = false;
         self.fit_overdub = false;
+        self.print_wait = false;
         self.swapping = false;
         self.phase = Phase::Empty;
         self.len = 0;
         self.len_ticks = 0;
+        self.speed = 0;
+        self.rate = 0;
         self.in_order = 0;
         self.n_done = 0;
         self.n_undone = 0;
@@ -3801,6 +3932,7 @@ impl Loop {
         self.merging = false;
         self.fitting = false;
         self.fit_overdub = false;
+        self.print_wait = false;
         self.swapping = false;
         self.bouncing = false;
         self.loading = false;
