@@ -357,6 +357,7 @@ impl Desk<'_> {
             }
             gui::FromUi::LoopBars(bars) => fx.extend(app.set_loop_bars(bars)),
             gui::FromUi::LoopKeys => fx.extend(app.toggle_loop_keys()),
+            gui::FromUi::PerformOff => fx.extend(app.perform_off()),
             gui::FromUi::LoopCapture => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Capture))
             }
@@ -533,6 +534,14 @@ impl Desk<'_> {
             app::Effect::Looper(a) => {
                 later.extend(crate::looper_action(out, looper, app, *card, a))
             }
+            // A Perform pad's throw, and its track mute.
+            app::Effect::PlayFx(p) => mix.play(p),
+            app::Effect::TrackMute { track, wait } => {
+                let line = time
+                    .mute_or_solo(track, wait, false)
+                    .unwrap_or_else(|e| format!("track mute: {e}"));
+                out.note(&format!("perform: {line}"));
+            }
             // The audio loop's own, named one by one as above.
             e @ (app::Effect::Light(..)
             | app::Effect::Octave(_)
@@ -607,6 +616,7 @@ fn arm(
 /// pass, overdub, play), arming the loop for REC as the ring does; a mute
 /// pad mutes or unmutes its loop without picking it, and with SHIFT held
 /// solos it or lets go. The line for the log.
+#[cfg(test)]
 pub fn perform_pad(
     app: &mut app::App,
     time: &time::TimeHost,
@@ -614,11 +624,52 @@ pub fn perform_pad(
     out: &mut Out,
     action: crate::perform_pads::PadAction,
 ) -> (Vec<app::Effect>, String) {
-    use crate::perform_pads::PadAction;
+    perform_pad_on(app, time, looper, out, action, 0)
+}
+
+/// A Perform pad pressed, as [`perform_pad`], with the drum pads Drop
+/// drums mutes (`drums`, [`crate::perform_pads::drum_pads`] of the kit
+/// playing). A throw pad plays its throw (held, or latched until the next
+/// hit); a track mute pad mutes or unmutes its track, at the launch line
+/// in Perform; a scene pad launches its row.
+pub fn perform_pad_on(
+    app: &mut app::App,
+    time: &time::TimeHost,
+    looper: &looping::LoopHost,
+    out: &mut Out,
+    action: crate::perform_pads::PadAction,
+    drums: u16,
+) -> (Vec<app::Effect>, String) {
+    use crate::perform_pads::{Hold, PadAction};
     use looping::LoopAction;
     let mut fx = Vec::new();
     let line = match action {
         PadAction::None => return (fx, String::new()),
+        PadAction::Throw(t) => match app.perform_throw(t, true) {
+            Some(on) => {
+                let i = usize::from(t.index);
+                fx.extend(crate::perform_pads::throw_fx(i, on, drums).map(app::Effect::PlayFx));
+                match (t.hold, on) {
+                    (Hold::WhileHeld, _) => format!("perform: {}", t.name()),
+                    (Hold::Latch, true) => format!("perform: {} latched", t.name()),
+                    (Hold::Latch, false) => format!("perform: {} let go", t.name()),
+                }
+            }
+            None => String::new(),
+        },
+        PadAction::Mute(t) => {
+            fx.push(app::Effect::TrackMute {
+                track: usize::from(t),
+                wait: app.mute_waits(),
+            });
+            String::new()
+        }
+        PadAction::Scene(n) => {
+            fx.push(app::Effect::Time(mpfree_time_ui::TimeAction::LaunchScene(
+                usize::from(n),
+            )));
+            format!("perform: Scene {}", u16::from(n) + 1)
+        }
         PadAction::LoopKey(n) => {
             let n = usize::from(n);
             fx.push(app::Effect::Looper(LoopAction::Select(n)));
@@ -684,6 +735,24 @@ pub fn perform_pad(
         }
     };
     (fx, line)
+}
+
+/// A Perform pad let go (`action`, what it pressed): a held throw lets
+/// go. Latched throws, keys, mutes and scenes do nothing on the lift.
+pub fn perform_pad_up(
+    app: &mut app::App,
+    action: crate::perform_pads::PadAction,
+) -> Vec<app::Effect> {
+    use crate::perform_pads::PadAction;
+    match action {
+        PadAction::Throw(t) => app
+            .perform_throw(t, false)
+            .and_then(|on| crate::perform_pads::throw_fx(usize::from(t.index), on, 0))
+            .map(app::Effect::PlayFx)
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// A loop key held for [`crate::perform_pads::CLEAR_HOLD_S`]: its loop

@@ -355,6 +355,21 @@ const STEP_ERASE_HINT: &str =
 const LOOP_KEYS_HINT: &str =
     "Pads: loop keys   ·   top rows: each loop's key (hold 1 s: clear)   ·   \
                               bottom rows: its mute   ·   SHIFT + SAMPLER: the pads play";
+/// The hint while the Perform set is on the pads at a page past A
+/// (`page`: "Page B · Throws"), on the Looper tab and Play.
+fn perform_hint(page: &str) -> String {
+    format!(
+        "Pads: Perform set, {page}   ·   PAD BANK: its pages (A: the loop keys)   ·   \
+         SHIFT + SAMPLER: the pads play"
+    )
+}
+
+/// Play's chip for a Perform page past A: "Pads: Perform B".
+fn perform_chip(page: &str) -> String {
+    let letter = page.strip_prefix("Page ").and_then(|p| p.chars().next());
+    format!("Pads: Perform {}", letter.unwrap_or('?'))
+}
+
 const PAD_MUTE_HINT: &str =
     "SHIFT + TRACK MUTE:   a pad mutes and unmutes itself in the kit   ·   red: muted   ·   \
                              TRACK MUTE: tracks   ·   SHIFT + TRACK MUTE: the pads play again";
@@ -1369,6 +1384,8 @@ pub enum FromUi {
     /// the "Pads: loop keys" chip (SHIFT + SAMPLER on the Looper tab does
     /// the same).
     LoopKeys,
+    /// The Perform set off the pads: Play's "Pads: Perform B" chip.
+    PerformOff,
     /// Capture: the last bars heard become a loop (the deck's Capture,
     /// What you played's button).
     LoopCapture,
@@ -1974,6 +1991,7 @@ impl Player {
             mute_keys: MuteKeys::Off,
             mute_bank: 0,
             loop_keys: false,
+            perform: None,
             steps: None,
             erase: false,
             copy: false,
@@ -4351,6 +4369,17 @@ impl Player {
             why.push(String::new());
             self.loop_keys_chip = Some(chips.len());
             chips.push(Chip::new("Pads: loop keys", Tone::Warn));
+        } else if let Some(page) = self
+            .status
+            .perform
+            .as_ref()
+            .filter(|_| self.view == View::Play)
+        {
+            // Another page of the Perform set: its letter (the hint names
+            // it); a tap gives the pads back.
+            why.push(String::new());
+            self.loop_keys_chip = Some(chips.len());
+            chips.push(Chip::new(perform_chip(page), Tone::Warn));
         }
         // STEP SEQ: the pads are a sound's steps; a tap gives them back.
         self.steps_chip = None;
@@ -4552,6 +4581,13 @@ impl Player {
             step_seq_hint(s)
         } else if self.status.loop_keys && matches!(self.view, View::Looper | View::Play) {
             LOOP_KEYS_HINT.to_string()
+        } else if let Some(page) = self
+            .status
+            .perform
+            .as_ref()
+            .filter(|_| matches!(self.view, View::Looper | View::Play))
+        {
+            perform_hint(page)
         } else if self.status.mute_keys == MuteKeys::Tracks {
             track_mute_hint(self.status.mute_bank, self.time.tracks.len())
         } else if self.status.mute_keys == MuteKeys::Pads {
@@ -9820,7 +9856,11 @@ impl Player {
                 Some(FromUi::StepsOff)
             }
             ("header", EventKind::Select(i)) if Some(i) == self.loop_keys_chip => {
-                Some(FromUi::LoopKeys)
+                Some(if self.status.loop_keys {
+                    FromUi::LoopKeys
+                } else {
+                    FromUi::PerformOff
+                })
             }
             ("header", EventKind::Select(i)) if Some(i) == self.controller_chip => {
                 Some(FromUi::ControllerOff)
@@ -10768,6 +10808,7 @@ pub fn sample_player(fonts: Fonts) -> Player {
         mute_keys: MuteKeys::Off,
         mute_bank: 0,
         loop_keys: false,
+        perform: None,
         steps: None,
         erase: false,
         copy: false,
@@ -11232,6 +11273,7 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         mute_keys: MuteKeys::Off,
         mute_bank: 0,
         loop_keys: false,
+        perform: None,
         steps: None,
         erase: false,
         copy: false,
@@ -11539,6 +11581,8 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::Bank { .. }
             | Effect::BankLights
             | Effect::Looper(_)
+            | Effect::PlayFx(_)
+            | Effect::TrackMute { .. }
             | Effect::SavePatterns(_)
             | Effect::SynthPads(_)
             | Effect::TrackSound { .. }
@@ -13238,6 +13282,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("looper sample: {e}"),
     }
+    // The Perform set on the pads at page B (PAD BANK B): the hint line
+    // names the page and the deck's loop keys switch is dark.
+    match sample_looper(fonts()) {
+        Ok(mut p) => {
+            let mut s = p.status.clone();
+            s.perform = Some("Page B · Throws".to_string());
+            p.apply(ToUi::Status(s));
+            out.push(("looper-perform-throws", p));
+        }
+        Err(e) => eprintln!("looper-perform-throws sample: {e}"),
+    }
     // The same on Loop tracks (clips-loops' grid): each loop named by its
     // place, and Show in Clips lit.
     match (
@@ -13264,6 +13319,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         mute_keys: MuteKeys::Off,
         mute_bank: 0,
         loop_keys: false,
+        perform: None,
         steps: None,
         erase: false,
         copy: false,
@@ -13302,6 +13358,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         mute_keys: MuteKeys::Off,
         mute_bank: 0,
         loop_keys: false,
+        perform: None,
         steps: None,
         erase: false,
         copy: false,
@@ -15194,7 +15251,39 @@ mod tests {
             Some(FromUi::LoopKeys)
         );
         p.touch(2, Touch::Up, chip.x + 10, chip.y + 10);
+        // Another page of the Perform set (PAD BANK B): the deck's switch
+        // is dark (page A is the loop keys), Play's chip names the page's
+        // letter and the hint the page; a tap turns the set off.
         s.loop_keys = false;
+        s.perform = Some("Page B · Throws".to_string());
+        p.apply(ToUi::Status(s.clone()));
+        assert!(
+            chips(&p).contains(&"Pads: Perform B".to_string()),
+            "{:?}",
+            chips(&p)
+        );
+        assert!(
+            hint(&p).starts_with("Pads: Perform set, Page B · Throws"),
+            "{}",
+            hint(&p)
+        );
+        let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
+        p.ui.paint(&mut c);
+        let chip =
+            p.ui.get::<Header>("header")
+                .unwrap()
+                .chip_rect(p.loop_keys_chip.unwrap())
+                .unwrap();
+        assert_eq!(
+            p.touch(3, Touch::Down, chip.x + 10, chip.y + 10),
+            Some(FromUi::PerformOff)
+        );
+        p.touch(3, Touch::Up, chip.x + 10, chip.y + 10);
+        p.show_view(View::Looper);
+        assert!(!p.ui.get::<LoopDeck>(DECK).unwrap().head.pads, "dark");
+        assert!(hint(&p).starts_with("Pads: Perform set"), "{}", hint(&p));
+        p.show_view(View::Play);
+        s.perform = None;
         p.apply(ToUi::Status(s));
         assert!(!chips(&p).iter().any(|c| c.starts_with("Pads:")));
     }
@@ -20041,6 +20130,7 @@ mod tests {
             arp: "mpfree-arp 1\ntrack 1\nmode = arp\n".to_string(),
             instruments: String::new(),
             track_kits: String::new(),
+            perform: String::new(),
             loops: Some(loops),
             audio: Some(audio),
         };
@@ -20357,6 +20447,7 @@ mod tests {
                 arp: String::new(),
                 instruments: String::new(),
                 track_kits: String::new(),
+                perform: String::new(),
                 loops: None,
                 audio: None,
             })
@@ -25030,6 +25121,7 @@ mod tests {
             mute_keys: MuteKeys::Off,
             mute_bank: 0,
             loop_keys: false,
+            perform: None,
             steps: None,
             erase: false,
             copy: false,
