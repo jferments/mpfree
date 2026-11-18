@@ -28,6 +28,8 @@
 //! program 4 bank 2
 //! touch 0:10 50:40
 //! note 0 240 36 100 100 - 1 0 2
+//! note 240 240 38 90 100 - 4 0 0 ramp:-40 slide
+//! note 480 240 38 90 100 - 1 0 0 off tie
 //! lock 480 36 pad36.4 0.25
 //! lane t:mix.0 -60 6 0 n
 //! point 0 0.5 r
@@ -49,6 +51,11 @@
 //! listloop
 //! ```
 //!
+//! A note's words after its pressure are the step's own settings, written
+//! only when set (sequencer S6): `off` (the step is off), `ramp:<n>` (its
+//! ratchet's velocity ramp), `tie` or `slide` ([`crate::Join`]). An older
+//! build reads the note and skips them.
+//!
 //! Reading is careful: every number is checked, every clip and the whole
 //! project go through [`Project::check`]-level checks, and a part that
 //! doesn't hold together is refused whole (the engine keeps what it had).
@@ -65,8 +72,8 @@ use mpfree_transport::time::{Swing, Tick};
 use crate::arrange::{Marker, MorphRows, Placement, Source};
 use crate::scenes::{Follow, FollowAction, ListStep, Scene, MAX_LIST_STEPS, SCENES};
 use crate::{
-    Clip, Cond, LaunchGrid, Lock, LoopInput, Note, Project, Quantise, Speed, Touch, TouchPoint,
-    Track, TrackKind, MAX_TRACKS, SLOTS,
+    Clip, Cond, Join, LaunchGrid, Lock, LoopInput, Note, Project, Quantise, Speed, Touch,
+    TouchPoint, Track, TrackKind, MAX_TRACKS, SLOTS,
 };
 
 /// The first line.
@@ -217,7 +224,7 @@ fn clip_body(s: &mut String, c: &Clip) {
         s.push('\n');
     }
     for n in &c.notes {
-        let _ = writeln!(
+        let _ = write!(
             s,
             "note {} {} {} {} {} {} {} {} {}",
             n.tick,
@@ -230,6 +237,16 @@ fn clip_body(s: &mut String, c: &Clip) {
             n.touch.first,
             n.touch.len
         );
+        if !n.on {
+            s.push_str(" off");
+        }
+        if n.ramp != 0 {
+            let _ = write!(s, " ramp:{}", n.ramp);
+        }
+        if n.join != Join::Attack {
+            let _ = write!(s, " {}", n.join.word());
+        }
+        s.push('\n');
     }
     for l in &c.locks {
         let sound = l.sound.map_or("-".to_string(), |x| x.to_string());
@@ -572,8 +589,12 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                             first: num(w.next())?,
                             len: num(w.next())?,
                         },
+                        on: true,
+                        ramp: 0,
+                        join: Join::Attack,
                     })
                 })()
+                .and_then(|n| step_words(n, w.by_ref()))
                 .ok_or_else(|| bad("note"))?;
                 c.add_note(n).map_err(|e| bad(&format!("{e:?}")))?;
             }
@@ -798,6 +819,26 @@ fn follow<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<Follow> {
     f.check().ok().map(|_| f)
 }
 
+/// A note line's words after its pressure: the step's own settings
+/// (`off`, `ramp:<n>`, `tie`, `slide`). A ramp out of range or not a
+/// number refuses the line (None); a word this build doesn't know is
+/// skipped, as unknown lines are, so a newer build's notes still open.
+fn step_words<'a>(mut n: Note, w: impl Iterator<Item = &'a str>) -> Option<Note> {
+    for word in w {
+        match word {
+            "off" => n.on = false,
+            "tie" => n.join = Join::Tie,
+            "slide" => n.join = Join::Slide,
+            x => {
+                if let Some(r) = x.strip_prefix("ramp:") {
+                    n.ramp = r.parse().ok()?;
+                }
+            }
+        }
+    }
+    Some(n)
+}
+
 fn num<T: FromStr>(w: Option<&str>) -> Option<T> {
     w?.parse().ok()
 }
@@ -880,11 +921,15 @@ mod tests {
             cond: Cond::Every { a: 2, b: 4 },
             chance: 50,
             ratchet: 3,
+            ramp: -40,
+            join: crate::Join::Slide,
             ..Note::new(0, 240, 36, 100)
         })
         .unwrap();
         c.add_note(Note {
             cond: Cond::NotFill,
+            on: false,
+            join: crate::Join::Tie,
             ..Note::new(960, 120, 38, 1)
         })
         .unwrap();
@@ -1101,6 +1146,31 @@ mod tests {
             "program",
         ] {
             let t = text.replace("program 4 bank 300", bad);
+            assert!(from_text(&t).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_steps_own_settings_read_back_and_older_notes_take_the_defaults() {
+        let text = to_text(&full());
+        assert!(text.contains(" ramp:-40 slide\n"), "{text}");
+        assert!(text.contains(" off tie\n"), "{text}");
+        let note = |t: &str| {
+            let p = from_text(t).unwrap();
+            p.tracks[0].slots[0].as_ref().unwrap().notes[1]
+        };
+        // An older file's note: on, no ramp, its own attack.
+        let old = text.replace(" off tie\n", "\n");
+        let n = note(&old);
+        assert!(n.on);
+        assert_eq!((n.ramp, n.join), (0, crate::Join::Attack));
+        // A newer build's word is skipped; the ones this build knows stay.
+        let newer = note(&text.replace(" off tie\n", " off sparkle tie\n"));
+        assert!(!newer.on);
+        assert_eq!(newer.join, crate::Join::Tie);
+        // A ramp out of range, or not a number, refuses the part.
+        for bad in ["ramp:127", "ramp:-127", "ramp:999", "ramp:x", "ramp:"] {
+            let t = text.replace("ramp:-40", bad);
             assert!(from_text(&t).is_err(), "{bad}");
         }
     }

@@ -37,6 +37,12 @@
 //! with their step: tapping a step off takes its row's locks out, a nudge
 //! moves them, and pages added, copied or taken off carry them.
 //!
+//! **A step's own settings** (sequencer S6). [`Change::On`] turns a
+//! step off and on again: off, its notes stay with everything they hold
+//! (velocity, length, settings, locks) and the player leaves them out.
+//! [`Change::Ramp`] sets a ratchet's velocity ramp, and [`Change::Join`]
+//! ties or slides the step into the note before it ([`crate::Join`]).
+//!
 //! **Euclidean fill.** [`Euclid`] spreads `hits` as evenly as they go
 //! over `steps` steps (the Euclidean rhythms, as on the Digitakt), turned
 //! on by `rotate`; [`Grid::euclid`] writes that pattern into one sound's
@@ -47,7 +53,8 @@
 //! apply as one undoable take (`Takes::edit` in `mpfree-play`).
 
 use crate::{
-    touch_room, Clip, Cond, Lock, Note, TouchPoint, MAX_CLIP_TICKS, MAX_RATCHET, MIN_CLIP_TICKS,
+    touch_room, Clip, Cond, Join, Lock, Note, TouchPoint, MAX_CLIP_TICKS, MAX_RAMP, MAX_RATCHET,
+    MIN_CLIP_TICKS,
 };
 use mpfree_moves::{Moves, MovesError};
 use mpfree_param::RelAddr;
@@ -80,6 +87,12 @@ pub struct Step {
     pub cond: Cond,
     /// Hits, 1 to `MAX_RATCHET`.
     pub ratchet: u8,
+    /// On, or off: kept and left out ([`Note::on`]).
+    pub on: bool,
+    /// The ratchet's velocity ramp ([`Note::ramp`]).
+    pub ramp: i8,
+    /// Its own attack, a tie or a slide ([`Note::join`]).
+    pub join: Join,
     /// Notes of the sound in the step, 1 or more.
     pub notes: usize,
     /// The lowest and highest note in the step (its sound's on a row; on
@@ -225,6 +238,14 @@ pub enum Change {
     Cond(Cond),
     /// Hits, kept within 1 to `MAX_RATCHET`.
     Ratchet(u8),
+    /// On or off: off keeps the notes and all they hold, and the player
+    /// leaves them out ([`Note::on`]).
+    On(bool),
+    /// A ratchet's velocity ramp, kept within -`MAX_RAMP` to `MAX_RAMP`
+    /// ([`Note::ramp`]).
+    Ramp(i8),
+    /// Its own attack, a tie or a slide ([`Note::join`]).
+    Join(Join),
     /// The step's notes move so its lowest is this note (pad or note
     /// number) and the others keep their distance above it: a melodic
     /// step's Note knob. Refused (no change) where a note would pass 127,
@@ -245,6 +266,9 @@ impl Change {
             Change::Cond(_) => 6,
             Change::Ratchet(_) => 7,
             Change::Note(_) => 8,
+            Change::On(_) => 9,
+            Change::Ramp(_) => 10,
+            Change::Join(_) => 11,
         };
         (kind << 56) | (u64::from(pitch) << 48) | (i as u64 & 0xFFFF_FFFF_FFFF)
     }
@@ -471,6 +495,9 @@ impl Grid {
                 chance: n.chance,
                 cond: n.cond,
                 ratchet: n.ratchet,
+                on: n.on,
+                ramp: n.ramp,
+                join: n.join,
                 notes: 1,
                 low: n.note,
                 high: n.note,
@@ -740,6 +767,9 @@ impl Grid {
                 Change::Cond(c) if c.ok() => new.cond = c,
                 Change::Cond(_) => {}
                 Change::Ratchet(r) => new.ratchet = r.clamp(1, MAX_RATCHET),
+                Change::On(on) => new.on = on,
+                Change::Ramp(r) => new.ramp = r.clamp(-MAX_RAMP, MAX_RAMP),
+                Change::Join(j) => new.join = j,
                 Change::Note(_) => {}
                 Change::Nudge(_) => {
                     let nudge = (self.place(clip.length, n.tick).1 + shift).clamp(lo, hi);
@@ -1731,6 +1761,64 @@ mod tests {
         ]
         .map(|ch| ch.key(36, 6));
         assert!(keys[0] != keys[1] && keys[1] != keys[2] && keys[0] != keys[2]);
+    }
+
+    #[test]
+    fn a_step_turns_off_keeping_what_it_holds_and_takes_a_ramp_and_a_join() {
+        let g = Grid::new(240).unwrap();
+        let mut c = clip(BAR, &[(1440, 36), (1500, 36), (1440, 38)]);
+        c.apply(&g.change(&c, 36, 6, Change::Velocity(70))).unwrap();
+        c.apply(&g.lock(
+            &c,
+            Some(36),
+            6,
+            RelAddr::new(mpfree_param::OnTrack::Pad(36), 4),
+            0.5,
+        ))
+        .unwrap();
+        let before = g.notes(&c, 36, 6);
+        let locks = c.locks.clone();
+        // Off: the same notes, off; the locks stay.
+        let e = g.change(&c, 36, 6, Change::On(false));
+        assert_eq!(e.add.len(), 2, "every note of the step");
+        assert!(e.erase_locks.is_empty() && e.add_locks.is_empty());
+        c.apply(&e).unwrap();
+        let off = g.notes(&c, 36, 6);
+        assert!(off.iter().all(|n| !n.on));
+        let on_again: Vec<Note> = off.iter().map(|n| Note { on: true, ..*n }).collect();
+        assert_eq!(on_again, before, "nothing else changed");
+        assert_eq!(c.locks, locks);
+        let s = g.row(&c, 36)[6].unwrap();
+        assert!(!s.on && s.velocity == 70);
+        assert!(g.row(&c, 38)[6].unwrap().on, "only the step's sound");
+        assert!(
+            g.change(&c, 36, 6, Change::On(false)).is_empty(),
+            "already so"
+        );
+        c.apply(&g.change(&c, 36, 6, Change::On(true))).unwrap();
+        assert_eq!(g.notes(&c, 36, 6), before);
+        // A ramp, kept in range, and a join.
+        let e = g.change(&c, 36, 6, Change::Ramp(i8::MIN));
+        assert!(e.add.iter().all(|n| n.ramp == -MAX_RAMP));
+        c.apply(&e).unwrap();
+        c.apply(&g.change(&c, 36, 6, Change::Join(Join::Slide)))
+            .unwrap();
+        let s = g.row(&c, 36)[6].unwrap();
+        assert_eq!((s.ramp, s.join), (-MAX_RAMP, Join::Slide));
+        // The whole line: a chord turns off together.
+        c.apply(&g.change_all(&c, 6, Change::On(false))).unwrap();
+        assert!(g.chord(&c, 6).iter().all(|n| !n.on));
+        // Each kind joins its own undo.
+        let keys = [
+            Change::On(false),
+            Change::Ramp(1),
+            Change::Join(Join::Tie),
+            Change::Ratchet(2),
+        ]
+        .map(|ch| ch.key(36, 6));
+        for (i, a) in keys.iter().enumerate() {
+            assert!(keys[i + 1..].iter().all(|b| a != b));
+        }
     }
 
     #[test]

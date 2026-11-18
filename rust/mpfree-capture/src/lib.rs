@@ -648,6 +648,9 @@ impl Capture {
                         cond: mpfree_seq::Cond::Always,
                         ratchet: 1,
                         touch: mpfree_seq::Touch::NONE,
+                        on: true,
+                        ramp: 0,
+                        join: mpfree_seq::Join::Attack,
                     };
                     open[n] = Some((played.len(), x.at));
                     played.push(Played {

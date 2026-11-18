@@ -211,6 +211,9 @@ fn four_beats() -> Session {
             cond: mpfree_seq::Cond::Always,
             ratchet: 1,
             touch: mpfree_seq::Touch::NONE,
+            on: true,
+            ramp: 0,
+            join: mpfree_seq::Join::Attack,
         })
         .collect();
     let mut s = session(c, 0);
@@ -539,6 +542,9 @@ fn a_loop_jump_ends_the_replace_pass_and_a_new_take_replaces_again() {
             cond: mpfree_seq::Cond::Always,
             ratchet: 1,
             touch: mpfree_seq::Touch::NONE,
+            on: true,
+            ramp: 0,
+            join: mpfree_seq::Join::Attack,
         })
         .collect();
     let mut s = session(c, 0);
@@ -593,6 +599,9 @@ fn a_take_undoes_and_redoes_as_a_whole() {
             cond: mpfree_seq::Cond::Always,
             ratchet: 1,
             touch: mpfree_seq::Touch::NONE,
+            on: true,
+            ramp: 0,
+            join: mpfree_seq::Join::Attack,
         })
         .collect();
     let original = c.notes.clone();
@@ -653,6 +662,9 @@ fn a_late_note_joins_its_own_take() {
             cond: mpfree_seq::Cond::Always,
             ratchet: 1,
             touch: mpfree_seq::Touch::NONE,
+            on: true,
+            ramp: 0,
+            join: mpfree_seq::Join::Attack,
         },
         Note {
             tick: 1920,
@@ -663,6 +675,9 @@ fn a_late_note_joins_its_own_take() {
             cond: mpfree_seq::Cond::Always,
             ratchet: 1,
             touch: mpfree_seq::Touch::NONE,
+            on: true,
+            ramp: 0,
+            join: mpfree_seq::Join::Attack,
         },
     ];
     let mut s = session(c, 0);

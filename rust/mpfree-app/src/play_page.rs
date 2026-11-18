@@ -1729,6 +1729,9 @@ impl PlayPage {
                 Change::Cond(c) if c.ok() => s.cond = c,
                 Change::Cond(_) => {}
                 Change::Ratchet(r) => s.ratchet = r.clamp(1, mpfree_seq::MAX_RATCHET),
+                Change::On(on) => s.on = on,
+                Change::Ramp(r) => s.ramp = r.clamp(-mpfree_seq::MAX_RAMP, mpfree_seq::MAX_RAMP),
+                Change::Join(j) => s.join = j,
                 Change::Note(to) => {
                     s.high = to.saturating_add(s.high - s.low);
                     s.low = to;
@@ -2472,6 +2475,9 @@ mod tests {
                 chance: 100,
                 cond: Default::default(),
                 ratchet: 1,
+                on: true,
+                ramp: 0,
+                join: mpfree_seq::Join::Attack,
                 notes: 1,
                 low: pad,
                 high: pad,
