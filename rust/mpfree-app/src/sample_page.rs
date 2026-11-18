@@ -701,6 +701,9 @@ pub struct SamplePage {
     /// A Play page Q-Link turning a pad: the pad, the knob and the turn's
     /// undo id (one undo step a turn).
     play_turn: Option<(usize, PadKnob, u64)>,
+    /// A learned MIDI control turning a pad's setting (MIDI Learn): the
+    /// kit, the pad, the setting and the turn's undo id.
+    learn_turn: Option<(usize, usize, PadField, u64)>,
     shown_heads: Vec<u64>,
     lines: Vec<String>,
     /// What the pad take ([`SamplePage::pad_take`]) tells the arm next.
@@ -900,6 +903,7 @@ impl SamplePage {
             last_turn: None,
             gesture: None,
             play_turn: None,
+            learn_turn: None,
             shown_heads: Vec::new(),
             lines: Vec::new(),
             pad_said: None,
@@ -3290,6 +3294,87 @@ impl SamplePage {
         }
     }
 
+    /// A learned MIDI control (MIDI Learn) set kit `kit`'s pad `pad`'s own
+    /// `field` to `value`, in the field's units ([`scene::own`]'s), as the
+    /// Play tab's knob sets it: one undo step a turn, a turn after a rest
+    /// ([`TURN_REST`]) or of another setting a new one. The kit's new view
+    /// goes to the audio thread; the engine's live rows (the Q-Links'
+    /// values, the clips' locks) are left alone. Nothing for a pad without
+    /// a sound, or a value it has already.
+    pub fn learned(&mut self, kit: usize, pad: usize, field: PadField, value: f32) {
+        let Some(before) = self.projects.get(kit).and_then(|p| p.pad(pad)).cloned() else {
+            return;
+        };
+        let mut after = before.clone();
+        scene::set_own(&mut after, field, value);
+        if after == before {
+            return;
+        }
+        self.turned();
+        if self
+            .learn_turn
+            .is_some_and(|(k, p, f, _)| (k, p, f) != (kit, pad, field))
+            || (self.learn_turn.is_none() && self.gesture.is_some())
+        {
+            self.lift();
+        }
+        let id = match self.learn_turn {
+            Some((.., id)) => id,
+            None => {
+                // "LEARN" and the edit count: a new undo step.
+                let id = 0x4C45_4152_4E00_0000 | (self.edits & 0xFF_FFFF);
+                self.learn_turn = Some((kit, pad, field, id));
+                self.gesture = Some(Gesture {
+                    id,
+                    kit,
+                    pad,
+                    before: Before::Pad(Box::new(before)),
+                });
+                id
+            }
+        };
+        match self.projects[kit].edit_pad(pad, Some(id), |p| *p = after) {
+            Ok(()) => {
+                self.edits += 1;
+                if let Some(dirty) = self.dirty.get_mut(kit) {
+                    *dirty = true;
+                }
+                self.stale = true;
+            }
+            Err(e) => self.lines.push(format!(
+                "sample: pad {} not changed by MIDI Learn ({e:?})",
+                self.pad_text(kit, pad)
+            )),
+        }
+    }
+
+    /// The pad setting under a touch for SHIFT + a touch (MIDI Learn): a
+    /// knob or row of the Play tab's panel, or the Pads tab's Level, Pan
+    /// or Tune, on the pad the page edits ([`SamplePage::pad`]). None for
+    /// anything else.
+    pub fn learn_field(&self, widget: &str, t: &mpfree_ui::Target) -> Option<(usize, PadField)> {
+        let field = if widget == play_tab::LIST {
+            self.play.as_ref()?.field_at(t)?
+        } else if widget == pads_tab::LIST {
+            pads_tab::Row::field_at(self.pads_state.as_ref()?, t)?
+        } else {
+            return None;
+        };
+        Some((self.pad, field))
+    }
+
+    /// Whether the Pads tab's picked pad has the Level, Pan and Tune rows
+    /// SHIFT + a touch learns: a Sample or Loop pad, not an Instrument or
+    /// MIDI out pad ([`pads_tab::PadType::rows`]).
+    pub fn pads_learnable(&self) -> bool {
+        self.pads_state.as_ref().is_some_and(|st| {
+            matches!(
+                st.picked_type(),
+                pads_tab::PadType::Sample | pads_tab::PadType::Loop
+            )
+        })
+    }
+
     /// A Q-Link or the wheel turned: a turn after a rest is a new undo step.
     fn turned(&mut self) {
         let now = Instant::now();
@@ -3834,6 +3919,7 @@ impl SamplePage {
         }
         self.last_turn = None;
         self.play_turn = None;
+        self.learn_turn = None;
         let Some(g) = self.gesture.take() else { return };
         if let Before::Slot(before) = &g.before {
             let after = self.projects.get(g.kit).and_then(|p| p.pad(g.pad));

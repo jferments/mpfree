@@ -56,6 +56,7 @@
 
 use mpfree_analysis::note_name;
 use mpfree_midi::profile::{PadOut, KIT_NOTES};
+use mpfree_sampler::engine::PadField;
 use mpfree_sampler::model::{
     ChannelPick, Fade, GrainKeys, GrainMode, GrainParams, Layer, Loop, LoopMode, ModelError, Pad,
     PadKind, PlayMode, Project, Region, SourceId, Warp, PADS, WARP_BPM,
@@ -157,6 +158,21 @@ impl Row {
             Row::Port => "Port",
             Row::Channel => "Channel",
         }
+    }
+
+    /// The pad setting row `t`'s index names on the Pad list ([`LIST`]),
+    /// whose rows follow the picked pad's type ([`PadType::rows`]), for
+    /// SHIFT + a touch (MIDI Learn): Level, Pan and Tune, as the Play
+    /// tab's rows ([`play_tab::Row::field`]). None for the other rows, so
+    /// nothing on an Instrument or MIDI out pad.
+    pub fn field_at(st: &PadsState, t: &mpfree_ui::Target) -> Option<PadField> {
+        if !play_tab::is_value_target(t) {
+            return None;
+        }
+        PadType::rows(st.picked_type())
+            .get(t.index)?
+            .play_row()?
+            .field()
     }
 
     /// The Play tab's row for the same setting.

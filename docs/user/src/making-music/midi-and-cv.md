@@ -218,7 +218,7 @@ MPFree can also send its own clock from **MIDI OUT**, or to a USB device, so a d
 
 ## MIDI Learn
 
-MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controller turn a value in MPFree: a mixer strip's fader, pan or send, its mute or solo, an effect's knob, a macro, a knob on the Synth tab, the arp's rate, gate, swing and octaves, the tempo, or the transport's buttons (see [Playing and stopping from your controller](#playing-and-stopping-from-your-controller)).
+MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controller turn a value in MPFree: a mixer strip's fader, pan or send, its mute or solo, an effect's knob, a macro, a knob on the Synth tab, the arp's rate, gate, swing and octaves, a pad's level, tune, filter and envelope, the tempo, or the transport's buttons (see [Playing and stopping from your controller](#playing-and-stopping-from-your-controller)).
 
 **The quick way: SHIFT + touch.** Hold **SHIFT**, touch the value on the screen, then move the control on your keyboard. Until a control takes it, the hint line reads *LEARNING Volume (Bass): move a knob, a key or a pedal on any controller*; then it says what the control moves (*Learned: CC 74 on Keystep 37 moves Poly cutoff (Track 2)*). While SHIFT is held the touch only picks the value: the fader doesn't move. Touch the same value with SHIFT again to cancel, or another one to learn that instead. It works on:
 
@@ -227,7 +227,8 @@ MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controll
 - the [chain editor](effects.md#adding-an-effect-the-chain-editor): an effect's knobs, faders, sliders and drawbars;
 - the macros panel: a macro's knob;
 - the Synth tab: the synth's knobs, faders, sliders and drawbars, for the track it shows (the track's own instrument, or the synth on the pads), and an MPC plugin's own screen (its skin): its knobs, sliders and buttons;
-- the arp: the [Arp panel](note-repeat-and-arp.md#the-arp-panel)'s Rate, Gate, Swing and Octaves sliders, and the Q-Link cards while NOTE REPEAT is held or latched. The control turns the armed track's arp, and keeps turning that track's arp when you arm another. A learned Swing is the arp's own swing from then on, as when you turn Q-Link 3.
+- the arp: the [Arp panel](note-repeat-and-arp.md#the-arp-panel)'s Rate, Gate, Swing and Octaves sliders, and the Q-Link cards while NOTE REPEAT is held or latched. The control turns the armed track's arp, and keeps turning that track's arp when you arm another. A learned Swing is the arp's own swing from then on, as when you turn Q-Link 3;
+- a pad's own settings: the knobs of the [Sample tab's Play page](shaping-a-pad.md#play-layers-envelope-and-filter) (level, pan, tune, cutoff, resonance, attack, decay, release, slice, LFO depth and the pitch envelope), and **Level**, **Pan** and **Tune** on the Pads tab. The control turns the pad you had picked, on the kit the armed track plays, and keeps turning it when you pick another pad or arm another track. The kit changes as if you turned the knob: a turn is one step for **UNDO**, and save the kit to keep it.
 
 Anywhere else SHIFT + a touch keeps its own job, such as SHIFT + drag on an audio region.
 
