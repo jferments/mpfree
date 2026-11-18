@@ -130,6 +130,13 @@ const THRESHOLDS_DB: [f32; 15] = [
     -9.0, -6.0,
 ];
 const PRE_ROLLS_MS: [u32; 8] = [0, 5, 10, 20, 50, 100, 200, 500];
+/// Why Gain is faint while the source is a point in the mix.
+pub const GAIN_LINE_ONLY: &str =
+    "Gain is the line input's: a point in the mix records as you hear it";
+
+/// Gain's range, dB, a dB a step.
+pub const GAIN_MIN_DB: f32 = -24.0;
+pub const GAIN_MAX_DB: f32 = 24.0;
 const LENGTHS_BARS: [u32; 6] = [1, 2, 4, 8, 16, 32];
 const SILENCES_MS: [u32; 5] = [250, 500, 1000, 2000, 4000];
 const VELOCITIES: [u8; 9] = [16, 32, 48, 64, 80, 96, 110, 120, 127];
@@ -211,6 +218,10 @@ pub struct RecSettings {
     /// first, is the line input).
     pub source: usize,
     pub pick: Pick,
+    /// How loud a take records, dB ([`GAIN_MIN_DB`] to [`GAIN_MAX_DB`]):
+    /// the input is turned up or down before the meter, the threshold
+    /// and the take see it.
+    pub gain_db: f32,
     pub start: StartAt,
     pub threshold_db: f32,
     pub pre_roll_ms: u32,
@@ -233,6 +244,7 @@ impl Default for RecSettings {
         RecSettings {
             source: 0,
             pick: Pick::Stereo,
+            gain_db: 0.0,
             start: StartAt::Now,
             threshold_db: -30.0,
             pre_roll_ms: 20,
@@ -253,6 +265,11 @@ fn ms_frames(ms: u32, rate: u32) -> u64 {
 }
 
 impl RecSettings {
+    /// The Gain as a linear factor.
+    pub fn gain(&self) -> f32 {
+        10f32.powf(self.gain_db / 20.0)
+    }
+
     /// The threshold as a linear peak.
     pub fn level(&self) -> f32 {
         10f32.powf(self.threshold_db / 20.0)
@@ -347,6 +364,9 @@ impl RecSettings {
 pub enum Row {
     Source,
     Input,
+    /// How loud a take records: a gain on what comes in, before the
+    /// meter, the threshold and the take (one-page step 2d).
+    Gain,
     Start,
     Threshold,
     PreRoll,
@@ -369,9 +389,10 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 17] = [
+    pub const ALL: [Row; 18] = [
         Row::Source,
         Row::Input,
+        Row::Gain,
         Row::Start,
         Row::Threshold,
         Row::PreRoll,
@@ -396,6 +417,7 @@ impl Row {
         match self {
             Row::Source => "Source",
             Row::Input => "Channels",
+            Row::Gain => "Gain",
             Row::Start => "Start",
             Row::Threshold => "Threshold",
             Row::PreRoll => "Pre-roll",
@@ -429,6 +451,7 @@ pub fn value_text(s: &RecSettings, row: Row, sources: &[String]) -> String {
             .cloned()
             .unwrap_or_else(|| "Line in".to_string()),
         Row::Input => s.pick.label().to_string(),
+        Row::Gain => gain_text(s.gain_db),
         Row::Start => match s.start {
             StartAt::Now => "Now",
             StartAt::Threshold => "Threshold",
@@ -465,6 +488,16 @@ pub fn value_text(s: &RecSettings, row: Row, sources: &[String]) -> String {
     }
 }
 
+/// Gain as the knob says it: "+0 dB", "-6 dB", "+12 dB".
+pub fn gain_text(db: f32) -> String {
+    format!("{:+.0} dB", db.round() + 0.0)
+}
+
+/// Where Gain's knob is lit to, 0 to 1 (0 dB in the middle).
+fn gain_place(db: f32) -> f32 {
+    (db - GAIN_MIN_DB) / (GAIN_MAX_DB - GAIN_MIN_DB)
+}
+
 fn ms_text(ms: u32) -> String {
     if ms >= 1000 && ms.is_multiple_of(1000) {
         format!("{} s", ms / 1000)
@@ -492,6 +525,7 @@ pub fn stepped(s: &RecSettings, row: Row, delta: i32, sources: usize) -> RecSett
     match row {
         Row::Source => s.source = shift(s.source, delta, sources.max(1)),
         Row::Input => s.pick = step_in(&Pick::ALL, s.pick, delta),
+        Row::Gain => s.gain_db = (s.gain_db.round() + delta as f32).clamp(GAIN_MIN_DB, GAIN_MAX_DB),
         Row::Start => {
             s.start = step_in(
                 &[StartAt::Now, StartAt::Threshold, StartAt::NextBar],
@@ -528,9 +562,12 @@ fn place_in<T: PartialEq>(list: &[T], now: &T) -> f32 {
     i as f32 / (list.len().max(2) - 1) as f32
 }
 
-/// Threshold's or Pre-roll's knob, lit to where `s` has it among its
-/// steps (another row: a chip).
+/// Gain's, Threshold's or Pre-roll's knob, lit to where `s` has it among
+/// its steps (another row: a chip). Gain's is lit from the middle, 0 dB.
 pub(crate) fn knob(s: &RecSettings, row: Row) -> Control {
+    if row == Row::Gain {
+        return gain_knob(s.gain_db);
+    }
     let (pos, len) = match row {
         Row::Threshold => (
             place_in(&THRESHOLDS_DB, &s.threshold_db),
@@ -543,6 +580,15 @@ pub(crate) fn knob(s: &RecSettings, row: Row) -> Control {
         pos,
         steps: len.saturating_sub(1) as u32,
         bipolar: false,
+    })
+}
+
+/// Gain's knob: lit from the middle (0 dB), a dB a step.
+fn gain_knob(db: f32) -> Control {
+    Control::new(Look::Knob {
+        pos: gain_place(db),
+        steps: (GAIN_MAX_DB - GAIN_MIN_DB) as u32,
+        bipolar: true,
     })
 }
 
@@ -815,6 +861,9 @@ impl RecTab {
                     THRESHOLDS_DB.len(),
                 ),
                 Row::PreRoll => knob(place_in(&PRE_ROLLS_MS, &s.pre_roll_ms), PRE_ROLLS_MS.len()),
+                // The line input's (one-page step 2d): resampling records
+                // the mix as it is heard.
+                Row::Gain => gain_knob(s.gain_db).faint_because(s.source != 0, GAIN_LINE_ONLY),
                 Row::Record => Control::new(Look::Primary(
                     if busy { "Stop" } else { "Record" }.to_string(),
                 ))
@@ -859,15 +908,17 @@ impl RecTab {
                 ),
                 Section::new(
                     "Start",
-                    250,
+                    280,
                     vec![
                         vec![it(Row::Start)],
-                        vec![it(Row::Threshold), it(Row::PreRoll)],
+                        // Gain (one-page step 2d) beside them: the
+                        // threshold hears the input as Gain turns it.
+                        vec![it(Row::Gain), it(Row::Threshold), it(Row::PreRoll)],
                     ],
                 ),
                 Section::new(
                     "End",
-                    280,
+                    270,
                     vec![
                         vec![it(Row::End)],
                         vec![it(Row::Length).labelled(), it(Row::Silence).labelled()],
@@ -886,7 +937,7 @@ impl RecTab {
                 .note(&onto),
                 Section::new(
                     "Resample",
-                    260,
+                    240,
                     vec![
                         vec![it(Row::Flatten), it(Row::Auto)],
                         vec![it(Row::FlattenVelocity).labelled()],

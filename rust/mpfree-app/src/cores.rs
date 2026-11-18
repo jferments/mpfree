@@ -930,7 +930,7 @@ pub fn rows(shared: &CoreShared) -> Vec<Row> {
             tone(c.returns_late + c.returns_lost),
         ));
         rows.push((
-            "Track instruments on lanes · late · waited · moves".to_string(),
+            "Track instruments on lanes".to_string(),
             format!(
                 "{} periods · {} late · {} waited · {} moves",
                 c.track_periods, c.track_late, c.track_waits, c.track_moves
@@ -1150,7 +1150,7 @@ mod tests {
                 "Drum voices on core 2 · late",
                 "Mixer inserts on core 2 · late",
                 "Reverb returns on core 2 · late · lost",
-                "Track instruments on lanes · late · waited · moves"
+                "Track instruments on lanes"
             ]
         );
         assert_eq!(rows[5].1, format!("{} parts · 0 late", n.voice_parts));
@@ -1382,7 +1382,7 @@ mod tests {
                 "Drum voices on core 2 · late",
                 "Mixer inserts on core 2 · late",
                 "Reverb returns on core 2 · late · lost",
-                "Track instruments on lanes · late · waited · moves",
+                "Track instruments on lanes",
                 "Synth on core 1 · late · waited"
             ]
         );
