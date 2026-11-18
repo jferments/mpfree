@@ -895,6 +895,7 @@ dependencies = [
  "mpfree-fx",
  "mpfree-fx-ui",
  "mpfree-mod",
+ "mpfree-notefx",
  "mpfree-param",
  "mpfree-sampler-ui",
  "mpfree-synth-ui",

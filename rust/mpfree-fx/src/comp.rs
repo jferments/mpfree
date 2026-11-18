@@ -75,7 +75,7 @@ const COLOUR_H3: f32 = 0.01;
 const COLOUR_FALL_MS: f32 = 50.0;
 const COLOUR_DC_HZ: f32 = 10.0;
 
-const STYLE_NAMES: &[&str] = &["Clean", "Opto", "Bus", "FET"];
+pub(crate) const STYLE_NAMES: &[&str] = &["Clean", "Opto", "Bus", "FET"];
 
 /// What a style changes.
 pub struct Style {

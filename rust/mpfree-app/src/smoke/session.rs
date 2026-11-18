@@ -218,6 +218,8 @@ pub struct Session {
     /// The pads pressed as TRACK MUTE's keys, so their release is theirs
     /// too.
     mute_pressed: [bool; 16],
+    /// The loop keys held (SHIFT + SAMPLER on the Looper tab).
+    keys_held: crate::perform_pads::Held,
     out: Out,
     to_screen: Receiver<ToUi>,
     fx: Vec<Effect>,
@@ -321,6 +323,7 @@ impl Session {
             kits: n,
             step_keys: crate::step_keys::StepKeys::default(),
             mute_pressed: [false; 16],
+            keys_held: crate::perform_pads::Held::default(),
             out,
             to_screen,
             fx: Vec::new(),
@@ -779,6 +782,26 @@ impl Session {
             self.out.show(ToUi::PadUp(pad));
             return;
         }
+        if down && pad < 16 && self.app.pads_are_loop_keys() {
+            self.keys_held.press(pad, self.t());
+            let action = self.app.perform_page().action(pad);
+            let (fx, line) = crate::desk::perform_pad(
+                &mut self.app,
+                &self.time,
+                &self.looper,
+                &mut self.out,
+                action,
+            );
+            self.fx.extend(fx);
+            if !line.is_empty() {
+                self.out.note(&line);
+            }
+            return;
+        }
+        if !down && self.keys_held.release(pad) {
+            self.out.show(ToUi::PadUp(pad));
+            return;
+        }
         if down && pad < 16 && self.app.pads_mute() {
             self.mute_pressed[pad] = true;
             let (tap, more) = self.app.mute_tap();
@@ -866,6 +889,17 @@ impl Session {
     fn period(&mut self) {
         self.settle();
         let t = self.t();
+        // A loop key held for a second clears its loop, as player_session.
+        for pad in self.keys_held.holds(t) {
+            if self.app.pads_are_loop_keys() {
+                let action = self.app.perform_page().action(pad);
+                let (fx, line) = crate::desk::perform_pad_held(action);
+                self.fx.extend(fx);
+                if !line.is_empty() {
+                    self.out.note(&line);
+                }
+            }
+        }
         if let Some(e) = self.app.tick(t) {
             self.fx.push(e);
         }
@@ -1099,9 +1133,15 @@ impl Session {
         }
         let (view, bpm) = (self.app.view(), self.time.info().bpm);
         let Session {
-            panels, mix, out, ..
+            panels,
+            mix,
+            out,
+            app,
+            time,
+            ..
         } = self;
-        panels.poll(view, mix, bpm, now, &mut |m| out.show(m));
+        let notes = |t| crate::modpanels::NotesSource::of(app, time, t);
+        panels.poll(view, mix, &notes, bpm, now, &mut |m| out.show(m));
         self.out.show(ToUi::PlayLevels(self.mix.play_levels()));
         self.periods += 1;
         self.feed_screen();

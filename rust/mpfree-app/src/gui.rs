@@ -342,6 +342,11 @@ fn step_held_hint(name: &str, bank: play_page::HeldBank, place: HeldPlace, line:
 
 const STEP_ERASE_HINT: &str =
     "ERASE +   a step pad: clear it   ·   PAD BANK: clear that page of steps   ·   UNDO brings them back";
+/// The hint while the pads are the loop keys (SHIFT + SAMPLER on the
+/// Looper tab), on the Looper tab and Play.
+const LOOP_KEYS_HINT: &str =
+    "Pads: loop keys   ·   top rows: each loop's key (hold 1 s: clear)   ·   \
+                              bottom rows: its mute   ·   SHIFT + SAMPLER: the pads play";
 const PAD_MUTE_HINT: &str =
     "SHIFT + TRACK MUTE:   a pad mutes and unmutes itself in the kit   ·   red: muted   ·   \
                              TRACK MUTE: tracks   ·   SHIFT + TRACK MUTE: the pads play again";
@@ -1310,6 +1315,10 @@ pub enum FromUi {
     /// The Looper tab's Records from: Loops (true) or the input: a new
     /// loop resamples the others.
     LoopRecordLoops(bool),
+    /// The pads as loop keys, or playing again: the deck's Pads switch,
+    /// the "Pads: loop keys" chip (SHIFT + SAMPLER on the Looper tab does
+    /// the same).
+    LoopKeys,
     /// The Looper tab's Length: the picked loop's first pass, 1 to 8 bars
     /// or free (None); MENU's First pass length follows.
     LoopBars(Option<u32>),
@@ -1554,6 +1563,9 @@ pub struct Player {
     level_chip: Option<usize>,
     /// The "Pads: steps" chip's place: a tap gives the pads back.
     steps_chip: Option<usize>,
+    /// The "Pads: loop keys" chip's place (on Play; the Looper tab has
+    /// the deck's switch): a tap gives the pads back.
+    loop_keys_chip: Option<usize>,
     /// The MAKE or PERFORM chip's place: a tap switches (sequencer S4).
     perform_chip: Option<usize>,
     /// The list of kits is open over the page (the kit chip); the view
@@ -1846,6 +1858,7 @@ impl Player {
             bpm: 120.0,
             mute_keys: MuteKeys::Off,
             mute_bank: 0,
+            loop_keys: false,
             steps: None,
             erase: false,
             copy: false,
@@ -1953,6 +1966,7 @@ impl Player {
             kit_chip: None,
             level_chip: None,
             steps_chip: None,
+            loop_keys_chip: None,
             perform_chip: None,
             kit_list: false,
             kit_rows: Vec::new(),
@@ -2677,6 +2691,21 @@ impl Player {
         }
     }
 
+    /// What track `t` plays on, for its Notes stage's Plays on row: its own
+    /// sound, or a MIDI out port and channel (the MIDI section's Tracks
+    /// out), and where to change it.
+    fn plays_on(&self, t: usize) -> (String, String) {
+        let out = self.io_model.as_ref().and_then(|m| {
+            let m = m.lock().unwrap_or_else(|e| e.into_inner());
+            m.setup.tracks.get(t).cloned().flatten()
+        });
+        let on = match out {
+            Some(o) => o.label(),
+            None => "Its own sound".to_string(),
+        };
+        (on, "Change it in MIDI, Tracks out".to_string())
+    }
+
     /// Opens the mixer's I/O view on the section titled `title` (the tempo
     /// chip: "Sync"). False, and nothing opens, when there is no such
     /// section.
@@ -2708,6 +2737,24 @@ impl Player {
                 "Tap a strip's name: its Volume, Pan and sends go on the Q-Links"
             }
             View::Mixer => "That strip has nothing on this Q-Link",
+            View::Chain
+                if self
+                    .ui
+                    .get::<mpfree_chain_ui::ChainView>(mpfree_chain_ui::CHAIN)
+                    .and_then(|v| v.state().notes.as_ref())
+                    .is_some_and(|n| n.selected.is_some()) =>
+            {
+                let arp = self
+                    .ui
+                    .get::<mpfree_chain_ui::ChainView>(mpfree_chain_ui::CHAIN)
+                    .and_then(|v| v.state().notes.as_ref())
+                    .is_some_and(|n| n.arp_page());
+                if arp {
+                    "The arp's settings are on its panel: Open the arp"
+                } else {
+                    "This MIDI effect has fewer settings than Q-Links"
+                }
+            }
             View::Chain
                 if self
                     .ui
@@ -3635,6 +3682,7 @@ impl Player {
                     }
                 }
                 LoopAct::Mute(n) => out.push(FromUi::LoopMute(Some(n))),
+                LoopAct::PadKeys => out.push(FromUi::LoopKeys),
                 LoopAct::Clear(n) => {
                     out.push(FromUi::LoopPick(n));
                     out.push(FromUi::LoopCommand(C::Clear));
@@ -3950,6 +3998,14 @@ impl Player {
             );
             chips.push(Chip::new("16 Levels · transpose", Tone::Warn));
         }
+        // The loop keys on Play (the Looper tab has the deck's switch): a
+        // tap gives the pads back.
+        self.loop_keys_chip = None;
+        if self.status.loop_keys && self.view == View::Play {
+            why.push(String::new());
+            self.loop_keys_chip = Some(chips.len());
+            chips.push(Chip::new("Pads: loop keys", Tone::Warn));
+        }
         // STEP SEQ: the pads are a sound's steps; a tap gives them back.
         self.steps_chip = None;
         if let Some(s) = self.status.steps {
@@ -4135,6 +4191,8 @@ impl Player {
             step_held_hint(&name, self.play.held_bank(), place, self.play.on_line())
         } else if let Some(s) = self.status.steps {
             step_seq_hint(s)
+        } else if self.status.loop_keys && matches!(self.view, View::Looper | View::Play) {
+            LOOP_KEYS_HINT.to_string()
         } else if self.status.mute_keys == MuteKeys::Tracks {
             track_mute_hint(self.status.mute_bank, self.time.tracks.len())
         } else if self.status.mute_keys == MuteKeys::Pads {
@@ -5641,7 +5699,11 @@ impl Player {
                 self.refresh_qlinks();
             }
             ToUi::IoInput(ev) => self.io_input(ev),
-            ToUi::Chain(st) => {
+            ToUi::Chain(mut st) => {
+                // A note track's Plays on, from the MIDI set-up's Tracks out.
+                if let Some(ns) = st.notes.as_mut() {
+                    (ns.plays_on, ns.plays_detail) = self.plays_on(usize::from(ns.track));
+                }
                 self.chain_page.set_chain(&mut self.ui, *st);
                 if self.chain_page.drives(self.view) {
                     self.refresh_qlinks();
@@ -5807,6 +5869,7 @@ impl Player {
             ToUi::Status(s) => {
                 // STEP SEQ: Beats shows the lane and the page on the pads.
                 let on_pads = s.steps.filter(|s| !s.picking);
+                self.looper_page.set_pads_keys(&mut self.ui, s.loop_keys);
                 self.status = s;
                 if self.play.on_pads != on_pads {
                     self.play.set_on_pads(on_pads);
@@ -8532,6 +8595,14 @@ impl Player {
         if h.widget == synth_view::TILES {
             return self.synth.as_ref()?.wheel_text();
         }
+        if mpfree_chain_ui::ChainView::is_note_setting(&h.target) {
+            // A MIDI effect's setting: the page knows its value.
+            let v = self
+                .ui
+                .get::<mpfree_chain_ui::ChainView>(&h.widget)?
+                .note_setting(h.target.index)?;
+            return Some(format!("{v}{HELD_TOLD}"));
+        }
         let now = self
             .ui
             .targets()
@@ -9177,7 +9248,14 @@ impl Player {
                 None
             }
             (mpfree_chain_ui::CHAIN, _) => {
-                let acts = mpfree_chain_ui::take_chain_actions(&mut self.ui);
+                let mut acts = mpfree_chain_ui::take_chain_actions(&mut self.ui);
+                // A note track's Plays on: the MIDI section, where its
+                // Tracks out are (the app opens the I/O view as it was
+                // left when there is no MIDI section).
+                acts.retain(|a| {
+                    !(matches!(a, ChainAction::Notes(mpfree_chain_ui::NoteAction::PlaysOn))
+                        && self.open_io_section(mpfree_midi_ui::MIDI))
+                });
                 if acts
                     .iter()
                     .any(|a| matches!(a, ChainAction::Strips(_) | ChainAction::OpenStrip(_)))
@@ -9222,6 +9300,9 @@ impl Player {
             }
             ("header", EventKind::Select(i)) if Some(i) == self.steps_chip => {
                 Some(FromUi::StepsOff)
+            }
+            ("header", EventKind::Select(i)) if Some(i) == self.loop_keys_chip => {
+                Some(FromUi::LoopKeys)
             }
             ("header", EventKind::Select(i)) if Some(i) == self.perform_chip => {
                 Some(FromUi::Time(TimeAction::Perform(!self.time.perform)))
@@ -10140,6 +10221,7 @@ pub fn sample_player(fonts: Fonts) -> Player {
         bpm: 120.0,
         mute_keys: MuteKeys::Off,
         mute_bank: 0,
+        loop_keys: false,
         steps: None,
         erase: false,
         copy: false,
@@ -10603,6 +10685,7 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         bpm: 92.0,
         mute_keys: MuteKeys::Off,
         mute_bank: 0,
+        loop_keys: false,
         steps: None,
         erase: false,
         copy: false,
@@ -11277,6 +11360,28 @@ fn sample_panels(p: &mut Player, view: View) {
     p.apply(ToUi::Macros(Box::new(song.macros_state(0))));
 }
 
+/// The chain editor on a note track (layout spec 4b, board 7): NOTES above
+/// SOUND, the Chord picked, its settings on the Q-Links, as the app sends
+/// them (`ChainHost::dress_notes`).
+fn sample_notes(p: &mut Player) {
+    use mpfree_chain_ui::sample::{Song, KEYS};
+    let song = Song::new();
+    p.apply(ToUi::Show(View::Chain));
+    let mut st = song.chain_state(KEYS, 0, 0, None).without_page();
+    st.back = Some("Mixer".into());
+    st.strip_name = st.title.trim_end_matches(" FX").to_string();
+    st.strip_kind = "Track 5".into();
+    let mut ns = mpfree_chain_ui::notes::example();
+    ns.track = 4;
+    if let Some((_, id, fx)) = ns.page_fx() {
+        (st.params, st.main_four) = mpfree_chain_ui::notes::param_views(ns.track, id, &fx);
+    }
+    st.notes = Some(ns);
+    p.apply(ToUi::Chain(Box::new(st)));
+    p.apply(ToUi::ChainFx(None));
+    p.apply(ToUi::Macros(Box::new(song.macros_state(0))));
+}
+
 /// The browser over the page, opened from the Pads tab's Browse for A5,
 /// in Samples / Drums with Kick 01 picked: Load on A5 and Next pad hit.
 /// Over a library filled in a scratch folder (removed again once the
@@ -11659,6 +11764,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         sample_panels(&mut p, view);
         out.push((name, p));
     }
+    // A note track's chain with its Notes stage (board 7): the Chord's page.
+    let mut notes = sample_player(fonts());
+    sample_notes(&mut notes);
+    out.push(("chain-notes", notes));
     // Q-LINK on Play: Macros 1-4 in the Q-Link column.
     let mut macros = sample_player(fonts());
     macros.apply(ToUi::Macros(Box::new(
@@ -12363,6 +12472,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         bpm: 120.0,
         mute_keys: MuteKeys::Off,
         mute_bank: 0,
+        loop_keys: false,
         steps: None,
         erase: false,
         copy: false,
@@ -12400,6 +12510,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         bpm: 120.0,
         mute_keys: MuteKeys::Off,
         mute_bank: 0,
+        loop_keys: false,
         steps: None,
         erase: false,
         copy: false,
@@ -14063,6 +14174,64 @@ mod tests {
     /// held, its speaker mutes it; a lane's head mutes its layer by its
     /// id; the Q-Links turn the loops' levels, and Q-LINK steps to the
     /// picked loop's; an empty loop's controls say how it records.
+    /// The deck's Pads switch asks for the loop keys (the Looper as an
+    /// instrument, step 2); the status lights it and the hint says what
+    /// the pads are. On Play the "Pads: loop keys" chip says so, and a tap
+    /// gives the pads back.
+    #[test]
+    fn the_pads_switch_and_chip_turn_the_loop_keys_on_and_off() {
+        use crate::looper_deck::{LoopDeck, DECK};
+        let chips = |p: &Player| -> Vec<String> {
+            p.ui.get::<Header>("header")
+                .unwrap()
+                .chips
+                .iter()
+                .map(|c| c.text.clone())
+                .collect()
+        };
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let mut p = sample_looper(Fonts::embedded()).unwrap();
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        let r = p.ui.rect_of(DECK).unwrap();
+        let (x, y) = centre_of(LoopDeck::pads_rect(r));
+        assert_eq!(p.touch(1, Touch::Down, x, y), Some(FromUi::LoopKeys));
+        p.touch(1, Touch::Up, x, y);
+        assert!(!p.ui.get::<LoopDeck>(DECK).unwrap().head.pads);
+        let mut s = p.status.clone();
+        s.loop_keys = true;
+        p.apply(ToUi::Status(s.clone()));
+        assert!(p.ui.get::<LoopDeck>(DECK).unwrap().head.pads, "lit");
+        assert!(hint(&p).starts_with("Pads: loop keys"), "{}", hint(&p));
+        assert!(
+            !chips(&p).contains(&"Pads: loop keys".to_string()),
+            "the deck's switch says so here"
+        );
+        // On Play: the chip, and a tap on it gives the pads back.
+        p.show_view(View::Play);
+        assert!(
+            chips(&p).contains(&"Pads: loop keys".to_string()),
+            "{:?}",
+            chips(&p)
+        );
+        assert!(hint(&p).starts_with("Pads: loop keys"), "{}", hint(&p));
+        let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
+        p.ui.paint(&mut c);
+        let chip =
+            p.ui.get::<Header>("header")
+                .unwrap()
+                .chip_rect(p.loop_keys_chip.unwrap())
+                .unwrap();
+        assert_eq!(
+            p.touch(2, Touch::Down, chip.x + 10, chip.y + 10),
+            Some(FromUi::LoopKeys)
+        );
+        p.touch(2, Touch::Up, chip.x + 10, chip.y + 10);
+        s.loop_keys = false;
+        p.apply(ToUi::Status(s));
+        assert!(!chips(&p).iter().any(|c| c.starts_with("Pads:")));
+    }
+
     #[test]
     fn the_looper_tab_plays_loops_and_works_layers() {
         use crate::looper_page::{B_RECORD, LOOPER_PAGE};
@@ -23096,6 +23265,7 @@ mod tests {
             bpm: 96.0,
             mute_keys: MuteKeys::Off,
             mute_bank: 0,
+            loop_keys: false,
             steps: None,
             erase: false,
             copy: false,
