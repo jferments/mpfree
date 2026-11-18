@@ -2859,7 +2859,6 @@ impl Player {
     /// pad's), each locked on the held steps when turned.
     fn held_sound_bank(&self) -> [Option<play_page::SoundKnob>; 4] {
         use mpfree_play::mpfree_param::{OnTrack, RelAddr};
-        use mpfree_sampler::engine::PadField;
         use play_page::{SoundKind, SoundKnob};
         let Some(sound) = self.play.held.as_ref().map(|h| h.0) else {
             return Default::default();
@@ -2925,7 +2924,8 @@ impl Player {
     /// their own values as the mixer last showed them (or the defaults: a
     /// send's lock starts at full, a throw).
     fn lock_knobs(&self) -> Vec<play_page::SoundKnob> {
-        use mpfree_fx::mixer::ids as mx;
+        use mpfree_fx::ids::mixer as mx;
+        use mpfree_fx::StripId;
         use mpfree_play::mpfree_param::{OnTrack, RelAddr};
         use play_page::{SoundKind, SoundKnob};
         if !self.play.sequencer || self.play.pitched() {
@@ -2952,7 +2952,7 @@ impl Player {
             .map(|m| m.state());
         let strip = state.and_then(|s| s.strip(StripId::Track(self.play.steps.track)));
         let info = |id: u16| {
-            mpfree_fx::mixer::strip_params()
+            mpfree_fx::strip_params()
                 .iter()
                 .find(|p| p.id == id)
                 .copied()
@@ -2970,7 +2970,7 @@ impl Player {
                 });
             }
         }
-        for r in 0..mpfree_fx::mixer::RETURNS {
+        for r in 0..mpfree_fx::RETURNS {
             // Named by the return's first effect, as Play names Return
             // A's delay.
             let effect = state

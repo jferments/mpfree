@@ -1997,8 +1997,10 @@ fn paint_lock_lane(
     cx.canvas.fill_round_rect(nr, 8, t.surface);
     dashed_outline(cx, nr, ink.with_alpha(130));
     // The hook from the sound above.
-    cx.canvas.fill_rect(Rect::new(nr.x + 9, nr.y + 7, 2, 10), ink);
-    cx.canvas.fill_rect(Rect::new(nr.x + 9, nr.y + 15, 8, 2), ink);
+    cx.canvas
+        .fill_rect(Rect::new(nr.x + 9, nr.y + 7, 2, 10), ink);
+    cx.canvas
+        .fill_rect(Rect::new(nr.x + 9, nr.y + 15, 8, 2), ink);
     let text = Rect::new(nr.x + 22, nr.y + 2, nr.w - 26, nr.h - 4);
     let (top, bottom) = text.take_top(text.h * 11 / 20);
     cx.text(FontId::Bold, 13.0, top, Align::Left, ink, &lane.name);
@@ -2093,12 +2095,7 @@ impl Widget for StepGrid {
                 cx.text(
                     FontId::Bold,
                     draw::HEAD_PX,
-                    Rect::new(
-                        x,
-                        h.y,
-                        self.head(r).title.right() - x,
-                        h.h,
-                    ),
+                    Rect::new(x, h.y, self.head(r).title.right() - x, h.h),
                     Align::Left,
                     t.text_dim,
                     &self.title.to_uppercase(),
