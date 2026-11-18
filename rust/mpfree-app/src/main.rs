@@ -6911,9 +6911,13 @@ fn player_session(
         let by_touch = learning_shown.is_some_and(|(_, by)| by == midi_in::ArmedBy::Touch);
         let following = music.leader_name().is_some();
         // A controller pulled out never lets go of what it held: the
-        // looper's learned keys let go, clearing nothing.
+        // looper's learned keys and the Clips grid's presses let go,
+        // clearing nothing, and a transport button it held down (REC)
+        // comes up.
         if music.take_unplugged() {
-            remote.let_go();
+            for id in remote.let_go() {
+                fx.extend(app.remote_press(id, false, t));
+            }
         }
         for l in music.learning() {
             match l {

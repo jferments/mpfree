@@ -364,12 +364,21 @@ impl Remote {
     }
 
     /// A controller went away (`MusicIn::take_unplugged`): its controls
-    /// held down will never come up, so the looper's keys and presses let
-    /// go without acting. A key held then clears nothing, and its next
-    /// press is a press again. The looper itself is left as it is.
-    pub fn let_go(&mut self) {
+    /// held down will never come up. The looper's keys and presses let go
+    /// without acting: a key held then clears nothing, and its next press
+    /// is a press again; the looper itself is left as it is. The Clips
+    /// grid's presses let go too (they act as they go down). The
+    /// transport's presses held down come back, each once, for the caller
+    /// to let their buttons up ([`Act::Press`] with `down` false), so a
+    /// learned REC isn't left held.
+    pub fn let_go(&mut self) -> impl Iterator<Item = u16> {
         self.loop_keys = [None; 9];
         self.looper_held = 0;
+        self.clips_held.clear();
+        std::mem::take(&mut self.held)
+            .into_iter()
+            .zip(0u16..)
+            .filter_map(|(down, id)| down.then_some(id))
     }
 
     /// The loops whose learned key has been held for `hold` seconds by
@@ -601,12 +610,47 @@ mod tests {
             r.looper_write(looper::UNDO, 1.0, STOPPED, 0.1),
             LooperAct::Press(Looper::Undo)
         );
-        r.let_go();
+        assert_eq!(r.let_go().count(), 0, "no transport press held");
         assert!(r.loop_holds(5.0, 1.0).is_empty(), "nothing cleared");
         assert_eq!(r.looper_write(k1, 1.0, STOPPED, 6.0), LooperAct::Key(0));
         assert_eq!(
             r.looper_write(looper::UNDO, 1.0, STOPPED, 6.0),
             LooperAct::Press(Looper::Undo)
+        );
+    }
+
+    /// A controller pulled out while a learned control holds REC down
+    /// and another a Clips grid press: REC comes back to be let up, once;
+    /// the Clips press lets go; and the next press of each is a press.
+    #[test]
+    fn an_unplugged_controller_lets_the_transport_and_the_clips_go() {
+        let mut r = Remote::new();
+        assert_eq!(
+            r.write(transport::REC, 1.0, STOPPED),
+            Act::Press(transport::REC, true)
+        );
+        assert_eq!(
+            r.write(transport::TAP_TEMPO, 1.0, STOPPED),
+            Act::Press(transport::TAP_TEMPO, true)
+        );
+        assert_eq!(
+            r.write(transport::TAP_TEMPO, 0.0, STOPPED),
+            Act::Press(transport::TAP_TEMPO, false)
+        );
+        let scene = clips::scene(1);
+        assert_eq!(
+            r.clips_write(scene, 1.0, STOPPED),
+            ClipsAct::Press(Clips::Scene(1))
+        );
+        assert_eq!(r.let_go().collect::<Vec<_>>(), [transport::REC]);
+        assert_eq!(r.let_go().count(), 0, "once");
+        assert_eq!(
+            r.write(transport::REC, 1.0, STOPPED),
+            Act::Press(transport::REC, true)
+        );
+        assert_eq!(
+            r.clips_write(scene, 1.0, STOPPED),
+            ClipsAct::Press(Clips::Scene(1))
         );
     }
 
