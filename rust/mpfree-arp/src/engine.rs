@@ -721,6 +721,10 @@ pub struct Engine {
     /// The notes it has started and not yet ended (bit `n` for note `n`),
     /// so a panic or a hush ends just those.
     sounding: u128,
+    /// Frames into the coming period that a press or a let-go lands on in
+    /// direct mode ([`Engine::set_at`]): 0, at its top, but for a pad hit
+    /// that waited for the launch line. Back to 0 once the period runs.
+    at: u32,
 }
 
 impl Engine {
@@ -736,6 +740,7 @@ impl Engine {
             hushed: false,
             own_swing: false,
             sounding: 0,
+            at: 0,
             next_step: 0.0,
             step: 0,
             arp_counter: 0,
@@ -883,6 +888,15 @@ impl Engine {
         self.after_change(&before);
     }
 
+    /// The presses and let-gos made before the next [`Engine::process`]
+    /// land `offset` frames into its period in direct mode, not at its
+    /// top: a pad hit that waited for the launch line plays on the line's
+    /// frame (sampler R5.3b). A running arp's steps keep their own grid.
+    /// `offset` is inside the coming period.
+    pub fn set_at(&mut self, offset: u32) {
+        self.at = offset;
+    }
+
     pub fn press(&mut self, note: u8, velocity: u8) {
         self.hushed = false;
         let before = self.notes.active().clone();
@@ -933,6 +947,7 @@ impl Engine {
         if self.idle() {
             self.now += u64::from(frames);
             self.sync = None;
+            self.at = 0;
         }
     }
 
@@ -1014,6 +1029,7 @@ impl Engine {
         }
         self.drain(end, out);
         self.now = end;
+        self.at = 0;
     }
 
     fn step_frames(&self) -> f64 {
@@ -1135,7 +1151,7 @@ impl Engine {
             self.nudge = None;
         }
         if self.settings.mode == Mode::Direct {
-            let at = self.now as f64;
+            let at = (self.now + u64::from(self.at)) as f64;
             for h in before.as_slice() {
                 if !self.notes.active().contains(h.note) {
                     self.queue_at(at, EventKind::Off { note: h.note });
@@ -1547,6 +1563,39 @@ mod tests {
         assert_eq!(t, [960, 480, 320, 240, 160, 120, 80]);
         let e = Engine::new(SR, 120.0);
         assert_eq!(e.step_frames(), STEP as f64);
+    }
+
+    /// Sampler R5.3b: a press set to land inside the coming period plays
+    /// there, its let-go too; the period after, presses are at its top
+    /// again.
+    #[test]
+    fn a_press_set_into_the_period_plays_on_that_frame_once() {
+        let mut e = engine(Mode::Direct);
+        e.set_at(37);
+        e.press(5, 90);
+        assert_eq!(
+            run(&mut e, 128, 128),
+            [(
+                37,
+                EventKind::On {
+                    note: 5,
+                    velocity: 90
+                }
+            )]
+        );
+        e.release(5);
+        assert_eq!(run(&mut e, 128, 128), [(128, EventKind::Off { note: 5 })]);
+        e.set_at(100);
+        e.press(6, 80);
+        assert_eq!(ons(&run(&mut e, 128, 128)), [(356, 6)]);
+        e.set_at(20);
+        e.release(6);
+        assert_eq!(run(&mut e, 128, 128), [(404, EventKind::Off { note: 6 })]);
+        // An idle period passed over forgets it too.
+        e.set_at(50);
+        e.skip(128);
+        e.press(7, 70);
+        assert_eq!(ons(&run(&mut e, 128, 128)), [(640, 7)]);
     }
 
     #[test]

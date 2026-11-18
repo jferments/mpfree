@@ -154,8 +154,8 @@ pub use mpfree_grain::GrainNode;
 pub use oversample::{Down2, IirDown2, IirPhase, IirUp2, Up2};
 pub use perform::{
     state as perform_state, Perform, AMOUNT_MEANS as PERFORM_AMOUNTS, EFFECTS as PERFORM_EFFECTS,
-    LENGTHS as PERFORM_LENGTHS, LENGTH_BEATS as PERFORM_LENGTH_BEATS, MAX_LOOP_SECONDS,
-    SLOTS as PERFORM_SLOTS,
+    LENGTHS as PERFORM_LENGTHS, LENGTH_BEATS as PERFORM_LENGTH_BEATS, LET_GO as PERFORM_LET_GO,
+    MAX_LOOP_SECONDS, PLAYS as PERFORM_PLAYS, SLOTS as PERFORM_SLOTS, STARTS as PERFORM_STARTS,
 };
 pub use pitch::PitchShifter;
 pub use presets::{page_keeps, presets};

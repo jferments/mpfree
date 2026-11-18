@@ -659,6 +659,9 @@ enum TypeTo {
     SceneName(usize),
     /// The Lanes card's Another CC: the CC of the gear a lock lane sends.
     LaneCc,
+    /// A Perform set page's name (the Pads tab's Perform view's Name
+    /// page).
+    PerformPage(usize),
 }
 
 impl TypeTo {
@@ -666,7 +669,7 @@ impl TypeTo {
     fn is_text(self) -> bool {
         matches!(
             self,
-            TypeTo::SampleName | TypeTo::PortName | TypeTo::SceneName(_)
+            TypeTo::SampleName | TypeTo::PortName | TypeTo::SceneName(_) | TypeTo::PerformPage(_)
         )
     }
 }
@@ -943,6 +946,9 @@ pub enum ToUi {
         pad: usize,
         velocity: u8,
     },
+    /// The pads (bit `i` for pad `i`) whose hit waits for the launch line
+    /// (a Loop pad's, sampler R5.3b): outlined in amber until it sounds.
+    PadsWaiting(u16),
     Kit(usize),
     /// PAD BANK turned the kit's page (A = 0 to H = 7): the 16 pads are
     /// its pads 16 * page + 1 on. `PadDown`, `PadUp` and `PadFlash` name
@@ -1461,6 +1467,12 @@ pub enum FromUi {
         page: usize,
         pad: usize,
         action: crate::perform_pads::PadAction,
+    },
+    /// Page `page` (0 is A) of the Perform set named `name`: the Pads
+    /// tab's Perform view's Name page, its UNDO too.
+    PerformName {
+        page: usize,
+        name: String,
     },
     /// Capture: the last bars heard become a loop (the deck's Capture,
     /// What you played's button).
@@ -2339,6 +2351,17 @@ impl Player {
                 .map(|t| (t.name.clone(), t.sound.clone()))
                 .collect(),
             scenes: self.time.scenes.clone(),
+            macros: self
+                .chain_page
+                .macros
+                .as_ref()
+                .map(|m| {
+                    m.macros
+                        .iter()
+                        .map(|v| (v.name.clone(), v.targets.len()))
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -2397,15 +2420,46 @@ impl Player {
         for a in acts {
             match a {
                 Act::Send(f) => {
-                    if matches!(f, FromUi::PerformPad { .. }) {
+                    if matches!(f, FromUi::PerformPad { .. } | FromUi::PerformName { .. }) {
                         self.mark_unsaved();
                     }
                     self.outbox.push(f);
                 }
-                Act::Hear(i, down) => {
-                    if let Some(fx) = self.play.throw(i, down) {
+                Act::Hear(crate::perform_pads::PadAction::Throw(t), down) => {
+                    // As Play's card plays it (Drop drums: the kit's drum
+                    // pads), with the pad's own Starts, Let go and bar.
+                    let fx = match self.play.throw(usize::from(t.index), down) {
+                        Some(PlayFx::Throw { fx, down, .. }) => Some(PlayFx::Throw {
+                            fx,
+                            down,
+                            how: Some(t.how()),
+                        }),
+                        other => other,
+                    };
+                    if let Some(fx) = fx {
                         self.outbox.push(FromUi::PlayFx(fx));
                     }
+                }
+                Act::Hear(crate::perform_pads::PadAction::Macro { card, value }, down) => {
+                    self.outbox
+                        .push(FromUi::PlayFx(crate::perform_pads::macro_fx(
+                            card, value, down,
+                        )));
+                }
+                Act::Hear(..) => {}
+                Act::Name(page, name) => {
+                    let letter = (b'A' + page as u8) as char;
+                    self.open_textpad(
+                        vec![mpfree_ui::textpad::TextAsk {
+                            key: "perform-page".to_string(),
+                            label: "Page".to_string(),
+                            title: format!("Name Perform pads page {letter}"),
+                            value: name,
+                            max_len: crate::perform_tab::MAX_PAGE_NAME,
+                        }],
+                        TypeTo::PerformPage(page),
+                    );
+                    return;
                 }
                 Act::Tell(line) => {
                     let log = format!("perform: {line}");
@@ -6545,7 +6599,10 @@ impl Player {
                 self.add_cc_lane(v.round() as u16);
                 None
             }
-            TypeTo::SampleName | TypeTo::PortName | TypeTo::SceneName(_) => None,
+            TypeTo::SampleName
+            | TypeTo::PortName
+            | TypeTo::SceneName(_)
+            | TypeTo::PerformPage(_) => None,
         }
     }
 
@@ -6561,6 +6618,12 @@ impl Player {
         let p = self.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD)?;
         let names = p.entered()?;
         self.close_numpad();
+        if let Some(TypeTo::PerformPage(page)) = to {
+            let (_, name) = names.into_iter().next()?;
+            let acts = self.perform.rename(page, &name);
+            self.perform_acts(acts);
+            return None;
+        }
         if let Some(TypeTo::SceneName(row)) = to {
             let (_, name) = names.into_iter().next()?;
             return Some(FromUi::Time(TimeAction::SceneSettings {
@@ -6832,6 +6895,11 @@ impl Player {
                 let pad = self.kit_pad(cell);
                 self.sample.pad_up(&mut self.ui, pad);
                 self.levels_hit(cell, pad, false);
+            }
+            ToUi::PadsWaiting(bits) => {
+                if let Some(m) = self.ui.get_mut::<MiniPads>(play_page::PADS) {
+                    m.waiting = bits;
+                }
             }
             ToUi::PadFlash { pad, velocity } => {
                 if let Some(g) = self
@@ -12931,10 +12999,11 @@ fn pads_perform(fonts: Fonts) -> Player {
     sample_kit_tracks(&mut p);
     let mut set = PerformSet::default();
     let b = &mut set.pages[1].pads;
-    b[7] = PadAction::Throw(Throw {
-        index: 7,
-        hold: Hold::Latch,
-    });
+    b[6] = PadAction::Macro {
+        card: 0,
+        value: 100,
+    };
+    b[7] = PadAction::Throw(Throw::new(7, Hold::Latch));
     b[8] = PadAction::Mute(0);
     b[9] = PadAction::Mute(1);
     b[10] = PadAction::LoopKey(1);
@@ -18837,7 +18906,7 @@ mod tests {
             t.items.iter().take(2).map(|i| i.on).collect()
         };
         let throw = |a: Option<FromUi>| match a {
-            Some(FromUi::PlayFx(PlayFx::Throw { fx, down })) => Some((fx, down)),
+            Some(FromUi::PlayFx(PlayFx::Throw { fx, down, .. })) => Some((fx, down)),
             _ => None,
         };
         use crate::mixing::ThrowFx::{Delay, Reverb};
@@ -19114,7 +19183,8 @@ mod tests {
                 down,
                 Some(FromUi::PlayFx(PlayFx::Throw {
                     fx: crate::mixing::ThrowFx::Delay,
-                    down: true
+                    down: true,
+                    how: None,
                 }))
             ),
             "{down:?}"
@@ -27318,12 +27388,9 @@ mod tests {
         ev(
             &mut p,
             perform_tab::LIST,
-            EventKind::Step { index: 2, delta: 1 },
+            EventKind::Step { index: 1, delta: 1 },
         );
-        let latched = PadAction::Throw(Throw {
-            index: 1,
-            hold: Hold::Latch,
-        });
+        let latched = PadAction::Throw(Throw::new(1, Hold::Latch));
         assert_eq!(
             p.take_actions(),
             [FromUi::PerformPad {
@@ -27359,20 +27426,14 @@ mod tests {
         assert_eq!(p.perform.set.page(1).action(8), PadAction::None);
         assert_eq!(
             p.perform.set.page(1).action(1),
-            PadAction::Throw(Throw {
-                index: 1,
-                hold: Hold::WhileHeld
-            })
+            PadAction::Throw(Throw::new(1, Hold::WhileHeld))
         );
         assert_eq!(
             p.take_actions().last(),
             Some(&FromUi::PerformPad {
                 page: 1,
                 pad: 1,
-                action: PadAction::Throw(Throw {
-                    index: 1,
-                    hold: Hold::WhileHeld
-                }),
+                action: PadAction::Throw(Throw::new(1, Hold::WhileHeld)),
             })
         );
         // A tap on the picked throw's pad plays it while the finger is
@@ -27398,10 +27459,58 @@ mod tests {
         assert!(matches!(
             fx.as_slice(),
             [
-                FromUi::PlayFx(crate::mixing::PlayFx::Throw { down: true, .. }),
+                FromUi::PlayFx(crate::mixing::PlayFx::Throw {
+                    down: true,
+                    how: Some(_),
+                    ..
+                }),
                 FromUi::PlayFx(crate::mixing::PlayFx::Throw { down: false, .. })
             ]
         ));
+        // Name page: the text keyboard on page B's name, "Drops" typed;
+        // Enter names it, back on the view, and UNDO takes it back.
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        ev(&mut p, perform_tab::BUTTONS, EventKind::Tab(3));
+        assert_eq!(p.page(), TEXTPAD_PAGE);
+        let r = p.ui.rect_of(TEXTPAD).unwrap();
+        assert_eq!(
+            p.ui.get::<mpfree_ui::textpad::TextPad>(TEXTPAD)
+                .unwrap()
+                .text(),
+            "Throws"
+        );
+        tap(
+            &mut p,
+            mpfree_ui::textpad::TextPad::key_at(r, mpfree_ui::textpad::KEY_CLEAR),
+        );
+        for c in "Drops".chars() {
+            let key = mpfree_ui::textpad::char_key(c).unwrap().0;
+            tap(&mut p, mpfree_ui::textpad::TextPad::key_at(r, key));
+        }
+        let enter = tap(
+            &mut p,
+            mpfree_ui::textpad::TextPad::key_at(r, mpfree_ui::textpad::KEY_ENTER),
+        );
+        let mut got = p.take_actions();
+        got.extend(enter);
+        assert!(
+            got.contains(&FromUi::PerformName {
+                page: 1,
+                name: "Drops".into()
+            }),
+            "{got:?}"
+        );
+        assert_eq!(p.ui.page(), perform_tab::PAGE);
+        assert_eq!(
+            p.ui.get::<PadMap>(perform_tab::MAP).unwrap().right,
+            "Page B · Drops"
+        );
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(p.perform.set.page_name(1), "Page B · Throws");
+        let _ = p.take_actions();
         // The On the pads switch.
         ev(&mut p, perform_tab::BAR, EventKind::Tab(0));
         assert_eq!(p.take_actions(), [FromUi::PerformOn]);
