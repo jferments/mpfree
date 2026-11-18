@@ -1031,6 +1031,53 @@ pub struct LockCells {
     /// Each step's lock on the page: how high its bar reaches (0 to 1)
     /// and its value as text; None, no lock.
     pub cells: Vec<Option<(f32, String)>>,
+    /// A tap on its name opens its control's mod rows (a gear's CC, bend
+    /// or pressure: LFO to CC, `Tab(LANE_NAME + number)`); else the name
+    /// is a label and only the × answers.
+    pub opens_rows: bool,
+    /// Something in the mod matrix moves its control (an LFO): a pink ~
+    /// right of its name.
+    pub moved: bool,
+}
+
+/// A gear lane's name tapped (LFO to CC): `Tab(LANE_NAME + number)`, the
+/// lane's number among the lock lanes.
+pub const LANE_NAME: usize = 1 << 19;
+/// The mod rows over the pattern, while open ([`LaneRows`]): row `k`'s
+/// × gives `Toggle(LANE_ROWS + k)`, a finger on its bar `Step { index:
+/// LANE_ROWS + k, delta }` with `delta` the depth it sets, in percent
+/// (-100 to 100); + LFO `Tab(LANE_ROWS_ADD)`, and a touch outside them
+/// `Tab(LANE_ROWS_CLOSE)`.
+pub const LANE_ROWS: usize = 1 << 20;
+pub const LANE_ROWS_ADD: usize = LANE_ROWS - 1;
+pub const LANE_ROWS_CLOSE: usize = LANE_ROWS - 2;
+/// The ~ of a control the mod matrix moves.
+const MOVED: Color = Color::rgb(0xFF6FB5);
+/// The mod rows' panel: as the chain editor's (layout spec 4b), 440 px
+/// wide, a row 44 px high, its source's name left of its depth bar.
+const ROWS_W: i32 = 440;
+const ROWS_ROW_H: i32 = 44;
+const ROWS_SOURCE_W: i32 = 98;
+
+/// A gear lane's mod rows over the pattern (LFO to CC, layout spec 4m):
+/// each matrix row that moves its control, and + LFO.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LaneRows {
+    /// "CUTOFF · CC 43".
+    pub title: String,
+    /// Each row's source ("LFO 1") and depth, -1 to 1.
+    pub rows: Vec<(String, f32)>,
+    /// + LFO can add one (the matrix has room).
+    pub can_add: bool,
+}
+
+/// Where the mod rows' parts are.
+struct RowsGeom {
+    panel: Rect,
+    title: Rect,
+    /// Each row's source name, depth bar and ×.
+    rows: Vec<(Rect, Rect, Rect)>,
+    add: Rect,
 }
 
 /// A synth track's pattern as scale rows (the sequencer design's mockup
@@ -1122,12 +1169,16 @@ pub struct StepGrid {
     pub top: usize,
     /// The Steps head's + Lane (a kit track on the Sequencer's Steps).
     pub add_lane: bool,
+    /// A gear lane's mod rows, open over the pattern (LFO to CC).
+    pub rows_open: Option<LaneRows>,
     /// The finger on a scale row's name, and its pad, until it lifts.
     sounding: Option<(u64, usize)>,
     /// A finger on Play's rows: a tap until it moves, then a swipe.
     swipe: Option<Swipe>,
     /// A finger on a lock's cell: a tap until it moves, then it turns.
     drag: Option<LockDrag>,
+    /// A finger on a mod row's depth bar, and its row, until it lifts.
+    depth_drag: Option<(u64, usize)>,
     painted: RefCell<Option<(Rect, StepLook)>>,
 }
 
@@ -1234,6 +1285,7 @@ struct StepLook {
     bank: Option<BankHead>,
     top: usize,
     add_lane: bool,
+    rows_open: Option<LaneRows>,
 }
 
 /// The pattern head's controls, right to left: + and - round the length,
@@ -1669,7 +1721,14 @@ impl StepGrid {
             bank: self.bank.clone(),
             top: self.top,
             add_lane: self.add_lane,
+            rows_open: self.rows_open.clone(),
         }
+    }
+
+    /// The lanes and the mod rows open, for the app's tests.
+    #[cfg(test)]
+    pub fn clone_look(&self) -> (Vec<Lane>, Option<LaneRows>) {
+        (self.lanes.clone(), self.rows_open.clone())
     }
 
     /// The pattern head, with + Lane where it shows.
@@ -2094,6 +2153,12 @@ fn paint_lock_lane(
     let text = Rect::new(nr.x + 22, nr.y + 2, nr.w - 26, nr.h - 4);
     let (top, bottom) = text.take_top(text.h * 11 / 20);
     cx.text(FontId::Bold, 13.0, top, Align::Left, ink, &lane.name);
+    if lk.moved {
+        // The mod matrix moves its control (an LFO): a pink ~ after it.
+        let w = cx.measure(FontId::Bold, 13.0, &lane.name).min(top.w - 16);
+        let mark = Rect::new(top.x + w + 5, top.y, 16, top.h);
+        cx.text(FontId::Bold, 16.0, mark, Align::Left, MOVED, "~");
+    }
     cx.text(FontId::Sans, 10.0, bottom, Align::Left, t.text_dim, &lk.sub);
     // The ×: the lane comes off, its locks too.
     cx.canvas.fill_round_rect(mb, 6, t.raised);
@@ -2137,6 +2202,93 @@ fn paint_lock_lane(
             shown,
         );
     }
+}
+
+/// A gear lane's mod rows over the pattern (LFO to CC), as the chain
+/// editor draws a control's: the title, each row's source, its depth bar
+/// from the middle and its ×, then + LFO.
+fn paint_rows(cx: &mut PaintCx, open: &LaneRows, rg: &RowsGeom) {
+    let t = cx.theme.clone();
+    // A shadow so it reads as over the pattern.
+    cx.canvas.fill_round_rect(
+        rg.panel.inset(-3),
+        t.radius + 3,
+        Color::rgb(0).with_alpha(90),
+    );
+    cx.canvas.fill_round_rect(rg.panel, t.radius, t.surface);
+    cx.canvas
+        .stroke_round_rect(rg.panel, t.radius, 1, t.outline);
+    cx.text(
+        FontId::Bold,
+        t.size_small - 1.0,
+        rg.title,
+        Align::Left,
+        t.text_dim,
+        &format!("MOD MATRIX · {}", open.title.to_uppercase()),
+    );
+    if open.rows.is_empty() {
+        let at = Rect::new(rg.title.x, rg.title.bottom() + 8, rg.title.w, ROWS_ROW_H);
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            at,
+            Align::Left,
+            t.text_dim,
+            "No rows yet: + LFO adds one",
+        );
+    }
+    for ((source, depth), (name, bar, x)) in open.rows.iter().zip(&rg.rows) {
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            *name,
+            Align::Left,
+            t.text,
+            source,
+        );
+        let track = bar.inset_xy(4, 14);
+        cx.canvas.fill_round_rect(track, 4, t.raised);
+        let mid = track.x + track.w / 2;
+        let end = mid + (depth * track.w as f32 * 0.5) as i32;
+        let (a, b) = if end < mid { (end, mid) } else { (mid, end) };
+        cx.canvas
+            .fill_round_rect(Rect::new(a, track.y, (b - a).max(2), track.h), 4, t.good);
+        cx.canvas
+            .fill_rect(Rect::new(mid, track.y - 3, 1, track.h + 6), t.text_dim);
+        cx.text(
+            FontId::Mono,
+            t.size_small - 2.0,
+            Rect::new(track.x, track.bottom() + 1, track.w, 14),
+            Align::Center,
+            t.text_dim,
+            &format!("{:+.0} %", depth * 100.0),
+        );
+        cx.text(
+            FontId::Bold,
+            t.size_body,
+            *x,
+            Align::Center,
+            t.text_faint,
+            "×",
+        );
+    }
+    let ink = if open.can_add { t.text } else { t.text_faint };
+    cx.canvas.fill_round_rect(rg.add, 9, t.raised);
+    cx.text(
+        FontId::Bold,
+        t.size_small,
+        rg.add,
+        Align::Center,
+        ink,
+        "+ LFO",
+    );
+}
+
+/// A finger at `x` on a mod row's depth bar: its depth, -1 to 1 from the
+/// middle, in hundredths (as the chain editor's).
+fn depth_at(bar: Rect, x: i32) -> f32 {
+    let t = (x - bar.x) as f32 / bar.w.max(1) as f32;
+    ((t * 2.0 - 1.0).clamp(-1.0, 1.0) * 100.0).round() / 100.0
 }
 
 impl Widget for StepGrid {
@@ -2336,10 +2488,26 @@ impl Widget for StepGrid {
             cx.canvas
                 .fill_round_rect(Rect::new(rail.x, y0, RAIL_W, y1 - y0), 3, t.text_dim);
         }
+        if let (Some(open), Some(rg)) = (&self.rows_open, self.rows_geom(r)) {
+            paint_rows(cx, open, &rg);
+        }
         *self.painted.borrow_mut() = Some((r, self.look()));
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
+        // The mod rows, open over the pattern, are all a finger reaches.
+        if let (Some(open), Some(rg)) = (&self.rows_open, self.rows_geom(r)) {
+            let mut out = Vec::new();
+            for (k, (_, bar, x)) in rg.rows.iter().enumerate() {
+                let source = open.rows.get(k).map_or("", |(s, _)| s.as_str());
+                out.push(
+                    Target::drag("row-depth", k, format!("{source} depth"), *bar).towards(30, 0),
+                );
+                out.push(Target::tap("row-off", k, format!("{source} ×"), *x));
+            }
+            out.push(Target::tap("rows-add", 0, "+ LFO", rg.add).disabled_if(!open.can_add));
+            return out;
+        }
         let g = self.geom(r);
         let mut out = Vec::new();
         let h = self.head(r);
@@ -2403,6 +2571,16 @@ impl Widget for StepGrid {
                 // value a finger drags (or the wheel turns) and a tap
                 // locks or unlocks.
                 let id = lane.pad - LOCK_LANE;
+                if lane.lock.as_ref().is_some_and(|lk| lk.opens_rows) {
+                    let mb = g.mute_button(k);
+                    let name = Rect::new(g.names.x, g.row_y(k), mb.x - 4 - g.names.x, g.rh);
+                    out.push(Target::tap(
+                        "lane-rows",
+                        id,
+                        format!("{}: mod rows", lane.name),
+                        name,
+                    ));
+                }
                 out.push(Target::tap(
                     "lock-lane-off",
                     id,
@@ -2464,6 +2642,10 @@ impl Widget for StepGrid {
     }
 
     fn touch(&mut self, f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        // A gear lane's mod rows, open over the pattern, take every finger.
+        if let Some(rg) = self.rows_geom(r) {
+            return self.rows_touch(&rg, f, phase, x, y);
+        }
         // A scale row's note sounds until its finger lifts.
         if phase == Touch::Up {
             if let Some((_, pad)) = self.sounding.filter(|(finger, _)| *finger == f) {
@@ -2531,6 +2713,84 @@ impl Widget for StepGrid {
 }
 
 impl StepGrid {
+    /// The mod rows' parts, while open: a panel over the pattern's steps
+    /// at the top of the card, a row each, + LFO at its foot.
+    fn rows_geom(&self, r: Rect) -> Option<RowsGeom> {
+        let open = self.rows_open.as_ref()?;
+        let g = self.geom(r);
+        let (_, body) = card_head(r);
+        let n = open.rows.len().max(1) as i32;
+        let pitch = ROWS_ROW_H + 6;
+        let h = (44 + n * pitch + 52).min(body.h - 8);
+        let w = ROWS_W.min(body.right() - g.grid.x);
+        let panel = Rect::new(g.grid.x, body.y + 4, w, h);
+        let title = Rect::new(panel.x + 14, panel.y + 8, panel.w - 28, 28);
+        let add = Rect::new(panel.x + 14, panel.bottom() - 46, 96, 36);
+        let mut rows = Vec::new();
+        for k in 0..open.rows.len() as i32 {
+            let row = Rect::new(
+                panel.x + 14,
+                panel.y + 44 + k * pitch,
+                panel.w - 28,
+                ROWS_ROW_H,
+            );
+            if row.bottom() > add.y {
+                break;
+            }
+            let (x, rest) = row.take_right(40);
+            let (name, bar) = rest.take_left(ROWS_SOURCE_W);
+            rows.push((name, bar, x));
+        }
+        Some(RowsGeom {
+            panel,
+            title,
+            rows,
+            add,
+        })
+    }
+
+    /// A finger on the mod rows while they're open: a row's × takes it
+    /// off, its bar sets its depth (and follows the finger), + LFO adds
+    /// one; a finger anywhere else closes them and does nothing more.
+    fn rows_touch(
+        &mut self,
+        rg: &RowsGeom,
+        f: u64,
+        phase: Touch,
+        x: i32,
+        y: i32,
+    ) -> Option<EventKind> {
+        let depth = |k: usize, bar: Rect| EventKind::Step {
+            index: LANE_ROWS + k,
+            delta: (depth_at(bar.inset_xy(4, 0), x) * 100.0).round() as i32,
+        };
+        if let Some((finger, k)) = self.depth_drag.filter(|(finger, _)| *finger == f) {
+            if matches!(phase, Touch::Up | Touch::Cancel) {
+                self.depth_drag = None;
+                return None;
+            }
+            let _ = finger;
+            return rg.rows.get(k).map(|(_, bar, _)| depth(k, *bar));
+        }
+        if phase != Touch::Down {
+            return None;
+        }
+        if !rg.panel.contains(x, y) {
+            return Some(EventKind::Tab(LANE_ROWS_CLOSE));
+        }
+        for (k, (_, bar, xr)) in rg.rows.iter().enumerate() {
+            if xr.contains(x, y) {
+                return Some(EventKind::Toggle(LANE_ROWS + k));
+            }
+            if bar.contains(x, y) {
+                self.depth_drag = Some((f, k));
+                return Some(depth(k, *bar));
+            }
+        }
+        let can_add = self.rows_open.as_ref().is_some_and(|o| o.can_add);
+        (can_add && rg.add.contains(x, y)).then_some(EventKind::Tab(LANE_ROWS_ADD))
+    }
+
     /// A finger moving on Play's rows, or lifting: past [`SWIPE_PX`] it
     /// swipes, the rows following it (`Step { index: ROWS, delta }`); one
     /// that lifts before that gives its tap.
@@ -2601,13 +2861,15 @@ impl StepGrid {
         let g = self.geom(r);
         let lanes = self.shown(g.rows);
         for (k, lane) in lanes.iter().enumerate() {
-            if lane.lock.is_some() && g.mute_hit(k).contains(x, y) {
-                // Only the × answers: the name is the lane's label.
-                return g
-                    .mute_button(k)
-                    .inset(-2)
-                    .contains(x, y)
-                    .then_some(EventKind::Toggle(lane.pad));
+            if let Some(lk) = lane.lock.as_ref().filter(|_| g.mute_hit(k).contains(x, y)) {
+                if g.mute_button(k).inset(-2).contains(x, y) {
+                    return Some(EventKind::Toggle(lane.pad));
+                }
+                // A gear's control: its name opens its mod rows (LFO to
+                // CC); else the name is only the lane's label.
+                return lk
+                    .opens_rows
+                    .then_some(EventKind::Tab(LANE_NAME + lane.pad - LOCK_LANE));
             }
             if g.mute_hit(k).contains(x, y) {
                 if self.pitched.is_some() && lane.pad < 16 {
@@ -3703,6 +3965,8 @@ mod tests {
                 cells: (0..16)
                     .map(|s| (s == 6).then(|| (0.5, "180 ms".to_string())))
                     .collect(),
+                opens_rows: false,
+                moved: false,
             }),
             ..lane(LOCK_LANE + id, &[])
         };
@@ -3945,6 +4209,8 @@ mod tests {
                 sub: format!("CC {id}"),
                 owner: None,
                 cells: vec![None; 16],
+                opens_rows: true,
+                moved: false,
             }),
             ..lane(LOCK_LANE + id, &[])
         }));
