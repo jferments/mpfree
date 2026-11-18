@@ -35,7 +35,6 @@
 //! The mockup is `mpfree-claude/sampler/mockups` (Wave). The header and the
 //! hint line are the app's; the tab adds its own widgets and its layout.
 
-use crate::rec_tab;
 use crate::recorder::{self, Recorder, RecorderAction, RecorderView, INPUT_ROWS, RECORDER};
 use std::sync::Arc;
 
@@ -52,7 +51,7 @@ use crate::panel::{Control, Item, Look, Panel, Section};
 use crate::play_tab::{PlayAction, PlayState};
 use crate::sound_panel::{self, SoundPanel};
 use crate::source::SourceView;
-use crate::widgets::{InfoCard, KnobCard, PadBar, Setting, SettingList};
+use crate::widgets::{InfoCard, KnobCard, PadBar, Setting, SettingList, ToolStrip};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
 pub const BAR: &str = "smp-bar";
@@ -61,13 +60,16 @@ pub const WAVE: &str = "smp-wave";
 pub const REGION: &str = "smp-region";
 pub const QLINKS: [&str; 4] = ["smp-q1", "smp-q2", "smp-q3", "smp-q4"];
 pub const WHEEL: &str = "smp-wheel";
+/// The tools strip over the wave ([`Tool`]).
+pub const TOOLS: &str = "smp-tools";
 
 /// The tab's page: the app's header, the pad bar, the recorder row
-/// ([`crate::recorder`]) over the overview with the zoom card, the waveform
+/// ([`crate::recorder`]) over the tools strip, the overview and the zoom
+/// card (the one Sample page's tools, Trim, Slice, Warp and Grain), the waveform
 /// across the page, the panel of settings under it with the Sound section
 /// on its right, the Q-Link cards on the right, and the app's hint line.
 pub const LAYOUT: &str = "col(header:60, row(smp-bar:*, smp-send:330):60, \
-                          row(col(smp-recorder:64, row(smp-overview:*, smp-wheel:240):56, smp-wave:*, \
+                          row(col(smp-recorder:64, row(smp-tools:360, smp-overview:*, smp-wheel:240):56, smp-wave:*, \
                           row(smp-region:*, smp-sound:340):242):*, \
                           col(smp-q1, smp-q2, smp-q3, smp-q4):128):*, hint:26)";
 
@@ -97,6 +99,56 @@ const ZERO_AHEAD: u64 = 8192;
 const WHEEL_ZOOM: f64 = 1.25;
 /// Gesture ids the tab hands out start here, clear of other screens'.
 const GESTURE_BASE: u64 = 0x5741_5645_0000_0000;
+
+/// The one Sample page's tools over the wave (Jay, 18 Nov 2026: one wave,
+/// four tools). The tool decides what a finger on the wave moves, which
+/// marks are bright, the panel's first section and the Q-Links; while REC
+/// is on, the recorder's Input section and its Q-Links win.
+///
+/// Trim is the page as the Wave page was. A tool not built on the page yet
+/// opens its old page instead ([`Tool::page`]), so every button does
+/// something and the app stays whole while the tools move in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tool {
+    /// Start, End, the loop and the fades.
+    #[default]
+    Trim,
+    /// The cuts and where they land (the Chop page's for now).
+    Slice,
+    /// Hits and pins (the Warp page's for now).
+    Warp,
+    /// The grain window (the Grain page's for now).
+    Grain,
+}
+
+impl Tool {
+    /// The strip's order.
+    pub const ALL: [Tool; 4] = [Tool::Trim, Tool::Slice, Tool::Warp, Tool::Grain];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Tool::Trim => "Trim",
+            Tool::Slice => "Slice",
+            Tool::Warp => "Warp",
+            Tool::Grain => "Grain",
+        }
+    }
+
+    /// The old page (its place in [`TABS`]) a tool not built on the page
+    /// yet opens; None for a tool on the page.
+    pub fn page(self) -> Option<usize> {
+        match self {
+            Tool::Trim => None,
+            Tool::Slice => Some(crate::chop_tab::TAB),
+            Tool::Warp => Some(crate::warp_tab::TAB),
+            Tool::Grain => Some(crate::grain_tab::TAB),
+        }
+    }
+}
+
+/// Why the tools are faint while a take records (the mockup's "tools wait
+/// for the take").
+pub const TOOLS_WAIT: &str = "The tools wait for the take: stop it first";
 
 /// The markers, in the order the Q-Links move them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -596,6 +648,8 @@ pub struct WaveTab {
     sound: SoundPanel,
     /// What the recorder row shows; while it records, the panel is Input.
     rec: RecorderView,
+    /// The tool in use.
+    tool: Tool,
 }
 
 impl WaveTab {
@@ -625,6 +679,8 @@ impl WaveTab {
             );
         }
         ui.add(WHEEL, InfoCard::new("SHIFT + - / + · zoom"));
+        let labels: Vec<&str> = Tool::ALL.iter().map(|t| t.label()).collect();
+        ui.add(TOOLS, ToolStrip::new(&labels));
         ui.add(RECORDER, Recorder::new());
         let sound = SoundPanel::add(ui);
         ui.add_page(name, LAYOUT)?;
@@ -640,6 +696,7 @@ impl WaveTab {
             wave_w: Waveform::wave_rect(wave).w,
             sound,
             rec: RecorderView::default(),
+            tool: Tool::default(),
         };
         tab.update(ui, st);
         Ok(tab)
@@ -647,6 +704,11 @@ impl WaveTab {
 
     pub fn snap(&self) -> Snap {
         self.snap
+    }
+
+    /// The tool in use.
+    pub fn tool(&self) -> Tool {
+        self.tool
     }
 
     /// The marker the wheel zooms round.
@@ -689,6 +751,7 @@ impl WaveTab {
         if let Some(w) = ui.get_mut::<Recorder>(RECORDER) {
             w.view = v;
         }
+        self.show_tools(ui);
         if was != self.rec.recording || self.rec.recording {
             self.show_list(ui, st);
             self.show_cards(ui, st);
@@ -812,37 +875,43 @@ impl WaveTab {
         self.update_wheel(ui, st);
     }
 
+    /// The tools strip: the tool in use, faint while a take records.
+    fn show_tools(&self, ui: &mut Ui) {
+        let (active, recording) = (
+            Tool::ALL.iter().position(|t| *t == self.tool).unwrap_or(0),
+            self.rec.recording,
+        );
+        if let Some(w) = ui.get_mut_quiet::<ToolStrip>(TOOLS) {
+            if w.active == active && w.enabled == !recording {
+                return;
+            }
+        }
+        if let Some(w) = ui.get_mut::<ToolStrip>(TOOLS) {
+            w.active = active;
+            w.enabled = !recording;
+            w.why = TOOLS_WAIT.to_string();
+        }
+    }
+
     /// The Q-Link cards: the markers, or while REC is on the Input's
-    /// Threshold and Pre-roll on Q-Links 2 and 3
+    /// Gain, Threshold, Pre-roll and Monitor's level
     /// ([`recorder::QLINK_ROWS`]).
     fn show_cards(&self, ui: &mut Ui, st: &WaveState) {
         if self.rec.recording {
-            let s = &self.rec.settings;
-            for (k, row) in recorder::QLINK_ROWS.iter().enumerate() {
-                let Some(card) = ui.get_mut::<KnobCard>(QLINKS[k]) else {
+            for (k, name) in QLINKS.iter().enumerate() {
+                let (Some(card), Some(q)) = (
+                    ui.get_mut::<KnobCard>(name),
+                    recorder::qlink_card(&self.rec, k),
+                ) else {
                     continue;
                 };
                 card.focused = false;
-                match row {
-                    Some(row) => {
-                        card.label = format!("Q-Link {} · {}", k + 1, row.label());
-                        card.value = rec_tab::value_text(s, *row, &self.rec.sources);
-                        card.sub = String::new();
-                        card.pos = match rec_tab::knob(s, *row).look {
-                            Look::Knob { pos, .. } => pos,
-                            _ => 0.0,
-                        };
-                        card.enabled = true;
-                    }
-                    None => {
-                        card.label = format!("Q-Link {}", k + 1);
-                        card.value = String::new();
-                        card.sub = String::new();
-                        card.pos = 0.0;
-                        card.enabled = false;
-                        card.why = recorder::QLINK_IDLE.to_string();
-                    }
-                }
+                card.label = format!("Q-Link {} · {}", k + 1, q.name);
+                card.value = q.value;
+                card.sub = q.sub;
+                card.pos = q.pos;
+                card.enabled = q.faint.is_none();
+                card.why = q.faint.unwrap_or_default();
             }
             return;
         }
@@ -1026,15 +1095,26 @@ impl WaveTab {
         if ev.widget == REGION && self.rec.recording {
             // The panel is the Input section while REC is on.
             return match &ev.kind {
-                EventKind::Step { index, delta } => Some(WaveAction::Rec(RecorderAction::Step(
-                    *INPUT_ROWS.get(*index)?,
-                    *delta,
-                ))),
+                EventKind::Step { index, delta } => {
+                    recorder::input_action(*index, *delta).map(WaveAction::Rec)
+                }
                 _ => None,
             };
         }
         match (ev.widget.as_str(), &ev.kind) {
             (BAR, EventKind::Tab(i)) => Some(WaveAction::Tab(*i)),
+            (TOOLS, EventKind::Tab(i)) => {
+                let tool = *Tool::ALL.get(*i)?;
+                match tool.page() {
+                    // Not on the page yet: its old page.
+                    Some(page) => Some(WaveAction::Tab(page)),
+                    None => {
+                        self.tool = tool;
+                        self.show_tools(ui);
+                        None
+                    }
+                }
+            }
             (WAVE, EventKind::Marker { index, frame }) => {
                 let m = *markers_order(&st.region).get(*index)?;
                 self.focus = m;
@@ -1090,8 +1170,8 @@ impl WaveTab {
 
     /// A Q-Link turned: `knob` 0 to 3 moves Start, End, Loop start or Loop
     /// end by `delta` detents; `fine` (SHIFT held) moves one frame per
-    /// detent, unsnapped. While REC is on, Q-Links 2 and 3 step the
-    /// Threshold and the Pre-roll a step a detent instead
+    /// detent, unsnapped. While REC is on, they turn Gain, the Threshold,
+    /// the Pre-roll and Monitor's level instead
     /// ([`recorder::QLINK_ROWS`]).
     pub fn qlink(
         &mut self,
@@ -1102,8 +1182,7 @@ impl WaveTab {
         fine: bool,
     ) -> Option<WaveAction> {
         if self.rec.recording {
-            let row = (*recorder::QLINK_ROWS.get(knob)?)?;
-            return (delta != 0).then_some(WaveAction::Rec(RecorderAction::Step(row, delta)));
+            return recorder::qlink_action(knob, delta, fine).map(WaveAction::Rec);
         }
         let m = *Mark::ALL.get(knob)?;
         let now = m.frame(&st.region)?;

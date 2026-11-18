@@ -29,7 +29,7 @@
 //! |---|---|
 //! | track 3's instrument, parameter 12 | `t3.inst.12` |
 //! | track 3, sampler pad 5, parameter 2 | `t3.pad5.2` |
-//! | track 3's mixer strip, volume (0) | `t3.mix.0` |
+//! | mixer track 7's strip, volume (0): sequencer track 3's own ([`track_strip`]; the Drums strip, `t0`, is track 0's) | `t7.mix.0` |
 //! | bus 2, the insert with slot id 7, parameter 4 | `bus2.fx7.4` |
 //! | input 0 / pad channel 9 / return 1 / master strip | `in0.mix.0` / `ps9.mix.0` / `ret1.mix.0` / `master.mix.0` |
 //! | track 3's arpeggiator / sequencer settings | `t3.arp.1` / `t3.seq.0` |
@@ -42,7 +42,9 @@
 //! | track 3's CC 74 / pitch bend out (its outside gear) | `t3.midi.74` / `t3.midi.128` |
 //!
 //! A [`RelAddr`] leaves the track out: `inst.12`, `pad5.2`, `mix.0`,
-//! `fx7.4`, `arp.1`, `seq.0`, `nfx2.4`, `midi.74`.
+//! `fx7.4`, `arp.1`, `seq.0`, `nfx2.4`, `midi.74`. Its `mix` and `fx` go
+//! to the playing track's strip, [`track_strip`]; a strip address names
+//! the mixer's own number for it.
 #![forbid(unsafe_code)]
 
 use std::fmt;
@@ -56,10 +58,44 @@ pub enum Strip {
     /// A pad channel of the mixer's pad pool (not a sampler pad's sound;
     /// that is [`Owner::Pad`]).
     Pad(u8),
+    /// A mixer track: the engines' first ([`ENGINE_STRIPS`]: Drums, Synth,
+    /// Loop, Audio), then each sequencer track's own ([`track_strip`]).
     Track(u8),
     Bus(u8),
     Return(u8),
     Master,
+}
+
+/// The mixer tracks the engines have before the sequencer tracks' own:
+/// Drums, Synth, Loop and Audio (the app's `mixing::TRACKS`).
+pub const ENGINE_STRIPS: u8 = 4;
+
+/// Sequencer track `t`'s mixer strip (0 is track 1), where its own
+/// instrument plays and what "this track's strip" in a clip names
+/// (sampler R3 part 4b): track 1's is the Drums strip, `Track(0)`, so a
+/// track has one strip whatever it plays; every other track's is its own,
+/// `Track(ENGINE_STRIPS + t)`. `Track(ENGINE_STRIPS)` is no track's (it
+/// was track 1's before; a project saved with settings on it keeps
+/// playing track 1 there, the app's choice). Tracks go up to 128, so
+/// this never runs past 255.
+pub const fn track_strip(t: u8) -> Strip {
+    if t == 0 {
+        Strip::Track(0)
+    } else {
+        Strip::Track(ENGINE_STRIPS.saturating_add(t))
+    }
+}
+
+/// The sequencer track whose strip `s` is ([`track_strip`]'s inverse):
+/// the Drums strip is track 1's (0), `Track(ENGINE_STRIPS + t)` for `t` of
+/// 1 and up is track `t`'s; Synth, Loop, Audio, `Track(ENGINE_STRIPS)`
+/// and every other strip are no track's.
+pub const fn strip_track(s: Strip) -> Option<u8> {
+    match s {
+        Strip::Track(0) => Some(0),
+        Strip::Track(i) if i > ENGINE_STRIPS => Some(i - ENGINE_STRIPS),
+        _ => None,
+    }
 }
 
 /// Whose parameter it is.
@@ -529,8 +565,8 @@ impl OnTrack {
         match self {
             OnTrack::Inst => Owner::Inst(t),
             OnTrack::Pad(p) => Owner::Pad(t, p),
-            OnTrack::Strip => Owner::Strip(Strip::Track(t)),
-            OnTrack::Insert(uid) => Owner::Insert(Strip::Track(t), uid),
+            OnTrack::Strip => Owner::Strip(track_strip(t)),
+            OnTrack::Insert(uid) => Owner::Insert(track_strip(t), uid),
             OnTrack::Arp => Owner::Arp(t),
             OnTrack::Seq => Owner::Seq(t),
             OnTrack::NoteFx(id) => Owner::NoteFx(t, id),
@@ -546,8 +582,14 @@ impl Owner {
         match self {
             Owner::Inst(t) => Some((t, OnTrack::Inst)),
             Owner::Pad(t, p) => Some((t, OnTrack::Pad(p))),
-            Owner::Strip(Strip::Track(t)) => Some((t, OnTrack::Strip)),
-            Owner::Insert(Strip::Track(t), uid) => Some((t, OnTrack::Insert(uid))),
+            Owner::Strip(s) => match strip_track(s) {
+                Some(t) => Some((t, OnTrack::Strip)),
+                None => None,
+            },
+            Owner::Insert(s, uid) => match strip_track(s) {
+                Some(t) => Some((t, OnTrack::Insert(uid))),
+                None => None,
+            },
             Owner::Arp(t) => Some((t, OnTrack::Arp)),
             Owner::Seq(t) => Some((t, OnTrack::Seq)),
             Owner::NoteFx(t, id) => Some((t, OnTrack::NoteFx(id))),
@@ -912,6 +954,41 @@ mod tests {
     }
 
     #[test]
+    fn a_tracks_strip_is_drums_for_track_1_and_its_own_for_the_rest() {
+        // Track 1's (0) is the Drums strip; track 2's (1) and track 5's
+        // (4) their own, after the engines' four.
+        let mix = RelAddr::new(OnTrack::Strip, 0);
+        assert_eq!(mix.on(0).owner, Owner::Strip(Strip::Track(0)));
+        assert_eq!(mix.on(1).owner, Owner::Strip(Strip::Track(5)));
+        assert_eq!(mix.on(4).owner, Owner::Strip(Strip::Track(8)));
+        let fx = RelAddr::new(OnTrack::Insert(3), 2);
+        assert_eq!(fx.on(0).owner, Owner::Insert(Strip::Track(0), 3));
+        assert_eq!(fx.on(4).owner, Owner::Insert(Strip::Track(8), 3));
+        // And back: each to its track, the round trip unchanged.
+        for t in [0u8, 1, 4, 127] {
+            for a in [mix.on(t), fx.on(t)] {
+                assert_eq!(a.owner.track(), Some(t), "{a}");
+                assert_eq!(a.rel().map(|r| r.on(t)), Some(a));
+                assert_eq!(strip_track(a.owner.strip().unwrap()), Some(t));
+            }
+        }
+        // Synth, Loop, Audio and the strip that was track 1's are no
+        // track's: a knob on them is not this track's strip.
+        for i in 1..=ENGINE_STRIPS {
+            let o = Owner::Strip(Strip::Track(i));
+            assert_eq!(o.split(), None, "t{i}");
+            assert_eq!(ParamAddr::new(o, 0).rel(), None);
+            assert_eq!(ParamAddr::new(o, 0).with_track(3).owner, o);
+        }
+        // Moved to another track, a Drums lock follows the track.
+        assert_eq!(mix.on(0).with_track(2).owner, Owner::Strip(Strip::Track(6)));
+        assert_eq!(mix.on(6).with_track(0).owner, Owner::Strip(Strip::Track(0)));
+        // Absolute addresses read and write as they did.
+        assert_eq!(mix.on(4).to_string(), "t8.mix.0");
+        assert_eq!("t8.mix.0".parse::<ParamAddr>(), Ok(mix.on(4)));
+    }
+
+    #[test]
     fn every_owner_round_trips() {
         for o in every_owner() {
             for p in [0u16, 1, 999, u16::MAX] {
@@ -1126,12 +1203,13 @@ mod tests {
                 }
             }
         }
-        // An insert on a track strip moves with the track; on a bus it stays.
+        // An insert on a track's strip moves with the track (track 1's is
+        // the Drums strip, t0; track 5's is t8); on a bus it stays.
         assert_eq!(
-            ParamAddr::new(Owner::Insert(Strip::Track(1), 7), 2)
+            ParamAddr::new(Owner::Insert(Strip::Track(0), 7), 2)
                 .with_track(4)
                 .to_string(),
-            "t4.fx7.2"
+            "t8.fx7.2"
         );
         assert_eq!(
             ParamAddr::new(Owner::Insert(Strip::Bus(1), 7), 2)
