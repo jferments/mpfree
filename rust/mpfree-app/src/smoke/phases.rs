@@ -644,6 +644,79 @@ mod looper {
         });
     }
 
+    /// The Perform set's other pages (step 6, board 7): PAD BANK B is
+    /// Play's throws. A pad held plays its throw on the master's Perform
+    /// FX and its lift lets it go; a latched throw plays until its next
+    /// hit, and lets go when the set goes off. On page C a track mute pad
+    /// mutes its track (at once in Make) and a scene pad launches its
+    /// row. PAD BANK A is the loop keys again.
+    #[test]
+    fn the_perform_sets_pages_throw_mute_and_launch() {
+        use crate::mixing::ThrowFx;
+        use crate::perform_pads::{Hold, PadAction, PerformSet, Throw};
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let mut set = PerformSet::default();
+            set.pages[1].pads[7] = PadAction::Throw(Throw {
+                index: 7,
+                hold: Hold::Latch,
+            });
+            set.pages[2].pads[0] = PadAction::Mute(0);
+            set.pages[2].pads[4] = PadAction::Scene(0);
+            let fx = s.app.set_perform_set(set);
+            assert!(fx.is_empty());
+            s.press("header", "tab", "Looper");
+            s.button_with("SHIFT", "SAMPLER");
+            s.run_for(0.1);
+            s.button("PAD BANK B/F");
+            assert_eq!(s.app.perform_bank(), 1);
+            assert!(s.said().iter().any(|l| l == "Perform: Page B · Throws"));
+            assert!(
+                s.hint().starts_with("Pads: Perform set, Page B · Throws"),
+                "{}",
+                s.hint()
+            );
+            // Pad 2 held: Reverb wash, while it is held.
+            s.pad_edge(1, 100, true);
+            s.run_periods(4);
+            assert!(s.mix.throw_held(ThrowFx::Reverb), "held");
+            assert_eq!(s.app.throws_on(), 0b10);
+            s.pad_edge(1, 0, false);
+            s.run_periods(4);
+            assert!(!s.mix.throw_held(ThrowFx::Reverb), "let go with the pad");
+            // Pad 8, latched: Vinyl brake plays on after the lift, and the
+            // next hit lets it go.
+            s.pad(7, 100, 0.05).run_periods(2);
+            assert!(s.mix.throw_held(ThrowFx::VinylBrake), "latched");
+            assert!(s.said().iter().any(|l| l == "perform: Vinyl brake latched"));
+            s.pad(7, 100, 0.05).run_periods(2);
+            assert!(!s.mix.throw_held(ThrowFx::VinylBrake));
+            assert!(s.said().iter().any(|l| l == "perform: Vinyl brake let go"));
+            // Latched again, the set off: it lets go.
+            s.pad(7, 100, 0.05).run_periods(2);
+            assert!(s.mix.throw_held(ThrowFx::VinylBrake));
+            s.button_with("SHIFT", "SAMPLER").run_periods(2);
+            assert!(!s.app.pads_are_loop_keys());
+            assert!(!s.mix.throw_held(ThrowFx::VinylBrake), "the set off");
+            // Back on, at page B; PAD BANK C: Track 1's mute and Scene 1.
+            s.button_with("SHIFT", "SAMPLER");
+            assert_eq!(s.app.perform_bank(), 1);
+            s.button("PAD BANK C/G");
+            assert_eq!(s.app.perform_bank(), 2);
+            assert_eq!(s.time.muted(0), Some(false));
+            s.pad(0, 100, 0.05);
+            assert_eq!(s.time.muted(0), Some(true), "pad 1 muted Track 1");
+            s.pad(0, 100, 0.05);
+            assert_eq!(s.time.muted(0), Some(false));
+            s.pad(4, 100, 0.05);
+            assert!(s.said().iter().any(|l| l == "perform: Scene 1"));
+            // PAD BANK A: the loop keys.
+            s.button("PAD BANK A/E");
+            assert_eq!(s.app.perform_bank(), 0);
+            assert!(s.hint().starts_with("Pads: loop keys"), "{}", s.hint());
+        });
+    }
+
     /// Overdubs: Replace (step 3b): an overdub with a pad in it takes the
     /// place of what was there for as long as it records; its lane says
     /// "replace", and UNDO takes it away.

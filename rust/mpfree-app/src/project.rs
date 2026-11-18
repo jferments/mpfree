@@ -17,6 +17,7 @@
 //! | `midi` | the I/O view | `mpfree_midi_ui::MidiPart` | the same |
 //! | `looper` | the Looper | [`loops_part`], a WAV a layer in `samples/` | [`loops_open`] on a thread, then `LoopHost::open` |
 //! | `arp` | the arps | `App::arp_part` | `App::open_arp` |
+//! | `perform` | the Perform set (`perform_pads.rs`) | `PerformSet::text` | `PerformSet::parse`, then `App::set_perform_set` |
 //! | `audiotracks` | the audio tracks | [`audio_part`]: each track's settings and regions, a WAV a take in `samples/` | [`audio_open`] on a thread, then [`crate::audiotracks::TrackHost::open`] |
 //!
 //! The project's tempo is `project.txt`'s `tempo`.
@@ -59,6 +60,9 @@ pub const LOOPER: &str = "looper";
 pub const ARP: &str = "arp";
 /// Each track's own instrument ([`instruments_text`]).
 pub const INSTRUMENTS: &str = "instruments";
+/// The Perform set: its pages and what each pad does
+/// (`perform_pads::PerformSet::text`).
+pub const PERFORM: &str = "perform";
 /// What each track plays: a kit or the synth (`sampler::TrackKits::text`).
 pub const TRACK_KITS: &str = "track-kits";
 /// The Song view's audio tracks and their takes ([`audio_part`]).
@@ -87,6 +91,8 @@ pub struct Collected {
     pub synth: String,
     /// The arps ([`crate::app::App::arp_part`]).
     pub arp: String,
+    /// The Perform set ([`crate::perform_pads::PerformSet::text`]).
+    pub perform: String,
     /// Each track's own instrument ([`instruments_text`]).
     pub instruments: String,
     /// What each track plays (`sampler::TrackKits::text`).
@@ -125,6 +131,10 @@ pub struct Opening {
     /// The arp part's text; None (New, or a project saved before it had
     /// one) puts every arp back to its default.
     pub arp: Option<String>,
+    /// The Perform set's part; None (New, or a project saved before it
+    /// had one) gives the new project's set: the loop keys on page A,
+    /// Play's throws on B.
+    pub perform: Option<String>,
     /// Each track's own instrument, made here. Every track not in it
     /// (all of them for New, or a project saved before the part) plays
     /// the kit.
@@ -200,6 +210,7 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
         (MOD.to_string(), c.modu.clone()),
         (SYNTH.to_string(), c.synth.clone()),
         (ARP.to_string(), c.arp.clone()),
+        (PERFORM.to_string(), c.perform.clone()),
     ];
     if c.instruments.lines().count() > 1 {
         parts.push((INSTRUMENTS.to_string(), c.instruments.clone()));
@@ -301,6 +312,7 @@ pub fn opening(
         mix,
         synth,
         arp: snap.part(ARP).map(str::to_string),
+        perform: snap.part(PERFORM).map(str::to_string),
         instruments,
         track_kits,
         notes,
@@ -1617,6 +1629,7 @@ mod tests {
             modu: String::new(),
             synth: String::new(),
             arp: String::new(),
+            perform: String::new(),
             instruments: format!("{INSTRUMENTS_FORMAT}\n"),
             track_kits,
             loops: None,
@@ -1655,6 +1668,38 @@ mod tests {
         assert!(track_kits_parse(&format!("{TRACK_KITS_FORMAT}\ntrack 0 kit 1\n")).is_err());
     }
 
+    /// The Perform set goes in its own part and comes back on open; a
+    /// project saved before the part has none, and opens with a new
+    /// project's set.
+    #[test]
+    fn the_perform_set_is_kept_and_comes_back() {
+        use crate::perform_pads::{PadAction, PerformSet};
+        let mut set = PerformSet::default();
+        set.pages[2].pads[0] = PadAction::Scene(3);
+        let c = Collected {
+            tempo: 120.0,
+            swing: mpfree_transport::time::Swing::new(240, 50).unwrap(),
+            clips: mpfree_seq::Project::default(),
+            mixer: String::new(),
+            modu: String::new(),
+            synth: String::new(),
+            arp: String::new(),
+            perform: set.text(),
+            instruments: format!("{INSTRUMENTS_FORMAT}\n"),
+            track_kits: String::new(),
+            loops: None,
+            audio: None,
+        };
+        let mut snap = snapshot(&c, Vec::new());
+        let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none());
+        let (back, skipped) = PerformSet::parse(o.perform.as_deref().unwrap());
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(back, set);
+        snap.parts.retain(|(name, _)| name != PERFORM);
+        let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none());
+        assert_eq!(o.perform, None);
+    }
+
     /// A project saved before the instruments part, or with no track's
     /// own instrument, has none: every track plays the kit.
     #[test]
@@ -1667,6 +1712,7 @@ mod tests {
             modu: String::new(),
             synth: String::new(),
             arp: String::new(),
+            perform: String::new(),
             instruments: format!("{INSTRUMENTS_FORMAT}\n"),
             track_kits: String::new(),
             loops: None,
