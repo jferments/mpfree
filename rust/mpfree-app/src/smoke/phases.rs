@@ -717,6 +717,61 @@ mod looper {
         });
     }
 
+    /// The Perform set's pages past A are actions, not notes (the
+    /// sequencer thread's rec-arm rule): with the notes armed and
+    /// recording, throw, track mute and scene pads put nothing in the
+    /// clip, and a throw records only what Play's throw tiles do (nothing).
+    #[test]
+    fn perform_pages_record_nothing_while_the_notes_record() {
+        use crate::perform_pads::{PadAction, PerformSet};
+        use crate::rec_arm::Target;
+        use mpfree_transport::State;
+        fn notes(s: &Session) -> usize {
+            s.time.project().tracks[0]
+                .slots
+                .iter()
+                .flatten()
+                .map(|c| c.notes.len())
+                .sum()
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            let mut set = PerformSet::default();
+            set.pages[2].pads[0] = PadAction::Mute(1);
+            set.pages[2].pads[4] = PadAction::Scene(0);
+            s.app.set_perform_set(set);
+            s.press("header", "tab", "Looper");
+            s.button_with("SHIFT", "SAMPLER");
+            s.button("PAD BANK B/F");
+            s.press("header", "tab", "Play");
+            assert!(s.app.pads_are_loop_keys(), "the set stays on Play");
+            // The notes armed (an Arm pill's tap), as the Looper tab had
+            // armed the loop.
+            s.route(crate::gui::FromUi::ArmTap(Target::Notes));
+            s.settle();
+            assert_eq!(s.app.rec.target, Target::Notes);
+            let before = notes(&s);
+            s.button("REC").button("PLAY");
+            let end = s.t() + 5.0;
+            while s.time.info().state != State::Recording && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(s.time.info().state, State::Recording);
+            // Page B: every throw, held a moment.
+            for pad in 0..8 {
+                s.pad(pad, 110, 0.1);
+            }
+            // Page C: a track mute (twice, so it plays again) and a scene.
+            s.button("PAD BANK C/G");
+            s.pad(0, 110, 0.05).pad(0, 110, 0.05).pad(4, 110, 0.05);
+            s.run_for(0.5);
+            s.button("STOP").settle();
+            assert_eq!(notes(&s), before, "no pad of the set is a note");
+            assert!(s.said().iter().any(|l| l == "perform: Reverb wash"));
+        });
+    }
+
     /// Overdubs: Replace (step 3b): an overdub with a pad in it takes the
     /// place of what was there for as long as it records; its lane says
     /// "replace", and UNDO takes it away.
