@@ -1609,6 +1609,50 @@ impl Mixer {
         true
     }
 
+    /// Why strip `key` can't feed the sidechain of strip `s`'s inserts
+    /// (what [`Mixer::set_key`] would refuse it for), or None when it can:
+    /// the sidechain list greys a strip with this. A strip `s` doesn't
+    /// have answers None too (`set_key` says no to it anyway).
+    pub fn sidechain_refusal(&self, s: StripId, key: StripId) -> Option<crate::sidechain::Refusal> {
+        use crate::sidechain::Refusal;
+        let topo = self.plan.topo;
+        let (k, j) = (topo.order(s)?, topo.order(key)?);
+        if j == k {
+            return Some(Refusal::Itself);
+        }
+        if !may_key(&topo, j, k) {
+            return Some(
+                if topo.role(j).0 == Role::Bus && topo.role(k).0 == Role::Bus {
+                    Refusal::HigherSubmix
+                } else {
+                    Refusal::Later
+                },
+            );
+        }
+        // A loop: `s` already feeds `key`'s sidechains, directly or through
+        // other strips' sidechains.
+        let mut seen = vec![false; self.strips.len()];
+        let mut todo = vec![j];
+        while let Some(at) = todo.pop() {
+            if std::mem::replace(&mut seen[at], true) {
+                continue;
+            }
+            let chain = &self.strips[at].chain;
+            for slot in 0..chain.len() {
+                if let Some(from) = chain.key(slot) {
+                    let from = from as usize;
+                    if from == k {
+                        return Some(Refusal::Loop);
+                    }
+                    if from < seen.len() {
+                        todo.push(from);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// The strip an insert is keyed from.
     pub fn key(&self, s: StripId, slot: usize) -> Option<StripId> {
         let k = self.plan.topo.order(s)?;

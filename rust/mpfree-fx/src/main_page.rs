@@ -92,7 +92,7 @@ pub static MAIN_PAGES: &[MainPage] = &[
             "Hold",
             "Mode",
             "Ratio",
-            "Key HP",
+            "SC low cut",
         ],
         ["Threshold", "Range", "Attack", "Release"],
     ),
