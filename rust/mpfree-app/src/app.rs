@@ -1873,11 +1873,24 @@ impl App {
         velocity: u8,
         down: bool,
     ) -> Option<mpfree_play::Event> {
-        if self.free_time_recording() || slot >= 16 {
+        if slot >= 16 {
             return None;
         }
         // A kit's pad on the page (or the one it pressed), else the slot.
-        let note = self.kit_pad(slot) as u8;
+        self.pressed_pad_event(self.kit_pad(slot) as u8, velocity, down)
+    }
+
+    /// The same for kit pad `pad` (0 to 127) itself: a key on a kit
+    /// ([`App::kit_key_down`]).
+    pub fn pressed_pad_event(
+        &self,
+        note: u8,
+        velocity: u8,
+        down: bool,
+    ) -> Option<mpfree_play::Event> {
+        if self.free_time_recording() {
+            return None;
+        }
         Some(if down {
             mpfree_play::Event::NoteOn {
                 note,
@@ -4659,6 +4672,51 @@ mod tests {
         app.set_pad_layout(Some(pads));
         app.key_up(50);
         assert!(app.eng().active().is_empty(), "nothing was left to let go");
+    }
+
+    /// With a kit, a key hits the kit pad its note names (A1 to H16,
+    /// `profile::kit_pad_of_note`), whatever bank the pads show. It shares
+    /// the hold with a pad of the MPC on the same kit pad, and a track
+    /// change lets go of the old track's kit pads in every bank.
+    #[test]
+    fn keys_hit_a_kits_pads_in_every_bank() {
+        let mut app = ready();
+        // Bank C on the pads: a key on B5 (kit pad 20) still hits B5.
+        app.set_pad_page(2);
+        app.kit_key_down(20, 100);
+        assert_eq!(notes(&mut app, 64), [20]);
+        assert!(matches!(
+            app.pressed_pad_event(20, 100, true),
+            Some(mpfree_play::Event::NoteOn { note: 20, .. })
+        ));
+        // Bank B: pad 6 and the key on B6 (21) hold it together.
+        app.set_pad_page(1);
+        app.kit_key_down(21, 100);
+        app.pad_down(5, 100);
+        app.kit_key_up(21);
+        assert!(app.eng().active().contains(21), "pad 6 still holds B6");
+        app.pad_up(5);
+        assert!(!app.eng().active().contains(21));
+        // A second note-on for a held key is ignored; one note-off ends it.
+        app.kit_key_down(40, 90);
+        app.kit_key_down(40, 90);
+        app.kit_key_up(40);
+        assert!(!app.eng().active().contains(40));
+        // A pad pressed again before it was let go: one let-go ends it.
+        app.pad_down(0, 100);
+        app.pad_down(0, 100);
+        app.pad_up(0);
+        assert!(!app.eng().active().contains(16));
+        // B5's key is still down, and H16's (127) goes down: a track
+        // change lets both go on the old track, and their keys' let-go
+        // later changes nothing on the new one.
+        app.kit_key_down(127, 100);
+        assert!(app.eng().active().contains(20) && app.eng().active().contains(127));
+        app.set_track(1);
+        assert!(app.arps.engine_at(0).active().is_empty());
+        app.kit_key_up(20);
+        app.kit_key_up(127);
+        assert!(app.eng().active().is_empty());
     }
 
     fn ons(app: &mut App, frames: u32) -> Vec<(u32, u8, u8)> {

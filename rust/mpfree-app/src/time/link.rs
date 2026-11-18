@@ -222,6 +222,10 @@ pub enum ToControl {
     /// A pad note played, `offset` frames into the coming or current
     /// period, for CAPTURE's history.
     Played(u32, Event),
+    /// A key a route played on a track that isn't armed, as the pad that
+    /// plays its note there, for CAPTURE's history: (track, offset,
+    /// event).
+    PlayedOn(u8, u32, Event),
     /// A Perform FX move, for the move log.
     Moved(u32, Input),
     /// A cue started on its bar line.
