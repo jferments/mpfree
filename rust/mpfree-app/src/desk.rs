@@ -431,6 +431,7 @@ impl Desk<'_> {
             | gui::FromUi::Slice { .. }
             | gui::FromUi::SampleLiveChop { .. }
             | gui::FromUi::SampleHit { .. }
+            | gui::FromUi::SampleTake { .. }
             | gui::FromUi::SampleKey { .. }
             | gui::FromUi::SamplePadLive { .. }
             | gui::FromUi::Preview(_)
