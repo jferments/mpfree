@@ -13520,7 +13520,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // cloud 1.5 s after a hit, as the audio thread sends it. Then its
     // other sections, a section chip tapped: Movement, with an LFO and the
     // envelope moving the cloud; Filter and keys, a sprayed band pass with
-    // glide; and Presets, with one put on the pad.
+    // glide and Quality Tape; and Presets, with one put on the pad.
     {
         use mpfree_sampler_ui::grain_tab::{View as GrainView, SECTIONS};
         for (name, section) in [

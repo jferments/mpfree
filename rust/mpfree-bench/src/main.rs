@@ -563,6 +563,29 @@ fn voices_in(budget_ns: f64, fixed: f64, per_voice: f64) -> Option<f64> {
     }
 }
 
+/// The sample voices the grain budget leaves room for in the sampler's
+/// share (a kit's worth playing at once).
+const A6_SAMPLE_VOICES: usize = 16;
+/// The scaling cases the grain budget is worked out from.
+const A6_GRAINS: &str = "Sampler grains (per grain)";
+const A6_VOICES: &str = "Sampler, looping pads held";
+
+/// R7 step A6, from the `--afford` fits (ns, on the MPC): the grains that
+/// fit in the sampler's share `budget_ns` beside [`A6_SAMPLE_VOICES`]
+/// sample voices, rounded down to 16 (the engine's `GRAIN_BUDGET` is set
+/// from it), and what a sample voice costs in grains (the engine's
+/// `VOICE_COST`). `grains` and `voices` are (fixed, per voice). None if
+/// a grain's cost isn't measured.
+fn grain_budget(budget_ns: f64, grains: (f64, f64), voices: (f64, f64)) -> Option<(usize, f64)> {
+    let (fixed, per_grain) = grains;
+    if per_grain <= 0.0 || !per_grain.is_finite() {
+        return None;
+    }
+    let room = budget_ns - fixed.max(0.0) - A6_SAMPLE_VOICES as f64 * voices.1.max(0.0);
+    let n = (room / per_grain).max(0.0).floor() as usize;
+    Some((n / 16 * 16, voices.1.max(0.0) / per_grain))
+}
+
 /// The `--afford` table: cost per voice and voices per budget.
 fn afford(quick: bool, model: Option<&Model>, on_device: bool) {
     let blocks = (if quick { 2 } else { 6 } * MPC.rate / MPC.frames) as u64;
@@ -584,6 +607,8 @@ fn afford(quick: bool, model: Option<&Model>, on_device: bool) {
         "{:<30} {:>9} {:>11}  {:<40}  {:>8}  voices that fit",
         "engine", "fixed us", "us / voice", "p99 us at each voice count", "budget"
     );
+    // (fixed, per voice) of the cases the grain budget needs, scaled.
+    let (mut grains, mut sample_voices, mut sampler_ns) = (None, None, 0.0);
     for mut sc in cases::scaling(MPC.rate) {
         let mut pts = Vec::new();
         for (n, c) in sc.points.iter_mut() {
@@ -592,6 +617,11 @@ fn afford(quick: bool, model: Option<&Model>, on_device: bool) {
         let (a, b) = cases::fit(&pts);
         let budget = budget::for_module(sc.module).expect("module budget");
         let budget_ns = budget.worst_ns(MPC) as f64;
+        if sc.name == A6_GRAINS {
+            (grains, sampler_ns) = (Some((a * factor, b * factor)), budget_ns);
+        } else if sc.name == A6_VOICES {
+            sample_voices = Some((a * factor, b * factor));
+        }
         let fits = |f: f64| voices_in(budget_ns, a * f, b * f);
         let most = pts.iter().map(|p| p.0).max().unwrap_or(1);
         let show = |v: Option<f64>| match v {
@@ -639,6 +669,23 @@ fn afford(quick: bool, model: Option<&Model>, on_device: bool) {
     println!(
         "the cost of a grain, and 256 is the engine's grain budget, the most a burst can reach."
     );
+    if let (Some(g), Some(v)) = (grains, sample_voices) {
+        if let Some((n, voice_cost)) = grain_budget(sampler_ns, g, v) {
+            println!();
+            println!(
+                "Grain budget (R7 step A6), {place}: a grain {:.2} us, a looping sample voice {:.2} us (about {voice_cost:.1} grains; \
+                 the engine's VOICE_COST is {}).",
+                g.1 / 1e3,
+                v.1 / 1e3,
+                mpfree_sampler::engine::VOICE_COST
+            );
+            println!(
+                "grain budget: {n} grains fit in the sampler's {:.0} us beside {A6_SAMPLE_VOICES} sample voices (GRAIN_BUDGET is {} now)",
+                sampler_ns / 1e3,
+                mpfree_sampler::engine::GRAIN_BUDGET
+            );
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -878,6 +925,21 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_grain_budget_leaves_room_for_a_kit_and_rounds_down_to_16() {
+        // 725 us for the sampler; grains 100 us fixed and 1.5 us each;
+        // a sample voice 12 us (8 grains): 725 - 100 - 192 = 433 us,
+        // 288 grains, 288 exactly.
+        let (n, cost) = grain_budget(725_000.0, (100_000.0, 1_500.0), (0.0, 12_000.0)).unwrap();
+        assert_eq!((n, cost), (288, 8.0));
+        let (n, _) = grain_budget(725_000.0, (100_000.0, 1_600.0), (0.0, 12_000.0)).unwrap();
+        assert_eq!(n, 256, "270 rounds down");
+        // Nothing left: none, never less.
+        let (n, _) = grain_budget(100_000.0, (90_000.0, 1_500.0), (0.0, 12_000.0)).unwrap();
+        assert_eq!(n, 0);
+        assert!(grain_budget(725_000.0, (100_000.0, 0.0), (0.0, 12_000.0)).is_none());
+    }
 
     #[test]
     fn a_soak_counts_slow_blocks_and_the_first_that_allocate() {

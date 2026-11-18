@@ -174,6 +174,7 @@ fn busy_kit() -> Project {
             resonance: 0.6,
             spray: 0.35,
         },
+        quality: GrainQuality::Tape,
     };
     g.grain_mode = GrainMode::Repeat;
     g.grain_keys = GrainKeys {
@@ -210,6 +211,7 @@ fn busy_kit() -> Project {
     m.grain.density = 44.0;
     m.grain.lfo.target = MotionTarget::Cutoff;
     m.grain.filter.kind = GrainFilterKind::High;
+    m.grain.quality = GrainQuality::LoFi;
     p.set_master(m, None).unwrap();
     p.set_pads_play(PadsPlay::Levels {
         pad: 5,

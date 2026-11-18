@@ -195,7 +195,10 @@ const TURNS: u32 = 720_720;
 /// A 16 Levels voice's note: this plus the pad (0 to 15) that played it.
 const LEVEL_NOTE: u8 = 128;
 /// Grains alive at once across every granular voice. Past it, new grains
-/// are skipped. A first guess, to be set by measurement on the MPC.
+/// are skipped. A first guess, to be set by measurement on the MPC: the
+/// device bench's `--afford` prints the grains that fit in the sampler's
+/// share beside a kit's sample voices ("grain budget: N grains", R7 step
+/// A6).
 pub const GRAIN_BUDGET: usize = 256;
 /// Seconds of output the master effect remembers for its grains.
 pub const MASTER_MEMORY_S: f32 = 8.0;
@@ -1264,8 +1267,8 @@ struct Pool {
 /// What a playing voice costs to render, in grains (see [`Pool::cost`]).
 /// A rough figure from the workstation bench, where a sample voice (read,
 /// envelope, filter) costs about as much as 8 to 16 live grains; the
-/// device bench may move it.
-const VOICE_COST: usize = 8;
+/// device bench's `--afford` says what it is on the MPC (R7 step A6).
+pub const VOICE_COST: usize = 8;
 /// What a plain one-shot costs in the same units: the drum kit bench
 /// cases put a plain voice at about a fifth of a full one.
 const LIGHT_COST: usize = 2;
