@@ -401,6 +401,15 @@ const SHIFT_SYNTH_HINT: &str =
     "SHIFT +   touch a knob: MIDI Learn   ·   wheel: page   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_SAMPLE_HINT: &str =
     "SHIFT +   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: back to bar 1";
+/// SHIFT held on the Sample tab's Play page, where a touch on a knob arms
+/// MIDI Learn on the pad's setting.
+const SHIFT_SAMPLE_LEARN_HINT: &str =
+    "SHIFT +   touch a knob: MIDI Learn   ·   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: back to bar 1";
+/// SHIFT held on the Pads tab, where a touch on Level, Pan or Tune arms
+/// MIDI Learn on the pad's setting.
+const SHIFT_PADS_HINT: &str =
+    "SHIFT +   touch Level, Pan or Tune: MIDI Learn   ·   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   \
+     NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_MENU_HINT: &str =
     "SHIFT +   wheel: change the value   ·   MENU: Prefs   ·   STOP: back to bar 1";
 /// The browser's hint without a library (no --data).
@@ -998,6 +1007,18 @@ pub enum ToUi {
     /// What the chain editor shows (a few times a second while it is open,
     /// and after each change), boxed as the mixer's state is.
     Chain(Box<ChainState>),
+    /// A gear lane's mod rows (LFO to CC, layout spec 4m), after a
+    /// [`FromUi::LaneRows`]: the matrix rows aimed at `target`, each its
+    /// place in the matrix, its source's name and depth (-1 to 1), and
+    /// whether + LFO has room.
+    LaneRows {
+        target: ParamAddr,
+        rows: Vec<(usize, String, f32)>,
+        can_add: bool,
+    },
+    /// The tracks' MIDI out controls the mod matrix moves (an LFO on a
+    /// gear lane): their lanes' pink ~. Sent when it changes.
+    GearMoved(Vec<ParamAddr>),
     /// An insert switched to another engine with its mode: Q-Links learned
     /// on its controls follow them (`fxmodes::Landed`).
     ParamsMoved(Box<crate::fxmodes::Landed>),
@@ -1062,6 +1083,11 @@ pub enum ToUi {
     },
     /// Every value of the synth, in its parameter order (after a preset).
     SynthValues(Vec<f32>),
+    /// Learned MIDI controls moved kit pads' own settings (MIDI Learn,
+    /// `Owner::Pad`): `(kit, pad, setting, value)`, each in the setting's
+    /// units, set on the kit as the Play tab's knob sets it
+    /// ([`sample_page::SamplePage::learned`]).
+    PadsLearned(Vec<(usize, u8, mpfree_sampler::engine::PadField, f32)>),
     /// The synth's meters, by parameter index.
     SynthMeters(Vec<(usize, f32)>),
     /// Each sounding voice's pressure, 0 to 1, for the Pressure page's
@@ -1203,6 +1229,14 @@ pub enum ToUi {
     Hit(HitInfo),
     /// The mixer's values the Play page's Q-Links and speakers show.
     PlayLevels(PlayLevels),
+    /// Learned controls moved the XY pad (the Learn section's Play card):
+    /// where it is now, and whether it is held away from where it rests.
+    /// The pad on the Play page follows, as it would a finger.
+    PlayXy {
+        x: f32,
+        y: f32,
+        down: bool,
+    },
     /// On the Play page (no arp): Q-Link `0` turned by `1` detents.
     PlayQLink(usize, i32),
     /// The master meter: each side's peak and Master safety's gain
@@ -1234,6 +1268,25 @@ pub enum ToUi {
     /// turn. With the set, when the view shows, and when a Perform FX goes
     /// on or comes off.
     ThrowKnobs(Vec<crate::mixing::ThrowKnobs>),
+}
+
+/// A touch on a gear lane's mod rows (LFO to CC, layout spec 4m): what
+/// it asks the mod matrix. A row is its place in the matrix, as
+/// [`ToUi::LaneRows`] gave it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LaneRowsAsk {
+    /// The rows aimed at this control, to show.
+    Show(ParamAddr),
+    /// + LFO: a row from LFO 1 at the chain editor's depth.
+    AddLfo(ParamAddr),
+    /// A row's depth, -1 to 1.
+    Depth {
+        target: ParamAddr,
+        row: usize,
+        depth: f32,
+    },
+    /// A row's ×: it comes off.
+    Remove { target: ParamAddr, row: usize },
 }
 
 /// Not `Clone`: [`FromUi::SampleInput`] carries the one writer of the
@@ -1575,6 +1628,9 @@ pub enum FromUi {
     /// A touch on the chain editor, or a Q-Link turned while its knobs
     /// show (`modpanels::ChainHost::action`).
     Chain(ChainAction),
+    /// A gear lane's mod rows on the Sequencer's Steps (LFO to CC): the
+    /// matrix answers with [`ToUi::LaneRows`].
+    LaneRows(LaneRowsAsk),
     /// A touch on the macros panel, or a macro bank's Q-Link turned
     /// (`modpanels::MacrosHost::action`).
     Macros(MacroAction),
@@ -1661,6 +1717,9 @@ pub enum LearnValue {
     /// One of the armed track's arp settings its Q-Links turn, by its id
     /// in `mpfree_param::arp`.
     Arp(u16),
+    /// A setting of a pad of the kit the Sample and Pads tabs show (the
+    /// armed track's): the pad, and the setting's `PadField` number.
+    Pad { pad: u8, field: u16 },
 }
 
 /// A track asked of the time engine for a kit: by "+ Kit track", or by a
@@ -4196,6 +4255,7 @@ impl Player {
         }
         if self.play.sequencer != seq {
             self.play.sequencer = seq;
+            self.play.lane_rows = None;
             moved = true;
         }
         self.time_page.edit_hidden = !seq;
@@ -4663,6 +4723,7 @@ impl Player {
             g.pitched = old.pitched;
             g.bank.clone_from(&old.bank);
             (g.top, g.add_lane) = (old.top, old.add_lane);
+            g.rows_open.clone_from(&old.rows_open);
         }
         self.refresh_lock_knobs();
         self.play.fill_steps(&mut g);
@@ -4682,6 +4743,7 @@ impl Player {
                     && old.pitched == g.pitched
                     && old.bank == g.bank
                     && (old.top, old.add_lane) == (g.top, g.add_lane)
+                    && old.rows_open == g.rows_open
             });
         if !same {
             if let Some(w) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
@@ -4697,6 +4759,7 @@ impl Player {
                 w.pitched = g.pitched;
                 w.bank = g.bank;
                 (w.top, w.add_lane) = (g.top, g.add_lane);
+                w.rows_open = g.rows_open;
             }
         }
         if self.lane_list {
@@ -5416,10 +5479,23 @@ impl Player {
             SHIFT_SYNTH_HINT.to_string()
         } else if self.status.shift && self.ready && self.clips_showing() {
             SHIFT_CLIPS_HINT.to_string()
+        } else if self.status.shift
+            && self.ready
+            && self.view == View::Sample
+            && self.sample.page() == sample_page::PLAY_PAGE
+        {
+            SHIFT_SAMPLE_LEARN_HINT.to_string()
         } else if self.status.shift && self.ready && self.perform_showing() {
             SHIFT_PERFORM_HINT.to_string()
         } else if self.status.shift && self.ready && self.view == View::Sample {
             SHIFT_SAMPLE_HINT.to_string()
+        } else if self.status.shift
+            && self.ready
+            && self.view == View::Pads
+            && self.sample.page() == sample_page::PADS_PAGE
+            && self.sample.pads_learnable()
+        {
+            SHIFT_PADS_HINT.to_string()
         } else if self.status.shift && self.ready && self.status.steps.is_some_and(|s| !s.picking) {
             SHIFT_STEPS_HINT.to_string()
         } else if self.status.shift
@@ -7119,9 +7195,11 @@ impl Player {
             ToUi::Steps(st) => {
                 if st.track != self.play.steps.track {
                     // Another track's pads: from their first row (and
-                    // the Sequencer's lanes from the top).
+                    // the Sequencer's lanes from the top, a gear lane's
+                    // mod rows closed).
                     self.play.rows_top = 0;
                     self.play.steps_top = 0;
+                    self.play.lane_rows = None;
                 }
                 self.play.set_steps(*st);
                 self.play.track = self.track_look();
@@ -7150,6 +7228,11 @@ impl Player {
                 if self.timing_shown() {
                     self.refresh_play();
                 }
+            }
+            ToUi::PlayXy { x, y, down } => {
+                // The sound has it already: only the pad's dot moves.
+                let _ = self.play.xy(x, y, down);
+                self.refresh_play();
             }
             ToUi::PlayLevels(l) => {
                 if self.play.levels != l {
@@ -7308,6 +7391,24 @@ impl Player {
                 self.refresh_qlinks();
             }
             ToUi::IoInput(ev) => self.io_input(ev),
+            // A gear lane's mod rows: what the matrix holds for the
+            // control open (an answer for one since closed is dropped).
+            ToUi::LaneRows {
+                target,
+                rows,
+                can_add,
+            } => {
+                if let Some(o) = self.play.lane_rows.as_mut().filter(|o| o.target == target) {
+                    (o.rows, o.can_add) = (rows, can_add);
+                    self.refresh_play();
+                }
+            }
+            ToUi::GearMoved(v) => {
+                if self.play.gear_moved != v {
+                    self.play.gear_moved = v;
+                    self.refresh_play();
+                }
+            }
             ToUi::Chain(mut st) => {
                 // A note track's Plays on, from the MIDI set-up's Tracks out.
                 if let Some(ns) = st.notes.as_mut() {
@@ -7567,6 +7668,11 @@ impl Player {
                         w.render();
                     }
                     self.refresh_qlinks();
+                }
+            }
+            ToUi::PadsLearned(sets) => {
+                for (kit, pad, field, value) in sets {
+                    self.sample.learned(kit, usize::from(pad), field, value);
                 }
             }
             ToUi::SynthValues(values) => {
@@ -10342,6 +10448,14 @@ impl Player {
             let skin = self.ui.get::<skin_page::SkinWidget>(skin_page::SKIN)?;
             return skin.param_id_at(x, y, r).map(LearnValue::Synth);
         }
+        // A pad's own setting: a knob of the Sample tab's Play page, or
+        // the Pads tab's Level, Pan or Tune.
+        if let Some((pad, field)) = self.sample.learn_field(w, t) {
+            return Some(LearnValue::Pad {
+                pad: u8::try_from(pad).ok()?,
+                field: field as u16,
+            });
+        }
         mpfree_chain_ui::param_of(&self.ui, w, t).map(LearnValue::Param)
     }
 
@@ -10969,6 +11083,54 @@ impl Player {
             (play_page::STEPS, EventKind::Tab(play_widgets::HEAD_LANE)) => {
                 self.toggle_lane_list();
                 None
+            }
+            // A gear lane's mod rows (LFO to CC, layout spec 4m): its name
+            // opens them over the pattern; + LFO adds a row from LFO 1, a
+            // finger on a row's bar sets its depth, its × takes it off,
+            // and a touch anywhere else closes them.
+            (play_page::STEPS, EventKind::Tab(play_widgets::LANE_ROWS_CLOSE)) => {
+                self.play.lane_rows = None;
+                self.refresh_play();
+                None
+            }
+            (play_page::STEPS, EventKind::Tab(play_widgets::LANE_ROWS_ADD)) => {
+                let target = self.play.lane_rows.as_ref()?.target;
+                self.mark_unsaved();
+                Some(FromUi::LaneRows(LaneRowsAsk::AddLfo(target)))
+            }
+            (play_page::STEPS, EventKind::Tab(k))
+                if (play_widgets::LANE_NAME..play_widgets::LANE_ROWS_CLOSE).contains(&k) =>
+            {
+                let open = self.play.lane_rows_for(k - play_widgets::LANE_NAME)?;
+                let target = open.target;
+                self.play.lane_rows = Some(open);
+                self.refresh_play();
+                Some(FromUi::LaneRows(LaneRowsAsk::Show(target)))
+            }
+            (play_page::STEPS, EventKind::Toggle(k)) if k >= play_widgets::LANE_ROWS => {
+                let open = self.play.lane_rows.as_ref()?;
+                let row = open.rows.get(k - play_widgets::LANE_ROWS)?.0;
+                let target = open.target;
+                self.mark_unsaved();
+                Some(FromUi::LaneRows(LaneRowsAsk::Remove { target, row }))
+            }
+            (play_page::STEPS, EventKind::Step { index, delta })
+                if index >= play_widgets::LANE_ROWS =>
+            {
+                let open = self.play.lane_rows.as_mut()?;
+                let target = open.target;
+                let r = open.rows.get_mut(index - play_widgets::LANE_ROWS)?;
+                let depth = (delta as f32 / 100.0).clamp(-1.0, 1.0);
+                if r.2 == depth {
+                    return None;
+                }
+                // At once, so the bar follows the finger; the matrix's
+                // answer confirms it.
+                r.2 = depth;
+                let row = r.0;
+                self.refresh_play();
+                self.mark_unsaved();
+                Some(FromUi::LaneRows(LaneRowsAsk::Depth { target, row, depth }))
             }
             (play_page::STEPS, EventKind::Cell { row, col }) if row >= play_widgets::LOCK_LANE => {
                 let r = self.play.tap_lock(row - play_widgets::LOCK_LANE, col);
@@ -14170,9 +14332,35 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
     }
     gear_lanes.refresh_play();
+    // LFO to CC (layout spec 4m): the Cutoff lane's name tapped, its mod
+    // rows over the pattern with LFO 1 on it, and its pink ~.
+    let mut gear_lfo = gear();
+    {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        let cutoff = RelAddr::new(OnTrack::Midi, 43);
+        if let Some(c) = gear_lfo.play.steps.clip.as_mut() {
+            c.lock_values.extend(
+                [(0, 20.0), (8, 84.0)].map(|(step, v)| (crate::time::LINE, step, cutoff, v)),
+            );
+        }
+        // The lane on screen first, named by the gear's profile.
+        gear_lfo.refresh_play();
+        let id = gear_lfo
+            .play
+            .lock_lanes()
+            .iter()
+            .position(|l| l.addr == cutoff);
+        if let Some(mut open) = id.and_then(|id| gear_lfo.play.lane_rows_for(id)) {
+            open.rows = vec![(0, "LFO 1".to_string(), 0.25)];
+            gear_lfo.play.gear_moved = vec![open.target];
+            gear_lfo.play.lane_rows = Some(open);
+        }
+    }
+    gear_lfo.refresh_play();
     let mut gear_list = gear();
     gear_list.toggle_lane_list();
     out.push(("sequencer-gear-lanes", gear_lanes));
+    out.push(("sequencer-gear-lane-lfo", gear_lfo));
     out.push(("sequencer-gear-lanes-list", gear_list));
     // Play's loop row with the loop armed (REC records it) and the chop
     // layer muted from its chip, as mockup H had it.
@@ -14411,6 +14599,29 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let _ = looper_card.take_actions();
     looper_card.ui.invalidate();
     out.push(("mixer-io-learn-looper", looper_card));
+    // The Learn section's Play card (Jay's pick, 18 Nov 2026): a knob on
+    // Play's Swing kept in the rig, and the card open.
+    let swing = "port Knobs | ch 1 | cc 21 | play.0 | 0 1 | absolute | pickup";
+    let l = mpfree_midi::learn::Saved::parse(swing).expect("a learned control");
+    let mut rig = learn_rig();
+    rig.setup.learned_in(mpfree_midi::setup::Kept::Rig, l);
+    rig.live.learn_names.push("Play · Swing".into());
+    let mut play_card = io_section_screen(fonts(), &io_state, rig, mpfree_midi_ui::LEARN);
+    let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
+    play_card.ui.paint(&mut c);
+    if let Some(t) = play_card
+        .ui
+        .targets()
+        .into_iter()
+        .find(|t| t.widget == mpfree_mixer_ui::MIXER && t.target.id == "learn-play")
+    {
+        let (x, y) = t.target.centre();
+        play_card.touch(1, Touch::Down, x, y);
+        play_card.touch(1, Touch::Up, x, y);
+    }
+    let _ = play_card.take_actions();
+    play_card.ui.invalidate();
+    out.push(("mixer-io-learn-play", play_card));
     // The CV section with an envelope and two LFOs, each with its two
     // more rows.
     out.push((
@@ -18586,6 +18797,145 @@ mod tests {
     /// SHIFT + a touch on the Arp panel's sliders, or on the Q-Link
     /// column's cards while they turn the arp (NOTE REPEAT held), arms
     /// MIDI Learn on that arp setting; without SHIFT a slider moves.
+    /// SHIFT + a touch on a knob of the Sample tab's Play page, or on the
+    /// Pads tab's Level, Pan or Tune, arms MIDI Learn on the picked pad's
+    /// setting; a learned control's values set it on the kit, one undo
+    /// step a turn, and the kit's new view goes to the audio thread.
+    #[test]
+    fn shift_and_a_touch_on_a_pads_setting_arms_midi_learn() {
+        use mpfree_sampler::engine::PadField;
+        use mpfree_sampler_ui::{pads_tab, play_tab};
+        use mpfree_ui::Rect;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let centre = |r: Rect| (r.x + r.w / 2, r.y + r.h / 2);
+        let value_at = |p: &Player, widget: &str, index: usize| {
+            p.ui.targets()
+                .into_iter()
+                .find(|pt| {
+                    pt.widget == widget
+                        && pt.target.index == index
+                        && play_tab::is_value_target(&pt.target)
+                })
+                .map(|pt| centre(pt.target.rect))
+                .unwrap()
+        };
+        let press = |p: &mut Player, (x, y): (i32, i32)| {
+            let mut acts: Vec<FromUi> =
+                [p.touch(1, Touch::Down, x, y), p.touch(1, Touch::Up, x, y)]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+            acts.extend(p.take_actions());
+            acts
+        };
+        let learn = |field: PadField| {
+            [FromUi::LearnValue(LearnValue::Pad {
+                pad: pad as u8,
+                field: field as u16,
+            })]
+        };
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        // The Play page's Tune knob.
+        open_sample(&mut p, sample_page::Editor::Play);
+        let index = play_row(&mut p, play_tab::Row::Tune);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        let tune = value_at(&p, play_tab::LIST, index);
+        p.status.shift = true;
+        p.refresh_hint();
+        assert!(
+            hint(&p).starts_with("SHIFT +   touch a knob: MIDI Learn"),
+            "{}",
+            hint(&p)
+        );
+        assert_eq!(press(&mut p, tune), learn(PadField::Tune));
+        p.status.shift = false;
+        // A turn of the learned control: the kit's pad follows, and its
+        // view goes out once.
+        let was = p.sample.project(0).unwrap().pad(pad).unwrap().tune_cents;
+        p.apply(ToUi::PadsLearned(vec![(
+            0,
+            pad as u8,
+            PadField::Tune,
+            700.0,
+        )]));
+        p.apply(ToUi::PadsLearned(vec![(
+            0,
+            pad as u8,
+            PadField::Tune,
+            1_200.4,
+        )]));
+        assert_eq!(
+            p.sample.project(0).unwrap().pad(pad).unwrap().tune_cents,
+            1_200
+        );
+        let (sent, _) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // The same value again changes nothing, and sends nothing.
+        p.apply(ToUi::PadsLearned(vec![(
+            0,
+            pad as u8,
+            PadField::Tune,
+            1_200.0,
+        )]));
+        assert!(views(p.take_actions()).0.is_empty());
+        // One undo step takes the whole turn back.
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(
+            p.sample.project(0).unwrap().pad(pad).unwrap().tune_cents,
+            was
+        );
+        // The Pads tab: Level, Pan and Tune learn; Voices doesn't.
+        open_pads(&mut p);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        p.status.shift = true;
+        p.refresh_hint();
+        assert!(
+            hint(&p).starts_with("SHIFT +   touch Level, Pan or Tune: MIDI Learn"),
+            "{}",
+            hint(&p)
+        );
+        let row = |r: pads_tab::Row| pads_tab::Row::ALL.iter().position(|x| *x == r).unwrap();
+        let level = value_at(&p, pads_tab::LIST, row(pads_tab::Row::Level));
+        assert_eq!(press(&mut p, level), learn(PadField::Level));
+        let voices = value_at(&p, pads_tab::LIST, row(pads_tab::Row::Polyphony));
+        assert!(!press(&mut p, voices)
+            .iter()
+            .any(|a| matches!(a, FromUi::LearnValue(_))));
+        p.status.shift = false;
+        // A MIDI out pad has no Level, Pan or Tune rows: nothing on its
+        // list learns, and SHIFT's hint doesn't offer it.
+        let midi = pads_tab::PadType::ALL
+            .iter()
+            .position(|t| *t == pads_tab::PadType::MidiOut)
+            .unwrap();
+        p.on_event(UiEvent {
+            widget: pads_tab::TYPE.into(),
+            kind: EventKind::Tab(midi),
+        });
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        p.status.shift = true;
+        p.refresh_hint();
+        assert!(!p.sample.pads_learnable());
+        assert!(!hint(&p).contains("MIDI Learn"), "{}", hint(&p));
+        let rows: Vec<Rect> =
+            p.ui.targets()
+                .into_iter()
+                .filter(|pt| pt.widget == pads_tab::LIST && play_tab::is_value_target(&pt.target))
+                .map(|pt| pt.target.rect)
+                .collect();
+        assert!(!rows.is_empty());
+        for r in rows {
+            let (x, y) = centre(r);
+            assert_eq!(p.learnable_at(x, y), None);
+        }
+        p.status.shift = false;
+    }
+
     #[test]
     fn shift_and_a_touch_on_the_arps_sliders_arms_midi_learn() {
         use mpfree_controller::mpc_one::button::NOTE_REPEAT;
@@ -20174,6 +20524,124 @@ mod tests {
                 "Pressure · Mono synth · pressure · showing",
             ]
         );
+    }
+
+    /// LFO to CC (layout spec 4m): a tap on a gear lane's name opens its
+    /// mod rows over the pattern; + LFO, a row's bar and its × ask the mod
+    /// matrix; the lane's pink ~ follows what the matrix moves; a touch
+    /// elsewhere closes them. A sound's lock lane keeps its label.
+    #[test]
+    fn an_lfo_on_a_gear_lane_moves_its_cc() {
+        use mpfree_midi::setup::{TrackOut, DIN_NAME};
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        let mut p = sample_beats_synth(Fonts::embedded());
+        let mut rig = mpfree_midi_ui::sample::rig();
+        rig.setup.tracks[0] = Some(TrackOut::new(DIN_NAME, 1));
+        let mut prof = mpfree_midi::profile::Profile::new("Mono synth");
+        prof.matches = vec![DIN_NAME.to_string()];
+        prof.set_cc(43, "Cutoff");
+        rig.profiles.add(prof).unwrap();
+        p.apply(ToUi::IoModel(std::sync::Arc::new(std::sync::Mutex::new(
+            rig,
+        ))));
+        let cutoff = RelAddr::new(OnTrack::Midi, 43);
+        let tune = RelAddr::new(OnTrack::Inst, 0);
+        if let Some(c) = p.play.steps.clip.as_mut() {
+            c.lock_values.push((crate::time::LINE, 0, cutoff, 20.0));
+            c.lock_values.push((crate::time::LINE, 2, tune, 0.5));
+        }
+        p.refresh_play();
+        let target = cutoff.on(p.play.steps.track as u8);
+        let grid = |p: &Player| p.ui.get::<StepGrid>(play_page::STEPS).unwrap().clone_look();
+        let lane_of = |p: &Player, name: &str| {
+            grid(p)
+                .0
+                .iter()
+                .find(|l| l.name == name && l.lock.is_some())
+                .map(|l| l.pad - play_widgets::LOCK_LANE)
+                .unwrap_or_else(|| panic!("{name}: {:?}", lock_lane_names(p)))
+        };
+        let id = lane_of(&p, "Cutoff");
+        // Only the gear's lane opens rows; the synth's keeps its label.
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let rows_targets: Vec<usize> = {
+            use mpfree_ui::Widget as _;
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .targets(r)
+                .into_iter()
+                .filter(|t| t.id == "lane-rows")
+                .map(|t| t.index)
+                .collect()
+        };
+        assert_eq!(rows_targets, [id]);
+        p.take_actions();
+        let b = steps_target(&p, "lane-rows", id);
+        let a = steps_tap(&mut p, b);
+        assert_eq!(a, Some(FromUi::LaneRows(LaneRowsAsk::Show(target))));
+        let open = grid(&p).1.expect("the rows open");
+        assert_eq!(open.title, "Cutoff · CC 43");
+        assert!(open.rows.is_empty() && open.can_add);
+        // + LFO: LFO 1 on it; the matrix's answer shows its row.
+        let b = steps_target(&p, "rows-add", 0);
+        let a = steps_tap(&mut p, b);
+        assert_eq!(a, Some(FromUi::LaneRows(LaneRowsAsk::AddLfo(target))));
+        p.apply(ToUi::LaneRows {
+            target,
+            rows: vec![(3, "LFO 1".to_string(), 0.25)],
+            can_add: true,
+        });
+        p.apply(ToUi::GearMoved(vec![target]));
+        assert_eq!(grid(&p).1.unwrap().rows, [("LFO 1".to_string(), 0.25)]);
+        let moved = |p: &Player, name: &str| {
+            grid(p)
+                .0
+                .iter()
+                .find(|l| l.name == name)
+                .and_then(|l| l.lock.as_ref())
+                .is_some_and(|lk| lk.moved)
+        };
+        assert!(moved(&p, "Cutoff"));
+        assert!(!moved(&p, "Tune"));
+        // A finger at the bar's left end: the row (the matrix's 3) to
+        // -100 %, the bar following at once.
+        let bar = steps_target(&p, "row-depth", 0);
+        let a = steps_tap(&mut p, mpfree_ui::Rect::new(bar.x, bar.y, 8, bar.h));
+        assert_eq!(
+            a,
+            Some(FromUi::LaneRows(LaneRowsAsk::Depth {
+                target,
+                row: 3,
+                depth: -1.0
+            }))
+        );
+        assert_eq!(grid(&p).1.unwrap().rows[0].1, -1.0);
+        // Its ×: the row off.
+        let x = steps_target(&p, "row-off", 0);
+        let a = steps_tap(&mut p, x);
+        assert_eq!(
+            a,
+            Some(FromUi::LaneRows(LaneRowsAsk::Remove { target, row: 3 }))
+        );
+        // An answer for another control is dropped.
+        let other = RelAddr::new(OnTrack::Midi, 44).on(0);
+        p.apply(ToUi::LaneRows {
+            target: other,
+            rows: vec![(0, "LFO 1".to_string(), 0.5)],
+            can_add: true,
+        });
+        assert_eq!(grid(&p).1.unwrap().rows.len(), 1);
+        // A touch on the pattern under them closes them, and does nothing
+        // else.
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let a = steps_tap(
+            &mut p,
+            mpfree_ui::Rect::new(r.right() - 30, r.bottom() - 30, 20, 20),
+        );
+        assert_eq!(a, None);
+        assert!(grid(&p).1.is_none());
+        p.apply(ToUi::GearMoved(Vec::new()));
+        assert!(!moved(&p, "Cutoff"));
     }
 
     #[test]
@@ -30303,6 +30771,14 @@ mod tests {
                                 .iter()
                                 .any(|t| t.target.id == "learn-looper-pick"),
                             "{name}: the Looper card shows"
+                        );
+                    }
+                    if name == "mixer-io-learn-play" {
+                        assert!(
+                            p.ui.targets()
+                                .iter()
+                                .any(|t| t.target.id == "learn-play-pick"),
+                            "{name}: the Play card shows"
                         );
                     }
                     if name == "mixer-io-routing" {

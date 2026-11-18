@@ -69,6 +69,7 @@ use std::sync::Arc;
 
 use mpfree_analysis::note_name;
 use mpfree_sampler::dsp::{vowel_name, MAX_DRIVE_DB};
+use mpfree_sampler::engine::PadField;
 use mpfree_sampler::model::{
     Ahdsr, Filter, FilterKind, Keys, LayerSelect, Levels, LfoShape, LfoTarget, ModelError, Pad,
     PadLfo, PadsPlay, PlayMode, PressureTarget, Project, SliceSet, Source, SourceId, GLIDE_MS,
@@ -293,6 +294,39 @@ pub enum Row {
     Legato,
     Glide,
     GlideOn,
+}
+
+impl Row {
+    /// The pad's own setting this row sets, as the engine names it
+    /// ([`PadField`], which clips' locks and MIDI Learn use): None for a
+    /// row without one (a layer's, the filter envelope's, the kit's).
+    pub fn field(self) -> Option<PadField> {
+        Some(match self {
+            Row::Level => PadField::Level,
+            Row::Pan => PadField::Pan,
+            Row::Tune => PadField::Tune,
+            Row::Cutoff => PadField::Cutoff,
+            Row::Resonance => PadField::Resonance,
+            Row::Attack => PadField::Attack,
+            Row::Decay => PadField::Decay,
+            Row::Release => PadField::Release,
+            Row::Slice => PadField::Slice,
+            Row::LfoDepth => PadField::LfoDepth,
+            Row::PitchEnv => PadField::PitchEnv,
+            Row::PitchDecay => PadField::PitchDecay,
+            _ => return None,
+        })
+    }
+}
+
+/// Whether target `t` of a panel's or a list's row is the row's value
+/// itself (its knob, slider, arrows or value), not a button, a switch or
+/// a choice's option, whose index isn't the row's.
+pub fn is_value_target(t: &mpfree_ui::Target) -> bool {
+    matches!(
+        t.id,
+        "knob" | "slider" | "less" | "more" | "value" | "control" | "row" | "row-less" | "row-more"
+    )
 }
 
 impl Row {
@@ -1168,6 +1202,16 @@ pub struct PlayTab {
 }
 
 impl PlayTab {
+    /// The pad setting a control of the open section's panel ([`LIST`])
+    /// sets, for SHIFT + a touch (MIDI Learn): the row's [`Row::field`].
+    /// None for any other target, or a row without one.
+    pub fn field_at(&self, t: &mpfree_ui::Target) -> Option<PadField> {
+        if !is_value_target(t) {
+            return None;
+        }
+        self.section.rows().get(t.index)?.field()
+    }
+
     /// Adds the widgets and the page `name` to `ui` (the app adds `header`
     /// and `hint` first) and shows `st`.
     pub fn add(ui: &mut Ui, name: &str, st: &PlayState) -> Result<PlayTab, String> {

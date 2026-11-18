@@ -842,6 +842,17 @@ impl Session {
         self.run_periods(2)
     }
 
+    /// A control learned on Play's own control `id` (the Learn section's
+    /// Play card) moved to `value` (0 to 1), as player_session takes MIDI
+    /// Learn's: on any page.
+    pub fn play_knob(&mut self, id: u16, value: f32) -> &mut Session {
+        let mut moves = crate::remote::PlayMoves::default();
+        moves.set(id, value);
+        let fx = crate::desk::play_remote(&self.time, &mut self.mix, &mut self.out, &mut moves);
+        self.fx.extend(fx);
+        self.run_periods(2)
+    }
+
     /// A key learned on Perform parameter `id` (Learn a key) moved to
     /// `value` (0 to 1), as player_session takes MIDI Learn's: on any page.
     pub fn perform_key(&mut self, id: u16, value: f32) -> &mut Session {
@@ -858,6 +869,37 @@ impl Session {
             act,
             0,
         );
+        self.fx.extend(fx);
+        self.run_periods(2)
+    }
+
+    /// The song's Sync settings for MIDI in: other gear's MMC and what a
+    /// program change does (the I/O view's Sync section).
+    pub fn midi_in_setup(
+        &mut self,
+        mmc_in: bool,
+        program_in: mpfree_midi::setup::ProgramIn,
+    ) -> &mut Session {
+        let io = std::sync::Arc::new(std::sync::Mutex::new(mpfree_midi_ui::IoModel::default()));
+        {
+            let mut m = io.lock().unwrap();
+            m.setup.mmc_in = mmc_in;
+            m.setup.program_in = program_in;
+            m.gen += 1;
+        }
+        let t = self.t();
+        self.music.sync(&io, t);
+        self
+    }
+
+    /// Bytes from other gear on the 5-pin MIDI In, as the sound loop takes
+    /// them: what MMC and program changes do (the Sync section's).
+    pub fn midi_from_gear(&mut self, bytes: &[u8]) -> &mut Session {
+        let t = self.t();
+        let mut keys = Vec::new();
+        self.music
+            .bytes(crate::midi_in::DIN, bytes, t, &mut keys, &mut |_| {});
+        let fx = crate::desk::remote_in(&mut self.music, &self.time, &mut self.app, &mut self.out);
         self.fx.extend(fx);
         self.run_periods(2)
     }

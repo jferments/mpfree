@@ -9,6 +9,8 @@
 //!   bytes, and DIN pacing (31250 bit/s) with how late each message and
 //!   clock pulse leaves.
 //! - [`learn`]: MIDI Learn onto any `mpfree_param::ParamAddr`.
+//! - [`mmc`]: MIDI Machine Control coming in (another device's
+//!   transport), read only.
 //! - [`cv`]: the eight CV/gate outputs as voltages.
 //! - [`setup`]: a project's MIDI, sync and CV settings (what the mixer's
 //!   I/O view edits), saved as the project's `midi` part.
@@ -38,6 +40,7 @@ pub mod cv_wire;
 pub mod expr_out;
 pub mod input;
 pub mod learn;
+pub mod mmc;
 pub mod monitor;
 pub mod mpe;
 pub mod mpe_out;
