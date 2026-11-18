@@ -793,6 +793,37 @@ mod tests {
         );
     }
 
+    /// The Ends card reaches every length (step 2f, part 4: the Rec
+    /// page's Length row went): On STOP, On silence, After 1 bar to After
+    /// 32 bars, stopping at each end.
+    #[test]
+    fn the_ends_card_steps_through_every_length() {
+        let mut s = RecSettings::default();
+        let mut seen = vec![ends_text(&s)];
+        for _ in 0..8 {
+            s = rec_tab::stepped(&s, Row::End, 1, 1);
+            seen.push(ends_text(&s));
+        }
+        assert_eq!(
+            seen,
+            [
+                "On STOP",
+                "On silence",
+                "After 1 bar",
+                "After 2 bars",
+                "After 4 bars",
+                "After 8 bars",
+                "After 16 bars",
+                "After 32 bars",
+                "After 32 bars"
+            ]
+        );
+        s = rec_tab::stepped(&s, Row::End, -6, 1);
+        assert_eq!(ends_text(&s), "On silence");
+        s = rec_tab::stepped(&s, Row::End, -5, 1);
+        assert_eq!(ends_text(&s), "On STOP");
+    }
+
     #[test]
     fn rec_records_or_stops_and_a_cards_halves_step_it() {
         let mut w = Recorder::new();

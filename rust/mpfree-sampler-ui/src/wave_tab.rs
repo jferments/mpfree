@@ -81,10 +81,12 @@ pub const LAYOUT: &str = "col(header:60, row(smp-bar:*, smp-send:330):60, \
 /// FX left them on 18 Nov 2026 (Jay: a pad's effects are in Mix, which
 /// the Pads tab's Effects row opens).
 /// Grain left them on 18 Nov 2026 too: it is a tool on this page
-/// ([`Tool::Grain`]).
-pub const TABS: [&str; 5] = ["Wave", "Warp", "Chop", "Play", "Rec"];
+/// ([`Tool::Grain`]). So did Rec (the one Sample page's step 2f, part 4):
+/// its controls are the recorder row's, its Input section's and Sample
+/// Recall's.
+pub const TABS: [&str; 4] = ["Wave", "Warp", "Chop", "Play"];
 /// The tabs built so far; the others are drawn faint.
-pub const BUILT: [&str; 5] = ["Wave", "Warp", "Chop", "Play", "Rec"];
+pub const BUILT: [&str; 4] = ["Wave", "Warp", "Chop", "Play"];
 /// The Wave tab's place in [`TABS`].
 pub const TAB: usize = 0;
 

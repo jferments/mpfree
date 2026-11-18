@@ -5841,7 +5841,7 @@ fn player_session(
     // its way to the screen thread to be freed there.
     let mut rec_feed: Option<Box<sampler::RecFeed>> = None;
     let mut rec_back: Option<Box<sampler::RecFeed>> = None;
-    // What the sampler's input records from (the Rec tab's Source).
+    // What the sampler's input records from (the recorder's Source).
     let mut rec_source = sampler::RecSource::Line;
     // The recorder's Gain on the line input, linear (one-page step 2d),
     // and where the last period's ramp ended.
@@ -9359,7 +9359,7 @@ fn player_session(
         loop_time.add(loop_took);
         engines.add(engines::LOOPER, loop_took);
         // The same line input into the sampler's buffer, with the bar lines
-        // (the Sample page's Rec tab and Skip back). A point in the mix
+        // (the Sample page's recorder). A point in the mix
         // goes in after the mixer, below.
         // Turned by the recorder's Gain, ramped over the period.
         let gain = (rec_gain_was, rec_gain);
@@ -9610,7 +9610,7 @@ fn player_session(
         if let Some(m) = print_out.take() {
             print_out = out.try_show(m).err();
         }
-        // Resampling: the point in the mix the Rec tab records (before the
+        // Resampling: the point in the mix the recorder records (before the
         // metronome), with the bar lines as late as that point hears them.
         if let (Some(f), sampler::RecSource::Mix(..)) = (rec_feed.as_mut(), rec_source) {
             if let Some((l, r, latency)) = mix.rec_capture() {

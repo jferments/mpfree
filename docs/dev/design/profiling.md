@@ -245,7 +245,7 @@ default of 5 minutes is about 120 MB, and 20 minutes about 448 MB, all locked
 in RAM), the Cloud reverb (9.4 MB per instance), the master grain effect and
 Grains FX (about 2.7 MB each) and the delay (1.4 MB). The CPU budget is per
 period; memory is per instance, so an engine that is cheap to run can still
-be costly to have many of. The sampler's Rec tab (line input into the
+be costly to have many of. The Sample page's recorder (line input into the
 sampler, once it lands after round 8) adds one 75 s stereo buffer, 26.46
 MB, only while the line input is on, and nothing otherwise.
 
@@ -519,7 +519,7 @@ data side is here:
   CPU): under the audio loop's rows on CPU by engine, what each part holds,
   from what it knows of its own buffers: every kit's sounds (those undo
   keeps included, a sound two kits share counted once), the stretched
-  copies, the Rec tab's input buffer while it is held, the master Sample
+  copies, the recorder's input buffer while it is held, the master Sample
   Recall always keeps (21.2 MB, sampler R5 part 1), the looper's sound
   used and set aside, and the synth's wavetables. Then "Everything else",
   the app's resident memory (from the developer tools' /proc sample) less
@@ -566,7 +566,7 @@ running):
   repitches, as it does until any copy is ready) and Auto-sample's Start.
   A test gives the page its own free memory (`SamplePage::set_mem_free`).
 - The looper and the audio tracks set their memory aside at start (Prefs'
-  Loop memory and Audio track memory), and the Rec tab's input buffer is a
+  Loop memory and Audio track memory), and the recorder's input buffer is a
   fixed 26 MB, so they aren't checked.
 - The screen thread already reads /proc/meminfo every 2 s for the RAM
   chip; `Watch` logs one line, and says it in place of the hint, when free
@@ -633,8 +633,9 @@ its inputs marked it changed (`Ui::get_mut`; `Ui::get_mut_quiet` is for
 state a widget does not draw); and the top bar, every second, whether or
 not a chip changed. The test `no_page_redraws_while_idle` (gui.rs) ticks
 every sample screen for three idle seconds and fails if any page draws,
-except the ones that show something live (the touch test's fading trails,
-and the Rec tab's meters falling back after the input stops).
+except the ones that show something live (the touch test's fading trails;
+the Rec tab's meters falling back after the input stops were the other,
+until the one Sample page's step 2f, part 4 took the Rec tab away).
 
 **The pages' clock and the loop's sleep** (fixed 13 Nov, `pace.rs`,
 `touch_bell.rs`). The screen loop woke every 4 ms to look at the
@@ -659,7 +660,8 @@ lab. Tests: `the_idle_screen_thread_keeps_time_and_sleeps` and
 `without_the_doorbell_the_screen_thread_reads_the_panel_every_4_ms` (gui.rs),
 `pace.rs` and `touch_bell.rs`.
 
-**Live parts** (fixed 13 Nov). The Rec tab's input view (meters and the
+**Live parts** (fixed 13 Nov; the Rec tab went in the one Sample page's
+step 2f, part 4, so this is history). The Rec tab's input view (meters and the
 input strip, 904 by 494) redrew whole at every frame, input or not: on the
 workstation 0.42 ms to paint and 1.11 ms to copy its 904 native rows, so
 roughly 30 to 45 % of an MPC core while the tab shows (round 7's 6.6 to 10
