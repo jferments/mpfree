@@ -265,6 +265,16 @@ pub struct TimeControl {
     /// The note editor (the Sequencer tab's Notes view), while it is open.
     editor: Option<Editor>,
     pub(super) armed: Option<usize>,
+    /// The other armed tracks, a bit each (`TimeAction::ArmAlso`): a take
+    /// records each one's notes too. Never a Loop track; the armed one is
+    /// left out of the view's set. Cleared when the tracks change.
+    also: u128,
+    /// The track count `also` was set with: tracks added or taken away
+    /// clear it, so a bit never names a track that moved.
+    also_n: usize,
+    /// Other armed tracks a take found with no clip and no empty slot to
+    /// make one in: they didn't record it.
+    also_full: u64,
     takes: Takes,
     /// REDOs done so far: a track that comes back with one is the one UNDO
     /// took away, and its kit comes back with it (`TrackKits::follow`).
@@ -415,6 +425,9 @@ impl TimeControl {
             scene_morph: SceneMorph::default(),
             editor: None,
             armed: tracks.armed,
+            also: 0,
+            also_n: 0,
+            also_full: 0,
             takes: Takes::default(),
             redos: 0,
             clipboard: None,
@@ -469,6 +482,31 @@ impl TimeControl {
     /// follow), if any.
     pub fn armed(&self) -> Option<usize> {
         self.armed
+    }
+
+    /// The other armed tracks, a bit each, without the armed one
+    /// (`TimeAction::ArmAlso`).
+    pub fn also(&self) -> u128 {
+        let main = self
+            .armed
+            .and_then(|t| 1u128.checked_shl(t as u32))
+            .unwrap_or(0);
+        self.also & !main
+    }
+
+    /// Every armed track, a bit each: the armed one and the others.
+    fn armed_set(&self) -> u128 {
+        let main = self
+            .armed
+            .and_then(|t| 1u128.checked_shl(t as u32))
+            .unwrap_or(0);
+        self.also() | main
+    }
+
+    /// Other armed tracks a take found with nothing to record into.
+    #[allow(dead_code)]
+    pub fn also_full(&self) -> u64 {
+        self.also_full
     }
 
     /// The note editor is open on a clip that is still there (as the
@@ -830,9 +868,17 @@ impl TimeControl {
         if self.armed.is_some_and(|t| t >= n) {
             self.armed = project.tracks.iter().rposition(|t| !t.is_loops());
         }
+        // Tracks added or taken away: the other armed tracks let go.
+        if self.also != 0 && self.also_n != n {
+            self.also = 0;
+        }
         let v = self.view()?;
-        // Room to record into the armed track's clips without allocating.
-        if let Some(t) = self.armed {
+        // Room to record into every armed track's clips without
+        // allocating.
+        let mut armed = self.armed_set();
+        while armed != 0 {
+            let t = armed.trailing_zeros() as usize;
+            armed &= armed - 1;
             let slots = self
                 .launches
                 .iter()
@@ -939,6 +985,7 @@ impl TimeControl {
         let mut v = PlayView::compile_cued(&self.project, &self.launches, &self.cues)
             .map_err(|e| format!("clips: {e:?}"))?;
         v.set_armed(self.armed);
+        v.set_also(self.also);
         v.set_song(&self.project, self.song)
             .map_err(|e| format!("song: {e:?}"))?;
         v.set_tempo_map(self.song_tempo()?);
@@ -1022,6 +1069,50 @@ impl TimeControl {
     }
 
     fn ready_to_record(&mut self) -> Result<Option<String>, String> {
+        let mut lines = Vec::new();
+        if let Some(line) = self.ready_armed()? {
+            lines.push(line);
+        }
+        // The other armed tracks: each records into its playing clip, else
+        // a new clip in its first empty slot; one with neither is said and
+        // counted, and the others still record.
+        let mut also = self.also();
+        let mut made = false;
+        let info = self.info;
+        let bar = info.meter.bar_ticks();
+        let length = info.loop_range.map_or(NEW_CLIP_BARS * bar, |(a, b)| b - a);
+        while also != 0 {
+            let track = also.trailing_zeros() as usize;
+            also &= also - 1;
+            if self.launches.iter().any(|l| l.track == track) {
+                continue;
+            }
+            let Some(t) = self.project.tracks.get_mut(track) else {
+                continue;
+            };
+            let Some(s) = t.slots.iter().position(Option::is_none) else {
+                self.also_full += 1;
+                lines.push(format!(
+                    "{} has no clip playing and no empty slot: it doesn't record this take",
+                    t.name
+                ));
+                continue;
+            };
+            t.slots[s] = Some(Clip::new(&format!("Clip {}", s + 1), length));
+            let launch = TimeAction::Launch { track, slot: s };
+            (self.launches, self.cues) =
+                clips_after(&self.project, &self.launches, &self.cues, &launch, &info);
+            lines.push(format!("new clip in slot {} of track {}", s + 1, track + 1));
+            made = true;
+        }
+        if made {
+            self.compile()?;
+        }
+        Ok((!lines.is_empty()).then(|| lines.join("; ")))
+    }
+
+    /// [`TimeControl::ready_to_record`] for the armed track.
+    fn ready_armed(&mut self) -> Result<Option<String>, String> {
         let Some(track) = self.armed else {
             return Ok(None);
         };
@@ -1984,6 +2075,30 @@ impl TimeControl {
                 Ok(match self.armed.and_then(|a| self.project.tracks.get(a)) {
                     Some(a) => format!("armed: {name} plays loops, the pads stay on {}", a.name),
                     None => format!("armed: {name} plays loops"),
+                })
+            }
+            TimeAction::ArmAlso(tracks) => {
+                if matches!(self.info.state, State::Recording | State::CountIn) {
+                    return Err("armed: finish the take first".into());
+                }
+                let n = self.project.tracks.len();
+                let mut keep = 0u128;
+                for (t, tr) in self.project.tracks.iter().enumerate() {
+                    if tracks & (1 << t) != 0 && !tr.is_loops() {
+                        keep |= 1 << t;
+                    }
+                }
+                self.also = keep;
+                self.also_n = n;
+                self.compile()?;
+                let names: Vec<&str> = (0..n)
+                    .filter(|&t| self.also() & (1 << t) != 0)
+                    .map(|t| self.project.tracks[t].name.as_str())
+                    .collect();
+                Ok(if names.is_empty() {
+                    "armed: the pads' track alone".into()
+                } else {
+                    format!("armed too: {}", names.join(", "))
                 })
             }
             TimeAction::Arm(track) => {
@@ -4331,6 +4446,7 @@ impl TimeControl {
             self.armed,
             &self.takes,
         );
+        st.also = self.also();
         st.capture = self.pending.map(|p| bars_label(p.bars));
         st.clipboard = self.clipboard.as_ref().map(|c| c.name.clone());
         st.cues = self.cues.clone();

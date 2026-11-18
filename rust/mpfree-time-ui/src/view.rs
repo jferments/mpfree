@@ -629,6 +629,9 @@ pub struct TimeState {
     /// by default). The app sets them.
     pub cues: Vec<Cue>,
     pub armed: Option<usize>,
+    /// The other armed tracks, a bit each (`TimeAction::ArmAlso`): a take
+    /// records their notes with the armed track's. Never the armed one.
+    pub also: u128,
     /// The clip COPY + a clip copied last, by its name, for COPY + an
     /// empty slot to paste. The app sets it.
     pub clipboard: Option<String>,
@@ -861,6 +864,7 @@ impl TimeState {
             launches: launches.to_vec(),
             cues: Vec::new(),
             armed,
+            also: 0,
             clipboard: None,
             done: takes.done().iter().map(TakeRow::of).collect(),
             undone: takes.undone().iter().map(TakeRow::of).collect(),
@@ -986,6 +990,10 @@ pub enum TimeAction {
     Redo,
     /// Arm a track for recording, or none.
     Arm(Option<usize>),
+    /// Arm these tracks too, a bit each (track 0 the lowest), for one take
+    /// over several tracks (the MPC's SHIFT + a track's arm): each records
+    /// what its MIDI input sends it. The armed track is left out of it.
+    ArmAlso(u128),
     /// "Pressure" (pad pressure) for a track: whether recording keeps the pads'
     /// pressure on its notes (`Track::record_touch`).
     RecordPressure {
