@@ -2122,7 +2122,10 @@ impl PlayPage {
     /// loses it, one without takes the setting's own value (a drag or the
     /// wheel then sets it). The step action and what to say, or why not.
     pub fn tap_lock(&mut self, id: usize, col: usize) -> Result<(StepAction, String), String> {
-        let l = *self.lock_lanes().get(id).ok_or("steps: that lane is gone")?;
+        let l = *self
+            .lock_lanes()
+            .get(id)
+            .ok_or("steps: that lane is gone")?;
         let i = self.page * PAGE + col;
         let c = self
             .steps
@@ -2180,7 +2183,10 @@ impl PlayPage {
         fine: bool,
     ) -> Result<(StepAction, String), String> {
         let (id, col) = (cell / PAGE, cell % PAGE);
-        let l = *self.lock_lanes().get(id).ok_or("steps: that lane is gone")?;
+        let l = *self
+            .lock_lanes()
+            .get(id)
+            .ok_or("steps: that lane is gone")?;
         let i = self.page * PAGE + col;
         let c = self
             .steps
@@ -2215,7 +2221,11 @@ impl PlayPage {
         self.added_lanes.retain(|(_, _, a)| *a != l);
         let c = self.steps.clip.as_mut()?;
         let mut steps = 0u128;
-        for v in c.lock_values.iter().filter(|v| (v.0, v.2) == (l.row, l.addr)) {
+        for v in c
+            .lock_values
+            .iter()
+            .filter(|v| (v.0, v.2) == (l.row, l.addr))
+        {
             if v.1 < 128 {
                 steps |= 1u128 << v.1;
             }
