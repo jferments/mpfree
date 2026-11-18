@@ -52,7 +52,7 @@ On **Effects** each strip of the view is a row: its name and how many of its eig
 - **+ FX** sits in each strip's first free slot. Tap it to pick an effect; it goes in that slot and opens in the chain editor.
 - **Tap an effect** to pick it (it is outlined): the four Q-Links and the data wheel then turn its first four knobs, as in the chain editor, while the strips stay in view. Tap it again to open it in the chain editor.
 - **Drag an effect along its row** to move it earlier or later in the chain.
-- A green dot means an effect is on; a blue one that it is keyed from another strip (**SC from** says which); a grey one that it is bypassed (**Off**).
+- A green dot means an effect is on; a blue one that it listens to another track (**SC from** says which, see [the sidechain](effects.md#listening-to-another-track-the-sidechain)); a red one with **Nothing picked** that it is set to listen and no track is picked; a grey one that it is bypassed (**Off**). Tap the **SC from** or **Nothing picked** line to open the effect with its sidechain list up.
 - **Tap a strip's name** to select it, as on Faders. Picking a strip or switching back to Faders gives the Q-Links back to the selected strip's level, pan and sends.
 
 Tracks, Pads, Inputs and Submixes work on Effects as on Faders, and **< >** page through the rows.

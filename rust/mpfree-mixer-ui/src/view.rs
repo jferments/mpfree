@@ -43,6 +43,9 @@ pub enum MixAction {
     Select(StripId),
     /// An insert slot was tapped: open its effect's page.
     OpenInsert { strip: StripId, slot: usize },
+    /// An effect's "SC from ..." or "Nothing picked" was tapped on the
+    /// Effects look: open its page with the sidechain list up.
+    OpenSidechain { strip: StripId, slot: usize },
     /// The empty slot was tapped: open the list of effects to add.
     AddInsert { strip: StripId },
     /// An effect was tapped on the Effects look: it is picked, and its
@@ -598,6 +601,9 @@ enum Grab {
         from: usize,
         x0: i32,
         to: Option<usize>,
+        /// It went down on the effect's sidechain line ("SC from Kick",
+        /// "Nothing picked"): a tap opens the sidechain list.
+        line: bool,
     },
     /// A curve on the EQ look, the dot under the finger if any: a tap
     /// picks the EQ (and the band), a tap again opens it; a dot that moves
@@ -1282,6 +1288,11 @@ impl MixerView {
         let (len, slots) = (s.inserts.len(), s.slots.min(FX_COLS));
         if let Some(k) = cells.iter().position(|c| c.contains(x, y)) {
             if k < len {
+                let ins = &s.inserts[k];
+                // The second line, as `paint_row` places it.
+                let line = ins.on
+                    && (ins.key.is_some() || ins.nothing_picked)
+                    && y >= cells[k].y + 6 + (cells[k].h - 12) / 2 + 2;
                 self.grabs.push((
                     finger,
                     Grab::Fx {
@@ -1289,6 +1300,7 @@ impl MixerView {
                         from: k,
                         x0: x,
                         to: None,
+                        line,
                     },
                 ));
             } else if k == len && len < slots {
@@ -1520,7 +1532,13 @@ impl MixerView {
                 self.eq_drag(id, slot, dot, x, y, r);
             }
             Grab::Eq { .. } => {}
-            Grab::Fx { id, from, x0, to } => {
+            Grab::Fx {
+                id,
+                from,
+                x0,
+                to,
+                line,
+            } => {
                 if to.is_none() && (x - x0).abs() < 12 {
                     return;
                 }
@@ -1530,6 +1548,7 @@ impl MixerView {
                     from,
                     x0,
                     to: at,
+                    line,
                 };
             }
             Grab::Fader {
@@ -1625,9 +1644,19 @@ impl MixerView {
                 _ => self.eq_tap(id, slot, dot),
             }
         }
-        if let Grab::Fx { id, from, to, .. } = g {
+        if let Grab::Fx {
+            id, from, to, line, ..
+        } = g
+        {
             match to {
                 _ if cancel => {}
+                None if line => {
+                    self.pick = Some((id, from));
+                    self.push(MixAction::OpenSidechain {
+                        strip: id,
+                        slot: from,
+                    });
+                }
                 None => self.fx_tap(id, from),
                 Some(to) if to != from => self.fx_move(id, from, to),
                 Some(_) => {}
@@ -1850,7 +1879,8 @@ impl MixerView {
                     );
                 }
                 let inner = row.inset_xy(7, 0);
-                let (tag, name_r) = if ins.key.is_some() {
+                let sc = ins.key.is_some() || ins.nothing_picked;
+                let (tag, name_r) = if sc {
                     inner.take_right(22)
                 } else {
                     (Rect::default(), inner)
@@ -1863,14 +1893,15 @@ impl MixerView {
                     t.button_ink(ins.on),
                     &ins.name,
                 );
-                if ins.key.is_some() {
-                    // Keyed by another strip: a sidechain.
+                if sc {
+                    // It listens to another strip (a sidechain); red when
+                    // none is picked.
                     cx.text(
                         FontId::Bold,
                         t.size_small - 3.0,
                         tag,
                         Align::Right,
-                        t.accent,
+                        if ins.nothing_picked { t.bad } else { t.accent },
                         "SC",
                     );
                 }
@@ -2174,6 +2205,8 @@ impl MixerView {
                 let dot = Rect::new(c.right() - 16, c.y + 9, 8, 8);
                 let tone = if !ins.on {
                     t.text_faint
+                } else if ins.nothing_picked {
+                    t.bad
                 } else if ins.key.is_some() {
                     t.accent
                 } else {
@@ -2198,8 +2231,10 @@ impl MixerView {
                 let second = match (&ins.key, ins.on) {
                     (_, false) => Some("Off".to_string()),
                     (Some(k), true) => Some(format!("SC from {k}")),
+                    (None, true) if ins.nothing_picked => Some("Nothing picked".to_string()),
                     (None, true) => None,
                 };
+                let warn = ins.on && ins.nothing_picked;
                 let (a, b) = match second {
                     Some(_) => inner.take_top(inner.h / 2 + 2),
                     None => (inner, Rect::default()),
@@ -2214,11 +2249,11 @@ impl MixerView {
                 );
                 if let Some(line) = second {
                     cx.text(
-                        FontId::Sans,
+                        if warn { FontId::Bold } else { FontId::Sans },
                         t.size_small - 4.0,
                         Rect::new(b.x, b.y, c.w - 16, b.h),
                         Align::Left,
-                        t.text_dim,
+                        if warn { t.bad } else { t.text_dim },
                         &line,
                     );
                 }
@@ -3798,6 +3833,7 @@ mod tests {
             name: "Compressor".into(),
             on: true,
             key: Some("Track 2".into()),
+            nothing_picked: false,
             cost_pct: None,
             eq: None,
         }];
@@ -4171,6 +4207,16 @@ mod tests {
             }],
             "again: its chain"
         );
+        // Its "SC from Track 2" line: its chain with the sidechain list up.
+        let cell = find(&ui, "fx", 0).unwrap();
+        tap(&mut ui, (cell.x + 20, cell.bottom() - 8));
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::OpenSidechain {
+                strip: StripId::Track(0),
+                slot: 0
+            }]
+        );
         let add = find(&ui, "fx-add", 0).expect("track 1's + FX");
         assert_eq!(add, row_cells(grid(&l).row(0)).1[1]);
         let at = mid(find(&ui, "fx-add", 1).expect("track 2's + FX"));
@@ -4218,6 +4264,7 @@ mod tests {
             name: name.into(),
             on: true,
             key: None,
+            nothing_picked: false,
             cost_pct: None,
             eq: None,
         };
@@ -4441,6 +4488,7 @@ mod tests {
             name: format!("Fx {i}"),
             on: i % 2 == 0,
             key: None,
+            nothing_picked: i == 2,
             cost_pct: Some(i as f32),
             eq: None,
         }));
