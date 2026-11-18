@@ -80,6 +80,8 @@ use std::sync::{Arc, TryLockError};
 use std::time::{Duration, Instant};
 
 use mpfree_midi::expr_out::{self, ExprOut};
+use mpfree_midi::mpe::Zone;
+use mpfree_midi::mpe_out::MpeOut;
 use mpfree_midi::msg::Msg;
 use mpfree_midi::output::{DinPacer, OutQueue, OutRoute, OutputRouter, Timed, MAX_TRACKS};
 use mpfree_midi::port::{PortId, DIN, MAX_PORTS};
@@ -276,20 +278,53 @@ struct Applied {
     channel: u8,
     program: Option<u8>,
     bank: Option<u16>,
+    /// The port's MPE zone ([`Zone::Off`] for gear without MPE).
+    mpe: Zone,
 }
 
 impl Applied {
     /// `o` on a port MIDI out has: the jacks, or a USB device plugged in
-    /// with an output. None for any other.
+    /// with an output. None for any other. On MPE gear the track's channel
+    /// is the zone's master channel, whatever its Plays on says: the
+    /// notes take the members ([`MpeOut`]), and program, bank and
+    /// controllers go to the whole zone.
     fn of(o: &TrackOut, ports: &[PortOut]) -> Option<Applied> {
         let i = ports.iter().position(|p| p.here && p.name == o.port)?;
+        let mpe = ports[i].mpe;
         Some(Applied {
             port: PortId(i as u8),
-            channel: o.channel.min(15),
+            channel: mpe.master().unwrap_or(o.channel.min(15)),
             program: o.program.map(|p| p.min(127)),
             bank: o.bank.map(|b| b.min(0x3FFF)),
+            mpe,
         })
     }
+}
+
+/// One of track `t`'s messages to the router at `offset`, on `ch` (None:
+/// the track's). On MPE gear (`mpe` has a zone) a note, its end and its
+/// pressure without a channel of their own take the track's member
+/// channels ([`MpeOut`]); everything else goes as it is.
+fn route_msg(
+    router: &mut OutputRouter,
+    queue: &mut [OutQueue],
+    mpe: &mut MpeOut,
+    t: usize,
+    m: Msg,
+    ch: Option<u8>,
+    offset: u32,
+) {
+    let mut on = |m: Msg| router.send_on(t as u8, m, Some(m.channel()), offset, queue);
+    match (m, ch, mpe.zone()) {
+        (_, Some(_), _) | (_, _, Zone::Off) => {}
+        (Msg::NoteOn { note, vel, .. }, None, _) => return mpe.note_on(note, vel, &mut on),
+        (Msg::NoteOff { note, .. }, None, _) => return mpe.note_off(note, &mut on),
+        (Msg::PolyPressure { note, value, .. }, None, _) => {
+            return mpe.pressure(note, value, &mut on)
+        }
+        _ => {}
+    }
+    router.send_on(t as u8, m, ch, offset, queue);
 }
 
 /// The notes a pad's note-on sent, and the channel of its own a kit pad
@@ -629,6 +664,9 @@ struct PortOut {
     /// whether its gear takes each note's own pressure (`pressure = poly`).
     bend: u8,
     poly_pressure: bool,
+    /// Its profile's MPE zone (`mpe = lower 15`): MPE gear, whose tracks'
+    /// notes each take a member channel ([`MpeOut`]).
+    mpe: Zone,
     clock: PortClock,
     /// Its page's test note still on: its channel and the frames until its
     /// note-off.
@@ -655,6 +693,7 @@ impl PortOut {
             pads: vec![None; KIT_PADS].into_boxed_slice(),
             bend: 0,
             poly_pressure: false,
+            mpe: Zone::Off,
             clock: PortClock::new(),
             test_off: None,
             queued: 0,
@@ -709,6 +748,8 @@ pub struct MidiOut {
     /// Each track's keys' expression for its gear, made one bend, pressure
     /// and CC 74 ([`MidiOut::expression`]).
     expr: Box<[ExprOut]>,
+    /// Each track's notes on MPE gear, a member channel each.
+    mpe: Box<[MpeOut]>,
     applied_gen: Option<u64>,
     shown_on: Option<bool>,
     rolling: bool,
@@ -769,6 +810,7 @@ impl MidiOut {
             program_due: [false; MAX_TRACKS],
             chords: Chords::new(),
             expr: vec![ExprOut::new(); MAX_TRACKS].into_boxed_slice(),
+            mpe: vec![MpeOut::new(); MAX_TRACKS].into_boxed_slice(),
             applied_gen: None,
             shown_on: None,
             rolling: false,
@@ -1108,6 +1150,7 @@ impl MidiOut {
             }
             p.bend = profile.and_then(|f| f.bend).unwrap_or(0);
             p.poly_pressure = profile.is_some_and(|f| f.poly_pressure);
+            p.mpe = profile.and_then(|f| f.mpe).unwrap_or(Zone::Off);
         }
         for t in 0..MAX_TRACKS {
             let want = m.setup.tracks[t]
@@ -1124,12 +1167,17 @@ impl MidiOut {
                 port: a.port,
                 channel: a.channel,
             });
-            if route != was {
-                // Another port or channel, or none: what is on ends where
-                // it started, and its gear's bend and pressure go back to
-                // rest. A new program alone leaves held notes alone.
+            let zone = want.map_or(Zone::Off, |a| a.mpe);
+            if route != was || zone != self.mpe[t].zone() {
+                // Another port or channel, or none, or another MPE zone:
+                // what is on ends where it started, and its gear's bend
+                // and pressure go back to rest. A new program alone leaves
+                // held notes alone.
                 self.end_chords(t, 0);
                 self.release_expression(t, 0);
+                self.mpe[t].set_zone(zone);
+            }
+            if route != was {
                 self.router.set_route(t as u8, route, 0, &mut self.queue);
                 // The gear there gets the track's controls (after its
                 // program).
@@ -1138,7 +1186,9 @@ impl MidiOut {
                 }
             }
             self.tracks[t] = want;
-            self.program_due[t] = want.is_some_and(|a| a.program.is_some() || a.bank.is_some());
+            // MPE gear gets its zone with the program.
+            self.program_due[t] =
+                want.is_some_and(|a| a.program.is_some() || a.bank.is_some() || a.mpe != Zone::Off);
         }
     }
 
@@ -1237,6 +1287,9 @@ impl MidiOut {
     /// Bank select (CC 0, then CC 32) and program change, for what is set.
     fn program(&mut self, t: usize) {
         let Some(a) = self.tracks[t] else { return };
+        // MPE gear: its zone first (RPN 6 on the master channel).
+        let (router, queue) = (&mut self.router, &mut self.queue);
+        self.mpe[t].configure(|m| router.send_on(t as u8, m, Some(m.channel()), 0, queue));
         if let Some(b) = a.bank {
             for (cc, value) in [(0, (b >> 7) as u8), (32, (b & 0x7F) as u8)] {
                 self.msg(t, Msg::Cc { ch: 0, cc, value }, 0);
@@ -1277,13 +1330,13 @@ impl MidiOut {
             .route(t as u8)
             .and_then(|r| self.ports.get(usize::from(r.port.0)))
             .map(|p| &p.pads[..]);
-        let (router, queue) = (&mut self.router, &mut self.queue);
+        let (router, queue, mpe) = (&mut self.router, &mut self.queue, &mut self.mpe[t]);
         self.chords.messages_on(
             t,
             o.event,
             is,
             |pad| kit.and_then(|k| k.get(pad).copied().flatten()),
-            |m, ch| router.send_on(t as u8, m, ch, o.offset, queue),
+            |m, ch| route_msg(router, queue, mpe, t, m, ch, o.offset),
         );
         true
     }
@@ -1351,6 +1404,22 @@ impl MidiOut {
             .and_then(|a| self.ports.get(usize::from(a.port.0)))
             .map_or((0, false), |p| (p.bend, p.poly_pressure));
         let (router, queue) = (&mut self.router, &mut self.queue);
+        // MPE gear: each note's own on its member channel, the wheel on
+        // the master; a key going up drops what was kept for a note that
+        // never came.
+        let mpe = &mut self.mpe[t];
+        if mpe.zone() != Zone::Off {
+            let mut on = |m: Msg| router.send_on(t as u8, m, Some(m.channel()), 0, queue);
+            match i {
+                expr_out::In::Wheel(v) => mpe.wheel(v, &mut on),
+                expr_out::In::Slide { note, semis } => mpe.slide(note, semis, &mut on),
+                expr_out::In::Pressure { note, value } => mpe.pressure(note, value, &mut on),
+                expr_out::In::Tone { note, value } => mpe.tone(note, value, &mut on),
+                expr_out::In::Up { note } => mpe.key_up(note),
+                expr_out::In::Down { .. } => {}
+            }
+            return true;
+        }
         match i {
             expr_out::In::Pressure { note, value } if poly => {
                 let m = Msg::PolyPressure {
@@ -1377,12 +1446,18 @@ impl MidiOut {
         if let Some(e) = self.expr.get_mut(t) {
             e.release(|m| router.send(t as u8, m, offset, queue));
         }
+        if let Some(mpe) = self.mpe.get_mut(t) {
+            mpe.release(|m| router.send_on(t as u8, m, Some(m.channel()), offset, queue));
+        }
     }
 
     fn end_chords(&mut self, t: usize, offset: u32) {
         let (router, queue) = (&mut self.router, &mut self.queue);
+        let Some(mpe) = self.mpe.get_mut(t) else {
+            return;
+        };
         self.chords
-            .end_track(t, |m, ch| router.send_on(t as u8, m, ch, offset, queue));
+            .end_track(t, |m, ch| route_msg(router, queue, mpe, t, m, ch, offset));
     }
 
     /// Ends every note MIDI out has on, on every port (a panic, a stop),
@@ -2064,6 +2139,67 @@ mod tests {
                 0xE2, 0, 96, // Each key's own pressure, on its note.
                 0xA2, 62, 70, // Closing puts the bend back at rest too.
                 0xE2, 0, 64
+            ]
+        );
+    }
+
+    /// Expression out to MPE gear (its profile says `mpe = lower 15`): the
+    /// zone goes out first, the track's channel is the master whatever its
+    /// Plays on says, each note takes a member channel with its own slide
+    /// (sent just ahead of it when it came first) and pressure, the wheel
+    /// bends the master, and closing puts every channel at rest and ends
+    /// the note still on where it started.
+    #[test]
+    fn notes_on_mpe_gear_take_a_member_channel_each() {
+        use mpfree_midi::expr_out::In;
+        use mpfree_midi::profile::Profile;
+        use mpfree_midi::setup::ProfilePick;
+        let (mut mo, sink) = open(Duration::ZERO);
+        let m = model(&[(1, TrackOut::new(DIN_NAME, 5))]);
+        {
+            let mut g = m.lock().unwrap();
+            let mut p = Profile::new("MPE synth");
+            p.mpe = Some(Zone::Lower(15));
+            g.profiles.add(p).unwrap();
+            g.setup.set_port(DIN_NAME, |p| {
+                p.profile = ProfilePick::Named("MPE synth".into())
+            });
+            g.gen += 1;
+        }
+        mo.sync(&m, false);
+        // A slide that comes before its note waits for it.
+        assert!(mo.expression(
+            1,
+            In::Slide {
+                note: 60,
+                semis: 12.0
+            }
+        ));
+        assert!(mo.send(&ev(1, 0, on(60, 100)), NoteIs::Note));
+        assert!(mo.send(&ev(1, 0, on(64, 90)), NoteIs::Note));
+        assert!(mo.expression(
+            1,
+            In::Pressure {
+                note: 64,
+                value: 80
+            }
+        ));
+        assert!(mo.expression(1, In::Wheel(0.5)));
+        assert!(mo.send(&ev(1, 0, Event::NoteOff { note: 60 }), NoteIs::Note));
+        mo.period_end(PERIOD, Instant::now());
+        assert!(mo.close());
+        assert_eq!(
+            sink.bytes(),
+            [
+                // The zone: RPN 6 = 15 members on channel 1, then the null RPN.
+                0xB0, 101, 0, 0xB0, 100, 6, 0xB0, 6, 15, 0xB0, 101, 127, 0xB0, 100, 127,
+                // C4 on channel 2, its 12 of 48 semitones' slide first.
+                0xE1, 0, 80, 0x91, 60, 100, // E4 on channel 3, and its pressure.
+                0x92, 64, 90, 0xD2, 80, // The wheel on the master channel.
+                0xE0, 0, 96, // C4 ends on channel 2.
+                0x81, 60, 64, // Closing: the master, then each member at rest.
+                0xE0, 0, 64, 0xE1, 0, 64, 0xD2, 0, // E4 ends where it started.
+                0x82, 64, 64
             ]
         );
     }
