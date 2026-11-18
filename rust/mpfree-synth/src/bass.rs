@@ -770,6 +770,11 @@ impl Bass {
         };
         let below = ((FOLLOW_BELOW - p) / 12.0).clamp(0.0, 4.0);
         let vca_to = amp * self.vel_gain * PRE_GAIN;
+        // A ramp to 0 leaves a rounding's worth behind, and the next ramp a
+        // rounding of that: under -400 dB the amplifier lands on exact 0.
+        if vca_to == 0.0 && self.vca.abs() < 1e-20 {
+            self.vca = 0.0;
+        }
         self.dvca = (vca_to - self.vca) / n;
         // The level and the key's scaling after the drive, so the drive
         // hears every note alike.
@@ -812,6 +817,23 @@ impl Bass {
             k: k_fb,
             hard,
         };
+
+        // A note held at a level of 0 feeds the stages after the amplifier
+        // zeros, and their states would sink through the denormals; under
+        // -400 dB each is exact 0.
+        let tiny = |x: &mut f32| {
+            if x.abs() < 1e-20 {
+                *x = 0.0;
+            }
+        };
+        for f in [&mut self.tone, &mut self.hp] {
+            tiny(&mut f.ic1);
+            tiny(&mut f.ic2);
+        }
+        for ap in self.hb_even.iter_mut().chain(self.hb_odd.iter_mut()) {
+            tiny(&mut ap.x1);
+            tiny(&mut ap.y1);
+        }
 
         if self.amp.idle() {
             self.quiet += 1;

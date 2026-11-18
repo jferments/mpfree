@@ -1321,6 +1321,15 @@ impl Keys {
                 };
                 Self::set_read(v);
             }
+            // A mode that has died away (the bending modes go long before
+            // the fundamental) would ring on through the denormals while
+            // the note sounds; under -400 dB it is exact 0.
+            for m in 0..MODES {
+                if v.y1[m].abs() < 1e-20 && v.y2[m].abs() < 1e-20 {
+                    v.y1[m] = 0.0;
+                    v.y2[m] = 0.0;
+                }
+            }
         }
         // The bus filters' tails: flushed once inaudible, so a silent
         // Keys puts out exact zeros (and never runs on denormals). The
@@ -1639,5 +1648,65 @@ impl Node for Keys {
         };
         self.kill(i);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A chord held on long tines: the bending modes die away long before
+    /// the fundamental, and none of them rings on through the denormals
+    /// (which would make each sample many times slower on a processor
+    /// without flush-to-zero).
+    #[test]
+    fn a_held_notes_died_away_modes_never_ring_through_the_denormals() {
+        let rate = 44_100;
+        let mut k = Keys::new(rate);
+        let p = Keys::presets()
+            .iter()
+            .find(|p| p.name == "Long Tines")
+            .expect("Long Tines");
+        k.load_preset(p);
+        k.prepare(rate, 128);
+        let notes: Vec<Timed> = [36u8, 48, 55, 60, 64, 67, 72, 76, 84, 96]
+            .iter()
+            .map(|&note| {
+                Timed::new(
+                    0,
+                    NodeEvent::NoteOn {
+                        note,
+                        velocity: 110,
+                    },
+                )
+            })
+            .collect();
+        let (mut l, mut r) = ([0.0f32; 128], [0.0f32; 128]);
+        let mut zeroed = 0;
+        for b in 0..(14 * rate as u64 / 128) {
+            let ev = if b == 0 { &notes[..] } else { &[] };
+            k.process(&Ctx::new(rate, b * 128), ev, &mut l, &mut r);
+            for v in k.voices.iter().filter(|v| v.state != State::Free) {
+                for m in 0..MODES {
+                    assert!(
+                        !v.y1[m].is_subnormal() && !v.y2[m].is_subnormal(),
+                        "block {b}"
+                    );
+                }
+            }
+            zeroed = k
+                .voices
+                .iter()
+                .filter(|v| v.state != State::Free)
+                .flat_map(|v| v.y1)
+                .filter(|&y| y == 0.0)
+                .count();
+        }
+        assert!(peak(&l) > 1e-4, "the chord still sounds");
+        assert!(zeroed > 0, "some modes have died away to exact 0");
+    }
+
+    fn peak(x: &[f32]) -> f32 {
+        x.iter().fold(0.0, |a, &v| a.max(v.abs()))
     }
 }

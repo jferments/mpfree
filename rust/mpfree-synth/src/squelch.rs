@@ -807,6 +807,19 @@ impl Squelch {
         } else {
             self.sweep *= self.empty_m;
         }
+        // A note held long would take these falls down through the
+        // denormals, slowing every sample they scale; under -400 dB each
+        // is exact 0, so the note goes quiet to exact zeros.
+        for x in [
+            &mut self.meg,
+            &mut self.veg,
+            &mut self.acc_lag,
+            &mut self.sweep,
+        ] {
+            if x.abs() < 1e-20 {
+                *x = 0.0;
+            }
+        }
 
         // The cutoff, in octaves.
         let r = self.v(RESONANCE) / 100.0;
@@ -828,6 +841,22 @@ impl Squelch {
         self.vca_to =
             (self.veg + a * ACCENT_VCA * self.acc_lag) * self.gate_level * comp * OUT_GAIN;
         self.dvca = (self.vca_to - self.vca) / per;
+
+        // A note held at a level of 0 feeds the stages after the amplifier
+        // zeros, and their states would sink through the denormals; under
+        // -400 dB each is exact 0.
+        let tiny = |x: &mut f32| {
+            if x.abs() < 1e-20 {
+                *x = 0.0;
+            }
+        };
+        tiny(&mut self.ohp_s);
+        tiny(&mut self.dc_x);
+        tiny(&mut self.dc_y);
+        for ap in self.hb_even.iter_mut().chain(self.hb_odd.iter_mut()) {
+            tiny(&mut ap.x1);
+            tiny(&mut ap.y1);
+        }
 
         // Once the gate has closed and the tails have died, stop.
         if !self.gate && self.gate_level == 0.0 && self.vca == 0.0 {
