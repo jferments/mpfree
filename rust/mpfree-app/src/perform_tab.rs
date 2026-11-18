@@ -32,6 +32,7 @@
 use crate::gui::FromUi;
 use crate::perform_pads::{Hold, LetGo, PadAction, PerformSet, Starts, Throw, PADS, PAGES};
 use crate::play_page::THROW_LIST;
+use mpfree_fx::StripId;
 use mpfree_sampler_ui::widgets::{
     ButtonRow, KitTracks, PadBar, PadCell, PadMap, SectionChip, SectionChips, Setting, SettingList,
 };
@@ -167,9 +168,41 @@ pub struct Names {
     /// Each macro's name ("Macro 3" when not named) and how many knobs it
     /// moves, as far as the screen knows them.
     pub macros: Vec<(String, usize)>,
+    /// The strips a throw can play on, as the Mix tab names them: the
+    /// master first ([`crate::mixing::throw_strips`]).
+    pub strips: Vec<(String, StripId)>,
 }
 
 impl Names {
+    /// Strip `on` by name ("Drums", "Sub 2"), and whether it is one a
+    /// throw can play on now (a track's own channel is only while in use).
+    fn strip(&self, on: StripId) -> (String, bool) {
+        match self.strips.iter().find(|(_, s)| *s == on) {
+            Some((n, _)) => (n.clone(), true),
+            None => (crate::mixing::name(on), on == StripId::Master),
+        }
+    }
+
+    /// Where a throw plays, in a sentence: "the master", "Drums".
+    fn on_words(&self, on: StripId) -> String {
+        match on {
+            StripId::Master => "the master".to_string(),
+            on => self.strip(on).0,
+        }
+    }
+
+    /// The strips a throw steps through: the master, then the rest.
+    fn throw_strips(&self) -> Vec<StripId> {
+        let mut out = vec![StripId::Master];
+        out.extend(
+            self.strips
+                .iter()
+                .map(|(_, s)| *s)
+                .filter(|&s| s != StripId::Master),
+        );
+        out
+    }
+
     fn track(&self, t: usize) -> String {
         self.tracks
             .get(t)
@@ -341,11 +374,15 @@ fn let_go_words(l: LetGo) -> &'static str {
 pub fn action_summary(a: PadAction, names: &Names) -> String {
     match a {
         PadAction::None => "Nothing on it".to_string(),
-        PadAction::Throw(t) => match t.hold {
-            Hold::WhileHeld => "Throw · while held, on the master".to_string(),
-            Hold::Latch => "Throw · latched, on the master".to_string(),
-            Hold::Bar => "Throw · for a bar, on the master".to_string(),
-        },
+        PadAction::Throw(t) => format!(
+            "Throw · {}, on {}",
+            match t.hold {
+                Hold::WhileHeld => "while held",
+                Hold::Latch => "latched",
+                Hold::Bar => "for a bar",
+            },
+            names.on_words(t.on)
+        ),
         PadAction::Macro { card, value } => format!(
             "Macro · {} at {value} % while held",
             names.macro_full(usize::from(card))
@@ -361,28 +398,38 @@ pub fn action_summary(a: PadAction, names: &Names) -> String {
 pub fn hit_text(label: &str, a: PadAction, names: &Names) -> String {
     match a {
         PadAction::None => format!("Nothing yet: pick what {label} does above."),
-        PadAction::Throw(t) => match t.hold {
-            Hold::WhileHeld => format!(
-                "Held, it plays {} on the master {}; let go, {}. Play's throw cards play the \
-                 same effects.",
-                t.name(),
-                starts_words(t.starts),
-                let_go_words(t.let_go)
-            ),
-            Hold::Latch => format!(
-                "A hit starts {} on the master {} and the next lets it go ({}).",
-                t.name(),
-                starts_words(t.starts),
-                let_go_words(t.let_go)
-            ),
-            Hold::Bar => format!(
-                "A hit plays {} on the master for a bar {}, however briefly the pad is held, \
-                 and a hit while it plays starts it again; then {}.",
-                t.name(),
-                starts_words(t.starts),
-                let_go_words(t.let_go)
-            ),
-        },
+        PadAction::Throw(t) => {
+            let on = names.on_words(t.on);
+            let (_, live) = names.strip(t.on);
+            if !live {
+                return format!(
+                    "{on}'s channel plays nothing now (no instrument or kit of its own), so \
+                     {} would be heard on nothing: pick another On.",
+                    t.name()
+                );
+            }
+            match t.hold {
+                Hold::WhileHeld => format!(
+                    "Held, it plays {} on {on} {}; let go, {}.",
+                    t.name(),
+                    starts_words(t.starts),
+                    let_go_words(t.let_go)
+                ),
+                Hold::Latch => format!(
+                    "A hit starts {} on {on} {} and the next lets it go ({}).",
+                    t.name(),
+                    starts_words(t.starts),
+                    let_go_words(t.let_go)
+                ),
+                Hold::Bar => format!(
+                    "A hit plays {} on {on} for a bar {}, however briefly the pad is held, and \
+                     a hit while it plays starts it again; then {}.",
+                    t.name(),
+                    starts_words(t.starts),
+                    let_go_words(t.let_go)
+                ),
+            }
+        }
         PadAction::Macro { card, value } => {
             let m = usize::from(card);
             match names.knobs(m) {
@@ -444,14 +491,20 @@ const MACRO_COLOR: Color = Color::rgb(0xB080F0);
 fn cell(page: usize, pad: usize, a: PadAction, names: &Names) -> PadCell {
     let (detail, badge) = match a {
         PadAction::None => (String::new(), None),
-        PadAction::Throw(t) => (
-            match t.hold {
-                Hold::WhileHeld => "master".to_string(),
-                Hold::Latch => "latch · master".to_string(),
-                Hold::Bar => "1 bar · master".to_string(),
-            },
-            Some("THROW"),
-        ),
+        PadAction::Throw(t) => {
+            let on = match t.on {
+                StripId::Master => "master".to_string(),
+                on => names.strip(on).0,
+            };
+            (
+                match t.hold {
+                    Hold::WhileHeld => on,
+                    Hold::Latch => format!("latch · {on}"),
+                    Hold::Bar => format!("1 bar · {on}"),
+                },
+                Some("THROW"),
+            )
+        }
         // The knob count is on the chips and the bar: a cell is narrow.
         PadAction::Macro { value, .. } => (format!("to {value} %"), Some("MACRO")),
         PadAction::LoopKey(_) => ("its key".to_string(), Some("LOOP")),
@@ -541,13 +594,12 @@ impl PerformTab {
             name: name.to_string(),
             value,
         };
-        let mut rows = vec![row(
-            "Pad does",
-            Kind::of(a).map_or("Nothing", Kind::label).to_string(),
-        )];
+        // What the pad does, and its choice, are the chips above.
+        let mut rows = Vec::new();
         match a {
             PadAction::None => {}
             PadAction::Throw(t) => {
+                rows.push(row("On", names.strip(t.on).0));
                 rows.push(row("Hold", hold_text(t.hold).to_string()));
                 rows.push(row("Starts", starts_text(t.starts).to_string()));
                 rows.push(row("Let go", let_go_text(t.let_go).to_string()));
@@ -722,15 +774,17 @@ impl PerformTab {
                  pads on Play and the Looper tab, and PAD BANK turns its pages.",
                 (b'A' + page as u8) as char
             );
-            // A throw's four rows leave room for what a hit does only.
+            // A throw's four rows leave room for what a hit does only; a
+            // throw on a channel that plays nothing warns.
             let hit = hit_text(&label, a, names);
+            let silent = matches!(a, PadAction::Throw(t) if !names.strip(t.on).1);
             l.footer = Some((
                 if l.rows.len() > 3 {
                     hit
                 } else {
                     format!("{hit} {live}")
                 },
-                false,
+                silent,
             ));
         }
     }
@@ -941,15 +995,15 @@ impl PerformTab {
             return Vec::new();
         }
         let after = match (row, a) {
-            (0, a) => {
-                // Nothing, then each kind in the chips' order.
-                let k = Kind::of(a).and_then(|k| Kind::ALL.iter().position(|&x| x == k));
-                let at = k.map_or(0, |k| k as i32 + 1);
-                let to = (at + d).clamp(0, Kind::ALL.len() as i32);
-                match to {
-                    0 => PadAction::None,
-                    k => Kind::ALL[k as usize - 1].action(a),
-                }
+            (0, PadAction::Throw(t)) => {
+                let strips = names.throw_strips();
+                // A strip not on the list now (a track's channel that
+                // plays nothing) steps on from the master.
+                let at = strips.iter().position(|&s| s == t.on).unwrap_or(0);
+                PadAction::Throw(Throw {
+                    on: strips[stepped(at, d, strips.len())],
+                    ..t
+                })
             }
             (1, PadAction::Throw(t)) => {
                 const HOLDS: [Hold; 3] = [Hold::WhileHeld, Hold::Latch, Hold::Bar];
@@ -971,25 +1025,25 @@ impl PerformTab {
                 let_go: if d > 0 { LetGo::Cut } else { LetGo::RingOut },
                 ..t
             }),
-            (1, PadAction::Macro { card, value }) => PadAction::Macro {
+            (0, PadAction::Macro { card, value }) => PadAction::Macro {
                 card: stepped(usize::from(card), d, MACROS) as u8,
                 value,
             },
-            (2, PadAction::Macro { card, value }) => PadAction::Macro {
+            (1, PadAction::Macro { card, value }) => PadAction::Macro {
                 card,
                 value: (i32::from(value) + d * VALUE_STEP).clamp(0, 100) as u8,
             },
-            (1, PadAction::LoopKey(n)) => {
+            (0, PadAction::LoopKey(n)) => {
                 PadAction::LoopKey(stepped(usize::from(n), d, LOOPS) as u8)
             }
-            (1, PadAction::LoopMute(n)) => {
+            (0, PadAction::LoopMute(n)) => {
                 PadAction::LoopMute(stepped(usize::from(n), d, LOOPS) as u8)
             }
-            (1, PadAction::Mute(t)) => {
+            (0, PadAction::Mute(t)) => {
                 let len = names.tracks.len().clamp(1, 256);
                 PadAction::Mute(stepped(usize::from(t), d, len) as u8)
             }
-            (1, PadAction::Scene(n)) => PadAction::Scene(stepped(usize::from(n), d, SCENES) as u8),
+            (0, PadAction::Scene(n)) => PadAction::Scene(stepped(usize::from(n), d, SCENES) as u8),
             _ => return Vec::new(),
         };
         self.edit(self.pad, after, names)
@@ -1125,6 +1179,9 @@ fn edit_text(a: PadAction, names: &Names) -> String {
             if t.let_go == LetGo::Cut {
                 text.push_str(", cut");
             }
+            if t.on != StripId::Master {
+                text.push_str(&format!(", on {}", names.on_words(t.on)));
+            }
             text
         }
         PadAction::Macro { card, value } => {
@@ -1159,6 +1216,13 @@ mod tests {
                 ("Macro 1".into(), 0),
                 ("Macro 2".into(), 2),
                 ("Dark".into(), 4),
+            ],
+            strips: vec![
+                ("Master".into(), StripId::Master),
+                ("Drums".into(), StripId::Track(0)),
+                ("Synth".into(), StripId::Track(1)),
+                ("Bass".into(), StripId::Track(5)),
+                ("Sub 1".into(), StripId::Bus(0)),
             ],
         }
     }
@@ -1211,8 +1275,8 @@ mod tests {
         );
         assert!(acts.contains(&Act::Tell("Perform pads B2: launches Scene 1".into())));
         assert_eq!(tab.picked(), PadAction::Scene(0));
-        // Row 2, Drop.
-        tab.step(1, 1, &n);
+        // Row 2, Drop: the list's only row.
+        tab.step(0, 1, &n);
         assert_eq!(tab.picked(), PadAction::Scene(1));
         let (rows, now) = tab.history_rows(&n);
         assert_eq!(
@@ -1285,7 +1349,7 @@ mod tests {
         assert_eq!(
             rows(&tab),
             [
-                "Pad does: Throw",
+                "On: Master",
                 "Hold: While held",
                 "Starts: Next 1/16",
                 "Let go: Ring out"
@@ -1326,6 +1390,60 @@ mod tests {
     }
 
     #[test]
+    fn a_throw_steps_where_it_plays_and_says_when_that_plays_nothing() {
+        let mut tab = PerformTab {
+            page: 1,
+            pad: 1,
+            ..PerformTab::default()
+        };
+        let n = names();
+        // On: the master, then the Mix tab's strips in order.
+        let acts = tab.step(0, 1, &n);
+        assert!(acts.contains(&Act::Tell(
+            "Perform pads B2: Reverb wash, while held, on Drums".into()
+        )));
+        let t = Throw {
+            on: StripId::Track(0),
+            ..Throw::new(1, Hold::WhileHeld)
+        };
+        assert_eq!(tab.picked(), PadAction::Throw(t));
+        assert_eq!(PerformTab::rows(tab.picked(), &n)[0].value, "Drums");
+        assert_eq!(
+            action_summary(tab.picked(), &n),
+            "Throw · while held, on Drums"
+        );
+        assert_eq!(
+            hit_text("B2", tab.picked(), &n),
+            "Held, it plays Reverb wash on Drums from the next 1/16; let go, it rings out."
+        );
+        assert_eq!(cell(1, 1, tab.picked(), &n).detail, "Drums");
+        // To the last, a submix; the end holds; back to the master.
+        for _ in 0..3 {
+            tab.step(0, 1, &n);
+        }
+        assert!(tab.step(0, 1, &n).is_empty());
+        assert_eq!(PerformTab::rows(tab.picked(), &n)[0].value, "Sub 1");
+        for _ in 0..4 {
+            tab.step(0, -1, &n);
+        }
+        assert_eq!(
+            tab.picked(),
+            PadAction::Throw(Throw::new(1, Hold::WhileHeld))
+        );
+        // A track's channel that plays nothing now: said, and it steps on
+        // from the master.
+        let gone = Throw {
+            on: StripId::Track(9),
+            ..Throw::new(1, Hold::Latch)
+        };
+        tab.edit(1, PadAction::Throw(gone), &n);
+        assert_eq!(PerformTab::rows(tab.picked(), &n)[0].value, "Track 6");
+        assert!(hit_text("B2", tab.picked(), &n).starts_with("Track 6's channel plays nothing now"));
+        tab.step(0, 1, &n);
+        assert_eq!(PerformTab::rows(tab.picked(), &n)[0].value, "Drums");
+    }
+
+    #[test]
     fn a_macro_pad_picks_its_macro_and_value() {
         let mut tab = PerformTab {
             page: 2,
@@ -1363,8 +1481,8 @@ mod tests {
         assert_eq!(chips[5].sub, "0 knobs");
         // Macro 3, then down to 90 %.
         tab.choose(2, &n);
-        tab.step(2, -1, &n);
-        tab.step(2, -1, &n);
+        tab.step(1, -1, &n);
+        tab.step(1, -1, &n);
         assert_eq!(tab.picked(), PadAction::Macro { card: 2, value: 90 });
         assert_eq!(action_name(tab.picked(), &n), "Dark");
         assert_eq!(
@@ -1378,7 +1496,7 @@ mod tests {
         );
         assert_eq!(cell(2, 0, tab.picked(), &n).detail, "to 90 %");
         // A macro with no knobs says so in place.
-        tab.step(1, 1, &n);
+        tab.step(0, 1, &n);
         assert!(hit_text("C1", tab.picked(), &n).contains("moves no knobs yet"));
         // A finger on its pad holds it while down.
         let down = UiEvent {
@@ -1488,7 +1606,7 @@ mod tests {
             page: 1,
             ..PerformTab::default()
         };
-        tab.step(0, -1, &n);
+        tab.edit(0, PadAction::None, &n);
         assert_eq!(tab.picked(), PadAction::None);
         // The app's echo of the edit keeps it.
         let echo = tab.set.clone();

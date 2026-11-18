@@ -321,3 +321,58 @@ fn the_same_events_for_every_period_size() {
         );
     }
 }
+
+/// The sequencer's look-ahead (S5, `mpfree_play::Ahead`) copies the
+/// transport and the player after a period and plays the copy on ahead,
+/// in one period (`Player::copy_from`, `Player::only`). From any period's
+/// end the copy plays what the player will, on the same frames, whatever
+/// the window holds (a stop, a locate, a loop's jump, a tempo change,
+/// punch in and out); with tracks left out, the others' events are the
+/// same.
+#[test]
+fn a_copy_plays_on_as_the_player_will() {
+    const AHEAD: u32 = 4_800;
+    let view = session();
+    let reference = run(&view, || 128);
+    let mut t = Transport::new(44_100, 120.0).unwrap();
+    script(&mut t);
+    let mut player = Player::new();
+    let mut block = Block::new();
+    let mut real = Log::default();
+    let mut copy = Box::new(Player::new());
+    let mut ahead = Box::new(t);
+    let mut ahead_block = Block::new();
+    let (mut i, mut checked, mut events) = (0u64, 0, 0);
+    while t.frame() + u64::from(AHEAD) < LENGTH {
+        t.process(128, &mut block);
+        player.process(&view, &block, &mut real);
+        i += 1;
+        if i % 37 != 0 {
+            continue;
+        }
+        let from = t.frame();
+        // Every other check plays tracks 1 and 3 alone.
+        let only = if i % 74 == 0 { 0b101 } else { u128::MAX };
+        *ahead = t;
+        copy.copy_from(&player);
+        copy.only(only);
+        let mut got = Log::default();
+        assert!(ahead.process(AHEAD, &mut ahead_block));
+        copy.process(&view, &ahead_block, &mut got);
+        let kept = |e: &&(u64, u16, u16, Event)| only == u128::MAX || matches!(e.1, 0 | 2);
+        let want: Vec<_> = reference
+            .iter()
+            .filter(|e| e.0 >= from && e.0 < from + u64::from(AHEAD))
+            .filter(kept)
+            .copied()
+            .collect();
+        let got: Vec<_> = got.0.iter().filter(kept).copied().collect();
+        assert_eq!(got, want, "ahead from frame {from}");
+        checked += 1;
+        events += got.len();
+    }
+    assert!(
+        checked > 100 && events > 500,
+        "{checked} copies, {events} events"
+    );
+}

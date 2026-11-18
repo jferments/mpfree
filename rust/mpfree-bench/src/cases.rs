@@ -21,7 +21,7 @@ use mpfree_looper::{
     Command as LooperCommand, Edit as LooperEdit, Looper, Phase as LooperPhase, MAX_LOOPS,
 };
 use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, MAX_BLOCK};
-use mpfree_play::{Launch, Out, PlayView, Player, Sink, TrackArps};
+use mpfree_play::{Ahead, Launch, Out, PlayView, Player, Sink, TrackArps};
 use mpfree_prof::alloc;
 use mpfree_prof::budget::MPC;
 use mpfree_sampler::dsp::{Filter, FilterKind};
@@ -1693,6 +1693,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| track_host_alone(rate, 16)));
     v.push(measured(|| time(rate, 8, false)));
     v.push(measured(|| time(rate, 8, true)));
+    v.push(measured(|| time_ahead(rate, 8, 4)));
     v.push(measured(|| live_arps(rate, 4)));
     v.push(measured(|| live_arps(rate, 16)));
     v.push(measured(|| looper(rate, 60)));
@@ -2339,17 +2340,10 @@ impl Sink for TimeSink {
     }
 }
 
-/// The time engine as a busy song uses it: the transport looping 4 bars at
-/// 128 BPM, and `tracks` clips playing at once (16ths with 3-note chords,
-/// one at 3:2 speed, one swung and quantised), through the per-track
-/// arps as the pad player runs them (16 of them), the first track's clip
-/// through its arp at 32nds over 2 octaves. Every step has two parameter locks: one of the
-/// instrument's (a different one each step, so each ends at the next
-/// note) and one of the strip's. With `trigs`, every note also has a trig
-/// condition (A:B, PRE, NEI, FILL, 1ST and their opposites in turn),
-/// every fourth step is a ratchet of 3, and FILL turns on and off every
-/// 64 blocks.
-fn time(rate: u32, tracks: usize, trigs: bool) -> Case {
+/// The Time cases' song: `tracks` clips of 16ths with 3-note chords and
+/// two locks a step, one at 3:2 speed, one swung and quantised, with
+/// `trigs` a trig condition on every note and a ratchet every fourth step.
+fn time_song(tracks: usize, trigs: bool) -> (Song, Vec<Launch>) {
     use mpfree_seq::Cond;
     const CONDS: [Cond; 9] = [
         Cond::Always,
@@ -2423,6 +2417,22 @@ fn time(rate: u32, tracks: usize, trigs: bool) -> Case {
             start: 0,
         });
     }
+    (song, launches)
+}
+
+/// The time engine as a busy song uses it: the transport looping 4 bars at
+/// 128 BPM, and `tracks` clips playing at once (16ths with 3-note chords,
+/// one at 3:2 speed, one swung and quantised), through the per-track
+/// arps as the pad player runs them (16 of them), the first track's clip
+/// through its arp at 32nds over 2 octaves. Every step has two parameter locks: one of the
+/// instrument's (a different one each step, so each ends at the next
+/// note) and one of the strip's. With `trigs`, every note also has a trig
+/// condition (A:B, PRE, NEI, FILL, 1ST and their opposites in turn),
+/// every fourth step is a ratchet of 3, and FILL turns on and off every
+/// 64 blocks.
+fn time(rate: u32, tracks: usize, trigs: bool) -> Case {
+    let ppq = i64::from(PPQ);
+    let (song, launches) = time_song(tracks, trigs);
     let view = PlayView::compile(&song, &launches).expect("view");
     let mut t = Transport::new(rate, 128.0).expect("transport");
     t.command(0, T::SetLoop(Some((0, 16 * ppq))));
@@ -2466,6 +2476,81 @@ fn time(rate: u32, tracks: usize, trigs: bool) -> Case {
             l[0] = sink.notes as f32;
         }),
         mem_bytes: 0,
+    }
+}
+
+/// Tracks on MIDI gear slower than the sound's lead (sequencer S5's
+/// look-ahead, `mpfree_play::Ahead`): the Time case's song without arps,
+/// `ahead` of its `tracks` clips 4,000 frames ahead (100 ms of gear delay
+/// less the 8.7 ms lead, at 44.1 kHz). Each block plays the real period,
+/// checks its events against the log, then copies the transport and the
+/// player and plays them on 4,000 frames to send what comes next.
+fn time_ahead(rate: u32, tracks: usize, ahead: usize) -> Case {
+    let ppq = i64::from(PPQ);
+    let (song, launches) = time_song(tracks, false);
+    let view = PlayView::compile(&song, &launches).expect("view");
+    let mut t = Transport::new(rate, 128.0).expect("transport");
+    t.command(0, T::SetLoop(Some((0, 16 * ppq))));
+    t.command(0, T::Play);
+    let mut player = Player::new();
+    let mut block = TBlock::new();
+    let mut look = Ahead::new(&t);
+    let frames: Vec<u32> = (0..tracks)
+        .map(|i| if i < ahead { 4_000 } else { 0 })
+        .collect();
+    look.set(&frames);
+    let mut real = Box::new(RealPass {
+        out: [Out {
+            offset: 0,
+            frame: 0,
+            track: 0,
+            dest: 0,
+            event: mpfree_play::Event::AllOff,
+        }; REAL_PASS],
+        n: 0,
+    });
+    let mut sent = 0u64;
+    Case {
+        name: format!("Time: {tracks} clips, {ahead} tracks 90 ms ahead"),
+        module: "time",
+        what: "the look-ahead for slow MIDI gear: a forecast copy each block",
+        block: Box::new(move |_, l, r| {
+            let n = l.len() as u32;
+            t.process(n, &mut block);
+            real.n = 0;
+            player.process(&view, &block, &mut *real);
+            for o in &real.out[..real.n] {
+                if !look.sent_already(o) {
+                    sent += 1;
+                }
+            }
+            look.check(t.frame(), |_| sent += 1);
+            look.forecast(&t, &player, &view, n, |_| {
+                sent += 1;
+                true
+            });
+            l.fill(0.0);
+            r.fill(0.0);
+            l[0] = sent as f32;
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// Events one real period plays, as the app's sink keeps them.
+const REAL_PASS: usize = 1_024;
+
+struct RealPass {
+    out: [Out; REAL_PASS],
+    n: usize,
+}
+
+impl Sink for RealPass {
+    fn send(&mut self, o: Out) {
+        if let Some(slot) = self.out.get_mut(self.n) {
+            *slot = o;
+            self.n += 1;
+        }
     }
 }
 
