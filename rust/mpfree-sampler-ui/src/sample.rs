@@ -1199,6 +1199,43 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     s.tab.meter(&mut s.ui, [0.5, 0.4], 0.0);
     out.push(s);
 
+    // The page's pad as the Source (one-page step 2e): REC has played it
+    // and records it until it goes quiet; the cards are its velocity and
+    // hold, and the Input section's Gain, Threshold, Pre-roll and
+    // Monitor are faint.
+    let mut s = wave_sample(fonts())?;
+    s.name = "wave-flatten";
+    s.about = "Source Flatten A5: REC played the pad at 120, held 500 ms, and records it until it goes quiet, to stay on the page";
+    let mut on = recorder_idle();
+    on.sources
+        .extend(["Flatten A5".into(), "Auto-sample".into()]);
+    on.settings.source = 2;
+    on.settings.flatten_velocity = 120;
+    on.settings.flatten_hold_ms = 500;
+    on.plays = crate::recorder::Plays::Pad;
+    on.recording = true;
+    on.status = "0:00.4 · stays here".into();
+    on.line_only = Some(crate::recorder::LINE_ONLY.into());
+    on.keep.line = "finish the take first".into();
+    on.keep.ready = false;
+    s.tab.set_recorder(&mut s.ui, on, &s.state.clone());
+    s.tab.meter(&mut s.ui, [0.7, 0.6], 0.0);
+    out.push(s);
+
+    // Auto-sample as the Source: REC opens it over the page; its own
+    // page sets how it plays, so the cards are faint.
+    let mut s = wave_sample(fonts())?;
+    s.name = "wave-auto-source";
+    s.about = "Source Auto-sample: REC opens Auto-sample over the page; the Starts and Ends cards are its page's";
+    let mut on = recorder_idle();
+    on.sources
+        .extend(["Flatten A5".into(), "Auto-sample".into()]);
+    on.settings.source = 3;
+    on.plays = crate::recorder::Plays::Notes;
+    on.status = "opens Auto-sample".into();
+    s.tab.set_recorder(&mut s.ui, on, &s.state.clone());
+    out.push(s);
+
     // Zoomed in round the loop start, snapping to sixteenths, after a
     // Q-Link turn.
     let mut s = wave_sample(fonts())?;

@@ -4536,7 +4536,7 @@ impl Player {
                 } else {
                     play_widgets::RecState::Armed
                 },
-                what: format!("{name} · {}", self.sample.source_name()),
+                what: format!("{name} · {}", self.sample.chip_source()),
                 add: false,
                 pinned: false,
             };
@@ -26411,6 +26411,49 @@ mod tests {
         }
     }
 
+    /// [`rec_desk`], keeping the page's other asks (its hits, its source
+    /// and input's writer) for the test, in order.
+    fn rec_desk_keep(
+        p: &mut Player,
+        arm: &mut crate::rec_arm::RecArm,
+        now: &crate::rec_arm::Now,
+    ) -> Vec<FromUi> {
+        use crate::rec_arm::Do;
+        let mut kept = Vec::new();
+        loop {
+            let (views_sent, rest) = views(p.take_actions());
+            for v in views_sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+            let mut asked = false;
+            for a in rest {
+                match a {
+                    FromUi::RecHere { kit, pad } => {
+                        asked = true;
+                        match arm.rec_here(kit, pad, now) {
+                            Ok(done) => {
+                                for d in done {
+                                    if let Do::Pad(d) = d {
+                                        p.apply(ToUi::PadTake(d));
+                                    }
+                                }
+                            }
+                            Err(why) => p.apply(ToUi::RecHereNo(why)),
+                        }
+                    }
+                    FromUi::PadTake(n) => {
+                        asked = true;
+                        arm.pad_now(n);
+                    }
+                    a => kept.push(a),
+                }
+            }
+            if !asked {
+                return kept;
+            }
+        }
+    }
+
     /// The audio loop's side of the Wave page's REC and the pad take, as
     /// `desk.rs` does it, with `arm` and the transport `now`: the page's
     /// asks go to the arm and what it does comes back. Views go back at
@@ -26976,6 +27019,354 @@ mod tests {
         );
         p.tick(0.033);
         assert_eq!(row(&p).line_only.as_deref(), Some(LINE_ONLY));
+    }
+
+    /// One-page step 2e (the plan's decision 5): the recorder's Source can
+    /// be the page's pad ("Flatten A5"), which REC plays once at the
+    /// Velocity card's velocity, holds for the Held for card's time and
+    /// records from its channel until it goes quiet, kept where Onto
+    /// says (Stay here: a take on the page). It is a pad take through the
+    /// arm, as REC's take is, and the REC chip names it. Or the Source is
+    /// Auto-sample, which REC opens over the page, its second button
+    /// coming back to it.
+    #[test]
+    fn the_recorders_source_flattens_the_pad_to_a_take_and_opens_auto_sample() {
+        use crate::play_widgets::RecState;
+        use crate::sampler::RecSource;
+        use mpfree_fx::{CapturePoint, StripId};
+        use mpfree_sampler_ui::recorder::{self, Plays, Recorder, RecorderView};
+        use mpfree_sampler_ui::sample::{feed_input, PAD};
+        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        use mpfree_sampler_ui::{auto_tab, wave_tab};
+        let mut p = sample_sampler(Fonts::embedded());
+        open_sample(&mut p, sample_page::Editor::Wave);
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let row = |p: &Player| -> RecorderView {
+            p.ui.get::<Recorder>(recorder::RECORDER)
+                .unwrap()
+                .view
+                .clone()
+        };
+        let card = |p: &mut Player, index: usize, delta: i32| {
+            ev(p, recorder::RECORDER, EventKind::Step { index, delta });
+        };
+        let stopped = rec_now_in(mpfree_transport::State::Stopped);
+        let mut arm = crate::rec_arm::RecArm::default();
+        // Source › twice: the master, then the page's pad. The sampler
+        // listens to A5's channel, after its inserts (it stays a take).
+        card(&mut p, 0, 1);
+        card(&mut p, 0, 1);
+        p.tick(0.033);
+        let v = row(&p);
+        assert_eq!(v.plays, Plays::Pad);
+        assert_eq!(v.sources[v.settings.source], "Flatten A5");
+        assert_eq!(
+            (v.cannot, v.status.as_str()),
+            (None, "flattens A5 · stays here")
+        );
+        let channel = RecSource::Mix(StripId::Pad(PAD), CapturePoint::BeforeFader);
+        let acts = rec_desk_keep(&mut p, &mut arm, &stopped);
+        assert!(
+            acts.iter()
+                .any(|a| matches!(a, FromUi::SampleSource(s) if *s == channel)),
+            "{acts:?}"
+        );
+        // The writer goes once the audio thread has the source.
+        let Some(FromUi::SampleInput(Some(mut feed))) =
+            rec_desk_keep(&mut p, &mut arm, &stopped).pop()
+        else {
+            panic!("the input's writer");
+        };
+        // The Starts and Ends cards are the hit's velocity and hold.
+        card(&mut p, 1, -1);
+        card(&mut p, 2, -1);
+        let s = row(&p).settings;
+        assert_eq!((s.flatten_velocity, s.flatten_hold_ms), (120, 500));
+        // REC: the arm's pad take; its go plays A5 at 120, and REC waits
+        // for its sound. The chip names the take it makes.
+        ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
+        p.tick(0.033);
+        rec_desk_keep(&mut p, &mut arm, &stopped);
+        assert!(arm.pad.is_some_and(|t| t.here && !t.recording), "{arm:?}");
+        let log = events_log(&p);
+        assert!(log.iter().any(|l| l
+            == "sample: flatten A5 to stay on the page: velocity 120, held 500 ms, from its channel after its inserts"), "{log:?}");
+        let v = row(&p);
+        assert!(v.recording && v.waiting);
+        assert_eq!(v.status, "plays A5 · stays here");
+        p.apply(ToUi::Rec(arm));
+        let chip = p.rec_chip();
+        assert_eq!(
+            (chip.state, chip.what.as_str()),
+            (RecState::Armed, "Break 92 flat · Flatten A5")
+        );
+        // While it records the Threshold is the pad's first sound's.
+        p.apply(ToUi::SampleQLink(1, 2));
+        p.apply(ToUi::SampleLift);
+        assert_eq!(row(&p).settings.threshold_db, -30.0, "not turned");
+        p.tick(0.033);
+        let hit = |down| FromUi::SampleHit {
+            kit: 0,
+            pad: PAD,
+            velocity: 120,
+            down,
+        };
+        assert_eq!(rec_desk_keep(&mut p, &mut arm, &stopped), [hit(true)]);
+        // It sounds for 0.6 s: the arm hears it records; let go after its
+        // 0.5 s hold.
+        feed_input(&mut feed.0, 0.6, 0.5, false);
+        p.tick(0.6);
+        assert_eq!(rec_desk_keep(&mut p, &mut arm, &stopped), [hit(false)]);
+        assert!(!row(&p).waiting);
+        assert!(arm.pad.is_some_and(|t| t.recording), "{arm:?}");
+        // A second of silence: kept on the page as a take, one undo step,
+        // and the arm hears it ended.
+        let edits = p.sample.edits;
+        feed_input(&mut feed.0, 1.2, 0.0, false);
+        p.tick(0.033);
+        rec_desk_keep(&mut p, &mut arm, &stopped);
+        assert_eq!(arm.pad, None);
+        let log = events_log(&p);
+        assert!(
+            log.iter()
+                .any(|l| l == "sample: flatten A5 kept on the page"),
+            "{log:?}"
+        );
+        assert!(log
+            .iter()
+            .any(|l| l.starts_with("sample: flatten: Break 92 flat, ")
+                && l.ends_with(" stays on the Sample page")));
+        let take = p.sample.project(0).unwrap().take(0).unwrap();
+        assert_eq!(take.name, "Break 92 flat");
+        assert_eq!(p.sample.edits, edits + 1);
+        assert!(p
+            .sample
+            .project(0)
+            .unwrap()
+            .pad(PAD + 1)
+            .is_none_or(|pd| pd.layers.is_empty()));
+        // The page shows the take: REC flattens a pad, not a take.
+        assert_eq!(p.sample.take_shown().as_deref(), Some("Break 92 flat"));
+        assert_eq!(
+            p.ui.get::<PadBar>(wave_tab::BAR).unwrap().title,
+            "Break 92 flat · new"
+        );
+        let v = row(&p);
+        assert!(!v.recording);
+        assert_eq!(v.cannot.as_deref(), Some(sample_page::FLATTEN_NOT_TAKE));
+        assert_eq!(v.sources[v.settings.source], "Flatten a pad");
+        // Source ›: Auto-sample. Its cards are its page's; REC opens it,
+        // and its second button comes back to the Wave page.
+        card(&mut p, 0, 1);
+        p.tick(0.033);
+        let v = row(&p);
+        assert_eq!(
+            (v.plays, v.status.as_str()),
+            (Plays::Notes, "opens Auto-sample")
+        );
+        assert_eq!(v.cannot, None);
+        let before = row(&p).settings;
+        card(&mut p, 1, 1);
+        assert_eq!(row(&p).settings, before, "Starts is Auto-sample's");
+        ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
+        assert_eq!(p.sample.editor(), sample_page::Editor::Auto);
+        assert_eq!(
+            p.ui.get::<PadBar>(auto_tab::BAR).unwrap().active,
+            wave_tab::TAB
+        );
+        assert_eq!(
+            p.ui.get::<ButtonRow>(auto_tab::BUTTONS).unwrap().labels[1],
+            "Wave"
+        );
+        ev(&mut p, auto_tab::BUTTONS, EventKind::Tab(1));
+        assert_eq!(p.sample.editor(), sample_page::Editor::Wave);
+    }
+
+    /// Threshold and Pre-roll turned while REC's take waits for its sound:
+    /// the take listens for the new level from there on.
+    #[test]
+    fn a_take_waiting_for_its_sound_hears_the_threshold_turned() {
+        use mpfree_sampler_ui::rec_tab;
+        use mpfree_sampler_ui::recorder::{self, Recorder};
+        use mpfree_sampler_ui::sample::feed_input;
+        let mut p = sample_sampler(Fonts::embedded());
+        open_sample(&mut p, sample_page::Editor::Wave);
+        let ev = |p: &mut Player, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: recorder::RECORDER.into(),
+                kind,
+            })
+        };
+        let waiting = |p: &Player| {
+            let v = &p.ui.get::<Recorder>(recorder::RECORDER).unwrap().view;
+            (v.recording, v.waiting)
+        };
+        let mut s = p.settings.clone();
+        s.line_input = true;
+        p.apply(ToUi::Settings(s));
+        let stopped = rec_now_in(mpfree_transport::State::Stopped);
+        let mut arm = crate::rec_arm::RecArm::default();
+        let Some(FromUi::SampleInput(Some(mut feed))) =
+            rec_desk_keep(&mut p, &mut arm, &stopped).pop()
+        else {
+            panic!("the input's writer");
+        };
+        // Starts › On threshold (-30 dB); the input plays far under it.
+        ev(&mut p, EventKind::Step { index: 1, delta: 1 });
+        assert_eq!(
+            p.sample.rec_settings_now().start,
+            rec_tab::StartAt::Threshold
+        );
+        feed_input(&mut feed.0, 0.5, 0.005, false);
+        ev(&mut p, EventKind::Tab(0));
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        feed_input(&mut feed.0, 0.5, 0.005, false);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert_eq!(waiting(&p), (true, true));
+        assert!(arm.pad.is_some_and(|t| !t.recording), "{arm:?}");
+        // Q-Link 2 down to the bottom of its range: the waiting take hears
+        // it, and the quiet input starts it.
+        p.apply(ToUi::SampleQLink(1, -100));
+        p.apply(ToUi::SampleLift);
+        assert_eq!(p.sample.rec_settings_now().threshold_db, -60.0);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: the take now waits for -60 dB, keeping 20 ms from before it"));
+        feed_input(&mut feed.0, 0.5, 0.005, false);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert_eq!(waiting(&p), (true, false));
+        assert!(arm.pad.is_some_and(|t| t.recording), "{arm:?}");
+    }
+
+    /// The recorder's Flatten is the arm's one pad take: refused while a
+    /// track's take counts in or records; STOP on the MPC before its sound
+    /// calls it off; UNDO while it records throws it away; REC on the MPC
+    /// once its sound has begun ends it, keeping what recorded. Each time
+    /// the pad is let go.
+    #[test]
+    fn a_flatten_is_the_arms_pad_take_for_rec_stop_and_undo() {
+        use crate::rec_arm::{Do, Press};
+        use mpfree_sampler_ui::recorder::{self, Recorder};
+        use mpfree_sampler_ui::sample::{feed_input, PAD};
+        let mut p = sample_sampler(Fonts::embedded());
+        open_sample(&mut p, sample_page::Editor::Wave);
+        let ev = |p: &mut Player, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: recorder::RECORDER.into(),
+                kind,
+            })
+        };
+        let cannot = |p: &Player| {
+            p.ui.get::<Recorder>(recorder::RECORDER)
+                .unwrap()
+                .view
+                .cannot
+                .clone()
+        };
+        // The arm's answers to the MPC's buttons, applied.
+        let apply = |p: &mut Player, done: Vec<Do>| {
+            for d in done {
+                if let Do::Pad(d) = d {
+                    p.apply(ToUi::PadTake(d));
+                }
+            }
+        };
+        let stopped = rec_now_in(mpfree_transport::State::Stopped);
+        let counting = rec_now_in(mpfree_transport::State::CountIn);
+        let mut arm = crate::rec_arm::RecArm::default();
+        for _ in 0..2 {
+            ev(&mut p, EventKind::Step { index: 0, delta: 1 });
+        }
+        p.tick(0.033);
+        rec_desk_keep(&mut p, &mut arm, &stopped);
+        let Some(FromUi::SampleInput(Some(mut feed))) =
+            rec_desk_keep(&mut p, &mut arm, &stopped).pop()
+        else {
+            panic!("the input's writer");
+        };
+        let hit = |down| FromUi::SampleHit {
+            kit: 0,
+            pad: PAD,
+            velocity: 127,
+            down,
+        };
+        let takes = |p: &Player| p.sample.project(0).unwrap().takes().len();
+        let rec = |p: &mut Player, arm: &mut crate::rec_arm::RecArm, now| {
+            ev(p, EventKind::Tab(0));
+            p.tick(0.033);
+            rec_desk_keep(p, arm, now)
+        };
+        // Drums counts in: the arm refuses, and nothing plays.
+        assert!(rec(&mut p, &mut arm, &counting).is_empty());
+        assert_eq!(
+            cannot(&p).as_deref(),
+            Some("Finish the take first: Drums records")
+        );
+        assert_eq!(arm.pad, None);
+        p.tick(5.0);
+        // STOP before its sound: called off, the pad let go.
+        rec(&mut p, &mut arm, &stopped);
+        p.tick(0.033);
+        assert_eq!(rec_desk_keep(&mut p, &mut arm, &stopped), [hit(true)]);
+        apply(&mut p, arm.press(Press::Stop, &stopped));
+        assert_eq!(rec_desk_keep(&mut p, &mut arm, &stopped), [hit(false)]);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: flatten A5 stopped: nothing kept"));
+        assert_eq!((arm.pad, takes(&p)), (None, 0));
+        // UNDO while it records: thrown away, the pad let go.
+        rec(&mut p, &mut arm, &stopped);
+        p.tick(0.033);
+        assert_eq!(rec_desk_keep(&mut p, &mut arm, &stopped), [hit(true)]);
+        feed_input(&mut feed.0, 0.3, 0.5, false);
+        p.tick(0.3);
+        rec_desk_keep(&mut p, &mut arm, &stopped);
+        assert!(arm.pad.is_some_and(|t| t.recording), "{arm:?}");
+        let thrown = arm.throw(&stopped).unwrap();
+        apply(&mut p, thrown);
+        assert_eq!(rec_desk_keep(&mut p, &mut arm, &stopped), [hit(false)]);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: flatten A5 thrown away"));
+        assert_eq!((arm.pad, takes(&p)), (None, 0));
+        // REC on the MPC once its sound began: kept on the page.
+        feed_input(&mut feed.0, 1.2, 0.0, false);
+        p.tick(0.033);
+        rec(&mut p, &mut arm, &stopped);
+        p.tick(0.033);
+        assert_eq!(rec_desk_keep(&mut p, &mut arm, &stopped), [hit(true)]);
+        feed_input(&mut feed.0, 0.3, 0.5, false);
+        p.tick(0.3);
+        rec_desk_keep(&mut p, &mut arm, &stopped);
+        apply(&mut p, arm.press(Press::Rec, &stopped));
+        assert_eq!(rec_desk_keep(&mut p, &mut arm, &stopped), [hit(false)]);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: flatten A5 kept on the page"));
+        assert_eq!((arm.pad, takes(&p)), (None, 1));
+        assert_eq!(
+            p.sample.project(0).unwrap().take(0).map(|t| t.name.clone()),
+            Some("Break 92 flat".to_string())
+        );
+        // A held empty pad + REC from the Play page: refused, said on the
+        // hint line there in the warning colour; the arm hears it ended.
+        p.apply(ToUi::Show(View::Play));
+        p.tick(0.033);
+        apply(&mut p, arm.arm_pad(0, 20, &stopped));
+        p.tick(0.033);
+        rec_desk_keep(&mut p, &mut arm, &stopped);
+        assert_eq!(arm.pad, None);
+        let said = tell_text(sample_page::FLATTEN_HELD);
+        let hint = p.ui.get::<Label>("hint").unwrap();
+        assert_eq!((hint.text.as_str(), hint.tone), (said.as_str(), Tone::Warn));
     }
 
     /// One-page step 2c (the plan's decision 4): the recorder row's Keep
