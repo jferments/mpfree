@@ -943,6 +943,20 @@ pub struct Status {
     pub copy: bool,
 }
 
+/// What Sample Recall is asked (sampler R5 part 2, sampler decision 3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecallKey {
+    /// A pad held + SHIFT + REC: open over the page on the kit's pad
+    /// `pad` (a kit pad, 0 to 127).
+    Open { pad: usize },
+    /// PLAY while it is open: hear the bracket.
+    Audition,
+    /// REC while it is open: keep the bracket on its pad.
+    Keep,
+    /// STOP while it is open: close it (the transport plays on).
+    Close,
+}
+
 /// Jay's wheel navigation (live test 2, 13 Nov) on a page with rows: the
 /// Sample and Pads pages' settings lists, the Synth tab's tiles, and
 /// Arrange's Record settings or Edit options. As in the menus: the wheel
@@ -1187,6 +1201,10 @@ pub enum Effect {
     /// SHIFT + BROWSE: save the project (the audio loop gathers its
     /// engines' parts and the screen saves them).
     SaveProject,
+    /// Sample Recall (sampler R5 part 2): a pad held + SHIFT + REC opens
+    /// it on that pad; while it is open PLAY auditions, REC keeps and STOP
+    /// closes ([`RecallKey`]).
+    Recall(RecallKey),
     /// The metronome on or off, and its level in dBFS (SHIFT + PLAY
     /// START, Play's options, and at the start from the saved settings).
     Metronome {
@@ -1394,6 +1412,12 @@ pub struct App {
     /// A list or pad over the page is open (the number pad, the undo
     /// history): the wheel, its push and - / + go to it.
     overlay: bool,
+    /// Sample Recall is open over the page: PLAY, REC and STOP are its
+    /// ([`crate::gui::FromUi::Recall`]).
+    recall_open: bool,
+    /// The pad slot pressed last while the pads play the kit, for Sample
+    /// Recall's held pad.
+    kit_last: Option<usize>,
     /// A finger rests on a control with a value: the wheel and - / + turn
     /// it, and the push does nothing ([`crate::gui::FromUi::Held`]).
     held: bool,
@@ -1553,6 +1577,8 @@ impl App {
             lights_shown: Self::startup_transport_lights(),
             undo_ready: false,
             overlay: false,
+            recall_open: false,
+            kit_last: None,
             held: false,
             outline: false,
             pad_layout: None,
@@ -1724,6 +1750,40 @@ impl App {
         self.overlay = on;
     }
 
+    /// The screen opened (true) or closed Sample Recall
+    /// ([`crate::gui::FromUi::Recall`]): PLAY, REC and STOP are its while
+    /// it is open.
+    pub fn set_recall(&mut self, on: bool) {
+        self.recall_open = on;
+    }
+
+    /// Sample Recall is open over the page.
+    pub fn recall_open(&self) -> bool {
+        self.recall_open
+    }
+
+    /// The kit pad a pad held + SHIFT + REC opens Sample Recall on (sampler
+    /// decision 3): the one pressed last of those held while the pads play
+    /// the kit. None while they are steps (STEP SEQ), mute keys (TRACK
+    /// MUTE), levels or transpose (16 LEVEL), loop keys or the synth's
+    /// notes: SHIFT + REC is Capture there, as with no pad held (the
+    /// sequencer thread, 18 Nov).
+    pub fn recall_pad(&self) -> Option<usize> {
+        if self.pad_layout.is_some()
+            || self.step_pads().is_some()
+            || self.levels_on
+            || self.pads_mute()
+            || self.pads_are_loop_keys()
+        {
+            return None;
+        }
+        let held = |slot: usize| self.kit_held.get(slot).copied().flatten();
+        self.kit_last
+            .and_then(held)
+            .or_else(|| self.kit_held.iter().flatten().next().copied())
+            .map(usize::from)
+    }
+
     /// The screen says whether a finger rests on a control with a value
     /// ([`crate::gui::FromUi::Held`]): until it lifts the wheel and - / +
     /// turn that control.
@@ -1887,11 +1947,24 @@ impl App {
         velocity: u8,
         down: bool,
     ) -> Option<mpfree_play::Event> {
-        if self.free_time_recording() || slot >= 16 {
+        if slot >= 16 {
             return None;
         }
         // A kit's pad on the page (or the one it pressed), else the slot.
-        let note = self.kit_pad(slot) as u8;
+        self.pressed_pad_event(self.kit_pad(slot) as u8, velocity, down)
+    }
+
+    /// The same for kit pad `pad` (0 to 127) itself: a key on a kit
+    /// ([`App::kit_key_down`]).
+    pub fn pressed_pad_event(
+        &self,
+        note: u8,
+        velocity: u8,
+        down: bool,
+    ) -> Option<mpfree_play::Event> {
+        if self.free_time_recording() {
+            return None;
+        }
         Some(if down {
             mpfree_play::Event::NoteOn {
                 note,
@@ -2276,6 +2349,24 @@ impl App {
             return self.copy_button(true);
         }
         let shift = self.shift;
+        if self.recall_open {
+            // Sample Recall over the page: PLAY auditions, REC keeps, STOP
+            // closes it, and the music plays on (the sequencer thread's OK,
+            // 18 Nov). SHIFT + REC goes on as ever: Capture.
+            let key = if note == button::PLAY {
+                Some(RecallKey::Audition)
+            } else if Some(note) == self.map.rec && !shift {
+                Some(RecallKey::Keep)
+            } else if note == button::STOP {
+                Some(RecallKey::Close)
+            } else {
+                None
+            };
+            if let Some(k) = key {
+                fx.push(Effect::Recall(k));
+                return fx;
+            }
+        }
         if note == button::FULL_LEVEL {
             let want = if shift {
                 PadLevel::Half
@@ -2377,6 +2468,12 @@ impl App {
             fx.extend(self.toggle_mixer(shift));
         } else if let Some(e) = self.mode_button(note, shift) {
             fx.extend(e);
+        } else if let (true, true, Some(pad)) =
+            (shift, Some(note) == self.map.rec, self.recall_pad())
+        {
+            // A pad held + SHIFT + REC: Sample Recall onto it, on every
+            // page (sampler decision 3, 16 Nov 2026).
+            fx.push(Effect::Recall(RecallKey::Open { pad }));
         } else if shift && Some(note) == self.map.rec && self.view == View::Looper {
             // SHIFT + REC on the Looper tab: the last bars heard become a
             // loop (the looper's Capture).
@@ -2972,8 +3069,9 @@ impl App {
     fn show(&mut self, v: View) -> Vec<Effect> {
         self.menu_editing = false;
         // The screen closes a list or pad over the page when the page
-        // changes.
+        // changes, and Sample Recall with it.
         self.overlay = false;
+        self.recall_open = false;
         let was_editing = std::mem::take(&mut self.page_editing);
         if self.view != v
             && matches!(
@@ -4709,6 +4807,51 @@ mod tests {
         app.set_pad_layout(Some(pads));
         app.key_up(50);
         assert!(app.eng().active().is_empty(), "nothing was left to let go");
+    }
+
+    /// With a kit, a key hits the kit pad its note names (A1 to H16,
+    /// `profile::kit_pad_of_note`), whatever bank the pads show. It shares
+    /// the hold with a pad of the MPC on the same kit pad, and a track
+    /// change lets go of the old track's kit pads in every bank.
+    #[test]
+    fn keys_hit_a_kits_pads_in_every_bank() {
+        let mut app = ready();
+        // Bank C on the pads: a key on B5 (kit pad 20) still hits B5.
+        app.set_pad_page(2);
+        app.kit_key_down(20, 100);
+        assert_eq!(notes(&mut app, 64), [20]);
+        assert!(matches!(
+            app.pressed_pad_event(20, 100, true),
+            Some(mpfree_play::Event::NoteOn { note: 20, .. })
+        ));
+        // Bank B: pad 6 and the key on B6 (21) hold it together.
+        app.set_pad_page(1);
+        app.kit_key_down(21, 100);
+        app.pad_down(5, 100);
+        app.kit_key_up(21);
+        assert!(app.eng().active().contains(21), "pad 6 still holds B6");
+        app.pad_up(5);
+        assert!(!app.eng().active().contains(21));
+        // A second note-on for a held key is ignored; one note-off ends it.
+        app.kit_key_down(40, 90);
+        app.kit_key_down(40, 90);
+        app.kit_key_up(40);
+        assert!(!app.eng().active().contains(40));
+        // A pad pressed again before it was let go: one let-go ends it.
+        app.pad_down(0, 100);
+        app.pad_down(0, 100);
+        app.pad_up(0);
+        assert!(!app.eng().active().contains(16));
+        // B5's key is still down, and H16's (127) goes down: a track
+        // change lets both go on the old track, and their keys' let-go
+        // later changes nothing on the new one.
+        app.kit_key_down(127, 100);
+        assert!(app.eng().active().contains(20) && app.eng().active().contains(127));
+        app.set_track(1);
+        assert!(app.arps.engine_at(0).active().is_empty());
+        app.kit_key_up(20);
+        app.kit_key_up(127);
+        assert!(app.eng().active().is_empty());
     }
 
     fn ons(app: &mut App, frames: u32) -> Vec<(u32, u8, u8)> {
@@ -7804,11 +7947,6 @@ mod tests {
             .any(|e| matches!(e, Effect::Note(n) if n.contains("bank F"))));
     }
 
-    /// The device as it starts on a fresh stick: no saved map, no Map
-    /// controls. REC, OVERDUB, UNDO and PLAY START must work and light on
-    /// their real numbers (the bug Jay hit three times: the tests gave them
-    /// made-up numbers, the MPC had none). Every light sent for them is one
-    /// main.rs lets through to the controller (`akai::app_lights`).
     /// Sampler R5.7: REC with kit pads held asks the audio loop for a pad
     /// take (it knows which are empty); STOP while one records keeps it
     /// with the music playing on, and UNDO throws it on every page.
@@ -7822,11 +7960,12 @@ mod tests {
         app.pad_down(1, 100);
         assert_eq!(app.held_kit_pads(), [17, 20]);
         assert_eq!(press(&mut app, button::REC), [Effect::PadRec(vec![17, 20])]);
-        // SHIFT + REC is still Capture.
+        // SHIFT + REC with a kit pad held is Sample Recall onto the first
+        // (sampler R5, layout spec section 6): the past, not a take.
         app.button(button::SHIFT, true, 0.0);
         assert_eq!(
             press(&mut app, button::REC),
-            [Effect::Time(TimeAction::Capture)]
+            [Effect::Recall(RecallKey::Open { pad: 17 })]
         );
         app.button(button::SHIFT, false, 0.0);
         // 16 Levels has the pads: REC as alone.
@@ -7861,6 +8000,11 @@ mod tests {
         );
     }
 
+    /// The device as it starts on a fresh stick: no saved map, no Map
+    /// controls. REC, OVERDUB, UNDO and PLAY START must work and light on
+    /// their real numbers (the bug Jay hit three times: the tests gave them
+    /// made-up numbers, the MPC had none). Every light sent for them is one
+    /// main.rs lets through to the controller (`akai::app_lights`).
     #[test]
     fn a_fresh_mpfree_knows_rec_overdub_undo_and_play_start() {
         let mut app = App::new(44_100, false);
@@ -8466,5 +8610,56 @@ mod tests {
         assert!(app.save_dirty, "the toggle is saved");
         let fx = held(&mut app, SHIFT, |a| press(a, 93));
         assert_eq!(fx[0], Effect::Metronome { on: false, db: -24 });
+    }
+
+    /// Sample Recall (sampler R5 part 2): a kit pad held + SHIFT + REC
+    /// opens it on any page; while it is open PLAY, REC and STOP are its,
+    /// and SHIFT + REC alone is still Capture. With STEP SEQ on, a held pad
+    /// is a step, so SHIFT + REC stays Capture (the sequencer thread's
+    /// condition, 18 Nov).
+    #[test]
+    fn a_pad_held_with_shift_rec_opens_sample_recall_and_it_takes_play_rec_and_stop() {
+        const SHIFT: u8 = button::SHIFT;
+        let mut app = ready();
+        app.set_pad_layout(None);
+        app.open_tab(View::Arrange);
+        app.pad_down(5, 100);
+        assert_eq!(app.recall_pad(), Some(5));
+        assert_eq!(
+            held(&mut app, SHIFT, |a| press(a, 90)),
+            [Effect::Recall(RecallKey::Open { pad: 5 })]
+        );
+        app.pad_up(5);
+        assert_eq!(app.recall_pad(), None);
+        // The screen opened it.
+        app.set_overlay(true);
+        app.set_recall(true);
+        assert_eq!(
+            press(&mut app, button::PLAY),
+            [Effect::Recall(RecallKey::Audition)]
+        );
+        assert_eq!(press(&mut app, 90), [Effect::Recall(RecallKey::Keep)]);
+        assert_eq!(
+            press(&mut app, button::STOP),
+            [Effect::Recall(RecallKey::Close)]
+        );
+        assert_eq!(
+            held(&mut app, SHIFT, |a| press(a, 90)),
+            [Effect::Time(TimeAction::Capture)]
+        );
+        // A change of page closes it: PLAY plays again.
+        app.open_tab(View::Play);
+        assert!(!app.recall_open());
+        assert!(!press(&mut app, button::PLAY)
+            .iter()
+            .any(|e| matches!(e, Effect::Recall(_))));
+        // STEP SEQ: the held pad is a step.
+        click(&mut app, button::STEP_SEQ);
+        app.pad_down(5, 100);
+        assert_eq!(app.recall_pad(), None);
+        assert_eq!(
+            held(&mut app, SHIFT, |a| press(a, 90)),
+            [Effect::Time(TimeAction::Capture)]
+        );
     }
 }

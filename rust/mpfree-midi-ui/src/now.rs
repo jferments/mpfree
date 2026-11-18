@@ -844,11 +844,11 @@ mod tests {
         // The clock on the 5-pin jacks, which the tempo follows.
         let c = d.clock.as_ref().unwrap();
         assert!(c.followed && c.name == "MIDI" && c.dir == Dir::In);
-        // The drum machine's channel 10: pad 1 let go, the note no pad
-        // has still down.
+        // The drum machine's channel 10: pad A1 let go, H2's note still
+        // down.
         let drums = data(&m, (mpfree_midi::DIN, Dir::In), 9, 1.0);
         assert_eq!(drums.held.down().collect::<Vec<_>>(), [20]);
-        assert_eq!(drums.went, "Drums, pad 1");
+        assert_eq!(drums.went, "Drums, pad A1");
         // MIDI Out: the Bass note ended, so nothing is still on.
         assert!(d.still.is_empty());
         assert!(!can_end(&d));

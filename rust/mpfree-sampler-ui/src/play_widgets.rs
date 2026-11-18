@@ -1,12 +1,13 @@
-//! The Play tab's three pictures: which layer plays at which velocity, the
-//! amp envelope drawn over the sound, and the filter's response. Like the
+//! The Play tab's pictures: which layer plays at which velocity, the amp
+//! envelope drawn over the sound, the filter's response, and the LFO's
+//! wave beside the pitch envelope. Like the
 //! other widgets they show what the page put in their fields and report
 //! touches; a drag moves the picture at once, and the page applies the
 //! value to the project and shows what was kept.
 
 use std::sync::Arc;
 
-use mpfree_sampler::model::{Ahdsr, Filter, FilterKind};
+use mpfree_sampler::model::{Ahdsr, Filter, FilterKind, LfoShape, PadLfo, PitchEnv, PITCH_ENV_ST};
 use mpfree_ui::wave::Peaks;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
@@ -808,5 +809,150 @@ impl Widget for FilterCurve {
             }
             _ => None,
         }
+    }
+}
+
+// ---------------------------------------------------------------- movement
+
+/// How far the pitch envelope has fallen at the end of its decay, as a
+/// power of e: the engine's ([`mpfree_sampler::engine`]), a ten-thousandth.
+const ENV_FALL: f32 = 9.21;
+/// The random waves' values, one a cycle, for the picture.
+const RANDOM: [f32; 4] = [0.55, -0.35, 0.9, -0.7];
+
+/// The LFO's wave at `phase` cycles from its start (-1 to 1), as the
+/// picture draws it: the random waves from a fixed run of values.
+pub fn lfo_shape(shape: LfoShape, phase: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    let f = phase.rem_euclid(1.0);
+    let cycle = phase.max(0.0) as usize;
+    let held = |k: usize| RANDOM[k % RANDOM.len()];
+    match shape {
+        LfoShape::Sine => (f * TAU).sin(),
+        LfoShape::Triangle => 1.0 - 4.0 * ((f + 0.25).fract() - 0.5).abs(),
+        LfoShape::SawUp => 2.0 * f - 1.0,
+        LfoShape::SawDown => 1.0 - 2.0 * f,
+        LfoShape::Square => {
+            if f < 0.5 {
+                1.0
+            } else {
+                -1.0
+            }
+        }
+        LfoShape::Hold => held(cycle + 1),
+        LfoShape::Drift => {
+            let t = 0.5 - 0.5 * (f * PI).cos();
+            held(cycle) + (held(cycle + 1) - held(cycle)) * t
+        }
+    }
+}
+
+/// The Movement section's picture: two cycles of the LFO's wave at its
+/// depth (left), and the pitch envelope falling back to the pad's pitch
+/// over its decay (right), each faint when it does nothing. It only
+/// shows: the controls are on the panel.
+pub struct MotionView {
+    pub title: String,
+    pub right: String,
+    pub caption: String,
+    pub lfo: PadLfo,
+    pub env: PitchEnv,
+    /// Whether the LFO and the envelope are heard on this pad.
+    pub lfo_on: bool,
+    pub env_on: bool,
+}
+
+impl MotionView {
+    pub fn new() -> MotionView {
+        MotionView {
+            title: "Movement".into(),
+            right: String::new(),
+            caption: String::new(),
+            lfo: PadLfo::default(),
+            env: PitchEnv::default(),
+            lfo_on: false,
+            env_on: false,
+        }
+    }
+
+    /// The two plots: the LFO's and the envelope's.
+    fn plots(r: Rect) -> (Rect, Rect) {
+        let b = body(r);
+        let plot = Rect::new(b.x, b.y + 4, b.w.max(1), (b.h - 4 - 24).max(1));
+        let gap = 24;
+        let left = (plot.w - gap) * 3 / 5;
+        (
+            Rect::new(plot.x, plot.y, left.max(1), plot.h),
+            Rect::new(
+                plot.x + left + gap,
+                plot.y,
+                (plot.w - left - gap).max(1),
+                plot.h,
+            ),
+        )
+    }
+}
+
+impl Default for MotionView {
+    fn default() -> MotionView {
+        MotionView::new()
+    }
+}
+
+impl Widget for MotionView {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        titled(cx, r, &self.title, &self.right);
+        let (lp, ep) = MotionView::plots(r);
+        let half = |p: Rect| (p.h / 2 - 6).max(1) as f32;
+        for (p, name) in [(lp, "LFO · 2 cycles"), (ep, "Pitch envelope")] {
+            let mid = p.y + p.h / 2;
+            cx.canvas.fill_rect(Rect::new(p.x, mid, p.w, 1), t.outline);
+            cx.canvas.fill_rect(Rect::new(p.x, p.y, 1, p.h), t.outline);
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                Rect::new(p.x + 6, p.y, p.w - 6, 16),
+                Align::Left,
+                t.text_faint,
+                name,
+            );
+        }
+        // The LFO: two cycles across, up for a positive depth.
+        let color = if self.lfo_on { t.good } else { t.text_faint };
+        let (mid, amp) = (lp.y + lp.h / 2, half(lp));
+        let depth = self.lfo.depth.clamp(-1.0, 1.0);
+        let ys: Vec<i32> = (0..=lp.w)
+            .map(|i| {
+                let phase = 2.0 * i as f32 / lp.w.max(1) as f32;
+                let v = lfo_shape(self.lfo.shape, phase.min(1.9999)) * depth;
+                mid - (v * amp).round() as i32
+            })
+            .collect();
+        polyline(cx, lp.x, &ys, 3, color);
+        // The envelope: from its start back to the pad's pitch over its
+        // decay, on the scale of the furthest start (24 semitones).
+        let color = if self.env_on { t.accent } else { t.text_faint };
+        let (mid, amp) = (ep.y + ep.h / 2, half(ep));
+        let start = (self.env.semitones / PITCH_ENV_ST).clamp(-1.0, 1.0);
+        let ys: Vec<i32> = (0..=ep.w)
+            .map(|i| {
+                let u = i as f32 / ep.w.max(1) as f32;
+                mid - (start * (-ENV_FALL * u).exp() * amp).round() as i32
+            })
+            .collect();
+        polyline(cx, ep.x, &ys, 3, color);
+        if self.env_on {
+            dot(cx, ep.x, ys[0], 12, t.accent);
+        }
+        let caption = Rect::new(lp.x, lp.bottom() + 6, ep.right() - lp.x, 20);
+        cx.text(
+            FontId::Sans,
+            t.size_small - 1.0,
+            caption,
+            Align::Left,
+            t.text_dim,
+            &self.caption,
+        );
     }
 }

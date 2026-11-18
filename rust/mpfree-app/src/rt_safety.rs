@@ -60,6 +60,8 @@ struct Rig {
     cv: cv_out::CvOut,
     /// Export's note tap (export.rs), on as if an export ran.
     tap: crate::export::Tap,
+    /// Sample Recall's master, kept every period (sampler R5 part 1).
+    recall: sampler::RecFeed,
 }
 
 fn tone(frames: usize, f: f32) -> Vec<i16> {
@@ -118,6 +120,9 @@ impl Rig {
             io: midi_in::io_model(),
             cv: cv_out::CvOut::new(RATE, std::time::Duration::ZERO),
             tap: crate::export::Tap::on(),
+            recall: sampler::RecFeed(
+                mpfree_sampler::record::input16(crate::sample_page::RECALL_SECONDS, RATE).0,
+            ),
         }
     }
 
@@ -169,6 +174,7 @@ impl Rig {
             io,
             cv,
             tap,
+            recall,
             ..
         } = self;
         let synth_on = *synth_on;
@@ -320,6 +326,7 @@ impl Rig {
         let n_tracks = time.project().tracks.len();
         let said = mix.takes_period(&ctx, n_tracks, &|t| time.now_playing(t));
         assert!(said.is_none(), "period {i}: a take said something");
+        recall.period(time.block(), &left[..], &right[..], mix.mixer.latency());
         let p = p.max(time.mix_click(left, right));
         self.peak = self.peak.max(p);
         // After the write, in the loop.
@@ -394,6 +401,8 @@ fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
     );
     assert!(rig.peak > 0.01, "silent: peak {}", rig.peak);
     assert!(rig.peak.is_finite());
+    // Sample Recall kept every period of the master.
+    assert_eq!(rig.recall.written(), i * PERIOD as u64);
     // On two cores the lane took its half of the voices; on three the synth
     // played every period on its lane. (Late parts are allowed here: under
     // qemu or a busy machine a lane can be slow, and a late part allocates
@@ -839,7 +848,8 @@ fn a_tracks_transpose_moves_its_notes_and_a_sounding_note_ends_where_it_went() {
 /// A key a route sends to a track that isn't armed (the I/O view's
 /// Routing) plays that track at once, where its clips play: out of MIDI
 /// out on its channel, on its own instrument, or the kit's pad for the
-/// MPC's pad note. None of it allocates.
+/// MPC's pad note. CAPTURE's history takes each as the pad that plays it
+/// there. None of it allocates.
 #[test]
 fn routed_keys_play_their_track_where_its_clips_play() {
     use crate::midi_in::Key;
@@ -870,10 +880,29 @@ fn routed_keys_play_their_track_where_its_clips_play() {
         (2, down(64)),
         (2, up(64)),
         (5, down(PAD_NOTES[0])),
+        (
+            5,
+            Key::Pressure {
+                note: PAD_NOTES[0],
+                value: 50,
+            },
+        ),
         (5, up(PAD_NOTES[0])),
     ];
+    let mut routed_pads = crate::midi_in::RoutedPads::new();
+    let synth = &*rig.synth;
     let ((), calls) = crate::sys::alloc_count::calls(|| {
         for (track, key) in keys {
+            // As the sound loop does: CAPTURE's history first, with the
+            // synth's pad layout for track 4 (as if it played the synth).
+            let t = usize::from(track);
+            let synth_has = (t == 3).then_some(synth);
+            let kept = routed_pads.event(track, key, |n| {
+                crate::midi_file::pad_on_track(&rig.mix.instruments, synth_has, t, n)
+            });
+            if let Some(ev) = kept {
+                rig.time.routed_played(track, 0, ev);
+            }
             crate::play_routed(
                 track,
                 key,
@@ -893,6 +922,7 @@ fn routed_keys_play_their_track_where_its_clips_play() {
     rig.period(0);
     assert_eq!(rig.player.hits(), before + 1, "only track 6 played the kit");
     assert_eq!(rig.mix.instruments.stats(2).notes, notes_before + 1);
+    assert!(rig.time.state().capture.is_some(), "CAPTURE has the keys");
     assert!(rig.midi.close());
     assert_eq!(*sink.0.lock().unwrap(), [0x91, 60, 100, 0x81, 60, 64]);
 }

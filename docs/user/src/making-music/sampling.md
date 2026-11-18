@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/warp_tab.rs rust/mpfree-sampler-ui/src/chop_tab.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
+covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/recall.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/warp_tab.rs rust/mpfree-sampler-ui/src/chop_tab.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
 checked: 2026-11-16 ececc7e
 -->
 
@@ -34,12 +34,13 @@ Q-Links 1 to 4 turn level, pan, tune and voices. **Put on** places the sound pic
 
 **Browse for A5** at the top right of the Pads tab (it names the pad picked) opens the browser over the page. **BROWSE**, and the folder at the right end of the top bar, open the same browser from any page. **BROWSE**, the folder or a tab closes it again.
 
-{{shot: browser-samples | The browser opened from Browse for A5: Samples / Drums, with Kick 01 picked, its waveform, and Load on A5 and Next pad hit under it.}}
+{{shot: browser-samples | The browser opened from Browse for A5: Samples / Drums, with Kick 01 picked, its waveform, the kit's pads with A5 picked, and Load on A5 and Next pad hit under them.}}
 
 Pick a place on the left (**Samples**, **Kits** or **Recordings**, say, or **Recent** and **Favourites**). Tap a folder to open it, and tap a sound to pick it and see its length, format and waveform. Then:
 
 - **Load on A5** puts it on the pad picked (so does a second tap on it). Hit another pad and the button names that pad instead: browse, hit a pad, load, hit the next pad, load again.
 - **Next pad hit** puts it on the next pad you hit.
+- **The kit's pads**, under the sound, show what each pad of the kit holds, a bank at a time, with the pad picked outlined. Put a finger on one to pick it, as a hit on the MPC's pad does, and hear what is on it until you lift your finger; **Load on** then names it. The map opens on the bank of the pad picked, and **‹** and **›** beside its heading show the kit's other banks.
 - **Audition**, or **PLAY**, lets you hear it first, at the level Q-Link 3 sets.
 - The **star** at the right end of each row adds it to Favourites; tap it again to take it out.
 
@@ -126,7 +127,31 @@ A take that starts on the bar line and lasts whole bars lands warped to the proj
 Use it to free up a busy pad, or to chop a sound you have already shaped.
 
 > [!TIP]
-> Resampling is the classic MPC trick: play the loop, the synth or the whole mix into a pad, then chop it and play it again. Pick **Master** as the Source and use **Skip back** after a jam you liked.
+> Resampling is the classic MPC trick: play the loop, the synth or the whole mix into a pad, then chop it and play it again. Pick **Master** as the Source and use **Skip back** after a jam you liked. MPFree always keeps the last two minutes of what you hear, so Skip back on **Master** reaches back to before you picked it. From any other page, [Sample Recall](#sample-recall-keep-what-just-played-from-any-page) does the same without leaving it.
+
+## Sample Recall: keep what just played, from any page
+
+MPFree always keeps the last two minutes of what you hear. When something good just happened (a fill, a lucky loop, a few bars of the whole mix), you can put it on a pad without stopping or leaving the page you're on.
+
+1. **Hold the pad** you want it on and press **SHIFT + REC**.
+2. Sample Recall opens over the page. While the music plays it brackets the **last 4 whole bars**; stopped, the **last 10 seconds**.
+3. Press **PLAY** to hear the bracket over the music, **REC** to keep it, or **STOP** to close without keeping. The music keeps playing either way.
+
+{{shot: sample-recall | Sample Recall opened from Play on pad A5: the last two minutes along the top with their bar numbers, bars 12 to 15 bracketed and drawn large, and Keep landing them on A6, the next free pad.}}
+
+Kept, the bracket lands on the pad you held if it is empty, or else on the next empty pad in its bank (the panel says which: "Pad A6 · next free"). It is cut on the bar lines, with a short fade in and out, and with **Warp** on it plays in time at the project's tempo from then on. The pad is picked, so **SAMPLE EDIT** opens it on the Sample tab, ready to chop. It is one step on the Sample and Pads tabs: **UNDO** there takes it back (the history calls it "Recall to A6").
+
+| Control | What it does |
+|---|---|
+| **Length** | 1, 2, 4, 8 or 16 whole bars, ending on the last bar line; or **Free**, a number of seconds ending where Sample Recall opened. |
+| **Lands on** | The pad it keeps onto. Step it to another pad; on a pad that already has a sound it says "replaces its sound". |
+| **Warp** | On: whole bars play in time at the project's tempo. Free always lands as played. |
+| **Audition**, **Keep** | The same as PLAY and REC. |
+
+The Q-Links turn **Length** (through the bars, then Free's seconds up to two minutes), **Ends at** (a bar further back each step, or a tenth of a second on Free), **Fade** (0 to 50 ms) and **Pad**.
+
+> [!NOTE]
+> **SHIFT + REC** without a pad held is still [Capture](clips.md#capture-keep-what-you-just-played). A held pad only counts while the pads play the kit: with **STEP SEQ**, **TRACK MUTE** or **16 LEVEL** on, or a synth on the pads, SHIFT + REC is Capture too. While a recording is ready, counting in or running, Sample Recall waits: finish the take first.
 
 ## Send to pad and Chop to pads
 

@@ -412,6 +412,34 @@ pub enum Knob {
     Transpose,
 }
 
+impl Knob {
+    /// The mixer value MIDI Learn takes for this knob (SHIFT + a touch on
+    /// its Q-Link card), as the mixer's Faders look learns it: a send or a
+    /// level of a strip. None for a knob that turns no strip value (swing,
+    /// tune, transpose, the DJ filters, which are the Perform FX insert,
+    /// and a step's values).
+    pub fn learn_addr(self) -> Option<mpfree_play::mpfree_param::ParamAddr> {
+        use mpfree_play::mpfree_param::{Owner, ParamAddr};
+        let (strip, param) = match self {
+            Knob::DrumsSend => (
+                StripId::Track(mixing::DRUMS),
+                mixer_ids::send(mixing::DELAY_RETURN),
+            ),
+            Knob::LoopSend => (
+                StripId::Track(mixing::LOOP),
+                mixer_ids::send(mixing::DELAY_RETURN),
+            ),
+            Knob::LoopLevel => (StripId::Track(mixing::LOOP), mixer_ids::VOLUME),
+            Knob::LineLevel => (mixing::LINE, mixer_ids::VOLUME),
+            _ => return None,
+        };
+        Some(ParamAddr::new(
+            Owner::Strip(crate::modmix::strip_of(strip)?),
+            param,
+        ))
+    }
+}
+
 /// Which bank the Q-Links show while step pads are held: Q-LINK steps
 /// Step, Trig, Sound and round. Held steps with no note have only Sound.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1342,6 +1370,15 @@ impl PlayPage {
                 }
                 p if p == PadField::Attack as u16 => ("Attack".to_string(), format!("{v:.0} ms")),
                 p if p == PadField::Release as u16 => ("Release".to_string(), format!("{v:.0} ms")),
+                p if p == PadField::LfoDepth as u16 => {
+                    ("LFO depth".to_string(), format!("{:+.0} %", v * 100.0))
+                }
+                p if p == PadField::PitchEnv as u16 => {
+                    ("Pitch env".to_string(), format!("{v:+.1} st"))
+                }
+                p if p == PadField::PitchDecay as u16 => {
+                    ("Pitch decay".to_string(), format!("{v:.0} ms"))
+                }
                 // Slices count from 1 on the screen, from 0 in the engine.
                 p if p == PadField::Slice as u16 => (
                     "Slice".to_string(),

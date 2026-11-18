@@ -212,6 +212,7 @@ impl Desk<'_> {
             }
             gui::FromUi::UndoReady(ready) => app.set_undo_ready(ready),
             gui::FromUi::Overlay(on) => app.set_overlay(on),
+            gui::FromUi::Recall(on) => app.set_recall(on),
             gui::FromUi::Outline(shown) => app.set_outline(shown),
             gui::FromUi::Held(on) => app.set_held(on),
             gui::FromUi::Tab(k) => fx.extend(app.tab(k)),
@@ -504,6 +505,25 @@ impl Desk<'_> {
                 out.show(gui::ToUi::Rec(app.rec));
             }
             app::Effect::PadTake(d) => out.show(gui::ToUi::PadTake(d)),
+            // Sample Recall opens only while no take is ready, counting in
+            // or recording: REC mid-take punches out, and the overlay
+            // mustn't take that (the sequencer thread, 18 Nov). A pad take
+            // armed or recording holds REC for that take the same way.
+            app::Effect::Recall(app::RecallKey::Open { pad }) => {
+                let now = rec_now(time, looper);
+                if now.taking()
+                    || now.loop_armed
+                    || app.rec.ready.is_some()
+                    || app.rec.pad.is_some()
+                {
+                    let s = "Finish the take first: Sample Recall opens once it stops".to_string();
+                    out.note(&s);
+                    out.show(gui::ToUi::Tell(s));
+                } else {
+                    out.show(gui::ToUi::Recall(app::RecallKey::Open { pad }));
+                }
+            }
+            app::Effect::Recall(k) => out.show(gui::ToUi::Recall(k)),
             app::Effect::Nav(n) => out.show(gui::ToUi::Nav(n)),
             app::Effect::Held { delta, fine } => out.show(gui::ToUi::Held { delta, fine }),
             app::Effect::Menu(m) => out.show(gui::ToUi::Menu(m)),

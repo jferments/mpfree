@@ -66,7 +66,12 @@ pub(crate) struct Heard {
     /// While the song plays: its position at `at`, and a bar's and a
     /// beat's ticks.
     now: Option<(f64, Tick, Tick)>,
+    /// The frame the unbroken run of song playing now began on.
+    run_from: u64,
 }
+
+/// A bar line: its tick and the frame it fell on.
+pub type LineAt = (Tick, u64);
 
 impl Heard {
     /// Room for `frames` frames (none: Capture finds nothing).
@@ -81,6 +86,7 @@ impl Heard {
             run: 0,
             next_tick: None,
             now: None,
+            run_from: 0,
         }
     }
 
@@ -99,6 +105,7 @@ impl Heard {
             self.at = block.start_frame;
             self.from = block.start_frame;
             self.run = self.run.wrapping_add(1);
+            self.run_from = block.start_frame;
         }
         if self.cap > 0 {
             let mut done = 0;
@@ -120,6 +127,7 @@ impl Heard {
             let ticks = span.ticks();
             if self.next_tick != Some(ticks.start) {
                 self.run = self.run.wrapping_add(1);
+                self.run_from = span.frame;
             }
             self.next_tick = Some(ticks.end);
             let bar = span.meter.bar_ticks();
@@ -183,6 +191,36 @@ impl Heard {
     /// Whether the song plays now.
     pub fn playing(&self) -> bool {
         self.now.is_some()
+    }
+
+    /// While the song plays: the bar lines of this unbroken run of it
+    /// around frame `p` (a note played then), each as its tick and frame:
+    /// the last one at or before `p` (None when `p` came before the run
+    /// began, or before its first line), and the next one, once heard.
+    /// None when the song isn't playing.
+    pub fn around(&self, p: u64) -> Option<(Option<LineAt>, Option<LineAt>)> {
+        self.now?;
+        let newest = self.n_lines.checked_sub(1).and_then(|i| self.line(i));
+        let Some(newest) = newest.filter(|l| l.frame >= self.run_from) else {
+            return Some((None, None));
+        };
+        let (mut before, mut after) = (None, None);
+        let mut i = self.n_lines;
+        while let Some(l) = i.checked_sub(1).and_then(|k| self.line(k)) {
+            if l.run != newest.run {
+                break;
+            }
+            if l.frame > p {
+                after = Some((l.tick, l.frame));
+            } else {
+                if p >= self.run_from {
+                    before = Some((l.tick, l.frame));
+                }
+                break;
+            }
+            i -= 1;
+        }
+        Some((before, after))
     }
 
     /// The newest bar lines of the newest run, up to `out.len()`, oldest
