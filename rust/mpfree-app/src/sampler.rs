@@ -969,7 +969,8 @@ pub struct RecFeed(pub Feed);
 
 impl RecFeed {
     /// One period: marks the bar lines the transport's `block` crosses
-    /// (from bar 1 on, not the count-in) at their frames in the buffer,
+    /// (from bar 1 on, not the count-in, each with its bar's number) at
+    /// their frames in the buffer,
     /// `latency` frames later (a point in the mix hears the block that
     /// much late), then appends the period's input. Never allocates, locks
     /// or waits.
@@ -983,7 +984,10 @@ impl RecFeed {
             let ticks = span.meter.bar_ticks();
             for (tick, offset) in span.lines(ticks) {
                 if tick >= 0 {
-                    self.0.bars.mark(base + u64::from(offset));
+                    // The bar the line starts, numbered from 1 as the
+                    // transport shows it (Sample Recall's bar numbers).
+                    let bar = u32::try_from(tick / ticks.max(1) + 1).unwrap_or(u32::MAX);
+                    self.0.bars.mark_bar(base + u64::from(offset), bar);
                 }
             }
             bar = Some(frames_between(0, ticks, span.bpm, span.rate));

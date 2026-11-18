@@ -139,6 +139,9 @@ pub const INPUT_SECONDS: u32 = 75;
 /// (`record::input16`, about 21 MB at 44.1 kHz). The audio thread makes it
 /// at start and the screen gets its reading end (`ToUi::SampleRecall`).
 pub const RECALL_SECONDS: u32 = 120;
+/// The tag on Sample Recall's undo steps, which the history names
+/// "Recall to A6" ([`model::Project::tag_last`]).
+const TAG_RECALL: u8 = 1;
 /// The page shown while the kits load, or while the synth has the pads.
 pub const EMPTY_PAGE: &str = "Sample · no sound";
 pub const EMPTY: &str = "sample-empty";
@@ -500,6 +503,22 @@ pub fn save_export(
     Ok(folder)
 }
 
+/// The warp for a sound kept as whole bars played at `bpm` (none when
+/// not), and what the log line adds for it.
+fn warp_at(bpm: Option<f64>) -> (Option<Warp>, String) {
+    let warp = bpm.map(|b| Warp::new((b as f32).clamp(*WARP_BPM.start(), *WARP_BPM.end())));
+    let warped = warp
+        .as_ref()
+        .map(|w| format!(", warped at {:.1} BPM", w.bpm))
+        .unwrap_or_default();
+    (warp, warped)
+}
+
+/// Sample Recall's Fade in frames at `rate`.
+fn recall_fade(r: &mpfree_sampler_ui::recall::Recall, rate: u32) -> u32 {
+    (u64::from(r.fade_ms) * u64::from(rate) / 1000) as u32
+}
+
 /// The Rec tab's Master source: the master as heard, after Master safety.
 pub fn master_source() -> RecSource {
     RecSource::Mix(StripId::Master, CapturePoint::AfterSafety)
@@ -694,6 +713,8 @@ pub struct SamplePage {
     takes: u32,
     /// Captures of an effect's memory kept, for their names.
     captures: u32,
+    /// Sample Recall's keeps so far, for their names ("Recall 3").
+    recalls: u32,
     /// The last take, said in a line on the tab.
     last_take: String,
     /// The Auto-sample mode, added the first time it is opened.
@@ -845,6 +866,7 @@ impl SamplePage {
             marks_seen: 0,
             takes: 0,
             captures: 0,
+            recalls: 0,
             last_take: String::new(),
             auto: None,
             auto_state: None,
@@ -3842,6 +3864,7 @@ impl SamplePage {
             }
         };
         match i {
+            _ if i.tag == TAG_RECALL => format!("Recall to {first}"),
             _ if i.chop && i.pads > 0 => format!("Chop to {}", pads(i.pads)),
             _ if i.pads_play && i.pads > 0 => format!("Keys on {}", pads(i.pads)),
             _ if i.pads_play => "What the pads play".to_string(),
@@ -4163,11 +4186,7 @@ impl SamplePage {
         what: &str,
         bpm: Option<f64>,
     ) {
-        let warp = bpm.map(|b| Warp::new((b as f32).clamp(*WARP_BPM.start(), *WARP_BPM.end())));
-        let warped = warp
-            .as_ref()
-            .map(|w| format!(", warped at {:.1} BPM", w.bpm))
-            .unwrap_or_default();
+        let (warp, warped) = warp_at(bpm);
         self.keep_as(ui, kit, pad, src, what, &warped, |layer| {
             layer.region.warp = warp
         });
@@ -5469,9 +5488,106 @@ impl SamplePage {
     }
 
     /// The master's last two minutes (Sample Recall), once they have come.
-    #[allow(dead_code)] // Recall's overlay reads it (R5 part 2)
     pub fn recall(&self) -> Option<&Input> {
         self.recall.as_ref()
+    }
+
+    /// Sample Recall opened on pad `pad` of the kit the pads play: the pad
+    /// it lands on (the held pad when it has no sound, else the next empty
+    /// one in its bank, as the Rec tab's Next empty; in a full bank the
+    /// held pad, replacing its sound) and which of the kit's pads have a
+    /// sound. None while no kit is in.
+    pub fn recall_pads(&self, pad: usize) -> Option<(usize, Vec<bool>)> {
+        let p = self.projects.get(self.kit)?;
+        let filled: Vec<bool> = (0..PADS)
+            .map(|i| p.pad(i).is_some_and(|pd| !pd.layers.is_empty()))
+            .collect();
+        let has = |i: usize| filled.get(i).copied().unwrap_or(false);
+        let onto = rec_tab::target(pad.min(PADS - 1), rec_tab::Onto::NextEmpty, has).unwrap_or(pad);
+        Some((onto, filled))
+    }
+
+    /// Sample Recall's bracket as a stereo source named `name`, as played;
+    /// `fade` frames faded in and out when `faded` (the audition: a kept
+    /// one fades on its region, which SAMPLE EDIT can change).
+    fn recall_source(
+        &self,
+        r: &mpfree_sampler_ui::recall::Recall,
+        name: &str,
+        faded: bool,
+    ) -> Result<Source, String> {
+        let input = self.recall.as_ref().ok_or("the master isn't kept yet")?;
+        let b = r
+            .bracket(input)
+            .ok_or("the bracket reaches past what is kept")?;
+        let mut data = Vec::with_capacity(b.frames() as usize * 2);
+        input
+            .audio
+            .copy(b.start, b.end, &mut data)
+            .map_err(|e| format!("{e:?}"))?;
+        if faded {
+            let fade = recall_fade(r, input.rate).min(b.frames() as u32 / 2) as usize;
+            let frames = data.len() / 2;
+            for i in 0..fade {
+                let g = i as f32 / fade as f32;
+                for c in 0..2 {
+                    data[i * 2 + c] *= g;
+                    data[(frames - 1 - i) * 2 + c] *= g;
+                }
+            }
+        }
+        Source::new(name, input.rate, 2, data).map_err(|e| format!("{e:?}"))
+    }
+
+    /// Sample Recall's bracket to hear (PLAY, or Audition), faded.
+    pub fn recall_audition(&self, r: &mpfree_sampler_ui::recall::Recall) -> Result<Source, String> {
+        self.recall_source(r, "Recall", true)
+    }
+
+    /// Keeps Sample Recall's bracket on its pad of the kit the pads play,
+    /// as one undo step named "Recall to A6": cut where the bracket is,
+    /// faded on its region, warped at the project tempo when it warps,
+    /// and the pad picked (SAMPLE EDIT opens it). The pad's name ("A6"),
+    /// or why it wasn't kept.
+    pub fn recall_keep(
+        &mut self,
+        ui: &mut Ui,
+        r: &mpfree_sampler_ui::recall::Recall,
+    ) -> Result<String, String> {
+        let input = self.recall.as_ref().ok_or("the master isn't kept yet")?;
+        let b = r
+            .bracket(input)
+            .ok_or("the bracket reaches past what is kept")?;
+        let rate = input.rate;
+        let fade = recall_fade(r, rate).min(b.frames() as u32 / 2);
+        self.recalls += 1;
+        let src = self.recall_source(r, &format!("Recall {}", self.recalls), false)?;
+        let what = match b.bars {
+            Some((a, z)) if a == z => format!("recall bar {a}"),
+            Some((a, z)) => format!("recall bars {a} to {z}"),
+            None => format!("recall {}", duration_text(b.frames(), rate)),
+        };
+        let kit = self.kit;
+        let edits = self.edits;
+        let bpm = r.warps().then(|| self.tempo());
+        let (warp, warped) = warp_at(bpm);
+        self.keep_as(ui, kit, r.onto, src, &what, &warped, |layer| {
+            layer.region.warp = warp;
+            if fade > 0 {
+                layer.region.fade_in = Fade {
+                    frames: fade,
+                    ..Fade::NONE
+                };
+                layer.region.fade_out = layer.region.fade_in;
+            }
+        });
+        if self.edits == edits {
+            return Err("not kept: the log says why".to_string());
+        }
+        if let Some(p) = self.projects.get_mut(kit) {
+            p.tag_last(TAG_RECALL);
+        }
+        Ok(self.pad_text(kit, r.onto))
     }
 
     /// What the input records from, when the audio thread hasn't been told;

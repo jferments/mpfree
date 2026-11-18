@@ -605,6 +605,8 @@ pub const BAR_LINES: usize = 256;
 
 struct Bars {
     at: [AtomicU64; BAR_LINES],
+    /// Each line's bar number (the bar it starts), 0 when not given.
+    number: [AtomicU32; BAR_LINES],
     /// Lines the writer has started to write (claimed), then finished, as
     /// [`Ring`]'s frames.
     claimed: AtomicU64,
@@ -620,6 +622,7 @@ struct Bars {
 pub fn bar_lines() -> (BarWriter, BarReader) {
     let bars = Arc::new(Bars {
         at: std::array::from_fn(|_| AtomicU64::new(0)),
+        number: std::array::from_fn(|_| AtomicU32::new(0)),
         claimed: AtomicU64::new(0),
         count: AtomicU64::new(0),
         bar: AtomicU64::new(0),
@@ -643,10 +646,18 @@ impl BarWriter {
     /// A bar line at absolute frame `frame` of the rolling buffer the lines
     /// go with. Lines come in order. Never allocates, locks or waits.
     pub fn mark(&mut self, frame: u64) {
+        self.mark_bar(frame, 0);
+    }
+
+    /// [`BarWriter::mark`], with the number of the bar the line starts
+    /// (the transport's, from 1), for Sample Recall's bar numbers.
+    pub fn mark_bar(&mut self, frame: u64, bar: u32) {
         let b = &self.bars;
         b.claimed.store(self.count + 1, Ordering::Relaxed);
         fence(Ordering::Release);
-        b.at[(self.count % BAR_LINES as u64) as usize].store(frame, Ordering::Relaxed);
+        let i = (self.count % BAR_LINES as u64) as usize;
+        b.at[i].store(frame, Ordering::Relaxed);
+        b.number[i].store(bar, Ordering::Relaxed);
         self.count += 1;
         b.count.store(self.count, Ordering::Release);
     }
@@ -674,16 +685,24 @@ impl BarReader {
 
     /// The `n`-th latest bar line (0 is the latest), if it is still kept.
     pub fn back(&self, n: usize) -> Option<u64> {
+        self.back_numbered(n).map(|(f, _)| f)
+    }
+
+    /// [`BarReader::back`] with the line's bar number (0 when it was
+    /// marked without one).
+    pub fn back_numbered(&self, n: usize) -> Option<(u64, u32)> {
         let count = self.count();
         if n >= BAR_LINES || n as u64 >= count {
             return None;
         }
         let i = count - 1 - n as u64;
-        let frame = self.bars.at[(i % BAR_LINES as u64) as usize].load(Ordering::Relaxed);
+        let at = (i % BAR_LINES as u64) as usize;
+        let frame = self.bars.at[at].load(Ordering::Relaxed);
+        let bar = self.bars.number[at].load(Ordering::Relaxed);
         // Did the writer start to write over it while we read?
         fence(Ordering::Acquire);
         let claimed = self.bars.claimed.load(Ordering::Relaxed);
-        (claimed <= i + BAR_LINES as u64).then_some(frame)
+        (claimed <= i + BAR_LINES as u64).then_some((frame, bar))
     }
 
     /// The `k`-th bar line after frame `frame` (`k` = 1 is the first one
