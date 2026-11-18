@@ -153,7 +153,7 @@
 8572	Time with trig conditions and ratchets, 8 clips, arp
 43626	Time: 8 clips, 4 tracks 90 ms ahead
 8882	Time: transport, 8 clips, arp
-53727	Track host alone, 16 tracks, 8 events each per block
+55989	Track host alone, 16 tracks, 8 events each per block
 406148	Track host, 4 Poly tracks of 4 voices
 27052	Transient shaper
 11340	Tremolo

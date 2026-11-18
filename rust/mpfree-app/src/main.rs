@@ -5796,6 +5796,7 @@ fn player_session(
         .map(|e| (e.node_id, e.name))
         .collect();
     cores.start_mixer(&mut mix.mixer);
+    cores.start_tracks(&mut mix.instruments);
     for line in cores.take_lines() {
         out.say(&line);
     }
@@ -9062,9 +9063,10 @@ fn player_session(
         let t_mix = Span::start();
         mix.follow(looper.line.is_open(), looper.monitor);
         let ctx = mixing::ctx(RATE, i * PERIOD as u64, time.info().bpm, time.block());
-        // The mixer's lanes (each stage's inserts, the returns) keep the
-        // same deadline.
+        // The mixer's lanes (each stage's inserts, the returns) and the
+        // tracks' instruments' lanes keep the same deadline.
         mix.mixer.set_lane_deadline(Some(lane_until));
+        mix.instruments.set_lane_deadline(Some(lane_until));
         let (p, caught) = mix.period(
             &ctx,
             (&synth_l, &synth_r),
@@ -9289,9 +9291,10 @@ fn player_session(
                 play.queued,
             )
         };
-        // A synth left out of this period (late) comes back before anything
-        // plays it again.
+        // A synth or a track's instrument left out of this period (late)
+        // comes back before anything plays it again.
         synth.settle(lane_until);
+        mix.instruments.settle(lane_until);
         // A period behind, with the queue running down: give up the voices
         // nobody hears (shed.rs). An underrun in this write emptied the
         // queue. A fast export is never behind (the card is stopped and
@@ -9413,7 +9416,7 @@ fn player_session(
             ));
             out.note(&format!(
                 "status: {}",
-                cores.status(cores::Counts::read(&player, &mix.mixer, &synth))
+                cores.status(cores::Counts::read(&player, &mix, &synth))
             ));
             out.note(&format!("status: {}", parts.status()));
             out.note(&format!("status: {}", shed.describe()));
@@ -9459,7 +9462,7 @@ fn player_session(
                 .set_counts(failed, dropped, stalls, out.report_dropped());
             // The second core's late parts: on the Dev page, and in the log
             // within a second (a fallback is never silent).
-            let counts = cores::Counts::read(&player, &mix.mixer, &synth);
+            let counts = cores::Counts::read(&player, &mix, &synth);
             cores.publish(&engine_shared.cores, counts);
             if let Some(line) = cores.late_note(counts, last_timing) {
                 out.note(&line);
@@ -9616,7 +9619,7 @@ fn player_session(
     }
     store.flush();
     out.say(&engines::log_line(&engines.lifetime()));
-    out.say(&cores.status(cores::Counts::read(&player, &mix.mixer, &synth)));
+    out.say(&cores.status(cores::Counts::read(&player, &mix, &synth)));
     if session {
         out.say("no more pings: the controller should drop the session by itself (inferred: within about 10 s)");
     }
