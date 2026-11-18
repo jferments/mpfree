@@ -2,7 +2,8 @@
 //! the mixer's I/O view.
 //!
 //! The owner's calls (2026-11-12): a project's routing lives in an I/O view
-//! inside the mixer, opened by the I/O icon beside the mixer icon. The
+//! inside the mixer, opened by the Mix tab's I/O chip (the I/O icon that
+//! opened it until 18 Nov 2026 gave its place to the folder icon). The
 //! mixer (`mpfree-mixer-ui`) owns the view and its Audio section; this crate
 //! gives it six more through [`mpfree_mixer_ui::IoSection`]:
 //!
