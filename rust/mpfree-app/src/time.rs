@@ -96,6 +96,10 @@ const MAX_OUT: usize = 512;
 /// before the view is compiled again (which allocates): room set aside
 /// in the clip and in the play view each time it compiles.
 pub const RECORD_ROOM: usize = 1024;
+/// The other tracks a take can record besides the armed one (SHIFT + a
+/// track's row in the REC chip's target list): 16 armed tracks in all,
+/// each with a recorder of its own.
+pub const MAX_ALSO: usize = 15;
 /// The Play page's steps: sixteenths.
 pub const STEP_TICKS: Tick = 240;
 /// The most pads a pen (STEP SEQ's note or chord on a melodic track)
@@ -295,7 +299,10 @@ pub trait Pads {
     /// MIDI port whose gear needs more than the sound's lead), handed over
     /// before its period: `o.offset` counts from this period's first
     /// frame and may be past its end. Only MIDI out takes it; true when it
-    /// did. By default nothing is.
+    /// did. By default nothing is. Also a lock, a lane's value or their
+    /// end on the track's own MIDI out control (`mpfree_play::is_gear_control`)
+    /// that the forecast missed, in its own period, or that went ahead and
+    /// wasn't played (its unlock): false leaves it to the mod engine.
     fn out_ahead(&mut self, o: &Out) -> bool {
         let _ = o;
         false
@@ -583,6 +590,12 @@ impl TimeHost {
     /// follow), if any.
     pub fn armed(&self) -> Option<usize> {
         self.control.armed()
+    }
+
+    /// The other armed tracks, a bit each, without the armed one
+    /// (`TimeAction::ArmAlso`).
+    pub fn also(&self) -> u128 {
+        self.control.also()
     }
 
     /// The Loop cell armed on the grid, while it is still empty: the next
@@ -2589,6 +2602,85 @@ mod tests {
             "notes ahead of the stop: {:?}",
             h.ahead_counts()
         );
+    }
+
+    /// Sequencer S5's controls ahead: a lock on the track's own MIDI out
+    /// control goes ahead with its note, once; one taken off its step
+    /// after it went ahead is put back (its unlock) when the real pass
+    /// doesn't play it.
+    #[test]
+    fn slow_gear_gets_a_lock_ahead_once_and_its_unlock_when_the_lock_is_taken_off() {
+        use mpfree_play::mpfree_param::{OnTrack, Owner, ParamAddr, RelAddr};
+        const AHEAD: u64 = 3_000;
+        const STEP: f64 = 5_512.5;
+        let mut h = gear_host();
+        let cc = RelAddr::new(OnTrack::Midi, 74);
+        let addr = ParamAddr::new(Owner::Midi(0), 74);
+        h.step_action(StepAction::Lock {
+            pad: 2,
+            steps: 1 << 8,
+            addr: cc,
+            value: Some(100.0),
+        })
+        .unwrap();
+        h.set_ahead(&[AHEAD as u32]);
+        h.command(Command::Play);
+        let mut g = Gear::default();
+        let locks = |g: &Gear| -> Vec<(u64, u64, Event)> {
+            g.midi
+                .iter()
+                .filter(|m| matches!(m.2, Event::Lock { .. } | Event::Unlock { .. }))
+                .copied()
+                .collect()
+        };
+        // The first pass: the lock goes out ahead, with step 9's note.
+        g.run(&mut h, BAR);
+        let first = locks(&g);
+        let step_9 = (8.0 * STEP).round() as u64;
+        let lock = first
+            .iter()
+            .find(|m| m.2 == Event::Lock { addr, value: 100.0 })
+            .copied()
+            .expect("the lock");
+        assert!(lock.0.abs_diff(step_9) <= 1, "{first:?}");
+        assert!(lock.1 + AHEAD <= lock.0, "ahead: {lock:?}");
+        let note = g
+            .midi
+            .iter()
+            .find(|m| m.0 == lock.0 && matches!(m.2, Event::NoteOn { note: 2, .. }))
+            .expect("step 9's note");
+        assert_eq!(note.1, lock.1, "handed over with its note");
+        assert_eq!(
+            first.iter().filter(|m| m.2 == lock.2).count(),
+            1,
+            "once: {first:?}"
+        );
+        assert_eq!(h.ahead_counts().late, 0, "{:?}", h.ahead_counts());
+        // The second pass: taken off its step 2,000 frames before it, after
+        // it went ahead. It isn't played, so its unlock follows.
+        let at = BAR + step_9 - 2_000;
+        g.run(&mut h, at);
+        h.step_action(StepAction::Lock {
+            pad: 2,
+            steps: 1 << 8,
+            addr: cc,
+            value: None,
+        })
+        .unwrap();
+        let before = g.midi.len();
+        g.run(&mut h, 2 * BAR);
+        let second: Vec<_> = g.midi[before..]
+            .iter()
+            .filter(|m| matches!(m.2, Event::Lock { .. } | Event::Unlock { .. }))
+            .copied()
+            .collect();
+        assert!(
+            matches!(second[..], [(_, _, Event::Unlock { addr: a })] if a == addr),
+            "only its unlock: {second:?}"
+        );
+        // In the period that held the lock's frame, from its start.
+        assert!(second[0].0 + u64::from(PERIOD) > BAR + step_9, "{second:?}");
+        assert!(h.ahead_counts().wrong >= 1, "{:?}", h.ahead_counts());
     }
 
     /// Perform FX gestures at frames: (frame, value or None for letting go).
@@ -5387,6 +5479,104 @@ mod tests {
             "redo: capture 1 · Track 1 / 1"
         );
         assert_eq!(h.dropped(), 0);
+    }
+
+    /// Several armed tracks record in one take (SHIFT + a track's row in
+    /// the REC chip's list; the MPC 3.10.1 guide's Rec Arm Behavior): REC
+    /// readies a clip on each, the keys a route plays on each armed track
+    /// record into its own clip, a routed track that isn't armed only
+    /// plays, and one UNDO takes the take back on every track. The arm
+    /// can't change while the take records.
+    #[test]
+    fn armed_tracks_record_their_routed_keys_in_one_take() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        assert_eq!(
+            h.act(TimeAction::ArmAlso(1 << 1 | 1 << 2 | 1 << 0))
+                .unwrap(),
+            "armed too: Track 2, Track 3",
+            "the armed track is left out of the others"
+        );
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let said = h.act(TimeAction::Transport(Command::Record)).unwrap();
+        assert!(
+            said.contains("new clip in slot 1 of track 1")
+                && said.contains("new clip in slot 1 of track 2")
+                && said.contains("new clip in slot 1 of track 3"),
+            "{said}"
+        );
+        run(&mut h, &mut pads, BAR / 2 + 4 * u64::from(PERIOD), &[]);
+        assert!(
+            h.act(TimeAction::ArmAlso(0)).is_err(),
+            "the arm stays while the take records"
+        );
+        let on = |note| Event::NoteOn { note, velocity: 90 };
+        // (frame, track, event): Tracks 2 and 3 armed, Track 4 not.
+        let keys = [
+            (BAR + 2000, 1, on(5)),
+            (BAR + 6000, 1, Event::NoteOff { note: 5 }),
+            (BAR + 3000, 2, on(7)),
+            (BAR + 9000, 2, Event::NoteOff { note: 7 }),
+            (BAR + 4000, 3, on(1)),
+            (BAR + 5000, 3, Event::NoteOff { note: 1 }),
+        ];
+        let pressed = [(BAR + 1000, 4, 100, 2000)];
+        while pads.frame < 2 * BAR {
+            let end = pads.frame + u64::from(PERIOD);
+            for &(at, track, ev) in &keys {
+                if (pads.frame..end).contains(&at) {
+                    h.routed_played(track, (at - pads.frame) as u32, ev);
+                }
+            }
+            run(&mut h, &mut pads, end, &pressed);
+        }
+        let notes = |h: &TimeHost, t: usize| {
+            h.control.project.tracks[t]
+                .slots
+                .iter()
+                .flatten()
+                .map(|c| c.notes.iter().map(|n| n.note).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(notes(&h, 0), vec![vec![4]]);
+        assert_eq!(notes(&h, 1), vec![vec![5]]);
+        assert_eq!(notes(&h, 2), vec![vec![7]]);
+        assert!(
+            notes(&h, 3).is_empty(),
+            "a track that isn't armed only plays"
+        );
+        let st = h.state();
+        assert_eq!(st.done.len(), 1, "one take");
+        assert_eq!(st.done[0].added, 3);
+        assert!(h.act(TimeAction::Undo).unwrap().starts_with("undo: take 1"));
+        for t in 0..3 {
+            assert_eq!(notes(&h, t), vec![Vec::<u8>::new()], "track {}", t + 1);
+        }
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// An armed track with no clip playing and no empty slot doesn't
+    /// record the take, and REC says so; the others still record.
+    #[test]
+    fn an_armed_track_with_no_room_is_said_and_the_others_record() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        h.act(TimeAction::ArmAlso(1 << 1 | 1 << 2)).unwrap();
+        for s in h.control.project.tracks[2].slots.iter_mut() {
+            *s = Some(Clip::new("full", 3840));
+        }
+        let said = h.act(TimeAction::Transport(Command::Record)).unwrap();
+        assert!(
+            said.contains("new clip in slot 1 of track 2")
+                && said.contains("Track 3 has no clip playing and no empty slot"),
+            "{said}"
+        );
+        assert_eq!(h.control.also_full(), 1);
+        run(&mut h, &mut pads, BAR, &[]);
+        assert_eq!(h.info().state, State::Recording);
     }
 
     /// Keys a route plays on tracks that aren't armed go into CAPTURE's

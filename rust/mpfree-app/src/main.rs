@@ -3832,6 +3832,9 @@ struct SeqPads<'a> {
     /// Tracks with their own instrument play it (instruments.rs), not the
     /// pads.
     own: &'a mut instruments::Instruments,
+    /// The mod engine, read: whether something besides a clip moves a
+    /// track's MIDI out control (S5's controls ahead).
+    modu: &'a modmix::ModMix,
     /// Synth-voice pads play their own synths (pad_synths.rs).
     pad_synths: &'a mut pad_synths::PadSynths,
     /// While an export runs, every event goes to its MIDI file too, as
@@ -4858,6 +4861,9 @@ impl time::Pads for SeqPads<'_> {
         if self.quiet(o) {
             return false;
         }
+        if mpfree_play::is_gear_control(o) {
+            return self.control_ahead(o);
+        }
         let shift = self.shift(o.track);
         let mut buf = [0; MAX_PAD_NOTES];
         let is = shifted_is(
@@ -4915,6 +4921,35 @@ fn synth_seen<'s>(
 }
 
 impl SeqPads<'_> {
+    /// A clip's lock or lane on the track's own MIDI out control, from a
+    /// track that plays ahead: MIDI out sends it, ahead or (missed by the
+    /// forecast) on its frame, unless something else moves the control
+    /// (a macro, an LFO row, the morph, a hand, or a lock the mod engine
+    /// still holds): then it goes to the mod engine a period at a time,
+    /// as before. An unlock sends the control's own value, the engine's.
+    fn control_ahead(&mut self, o: &mpfree_play::Out) -> bool {
+        use mpfree_play::Event;
+        let (addr, value, lane) = match o.event {
+            Event::Lock { addr, value } => (addr, Some(value), false),
+            Event::Lane { addr, value } => (addr, Some(value), true),
+            Event::Unlock { addr } => (addr, None, false),
+            _ => return false,
+        };
+        // A control the mod engine can't hold either (the pressure, which
+        // has no own value to go back to) is left to it, as before.
+        let Some((_, default)) = modmix::midi_param(addr) else {
+            return false;
+        };
+        let e = self.modu.engine();
+        if e.is_moved(addr) || e.is_touched(addr) || e.is_locked(addr) {
+            self.midi.release_ahead(addr);
+            return false;
+        }
+        let v = value.unwrap_or_else(|| e.base(addr).unwrap_or(default));
+        self.midi
+            .control_ahead(o.offset, addr, v, value.is_some(), lane)
+    }
+
     /// A note-on that went out elsewhere (MIDI out, a track's own
     /// instrument) still flashes its pad.
     fn flash(&mut self, o: &mpfree_play::Out) {
@@ -6079,6 +6114,7 @@ fn player_session(
         .collect();
     cores.start_mixer(&mut mix.mixer);
     cores.start_tracks(&mut mix.instruments);
+    cores.start_pads(&mut mix.pad_synths);
     for line in cores.take_lines() {
         out.say(&line);
     }
@@ -8894,6 +8930,7 @@ fn player_session(
             midi: &mut midi_out,
             cv: &mut cv_out,
             own: &mut mix.instruments,
+            modu: &mix.modu,
             pad_synths: &mut mix.pad_synths,
             only: export.only(),
             tap: &mut export.tap,
@@ -9502,10 +9539,12 @@ fn player_session(
             line_level_said = Some(line_level);
         }
         let ctx = mixing::ctx(RATE, i * PERIOD as u64, time.info().bpm, time.block());
-        // The mixer's lanes (each stage's inserts, the returns) and the
-        // tracks' instruments' lanes keep the same deadline.
+        // The mixer's lanes (each stage's inserts, the returns), the
+        // tracks' instruments' lanes and the pads' synths' keep the same
+        // deadline.
         mix.mixer.set_lane_deadline(Some(lane_until));
         mix.instruments.set_lane_deadline(Some(lane_until));
+        mix.pad_synths.set_lane_deadline(Some(lane_until));
         let (p, caught) = mix.period(
             &ctx,
             (&synth_l, &synth_r),
@@ -9735,10 +9774,11 @@ fn player_session(
                 play.queued,
             )
         };
-        // A synth or a track's instrument left out of this period (late)
-        // comes back before anything plays it again.
+        // A synth, a track's instrument or a pad's synth left out of this
+        // period (late) comes back before anything plays it again.
         synth.settle(lane_until);
         mix.instruments.settle(lane_until);
+        mix.pad_synths.settle(lane_until);
         // A period behind, with the queue running down: give up the voices
         // nobody hears (shed.rs). An underrun in this write emptied the
         // queue. A fast export is never behind (the card is stopped and
