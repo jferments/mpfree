@@ -1914,6 +1914,9 @@ enum Undo {
     },
     /// Several steps made by one command (chop to pads), undone together.
     Group(Vec<Undo>),
+    /// Changes nothing: what made the step it is in, for its name in the
+    /// undo history ([`Project::tag_last`]).
+    Tag(u8),
 }
 
 impl Undo {
@@ -1936,6 +1939,7 @@ impl Undo {
             Undo::PadsPlay { .. } => i.pads_play = true,
             Undo::Rename { .. } => i.named += 1,
             Undo::Group(steps) => steps.iter().for_each(|u| u.add_info(i)),
+            Undo::Tag(t) => i.tag = *t,
         }
     }
 }
@@ -1957,6 +1961,9 @@ pub struct StepInfo {
     pub pads_play: bool,
     /// How many sounds it names.
     pub named: usize,
+    /// What made it, as the page tagged it ([`Project::tag_last`]); 0 if
+    /// untagged.
+    pub tag: u8,
 }
 
 /// The sampler's project: its sources, chop sets, pads and undo history.
@@ -2938,6 +2945,7 @@ impl Project {
                 };
                 Undo::Rename { id, before }
             }
+            Undo::Tag(t) => Undo::Tag(t),
             Undo::Group(steps) => {
                 Undo::Group(steps.into_iter().rev().map(|u| self.reverse(u)).collect())
             }
@@ -3004,6 +3012,23 @@ impl Project {
     }
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
+    }
+
+    /// Tags the newest undo step with `tag` (not 0), for its name in the
+    /// undo history ([`StepInfo::tag`]); it undoes as before. False if
+    /// there is no step to tag.
+    pub fn tag_last(&mut self, tag: u8) -> bool {
+        let Some(u) = self.undo.pop() else {
+            return false;
+        };
+        self.undo.push(match u {
+            Undo::Group(mut steps) => {
+                steps.push(Undo::Tag(tag));
+                Undo::Group(steps)
+            }
+            u => Undo::Group(vec![u, Undo::Tag(tag)]),
+        });
+        true
     }
 
     /// The undo history: the steps undo takes back, oldest first, and the

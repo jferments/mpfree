@@ -1092,6 +1092,7 @@ impl App {
             let pad = self.kit_pad(slot) as u8;
             if let Some(h) = self.kit_held.get_mut(slot) {
                 *h = Some(pad);
+                self.kit_last = Some(slot);
             }
             self.arps.engine_at_mut(self.track).press(pad, velocity);
             return;

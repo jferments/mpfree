@@ -6911,8 +6911,20 @@ fn player_session(
                     let page = app.view();
                     // While the mixer is open they move the selected strip; on the chain
                     // editor and the macros panel, the knobs or macros the column shows. In
-                    // the browser: scroll, filter, preview level, place.
-                    if matches!(
+                    // the browser: scroll, filter, preview level, place. Over any page,
+                    // Sample Recall's: Length, Ends at, Fade and Pad.
+                    if app.recall_open() && knob < 4 {
+                        let k = knob as usize;
+                        let ticks = if public {
+                            let was = qlink_at[k].replace(m.bytes[2]);
+                            was.map_or(0, |w| m.bytes[2] as i32 - w as i32)
+                        } else {
+                            delta as i32
+                        };
+                        if ticks != 0 {
+                            out.show(gui::ToUi::RecallQLink(k, ticks));
+                        }
+                    } else if matches!(
                         page,
                         app::View::Synth
                             | app::View::Sample
