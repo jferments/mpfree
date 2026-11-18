@@ -733,6 +733,56 @@ fn an_instrument_that_hears_the_pedal_gets_it_as_it_came() {
 }
 
 #[test]
+fn the_sostenuto_catches_the_keys_down_when_it_goes_down() {
+    // The keys go down while both pedals are up, the quick way, so the
+    // host tells the pedals which keys are down when the sostenuto goes
+    // down; and again after the pedals have been up a while.
+    let mut host = TrackHost::new(1, RATE, 128);
+    let (inst, seen) = rec(false);
+    host.swap(0, Some(inst)).unwrap();
+    let mut out = Split::new(1, 128);
+    let mut frame = 0;
+    let on = |note| NodeEvent::NoteOn {
+        note,
+        velocity: 100,
+    };
+    let off = |note| NodeEvent::NoteOff { note };
+    for round in 0..2 {
+        host.note_on(0, 0, 60, 100);
+        host.note_on(0, 1, 64, 100);
+        host.note_off(0, 2, 64);
+        host.control(0, 3, Ctl::Sostenuto, 1.0);
+        host.note_off(0, 4, 60);
+        host.note_on(0, 5, 67, 100);
+        host.note_off(0, 6, 67);
+        host.control(0, 7, Ctl::Sostenuto, 0.0);
+        run(&mut host, &mut out, &mut frame, 1, 128);
+        // 60 was down as the pedal went down: it is held to the pedal's
+        // rise. 64 was already up and 67 came after: they end at once.
+        assert_eq!(
+            evs(&seen),
+            vec![
+                Timed::new(0, on(60)),
+                Timed::new(1, on(64)),
+                Timed::new(2, off(64)),
+                Timed::new(5, on(67)),
+                Timed::new(6, off(67)),
+                Timed::new(7, off(60)),
+            ],
+            "round {round}"
+        );
+        // Plain notes between the rounds, with both pedals up.
+        host.note_on(0, 0, 72, 100);
+        host.note_off(0, 1, 72);
+        run(&mut host, &mut out, &mut frame, 1, 128);
+        assert_eq!(
+            evs(&seen),
+            vec![Timed::new(0, on(72)), Timed::new(1, off(72))]
+        );
+    }
+}
+
+#[test]
 fn a_poly_note_sustains_on_the_pedal_and_rings_out_when_it_comes_up() {
     let mut host = TrackHost::new(1, RATE, 128);
     host.swap(0, Some(poly())).unwrap();
