@@ -10,6 +10,7 @@
 //! out instead. Grains at or under two semitones up keep the Hermite read
 //! and its cost.
 
+use mpfree_grain::buffer::first_hit;
 use mpfree_grain::{hermite, Aim, GrainSource};
 
 use crate::bandlimit::{self, Kernel, Octaves, Reach};
@@ -31,6 +32,8 @@ pub struct GrainClip<'a, S> {
     /// (a Vintage pad).
     kernel: Option<&'static Kernel>,
     octaves: Option<&'a Octaves>,
+    /// Its hits, kept sharp ([`GrainSource::next_hit`]).
+    hits: &'a [u64],
 }
 
 impl<'a, S: Sample> GrainClip<'a, S> {
@@ -50,6 +53,7 @@ impl<'a, S: Sample> GrainClip<'a, S> {
             end,
             kernel: None,
             octaves: None,
+            hits: &[],
         })
     }
 
@@ -69,6 +73,13 @@ impl<'a, S: Sample> GrainClip<'a, S> {
     pub fn clean(mut self, octaves: Option<&'a Octaves>) -> Self {
         self.kernel = Some(bandlimit::kernel());
         self.octaves = octaves;
+        self
+    }
+
+    /// The sound's hits (frames, in order), for a Stretch that keeps them
+    /// sharp ([`crate::hits`]).
+    pub fn with_hits(mut self, hits: &'a [u64]) -> Self {
+        self.hits = hits;
         self
     }
 }
@@ -150,6 +161,11 @@ impl<S: Sample> GrainSource for GrainClip<'_, S> {
             step,
             taps,
         }
+    }
+
+    #[inline]
+    fn next_hit(&self, from: f64, to: f64) -> Option<f64> {
+        first_hit(self.hits, from, to)
     }
 
     #[inline]
