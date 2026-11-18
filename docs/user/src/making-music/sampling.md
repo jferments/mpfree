@@ -15,7 +15,7 @@ Two tabs share the work:
 
 ## The Pads tab: sounds onto pads
 
-On the left of the Pads tab are the 16 pads of the bank, laid out as on the MPC (pad 1 at the bottom left), each with its name and how it plays. Over them, the kit's banks **A** to **H** each show a dot for every pad that has a sound; tap a bank to put it on the pads, as **PAD BANK** does. The **Pads of** row across the top names the tracks that play kits, each with its kit, the selected track outlined: tap a track to select it, and the pads play its kit. **+ Kit track** after them adds a track with a new empty kit of its own and selects it, ready for sounds (one **UNDO** takes the track back). **Perform pads** at the right end shows the project's [Perform set](looping.md#setting-up-the-perform-set-on-the-pads-tab) in the kit's place: the pads that throw effects, play the loop keys, mute tracks and launch scenes. Tap a pad to pick it, and tap it again to hear it; a pad you hit lights up. Under the pads, **Copy**, **Paste** and **Clear** move pads around, and **Map to keys** turns the bank into a keyboard instrument (see [Playing a kit on keys](shaping-a-pad.md#playing-a-kit-on-keys)).
+On the left of the Pads tab are the 16 pads of the bank, laid out as on the MPC (pad 1 at the bottom left), each with its name and how it plays. Over them, the kit's banks **A** to **H** each show a dot for every pad that has a sound; tap a bank to put it on the pads, as **PAD BANK** does. The **Pads of** row across the top names the tracks that play kits, each with its kit, the selected track outlined: tap a track to select it, and the pads play its kit. **+ Kit track** after them adds a track with a new empty kit of its own and selects it, ready for sounds (one **UNDO** takes back the track and its kit, and **REDO** brings both back). **Perform pads** at the right end shows the project's [Perform set](looping.md#setting-up-the-perform-set-on-the-pads-tab) in the kit's place: the pads that throw effects, play the loop keys, mute tracks and launch scenes. Tap a pad to pick it, and tap it again to hear it; a pad you hit lights up. Under the pads, **Copy**, **Paste** and **Clear** move pads around, and **Map to keys** turns the bank into a keyboard instrument (see [Playing a kit on keys](shaping-a-pad.md#playing-a-kit-on-keys)).
 
 {{shot: pads-pad | The Pads tab: the bank on the left, the picked pad's settings in the middle, the sounds in the kit on the right, and Kit and Browse for at the top right.}}
 
@@ -65,7 +65,7 @@ Pick a place on the left (**Samples**, **Kits** or **Recordings**, say, or **Rec
 
 **Sounds at other rates.** MPFree plays at 44.1 kHz. A sound recorded at another rate (48 kHz from a video or a phone, 96 kHz from a studio, 22 kHz from an old sampler) is converted to 44.1 kHz as it loads, and the Console says so ("converted from 48 kHz to 44.1 kHz"). Nothing you can hear changes: it plays at its own pitch, and as lightly as a sound recorded at 44.1 kHz. Whatever its settings file places on it (trim, loop, fades, warp and slices) moves with it to the same moments, and the file itself stays as it was. Kits and projects convert their sounds as they open, too. When memory is short, a sound stays at its own rate; it still plays at its pitch, and the Console lists it.
 
-**Whole kits.** A kit (green icon) loads all at once: pick it and tap it again, push the data wheel, or tap **Load on**, which names the selected track (**Load on Drums**). It takes the place of the kit that track and the pads play now, with every pad's sound and settings. When another track with a clip plays that kit too, the loaded kit goes into a new kit of its own for the selected track instead, so the other tracks sound as they did; if all eight new kits are in use, MPFree says so and loads nothing. **New track with this kit**, beside Load, keeps the kit the pads play as it is: it adds a track, as **+ Track** on Arrange does, and the kit loads into a new kit for that track alone. The new track is the one selected, so the pads play the kit at once. **UNDO** on Arrange takes the new track away; the kit stays among the project's kits, for any track to pick. To see the sounds inside a kit one by one, press **+**. **Save kit**, at the top of the **Kits** place, keeps the kit the pads play as a kit of its own, so you can load it in another project; save it before you load another kit over it if you want to keep your changes. MPFree puts its own drum kits in **Kits > MPFree** the first time it starts with your library.
+**Whole kits.** A kit (green icon) loads all at once: pick it and tap it again, push the data wheel, or tap **Load on**, which names the selected track (**Load on Drums**). It takes the place of the kit that track and the pads play now, with every pad's sound and settings. When another track with a clip plays that kit too, the loaded kit goes into a new kit of its own for the selected track instead, so the other tracks sound as they did; if all eight new kits are in use, MPFree says so and loads nothing. **New track with this kit**, beside Load, keeps the kit the pads play as it is: it adds a track, as **+ Track** on Arrange does, and the kit loads into a new kit for that track alone. The new track is the one selected, so the pads play the kit at once. One **UNDO** on Arrange takes back the new track and its kit together, and **REDO** brings both back. Once you do something else, so REDO can't bring them back, the kit shows again among the project's kits, played by no track, so nothing you loaded is lost. To see the sounds inside a kit one by one, press **+**. **Save kit**, at the top of the **Kits** place, keeps the kit the pads play as a kit of its own, so you can load it in another project; save it before you load another kit over it if you want to keep your changes. MPFree puts its own drum kits in **Kits > MPFree** the first time it starts with your library.
 
 {{shot: browser-kits | The browser in Kits, with Boom bap picked: Load on Drums (in place of the kit the selected track, Drums, plays) and New track with this kit.}}
 
@@ -96,9 +96,32 @@ The **Rec** page records onto a pad: from the INPUTS on the back of the MPC, or 
 2. Set how the take starts and ends (below), or leave them: by default it starts when you press **Record** and ends when you press **Stop**.
 3. Tap **Record**, play, and tap **Stop**.
 
-The take goes onto the next pad with no sound, starting from the pad picked, and the Sample tab moves to that pad so you can trim it straight away. The title says which pad it will land on ("Record onto pad A6"). Set **Onto** to **This pad** to replace the picked pad's sound instead. One **UNDO** takes a take off its pad again.
+The take stays on the Sample page until you put it on a pad: the **Wave** page shows it as a new take ("Take 3 · new"), ready to hear and trim (see [A take on the page](#a-take-on-the-page)). The title says so ("Record: the take stays here"). To put each take straight onto a pad instead, set **Onto** to **Next empty**: the take goes onto the next pad with no sound, starting from the pad picked, the Sample tab moves to that pad, and the title says which pad it will land on ("Record onto pad A6"). **This pad** replaces the picked pad's sound. One **UNDO** takes a take off the page, or off its pad, again.
 
 The picture shows the source's level on two meters, and the last 30 seconds of it scrolling past with the bar lines, so you can see what came in.
+
+### Recording from the Wave page
+
+You can also record without leaving the **Wave** page: the row over the wave is a recorder, with the Rec page's own settings (a change on one shows on the other).
+
+{{shot: sample-recording | The Wave page while REC is on: REC lit with the take's time under it, Keep last 4 bars waiting on the right, and the panel under the wave showing the Input section.}}
+
+- **REC** starts a take at once; the line under REC says where it goes ("next take stays here", or "next take onto A6" with **Onto** on **Next empty**), and while it records, how long it has run ("0:05.1 · stays here"). With **Starts** on **Next bar** it waits for the music's next bar line, so with the music stopped it waits for **PLAY**. It lights while the take records, and the **REC** chip at the top names the take ("● REC → Take 4 · Line in"), or the pad it goes onto ("● REC → Pad A6 · Line in"). **REC** again (on the screen or on the MPC) or **STOP** keeps the take, and the music plays on; **UNDO** throws it away. Then **REC** on the MPC records what it did before. When REC can't take, the line under it says why in orange: the line input is off ("Line in off: Looper tab, MENU"), there is no empty pad left in the bank for **Next empty**, or another take is counting in or recording ("Finish the take first: Drums records"; a long reason is cut short there, and the hint line at the bottom says it in full).
+- **Source**, **Starts** and **Ends** are cards: tap a card's left half to step it back and its right half to step it on. **Source** is what you record, with its level on the two little bars. **Starts** is **Now**, **On input** (when the sound crosses the threshold) or **Next bar**. **Ends** is **On STOP**, **On silence** or **After** a number of bars.
+- While REC is on, the panel under the wave shows **Input** (**Source**, **Channels** and **Onto**, then **Gain**, **Threshold**, **Pre-roll** and **Monitor**) in place of the region's settings, and the Q-Links turn **Gain**, **Threshold**, **Pre-roll** and how loud **Monitor** plays the input. **Onto** is where the take goes when it stops (**Stay here**, **Next empty** or **This pad**), so you can change your mind while it records. The region's settings and the four markers come back when the take stops, and the page shows the new take, or moves to its pad.
+- **Gain** turns the line input up or down (-24 to +24 dB) on its way into the take. Watch the **Source** card's bars: the level they show, and the level the **Threshold** listens for, are after Gain. Turn it while a take records and the take follows, with no click. It changes what you record, not what you hear.
+- **Monitor** lets you hear the line input through MPFree while you record. It is the same switch as the Looper's **Monitor the input**, so turning it on here turns it on there. **Q-Link 4** sets how loud you hear it: that is the **Input 1** fader on the Mix tab, and the card says **monitor off** under the level while you aren't hearing it. While Monitor is on, the input is part of the mix at that level, so [Sample Recall](#sample-recall-keep-what-just-played-from-any-page), **Keep last 4 bars** and resampling the master keep it as you hear it; the looper and the audio tracks record the input before the fader, as it comes in. Turn your source down before you switch it on, to avoid feedback.
+- **Gain** and **Monitor** are for the line input. Recording a point in the mix (resampling) takes it as you hear it, so both are faint then and say why.
+- **Keep last 4 bars**, at the end of the row, keeps what just played in one tap: [Sample Recall](#sample-recall-keep-what-just-played-from-any-page)'s last 4 bars of the whole mix while the music plays (fewer, early in a song), or its last 10 seconds while it is stopped, and the card says which ("Keep last 10 s"). It becomes a new take where **Onto** says, as a take from **REC** would: on the page ("what just played, as a new take"), or on the pad **Next empty** finds ("what just played, onto A6"). Whole bars are cut on the bar lines and play in time at the project's tempo; a short fade goes in and out. One **UNDO** takes it back (the history calls it "Recall take", or "Recall to A6"). **Hold** the card instead to open Sample Recall over the page, to pick another length, hear it first or choose the pad. While a take is ready, counting in or recording (on the Wave page, or a clip's notes, or a loop), the card waits ("finish the take first"), as Sample Recall does, so nothing is kept under a take.
+
+### A take on the page
+
+A take that stays is kept with the kit, on no pad, until you put it somewhere. The **Wave** page shows it with a red swatch and its name ("Take 3 · new"), and works on it as it does on a pad: tap the wave to hear it, set its start, end and loop with the Q-Links or the markers, shape it with the region's settings, **Normalize to 0 dB** and the **Sound** controls. Each change is one **UNDO**, as on a pad.
+
+- **Send to pad**, then hit a pad: the take goes on that pad, replacing any sound there, and leaves the page; the page shows the pad. One **UNDO** puts it back on the page.
+- **SHIFT + the wheel** steps through the takes on the page, then the pads with a sound (**SHIFT + –** / **+** still zooms).
+- **Chop to pads**, the other pages and **Process** work on pads, so put the take on a pad first; they say so if you try.
+- A take on the page is part of the kit, so you never lose one without being asked: saving the project keeps it, autosave keeps it too, and opening another project or **New project** asks first, as for any change you haven't saved. The page keeps up to 32 takes.
 
 ### Skip back: keep what you just played
 
@@ -120,12 +143,13 @@ The rule to remember: **a pad + REC records from now**; SHIFT + REC keeps what y
 
 ### How a take starts and ends
 
-The panel under the picture sets up the take, in five sections: **Input** (Source and Channels), **Start**, **End**, **Take** (Record, Skip back and Onto) and **Resample** (Flatten and Auto-sample). Tap a choice's button to pick it, drag a knob up or down, or tap a selector's arrows; the data wheel and **–** / **+** change the control you touched last, and a finger resting on a control lets the wheel turn it.
+The panel under the picture sets up the take, in five sections: **Input** (Source and Channels), **Start** (with Gain, Threshold and Pre-roll), **End**, **Take** (Record, Skip back and Onto) and **Resample** (Flatten and Auto-sample). Tap a choice's button to pick it, drag a knob up or down, or tap a selector's arrows; the data wheel and **–** / **+** change the control you touched last, and a finger resting on a control lets the wheel turn it.
 
 | Control | What it does |
 |---|---|
 | **Source** | What it records (above). |
 | **Channels** | **Left + right**, **Left**, **Right** or **Mono mix** (both mixed into one). |
+| **Gain** | How loud the line input records, from -24 to +24 dB. The meters, the threshold and the take hear it; what you hear doesn't change. Faint while you resample a point in the mix. |
 | **Start** | **Now**: when you tap Record. **Threshold**: when the sound gets louder than the Threshold knob, for catching a hit without missing its start. **Next bar**: on the next bar line, in time with the music. |
 | **Threshold** | How loud the sound must be to start a take (and quiet, to end one on silence), from -60 to -6 dB. |
 | **Pre-roll** | With Start on Threshold, how much from just before the sound to keep as well (0 to 500 ms), so the attack isn't cut. |
@@ -134,14 +158,14 @@ The panel under the picture sets up the take, in five sections: **Input** (Sourc
 | **Tail** | What a take of a Length does at its end. **Cut** ends on the bar line. **Ring out** keeps recording until the sound dies away (up to 20 seconds more), for a one-shot with its reverb. **Loop** makes a loop of exactly its bars, with the ringing folded onto its start, so it loops with no seam. |
 | **Silence for** | How long the quiet must last (250 ms to 4 s) to end a take on silence, or a Ring out. |
 | **Skip back** | How far Skip back reaches. |
-| **Onto** | **Next empty** or **This pad** (above). |
+| **Onto** | **Stay here** (the take stays on the Sample page until you put it on a pad), **Next empty** or **This pad** (above). Skip back keeps what it reaches the same way. |
 | **Flatten velocity**, **Flatten hold** | How Flatten plays the pad (below). |
 
 A take that starts on the bar line and lasts whole bars lands warped to the project's tempo, so it stays in time if you change the tempo later. A take can be up to three minutes long.
 
 ### Flatten: print a pad to a new sound
 
-**Flatten** records the picked pad as it sounds now, with its layers, envelope, filter, warp and pan in one new sound. It plays the pad once at the **Flatten velocity**, lets go after the **Flatten hold**, and records until the sound has been silent for the Silence time. Onto the next empty pad, the pad channel's effects are printed in too; onto the pad itself they are left out, because the channel will play them again.
+**Flatten** records the picked pad as it sounds now, with its layers, envelope, filter, warp and pan in one new sound. It plays the pad once at the **Flatten velocity**, lets go after the **Flatten hold**, and records until the sound has been silent for the Silence time. Onto the next empty pad (where it goes with **Onto** on **Stay here** too), the pad channel's effects are printed in too; onto the pad itself they are left out, because the channel will play them again.
 
 Use it to free up a busy pad, or to chop a sound you have already shaped.
 
@@ -152,7 +176,7 @@ Use it to free up a busy pad, or to chop a sound you have already shaped.
 
 MPFree always keeps the last two minutes of what you hear. When something good just happened (a fill, a lucky loop, a few bars of the whole mix), you can put it on a pad without stopping or leaving the page you're on.
 
-1. **Hold the pad** you want it on and press **SHIFT + REC**.
+1. **Hold the pad** you want it on and press **SHIFT + REC**. On the Sample tab's **Wave** page, holding **Keep last 4 bars** opens it too, and a tap on that card keeps the last 4 bars at once ([Recording from the Wave page](#recording-from-the-wave-page)).
 2. Sample Recall opens over the page. While the music plays it brackets the **last 4 whole bars**; stopped, the **last 10 seconds**.
 3. Press **PLAY** to hear the bracket over the music, **REC** to keep it, or **STOP** to close without keeping. The music keeps playing either way.
 
@@ -193,9 +217,11 @@ The pad's name at the top left of every Sample page has a dotted line under it: 
 
 ## Wave: trim, loop and sound
 
-{{shot: sample | The Wave page: the whole sample at the top, the zoomed region across the page, the region's knobs, buttons and switches under it in three sections with the pad's Sound beside them, and the four Q-Links (Start, End, Loop start, Loop end) down the right. Send to pad and Chop to pads are at the top right.}}
+{{shot: sample | The Wave page: the recorder row at the top (REC, Source, Starts and Ends), the tools (Trim, Slice, Warp and Grain) beside the whole sample under it, the zoomed region across the page, the region's knobs, buttons and switches under it in three sections with the pad's Sound beside them, and the four Q-Links (Start, End, Loop start, Loop end) down the right. Send to pad and Chop to pads are at the top right.}}
 
 The **Wave** page shows the sample across the screen. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links, or rest a finger on a marker's tab and turn the data wheel: it moves a screen pixel a turn, or one frame at a time with **SHIFT** (next build; see [Hold and turn](../getting-started/the-screen.md#hold-and-turn)). Hold **SHIFT** and press **+** to zoom in, **SHIFT + –** to zoom out (the Warp and Chop pages too); the card beside the strip at the top says how far in you are. Tap the wave to hear it.
+
+**The tools.** At the left of the strip over the wave are four tools: **Trim**, **Slice**, **Warp** and **Grain**. The tool you pick decides what a finger on the wave moves and what the Q-Links turn. **Trim** is what this page does now: Start, End, the loop and the fades. The other three are moving onto this page one at a time; until each one has, its button opens its own page (**Slice** opens [Chop](#chop-slice-across-the-pads), **Warp** opens [Warp](#warp-put-the-hits-on-the-beat), **Grain** opens [Grain](shaping-a-pad.md#grain-stretch-and-smear)), and **Wave** at the top right brings you back. While a take records the tools are grey: they wait for the take.
 
 Under the wave, the region's settings are laid out like an instrument's panel, in three sections, with the pad's **Sound** beside them:
 
@@ -260,7 +286,7 @@ Each slice plays as it would on a pad of its own: from its cut to the next, with
 
 With **Put on** at **New kit**, the slices don't touch the kit you chopped. They go on an empty kit from pad A1 (up to 128 slices, running on through banks B to H), MPFree adds a new track at the end of the song, arms it and gives it that kit, named after the pad ("Break 92 chops"). The button reads **Chop to new kit**, or **Phrase to new kit** with **Phrase** on, and then the phrase goes in the new track's first slot, ready to launch. The pads play the new kit straight away, and the Sample tab shows its first slice.
 
-- **UNDO** on the Sample tab takes the slices back off the new kit. The track stays, playing the now empty kit.
+- **UNDO** on the Sample tab takes the slices back off the new kit. The track stays, playing the now empty kit. **UNDO** on Arrange takes back the track and its kit together, and **REDO** brings both back.
 - **Pads** and Q-Link 4 have nothing to move: a new kit's slices always start on A1.
 - New kit is faint, and a tap says why, when no empty kit is left, when the song already has 128 tracks, or for the moment while the last new track is on its way.
 

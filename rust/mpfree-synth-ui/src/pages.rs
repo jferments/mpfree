@@ -13,6 +13,10 @@ pub const MAX_TILES: usize = 16;
 /// Generic pages stop adding groups at this many tiles, so most pages keep
 /// big tiles (three rows of four).
 pub const SOFT_TILES: usize = 12;
+/// The group of a node's macros (a sound's, `mpfree_instruments::sound`,
+/// or a plugin's of that name): they get the first page, and Q-Links 1 to 4
+/// turn the first four.
+pub const MACROS: &str = "Macros";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Page {
@@ -284,8 +288,8 @@ const PLUCK: &[PlanPage] = &[
 
 use mpfree_synth::keys_params as ek;
 
-/// Keys: the model and the strike, the pickup's tone, the amp (tremolo,
-/// drive, key noise), and the voice.
+/// Keys: the model and the strike, the pickup's tone, the clav's own
+/// switches, the amp (tremolo, drive, key noise), and the voice.
 const KEYS: &[PlanPage] = &[
     pg_with(
         "Strike",
@@ -297,6 +301,11 @@ const KEYS: &[PlanPage] = &[
         "Tone",
         &["Tone"],
         &[ek::VOICING, ek::BARK, ek::TONE, ek::VEL_TONE],
+    ),
+    pg(
+        "Clav",
+        &["Clav"],
+        &[ek::PICKUP, ek::CLAV_TONE, ek::MUTE, ek::DROP],
     ),
     pg(
         "Amp",
@@ -419,6 +428,42 @@ const STRINGS: &[PlanPage] = &[
     ),
 ];
 
+use mpfree_synth::bass_params as bp;
+
+/// Bass: the body and its oscillators, the filter, the pitch drop with
+/// the amp, the playing (glide, keys, tuning, pressure), then the output
+/// (drive and tone). The Q-Links take what players ride under a line: the
+/// sub, the fifth, the reese's detune and the pulse width; the filter's
+/// four knobs; the drop and the decays; the glide and the bend; the drive
+/// and the tone.
+const BASS: &[PlanPage] = &[
+    pg(
+        "Source",
+        &["Body", "Source"],
+        &[bp::SUB, bp::FIFTH, bp::DETUNE, bp::PW],
+    ),
+    pg(
+        "Filter",
+        &["Filter"],
+        &[bp::CUTOFF, bp::RESONANCE, bp::ENV_AMOUNT, bp::FILTER_DECAY],
+    ),
+    pg(
+        "Shape",
+        &["Pitch", "Amp"],
+        &[bp::DROP, bp::DROP_TIME, bp::DECAY, bp::RELEASE],
+    ),
+    pg(
+        "Play",
+        &["Play", "Pressure"],
+        &[bp::GLIDE, bp::FINE, bp::BEND_RANGE, bp::PRESSURE],
+    ),
+    pg(
+        "Output",
+        &["Output"],
+        &[bp::DRIVE, bp::TONE, bp::HIGH_PASS, bp::LEVEL],
+    ),
+];
+
 fn known(id: &str) -> Option<&'static [PlanPage]> {
     match id {
         "mpfree.poly" => Some(POLY),
@@ -431,15 +476,38 @@ fn known(id: &str) -> Option<&'static [PlanPage]> {
         "mpfree.squelch" => Some(SQUELCH),
         "mpfree.analog" => Some(ANALOG),
         "mpfree.strings" => Some(STRINGS),
+        "mpfree.bass" => Some(BASS),
         _ => None,
     }
 }
 
-/// The pages for a node. Every parameter is on exactly one page; a group the
-/// engine's own plan doesn't name goes on generic pages after it.
+/// The pages for a node. Every parameter is on exactly one page. A node's
+/// macros (group [`MACROS`]) come first, then the engine's own plan; a
+/// group the plan doesn't name goes on generic pages after it.
 pub fn plan(info: &NodeInfo, params: &[ParamInfo]) -> Vec<Page> {
     let mut placed = vec![false; params.len()];
     let mut pages = Vec::new();
+    let macros: Vec<usize> = (0..params.len())
+        .filter(|&i| params[i].group == MACROS)
+        .collect();
+    for (k, chunk) in macros.chunks(MAX_TILES).enumerate() {
+        for &i in chunk {
+            placed[i] = true;
+        }
+        pages.push(Page {
+            name: if k == 0 {
+                MACROS.to_string()
+            } else {
+                format!("{MACROS} {}", k + 1)
+            },
+            params: chunk.to_vec(),
+            qlinks: if k == 0 {
+                chunk.iter().copied().take(4).collect()
+            } else {
+                Vec::new()
+            },
+        });
+    }
     if let Some(plan) = known(info.id) {
         for PlanPage {
             name,
@@ -743,13 +811,29 @@ mod tests {
     }
 
     #[test]
+    fn bass_has_its_own_pages() {
+        use mpfree_node::Node;
+        let b = mpfree_synth::Bass::new(48_000);
+        let params = b.params();
+        let pages = plan(b.info(), params);
+        let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Source", "Filter", "Shape", "Play", "Output"]);
+        every_param_once(&pages, params.len());
+        let q: Vec<&str> = qlink_targets(&pages[0], params)
+            .iter()
+            .map(|&i| params[i].name)
+            .collect();
+        assert_eq!(q, ["Sub", "Fifth", "Detune", "Pulse width"]);
+    }
+
+    #[test]
     fn keys_has_its_own_pages() {
         use mpfree_node::Node;
         let s = mpfree_synth::Keys::new(48_000);
         let params = s.params();
         let pages = plan(s.info(), params);
         let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["Strike", "Tone", "Amp", "Voice"]);
+        assert_eq!(names, ["Strike", "Tone", "Clav", "Amp", "Voice"]);
         every_param_once(&pages, params.len());
         let names =
             |page: &Page| -> Vec<&str> { page.params.iter().map(|&i| params[i].name).collect() };
@@ -767,6 +851,10 @@ mod tests {
             .map(|&i| params[i].name)
             .collect();
         assert_eq!(q, ["Voicing", "Bark", "Tone", "Vel > tone"]);
+        assert_eq!(
+            names(&pages[2]),
+            ["Pickup", "Clav tone", "Mute", "Release drop"]
+        );
         for p in &pages {
             for &i in &p.params {
                 assert!(tile_label(&p.name, &params[i]).len() <= 20);
@@ -918,5 +1006,51 @@ mod tests {
         assert_eq!(tile_label("Osc", &p("Osc 2", "Wave")), "Osc 2 · Wave");
         assert_eq!(tile_label("Osc", &p("Mix", "Sub")), "Mix · Sub");
         assert_eq!(tile_label("Osc", &p("Unison", "Unison")), "Unison");
+    }
+
+    /// A sound's macros are its first page, turned by Q-Links 1 to 4; the
+    /// engine's own pages follow, then each effect's.
+    #[test]
+    fn a_sounds_macros_come_first_and_its_effects_last() {
+        use mpfree_instruments::{Design, Macro, MacroMap, Sound};
+        use mpfree_mod::MapCurve;
+        use mpfree_node::Node;
+        use mpfree_synth::keys_params as kp;
+        let map = |target| MacroMap {
+            target,
+            from: 0.0,
+            to: 50.0,
+            curve: MapCurve::Linear,
+        };
+        let design = Design {
+            fx: vec!["mpfree.fx.ensemble".into()],
+            macros: ["Bark", "Tone", "Hammer", "Space", "Width"]
+                .iter()
+                .zip([kp::BARK, kp::TONE, kp::HARDNESS, kp::DRIVE, kp::BELL])
+                .map(|(name, t)| Macro {
+                    name: name.to_string(),
+                    maps: vec![map(t)],
+                })
+                .collect(),
+        };
+        let s = Sound::new(Box::new(mpfree_synth::Keys::new(48_000)), &design).unwrap();
+        let params = s.params();
+        let pages = plan(s.info(), params);
+        let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+        let keys: Vec<String> = plan(s.info(), mpfree_synth::Keys::new(48_000).params())
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names[0], MACROS);
+        assert_eq!(names[1..=keys.len()], keys[..]);
+        assert_eq!(names[keys.len() + 1..], ["FX 1"]);
+        every_param_once(&pages, params.len());
+        let q: Vec<&str> = qlink_targets(&pages[0], params)
+            .iter()
+            .map(|&i| params[i].name)
+            .collect();
+        assert_eq!(q, ["Bark", "Tone", "Hammer", "Space"]);
+        // The page's tiles are the macros' own names.
+        assert_eq!(tile_label(MACROS, &params[pages[0].params[4]]), "Width");
     }
 }

@@ -7,6 +7,7 @@
 //! mpfree-bench --calibrate [--machine NAME]
 //! mpfree-bench --compare A.json B.json
 //! mpfree-bench --afford [--quick] [--filter TEXT] [--calibration FILE]
+//! mpfree-bench --starts [--quick] [--filter TEXT] [--calibration FILE]
 //! mpfree-bench --lanes [--lane-cores A,B] [--quick] [--json FILE]
 //! mpfree-bench --count [--blocks N] [--filter TEXT]
 //! mpfree-bench --soak [--blocks N] [--filter TEXT]
@@ -30,8 +31,19 @@
 //!   budget: on this machine, as an MPC estimate with `--calibration`, or
 //!   for real on the MPC. It also gives the worst block over the mean at
 //!   the most voices. `--filter` keeps the engines whose name holds TEXT.
+//! - `--starts` starts 16 notes in one block, from silence, on every
+//!   preset of every keyboard engine, and says what that block costs
+//!   against the blocks after it: the work a note does as it starts
+//!   (tables, coefficients, resets), which shows as a worst block many
+//!   times the mean. `--filter` keeps the presets whose name holds TEXT.
 //! - The "mem MB" column is what each engine holds once it is built (its
 //!   buffers, delay lines, sample memory), from the counting allocator.
+//! - Every mode but `--count` turns the processor's flush-to-zero on first,
+//!   as the app's audio thread and lanes do (`mpfree_lanes::fpu`), so a
+//!   denormal costs here what it costs in the app; `--keep-denormals`
+//!   leaves it off, to see what an engine's own flushing misses. `--count`
+//!   leaves it off: callgrind counts the same either way, and doesn't
+//!   model the mode.
 //!
 //! - `--lanes` runs only the lane cases: the same work on one core and split
 //!   over two with a lane (`mpfree-lanes`), plus the handoff alone. With
@@ -84,6 +96,8 @@ struct Options {
     machine: Option<String>,
     compare: Option<(String, String)>,
     afford: bool,
+    starts: bool,
+    keep_denormals: bool,
     lanes: bool,
     lane_cores: Option<(usize, usize)>,
     count: bool,
@@ -102,6 +116,8 @@ fn options() -> Result<Options, String> {
         machine: None,
         compare: None,
         afford: false,
+        starts: false,
+        keep_denormals: false,
         lanes: false,
         lane_cores: None,
         count: false,
@@ -120,6 +136,8 @@ fn options() -> Result<Options, String> {
             "--calibrate" => o.calibrate = true,
             "--machine" => o.machine = Some(value("--machine")?),
             "--afford" => o.afford = true,
+            "--starts" => o.starts = true,
+            "--keep-denormals" => o.keep_denormals = true,
             "--lanes" => o.lanes = true,
             "--count" => o.count = true,
             "--soak" => o.soak = true,
@@ -702,6 +720,92 @@ fn afford(quick: bool, filter: Option<&str>, model: Option<&Model>, on_device: b
     }
 }
 
+/// `--starts`: see the module docs.
+fn starts(
+    quick: bool,
+    filter: Option<&str>,
+    model: Option<&Model>,
+    on_device: bool,
+    flushing: bool,
+) {
+    let rounds = if quick { 8 } else { 32 };
+    let factor = model.map_or(1.0, |m| m.factor().0);
+    let place = if on_device {
+        "on this MPC"
+    } else if model.is_some() {
+        "on the MPC (estimate)"
+    } else {
+        "on this machine"
+    };
+    let budget_ns = budget::for_module("synth")
+        .expect("module budget")
+        .worst_ns(MPC) as f64;
+    println!("mpfree-bench --starts on {}, build {}", machine(), build());
+    println!(
+        "{} notes start on a block's first frame, from silence, {rounds} times a preset (medians). Times are {place}{}. \
+         Denormals {}.",
+        cases::START_NOTES,
+        if model.is_some() && !on_device {
+            format!(" (this machine x {factor:.1})")
+        } else {
+            String::new()
+        },
+        if flushing {
+            "flushed to zero, as in the app"
+        } else {
+            "kept"
+        }
+    );
+    println!();
+    println!(
+        "{:<40} {:>9} {:>9} {:>10} {:>13} {:>10} {:>10}",
+        "preset", "start us", "held us", "start/held", "us per start", "worst us", "change us"
+    );
+    let wanted = |name: &str| filter.is_none_or(|f| name.to_lowercase().contains(f));
+    let mut rows = Vec::new();
+    for p in cases::keyboard_presets(MPC.rate)
+        .into_iter()
+        .filter(|p| wanted(&p.name))
+    {
+        let c = cases::start_cost(&p, MPC.rate, MPC.frames as usize, rounds);
+        let notes = if p.mono { 1 } else { cases::START_NOTES };
+        let per_start = (c.start_ns - c.held_ns).max(0.0) / notes as f64;
+        let ratio = c.start_ns / c.held_ns.max(1.0);
+        let over = if c.worst_start_ns * factor > budget_ns {
+            "  over the synth budget"
+        } else {
+            ""
+        };
+        println!(
+            "{:<40} {:>9.1} {:>9.1} {:>10.1} {:>13.2} {:>10.1} {:>10.1}{over}",
+            format!("{}{}", p.name, if p.mono { " (mono)" } else { "" }),
+            c.start_ns * factor / 1e3,
+            c.held_ns * factor / 1e3,
+            ratio,
+            per_start * factor / 1e3,
+            c.worst_start_ns * factor / 1e3,
+            c.change_ns * factor / 1e3,
+        );
+        rows.push((p.name, ratio, c));
+    }
+    rows.sort_by(|a, b| b.1.total_cmp(&a.1));
+    println!();
+    println!(
+        "\"start/held\" is the start block over the blocks after it; \"us per start\" is the difference shared by the notes \
+         started (one on a mono preset). \"worst us\" is the worst start block, against the synth budget ({:.0} us, the worst \
+         block of a whole module). \"change us\" is the next chord change: every note ends and as many start a fifth up.",
+        budget_ns / 1e3
+    );
+    println!("Most costly starts against their held blocks:");
+    for (name, ratio, c) in rows.iter().take(10) {
+        println!(
+            "  {name}: {ratio:.1} x ({:.1} us against {:.1} us)",
+            c.start_ns * factor / 1e3,
+            c.held_ns * factor / 1e3
+        );
+    }
+}
+
 fn main() -> ExitCode {
     let o = match options() {
         Ok(o) => o,
@@ -713,6 +817,7 @@ fn main() -> ExitCode {
                        mpfree-bench --calibrate [--machine NAME]\n       \
                        mpfree-bench --compare A.json B.json\n       \
                        mpfree-bench --afford [--quick] [--filter TEXT] [--calibration FILE]\n       \
+                       mpfree-bench --starts [--quick] [--filter TEXT] [--calibration FILE]\n       \
                        mpfree-bench --lanes [--lane-cores A,B] [--quick] [--json FILE]\n       \
                        mpfree-bench --count [--blocks N] [--filter TEXT]\n       \
                        mpfree-bench --soak [--blocks N] [--filter TEXT]");
@@ -735,6 +840,7 @@ fn main() -> ExitCode {
         count(&o);
         return ExitCode::SUCCESS;
     }
+    let flushing = !o.keep_denormals && mpfree_lanes::fpu::flush_to_zero();
     if o.soak {
         return soak(&o);
     }
@@ -781,6 +887,16 @@ fn main() -> ExitCode {
             o.filter.as_deref(),
             model.as_ref().map(|(m, _)| m),
             on_device,
+        );
+        return ExitCode::SUCCESS;
+    }
+    if o.starts {
+        starts(
+            o.quick,
+            o.filter.as_deref(),
+            model.as_ref().map(|(m, _)| m),
+            on_device,
+            flushing,
         );
         return ExitCode::SUCCESS;
     }

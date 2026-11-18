@@ -94,6 +94,10 @@ pub const AUTO_LABEL: &str = "Auto-sample";
 /// The button that keeps what Skip back covers.
 pub const SKIP_LABEL: &str = "Skip back";
 
+/// The bar's title while Onto is on Stay here (one-page step 2b): the take
+/// stays on the Sample page until it is put on a pad.
+pub const STAYS_TITLE: &str = "Record: the take stays here";
+
 /// Flatten's level for silence: under it for the Silence time, the sound
 /// has ended (and a sound starts when it goes over it).
 pub const FLATTEN_SILENCE_DB: f32 = -60.0;
@@ -126,6 +130,13 @@ const THRESHOLDS_DB: [f32; 15] = [
     -9.0, -6.0,
 ];
 const PRE_ROLLS_MS: [u32; 8] = [0, 5, 10, 20, 50, 100, 200, 500];
+/// Why Gain is faint while the source is a point in the mix.
+pub const GAIN_LINE_ONLY: &str =
+    "Gain is the line input's: a point in the mix records as you hear it";
+
+/// Gain's range, dB, a dB a step.
+pub const GAIN_MIN_DB: f32 = -24.0;
+pub const GAIN_MAX_DB: f32 = 24.0;
 const LENGTHS_BARS: [u32; 6] = [1, 2, 4, 8, 16, 32];
 const SILENCES_MS: [u32; 5] = [250, 500, 1000, 2000, 4000];
 const VELOCITIES: [u8; 9] = [16, 32, 48, 64, 80, 96, 110, 120, 127];
@@ -187,9 +198,13 @@ impl Skip {
     }
 }
 
-/// Which pad a take goes onto.
+/// Where a take goes when it stops.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Onto {
+    /// It stays on the Sample page, on no pad, until it is put somewhere
+    /// (the one Sample page's decision 1: recording never fills a pad the
+    /// musician didn't pick).
+    Stay,
     /// The pad picked if it has no sound, else the next one without.
     NextEmpty,
     /// The pad picked, replacing its sound.
@@ -203,6 +218,10 @@ pub struct RecSettings {
     /// first, is the line input).
     pub source: usize,
     pub pick: Pick,
+    /// How loud a take records, dB ([`GAIN_MIN_DB`] to [`GAIN_MAX_DB`]):
+    /// the input is turned up or down before the meter, the threshold
+    /// and the take see it.
+    pub gain_db: f32,
     pub start: StartAt,
     pub threshold_db: f32,
     pub pre_roll_ms: u32,
@@ -225,6 +244,7 @@ impl Default for RecSettings {
         RecSettings {
             source: 0,
             pick: Pick::Stereo,
+            gain_db: 0.0,
             start: StartAt::Now,
             threshold_db: -30.0,
             pre_roll_ms: 20,
@@ -233,7 +253,7 @@ impl Default for RecSettings {
             tail: TailAt::Cut,
             silence_ms: 1000,
             skip: Skip::Seconds(10),
-            onto: Onto::NextEmpty,
+            onto: Onto::Stay,
             flatten_velocity: 127,
             flatten_hold_ms: 1000,
         }
@@ -245,6 +265,11 @@ fn ms_frames(ms: u32, rate: u32) -> u64 {
 }
 
 impl RecSettings {
+    /// The Gain as a linear factor.
+    pub fn gain(&self) -> f32 {
+        10f32.powf(self.gain_db / 20.0)
+    }
+
     /// The threshold as a linear peak.
     pub fn level(&self) -> f32 {
         10f32.powf(self.threshold_db / 20.0)
@@ -339,6 +364,9 @@ impl RecSettings {
 pub enum Row {
     Source,
     Input,
+    /// How loud a take records: a gain on what comes in, before the
+    /// meter, the threshold and the take (one-page step 2d).
+    Gain,
     Start,
     Threshold,
     PreRoll,
@@ -361,9 +389,10 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 17] = [
+    pub const ALL: [Row; 18] = [
         Row::Source,
         Row::Input,
+        Row::Gain,
         Row::Start,
         Row::Threshold,
         Row::PreRoll,
@@ -388,6 +417,7 @@ impl Row {
         match self {
             Row::Source => "Source",
             Row::Input => "Channels",
+            Row::Gain => "Gain",
             Row::Start => "Start",
             Row::Threshold => "Threshold",
             Row::PreRoll => "Pre-roll",
@@ -421,6 +451,7 @@ pub fn value_text(s: &RecSettings, row: Row, sources: &[String]) -> String {
             .cloned()
             .unwrap_or_else(|| "Line in".to_string()),
         Row::Input => s.pick.label().to_string(),
+        Row::Gain => gain_text(s.gain_db),
         Row::Start => match s.start {
             StartAt::Now => "Now",
             StartAt::Threshold => "Threshold",
@@ -449,11 +480,22 @@ pub fn value_text(s: &RecSettings, row: Row, sources: &[String]) -> String {
         Row::Record | Row::Keep | Row::Flatten | Row::Auto => String::new(),
         Row::SkipBack => s.skip.label(),
         Row::Onto => match s.onto {
+            Onto::Stay => "Stay here",
             Onto::NextEmpty => "Next empty",
             Onto::ThisPad => "This pad",
         }
         .to_string(),
     }
+}
+
+/// Gain as the knob says it: "+0 dB", "-6 dB", "+12 dB".
+pub fn gain_text(db: f32) -> String {
+    format!("{:+.0} dB", db.round() + 0.0)
+}
+
+/// Where Gain's knob is lit to, 0 to 1 (0 dB in the middle).
+fn gain_place(db: f32) -> f32 {
+    (db - GAIN_MIN_DB) / (GAIN_MAX_DB - GAIN_MIN_DB)
 }
 
 fn ms_text(ms: u32) -> String {
@@ -468,6 +510,9 @@ fn shift(i: usize, delta: i32, len: usize) -> usize {
     (i as i32 + delta).clamp(0, len as i32 - 1) as usize
 }
 
+/// The Onto row's choices, in order.
+pub const ONTOS: [Onto; 3] = [Onto::Stay, Onto::NextEmpty, Onto::ThisPad];
+
 fn step_in<T: PartialEq + Copy>(list: &[T], now: T, delta: i32) -> T {
     let i = list.iter().position(|x| *x == now).unwrap_or(0);
     list[shift(i, delta, list.len())]
@@ -480,6 +525,7 @@ pub fn stepped(s: &RecSettings, row: Row, delta: i32, sources: usize) -> RecSett
     match row {
         Row::Source => s.source = shift(s.source, delta, sources.max(1)),
         Row::Input => s.pick = step_in(&Pick::ALL, s.pick, delta),
+        Row::Gain => s.gain_db = (s.gain_db.round() + delta as f32).clamp(GAIN_MIN_DB, GAIN_MAX_DB),
         Row::Start => {
             s.start = step_in(
                 &[StartAt::Now, StartAt::Threshold, StartAt::NextBar],
@@ -500,7 +546,7 @@ pub fn stepped(s: &RecSettings, row: Row, delta: i32, sources: usize) -> RecSett
         Row::Tail => s.tail = step_in(&[TailAt::Cut, TailAt::Ring, TailAt::Loop], s.tail, delta),
         Row::Silence => s.silence_ms = step_in(&SILENCES_MS, s.silence_ms, delta),
         Row::SkipBack => s.skip = step_in(&SKIPS, s.skip, delta),
-        Row::Onto => s.onto = step_in(&[Onto::NextEmpty, Onto::ThisPad], s.onto, delta),
+        Row::Onto => s.onto = step_in(&ONTOS, s.onto, delta),
         Row::FlattenVelocity => {
             s.flatten_velocity = step_in(&VELOCITIES, s.flatten_velocity, delta)
         }
@@ -516,6 +562,36 @@ fn place_in<T: PartialEq>(list: &[T], now: &T) -> f32 {
     i as f32 / (list.len().max(2) - 1) as f32
 }
 
+/// Gain's, Threshold's or Pre-roll's knob, lit to where `s` has it among
+/// its steps (another row: a chip). Gain's is lit from the middle, 0 dB.
+pub(crate) fn knob(s: &RecSettings, row: Row) -> Control {
+    if row == Row::Gain {
+        return gain_knob(s.gain_db);
+    }
+    let (pos, len) = match row {
+        Row::Threshold => (
+            place_in(&THRESHOLDS_DB, &s.threshold_db),
+            THRESHOLDS_DB.len(),
+        ),
+        Row::PreRoll => (place_in(&PRE_ROLLS_MS, &s.pre_roll_ms), PRE_ROLLS_MS.len()),
+        _ => return Control::new(Look::Chip),
+    };
+    Control::new(Look::Knob {
+        pos,
+        steps: len.saturating_sub(1) as u32,
+        bipolar: false,
+    })
+}
+
+/// Gain's knob: lit from the middle (0 dB), a dB a step.
+fn gain_knob(db: f32) -> Control {
+    Control::new(Look::Knob {
+        pos: gain_place(db),
+        steps: (GAIN_MAX_DB - GAIN_MIN_DB) as u32,
+        bipolar: true,
+    })
+}
+
 /// What the tab shows besides the input: the pad picked and where a take
 /// would go.
 #[derive(Clone, Debug, PartialEq)]
@@ -523,7 +599,9 @@ pub struct RecState {
     /// The pad picked in the editor, and its sound's name if it has one.
     pub pad: usize,
     pub pad_name: Option<String>,
-    /// The pad a take goes onto now (None: no empty pad left).
+    /// The pad a take goes onto now (None: no empty pad left). With the
+    /// settings' Onto on [`Onto::Stay`], where a Flatten goes (the next
+    /// empty pad): a take stays on the page.
     pub target: Option<usize>,
     /// The sources it can record from, by name; the first is the line
     /// input.
@@ -635,6 +713,7 @@ impl RecTab {
                 .collect();
             bar.title = match (&st.flattening, &target) {
                 (Some(f), _) => f.clone(),
+                (None, _) if self.stays() => STAYS_TITLE.to_string(),
                 (None, Some(p)) => format!("Record onto pad {p}"),
                 (None, None) => "Record: no empty pad in this bank".to_string(),
             };
@@ -681,7 +760,11 @@ impl RecTab {
         }
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.rows = rows;
-            list.right = target.map(|p| format!("onto {p}")).unwrap_or_default();
+            list.right = if self.stays() {
+                "stays here".to_string()
+            } else {
+                target.map(|p| format!("onto {p}")).unwrap_or_default()
+            };
         }
         self.flattening = st.flattening.is_some();
         self.sources = st.sources.clone();
@@ -713,10 +796,10 @@ impl RecTab {
     fn controls(&self, st: &RecState, live: bool) -> Vec<Control> {
         let s = &self.settings;
         let busy = self.recording || self.flattening;
-        let can = live && st.target.is_some() && !self.flattening;
+        let can = live && (self.stays() || st.target.is_some()) && !self.flattening;
         let cannot = if !live {
             OFF_NOTE
-        } else if st.target.is_none() {
+        } else if !self.stays() && st.target.is_none() {
             "No empty pad left for a take"
         } else {
             "Wait for Flatten to finish"
@@ -770,15 +853,17 @@ impl RecTab {
                         TailAt::Loop => 2,
                     },
                 ),
-                Row::Onto => choice(
-                    &["Next empty", "This pad"],
-                    usize::from(s.onto == Onto::ThisPad),
-                ),
+                // Three choices don't fit the Take section's width: the
+                // value between arrows, as on the Wave page's Input.
+                Row::Onto => Control::new(Look::Chip),
                 Row::Threshold => knob(
                     place_in(&THRESHOLDS_DB, &s.threshold_db),
                     THRESHOLDS_DB.len(),
                 ),
                 Row::PreRoll => knob(place_in(&PRE_ROLLS_MS, &s.pre_roll_ms), PRE_ROLLS_MS.len()),
+                // The line input's (one-page step 2d): resampling records
+                // the mix as it is heard.
+                Row::Gain => gain_knob(s.gain_db).faint_because(s.source != 0, GAIN_LINE_ONLY),
                 Row::Record => Control::new(Look::Primary(
                     if busy { "Stop" } else { "Record" }.to_string(),
                 ))
@@ -806,10 +891,11 @@ impl RecTab {
     /// their buttons.
     fn panel(&self, st: &RecState) -> Panel {
         let it = |k: Row| Item::new(k.index());
-        let onto = st
-            .target
-            .map(|p| format!("onto {}", pad_text(self.bank, p)))
-            .unwrap_or_else(|| "no empty pad".to_string());
+        let onto = match st.target {
+            _ if self.stays() => "stays here".to_string(),
+            Some(p) => format!("onto {}", pad_text(self.bank, p)),
+            None => "no empty pad".to_string(),
+        };
         Panel {
             sections: vec![
                 Section::new(
@@ -822,15 +908,17 @@ impl RecTab {
                 ),
                 Section::new(
                     "Start",
-                    250,
+                    280,
                     vec![
                         vec![it(Row::Start)],
-                        vec![it(Row::Threshold), it(Row::PreRoll)],
+                        // Gain (one-page step 2d) beside them: the
+                        // threshold hears the input as Gain turns it.
+                        vec![it(Row::Gain), it(Row::Threshold), it(Row::PreRoll)],
                     ],
                 ),
                 Section::new(
                     "End",
-                    280,
+                    270,
                     vec![
                         vec![it(Row::End)],
                         vec![it(Row::Length).labelled(), it(Row::Silence).labelled()],
@@ -849,7 +937,7 @@ impl RecTab {
                 .note(&onto),
                 Section::new(
                     "Resample",
-                    260,
+                    240,
                     vec![
                         vec![it(Row::Flatten), it(Row::Auto)],
                         vec![it(Row::FlattenVelocity).labelled()],
@@ -1054,6 +1142,11 @@ impl RecTab {
         self.settings = stepped(&self.settings, row, delta, st.sources.len());
         self.update(ui, st);
         (self.settings.source != was).then_some(RecAction::Source(self.settings.source))
+    }
+
+    /// A take stays on the Sample page when it stops ([`Onto::Stay`]).
+    fn stays(&self) -> bool {
+        self.settings.onto == Onto::Stay
     }
 
     /// A take is being made (the first button says Stop).

@@ -21,7 +21,7 @@ use mpfree_looper::{
     Command as LooperCommand, Edit as LooperEdit, Looper, Phase as LooperPhase, MAX_LOOPS,
 };
 use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, MAX_BLOCK};
-use mpfree_play::{Launch, Out, PlayView, Player, Sink, TrackArps};
+use mpfree_play::{Ahead, Launch, Out, PlayView, Player, Sink, TrackArps};
 use mpfree_prof::alloc;
 use mpfree_prof::budget::MPC;
 use mpfree_sampler::dsp::{Filter, FilterKind};
@@ -30,10 +30,8 @@ use mpfree_sampler::model::*;
 use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
 use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
-use mpfree_synth::wavetable::params::{self as wt, PRESETS as WT_PRESETS};
-use mpfree_synth::{
-    Analog, Drawbar, Drums, Keys, Pluck, Poly, Squelch, Strings, Wavetable, PRESETS,
-};
+use mpfree_synth::wavetable::params as wt;
+use mpfree_synth::{Analog, Bass, Drawbar, Drums, Keys, Pluck, Poly, Squelch, Strings, Wavetable};
 use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
 use mpfree_transport::{Block as TBlock, Command as T, Transport};
@@ -986,7 +984,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     // Made first, so no case's memory includes it.
     program(rate);
     let mut v = Vec::new();
-    for preset in PRESETS {
+    for preset in Poly::presets() {
         v.push(measured(|| {
             synth(
                 format!("Poly {}, 8 voices", preset.name),
@@ -1018,8 +1016,16 @@ pub fn all(rate: u32) -> Vec<Case> {
     ] {
         v.push(measured(|| pluck(name, rate, voices)));
     }
-    // Keys: a tine and a reed preset, and the tremolo and drive on top.
-    for (name, voices) in [("Init", 8), ("Init", 16), ("Reed", 16), ("Dusty Keys", 16)] {
+    // Keys: a tine and a reed preset, the tremolo and drive on top, and
+    // the clav (its string loop and the bus's tone switch and rotator).
+    for (name, voices) in [
+        ("Init", 8),
+        ("Init", 16),
+        ("Reed", 16),
+        ("Dusty Keys", 16),
+        ("Clav", 8),
+        ("Clav", 16),
+    ] {
         v.push(measured(|| {
             let p = Keys::presets()
                 .iter()
@@ -1035,6 +1041,42 @@ pub fn all(rate: u32) -> Vec<Case> {
             )
         }));
     }
+    // A sound: the Keys engine with its own Ensemble and a macro moving a
+    // setting of each (what the wrapper and its effect add to the engine).
+    v.push(measured(|| {
+        use mpfree_instruments::sound::FX_BASE;
+        use mpfree_instruments::{Design, Macro, MacroMap, Sound};
+        let design = Design {
+            fx: vec!["mpfree.fx.ensemble".into()],
+            macros: vec![Macro {
+                name: "Space".into(),
+                maps: vec![
+                    MacroMap {
+                        target: mpfree_synth::keys_params::TONE,
+                        from: -20.0,
+                        to: 20.0,
+                        curve: mpfree_mod::MapCurve::Linear,
+                    },
+                    MacroMap {
+                        target: FX_BASE + ids::ensemble::MIX,
+                        from: 0.0,
+                        to: 60.0,
+                        curve: mpfree_mod::MapCurve::Linear,
+                    },
+                ],
+            }],
+        };
+        let sound = Sound::new(Box::new(Keys::new(rate)), &design).expect("the sound");
+        let space = mpfree_instruments::sound::MACRO_BASE;
+        chords(
+            "Sound Keys Init with Ensemble, 8 voices".to_string(),
+            rate,
+            Box::new(sound),
+            &[(space, 50.0)],
+            Some(mpfree_synth::keys_params::POLYPHONY),
+            8,
+        )
+    }));
     // Drawbar: the default three drawbars, all nine with leakage, chorus
     // and the fast rotary, and the rotary off.
     for (name, keys) in [
@@ -1092,6 +1134,22 @@ pub fn all(rate: u32) -> Vec<Case> {
             )
         }));
     }
+    // Bass: the synth bass through its ladder, the reese's pair over the
+    // sub, and the 808 driven hard.
+    for name in ["Init", "Reese", "Distorted 808"] {
+        v.push(measured(|| {
+            let p = Bass::presets()
+                .iter()
+                .find(|p| p.name == name)
+                .unwrap_or_else(|| panic!("bass preset {name}"));
+            line(
+                format!("Bass {name}, a line"),
+                rate,
+                Box::new(Bass::new(rate)),
+                p.values,
+            )
+        }));
+    }
     // Analog: the plain init, the pad with the chorus, and the brass on
     // the two-pole; Worn Cards adds Age's drift on every oscillator.
     for (name, voices) in [
@@ -1117,7 +1175,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     }
     // Wavetable: the first case also holds the factory tables (built once
     // per process, shared by every instance).
-    for preset in WT_PRESETS {
+    for preset in Wavetable::presets() {
         v.push(measured(|| {
             chords(
                 format!("Wavetable {}, 8 voices", preset.name),
@@ -1195,6 +1253,9 @@ pub fn all(rate: u32) -> Vec<Case> {
     }));
     v.push(measured(|| {
         new_filter_pads(rate, 16, FilterKind::Vowel, 0.0)
+    }));
+    v.push(measured(|| {
+        new_filter_pads(rate, 16, FilterKind::Comb, 0.0)
     }));
     v.push(measured(|| {
         sampler(
@@ -1693,6 +1754,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| track_host_alone(rate, 16)));
     v.push(measured(|| time(rate, 8, false)));
     v.push(measured(|| time(rate, 8, true)));
+    v.push(measured(|| time_ahead(rate, 8, 4)));
     v.push(measured(|| live_arps(rate, 4)));
     v.push(measured(|| live_arps(rate, 16)));
     v.push(measured(|| looper(rate, 60)));
@@ -1745,88 +1807,155 @@ fn preset_scaling(
     }
 }
 
-/// Every factory preset of every keyboard engine but Poly at 1 to 16
-/// voices (keys held, for the organ), the acid line once (it is mono).
-fn engine_scaling(rate: u32) -> Vec<Scaling> {
-    use mpfree_synth::{analog_params, fm_params, keys_params, pluck_params};
-    let mut v = Vec::new();
+/// One factory preset of a keyboard engine, ready to build: for
+/// `--afford` and `--starts`.
+pub struct Preset {
+    /// The engine and the preset, such as "Keys Phase Tines".
+    pub name: String,
+    pub make: Box<dyn Fn() -> Box<dyn Node>>,
+    pub values: Vec<(u16, f32)>,
+    /// The engine's voice count parameter; None for an organ or a string
+    /// machine (every key held sounds) and for a mono engine.
+    pub polyphony: Option<u16>,
+    /// It plays one note at a time.
+    pub mono: bool,
+}
+
+impl Preset {
+    fn new<N: Node + 'static>(
+        name: String,
+        rate: u32,
+        make: fn(u32) -> N,
+        values: &[(u16, f32)],
+        polyphony: Option<u16>,
+        mono: bool,
+    ) -> Preset {
+        Preset {
+            name,
+            make: Box::new(move || Box::new(make(rate))),
+            values: values.to_vec(),
+            polyphony,
+            mono,
+        }
+    }
+}
+
+/// Every factory preset of Poly (a mono or legato one plays one voice).
+fn poly_presets(rate: u32) -> Vec<Preset> {
+    Poly::presets()
+        .iter()
+        .map(|p| {
+            let mono = p.values.iter().any(|&(id, x)| id == VOICE_MODE && x != 0.0);
+            Preset::new(
+                format!("Poly {}", p.name),
+                rate,
+                Poly::new,
+                p.values,
+                Some(POLYPHONY),
+                mono,
+            )
+        })
+        .collect()
+}
+
+/// Every factory preset of every keyboard engine but Poly.
+fn engine_presets(rate: u32) -> Vec<Preset> {
+    use mpfree_synth::{analog_params, fm_params, keys_params, pluck_params, Fm};
     let mode = |values: &[(u16, f32)], id: u16| values.iter().any(|&(i, x)| i == id && x != 0.0);
+    let mut v = Vec::new();
     for p in Analog::presets() {
         // Unison stacks every voice on one note: still a cost per voice.
-        v.push(preset_scaling(
-            format!("Analog {}", p.name),
+        let name = format!("Analog {}", p.name);
+        v.push(Preset::new(
+            name,
             rate,
-            || Box::new(Analog::new(rate)),
+            Analog::new,
             p.values,
             Some(analog_params::POLYPHONY),
             false,
         ));
     }
     for p in Squelch::presets() {
-        v.push(preset_scaling(
+        v.push(Preset::new(
             format!("Squelch {}", p.name),
             rate,
-            || Box::new(Squelch::new(rate)),
+            Squelch::new,
             p.values,
             None,
             true,
         ));
     }
-    for p in mpfree_synth::Fm::presets() {
-        v.push(preset_scaling(
-            format!("FM {}", p.name),
+    for p in Bass::presets() {
+        v.push(Preset::new(
+            format!("Bass {}", p.name),
             rate,
-            || Box::new(mpfree_synth::Fm::new(rate)),
-            &p.values,
-            Some(fm_params::POLYPHONY),
-            mode(&p.values, fm_params::VOICE_MODE),
+            Bass::new,
+            p.values,
+            None,
+            true,
         ));
     }
-    for p in WT_PRESETS {
-        v.push(preset_scaling(
-            format!("Wavetable {}", p.name),
+    for p in Fm::presets() {
+        let mono = mode(&p.values, fm_params::VOICE_MODE);
+        let name = format!("FM {}", p.name);
+        v.push(Preset::new(
+            name,
             rate,
-            || Box::new(Wavetable::new(rate)),
+            Fm::new,
+            &p.values,
+            Some(fm_params::POLYPHONY),
+            mono,
+        ));
+    }
+    for p in Wavetable::presets() {
+        let mono = mode(p.values, wt::VOICE_MODE);
+        let name = format!("Wavetable {}", p.name);
+        v.push(Preset::new(
+            name,
+            rate,
+            Wavetable::new,
             p.values,
             Some(wt::POLYPHONY),
-            mode(p.values, wt::VOICE_MODE),
+            mono,
         ));
     }
     for p in Keys::presets() {
-        v.push(preset_scaling(
-            format!("Keys {}", p.name),
+        let name = format!("Keys {}", p.name);
+        v.push(Preset::new(
+            name,
             rate,
-            || Box::new(Keys::new(rate)),
+            Keys::new,
             p.values,
             Some(keys_params::POLYPHONY),
             false,
         ));
     }
     for p in Drawbar::presets() {
-        v.push(preset_scaling(
-            format!("Drawbar {} (keys held)", p.name),
+        v.push(Preset::new(
+            format!("Drawbar {}", p.name),
             rate,
-            || Box::new(Drawbar::new(rate)),
+            Drawbar::new,
             p.values,
             None,
             false,
         ));
     }
     for p in Strings::presets() {
-        v.push(preset_scaling(
-            format!("Strings {} (keys held)", p.name),
+        v.push(Preset::new(
+            format!("Strings {}", p.name),
             rate,
-            || Box::new(Strings::new(rate)),
+            Strings::new,
             p.values,
             None,
             false,
         ));
     }
     for p in Pluck::presets() {
-        v.push(preset_scaling(
-            format!("Pluck {}", p.name),
+        let name = format!("Pluck {}", p.name);
+        v.push(Preset::new(
+            name,
             rate,
-            || Box::new(Pluck::new(rate)),
+            Pluck::new,
             p.values,
             Some(pluck_params::POLYPHONY),
             false,
@@ -1835,12 +1964,124 @@ fn engine_scaling(rate: u32) -> Vec<Scaling> {
     v
 }
 
+/// Every factory preset of every keyboard engine, Poly first.
+pub fn keyboard_presets(rate: u32) -> Vec<Preset> {
+    let mut v = poly_presets(rate);
+    v.extend(engine_presets(rate));
+    v
+}
+
+/// Notes started in one block by `--starts`: Poly's most voices.
+pub const START_NOTES: usize = 16;
+
+/// What starting [`START_NOTES`] notes in one block costs a preset
+/// (`--starts`), each time from silence. Times in ns.
+#[derive(Clone, Debug, Default)]
+pub struct StartCost {
+    /// The block the notes start in (the median over the rounds).
+    pub start_ns: f64,
+    /// The worst of those blocks.
+    pub worst_start_ns: f64,
+    /// The next three blocks, the notes sounding (the median of their
+    /// means): what the notes cost once started.
+    pub held_ns: f64,
+    /// The block after those, where the chord changes: every note ends and
+    /// as many start a fifth higher, so the new notes take voices still
+    /// sounding their release, or steal them (the median).
+    pub change_ns: f64,
+}
+
+/// [`StartCost`]: `rounds` times, the preset is silenced ([`Node::reset`],
+/// which keeps its memory warm), plays two blocks of silence, then starts
+/// [`START_NOTES`] notes on the first frame of a block (a chord over three
+/// octaves, velocity 100); that block, the three after it and the chord
+/// change after those are timed.
+pub fn start_cost(p: &Preset, rate: u32, frames: usize, rounds: usize) -> StartCost {
+    let mut s = (p.make)();
+    s.prepare(rate, MAX_BLOCK);
+    for &(id, v) in &p.values {
+        s.set_param(id, v);
+    }
+    if let Some(id) = p.polyphony {
+        s.set_param(id, START_NOTES as f32);
+    }
+    let chord = |root: u8| {
+        (0..START_NOTES)
+            .map(move |k| root + [0u8, 7, 12, 16, 19, 24, 28, 31][k % 8] + 12 * (k / 8) as u8)
+    };
+    let on = |note| {
+        Timed::new(
+            0,
+            NodeEvent::NoteOn {
+                note,
+                velocity: 100,
+            },
+        )
+    };
+    let notes: Vec<Timed> = chord(48).map(on).collect();
+    let change: Vec<Timed> = chord(48)
+        .map(|note| Timed::new(0, NodeEvent::NoteOff { note }))
+        .chain(chord(55).map(on))
+        .collect();
+    let (mut l, mut r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
+    let mut frame = 0u64;
+    let mut block = |s: &mut Box<dyn Node>, events: &[Timed]| {
+        l.fill(0.0);
+        r.fill(0.0);
+        let t = Instant::now();
+        s.process(&Ctx::new(rate, frame), events, &mut l, &mut r);
+        let ns = t.elapsed().as_nanos() as f64;
+        std::hint::black_box((&l, &r));
+        frame += frames as u64;
+        ns
+    };
+    let (mut starts, mut held, mut changes) = (Vec::new(), Vec::new(), Vec::new());
+    for _ in 0..rounds {
+        s.reset();
+        for _ in 0..2 {
+            block(&mut s, &[]);
+        }
+        starts.push(block(&mut s, &notes));
+        held.push((0..3).map(|_| block(&mut s, &[])).sum::<f64>() / 3.0);
+        changes.push(block(&mut s, &change));
+    }
+    let median = |v: &mut Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v.get(v.len() / 2).copied().unwrap_or(0.0)
+    };
+    StartCost {
+        worst_start_ns: starts.iter().copied().fold(0.0, f64::max),
+        start_ns: median(&mut starts),
+        held_ns: median(&mut held),
+        change_ns: median(&mut changes),
+    }
+}
+
+/// Every factory preset of every keyboard engine but Poly at 1 to 16
+/// voices (keys held, for the organ), the acid line once (it is mono).
+fn engine_scaling(rate: u32) -> Vec<Scaling> {
+    engine_presets(rate)
+        .into_iter()
+        .map(|p| {
+            let held = p.polyphony.is_none() && !p.mono;
+            preset_scaling(
+                format!("{}{}", p.name, if held { " (keys held)" } else { "" }),
+                rate,
+                &*p.make,
+                &p.values,
+                p.polyphony,
+                p.mono,
+            )
+        })
+        .collect()
+}
+
 /// Every synth preset of every keyboard engine at 1 to 16 voices (chords
 /// changing every half second, as in the synth cases; a mono preset once,
 /// on a line), the sampler at 1 to 32 voices held, and the sampler's
 /// grains at 16 to 256 alive.
 pub fn scaling(rate: u32) -> Vec<Scaling> {
-    let mut v: Vec<Scaling> = PRESETS
+    let mut v: Vec<Scaling> = Poly::presets()
         .iter()
         .map(|p| {
             // Mono and legato presets play one voice whatever the polyphony.
@@ -2107,7 +2348,8 @@ fn moving_pads(rate: u32, n: usize) -> Case {
 /// The sampler with `n` looping pads held down, as [`held_pads`], through
 /// one of sampler R5.6's filters with its envelope moving the cutoff (set
 /// again every 16 frames): the Ladder (with `drive_db` of Drive, its curve
-/// at twice the rate) or the Vowel (two formants).
+/// at twice the rate), the Vowel (two formants) or the Comb (its delay
+/// gliding to each new pitch).
 fn new_filter_pads(rate: u32, n: usize, kind: FilterKind, drive_db: f32) -> Case {
     let s = Source::new("noise", rate, 2, bench_sound(rate as usize, false)).expect("source");
     let mut p = Project::new();
@@ -2142,6 +2384,10 @@ fn new_filter_pads(rate: u32, n: usize, kind: FilterKind, drive_db: f32) -> Case
         FilterKind::Ladder => (
             format!("Sampler x{n} held, driven ladder"),
             "looping pads held down through a ladder driven 12 dB, its envelope moving",
+        ),
+        FilterKind::Comb => (
+            format!("Sampler x{n} held, comb"),
+            "looping pads held down through a comb with feedback, its envelope moving its pitch",
         ),
         _ => (
             format!("Sampler x{n} held, vowel"),
@@ -2260,7 +2506,7 @@ pub fn fit(points: &[(usize, f64)]) -> (f64, f64) {
 /// also shows what they cost each other in the caches.
 fn song(rate: u32) -> Case {
     let preset = |name: &str| {
-        PRESETS
+        Poly::presets()
             .iter()
             .find(|p| p.name == name)
             .unwrap_or_else(|| panic!("preset {name}"))
@@ -2339,17 +2585,10 @@ impl Sink for TimeSink {
     }
 }
 
-/// The time engine as a busy song uses it: the transport looping 4 bars at
-/// 128 BPM, and `tracks` clips playing at once (16ths with 3-note chords,
-/// one at 3:2 speed, one swung and quantised), through the per-track
-/// arps as the pad player runs them (16 of them), the first track's clip
-/// through its arp at 32nds over 2 octaves. Every step has two parameter locks: one of the
-/// instrument's (a different one each step, so each ends at the next
-/// note) and one of the strip's. With `trigs`, every note also has a trig
-/// condition (A:B, PRE, NEI, FILL, 1ST and their opposites in turn),
-/// every fourth step is a ratchet of 3, and FILL turns on and off every
-/// 64 blocks.
-fn time(rate: u32, tracks: usize, trigs: bool) -> Case {
+/// The Time cases' song: `tracks` clips of 16ths with 3-note chords and
+/// two locks a step, one at 3:2 speed, one swung and quantised, with
+/// `trigs` a trig condition on every note and a ratchet every fourth step.
+fn time_song(tracks: usize, trigs: bool) -> (Song, Vec<Launch>) {
     use mpfree_seq::Cond;
     const CONDS: [Cond; 9] = [
         Cond::Always,
@@ -2423,6 +2662,22 @@ fn time(rate: u32, tracks: usize, trigs: bool) -> Case {
             start: 0,
         });
     }
+    (song, launches)
+}
+
+/// The time engine as a busy song uses it: the transport looping 4 bars at
+/// 128 BPM, and `tracks` clips playing at once (16ths with 3-note chords,
+/// one at 3:2 speed, one swung and quantised), through the per-track
+/// arps as the pad player runs them (16 of them), the first track's clip
+/// through its arp at 32nds over 2 octaves. Every step has two parameter locks: one of the
+/// instrument's (a different one each step, so each ends at the next
+/// note) and one of the strip's. With `trigs`, every note also has a trig
+/// condition (A:B, PRE, NEI, FILL, 1ST and their opposites in turn),
+/// every fourth step is a ratchet of 3, and FILL turns on and off every
+/// 64 blocks.
+fn time(rate: u32, tracks: usize, trigs: bool) -> Case {
+    let ppq = i64::from(PPQ);
+    let (song, launches) = time_song(tracks, trigs);
     let view = PlayView::compile(&song, &launches).expect("view");
     let mut t = Transport::new(rate, 128.0).expect("transport");
     t.command(0, T::SetLoop(Some((0, 16 * ppq))));
@@ -2466,6 +2721,81 @@ fn time(rate: u32, tracks: usize, trigs: bool) -> Case {
             l[0] = sink.notes as f32;
         }),
         mem_bytes: 0,
+    }
+}
+
+/// Tracks on MIDI gear slower than the sound's lead (sequencer S5's
+/// look-ahead, `mpfree_play::Ahead`): the Time case's song without arps,
+/// `ahead` of its `tracks` clips 4,000 frames ahead (100 ms of gear delay
+/// less the 8.7 ms lead, at 44.1 kHz). Each block plays the real period,
+/// checks its events against the log, then copies the transport and the
+/// player and plays them on 4,000 frames to send what comes next.
+fn time_ahead(rate: u32, tracks: usize, ahead: usize) -> Case {
+    let ppq = i64::from(PPQ);
+    let (song, launches) = time_song(tracks, false);
+    let view = PlayView::compile(&song, &launches).expect("view");
+    let mut t = Transport::new(rate, 128.0).expect("transport");
+    t.command(0, T::SetLoop(Some((0, 16 * ppq))));
+    t.command(0, T::Play);
+    let mut player = Player::new();
+    let mut block = TBlock::new();
+    let mut look = Ahead::new(&t);
+    let frames: Vec<u32> = (0..tracks)
+        .map(|i| if i < ahead { 4_000 } else { 0 })
+        .collect();
+    look.set(&frames);
+    let mut real = Box::new(RealPass {
+        out: [Out {
+            offset: 0,
+            frame: 0,
+            track: 0,
+            dest: 0,
+            event: mpfree_play::Event::AllOff,
+        }; REAL_PASS],
+        n: 0,
+    });
+    let mut sent = 0u64;
+    Case {
+        name: format!("Time: {tracks} clips, {ahead} tracks 90 ms ahead"),
+        module: "time",
+        what: "the look-ahead for slow MIDI gear: a forecast copy each block",
+        block: Box::new(move |_, l, r| {
+            let n = l.len() as u32;
+            t.process(n, &mut block);
+            real.n = 0;
+            player.process(&view, &block, &mut *real);
+            for o in &real.out[..real.n] {
+                if !look.sent_already(o) {
+                    sent += 1;
+                }
+            }
+            look.check(t.frame(), |_| sent += 1);
+            look.forecast(&t, &player, &view, n, |_| {
+                sent += 1;
+                true
+            });
+            l.fill(0.0);
+            r.fill(0.0);
+            l[0] = sent as f32;
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// Events one real period plays, as the app's sink keeps them.
+const REAL_PASS: usize = 1_024;
+
+struct RealPass {
+    out: [Out; REAL_PASS],
+    n: usize,
+}
+
+impl Sink for RealPass {
+    fn send(&mut self, o: Out) {
+        if let Some(slot) = self.out.get_mut(self.n) {
+            *slot = o;
+            self.n += 1;
+        }
     }
 }
 
@@ -3517,7 +3847,7 @@ fn beside(name: &str, rate: u32, lane: Option<LaneConfig>, wait: Duration) -> Ca
     let poly = Part::new(Chords::new(
         rate,
         Box::new(Poly::new(rate)),
-        PRESETS[0].values,
+        Poly::presets()[0].values,
         Some(POLYPHONY),
         8,
     ));

@@ -9,7 +9,7 @@ use mpfree_synth::params as pp;
 use mpfree_synth::params::Preset;
 use mpfree_synth::wavetable::params as wtp;
 use mpfree_synth::Wavetable;
-use mpfree_synth::{Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch};
+use mpfree_synth::{Analog, Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch};
 use mpfree_ui::qlink::QLinkColumn;
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
@@ -317,6 +317,8 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
          "keys", "Bright Tines", "Strike"),
         ("synth-keys-tone", "Keys · Reed Bite, Tone page: the reed's pickup curve with the stretch a hit swings across",
          "keys", "Reed Bite", "Tone"),
+        ("synth-keys-clav", "Keys · Funk Clav, Clav page: what the bridge pickup hears through the Treble switch, and how long each partial rings",
+         "keys", "Funk Clav", "Clav"),
         ("synth-drawbar", "Drawbar · Jazz Perc, Drawbars page: the registration as bars, the wave it adds up to, third percussion",
          "drawbar", "Jazz Perc", "Drawbars"),
         ("synth-drawbar-rotary", "Drawbar · Gospel, Rotary page: the horn and the drum spinning up to Fast",
@@ -329,6 +331,10 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
          "analog", "Poly Brass", "Filter"),
         ("synth-analog-voice", "Analog · Worn Cards, Voice page: each voice card's own tuning at its Age",
          "analog", "Worn Cards", "Voice"),
+        ("synth-bass", "Bass · Rubber Bass, Source page: the saw with its sub, locked over the sub's cycle",
+         "bass", "Rubber Bass", "Source"),
+        ("synth-bass-808", "Bass · Long 808, Shape page: the pitch drop landing on the note, and the amp",
+         "bass", "Long 808", "Shape"),
     ] {
         out.push(inst_scene(name, about, engine, preset, page, fonts())?);
     }
@@ -387,6 +393,7 @@ fn inst_scene(
             Analog::load_preset,
             preset,
         )?,
+        "bass" => loaded(Bass::new(RATE), Bass::presets(), Bass::load_preset, preset)?,
         _ => return Err(format!("no engine {engine}")),
     };
     let st = SynthState::from_node(node.as_ref(), "Keys", Color::rgb(0x3DDC97), names, Some(i));

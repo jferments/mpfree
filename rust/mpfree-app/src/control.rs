@@ -430,7 +430,9 @@ pub struct MadeInstrument {
 pub struct InstrumentJob {
     pub track: usize,
     pub id: &'static str,
-    /// A synth engine's sound (none for a plugin).
+    /// A synth engine's sound: its design lines (none for a plain engine)
+    /// and its values (none for a plugin).
+    pub extras: Vec<(String, String)>,
     pub values: Vec<f32>,
     pub pads: [Pad; PADS],
     pub tuning: Tuning,
@@ -840,7 +842,7 @@ pub fn make_instrument(
     MadeInstrument {
         track: job.track,
         id: job.id,
-        made: crate::instruments::make(plugins, job.id, &job.values, rate, block),
+        made: crate::instruments::make(plugins, job.id, &job.extras, &job.values, rate, block),
         pads: job.pads,
         tuning: job.tuning,
     }

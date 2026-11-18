@@ -4,7 +4,9 @@
 
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_synth::params::{AMP_R, VEL_AMP};
-use mpfree_synth::{Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable};
+use mpfree_synth::{
+    Analog, Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable,
+};
 
 const RATE: u32 = 48_000;
 const BLOCK: usize = 128;
@@ -24,13 +26,14 @@ fn engines() -> Vec<(&'static str, Box<dyn Node>)> {
 /// The organ (its wheels turn whatever the keys do, so a key given up
 /// saves little), the string machine (a key shares its notes with the
 /// keys an octave away, and the Ensemble costs the same either way) and
-/// the mono bass offer no voice.
+/// the mono basses offer no voice.
 #[test]
-fn drawbar_strings_and_squelch_offer_no_voice() {
-    let mut engines: [(&str, Box<dyn Node>); 3] = [
+fn drawbar_strings_and_the_basses_offer_no_voice() {
+    let mut engines: [(&str, Box<dyn Node>); 4] = [
         ("Drawbar", Box::new(Drawbar::new(RATE))),
         ("Strings", Box::new(Strings::new(RATE))),
         ("Squelch", Box::new(Squelch::new(RATE))),
+        ("Bass", Box::new(Bass::new(RATE))),
     ];
     for (name, n) in engines.iter_mut() {
         let mut t = 0;

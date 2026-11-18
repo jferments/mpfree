@@ -2935,6 +2935,8 @@ fn knob_turn(
             )
         }
         gui::FromUi::Chain(mpfree_chain_ui::ChainAction::Set { addr, value }) => (*addr, *value),
+        // The Perform view's Q-Links on a throw's Perform FX.
+        gui::FromUi::ThrowKnob { addr, value } => (*addr, *value),
         _ => return None,
     };
     // A MIDI effect's setting records as a lock too: the mod engine plays
@@ -3273,7 +3275,8 @@ fn kit_views(kits: &[kit::Kit], users: Range<usize>, synth: &synth::Synth) -> Ve
 /// The entry SHIFT + wheel turns to from `from`, `d` detents on among `n`
 /// (the kits, then the synth): a user kit slot (`users`) counts only once
 /// it is in use, with sounds (`sounds(k)`) or a track playing it, so the
-/// wheel never stops on an empty spare slot.
+/// wheel never stops on an empty spare slot, nor on a kit set aside with
+/// a track UNDO took away (`TrackKits::set_aside`).
 fn kit_turned(
     from: usize,
     d: i32,
@@ -3283,12 +3286,13 @@ fn kit_turned(
     kits: &sampler::TrackKits,
 ) -> usize {
     let n = n.max(1);
-    let spare = |k: usize| users.contains(&k) && sounds(k) == 0 && !kits.plays(k);
+    let skip =
+        |k: usize| kits.set_aside(k) || (users.contains(&k) && sounds(k) == 0 && !kits.plays(k));
     let mut at = from;
     for _ in 0..d.unsigned_abs() {
         for _ in 0..n {
             at = (at as i64 + i64::from(d.signum())).rem_euclid(n as i64) as usize;
-            if !spare(at) {
+            if !skip(at) {
                 break;
             }
         }
@@ -3845,11 +3849,12 @@ struct SeqPads<'a> {
 
 /// A key a route sends to a track that isn't armed (the I/O view's
 /// Routing): played at once where the track's clips play, on MIDI out, its
-/// own instrument, or what it plays (its kit's pad that sends the note,
-/// `profile::kit_pad_of_note`, or the synth by note: `synth` if the track
-/// plays it, else `kit`), and
-/// on CV out if it follows the track. It goes through no arp, and nothing
-/// records it: REC records the armed track.
+/// own instrument, or what it plays: the synth by note when it plays the
+/// synth (`plays_synth`), else its kit's pad that sends the note
+/// (`profile::kit_pad_of_note`) as that pad's kind has it, as a clip's
+/// note on it would be ([`play_routed_pad`]). And on CV out if it follows
+/// the track. It goes through no arp, and nothing records it: REC records
+/// the armed track.
 // What a track plays comes in pieces the sound loop holds apart.
 #[allow(clippy::too_many_arguments)]
 fn play_routed(
@@ -3858,7 +3863,8 @@ fn play_routed(
     midi: &mut midi_out::MidiOut,
     cv: &mut cv_out::CvOut,
     own: &mut instruments::Instruments,
-    synth: Option<&mut synth::Synth>,
+    synth: &mut synth::Synth,
+    plays_synth: bool,
     player: &mut sampler::Player,
     kit: usize,
 ) {
@@ -3884,28 +3890,25 @@ fn play_routed(
         // gear (above), else its instrument, else the synth (Thru passes a
         // keyboard's on as it came).
         midi_in::Key::Bend { value } => {
-            if !gear && !own.bend(t, value) {
-                if let Some(s) = synth {
-                    s.bend(value);
-                }
+            if !gear && !own.bend(t, value) && plays_synth {
+                synth.bend(value);
             }
             return;
         }
         midi_in::Key::Expr { note, kind, value } => {
-            if !gear && !own.note_expression(t, note, kind, value) {
-                if let Some(s) = synth {
-                    s.expression_note(note, kind, value);
-                }
+            if !gear && !own.note_expression(t, note, kind, value) && plays_synth {
+                synth.expression_note(note, kind, value);
             }
             return;
         }
         // A pedal, the mod wheel, breath or a foot controller: the track's
         // gear, else its instrument, else the synth (a kit takes none).
         midi_in::Key::Control { ctl, value } => {
-            if !midi.keys_control(u16::from(track), ctl, value) && !own.control(t, ctl, value, 0) {
-                if let Some(s) = synth {
-                    s.control(ctl, value, 0);
-                }
+            if !midi.keys_control(u16::from(track), ctl, value)
+                && !own.control(t, ctl, value, 0)
+                && plays_synth
+            {
+                synth.control(ctl, value, 0);
             }
             return;
         }
@@ -3948,21 +3951,81 @@ fn play_routed(
         }
         return;
     }
-    match (synth, event) {
-        (Some(s), Event::NoteOn { note, velocity }) => s.note_on_note(note, velocity, 0),
-        (Some(s), Event::NoteOff { note }) => s.note_off_note(note, 0),
-        (Some(s), Event::Pressure { note, value }) => s.pressure_note(note, value),
-        // A kit: the pad that sends the note, in any bank.
-        (None, Event::NoteOn { note, velocity }) => {
-            player.hit_kit_at(kit, profile::kit_pad_of_note(note), velocity, 0);
+    if plays_synth {
+        match event {
+            Event::NoteOn { note, velocity } => synth.note_on_note(note, velocity, 0),
+            Event::NoteOff { note } => synth.note_off_note(note, 0),
+            Event::Pressure { note, value } => synth.pressure_note(note, value),
+            _ => {}
         }
-        (None, Event::NoteOff { note }) => {
-            player.release_kit_at(kit, profile::kit_pad_of_note(note), 0);
+        return;
+    }
+    // A kit: the pad that sends the note, in any bank.
+    if let Event::NoteOn { note, .. } | Event::NoteOff { note } | Event::Pressure { note, .. } =
+        event
+    {
+        let pad = profile::kit_pad_of_note(note);
+        play_routed_pad(track, pad, event, midi, synth, player, kit);
+    }
+}
+
+/// A routed key's hit, let-go or pressure on pad `pad` of track `track`'s
+/// kit `kit`, as the pad's kind has it (the Pads tab's, the redesign's
+/// 6b), as `SeqPads::routed` plays a clip's: a MIDI out pad to its own
+/// port, channel and note (`MidiOut::pad_to`), an Instrument pad as a
+/// voice of its engine (`Synth::pad_voice_on`), and a Sample pad (no
+/// route) on the sampler. `event`'s note is the key's; the pad's own
+/// note goes out. Never allocates.
+fn play_routed_pad(
+    track: u8,
+    pad: usize,
+    event: mpfree_play::Event,
+    midi: &mut midi_out::MidiOut,
+    synth: &mut synth::Synth,
+    player: &mut sampler::Player,
+    kit: usize,
+) {
+    use mpfree_play::Event;
+    let track = u16::from(track);
+    match player.pad_route(kit, pad) {
+        Some(sampler::PadRoute::Midi {
+            port,
+            channel,
+            note,
+        }) => {
+            // `pad_to` reads the pad from the event's note.
+            let p = pad.min(usize::from(u8::MAX)) as u8;
+            let event = match event {
+                Event::NoteOn { velocity, .. } => Event::NoteOn { note: p, velocity },
+                Event::NoteOff { .. } => Event::NoteOff { note: p },
+                Event::Pressure { value, .. } => Event::Pressure { note: p, value },
+                _ => return,
+            };
+            let o = mpfree_play::Out {
+                offset: 0,
+                frame: 0,
+                track,
+                dest: Default::default(),
+                event,
+            };
+            midi.pad_to(&o, port, *channel, *note);
         }
-        (None, Event::Pressure { note, value }) => {
-            player.pressure_kit_at(kit, profile::kit_pad_of_note(note), value, 0);
-        }
-        _ => {}
+        Some(&sampler::PadRoute::Voice(engine, note)) => match event {
+            Event::NoteOn { velocity, .. } => {
+                synth.pad_voice_on(track, pad, (engine, note), velocity, 0);
+            }
+            Event::NoteOff { .. } => synth.pad_voice_off(track, pad, 0),
+            Event::Pressure { value, .. } => synth.pad_voice_pressure(track, pad, value, 0),
+            _ => {}
+        },
+        None => match event {
+            Event::NoteOn { velocity, .. } => {
+                player.hit_kit_at(kit, pad, velocity, 0);
+            }
+            Event::NoteOff { .. } => player.release_kit_at(kit, pad, 0),
+            Event::Pressure { value, .. } => player.pressure_kit_at(kit, pad, value, 0),
+            _ => {}
+        },
     }
 }
 
@@ -4042,6 +4105,8 @@ fn learn_describe(
         Owner::Transport => return remote::describe(addr.param, now),
         Owner::Clips => return remote::describe_clips(addr.param, now),
         Owner::Looper => return remote::describe_looper(addr.param, now),
+        // A Perform pad is pressed, with no value to read.
+        Owner::Perform => return None,
         Owner::Play => return remote::describe_play(addr.param, now),
         // A track's controller, bend or pressure out: where the engine has
         // it, else its default.
@@ -4096,8 +4161,9 @@ fn synth_describe(
 /// track's arp, "Tune (A5, Drums)" for a kit pad's setting, "PLAY and
 /// STOP" or "Tempo" for the transport, "Launch Bass · row 2" or "Mute
 /// Bass" on the Clips grid ([`clips_label`]), "Looper · Loop 3 key" or
-/// "Looper · picked loop's key" on the looper, else as the chain editor
-/// names it ([`modpanels::label`]).
+/// "Looper · picked loop's key" on the looper, "Perform pads B2" on the
+/// Perform pads, "Play · Swing" on Play's own controls, else as the chain
+/// editor names it ([`modpanels::label`]).
 fn learn_label(
     mix: &mixing::MixHost,
     synth: &synth::Synth,
@@ -4127,6 +4193,10 @@ fn learn_label(
         Owner::Looper => {
             let name = looper::name(addr.param);
             return format!("Looper · {}", name.as_deref().unwrap_or("?"));
+        }
+        Owner::Perform => {
+            let name = mpfree_play::mpfree_param::perform::name(addr.param);
+            return format!("Perform pads {}", name.as_deref().unwrap_or("?"));
         }
         Owner::Play => return format!("Play · {}", play::name(addr.param).unwrap_or("?")),
         _ => return modpanels::label(mix, addr),
@@ -4374,23 +4444,28 @@ fn instrument_name(plugins: &plugins::Plugins, id: &'static str) -> &'static str
 }
 
 /// A job for track `track`'s own instrument `id`: an engine's copy of the
-/// shared synth's sound (or `values`), or a plugin synth, with the pad
-/// layout and tuning now.
+/// shared synth's sound with its design (or `preset`, a factory preset's
+/// design lines and values, [`synth::Synth::preset_values`]), or a plugin
+/// synth, with the pad layout and tuning now.
 fn instrument_job(
     synth: &synth::Synth,
     track: usize,
     id: &'static str,
-    values: Option<Vec<f32>>,
+    preset: Option<synth::SoundCopy>,
 ) -> control::InstrumentJob {
     let engine = synth::Engine::from_node_id(id);
-    let values = match (values, engine) {
-        (Some(v), _) => v,
-        (None, Some(e)) => synth.sound_of(e).1,
-        (None, None) => Vec::new(),
+    let (extras, values) = match (preset, engine) {
+        (Some(p), _) => p,
+        (None, Some(e)) => {
+            let (_, extras, values) = synth.sound_of(e);
+            (extras, values)
+        }
+        (None, None) => (Vec::new(), Vec::new()),
     };
     control::InstrumentJob {
         track,
         id,
+        extras,
         values,
         pads: synth.pads_for(engine.unwrap_or(synth::Engine::Poly)),
         tuning: synth.tuning_now(),
@@ -4617,16 +4692,10 @@ impl time::Pads for SeqPads<'_> {
     /// the pads don't play it (its pad still flashes). A panic ends MIDI
     /// Out's notes and goes on to the pads.
     fn out(&mut self, o: &mpfree_play::Out) -> bool {
-        use mpfree_play::Event;
         if self.quiet(o) {
             return true;
         }
-        let pad = match o.event {
-            Event::NoteOn { note, .. } | Event::NoteOff { note } | Event::Pressure { note, .. } => {
-                usize::from(note)
-            }
-            _ => 0,
-        };
+        let pad = event_pad(o.event);
         // A track that plays notes plays its pad's notes moved by its live
         // transpose (S4); a note-off goes to what its note-on sent.
         let shift = self.shift(o.track);
@@ -4639,12 +4708,63 @@ impl time::Pads for SeqPads<'_> {
         self.cv.send(o, is);
         self.tap.send(o, is);
         let taken = self.midi.send(o, is) || self.clip_own(o, &shift);
-        if let (true, Event::NoteOn { velocity, .. }) = (taken, o.event) {
-            if let Some(f) = self.flashes.get_mut(pad) {
-                *f = velocity.max(1);
-            }
+        if taken {
+            self.flash(o);
         }
         taken
+    }
+
+    /// A clip's event on a track whose gear needs more than the sound's
+    /// lead (sequencer S5), before its period: MIDI out alone sends it
+    /// now, early enough for the gear's delay.
+    fn out_ahead(&mut self, o: &mpfree_play::Out) -> bool {
+        if self.quiet(o) {
+            return false;
+        }
+        let shift = self.shift(o.track);
+        let mut buf = [0; MAX_PAD_NOTES];
+        let is = shifted_is(
+            pad_is(
+                synth_seen(self.kits, self.synth, o.track),
+                event_pad(o.event),
+            ),
+            &shift,
+            &mut buf,
+        );
+        self.midi.send(o, is)
+    }
+
+    /// The same event in its own period, MIDI out having sent it ahead:
+    /// the rest of what `out` does (CV out, an export's MIDI file, the
+    /// pad's flash).
+    fn out_sent(&mut self, o: &mpfree_play::Out) {
+        if self.quiet(o) {
+            return;
+        }
+        let shift = self.shift(o.track);
+        let mut buf = [0; MAX_PAD_NOTES];
+        let is = shifted_is(
+            pad_is(
+                synth_seen(self.kits, self.synth, o.track),
+                event_pad(o.event),
+            ),
+            &shift,
+            &mut buf,
+        );
+        self.cv.send(o, is);
+        self.tap.send(o, is);
+        self.flash(o);
+    }
+}
+
+/// The pad a clip's note event is on (0 for the rest).
+fn event_pad(e: mpfree_play::Event) -> usize {
+    use mpfree_play::Event;
+    match e {
+        Event::NoteOn { note, .. } | Event::NoteOff { note } | Event::Pressure { note, .. } => {
+            usize::from(note)
+        }
+        _ => 0,
     }
 }
 
@@ -4658,6 +4778,16 @@ fn synth_seen<'s>(
 }
 
 impl SeqPads<'_> {
+    /// A note-on that went out elsewhere (MIDI out, a track's own
+    /// instrument) still flashes its pad.
+    fn flash(&mut self, o: &mpfree_play::Out) {
+        if let mpfree_play::Event::NoteOn { velocity, .. } = o.event {
+            if let Some(f) = self.flashes.get_mut(event_pad(o.event)) {
+                *f = velocity.max(1);
+            }
+        }
+    }
+
     /// The synth, if track `track` plays it rather than a kit.
     fn synth_of(&mut self, track: u16) -> Option<&mut synth::Synth> {
         if self.kits.plays_synth(usize::from(track)) {
@@ -4720,7 +4850,12 @@ impl SeqPads<'_> {
     /// the pads is kept quiet (taken, so nothing plays or records it).
     fn quiet(&self, o: &mpfree_play::Out) -> bool {
         self.only.is_some() && {
-            let on_pads = !self.midi.takes(o.track) && !self.own.holds(usize::from(o.track));
+            let t = usize::from(o.track);
+            let outside = self.midi.takes(o.track);
+            // Track 1's own instrument shares Drums with the tracks on
+            // kit 1 (R3 part 4b), so their replays keep it quiet too.
+            let on_pads = !outside
+                && (!self.own.holds(t) || (t == 0 && self.own.channel(0) == mixing::DRUMS));
             export::quiets(self.only, o.track, on_pads, o.event)
         }
     }
@@ -5526,6 +5661,9 @@ fn player_session(
     // every track until a pick). The pads play the armed track's; each
     // track's clips play its own.
     let mut track_kits = sampler::TrackKits::new(drum_kits);
+    // The time engine's REDOs seen so far: a track one brings back gets its
+    // kit back (`TrackKits::follow`).
+    let mut redos_seen = 0u64;
     // The armed track changed: next period the pads follow it to what it
     // plays (as a pick would, but nothing changes what a track plays).
     let mut kit_follow: Option<usize> = None;
@@ -5571,6 +5709,13 @@ fn player_session(
     let mut rec_back: Option<Box<sampler::RecFeed>> = None;
     // What the sampler's input records from (the Rec tab's Source).
     let mut rec_source = sampler::RecSource::Line;
+    // The recorder's Gain on the line input, linear (one-page step 2d),
+    // and where the last period's ramp ended.
+    let mut rec_gain = 1.0f32;
+    let mut rec_gain_was = 1.0f32;
+    // Monitor's level (the line input strip's fader) the screen was last
+    // told, dB.
+    let mut line_level_said: Option<f32> = None;
     // Sample Recall (sampler decision 3): the master as heard, its last two
     // minutes always kept, made here once and never freed; its reading end
     // goes to the screen as soon as there is room.
@@ -5836,6 +5981,8 @@ fn player_session(
     // Learned controls on the transport (remote.rs): the presses they hold,
     // and whether the log said a learned tempo waits for a followed clock.
     let mut remote = remote::Remote::new();
+    // Keys learned on the Perform pads (Learn a key): the pads they hold.
+    let mut perform_keys = remote::PerformKeys::default();
     let mut remote_tempo_waits = false;
     // Learned controls on Play's Swing, Drums filter and XY pad (the Learn
     // section's Play card), done once a pass.
@@ -6426,6 +6573,8 @@ fn player_session(
                         player.release_kit_at(kit, pad, 0);
                     }
                 }
+                // The take the Wave page shows, kept off the pads.
+                gui::FromUi::SampleTake { kit, down } => player.take_at(kit, down, 0),
                 gui::FromUi::SampleKey {
                     kit,
                     note,
@@ -6470,7 +6619,7 @@ fn player_session(
                             None => mixing::SYNTH,
                             Some(k) => match homes.get(k).copied().unwrap_or(0) {
                                 0 => mixing::DRUMS,
-                                h => instruments::first_track() + usize::from(h) - 1,
+                                h => mix.track_channel(usize::from(h) - 1),
                             },
                         })
                     };
@@ -6726,6 +6875,7 @@ fn player_session(
                         }
                     }
                 }
+                gui::FromUi::SampleGain(db) => rec_gain = 10f32.powf(db / 20.0),
                 gui::FromUi::SampleSource(src) => {
                     if src != rec_source {
                         rec_source = src;
@@ -6776,8 +6926,8 @@ fn player_session(
                     let held = mix.instruments.held(track);
                     let engine = held.and_then(|h| synth::Engine::from_node_id(h.id));
                     match (held, engine.and_then(|e| synth.preset_values(e, k))) {
-                        (Some(h), Some((name, values))) => {
-                            let job = instrument_job(&synth, track, h.id, Some(values));
+                        (Some(h), Some((name, extras, values))) => {
+                            let job = instrument_job(&synth, track, h.id, Some((extras, values)));
                             if mix.build_instrument(job) {
                                 if let Some(p) = track_presets.get_mut(track) {
                                     *p = Some(k);
@@ -6956,6 +7106,11 @@ fn player_session(
         if music.take_unplugged() {
             for id in remote.let_go() {
                 fx.extend(app.remote_press(id, false, t));
+            }
+            // And the Perform pads its keys held let go, so no throw
+            // stays on.
+            for action in perform_keys.let_go() {
+                fx.extend(desk::perform_pad_up(&mut app, action));
             }
         }
         for l in music.learning() {
@@ -7144,6 +7299,20 @@ fn player_session(
                     let now = desk::looper_now(&looper);
                     let act = remote.looper_write(w.target.param, w.value, now, t);
                     fx.extend(desk::looper_remote(&mut app, &time, &looper, out, act));
+                }
+                // A Perform pad (Learn a key): played as a hit on it plays
+                // it, whatever the pads show, and let go of what it pressed.
+                midi_in::Learning::Set(w)
+                    if w.target.owner == mpfree_play::mpfree_param::Owner::Perform =>
+                {
+                    let set = app.perform_set();
+                    let act = perform_keys.write(w.target.param, w.value, t, |page, pad| {
+                        set.page(page).action(pad)
+                    });
+                    let drums = kit_drums(&kits, player.kit());
+                    fx.extend(desk::perform_remote(
+                        &mut app, &time, &looper, out, act, drums,
+                    ));
                 }
                 // A synth's knob: as the Synth tab turns it, and the tab
                 // follows (a few times a second at most).
@@ -7523,9 +7692,8 @@ fn player_session(
                 &mut midi_out,
                 &mut cv_out,
                 &mut mix.instruments,
-                track_kits
-                    .plays_synth(usize::from(track))
-                    .then_some(&mut synth),
+                &mut synth,
+                track_kits.plays_synth(usize::from(track)),
                 &mut player,
                 track_kits.kit_of(usize::from(track)).unwrap_or(0),
             );
@@ -7881,6 +8049,14 @@ fn player_session(
             let (more, line) = desk::perform_pad_held(key);
             fx.extend(more);
             out.note(&format!("{line}, from a learned control"));
+        }
+        // And a key learned on a Perform pad that is a loop key.
+        for key in perform_keys.holds(t, perform_pads::CLEAR_HOLD_S) {
+            let (more, line) = desk::perform_pad_held(key);
+            fx.extend(more);
+            if !line.is_empty() {
+                out.note(&format!("{line}, from a learned key"));
+            }
         }
         fx.extend(app.tick(t));
         // As set, not rounded: the song plays at it, and a project saves it
@@ -8292,10 +8468,13 @@ fn player_session(
             out.note(&format!("time: {line}"));
         }
         app.set_track_count(time.track_count());
-        // A track UNDO took away gives its kit back: its place plays kit 1
-        // again, for a track added there later (the screen hears of it
-        // with the track kits below).
-        track_kits.forget_past(time.track_count());
+        // A track UNDO took away sets its kit aside (its place plays kit 1
+        // again, for a track added there later), and a REDO that brings it
+        // back gives it its kit again, so the two go together (the screen
+        // hears of it with the track kits below).
+        let (redos, can_redo) = time.redos();
+        track_kits.follow(time.track_count(), redos != redos_seen, can_redo);
+        redos_seen = redos;
         // The transport buttons' lights follow the transport and the
         // loops (only the ones that changed; next period's effects).
         {
@@ -8363,6 +8542,9 @@ fn player_session(
         // the song starts, before this period's notes.
         midi_out.sync(&io_model, time.info().state.rolling());
         midi_out.clock(time.block());
+        // The tracks on gear slower than the sound's lead play their clips
+        // that much ahead (sequencer S5).
+        time.set_ahead(&midi_out.ahead());
         // CV out takes the outputs' jobs; run, reset and clock follow the
         // transport.
         cv_out.sync(&io_model);
@@ -9023,10 +9205,13 @@ fn player_session(
         // The same line input into the sampler's buffer, with the bar lines
         // (the Sample page's Rec tab and Skip back). A point in the mix
         // goes in after the mixer, below.
+        // Turned by the recorder's Gain, ramped over the period.
+        let gain = (rec_gain_was, rec_gain);
+        rec_gain_was = rec_gain;
         if let (Some(f), sampler::RecSource::Line) = (rec_feed.as_mut(), rec_source) {
             let t_rec = Instant::now();
             let (l, r) = looper.input();
-            f.period(time.block(), l, r, 0);
+            f.period_gain(time.block(), l, r, 0, gain);
             engines.add(engines::SAMPLER, t_rec.elapsed());
         }
         if let Some(f) = rec_back.take() {
@@ -9042,6 +9227,12 @@ fn player_session(
         parts.begin();
         if let Some(line) = mix.poll_built() {
             out.note(line);
+        }
+        // A Perform FX the set put on and no throw plays on now, taken
+        // off once it was in; one put on that came in: the Perform view's
+        // Q-Links can turn its throws now.
+        if desk::tell_throw_said(&mut mix, out) {
+            out.show(desk::throw_knobs(&mix, app.perform_set()));
         }
         // A switch of mode that came in: Q-Links and MIDI controls learned
         // on the insert's controls follow them.
@@ -9147,6 +9338,13 @@ fn player_session(
         parts.lap(parts::PADS);
         let t_mix = Span::start();
         mix.follow(looper.line.is_open(), looper.monitor);
+        // Monitor's level, for the Sample page's recorder, when it moves.
+        let line_level = mix.line_level();
+        if line_level_said != Some(line_level)
+            && out.try_show(gui::ToUi::LineLevel(line_level)).is_ok()
+        {
+            line_level_said = Some(line_level);
+        }
         let ctx = mixing::ctx(RATE, i * PERIOD as u64, time.info().bpm, time.block());
         // The mixer's lanes (each stage's inserts, the returns) keep the
         // same deadline.
@@ -9637,6 +9835,15 @@ fn player_session(
     }
     for line in summary {
         out.say(&line);
+    }
+    let ahead = time.ahead_counts();
+    if ahead != Default::default() {
+        out.say(&format!(
+            "MIDI out ahead (gear slower than the sound's lead): {} clip events sent early, {} \
+             late (changed inside the look-ahead), {} notes ended (sent early, then not played), \
+             {} found no room and went late",
+            ahead.ahead, ahead.late, ahead.wrong, ahead.dropped
+        ));
     }
     // CV 1 to 4 go to 0 V before the port lets go.
     let summary = cv_out.summary();
@@ -11275,6 +11482,38 @@ mod tests {
         assert!(!midi_in::key_toggles(at(play::XY_UP)));
     }
 
+    /// A key learned on a Perform pad (Learn a key) is named by the pad,
+    /// has no value to read, and plays while held whatever sends it: a
+    /// key, a footswitch's CC or a pad.
+    #[test]
+    fn a_perform_pads_learned_key_is_named_by_its_pad_and_plays_while_held() {
+        use mpfree_midi::learn::{Mode, Source};
+        use mpfree_play::mpfree_param::{perform, Owner, ParamAddr};
+        let mix = mixing::MixHost::new(44_100, 0.0, 6.0);
+        let synth = synth::Synth::new(44_100);
+        let time = time::TimeHost::new(44_100, 120.0).unwrap();
+        let app = app::App::new(44_100, false);
+        let b2 = ParamAddr::new(Owner::Perform, perform::pad(1, 1));
+        assert_eq!(learn_label(&mix, &synth, &time, b2), "Perform pads B2");
+        assert_eq!(
+            learn_label(&mix, &synth, &time, ParamAddr::new(Owner::Perform, 200)),
+            "Perform pads ?"
+        );
+        assert!(learn_describe(
+            &mix,
+            &synth,
+            &app,
+            &|_, _, _| None,
+            remote::Now::default(),
+            b2
+        )
+        .is_none());
+        for source in [Source::Note(40), Source::Cc(64)] {
+            assert_eq!(midi_in::learned_mode(&source, b2), Some(Mode::Momentary));
+        }
+        assert!(!midi_in::key_toggles(b2));
+    }
+
     /// The looper's learned controls (its footswitch) are named so the
     /// picked loop's never looks like a loop's number, and a loop's mute
     /// reads from the loops' bits.
@@ -11399,6 +11638,13 @@ mod tests {
             6,
             "3, 4, then past 5 to the synth"
         );
+        // A kit set aside with a track UNDO took away is no stop, even
+        // with sounds, until REDO brings the track back.
+        assert!(kits.follow(3, false, true));
+        let b0 = |k| if k == 3 { 1u128 } else { 0 };
+        assert_eq!(kit_turned(2, 1, 7, &users, b0, &kits), 6);
+        assert!(kits.follow(4, true, true));
+        assert_eq!(kit_turned(2, 1, 7, &users, b0, &kits), 3);
     }
 
     #[test]

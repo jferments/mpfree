@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use mpfree_sampler::dsp::{ladder_db, vowel_db};
+use mpfree_sampler::dsp::{comb_db, ladder_db, vowel_db};
 use mpfree_sampler::model::{Ahdsr, Filter, FilterKind, LfoShape, PadLfo, PitchEnv, PITCH_ENV_ST};
 use mpfree_ui::wave::Peaks;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
@@ -673,6 +673,7 @@ pub fn filter_db(f: &Filter, hz: f32) -> f32 {
         FilterKind::Off => return 0.0,
         FilterKind::Ladder => return ladder_db(f.cutoff_hz, f.resonance, hz),
         FilterKind::Vowel => return vowel_db(f.cutoff_hz, f.resonance, hz),
+        FilterKind::Comb => return comb_db(f.cutoff_hz, f.resonance, hz),
         _ => {}
     }
     let w = hz / f.cutoff_hz.max(1.0);
@@ -683,7 +684,7 @@ pub fn filter_db(f: &Filter, hz: f32) -> f32 {
         FilterKind::BandPass => w * w / den,
         FilterKind::HighPass => w.powi(4) / den,
         FilterKind::Notch => (1.0 - w * w).powi(2) / den,
-        FilterKind::Off | FilterKind::Ladder | FilterKind::Vowel => 1.0,
+        FilterKind::Off | FilterKind::Ladder | FilterKind::Vowel | FilterKind::Comb => 1.0,
     };
     let stages = if f.poles >= 4 { 2.0 } else { 1.0 };
     10.0 * power.max(1e-12).log10() * stages

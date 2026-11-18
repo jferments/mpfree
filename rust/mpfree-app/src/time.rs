@@ -83,6 +83,7 @@ pub use audio::TimeAudio;
 pub use control::{MuteLight, PadTap, TimeControl};
 pub use follow::Follow;
 use link::Tracks;
+pub use mpfree_play::AheadCounts;
 pub use pad_wait::{DuePads, PadFrom, PadWait, MAX_WAITS};
 
 /// Tracks in a new project.
@@ -289,6 +290,21 @@ pub trait Pads {
     fn out(&mut self, o: &Out) -> bool {
         let _ = o;
         false
+    }
+    /// An event of a track that plays ahead (sequencer S5, a track on a
+    /// MIDI port whose gear needs more than the sound's lead), handed over
+    /// before its period: `o.offset` counts from this period's first
+    /// frame and may be past its end. Only MIDI out takes it; true when it
+    /// did. By default nothing is.
+    fn out_ahead(&mut self, o: &Out) -> bool {
+        let _ = o;
+        false
+    }
+    /// An event the real pass played that went out ahead already
+    /// ([`Pads::out_ahead`]): what [`Pads::out`] does besides MIDI out
+    /// (CV out, the monitor, the pads' flashes) happens now.
+    fn out_sent(&mut self, o: &Out) {
+        let _ = o;
     }
     /// A clip's parameter lock (`Some`) or its end (`None`) on a kit
     /// pad's sound (`Owner::Pad`) or an instrument (`Owner::Inst`),
@@ -1181,6 +1197,13 @@ impl TimeHost {
         self.control.track_count()
     }
 
+    /// REDOs done so far, and whether REDO has anything to do: a track
+    /// that comes back with a REDO gets its kit back
+    /// ([`crate::sampler::TrackKits::follow`]).
+    pub fn redos(&self) -> (u64, bool) {
+        (self.control.redos(), self.control.can_redo())
+    }
+
     /// Whether track `t` has a clip launched (playing, or waiting for the
     /// transport); TRACK MUTE's pad lights have it in [`MuteLight`].
     #[cfg(test)]
@@ -1221,6 +1244,18 @@ impl TimeHost {
     /// tests; the pad player calls [`TimeHost::period_arps`].
     pub fn period(&mut self, frames: u32, pads: &mut impl Pads) {
         self.run(frames, pads, None);
+    }
+
+    /// Each track's ahead in frames for the coming periods (sequencer S5,
+    /// `MidiOut::ahead`): its clips' notes go to MIDI out that far before
+    /// their period ([`Pads::out_ahead`]). All 0 plays nothing ahead.
+    pub fn set_ahead(&mut self, frames: &[u32]) {
+        self.audio.set_ahead(frames);
+    }
+
+    /// What the look-ahead did, for the log.
+    pub fn ahead_counts(&self) -> AheadCounts {
+        self.audio.ahead_counts()
     }
 
     /// [`TimeHost::period`] with the per-track arps between the player and
@@ -2359,6 +2394,202 @@ mod tests {
 
     /// Frames per bar at 120 BPM.
     const BAR: u64 = 88_200;
+
+    /// Outside gear on every track (sequencer S5's tests): `Pads::out`
+    /// takes every clip event, as MIDI out does for a track on a port.
+    /// `midi` is what MIDI out was handed: the frame it plays on, the
+    /// first frame of the period it was handed over in, the event.
+    #[derive(Default)]
+    struct Gear {
+        frame: u64,
+        midi: Vec<(u64, u64, Event)>,
+        /// Real-pass events that had gone out ahead already.
+        sent: usize,
+    }
+
+    impl Pads for Gear {
+        fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+            true
+        }
+        fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+        fn stop_all(&mut self) {}
+        fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        fn out(&mut self, o: &Out) -> bool {
+            self.midi
+                .push((self.frame + u64::from(o.offset), self.frame, o.event));
+            o.track != mpfree_play::ALL
+        }
+        fn out_ahead(&mut self, o: &Out) -> bool {
+            self.out(o)
+        }
+        fn out_sent(&mut self, _: &Out) {
+            self.sent += 1;
+        }
+    }
+
+    impl Gear {
+        /// Periods until frame `to`.
+        fn run(&mut self, h: &mut TimeHost, to: u64) {
+            while self.frame < to {
+                h.period(PERIOD, self);
+                self.frame += u64::from(PERIOD);
+            }
+        }
+
+        /// The notes as they will play: (frame, event), in frame order
+        /// (the order handed over within a frame), before frame `to`.
+        fn notes(&self, to: u64) -> Vec<(u64, Event)> {
+            let mut v: Vec<(u64, Event)> = self
+                .midi
+                .iter()
+                .filter(|m| m.0 < to)
+                .map(|&(f, _, e)| (f, e))
+                .collect();
+            v.sort_by_key(|m| m.0);
+            v
+        }
+
+        /// Notes still on at the end, on gear `ahead` frames slow: each
+        /// note-on not followed by its note-off (or an All off) in the
+        /// order they leave, as MIDI out sends them: each its ahead before
+        /// its frame, never before the period it was handed over in, and
+        /// in the order handed over when two leave together.
+        fn hanging(&self, ahead: u64) -> Vec<u8> {
+            let mut left: Vec<(u64, Event)> = self
+                .midi
+                .iter()
+                .map(|&(f, at, e)| (f.saturating_sub(ahead).max(at), e))
+                .collect();
+            left.sort_by_key(|m| m.0);
+            let mut on = [0i32; 128];
+            for (_, e) in left {
+                match e {
+                    Event::NoteOn { note, .. } => on[usize::from(note)] += 1,
+                    Event::NoteOff { note } => {
+                        on[usize::from(note)] = (on[usize::from(note)] - 1).max(0)
+                    }
+                    Event::AllOff => on = [0; 128],
+                    _ => {}
+                }
+            }
+            (0..128u8).filter(|&n| on[usize::from(n)] > 0).collect()
+        }
+    }
+
+    /// A bar of 16ths on two pads, some overlapping, on the armed track.
+    fn gear_host() -> TimeHost {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for (pad, steps) in [
+            (2u8, &[0usize, 3, 4, 8, 11, 12, 14][..]),
+            (5, &[2, 6, 10, 15]),
+        ] {
+            for &step in steps {
+                h.step_action(StepAction::Tap {
+                    pad,
+                    step,
+                    velocity: 100,
+                })
+                .unwrap();
+            }
+        }
+        h
+    }
+
+    /// Sequencer S5: a track on slow gear hands its clips' notes to MIDI
+    /// out its ahead before their frame, each once, on the frames the
+    /// real pass plays them; the real pass then strikes each off.
+    #[test]
+    fn a_track_on_slow_gear_hands_its_notes_over_ahead_each_once() {
+        const AHEAD: u64 = 1_000;
+        let play = |ahead: u32| {
+            let mut h = gear_host();
+            h.set_ahead(&[ahead]);
+            h.command(Command::Play);
+            let mut g = Gear::default();
+            g.run(&mut h, 2 * BAR + 4 * AHEAD);
+            (g, h.ahead_counts())
+        };
+        let (plain, none) = play(0);
+        let (gear, counts) = play(AHEAD as u32);
+        assert_eq!(none.ahead, 0);
+        assert_eq!(
+            gear.notes(2 * BAR),
+            plain.notes(2 * BAR),
+            "the same notes, frames"
+        );
+        assert!(plain.notes(2 * BAR).len() >= 22, "two bars of notes");
+        // Once the forecast runs (a period and the ahead after PLAY), each
+        // is handed over in the period that holds its frame less the ahead.
+        for &(f, at, e) in gear
+            .midi
+            .iter()
+            .filter(|m| m.0 >= AHEAD + 2 * u64::from(PERIOD))
+        {
+            assert!(
+                at <= f - AHEAD && f - AHEAD < at + u64::from(PERIOD),
+                "{e:?} on {f} handed over at {at}"
+            );
+        }
+        assert!(counts.ahead > 20, "{counts:?}");
+        assert_eq!((counts.late, counts.wrong, counts.dropped), (0, 0, 0));
+        assert_eq!(
+            gear.sent as u64,
+            counts.ahead - gear.midi.iter().filter(|m| m.0 >= gear.frame).count() as u64
+        );
+        assert!(
+            gear.hanging(AHEAD).len() <= 1,
+            "at most the note sounding at the end"
+        );
+    }
+
+    /// Sequencer S5: what the forecast can't know. A step added just ahead
+    /// of the playhead goes out late, when the real pass plays it; STOP
+    /// leaves no note on, though notes went out ahead of it.
+    #[test]
+    fn slow_gear_gets_a_late_edit_late_and_no_note_left_on_at_stop() {
+        const AHEAD: u64 = 3_000;
+        let mut h = gear_host();
+        h.set_ahead(&[AHEAD as u32]);
+        h.command(Command::Play);
+        let mut g = Gear::default();
+        // To 2,000 frames before step 8 of the second bar (a step is
+        // 5,512.5 frames), so its frame is in what went out ahead already.
+        g.run(&mut h, BAR + 7 * 5_513 - 2_000);
+        h.step_action(StepAction::Tap {
+            pad: 9,
+            step: 7,
+            velocity: 90,
+        })
+        .unwrap();
+        g.run(&mut h, BAR + 8 * 5_513);
+        let late = g
+            .midi
+            .iter()
+            .find(|m| {
+                m.2 == Event::NoteOn {
+                    note: 9,
+                    velocity: 90,
+                }
+            })
+            .copied()
+            .expect("the new step played");
+        assert!(
+            late.1 + u64::from(PERIOD) > late.0,
+            "handed over in its own period: {late:?}"
+        );
+        assert!(h.ahead_counts().late >= 1, "{:?}", h.ahead_counts());
+        // STOP 1,500 frames before step 13, whose notes went out ahead:
+        // they end, and so does the note sounding.
+        g.run(&mut h, BAR + 12 * 5_513 - 1_500);
+        h.command(Command::Stop);
+        g.run(&mut h, 2 * BAR + 4 * AHEAD);
+        assert_eq!(g.hanging(AHEAD), Vec::<u8>::new(), "{:?}", h.ahead_counts());
+        assert!(
+            h.ahead_counts().wrong >= 1,
+            "notes ahead of the stop: {:?}",
+            h.ahead_counts()
+        );
+    }
 
     /// Perform FX gestures at frames: (frame, value or None for letting go).
     fn gestures(

@@ -191,12 +191,11 @@ impl ChainHost {
         }
     }
 
-    /// The track of the strip shown, for a track's strip.
+    /// The sequencer track whose strip is shown (Drums is track 1's, an
+    /// own channel its track's: `mpfree_param::strip_track`), for its
+    /// Notes stage. Synth, Loop and Audio are no track's.
     pub fn track(&self) -> Option<usize> {
-        match self.strip() {
-            Strip::Track(t) => Some(usize::from(t)),
-            _ => None,
-        }
+        mpfree_play::mpfree_param::strip_track(self.strip()).map(usize::from)
     }
 
     /// A Notes stage action on the track's MIDI effects `fx` (the
@@ -950,6 +949,14 @@ fn moved(s: usize, from: usize, to: usize) -> usize {
 
 /// A knob turned on the editor: through the engine when it holds the
 /// parameter, else straight to the mixer.
+/// Parameter `addr` set to `value` by a hand on the screen (the chain
+/// editor's knobs, the Perform view's Q-Links): through the mod engine, so
+/// it records over a move lane while `recording`, else straight onto the
+/// mixer.
+pub fn set_param(h: &mut MixHost, addr: ParamAddr, value: f32, recording: bool) {
+    set(h, addr, value, recording)
+}
+
 fn set(h: &mut MixHost, addr: ParamAddr, value: f32, recording: bool) {
     if h.modu.hand(addr, value, recording) {
         return;
@@ -1350,6 +1357,35 @@ impl Panels {
         let Some(mut h) = host else {
             return vec![Effect::Tell(no_channel(kit, pad))];
         };
+        h.back = Some("Pads".into());
+        self.chain = Some(h);
+        self.sent_at = None;
+        app.open_chain()
+    }
+
+    /// The Perform view's Edit the effect: throw `fx`'s pad of strip
+    /// `on`'s Perform FX in the Mix tab's chain editor, on that pad's page
+    /// ("Slots 9-12" for the Delay throw), with ‹ back to the Pads tab.
+    pub fn open_throw_mix(
+        &mut self,
+        app: &mut App,
+        mix: &mut MixHost,
+        on: StripId,
+        fx: mixing::ThrowFx,
+    ) -> Vec<Effect> {
+        self.picked = false;
+        let host = mix
+            .perform_slot(on)
+            .and_then(|slot| ChainHost::from_mixer(on, Some(slot)));
+        let Some(h) = host else {
+            return vec![Effect::Tell(format!(
+                "perform: {} has no Perform FX for the throw: pick the pad's On again on the Pads tab",
+                mix.strip_name(on)
+            ))];
+        };
+        let mut h = h.named(mix, on);
+        // The Perform FX's pages: Perform, then four slots to a page.
+        h.group = 1 + fx.pad() / 4;
         h.back = Some("Pads".into());
         self.chain = Some(h);
         self.sent_at = None;
@@ -1890,7 +1926,13 @@ mod tests {
         let mut time = TimeHost::new(RATE, 120.0).unwrap();
         app.start();
         let mut p = Panels::new();
-        p.open_insert(&mut app, &r.h, StripId::Track(SYNTH), None);
+        // Track 2's own strip (R3 part 4b: the Synth strip is no track's).
+        p.open_insert(
+            &mut app,
+            &r.h,
+            StripId::Track(mixing::track_channel(SYNTH)),
+            None,
+        );
         let mut quiet = |_: ToUi| {};
         let act = |p: &mut Panels, app: &mut App, time: &mut TimeHost, r: &mut Rig, a| {
             p.chain(
@@ -2023,7 +2065,13 @@ mod tests {
         let mut time = TimeHost::new(RATE, 120.0).unwrap();
         app.start();
         let mut p = Panels::new();
-        p.open_insert(&mut app, &r.h, StripId::Track(SYNTH), None);
+        // Track 2's own strip (R3 part 4b: the Synth strip is no track's).
+        p.open_insert(
+            &mut app,
+            &r.h,
+            StripId::Track(mixing::track_channel(SYNTH)),
+            None,
+        );
         let act = |p: &mut Panels, app: &mut App, time: &mut TimeHost, r: &mut Rig, a| {
             p.chain(app, &mut r.h, time, &a, false, &mut |_| {})
         };

@@ -243,6 +243,7 @@ fn assert_same(a: &Project, b: &Project) {
     assert_eq!(a.kept_chops(), b.kept_chops());
     assert_eq!(a.master(), b.master());
     assert_eq!(a.pads_play(), b.pads_play());
+    assert_eq!(a.takes(), b.takes());
     let ids = |p: &Project| p.sources().iter().map(Source::id).collect::<Vec<_>>();
     assert_eq!(ids(a), ids(b));
     let names = |p: &Project| {
@@ -599,6 +600,7 @@ fn the_new_filters_and_drive_save_and_open() {
         (FilterKind::Notch, 4, 0.0),
         (FilterKind::Ladder, 4, 12.5),
         (FilterKind::Vowel, 2, 0.0),
+        (FilterKind::Comb, 2, 0.0),
     ]
     .into_iter()
     .enumerate()
@@ -620,6 +622,7 @@ fn the_new_filters_and_drive_save_and_open() {
         "kit.0.pad.1.filter.kind = ladder",
         "kit.0.pad.1.filter.drive_db = 12.5",
         "kit.0.pad.2.filter.kind = vowel",
+        "kit.0.pad.3.filter.kind = comb",
     ] {
         assert!(text.lines().any(|l| l == line), "{line} in\n{text}");
     }

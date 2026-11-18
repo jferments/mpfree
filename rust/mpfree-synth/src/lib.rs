@@ -41,6 +41,11 @@
 //!   filters, a swell per key or shared, bow noise and the Ensemble, with
 //!   factory presets.
 //!
+//! - [`Bass`]: a one-voice bass, synth, 808 or reese, its oscillator, sub
+//!   and fifth locked to one counter, a pitch drop that lands exactly on
+//!   the note, a saturating four-pole ladder, drive with a low-pass after
+//!   it, note priority and glide by time or rate, with factory presets.
+//!
 //! - [`pressure`]: what pad pressure drives in each engine. Both run it
 //!   through the shared shaper in [`mpfree_node::pressure`].
 //! - [`voice`]: the shared voice core the new engines are built on (held
@@ -54,6 +59,8 @@
 
 pub mod analog;
 pub mod analog_params;
+pub mod bass;
+pub mod bass_params;
 pub mod drawbar;
 pub mod drawbar_params;
 pub mod drum;
@@ -61,6 +68,7 @@ pub mod drum_params;
 pub mod dsp;
 pub mod dx7;
 pub mod expr;
+pub mod factory;
 pub mod fm;
 pub mod fm_params;
 pub mod keys;
@@ -78,11 +86,12 @@ pub mod voice;
 pub mod wavetable;
 
 pub use analog::Analog;
+pub use bass::Bass;
 pub use drawbar::Drawbar;
 pub use drum::Drums;
 pub use fm::Fm;
 pub use keys::Keys;
-pub use params::{Preset, PARAMS, PRESETS};
+pub use params::{Preset, PARAMS};
 pub use pluck::Pluck;
 pub use poly::Poly;
 pub use squelch::Squelch;

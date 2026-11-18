@@ -981,3 +981,250 @@ fn the_sound_section_turns_the_pad_as_the_play_page_does() {
     };
     assert_ne!(g1, g2);
 }
+
+/// One-page step 2a: the recorder row sits on the Wave page; REC asks for
+/// a take and its cards step the Rec settings; while REC is on, the panel
+/// under the wave is Input, whose steps are the recorder's, and the
+/// region's settings come back when it stops.
+/// One-page step 2b: a take kept on the page shows as a new take ("Take 3 ·
+/// new", which of how many), with no pad of its own, and only Send to pad
+/// is lit (a take goes onto a pad before it is chopped).
+#[test]
+fn a_take_kept_on_the_page_shows_as_new_with_only_send_to_pad() {
+    use mpfree_sampler_ui::send;
+    use mpfree_sampler_ui::widgets::ButtonRow;
+    let mut s = sample();
+    let mut take = s.project.pad(PAD).unwrap().clone();
+    take.name = "Take 2".into();
+    s.project.add_take(take.clone()).unwrap();
+    take.name = "Take 3".into();
+    s.project.add_take(take).unwrap();
+    let st = WaveState::of_take(&s.project, 1, 0, s.state.source.clone()).unwrap();
+    assert_eq!(st.pad, wave_tab::TAKE, "no pad of its own");
+    assert_eq!(st.take.map(|t| (t.index, t.of)), Some((1, 2)));
+    s.tab.update(&mut s.ui, &st);
+    let bar = s.ui.get::<PadBar>(wave_tab::BAR).unwrap();
+    assert_eq!(bar.title, "Take 3 · new");
+    assert!(bar.subtitle.ends_with(" · take 2 of 2"), "{}", bar.subtitle);
+    send::show_take(&mut s.ui, false);
+    let b = s.ui.get::<ButtonRow>(send::SEND).unwrap();
+    assert_eq!(b.enabled, [true, false]);
+    assert_eq!(b.why[1], send::TAKE_FIRST);
+    send::show_take(&mut s.ui, true);
+    let b = s.ui.get::<ButtonRow>(send::SEND).unwrap();
+    assert_eq!(b.labels[0], send::SENDING);
+}
+
+#[test]
+fn the_recorder_row_records_and_the_panel_is_input_while_rec_is_on() {
+    use mpfree_sampler_ui::recorder::{self, Recorder, RecorderAction, RecorderView};
+    let mut s = sample();
+    let st = s.state.clone();
+    let row = s.ui.rect_of(recorder::RECORDER).unwrap();
+    let bar = s.ui.rect_of(wave_tab::BAR).unwrap();
+    let wave = s.ui.rect_of(wave_tab::WAVE).unwrap();
+    assert!(
+        row.y >= bar.bottom() && row.bottom() <= wave.y,
+        "between the bar and the wave"
+    );
+    let rec = Recorder::rec_rect(row);
+    let ev = s.ui.touch(1, Touch::Down, rec.x + 5, rec.y + 5).unwrap();
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(WaveAction::Rec(RecorderAction::Record))
+    );
+    s.ui.touch(1, Touch::Up, 0, 0);
+    let ends = Recorder::card_rect(row, 2);
+    let ev =
+        s.ui.touch(2, Touch::Down, ends.right() - 5, ends.y + 5)
+            .unwrap();
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(WaveAction::Rec(RecorderAction::Step(rec_tab::Row::End, 1)))
+    );
+    s.ui.touch(2, Touch::Up, 0, 0);
+    // REC on: the panel is Input.
+    let on = RecorderView {
+        sources: vec!["Line in".into()],
+        recording: true,
+        status: "0:01.0 · onto A1".into(),
+        ..Default::default()
+    };
+    s.tab.set_recorder(&mut s.ui, on, &st);
+    let list = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
+    let names: Vec<&str> = list.rows.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Source",
+            "Channels",
+            "Onto",
+            "Gain",
+            "Threshold",
+            "Pre-roll",
+            "Monitor"
+        ]
+    );
+    let ev = UiEvent {
+        widget: wave_tab::REGION.into(),
+        kind: EventKind::Step { index: 4, delta: 1 },
+    };
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(WaveAction::Rec(RecorderAction::Step(
+            rec_tab::Row::Threshold,
+            1
+        )))
+    );
+    // Onto (step 2b) steps where the take goes when it stops.
+    let ev = UiEvent {
+        widget: wave_tab::REGION.into(),
+        kind: EventKind::Step { index: 2, delta: 1 },
+    };
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(WaveAction::Rec(RecorderAction::Step(rec_tab::Row::Onto, 1)))
+    );
+    // Gain and Monitor's switch (step 2d).
+    let ev = UiEvent {
+        widget: wave_tab::REGION.into(),
+        kind: EventKind::Step {
+            index: 3,
+            delta: -1,
+        },
+    };
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(WaveAction::Rec(RecorderAction::Step(
+            rec_tab::Row::Gain,
+            -1
+        )))
+    );
+    let ev = UiEvent {
+        widget: wave_tab::REGION.into(),
+        kind: EventKind::Step { index: 6, delta: 1 },
+    };
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(WaveAction::Rec(RecorderAction::Monitor))
+    );
+    // And the Q-Links: Gain, Threshold, Pre-roll and Monitor's level.
+    let card = |s: &Sample, k: usize| {
+        let c = s.ui.get::<KnobCard>(wave_tab::QLINKS[k]).unwrap();
+        (c.label.clone(), c.value.clone(), c.enabled, c.why.clone())
+    };
+    assert_eq!(card(&s, 0).0, "Q-Link 1 · Gain");
+    assert_eq!(card(&s, 0).1, "+0 dB");
+    assert_eq!(card(&s, 1).0, "Q-Link 2 · Threshold");
+    assert_eq!(card(&s, 1).1, "-30 dB");
+    assert_eq!(card(&s, 2).0, "Q-Link 3 · Pre-roll");
+    assert_eq!(card(&s, 3).0, "Q-Link 4 · Monitor");
+    assert!((0..4).all(|k| card(&s, k).2), "all four turn");
+    assert_eq!(
+        s.tab.qlink(&mut s.ui, &st, 1, -2, false),
+        Some(WaveAction::Rec(RecorderAction::Step(
+            rec_tab::Row::Threshold,
+            -2
+        )))
+    );
+    assert_eq!(
+        s.tab.qlink(&mut s.ui, &st, 2, 1, false),
+        Some(WaveAction::Rec(RecorderAction::Step(
+            rec_tab::Row::PreRoll,
+            1
+        )))
+    );
+    assert_eq!(
+        s.tab.qlink(&mut s.ui, &st, 0, 1, false),
+        Some(WaveAction::Rec(RecorderAction::Step(rec_tab::Row::Gain, 1)))
+    );
+    assert_eq!(
+        s.tab.qlink(&mut s.ui, &st, 3, -1, true),
+        Some(WaveAction::Rec(RecorderAction::MonitorLevel {
+            delta: -1,
+            fine: true
+        }))
+    );
+    let tap = s.ui.touch(3, Touch::Down, rec.x + 5, rec.y + 5).unwrap();
+    assert_eq!(
+        s.tab.action(&mut s.ui, &tap, &st),
+        Some(WaveAction::Rec(RecorderAction::Stop))
+    );
+    s.ui.touch(3, Touch::Up, 0, 0);
+    // Stopped: the region's settings again.
+    s.tab.set_recorder(&mut s.ui, RecorderView::default(), &st);
+    let list = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
+    assert_eq!(list.rows.len(), Row::ALL.len());
+    assert!(step(&mut s, Row::Reverse, 1).is_some());
+    // The Q-Links move the markers again.
+    assert_eq!(card(&s, 0).0, "Q-Link 1 · Start");
+    assert!(card(&s, 0).2);
+    assert!(matches!(
+        s.tab.qlink(&mut s.ui, &st, 1, -1, false),
+        Some(WaveAction::Region { .. })
+    ));
+}
+
+#[test]
+fn the_tools_strip_sits_over_the_wave_and_opens_the_tools_old_pages_for_now() {
+    use mpfree_sampler_ui::recorder::RecorderView;
+    use mpfree_sampler_ui::wave_tab::Tool;
+    use mpfree_sampler_ui::widgets::ToolStrip;
+    let mut s = sample();
+    let st = s.state.clone();
+    // Trim, Slice, Warp and Grain, at the left of the overview's row,
+    // between the recorder row and the wave; Trim (the page) is in use.
+    let strip = s.ui.rect_of(wave_tab::TOOLS).unwrap();
+    let over = s.ui.rect_of(wave_tab::OVERVIEW).unwrap();
+    let wave = s.ui.rect_of(wave_tab::WAVE).unwrap();
+    assert_eq!((strip.y, strip.h), (over.y, over.h));
+    assert!(strip.right() <= over.x && strip.bottom() <= wave.y);
+    assert_eq!(strip.x, wave.x);
+    let w = s.ui.get::<ToolStrip>(wave_tab::TOOLS).unwrap();
+    assert_eq!(w.tools, ["Trim", "Slice", "Warp", "Grain"]);
+    assert_eq!((w.active, w.enabled), (0, true));
+    assert_eq!(s.tab.tool(), Tool::Trim);
+    // Trim is in use: a tap on it changes nothing. The others aren't on the
+    // page yet, so each opens its old page: Slice the Chop page, Warp the
+    // Warp page, Grain the Grain page.
+    let tap = |s: &mut Sample, i: usize| {
+        let st = s.state.clone();
+        let w = s.ui.get::<ToolStrip>(wave_tab::TOOLS).unwrap();
+        let r = w.tool_rect(strip, i);
+        let got =
+            s.ui.touch(9, Touch::Down, r.x + r.w / 2, r.y + r.h / 2)
+                .and_then(|ev| s.tab.action(&mut s.ui, &ev, &st));
+        s.ui.touch(9, Touch::Up, 0, 0);
+        got
+    };
+    assert_eq!(tap(&mut s, 0), None);
+    assert_eq!(tap(&mut s, 1), Some(WaveAction::Tab(chop_tab::TAB)));
+    assert_eq!(tap(&mut s, 2), Some(WaveAction::Tab(warp_tab::TAB)));
+    assert_eq!(tap(&mut s, 3), Some(WaveAction::Tab(grain_tab::TAB)));
+    assert_eq!(s.tab.tool(), Tool::Trim, "the page stays on Trim");
+    // Each tool is a target the device checks can find by its name.
+    let names: Vec<String> =
+        s.ui.targets()
+            .into_iter()
+            .filter(|t| t.widget == wave_tab::TOOLS)
+            .map(|t| t.target.label)
+            .collect();
+    assert_eq!(names, ["Trim", "Slice", "Warp", "Grain"]);
+    // While a take records the tools wait for it: faint, and a tap says why.
+    let on = RecorderView {
+        sources: vec!["Line in".into()],
+        recording: true,
+        ..Default::default()
+    };
+    s.tab.set_recorder(&mut s.ui, on, &st);
+    let w = s.ui.get::<ToolStrip>(wave_tab::TOOLS).unwrap();
+    assert!(!w.enabled);
+    assert_eq!(w.why_faint(2), Some(wave_tab::TOOLS_WAIT));
+    let r = w.tool_rect(strip, 2);
+    let ev = s.ui.touch(9, Touch::Down, r.x + 5, r.y + 5).unwrap();
+    assert_eq!(ev.kind, EventKind::Select(2));
+    assert_eq!(s.tab.action(&mut s.ui, &ev, &st), None);
+    s.ui.touch(9, Touch::Up, 0, 0);
+    s.tab.set_recorder(&mut s.ui, RecorderView::default(), &st);
+    assert!(s.ui.get::<ToolStrip>(wave_tab::TOOLS).unwrap().enabled);
+}

@@ -1,9 +1,11 @@
 //! The filter types sampler R5.6 adds beside low, high and band pass: a
-//! Notch, a 4-pole Ladder low-pass with Drive, and a Vowel (two formants
-//! the cutoff moves from "oo" to "ee"). Measured on a pad of the engine.
+//! Notch, a 4-pole Ladder low-pass with Drive, a Vowel (two formants the
+//! cutoff moves from "oo" to "ee") and a Comb with feedback. Measured on a
+//! pad of the engine.
 
 use mpfree_sampler::dsp::{
-    ladder_db, vowel_db, vowel_formants, vowel_name, Filter, FilterKind, MAX_DRIVE_DB,
+    comb_db, comb_gain, ladder_db, vowel_db, vowel_formants, vowel_name, Filter, FilterKind,
+    MAX_DRIVE_DB,
 };
 use mpfree_sampler::engine::{Engine, EngineView, Event};
 use mpfree_sampler::model::*;
@@ -263,4 +265,103 @@ fn the_ladder_is_as_its_picture() {
             );
         }
     }
+}
+
+/// A click at the start of a sound `frames` long, the rest silence.
+fn click(frames: usize) -> Source {
+    source(frames, |i| if i == 0 { 0.5 } else { 0.0 })
+}
+
+/// Where the loudest of `x`'s period candidates from `lo` to `hi` frames
+/// is: the lag (frames) at which `x` best matches itself.
+fn period(x: &[f32], lo: usize, hi: usize) -> usize {
+    (lo..=hi)
+        .max_by(|&a, &b| {
+            let c = |lag: usize| x.iter().zip(&x[lag..]).map(|(p, q)| p * q).sum::<f32>();
+            c(a).total_cmp(&c(b))
+        })
+        .unwrap()
+}
+
+#[test]
+fn the_comb_rings_at_its_cutoff() {
+    // 441 Hz: a cycle of 100 frames.
+    let f = filter(FilterKind::Comb, 2, 441.0, 1.0, 0.0);
+    let out = played(&click(RATE as usize), f, 0.5);
+    assert_eq!(period(&out[1_000..10_000], 50, 150), 100);
+    // A higher pitch, between frames: 44100 / 3000 = 14.7.
+    let f = filter(FilterKind::Comb, 2, 3_000.0, 1.0, 0.0);
+    let out = played(&click(RATE as usize), f, 0.5);
+    let p = period(&out[1_000..10_000], 10, 20);
+    assert!((14..=15).contains(&p), "{p}");
+    // Resonance is its feedback: at 0 the click passes as it is.
+    let f = filter(FilterKind::Comb, 2, 441.0, 0.0, 0.0);
+    let out = played(&click(RATE as usize), f, 0.5);
+    assert!(out[200..].iter().all(|x| x.abs() < 1e-3));
+}
+
+#[test]
+fn the_combs_picture_matches_the_engine() {
+    for res in [0.3f32, 0.8] {
+        let f = filter(FilterKind::Comb, 2, 200.0, res, 0.0);
+        for hz in [200.0f32, 300.0, 1_000.0, 1_100.0] {
+            let got = gain_db(hz, f);
+            let want = comb_db(200.0, res, hz);
+            assert!((got - want).abs() < 1.0, "{res} {hz} Hz: {got} {want}");
+        }
+    }
+    // At full feedback a peak stands out, a gap between peaks is deep.
+    assert!(comb_db(200.0, 1.0, 400.0) > 17.0);
+    assert!(comb_db(200.0, 1.0, 500.0) < -15.0);
+    assert!((comb_gain(0.0) - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn the_comb_rings_on_after_its_sound_ends_and_stops_once_quiet() {
+    // A sound of 1000 frames: the comb rings well past it, at its level,
+    // then the voice ends.
+    let f = filter(FilterKind::Comb, 2, 441.0, 1.0, 0.0);
+    let mut e = Engine::new(RATE, 8);
+    e.set_view(EngineView::build(&project(&click(1_000), f), RATE));
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 127,
+    });
+    let out = run(&mut e, RATE as usize / 4);
+    let at = |a: usize| out[a..a + 100].iter().fold(0f32, |m, x| m.max(x.abs()));
+    assert!(at(900) > 0.01, "{}", at(900));
+    // No step where the sound ended: the ringing goes straight on.
+    assert!(at(1_000) > 0.9 * at(900), "{} {}", at(900), at(1_000));
+    assert!(at(5_000) > 0.01);
+    assert_eq!(e.active_voices(), 1);
+    let _ = run(&mut e, 6 * RATE as usize);
+    assert_eq!(e.active_voices(), 0, "it stops once too quiet to hear");
+}
+
+#[test]
+fn a_cut_stops_the_combs_ringing() {
+    let f = filter(FilterKind::Comb, 2, 441.0, 1.0, 0.0);
+    let mut p = project(&click(1_000), f);
+    let mut other = Pad::new("q", Layer::new(Region::whole(&click(1_000))));
+    other.mute_group = Some(1);
+    let mut pd = p.pad(0).unwrap().clone();
+    pd.mute_group = Some(1);
+    p.set_pad(0, Some(pd), None).unwrap();
+    p.set_pad(1, Some(other), None).unwrap();
+    let mut e = Engine::new(RATE, 8);
+    e.set_view(EngineView::build(&p, RATE));
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 127,
+    });
+    let _ = run(&mut e, 4_000);
+    assert_eq!(e.active_voices(), 1, "ringing");
+    // Pad 2 of the same mute group chokes it: its ringing fades out and
+    // doesn't start again.
+    e.apply(Event::NoteOn {
+        pad: 1,
+        velocity: 127,
+    });
+    let _ = run(&mut e, 4_000);
+    assert_eq!(e.active_voices(), 0);
 }

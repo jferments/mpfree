@@ -598,7 +598,7 @@ impl Strings {
     }
 
     pub fn presets() -> &'static [Preset] {
-        PRESETS
+        crate::factory::presets!("strings.presets", &INFO, PARAMS)
     }
 
     /// Sets every parameter to its default, then the preset's values.

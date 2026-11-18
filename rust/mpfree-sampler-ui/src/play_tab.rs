@@ -708,9 +708,9 @@ const SELECTS: [LayerSelect; 3] = [LayerSelect::All, LayerSelect::Cycle, LayerSe
 /// What the kit's pads play, as the Pads play row steps through them.
 const PADS_PLAY: [&str; 3] = ["Their sounds", "Notes", "16 Levels"];
 
-/// The filter types the Filter row steps through (the Ladder is 4-pole and
-/// the Vowel two formants, whatever the poles).
-const FILTERS: [(FilterKind, u8); 11] = [
+/// The filter types the Filter row steps through (the Ladder is 4-pole,
+/// the Vowel two formants and the Comb a delay, whatever the poles).
+const FILTERS: [(FilterKind, u8); 12] = [
     (FilterKind::Off, 2),
     (FilterKind::LowPass, 2),
     (FilterKind::LowPass, 4),
@@ -722,6 +722,7 @@ const FILTERS: [(FilterKind, u8); 11] = [
     (FilterKind::Notch, 4),
     (FilterKind::Ladder, 4),
     (FilterKind::Vowel, 2),
+    (FilterKind::Comb, 2),
 ];
 
 const PRESSURE: [PressureTarget; 8] = [
@@ -823,6 +824,9 @@ pub struct PlayState {
     /// The project's tempo, for an LFO synced to it (the app sets it; 120
     /// until then).
     pub bpm: f64,
+    /// A take kept on the page, by name (its pad is
+    /// [`crate::wave_tab::TAKE`]): the Wave page's Sound section edits it.
+    pub take: Option<String>,
 }
 
 impl PlayState {
@@ -831,9 +835,32 @@ impl PlayState {
     pub fn from_project(
         p: &Project,
         pad: usize,
+        view: impl FnMut(&Source) -> Arc<SourceView>,
+    ) -> Option<PlayState> {
+        Self::of_settings(p, pad, p.pad(pad)?.clone(), view)
+    }
+
+    /// Take `index` kept on the page (one-page step 2b), as
+    /// [`PlayState::from_project`] shows a pad; its pad is
+    /// [`crate::wave_tab::TAKE`].
+    pub fn of_take(
+        p: &Project,
+        index: usize,
+        view: impl FnMut(&Source) -> Arc<SourceView>,
+    ) -> Option<PlayState> {
+        let t = p.take(index)?.clone();
+        let name = t.name.clone();
+        let mut st = Self::of_settings(p, crate::wave_tab::TAKE, t, view)?;
+        st.take = Some(name);
+        Some(st)
+    }
+
+    fn of_settings(
+        p: &Project,
+        pad: usize,
+        settings: Pad,
         mut view: impl FnMut(&Source) -> Arc<SourceView>,
     ) -> Option<PlayState> {
-        let settings = p.pad(pad)?.clone();
         if settings.layers.is_empty() {
             return None;
         }
@@ -879,6 +906,7 @@ impl PlayState {
                 })
                 .collect(),
             bpm: 120.0,
+            take: None,
         })
     }
 
@@ -1093,19 +1121,26 @@ impl PlayAction {
             | PlayAction::Scene(_) => return Ok(()),
         };
         let now = p.pad(*pad).ok_or(ModelError::BadPad)?;
-        if now.layers.len() != after.layers.len() {
-            return Err(ModelError::BadPad);
-        }
-        let mut next = (**after).clone();
-        for (l, n) in next.layers.iter_mut().zip(&now.layers) {
-            // A sliced region's slices' own settings are the tab's (R4
-            // part 5); the rest of a region is the other tabs'.
-            let sets = std::mem::take(&mut l.region.slice_sets);
-            l.region = n.region.clone();
-            l.region.slice_sets = sets;
-        }
+        let next = with_regions_of(after, now)?;
         p.set_pad(*pad, Some(next), Some(*gesture))
     }
+}
+
+/// `after` (the tab's change to a pad) with `now`'s layer regions: the
+/// other tabs' part of a region stays as the pad has it, a sliced
+/// region's slices' own settings are the tab's (R4 part 5). Refused when
+/// the layers differ in number.
+pub fn with_regions_of(after: &Pad, now: &Pad) -> Result<Pad, ModelError> {
+    if now.layers.len() != after.layers.len() {
+        return Err(ModelError::BadPad);
+    }
+    let mut next = after.clone();
+    for (l, n) in next.layers.iter_mut().zip(&now.layers) {
+        let sets = std::mem::take(&mut l.region.slice_sets);
+        l.region = n.region.clone();
+        l.region.slice_sets = sets;
+    }
+    Ok(next)
 }
 
 /// `p` with a copy of layer `after` just after it, the copy taking the
@@ -1586,6 +1621,9 @@ impl PlayTab {
                     }
                     FilterKind::Vowel => {
                         f.caption += &format!(" · \"{}\"", vowel_name(p.filter.cutoff_hz))
+                    }
+                    FilterKind::Comb => {
+                        f.caption += &format!(" · rings at {}", note_of(p.filter.cutoff_hz))
                     }
                     _ => {}
                 }
@@ -2852,6 +2890,7 @@ fn section_text(st: &PlayState, s: Section) -> String {
         Section::Filter => match p.filter.kind {
             FilterKind::Off => "Off".into(),
             FilterKind::Vowel => format!("Vowel · {}", vowel_name(p.filter.cutoff_hz)),
+            FilterKind::Comb => format!("Comb · {}", note_of(p.filter.cutoff_hz)),
             _ => format!(
                 "{} · {}",
                 filter_label(&p.filter)
@@ -3455,6 +3494,12 @@ pub fn value_text(p: &Pad, row: Row) -> String {
             hz_text(p.filter.cutoff_hz),
             vowel_name(p.filter.cutoff_hz)
         ),
+        // A comb's cutoff is its pitch: "220 Hz · A3".
+        Row::Cutoff if p.filter.kind == FilterKind::Comb => format!(
+            "{} · {}",
+            hz_text(p.filter.cutoff_hz),
+            note_of(p.filter.cutoff_hz)
+        ),
         Row::Cutoff => hz_text(p.filter.cutoff_hz),
         Row::Resonance => format!("{} %", percent(p.filter.resonance)),
         Row::Drive if p.filter.drive_db == 0.0 => "Off".into(),
@@ -3704,6 +3749,19 @@ pub fn pressure_label(t: PressureTarget) -> &'static str {
     }
 }
 
+/// The note nearest `hz` (A4 = 440 Hz, C4 middle C): "A3", "C#5".
+pub fn note_of(hz: f32) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let midi = (69.0 + 12.0 * (hz.max(1.0) / 440.0).log2()).round() as i32;
+    format!(
+        "{}{}",
+        NAMES[midi.rem_euclid(12) as usize],
+        midi.div_euclid(12) - 1
+    )
+}
+
 pub fn filter_label(f: &Filter) -> String {
     let kind = match f.kind {
         FilterKind::Off => return "Off".into(),
@@ -3713,6 +3771,7 @@ pub fn filter_label(f: &Filter) -> String {
         FilterKind::Notch => "Notch",
         FilterKind::Ladder => return "Ladder".into(),
         FilterKind::Vowel => return "Vowel".into(),
+        FilterKind::Comb => return "Comb".into(),
     };
     format!("{kind} {}-pole", if f.poles >= 4 { 4 } else { 2 })
 }
