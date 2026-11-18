@@ -673,8 +673,12 @@ impl TypeTo {
 #[derive(Clone, Debug)]
 pub struct KitView {
     pub name: String,
-    /// The sample on each pad (pad 1 first), if any.
+    /// The sound on each pad (pad 1 first), if any: a sample's name, or a
+    /// synth voice's or note out's.
     pub pads: Vec<Option<String>>,
+    /// Each pad's type tag on Play's rows ("LOOP", "SYNTH", "MIDI"; none
+    /// for a sample), pad 1 first; empty until the Sample page tells it.
+    pub tags: Vec<Option<&'static str>>,
     /// The kit's pad colour, 0-63 per channel as the controller takes it.
     pub colour: [u8; 3],
     /// The header chip while it plays, if not "Kit N of M · Bank X" (the
@@ -2804,6 +2808,7 @@ impl Player {
                     label: kit.pads.get(i).cloned().flatten(),
                     color: Some(Color::from_pad(kit.colour)),
                     pitch: kit.pitches.get(i).copied().flatten(),
+                    tag: kit.tags.get(i).copied().flatten(),
                 })
                 .collect(),
             None => vec![PadInfo::default(); 16],
@@ -3243,6 +3248,37 @@ impl Player {
                 Some("sends nothing: the track plays its own sound".to_string()),
             ),
         }
+    }
+
+    /// The MIDI outputs a Pads tab MIDI out pad can send to: those plugged
+    /// in with an output, each by the name it shows by, with why a note
+    /// sent to it would go nowhere now (`sends_nothing`, said in place
+    /// under the pad's port).
+    fn follow_pad_ports(&mut self) {
+        let Some(m) = &self.io_model else {
+            return;
+        };
+        let ports = {
+            let m = m.lock().unwrap_or_else(|e| e.into_inner());
+            m.live
+                .ports
+                .iter()
+                .filter(|p| p.has_out)
+                .map(|p| mpfree_sampler_ui::pads_tab::OutPort {
+                    name: p.name.clone(),
+                    shown: m.setup.shown(&p.name).to_string(),
+                    why: mpfree_midi_ui::sends_nothing(&m, &p.name),
+                    // What its profile has a kit's pads play, for a new
+                    // MIDI out pad's note and channel.
+                    pads: m.profile(&p.name).map_or_else(Vec::new, |pr| {
+                        (0..mpfree_midi::profile::KIT_PADS)
+                            .filter_map(|i| Some((u8::try_from(i).ok()?, pr.pad(i)?)))
+                            .collect()
+                    }),
+                })
+                .collect()
+        };
+        self.sample.set_pad_ports(&mut self.ui, ports);
     }
 
     /// Opens the mixer's I/O view on the section titled `title` (the tempo
@@ -5230,7 +5266,8 @@ impl Player {
                 }
                 View::Pads if self.sample.page() == sample_page::PADS_PAGE => {
                     format!("Hit or tap a pad to pick it, again to hear it   ·   A-H: the kit's banks   ·   \
-                     Q-Links 1-4: level, pan, tune, voices   ·   {ROWS_HINT}")
+                     Q-Links 1-4: {}   ·   {ROWS_HINT}",
+                            self.sample.pads_qlinks_text())
                 }
                 View::Pads => format!("Pick a drum kit on Play to see its pads here   ·   {stop}"),
                 View::Sample if self.sample.play_takes_pads(&self.ui) => {
@@ -7711,10 +7748,11 @@ impl Player {
     /// The Play page's pad names, for kits whose pads the Sample page
     /// changed.
     fn sample_names(&mut self) {
-        while let Some((kit, pads)) = self.sample.take_renamed() {
+        while let Some(sample_page::KitPads { kit, names, tags }) = self.sample.take_renamed() {
             let name = self.sample.kit_name(kit).map(str::to_string);
             if let Some(k) = self.kits.get_mut(kit) {
-                k.pads = pads;
+                k.pads = names;
+                k.tags = tags;
                 // A kit loaded or opened on it names it.
                 if let Some(n) = name.filter(|n| !n.is_empty() && *n != k.name) {
                     k.name = n;
@@ -9456,6 +9494,7 @@ impl Player {
                 self.sample.page().to_string()
             }
             View::Pads => {
+                self.follow_pad_ports();
                 self.sample.show_pads(&mut self.ui);
                 // The tab is built on its first show: its Kit of row too.
                 self.refresh_kit_tracks();
@@ -10996,6 +11035,10 @@ impl Player {
                 self.refresh_hint();
             }
         }
+        // The Pads tab's MIDI out pads follow the ports as they come and go.
+        if self.view == View::Pads {
+            self.follow_pad_ports();
+        }
         // The I/O section showing updates its live values (lights, the
         // clock's tempo); it marks what it needs drawn.
         self.io_clock += Duration::from_secs_f32(dt.max(0.0));
@@ -11664,6 +11707,7 @@ pub fn sample_kits() -> Vec<KitView> {
         pitches: Vec::new(),
         user: false,
         key: None,
+        tags: Vec::new(),
     };
     // Kit 2 is the Play mockups' kit (F to I), so the previews show it.
     let mut boom_bap = kit("Boom Bap", [0x00, 0x2A, 0x3F], 16);
@@ -12632,6 +12676,85 @@ pub fn open_pads(p: &mut Player) {
     p.apply(ToUi::Show(View::Pads));
 }
 
+/// The Pads tab with a pad of each type, each made with the type switch
+/// (the redesign's board 6): A5 a loop, A11 a voice of the Synth tab's
+/// Poly, A13 a MIDI out pad sending to a Volca Kick plugged in, picked.
+#[inline(never)]
+fn pads_types(fonts: Fonts) -> Player {
+    use mpfree_sampler_ui::pads_tab::PadType;
+    pads_typed(
+        fonts,
+        &[
+            (mpfree_sampler_ui::sample::PAD, PadType::Loop),
+            (10, PadType::Instrument),
+            (12, PadType::MidiOut),
+        ],
+    )
+}
+
+/// Play's rows with a pad of each type (the redesign's board 2): kit 1
+/// on track 1, swiped down to A5-A10. A5 loops "Break 92", A6 is a Poly
+/// voice, A8 sends to a Volca Kick, and A7, A9 and A10 are empty.
+#[inline(never)]
+fn play_pad_types(fonts: Fonts) -> Player {
+    use mpfree_sampler_ui::pads_tab::PadType;
+    let mut p = pads_typed(
+        fonts,
+        &[
+            (mpfree_sampler_ui::sample::PAD, PadType::Loop),
+            (5, PadType::Instrument),
+            (7, PadType::MidiOut),
+        ],
+    );
+    p.apply(ToUi::Show(View::Play));
+    p.on_event(UiEvent {
+        widget: play_page::STEPS.into(),
+        kind: EventKind::Step {
+            index: play_widgets::ROWS,
+            delta: 4,
+        },
+    });
+    let _ = p.take_actions();
+    p
+}
+
+/// The Pads tab with `picks`' pads made each type with the type switch, a
+/// Volca Kick plugged in for MIDI out; the last one picked.
+fn pads_typed(fonts: Fonts, picks: &[(usize, mpfree_sampler_ui::pads_tab::PadType)]) -> Player {
+    use mpfree_sampler_ui::pads_tab::{self, PadType};
+    let mut p = sample_sampler(fonts);
+    let mut m = mpfree_midi_ui::IoModel::default();
+    m.live.built.notes_out = true;
+    m.live.ports = vec![mpfree_midi_ui::PortLive {
+        name: "Volca Kick".into(),
+        kind: "USB".into(),
+        about: "USB".into(),
+        has_in: false,
+        has_out: true,
+        sending: true,
+        last_in: None,
+        clock_measured: None,
+    }];
+    p.apply(ToUi::IoModel(std::sync::Arc::new(std::sync::Mutex::new(m))));
+    open_pads(&mut p);
+    for &(pad, t) in picks {
+        p.on_event(UiEvent {
+            widget: pads_tab::MAP.into(),
+            kind: EventKind::Select(pad),
+        });
+        let i = PadType::ALL.iter().position(|x| *x == t).unwrap_or(0);
+        p.on_event(UiEvent {
+            widget: pads_tab::TYPE.into(),
+            kind: EventKind::Tab(i),
+        });
+    }
+    sample_kit_tracks(&mut p);
+    let _ = p.take_actions();
+    // What the last switch did has been read: the hint is back.
+    p.tick(30.0);
+    p
+}
+
 /// The Sample tab on `editor`, as SAMPLE EDIT or a tap on its bar would.
 pub fn open_sample(p: &mut Player, editor: sample_page::Editor) {
     p.apply(ToUi::Show(View::Sample));
@@ -12711,6 +12834,7 @@ pub fn sample_sampler_with_empty_kit(fonts: Fonts) -> (Player, usize) {
         pitches: Vec::new(),
         user: true,
         key: None,
+        tags: Vec::new(),
     });
     kits.push(synth.kit_view());
     p.apply(ToUi::Kits(kits));
@@ -14607,6 +14731,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     sample_kit_tracks(&mut pads);
     pads.take_actions();
     out.push(("pads-pad", pads));
+    // A pad of each type (the redesign's board 6): A5 a loop, A11 a Poly
+    // voice, A13 MIDI out to a Volca Kick, picked.
+    out.push(("pads-types", pads_types(fonts())));
+    // Play's rows show each type under its pad's name (board 2).
+    out.push(("play-pad-types", play_pad_types(fonts())));
     // The browser from the Pads tab's Browse for A5, over a scratch
     // library: Samples / Drums with Kick 01 selected, Load on A5.
     match browser_samples(fonts()) {
@@ -20855,6 +20984,7 @@ mod tests {
                 pitches: Vec::new(),
                 user: true,
                 key: None,
+                tags: Vec::new(),
             });
         }
         kits.push(synth.kit_view());
@@ -20949,6 +21079,7 @@ mod tests {
             pitches: Vec::new(),
             user: true,
             key: None,
+            tags: Vec::new(),
         });
         kits.push(synth.kit_view());
         p.apply(ToUi::Kits(kits));
@@ -21686,6 +21817,7 @@ mod tests {
                 pitches: Vec::new(),
                 user: true,
                 key: None,
+                tags: Vec::new(),
             },
         );
         p.apply(ToUi::Kits(kits));
@@ -22009,7 +22141,13 @@ mod tests {
         // Nor the UNDO light, the undo list or a list over the page, nor
         // a kit's view still on its way after the settle time (the open's,
         // on a slow machine: the Sample page made no edit).
-        let view = || FromUi::SampleView(Box::new(ViewSwap { kit: 0, view: None }));
+        let view = || {
+            FromUi::SampleView(Box::new(ViewSwap {
+                kit: 0,
+                view: None,
+                routes: Vec::new(),
+            }))
+        };
         p.saw_action(&FromUi::UndoReady(true));
         p.saw_action(&FromUi::UndoHistory(UndoOn::Mixer));
         p.saw_action(&FromUi::Overlay(true));
@@ -26509,6 +26647,127 @@ mod tests {
             "{:?}",
             events_log(&p)
         );
+    }
+
+    /// The Pads tab's type switch (the redesign's step 6b): the MIDI
+    /// outputs plugged in are there to pick and follow as they come and
+    /// go, a pad made MIDI out says in place why its port would send
+    /// nothing, the kit's view goes to the sound loop with the pad's
+    /// route, the hint names what the Q-Links turn, and UNDO takes the
+    /// switch back.
+    #[test]
+    fn the_pads_tabs_type_switch_makes_a_midi_out_pad_the_sound_loop_routes() {
+        use crate::sampler::PadRoute;
+        use mpfree_sampler::model::PadKind;
+        use mpfree_sampler_ui::pads_tab::{self, PadType};
+        use mpfree_sampler_ui::widgets::SettingList;
+        let mut p = sample_sampler(Fonts::embedded());
+        let model: mpfree_midi_ui::Shared =
+            std::sync::Arc::new(std::sync::Mutex::new(mpfree_midi_ui::IoModel::default()));
+        model.lock().unwrap().live.ports = vec![mpfree_midi_ui::PortLive {
+            name: "Volca Kick".into(),
+            kind: "USB".into(),
+            about: "USB".into(),
+            has_in: false,
+            has_out: true,
+            sending: false,
+            last_in: None,
+            clock_measured: None,
+        }];
+        p.apply(ToUi::IoModel(model.clone()));
+        open_pads(&mut p);
+        let _ = p.take_actions();
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        ev(&mut p, pads_tab::MAP, EventKind::Select(10));
+        let midi = PadType::ALL.iter().position(|t| *t == PadType::MidiOut);
+        ev(&mut p, pads_tab::TYPE, EventKind::Tab(midi.unwrap()));
+        let kind = p.sample.project(0).unwrap().pad(10).unwrap().kind.clone();
+        assert_eq!(
+            kind,
+            PadKind::MidiOut {
+                port: "Volca Kick".into(),
+                channel: 10,
+                note: 45
+            }
+        );
+        let footer = |p: &Player| {
+            p.ui.get::<SettingList>(pads_tab::LIST)
+                .unwrap()
+                .footer
+                .clone()
+        };
+        assert_eq!(
+            footer(&p),
+            Some(("sends nothing: MIDI out is off".to_string(), true))
+        );
+        // The kit's view goes with the pad's route: channel 10 is 9.
+        let routed = p.take_actions().into_iter().any(|a| match a {
+            FromUi::SampleView(swap) => {
+                swap.routes.get(10)
+                    == Some(&Some(PadRoute::Midi {
+                        port: "Volca Kick".into(),
+                        channel: 9,
+                        note: 45,
+                    }))
+            }
+            _ => false,
+        });
+        assert!(routed, "the view carries the MIDI out pad");
+        // The log says what the pad is now, for the device check.
+        assert!(
+            events_log(&p).iter().any(|l| l
+                == "sample: kit 1 (Breaks) pad A11: now plays Volca Kick (MIDI out pad: Volca Kick, ch 10, note 45)"),
+            "{:?}",
+            events_log(&p)
+        );
+        // What the switch did is told; then the hint comes back.
+        assert_eq!(
+            p.ui.get::<Label>("hint").unwrap().text,
+            "A11 is a MIDI out pad now"
+        );
+        p.tick(30.0);
+        assert!(
+            p.ui.get::<Label>("hint")
+                .unwrap()
+                .text
+                .contains("Q-Links 1-4: note, channel, port"),
+            "{}",
+            p.ui.get::<Label>("hint").unwrap().text
+        );
+        // Play's rows show it, its type under its name (board 2).
+        assert_eq!(p.kits[0].pads[10].as_deref(), Some("Volca Kick"));
+        assert_eq!(p.kits[0].tags[10], Some("MIDI"));
+        p.apply(ToUi::Show(View::Play));
+        let lane = |p: &Player| {
+            let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+            g.lanes
+                .iter()
+                .find(|l| l.pad == 10)
+                .map(|l| (l.empty, l.tag))
+        };
+        assert_eq!(lane(&p), Some((false, Some("MIDI"))));
+        open_pads(&mut p);
+        // The port unplugged: the pad keeps its name and says so.
+        model.lock().unwrap().live.ports.clear();
+        p.tick(0.0);
+        assert_eq!(
+            footer(&p),
+            Some((
+                "sends nothing: Volca Kick is not plugged in".to_string(),
+                true
+            ))
+        );
+        // UNDO on the Pads tab takes the switch back, on Play's rows too.
+        p.apply(ToUi::Undo(false));
+        assert!(p.sample.project(0).unwrap().pad(10).is_none());
+        assert_eq!(p.kits[0].tags[10], None);
+        p.apply(ToUi::Show(View::Play));
+        assert_eq!(lane(&p), Some((true, None)));
     }
 
     #[test]

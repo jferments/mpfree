@@ -3158,6 +3158,7 @@ fn kit_views(kits: &[kit::Kit], users: Range<usize>, synth: &synth::Synth) -> Ve
                 pitches: Vec::new(),
                 user: users.contains(&k),
                 key: None,
+                tags: Vec::new(),
             }
         })
         .collect();
@@ -4219,13 +4220,19 @@ impl time::Pads for SeqPads<'_> {
         // transpose (S4); the pad remembers the notes it started, so its
         // note-off and pressure reach them.
         let shift = self.shift(track);
-        let sounded = match self.synth_of(track) {
-            Some(s) if pad < 16 => {
+        let on = mpfree_play::Event::NoteOn {
+            note: pad.min(127) as u8,
+            velocity,
+        };
+        let sounded = if let Some(s) = self.synth_of(track) {
+            if pad < 16 {
                 s.note_on_shifted(pad, velocity, offset, &shift);
-                true
             }
-            Some(_) => false,
-            None => self.player.hit_kit_at(kit, pad, velocity, offset),
+            pad < 16
+        } else if self.routed(track, pad, on, offset) {
+            true
+        } else {
+            self.player.hit_kit_at(kit, pad, velocity, offset)
         };
         if sounded {
             self.hits += 1;
@@ -4239,9 +4246,13 @@ impl time::Pads for SeqPads<'_> {
     }
     fn release_at(&mut self, track: u16, pad: usize, offset: u32) {
         let kit = self.kit_of(track);
-        match self.synth_of(track) {
-            Some(s) => s.note_off(pad, offset),
-            None => self.player.release_kit_at(kit, pad, offset),
+        let off = mpfree_play::Event::NoteOff {
+            note: pad.min(127) as u8,
+        };
+        if let Some(s) = self.synth_of(track) {
+            s.note_off(pad, offset);
+        } else if !self.routed(track, pad, off, offset) {
+            self.player.release_kit_at(kit, pad, offset);
         }
     }
     /// A panic: every kit, the synth and every track's own instrument.
@@ -4256,9 +4267,14 @@ impl time::Pads for SeqPads<'_> {
     }
     fn pressure_at(&mut self, track: u16, pad: usize, value: u8, offset: u32) {
         let kit = self.kit_of(track);
-        match self.synth_of(track) {
-            Some(s) => s.pressure_at(pad, value, offset),
-            None => self.player.pressure_kit_at(kit, pad, value, offset),
+        let press = mpfree_play::Event::Pressure {
+            note: pad.min(127) as u8,
+            value,
+        };
+        if let Some(s) = self.synth_of(track) {
+            s.pressure_at(pad, value, offset);
+        } else if !self.routed(track, pad, press, offset) {
+            self.player.pressure_kit_at(kit, pad, value, offset);
         }
     }
 
@@ -4309,8 +4325,15 @@ impl time::Pads for SeqPads<'_> {
                         return None;
                     }
                     let kit = self.kit_of(o.track);
+                    let on = Event::NoteOn {
+                        note: pad as u8,
+                        velocity: v,
+                    };
                     if let Some(s) = self.synth_of(o.track) {
                         s.note_on_shifted(pad, v, o.offset, &shift);
+                        self.hits += 1;
+                    } else if self.routed(o.track, pad, on, o.offset) {
+                        // An Instrument or MIDI out pad: its voice, its note out.
                         self.hits += 1;
                     } else if self.player.live_hit_at(kit, pad, v, o.offset) {
                         // While live chop takes cuts, a hit marks one.
@@ -4338,11 +4361,11 @@ impl time::Pads for SeqPads<'_> {
                 // The synth's note ends; a Grains pad stops when let go;
                 // one-shot sounds ignore it.
                 let kit = self.kit_of(o.track);
-                match self.synth_of(o.track) {
-                    Some(s) => s.note_off(usize::from(note), o.offset),
-                    None => self
-                        .player
-                        .live_release_at(kit, usize::from(note), o.offset),
+                if let Some(s) = self.synth_of(o.track) {
+                    s.note_off(usize::from(note), o.offset);
+                } else if !self.routed(o.track, usize::from(note), o.event, o.offset) {
+                    self.player
+                        .live_release_at(kit, usize::from(note), o.offset);
                 }
                 Some(o.event)
             }
@@ -4460,6 +4483,50 @@ impl SeqPads<'_> {
     /// The kit track `track` plays (kit 1 if it plays the synth).
     fn kit_of(&self, track: u16) -> usize {
         self.kits.kit_of(usize::from(track)).unwrap_or(0)
+    }
+
+    /// A hit, end or pressure (`event`) on pad `pad` of the kit track
+    /// `track` plays, when the pad is of another kind (the Pads tab's
+    /// Instrument and MIDI out pads, [`sampler::PadRoute`]): one voice of
+    /// a synth engine, or a note out to the pad's own port, channel and
+    /// note (`MidiOut::pad_to`, whatever the track's Plays on). True when
+    /// the pad is one of those, sent or not (a port that isn't plugged in
+    /// sends nothing, as the Pads tab says); false leaves it to the
+    /// sampler. Never allocates.
+    fn routed(&mut self, track: u16, pad: usize, event: mpfree_play::Event, offset: u32) -> bool {
+        use mpfree_play::Event;
+        let kit = self.kit_of(track);
+        let Some(route) = self.player.pad_route(kit, pad) else {
+            return false;
+        };
+        match route {
+            sampler::PadRoute::Midi {
+                port,
+                channel,
+                note,
+            } => {
+                let o = mpfree_play::Out {
+                    offset,
+                    frame: 0,
+                    track,
+                    dest: Default::default(),
+                    event,
+                };
+                self.midi.pad_to(&o, port, *channel, *note);
+            }
+            &sampler::PadRoute::Voice(engine, note) => match event {
+                Event::NoteOn { velocity, .. } => {
+                    self.synth
+                        .pad_voice_on(track, pad, (engine, note), velocity, offset);
+                }
+                Event::NoteOff { .. } => self.synth.pad_voice_off(track, pad, offset),
+                Event::Pressure { value, .. } => {
+                    self.synth.pad_voice_pressure(track, pad, value, offset);
+                }
+                _ => {}
+            },
+        }
+        true
     }
 
     /// An export's replay plays one track alone: another track's note on
@@ -5682,6 +5749,8 @@ fn player_session(
     // Live transpose (S4): each track's arp notes by number, and where its
     // shift took them (SeqPads::sounding).
     let mut by_note = vec![mpfree_arp::scale::Held::new(); mpfree_seq::MAX_TRACKS];
+    // The tracks silent last period (`TimeHost::silenced`).
+    let mut silent_was = 0u128;
     // STEP SEQ (step_keys.rs): the pads held as steps, the steps the pads
     // show (kept from the last change), and the PAD BANK lights sent while
     // they are pages.
@@ -7980,6 +8049,16 @@ fn player_session(
         // The clips and every track's arp (the pads go through the armed
         // track's) play into the kit or the synth: the clips as recorded,
         // the arps' notes as live playing (SeqPads::live).
+        // A track gone silent (muted, or another soloed) ends the notes its
+        // kit's Instrument and MIDI out pads hold: they sound outside its
+        // mixer strip, so its mute wouldn't reach them.
+        let silent = time.silenced();
+        let went = silent & !silent_was;
+        silent_was = silent;
+        for t in (0..128).filter(|t| went & 1 << t != 0) {
+            midi_out.end_pads(t, 0);
+            synth.end_pad_voices(t as u16, 0);
+        }
         let key = synth.transpose_key();
         let mut seq = SeqPads {
             player: &mut player,

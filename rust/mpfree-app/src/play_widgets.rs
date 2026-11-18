@@ -1011,6 +1011,9 @@ pub struct Lane {
     pub label: Option<String>,
     /// A pad with no sound: its row stays, dashed, with no speaker.
     pub empty: bool,
+    /// A kit pad's type ("LOOP", "SYNTH", "MIDI") in small letters under
+    /// its name; None for a sample.
+    pub tag: Option<&'static str>,
     /// A lock lane (the Sequencer's Steps, the Play, Pads and Sequencer
     /// redesign's board 3): one setting's locks, step by step, under its
     /// sound or the track's. Its `pad` is [`LOCK_LANE`] and the lane's
@@ -2275,20 +2278,20 @@ impl Widget for StepGrid {
                     }
                     None => nr,
                 };
-                // STEP SEQ's lane: its name over a small "ON THE PADS".
-                let name_r = if on_pads {
-                    let (top, bottom) = nr.take_left(18).1.take_top(g.rh * 3 / 5);
-                    cx.text(
-                        FontId::Bold,
-                        10.0,
-                        bottom,
-                        Align::Left,
-                        t.accent,
-                        "ON THE PADS",
-                    );
-                    top
-                } else {
-                    nr.take_left(18).1
+                // STEP SEQ's lane: its name over a small "ON THE PADS";
+                // a pad of another type than a sample, over its type.
+                let caption = match (on_pads, lane.tag) {
+                    (true, _) => Some(("ON THE PADS", t.accent)),
+                    (false, Some(tag)) => Some((tag, t.text_dim)),
+                    (false, None) => None,
+                };
+                let name_r = match caption {
+                    Some((caption, ink)) => {
+                        let (top, bottom) = nr.take_left(18).1.take_top(g.rh * 3 / 5);
+                        cx.text(FontId::Bold, 10.0, bottom, Align::Left, ink, caption);
+                        top
+                    }
+                    None => nr.take_left(18).1,
                 };
                 cx.text(FontId::Sans, 14.0, name_r, Align::Left, ink, &lane.name);
                 // The mute button: a box round the speaker, red-tinted while
@@ -3680,6 +3683,7 @@ mod tests {
             root: false,
             label: None,
             empty: false,
+            tag: None,
             lock: None,
         }
     }
