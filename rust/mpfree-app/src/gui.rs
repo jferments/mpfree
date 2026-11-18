@@ -55,6 +55,7 @@ use mpfree_arp_ui::widgets::SliderStack;
 use mpfree_arp_ui::workspace::{self, Editor, PatternWorkspace, Row, WsAction};
 use mpfree_chain_ui::{ChainAction, ChainState, MacroAction, MacrosState};
 use mpfree_fx_ui::FxState;
+use mpfree_node::Held;
 use mpfree_play::mpfree_param::ParamAddr;
 use mpfree_sampler::model::Levels;
 use mpfree_sampler::model::Project;
@@ -1052,6 +1053,10 @@ pub enum ToUi {
     /// The sampler's input writer, handed back once the line input is off,
     /// for the Sample page to free.
     SampleInputBack(Box<crate::sampler::RecFeed>),
+    /// An effect's memory, copied out on the audio thread
+    /// ([`FromUi::Capture`]), and how that ended: for the Sample page to
+    /// put on a pad, then free.
+    Captured(Box<Held>, crate::mixing::Captured),
     /// One kit's entry changed: its name, pad labels and chip (the synth,
     /// after an octave, engine or pad layout change).
     KitChanged {
@@ -1420,6 +1425,14 @@ pub enum FromUi {
     /// fill each period (`sampler::RecFeed`); None asks for it back, to be
     /// freed here ([`ToUi::SampleInputBack`]).
     SampleInput(Option<Box<crate::sampler::RecFeed>>),
+    /// The chain editor's Capture on insert `slot` of the chain it shows:
+    /// a buffer made here for the audio thread to fill with the effect's
+    /// memory, a piece a period ([`crate::mixing::MixHost::capture`]); it
+    /// comes back in [`ToUi::Captured`].
+    Capture {
+        slot: usize,
+        held: Box<Held>,
+    },
     /// What the sampler's input records from: the line input or a point in
     /// the mix (the Rec tab's Source). The audio thread points the mixer's
     /// sampler capture point at it and starts the buffer afresh.
@@ -1455,6 +1468,23 @@ pub enum FromUi {
     MidiFile(Box<crate::midi_file::MidiImport>),
 }
 
+/// Room for the Grains effect's whole memory at the app's rate, for a
+/// capture ([`FromUi::Capture`]).
+const CAPTURE_FRAMES: usize = mpfree_fx::GrainNode::MEMORY_S as usize * crate::RATE as usize;
+
+/// A chain editor action as the message for the audio loop. A Capture
+/// takes the buffer it is copied into with it, made here, so the audio
+/// thread never allocates or frees it.
+fn chain_msg(a: ChainAction) -> FromUi {
+    match a {
+        ChainAction::Capture(slot) => FromUi::Capture {
+            slot,
+            held: Box::new(Held::new(2, CAPTURE_FRAMES)),
+        },
+        a => FromUi::Chain(a),
+    }
+}
+
 /// Lines the console keeps while paused, to show when it carries on.
 const CONSOLE_BACKLOG: usize = 600;
 
@@ -1467,6 +1497,20 @@ pub enum LearnValue {
     /// A knob of the synth the Synth tab shows (the selected track's), by
     /// its parameter id.
     Synth(u16),
+}
+
+/// A track asked of the time engine for a kit: by "+ Kit track", or by a
+/// chop to a new kit on the Sample tab (sampler R4.6). Once the new track
+/// is there and armed it plays the kit ([`Player::kit_track_armed`]).
+struct KitTrackAsk {
+    /// How many tracks there were: the new track is this one.
+    tracks: usize,
+    /// When it was asked: a track that never comes is given up.
+    at: Instant,
+    /// The kit it plays: None for the first empty kit (+ Kit track).
+    kit: Option<usize>,
+    /// A chop's phrase, for the new track's first empty slot.
+    phrase: Option<Box<mpfree_seq::Clip>>,
 }
 
 pub struct Player {
@@ -1643,9 +1687,9 @@ pub struct Player {
     lane_list: bool,
     /// The Lanes list's rows: each a setting, its name, and what it is on.
     lane_rows: Vec<(play_page::LockLane, String, String)>,
-    /// The "+ Kit track" ask for a track: how many tracks there were, and
-    /// when. Once the new track is armed it gets an empty kit.
-    kit_track: Option<(usize, Instant)>,
+    /// A track asked of the time engine for a kit ("+ Kit track", or a
+    /// chop to a new kit): once the new track is armed it gets its kit.
+    kit_track: Option<KitTrackAsk>,
     /// What each header chip that only shows (CPU, RAM, session, time
     /// left) says when tapped, by its place; empty for the others.
     chip_why: Vec<String>,
@@ -2191,6 +2235,7 @@ impl Player {
                 w.can_add = can_add;
             }
         }
+        self.refresh_new_kit();
     }
 
     /// The "+ Kit track" button: a new track (as Arrange's + Track adds
@@ -2204,9 +2249,49 @@ impl Player {
             );
             return None;
         }
-        self.kit_track = Some((self.time.tracks.len(), Instant::now()));
+        self.kit_track = Some(KitTrackAsk {
+            tracks: self.time.tracks.len(),
+            at: Instant::now(),
+            kit: None,
+            phrase: None,
+        });
         self.refresh_kit_tracks();
         Some(FromUi::Time(TimeAction::AddTrack))
+    }
+
+    /// A chop to a new kit on the Sample tab (sampler R4.6) filled kit
+    /// `kit`: a new track (as + Kit track adds one), which plays it, and
+    /// the chop's phrase in its first empty slot, once the time engine has
+    /// armed it.
+    fn add_chop_track(&mut self, kit: usize, phrase: Option<Box<mpfree_seq::Clip>>) {
+        self.kit_track = Some(KitTrackAsk {
+            tracks: self.time.tracks.len(),
+            at: Instant::now(),
+            kit: Some(kit),
+            phrase,
+        });
+        self.refresh_kit_tracks();
+        self.outbox.push(FromUi::Time(TimeAction::AddTrack));
+    }
+
+    /// What the Chop tab's Put on New kit would do now (sampler R4.6): the
+    /// first empty kit, for a new track, or why not.
+    fn refresh_new_kit(&mut self) {
+        let new_kit = if self.kit_track.is_some() {
+            Err("A new track is on its way: a moment".to_string())
+        } else if self.time.tracks.len() >= mpfree_seq::MAX_TRACKS {
+            Err(format!(
+                "The song has {} tracks, the most it can: no room for a new one",
+                mpfree_seq::MAX_TRACKS
+            ))
+        } else {
+            (0..self.kits.len())
+                .find(|&k| self.spare_kit(k) && self.sample.has_kit(k))
+                .ok_or_else(|| {
+                    "No empty kit is left for a new track: chop to this kit's pads".to_string()
+                })
+        };
+        self.sample.set_new_kit(&mut self.ui, new_kit);
     }
 
     /// The time engine's news after + Kit track: once the new track is
@@ -2214,18 +2299,31 @@ impl Player {
     /// came (128 tracks already: the time engine says why) is given up
     /// after a few seconds.
     fn kit_track_armed(&mut self) {
-        let Some((n, at)) = self.kit_track else {
+        let Some(ask) = self.kit_track.as_ref() else {
             return;
         };
+        let n = ask.tracks;
         if self.time.tracks.len() > n {
-            self.kit_track = None;
+            let Some(ask) = self.kit_track.take() else {
+                return;
+            };
+            let kit = ask
+                .kit
+                .or_else(|| (0..self.kits.len()).find(|&k| self.spare_kit(k)));
             if self.time.armed == Some(n) {
-                if let Some(u) = (0..self.kits.len()).find(|&k| self.spare_kit(k)) {
+                if let Some(u) = kit {
                     self.outbox.push(FromUi::Kit(u));
                 }
+                if let Some(clip) = ask.phrase {
+                    self.outbox.push(FromUi::SamplePhrase(clip));
+                }
+            } else if let Some(u) = ask.kit {
+                self.chop_track_missed(u, "another track was armed first");
             }
-        } else if at.elapsed() > Duration::from_secs(3) {
-            self.kit_track = None;
+        } else if ask.at.elapsed() > Duration::from_secs(3) {
+            if let Some(u) = self.kit_track.take().and_then(|a| a.kit) {
+                self.chop_track_missed(u, "the song took no new track");
+            }
         }
     }
 
@@ -2322,6 +2420,18 @@ impl Player {
         };
         println!("{line}");
         self.tell(&line);
+    }
+
+    /// A chop to a new kit whose track didn't come: the slices stay on
+    /// the kit, for a track to pick.
+    fn chop_track_missed(&mut self, kit: usize, why: &str) {
+        let name = self
+            .kits
+            .get(kit)
+            .map_or_else(|| format!("Kit {}", kit + 1), |k| k.name.clone());
+        self.tell(&format!(
+            "The slices are on {name}, but no new track plays it ({why}): pick {name} for a track from the list of kits"
+        ));
     }
 
     /// The list of kits again: its rows, and the kit on the pads picked
@@ -4774,8 +4884,8 @@ impl Player {
                      Q-Links 1-4: {}   ·   {ROWS_HINT}", self.sample.play_qlinks_text())
                 }
                 View::Sample if self.sample.page() == sample_page::GRAIN_PAGE => {
-                    format!("Hit the pad to see its grains   ·   Q-Links 1-4: position, size, density, pitch (SHIFT: sprays, \
-                     finer)   ·   {ROWS_HINT}")
+                    format!("Tap a section for its controls   ·   Q-Links 1-4: position, size, density, pitch \
+                     (SHIFT: sprays, finer)   ·   {ROWS_HINT}")
                 }
                 View::Sample if self.sample.page() == sample_page::FX_PAGE => {
                     format!("Touch an effect: its knobs on the Q-Links   ·   + Add effect: pick one   ·   \
@@ -6296,7 +6406,7 @@ impl Player {
             ToUi::ChainPush => {
                 if mpfree_chain_ui::chain_push(&mut self.ui) {
                     let acts = mpfree_chain_ui::take_chain_actions(&mut self.ui);
-                    self.outbox.extend(acts.into_iter().map(FromUi::Chain));
+                    self.outbox.extend(acts.into_iter().map(chain_msg));
                 } else {
                     // The picker is shut: the push is the outline's.
                     self.nav(Nav::Push);
@@ -6579,6 +6689,8 @@ impl Player {
             ToUi::SampleKits { projects, rate } => {
                 self.project_rate = rate;
                 self.sample.set_kits(&mut self.ui, projects, rate);
+                // The kits' sounds are in: an empty one can take a chop.
+                self.refresh_new_kit();
                 self.sample_changed();
             }
             ToUi::SampleViewBack(swap) => self.sample.view_back(swap),
@@ -6614,6 +6726,10 @@ impl Player {
             }
             ToUi::SampleInputBack(f) => {
                 self.sample.input_back(f);
+                self.print_sample_lines();
+            }
+            ToUi::Captured(held, end) => {
+                self.sample.captured(&mut self.ui, *held, end);
                 self.print_sample_lines();
             }
             ToUi::KitChanged { kit, view } => {
@@ -7042,6 +7158,9 @@ impl Player {
     /// names of pads a chop filled.
     fn sample_after(&mut self, before: &str) {
         self.sample_names();
+        if let Some(t) = self.sample.take_new_kit_track() {
+            self.add_chop_track(t.kit, t.phrase);
+        }
         if self.sample.page() != before {
             self.sample_changed();
         }
@@ -8762,7 +8881,7 @@ impl Player {
                 .get_mut::<mpfree_chain_ui::ChainView>(mpfree_chain_ui::CHAIN)
             {
                 let stop = cv.stop_listening();
-                self.outbox.extend(stop.into_iter().map(FromUi::Chain));
+                self.outbox.extend(stop.into_iter().map(chain_msg));
             }
         }
         let (was, now) = (self.view == View::Touch, v == View::Touch);
@@ -9917,7 +10036,7 @@ impl Player {
                     // The strip list opened or shut: its hint.
                     self.refresh_hint();
                 }
-                let mut acts = acts.into_iter().map(FromUi::Chain);
+                let mut acts = acts.into_iter().map(chain_msg);
                 let first = acts.next();
                 self.outbox.extend(acts);
                 first
@@ -10003,9 +10122,17 @@ impl Player {
                 }
             }
             // SHIFT + the clip card's arrows: Length and Speed halve or
-            // double.
-            (time_view::CLIP_CARD, EventKind::Step { index, delta }) if self.status.shift => {
-                match time_view::card_action(&self.time, index, delta, true) {
+            // double, Bank steps a whole CC 0; on the scene editor, Bank
+            // does too.
+            (time_view::CLIP_CARD | time_view::SCENE_CARD, EventKind::Step { index, delta })
+                if self.status.shift =>
+            {
+                let a = if ev.widget == time_view::CLIP_CARD {
+                    time_view::card_action(&self.time, index, delta, true)
+                } else {
+                    time_view::scene_action(&self.time, index, delta, true)
+                };
+                match a {
                     Ok(a) => Some(FromUi::Time(a)),
                     Err(why) => {
                         if !why.is_empty() {
@@ -10230,7 +10357,7 @@ impl Player {
         // A finger held on an effect in the picker opens its presets.
         if self.view == View::Chain && mpfree_chain_ui::chain_hold(&mut self.ui) {
             let acts = mpfree_chain_ui::take_chain_actions(&mut self.ui);
-            self.outbox.extend(acts.into_iter().map(FromUi::Chain));
+            self.outbox.extend(acts.into_iter().map(chain_msg));
         }
         // A finger held still on a Looper layer's row: it can lift out to
         // drag now (moved sooner, it swiped the rows).
@@ -11863,6 +11990,50 @@ pub fn sample_sampler(fonts: Fonts) -> Player {
     p
 }
 
+/// [`sample_sampler`] with an empty user kit after the six (before the
+/// synth's), its sounds on the Sample page too, so Chop can put slices on
+/// a new kit (sampler R4.6). Returns the player and the empty kit.
+pub fn sample_sampler_with_empty_kit(fonts: Fonts) -> (Player, usize) {
+    let mut p = sample_player(fonts);
+    let (project, _) = mpfree_sampler_ui::sample::project();
+    let pad = mpfree_sampler_ui::sample::PAD;
+    let synth = crate::synth::Synth::new(44_100);
+    let mut kits: Vec<KitView> = p
+        .kits
+        .iter()
+        .filter(|k| k.synth.is_none())
+        .cloned()
+        .collect();
+    kits[0].name = "Breaks".to_string();
+    kits[0].pads = (0..16)
+        .map(|i| (i == pad).then(|| "Break 92".to_string()))
+        .collect();
+    let u = kits.len();
+    kits.push(KitView {
+        name: format!("Kit {}", u + 1),
+        pads: vec![None; 128],
+        colour: [0x10, 0x10, 0x10],
+        chip: None,
+        synth: None,
+        pitches: Vec::new(),
+        user: true,
+        key: None,
+    });
+    kits.push(synth.kit_view());
+    p.apply(ToUi::Kits(kits));
+    let mut projects = vec![project];
+    projects.resize_with(u + 1, mpfree_sampler::model::Project::new);
+    p.apply(ToUi::SampleKits {
+        projects,
+        rate: mpfree_sampler_ui::sample::RATE,
+    });
+    p.apply(ToUi::PadDown { pad, velocity: 100 });
+    p.apply(ToUi::PadUp(pad));
+    p.apply(ToUi::Show(View::Sample));
+    settle_views(&mut p);
+    (p, u)
+}
+
 /// How long the screens and tests wait for the Sample tab's worker threads
 /// (the analysis, a load, a process). Under a second on its own, but a
 /// coverage build on a busy CI runner took over 10 s for one sound's
@@ -12542,25 +12713,49 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // The Learn section (board 8, without MIDI Follow): the keyboard's
     // filter knob for this song, picking up over part of its range, and
     // the drum machine's mute key kept for every project.
-    let mut rig = mpfree_midi_ui::sample::rig();
-    for (kept, text) in [
-        (
-            mpfree_midi::setup::Kept::Project,
-            "port Keystep 37 | ch 1 | cc 74 | t1.fx1.0 | 0.35 0.8 | absolute | pickup",
-        ),
-        (
-            mpfree_midi::setup::Kept::Rig,
-            "port MIDI | ch 10 | note 36 | t6.mix.2 | 0 1 | toggle | jump",
-        ),
-    ] {
-        let l = mpfree_midi::learn::Saved::parse(text).expect("a learned control");
-        rig.setup.learned_in(kept, l);
-    }
-    rig.live.learn_names = vec!["Cutoff (Filter, Drums)".into(), "Mute (Perc)".into()];
+    let learn_rig = || {
+        let mut rig = mpfree_midi_ui::sample::rig();
+        for (kept, text) in [
+            (
+                mpfree_midi::setup::Kept::Project,
+                "port Keystep 37 | ch 1 | cc 74 | t1.fx1.0 | 0.35 0.8 | absolute | pickup",
+            ),
+            (
+                mpfree_midi::setup::Kept::Rig,
+                "port MIDI | ch 10 | note 36 | t6.mix.2 | 0 1 | toggle | jump",
+            ),
+        ] {
+            let l = mpfree_midi::learn::Saved::parse(text).expect("a learned control");
+            rig.setup.learned_in(kept, l);
+        }
+        rig.live.learn_names = vec!["Cutoff (Filter, Drums)".into(), "Mute (Perc)".into()];
+        rig
+    };
     out.push((
         "mixer-io-learn",
-        io_section_screen(fonts(), &io_state, rig, mpfree_midi_ui::LEARN),
+        io_section_screen(fonts(), &io_state, learn_rig(), mpfree_midi_ui::LEARN),
     ));
+    // Its Clips and scenes card (the owner's card of 18 Nov 2026, "Both"),
+    // on the second track: a track's Mute, Solo and Stop, Stop all and
+    // Back to song.
+    let mut clips = io_section_screen(fonts(), &io_state, learn_rig(), mpfree_midi_ui::LEARN);
+    for (id, label) in [
+        ("learn-clips", "Clips and scenes"),
+        ("learn-clip-track", "Track after"),
+    ] {
+        if let Some(t) = clips.ui.targets().into_iter().find(|t| {
+            t.widget == mpfree_mixer_ui::MIXER
+                && t.target.id == id
+                && t.target.label.starts_with(label)
+        }) {
+            let (x, y) = t.target.centre();
+            clips.touch(1, Touch::Down, x, y);
+            clips.touch(1, Touch::Up, x, y);
+        }
+    }
+    let _ = clips.take_actions();
+    clips.ui.invalidate();
+    out.push(("mixer-io-learn-clips", clips));
     // The CV section with an envelope and two LFOs, each with its two
     // more rows.
     out.push((
@@ -12993,9 +13188,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("clips-card sample: {e}"),
     }
-    // The Record panel's Scene tab (sequencer S4): scene 2, named Drop,
-    // moves on to the next scene after 4 bars four times in five (else
-    // plays again), and mutes Track 2 when it starts.
+    // The Record panel's Scene tab (sequencer S4 and S5): scene 2, named
+    // Drop, moves on to the next scene after 4 bars four times in five
+    // (else plays again), mutes Track 2 when it starts, and sends Track
+    // 1's gear program 12.
     match sample_clips(fonts()) {
         Ok(mut p) => {
             let mut st = p.time.clone();
@@ -13008,11 +13204,30 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                     chance: 80,
                     ..mpfree_seq::Follow::after(4, mpfree_seq::FollowAction::Next)
                 }),
+                programs: vec![mpfree_seq::TrackProgram {
+                    track: 0,
+                    program: mpfree_seq::ClipProgram {
+                        program: 11,
+                        bank: None,
+                    },
+                }],
             };
             p.time_page.scene_card = true;
-            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Time(Box::new(st.clone())));
             p.apply(ToUi::Show(View::Arrange));
             out.push(("clips-scene", p));
+            // The same scene's program change rows (S5), scrolled to: the
+            // armed track's Program and Bank, and Sent to.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                st.armed = Some(0);
+                p.time_page.scene_card = true;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                if let Some(l) = p.ui.get_mut::<OptionList>(time_view::SCENE_CARD) {
+                    l.selected = mpfree_time_ui::view::SCENE_ROWS.len() - 1;
+                }
+                out.push(("clips-scene-program", p));
+            }
         }
         Err(e) => eprintln!("clips-scene sample: {e}"),
     }
@@ -13656,36 +13871,57 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         out.push(("sample-play-scenes", scenes));
     }
     // The Grain tab on the same pad, set to play grains: the engine's own
-    // cloud 1.5 s after a hit, as the audio thread sends it.
-    let mut grain = sample_sampler(fonts());
-    let (project, _) = mpfree_sampler_ui::sample::grain_project();
-    let (grains, head, live) = mpfree_sampler_ui::sample::grains_after(&project, 1.5);
-    let region = project
-        .pad(mpfree_sampler_ui::sample::PAD)
-        .and_then(|pd| pd.layers.first())
-        .map(|l| l.region.clone());
-    grain.apply(ToUi::SampleKits {
-        projects: vec![project],
-        rate: mpfree_sampler_ui::sample::RATE,
-    });
-    grain.on_event(UiEvent {
-        widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-        kind: EventKind::Tab(mpfree_sampler_ui::grain_tab::TAB),
-    });
-    if let Some(FromUi::SampleGrains(mut c)) = grain
-        .take_actions()
-        .into_iter()
-        .find(|a| matches!(a, FromUi::SampleGrains(_)))
+    // cloud 1.5 s after a hit, as the audio thread sends it. Then its
+    // other sections, a section chip tapped: Movement, with an LFO and the
+    // envelope moving the cloud; Filter and keys, a sprayed band pass with
+    // glide; and Presets, with one put on the pad.
     {
-        c.len = grains.len().min(crate::sampler::CLOUD_GRAINS);
-        c.grains[..c.len].copy_from_slice(&grains[..c.len]);
-        c.head = head
-            .zip(region)
-            .map(|(h, r)| r.start + (f64::from(h) * r.frames() as f64) as u64);
-        c.live = live;
-        grain.apply(ToUi::SampleGrains(c));
+        use mpfree_sampler_ui::grain_tab::{View as GrainView, SECTIONS};
+        for (name, section) in [
+            ("sample-grain", GrainView::Grains),
+            ("sample-grain-movement", GrainView::Movement),
+            ("sample-grain-filter", GrainView::FilterKeys),
+            ("sample-grain-presets", GrainView::Presets),
+        ] {
+            let mut grain = sample_sampler(fonts());
+            let Ok((project, _)) = mpfree_sampler_ui::sample::grain_section_project(section) else {
+                continue;
+            };
+            let (grains, head, live) = mpfree_sampler_ui::sample::grains_after(&project, 1.5);
+            let region = project
+                .pad(mpfree_sampler_ui::sample::PAD)
+                .and_then(|pd| pd.layers.first())
+                .map(|l| l.region.clone());
+            grain.apply(ToUi::SampleKits {
+                projects: vec![project],
+                rate: mpfree_sampler_ui::sample::RATE,
+            });
+            grain.on_event(UiEvent {
+                widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+                kind: EventKind::Tab(mpfree_sampler_ui::grain_tab::TAB),
+            });
+            if let Some(i) = GrainView::ALL.iter().position(|v| *v == section) {
+                grain.on_event(UiEvent {
+                    widget: SECTIONS.into(),
+                    kind: EventKind::Tab(i),
+                });
+            }
+            if let Some(FromUi::SampleGrains(mut c)) = grain
+                .take_actions()
+                .into_iter()
+                .find(|a| matches!(a, FromUi::SampleGrains(_)))
+            {
+                c.len = grains.len().min(crate::sampler::CLOUD_GRAINS);
+                c.grains[..c.len].copy_from_slice(&grains[..c.len]);
+                c.head = head
+                    .zip(region)
+                    .map(|(h, r)| r.start + (f64::from(h) * r.frames() as f64) as u64);
+                c.live = live;
+                grain.apply(ToUi::SampleGrains(c));
+            }
+            out.push((name, grain));
+        }
     }
-    out.push(("sample-grain", grain));
     // The Rec tab with the line input on: 40 s of drums came in with the
     // transport playing, and a take on the next bar is two bars in.
     let mut rec = sample_sampler(fonts());
@@ -14082,6 +14318,34 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         one.take_actions();
         out.push(("sample-chop-one-pad", one));
+    }
+    // The Chop tab putting every eighth on a new kit, for a new track,
+    // with its phrase (R4.6).
+    {
+        use mpfree_sampler_ui::chop_tab::{Row, LIST};
+        let (mut new, _) = sample_sampler_with_empty_kit(fonts());
+        sample_pattern(&mut new, 0);
+        new.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
+        });
+        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
+        for (row, delta) in [
+            (Row::Method, 1),
+            (Row::Amount, -1),
+            (Row::Phrase, 1),
+            (Row::Put, 3i32),
+        ] {
+            new.on_event(UiEvent {
+                widget: LIST.into(),
+                kind: EventKind::Step {
+                    index: index(row),
+                    delta,
+                },
+            });
+        }
+        new.take_actions();
+        out.push(("sample-chop-new-kit", new));
     }
     // Live chop on the same pad: Start pressed, the break playing halfway,
     // and four pads hit so far.
@@ -14558,7 +14822,10 @@ mod tests {
                 "After —",
                 "Chance —",
                 "Or —",
-                "Mutes as they are"
+                "Mutes as they are",
+                "Program off",
+                "Bank —",
+                "Sent to none"
             ]
         );
         // The wheel on the Scene row: the next scene.
@@ -22265,6 +22532,131 @@ mod tests {
     }
 
     #[test]
+    fn chop_to_a_new_kit_adds_a_track_playing_it_with_the_phrase_and_undo_takes_the_pads_back() {
+        use crate::sampler::TrackKits;
+        use mpfree_sampler_ui::chop_tab::{self, Row};
+        use mpfree_sampler_ui::widgets::{PadBar, SettingList};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        // The Sample tab on Break 92 (kit 1, Breaks), with an empty user
+        // kit after the six.
+        let (mut p, u) = sample_sampler_with_empty_kit(Fonts::embedded());
+        sample_pattern(&mut p, 0);
+        let tap = |p: &mut Player, widget: &str, i: usize| {
+            let r = p.ui.rect_of(widget).unwrap();
+            let t = match widget {
+                chop_tab::LIST => {
+                    p.ui.get::<SettingList>(widget)
+                        .unwrap()
+                        .control_rect(r, i)
+                        .unwrap()
+                }
+                _ => p.ui.get::<PadBar>(widget).unwrap().tab_rect(r, i),
+            };
+            assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
+            p.touch(9, Touch::Up, t.x + 5, t.y + 5);
+        };
+        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
+        assert_eq!(p.page(), sample_page::CHOP_PAGE);
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            let index = Row::ALL.iter().position(|r| *r == row).unwrap();
+            p.on_event(UiEvent {
+                widget: chop_tab::LIST.into(),
+                kind: EventKind::Step { index, delta },
+            });
+        };
+        fn list(p: &Player) -> &SettingList {
+            p.ui.get::<SettingList>(chop_tab::LIST).unwrap()
+        }
+        // Put on: Pads, One pad, Keys, New kit.
+        for _ in 0..3 {
+            step(&mut p, Row::Put, 1);
+        }
+        assert_eq!(list(&p).rows[Row::Put.index()].value, "New kit");
+        assert_eq!(list(&p).right, "on a new track");
+        // Every eighth of the beat grid, with a phrase.
+        step(&mut p, Row::Method, 1);
+        step(&mut p, Row::Amount, -1);
+        step(&mut p, Row::Phrase, 1);
+        assert_eq!(list(&p).rows[Row::Chop.index()].value, "Phrase to new kit");
+        let n = p.sample.chop().unwrap().0.slices();
+        assert!(n > 1);
+        p.take_actions();
+        let tracks = p.time.tracks.len();
+        tap(&mut p, chop_tab::LIST, Row::Chop.index());
+        // The new kit's pads go to the audio thread, and a track is asked
+        // for; the phrase waits for it.
+        let (sent, rest) = views(p.take_actions());
+        assert_eq!(sent.iter().map(|v| v.kit).collect::<Vec<_>>(), [u]);
+        assert_eq!(rest, [FromUi::Time(TimeAction::AddTrack)]);
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        let last = crate::app::kit_pad_name(n - 1);
+        assert!(
+            events_log(&p).iter().any(|l| l.ends_with(&format!(
+                "into {n} slices (Beat) on kit {} (Break 92 chops) pads A1 to {last}, for a new track",
+                u + 1
+            ))),
+            "{:?}",
+            events_log(&p)
+        );
+        assert_eq!(p.kits[u].name, "Break 92 chops");
+        assert_eq!(p.kits[u].pads.iter().flatten().count(), n);
+        assert_eq!(p.kits[u].pads[0].as_deref(), Some("Break 92 1"));
+        let breaks = p.sample.project(0).unwrap();
+        assert!(
+            breaks.pad(pad).is_some() && breaks.pad(0).is_none() && breaks.chop_sets.is_empty(),
+            "kit 1 stays as it was"
+        );
+        // Not two at once: New kit waits for the track.
+        assert!(!list(&p).controls[Row::Chop.index()].why.is_empty());
+        // The track comes back armed: it plays the new kit and the phrase
+        // goes in its first empty slot.
+        let mut st = p.time.clone();
+        let mut added = st.tracks[0].clone();
+        added.name = format!("Track {}", tracks + 1);
+        added.slots.iter_mut().for_each(|s| *s = None);
+        st.tracks.push(added);
+        st.armed = Some(tracks);
+        p.apply(ToUi::Time(Box::new(st)));
+        let acts = p.take_actions();
+        let [FromUi::Kit(k), FromUi::SamplePhrase(clip)] = &acts[..] else {
+            panic!("{acts:?}")
+        };
+        assert_eq!(*k, u);
+        assert_eq!(clip.name, "Break 92 phrase");
+        assert_eq!(clip.notes.len(), n);
+        assert_eq!(
+            (clip.notes[0].note, clip.notes[n - 1].note),
+            (0, (n - 1) as u8)
+        );
+        // The audio loop switches the pads to it: the Sample tab shows its
+        // first slice, and no empty kit is left for another.
+        let mut tk = TrackKits::new(u + 1);
+        assert!(tk.set(tracks, u));
+        p.apply(ToUi::TrackKits(Box::new(tk)));
+        p.apply(ToUi::Kit(u));
+        settle_views(&mut p);
+        assert_eq!(p.sample.chop().unwrap().1.pad, 0);
+        assert_eq!(
+            p.ui.get::<PadBar>(chop_tab::BAR).unwrap().title,
+            "Pad A1 · Break 92 1"
+        );
+        assert_eq!(list(&p).right, "not now");
+        assert_eq!(
+            list(&p).controls[Row::Chop.index()].why,
+            "No empty kit is left for a new track: chop to this kit's pads"
+        );
+        // One UNDO takes the pads and the sound back off the new kit; the
+        // track stays.
+        p.apply(ToUi::SampleUndo(false));
+        let new = p.sample.project(u).unwrap();
+        assert!(new.pad(0).is_none() && new.chop_sets.is_empty());
+        assert!(p.kits[u].pads.iter().all(Option::is_none));
+        let (sent, rest) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        assert!(rest.is_empty(), "{rest:?}");
+    }
+
+    #[test]
     fn sixteen_levels_make_every_pad_play_the_pad_and_hits_pick_it() {
         use mpfree_sampler::model::{Levels, PadsPlay};
         use mpfree_sampler_ui::play_tab::{self, Row};
@@ -22848,7 +23240,7 @@ mod tests {
             p.ui.get::<PadBar>(grain_tab::BAR).unwrap().title,
             "Pad A5 · Break 92 · layer 2"
         );
-        let row = |r: grain_tab::Row| grain_tab::Row::ALL.iter().position(|x| *x == r).unwrap();
+        let row = |r: grain_tab::Row| grain_tab::Row::GRAINS.iter().position(|x| *x == r).unwrap();
         for r in [grain_tab::Row::Mode, grain_tab::Row::Sync] {
             ev(
                 &mut p,
@@ -22918,6 +23310,58 @@ mod tests {
                 (text, !c.faint)
             })
             .unzip()
+    }
+
+    /// The chain editor's Capture goes to the audio thread with a buffer
+    /// made here; the memory that comes back lands where a recording would,
+    /// playing as grains with the effect's settings.
+    #[test]
+    fn a_grains_capture_lands_where_a_recording_would_playing_as_grains() {
+        use crate::mixing::Captured;
+        use mpfree_sampler::model::PlayMode;
+        let mut p = sample_sampler(Fonts::embedded());
+        match chain_msg(ChainAction::Capture(2)) {
+            FromUi::Capture { slot, held } => {
+                assert_eq!(slot, 2);
+                assert!(held.room() >= 8 * 44_100, "the whole memory fits");
+            }
+            m => panic!("{m:?}"),
+        }
+        assert_eq!(
+            chain_msg(ChainAction::Select(1)),
+            FromUi::Chain(ChainAction::Select(1))
+        );
+        // What the audio thread sends back: two seconds of a tone, from a
+        // Grains effect set to Pitch +7.
+        let mut held = Box::new(Held::new(2, 44_100 * 8));
+        let tone: Vec<f32> = (0..88_200)
+            .flat_map(|i| {
+                let x = 0.3 * (i as f32 * 0.05).sin();
+                [x, x]
+            })
+            .collect();
+        assert!(held.begin(0, 88_200, 2, 44_100, 0));
+        held.push(&tone);
+        let mut n = mpfree_fx::GrainNode::new(1);
+        mpfree_node::Node::set_param(&mut n, mpfree_fx::ids::grains::PITCH, 7.0);
+        held.keep_values(&n);
+        p.apply(ToUi::Captured(held, Captured::Done));
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l
+                == "sample: grains capture: Grains 1, 2.00 s stereo on pad A6, playing as grains"),
+            "{log:?}"
+        );
+        let pr = p.sample.project(0).unwrap();
+        let layer = &pr.pad(5).unwrap().layers[0];
+        assert_eq!(layer.region.mode, PlayMode::Granular);
+        assert_eq!(layer.region.grain.pitch, 7.0);
+        assert_eq!(pr.source(layer.region.source).unwrap().frames(), 88_200);
+        // One that made nothing says why.
+        p.apply(ToUi::Captured(Box::new(Held::new(2, 4)), Captured::Nothing));
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: nothing captured: the effect hasn't heard anything yet"));
     }
 
     #[test]
@@ -23526,7 +23970,7 @@ mod tests {
             "Pad A5 · Break 92"
         );
         // Mode, stepped from the list, makes the loop play grains: one log line.
-        let mode = Row::ALL.iter().position(|r| *r == Row::Mode).unwrap();
+        let mode = Row::GRAINS.iter().position(|r| *r == Row::Mode).unwrap();
         ev(
             &mut p,
             grain_tab::LIST,

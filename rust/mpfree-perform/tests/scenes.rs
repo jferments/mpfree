@@ -1,11 +1,11 @@
 //! Scenes and follow actions played through the transport and the player:
-//! a scene's clips start together on the bar line and its mutes switch
-//! exactly there; follow actions chain clips and scenes on their bar lines;
-//! all of it the same at any period size.
+//! a scene's clips start together on the bar line and its mutes and
+//! program changes switch exactly there; follow actions chain clips and
+//! scenes on their bar lines; all of it the same at any period size.
 
 use mpfree_perform::{Perform, When};
 use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Sink, Started};
-use mpfree_seq::{Clip, Follow, FollowAction, Note, Project, Track};
+use mpfree_seq::{Clip, ClipProgram, Follow, FollowAction, Note, Project, Track};
 use mpfree_transport::{Block, Command, Transport};
 
 const BAR: i64 = 3840;
@@ -28,7 +28,12 @@ impl Sink for Log {
 #[derive(Clone, Copy, Debug)]
 enum Act {
     Scene(usize),
+    /// Launched while stopped: at once, on the bar the position is in.
+    SceneNow(usize),
     StopAll,
+    /// A transport command, queued from the start for the action's frame
+    /// exactly.
+    Transport(Command),
 }
 
 #[derive(Debug, PartialEq)]
@@ -51,6 +56,11 @@ fn run(
     let mut project = project.clone();
     let mut t = Transport::new(RATE, 120.0).unwrap();
     assert!(t.command(0, Command::Play));
+    for &(f, a) in acts {
+        if let Act::Transport(c) = a {
+            assert!(t.command(f, c));
+        }
+    }
     let mut perform = Perform::new(11);
     let (mut launches, mut cues): (Vec<Launch>, Vec<Cue>) = (launches.to_vec(), vec![]);
     let compile = |p: &Project, l: &[Launch], c: &[Cue], perform: &Perform| {
@@ -78,6 +88,18 @@ fn run(
                     ));
                 }
                 Act::StopAll => perform.stop_all(When::Cued, &mut launches, &mut cues),
+                Act::SceneNow(row) => {
+                    let bar = t.meter().bar_ticks();
+                    let line = t.position().div_euclid(bar) * bar;
+                    assert!(perform.launch_scene(
+                        &mut project,
+                        row,
+                        When::Now(line),
+                        &mut launches,
+                        &mut cues
+                    ));
+                }
+                Act::Transport(_) => {}
             }
             next += 1;
             changed = true;
@@ -189,6 +211,75 @@ fn a_scene_starts_together_on_the_bar_line_and_switches_its_mutes_there() {
     assert_eq!(r.mutes, vec![false, true]);
     assert!(r.started.iter().all(|s| s.at == BAR));
     assert_eq!(r.started[1].mute, Some(true));
+}
+
+/// A scene's program changes (sequencer S5) go out on its bar line, the
+/// clip's own where the clip starting there has one, and a track with no
+/// clip in the scene gets its program change too (its gear plays its own
+/// patterns). After a stop they go out again where the music starts.
+#[test]
+fn a_scenes_program_changes_go_out_on_its_bar_line() {
+    let mut p = project(2);
+    p.tracks.push(Track::new("gear", 2));
+    let pc = |program, bank| ClipProgram { program, bank };
+    p.tracks[1].slots[1].as_mut().unwrap().program = Some(pc(9, None));
+    let s1 = p.scene_mut(1).unwrap();
+    s1.set_program(0, Some(pc(5, None))).unwrap();
+    s1.set_program(1, Some(pc(7, Some(2)))).unwrap();
+    s1.set_program(2, Some(pc(3, Some(1)))).unwrap();
+    let ev = |p: ClipProgram| Event::Program {
+        program: p.program,
+        bank: p.bank,
+    };
+    let programs = |r: &Run| -> Vec<(u64, u16, Event)> {
+        r.played
+            .iter()
+            .filter(|e| matches!(e.2, Event::Program { .. }))
+            .copied()
+            .collect()
+    };
+    let r = same_everywhere(&p, &row0(), &[(at(1500), Act::Scene(1))], at(3 * BAR));
+    let on_bar = |t| {
+        (
+            at(BAR),
+            t,
+            ev(pc([5, 9, 3][t as usize], [None, None, Some(1)][t as usize])),
+        )
+    };
+    assert_eq!(programs(&r), vec![on_bar(0), on_bar(1), on_bar(2)]);
+    // Before track 0's first note of the new clip, after its old notes.
+    let k = r.played.iter().position(|e| *e == on_bar(0)).unwrap();
+    assert!(r.played[k + 1..]
+        .iter()
+        .any(|e| e.0 == at(BAR) && matches!(e.2, Event::NoteOn { note: 11, .. })));
+    assert!(!r.played[k + 1..]
+        .iter()
+        .any(|e| e.1 == 0 && matches!(e.2, Event::NoteOff { .. }) && e.0 == at(BAR)));
+    // Stopped in bar 1 and started again: the same three, as it starts.
+    let acts = [
+        (at(1500), Act::Scene(1)),
+        (at(BAR + 200), Act::Transport(Command::Stop)),
+        (at(2 * BAR), Act::Transport(Command::Play)),
+    ];
+    let r = same_everywhere(&p, &row0(), &acts, at(3 * BAR));
+    let back: Vec<_> = programs(&r).into_iter().skip(3).collect();
+    let again = |t| (at(2 * BAR), t, on_bar(t).2);
+    assert_eq!(back, vec![again(0), again(1), again(2)]);
+    // A loop jump sends none: the transport loops bar 1 to 2.
+    let acts = [
+        (0, Act::Transport(Command::SetLoop(Some((BAR, 2 * BAR))))),
+        (at(1500), Act::Scene(1)),
+    ];
+    let r = same_everywhere(&p, &row0(), &acts, at(4 * BAR));
+    assert_eq!(programs(&r).len(), 3);
+    // Launched while stopped: they go out where the music starts.
+    let acts = [
+        (at(600), Act::Transport(Command::Stop)),
+        (at(BAR), Act::SceneNow(1)),
+        (at(2 * BAR), Act::Transport(Command::Play)),
+    ];
+    let r = same_everywhere(&p, &row0(), &acts, at(3 * BAR));
+    assert_eq!(programs(&r), vec![again(0), again(1), again(2)]);
 }
 
 #[test]

@@ -1,16 +1,17 @@
 # Scenes, follow actions and the scene morph (T9, T10)
 
-A scene is a row of the launch grid. Launching it plays every track's clip in that row from the next bar line, so a whole part of the song changes at once. A scene can also switch the track mutes on that bar line, and a follow action can chain scenes and clips into a song without an arrangement.
+A scene is a row of the launch grid. Launching it plays every track's clip in that row from the next bar line, so a whole part of the song changes at once. A scene can also switch the track mutes on that bar line, send outside gear a program change per track there (sequencer S5), and a follow action can chain scenes and clips into a song without an arrangement.
 
 The model is in `rust/mpfree-seq/src/scenes.rs`. `rust/mpfree-perform` carries it out on the control thread with the launches and cues the host already keeps (see [playback.md](playback.md#launching-on-the-bar-line-cues-t9)).
 
 ## The model (`mpfree-seq`)
 
 - **Scene `k` is row `k`** of every track's slots, so there are 16 (`SCENES = SLOTS`). `Project::scenes` holds what a row has besides its clips. A row the project keeps nothing for is a plain scene: launching it still plays its clips. `Project::scene_mut(row)` makes the plain rows up to it when a row gets a name, mutes or a follow.
-- **`Scene { name, mutes, follow, values }`**.
+- **`Scene { name, mutes, follow, values, programs }`**.
   - `mutes: Option<u128>`: bit `t` mutes track `t` while the scene plays. `None` leaves the mutes as they are.
   - `follow: Option<Follow>`: what happens after it has played some bars.
   - `values`: parameter values stored with the scene, for the scene morph (T10, below).
+  - `programs: Vec<TrackProgram>` (sequencer S5, the Elektron's program change per pattern): `TrackProgram { track, program: ClipProgram }`, at most one a track, kept in order of track (`Scene::set_program`, `Scene::program`). A track's gear gets it as the scene starts (below). `SceneSettings` carries them for the scene editor. Saved as a scene's `program <track> <program>[ bank <bank>]` lines, after its `value` lines; a track twice, past `MAX_TRACKS` or a value out of range refuses the part, and an older build skips the lines.
 - **`Clip::follow`**: a clip can have a follow action of its own. A one-shot clip (`Clip::once`, S4) stops its track at the end of its pass instead, and its follow waits ([make-perform.md](make-perform.md#one-shot-clips-as-built-the-eighth-part)).
 - **`Follow { bars, action, other, chance }`**: after `bars` bars (1 to 999, counted from where it started), `action` with a chance of `chance` %, and `other` the rest of the time. These are Ableton's A and B.
 - **`FollowAction`**: Stay, Again, Next, Previous, First, Last, Any, Other, Stop.
@@ -25,7 +26,8 @@ The model is in `rust/mpfree-seq/src/scenes.rs`. `rust/mpfree-perform` carries i
 - **While the transport rolls**, every track gets a cue for the next bar line: its clip in the row, or a stop when its cell is empty and it is playing something. They all start on the same bar line. A track with nothing playing or cued and an empty cell gets no cue.
 - **On the project's launch quantise** (S4). The "bar line" is the next line of `Project::launch` (one bar by default): `launch_scene` keeps it for each cue it makes (`Perform::cue_line`), and `dress` sets it on every new view (`PlayView::set_cue_line`), so a clip's own Launch can't pull one track of the scene off the others' line. A follow's cue lands on its point, a bar line, whatever Launch says (`Bars(1)`). A cue taken back or started forgets its line.
 - **Mutes switch on the same bar line.** A cue carries its track's mute (`PlayView::set_cue_mute`). The player switches the mute when the cue starts: a muted track's notes end on the bar line and nothing after it sounds. `Started::mute` reports it, and `Perform::started` makes it the track's `mute`. Each compile drops the cue mutes, so `Perform::dress` sets them again on every new view. A track with no cue takes its mute at once. It is silent, so that sounds the same. **With a solo** (S4's third part), the scene still sets the tracks' own mutes, and `TimeControl::view` makes each cue's mute solo-aware after `dress`: a track not soloed stays silent while any track is. A mute waiting in TRACK MUTE's queue lands on its own line; where it and a scene's cue switch a track, the later wins ([playback.md](playback.md)).
-- **While stopped**, it all happens at once: the row's clips become the launches, as if started on the bar line the position is in, and the mutes are set.
+- **Program changes go out on the same line** (S5). `launch_scene` gives every track the scene holds a program for a `SceneProgram { program, line, id }` (`Perform::program`), a new `id` for each launch, and `dress` sets it on every view (`PlayView::set_scene_program`). It is not tied to a cue: a track with no clip in the row and nothing playing gets it too, so gear that plays its own patterns (a drum machine on a MIDI Out track with no clips) switches with the scene. The player sends it once on the first line of `line` it plays (a follow's and the song list's land on the next bar line, as their cues do), unless the clip playing on the track then has a program change of its own: that one goes out instead, so the clip's wins. Once its line has passed, a stop or a locate sends it again where the music starts, as a clip's own is; a loop jump doesn't. The next launch replaces every track's (a track the new scene holds none for keeps what its gear has, and none is sent again), and Stop all and an uncue forget them ([playback.md](playback.md)).
+- **While stopped**, it all happens at once: the row's clips become the launches, as if started on the bar line the position is in, and the mutes are set. Its program changes have no line and go out where the music starts.
 - **Stop all** (`Perform::stop_all`) cues a stop on every track that plays or has a cue, and forgets the scene.
 
 ## Follow actions (`Perform::due`)
@@ -98,12 +100,14 @@ The project keeps the rows' values (`Project::scenes`), so a saved morph comes b
   - chances picking both ways;
   - Stop all;
   - a scene's cues taking the project's launch quantise, a follow's the bar, and a line kept when Launch changes (`scene_cues_take_the_projects_line_and_follows_the_bar`);
+  - a launch's program changes: on the launch line, with none while stopped, a new id each launch, a follow's on the next bar line, forgotten by an uncue and Stop all (`a_scenes_program_changes_go_with_its_launch`);
   - the song list's steps in order, then the stop or the first again (`the_song_list_plays_its_steps_in_order_then_stops`).
 - `mpfree-perform/tests/scenes.rs` plays scenes through the transport and the player at periods of 1, 64, 128, 1000 and 4096 frames. Every period size must give the same events. It checks that:
   - a scene's clips start together on the bar line and its mute silences a track from exactly that tick;
   - clip follow actions chain on their bar lines (Next after 1 bar, Next after 2, then First);
   - scene follow actions ping-pong between two rows and carry their mutes;
-  - Stop all stops every track on the bar line.
+  - Stop all stops every track on the bar line;
+  - a scene's program changes go out on its bar line, the clip's own where the clip starting there has one, and a track with no clip gets its own; after a stop they go out again as the music starts, a loop jump sends none, and a scene launched while stopped sends them as the music starts (`a_scenes_program_changes_go_out_on_its_bar_line`).
 - `mpfree-app`'s `a_scene_plays_its_row_with_its_mutes_and_follows_on` runs the same through `TimeHost` with the pads.
 - `mpfree-time-ui` tests cover the scene buttons, Stop all, and redrawing the grid when a scene is cued. They also cover the morph bar's chips, crossfader and buttons, and redrawing only the bar when the crossfader moves.
 - `mpfree-perform/tests/morph.rs` runs the real mod engine. It checks:

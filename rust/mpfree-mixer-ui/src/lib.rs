@@ -79,7 +79,7 @@ pub const MIXER_HINT_EFFECTS: &str = "Tap + FX: add an effect  ·  tap an effect
 /// The hint line on EQ.
 pub const MIXER_HINT_EQ: &str = "Tap a curve: its band on the Q-Links, again: open it  ·  drag a dot: move that band  ·  a strip's name: its Q-Links  ·  + EQ: add one  ·  TRACK MIX: back";
 /// The hint line while the I/O view shows.
-pub const MIXER_HINT_IO: &str = "Tap a row to select it  ·  tap an output to route it  ·  wheel: select  ·  - and +: step its output  ·  the I/O icon or TRACK MIX: back";
+pub const MIXER_HINT_IO: &str = "Tap a row to select it  ·  tap an output to route it  ·  wheel: select  ·  - and +: step its output  ·  TRACK MIX: back";
 
 /// Adds the mixer widget and its page. The app's `header` and `hint`
 /// widgets must be there already (the page uses them).

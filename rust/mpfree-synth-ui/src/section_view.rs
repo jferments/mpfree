@@ -84,6 +84,8 @@ pub struct SectionBox {
     pub note: String,
     /// `Tab(n)` for a tap on the name ("Open ›" shows).
     pub link: Option<usize>,
+    /// What the link says, where not "Open ›" (an action: "Capture ›").
+    pub link_text: Option<String>,
     /// The drawings, side by side in the section's well.
     pub cards: Vec<Card>,
     /// `Tab(n)` for a tap on box `k` of the drawings (counted across them).
@@ -104,6 +106,7 @@ impl SectionBox {
             job,
             note: String::new(),
             link: None,
+            link_text: None,
             cards: Vec::new(),
             node_links: Vec::new(),
             controls: Vec::new(),
@@ -1287,7 +1290,7 @@ fn paint_section(
             right,
             Align::Right,
             name_color,
-            "Open ›",
+            s.link_text.as_deref().unwrap_or("Open ›"),
         );
         right.w -= lw + 12;
     }

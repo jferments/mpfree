@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_grain::node::param;
 use mpfree_grain::*;
-use mpfree_node::{Ctx, Node, NodeEvent, Timed};
+use mpfree_node::{Ctx, Held, HeldStep, Node, NodeEvent, Timed};
 
 struct Counting;
 thread_local! {
@@ -85,6 +85,9 @@ fn grains_never_allocate() {
     node.prepare(rate, 128);
     node.set_param(param::DENSITY, 120.0);
     let (mut nl, mut nr) = (vec![0.0f32; 128], vec![0.0f32; 128]);
+    // A capture's buffer, made off the audio thread.
+    let mut held = Held::new(2, rate as usize * 9);
+    let mut captures = 0;
 
     watch(true);
     let mut t = 0u64;
@@ -123,6 +126,44 @@ fn grains_never_allocate() {
                     } else {
                         SprayShape::Even
                     },
+                    lfo: GrainLfo {
+                        shape: [LfoShape::Sine, LfoShape::Hold, LfoShape::Drift][k % 3],
+                        rate_hz: 0.5 + (k % 4) as f32 * 10.0,
+                        beats: k.is_multiple_of(5).then_some(0.25),
+                        target: [
+                            MotionTarget::Position,
+                            MotionTarget::Size,
+                            MotionTarget::Density,
+                            MotionTarget::Pitch,
+                            MotionTarget::Spray,
+                            MotionTarget::Cutoff,
+                            MotionTarget::Off,
+                        ][k % 7],
+                        depth: 1.0 - (k % 3) as f32,
+                    },
+                    env: GrainEnv {
+                        attack_ms: (k % 3) as f32 * 20.0,
+                        decay_ms: 50.0,
+                        sustain: 0.5,
+                        target: [
+                            MotionTarget::Size,
+                            MotionTarget::Density,
+                            MotionTarget::Cutoff,
+                            MotionTarget::Off,
+                        ][k % 4],
+                        depth: 0.8,
+                    },
+                    filter: GrainFilter {
+                        kind: [
+                            FilterKind::Off,
+                            FilterKind::Low,
+                            FilterKind::Band,
+                            FilterKind::High,
+                        ][k % 4],
+                        cutoff_hz: 200.0 * (1 + k % 6) as f32,
+                        resonance: (k % 3) as f32 * 0.5,
+                        spray: (k % 2) as f32,
+                    },
                 });
                 if k % 4 == 3 {
                     v.stop()
@@ -152,6 +193,15 @@ fn grains_never_allocate() {
             fx.set_mix(((period / 100) % 4) as f32 / 3.0);
         }
         fx.set_frozen(period % 300 > 150);
+        // Repeats of a few lengths, rolls and stops.
+        match period % 250 {
+            40 => fx.start_repeat(0.25),
+            90 => fx.start_repeat(0.125),
+            140 => fx.stop_repeat(),
+            200 => fx.start_repeat(2.0),
+            240 => fx.stop_repeat(),
+            _ => {}
+        }
         if period % 500 == 499 {
             fx.set_params(Params {
                 position: (period % 7) as f32 / 7.0,
@@ -187,6 +237,19 @@ fn grains_never_allocate() {
         };
         node.process(&Ctx::new(rate, t), events, &mut nl, &mut nr);
         node.set_param(param::SIZE, 20.0 + (period % 9) as f32 * 30.0);
+        node.set_param(param::REPEAT, ((period / 90) % 6) as f32);
+        node.set_param(param::FILTER, ((period / 70) % 4) as f32);
+        node.set_param(param::FILTER_SPRAY, ((period / 50) % 2) as f32 * 100.0);
+        // Captures of its memory, one after another.
+        match node.copy_held(&mut held, 4096) {
+            HeldStep::More => {}
+            HeldStep::Done => {
+                held.keep_values(&node);
+                held.clear();
+                captures += 1;
+            }
+            HeldStep::Nothing | HeldStep::Lost => held.clear(),
+        }
         if period % 700 == 699 {
             node.reset();
         }
@@ -198,6 +261,7 @@ fn grains_never_allocate() {
         0,
         "the grain engine allocated or freed"
     );
+    assert!(captures > 5, "the node's memory was captured: {captures}");
     assert!(
         budget.skipped > 0,
         "the budget was never full; the test is not busy enough"

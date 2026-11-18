@@ -53,8 +53,8 @@ use mpfree_play::{anchored, ClipDrop, Cue, Launch, SongChange, Take, Takes};
 use mpfree_seq::scenes::MAX_FOLLOW_BARS;
 use mpfree_seq::{
     Clip, ClipProgram, ClipSettings, Follow, FollowAction, LaunchGrid, Project, Quantise,
-    SceneSettings, Source, Speed, Transpose, LAUNCH_GRIDS, MAX_CLIP_TICKS, MAX_TRACKS,
-    MAX_TRANSPOSE, SLOTS,
+    SceneSettings, Source, Speed, TrackProgram, Transpose, LAUNCH_GRIDS, MAX_CLIP_TICKS,
+    MAX_TRACKS, MAX_TRANSPOSE, SLOTS,
 };
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
@@ -200,8 +200,15 @@ pub const RECORD_ROWS: [&str; 10] = [
 /// transpose), for the armed track.
 pub const TRANSPOSE_ROW: usize = 8;
 pub const FOLLOWS_ROW: usize = 9;
-/// The scene editor's rows, top to bottom.
-pub const SCENE_ROWS: [&str; 6] = ["Scene", "Follow", "After", "Chance", "Or", "Mutes"];
+/// The scene editor's rows, top to bottom. Program and Bank are the
+/// program change the scene sends the armed track's gear (sequencer S5);
+/// Sent to lists every track it sends one.
+pub const SCENE_ROWS: [&str; 9] = [
+    "Scene", "Follow", "After", "Chance", "Or", "Mutes", "Program", "Bank", "Sent to",
+];
+/// The scene editor's Program and Bank rows.
+pub const SCENE_PROGRAM: usize = 6;
+pub const SCENE_BANK: usize = 7;
 /// `TimeAction::SceneSettings`'s card row for a rename.
 pub const SCENE_NAME: u8 = SCENE_ROWS.len() as u8;
 /// The scene editor's buttons, under its rows: `Toggle(k)`.
@@ -1969,7 +1976,43 @@ pub fn scene_rows(st: &TimeState) -> Vec<OptionRow> {
                 .map_or_else(dash, |f| follow_name(f.other).to_string()),
         ),
         row(5, mutes_words(st, s.mutes)),
+        // The armed track's program change (as the Record tab's rows are
+        // the armed track's), shown 1 to 128 as on the gear, and its bank
+        // select.
+        row(
+            SCENE_PROGRAM,
+            st.armed.map_or_else(dash, |t| {
+                s.program(t)
+                    .map_or_else(|| "off".to_string(), |p| program_name(p.program))
+            }),
+        ),
+        row(
+            SCENE_BANK,
+            match st.armed.and_then(|t| s.program(t)) {
+                None => dash(),
+                Some(ClipProgram { bank: None, .. }) => "off".to_string(),
+                Some(ClipProgram { bank: Some(b), .. }) => bank_name(b),
+            },
+        ),
+        row(8, programs_words(st, s)),
     ]
+}
+
+/// A program change as the gear shows it: 1 to 128.
+pub fn program_name(program: u8) -> String {
+    (u16::from(program) + 1).to_string()
+}
+
+/// The tracks a scene sends a program change, as its Sent to row says
+/// them: "none", "Keys", "Keys, Bass", "Keys +2".
+fn programs_words(st: &TimeState, s: &SceneSettings) -> String {
+    let name = |p: &TrackProgram| st.track_name(p.track);
+    match s.programs.as_slice() {
+        [] => "none".to_string(),
+        [a] => name(a),
+        [a, b] => format!("{}, {}", name(a), name(b)),
+        [a, rest @ ..] => format!("{} +{}", name(a), rest.len()),
+    }
 }
 
 /// A scene's mutes as its Mutes row says them: "as they are" (it leaves
@@ -2170,8 +2213,103 @@ fn scene_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, St
             }
             (Some(_), true) => Err("Mutes now takes the tracks muted now".into()),
         },
+        SCENE_PROGRAM | SCENE_BANK => {
+            let t = st
+                .armed
+                .ok_or("Arm a track first: Program is the program change the scene sends it")?;
+            let now = s.program(t);
+            let to = if index == SCENE_BANK {
+                let p = now.ok_or("Set Program first: the bank goes with its program change")?;
+                Some(ClipProgram {
+                    bank: bank_next(p, delta, 1)?,
+                    ..p
+                })
+            } else {
+                program_next(now, delta)?
+            };
+            s.set_program(t, to);
+            set(s)
+        }
+        8 => Err(
+            "Arm a track and set Program: this row lists the tracks the scene sends a program change"
+                .into(),
+        ),
         _ => Err(String::new()),
     }
+}
+
+/// The scene editor's step with SHIFT held or not: with SHIFT, Bank steps
+/// a whole CC 0 (128), as on the clip card; the other rows step as
+/// without it.
+pub fn scene_action(
+    st: &TimeState,
+    index: usize,
+    delta: i32,
+    shift: bool,
+) -> Result<TimeAction, String> {
+    if !(shift && index == SCENE_BANK) {
+        return scene_step(st, index, delta);
+    }
+    let t = st
+        .armed
+        .ok_or("Arm a track first: Program is the program change the scene sends it")?;
+    let mut s = st.scene.clone();
+    let p = s
+        .program(t)
+        .ok_or("Set Program first: the bank goes with its program change")?;
+    s.set_program(
+        t,
+        Some(ClipProgram {
+            bank: bank_next(p, delta, 128)?,
+            ..p
+        }),
+    );
+    Ok(TimeAction::SceneSettings {
+        row: st.scene_focus,
+        card_row: SCENE_BANK as u8,
+        settings: s,
+    })
+}
+
+/// A step of a Program row: off, then 1 to 128 (the bank kept).
+fn program_next(now: Option<ClipProgram>, delta: i32) -> Result<Option<ClipProgram>, String> {
+    let k = now.map_or(0, |p| i32::from(p.program) + 1) + delta.signum();
+    match k {
+        ..0 => Err("Program is off already: no program change goes out".into()),
+        0 => Ok(None),
+        1..=128 => Ok(Some(ClipProgram {
+            program: (k - 1) as u8,
+            bank: now.and_then(|p| p.bank),
+        })),
+        _ => Err("Program is at its last, 128".into()),
+    }
+}
+
+/// A step of a Bank row by `by` (1, or 128 with SHIFT: a whole CC 0):
+/// off, then 0/0 up to 127/127.
+fn bank_next(p: ClipProgram, delta: i32, by: i32) -> Result<Option<u16>, String> {
+    // Off is one below 0/0.
+    let now = p.bank.map_or(-1, i32::from);
+    let max = i32::from(ClipProgram::MAX_BANK);
+    let next = if delta > 0 {
+        if now >= max {
+            return Err(format!(
+                "Bank is at its last, {}",
+                bank_name(ClipProgram::MAX_BANK)
+            ));
+        }
+        (now + by).min(max)
+    } else {
+        match now {
+            ..0 => {
+                return Err("Bank is off already: no bank select goes before the program".into())
+            }
+            // 0/0, then off.
+            0 => -1,
+            _ => (now - by).max(0),
+        }
+    };
+    Ok(u16::try_from(next).ok())
 }
 
 /// The clip settings card's rows, for the focused clip; none without one.
@@ -2262,10 +2400,8 @@ pub fn card_rows(length: Tick, s: ClipSettings) -> Vec<OptionRow> {
         // starts (S5): shown 1 to 128, as on the gear.
         row(
             9,
-            s.program.map_or_else(
-                || "off".to_string(),
-                |p| (u16::from(p.program) + 1).to_string(),
-            ),
+            s.program
+                .map_or_else(|| "off".to_string(), |p| program_name(p.program)),
         ),
         // Its bank select as the two numbers sent, CC 0 / CC 32.
         row(
@@ -2627,29 +2763,8 @@ fn bank_step(st: &TimeState, delta: i32, by: i32) -> Result<TimeAction, String> 
     let p = s
         .program
         .ok_or("Set Program first: the bank goes with its program change")?;
-    // Off is one below 0/0.
-    let now = p.bank.map_or(-1, i32::from);
-    let max = i32::from(ClipProgram::MAX_BANK);
-    let next = if delta > 0 {
-        if now >= max {
-            return Err(format!(
-                "Bank is at its last, {}",
-                bank_name(ClipProgram::MAX_BANK)
-            ));
-        }
-        (now + by).min(max)
-    } else {
-        match now {
-            ..0 => {
-                return Err("Bank is off already: no bank select goes before the program".into())
-            }
-            // 0/0, then off.
-            0 => -1,
-            _ => (now - by).max(0),
-        }
-    };
     s.program = Some(ClipProgram {
-        bank: u16::try_from(next).ok(),
+        bank: bank_next(p, delta, by)?,
         ..p
     });
     Ok(TimeAction::ClipSettings {
@@ -5978,7 +6093,10 @@ mod tests {
                 "After —",
                 "Chance —",
                 "Or —",
-                "Mutes as they are"
+                "Mutes as they are",
+                "Program off",
+                "Bank —",
+                "Sent to none"
             ]
         );
         let step = |st: &TimeState, row: usize, delta: i32| {
@@ -6048,6 +6166,101 @@ mod tests {
         assert!(page.page_tracks(&ev(SCENE_CARD, EventKind::Tab(0)), &st));
         page.update(&mut ui, &st);
         assert_eq!(ui.layout_of(CLIPS_PAGE), Some(CLIPS_LAYOUT));
+    }
+
+    /// The scene editor's Program and Bank (S5): the program change the
+    /// scene sends the armed track, off then 1 to 128, its bank with it
+    /// (SHIFT steps a whole CC 0); Sent to lists every track's.
+    #[test]
+    fn the_scene_tab_sets_the_armed_tracks_program_change() {
+        let mut st = state();
+        st.scene_focus = 1;
+        let shown = |st: &TimeState| -> Vec<String> {
+            scene_rows(st)[SCENE_PROGRAM..]
+                .iter()
+                .map(|r| format!("{} {}", r.name, r.value))
+                .collect()
+        };
+        let step = |st: &TimeState, row: usize, delta: i32| {
+            action(&ev(SCENE_CARD, EventKind::Step { index: row, delta }), st)
+        };
+        let why = |st: &TimeState, row: usize, delta: i32| {
+            why_not(&ev(SCENE_CARD, EventKind::Step { index: row, delta }), st)
+        };
+        let set = |a: Option<TimeAction>| match a {
+            Some(TimeAction::SceneSettings {
+                row: 1,
+                card_row,
+                settings,
+            }) => {
+                assert!(
+                    usize::from(card_row) == SCENE_PROGRAM || usize::from(card_row) == SCENE_BANK
+                );
+                settings
+            }
+            other => panic!("{other:?}"),
+        };
+        // Off, and no bank before a program.
+        assert_eq!(step(&st, SCENE_PROGRAM, -1), None);
+        assert!(why(&st, SCENE_PROGRAM, -1).unwrap().contains("off already"));
+        assert_eq!(step(&st, SCENE_BANK, 1), None);
+        assert!(why(&st, SCENE_BANK, 1)
+            .unwrap()
+            .starts_with("Set Program first"));
+        // + : program 1, then 2.
+        st.scene = set(step(&st, SCENE_PROGRAM, 1));
+        st.scene = set(step(&st, SCENE_PROGRAM, 1));
+        assert_eq!(
+            st.scene.program(2),
+            Some(ClipProgram {
+                program: 1,
+                bank: None
+            })
+        );
+        assert_eq!(shown(&st), ["Program 2", "Bank off", "Sent to Stab"]);
+        // Bank 0/0, SHIFT a whole CC 0 on, then back to off.
+        st.scene = set(step(&st, SCENE_BANK, 1));
+        assert_eq!(shown(&st)[1], "Bank 0/0");
+        st.scene = set(scene_action(&st, SCENE_BANK, 1, true).ok());
+        assert_eq!(shown(&st)[1], "Bank 1/0");
+        st.scene = set(scene_action(&st, SCENE_BANK, -1, true).ok());
+        st.scene = set(step(&st, SCENE_BANK, -1));
+        assert_eq!(shown(&st)[1], "Bank off");
+        // Another track armed: its own, and Sent to lists them all.
+        st.armed = Some(0);
+        assert_eq!(shown(&st)[..2], ["Program off", "Bank —"]);
+        st.scene = set(step(&st, SCENE_PROGRAM, 1));
+        assert_eq!(
+            shown(&st)[..3],
+            ["Program 1", "Bank off", "Sent to Drums, Stab"]
+        );
+        st.scene.set_program(
+            1,
+            Some(ClipProgram {
+                program: 127,
+                bank: None,
+            }),
+        );
+        assert_eq!(shown(&st)[2], "Sent to Drums +2");
+        st.armed = Some(1);
+        assert_eq!(step(&st, SCENE_PROGRAM, 1), None);
+        assert_eq!(
+            why(&st, SCENE_PROGRAM, 1).as_deref(),
+            Some("Program is at its last, 128")
+        );
+        // Off again: – from 1.
+        st.armed = Some(0);
+        st.scene = set(step(&st, SCENE_PROGRAM, -1));
+        assert_eq!(st.scene.program(0), None);
+        // Nothing armed: nothing to set, and it says so.
+        st.armed = None;
+        assert_eq!(shown(&st)[..2], ["Program —", "Bank —"]);
+        assert!(why(&st, SCENE_PROGRAM, 1)
+            .unwrap()
+            .starts_with("Arm a track first"));
+        assert!(why(&st, 8, 1)
+            .unwrap()
+            .starts_with("Arm a track and set Program"));
     }
 
     /// Save state and Reload on the clip card, Reload clip on the morph
