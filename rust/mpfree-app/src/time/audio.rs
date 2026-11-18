@@ -663,6 +663,9 @@ impl TimeAudio {
                         self.locks_dropped += 1;
                     }
                 }
+                // A clip's program change goes to outside gear alone
+                // (`Pads::out`, S5): the pads have no programs.
+                Event::Program { .. } => {}
             }
         }
         self.recorder.process(&self.view, &self.block);

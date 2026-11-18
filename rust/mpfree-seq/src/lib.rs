@@ -361,6 +361,29 @@ impl Quantise {
     }
 }
 
+/// The program change a clip sends its track's outside gear when it
+/// starts (sequencer S5, the MPC's program change per sequence): on the
+/// tick it starts, after the clip before it ends its notes and before its
+/// own first note. `program` is 0 to 127 (shown 1 to 128); `bank`, when
+/// set, goes first as bank select (CC 0 its top seven bits, CC 32 the
+/// rest), 0 to [`ClipProgram::MAX_BANK`] (shown 1 up). Only a track on
+/// MIDI Out sends it; on the pads it does nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ClipProgram {
+    pub program: u8,
+    pub bank: Option<u16>,
+}
+
+impl ClipProgram {
+    /// The last bank select, CC 0 and CC 32 both at 127.
+    pub const MAX_BANK: u16 = 16383;
+
+    /// In range: a program of 0 to 127, a bank of 0 to [`Self::MAX_BANK`].
+    pub fn ok(self) -> bool {
+        self.program < 128 && self.bank.is_none_or(|b| b <= Self::MAX_BANK)
+    }
+}
+
 /// When a launched clip starts, and a stop or a mute lands (launch
 /// quantise, sequencer S4): at once, on the next line of a note grid, or
 /// on the next line of a number of bars counted from the song's start.
@@ -528,6 +551,9 @@ pub struct Clip {
     /// One-shot (sequencer S4): its track stops at the end of the pass it
     /// started in, in place of looping; a follow action of its own waits.
     pub once: bool,
+    /// The program change it sends when it starts (sequencer S5); None
+    /// sends none.
+    pub program: Option<ClipProgram>,
 }
 
 /// A clip's settings that are not its notes: how fast it plays, its own
@@ -545,6 +571,8 @@ pub struct ClipSettings {
     pub launch: Option<LaunchGrid>,
     pub legato: bool,
     pub once: bool,
+    /// Its program change (S5).
+    pub program: Option<ClipProgram>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -586,6 +614,8 @@ pub enum ModelError {
     NoRoom,
     /// A launch quantise out of range ([`LaunchGrid::ok`]).
     BadLaunch,
+    /// A clip's program or bank is out of range ([`ClipProgram::ok`]).
+    BadProgram,
     /// A loop cell names no loop or holds notes, or a clip is on a track
     /// of the other kind (a loop cell on a note track, a note clip on a
     /// Loop track).
@@ -604,13 +634,14 @@ impl Clip {
             launch: self.launch,
             legato: self.legato,
             once: self.once,
+            program: self.program,
         }
     }
 
-    /// Change its speed, swing, quantise, follow action, launch quantise
-    /// and legato, all or none: `BadSpeed`, `BadSwing`, `BadQuantise`,
-    /// `BadLaunch` or the follow action's own refusal leaves the clip as it
-    /// was.
+    /// Change its speed, swing, quantise, follow action, launch quantise,
+    /// legato and program, all or none: `BadSpeed`, `BadSwing`,
+    /// `BadQuantise`, `BadLaunch`, `BadProgram` or the follow action's own
+    /// refusal leaves the clip as it was.
     pub fn set_settings(&mut self, s: ClipSettings) -> Result<(), ModelError> {
         if Speed::new(s.speed.num, s.speed.den).is_none() {
             return Err(ModelError::BadSpeed);
@@ -631,6 +662,9 @@ impl Clip {
         if s.launch.is_some_and(|g| !g.ok()) {
             return Err(ModelError::BadLaunch);
         }
+        if s.program.is_some_and(|p| !p.ok()) {
+            return Err(ModelError::BadProgram);
+        }
         self.speed = s.speed;
         self.swing = s.swing;
         self.quantise = s.quantise;
@@ -638,6 +672,7 @@ impl Clip {
         self.launch = s.launch;
         self.legato = s.legato;
         self.once = s.once;
+        self.program = s.program;
         Ok(())
     }
 
@@ -658,6 +693,7 @@ impl Clip {
             launch: None,
             legato: false,
             once: false,
+            program: None,
         }
     }
 
@@ -782,6 +818,9 @@ impl Clip {
         }
         if self.launch.is_some_and(|g| !g.ok()) {
             return Err(ModelError::BadLaunch);
+        }
+        if self.program.is_some_and(|p| !p.ok()) {
+            return Err(ModelError::BadProgram);
         }
         for (i, n) in self.notes.iter().enumerate() {
             if !self.note_ok(n) {
@@ -1411,6 +1450,38 @@ mod tests {
         let mut p = Project::new();
         p.launch = LaunchGrid::Bars(99);
         assert_eq!(p.check(), Err(ModelError::BadLaunch));
+    }
+
+    #[test]
+    fn a_clips_program_is_checked_with_its_settings() {
+        let ok = ClipProgram {
+            program: 127,
+            bank: Some(ClipProgram::MAX_BANK),
+        };
+        assert!(ok.ok());
+        let mut c = Clip::new("c", 960);
+        let mut s = c.settings();
+        for bad in [
+            ClipProgram {
+                program: 128,
+                bank: None,
+            },
+            ClipProgram {
+                program: 0,
+                bank: Some(ClipProgram::MAX_BANK + 1),
+            },
+        ] {
+            assert!(!bad.ok(), "{bad:?}");
+            s.program = Some(bad);
+            assert_eq!(c.set_settings(s), Err(ModelError::BadProgram));
+            assert_eq!(c.program, None);
+            c.program = Some(bad);
+            assert_eq!(c.check(), Err(ModelError::BadProgram));
+            c.program = None;
+        }
+        s.program = Some(ok);
+        assert_eq!(c.set_settings(s), Ok(()));
+        assert_eq!(c.settings().program, Some(ok));
     }
 
     #[test]

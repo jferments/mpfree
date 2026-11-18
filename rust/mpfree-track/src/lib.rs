@@ -684,8 +684,12 @@ impl Sink for TrackHost {
             // Parameter locks and moves go to the mod resolver
             // (`mpfree-mod`), which knows each parameter's own value to go
             // back to on Unlock and sends the instruments their values; not
-            // straight to a node.
-            Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => return,
+            // straight to a node. A clip's program change is for outside
+            // gear.
+            Event::Lock { .. }
+            | Event::Lane { .. }
+            | Event::Unlock { .. }
+            | Event::Program { .. } => return,
         };
         if out.dest == ALL {
             for slot in 0..self.slots.len() {

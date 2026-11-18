@@ -290,7 +290,11 @@ impl CvOut {
                 self.chords.clear();
                 engine.release_all(o.offset, &mut |c| changes.push(c));
             }
-            Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => {}
+            // CV has no programs.
+            Event::Lock { .. }
+            | Event::Lane { .. }
+            | Event::Unlock { .. }
+            | Event::Program { .. } => {}
             _ => {
                 let t = usize::from(o.track);
                 if t >= MAX_TRACKS {

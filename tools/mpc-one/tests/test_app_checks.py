@@ -341,6 +341,17 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(got["thru sent them out of MIDI OUT"])
         self.assertTrue(got["notes came in"])
 
+    def test_clip_program_needs_the_row_the_program_change_out_and_sending_off(self):
+        """clip-program passes on Prefs' switch on, the clip card's Program 5, the program change out of MIDI OUT
+        (the writer's line) and the switch off again; without the program change it fails."""
+        row = "time: clip: Clip 1 \u00b7 Program 5 (UNDO takes it back)"
+        out = "+5.120 s MIDI Out: C0 04 = program 5, ch 1"
+        on, off = "MIDI and CV out: on (the MIDI Out jack and the CV jacks send)", "MIDI and CV out: off (nothing is sent)"
+        self.assertTrue(all(ok for ok, _ in self.judge("clip-program", checks.Window(lines(on, row, out, off)))))
+        got = dict((what, ok) for ok, what in self.judge("clip-program", checks.Window(lines(on, row, off))))
+        self.assertFalse(got["the program change went out of MIDI OUT"])
+        self.assertTrue(got["the clip's Program was set to 5"])
+
     def test_first_start_reads_the_setup_since_power_on(self):
         start = [(6.0, "first start: setup, try 1 of 3"),
                  (6.1, "first start: asked for the backup (/run/mpfree-app/setup-backup.request)"),
