@@ -16,6 +16,12 @@
 //!   Pad 9 of Tune says "as recorded".
 //! - **The kinds** (Velocity, Tune, Cutoff, Decay, Start) in a column
 //!   beside the grid, each with its range; a tap or the wheel picks one.
+//! - **Transpose** (sequencer S4, live transpose; Jay's card, 17 Nov:
+//!   "16 Levels gets a Transpose kind"), the last kind: the pads shift the
+//!   armed track and the tracks that follow it from -8 to +7 semitones,
+//!   pad 9 as written, or as many notes of the key while the pads are In
+//!   key. It is the app's, not the kit's: the heading names the track,
+//!   the cell it is on is lit, and Pick pad is faint ([`TransposeView`]).
 //!
 //! The panel only shows a [`LevelsModel`] and gathers [`LevelsAction`]s;
 //! the app changes the kit (`PadsPlay::Levels`) and hands the model back.
@@ -42,6 +48,74 @@ pub struct LevelsModel {
     /// The kit's pad colour, as the controller takes it (0 to 63 a
     /// channel): the cells' colour.
     pub colour: [u8; 3],
+    /// The Transpose kind is picked: what it moves (`by` is then left as
+    /// it was, the kind the kit's levels go back to).
+    pub transpose: Option<TransposeView>,
+}
+
+/// What the Transpose kind shows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TransposeView {
+    /// The armed track ("Bass"); empty with none armed.
+    pub track: String,
+    /// The tracks that follow it.
+    pub with: Vec<String>,
+    /// It plays notes, so the pads move it (a kit's notes are its pads).
+    pub melodic: bool,
+    /// Where it is now, in semitones or notes of the key.
+    pub by: i8,
+    /// The steps are notes of this key ("D minor"); None, semitones.
+    pub key: Option<String>,
+}
+
+impl TransposeView {
+    /// The pad whose step it is on, if one is (-8 to +7).
+    pub fn pad(&self) -> Option<usize> {
+        let k = i32::from(self.by) + 8;
+        (0..16).contains(&k).then_some(k as usize)
+    }
+}
+
+/// The kinds the column lists: the kit's levels, then Transpose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Level(Levels),
+    Transpose,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 6] = [
+        Kind::Level(Levels::Velocity),
+        Kind::Level(Levels::Tune),
+        Kind::Level(Levels::Cutoff),
+        Kind::Level(Levels::Decay),
+        Kind::Level(Levels::Start),
+        Kind::Transpose,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Kind::Level(l) => l.label(),
+            Kind::Transpose => "Transpose",
+        }
+    }
+
+    fn range(self) -> String {
+        match self {
+            Kind::Level(l) => range_text(l),
+            Kind::Transpose => "-8 to +7".to_string(),
+        }
+    }
+}
+
+/// Pad `k`'s step of Transpose: "-8 st" to "+7 st", or in key "-8" to
+/// "+7" (notes of the key); pad 9 "0".
+pub fn transpose_text(k: usize, in_key: bool) -> String {
+    match (Levels::semitones(k), in_key) {
+        (0, _) => "0".to_string(),
+        (s, false) => format!("{s:+} st"),
+        (s, true) => format!("{s:+}"),
+    }
 }
 
 impl Default for LevelsModel {
@@ -53,6 +127,18 @@ impl Default for LevelsModel {
             picking: false,
             lit: None,
             colour: [0x3F, 0x22, 0x00],
+            transpose: None,
+        }
+    }
+}
+
+impl LevelsModel {
+    /// The kind picked: Transpose, or the kit's levels.
+    pub fn kind(&self) -> Kind {
+        if self.transpose.is_some() {
+            Kind::Transpose
+        } else {
+            Kind::Level(self.by)
         }
     }
 }
@@ -62,6 +148,8 @@ impl Default for LevelsModel {
 pub enum LevelsAction {
     /// The levels step through this instead.
     By(Levels),
+    /// The pads transpose (sequencer S4).
+    Transpose,
     /// The next hit picks the pad the levels play (again: called off).
     PickPad,
     /// The panel goes; 16 Levels stays on.
@@ -125,7 +213,7 @@ struct Parts {
     buttons: [Rect; 3],
     cells: [Rect; 16],
     kinds_panel: Rect,
-    kinds: [Rect; 5],
+    kinds: [Rect; 6],
 }
 
 fn parts(r: Rect) -> Parts {
@@ -160,7 +248,7 @@ fn parts(r: Rect) -> Parts {
         (body.w - grid_w - GAP * 2).max(0),
         body.h,
     );
-    let mut kinds = [Rect::default(); 5];
+    let mut kinds = [Rect::default(); 6];
     for (i, k) in kinds.iter_mut().enumerate() {
         *k = Rect::new(
             kinds_panel.x + 12,
@@ -198,17 +286,17 @@ impl LevelsPanel {
         parts(r).buttons[i.min(2)]
     }
 
-    /// The row of kind `by`.
-    pub fn kind_rect(r: Rect, by: Levels) -> Rect {
-        let i = Levels::ALL.iter().position(|l| *l == by).unwrap_or(0);
+    /// The row of kind `kind`.
+    pub fn kind_rect(r: Rect, kind: Kind) -> Rect {
+        let i = Kind::ALL.iter().position(|k| *k == kind).unwrap_or(0);
         parts(r).kinds[i]
     }
 
     /// The wheel: the next (`delta` > 0) or previous kind, without wrapping.
-    pub fn wheel(by: Levels, delta: i32) -> Levels {
-        let i = Levels::ALL.iter().position(|l| *l == by).unwrap_or(0) as i32;
-        let n = Levels::ALL.len() as i32;
-        Levels::ALL[(i + delta.signum()).clamp(0, n - 1) as usize]
+    pub fn wheel(kind: Kind, delta: i32) -> Kind {
+        let i = Kind::ALL.iter().position(|k| *k == kind).unwrap_or(0) as i32;
+        let n = Kind::ALL.len() as i32;
+        Kind::ALL[(i + delta.signum()).clamp(0, n - 1) as usize]
     }
 }
 
@@ -230,27 +318,29 @@ impl Widget for LevelsPanel {
             t.text_dim,
             "16 LEVELS",
         );
-        let of = if m.picking {
-            "Hit the pad the levels play".to_string()
-        } else if m.pad_name.is_empty() {
-            format!("of pad {}", m.pad_label)
-        } else {
-            format!("of pad {} · {}", m.pad_label, m.pad_name)
+        let (of, of_color) = match &m.transpose {
+            Some(v) => transpose_heading(v, t.text, t.text_dim),
+            None if m.picking => ("Hit the pad the levels play".to_string(), t.accent),
+            None if m.pad_name.is_empty() => (format!("of pad {}", m.pad_label), t.text),
+            None => (format!("of pad {} · {}", m.pad_label, m.pad_name), t.text),
         };
         cx.text(
             FontId::Bold,
             t.size_body + 2.0,
             rest,
             Align::Left,
-            if m.picking { t.accent } else { t.text },
+            of_color,
             &of,
         );
         for (i, (b, label)) in p.buttons.iter().zip(BUTTONS).enumerate() {
             let armed = i == 0 && m.picking;
+            // Transpose has no pad to pick.
+            let faint = i == 0 && m.transpose.is_some();
             cx.canvas
                 .fill_round_rect(*b, 8, if armed { t.accent } else { t.raised });
             let color = match i {
                 _ if armed => t.on_accent,
+                _ if faint => t.text_dim.mix(t.raised, 0.5),
                 2 => t.bad,
                 _ => t.text,
             };
@@ -260,11 +350,16 @@ impl Widget for LevelsPanel {
         let pad = Color::from_pad(m.colour);
         let rest_fill = t.raised.mix(pad, 0.45);
         let hit_fill = Color::from_pad([63, 63, 63]).mix(pad, 0.85);
+        let at = m.transpose.as_ref().and_then(TransposeView::pad);
         for (k, c) in p.cells.iter().enumerate() {
             if c.w <= 0 {
                 continue;
             }
-            let lit = m.lit == Some(k);
+            // Transpose lights the step it is on; the levels, the pad hit.
+            let lit = match &m.transpose {
+                Some(_) => at == Some(k),
+                None => m.lit == Some(k),
+            };
             let (fill, fg, sub) = if lit {
                 (hit_fill, t.bg, t.bg.mix(hit_fill, 0.3))
             } else {
@@ -281,7 +376,12 @@ impl Widget for LevelsPanel {
                 sub,
                 &format!("PAD {}", k + 1),
             );
-            if m.by == Levels::Tune && Levels::semitones(k) == 0 {
+            let home = match m.kind() {
+                Kind::Level(Levels::Tune) => Some("as recorded"),
+                Kind::Transpose => Some("as written"),
+                Kind::Level(_) => None,
+            };
+            if let Some(home) = home.filter(|_| Levels::semitones(k) == 0) {
                 let (note, _) = rest.take_top(16);
                 cx.text(
                     FontId::Sans,
@@ -289,16 +389,20 @@ impl Widget for LevelsPanel {
                     note,
                     Align::Left,
                     sub,
-                    "as recorded",
+                    home,
                 );
             }
+            let value = match &m.transpose {
+                Some(v) => transpose_text(k, v.key.is_some()),
+                None => step_text(m.by, k),
+            };
             cx.text(
                 FontId::Bold,
                 t.size_title,
                 Rect::new(c.x, c.y + c.h / 2 - 16, c.w, 32),
                 Align::Center,
                 fg,
-                &step_text(m.by, k),
+                &value,
             );
             // The step's bar.
             let bar = Rect::new(c.x + 12, c.bottom() - 18, (c.w - 24).max(0), 6);
@@ -327,8 +431,9 @@ impl Widget for LevelsPanel {
                 t.text_dim,
                 "LEVELS CHANGE · WHEEL",
             );
-            for (row, by) in p.kinds.iter().zip(Levels::ALL) {
-                let sel = by == m.by;
+            let picked = m.kind();
+            for (row, by) in p.kinds.iter().zip(Kind::ALL) {
+                let sel = by == picked;
                 if sel {
                     cx.canvas.fill_round_rect(*row, 8, t.raised);
                     cx.canvas.fill_rect(
@@ -351,7 +456,7 @@ impl Widget for LevelsPanel {
                     text,
                     Align::Right,
                     t.text_dim,
-                    &range_text(by),
+                    &by.range(),
                 );
             }
         }
@@ -360,16 +465,20 @@ impl Widget for LevelsPanel {
     /// Pick pad, Close and Off, then the kinds (the one picked is lit).
     fn targets(&self, r: Rect) -> Vec<Target> {
         let p = parts(r);
+        let transposing = self.model.transpose.is_some();
         let mut v: Vec<Target> = p
             .buttons
             .iter()
             .zip(BUTTONS)
             .enumerate()
-            .map(|(i, (b, label))| Target::tap("button", i, label, *b))
+            .map(|(i, (b, label))| {
+                Target::tap("button", i, label, *b).disabled_if(i == 0 && transposing)
+            })
             .collect();
         if p.kinds_panel.w > 0 {
-            for (i, (row, by)) in p.kinds.iter().zip(Levels::ALL).enumerate() {
-                v.push(Target::tap("kind", i, by.label(), *row).disabled_if(by == self.model.by));
+            let picked = self.model.kind();
+            for (i, (row, by)) in p.kinds.iter().zip(Kind::ALL).enumerate() {
+                v.push(Target::tap("kind", i, by.label(), *row).disabled_if(by == picked));
             }
         }
         v
@@ -388,12 +497,40 @@ impl Widget for LevelsPanel {
             ][i],
             None => {
                 let i = p.kinds.iter().position(|k| k.contains(x, y))?;
-                LevelsAction::By(Levels::ALL[i])
+                match Kind::ALL[i] {
+                    Kind::Level(l) => LevelsAction::By(l),
+                    Kind::Transpose => LevelsAction::Transpose,
+                }
             }
         };
         self.actions.push(action);
         Some(EventKind::Select(self.actions.len() - 1))
     }
+}
+
+/// Transpose's heading: the track and where it is ("Bass, with Keys · +5
+/// st"), or why the pads can't move it (dim).
+fn transpose_heading(v: &TransposeView, text: Color, dim: Color) -> (String, Color) {
+    if v.track.is_empty() {
+        return ("Arm the track to transpose".to_string(), dim);
+    }
+    if !v.melodic {
+        return (
+            format!("{} plays a kit: arm a track that plays notes", v.track),
+            dim,
+        );
+    }
+    let with = if v.with.is_empty() {
+        String::new()
+    } else {
+        format!(", with {}", v.with.join(", "))
+    };
+    let at = match (v.by, &v.key) {
+        (0, _) => "as written".to_string(),
+        (n, None) => format!("{n:+} st"),
+        (n, Some(k)) => format!("{n:+} in {k}"),
+    };
+    (format!("{}{with} · {at}", v.track), text)
 }
 
 #[cfg(test)]
@@ -431,9 +568,9 @@ mod tests {
         assert!(c13.y < c1.y);
         assert!(c1.bottom() <= R.bottom());
         // The kinds sit right of the grid.
-        let kind = LevelsPanel::kind_rect(R, Levels::Velocity);
+        let kind = LevelsPanel::kind_rect(R, Kind::Level(Levels::Velocity));
         assert!(kind.x > c4.right());
-        assert!(LevelsPanel::kind_rect(R, Levels::Start).bottom() <= R.bottom());
+        assert!(LevelsPanel::kind_rect(R, Kind::Transpose).bottom() <= R.bottom());
     }
 
     #[test]
@@ -441,7 +578,11 @@ mod tests {
         let mut p = LevelsPanel::new();
         let tap =
             |p: &mut LevelsPanel, r: Rect| p.touch(1, Touch::Down, r.x + r.w / 2, r.y + r.h / 2, R);
-        assert!(tap(&mut p, LevelsPanel::kind_rect(R, Levels::Decay)).is_some());
+        assert!(tap(
+            &mut p,
+            LevelsPanel::kind_rect(R, Kind::Level(Levels::Decay))
+        )
+        .is_some());
         assert!(tap(&mut p, LevelsPanel::button_rect(R, 0)).is_some());
         assert!(tap(&mut p, LevelsPanel::button_rect(R, 1)).is_some());
         assert!(tap(&mut p, LevelsPanel::button_rect(R, 2)).is_some());
@@ -457,12 +598,71 @@ mod tests {
             ]
         );
         assert!(p.take_actions().is_empty());
+        // Transpose, the last kind.
+        assert!(tap(&mut p, LevelsPanel::kind_rect(R, Kind::Transpose)).is_some());
+        assert_eq!(p.take_actions(), vec![LevelsAction::Transpose]);
+    }
+
+    /// Transpose (sequencer S4): the pads' steps, the heading, the step it
+    /// is on lit and Pick pad faint.
+    #[test]
+    fn transpose_shows_the_track_and_the_step_it_is_on() {
+        assert_eq!(transpose_text(0, false), "-8 st");
+        assert_eq!(transpose_text(8, false), "0");
+        assert_eq!(transpose_text(15, false), "+7 st");
+        assert_eq!(transpose_text(13, true), "+5");
+        let mut v = TransposeView {
+            track: "Bass".into(),
+            with: vec!["Keys".into()],
+            melodic: true,
+            by: 5,
+            key: None,
+        };
+        assert_eq!(v.pad(), Some(13));
+        let (dim, text) = (Color::from_pad([1, 1, 1]), Color::from_pad([63, 63, 63]));
+        assert_eq!(
+            transpose_heading(&v, text, dim).0,
+            "Bass, with Keys · +5 st"
+        );
+        v.key = Some("D minor".into());
+        v.by = -3;
+        assert_eq!(
+            transpose_heading(&v, text, dim).0,
+            "Bass, with Keys · -3 in D minor"
+        );
+        v.by = 12;
+        assert_eq!(v.pad(), None, "past the pads: none lit");
+        v.melodic = false;
+        assert_eq!(
+            transpose_heading(&v, text, dim),
+            (
+                "Bass plays a kit: arm a track that plays notes".to_string(),
+                dim
+            )
+        );
+        let mut p = LevelsPanel::new();
+        p.model.transpose = Some(TransposeView {
+            track: "Bass".into(),
+            melodic: true,
+            ..TransposeView::default()
+        });
+        assert_eq!(p.model.kind(), Kind::Transpose);
+        let t = p.targets(R);
+        assert!(!t[0].enabled, "Pick pad is faint");
+        assert!(t
+            .iter()
+            .any(|t| t.id == "kind" && t.index == 5 && !t.enabled));
     }
 
     #[test]
     fn the_wheel_steps_the_kinds_without_wrapping() {
-        assert_eq!(LevelsPanel::wheel(Levels::Velocity, 1), Levels::Tune);
-        assert_eq!(LevelsPanel::wheel(Levels::Velocity, -1), Levels::Velocity);
-        assert_eq!(LevelsPanel::wheel(Levels::Start, 3), Levels::Start);
+        let k = Kind::Level;
+        assert_eq!(LevelsPanel::wheel(k(Levels::Velocity), 1), k(Levels::Tune));
+        assert_eq!(
+            LevelsPanel::wheel(k(Levels::Velocity), -1),
+            k(Levels::Velocity)
+        );
+        assert_eq!(LevelsPanel::wheel(k(Levels::Start), 3), Kind::Transpose);
+        assert_eq!(LevelsPanel::wheel(Kind::Transpose, 1), Kind::Transpose);
     }
 }

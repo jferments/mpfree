@@ -522,6 +522,18 @@ impl TimeAudio {
         })
     }
 
+    /// Each track's live transpose (sequencer S4), as the control half
+    /// last sent it; as written past the last track.
+    pub fn transposes(&self) -> [mpfree_seq::Transpose; mpfree_seq::MAX_TRACKS] {
+        std::array::from_fn(|t| {
+            if t < self.tracks.n {
+                self.tracks.set[t].transpose
+            } else {
+                mpfree_seq::Transpose::NONE
+            }
+        })
+    }
+
     /// The per-track arps take each track's switch, destination and MIDI
     /// effects, and a chain to run the effects in once the control half
     /// has sent one.

@@ -1741,6 +1741,61 @@ impl TimeControl {
                     None => format!("record quantise: {name} records the notes as played"),
                 })
             }
+            // Live transpose (S4): the track and every one that follows
+            // move; the audio half shifts their notes from the next one on.
+            TimeAction::Transpose { track, to } => {
+                if !to.ok() {
+                    return Err(format!(
+                        "transpose: {} is past {} either way",
+                        to.by,
+                        mpfree_seq::MAX_TRANSPOSE
+                    ));
+                }
+                if track >= self.project.tracks.len() {
+                    return Err(format!("transpose: no track {}", track + 1));
+                }
+                let mut with = Vec::new();
+                for (i, t) in self.project.tracks.iter_mut().enumerate() {
+                    if i != track && !t.follows {
+                        continue;
+                    }
+                    if i != track {
+                        with.push(t.name.clone());
+                    }
+                    if t.transpose != to {
+                        t.transpose = to;
+                        self.changed = true;
+                    }
+                }
+                self.sync_tracks();
+                let name = &self.project.tracks[track].name;
+                let with = if with.is_empty() {
+                    String::new()
+                } else {
+                    format!(", with {}", with.join(", "))
+                };
+                Ok(format!(
+                    "transpose: {name} {}{with}",
+                    mpfree_time_ui::view::transpose_text(to)
+                ))
+            }
+            TimeAction::FollowsTranspose { track, on } => {
+                let t = self
+                    .project
+                    .tracks
+                    .get_mut(track)
+                    .ok_or_else(|| format!("follows transpose: no track {}", track + 1))?;
+                if t.follows != on {
+                    t.follows = on;
+                    self.changed = true;
+                }
+                let name = &t.name;
+                Ok(if on {
+                    format!("follows transpose: {name} moves with the armed track's transpose")
+                } else {
+                    format!("follows transpose: {name} keeps its own")
+                })
+            }
             // The project's launch quantise (S4). What waits already keeps
             // the line it had (the design's edge case).
             TimeAction::LaunchGrid(g) => {

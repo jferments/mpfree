@@ -558,6 +558,8 @@ pub enum ModelError {
     BadSwing,
     BadQuantise,
     TooManyTracks,
+    /// A track's transpose past [`MAX_TRANSPOSE`].
+    BadTranspose,
     BadSlot,
     /// A note to take out is not in the clip (see [`steps::Edit`]).
     MissingNote,
@@ -869,7 +871,49 @@ pub struct Track {
     /// A note track (the pads play it and its clips hold notes), or a Loop
     /// track, whose cells launch the looper's loops ([`loops`]).
     pub kind: TrackKind,
+    /// Its live transpose (sequencer S4): every note it plays shifted, as
+    /// played on the pads' Transpose or its row; 0 plays as written. Only
+    /// a melodic track is ever transposed: a drum kit's notes are its
+    /// pads.
+    pub transpose: Transpose,
+    /// "Follows transpose": the pads' Transpose moves this track with the
+    /// armed one, so a bass and its chords change key together.
+    pub follows: bool,
     pub slots: [Option<Clip>; SLOTS],
+}
+
+/// The furthest a track's transpose goes either way: two octaves of
+/// semitones, or 24 notes of its key (`mpfree_scale::MAX_SHIFT`).
+pub const MAX_TRANSPOSE: i8 = 24;
+
+/// A track's live transpose (sequencer S4, Jay's card of 17 Nov): `by`
+/// semitones, or with `in_key` `by` notes of the scale its pads play in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Transpose {
+    pub by: i8,
+    pub in_key: bool,
+}
+
+impl Transpose {
+    /// As written.
+    pub const NONE: Transpose = Transpose {
+        by: 0,
+        in_key: false,
+    };
+
+    pub fn semitones(by: i8) -> Transpose {
+        Transpose { by, in_key: false }
+    }
+
+    /// Within [`MAX_TRANSPOSE`] either way.
+    pub fn ok(self) -> bool {
+        (-MAX_TRANSPOSE..=MAX_TRANSPOSE).contains(&self.by)
+    }
+
+    /// It moves nothing.
+    pub fn is_none(self) -> bool {
+        self.by == 0
+    }
 }
 
 /// What a track is: see [`Track::kind`].
@@ -940,6 +984,8 @@ impl Track {
             record_quantise: None,
             note_fx: mpfree_notefx::TrackFx::default(),
             kind: TrackKind::Notes,
+            transpose: Transpose::NONE,
+            follows: false,
             slots: Default::default(),
         }
     }
@@ -1033,6 +1079,9 @@ impl Project {
                 .is_some_and(|s| Swing::new(s.grid, s.amount).is_none())
         }) {
             return Err(ModelError::BadSwing);
+        }
+        if self.tracks.iter().any(|t| !t.transpose.ok()) {
+            return Err(ModelError::BadTranspose);
         }
         Ok(())
     }

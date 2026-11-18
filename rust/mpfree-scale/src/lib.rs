@@ -15,6 +15,8 @@
 //!
 //! - [`pads`] lays the 16 pads out from a scale for a synth on the pads:
 //!   Chromatic with the scale lit, In key, or Chord pads.
+//! - [`shift`] is a track's live transpose: by semitones, or by notes of
+//!   a key, with what each held note became.
 //!
 //! Notes are MIDI note numbers (60 = middle C) as `i16`, so steps below 0
 //! and above 127 can be computed and skipped by the caller. Nothing here
@@ -22,7 +24,9 @@
 #![forbid(unsafe_code)]
 
 pub mod pads;
+pub mod shift;
 pub use pads::{InKeyRows, Pad, PadLayout, PadRole, PadSetup};
+pub use shift::{Held, Shift, MAX_SHIFT};
 
 /// A 12-bit set from semitones above the root (each 0..=11).
 pub const fn mask(intervals: &[u8]) -> u16 {

@@ -1739,8 +1739,8 @@ mod tests {
         });
     }
 
-    /// The Looper with no loop yet: its faint tools and uses say why on
-    /// the hint line instead of doing nothing.
+    /// The Looper with no loop yet: its faint controls (Send, Clear) say
+    /// why on the hint line instead of doing nothing.
     #[test]
     fn faint_looper_tools_say_why() {
         on_big_stack(|| {
@@ -1749,9 +1749,10 @@ mod tests {
             let faint: Vec<_> = s
                 .controls()
                 .into_iter()
-                .filter(|c| matches!(c.target.id, "tool" | "use") && !c.target.enabled)
+                .filter(|c| c.widget == "leditor" && !c.target.enabled)
+                .filter(|c| matches!(c.target.id, "send" | "clear"))
                 .collect();
-            assert!(!faint.is_empty(), "with no loop, the tools are faint");
+            assert_eq!(faint.len(), 2, "with no loop, Send and Clear are faint");
             let normal = s.hint();
             for c in faint {
                 let n = s.screen.tells();
@@ -2472,7 +2473,8 @@ mod tests {
             // Show in Clips on the Looper tab: the Arrange page, with Loops
             // A's page of tracks in view.
             s.press("header", "tab", "Looper").settle();
-            s.press("luse", "use", "Show in Clips").settle();
+            s.press("leditor", "send", "Send").settle();
+            s.press("leditor", "send-to", "Show in Clips").settle();
             assert_eq!(s.view(), View::Arrange);
             assert_eq!(s.screen.time_page.first_track, 8);
             s.press("header", "tab", "Play").settle();

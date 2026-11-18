@@ -238,41 +238,40 @@ mod looper {
         s
     }
 
-    /// With the loop playing, each tool does its edit (½ length, × 2,
-    /// Reverse, the nudges, the seam fade, Merge layers), UNDO and SHIFT +
-    /// UNDO take the last back and put it back, the undo history goes
-    /// back to an older step and forward again, and the trim grip trims.
+    /// With the loop playing, each control does its edit (½, × 2,
+    /// Reverse, a nudge dragged on the ruler, the seam fade on the picked
+    /// loop's Q-Links, Merge), UNDO and SHIFT + UNDO take the last back and
+    /// put it back, the undo history (the chips) goes back to an older
+    /// step and forward again, and the trim grip trims.
     #[test]
     fn the_tools_the_undo_history_and_trim_work_while_the_loop_plays() {
         use mpfree_looper::{Edit, Step};
         on_big_stack(|| {
             let mut s = two_layers();
             let bar = 4 * PPQ as u64;
-            // A tool by the start of its label (the seam fade's says its
-            // length: "Seam fade 6 ms").
-            let tool = |s: &mut Session, label: &str| {
+            // A control under the lanes by its id.
+            let tool = |s: &mut Session, id: &str| {
                 let c = s
                     .controls()
                     .into_iter()
-                    .find(|c| {
-                        c.widget == "leditor"
-                            && c.target.id == "tool"
-                            && c.target.label.starts_with(label)
-                    })
-                    .unwrap_or_else(|| panic!("no tool {label}"));
-                assert!(c.target.enabled, "{label} works while the loop plays");
+                    .find(|c| c.widget == "leditor" && c.target.id == id)
+                    .unwrap_or_else(|| panic!("no control {id}"));
+                assert!(c.target.enabled, "{id} works while the loop plays");
                 s.press_target(&c.target).run_for(0.2);
             };
 
-            tool(&mut s, "½ length");
+            tool(&mut s, "half");
             assert_eq!(status(&s).ticks as u64, bar, "half: one bar");
-            tool(&mut s, "× 2");
+            tool(&mut s, "double");
             assert_eq!(status(&s).ticks as u64, 2 * bar, "doubled: two again");
-            tool(&mut s, "Reverse");
-            tool(&mut s, "← 1/16");
-            tool(&mut s, "1/16 →");
+            tool(&mut s, "reverse");
+            // The ruler dragged right a 1/16 note.
+            tool(&mut s, "nudge");
+            // Q-LINK twice: the picked loop's knobs; Q4 the seam fade.
+            s.button("Q-LINK");
+            s.button("Q-LINK");
             let seam = status(&s).seam;
-            tool(&mut s, "Seam fade");
+            s.qlink(3, 10).run_for(0.2);
             assert_ne!(status(&s).seam, seam, "the seam fade changed");
             let edits: Vec<Step> = steps(&s).into_iter().skip(1).collect();
             assert!(
@@ -282,24 +281,31 @@ mod looper {
                         Step::Edit(Edit::Half),
                         Step::Edit(Edit::Double),
                         Step::Edit(Edit::Reverse),
-                        Step::Edit(Edit::Nudge(-1)),
                         Step::Edit(Edit::Nudge(1)),
                         Step::Edit(Edit::SeamFade(_)),
+                        ..
                     ]
                 ),
-                "after the overdub, each tool is a step: {edits:?}"
+                "after the overdub, each edit is a step: {edits:?}"
             );
+            // The knob's detents may land as more than one step: undo
+            // back to before the first.
+            while matches!(steps(&s).last(), Some(Step::Edit(Edit::SeamFade(_)))) {
+                s.button("UNDO").run_for(0.2);
+            }
+            assert_eq!(status(&s).seam, seam);
+            s.button_with("SHIFT", "UNDO").run_for(0.2);
+            assert_ne!(status(&s).seam, seam, "SHIFT + UNDO put one back");
 
-            // UNDO takes the seam fade back; SHIFT + UNDO puts it back.
+            // UNDO takes the last step back; SHIFT + UNDO puts it back.
             let n = steps(&s).len();
             s.button("UNDO").run_for(0.2);
             assert_eq!(steps(&s).len(), n - 1, "UNDO took a step back");
-            assert_eq!(status(&s).seam, seam);
             s.button_with("SHIFT", "UNDO").run_for(0.2);
             assert_eq!(steps(&s).len(), n, "SHIFT + UNDO put it back");
 
             // Merge layers: the two become one, as a render while it plays.
-            tool(&mut s, "Merge layers");
+            tool(&mut s, "merge");
             let end = s.t() + 10.0;
             while status(&s).layers != 1 && s.t() < end {
                 s.run_for(0.1);
@@ -311,7 +317,7 @@ mod looper {
             // k is k steps done; row 0 is the first pass alone), and the
             // newest tapped again goes forward to it.
             let n = steps(&s).len();
-            tool(&mut s, "Undo history");
+            tool(&mut s, "history");
             let rows = |s: &mut Session| -> Vec<mpfree_ui::Target> {
                 let mut v: Vec<_> = s
                     .controls()
@@ -342,7 +348,7 @@ mod looper {
             }
             assert_eq!(steps(&s).len(), n, "forward to the newest again");
             assert_eq!(status(&s).layers, 1);
-            tool(&mut s, "Undo history");
+            tool(&mut s, "history");
 
             // The trim grip at the end, dragged in and let go: shorter.
             let ticks = status(&s).ticks;
@@ -378,8 +384,8 @@ mod looper {
             .target
     }
 
-    /// A finger on layer row `k`'s lane, moved off it and onto `to`, then
-    /// lifted there, as the musician drags it.
+    /// A finger on layer `k`'s lane, held, moved off it and onto `to`,
+    /// then lifted there, as the musician drags it.
     fn drag_layer(s: &mut Session, k: usize, to: mpfree_ui::Rect) {
         let lane = at(s, "leditor", "layer", k).rect;
         let (x, y) = (lane.x + 30, lane.y + lane.h / 2);
@@ -403,20 +409,22 @@ mod looper {
         s.run_for(0.3);
     }
 
-    /// A layer row's speaker, S, level bar and a tap on its lane (the
-    /// Q-Links then turn it); a second loop from + New loop; a layer
+    /// A lane's head (its speaker) and S; Q1 turns loop 1's level, and on
+    /// the picked loop's bank Q2 the picked layer's; a second loop from a
+    /// tap on an empty ring (and its ring again to close it); a layer
     /// dragged onto it moves there and UNDO takes the move back; one
-    /// dragged onto + New loop becomes a loop of its own; a loop's speaker
-    /// keeps it silent through STOP and PLAY; Clear empties the picked loop;
-    /// x deletes layers, and x on the last one clears the loop too.
+    /// dragged onto an empty loop becomes a loop of its own; a loop's
+    /// speaker keeps it silent through STOP and PLAY; Clear empties the
+    /// picked loop, and so does a ring held a second; x deletes layers, and
+    /// x on the last one clears the loop too.
     #[test]
     fn layers_move_between_loops_and_speakers_clear_and_x_work() {
         on_big_stack(|| {
             let mut s = two_layers();
-            // Layer 2's row.
+            // Layer 2's lane.
             let t = at(&mut s, "leditor", "layer-mute", 1);
             s.press_target(&t).run_for(0.1);
-            assert!(layer(&s, 0, 1).muted, "the speaker muted layer 2");
+            assert!(layer(&s, 0, 1).muted, "the head muted layer 2");
             let t = at(&mut s, "leditor", "layer-mute", 1);
             s.press_target(&t).run_for(0.1);
             assert!(!layer(&s, 0, 1).muted);
@@ -426,27 +434,40 @@ mod looper {
             assert!(!layer(&s, 0, 0).audible, "and left layer 1 out");
             let t = at(&mut s, "leditor", "layer-solo", 1);
             s.press_target(&t).run_for(0.1);
-            let level = layer(&s, 0, 1).level;
-            let t = at(&mut s, "leditor", "layer-level", 1);
-            s.press_target(&t).run_for(0.1);
-            assert_ne!(layer(&s, 0, 1).level, level, "the level bar moved it");
+            // Q1: loop 1's level.
+            let level = s.looper.looper.loop_status(0).unwrap().level;
+            s.qlink(0, -6).run_for(0.1);
+            assert!(
+                s.looper.looper.loop_status(0).unwrap().level < level,
+                "Q-Link 1 turned loop 1"
+            );
+            // The picked loop's bank: Q2 turns the layer tapped.
+            s.button("Q-LINK");
+            s.button("Q-LINK");
             let t = at(&mut s, "leditor", "layer", 0);
             s.press_target(&t).run_for(0.1);
             let level = layer(&s, 0, 0).level;
-            s.qlink(0, -6).run_for(0.1);
-            assert!(layer(&s, 0, 0).level < level, "Q-Link 1 turned layer 1");
+            s.qlink(1, -6).run_for(0.1);
+            assert!(layer(&s, 0, 0).level < level, "Q-Link 2 turned layer 1");
 
-            // + New loop: loop 2, picked, recorded at the same length.
-            s.press("lloops", "new-loop", "+ New loop").run_for(0.1);
+            // Loop 2's ring: picked and armed; its ring again closes it.
+            let t = at(&mut s, "ldeck", "ring", 1);
+            s.press_target(&t).run_for(0.1);
             assert_eq!(s.looper.looper.selected(), 1);
-            record_a_loop(&mut s);
+            assert_eq!(status(&s).phase, Phase::Armed, "the ring armed it");
+            until_phase(&mut s, Phase::Recording, 2.5);
+            s.run_for(3.0);
+            let t = at(&mut s, "ldeck", "ring", 1);
+            s.press_target(&t);
+            assert!(status(&s).ending, "the ring again: it ends on the bar line");
+            until_phase(&mut s, Phase::Playing, 1.5);
             assert_eq!(layers_of(&s, 1), 1);
 
             // Back on loop 1, its layer 2 dragged onto loop 2: it moves.
-            let t = at(&mut s, "lloops", "loop", 0);
+            let t = at(&mut s, "ldeck", "loop", 0);
             s.press_target(&t).run_for(0.1);
             assert_eq!(s.looper.looper.selected(), 0);
-            let two = at(&mut s, "lloops", "loop", 1).rect;
+            let two = at(&mut s, "ldeck", "loop", 1).rect;
             drag_layer(&mut s, 1, two);
             assert_eq!(
                 (layers_of(&s, 0), layers_of(&s, 1)),
@@ -462,19 +483,19 @@ mod looper {
                 (2, 1),
                 "UNDO took the move back"
             );
-            let t = at(&mut s, "lloops", "loop", 0);
+            let t = at(&mut s, "ldeck", "loop", 0);
             s.press_target(&t).run_for(0.1);
 
-            // Onto + New loop: a loop of its own (loop 3).
-            let new = at(&mut s, "lloops", "new-loop", 0).rect;
-            drag_layer(&mut s, 1, new);
+            // Onto loop 3, empty: a loop of its own.
+            let three = at(&mut s, "ldeck", "ring", 2).rect;
+            drag_layer(&mut s, 1, three);
             assert_eq!(layers_of(&s, 0), 1);
             assert_eq!(layers_of(&s, 2), 1, "loop 3 has it");
             assert_eq!(s.looper.looper.selected(), 2);
 
             // Loop 1's speaker: silent, and it stays so through STOP and
             // PLAY; tapped again it plays.
-            let t = at(&mut s, "lloops", "loop-mute", 0);
+            let t = at(&mut s, "ldeck", "loop-mute", 0);
             s.press_target(&t).run_for(0.1);
             let muted = |s: &Session| s.looper.looper.loop_status(0).unwrap().muted;
             assert!(muted(&s), "loop 1 is silent");
@@ -482,19 +503,42 @@ mod looper {
             s.button("PLAY").run_for(0.3);
             assert!(muted(&s), "and stays out after STOP and PLAY");
             assert_ne!(layers_of(&s, 0), 0, "but it is kept");
-            let t = at(&mut s, "lloops", "loop-mute", 0);
+            let t = at(&mut s, "ldeck", "loop-mute", 0);
             s.press_target(&t).run_for(0.1);
             assert!(!muted(&s), "back in");
 
             // Loop 2 picked and cleared, first pass and all.
-            let t = at(&mut s, "lloops", "loop", 1);
+            let t = at(&mut s, "ldeck", "loop", 1);
             s.press_target(&t).run_for(0.1);
-            s.press("lloops", "clear", "Clear").run_for(0.3);
+            s.press("leditor", "clear", "Clear").run_for(0.3);
             assert_eq!(s.looper.looper.loop_status(1).unwrap().phase, Phase::Empty);
+            // Loop 3's ring held a second: cleared.
+            let ring = at(&mut s, "ldeck", "ring", 2).rect;
+            let (x, y) = (ring.x + ring.w / 2, ring.y + ring.h / 2);
+            let mut acts: Vec<crate::gui::FromUi> = s
+                .screen
+                .touch(7, mpfree_ui::Touch::Down, x, y)
+                .into_iter()
+                .collect();
+            acts.extend(s.screen.take_actions());
+            for a in acts {
+                s.route(a);
+            }
+            s.run_for(f64::from(crate::looper_deck::CLEAR_HOLD_S) + 0.2);
+            let up = s.screen.touch(7, mpfree_ui::Touch::Up, x, y);
+            for a in up.into_iter().chain(s.screen.take_actions()) {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            assert_eq!(
+                s.looper.looper.loop_status(2).unwrap().phase,
+                Phase::Empty,
+                "the held ring cleared loop 3"
+            );
 
             // Loop 1: an overdub, then x on each layer down to the last;
             // x on that one clears the loop.
-            let t = at(&mut s, "lloops", "loop", 0);
+            let t = at(&mut s, "ldeck", "loop", 0);
             s.press_target(&t).run_for(0.1);
             s.button("OVERDUB");
             until_phase(&mut s, Phase::Overdubbing, 4.5);
@@ -502,9 +546,14 @@ mod looper {
             s.button("REC");
             until_phase(&mut s, Phase::Playing, 4.5);
             assert_eq!(layers_of(&s, 0), 2);
+            // The x is on the picked layer's lane: a tap picks it.
+            let t = at(&mut s, "leditor", "layer", 1);
+            s.press_target(&t).run_for(0.1);
             let t = at(&mut s, "leditor", "layer-delete", 1);
             s.press_target(&t).run_for(0.3);
             assert_eq!(layers_of(&s, 0), 1, "x deleted layer 2");
+            let t = at(&mut s, "leditor", "layer", 0);
+            s.press_target(&t).run_for(0.1);
             let t = at(&mut s, "leditor", "layer-delete", 0);
             s.press_target(&t).run_for(0.3);
             assert_eq!(
@@ -1819,6 +1868,35 @@ mod device_log {
             let l = wrote(&s, n, "time: ", " back as saved on bar ");
             assert!(l.contains("reload: "), "{l}");
             s.button("STOP");
+        });
+    }
+
+    /// Live transpose (`^transpose: .* \+5 st$`, `^transpose: .* as
+    /// written$`), as the `live-transpose` check has it done: with the
+    /// synth on the pads, 16 LEVEL opens Transpose, pad 14 moves the armed
+    /// track up a fourth and pad 9 brings it back.
+    #[test]
+    fn live_transpose_writes_its_lines() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            s.pick_synth();
+            s.button("16 LEVEL");
+            assert!(s.app.pads_transpose(), "16 LEVEL on the synth: Transpose");
+            let n = s.lines.len();
+            s.pad(13, 100, 0.05);
+            let l = wrote(&s, n, "transpose: ", " +5 st");
+            assert_eq!(l, "transpose: Track 1 +5 st");
+            let n = s.lines.len();
+            s.pad(8, 100, 0.05);
+            wrote(&s, n, "transpose: Track 1 as written", "");
+            s.button("16 LEVEL");
+            let n = s.lines.len();
+            s.pad(13, 100, 0.05);
+            assert!(
+                !since(&s, n).iter().any(|l| l.starts_with("transpose: ")),
+                "16 LEVEL gave the pads back"
+            );
         });
     }
 
