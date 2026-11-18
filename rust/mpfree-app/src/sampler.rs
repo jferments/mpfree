@@ -1096,6 +1096,33 @@ impl RecFeed {
         self.0.audio.push_planar(&left[..n], &right[..n]);
     }
 
+    /// [`RecFeed::period`] with the input turned by the recorder's Gain
+    /// (one-page step 2d): `from` at the period's start moving evenly to
+    /// `to` at its end, so a Gain turned while a take records never
+    /// clicks. Unity both ends appends the input as it is. Never
+    /// allocates: the turned period is made on the stack.
+    pub fn period_gain(
+        &mut self,
+        block: &Block,
+        left: &[f32],
+        right: &[f32],
+        latency: u32,
+        (from, to): (f32, f32),
+    ) {
+        if from == 1.0 && to == 1.0 {
+            return self.period(block, left, right, latency);
+        }
+        let n = left.len().min(right.len()).min(PERIOD);
+        let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
+        let step = (to - from) / n.max(1) as f32;
+        for i in 0..n {
+            let g = from + step * (i + 1) as f32;
+            l[i] = left[i] * g;
+            r[i] = right[i] * g;
+        }
+        self.period(block, &l[..n], &r[..n], latency);
+    }
+
     /// The input comes from another source from now on: Skip back and
     /// takes stop here.
     pub fn restart(&mut self) {
@@ -1871,6 +1898,33 @@ mod tests {
         }
         assert_eq!(inp.bars.bar_frames(), None);
         assert_eq!(inp.bars.count(), 3);
+    }
+
+    /// The recorder's Gain (one-page step 2d): the input goes into the
+    /// buffer turned, a turn ramped over one period with no step, and at
+    /// unity as it came.
+    #[test]
+    fn the_feed_turns_the_input_by_the_gain_without_a_step() {
+        use mpfree_sampler::record::input;
+        let rate = 44_100;
+        let (feed, inp) = input(2, rate);
+        let mut feed = RecFeed(feed);
+        let block = Block::new();
+        let (l, r) = ([0.5f32; PERIOD], [-0.5f32; PERIOD]);
+        feed.period_gain(&block, &l, &r, 0, (1.0, 1.0));
+        assert_eq!(inp.last_frames(1).unwrap(), [0.5, -0.5]);
+        // +6 dB: a period's ramp up from unity, then twice as loud.
+        feed.period_gain(&block, &l, &r, 0, (1.0, 2.0));
+        let ramp = inp.last_frames(PERIOD as u64).unwrap();
+        let lefts: Vec<f32> = ramp.chunks_exact(2).map(|f| f[0]).collect();
+        assert!(lefts.windows(2).all(|w| w[1] > w[0]), "rises evenly");
+        assert!((lefts[0] - 0.5).abs() < 0.5 / PERIOD as f32 + 1e-6);
+        assert_eq!(lefts[PERIOD - 1], 1.0);
+        let biggest = lefts.windows(2).map(|w| w[1] - w[0]).fold(0.0, f32::max);
+        assert!(biggest <= 0.5 / PERIOD as f32 + 1e-6, "no step: {biggest}");
+        feed.period_gain(&block, &l, &r, 0, (2.0, 2.0));
+        assert_eq!(inp.last_frames(1).unwrap(), [1.0, -1.0]);
+        assert_eq!(feed.written(), 3 * PERIOD as u64);
     }
 
     /// The Pads tab's pad types go to the audio thread with the kit's

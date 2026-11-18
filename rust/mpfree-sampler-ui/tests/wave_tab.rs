@@ -1055,11 +1055,19 @@ fn the_recorder_row_records_and_the_panel_is_input_while_rec_is_on() {
     let names: Vec<&str> = list.rows.iter().map(|r| r.name.as_str()).collect();
     assert_eq!(
         names,
-        ["Source", "Channels", "Threshold", "Pre-roll", "Onto"]
+        [
+            "Source",
+            "Channels",
+            "Onto",
+            "Gain",
+            "Threshold",
+            "Pre-roll",
+            "Monitor"
+        ]
     );
     let ev = UiEvent {
         widget: wave_tab::REGION.into(),
-        kind: EventKind::Step { index: 2, delta: 1 },
+        kind: EventKind::Step { index: 4, delta: 1 },
     };
     assert_eq!(
         s.tab.action(&mut s.ui, &ev, &st),
@@ -1071,23 +1079,47 @@ fn the_recorder_row_records_and_the_panel_is_input_while_rec_is_on() {
     // Onto (step 2b) steps where the take goes when it stops.
     let ev = UiEvent {
         widget: wave_tab::REGION.into(),
-        kind: EventKind::Step { index: 4, delta: 1 },
+        kind: EventKind::Step { index: 2, delta: 1 },
     };
     assert_eq!(
         s.tab.action(&mut s.ui, &ev, &st),
         Some(WaveAction::Rec(RecorderAction::Step(rec_tab::Row::Onto, 1)))
     );
-    // And the Q-Links: 2 turns the Threshold, 3 the Pre-roll; 1 and 4 are
-    // faint and say why.
+    // Gain and Monitor's switch (step 2d).
+    let ev = UiEvent {
+        widget: wave_tab::REGION.into(),
+        kind: EventKind::Step {
+            index: 3,
+            delta: -1,
+        },
+    };
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(WaveAction::Rec(RecorderAction::Step(
+            rec_tab::Row::Gain,
+            -1
+        )))
+    );
+    let ev = UiEvent {
+        widget: wave_tab::REGION.into(),
+        kind: EventKind::Step { index: 6, delta: 1 },
+    };
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(WaveAction::Rec(RecorderAction::Monitor))
+    );
+    // And the Q-Links: Gain, Threshold, Pre-roll and Monitor's level.
     let card = |s: &Sample, k: usize| {
         let c = s.ui.get::<KnobCard>(wave_tab::QLINKS[k]).unwrap();
         (c.label.clone(), c.value.clone(), c.enabled, c.why.clone())
     };
+    assert_eq!(card(&s, 0).0, "Q-Link 1 · Gain");
+    assert_eq!(card(&s, 0).1, "+0 dB");
     assert_eq!(card(&s, 1).0, "Q-Link 2 · Threshold");
     assert_eq!(card(&s, 1).1, "-30 dB");
     assert_eq!(card(&s, 2).0, "Q-Link 3 · Pre-roll");
-    assert!(!card(&s, 0).2 && !card(&s, 3).2);
-    assert_eq!(card(&s, 0).3, recorder::QLINK_IDLE);
+    assert_eq!(card(&s, 3).0, "Q-Link 4 · Monitor");
+    assert!((0..4).all(|k| card(&s, k).2), "all four turn");
     assert_eq!(
         s.tab.qlink(&mut s.ui, &st, 1, -2, false),
         Some(WaveAction::Rec(RecorderAction::Step(
@@ -1102,8 +1134,17 @@ fn the_recorder_row_records_and_the_panel_is_input_while_rec_is_on() {
             1
         )))
     );
-    assert_eq!(s.tab.qlink(&mut s.ui, &st, 0, 1, false), None);
-    assert_eq!(s.tab.qlink(&mut s.ui, &st, 3, 1, false), None);
+    assert_eq!(
+        s.tab.qlink(&mut s.ui, &st, 0, 1, false),
+        Some(WaveAction::Rec(RecorderAction::Step(rec_tab::Row::Gain, 1)))
+    );
+    assert_eq!(
+        s.tab.qlink(&mut s.ui, &st, 3, -1, true),
+        Some(WaveAction::Rec(RecorderAction::MonitorLevel {
+            delta: -1,
+            fine: true
+        }))
+    );
     let tap = s.ui.touch(3, Touch::Down, rec.x + 5, rec.y + 5).unwrap();
     assert_eq!(
         s.tab.action(&mut s.ui, &tap, &st),
