@@ -44,6 +44,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod fpu;
 pub mod os;
 
 use std::cell::UnsafeCell;
@@ -96,6 +97,12 @@ pub struct Config {
     /// before it touches the job and the lane runs jobs on the calling
     /// thread ([`Setup::threaded`] says why). Off: the worker runs anyway.
     pub strict: bool,
+    /// Turn the processor's flush-to-zero mode on for the worker as it
+    /// starts ([`fpu`]), so a job renders on it as it would on an audio
+    /// thread that has it on. Off by default, so a lane renders as the
+    /// thread that made it would without it. A lane that runs jobs on the
+    /// calling thread leaves that thread's mode alone.
+    pub flush_to_zero: bool,
 }
 
 impl Default for Config {
@@ -108,6 +115,7 @@ impl Default for Config {
             worker_spin: Duration::ZERO,
             join_spin: Duration::MAX,
             strict: false,
+            flush_to_zero: false,
         }
     }
 }
@@ -121,6 +129,10 @@ pub struct Setup {
     pub pinned: Option<Result<usize, String>>,
     /// The SCHED_FIFO priority asked for, and whether it took.
     pub fifo: Option<Result<i32, String>>,
+    /// Flush-to-zero asked for ([`Config::flush_to_zero`]), and whether the
+    /// worker has it on: false only on a processor [`fpu`] doesn't know.
+    /// None when not asked, or when jobs run on the calling thread.
+    pub flush_to_zero: Option<bool>,
 }
 
 /// The deadline passed before the worker finished the block. The job stays
@@ -219,7 +231,12 @@ impl<J: Job> Lane<J> {
             job: UnsafeCell::new(job),
         });
         let (tx, rx) = mpsc::channel();
-        let (core, fifo, strict) = (config.core, config.fifo, config.strict);
+        let (core, fifo, strict, ftz) = (
+            config.core,
+            config.fifo,
+            config.strict,
+            config.flush_to_zero,
+        );
         let theirs = Arc::clone(&shared);
         let spawned = std::thread::Builder::new()
             .name(config.name.clone())
@@ -228,7 +245,9 @@ impl<J: Job> Lane<J> {
                 let fifo = fifo.map(|p| os::fifo(p).map(|()| p));
                 let missed =
                     strict && (matches!(pinned, Some(Err(_))) || matches!(fifo, Some(Err(_))));
-                let _ = tx.send((pinned, fifo));
+                // The mode belongs to this thread; set before the first job.
+                let flushing = ftz.then(fpu::flush_to_zero);
+                let _ = tx.send((pinned, fifo, flushing));
                 // Strict and short of its core or priority: stop without
                 // touching the job, so the lane can take it back.
                 if !missed {
@@ -237,9 +256,11 @@ impl<J: Job> Lane<J> {
             });
         match spawned {
             Ok(thread) => {
-                let (pinned, fifo) = rx
-                    .recv()
-                    .unwrap_or((None, Some(Err("the worker stopped while starting".into()))));
+                let (pinned, fifo, flushing) = rx.recv().unwrap_or((
+                    None,
+                    Some(Err("the worker stopped while starting".into())),
+                    None,
+                ));
                 if let Some(why) = strict.then(|| missing(&pinned, &fifo)).flatten() {
                     // The worker has returned (or is returning) without
                     // running the job; once it has, its Arc is gone.
@@ -263,6 +284,7 @@ impl<J: Job> Lane<J> {
                         threaded: Ok(()),
                         pinned,
                         fifo,
+                        flush_to_zero: flushing,
                     },
                     stats: Stats::default(),
                 }
@@ -300,6 +322,7 @@ impl<J: Job> Lane<J> {
                 threaded: why,
                 pinned: None,
                 fifo: None,
+                flush_to_zero: None,
             },
             stats: Stats::default(),
         }
@@ -914,5 +937,64 @@ mod tests {
         assert!(matches!(lane.setup().pinned, Some(Err(_))));
         assert!(lane.setup().fifo.is_some());
         check(&mut lane, 50);
+    }
+
+    /// What a worker's floating point does with a denormal result.
+    #[derive(Default)]
+    struct Denormal {
+        product: f32,
+        flushing: bool,
+    }
+
+    impl Job for Denormal {
+        fn run(&mut self, _block: u64) {
+            // 1e-40: under the smallest normal float.
+            self.product = std::hint::black_box(1e-30f32) * std::hint::black_box(1e-10f32);
+            self.flushing = fpu::flushing();
+        }
+    }
+
+    #[test]
+    fn a_lane_asked_to_flush_denormals_flushes_them_on_its_worker_only() {
+        let known = cfg!(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "arm"
+        ));
+        let mut lane = Lane::new(
+            Denormal::default(),
+            Config {
+                flush_to_zero: true,
+                ..Config::default()
+            },
+        );
+        assert_eq!(lane.setup().flush_to_zero, Some(known));
+        lane.post(0).unwrap();
+        let job = lane.join(soon()).unwrap();
+        assert_eq!(job.flushing, known);
+        if known {
+            assert_eq!(job.product, 0.0);
+        }
+        // Not asked: the setup says nothing, and the worker keeps the mode
+        // of the thread that started it (here off, so on x86-64 it keeps
+        // the denormal).
+        let mut plain = Lane::new(Denormal::default(), Config::default());
+        assert_eq!(plain.setup().flush_to_zero, None);
+        plain.post(0).unwrap();
+        let job = plain.join(soon()).unwrap();
+        if cfg!(target_arch = "x86_64") {
+            assert!(!job.flushing);
+            assert_eq!(job.product, 1e-40);
+        }
+        // Run here, a lane leaves the calling thread's mode alone.
+        let here = Lane::new(
+            Denormal::default(),
+            Config {
+                threaded: false,
+                flush_to_zero: true,
+                ..Config::default()
+            },
+        );
+        assert_eq!(here.setup().flush_to_zero, None);
     }
 }

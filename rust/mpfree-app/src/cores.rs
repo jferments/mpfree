@@ -66,9 +66,17 @@
 //! core. For the same reason, if the audio thread itself could not be put
 //! on core 3, no lane starts at all.
 //!
+//! **Denormals are flushed to zero** (the synth architecture's lever 5).
+//! In every mode the audio thread turns the processor's flush-to-zero on
+//! before the sound starts, and each lane turns it on for its worker
+//! (`mpfree_lanes::fpu`). A filter or reverb tail decaying under the
+//! smallest normal float (some 750 dB under full scale) then costs what
+//! any other sound does, not many times more; the sound changes by less
+//! than −700 dB. The Dev page's "Denormals" row says whether it took.
+//!
 //! The mode is set once, on the audio thread, before the sound starts.
-//! Only the program's own threads change (their core and priority, in
-//! RAM): quitting the program undoes it. Prefs keeps the row's value in
+//! Only the program's own threads change (their core, priority and
+//! floating-point mode, in RAM): quitting the program undoes it. Prefs keeps the row's value in
 //! the app's settings, as every Prefs row.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -208,6 +216,9 @@ struct Pins {
     lane: Option<usize>,
     synth: Option<usize>,
     fifo: Option<i32>,
+    /// Turn flush-to-zero on for the audio thread and every lane
+    /// ([`mpfree_lanes::fpu`]).
+    flush: bool,
 }
 
 const MPC: Pins = Pins {
@@ -215,14 +226,18 @@ const MPC: Pins = Pins {
     lane: Some(LANE_CORE),
     synth: Some(SYNTH_CORE),
     fifo: Some(LANE_FIFO),
+    flush: true,
 };
 
+/// The tests' threads keep the mode they have, so what they render is
+/// what they rendered before flush-to-zero.
 #[cfg(test)]
 const NONE: Pins = Pins {
     audio: None,
     lane: None,
     synth: None,
     fifo: None,
+    flush: false,
 };
 
 /// The lanes' counts since the start.
@@ -561,6 +576,20 @@ impl Cores {
             noted: Counts::default(),
             noted_at: None,
         };
+        if pins.flush {
+            // Whatever the cores: a denormal costs the same on any of them.
+            let (text, tone) = if mpfree_lanes::fpu::flush_to_zero() {
+                ("flushed to zero (audio thread and lanes)", Tone::Good)
+            } else {
+                (
+                    "not flushed: this processor is not one the app knows",
+                    Tone::Warn,
+                )
+            };
+            c.lines.push(format!("sound cores: denormals {text}"));
+            c.rows
+                .push(("Denormals".to_string(), text.to_string(), tone));
+        }
         if mode == SoundCores::Shared {
             return c;
         }
@@ -658,6 +687,7 @@ impl Cores {
             core,
             fifo: self.pins.fifo,
             strict: true,
+            flush_to_zero: self.pins.flush,
             ..LaneConfig::default()
         }
     }
@@ -852,6 +882,7 @@ pub fn sample(shared: &CoreShared) {
                 threaded: Ok(()),
                 pinned: Some(Ok(LANE_CORE)),
                 fifo: Some(Ok(fifo)),
+                flush_to_zero: Some(true),
             },
             what,
         )
@@ -956,6 +987,31 @@ mod tests {
         assert!(r[0].1.starts_with("shared: "), "{r:?}");
         assert_eq!(c.status(Counts::default()), "sound cores shared");
         assert_eq!(c.take_lines().len(), 1);
+    }
+
+    #[test]
+    fn the_audio_thread_and_its_lanes_flush_denormals_in_every_mode() {
+        for mode in [SoundCores::Shared, SoundCores::Three] {
+            // On a thread of its own, so the test's thread keeps its mode.
+            std::thread::spawn(move || {
+                let pins = Pins {
+                    flush: true,
+                    ..NONE
+                };
+                let c = Cores::start_on(mode, &mut player(), &mut slot(), pins);
+                assert!(mpfree_lanes::fpu::flushing(), "{mode:?}");
+                let row = c.rows.iter().find(|r| r.0 == "Denormals").expect("a row");
+                assert_eq!(row.1, "flushed to zero (audio thread and lanes)");
+                assert_eq!(row.2, Tone::Good);
+                assert!(c.lane("mpfree-lane-t", None).flush_to_zero);
+            })
+            .join()
+            .unwrap();
+        }
+        // The tests' own pins leave the mode alone.
+        let c = Cores::start_on(SoundCores::Three, &mut player(), &mut slot(), NONE);
+        assert!(!c.rows.iter().any(|r| r.0 == "Denormals"));
+        assert!(!c.lane("mpfree-lane-t", None).flush_to_zero);
     }
 
     #[test]
@@ -1344,6 +1400,7 @@ mod tests {
             threaded: Ok(()),
             pinned: Some(Ok(2)),
             fifo: Some(Err("Operation not permitted".into())),
+            flush_to_zero: None,
         };
         assert_eq!(
             lane_text(&s, "x"),
@@ -1356,12 +1413,14 @@ mod tests {
             threaded: Ok(()),
             pinned: Some(Err("Invalid argument".into())),
             fifo: Some(Ok(69)),
+            flush_to_zero: None,
         };
         assert_eq!(lane_text(&s, "x").1, Tone::Bad);
         let s = LaneSetup {
             threaded: Err("no thread".into()),
             pinned: None,
             fifo: None,
+            flush_to_zero: None,
         };
         assert_eq!(
             lane_text(&s, "x"),
