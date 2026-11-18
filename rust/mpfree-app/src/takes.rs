@@ -918,6 +918,7 @@ mod tests {
         let job = crate::control::InstrumentJob {
             track: 0,
             id: "mpfree.poly",
+            extras: Vec::new(),
             values: crate::synth::engine_node("mpfree.poly", RATE)
                 .unwrap()
                 .params()

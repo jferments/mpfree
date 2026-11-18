@@ -1047,7 +1047,7 @@ fn the_recorder_row_records_and_the_panel_is_input_while_rec_is_on() {
     let on = RecorderView {
         sources: vec!["Line in".into()],
         recording: true,
-        status: "Recording onto A1 · 0:01.0".into(),
+        status: "0:01.0 · onto A1".into(),
         ..Default::default()
     };
     s.tab.set_recorder(&mut s.ui, on, &st);

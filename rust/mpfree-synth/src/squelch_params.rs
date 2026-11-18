@@ -1,8 +1,7 @@
-//! The mono acid bass's parameters and factory presets.
+//! The mono acid bass's parameters; its factory presets are in
+//! `presets/squelch.presets` ([`crate::factory::read`]).
 
 use mpfree_node::{Curve, ParamInfo, Unit};
-
-use crate::params::Preset;
 
 macro_rules! ids {
     ($($name:ident = $v:expr),* $(,)?) => { $(pub const $name: u16 = $v;)* };
@@ -180,108 +179,4 @@ pub static PARAMS: &[ParamInfo] = &[
         Unit::Percent,
         Linear,
     ),
-];
-
-pub static PRESETS: &[Preset] = &[
-    Preset {
-        name: "Init",
-        values: &[],
-    },
-    // The classic squelch: high resonance, a fair sweep, short decay.
-    Preset {
-        name: "Acid Line",
-        values: &[
-            (CUTOFF, 320.0),
-            (RESONANCE, 85.0),
-            (ENV_MOD, 65.0),
-            (DECAY, 350.0),
-            (ACCENT, 80.0),
-        ],
-    },
-    // Low and round: little resonance, a soft envelope, for bass lines
-    // under a track.
-    Preset {
-        name: "Deep Bass",
-        values: &[
-            (CUTOFF, 180.0),
-            (RESONANCE, 25.0),
-            (ENV_MOD, 30.0),
-            (DECAY, 700.0),
-            (ACCENT, 40.0),
-            (LEVEL, 2.0),
-        ],
-    },
-    // The square through a nearly closed, very resonant filter.
-    Preset {
-        name: "Square Acid",
-        values: &[
-            (WAVE, SQUARE),
-            (CUTOFF, 250.0),
-            (RESONANCE, 90.0),
-            (ENV_MOD, 75.0),
-            (DECAY, 300.0),
-            (ACCENT, 85.0),
-        ],
-    },
-    // Distorted, with the filter wide open on accents.
-    Preset {
-        name: "Distorted",
-        values: &[
-            (CUTOFF, 400.0),
-            (RESONANCE, 75.0),
-            (ENV_MOD, 70.0),
-            (DECAY, 450.0),
-            (ACCENT, 90.0),
-            (DRIVE, 70.0),
-        ],
-    },
-    // Long decay and slow slides: lines that melt into each other.
-    Preset {
-        name: "Rubber",
-        values: &[
-            (CUTOFF, 220.0),
-            (RESONANCE, 70.0),
-            (ENV_MOD, 55.0),
-            (DECAY, 1500.0),
-            (SLIDE, 140.0),
-            (ACCENT, 50.0),
-        ],
-    },
-    // Short notes, short envelope, all click and squelch.
-    Preset {
-        name: "Plucky",
-        values: &[
-            (CUTOFF, 300.0),
-            (RESONANCE, 65.0),
-            (ENV_MOD, 80.0),
-            (DECAY, 200.0),
-            (AMP_DECAY, 400.0),
-            (ACCENT, 70.0),
-        ],
-    },
-    // The filter follows the keys: a lead an octave up.
-    Preset {
-        name: "Acid Lead",
-        values: &[
-            (CUTOFF, 600.0),
-            (RESONANCE, 80.0),
-            (ENV_MOD, 60.0),
-            (DECAY, 400.0),
-            (KEY_TRACK, 70.0),
-            (TRANSPOSE, 12.0),
-            (DRIVE, 30.0),
-        ],
-    },
-    // Resonance right up: the harmonic at the cutoff screams.
-    Preset {
-        name: "Screamer",
-        values: &[
-            (CUTOFF, 700.0),
-            (RESONANCE, 100.0),
-            (ENV_MOD, 50.0),
-            (DECAY, 600.0),
-            (ACCENT, 100.0),
-            (DRIVE, 40.0),
-        ],
-    },
 ];

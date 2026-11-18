@@ -81,7 +81,7 @@ A first canon of 32 (our reading): clean tine, bright tine, barking tine, mellow
 
 ## What MPFree has today
 
-- **Keys:** tine, reed and (from 18 Nov) clav, 32 presets, a Velocity range per preset, 12 voices by default (16 at most), never played on the MPC. See [Keys](../design/synths.md#keys-mpfree-synth-keys).
+- **Keys:** tine, reed and (from 18 Nov) clav, 34 presets (two of them sounds with effects and macros of their own), a Velocity range per preset, 12 voices by default (16 at most), never played on the MPC. See [Keys](../design/synths.md#keys-mpfree-synth-keys).
 - **FM:** Glass Keys and other FM piano sounds.
 - **Effects** that suit keys, already in `mpfree-fx` after the FX quality rounds: chorus, phaser, auto wah, tremolo and auto-pan, drive, amp, spring reverb. Presets can't carry them yet.
 - **Missing:** electric grand, acoustic piano; the sustain pedal reaching instruments.

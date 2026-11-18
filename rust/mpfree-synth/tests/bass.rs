@@ -117,7 +117,9 @@ fn params_and_presets_are_valid() {
     assert_eq!(b.info().id, "mpfree.bass");
     let names: Vec<_> = Bass::presets().iter().map(|p| p.name).collect();
     assert_eq!(names[0], "Init");
-    assert_eq!(names.len(), 32);
+    // 32 engine presets and two sounds with their own effects (Amp Bass,
+    // Tube 808).
+    assert_eq!(names.len(), 34);
     for (i, a) in names.iter().enumerate() {
         assert!(!names[..i].contains(a), "{a} twice");
     }

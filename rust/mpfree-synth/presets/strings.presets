@@ -1,0 +1,456 @@
+mpfree-preset = 1
+engine = mpfree.strings
+name = Init
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Classic Strings
+
+# Registers
+registers.violin = 100
+registers.viola = 80
+registers.cello = 35
+
+# Swell
+swell.crescendo = 300
+swell.sustain = 1800
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Bright Strings
+
+# Registers
+registers.violin = 100
+registers.viola = 40
+
+# Tone
+tone.brightness = 75
+tone.body = 60
+
+# Swell
+swell.crescendo = 150
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Cello and Viola
+
+# Registers
+registers.violin = 0
+registers.viola = 90
+registers.cello = 100
+
+# Tone
+tone.brightness = 40
+
+# Swell
+swell.crescendo = 350
+swell.sustain = 2000
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Full Ensemble
+
+# Registers
+registers.violin = 90
+registers.viola = 80
+registers.cello = 70
+registers.contrabass = 40
+
+# Swell
+swell.sustain = 2200
+
+# Ensemble
+ensemble.lines = 4
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Orchestra
+
+# Registers
+registers.violin = 80
+registers.viola = 60
+registers.cello = 60
+registers.horn = 60
+registers.trumpet = 30
+
+# Swell
+swell.crescendo = 200
+swell.sustain = 1600
+
+# Output
+output.level = -2
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Brass Ensemble
+
+# Registers
+registers.violin = 0
+registers.viola = 0
+registers.horn = 100
+registers.trumpet = 70
+
+# Swell
+swell.crescendo = 60
+swell.sustain = 600
+swell.velocity = 20
+
+# Ensemble
+ensemble.ensemble = 60
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Slow Swell
+
+# Registers
+registers.violin = 90
+registers.viola = 90
+registers.cello = 40
+
+# Swell
+swell.crescendo = 2500
+swell.sustain = 4000
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Staccato Strings
+
+# Registers
+registers.violin = 100
+registers.viola = 60
+registers.cello = 30
+
+# Tone
+tone.bow-noise = 25
+
+# Swell
+swell.crescendo = 12
+swell.sustain = 220
+swell.velocity = 18
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Swirl Strings
+
+# Registers
+registers.violin = 100
+registers.viola = 70
+
+# Swell
+swell.sustain = 2500
+
+# Ensemble
+ensemble.lines = 4
+ensemble.slow-rate = 0.18
+ensemble.fast-rate = 5.9
+ensemble.depth = 140
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Dark Strings
+
+# Registers
+registers.violin = 30
+registers.viola = 90
+registers.cello = 70
+
+# Tone
+tone.brightness = 15
+tone.body = 70
+
+# Swell
+swell.sustain = 2500
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = High Strings
+
+# Registers
+registers.violin = 100
+registers.viola = 40
+registers.octave = 1
+
+# Tone
+tone.brightness = 55
+
+# Swell
+swell.crescendo = 450
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Low Strings
+
+# Registers
+registers.violin = 0
+registers.viola = 60
+registers.cello = 100
+registers.contrabass = 60
+
+# Tone
+tone.brightness = 60
+
+# Swell
+swell.crescendo = 250
+swell.sustain = 1200
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Paraphonic 70s
+
+# Registers
+registers.violin = 100
+registers.viola = 80
+
+# Swell
+swell.crescendo = 500
+swell.sustain = 2000
+swell.swell = Shared
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Disco Strings
+
+# Registers
+registers.violin = 100
+registers.viola = 50
+
+# Tone
+tone.brightness = 65
+
+# Swell
+swell.crescendo = 40
+swell.sustain = 900
+
+# Ensemble
+ensemble.fast-rate = 7
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Ballad Pad
+
+# Registers
+registers.violin = 40
+registers.viola = 80
+registers.cello = 60
+
+# Swell
+swell.crescendo = 900
+swell.sustain = 3500
+
+# Ensemble
+ensemble.depth = 80
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Lo-fi Strings
+
+# Registers
+registers.violin = 100
+registers.viola = 60
+
+# Tone
+tone.brightness = 25
+tone.bow-noise = 45
+
+# Ensemble
+ensemble.depth = 160
+ensemble.width = 60
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Wide Strings
+
+# Registers
+registers.violin = 100
+registers.viola = 80
+
+# Ensemble
+ensemble.lines = 4
+ensemble.depth = 110
+ensemble.width = 100
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Mono Ensemble
+
+# Registers
+registers.violin = 100
+registers.viola = 80
+
+# Ensemble
+ensemble.width = 0
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Dry Divider
+
+# Registers
+registers.violin = 100
+registers.viola = 70
+
+# Ensemble
+ensemble.ensemble = 0
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Bowed
+
+# Registers
+registers.violin = 100
+registers.viola = 50
+
+# Tone
+tone.body = 80
+tone.bow-noise = 60
+
+# Swell
+swell.crescendo = 180
+swell.velocity = 20
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Horn Section
+
+# Registers
+registers.violin = 0
+registers.viola = 0
+registers.cello = 30
+registers.horn = 100
+
+# Swell
+swell.crescendo = 120
+swell.sustain = 700
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Brassy Lead
+
+# Registers
+registers.violin = 0
+registers.viola = 0
+registers.trumpet = 100
+
+# Swell
+swell.crescendo = 30
+swell.sustain = 400
+swell.velocity = 14
+
+# Ensemble
+ensemble.ensemble = 40
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Vox Strings
+
+# Registers
+registers.violin = 0
+registers.viola = 60
+registers.horn = 50
+
+# Tone
+tone.brightness = 35
+tone.body = 90
+
+# Swell
+swell.crescendo = 600
+swell.sustain = 2500
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Hall Strings
+fx.1 = mpfree.fx.room
+macro.1 = Crescendo
+macro.1.map = swell.crescendo 20 3000
+macro.2 = Sustain
+macro.2.map = swell.sustain 300 6000
+macro.3 = Ensemble
+macro.3.map = ensemble.depth 20 180
+macro.3.map = ensemble.width 60 100
+macro.4 = Brightness
+macro.4.map = tone.brightness 15 85
+macro.5 = Space
+macro.5.map = fx-1.mix 0 50
+
+# Macros
+macros.crescendo = 54
+macros.sustain = 60
+macros.ensemble = 50
+macros.brightness = 50
+macros.space = 60
+
+# Registers
+registers.violin = 100
+registers.viola = 80
+registers.cello = 35
+
+# Swell
+swell.crescendo = 299
+swell.sustain = 1810
+
+# Ensemble
+ensemble.depth = 100
+ensemble.width = 80
+
+# FX 1: a large room
+fx-1.pre-delay = 20
+fx-1.size = 80
+fx-1.decay = 2400
+fx-1.early = 50
+fx-1.low-cut = 150
+fx-1.mix = 30
+
+mpfree-preset = 1
+engine = mpfree.strings
+name = Space Strings
+fx.1 = mpfree.fx.tape_delay
+fx.2 = mpfree.fx.plate
+macro.1 = Crescendo
+macro.1.map = swell.crescendo 100 6000
+macro.2 = Sustain
+macro.2.map = swell.sustain 800 10000
+macro.3 = Ensemble
+macro.3.map = ensemble.depth 20 180
+macro.3.map = ensemble.width 60 100
+macro.4 = Brightness
+macro.4.map = tone.brightness 10 70
+macro.5 = Space
+macro.5.map = fx-1.mix 0 40
+macro.5.map = fx-2.mix 10 60
+
+# Macros
+macros.crescendo = 79
+macros.sustain = 64
+macros.ensemble = 50
+macros.brightness = 50
+macros.space = 50
+
+# Registers
+registers.violin = 90
+registers.viola = 90
+registers.cello = 40
+
+# Tone
+tone.brightness = 40
+
+# Swell
+swell.crescendo = 2539
+swell.sustain = 4028
+
+# Ensemble
+ensemble.depth = 100
+ensemble.width = 80
+
+# FX 1: a worn tape echo
+fx-1.time = 420
+fx-1.feedback = 40
+fx-1.wow = 30
+fx-1.flutter = 15
+fx-1.tone = 3500
+fx-1.mix = 20
+
+# FX 2: a long plate
+fx-2.pre-delay = 30
+fx-2.size = 120
+fx-2.decay = 4000
+fx-2.low-cut = 200
+fx-2.mix = 35

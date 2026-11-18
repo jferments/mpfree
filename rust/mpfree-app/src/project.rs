@@ -41,6 +41,7 @@ use std::fmt::Write as _;
 
 use mpfree_fx::ids::mixer as mx;
 use mpfree_fx::{Insert, Mixer, StripId};
+use mpfree_instruments::sound::is_design_key;
 use mpfree_library::Snapshot;
 use mpfree_node::Node;
 
@@ -921,7 +922,9 @@ pub struct Loaded {
 
 /// The instruments part: a `track` line for each track that has its own
 /// instrument (numbered from 1, as the screen shows them) with its node
-/// id and `key=value` extras, then its parameters and a plugin's state.
+/// id and `key=value` extras, then a `sound` line for each line of a
+/// sound's design (its effects and macros: `mpfree_instruments::Sound`),
+/// then its parameters and a plugin's state.
 /// Called on the audio thread when a project is saved (a few small
 /// allocations, once): a plugin's state is its last snapshot, never a
 /// round trip.
@@ -930,6 +933,11 @@ pub struct Loaded {
 /// mpfree-instruments 1
 /// track 2 mpfree.fm
 /// param 0 5
+/// track 3 mpfree.keys
+/// sound fx.1 = mpfree.fx.ensemble
+/// sound macro.1 = Space
+/// sound macro.1.map = fx-1.mix 0 80 linear
+/// param 64512 40
 /// track 4 clap:org.example.synth file=synth.clap
 /// param 0 0.5
 /// state AAECAw==
@@ -943,12 +951,19 @@ pub fn instruments_text(inst: &crate::instruments::Instruments) -> String {
             continue;
         };
         let _ = write!(s, "track {} {}", t + 1, node.info().id);
-        for (k, v) in node.save_extras() {
-            if word_ok(&k) && word_ok(&v) {
+        let extras = node.save_extras();
+        let (design, words): (Vec<_>, Vec<_>) = extras.iter().partition(|(k, _)| is_design_key(k));
+        for (k, v) in words {
+            if word_ok(k) && word_ok(v) {
                 let _ = write!(s, " {k}={v}");
             }
         }
         s.push('\n');
+        for (k, v) in design {
+            if word_ok(k) && !v.contains(['\n', '\r']) {
+                let _ = writeln!(s, "sound {k} = {v}");
+            }
+        }
         for p in node.params() {
             if !p.readonly {
                 let _ = writeln!(s, "param {} {}", p.id, node.param(p.id));
@@ -983,6 +998,10 @@ pub fn instruments_load(
     // The track being read: Some(None) while it is left out (its params
     // and state are skipped too).
     let mut open: Option<Option<Made>> = None;
+    // Its sound's design lines, put in before its first param or state
+    // (a sound's macros come first among its params, so they are set
+    // before what they move).
+    let mut design: Vec<(String, String)> = Vec::new();
     for (i, raw) in lines {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -990,7 +1009,14 @@ pub fn instruments_load(
         }
         let bad = || format!("line {}: {line}", i + 1);
         let mut w = line.split_whitespace();
-        match w.next() {
+        let first = w.next();
+        if !design.is_empty() && first != Some("sound") {
+            if let Some(Some(m)) = open.as_mut() {
+                design_in(m, &design, rate, &mut notes);
+            }
+            design.clear();
+        }
+        match first {
             Some("track") => {
                 if let Some(Some(m)) = open.take() {
                     made.push(m);
@@ -1031,6 +1057,14 @@ pub fn instruments_load(
                     },
                 });
             }
+            Some("sound") => {
+                if open.is_none() {
+                    return Err(bad());
+                }
+                let rest = line["sound".len()..].trim();
+                let (k, v) = rest.split_once('=').ok_or_else(bad)?;
+                design.push((k.trim().to_string(), v.trim().to_string()));
+            }
             Some("param") => {
                 let Some(o) = open.as_mut() else {
                     return Err(bad());
@@ -1062,6 +1096,11 @@ pub fn instruments_load(
             _ => {}
         }
     }
+    if let Some(Some(m)) = open.as_mut() {
+        if !design.is_empty() {
+            design_in(m, &design, rate, &mut notes);
+        }
+    }
     if let Some(Some(m)) = open.take() {
         made.push(m);
     }
@@ -1081,6 +1120,37 @@ pub fn instruments_load(
         })
         .collect();
     Ok((slots, notes))
+}
+
+/// Puts a track's sound's design (its `sound` lines) around the engine
+/// just made: the effects and macros its preset brought. One that can't
+/// be built leaves the engine plain, said in `notes`.
+fn design_in(
+    m: &mut (usize, Box<dyn Node>, u64),
+    lines: &[(String, String)],
+    rate: u32,
+    notes: &mut Vec<String>,
+) {
+    let (track, node, _) = m;
+    let id = node.info().id;
+    if crate::plugins::Plugins::is_plugin(id) {
+        return;
+    }
+    let Some(engine) = crate::synth::engine_node(id, rate) else {
+        return;
+    };
+    let built = mpfree_instruments::Sound::new(engine, &mpfree_instruments::Design::default())
+        .and_then(|mut s| s.set_design_lines(lines).map(|()| s));
+    match built {
+        Ok(mut s) => {
+            s.prepare_effects(rate, mpfree_node::MAX_BLOCK);
+            *node = Box::new(s);
+        }
+        Err(e) => notes.push(format!(
+            "project: track {}'s sound didn't build ({e}); it plays without its effects and macros",
+            *track + 1
+        )),
+    }
 }
 
 /// A track's instrument a project names: an engine at its defaults (the
@@ -1528,7 +1598,7 @@ mod tests {
         let synth = crate::synth::Synth::new(rate);
         let mut inst = Instruments::new(rate, PERIOD);
         assert_eq!(instruments_text(&inst), format!("{INSTRUMENTS_FORMAT}\n"));
-        let (fm, mut values) = synth.sound_of(Engine::Fm);
+        let (fm, extras, mut values) = synth.sound_of(Engine::Fm);
         let params = crate::synth::engine_node(fm, rate).unwrap().params();
         let k = params
             .iter()
@@ -1539,13 +1609,13 @@ mod tests {
         } else {
             params[k].max
         };
-        let made = make(&plugins, fm, &values, rate, PERIOD).unwrap();
+        let made = make(&plugins, fm, &extras, &values, rate, PERIOD).unwrap();
         let tuning = synth.tuning_now();
         assert!(inst
             .put(1, made, synth.pads_for(Engine::Fm), &tuning)
             .is_ok());
-        let (poly, pv) = synth.sound_of(Engine::Poly);
-        let made = make(&plugins, poly, &pv, rate, PERIOD).unwrap();
+        let (poly, px, pv) = synth.sound_of(Engine::Poly);
+        let made = make(&plugins, poly, &px, &pv, rate, PERIOD).unwrap();
         assert!(inst
             .put(3, made, synth.pads_for(Engine::Poly), &tuning)
             .is_ok());
@@ -1566,6 +1636,80 @@ mod tests {
         }
         let fm_back = slots[0].as_ref().unwrap().instrument.node();
         assert_eq!(fm_back.param(params[k].id), values[k], "its own sound");
+    }
+
+    /// A track's sound with its own effects and macros (a setting turned
+    /// after its macro moved) is written with its design and read back to
+    /// the bit; one whose design can't be built plays plain, said.
+    #[test]
+    fn a_tracks_sound_keeps_its_effects_and_macros() {
+        use crate::instruments::{make, Instruments};
+        use mpfree_instruments::sound::{FX_BASE, MACRO_BASE};
+        use mpfree_instruments::{Design, Macro, MacroMap, Sound};
+        let rate = 44_100;
+        let plugins = crate::plugins::Plugins::none();
+        let mut inst = Instruments::new(rate, PERIOD);
+        let design = Design {
+            fx: vec!["mpfree.fx.ensemble".into()],
+            macros: vec![Macro {
+                name: "Wide Space".into(),
+                maps: vec![MacroMap {
+                    target: FX_BASE + mpfree_fx::ids::ensemble::MIX,
+                    from: 0.0,
+                    to: 80.0,
+                    curve: mpfree_mod::MapCurve::S,
+                }],
+            }],
+        };
+        let mut sound = Sound::new(
+            crate::synth::engine_node("mpfree.keys", rate).unwrap(),
+            &design,
+        )
+        .unwrap();
+        sound.set_param(MACRO_BASE, 70.0);
+        sound.set_param(FX_BASE + mpfree_fx::ids::ensemble::MIX, 33.0);
+        let values: Vec<f32> = sound.params().iter().map(|p| sound.param(p.id)).collect();
+        let made = make(
+            &plugins,
+            "mpfree.keys",
+            &sound.save_extras(),
+            &values,
+            rate,
+            PERIOD,
+        )
+        .unwrap();
+        let pads = std::array::from_fn(|p| mpfree_arp::scale::pads::Pad::single(60 + p as i16));
+        assert!(inst
+            .put(2, made, pads, &mpfree_node::Tuning::standard())
+            .is_ok());
+        let text = instruments_text(&inst);
+        assert!(
+            text.contains("\ntrack 3 mpfree.keys\nsound fx.1 = mpfree.fx.ensemble\nsound macro.1 = Wide Space\nsound macro.1.map = fx-1.mix 0 80 s\nparam 64512 70\n"),
+            "{text}"
+        );
+        let (slots, notes) = instruments_load(&text, rate, &plugins).unwrap();
+        assert!(notes.is_empty(), "{notes:?}");
+        let back = slots[0].as_ref().unwrap().instrument.node();
+        assert_eq!(back.params().len(), sound.params().len());
+        for p in sound.params() {
+            assert_eq!(
+                back.param(p.id).to_bits(),
+                sound.param(p.id).to_bits(),
+                "{}",
+                p.name
+            );
+        }
+        // An effect this build hasn't got: the engine plays plain, said.
+        let odd = text.replace("mpfree.fx.ensemble", "mpfree.fx.sparkle");
+        let (slots, notes) = instruments_load(&odd, rate, &plugins).unwrap();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].contains("track 3's sound didn't build"),
+            "{notes:?}"
+        );
+        let plain = slots[0].as_ref().unwrap().instrument.node();
+        assert_eq!(plain.info().id, "mpfree.keys");
+        assert!(plain.params().iter().all(|p| p.id < FX_BASE));
     }
 
     /// A missing plugin, a track that isn't there or is named twice, and

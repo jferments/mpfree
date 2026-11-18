@@ -568,7 +568,7 @@ impl Drums {
     }
 
     pub fn presets() -> &'static [Preset] {
-        KITS
+        crate::factory::presets!("drums.presets", &INFO, &PARAMS)
     }
 
     /// Hits sounding or fading.

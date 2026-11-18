@@ -1,0 +1,629 @@
+mpfree-preset = 1
+engine = mpfree.bass
+name = Init
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Round Mono
+
+# Filter
+filter.cutoff = 600
+filter.resonance = 10
+filter.env-amount = 30
+filter.filter-decay = 400
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Pluck Bass
+
+# Filter
+filter.cutoff = 300
+filter.resonance = 25
+filter.env-amount = 70
+filter.filter-decay = 180
+
+# Amp
+amp.decay = 400
+amp.sustain = 30
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Resonant Sweep
+
+# Filter
+filter.cutoff = 250
+filter.resonance = 65
+filter.env-amount = 80
+filter.filter-decay = 600
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Square Sub
+
+# Source
+source.wave = Pulse
+source.sub = 60
+source.sub-mode = Square -2 oct
+
+# Filter
+filter.cutoff = 900
+filter.env-amount = 25
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Rubber Bass
+
+# Filter
+filter.cutoff = 200
+filter.resonance = 35
+filter.env-amount = 60
+filter.filter-decay = 1200
+
+# Play
+play.glide = 80
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Funk Bass
+
+# Filter
+filter.cutoff = 350
+filter.resonance = 55
+filter.env-amount = 90
+filter.filter-decay = 120
+
+# Amp
+amp.decay = 300
+amp.sustain = 60
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Synth Pop
+
+# Source
+source.sub = 70
+
+# Filter
+filter.cutoff = 1500
+filter.env-amount = 30
+filter.filter-decay = 200
+
+# Amp
+amp.decay = 350
+amp.sustain = 0
+amp.release = 60
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Power Bass
+
+# Source
+source.sub = 40
+source.fifth = 60
+
+# Filter
+filter.cutoff = 1200
+
+# Output
+output.drive = 35
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Fat Saw
+
+# Source
+source.sub = 70
+
+# Filter
+filter.cutoff = 1000
+filter.filter-drive = 60
+
+# Amp
+amp.vel-tone = 50
+
+# Output
+output.drive = 30
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Thin Pulse
+
+# Source
+source.wave = Pulse
+source.pulse-width = 20
+source.sub = 0
+
+# Filter
+filter.cutoff = 1800
+filter.env-amount = 20
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Soft Triangle
+
+# Source
+source.wave = Triangle
+source.sub = 0
+
+# Filter
+filter.cutoff = 4000
+filter.resonance = 0
+filter.env-amount = 0
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Noisy Bass
+
+# Source
+source.noise = 30
+
+# Filter
+filter.cutoff = 900
+filter.resonance = 30
+filter.env-amount = 50
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Glide Bass
+
+# Filter
+filter.cutoff = 1400
+filter.resonance = 30
+
+# Play
+play.glide = 150
+play.glide-on = Always
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Low Note Lines
+
+# Filter
+filter.cutoff = 500
+filter.env-amount = 60
+filter.filter-decay = 150
+
+# Play
+play.glide = 0
+play.priority = Low
+play.retrigger = On
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Growl Press
+
+# Filter
+filter.cutoff = 700
+
+# Output
+output.drive = 20
+
+# Pressure
+pressure.press-to = Drive
+pressure.pressure = 80
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Press Wah
+
+# Filter
+filter.cutoff = 300
+filter.resonance = 50
+filter.env-amount = 20
+
+# Pressure
+pressure.press-to = Cutoff
+pressure.pressure = 70
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Sub Sine
+
+# Body
+body.body = 808
+
+# Source
+source.wave = Sine
+source.sub = 0
+
+# Output
+output.drive = 0
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Sub Triangle
+
+# Body
+body.body = 808
+
+# Source
+source.wave = Triangle
+source.sub = 0
+
+# Output
+output.drive = 0
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = 808
+
+# Body
+body.body = 808
+
+# Source
+source.wave = Sine
+source.sub = 0
+
+# Pitch
+pitch.punch = 50
+pitch.drop = 12
+pitch.drop-time = 40
+
+# Amp
+amp.release = 300
+
+# Play
+play.glide = 80
+
+# Output
+output.drive = 40
+output.tone = 4000
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Long 808
+
+# Body
+body.body = 808
+
+# Source
+source.wave = Sine
+source.sub = 0
+
+# Pitch
+pitch.punch = 40
+pitch.drop = 7
+pitch.drop-time = 60
+
+# Amp
+amp.release = 1500
+
+# Play
+play.glide = 80
+
+# Output
+output.drive = 35
+output.tone = 4000
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Distorted 808
+
+# Body
+body.body = 808
+
+# Source
+source.wave = Sine
+source.sub = 0
+
+# Pitch
+pitch.punch = 60
+pitch.drop = 12
+pitch.drop-time = 40
+
+# Amp
+amp.release = 400
+
+# Play
+play.glide = 80
+
+# Output
+output.drive = 90
+output.drive-mode = Hard
+output.tone = 3000
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = 808 Slide
+
+# Body
+body.body = 808
+
+# Source
+source.wave = Sine
+source.sub = 0
+
+# Pitch
+pitch.punch = 40
+pitch.drop = 5
+pitch.drop-time = 30
+
+# Amp
+amp.release = 600
+
+# Play
+play.glide = 120
+
+# Output
+output.drive = 40
+output.tone = 4000
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = 808 Kick Bass
+
+# Body
+body.body = 808
+
+# Source
+source.wave = Sine
+source.sub = 0
+
+# Pitch
+pitch.punch = 100
+pitch.drop = 24
+pitch.drop-time = 60
+
+# Amp
+amp.decay = 900
+amp.sustain = 0
+amp.release = 300
+
+# Output
+output.drive = 45
+output.tone = 4000
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Short 808
+
+# Body
+body.body = 808
+
+# Source
+source.wave = Sine
+source.sub = 0
+
+# Pitch
+pitch.punch = 50
+pitch.drop = 12
+pitch.drop-time = 35
+
+# Amp
+amp.decay = 400
+amp.sustain = 0
+amp.release = 150
+
+# Output
+output.drive = 35
+output.tone = 4000
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = 808 Vibrato
+
+# Body
+body.body = 808
+
+# Source
+source.wave = Sine
+source.sub = 0
+
+# Pitch
+pitch.punch = 40
+pitch.drop = 7
+
+# Amp
+amp.release = 800
+
+# Play
+play.glide = 80
+
+# Output
+output.drive = 35
+output.tone = 4000
+
+# Pressure
+pressure.press-to = Vibrato
+pressure.pressure = 80
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Reese
+
+# Body
+body.body = Reese
+
+# Source
+source.sub = 60
+source.sub-mode = Sine
+
+# Filter
+filter.cutoff = 2500
+filter.resonance = 10
+filter.env-amount = 0
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Dark Reese
+
+# Body
+body.body = Reese
+
+# Source
+source.sub = 70
+source.sub-mode = Sine
+source.detune = 20
+
+# Filter
+filter.cutoff = 700
+filter.resonance = 20
+filter.env-amount = 0
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Wide Detune
+
+# Body
+body.body = Reese
+
+# Source
+source.sub = 60
+source.sub-mode = Sine
+source.detune = 60
+
+# Filter
+filter.cutoff = 3000
+filter.env-amount = 0
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Soft Reese
+
+# Body
+body.body = Reese
+
+# Source
+source.wave = Triangle
+source.sub = 70
+source.sub-mode = Sine
+source.detune = 40
+
+# Filter
+filter.cutoff = 4000
+filter.env-amount = 0
+
+# Output
+output.drive = 30
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Growl Reese
+
+# Body
+body.body = Reese
+
+# Source
+source.sub = 60
+source.sub-mode = Sine
+
+# Filter
+filter.cutoff = 1200
+filter.resonance = 35
+filter.env-amount = 0
+filter.filter-drive = 70
+
+# Output
+output.drive = 40
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Reese Sweep
+
+# Body
+body.body = Reese
+
+# Source
+source.sub = 60
+source.sub-mode = Sine
+
+# Filter
+filter.cutoff = 300
+filter.resonance = 40
+filter.env-amount = 70
+filter.filter-decay = 1500
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Amp Bass
+fx.1 = mpfree.fx.amp
+macro.1 = Cutoff
+macro.1.map = filter.cutoff 100 3000
+macro.2 = Env amount
+macro.2.map = filter.env-amount 0 100
+macro.3 = Drive
+macro.3.map = fx-1.gain 1 9
+macro.3.map = output.drive 0 60
+macro.4 = Glide
+macro.4.map = play.glide 0 300
+
+# Macros
+macros.cutoff = 50
+macros.env-amount = 50
+macros.drive = 20
+macros.glide = 20
+
+# Filter
+filter.cutoff = 548
+filter.resonance = 25
+filter.env-amount = 50
+filter.filter-decay = 250
+
+# Amp
+amp.decay = 800
+amp.sustain = 70
+amp.vel-tone = 80
+
+# Play
+play.glide = 60
+
+# Output
+output.drive = 12
+
+# FX 1: a crunchy amp into a bass cabinet
+fx-1.model = Crunch
+fx-1.gain = 2.6
+fx-1.bass = 7
+fx-1.mid = 6
+fx-1.treble = 4
+fx-1.cab = 1x15 bass
+fx-1.depth = 7
+fx-1.level = -5
+
+mpfree-preset = 1
+engine = mpfree.bass
+name = Tube 808
+fx.1 = mpfree.fx.drive
+macro.1 = Drop
+macro.1.map = pitch.drop 0 24
+macro.2 = Decay
+macro.2.map = amp.release 50 3000
+macro.3 = Drive
+macro.3.map = fx-1.drive 0 24
+macro.3.map = output.drive 30 90
+macro.4 = Tone
+macro.4.map = output.tone 1000 12000
+
+# Macros
+macros.drop = 50
+macros.decay = 44
+macros.drive = 50
+macros.tone = 56
+
+# Body
+body.body = 808
+
+# Source
+source.wave = Sine
+source.sub = 0
+
+# Pitch
+pitch.punch = 50
+pitch.drop = 12
+pitch.drop-time = 40
+
+# Amp
+amp.release = 303
+amp.velocity = 16
+
+# Play
+play.glide = 80
+
+# Output
+output.drive = 60
+output.tone = 4021
+
+# FX 1: a tube drive
+fx-1.mode = Tube
+fx-1.drive = 12
+fx-1.output = -4

@@ -402,7 +402,7 @@ impl Pluck {
     }
 
     pub fn presets() -> &'static [Preset] {
-        PRESETS
+        crate::factory::presets!("pluck.presets", &INFO, PARAMS)
     }
 
     /// Voices sounding or fading.
