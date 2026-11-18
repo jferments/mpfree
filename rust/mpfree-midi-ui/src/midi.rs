@@ -146,18 +146,25 @@ fn mpe_zone(m: &IoModel, port: &str) -> Option<mpfree_midi::mpe::Zone> {
 }
 
 fn plays_on_index(m: &IoModel, t: &Option<TrackOut>) -> usize {
-    // On MPE gear any channel is the port's one choice.
-    let key = |o: &Option<TrackOut>| {
-        o.as_ref().map(|t| {
-            let ch = mpe_zone(m, &t.port).map_or(Some(t.channel), |_| None);
-            (t.port.clone(), ch)
-        })
-    };
-    let want = key(t);
-    plays_on_list(m)
-        .iter()
-        .position(|o| key(o) == want)
+    plays_on_index_in(m, &plays_on_list(m), t)
+}
+
+/// [`plays_on_index`] in a list made once ([`plays_on_list`]), for the
+/// rows of up to 128 tracks.
+fn plays_on_index_in(m: &IoModel, list: &[Option<TrackOut>], t: &Option<TrackOut>) -> usize {
+    let want = plays_on_key(m, t);
+    list.iter()
+        .position(|o| plays_on_key(m, o) == want)
         .unwrap_or(0)
+}
+
+/// What makes two Plays on the same: the port and channel; on MPE gear
+/// any channel is the port's one choice.
+fn plays_on_key<'a>(m: &IoModel, o: &'a Option<TrackOut>) -> Option<(&'a str, Option<u8>)> {
+    o.as_ref().map(|t| {
+        let ch = mpe_zone(m, &t.port).map_or(Some(t.channel), |_| None);
+        (t.port.as_str(), ch)
+    })
 }
 
 fn tracks_shown(m: &IoModel) -> usize {
@@ -248,11 +255,13 @@ impl Form for Midi {
             rows.push(row);
         }
         rows.push(Row::heading("Tracks out", vec!["Plays on", "Program"]));
+        // Made once: up to 128 tracks pick from it.
+        let list = plays_on_list(m);
+        let n = list.len();
         for i in 0..tracks_shown(m) {
             let t = &m.setup.tracks[i];
             let mut row = Row::item(format!("track:{i}"), track_name(m, i));
-            let n = plays_on_list(m).len();
-            let at = plays_on_index(m, t);
+            let at = plays_on_index_in(m, &list, t);
             match t {
                 None => {
                     row = row
@@ -533,6 +542,27 @@ mod tests {
         assert_eq!(row(&r, "port:MIDI").fields[0].text, "Both");
         assert_eq!(row(&r, "track:1").fields[0].text, INSIDE);
         assert!(!row(&r, "track:1").fields[1].enabled);
+    }
+
+    /// Tracks out lists every track of the project, all 128 of a full
+    /// one, and the last can play out of the jacks like the first.
+    #[test]
+    fn every_one_of_128_tracks_can_play_outside_gear() {
+        let s = model();
+        s.lock().unwrap().live.tracks = (1..=MAX_TRACKS).map(|i| format!("T{i}")).collect();
+        let r = rows(&s);
+        let tracks = r.iter().filter(|r| r.key.starts_with("track:")).count();
+        assert_eq!(tracks, MAX_TRACKS);
+        assert_eq!(row(&r, "track:127").title, "T128");
+        assert!(Midi.pick(&mut s.lock().unwrap(), "track:127", 0, 1, 4));
+        assert_eq!(
+            s.lock().unwrap().setup.tracks[127],
+            Some(TrackOut::new(DIN_NAME, 4))
+        );
+        let r = rows(&s);
+        assert_eq!(row(&r, "track:127").fields[0].text, "MIDI · ch 5");
+        // Past the last track there is none.
+        assert!(!Midi.pick(&mut s.lock().unwrap(), "track:128", 0, 1, 4));
     }
 
     /// A port named on its page shows that name on its row and in the
