@@ -3642,7 +3642,136 @@ mod tests {
             root: false,
             label: None,
             empty: false,
+            lock: None,
         }
+    }
+
+    /// The Sequencer's lock lanes (the redesign's board 3): each under its
+    /// sound, the track's after them all; a tap on a step's cell gives it
+    /// on the lift, a drag turns it a detent each 8 px up, the wheel does
+    /// too, the × takes the lane off on the lift, + Lane is on the head,
+    /// and a swipe moves the rows once they don't all fit.
+    #[test]
+    fn lock_lanes_hang_under_their_sounds_and_a_drag_turns_a_lock() {
+        let lock = |id: usize, owner: Option<usize>, name: &str| Lane {
+            name: name.into(),
+            lock: Some(LockCells {
+                sub: "lock lane".into(),
+                owner,
+                cells: (0..16)
+                    .map(|s| (s == 6).then(|| (0.5, "180 ms".to_string())))
+                    .collect(),
+            }),
+            ..lane(LOCK_LANE + id, &[])
+        };
+        let mut g = StepGrid {
+            steps: 16,
+            length: 16,
+            pages: 1,
+            add_lane: true,
+            ..Default::default()
+        };
+        g.lanes = (0..8).map(|p| lane(p, &[0; 16])).collect();
+        g.lanes.push(lock(0, Some(2), "Decay"));
+        g.lanes.push(lock(1, None, "Delay send"));
+        let r = Rect::new(0, 0, 1038, 330);
+        let rows = g.rows_shown(r);
+        // The sounds that fit (pad 3 among them), then the two lock lanes.
+        let n = rows.min(8) + 2;
+        assert!(rows < n, "{rows}: a swipe shows the rest");
+        let shown = g.lanes_shown(r);
+        assert_eq!(shown[..4], [0, 1, 2, LOCK_LANE], "Decay under pad 3");
+        // + Lane, on the press.
+        let ts = g.targets(r);
+        let plus = ts
+            .iter()
+            .find(|t| t.id == "head" && t.index == HEAD_LANE)
+            .expect("+ Lane")
+            .rect;
+        assert_eq!(
+            g.touch(1, Touch::Down, plus.x + 8, plus.y + plus.h / 2, r),
+            Some(EventKind::Tab(HEAD_LANE))
+        );
+        g.touch(1, Touch::Up, plus.x + 8, plus.y + plus.h / 2, r);
+        // A lock lane's cells are values to drag; the wheel turns them.
+        let cells: Vec<&Target> = ts.iter().filter(|t| t.id == "lock").collect();
+        assert_eq!(cells.len(), 16, "Decay's; the send's lane is below");
+        assert!(g.steps(cells[6]));
+        assert_eq!(
+            g.step(cells[6], -3, r),
+            Some(EventKind::Step {
+                index: LOCK_LANE + 6,
+                delta: -3
+            })
+        );
+        // A tap: on the lift.
+        let (x, y) = g.step_at(r, 3, 6);
+        assert_eq!(g.touch(2, Touch::Down, x, y, r), None);
+        assert_eq!(
+            g.touch(2, Touch::Up, x, y, r),
+            Some(EventKind::Cell {
+                row: LOCK_LANE,
+                col: 6
+            })
+        );
+        // A drag: a detent each 8 px up, and no tap at the lift.
+        assert_eq!(g.touch(3, Touch::Down, x, y, r), None);
+        assert_eq!(g.touch(3, Touch::Move, x, y - 5, r), None);
+        assert_eq!(
+            g.touch(3, Touch::Move, x, y - 17, r),
+            Some(EventKind::Step {
+                index: LOCK_LANE + 6,
+                delta: 2
+            })
+        );
+        assert_eq!(
+            g.touch(3, Touch::Move, x, y + 8, r),
+            Some(EventKind::Step {
+                index: LOCK_LANE + 6,
+                delta: -3
+            })
+        );
+        assert_eq!(g.touch(3, Touch::Up, x, y + 8, r), None);
+        // The ×: the lane off, on the lift.
+        let off = ts
+            .iter()
+            .find(|t| t.id == "lock-lane-off" && t.index == 0)
+            .expect("Decay's ×")
+            .rect;
+        let (x, y) = (off.x + off.w / 2, off.y + off.h / 2);
+        assert_eq!(g.touch(4, Touch::Down, x, y, r), None);
+        assert_eq!(
+            g.touch(4, Touch::Up, x, y, r),
+            Some(EventKind::Toggle(LOCK_LANE))
+        );
+        // A swipe up: the rows below, to the track's lane at the end.
+        let (x, y) = g.step_at(r, 0, 3);
+        let pitch = g.step_at(r, 1, 0).1 - g.step_at(r, 0, 0).1;
+        assert_eq!(g.touch(5, Touch::Down, x, y, r), None);
+        assert_eq!(
+            g.touch(5, Touch::Move, x, y - 20 * pitch, r),
+            Some(EventKind::Step {
+                index: ROWS,
+                delta: (n - rows) as i32
+            })
+        );
+        g.touch(5, Touch::Up, x, y - 20 * pitch, r);
+        assert_eq!(g.steps_last_top(r), n - rows);
+        g.top = g.steps_last_top(r);
+        assert_eq!(g.lanes_shown(r).last(), Some(&(LOCK_LANE + 1)));
+        // + Lane's new lane: the rows stay where it shows already, or
+        // move just far enough to show it.
+        assert_eq!(g.top_showing(r, LOCK_LANE), Some(n - rows));
+        g.top = 0;
+        assert_eq!(g.top_showing(r, LOCK_LANE + 1), Some(n - rows));
+        // No clip yet: + Lane waits.
+        g.length = 0;
+        let plus = g
+            .targets(r)
+            .into_iter()
+            .find(|t| t.id == "head" && t.index == HEAD_LANE)
+            .unwrap();
+        assert!(!plus.enabled);
     }
 
     /// Play's rows (the Play, Pads and Sequencer redesign's board 1): the
