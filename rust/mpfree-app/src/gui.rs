@@ -10470,6 +10470,11 @@ impl Player {
             let name = self.auto_synth_name();
             self.sample.set_auto_synth(&mut self.ui, name);
             self.sample.event(&mut self.ui, &ev, &mut self.outbox);
+            // The Wave page's REC goes to the arm with the press, not a
+            // frame later.
+            if let Some((kit, pad)) = self.sample.take_rec_here() {
+                self.outbox.push(FromUi::RecHere { kit, pad });
+            }
             if let Some(ask) = self.sample.take_number_ask() {
                 self.open_numpad(ask, TypeTo::Sample);
             }
