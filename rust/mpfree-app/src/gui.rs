@@ -216,6 +216,10 @@ fn learning_hint(name: &str) -> String {
     )
 }
 
+/// SHIFT held on the Pads tab's Perform view (board 7's Learn a key).
+const SHIFT_PERFORM_HINT: &str = "SHIFT + a pad: learn a key on your gear for it   ·   \
+     SHIFT + wheel: pick a pad   ·   SHIFT + UNDO: redo";
+
 /// SHIFT held on Arrange's Clips grid (sequencer S5: a tap learns).
 const SHIFT_CLIPS_HINT: &str =
     "SHIFT +   tap a clip, a scene or a track's name: MIDI Learn   ·   drag a clip: copy   ·   \
@@ -915,6 +919,10 @@ pub enum ToUi {
     /// recording ([`desk::take_waits`](crate::desk::take_waits); one-page
     /// step 2c).
     KeepLast,
+    /// How loud Monitor plays the line input, dB: the mixer's Input 1
+    /// fader, said when it changes (the Sample page's recorder, one-page
+    /// step 2d).
+    LineLevel(f32),
     /// The wheel, its push, - or + for the outline ([`Player::nav`]).
     Nav(Nav),
     /// The wheel or - / + turned the control a finger rests on by `delta`
@@ -1600,6 +1608,10 @@ pub enum FromUi {
     /// the mix (the Rec tab's Source). The audio thread points the mixer's
     /// sampler capture point at it and starts the buffer afresh.
     SampleSource(crate::sampler::RecSource),
+    /// The recorder's Gain, dB (one-page step 2d): the line input is
+    /// turned by it on its way into the sampler's buffer, so the meter,
+    /// the threshold and the take hear it; the looper and Monitor don't.
+    SampleGain(f32),
     /// The Pads tab's Effects row on kit `kit`'s pad `pad`: its chain in
     /// the Mix tab (lent a channel if it has none), with ‹ back to the
     /// Pads tab ([`crate::modpanels::Panels::open_pad_mix`]).
@@ -2336,22 +2348,26 @@ impl Player {
     }
 
     /// Whether kit `k` is one of the empty kits kept for New kit and
-    /// still out of use: no sounds, no track playing it, not on the pads.
+    /// still out of use: no sounds, no track playing it, not on the pads,
+    /// and not set aside with a track UNDO took away (REDO brings it back).
     fn spare_kit(&self, k: usize) -> bool {
         self.kits.get(k).is_some_and(|v| {
             v.user
                 && k != self.kit
                 && !self.track_kits.plays(k)
+                && !self.track_kits.set_aside(k)
                 && v.pads.iter().all(Option::is_none)
         })
     }
 
     /// The list of kits (Play's "pads play", the Pads tab's Kit): every
-    /// kit and the synth, but
-    /// the spare user kits, then **New kit** while one is left (None).
+    /// kit and the synth, but the spare user kits and the kits set aside
+    /// with a track UNDO took away (unless on the pads), then **New kit**
+    /// while one is left (None).
     fn kit_rows(&self) -> Vec<Option<usize>> {
         let mut rows: Vec<Option<usize>> = (0..self.kits.len())
             .filter(|&k| !self.spare_kit(k))
+            .filter(|&k| k == self.kit || !self.track_kits.set_aside(k))
             .map(Some)
             .collect();
         if (0..self.kits.len()).any(|k| self.spare_kit(k)) {
@@ -3787,7 +3803,13 @@ impl Player {
             .ui
             .get::<mpfree_mixer_ui::MixerView>(mpfree_mixer_ui::MIXER)
             .map(|m| m.state());
-        let strip = state.and_then(|s| s.strip(StripId::Track(self.play.steps.track)));
+        // The knobs lock "this track's strip": Drums for track 1, its own
+        // for the rest (R3 part 4b).
+        let strip = state.and_then(|s| {
+            s.strip(StripId::Track(crate::mixing::track_channel(
+                self.play.steps.track,
+            )))
+        });
         let info = |id: u16| {
             mpfree_fx::strip_params()
                 .iter()
@@ -5394,6 +5416,8 @@ impl Player {
             SHIFT_SYNTH_HINT.to_string()
         } else if self.status.shift && self.ready && self.clips_showing() {
             SHIFT_CLIPS_HINT.to_string()
+        } else if self.status.shift && self.ready && self.perform_showing() {
+            SHIFT_PERFORM_HINT.to_string()
         } else if self.status.shift && self.ready && self.view == View::Sample {
             SHIFT_SAMPLE_HINT.to_string()
         } else if self.status.shift && self.ready && self.status.steps.is_some_and(|s| !s.picking) {
@@ -5516,14 +5540,14 @@ impl Player {
                                        self.synth.as_ref().map_or("the synth", |p| p.state.info.name)),
                 // REC on the Wave page (one-page step 2a): a pad take, so
                 // REC, STOP and UNDO end it or throw it away (the music
-                // plays on); the Q-Links turn the Input's Threshold and
-                // Pre-roll.
+                // plays on); the Q-Links turn the Input's Gain, Threshold,
+                // Pre-roll and Monitor's level (step 2d).
                 View::Sample if self.sample.page() == sample_page::PAGE && self.sample.pad_take_on() => {
                     "REC again or STOP: stop and keep the take   ·   UNDO: throw it away   ·   the music plays on   ·   \
-                     Q-Links 2-3: Threshold, Pre-roll".to_string()
+                     Q-Links 1-4: Gain, Threshold, Pre-roll, Monitor".to_string()
                 }
                 View::Sample if self.sample.page() == sample_page::PAGE && self.sample.recorder_on() => {
-                    format!("Tap REC: stop, keep the take   ·   Q-Links 2-3: Threshold, Pre-roll   ·   {ROWS_HINT}   ·   \
+                    format!("Tap REC: stop, keep the take   ·   Q-Links 1-4: Gain, Threshold, Pre-roll, Monitor   ·   {ROWS_HINT}   ·   \
                      SHIFT + - / +: zoom")
                 }
                 // A take kept on the page (one-page step 2b): it stays until
@@ -5761,6 +5785,9 @@ impl Player {
         // The sampler keeps the line input only while it is on.
         let line = self.settings.line_input;
         self.sample.set_line_input(&mut self.ui, line);
+        // The recorder's Monitor is the Looper's (one-page step 2d).
+        let monitor = self.settings.loop_monitor;
+        self.sample.set_monitor(&mut self.ui, monitor);
         self.print_sample_lines();
         if retab {
             let debug = self.settings.debug_mode;
@@ -6892,6 +6919,7 @@ impl Player {
             ToUi::PadTake(d) => self.sample.pad_take(&mut self.ui, d),
             ToUi::RecHereNo(why) => self.sample.rec_here_refused(&mut self.ui, why),
             ToUi::KeepLast => self.keep_last(),
+            ToUi::LineLevel(db) => self.sample.set_monitor_level(&mut self.ui, db),
             ToUi::Nav(n) => self.nav(n),
             ToUi::Held { delta, fine } => self.held_turn(delta, fine),
             ToUi::TurnsReady { synth, mixer } => self.turns_ready = (synth, mixer),
@@ -8228,6 +8256,7 @@ impl Player {
             FromUi::SampleGrains(c) => self.sample.cloud_unsent(c),
             FromUi::SampleInput(f) => self.sample.input_unsent(f),
             FromUi::SampleSource(src) => self.sample.source_unsent(src),
+            FromUi::SampleGain(_) => self.sample.gain_unsent(),
             FromUi::SamplePhrase(clip) => {
                 println!("sample: phrase {:?} found no room on its way to the clips; the pads have the slices", clip.name);
                 let _ = io::stdout().flush();
@@ -10649,6 +10678,14 @@ impl Player {
             };
         }
         if ev.widget.starts_with(crate::perform_tab::PREFIX) {
+            // SHIFT + a pad: Learn a key for it (layout spec 4d's SHIFT +
+            // a touch).
+            if self.status.shift {
+                if let Some(acts) = self.perform.learn_touch(&ev) {
+                    self.perform_acts(acts);
+                    return None;
+                }
+            }
             let names = self.perform_names();
             let acts = self.perform.event(&mut self.ui, &ev, &names);
             self.perform_acts(acts);
@@ -10664,10 +10701,12 @@ impl Player {
             self.sample.set_auto_synth(&mut self.ui, name);
             self.sample.event(&mut self.ui, &ev, &mut self.outbox);
             // The Wave page's REC goes to the arm with the press, not a
-            // frame later.
+            // frame later; Monitor's switch too.
             if let Some((kit, pad)) = self.sample.take_rec_here() {
                 self.outbox.push(FromUi::RecHere { kit, pad });
             }
+            let monitor = self.sample.take_monitor();
+            self.outbox.extend(monitor);
             if let Some(ask) = self.sample.take_number_ask() {
                 self.open_numpad(ask, TypeTo::Sample);
             }
@@ -11644,6 +11683,9 @@ impl Player {
         if let Some((kit, pad)) = self.sample.take_rec_here() {
             self.outbox.push(FromUi::RecHere { kit, pad });
         }
+        // Monitor's switch and level, turned on the recorder's Q-Link 4.
+        let monitor = self.sample.take_monitor();
+        self.outbox.extend(monitor);
         // The browser: its touches and the worker's answers (a save's too,
         // made from another page); a preview's file and an opened
         // project's loops once read.
@@ -15357,8 +15399,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     own.apply(ToUi::Show(View::Synth));
     out.push(("synth-track", own));
-    // The mixer with two tracks playing their own instruments (Poly on
-    // track 1, FM on track 2): their channels after Drums, Synth, Loop and Audio.
+    // The mixer with two tracks playing their own instruments: Poly on
+    // track 1 in the Drums strip, named "Track 1" for it, and FM on track 2
+    // in its own channel after Synth, Loop and Audio.
     let mut mixer = sample_player(fonts());
     mixer.apply(ToUi::Show(View::Mixer));
     mixer.apply(ToUi::Mixer(Box::new(sample_instrument_mixer(&fm))));
@@ -21764,6 +21807,61 @@ mod tests {
         assert_eq!(p.page(), "Loading");
     }
 
+    /// A kit set aside with a track UNDO took away is out of the list of
+    /// kits and no New kit's, until REDO gives it back to its track.
+    #[test]
+    fn a_kit_set_aside_by_a_track_undo_is_out_of_the_list_until_redo() {
+        use crate::sampler::TrackKits;
+        let mut p = sample_player(Fonts::embedded());
+        let synth = crate::synth::Synth::new(44_100);
+        let mut kits = sample_kits();
+        let n = kits.len();
+        for k in 0..2 {
+            kits.push(KitView {
+                name: format!("Kit {}", n + k + 1),
+                pads: vec![None; 128],
+                colour: [0x10, 0x10, 0x10],
+                chip: None,
+                synth: None,
+                pitches: Vec::new(),
+                user: true,
+                key: None,
+                tags: Vec::new(),
+            });
+        }
+        kits.push(synth.kit_view());
+        p.apply(ToUi::Kits(kits));
+        let names = |p: &Player| -> Vec<String> {
+            p.ui.get::<ListView>("kits")
+                .unwrap()
+                .items
+                .iter()
+                .map(|i| i.text.clone())
+                .collect()
+        };
+        // Track 4 played the first user kit; UNDO took the track away.
+        let mut tk = TrackKits::new(n + 2);
+        assert!(tk.set(3, n));
+        assert!(tk.follow(3, false, true));
+        p.apply(ToUi::TrackKits(Box::new(tk.clone())));
+        let l = names(&p);
+        assert!(!l.contains(&format!("Kit {}", n + 1)), "{l:?}");
+        assert_eq!(l.len(), n + 2, "the kits, the synth, New kit: {l:?}");
+        assert_eq!(l[n + 1], NEW_KIT);
+        // New kit takes the other user kit, never the one set aside.
+        let new_kit = p.on_event(UiEvent {
+            widget: "kits".into(),
+            kind: EventKind::Select(n + 1),
+        });
+        assert_eq!(new_kit, Some(FromUi::Kit(n + 1)));
+        // REDO: the track and its kit are back, and the kit is listed.
+        assert!(tk.follow(4, true, true));
+        p.apply(ToUi::TrackKits(Box::new(tk)));
+        let l = names(&p);
+        assert_eq!(l[n], format!("Kit {}", n + 1), "{l:?}");
+        assert_eq!(l.len(), n + 3, "{l:?}");
+    }
+
     #[test]
     fn new_kit_puts_an_empty_kit_on_the_track_and_a_shared_kit_loads_into_one() {
         use crate::sampler::TrackKits;
@@ -26155,14 +26253,22 @@ mod tests {
         );
         assert_eq!(
             panel(&p),
-            ["Source", "Channels", "Threshold", "Pre-roll", "Onto"]
+            [
+                "Source",
+                "Channels",
+                "Onto",
+                "Gain",
+                "Threshold",
+                "Pre-roll",
+                "Monitor"
+            ]
         );
         // The panel's Onto steps to Next empty while it records: the take
         // will land on A6.
         ev(
             &mut p,
             wave_tab::REGION,
-            EventKind::Step { index: 4, delta: 1 },
+            EventKind::Step { index: 2, delta: 1 },
         );
         assert_eq!(p.sample.rec_settings_now().onto, rec_tab::Onto::NextEmpty);
         assert!(
@@ -26173,12 +26279,13 @@ mod tests {
         let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
         assert!(
             hint(&p).starts_with("REC again or STOP: stop and keep the take")
-                && hint(&p).contains("Q-Links 2-3: Threshold, Pre-roll"),
+                && hint(&p).contains("Q-Links 1-4: Gain, Threshold, Pre-roll, Monitor"),
             "{}",
             hint(&p)
         );
-        // Q-Link 2 turns the Threshold, Q-Link 3 the Pre-roll: the Rec
-        // tab's settings; Q-Link 1 moves no marker meanwhile.
+        // Q-Link 2 turns the Threshold, Q-Link 3 the Pre-roll, Q-Link 1
+        // the Gain (step 2d): the Rec tab's settings; no marker moves
+        // meanwhile.
         let before = p.sample.rec_settings_now();
         p.apply(ToUi::SampleQLink(1, -2));
         p.apply(ToUi::SampleQLink(2, 1));
@@ -26187,6 +26294,7 @@ mod tests {
         let after = p.sample.rec_settings_now();
         assert!(after.threshold_db < before.threshold_db, "{after:?}");
         assert!(after.pre_roll_ms > before.pre_roll_ms, "{after:?}");
+        assert_eq!(after.gain_db, 3.0, "{after:?}");
         assert_eq!(row(&p).settings, after);
         p.tick(0.033);
         assert_eq!(rec_desk(&mut p, &mut arm, &stopped), 0, "no pad was edited");
@@ -26726,6 +26834,148 @@ mod tests {
             p.ui.get::<InputView>(rec_tab::VIEW).unwrap().note,
             rec_tab::OFF_NOTE
         );
+    }
+
+    /// One-page step 2d: while REC is on, the Input section has Gain and
+    /// Monitor, and the Q-Links turn Gain, Threshold, Pre-roll and
+    /// Monitor's level. Gain goes to the audio loop for the line input;
+    /// Monitor's switch is the Looper's (one setting), its level the
+    /// Input 1 strip's fader, shown as the audio loop says it. Resampling
+    /// a point in the mix, both are faint and say why.
+    #[test]
+    fn the_recorder_turns_the_line_inputs_gain_and_monitor_while_rec_is_on() {
+        use mpfree_sampler_ui::recorder::{self, Recorder, RecorderView, LINE_ONLY};
+        use mpfree_sampler_ui::sample::feed_input;
+        use mpfree_sampler_ui::wave_tab;
+        use mpfree_sampler_ui::widgets::{KnobCard, SettingList};
+        let mut p = sample_sampler(Fonts::embedded());
+        open_sample(&mut p, sample_page::Editor::Wave);
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let row = |p: &Player| -> RecorderView {
+            p.ui.get::<Recorder>(recorder::RECORDER)
+                .unwrap()
+                .view
+                .clone()
+        };
+        let panel = |p: &Player, name: &str| -> String {
+            let list = p.ui.get::<SettingList>(wave_tab::REGION).unwrap();
+            let k = list.rows.iter().position(|r| r.name == name).unwrap();
+            list.rows[k].value.clone()
+        };
+        let card = |p: &Player, k: usize| {
+            let c = p.ui.get::<KnobCard>(wave_tab::QLINKS[k]).unwrap();
+            (c.label.clone(), c.value.clone(), c.enabled)
+        };
+        let sent = |p: &mut Player| {
+            p.tick(0.033);
+            views(p.take_actions()).1
+        };
+        // The line input on, its monitor off; the audio loop says the
+        // Input 1 fader is at 0 dB.
+        let mut s = p.settings.clone();
+        s.line_input = true;
+        p.apply(ToUi::Settings(s.clone()));
+        p.apply(ToUi::LineLevel(0.0));
+        let Some(FromUi::SampleInput(Some(mut feed))) = sent(&mut p).pop() else {
+            panic!("the input's writer");
+        };
+        feed_input(&mut feed.0, 2.0, 0.4, true);
+        // REC: the pad take goes at once; the panel is Input.
+        let stopped = rec_now_in(mpfree_transport::State::Stopped);
+        let mut arm = crate::rec_arm::RecArm::default();
+        ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        feed_input(&mut feed.0, 0.5, 0.4, true);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert!(row(&p).recording);
+        assert_eq!(panel(&p, "Gain"), "+0 dB");
+        assert_eq!(panel(&p, "Monitor"), "Off");
+        assert_eq!(
+            card(&p, 0),
+            ("Q-Link 1 · Gain".into(), "+0 dB".into(), true)
+        );
+        assert_eq!(
+            card(&p, 3),
+            ("Q-Link 4 · Monitor".into(), "0.0 dB".into(), true)
+        );
+        let sub = |p: &Player| {
+            p.ui.get::<KnobCard>(wave_tab::QLINKS[3])
+                .unwrap()
+                .sub
+                .clone()
+        };
+        assert_eq!(sub(&p), recorder::MONITOR_OFF);
+        // Q-Link 1 turns Gain up 6 dB: the audio loop is told, once.
+        p.apply(ToUi::SampleQLink(0, 6));
+        p.apply(ToUi::SampleLift);
+        let acts = sent(&mut p);
+        assert!(
+            matches!(acts.as_slice(), [FromUi::SampleGain(g)] if *g == 6.0),
+            "{acts:?}"
+        );
+        assert_eq!(p.sample.rec_settings_now().gain_db, 6.0);
+        assert_eq!(card(&p, 0).1, "+6 dB");
+        assert!(sent(&mut p).is_empty(), "said once");
+        // Monitor's switch is the Looper's: the same message as its
+        // Monitor button; the settings coming back keep it on.
+        ev(
+            &mut p,
+            wave_tab::REGION,
+            EventKind::Step { index: 6, delta: 1 },
+        );
+        let acts = sent(&mut p);
+        assert!(
+            matches!(
+                acts.as_slice(),
+                [FromUi::Looper(b)] if *b == crate::looper_page::B_MONITOR
+            ),
+            "{acts:?}"
+        );
+        s.loop_monitor = true;
+        p.apply(ToUi::Settings(s.clone()));
+        p.tick(0.033);
+        assert_eq!(panel(&p, "Monitor"), "0.0 dB");
+        assert!(row(&p).monitor.on);
+        assert_eq!(sub(&p), "", "heard");
+        // Q-Link 4 turns its level down: the Input 1 strip's fader.
+        p.apply(ToUi::SampleQLink(3, -3));
+        p.apply(ToUi::SampleLift);
+        let acts = sent(&mut p);
+        let db = match acts.as_slice() {
+            [FromUi::Mixer(mpfree_mixer_ui::MixAction::Set { strip, id, value })]
+                if *strip == crate::mixing::LINE && *id == mpfree_fx::ids::mixer::VOLUME =>
+            {
+                *value
+            }
+            _ => panic!("{acts:?}"),
+        };
+        assert!(db < 0.0 && db > -12.0, "as the Mix tab turns a fader: {db}");
+        p.apply(ToUi::LineLevel(db));
+        p.tick(0.033);
+        assert_eq!(card(&p, 3).1, mpfree_mixer_ui::view::db_text(db));
+        // REC again: the take lands, and the region's settings are back.
+        ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert!(!row(&p).recording);
+        assert_eq!(row(&p).line_only, None);
+        // Resampling the master: Gain and Monitor are the line input's.
+        ev(
+            &mut p,
+            recorder::RECORDER,
+            EventKind::Step { index: 0, delta: 1 },
+        );
+        p.tick(0.033);
+        assert_eq!(row(&p).line_only.as_deref(), Some(LINE_ONLY));
     }
 
     /// One-page step 2c (the plan's decision 4): the recorder row's Keep
@@ -28189,6 +28439,49 @@ mod tests {
     }
 
     #[test]
+    fn the_sample_pages_tools_open_the_pages_not_on_it_yet() {
+        use mpfree_sampler_ui::wave_tab::{self, Tool};
+        let mut p = sample_sampler(Fonts::embedded());
+        assert_eq!(p.page(), sample_page::PAGE);
+        // Slice, Warp and Grain aren't on the page yet: each opens its old
+        // page, and the pad bar's first tab comes back to Trim.
+        for (i, page) in [
+            (1, sample_page::CHOP_PAGE),
+            (2, sample_page::WARP_PAGE),
+            (3, sample_page::GRAIN_PAGE),
+        ] {
+            p.on_event(UiEvent {
+                widget: wave_tab::TOOLS.into(),
+                kind: EventKind::Tab(i),
+            });
+            assert_eq!(p.page(), page, "{:?}", Tool::ALL[i]);
+            let bar = match page {
+                sample_page::CHOP_PAGE => "smp-chop-bar",
+                sample_page::WARP_PAGE => "smp-warp-bar",
+                _ => "smp-grain-bar",
+            };
+            p.on_event(UiEvent {
+                widget: bar.into(),
+                kind: EventKind::Tab(wave_tab::TAB),
+            });
+            assert_eq!(p.page(), sample_page::PAGE);
+        }
+        // While a take records the tools are faint and a tap says why.
+        let strip =
+            p.ui.get_mut::<mpfree_sampler_ui::widgets::ToolStrip>(wave_tab::TOOLS)
+                .unwrap();
+        strip.enabled = false;
+        strip.why = wave_tab::TOOLS_WAIT.to_string();
+        p.on_event(UiEvent {
+            widget: wave_tab::TOOLS.into(),
+            kind: EventKind::Select(1),
+        });
+        assert_eq!(p.page(), sample_page::PAGE);
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains(wave_tab::TOOLS_WAIT), "{hint}");
+    }
+
+    #[test]
     fn send_to_pad_copies_the_pad_onto_the_next_hit_and_chop_to_pads_opens_the_chop_tab() {
         use mpfree_sampler_ui::send;
         use mpfree_sampler_ui::widgets::ButtonRow;
@@ -28430,6 +28723,64 @@ mod tests {
         assert_eq!(p.kits[0].tags[10], None);
         p.apply(ToUi::Show(View::Play));
         assert_eq!(lane(&p), Some((true, None)));
+    }
+
+    /// Learn a key on the Perform view: SHIFT held says what SHIFT + a
+    /// pad does; SHIFT + a tap on a pad picks it and hands it to MIDI
+    /// Learn without playing it; the hint names the pad while Learn waits;
+    /// and the Learn a key button hands the picked pad over too.
+    #[test]
+    fn shift_and_a_perform_pad_or_learn_a_key_hand_the_pad_to_midi_learn() {
+        use crate::perform_pads::PerformSet;
+        use crate::perform_tab;
+        use mpfree_play::mpfree_param::{perform, Owner, ParamAddr};
+        use mpfree_sampler_ui::pads_tab;
+        let mut p = sample_sampler(Fonts::embedded());
+        open_pads(&mut p);
+        sample_kit_tracks(&mut p);
+        p.apply(ToUi::PerformSet {
+            set: Box::new(PerformSet::default()),
+            opened: true,
+        });
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        ev(&mut p, pads_tab::KITS, EventKind::Tab(1));
+        // PAD BANK B on the app: page B.
+        let mut st = p.status.clone();
+        st.perform_bank = 1;
+        p.apply(ToUi::Status(st));
+        let _ = p.take_actions();
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let learn = |page, pad| {
+            FromUi::LearnValue(LearnValue::Param(ParamAddr::new(
+                Owner::Perform,
+                perform::pad(page, pad),
+            )))
+        };
+        p.status.shift = true;
+        p.refresh_hint();
+        assert!(
+            hint(&p).starts_with("SHIFT + a pad: learn a key"),
+            "{}",
+            hint(&p)
+        );
+        ev(&mut p, perform_tab::MAP, EventKind::Select(1));
+        assert_eq!(p.take_actions(), [learn(1, 1)], "picked, not played");
+        p.apply(ToUi::Learning(Some("Perform pads B2".into())));
+        assert!(
+            hint(&p).starts_with("LEARNING   Perform pads B2: move a knob, a key or a pedal"),
+            "{}",
+            hint(&p)
+        );
+        p.apply(ToUi::Learning(None));
+        p.status.shift = false;
+        p.refresh_hint();
+        ev(&mut p, perform_tab::ACTS, EventKind::Tab(2));
+        assert_eq!(p.take_actions(), [learn(1, 1)]);
     }
 
     /// The Pads tab's Perform view (board 7): the Pads of row's Perform

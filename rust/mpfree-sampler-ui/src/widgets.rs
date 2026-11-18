@@ -288,6 +288,102 @@ impl Widget for PadBar {
     }
 }
 
+// ---------------------------------------------------------------- tool strip
+
+/// The one Sample page's tools over the wave (Trim, Slice, Warp, Grain): a
+/// switch of equal segments filling its box, the tool in use raised. The
+/// tool decides what a finger on the wave moves, the panel's first section
+/// and the Q-Links. A tap on another tool gives [`EventKind::Tab`]`(i)`;
+/// while the strip is faint (a take recording: the tools wait for it) a
+/// tap gives [`EventKind::Select`]`(i)`, for the page to say `why`.
+pub struct ToolStrip {
+    pub tools: Vec<String>,
+    pub active: usize,
+    pub enabled: bool,
+    /// Why the strip is faint, for the hint line.
+    pub why: String,
+}
+
+impl ToolStrip {
+    pub fn new(tools: &[&str]) -> ToolStrip {
+        ToolStrip {
+            tools: tools.iter().map(|s| s.to_string()).collect(),
+            active: 0,
+            enabled: true,
+            why: String::new(),
+        }
+    }
+
+    /// Why tool `i` can't be picked, if the strip is faint and says why.
+    pub fn why_faint(&self, i: usize) -> Option<&str> {
+        (!self.enabled && i < self.tools.len() && !self.why.is_empty()).then_some(self.why.as_str())
+    }
+
+    /// Tool `i`'s segment.
+    pub fn tool_rect(&self, r: Rect, i: usize) -> Rect {
+        let n = self.tools.len().max(1) as i32;
+        let inner = r.inset(SEG_PAD);
+        let w = inner.w / n;
+        let x = inner.x + i as i32 * w;
+        let w = if i as i32 + 1 == n {
+            inner.right() - x
+        } else {
+            w
+        };
+        Rect::new(x, inner.y, w.max(0), inner.h)
+    }
+}
+
+impl Widget for ToolStrip {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        cx.canvas.fill_round_rect(r, 12, t.bg);
+        for (i, name) in self.tools.iter().enumerate() {
+            let tr = self.tool_rect(r, i);
+            let on = i == self.active;
+            if on {
+                cx.canvas.fill_round_rect(tr, 9, t.raised);
+            }
+            let color = if !self.enabled {
+                t.text_faint
+            } else if on {
+                t.text
+            } else {
+                t.text_dim
+            };
+            cx.text(
+                if on { FontId::Bold } else { FontId::Sans },
+                t.size_body,
+                tr,
+                Align::Center,
+                color,
+                name,
+            );
+        }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        (0..self.tools.len())
+            .map(|i| {
+                // The tool in use changes nothing; a faint strip says why.
+                let on = self.enabled && i != self.active;
+                Target::tap("tool", i, self.tools[i].clone(), self.tool_rect(r, i)).disabled_if(!on)
+            })
+            .collect()
+    }
+
+    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if phase != Touch::Down {
+            return None;
+        }
+        let i = (0..self.tools.len()).find(|&i| self.tool_rect(r, i).contains(x, y))?;
+        if !self.enabled {
+            return Some(EventKind::Select(i));
+        }
+        (i != self.active).then_some(EventKind::Tab(i))
+    }
+}
+
 // ---------------------------------------------------------------- knob card
 
 /// A Q-Link's card: a knob showing where its marker sits in the sound, the

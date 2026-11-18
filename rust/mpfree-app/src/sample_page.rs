@@ -93,7 +93,9 @@ use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
 use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab, SceneAction};
 use mpfree_sampler_ui::rec_tab::{self, RecAction, RecState, RecTab, Skip};
 use mpfree_sampler_ui::rec_widgets::Strip;
-use mpfree_sampler_ui::recorder::{KeepView, RecorderAction, RecorderView, KEEP_NOT_YET};
+use mpfree_sampler_ui::recorder::{
+    KeepView, MonitorView, RecorderAction, RecorderView, KEEP_NOT_YET, LINE_ONLY,
+};
 use mpfree_sampler_ui::send;
 use mpfree_sampler_ui::source::{cache_file, SourceView};
 use mpfree_sampler_ui::warp_tab::{self, WarpTab};
@@ -704,6 +706,18 @@ pub struct SamplePage {
     /// loop, a pad take; the screen's `Player::take_waits`): the Keep
     /// card waits.
     take_waits: bool,
+    /// The recorder's Gain the audio thread was last told, dB (one-page
+    /// step 2d; it starts at 0 dB, as the settings do).
+    gain_sent: Option<f32>,
+    /// The line input's monitor (step 2d): heard or not (the Looper's
+    /// "Monitor the input", as the settings say), and how loud (the Mix
+    /// tab's Input 1 fader, as the audio loop says).
+    monitor_on: bool,
+    monitor_db: f32,
+    /// Monitor's switch pressed, and the level turned to, for the audio
+    /// loop ([`SamplePage::take_monitor`]).
+    monitor_flip: bool,
+    monitor_set: Option<f32>,
     /// Why the arm refused the Wave page's REC, and the seconds it is
     /// still said on the row.
     here_no: Option<(String, f32)>,
@@ -909,6 +923,11 @@ impl SamplePage {
             rec_here: None,
             keep_press: false,
             take_waits: false,
+            gain_sent: Some(0.0),
+            monitor_on: false,
+            monitor_db: 0.0,
+            monitor_flip: false,
+            monitor_set: None,
             here_no: None,
             pad_run: None,
             told: Vec::new(),
@@ -2055,6 +2074,10 @@ impl SamplePage {
                 .and_then(|b| b.why_faint(i))
                 .or_else(|| {
                     ui.get::<mpfree_sampler_ui::widgets::SettingList>(&ev.widget)
+                        .and_then(|l| l.why_faint(i))
+                })
+                .or_else(|| {
+                    ui.get::<mpfree_sampler_ui::widgets::ToolStrip>(&ev.widget)
                         .and_then(|l| l.why_faint(i))
                 })
                 .map(str::to_string)
@@ -3344,6 +3367,10 @@ impl SamplePage {
                         .push("A take keeps its source: stop it first".to_string());
                     return;
                 }
+                if row == rec_tab::Row::Gain && self.source != RecSource::Line {
+                    self.told.push(rec_tab::GAIN_LINE_ONLY.to_string());
+                    return;
+                }
                 let before = self.rec_settings_now();
                 let s = rec_tab::stepped(&before, row, delta, self.rec_sources.len());
                 if s == before {
@@ -3361,6 +3388,33 @@ impl SamplePage {
                 }
                 self.refresh_rec_state(ui);
             }
+            // The line input's one monitor (step 2d): the Looper's switch,
+            // and the Input 1 strip's fader.
+            RecorderAction::Monitor => match self.line_only_why() {
+                Some(why) => self.told.push(why.to_string()),
+                None => {
+                    self.monitor_flip = true;
+                    // As the settings will say once the audio loop has it.
+                    self.monitor_on = !self.monitor_on;
+                    self.lines.push(format!(
+                        "sample: Monitor {} (the line input, as the Looper's Monitor)",
+                        if self.monitor_on { "on" } else { "off" }
+                    ));
+                }
+            },
+            RecorderAction::MonitorLevel { delta, fine } => match self.line_only_why() {
+                Some(why) => self.told.push(why.to_string()),
+                None => {
+                    let to = mpfree_mixer_ui::qlinks::level_turn(self.monitor_db, delta, fine);
+                    if to == self.monitor_db {
+                        let way = if delta < 0 { "down" } else { "up" };
+                        self.told.push(format!("Monitor goes no further {way}"));
+                        return;
+                    }
+                    self.monitor_db = to;
+                    self.monitor_set = Some(to);
+                }
+            },
             // The screen times the finger: a lift keeps, a hold opens
             // Sample Recall. A faint card says why it keeps nothing.
             RecorderAction::Keep => {
@@ -3511,6 +3565,66 @@ impl SamplePage {
             cannot,
             status,
             keep: self.keep_view(),
+            monitor: self.monitor_view(),
+            line_only: (self.source != RecSource::Line).then(|| LINE_ONLY.to_string()),
+        }
+    }
+
+    /// The line input's monitor as the recorder shows it: the switch, and
+    /// the level as the Mix tab's Input 1 fader writes it.
+    fn monitor_view(&self) -> MonitorView {
+        MonitorView {
+            on: self.monitor_on,
+            level: mpfree_mixer_ui::view::db_text(self.monitor_db),
+            pos: mpfree_mixer_ui::view::db_to_pos(self.monitor_db),
+        }
+    }
+
+    /// The line input heard or not: the Looper's "Monitor the input" (the
+    /// settings, each time they change).
+    pub fn set_monitor(&mut self, ui: &mut Ui, on: bool) {
+        if on != self.monitor_on {
+            self.monitor_on = on;
+            self.feed_recorder(ui, 0.0);
+        }
+    }
+
+    /// How loud Monitor plays the line input: the Mix tab's Input 1 fader,
+    /// as the audio loop says whenever it changes.
+    pub fn set_monitor_level(&mut self, ui: &mut Ui, db: f32) {
+        if db != self.monitor_db {
+            self.monitor_db = db;
+            self.feed_recorder(ui, 0.0);
+        }
+    }
+
+    /// Monitor's switch and level, for the audio loop: the switch is the
+    /// Looper's own Monitor (one setting for the line input), the level
+    /// the Input 1 strip's fader.
+    pub fn take_monitor(&mut self) -> Vec<FromUi> {
+        let mut out = Vec::new();
+        if std::mem::take(&mut self.monitor_flip) {
+            out.push(FromUi::Looper(crate::looper_page::B_MONITOR));
+        }
+        if let Some(db) = self.monitor_set.take() {
+            out.push(FromUi::Mixer(mpfree_mixer_ui::MixAction::Set {
+                strip: crate::mixing::LINE,
+                id: mpfree_fx::ids::mixer::VOLUME,
+                value: db,
+            }));
+        }
+        out
+    }
+
+    /// Why Gain and Monitor do nothing now: the source is a point in the
+    /// mix, or the line input is off. None while they work.
+    fn line_only_why(&self) -> Option<&'static str> {
+        if self.source != RecSource::Line {
+            Some(LINE_ONLY)
+        } else if !self.line_on {
+            Some(RECORDER_OFF)
+        } else {
+            None
         }
     }
 
@@ -4256,6 +4370,11 @@ impl SamplePage {
     /// [`SamplePage::take_input`]'s source found no room: again later.
     pub fn source_unsent(&mut self, _src: RecSource) {
         self.source_sent = None;
+    }
+
+    /// [`SamplePage::take_input`]'s Gain found no room: again later.
+    pub fn gain_unsent(&mut self) {
+        self.gain_sent = None;
     }
 
     /// A bar's length now: the transport's while it plays, else 4/4 at the
@@ -5885,6 +6004,12 @@ impl SamplePage {
         if self.source_sent != Some(self.source) {
             self.source_sent = Some(self.source);
             return Some(FromUi::SampleSource(self.source));
+        }
+        // The recorder's Gain on the line input (one-page step 2d).
+        let gain = self.rec_settings_now().gain_db;
+        if self.gain_sent != Some(gain) {
+            self.gain_sent = Some(gain);
+            return Some(FromUi::SampleGain(gain));
         }
         if let Some(f) = self.feed.take() {
             self.feeding = true;

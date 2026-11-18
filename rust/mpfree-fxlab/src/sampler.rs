@@ -32,6 +32,14 @@
 //!   bin that is no harmonic of the tone, from 20 Hz to 20 kHz, against
 //!   the tone (sampler R5.6; the Drive runs its curve at twice the rate
 //!   with first-order ADAA, as the effects' Drive does).
+//! - **S7, the Comb:** where its lowest peak lands against the cutoff, in
+//!   cents, from a click on the pad at Resonance 1 (220 Hz and 3.3 kHz,
+//!   the delay a fraction of a frame there); noise through it at full
+//!   feedback against the same noise dry (its gain keeps a full sound's
+//!   loudness); and a sine right on a peak at full feedback, against dry
+//!   (information: how far a tone can stand out). It is a straight delay
+//!   and sum, so it makes no aliases of its own; the S5 rows hold its
+//!   response against the prototype.
 //!
 //! Cost per voice is the bench's: `mpfree-bench`'s sampler cases, counted
 //! on CI by the instruction gate. Design: `docs/dev/design/fx-quality.md`
@@ -47,7 +55,7 @@ use crate::fft::{bin_db, power_spectrum};
 use crate::harmonics;
 use crate::quality::{Better, Row};
 use crate::response;
-use crate::signals::{coherent, db_to_amp, sine};
+use crate::signals::{coherent, db_to_amp, pink, rms_of, sine, Rng};
 use crate::wav::Stereo;
 
 /// 32.32 fixed point: how the engine holds a voice's speed.
@@ -70,6 +78,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     stops(&mut rows, rate);
     filters(&mut rows, rate);
     drive(&mut rows, rate);
+    comb(&mut rows, rate);
     rows
 }
 
@@ -525,7 +534,7 @@ fn stage_db(kind: FilterKind, resonance: f64, x: f64) -> f64 {
     let k = 2.0 - 1.95 * resonance.clamp(0.0, 1.0);
     let den = ((1.0 - x * x).powi(2) + (k * x).powi(2)).sqrt();
     let num = match kind {
-        FilterKind::Off | FilterKind::Ladder | FilterKind::Vowel => return 0.0,
+        FilterKind::Off | FilterKind::Ladder | FilterKind::Vowel | FilterKind::Comb => return 0.0,
         FilterKind::LowPass => 1.0,
         FilterKind::BandPass => x,
         FilterKind::HighPass => x * x,
@@ -566,15 +575,29 @@ fn vowel_prototype_db(f: &Filter, hz: f64) -> f64 {
     10.0 * (re * re + im * im).max(1e-30).log10()
 }
 
+/// The Comb's prototype (dB): `y = x + g y(t - 1/fc)`, `g = 0.97 ×
+/// resonance`, then `sqrt(1 - g²)`: `sqrt(1 - g²) / |1 - g e^(-j 2π f /
+/// fc)|`, and its DC blocker, a one-pole high-pass at 10 Hz, written out
+/// here rather than taken from the engine.
+fn comb_prototype_db(resonance: f64, x: f64, hz: f64) -> f64 {
+    let g = 0.97 * resonance.clamp(0.0, 1.0);
+    let w = 2.0 * std::f64::consts::PI * x;
+    let (re, im) = (1.0 - g * w.cos(), g * w.sin());
+    let h = hz / 10.0;
+    let hp = h * h / (1.0 + h * h);
+    10.0 * (hp * (1.0 - g * g) / (re * re + im * im)).log10()
+}
+
 /// The prototype of a filter: one stage, or two for 4 poles (the second
-/// at half the resonance, as the engine sets it); the Ladder's and the
-/// Vowel's own.
+/// at half the resonance, as the engine sets it); the Ladder's, the
+/// Vowel's and the Comb's own.
 fn prototype_db(f: &Filter, hz: f64) -> f64 {
     let x = hz / f64::from(f.cutoff_hz);
     let r = f64::from(f.resonance);
     match f.kind {
         FilterKind::Ladder => return ladder_prototype_db(r, x),
         FilterKind::Vowel => return vowel_prototype_db(f, hz),
+        FilterKind::Comb => return comb_prototype_db(r, x, hz),
         _ => {}
     }
     let mut db = stage_db(f.kind, r, x);
@@ -636,6 +659,8 @@ fn filters(rows: &mut Vec<Row>, rate: u32) {
         ("ladder", FilterKind::Ladder, 4, 0.0),
         ("ladder, resonance 0.5", FilterKind::Ladder, 4, 0.5),
         ("vowel ah, resonance 0.5", FilterKind::Vowel, 2, 0.5),
+        ("comb, resonance 0.5", FilterKind::Comb, 2, 0.5),
+        ("comb, resonance 0.9", FilterKind::Comb, 2, 0.9),
     ] {
         let f = Filter {
             kind,
@@ -718,6 +743,105 @@ fn drive(rows: &mut Vec<Row>, rate: u32) {
                 0.5,
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S7: the Comb.
+
+/// A Comb at `cutoff_hz` and `resonance`.
+fn comb_filter(cutoff_hz: f32, resonance: f32) -> Filter {
+    Filter {
+        kind: FilterKind::Comb,
+        poles: 2,
+        cutoff_hz,
+        resonance,
+        env_octaves: 0.0,
+        drive_db: 0.0,
+    }
+}
+
+/// `x` played on a pad through `filter` (None: dry), `frames` long.
+fn through(x: &[f64], filter: Option<Filter>, rate: u32, frames: usize) -> Vec<f64> {
+    let s = sound(x, rate);
+    let p = pad(&s, |p| {
+        if let Some(f) = filter {
+            p.filter = f;
+        }
+    });
+    play(&kit(vec![(s, p)]), rate, &[(0, hit(0))], frames).left
+}
+
+/// The loudest bin from `lo` to `hi` Hz of `x`'s spectrum, placed between
+/// bins by a parabola through its dB and its neighbours' (Hz).
+fn peak_hz(x: &[f64], rate: u32, lo: f64, hi: f64) -> f64 {
+    let n = x.len();
+    let ps = power_spectrum(x);
+    let bin_hz = f64::from(rate) / n as f64;
+    let (a, b) = ((lo / bin_hz) as usize, (hi / bin_hz) as usize);
+    let k = (a.max(1)..=b.min(ps.len() - 2))
+        .max_by(|&i, &j| ps[i].total_cmp(&ps[j]))
+        .unwrap_or(1);
+    let db = |i: usize| 10.0 * ps[i].max(1e-300).log10();
+    let (l, c, r) = (db(k - 1), db(k), db(k + 1));
+    let den = l - 2.0 * c + r;
+    let off = if den.abs() > 1e-12 {
+        0.5 * (l - r) / den
+    } else {
+        0.0
+    };
+    (k as f64 + off) * bin_hz
+}
+
+fn comb(rows: &mut Vec<Row>, rate: u32) {
+    let n = harmonics::N;
+    // A click: the comb's answer is its ringing, peaks at the cutoff and
+    // its multiples.
+    // (The click's sound is as long as the window: a voice ends with its
+    // sound, and the ringing with it.)
+    let mut click = vec![0.0; n];
+    click[0] = 0.5;
+    for hz in [220.0f32, 3_300.0] {
+        let out = through(&click, Some(comb_filter(hz, 1.0)), rate, n);
+        let found = peak_hz(&out, rate, f64::from(hz) * 0.8, f64::from(hz) * 1.2);
+        put(
+            rows,
+            "S7",
+            format!("comb[{hz} Hz, resonance 1]"),
+            "pitch_error_cents",
+            (1200.0 * (found / f64::from(hz)).log2()).abs(),
+            Better::Lower,
+            Some(5.0),
+            0.5,
+        );
+    }
+    // Noise, and a sine on the second peak, full feedback.
+    let frames = 4 * f64::from(rate) as usize;
+    let settle = f64::from(rate) as usize;
+    let mut rng = Rng::new(17);
+    let white: Vec<f64> = (0..frames).map(|_| 0.25 * rng.bipolar()).collect();
+    let pinkish = pink(frames, 0.125, 17);
+    let tone = sine(440.0, 0.0625, frames, rate);
+    for (how, x, better, target) in [
+        // The Hermite read takes a little of the top each time round the
+        // loop, so a bright sound rings softer than its own loudness.
+        ("pink noise", &pinkish, Better::Near(0.0), Some(3.0)),
+        ("white noise", &white, Better::Near(0.0), None),
+        ("a sine on a peak", &tone, Better::Info, None),
+    ] {
+        let dry = through(x, None, rate, frames);
+        let wet = through(x, Some(comb_filter(220.0, 1.0)), rate, frames);
+        let gain = 20.0 * (rms_of(&wet[settle..]) / rms_of(&dry[settle..])).log10();
+        put(
+            rows,
+            "S7",
+            format!("comb[220 Hz, resonance 1, {how}]"),
+            "level_db",
+            gain,
+            better,
+            target,
+            0.1,
+        );
     }
 }
 

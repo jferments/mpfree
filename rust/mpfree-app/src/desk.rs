@@ -466,6 +466,7 @@ impl Desk<'_> {
             | gui::FromUi::SampleView(_)
             | gui::FromUi::SampleInput(_)
             | gui::FromUi::SampleSource(_)
+            | gui::FromUi::SampleGain(_)
             | gui::FromUi::SampleGrains(_)
             | gui::FromUi::SaveProject
             | gui::FromUi::OpenProject(_)
@@ -801,7 +802,7 @@ pub fn perform_pad(
 pub fn throw_strips(mix: &mixing::MixHost, time: &time::TimeHost) -> gui::ToUi {
     gui::ToUi::ThrowStrips(mixing::throw_strips(
         &mix.mixer,
-        mix.channels_in_use(),
+        mix.own_channels_in_use(),
         &crate::export::track_names(time),
     ))
 }
@@ -975,6 +976,44 @@ pub fn perform_pad_up(
             ))]
         }
         _ => Vec::new(),
+    }
+}
+
+/// A key learned on a Perform pad (Learn a key; `remote::PerformAct`), on
+/// any page: pressed, the pad's action plays as a hit on it does
+/// ([`perform_pad_on`], with the drum pads Drop drums mutes, `drums`), and
+/// the log says which pad; let go, its let-go ([`perform_pad_up`]). A
+/// loop key's hold clears its loop through [`perform_pad_held`].
+pub fn perform_remote(
+    app: &mut app::App,
+    time: &time::TimeHost,
+    looper: &looping::LoopHost,
+    out: &mut Out,
+    act: crate::remote::PerformAct,
+    drums: u16,
+) -> Vec<app::Effect> {
+    use crate::perform_pads::PadAction;
+    use crate::remote::PerformAct;
+    match act {
+        PerformAct::Nothing => Vec::new(),
+        PerformAct::Down { page, pad, action } => {
+            let label = crate::perform_tab::pad_label(usize::from(page), usize::from(pad));
+            if action == PadAction::None {
+                out.note(&format!(
+                    "perform: Perform pads {label} has nothing on it, from a learned key"
+                ));
+                return Vec::new();
+            }
+            out.note(&format!(
+                "perform: Perform pads {label}, from a learned key"
+            ));
+            let (fx, line) = perform_pad_on(app, time, looper, out, action, drums);
+            if !line.is_empty() {
+                out.note(&line);
+            }
+            fx
+        }
+        PerformAct::Up(action) => perform_pad_up(app, action),
     }
 }
 

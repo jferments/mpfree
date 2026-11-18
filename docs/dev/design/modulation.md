@@ -123,7 +123,7 @@ The engine's set-up (macro values and maps, the morph, matrix rows, scenes, LFO 
 ```text
 macro.0 = 0.62
 morph = 0.64
-map.0.0 = t4.mix.6 0.45 0.85 linear
+map.0.0 = t5.mix.6 0.45 0.85 linear
 map.1.3 = ps0.fx1.1 0.1 0.5 linear
 row.0 = lfo0 - bus0.fx2.2 0.18
 row.2 = lfo1 host2 bus0.fx1.2 0.12
@@ -131,7 +131,7 @@ scene.bus0.fx1.2 = 20000 900
 scene.macro0.0 = 0.62 0.9
 ```
 
-Each line is `key = value`: a macro's value; the morph; macro `m`'s map `k` (target, from, to as knob positions, curve); matrix row `i` (source, `via` or `-`, target, depth); a parameter's scene A and B values (`-` where a scene doesn't hold it); and an LFO's or follower's settings (`source.mod<n>.<param>`). Targets are written as `ParamAddr` text (`t4.mix.6` is track 4's strip parameter 6, `bus0.fx2.2` is bus 1's insert with slot id 2, parameter 2).
+Each line is `key = value`: a macro's value; the morph; macro `m`'s map `k` (target, from, to as knob positions, curve); matrix row `i` (source, `via` or `-`, target, depth); a parameter's scene A and B values (`-` where a scene doesn't hold it); and an LFO's or follower's settings (`source.mod<n>.<param>`). Targets are written as `ParamAddr` text (`t5.mix.6` is mixer track 5's strip, parameter 6: track 2's own channel, `mpfree_param::track_strip`; `bus0.fx2.2` is bus 1's insert with slot id 2, parameter 2).
 
 `ModEngine::load(text, target)` replaces the maps, rows and scenes with what the text has. `target` gives a parameter's description and value now (from the chain or mixer it lives in); a line naming one it doesn't know (an effect since removed) is skipped, and `load` returns how many lines it skipped. Sources and curves are written as words (`lfo3`, `fol1`, `macro2`, `host0`; `linear`, `exp`, `log`, `s`).
 

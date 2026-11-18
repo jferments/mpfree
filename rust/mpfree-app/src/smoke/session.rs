@@ -217,6 +217,8 @@ pub struct Session {
     pub synth_on: bool,
     /// What each track plays, as main.rs keeps it.
     pub track_kits: crate::sampler::TrackKits,
+    /// The time engine's REDOs seen so far, as player_session keeps them.
+    redos_seen: u64,
     /// Messages for the screen that found it gone (none expected).
     pub quit: bool,
     kits: usize,
@@ -237,6 +239,9 @@ pub struct Session {
     /// Controls learned on the looper (its footswitch), as player_session
     /// keeps them.
     remote: crate::remote::Remote,
+    /// Keys learned on the Perform pads (Learn a key), as player_session
+    /// keeps them.
+    perform_keys: crate::remote::PerformKeys,
     out: Out,
     to_screen: Receiver<ToUi>,
     /// The app's effects waiting for the desk (a test may add some).
@@ -249,6 +254,9 @@ pub struct Session {
     /// Hz, and where it is in its cycle.
     line_tone: Option<f32>,
     line_phase: f32,
+    /// The recorder's Gain on the line input, linear, and where the last
+    /// period's ramp ended (as main.rs).
+    rec_gain: (f32, f32),
     cloud: Option<Box<crate::sampler::Cloud>>,
     /// Simulated time: periods run, and the clock the rate limits read.
     periods: u64,
@@ -343,6 +351,7 @@ impl Session {
             kit: 0,
             synth_on: false,
             track_kits: crate::sampler::TrackKits::new(n),
+            redos_seen: 0,
             quit: false,
             kits: n,
             step_keys: crate::step_keys::StepKeys::default(),
@@ -352,6 +361,7 @@ impl Session {
             stop_dropped: 0,
             waiting_shown: 0,
             keys_held: crate::perform_pads::Held::default(),
+            perform_keys: crate::remote::PerformKeys::default(),
             remote: crate::remote::Remote::new(),
             loop_tempo: None,
             out,
@@ -362,6 +372,7 @@ impl Session {
             rec_feed: None,
             line_tone: None,
             line_phase: 0.0,
+            rec_gain: (1.0, 1.0),
             cloud: None,
             periods: 0,
             t0: Instant::now(),
@@ -831,6 +842,35 @@ impl Session {
         self.run_periods(2)
     }
 
+    /// A key learned on Perform parameter `id` (Learn a key) moved to
+    /// `value` (0 to 1), as player_session takes MIDI Learn's: on any page.
+    pub fn perform_key(&mut self, id: u16, value: f32) -> &mut Session {
+        let t = self.t();
+        let set = self.app.perform_set();
+        let act = self
+            .perform_keys
+            .write(id, value, t, |page, pad| set.page(page).action(pad));
+        let fx = crate::desk::perform_remote(
+            &mut self.app,
+            &self.time,
+            &self.looper,
+            &mut self.out,
+            act,
+            0,
+        );
+        self.fx.extend(fx);
+        self.run_periods(2)
+    }
+
+    /// The controller the Perform pads' learned keys came from went away.
+    pub fn unplug_perform_keys(&mut self) -> &mut Session {
+        for action in self.perform_keys.let_go() {
+            let fx = crate::desk::perform_pad_up(&mut self.app, action);
+            self.fx.extend(fx);
+        }
+        self.run_periods(2)
+    }
+
     pub fn pad(&mut self, pad: usize, velocity: u8, hold: f64) -> &mut Session {
         self.pad_edge(pad, velocity, true);
         self.run_for(hold);
@@ -1034,6 +1074,17 @@ impl Session {
             self.fx.extend(fx);
             self.out.note(&format!("{line}, from a learned control"));
         }
+        // And a key learned on a Perform pad that is a loop key.
+        for key in self
+            .perform_keys
+            .holds(t, crate::perform_pads::CLEAR_HOLD_S)
+        {
+            let (fx, line) = crate::desk::perform_pad_held(key);
+            self.fx.extend(fx);
+            if !line.is_empty() {
+                self.out.note(&format!("{line}, from a learned key"));
+            }
+        }
         if let Some(e) = self.app.tick(t) {
             self.fx.push(e);
         }
@@ -1052,8 +1103,15 @@ impl Session {
             self.out.note(&format!("time: {line}"));
         }
         self.app.set_track_count(self.time.track_count());
-        // A track UNDO took away gives its kit back (as player_session).
-        if self.track_kits.forget_past(self.time.track_count()) {
+        // A track UNDO took away sets its kit aside, and REDO gives it back
+        // (as player_session).
+        let (redos, can_redo) = self.time.redos();
+        let redone = redos != self.redos_seen;
+        self.redos_seen = redos;
+        if self
+            .track_kits
+            .follow(self.time.track_count(), redone, can_redo)
+        {
             self.out
                 .show(ToUi::TrackKits(Box::new(self.track_kits.clone())));
         }
@@ -1198,8 +1256,9 @@ impl Session {
                 *x = 0.5 * (self.line_phase * std::f32::consts::TAU).sin();
                 self.line_phase = (self.line_phase + step).fract();
             }
-            feed.period(self.time.block(), &l, &l, 0);
+            feed.period_gain(self.time.block(), &l, &l, 0, self.rec_gain);
         }
+        self.rec_gain.0 = self.rec_gain.1;
         // The looper's period, as main.rs runs it: the pads as heard in the
         // last period's mix (silence when that can't be had: the session
         // has no dry feed), and the loop out to the mixer's Loop track. It
@@ -1640,6 +1699,7 @@ impl Session {
             FromUi::SampleSource(src) => {
                 self.mix.set_rec_source(src);
             }
+            FromUi::SampleGain(db) => self.rec_gain.1 = 10f32.powf(db / 20.0),
             FromUi::SampleGrains(c) => self.cloud = Some(c),
             // A tap on a track's sound line on Arrange, as main.rs: the
             // track is armed and the Synth tab's MENU opens on its

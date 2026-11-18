@@ -600,6 +600,7 @@ fn the_new_filters_and_drive_save_and_open() {
         (FilterKind::Notch, 4, 0.0),
         (FilterKind::Ladder, 4, 12.5),
         (FilterKind::Vowel, 2, 0.0),
+        (FilterKind::Comb, 2, 0.0),
     ]
     .into_iter()
     .enumerate()
@@ -621,6 +622,7 @@ fn the_new_filters_and_drive_save_and_open() {
         "kit.0.pad.1.filter.kind = ladder",
         "kit.0.pad.1.filter.drive_db = 12.5",
         "kit.0.pad.2.filter.kind = vowel",
+        "kit.0.pad.3.filter.kind = comb",
     ] {
         assert!(text.lines().any(|l| l == line), "{line} in\n{text}");
     }

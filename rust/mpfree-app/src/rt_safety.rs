@@ -427,11 +427,11 @@ fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
 }
 
 /// Track 1 with its own Poly (instruments.rs): the pads (through its arp)
-/// and its clip play the Poly into its own mixer channel, not the kit, and
-/// half a minute of it allocates and frees nothing on the sound path.
+/// and its clip play the Poly into its mixer channel (the Drums strip,
+/// R3 part 4b), not the kit, and half a minute of it allocates and frees
+/// nothing on the sound path.
 #[test]
 fn a_track_with_its_own_instrument_plays_it_and_never_allocates() {
-    use crate::instruments::first_track;
     let mut rig = Rig::new(false);
     // Setup, which may allocate: Poly made for track 1 (no builder here,
     // so made at once) and put in on the next period.
@@ -474,13 +474,14 @@ fn a_track_with_its_own_instrument_plays_it_and_never_allocates() {
         "the live pads played the kit"
     );
     assert!(rig.peak > 0.01, "silent: peak {}", rig.peak);
-    // Its own mixer channel shows on the panel; the others don't.
+    // Track 1's own instrument plays into the Drums strip (R3 part 4b),
+    // which says so; no own channel shows.
     rig.mix.show(Some(mpfree_mixer_ui::MixView::Tracks));
     let st = rig.mix.poll_state(std::time::Instant::now()).unwrap();
     let names: Vec<&str> = st.strips.iter().map(|v| v.name.as_str()).collect();
-    assert_eq!(names, vec!["Drums", "Synth", "Loop", "Audio", "Track 1"]);
-    assert_eq!(st.strips[4].id, mpfree_fx::StripId::Track(first_track()));
-    assert!(st.strips[4].peak[0] > 0.0, "{:?}", st.strips[4].peak);
+    assert_eq!(names, vec![mixing::TRACK_1, "Synth", "Loop", "Audio"]);
+    assert_eq!(st.strips[0].id, mpfree_fx::StripId::Track(mixing::DRUMS));
+    assert!(st.strips[0].peak[0] > 0.0, "{:?}", st.strips[0].peak);
 }
 
 /// A send reverb that goes a block late on the returns lane (cores.rs):

@@ -14,7 +14,7 @@
 92689	Bass Init, a line
 128021	Bass Reese, a line
 9679	Arps: 16 latched arps at 32nds
-3435	Arps: 4 latched arps at 32nds
+3183	Arps: 4 latched arps at 32nds
 44291	Audio tracks: 6 playing comped takes, 2 recording
 44270	Audio tracks: 8 playing comped takes
 54516	Audio tracks: 8 streaming comped takes
@@ -109,7 +109,7 @@
 249183	Pluck Harp, 16 voices
 127636	Pluck Marimba, 8 voices
 163789	Pluck Steel String, 8 voices
-45911	Poly Acid, 8 voices
+48397	Poly Acid, 8 voices
 201662	Poly Brass, 8 voices
 374389	Poly Dust Pad, 8 voices
 57376	Poly Grit Bass, 8 voices
@@ -127,6 +127,7 @@
 1774420	Sampler x16 held up, 16-bit sound
 548284	Sampler x16 held, 16-bit sound
 1336420	Sampler x16 held, LFO and pitch envelope
+867548	Sampler x16 held, comb
 1544133	Sampler x16 held, driven ladder
 650988	Sampler x16 held, vowel
 1435285	Sampler, 20 pads
