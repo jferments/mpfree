@@ -34,12 +34,13 @@ Q-Links 1 to 4 turn level, pan, tune and voices. **Put on** places the sound pic
 
 **Browse for A5** at the top right of the Pads tab (it names the pad picked) opens the browser over the page. **BROWSE**, and the folder at the right end of the top bar, open the same browser from any page. **BROWSE**, the folder or a tab closes it again.
 
-{{shot: browser-samples | The browser opened from Browse for A5: Samples / Drums, with Kick 01 picked, its waveform, and Load on A5 and Next pad hit under it.}}
+{{shot: browser-samples | The browser opened from Browse for A5: Samples / Drums, with Kick 01 picked, its waveform, the kit's pads with A5 picked, and Load on A5 and Next pad hit under them.}}
 
 Pick a place on the left (**Samples**, **Kits** or **Recordings**, say, or **Recent** and **Favourites**). Tap a folder to open it, and tap a sound to pick it and see its length, format and waveform. Then:
 
 - **Load on A5** puts it on the pad picked (so does a second tap on it). Hit another pad and the button names that pad instead: browse, hit a pad, load, hit the next pad, load again.
 - **Next pad hit** puts it on the next pad you hit.
+- **The kit's pads**, under the sound, show what each pad of the kit holds, a bank at a time, with the pad picked outlined. Put a finger on one to pick it and hear what is on it, as a hit on the MPC's pad does; **Load on** then names it. The arrows show the kit's other banks.
 - **Audition**, or **PLAY**, lets you hear it first, at the level Q-Link 3 sets.
 - The **star** at the right end of each row adds it to Favourites; tap it again to take it out.
 

@@ -6814,10 +6814,12 @@ impl Player {
         // Load names the pad it puts a sound on: the pad picked, which a
         // pad hit moves (none while the pads play an instrument).
         let target = self.sample.load_target();
+        let map = target.as_ref().and_then(|_| self.browser_pad_map());
         let Some(b) = self.browser.as_mut() else {
             return;
         };
         b.set_pad_target(target);
+        b.set_pad_map(map);
         for a in mpfree_browser_ui::step(&mut self.ui, b) {
             self.browse_action(a);
         }
@@ -6829,9 +6831,47 @@ impl Player {
         }
     }
 
+    /// The kit the pads play, for the browser's pad map under a sound:
+    /// its name, each pad's sound and the pad picked (None while the pads
+    /// play an instrument).
+    fn browser_pad_map(&self) -> Option<mpfree_browser_ui::PadMap> {
+        let kit = self.sample.kit();
+        let project = self.sample.project(kit)?;
+        let pads = (0..mpfree_sampler::model::PADS)
+            .map(|i| {
+                project
+                    .pad(i)
+                    .filter(|p| !p.layers.is_empty())
+                    .map(|p| match p.name.as_str() {
+                        "" => "a sound".to_string(),
+                        n => n.to_string(),
+                    })
+            })
+            .collect();
+        Some(mpfree_browser_ui::PadMap {
+            kit: self
+                .sample
+                .kit_name(kit)
+                .map_or_else(|| format!("Kit {}", kit + 1), str::to_string),
+            pads,
+            picked: self.sample.pad(),
+        })
+    }
+
     fn browse_action(&mut self, a: mpfree_browser_ui::BrowseAction) {
         use mpfree_browser_ui::BrowseAction as A;
         match a {
+            // A finger on the pad map: the pad picked, as a hit on the
+            // MPC's pad picks it (so Load names it), and heard while held.
+            A::PadPress { pad, down } => {
+                if down {
+                    self.sample.hit(pad);
+                    let (label, name) = self.sample.pad_names(pad);
+                    let what = if name.is_empty() { "empty" } else { &name };
+                    self.say(format!("browser: pad {label} picked ({what})"));
+                }
+                self.outbox.push(FromUi::Audition { pad, down });
+            }
             // Load: onto the pad picked. Load to pad: onto the next pad hit.
             A::LoadSample { path, .. } => self.sample.load_file(path, false),
             A::LoadToPad { path, .. } => self.sample.load_file(path, true),
@@ -20197,6 +20237,48 @@ mod tests {
         p.apply(ToUi::PadUp(1));
         p.tick(0.033);
         assert_eq!(load_on(&p).as_deref(), Some("A2"));
+        assert_eq!(p.page(), mpfree_browser_ui::BROWSER_PAGE, "it stays open");
+    }
+
+    /// The browser's pad map (the redesign's board 8): under a sound, the
+    /// kit the pads play, bank by bank, with each pad's sound and the pad
+    /// picked. A finger on one of its pads picks that pad, as a hit on the
+    /// MPC's pad does (Load follows: Load on A9), and plays what is on it
+    /// until the finger lifts.
+    #[test]
+    fn the_browsers_pad_map_picks_a_pad_and_plays_it_while_held() {
+        use mpfree_browser_ui::{BrowserView, BROWSER};
+        let mut p = browser_samples(Fonts::embedded()).unwrap();
+        let screen = p.browser.as_ref().unwrap().screen();
+        let map = screen.pad_map.clone().expect("the map under Kick 01");
+        assert_eq!(map.title, "Breaks · bank A · tap a pad");
+        assert_eq!(map.cells[4].name.as_deref(), Some("Break 92"));
+        assert!(map.cells[4].picked, "A5, the pad picked");
+        assert_eq!(map.cells[8].name, None);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let r = p.ui.rect_of(BROWSER).unwrap();
+        let (x, y) = BrowserView::map_point(r, &screen, 8).unwrap();
+        p.take_actions();
+        p.touch(1, Touch::Down, x, y);
+        p.tick(0.033);
+        assert!(
+            p.take_actions()
+                .contains(&FromUi::Audition { pad: 8, down: true }),
+            "A9 sounds while held"
+        );
+        assert_eq!(p.sample.pad(), 8);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "browser: pad A9 picked (empty)"));
+        let screen = p.browser.as_ref().unwrap().screen();
+        assert_eq!(screen.load_on.as_deref(), Some("A9"));
+        assert!(screen.pad_map.unwrap().cells[8].picked);
+        p.touch(1, Touch::Up, x, y);
+        p.tick(0.033);
+        assert!(p.take_actions().contains(&FromUi::Audition {
+            pad: 8,
+            down: false
+        }));
         assert_eq!(p.page(), mpfree_browser_ui::BROWSER_PAGE, "it stays open");
     }
 
