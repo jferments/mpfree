@@ -1752,7 +1752,15 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| moves(rate)));
     v.push(measured(|| track_host(rate, 4, 4)));
     v.push(measured(|| track_host_alone(rate, 16)));
-    v.push(measured(|| pad_synths(rate, 16)));
+    v.push(measured(|| {
+        pad_synths(
+            "Pad synths: 16 Instrument pads of Poly, a hit each per 0.5 s",
+            rate,
+            16,
+            vec![],
+            Duration::ZERO,
+        )
+    }));
     v.push(measured(|| time(rate, 8, false)));
     v.push(measured(|| time(rate, 8, true)));
     v.push(measured(|| time_ahead(rate, 8, 4)));
@@ -3354,8 +3362,11 @@ fn synth_tracks(name: &str, rate: u32, lanes: Vec<LaneConfig>, wait: Duration) -
 /// ring-outs) as the app has it, each pad hit once every half second
 /// (the pads a 1/16 of it apart) and let go after a quarter of it, so
 /// every copy is playing or ringing out at once: the most the app lets
-/// play this way (16).
-fn pad_synths(rate: u32, pads: usize) -> Case {
+/// play this way (16). With `lanes` the host splits the copies over this
+/// thread and the lanes by what they cost, as the app does on two or three
+/// sound cores (`PadSynths::set_lanes`); `wait` is how long a lane is
+/// waited for.
+fn pad_synths(name: &str, rate: u32, pads: usize, lanes: Vec<LaneConfig>, wait: Duration) -> Case {
     let max = MAX_BLOCK.min(1024);
     let mut host = TrackHost::new(2 * pads, rate, max);
     for p in 0..pads {
@@ -3369,10 +3380,14 @@ fn pad_synths(rate: u32, pads: usize) -> Case {
     for s in pads..2 * pads {
         host.route(s, None);
     }
+    let split = !lanes.is_empty();
+    if split {
+        host.set_lanes(lanes);
+    }
     let half = u64::from(rate / 2);
     Case {
-        name: format!("Pad synths: {pads} Instrument pads of Poly, a hit each per 0.5 s"),
-        module: "synth",
+        name: name.to_string(),
+        module: if split { "lanes" } else { "synth" },
         what: "each pad's own Poly playing and ringing out at once",
         block: Box::new(move |b, l, r| {
             let len = l.len() as u64;
@@ -3396,7 +3411,13 @@ fn pad_synths(rate: u32, pads: usize) -> Case {
             }
             l.fill(0.0);
             r.fill(0.0);
+            if split {
+                host.set_deadline(Some(Instant::now() + wait));
+            }
             host.render(&Ctx::new(rate, f0), l.len(), &mut Sum { left: l, right: r });
+            if split {
+                host.settle(Instant::now() + wait);
+            }
         }),
         mem_bytes: 0,
     }
@@ -3855,6 +3876,24 @@ pub fn lanes(rate: u32, worker: Option<usize>, third: Option<usize>) -> Vec<Case
                 lane_wait(),
             )
         }),
+        measured(|| {
+            pad_synths(
+                "Pad synths: 16 Instrument pads of Poly, one core",
+                rate,
+                16,
+                vec![],
+                lane_wait(),
+            )
+        }),
+        measured(|| {
+            pad_synths(
+                "Pad synths: 16 Instrument pads of Poly, 2 cores",
+                rate,
+                16,
+                vec![config(false)],
+                lane_wait(),
+            )
+        }),
     ]
 }
 
@@ -4118,12 +4157,17 @@ mod tests {
             synth_tracks("three", 44_100, vec![LaneConfig::default(); 2], wait),
             600,
         );
+        same_blocks(
+            pad_synths("one", 44_100, 16, vec![], wait),
+            pad_synths("two", 44_100, 16, vec![LaneConfig::default()], wait),
+            600,
+        );
     }
 
     #[test]
     fn the_lane_cases_cover_one_core_and_two() {
         let mut cases = lanes(44_100, None, None);
-        assert_eq!(cases.len(), 19);
+        assert_eq!(cases.len(), 21);
         assert!(cases.iter().any(|c| c.name.contains("one core")));
         assert!(cases.iter().any(|c| c.name.contains("2 cores")));
         for c in &mut cases {

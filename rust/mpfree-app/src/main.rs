@@ -6079,6 +6079,7 @@ fn player_session(
         .collect();
     cores.start_mixer(&mut mix.mixer);
     cores.start_tracks(&mut mix.instruments);
+    cores.start_pads(&mut mix.pad_synths);
     for line in cores.take_lines() {
         out.say(&line);
     }
@@ -9502,10 +9503,12 @@ fn player_session(
             line_level_said = Some(line_level);
         }
         let ctx = mixing::ctx(RATE, i * PERIOD as u64, time.info().bpm, time.block());
-        // The mixer's lanes (each stage's inserts, the returns) and the
-        // tracks' instruments' lanes keep the same deadline.
+        // The mixer's lanes (each stage's inserts, the returns), the
+        // tracks' instruments' lanes and the pads' synths' keep the same
+        // deadline.
         mix.mixer.set_lane_deadline(Some(lane_until));
         mix.instruments.set_lane_deadline(Some(lane_until));
+        mix.pad_synths.set_lane_deadline(Some(lane_until));
         let (p, caught) = mix.period(
             &ctx,
             (&synth_l, &synth_r),
@@ -9735,10 +9738,11 @@ fn player_session(
                 play.queued,
             )
         };
-        // A synth or a track's instrument left out of this period (late)
-        // comes back before anything plays it again.
+        // A synth, a track's instrument or a pad's synth left out of this
+        // period (late) comes back before anything plays it again.
         synth.settle(lane_until);
         mix.instruments.settle(lane_until);
+        mix.pad_synths.settle(lane_until);
         // A period behind, with the queue running down: give up the voices
         // nobody hears (shed.rs). An underrun in this write emptied the
         // queue. A fast export is never behind (the card is stopped and
