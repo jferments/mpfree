@@ -6,7 +6,7 @@
 
 use mpfree_moves::*;
 use mpfree_node::{Curve, ParamInfo, Unit};
-use mpfree_param::{OnTrack, Owner, ParamAddr, RelAddr, Strip};
+use mpfree_param::{track_strip, OnTrack, Owner, ParamAddr, RelAddr, Strip};
 use mpfree_transport::{Block, Command, Transport};
 
 const BAR: u32 = 3840;
@@ -314,7 +314,7 @@ fn a_map_follows_its_parameter() {
     });
     assert!(choice.stepped());
     assert_eq!(choice.value(0.6), 1.0);
-    let addr = ParamAddr::new(Owner::Insert(Strip::Track(4), 2), 7);
+    let addr = ParamAddr::new(Owner::Insert(track_strip(4), 2), 7);
     assert_eq!(
         Target::for_track(addr, 4),
         Target::Track(RelAddr::new(OnTrack::Insert(2), 7))

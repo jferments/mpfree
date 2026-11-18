@@ -264,7 +264,7 @@ pub fn opening(
             .ok()
             .map(Box::new)
     });
-    let mix = snap.part(MIXER).and_then(|text| {
+    let mut mix = snap.part(MIXER).and_then(|text| {
         mixer_load(text, snap.part(MOD), rate, plugins)
             .map_err(|e| notes.push(format!("project: the mixer wasn't opened ({e})")))
             .ok()
@@ -296,6 +296,11 @@ pub fn opening(
             }
         },
     };
+    // Where track 1's own instrument played, in a project saved before
+    // Drums was track 1's strip (`MixLoad::track1_own`).
+    if let Some(m) = mix.as_mut() {
+        m.track1_own = instruments.iter().flatten().any(|l| l.track == 0);
+    }
     let track_kits = match snap.part(TRACK_KITS).map(track_kits_parse) {
         None => Vec::new(),
         Some(Ok(picks)) => picks,
@@ -604,11 +609,13 @@ pub fn untouched_channel(mixer: &Mixer, st: StripId) -> bool {
 /// The mixer part: every strip's controls (but [`untouched_channel`]s),
 /// then each insert with its parameters (and a plugin's state, base64), and
 /// the pad mutes. A mixer of the app's adds the pads its lent pad channels
-/// are lent to ([`mixer_text_lent`]).
+/// are lent to and where track 1 plays ([`mixer_text_lent`]); here it plays
+/// into Drums.
 ///
 /// ```text
 /// mpfree-mixer 1
 /// padmutes 0
+/// track1 t0
 /// strip t0 0=-3 1=0 3=0 4=0 5=0 6=-80 ...
 /// insert t0 1 1 mpfree.fx.dj_filter
 /// param 0 0.5
@@ -616,16 +623,20 @@ pub fn untouched_channel(mixer: &Mixer, st: StripId) -> bool {
 /// state AAECAw==
 /// ```
 pub fn mixer_text(mixer: &Mixer, pad_mutes: u16, pad_solos: u16) -> String {
-    mixer_text_lent(mixer, pad_mutes, pad_solos, &[])
+    let drums = StripId::Track(crate::mixing::DRUMS);
+    mixer_text_lent(mixer, pad_mutes, pad_solos, &[], drums)
 }
 
 /// [`mixer_text`], with a `lent` line for each pad channel lent to a pad
-/// (its strip, kit and pad): `lent ps16 1 20` is kit 2's pad B5.
+/// (its strip, kit and pad): `lent ps16 1 20` is kit 2's pad B5; and the
+/// `track1` line, the strip track 1 plays into (`t0`, Drums, or `t4`, its
+/// old own channel: [`MixLoad::track1`]).
 pub fn mixer_text_lent(
     mixer: &Mixer,
     pad_mutes: u16,
     pad_solos: u16,
     lent: &[(StripId, usize, usize)],
+    track1: StripId,
 ) -> String {
     let mut s = String::with_capacity(4096);
     s.push_str(MIXER_FORMAT);
@@ -634,6 +645,7 @@ pub fn mixer_text_lent(
     if pad_solos != 0 {
         let _ = writeln!(s, "padsolos {pad_solos}");
     }
+    let _ = writeln!(s, "track1 {}", strip_text(track1));
     for &(st, kit, pad) in lent {
         let _ = writeln!(s, "lent {} {kit} {pad}", strip_text(st));
     }
@@ -706,6 +718,15 @@ pub struct MixLoad {
     pub pad_solos: u16,
     /// The pad channels lent to pads: strip, kit and pad.
     pub lent: Vec<(StripId, u8, u8)>,
+    /// The strip track 1 played into when the project was saved (its
+    /// `track1` line): Drums, or its old own channel (`MixHost::old_first`).
+    /// None for a project saved before Drums was track 1's strip (sampler
+    /// R3 part 4b); Drums, said in `notes`, for a strip it can't be.
+    pub track1: Option<StripId>,
+    /// Track 1 has its own instrument in the project (set by [`opening`]
+    /// from the instruments part): in a project saved before part 4b it
+    /// played into its own channel, so it keeps that.
+    pub track1_own: bool,
     pub strips: Vec<(StripId, Vec<(u16, f32)>)>,
     /// Each strip's inserts, in order.
     pub chains: Vec<(StripId, Vec<Keyed>)>,
@@ -783,6 +804,8 @@ pub fn mixer_load(
         pad_mutes: 0,
         pad_solos: 0,
         lent: Vec::new(),
+        track1: None,
+        track1_own: false,
         strips: Vec::new(),
         chains: Vec::new(),
         modu: modu.map(str::to_string),
@@ -819,6 +842,20 @@ pub fn mixer_load(
             }
             Some("padsolos") => {
                 out.pad_solos = w.next().and_then(|x| x.parse().ok()).ok_or_else(bad)?;
+            }
+            Some("track1") => {
+                let st = w.next().and_then(parse_strip).ok_or_else(bad)?;
+                let (drums, old) = (crate::mixing::DRUMS, crate::mixing::TRACKS);
+                match st {
+                    StripId::Track(t) if t == drums || t == old => out.track1 = Some(st),
+                    _ => {
+                        out.track1 = Some(StripId::Track(drums));
+                        out.notes.push(format!(
+                            "project: track 1 can't play into {}; it plays into Drums",
+                            strip_text(st)
+                        ));
+                    }
+                }
             }
             Some("lent") => {
                 let st = w.next().and_then(parse_strip).ok_or_else(bad)?;
@@ -1878,6 +1915,42 @@ mod tests {
         snap.parts.retain(|(name, _)| name != PERFORM);
         let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none());
         assert_eq!(o.perform, None);
+    }
+
+    /// The mixer's load knows whether track 1 has its own instrument, for
+    /// a project saved before Drums was track 1's strip
+    /// (`MixHost::tend_open`), and reads the `track1` line of one since.
+    #[test]
+    fn the_mixer_knows_where_track_1_played() {
+        let open = |mixer: &str, track: usize| {
+            let c = Collected {
+                tempo: 120.0,
+                swing: mpfree_transport::time::Swing::new(240, 50).unwrap(),
+                clips: mpfree_seq::Project::default(),
+                mixer: mixer.to_string(),
+                modu: String::new(),
+                synth: String::new(),
+                arp: String::new(),
+                perform: String::new(),
+                instruments: format!("{INSTRUMENTS_FORMAT}\ntrack {track} mpfree.poly\n"),
+                track_kits: String::new(),
+                loops: None,
+                audio: None,
+            };
+            let snap = snapshot(&c, Vec::new());
+            let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none());
+            assert_eq!(o.instruments.iter().flatten().count(), 1, "{:?}", o.notes);
+            let m = o.mix.expect("the mixer");
+            (m.track1_own, m.track1)
+        };
+        let before = format!("{MIXER_FORMAT}\npadmutes 0\n");
+        assert_eq!(open(&before, 1), (true, None));
+        assert_eq!(open(&before, 2), (false, None));
+        let since = format!("{MIXER_FORMAT}\npadmutes 0\ntrack1 t4\n");
+        assert_eq!(
+            open(&since, 2),
+            (false, Some(StripId::Track(crate::mixing::TRACKS)))
+        );
     }
 
     /// A project saved before the instruments part, or with no track's

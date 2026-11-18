@@ -4714,7 +4714,12 @@ impl SeqPads<'_> {
     /// the pads is kept quiet (taken, so nothing plays or records it).
     fn quiet(&self, o: &mpfree_play::Out) -> bool {
         self.only.is_some() && {
-            let on_pads = !self.midi.takes(o.track) && !self.own.holds(usize::from(o.track));
+            let t = usize::from(o.track);
+            let outside = self.midi.takes(o.track);
+            // Track 1's own instrument shares Drums with the tracks on
+            // kit 1 (R3 part 4b), so their replays keep it quiet too.
+            let on_pads = !outside
+                && (!self.own.holds(t) || (t == 0 && self.own.channel(0) == mixing::DRUMS));
             export::quiets(self.only, o.track, on_pads, o.event)
         }
     }
@@ -6456,7 +6461,7 @@ fn player_session(
                             None => mixing::SYNTH,
                             Some(k) => match homes.get(k).copied().unwrap_or(0) {
                                 0 => mixing::DRUMS,
-                                h => instruments::first_track() + usize::from(h) - 1,
+                                h => mix.track_channel(usize::from(h) - 1),
                             },
                         })
                     };
