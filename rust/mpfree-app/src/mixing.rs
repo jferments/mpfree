@@ -54,7 +54,7 @@ use mpfree_fx::ids::mixer::{self as mx, monitor, source};
 use mpfree_fx::ids::{delay, dj_filter};
 use mpfree_fx::{Delay, DjFilter, Edit, Insert, Mixer, MixerConfig, StripId, CAPTURES};
 use mpfree_mixer_ui::{default_name, MixAction, MixState, MixView};
-use mpfree_node::{Ctx, Node, NodeEvent, Timed};
+use mpfree_node::{Ctx, Held, HeldStep, Node, NodeEvent, Timed};
 use mpfree_play::mpfree_param::{Owner, ParamAddr};
 use mpfree_sampler::engine::PadOut;
 
@@ -277,7 +277,29 @@ pub enum PlayFx {
     /// The XY pad: where the finger is (0 to 1 each way), and whether it
     /// is down.
     Xy { x: f32, y: f32, down: bool },
+    /// What the XY pad plays, picked from its chip's list (Jay, 18 Nov
+    /// 2026 07:34Z): None, the Perform FX's DJ filter and echo (as
+    /// before); `Some(k)`, effect `k` of the XY FX
+    /// (`mpfree_fx::xyfx::EFFECTS`), put on the master after the Perform
+    /// FX the first time it is picked.
+    XyEffect(Option<usize>),
 }
+
+/// The XY FX's node id: what the XY pad plays when an effect is picked.
+pub const XY_FX: &str = "mpfree.fx.xy";
+
+/// What the master's XY FX starts with when the pad puts it there: the
+/// effect picked, closed (Active off) until a finger lands.
+static XY_START: [[(u16, f32); 2]; 9] = {
+    use mpfree_fx::xyfx::ids as xy;
+    let mut out = [[(xy::EFFECT, 0.0), (xy::ACTIVE, 0.0)]; 9];
+    let mut k = 0;
+    while k < 9 {
+        out[k][0].1 = k as f32;
+        k += 1;
+    }
+    out
+};
 
 /// The performance effects a throw holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -376,6 +398,8 @@ pub struct MixHost {
     dropped: u16,
     /// Pads soloed (a bit each): while any is, the others are silent.
     pad_solos: u16,
+    /// What the XY pad plays ([`PlayFx::XyEffect`]).
+    xy_effect: Option<usize>,
     /// The pad strips' mutes as `apply_mutes` last set them (a bit each):
     /// a strip's parameter reads its old value until the next period, so
     /// two changes in one period compare with what was sent.
@@ -425,6 +449,51 @@ pub struct MixHost {
     pub takes: crate::takes::Takes,
     /// A take's memory made without a builder (the tests).
     here: crate::takes::Here,
+    /// An insert's memory on its way to a pad ([`MixHost::capture`]), and
+    /// one that is done and not yet sent back.
+    capturing: Option<Capturing>,
+    captured: Option<(Box<Held>, Captured)>,
+}
+
+/// An insert's memory being copied out, a piece a period
+/// ([`CAPTURE_STEP`] frames), so a long one never costs a period much.
+struct Capturing {
+    strip: StripId,
+    uid: u16,
+    held: Box<Held>,
+}
+
+/// Frames of an insert's memory copied a period: 8,192 stereo frames are
+/// 64 KB, a small part of a period's time, and 8 s of Grains memory takes
+/// 44 periods (about 130 ms).
+pub const CAPTURE_STEP: usize = 8192;
+
+/// How a capture of an insert's memory ended ([`MixHost::capture`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Captured {
+    /// All of it is in the box.
+    Done,
+    /// The effect holds nothing yet.
+    Nothing,
+    /// Its memory was cleared or overwritten while it was copied.
+    Lost,
+    /// The effect was taken out, or moved off its strip.
+    Gone,
+    /// Another capture is on its way.
+    Busy,
+}
+
+impl Captured {
+    /// Why a capture made nothing, for the hint line.
+    pub fn why(self) -> &'static str {
+        match self {
+            Captured::Done => "done",
+            Captured::Nothing => "the effect hasn't heard anything yet",
+            Captured::Lost => "its memory changed while it was copied; try again",
+            Captured::Gone => "the effect was taken out",
+            Captured::Busy => "another capture is on its way",
+        }
+    }
 }
 
 /// The take host's memory: made and dropped on the builder thread, or
@@ -558,6 +627,7 @@ impl MixHost {
             dropped: 0,
             pad_solos: 0,
             mutes_sent: 0,
+            xy_effect: None,
             builder: None,
             landing: None,
             plugins: Arc::new(Plugins::none()),
@@ -576,6 +646,8 @@ impl MixHost {
             modes: crate::fxmodes::Modes::default(),
             takes: crate::takes::Takes::new(rate),
             here: crate::takes::Here::default(),
+            capturing: None,
+            captured: None,
         }
     }
 
@@ -1143,10 +1215,46 @@ impl MixHost {
                     if down { 1.0 } else { 0.0 },
                 );
             }
-            PlayFx::Xy { x, y, .. } => {
-                let pad = mpfree_fx::XyPad::perform();
-                for (axis, pos) in [(pad.x, x), (pad.y, y)] {
-                    self.insert(StripId::Master, PERFORM_SLOT, axis.param, axis.value(pos));
+            PlayFx::Xy { x, y, down } => match self.xy_effect {
+                Some(_) => {
+                    use mpfree_fx::xyfx::ids as xy;
+                    // Still being built: the next move plays it.
+                    let Some(slot) = self.xy_slot() else {
+                        return;
+                    };
+                    self.insert(StripId::Master, slot, xy::X, x.clamp(0.0, 1.0) * 100.0);
+                    self.insert(StripId::Master, slot, xy::Y, y.clamp(0.0, 1.0) * 100.0);
+                    let open = if down { 1.0 } else { 0.0 };
+                    self.insert(StripId::Master, slot, xy::ACTIVE, open);
+                }
+                None => {
+                    let pad = mpfree_fx::XyPad::perform();
+                    for (axis, pos) in [(pad.x, x), (pad.y, y)] {
+                        self.insert(StripId::Master, PERFORM_SLOT, axis.param, axis.value(pos));
+                    }
+                }
+            },
+            PlayFx::XyEffect(pick) => {
+                use mpfree_fx::xyfx::ids as xy;
+                let pick = pick.filter(|&k| k < XY_START.len());
+                self.xy_effect = pick;
+                match (pick, self.xy_slot()) {
+                    (Some(k), Some(slot)) => {
+                        self.insert(StripId::Master, slot, xy::EFFECT, k as f32);
+                        self.insert(StripId::Master, slot, xy::ACTIVE, 0.0);
+                    }
+                    (Some(k), None) => {
+                        // Busy: the next pick or start tries again.
+                        let _ = self.add_insert_with(StripId::Master, XY_FX, &XY_START[k]);
+                    }
+                    // Back to the DJ filter and echo: the XY FX closes, on
+                    // its Filter, an insert that doesn't run while closed
+                    // (a closed echo or wash keeps running to ring out).
+                    (None, Some(slot)) => {
+                        self.insert(StripId::Master, slot, xy::ACTIVE, 0.0);
+                        self.insert(StripId::Master, slot, xy::EFFECT, 0.0);
+                    }
+                    (None, None) => {}
                 }
             }
             PlayFx::PadMute { pad, mute } if pad < PADS => {
@@ -1193,6 +1301,12 @@ impl MixHost {
             .chain(StripId::Master)
             .and_then(|c| c.node(PERFORM_SLOT))
             .is_some_and(|n| n.param(perf::hold(fx.pad())) > 0.5)
+    }
+
+    /// The master's XY FX, the first on its chain, if it has one.
+    fn xy_slot(&self) -> Option<usize> {
+        let c = self.mixer.chain(StripId::Master)?;
+        (0..c.len()).find(|&i| c.node(i).is_some_and(|n| n.info().id == XY_FX))
     }
 
     /// A strip control as the mixer panel set it, for UNDO: a pad's mute
@@ -1623,6 +1737,7 @@ impl MixHost {
         }
         self.modu.process(ctx, PERIOD, &mut self.mixer);
         self.mixer.process(ctx, left, right);
+        self.step_capture();
         let peak = left
             .iter()
             .chain(right.iter())
@@ -1631,6 +1746,69 @@ impl MixHost {
         let caught = overs != self.overs;
         self.overs = overs;
         (peak, caught)
+    }
+
+    /// Starts copying what insert `slot` of `strip` holds (the Grains
+    /// effect's memory) into `held`, made off the audio thread, a piece
+    /// each period from now on; [`MixHost::take_captured`] gives it back
+    /// when done. The box may have held another copy (it is emptied
+    /// first). While another is on its way, or with no insert there, the
+    /// box comes straight back with why.
+    pub fn capture(
+        &mut self,
+        strip: StripId,
+        slot: usize,
+        held: Box<Held>,
+    ) -> Result<(), (Box<Held>, Captured)> {
+        if self.capturing.is_some() || self.captured.is_some() {
+            return Err((held, Captured::Busy));
+        }
+        let Some(uid) = self.mixer.chain(strip).and_then(|c| c.uid(slot)) else {
+            return Err((held, Captured::Gone));
+        };
+        let mut held = held;
+        held.clear();
+        self.capturing = Some(Capturing { strip, uid, held });
+        Ok(())
+    }
+
+    /// The period's piece of the capture: the insert found again by its
+    /// id (a move keeps it), its memory copied on. Never allocates.
+    fn step_capture(&mut self) {
+        let Some(c) = self.capturing.as_mut() else {
+            return;
+        };
+        let node = self
+            .mixer
+            .chain_mut(c.strip)
+            .and_then(|ch| ch.slot_of(c.uid).and_then(|i| ch.node_mut(i)));
+        let end = match node {
+            None => Captured::Gone,
+            Some(n) => match n.copy_held(&mut c.held, CAPTURE_STEP) {
+                HeldStep::More => return,
+                HeldStep::Done => {
+                    c.held.keep_values(&*n);
+                    Captured::Done
+                }
+                HeldStep::Nothing => Captured::Nothing,
+                HeldStep::Lost => Captured::Lost,
+            },
+        };
+        if let Some(c) = self.capturing.take() {
+            self.captured = Some((c.held, end));
+        }
+    }
+
+    /// A capture that has ended, to send to the screen thread (which frees
+    /// it). Give it back with [`MixHost::keep_captured`] if it found no
+    /// room, so the audio thread never frees it.
+    pub fn take_captured(&mut self) -> Option<(Box<Held>, Captured)> {
+        self.captured.take()
+    }
+
+    /// A capture [`MixHost::take_captured`] gave that couldn't be sent yet.
+    pub fn keep_captured(&mut self, held: Box<Held>, end: Captured) {
+        self.captured = Some((held, end));
     }
 
     /// The mixer panel opened on `view`, or closed (`None`).
@@ -2527,6 +2705,70 @@ mod tests {
         assert_eq!(pads.len(), all.len());
     }
 
+    /// The XY pad's chip picks what it plays: an XY FX effect goes on the
+    /// master after the Perform FX, closed until a finger lands; the pad
+    /// then plays X, Y and Active; Filter + echo plays the Perform FX
+    /// again and the XY FX closes.
+    #[test]
+    fn the_xy_pads_pick_puts_an_xy_fx_on_the_master_and_plays_it() {
+        use mpfree_fx::xyfx::ids as xy;
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        run(&mut h, 10, 0.0, 0.0);
+        assert_eq!(h.xy_slot(), None, "none until picked");
+        h.play(PlayFx::XyEffect(Some(3)));
+        run(&mut h, 10, 0.0, 0.0);
+        let slot = h.xy_slot().expect("the XY FX on the master");
+        assert!(slot > PERFORM_SLOT, "after the Perform FX");
+        let xyfx = |h: &MixHost, id: u16| {
+            h.mixer
+                .chain(StripId::Master)
+                .and_then(|c| c.node(slot))
+                .map(|n| n.param(id))
+        };
+        assert_eq!(xyfx(&h, xy::EFFECT), Some(3.0), "Wash");
+        assert_eq!(xyfx(&h, xy::ACTIVE), Some(0.0), "closed");
+        h.play(PlayFx::Xy {
+            x: 0.25,
+            y: 1.0,
+            down: true,
+        });
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(xyfx(&h, xy::X), Some(25.0));
+        assert_eq!(xyfx(&h, xy::Y), Some(100.0));
+        assert_eq!(xyfx(&h, xy::ACTIVE), Some(1.0), "open while held");
+        let dj = |h: &MixHost| {
+            h.mixer
+                .chain(StripId::Master)
+                .and_then(|c| c.node(PERFORM_SLOT))
+                .map(|n| n.param(perf::DJ_FILTER))
+        };
+        assert_eq!(dj(&h), Some(0.0), "the DJ filter is left alone");
+        h.play(PlayFx::Xy {
+            x: 0.25,
+            y: 1.0,
+            down: false,
+        });
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(xyfx(&h, xy::ACTIVE), Some(0.0), "lifting lets it go");
+        // Another effect: the same insert, no second one.
+        h.play(PlayFx::XyEffect(Some(1)));
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(xyfx(&h, xy::EFFECT), Some(1.0));
+        let n = h.mixer.chain(StripId::Master).map_or(0, |c| c.len());
+        // Filter + echo: the Perform FX again, the XY FX closed.
+        h.play(PlayFx::XyEffect(None));
+        h.play(PlayFx::Xy {
+            x: 0.0,
+            y: 1.0,
+            down: true,
+        });
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(dj(&h), Some(-100.0), "low-pass");
+        assert_eq!(xyfx(&h, xy::ACTIVE), Some(0.0));
+        assert_eq!(xyfx(&h, xy::EFFECT), Some(0.0), "on the Filter, idle");
+        assert_eq!(h.mixer.chain(StripId::Master).map_or(0, |c| c.len()), n);
+    }
+
     /// Jay after live test 3: several throws at once, a finger on each.
     #[test]
     fn two_throws_held_at_once_each_hold_their_pad() {
@@ -2581,6 +2823,70 @@ mod tests {
             h.mixer.edit(Edit::Remove { strip, at: base }).ok().unwrap();
             assert_eq!(until_chain(h, base), base, "remove {round}");
         }
+    }
+
+    /// The chain editor's Capture: the Grains effect's memory comes out a
+    /// piece a period, whole, with its settings; one at a time; and an
+    /// effect taken out on the way says so.
+    #[test]
+    fn an_effects_memory_is_captured_a_piece_a_period() {
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        let strip = StripId::Pad(0);
+        let base = h.mixer.chain(strip).unwrap().len();
+        h.add_insert(strip, "mpfree.grains").unwrap();
+        for _ in 0..20 {
+            assert_eq!(h.poll_built(), None);
+            run(&mut h, 1, 0.5, 0.0);
+        }
+        assert_eq!(h.mixer.chain(strip).unwrap().len(), base + 1);
+        // Two seconds of the pad's tone into its memory.
+        run(&mut h, 690, 0.5, 0.0);
+        let held = Box::new(Held::new(2, RATE as usize * 8));
+        h.capture(strip, base, held).unwrap();
+        assert!(h.capturing.is_some());
+        let busy = h.capture(strip, base, Box::new(Held::new(2, 10)));
+        assert_eq!(busy.err().map(|(_, e)| e), Some(Captured::Busy));
+        let mut periods = 0;
+        let (held, end) = loop {
+            run(&mut h, 1, 0.5, 0.0);
+            periods += 1;
+            if let Some(done) = h.take_captured() {
+                break done;
+            }
+            assert!(periods < 100, "never done");
+        };
+        assert_eq!(end, Captured::Done);
+        assert!(h.capturing.is_none());
+        // Not frozen: all but the oldest quarter of what it heard, which
+        // is under its 8 s, so everything from the start.
+        let frames = held.frames();
+        assert!(frames > RATE as usize * 2, "{frames} frames");
+        assert_eq!(periods, frames.div_ceil(CAPTURE_STEP));
+        assert!(held.data().iter().any(|&x| x.abs() > 0.1), "the tone");
+        let size = held
+            .values()
+            .iter()
+            .find(|(id, _)| *id == mpfree_fx::ids::grains::SIZE)
+            .map(|v| v.1);
+        assert!(size.is_some(), "the settings came too");
+        // Taken out on the way: Gone, and the box still comes back.
+        h.capture(strip, base, held).unwrap();
+        h.mixer.edit(Edit::Remove { strip, at: base }).ok().unwrap();
+        let mut end = None;
+        for _ in 0..100 {
+            run(&mut h, 1, 0.0, 0.0);
+            if let Some((_, e)) = h.take_captured() {
+                end = Some(e);
+                break;
+            }
+        }
+        assert_eq!(end, Some(Captured::Gone));
+        let none = h.capture(strip, base, Box::new(Held::new(2, 10)));
+        assert_eq!(
+            none.err().map(|(_, e)| e),
+            Some(Captured::Gone),
+            "no insert there"
+        );
     }
 
     #[test]

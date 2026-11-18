@@ -70,15 +70,15 @@ use std::time::{Duration, Instant};
 
 use mpfree_chain_ui::state::Pedal;
 use mpfree_chain_ui::ChainAction;
-use mpfree_node::Node;
+use mpfree_node::{Held, Node};
 use mpfree_play::mpfree_param::{OnTrack, ParamAddr, RelAddr};
 use mpfree_sampler::autosample::{Finished, Gear, Job, Plan, PlanError};
 use mpfree_sampler::engine::{EngineView, PadField};
 use mpfree_sampler::export;
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
-    self as model, ChannelPick, ChopSet, Fade, Levels, LoopMode, Pad, PadsPlay, PlayMode, Project,
-    Region, Source, SourceId, Warp, KEPT_CHOP, PADS, SLICE_KEYS_FROM, WARP_BPM,
+    self as model, ChannelPick, ChopSet, Fade, Layer, Levels, LoopMode, Pad, PadsPlay, PlayMode,
+    Project, Region, Source, SourceId, Warp, KEPT_CHOP, PADS, SLICE_KEYS_FROM, WARP_BPM,
 };
 use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::record::{self, Input, Looped, Progress, Recording};
@@ -91,7 +91,7 @@ use mpfree_sampler_ui::auto_tab::{
 };
 use mpfree_sampler_ui::chop_tab::{self, ChopAction, ChopState, ChopTab};
 use mpfree_sampler_ui::fx_tab::{self, FxAction, FxKnob, FxPedal, FxState, FxTab};
-use mpfree_sampler_ui::grain_tab::{self, GrainAction, GrainState, GrainTab};
+use mpfree_sampler_ui::grain_tab::{self, CloudNow, GrainAction, GrainState, GrainTab};
 use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
 use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab, SceneAction};
 use mpfree_sampler_ui::rec_tab::{self, RecAction, RecState, RecTab, Skip};
@@ -108,6 +108,7 @@ use mpfree_ui::widgets::Card;
 use mpfree_ui::{EventKind, Tone, Ui, UiEvent};
 
 use crate::gui::FromUi;
+use crate::mixing::Captured;
 use crate::modpanels::PadFx;
 use crate::sampler::{Cloud, Playheads, RecFeed, RecSource, ViewSwap};
 use mpfree_fx::{CapturePoint, StripId};
@@ -675,6 +676,8 @@ pub struct SamplePage {
     marks_seen: u64,
     /// Takes made, for their names.
     takes: u32,
+    /// Captures of an effect's memory kept, for their names.
+    captures: u32,
     /// The last take, said in a line on the tab.
     last_take: String,
     /// The Auto-sample mode, added the first time it is opened.
@@ -730,6 +733,26 @@ pub struct SamplePage {
     exports: Vec<export::Export>,
     /// The kit an opened project was playing, for the app to switch to.
     wanted_kit: Option<usize>,
+    /// Put on New kit (sampler R4.6) as the app offers it: Ok with the
+    /// empty kit the slices would go on, for a new track, or Err saying
+    /// why not now. None until the app says, and then the Chop tab has no
+    /// New kit.
+    new_kit: Option<Result<usize, String>>,
+    /// A chop to a new kit just made, for the app to put on a new track
+    /// ([`SamplePage::take_new_kit_track`]).
+    new_kit_track: Option<NewKitTrack>,
+    /// The kit a chop to a new kit filled and the pad of its first slice:
+    /// the tab shows that pad once the pads play the kit.
+    new_kit_pad: Option<(usize, usize)>,
+}
+
+/// A chop to a new kit (sampler R4.6), for the app: the kit the slices
+/// went on, which a new track is to play, and the phrase for that track
+/// when Phrase was on.
+#[derive(Debug)]
+pub struct NewKitTrack {
+    pub kit: usize,
+    pub phrase: Option<Box<Clip>>,
 }
 
 impl SamplePage {
@@ -803,6 +826,7 @@ impl SamplePage {
             live: None,
             marks_seen: 0,
             takes: 0,
+            captures: 0,
             last_take: String::new(),
             auto: None,
             auto_state: None,
@@ -828,6 +852,9 @@ impl SamplePage {
             files: false,
             exports: Vec::new(),
             wanted_kit: None,
+            new_kit: None,
+            new_kit_track: None,
+            new_kit_pad: None,
         };
         p.show_empty(ui);
         Ok(p)
@@ -903,7 +930,11 @@ impl SamplePage {
         }
         self.lift();
         self.kit = k;
-        self.pad = self.with_sound(self.pad, 1).unwrap_or(self.pad);
+        self.pad = match self.new_kit_pad.take() {
+            // A chop to a new kit: its first slice.
+            Some((kit, pad)) if kit == k => pad,
+            _ => self.with_sound(self.pad, 1).unwrap_or(self.pad),
+        };
         if self.sending.take().is_some() {
             self.lines
                 .push("sample: Send to pad called off (another kit)".into());
@@ -1093,6 +1124,12 @@ impl SamplePage {
                 0
             },
         }
+    }
+
+    /// Whether the page has kit `kit`'s sounds to edit (the synth's kit
+    /// has none).
+    pub fn has_kit(&self, kit: usize) -> bool {
+        kit < self.projects.len()
     }
 
     /// Kit `kit`'s project, to change behind the page's back (tests).
@@ -1479,8 +1516,13 @@ impl SamplePage {
             return;
         };
         self.chop_state = ChopState::from_project(project, st.pad, st.layer, st.source.clone());
+        let new_kit = self
+            .new_kit
+            .as_ref()
+            .map(|r| r.as_ref().map(|_| ()).map_err(Clone::clone));
         if let Some(cs) = self.chop_state.as_mut() {
             cs.files = self.files;
+            cs.new_kit = new_kit;
         }
         let Some(cs) = self.chop_state.as_ref() else {
             return;
@@ -2405,35 +2447,64 @@ impl SamplePage {
                 mode,
                 keys_from,
                 one_pad,
+                new_kit,
                 ..
             } => {
                 let kit = self.kit;
-                let Some(project) = self.projects.get_mut(kit) else {
+                // Chop to a new kit (R4.6): the empty kit the app offered.
+                let to_kit = match (*new_kit, &self.new_kit) {
+                    (false, _) => kit,
+                    (true, Some(Ok(u))) if *u != kit && *u < self.projects.len() => *u,
+                    (true, Some(Err(why))) => {
+                        self.lines
+                            .push(format!("sample: chop to a new kit not made: {why}"));
+                        return;
+                    }
+                    (true, _) => {
+                        self.lines
+                            .push("sample: chop to a new kit not made: no empty kit".into());
+                        return;
+                    }
+                };
+                let Some(project) = self.projects.get(kit) else {
                     return;
                 };
                 let name = project.pad(*pad).map_or(String::new(), |p| p.name.clone());
+                let new_name = (to_kit != kit).then(|| self.new_kit_name(project, *pad, to_kit));
                 // Worked out before the pads change: the chop's source stays.
                 let phrase = a.phrase(project);
-                match a.apply(project) {
+                let made = if to_kit == kit {
+                    a.apply(&mut self.projects[kit])
+                } else {
+                    let (from, to) = two_mut(&mut self.projects, kit, to_kit);
+                    a.apply_to(from, to)
+                };
+                match made {
                     Ok(pads) => {
                         self.edits += 1;
-                        if let Some(d) = self.dirty.get_mut(kit) {
+                        if let Some(d) = self.dirty.get_mut(to_kit) {
                             *d = true;
                         }
-                        self.mark_renamed(kit);
+                        if let (Some(n), Some(new)) = (self.names.get_mut(to_kit), new_name) {
+                            *n = new;
+                        }
+                        self.mark_renamed(to_kit);
                         let n = bounds.len() - 1;
                         let to = if pads.len() == 1 {
-                            self.pad_text(kit, pads.start)
+                            self.pad_text(to_kit, pads.start)
                         } else {
                             format!(
                                 "{} to {}",
-                                self.pad_text(kit, pads.start),
-                                self.pad_text(kit, pads.end - 1)
+                                self.pad_text(to_kit, pads.start),
+                                self.pad_text(to_kit, pads.end - 1)
                             )
                         };
                         let s = |f: u64| format!("{:.3} s", f as f64 / f64::from(self.rate.max(1)));
                         let span = format!("{} to {}", s(bounds[0]), s(bounds[n]));
                         let to = match keys_from {
+                            _ if to_kit != kit => {
+                                format!("{} pads {to}, for a new track", self.kit_text_of(to_kit))
+                            }
                             _ if *one_pad => format!(
                                 "pad {to}, sliced: a hit plays slice 1, keys {} to {} a slice each",
                                 mpfree_sampler_ui::note_name(SLICE_KEYS_FROM),
@@ -2451,23 +2522,36 @@ impl SamplePage {
                         self.lines.push(format!("sample: {} pad {} {name}: chopped {span} into {n} slice{} ({mode:?}) on \
                                                  {to}", self.kit_text_of(kit), self.pad_text(kit, *pad),
                                                 if n == 1 { "" } else { "s" }));
+                        let mut for_track = None;
                         match phrase
                             .map(|p| p.map(|p| phrase_clip(&name, &p, pads.start, *one_pad)))
                         {
                             Ok(None) => {}
                             Ok(Some(Ok(clip))) => {
                                 self.lines.push(format!(
-                                    "sample: phrase {:?}: {} hits over {} beats, for the armed track",
+                                    "sample: phrase {:?}: {} hits over {} beats, for the {} track",
                                     clip.name,
                                     clip.notes.len(),
-                                    clip.length / i64::from(PPQ)
+                                    clip.length / i64::from(PPQ),
+                                    if to_kit == kit { "armed" } else { "new" }
                                 ));
-                                out.push(FromUi::SamplePhrase(Box::new(clip)));
+                                if to_kit == kit {
+                                    out.push(FromUi::SamplePhrase(Box::new(clip)));
+                                } else {
+                                    for_track = Some(Box::new(clip));
+                                }
                             }
                             Ok(Some(Err(why))) => {
                                 self.lines.push(format!("sample: phrase not made: {why}"))
                             }
                             Err(e) => self.lines.push(format!("sample: phrase not made ({e:?})")),
+                        }
+                        if to_kit != kit {
+                            self.new_kit_pad = Some((to_kit, pads.start));
+                            self.new_kit_track = Some(NewKitTrack {
+                                kit: to_kit,
+                                phrase: for_track,
+                            });
                         }
                     }
                     Err(e) => self.lines.push(format!(
@@ -2524,6 +2608,36 @@ impl SamplePage {
         if self.files != on {
             self.files = on;
             self.refresh(ui);
+        }
+    }
+
+    /// What Put on New kit would do now (sampler R4.6), as the app works
+    /// it out: Ok with the empty kit the slices would go on, for a new
+    /// track, or Err saying why not (no empty kit left, no room for a
+    /// track). The Chop tab offers New kit once the app says.
+    pub fn set_new_kit(&mut self, ui: &mut Ui, new_kit: Result<usize, String>) {
+        if self.new_kit.as_ref() != Some(&new_kit) {
+            self.new_kit = Some(new_kit);
+            self.refresh(ui);
+        }
+    }
+
+    /// A chop to a new kit made since the last call: the app adds a track,
+    /// and once it is armed gives it the kit and the phrase.
+    pub fn take_new_kit_track(&mut self) -> Option<NewKitTrack> {
+        self.new_kit_track.take()
+    }
+
+    /// The name kit `u` gets from a chop of `project`'s pad `pad`: "<the
+    /// pad's name> chops", or the kit's own name for a pad without one.
+    fn new_kit_name(&self, project: &Project, pad: usize, u: usize) -> String {
+        match project.pad(pad).map(|p| p.name.trim()) {
+            Some(n) if !n.is_empty() => format!("{n} chops"),
+            _ => self
+                .names
+                .get(u)
+                .cloned()
+                .unwrap_or_else(|| format!("Kit {}", u + 1)),
         }
     }
 
@@ -3958,6 +4072,53 @@ impl SamplePage {
         }
     }
 
+    /// An effect's memory came back from the audio thread (the chain
+    /// editor's Capture on the Grains effect, step C3): it goes where a
+    /// recording would land (the pad picked if it is empty, else the
+    /// bank's next empty pad, or the pad picked whatever it holds when
+    /// the Rec tab's Onto says so), playing as grains with the settings
+    /// the effect had. One undo step; the buffer is freed here.
+    pub fn captured(&mut self, ui: &mut Ui, held: Held, end: Captured) {
+        if end != Captured::Done {
+            self.lines
+                .push(format!("sample: nothing captured: {}", end.why()));
+            self.told.push(format!("Nothing captured: {}", end.why()));
+            return;
+        }
+        let Some(pad) = self.rec_state_now().target else {
+            self.lines
+                .push("sample: nothing captured: no empty pad in this bank".to_string());
+            self.told
+                .push("Nothing captured: no empty pad in this bank".to_string());
+            return;
+        };
+        let grain = mpfree_grain::node::voice_params(held.values());
+        let (rate, ch) = (held.rate(), held.channels() as u8);
+        self.captures += 1;
+        let name = format!("Grains {}", self.captures);
+        match Source::new(&name, rate, ch, held.into_data()) {
+            Ok(src) => {
+                self.keep_as(
+                    ui,
+                    self.kit,
+                    pad,
+                    src,
+                    "grains capture",
+                    ", playing as grains",
+                    |l| {
+                        l.region.mode = PlayMode::Granular;
+                        l.region.grain = grain;
+                    },
+                );
+                self.told
+                    .push(format!("{name} on pad {}", self.pad_text(self.kit, pad)));
+            }
+            Err(e) => self
+                .lines
+                .push(format!("sample: grains capture not kept ({e:?})")),
+        }
+    }
+
     fn take_name(&mut self) -> String {
         self.takes += 1;
         match self.source {
@@ -3983,18 +4144,38 @@ impl SamplePage {
         what: &str,
         bpm: Option<f64>,
     ) {
+        let warp = bpm.map(|b| Warp::new((b as f32).clamp(*WARP_BPM.start(), *WARP_BPM.end())));
+        let warped = warp
+            .as_ref()
+            .map(|w| format!(", warped at {:.1} BPM", w.bpm))
+            .unwrap_or_default();
+        self.keep_as(ui, kit, pad, src, what, &warped, |layer| {
+            layer.region.warp = warp
+        });
+    }
+
+    /// [`Self::keep`] with `set` changing the new layer first, and `after`
+    /// at the end of the line that says so.
+    // The sound and where it goes, then what to say and do: one call each.
+    #[allow(clippy::too_many_arguments)]
+    fn keep_as(
+        &mut self,
+        ui: &mut Ui,
+        kit: usize,
+        pad: usize,
+        src: Source,
+        what: &str,
+        after: &str,
+        set: impl FnOnce(&mut Layer),
+    ) {
         let (name, frames, rate, ch) = (src.name.clone(), src.frames(), src.rate(), src.channels());
         let Some(project) = self.projects.get_mut(kit) else {
             self.lines
                 .push(format!("sample: {what} not kept (the kit is gone)"));
             return;
         };
-        let warp = bpm.map(|b| Warp::new((b as f32).clamp(*WARP_BPM.start(), *WARP_BPM.end())));
-        let warped = warp
-            .as_ref()
-            .map(|w| format!(", warped at {:.1} BPM", w.bpm));
         match project.put_source_as(pad, src, |name, mut layer, old| {
-            layer.region.warp = warp;
+            set(&mut layer);
             match old {
                 Some(_) => Pad::replacing(name, layer, old),
                 None => crate::sampler::kit_pad_with(name, layer),
@@ -4012,10 +4193,7 @@ impl SamplePage {
                     if ch == 2 { "stereo" } else { "mono" },
                     self.pad_text(kit, pad)
                 );
-                self.lines.push(format!(
-                    "sample: {what}: {text}{}",
-                    warped.unwrap_or_default()
-                ));
+                self.lines.push(format!("sample: {what}: {text}{after}"));
                 self.last_take = text;
                 if kit == self.kit {
                     self.lift();
@@ -5638,7 +5816,12 @@ impl SamplePage {
                     let head = c
                         .head
                         .map(|h| ((h as f64 - r.start as f64) / r.frames().max(1) as f64) as f32);
-                    tab.set_cloud(ui, st, c.grains(), head, c.live);
+                    let now = CloudNow {
+                        playhead: head,
+                        state: c.state,
+                        live: c.live,
+                    };
+                    tab.set_cloud(ui, st, c.grains(), now);
                 }
                 self.cloud_shown = busy;
             }
@@ -5846,6 +6029,19 @@ pub fn describe(a: &Region, b: &Region, rate: u32) -> String {
         ));
     }
     out.join(", ")
+}
+
+/// Projects `a` and `b` (not the same) of `all`, `a` to read and `b` to
+/// change.
+fn two_mut(all: &mut [Project], a: usize, b: usize) -> (&Project, &mut Project) {
+    assert_ne!(a, b);
+    if a < b {
+        let (lo, hi) = all.split_at_mut(b);
+        (&lo[a], &mut hi[0])
+    } else {
+        let (lo, hi) = all.split_at_mut(a);
+        (&hi[0], &mut lo[b])
+    }
 }
 
 /// A phrase as a clip of the time engine, at [`PPQ`]: slice `k` is a note

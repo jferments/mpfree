@@ -242,6 +242,9 @@ enum Put {
     /// Files: the pad's sounds, its sidecar and each slice
     /// ([`ChopAction::Export`]; only where the app can write them).
     Files,
+    /// An empty kit's pads from A1, the kit on a new track (sampler R4.6;
+    /// where the app offers it, [`ChopState::new_kit`]).
+    NewKit,
 }
 
 impl Row {
@@ -318,6 +321,10 @@ pub struct ChopState {
     /// The chop kept for the sound ([`Project::kept_chop`]): the slices
     /// as the tab last left them, shown again in place of a fresh chop.
     pub kept: Option<ChopSet>,
+    /// Put on New kit (sampler R4.6), where the app offers it: Ok when an
+    /// empty kit and a new track can take the slices, or Err saying why
+    /// not now (no empty kit left, no room for a track).
+    pub new_kit: Option<Result<(), String>>,
 }
 
 impl ChopState {
@@ -352,6 +359,7 @@ impl ChopState {
             used: (0..PADS).map(|i| p.pad(i).is_some()).collect(),
             files: false,
             kept,
+            new_kit: None,
         })
     }
 
@@ -403,6 +411,9 @@ pub enum ChopAction {
         /// All on pad `to_pad` as one sliced pad
         /// ([`Project::chop_to_one_pad`]).
         one_pad: bool,
+        /// Onto an empty kit's pads from A1, for a new track (sampler
+        /// R4.6), not the chopped pad's kit: [`ChopAction::apply_to`].
+        new_kit: bool,
         /// Also a phrase of the slices in time, at this many frames a beat
         /// (the sound's tempo): [`ChopAction::phrase`].
         phrase: Option<f64>,
@@ -471,6 +482,29 @@ impl ChopAction {
             Some(from) => p.chop_to_keys(c, first, count, *to_pad, *from, Some(&template))?,
             None => p.chop_to_pads(c, first, count, *to_pad, Some(&template))?,
         };
+        Ok(*to_pad..*to_pad + count)
+    }
+
+    /// Applies a [`ChopAction::ToPads`] made with `new_kit` from `from`
+    /// (the chopped pad's kit) onto `to` (the empty kit): the slices on
+    /// its pads from `to_pad`, made from the chopped pad as Chop to pads
+    /// makes them, and the sound added to it, as one undo step of `to`.
+    /// `from` doesn't change. Returns the pads it filled.
+    pub fn apply_to(&self, from: &Project, to: &mut Project) -> Result<Range<usize>, ModelError> {
+        let ChopAction::ToPads {
+            pad, layer, to_pad, ..
+        } = self
+        else {
+            return Ok(0..0);
+        };
+        let mut template = from.pad(*pad).ok_or(ModelError::BadPad)?.clone();
+        if *layer >= template.layers.len() {
+            return Err(ModelError::BadPad);
+        }
+        template.layers.swap(0, *layer);
+        let (c, first, count) = self.slices(from)?;
+        let s = from.source(c.source).ok_or(ModelError::UnknownSource)?;
+        to.chop_to_pads_of(s, c, first, count, *to_pad, Some(&template))?;
         Ok(*to_pad..*to_pad + count)
     }
 
@@ -664,6 +698,7 @@ impl ChopTab {
     fn put(&self, st: &ChopState) -> Put {
         match self.put {
             Put::Files if !st.files => Put::Pads,
+            Put::NewKit if st.new_kit.is_none() => Put::Pads,
             p => p,
         }
     }
@@ -675,12 +710,17 @@ impl ChopTab {
             Put::OnePad => "One pad",
             Put::Keys => "Keys",
             Put::Files => "Files",
+            Put::NewKit => "New kit",
         }
     }
 
-    /// The Put on choices for `st`: Files where the app writes them.
+    /// The Put on choices for `st`: New kit where the app offers it, and
+    /// Files where it writes them.
     fn puts(st: &ChopState) -> Vec<Put> {
         let mut all = vec![Put::Pads, Put::OnePad, Put::Keys];
+        if st.new_kit.is_some() {
+            all.push(Put::NewKit);
+        }
         if st.files {
             all.push(Put::Files);
         }
@@ -698,10 +738,12 @@ impl ChopTab {
     fn phrase_why(&self, st: &ChopState) -> Option<&'static str> {
         if st.frames_per_beat().is_none() {
             Some("A phrase needs a beat: no tempo was found in this sound")
-        } else if !matches!(self.put(st), Put::Pads | Put::OnePad) {
-            Some("A phrase goes with Pads or One pad, not keys or files")
-        } else {
+        } else if matches!(self.put(st), Put::Pads | Put::OnePad | Put::NewKit) {
             None
+        } else if st.new_kit.is_some() {
+            Some("A phrase goes with Pads, One pad or New kit, not keys or files")
+        } else {
+            Some("A phrase goes with Pads or One pad, not keys or files")
         }
     }
 
@@ -735,6 +777,10 @@ impl ChopTab {
     pub fn pads(&self, st: &ChopState) -> Option<Range<usize>> {
         let n = self.slices();
         let room = st.room();
+        if self.put(st) == Put::NewKit {
+            // The new kit's pads from A1.
+            return (n <= room.len()).then_some(0..n);
+        }
         if self.put(st) == Put::OnePad {
             let at = self
                 .first_pad
@@ -757,6 +803,9 @@ impl ChopTab {
 
     /// The pads Chop to pads fills that have a sound already.
     pub fn replaced(&self, st: &ChopState) -> Vec<usize> {
+        if self.put(st) == Put::NewKit {
+            return Vec::new();
+        }
         self.pads(st)
             .map_or_else(Vec::new, |r| r.filter(|&i| st.used(i)).collect())
     }
@@ -1058,6 +1107,7 @@ impl ChopTab {
         let rows = self.rows(st);
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.right = match (pads.is_some(), replaced.len()) {
+                (true, _) if self.put(st) == Put::NewKit => Self::new_kit_note(st),
                 (false, _) => format!("{n} slices: more than the kit's {PADS} pads"),
                 (true, 0) => "no pad replaced".into(),
                 (true, 1..=3) => {
@@ -1095,6 +1145,8 @@ impl ChopTab {
                 (_, Put::Files) => format!("Export {n} slices"),
                 (None, Put::OnePad) => format!("Max {MAX_SLICES} slices"),
                 (None, _) => format!("Max {PADS} slices"),
+                (Some(_), Put::NewKit) if self.phrase_on(st) => "Phrase to new kit".to_string(),
+                (Some(_), Put::NewKit) => "Chop to new kit".to_string(),
                 (Some(t), Put::Pads | Put::OnePad) if self.phrase_on(st) => {
                     format!("Phrase on {t}")
                 }
@@ -1126,6 +1178,11 @@ impl ChopTab {
             Button::Split => Some("This slice is too short to split".to_string()),
             Button::Merge if n > 1 => None,
             Button::Merge => Some("One slice: nothing to merge".to_string()),
+            Button::ToPads if self.put(st) == Put::NewKit => match (&st.new_kit, self.pads(st)) {
+                (Some(Err(why)), _) => Some(why.clone()),
+                (_, None) => Some(format!("A kit has {PADS} pads: fewer slices")),
+                _ => None,
+            },
             Button::ToPads if self.pads(st).is_some() || self.put(st) == Put::Files => None,
             Button::ToPads => Some(
                 "The slices don't fit on the pads from the first pad: fewer slices, or an earlier First pad"
@@ -1176,6 +1233,7 @@ impl ChopTab {
                                 Put::OnePad => "1 pad",
                                 Put::Keys => "Keys",
                                 Put::Files => "Files",
+                                Put::NewKit => "New kit",
                             }
                             .to_string()
                         })
@@ -1198,12 +1256,22 @@ impl ChopTab {
             .collect()
     }
 
+    /// What Chop to new kit does, beside the button's heading: "on a new
+    /// track", or "not now" (the faint button says why).
+    fn new_kit_note(st: &ChopState) -> String {
+        match &st.new_kit {
+            Some(Ok(())) => "on a new track".into(),
+            _ => "not now".into(),
+        }
+    }
+
     /// The panel: Method, Slice, Pads and Chop across the band under the
     /// wave, at the widths of the mockup Jay approved (17 Nov).
     fn panel(&self, st: &ChopState) -> Panel {
         let it = |k: Row| Item::new(k.index());
         let replaced = self.replaced(st);
         let note = match (self.pads(st).is_some(), replaced.len()) {
+            (true, _) if self.put(st) == Put::NewKit => Self::new_kit_note(st),
             (false, _) => String::new(),
             (true, 0) => "no pad replaced".into(),
             (true, 1..=3) => {
@@ -1365,6 +1433,7 @@ impl ChopTab {
                         Put::OnePad => "One pad".into(),
                         Put::Keys => format!("Keys from {}", note_name(SLICE_KEYS_FROM)),
                         Put::Files => "Files".into(),
+                        Put::NewKit => "New kit".into(),
                     },
                 },
             })
@@ -1420,6 +1489,11 @@ impl ChopTab {
                 None => c.enabled = false,
             }
             c.why = "The slices don't fit on the pads: fewer slices".to_string();
+            if self.put(st) == Put::NewKit {
+                // The new kit's pads from A1, whatever the first pad.
+                c.enabled = false;
+                c.why = "On a new kit the slices start on A1".to_string();
+            }
         }
         self.update_wheel(ui, st);
     }
@@ -1574,10 +1648,14 @@ impl ChopTab {
                 layer: st.layer,
                 cuts: self.cuts.clone(),
             }),
+            Button::ToPads if self.button_why(st, b).is_some() => None,
             Button::ToPads => {
                 let pads = self.pads(st)?;
-                // Chopping this pad again replaces these slices.
-                self.first_pad = Some((st.pad, pads.start));
+                // Chopping this pad again replaces these slices (not on a
+                // new kit: those are in another kit).
+                if self.put(st) != Put::NewKit {
+                    self.first_pad = Some((st.pad, pads.start));
+                }
                 Some(ChopAction::ToPads {
                     pad: st.pad,
                     layer: st.layer,
@@ -1588,6 +1666,7 @@ impl ChopTab {
                     to_pad: pads.start,
                     keys_from: (self.put(st) == Put::Keys).then_some(SLICE_KEYS_FROM),
                     one_pad: self.put(st) == Put::OnePad,
+                    new_kit: self.put(st) == Put::NewKit,
                     phrase: st.frames_per_beat().filter(|_| self.phrase_on(st)),
                 })
             }
@@ -1701,6 +1780,10 @@ impl ChopTab {
     }
 
     fn turn_first_pad(&mut self, st: &ChopState, delta: i32) {
+        if self.put(st) == Put::NewKit {
+            // A new kit's slices start on A1.
+            return;
+        }
         let Some(p) = self.pads(st) else { return };
         let room = st.room();
         let last = (room.end - p.len()) as i32;

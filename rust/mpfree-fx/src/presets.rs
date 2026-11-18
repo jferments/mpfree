@@ -8,7 +8,7 @@
 
 use crate::ids::{
     character, chorus, comb, compressor as comp, crush, delay, drive, ducker, eq, filter, flanger,
-    harmonizer as harm, phaser, pitch, pitch_correct as tune, transient,
+    grains, harmonizer as harm, phaser, pitch, pitch_correct as tune, transient,
 };
 use crate::Preset;
 
@@ -997,6 +997,111 @@ pub static HARMONIZER: &[Preset] = &[
             (harm::KEY, KEY_A),
             (harm::SCALE, MINOR),
             (harm::VOICE2, OFF),
+        ],
+    },
+];
+
+/// Grains: a trail behind the sound, an octave shimmer, a backwards haze,
+/// a glitch, the sound held an octave down and a long smear. None sets
+/// Freeze: a preset sets the sound, Freeze is played.
+pub static GRAINS: &[Preset] = &[
+    Preset {
+        name: "Trail cloud",
+        values: &[
+            (grains::SIZE, 250.0),
+            (grains::DENSITY, 30.0),
+            (grains::SPRAY, 25.0),
+            (grains::SPREAD, 90.0),
+            (grains::FEEDBACK, 40.0),
+        ],
+    },
+    Preset {
+        name: "Octave shimmer",
+        values: &[
+            (grains::PITCH, 12.0),
+            (grains::SIZE, 200.0),
+            (grains::DENSITY, 30.0),
+            (grains::SPRAY, 15.0),
+            (grains::SHAPE, 80.0),
+            (grains::SPREAD, 100.0),
+            (grains::FEEDBACK, 55.0),
+        ],
+    },
+    Preset {
+        name: "Reverse haze",
+        values: &[
+            (grains::REVERSE, 100.0),
+            (grains::POSITION, 70.0),
+            (grains::SIZE, 400.0),
+            (grains::DENSITY, 12.0),
+            (grains::SPRAY, 30.0),
+            (grains::FEEDBACK, 30.0),
+        ],
+    },
+    Preset {
+        name: "Glitch dust",
+        values: &[
+            (grains::SIZE, 20.0),
+            (grains::DENSITY, 60.0),
+            (grains::SPRAY, 60.0),
+            (grains::TIMING, 100.0),
+            (grains::SHAPE, 0.0),
+            (grains::SIZE_SPRAY, 60.0),
+            (grains::LEVEL_SPRAY, 50.0),
+            (grains::PITCH_SPRAY, 1.0),
+            (grains::REVERSE, 30.0),
+        ],
+    },
+    Preset {
+        name: "Octave down",
+        values: &[
+            (grains::PITCH, -12.0),
+            (grains::SIZE, 300.0),
+            (grains::DENSITY, 16.0),
+            (grains::SPRAY, 20.0),
+            (grains::SHAPE, 70.0),
+            (grains::FEEDBACK, 35.0),
+        ],
+    },
+    Preset {
+        name: "Long smear",
+        values: &[
+            (grains::SIZE, 1200.0),
+            (grains::DENSITY, 6.0),
+            (grains::SPRAY, 40.0),
+            (grains::PEAKED, 1.0),
+            (grains::SHAPE, 100.0),
+            (grains::SPREAD, 80.0),
+            (grains::FEEDBACK, 60.0),
+        ],
+    },
+    // Each grain a different colour (step C4).
+    Preset {
+        name: "Glass spray",
+        values: &[
+            (grains::SIZE, 90.0),
+            (grains::DENSITY, 30.0),
+            (grains::SPRAY, 30.0),
+            (grains::PITCH, 12.0),
+            (grains::SPREAD, 70.0),
+            (grains::FILTER, 3.0),
+            (grains::CUTOFF, 3000.0),
+            (grains::RESONANCE, 20.0),
+            (grains::FILTER_SPRAY, 70.0),
+        ],
+    },
+    Preset {
+        name: "Gnarl",
+        values: &[
+            (grains::SIZE, 40.0),
+            (grains::DENSITY, 50.0),
+            (grains::SPRAY, 20.0),
+            (grains::TIMING, 60.0),
+            (grains::SHAPE, 20.0),
+            (grains::FILTER, 1.0),
+            (grains::CUTOFF, 600.0),
+            (grains::RESONANCE, 85.0),
+            (grains::FILTER_SPRAY, 50.0),
         ],
     },
 ];

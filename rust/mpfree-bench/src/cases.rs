@@ -1543,6 +1543,22 @@ pub fn all(rate: u32) -> Vec<Case> {
             ],
         )
     }));
+    // The same with a band pass on each grain, sprayed (step C4).
+    v.push(measured(|| {
+        effect(
+            "Grains FX (dense, filtered)",
+            rate,
+            Box::new(GrainNode::new(5)),
+            &[
+                (mpfree_grain::node::param::MIX, 100.0),
+                (mpfree_grain::node::param::DENSITY, 200.0),
+                (mpfree_grain::node::param::SPRAY, 50.0),
+                (mpfree_grain::node::param::FILTER, 2.0),
+                (mpfree_grain::node::param::RESONANCE, 50.0),
+                (mpfree_grain::node::param::FILTER_SPRAY, 50.0),
+            ],
+        )
+    }));
     v.push(measured(|| {
         mixer(
             "Mixer, idle (63 strips, nothing playing)",
