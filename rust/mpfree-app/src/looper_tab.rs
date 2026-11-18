@@ -118,6 +118,9 @@ pub enum LoopAct {
     Level(usize, f32),
     /// The deck's Pads switch: the pads as loop keys, or playing again.
     PadKeys,
+    /// Capture (the deck's, What you played's): the last bars heard
+    /// become a loop.
+    Capture,
     /// Show layer `k` (play order) on the Q-Links: it is picked.
     Layer(usize),
     /// A control of layer `k` (play order).
@@ -426,17 +429,42 @@ impl Default for Strip {
     }
 }
 
-/// While the picked loop has no layers: what the lanes' space shows.
+/// While the picked loop has no layers, the lanes' space shows What you
+/// played: the input's last 8 bars, and what Capture takes from it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EmptyLook {
-    /// "INPUT · LINE IN".
+    /// "WHAT YOU PLAYED · LINE IN".
     pub title: String,
     /// What a tap on its ring or REC does now.
     pub says: String,
     /// "REC starts on bar 13", while it waits for its bar.
     pub waits: Option<String>,
-    /// The input's level over the last few seconds, oldest first, 0 to 1.
+    /// What the looper heard over the last 8 bars, oldest first, 0 to 1.
     pub input: Vec<f32>,
+    /// The bar lines over it: each bar's number and where it starts, 0
+    /// to 1.
+    pub bars: Vec<(i64, f32)>,
+    /// What Capture takes now: where it starts and ends (0 to 1), and
+    /// its button's words ("Capture bars 10 and 11"); None when there is
+    /// nothing to take.
+    pub take: Option<(f32, f32, String)>,
+}
+
+/// What you played's Capture button, over the bars it takes, in the
+/// lanes' space `lanes`.
+pub fn empty_capture_rect(lanes: Rect, e: &EmptyLook) -> Option<Rect> {
+    let (a, b, _) = e.take.as_ref()?;
+    let w = empty_wave_rect(lanes);
+    let mid = w.x + ((a + b) / 2.0 * w.w as f32) as i32;
+    let bw = 250.min(w.w);
+    let x = (mid - bw / 2).clamp(w.x, w.right() - bw);
+    Some(Rect::new(x, w.y + w.h / 2 - 22, bw, 44))
+}
+
+/// Where What you played draws the input, in the lanes' space.
+fn empty_wave_rect(lanes: Rect) -> Rect {
+    let inner = lanes.inset_xy(14, 10);
+    Rect::new(inner.x, inner.y + 22, inner.w, inner.h - 22 - 46)
 }
 
 /// Send's choices: title and what it does, and whether it is built.
@@ -1492,17 +1520,56 @@ impl LoopEditor {
             t.text_dim,
             &e.title,
         );
-        // The input's level over the last few seconds, now at the right.
-        let w = Rect::new(inner.x, inner.y + 22, inner.w, inner.h - 22 - 46);
+        // What Capture takes, behind the input.
+        let w = empty_wave_rect(lanes);
+        let at = |f: f32| w.x + (f.clamp(0.0, 1.0) * w.w as f32) as i32;
+        if let Some((a, b, _)) = &e.take {
+            let (a, b) = (at(*a), at(*b));
+            cx.canvas.fill_rect(
+                Rect::new(a, w.y, (b - a).max(1), w.h),
+                t.accent.mix(t.bg, 0.78),
+            );
+        }
+        // The bar lines and their numbers.
+        for (bar, f) in &e.bars {
+            let x = at(*f);
+            cx.canvas.fill_rect(Rect::new(x, w.y, 1, w.h), t.outline);
+            cx.text(
+                FontId::Bold,
+                12.0,
+                Rect::new(x + 5, w.y + 2, 40, 14),
+                Align::Left,
+                t.text_dim,
+                &bar.to_string(),
+            );
+        }
+        // The input's level over the last 8 bars, now at the right.
         let n = e.input.len().max(1);
         let mid = w.y + w.h / 2;
         let half = w.h as f32 / 2.0 - 2.0;
+        let cw = (w.w / n as i32).max(2);
         for (i, v) in e.input.iter().enumerate() {
             let x = w.x + (i as f32 / n as f32 * w.w as f32) as i32;
             let h = ((v.clamp(0.0, 1.0) * half) as i32).max(1);
             cx.canvas.fill_rect(
-                Rect::new(x, mid - h, 2, 2 * h),
+                Rect::new(x, mid - h, (cw - 1).max(1), 2 * h),
                 self.colour.mix(t.surface, 0.2),
+            );
+        }
+        if let Some(b) = empty_capture_rect(lanes, e) {
+            let label = e.take.as_ref().map_or("", |t| t.2.as_str());
+            cx.canvas.fill_round_rect(b, 10, t.accent);
+            let tw = cx.measure(FontId::Bold, 15.0, label);
+            let icon_x = b.x + (b.w - tw - 26) / 2;
+            let icon = Rect::new(icon_x, b.y + b.h / 2 - 9, 18, 18);
+            crate::looper_deck::capture_icon(cx, icon, t.on_accent);
+            cx.text(
+                FontId::Bold,
+                15.0,
+                Rect::new(icon.right() + 8, b.y, tw + 4, b.h),
+                Align::Left,
+                t.on_accent,
+                label,
             );
         }
         cx.canvas
@@ -1908,6 +1975,11 @@ impl Widget for LoopEditor {
             return out;
         }
         if self.layers.is_empty() {
+            if let Some(e) = &self.empty {
+                if let (Some(b), Some((_, _, label))) = (empty_capture_rect(p.lanes, e), &e.take) {
+                    out.push(Target::tap("capture", 0, label.clone(), b));
+                }
+            }
             return out;
         }
         if let Some(ticks) = self.trim_ticks.filter(|&t| t > 0) {
@@ -2091,6 +2163,14 @@ impl Widget for LoopEditor {
                     return None;
                 }
                 if self.layers.is_empty() {
+                    let capture = self
+                        .empty
+                        .as_ref()
+                        .and_then(|e| empty_capture_rect(p.lanes, e));
+                    if capture.is_some_and(|b| b.contains(x, y)) {
+                        self.acts.push(LoopAct::Capture);
+                        return Some(EventKind::Tab(4));
+                    }
                     return None;
                 }
                 if let Some(ticks) = self.trim_ticks.filter(|&t| t > 0) {
@@ -2586,6 +2666,36 @@ mod tests {
             acts(&mut ui),
             vec![LoopAct::Strip(Ctl::Bars(3)), LoopAct::Strip(Ctl::Monitor)]
         );
+        // What you played: Capture over the bars it takes, while it has
+        // some to take.
+        let e = ui.get_mut::<LoopEditor>(EDITOR).unwrap();
+        e.empty = Some(EmptyLook {
+            title: "WHAT YOU PLAYED · LINE IN".into(),
+            bars: vec![(9, 0.1), (10, 0.35), (11, 0.6), (12, 0.85)],
+            take: Some((0.35, 0.85, "Capture bars 10 and 11".into())),
+            ..EmptyLook::default()
+        });
+        let ts = e.targets(r);
+        let c = ts.iter().find(|t| t.id == "capture").expect("Capture");
+        assert_eq!(c.label, "Capture bars 10 and 11");
+        assert!(
+            c.rect.h >= 44 && c.rect.w >= 200,
+            "a fingertip: {:?}",
+            c.rect
+        );
+        let lanes = LoopEditor::parts(r).lanes;
+        let mid = lanes.x + 14 + (0.6 * (lanes.w - 28) as f32) as i32;
+        assert!(
+            (c.rect.x + c.rect.w / 2 - mid).abs() <= 2,
+            "over bars 10 and 11"
+        );
+        let (x, y) = (c.rect.x + 10, c.rect.y + 10);
+        tap(&mut ui, x, y);
+        assert_eq!(acts(&mut ui), vec![LoopAct::Capture]);
+        let e = ui.get_mut::<LoopEditor>(EDITOR).unwrap();
+        e.empty.as_mut().unwrap().take = None;
+        assert!(!e.targets(r).iter().any(|t| t.id == "capture"));
+        ui.paint(&mut mpfree_ui::SoftCanvas::new(1280, 800));
     }
 
     #[test]

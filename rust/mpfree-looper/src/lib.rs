@@ -84,11 +84,15 @@
 
 #![forbid(unsafe_code)]
 
+pub mod heard;
 pub mod print;
 pub mod save;
 mod view;
 
+pub use heard::{Take, HEARD_SECONDS};
 pub use save::{LayerFile, LoopFile};
+
+use heard::Heard;
 
 use view::{Cursor, View};
 
@@ -221,6 +225,18 @@ pub enum Command {
     /// the loop's one layer, at the print's length (see the module notes).
     /// Undo takes it back. Refused when no print plays.
     Fit,
+    /// Empty: the last this many whole bars heard become the loop
+    /// ([`heard`]), ending on the bar line just passed, or, pressed in a
+    /// bar's last beat, on the one coming. Fewer bars (halving) when fewer
+    /// were played since the song started or jumped, or since the input
+    /// changed. It copies in at [`LOAD_SPEED`] while the loop stays
+    /// silent, then plays in time with the song, fading in, as a load
+    /// does ([`Status::capturing`]). Again, Undo or Clear call it off.
+    /// Refused when the loop isn't empty or no whole bar was heard.
+    Capture(u32),
+    /// The input is another source now: Capture forgets what it heard
+    /// before. For every loop.
+    NewInput,
 }
 
 /// A loop rendered out ([`Looper::bounce`]), for a pad or a WAV file.
@@ -569,6 +585,10 @@ pub struct Status {
     /// Not 0, the loop plays like tape until a print is in, and an
     /// overdub waits for that print and fits the loop to it first.
     pub rate: i8,
+    /// A capture ([`Command::Capture`]): 0 while it waits for its bar
+    /// line and its last frames, then how much has copied in, to 1. The
+    /// loop is empty and silent until it is all in.
+    pub capturing: Option<f32>,
 }
 
 /// The memory gauge: all the loops together.
@@ -1144,12 +1164,24 @@ fn n_blocks(rate: u32, seconds: u32) -> usize {
 }
 
 /// The memory [`Looper::new`] sets aside for `seconds` at `rate`, in
-/// bytes: the sound itself and its tables of blocks. For showing what a
+/// bytes: the sound itself and its tables of blocks, and the last
+/// [`HEARD_SECONDS`] of input that Capture takes from. For showing what a
 /// size costs before it is made.
 pub fn bytes_for(rate: u32, seconds: u32) -> usize {
     let per_block = 2 * BLOCK * std::mem::size_of::<f32>()
         + (MAX_LOOPS * MAX_LAYERS + 1) * std::mem::size_of::<u16>();
     n_blocks(rate, seconds) * per_block
+        + 2 * heard_frames(rate, seconds) * std::mem::size_of::<f32>()
+}
+
+/// The frames of input kept for Capture: [`HEARD_SECONDS`], with any
+/// memory for loops at all.
+fn heard_frames(rate: u32, seconds: u32) -> usize {
+    if seconds > 0 {
+        rate as usize * HEARD_SECONDS as usize
+    } else {
+        0
+    }
 }
 
 /// Playback frame `p` of a layer through its view: the audio frame the
@@ -1440,6 +1472,22 @@ struct Loop {
     ad_origin: Tick,
     /// Another loop is copying one of this loop's layers.
     lend: Option<Lend>,
+    /// A capture waiting for its bar line or its last frames.
+    capture: Option<Capture>,
+    /// A load from what was heard (a capture copying in): the frame heard
+    /// that is the loop's first.
+    ld_heard: Option<u64>,
+}
+
+/// A capture waiting ([`Command::Capture`]): the bars asked for, the bar
+/// line it ends on (counted as [`Heard`] counts them), whether that line
+/// is still to come, and once it has come, the take.
+#[derive(Clone, Copy, Debug)]
+struct Capture {
+    bars: u32,
+    end: u64,
+    wait: bool,
+    take: Option<Take>,
 }
 
 /// One of a loop's layers being copied into another loop: its slot, the
@@ -1567,11 +1615,28 @@ impl Loop {
         ad_ticks: 0,
         ad_origin: 0,
         lend: None,
+        capture: None,
+        ld_heard: None,
     };
 
     /// Recording or about to: armed, the first pass, or an overdub.
     fn recording(&self) -> bool {
         matches!(self.phase, Phase::Armed | Phase::Recording) || self.od_open
+    }
+
+    /// A capture waiting, or copying in.
+    fn capturing(&self) -> bool {
+        self.capture.is_some() || (self.loading && self.ld_heard.is_some())
+    }
+
+    /// The capture is called off: the loop stays empty (its memory goes
+    /// back with the reclaim after the command).
+    fn call_off_capture(&mut self) {
+        self.capture = None;
+        if self.ld_heard.is_some() {
+            self.loading = false;
+            self.ld_heard = None;
+        }
     }
 }
 
@@ -1591,6 +1656,8 @@ pub struct Looper {
     /// Each loop's saved loop being loaded, or loaded and waiting for
     /// [`Looper::take_loaded`].
     loads: Vec<Option<LoopFile>>,
+    /// The last [`HEARD_SECONDS`] of input and its bar lines, for Capture.
+    heard: Heard,
 }
 
 impl Looper {
@@ -1614,6 +1681,7 @@ impl Looper {
             bounce: None,
             prints: (0..MAX_LOOPS).map(|_| Prints::default()).collect(),
             loads: (0..MAX_LOOPS).map(|_| None).collect(),
+            heard: Heard::new(heard_frames(rate, seconds)),
         }
     }
 
@@ -1730,8 +1798,7 @@ impl Looper {
             fitting: l
                 .fitting
                 .then(|| l.fit_done as f32 / l.fit_frames.max(1) as f32),
-            loading: l
-                .loading
+            loading: (l.loading && l.ld_heard.is_none())
                 .then(|| l.ld_done as f32 / (l.ld_frames * l.ld_layers).max(1) as f32),
             copying: l
                 .adding
@@ -1748,6 +1815,12 @@ impl Looper {
             overdubs: l.overdubs,
             speed: l.speed,
             rate: l.rate,
+            capturing: if l.capture.is_some() {
+                Some(0.0)
+            } else {
+                (l.loading && l.ld_heard.is_some())
+                    .then(|| l.ld_done as f32 / l.ld_frames.max(1) as f32)
+            },
         })
     }
 
@@ -1913,6 +1986,36 @@ impl Looper {
         l.ld_at = self.now + (f.layers.len() * f.frames).div_ceil(LOAD_SPEED) as u64;
         self.loads[n] = Some(f);
         Ok(())
+    }
+
+    /// What a Capture of `bars` would take now ([`Command::Capture`]):
+    /// the bars ending on the last bar line heard (pressed in a bar's last
+    /// beat, it waits for the next one instead), read with the selected
+    /// loop's latency. None when not even one whole bar was heard.
+    pub fn capture_take(&self, bars: u32) -> Option<Take> {
+        let end = self.heard.lines().checked_sub(1)?;
+        self.heard
+            .take(end, bars, self.loops[self.selected].latency)
+    }
+
+    /// A Capture now would wait for the bar line coming: the song plays
+    /// and is in a bar's last beat.
+    pub fn capture_waits(&self) -> bool {
+        self.heard.in_last_beat()
+    }
+
+    /// The bar lines of the song as it last played on unbroken (since it
+    /// started, jumped or looped), the newest up to `out.len()`, oldest
+    /// first: each one's tick and the frame it fell on. Returns how many.
+    /// With [`Looper::heard_at`], where What you played puts its bars.
+    pub fn heard_lines(&self, out: &mut [(Tick, u64)]) -> usize {
+        self.heard.recent(out)
+    }
+
+    /// The frame after the last one the looper heard (the end of the
+    /// period it last ran).
+    pub fn heard_at(&self) -> u64 {
+        self.heard.at()
     }
 
     /// The saved loop loop `n` has loaded (or called off), to drop away
@@ -2114,7 +2217,9 @@ impl Looper {
             .min(input.len() / 2)
             .min(out.len() / 2);
         self.now = block.start_frame;
+        self.heard.hear(block, input, n);
         self.apply_commands();
+        self.tend_captures();
         // A loop with sound soloed: the others fall silent.
         let any_solo = self.loops.iter().any(|l| l.solo && l.phase != Phase::Empty);
         for l in &mut self.loops {
@@ -2133,6 +2238,7 @@ impl Looper {
             bounce,
             prints,
             loads,
+            heard,
             ..
         } = self;
         let end = block.start_frame + n as u64;
@@ -2161,6 +2267,8 @@ impl Looper {
             if l.loading {
                 if let Some(f) = loads[k].as_ref() {
                     l.render_load(store, k, f, end);
+                } else if l.ld_heard.is_some() {
+                    l.render_heard(store, stats, k, heard, end);
                 }
             }
         }
@@ -2345,6 +2453,7 @@ impl Looper {
                         | Command::Edit(_)
                         | Command::Merge
                         | Command::Resample
+                        | Command::Capture(_)
                 ) | Queued::Layer(_, LayerCommand::Delete)
                     | Queued::Copy { .. }
             ) || (self.loops[self.selected].busy()
@@ -2391,6 +2500,14 @@ impl Looper {
                     lp.latency = l;
                 }
             }
+            Queued::Loop(Command::NewInput) => self.heard.forget(),
+            // A capture under way: again, Undo or Clear call it off.
+            Queued::Loop(
+                Command::Capture(_) | Command::Undo | Command::Clear | Command::Forget,
+            ) if self.loops[s].capturing() => {
+                self.loops[s].call_off_capture();
+            }
+            Queued::Loop(Command::Capture(bars)) => self.start_capture(s, bars),
             Queued::Copy { from, id, to, keep } => self.start_copy(from, id, to, keep),
             Queued::Loop(Command::Clear | Command::Forget) if self.loops[s].loading => {
                 // Called off: the memory goes back (below).
@@ -2458,6 +2575,108 @@ impl Looper {
             }
         }
         self.loops[s].reclaim(&mut self.store, s);
+    }
+
+    /// Capture into loop `s` ([`Command::Capture`]): it waits for its bar
+    /// line (the last one heard, or, pressed in a bar's last beat, the one
+    /// coming); [`Looper::tend_captures`] takes it from there.
+    fn start_capture(&mut self, s: usize, bars: u32) {
+        let wait = self.heard.in_last_beat();
+        let lines = self.heard.lines();
+        let l = &mut self.loops[s];
+        if l.phase != Phase::Empty
+            || l.clearing
+            || l.loading
+            || l.adding
+            || self.loads[s].is_some()
+            || bars == 0
+            || (lines == 0 && !wait)
+        {
+            self.stats.refused += 1;
+            return;
+        }
+        l.capture = Some(Capture {
+            bars,
+            end: if wait { lines } else { lines - 1 },
+            wait,
+            take: None,
+        });
+        // A new loop plays once it is in.
+        l.on = true;
+        l.cue = None;
+    }
+
+    /// Each capture waiting: once its bar line is heard, the take; once
+    /// the take's last frame is heard (`latency` after the bar line), it
+    /// copies in, as a load does, from what was heard.
+    fn tend_captures(&mut self) {
+        for k in 0..self.loops.len() {
+            if let Some(c) = self.loops[k].capture {
+                self.loops[k].capture = self.tend_capture(k, c);
+            }
+        }
+    }
+
+    /// [`Looper::tend_captures`] for loop `k`: the capture as it is now,
+    /// or None once it copies in or is refused.
+    fn tend_capture(&mut self, k: usize, mut c: Capture) -> Option<Capture> {
+        let h = &self.heard;
+        if c.wait {
+            if h.lines() > c.end {
+                c.wait = false;
+            } else if h.playing() {
+                return Some(c);
+            } else if c.end > 0 {
+                // The song stopped before that bar line: the bars before.
+                c.wait = false;
+                c.end -= 1;
+            } else {
+                self.stats.refused += 1;
+                return None;
+            }
+        }
+        let Some(t) = c
+            .take
+            .or_else(|| h.take(c.end, c.bars, self.loops[k].latency))
+        else {
+            self.stats.refused += 1;
+            return None;
+        };
+        c.take = Some(t);
+        if h.at() < t.start + t.frames as u64 {
+            // Its last frames are still to be heard.
+            return Some(c);
+        }
+        let need = blocks_for(t.frames);
+        if self.store.available() < need {
+            self.stats.refused += 1;
+            return None;
+        }
+        // It takes the place of the loop kept for Undo.
+        self.store.drop_kept(k);
+        let l = &mut self.loops[k];
+        l.reclaim(&mut self.store, k);
+        if !self.store.grow(k, 0, need) {
+            self.stats.refused += 1;
+            l.reclaim(&mut self.store, k);
+            return None;
+        }
+        l.slots[0] = Slot {
+            valid: (0, t.frames),
+            ..Slot::NEW
+        };
+        l.loading = true;
+        l.ld_heard = Some(t.start);
+        l.ld_layers = 1;
+        l.ld_frames = t.frames;
+        l.ld_ticks = t.ticks;
+        l.ld_origin = t.origin;
+        l.ld_done = 0;
+        // From the frame its last frame was heard on, when that is in
+        // this period, so the period size changes nothing.
+        l.ld_from = self.now.max(t.start + t.frames as u64);
+        l.ld_at = l.ld_from + t.frames.div_ceil(LOAD_SPEED) as u64;
+        None
     }
 
     /// Start a layer's copy between loops ([`Looper::copy_layer`]).
@@ -2744,6 +2963,9 @@ impl Loop {
 
     fn must_wait(&self, q: Queued) -> bool {
         match q {
+            // A capture: again, or Undo, calls it off; the rest waits.
+            Queued::Loop(Command::Capture(_) | Command::Undo) if self.capturing() => false,
+            _ if self.capture.is_some() => true,
             // Everything waits for a bounce (Clear stops it) and a load
             // (Clear calls it off).
             _ if self.bouncing || self.loading => true,
@@ -2933,6 +3155,7 @@ impl Loop {
                 | Command::SetLevel(_)
                 | Command::Merge
                 | Command::Fit
+                | Command::NewInput
         ) {
             self.touch();
         }
@@ -3020,8 +3243,9 @@ impl Loop {
                 }
             }
             Command::Edit(e) => self.edit(stats, e),
-            // The looper starts these, with the time and the print.
-            Command::Merge | Command::Fit => {}
+            // The looper starts these, with the time, the print and what
+            // it heard.
+            Command::Merge | Command::Fit | Command::Capture(_) | Command::NewInput => {}
             Command::Resample => match self.phase {
                 Phase::Empty => {
                     self.apply(store, stats, me, Command::Record);
@@ -3349,11 +3573,55 @@ impl Loop {
         self.ld_done = self.ld_done.max(target);
     }
 
-    /// The saved loop is all in: it plays from now on (fading in), in
-    /// time with the song.
+    /// A capture copying in from what was heard, as far as the period
+    /// ending before frame `end` is due. Its loop point fades into what
+    /// was heard just before its first frame, as a first pass's does. Were
+    /// what it reads gone by (the room [`Heard::take`] leaves keeps it),
+    /// the capture would be thrown away.
+    fn render_heard(
+        &mut self,
+        store: &mut Store,
+        stats: &mut Stats,
+        me: usize,
+        heard: &Heard,
+        end: u64,
+    ) {
+        let Some(from) = self.ld_heard else {
+            return;
+        };
+        let total = self.ld_frames;
+        let due = (end - self.ld_from).saturating_mul(LOAD_SPEED as u64);
+        let target = total.min(due.min(usize::MAX as u64) as usize);
+        if self.ld_done < target && !heard.holds(from + self.ld_done as u64) {
+            stats.aborted += 1;
+            self.loading = false;
+            self.ld_heard = None;
+            self.reclaim(store, me);
+            return;
+        }
+        let fade = FADE.min(total / 2);
+        for q in self.ld_done..target {
+            let mut x = heard.frame(from + q as u64);
+            if q + fade >= total {
+                let k = q + fade - total;
+                let w = (k as f32 + 0.5) / fade as f32;
+                let p = (from + k as u64)
+                    .checked_sub(fade as u64)
+                    .map_or([0.0; 2], |f| heard.frame(f));
+                x = [x[0] * (1.0 - w) + p[0] * w, x[1] * (1.0 - w) + p[1] * w];
+            }
+            store.set(me, 0, q, x);
+        }
+        self.ld_done = self.ld_done.max(target);
+    }
+
+    /// The saved loop (or a capture) is all in: it plays from now on
+    /// (fading in), in time with the song.
     fn finish_load(&mut self) {
         self.loading = false;
+        self.ld_heard = None;
         self.len = self.ld_frames;
+        self.cut = self.len;
         self.len_ticks = self.ld_ticks;
         self.origin = self.ld_origin;
         self.in_order = self.ld_layers;
@@ -3897,6 +4165,8 @@ impl Loop {
         self.bouncing = false;
         self.resample = false;
         self.loading = false;
+        self.ld_heard = None;
+        self.capture = None;
         self.adding = false;
         self.lend = None;
     }
@@ -4926,7 +5196,7 @@ mod tests {
         for seconds in [0, 1, 7, 60] {
             let l = Looper::new(44_100, seconds);
             let s = &l.store;
-            let real = s.pool.len() * 4 + s.tables.len() * 2 + s.free.len() * 2;
+            let real = s.pool.len() * 4 + s.tables.len() * 2 + s.free.len() * 2 + l.heard.bytes();
             assert_eq!(bytes_for(44_100, seconds), real, "{seconds} s");
             assert!(l.memory().capacity >= 44_100 * seconds as usize);
         }
@@ -4935,8 +5205,9 @@ mod tests {
             assert!(n < NONE as usize && n * BLOCK >= rate as usize * 1200);
         }
         assert_eq!(n_blocks(44_100, 3600), NONE as usize);
-        // Five minutes: about 109 MB, a fifth of it per minute.
-        assert_eq!(bytes_for(44_100, 300) / 1_000_000, 109);
+        // Five minutes: about 109 MB, a fifth of it per minute, and 10.6 MB
+        // for the 30 seconds Capture takes from.
+        assert_eq!(bytes_for(44_100, 300) / 1_000_000, 119);
     }
 
     /// Bit for bit what `rem_euclid` gives, over song positions and loop

@@ -35,9 +35,10 @@ use mpfree_looper::print::{frames_at, PrintJob};
 use mpfree_looper::save::Saved;
 use mpfree_looper::{
     Bounce, Command, Edit, History, LayerCommand, LayerInfo, LoopFile, Looper, Memory, Phase,
-    Print, Stats, Status, Step, MAX_LAYERS, MAX_LOOPS,
+    Print, Stats, Status, Step, Take, HEARD_SECONDS, MAX_LAYERS, MAX_LOOPS,
 };
 use mpfree_seq::loops::{LoopNow, LoopPlan};
+use mpfree_transport::time::{Tick, PPQ};
 use mpfree_transport::Block;
 use mpfree_ui::wave::{Peaks, WaveColumn};
 use std::ops::Range;
@@ -77,6 +78,64 @@ pub use mpfree_time_ui::widgets::CELL_WAVE;
 /// Periods between looks for a loop whose small wave is out of date
 /// (about 23 ms).
 const CELL_WAVE_EVERY: u64 = 8;
+/// Frames of what the looper heard in each of the peaks What you played
+/// draws from.
+const HEARD_CHUNK: u64 = 256;
+/// Columns of What you played: the last [`HEARD_BARS`] bars heard.
+pub const HEARD_COLS: usize = 240;
+pub const HEARD_BARS: u32 = 8;
+/// Bars Capture takes when the loop's Length is Free.
+pub const CAPTURE_FREE_BARS: u32 = 4;
+
+/// What the looper heard over the last [`HEARD_BARS`] bars, for an empty
+/// loop's What you played: its level, the bar lines in it, and what
+/// Capture into the picked loop would take now.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeardWave {
+    /// Each column's peak, oldest first, dBFS (-inf silent).
+    pub cols: [f32; HEARD_COLS],
+    /// The bar lines in it, oldest first: each bar's number (from 1) and
+    /// where it starts, 0 to 1; `n_lines` of them.
+    pub lines: [(i64, f32); HEARD_BARS as usize + 1],
+    pub n_lines: usize,
+    /// What Capture takes now: where it starts and ends (0 to 1), its
+    /// first bar's number and how many bars.
+    pub take: Option<(f32, f32, i64, u32)>,
+    /// Capture now waits for the bar line coming (the song is in a bar's
+    /// last beat): it takes the bars up to that line.
+    pub waits: bool,
+}
+
+impl Default for HeardWave {
+    fn default() -> Self {
+        HeardWave {
+            cols: [f32::NEG_INFINITY; HEARD_COLS],
+            lines: [(0, 0.0); HEARD_BARS as usize + 1],
+            n_lines: 0,
+            take: None,
+            waits: false,
+        }
+    }
+}
+
+/// "1 bar", "2 bars".
+pub fn bars_words_n(bars: u32) -> String {
+    if bars == 1 {
+        "1 bar".to_string()
+    } else {
+        format!("{bars} bars")
+    }
+}
+
+/// Bars `first..first + bars`, as words: "bar 3", "bars 10 and 11",
+/// "bars 8 to 11".
+pub fn bars_words(first: i64, bars: u32) -> String {
+    match bars {
+        0 | 1 => format!("bar {first}"),
+        2 => format!("bars {first} and {}", first + 1),
+        b => format!("bars {first} to {}", first + i64::from(b) - 1),
+    }
+}
 
 /// Where the looper records from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -149,7 +208,7 @@ impl LoopMemory {
         mpfree_looper::bytes_for(rate, self.seconds()).div_ceil(1_000_000)
     }
 
-    /// Prefs' value for it: "5 min, 110 MB".
+    /// Prefs' value for it: "5 min, 120 MB".
     pub fn row(self, rate: u32) -> String {
         format!("{} min, {} MB", self.minutes(), self.megabytes(rate))
     }
@@ -197,6 +256,9 @@ pub enum LoopAction {
         to: usize,
         keep: bool,
     },
+    /// Capture: the last bars heard become a loop, or one capturing is
+    /// called off ([`LoopHost::capture`]).
+    Capture,
 }
 
 /// What the line input counted since it was opened.
@@ -993,6 +1055,11 @@ pub struct LooperView {
     /// The loop a whole loop copies into ([`LoopHost::copy_loop`]), until
     /// every layer is in.
     pub copy_into: Option<usize>,
+    /// What the looper heard over the last bars (What you played).
+    pub heard: HeardWave,
+    /// Where Capture goes now: the picked loop if it is empty, else the
+    /// first empty one (None: none is), and the bars it asks for.
+    pub capture_into: Option<(usize, u32)>,
 }
 
 impl Default for LooperView {
@@ -1018,6 +1085,8 @@ impl Default for LooperView {
             cell_waves: [[0; CELL_WAVE]; MAX_LOOPS],
             ring_waves: [[0; RING_WAVE]; MAX_LOOPS],
             copy_into: None,
+            heard: HeardWave::default(),
+            capture_into: None,
         }
     }
 }
@@ -1090,6 +1159,11 @@ pub struct LoopHost {
     /// and how the last one ended, until [`LoopHost::copy_ended`] takes it.
     copy: Option<LoopCopy>,
     copy_end: Option<CopyEnd>,
+    /// The peak of every [`HEARD_CHUNK`] frames the looper heard, frame
+    /// `f`'s at `(f / HEARD_CHUNK) % len` (What you played).
+    heard_peaks: Vec<f32>,
+    /// A bar's ticks as the last period played.
+    bar_ticks: Tick,
 }
 
 /// A whole loop copying into an empty one, a layer at a time
@@ -1430,6 +1504,15 @@ impl LoopHost {
             picked: 0,
             copy: None,
             copy_end: None,
+            heard_peaks: vec![
+                0.0;
+                if seconds > 0 {
+                    (rate as u64 * u64::from(HEARD_SECONDS)).div_ceil(HEARD_CHUNK) as usize + 1
+                } else {
+                    0
+                }
+            ],
+            bar_ticks: 4 * PPQ as Tick,
         }
     }
 
@@ -1709,10 +1792,17 @@ impl LoopHost {
             .looper
             .loop_status(self.picked)
             .is_some_and(|s| s.phase == Phase::Empty);
+        let capturing = self
+            .looper
+            .loop_status(self.picked)
+            .is_some_and(|s| s.capturing.is_some());
         let c = match c {
             Command::SetLatency(_) if self.source == LoopSource::Pads => {
                 Command::SetLatency(self.pads_latency)
             }
+            // Record (a ring, REC) on a loop capturing calls it off, as
+            // Capture again does.
+            Command::Record if capturing => Command::Capture(1),
             Command::Record if self.resample && empty => Command::Resample,
             c => c,
         };
@@ -1771,6 +1861,9 @@ impl LoopHost {
             }
             (Command::Undo, Phase::Playing) if s.layers > 1 => {
                 format!("Undo: layer {} fades out", s.layers)
+            }
+            (Command::Undo | Command::Capture(_), Phase::Empty) if s.capturing.is_some() => {
+                format!("Capture into Loop {} called off", self.picked + 1)
             }
             (Command::Undo, Phase::Empty) if s.kept => {
                 "Undo: the cleared loop comes back".to_string()
@@ -1844,6 +1937,8 @@ impl LoopHost {
                 s.layers
             ),
             (Command::Fit, _) => "fit: refused, no print plays".to_string(),
+            (Command::Capture(b), _) => format!("Capture: the last {} heard", bars_words_n(b)),
+            (Command::NewInput, _) => "Capture forgets what it heard before".to_string(),
         };
         if !self.looper.command(c) {
             return format!("looper: {what}: NOT done, the command queue is full");
@@ -2367,6 +2462,17 @@ impl LoopHost {
         for (m, x) in self.meter.iter_mut().zip([src_l, src_r]) {
             *m = x.iter().fold(*m, |a, v| a.max(v.abs()));
         }
+        let chunks = self.heard_peaks.len() as u64;
+        if chunks > 0 {
+            for f in 0..PERIOD {
+                let at = block.start_frame + f as u64;
+                let p = &mut self.heard_peaks[((at / HEARD_CHUNK) % chunks) as usize];
+                if at.is_multiple_of(HEARD_CHUNK) {
+                    *p = 0.0;
+                }
+                *p = p.max(src_l[f].abs()).max(src_r[f].abs());
+            }
+        }
         // A period nobody handed the pads' sound to records silence.
         self.pads_l = [0.0; PERIOD];
         self.pads_r = [0.0; PERIOD];
@@ -2379,6 +2485,7 @@ impl LoopHost {
         }
         if let Some(span) = block.spans().first() {
             self.beats_per_bar = u32::from(span.meter.beats);
+            self.bar_ticks = span.meter.bar_ticks();
             self.bpm = span.bpm;
         }
         self.out.fill(0.0);
@@ -2464,7 +2571,10 @@ impl LoopHost {
         let empty = |n: usize| {
             copy != Some(n)
                 && self.looper.loop_status(n).is_some_and(|s| {
-                    s.phase == Phase::Empty && s.copying.is_none() && s.loading.is_none()
+                    s.phase == Phase::Empty
+                        && s.copying.is_none()
+                        && s.loading.is_none()
+                        && s.capturing.is_none()
                 })
         };
         let n = if empty(self.picked) {
@@ -2709,7 +2819,167 @@ impl LoopHost {
             cell_waves: self.cells.done,
             ring_waves: self.cells.rings,
             copy_into: self.copy.map(|c| c.to),
+            heard: self.heard_wave(),
+            capture_into: self.capture_into(),
         }
+    }
+
+    /// Where Capture goes now: the picked loop if it is empty (or
+    /// capturing: then Capture calls it off), else the first empty loop;
+    /// and the bars that loop's Length asks for (Free:
+    /// [`CAPTURE_FREE_BARS`]).
+    fn capture_into(&self) -> Option<(usize, u32)> {
+        let picked = self.looper.loop_status(self.picked)?;
+        let n = if picked.capturing.is_some() {
+            self.picked
+        } else {
+            self.free_loop().ok()?
+        };
+        let bars = self.looper.loop_status(n)?.bars;
+        Some((n, bars.unwrap_or(CAPTURE_FREE_BARS)))
+    }
+
+    /// What the looper heard over the last [`HEARD_BARS`] bars at the
+    /// tempo now, with its bar lines and what Capture would take.
+    fn heard_wave(&self) -> HeardWave {
+        let mut w = HeardWave::default();
+        let chunks = self.heard_peaks.len() as u64;
+        if chunks == 0 {
+            return w;
+        }
+        let now = self.looper.heard_at();
+        let bar = self.bar_ticks.max(1) as f64 / f64::from(PPQ) * 60.0 / self.bpm.max(1.0)
+            * f64::from(self.rate);
+        let span = (bar * f64::from(HEARD_BARS)).min((chunks - 1) as f64 * HEARD_CHUNK as f64);
+        let from = now as f64 - span;
+        let x = |f: u64| ((f as f64 - from) / span) as f32;
+        for (c, col) in w.cols.iter_mut().enumerate() {
+            let a = from + span * c as f64 / HEARD_COLS as f64;
+            let b = from + span * (c + 1) as f64 / HEARD_COLS as f64;
+            if b <= 0.0 {
+                continue;
+            }
+            let (a, b) = (
+                a.max(0.0) as u64 / HEARD_CHUNK,
+                (b as u64).div_ceil(HEARD_CHUNK),
+            );
+            let p = (a..b.max(a + 1))
+                .map(|k| self.heard_peaks[(k % chunks) as usize])
+                .fold(0.0f32, f32::max);
+            *col = if p > 0.0 {
+                20.0 * p.log10()
+            } else {
+                f32::NEG_INFINITY
+            };
+        }
+        let mut lines = [(0 as Tick, 0u64); HEARD_BARS as usize + 1];
+        let n = self.looper.heard_lines(&mut lines);
+        let number = |t: Tick| t.div_euclid(self.bar_ticks.max(1)) + 1;
+        for &(t, f) in &lines[..n] {
+            if f as f64 >= from && w.n_lines < w.lines.len() {
+                w.lines[w.n_lines] = (number(t), x(f));
+                w.n_lines += 1;
+            }
+        }
+        w.waits = self.looper.capture_waits();
+        if let Some((_, bars)) = self.capture_into() {
+            let latency = u64::from(self.looper.status().latency);
+            w.take = self.looper.capture_take(bars).map(|t| {
+                let a = t.start.saturating_sub(latency);
+                let (a, b) = (x(a), x(a + t.frames as u64));
+                if w.waits {
+                    // It takes the bars up to the bar line coming: one on.
+                    let shift = b - a;
+                    let shift = shift / t.bars as f32;
+                    (a + shift, 1.0, number(t.origin) + 1, t.bars)
+                } else {
+                    (a, b, number(t.origin), t.bars)
+                }
+            });
+        }
+        w
+    }
+
+    /// Capture ([`Command::Capture`]): the last bars heard become a loop,
+    /// the picked one if it is empty, else the first empty one; its
+    /// Length gives the bars (Free: [`CAPTURE_FREE_BARS`]). Again while it
+    /// waits for its bar line or copies in, it is called off. A line for
+    /// the log, saying which bars, or why not.
+    pub fn capture(&mut self) -> String {
+        let picked = self.looper.loop_status(self.picked);
+        if picked.is_some_and(|s| s.capturing.is_some()) {
+            if !self.looper.command(Command::Capture(1)) {
+                return "looper: Capture: NOT called off, the command queue is full".to_string();
+            }
+            return format!("looper: Capture into Loop {} called off", self.picked + 1);
+        }
+        let n = match self.free_loop() {
+            Ok(n) => n,
+            Err(why) => return format!("looper: Capture: {why}"),
+        };
+        let asked = self
+            .looper
+            .loop_status(n)
+            .and_then(|s| s.bars)
+            .unwrap_or(CAPTURE_FREE_BARS);
+        let waits = self.looper.capture_waits();
+        let take = self.looper.capture_take(asked);
+        let Some(t) = take.or(waits.then_some(Take {
+            bars: asked,
+            start: 0,
+            frames: 0,
+            ticks: 0,
+            origin: 0,
+        })) else {
+            return "looper: Capture: no whole bar heard yet: it takes the bars the song has \
+                    played since PLAY (and since Records from changed)"
+                .to_string();
+        };
+        let m = self.looper.memory();
+        if t.frames > m.capacity.saturating_sub(m.used) {
+            return format!(
+                "looper: Capture: the loops' memory can't hold {} ({:.1} s): clear a loop, or \
+                 set a bigger Loop memory in Prefs",
+                bars_words_n(t.bars),
+                t.frames as f64 / f64::from(self.rate)
+            );
+        }
+        if n != self.picked {
+            if !self.looper.select_loop(n) {
+                return "looper: Capture: NOT started, the command queue is full".to_string();
+            }
+            self.picked = n;
+        }
+        if !self.looper.command(Command::Capture(asked)) {
+            return "looper: Capture: NOT started, the command queue is full".to_string();
+        }
+        let number = |tick: Tick| tick.div_euclid(self.bar_ticks.max(1)) + 1;
+        if take.is_none() || waits {
+            return format!(
+                "looper: Capture: on the bar line coming, the last {} become Loop {}",
+                bars_words_n(asked),
+                n + 1
+            );
+        }
+        let fewer = if t.bars < asked {
+            format!(" (its Length asks {asked}: fewer were played since PLAY)")
+        } else {
+            String::new()
+        };
+        format!(
+            "looper: Capture: {} become Loop {}{fewer}",
+            bars_words(number(t.origin), t.bars),
+            n + 1
+        )
+    }
+
+    /// Record from `s` (the pads or the line input): Capture forgets what
+    /// it heard from the other.
+    pub fn set_source(&mut self, s: LoopSource) {
+        if s != self.source {
+            self.looper.command(Command::NewInput);
+        }
+        self.source = s;
     }
 
     /// One slice of the loop's waveform; the finished wave when it is
@@ -3399,6 +3669,110 @@ mod tests {
                 .describe()
                 .contains(&format!("records from {}", source.name().to_lowercase())));
         }
+    }
+
+    /// Capture: the pads played over three bars at 120 BPM; the last two
+    /// whole bars become the picked empty loop (its Length), playing them
+    /// in time; with it playing, the next Capture goes into a free loop.
+    /// What you played shows the bar lines and what Capture takes, and
+    /// the deck's button says it. A change of source forgets what was
+    /// heard before.
+    #[test]
+    fn capture_turns_the_last_bars_played_into_a_loop() {
+        const BAR: u64 = 88_200;
+        let mut h = LoopHost::new(44_100, 20);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetLatency(0));
+        t.command(0, T::Play);
+        // The song's frame is the output's length.
+        let mut run = |h: &mut LoopHost, to: u64, out: &mut Vec<(f32, f32)>| {
+            while (out.len() as u64) < to {
+                let frame = out.len() as u64;
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                for f in 0..PERIOD {
+                    (l[f], r[f]) = pads_at(frame + f as u64);
+                }
+                h.take_pads(&l, &r);
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.period(&b, &mut l, &mut r);
+                out.extend(l.iter().copied().zip(r.iter().copied()));
+            }
+        };
+        let mut out = Vec::new();
+        let frame = |out: &Vec<(f32, f32)>| out.len() as u64;
+        // Nothing heard on the bars yet.
+        assert!(
+            h.capture().contains("no whole bar heard yet"),
+            "{}",
+            h.capture()
+        );
+        // Bar 4, beat 2.
+        run(&mut h, 3 * BAR + 30_000, &mut out);
+        let v = h.view(120.0);
+        assert_eq!(v.capture_into, Some((0, 2)), "the picked loop, its Length");
+        let lines: Vec<i64> = v.heard.lines[..v.heard.n_lines]
+            .iter()
+            .map(|l| l.0)
+            .collect();
+        assert_eq!(lines, [1, 2, 3, 4], "the bar lines heard");
+        let (a, b2, first, bars) = v.heard.take.expect("a take");
+        assert_eq!((first, bars), (2, 2), "bars 2 and 3");
+        assert!(a < b2 && b2 < 1.0);
+        let button = crate::looper_page::capture_button(&v);
+        assert_eq!(
+            (button.label.as_str(), button.works),
+            ("Capture last 2 bars", true)
+        );
+        assert_eq!(h.capture(), "looper: Capture: bars 2 and 3 become Loop 1");
+        // It copies in at 64 times the speed it plays: about 2 800 frames.
+        run(&mut h, frame(&out) + 3_200, &mut out);
+        let s = h.looper.status();
+        assert_eq!(
+            (s.phase, s.frames, s.origin),
+            (Phase::Playing, 2 * BAR as usize, 3840)
+        );
+        // It plays bars 2 and 3 in time: song frame n plays what the pads
+        // played at the same place in those bars (past the fade in).
+        let from = out.len();
+        run(&mut h, frame(&out) + BAR, &mut out);
+        for (n, y) in out.iter().enumerate().skip(from + 512) {
+            let want = pads_at(BAR + (n as u64 - BAR) % (2 * BAR));
+            assert!(
+                (y.0 - want.0).abs() < 1e-6 && (y.1 - want.1).abs() < 1e-6,
+                "frame {n}: {y:?}, want {want:?}"
+            );
+        }
+        // The picked loop plays: Capture goes into Loop 2, one bar asked.
+        assert!(h.select(1).contains("picked"));
+        h.command(Command::SetBars(Some(1)));
+        run(&mut h, frame(&out) + 256, &mut out);
+        assert!(h.select(0).contains("picked"));
+        run(&mut h, frame(&out) + 256, &mut out);
+        assert_eq!(h.view(120.0).capture_into, Some((1, 1)));
+        let said = h.capture();
+        assert!(said.ends_with("become Loop 2"), "{said}");
+        run(&mut h, frame(&out) + 4_096, &mut out);
+        let two = h.looper.loop_status(1).unwrap();
+        assert_eq!((two.phase, two.frames), (Phase::Playing, BAR as usize));
+        // Into Loop 3; Record on it (its ring, REC) while it copies in
+        // calls it off, as Capture again does.
+        assert!(h.capture().ends_with("become Loop 3"));
+        run(&mut h, frame(&out) + PERIOD as u64, &mut out);
+        assert!(h.looper.loop_status(2).unwrap().capturing.is_some());
+        assert_eq!(
+            h.command(Command::Record),
+            "looper: Capture into Loop 3 called off"
+        );
+        run(&mut h, frame(&out) + 4_096, &mut out);
+        let three = h.looper.loop_status(2).unwrap();
+        assert_eq!((three.phase, three.capturing), (Phase::Empty, None));
+        // Another source: what was heard before is forgotten.
+        h.set_source(LoopSource::Line);
+        run(&mut h, frame(&out) + 256, &mut out);
+        assert!(h.capture().contains("no whole bar heard yet"));
+        assert!(h.view(120.0).heard.take.is_none());
     }
 
     /// The pads from the mix come a period late (the looper runs before

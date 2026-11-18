@@ -1322,6 +1322,9 @@ pub enum FromUi {
     /// the "Pads: loop keys" chip (SHIFT + SAMPLER on the Looper tab does
     /// the same).
     LoopKeys,
+    /// Capture: the last bars heard become a loop (the deck's Capture,
+    /// What you played's button).
+    LoopCapture,
     /// The Looper tab's Length: the picked loop's first pass, 1 to 8 bars
     /// or free (None); MENU's First pass length follows.
     LoopBars(Option<u32>),
@@ -3565,6 +3568,9 @@ impl Player {
                     let l = self.looper.loops.get(n).copied();
                     if l.is_some_and(|l| l.phase == mpfree_looper::Phase::Playing && l.muted) {
                         out.push(FromUi::LoopMute(Some(n)));
+                    } else if l.is_some_and(|l| l.capturing.is_some()) {
+                        // Capturing: the tap calls it off.
+                        out.push(FromUi::LoopCapture);
                     } else {
                         out.push(FromUi::Looper(crate::looper_page::B_RECORD));
                     }
@@ -3572,6 +3578,7 @@ impl Player {
                 LoopAct::Mute(n) => out.push(FromUi::LoopMute(Some(n))),
                 LoopAct::Solo(n) => out.push(FromUi::LoopSolo(n)),
                 LoopAct::PadKeys => out.push(FromUi::LoopKeys),
+                LoopAct::Capture => out.push(FromUi::LoopCapture),
                 LoopAct::Clear(n) => {
                     out.push(FromUi::LoopPick(n));
                     out.push(FromUi::LoopCommand(C::Clear));
@@ -4112,8 +4119,9 @@ impl Player {
                 View::Arrange => CLIPS_HINT.to_string(),
                 View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
                                          drag: scroll   ·   Undo history: close   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
-                View::Looper => format!("Tap a ring: record, play, overdub   ·   hold it: clear   ·   tap a name: pick   ·   \
-                                         Q-Links: {}   ·   Q-LINK: next bank   ·   hold a layer, drag: to a loop   ·   {stop}",
+                View::Looper => format!("Tap a ring: record, play, overdub   ·   hold it: clear   ·   \
+                                         SHIFT + REC: capture   ·   Q-Links: {}   ·   Q-LINK: next bank   ·   \
+                                         hold a layer, drag: to a loop   ·   {stop}",
                                         self.looper_page.bank().name()),
                 View::Synth if self.skin_showing() => format!("{}'s own screen   ·   tap a control: pick it   ·   Wheel: pick one, push and turn: change it   ·   \
                                         Q-Links 1-4: the skin's knobs   ·   MPFree page: MPFree's own page   ·   {stop}",
@@ -11041,6 +11049,12 @@ fn sample_instrument_mixer(synth: &crate::synth::Synth) -> mpfree_mixer_ui::MixS
 /// a chop, the chop muted, the bass on the Q-Links), loop 2 two bars of
 /// hats, muted.
 fn sample_looper(fonts: Fonts) -> Result<Player, String> {
+    sample_looper_picking(fonts, 0)
+}
+
+/// [`sample_looper`] with loop `picked` picked (an empty one shows What
+/// you played: the last bars heard, and Capture over the last two).
+fn sample_looper_picking(fonts: Fonts, picked: usize) -> Result<Player, String> {
     use crate::looping::{LoopHost, PERIOD};
     use mpfree_looper::{Command as L, Phase};
     use mpfree_transport::{Block, Command as T, Transport};
@@ -11102,10 +11116,18 @@ fn sample_looper(fonts: Fonts) -> Result<Player, String> {
     if let Some(l) = v.layers[2].as_mut() {
         l.level = 10f32.powf(-6.0 / 20.0);
     }
+    if picked > 1 {
+        v.selected = picked;
+        v.status = v.loops[picked];
+        v.layers = [None; mpfree_looper::MAX_LAYERS];
+        v.capture_into = Some((picked, 2));
+    }
     p.apply(ToUi::Looper(Box::new(v)));
     p.looper_page.set_names(&["Drums", "Bass", "Chop"]);
-    p.apply(ToUi::LoopWave(Arc::clone(wave)));
-    p.looper_page.pick_layer(&mut p.ui, 1);
+    if picked <= 1 {
+        p.apply(ToUi::LoopWave(Arc::clone(wave)));
+        p.looper_page.pick_layer(&mut p.ui, 1);
+    }
     Ok(p)
 }
 
@@ -12213,6 +12235,12 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     match sample_looper(fonts()) {
         Ok(p) => out.push(("looper", p)),
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
+    // Loop 5 picked, empty: What you played, the last 8 bars heard with
+    // their bar lines, and Capture over the last two.
+    match sample_looper_picking(fonts(), 4) {
+        Ok(p) => out.push(("looper-empty", p)),
         Err(e) => eprintln!("looper sample: {e}"),
     }
     // The same with the undo history open: the bass and the chop overdubs.
@@ -13951,6 +13979,10 @@ mod tests {
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
         p.take_actions();
         let r = p.ui.rect_of(DECK).unwrap();
+        // The header's Capture beside it asks for the last bars heard.
+        let (x, y) = centre_of(LoopDeck::capture_rect(r));
+        assert_eq!(p.touch(1, Touch::Down, x, y), Some(FromUi::LoopCapture));
+        p.touch(1, Touch::Up, x, y);
         let (x, y) = centre_of(LoopDeck::pads_rect(r));
         assert_eq!(p.touch(1, Touch::Down, x, y), Some(FromUi::LoopKeys));
         p.touch(1, Touch::Up, x, y);
@@ -14096,7 +14128,10 @@ mod tests {
         // The hint says what the tab's controls do.
         let h = hint(&p);
         assert!(
-            h.contains("Tap a ring") && h.contains("hold it: clear") && h.contains("hold a layer"),
+            h.contains("Tap a ring")
+                && h.contains("hold it: clear")
+                && h.contains("SHIFT + REC: capture")
+                && h.contains("hold a layer"),
             "{h}"
         );
         // An empty loop picked: Line in opens the line input; Loops

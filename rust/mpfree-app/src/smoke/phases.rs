@@ -827,6 +827,97 @@ mod looper {
             s.button("STOP");
         });
     }
+
+    /// Capture (step 4a): the looper keeps what it heard; with the song
+    /// playing, SHIFT + REC on the Looper tab turns the last whole bars
+    /// played into Loop 1, in time with the song, and the header's
+    /// Capture puts the next ones into Loop 2. What you played shows on an
+    /// empty loop's page, its bars numbered and the take marked.
+    #[test]
+    fn capture_turns_what_you_played_into_a_loop() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            s.button("PLAY").run_for(0.3);
+            // A pad on every beat, into bar 4's second beat (120 BPM: a
+            // bar is 2 s).
+            for _ in 0..13 {
+                s.pad(0, 120, 0.1).run_for(0.4);
+            }
+            // Free length asks 4 bars; 3 whole ones were played, so 2.
+            let t = at(&mut s, "leditor", "capture", 0);
+            assert_eq!(t.label, "Capture bars 2 and 3");
+            let d = at(&mut s, "ldeck", "capture", 0);
+            assert_eq!((d.label.as_str(), d.enabled), ("Capture last 2 bars", true));
+            s.button_with("SHIFT", "REC");
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l.starts_with("looper: Capture: bars 2 and 3 become Loop 1")),
+                "{:?}",
+                s.said()
+            );
+            until_phase(&mut s, Phase::Playing, 1.0);
+            let bar = 4 * PPQ as i64;
+            let st = status(&s);
+            assert_eq!(
+                (st.ticks, st.origin, st.layers),
+                (2 * bar, bar, 1),
+                "bars 2 and 3"
+            );
+            let peak = {
+                let v = s.looper.looper.loop_layer(0, 0).expect("a layer");
+                let mut f = vec![[0.0f32; 2]; v.len() / 2];
+                v.read(0, &mut f);
+                f.iter().fold(0.0f32, |m, x| m.max(x[0].abs()))
+            };
+            assert!(peak > 0.05, "the pads are in it: {peak}");
+
+            // Two bars more, then the header's Capture: into Loop 2.
+            for _ in 0..8 {
+                s.pad(1, 120, 0.1).run_for(0.4);
+            }
+            let d = at(&mut s, "ldeck", "capture", 0);
+            assert!(d.label.starts_with("Capture last"), "{}", d.label);
+            s.press_target(&d).run_for(0.1);
+            assert!(
+                s.said().iter().any(|l| l.contains("become Loop 2")),
+                "{:?}",
+                s.said()
+            );
+            let l2 = |s: &Session| s.looper.looper.loop_status(1).unwrap();
+            let end = s.t() + 1.0;
+            while l2(&s).phase != Phase::Playing && s.t() < end {
+                s.run_periods(1);
+            }
+            assert_eq!(l2(&s).phase, Phase::Playing, "Loop 2 plays");
+            assert_eq!(status(&s).phase, Phase::Playing, "Loop 1 plays on");
+
+            // In a bar's last beat it waits for the bar line, Loop 3's
+            // ring waiting as an armed one; a tap on it calls it off.
+            let end = s.t() + 2.5;
+            while !s.looper.looper.capture_waits() && s.t() < end {
+                s.run_periods(1);
+            }
+            assert!(s.looper.looper.capture_waits(), "a bar's last beat");
+            s.button_with("SHIFT", "REC");
+            let l3 = |s: &Session| s.looper.looper.loop_status(2).unwrap();
+            assert_eq!(l3(&s).capturing, Some(0.0), "waits for the bar line");
+            let ring = at(&mut s, "ldeck", "ring", 2);
+            assert_eq!(ring.label, "Loop 3 ring: cancel");
+            s.press_target(&ring).run_for(1.0);
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l == "looper: Capture into Loop 3 called off"),
+                "{:?}",
+                s.said()
+            );
+            assert_eq!((l3(&s).phase, l3(&s).capturing), (Phase::Empty, None));
+            s.button("STOP");
+        });
+    }
 }
 
 #[cfg(test)]

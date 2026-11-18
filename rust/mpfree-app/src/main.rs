@@ -4416,8 +4416,9 @@ fn looper_action(
             out.note(&looper.steps(n));
             Vec::new()
         }
+        looping::LoopAction::Capture => vec![app::Effect::Tell(looper.capture())],
         looping::LoopAction::Source(s) => {
-            looper.source = s;
+            looper.set_source(s);
             out.note(&format!("looper: records from {}", s.name().to_lowercase()));
             Vec::new()
         }

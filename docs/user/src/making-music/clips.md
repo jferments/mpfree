@@ -128,7 +128,7 @@ Every recording is a **take**, listed under Takes. **UNDO** takes back the newes
 
 ## Capture: keep what you just played
 
-You weren't recording, but you just played something great. Tap the **Capture** button under Takes (it says how many bars it would keep), or press **SHIFT + REC**, and MPFree keeps it.
+You weren't recording, but you just played something great. Tap the **Capture** button under Takes (it says how many bars it would keep), or press **SHIFT + REC**, and MPFree keeps it. (On the Looper tab, SHIFT + REC keeps the sound instead, as a loop: see [Recording loops](looping.md#capture-keep-what-you-just-played).)
 
 MPFree is always listening to the pads. Capture keeps your **last phrase**: everything since the last bar of silence, up to 32 bars, cut to whole bars and with your exact timing.
 
