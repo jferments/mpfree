@@ -569,6 +569,10 @@ pub struct MusicIn {
     moved: Vec<crate::fxmodes::Landed>,
     /// Learned controls the project couldn't keep (past its limit).
     unkept: u64,
+    /// A port went away since the app last asked
+    /// ([`MusicIn::take_unplugged`]): a learned control on it never sends
+    /// its let-go.
+    unplugged: bool,
     /// What learned controls last set (room for every learned control,
     /// so the sound loop never grows it).
     learn_sets: Vec<LearnedSet>,
@@ -651,6 +655,7 @@ impl MusicIn {
             armed_by: ArmedBy::Chain,
             moved: Vec::new(),
             unkept: 0,
+            unplugged: false,
             // The song's and the rig's.
             learn_sets: Vec::with_capacity(2 * mpfree_midi::setup::MAX_LEARNED),
             next_look: 0.0,
@@ -1294,6 +1299,7 @@ impl MusicIn {
         }
         self.ports.unplugged(port);
         self.ports_changed = true;
+        self.unplugged = true;
         if let Some(c) = self.clock.get_mut(usize::from(port.0)) {
             *c = ClockIn::new(CLOCK_RATE);
         }
@@ -1302,6 +1308,13 @@ impl MusicIn {
             s.sysex = None;
         }
         u16::try_from(ended).unwrap_or(u16::MAX)
+    }
+
+    /// Whether a port went away since the last call: a learned control
+    /// held down on it (a footswitch on the looper) will never come up,
+    /// so the app lets go of what it holds (`remote::Remote::let_go`).
+    pub fn take_unplugged(&mut self) -> bool {
+        std::mem::take(&mut self.unplugged)
     }
 
     /// Bytes that came in on `port` at `t` seconds: the keys they play go
@@ -2208,6 +2221,10 @@ mod tests {
         // Unplugged while held: the key is let go on its track.
         let mut keys = Vec::new();
         assert_eq!(m.unplugged(keystep, &mut keys), 1);
+        // The app hears of it once, so a learned footswitch held on it
+        // lets go (remote::Remote::let_go).
+        assert!(m.take_unplugged());
+        assert!(!m.take_unplugged());
         assert_eq!(
             m.take_routed().collect::<Vec<_>>(),
             vec![(2, Key::Up { note: 64 })]
