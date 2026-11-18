@@ -101,8 +101,14 @@ impl Desk<'_> {
                 panels.insert_param(mix, &a, recording)
             }
             // The Sample tab's FX: the chain editor on the pad's channel.
-            gui::FromUi::SampleFx { pad } => fx.extend(panels.open_pad(app, pad, mixing::DRUMS)),
-            gui::FromUi::PadEffects { pad } => fx.extend(panels.open_pad_mix(app, mix, pad)),
+            gui::FromUi::SampleFx { kit, pad, add } => {
+                fx.extend(panels.open_pad(app, mix, kit, pad, add))
+            }
+            // The FX tab's pedals: the pad's channel, without the editor.
+            gui::FromUi::SamplePedals(pad) => panels.show_pedals(mix, pad),
+            gui::FromUi::PadEffects { kit, pad } => {
+                fx.extend(panels.open_pad_mix(app, mix, kit, pad))
+            }
             gui::FromUi::Chain(a) => {
                 let recording = time.info().state == mpfree_transport::State::Recording;
                 fx.extend(panels.chain(app, mix, time, &a, recording, &mut |m| {
@@ -322,6 +328,9 @@ impl Desk<'_> {
             gui::FromUi::LoopMute(n) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::ToggleMute(n)))
             }
+            gui::FromUi::LoopSolo(n) => {
+                fx.push(app::Effect::Looper(looping::LoopAction::ToggleSolo(n)))
+            }
             gui::FromUi::LoopLevel(n, level) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Level(n, level)))
             }
@@ -330,6 +339,9 @@ impl Desk<'_> {
             }
             gui::FromUi::LoopBars(bars) => fx.extend(app.set_loop_bars(bars)),
             gui::FromUi::LoopKeys => fx.extend(app.toggle_loop_keys()),
+            gui::FromUi::LoopCapture => {
+                fx.push(app::Effect::Looper(looping::LoopAction::Capture))
+            }
             gui::FromUi::LooperSetting(item, d) => fx.extend(app.looper_setting(item, d)),
             gui::FromUi::LoopCommand(c) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Command(c)))
@@ -372,7 +384,11 @@ impl Desk<'_> {
             | gui::FromUi::UndoHistory(_)
             | gui::FromUi::UndoOn { .. }
             | gui::FromUi::ExportAsk
-            | gui::FromUi::Export(_)) => return Some(a),
+            | gui::FromUi::Export(_)
+            // Controller mode's chip: the I/O model and MIDI out's.
+            | gui::FromUi::ControllerOff
+            // The Q-Links' values, for MIDI Follow's Send values back.
+            | gui::FromUi::QLinkValues(_)) => return Some(a),
         }
         None
     }
@@ -535,6 +551,7 @@ pub fn rec_now(time: &time::TimeHost, looper: &looping::LoopHost) -> crate::rec_
         loop_taking,
         loop_armed,
         notes,
+        clock: time.waiting_for().map(str::to_string),
     }
 }
 
@@ -570,7 +587,8 @@ fn arm(
 /// key picks its loop and takes its next step (a muted loop plays again;
 /// otherwise Record: record from the next bar line, cancel, end the first
 /// pass, overdub, play), arming the loop for REC as the ring does; a mute
-/// pad mutes or unmutes its loop without picking it. The line for the log.
+/// pad mutes or unmutes its loop without picking it, and with SHIFT held
+/// solos it or lets go. The line for the log.
 pub fn perform_pad(
     app: &mut app::App,
     time: &time::TimeHost,
@@ -590,6 +608,10 @@ pub fn perform_pad(
             if s.is_some_and(|s| s.phase == mpfree_looper::Phase::Playing && s.muted) {
                 fx.push(app::Effect::Looper(LoopAction::ToggleMute(Some(n))));
                 format!("loop keys: Loop {} plays again", n + 1)
+            } else if s.is_some_and(|s| s.capturing.is_some()) {
+                // Capturing: its key calls it off.
+                fx.push(app::Effect::Looper(LoopAction::Capture));
+                format!("loop keys: Loop {}'s key calls its Capture off", n + 1)
             } else {
                 if !app.rec.armed(crate::rec_arm::Target::Loop) {
                     app.rec.ready = None;
@@ -604,6 +626,24 @@ pub fn perform_pad(
                 }
                 fx.extend(app.looper_tap(crate::looper_page::B_RECORD));
                 format!("loop keys: Loop {}'s key", n + 1)
+            }
+        }
+        PadAction::LoopMute(n) if app.shift_held() => {
+            let n = usize::from(n);
+            let s = looper.loop_status(n);
+            if s.is_none_or(|s| s.phase == mpfree_looper::Phase::Empty) {
+                format!("loop keys: Loop {} is empty, nothing to solo", n + 1)
+            } else {
+                fx.push(app::Effect::Looper(LoopAction::ToggleSolo(n)));
+                format!(
+                    "loop keys: Loop {} {}",
+                    n + 1,
+                    if s.is_some_and(|s| s.solo) {
+                        "solo off"
+                    } else {
+                        "soloed"
+                    }
+                )
             }
         }
         PadAction::LoopMute(n) => {

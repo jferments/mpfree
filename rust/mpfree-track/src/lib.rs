@@ -454,6 +454,13 @@ impl TrackHost {
         }
     }
 
+    /// Whether slot `slot` holds note `note` (a note-on not yet ended).
+    pub fn holds_note(&self, slot: usize, note: u8) -> bool {
+        self.slots
+            .get(slot)
+            .is_some_and(|s| s.held[usize::from(note & 0x7F)] > 0)
+    }
+
     pub fn note_on(&mut self, slot: usize, offset: u32, note: u8, velocity: u8) -> bool {
         self.event(
             slot,
@@ -684,8 +691,12 @@ impl Sink for TrackHost {
             // Parameter locks and moves go to the mod resolver
             // (`mpfree-mod`), which knows each parameter's own value to go
             // back to on Unlock and sends the instruments their values; not
-            // straight to a node.
-            Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => return,
+            // straight to a node. A clip's program change is for outside
+            // gear.
+            Event::Lock { .. }
+            | Event::Lane { .. }
+            | Event::Unlock { .. }
+            | Event::Program { .. } => return,
         };
         if out.dest == ALL {
             for slot in 0..self.slots.len() {

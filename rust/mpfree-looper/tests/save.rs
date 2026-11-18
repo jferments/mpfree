@@ -278,3 +278,26 @@ fn a_load_is_refused_where_it_cannot_go() {
     assert_eq!(a.l.read_layer(0, 0, 0, &mut buf), None);
     assert_eq!(buf, [1.0; 8]);
 }
+
+#[test]
+fn a_loop_at_half_speed_loads_at_half_speed() {
+    let mut a = recorded();
+    let ticks = a.l.status().ticks;
+    a.cmd(L::Edit(Edit::Speed(-1)));
+    a.run(a.frame + 4096, &silence);
+    let s = a.l.status();
+    assert_eq!((s.speed, s.rate, s.ticks), (-1, -1, 2 * ticks));
+    let f = through_files(saved(&a));
+    assert_eq!(
+        (f.speed, f.rate, f.ticks, f.frames),
+        (-1, -1, 2 * ticks, BAR)
+    );
+    let mut b = loaded(128, f);
+    let copy = (2 * BAR).div_ceil(LOAD_SPEED) as u64;
+    b.run(copy + 4096, &silence);
+    let s = b.l.loop_status(3).unwrap();
+    assert_eq!(
+        (s.phase, s.speed, s.rate, s.ticks, s.frames),
+        (Phase::Playing, -1, -1, 2 * ticks, BAR)
+    );
+}

@@ -11,7 +11,9 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use mpfree_midi::blocks::Blocks;
 use mpfree_midi::cv::{CvAssign, CvEngine, Priority, Scale};
+use mpfree_midi::cv_mod::{Env, Lfo, Notes, Rate, Shape};
 use mpfree_midi::input::{ChanFilter, In, InputMode, InputRouter, Listen, PortFilter, Route, Thru};
 use mpfree_midi::monitor::{Dir, Event, Feed, Monitor, Mpc, To, KEEP};
 use mpfree_midi::output::{DinPacer, OutQueue, OutRoute, OutputRouter, Timed};
@@ -76,11 +78,13 @@ fn routing_pacing_and_cv_never_allocate() {
                 port: PortFilter::One(DIN),
                 channel: ChanFilter::One(0),
                 track: 40,
+                blocks: Blocks::NONE,
             },
             Route {
                 port: PortFilter::One(PortId(1)),
                 channel: ChanFilter::Omni,
                 track: 3,
+                blocks: Blocks::NONE,
             },
         ],
         0,
@@ -92,6 +96,7 @@ fn routing_pacing_and_cv_never_allocate() {
             port: PortFilter::One(PortId(1)),
             channel: ChanFilter::One(1),
             to: DIN,
+            blocks: Blocks::NONE,
         }],
         0,
         |_| {},
@@ -139,6 +144,34 @@ fn routing_pacing_and_cv_never_allocate() {
         0,
         &mut |_| {},
     );
+    // An LFO on the song that restarts on track 0, one that snaps to
+    // notes, and an envelope of track 0.
+    cv.set_assign(
+        3,
+        CvAssign::Lfo(Lfo {
+            shape: Shape::Drift,
+            rate: Rate::Beats(1.0),
+            restart: Some(0),
+            ..Lfo::default()
+        }),
+        0,
+        &mut |_| {},
+    );
+    cv.set_assign(
+        4,
+        CvAssign::Lfo(Lfo {
+            shape: Shape::Random,
+            rate: Rate::Hz(8.0),
+            notes: Notes {
+                mask: 0xAB5,
+                root: 2,
+            },
+            ..Lfo::default()
+        }),
+        0,
+        &mut |_| {},
+    );
+    cv.set_assign(5, CvAssign::Envelope(Env::new(0)), 0, &mut |_| {});
     for period in 0..200u32 {
         for q in queues.iter_mut() {
             q.clear();
@@ -191,6 +224,13 @@ fn routing_pacing_and_cv_never_allocate() {
         }
         input.feed_all(PortId(1), &on_two, u64::from(period) * 128, &mut route);
         cv.clock(24, 0, &mut |_| {});
+        cv.song(
+            0,
+            128,
+            f64::from(period) * 0.01,
+            0.01 / 128.0,
+            period % 7 != 0,
+        );
         if period % 50 == 49 {
             out.all_off(100, &mut queues);
             cv.release_all(100, &mut |_| {});

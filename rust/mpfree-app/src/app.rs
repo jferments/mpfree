@@ -2019,14 +2019,20 @@ impl App {
     /// once and in Perform it waits for the launch line; SHIFT gives the
     /// other timing. With TRACK MUTE held the tap solos its track: the
     /// pads show the tracks while it is held, and letting go leaves the
-    /// mode as it was before the press (the effects say so).
+    /// mode as it was before the press (the effects say so). Over the
+    /// kit's pad mutes (SHIFT + TRACK MUTE) the hold solos a pad of the
+    /// kit instead, and the pads stay the kit's.
     pub fn mute_tap(&mut self) -> (MuteTap, Vec<Effect>) {
         let mut fx = Vec::new();
         let solo = self.mute_hold.is_some();
         if let Some(h) = &mut self.mute_hold {
             h.used = true;
-            if self.mute_keys != MuteKeys::Tracks {
-                fx.extend(self.set_mute_keys(MuteKeys::Tracks));
+            let keys = match h.before {
+                MuteKeys::Pads => MuteKeys::Pads,
+                _ => MuteKeys::Tracks,
+            };
+            if self.mute_keys != keys {
+                fx.extend(self.set_mute_keys(keys));
             }
         }
         let tap = MuteTap {
@@ -2313,6 +2319,10 @@ impl App {
             fx.extend(self.toggle_mixer(shift));
         } else if let Some(e) = self.mode_button(note, shift) {
             fx.extend(e);
+        } else if shift && Some(note) == self.map.rec && self.view == View::Looper {
+            // SHIFT + REC on the Looper tab: the last bars heard become a
+            // loop (the looper's Capture).
+            fx.push(Effect::Looper(LoopAction::Capture));
         } else if shift && Some(note) == self.map.rec {
             // SHIFT + REC: Capture, on every page (Jay, 20:40Z).
             fx.push(Effect::Time(TimeAction::Capture));
@@ -4957,21 +4967,21 @@ mod tests {
             Some(Effect::Menu(m)) => m.rows[at].1.clone(),
             _ => panic!("{fx:?}"),
         };
-        assert_eq!(app.item_text(Item::LoopMemory).1, "5 min, 110 MB");
+        assert_eq!(app.item_text(Item::LoopMemory).1, "5 min, 120 MB");
         let fx = app.step_item(at, 1);
-        assert_eq!(value(&fx), "10 min, 219 MB (next start)");
+        assert_eq!(value(&fx), "10 min, 230 MB (next start)");
         assert!(fx.contains(&Effect::Note(
             "loop memory: 10 min from the next start (now 5 min)".into()
         )));
-        assert_eq!(value(&app.step_item(at, 1)), "20 min, 437 MB (next start)");
-        assert_eq!(value(&app.step_item(at, 1)), "20 min, 437 MB (next start)");
+        assert_eq!(value(&app.step_item(at, 1)), "20 min, 448 MB (next start)");
+        assert_eq!(value(&app.step_item(at, 1)), "20 min, 448 MB (next start)");
         for _ in 0..5 {
             app.step_item(at, -1);
         }
         assert_eq!(app.settings.loop_memory, LoopMemory::Min1);
         assert_eq!(
             app.item_text(Item::LoopMemory).1,
-            "1 min, 22 MB (next start)"
+            "1 min, 33 MB (next start)"
         );
         // Kept as minutes; the next start makes it and says no more.
         let kept = app.app_settings();
@@ -4981,7 +4991,7 @@ mod tests {
         assert_eq!(next.settings.loop_memory, LoopMemory::Min1);
         assert!(notes[0].contains(", loop memory 1 min,"), "{notes:?}");
         next.set_loop_memory_now(LoopMemory::Min1);
-        assert_eq!(next.item_text(Item::LoopMemory).1, "1 min, 22 MB");
+        assert_eq!(next.item_text(Item::LoopMemory).1, "1 min, 33 MB");
         // A size it doesn't offer is left out, and the default stays.
         let mut odd = mpfree_store::Settings::default();
         odd.set_i64("loop-memory", 7);
@@ -7541,6 +7551,19 @@ mod tests {
         assert!(!app.mute_tap().0.solo);
         app.button(TRACK_MUTE, false, 0.0);
         assert_eq!(app.mute_keys(), MuteKeys::Pads);
+        // Over the kit's pad mutes, TRACK MUTE held solos a pad of the kit:
+        // the press shows the tracks, the tap brings the kit's pads back,
+        // and letting go leaves them.
+        app.button(TRACK_MUTE, true, 0.0);
+        assert_eq!(app.mute_keys(), MuteKeys::Tracks);
+        let (tap, fx) = app.mute_tap();
+        assert!(tap.solo && tap.keys == MuteKeys::Pads, "{tap:?}");
+        assert!(fx.contains(&Effect::BankLights), "{fx:?}");
+        assert_eq!(app.mute_keys(), MuteKeys::Pads);
+        assert!(app.mute_tap().0.wait, "in Perform it waits");
+        app.button(TRACK_MUTE, false, 0.0);
+        assert_eq!(app.mute_keys(), MuteKeys::Pads);
+        assert!(!app.mute_tap().0.solo);
     }
 
     /// TRACK MUTE with more than 16 tracks (up to 128, Jay 14 Nov): PAD
@@ -8191,14 +8214,18 @@ mod tests {
         assert!(fx.contains(&Effect::Time(TimeAction::Transport(Command::StopAndRewind))));
         assert!(fx.contains(&Effect::StopSounds));
         assert!(!fx.contains(&Effect::Show(View::Console)));
-        // SHIFT + REC (90 here): Capture, on the Looper tab too.
-        for v in [View::Play, View::Looper] {
-            app.open_tab(v);
-            assert_eq!(
-                held(&mut app, SHIFT, |a| press(a, 90)),
-                [Effect::Time(TimeAction::Capture)]
-            );
-        }
+        // SHIFT + REC (90 here): Capture of notes; on the Looper tab, of
+        // what the looper heard.
+        app.open_tab(View::Play);
+        assert_eq!(
+            held(&mut app, SHIFT, |a| press(a, 90)),
+            [Effect::Time(TimeAction::Capture)]
+        );
+        app.open_tab(View::Looper);
+        assert_eq!(
+            held(&mut app, SHIFT, |a| press(a, 90)),
+            [Effect::Looper(LoopAction::Capture)]
+        );
         // SHIFT + PLAY START (93): the metronome.
         let fx = held(&mut app, SHIFT, |a| press(a, 93));
         assert_eq!(fx[0], Effect::Metronome { on: true, db: -24 });

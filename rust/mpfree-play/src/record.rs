@@ -779,8 +779,11 @@ impl Recorder {
             Event::AllOff => self.finish_all(view, span.swing, tick),
             Event::Lock { addr, value } => self.lock(view, span.swing, addr, value, tick),
             // Moves are recorded as gestures, not as locks; pressure has
-            // its own queue.
-            Event::Lane { .. } | Event::Unlock { .. } | Event::Pressure { .. } => {}
+            // its own queue; a clip's program change is the clip's own.
+            Event::Lane { .. }
+            | Event::Unlock { .. }
+            | Event::Pressure { .. }
+            | Event::Program { .. } => {}
         }
     }
 

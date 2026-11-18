@@ -11,6 +11,11 @@
 //! and picks the note with the most weight (loudness × periodicity ×
 //! steadiness). That ignores a noisy attack, a pitch glide (an 808's thump)
 //! and the odd octave slip.
+//!
+//! [`pitch_track`] follows the pitch every 10 ms instead, for chopping a
+//! phrase where its notes change ([`PitchTrack::changes`]): YIN on 40 ms
+//! windows of the sound brought down to about 8 kHz, then each cut found
+//! to the millisecond by which note's period the sound repeats at.
 
 use crate::fft::Fft;
 use crate::{mono, AnalysisError};
@@ -350,4 +355,276 @@ pub fn root_pitch(
     let hz = 440.0 * ((median - 69.0) / 12.0).exp2();
     let confidence = ((1.0 - steadiest.1) * best_weight / total).clamp(0.0, 1.0);
     Ok(Some(Pitch::from_hz(hz, confidence, steadiest.3 as u64)))
+}
+
+/// A sound's pitch over time, for chopping where it changes
+/// ([`pitch_track`], [`PitchTrack::changes`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PitchTrack {
+    /// Frames of the sound between two readings.
+    pub hop: u64,
+    /// One reading a hop: the fractional MIDI note heard, or None where
+    /// nothing is pitched (silence, noise, a drum hit).
+    pub notes: Vec<Option<f32>>,
+    /// The sound's length, frames.
+    pub frames: u64,
+    /// The mono mix at the rate the track listens at, one frame for each
+    /// `down` of the sound's, to find exactly where a note starts.
+    low: Vec<f32>,
+    low_rate: u32,
+    down: u64,
+    /// A reading's hop and window, frames of `low`.
+    low_hop: usize,
+    window: usize,
+}
+
+/// The rate the pitch track listens at (about: the sound's rate over a
+/// whole number): a voice's or an instrument's fundamental is far below
+/// it, and YIN's work is a small part of what it would be at 44.1 kHz
+/// (about 0.2 s a minute of sound on the workstation).
+const TRACK_RATE: u32 = 8_000;
+/// Each reading's window, and the time between readings, ms.
+const TRACK_WINDOW_MS: f32 = 40.0;
+const TRACK_HOP_MS: f32 = 10.0;
+/// The pitches a reading looks for, Hz.
+const TRACK_MIN_HZ: f32 = 60.0;
+const TRACK_MAX_HZ: f32 = 1500.0;
+/// Readings more than this far below the loudest (as RMS) count as
+/// silence: 30 dB.
+const TRACK_FLOOR: f32 = 0.0316;
+
+/// The pitch of `data` (1 or 2 interleaved channels at `rate`) every
+/// 10 ms: YIN on 40 ms windows of the mono mix, brought down to about
+/// 8 kHz first (averaging, so its fundamental is kept and the cost is
+/// low enough for the screen). A reading more than 30 dB below the
+/// loudest, or not periodic enough, is None. Steady notes read within
+/// a few cents; a reading alone between two others of one note is
+/// taken as that note (an octave slip, or a reading missed).
+pub fn pitch_track(data: &[f32], channels: usize, rate: u32) -> Result<PitchTrack, AnalysisError> {
+    let x = mono(data, channels)?;
+    if rate == 0 {
+        return Err(AnalysisError::BadInput("rate"));
+    }
+    let frames = x.len() as u64;
+    let down = (rate / TRACK_RATE).max(1) as usize;
+    let low_rate = rate / down as u32;
+    // Averaged in blocks of `down`: a low-pass with its zeros at the new
+    // rate's multiples, then one frame a block.
+    let y: Vec<f32> = x
+        .chunks(down)
+        .map(|c| c.iter().sum::<f32>() / c.len() as f32)
+        .collect();
+    let (tau_min, tau_max) = lags(
+        low_rate,
+        TRACK_MIN_HZ,
+        TRACK_MAX_HZ.min(low_rate as f32 / 3.0),
+    )
+    .ok_or(AnalysisError::BadInput("rate"))?;
+    let w = ((TRACK_WINDOW_MS / 1000.0 * low_rate as f32) as usize).max(2 * tau_max);
+    let hop = ((TRACK_HOP_MS / 1000.0 * low_rate as f32) as usize).max(1);
+    let mut yin = Yin::new(w, tau_min, tau_max, 0.2);
+    let span = yin.span();
+    let mut notes = Vec::new();
+    if y.len() >= span {
+        let starts: Vec<usize> = (0..=(y.len() - span) / hop).map(|i| i * hop).collect();
+        let rms: Vec<f32> = starts.iter().map(|&a| rms_of(&y[a..a + w])).collect();
+        let loudest = rms.iter().copied().fold(0.0, f32::max);
+        notes = starts
+            .iter()
+            .zip(&rms)
+            .map(|(&a, &r)| {
+                if loudest < 1e-4 || r < loudest * TRACK_FLOOR {
+                    return None;
+                }
+                let (hz, ap) = yin.run(&y[a..], low_rate)?;
+                (ap < yin.threshold
+                    && hz.is_finite()
+                    && (TRACK_MIN_HZ..=TRACK_MAX_HZ).contains(&hz))
+                .then(|| 69.0 + 12.0 * (hz / 440.0).log2())
+            })
+            .collect();
+        // A reading an octave (or any note) off, or missing, between two
+        // that agree is taken as theirs.
+        for i in 1..notes.len().saturating_sub(1) {
+            if let (Some(a), b, Some(c)) = (notes[i - 1], notes[i], notes[i + 1]) {
+                if (a - c).abs() < 0.5 && b.is_none_or(|b| (b - a).abs() >= 0.5) {
+                    notes[i] = Some((a + c) / 2.0);
+                }
+            }
+        }
+    }
+    Ok(PitchTrack {
+        hop: (hop * down) as u64,
+        notes,
+        frames,
+        low: y,
+        low_rate,
+        down: down as u64,
+        low_hop: hop,
+        window: w,
+    })
+}
+
+fn rms_of(x: &[f32]) -> f32 {
+    if x.is_empty() {
+        return 0.0;
+    }
+    (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
+}
+
+impl PitchTrack {
+    /// Where the notes start: the first reading of each run of readings on
+    /// one note (within half a semitone of the run's first two) that lasts
+    /// `min_frames` at least, when its note is `min_semitones` or more from
+    /// the one before (a quarter of a semitone less, so a note sung a
+    /// little flat still counts; vibrato, or a slide, which moves a little
+    /// at a time, doesn't), or it comes `min_frames` or more after the
+    /// last note (a rest). The sound's first note is a cut only after a lead-in as
+    /// long. Each cut is then found to the millisecond ([`Self::start`]).
+    /// Frames, in order, inside the sound.
+    pub fn changes(&self, min_semitones: f32, min_frames: u64) -> Vec<u64> {
+        let hop = self.hop.max(1);
+        let need = min_frames.div_ceil(hop).max(1) as usize;
+        let mut runs: Vec<(usize, usize, f32)> = Vec::new(); // (first, len, note)
+        let mut i = 0;
+        while i < self.notes.len() {
+            let Some(first) = self.notes[i] else {
+                i += 1;
+                continue;
+            };
+            // The note the run keeps to: its first readings', once they
+            // settle.
+            let note = match self.notes.get(i + 1).copied().flatten() {
+                Some(next) if (next - first).abs() < 0.5 => (first + next) / 2.0,
+                _ => first,
+            };
+            let mut j = i + 1;
+            while j < self.notes.len() && self.notes[j].is_some_and(|n| (n - note).abs() < 0.5) {
+                j += 1;
+            }
+            // Its note, once formed: the middle of its readings, so a first
+            // reading caught between two notes doesn't set it.
+            let mut heard: Vec<f32> = self.notes[i..j].iter().flatten().copied().collect();
+            heard.sort_by(f32::total_cmp);
+            runs.push((i, j - i, heard[heard.len() / 2]));
+            i = j;
+        }
+        let change = (min_semitones - 0.25).max(0.25);
+        let mut cuts = Vec::new();
+        // The last note kept: its end, and its note.
+        let mut last: Option<(usize, f32)> = None;
+        for (k, &(first, len, note)) in runs.iter().enumerate() {
+            if len < need {
+                continue;
+            }
+            let new = match last {
+                None => first >= need,
+                Some((end, _)) if first >= end + need => true,
+                Some((_, before)) => (note - before).abs() >= change,
+            };
+            if new {
+                // The note held just before, if one is (else a rest or
+                // noise).
+                let near = self.window.div_ceil(self.low_hop);
+                let before = runs[..k]
+                    .iter()
+                    .rev()
+                    .find(|r| r.1 >= need)
+                    .filter(|&&(f, l, _)| f + l + near >= first)
+                    .map(|r| r.2);
+                let at = self.start(first, before, note);
+                if at > 0 && at < self.frames && cuts.last().is_none_or(|&l| at > l) {
+                    cuts.push(at);
+                }
+            }
+            last = Some((first + len, note));
+        }
+        cuts
+    }
+
+    /// Where the note `note` first read at reading `first` starts, frames
+    /// of the sound. A window that hears two notes reads one of them or
+    /// neither, so the change is somewhere in the window before the first
+    /// reading, or this one's. Each millisecond there votes: from a note
+    /// `before`, for whichever note's period the next few periods repeat at
+    /// better; from a rest or noise, for the new note where it is loud
+    /// and repeats at its period. The change is where the votes split
+    /// best, old before it and new from it.
+    fn start(&self, first: usize, before: Option<f32>, note: f32) -> u64 {
+        let y = &self.low;
+        let a = first * self.low_hop;
+        let lo = a.saturating_sub(self.low_hop);
+        let hi = (a + self.window).min(y.len());
+        let step = (self.low_rate as usize / 1000).max(1);
+        let to_frames = |t: usize| (t as u64 * self.down).min(self.frames);
+        if lo >= hi {
+            return to_frames(a);
+        }
+        let period = |n: f32| {
+            let hz = 440.0 * 2f32.powf((n - 69.0) / 12.0);
+            ((self.low_rate as f32 / hz).round() as usize).max(1)
+        };
+        let p_new = period(note);
+        let p_most = before.map_or(p_new, |o| period(o).max(p_new));
+        let span = 2 * p_most;
+        // How badly `span` frames from `t` repeat `p` later: 0 for a
+        // perfect repeat, about 1 for noise; None for silence.
+        let misfit = |t: usize, p: usize| -> Option<f32> {
+            let x = y.get(t..t + span + p)?;
+            let (mut d, mut e) = (0.0f32, 0.0f32);
+            for j in 0..span {
+                d += (x[j] - x[j + p]).powi(2);
+                e += x[j] * x[j] + x[j + p] * x[j + p];
+            }
+            (e > 1e-12).then(|| d / e)
+        };
+        let ts: Vec<usize> = (lo..hi).step_by(step).collect();
+        let (votes, reach): (Vec<i32>, usize) = match before {
+            Some(old) => {
+                let p_old = period(old);
+                let votes = ts
+                    .iter()
+                    .map(|&t| match (misfit(t, p_old), misfit(t, p_new)) {
+                        (Some(o), Some(n)) if n < o => 1,
+                        (Some(o), Some(n)) if o < n => -1,
+                        _ => 0,
+                    })
+                    .collect();
+                // A vote hears the frames from it to the end of its periods:
+                // the votes turn when the new note fills half of those.
+                (votes, (span + p_most) / 2)
+            }
+            None => {
+                let level: Vec<f32> = ts
+                    .iter()
+                    .map(|&t| rms_of(&y[t..(t + step).min(y.len())]))
+                    .collect();
+                let loudest = level.iter().copied().fold(0.0, f32::max);
+                let votes = ts
+                    .iter()
+                    .zip(&level)
+                    .map(|(&t, &l)| {
+                        let pitched = misfit(t, p_new).is_some_and(|m| m < 0.5);
+                        if l >= loudest * 0.1 && pitched {
+                            1
+                        } else {
+                            -1
+                        }
+                    })
+                    .collect();
+                (votes, 0)
+            }
+        };
+        // The split that agrees with the most votes (the earliest of
+        // equals).
+        let mut best = (i32::MIN, 0usize);
+        let mut score: i32 = votes.iter().sum();
+        for (k, v) in votes.iter().enumerate() {
+            if score > best.0 {
+                best = (score, k);
+            }
+            score -= 2 * v;
+        }
+        to_frames(ts[best.1] + reach)
+    }
 }
