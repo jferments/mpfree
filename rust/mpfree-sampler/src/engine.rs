@@ -99,7 +99,8 @@ use crate::grain_clip::GrainClip;
 use crate::hits::{self, HitCell};
 use crate::model::{
     edge_gain, ChannelPick, Fade, GrainMode, GrainParams, Keys, LayerSelect, Levels, LoopMode,
-    MasterFx, PadsPlay, Pcm, PlayMode, PressureRoute, PressureTarget, Project, WarpMethod, PADS,
+    MasterFx, PadsPlay, Pcm, PlayMode, PressureRoute, PressureTarget, Project, SliceSet,
+    WarpMethod, PADS,
 };
 use crate::warp::{CopyMap, Warps};
 
@@ -152,6 +153,9 @@ struct Vary {
     /// An audition: these source frames once, forward, without fades or a
     /// loop, instead of the layer's region.
     slice: Option<(i64, i64)>,
+    /// The slice a sliced layer plays (a note's, on keys), in place of the
+    /// pad's own and its live or locked [`PadField::Slice`].
+    cut: Option<usize>,
     /// The pad hit, when it is not the pad playing (a link).
     by: Option<u8>,
 }
@@ -308,6 +312,53 @@ pub struct ViewLayer {
     /// The sound's hits, for a region in the Stretch grain mode
     /// ([`crate::hits`]).
     hits: Option<Arc<HitCell>>,
+    /// A sliced region's boundaries inside it, in the frames it reads
+    /// (R4); empty when it isn't sliced or plays as grains.
+    cuts: Vec<i64>,
+    /// Its slices' own settings, by slice number (R4 part 5), ready to
+    /// use: built with the view, so a hit only reads them. Empty when
+    /// none has any or it isn't sliced.
+    slice_sets: Vec<ViewSlice>,
+}
+
+/// A slice's own settings as a voice uses them ([`SliceSet`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ViewSlice {
+    /// Cents from the pad's pitch.
+    cents: f32,
+    /// Its level as a gain.
+    gain: f32,
+    reverse: bool,
+    /// A low-pass cutoff in place of the pad's filter's, Hz; 0 for none.
+    cutoff_hz: f32,
+    /// Its fade out, in the frames the layer reads; None: the region's.
+    fade_out: Option<u32>,
+    to_end: bool,
+}
+
+impl ViewSlice {
+    const PLAIN: ViewSlice = ViewSlice {
+        cents: 0.0,
+        gain: 1.0,
+        reverse: false,
+        cutoff_hz: 0.0,
+        fade_out: None,
+        to_end: false,
+    };
+
+    /// `s` for a layer reading `rate` frames a second.
+    fn of(s: &SliceSet, rate: u32) -> ViewSlice {
+        ViewSlice {
+            cents: f32::from(s.tune_st) * 100.0,
+            gain: db_to_gain(s.level_db),
+            reverse: s.reverse,
+            cutoff_hz: s.cutoff_hz.unwrap_or(0.0),
+            fade_out: s
+                .fade_out_ms
+                .map(|ms| (f64::from(ms) * f64::from(rate) / 1000.0).round() as u32),
+            to_end: s.to_end,
+        }
+    }
 }
 
 impl ViewLayer {
@@ -342,6 +393,16 @@ pub struct ViewPad {
     tune_cents: i32,
     /// Pitched as older samplers do: no band-limited read.
     vintage: bool,
+    /// The slice a hit plays on its sliced layers.
+    slice: u8,
+}
+
+impl ViewPad {
+    /// Whether a layer of it is sliced: a note on keys picks a slice, at
+    /// the sound's own pitch.
+    fn sliced(&self) -> bool {
+        self.layers.iter().any(|l| !l.cuts.is_empty())
+    }
 }
 
 /// What the audio thread needs from the project, for every pad.
@@ -400,6 +461,7 @@ impl EngineView {
             PadField::Attack => Some(p.amp.attack_ms),
             PadField::Decay => Some(p.amp.decay_ms),
             PadField::Release => Some(p.amp.release_ms),
+            PadField::Slice => Some(f32::from(p.slice)),
         }
     }
 
@@ -490,6 +552,20 @@ impl EngineView {
                             source_at: None,
                             octaves: None,
                             hits: None,
+                            cuts: if r.mode == PlayMode::Granular {
+                                Vec::new()
+                            } else {
+                                r.cuts().map(|x| x as i64).collect()
+                            },
+                            slice_sets: if r.mode == PlayMode::Granular || r.slice_count() < 2 {
+                                Vec::new()
+                            } else {
+                                r.slice_sets
+                                    .iter()
+                                    .take(r.slice_count())
+                                    .map(|x| ViewSlice::of(x, s.rate()))
+                                    .collect()
+                            },
                         };
                         if r.mode == PlayMode::Granular && r.grain_mode == GrainMode::Stretch {
                             hits::prepare(s.hits(), s.data(), s.channels(), s.rate());
@@ -504,7 +580,9 @@ impl EngineView {
                                 let semis = g.pitch.max(0.0) + g.pitch_spray.clamp(0.0, 24.0);
                                 ratio * f64::from(semis / 12.0).exp2()
                             } else {
-                                ratio
+                                // A slice's own pitch up (R4 part 5).
+                                let st = r.slice_sets.iter().map(|x| x.tune_st).max();
+                                ratio * (f64::from(st.unwrap_or(0).max(0)) / 12.0).exp2()
                             };
                             if may_pass_an_octave(p, up, project.pads_play()) {
                                 bandlimit::prepare(s.octaves(), s.data(), s.channels());
@@ -531,6 +609,8 @@ impl EngineView {
                                 v.data = Pcm::F32(data);
                                 v.start = 0;
                                 v.end = len;
+                                v.cuts = r.cuts().map(at).filter(|&x| x > 0 && x < len).collect();
+                                v.cuts.dedup();
                                 v.sustain_loop = r.sustain_loop.map(|lp| {
                                     let (a, b) = (at(lp.start), at(lp.end).min(len));
                                     ViewLoop {
@@ -590,6 +670,7 @@ impl EngineView {
                     pan: p.pan,
                     tune_cents: p.tune_cents,
                     vintage: p.vintage,
+                    slice: p.slice,
                 }
             }));
         }
@@ -756,10 +837,14 @@ pub enum PadField {
     Attack = 5,
     Decay = 6,
     Release = 7,
+    /// The slice a hit plays on a sliced pad, from 0 (R4): replaces the
+    /// pad's own [`crate::model::Pad::slice`], rounded to a whole slice,
+    /// for new voices.
+    Slice = 8,
 }
 
 impl PadField {
-    pub const COUNT: usize = 8;
+    pub const COUNT: usize = 9;
     pub const ALL: [PadField; PadField::COUNT] = [
         PadField::Level,
         PadField::Pan,
@@ -769,6 +854,7 @@ impl PadField {
         PadField::Attack,
         PadField::Decay,
         PadField::Release,
+        PadField::Slice,
     ];
 
     /// Whether playing voices follow it (Level, Pan, Cutoff, Resonance);
@@ -789,6 +875,7 @@ impl PadField {
             PadField::Cutoff => (10.0, 22_000.0),
             PadField::Resonance => (0.0, 1.0),
             PadField::Attack | PadField::Decay | PadField::Release => (0.0, 60_000.0),
+            PadField::Slice => (0.0, (crate::model::MAX_SLICES - 1) as f32),
         };
         x.clamp(lo, hi)
     }
@@ -2309,16 +2396,23 @@ impl Engine {
                 continue;
             };
             if k.contains(note) {
-                let semis = i32::from(note) - i32::from(k.root);
-                self.note_on(
-                    p as u8,
-                    velocity,
-                    note,
+                // A sliced pad: one note a slice from its lowest, each at
+                // the sound's own pitch.
+                let sliced = self.views[self.at].pads[p]
+                    .as_ref()
+                    .is_some_and(ViewPad::sliced);
+                let vary = if sliced {
                     Vary {
-                        semis,
+                        cut: Some(usize::from(note - k.lo)),
                         ..Vary::default()
-                    },
-                );
+                    }
+                } else {
+                    Vary {
+                        semis: i32::from(note) - i32::from(k.root),
+                        ..Vary::default()
+                    }
+                };
+                self.note_on(p as u8, velocity, note, vary);
             }
         }
     }
@@ -2596,10 +2690,45 @@ impl Engine {
             }
             None => None,
         };
-        // What the voice reads: the layer's region, or the slice once.
-        let (start, end, reverse, mode) = match slice {
-            Some((a, b)) => (a, b, false, PlayMode::OneShot),
-            None => (l.start, l.end, l.reverse, l.mode),
+        // A sliced layer plays one slice (R4): the note's, else the pad's
+        // live or locked Slice, else its own. Past its last, nothing.
+        let cut = if slice.is_none() && !l.cuts.is_empty() {
+            let set = self.lives[at].row(p)[PadField::Slice as usize];
+            let k = vary.cut.unwrap_or(if set.is_nan() {
+                usize::from(vp.slice)
+            } else {
+                set.round().max(0.0) as usize
+            });
+            let mut edges = std::iter::once(l.start)
+                .chain(l.cuts.iter().copied())
+                .chain(std::iter::once(l.end));
+            match (edges.nth(k), edges.next()) {
+                (Some(a), Some(b)) if a < b => Some((a, b, k)),
+                _ => return,
+            }
+        } else {
+            None
+        };
+        // The slice's own settings (R4 part 5).
+        let own = cut
+            .and_then(|(_, _, k)| l.slice_sets.get(k))
+            .copied()
+            .unwrap_or(ViewSlice::PLAIN);
+        let level = level * own.gain;
+        // What the voice reads: the layer's region, the slice of it (on to
+        // the region's end, if the slice says so), or the audition's
+        // frames once. A slice doesn't loop.
+        let (start, end, reverse, mode) = match (slice, cut) {
+            (Some((a, b)), _) => (a, b, false, PlayMode::OneShot),
+            (None, Some((a, b, _))) => {
+                let mode = match l.mode {
+                    PlayMode::Loop => PlayMode::Gate,
+                    m => m,
+                };
+                let b = if own.to_end { l.end } else { b };
+                (a, b, l.reverse != own.reverse, mode)
+            }
+            (None, None) => (l.start, l.end, l.reverse, l.mode),
         };
         let granular = mode == PlayMode::Granular;
         let frames = end - start;
@@ -2615,18 +2744,35 @@ impl Engine {
             (start + skip).min(end - 1)
         };
         let (pick_l, pick_r) = picks(l.stereo, l.pick);
-        let lp = if slice.is_some() {
+        let lp = if slice.is_some() || cut.is_some() {
             None
         } else {
             l.sustain_loop.as_ref()
         };
+        // A slice's fades are the region's, each at most half the slice.
+        let half = if cut.is_some() {
+            u32::try_from(frames / 2).unwrap_or(u32::MAX)
+        } else {
+            u32::MAX
+        };
+        let fit = |f: Fade| {
+            Some(Fade {
+                frames: f.frames.min(half),
+                ..f
+            })
+            .filter(|f| f.frames > 0)
+        };
         let (fade_in, fade_out) = if slice.is_some() {
             (None, None)
         } else {
-            (
-                (l.fade_in.frames > 0).then_some(l.fade_in),
-                (l.fade_out.frames > 0).then_some(l.fade_out),
-            )
+            let out = match own.fade_out {
+                Some(frames) => Fade {
+                    frames,
+                    ..l.fade_out
+                },
+                None => l.fade_out,
+            };
+            (fit(l.fade_in), fit(out))
         };
         // The pad's live settings and locks, where set, in place of its own.
         let kit_live = &self.lives[at];
@@ -2654,7 +2800,12 @@ impl Engine {
         if let Some(ms) = vary.decay_ms {
             (amp.decay_ms, amp.sustain) = (ms, 0.0);
         }
-        let filter = match vary.cutoff_hz {
+        // A slice's own cutoff in place of the pad's, unless the hit has
+        // one (16 Levels by Cutoff).
+        let cutoff = vary
+            .cutoff_hz
+            .or((own.cutoff_hz > 0.0).then_some(own.cutoff_hz));
+        let filter = match cutoff {
             Some(hz) if vp.filter.kind == FilterKind::Off => Some(Filter {
                 kind: FilterKind::LowPass,
                 poles: 2,
@@ -2687,6 +2838,8 @@ impl Engine {
                 program[ProgramField::Tune as usize],
             )
         };
+        // A slice's own pitch repitches it, warped or not.
+        let tune = tune + own.cents;
         let mut grain = pitched_grain(l.grain, semis as f32, l.tone);
         if tune != 0.0 {
             grain = pitched_grain(grain, tune / 100.0, l.tone);

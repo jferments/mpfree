@@ -503,7 +503,7 @@ fn the_effects_row_names_the_pads_effects_and_opens_its_chain() {
     // No effects yet: + FX.
     let mut e = pads(10);
     assert_eq!(row_value(&e, Row::Effects), "+ FX");
-    // No channel of its own (the app leaves it None): a dash, no button.
+    // Before the mixer says (the app leaves it None): a dash, no button.
     e.state.effects = None;
     let st = e.state.clone();
     e.tab.update(&mut e.ui, &st);
@@ -515,4 +515,20 @@ fn the_effects_row_names_the_pads_effects_and_opens_its_chain() {
         .buttons
         .is_empty());
     assert_eq!(act(&mut e, pads_tab::LIST, EventKind::Tab(index)), None);
+}
+
+/// A sliced pad (R4) says how many slices it holds on the map.
+#[test]
+fn a_sliced_pad_says_its_slices_on_the_map() {
+    let mut s = pads(PAD);
+    s.project
+        .edit_pad(PAD, None, |p| {
+            let r = &mut p.layers[0].region;
+            let (a, b) = (r.start, r.end);
+            r.slices = (1..16).map(|k| a + (b - a) * k / 16).collect();
+        })
+        .unwrap();
+    pick(&mut s, PAD);
+    let map = s.ui.get::<PadMap>(pads_tab::MAP).unwrap();
+    assert_eq!(map.cells[PAD].detail, "16 slices · Loop");
 }

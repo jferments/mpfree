@@ -573,7 +573,14 @@ pub(crate) fn saved_control(s: StripId, id: u16) -> bool {
 /// sets the ones a project leaves out back to their defaults
 /// ([`crate::mixing::MixHost::tend_open`]).
 pub fn untouched_channel(mixer: &Mixer, st: StripId) -> bool {
-    matches!(st, StripId::Track(t) if t >= crate::mixing::TRACKS)
+    let spare = match st {
+        StripId::Track(t) => t >= crate::mixing::TRACKS,
+        // A pad channel past kit 1's A1-A16: lent only while it has
+        // something set (`mixing::PadChannels`).
+        StripId::Pad(p) => p >= crate::mixing::PADS,
+        _ => false,
+    };
+    spare
         && mixer.chain(st).is_none_or(|c| c.is_empty())
         && mpfree_fx::strip_params()
             .iter()
@@ -583,7 +590,8 @@ pub fn untouched_channel(mixer: &Mixer, st: StripId) -> bool {
 
 /// The mixer part: every strip's controls (but [`untouched_channel`]s),
 /// then each insert with its parameters (and a plugin's state, base64), and
-/// the pad mutes.
+/// the pad mutes. A mixer of the app's adds the pads its lent pad channels
+/// are lent to ([`mixer_text_lent`]).
 ///
 /// ```text
 /// mpfree-mixer 1
@@ -595,12 +603,26 @@ pub fn untouched_channel(mixer: &Mixer, st: StripId) -> bool {
 /// state AAECAw==
 /// ```
 pub fn mixer_text(mixer: &Mixer, pad_mutes: u16, pad_solos: u16) -> String {
+    mixer_text_lent(mixer, pad_mutes, pad_solos, &[])
+}
+
+/// [`mixer_text`], with a `lent` line for each pad channel lent to a pad
+/// (its strip, kit and pad): `lent ps16 1 20` is kit 2's pad B5.
+pub fn mixer_text_lent(
+    mixer: &Mixer,
+    pad_mutes: u16,
+    pad_solos: u16,
+    lent: &[(StripId, usize, usize)],
+) -> String {
     let mut s = String::with_capacity(4096);
     s.push_str(MIXER_FORMAT);
     s.push('\n');
     let _ = writeln!(s, "padmutes {pad_mutes}");
     if pad_solos != 0 {
         let _ = writeln!(s, "padsolos {pad_solos}");
+    }
+    for &(st, kit, pad) in lent {
+        let _ = writeln!(s, "lent {} {kit} {pad}", strip_text(st));
     }
     let strips: Vec<StripId> = mixer
         .strips()
@@ -669,6 +691,8 @@ pub struct MixLoad {
     pub pad_mutes: u16,
     /// The kit's pads soloed (TRACK MUTE held over pad mutes).
     pub pad_solos: u16,
+    /// The pad channels lent to pads: strip, kit and pad.
+    pub lent: Vec<(StripId, u8, u8)>,
     pub strips: Vec<(StripId, Vec<(u16, f32)>)>,
     /// Each strip's inserts, in order.
     pub chains: Vec<(StripId, Vec<Keyed>)>,
@@ -745,6 +769,7 @@ pub fn mixer_load(
     let mut out = MixLoad {
         pad_mutes: 0,
         pad_solos: 0,
+        lent: Vec::new(),
         strips: Vec::new(),
         chains: Vec::new(),
         modu: modu.map(str::to_string),
@@ -781,6 +806,14 @@ pub fn mixer_load(
             }
             Some("padsolos") => {
                 out.pad_solos = w.next().and_then(|x| x.parse().ok()).ok_or_else(bad)?;
+            }
+            Some("lent") => {
+                let st = w.next().and_then(parse_strip).ok_or_else(bad)?;
+                let kit: u8 = w.next().and_then(|x| x.parse().ok()).ok_or_else(bad)?;
+                let pad: u8 = w.next().and_then(|x| x.parse().ok()).ok_or_else(bad)?;
+                if pad < 128 && kit < 128 {
+                    out.lent.push((st, kit, pad));
+                }
             }
             Some("strip") => {
                 finish(&mut open, &mut out);
@@ -1311,6 +1344,46 @@ mod tests {
         assert_eq!(b.mixer.param(own(5), mx::PAN), 0.0);
         assert_eq!(b.mixer.param(own(5), mx::MUTE), 0.0);
         assert!(untouched_channel(&b.mixer, own(5)));
+    }
+
+    /// A pad channel lent to a pad (R3 part 4a) is saved with the pad it
+    /// is lent to, and opens lent to it again, playing into its kit's
+    /// track; a lent line for a pad that has its own, or past the kits, is
+    /// left out.
+    #[test]
+    fn a_lent_pad_channel_is_saved_and_opens_lent_to_its_pad() {
+        use crate::mixing::{MixHost, PADS};
+        let mut a = MixHost::new(44_100, -6.0, 0.0);
+        let s = a.lend_pad(1, 20).unwrap();
+        a.mixer.set_now(s, mx::PAN, 30.0);
+        let mut text = a.mixer_text();
+        assert!(
+            text.contains(&format!("lent {} 1 20\n", strip_text(s))),
+            "{text}"
+        );
+        text.push_str(&format!(
+            "lent {} 0 3\n",
+            strip_text(StripId::Pad(PADS + 1))
+        ));
+        let load = mixer_load(&text, None, 44_100, &crate::plugins::Plugins::none()).unwrap();
+        assert_eq!(load.lent.len(), 2);
+        let mut b = MixHost::new(44_100, -6.0, 0.0);
+        let _ = b.pads_homed(&[0, 2]);
+        b.open(Box::new(load));
+        for _ in 0..400 {
+            b.tend_open();
+            b.run_silent_period();
+        }
+        assert!(!b.opening());
+        assert_eq!(b.pad_channels.channel(1, 20), Some(s));
+        assert_eq!(
+            b.pad_channels.holder(StripId::Pad(PADS + 1)),
+            None,
+            "A4 has its own"
+        );
+        assert_eq!(b.mixer.param(s, mx::PAN), 30.0);
+        let track = crate::instruments::first_track() + 1;
+        assert_eq!(b.mixer.param(s, mx::OUTPUT_TRACK), track as f32);
     }
 
     #[test]

@@ -1,6 +1,8 @@
 //! Root pitch on tones whose pitch is known exactly.
 
-use mpfree_analysis::{note_name, root_pitch, yin, AnalysisError, PitchSettings};
+use mpfree_analysis::{
+    note_name, pitch_track, root_pitch, yin, AnalysisError, PitchSettings, PitchTrack,
+};
 use std::f32::consts::TAU;
 
 /// A sum of harmonics: `amps[k]` is the level of harmonic k+1.
@@ -178,5 +180,141 @@ fn noise_silence_and_short_input_have_no_pitch() {
     assert_eq!(
         root_pitch(&[0.0; 4], 1, rate, bad),
         Err(AnalysisError::BadInput("pitch range"))
+    );
+}
+
+fn hz_of(note: f32) -> f32 {
+    440.0 * 2f32.powf((note - 69.0) / 12.0)
+}
+
+/// Notes in a row: (MIDI note, or None for a rest; seconds), a voice-like
+/// tone of four harmonics; and where each starts, frames.
+fn phrase(parts: &[(Option<f32>, f32)], rate: u32) -> (Vec<f32>, Vec<u64>) {
+    let mut out = Vec::new();
+    let mut starts = Vec::new();
+    for &(note, secs) in parts {
+        starts.push(out.len() as u64);
+        match note {
+            Some(n) => out.extend(tone(hz_of(n), &[1.0, 0.5, 0.3, 0.2], rate, secs)),
+            None => out.extend(std::iter::repeat_n(0.0, (secs * rate as f32) as usize)),
+        }
+    }
+    (out, starts)
+}
+
+fn near(got: &[u64], want: &[u64], rate: u32) {
+    let ms = |f: u64| f as f64 * 1000.0 / f64::from(rate);
+    assert_eq!(got.len(), want.len(), "cuts {got:?}, want {want:?}");
+    for (g, w) in got.iter().zip(want) {
+        assert!(
+            (ms(*g) - ms(*w)).abs() <= 15.0,
+            "cuts {got:?}, want {want:?}"
+        );
+    }
+}
+
+#[test]
+fn the_track_reads_each_note_and_a_rest_reads_none() {
+    for rate in [44_100, 48_000, 96_000] {
+        let (x, _) = phrase(&[(Some(60.0), 0.3), (None, 0.2), (Some(64.0), 0.3)], rate);
+        let t = pitch_track(&x, 1, rate).unwrap();
+        assert_eq!(t.frames, x.len() as u64);
+        let at = |secs: f32| t.notes[((secs * rate as f32) as u64 / t.hop) as usize];
+        for (secs, want) in [(0.1, Some(60.0)), (0.35, None), (0.65, Some(64.0))] {
+            match (at(secs), want) {
+                (Some(g), Some(w)) => assert!((g - w).abs() < 0.1, "{rate}: {g} at {secs}"),
+                (g, w) => assert_eq!(g, w, "{rate} at {secs}"),
+            }
+        }
+        // A reading every 10 ms.
+        assert!(
+            (t.hop as f32 / rate as f32 - 0.01).abs() < 0.001,
+            "{}",
+            t.hop
+        );
+    }
+}
+
+#[test]
+fn cuts_come_where_the_note_changes_by_enough_and_after_a_rest() {
+    let rate = 44_100;
+    let (x, at) = phrase(
+        &[
+            (Some(60.0), 0.4),
+            (Some(64.0), 0.4),
+            (None, 0.2),
+            (Some(64.0), 0.4),
+            (Some(67.0), 0.3),
+            (Some(68.0), 0.3),
+        ],
+        rate,
+    );
+    let t = pitch_track(&x, 1, rate).unwrap();
+    let min = rate as u64 / 20;
+    // Every change of a semitone or more, and the note after the rest.
+    near(&t.changes(1.0, min), &[at[1], at[3], at[4], at[5]], rate);
+    // Three semitones or more: not the last step up.
+    near(&t.changes(3.0, min), &[at[1], at[3], at[4]], rate);
+    // Four or more: C to E, and the rest.
+    near(&t.changes(4.0, min), &[at[1], at[3]], rate);
+    // Twelve: only the rest.
+    near(&t.changes(12.0, min), &[at[3]], rate);
+    // Notes shorter than the minimum length don't count, nor a rest as
+    // short: the E after it is the E before.
+    near(&t.changes(1.0, rate as u64 * 7 / 20), &[at[1]], rate);
+    // Cuts come within a few milliseconds of each note's start.
+    for (got, want) in t.changes(1.0, min).iter().zip([at[1], at[3], at[4], at[5]]) {
+        assert!(got.abs_diff(want) <= rate as u64 / 200, "{got} for {want}");
+    }
+}
+
+#[test]
+fn vibrato_and_a_stereo_sound_cut_only_at_the_notes() {
+    let rate = 48_000;
+    // A note sung with vibrato (±40 cents at 5.5 Hz), then a fifth up.
+    let sung = |note: f32, secs: f32, phase0: f32| -> Vec<f32> {
+        let mut phase = phase0;
+        (0..(secs * rate as f32) as usize)
+            .map(|i| {
+                let t = i as f32 / rate as f32;
+                let hz = hz_of(note + 0.4 * (TAU * 5.5 * t).sin());
+                phase += TAU * hz / rate as f32;
+                0.3 * (phase.sin() + 0.4 * (2.0 * phase).sin())
+            })
+            .collect()
+    };
+    let mut x = sung(57.0, 0.8, 0.0);
+    let change = x.len() as u64;
+    x.extend(sung(64.0, 0.8, 0.0));
+    let stereo: Vec<f32> = x.iter().flat_map(|&v| [v, v * 0.5]).collect();
+    let t: PitchTrack = pitch_track(&stereo, 2, rate).unwrap();
+    assert_eq!(t.frames, x.len() as u64);
+    near(&t.changes(1.0, rate as u64 / 20), &[change], rate);
+}
+
+#[test]
+fn noise_silence_and_short_sounds_make_no_cuts() {
+    let rate = 44_100;
+    for x in [
+        noise(rate as usize, 9, 0.5),
+        vec![0.0; rate as usize],
+        tone(440.0, &[1.0], rate, 0.02),
+        Vec::new(),
+    ] {
+        let t = pitch_track(&x, 1, rate).unwrap();
+        assert!(t.changes(1.0, rate as u64 / 20).is_empty(), "{t:?}");
+    }
+    // A note after a lead-in of noise is cut at the note.
+    let mut x = noise(rate as usize / 2, 4, 0.3);
+    x.extend(tone(220.0, &[1.0, 0.5], rate, 0.5));
+    let t = pitch_track(&x, 1, rate).unwrap();
+    near(&t.changes(1.0, rate as u64 / 20), &[rate as u64 / 2], rate);
+    assert_eq!(
+        pitch_track(&[0.0; 3], 2, rate),
+        Err(AnalysisError::BadInput("length"))
+    );
+    assert_eq!(
+        pitch_track(&[0.0; 4], 1, 0),
+        Err(AnalysisError::BadInput("rate"))
     );
 }
