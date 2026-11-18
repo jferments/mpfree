@@ -613,6 +613,7 @@ const CHOP_MODES: &[(&str, ChopMode)] = &[
     ("beat", ChopMode::Beat),
     ("manual", ChopMode::Manual),
     ("silence", ChopMode::Silence),
+    ("pitch", ChopMode::Pitch),
 ];
 const SELECTS: &[(&str, LayerSelect)] = &[
     ("all", LayerSelect::All),

@@ -180,8 +180,8 @@ Pins only work while the sound is stretched. With Warp on Repitch, the sound pla
 
 **Chopping** cuts a sample into slices, one per pad, so you can replay a drum break in a new order or pick out single hits.
 
-1. Under the wave, tap a **Method**: **Transient** cuts at each hit, **Beat** on the beats, **Grid** into equal pieces, **Silence** at the gaps, **Manual** leaves the cuts to you, and **Live** cuts where you play (below).
-2. Drag the **Sensitivity** knob up for more slices, down for fewer (on Beat, Grid and Silence the knob sets the slice length, the number of slices or the threshold).
+1. Under the wave, tap a **Method**: **Transient** cuts at each hit, **Beat** on the beats, **Grid** into equal pieces, **Silence** at the gaps, **Pitch** where the note changes (below), **Manual** leaves the cuts to you, and **Live** cuts where you play (below).
+2. Drag the **Sensitivity** knob up for more slices, down for fewer (on Beat, Grid, Silence and Pitch the knob sets the slice length, the number of slices, the threshold or the change).
 3. Tap a slice to hear it. **Split** and **Merge** add or remove a cut by hand; drag a cut's tab, or turn the Q-Links, to move it. The first marker and **END** are the pad's own start and end, so they stay put here: move them on the Wave page.
 4. Tap the big **Chop to** button to put the slices on the pads. They go on the first empty pads after the one you chopped, running on past A16 into bank B (and so on, up to H16), so the pad itself and the sounds around it stay; the button names the pads ("Chop to A6–B4"), and **PAD BANK B** plays the ones on bank B. To start somewhere else, turn **Pads** (or Q-Link 4); the list says which pads already have a sound. Chop the same pad again and the new slices replace the ones you just made. **Put on** picks where they go: the **Pads**, **1 pad** (every slice on one pad, below), the pads and **Keys**, or **Files**. Turn **Phrase** on to get a clip that plays the slices in time as well (for a sound with a beat, on Pads or 1 pad).
 
@@ -215,6 +215,19 @@ The Play page's **Slices** section gives each slice of a sliced pad its own sett
 - **Plays to**: **Its end** (the next cut), or **Sound end**, so the slice plays on through the rest of the break.
 
 Q-Links 2 to 4 turn the picked slice's pitch, level and filter. The **Slices** chip says how many slices have settings of their own ("8 · 1 set"). Each change is one **UNDO** step. Chopping the pad again onto itself keeps the settings of the slices that are still there, by number.
+
+### Pitch: a slice a note
+
+{{shot: sample-chop-pitch | Pitch chop: a sung line cut into a slice a note, at each change of a semitone or more and after its rest.}}
+
+**Pitch** cuts a melody into its notes: a sung line, a bass part or a lead, a slice for each note. It follows the sound's pitch and cuts where the note moves, and where a note starts after a rest.
+
+- The knob is the **Change**: how far the note has to move to count, in semitones, from **1 semi** (every note) up to an **Octave** (only big leaps, and notes after a rest). Turn it up when a slide or a wobbly note makes too many slices.
+- Vibrato and slides don't cut; notes shorter than 50 ms (a scoop into a note) don't count.
+- Drums and noise have no pitch to follow, so Pitch makes few cuts on them: use Transient there.
+- With **Snap** on, each cut moves to the nearest zero crossing, so a slice starts without a click.
+
+The first time you pick Pitch on a sound, MPFree listens through it in the background; on a long sound the slices show a moment later.
 
 ### Live: chop by playing
 

@@ -600,6 +600,7 @@ fn phrase_on_also_gives_the_slices_in_time_for_a_clip() {
         root: None,
         root_note: None,
         onsets: v.onsets.clone(),
+        pitch: None,
         ready: true,
     };
     s.state.source = Arc::new(plain);
@@ -1031,4 +1032,88 @@ fn the_chop_panel_has_the_methods_the_slice_buttons_and_chop() {
     assert_eq!((labels[2].as_str(), on[2]), ("Chop to A6–A14", true));
     let a = tap_panel(&mut s, "Chop to A6–A14");
     assert!(matches!(a, Some(ChopAction::ToPads { .. })), "{a:?}");
+}
+
+#[test]
+fn pitch_chops_a_sung_line_where_its_notes_change() {
+    let mut s = chop();
+    let (project, followed) = sample::melody_project();
+    let (_, starts) = sample::melody();
+    s.project = project;
+    // Its view as it first comes, the pitch not followed.
+    let bare = Arc::new(SourceView {
+        pitch: None,
+        ..(*followed).clone()
+    });
+    s.state = ChopState::from_project(&s.project, PAD, 0, bare).unwrap();
+    let st = s.state.clone();
+    s.tab.update(&mut s.ui, &st);
+    assert!(!s.tab.wants_pitch(&st), "only for Pitch");
+    method(&mut s, Method::Pitch);
+    // Pitch waits for the sound's pitch: no cuts, and nothing to keep.
+    assert!(s.tab.wants_pitch(&st));
+    assert_eq!(s.tab.slices(), 1);
+    assert_eq!(s.tab.take_kept(&st), None);
+    // It comes in (the app follows it off the screen thread): the chop.
+    s.state.source = followed;
+    let st = s.state.clone();
+    s.tab.update(&mut s.ui, &st);
+    assert!(!s.tab.wants_pitch(&st));
+    let value = |s: &ChopSample| {
+        s.ui.get::<SettingList>(chop_tab::LIST).unwrap().rows[Row::Amount.index()]
+            .value
+            .clone()
+    };
+    // Every change of a semitone or more, and the G after the rest: each
+    // cut within 5 ms of its note's start, on a zero crossing.
+    let near = |s: &ChopSample, want: &[usize]| {
+        let b = s.tab.bounds(&s.state);
+        let cuts = &b[1..b.len() - 1];
+        assert_eq!(cuts.len(), want.len(), "cuts {cuts:?}, notes {starts:?}");
+        for (&c, &k) in cuts.iter().zip(want) {
+            assert!(
+                c.abs_diff(starts[k]) <= u64::from(RATE) / 200,
+                "{c} for note {k}"
+            );
+        }
+    };
+    assert_eq!(value(&s), "1 semi");
+    near(&s, &[1, 2, 4, 5]);
+    let mono = &s.state.source.mono;
+    let b = s.tab.bounds(&s.state);
+    for &c in &b[1..b.len() - 1] {
+        let (x, y) = (mono[c as usize - 1], mono[c as usize]);
+        assert!(
+            x * y <= 0.0 || x.abs() < 1e-3,
+            "{c} isn't on a zero crossing"
+        );
+    }
+    // Four semitones or more: E to G (three) is no cut.
+    qlink(&mut s, 2, 3, false);
+    assert_eq!(value(&s), "4 semis");
+    near(&s, &[1, 4, 5]);
+    // An octave: only the note after the rest.
+    for _ in 0..10 {
+        step(&mut s, Row::Amount, 1);
+    }
+    assert_eq!(value(&s), "Octave");
+    near(&s, &[4]);
+    // Kept as a Pitch chop, and a tab made afresh opens on it.
+    let (mode, cuts) = s.tab.take_kept(&s.state).expect("a changed chop");
+    assert_eq!(mode, ChopMode::Pitch);
+    let src = s.project.source(s.state.source.id).unwrap().clone();
+    let kept = ChopSet::from_markers(KEPT_CHOP, &src, mode, cuts.clone()).unwrap();
+    s.project.keep_chop(kept).unwrap();
+    let st = ChopState::from_project(&s.project, PAD, 0, s.state.source.clone()).unwrap();
+    let mut ui = sample::app_ui_with(Fonts::embedded(), &s.project, chop_tab::HINT);
+    let again = ChopTab::add(&mut ui, sample::CHOP_PAGE, &st).unwrap();
+    assert_eq!(again.method(), Method::Pitch);
+    let b = again.bounds(&st);
+    assert_eq!(&b[1..b.len() - 1], &cuts[..]);
+    // The drum loop has few notes to follow: few cuts.
+    let mut d = chop();
+    let v = d.state.source.clone();
+    d.state.source = Arc::new(v.with_pitch(v.follow_pitch(RATE).unwrap()));
+    method(&mut d, Method::Pitch);
+    assert!(d.tab.slices() <= 3, "{:?}", d.tab.bounds(&d.state));
 }

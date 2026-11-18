@@ -13087,6 +13087,37 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         live.take_actions();
         out.push(("sample-chop-live", live));
     }
+    // The Chop tab cutting a sung line where its notes change (R4.7).
+    {
+        use mpfree_sampler_ui::chop_tab::{Row, LIST};
+        let mut sung = sample_sampler(fonts());
+        let (project, _) = mpfree_sampler_ui::sample::melody_project();
+        let mut kits = sung.kits.clone();
+        kits[0].name = "Vocals".to_string();
+        kits[0].pads[mpfree_sampler_ui::sample::PAD] = Some("Sung line".to_string());
+        sung.apply(ToUi::Kits(kits));
+        sung.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        settle_views(&mut sung);
+        sung.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
+        });
+        // Back from Transient past Live and Manual: Pitch.
+        sung.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Step {
+                index: Row::ALL.iter().position(|r| *r == Row::Method).unwrap_or(0),
+                delta: -3,
+            },
+        });
+        // Its pitch followed on the worker, and the chop made.
+        settle_views(&mut sung);
+        sung.take_actions();
+        out.push(("sample-chop-pitch", sung));
+    }
     let mut lab = sample_player(fonts());
     lab.apply(ToUi::Show(View::Prefs));
     lab.apply(ToUi::TouchLab);
@@ -20330,6 +20361,51 @@ mod tests {
         let (tab, st) = p.sample.chop().unwrap();
         assert_eq!(tab.bounds(st), bounds);
         assert!(p.sample.project(0).unwrap().kept_chop(source).is_some());
+    }
+
+    #[test]
+    fn pitch_chop_waits_for_the_sounds_pitch_from_the_worker_then_chops_and_keeps_it() {
+        use mpfree_sampler::model::ChopMode;
+        use mpfree_sampler_ui::chop_tab::{self, Method, Row};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let (project, _) = mpfree_sampler_ui::sample::melody_project();
+        p.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        p.apply(ToUi::PadDown { pad, velocity: 100 });
+        settle_views(&mut p);
+        p.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(chop_tab::TAB),
+        });
+        let source = p.sample.project(0).unwrap().pad(pad).unwrap().layers[0]
+            .region
+            .source;
+        assert!(p.sample.chop().unwrap().1.source.pitch.is_none());
+        // Pitch picked: the worker follows the sound's pitch; till then
+        // there are no cuts and nothing is kept.
+        p.on_event(UiEvent {
+            widget: chop_tab::LIST.into(),
+            kind: EventKind::Step {
+                index: Row::ALL.iter().position(|r| *r == Row::Method).unwrap(),
+                delta: -3,
+            },
+        });
+        let (tab, _) = p.sample.chop().unwrap();
+        assert_eq!(tab.method(), Method::Pitch);
+        assert!(p.sample.analysing(), "the pitch is being followed");
+        settle_views(&mut p);
+        // In: a slice a note, kept for the sound as a Pitch chop.
+        let (tab, st) = p.sample.chop().unwrap();
+        assert!(st.source.pitch.is_some());
+        assert_eq!((tab.method(), tab.slices()), (Method::Pitch, 5));
+        let bounds = tab.bounds(st);
+        let kept = p.sample.project(0).unwrap().kept_chop(source).unwrap();
+        assert_eq!(kept.mode, ChopMode::Pitch);
+        assert_eq!(kept.markers(), &bounds[1..5]);
+        assert!(p.sample.take_unsaved());
     }
 
     #[test]
