@@ -5114,6 +5114,13 @@ fn player_session(
     let mut rec_back: Option<Box<sampler::RecFeed>> = None;
     // What the sampler's input records from (the Rec tab's Source).
     let mut rec_source = sampler::RecSource::Line;
+    // Sample Recall (sampler decision 3): the master as heard, its last two
+    // minutes always kept, made here once and never freed; its reading end
+    // goes to the screen as soon as there is room.
+    let (recall_feed, recall_input) =
+        mpfree_sampler::record::input16(sample_page::RECALL_SECONDS, RATE);
+    let mut recall_feed = sampler::RecFeed(recall_feed);
+    let mut recall_out = Some(gui::ToUi::SampleRecall(Box::new(recall_input)));
     // 2. The controller (USB; it may still be starting at power-on).
     let wait = if timed { Duration::ZERO } else { DEVICE_WAIT };
     progress(
@@ -8228,6 +8235,14 @@ fn player_session(
             {
                 mix.keep_captured(held, end);
             }
+        }
+        // Sample Recall keeps the master as heard (after Master safety,
+        // before the metronome), with the bar lines as late as it hears them.
+        let t_rec = Instant::now();
+        recall_feed.period(time.block(), &left, &right, mix.mixer.latency());
+        engines.add(engines::SAMPLER, t_rec.elapsed());
+        if let Some(m) = recall_out.take() {
+            recall_out = out.try_show(m).err();
         }
         // The metronome goes on top; it keeps the samples within ±1 itself.
         let p = p.max(time.mix_click(&mut left, &mut right));

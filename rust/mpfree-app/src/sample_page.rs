@@ -134,6 +134,11 @@ pub const AUTO_PAGE: &str = "Sample · Auto-sample";
 /// The line input the sampler keeps while it is on: enough for the
 /// longest Skip back (a minute, or 8 bars down to 60 BPM) and more.
 pub const INPUT_SECONDS: u32 = 75;
+/// The master as heard, which Sample Recall always keeps (sampler
+/// decision 3, 16 Nov 2026): the last two minutes, as 16-bit samples
+/// (`record::input16`, about 21 MB at 44.1 kHz). The audio thread makes it
+/// at start and the screen gets its reading end (`ToUi::SampleRecall`).
+pub const RECALL_SECONDS: u32 = 120;
 /// The page shown while the kits load, or while the synth has the pads.
 pub const EMPTY_PAGE: &str = "Sample · no sound";
 pub const EMPTY: &str = "sample-empty";
@@ -495,6 +500,11 @@ pub fn save_export(
     Ok(folder)
 }
 
+/// The Rec tab's Master source: the master as heard, after Master safety.
+pub fn master_source() -> RecSource {
+    RecSource::Mix(StripId::Master, CapturePoint::AfterSafety)
+}
+
 /// What the Rec tab's Source row offers, by name: the line input, then the
 /// mix as heard (the master after Master safety), each track, the delay's
 /// return and the playing kit's 16 pad channels, each after its fader.
@@ -503,10 +513,7 @@ pub fn rec_sources() -> Vec<(String, RecSource)> {
     let after = |s: StripId| (mixing::name(s), RecSource::Mix(s, CapturePoint::AfterFader));
     let mut v = vec![
         ("Line in".to_string(), RecSource::Line),
-        (
-            "Master".to_string(),
-            RecSource::Mix(StripId::Master, CapturePoint::AfterSafety),
-        ),
+        ("Master".to_string(), master_source()),
     ];
     v.extend([DRUMS, SYNTH, LOOP].map(|t| after(StripId::Track(t))));
     v.push(after(StripId::Return(DELAY_RETURN)));
@@ -523,8 +530,11 @@ pub struct SampleMemory {
     pub count: usize,
     /// The stretched copies warped pads play.
     pub copies: usize,
-    /// The Rec tab's input buffer, while it is held.
+    /// The Rec tab's input buffer, while it is held (not while it reads
+    /// the master Sample Recall keeps).
     pub input: usize,
+    /// The master Sample Recall always keeps.
+    pub recall: usize,
 }
 
 /// The sampler's input buffer's size: stereo `f32`.
@@ -662,6 +672,12 @@ pub struct SamplePage {
     /// goes to the audio thread.
     input: Option<Input>,
     feed: Option<Box<RecFeed>>,
+    /// `input` is the master Sample Recall keeps (`recall`), read while
+    /// the source is the master: no buffer of its own, nothing to hand back.
+    input_shared: bool,
+    /// The master's last two minutes, always kept (Sample Recall), once
+    /// the audio thread has sent its reading end.
+    recall: Option<Input>,
     /// The audio thread has the writer, and should hand it back.
     feeding: bool,
     want_back: bool,
@@ -818,6 +834,8 @@ impl SamplePage {
             source_sent: Some(RecSource::Line),
             input: None,
             feed: None,
+            input_shared: false,
+            recall: None,
             feeding: false,
             want_back: false,
             take: None,
@@ -1118,11 +1136,12 @@ impl SamplePage {
             sounds: seen.iter().map(|&(_, n)| n).sum(),
             count: seen.len(),
             copies: self.warps.bytes(),
-            input: if self.input.is_some() {
+            input: if self.input.is_some() && !self.input_shared {
                 input_bytes(self.rate) as usize
             } else {
                 0
             },
+            recall: self.recall.as_ref().map_or(0, |r| r.audio.bytes()),
         }
     }
 
@@ -5379,36 +5398,80 @@ impl SamplePage {
 
     /// Makes the sampler's input when its source wants it, or frees it
     /// when not (a take still recording ends there and is kept).
+    /// The master's source reads the buffer Sample Recall keeps, once it
+    /// has come, rather than a buffer of its own.
     fn sync_input(&mut self, ui: &mut Ui) {
-        if self.input_wanted() {
-            if self.input.is_none() {
+        let wanted = self.input_wanted();
+        let share = wanted && self.source == master_source() && self.recall.is_some();
+        if !wanted || (self.input.is_some() && self.input_shared != share) {
+            self.drop_input(ui);
+        }
+        if wanted && self.input.is_none() {
+            if share {
+                self.input = self.recall.clone();
+                self.input_shared = true;
+                self.lines.push(
+                    "sample: the sampler resamples the master from what Sample Recall keeps \
+                     (nothing more held)"
+                        .to_string(),
+                );
+            } else {
                 let (feed, input) = record::input(INPUT_SECONDS, self.rate);
                 self.input = Some(input);
                 self.feed = Some(Box::new(RecFeed(feed)));
                 let what = match self.source {
                     RecSource::Line => "the line input feeds the sampler".to_string(),
-                    RecSource::Mix(..) => format!("the sampler resamples {}", self.source_name()),
+                    RecSource::Mix(..) => {
+                        format!("the sampler resamples {}", self.source_name())
+                    }
                 };
                 self.lines.push(format!(
                     "sample: {what} ({INPUT_SECONDS} s kept, {:.1} MB)",
                     input_bytes(self.rate) as f64 / 1e6
                 ));
             }
-        } else if self.input.is_some() || self.feed.is_some() {
-            if let (Some(t), Some(input)) = (self.take.as_mut(), self.input.as_ref()) {
-                t.rec.stop(input);
-            }
-            self.tick(ui, 0.0, false);
-            self.take = None;
-            self.input = None;
-            // Not sent yet: freed here and now. Else the audio thread hands
-            // it back first.
-            if self.feed.take().is_none() && self.feeding {
-                self.want_back = true;
-            }
         }
         self.refresh_rec_state(ui);
         self.feed_rec(ui, 0.0);
+    }
+
+    /// The input goes: a take still recording ends there and is kept, and
+    /// a buffer of its own is freed (once the audio thread hands it back).
+    fn drop_input(&mut self, ui: &mut Ui) {
+        if self.input.is_none() && self.feed.is_none() {
+            return;
+        }
+        if let (Some(t), Some(input)) = (self.take.as_mut(), self.input.as_ref()) {
+            t.rec.stop(input);
+        }
+        self.tick(ui, 0.0, false);
+        self.take = None;
+        self.input = None;
+        // The master's is never freed. Not sent yet: freed here and now.
+        // Else the audio thread hands it back first.
+        if !std::mem::take(&mut self.input_shared) && self.feed.take().is_none() && self.feeding {
+            self.want_back = true;
+        }
+    }
+
+    /// The reading end of the master's last two minutes, which the audio
+    /// thread keeps from start (Sample Recall). The Rec tab's Master source
+    /// reads it from now on.
+    pub fn set_recall(&mut self, ui: &mut Ui, input: Input) {
+        self.lines.push(format!(
+            "sample: Sample Recall keeps the master's last {}:{:02} ({:.1} MB)",
+            RECALL_SECONDS / 60,
+            RECALL_SECONDS % 60,
+            input.audio.bytes() as f64 / 1e6
+        ));
+        self.recall = Some(input);
+        self.sync_input(ui);
+    }
+
+    /// The master's last two minutes (Sample Recall), once they have come.
+    #[allow(dead_code)] // Recall's overlay reads it (R5 part 2)
+    pub fn recall(&self) -> Option<&Input> {
+        self.recall.as_ref()
     }
 
     /// What the input records from, when the audio thread hasn't been told;

@@ -61,6 +61,9 @@ impl std::error::Error for RecordError {}
 struct Ring {
     channels: usize,
     frames: u64,
+    /// Stereo frames as two 16-bit samples in one word ([`rolling16`]),
+    /// else one `f32` a sample.
+    packed: bool,
     data: Box<[AtomicU32]>,
     /// Frames the writer has started to write (claimed), then finished.
     claimed: AtomicU64,
@@ -79,11 +82,27 @@ pub fn rolling(channels: u8, frames: usize) -> (RollingWriter, RollingReader) {
         (1..=2).contains(&channels) && frames > 0,
         "1 or 2 channels and a non-empty buffer"
     );
-    let ch = usize::from(channels);
+    ring(usize::from(channels), frames, false)
+}
+
+/// A stereo rolling buffer of `frames` frames kept as 16-bit samples, half
+/// the memory of [`rolling`]'s: for audio that is at most full scale (the
+/// master as heard, which the output clips there anyway). A sample over it
+/// is held at full scale; the rest are rounded to the nearest of 65,535
+/// steps (about -96 dB of noise), and read back as `f32`. Allocates once,
+/// here; the writer goes to the audio thread.
+pub fn rolling16(frames: usize) -> (RollingWriter, RollingReader) {
+    assert!(frames > 0, "a non-empty buffer");
+    ring(2, frames, true)
+}
+
+fn ring(ch: usize, frames: usize, packed: bool) -> (RollingWriter, RollingReader) {
+    let words = if packed { frames } else { frames * ch };
     let ring = Arc::new(Ring {
         channels: ch,
         frames: frames as u64,
-        data: (0..frames * ch).map(|_| AtomicU32::new(0)).collect(),
+        packed,
+        data: (0..words).map(|_| AtomicU32::new(0)).collect(),
         claimed: AtomicU64::new(0),
         written: AtomicU64::new(0),
         start: AtomicU64::new(0),
@@ -111,6 +130,14 @@ impl RollingWriter {
         let ch = self.ring.channels;
         let n = (interleaved.len() / ch) as u64;
         self.begin(n);
+        if self.ring.packed {
+            for (i, frame) in interleaved.chunks_exact(2).enumerate() {
+                let at = ((self.pos + i as u64) % self.ring.frames) as usize;
+                self.ring.data[at].store(pack(frame[0], frame[1]), Ordering::Relaxed);
+            }
+            self.end(n);
+            return;
+        }
         for (i, frame) in interleaved.chunks_exact(ch).enumerate() {
             let base = ((self.pos + i as u64) % self.ring.frames) as usize * ch;
             for (c, x) in frame.iter().enumerate() {
@@ -128,7 +155,9 @@ impl RollingWriter {
         self.begin(n);
         for i in 0..n as usize {
             let base = ((self.pos + i as u64) % self.ring.frames) as usize * ch;
-            if ch == 2 {
+            if self.ring.packed {
+                self.ring.data[base / 2].store(pack(left[i], right[i]), Ordering::Relaxed);
+            } else if ch == 2 {
                 self.ring.data[base].store(left[i].to_bits(), Ordering::Relaxed);
                 self.ring.data[base + 1].store(right[i].to_bits(), Ordering::Relaxed);
             } else {
@@ -165,6 +194,18 @@ impl RollingWriter {
     }
 }
 
+/// A stereo frame as two 16-bit samples in one word ([`rolling16`]).
+fn pack(l: f32, r: f32) -> u32 {
+    // `as` saturates, and a NaN becomes 0.
+    let q = |x: f32| (x.clamp(-1.0, 1.0) * 32767.0).round() as i16 as u16;
+    u32::from(q(l)) | u32::from(q(r)) << 16
+}
+
+fn unpack(w: u32) -> (f32, f32) {
+    let s = |v: u32| f32::from(v as u16 as i16) / 32767.0;
+    (s(w & 0xffff), s(w >> 16))
+}
+
 /// A reader of a rolling buffer, for any thread but the audio thread.
 #[derive(Clone)]
 pub struct RollingReader {
@@ -177,6 +218,10 @@ impl RollingReader {
     }
     pub fn capacity(&self) -> u64 {
         self.ring.frames
+    }
+    /// The memory the buffer's audio takes.
+    pub fn bytes(&self) -> usize {
+        self.ring.data.len() * std::mem::size_of::<AtomicU32>()
     }
     /// The absolute frame number the writer will write next.
     pub fn written(&self) -> u64 {
@@ -212,10 +257,15 @@ impl RollingReader {
         let keep = out.len();
         out.reserve(((end - start) as usize) * ch);
         for f in start..end {
-            let base = (f % self.ring.frames) as usize * ch;
+            let at = (f % self.ring.frames) as usize;
+            if self.ring.packed {
+                let (l, r) = unpack(self.ring.data[at].load(Ordering::Relaxed));
+                out.extend_from_slice(&[l, r]);
+                continue;
+            }
             for c in 0..ch {
                 out.push(f32::from_bits(
-                    self.ring.data[base + c].load(Ordering::Relaxed),
+                    self.ring.data[at * ch + c].load(Ordering::Relaxed),
                 ));
             }
         }
@@ -549,9 +599,9 @@ impl Take {
 
 // ---------------------------------------------------------------- bar lines
 
-/// Bar lines a [`BarReader`] can look back over: more than a minute of bars
-/// at any tempo.
-pub const BAR_LINES: usize = 64;
+/// Bar lines a [`BarReader`] can look back over: the 2 minutes Sample
+/// Recall keeps ([`input16`]) of 4/4 bars up to 512 BPM.
+pub const BAR_LINES: usize = 256;
 
 struct Bars {
     at: [AtomicU64; BAR_LINES],
@@ -702,6 +752,21 @@ pub struct Input {
 /// Allocates once, here (about 21 MB a minute).
 pub fn input(seconds: u32, rate: u32) -> (Feed, Input) {
     let (audio_w, audio) = rolling(2, (seconds.max(1) as usize) * rate as usize);
+    let (bars_w, bars) = bar_lines();
+    (
+        Feed {
+            audio: audio_w,
+            bars: bars_w,
+        },
+        Input { audio, bars, rate },
+    )
+}
+
+/// As [`input`], with the audio kept as 16-bit samples ([`rolling16`]):
+/// about 10.6 MB a minute at 44.1 kHz. For the master as heard, which
+/// Sample Recall always keeps.
+pub fn input16(seconds: u32, rate: u32) -> (Feed, Input) {
+    let (audio_w, audio) = rolling16((seconds.max(1) as usize) * rate as usize);
     let (bars_w, bars) = bar_lines();
     (
         Feed {
