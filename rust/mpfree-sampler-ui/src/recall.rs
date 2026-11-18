@@ -6,13 +6,18 @@
 //! the Master source; PLAY auditions the bracket, REC keeps it, STOP
 //! closes it, and the music plays on throughout.
 //!
-//! This module is the overlay's state ([`Recall`]: the length, where the
-//! bracket ends, the fade, the pad it lands on, warp), the bracket worked
-//! out from the buffer ([`Recall::bracket`]), and its page: the picture
-//! ([`RecallView`]), the panel under it (Length, Lands on, Warp, Audition,
-//! Keep) and the Q-Link column (Length, Ends at, Fade, Pad). The design is
-//! the review's Recall mockup (mpfree-claude `sampler/rethink/mockups/
-//! recall.png`) and `sampler/r5/plan.md`.
+//! This module is the overlay's state ([`Recall`]: what it reads, the
+//! length, where the bracket ends, the fade, the pad it lands on, warp),
+//! the bracket worked out from the buffer ([`Recall::bracket`]), and its
+//! page: the picture ([`RecallView`]), the panel under it (From, Length,
+//! Lands on, Warp, Audition, Keep) and the Q-Link column (Length, Ends
+//! at, Fade, Pad). The design is the review's Recall mockup (mpfree-claude
+//! `sampler/rethink/mockups/recall.png`) and `sampler/r5/plan.md`.
+//!
+//! **From** (the one Sample page's step 2f, Jay 18 Nov 19:48Z: Skip back
+//! moves into Sample Recall as a second source) reads the master, or what
+//! the sampler's Source has kept (the line input, or the point in the mix
+//! the recorder listens to), which is what the Rec page's Skip back kept.
 
 use std::cell::Cell;
 
@@ -129,9 +134,20 @@ impl Length {
     }
 }
 
+/// What Sample Recall reads: the master's last two minutes, always kept,
+/// or what the sampler's Source has kept (one-page step 2f: Skip back).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum RecallFrom {
+    #[default]
+    Master,
+    Source,
+}
+
 /// The panel's rows, in the list's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
+    /// The master, or the recorder's Source.
+    From,
     Length,
     LandsOn,
     Warp,
@@ -140,7 +156,8 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 5] = [
+    pub const ALL: [Row; 6] = [
+        Row::From,
         Row::Length,
         Row::LandsOn,
         Row::Warp,
@@ -154,6 +171,7 @@ impl Row {
 
     pub fn label(self) -> &'static str {
         match self {
+            Row::From => "From",
             Row::Length => "Length",
             Row::LandsOn => "Lands on",
             Row::Warp => "Warp",
@@ -188,11 +206,15 @@ pub enum Ask {
     Audition,
     /// Keep the bracket on the pad (REC, or Keep).
     Keep,
+    /// Read the other buffer ([`RecallPage::switch`], with its input).
+    Switch(RecallFrom),
 }
 
 /// The overlay's settings while it is open.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Recall {
+    /// What it reads: the master (as it opens), or the Source's buffer.
+    pub from: RecallFrom,
     /// The pad held when it opened.
     pub pad: usize,
     /// The pad it lands on: the held pad when it has no sound, else the
@@ -234,6 +256,7 @@ impl Recall {
     ) -> Recall {
         let playing = input.bars.bar_frames().is_some() && input.bars_back(1).is_some();
         let mut r = Recall {
+            from: RecallFrom::Master,
             pad,
             onto,
             pads: pads.max(1),
@@ -247,14 +270,28 @@ impl Recall {
             warp: playing,
             fade_ms: FADE_MS,
         };
-        // Fewer bars have passed: as many as there are.
-        while r.bracket(input).is_none() {
-            match r.length {
-                Length::Bars(n) if n > 1 => r.length = Length::Bars(n / 2),
+        r.fewer(input);
+        r
+    }
+
+    /// Fewer bars have passed than the length: as many as there are.
+    fn fewer(&mut self, input: &Input) {
+        while self.bracket(input).is_none() {
+            match self.length {
+                Length::Bars(n) if n > 1 => self.length = Length::Bars(n / 2),
                 _ => break,
             }
         }
-        r
+    }
+
+    /// Reads `input` now, `from` it: the bracket ends there now, as when
+    /// it opened (its buffer counts frames from its own start), with the
+    /// same length, or fewer bars when fewer have come in.
+    pub fn read(&mut self, input: &Input, from: RecallFrom) {
+        self.from = from;
+        self.back = 0;
+        self.at = input.now();
+        self.fewer(input);
     }
 
     /// The bar line the bracket ends on, as [`Input::bars_back`] finds the
@@ -330,6 +367,18 @@ impl Recall {
     /// one lit to the one tapped), or a press of a button.
     pub fn step(&mut self, row: Row, delta: i32, input: &Input) -> Ask {
         match row {
+            // The other buffer: the app has its input.
+            Row::From => {
+                let to = match delta.signum() {
+                    1 => RecallFrom::Source,
+                    -1 => RecallFrom::Master,
+                    _ if self.from == RecallFrom::Master => RecallFrom::Source,
+                    _ => RecallFrom::Master,
+                };
+                if to != self.from {
+                    return Ask::Switch(to);
+                }
+            }
             Row::Length => {
                 let at = (self.length.choice() as i32 + delta).clamp(0, 5) as usize;
                 self.length = if at == 5 {
@@ -408,6 +457,9 @@ pub struct RecallView {
     pub bracket: Option<Bracket>,
     /// "REC → Pad A6 · Master, effects on".
     pub chip: String,
+    /// Beside the title: "the master's last 2:00, always kept", or the
+    /// Source's ("Line in's last 1:15, kept while it is the Source").
+    pub sub: String,
     /// "Bars 43 to 46 · 10.4 s · lands warped at 92 BPM".
     pub caption: String,
     /// The bracket's peaks, a column each: (lowest, highest) of both sides.
@@ -431,12 +483,25 @@ impl RecallView {
             bars: Vec::new(),
             bracket: None,
             chip: String::new(),
+            sub: master_text(),
             caption: String::new(),
             zoom: Vec::new(),
             zoom_bars: Vec::new(),
             note: String::new(),
             painted: Cell::new(None),
         }
+    }
+
+    /// Reads `input` from its start, `from` it: the master over its two
+    /// minutes, a Source over what its buffer holds.
+    pub fn read(&mut self, input: &Input, from: RecallFrom) {
+        let rate = u64::from(input.rate.max(1));
+        let span = match from {
+            RecallFrom::Master => u64::from(SECONDS) * rate,
+            RecallFrom::Source => input.audio.capacity() / rate * rate,
+        };
+        self.strip = Strip::new(span / COLUMNS, COLUMNS as usize);
+        self.update(input);
     }
 
     /// Reads what came in since the last update and the bar lines kept.
@@ -525,7 +590,7 @@ impl RecallView {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut h = DefaultHasher::new();
-        (&self.chip, &self.caption, &self.note).hash(&mut h);
+        (&self.chip, &self.sub, &self.caption, &self.note).hash(&mut h);
         let [_, overview, ..] = RecallView::areas(r);
         self.edge().hash(&mut h);
         for &(f, n) in &self.bars {
@@ -559,14 +624,7 @@ impl Widget for RecallView {
             "SAMPLE RECALL",
         );
         let sub = Rect::new(title.x + w + 16, title.y, title.w - w - 16, title.h);
-        cx.text(
-            FontId::Sans,
-            small,
-            sub,
-            Align::Left,
-            t.text_dim,
-            "the master's last 2:00, always kept",
-        );
+        cx.text(FontId::Sans, small, sub, Align::Left, t.text_dim, &self.sub);
         if !self.chip.is_empty() {
             let cw = cx.measure(FontId::Bold, small, &self.chip) + 28;
             let chip = Rect::new(title.right() - cw, title.y - 2, cw, title.h + 4);
@@ -673,6 +731,21 @@ impl Widget for RecallView {
     }
 }
 
+/// The subtitle while it reads the master.
+fn master_text() -> String {
+    format!(
+        "the master's last {}:{:02}, always kept",
+        SECONDS / 60,
+        SECONDS % 60
+    )
+}
+
+/// "1:15", "0:48": a buffer's length.
+fn span_text(frames: u64, rate: u32) -> String {
+    let s = frames / u64::from(rate.max(1));
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
 // ---------------------------------------------------------------- page
 
 /// The overlay's widgets and state, while the app has it.
@@ -682,6 +755,10 @@ pub struct RecallPage {
     pub bpm: f64,
     /// Which of the kit's pads have a sound (when it opened).
     pub filled: Vec<bool>,
+    /// From's second choice: the recorder's Source by name ("Line in"),
+    /// or why it can't be read now (it is the master, the line input is
+    /// off).
+    pub second: Result<String, String>,
     /// The pad it first picked to land on: "next free".
     next_free: usize,
     /// The bracket last shown.
@@ -716,22 +793,24 @@ impl RecallPage {
     }
 
     /// Opened over `input`: `recall` as [`Recall::open`] set it, at `bpm`,
-    /// with `filled` saying which pads have a sound.
+    /// with `filled` saying which pads have a sound and `second` From's
+    /// second choice.
     pub fn open(
         ui: &mut Ui,
         input: &Input,
         recall: Recall,
         bpm: f64,
         filled: Vec<bool>,
+        second: Result<String, String>,
     ) -> RecallPage {
         if let Some(v) = ui.get_mut::<RecallView>(VIEW) {
-            v.strip.reset();
-            v.update(input);
+            v.read(input, recall.from);
         }
         let mut p = RecallPage {
             recall,
             bpm,
             filled,
+            second,
             next_free: recall.onto,
             zoomed: None,
             since_drawn: 0.0,
@@ -773,11 +852,43 @@ impl RecallPage {
         }
     }
 
+    /// Reads `input`, `from` it ([`Ask::Switch`]): the picture starts
+    /// again on that buffer, and the bracket ends there now.
+    pub fn switch(&mut self, ui: &mut Ui, input: &Input, from: RecallFrom) {
+        self.recall.read(input, from);
+        if let Some(v) = ui.get_mut::<RecallView>(VIEW) {
+            v.read(input, from);
+        }
+        self.zoomed = None;
+        self.show(ui, input);
+    }
+
+    /// The Source's name while it reads it.
+    fn source_name(&self) -> &str {
+        self.second.as_deref().unwrap_or("the Source")
+    }
+
     /// Shows the settings, the bracket and the cards.
     pub fn show(&mut self, ui: &mut Ui, input: &Input) {
         let r = self.recall;
         let b = r.bracket(input);
         let onto = pad_label(r.onto);
+        let (chip, sub) = match r.from {
+            RecallFrom::Master => (
+                format!("REC → Pad {onto} · Master, effects on"),
+                master_text(),
+            ),
+            RecallFrom::Source => {
+                let name = self.source_name();
+                (
+                    format!("REC → Pad {onto} · {name}"),
+                    format!(
+                        "{name}'s last {}, kept while it is the Source",
+                        span_text(input.audio.capacity(), input.rate)
+                    ),
+                )
+            }
+        };
         let caption = r.caption(b.as_ref(), input.rate, self.bpm);
         let note = if self.replaces() {
             format!("Replaces {onto}'s sound, trimmed: UNDO takes it back. SAMPLE EDIT opens it.")
@@ -785,7 +896,8 @@ impl RecallPage {
             format!("Lands trimmed on {onto}, ready to chop: SAMPLE EDIT opens it.")
         };
         if let Some(v) = ui.get_mut::<RecallView>(VIEW) {
-            v.chip = format!("REC → Pad {onto} · Master, effects on");
+            v.chip = chip;
+            v.sub = sub;
             v.caption = caption;
             v.note = note;
             if self.zoomed != Some(b) {
@@ -793,7 +905,15 @@ impl RecallPage {
             }
         }
         self.zoomed = Some(b);
+        let second = match &self.second {
+            Ok(name) => name.clone(),
+            Err(_) => "Source".to_string(),
+        };
         let value = |row: Row| match row {
+            Row::From => match r.from {
+                RecallFrom::Master => "Master".to_string(),
+                RecallFrom::Source => second.clone(),
+            },
             Row::Length => r.length.text(),
             Row::LandsOn => {
                 if self.replaces() {
@@ -819,7 +939,17 @@ impl RecallPage {
                     value: value(*row),
                 })
                 .collect();
+            // No Source to read: its choice is faint, and a tap on From
+            // says why (the master stays lit).
+            let none = self.second.is_err() && r.from == RecallFrom::Master;
+            let mut from = Control::new(Look::Choice {
+                options: vec!["Master".into(), second.clone()],
+                on: usize::from(r.from == RecallFrom::Source),
+                off: if none { vec![1] } else { Vec::new() },
+            });
+            from.why = self.second.as_ref().err().cloned().unwrap_or_default();
             list.controls = vec![
+                from,
                 Control::new(Look::Choice {
                     options: Length::CHOICES.iter().map(|c| c.to_string()).collect(),
                     on: r.length.choice(),
@@ -840,9 +970,15 @@ impl RecallPage {
             } else {
                 "seconds, ending where Ends at says"
             };
+            let from_note = match r.from {
+                RecallFrom::Master => "the whole mix",
+                RecallFrom::Source => "the recorder's Source",
+            };
             list.panel = Some(Panel {
                 sections: vec![
-                    Section::new("Length", 330, vec![vec![Item::new(Row::Length.index())]])
+                    Section::new("From", 230, vec![vec![Item::new(Row::From.index())]])
+                        .note(from_note),
+                    Section::new("Length", 300, vec![vec![Item::new(Row::Length.index())]])
                         .note(length_note),
                     Section::new("Lands on", 200, vec![vec![Item::new(Row::LandsOn.index())]]),
                     Section::new("Warp", 130, vec![vec![Item::new(Row::Warp.index())]]),

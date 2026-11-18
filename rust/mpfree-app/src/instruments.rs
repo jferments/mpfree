@@ -41,7 +41,7 @@
 use mpfree_arp::scale::pads::{Pad, MAX_PAD_NOTES, PADS};
 use mpfree_arp::scale::Shift;
 use mpfree_node::{Ctx, NodeEvent, Timed, Tuning};
-use mpfree_track::{Instrument, Outputs, SlotStats, TrackHost};
+use mpfree_track::{Instrument, LaneCounts, Outputs, SlotStats, TrackHost};
 
 /// Makes the instrument `id` for a track, ready for the audio thread:
 /// a plugin synth (`clap:`...) in its own process, from `plugins`, or a
@@ -517,7 +517,6 @@ impl Instruments {
     /// A controller (a pedal, the mod wheel, breath) for track `track`'s
     /// instrument, 0 to 1, `offset` frames into the next block. The host
     /// holds the notes for an instrument that doesn't hear the pedals.
-    #[allow(dead_code)] // MIDI in's controller wiring calls it (the MIDI thread)
     pub fn control(
         &mut self,
         track: usize,
@@ -649,6 +648,50 @@ impl Instruments {
         // The locks that ended play now: forget them.
         self.locks.settle();
         self.host.render(ctx, frames, out);
+    }
+
+    /// The slots split over the audio thread and a lane per config
+    /// (`TrackHost::set_lanes`; [`crate::cores::Cores::start_tracks`]).
+    /// Allocates and starts the lanes' threads.
+    pub fn set_lanes(&mut self, configs: Vec<mpfree_lanes::Config>) -> Vec<mpfree_lanes::Setup> {
+        self.host.set_lanes(configs)
+    }
+
+    /// When the lanes' joins stop waiting this period (the period's one
+    /// deadline, [`crate::cores::lane_deadline`]).
+    pub fn set_lane_deadline(&mut self, at: Option<std::time::Instant>) {
+        self.host.set_deadline(at);
+    }
+
+    /// After a late period: the lanes' instruments back, waiting until
+    /// `deadline` at most and past it as long as it takes (counted). Call
+    /// it right after each write. No allocation.
+    pub fn settle(&mut self, deadline: std::time::Instant) {
+        self.host.settle(deadline);
+    }
+
+    /// Lanes beside the audio thread (0: every instrument plays on it).
+    #[cfg(test)]
+    pub fn lanes(&self) -> usize {
+        self.host.lanes()
+    }
+
+    /// Every lane's counts added up.
+    pub fn lane_counts(&self) -> LaneCounts {
+        let mut all = LaneCounts::default();
+        for k in 0..self.host.lanes() {
+            if let Some(c) = self.host.lane_counts(k) {
+                all.periods += c.periods;
+                all.late += c.late;
+                all.waits += c.waits;
+            }
+        }
+        all
+    }
+
+    /// Instruments moved between cores since the lanes started.
+    pub fn lane_moves(&self) -> u64 {
+        self.host.moves()
     }
 
     /// An instrument taken out, after its ring-out: drop it off the audio
@@ -881,6 +924,31 @@ mod tests {
         let mut t = tracks();
         i.render(&Ctx::new(RATE, BLOCK as u64), BLOCK, &mut t);
         assert_eq!(level(&t, first_track() + 1), 0.75);
+    }
+
+    /// A keyboard's sustain pedal holds a track's instrument's notes
+    /// until it comes up (the host holds them: the instrument doesn't
+    /// hear the pedal itself).
+    #[test]
+    fn a_keyboards_sustain_pedal_holds_a_tracks_instrument() {
+        use mpfree_node::Ctl;
+        let mut i = Instruments::new(RATE, BLOCK);
+        assert!(
+            !i.control(1, Ctl::Sustain, 1.0, 0),
+            "no instrument: the synth takes it"
+        );
+        let pads = std::array::from_fn(|p| Pad::single(60 + p as i16));
+        i.put(1, hum(), pads, &Tuning::standard()).unwrap();
+        assert!(i.control(1, Ctl::Sustain, 1.0, 0));
+        assert!(i.note_on(1, 60, 90, 0));
+        assert!(i.note_off(1, 60, 1));
+        let mut t = tracks();
+        i.render(&Ctx::new(RATE, 0), BLOCK, &mut t);
+        assert_eq!(level(&t, first_track() + 1), 0.5, "held by the pedal");
+        assert!(i.control(1, Ctl::Sustain, 0.0, 0));
+        let mut t = tracks();
+        i.render(&Ctx::new(RATE, BLOCK as u64), BLOCK, &mut t);
+        assert_eq!(level(&t, first_track() + 1), 0.0, "let go with it");
     }
 
     #[test]

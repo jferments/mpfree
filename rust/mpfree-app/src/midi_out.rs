@@ -92,6 +92,7 @@ use mpfree_midi::profile::{PadOut, KIT_NOTES, KIT_PADS};
 use mpfree_midi::setup::{ClockOut, TrackOut, DIN_NAME};
 use mpfree_midi_clock::{ClockOut as Pulses, Messages, PULSE_TICKS};
 use mpfree_midi_ui::{IoModel, PortSend, Shared, ToPort};
+use mpfree_node::Ctl;
 use mpfree_notefx::TrackFx;
 use mpfree_play::mpfree_param::midi::{self as ctl, Midi};
 use mpfree_play::mpfree_param::{Owner, ParamAddr};
@@ -219,6 +220,8 @@ const CTLS: usize = ctl::COUNT as usize;
 const CTL_WORDS: usize = CTLS.div_ceil(64);
 /// A control no value has been given for.
 const UNSET: i16 = i16::MIN;
+/// No message out yet, in [`Controls::last`].
+const NEVER: u32 = u32::MAX;
 
 /// Each track's controls out ([`MidiOut::control`]): the value last
 /// given, and which went out this period or wait for the next.
@@ -244,6 +247,11 @@ struct Controls {
     waiting: [[u64; CTL_WORDS]; MAX_TRACKS],
     /// Tracks with a bit in `sent` or `waiting`.
     touched: u128,
+    /// The period each control's last message went out in ([`Controls::now`]),
+    /// for the 5-pin jacks' floor ([`DIN_GLIDE_FLOOR`]); `NEVER` before any.
+    last: Box<[[u32; CTLS]; MAX_TRACKS]>,
+    /// Periods since the start, counted at each period's end.
+    now: u32,
     /// Tracks whose every control with a value goes out again (a new port
     /// or channel, the song's start).
     due: u128,
@@ -262,6 +270,8 @@ impl Controls {
             sent: [[0; CTL_WORDS]; MAX_TRACKS],
             waiting: [[0; CTL_WORDS]; MAX_TRACKS],
             touched: 0,
+            last: Box::new([[NEVER; CTLS]; MAX_TRACKS]),
+            now: 0,
             due: 0,
             messages: 0,
         }
@@ -845,6 +855,9 @@ pub struct MidiOut {
     expr: Box<[ExprOut]>,
     /// Each track's notes on MPE gear, a member channel each.
     mpe: Box<[MpeOut]>,
+    /// Each track's pedals the keys put down on its gear, a bit each in
+    /// [`Ctl::ALL`]'s order, so that they come up with its expression.
+    keys_pedals: Box<[u8]>,
     applied_gen: Option<u64>,
     shown_on: Option<bool>,
     rolling: bool,
@@ -924,6 +937,7 @@ impl MidiOut {
             chords: Chords::new(),
             expr: vec![ExprOut::new(); MAX_TRACKS].into_boxed_slice(),
             mpe: vec![MpeOut::new(); MAX_TRACKS].into_boxed_slice(),
+            keys_pedals: vec![0; MAX_TRACKS].into_boxed_slice(),
             applied_gen: None,
             shown_on: None,
             rolling: false,
@@ -1179,6 +1193,11 @@ impl MidiOut {
             for id in 0..CTLS {
                 let (w, bit) = (id / 64, 1u64 << (id % 64));
                 let waited = self.controls.waiting[t][w] & bit != 0;
+                // On the jacks a value too soon after the last waits on.
+                if waited && due & (1 << t) == 0 && !self.ctl_free(t, id) {
+                    self.controls.touched |= 1 << t;
+                    continue;
+                }
                 if waited {
                     self.controls.waiting[t][w] &= !bit;
                     // A waiting value counts as this period's message.
@@ -1297,8 +1316,15 @@ impl MidiOut {
             None => {
                 self.controls.glide[t][id].left = 0;
                 self.controls.glide[t][id].total = 0;
+                // Only a change goes (an LFO gives a value every period),
+                // unless the gear must be told again (a new route, the
+                // song's start).
+                if to == was && !jump {
+                    return;
+                }
                 if let Some(m) = Controls::msg(id, to) {
                     self.controls.out[t][id] = to;
+                    self.controls.last[t][id] = self.controls.now;
                     self.ctl_msg(t, m, offset);
                 }
             }
@@ -1344,6 +1370,7 @@ impl MidiOut {
                         self.controls.out[t][id] = v;
                         self.controls.sent[t][w] |= bit;
                         self.controls.touched |= 1 << t;
+                        self.controls.last[t][id] = self.controls.now;
                         g.since = 0;
                         self.ctl_msg(t, m, 0);
                     }
@@ -1383,9 +1410,11 @@ impl MidiOut {
     /// The mod engine's value for a track's controller, bend or pressure
     /// (`Owner::Midi`, from `ModMix::take_midi_values`), at `offset` frames
     /// into this period. Kept for the track either way; sent on its port
-    /// and channel while MIDI out takes the track, at most once a period
-    /// a control (a second value in the period goes at the next period's
-    /// start). Never allocates.
+    /// and channel while MIDI out takes the track, only when the value
+    /// that goes out changes, at most once a period a control (a second
+    /// value in the period goes at the next period's start), and on the
+    /// 5-pin jacks no sooner than [`DIN_GLIDE_FLOOR`] after the last (a
+    /// value too soon waits, and the newest goes). Never allocates.
     pub fn control(&mut self, offset: u32, addr: ParamAddr, value: f32) {
         let Owner::Midi(t) = addr.owner else { return };
         let (t, id) = (usize::from(t), usize::from(addr.param));
@@ -1407,12 +1436,34 @@ impl MidiOut {
             return;
         }
         self.controls.touched |= 1 << t;
-        if self.controls.sent[t][w] & bit != 0 {
+        if self.controls.sent[t][w] & bit != 0 || !self.ctl_free(t, id) {
             self.controls.waiting[t][w] |= bit;
             return;
         }
         self.controls.sent[t][w] |= bit;
         self.send_ctl(t, id, offset, false);
+    }
+
+    /// Whether track `t`'s control `id` may go out now: always on USB, and
+    /// for a control CC smooth glides; else on the 5-pin jacks no sooner
+    /// than [`DIN_GLIDE_FLOOR`] after its last message, so an LFO on a
+    /// control (a value each period) leaves the notes room on the wire.
+    fn ctl_free(&self, t: usize, id: usize) -> bool {
+        if !self.tracks[t].is_some_and(|a| a.port == DIN) {
+            return true;
+        }
+        // CC smooth's glide keeps its own floor ([`MidiOut::glides`]).
+        let v = self.controls.value[t][id];
+        if v != UNSET && self.shaped(t, id, v).1.is_some() {
+            return true;
+        }
+        let last = self.controls.last[t][id];
+        if last == NEVER {
+            return true;
+        }
+        let floor = DIN_GLIDE_FLOOR.as_secs_f64() * f64::from(self.rate);
+        let since = u64::from(self.controls.now.wrapping_sub(last)) * u64::from(self.period);
+        since as f64 >= floor
     }
 
     /// A control's message from track `t`, put before the notes already
@@ -1987,15 +2038,80 @@ impl MidiOut {
         true
     }
 
+    /// What [`MidiOut::expression`] last sent `track`'s gear from the keys:
+    /// its bend (-8192 to 8191) and, unless the gear takes pressure note
+    /// by note (its profile's poly pressure), its channel pressure, for
+    /// recording them (`expr_rec`). None while the track's events don't go
+    /// to MIDI out, or its gear is MPE, whose notes each bend on their own.
+    pub fn expression_sent(&self, track: u16) -> Option<(i16, Option<u8>)> {
+        if !self.takes(track) {
+            return None;
+        }
+        let t = usize::from(track);
+        if self.mpe.get(t)?.zone() != Zone::Off {
+            return None;
+        }
+        let poly = self.tracks[t]
+            .and_then(|a| self.ports.get(usize::from(a.port.0)))
+            .is_some_and(|p| p.poly_pressure);
+        let (bend, pressure) = self.expr.get(t)?.sent();
+        Some((bend, (!poly).then_some(pressure)))
+    }
+
+    /// A keyboard's pedal, mod wheel, breath or foot controller for track
+    /// `track`'s gear, at the start of this period: its CC as it came, on
+    /// the track's channel (MPE gear's master channel). A pedal it put
+    /// down comes up when the track's expression goes back to rest
+    /// (another track armed, its route changed, a stop, a panic). True
+    /// when MIDI out takes the track, so its instrument and the synth
+    /// don't.
+    pub fn keys_control(&mut self, track: u16, ctl: Ctl, value: f32) -> bool {
+        if !self.takes(track) {
+            return false;
+        }
+        let Some(v) = Ctl::clamp(value) else {
+            return true;
+        };
+        let t = usize::from(track);
+        if let Some(i) = Ctl::ALL.iter().position(|&c| c == ctl && c.is_pedal()) {
+            if Ctl::down(v) {
+                self.keys_pedals[t] |= 1 << i;
+            } else {
+                self.keys_pedals[t] &= !(1 << i);
+            }
+        }
+        let m = Msg::Cc {
+            ch: 0,
+            cc: ctl.cc(),
+            value: (v * 127.0).round() as u8,
+        };
+        self.router.send(t as u8, m, 0, &mut self.queue);
+        true
+    }
+
     /// Track `track`'s gear's bend and pressure back to rest (another
     /// track is armed), at the start of this period.
     pub fn rest_expression(&mut self, track: usize) {
         self.release_expression(track, 0);
     }
 
-    /// Track `t`'s gear's bend and pressure back to rest, at `offset`.
+    /// Track `t`'s gear's bend and pressure back to rest, and the pedals
+    /// the keys put down up, at `offset`.
     fn release_expression(&mut self, t: usize, offset: u32) {
         let (router, queue) = (&mut self.router, &mut self.queue);
+        if let Some(down) = self.keys_pedals.get_mut(t) {
+            for (i, ctl) in Ctl::ALL.into_iter().enumerate() {
+                if *down & (1 << i) != 0 {
+                    let m = Msg::Cc {
+                        ch: 0,
+                        cc: ctl.cc(),
+                        value: 0,
+                    };
+                    router.send(t as u8, m, offset, queue);
+                }
+            }
+            *down = 0;
+        }
         if let Some(e) = self.expr.get_mut(t) {
             e.release(|m| router.send(t as u8, m, offset, queue));
         }
@@ -2218,6 +2334,7 @@ impl MidiOut {
             p.full += full;
         }
         // A new period: each control may send once again.
+        self.controls.now = self.controls.now.wrapping_add(1);
         let mut tracks = std::mem::take(&mut self.controls.touched);
         while tracks != 0 {
             let t = tracks.trailing_zeros() as usize;
@@ -2664,6 +2781,36 @@ mod tests {
             [
                 0x92, 36, 100, 0x90, 40, 90, 0xA2, 36, 50, 0x82, 36, 64, 0x92, 36, 80, 0x82, 36,
                 64, 0x80, 40, 64, 0x92, 38, 70, 0x82, 38, 64
+            ]
+        );
+    }
+
+    /// A keyboard's pedals and mod wheel go to a track's gear as they
+    /// came, on its channel; arming another track lets the sustain pedal
+    /// up there, once. A track not on MIDI out isn't taken.
+    #[test]
+    fn the_keys_pedals_and_mod_wheel_reach_the_gear_and_come_up() {
+        let (mut mo, sink) = open(Duration::ZERO);
+        let m = model(&[(1, TrackOut::new(DIN_NAME, 2))]);
+        mo.sync(&m, false);
+        assert!(!mo.keys_control(0, Ctl::Sustain, 1.0), "not on MIDI out");
+        assert!(mo.keys_control(1, Ctl::Sustain, 1.0));
+        assert!(mo.keys_control(1, Ctl::ModWheel, 0.5));
+        assert!(mo.keys_control(1, Ctl::Sostenuto, 1.0));
+        assert!(mo.keys_control(1, Ctl::Sostenuto, 0.0));
+        assert!(mo.keys_control(1, Ctl::Breath, f32::NAN), "taken, not sent");
+        mo.rest_expression(1);
+        mo.rest_expression(1);
+        mo.period_end(PERIOD, Instant::now());
+        assert!(mo.close());
+        assert_eq!(
+            sink.bytes(),
+            [
+                // Sustain down, the wheel halfway, sostenuto down and up,
+                // on channel 3.
+                0xB2, 64, 127, 0xB2, 1, 64, 0xB2, 66, 127, 0xB2, 66, 0,
+                // Another track armed: sustain up, once; the wheel stays.
+                0xB2, 64, 0,
             ]
         );
     }
@@ -3251,34 +3398,68 @@ mod tests {
     }
 
     /// At most one message a control a period: a value given again in
-    /// the period goes at the next period's start, the last one given.
+    /// the period goes later, the last one given; on the 5-pin jacks no
+    /// sooner than 4 ms after the last (every other period of 128 frames),
+    /// on USB at the next period's start. Only a change goes.
     #[test]
     fn a_control_goes_once_a_period_and_its_last_value_follows() {
-        let (mut mo, _sink) = open(Duration::ZERO);
-        let m = model(&[(0, TrackOut::new(DIN_NAME, 0))]);
         let sent = |mo: &MidiOut| -> Vec<(u32, Vec<u8>)> {
             mo.sent()
                 .map(|(_, _, t)| (t.offset, t.bytes().to_vec()))
                 .collect()
         };
-        mo.sync(&m, true);
-        for (offset, v) in [(0, 10.0), (40, 20.0), (80, 30.0)] {
-            mo.control(offset, ctl(0, 1), v);
+        for usb in [false, true] {
+            let (mut mo, _din) = open(Duration::ZERO);
+            let port = if usb { "Digitone" } else { DIN_NAME };
+            let (sink, opens) = (Sink::default(), Arc::default());
+            if usb {
+                mo.plugged(USB, "Digitone", opener(&sink, &opens));
+            }
+            let m = model(&[(0, TrackOut::new(port, 0))]);
+            if usb {
+                with_digitone(&m);
+            }
+            mo.sync(&m, true);
+            for (offset, v) in [(0, 10.0), (40, 20.0), (80, 30.0)] {
+                mo.control(offset, ctl(0, 1), v);
+            }
+            mo.control(90, ctl(0, 2), 5.0);
+            mo.period_end(PERIOD, Instant::now());
+            assert_eq!(sent(&mo), [(0, vec![0xB0, 1, 10]), (90, vec![0xB0, 2, 5])]);
+            if !usb {
+                mo.sync(&m, true);
+                mo.period_end(PERIOD, Instant::now());
+                assert!(sent(&mo).is_empty(), "the jacks: 2.9 ms is too soon");
+            }
+            mo.sync(&m, true);
+            mo.period_end(PERIOD, Instant::now());
+            assert_eq!(sent(&mo), [(0, vec![0xB0, 1, 30])], "once, the last");
+            mo.sync(&m, true);
+            mo.period_end(PERIOD, Instant::now());
+            assert!(sent(&mo).is_empty());
+            // The same value again (an LFO at its peak, a lock): nothing.
+            mo.sync(&m, true);
+            mo.control(0, ctl(0, 1), 30.0);
+            mo.control(0, ctl(0, 2), 5.2);
+            mo.period_end(PERIOD, Instant::now());
+            assert!(sent(&mo).is_empty(), "no change");
+            // An LFO: a value every period. The jacks get one every other
+            // period, the newest given by then (at the period's start);
+            // USB each, on its own period.
+            let mut got = Vec::new();
+            for p in 0..8u8 {
+                mo.sync(&m, true);
+                mo.control(0, ctl(0, 1), f32::from(40 + p));
+                mo.period_end(PERIOD, Instant::now());
+                got.extend(sent(&mo).into_iter().map(|(_, b)| b[2]));
+            }
+            if usb {
+                assert_eq!(got, [40, 41, 42, 43, 44, 45, 46, 47]);
+            } else {
+                assert_eq!(got, [40, 41, 43, 45]);
+            }
+            assert!(mo.close());
         }
-        mo.control(90, ctl(0, 2), 5.0);
-        mo.period_end(PERIOD, Instant::now());
-        assert_eq!(sent(&mo), [(0, vec![0xB0, 1, 10]), (90, vec![0xB0, 2, 5])]);
-        mo.sync(&m, true);
-        mo.period_end(PERIOD, Instant::now());
-        assert_eq!(
-            sent(&mo),
-            [(0, vec![0xB0, 1, 30])],
-            "once, at the next start"
-        );
-        mo.sync(&m, true);
-        mo.period_end(PERIOD, Instant::now());
-        assert!(sent(&mo).is_empty());
-        assert!(mo.close());
     }
 
     /// A track on the pads sends nothing but keeps its controls' values:

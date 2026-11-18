@@ -13,6 +13,70 @@
 use crate::{app, audiotracks, gui, looping, midi_in, mixing, modpanels, time, Out};
 use crate::{LEVEL_MIN_DB, LEVEL_STEP_DB};
 
+/// A touch on a gear lane's mod rows on the Sequencer's Steps (LFO to
+/// CC, layout spec 4m): the change made in the mod matrix, then the rows
+/// on its control for the screen, and what the matrix moves of the
+/// tracks' MIDI out after a change. Only a track's MIDI out control, and
+/// only a row aimed at it, is touched.
+fn lane_rows(mix: &mut mixing::MixHost, ask: gui::LaneRowsAsk, out: &mut Out) {
+    use gui::LaneRowsAsk as Ask;
+    use mpfree_mod::{Change, Row, Source};
+    use mpfree_play::mpfree_param::Owner;
+    let target = match ask {
+        Ask::Show(t) | Ask::AddLfo(t) => t,
+        Ask::Depth { target, .. } | Ask::Remove { target, .. } => target,
+    };
+    if !matches!(target.owner, Owner::Midi(_)) {
+        return;
+    }
+    let aimed = |mix: &mixing::MixHost, row: usize| {
+        u8::try_from(row)
+            .ok()
+            .filter(|_| mix.modu.rows_on(target).iter().any(|r| r.0 == row))
+    };
+    let changed = match ask {
+        Ask::Show(_) => false,
+        Ask::AddLfo(_) => {
+            let row = Row {
+                source: Source::Lfo(0),
+                via: None,
+                target,
+                depth: modpanels::ROW_DEPTH,
+            };
+            let added = mix.modu.change(&mix.mixer, Change::AddRow(row)).is_ok();
+            if !added {
+                out.show(gui::ToUi::Tell(
+                    "mod rows: the mod matrix is full (64 rows)".to_string(),
+                ));
+            }
+            added
+        }
+        Ask::Depth { row, depth, .. } => aimed(mix, row).is_some_and(|row| {
+            let depth = depth.clamp(-1.0, 1.0);
+            mix.modu
+                .change(&mix.mixer, Change::Depth { row, depth })
+                .is_ok()
+        }),
+        Ask::Remove { row, .. } => aimed(mix, row)
+            .is_some_and(|row| mix.modu.change(&mix.mixer, Change::RemoveRow(row)).is_ok()),
+    };
+    let rows = mix
+        .modu
+        .rows_on(target)
+        .into_iter()
+        .map(|(i, s, d)| (i, mpfree_chain_ui::state::source_name(s), d))
+        .collect();
+    let can_add = mix.modu.engine().rows().count() < mpfree_mod::MAX_ROWS;
+    out.show(gui::ToUi::LaneRows {
+        target,
+        rows,
+        can_add,
+    });
+    if changed {
+        out.show(gui::ToUi::GearMoved(mix.modu.midi_moved()));
+    }
+}
+
 /// The engines the control side reaches, borrowed for one action or effect.
 pub struct Desk<'a> {
     pub app: &'a mut app::App,
@@ -127,14 +191,16 @@ impl Desk<'_> {
                     let _ = out.try_show(gui::ToUi::Captured(held, end));
                 }
             }
+            gui::FromUi::LaneRows(ask) => lane_rows(mix, ask, out),
             gui::FromUi::ChainLearned => {
                 panels.learned();
                 music.disarm();
             }
             // SHIFT + a touch on a value (layout spec 4d): MIDI Learn waits
             // for a control to take it, and the same value again cancels.
-            // A knob on the Synth tab is the selected track's synth's, and
-            // an arp slider the armed track's arp's.
+            // A knob on the Synth tab is the selected track's synth's, an
+            // arp slider the armed track's arp's, and a pad's setting on
+            // the Sample or Pads tab the armed track's kit's.
             gui::FromUi::LearnValue(v) => {
                 use mpfree_play::mpfree_param::{Owner, ParamAddr};
                 let addr = match v {
@@ -146,6 +212,10 @@ impl Desk<'_> {
                     gui::LearnValue::Arp(id) => {
                         let t = u8::try_from(app.track()).unwrap_or(u8::MAX);
                         ParamAddr::new(Owner::Arp(t), id)
+                    }
+                    gui::LearnValue::Pad { pad, field } => {
+                        let t = u8::try_from(app.track()).unwrap_or(u8::MAX);
+                        ParamAddr::new(Owner::Pad(t, pad), field)
                     }
                 };
                 if music.armed() == Some(addr) && music.waits() {
@@ -1056,6 +1126,56 @@ pub fn looper_remote(
     }
 }
 
+/// What learned controls did to Play this pass (the Learn section's Play
+/// card; `remote::PlayMoves`), on any page: its Swing and Drums filter
+/// as its Q-Links turn them (the project's, so the work is unsaved), and
+/// its XY pad as a finger moves it, the pad on the screen following.
+/// Nothing when nothing moved.
+pub fn play_remote(
+    time: &time::TimeHost,
+    mix: &mut mixing::MixHost,
+    out: &mut Out,
+    moves: &mut crate::remote::PlayMoves,
+) -> Vec<app::Effect> {
+    use mpfree_transport::{time::Swing, Command};
+    let mut fx = Vec::new();
+    if *moves == crate::remote::PlayMoves::default() {
+        return fx;
+    }
+    let swing = time.info().swing;
+    let acts = moves.take(play_now(time, mix));
+    if let Some(amount) = acts.swing {
+        fx.push(app::Effect::Time(mpfree_time_ui::TimeAction::Transport(
+            Command::SetSwing(Swing { amount, ..swing }),
+        )));
+    }
+    if let Some(position) = acts.filter {
+        mix.play(mixing::PlayFx::Filter {
+            strip: mpfree_fx::StripId::Track(mixing::DRUMS),
+            position,
+        });
+    }
+    if acts.swing.is_some() || acts.filter.is_some() {
+        out.show(gui::ToUi::Edited);
+    }
+    if let Some((x, y, down)) = acts.xy {
+        mix.play(mixing::PlayFx::Xy { x, y, down });
+        out.show(gui::ToUi::PlayXy { x, y, down });
+    }
+    fx
+}
+
+/// What Play's learned controls read (`remote::Now`): the swing, the
+/// Drums filter and where the XY pad stands.
+pub fn play_now(time: &time::TimeHost, mix: &mixing::MixHost) -> crate::remote::Now {
+    crate::remote::Now {
+        swing: time.info().swing.amount,
+        drums_filter: mix.play_levels().drums_filter,
+        xy: mix.xy_at(),
+        ..crate::remote::Now::default()
+    }
+}
+
 /// What the looper's learned controls read (`remote::Now`): the loop
 /// picked and the loops muted.
 pub fn looper_now(looper: &looping::LoopHost) -> crate::remote::Now {
@@ -1311,9 +1431,170 @@ pub fn qlink_to_screen(page: app::View, k: usize, ticks: i32) -> Option<gui::ToU
     })
 }
 
+/// Other gear's MMC commands and program changes since the last pass
+/// (the Sync section's MMC in and Program change in), as effects: MMC as
+/// the MPC's PLAY, STOP and REC through the arm ([`app::App::mmc`]), a
+/// Locate along the tempo map ([`mmc_locate`]), a scene launched as its
+/// button launches it. A program past the Clips grid's last scene is
+/// noted and does nothing.
+pub fn remote_in(
+    music: &mut crate::midi_in::MusicIn,
+    time: &time::TimeHost,
+    app: &mut app::App,
+    out: &mut Out,
+) -> Vec<app::Effect> {
+    use crate::midi_in::RemoteIn;
+    use mpfree_midi::mmc::Mmc;
+    let mut fx = Vec::new();
+    while let Some(r) = music.next_remote_in() {
+        let a = match r {
+            RemoteIn::Mmc(Mmc::Locate(at)) => Some(mmc_locate(at, time.tempo_map())),
+            RemoteIn::Mmc(c) => {
+                fx.extend(app.mmc(c));
+                None
+            }
+            RemoteIn::Scene(k) => {
+                let c = mpfree_play::mpfree_param::clips::Clips::Scene(k);
+                let a = mpfree_time_ui::view::clips_press(&time.state(), c);
+                if a.is_none() {
+                    let n = u16::from(k) + 1;
+                    out.note(&format!(
+                        "Program change {n}: the Clips grid has no scene {n}"
+                    ));
+                }
+                a
+            }
+        };
+        fx.extend(a.map(app::Effect::Time));
+    }
+    fx
+}
+
+/// Where other gear's MMC Locate goes (the Sync section's MMC in): the
+/// tick its time reaches along the tempo map from 0, so 00:00:00:00 is
+/// the start and Locate zero then Play is PLAY START.
+pub fn mmc_locate(
+    at: mpfree_midi::mmc::Smpte,
+    map: &mpfree_transport::TempoMap,
+) -> mpfree_time_ui::TimeAction {
+    let frames = at.secs() * f64::from(crate::RATE);
+    let tick = map.tick_after(0.0, frames, crate::RATE);
+    mpfree_time_ui::TimeAction::Transport(mpfree_transport::Command::Locate(tick.round() as i64))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mpfree_play::mpfree_param::{Owner, ParamAddr};
+
+    /// LFO to CC: a gear lane's mod rows ask the mod matrix; each answer
+    /// is the rows on its control, and a change says what the matrix moves
+    /// of the tracks' MIDI out. A row aimed elsewhere, or a control that
+    /// isn't a track's MIDI out, is left alone.
+    #[test]
+    fn a_gear_lanes_mod_rows_add_set_and_take_off_an_lfo() {
+        use gui::LaneRowsAsk as Ask;
+        use gui::ToUi;
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ToUi>(64);
+        let mut out = Out {
+            console: None,
+            sink: Some(tx),
+            dropped: 0,
+            report: None,
+            queued: None,
+            last_draw: std::time::Instant::now(),
+        };
+        let mut mix = mixing::MixHost::new(44_100, 0.0, 6.0);
+        let cc = ParamAddr::new(Owner::Midi(1), 43);
+        let other = ParamAddr::new(Owner::Midi(1), 44);
+        let mut ask = |mix: &mut mixing::MixHost, a: Ask| {
+            lane_rows(mix, a, &mut out);
+            rx.try_iter()
+                .filter_map(|m| match m {
+                    ToUi::LaneRows {
+                        target,
+                        rows,
+                        can_add,
+                    } => Some(format!("{target:?} {rows:?} {can_add}")),
+                    ToUi::GearMoved(v) => Some(format!("moved {v:?}")),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ask(&mut mix, Ask::Show(cc)), [format!("{cc:?} [] true")]);
+        assert_eq!(
+            ask(&mut mix, Ask::AddLfo(cc)),
+            [
+                format!("{cc:?} [(0, \"LFO 1\", 0.25)] true"),
+                format!("moved [{cc:?}]"),
+            ]
+        );
+        assert!(mix
+            .modu
+            .change(
+                &mix.mixer,
+                mpfree_mod::Change::AddRow(mpfree_mod::Row {
+                    source: mpfree_mod::Source::Lfo(1),
+                    via: None,
+                    target: other,
+                    depth: 0.5,
+                })
+            )
+            .is_ok());
+        // Row 1 is CC 44's: CC 43's lane can't touch it.
+        assert_eq!(
+            ask(
+                &mut mix,
+                Ask::Depth {
+                    target: cc,
+                    row: 1,
+                    depth: 0.0
+                }
+            ),
+            [format!("{cc:?} [(0, \"LFO 1\", 0.25)] true")]
+        );
+        assert_eq!(mix.modu.rows_on(other)[0].2, 0.5);
+        let set = ask(
+            &mut mix,
+            Ask::Depth {
+                target: cc,
+                row: 0,
+                depth: -2.0,
+            },
+        );
+        assert_eq!(set[0], format!("{cc:?} [(0, \"LFO 1\", -1.0)] true"));
+        let off = ask(&mut mix, Ask::Remove { target: cc, row: 0 });
+        assert_eq!(
+            off,
+            [format!("{cc:?} [] true"), format!("moved [{other:?}]")]
+        );
+        // Not a track's MIDI out: nothing asked, nothing said.
+        let strip = ParamAddr::new(Owner::Strip(mpfree_play::mpfree_param::Strip::Track(0)), 0);
+        assert!(ask(&mut mix, Ask::AddLfo(strip)).is_empty());
+        assert!(mix.modu.rows_on(strip).is_empty());
+    }
+
+    /// Other gear's MMC Locate goes along the tempo map: 0 s is the
+    /// start, 2 s at 120 BPM is beat 4.
+    #[test]
+    fn mmc_locate_goes_along_the_tempo_map() {
+        use mpfree_midi::mmc::{Rate, Smpte};
+        use mpfree_time_ui::TimeAction;
+        use mpfree_transport::Command;
+        let time = time::TimeHost::new(44_100, 120.0).unwrap();
+        let at = |seconds| Smpte {
+            rate: Rate::Fps25,
+            hours: 0,
+            minutes: 0,
+            seconds,
+            frames: 0,
+            subframes: 0,
+        };
+        let go = |s| mmc_locate(at(s), time.tempo_map());
+        assert_eq!(go(0), TimeAction::Transport(Command::Locate(0)));
+        let ticks = 4 * i64::from(mpfree_transport::PPQ);
+        assert_eq!(go(2), TimeAction::Transport(Command::Locate(ticks)));
+    }
 
     /// Sample Recall and the Wave page's Keep card wait while a take is
     /// ready, counting in or recording: the notes' take ready, or a pad

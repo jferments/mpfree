@@ -1078,10 +1078,10 @@ impl TimeHost {
     /// the DJ knob or a pad's Hold moving a parameter (`Input::Move`, the
     /// first value starting a gesture), or letting go (`Input::End`).
     /// While the transport records it becomes a move in the armed track's
-    /// clip; while it rolls the move log keeps it for CAPTURE.
-    // The Perform FX page calls it once the pad player runs it (the FX
-    // thread's side); until then only tests do.
-    #[allow(dead_code)]
+    /// clip; while it rolls the move log keeps it for CAPTURE. The main
+    /// loop calls it for the keys' wheel, pressure and controllers on the
+    /// armed track's gear (`expr_rec`, thinned to one value a period at
+    /// most); the Perform FX page will once the pad player runs it.
     pub fn gesture(&mut self, offset: u32, input: Input) {
         self.audio.gesture(offset, input);
     }

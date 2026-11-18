@@ -333,7 +333,10 @@ core B (3,2 on the MPC); without it nothing is pinned. The default run is
 unchanged. The sampler appears three ways: one engine of 24 voices, two
 engines of 12 voices splitting the pads, and one engine of 24 voices split
 natively (`Engine::split`, see the sampler architecture), each on one core
-and on two.
+and on two. Eight synth tracks of eight engines in the track host play on
+one core, two and three (with `--lane-cores A,B` the third core is the
+first from 1 that is neither A nor B: 1 on the MPC), placed by what each
+costs ([Track host](track-host.md#other-cores-lanes)).
 
 ### The cost model
 

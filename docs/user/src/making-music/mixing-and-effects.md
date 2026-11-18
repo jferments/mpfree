@@ -28,7 +28,7 @@ Along the top are the mixer's five views:
 
 {{shot: mixer-instruments | The Tracks view with tracks 1 and 2 playing their own instruments (Poly and FM): track 1's plays in the first strip, called Track 1 while it does, and track 2's has its own strip after Synth, Loop and Audio.}}
 
-**Projects saved before track 1 played through Drums** open as they sounded. If track 1 had its own instrument in such a project, or you changed anything on its own strip (its fader, an effect, a send), track 1 keeps that strip, called **Track 1 (old)**, and the log says so when the project opens. It stays that way when you save the project again.
+**Projects saved before track 1 played through Drums** open as they sounded. If track 1 had its own instrument in such a project, or you changed anything on its own strip (its fader, an effect, a send), track 1 keeps that strip, called **Track 1 (old)**, and the log says so when the project opens. It stays that way when you save the project again. Recorded knob moves on tracks 2 and up keep moving the strip they moved before (Synth, Loop or Audio). A step lock on track 2 and up that turned an effect on one of those strips is dropped, since it can only reach the track's own effects now, and the log says how many.
 
 The **< >** buttons page through the strips when there are more than fit.
 

@@ -251,7 +251,7 @@ fn shots() -> Vec<Shot> {
         },
         Shot {
             name: "io-sync",
-            about: "Sync: tempo from the 5-pin jacks with clock arriving, following, and clock out per port; following not built yet",
+            about: "Sync: tempo from the 5-pin jacks with clock arriving, following, MMC in and Program change in (both off), and clock out per port; following not built yet",
             section: 5,
             model: rig.clone(),
             wheel: 0,
@@ -325,6 +325,17 @@ fn shots() -> Vec<Shot> {
             at: 1,
             open: None,
             pick: Some("Looper controls"),
+        },
+        Shot {
+            name: "io-learn-play",
+            about: "Learn with Play tapped: Play's Swing, Filter, XY across and XY up for a knob to learn (what SHIFT + a touch on Play can't), beside MIDI Follow",
+            section: 3,
+            model: learn.clone(),
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: None,
+            pick: Some("Play controls"),
         },
         Shot {
             name: "io-learn-learning",

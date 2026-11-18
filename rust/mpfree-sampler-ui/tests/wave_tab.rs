@@ -11,7 +11,7 @@ use mpfree_sampler_ui::wave_tab::{
     self, moved, position_text, Mark, Row, Snap, WaveAction, WaveState,
 };
 use mpfree_sampler_ui::widgets::{KnobCard, PadBar, SettingList};
-use mpfree_sampler_ui::{chop_tab, grain_tab, play_tab, rec_tab, warp_tab};
+use mpfree_sampler_ui::{chop_tab, play_tab, rec_tab, warp_tab};
 use mpfree_sampler_ui::{PyramidPeaks, SourceView};
 use mpfree_ui::wave::{Peaks, RawPeaks, Waveform};
 use mpfree_ui::{EventKind, Fonts, SoftCanvas, Touch, UiEvent};
@@ -480,25 +480,24 @@ fn tabs_taps_and_the_sample_screens() {
     let mut s = sample();
     let bar = s.ui.rect_of(wave_tab::BAR).unwrap();
     let pb = s.ui.get::<PadBar>(wave_tab::BAR).unwrap();
-    let (warp_tab_r, chop_tab_r, play_tab_r, grain_tab_r, rec_tab_r) = (
+    let (warp_tab_r, chop_tab_r, play_tab_r, rec_tab_r) = (
         pb.tab_rect(bar, warp_tab::TAB),
         pb.tab_rect(bar, chop_tab::TAB),
         pb.tab_rect(bar, play_tab::TAB),
-        pb.tab_rect(bar, grain_tab::TAB),
         pb.tab_rect(bar, rec_tab::TAB),
     );
     assert_eq!(pb.active, wave_tab::TAB);
     assert_eq!(
         pb.tabs,
-        ["Wave", "Warp", "Chop", "Play", "Grain", "Rec"],
-        "the pads are the app's Pads tab, and a pad's effects are in Mix (no FX tab)"
+        ["Wave", "Warp", "Chop", "Play", "Rec"],
+        "the pads are the app's Pads tab, a pad's effects are in Mix (no FX tab), and Grain \
+         is a tool on the page (no Grain tab)"
     );
     let st = s.state.clone();
     for (id, r, tab, what) in [
         (7, warp_tab_r, warp_tab::TAB, "Warp opens"),
         (2, chop_tab_r, chop_tab::TAB, "Chop opens"),
         (4, play_tab_r, play_tab::TAB, "Play opens"),
-        (5, grain_tab_r, grain_tab::TAB, "Grain opens"),
         (6, rec_tab_r, rec_tab::TAB, "Rec opens"),
     ] {
         let ev = s.ui.touch(id, Touch::Down, r.x + 5, r.y + 5).unwrap();
@@ -772,11 +771,11 @@ fn a_finger_resting_on_a_panel_control_puts_it_under_the_wheel() {
     s.ui.touch(9, Touch::Cancel, x, y);
 }
 
-/// A sliced region (R4) shows a line at each cut, numbered from 2, after
-/// the region's own markers; they stay put (they move on the Chop tab),
-/// and Start and End still move.
+/// A sliced region (R4) shows a line at each cut after the region's own
+/// markers: the Slice tool's, so faint lines with no tab that stay put
+/// (they move on the Chop tab), and Start and End still move.
 #[test]
-fn a_sliced_region_shows_its_slice_lines_fixed() {
+fn a_sliced_region_shows_its_slice_lines_faint_with_no_tab() {
     let mut s = sample();
     let r = region(&s);
     let cuts: Vec<u64> = (1..4)
@@ -790,11 +789,17 @@ fn a_sliced_region_shows_its_slice_lines_fixed() {
     let w = s.ui.get::<Waveform>(wave_tab::WAVE).unwrap();
     let labels: Vec<&str> = w.markers().iter().map(|m| m.label.as_str()).collect();
     assert_eq!(labels, ["START", "END", "LOOP", "LOOP END", "2", "3", "4"]);
-    let lines: Vec<(u64, bool)> = w.markers()[4..]
+    let lines: Vec<(u64, bool, bool, bool)> = w.markers()[4..]
         .iter()
-        .map(|m| (m.frame, m.fixed))
+        .map(|m| (m.frame, m.fixed, m.faint, m.tab))
         .collect();
-    assert_eq!(lines, cuts.iter().map(|&c| (c, true)).collect::<Vec<_>>());
+    assert_eq!(
+        lines,
+        cuts.iter()
+            .map(|&c| (c, true, true, false))
+            .collect::<Vec<_>>()
+    );
+    assert!(w.markers()[..4].iter().all(|m| m.tab && !m.faint));
     // A touch on a slice line changes nothing.
     let ev = UiEvent {
         widget: wave_tab::WAVE.into(),
@@ -863,6 +868,13 @@ fn the_sound_section_shows_four_of_the_play_pages_controls_a_part() {
         assert_eq!(s.tab.sound().part(), part);
         let want: Vec<String> = std::iter::once("Sound".to_string())
             .chain(part.rows().iter().map(|r| r.label().to_string()))
+            .chain(
+                (part == Part::Grain)
+                    .then_some(sound_panel::GRAIN_ROWS)
+                    .into_iter()
+                    .flatten()
+                    .map(|r| r.short().to_string()),
+            )
             .collect();
         assert_eq!(sound_names(&s), want);
         // Its controls sit inside it and never overlap.
@@ -1166,7 +1178,7 @@ fn the_recorder_row_records_and_the_panel_is_input_while_rec_is_on() {
 }
 
 #[test]
-fn the_tools_strip_sits_over_the_wave_and_opens_the_tools_old_pages_for_now() {
+fn the_tools_strip_sits_over_the_wave_and_picks_a_tool_or_opens_its_old_page() {
     use mpfree_sampler_ui::recorder::RecorderView;
     use mpfree_sampler_ui::wave_tab::Tool;
     use mpfree_sampler_ui::widgets::ToolStrip;
@@ -1184,9 +1196,9 @@ fn the_tools_strip_sits_over_the_wave_and_opens_the_tools_old_pages_for_now() {
     assert_eq!(w.tools, ["Trim", "Slice", "Warp", "Grain"]);
     assert_eq!((w.active, w.enabled), (0, true));
     assert_eq!(s.tab.tool(), Tool::Trim);
-    // Trim is in use: a tap on it changes nothing. The others aren't on the
-    // page yet, so each opens its old page: Slice the Chop page, Warp the
-    // Warp page, Grain the Grain page.
+    // Trim is in use: a tap on it changes nothing. Slice and Warp aren't
+    // on the page yet, so each opens its old page: Slice the Chop page,
+    // Warp the Warp page. Grain is: a tap picks it.
     let tap = |s: &mut Sample, i: usize| {
         let st = s.state.clone();
         let w = s.ui.get::<ToolStrip>(wave_tab::TOOLS).unwrap();
@@ -1200,8 +1212,51 @@ fn the_tools_strip_sits_over_the_wave_and_opens_the_tools_old_pages_for_now() {
     assert_eq!(tap(&mut s, 0), None);
     assert_eq!(tap(&mut s, 1), Some(WaveAction::Tab(chop_tab::TAB)));
     assert_eq!(tap(&mut s, 2), Some(WaveAction::Tab(warp_tab::TAB)));
-    assert_eq!(tap(&mut s, 3), Some(WaveAction::Tab(grain_tab::TAB)));
     assert_eq!(s.tab.tool(), Tool::Trim, "the page stays on Trim");
+    let labels = |s: &Sample| -> Vec<(String, bool)> {
+        let w = s.ui.get::<Waveform>(wave_tab::WAVE).unwrap();
+        w.markers()
+            .iter()
+            .map(|m| (m.label.clone(), m.faint))
+            .collect()
+    };
+    let trim = labels(&s);
+    assert!(trim.iter().all(|(_, faint)| !faint));
+    assert_eq!(tap(&mut s, 3), None);
+    assert_eq!(s.tab.tool(), Tool::Grain);
+    assert_eq!(s.tab.hint(), wave_tab::GRAIN_HINT);
+    let w = s.ui.get::<ToolStrip>(wave_tab::TOOLS).unwrap();
+    assert_eq!(w.active, 3);
+    // Every mark stays on the wave: Trim's faint, the grain window's two
+    // tabs bright; the panel is the Grain section.
+    let grain = labels(&s);
+    assert_eq!(grain.len(), trim.len() + 2);
+    assert!(grain[..trim.len()].iter().all(|(_, faint)| *faint));
+    assert_eq!(
+        grain[trim.len()..],
+        [("GRAIN".into(), false), ("SIZE".into(), false)]
+    );
+    assert_eq!(
+        s.ui.get::<SettingList>(wave_tab::REGION).unwrap().right,
+        "grains"
+    );
+    let card = |s: &Sample, k: usize| {
+        let c = s.ui.get::<KnobCard>(wave_tab::QLINKS[k]).unwrap();
+        c.label.clone()
+    };
+    assert_eq!(card(&s, 0), "Q-Link 1 · Position");
+    // Back to Trim: its marks bright again, the loop not playing grains has
+    // no window.
+    assert_eq!(tap(&mut s, 0), None);
+    assert_eq!(s.tab.tool(), Tool::Trim);
+    assert_eq!(labels(&s), trim);
+    assert!(s
+        .ui
+        .get::<Waveform>(wave_tab::WAVE)
+        .unwrap()
+        .window()
+        .is_none());
+    assert_eq!(card(&s, 0), "Q-Link 1 · Start");
     // Each tool is a target the device checks can find by its name.
     let names: Vec<String> =
         s.ui.targets()

@@ -29,7 +29,7 @@ pub struct GrainPreset {
 }
 
 /// Frames per beat a preset's tempo sync is saved with (120 BPM at
-/// 44.1 kHz, as the Grain page saves it); the engine plays it at the
+/// 44.1 kHz, as a grain pad saves it); the engine plays it at the
 /// project tempo.
 const FRAMES_PER_BEAT: f64 = 22_050.0;
 

@@ -119,6 +119,41 @@ impl ClockOut {
     }
 }
 
+/// What a program change coming in does (the Sync section's "Program
+/// change in", as the MPC's Sync settings' "Program Change" does with a
+/// sequence).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProgramIn {
+    /// Nothing: it shows in the MIDI monitor, and thru passes it on.
+    #[default]
+    Off,
+    /// Program N (1 to 128) launches scene N, the Clips grid's row N, as
+    /// a tap on the scene's launch button does.
+    Scene,
+}
+
+impl ProgramIn {
+    pub const ALL: [ProgramIn; 2] = [ProgramIn::Off, ProgramIn::Scene];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ProgramIn::Off => "Off",
+            ProgramIn::Scene => "Launches a scene",
+        }
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            ProgramIn::Off => "off",
+            ProgramIn::Scene => "scene",
+        }
+    }
+
+    fn from_word(w: &str) -> Option<ProgramIn> {
+        ProgramIn::ALL.into_iter().find(|c| c.word() == w)
+    }
+}
+
 /// What a port can be set to ignore coming in (its page's "Ignore coming
 /// in"). Ignored messages still show in the MIDI monitor, marked
 /// "ignored", but nothing past the port gets them: no track, Learn, clock
@@ -712,6 +747,12 @@ pub struct MidiSetup {
     pub follow_start_stop: bool,
     /// While following: its song position moves MPFree's.
     pub follow_position: bool,
+    /// Other gear's MIDI Machine Control moves the transport, from any
+    /// port: Play, Stop, Pause, Record Strobe and Locate ([`crate::mmc`]).
+    pub mmc_in: bool,
+    /// What a program change coming in does, from any port that doesn't
+    /// ignore program changes.
+    pub program_in: ProgramIn,
     /// Ports with settings of their own, by name, in the order first set.
     pub ports: Vec<PortSetup>,
     /// Each track's MIDI output; `None` plays nothing out.
@@ -743,6 +784,8 @@ impl Default for MidiSetup {
             tempo: TempoSource::Internal,
             follow_start_stop: true,
             follow_position: true,
+            mmc_in: false,
+            program_in: ProgramIn::Off,
             ports: Vec::new(),
             tracks: std::array::from_fn(|_| None),
             routes: Vec::new(),
@@ -1068,6 +1111,12 @@ impl MidiSetup {
         if self.follow_position != d.follow_position {
             line(&mut s, "follow.position", on_off(self.follow_position));
         }
+        if self.mmc_in != d.mmc_in {
+            line(&mut s, "mmc.in", on_off(self.mmc_in));
+        }
+        if self.program_in != d.program_in {
+            line(&mut s, "program-change.in", self.program_in.word());
+        }
         for (i, p) in self.ports.iter().enumerate() {
             let k = format!("port.{}", i + 1);
             line(&mut s, &k, &p.name);
@@ -1272,6 +1321,11 @@ impl MidiSetup {
             }
             ["follow", "start-stop"] => self.follow_start_stop = parse_on(v)?,
             ["follow", "position"] => self.follow_position = parse_on(v)?,
+            ["mmc", "in"] => self.mmc_in = parse_on(v)?,
+            ["program-change", "in"] => {
+                self.program_in = ProgramIn::from_word(v)
+                    .ok_or_else(|| format!("expected off or scene, found \"{v}\""))?
+            }
             ["midi-follow"] => self.follow.on = parse_on(v)?,
             ["midi-follow", "port"] => self.follow.port = v.to_string(),
             ["midi-follow", "knobs"] => self.follow.knobs = parse_knobs(v)?,
@@ -2169,6 +2223,8 @@ mod tests {
         let mut m = MidiSetup {
             tempo: TempoSource::Port("Digitone = 2".into()),
             follow_position: false,
+            mmc_in: true,
+            program_in: ProgramIn::Scene,
             ..MidiSetup::default()
         };
         m.set_port(DIN_NAME, |p| {
@@ -2343,6 +2399,31 @@ mod tests {
         assert_eq!(back.rig_learn, [key, picked, mute, undo]);
     }
 
+    /// A knob learned on Play's Swing and one on the XY pad (the Learn
+    /// section's Play card) are the rig's and read back by Play's fixed
+    /// numbers.
+    #[test]
+    fn plays_learned_knobs_read_back_from_the_rig() {
+        use mpfree_param::{play, Owner, ParamAddr};
+        let mut m = MidiSetup::default();
+        let swing = Saved {
+            target: ParamAddr::new(Owner::Play, play::SWING),
+            ..learned(Some("Knobs"), 21)
+        };
+        let up = Saved {
+            target: ParamAddr::new(Owner::Play, play::XY_UP),
+            ..learned(Some("Knobs"), 22)
+        };
+        for l in [&swing, &up] {
+            assert!(m.learned_in(Kept::Rig, l.clone()));
+        }
+        let text = m.rig_text();
+        assert!(text.contains("play.0") && text.contains("play.3"), "{text}");
+        let (back, w) = MidiSetup::parse(&text);
+        assert!(w.is_empty(), "{w:?}\n{text}");
+        assert_eq!(back.rig_learn, [swing, up]);
+    }
+
     #[test]
     fn a_new_project_writes_only_the_header() {
         assert_eq!(MidiSetup::default().to_text(), "mpfree-midi 1\n");
@@ -2365,6 +2446,29 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("tempo.port = Digitone = 2\n"), "{text}");
+        assert!(
+            text.contains("mmc.in = on\nprogram-change.in = scene\n"),
+            "{text}"
+        );
+    }
+
+    /// MMC in and program change in are the song's, off unless set; a
+    /// word the setting hasn't got is named and skipped.
+    #[test]
+    fn mmc_and_program_change_in_are_the_songs() {
+        let m = MidiSetup {
+            mmc_in: true,
+            program_in: ProgramIn::Scene,
+            ..MidiSetup::default()
+        };
+        assert!(m.project().mmc_in);
+        assert_eq!(m.project().program_in, ProgramIn::Scene);
+        assert!(!m.rig().mmc_in);
+        assert_eq!(m.rig().program_in, ProgramIn::Off);
+        assert!(!MidiSetup::default().to_text().contains("mmc"));
+        let (back, w) = MidiSetup::parse(&format!("{HEADER}\nprogram-change.in = track\n"));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert_eq!(back.program_in, ProgramIn::Off);
     }
 
     #[test]
