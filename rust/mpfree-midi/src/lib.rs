@@ -40,6 +40,7 @@ pub mod input;
 pub mod learn;
 pub mod monitor;
 pub mod mpe;
+pub mod mpe_out;
 pub mod msg;
 pub mod output;
 pub mod port;

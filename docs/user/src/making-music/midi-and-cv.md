@@ -106,6 +106,15 @@ A track that plays a synth through MIDI out passes your keyboard's [pitch wheel,
 
 Each goes out only when it changes. When you let go of the last key, the bend goes back to the wheel's and the pressure to 0, and a stop, a panic or a new **Plays on** puts the synth back at rest. Keys that play a kit's pads send each pad's pressure on its notes, and no bend. To send a synth the keyboard's own messages as they came (an MPE synth's channels and all), use [Thru](#thru-a-keyboard-straight-to-a-synth) instead.
 
+**An MPE synth** (one that takes each note on its own channel: a hardware synth with an MPE mode, or a soft synth set to MPE) gets each note's expression on that note alone. Give the synth's port a [profile](#device-profiles) with an **mpe** line (`mpe = lower 15` for most), and every track that plays on that port plays MPE:
+
+- each note goes out on a channel of its own (channels 2 to 16 for the lower zone), so a slide, pressure or tone on one finger of an MPE controller moves only that note;
+- the wheel bends every note at once on the zone's main channel (channel 1 for the lower zone), and the program, bank and the track's controls go there too;
+- MPFree tells the synth its zone with the track's program, so a synth that listens for it sets itself up;
+- with more notes than channels, a new note shares the channel of the oldest one, as MPE asks.
+
+On the I/O view the track's **Plays on** says *port · MPE* and its note *each note on its own channel*, because there is no channel to pick. A stop, a panic or a new **Plays on** puts every channel back at rest.
+
 ### A kit on a drum machine
 
 A track that plays a kit sends each pad as a note, so the kit can play a drum machine: set the track's **Plays on** to the drum machine's port and channel. Each pad plays its own note:
@@ -182,7 +191,7 @@ program.1 = Init
 - **name** is what the port's page shows: at most 32 characters, and not *Auto* or *None*. Two profiles can't share a name, so one with the name of the built-in General MIDI is left out.
 - **match** is a name a USB device calls itself (the page says it: *it calls itself …*). A port set to **Auto** takes the first profile with its name. Put up to 8 **match** lines in one profile, or none.
 - **cc.N** names CC N (0 to 127); **nrpn.MSB.LSB** names the NRPN parameter sent as CC 99 = MSB and CC 98 = LSB; **program.N** names program N, counted from 1 as everywhere on screen. Each name has at most 32 characters.
-- **mpe** says the controller plays [MPE](#the-pitch-wheel-pressure-and-mpe): `mpe = lower 15` (main channel 1, notes on channels 2 to 16; fewer channels with a smaller number), `mpe = upper 15` (main channel 16) or `mpe = off`.
+- **mpe** says the gear speaks [MPE](#the-pitch-wheel-pressure-and-mpe): `mpe = lower 15` (main channel 1, notes on channels 2 to 16; fewer channels with a smaller number), `mpe = upper 15` (main channel 16) or `mpe = off`. On a controller it says how to read it; on a synth, MPFree plays each note on its own channel ([An MPE synth](#the-wheel-pressure-and-mpe-on-a-synth)).
 - **bend** is a synth's pitch bend range in semitones, 1 to 96 (`bend = 12`), which your keyboard's [wheel and slides](#the-wheel-pressure-and-mpe-on-a-synth) bend it by. Without it MPFree takes 2, the range most synths start with.
 - **pressure** is what a synth takes for your keys' pressure: `pressure = channel` (one value for all its notes, which most synths take, and what MPFree sends without the line) or `pressure = poly` (each note's own).
 - **knobs** lists a controller's knobs by their CCs, in order, up to 16 (`knobs = 74 71 76 77`). [MIDI Follow](#midi-follow-your-controllers-knobs-on-the-q-links) turns Q-Links 1 to 4 with the first four, unless you taught it the controller's knobs yourself.
