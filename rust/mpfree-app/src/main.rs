@@ -2643,8 +2643,12 @@ fn pad_starts_loop(
     let at = time.next_frame();
     let n = looper.listens_for_pads(at)?;
     let mut line = format!("looper: Loop {} starts on your note", n + 1);
-    if time.info().state == mpfree_transport::State::Stopped {
-        match start_song_on_note(time, at, take, exporting) {
+    if looper.records_free(n) {
+        // Tempo from the first loop: it records free, and closing it
+        // starts the song (loop_sets_tempo).
+        line.push_str(", free: REC again closes it and sets the tempo");
+    } else if time.info().state == mpfree_transport::State::Stopped {
+        match start_song_on_note(time, at, None, take, exporting) {
             Ok(more) => {
                 line.push_str(", and the song with it");
                 if let Some(m) = more {
@@ -2677,7 +2681,7 @@ fn loop_starts_song(
 ) -> LoopStart {
     let n = looper.take_start()?;
     Some(
-        match start_song_on_note(time, time.next_frame(), take, exporting) {
+        match start_song_on_note(time, time.next_frame(), None, take, exporting) {
             Ok(more) => (
                 format!(
                     "looper: Loop {} heard you: the song starts on your note{}",
@@ -2691,18 +2695,64 @@ fn loop_starts_song(
     )
 }
 
-/// The song starts on a note on frame `at`, unless an export runs (the
-/// transport's own refusals: [`time::TimeHost::start_at`]).
+/// The song starts on a note on frame `at` (at tempo `bpm`, if given),
+/// unless an export runs (the transport's own refusals:
+/// [`time::TimeHost::start_at`]).
 fn start_song_on_note(
     time: &mut time::TimeHost,
     at: u64,
+    bpm: Option<f64>,
     take: Option<bool>,
     exporting: bool,
 ) -> Result<Option<String>, String> {
     if exporting {
         return Err("an export is running".to_string());
     }
-    time.start_at(at, None, take)
+    time.start_at(at, bpm, take)
+}
+
+/// Tempo from the first loop (the looper's options): whether the song can
+/// take its tempo from a loop now. Not while another device's clock leads
+/// (its tempo arriving, or PLAY waiting for its Start), the song has more
+/// than one tempo, or an export runs. The looper is told every period.
+fn tempo_from_loop_allowed(on: bool, time: &time::TimeHost, exporting: bool) -> bool {
+    on && time.followed_bpm().is_none()
+        && !time.clock_waits()
+        && time.tempo_map().segments().len() <= 1
+        && !exporting
+}
+
+/// Tempo from the first loop, after the looper's period: a free first
+/// pass closed, so the song starts on the frame it comes round, at the
+/// tempo its length sets, from the start of the bar it stopped in (the
+/// loop's first bar). With a take ready it records from there too. The
+/// line for the log (on the screen too when the song can't start: then
+/// the loop plays at the song's tempo when it starts), and the tempo the
+/// app takes from the next period on, so it doesn't ask for its old one.
+fn loop_sets_tempo(
+    looper: &mut looping::LoopHost,
+    time: &mut time::TimeHost,
+    take: Option<bool>,
+    exporting: bool,
+) -> (LoopStart, Option<f64>) {
+    let Some((n, bars, bpm, at)) = looper.take_tempo() else {
+        return (None, None);
+    };
+    match start_song_on_note(time, at, Some(bpm), take, exporting) {
+        Ok(more) => (
+            Some((
+                format!(
+                    "looper: Loop {} is {} at {bpm:.2} BPM: the song starts at that tempo{}",
+                    n + 1,
+                    looping::bars_words_n(bars),
+                    more.map(|m| format!("; {m}")).unwrap_or_default()
+                ),
+                false,
+            )),
+            Some(bpm),
+        ),
+        Err(why) => (Some((looper.tempo_refused(n, bars, bpm, &why), true)), None),
+    }
 }
 
 /// Live erase (sequencer roadmap S1, the MPC's way): whether a pad
@@ -5476,6 +5526,9 @@ fn player_session(
     let (mut synth_learned, mut synth_learned_at) = (false, 0.0f64);
     // A followed clock's tempo for the app, taken at the next turn.
     let mut followed_tempo: Option<f64> = None;
+    // The tempo a free first loop set (tempo from the first loop), for the
+    // app at the next turn, before the transport follows the app's tempo.
+    let mut loop_tempo: Option<f64> = None;
     // The port the tempo chip last said the tempo comes from.
     let mut clock_from: Option<String> = None;
     out.show(gui::ToUi::Macros(Box::new(panels.macros_state(&mix))));
@@ -7188,6 +7241,11 @@ fn player_session(
             }
         }
         fx.extend(app.tick(t));
+        // As set, not rounded: the song plays at it, and a project saves it
+        // as it is.
+        if let Some(bpm) = loop_tempo.take() {
+            fx.extend(app.set_tempo(bpm));
+        }
         if let Some(bpm) = followed_tempo.take() {
             let bpm = (bpm * 10.0).round() / 10.0;
             // Without the log line set_tempo writes: the tempo follows
@@ -8202,6 +8260,11 @@ fn player_session(
         for line in looper.follow_plan(&time.loop_plan()) {
             out.note(&line);
         }
+        looper.set_tempo_from_loop(tempo_from_loop_allowed(
+            app.settings.loop_tempo,
+            &time,
+            export.running(),
+        ));
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
         // A loop that heard the line input with the song stopped starts it.
         let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
@@ -8211,6 +8274,10 @@ fn player_session(
             take,
             export.running(),
         ));
+        // A free first loop closed: the song starts at its tempo.
+        let (said, tempo) = loop_sets_tempo(&mut looper, &mut time, take, export.running());
+        out.loop_start(said);
+        loop_tempo = tempo.or(loop_tempo);
         // The audio tracks record the same line input onto the Song view's
         // lanes, and play into the mixer's Audio track (song mode only).
         tracks.follow_latency(app.settings.loop_latency);

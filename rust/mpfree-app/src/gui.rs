@@ -13229,6 +13229,26 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("looper sample: {e}"),
     }
+    // Tempo from the first loop: Loop 1 recording free with the song
+    // stopped (every other loop empty), 2.4 s in; closing it sets the
+    // tempo.
+    {
+        let mut p = sample_player(fonts());
+        p.apply(ToUi::Show(View::Looper));
+        p.take_actions();
+        let mut v = crate::looping::LooperView {
+            free_tempo: true,
+            ..Default::default()
+        };
+        let l = &mut v.loops[0];
+        l.phase = mpfree_looper::Phase::Recording;
+        l.bars = None;
+        l.free = true;
+        l.recorded = 105_840;
+        v.status = v.loops[0];
+        p.apply(ToUi::Looper(Box::new(v)));
+        out.push(("looper-free", p));
+    }
     // The same with the undo history open: the bass and the chop overdubs.
     match sample_looper(fonts()) {
         Ok(mut p) => {

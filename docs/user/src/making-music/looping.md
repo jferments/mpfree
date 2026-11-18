@@ -123,7 +123,7 @@ Pick an empty loop and the space under the lanes shows how it will record, and t
 |---|---|
 | **Records from** | **Pads**: MPFree's own sound as you hear it, with the effects on its tracks and the echoes and reverbs of the sends. It leaves out the loops, the audio tracks, the line input and the metronome, and the master's own effects and Level, which the loop plays through anyway. **Line in**: the INPUTS on the back of the MPC (it opens the line input). **Loops**: all the other loops as you hear them, so you can bounce several loops into one and keep layering. |
 | **Monitor** | With Line in: hear the input through the outputs, about 9 ms late. Leave it off if you already hear your instrument another way, such as through a mixer. |
-| **Length** | **Free** (the default): from the next bar line until you tap the ring again (it ends on the next bar line) or press STOP (it stops at once). Or 1, 2, 4 or 8 bars, and it ends by itself. |
+| **Length** | **Free** (the default): from the next bar line until you tap the ring again (it ends on the next bar line) or press STOP (it stops at once). Or 1, 2, 4 or 8 bars, and it ends by itself. With [Tempo from the first loop](#tempo-from-the-first-loop) on and the music stopped, a first loop on Free records in your own time and sets the tempo. |
 | **Starts** | **On the bar** (the default): the first pass starts on the next bar line, or when PLAY starts the music. **When I play**: the loop waits for you, and your first note starts it ([below](#start-when-you-play)). With **Loops** it is always on the bar. |
 | **Then** | What the loop does when its first pass ends: **Play**, or go straight into an **Overdub**. |
 
@@ -141,9 +141,23 @@ With **Starts: When I play**, tap the ring (or press REC) and the loop waits for
 
 {{shot: looper-listening | Loop 5 set to start when you play, waiting: Play to start.}}
 
+#### Tempo from the first loop
+
+To play in your own time and have everything follow you, turn on **Tempo from the first loop** in the Looper tab's MENU. Then, with the music stopped and every loop empty, a loop on **Length: Free** doesn't wait for a bar line: tap its ring (or press REC) and it records from that moment, or, with **Starts: When I play**, from your first note. The ring says **Free** and counts the seconds.
+
+When you tap the ring (or press REC) again, the loop closes there and its length sets the tempo. MPFree picks the number of bars (1, 2, 4, 8 and so on) that puts the tempo between 80 and 160 BPM, so a 2.5-second riff becomes one bar at 96 BPM, and a 7-second one four bars at about 137 BPM. The music starts at that tempo just as the loop comes round, from the start of the bar it stopped in, so the loop, the sequencer and the metronome all follow it. If notes are armed and ready to record, they record from there too.
+
+- **The tempo is exact,** to many decimal places, so the loop never drifts against the song; the project keeps it exactly when you save. The tempo chip shows it rounded.
+- **Closed too soon** (shorter than a bar at 160 BPM, 1.5 s in 4/4), the loop keeps recording and closes as soon as it is that long. The ring says **closing**.
+- **PLAY while it records** throws the free loop away (the screen counts it), since the music would start at the old tempo. Close the loop with its ring or REC instead.
+- It is off while another device's clock leads, the song has more than one tempo, or an export is running. A loop with a set Length, a second loop, or a loop recorded with the music playing keeps to the bars as usual.
+- If the music still can't start at the new tempo, the screen says why, and the loop plays at the song's tempo when the music starts.
+
+{{shot: looper-free | Loop 1 recording free with the music stopped: closing it sets the tempo.}}
+
 Two things to know about recording the pads with their effects. The loop's own echo is recorded too if you turn up the **Looper**'s Delay send on the Play page, since that echo is part of the mix. And if you send the Loop or Audio track (or the line input) to a submix in the mixer, the looper can't leave it out of the mix, so it records the pads and the synth without their effects until that track goes back to the master.
 
-Press **MENU** on the Looper tab for the rarer settings as a list, with an explanation beside each: the line input itself, the latency to make up for, **Loop level** (-24 to +6 dB) and **Loop memory**. The Loop level, and the latency once you set it by hand, are kept for you whatever project is open; the line input is off at every start, so the Looper records the pads until you turn it on.
+Press **MENU** on the Looper tab for the rarer settings as a list, with an explanation beside each: the line input itself, the latency to make up for, **Loop level** (-24 to +6 dB), **Tempo from the first loop** ([above](#tempo-from-the-first-loop)) and **Loop memory**. The Loop level, Tempo from the first loop, and the latency once you set it by hand, are kept for you whatever project is open; the line input is off at every start, so the Looper records the pads until you turn it on.
 
 ### Capture: keep what you just played
 

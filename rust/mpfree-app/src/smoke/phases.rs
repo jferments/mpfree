@@ -924,6 +924,60 @@ mod looper {
     /// starts the song and the loop together, bar 1 on the hit. With the
     /// song playing, a pad early in a bar starts the next loop on that
     /// bar's line, the pad's sound in it.
+    /// Looper redesign step 4c: with Tempo from the first loop on and the
+    /// song stopped, a first loop on Free length records free from REC;
+    /// REC again closes it, its length sets the tempo (1 bar at about 96
+    /// BPM here), and the song starts at that tempo as the loop comes
+    /// round. The app takes the tempo exactly, so it isn't asked back.
+    #[test]
+    fn tempo_from_the_first_loop_sets_the_tempo_and_starts_the_song() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            // The Looper tab's options: Tempo from the first loop (the
+            // setting the MENU row steps).
+            s.app.settings.loop_tempo = true;
+            let free = at(&mut s, "leditor", "bars", 0);
+            assert_eq!(free.label, "Free");
+            s.press_target(&free).run_for(0.1);
+            assert_eq!(s.time.info().state, mpfree_transport::State::Stopped);
+            let before = s.app.settings.bpm;
+            assert!(status(&s).free, "an empty loop that would record free");
+            s.button("REC").run_for(0.1);
+            assert!(
+                s.said().iter().any(|l| l
+                    == "looper: Record: the first pass records free from now: REC again \
+                        closes it, and its length sets the tempo and starts the song"),
+                "{:?}",
+                s.said()
+            );
+            let st = status(&s);
+            assert_eq!((st.phase, st.free), (Phase::Recording, true));
+            // In your own time: a pad, and 2.5 s in all.
+            s.pad(0, 120, 0.1);
+            s.run_for(2.3);
+            assert_eq!(s.time.info().state, mpfree_transport::State::Stopped);
+            s.button("REC");
+            until_phase(&mut s, Phase::Playing, 1.0);
+            let st = status(&s);
+            let bar = 4 * PPQ as i64;
+            let (bars, bpm) = mpfree_looper::free_tempo(st.frames, crate::RATE, bar).unwrap();
+            assert_eq!((bars, st.ticks, st.origin), (1, bar, 0), "bar 1, one bar");
+            assert!((90.0..100.0).contains(&bpm), "{bpm}");
+            let said =
+                format!("looper: Loop 1 is 1 bar at {bpm:.2} BPM: the song starts at that tempo");
+            assert!(s.said().contains(&said), "{:?}", s.said());
+            s.run_for(0.5);
+            assert!(s.time.info().state.rolling(), "the song plays");
+            assert_eq!(s.time.info().bpm, bpm);
+            assert_eq!(s.app.settings.bpm, bpm, "the app's tempo, as set");
+            assert_ne!(bpm, before);
+            assert_eq!(s.time.tempo_map().segments().len(), 1);
+            assert_eq!(s.looper.tempos_refused, 0);
+        });
+    }
+
     #[test]
     fn when_i_play_starts_the_loop_and_the_song_on_the_first_pad() {
         on_big_stack(|| {

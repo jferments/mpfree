@@ -177,6 +177,9 @@ pub struct Session {
     pub time: time::TimeHost,
     pub panels: modpanels::Panels,
     pub looper: looping::LoopHost,
+    /// The tempo a free first loop set, for the app at the next period
+    /// (main.rs's `loop_tempo`).
+    loop_tempo: Option<f64>,
     /// The audio tracks on the Song view's lanes (a short memory: the
     /// tests record no takes).
     pub tracks: audiotracks::TrackHost,
@@ -330,6 +333,7 @@ impl Session {
             step_keys: crate::step_keys::StepKeys::default(),
             mute_pressed: [false; 16],
             keys_held: crate::perform_pads::Held::default(),
+            loop_tempo: None,
             out,
             to_screen,
             fx: Vec::new(),
@@ -951,6 +955,9 @@ impl Session {
         if let Some(e) = self.app.tick(t) {
             self.fx.push(e);
         }
+        if let Some(bpm) = self.loop_tempo.take() {
+            self.fx.extend(self.app.set_tempo(bpm));
+        }
         self.effects();
         self.change_kit();
         // The time engine, as player_session runs it.
@@ -1088,6 +1095,12 @@ impl Session {
         for line in self.looper.follow_plan(&self.time.loop_plan()) {
             self.out.note(&line);
         }
+        self.looper
+            .set_tempo_from_loop(crate::tempo_from_loop_allowed(
+                self.app.settings.loop_tempo,
+                &self.time,
+                self.export.running(),
+            ));
         if let Some(line) = self.looper.run(self.time.block(), &mut ll, &mut lr) {
             self.out.note(&line);
         }
@@ -1099,6 +1112,10 @@ impl Session {
         let exporting = self.export.running();
         let said = crate::loop_starts_song(&mut self.looper, &mut self.time, take, exporting);
         self.out.loop_start(said);
+        let (said, tempo) =
+            crate::loop_sets_tempo(&mut self.looper, &mut self.time, take, exporting);
+        self.out.loop_start(said);
+        self.loop_tempo = tempo.or(self.loop_tempo);
         // The Looper tab and the Play page's strip follow the loop, as
         // main.rs shows them: its wave a slice at a time, its changes in
         // the log, and the loop's view about as often as the transport card
