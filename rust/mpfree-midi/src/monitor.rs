@@ -195,12 +195,18 @@ pub enum To {
     /// The tempo follows this port's clock (its Start, Stop and Song
     /// Position too).
     Follows,
+    /// Other gear's MMC moved the transport (the Sync section's MMC in).
+    Transport,
+    /// A program change launched this scene (from 0; the Sync section's
+    /// Program change in).
+    Scene(u8),
     /// Clock arriving on a port the tempo isn't from.
     NotFollowed,
     /// No track or control takes it: a control no one learned, a bend or
     /// program change the tracks don't take from a keyboard yet.
     Nothing,
-    /// MPFree never reads it (SysEx, tune request, undefined bytes).
+    /// MPFree never reads it (SysEx other than MMC, tune request,
+    /// undefined bytes).
     Ignored,
     /// The port is set to ignore this kind coming in (its page's "Ignore
     /// coming in").

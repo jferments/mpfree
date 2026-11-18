@@ -177,6 +177,12 @@ impl ExprOut {
         }
     }
 
+    /// The bend (-8192 to 8191) and channel pressure (0 to 127) last sent,
+    /// for recording what the gear plays (the app's `expr_rec`).
+    pub fn sent(&self) -> (i16, u8) {
+        (self.bend, self.pressure)
+    }
+
     /// Puts the gear back at rest (a stop, a panic, its route changed):
     /// the bend to the middle and the pressure to 0 if they weren't, and
     /// the keys let go of. The wheel is kept: a wheel still held bends

@@ -76,6 +76,54 @@ pub fn own(p: &Pad, field: PadField) -> f32 {
     }
 }
 
+/// Pad `p` with its own `field` set to `v`, in [`own`]'s units, as its
+/// editor would set it (MIDI Learn's learned pad settings): `v` kept to
+/// the field's range ([`PadField::clamp`]), a slice to the pad's slices. A
+/// cutoff or a resonance on a pad without a filter gives it the open
+/// 2-pole low-pass a live cutoff gives it. NaN changes nothing.
+pub fn set_own(p: &mut Pad, field: PadField, v: f32) {
+    if v.is_nan() {
+        return;
+    }
+    let v = field.clamp(v);
+    let filter = |p: &mut Pad| {
+        if p.filter.kind == FilterKind::Off {
+            p.filter.kind = FilterKind::LowPass;
+            p.filter.poles = 2;
+            p.filter.cutoff_hz = OPEN_HZ;
+            p.filter.resonance = 0.0;
+        }
+    };
+    match field {
+        PadField::Level => p.level_db = v,
+        PadField::Pan => p.pan = v,
+        PadField::Tune => p.tune_cents = v.round() as i32,
+        PadField::Cutoff => {
+            filter(p);
+            p.filter.cutoff_hz = v;
+        }
+        PadField::Resonance => {
+            filter(p);
+            p.filter.resonance = v;
+        }
+        PadField::Attack => p.amp.attack_ms = v,
+        PadField::Decay => p.amp.decay_ms = v,
+        PadField::Release => p.amp.release_ms = v,
+        PadField::Slice => {
+            let slices = p
+                .layers
+                .iter()
+                .map(|l| l.region.slice_count())
+                .max()
+                .unwrap_or(1);
+            p.slice = (v.round() as usize).min(slices.saturating_sub(1)) as u8;
+        }
+        PadField::LfoDepth => p.lfo.depth = v,
+        PadField::PitchEnv => p.pitch_env.semitones = v,
+        PadField::PitchDecay => p.pitch_env.decay_ms = v,
+    }
+}
+
 /// The live values at crossfader position `x` (0 is A, 1 is B), as
 /// `(pad, field, value)`: see the module notes.
 pub fn morph(a: &Scene, b: &Scene, x: f32) -> Vec<(u8, PadField, f32)> {
@@ -121,6 +169,46 @@ pub fn clear(a: &Scene, b: &Scene) -> Vec<(u8, PadField, f32)> {
 mod tests {
     use super::*;
     use crate::model::{Layer, Region, Source};
+
+    /// A learned control sets a pad's own setting: each field reads back
+    /// as set, kept to its range; a cutoff gives a pad without a filter
+    /// the open low-pass, and a slice stays within the pad's slices.
+    #[test]
+    fn set_own_sets_what_own_reads() {
+        let s = Source::new("s", 48_000, 1, vec![0.0; 100]).unwrap();
+        let mut pad = Pad::new("Kick", Layer::new(Region::whole(&s)));
+        pad.filter.kind = FilterKind::Off;
+        for (f, v) in [
+            (PadField::Level, -6.0),
+            (PadField::Pan, 0.5),
+            (PadField::Tune, 250.0),
+            (PadField::Attack, 12.0),
+            (PadField::Decay, 300.0),
+            (PadField::Release, 80.0),
+            (PadField::LfoDepth, -0.25),
+            (PadField::PitchEnv, 7.0),
+            (PadField::PitchDecay, 40.0),
+        ] {
+            set_own(&mut pad, f, v);
+            assert_eq!(own(&pad, f), v, "{f:?}");
+        }
+        assert_eq!(pad.filter.kind, FilterKind::Off, "untouched so far");
+        set_own(&mut pad, PadField::Cutoff, 800.0);
+        assert_eq!(
+            (
+                pad.filter.kind,
+                pad.filter.poles,
+                own(&pad, PadField::Cutoff)
+            ),
+            (FilterKind::LowPass, 2, 800.0)
+        );
+        set_own(&mut pad, PadField::Level, 99.0);
+        assert_eq!(pad.level_db, 24.0, "kept to the range");
+        set_own(&mut pad, PadField::Level, f32::NAN);
+        assert_eq!(pad.level_db, 24.0, "NaN changes nothing");
+        set_own(&mut pad, PadField::Slice, 5.0);
+        assert_eq!(pad.slice, 0, "the pad isn't sliced");
+    }
 
     #[test]
     fn the_morph_runs_each_setting_from_a_to_b() {

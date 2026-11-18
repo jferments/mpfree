@@ -37,7 +37,7 @@ Its settings come in **sections**, a button each across the top of the page, wit
 | **Movement** | LFO to, LFO wave, LFO rate, LFO depth, Sync to tempo, Retrigger, Pitch env and Pitch decay | LFO rate, LFO depth, pitch env, pitch decay |
 | **Pad** | Polyphony, Mute group, Stops, Also plays, Latch, and the kit's Pads play, Pads from and Levels by | voices, mute group, pads play, pads from |
 
-On a Q-Link, SHIFT turns finer. A setting that has nothing to change right now (the filter's while it is off, the keys' while the pad isn't a keygroup) shows its control and its card faint, and a tap on it says why.
+On a Q-Link, SHIFT turns finer. Hold **SHIFT** and touch a knob to give it a knob on your MIDI controller instead (see [MIDI Learn](midi-and-cv.md#midi-learn)). A setting that has nothing to change right now (the filter's while it is off, the keys' while the pad isn't a keygroup) shows its control and its card faint, and a tap on it says why.
 
 On the **Filter** section the drawing shows the filter's own envelope instead of the volume's: how far and how fast the cutoff moves on each hit. **Env depth** says how far, up to 4 octaves up or down; drag the points for its times, or turn their knobs.
 

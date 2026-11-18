@@ -66,6 +66,61 @@ pub fn pad_field(param: u16) -> Option<PadField> {
     PadField::ALL.get(usize::from(param)).copied()
 }
 
+/// A kit pad's own setting as MIDI Learn moves it (`Owner::Pad`): its name
+/// and the range a learned control covers, as the Sample tab's Play page
+/// knob turns it (level -48 to +12 dB, tune ±48 semitones in cents, cutoff
+/// 20 Hz to 20 kHz and the times on log curves), the slice over the pad's
+/// `slices`.
+pub fn pad_info(field: PadField, slices: usize) -> mpfree_node::ParamInfo {
+    use mpfree_node::{Curve, ParamInfo, Unit};
+    let info = |name, min, max, default, unit, curve| ParamInfo {
+        id: field as u16,
+        name,
+        group: "Pad",
+        min,
+        max,
+        default,
+        unit,
+        curve,
+        readonly: false,
+    };
+    let ms = |name, max| info(name, 1.0, max, 10.0, Unit::Ms, Curve::Log);
+    match field {
+        PadField::Level => info("Level", -48.0, 12.0, 0.0, Unit::Db, Curve::Linear),
+        PadField::Pan => info("Pan", -1.0, 1.0, 0.0, Unit::None, Curve::Linear),
+        PadField::Tune => info("Tune", -4800.0, 4800.0, 0.0, Unit::Cents, Curve::Stepped),
+        PadField::Cutoff => info("Cutoff", 20.0, 20_000.0, 20_000.0, Unit::Hz, Curve::Log),
+        PadField::Resonance => info("Resonance", 0.0, 1.0, 0.0, Unit::None, Curve::Linear),
+        PadField::Attack => ms("Attack", 20_000.0),
+        PadField::Decay => ms("Decay", 20_000.0),
+        PadField::Release => ms("Release", 20_000.0),
+        PadField::Slice => info(
+            "Slice",
+            0.0,
+            slices.max(1) as f32 - 1.0,
+            0.0,
+            Unit::None,
+            Curve::Stepped,
+        ),
+        PadField::LfoDepth => info("LFO depth", -1.0, 1.0, 0.0, Unit::None, Curve::Linear),
+        PadField::PitchEnv => {
+            let st = mpfree_sampler::model::PITCH_ENV_ST;
+            info("Pitch env", -st, st, 0.0, Unit::Semitones, Curve::Linear)
+        }
+        PadField::PitchDecay => {
+            let r = mpfree_sampler::model::PITCH_DECAY_MS;
+            info(
+                "Pitch decay",
+                *r.start(),
+                *r.end(),
+                100.0,
+                Unit::Ms,
+                Curve::Log,
+            )
+        }
+    }
+}
+
 /// What each row of the Grains kit's pads changes with pressure: target,
 /// depth.
 const GRAIN_ROWS: [(PressureTarget, f32); 4] = [
@@ -870,6 +925,25 @@ impl Player {
             self.engine
                 .schedule_for(kit, offset, Event::NoteOff { pad: pad as u8 });
         }
+    }
+
+    /// Kit `kit`'s pad `pad`'s own `field`, as its view has it: a pad
+    /// without a filter reads open (no resonance). None for a pad without
+    /// a sound.
+    pub fn pad_own(&self, kit: usize, pad: usize, field: PadField) -> Option<f32> {
+        if !self.has_sound(kit, pad) {
+            return None;
+        }
+        self.engine.kit_pad_own(kit, pad, field).or(match field {
+            PadField::Cutoff => Some(mpfree_sampler::scene::OPEN_HZ),
+            PadField::Resonance => Some(0.0),
+            _ => None,
+        })
+    }
+
+    /// How many slices kit `kit`'s pad `pad` plays from (1 unsliced).
+    pub fn pad_slices(&self, kit: usize, pad: usize) -> usize {
+        self.engine.kit_pad_slices(kit, pad)
     }
 
     /// Live values on kit `kit`'s pads (the scene crossfader's), applied

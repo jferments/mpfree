@@ -517,7 +517,6 @@ impl Instruments {
     /// A controller (a pedal, the mod wheel, breath) for track `track`'s
     /// instrument, 0 to 1, `offset` frames into the next block. The host
     /// holds the notes for an instrument that doesn't hear the pedals.
-    #[allow(dead_code)] // MIDI in's controller wiring calls it (the MIDI thread)
     pub fn control(
         &mut self,
         track: usize,
@@ -881,6 +880,31 @@ mod tests {
         let mut t = tracks();
         i.render(&Ctx::new(RATE, BLOCK as u64), BLOCK, &mut t);
         assert_eq!(level(&t, first_track() + 1), 0.75);
+    }
+
+    /// A keyboard's sustain pedal holds a track's instrument's notes
+    /// until it comes up (the host holds them: the instrument doesn't
+    /// hear the pedal itself).
+    #[test]
+    fn a_keyboards_sustain_pedal_holds_a_tracks_instrument() {
+        use mpfree_node::Ctl;
+        let mut i = Instruments::new(RATE, BLOCK);
+        assert!(
+            !i.control(1, Ctl::Sustain, 1.0, 0),
+            "no instrument: the synth takes it"
+        );
+        let pads = std::array::from_fn(|p| Pad::single(60 + p as i16));
+        i.put(1, hum(), pads, &Tuning::standard()).unwrap();
+        assert!(i.control(1, Ctl::Sustain, 1.0, 0));
+        assert!(i.note_on(1, 60, 90, 0));
+        assert!(i.note_off(1, 60, 1));
+        let mut t = tracks();
+        i.render(&Ctx::new(RATE, 0), BLOCK, &mut t);
+        assert_eq!(level(&t, first_track() + 1), 0.5, "held by the pedal");
+        assert!(i.control(1, Ctl::Sustain, 0.0, 0));
+        let mut t = tracks();
+        i.render(&Ctx::new(RATE, BLOCK as u64), BLOCK, &mut t);
+        assert_eq!(level(&t, first_track() + 1), 0.0, "let go with it");
     }
 
     #[test]

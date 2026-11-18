@@ -25,6 +25,7 @@ use mpfree_export::{
     Why,
 };
 use mpfree_fx::{Mixer, StripId};
+use mpfree_play::mpfree_param::{midi, Owner, ParamAddr};
 use mpfree_play::{Event, Out};
 use mpfree_time_ui::TimeAction;
 use mpfree_transport::time::{frames_between, Tick};
@@ -37,6 +38,11 @@ use crate::PERIOD;
 /// Notes and controls one period can hand the MIDI file; more are counted
 /// as left out.
 pub const TAP_ROOM: usize = 1024;
+/// Tracks whose controllers, bend and pressure go in the MIDI file: as
+/// many as MIDI out keeps them for.
+const CONTROL_TRACKS: usize = mpfree_export::mpfree_midi::output::MAX_TRACKS;
+/// A control no value has gone in the file for yet.
+const UNTAKEN: i16 = i16::MIN;
 /// Periods the transport may take to start before the export gives up
 /// (about a second).
 const START_PERIODS: u32 = 400;
@@ -577,6 +583,10 @@ pub struct Tap {
     on: bool,
     chords: Box<Chords>,
     notes: Vec<(u64, u16, Msg)>,
+    /// Each track's controllers, bend and pressure (`Owner::Midi`) as last
+    /// put in the file, so a value goes in only when it changes:
+    /// `CONTROL_TRACKS` × `midi::COUNT`, [`UNTAKEN`] before the first.
+    controls: Box<[i16]>,
     /// Messages past [`TAP_ROOM`] in a period, left out.
     pub dropped: u64,
 }
@@ -593,6 +603,7 @@ impl Tap {
             on: false,
             chords: Box::default(),
             notes: Vec::with_capacity(TAP_ROOM),
+            controls: vec![UNTAKEN; CONTROL_TRACKS * usize::from(midi::COUNT)].into_boxed_slice(),
             dropped: 0,
         }
     }
@@ -612,6 +623,49 @@ impl Tap {
                     *dropped += 1;
                 }
             });
+    }
+
+    /// A track's controller, bend or pressure as the mod engine moved it
+    /// (`Owner::Midi`: a step's lock, a lane, an LFO, a macro, a learned
+    /// knob; `ModMix::take_midi_values`), at `frame`, before CC scale and
+    /// CC smooth shape it for the gear. Only while an export runs, and
+    /// only when its value changes (the 7-bit value for a controller), on
+    /// channel 1 as the notes are. Never allocates.
+    pub fn control(&mut self, frame: u64, addr: ParamAddr, value: f32) {
+        use mpfree_play::mpfree_param::midi::Midi;
+        let Owner::Midi(t) = addr.owner else { return };
+        if !self.on || !value.is_finite() {
+            return;
+        }
+        let (Some((lo, hi)), Some(kind)) = (midi::range(addr.param), midi::of(addr.param)) else {
+            return;
+        };
+        let k = usize::from(t) * usize::from(midi::COUNT) + usize::from(addr.param);
+        let Some(last) = self.controls.get_mut(k) else {
+            return;
+        };
+        let v = (value.round() as i32).clamp(lo.into(), hi.into()) as i16;
+        if *last == v {
+            return;
+        }
+        *last = v;
+        let m = match kind {
+            Midi::Cc(cc) => Msg::Cc {
+                ch: 0,
+                cc,
+                value: v as u8,
+            },
+            Midi::Bend => Msg::PitchBend { ch: 0, value: v },
+            Midi::Pressure => Msg::ChanPressure {
+                ch: 0,
+                value: v as u8,
+            },
+        };
+        if self.notes.len() < TAP_ROOM {
+            self.notes.push((frame, u16::from(t), m));
+        } else {
+            self.dropped += 1;
+        }
     }
 
     /// A tap that takes notes at once (the real-time safety tests).
@@ -635,6 +689,7 @@ impl Tap {
         self.on = true;
         self.chords.clear();
         self.notes.clear();
+        self.controls.fill(UNTAKEN);
     }
 
     fn stop(&mut self) {
@@ -971,6 +1026,55 @@ mod tests {
             song_on: false,
             rig: Rig::default(),
         }
+    }
+
+    /// A track's controllers, bend and pressure go in the MIDI file as the
+    /// lanes give them, only when they change, and only while an export
+    /// runs; anything not a track's MIDI out is left out.
+    #[test]
+    fn the_tap_takes_a_tracks_controls_when_they_change() {
+        use mpfree_play::mpfree_param::Strip;
+        let cc74 = ParamAddr::new(Owner::Midi(2), 74);
+        let bend = ParamAddr::new(Owner::Midi(2), midi::BEND);
+        let mut t = Tap::new();
+        t.control(0, cc74, 64.0);
+        assert!(t.notes.is_empty(), "no export running");
+        t.start();
+        for (frame, v) in [(10, 64.0), (20, 64.2), (30, 65.0), (40, 300.0)] {
+            t.control(frame, cc74, v);
+        }
+        t.control(50, bend, -8192.0);
+        t.control(60, bend, -8192.4);
+        t.control(70, ParamAddr::new(Owner::Midi(1), midi::PRESSURE), 40.0);
+        t.control(80, ParamAddr::new(Owner::Strip(Strip::Track(2)), 0), 0.5);
+        t.control(90, cc74, f32::NAN);
+        let cc = |value| Msg::Cc {
+            ch: 0,
+            cc: 74,
+            value,
+        };
+        assert_eq!(
+            t.notes,
+            [
+                (10, 2, cc(64)),
+                (30, 2, cc(65)),
+                (40, 2, cc(127)),
+                (
+                    50,
+                    2,
+                    Msg::PitchBend {
+                        ch: 0,
+                        value: -8192
+                    }
+                ),
+                (70, 1, Msg::ChanPressure { ch: 0, value: 40 }),
+            ]
+        );
+        // A new export starts afresh: the first value goes in again.
+        t.stop();
+        t.start();
+        t.control(5, cc74, 127.0);
+        assert_eq!(t.notes, [(5, 2, cc(127))]);
     }
 
     #[test]
