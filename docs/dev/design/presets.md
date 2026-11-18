@@ -44,6 +44,40 @@ qset = 31 32 34 33 Tone
   - The app wires these to the browser's actions with the browser page.
 - The crate does no file I/O. The library (`mpfree-library`, the browser thread) writes files whole or not at all, refuses a taken name, lists the Instruments place and moves deleted presets to the Trash. Saving makes `Instruments/<engine>` if it is missing, then writes `<name>.preset` with a name the library picked as unique.
 
+## Sounds: an engine with its own effects and macros
+
+A preset can carry more than the engine's settings: up to three effects of its own and up to six macros ([Architecture, section 5](synth-architecture.md#5-what-a-preset-carries)). `Sound` (`mpfree-instruments`, `sound.rs`) plays one: a node that holds the engine's node, the effects in a chain after it (`mpfree_fx::Chain`) and the macros. A plain preset (no effects, no macros) is a sound with nothing added and plays bit for bit as the engine alone.
+
+**In the file**, the design is a few lines beside the settings, and the effects' and macros' settings are ordinary settings:
+
+```text
+mpfree-preset = 1
+engine = mpfree.keys
+name = Space Tines
+fx.1 = mpfree.fx.ensemble
+macro.1 = Brightness
+macro.1.map = tone.tone -40 40 linear
+macro.1.map = tone.hardness 30 80 exp
+...
+fx-1.mix = 42
+macros.brightness = 35
+```
+
+- **`fx.N`** names slot N's effect by its id in the effects' registry (`mpfree_fx::registry`). Slots run in order, 1 to 3.
+- **`macro.N`** names macro N (at most 16 characters). Each **`macro.N.map`** line is one setting it moves: the setting's key, the value at 0 %, the value at 100 %, and the curve (`linear`, `exp`, `log` or `s`; linear when left out). Up to eight a macro. A macro moves its settings in knob positions, so a cutoff sweeps evenly in pitch, and it lands on the two values exactly at its ends.
+- **The effects' settings** are keyed by their slot (`fx-1.mix`). **The macros' positions** are `macros.<name>`, 0 to 100 %. Loading sets the macros' positions without moving their settings, so the settings load as they were saved.
+- A file with design lines loads in a build without sounds as a plain preset: the lines ride along as unknown lines and are written back.
+- What can't be built is refused with a reason: a fourth effect or a seventh macro, an effect the registry doesn't have, a map to a setting the sound doesn't have (or to a macro or a meter), a macro name that is empty or too long.
+
+**As a node**, a sound is the engine to whatever hosts it, with more settings:
+
+- `info()` is the engine's, so the Synth tab draws the engine's own pages, and every id the engine uses keeps its meaning.
+- Slot N's effect settings are `61440 + (N − 1) × 1024 + id`, in the group "FX N"; macro K is `64512 + K − 1`, in the group "Macros", 0 to 100 %. A step lock, an LFO or MIDI Learn on any of them needs no new code.
+- Moving a macro moves its settings; a setting turned by hand afterwards stays until the macro moves again (the last move wins). A macro moved on a frame (a lock, automation) moves its settings on that frame.
+- The Synth tab puts a node's "Macros" group on its first page, and Q-Links 1 to 4 turn the first four macros (`mpfree_synth_ui::pages::plan`). The effects get a page each after the engine's own.
+- Notes, the tuning, load shedding (`cull`), voice counts and the latency go to the engine; the tail is the engine's plus each effect's.
+- Building a sound allocates (the chain, the parameter list, made once per design and kept, since nodes hand out `&'static` lists); after `prepare`, `process` never does (`tests/sound_no_alloc.rs`). On the workstation the wrapper adds about 3,000 instructions a block to the engine and its effects (bench case "Sound Keys Init with Ensemble, 8 voices": 254k, against Keys Init's 113k and the Ensemble's 138k).
+
 ## Tests
 
 - Every factory sound of every engine (44) saved as text and loaded into a fresh engine has every setting identical to the bit and plays a phrase identically to the bit.
@@ -51,9 +85,12 @@ qset = 31 32 34 33 Tone
 - Native engines name every setting (no `id.` keys) and save every writable one.
 - A setting missing from the file takes its default; a preset for another engine is refused and changes nothing.
 - Keys, the id fallback, choices and switches by name or number, unknown lines kept and written back, names and tags kept on one line, and every refusal with its reason.
+- Sounds (`sound.rs`): a sound with nothing added plays bit for bit as its engine; its effects play bit for bit as the same chain by hand; effect settings get their own ids and groups, and one design gets one parameter list; a macro moves its settings along their curves, on the frame it moves; a sound saved as text loads back to the bit (settings, effects, macros and their positions); a plain preset loads as a sound with nothing added; every refusal says why. A sound's `process` allocates nothing through a busy session with every setting automated (`tests/sound_no_alloc.rs`).
 - In `mpfree-app`'s `synth.rs`: trying two presets and cancelling brings back every setting to the bit; Load after trying keeps the tried sound; another engine's file or folder, and a file that isn't a preset, change nothing; a file straight in Instruments goes by its engine line; Q-Link sets ride along in a save; a Drums kit tried moves the pads and Cancel moves them back.
 
 ## Not yet
+
+- **Sounds in the app.** The pads' synth and the tracks still hold bare engines, and a project saves an instrument as its engine and values; the next step (roadmap row 8, [Architecture](synth-architecture.md#7-roadmap)) makes them hold sounds, saves the design with the track, and moves the factory presets to files that can carry effects and macros. Send hints, the category and the play lines (section 5's table) come with it.
 
 - A Wavetable sound on a user table (one made from a sample) saves the table choice "User" but not the table itself; the preset will name the table's file once the library holds it.
 - Plugins: a CLAP plugin's own state chunk is not saved in a sound preset yet. A plugin's own presets (its factory and user files, listed and loaded through CLAP) are the plugin's, not this format: see [Plugins](plugins.md#in-the-app).

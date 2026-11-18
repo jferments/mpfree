@@ -141,8 +141,8 @@ A preset today is the engine's settings, a name, tags and its Q-Link sets ([Pres
 | Part | What it is | In the file |
 |---|---|---|
 | Settings | Every setting of the engine, by name (as now) | `filter.cutoff = 1840` |
-| Macros | Four to six named macros, each moving several settings along curves, from and to | `macro.1 = Brightness` and `macro.1.map = op-2.level 20 80 exp` |
-| Effects | Up to three of the sound's own effects from `mpfree-fx`, in order, with their settings | `fx.1 = mpfree.ensemble`, `fx.1.depth = 60` |
+| Macros | Four to six named macros, each moving several settings along curves, from and to | `macro.1 = Brightness`, `macro.1.map = op-2.level 20 80 exp` and its position `macros.brightness = 35` |
+| Effects | Up to three of the sound's own effects from `mpfree-fx`, in order, with their settings | `fx.1 = mpfree.fx.ensemble`, `fx-1.mix = 60` |
 | Send hints | The reverb or delay level the sound was made for, used only when the track's send is still at its default | `send.a = -12` |
 | Play | Voices, play mode, note priority, glide, velocity range, routes, the pad layout it suits (chord pads for strings) | `voice.count = 8`, `play.layout = chord` |
 | Q-Link sets | As now | `qset = ...` |
@@ -196,7 +196,7 @@ Three waves, each finished end to end: engine work, then presets, then the check
 | 5 | Strings engine | Bank, registers, swell, bow noise, the Ensemble; 24 presets. Built 18 Nov ([synths.md](synths.md#strings-mpfree-synth-strings)): S6 to S9 met, S5 not (its cost grows with the notes heard; see [Synth quality](synth-quality.md#wave-1-targets-bass-keys-and-strings-stage-4)) |
 | 6 | Bass engine | Synth and 808 bodies, Reese; 32 presets. Built 18 Nov ([synths.md](synths.md#bass-mpfree-synth-bass)): B1, B3, B4, B7, B10, V7 and L11 met; B5 on 21 of 32 presets (not the plain subs and clean 808s, by design; see [Synth quality](synth-quality.md#wave-1-targets-bass-keys-and-strings-stage-4)) |
 | 7 | Keys | Velocity range and tone, sustain, the clav; presets to 32. Built 18 Nov ([synths.md](synths.md#keys-mpfree-synth-keys)): the clav (a waveguide string, two pickups, the tone switch, Mute, Release drop), Velocity per preset, each model voiced evenly across the keys, a Clav page; K1, K3, K4, K6, K7 and K9 met on every preset they apply to. The sustain pedal is the host's (Keys leaves it to `Node::hears`'s fallback) |
-| 8 | Sounds | The Sound wrapper, macros and effects in presets, the macros page; factory presets as files |
+| 8 | Sounds | The Sound wrapper, macros and effects in presets, the macros page; factory presets as files. In two pull requests. The first is built (18 Nov, [Presets](presets.md#sounds-an-engine-with-its-own-effects-and-macros)): the wrapper, the file lines, the macros page first in the Synth tab, a bench case (the wrapper adds about 1 % to Keys with its Ensemble) and no allocation while sounding. The second makes the app's pads and tracks hold sounds, saves the design with a project, and moves the factory presets to files |
 | 9 | The preset browser (stage 6) | Try, Load and Save wired, the automatic preset checks (with the browser's owner) |
 | 10 | Wave 1 listening and device asks | Blind A/B pages; the device round's cost asks |
 

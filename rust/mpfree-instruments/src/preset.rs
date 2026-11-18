@@ -248,6 +248,18 @@ impl Preset {
     }
 }
 
+/// The key a preset writes setting `id` of `params` under (`filter.cutoff`,
+/// or `id.31` where two settings would share a name).
+pub fn key_of(params: &[ParamInfo], id: u16) -> Option<String> {
+    let i = params.iter().position(|p| p.id == id)?;
+    Some(Keys::new(params).key(i).to_string())
+}
+
+/// The setting of `params` a preset key names (ignoring case).
+pub fn id_of(params: &[ParamInfo], key: &str) -> Option<u16> {
+    Keys::new(params).find(key).map(|i| params[i].id)
+}
+
 /// The engine a preset text is for, without reading the rest (to pick the
 /// node before [`Preset::parse`]). `None` if it isn't a preset.
 pub fn engine_of(text: &str) -> Option<&str> {
