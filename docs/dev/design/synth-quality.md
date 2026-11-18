@@ -10,7 +10,7 @@ The method is the FX quality one ([FX quality](fx-quality.md)): each target a nu
 
 ## The report
 
-`fxlab synth [--rate HZ] [--renders] [--out DIR]` measures every keyboard engine's factory presets (Poly, Analog, Squelch, FM, Wavetable, Keys, Drawbar, Pluck: 83 presets), each engine's plain patch, Poly's voice, FM's operators and the five drum kits, and prints one row per number with its target and whether it is met, then a count by measure; it writes DIR/synth.txt. With `--renders` it also writes each preset's listening phrase (C, E and G, then a four-note chord; two octaves down for a bass) as DIR/renders/ENGINE/NN-PRESET.wav, and each kit's tour (every pad, then two bars of a beat). The report takes about 21 s in a release build on the workstation.
+`fxlab synth [--rate HZ] [--renders] [--out DIR]` measures every keyboard engine's factory presets (Poly, Analog, Squelch, FM, Wavetable, Keys, Drawbar, Pluck: 83 presets at the baseline; Strings' 24 joined with wave 1), each engine's plain patch, Poly's voice, FM's operators and the five drum kits, and prints one row per number with its target and whether it is met, then a count by measure; it writes DIR/synth.txt. With `--renders` it also writes each preset's listening phrase (C, E and G, then a four-note chord; two octaves down for a bass) as DIR/renders/ENGINE/NN-PRESET.wav, and each kit's tour (every pad, then two bars of a beat). The report takes about 21 s in a release build on the workstation.
 
 Every render plays 100 silent blocks first, so parameters a preset or patch sets have finished gliding, as they have when a player picks a preset and then plays (without them Poly's Decay read 19 % long: its Sustain was still gliding down). Renders run in 128-frame blocks on absolute frames, as on the MPC.
 
@@ -124,17 +124,17 @@ The bar each wave 1 pull request is judged by ([Architecture and roadmap](synth-
 | S2 | The lines' movement | 120° apart, within 5° | Ensemble effect: exact (a third of a cycle; a quarter with four lines) |
 | S3 | Width | Correlation 0.2 to 0.6 with the ensemble on; mono fold-down loss under 3 dB | Ensemble effect: 0.51 (three lines) and 0.58 (four) above 300 Hz; mono fold -1.1 LU |
 | S4 | Top end | The wet path 3 dB down between 6 and 9 kHz | Ensemble effect: met (-1.4 dB at 6 kHz, -5.4 at 9) |
-| S5 | Cost against keys held | Flat within 10 % from 1 to 49 keys (workstation bench, then the MPC) | Drawbar's bank: 0.4 to 1.2 µs a key |
-| S6 | Tuning | Every key within 1 cent in every built-in tuning; 24-TET through the per-key fallback | |
-| S7 | Crescendo and Sustain | Within 10 % of their labels | |
-| S8 | Aliasing | Worst alias under −60 dB at C7 | |
-| S9 | Chords | A 6-note chord within 6 dB of its notes' power sum (L12) | |
+| S5 | Cost against keys held | Flat within 10 % from 1 to 49 keys (workstation bench, then the MPC) | Not met, by design: the bank renders only the notes heard. Workstation, instructions a block: 154k for one key (most of it the Ensemble), 221k for 6, 385k for 49 (2.5 times one key); a track at rest stops running after 0.1 s. MPC: device round |
+| S6 | Tuning | Every key within 1 cent in every built-in tuning; 24-TET with each note at its own pitch | Met: every key within 1 cent in every built-in tuning on two roots, 0.001 cents from C1 to C7 (T1); 24-TET within 0.01 cent |
+| S7 | Crescendo and Sustain | Within 10 % of their labels | Met: −2.3 % to +0.2 % |
+| S8 | Aliasing | Worst alias under −60 dB at C7 | Met: −65.5 dB at worst (Violin) |
+| S9 | Chords | A 6-note chord within 6 dB of its notes' power sum (L12) | Met: −0.55 to +1.61 dB over the 24 presets |
 
 The Ensemble effect also meets the FX method's own rows: no dip as Mix goes up (within −1 to +1.5 LU of the dry), no zipper over 3 dB on any control, and no cut-off tail ([FX quality](fx-quality.md#delay), D6, D7 and D12). Built 18 Nov: in the `modulation` class it meets all of them (mix dip -0.33 LU, no bump; every control's click at least 60 dB under the tone; on insert within ±0.4 LU at the defaults and every preset).
 
 ## Not measured yet
 
-Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), drift (P10), the 808 kick and metal bank against their papers (D1, D2, D9), chokes and retriggers (D6), sustain-pedal behaviour (K5: there is no pedal event yet), clav and piano partials (K7, K8), FM envelope rates and banks (F4, F6), the string machine, organs, winds and choirs (S, O: no engines yet), and cost on the MPC. Each joins the report when stage 3 or 4 builds or changes what it measures.
+Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), drift (P10), the 808 kick and metal bank against their papers (D1, D2, D9), chokes and retriggers (D6), sustain-pedal behaviour (K5: there is no pedal event yet), clav and piano partials (K7, K8), FM envelope rates and banks (F4, F6), organs, winds and choirs (O: no engines yet), and cost on the MPC. Each joins the report when stage 3 or 4 builds or changes what it measures.
 
 ## Running it
 

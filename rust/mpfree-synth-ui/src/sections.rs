@@ -380,6 +380,7 @@ mod tests {
             Box::new(Drawbar::new(rate)),
             Box::new(Squelch::new(rate)),
             Box::new(Analog::new(rate)),
+            Box::new(Strings::new(rate)),
         ];
         for n in &nodes {
             let (info, params) = (n.info(), n.params());
