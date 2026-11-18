@@ -58,6 +58,11 @@ pub const FADE_MS: u32 = 5;
 /// Free's lengths, in seconds.
 pub const FREE_SECONDS: [u32; 6] = [5, 10, 20, 30, 60, 120];
 
+/// What Sample Recall opens on, and what the Sample page's Keep card
+/// keeps: the last 4 bars while the music plays, else the last 10 s.
+pub const OPEN_BARS: u32 = 4;
+pub const OPEN_SECONDS: u32 = 10;
+
 /// How long the bracket is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Length {
@@ -110,6 +115,17 @@ impl Length {
 
     fn index(self) -> usize {
         Length::ALL.iter().position(|l| *l == self).unwrap_or(2)
+    }
+
+    /// What the Sample page's Keep card says it keeps: "Keep last 4 bars",
+    /// "Keep last bar", "Keep last 10 s", "Keep last 2:00".
+    pub fn keep_text(self) -> String {
+        match self {
+            Length::Bars(1) => "Keep last bar".to_string(),
+            Length::Bars(n) => format!("Keep last {n} bars"),
+            Length::Free(s) if s >= 60 => format!("Keep last {}:{:02}", s / 60, s % 60),
+            Length::Free(s) => format!("Keep last {s} s"),
+        }
     }
 }
 
@@ -198,25 +214,40 @@ pub struct Recall {
 
 impl Recall {
     /// Opened on `pad` (landing on `onto`) over `input`: while the music
-    /// plays (bar lines come in), the last 4 whole bars, warped; stopped,
-    /// the last 10 s as played.
+    /// plays (bar lines come in), the last [`OPEN_BARS`] whole bars,
+    /// warped; stopped, the last [`OPEN_SECONDS`] as played.
     pub fn open(input: &Input, pad: usize, onto: usize, pads: usize) -> Recall {
+        Recall::last(input, OPEN_BARS, OPEN_SECONDS, pad, onto, pads)
+    }
+
+    /// [`Recall::open`] with its lengths: the last `bars` whole bars while
+    /// the music plays (as many as have passed, halving, when fewer
+    /// have), warped; stopped, the last `seconds` as played. The Sample
+    /// page's Keep card keeps this in one tap (one-page step 2c).
+    pub fn last(
+        input: &Input,
+        bars: u32,
+        seconds: u32,
+        pad: usize,
+        onto: usize,
+        pads: usize,
+    ) -> Recall {
         let playing = input.bars.bar_frames().is_some() && input.bars_back(1).is_some();
         let mut r = Recall {
             pad,
             onto,
             pads: pads.max(1),
             length: if playing {
-                Length::Bars(4)
+                Length::Bars(bars.max(1))
             } else {
-                Length::Free(10)
+                Length::Free(seconds.max(1))
             },
             back: 0,
             at: input.now(),
             warp: playing,
             fade_ms: FADE_MS,
         };
-        // Fewer bars than 4 have passed: as many as there are.
+        // Fewer bars have passed: as many as there are.
         while r.bracket(input).is_none() {
             match r.length {
                 Length::Bars(n) if n > 1 => r.length = Length::Bars(n / 2),

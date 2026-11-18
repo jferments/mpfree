@@ -1,0 +1,292 @@
+mpfree-preset = 1
+engine = mpfree.poly
+name = Init
+
+mpfree-preset = 1
+engine = mpfree.poly
+name = Grit Bass
+
+# Osc 1
+osc-1.octave = -1
+
+# Osc 2
+osc-2.wave = Pulse
+osc-2.octave = -1
+osc-2.fine = -9
+osc-2.level = 70
+
+# Mix
+mix.sub = 70
+
+# Filter
+filter.cutoff = 260
+filter.resonance = 35
+filter.distortion = 18
+filter.env-amount = 3.2
+filter.key-track = 30
+
+# Filter env
+filter-env.decay = 220
+filter-env.sustain = 10
+
+# Amp env
+amp-env.decay = 400
+amp-env.sustain = 70
+amp-env.release = 90
+
+# Voice
+voice.mode = Legato
+voice.glide = 40
+
+# Output
+output.level = 6
+
+# Pressure
+pressure.to-1 = Distortion
+pressure.depth-1 = 25
+
+mpfree-preset = 1
+engine = mpfree.poly
+name = Acid
+
+# Osc 1
+osc-1.octave = -1
+
+# Osc 2
+osc-2.level = 0
+
+# Filter
+filter.cutoff = 380
+filter.resonance = 82
+filter.drive = 12
+filter.env-amount = 3.8
+filter.velocity = 2
+
+# Filter env
+filter-env.decay = 180
+filter-env.sustain = 0
+
+# Amp env
+amp-env.sustain = 90
+amp-env.release = 40
+
+# Voice
+voice.mode = Legato
+voice.glide = 70
+
+# Output
+output.level = 5
+
+# Pressure
+pressure.depth-1 = 50
+pressure.to-2 = Resonance
+pressure.depth-2 = 20
+
+mpfree-preset = 1
+engine = mpfree.poly
+name = Supersaw
+
+# Osc 2
+osc-2.octave = 1
+osc-2.fine = 4
+osc-2.level = 45
+
+# Unison
+unison.unison = 4
+unison.detune = 28
+unison.spread = 90
+
+# Filter
+filter.type = LP 12
+filter.cutoff = 6000
+filter.resonance = 10
+filter.env-amount = 0.8
+
+# Amp env
+amp-env.attack = 5
+amp-env.release = 500
+
+# Output
+output.level = -3
+
+mpfree-preset = 1
+engine = mpfree.poly
+name = Dust Pad
+
+# Osc 1
+osc-1.wave = Pulse
+osc-1.width = 35
+
+# Osc 2
+osc-2.fine = 11
+osc-2.level = 80
+
+# Mix
+mix.noise = 8
+
+# Unison
+unison.unison = 2
+unison.detune = 12
+
+# Filter
+filter.cutoff = 900
+filter.resonance = 25
+filter.env-amount = 1.2
+
+# Filter env
+filter-env.attack = 900
+filter-env.decay = 2000
+filter-env.sustain = 50
+filter-env.release = 1500
+
+# Amp env
+amp-env.attack = 700
+amp-env.decay = 1500
+amp-env.sustain = 85
+amp-env.release = 1800
+
+# LFO
+lfo.shape = Triangle
+lfo.rate = 0.3
+lfo.to-cutoff = 0.6
+lfo.to-width = 20
+
+# Output
+output.level = -6
+
+# Pressure
+pressure.to-1 = Level
+pressure.depth-1 = 25
+pressure.to-2 = Vibrato
+pressure.depth-2 = 30
+
+mpfree-preset = 1
+engine = mpfree.poly
+name = Pluck
+
+# Osc 2
+osc-2.wave = Pulse
+osc-2.octave = 1
+osc-2.level = 35
+
+# Filter
+filter.cutoff = 400
+filter.resonance = 30
+filter.env-amount = 4
+filter.velocity = 1.5
+
+# Filter env
+filter-env.decay = 160
+filter-env.sustain = 0
+filter-env.release = 160
+
+# Amp env
+amp-env.decay = 450
+amp-env.sustain = 0
+amp-env.release = 300
+
+# Pressure
+pressure.to-1 = Off
+
+mpfree-preset = 1
+engine = mpfree.poly
+name = Brass
+
+# Osc 2
+osc-2.fine = 5
+osc-2.level = 90
+
+# Filter
+filter.cutoff = 700
+filter.resonance = 10
+filter.env-amount = 2.5
+
+# Filter env
+filter-env.attack = 60
+filter-env.decay = 500
+filter-env.sustain = 50
+
+# Amp env
+amp-env.attack = 30
+amp-env.sustain = 90
+
+# LFO
+lfo.rate = 5.5
+lfo.to-pitch = 0.15
+
+# Pressure
+pressure.to-1 = Level
+pressure.depth-1 = 37.5
+pressure.to-2 = Cutoff
+pressure.depth-2 = 37.5
+
+mpfree-preset = 1
+engine = mpfree.poly
+name = Sub Bass
+
+# Osc 1
+osc-1.wave = Sine
+osc-1.octave = -1
+
+# Osc 2
+osc-2.wave = Triangle
+osc-2.octave = -1
+osc-2.fine = 0
+osc-2.level = 40
+
+# Filter
+filter.cutoff = 1200
+filter.resonance = 0
+filter.env-amount = 0
+
+# Amp env
+amp-env.sustain = 100
+amp-env.release = 120
+
+# Voice
+voice.mode = Mono
+voice.glide = 25
+
+# Pressure
+pressure.to-1 = Drive
+pressure.depth-1 = 25
+
+mpfree-preset = 1
+engine = mpfree.poly
+name = Lead
+
+# Osc 1
+osc-1.wave = Pulse
+osc-1.width = 40
+
+# Osc 2
+osc-2.fine = 12
+osc-2.level = 80
+
+# Filter
+filter.cutoff = 1800
+filter.resonance = 40
+filter.drive = 9
+filter.env-amount = 1.8
+
+# Filter env
+filter-env.decay = 300
+filter-env.sustain = 40
+
+# LFO
+lfo.rate = 5.8
+lfo.to-pitch = 0.3
+
+# Voice
+voice.mode = Legato
+voice.glide = 90
+voice.bend-range = 12
+
+# Output
+output.level = 3
+
+# Pressure
+pressure.to-1 = Vibrato
+pressure.depth-1 = 50
+pressure.to-2 = Cutoff
+pressure.depth-2 = 25

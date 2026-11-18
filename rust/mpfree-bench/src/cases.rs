@@ -30,10 +30,8 @@ use mpfree_sampler::model::*;
 use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
 use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
-use mpfree_synth::wavetable::params::{self as wt, PRESETS as WT_PRESETS};
-use mpfree_synth::{
-    Analog, Bass, Drawbar, Drums, Keys, Pluck, Poly, Squelch, Strings, Wavetable, PRESETS,
-};
+use mpfree_synth::wavetable::params as wt;
+use mpfree_synth::{Analog, Bass, Drawbar, Drums, Keys, Pluck, Poly, Squelch, Strings, Wavetable};
 use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
 use mpfree_transport::{Block as TBlock, Command as T, Transport};
@@ -986,7 +984,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     // Made first, so no case's memory includes it.
     program(rate);
     let mut v = Vec::new();
-    for preset in PRESETS {
+    for preset in Poly::presets() {
         v.push(measured(|| {
             synth(
                 format!("Poly {}, 8 voices", preset.name),
@@ -1043,6 +1041,42 @@ pub fn all(rate: u32) -> Vec<Case> {
             )
         }));
     }
+    // A sound: the Keys engine with its own Ensemble and a macro moving a
+    // setting of each (what the wrapper and its effect add to the engine).
+    v.push(measured(|| {
+        use mpfree_instruments::sound::FX_BASE;
+        use mpfree_instruments::{Design, Macro, MacroMap, Sound};
+        let design = Design {
+            fx: vec!["mpfree.fx.ensemble".into()],
+            macros: vec![Macro {
+                name: "Space".into(),
+                maps: vec![
+                    MacroMap {
+                        target: mpfree_synth::keys_params::TONE,
+                        from: -20.0,
+                        to: 20.0,
+                        curve: mpfree_mod::MapCurve::Linear,
+                    },
+                    MacroMap {
+                        target: FX_BASE + ids::ensemble::MIX,
+                        from: 0.0,
+                        to: 60.0,
+                        curve: mpfree_mod::MapCurve::Linear,
+                    },
+                ],
+            }],
+        };
+        let sound = Sound::new(Box::new(Keys::new(rate)), &design).expect("the sound");
+        let space = mpfree_instruments::sound::MACRO_BASE;
+        chords(
+            "Sound Keys Init with Ensemble, 8 voices".to_string(),
+            rate,
+            Box::new(sound),
+            &[(space, 50.0)],
+            Some(mpfree_synth::keys_params::POLYPHONY),
+            8,
+        )
+    }));
     // Drawbar: the default three drawbars, all nine with leakage, chorus
     // and the fast rotary, and the rotary off.
     for (name, keys) in [
@@ -1141,7 +1175,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     }
     // Wavetable: the first case also holds the factory tables (built once
     // per process, shared by every instance).
-    for preset in WT_PRESETS {
+    for preset in Wavetable::presets() {
         v.push(measured(|| {
             chords(
                 format!("Wavetable {}, 8 voices", preset.name),
@@ -1817,7 +1851,7 @@ fn engine_scaling(rate: u32) -> Vec<Scaling> {
             mode(&p.values, fm_params::VOICE_MODE),
         ));
     }
-    for p in WT_PRESETS {
+    for p in Wavetable::presets() {
         v.push(preset_scaling(
             format!("Wavetable {}", p.name),
             rate,
@@ -1875,7 +1909,7 @@ fn engine_scaling(rate: u32) -> Vec<Scaling> {
 /// on a line), the sampler at 1 to 32 voices held, and the sampler's
 /// grains at 16 to 256 alive.
 pub fn scaling(rate: u32) -> Vec<Scaling> {
-    let mut v: Vec<Scaling> = PRESETS
+    let mut v: Vec<Scaling> = Poly::presets()
         .iter()
         .map(|p| {
             // Mono and legato presets play one voice whatever the polyphony.
@@ -2295,7 +2329,7 @@ pub fn fit(points: &[(usize, f64)]) -> (f64, f64) {
 /// also shows what they cost each other in the caches.
 fn song(rate: u32) -> Case {
     let preset = |name: &str| {
-        PRESETS
+        Poly::presets()
             .iter()
             .find(|p| p.name == name)
             .unwrap_or_else(|| panic!("preset {name}"))
@@ -3636,7 +3670,7 @@ fn beside(name: &str, rate: u32, lane: Option<LaneConfig>, wait: Duration) -> Ca
     let poly = Part::new(Chords::new(
         rate,
         Box::new(Poly::new(rate)),
-        PRESETS[0].values,
+        Poly::presets()[0].values,
         Some(POLYPHONY),
         8,
     ));

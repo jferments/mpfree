@@ -4,9 +4,11 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 license = "MIT"
-description = "Sound presets for MPFree's instruments: any node's settings as plain key = value text and back, for user presets in the library"
+description = "Sound presets for MPFree's instruments: any node's settings as plain key = value text and back, for user presets in the library; sounds (an engine with its own effects and macros)"
 
 [dependencies]
+mpfree-fx = { path = "../mpfree-fx" }
+mpfree-mod = { path = "../mpfree-mod" }
 mpfree-node = { path = "../mpfree-node" }
 
 [dev-dependencies]

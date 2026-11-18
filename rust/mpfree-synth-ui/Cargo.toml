@@ -16,3 +16,6 @@ mpfree-ui = { path = "../mpfree-ui" }
 [[bin]]
 name = "mpfree-synth-preview"
 path = "src/bin/preview.rs"
+
+[dev-dependencies]
+mpfree-instruments = { path = "../mpfree-instruments" }
