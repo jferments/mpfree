@@ -3080,6 +3080,9 @@ mod tests {
                     cond: mpfree_seq::Cond::Always,
                     ratchet: 1,
                     touch: mpfree_seq::Touch::NONE,
+                    on: true,
+                    ramp: 0,
+                    join: mpfree_seq::Join::Attack,
                 })
                 .collect();
             c
@@ -5489,6 +5492,9 @@ mod tests {
                 cond: mpfree_seq::Cond::Always,
                 ratchet: 1,
                 touch: mpfree_seq::Touch::NONE,
+                on: true,
+                ramp: 0,
+                join: mpfree_seq::Join::Attack,
             })
             .collect();
         h.control.project.tracks[0].slots[0] = Some(c);

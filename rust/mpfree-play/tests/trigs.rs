@@ -2,12 +2,13 @@
 //! start by song position (across locates, loops and relaunches); FILL
 //! switches on an exact frame; PRE and NEI follow the last conditional
 //! note; a ratchet plays whole or not at all, spread over its note; a note
-//! left out leaves out its own locks; and all of it the same at every
-//! period size.
+//! left out leaves out its own locks; a step that is off, a ratchet's
+//! velocity ramp, ties and slides (sequencer S6); and all of it the same
+//! at every period size.
 
 use mpfree_play::{anchored, Cue, Event, Launch, Out, PlayView, Player, Sink};
 use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
-use mpfree_seq::{Clip, Cond, Lock, Note, Project, Quantise, Speed, Track};
+use mpfree_seq::{Clip, Cond, Join, Lock, Note, Project, Quantise, Speed, Track};
 use mpfree_transport::time::Swing;
 use mpfree_transport::{Block, Command, Transport};
 
@@ -641,6 +642,149 @@ fn a_whole_step_lock_on_a_chord_goes_only_with_every_note() {
     );
 }
 
+#[test]
+fn a_step_that_is_off_is_left_out_with_its_locks_and_decides_nothing() {
+    use What::{Lock as L, On, Unlock as U};
+    // On pass 1 the 1ST note would play and set PRE, so !PRE would not;
+    // off, it decides nothing and !PRE plays on every pass.
+    let mut first = note(4 * STEP, 61, Cond::First);
+    first.on = false;
+    let mut c = clip(
+        BAR,
+        &[
+            note(0, 60, Cond::Always),
+            first,
+            note(8 * STEP, 62, Cond::NotPre),
+        ],
+    );
+    c.locks = vec![
+        Lock::new(0, None, CUT, 1.0),
+        // On the off step's row: left out with it.
+        Lock::new(4 * STEP, Some(61), CUT, 2.0),
+    ];
+    let s = Session::new(vec![c]);
+    let (log, player) = run(&s, 128, 2 * BAR_FRAMES);
+    assert_eq!(
+        locks_and_ons(&log),
+        vec![L(1.0), On(60), U, On(62), L(1.0), On(60), U, On(62)]
+    );
+    assert_eq!(player.stats().off, 2);
+    assert_eq!(player.stats().unmet, 0);
+}
+
+/// Note-on velocities of note `n`.
+fn velocities(log: &[Out], n: u8) -> Vec<u8> {
+    log.iter()
+        .filter_map(|o| match o.event {
+            Event::NoteOn { note, velocity } if note == n => Some(velocity),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_ratchets_velocity_ramps_to_its_last_hit() {
+    let mut down = Note::new(0, STEP, 60, 100);
+    down.ratchet = 4;
+    down.ramp = -60;
+    let mut up = Note::new(4 * STEP, STEP, 61, 100);
+    up.ratchet = 3;
+    up.ramp = 126;
+    // No ratchet: the ramp has nothing to do.
+    let mut one = Note::new(8 * STEP, STEP, 62, 90);
+    one.ramp = -50;
+    let s = Session::new(vec![clip(BAR, &[down, up, one])]);
+    let (log, _) = run(&s, 128, BAR_FRAMES);
+    assert_eq!(velocities(&log, 60), vec![100, 80, 60, 40]);
+    // Kept to 127.
+    assert_eq!(velocities(&log, 61), vec![100, 127, 127]);
+    assert_eq!(velocities(&log, 62), vec![90]);
+}
+
+fn joined(tick: i64, len: i64, n: u8, join: Join) -> Note {
+    let mut x = Note::new(tick, len, n, 100);
+    x.join = join;
+    x
+}
+
+#[test]
+fn a_tie_goes_on_as_the_note_before_it() {
+    use What::{Lock as L, On, Unlock as U};
+    let mut c = clip(
+        BAR,
+        &[
+            Note::new(0, STEP, 60, 100),
+            // Ends where the note before it ends: no attack, one long note
+            // with the lock it holds.
+            joined(STEP, STEP, 60, Join::Tie),
+            // A slide onto the same pitch ties too.
+            joined(2 * STEP, STEP, 60, Join::Slide),
+            // Nothing sounding to continue (a gap): its own attack.
+            joined(4 * STEP, STEP, 60, Join::Tie),
+            // Another pitch: nothing to continue either.
+            joined(5 * STEP, STEP, 64, Join::Tie),
+        ],
+    );
+    c.locks = vec![Lock::new(0, None, CUT, 1.0)];
+    let tied = Session::new(vec![c]);
+    let plain = Session::new(vec![clip(
+        BAR,
+        &[
+            Note::new(0, 3 * STEP, 60, 100),
+            Note::new(4 * STEP, STEP, 60, 100),
+            Note::new(5 * STEP, STEP, 64, 100),
+        ],
+    )]);
+    for period in [64, 128, 1000] {
+        let (a, pa) = run(&tied, period, 2 * BAR_FRAMES);
+        let (b, _) = run(&plain, period, 2 * BAR_FRAMES);
+        assert_eq!(edges(&a), edges(&b), "{period}");
+        assert_eq!(pa.stats().tied, 4);
+    }
+    let (log, _) = run(&tied, 128, BAR_FRAMES);
+    // The lock holds through the tie; the next attack ends it.
+    assert_eq!(locks_and_ons(&log), vec![L(1.0), On(60), U, On(60), On(64)]);
+}
+
+#[test]
+fn a_slide_overlaps_the_note_before_it_by_a_tick() {
+    let slid = Session::new(vec![clip(
+        BAR,
+        &[
+            Note::new(0, STEP, 60, 100),
+            // A held note ending later is handed over too.
+            Note::new(0, 4 * STEP, 48, 100),
+            // A chord slides from both; its own notes don't end each other.
+            joined(STEP, STEP, 63, Join::Slide),
+            joined(STEP, STEP, 67, Join::Slide),
+            // A gap: nothing to slide from.
+            joined(4 * STEP, STEP, 65, Join::Slide),
+        ],
+    )]);
+    let plain = Session::new(vec![clip(
+        BAR,
+        &[
+            Note::new(0, STEP + 1, 60, 100),
+            Note::new(0, STEP + 1, 48, 100),
+            Note::new(STEP, STEP, 63, 100),
+            Note::new(STEP, STEP, 67, 100),
+            Note::new(4 * STEP, STEP, 65, 100),
+        ],
+    )]);
+    for period in [1, 64, 128, 1000] {
+        let (a, pa) = run(&slid, period, 2 * BAR_FRAMES);
+        let (b, _) = run(&plain, period, 2 * BAR_FRAMES);
+        assert_eq!(edges(&a), edges(&b), "{period}");
+        assert_eq!(pa.stats().tied, 0);
+    }
+    // The new note starts before the old one ends: legato.
+    let (log, _) = run(&slid, 128, BAR_FRAMES);
+    let e = edges(&log);
+    let on = e.iter().position(|x| *x == (e[2].0, true, 63)).unwrap();
+    let off = e.iter().position(|x| !x.1 && x.2 == 60).unwrap();
+    assert!(on < off && e[off].0 > e[on].0, "{e:?}");
+}
+
 /// A busy session: four tracks with every condition, chance, ratchets,
 /// locks, FILL switched mid-bar, a transport loop, a locate and a cue.
 fn busy() -> Session {
@@ -677,6 +821,15 @@ fn busy() -> Session {
             n.cond = conds[(rnd() % conds.len() as u64) as usize];
             n.chance = [100, 100, 70][(rnd() % 3) as usize];
             n.ratchet = 1 + (rnd() % 4) as u8;
+            // The step's own settings, by step (no more dice, so the rest
+            // of the session stays as it was).
+            n.on = k % 11 != 4;
+            n.ramp = if n.ratchet > 1 {
+                [0, -40, 30][(k % 3) as usize]
+            } else {
+                0
+            };
+            n.join = [Join::Attack, Join::Attack, Join::Tie, Join::Slide][(k % 4) as usize];
             if rnd() % 3 == 0 {
                 c.locks.push(Lock::new(n.tick, Some(n.note), CUT, k as f32));
             }
@@ -729,7 +882,11 @@ fn the_same_at_every_period_size() {
     let stats = p.stats();
     assert!(want.len() > 2000, "{} events", want.len());
     assert!(
-        stats.unmet > 100 && stats.skipped > 20 && stats.locks > 50,
+        stats.unmet > 100
+            && stats.skipped > 20
+            && stats.locks > 50
+            && stats.off > 10
+            && stats.tied > 0,
         "{stats:?}"
     );
     for period in [1, 63, 64, 100, 256, 512, 1000, 1024] {

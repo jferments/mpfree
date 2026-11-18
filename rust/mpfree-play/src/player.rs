@@ -64,7 +64,20 @@
 //! it. The condition and chance are decided once, on the first hit, so a
 //! ratchet plays whole or not at all: its later hits wait in a table until
 //! their tick. A stop, a locate or a loop jump drops them; a switch drops
-//! the ones from its bar line on; a muted track drops its own.
+//! the ones from its bar line on; a muted track drops its own. A ratchet's
+//! velocity ramp (`Note::ramp`) steps each later hit's velocity evenly
+//! to the last hit's (`mpfree_seq::ramped`).
+//!
+//! **Steps that are off, ties and slides** (sequencer S6). A step that is
+//! off (`Note::on` false) is left out like a note its chance left out,
+//! with its locks, but it sets no last result for PRE and NEI. A tie or a
+//! slide (`mpfree_seq::Join`) that plays looks, before anything on its
+//! tick ends, at its track's notes started before its tick that are still
+//! sounding or end on it: a note of its own pitch goes on to the tie's end
+//! with no new attack, and the locks it holds stay (a slide onto the same
+//! pitch does the same); with a slide, the other notes end one tick after
+//! the slide's note-on, so the two overlap and a synth in mono or legato
+//! mode glides. A tie or a slide with nothing to join plays as any note.
 //!
 //! **Cues** (see [`crate::view`]). A track's waiting cue starts on the
 //! first bar line the playhead plays: the clip so far plays the ticks
@@ -109,7 +122,7 @@ use std::ops::Range;
 
 use mpfree_param::ParamAddr;
 use mpfree_seq::mpfree_moves::Out as MoveOut;
-use mpfree_seq::{ClipProgram, Cond, DestId, Lock, Note, Speed, Touch, MAX_TRACKS};
+use mpfree_seq::{ClipProgram, Cond, DestId, Join, Lock, Note, Speed, Touch, MAX_TRACKS};
 use mpfree_transport::time::{Swing, Tick};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
@@ -245,6 +258,11 @@ pub struct Stats {
     pub skipped: u64,
     /// Notes their trig condition left out (chance did not roll).
     pub unmet: u64,
+    /// Steps that are off ([`Note::on`]), left out.
+    pub off: u64,
+    /// Ties (and slides onto the same pitch) that went on as the note
+    /// before them, with no attack ([`Join`]).
+    pub tied: u64,
     /// Parameter locks sent (each lock, not each unlock). Locks a full
     /// table left out count in `dropped`.
     pub locks: u64,
@@ -262,6 +280,9 @@ struct Sounding {
     off: Tick,
     /// Start order, to break ties.
     seq: u64,
+    /// Its start's song tick: a tie or slide joins only notes from before
+    /// its own tick.
+    from: Tick,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -278,15 +299,20 @@ struct Start {
     cond: Cond,
     /// The clip's pass, counted from its start (pass 1).
     pass: i32,
-    /// Hits, spread over `len` song ticks.
+    /// Hits, spread over `len` song ticks, their velocity ramping by
+    /// `ramp` to the last.
     ratchet: u8,
     len: f32,
+    ramp: i8,
+    /// With its own attack, or tied or sliding into the note before it.
+    join: Join,
     /// Not a note: the track's clip starts here, so its last result
     /// (for PRE and NEI) starts again at "not played".
     reset: bool,
     /// With `reset`, the program change the clip starting here sends.
     program: Option<ClipProgram>,
-    /// Decided before the span plays: the note plays.
+    /// Decided before the span plays: the note plays. A step that is off
+    /// ([`Note::on`]) starts out false.
     plays: bool,
     /// Its recorded pressure in the clip in `slot` (at `speed`), sent
     /// until song tick `until` (the whole note's end).
@@ -433,6 +459,7 @@ const NO_SOUND: Sounding = Sounding {
     note: 0,
     off: 0,
     seq: 0,
+    from: 0,
 };
 const NO_START: Start = Start {
     tick: 0,
@@ -447,6 +474,8 @@ const NO_START: Start = Start {
     pass: 1,
     ratchet: 1,
     len: 0.0,
+    ramp: 0,
+    join: Join::Attack,
     reset: false,
     program: None,
     plays: true,
@@ -564,16 +593,7 @@ impl Erase {
 const NO_ERASED: Erased = Erased {
     track: 0,
     slot: 0,
-    note: Note {
-        tick: 0,
-        len: 1,
-        note: 0,
-        velocity: 1,
-        chance: 100,
-        cond: mpfree_seq::Cond::Always,
-        ratchet: 1,
-        touch: mpfree_seq::Touch::NONE,
-    },
+    note: Note::new(0, 1, 0, 1),
     take: 0,
 };
 
@@ -923,6 +943,9 @@ impl Player {
         let mut k = 0;
         for i in 0..self.n_starts {
             let s = self.starts[i];
+            // A tie or a slide holds the note before it, before anything
+            // on this tick can end it.
+            let tied = !s.reset && s.plays && s.join != Join::Attack && self.join(&s);
             // Locks on or before this tick go first (after the note-offs
             // before them), so a note starts with its step's locks. A note
             // left out leaves out its own locks.
@@ -953,6 +976,12 @@ impl Player {
                 });
             }
             if s.reset || !s.plays {
+                continue;
+            }
+            // A tie goes on as the note it continues: no attack, and the
+            // locks it holds stay.
+            if tied {
+                self.stats.tied += 1;
                 continue;
             }
             if s.ratchet > 1 {
@@ -1000,6 +1029,7 @@ impl Player {
                 note: s.note,
                 off: s.off,
                 seq: self.seq,
+                from: s.tick,
             };
             self.n_sounding += 1;
             self.seq += 1;
@@ -1248,6 +1278,13 @@ impl Player {
                 }
                 continue;
             }
+            // A step that is off is left out with its locks, and decides
+            // nothing for PRE and NEI.
+            if !s.plays {
+                self.stats.off += 1;
+                self.left_out = true;
+                continue;
+            }
             if s.cond == Cond::Always && s.chance >= 100 {
                 continue;
             }
@@ -1334,6 +1371,36 @@ impl Player {
         }
     }
 
+    /// Tie or slide `s` (a note that plays, [`Join`]) to the notes of its
+    /// track sounding as it starts or ending on its tick, started before
+    /// it (a ratchet's hit before its tick that is still waiting too): a
+    /// note of its own pitch goes on to `s`'s end (true: `s` plays no
+    /// attack of its own); with a slide, the rest end one tick after `s`
+    /// starts, so the two overlap and a legato synth glides.
+    fn join(&mut self, s: &Start) -> bool {
+        let mut tied = false;
+        let notes = self.sounding[..self.n_sounding]
+            .iter_mut()
+            .map(|x| (x.track, x.dest, x.note, x.from, &mut x.off));
+        // A ratchet's hits from before the tie's tick that this span hasn't
+        // played yet count as sounding, as they would at a shorter period.
+        let hits = self.hits[..self.n_hits]
+            .iter_mut()
+            .map(|h| (h.track, h.dest, h.note, h.tick, &mut h.off));
+        for (track, dest, note, from, off) in notes.chain(hits) {
+            if track != s.track || dest != s.dest || *off < s.tick || from >= s.tick {
+                continue;
+            }
+            if note == s.note {
+                *off = (*off).max(s.until);
+                tied = true;
+            } else if s.join == Join::Slide {
+                *off = s.tick + 1;
+            }
+        }
+        tied
+    }
+
     /// Queue the later hits of `starts[i]`, a ratchet whose first hit
     /// plays now: spread evenly over the note's length (hits less than a
     /// tick apart merge), none from a switch of its track on (the switch's
@@ -1361,7 +1428,7 @@ impl Player {
                 track: s.track,
                 dest: s.dest,
                 note: s.note,
-                velocity: s.velocity,
+                velocity: mpfree_seq::ramped(s.velocity, s.ramp, h as u8, s.ratchet),
                 off: at(h + 1).max(tick + 1).min(cut),
             });
         }
@@ -1450,6 +1517,7 @@ impl Player {
                 note: h.note,
                 off: h.off,
                 seq: self.seq,
+                from: h.tick,
             };
             self.n_sounding += 1;
             self.seq += 1;
@@ -1923,9 +1991,11 @@ impl Player {
                     pass: number_of(pass, &mut first_number),
                     ratchet,
                     len: n.len as f32,
+                    ramp: n.src.ramp,
+                    join: n.src.join,
                     reset: false,
                     program: None,
-                    plays: true,
+                    plays: n.src.on,
                     touch: n.src.touch,
                     slot: clip.slot,
                     speed: clip.speed,

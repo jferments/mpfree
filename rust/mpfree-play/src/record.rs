@@ -261,6 +261,9 @@ const NO_TAKE: Taken = Taken {
         cond: mpfree_seq::Cond::Always,
         ratchet: 1,
         touch: mpfree_seq::Touch::NONE,
+        on: true,
+        ramp: 0,
+        join: mpfree_seq::Join::Attack,
     },
     take: 0,
 };
@@ -1162,6 +1165,9 @@ impl Recorder {
             cond: mpfree_seq::Cond::Always,
             ratchet: 1,
             touch: mpfree_seq::Touch::NONE,
+            on: true,
+            ramp: 0,
+            join: mpfree_seq::Join::Attack,
         };
         let taken = Taken {
             track,
