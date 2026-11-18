@@ -992,6 +992,16 @@ impl TimeControl {
         })
     }
 
+    /// A note started the song with a take ready (the looper's Starts:
+    /// When I play, [`super::TimeHost::start_at`]): the clip it records
+    /// into, as for the leader's start. A line for the log.
+    pub(super) fn take_started_on_note(&mut self) -> Result<String, String> {
+        Ok(match self.ready_to_record()? {
+            Some(line) => format!("rec: the take started on your note, {line}"),
+            None => "rec: the take started on your note".to_string(),
+        })
+    }
+
     fn ready_to_record(&mut self) -> Result<Option<String>, String> {
         let Some(track) = self.armed else {
             return Ok(None);

@@ -54,13 +54,13 @@ The eight loops sit side by side across the top, each the same: its name and len
 
 - **Its wave runs round the ring**, and an arc fills as the loop plays, with a tick for each bar and a hand at the place it has got to. The middle says which bar is playing ("2 of 4").
 - **Its colour is what it is doing:** the loop's own colour while it plays, red while it records its first pass, amber while it overdubs, grey when muted.
-- **An empty loop is a dashed circle** with **+** in the middle and what it will record under it (**Pads**, **Line in** or **Loops**). Once you tap it, it waits for the next bar line: the circle turns red and the middle says the bar it starts on ("13, REC on bar"), or **REC on PLAY** while the music is stopped.
+- **An empty loop is a dashed circle** with **+** in the middle and what it will record under it (**Pads**, **Line in** or **Loops**). Once you tap it, it waits for the next bar line: the circle turns red and the middle says the bar it starts on ("13, REC on bar"), or **REC on PLAY** while the music is stopped. Set to start [when you play](#start-when-you-play), it says **Play to start** until your first note.
 
 Tap a ring and the loop does its next step, on the moment your finger lands, so a punch is where you played it:
 
 | The loop is | A tap on its ring |
 |---|---|
-| Empty | Records from the next bar line (or from PLAY). |
+| Empty | Records from the next bar line (or from PLAY), or from your first note when it [starts when you play](#start-when-you-play). |
 | Waiting for its bar | Cancels. |
 | Recording its first pass | Ends it on the next bar line, and it plays. |
 | Playing | Starts an overdub. |
@@ -124,9 +124,22 @@ Pick an empty loop and the space under the lanes shows how it will record, and t
 | **Records from** | **Pads**: MPFree's own sound as you hear it, with the effects on its tracks and the echoes and reverbs of the sends. It leaves out the loops, the audio tracks, the line input and the metronome, and the master's own effects and Level, which the loop plays through anyway. **Line in**: the INPUTS on the back of the MPC (it opens the line input). **Loops**: all the other loops as you hear them, so you can bounce several loops into one and keep layering. |
 | **Monitor** | With Line in: hear the input through the outputs, about 9 ms late. Leave it off if you already hear your instrument another way, such as through a mixer. |
 | **Length** | **Free** (the default): from the next bar line until you tap the ring again (it ends on the next bar line) or press STOP (it stops at once). Or 1, 2, 4 or 8 bars, and it ends by itself. |
+| **Starts** | **On the bar** (the default): the first pass starts on the next bar line, or when PLAY starts the music. **When I play**: the loop waits for you, and your first note starts it ([below](#start-when-you-play)). With **Loops** it is always on the bar. |
 | **Then** | What the loop does when its first pass ends: **Play**, or go straight into an **Overdub**. |
 
 {{shot: looper-empty | An empty loop picked: What you played over the last eight bars, the two Capture would take marked, and how the loop will record under it.}}
+
+#### Start when you play
+
+With **Starts: When I play**, tap the ring (or press REC) and the loop waits for you for as long as you like: the ring says **Play to start**. Your first note starts it, so you can arm the loop and then play with both hands, or a guitar, without reaching back for a button.
+
+- **What counts as your first note:** with **Records from: Pads**, the first pad you play (a pad, not the sound: the music playing doesn't start it). With **Line in**, the first sound on the input louder than -40 dB.
+- **With the music stopped**, your note starts the music too, from the start of the bar it stopped in (bar 1 after STOP twice), with no count-in. Bar 1 begins on your note, so the loop, the sequencer and the metronome all start where you started. If notes are armed and ready to record (SHIFT + the track's Arm), they record from that note too.
+- **With the music playing**, the loop starts on the bar line nearest your note. Come in a little late (in the first half of a bar) and it starts on that bar's line, with what you played since kept: the looper was listening all along. Come in early (in the second half) and it starts on the next bar line, and the notes you played before it lead into the loop each time it comes round, as a pickup does.
+- **Counting in,** a note in the last half bar before bar 1 is a pickup into bar 1. A note earlier than that is forgotten, and the loop waits for the next one.
+- If the music can't start (it follows another device's clock, or an export is running), the screen says why and the loop keeps waiting.
+
+{{shot: looper-listening | Loop 5 set to start when you play, waiting: Play to start.}}
 
 Two things to know about recording the pads with their effects. The loop's own echo is recorded too if you turn up the **Looper**'s Delay send on the Play page, since that echo is part of the mix. And if you send the Loop or Audio track (or the line input) to a submix in the mixer, the looper can't leave it out of the mix, so it records the pads and the synth without their effects until that track goes back to the master.
 
