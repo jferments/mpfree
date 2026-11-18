@@ -71,6 +71,34 @@ pub const LOOP: usize = 2;
 /// level, pan, mute and solo.
 pub const AUDIO: usize = 3;
 pub const TRACKS: usize = 4;
+// The parameter addresses count the engines' tracks the same way.
+const _: () = assert!(mpfree_play::mpfree_param::ENGINE_STRIPS as usize == TRACKS);
+
+/// Sequencer track `t`'s mixer channel (0 is track 1), where its own
+/// instrument and a kit homed on it play, and what its clips' "this
+/// track's strip" locks reach (`mpfree_param::track_strip`, the same
+/// numbers): track 1's is the Drums strip (sampler R3 part 4b), so a
+/// track has one strip whatever it plays; every other track's is its own,
+/// past the engines' ([`crate::instruments::first_track`]` + t`). The
+/// mixer track that was track 1's own (`TRACKS`) is no track's, but for a
+/// project saved with settings on it ([`MixHost::old_first`]).
+pub const fn track_channel(t: usize) -> usize {
+    if t == 0 {
+        DRUMS
+    } else {
+        crate::instruments::first_track() + t
+    }
+}
+
+/// The Drums strip's name while track 1's own instrument plays there,
+/// like every other track's own channel ("Track 2"): the strip is named
+/// for what track 1 plays. Kit 1's pads, from whichever track plays them,
+/// still sound there too (the manual's mixer page says so); the strip's
+/// name has no room for both words.
+pub const TRACK_1: &str = "Track 1";
+/// The name of track 1's old own channel, in a project saved with
+/// settings on it ([`MixHost::old_first`]).
+pub const OLD_TRACK_1: &str = "Track 1 (old)";
 /// Pad channels: the playing kit's pads.
 pub const PADS: usize = 16;
 /// [`Pads::played`]'s bit for kit 1's pads past [`PADS`], which play
@@ -452,6 +480,7 @@ pub fn name(s: StripId) -> String {
         StripId::Track(SYNTH) => "Synth".into(),
         StripId::Track(LOOP) => "Loop".into(),
         StripId::Track(AUDIO) => "Audio".into(),
+        StripId::Track(TRACKS) => OLD_TRACK_1.into(),
         StripId::Track(t) if t >= TRACKS => format!("Track {}", t - TRACKS + 1),
         LINE => "Line in".into(),
         s => default_name(s),
@@ -543,6 +572,9 @@ pub struct MixHost {
     /// How long the tracks' own instruments took in the last period (0
     /// when no track has one), for load shedding's cost a voice (shed.rs).
     pub instrument_time: Duration,
+    /// Projects opened whose track 1 kept its old own channel
+    /// ([`MixHost::old_first`]).
+    pub old_first_opens: u64,
     /// Instruments made without a builder (the tests), waiting to go in.
     made: Vec<crate::control::MadeInstrument>,
     /// Each plugin synth's own presets, once listed (or why not), by its
@@ -755,6 +787,7 @@ impl MixHost {
             homes: [0; KITS],
             pad_channels: PadChannels::default(),
             instrument_time: Duration::ZERO,
+            old_first_opens: 0,
             made: Vec::new(),
             plugin_presets: Vec::new(),
             presets_asked: Vec::new(),
@@ -1093,7 +1126,33 @@ impl MixHost {
                     Some(text) => self.modu.load(&self.mixer, text),
                     None => 0,
                 };
+                // Track 1 plays where the project says (its `track1`
+                // line). A project saved before Drums was track 1's strip
+                // keeps track 1 on its old own channel when its instrument
+                // played there or the channel has settings, so the project
+                // sounds as it did (counted, said, and shown as
+                // OLD_TRACK_1); otherwise nothing played there, and track 1
+                // moves to Drums.
+                let settings =
+                    !crate::project::untouched_channel(&self.mixer, StripId::Track(TRACKS));
+                let old = match load.track1 {
+                    Some(st) => st == StripId::Track(TRACKS),
+                    None => settings || load.track1_own,
+                };
+                self.instruments
+                    .set_first_channel(if old { TRACKS } else { track_channel(0) });
                 let mut line = format!("mixer: the project's mixer is in ({effects} effects)");
+                if old {
+                    self.old_first_opens += 1;
+                    let why = match (load.track1, load.track1_own) {
+                        (Some(_), _) => "saved so",
+                        (None, true) => "its instrument played there",
+                        (None, false) => "the project has settings on it",
+                    };
+                    line += &format!(
+                        "; track 1 keeps its old own channel (\"{OLD_TRACK_1}\": {why}), not Drums"
+                    );
+                }
                 if skipped > 0 {
                     line += &format!("; {skipped} mod lines skipped");
                 }
@@ -1850,6 +1909,12 @@ impl MixHost {
         self.mixer.param(StripId::Master, mx::VOLUME)
     }
 
+    /// How loud Monitor plays the line input: its strip's fader, dB (the
+    /// Sample page's recorder shows and turns it; one-page step 2d).
+    pub fn line_level(&self) -> f32 {
+        self.mixer.param(LINE, mx::VOLUME)
+    }
+
     /// Follows the looper: whether the line input is open, and whether it
     /// is heard (Monitor). Cheap to call every period.
     pub fn follow(&mut self, line_open: bool, monitor_on: bool) {
@@ -1905,6 +1970,7 @@ impl MixHost {
             self.route_lent();
         }
         Pads {
+            first: self.instruments.channel(0),
             mixer: &mut self.mixer,
             channels: &self.pad_channels,
             played: 0,
@@ -1917,7 +1983,7 @@ impl MixHost {
     pub fn kit_track(&self, kit: usize) -> usize {
         match self.homes.get(kit).copied().unwrap_or(0) {
             0 => DRUMS,
-            h => crate::instruments::first_track() + usize::from(h) - 1,
+            h => self.track_channel(usize::from(h) - 1),
         }
     }
 
@@ -2001,7 +2067,8 @@ impl MixHost {
     pub fn mixer_text(&mut self) -> String {
         self.give_back_plain();
         let lent: Vec<(StripId, usize, usize)> = self.pad_channels.lent().collect();
-        crate::project::mixer_text_lent(&self.mixer, self.pad_mutes, self.pad_solos, &lent)
+        let track1 = StripId::Track(self.track_channel(0));
+        crate::project::mixer_text_lent(&self.mixer, self.pad_mutes, self.pad_solos, &lent, track1)
     }
 
     /// The tracks whose own channels are in use, a bit each: playing their
@@ -2009,6 +2076,36 @@ impl MixHost {
     /// ([`MixHost::pads_homed`]).
     pub fn channels_in_use(&self) -> u128 {
         self.instruments.in_use() | self.kit_tracks
+    }
+
+    /// Sequencer track `t`'s mixer channel: [`track_channel`], but track
+    /// 1's old own one in a project saved with settings there
+    /// ([`MixHost::old_first`]).
+    pub fn track_channel(&self, t: usize) -> usize {
+        self.instruments.channel(t)
+    }
+
+    /// Whether track 1 plays into its old own channel (a project saved
+    /// before Drums was track 1's strip, with settings on that channel)
+    /// rather than Drums: shown as [`OLD_TRACK_1`] while in use, said in
+    /// the log when the project opens and counted
+    /// ([`MixHost::old_first_opens`]).
+    pub fn old_first(&self) -> bool {
+        self.instruments.channel(0) != DRUMS
+    }
+
+    /// The own channels in use, a bit each by their place past the
+    /// engines' tracks (bit `k`: mixer track `TRACKS + k`), as the Tracks
+    /// view, the stems and the throws list them: [`MixHost::channels_in_use`]
+    /// but track 1's, which plays into Drums ([`track_channel`]) unless it
+    /// keeps its old channel.
+    pub fn own_channels_in_use(&self) -> u128 {
+        let used = self.channels_in_use();
+        if self.old_first() {
+            used
+        } else {
+            used & !1
+        }
     }
 
     /// The drums as the sampler made them: the pads that played (`played`,
@@ -2244,7 +2341,7 @@ impl MixHost {
     /// The tracks' strips as the mixer's Tracks view shows them: the
     /// engines' tracks, then each track's own instrument's while in use.
     pub fn track_strips(&self) -> Vec<StripId> {
-        let used = self.channels_in_use();
+        let used = self.own_channels_in_use();
         (0..self.mixer.tracks())
             .filter(|&t| t < TRACKS || used & (1 << (t - TRACKS)) != 0)
             .map(StripId::Track)
@@ -2261,8 +2358,10 @@ impl MixHost {
         }
         self.state_at = Some(now);
         // Tracks' own channels show only while in use (an instrument or a
-        // kit plays there); the others aren't read.
-        let used = self.channels_in_use();
+        // kit plays there); the others aren't read. Track 1's is Drums,
+        // named "Track 1" while its own instrument plays there.
+        let used = self.own_channels_in_use();
+        let first_own = self.instruments.channel(0) == DRUMS && self.instruments.holds(0);
         let ch = &self.pad_channels;
         // Lent pad channels show while lent.
         let shown = |s: StripId| match s {
@@ -2270,7 +2369,10 @@ impl MixHost {
             StripId::Pad(p) if p >= PADS => ch.holder(s).is_some(),
             _ => true,
         };
-        let named = |s: StripId| strip_name(ch, s);
+        let named = |s: StripId| match s {
+            StripId::Track(DRUMS) if first_own => TRACK_1.to_string(),
+            s => strip_name(ch, s),
+        };
         let mut st = MixState::from_mixer_where(&mut self.mixer, view, &named, &shown);
         st.counts[0] = TRACKS + used.count_ones() as usize;
         st.counts[1] = PADS + ch.lent().count();
@@ -2378,6 +2480,8 @@ impl MixHost {
 /// track's channel (`homes`, [`MixHost::pads_homed`]), or into pad
 /// channel `p` if no track has it. It notes which pad channels played.
 pub struct Pads<'a> {
+    /// Track 1's channel ([`MixHost::track_channel`]).
+    first: usize,
     mixer: &'a mut Mixer,
     channels: &'a PadChannels,
     played: u128,
@@ -2412,9 +2516,8 @@ impl PadOut for Pads<'_> {
                 self.played |= DRUMS_DIRECT;
                 self.mixer.track_input(DRUMS)
             }
-            home => self
-                .mixer
-                .track_input(crate::instruments::first_track() + usize::from(home) - 1),
+            1 => self.mixer.track_input(self.first),
+            home => self.mixer.track_input(track_channel(usize::from(home) - 1)),
         }
     }
 }
@@ -2621,6 +2724,114 @@ mod tests {
         let _ = h.pads_homed(&[0, 0]);
         assert_eq!(h.channels_in_use(), 0);
         assert!(!h.track_strips().contains(&StripId::Track(track)));
+    }
+
+    /// A track's channel (R3 part 4b): Drums for track 1, its own past
+    /// the engines' for the rest, the same numbers the clips' "this
+    /// track's strip" locks reach.
+    #[test]
+    fn track_1s_channel_is_drums_and_the_rest_their_own() {
+        use mpfree_play::mpfree_param::{strip_track, track_strip, Strip};
+        assert_eq!(track_channel(0), DRUMS);
+        assert_eq!(track_channel(1), TRACKS + 1);
+        for t in 0..crate::instruments::TRACKS {
+            let ch = track_channel(t);
+            assert_eq!(track_strip(t as u8), Strip::Track(ch as u8), "track {t}");
+            assert_eq!(strip_track(Strip::Track(ch as u8)), Some(t as u8));
+        }
+        // A kit homed on track 1 plays into Drums, and no own channel
+        // shows for it.
+        let mut h = MixHost::new(RATE, -6.0, -6.0);
+        let mut pads = h.pads_homed(&[0, 1]);
+        pads.pad(1, 5).unwrap().0[0] = 0.5;
+        assert_eq!(h.mixer.track_input(DRUMS).unwrap().0[0], 0.5);
+        assert_eq!(h.kit_track(1), DRUMS);
+        assert_eq!(h.channels_in_use(), 1);
+        assert_eq!(h.own_channels_in_use(), 0);
+        assert!(!h.track_strips().contains(&StripId::Track(TRACKS)));
+        assert!(!h.old_first());
+    }
+
+    /// A project saved with settings on track 1's old own channel opens
+    /// with track 1 kept there, so it sounds as it did: said in the log,
+    /// counted, and the strip named so while in use. One without them
+    /// opens with track 1 on Drums.
+    #[test]
+    fn an_old_project_keeps_track_1_on_its_old_channel() {
+        let open = |text: &str, own: bool| {
+            let mut h = MixHost::new(RATE, -6.0, 0.0);
+            let mut load =
+                crate::project::mixer_load(text, None, RATE, &crate::plugins::Plugins::none())
+                    .unwrap();
+            load.track1_own = own;
+            let notes = load.notes.join("; ");
+            h.open(Box::new(load));
+            let mut said = None;
+            for _ in 0..400 {
+                if let Some(l) = h.tend_open() {
+                    said = Some(l);
+                }
+                h.run_silent_period();
+            }
+            (h, said.unwrap_or_default() + &notes)
+        };
+        // A project saved before Drums was track 1's strip has no track1
+        // line.
+        let before = |text: String| -> String {
+            assert!(text.contains("\ntrack1 t0\n"), "{text}");
+            text.lines()
+                .filter(|l| !l.starts_with("track1 "))
+                .map(|l| format!("{l}\n"))
+                .collect()
+        };
+        // Settings on its old own channel: track 1 keeps it.
+        let mut a = MixHost::new(RATE, -6.0, 0.0);
+        a.mixer.set_now(StripId::Track(TRACKS), mx::VOLUME, -9.0);
+        let (h, said) = open(&before(a.mixer_text()), false);
+        assert!(h.old_first());
+        assert_eq!(h.track_channel(0), TRACKS);
+        assert_eq!(h.track_channel(2), TRACKS + 2);
+        assert_eq!(h.old_first_opens, 1);
+        assert!(
+            said.contains("track 1 keeps its old own channel (\"Track 1 (old)\": the project has settings on it)"),
+            "{said}"
+        );
+        assert_eq!(name(StripId::Track(TRACKS)), OLD_TRACK_1);
+        // A kit homed on track 1 plays there, and it shows.
+        let mut h = h;
+        let mut pads = h.pads_homed(&[0, 1]);
+        pads.pad(1, 5).unwrap().0[0] = 0.5;
+        assert_eq!(h.mixer.track_input(TRACKS).unwrap().0[0], 0.5);
+        assert_eq!(h.own_channels_in_use(), 1);
+        assert!(h.track_strips().contains(&StripId::Track(TRACKS)));
+        // Saved again, it says so, and opens the same.
+        let text = h.mixer_text();
+        assert!(text.contains("\ntrack1 t4\n"), "{text}");
+        let (h, said) = open(&text, false);
+        assert_eq!(h.track_channel(0), TRACKS);
+        assert!(said.contains("(\"Track 1 (old)\": saved so)"), "{said}");
+        // Its own instrument played there, with nothing set: it keeps it
+        // too, so it sounds through no effects of Drums'.
+        let plain = MixHost::new(RATE, -6.0, 0.0).mixer_text();
+        let (h, said) = open(&before(plain.clone()), true);
+        assert_eq!(h.track_channel(0), TRACKS);
+        assert!(said.contains("its instrument played there"), "{said}");
+        // Nothing played there: Drums.
+        let (h, said) = open(&before(plain.clone()), false);
+        assert!(!h.old_first());
+        assert!(!said.contains("old own channel"), "{said}");
+        // A project saved since: where it says, whatever track 1 plays.
+        let (h, said) = open(&plain, true);
+        assert_eq!(h.track_channel(0), DRUMS);
+        assert_eq!(h.old_first_opens, 0);
+        assert!(!said.contains("old own channel"), "{said}");
+        // A strip track 1 can't be: Drums, and said.
+        let (h, said) = open(&plain.replace("track1 t0", "track1 t9"), true);
+        assert_eq!(h.track_channel(0), DRUMS);
+        assert!(
+            said.contains("track 1 can't play into t9; it plays into Drums"),
+            "{said}"
+        );
     }
 
     /// Kit 1's pads past its first 16 (PAD BANK B to H) have no pad

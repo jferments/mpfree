@@ -3848,11 +3848,12 @@ struct SeqPads<'a> {
 
 /// A key a route sends to a track that isn't armed (the I/O view's
 /// Routing): played at once where the track's clips play, on MIDI out, its
-/// own instrument, or what it plays (its kit's pad that sends the note,
-/// `profile::kit_pad_of_note`, or the synth by note: `synth` if the track
-/// plays it, else `kit`), and
-/// on CV out if it follows the track. It goes through no arp, and nothing
-/// records it: REC records the armed track.
+/// own instrument, or what it plays: the synth by note when it plays the
+/// synth (`plays_synth`), else its kit's pad that sends the note
+/// (`profile::kit_pad_of_note`) as that pad's kind has it, as a clip's
+/// note on it would be ([`play_routed_pad`]). And on CV out if it follows
+/// the track. It goes through no arp, and nothing records it: REC records
+/// the armed track.
 // What a track plays comes in pieces the sound loop holds apart.
 #[allow(clippy::too_many_arguments)]
 fn play_routed(
@@ -3861,7 +3862,8 @@ fn play_routed(
     midi: &mut midi_out::MidiOut,
     cv: &mut cv_out::CvOut,
     own: &mut instruments::Instruments,
-    synth: Option<&mut synth::Synth>,
+    synth: &mut synth::Synth,
+    plays_synth: bool,
     player: &mut sampler::Player,
     kit: usize,
 ) {
@@ -3887,18 +3889,14 @@ fn play_routed(
         // gear (above), else its instrument, else the synth (Thru passes a
         // keyboard's on as it came).
         midi_in::Key::Bend { value } => {
-            if !gear && !own.bend(t, value) {
-                if let Some(s) = synth {
-                    s.bend(value);
-                }
+            if !gear && !own.bend(t, value) && plays_synth {
+                synth.bend(value);
             }
             return;
         }
         midi_in::Key::Expr { note, kind, value } => {
-            if !gear && !own.note_expression(t, note, kind, value) {
-                if let Some(s) = synth {
-                    s.expression_note(note, kind, value);
-                }
+            if !gear && !own.note_expression(t, note, kind, value) && plays_synth {
+                synth.expression_note(note, kind, value);
             }
             return;
         }
@@ -3941,21 +3939,81 @@ fn play_routed(
         }
         return;
     }
-    match (synth, event) {
-        (Some(s), Event::NoteOn { note, velocity }) => s.note_on_note(note, velocity, 0),
-        (Some(s), Event::NoteOff { note }) => s.note_off_note(note, 0),
-        (Some(s), Event::Pressure { note, value }) => s.pressure_note(note, value),
-        // A kit: the pad that sends the note, in any bank.
-        (None, Event::NoteOn { note, velocity }) => {
-            player.hit_kit_at(kit, profile::kit_pad_of_note(note), velocity, 0);
+    if plays_synth {
+        match event {
+            Event::NoteOn { note, velocity } => synth.note_on_note(note, velocity, 0),
+            Event::NoteOff { note } => synth.note_off_note(note, 0),
+            Event::Pressure { note, value } => synth.pressure_note(note, value),
+            _ => {}
         }
-        (None, Event::NoteOff { note }) => {
-            player.release_kit_at(kit, profile::kit_pad_of_note(note), 0);
+        return;
+    }
+    // A kit: the pad that sends the note, in any bank.
+    if let Event::NoteOn { note, .. } | Event::NoteOff { note } | Event::Pressure { note, .. } =
+        event
+    {
+        let pad = profile::kit_pad_of_note(note);
+        play_routed_pad(track, pad, event, midi, synth, player, kit);
+    }
+}
+
+/// A routed key's hit, let-go or pressure on pad `pad` of track `track`'s
+/// kit `kit`, as the pad's kind has it (the Pads tab's, the redesign's
+/// 6b), as `SeqPads::routed` plays a clip's: a MIDI out pad to its own
+/// port, channel and note (`MidiOut::pad_to`), an Instrument pad as a
+/// voice of its engine (`Synth::pad_voice_on`), and a Sample pad (no
+/// route) on the sampler. `event`'s note is the key's; the pad's own
+/// note goes out. Never allocates.
+fn play_routed_pad(
+    track: u8,
+    pad: usize,
+    event: mpfree_play::Event,
+    midi: &mut midi_out::MidiOut,
+    synth: &mut synth::Synth,
+    player: &mut sampler::Player,
+    kit: usize,
+) {
+    use mpfree_play::Event;
+    let track = u16::from(track);
+    match player.pad_route(kit, pad) {
+        Some(sampler::PadRoute::Midi {
+            port,
+            channel,
+            note,
+        }) => {
+            // `pad_to` reads the pad from the event's note.
+            let p = pad.min(usize::from(u8::MAX)) as u8;
+            let event = match event {
+                Event::NoteOn { velocity, .. } => Event::NoteOn { note: p, velocity },
+                Event::NoteOff { .. } => Event::NoteOff { note: p },
+                Event::Pressure { value, .. } => Event::Pressure { note: p, value },
+                _ => return,
+            };
+            let o = mpfree_play::Out {
+                offset: 0,
+                frame: 0,
+                track,
+                dest: Default::default(),
+                event,
+            };
+            midi.pad_to(&o, port, *channel, *note);
         }
-        (None, Event::Pressure { note, value }) => {
-            player.pressure_kit_at(kit, profile::kit_pad_of_note(note), value, 0);
-        }
-        _ => {}
+        Some(&sampler::PadRoute::Voice(engine, note)) => match event {
+            Event::NoteOn { velocity, .. } => {
+                synth.pad_voice_on(track, pad, (engine, note), velocity, 0);
+            }
+            Event::NoteOff { .. } => synth.pad_voice_off(track, pad, 0),
+            Event::Pressure { value, .. } => synth.pad_voice_pressure(track, pad, value, 0),
+            _ => {}
+        },
+        None => match event {
+            Event::NoteOn { velocity, .. } => {
+                player.hit_kit_at(kit, pad, velocity, 0);
+            }
+            Event::NoteOff { .. } => player.release_kit_at(kit, pad, 0),
+            Event::Pressure { value, .. } => player.pressure_kit_at(kit, pad, value, 0),
+            _ => {}
+        },
     }
 }
 
@@ -4714,7 +4772,12 @@ impl SeqPads<'_> {
     /// the pads is kept quiet (taken, so nothing plays or records it).
     fn quiet(&self, o: &mpfree_play::Out) -> bool {
         self.only.is_some() && {
-            let on_pads = !self.midi.takes(o.track) && !self.own.holds(usize::from(o.track));
+            let t = usize::from(o.track);
+            let outside = self.midi.takes(o.track);
+            // Track 1's own instrument shares Drums with the tracks on
+            // kit 1 (R3 part 4b), so their replays keep it quiet too.
+            let on_pads = !outside
+                && (!self.own.holds(t) || (t == 0 && self.own.channel(0) == mixing::DRUMS));
             export::quiets(self.only, o.track, on_pads, o.event)
         }
     }
@@ -5568,6 +5631,13 @@ fn player_session(
     let mut rec_back: Option<Box<sampler::RecFeed>> = None;
     // What the sampler's input records from (the Rec tab's Source).
     let mut rec_source = sampler::RecSource::Line;
+    // The recorder's Gain on the line input, linear (one-page step 2d),
+    // and where the last period's ramp ended.
+    let mut rec_gain = 1.0f32;
+    let mut rec_gain_was = 1.0f32;
+    // Monitor's level (the line input strip's fader) the screen was last
+    // told, dB.
+    let mut line_level_said: Option<f32> = None;
     // Sample Recall (sampler decision 3): the master as heard, its last two
     // minutes always kept, made here once and never freed; its reading end
     // goes to the screen as soon as there is room.
@@ -6456,7 +6526,7 @@ fn player_session(
                             None => mixing::SYNTH,
                             Some(k) => match homes.get(k).copied().unwrap_or(0) {
                                 0 => mixing::DRUMS,
-                                h => instruments::first_track() + usize::from(h) - 1,
+                                h => mix.track_channel(usize::from(h) - 1),
                             },
                         })
                     };
@@ -6712,6 +6782,7 @@ fn player_session(
                         }
                     }
                 }
+                gui::FromUi::SampleGain(db) => rec_gain = 10f32.powf(db / 20.0),
                 gui::FromUi::SampleSource(src) => {
                     if src != rec_source {
                         rec_source = src;
@@ -7417,9 +7488,8 @@ fn player_session(
                 &mut midi_out,
                 &mut cv_out,
                 &mut mix.instruments,
-                track_kits
-                    .plays_synth(usize::from(track))
-                    .then_some(&mut synth),
+                &mut synth,
+                track_kits.plays_synth(usize::from(track)),
                 &mut player,
                 track_kits.kit_of(usize::from(track)).unwrap_or(0),
             );
@@ -8931,10 +9001,13 @@ fn player_session(
         // The same line input into the sampler's buffer, with the bar lines
         // (the Sample page's Rec tab and Skip back). A point in the mix
         // goes in after the mixer, below.
+        // Turned by the recorder's Gain, ramped over the period.
+        let gain = (rec_gain_was, rec_gain);
+        rec_gain_was = rec_gain;
         if let (Some(f), sampler::RecSource::Line) = (rec_feed.as_mut(), rec_source) {
             let t_rec = Instant::now();
             let (l, r) = looper.input();
-            f.period(time.block(), l, r, 0);
+            f.period_gain(time.block(), l, r, 0, gain);
             engines.add(engines::SAMPLER, t_rec.elapsed());
         }
         if let Some(f) = rec_back.take() {
@@ -9061,6 +9134,13 @@ fn player_session(
         parts.lap(parts::PADS);
         let t_mix = Span::start();
         mix.follow(looper.line.is_open(), looper.monitor);
+        // Monitor's level, for the Sample page's recorder, when it moves.
+        let line_level = mix.line_level();
+        if line_level_said != Some(line_level)
+            && out.try_show(gui::ToUi::LineLevel(line_level)).is_ok()
+        {
+            line_level_said = Some(line_level);
+        }
         let ctx = mixing::ctx(RATE, i * PERIOD as u64, time.info().bpm, time.block());
         // The mixer's lanes (each stage's inserts, the returns) keep the
         // same deadline.
