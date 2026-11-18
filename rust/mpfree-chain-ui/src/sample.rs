@@ -651,6 +651,35 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         v.push_wheel();
         v.wheel(6, false);
     }
+    // A note track's Notes stage (board 7): the Chord's page, the arp's,
+    // and the MIDI effect picker.
+    let notes_st = |row: Option<usize>, picking: bool| {
+        let mut st = from_mixer(song.chain_state(KEYS, 0, 0, None)).without_page();
+        let mut ns = crate::notes::example();
+        ns.selected = row;
+        ns.picking = picking;
+        if let Some((_, id, fx)) = ns.page_fx() {
+            (st.params, st.main_four) = crate::notes::param_views(ns.track, id, &fx);
+        }
+        st.notes = Some(ns);
+        st
+    };
+    let (chord_st, arp_st, pick_st) = (
+        notes_st(Some(1), false),
+        notes_st(Some(2), false),
+        notes_st(None, true),
+    );
+    let mut notes_screens = Vec::new();
+    for st in [chord_st, arp_st, pick_st] {
+        let mut ui = screen(fonts(), &mut song, Place::Mixer, Some(st), None)?;
+        if let Some(h) = ui.get_mut::<Label>("hint") {
+            h.text = crate::NOTES_HINT.to_string();
+        }
+        notes_screens.push(ui);
+    }
+    let notes_pick = notes_screens.pop().ok_or("notes picker")?;
+    let notes_arp = notes_screens.pop().ok_or("notes arp")?;
+    let notes_chord = notes_screens.pop().ok_or("notes chord")?;
     // The strip button's list over the keys chain: the tracks.
     let keys = from_mixer(song.chain_state(KEYS, 1, 0, None));
     let mut listed = keys.clone();
@@ -855,6 +884,9 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         Sample { name: "chain-mixer-keys-hall", about: "The Reverb in its Hall mode with its Mix curve touched and set to Dry first: the small chip in Output (Equal, Dry first, Linear) and the hint line saying what the choice does; Quality sits in the Reverb section", ui: hall },
         Sample { name: "chain-mixer-keys-multitap", about: "The Multi-tap delay: its four taps on the beat grid (left in the accent, right in green) and the pattern again from the last, as loud as Feedback", ui: multitap },
         Sample { name: "chain-mixer-keys-strip-comp", about: "The Channel strip (Vocal) on its Compressor page: the dynamics curve, the gate's drop under its threshold and the compressor over its own, with makeup", ui: strip_comp },
+        Sample { name: "chain-notes-chord", about: "A note track's chain (board 7, layout spec 4b): NOTES above SOUND, with Scale, Chord, the arp and Humanize (off) in order and Plays on between the groups. Chord's page in the effect frame: its shapes as chips (m7 lit), what goes in and what comes out on a keyboard (C3 in, C3 Eb3 G3 Bb3 out), Voicing and Added notes as cards; the Q-Links turn Chord, Voicing, Inversion and Velocity", ui: notes_chord },
+        Sample { name: "chain-notes-arp", about: "The arp's row picked: what it plays now and a way to its panel; Up and Down move it among the MIDI effects (those above change what it gets, those below what it plays), and it can't be removed", ui: notes_arp },
+        Sample { name: "chain-notes-add", about: "+ MIDI effect: the eleven MIDI effects as tiles, each with what it does; a tap adds it above the arp", ui: notes_pick },
         Sample { name: "chain-strip-list", about: "The strip button's list over the keys chain: the groups down the left, the tracks as tiles with what each holds (the open one outlined); a tap opens that strip's chain", ui: strips },
         Sample { name: "macros-1-4", about: "The macros panel over the page (a long press on a macro card; no tab lit, Back closes it): Macros 1-4 with their targets and ranges, the Q-Links on Macros 1-4, the morph 64 % of the way from Dry verse to Wash drop", ui: screen(fonts(), &mut song, Place::Over, None, Some(m0))? },
         Sample { name: "macros-5-8", about: "Macros 5-8, not yet assigned; the Q-Links on Macros 5-8", ui: screen(fonts(), &mut song, Place::Over, None, Some(m1))? },
@@ -918,7 +950,7 @@ mod tests {
     #[test]
     fn the_samples_read_real_state_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 26);
+        assert_eq!(s.len(), 29);
         for mut sample in s {
             let (w, h) = sample.ui.size();
             let mut c = SoftCanvas::new(w, h);
@@ -1178,6 +1210,235 @@ mod tests {
     /// nothing. Drive's Mode is the chooser, not a knob; a Cloud reverb
     /// set to its own Plate is in none of the modes and keeps its
     /// Character knob.
+    /// The keys chain with board 7's Notes above it, row `row` selected.
+    fn notes_screen(song: &mut Song, row: Option<usize>) -> Ui {
+        let mut st = song.chain_state(KEYS, 0, 0, None).without_page();
+        let mut ns = crate::notes::example();
+        ns.selected = row;
+        if let Some((_, id, fx)) = ns.page_fx() {
+            (st.params, st.main_four) = crate::notes::param_views(ns.track, id, &fx);
+        }
+        st.notes = Some(ns);
+        screen(Fonts::embedded(), song, Place::Mixer, Some(st), None).unwrap()
+    }
+
+    #[test]
+    fn the_notes_group_and_its_page_become_actions() {
+        use crate::notes::NoteAction as N;
+        let mut song = Song::new();
+        let mut ui = notes_screen(&mut song, Some(1));
+        // The Q-Links turn the Chord's four.
+        let q = ui.get::<QLinkColumn>(QLINKS).unwrap();
+        assert_eq!(
+            q.cards.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
+            ["Chord", "Voicing", "Inversion", "Velocity"]
+        );
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
+        let nl = l.notes.clone().unwrap();
+        let pl = l.notes_page.clone().unwrap();
+        // Up moves the Chord over the Scale; the arp can't be removed, but
+        // its row opens its page; Humanize's pill switches it on.
+        let up = l.buttons[0];
+        tap(&mut ui, up.x + 5, up.y + 5);
+        let (arp, _) = nl.rows[2];
+        tap(&mut ui, arp.x + 40, arp.y + 10);
+        let rm = l.buttons[2];
+        tap(&mut ui, rm.x + 5, rm.y + 5);
+        let (hum, _) = nl.rows[3];
+        tap(&mut ui, hum.right() - 20, hum.y + hum.h / 2);
+        let acts = crate::take_chain_actions(&mut ui);
+        assert_eq!(
+            acts,
+            [
+                ChainAction::Notes(N::Move { from: 1, to: 0 }),
+                ChainAction::Notes(N::Select(2)),
+                ChainAction::Notes(N::SetOn { row: 3, on: true }),
+            ]
+        );
+        // On the Chord's page: Spread, then + on Strum.
+        let mut ui = notes_screen(&mut song, Some(1));
+        let voicing = &pl.cards[0].rows[0];
+        let (spread, _) = voicing.seg[1];
+        tap(&mut ui, spread.x + 5, spread.y + 5);
+        let strum = pl.cards[1].rows.iter().find(|r| r.k == 5).unwrap();
+        let plus = strum.plus.unwrap();
+        tap(&mut ui, plus.x + 5, plus.y + 5);
+        // A sound effect's row takes the page; + MIDI effect opens the
+        // picker, whose tile adds; Plays on asks for the track's output.
+        let sound = l.rows[0];
+        tap(&mut ui, sound.x + 60, sound.y + 10);
+        let add = nl.add.unwrap();
+        tap(&mut ui, add.x + 5, add.y + 5);
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let picker = ui
+            .get::<ChainView>(crate::CHAIN)
+            .unwrap()
+            .layout(r)
+            .notes_page
+            .unwrap();
+        let echo = picker.tiles[5];
+        tap(&mut ui, echo.x + 5, echo.y + 5);
+        tap(&mut ui, nl.plays.x + 5, nl.plays.y + 5);
+        let acts = crate::take_chain_actions(&mut ui);
+        // Each setting touched becomes the one the Modulate row works on.
+        let at = |k| crate::notes::addr(2, 2, k);
+        assert_eq!(
+            acts,
+            [
+                ChainAction::Focus(at(1)),
+                ChainAction::Notes(N::Set {
+                    id: 2,
+                    k: 1,
+                    value: 1
+                }),
+                ChainAction::Focus(at(5)),
+                ChainAction::Notes(N::Set {
+                    id: 2,
+                    k: 5,
+                    value: 1
+                }),
+                ChainAction::Select(0),
+                ChainAction::Notes(N::Picker(true)),
+                ChainAction::Notes(N::Add(5)),
+                ChainAction::Notes(N::PlaysOn),
+            ]
+        );
+    }
+
+    /// A MIDI effect's setting touched takes the usual Modulate row: a
+    /// macro, Learn and + LFO work on it (a choice takes macros, not rows).
+    #[test]
+    fn a_touched_midi_effect_setting_takes_a_macro_learn_and_an_lfo() {
+        use crate::notes::NoteAction as N;
+        use mpfree_mod::Source;
+        let mut song = Song::new();
+        let mut ui = notes_screen(&mut song, Some(1));
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
+        let pl = l.notes_page.clone().unwrap();
+        let at = |k| crate::notes::addr(2, 2, k);
+        // Strum's value (a number), then macro 2, Learn and + LFO.
+        let strum = pl.cards[1].rows.iter().find(|w| w.k == 5).unwrap();
+        tap(&mut ui, strum.value.x + 4, strum.value.y + 4);
+        let centre = |r: Rect| (r.x + r.w / 2, r.y + r.h / 2);
+        let (mx, my) = centre(l.macros[1]);
+        tap(&mut ui, mx, my);
+        let (lx, ly) = centre(l.learn);
+        tap(&mut ui, lx, ly);
+        let (fx, fy) = centre(l.add_lfo);
+        tap(&mut ui, fx, fy);
+        // The new row opened the rows over the page: a tap elsewhere shuts
+        // them. Then Voicing (a choice): a macro only, no row.
+        let (spread, _) = pl.cards[0].rows[0].seg[1];
+        tap(&mut ui, spread.x + 5, spread.y + 5);
+        tap(&mut ui, spread.x + 5, spread.y + 5);
+        tap(&mut ui, fx, fy);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [
+                ChainAction::Focus(at(5)),
+                ChainAction::Macro {
+                    target: at(5),
+                    macro_: Some(1)
+                },
+                ChainAction::Learn(at(5)),
+                ChainAction::AddRow {
+                    target: at(5),
+                    source: Source::Lfo(0)
+                },
+                ChainAction::Focus(at(1)),
+                ChainAction::Notes(N::Set {
+                    id: 2,
+                    k: 1,
+                    value: 1
+                }),
+            ]
+        );
+    }
+
+    /// A finger resting on a MIDI effect's setting puts it under the data
+    /// wheel: each detent steps it (held at its ends), the page shows the
+    /// new value at once, and the chips' row steps the chord's shape.
+    #[test]
+    fn a_held_midi_effect_setting_turns_with_the_wheel() {
+        use crate::notes::NoteAction as N;
+        let mut song = Song::new();
+        let mut ui = notes_screen(&mut song, Some(1));
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let v = ui.get_mut::<ChainView>(crate::CHAIN).unwrap();
+        let pl = v.layout(r).notes_page.unwrap();
+        let id = v.state().notes.as_ref().unwrap().page_fx().unwrap().1;
+        // Inversion's row (setting 2), on its value between - and +.
+        let row = pl
+            .cards
+            .iter()
+            .flat_map(|c| &c.rows)
+            .find(|w| w.k == 2)
+            .unwrap();
+        let (x, y) = (row.value.x + 4, row.value.y + row.value.h / 2);
+        let t = v.held(x, y, r).expect("a setting is held");
+        assert_eq!(v.note_setting(t.index).as_deref(), Some("Inversion 0"));
+        v.held_step(&t, 1, false, r).unwrap();
+        v.held_step(&t, 1, true, r).unwrap();
+        assert_eq!(v.note_setting(2).as_deref(), Some("Inversion 2"));
+        let set = |k, value| ChainAction::Notes(N::Set { id, k, value });
+        assert_eq!(v.take_actions(), [set(2, 1), set(2, 2)]);
+        // Down past 0 stops there.
+        for _ in 0..3 {
+            v.held_step(&t, -1, false, r);
+        }
+        assert_eq!(v.take_actions(), [set(2, 1), set(2, 0)]);
+        // The chips' row: m7 (5) steps to maj7 (6).
+        let chip = pl.chips[0].0;
+        let t = v
+            .held(chip.x + 2, chip.y + 2, r)
+            .expect("the chips are held");
+        assert_eq!(t.index, 0);
+        v.held_step(&t, 1, false, r).unwrap();
+        assert_eq!(v.take_actions(), [set(0, 6)]);
+        // The keyboard holds nothing.
+        let keys = pl.keys.unwrap();
+        assert!(v
+            .held(keys.x + keys.w / 2, keys.y + keys.h / 2, r)
+            .is_none());
+    }
+
+    #[test]
+    fn a_scrolled_sound_group_shows_the_effect_picked() {
+        let mut song = Song::new();
+        for id in ["mpfree.fx.drive", "mpfree.fx.crush", "mpfree.fx.plate"] {
+            song.keys.push(mpfree_fx::registry::make(id).unwrap());
+        }
+        let mut ui = notes_screen(&mut song, None);
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+        let l = v.layout(r);
+        let n = song.keys.len();
+        let shown = l.rows.iter().filter(|r| !r.is_empty()).count();
+        assert!(shown < n && l.sound_arrows.is_some(), "{shown} of {n}");
+        assert!(l.rows[n - 1].is_empty());
+        // The last effect picked (from the mixer), once the editor is on
+        // screen: its row scrolls in.
+        let (w, h) = ui.size();
+        ui.paint(&mut SoftCanvas::new(w, h));
+        let mut st = song.chain_state(KEYS, n - 1, 0, None);
+        st.notes = Some(crate::notes::NotesState {
+            selected: None,
+            ..crate::notes::example()
+        });
+        crate::update_chain(&mut ui, st);
+        let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
+        assert!(!l.rows[n - 1].is_empty());
+        assert!(l.rows[0].is_empty());
+        // The up arrow scrolls back a row.
+        let (up, _) = l.sound_arrows.unwrap();
+        tap(&mut ui, up.x + 3, up.y + 3);
+        let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
+        assert!(l.rows[n - 1].is_empty());
+        assert!(crate::take_chain_actions(&mut ui).is_empty());
+    }
+
     #[test]
     fn the_mode_chooser_switches_an_effect_with_modes() {
         let modes = |v: &ChainView, r: Rect| -> Vec<(usize, String, bool)> {

@@ -2573,6 +2573,8 @@ fn knob_turn(
         gui::FromUi::Chain(mpfree_chain_ui::ChainAction::Set { addr, value }) => (*addr, *value),
         _ => return None,
     };
+    // A MIDI effect's setting records as a lock too: the mod engine plays
+    // it back onto the track's chain.
     (addr.owner.track().is_some() && value.is_finite()).then_some((addr, value))
 }
 
@@ -6971,6 +6973,15 @@ fn player_session(
             }
             preset_looks.retain(|(_, at)| *at > t_read);
         }
+        // The mod engine knows the tracks' MIDI effects as the sound loop
+        // has them, and its values on their settings (macros, LFOs, step
+        // locks) from the last period reach the arps' chains in this one.
+        if let Some(fx) = time.note_fx_moved() {
+            mix.modu.set_note_fx(fx);
+        }
+        for (addr, value) in mix.modu.take_note_values() {
+            time.modulate_note_fx(addr, Some(value));
+        }
         // The clips and every track's arp (the pads go through the armed
         // track's) play into the kit or the synth: the clips as recorded,
         // the arps' notes as live playing (SeqPads::live).
@@ -7529,6 +7540,7 @@ fn player_session(
         panels.poll(
             app.view(),
             &mix,
+            &|t| modpanels::NotesSource::of(&app, &time, t),
             time.info().bpm,
             Instant::now(),
             &mut |m| out.show(m),

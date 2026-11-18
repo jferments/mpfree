@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-fx rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-mpchost rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
+covers: rust/mpfree-fx rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-notefx rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-mpchost rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
 checked: 2026-11-17 8ac941f3
 -->
 
@@ -58,6 +58,46 @@ Touch a control on the page and the **Modulate** row under the page names it. Th
 
 The Pads tab's **Effects** row opens the chain editor on the pad picked, in the Mix tab, and **‹** comes back to the Pads tab (see [Sampling](sampling.md#the-pads-tab-sounds-onto-pads)). The Sample tab's **FX** page opens the same chain editor on the pad you are editing, with a switch between the pad's own channel and the Drums track (see [Shaping how a pad plays](shaping-a-pad.md#fx-effects-on-one-pad-or-on-the-whole-kit)).
 
+## MIDI effects: a track's Notes
+
+A track that plays notes (not a Loop track) can change its notes before they reach its sound: make each note a chord, keep notes in a scale, move them, set how hard they play, make them all as long, echo them, loosen them up, let some through only by chance, strum a chord, hold notes after you let go, or move notes at random. These are its **MIDI effects**, and with the track's arp they are its **Notes**. They work on the pads, a keyboard and the track's clips, and on what the track sends out of MIDI.
+
+{{shot: chain-notes | A track's chain: NOTES above SOUND, with Scale, Chord, the arp and Humanize (off) in order. Chord's page shows its shapes, what goes in and what comes out on a keyboard, and its settings; the Q-Links turn Chord, Voicing, Inversion and Velocity.}}
+
+Open a track's chain in the chain editor (its strip's **+ FX**, or an effect in its insert row). The left column then has two groups:
+
+- **NOTES**, the track's MIDI effects and its **Arp**, in the order the notes go through them, top to bottom. Each row has its name, a line on how it is set, and its **ON** switch. Four rows show at a time; **‹ ›** on the NOTES line scroll through more. The line says how many MIDI effects the track has out of 8.
+- **Plays on**, between the groups, says where the track's notes go: **Its own sound**, or a MIDI out port and channel. Tap it to change that in the mixer's I/O view, in the MIDI section's **Tracks out** (see [Playing a synth from a track](midi-and-cv.md#playing-a-synth-from-a-track)).
+- **SOUND**, the effects on the track's sound, as before.
+
+**+ MIDI effect** opens the eleven MIDI effects as tiles, each with what it does. Tap one to add it, just above the arp, with its page open. **Cancel** closes the tiles.
+
+| MIDI effect | What it does |
+|---|---|
+| **Scale** | Keeps notes in a scale: a note outside it moves down, up or to the nearest note in it, or isn't played |
+| **Chord** | Adds notes to each one played: a shape (Octave, Fifth, Major, Minor, 7th, m7, maj7, sus2, sus4, add9, dim, aug, In key or your own), a voicing, an inversion, a highest note, the added notes' velocity and a strum |
+| **Transpose** | Moves every note, up to four octaves either way |
+| **Velocity** | Sets how hard each note plays: one velocity, or the one you played on a curve between a lowest and a highest |
+| **Note length** | Makes every note as long, in ms or a note value, however long you hold it |
+| **Echo** | Plays each note again after it, softer each time, up to 16 times, with a pitch step per repeat if you like |
+| **Humanize** | Plays each note a little late and a little louder or softer, never the same way twice |
+| **Chance** | Plays each note with a chance, from 0 to 100 % |
+| **Strum** | Plays the notes of a chord one after another, 1 to 200 ms apart: **Up** (lowest first), **Down** or **As played**. Notes that start within 40 ms of each other are one chord. Up and Down sort a chord from a clip, the pads or a Chord effect above; keys you play by hand strum in the order you play them. Each note keeps its length |
+| **Latch** | Keeps notes on after you let go. **Next chord**: they end when you next play with no key held, and the new notes stay instead. **Toggle**: press a note to turn it on, press it again to turn it off. Switch Latch off or remove it to end what it holds |
+| **Randomize** | Moves some notes up or down at random (**Pitch**, up to 24 semitones, on **How often** of them), spreads how hard they play (**Velocity**) and makes them last a little longer (**Longer by**, up to 1 second), never the same way twice. A setting at 0 leaves that part alone |
+
+Tap a MIDI effect's row for its page. Its choices are along the top as buttons (Chord's shapes, Scale's root), a keyboard shows what goes in and what comes out (for Chord, Scale and Transpose), and its settings sit in sections under it: tap a choice, or – and + to step a value, or rest a finger on a setting's row and turn the data wheel (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)). The four with a **Q1** to **Q4** badge are on the Q-Links. The page's line under its name says where it is among the Notes ("after Scale, before Arp").
+
+- **Up** and **Down** move the row picked, the arp too. An effect above the arp changes the notes it gets; one below changes what it plays.
+- **Remove** takes a MIDI effect out. The arp stays: tap its row for what it plays now and **Open the arp ›**, which opens the arp panel on that track.
+- **ON** switches one off without losing how it is set.
+- A key held while you change an effect ends as it started, so nothing hangs.
+- The track's MIDI effects are saved with the project.
+- On a drum track, the pads go through them but the track's clips don't.
+- On a drum track the MIDI effects see pads, not notes: **Transpose** by 1 plays the next pad, a pad moved off the kit doesn't play, and **Randomize**'s Pitch plays other pads at random. Velocity, Note length, Echo, Humanize, Chance, Strum and Latch work the same on any track.
+
+Touch a MIDI effect's setting and the **Modulate** row under the page works on it, as it does for a sound's knob: tap a macro number to put it on that macro, **Learn** to put it on the next Q-Link you turn, or **+ LFO** to sweep it (a choice, such as Chord's shape, takes a macro but not an LFO). A step can lock it, and while you record, a Q-Link turn of it records with the clip and plays back with it. What these do is heard from the next note; a note already playing keeps what it started as. Until you touch a setting, the row says which settings the Q-Links turn. Returns, submixes, the master and Loop tracks have no Notes.
+
 ## The effects
 
 The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modulation, Delay and reverb, Pitch and vocal, Performance, and Utility (the Tuner, Stereo width and Sample delay). **Reverb**, **Delay**, **Drive**, **Filter** and **Tremolo** each come in several modes (see [Effects with modes](#effects-with-modes)).
@@ -65,11 +105,11 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | Effect | What it does |
 |---|---|
 | **Compressor** | Evens out levels and adds punch or glue. **Attack** is how long it takes to get most of the way down (63 %, the usual convention) and **Release** how long to come most of the way back. **Style** sets how it moves: **Clean** does exactly what the knobs say; **Opto** eases in and comes back slowly after long, heavy compression, for smooth levelling (vocals, bass); **Bus** comes back quickly after a hit and slower under a steady mix, for glue; **FET** adds a little grit as it turns down, more the harder it works, for drums and aggressive vocals. **Auto makeup** turns it back up by what it takes from a sound at a mix level, so comparing it with bypass is fair (**Makeup** still adds on top). **Range** limits how far it turns down; **Link** at 100 % moves both sides together, lower lets each side follow itself. It can be keyed from another strip, for side-chain pumping. **SC filter** keeps low end (a kick) from pushing it, so a whole mix doesn't pump; **Detect** picks **Peak**, which catches every hit, or **RMS**, which follows the loudness and is smoother on a bus or a vocal. |
-| **Ducker** | The pump: turns the sound down on each kick (keyed from another strip) or on every 1/16, 1/8, 1/4, 1/2 or bar of the tempo, and brings it back on a curve you shape. |
+| **Ducker** | The pump: turns the sound down on each kick (keyed from another strip) or on every 1/16, 1/8, 1/4, 1/2, bar, dotted or triplet beat of the tempo, and brings it back on a curve you shape. |
 | **Transient shaper** | More or less punch at the start of each hit and more or less ring after it, at any level, with no threshold to set. |
 | **Limiter** | A brick wall: nothing gets past the ceiling. **True peak** also catches the peaks a converter makes between samples; **Auto release** keeps a loud mix from pumping. See [The Limiter](#the-limiter). |
-| **Gate** | Silences (or turns down) what falls under the threshold, so drums stop ringing. It can open from another strip's sound, for rhythmic gating. |
-| **De-esser** | Turns down harsh "s" and "t" sounds. **Listen** plays only what it hears, to find the right frequency. |
+| **Gate** | Silences (or turns down) what falls under the threshold, so drums stop ringing; as an **Expander** it turns quiet sound down gently instead. It can open from another strip's sound, for rhythmic gating. |
+| **De-esser** | Turns down harsh "s" and "t" sounds ([more](#the-de-esser)). **Listen** plays only what it hears, to find the right frequency. |
 | **Multiband comp** | Three compressors, on the lows, mids and highs ([more](#the-multiband-comp)). |
 | **Channel strip** | A gate, a compressor and an EQ in one, as on a mixing desk. Its first page, **Main**, shows the three as sections, each with its switch, then the **Signal path** (**Order**: the EQ before or after the gate and compressor) and **Output**; then a page each for the gate, the compressor and the EQ. |
 | **EQ** | Shapes the tone with up to eight bands (each a bell, a shelf or a notch) and low and high cuts: cut mud, add air, take out a ring, thin out a sound. Its page is a graph with a dot for each band (see [The EQ's page](#the-eqs-page)); each band can be on (**ON**), switched off with its settings kept (**OFF**), or removed. Bands 1 to 4 start on and bands 5 to 8 start removed. |
@@ -262,12 +302,57 @@ It holds the sound back about 1.8 ms to see the peaks coming, and the mixer hold
 > [!NOTE]
 > Projects saved before this change sound a little different through the Limiter: pushed hard, it is cleaner on bass and a little quieter (about 0.6 dB on a mix pushed 6 dB), and Auto release now acts.
 
+### The De-esser
+
+**Freq** is where the "s" sounds start; the De-esser listens above it, on whichever side is louder, so a doubled vocal panned to one side is caught as well as one in the centre. **Threshold** is how far that band has to stand out: with **Detect** on **Relative** (the default) it is measured against the whole sound, so it works the same on a quiet take and a loud one; **Absolute** uses the band's own level. **Range** is the most it turns down. **Split** turns down only what is above Freq and never touches the voice under it; **Wide** turns the whole sound down, which some voices like better. **Listen** plays only the band it hears, to find the right Freq.
+
+It holds the sound back 2 ms so it is already turning down when each "s" arrives; the mixer holds everything else back to match.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through the De-esser: in Split it no longer lifts the voice under Freq, it turns the "s" down as far as Range says (it used to fall well short), it catches each "s" from its start, and an "s" on one side is turned down as much as one in the centre.
+
 ### The Multiband comp
 
 **Low | mid** and **Mid | high** split the sound into three bands, and each band has its own **Threshold**, **Ratio** and **Gain**; **Attack** and **Release** are shared and mean the same as on the Compressor (most of the way, 63 %, in the time shown). **Solo** plays one band alone while you set it up. **Mix** blends in the sound before compression for parallel squash, and any Mix stays even across the bands (the blend no longer dips at the split points). **Auto makeup** turns each band back up by what it takes from a sound at a mix level, so comparing it with bypass is fair; it is off at first and on in every preset, and **Gain** still adds on top.
 
 > [!NOTE]
 > Projects saved before this change sound a little different through the Multiband comp: it compresses as far as its curve says (it used to fall short, and react about 1.7 times slower than Attack showed), a Mix under 100 % no longer dips around the split points, and turning a threshold or ratio is smooth. The Drum crush preset now uses Auto makeup instead of +6 dB on each band.
+
+### The Gate
+
+**Threshold** is the level that opens it. It shuts again 4 dB under, so a sound hovering at the threshold doesn't flutter, once the sound has stayed under that for **Hold**. Hold is at least 20 ms even at 0, so a bass note never shuts it between the peaks of its waves. **Attack** is how fast it opens; it looks 1 ms ahead, so the front of a hit is kept. **Release** is how long it takes to fall to **Range**, the most it turns down (at the bottom, silence). Moving Range while the gate is shut takes effect at once.
+
+**Mode** picks how it turns down. **Gate** shuts all the way to Range. **Expander** turns the sound down gradually under the threshold, by **Ratio**: at 2, a sound 3 dB under the threshold comes out 6 dB under, at most down to Range. It is a gentler clean-up for guitars, vocals and room noise; the Soft cleanup preset uses it.
+
+**Key HP** and **Key LP** filter what it listens to, so a kick's thump or a hi-hat's hiss doesn't open it, and **Key** picks the strip's own sound or another strip's (**Sidechain**), for rhythmic gating. **Listen** plays what it listens to, so you can set the filters by ear.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through the Gate: with Hold under 20 ms it now stays open through low notes (it used to flutter on bass under 100 Hz), it shuts closer to 4 dB under the threshold, and a Range moved while it is shut takes effect. Saved gates stay gates.
+
+### The Channel strip
+
+The **Gate**, **Comp** and **EQ** switches fade their stage in or out over 20 ms, so switching one mid-note doesn't click; the gate comes back on open and shuts from there if the sound is quiet. Changing **Order** dips the sound for a moment (about 20 ms) and swaps the stages in the gap. The compressor has the Compressor's **Style** (Clean, Opto, Bus, FET) and **Auto makeup**, which turns it back up by what it takes from a sound at a mix level, so comparing with bypass is fair; Auto makeup is off at first and on in every preset. Its gate holds open through low notes as the Gate does.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through the Channel strip: its gate stays open through bass notes and shuts closer to 4 dB under its threshold. They keep the Clean style and their own Makeup. The presets now use Auto makeup instead of their own makeup, and a style each: Vocal and Bass Opto, Snare FET, Gentle glue Bus, Kick Clean.
+
+### The Ducker
+
+**Source** picks what makes it duck. On **Sidechain** it listens to another strip (usually the kick) and ducks when that goes over **Threshold**; **Key HP** and **Key LP** filter what it listens to, so with Key LP around 120 Hz it ducks on the kick of a whole drum bus and not on the hats (the Kick from drums preset). On **Tempo** it ducks on every step of **Rate**, from 1/16 to a bar, or a dotted or triplet eighth or quarter, in time with the song, and it is already down when each beat lands: it starts going down **Attack** before the beat. **Nudge** moves the duck up to 20 ms later or earlier, for a kick that sits behind or ahead of the beat.
+
+**Depth** is how far it turns down, **Hold** how long it stays there, and **Release** how long it takes to come back, on a curve **Shape** bends from straight to a slow start and fast finish, the classic pump. If the Release is longer than the step, the duck never comes all the way back before the next one, and the drawing shows it as you hear it.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through a Ducker on Tempo: each duck now starts Attack earlier, so it is fully down on the beat (2 ms earlier at the default Attack), and one with a Release longer than its step pumps as its drawing shows.
+
+### The Transient shaper
+
+It has no threshold: it follows the shape of the sound, so the same setting does the same to a quiet hit and a loud one. **Attack** turns the start of each hit up (more punch, more click) or down (softer, further away); **Sustain** turns up or down what rings on after it (more room and body, or a tighter, drier hit). **Speed** is how long the start lasts: short for a snappy click, long to take in the whole thump of a kick. **Output** sets the level after it and **Mix** blends it with the dry sound. A steady sound, a held pad or bass note, passes untouched.
+
+At the default (Attack 50) every hit's front comes up by the same amount, about half of what Attack 100 gives; turn Attack to 0 for no change.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through a Transient shaper: quiet hits now get as much lift (or softening) as loud ones. At Attack 50 a loud hit's front comes up about 7 dB less than it did, and a quiet one's a little more.
 
 ### Master safety
 

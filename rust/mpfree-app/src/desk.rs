@@ -105,7 +105,7 @@ impl Desk<'_> {
             gui::FromUi::PadEffects { pad } => fx.extend(panels.open_pad_mix(app, mix, pad)),
             gui::FromUi::Chain(a) => {
                 let recording = time.info().state == mpfree_transport::State::Recording;
-                fx.extend(panels.chain(app, mix, &a, recording, &mut |m| {
+                fx.extend(panels.chain(app, mix, time, &a, recording, &mut |m| {
                     // MIDI Learn arms with the Q-Link learn: a control
                     // moved on a keyboard can take the knob too (M5).
                     if let gui::ToUi::ChainLearn(addr) = &m {

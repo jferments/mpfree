@@ -720,6 +720,9 @@ impl MixHost {
                     .strips()
                     .map(|s| self.mixer.chain(s).map_or(0, |c| c.len()))
                     .sum();
+                if let Some(fx) = &load.note_fx {
+                    self.modu.set_note_fx(fx);
+                }
                 let skipped = match &load.modu {
                     Some(text) => self.modu.load(&self.mixer, text),
                     None => 0,

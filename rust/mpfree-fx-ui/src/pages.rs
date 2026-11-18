@@ -242,6 +242,8 @@ fn known(info: &NodeInfo, count: u16) -> Option<Vec<Plan>> {
                     strip::COMP_ATTACK,
                     strip::COMP_RELEASE,
                     strip::MAKEUP,
+                    strip::STYLE,
+                    strip::AUTO_MAKEUP,
                 ],
                 &[
                     strip::COMP_THRESHOLD,
