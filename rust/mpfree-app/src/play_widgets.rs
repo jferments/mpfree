@@ -1014,6 +1014,23 @@ pub struct Lane {
     /// A kit pad's type ("LOOP", "SYNTH", "MIDI") in small letters under
     /// its name; None for a sample.
     pub tag: Option<&'static str>,
+    /// A lock lane (the Sequencer's Steps, the Play, Pads and Sequencer
+    /// redesign's board 3): one setting's locks, step by step, under its
+    /// sound or the track's. Its `pad` is [`LOCK_LANE`] and the lane's
+    /// number among them.
+    pub lock: Option<LockCells>,
+}
+
+/// A lock lane's look: what it locks, and each step's lock on the page.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LockCells {
+    /// "lock lane · Kick", "lock lane · track FX".
+    pub sub: String,
+    /// The sound lane it hangs under (its pad); None for the track's.
+    pub owner: Option<usize>,
+    /// Each step's lock on the page: how high its bar reaches (0 to 1)
+    /// and its value as text; None, no lock.
+    pub cells: Vec<Option<(f32, String)>>,
 }
 
 /// A synth track's pattern as scale rows (the sequencer design's mockup
@@ -1100,11 +1117,31 @@ pub struct StepGrid {
     /// Play's head over the armed track's pads, its lanes a bank's 16 in
     /// pad order; None on the Sequencer's Steps.
     pub bank: Option<BankHead>,
+    /// The Sequencer's Steps with lock lanes: the first row shown of the
+    /// sounds and their lock lanes (a swipe moves it).
+    pub top: usize,
+    /// The Steps head's + Lane (a kit track on the Sequencer's Steps).
+    pub add_lane: bool,
     /// The finger on a scale row's name, and its pad, until it lifts.
     sounding: Option<(u64, usize)>,
     /// A finger on Play's rows: a tap until it moves, then a swipe.
     swipe: Option<Swipe>,
+    /// A finger on a lock's cell: a tap until it moves, then it turns.
+    drag: Option<LockDrag>,
     painted: RefCell<Option<(Rect, StepLook)>>,
+}
+
+/// A finger on a lock lane's cell: where it went down, the detents it has
+/// turned the lock, and the tap it gives if it lifts unmoved.
+#[derive(Clone, Debug, PartialEq)]
+struct LockDrag {
+    finger: u64,
+    /// The lane's number times 16 plus the step on the page.
+    cell: usize,
+    y: i32,
+    sent: i32,
+    moved: bool,
+    tap: Option<EventKind>,
 }
 
 /// Play's head over the armed track's pads (the Play, Pads and Sequencer
@@ -1148,6 +1185,15 @@ pub const HEAD_TRACK_PREV: usize = 7;
 pub const HEAD_TRACK_NEXT: usize = 8;
 pub const HEAD_FOLLOW: usize = 9;
 pub const HEAD_BANK: usize = 16;
+/// The Steps head's + Lane: `Tab(HEAD_LANE)`.
+pub const HEAD_LANE: usize = 11;
+/// A lock lane's `pad`: this plus its number among the lock lanes. A tap
+/// on its step `col` gives `Cell { row: pad, col }`, its × `Toggle(pad)`,
+/// and a drag on (or the wheel turning) the step's cell `Step { index:
+/// LOCK_LANE + number * 16 + col, delta }`.
+pub const LOCK_LANE: usize = 4096;
+/// A finger moves this far on a lock's cell for each detent.
+const LOCK_DRAG_PX: i32 = 8;
 /// A swipe on Play's rows: `Step { index: ROWS, delta }`, the rows to
 /// move the first one shown by.
 pub const ROWS: usize = 0;
@@ -1186,6 +1232,8 @@ struct StepLook {
     arm: Option<ArmPill>,
     pitched: Option<Pitched>,
     bank: Option<BankHead>,
+    top: usize,
+    add_lane: bool,
 }
 
 /// The pattern head's controls, right to left: + and - round the length,
@@ -1205,13 +1253,15 @@ struct Head {
     lower: Rect,
     octave: Rect,
     higher: Rect,
+    /// + Lane, left of the page (empty without it).
+    lane: Rect,
 }
 
 /// A head button's width.
 const HEAD_BTN: i32 = 56;
 
 impl Head {
-    fn of(r: Rect, pitched: bool) -> Head {
+    fn of(r: Rect, pitched: bool, add_lane: bool) -> Head {
         let (h, body) = card_head(r);
         let band = Rect::new(h.x, r.y, h.w, body.y - 2 - r.y);
         let mut x = h.right();
@@ -1238,7 +1288,19 @@ impl Head {
         } else {
             (none, none, none, none)
         };
-        let left = if pitched { fold.x } else { prev.x };
+        let lane = if add_lane {
+            take(12);
+            take(96)
+        } else {
+            none
+        };
+        let left = if add_lane {
+            lane.x
+        } else if pitched {
+            fold.x
+        } else {
+            prev.x
+        };
         Head {
             title: Rect::new(h.x, h.y, (left - 12 - h.x).max(0), h.h),
             prev,
@@ -1251,12 +1313,14 @@ impl Head {
             lower,
             octave,
             higher,
+            lane,
         }
     }
 
     /// The control under (`x`, `y`), as its `Tab` index.
     fn at(&self, x: i32, y: i32) -> Option<usize> {
         [
+            (self.lane, HEAD_LANE),
             (self.prev, HEAD_PREV),
             (self.next, HEAD_NEXT),
             (self.shorter, HEAD_SHORTER),
@@ -1407,6 +1471,11 @@ impl StepGrid {
                 let (names, grid) = body.take_left(BANK_NAMES_W);
                 (names, grid.take_right(RAIL_W + 8).1)
             }
+            // The Steps with lock lanes (under scale rows too): the rail.
+            None if self.lanes.iter().any(|l| l.lock.is_some()) => {
+                let (names, grid) = body.take_left(NAMES_W);
+                (names, grid.take_right(RAIL_W + 8).1)
+            }
             None => body.take_left(NAMES_W),
         };
         let fit = ((grid.h + LANE_GAP) / (LANE_MIN_H + LANE_GAP)).clamp(1, 8) as usize;
@@ -1424,31 +1493,142 @@ impl StepGrid {
 
     /// The lanes shown in `rows` rows: the most wanted, in pad order. On
     /// scale rows, the line (if it is there) on top, then the notes from
-    /// the window's lowest up, high on top.
+    /// the window's lowest up, high on top. With lock lanes, the list
+    /// ([`Self::steps_list`]) from the swipe's top.
     fn shown(&self, rows: usize) -> Vec<&Lane> {
         if let (Some(b), None) = (&self.bank, self.pitched) {
             // Play's rows: the bank's pads in order, from the swipe's top.
             let top = b.top.min(self.lanes.len().saturating_sub(rows));
             return self.lanes.iter().skip(top).take(rows).collect();
         }
+        if self.has_locks() {
+            let list = self.steps_list(rows);
+            let top = self.top.min(list.len().saturating_sub(rows));
+            return list.into_iter().skip(top).take(rows).collect();
+        }
         let Some(p) = self.pitched else {
             let mut v: Vec<&Lane> = self.lanes.iter().take(rows).collect();
             v.sort_by_key(|l| l.pad);
             return v;
         };
-        let (mut top, notes): (Vec<&Lane>, Vec<&Lane>) =
-            self.lanes.iter().partition(|l| l.pad >= 16);
-        let n = rows.saturating_sub(top.len());
+        let (mut top, notes, locks, k) = self.pitched_parts(rows);
+        let n = rows.saturating_sub(top.len() + k);
         let low = p.low.min(notes.len().saturating_sub(n));
         top.extend(notes.iter().skip(low).take(n).rev());
+        // The lock lanes under the notes (board 4), from the swipe's top.
+        let first = self.top.min(locks.len() - k);
+        top.extend(locks.into_iter().skip(first).take(k));
         top
+    }
+
+    /// Scale rows' parts (a synth's or outside gear's track): the line
+    /// (STEP SEQ's, on top), the notes, the lock lanes (under them, board
+    /// 4), and how many of the lanes show in `rows`: as many as leave
+    /// three notes, one at least; a swipe shows the others.
+    fn pitched_parts(&self, rows: usize) -> (Vec<&Lane>, Vec<&Lane>, Vec<&Lane>, usize) {
+        let (mut line, mut notes, mut locks) = (Vec::new(), Vec::new(), Vec::new());
+        for l in &self.lanes {
+            if l.lock.is_some() {
+                locks.push(l);
+            } else if l.pad >= 16 {
+                line.push(l);
+            } else {
+                notes.push(l);
+            }
+        }
+        let k = locks.len().min(rows.saturating_sub(line.len() + 3).max(1));
+        (line, notes, locks, k)
+    }
+
+    /// Lock lanes on the Sequencer's Steps (a kit's sounds; not Play's
+    /// rows, nor scale rows).
+    fn has_locks(&self) -> bool {
+        self.bank.is_none() && self.pitched.is_none() && self.lanes.iter().any(|l| l.lock.is_some())
+    }
+
+    /// The Steps with lock lanes, every row a swipe can reach: the most
+    /// wanted sounds that fit in `rows` and any sound with a lock lane, in
+    /// pad order, each with its lock lanes under it, then the track's.
+    fn steps_list(&self, rows: usize) -> Vec<&Lane> {
+        let (locks, sounds): (Vec<&Lane>, Vec<&Lane>) =
+            self.lanes.iter().partition(|l| l.lock.is_some());
+        let owner = |l: &Lane| l.lock.as_ref().and_then(|k| k.owner);
+        let mut v: Vec<&Lane> = sounds
+            .iter()
+            .enumerate()
+            .filter(|(i, s)| *i < rows || locks.iter().any(|l| owner(l) == Some(s.pad)))
+            .map(|(_, s)| *s)
+            .collect();
+        v.sort_by_key(|l| l.pad);
+        let mut out = Vec::with_capacity(v.len() + locks.len());
+        for s in &v {
+            out.push(*s);
+            out.extend(locks.iter().filter(|l| owner(l) == Some(s.pad)));
+        }
+        out.extend(
+            locks
+                .iter()
+                .filter(|l| owner(l).is_none_or(|o| !v.iter().any(|s| s.pad == o))),
+        );
+        out
+    }
+
+    /// How many rows a swipe moves through, and the first one shown: the
+    /// bank's on Play, the Steps' list with lock lanes (None: no swipe).
+    fn scroll(&self, rows: usize) -> Option<(usize, usize)> {
+        match &self.bank {
+            Some(b) if self.pitched.is_none() => Some((self.lanes.len(), b.top)),
+            Some(_) => None,
+            None if self.has_locks() => Some((self.steps_list(rows).len(), self.top)),
+            // Scale rows with more lock lanes than show: the lanes swipe.
+            None if self.pitched.is_some() => {
+                let (_, _, locks, k) = self.pitched_parts(rows);
+                (locks.len() > k).then(|| (locks.len() - k + rows, self.top))
+            }
+            None => None,
+        }
+    }
+
+    /// The Steps' first row to show so that lane `pad` (a lock lane's)
+    /// shows in `r`, for the app after + Lane.
+    pub fn top_showing(&self, r: Rect, pad: usize) -> Option<usize> {
+        let rows = self.geom(r).rows;
+        // Scale rows: among the lock lanes, as many showing as fit.
+        let (list, rows) = if self.pitched.is_some() {
+            let (_, _, locks, k) = self.pitched_parts(rows);
+            (locks, k.max(1))
+        } else {
+            (self.steps_list(rows), rows)
+        };
+        let k = list.iter().position(|l| l.pad == pad)?;
+        let last = list.len().saturating_sub(rows);
+        let top = self.top.min(last);
+        Some(if k < top {
+            k
+        } else if k >= top + rows {
+            (k + 1 - rows).min(last)
+        } else {
+            top
+        })
+    }
+
+    /// The Steps' last first row a swipe can reach in `r` (0: they all
+    /// show).
+    pub fn steps_last_top(&self, r: Rect) -> usize {
+        let rows = self.geom(r).rows;
+        if self.pitched.is_some() {
+            let (_, _, locks, k) = self.pitched_parts(rows);
+            return locks.len() - k;
+        }
+        self.steps_list(rows).len().saturating_sub(rows)
     }
 
     /// How many note rows the scale rows show in `r` (the line's taken
     /// off), for the octave's ‹ and ›.
     pub fn note_rows(&self, r: Rect) -> usize {
-        let top = self.lanes.iter().filter(|l| l.pad >= 16).count();
-        self.geom(r).rows.saturating_sub(top).max(1)
+        let rows = self.geom(r).rows;
+        let (line, _, _, k) = self.pitched_parts(rows);
+        rows.saturating_sub(line.len() + k).max(1)
     }
 
     /// The octave's name on scale rows: the lowest row's ("Oct 3", for
@@ -1466,9 +1646,9 @@ impl StepGrid {
         let Some(p) = self.pitched else {
             return (false, false);
         };
-        let top = self.lanes.iter().filter(|l| l.pad >= 16).count();
-        let notes = self.lanes.len() - top;
-        let n = rows.saturating_sub(top);
+        let (line, notes, _, k) = self.pitched_parts(rows);
+        let notes = notes.len();
+        let n = rows.saturating_sub(line.len() + k);
         let low = p.low.min(notes.saturating_sub(n));
         (low > 0, low + n < notes)
     }
@@ -1487,14 +1667,21 @@ impl StepGrid {
             arm: self.arm,
             pitched: self.pitched,
             bank: self.bank.clone(),
+            top: self.top,
+            add_lane: self.add_lane,
         }
+    }
+
+    /// The pattern head, with + Lane where it shows.
+    fn head(&self, r: Rect) -> Head {
+        Head::of(r, self.pitched.is_some(), self.add_lane)
     }
 
     /// The middle of head control `k` (`HEAD_PREV` ...) with scale rows
     /// (`pitched`) or without, for the app's tests.
     #[cfg(test)]
     pub fn head_at(r: Rect, k: usize, pitched: bool) -> (i32, i32) {
-        let h = Head::of(r, pitched);
+        let h = Head::of(r, pitched, false);
         let b = [
             h.prev, h.next, h.shorter, h.longer, h.fold, h.lower, h.higher,
         ][k];
@@ -1518,7 +1705,7 @@ impl StepGrid {
     /// would crowd the title.
     fn paint_head(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        let hd = Head::of(r, self.pitched.is_some());
+        let hd = self.head(r);
         let (h, _) = card_head(r);
         let title_w = cx.measure(FontId::Bold, draw::HEAD_PX, &self.title.to_uppercase())
             + if self.arm.is_some() {
@@ -1555,6 +1742,19 @@ impl StepGrid {
         button(cx, hd.next, "›", next);
         button(cx, hd.shorter, "−", shorter);
         button(cx, hd.longer, "+", longer);
+        if hd.lane.w > 0 {
+            // + Lane: a lock lane (usable once there is a clip).
+            let face = Rect::new(hd.lane.x + 4, mid - 13, hd.lane.w - 8, 26);
+            cx.canvas.fill_round_rect(face, 8, t.raised);
+            cx.text(
+                FontId::Bold,
+                14.0,
+                face,
+                Align::Center,
+                t.button_ink(self.length > 0),
+                "+ Lane",
+            );
+        }
         let row = |b: Rect| Rect::new(b.x, h.y, b.w, h.h);
         if let Some(p) = self.pitched {
             let rows = self.geom(r).rows;
@@ -1865,6 +2065,80 @@ fn paint_cell(
     }
 }
 
+/// A lock lane's row `k` (the redesign's board 3): its setting's name
+/// over "lock lane · Kick" in a dashed purple box, hooked under its sound,
+/// a × in the speaker's place, then each step's lock as a purple bar as
+/// high as its value, with the value over it.
+#[allow(clippy::too_many_arguments)]
+fn paint_lock_lane(
+    cx: &mut PaintCx,
+    g: &GridGeom,
+    k: usize,
+    lane: &Lane,
+    lk: &LockCells,
+    steps: usize,
+    play: Option<usize>,
+) {
+    let t = cx.theme.clone();
+    let y = g.row_y(k);
+    let ink = LOCKED.mix(Color::rgb(0xFFFFFF), 0.45);
+    let mb = g.mute_button(k);
+    let nr = Rect::new(g.names.x, y, mb.x - 4 - g.names.x, g.rh);
+    cx.canvas.fill_round_rect(nr, 8, t.surface);
+    dashed_outline(cx, nr, ink.with_alpha(130));
+    // The hook from the sound above.
+    cx.canvas
+        .fill_rect(Rect::new(nr.x + 9, nr.y + 7, 2, 10), ink);
+    cx.canvas
+        .fill_rect(Rect::new(nr.x + 9, nr.y + 15, 8, 2), ink);
+    let text = Rect::new(nr.x + 22, nr.y + 2, nr.w - 26, nr.h - 4);
+    let (top, bottom) = text.take_top(text.h * 11 / 20);
+    cx.text(FontId::Bold, 13.0, top, Align::Left, ink, &lane.name);
+    cx.text(FontId::Sans, 10.0, bottom, Align::Left, t.text_dim, &lk.sub);
+    // The ×: the lane comes off, its locks too.
+    cx.canvas.fill_round_rect(mb, 6, t.raised);
+    cx.canvas.stroke_round_rect(mb, 6, 1, t.outline);
+    cx.text(FontId::Bold, 16.0, mb, Align::Center, t.text_dim, "×");
+    for s in 0..steps.min(16) {
+        let sr = g.cell(k, s);
+        let base = if s % 4 == 0 {
+            t.raised
+        } else {
+            t.raised.mix(t.surface, 0.45)
+        };
+        let base = if play == Some(s) {
+            base.mix(Color::rgb(0xFFFFFF), 0.12)
+        } else {
+            base
+        };
+        cx.canvas.fill_round_rect(sr, 5, base);
+        let Some((pos, text)) = lk.cells.get(s).cloned().flatten() else {
+            continue;
+        };
+        let room = (sr.h - 8).max(3);
+        let bh = ((room as f32 * pos.clamp(0.0, 1.0)).round() as i32).clamp(3, room);
+        cx.canvas.fill_round_rect(
+            Rect::new(sr.x + 3, sr.bottom() - 3 - bh, sr.w - 6, bh),
+            4,
+            ink.with_alpha(190),
+        );
+        // The value over it: only the number when the unit doesn't fit.
+        let shown = if cx.measure(FontId::Bold, 10.0, &text) <= sr.w - 4 {
+            text.as_str()
+        } else {
+            text.split(' ').next().unwrap_or_default()
+        };
+        cx.text(
+            FontId::Bold,
+            10.0,
+            Rect::new(sr.x, sr.y + 2, sr.w, 13),
+            Align::Center,
+            Color::rgb(0xFFFFFF),
+            shown,
+        );
+    }
+}
+
 impl Widget for StepGrid {
     fn changed_parts(&self, r: Rect) -> Option<Vec<Rect>> {
         let painted = self.painted.borrow();
@@ -1911,12 +2185,7 @@ impl Widget for StepGrid {
                 cx.text(
                     FontId::Bold,
                     draw::HEAD_PX,
-                    Rect::new(
-                        x,
-                        h.y,
-                        Head::of(r, self.pitched.is_some()).title.right() - x,
-                        h.h,
-                    ),
+                    Rect::new(x, h.y, self.head(r).title.right() - x, h.h),
                     Align::Left,
                     t.text_dim,
                     &self.title.to_uppercase(),
@@ -1948,6 +2217,10 @@ impl Widget for StepGrid {
             let nr = Rect::new(g.names.x, y, mb.x - 4 - g.names.x, g.rh);
             let c = lane.color;
             let on_pads = self.on_pads == Some(lane.pad);
+            if let Some(lk) = &lane.lock {
+                paint_lock_lane(cx, &g, k, lane, lk, self.steps, self.play);
+                continue;
+            }
             if self.pitched.is_some() && lane.pad < 16 {
                 // A scale row: its note on a key, the roots shaded and
                 // tagged; a finger on it plays it.
@@ -2051,11 +2324,10 @@ impl Widget for StepGrid {
                 cx.canvas.stroke_round_rect(lane_r, 8, 2, t.accent);
             }
         }
-        // Play's rows: a rail at the right, where the rows shown sit
-        // among the bank's.
-        if self.bank.is_some() && self.pitched.is_none() && self.lanes.len() > g.rows {
-            let n = self.lanes.len();
-            let top = self.bank.as_ref().map_or(0, |b| b.top.min(n - g.rows));
+        // Play's rows, or the Steps with lock lanes: a rail at the right,
+        // where the rows shown sit among them all.
+        if let Some((n, top)) = self.scroll(g.rows).filter(|(n, _)| *n > g.rows) {
+            let top = top.min(n - g.rows);
             let rail_h = g.row_y(g.rows - 1) + g.rh - g.grid.y;
             let rail = Rect::new(g.grid.right() + 8, g.grid.y, RAIL_W, rail_h);
             cx.canvas.fill_round_rect(rail, 3, t.raised);
@@ -2070,7 +2342,7 @@ impl Widget for StepGrid {
     fn targets(&self, r: Rect) -> Vec<Target> {
         let g = self.geom(r);
         let mut out = Vec::new();
-        let h = Head::of(r, self.pitched.is_some());
+        let h = self.head(r);
         let (prev, next, shorter, longer) = self.usable();
         if let Some(b) = &self.bank {
             // Play's head: the track's ‹ and ›, the banks, the pages and
@@ -2107,6 +2379,11 @@ impl Widget for StepGrid {
         {
             out.push(Target::tap("head", k, label, rect).disabled_if(!can));
         }
+        if h.lane.w > 0 && self.bank.is_none() {
+            out.push(
+                Target::tap("head", HEAD_LANE, "+ Lane", h.lane).disabled_if(self.length == 0),
+            );
+        }
         if self.pitched.is_some() && self.bank.is_none() {
             let (lower, higher) = self.octave_usable(g.rows);
             for (k, label, rect, can) in [
@@ -2121,6 +2398,30 @@ impl Widget for StepGrid {
             out.push(Target::tap("arm", 0, pill.label(), arm_pill_hit(r)));
         }
         for (k, lane) in self.shown(g.rows).iter().enumerate() {
+            if lane.lock.is_some() {
+                // A lock lane: its × takes it off; a step's cell is a
+                // value a finger drags (or the wheel turns) and a tap
+                // locks or unlocks.
+                let id = lane.pad - LOCK_LANE;
+                out.push(Target::tap(
+                    "lock-lane-off",
+                    id,
+                    format!("{} lock lane: take it off", lane.name),
+                    g.mute_button(k),
+                ));
+                for st in 0..self.steps.min(16) {
+                    out.push(
+                        Target::drag(
+                            "lock",
+                            id * 16 + st,
+                            format!("{} lock, step {}", lane.name, st + 1),
+                            g.cell(k, st),
+                        )
+                        .towards(0, -40),
+                    );
+                }
+                continue;
+            }
             if self.pitched.is_some() && lane.pad < 16 {
                 // A scale row's name plays its note while held.
                 out.push(Target::hold(
@@ -2150,6 +2451,18 @@ impl Widget for StepGrid {
         out
     }
 
+    fn steps(&self, t: &Target) -> bool {
+        t.id == "lock"
+    }
+
+    /// The wheel turning a lock's cell held (or grabbed): as a drag.
+    fn step(&mut self, t: &Target, delta: i32, _r: Rect) -> Option<EventKind> {
+        (t.id == "lock").then_some(EventKind::Step {
+            index: LOCK_LANE + t.index,
+            delta,
+        })
+    }
+
     fn touch(&mut self, f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         // A scale row's note sounds until its finger lifts.
         if phase == Touch::Up {
@@ -2161,31 +2474,49 @@ impl Widget for StepGrid {
                 });
             }
         }
-        if self.bank.is_some() && phase != Touch::Down {
-            return self.swipe_on(f, phase, y, r);
-        }
         if phase != Touch::Down {
+            if self.drag.as_ref().is_some_and(|d| d.finger == f) {
+                return self.drag_on(phase, y);
+            }
+            if self.swipes(r) {
+                return self.swipe_on(f, phase, y, r);
+            }
             return None;
         }
         if self.bank.is_some() {
             if let Some(i) = BankLayout::of(r).at(x, y) {
                 return Some(EventKind::Tab(i));
             }
-        } else if let Some(i) = Head::of(r, self.pitched.is_some()).at(x, y) {
+        } else if let Some(i) = self.head(r).at(x, y) {
             return Some(EventKind::Tab(i));
         }
         if self.arm.is_some() && arm_pill_hit(r).contains(x, y) {
             return Some(EventKind::Select(0));
         }
         let tap = self.tap_at(f, x, y, r);
-        if self.bank.is_none() || matches!(tap, Some(EventKind::Pad { .. })) {
+        if let Some(EventKind::Cell { row, col }) = tap {
+            if row >= LOCK_LANE {
+                // A lock's cell: a drag turns it, a tap waits for the
+                // finger to lift.
+                self.drag = Some(LockDrag {
+                    finger: f,
+                    cell: (row - LOCK_LANE) * 16 + col,
+                    y,
+                    sent: 0,
+                    moved: false,
+                    tap,
+                });
+                return None;
+            }
+        }
+        if !self.swipes(r) || matches!(tap, Some(EventKind::Pad { .. })) {
             return tap;
         }
-        // Play's rows: the tap waits for the finger to lift, so a swipe
-        // can move the rows instead.
+        // Play's rows (or the Steps with lock lanes): the tap waits for
+        // the finger to lift, so a swipe can move the rows instead.
         let (_, body) = card_head(r);
         if body.contains(x, y) {
-            let top = self.bank.as_ref().map_or(0, |b| b.top);
+            let top = self.bank.as_ref().map_or(self.top, |b| b.top);
             self.swipe = Some(Swipe {
                 finger: f,
                 y,
@@ -2225,7 +2556,8 @@ impl StepGrid {
                 let pitch = g.rh + LANE_GAP;
                 // A finger moving up shows the rows below.
                 let want = -dy / pitch.max(1);
-                let last = self.lanes.len().saturating_sub(g.rows) as i32;
+                let n = self.scroll(g.rows).map_or(self.lanes.len(), |(n, _)| n);
+                let last = n.saturating_sub(g.rows) as i32;
                 let to = (s.top as i32 + want).clamp(0, last);
                 let delta = to - (s.top as i32 + s.moved);
                 s.moved += delta;
@@ -2236,12 +2568,47 @@ impl StepGrid {
         }
     }
 
+    /// Play's rows, or the Steps with lock lanes that don't all show: a
+    /// finger swipes them.
+    fn swipes(&self, r: Rect) -> bool {
+        self.bank.is_some() || self.scroll(self.geom(r).rows).is_some()
+    }
+
+    /// A finger moving on a lock's cell, or lifting: each
+    /// [`LOCK_DRAG_PX`] up turns the lock a detent up (`Step { index:
+    /// LOCK_LANE + cell, delta }`); one that lifts unmoved gives its tap.
+    fn drag_on(&mut self, phase: Touch, y: i32) -> Option<EventKind> {
+        let mut d = self.drag.take()?;
+        match phase {
+            Touch::Up => (!d.moved).then_some(d.tap).flatten(),
+            Touch::Cancel => None,
+            _ => {
+                let det = (d.y - y) / LOCK_DRAG_PX;
+                let delta = det - d.sent;
+                d.sent = det;
+                d.moved |= det != 0;
+                let index = LOCK_LANE + d.cell;
+                self.drag = Some(d);
+                (delta != 0).then_some(EventKind::Step { index, delta })
+            }
+        }
+    }
+
     /// What a finger down at (`x`, `y`) on the rows taps: a lane's name
-    /// (its mute, or a scale row's note), or a step.
+    /// (its mute, or a scale row's note), or a step; on a lock lane its ×
+    /// or a step's lock.
     fn tap_at(&mut self, f: u64, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let g = self.geom(r);
         let lanes = self.shown(g.rows);
         for (k, lane) in lanes.iter().enumerate() {
+            if lane.lock.is_some() && g.mute_hit(k).contains(x, y) {
+                // Only the × answers: the name is the lane's label.
+                return g
+                    .mute_button(k)
+                    .inset(-2)
+                    .contains(x, y)
+                    .then_some(EventKind::Toggle(lane.pad));
+            }
             if g.mute_hit(k).contains(x, y) {
                 if self.pitched.is_some() && lane.pad < 16 {
                     let pad = lane.pad;
@@ -3317,7 +3684,136 @@ mod tests {
             label: None,
             empty: false,
             tag: None,
+            lock: None,
         }
+    }
+
+    /// The Sequencer's lock lanes (the redesign's board 3): each under its
+    /// sound, the track's after them all; a tap on a step's cell gives it
+    /// on the lift, a drag turns it a detent each 8 px up, the wheel does
+    /// too, the × takes the lane off on the lift, + Lane is on the head,
+    /// and a swipe moves the rows once they don't all fit.
+    #[test]
+    fn lock_lanes_hang_under_their_sounds_and_a_drag_turns_a_lock() {
+        let lock = |id: usize, owner: Option<usize>, name: &str| Lane {
+            name: name.into(),
+            lock: Some(LockCells {
+                sub: "lock lane".into(),
+                owner,
+                cells: (0..16)
+                    .map(|s| (s == 6).then(|| (0.5, "180 ms".to_string())))
+                    .collect(),
+            }),
+            ..lane(LOCK_LANE + id, &[])
+        };
+        let mut g = StepGrid {
+            steps: 16,
+            length: 16,
+            pages: 1,
+            add_lane: true,
+            ..Default::default()
+        };
+        g.lanes = (0..8).map(|p| lane(p, &[0; 16])).collect();
+        g.lanes.push(lock(0, Some(2), "Decay"));
+        g.lanes.push(lock(1, None, "Delay send"));
+        let r = Rect::new(0, 0, 1038, 330);
+        let rows = g.rows_shown(r);
+        // The sounds that fit (pad 3 among them), then the two lock lanes.
+        let n = rows.min(8) + 2;
+        assert!(rows < n, "{rows}: a swipe shows the rest");
+        let shown = g.lanes_shown(r);
+        assert_eq!(shown[..4], [0, 1, 2, LOCK_LANE], "Decay under pad 3");
+        // + Lane, on the press.
+        let ts = g.targets(r);
+        let plus = ts
+            .iter()
+            .find(|t| t.id == "head" && t.index == HEAD_LANE)
+            .expect("+ Lane")
+            .rect;
+        assert_eq!(
+            g.touch(1, Touch::Down, plus.x + 8, plus.y + plus.h / 2, r),
+            Some(EventKind::Tab(HEAD_LANE))
+        );
+        g.touch(1, Touch::Up, plus.x + 8, plus.y + plus.h / 2, r);
+        // A lock lane's cells are values to drag; the wheel turns them.
+        let cells: Vec<&Target> = ts.iter().filter(|t| t.id == "lock").collect();
+        assert_eq!(cells.len(), 16, "Decay's; the send's lane is below");
+        assert!(g.steps(cells[6]));
+        assert_eq!(
+            g.step(cells[6], -3, r),
+            Some(EventKind::Step {
+                index: LOCK_LANE + 6,
+                delta: -3
+            })
+        );
+        // A tap: on the lift.
+        let (x, y) = g.step_at(r, 3, 6);
+        assert_eq!(g.touch(2, Touch::Down, x, y, r), None);
+        assert_eq!(
+            g.touch(2, Touch::Up, x, y, r),
+            Some(EventKind::Cell {
+                row: LOCK_LANE,
+                col: 6
+            })
+        );
+        // A drag: a detent each 8 px up, and no tap at the lift.
+        assert_eq!(g.touch(3, Touch::Down, x, y, r), None);
+        assert_eq!(g.touch(3, Touch::Move, x, y - 5, r), None);
+        assert_eq!(
+            g.touch(3, Touch::Move, x, y - 17, r),
+            Some(EventKind::Step {
+                index: LOCK_LANE + 6,
+                delta: 2
+            })
+        );
+        assert_eq!(
+            g.touch(3, Touch::Move, x, y + 8, r),
+            Some(EventKind::Step {
+                index: LOCK_LANE + 6,
+                delta: -3
+            })
+        );
+        assert_eq!(g.touch(3, Touch::Up, x, y + 8, r), None);
+        // The ×: the lane off, on the lift.
+        let off = ts
+            .iter()
+            .find(|t| t.id == "lock-lane-off" && t.index == 0)
+            .expect("Decay's ×")
+            .rect;
+        let (x, y) = (off.x + off.w / 2, off.y + off.h / 2);
+        assert_eq!(g.touch(4, Touch::Down, x, y, r), None);
+        assert_eq!(
+            g.touch(4, Touch::Up, x, y, r),
+            Some(EventKind::Toggle(LOCK_LANE))
+        );
+        // A swipe up: the rows below, to the track's lane at the end.
+        let (x, y) = g.step_at(r, 0, 3);
+        let pitch = g.step_at(r, 1, 0).1 - g.step_at(r, 0, 0).1;
+        assert_eq!(g.touch(5, Touch::Down, x, y, r), None);
+        assert_eq!(
+            g.touch(5, Touch::Move, x, y - 20 * pitch, r),
+            Some(EventKind::Step {
+                index: ROWS,
+                delta: (n - rows) as i32
+            })
+        );
+        g.touch(5, Touch::Up, x, y - 20 * pitch, r);
+        assert_eq!(g.steps_last_top(r), n - rows);
+        g.top = g.steps_last_top(r);
+        assert_eq!(g.lanes_shown(r).last(), Some(&(LOCK_LANE + 1)));
+        // + Lane's new lane: the rows stay where it shows already, or
+        // move just far enough to show it.
+        assert_eq!(g.top_showing(r, LOCK_LANE), Some(n - rows));
+        g.top = 0;
+        assert_eq!(g.top_showing(r, LOCK_LANE + 1), Some(n - rows));
+        // No clip yet: + Lane waits.
+        g.length = 0;
+        let plus = g
+            .targets(r)
+            .into_iter()
+            .find(|t| t.id == "head" && t.index == HEAD_LANE)
+            .unwrap();
+        assert!(!plus.enabled);
     }
 
     /// Play's rows (the Play, Pads and Sequencer redesign's board 1): the
@@ -3420,6 +3916,67 @@ mod tests {
             .find(|t| t.id == "head" && t.index == HEAD_BANK)
             .unwrap();
         assert!(!bank_a.enabled);
+    }
+
+    /// A synth or gear track's lock lanes (step 5b, board 4): under the
+    /// scale rows, as many as leave three notes; a swipe shows the rest.
+    #[test]
+    fn lock_lanes_go_under_the_scale_rows_and_swipe() {
+        let mut g = StepGrid {
+            steps: 16,
+            length: 16,
+            pages: 1,
+            add_lane: true,
+            pitched: Some(Pitched {
+                fold: false,
+                low: 0,
+            }),
+            ..Default::default()
+        };
+        g.lanes = (0..16)
+            .map(|p| Lane {
+                note: Some(48 + p as u8),
+                ..lane(p, &[0; 16])
+            })
+            .collect();
+        g.lanes.extend((0..6).map(|id| Lane {
+            name: format!("CC {id}"),
+            lock: Some(LockCells {
+                sub: format!("CC {id}"),
+                owner: None,
+                cells: vec![None; 16],
+            }),
+            ..lane(LOCK_LANE + id, &[])
+        }));
+        let r = Rect::new(0, 0, 998, 420);
+        let rows = g.rows_shown(r);
+        let k = 6.min(rows - 3);
+        assert!(k < 6, "{rows} rows: the test wants a swipe");
+        let notes = rows - k;
+        assert_eq!(g.note_rows(r), notes);
+        let want = |top: usize| -> Vec<usize> {
+            (0..notes)
+                .rev()
+                .chain((top..top + k).map(|id| LOCK_LANE + id))
+                .collect()
+        };
+        assert_eq!(
+            g.lanes_shown(r),
+            want(0),
+            "the lowest notes, then the lanes"
+        );
+        // The last lane: a swipe's top that shows it, which is the last.
+        let top = g.top_showing(r, LOCK_LANE + 5).expect("a top");
+        assert_eq!(top, 6 - k);
+        assert_eq!(g.steps_last_top(r), 6 - k);
+        g.top = top;
+        assert_eq!(g.lanes_shown(r), want(6 - k));
+        // Past the end: the last lanes still.
+        g.top = 40;
+        assert_eq!(g.lanes_shown(r), want(6 - k));
+        // A lane's cells are values the wheel turns, as on a kit.
+        let ts = g.targets(r);
+        assert_eq!(ts.iter().filter(|t| t.id == "lock").count(), 16 * k);
     }
 
     /// A synth track's scale rows (the sequencer design's mockup B): the

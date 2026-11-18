@@ -757,6 +757,14 @@ pub(crate) fn square(t: f32, dt: f32) -> f32 {
     naive + blep(t, dt) - blep(kit::wrap(t + 0.5), dt)
 }
 
+/// A rising saw (-1 at phase 0 up to +1) with its step band-limited
+/// across four frames, as [`square`]'s (the vocoder's carrier).
+#[inline]
+pub(crate) fn saw(t: f32, dt: f32) -> f32 {
+    let dt = dt.clamp(1e-6, 0.25);
+    2.0 * t - 1.0 - blep(t, dt)
+}
+
 /// A triangle wave (-1 at phase 0, +1 at a half) with its corners
 /// band-limited across four frames.
 #[inline]

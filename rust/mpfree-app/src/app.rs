@@ -933,6 +933,9 @@ pub struct Status {
     /// The loop keys are on (SHIFT + SAMPLER on the Looper tab): the pads
     /// are the loop keys on the Looper tab and Play.
     pub loop_keys: bool,
+    /// The Perform set is on the pads at a page past A (PAD BANK): its
+    /// name ("Page B · Throws"), for the chip and the hint.
+    pub perform: Option<String>,
     /// STEP SEQ: the pads as steps, or STEP SEQ held to pick the sound.
     pub steps: Option<StepPads>,
     /// ERASE held: the next tap on the screen deletes what it lands on
@@ -1169,6 +1172,14 @@ pub enum Effect {
     },
     /// For the looper and the line input.
     Looper(LoopAction),
+    /// A Perform pad's throw held or let go, for the mixer.
+    PlayFx(crate::mixing::PlayFx),
+    /// A Perform pad's track mute: track `track` (0 is Track 1) muted or
+    /// unmuted, at the launch line when `wait`.
+    TrackMute {
+        track: usize,
+        wait: bool,
+    },
     /// MAIN on the Play page (None: the next view) and STEP SEQ (Beats).
     PlayView(Option<crate::play_page::PlayView>),
     /// Arrange's view: the Song view (`Some(true)`), the Clips grid
@@ -1261,11 +1272,18 @@ pub struct App {
     mute_bank: usize,
     /// TRACK MUTE held (without SHIFT): a pad tapped solos its track.
     mute_hold: Option<MuteHold>,
-    /// The Perform pads' page on the pads (SHIFT + SAMPLER on the Looper
-    /// tab), and the page: the loop keys
-    /// ([`crate::perform_pads::PerformPage::loop_keys`]).
+    /// The Perform set is on the pads (SHIFT + SAMPLER on the Looper tab,
+    /// or the Looper's Pads switch), on the Looper tab and Play.
     loop_keys: bool,
-    perform_page: crate::perform_pads::PerformPage,
+    /// The project's Perform set ([`crate::perform_pads::PerformSet`]):
+    /// page A the loop keys, B Play's throws.
+    perform_set: crate::perform_pads::PerformSet,
+    /// The set's page on the pads (PAD BANK A = 0 to H = 7), kept while
+    /// the set is off, so SHIFT + SAMPLER brings it back.
+    perform_bank: usize,
+    /// The throws a Perform pad plays (held or latched), a bit for each
+    /// place in [`crate::play_page::THROW_LIST`].
+    throws_on: u8,
     /// The kit's page on the pads (PAD BANK A = 0 to H = 7): pad n plays
     /// the kit's pad 16 * page + n (sampler R3 part 2b). One page for
     /// every kit, as Akai's MPC has one pad bank.
@@ -1513,7 +1531,9 @@ impl App {
             mute_bank: 0,
             mute_hold: None,
             loop_keys: false,
-            perform_page: crate::perform_pads::PerformPage::loop_keys(),
+            perform_set: crate::perform_pads::PerformSet::default(),
+            perform_bank: 0,
+            throws_on: 0,
             pad_page: 0,
             kit_held: [None; 16],
             track_count: 0,
@@ -2047,23 +2067,153 @@ impl App {
         self.levels_on && self.levels_transpose
     }
 
-    /// The pads are the loop keys now: turned on (SHIFT + SAMPLER on the
-    /// Looper tab, or the deck's Pads switch), on the Looper tab or Play.
-    /// Elsewhere they play the kit, and come back as loop keys on return.
+    /// The pads are the Perform set now (the loop keys on its page A):
+    /// turned on (SHIFT + SAMPLER on the Looper tab, or the deck's Pads
+    /// switch), on the Looper tab or Play. Elsewhere they play the kit,
+    /// and come back as the set on return.
     pub fn pads_are_loop_keys(&self) -> bool {
         self.loop_keys && matches!(self.view, View::Looper | View::Play)
     }
 
-    /// The Perform pads' page the pads show as loop keys.
+    /// The Perform set's page on the pads.
     pub fn perform_page(&self) -> &crate::perform_pads::PerformPage {
-        &self.perform_page
+        self.perform_set.page(self.perform_bank)
     }
 
-    /// The loop keys on or off (SHIFT + SAMPLER on the Looper tab, the
-    /// deck's Pads switch). One pad mode at a time: STEP SEQ, TRACK MUTE
-    /// and 16 Levels give the pads up to them.
+    /// The Perform set's page on the pads: PAD BANK A = 0 to H = 7.
+    pub fn perform_bank(&self) -> usize {
+        self.perform_bank
+    }
+
+    /// The project's Perform set, for its save.
+    pub fn perform_set(&self) -> &crate::perform_pads::PerformSet {
+        &self.perform_set
+    }
+
+    /// A Perform set in place of the project's. A throw a pad was
+    /// playing is let go; the page on the pads stays, and with the set on
+    /// the screen shows the new page's name.
+    pub fn set_perform_set(&mut self, set: crate::perform_pads::PerformSet) -> Vec<Effect> {
+        let mut fx = self.throws_off();
+        self.perform_set = set;
+        if self.loop_keys {
+            fx.push(self.status());
+        }
+        fx
+    }
+
+    /// A project's Perform set opened (`text`: its `perform` part; None,
+    /// New or a project saved before the part, gives a new project's
+    /// set): the lines it skipped, for the log, and its effects.
+    pub fn open_perform(&mut self, text: Option<&str>) -> (Vec<String>, Vec<Effect>) {
+        use crate::perform_pads::PerformSet;
+        let (set, skipped) =
+            text.map_or_else(|| (PerformSet::default(), Vec::new()), PerformSet::parse);
+        (skipped, self.set_perform_set(set))
+    }
+
+    /// The throws Perform pads play now (for their lights).
+    pub fn throws_on(&self) -> u8 {
+        self.throws_on
+    }
+
+    /// A throw pad pressed (`down`) or let go: whether its throw now plays,
+    /// when that changed. Held: it plays while the pad is down. Latched:
+    /// a press starts it and the next lets it go; the lift does nothing.
+    pub fn perform_throw(&mut self, t: crate::perform_pads::Throw, down: bool) -> Option<bool> {
+        use crate::perform_pads::Hold;
+        let bit = 1u8.checked_shl(u32::from(t.index))?;
+        let was = self.throws_on & bit != 0;
+        let now = match (t.hold, down) {
+            (Hold::WhileHeld, d) => d,
+            (Hold::Latch, true) => !was,
+            (Hold::Latch, false) => was,
+        };
+        if now == was {
+            return None;
+        }
+        self.throws_on ^= bit;
+        Some(now)
+    }
+
+    /// Every throw a Perform pad plays let go (the set off, another
+    /// project).
+    fn throws_off(&mut self) -> Vec<Effect> {
+        let on = std::mem::take(&mut self.throws_on);
+        (0..8u8)
+            .filter(|i| on & (1 << i) != 0)
+            .filter_map(|i| crate::perform_pads::throw_fx(usize::from(i), false, 0))
+            .map(Effect::PlayFx)
+            .collect()
+    }
+
+    /// A track mute pad's change waits for the launch line (Perform;
+    /// SHIFT gives the other timing), as TRACK MUTE's pads.
+    pub fn mute_waits(&self) -> bool {
+        self.perform != self.shift
+    }
+
+    /// The Looper's Pads switch (the deck's and the loop row's): the
+    /// Perform set on the pads at page A, the loop keys; with page A on
+    /// the pads already, off. One pad mode at a time: STEP SEQ, TRACK
+    /// MUTE and 16 Levels give the pads up to it.
     pub fn toggle_loop_keys(&mut self) -> Vec<Effect> {
+        if self.loop_keys && self.perform_bank == 0 {
+            return self.set_loop_keys(false);
+        }
+        let turned = self.perform_bank != 0;
+        self.perform_bank = 0;
+        let mut fx = self.set_loop_keys(true);
+        if turned && fx.is_empty() {
+            // On already, on another page: page A now.
+            fx.extend([
+                self.status(),
+                Effect::BankLights,
+                Effect::Note(self.perform_line()),
+            ]);
+        }
+        fx
+    }
+
+    /// SHIFT + SAMPLER on the Looper tab: the Perform set on the pads at
+    /// the page shown last, or off.
+    fn toggle_perform(&mut self) -> Vec<Effect> {
         self.set_loop_keys(!self.loop_keys)
+    }
+
+    /// The Perform set off the pads (Play's "Pads: Perform B" chip
+    /// tapped): the pads play again.
+    pub fn perform_off(&mut self) -> Vec<Effect> {
+        self.set_loop_keys(false)
+    }
+
+    /// What the pads are with the set on, for the log: page A's loop keys
+    /// as the Looper has always said, another page by its name.
+    fn perform_line(&self) -> String {
+        if self.perform_bank == 0 {
+            "SHIFT + SAMPLER: the pads are the loop keys (top two rows: \
+             each loop's key; bottom two: its mute)"
+                .to_string()
+        } else {
+            format!(
+                "SHIFT + SAMPLER: the pads are the Perform set, {} (PAD BANK: its pages)",
+                self.perform_set.page_name(self.perform_bank)
+            )
+        }
+    }
+
+    /// PAD BANK with the Perform set on the pads: its page (SHIFT or a
+    /// second press for E to H, as a kit's).
+    fn perform_bank_button(&mut self, k: u8, shift: bool) -> Vec<Effect> {
+        self.perform_bank = bank_target(self.perform_bank, k, shift);
+        vec![
+            self.status(),
+            Effect::BankLights,
+            Effect::Note(format!(
+                "Perform: {}",
+                self.perform_set.page_name(self.perform_bank)
+            )),
+        ]
     }
 
     fn set_loop_keys(&mut self, on: bool) -> Vec<Effect> {
@@ -2083,13 +2233,15 @@ impl App {
             }
             fx.retain(|e| !matches!(e, Effect::Status(_) | Effect::Note(_)));
         }
+        if !on {
+            fx.extend(self.throws_off());
+        }
         self.loop_keys = on;
         fx.extend([
             self.status(),
+            Effect::BankLights,
             Effect::Note(if on {
-                "SHIFT + SAMPLER: the pads are the loop keys (top two rows: \
-                 each loop's key; bottom two: its mute)"
-                    .to_string()
+                self.perform_line()
             } else {
                 "SHIFT + SAMPLER: the pads play again".to_string()
             }),
@@ -2104,7 +2256,9 @@ impl App {
             return Vec::new();
         }
         self.loop_keys = false;
-        vec![self.status()]
+        let mut fx = self.throws_off();
+        fx.push(self.status());
+        fx
     }
 
     /// A pad tapped as a mute key: what it does. In Make a mute acts at
@@ -2231,7 +2385,11 @@ impl App {
             bpm: self.settings.bpm,
             mute_keys: self.mute_keys,
             mute_bank: self.mute_bank,
-            loop_keys: self.loop_keys,
+            // The Looper's Pads switch lights for page A only: another
+            // page isn't the loop keys.
+            loop_keys: self.loop_keys && self.perform_bank == 0,
+            perform: (self.loop_keys && self.perform_bank != 0)
+                .then(|| self.perform_set.page_name(self.perform_bank)),
             steps: self.step_pads(),
             erase: self.erase_held,
             copy: self.copy_held(),
@@ -2514,6 +2672,9 @@ impl App {
             self.mute_bank = bank_target(self.mute_bank, k, shift);
             fx.push(Effect::Note(self.mute_bank_line()));
             fx.push(Effect::BankLights);
+        } else if let Some(k) = self.map.bank_of(note).filter(|_| self.pads_are_loop_keys()) {
+            // The Perform set on the pads: PAD BANK picks its page.
+            fx.extend(self.perform_bank_button(k, shift));
         } else if let Some(k) = self.map.bank_of(note) {
             fx.push(Effect::Bank { button: k, shift });
         } else if Some(note) == self.map.data_push && self.wheel_to_held() {
@@ -2632,7 +2793,7 @@ impl App {
             // SHIFT + SAMPLER: the Looper tab; pressed again there, the
             // pads become the loop keys, or play again.
             if shift && self.view == View::Looper {
-                self.toggle_loop_keys()
+                self.toggle_perform()
             } else {
                 self.go(if shift { View::Looper } else { View::Sample })
             }
@@ -7045,6 +7206,42 @@ mod tests {
         assert!(free.iter().all(|&g| g.abs_diff(5512) <= 1), "{free:?}");
     }
 
+    /// MIDI Learn turns a track's arp as its Q-Links do: the armed
+    /// track's through the panel, another track's in place, which the
+    /// panel shows once that track is armed.
+    #[test]
+    fn a_learned_control_turns_a_tracks_arp() {
+        use mpfree_play::mpfree_param::arp as ids;
+        let mut app = ready();
+        let (info, v) = app.arp_param(0, ids::GATE).unwrap();
+        assert_eq!((info.name, v), ("Gate", 50.0));
+        let (rate, v) = app.arp_param(0, ids::RATE).unwrap();
+        assert_eq!(mpfree_mod::text::value_text(&rate, v), "1/16");
+        assert!(app.arp_param(0, 9).is_none());
+        assert!(app.set_arp_param(0, 9, 1.0).is_empty());
+        // The armed track: as Q-Link 2 sets it, and the panel hears.
+        assert!(!app.set_arp_param(0, ids::GATE, 80.0).is_empty());
+        assert_eq!((app.arp.gate, app.eng().settings().gate), (80, 80));
+        app.set_arp_param(0, ids::RATE, 1.0);
+        assert_eq!(app.settings.rate, Rate::Eighth);
+        assert!(
+            app.set_arp_param(0, ids::RATE, 1.2).is_empty(),
+            "the same step"
+        );
+        app.set_arp_param(0, ids::OCTAVES, 9.0);
+        assert_eq!(app.arp.octaves, 4, "kept to the range");
+        assert!(app.take_project_edit());
+        // Track 3, not armed: its engine plays on with it.
+        assert!(app.set_arp_param(2, ids::SWING, 60.0).is_empty());
+        assert_eq!(app.arps.engine_at(2).settings().swing, 60);
+        assert_eq!(app.arp_param(2, ids::SWING).unwrap().1, 60.0);
+        assert_eq!(app.arp.swing, 50, "the armed track's arp is as it was");
+        assert!(app.take_project_edit());
+        app.set_track(2);
+        assert_eq!((app.arp.swing, app.arp.gate), (60, 50));
+        assert!(!app.swing_from_transport, "a turned swing is the arp's own");
+    }
+
     #[test]
     fn the_arps_go_in_the_project_and_an_open_puts_them_back() {
         let mut app = ready();
@@ -7766,6 +7963,119 @@ mod tests {
         assert!(!app.pads_are_loop_keys());
         assert!(fx.contains(&Effect::Note("SHIFT + SAMPLER: the pads play again".into())));
         assert_eq!(app.view(), View::Looper);
+    }
+
+    /// The Perform set on the pads (step 6, board 7): PAD BANK picks its
+    /// page (SHIFT or a second press for E to H, as a kit's), and only
+    /// page A is the loop keys. SHIFT + SAMPLER brings the set back at the
+    /// page shown last; the Looper's Pads switch brings page A. A throw
+    /// pad plays while held, or latched until its next hit, and whatever
+    /// plays lets go when the set goes off. Out of the set PAD BANK picks
+    /// kits again.
+    #[test]
+    fn pad_bank_pages_the_perform_set_and_its_throws_let_go_with_it() {
+        use crate::perform_pads::{Hold, PadAction, Throw};
+        const SHIFT: u8 = button::SHIFT;
+        const SAMPLER: u8 = button::SAMPLER;
+        const BANK_A: u8 = 35;
+        const BANK_B: u8 = 36;
+        let mut app = ready();
+        app.map.learn(mapper::Job::Bank(0), Some(BANK_A));
+        app.map.learn(mapper::Job::Bank(1), Some(BANK_B));
+        app.open_tab(View::Looper);
+        held(&mut app, SHIFT, |a| press(a, SAMPLER));
+        assert!(app.pads_are_loop_keys());
+        assert_eq!(app.perform_bank(), 0);
+        // PAD BANK B: page B, Play's throws; no kit changes.
+        let fx = press(&mut app, BANK_B);
+        assert_eq!(app.perform_bank(), 1);
+        assert!(
+            fx.contains(&Effect::Note("Perform: Page B · Throws".into())),
+            "{fx:?}"
+        );
+        assert!(fx.contains(&Effect::BankLights));
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Bank { .. })));
+        assert!(!app.status_now().loop_keys, "page B isn't the loop keys");
+        assert!(app.pads_are_loop_keys(), "the set is still on the pads");
+        let reverb = Throw {
+            index: 1,
+            hold: Hold::WhileHeld,
+        };
+        assert_eq!(app.perform_page().action(1), PadAction::Throw(reverb));
+        // Held: on with the press, off with the lift, once each.
+        assert_eq!(app.perform_throw(reverb, true), Some(true));
+        assert_eq!(app.throws_on(), 0b10);
+        assert_eq!(app.perform_throw(reverb, true), None);
+        assert_eq!(app.perform_throw(reverb, false), Some(false));
+        assert_eq!(app.throws_on(), 0);
+        // Latched: a hit starts it, the lift does nothing, the next hit
+        // lets it go.
+        let brake = Throw {
+            index: 7,
+            hold: Hold::Latch,
+        };
+        assert_eq!(app.perform_throw(brake, true), Some(true));
+        assert_eq!(app.perform_throw(brake, false), None);
+        assert_eq!(app.throws_on(), 0b1000_0000);
+        assert_eq!(app.perform_throw(brake, true), Some(false));
+        assert_eq!(app.perform_throw(brake, false), None);
+        // Latched again, then SHIFT + SAMPLER: the set goes off and the
+        // throw lets go.
+        app.perform_throw(brake, true);
+        let fx = held(&mut app, SHIFT, |a| press(a, SAMPLER));
+        assert!(!app.pads_are_loop_keys());
+        let let_go = crate::perform_pads::throw_fx(7, false, 0).unwrap();
+        assert!(fx.contains(&Effect::PlayFx(let_go)), "{fx:?}");
+        assert_eq!(app.throws_on(), 0);
+        // Out of the set, PAD BANK picks kits.
+        assert_eq!(
+            press(&mut app, BANK_B),
+            vec![Effect::Bank {
+                button: 1,
+                shift: false
+            }]
+        );
+        // SHIFT + SAMPLER again: back at page B, and the log says so.
+        let fx = held(&mut app, SHIFT, |a| press(a, SAMPLER));
+        assert_eq!(app.perform_bank(), 1);
+        assert!(
+            fx.iter()
+                .any(|e| matches!(e, Effect::Note(n) if n.contains("Page B · Throws"))),
+            "{fx:?}"
+        );
+        // A second press of B: page F, empty; SHIFT + A: page E.
+        press(&mut app, BANK_B);
+        assert_eq!(app.perform_bank(), 5);
+        assert_eq!(app.perform_page().action(0), PadAction::None);
+        held(&mut app, SHIFT, |a| press(a, BANK_A));
+        assert_eq!(app.perform_bank(), 4);
+        // The Looper's Pads switch: page A, the loop keys; again, off.
+        let fx = app.toggle_loop_keys();
+        assert_eq!(app.perform_bank(), 0);
+        assert!(app.status_now().loop_keys);
+        assert!(fx.contains(&Effect::BankLights));
+        app.toggle_loop_keys();
+        assert!(!app.pads_are_loop_keys());
+        // A project opened: its set, and nothing left playing.
+        app.toggle_loop_keys();
+        press(&mut app, BANK_B);
+        app.perform_throw(reverb, true);
+        let (skipped, fx) = app.open_perform(Some("mpfree-perform 1\npad B1 = scene 1\nbad\n"));
+        assert_eq!(skipped, ["perform: skipped \"bad\""]);
+        assert!(fx.contains(&Effect::PlayFx(
+            crate::perform_pads::throw_fx(1, false, 0).unwrap()
+        )));
+        assert!(app.status_now().perform.is_some(), "the screen hears");
+        assert_eq!(app.throws_on(), 0);
+        assert_eq!(app.perform_page().action(0), PadAction::Scene(0));
+        assert_eq!(app.perform_page().action(1), PadAction::None);
+        // A project saved before the part: a new project's set.
+        let (skipped, _) = app.open_perform(None);
+        assert!(skipped.is_empty());
+        assert_eq!(
+            app.perform_set(),
+            &crate::perform_pads::PerformSet::default()
+        );
     }
 
     /// TRACK MUTE held with a pad tapped: a solo, and letting go leaves

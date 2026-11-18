@@ -1811,6 +1811,42 @@ pub static PLANS: &[Plan] = &[
         )],
         dims: &[sync_dim(&["LFO rate"], "LFO sync")],
     },
+    Plan {
+        id: "mpfree.fx.vocoder",
+        qlinks: &["Formant", "Bandwidth", "Release", "Mix"],
+        pages: &[page(
+            "col(row(carrier:300, bands):270, row(voice, output:220):*)",
+            &[
+                Section {
+                    rows: &["Carrier"],
+                    ..s("carrier", "Carrier", Source, &["Carrier", "Pitch"])
+                },
+                s(
+                    "bands",
+                    "Bands",
+                    Tone,
+                    &["Bands", "Low", "High", "Formant", "Bandwidth"],
+                ),
+                Section {
+                    meters: &["Voice level"],
+                    ..s(
+                        "voice",
+                        "Voice",
+                        Shape,
+                        &["Attack", "Release", "Gate", "Unvoiced"],
+                    )
+                },
+                s("output", "Output", Voice, &["Spread", "Mix"]),
+            ],
+        )],
+        dims: &[Dim {
+            controls: &["Pitch"],
+            by: "Carrier",
+            when: When::Not(&[0.0]),
+            reason: "Saw only",
+            swap: false,
+        }],
+    },
     // Performance.
     Plan {
         id: "mpfree.fx.perform",
