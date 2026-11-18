@@ -112,6 +112,10 @@ pub(crate) const HINT: &str = "Tap a row to edit it  ·  wheel: pick  ·  - and 
 pub(crate) const CLIPS_HINT: &str =
     "Tap one, then press a button on your controller  ·  - and +: the track  ·  wheel: pick a row";
 
+/// The hint line while the looper's card shows.
+pub(crate) const LOOPER_HINT: &str =
+    "Tap a button, then press your footswitch  ·  - and +: the loop for Key and Mute";
+
 /// The card of buttons to learn that shows in the picked row's place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Buttons {
@@ -1738,6 +1742,9 @@ impl IoSection for Learn {
         if self.buttons == Some(Buttons::Clips) && !self.follow {
             return Some(CLIPS_HINT);
         }
+        if self.buttons == Some(Buttons::Looper) && !self.follow {
+            return Some(LOOPER_HINT);
+        }
         Some(HINT)
     }
 
@@ -2143,6 +2150,12 @@ impl IoSection for Learn {
                 if d != 0 && !self.follow && self.buttons_shown(n) == Some(Buttons::Clips) =>
             {
                 self.clip_step(d)
+            }
+            // The looper's card: - and + step its Loop.
+            IoInput::Step(d)
+                if d != 0 && !self.follow && self.buttons_shown(n) == Some(Buttons::Looper) =>
+            {
+                self.loop_step(d)
             }
             IoInput::Step(_) if self.buttons_shown(n).is_some() || self.follow => IoReply::Handled,
             IoInput::Step(d) if d != 0 => self.mode(d.signum()),
@@ -2718,10 +2731,17 @@ mod tests {
                 "Clear"
             ]
         );
-        // Nothing for the Q-Links or - and + while it shows.
+        // Nothing for the Q-Links while it shows.
         assert!(s.qlinks().unwrap().iter().all(|k| !k.enabled));
         assert_eq!(s.qlink_turn(0, 1, false), IoReply::Ignored);
-        assert_eq!(s.input(IoInput::Step(1)), IoReply::Handled);
+        assert_eq!(s.hint(), Some(LOOPER_HINT));
+        // - and + step the Loop: down from the picked loop says so, up
+        // is Loop 1, and back.
+        assert_eq!(s.input(IoInput::Step(-1)), IoReply::Handled);
+        assert_eq!(s.take_note().unwrap(), "The picked loop is the first");
+        assert_eq!(s.input(IoInput::Step(1)), IoReply::Redraw);
+        assert_eq!(s.loop_which, Which::Loop(0));
+        assert_eq!(s.input(IoInput::Step(-1)), IoReply::Redraw);
         let armed = |m: &Shared| m.lock().unwrap().asks.learn_target;
         let at = |id| Some(ParamAddr::new(Owner::Looper, id));
         // The picked loop's to start with.

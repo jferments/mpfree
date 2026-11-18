@@ -363,6 +363,15 @@ impl Remote {
         }
     }
 
+    /// A controller went away (`MusicIn::take_unplugged`): its controls
+    /// held down will never come up, so the looper's keys and presses let
+    /// go without acting. A key held then clears nothing, and its next
+    /// press is a press again. The looper itself is left as it is.
+    pub fn let_go(&mut self) {
+        self.loop_keys = [None; 9];
+        self.looper_held = 0;
+    }
+
     /// The loops whose learned key has been held for `hold` seconds by
     /// `t`, once each hold: each is cleared, as a loop key's pad held
     /// clears it.
@@ -578,6 +587,27 @@ mod tests {
         assert_eq!(r.loop_holds(11.0, 1.0), [4]);
         assert_eq!(r.looper_write(p, 0.0, now, 11.5), LooperAct::Nothing);
         assert_eq!(describe_looper(p, now), None, "a key has no value");
+    }
+
+    /// A controller pulled out while its footswitch is down never sends
+    /// the let-go: the key lets go without clearing its loop, and the next
+    /// press is a press.
+    #[test]
+    fn an_unplugged_footswitch_lets_go_and_clears_nothing() {
+        let mut r = Remote::new();
+        let k1 = looper::key(0);
+        assert_eq!(r.looper_write(k1, 1.0, STOPPED, 0.0), LooperAct::Key(0));
+        assert_eq!(
+            r.looper_write(looper::UNDO, 1.0, STOPPED, 0.1),
+            LooperAct::Press(Looper::Undo)
+        );
+        r.let_go();
+        assert!(r.loop_holds(5.0, 1.0).is_empty(), "nothing cleared");
+        assert_eq!(r.looper_write(k1, 1.0, STOPPED, 6.0), LooperAct::Key(0));
+        assert_eq!(
+            r.looper_write(looper::UNDO, 1.0, STOPPED, 6.0),
+            LooperAct::Press(Looper::Undo)
+        );
     }
 
     #[test]

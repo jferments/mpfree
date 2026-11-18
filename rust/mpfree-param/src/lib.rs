@@ -947,6 +947,8 @@ mod tests {
             Some(Looper::Key(Which::Picked))
         );
         assert_eq!(looper::of(looper::key(8)), None, "8 loops");
+        assert_eq!(looper::of(looper::mute(8)), None, "8 loops");
+        assert_eq!(looper::of(0x1FF), None);
         assert_eq!(looper::of(7), None);
         for w in [Which::Picked, Which::Loop(0), Which::Loop(7)] {
             assert_eq!(looper::of(looper::key_of(w)), Some(Looper::Key(w)));

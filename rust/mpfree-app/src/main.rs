@@ -6728,6 +6728,11 @@ fn player_session(
         let recording = time.info().state == mpfree_transport::State::Recording;
         let by_touch = learning_shown.is_some_and(|(_, by)| by == midi_in::ArmedBy::Touch);
         let following = music.leader_name().is_some();
+        // A controller pulled out never lets go of what it held: the
+        // looper's learned keys let go, clearing nothing.
+        if music.take_unplugged() {
+            remote.let_go();
+        }
         for l in music.learning() {
             match l {
                 midi_in::Learning::Took { .. } if panels.learning() => {
