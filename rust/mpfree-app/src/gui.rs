@@ -979,6 +979,18 @@ pub enum ToUi {
     /// What the chain editor shows (a few times a second while it is open,
     /// and after each change), boxed as the mixer's state is.
     Chain(Box<ChainState>),
+    /// A gear lane's mod rows (LFO to CC, layout spec 4m), after a
+    /// [`FromUi::LaneRows`]: the matrix rows aimed at `target`, each its
+    /// place in the matrix, its source's name and depth (-1 to 1), and
+    /// whether + LFO has room.
+    LaneRows {
+        target: ParamAddr,
+        rows: Vec<(usize, String, f32)>,
+        can_add: bool,
+    },
+    /// The tracks' MIDI out controls the mod matrix moves (an LFO on a
+    /// gear lane): their lanes' pink ~. Sent when it changes.
+    GearMoved(Vec<ParamAddr>),
     /// An insert switched to another engine with its mode: Q-Links learned
     /// on its controls follow them (`fxmodes::Landed`).
     ParamsMoved(Box<crate::fxmodes::Landed>),
@@ -1201,6 +1213,25 @@ pub enum ToUi {
     /// thread reads it on this pass.
     TouchBell,
     Quit,
+}
+
+/// A touch on a gear lane's mod rows (LFO to CC, layout spec 4m): what
+/// it asks the mod matrix. A row is its place in the matrix, as
+/// [`ToUi::LaneRows`] gave it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LaneRowsAsk {
+    /// The rows aimed at this control, to show.
+    Show(ParamAddr),
+    /// + LFO: a row from LFO 1 at the chain editor's depth.
+    AddLfo(ParamAddr),
+    /// A row's depth, -1 to 1.
+    Depth {
+        target: ParamAddr,
+        row: usize,
+        depth: f32,
+    },
+    /// A row's ×: it comes off.
+    Remove { target: ParamAddr, row: usize },
 }
 
 /// Not `Clone`: [`FromUi::SampleInput`] carries the one writer of the
@@ -1477,6 +1508,9 @@ pub enum FromUi {
     /// A touch on the chain editor, or a Q-Link turned while its knobs
     /// show (`modpanels::ChainHost::action`).
     Chain(ChainAction),
+    /// A gear lane's mod rows on the Sequencer's Steps (LFO to CC): the
+    /// matrix answers with [`ToUi::LaneRows`].
+    LaneRows(LaneRowsAsk),
     /// A touch on the macros panel, or a macro bank's Q-Link turned
     /// (`modpanels::MacrosHost::action`).
     Macros(MacroAction),
@@ -3928,6 +3962,7 @@ impl Player {
         }
         if self.play.sequencer != seq {
             self.play.sequencer = seq;
+            self.play.lane_rows = None;
             moved = true;
         }
         self.time_page.edit_hidden = !seq;
@@ -4388,6 +4423,7 @@ impl Player {
             g.pitched = old.pitched;
             g.bank.clone_from(&old.bank);
             (g.top, g.add_lane) = (old.top, old.add_lane);
+            g.rows_open.clone_from(&old.rows_open);
         }
         self.refresh_lock_knobs();
         self.play.fill_steps(&mut g);
@@ -4407,6 +4443,7 @@ impl Player {
                     && old.pitched == g.pitched
                     && old.bank == g.bank
                     && (old.top, old.add_lane) == (g.top, g.add_lane)
+                    && old.rows_open == g.rows_open
             });
         if !same {
             if let Some(w) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
@@ -4422,6 +4459,7 @@ impl Player {
                 w.pitched = g.pitched;
                 w.bank = g.bank;
                 (w.top, w.add_lane) = (g.top, g.add_lane);
+                w.rows_open = g.rows_open;
             }
         }
         if self.lane_list {
@@ -6802,9 +6840,11 @@ impl Player {
             ToUi::Steps(st) => {
                 if st.track != self.play.steps.track {
                     // Another track's pads: from their first row (and
-                    // the Sequencer's lanes from the top).
+                    // the Sequencer's lanes from the top, a gear lane's
+                    // mod rows closed).
                     self.play.rows_top = 0;
                     self.play.steps_top = 0;
+                    self.play.lane_rows = None;
                 }
                 self.play.set_steps(*st);
                 self.play.track = self.track_look();
@@ -6992,6 +7032,24 @@ impl Player {
                 self.refresh_qlinks();
             }
             ToUi::IoInput(ev) => self.io_input(ev),
+            // A gear lane's mod rows: what the matrix holds for the
+            // control open (an answer for one since closed is dropped).
+            ToUi::LaneRows {
+                target,
+                rows,
+                can_add,
+            } => {
+                if let Some(o) = self.play.lane_rows.as_mut().filter(|o| o.target == target) {
+                    (o.rows, o.can_add) = (rows, can_add);
+                    self.refresh_play();
+                }
+            }
+            ToUi::GearMoved(v) => {
+                if self.play.gear_moved != v {
+                    self.play.gear_moved = v;
+                    self.refresh_play();
+                }
+            }
             ToUi::Chain(mut st) => {
                 // A note track's Plays on, from the MIDI set-up's Tracks out.
                 if let Some(ns) = st.notes.as_mut() {
@@ -10460,6 +10518,54 @@ impl Player {
                 self.toggle_lane_list();
                 None
             }
+            // A gear lane's mod rows (LFO to CC, layout spec 4m): its name
+            // opens them over the pattern; + LFO adds a row from LFO 1, a
+            // finger on a row's bar sets its depth, its × takes it off,
+            // and a touch anywhere else closes them.
+            (play_page::STEPS, EventKind::Tab(play_widgets::LANE_ROWS_CLOSE)) => {
+                self.play.lane_rows = None;
+                self.refresh_play();
+                None
+            }
+            (play_page::STEPS, EventKind::Tab(play_widgets::LANE_ROWS_ADD)) => {
+                let target = self.play.lane_rows.as_ref()?.target;
+                self.mark_unsaved();
+                Some(FromUi::LaneRows(LaneRowsAsk::AddLfo(target)))
+            }
+            (play_page::STEPS, EventKind::Tab(k))
+                if (play_widgets::LANE_NAME..play_widgets::LANE_ROWS_CLOSE).contains(&k) =>
+            {
+                let open = self.play.lane_rows_for(k - play_widgets::LANE_NAME)?;
+                let target = open.target;
+                self.play.lane_rows = Some(open);
+                self.refresh_play();
+                Some(FromUi::LaneRows(LaneRowsAsk::Show(target)))
+            }
+            (play_page::STEPS, EventKind::Toggle(k)) if k >= play_widgets::LANE_ROWS => {
+                let open = self.play.lane_rows.as_ref()?;
+                let row = open.rows.get(k - play_widgets::LANE_ROWS)?.0;
+                let target = open.target;
+                self.mark_unsaved();
+                Some(FromUi::LaneRows(LaneRowsAsk::Remove { target, row }))
+            }
+            (play_page::STEPS, EventKind::Step { index, delta })
+                if index >= play_widgets::LANE_ROWS =>
+            {
+                let open = self.play.lane_rows.as_mut()?;
+                let target = open.target;
+                let r = open.rows.get_mut(index - play_widgets::LANE_ROWS)?;
+                let depth = (delta as f32 / 100.0).clamp(-1.0, 1.0);
+                if r.2 == depth {
+                    return None;
+                }
+                // At once, so the bar follows the finger; the matrix's
+                // answer confirms it.
+                r.2 = depth;
+                let row = r.0;
+                self.refresh_play();
+                self.mark_unsaved();
+                Some(FromUi::LaneRows(LaneRowsAsk::Depth { target, row, depth }))
+            }
             (play_page::STEPS, EventKind::Cell { row, col }) if row >= play_widgets::LOCK_LANE => {
                 let r = self.play.tap_lock(row - play_widgets::LOCK_LANE, col);
                 self.lock_done(r)
@@ -13522,9 +13628,35 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
     }
     gear_lanes.refresh_play();
+    // LFO to CC (layout spec 4m): the Cutoff lane's name tapped, its mod
+    // rows over the pattern with LFO 1 on it, and its pink ~.
+    let mut gear_lfo = gear();
+    {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        let cutoff = RelAddr::new(OnTrack::Midi, 43);
+        if let Some(c) = gear_lfo.play.steps.clip.as_mut() {
+            c.lock_values.extend(
+                [(0, 20.0), (8, 84.0)].map(|(step, v)| (crate::time::LINE, step, cutoff, v)),
+            );
+        }
+        // The lane on screen first, named by the gear's profile.
+        gear_lfo.refresh_play();
+        let id = gear_lfo
+            .play
+            .lock_lanes()
+            .iter()
+            .position(|l| l.addr == cutoff);
+        if let Some(mut open) = id.and_then(|id| gear_lfo.play.lane_rows_for(id)) {
+            open.rows = vec![(0, "LFO 1".to_string(), 0.25)];
+            gear_lfo.play.gear_moved = vec![open.target];
+            gear_lfo.play.lane_rows = Some(open);
+        }
+    }
+    gear_lfo.refresh_play();
     let mut gear_list = gear();
     gear_list.toggle_lane_list();
     out.push(("sequencer-gear-lanes", gear_lanes));
+    out.push(("sequencer-gear-lane-lfo", gear_lfo));
     out.push(("sequencer-gear-lanes-list", gear_list));
     // The synth on the pads, A minor, In key: the pads panel's switch.
     let mut synth = sample_player(fonts());
@@ -19520,6 +19652,124 @@ mod tests {
                 "Pressure · Mono synth · pressure · showing",
             ]
         );
+    }
+
+    /// LFO to CC (layout spec 4m): a tap on a gear lane's name opens its
+    /// mod rows over the pattern; + LFO, a row's bar and its × ask the mod
+    /// matrix; the lane's pink ~ follows what the matrix moves; a touch
+    /// elsewhere closes them. A sound's lock lane keeps its label.
+    #[test]
+    fn an_lfo_on_a_gear_lane_moves_its_cc() {
+        use mpfree_midi::setup::{TrackOut, DIN_NAME};
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        let mut p = sample_beats_synth(Fonts::embedded());
+        let mut rig = mpfree_midi_ui::sample::rig();
+        rig.setup.tracks[0] = Some(TrackOut::new(DIN_NAME, 1));
+        let mut prof = mpfree_midi::profile::Profile::new("Mono synth");
+        prof.matches = vec![DIN_NAME.to_string()];
+        prof.set_cc(43, "Cutoff");
+        rig.profiles.add(prof).unwrap();
+        p.apply(ToUi::IoModel(std::sync::Arc::new(std::sync::Mutex::new(
+            rig,
+        ))));
+        let cutoff = RelAddr::new(OnTrack::Midi, 43);
+        let tune = RelAddr::new(OnTrack::Inst, 0);
+        if let Some(c) = p.play.steps.clip.as_mut() {
+            c.lock_values.push((crate::time::LINE, 0, cutoff, 20.0));
+            c.lock_values.push((crate::time::LINE, 2, tune, 0.5));
+        }
+        p.refresh_play();
+        let target = cutoff.on(p.play.steps.track as u8);
+        let grid = |p: &Player| p.ui.get::<StepGrid>(play_page::STEPS).unwrap().clone_look();
+        let lane_of = |p: &Player, name: &str| {
+            grid(p)
+                .0
+                .iter()
+                .find(|l| l.name == name && l.lock.is_some())
+                .map(|l| l.pad - play_widgets::LOCK_LANE)
+                .unwrap_or_else(|| panic!("{name}: {:?}", lock_lane_names(p)))
+        };
+        let id = lane_of(&p, "Cutoff");
+        // Only the gear's lane opens rows; the synth's keeps its label.
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let rows_targets: Vec<usize> = {
+            use mpfree_ui::Widget as _;
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .targets(r)
+                .into_iter()
+                .filter(|t| t.id == "lane-rows")
+                .map(|t| t.index)
+                .collect()
+        };
+        assert_eq!(rows_targets, [id]);
+        p.take_actions();
+        let b = steps_target(&p, "lane-rows", id);
+        let a = steps_tap(&mut p, b);
+        assert_eq!(a, Some(FromUi::LaneRows(LaneRowsAsk::Show(target))));
+        let open = grid(&p).1.expect("the rows open");
+        assert_eq!(open.title, "Cutoff · CC 43");
+        assert!(open.rows.is_empty() && open.can_add);
+        // + LFO: LFO 1 on it; the matrix's answer shows its row.
+        let b = steps_target(&p, "rows-add", 0);
+        let a = steps_tap(&mut p, b);
+        assert_eq!(a, Some(FromUi::LaneRows(LaneRowsAsk::AddLfo(target))));
+        p.apply(ToUi::LaneRows {
+            target,
+            rows: vec![(3, "LFO 1".to_string(), 0.25)],
+            can_add: true,
+        });
+        p.apply(ToUi::GearMoved(vec![target]));
+        assert_eq!(grid(&p).1.unwrap().rows, [("LFO 1".to_string(), 0.25)]);
+        let moved = |p: &Player, name: &str| {
+            grid(p)
+                .0
+                .iter()
+                .find(|l| l.name == name)
+                .and_then(|l| l.lock.as_ref())
+                .is_some_and(|lk| lk.moved)
+        };
+        assert!(moved(&p, "Cutoff"));
+        assert!(!moved(&p, "Tune"));
+        // A finger at the bar's left end: the row (the matrix's 3) to
+        // -100 %, the bar following at once.
+        let bar = steps_target(&p, "row-depth", 0);
+        let a = steps_tap(&mut p, mpfree_ui::Rect::new(bar.x, bar.y, 8, bar.h));
+        assert_eq!(
+            a,
+            Some(FromUi::LaneRows(LaneRowsAsk::Depth {
+                target,
+                row: 3,
+                depth: -1.0
+            }))
+        );
+        assert_eq!(grid(&p).1.unwrap().rows[0].1, -1.0);
+        // Its ×: the row off.
+        let x = steps_target(&p, "row-off", 0);
+        let a = steps_tap(&mut p, x);
+        assert_eq!(
+            a,
+            Some(FromUi::LaneRows(LaneRowsAsk::Remove { target, row: 3 }))
+        );
+        // An answer for another control is dropped.
+        let other = RelAddr::new(OnTrack::Midi, 44).on(0);
+        p.apply(ToUi::LaneRows {
+            target: other,
+            rows: vec![(0, "LFO 1".to_string(), 0.5)],
+            can_add: true,
+        });
+        assert_eq!(grid(&p).1.unwrap().rows.len(), 1);
+        // A touch on the pattern under them closes them, and does nothing
+        // else.
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let a = steps_tap(
+            &mut p,
+            mpfree_ui::Rect::new(r.right() - 30, r.bottom() - 30, 20, 20),
+        );
+        assert_eq!(a, None);
+        assert!(grid(&p).1.is_none());
+        p.apply(ToUi::GearMoved(Vec::new()));
+        assert!(!moved(&p, "Cutoff"));
     }
 
     #[test]

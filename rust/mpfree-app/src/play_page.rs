@@ -831,6 +831,25 @@ pub struct PlayPage {
     /// The outside gear the Sequencer's track plays on (its MIDI out
     /// profile's name, or its port and channel), for the Lanes list.
     pub gear: Option<String>,
+    /// The tracks' MIDI out controls the mod matrix moves (an LFO on a
+    /// gear lane): their lanes' pink ~.
+    pub gear_moved: Vec<mpfree_play::mpfree_param::ParamAddr>,
+    /// A gear lane's mod rows, open over the Steps (LFO to CC).
+    pub lane_rows: Option<LaneRowsOpen>,
+}
+
+/// A gear lane's mod rows, open over the Sequencer's Steps (LFO to CC,
+/// layout spec 4m): the control they're on, and what the mod matrix
+/// last said of it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LaneRowsOpen {
+    pub target: mpfree_play::mpfree_param::ParamAddr,
+    /// "Cutoff · CC 43".
+    pub title: String,
+    /// Each row's place in the matrix, its source's name and depth.
+    pub rows: Vec<(usize, String, f32)>,
+    /// + LFO has room.
+    pub can_add: bool,
 }
 
 /// The track Play's rows are, for their head: its name, "Track 1" under
@@ -985,6 +1004,8 @@ impl Default for PlayPage {
             added_lanes: Vec::new(),
             steps_top: 0,
             gear: None,
+            gear_moved: Vec::new(),
+            lane_rows: None,
         }
     }
 }
@@ -2391,6 +2412,8 @@ impl PlayPage {
         } else {
             format!("lock · {}", Self::track_part(l.addr))
         };
+        let gear = l.row == LINE && l.addr.on == mpfree_play::mpfree_param::OnTrack::Midi;
+        let moved = gear && self.gear_moved.contains(&self.lane_target(l));
         Lane {
             pad: crate::play_widgets::LOCK_LANE + id,
             name: self.lock_name(l.addr),
@@ -2412,8 +2435,31 @@ impl PlayPage {
                         Some(self.lock_cell(l.addr, v))
                     })
                     .collect(),
+                opens_rows: gear,
+                moved,
             }),
         }
+    }
+
+    /// The setting lock lane `l` locks, on the Sequencer's track.
+    fn lane_target(&self, l: LockLane) -> mpfree_play::mpfree_param::ParamAddr {
+        l.addr.on(u8::try_from(self.steps.track).unwrap_or(u8::MAX))
+    }
+
+    /// Gear lane `id`'s name tapped (LFO to CC): its mod rows, empty
+    /// until the matrix says what moves it. None for a lane that isn't a
+    /// gear's control.
+    pub fn lane_rows_for(&self, id: usize) -> Option<LaneRowsOpen> {
+        let l = *self.lock_lanes().get(id)?;
+        if l.row != LINE || l.addr.on != mpfree_play::mpfree_param::OnTrack::Midi {
+            return None;
+        }
+        Some(LaneRowsOpen {
+            target: self.lane_target(l),
+            title: format!("{} · {}", self.lock_name(l.addr), Self::track_part(l.addr)),
+            rows: Vec::new(),
+            can_add: true,
+        })
     }
 
     /// A lock lane's step `col` of the page tapped: a step with a lock
@@ -2772,6 +2818,19 @@ impl PlayPage {
         });
         if g.bank != bank {
             g.bank = bank;
+        }
+        // A gear lane's mod rows, while the Sequencer's Steps show.
+        let rows_open = self
+            .lane_rows
+            .as_ref()
+            .filter(|_| self.sequencer && self.view == PlayView::Beats)
+            .map(|o| crate::play_widgets::LaneRows {
+                title: o.title.clone(),
+                rows: o.rows.iter().map(|(_, s, d)| (s.clone(), *d)).collect(),
+                can_add: o.can_add,
+            });
+        if g.rows_open != rows_open {
+            g.rows_open = rows_open;
         }
     }
 

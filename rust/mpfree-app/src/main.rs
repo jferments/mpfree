@@ -5669,6 +5669,10 @@ fn player_session(
     let mut remote_tempo_waits = false;
     let mut learn_names_gen: Option<u64> = None;
     let mut learn_now_at = 0.0_f64;
+    // The gear lanes' pink ~: the MIDI out controls the mod matrix moves,
+    // as last shown, and the next look (LFO to CC).
+    let (mut gear_moved, mut gear_moved_now) = (Vec::new(), Vec::new());
+    let mut gear_moved_at = 0.0_f64;
     let mut track_names_at = 0.0_f64;
     let mut learning_shown: Option<(mpfree_play::mpfree_param::ParamAddr, midi_in::ArmedBy)> = None;
     // A learned control moved a synth's knob: the Synth tab is told, at
@@ -6939,6 +6943,17 @@ fn player_session(
                 &mix,
                 app.track(),
             )));
+        }
+        // The gear lanes' pink ~ (LFO to CC): what the mod matrix moves of
+        // the tracks' MIDI out, four times a second, sent when it changes
+        // (a row added or taken off, a project loaded, an undo).
+        if mt >= gear_moved_at {
+            gear_moved_at = mt + 0.25;
+            mix.modu.midi_moved_into(&mut gear_moved_now);
+            if gear_moved_now != gear_moved {
+                gear_moved.clone_from(&gear_moved_now);
+                out.show(gui::ToUi::GearMoved(gear_moved.clone()));
+            }
         }
         // Where each learned control's parameter stands, when something
         // else moved it: an endless encoder steps on from there.

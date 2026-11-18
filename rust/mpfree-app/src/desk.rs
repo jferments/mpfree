@@ -13,6 +13,70 @@
 use crate::{app, audiotracks, gui, looping, midi_in, mixing, modpanels, time, Out};
 use crate::{LEVEL_MIN_DB, LEVEL_STEP_DB};
 
+/// A touch on a gear lane's mod rows on the Sequencer's Steps (LFO to
+/// CC, layout spec 4m): the change made in the mod matrix, then the rows
+/// on its control for the screen, and what the matrix moves of the
+/// tracks' MIDI out after a change. Only a track's MIDI out control, and
+/// only a row aimed at it, is touched.
+fn lane_rows(mix: &mut mixing::MixHost, ask: gui::LaneRowsAsk, out: &mut Out) {
+    use gui::LaneRowsAsk as Ask;
+    use mpfree_mod::{Change, Row, Source};
+    use mpfree_play::mpfree_param::Owner;
+    let target = match ask {
+        Ask::Show(t) | Ask::AddLfo(t) => t,
+        Ask::Depth { target, .. } | Ask::Remove { target, .. } => target,
+    };
+    if !matches!(target.owner, Owner::Midi(_)) {
+        return;
+    }
+    let aimed = |mix: &mixing::MixHost, row: usize| {
+        u8::try_from(row)
+            .ok()
+            .filter(|_| mix.modu.rows_on(target).iter().any(|r| r.0 == row))
+    };
+    let changed = match ask {
+        Ask::Show(_) => false,
+        Ask::AddLfo(_) => {
+            let row = Row {
+                source: Source::Lfo(0),
+                via: None,
+                target,
+                depth: modpanels::ROW_DEPTH,
+            };
+            let added = mix.modu.change(&mix.mixer, Change::AddRow(row)).is_ok();
+            if !added {
+                out.show(gui::ToUi::Tell(
+                    "mod rows: the mod matrix is full (64 rows)".to_string(),
+                ));
+            }
+            added
+        }
+        Ask::Depth { row, depth, .. } => aimed(mix, row).is_some_and(|row| {
+            let depth = depth.clamp(-1.0, 1.0);
+            mix.modu
+                .change(&mix.mixer, Change::Depth { row, depth })
+                .is_ok()
+        }),
+        Ask::Remove { row, .. } => aimed(mix, row)
+            .is_some_and(|row| mix.modu.change(&mix.mixer, Change::RemoveRow(row)).is_ok()),
+    };
+    let rows = mix
+        .modu
+        .rows_on(target)
+        .into_iter()
+        .map(|(i, s, d)| (i, mpfree_chain_ui::state::source_name(s), d))
+        .collect();
+    let can_add = mix.modu.engine().rows().count() < mpfree_mod::MAX_ROWS;
+    out.show(gui::ToUi::LaneRows {
+        target,
+        rows,
+        can_add,
+    });
+    if changed {
+        out.show(gui::ToUi::GearMoved(mix.modu.midi_moved()));
+    }
+}
+
 /// The engines the control side reaches, borrowed for one action or effect.
 pub struct Desk<'a> {
     pub app: &'a mut app::App,
@@ -129,6 +193,7 @@ impl Desk<'_> {
                     let _ = out.try_show(gui::ToUi::Captured(held, end));
                 }
             }
+            gui::FromUi::LaneRows(ask) => lane_rows(mix, ask, out),
             gui::FromUi::ChainLearned => {
                 panels.learned();
                 music.disarm();
@@ -1084,4 +1149,97 @@ pub fn qlink_to_screen(page: app::View, k: usize, ticks: i32) -> Option<gui::ToU
         View::Play | View::Sequencer | View::Arrange => gui::ToUi::PlayQLink(k, ticks),
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mpfree_play::mpfree_param::{Owner, ParamAddr};
+
+    /// LFO to CC: a gear lane's mod rows ask the mod matrix; each answer
+    /// is the rows on its control, and a change says what the matrix moves
+    /// of the tracks' MIDI out. A row aimed elsewhere, or a control that
+    /// isn't a track's MIDI out, is left alone.
+    #[test]
+    fn a_gear_lanes_mod_rows_add_set_and_take_off_an_lfo() {
+        use gui::LaneRowsAsk as Ask;
+        use gui::ToUi;
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ToUi>(64);
+        let mut out = Out {
+            console: None,
+            sink: Some(tx),
+            dropped: 0,
+            report: None,
+            queued: None,
+            last_draw: std::time::Instant::now(),
+        };
+        let mut mix = mixing::MixHost::new(44_100, 0.0, 6.0);
+        let cc = ParamAddr::new(Owner::Midi(1), 43);
+        let other = ParamAddr::new(Owner::Midi(1), 44);
+        let mut ask = |mix: &mut mixing::MixHost, a: Ask| {
+            lane_rows(mix, a, &mut out);
+            rx.try_iter()
+                .filter_map(|m| match m {
+                    ToUi::LaneRows {
+                        target,
+                        rows,
+                        can_add,
+                    } => Some(format!("{target:?} {rows:?} {can_add}")),
+                    ToUi::GearMoved(v) => Some(format!("moved {v:?}")),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ask(&mut mix, Ask::Show(cc)), [format!("{cc:?} [] true")]);
+        assert_eq!(
+            ask(&mut mix, Ask::AddLfo(cc)),
+            [
+                format!("{cc:?} [(0, \"LFO 1\", 0.25)] true"),
+                format!("moved [{cc:?}]"),
+            ]
+        );
+        assert!(mix
+            .modu
+            .change(
+                &mix.mixer,
+                mpfree_mod::Change::AddRow(mpfree_mod::Row {
+                    source: mpfree_mod::Source::Lfo(1),
+                    via: None,
+                    target: other,
+                    depth: 0.5,
+                })
+            )
+            .is_ok());
+        // Row 1 is CC 44's: CC 43's lane can't touch it.
+        assert_eq!(
+            ask(
+                &mut mix,
+                Ask::Depth {
+                    target: cc,
+                    row: 1,
+                    depth: 0.0
+                }
+            ),
+            [format!("{cc:?} [(0, \"LFO 1\", 0.25)] true")]
+        );
+        assert_eq!(mix.modu.rows_on(other)[0].2, 0.5);
+        let set = ask(
+            &mut mix,
+            Ask::Depth {
+                target: cc,
+                row: 0,
+                depth: -2.0,
+            },
+        );
+        assert_eq!(set[0], format!("{cc:?} [(0, \"LFO 1\", -1.0)] true"));
+        let off = ask(&mut mix, Ask::Remove { target: cc, row: 0 });
+        assert_eq!(
+            off,
+            [format!("{cc:?} [] true"), format!("moved [{other:?}]")]
+        );
+        // Not a track's MIDI out: nothing asked, nothing said.
+        let strip = ParamAddr::new(Owner::Strip(mpfree_play::mpfree_param::Strip::Track(0)), 0);
+        assert!(ask(&mut mix, Ask::AddLfo(strip)).is_empty());
+        assert!(mix.modu.rows_on(strip).is_empty());
+    }
 }
