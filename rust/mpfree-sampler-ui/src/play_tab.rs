@@ -168,6 +168,8 @@ pub enum Row {
     Links,
     /// Whether a hit starts the pad and the next lets it go.
     Latch,
+    /// The slice a hit plays, on a sliced pad (R4).
+    Slice,
     /// How layers whose velocities match a hit are picked.
     Layers,
     Level,
@@ -232,12 +234,13 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 45] = [
+    pub const ALL: [Row; 46] = [
         Row::Polyphony,
         Row::MuteGroup,
         Row::Chokes,
         Row::Links,
         Row::Latch,
+        Row::Slice,
         Row::Layers,
         Row::Level,
         Row::Pan,
@@ -287,6 +290,7 @@ impl Row {
             Row::Chokes => "Stops",
             Row::Links => "Also plays",
             Row::Latch => "Latch",
+            Row::Slice => "Slice",
             Row::Layers => "Layers",
             Row::Level => "Level",
             Row::Pan => "Pan",
@@ -461,6 +465,7 @@ impl Section {
                 Row::Chokes,
                 Row::Links,
                 Row::Latch,
+                Row::Slice,
                 Row::PadsPlay,
                 Row::PadsFrom,
                 Row::LevelsBy,
@@ -1384,6 +1389,7 @@ impl PlayTab {
                     Row::Vintage => Look::Toggle(p.vintage),
                     Row::Keys => Look::Toggle(p.keys.is_some()),
                     Row::Latch => Look::Toggle(p.latch),
+                    Row::Slice => Look::Stepper,
                     Row::VelLow
                     | Row::VelHigh
                     | Row::LowKey
@@ -1554,7 +1560,11 @@ impl PlayTab {
                     "Pad",
                     420,
                     vec![
-                        vec![it(Row::Polyphony).labelled(), it(Row::MuteGroup).labelled()],
+                        vec![
+                            it(Row::Polyphony).labelled(),
+                            it(Row::MuteGroup).labelled(),
+                            it(Row::Slice).labelled(),
+                        ],
                         vec![it(Row::Chokes).labelled(), it(Row::Links).labelled()],
                         vec![it(Row::Latch)],
                     ],
@@ -2094,6 +2104,9 @@ fn faint_why(st: &PlayState, row: Row) -> Option<&'static str> {
         Row::LevelsBy if !matches!(st.pads_play, PadsPlay::Levels { .. }) => {
             Some("Set Pads play to 16 Levels first")
         }
+        Row::Slice if slices(p) < 2 => {
+            Some("The pad isn't sliced: chop it on the Chop tab with Put on at 1 pad")
+        }
         _ => None,
     }
 }
@@ -2219,9 +2232,23 @@ fn section_text(st: &PlayState, s: Section) -> String {
             if p.latch {
                 t.push_str(" · latch");
             }
+            match slices(p) {
+                0 | 1 => {}
+                n => t.push_str(&format!(" · {n} slices")),
+            }
             t
         }
     }
+}
+
+/// How many slices the pad plays from (R4): its most sliced layer's; 1
+/// when it isn't sliced.
+pub fn slices(p: &Pad) -> usize {
+    p.layers
+        .iter()
+        .map(|l| l.region.slice_count())
+        .max()
+        .unwrap_or(1)
 }
 
 /// `p` with row `row` stepped by `delta` steps, within its limits.
@@ -2248,6 +2275,10 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
         Row::Chokes => step_pads(&mut p.chokes, delta, None),
         Row::Links => step_pads(&mut p.links, delta, None),
         Row::Latch => p.latch = !p.latch,
+        Row::Slice => {
+            let last = slices(&p).saturating_sub(1).min(usize::from(u8::MAX)) as i32;
+            p.slice = (i32::from(p.slice) + delta).clamp(0, last) as u8;
+        }
         Row::Layers => {
             let all = [LayerSelect::All, LayerSelect::Cycle, LayerSelect::Random];
             let i = all.iter().position(|s| *s == p.select).unwrap_or(0);
@@ -2456,6 +2487,10 @@ pub fn value_text(p: &Pad, row: Row) -> String {
         Row::Chokes => pads_text(None, &p.chokes),
         Row::Links => pads_text(None, &p.links),
         Row::Latch => if p.latch { "On" } else { "Off" }.into(),
+        Row::Slice => match slices(p) {
+            0 | 1 => "–".into(),
+            n => format!("{} of {n}", usize::from(p.slice) + 1),
+        },
         Row::Layers => select_label(p.select).into(),
         Row::Level => format!("{:+.1} dB", p.level_db),
         Row::Pan => pan_text(p.pan),

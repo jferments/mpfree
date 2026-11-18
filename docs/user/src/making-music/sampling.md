@@ -193,11 +193,13 @@ Pins only work while the sound is stretched. With Warp on Repitch, the sound pla
 
 With **Put on** at **1 pad**, every slice goes on one pad instead of a pad each, so a whole break plays from one pad and one track. The button reads **Slices on A5**: the pad you chopped becomes the sliced pad (turn **Pads** or Q-Link 4 to put it on another pad), and no other pad changes. Up to 128 slices fit on one pad.
 
-- A **hit** on the pad plays slice 1.
+- A **hit** on the pad plays slice 1, or the one **Slice** picks on the Play page's **Pad** section ("3 of 15").
 - A **step lock** picks the slice that step plays: lock **Slice** on a step and that hit plays that slice. With **Phrase** on, the clip already has a Slice lock on every hit, so it plays the break back slice by slice, and you can move, mute or re-lock any hit.
 - On a **keyboard** (the Play page's keys, or a kit playing notes), C2 plays slice 1, C#2 slice 2 and so on up, each at the sound's own pitch.
 
 Each slice plays as it would on a pad of its own: from its cut to the next, with **Gate** or **One shot** as the pad is set (a **Loop** pad plays each slice as Gate). **UNDO** gives the pad back as it was.
+
+A sliced pad shows its slices everywhere: numbered lines on the **Wave** page (move them on the Chop page), "15 slices" under its name on the **Pads** tab, and the **Chop** page opens on its own slices, so you can move a cut and chop it again.
 
 ### Live: chop by playing
 

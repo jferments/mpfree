@@ -1497,3 +1497,50 @@ fn each_section_shows_its_picture_across_the_page_and_its_controls_on_the_panel(
         Some("Store A first")
     );
 }
+
+/// A sliced pad (R4): the Pad section's Slice picks the slice a hit
+/// plays, from 1 to the last, one undo step a turn; on a pad that isn't
+/// sliced it is faint and says why.
+#[test]
+fn slice_picks_the_slice_a_sliced_pad_plays() {
+    let mut s = play(false);
+    assert_eq!(row_value(&mut s, Row::Slice), "–");
+    let list = s.ui.get::<SettingList>(play_tab::LIST).unwrap();
+    assert!(list.controls[Row::Slice.place()].faint);
+    assert!(list.controls[Row::Slice.place()].why.contains("1 pad"));
+    // Slice the pad in 8, as Chop to one pad would.
+    s.project
+        .edit_pad(PAD, None, |p| {
+            let r = &mut p.layers[0].region;
+            let (a, b) = (r.start, r.end);
+            r.slices = (1..8).map(|k| a + (b - a) * k / 8).collect();
+        })
+        .unwrap();
+    let view = s.state.sounds[0].view.clone();
+    s.state = PlayState::from_project(&s.project, PAD, |_| view.clone()).unwrap();
+    let st = s.state.clone();
+    s.tab.update(&mut s.ui, &st);
+    assert_eq!(row_value(&mut s, Row::Slice), "1 of 8");
+    step_apply(&mut s, Row::Slice, 3);
+    assert_eq!(row_value(&mut s, Row::Slice), "4 of 8");
+    assert_eq!(s.project.pad(PAD).unwrap().slice, 3);
+    step_apply(&mut s, Row::Slice, 20);
+    assert_eq!(
+        row_value(&mut s, Row::Slice),
+        "8 of 8",
+        "no further than the last"
+    );
+    let chips = s.ui.get::<SectionChips>(play_tab::SECTIONS).unwrap();
+    let pad = Section::ALL
+        .iter()
+        .position(|x| *x == Section::Pad)
+        .unwrap();
+    assert!(
+        chips.chips[pad].sub.ends_with("· 8 slices"),
+        "{}",
+        chips.chips[pad].sub
+    );
+    // The steps on one row are one turn: one undo takes them back.
+    assert!(s.project.undo());
+    assert_eq!(s.project.pad(PAD).unwrap().slice, 0);
+}

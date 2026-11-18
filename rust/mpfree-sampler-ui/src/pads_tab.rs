@@ -752,11 +752,16 @@ impl PadsTab {
     }
 }
 
-/// "3 layers · Loop", for the map.
+/// "3 layers · Loop", for the map; a sliced pad's slices first ("16
+/// slices · One shot").
 fn pad_detail(p: &Pad) -> String {
     let mode = p.layers.first().map_or("", |l| mode_label(l.region.mode));
+    let mode = match crate::play_tab::slices(p) {
+        0 | 1 => mode.to_string(),
+        n => format!("{n} slices · {mode}"),
+    };
     match p.layers.len() {
-        1 => mode.to_string(),
+        1 => mode,
         n => format!("{n} layers · {mode}"),
     }
 }
