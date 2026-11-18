@@ -45,6 +45,10 @@ A **pattern** is a loop of steps, like a grid: each row is a pad, each column a 
 
 {{shot: sequencer-lock-lanes | Lock lanes on the Steps: Tune and Decay under the kick, a Tune lane under the snare, each locked step a purple bar with its value.}}
 
+On a synth track the lanes go under the note rows, and **+ Lane** lists the synth's first four Q-Link settings (and any synth setting you locked on the Synth tab with steps held), then the track's. A track that plays a synth or drum machine through MIDI out (see [Playing a synth from a track](../making-music/midi-and-cv.md#playing-a-synth-from-a-track)) has **CC lanes** instead: **+ Lane** lists the controls its [device profile](../making-music/midi-and-cv.md#device-profiles) names (or, with none, the ones most gear shares, such as Mod wheel and Cutoff on CC 74), then **Bend** and **Pressure**; **Another CC** on the list's card takes any CC by number. With more lanes than fit under the notes, swipe them. Turn the data wheel on the list to reach the rows a finger can't, and push it to add the one picked.
+
+{{shot: sequencer-gear-lanes | CC lanes on a track that plays a synth through MIDI out: the notes on top, the synth's Cutoff (CC 43) opening over the bar and a bend on step 7 underneath.}}
+
 **Mute a row.** Each row's name is its mute button (the speaker in the box beside the name shows it): tap the name to mute that pad, so you can drop the kick out and bring it back.
 
 **Make it longer.** A pattern starts at 16 steps, one bar of 16ths. Tap **+** at the top right of the pattern to double it to 32 steps, then 64, then 128 (eight bars). The new steps repeat the ones you have, so the beat carries on and you change what you want in the copy. **‹** and **›** turn the pages of 16 steps, and the number between them says which page you're on. **–** halves the pattern again, down to 16 steps; press **UNDO** if you want the steps it took off back.

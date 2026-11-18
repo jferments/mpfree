@@ -1285,16 +1285,16 @@ impl Head {
         } else {
             (none, none, none, none)
         };
-        let lane = if add_lane && !pitched {
+        let lane = if add_lane {
             take(12);
             take(96)
         } else {
             none
         };
-        let left = if pitched {
-            fold.x
-        } else if add_lane {
+        let left = if add_lane {
             lane.x
+        } else if pitched {
+            fold.x
         } else {
             prev.x
         };
@@ -1468,8 +1468,8 @@ impl StepGrid {
                 let (names, grid) = body.take_left(BANK_NAMES_W);
                 (names, grid.take_right(RAIL_W + 8).1)
             }
-            // The Steps with lock lanes: the rail too.
-            None if self.has_locks() => {
+            // The Steps with lock lanes (under scale rows too): the rail.
+            None if self.lanes.iter().any(|l| l.lock.is_some()) => {
                 let (names, grid) = body.take_left(NAMES_W);
                 (names, grid.take_right(RAIL_W + 8).1)
             }
@@ -1508,12 +1508,33 @@ impl StepGrid {
             v.sort_by_key(|l| l.pad);
             return v;
         };
-        let (mut top, notes): (Vec<&Lane>, Vec<&Lane>) =
-            self.lanes.iter().partition(|l| l.pad >= 16);
-        let n = rows.saturating_sub(top.len());
+        let (mut top, notes, locks, k) = self.pitched_parts(rows);
+        let n = rows.saturating_sub(top.len() + k);
         let low = p.low.min(notes.len().saturating_sub(n));
         top.extend(notes.iter().skip(low).take(n).rev());
+        // The lock lanes under the notes (board 4), from the swipe's top.
+        let first = self.top.min(locks.len() - k);
+        top.extend(locks.into_iter().skip(first).take(k));
         top
+    }
+
+    /// Scale rows' parts (a synth's or outside gear's track): the line
+    /// (STEP SEQ's, on top), the notes, the lock lanes (under them, board
+    /// 4), and how many of the lanes show in `rows`: as many as leave
+    /// three notes, one at least; a swipe shows the others.
+    fn pitched_parts(&self, rows: usize) -> (Vec<&Lane>, Vec<&Lane>, Vec<&Lane>, usize) {
+        let (mut line, mut notes, mut locks) = (Vec::new(), Vec::new(), Vec::new());
+        for l in &self.lanes {
+            if l.lock.is_some() {
+                locks.push(l);
+            } else if l.pad >= 16 {
+                line.push(l);
+            } else {
+                notes.push(l);
+            }
+        }
+        let k = locks.len().min(rows.saturating_sub(line.len() + 3).max(1));
+        (line, notes, locks, k)
     }
 
     /// Lock lanes on the Sequencer's Steps (a kit's sounds; not Play's
@@ -1556,6 +1577,11 @@ impl StepGrid {
             Some(b) if self.pitched.is_none() => Some((self.lanes.len(), b.top)),
             Some(_) => None,
             None if self.has_locks() => Some((self.steps_list(rows).len(), self.top)),
+            // Scale rows with more lock lanes than show: the lanes swipe.
+            None if self.pitched.is_some() => {
+                let (_, _, locks, k) = self.pitched_parts(rows);
+                (locks.len() > k).then(|| (locks.len() - k + rows, self.top))
+            }
             None => None,
         }
     }
@@ -1564,7 +1590,13 @@ impl StepGrid {
     /// shows in `r`, for the app after + Lane.
     pub fn top_showing(&self, r: Rect, pad: usize) -> Option<usize> {
         let rows = self.geom(r).rows;
-        let list = self.steps_list(rows);
+        // Scale rows: among the lock lanes, as many showing as fit.
+        let (list, rows) = if self.pitched.is_some() {
+            let (_, _, locks, k) = self.pitched_parts(rows);
+            (locks, k.max(1))
+        } else {
+            (self.steps_list(rows), rows)
+        };
         let k = list.iter().position(|l| l.pad == pad)?;
         let last = list.len().saturating_sub(rows);
         let top = self.top.min(last);
@@ -1581,14 +1613,19 @@ impl StepGrid {
     /// show).
     pub fn steps_last_top(&self, r: Rect) -> usize {
         let rows = self.geom(r).rows;
+        if self.pitched.is_some() {
+            let (_, _, locks, k) = self.pitched_parts(rows);
+            return locks.len() - k;
+        }
         self.steps_list(rows).len().saturating_sub(rows)
     }
 
     /// How many note rows the scale rows show in `r` (the line's taken
     /// off), for the octave's ‹ and ›.
     pub fn note_rows(&self, r: Rect) -> usize {
-        let top = self.lanes.iter().filter(|l| l.pad >= 16).count();
-        self.geom(r).rows.saturating_sub(top).max(1)
+        let rows = self.geom(r).rows;
+        let (line, _, _, k) = self.pitched_parts(rows);
+        rows.saturating_sub(line.len() + k).max(1)
     }
 
     /// The octave's name on scale rows: the lowest row's ("Oct 3", for
@@ -1606,9 +1643,9 @@ impl StepGrid {
         let Some(p) = self.pitched else {
             return (false, false);
         };
-        let top = self.lanes.iter().filter(|l| l.pad >= 16).count();
-        let notes = self.lanes.len() - top;
-        let n = rows.saturating_sub(top);
+        let (line, notes, _, k) = self.pitched_parts(rows);
+        let notes = notes.len();
+        let n = rows.saturating_sub(line.len() + k);
         let low = p.low.min(notes.saturating_sub(n));
         (low > 0, low + n < notes)
     }
@@ -2438,7 +2475,7 @@ impl Widget for StepGrid {
             if self.drag.as_ref().is_some_and(|d| d.finger == f) {
                 return self.drag_on(phase, y);
             }
-            if self.swipes() {
+            if self.swipes(r) {
                 return self.swipe_on(f, phase, y, r);
             }
             return None;
@@ -2469,7 +2506,7 @@ impl Widget for StepGrid {
                 return None;
             }
         }
-        if !self.swipes() || matches!(tap, Some(EventKind::Pad { .. })) {
+        if !self.swipes(r) || matches!(tap, Some(EventKind::Pad { .. })) {
             return tap;
         }
         // Play's rows (or the Steps with lock lanes): the tap waits for
@@ -2528,9 +2565,10 @@ impl StepGrid {
         }
     }
 
-    /// Play's rows, or the Steps with lock lanes: a finger swipes them.
-    fn swipes(&self) -> bool {
-        self.bank.is_some() || self.has_locks()
+    /// Play's rows, or the Steps with lock lanes that don't all show: a
+    /// finger swipes them.
+    fn swipes(&self, r: Rect) -> bool {
+        self.bank.is_some() || self.scroll(self.geom(r).rows).is_some()
     }
 
     /// A finger moving on a lock's cell, or lifting: each
@@ -3874,6 +3912,67 @@ mod tests {
             .find(|t| t.id == "head" && t.index == HEAD_BANK)
             .unwrap();
         assert!(!bank_a.enabled);
+    }
+
+    /// A synth or gear track's lock lanes (step 5b, board 4): under the
+    /// scale rows, as many as leave three notes; a swipe shows the rest.
+    #[test]
+    fn lock_lanes_go_under_the_scale_rows_and_swipe() {
+        let mut g = StepGrid {
+            steps: 16,
+            length: 16,
+            pages: 1,
+            add_lane: true,
+            pitched: Some(Pitched {
+                fold: false,
+                low: 0,
+            }),
+            ..Default::default()
+        };
+        g.lanes = (0..16)
+            .map(|p| Lane {
+                note: Some(48 + p as u8),
+                ..lane(p, &[0; 16])
+            })
+            .collect();
+        g.lanes.extend((0..6).map(|id| Lane {
+            name: format!("CC {id}"),
+            lock: Some(LockCells {
+                sub: format!("CC {id}"),
+                owner: None,
+                cells: vec![None; 16],
+            }),
+            ..lane(LOCK_LANE + id, &[])
+        }));
+        let r = Rect::new(0, 0, 998, 420);
+        let rows = g.rows_shown(r);
+        let k = 6.min(rows - 3);
+        assert!(k < 6, "{rows} rows: the test wants a swipe");
+        let notes = rows - k;
+        assert_eq!(g.note_rows(r), notes);
+        let want = |top: usize| -> Vec<usize> {
+            (0..notes)
+                .rev()
+                .chain((top..top + k).map(|id| LOCK_LANE + id))
+                .collect()
+        };
+        assert_eq!(
+            g.lanes_shown(r),
+            want(0),
+            "the lowest notes, then the lanes"
+        );
+        // The last lane: a swipe's top that shows it, which is the last.
+        let top = g.top_showing(r, LOCK_LANE + 5).expect("a top");
+        assert_eq!(top, 6 - k);
+        assert_eq!(g.steps_last_top(r), 6 - k);
+        g.top = top;
+        assert_eq!(g.lanes_shown(r), want(6 - k));
+        // Past the end: the last lanes still.
+        g.top = 40;
+        assert_eq!(g.lanes_shown(r), want(6 - k));
+        // A lane's cells are values the wheel turns, as on a kit.
+        let ts = g.targets(r);
+        assert_eq!(ts.iter().filter(|t| t.id == "lock").count(), 16 * k);
     }
 
     /// A synth track's scale rows (the sequencer design's mockup B): the
