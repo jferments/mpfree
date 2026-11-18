@@ -40,7 +40,9 @@ use crate::mpfree_moves::{Kind, Map, Moves, Target};
 use crate::mpfree_param::ParamAddr;
 use crate::scenes::SongList;
 use crate::{Clip, Follow, FollowAction, ModelError, Project, Track, SCENES, SLOTS};
-use mpfree_transport::time::Tick;
+use mpfree_transport::time::{
+    valid_bpm, MapError, Segment, TempoMap, Tick, MAX_SEGMENTS, MIN_SPAN_TICKS,
+};
 
 /// Placements in a song.
 pub const MAX_PLACEMENTS: usize = 4096;
@@ -48,6 +50,9 @@ pub const MAX_PLACEMENTS: usize = 4096;
 pub const MAX_MARKERS: usize = 256;
 /// Changes of the morph's rows in a song.
 pub const MAX_MORPHS: usize = 1024;
+/// Tempo points in a song: the tempo map's segments, less one for the
+/// project's tempo before the first point.
+pub const MAX_TEMPO_POINTS: usize = MAX_SEGMENTS - 1;
 /// How long the song's lanes are, in ticks: they never loop (about 72
 /// hours at 120 BPM).
 pub const SONG_LANE_LEN: u32 = 1 << 30;
@@ -144,6 +149,18 @@ pub struct Marker {
     pub name: String,
 }
 
+/// A tempo point on the song (sequencer roadmap, tempo ramps): from `at`
+/// on the song plays `bpm`, and with `ramp` it glides from there to the
+/// next point's tempo, arriving on that point (the transport plays the
+/// glide in 1/16 steps; see `mpfree_transport::TempoMap`). A ramp on the
+/// last point waits for a point after it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TempoPoint {
+    pub at: Tick,
+    pub bpm: f64,
+    pub ramp: bool,
+}
+
 /// From `at` on, the morph is between rows `a` and `b`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MorphRows {
@@ -169,6 +186,9 @@ pub struct Arrangement {
     /// It plays on its own (`mpfree-perform`); List → song lays it on the
     /// timeline ([`list_to_song`]).
     pub list: SongList,
+    /// The song's tempo points, in order, at least a 1/16 apart. None:
+    /// the project's tempo throughout.
+    pub tempo: Vec<TempoPoint>,
 }
 
 impl Arrangement {
@@ -231,9 +251,93 @@ impl Arrangement {
         {
             return Err(ModelError::BadPlacement);
         }
+        self.check_tempo()?;
         self.lanes
             .check(SONG_LANE_LEN)
             .map_err(|_| ModelError::BadMoves)
+    }
+
+    /// The tempo points: [`MAX_TEMPO_POINTS`] at most, none before the
+    /// start, in order at least a 1/16 apart, each tempo in range.
+    fn check_tempo(&self) -> Result<(), ModelError> {
+        if self.tempo.len() > MAX_TEMPO_POINTS
+            || self.tempo.iter().any(|p| p.at < 0 || !valid_bpm(p.bpm))
+            || self
+                .tempo
+                .windows(2)
+                .any(|w| w[1].at - w[0].at < MIN_SPAN_TICKS)
+        {
+            return Err(ModelError::BadTempo);
+        }
+        Ok(())
+    }
+
+    /// The song's tempo map with the project at `project_bpm`: the
+    /// project's tempo until the first point (unless it is on bar 1), then
+    /// each point, gliding where it ramps.
+    pub fn tempo_map(&self, project_bpm: f64) -> Result<TempoMap, MapError> {
+        let mut segs = [Segment {
+            start: 0,
+            bpm: project_bpm,
+        }; MAX_SEGMENTS];
+        let lead = usize::from(self.tempo.first().is_none_or(|p| p.at > 0));
+        let n = lead + self.tempo.len();
+        if n > MAX_SEGMENTS {
+            return Err(MapError::TooManySegments);
+        }
+        for (seg, p) in segs[lead..n].iter_mut().zip(&self.tempo) {
+            *seg = Segment {
+                start: p.at,
+                bpm: p.bpm,
+            };
+        }
+        let mut map = TempoMap::new(&segs[..n])?;
+        for (i, p) in self.tempo.iter().enumerate() {
+            if p.ramp && i + 1 < self.tempo.len() {
+                map = map.ramp(lead + i)?;
+            }
+        }
+        Ok(map)
+    }
+
+    /// Put a tempo point at `at` (in place of one already there, keeping
+    /// its ramp when `ramp` is None). Refused, changing nothing, with
+    /// `BadTempo`: before the start, a tempo out of range, within a 1/16
+    /// of another point, or past [`MAX_TEMPO_POINTS`].
+    pub fn set_tempo(&mut self, at: Tick, bpm: f64, ramp: Option<bool>) -> Result<(), ModelError> {
+        if at < 0 || !valid_bpm(bpm) {
+            return Err(ModelError::BadTempo);
+        }
+        let i = self.tempo.partition_point(|p| p.at < at);
+        if let Some(p) = self.tempo.get_mut(i).filter(|p| p.at == at) {
+            p.bpm = bpm;
+            p.ramp = ramp.unwrap_or(p.ramp);
+            return Ok(());
+        }
+        let near = |j: usize| {
+            self.tempo
+                .get(j)
+                .is_some_and(|p| (p.at - at).abs() < MIN_SPAN_TICKS)
+        };
+        if self.tempo.len() >= MAX_TEMPO_POINTS || near(i) || (i > 0 && near(i - 1)) {
+            return Err(ModelError::BadTempo);
+        }
+        self.tempo.insert(
+            i,
+            TempoPoint {
+                at,
+                bpm,
+                ramp: ramp.unwrap_or(false),
+            },
+        );
+        Ok(())
+    }
+
+    /// Take the tempo point at `at` away. False if there is none.
+    pub fn remove_tempo(&mut self, at: Tick) -> bool {
+        let before = self.tempo.len();
+        self.tempo.retain(|p| p.at != at);
+        self.tempo.len() < before
     }
 
     /// Take track `track`'s placements out of song ticks `from..to`: the
@@ -484,8 +588,8 @@ impl Arrangement {
     /// before (as [`Arrangement::clear`] cuts). Moved to where it is, it
     /// stays. Refused, changing nothing: `BadPlacement` for no such
     /// section or gap or past [`MAX_PLACEMENTS`] or [`MAX_MARKERS`];
-    /// `BadMoves` while the song has morph moves, which would not move
-    /// with it.
+    /// `BadMoves` while the song has morph moves or tempo points, which
+    /// would not move with it.
     pub fn move_section(
         &mut self,
         tracks: &[Track],
@@ -498,7 +602,7 @@ impl Arrangement {
         if k >= n || gap > n {
             return Err(ModelError::BadPlacement);
         }
-        if !self.lanes.is_empty() || !self.morphs.is_empty() {
+        if !self.lanes.is_empty() || !self.morphs.is_empty() || !self.tempo.is_empty() {
             return Err(ModelError::BadMoves);
         }
         let mut order: Vec<usize> = (0..n).collect();
@@ -733,6 +837,75 @@ pub fn song_to_scenes(project: &mut Project, bar: Tick) -> Result<Vec<usize>, Mo
 
 #[cfg(test)]
 mod tests {
+
+    /// A song's tempo points (tempo ramps): kept in order a 1/16 apart,
+    /// one in place of another on the same tick, and the tempo map they
+    /// make with the project's tempo before the first.
+    #[test]
+    fn tempo_points_keep_their_order_and_make_the_songs_tempo_map() {
+        use mpfree_transport::time::RAMP_STEP;
+        let mut a = Arrangement::default();
+        let map = a.tempo_map(92.0).unwrap();
+        assert_eq!(map.segments().len(), 1);
+        assert_eq!(map.bpm_at(100_000), 92.0);
+        a.set_tempo(7_680, 140.0, None).unwrap();
+        a.set_tempo(3_840, 100.0, Some(true)).unwrap();
+        assert_eq!(
+            a.tempo
+                .iter()
+                .map(|p| (p.at, p.bpm, p.ramp))
+                .collect::<Vec<_>>(),
+            [(3_840, 100.0, true), (7_680, 140.0, false)]
+        );
+        // Bar 1 plays the project's tempo, then 100 gliding to 140.
+        let map = a.tempo_map(92.0).unwrap();
+        assert_eq!(map.segments().len(), 3);
+        assert!(!map.is_ramp(0) && map.is_ramp(1) && !map.is_ramp(2));
+        assert_eq!(map.bpm_at(0), 92.0);
+        assert_eq!(map.bpm_at(5_760), 120.0);
+        assert_eq!(map.next_change_after(3_840), Some(3_840 + RAMP_STEP));
+        // On the same tick: the tempo changes, the ramp stays.
+        a.set_tempo(3_840, 110.0, None).unwrap();
+        assert_eq!((a.tempo[0].bpm, a.tempo[0].ramp), (110.0, true));
+        // A point on bar 1 takes the project's place.
+        a.set_tempo(0, 80.0, None).unwrap();
+        let map = a.tempo_map(92.0).unwrap();
+        assert_eq!(map.segments().len(), 3);
+        assert_eq!(map.bpm_at(-960), 80.0);
+        // A ramp on the last point waits for a point after it.
+        a.set_tempo(7_680, 140.0, Some(true)).unwrap();
+        assert!(!a.tempo_map(92.0).unwrap().is_ramp(2));
+        a.check(&[]).unwrap();
+        // Refused, changing nothing.
+        let before = a.clone();
+        for (at, bpm) in [
+            (-1, 90.0),
+            (960, 19.0),
+            (960, 401.0),
+            (3_841, 90.0),
+            (3_700, 90.0),
+        ] {
+            assert_eq!(
+                a.set_tempo(at, bpm, None),
+                Err(ModelError::BadTempo),
+                "{at} {bpm}"
+            );
+        }
+        assert_eq!(a, before);
+        assert!(a.remove_tempo(3_840) && !a.remove_tempo(3_840));
+        assert_eq!(a.tempo.len(), 2);
+        // No more than the tempo map holds.
+        let mut full = Arrangement::default();
+        for k in 0..MAX_TEMPO_POINTS {
+            full.set_tempo(960 * (k as Tick + 1), 120.0, None).unwrap();
+        }
+        assert_eq!(full.set_tempo(0, 90.0, None), Err(ModelError::BadTempo));
+        assert_eq!(full.tempo_map(92.0).unwrap().segments().len(), MAX_SEGMENTS);
+        // Points out of order don't pass the check.
+        full.tempo.swap(0, 1);
+        assert_eq!(full.check(&[]), Err(ModelError::BadTempo));
+    }
+
     use super::*;
 
     const BAR: Tick = 3840;
@@ -1185,6 +1358,20 @@ mod tests {
         );
         assert_eq!(s.on_track(1)[4].slot(), Some(1), "linked like the first");
         assert_eq!(s.check(&p.tracks), Ok(()));
+    }
+
+    /// Tempo points don't move with a section yet: a song with them
+    /// keeps its sections where they are.
+    #[test]
+    fn sections_with_tempo_points_stay_put() {
+        let mut p = sections_song();
+        p.arrangement.set_tempo(BAR, 100.0, None).unwrap();
+        let before = p.arrangement.clone();
+        assert_eq!(
+            p.arrangement.move_section(&p.tracks, 1, 0, false, BAR),
+            Err(ModelError::BadMoves)
+        );
+        assert_eq!(p.arrangement, before);
     }
 
     #[test]
