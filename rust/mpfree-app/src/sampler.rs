@@ -147,6 +147,21 @@ impl TrackKits {
         }
     }
 
+    /// Only `tracks` tracks are left (UNDO took a new track away): every
+    /// place from there on plays kit 1 again, so a track added there later
+    /// starts on kit 1, never on the kit the one before it had (which
+    /// stays in its slot). True if any changed. Never allocates.
+    pub fn forget_past(&mut self, tracks: usize) -> bool {
+        let mut changed = false;
+        for e in self.entries.iter_mut().skip(tracks) {
+            if *e != 0 {
+                *e = 0;
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Whether any track plays entry `entry` (a kit, or the synth).
     pub fn plays(&self, entry: usize) -> bool {
         self.entries.iter().any(|&e| usize::from(e) == entry)
@@ -1574,6 +1589,17 @@ mod tests {
         assert_eq!((kick.len(), snare.len()), (1, 1));
         assert!(kick[0] > snare[0] && kick[0] <= 512, "{kick:?} {snare:?}");
         assert_eq!(heads.of(3).count(), 0);
+    }
+
+    /// Only 3 tracks left (UNDO took the rest away): every place from
+    /// track 4 on plays kit 1 again; the tracks left keep theirs.
+    #[test]
+    fn a_place_past_the_tracks_plays_kit_1_again() {
+        let mut k = TrackKits::new(3);
+        assert!(k.set(1, 2) && k.set(3, 1) && k.set(9, 3));
+        assert!(k.forget_past(3));
+        assert_eq!((k.entry(1), k.entry(3), k.entry(9)), (2, 0, 0));
+        assert!(!k.forget_past(3), "nothing more to forget");
     }
 
     /// Every track plays kit 1 until a pick; a track picks a kit or the

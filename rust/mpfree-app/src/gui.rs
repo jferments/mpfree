@@ -149,6 +149,8 @@ fn guarded(widget: &str, t: &mpfree_ui::Target) -> bool {
         // Play's loop strip's Clear, and the step inspector's Clear.
         (crate::looper_page::LOOP_STRIP, "button") => label == "Clear",
         (play_page::INSPECTOR, "clear") => true,
+        // A lock lane's ×: the lane and its locks (the Sequencer's Steps).
+        (play_page::STEPS, "lock-lane-off") => true,
         _ => false,
     }
 }
@@ -174,6 +176,16 @@ pub const KITS_PAGE: &str = "Kits";
 pub const NEW_KIT: &str = "New kit";
 pub const KITS_LAYOUT: &str = "col(header:60, row(kits:*, kits-card:400):*, hint:26)";
 const KITS_HINT: &str = "Tap a kit: load it on the pads   ·   Back or a tab: close the list";
+/// The Sequencer's + Lane (the Play, Pads and Sequencer redesign's step
+/// 5, board 3): the settings a lock lane can hold, over the page.
+pub const LANES_PAGE: &str = "Lanes";
+/// The card is wide enough for two buttons (a gear track's Another CC).
+pub const LANES_LAYOUT: &str = "col(header:60, row(lanes:*, lanes-card:440):*, hint:26)";
+const LANES_HINT: &str = "Tap a setting, or turn the wheel and push: its lock lane shows   ·   Back or a tab: close the list";
+/// The Lanes card's last line on a kit or synth track, and on a track
+/// that plays outside gear (with its Another CC button).
+const LANES_PAD_LINE: &str = "Hit a pad first to list its sound's settings.";
+const LANES_GEAR_LINE: &str = "Another CC: any control of the gear, by number.";
 
 const CONSOLE_HINT: &str =
     "Switch the MPC off with its power switch to return to the stock firmware";
@@ -181,8 +193,13 @@ const CONSOLE_HINT: &str =
 /// tap deletes what is tapped).
 pub const ERASE_HINT: &str = "ERASE held: tap a clip (Arrange), a step or a lane's name (Play), a layer or a ring (Looper) to delete it   ·   \
                               UNDO brings it back";
-/// SHIFT held on the mixer, the chain editor or the macros panel, where
-/// a touch on a value arms MIDI Learn (layout spec 4d).
+/// The Q-Link column's title while its cards turn the arp (NOTE REPEAT
+/// held or latched, or the Arp panel open).
+const ARP_QLINKS: &str = "Q-Links · Arp";
+
+/// SHIFT held on the mixer, the chain editor, the macros panel or the Arp
+/// panel's sliders, where a touch on a value arms MIDI Learn (layout spec
+/// 4d).
 const SHIFT_LEARN_HINT: &str =
     "SHIFT +   touch a value: MIDI Learn   ·   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   \
      NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
@@ -355,6 +372,21 @@ const STEP_ERASE_HINT: &str =
 const LOOP_KEYS_HINT: &str =
     "Pads: loop keys   ·   top rows: each loop's key (hold 1 s: clear)   ·   \
                               bottom rows: its mute   ·   SHIFT + SAMPLER: the pads play";
+/// The hint while the Perform set is on the pads at a page past A
+/// (`page`: "Page B · Throws"), on the Looper tab and Play.
+fn perform_hint(page: &str) -> String {
+    format!(
+        "Pads: Perform set, {page}   ·   PAD BANK: its pages (A: the loop keys)   ·   \
+         SHIFT + SAMPLER: the pads play"
+    )
+}
+
+/// Play's chip for a Perform page past A: "Pads: Perform B".
+fn perform_chip(page: &str) -> String {
+    let letter = page.strip_prefix("Page ").and_then(|p| p.chars().next());
+    format!("Pads: Perform {}", letter.unwrap_or('?'))
+}
+
 const PAD_MUTE_HINT: &str =
     "SHIFT + TRACK MUTE:   a pad mutes and unmutes itself in the kit   ·   red: muted   ·   \
                              TRACK MUTE: tracks   ·   SHIFT + TRACK MUTE: the pads play again";
@@ -623,6 +655,8 @@ enum TypeTo {
     /// A scene's name, typed on the text keyboard (the scene editor's
     /// Rename).
     SceneName(usize),
+    /// The Lanes card's Another CC: the CC of the gear a lock lane sends.
+    LaneCc,
 }
 
 impl TypeTo {
@@ -1395,6 +1429,8 @@ pub enum FromUi {
     /// the "Pads: loop keys" chip (SHIFT + SAMPLER on the Looper tab does
     /// the same).
     LoopKeys,
+    /// The Perform set off the pads: Play's "Pads: Perform B" chip.
+    PerformOff,
     /// Capture: the last bars heard become a loop (the deck's Capture,
     /// What you played's button).
     LoopCapture,
@@ -1516,6 +1552,9 @@ pub enum LearnValue {
     /// A knob of the synth the Synth tab shows (the selected track's), by
     /// its parameter id.
     Synth(u16),
+    /// One of the armed track's arp settings its Q-Links turn, by its id
+    /// in `mpfree_param::arp`.
+    Arp(u16),
 }
 
 /// A track asked of the time engine for a kit: by "+ Kit track", or by a
@@ -1530,6 +1569,9 @@ struct KitTrackAsk {
     kit: Option<usize>,
     /// A chop's phrase, for the new track's first empty slot.
     phrase: Option<Box<mpfree_seq::Clip>>,
+    /// A kit folder (BROWSE's New track with this kit) to load into the
+    /// new track's empty kit once it is armed.
+    load: Option<std::path::PathBuf>,
 }
 
 pub struct Player {
@@ -1702,6 +1744,10 @@ pub struct Player {
     kit_list: bool,
     /// The list of kits' rows: each a kit (or the synth), None for New kit.
     kit_rows: Vec<Option<usize>>,
+    /// The Lanes list is open over the Sequencer's Steps (its + Lane).
+    lane_list: bool,
+    /// The Lanes list's rows: each a setting, its name, and what it is on.
+    lane_rows: Vec<(play_page::LockLane, String, String)>,
     /// A track asked of the time engine for a kit ("+ Kit track", or a
     /// chop to a new kit): once the new track is armed it gets its kit.
     kit_track: Option<KitTrackAsk>,
@@ -1852,6 +1898,27 @@ impl Player {
         ];
         kits_card.buttons = vec!["Back".to_string()];
         ui.add("kits-card", kits_card);
+        ui.add("lanes", ListView::new("Lanes"));
+        let mut lanes_card = Card::new("Add a lock lane");
+        lanes_card.heading = "Lanes".to_string();
+        lanes_card.lines = vec![
+            (
+                "A lock lane sets one setting step by step.".to_string(),
+                Tone::Normal,
+            ),
+            (
+                "Tap a step on it: a lock at the sound's own value.".to_string(),
+                Tone::Dim,
+            ),
+            (
+                "Drag it up or down, or hold it and turn the wheel.".to_string(),
+                Tone::Dim,
+            ),
+            (LANES_PAD_LINE.to_string(), Tone::Dim),
+            ("Back adds nothing.".to_string(), Tone::Dim),
+        ];
+        lanes_card.buttons = vec!["Back".to_string()];
+        ui.add("lanes-card", lanes_card);
         ui.add("timing", StatList::new("Timing"));
         ui.add(play_page::TRANSPORT, PlayTransport::default());
         ui.add(play_page::MASTER, MasterBar::new());
@@ -1928,6 +1995,7 @@ impl Player {
         ui.add_page(HISTORY_PAGE, HISTORY_LAYOUT)
             .expect("undo history layout");
         ui.add_page(KITS_PAGE, KITS_LAYOUT).expect("kits layout");
+        ui.add_page(LANES_PAGE, LANES_LAYOUT).expect("lanes layout");
         ui.add_page("System info", SYSTEM_LAYOUT)
             .expect("system info layout");
         let patterns = crate::app::built_in_patterns();
@@ -2002,6 +2070,7 @@ impl Player {
             mute_keys: MuteKeys::Off,
             mute_bank: 0,
             loop_keys: false,
+            perform: None,
             steps: None,
             erase: false,
             copy: false,
@@ -2116,6 +2185,8 @@ impl Player {
             perform_chip: None,
             kit_list: false,
             kit_rows: Vec::new(),
+            lane_list: false,
+            lane_rows: Vec::new(),
             kit_track: None,
             chip_why: Vec::new(),
             fingers: Vec::new(),
@@ -2234,17 +2305,44 @@ impl Player {
     /// ([`Player::kit_track_armed`]). Refused, and said, with no empty kit
     /// left.
     fn add_kit_track(&mut self) -> Option<FromUi> {
+        self.add_track_for_kit(None)
+    }
+
+    /// As + Kit track, with the kit folder `load` (the browser's New track
+    /// with this kit) loaded into the new track's empty kit once it is
+    /// armed. Refused and said with no room for a track or no empty kit
+    /// left, and one at a time: a second ask while a track is on its way
+    /// is refused and said too.
+    fn add_track_for_kit(&mut self, load: Option<std::path::PathBuf>) -> Option<FromUi> {
+        if self.time.tracks.len() >= mpfree_seq::MAX_TRACKS {
+            self.tell(&format!(
+                "The song has {} tracks, the most it can: no room for a new one",
+                mpfree_seq::MAX_TRACKS
+            ));
+            return None;
+        }
         if !(0..self.kits.len()).any(|k| self.spare_kit(k)) {
             self.tell(
                 "No empty kit is left for a new track: pick one of the kits on a track instead",
             );
             return None;
         }
+        if self.kit_track.is_some() {
+            self.tell("A new track is still on its way: try again in a moment");
+            return None;
+        }
+        if let Some(name) = load.as_deref().and_then(|d| d.file_name()) {
+            self.say(format!(
+                "browser: a new track for the kit {}",
+                name.to_string_lossy()
+            ));
+        }
         self.kit_track = Some(KitTrackAsk {
             tracks: self.time.tracks.len(),
             at: Instant::now(),
             kit: None,
             phrase: None,
+            load,
         });
         self.refresh_kit_tracks();
         Some(FromUi::Time(TimeAction::AddTrack))
@@ -2260,6 +2358,7 @@ impl Player {
             at: Instant::now(),
             kit: Some(kit),
             phrase,
+            load: None,
         });
         self.refresh_kit_tracks();
         self.outbox.push(FromUi::Time(TimeAction::AddTrack));
@@ -2294,7 +2393,7 @@ impl Player {
             return;
         };
         let n = ask.tracks;
-        if self.time.tracks.len() > n {
+        let load = if self.time.tracks.len() > n {
             let Some(ask) = self.kit_track.take() else {
                 return;
             };
@@ -2303,19 +2402,196 @@ impl Player {
                 .or_else(|| (0..self.kits.len()).find(|&k| self.spare_kit(k)));
             if self.time.armed == Some(n) {
                 if let Some(u) = kit {
+                    if let Some(dir) = ask.load {
+                        self.sample.open_kit_into(dir, u);
+                    }
                     self.outbox.push(FromUi::Kit(u));
+                    if let Some(clip) = ask.phrase {
+                        self.outbox.push(FromUi::SamplePhrase(clip));
+                    }
+                    return;
                 }
                 if let Some(clip) = ask.phrase {
                     self.outbox.push(FromUi::SamplePhrase(clip));
                 }
-            } else if let Some(u) = ask.kit {
-                self.chop_track_missed(u, "another track was armed first");
+                ask.load
+            } else {
+                if let Some(u) = ask.kit {
+                    self.chop_track_missed(u, "another track was armed first");
+                }
+                ask.load
             }
         } else if ask.at.elapsed() > Duration::from_secs(3) {
-            if let Some(u) = self.kit_track.take().and_then(|a| a.kit) {
+            let ask = self.kit_track.take();
+            if let Some(u) = ask.as_ref().and_then(|a| a.kit) {
                 self.chop_track_missed(u, "the song took no new track");
             }
+            ask.and_then(|a| a.load)
+        } else {
+            return;
+        };
+        // The kit asked for found no new track to go on: said, never
+        // dropped quietly.
+        if let Some(name) = load.as_deref().and_then(|d| d.file_name()) {
+            self.say(format!(
+                "browser: the kit {} wasn't loaded (no new track came for it)",
+                name.to_string_lossy()
+            ));
         }
+    }
+
+    /// The Lanes list again: the settings of the pad hit last, then the
+    /// track's, each saying what it is on and whether its lane shows.
+    fn refresh_lane_list(&mut self) {
+        // The knobs as they are now (a kit edited or sliced since).
+        self.refresh_lock_knobs();
+        let choices = self.play.lane_choices();
+        let items = choices
+            .iter()
+            .map(|(_, name, on, shown)| ListItem {
+                text: name.clone(),
+                detail: if *shown {
+                    format!("{on} · showing")
+                } else {
+                    on.clone()
+                },
+                color: Some(play_page::LOCKED),
+            })
+            .collect();
+        if let Some(l) = self.ui.get_mut::<ListView>("lanes") {
+            l.items = items;
+            l.selected = choices.iter().position(|c| !c.3).unwrap_or(0);
+        }
+        self.lane_rows = choices
+            .into_iter()
+            .map(|(l, name, on, _)| (l, name, on))
+            .collect();
+        // A gear track's card: Another CC for a control without a name.
+        let gear = self.play.gear.is_some();
+        if let Some(c) = self.ui.get_mut::<Card>("lanes-card") {
+            c.buttons = if gear {
+                vec!["Back".to_string(), "Another CC".to_string()]
+            } else {
+                vec!["Back".to_string()]
+            };
+            let line = if gear {
+                LANES_GEAR_LINE
+            } else {
+                LANES_PAD_LINE
+            };
+            if let Some(l) = c.lines.get_mut(3) {
+                l.0 = line.to_string();
+            }
+        }
+    }
+
+    /// A lock lane's tap or turn done (or why not): what it said, and the
+    /// step action for the engine.
+    fn lock_done(&mut self, r: Result<(StepAction, String), String>) -> Option<FromUi> {
+        let (a, line) = match r {
+            Ok((a, line)) => (Some(a), line),
+            Err(why) => (None, why),
+        };
+        self.tell(&line);
+        self.refresh_play();
+        self.refresh_qlinks();
+        a.map(FromUi::Steps)
+    }
+
+    /// The Sequencer's + Lane: the Lanes list over the page, or the page
+    /// again.
+    fn toggle_lane_list(&mut self) {
+        if self.lane_list {
+            self.show_view(self.view);
+            return;
+        }
+        if self.play.steps.clip.is_none() {
+            self.tell("+ Lane: tap a step to start a pattern first");
+            return;
+        }
+        self.close_touch_page();
+        self.refresh_lane_list();
+        self.switch_page(LANES_PAGE);
+        self.lane_list = true;
+        self.refresh_hint();
+    }
+
+    /// A setting picked on the Lanes list: its lock lane shows (with no
+    /// locks yet) and the Steps swipe to it.
+    fn add_lane(&mut self, row: usize) {
+        let Some((l, name, _)) = self.lane_rows.get(row).cloned() else {
+            return;
+        };
+        self.add_lane_of(l, &name);
+    }
+
+    /// The Lanes card's Another CC (a track that plays outside gear): the
+    /// number pad for the CC, 0 to 119; Enter adds its lane
+    /// ([`Player::add_cc_lane`]).
+    fn type_lane_cc(&mut self) {
+        let gear = self.play.gear.clone().unwrap_or_default();
+        self.show_view(self.view);
+        self.open_numpad(
+            mpfree_ui::numpad::NumberAsk {
+                key: "cc".to_string(),
+                title: format!("A CC of {gear}"),
+                unit: "CC".to_string(),
+                value: 1.0,
+                min: 0.0,
+                max: f64::from(mpfree_play::mpfree_param::midi::CONTROLLERS - 1),
+                decimals: 0,
+            },
+            TypeTo::LaneCc,
+        );
+    }
+
+    /// CC `cc` typed for Another CC: its lock lane shows on the track, as
+    /// the gear's profile names it ("CC 23" when it has no name).
+    fn add_cc_lane(&mut self, cc: u16) {
+        use mpfree_play::mpfree_param::{midi, OnTrack, RelAddr};
+        let addr = RelAddr::new(OnTrack::Midi, cc);
+        let name = self
+            .play
+            .lock_knobs
+            .iter()
+            .find(|k| k.addr == addr)
+            .map(|k| k.name.clone())
+            .or_else(|| midi::name(cc))
+            .unwrap_or_else(|| format!("CC {cc}"));
+        self.add_lane_of(play_page::LockLane::of(addr), &name);
+    }
+
+    /// Lane `l` (called `name`) added: it shows with no locks yet and the
+    /// Steps swipe to it.
+    fn add_lane_of(&mut self, l: play_page::LockLane, name: &str) {
+        let shown = self.play.lock_lanes().contains(&l);
+        let Some(id) = self.play.add_lock_lane(l) else {
+            self.tell("+ Lane: tap a step to start a pattern first");
+            return;
+        };
+        self.refresh_play();
+        let lane = play_widgets::LOCK_LANE + id;
+        let top = self
+            .ui
+            .rect_of(play_page::STEPS)
+            .zip(self.ui.get::<StepGrid>(play_page::STEPS))
+            .and_then(|(r, g)| g.top_showing(r, lane));
+        if let Some(top) = top.filter(|&t| t != self.play.steps_top) {
+            self.play.steps_top = top;
+            self.refresh_play();
+        }
+        let under = if l.row == crate::time::LINE {
+            "on the track".to_string()
+        } else {
+            format!("under {}", self.play.pad_name(usize::from(l.row)))
+        };
+        let line = if shown {
+            format!("steps: the {name} lane {under} is there already")
+        } else {
+            format!("steps: {name} lane {under}: tap a step on it to lock it")
+        };
+        println!("{line}");
+        self.tell(&line);
     }
 
     /// A chop to a new kit whose track didn't come: the slices stay on
@@ -2781,7 +3057,7 @@ impl Player {
                 let name = row.label.split(" · ").next().unwrap_or(&row.label);
                 *card = QLinkCard::new(name, "Arp", &row.text, row.value);
             }
-            ("Q-Links · Arp", cards)
+            (ARP_QLINKS, cards)
         } else {
             let knobs = self.play.knobs();
             let pad = self.sample.pad_knobs(self.play.last_pad);
@@ -3113,7 +3389,6 @@ impl Player {
     /// pad's), each locked on the held steps when turned.
     fn held_sound_bank(&self) -> [Option<play_page::SoundKnob>; 4] {
         use mpfree_play::mpfree_param::{OnTrack, RelAddr};
-        use mpfree_sampler::engine::PadField;
         use play_page::{SoundKind, SoundKnob};
         let Some(sound) = self.play.held.as_ref().map(|h| h.0) else {
             return Default::default();
@@ -3142,10 +3417,19 @@ impl Player {
                 })
             });
         }
+        self.pad_knobs(pad)
+    }
+
+    /// A kit pad's Sound bank: its tune, decay, filter and level, with its
+    /// own values (none on the synth's kit).
+    fn pad_knobs(&self, pad: usize) -> [Option<play_page::SoundKnob>; 4] {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_sampler::engine::PadField;
+        use play_page::{SoundKind, SoundKnob};
         if self.kits.get(self.kit).is_some_and(|k| k.synth.is_some()) {
             return Default::default();
         }
-        let Some(own) = self.sample.pad_sound(pad) else {
+        let (Ok(sound), Some(own)) = (u8::try_from(pad), self.sample.pad_sound(pad)) else {
             return Default::default();
         };
         let knob = |name: &str, field: PadField, kind: SoundKind, own: f32| {
@@ -3162,6 +3446,231 @@ impl Player {
             knob("Filter", PadField::Cutoff, SoundKind::Cutoff, own[2]),
             knob("Level", PadField::Level, SoundKind::Level, own[3]),
         ]
+    }
+
+    /// The lock lanes' knobs again ([`Player::lock_knobs`]), and the gear
+    /// the track plays on, which the Lanes list names.
+    fn refresh_lock_knobs(&mut self) {
+        let (knobs, gear) = self.lock_knobs();
+        self.play.lock_knobs = knobs;
+        self.play.gear = gear;
+    }
+
+    /// What the Sequencer's lock lanes turn (the Play, Pads and Sequencer
+    /// redesign's step 5): the Sound bank of each sound with a lane and of
+    /// the pad hit last (a synth track: the synth's first Q-Link set and
+    /// each synth setting with a lane), then the track's volume, pan and
+    /// sends, with their own values as the mixer last showed them (or the
+    /// defaults: a send's lock starts at full, a throw). A track that
+    /// plays outside gear has the gear's controls instead (step 5b), and
+    /// the gear's name.
+    fn lock_knobs(&self) -> (Vec<play_page::SoundKnob>, Option<String>) {
+        use mpfree_fx::ids::mixer as mx;
+        use mpfree_fx::StripId;
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use play_page::{SoundKind, SoundKnob};
+        if !self.play.sequencer {
+            return (Vec::new(), None);
+        }
+        let lanes = self.play.lock_lanes();
+        // Outside gear plays the track's notes instead of its own sound:
+        // its controls are what a lane can move.
+        let mut gear = Vec::new();
+        if let Some(name) = self.gear_lane_knobs(&lanes, &mut gear) {
+            return (gear, Some(name));
+        }
+        let mut v: Vec<SoundKnob> = if self.play.pitched() {
+            self.synth_lane_knobs(&lanes)
+        } else {
+            self.pad_lane_knobs(&lanes)
+        };
+        let state = self
+            .ui
+            .get::<mpfree_mixer_ui::MixerView>(mpfree_mixer_ui::MIXER)
+            .map(|m| m.state());
+        let strip = state.and_then(|s| s.strip(StripId::Track(self.play.steps.track)));
+        let info = |id: u16| {
+            mpfree_fx::strip_params()
+                .iter()
+                .find(|p| p.id == id)
+                .copied()
+        };
+        for (id, own) in [
+            (mx::VOLUME, strip.map_or(0.0, |s| s.volume_db)),
+            (mx::PAN, strip.map_or(0.0, |s| s.pan)),
+        ] {
+            if let Some(p) = info(id) {
+                v.push(SoundKnob {
+                    name: p.name.to_string(),
+                    addr: RelAddr::new(OnTrack::Strip, id),
+                    kind: SoundKind::Param(p),
+                    own,
+                });
+            }
+        }
+        for r in 0..mpfree_fx::RETURNS {
+            // Named by the return's first effect, as Play names Return
+            // A's delay.
+            let effect = state
+                .and_then(|s| s.strip(StripId::Return(r)))
+                .and_then(|s| s.inserts.first())
+                .map(|i| i.name.clone());
+            let name = match effect {
+                Some(e) => format!("{e} send"),
+                None if r == crate::mixing::DELAY_RETURN => "Delay send".to_string(),
+                None => format!("Send {}", (b'A' + r as u8) as char),
+            };
+            let own = strip
+                .and_then(|s| s.sends)
+                .map(|s| s[r].db)
+                .filter(|&db| db > crate::mixing::SEND_OFF_DB)
+                .unwrap_or(0.0);
+            v.push(SoundKnob {
+                name,
+                addr: RelAddr::new(OnTrack::Strip, mx::send(r)),
+                kind: SoundKind::Send,
+                own,
+            });
+        }
+        (v, None)
+    }
+
+    /// The lock lanes' knobs of a kit track's sounds: the Sound bank of
+    /// each sound with a lane and of the pad hit last, and a sliced pad's
+    /// Slice.
+    fn pad_lane_knobs(&self, lanes: &[play_page::LockLane]) -> Vec<play_page::SoundKnob> {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_sampler::engine::PadField;
+        use play_page::{SoundKind, SoundKnob};
+        let mut pads: Vec<usize> = lanes
+            .iter()
+            .filter(|l| l.row != crate::time::LINE)
+            .map(|l| usize::from(l.row))
+            .collect();
+        pads.push(self.play.last_pad);
+        pads.sort_unstable();
+        pads.dedup();
+        let synth = self.kits.get(self.kit).is_some_and(|k| k.synth.is_some());
+        let mut v: Vec<SoundKnob> = Vec::new();
+        for p in pads {
+            v.extend(self.pad_knobs(p).into_iter().flatten());
+            // A sliced pad's slice (the sampler's R4 Slice lock): its own
+            // lane, a slice a step.
+            let sliced = self.sample.pad_slices(p).filter(|_| !synth);
+            if let (Ok(sound), Some((n, own))) = (u8::try_from(p), sliced) {
+                v.push(SoundKnob {
+                    name: "Slice".to_string(),
+                    addr: RelAddr::new(OnTrack::Pad(sound), PadField::Slice as u16),
+                    kind: SoundKind::Slice(n.min(usize::from(u8::MAX)) as u8),
+                    own,
+                });
+            }
+        }
+        v
+    }
+
+    /// The lock lanes' knobs of a synth track (board 4's lanes under the
+    /// scale rows): the synth's first Q-Link set, as the held steps' Sound
+    /// bank has it, then each other synth setting that has a lane (one
+    /// locked on the Synth tab with steps held). None when the track
+    /// plays another synth than the one the Synth tab shows.
+    fn synth_lane_knobs(&self, lanes: &[play_page::LockLane]) -> Vec<play_page::SoundKnob> {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use play_page::{SoundKind, SoundKnob};
+        if !self.held_plays_synth() {
+            return Vec::new();
+        }
+        let Some(st) = self.synth.as_ref().map(|p| &p.state) else {
+            return Vec::new();
+        };
+        let sets = mpfree_synth_ui::qsets::factory(st.info, st.params);
+        let mut ids: Vec<u16> = sets
+            .first()
+            .map(|s| s.params.iter().flatten().copied().collect())
+            .unwrap_or_default();
+        for l in lanes {
+            if l.addr.on == OnTrack::Inst && !ids.contains(&l.addr.param) {
+                ids.push(l.addr.param);
+            }
+        }
+        ids.iter()
+            .filter_map(|&id| {
+                let i = st.params.iter().position(|q| q.id == id && !q.readonly)?;
+                let info = st.params[i];
+                Some(SoundKnob {
+                    name: info.name.to_string(),
+                    addr: RelAddr::new(OnTrack::Inst, info.id),
+                    kind: SoundKind::Param(info),
+                    own: *st.values.get(i)?,
+                })
+            })
+            .collect()
+    }
+
+    /// A track that plays outside gear (its MIDI out in MIDI, Tracks out):
+    /// the gear's controls go on `v` (board 4's CC lanes): the CCs its
+    /// profile names, or with none the ones most gear agrees on (Cutoff
+    /// is CC 74), then pitch bend and pressure, then any other control
+    /// with a lane; and the
+    /// gear's name (its profile's, else the port and channel). The bank
+    /// select (CC 0 and 32), data entry (6 and 38) and the RPN and NRPN
+    /// numbers (96 to 101) are left out: they change what the gear's
+    /// other controls mean, not its sound ("Another CC" still reaches
+    /// them).
+    fn gear_lane_knobs(
+        &self,
+        lanes: &[play_page::LockLane],
+        v: &mut Vec<play_page::SoundKnob>,
+    ) -> Option<String> {
+        use mpfree_play::mpfree_param::{midi, OnTrack, RelAddr};
+        use play_page::{SoundKind, SoundKnob};
+        let m = self.io_model.as_ref()?;
+        let m = m.lock().unwrap_or_else(|e| e.into_inner());
+        let out = m
+            .setup
+            .tracks
+            .get(self.play.steps.track)
+            .cloned()
+            .flatten()?;
+        let profile = m.profile(&out.port);
+        let knob = |id: u16, name: String| SoundKnob {
+            name,
+            addr: RelAddr::new(OnTrack::Midi, id),
+            kind: SoundKind::Midi(id),
+            own: midi::default(id).map_or(0.0, f32::from),
+        };
+        let skip = |cc: u8| matches!(cc, 0 | 6 | 32 | 38 | 96..=101);
+        // A profile that names CCs names the gear's own: the common names
+        // would put a second "Cutoff" on the list that the gear may not
+        // have.
+        let named = profile.filter(|p| p.counts().0 > 0);
+        let mut ids: Vec<u16> = Vec::new();
+        for cc in 0..midi::CONTROLLERS as u8 {
+            let name = match named {
+                Some(p) => p.cc_name(cc),
+                None => mpfree_midi::profile::common_cc_name(cc),
+            };
+            if let Some(name) = name.filter(|_| !skip(cc)) {
+                v.push(knob(u16::from(cc), name.to_string()));
+                ids.push(u16::from(cc));
+            }
+        }
+        // "Bend": the Steps' names column is narrow, and the lane and the
+        // list say "pitch bend" beside it.
+        for (id, name) in [(midi::BEND, "Bend"), (midi::PRESSURE, "Pressure")] {
+            v.push(knob(id, name.to_string()));
+            ids.push(id);
+        }
+        for l in lanes {
+            if l.addr.on == OnTrack::Midi && !ids.contains(&l.addr.param) {
+                let Some(name) = midi::name(l.addr.param) else {
+                    continue;
+                };
+                v.push(knob(l.addr.param, name));
+                ids.push(l.addr.param);
+            }
+        }
+        Some(profile.map_or_else(|| out.label(), |p| p.name.clone()))
     }
 
     /// Steps held on the step pads (`first`: they just were) or let go:
@@ -3825,7 +4334,9 @@ impl Player {
             g.held.clone_from(&old.held);
             g.pitched = old.pitched;
             g.bank.clone_from(&old.bank);
+            (g.top, g.add_lane) = (old.top, old.add_lane);
         }
+        self.refresh_lock_knobs();
         self.play.fill_steps(&mut g);
         let same = self
             .ui
@@ -3842,6 +4353,7 @@ impl Player {
                     && old.held == g.held
                     && old.pitched == g.pitched
                     && old.bank == g.bank
+                    && (old.top, old.add_lane) == (g.top, g.add_lane)
             });
         if !same {
             if let Some(w) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
@@ -3856,7 +4368,11 @@ impl Player {
                 w.held = g.held;
                 w.pitched = g.pitched;
                 w.bank = g.bank;
+                (w.top, w.add_lane) = (g.top, g.add_lane);
             }
+        }
+        if self.lane_list {
+            self.refresh_lane_list();
         }
         let mut th = Throws::default();
         self.play.fill_throws(&mut th);
@@ -3980,6 +4496,16 @@ impl Player {
     /// yet, so ERASE leaves them alone.
     fn erase_tap(&mut self, ev: &UiEvent) -> Option<Option<FromUi>> {
         match (ev.widget.as_str(), &ev.kind) {
+            // A lock lane's step: its lock comes off (the lane stays).
+            (play_page::STEPS, EventKind::Cell { row, col }) if *row >= play_widgets::LOCK_LANE => {
+                let a = self.play.erase_lock(row - play_widgets::LOCK_LANE, *col);
+                if a.is_none() {
+                    self.tell("ERASE: that step has no lock on this lane");
+                }
+                self.refresh_play();
+                self.refresh_qlinks();
+                Some(a.map(FromUi::Steps))
+            }
             // A step: it comes out, locks too (a tap only switches it off
             // and keeps it, the redesign's step 3b).
             (play_page::STEPS, EventKind::Cell { row, col }) => {
@@ -4403,6 +4929,17 @@ impl Player {
             why.push(String::new());
             self.loop_keys_chip = Some(chips.len());
             chips.push(Chip::new("Pads: loop keys", Tone::Warn));
+        } else if let Some(page) = self
+            .status
+            .perform
+            .as_ref()
+            .filter(|_| self.view == View::Play)
+        {
+            // Another page of the Perform set: its letter (the hint names
+            // it); a tap gives the pads back.
+            why.push(String::new());
+            self.loop_keys_chip = Some(chips.len());
+            chips.push(Chip::new(perform_chip(page), Tone::Warn));
         }
         // STEP SEQ: the pads are a sound's steps; a tap gives them back.
         self.steps_chip = None;
@@ -4542,6 +5079,8 @@ impl Player {
             mpfree_sampler_ui::recall::HINT.to_string()
         } else if self.kit_list {
             KITS_HINT.to_string()
+        } else if self.lane_list {
+            LANES_HINT.to_string()
         } else if let Some(name) = &self.learning {
             learning_hint(name)
         } else if self.status.shift
@@ -4559,7 +5098,8 @@ impl Player {
             SHIFT_STEPS_HINT.to_string()
         } else if self.status.shift
             && self.ready
-            && matches!(self.view, View::Mixer | View::Chain | View::Macros)
+            && (matches!(self.view, View::Mixer | View::Chain | View::Macros)
+                || (self.view == View::Arp && self.ui.rect_of(arp_view::QLINKS).is_some()))
             && (self.view != View::Mixer || mpfree_mixer_ui::io_hint(&self.ui).is_none())
         {
             SHIFT_LEARN_HINT.to_string()
@@ -4608,6 +5148,13 @@ impl Player {
             step_seq_hint(s)
         } else if self.status.loop_keys && matches!(self.view, View::Looper | View::Play) {
             LOOP_KEYS_HINT.to_string()
+        } else if let Some(page) = self
+            .status
+            .perform
+            .as_ref()
+            .filter(|_| matches!(self.view, View::Looper | View::Play))
+        {
+            perform_hint(page)
         } else if self.status.mute_keys == MuteKeys::Tracks {
             track_mute_hint(self.status.mute_bank, self.time.tracks.len())
         } else if self.status.mute_keys == MuteKeys::Pads {
@@ -4638,8 +5185,16 @@ impl Player {
                     time_view::edit_hint(self.time.edit.as_ref().map_or(Lens::Grid, |e| e.editor.lens))
                         .to_string()
                 }
+                // A kit's Steps: + Lane and the lock lanes (the redesign's
+                // step 5).
+                View::Sequencer if !self.play.pitched() => format!("Tap a step: on or off   ·   a lit step: pick it   ·   \
+                                            + Lane: a lock lane   ·   a lock lane's step: tap it, then drag   ·   \
+                                            STEP SEQ: steps on the pads   ·   PAD BANK: bank   ·   {stop}"),
+                // A synth's scale rows: the lock lanes go under them
+                // (step 5b, board 4).
                 View::Sequencer => format!("Tap a step: on or off   ·   a lit step: pick it   ·   Notes: the clip's notes   ·   \
-                                            STEP SEQ: steps on the pads   ·   PAD BANK: bank   ·   MENU: options   ·   {stop}"),
+                                            + Lane: a lock lane   ·   STEP SEQ: steps on the pads   ·   PAD BANK: bank   ·   \
+                                            MENU: options   ·   {stop}"),
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
                 View::Arrange if self.time_page.clip_card => time_view::CLIPS_CARD_HINT.to_string(),
@@ -5137,6 +5692,28 @@ impl Player {
     /// control to control, press the control it is on, or grab a value and
     /// turn it.
     fn nav(&mut self, n: Nav) {
+        // The Lanes list takes the wheel: it moves the row picked (the
+        // list follows it, past the rows a finger reaches) and the push
+        // adds that row's lane.
+        if self.lane_list {
+            match n {
+                Nav::Turn(d) | Nav::Step(d) => {
+                    if let Some(l) = self.ui.get_mut::<ListView>("lanes") {
+                        let last = l.items.len().saturating_sub(1) as i64;
+                        l.selected = (l.selected as i64 + i64::from(d)).clamp(0, last) as usize;
+                    }
+                }
+                Nav::Push => {
+                    let row = self.ui.get::<ListView>("lanes").map(|l| l.selected);
+                    self.show_view(self.view);
+                    if let Some(row) = row {
+                        self.add_lane(row);
+                    }
+                }
+            }
+            self.refresh_hint();
+            return;
+        }
         if !self.outline_here() {
             return;
         }
@@ -5803,6 +6380,10 @@ impl Player {
                     mpfree_transport::Command::SetTempo(v),
                 )))
             }
+            TypeTo::LaneCc => {
+                self.add_cc_lane(v.round() as u16);
+                None
+            }
             TypeTo::SampleName | TypeTo::PortName | TypeTo::SceneName(_) => None,
         }
     }
@@ -6153,8 +6734,10 @@ impl Player {
             }
             ToUi::Steps(st) => {
                 if st.track != self.play.steps.track {
-                    // Another track's pads: from their first row.
+                    // Another track's pads: from their first row (and
+                    // the Sequencer's lanes from the top).
                     self.play.rows_top = 0;
+                    self.play.steps_top = 0;
                 }
                 self.play.set_steps(*st);
                 self.play.track = self.track_look();
@@ -7275,13 +7858,20 @@ impl Player {
     /// the app (once a frame while it shows, and after a control).
     pub(crate) fn step_browser(&mut self) {
         // Load names the pad it puts a sound on: the pad picked, which a
-        // pad hit moves (none while the pads play an instrument).
+        // pad hit moves (none while the pads play an instrument). A kit's
+        // Load names the armed track, whose kit it replaces.
         let target = self.sample.load_target();
+        let kit_on = self
+            .kit_page()
+            .and(self.time.armed)
+            .and_then(|t| self.time.tracks.get(t))
+            .map(|t| t.name.clone());
         let map = target.as_ref().and_then(|_| self.browser_pad_map());
         let Some(b) = self.browser.as_mut() else {
             return;
         };
         b.set_pad_target(target);
+        b.set_kit_target(kit_on);
         b.set_pad_map(map);
         for a in mpfree_browser_ui::step(&mut self.ui, b) {
             self.browse_action(a);
@@ -7367,6 +7957,11 @@ impl Player {
                     self.tell(&why);
                 }
             },
+            A::NewTrackWithKit { path, .. } => {
+                if let Some(fx) = self.add_track_for_kit(Some(path)) {
+                    self.outbox.push(fx);
+                }
+            }
             A::SaveKitRequested => self.save_kit(),
             A::Note(line) => self.say(line),
             // Projects (project.rs).
@@ -8826,6 +9421,7 @@ impl Player {
         // note editor, the REC chip's target list (Play's and the
         // Sequencer's transport both have the chip).
         self.kit_list = false;
+        self.lane_list = false;
         let notes = v == View::Sequencer && self.time.edit.is_some();
         if v != self.view || notes || !matches!(v, View::Play | View::Sequencer) {
             self.rec_list = false;
@@ -9226,6 +9822,17 @@ impl Player {
                 mpfree_fx::ids::mixer::VOLUME,
             )));
         }
+        // The arp's rate, gate, swing and octaves: the Arp panel's sliders,
+        // and the Q-Link column's cards while they turn the arp.
+        let arp_cards = || {
+            self.ui
+                .get::<QLinkColumn>(play_page::QLINKS)
+                .is_some_and(|q| q.title == ARP_QLINKS)
+        };
+        if w == arp_view::QLINKS || (w == play_page::QLINKS && arp_cards()) {
+            let (id, _) = mpfree_play::mpfree_param::arp::ALL.get(t.index)?;
+            return Some(LearnValue::Arp(*id));
+        }
         // A Play Q-Link card that turns a strip's send or level (not the
         // audio tracks' or a band's cards, which turn other things).
         if w == play_page::QLINKS
@@ -9611,6 +10218,23 @@ impl Player {
                 self.show_view(self.view);
                 None
             }
+            // The Lanes list: a setting gets its lock lane; Back.
+            ("lanes", EventKind::Select(row)) => {
+                if self.lane_list {
+                    self.show_view(self.view);
+                }
+                self.add_lane(row);
+                None
+            }
+            // A gear track's Another CC: the number pad for it.
+            ("lanes-card", EventKind::Tab(1)) => {
+                self.type_lane_cc();
+                None
+            }
+            ("lanes-card", EventKind::Tab(_)) => {
+                self.show_view(self.view);
+                None
+            }
             (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_BPM)) => {
                 Some(FromUi::TapTempo)
             }
@@ -9744,6 +10368,61 @@ impl Player {
             (play_page::STEPS, EventKind::Select(0)) => self.arm_tap(crate::rec_arm::Target::Notes),
             (crate::looper_page::LOOP_STRIP, EventKind::Select(0)) => {
                 self.arm_tap(crate::rec_arm::Target::Loop)
+            }
+            // The Sequencer's lock lanes (the redesign's step 5): + Lane
+            // opens the Lanes list; a tap on a lane's step locks it at the
+            // sound's own value, or unlocks it; a drag on it (or the wheel,
+            // the step held) turns it; the lane's × takes it off, its
+            // locks too.
+            (play_page::STEPS, EventKind::Tab(play_widgets::HEAD_LANE)) => {
+                self.toggle_lane_list();
+                None
+            }
+            (play_page::STEPS, EventKind::Cell { row, col }) if row >= play_widgets::LOCK_LANE => {
+                let r = self.play.tap_lock(row - play_widgets::LOCK_LANE, col);
+                self.lock_done(r)
+            }
+            (play_page::STEPS, EventKind::Step { index, delta })
+                if index >= play_widgets::LOCK_LANE =>
+            {
+                let fine = self.status.shift;
+                let r = self
+                    .play
+                    .turn_lock(index - play_widgets::LOCK_LANE, delta, fine);
+                self.lock_done(r)
+            }
+            (play_page::STEPS, EventKind::Toggle(lane)) if lane >= play_widgets::LOCK_LANE => {
+                let id = lane - play_widgets::LOCK_LANE;
+                let name = self
+                    .play
+                    .lock_lanes()
+                    .get(id)
+                    .map(|l| self.play.lock_name(l.addr));
+                let a = self.play.clear_lock_lane(id);
+                if let Some(name) = name {
+                    let line = format!(
+                        "steps: the {name} lane is off{}",
+                        if a.is_some() { ", its locks too" } else { "" }
+                    );
+                    println!("{line}");
+                    self.tell(&line);
+                }
+                self.refresh_play();
+                self.refresh_qlinks();
+                a.map(FromUi::Steps)
+            }
+            // The Sequencer's Steps with lock lanes: a swipe moves them.
+            (play_page::STEPS, EventKind::Step { index, delta })
+                if index == play_widgets::ROWS && !self.play.on_play_rows() =>
+            {
+                let last = self
+                    .ui
+                    .rect_of(play_page::STEPS)
+                    .zip(self.ui.get::<StepGrid>(play_page::STEPS))
+                    .map_or(0, |(r, g)| g.steps_last_top(r));
+                self.play.scroll_steps(delta, last);
+                self.refresh_play();
+                None
             }
             (play_page::STEPS, EventKind::Cell { row, col }) => {
                 let a = self.play.tap_step(row, col);
@@ -10067,7 +10746,11 @@ impl Player {
                 Some(FromUi::StepsOff)
             }
             ("header", EventKind::Select(i)) if Some(i) == self.loop_keys_chip => {
-                Some(FromUi::LoopKeys)
+                Some(if self.status.loop_keys {
+                    FromUi::LoopKeys
+                } else {
+                    FromUi::PerformOff
+                })
             }
             ("header", EventKind::Select(i)) if Some(i) == self.controller_chip => {
                 Some(FromUi::ControllerOff)
@@ -11023,6 +11706,7 @@ pub fn sample_player(fonts: Fonts) -> Player {
         mute_keys: MuteKeys::Off,
         mute_bank: 0,
         loop_keys: false,
+        perform: None,
         steps: None,
         erase: false,
         copy: false,
@@ -11487,6 +12171,7 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         mute_keys: MuteKeys::Off,
         mute_bank: 0,
         loop_keys: false,
+        perform: None,
         steps: None,
         erase: false,
         copy: false,
@@ -11796,6 +12481,8 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::Bank { .. }
             | Effect::BankLights
             | Effect::Looper(_)
+            | Effect::PlayFx(_)
+            | Effect::TrackMute { .. }
             | Effect::SavePatterns(_)
             | Effect::SynthPads(_)
             | Effect::TrackSound { .. }
@@ -12303,6 +12990,43 @@ fn browser_samples(fonts: Fonts) -> Result<Player, String> {
     built
 }
 
+/// The whole browser (BROWSE) in Kits with the Boom bap kit picked: Load
+/// on Drums (the armed track) and New track with this kit. Over a library
+/// filled in a scratch folder (removed again once the browser has read
+/// what it shows). For the manual's Sampling chapter.
+fn browser_kits(fonts: Fonts) -> Result<Player, String> {
+    use mpfree_browser_ui::sample::{fill, select, source};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "mpfree-browser-kits-{}-{nanos}",
+        std::process::id()
+    ));
+    let built = (|| {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let lib = fill(&dir)?;
+        let mut p = sample_sampler(fonts);
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib), "");
+        sample_kit_tracks(&mut p);
+        let mut st = p.time.clone();
+        let armed = st.armed.ok_or("no track armed")?;
+        st.tracks[armed].name = "Drums".to_string();
+        p.apply(ToUi::Time(Box::new(st)));
+        p.take_actions();
+        p.apply(ToUi::Show(View::Browser));
+        let b = p.browser.as_mut().ok_or("no browser")?;
+        b.go_source(source("Kits"));
+        select(b, "Boom bap");
+        p.step_browser();
+        p.take_actions();
+        Ok(p)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    built
+}
+
 /// The whole browser over the page (BROWSE), in Projects with a saved
 /// project picked, over a library filled in a scratch folder (removed
 /// again once the browser has read what it shows). For the manual's
@@ -12547,6 +13271,80 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         out.push((name, p));
     }
+    // The Sequencer's lock lanes (the Play, Pads and Sequencer redesign's
+    // board 3): Kick's Decay locked on steps 7 and 12, and a Delay send
+    // lane on the track throwing on steps 8, 15 and 16; then the Lanes
+    // list + Lane opens.
+    let mut lanes = sample_play(fonts(), PlayView::Beats);
+    {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_sampler::engine::PadField;
+        let decay = RelAddr::new(OnTrack::Pad(0), PadField::Decay as u16);
+        let send = RelAddr::new(
+            OnTrack::Strip,
+            mpfree_fx::ids::mixer::send(crate::mixing::DELAY_RETURN),
+        );
+        if let Some(c) = lanes.play.steps.clip.as_mut() {
+            c.lock_values.extend([
+                (0, 6, decay, 180.0),
+                (0, 11, decay, 90.0),
+                (crate::time::LINE, 7, send, play_page::send_db(0.9)),
+                (crate::time::LINE, 14, send, 0.0),
+                (crate::time::LINE, 15, send, 0.0),
+            ]);
+        }
+    }
+    lanes.refresh_play();
+    let mut list = sample_play(fonts(), PlayView::Beats);
+    list.toggle_lane_list();
+    out.push(("sequencer-lock-lanes", lanes));
+    out.push(("sequencer-lanes-list", list));
+    // A track that plays outside gear (step 5b, board 4): its notes as
+    // scale rows, its CC lanes under them (the gear's Cutoff opening over
+    // the bar, a bend on step 7); then its Lanes list, the gear's CCs.
+    let gear = || {
+        let mut p = sample_beats_synth(fonts());
+        let mut rig = mpfree_midi_ui::sample::rig();
+        rig.setup.tracks[0] = Some(mpfree_midi::setup::TrackOut::new(
+            mpfree_midi::setup::DIN_NAME,
+            1,
+        ));
+        let mut prof = mpfree_midi::profile::Profile::new("Mono synth");
+        prof.matches = vec![mpfree_midi::setup::DIN_NAME.to_string()];
+        for (cc, name) in [
+            (43, "Cutoff"),
+            (44, "Resonance"),
+            (45, "Env amount"),
+            (46, "Decay"),
+            (47, "Glide"),
+            (48, "Drive"),
+        ] {
+            prof.set_cc(cc, name);
+        }
+        let _ = rig.profiles.add(prof);
+        p.apply(ToUi::IoModel(std::sync::Arc::new(std::sync::Mutex::new(
+            rig,
+        ))));
+        p
+    };
+    let mut gear_lanes = gear();
+    {
+        use mpfree_play::mpfree_param::{midi, OnTrack, RelAddr};
+        let cutoff = RelAddr::new(OnTrack::Midi, 43);
+        let bend = RelAddr::new(OnTrack::Midi, midi::BEND);
+        if let Some(c) = gear_lanes.play.steps.clip.as_mut() {
+            c.lock_values.extend(
+                [(0, 20.0), (4, 52.0), (8, 84.0), (12, 116.0)]
+                    .map(|(step, v)| (crate::time::LINE, step, cutoff, v)),
+            );
+            c.lock_values.push((crate::time::LINE, 6, bend, 2048.0));
+        }
+    }
+    gear_lanes.refresh_play();
+    let mut gear_list = gear();
+    gear_list.toggle_lane_list();
+    out.push(("sequencer-gear-lanes", gear_lanes));
+    out.push(("sequencer-gear-lanes-list", gear_list));
     // The synth on the pads, A minor, In key: the pads panel's switch.
     let mut synth = sample_player(fonts());
     let mut s = crate::synth::Synth::new(44_100);
@@ -13541,6 +14339,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("looper sample: {e}"),
     }
+    // The Perform set on the pads at page B (PAD BANK B): the hint line
+    // names the page and the deck's loop keys switch is dark.
+    match sample_looper(fonts()) {
+        Ok(mut p) => {
+            let mut s = p.status.clone();
+            s.perform = Some("Page B · Throws".to_string());
+            p.apply(ToUi::Status(s));
+            out.push(("looper-perform-throws", p));
+        }
+        Err(e) => eprintln!("looper-perform-throws sample: {e}"),
+    }
     // The same on Loop tracks (clips-loops' grid): each loop named by its
     // place, and Show in Clips lit.
     match (
@@ -13567,6 +14376,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         mute_keys: MuteKeys::Off,
         mute_bank: 0,
         loop_keys: false,
+        perform: None,
         steps: None,
         erase: false,
         copy: false,
@@ -13605,6 +14415,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         mute_keys: MuteKeys::Off,
         mute_bank: 0,
         loop_keys: false,
+        perform: None,
         steps: None,
         erase: false,
         copy: false,
@@ -13767,6 +14578,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     match browser_samples(fonts()) {
         Ok(browse) => out.push(("browser-samples", browse)),
         Err(e) => eprintln!("browser-samples: not drawn ({e})"),
+    }
+    // The whole browser in Kits, Boom bap picked: New track with this kit.
+    match browser_kits(fonts()) {
+        Ok(kits) => out.push(("browser-kits", kits)),
+        Err(e) => eprintln!("browser-kits: not drawn ({e})"),
     }
     // The whole browser (BROWSE) in Projects, Night drive picked.
     match browser_projects(fonts()) {
@@ -15539,7 +16355,39 @@ mod tests {
             Some(FromUi::LoopKeys)
         );
         p.touch(2, Touch::Up, chip.x + 10, chip.y + 10);
+        // Another page of the Perform set (PAD BANK B): the deck's switch
+        // is dark (page A is the loop keys), Play's chip names the page's
+        // letter and the hint the page; a tap turns the set off.
         s.loop_keys = false;
+        s.perform = Some("Page B · Throws".to_string());
+        p.apply(ToUi::Status(s.clone()));
+        assert!(
+            chips(&p).contains(&"Pads: Perform B".to_string()),
+            "{:?}",
+            chips(&p)
+        );
+        assert!(
+            hint(&p).starts_with("Pads: Perform set, Page B · Throws"),
+            "{}",
+            hint(&p)
+        );
+        let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
+        p.ui.paint(&mut c);
+        let chip =
+            p.ui.get::<Header>("header")
+                .unwrap()
+                .chip_rect(p.loop_keys_chip.unwrap())
+                .unwrap();
+        assert_eq!(
+            p.touch(3, Touch::Down, chip.x + 10, chip.y + 10),
+            Some(FromUi::PerformOff)
+        );
+        p.touch(3, Touch::Up, chip.x + 10, chip.y + 10);
+        p.show_view(View::Looper);
+        assert!(!p.ui.get::<LoopDeck>(DECK).unwrap().head.pads, "dark");
+        assert!(hint(&p).starts_with("Pads: Perform set"), "{}", hint(&p));
+        p.show_view(View::Play);
+        s.perform = None;
         p.apply(ToUi::Status(s));
         assert!(!chips(&p).iter().any(|c| c.starts_with("Pads:")));
     }
@@ -16699,6 +17547,84 @@ mod tests {
 
     /// Remote control: SHIFT + a touch on Play's tempo or a strip's M arms
     /// MIDI Learn on it. Arrange's PLAY is no value: it keeps its job.
+    /// SHIFT + a touch on the Arp panel's sliders, or on the Q-Link
+    /// column's cards while they turn the arp (NOTE REPEAT held), arms
+    /// MIDI Learn on that arp setting; without SHIFT a slider moves.
+    #[test]
+    fn shift_and_a_touch_on_the_arps_sliders_arms_midi_learn() {
+        use mpfree_controller::mpc_one::button::NOTE_REPEAT;
+        use mpfree_play::mpfree_param::arp;
+        use mpfree_ui::Rect;
+        let mut p = sample_player(Fonts::embedded());
+        let mut app = sample_app();
+        let centre = |r: Rect| (r.x + r.w / 2, r.y + r.h / 2);
+        let press = |p: &mut Player, (x, y): (i32, i32)| {
+            let mut acts: Vec<FromUi> =
+                [p.touch(1, Touch::Down, x, y), p.touch(1, Touch::Up, x, y)]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+            acts.extend(p.take_actions());
+            acts
+        };
+        let learn = |id| [FromUi::LearnValue(LearnValue::Arp(id))];
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        // NOTE REPEAT held: the column's cards turn the arp.
+        apply_effects(&mut p, app.button(NOTE_REPEAT, true, 0.0));
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        p.status.shift = true;
+        let cards = QLinkColumn::card_rects(p.ui.rect_of(play_page::QLINKS).unwrap());
+        assert_eq!(press(&mut p, centre(cards[0])), learn(arp::RATE));
+        assert_eq!(press(&mut p, centre(cards[3])), learn(arp::OCTAVES));
+        p.status.shift = false;
+        apply_effects(&mut p, app.button(NOTE_REPEAT, false, 0.1));
+        // Play's own cards again: the first (Swing) learns nothing.
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        p.status.shift = true;
+        let cards = QLinkColumn::card_rects(p.ui.rect_of(play_page::QLINKS).unwrap());
+        assert!(!press(&mut p, centre(cards[0]))
+            .iter()
+            .any(|a| matches!(a, FromUi::LearnValue(_))));
+        p.status.shift = false;
+        // The Arp panel: its sliders, and the hint line says so.
+        let mut fx = app.toggle_panel();
+        fx.extend(app.arp_poll());
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), ARP_PAGE);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        p.status.shift = true;
+        p.refresh_hint();
+        assert!(
+            hint(&p).starts_with("SHIFT +   touch a value: MIDI Learn"),
+            "{}",
+            hint(&p)
+        );
+        let r = p.ui.rect_of(arp_view::QLINKS).unwrap();
+        let sliders = p.ui.get::<SliderStack>(arp_view::QLINKS).unwrap();
+        let (gate, swing) = (sliders.row_rects(r, 1).1, sliders.row_rects(r, 2).1);
+        assert_eq!(press(&mut p, centre(gate)), learn(arp::GATE));
+        assert_eq!(press(&mut p, centre(swing)), learn(arp::SWING));
+        p.status.shift = false;
+        let (x, y) = centre(gate);
+        let mut acts: Vec<FromUi> = [
+            p.touch(2, Touch::Down, x, y),
+            p.touch(2, Touch::Move, gate.right() - 4, y),
+            p.touch(2, Touch::Up, gate.right() - 4, y),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        acts.extend(p.take_actions());
+        assert!(
+            acts.iter()
+                .any(|a| matches!(a, FromUi::Arp(ArpAction::Settings(_)))),
+            "without SHIFT the slider moves: {acts:?}"
+        );
+    }
+
     #[test]
     fn shift_and_a_touch_on_plays_master_or_a_strip_card_arms_midi_learn() {
         use mpfree_play::mpfree_param::{Owner, Strip};
@@ -17820,6 +18746,435 @@ mod tests {
         assert!(p
             .take_actions()
             .contains(&FromUi::PlayFx(PlayFx::XyEffect(Some(1)))));
+    }
+
+    /// The Sequencer's lock lanes (the redesign's step 5, board 3): the
+    /// clip's Tune locks have lanes; + Lane opens the Lanes list (Kick's
+    /// settings, then the track's); Decay picked hangs under Kick; a tap
+    /// on a step locks it at Kick's own decay, a drag turns it, ERASE
+    /// takes it; the × takes the lane off (held in Perform); a sliced Kick
+    /// offers a Slice lane.
+    #[test]
+    fn the_sequencers_lock_lanes_lock_turn_and_come_off() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_sampler::engine::PadField;
+        use mpfree_ui::{Rect, Widget as _};
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        assert_eq!(p.view, View::Sequencer);
+        let target = |p: &Player, id: &str, index: usize| -> Rect {
+            let r = p.ui.rect_of(play_page::STEPS).unwrap();
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .targets(r)
+                .into_iter()
+                .find(|t| t.id == id && t.index == index)
+                .unwrap_or_else(|| panic!("{id} {index}"))
+                .rect
+        };
+        let mid = |b: Rect| (b.x + b.w / 2, b.y + b.h / 2);
+        // (What waits in the outbox goes first, so a tap's action would
+        // queue behind it.)
+        let tap = |p: &mut Player, b: Rect| {
+            p.take_actions();
+            let (x, y) = (b.x + b.w / 2, b.y + b.h / 2);
+            let down = p.touch(7, Touch::Down, x, y);
+            let up = p.touch(7, Touch::Up, x, y);
+            // A finger on a value the wheel can turn says so first
+            // (Held), so the step action waits behind it.
+            down.or(up).or_else(|| {
+                p.take_actions()
+                    .into_iter()
+                    .find(|a| matches!(a, FromUi::Steps(_)))
+            })
+        };
+        let lanes = |p: &Player| -> Vec<String> {
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .lanes
+                .iter()
+                .filter_map(|l| {
+                    let k = l.lock.as_ref()?;
+                    Some(format!("{} {}", l.name, k.sub))
+                })
+                .collect()
+        };
+        // The pattern's Tune locks: a lane each, under Kick, Snare, Conga.
+        assert_eq!(
+            lanes(&p),
+            ["Tune lock · Kick", "Tune lock · Snare", "Tune lock · Perc"]
+        );
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("+ Lane: a lock lane"), "{hint}");
+        // + Lane: the Lanes list, Kick's settings then the track's.
+        assert_eq!(
+            {
+                let b = target(&p, "head", play_widgets::HEAD_LANE);
+                tap(&mut p, b)
+            },
+            None
+        );
+        assert_eq!(p.page(), LANES_PAGE);
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.starts_with("Tap a setting"), "{hint}");
+        let items: Vec<String> =
+            p.ui.get::<ListView>("lanes")
+                .unwrap()
+                .items
+                .iter()
+                .map(|i| format!("{} · {}", i.text, i.detail))
+                .collect();
+        assert_eq!(
+            items[..4],
+            [
+                "Tune · Kick · the pad hit last · showing",
+                "Decay · Kick · the pad hit last",
+                "Filter · Kick · the pad hit last",
+                "Level · Kick · the pad hit last"
+            ]
+        );
+        assert!(
+            items.contains(&"Volume · Track 1 · track mix".to_string()),
+            "{items:?}"
+        );
+        assert!(
+            items.contains(&"Delay send · Track 1 · track FX".to_string()),
+            "{items:?}"
+        );
+        // Decay: its lane under Kick, the Steps back.
+        assert_eq!(
+            p.on_event(UiEvent {
+                widget: "lanes".into(),
+                kind: EventKind::Select(1),
+            }),
+            None
+        );
+        assert_eq!(p.page(), play_page::PlayView::Beats.page_with(true, true));
+        let shown: Vec<usize> = {
+            let r = p.ui.rect_of(play_page::STEPS).unwrap();
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .lanes_shown(r)
+        };
+        let ll = play_widgets::LOCK_LANE;
+        assert_eq!(shown[..3], [0, ll, ll + 1], "Tune, then Decay, under Kick");
+        // A tap on step 7 (Kick hits there): Kick's own decay.
+        let cell = target(&p, "lock", 16 + 6);
+        let a = tap(&mut p, cell);
+        let addr = RelAddr::new(OnTrack::Pad(0), PadField::Decay as u16);
+        let Some(FromUi::Steps(StepAction::Lock {
+            pad: 0,
+            steps: 64,
+            addr: got,
+            value: Some(own),
+        })) = a
+        else {
+            panic!("{a:?}");
+        };
+        assert_eq!(got, addr);
+        assert_eq!(Some(own), p.sample.pad_sound(0).map(|s| s[1]));
+        // A drag down (Kick's decay is open): two detents shorter.
+        let (x, y) = mid(cell);
+        p.take_actions();
+        p.touch(8, Touch::Down, x, y);
+        p.touch(8, Touch::Move, x, y + 17);
+        p.touch(8, Touch::Up, x, y + 17);
+        let a = p.take_actions();
+        assert!(
+            a.iter().any(|a| matches!(a, FromUi::Steps(StepAction::Lock { steps: 64, value: Some(v), .. }) if *v < own)),
+            "{a:?}"
+        );
+        assert!(
+            !a.iter()
+                .any(|a| matches!(a, FromUi::Steps(StepAction::Lock { value: None, .. }))),
+            "a drag is no tap: {a:?}"
+        );
+        // ERASE + a tap: that lock off; on an empty step, nothing.
+        p.apply(ToUi::Status(Status {
+            erase: true,
+            ..p.status.clone()
+        }));
+        assert!(matches!(
+            tap(&mut p, cell),
+            Some(FromUi::Steps(StepAction::Lock {
+                steps: 64,
+                value: None,
+                ..
+            }))
+        ));
+        assert_eq!(
+            {
+                let b = target(&p, "lock", 16 + 2);
+                tap(&mut p, b)
+            },
+            None
+        );
+        p.apply(ToUi::Status(Status {
+            erase: false,
+            ..p.status.clone()
+        }));
+        // Perform holds the × back (a hold presses it).
+        let off = {
+            let r = p.ui.rect_of(play_page::STEPS).unwrap();
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .targets(r)
+                .into_iter()
+                .find(|t| t.id == "lock-lane-off")
+                .unwrap()
+        };
+        assert!(guarded(play_page::STEPS, &off));
+        // The ×: Decay's lane off (it has no locks left).
+        assert_eq!(
+            {
+                let b = target(&p, "lock-lane-off", 1);
+                tap(&mut p, b)
+            },
+            None
+        );
+        assert_eq!(lanes(&p).len(), 3);
+        // The × on Tune: the lane and its two locks.
+        let a = {
+            let b = target(&p, "lock-lane-off", 0);
+            tap(&mut p, b)
+        };
+        assert!(
+            matches!(a, Some(FromUi::Steps(StepAction::Lock { pad: 0, value: None, steps, .. })) if steps == (1 << 6) | (1 << 9)),
+            "{a:?}"
+        );
+        // A sliced Kick: a Slice lane on the list.
+        let mut bb = boom_bap_project();
+        let _ = bb.edit_pad(0, None, |pad| {
+            let r = &mut pad.layers[0].region;
+            let (a, b) = (r.start, r.end);
+            r.slices = (1..8).map(|k| a + (b - a) * k / 8).collect();
+        });
+        p.apply(ToUi::SampleKits {
+            projects: vec![mpfree_sampler::model::Project::new(), bb],
+            rate: 44_100,
+        });
+        {
+            let b = target(&p, "head", play_widgets::HEAD_LANE);
+            tap(&mut p, b)
+        };
+        let items: Vec<String> =
+            p.ui.get::<ListView>("lanes")
+                .unwrap()
+                .items
+                .iter()
+                .map(|i| i.text.clone())
+                .collect();
+        assert!(items.contains(&"Slice".to_string()), "{items:?}");
+        // Back: nothing added.
+        p.on_event(UiEvent {
+            widget: "lanes-card".into(),
+            kind: EventKind::Tab(0),
+        });
+        assert!(p.page().starts_with("Play"));
+    }
+
+    /// The Steps' target `id`, `index` (a lane's head, a lock cell).
+    fn steps_target(p: &Player, id: &str, index: usize) -> mpfree_ui::Rect {
+        use mpfree_ui::Widget as _;
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        p.ui.get::<StepGrid>(play_page::STEPS)
+            .unwrap()
+            .targets(r)
+            .into_iter()
+            .find(|t| t.id == id && t.index == index)
+            .unwrap_or_else(|| panic!("{id} {index}"))
+            .rect
+    }
+
+    /// A tap at `b`'s middle: its action, or the step action that queued
+    /// behind what the outbox held.
+    fn steps_tap(p: &mut Player, b: mpfree_ui::Rect) -> Option<FromUi> {
+        p.take_actions();
+        let (x, y) = (b.x + b.w / 2, b.y + b.h / 2);
+        let down = p.touch(7, Touch::Down, x, y);
+        let up = p.touch(7, Touch::Up, x, y);
+        down.or(up).or_else(|| {
+            p.take_actions()
+                .into_iter()
+                .find(|a| matches!(a, FromUi::Steps(_)))
+        })
+    }
+
+    /// The Lanes list's rows: "name · detail".
+    fn lane_items(p: &Player) -> Vec<String> {
+        p.ui.get::<ListView>("lanes")
+            .unwrap()
+            .items
+            .iter()
+            .map(|i| format!("{} · {}", i.text, i.detail))
+            .collect()
+    }
+
+    /// The Steps' lock lanes: "name sub".
+    fn lock_lane_names(p: &Player) -> Vec<String> {
+        p.ui.get::<StepGrid>(play_page::STEPS)
+            .unwrap()
+            .lanes
+            .iter()
+            .filter_map(|l| Some(format!("{} {}", l.name, l.lock.as_ref()?.sub)))
+            .collect()
+    }
+
+    #[test]
+    fn a_synth_tracks_lock_lanes_hang_under_its_scale_rows() {
+        use mpfree_play::mpfree_param::OnTrack;
+        let mut p = sample_beats_synth(Fonts::embedded());
+        assert!(p.play.pitched() && p.play.sequencer);
+        // + Lane: the synth's first Q-Link set, then the track's mix.
+        let b = steps_target(&p, "head", play_widgets::HEAD_LANE);
+        assert_eq!(steps_tap(&mut p, b), None);
+        assert_eq!(p.page(), LANES_PAGE);
+        let items = lane_items(&p);
+        assert!(items[0].ends_with("· Track 1 · the synth"), "{items:?}");
+        assert!(
+            items.contains(&"Volume · Track 1 · track mix".to_string()),
+            "{items:?}"
+        );
+        let name = p.ui.get::<ListView>("lanes").unwrap().items[0].text.clone();
+        p.on_event(UiEvent {
+            widget: "lanes".into(),
+            kind: EventKind::Select(0),
+        });
+        assert_eq!(
+            lock_lane_names(&p),
+            [format!("{name} lock · the synth")],
+            "board 4: under the scale rows"
+        );
+        let shown: Vec<usize> = {
+            let r = p.ui.rect_of(play_page::STEPS).unwrap();
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .lanes_shown(r)
+        };
+        assert_eq!(shown.last(), Some(&play_widgets::LOCK_LANE));
+        assert!(shown.len() > 4, "the notes still show: {shown:?}");
+        // A tap on step 2: the synth's own value, on the track's line.
+        let a = {
+            let b = steps_target(&p, "lock", 1);
+            steps_tap(&mut p, b)
+        };
+        let Some(FromUi::Steps(StepAction::Lock {
+            pad,
+            steps: 2,
+            addr,
+            value: Some(_),
+        })) = a
+        else {
+            panic!("{a:?}");
+        };
+        assert_eq!((pad, addr.on), (crate::time::LINE, OnTrack::Inst));
+    }
+
+    #[test]
+    fn a_gear_tracks_lock_lanes_send_its_ccs() {
+        use mpfree_midi::profile::Profile;
+        use mpfree_midi::setup::{TrackOut, DIN_NAME};
+        use mpfree_play::mpfree_param::{midi, OnTrack, RelAddr};
+        use mpfree_ui::numpad::{NumPad, KEY_ENTER};
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        let mut rig = mpfree_midi_ui::sample::rig();
+        rig.setup.tracks[0] = Some(TrackOut::new(DIN_NAME, 2));
+        let io: mpfree_midi_ui::Shared = std::sync::Arc::new(std::sync::Mutex::new(rig));
+        p.apply(ToUi::IoModel(io.clone()));
+        p.take_actions();
+        // No profile: the CCs most gear agrees on, the bend and pressure;
+        // nothing of the kit (the gear plays the track instead).
+        let b = steps_target(&p, "head", play_widgets::HEAD_LANE);
+        steps_tap(&mut p, b);
+        assert_eq!(p.page(), LANES_PAGE);
+        let gear = io.lock().unwrap().setup.tracks[0].clone().unwrap().label();
+        let items = lane_items(&p);
+        assert_eq!(items[0], format!("Mod wheel · {gear} · CC 1"));
+        for want in ["Cutoff", "Bend", "Pressure"] {
+            assert!(
+                items.iter().any(|i| i.starts_with(want)),
+                "{want}: {items:?}"
+            );
+        }
+        assert!(
+            !items.iter().any(|i| i.contains("Kick")
+                || i.contains("Bank select")
+                || i.contains("track mix")),
+            "{items:?}"
+        );
+        let card = p.ui.get::<Card>("lanes-card").unwrap();
+        assert_eq!(card.buttons, ["Back", "Another CC"]);
+        // The wheel moves down the list past what a finger reaches; the
+        // push adds the row picked (Pressure, the last).
+        let last = items.len() as i32 - 1;
+        p.apply(ToUi::Nav(Nav::Turn(last + 3)));
+        assert_eq!(
+            p.ui.get::<ListView>("lanes").unwrap().selected,
+            items.len() - 1
+        );
+        p.apply(ToUi::Nav(Nav::Push));
+        assert!(p.page().starts_with("Play"));
+        // (The pattern's Tune locks keep their lanes, under the kit.)
+        let names = lock_lane_names(&p);
+        assert_eq!(names[3..], ["Pressure pressure"], "{names:?}");
+        // A tap on step 1: no pressure, on the track's line.
+        let a = {
+            let b = steps_target(&p, "lock", 3 * 16);
+            steps_tap(&mut p, b)
+        };
+        assert_eq!(
+            a,
+            Some(FromUi::Steps(StepAction::Lock {
+                pad: crate::time::LINE,
+                steps: 1,
+                addr: RelAddr::new(OnTrack::Midi, midi::PRESSURE),
+                value: Some(0.0),
+            }))
+        );
+        // Another CC: the number pad, then CC 23's lane.
+        let b = steps_target(&p, "head", play_widgets::HEAD_LANE);
+        steps_tap(&mut p, b);
+        p.on_event(UiEvent {
+            widget: "lanes-card".into(),
+            kind: EventKind::Tab(1),
+        });
+        assert_eq!(p.page(), NUMPAD_PAGE);
+        let key = |p: &mut Player, k: usize| {
+            let r = p.ui.rect_of(NUMPAD).unwrap();
+            let (x, y) = NumPad::key_at(r, k);
+            p.touch(7, Touch::Down, x, y);
+            p.touch(7, Touch::Up, x, y);
+        };
+        for k in [2, 3, KEY_ENTER] {
+            key(&mut p, k);
+        }
+        assert!(p.page().starts_with("Play"));
+        let names = lock_lane_names(&p);
+        assert_eq!(
+            names[3..],
+            ["CC 23 CC 23", "Pressure pressure"],
+            "{names:?}"
+        );
+        // A profile that names CCs: its names only (no second Cutoff).
+        {
+            let mut m = io.lock().unwrap();
+            let mut prof = Profile::new("Mono synth");
+            prof.matches = vec![DIN_NAME.to_string()];
+            prof.set_cc(43, "Cutoff");
+            prof.set_cc(44, "Resonance");
+            m.profiles.add(prof).unwrap();
+        }
+        let b = steps_target(&p, "head", play_widgets::HEAD_LANE);
+        steps_tap(&mut p, b);
+        assert_eq!(
+            lane_items(&p)[..4],
+            [
+                "Cutoff · Mono synth · CC 43",
+                "Resonance · Mono synth · CC 44",
+                "Bend · Mono synth · pitch bend",
+                "Pressure · Mono synth · pressure · showing",
+            ]
+        );
     }
 
     #[test]
@@ -20268,6 +21623,121 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// New track with this kit (the browser): a track is added as + Kit
+    /// track adds one, and once it is armed the kit folder loads into the
+    /// empty kit it gets, leaving the kit on the pads as it was.
+    #[test]
+    fn new_track_with_this_kit_adds_a_track_that_plays_the_kit() {
+        use mpfree_browser_ui::BrowseAction as A;
+        use mpfree_library::{Loc, Place};
+        let dir = std::env::temp_dir().join(format!("mpfree-kit-track-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = mpfree_library::Library::at(&dir).unwrap();
+        let mut p = sample_sampler(Fonts::embedded());
+        // An empty user kit after the kits, with a sampler kit for each.
+        let mut kits = p.kits.clone();
+        let n = kits
+            .iter()
+            .position(|k| k.synth.is_some())
+            .unwrap_or(kits.len());
+        kits.insert(
+            n,
+            KitView {
+                name: format!("Kit {}", n + 1),
+                pads: vec![None; 128],
+                colour: [0x10, 0x10, 0x10],
+                chip: None,
+                synth: None,
+                pitches: Vec::new(),
+                user: true,
+                key: None,
+            },
+        );
+        p.apply(ToUi::Kits(kits));
+        let (first, _) = mpfree_sampler_ui::sample::project();
+        let mut projects = vec![first];
+        projects.resize_with(n + 1, mpfree_sampler::model::Project::new);
+        p.apply(ToUi::SampleKits {
+            projects,
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        sample_pattern(&mut p, 0);
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
+        p.take_actions();
+        let pads = |p: &Player, k: usize| -> Vec<Option<String>> {
+            (0..16)
+                .map(|i| {
+                    p.sample
+                        .project(k)
+                        .and_then(|pr| pr.pad(i))
+                        .filter(|pd| !pd.layers.is_empty())
+                        .map(|pd| pd.name.clone())
+                })
+                .collect()
+        };
+        let on_the_pads = pads(&p, 0);
+        assert!(on_the_pads.iter().any(Option::is_some));
+        assert!(pads(&p, n).iter().all(Option::is_none));
+        // A kit's Load names the armed track, whose kit it replaces.
+        let kit_on = |p: &mut Player| {
+            p.step_browser();
+            p.browser.as_ref().unwrap().screen().kit_on
+        };
+        let armed = p.time.armed.expect("a track is armed");
+        let name = p.time.tracks[armed].name.clone();
+        assert_eq!(kit_on(&mut p), Some(name));
+        p.browse_action(A::SaveKitRequested);
+        let kit = Loc::new(Place::Kits, &["Breaks"]).unwrap();
+        let ask = A::NewTrackWithKit {
+            loc: kit.clone(),
+            path: lib.kit_path(&kit).unwrap(),
+        };
+        let before = p.time.tracks.len();
+        p.browse_action(ask.clone());
+        assert_eq!(p.take_actions(), vec![FromUi::Time(TimeAction::AddTrack)]);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "browser: a new track for the kit Breaks"));
+        // One at a time.
+        p.browse_action(ask);
+        assert!(p.take_actions().is_empty());
+        // The time engine adds it, armed: it gets the empty kit, and the
+        // kit folder goes into that kit.
+        let mut st = p.time.clone();
+        let mut added = st.tracks[0].clone();
+        added.name = format!("Track {}", before + 1);
+        added.slots.iter_mut().for_each(|s| *s = None);
+        st.tracks.push(added);
+        st.armed = Some(before);
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(p.take_actions(), vec![FromUi::Kit(n)]);
+        let now = format!("sample: kit {} is now Breaks", n + 1);
+        tick_until(&mut p, |p| events_log(p).contains(&now));
+        assert_eq!(pads(&p, n), on_the_pads);
+        assert_eq!(pads(&p, 0), on_the_pads, "the pads' kit is as it was");
+        assert_eq!(kit_on(&mut p), Some(format!("Track {}", before + 1)));
+        // With no room for another track, it says so and adds nothing.
+        let mut full = p.time.clone();
+        let more = full.tracks[0].clone();
+        full.tracks.resize(mpfree_seq::MAX_TRACKS, more);
+        p.apply(ToUi::Time(Box::new(full)));
+        p.take_actions();
+        p.browse_action(A::NewTrackWithKit {
+            loc: kit.clone(),
+            path: lib.kit_path(&kit).unwrap(),
+        });
+        assert!(p.take_actions().is_empty());
+        assert!(
+            p.told
+                .as_ref()
+                .is_some_and(|(t, _)| t.contains("no room for a new one")),
+            "{:?}",
+            p.told
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// BROWSE, SHIFT + BROWSE, Open and New project through the screen, on
     /// a library in a scratch folder.
     #[test]
@@ -20388,6 +21858,7 @@ mod tests {
             arp: "mpfree-arp 1\ntrack 1\nmode = arp\n".to_string(),
             instruments: String::new(),
             track_kits: String::new(),
+            perform: String::new(),
             loops: Some(loops),
             audio: Some(audio),
         };
@@ -20704,6 +22175,7 @@ mod tests {
                 arp: String::new(),
                 instruments: String::new(),
                 track_kits: String::new(),
+                perform: String::new(),
                 loops: None,
                 audio: None,
             })
@@ -25636,6 +27108,7 @@ mod tests {
             mute_keys: MuteKeys::Off,
             mute_bank: 0,
             loop_keys: false,
+            perform: None,
             steps: None,
             erase: false,
             copy: false,

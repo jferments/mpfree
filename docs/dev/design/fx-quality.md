@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-fxlab
-checked: 2026-11-18 1a0b4bde
+checked: 2026-11-18 dd1645f
 -->
 # FX quality: targets, the report and the ratchet
 
@@ -15,6 +15,8 @@ An effect is good when it meets its measured targets, wins or ties in blind, lev
 **Fifth round** (measuring built 2026-11-17): the movement, pitch and voice effects (the shared LFO, Tremolo, Auto-pan, Rotary, Auto wah, Ring mod, Frequency shifter, Pitch shifter, Pitch correct, Harmonizer, Tuner and Talk box), in [Round 5](#round-5-movement-pitch-and-voice) below; the fixes come one class at a time, and a Vocoder joins with its own. Movement and pitch are done (PRs W and 2 to 6, 18 Nov: every target met); the talk box and the vocoder (PRs 7 and 8, plan-5 sections 10 and 11) are held for a later session. Research and plan: jferments/mpfree-claude `fx/quality/` (research-movement.md, research-pitch.md, research-voice.md, plan-5.md, baseline-r5-2026-11-17.md).
 
 **The sampler** (measuring built 2026-11-17; the sampler review's engine item 7): a pad of `mpfree-sampler` measured by the same kind of numbers, with its own ratchet: [The sampler](#the-sampler) below.
+
+**The synths** (measuring built 2026-11-18; synth library stage 2): every synth engine and factory preset by the same method, with its own ratchet (`tests/synth.rs`, `quality/synth.tsv`): [Synth quality](synth-quality.md).
 
 ## The report
 
@@ -922,7 +924,7 @@ The tremolo goes in quieter by what its depth takes, and the auto-pan is a balan
 | V3 | `f2_level_error_db_<vowel>`, `f3_level_error_db_<vowel>` | Within 4 dB of the table's levels under F1 (Peterson and Barney 1952, table II, the averages over all speakers; checked against the paper for this PR) | The levels make it a mouth |
 | V4 | `vowel_spread_lu`, `lu_pink` | ≤ 4 LU across the nine vowels on the saw; within ±2 LU on pink, the defaults and every preset | A vowel sweep shouldn't pump |
 | V5 | `click_db_<control>` | ≤ -60 dB | It is made to be moved |
-| V6 | (with the Vocoder) | Latency 0; within ±2 LU of the carrier at the defaults; a sung vowel's F1 and F2 on a saw carrier within one band of the voice's; an "s" (noise above 4 kHz) no more than 6 dB under the voice's level at the default Unvoiced; clicks ≤ -60 dB | Intelligible, level, playable live. Its rows come with the Vocoder (plan-5 decision 12.1) |
+| V6 | `latency_frames`, `lu_carrier_<vowel>`, `f1_error_bands_<vowel>`, `f2_error_bands_<vowel>`, `lu_pink`, `s_level_db`, `s_level_db_keyed`, `click_db_<control>` | Latency 0; within ±2 LU of the carrier at the defaults (keyed: a 110 Hz saw through the input and each sung vowel at 220 Hz on the key, both at -18 dBFS RMS; and the defaults and presets on pink at the track); a sung vowel's F1 and F2 on a saw carrier within one band of the voice's (where the output's gain over the saw peaks against where the voice is loudest, on the saw's harmonics); an "s" (noise above 4 kHz) no more than 6 dB under the voice's level at the default Unvoiced, on the track and on the key; clicks ≤ -60 dB (the 997 Hz tone as voice and carrier both, every control but Carrier) | Intelligible, level, playable live. Its rows came with the Vocoder (PR 8, plan-5 decision 12.1) |
 
 The cost of each is in the instruction gate, at its defaults (new cases, instructions a 128-frame block): Tremolo 16.7k, Auto-pan 22.0k, Ring mod 24.6k, Auto wah 28.5k, Tuner 32.2k, Talk box 37.3k, Frequency shifter 55.3k, Pitch shifter 59.0k, Pitch correct 60.1k, Harmonizer 99.3k and Rotary 115.7k.
 
@@ -1001,3 +1003,11 @@ What changed (design: [fx-voice.md](fx-voice.md), [fx.md](fx.md)): the talk box 
 - **Met now:** the dips between F1 and F2 at most 1.7 dB deeper than the cascade's (V2; 7.1 to 16.3), "IH" 6.4 dB shallower; F2 and F3 within 0.005 dB of the sung levels on the saw (V3; up to 10.1); 2.0 LU between the vowels on the saw (V4; 6.8), the defaults +0.6 LU on pink and the presets -0.8 to +0.3 (V4; -6.4, and -4.9 to -8.2); Vowel's click -69.4 dB, LFO depth -67.0, Env depth -72.2, Resonance -79.0 and Formant -105.4 (V5; -38.1, -40.8, -43.4, -51.0 and -42.8).
 - **Blessed worse, inside the targets:** the controls that move nothing at the defaults (Attack, Release, Sensitivity, LFO rate, LFO sync and LFO shape, with both depths at 0) read -79.1 dB (V5; -103.5), and Mix -100.8 (-105.8): what they measure is the floor under the 997 Hz tone, which follows the tone's level through the effect. The tone sits between AH's F1 and F2, where the old bank's notch took it about 6 dB down; it now passes about 10 dB up. A steady tone through the new bank has no sidebands at the retune rate (under -150 dB).
 - **Cost** (the instruction gate): 30.2k after PR W to 31.3k (+3.6 %; 37.3k before round 5): the ramps of the three filters' coefficients and gains, twelve adds a frame.
+
+### PR 8: the vocoder
+
+What changed (design: [fx-voice.md](fx-voice.md), [fx.md](fx.md)): a new effect, the Vocoder (plan-5 decision 12.1, section 11), with its V6 rows (48), a gate case "Vocoder" and a golden line. 4 to 40 bands (16 by default) of 4th-order band-passes spaced evenly in pitch from Low to High; the carrier's bands summed with alternating signs, crossing 3 dB down, so the bank is flat within 1.5 dB (same-sign, it would notch 10 to 40 dB at every crossing: mpfree-claude `fx/quality/tools/vocoder_bank.py`); each band's power read from the band-pass and a partner in quadrature with it, so it doesn't ripple; the bands' gain from their Q, the range and the bank's summed power at that Bandwidth, so the level holds as the layout changes; Carrier Saw (following the voice's pitch with pitch correct's tracker, the default), Noise or Input (keyed by a voice; silent without a key, which only a project can set today); Unvoiced (the voice above 4 kHz), a gate, Spread and Mix; Low, High, Formant, Bandwidth and Spread glided, a 12 ms dip on a Carrier or Bands change. fxlab's `NodeDut` can now key a node by its own input (`keyed_by_input`), and round 4's keyed runner is shared with round 5.
+
+- **Met:** latency 0; the nine sung vowels keyed onto the saw within -1.5 and +1.4 LU of it; F1 and F2 within 0.8 bands of the voice's (most within 0.5); the defaults -0.5 LU on pink and the presets -1.1 to +1.0; an "s" 3.0 dB down on the track and 2.9 on the key; every control's click -64.8 dB or under (Bands, through its dip; Bandwidth -71.9; the rest -76 or under). Voice: 102 of 102 met.
+- **Tuned on the way:** the level constant (0.607; the theory gives 0.66) on the sung vowels; Bandwidth stops at 150 %, as wider alternating bands cancel (the summed power falls to 0.46 at 150 % and lower beyond); the presets keep the saw's fundamental inside the bands (Deep robot's Low 50 Hz) and Wide choir at Spread 80. The formant rows first compared the output with the table's formants: a sung vowel at 220 Hz has no harmonic at OO's F1 (300 Hz), so they now compare with where the voice itself is loudest.
+- **Cost** (the instruction gate): Vocoder 111.2k at its defaults. As ARMv7 code, 275.1k at 16 bands and 590.6k at 40 (about 13k a band): about 6 % of a period on one MPC core at 16 bands, by estimate (fx-voice.md section 8).

@@ -1,0 +1,83 @@
+<!--
+covers: rust/mpfree-fxlab/src/synth.rs rust/mpfree-fxlab/tests/synth.rs rust/mpfree-fxlab/quality/synth.tsv rust/mpfree-bench/src/cases.rs
+checked: 2026-11-18 dd1645f
+-->
+# Synth quality: the baseline, the measures and the ratchet
+
+**Status:** measure-only baseline built 2026-11-18 (synth library stage 2). No engine changed: this page says where today's synths stand against the targets the research pages propose, and the ratchet stops any of those numbers getting worse while stages 3 and 4 improve them. Research: [What every type shares](../research/synth-topics.md) and the type pages it links. Plan: "Synth library: stock-take and research plan" (https://claude.ai/artifact/36gY5Lf3qTVZp21RM9pzUp). **Nothing here has run on the MPC**; the cost table is the workstation's.
+
+The method is the FX quality one ([FX quality](fx-quality.md)): each target a number with its reason, an fxlab module that measures it on signals with known answers, and a ratchet on CI. Targets in brackets on the research pages are proposals until listening and the device confirm them; here they are the bar a row is "met" against, and a row that misses one is printed, not failed.
+
+## The report
+
+`fxlab synth [--rate HZ] [--renders] [--out DIR]` measures every keyboard engine's factory presets (Poly, Analog, Squelch, FM, Wavetable, Keys, Drawbar, Pluck: 83 presets), each engine's plain patch, Poly's voice, FM's operators and the five drum kits, and prints one row per number with its target and whether it is met, then a count by measure; it writes DIR/synth.txt. With `--renders` it also writes each preset's listening phrase (C, E and G, then a four-note chord; two octaves down for a bass) as DIR/renders/ENGINE/NN-PRESET.wav, and each kit's tour (every pad, then two bars of a beat). The report takes about 21 s in a release build on the workstation.
+
+Every render plays 100 silent blocks first, so parameters a preset or patch sets have finished gliding, as they have when a player picks a preset and then plays (without them Poly's Decay read 19 % long: its Sustain was still gliding down). Renders run in 128-frame blocks on absolute frames, as on the MPC.
+
+| Id | Subject | What is measured | Target | From |
+|---|---|---|---|---|
+| L1 | every preset | The phrase's loudness, LUFS | shown | |
+| L2 | every preset | An 8-note chord at full velocity, sample peak | under 0 dBFS | P4 |
+| L3 | every preset | DC over the phrase | under −60 dBFS | B8 |
+| L4 | every preset | Seconds after the last note-off until under −80 dBFS | shown | |
+| L5 | every preset but the organ's | Spectral centroid of the first 370 ms, velocity 127 against 20, octaves | at least 0.1 | K1, F8, P9 |
+| L6 | every preset | Level (loudest 20 ms) from velocity 20 to 127; the worst error of the best-fitting square-law curve (Dannenberg, ICMC 2006) over 20, 40, 64, 100 and 127 | range shown; fit within 2 dB | K2, P9 |
+| L7 | every preset | Full pressure from 0.3 s against none, level and centroid | shown | |
+| L8 | every preset | Mono fold-down loss: the phrase's LUFS against (L+R)/2 on both sides | under 3 dB | P8, S3 |
+| L9 | every preset | Stereo correlation of the phrase | shown | |
+| L11 | every preset | LUFS spread of single notes: C2 to C6; C1 to C7 for Keys and Pluck; C1 to C3 for a bass | under 3 dB | K6, B6 |
+| L12 | every poly preset | A 6-note chord against the power sum of its notes, LUFS | within 6 dB | S9 |
+| L13 | every preset | Milliseconds until 3 dB under the loudest 5 ms | shown | |
+| B4 | bass presets | The largest step in the first four frames of C2 | under −40 dBFS | B4 |
+| B5 | bass presets | 100 to 400 Hz against 20 to 100 Hz, the worse of C1 and C2 | at least −12 dB | B5 |
+| B7 | bass presets | The phrase's correlation under 120 Hz | at least 0.95 | B7 |
+| K1 | Keys presets | Second harmonic against the first at C4, velocity 127 against 40 | at least 12 dB more | K1 |
+| K3 | Keys and Pluck presets | T60 at C4 against the Decay label; the slope of log T60 against log frequency over C2 to C6 against the engine's law (−0.75 Keys, −0.5 Pluck) | within 20 %; within 0.15 | K3 |
+| K9 | Keys presets with tremolo | The level's modulation rate against Trem rate | within 5 % | K9 |
+| T1 | each engine's plain patch | Pitch of C1, C2, C4, C6 and C7 (a Blackman-Harris peak refined by the phase it turns through in a second): the worst, cents | within 1 cent (the organ, tuned by its gears, shown) | S6, B1 |
+| A1 | plain patches with saw, pulse, square, drive, distortion, wavetables, FM feedback | Loudest component off the harmonics, 20 Hz to 20 kHz, against the loudest harmonic, at C5, C6 and C7 | under −60 dB | P1, F3, B10 |
+| B2 | Poly, legato C3 to C4, Glide 200 ms | Landing pitch; time to within 12 cents (99 % of the octave) against the label | within 2 cents; within 10 % | B2 |
+| P6 | Poly's amp envelope on a sine | Attack to full level, Decay to within 1 % of Sustain, Release to 1 % of the held level, against the labels ("about 99 % of a segment") | within 10 % | P6 |
+| B9, P5 | Poly's LP24 and LP12 at 1 kHz | A C1 saw's harmonics filtered against the same saw with the filter open, against the analog prototype (`1/(1+s)^4`, `1/(1+s)^2`) where it is above −30 dB; where it is 3 dB a pole down against the label; full resonance on noise, where it peaks at 250 Hz, 1 kHz and 4 kHz | within 1 dB; within 0.1 octave; within 25 cents | B9, P5 |
+| F1 | FM, operator 2 at ratio 4 into operator 1 | Partials at 1 ± 4n of C4 against the Bessel functions |Jn(I)|, I fitted, at operator levels 60, 75 and 90 | within 0.5 dB | F1 |
+| F5 | FM, operator 6 alone | Feedback 7 against 0, LUFS | within 3 dB | F5 |
+| F7 | FM Glass Keys | LUFS spread over the 32 algorithms | under 3 dB | F7 |
+| D3 | every drum pad of every kit | Centroid of the first 93 ms, velocity 127 against 40, octaves | at least 0.1 | D3 |
+| D4 | every pad | The same hit twice, the second's level against the first | shown | D4 |
+| D5 | every pad | Time to 60 dB under the loudest 5 ms against the Decay label | within 10 % | D5 |
+| D7 | every pad | Level against the kit's first kick | shown | D7 |
+
+New analyses in `rust/mpfree-fxlab/src/synth.rs`, each tested on signals with known answers (`cargo test -p mpfree-fxlab --lib synth`): the frequency read (a sine 0.07 % off reads within 0.01 cent at C1, C4 and C7), the alias read (a band-limited saw under −85 dB, a naive one above −40 dB), the Bessel functions and the square-law fit.
+
+## The ratchet
+
+`tests/synth.rs` runs the whole report and compares every row that has a better direction (896 of them) with `rust/mpfree-fxlab/quality/synth.tsv`, as the FX ratchet does: a number worse than recorded by more than its tolerance, a new row, or a recorded row no longer measured fails it. It renders every preset many times, so it runs in release only (ignored in a debug build) as its own CI step, about 21 s. A change that improves numbers records them with `MPFREE_QUALITY_BLESS=1 cargo test --release --locked -p mpfree-fxlab --test synth`; one made worse on purpose is blessed the same way and explained in its pull request. Adding a preset adds rows, so a preset pull request blesses too.
+
+## Where today's synths stand (2026-11-18)
+
+Met against rows with a target: L2 66 of 83, L3 75/83, L5 32/71, L6 81/83, L8 83/83, L11 25/83, L12 65/65; B4 16/16, B5 9/16, B7 16/16; K1 11/12, K3 48/48, K9 3/3; T1 7/7; A1 9/36; B2 2/2; P6 1/3; B9 3/3, P5 2/2; F1 3/3, F5 0/1, F7 0/1; D3 19/80, D5 70/80.
+
+- **In tune and true to theory.** Every engine's plain patch is within 0.03 cents from C1 to C7, except Keys (0.55 cents at C2) and the organ (0.58 cents, its gear ratios). FM's sidebands match the Bessel functions within 0.01 dB (operator level 60, 75 and 90 give an index of 0.43, 1.57 and 5.76). Poly's LP24 is within 0.16 dB of its 4-pole prototype and LP12 within 0.8 dB, the cutoff where the label says, the resonance peak within 5.3 cents. Glide lands within 0.04 cents in 1.2 % of its time. Keys' and Pluck's decays follow their labels and laws (all 48 K3 rows), and the tremolo rates are within 0.4 %.
+- **Aliasing is the biggest gap.** Poly's saw and pulse (PolyBLEP) alias at −49 dB at C5, −44 at C6 and −37 at C7 (the saw's 13th harmonic folds to 16.9 kHz); drive and distortion make it −30 and −27 at C7. Analog: −54, −48, −42. Squelch's saw meets −60 to C6, its square doesn't (−27 at C7). Wavetable's mips work: Init −72 at C7, position 100 −54. FM feedback 7 sits 13 to 17 dB under its harmonics with what is off them (aliasing or the feedback's noise; the row can't tell which).
+- **Velocity is narrow.** From velocity 20 to 127 Poly's level moves 7 to 8 dB, Analog's 2 to 8, Pluck's 6 to 10 and Keys' 12 to 22, against the 30 to 40 dB the research proposes; the curve's shape is fine (81 of 83 within 2 dB of a square law). Tone follows velocity on 32 of 71 presets; on the drums only snares, claps and FM perc brighten (19 of 80 pads).
+- **Levels.** 17 presets clip an 8-note chord at full velocity (up to +3.2 dB: Pluck's mallets and Steel Drum, Poly Init +2.0, FM Init +1.9). Single notes across the keys stay within 3 dB on only 25 of 83 presets (Pluck's strings up to 9 dB). DC is above −60 dBFS on 8 presets: FM's 1:1 pairs (Glass Keys −38.5 dBFS: a 1:1 pair puts a sideband at 0 Hz), the reeds (Reed Bite −45.6) and Poly Lead (−45.1). Every preset keeps its loudness within 3 dB in mono.
+- **Knobs that say one thing and do another.** Poly's Attack reaches full level in 31 % of its label (the envelope aims at 1.3 and stops at 1), and Release reaches 1 % in 85 % of its label (it aims just below zero); Decay is exact. FM feedback 7 is 3.5 dB louder than 0, and Glass Keys moves 6.4 dB across the algorithms.
+- **Small speakers.** Poly Sub Bass (−37 dB) and FM Rubber Bass (−85 dB: a sine by 0.1 s at C1 and C2) all but vanish on a phone; 7 of the 16 bass presets are under −12 dB.
+- **Drum decays** are within 10 % of the label on 70 of 80 pads; the Grit kit's kicks ring 24 to 30 % long.
+
+## Voices: what each engine costs
+
+`mpfree-bench --afford [--filter TEXT]` now plays every factory preset of every keyboard engine at 1, 2, 4, 8 and 16 voices (keys held, for the organ; a mono preset once, on a line), fits `p99 = fixed + voices × per voice` and says how many voices fit in the synth budget, with the worst block over the mean at the most voices beside it ([Profiling, What can we afford?](profiling.md#what-can-we-afford---afford)). It is not a ratchet row: costs on a shared VM are too noisy, and the instruction gate counts the bench's synth cases already. On the workstation (Xeon, 18 Nov) a voice costs about 4 µs a block for Poly Init (6.7 for Supersaw), 5 for Analog, 3 to 5 for FM, 3.5 to 7.7 for Wavetable, 5 for Keys, 1.8 for Pluck and about 1 for the organ's keys (its wheels cost the same whatever is held). The MPC's numbers come from a device round.
+
+## Not measured yet
+
+Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), drift (P10), the 808 kick and metal bank against their papers (D1, D2, D9), chokes and retriggers (D6), sustain-pedal behaviour (K5: there is no pedal event yet), clav and piano partials (K7, K8), FM envelope rates and banks (F4, F6), the string machine, organs, winds and choirs (S, O: no engines yet), and cost on the MPC. Each joins the report when stage 3 or 4 builds or changes what it measures.
+
+## Running it
+
+```sh
+cd rust
+cargo test --release --locked -p mpfree-fxlab --test synth -- --nocapture     # the ratchet, with the report
+cargo build --release -p mpfree-fxlab && ./target/release/fxlab synth --renders --out /tmp/synth
+cargo run --release -p mpfree-bench -- --afford --filter keys                 # voice costs, Keys only
+```

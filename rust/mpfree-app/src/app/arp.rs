@@ -26,6 +26,8 @@ use mpfree_arp::{
 };
 use mpfree_arp_ui::view::{ArpAction, PatternButton};
 use mpfree_arp_ui::workspace::{Editor, WsAction};
+use mpfree_node::{Curve, ParamInfo, Unit};
+use mpfree_play::mpfree_param::arp as arp_ids;
 
 /// What the arp screens show: the panel, the quick band and the chip.
 #[derive(Clone, Debug, PartialEq)]
@@ -1361,6 +1363,119 @@ impl App {
         )));
         fx
     }
+
+    /// Track `track`'s arp setting `id` (`mpfree_param::arp`) as MIDI
+    /// Learn reads it: its description and its value now (the rate as its
+    /// place in [`Rate::ALL`]). The armed track's as the panel holds it,
+    /// another's as it was left.
+    pub fn arp_param(&self, track: usize, id: u16) -> Option<(ParamInfo, f32)> {
+        let info = arp_info(id)?;
+        let (s, rate) = if track == self.track {
+            (&self.arp, self.settings.rate)
+        } else {
+            let u = self.track_ui.get(track)?;
+            (&u.arp, u.rate)
+        };
+        let v = match id {
+            arp_ids::RATE => Rate::ALL.iter().position(|r| *r == rate).unwrap_or(0) as f32,
+            arp_ids::GATE => f32::from(s.gate),
+            arp_ids::SWING => f32::from(s.swing),
+            _ => f32::from(s.octaves),
+        };
+        Some((info, v))
+    }
+
+    /// A learned control set track `track`'s arp setting `id` to `value`
+    /// (in [`App::arp_param`]'s units): the armed track's as its Q-Link
+    /// sets it, so the panel and the band follow; another track's arp
+    /// plays on with it, and the panel shows it when that track is armed.
+    /// Swing turned this way stops following the transport, as a Q-Link
+    /// turn does. Nothing for a setting it already has.
+    pub fn set_arp_param(&mut self, track: usize, id: u16, value: f32) -> Vec<Effect> {
+        let Some((info, now)) = self.arp_param(track, id) else {
+            return Vec::new();
+        };
+        let value = info.clamp(value);
+        if value == now {
+            return Vec::new();
+        }
+        let set = |s: &mut Settings, rate: &mut Rate| {
+            let v = value as usize;
+            match id {
+                arp_ids::RATE => *rate = Rate::ALL[v.min(Rate::ALL.len() - 1)],
+                arp_ids::GATE => s.gate = v as u8,
+                arp_ids::SWING => s.swing = v as u8,
+                _ => s.octaves = v as u8,
+            }
+            *s = s.clamped();
+        };
+        if track == self.track {
+            let mut s = self.arp;
+            s.rate = self.settings.rate;
+            let mut rate = s.rate;
+            set(&mut s, &mut rate);
+            s.rate = rate;
+            return self.arp_action(ArpAction::Settings(s));
+        }
+        let Some(u) = self.track_ui.get_mut(track) else {
+            return Vec::new();
+        };
+        set(&mut u.arp, &mut u.rate);
+        if id == arp_ids::SWING {
+            u.swing_from_transport = false;
+        }
+        let u = *u;
+        let e = self.arps.engine_at_mut(track);
+        let mut s = u.arp;
+        s.mode = e.settings().mode;
+        s.rate = u.rate;
+        e.set_settings(s);
+        e.set_own_swing(!u.swing_from_transport);
+        self.arp_dirty = true;
+        Vec::new()
+    }
+}
+
+/// The names of [`Rate::ALL`], for MIDI Learn's description of the rate.
+const RATE_NAMES: [&str; 7] = {
+    let mut n = [""; 7];
+    let mut i = 0;
+    while i < 7 {
+        n[i] = Rate::ALL[i].label();
+        i += 1;
+    }
+    n
+};
+
+/// What an arp setting is to MIDI Learn (`Owner::Arp`, ids in
+/// `mpfree_param::arp`): its name, range and units, as the arp's Q-Link
+/// sliders show it. None for an id that isn't one.
+pub fn arp_info(id: u16) -> Option<ParamInfo> {
+    let info = |name, min, max, default, unit, curve| ParamInfo {
+        id,
+        name,
+        group: "Arp",
+        min,
+        max,
+        default,
+        unit,
+        curve,
+        readonly: false,
+    };
+    Some(match id {
+        arp_ids::RATE => info(
+            "Rate",
+            0.0,
+            (RATE_NAMES.len() - 1) as f32,
+            3.0,
+            Unit::None,
+            Curve::Choice(&RATE_NAMES),
+        ),
+        arp_ids::GATE => info("Gate", 1.0, 100.0, 50.0, Unit::Percent, Curve::Stepped),
+        arp_ids::SWING => info("Swing", 50.0, 75.0, 50.0, Unit::Percent, Curve::Stepped),
+        arp_ids::OCTAVES => info("Octaves", 1.0, 4.0, 1.0, Unit::None, Curve::Stepped),
+        _ => return None,
+    })
 }
 
 /// The live treatment's inputs, copied out of the App each period
