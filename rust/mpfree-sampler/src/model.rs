@@ -544,6 +544,95 @@ pub struct PressureRoute {
     pub depth: f32,
 }
 
+/// What a pad's LFO moves (sampler R5 part 4), and how far at full depth
+/// (a depth of -1 moves it as far the other way).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LfoTarget {
+    #[default]
+    Off,
+    /// The pitch: up to 12 semitones either way. A warped layer and a
+    /// grain voice keep their pitch.
+    Pitch,
+    /// The filter's cutoff: up to 4 octaves either way. A pad whose filter
+    /// is off has none to move.
+    Cutoff,
+    /// The level: from full down to silence at full depth (a tremolo).
+    Level,
+    /// The pan: from side to side at full depth.
+    Pan,
+}
+
+/// A pad's LFO (sampler R5 part 4): one on each voice, with the waves of
+/// the Grain page's ([`LfoShape`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PadLfo {
+    pub shape: LfoShape,
+    /// Cycles a second when it runs free ([`LFO_RATE_HZ`]).
+    pub rate_hz: f32,
+    /// Synced: one cycle every this many beats at the project tempo
+    /// ([`LFO_BEATS`]), in place of the rate.
+    pub beats: Option<f32>,
+    pub target: LfoTarget,
+    /// -1 to 1.
+    pub depth: f32,
+    /// Each hit starts the cycle from its start. Off, every voice of the
+    /// pad joins one cycle that runs on between hits: on the transport's
+    /// beats when synced and playing.
+    pub retrig: bool,
+}
+
+/// The free LFO's rates, in Hz.
+pub const LFO_RATE_HZ: std::ops::RangeInclusive<f32> = 0.01..=40.0;
+/// The synced LFO's cycles, in beats.
+pub const LFO_BEATS: std::ops::RangeInclusive<f32> = 0.125..=64.0;
+
+impl Default for PadLfo {
+    /// Off, and when it is given a target: a sine at 5 Hz, a tenth of the
+    /// way (a vibrato of 1.2 semitones on Pitch), from each hit.
+    fn default() -> PadLfo {
+        PadLfo {
+            shape: LfoShape::Sine,
+            rate_hz: 5.0,
+            beats: None,
+            target: LfoTarget::Off,
+            depth: 0.1,
+            retrig: true,
+        }
+    }
+}
+
+impl PadLfo {
+    /// Whether it moves anything.
+    pub fn moves(&self) -> bool {
+        self.target != LfoTarget::Off && self.depth != 0.0
+    }
+}
+
+/// A pad's pitch envelope (sampler R5 part 4): each hit starts
+/// `semitones` from its pitch and comes back to it over `decay_ms`, on an
+/// exponential curve (a kick's drop, a zap, a riser played backwards).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PitchEnv {
+    /// -24 to +24 ([`PITCH_ENV_ST`]); 0 is off.
+    pub semitones: f32,
+    /// How long it takes to come back, in ms ([`PITCH_DECAY_MS`]).
+    pub decay_ms: f32,
+}
+
+/// The pitch envelope's furthest start, in semitones either way.
+pub const PITCH_ENV_ST: f32 = 24.0;
+/// The pitch envelope's decay times, in ms.
+pub const PITCH_DECAY_MS: std::ops::RangeInclusive<f32> = 1.0..=10_000.0;
+
+impl Default for PitchEnv {
+    fn default() -> PitchEnv {
+        PitchEnv {
+            semitones: 0.0,
+            decay_ms: 100.0,
+        }
+    }
+}
+
 /// How a warped region meets the project tempo.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WarpMethod {
@@ -1657,6 +1746,17 @@ pub struct Pad {
     /// [`crate::engine::PadField::Slice`] picks another for a hit; a note
     /// on keys plays its own slice.
     pub slice: u8,
+    /// The pad's LFO (sampler R5 part 4).
+    pub lfo: PadLfo,
+    /// The pad's pitch envelope (sampler R5 part 4).
+    pub pitch_env: PitchEnv,
+    /// 0 to 1: how much darker a soft hit is than the hardest, up to 4
+    /// octaves lower at the softest when 1 (where the pad has a filter).
+    pub vel_to_cutoff: f32,
+    /// Semitones the softest hit plays below the hardest (-12 to +12; below
+    /// 0, softer hits play higher). A warped layer and a grain voice keep
+    /// their pitch.
+    pub vel_to_pitch: f32,
     /// What a hit does: plays its layers, an engine's voice, or a note out
     /// to gear ([`PadKind`]).
     pub kind: PadKind,
@@ -1882,6 +1982,10 @@ impl Pad {
             vel_fade: 0,
             vintage: false,
             slice: 0,
+            lfo: PadLfo::default(),
+            pitch_env: PitchEnv::default(),
+            vel_to_cutoff: 0.0,
+            vel_to_pitch: 0.0,
             kind: PadKind::Sample,
             on_launch: false,
         }
@@ -1904,6 +2008,19 @@ impl Pad {
             }
         }
         self.vel_fade = fade;
+    }
+
+    /// Whether its LFO, pitch envelope and velocity routes are in their
+    /// ranges (sampler R5 part 4).
+    fn movement_ok(&self) -> bool {
+        let (l, e) = (&self.lfo, &self.pitch_env);
+        LFO_RATE_HZ.contains(&l.rate_hz)
+            && l.beats.is_none_or(|b| LFO_BEATS.contains(&b))
+            && (-1.0..=1.0).contains(&l.depth)
+            && (-PITCH_ENV_ST..=PITCH_ENV_ST).contains(&e.semitones)
+            && PITCH_DECAY_MS.contains(&e.decay_ms)
+            && (0.0..=1.0).contains(&self.vel_to_cutoff)
+            && (-12.0..=12.0).contains(&self.vel_to_pitch)
     }
 
     /// The pad `old` with `layer` as its only layer and named `name` (its
@@ -2139,6 +2256,7 @@ impl Project {
             || pad.mute_group.is_some_and(|g| !(1..=16).contains(&g))
             || !depth.is_finite()
             || depth.abs() > 1.0
+            || !pad.movement_ok()
         {
             return Err(ModelError::BadPad);
         }

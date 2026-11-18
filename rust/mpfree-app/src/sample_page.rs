@@ -1658,8 +1658,14 @@ impl SamplePage {
         let Some(project) = self.projects.get(self.kit) else {
             return;
         };
+        let bpm = self.tempo();
         let sources = &mut self.sources;
-        self.play_state = PlayState::from_project(project, self.pad, |s| sources.get(s));
+        self.play_state =
+            PlayState::from_project(project, self.pad, |s| sources.get(s)).map(|mut ps| {
+                // For an LFO synced to it (sampler R5 part 4).
+                ps.bpm = bpm;
+                ps
+            });
         let Some(ps) = self.play_state.as_ref() else {
             return;
         };

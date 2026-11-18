@@ -109,9 +109,10 @@ use crate::dsp::{
 use crate::grain_clip::GrainClip;
 use crate::hits::{self, HitCell};
 use crate::model::{
-    edge_gain, ChannelPick, Fade, GrainMode, GrainParams, Keys, LayerSelect, Levels, LoopMode,
-    MasterFx, PadsPlay, Pcm, PlayMode, PressureRoute, PressureTarget, Project, SliceSet,
-    WarpMethod, GRAIN_GLIDE_MAX_MS, PADS,
+    edge_gain, ChannelPick, Fade, GrainMode, GrainParams, Keys, LayerSelect, Levels, LfoShape,
+    LfoTarget, LoopMode, MasterFx, PadLfo, PadsPlay, Pcm, PitchEnv, PlayMode, PressureRoute,
+    PressureTarget, Project, SliceSet, WarpMethod, GRAIN_GLIDE_MAX_MS, LFO_BEATS, LFO_RATE_HZ,
+    PADS, PITCH_DECAY_MS, PITCH_ENV_ST,
 };
 use crate::warp::{CopyMap, Warps};
 
@@ -409,6 +410,12 @@ pub struct ViewPad {
     vintage: bool,
     /// The slice a hit plays on its sliced layers.
     slice: u8,
+    /// Its LFO, pitch envelope and velocity on pitch and cutoff (sampler
+    /// R5 part 4), in their ranges.
+    lfo: PadLfo,
+    pitch_env: PitchEnv,
+    vel_to_cutoff: f32,
+    vel_to_pitch: f32,
 }
 
 impl ViewPad {
@@ -476,6 +483,9 @@ impl EngineView {
             PadField::Decay => Some(p.amp.decay_ms),
             PadField::Release => Some(p.amp.release_ms),
             PadField::Slice => Some(f32::from(p.slice)),
+            PadField::LfoDepth => Some(p.lfo.depth),
+            PadField::PitchEnv => Some(p.pitch_env.semitones),
+            PadField::PitchDecay => Some(p.pitch_env.decay_ms),
         }
     }
 
@@ -694,6 +704,27 @@ impl EngineView {
                     tune_cents: p.tune_cents,
                     vintage: p.vintage,
                     slice: p.slice,
+                    lfo: PadLfo {
+                        rate_hz: p
+                            .lfo
+                            .rate_hz
+                            .clamp(*LFO_RATE_HZ.start(), *LFO_RATE_HZ.end()),
+                        beats: p
+                            .lfo
+                            .beats
+                            .map(|b| b.clamp(*LFO_BEATS.start(), *LFO_BEATS.end())),
+                        depth: p.lfo.depth.clamp(-1.0, 1.0),
+                        ..p.lfo
+                    },
+                    pitch_env: PitchEnv {
+                        semitones: p.pitch_env.semitones.clamp(-PITCH_ENV_ST, PITCH_ENV_ST),
+                        decay_ms: p
+                            .pitch_env
+                            .decay_ms
+                            .clamp(*PITCH_DECAY_MS.start(), *PITCH_DECAY_MS.end()),
+                    },
+                    vel_to_cutoff: p.vel_to_cutoff.clamp(0.0, 1.0),
+                    vel_to_pitch: p.vel_to_pitch.clamp(-12.0, 12.0),
                 }
             }));
         }
@@ -864,10 +895,17 @@ pub enum PadField {
     /// pad's own [`crate::model::Pad::slice`], rounded to a whole slice,
     /// for new voices.
     Slice = 8,
+    /// The LFO's depth, -1 to 1 (sampler R5 part 4): playing voices follow
+    /// it. It moves nothing on a pad whose LFO has no target.
+    LfoDepth = 9,
+    /// The pitch envelope's start in semitones (-24 to +24) and its decay
+    /// in ms (1 to 10 000), for new voices.
+    PitchEnv = 10,
+    PitchDecay = 11,
 }
 
 impl PadField {
-    pub const COUNT: usize = 9;
+    pub const COUNT: usize = 12;
     pub const ALL: [PadField; PadField::COUNT] = [
         PadField::Level,
         PadField::Pan,
@@ -878,14 +916,21 @@ impl PadField {
         PadField::Decay,
         PadField::Release,
         PadField::Slice,
+        PadField::LfoDepth,
+        PadField::PitchEnv,
+        PadField::PitchDecay,
     ];
 
-    /// Whether playing voices follow it (Level, Pan, Cutoff, Resonance);
-    /// the others reach new voices only.
+    /// Whether playing voices follow it (Level, Pan, Cutoff, Resonance,
+    /// LFO depth); the others reach new voices only.
     pub fn follows(self) -> bool {
         matches!(
             self,
-            PadField::Level | PadField::Pan | PadField::Cutoff | PadField::Resonance
+            PadField::Level
+                | PadField::Pan
+                | PadField::Cutoff
+                | PadField::Resonance
+                | PadField::LfoDepth
         )
     }
 
@@ -899,6 +944,9 @@ impl PadField {
             PadField::Resonance => (0.0, 1.0),
             PadField::Attack | PadField::Decay | PadField::Release => (0.0, 60_000.0),
             PadField::Slice => (0.0, (crate::model::MAX_SLICES - 1) as f32),
+            PadField::LfoDepth => (-1.0, 1.0),
+            PadField::PitchEnv => (-PITCH_ENV_ST, PITCH_ENV_ST),
+            PadField::PitchDecay => (*PITCH_DECAY_MS.start(), *PITCH_DECAY_MS.end()),
         };
         x.clamp(lo, hi)
     }
@@ -996,6 +1044,160 @@ struct Follow {
     own_pan: f32,
     own_fc: f32,
     own_res: f32,
+}
+
+/// A voice's movement (sampler R5 part 4): its pad's LFO, its pitch
+/// envelope and what its hit's velocity did to its pitch and cutoff.
+/// Worked out every [`FILTER_STEP`] frames ([`motion_step`]), as pressure
+/// is; the level and pan glide across each step.
+#[derive(Clone, Copy, Debug)]
+struct Motion {
+    /// The LFO or the pitch envelope still moves something: [`finish`]
+    /// steps it, and the voice is never plain ([`plain_now`]).
+    on: bool,
+    /// Frames into the current step.
+    count: u32,
+    shape: LfoShape,
+    to: LfoTarget,
+    /// The depth in use (a live one, else the pad's own) and the pad's own.
+    depth: f32,
+    own_depth: f32,
+    /// Where it is in its cycle (0 to 1), and how far a step moves it.
+    phase: f32,
+    inc: f32,
+    /// A synced LFO's cycle in beats (0 when it runs free at `hz`), and
+    /// output frames a step, so a tempo change or an edit can set `inc`.
+    beats: f32,
+    hz: f32,
+    step_s: f32,
+    /// The random waves' values: the one it comes from and the one it
+    /// holds or goes to.
+    held: [f32; 2],
+    rng: Rng,
+    /// The pitch envelope now, in cents, and what a step leaves of it.
+    env_cents: f32,
+    env_k: f32,
+    /// The hit's velocity on its pitch (cents) and on its cutoff (a factor).
+    vel_cents: f32,
+    vel_fc: f32,
+    /// What it all comes to: cents on the pitch, a factor on the cutoff,
+    /// and a gain on each side, gliding to the next over the step.
+    cents: f32,
+    fc: f32,
+    side: [f32; 2],
+    side_inc: [f32; 2],
+    /// Its pitch may move: not a warped layer, not a grain voice.
+    pitched: bool,
+}
+
+impl Default for Motion {
+    fn default() -> Motion {
+        Motion {
+            on: false,
+            count: 0,
+            shape: LfoShape::Sine,
+            to: LfoTarget::Off,
+            depth: 0.0,
+            own_depth: 0.0,
+            phase: 0.0,
+            inc: 0.0,
+            beats: 0.0,
+            hz: 0.0,
+            step_s: 0.0,
+            held: [0.0; 2],
+            rng: Rng::new(1),
+            env_cents: 0.0,
+            env_k: 0.0,
+            vel_cents: 0.0,
+            vel_fc: 1.0,
+            cents: 0.0,
+            fc: 1.0,
+            side: [1.0; 2],
+            side_inc: [0.0; 2],
+            pitched: false,
+        }
+    }
+}
+
+/// The pitch envelope's fall over its decay: e^-9.21 is 1e-4, as the
+/// Grain page's envelope (24 semitones come back to under a cent).
+const ENV_FALL: f32 = 9.21;
+
+impl Motion {
+    /// Takes `lfo`'s wave, target and rate (and `depth` in place of its
+    /// own), keeping where it is in its cycle: a new voice, or an edit of
+    /// the pad while it plays. `bpm` is the project tempo.
+    fn set_lfo(&mut self, lfo: &PadLfo, depth: f32, bpm: f64) {
+        self.shape = lfo.shape;
+        self.to = lfo.target;
+        self.own_depth = lfo.depth;
+        self.depth = depth;
+        self.beats = lfo.beats.unwrap_or(0.0);
+        self.hz = lfo.rate_hz;
+        self.retempo(bpm);
+        if self.to != LfoTarget::Off {
+            self.on = true;
+        }
+    }
+
+    /// A synced LFO keeps its cycle in beats at tempo `bpm`.
+    fn retempo(&mut self, bpm: f64) {
+        let hz = if self.beats > 0.0 {
+            (bpm / 60.0) as f32 / self.beats
+        } else {
+            self.hz
+        };
+        self.inc = hz * self.step_s;
+    }
+
+    /// The cycles a second it runs at, at tempo `bpm`.
+    fn cycle_hz(&self, bpm: f64) -> f64 {
+        if self.beats > 0.0 {
+            bpm / 60.0 / f64::from(self.beats)
+        } else {
+            f64::from(self.hz)
+        }
+    }
+}
+
+/// The LFO's wave `shape` at `phase` (0 to 1), -1 to 1, as the Grain
+/// page's LFO draws it: the random waves from `held[0]` to `held[1]`.
+fn lfo_wave(shape: LfoShape, phase: f32, held: [f32; 2]) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    match shape {
+        LfoShape::Sine => (phase * TAU).sin(),
+        LfoShape::Triangle => 1.0 - 4.0 * ((phase + 0.25).fract() - 0.5).abs(),
+        LfoShape::SawUp => 2.0 * phase - 1.0,
+        LfoShape::SawDown => 1.0 - 2.0 * phase,
+        LfoShape::Square => {
+            if phase < 0.5 {
+                1.0
+            } else {
+                -1.0
+            }
+        }
+        LfoShape::Hold => held[1],
+        LfoShape::Drift => {
+            let t = 0.5 - 0.5 * (phase * PI).cos();
+            held[0] + (held[1] - held[0]) * t
+        }
+    }
+}
+
+/// A random value from -1 to 1.
+fn bipolar(rng: &mut Rng) -> f32 {
+    (rng.next_u32() >> 8) as f32 / (1u32 << 23) as f32 - 1.0
+}
+
+/// A balance `x` from -1 (left) to 1 (right): the far side's gain falls
+/// on a quarter sine and the near side's stays.
+fn balance(x: f32) -> [f32; 2] {
+    let fall = (x.abs().min(1.0) * std::f32::consts::FRAC_PI_2).cos();
+    if x > 0.0 {
+        [fall, 1.0]
+    } else {
+        [1.0, fall]
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1139,6 +1341,9 @@ struct Voice {
     /// fading out over [`JUMP_FRAMES`] frames so the sound doesn't step.
     jump: [f32; 2],
     jump_left: u16,
+    /// Its pad's LFO and pitch envelope, and its hit's velocity on its
+    /// pitch and cutoff (sampler R5 part 4).
+    motion: Motion,
 }
 
 impl Voice {
@@ -1592,6 +1797,12 @@ pub struct Engine {
     master: Option<GrainFx>,
     /// The project tempo, for warped layers.
     tempo: f64,
+    /// The transport's position in beats and the frame it was at, while
+    /// it plays ([`Engine::set_beat`]): a synced LFO that runs on between
+    /// hits keeps to it.
+    beat: Option<(u64, f64)>,
+    /// The frame the events being applied are on.
+    event_frame: u64,
     /// The tape's speed (1 when running, 0 stopped), where it is going,
     /// and how far it moves a frame.
     tape: f32,
@@ -1669,6 +1880,8 @@ impl Engine {
             frames: 0,
             master: None,
             tempo: 120.0,
+            beat: None,
+            event_frame: 0,
             tape: 1.0,
             tape_target: 1.0,
             tape_rate: 0.0,
@@ -1768,9 +1981,20 @@ impl Engine {
                 v.base_step = warped_step(v.plain_step, bpm, v.warp_bpm);
                 retime(v);
             }
+            // A synced LFO keeps its cycle in beats.
+            if v.active && v.motion.beats > 0.0 {
+                v.motion.retempo(bpm);
+            }
             // A cloud synced to the tempo follows it at once.
             g.set_tempo(beat);
         }
+    }
+
+    /// Where the transport is, in beats, at the start of the next render,
+    /// while it plays (None stopped): a synced LFO with Retrig off keeps
+    /// to its beats (sampler R5 part 4). Once a period, with the tempo.
+    pub fn set_beat(&mut self, beat: Option<f64>) {
+        self.beat = beat.filter(|b| b.is_finite()).map(|b| (self.frames, b));
     }
 
     /// Output frames per beat at the project tempo: what a granular pad's
@@ -1902,13 +2126,25 @@ impl Engine {
         });
         let old = self.set_kit_view(kit, view);
         let Engine {
-            pool, views, lives, ..
+            pool,
+            views,
+            lives,
+            tempo,
+            ..
         } = self;
         let (view, live) = (&views[kit], &lives[kit]);
         for (v, g) in pool.iter_mut() {
             let p = usize::from(v.pad);
             if v.active && usize::from(v.kit) == kit && p < PADS {
-                follow_edit(v, g, view, &live.row(p), &live.program, live_pads[p]);
+                follow_edit(
+                    v,
+                    g,
+                    view,
+                    &live.row(p),
+                    &live.program,
+                    live_pads[p],
+                    *tempo,
+                );
             }
         }
         self.edit_lane[kit] = self.pool.split && self.pool.b.is_none();
@@ -2780,6 +3016,70 @@ impl Engine {
         false
     }
 
+    /// A new voice's movement on pad `vp` (sampler R5 part 4): its LFO
+    /// (from the start of its cycle, or where the pad's cycle is with
+    /// Retrig off), its pitch envelope, and velocity `vel` (0 to 1) on its
+    /// pitch and cutoff, under the pad's `live` row. `pitched`: its pitch
+    /// may move.
+    fn motion_for(
+        &self,
+        vp: &ViewPad,
+        live: &[f32; PadField::COUNT],
+        vel: f32,
+        pitched: bool,
+    ) -> Motion {
+        let set = |f: PadField| Some(live[f as usize]).filter(|x| !x.is_nan());
+        let rate = self.rate;
+        let soft = 1.0 - vel.clamp(0.0, 1.0);
+        let semis = set(PadField::PitchEnv).unwrap_or(vp.pitch_env.semitones);
+        let decay_ms = set(PadField::PitchDecay).unwrap_or(vp.pitch_env.decay_ms);
+        let decay = (decay_ms * 0.001 * rate).max(1.0);
+        let mut m = Motion {
+            step_s: FILTER_STEP as f32 / rate,
+            env_cents: if pitched { 100.0 * semis } else { 0.0 },
+            env_k: (-ENV_FALL * FILTER_STEP as f32 / decay).exp(),
+            vel_cents: if pitched {
+                -100.0 * vp.vel_to_pitch * soft
+            } else {
+                0.0
+            },
+            vel_fc: (-4.0 * vp.vel_to_cutoff * soft).exp2(),
+            pitched,
+            // Seeded from the hit count, so the same performance renders
+            // the same.
+            rng: Rng::new(0x4C46_4F00 ^ (self.clock as u32).wrapping_mul(0x9E37_79B9)),
+            ..Motion::default()
+        };
+        m.held = [bipolar(&mut m.rng), bipolar(&mut m.rng)];
+        m.set_lfo(
+            &vp.lfo,
+            set(PadField::LfoDepth).unwrap_or(vp.lfo.depth),
+            self.tempo,
+        );
+        if !vp.lfo.retrig && m.to != LfoTarget::Off {
+            m.phase = self.free_phase(&m);
+        }
+        m.cents = m.vel_cents + m.env_cents;
+        m.fc = m.vel_fc;
+        m.on |= m.env_cents != 0.0;
+        m
+    }
+
+    /// Where an LFO that runs on between hits (Retrig off) is in its cycle
+    /// now: on the transport's beats when synced and it plays, else on the
+    /// engine's own clock, so every voice of the pad joins one cycle.
+    fn free_phase(&self, m: &Motion) -> f32 {
+        let rate = f64::from(self.rate);
+        let at = self.event_frame as f64;
+        let cycles = match self.beat {
+            Some((frame, beat)) if m.beats > 0.0 => {
+                (beat + (at - frame as f64) * self.tempo / 60.0 / rate) / f64::from(m.beats)
+            }
+            _ => at * m.cycle_hz(self.tempo) / rate,
+        };
+        cycles.rem_euclid(1.0) as f32
+    }
+
     /// Starts layer `li` of pad `p` with what `vary` changes. A slice, for
     /// an audition, plays those source frames instead of the layer's
     /// region: once, forward, without fades or a loop.
@@ -3013,10 +3313,16 @@ impl Engine {
         } else {
             plain
         };
+        // The pad's LFO, pitch envelope and velocity on pitch and cutoff
+        // (R5 part 4), with a live or locked depth and envelope. A warped
+        // layer and a grain voice keep their pitch.
+        let motion = self.motion_for(vp, &live, vel, !granular && !warped);
         // A plain one-shot (as a kit's drum hits are) can take one of the
         // voices past the full-voice limit: it costs a fraction of a full
         // voice once it plays (`plain_now`, `render_plain`).
-        let light = !granular
+        let light = !motion.on
+            && motion.cents == 0.0
+            && !granular
             && mode == PlayMode::OneShot
             && step == ONE
             && !reverse
@@ -3175,6 +3481,7 @@ impl Engine {
             layer_grain: l.grain,
             jump: [0.0; 2],
             jump_left: 0,
+            motion,
         };
         if self.tape != 1.0 {
             // A hit on a stopped (or slowing) tape plays at its speed.
@@ -3183,7 +3490,7 @@ impl Engine {
             v.tape_gain = gain;
             (v.gain_l, v.gain_r) = (v.base_gain_l * gain, v.base_gain_r * gain);
             retime(v);
-        } else if cents != 0.0 {
+        } else if cents != 0.0 || v.motion.cents != 0.0 {
             retime(v);
         }
         let beat = self.frames_per_beat();
@@ -3317,7 +3624,8 @@ impl Engine {
                     let (k, p) = (usize::from(v.kit), usize::from(v.pad));
                     if v.active && p < PADS && self.edit_lane.get(k) == Some(&true) {
                         let live = &self.lives[k];
-                        follow_edit(v, g, &self.views[k], &live.row(p), &live.program, true);
+                        let (row, program) = (live.row(p), live.program);
+                        follow_edit(v, g, &self.views[k], &row, &program, true, self.tempo);
                     }
                 }
             }
@@ -3328,6 +3636,9 @@ impl Engine {
             if v.active && v.warp_bpm > 0.0 {
                 v.base_step = warped_step(v.plain_step, tempo, v.warp_bpm);
                 retime(v);
+            }
+            if v.active && v.motion.beats > 0.0 {
+                v.motion.retempo(tempo);
             }
         }
         self.tape_moved = true;
@@ -3366,6 +3677,7 @@ impl Engine {
             let mut next = n;
             if home {
                 // Apply every event due now.
+                self.event_frame = self.frames + u64::from(at);
                 while let Some(&(o, kit, ev)) = self.events.get(applied) {
                     if o > at {
                         break;
@@ -3433,6 +3745,8 @@ impl Engine {
             at = next;
         }
         self.frames += u64::from(n);
+        // Events applied between renders are on the next frame.
+        self.event_frame = self.frames;
         self.events.drain(..applied);
         for e in &mut self.events {
             e.0 = e.0.saturating_sub(n);
@@ -3727,6 +4041,12 @@ fn retarget(v: &mut Voice, live: &[f32; PadField::COUNT], program: &[f32; Progra
         f.count = 0;
     }
     f.moving = true;
+    // A live LFO depth, or back to the pad's own.
+    let m = &mut v.motion;
+    m.depth = get(PadField::LfoDepth).unwrap_or(m.own_depth);
+    if m.to != LfoTarget::Off {
+        m.on = true;
+    }
 }
 
 /// Playing voice `v` (with its grain voice `g`) follows an edit of its pad
@@ -3743,6 +4063,7 @@ fn follow_edit(
     live: &[f32; PadField::COUNT],
     program: &[f32; ProgramField::COUNT],
     was_live: bool,
+    bpm: f64,
 ) {
     if !v.active || v.kill_left > 0 || v.audition {
         return;
@@ -3750,6 +4071,11 @@ fn follow_edit(
     let Some(vp) = view.pads.get(usize::from(v.pad)).and_then(Option::as_ref) else {
         return;
     };
+    // The LFO's wave, target, rate and depth, from where it is in its
+    // cycle (sampler R5 part 4).
+    let depth = Some(live[PadField::LfoDepth as usize]).filter(|x| !x.is_nan());
+    v.motion
+        .set_lfo(&vp.lfo, depth.unwrap_or(vp.lfo.depth), bpm);
     let Some(l) = vp.layers.get(usize::from(v.layer)) else {
         return;
     };
@@ -4061,8 +4387,8 @@ fn pressure_step(v: &mut Voice) {
 }
 
 /// The voice's step from its base step, its pitch pressure, its speed
-/// (the tape's, with wow and flutter) and the program's tune. A granular
-/// voice's grains keep their own pitch.
+/// (the tape's, with wow and flutter), the program's tune and its
+/// movement's pitch. A granular voice's grains keep their own pitch.
 fn retime(v: &mut Voice) {
     if v.granular {
         return;
@@ -4074,15 +4400,90 @@ fn retime(v: &mut Voice) {
     if v.speed != 1.0 {
         step *= f64::from(v.speed);
     }
-    if v.follow.cents != 0.0 {
-        step *= f64::from(v.follow.cents / 1200.0).exp2();
+    let cents = v.follow.cents + v.motion.cents;
+    if cents != 0.0 {
+        step *= f64::from(cents / 1200.0).exp2();
     }
     v.step = step.round().max(1.0) as i64;
 }
 
+/// One frame of the voice's movement: every [`FILTER_STEP`] frames its
+/// next step ([`motion_step`]), and each frame the level and pan's glide.
+/// Only called while [`Motion::on`].
+#[inline(always)]
+fn follow_motion(v: &mut Voice) {
+    if v.motion.count == 0 {
+        motion_step(v);
+    }
+    let m = &mut v.motion;
+    m.count = (m.count + 1) % FILTER_STEP;
+    m.side[0] += m.side_inc[0];
+    m.side[1] += m.side_inc[1];
+}
+
+/// [`follow_motion`]'s step every [`FILTER_STEP`] frames, kept out of the
+/// per-frame loop: the LFO's value and the pitch envelope's, on to the
+/// pitch (a new step), the cutoff ([`retune`] sees it) and the gain on
+/// each side. It stops itself when nothing moves any more: no LFO, the
+/// envelope back home and the gains landed.
+#[inline(never)]
+fn motion_step(v: &mut Voice) {
+    let m = &mut v.motion;
+    let mut cents = m.vel_cents + m.env_cents;
+    if m.env_cents != 0.0 {
+        m.env_cents *= m.env_k;
+        if m.env_cents.abs() < 0.01 {
+            m.env_cents = 0.0;
+        }
+    }
+    let mut fc = m.vel_fc;
+    let mut side = [1.0f32; 2];
+    let lfo = m.to != LfoTarget::Off;
+    if lfo {
+        let x = m.depth * lfo_wave(m.shape, m.phase, m.held);
+        m.phase += m.inc;
+        if m.phase >= 1.0 {
+            m.phase = m.phase.fract();
+            m.held = [m.held[1], bipolar(&mut m.rng)];
+        }
+        match m.to {
+            LfoTarget::Pitch => cents += 1200.0 * x,
+            LfoTarget::Cutoff => fc *= (4.0 * x).exp2(),
+            LfoTarget::Level => {
+                let g = 1.0 - 0.5 * (m.depth.abs() - x);
+                side = [g, g];
+            }
+            LfoTarget::Pan => side = balance(x),
+            LfoTarget::Off => {}
+        }
+    }
+    let mut gliding = false;
+    for k in 0..2 {
+        let d = side[k] - m.side[k];
+        if d.abs() < 1e-6 {
+            m.side[k] = side[k];
+            m.side_inc[k] = 0.0;
+        } else {
+            m.side_inc[k] = d / FILTER_STEP as f32;
+            gliding = true;
+        }
+    }
+    m.fc = fc;
+    let cents = if m.pitched { cents } else { 0.0 };
+    // The envelope on the pitch keeps it on a step past coming home, so
+    // the pitch lands on the velocity's alone.
+    let homing = cents != m.vel_cents;
+    m.on = lfo || homing || gliding;
+    if cents != m.cents {
+        m.cents = cents;
+        retime(v);
+    }
+}
+
 /// Sets the voice's filter for envelope level `e`. The coefficients only
-/// depend on `e` and pressure's cutoff factor, so while neither moves (a
-/// held sustain, no pressure) this skips the `exp2` and `tan`; the second
+/// depend on `e` and the cutoff factors of pressure and movement, so while
+/// none moves (a held sustain, no pressure, no LFO on the cutoff) this
+/// skips the `exp2` and `tan`; the second
 /// stage is only set for a 4-pole filter, the only one that uses it.
 /// It also flushes the filter's state: ringing out on silence, the filter
 /// reaches exact zeros instead of denormals (here, out of the per-frame
@@ -4093,12 +4494,13 @@ fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
     if f.poles >= 4 {
         v.svf[1].flush();
     }
-    let key = (e.to_bits(), v.press_fc.to_bits());
+    let moved = v.press_fc * v.motion.fc;
+    let key = (e.to_bits(), moved.to_bits());
     if v.filter_key == Some(key) {
         return;
     }
     v.filter_key = Some(key);
-    let fc = f.cutoff_hz * (f.env_octaves * e).exp2() * v.press_fc;
+    let fc = f.cutoff_hz * (f.env_octaves * e).exp2() * moved;
     v.svf[0].set(fc, f.resonance, rate);
     if f.poles >= 4 {
         v.svf[1].set(fc, f.resonance * 0.5, rate);
@@ -4129,6 +4531,11 @@ fn finish<const FOLLOW: bool>(
     }
     if v.kill_left > 0 {
         g *= f32::from(v.kill_left) / f32::from(KILL_FRAMES);
+    }
+    if v.motion.on {
+        follow_motion(v);
+        l *= v.motion.side[0];
+        r *= v.motion.side[1];
     }
 
     l *= g * v.gain_l;
@@ -4236,6 +4643,7 @@ fn plain_now(v: &Voice) -> bool {
         && v.fade_out.is_none()
         && v.filter.is_none()
         && v.route.target == PressureTarget::Off
+        && !v.motion.on
         && v.kill_left == 0
         && v.tail_left == 0
         && v.amp.as_ref().is_none_or(|a| a.is_steady())

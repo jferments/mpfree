@@ -7998,6 +7998,12 @@ fn player_session(
         let t_render = Instant::now();
         // Warped pads play at the transport's tempo.
         player.set_tempo(time.info().bpm);
+        // A synced pad LFO keeps to the beats while the transport rolls.
+        player.set_beat(time.block().spans().first().and_then(|s| {
+            s.state
+                .rolling()
+                .then(|| s.tick_at(s.frame) / f64::from(mpfree_transport::PPQ))
+        }));
         // Each pad of kit 1 into its pad channel (Pad Mix), which all go
         // to the Drums track; another kit into the channel of the first
         // track that plays it.

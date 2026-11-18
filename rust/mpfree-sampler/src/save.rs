@@ -678,6 +678,13 @@ const GRAIN_FILTERS: &[(&str, GrainFilterKind)] = &[
     ("band", GrainFilterKind::Band),
     ("high", GrainFilterKind::High),
 ];
+const PAD_LFO_TARGETS: &[(&str, LfoTarget)] = &[
+    ("off", LfoTarget::Off),
+    ("pitch", LfoTarget::Pitch),
+    ("cutoff", LfoTarget::Cutoff),
+    ("level", LfoTarget::Level),
+    ("pan", LfoTarget::Pan),
+];
 const LFO_SHAPES: &[(&str, LfoShape)] = &[
     ("sine", LfoShape::Sine),
     ("triangle", LfoShape::Triangle),
@@ -1049,6 +1056,10 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
         vel_fade,
         vintage,
         slice,
+        lfo,
+        pitch_env,
+        vel_to_cutoff,
+        vel_to_pitch,
         kind,
         on_launch,
     } = p;
@@ -1101,6 +1112,34 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
     f.num("vel_fade", vel_fade);
     f.flag("vintage", vintage);
     f.num("slice", slice);
+    // Saves before sampler R5 part 4 open with no LFO, no pitch envelope
+    // and velocity on neither.
+    f.scope("lfo", |f| {
+        let PadLfo {
+            shape,
+            rate_hz,
+            beats,
+            target,
+            depth,
+            retrig,
+        } = lfo;
+        f.word("shape", shape, LFO_SHAPES);
+        f.num("rate_hz", rate_hz);
+        f.opt_num("beats", beats);
+        f.word("target", target, PAD_LFO_TARGETS);
+        f.num("depth", depth);
+        f.flag("retrig", retrig);
+    });
+    f.scope("pitch_env", |f| {
+        let PitchEnv {
+            semitones,
+            decay_ms,
+        } = pitch_env;
+        f.num("semitones", semitones);
+        f.num("decay_ms", decay_ms);
+    });
+    f.num("vel_to_cutoff", vel_to_cutoff);
+    f.num("vel_to_pitch", vel_to_pitch);
     visit_kind(f, kind);
     f.flag("on_launch", on_launch);
 }
