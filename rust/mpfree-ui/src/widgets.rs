@@ -32,10 +32,19 @@ impl Chip {
 /// The pad player's tabs, in the order Jay approved (docs/dev/design/layout-spec.md).
 /// Every crate's preview draws this bar ([`Header::app`]), never a list of its
 /// own; adding, removing, renaming or reordering a tab needs Jay's approval.
-/// Pads joined between Play and Arrange on 12 Nov 2026 (Jay, 15:46Z), and
-/// Mix (the mixer and the effects) last on 14 Nov (Jay's card, 07:15Z).
-pub const APP_TABS: [&str; 7] = [
-    "Play", "Pads", "Arrange", "Synth", "Looper", "Sample", "Mix",
+/// Pads joined between Play and Arrange on 12 Nov 2026 (Jay, 15:46Z), Mix
+/// (the mixer and the effects) last on 14 Nov (Jay's card, 07:15Z), and
+/// the Sequencer after Pads on 18 Nov (the Play, Pads and Sequencer
+/// redesign, Jay 00:30Z).
+pub const APP_TABS: [&str; 8] = [
+    "Play",
+    "Pads",
+    "Sequencer",
+    "Arrange",
+    "Synth",
+    "Looper",
+    "Sample",
+    "Mix",
 ];
 /// The tab after them while Prefs > "Show developer tools" is on.
 pub const DEV_TAB: &str = "Dev";
@@ -84,6 +93,14 @@ const TAB_W: i32 = 112;
 const TAB_GAP: i32 = 6;
 /// Room for six full-width tabs.
 const TABS_W: i32 = 6 * (TAB_W + TAB_GAP);
+/// The narrowest a tab sized to its name is ([`Header::tab_rect`]).
+const NAMED_TAB_MIN_W: i32 = 72;
+
+/// How wide a tab sized to its name wants to be: about 11 px a letter at
+/// the title size, and room either side.
+fn named_tab_w(name: &str) -> i32 {
+    (name.chars().count() as i32 * 11 + 22).max(NAMED_TAB_MIN_W)
+}
 
 impl Header {
     pub fn new(tabs: &[&str]) -> Header {
@@ -151,17 +168,29 @@ impl Header {
             .map(|(_, r)| *r)
     }
 
-    /// Up to six tabs are TAB_W wide. More tabs share the same width, so the
-    /// chips on the right keep their room.
+    /// Tab `i`'s place (`i` = the number of tabs: where the tabs end).
+    /// Up to six tabs are TAB_W wide. More tabs are each as wide as its
+    /// name, all shrunk alike to share six tabs' room, so the chips on the
+    /// right keep theirs and a long name ("Sequencer") still fits.
     pub fn tab_rect(&self, r: Rect, i: usize) -> Rect {
         let h = 44.min(r.h);
-        let pitch = TABS_W / self.tabs.len().max(6) as i32;
-        Rect::new(
-            r.x + LEFT_W + i as i32 * pitch,
-            r.y + (r.h - h) / 2,
-            pitch - TAB_GAP,
-            h,
-        )
+        let y = r.y + (r.h - h) / 2;
+        let n = self.tabs.len();
+        if n <= 6 {
+            return Rect::new(r.x + LEFT_W + i as i32 * (TAB_W + TAB_GAP), y, TAB_W, h);
+        }
+        let pitch: Vec<i32> = self.tabs.iter().map(|t| named_tab_w(t) + TAB_GAP).collect();
+        let total: i32 = pitch.iter().sum();
+        let fit = |w: i32| {
+            if total > TABS_W {
+                w * TABS_W / total
+            } else {
+                w
+            }
+        };
+        let x: i32 = pitch[..i.min(n)].iter().map(|&w| fit(w)).sum();
+        let w = pitch.get(i).map_or(0, |&w| fit(w) - TAB_GAP);
+        Rect::new(r.x + LEFT_W + x, y, w, h)
     }
 }
 
@@ -1840,11 +1869,45 @@ mod tests {
     fn the_app_bar_is_the_approved_one() {
         assert_eq!(
             APP_TABS,
-            ["Play", "Pads", "Arrange", "Synth", "Looper", "Sample", "Mix"]
+            [
+                "Play",
+                "Pads",
+                "Sequencer",
+                "Arrange",
+                "Synth",
+                "Looper",
+                "Sample",
+                "Mix"
+            ]
         );
-        assert_eq!(Header::app("Mix").active, 6);
-        assert_eq!(Header::app("Synth").active, 3);
+        assert_eq!(Header::app("Mix").active, 7);
+        assert_eq!(Header::app("Synth").active, 4);
         assert_eq!(Header::app("Prefs").active, usize::MAX);
+    }
+
+    /// Eight or nine tabs (the Dev tab) are sized to their names within
+    /// six tabs' room: "Sequencer" is the widest and keeps room for its
+    /// name, and the tabs touch with one gap between, in order.
+    #[test]
+    fn more_than_six_tabs_are_sized_to_their_names() {
+        let r = Rect::new(0, 0, 1280, 60);
+        for tabs in [&APP_TABS[..], &[&APP_TABS[..], &[DEV_TAB]].concat()] {
+            let h = Header::new(tabs);
+            let rects: Vec<Rect> = (0..tabs.len()).map(|i| h.tab_rect(r, i)).collect();
+            for w in rects.windows(2) {
+                assert_eq!(w[0].right() + TAB_GAP, w[1].x, "{tabs:?}");
+            }
+            let end = h.tab_rect(r, tabs.len()).x;
+            assert!(end <= LEFT_W + TABS_W, "{end}");
+            assert_eq!(end, rects[tabs.len() - 1].right() + TAB_GAP);
+            let seq = rects[2];
+            assert!(rects.iter().all(|t| t.w <= seq.w), "{rects:?}");
+            assert!(seq.w >= 100, "Sequencer is {} px", seq.w);
+            assert!(rects.iter().all(|t| t.w >= 60), "{rects:?}");
+        }
+        // Six or fewer keep the full width.
+        let h = Header::new(&["Play", "Debug"]);
+        assert_eq!(h.tab_rect(r, 1).w, TAB_W);
     }
 
     #[test]

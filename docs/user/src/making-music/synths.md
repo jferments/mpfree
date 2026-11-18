@@ -182,11 +182,11 @@ The **Chromatic / In key** switch in the pads heading on the Synth tab flips the
 > [!TIP]
 > Drums is a kit rather than a keyboard: pad 1 plays the first drum, pad 2 the second and so on, whatever the scale, layout or octave.
 
-## The synth's notes on Beats
+## The synth's notes on the Sequencer
 
-With the synth on the pads, the pattern on Play's **Beats** view (and the **All** view) shows the pads' notes as rows, the highest on top, like a piano roll turned to the scale: with a scale on, the rows are its notes, and the root's rows are shaded and marked **root**.
+With the synth on the pads, the pattern on the **Sequencer** tab's **Steps** (and Play's **All** view) shows the pads' notes as rows, the highest on top, like a piano roll turned to the scale: with a scale on, the rows are its notes, and the root's rows are shaded and marked **root**.
 
-{{shot: play-beats-synth | Beats on a synth track in C minor: the rows are the scale's notes from C3 to C4, the roots shaded. Step 1 holds a C minor triad, with an accent, a 50 % note and a 1:2 note later on.}}
+{{shot: sequencer-steps-synth | The Sequencer's Steps on a synth track in C minor: the rows are the scale's notes from C3 to C4, the roots shaded. Step 1 holds a C minor triad, with an accent, a 50 % note and a 1:2 note later on.}}
 
 - **Tap a step in a row** to put that note there, and tap more rows on the same step for a chord. Tap a lit step to pick it for the Q-Links, and again to take it off.
 - **Hold a row's name** to hear its note.
@@ -194,7 +194,7 @@ With the synth on the pads, the pattern on Play's **Beats** view (and the **All*
 - **Fold** shows only the notes the pattern uses, so a bass line or a chord part fits on one screen. Tap it again for every note.
 - **ERASE** held + a row's name clears that note's steps; **UNDO** brings them back.
 
-Turning Play's **Timing strip** off in Play's options gives the pattern room for eight rows, a whole octave of a seven-note scale.
+Turning **Timing strip** off in the Sequencer's options (**MENU**) gives the pattern room for eight rows, a whole octave of a seven-note scale.
 
 ## Steps on the synth
 
@@ -205,11 +205,11 @@ Press **STEP SEQ** with the synth on the pads and the 16 pads become the steps o
 3. **Hit a lit step and let go** to take the whole step off.
 4. **Pick another note** at any time the same way, holding **STEP SEQ**: the steps already there keep theirs.
 
-On the Beats view the line is the lane on the pads, named **Line**. Tap an empty step there to put the note or chord on it; tap a lit one to pick it, and tap it again to take it off.
+On the Sequencer's Steps the line is the lane on the pads, named **Line**. Tap an empty step there to put the note or chord on it; tap a lit one to pick it, and tap it again to take it off.
 
 **Changing a step's notes.** Hold a step and turn **Q-Link 1**: its card says **Note** (or **Chord**) and the lowest note, and each click moves the step a pad up or down, a chord keeping its shape. Or, with a keyboard on **MIDI IN** or the USB socket, hold a step and play: the keys you hold together go on the step in place of what it had, each as loud as you played it. Hold several steps to give them all the same notes. The keys play the pads' notes, so with a scale on, a key outside it (or past the pads' range) can't go on a step, and the hint line says so. **UNDO** takes the whole chord back in one go.
 
-Everything else works as on a drum's steps (see [Your first beat](../getting-started/first-beat.md#program-a-pattern-on-the-pads)): the other Q-Links set the step's velocity, length and chance for every note on it; press **Q-LINK** for its condition, ratchet and nudge, and again for **Sound** to lock the synth's knobs on that step; hold a step and hit a later one for a long note; **COPY** and **ERASE** copy and clear whole steps; **UNDO** takes any of it back. Tap a step of the **Line** lane on Beats and the step inspector names its notes ("Step 1 · E3 + G3").
+Everything else works as on a drum's steps (see [Your first beat](../getting-started/first-beat.md#program-a-pattern-on-the-pads)): the other Q-Links set the step's velocity, length and chance for every note on it; press **Q-LINK** for its condition, ratchet and nudge, and again for **Sound** to lock the synth's knobs on that step; hold a step and hit a later one for a long note; **COPY** and **ERASE** copy and clear whole steps; **UNDO** takes any of it back. Tap a step of the **Line** lane on the Sequencer and the step inspector names its notes ("Step 1 · E3 + G3").
 
 ## Tuning
 

@@ -28,7 +28,7 @@ These are saved on the stick as soon as you change them, and are back the next t
 | Your Prefs: pad velocity curve, how Latch keeps pads, the audio buffer, the loop memory, developer tools, the theme, what opens at start, how exports play, screen pad velocity | [Prefs](../reference/prefs.md) |
 | The metronome on or off, and its level | **SHIFT + PLAY START**, or the Play page's options (**MENU**) |
 | The Looper's level, and the line input's latency once you have set it by hand | The Looper tab's options (see [Recording loops](looping.md)) |
-| Whether the Play page's Beats view shows the timing strip | The Play page's options (**MENU**) |
+| Whether the Sequencer's Steps view shows the timing strip | The Sequencer's or the Play page's options (**MENU**) |
 | The buttons MPFree has learned | Prefs > Map controls, or the button guide |
 | Each MIDI port's input (Plays tracks, Learn only or Both), what it ignores, its gear's delay, its clock's nudge and its device profile | The mixer's I/O view, MIDI section and the port's page (see [MIDI, sync and CV](midi-and-cv.md)) |
 | Arpeggiator patterns you save, and your own scales | The pattern workspace's **Save** (see [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md#the-pattern-workspace)) |

@@ -12,7 +12,7 @@ A musician who has never used an MPC, holding one. They want to make music, not 
 - Lead with what something is for and when you'd use it, then how.
 - One idea per paragraph. Short pages over long ones.
 - No code, crate names, file paths, thread names or development history. A musician doesn't need to know which round added a feature.
-- Name controls by their printed label in bold capitals (**REC**, **NOTE REPEAT**, **SHIFT + MENU**) and screen items by their on-screen name (the Beats view, the Q-Link column).
+- Name controls by their printed label in bold capitals (**REC**, **NOTE REPEAT**, **SHIFT + MENU**) and screen items by their on-screen name (the Sequencer tab, the Q-Link column).
 - Don't promise dates. A thing that isn't built yet goes on a `planned` page or in a sentence marked "coming".
 
 ## Structure of a page
