@@ -46,6 +46,7 @@ These are the active, specialized developer references for programming the board
 | Audio and MIDI | [Audio/MIDI inventory](audio-midi-survey.md) and [audio runtime](audio-runtime.md) | Which ALSA cards and PCM/MIDI interfaces are present, and what the realtime runtime must handle |
 | Pads and controls | [Controller protocol](controller-protocol.md) and [MIDI activity map](midi-activity-map.md) | How physical controls are represented in Linux and MIDI |
 | Networking and USB controllers | [Ethernet and USB hardware](ethernet-usb.md) | Gigabit link, USB host/peripheral controllers and measurable I/O behavior |
+| USB-B to a computer | [USB-B: MPFree as a USB MIDI device](usb-b-midi.md) | What is known about the USB-B socket, and the read-only check that shows how Akai's system sets it up |
 | Touchscreen and graphics | [Display and touchscreen](touchscreen-display.md) | DSI/DRM/Panfrost interfaces, panel properties and touch input |
 | Service/resource ownership | [Resource ownership](resource-ownership.md) | Which factory processes hold PCM, MIDI, DRM and input devices |
 | Structured board measurements | [Observed hardware data](data/) | Recorded machine-readable hardware profiles and touchscreen properties |
