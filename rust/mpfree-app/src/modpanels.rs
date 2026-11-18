@@ -826,6 +826,11 @@ pub fn label(h: &MixHost, addr: ParamAddr) -> String {
             }
         }
         Owner::NoteFx(..) => h.modu.note_label(addr).unwrap_or_else(|| addr.to_string()),
+        // Outside gear's control on the track's MIDI out: "CC 74 (Track 3)".
+        Owner::Midi(t) => match mpfree_play::mpfree_param::midi::name(addr.param) {
+            Some(n) => format!("{n} (Track {})", u16::from(t) + 1),
+            None => addr.to_string(),
+        },
         _ => addr.to_string(),
     }
 }

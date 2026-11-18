@@ -9,7 +9,9 @@
 //! its own output, the substream of its port on its own card; never to the
 //! MPC's own controller or sound card, which the scanner leaves out.
 //! Nothing is stored on the MPC. Only note, pressure, bank and program
-//! messages and clock are ever sent, never SysEx (plus, from a port's
+//! messages, a track's controllers (0 to 119, never the channel mode
+//! messages), pitch bend and channel pressure, and clock are ever sent,
+//! never SysEx (plus, from a port's
 //! page, its test note and All notes off, and what thru passes on: the
 //! channel messages that came in on a port, as they came). The outputs
 //! are open only while Prefs' "Send MIDI and CV out" is on (off until the
@@ -60,6 +62,16 @@
 //!   each period ([`GEAR_QUEUE`]), out at once with no song timing. Its
 //!   notes still on end at a panic, when sending is switched off, when the
 //!   jacks' writer stops and when the job ends.
+//! - **A track's controllers, pitch bend and pressure** (sequencer S6's CC
+//!   lanes, `Owner::Midi`): the mod engine moves them (a step's lock, a
+//!   lane, a macro, the morph, a learned knob) and [`MidiOut::control`]
+//!   sends each value on the track's port and channel on its frame, ahead
+//!   of the notes already there (`OutQueue::lift_last_before_notes`). At most one message a control goes out
+//!   in a period; a value given again in the same period goes at the
+//!   next period's start, so a fast LFO can't flood the 5-pin wire. The
+//!   last value of each control of each track is kept, also for a track on
+//!   the pads, and sent again when the track's port or channel is set and
+//!   at each song start, after its program.
 
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -75,6 +87,8 @@ use mpfree_midi::profile::{PadOut, KIT_NOTES, KIT_PADS};
 use mpfree_midi::setup::{ClockOut, TrackOut, DIN_NAME};
 use mpfree_midi_clock::{ClockOut as Pulses, Messages, PULSE_TICKS};
 use mpfree_midi_ui::{IoModel, PortSend, Shared, ToPort};
+use mpfree_play::mpfree_param::midi::{self as ctl, Midi};
+use mpfree_play::mpfree_param::{Owner, ParamAddr};
 use mpfree_play::{Event, Out};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
@@ -191,6 +205,68 @@ fn test_off(ch: u8) -> Msg {
 /// note each of the rest ([`KIT_NOTES`]).
 pub fn kit_notes(pad: usize) -> &'static [u8] {
     KIT_NOTES.get(pad).map_or(&[], std::slice::from_ref)
+}
+
+/// A track's MIDI out controls: CC 0-119, the bend and the pressure
+/// (`mpfree_param::midi`), by their ids.
+const CTLS: usize = ctl::COUNT as usize;
+const CTL_WORDS: usize = CTLS.div_ceil(64);
+/// A control no value has been given for.
+const UNSET: i16 = i16::MIN;
+
+/// Each track's controls out ([`MidiOut::control`]): the value last
+/// given, and which went out this period or wait for the next.
+struct Controls {
+    value: Box<[[i16; CTLS]; MAX_TRACKS]>,
+    /// Sent this period: a second value waits ([`Controls::waiting`]).
+    sent: [[u64; CTL_WORDS]; MAX_TRACKS],
+    /// Given again after this period's message: sent at the next
+    /// period's start.
+    waiting: [[u64; CTL_WORDS]; MAX_TRACKS],
+    /// Tracks with a bit in `sent` or `waiting`.
+    touched: u128,
+    /// Tracks whose every control with a value goes out again (a new port
+    /// or channel, the song's start).
+    due: u128,
+    /// Messages sent, for the summary.
+    messages: u64,
+}
+
+impl Controls {
+    fn new() -> Controls {
+        Controls {
+            value: Box::new([[UNSET; CTLS]; MAX_TRACKS]),
+            sent: [[0; CTL_WORDS]; MAX_TRACKS],
+            waiting: [[0; CTL_WORDS]; MAX_TRACKS],
+            touched: 0,
+            due: 0,
+            messages: 0,
+        }
+    }
+
+    /// Control `id` of a track as a message on channel 1 (the router puts
+    /// it on the track's), if it has a value.
+    fn msg(&self, t: usize, id: usize) -> Option<Msg> {
+        let v = self.value[t][id];
+        if v == UNSET {
+            return None;
+        }
+        Some(match ctl::of(id as u16)? {
+            Midi::Cc(cc) => Msg::Cc {
+                ch: 0,
+                cc,
+                value: v.clamp(0, 127) as u8,
+            },
+            Midi::Bend => Msg::PitchBend {
+                ch: 0,
+                value: v.clamp(-8192, 8191),
+            },
+            Midi::Pressure => Msg::ChanPressure {
+                ch: 0,
+                value: v.clamp(0, 127) as u8,
+            },
+        })
+    }
 }
 
 /// A track's output as it was taken from the project.
@@ -655,6 +731,8 @@ pub struct MidiOut {
     sent_back: u64,
     /// The Sample tab's auto-sample of outside gear, out of the jacks.
     gear: Gear,
+    /// The tracks' controllers, bend and pressure out.
+    controls: Controls,
 }
 
 /// The port page's test note: C4, held half a second.
@@ -703,6 +781,7 @@ impl MidiOut {
             controller_unsent: 0,
             sent_back: 0,
             gear: Gear::new(),
+            controls: Controls::new(),
         }
     }
 
@@ -878,6 +957,9 @@ impl MidiOut {
         if rolling && !self.rolling {
             for t in 0..MAX_TRACKS {
                 self.program_due[t] |= self.tracks[t].is_some();
+                if self.tracks[t].is_some() {
+                    self.controls.due |= 1 << t;
+                }
             }
         }
         self.rolling = rolling;
@@ -885,6 +967,84 @@ impl MidiOut {
             if std::mem::take(&mut self.program_due[t]) {
                 self.program(t);
             }
+        }
+        self.controls_due();
+    }
+
+    /// At a period's start, after the programs: the controls that waited
+    /// from the last period, and every control with a value of a track
+    /// whose port or channel was set or whose song started.
+    fn controls_due(&mut self) {
+        let due = std::mem::take(&mut self.controls.due);
+        let mut tracks = self.controls.touched | due;
+        while tracks != 0 {
+            let t = tracks.trailing_zeros() as usize;
+            tracks &= tracks - 1;
+            if !self.takes(t as u16) {
+                self.controls.waiting[t] = [0; CTL_WORDS];
+                continue;
+            }
+            for id in 0..CTLS {
+                let (w, bit) = (id / 64, 1u64 << (id % 64));
+                let waited = self.controls.waiting[t][w] & bit != 0;
+                if waited {
+                    self.controls.waiting[t][w] &= !bit;
+                    // A waiting value counts as this period's message.
+                    self.controls.sent[t][w] |= bit;
+                    self.controls.touched |= 1 << t;
+                }
+                if waited || due & (1 << t) != 0 {
+                    if let Some(m) = self.controls.msg(t, id) {
+                        self.ctl_msg(t, m, 0);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The mod engine's value for a track's controller, bend or pressure
+    /// (`Owner::Midi`, from `ModMix::take_midi_values`), at `offset` frames
+    /// into this period. Kept for the track either way; sent on its port
+    /// and channel while MIDI out takes the track, at most once a period
+    /// a control (a second value in the period goes at the next period's
+    /// start). Never allocates.
+    pub fn control(&mut self, offset: u32, addr: ParamAddr, value: f32) {
+        let Owner::Midi(t) = addr.owner else { return };
+        let (t, id) = (usize::from(t), usize::from(addr.param));
+        let Some((lo, hi)) = ctl::range(addr.param) else {
+            return;
+        };
+        if t >= MAX_TRACKS || !value.is_finite() {
+            return;
+        }
+        self.controls.value[t][id] = (value.round() as i32).clamp(lo.into(), hi.into()) as i16;
+        if !self.takes(t as u16) {
+            return;
+        }
+        let (w, bit) = (id / 64, 1u64 << (id % 64));
+        self.controls.touched |= 1 << t;
+        if self.controls.sent[t][w] & bit != 0 {
+            self.controls.waiting[t][w] |= bit;
+            return;
+        }
+        self.controls.sent[t][w] |= bit;
+        if let Some(m) = self.controls.msg(t, id) {
+            self.ctl_msg(t, m, offset);
+        }
+    }
+
+    /// A control's message from track `t`, put before the notes already
+    /// on its frame (the mixer, and so the mod engine, runs after the
+    /// notes): a step's lock reaches the gear before the step's note.
+    fn ctl_msg(&mut self, t: usize, m: Msg, offset: u32) {
+        let Some(port) = self.tracks[t].map(|a| usize::from(a.port.0)) else {
+            return;
+        };
+        let before = self.queue[port].len();
+        self.msg(t, m, offset);
+        if self.queue[port].len() > before {
+            self.queue[port].lift_last_before_notes();
+            self.controls.messages += 1;
         }
     }
 
@@ -971,6 +1131,11 @@ impl MidiOut {
                 self.end_chords(t, 0);
                 self.release_expression(t, 0);
                 self.router.set_route(t as u8, route, 0, &mut self.queue);
+                // The gear there gets the track's controls (after its
+                // program).
+                if route.is_some() {
+                    self.controls.due |= 1 << t;
+                }
             }
             self.tracks[t] = want;
             self.program_due[t] = want.is_some_and(|a| a.program.is_some() || a.bank.is_some());
@@ -1421,6 +1586,16 @@ impl MidiOut {
             p.queued += queued;
             p.full += full;
         }
+        // A new period: each control may send once again.
+        let mut tracks = std::mem::take(&mut self.controls.touched);
+        while tracks != 0 {
+            let t = tracks.trailing_zeros() as usize;
+            tracks &= tracks - 1;
+            self.controls.sent[t] = [0; CTL_WORDS];
+            if self.controls.waiting[t] != [0; CTL_WORDS] {
+                self.controls.touched |= 1 << t;
+            }
+        }
     }
 
     /// The last period's messages the writers took, each with when it is
@@ -1600,6 +1775,12 @@ impl MidiOut {
             lines.push(format!(
                 "Controller mode: {} messages not sent (MIDI out off, or no output to send them to)",
                 self.controller_unsent
+            ));
+        }
+        if self.controls.messages > 0 {
+            lines.push(format!(
+                "Tracks' controllers, bend and pressure (locks, lanes, macros): {} messages sent",
+                self.controls.messages
             ));
         }
         let g = &self.gear;
@@ -2297,6 +2478,97 @@ mod tests {
         assert!(mo.close());
         let mut want = vec![0xC2, 4, 0xB2, 0, 2, 0xB2, 32, 2, 0xC2, 9];
         want.extend([0x92, 0x25, 100, 0xC2, 9, 0x82, 0x25, 64]);
+        assert_eq!(sink.bytes(), want);
+    }
+
+    fn ctl(t: u8, id: u16) -> ParamAddr {
+        ParamAddr::new(Owner::Midi(t), id)
+    }
+
+    /// A track's controller, bend and pressure (S6's CC lanes) go out on
+    /// its channel on their frames, rounded and kept in range, a step's
+    /// ahead of the note on its frame; a channel mode message never.
+    #[test]
+    fn a_tracks_controls_go_on_its_channel_ahead_of_its_note() {
+        let (mut mo, sink) = open(Duration::ZERO);
+        let m = model(&[(0, TrackOut::new(DIN_NAME, 2))]);
+        mo.sync(&m, true);
+        assert!(mo.send(&ev(0, 10, on(0, 100)), NoteIs::Pad(kit_notes(0))));
+        mo.control(10, ctl(0, 74), 20.4);
+        mo.control(5, ctl(0, ctl::BEND), -100.0);
+        mo.control(0, ctl(0, ctl::PRESSURE), 300.0);
+        mo.control(0, ctl(0, 123), 0.0);
+        mo.control(0, ParamAddr::new(Owner::Inst(0), 74), 1.0);
+        mo.period_end(PERIOD, Instant::now());
+        assert!(mo.close());
+        let b = sink.bytes();
+        // -100 is 8092 from the bottom: LSB 28, MSB 63.
+        assert_eq!(
+            b[..12],
+            [0xD2, 127, 0xE2, 28, 63, 0xB2, 74, 20, 0x92, 0x25, 100, 0x82]
+        );
+    }
+
+    /// At most one message a control a period: a value given again in
+    /// the period goes at the next period's start, the last one given.
+    #[test]
+    fn a_control_goes_once_a_period_and_its_last_value_follows() {
+        let (mut mo, _sink) = open(Duration::ZERO);
+        let m = model(&[(0, TrackOut::new(DIN_NAME, 0))]);
+        let sent = |mo: &MidiOut| -> Vec<(u32, Vec<u8>)> {
+            mo.sent()
+                .map(|(_, _, t)| (t.offset, t.bytes().to_vec()))
+                .collect()
+        };
+        mo.sync(&m, true);
+        for (offset, v) in [(0, 10.0), (40, 20.0), (80, 30.0)] {
+            mo.control(offset, ctl(0, 1), v);
+        }
+        mo.control(90, ctl(0, 2), 5.0);
+        mo.period_end(PERIOD, Instant::now());
+        assert_eq!(sent(&mo), [(0, vec![0xB0, 1, 10]), (90, vec![0xB0, 2, 5])]);
+        mo.sync(&m, true);
+        mo.period_end(PERIOD, Instant::now());
+        assert_eq!(
+            sent(&mo),
+            [(0, vec![0xB0, 1, 30])],
+            "once, at the next start"
+        );
+        mo.sync(&m, true);
+        mo.period_end(PERIOD, Instant::now());
+        assert!(sent(&mo).is_empty());
+        assert!(mo.close());
+    }
+
+    /// A track on the pads sends nothing but keeps its controls' values:
+    /// they go out when its port is set and again at each song start,
+    /// after its program; a control never given a value never goes.
+    #[test]
+    fn a_tracks_controls_wait_for_its_port_and_go_again_at_each_start() {
+        let (mut mo, sink) = open(Duration::ZERO);
+        let none = model(&[]);
+        mo.sync(&none, false);
+        mo.control(0, ctl(1, 7), 90.0);
+        mo.control(0, ctl(1, ctl::BEND), 8191.0);
+        mo.period_end(PERIOD, Instant::now());
+        assert!(sink.bytes().is_empty());
+        let mut o = TrackOut::new(DIN_NAME, 0);
+        o.program = Some(4);
+        let m = model(&[(1, o)]);
+        m.lock().unwrap().gen = 2;
+        mo.sync(&m, false);
+        mo.period_end(PERIOD, Instant::now());
+        let set = [0xC0, 4, 0xB0, 7, 90, 0xE0, 0x7F, 0x7F];
+        // Stopped, then the song starts: again; still playing: not again.
+        mo.sync(&m, false);
+        mo.period_end(PERIOD, Instant::now());
+        mo.sync(&m, true);
+        mo.period_end(PERIOD, Instant::now());
+        mo.sync(&m, true);
+        mo.period_end(PERIOD, Instant::now());
+        assert!(mo.close());
+        let mut want = set.to_vec();
+        want.extend(set);
         assert_eq!(sink.bytes(), want);
     }
 

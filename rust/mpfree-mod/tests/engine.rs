@@ -279,6 +279,51 @@ fn a_lock_replaces_everything_until_unlocked_and_lands_on_its_frame() {
     );
 }
 
+/// A quiet target (outside gear's control) sends nothing until it moves:
+/// a lock goes out on its frame, its end goes back to the value it was
+/// added with, and a turn after that goes out as any target's.
+#[test]
+fn a_quiet_target_sends_nothing_until_something_moves_it() {
+    let mut e = ModEngine::new(RATE, DEFAULT_TICK);
+    e.add_quiet_target(mix(), MIX, 64.0).unwrap();
+    assert!(e.is_target(mix()));
+    let mine = |log: Log| -> Vec<(u64, f32)> {
+        log.iter()
+            .filter(|x| x.1 == mix())
+            .map(|x| (x.0, x.2))
+            .collect()
+    };
+    assert!(mine(run(&mut e, 4800, 128, &[], None)).is_empty());
+    let log = run(
+        &mut e,
+        512,
+        128,
+        &[
+            (
+                70,
+                ModEvent::Lock {
+                    addr: mix(),
+                    value: 90.0,
+                },
+            ),
+            (300, ModEvent::Unlock { addr: mix() }),
+            (
+                400,
+                ModEvent::Set {
+                    addr: mix(),
+                    value: 10.0,
+                },
+            ),
+        ],
+        None,
+    );
+    assert_eq!(mine(log), [(70, 90.0), (300, 64.0), (400, 10.0)]);
+    // Added again, quietly: it keeps what it has.
+    e.add_quiet_target(mix(), MIX, 64.0).unwrap();
+    assert_eq!(e.base(mix()), Some(10.0));
+    assert!(mine(run(&mut e, 512, 128, &[], None)).is_empty());
+}
+
 #[test]
 fn a_lock_on_a_parameter_no_one_registered_passes_through() {
     let mut e = engine();
