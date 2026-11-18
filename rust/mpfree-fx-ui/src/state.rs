@@ -2,8 +2,8 @@
 //! values, where it sits, its presets, and the tempo for synced times.
 
 use mpfree_fx::{
-    Character, Chorus, Comb, Compressor, Delay, DjFilter, Drive, Eq, Flanger, LoFi, MasterSafety,
-    MultiFilter, Phaser, Preset,
+    Character, Chorus, Comb, Compressor, Delay, DjFilter, Drive, Ensemble, Eq, Flanger, LoFi,
+    MasterSafety, MultiFilter, Phaser, Preset,
 };
 use mpfree_node::{Node, NodeInfo, ParamInfo};
 use mpfree_ui::Color;
@@ -132,6 +132,7 @@ pub enum Scratch {
     Comb(Box<Comb>),
     Delay(Box<Delay>),
     Chorus(Box<Chorus>),
+    Ensemble(Box<Ensemble>),
     Flanger(Box<Flanger>),
     Phaser(Box<Phaser>),
     LoFi(Box<LoFi>),
@@ -212,6 +213,7 @@ impl Scratch {
             "mpfree.fx.comb" => Scratch::Comb(Box::new(Comb::new())),
             "mpfree.fx.delay" => Scratch::Delay(Box::new(Delay::new())),
             "mpfree.fx.chorus" => Scratch::Chorus(Box::new(Chorus::new())),
+            "mpfree.fx.ensemble" => Scratch::Ensemble(Box::new(Ensemble::new())),
             "mpfree.fx.flanger" => Scratch::Flanger(Box::new(Flanger::new())),
             "mpfree.fx.phaser" => Scratch::Phaser(Box::new(Phaser::new())),
             "mpfree.fx.lofi" => Scratch::LoFi(Box::new(LoFi::new())),
@@ -241,6 +243,7 @@ impl Scratch {
             Scratch::Comb(n) => n.as_mut(),
             Scratch::Delay(n) => n.as_mut(),
             Scratch::Chorus(n) => n.as_mut(),
+            Scratch::Ensemble(n) => n.as_mut(),
             Scratch::Flanger(n) => n.as_mut(),
             Scratch::Phaser(n) => n.as_mut(),
             Scratch::LoFi(n) => n.as_mut(),
