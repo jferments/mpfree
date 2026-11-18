@@ -55,6 +55,7 @@ use mpfree_arp_ui::widgets::SliderStack;
 use mpfree_arp_ui::workspace::{self, Editor, PatternWorkspace, Row, WsAction};
 use mpfree_chain_ui::{ChainAction, ChainState, MacroAction, MacrosState};
 use mpfree_fx_ui::FxState;
+use mpfree_node::Held;
 use mpfree_play::mpfree_param::ParamAddr;
 use mpfree_sampler::model::Levels;
 use mpfree_sampler::model::Project;
@@ -1041,6 +1042,10 @@ pub enum ToUi {
     /// The sampler's input writer, handed back once the line input is off,
     /// for the Sample page to free.
     SampleInputBack(Box<crate::sampler::RecFeed>),
+    /// An effect's memory, copied out on the audio thread
+    /// ([`FromUi::Capture`]), and how that ended: for the Sample page to
+    /// put on a pad, then free.
+    Captured(Box<Held>, crate::mixing::Captured),
     /// One kit's entry changed: its name, pad labels and chip (the synth,
     /// after an octave, engine or pad layout change).
     KitChanged {
@@ -1409,6 +1414,14 @@ pub enum FromUi {
     /// fill each period (`sampler::RecFeed`); None asks for it back, to be
     /// freed here ([`ToUi::SampleInputBack`]).
     SampleInput(Option<Box<crate::sampler::RecFeed>>),
+    /// The chain editor's Capture on insert `slot` of the chain it shows:
+    /// a buffer made here for the audio thread to fill with the effect's
+    /// memory, a piece a period ([`crate::mixing::MixHost::capture`]); it
+    /// comes back in [`ToUi::Captured`].
+    Capture {
+        slot: usize,
+        held: Box<Held>,
+    },
     /// What the sampler's input records from: the line input or a point in
     /// the mix (the Rec tab's Source). The audio thread points the mixer's
     /// sampler capture point at it and starts the buffer afresh.
@@ -1442,6 +1455,23 @@ pub enum FromUi {
     /// A MIDI file BROWSE loaded, read: its tracks as clips from the armed
     /// track on ([`crate::midi_file::put`]).
     MidiFile(Box<crate::midi_file::MidiImport>),
+}
+
+/// Room for the Grains effect's whole memory at the app's rate, for a
+/// capture ([`FromUi::Capture`]).
+const CAPTURE_FRAMES: usize = mpfree_fx::GrainNode::MEMORY_S as usize * crate::RATE as usize;
+
+/// A chain editor action as the message for the audio loop. A Capture
+/// takes the buffer it is copied into with it, made here, so the audio
+/// thread never allocates or frees it.
+fn chain_msg(a: ChainAction) -> FromUi {
+    match a {
+        ChainAction::Capture(slot) => FromUi::Capture {
+            slot,
+            held: Box::new(Held::new(2, CAPTURE_FRAMES)),
+        },
+        a => FromUi::Chain(a),
+    }
 }
 
 /// Lines the console keeps while paused, to show when it carries on.
@@ -5944,7 +5974,7 @@ impl Player {
             ToUi::ChainPush => {
                 if mpfree_chain_ui::chain_push(&mut self.ui) {
                     let acts = mpfree_chain_ui::take_chain_actions(&mut self.ui);
-                    self.outbox.extend(acts.into_iter().map(FromUi::Chain));
+                    self.outbox.extend(acts.into_iter().map(chain_msg));
                 } else {
                     // The picker is shut: the push is the outline's.
                     self.nav(Nav::Push);
@@ -6262,6 +6292,10 @@ impl Player {
             }
             ToUi::SampleInputBack(f) => {
                 self.sample.input_back(f);
+                self.print_sample_lines();
+            }
+            ToUi::Captured(held, end) => {
+                self.sample.captured(&mut self.ui, *held, end);
                 self.print_sample_lines();
             }
             ToUi::KitChanged { kit, view } => {
@@ -8405,7 +8439,7 @@ impl Player {
                 .get_mut::<mpfree_chain_ui::ChainView>(mpfree_chain_ui::CHAIN)
             {
                 let stop = cv.stop_listening();
-                self.outbox.extend(stop.into_iter().map(FromUi::Chain));
+                self.outbox.extend(stop.into_iter().map(chain_msg));
             }
         }
         let (was, now) = (self.view == View::Touch, v == View::Touch);
@@ -9479,7 +9513,7 @@ impl Player {
                     // The strip list opened or shut: its hint.
                     self.refresh_hint();
                 }
-                let mut acts = acts.into_iter().map(FromUi::Chain);
+                let mut acts = acts.into_iter().map(chain_msg);
                 let first = acts.next();
                 self.outbox.extend(acts);
                 first
@@ -9792,7 +9826,7 @@ impl Player {
         // A finger held on an effect in the picker opens its presets.
         if self.view == View::Chain && mpfree_chain_ui::chain_hold(&mut self.ui) {
             let acts = mpfree_chain_ui::take_chain_actions(&mut self.ui);
-            self.outbox.extend(acts.into_iter().map(FromUi::Chain));
+            self.outbox.extend(acts.into_iter().map(chain_msg));
         }
         // A finger held still on a Looper layer's row: it can lift out to
         // drag now (moved sooner, it swiped the rows).
@@ -22135,6 +22169,58 @@ mod tests {
                 (text, !c.faint)
             })
             .unzip()
+    }
+
+    /// The chain editor's Capture goes to the audio thread with a buffer
+    /// made here; the memory that comes back lands where a recording would,
+    /// playing as grains with the effect's settings.
+    #[test]
+    fn a_grains_capture_lands_where_a_recording_would_playing_as_grains() {
+        use crate::mixing::Captured;
+        use mpfree_sampler::model::PlayMode;
+        let mut p = sample_sampler(Fonts::embedded());
+        match chain_msg(ChainAction::Capture(2)) {
+            FromUi::Capture { slot, held } => {
+                assert_eq!(slot, 2);
+                assert!(held.room() >= 8 * 44_100, "the whole memory fits");
+            }
+            m => panic!("{m:?}"),
+        }
+        assert_eq!(
+            chain_msg(ChainAction::Select(1)),
+            FromUi::Chain(ChainAction::Select(1))
+        );
+        // What the audio thread sends back: two seconds of a tone, from a
+        // Grains effect set to Pitch +7.
+        let mut held = Box::new(Held::new(2, 44_100 * 8));
+        let tone: Vec<f32> = (0..88_200)
+            .flat_map(|i| {
+                let x = 0.3 * (i as f32 * 0.05).sin();
+                [x, x]
+            })
+            .collect();
+        assert!(held.begin(0, 88_200, 2, 44_100, 0));
+        held.push(&tone);
+        let mut n = mpfree_fx::GrainNode::new(1);
+        mpfree_node::Node::set_param(&mut n, mpfree_fx::ids::grains::PITCH, 7.0);
+        held.keep_values(&n);
+        p.apply(ToUi::Captured(held, Captured::Done));
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l
+                == "sample: grains capture: Grains 1, 2.00 s stereo on pad A6, playing as grains"),
+            "{log:?}"
+        );
+        let pr = p.sample.project(0).unwrap();
+        let layer = &pr.pad(5).unwrap().layers[0];
+        assert_eq!(layer.region.mode, PlayMode::Granular);
+        assert_eq!(layer.region.grain.pitch, 7.0);
+        assert_eq!(pr.source(layer.region.source).unwrap().frames(), 88_200);
+        // One that made nothing says why.
+        p.apply(ToUi::Captured(Box::new(Held::new(2, 4)), Captured::Nothing));
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: nothing captured: the effect hasn't heard anything yet"));
     }
 
     #[test]

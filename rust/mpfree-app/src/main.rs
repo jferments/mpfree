@@ -8185,6 +8185,15 @@ fn player_session(
             };
             music.feed.sent(port, ports.at(due), m.bytes(), to);
         }
+        // A capture of an effect's memory that has ended goes to the
+        // Sample page, which frees it; with no room it waits a period.
+        if let Some((held, end)) = mix.take_captured() {
+            if let Err(gui::ToUi::Captured(held, end)) =
+                out.try_show(gui::ToUi::Captured(held, end))
+            {
+                mix.keep_captured(held, end);
+            }
+        }
         // The metronome goes on top; it keeps the samples within ±1 itself.
         let p = p.max(time.mix_click(&mut left, &mut right));
         engines.stop(engines::MIX, t_mix);
