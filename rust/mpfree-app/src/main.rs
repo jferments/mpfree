@@ -6734,9 +6734,7 @@ fn player_session(
                     if synth_now {
                         later.extend(app.open_tab(app::View::Synth));
                     } else {
-                        // The Pads tab on its Pad view: the pad's settings.
-                        app.set_pads_browse(false);
-                        out.show(gui::ToUi::PadsView(mpfree_sampler_ui::pads_tab::PAD_VIEW));
+                        // The Pads tab: the pad's settings.
                         later.extend(app.open_tab(app::View::Pads));
                     }
                 }

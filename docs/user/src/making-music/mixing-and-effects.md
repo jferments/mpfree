@@ -72,7 +72,7 @@ On **EQ** each strip of the view is a row again: its name, its EQ drawn as a cur
 
 **I/O** shows the project's routing in one place instead of strip by strip. The master stays on the right; down the left is a list of sections, and the section you pick fills the rest.
 
-To open it, tap the small **I/O icon** (an arrow in over an arrow out) at the right end of the top bar, or tap **I/O** among the mixer's views. The I/O icon lights while the view shows; tap it again, press **TRACK MIX** or pick a tab to close the mixer. While the tempo follows a clock from another device, the top bar shows a tempo chip such as **120.0 from MIDI In** with a green dot; tapping it opens this view too, at **Sync** once that section is there.
+To open it, tap the **Mix** tab and then **I/O** among the mixer's views. Press **TRACK MIX** or pick a tab to close the mixer. While the tempo follows a clock from another device, the top bar shows a tempo chip such as **120.0 from MIDI In** with a green dot; tapping it opens this view too, at **Sync** once that section is there.
 
 {{shot: mixer-io | The I/O view's Audio section, with example strips from the preview: each strip's output, and the inputs' source and monitoring. The tempo chip at the top follows a clock on MIDI In.}}
 

@@ -1589,9 +1589,6 @@ impl Session {
                         if synth_now {
                             later.extend(self.app.open_tab(View::Synth));
                         } else {
-                            self.app.set_pads_browse(false);
-                            self.out
-                                .show(ToUi::PadsView(mpfree_sampler_ui::pads_tab::PAD_VIEW));
                             later.extend(self.app.open_tab(View::Pads));
                         }
                     }
