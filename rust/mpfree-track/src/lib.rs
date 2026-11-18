@@ -31,6 +31,22 @@
 //! - **Tuning** ([`TrackHost::set_tuning`]): each slot has its own tuning
 //!   (12-TET at A4 = 440 Hz until set). The slot keeps it, so an
 //!   instrument swapped in later plays in it too.
+//! - **Other cores** ([`TrackHost::set_lanes`]): the slots can be split into
+//!   groups, one rendered on the calling thread and one on each lane
+//!   (`mpfree-lanes`, a worker thread on its own core). Each period the
+//!   lanes are posted with their slots' instruments, buffers and events,
+//!   the calling thread renders its own group, joins the lanes by the
+//!   period's deadline ([`TrackHost::set_deadline`]), and then adds every
+//!   slot's sound into its track in slot order, so the sound is the same
+//!   to the bit with or without lanes. A slot moves between groups only
+//!   between periods: twice a second the slots are placed again by what
+//!   their renders cost, the most costly first, each where the least is
+//!   placed (the lanes before the calling thread on a tie, as it has the
+//!   rest of the period's work), and only if the busiest group gets
+//!   clearly lighter. A lane
+//!   that misses the deadline leaves its slots out of that period
+//!   (counted, [`TrackHost::lane_counts`]) and finishes on its own;
+//!   [`TrackHost::settle`] takes them back after the write.
 //!
 //! # Real-time rules
 //!
@@ -43,7 +59,10 @@
 //! which lands on a block boundary (it is inaudible by then).
 #![forbid(unsafe_code)]
 
+use std::time::{Duration, Instant};
+
 use mpfree_fx::Mixer;
+use mpfree_lanes::{Config as LaneConfig, Job, Lane, Setup as LaneSetup};
 use mpfree_node::pedal::{NoteSet, Pedals};
 use mpfree_node::{Ctl, Ctx, Cull, Node, NodeEvent, ParamInfo, Timed, Tuning};
 use mpfree_play::{Event, Out, Sink, ALL};
@@ -60,6 +79,15 @@ pub const QUIET_FRAMES: u32 = 4096;
 pub const QUIET_LEVEL: f32 = 1e-5;
 /// The longest an old instrument rings out (20 s at 44.1 kHz).
 pub const MAX_RING_FRAMES: u32 = 882_000;
+/// With lanes, the slots are placed again every this many renders (about
+/// half a second at 128 frames and 44.1 kHz).
+pub const PLACE_EVERY: u32 = 172;
+/// A new placement is taken only if its busiest group costs at most this
+/// share of the busiest group now.
+pub const PLACE_GAIN: f32 = 0.8;
+/// What a slot's render counts as at least when it is placed, ns: an
+/// instrument not timed yet still has a place of its own.
+const PLACE_FLOOR_NS: f32 = 1_000.0;
 
 /// An instrument made ready for the audio thread: the node, prepared for
 /// the host's rate and block size, and its timing probe. Making one
@@ -174,17 +202,100 @@ struct Ringing {
     limit: u32,
 }
 
-struct Slot {
+/// What a slot renders with: its instruments, the period's events and the
+/// buffers they render into. It moves whole to a lane for a period and
+/// back, so nothing in it is shared between threads.
+#[derive(Default)]
+struct Work {
     inst: Option<Instrument>,
     ringing: Option<Ringing>,
+    /// The period's events, sorted (the slot's queue, swapped in).
+    events: Vec<Timed>,
+    left: Vec<f32>,
+    right: Vec<f32>,
+    /// The old instrument ringing out renders here.
+    ring_left: Vec<f32>,
+    ring_right: Vec<f32>,
+    /// What the period's render did, for the host to act on at home.
+    wrote: bool,
+    ring_wrote: bool,
+    reset: bool,
+    ring_done: bool,
+    /// The render's time, ns, smoothed over about 20 periods (timed only
+    /// while the host has lanes).
+    cost: f32,
+}
+
+impl Work {
+    /// The period's render of `n` frames, on whichever thread holds it.
+    fn render(&mut self, ctx: &Ctx, n: usize, profiling: bool, timing: bool) {
+        let t = timing.then(Instant::now);
+        (self.wrote, self.ring_wrote, self.reset, self.ring_done) = (false, false, false, false);
+        let (sl, sr) = (&mut self.left[..n], &mut self.right[..n]);
+        if let Some(inst) = self.inst.as_mut() {
+            sl.fill(0.0);
+            sr.fill(0.0);
+            let span = profiling.then(Span::start);
+            inst.node.process(ctx, &self.events, sl, sr);
+            if let Some(span) = span {
+                inst.probe.stop(span, n as u32);
+            }
+            if sl.iter().chain(sr.iter()).all(|x| x.is_finite()) {
+                self.wrote = true;
+            } else {
+                inst.node.reset();
+                self.reset = true;
+            }
+        }
+        self.events.clear();
+        if let Some(r) = self.ringing.as_mut() {
+            let (sl, sr) = (&mut self.ring_left[..n], &mut self.ring_right[..n]);
+            sl.fill(0.0);
+            sr.fill(0.0);
+            let off = [Timed::new(0, NodeEvent::AllOff)];
+            let ev: &[Timed] = if r.off { &off } else { &[] };
+            r.off = false;
+            r.inst.node.process(ctx, ev, sl, sr);
+            let peak = sl.iter().chain(sr.iter()).fold(0f32, |m, x| m.max(x.abs()));
+            let finite = peak.is_finite();
+            self.ring_wrote = finite;
+            r.frames = r.frames.saturating_add(n as u32);
+            r.quiet = if finite && peak < QUIET_LEVEL {
+                r.quiet.saturating_add(n as u32)
+            } else {
+                0
+            };
+            self.ring_done = !finite || r.quiet >= QUIET_FRAMES || r.frames >= r.limit;
+        }
+        if let Some(t) = t {
+            let ns = t.elapsed().as_nanos() as f32;
+            self.cost += (ns - self.cost) * 0.05;
+        }
+    }
+
+    /// Something to render: an instrument, or an old one ringing out.
+    fn busy(&self) -> bool {
+        self.inst.is_some() || self.ringing.is_some()
+    }
+}
+
+struct Slot {
+    work: Work,
+    /// The group that renders it: 0 the calling thread, `k` lane `k - 1`.
+    group: usize,
+    /// Its work is on a lane that missed the deadline.
+    away: bool,
+    /// It renders this period (not frozen, the block not empty).
+    go: bool,
+    /// STOP's fade ended while its work was away: reset it on its return.
+    reset_due: bool,
     track: Option<usize>,
+    /// The events queued for the next render.
     events: Vec<Timed>,
     /// How many notes each note number has sounding (pads, clips, the arp).
     held: [u8; 128],
     /// The slot's tuning, given to each instrument that takes the slot.
     tuning: Tuning,
-    left: Vec<f32>,
-    right: Vec<f32>,
     stats: SlotStats,
     /// Its track wanted nothing last block (frozen): the instrument
     /// rested, and gets an AllOff before it plays again.
@@ -213,6 +324,55 @@ pub struct TrackHost {
     profiling: bool,
     /// Frames a render was asked for past `max_block` (should stay 0).
     clipped_frames: u64,
+    /// The lanes, one per group past the first (none: every slot here).
+    lanes: Vec<HostLane>,
+    /// When the lanes' joins stop waiting (None: a second from the join).
+    deadline: Option<Instant>,
+    /// Renders since the slots were last placed.
+    since_place: u32,
+    /// Slots moved to another group since the lanes started.
+    moves: u64,
+    /// Scratch for placing: slot numbers, each slot's planned group, each
+    /// group's load (made with the lanes).
+    order: Vec<usize>,
+    plan: Vec<usize>,
+    loads: Vec<f32>,
+}
+
+/// A lane's slots for one period.
+struct Group {
+    works: Vec<Work>,
+    /// The slot each of `works` came from.
+    index: Vec<usize>,
+    ctx: Ctx<'static>,
+    n: usize,
+    profiling: bool,
+}
+
+impl Job for Group {
+    fn run(&mut self, _block: u64) {
+        for w in &mut self.works {
+            w.render(&self.ctx, self.n, self.profiling, true);
+        }
+    }
+}
+
+struct HostLane {
+    lane: Lane<Group>,
+    posted: bool,
+    away: bool,
+    counts: LaneCounts,
+}
+
+/// A lane's counts since it started.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LaneCounts {
+    /// Periods it was posted.
+    pub periods: u64,
+    /// Periods it missed the deadline: its slots were left out.
+    pub late: u64,
+    /// Times the host had to wait past a deadline to take its slots back.
+    pub waits: u64,
 }
 
 impl TrackHost {
@@ -221,14 +381,22 @@ impl TrackHost {
     pub fn new(slots: usize, rate: u32, max_block: usize) -> TrackHost {
         let slots = (0..slots)
             .map(|i| Slot {
-                inst: None,
-                ringing: None,
+                work: Work {
+                    events: Vec::with_capacity(MAX_EVENTS),
+                    left: vec![0.0; max_block],
+                    right: vec![0.0; max_block],
+                    ring_left: vec![0.0; max_block],
+                    ring_right: vec![0.0; max_block],
+                    ..Work::default()
+                },
+                group: 0,
+                away: false,
+                go: false,
+                reset_due: false,
                 track: Some(i),
                 events: Vec::with_capacity(MAX_EVENTS),
                 held: [0; 128],
                 tuning: Tuning::standard(),
-                left: vec![0.0; max_block],
-                right: vec![0.0; max_block],
                 stats: SlotStats::default(),
                 resting: false,
                 pedals: Pedals::new(),
@@ -246,6 +414,13 @@ impl TrackHost {
             fading: false,
             profiling: false,
             clipped_frames: 0,
+            lanes: Vec::new(),
+            deadline: None,
+            since_place: 0,
+            moves: 0,
+            order: Vec::new(),
+            plan: Vec::new(),
+            loads: Vec::new(),
         }
     }
 
@@ -272,19 +447,22 @@ impl TrackHost {
         slot: usize,
         inst: Option<Instrument>,
     ) -> Result<(), (SwapError, Option<Instrument>)> {
-        let Some(s) = self.slots.get_mut(slot) else {
+        if slot >= self.slots.len() {
             return Err((SwapError::NoSlot, inst));
-        };
-        if s.ringing.is_some() && self.retired.len() == self.retired.capacity() {
+        }
+        self.home();
+        let least = self.least_loaded();
+        let s = &mut self.slots[slot];
+        if s.work.ringing.is_some() && self.retired.len() == self.retired.capacity() {
             return Err((SwapError::RetiredFull, inst));
         }
-        if let Some(old) = s.ringing.take() {
+        if let Some(old) = s.work.ringing.take() {
             self.retired.push(old.inst);
         }
-        if let Some(old) = s.inst.take() {
+        if let Some(old) = s.work.inst.take() {
             let tail = old.node.tail_frames();
             let limit = tail.saturating_add(QUIET_FRAMES).min(MAX_RING_FRAMES);
-            s.ringing = Some(Ringing {
+            s.work.ringing = Some(Ringing {
                 inst: old,
                 off: true,
                 frames: 0,
@@ -297,10 +475,19 @@ impl TrackHost {
         s.events.clear();
         s.held = [0; 128];
         s.pedals.clear_notes();
-        s.inst = inst;
-        s.hears_pedal = s.inst.as_ref().is_some_and(|i| i.node.hears(Ctl::Sustain));
+        // A new instrument starts where the least is placed (an old one
+        // ringing out stays with it).
+        if s.work.ringing.is_none() {
+            s.group = least;
+        }
+        s.work.inst = inst;
+        s.hears_pedal = s
+            .work
+            .inst
+            .as_ref()
+            .is_some_and(|i| i.node.hears(Ctl::Sustain));
         s.plain = s.hears_pedal || s.pedals.idle();
-        if let Some(i) = s.inst.as_mut() {
+        if let Some(i) = s.work.inst.as_mut() {
             i.node.set_tuning(&s.tuning);
         }
         Ok(())
@@ -314,11 +501,14 @@ impl TrackHost {
 
     /// Whether slot `slot` has an old instrument still ringing out.
     pub fn ringing(&self, slot: usize) -> bool {
-        self.slots.get(slot).is_some_and(|s| s.ringing.is_some())
+        self.slots
+            .get(slot)
+            .is_some_and(|s| s.work.ringing.is_some())
     }
 
+    /// Slot `slot`'s instrument (None while a late lane still has it).
     pub fn instrument(&self, slot: usize) -> Option<&Instrument> {
-        self.slots.get(slot)?.inst.as_ref()
+        self.slots.get(slot)?.work.inst.as_ref()
     }
 
     // ------------------------------------------------------------ load shedding
@@ -328,7 +518,7 @@ impl TrackHost {
     pub fn voices(&self) -> usize {
         self.slots
             .iter()
-            .filter_map(|s| s.inst.as_ref())
+            .filter_map(|s| s.work.inst.as_ref())
             .map(|i| i.node.sounding_voices())
             .sum()
     }
@@ -339,7 +529,7 @@ impl TrackHost {
     pub fn cull_candidate(&self) -> Option<(usize, Cull)> {
         let mut best = None;
         for (i, s) in self.slots.iter().enumerate() {
-            if let Some(c) = s.inst.as_ref().and_then(|x| x.node.cull_candidate()) {
+            if let Some(c) = s.work.inst.as_ref().and_then(|x| x.node.cull_candidate()) {
                 best = Cull::first(best, Some((i, c)));
             }
         }
@@ -349,9 +539,10 @@ impl TrackHost {
     /// Gives up the voice slot `slot`'s instrument names
     /// ([`Node::cull`]). True if it did. No allocation.
     pub fn cull(&mut self, slot: usize) -> bool {
+        self.home();
         self.slots
             .get_mut(slot)
-            .and_then(|s| s.inst.as_mut())
+            .and_then(|s| s.work.inst.as_mut())
             .is_some_and(|i| i.node.cull())
     }
 
@@ -374,11 +565,12 @@ impl TrackHost {
     /// the instrument: never allocates, so it may run on the audio thread.
     /// An instrument still ringing out after a swap keeps the old tuning.
     pub fn set_tuning(&mut self, slot: usize, tuning: &Tuning) {
+        self.home();
         let Some(s) = self.slots.get_mut(slot) else {
             return;
         };
         s.tuning.clone_from(tuning);
-        if let Some(i) = s.inst.as_mut() {
+        if let Some(i) = s.work.inst.as_mut() {
             i.node.set_tuning(tuning);
         }
     }
@@ -407,7 +599,7 @@ impl TrackHost {
     pub fn slot_of_track(&self, track: usize) -> Option<usize> {
         self.slots
             .iter()
-            .position(|s| s.inst.is_some() && s.track == Some(track))
+            .position(|s| s.work.inst.is_some() && s.track == Some(track))
     }
 
     // ------------------------------------------------------------ events
@@ -589,10 +781,14 @@ impl TrackHost {
     /// Adds every slot's next `frames` frames into its track's buffers in
     /// `out`. `ctx` is the block's context (its `sidechain` is not passed
     /// on). At most [`TrackHost::max_block`] frames are rendered; the rest
-    /// are counted. Never allocates.
+    /// are counted. With lanes ([`TrackHost::set_lanes`]) the lanes' groups
+    /// render at the same time as this thread's, and a lane past the
+    /// deadline leaves its slots out (see the crate docs). Never allocates.
     pub fn render(&mut self, ctx: &Ctx, frames: usize, out: &mut dyn Outputs) {
         let n = frames.min(self.max_block);
         self.clipped_frames += (frames - n) as u64;
+        // A lane still out from a late period: its slots come back first.
+        self.home();
         let ctx = Ctx {
             sidechain: None,
             ..*ctx
@@ -601,6 +797,7 @@ impl TrackHost {
         let fading = self.fading;
         let profiling = self.profiling;
         for s in &mut self.slots {
+            s.go = false;
             let events = &mut s.events;
             // Stable insertion sort by frame (few events, no allocation);
             // late events land on the last frame.
@@ -629,7 +826,7 @@ impl TrackHost {
                 s.resting = true;
                 s.stats.rested += 1;
                 if self.retired.len() < self.retired.capacity() {
-                    if let Some(r) = s.ringing.take() {
+                    if let Some(r) = s.work.ringing.take() {
                         self.retired.push(r.inst);
                     }
                 }
@@ -643,53 +840,106 @@ impl TrackHost {
                     *e = Timed::new(0, NodeEvent::AllOff);
                 }
             }
-            let (sl, sr) = (&mut s.left[..n], &mut s.right[..n]);
-            let mut wrote = false;
-            if let Some(inst) = s.inst.as_mut() {
-                sl.fill(0.0);
-                sr.fill(0.0);
-                let span = profiling.then(Span::start);
-                inst.node.process(&ctx, events, sl, sr);
-                if let Some(span) = span {
-                    inst.probe.stop(span, n as u32);
-                }
-                if sl.iter().chain(sr.iter()).all(|x| x.is_finite()) {
-                    wrote = true;
-                } else {
-                    inst.node.reset();
-                    s.held = [0; 128];
-                    s.stats.resets += 1;
+            // The period's events go with the work; the slot's queue is
+            // the work's emptied one from last period.
+            std::mem::swap(&mut s.events, &mut s.work.events);
+            s.go = true;
+        }
+        let timing = !self.lanes.is_empty();
+        if timing {
+            self.since_place += 1;
+            if self.since_place >= PLACE_EVERY {
+                self.place();
+            }
+        }
+        // The lanes' groups go first, then this thread renders its own.
+        let job_ctx = Ctx {
+            rate: ctx.rate,
+            frame: ctx.frame,
+            bpm: ctx.bpm,
+            beats: ctx.beats,
+            playing: ctx.playing,
+            sidechain: None,
+        };
+        let TrackHost { slots, lanes, .. } = self;
+        for (k, l) in lanes.iter_mut().enumerate() {
+            let Some(job) = l.lane.job() else {
+                continue;
+            };
+            for (i, s) in slots.iter_mut().enumerate() {
+                if s.go
+                    && s.group == k + 1
+                    && s.work.busy()
+                    && job.works.len() < job.works.capacity()
+                {
+                    job.works.push(std::mem::take(&mut s.work));
+                    job.index.push(i);
+                    s.away = true;
                 }
             }
-            events.clear();
-            if wrote {
-                Self::add(s.track, sl, sr, fading, fade0, out);
+            if job.works.is_empty() {
+                continue;
             }
-            if let Some(r) = s.ringing.as_mut() {
-                sl.fill(0.0);
-                sr.fill(0.0);
-                let off = [Timed::new(0, NodeEvent::AllOff)];
-                let ev: &[Timed] = if r.off { &off } else { &[] };
-                r.off = false;
-                r.inst.node.process(&ctx, ev, sl, sr);
-                let peak = sl.iter().chain(sr.iter()).fold(0f32, |m, x| m.max(x.abs()));
-                let finite = peak.is_finite();
-                if finite {
-                    Self::add(s.track, sl, sr, fading, fade0, out);
-                }
-                r.frames = r.frames.saturating_add(n as u32);
-                r.quiet = if finite && peak < QUIET_LEVEL {
-                    r.quiet.saturating_add(n as u32)
-                } else {
-                    0
-                };
-                // With the retired list full it rings on (quietly) until
-                // the control thread makes room.
-                let done = !finite || r.quiet >= QUIET_FRAMES || r.frames >= r.limit;
-                if done && self.retired.len() < self.retired.capacity() {
-                    if let Some(r) = s.ringing.take() {
-                        self.retired.push(r.inst);
-                    }
+            (job.ctx, job.n, job.profiling) = (job_ctx, n, profiling);
+            if l.lane.post(ctx.frame).is_ok() {
+                l.posted = true;
+                l.counts.periods += 1;
+            } else {
+                // Never reached (the job is home): render them here.
+                Self::take_back(slots, l, false, &mut self.retired);
+            }
+        }
+        for s in slots.iter_mut().filter(|s| s.go && !s.away) {
+            s.work.render(&ctx, n, profiling, timing);
+        }
+        // The clock is read only when a lane was posted.
+        let mut deadline = None;
+        for l in lanes.iter_mut().filter(|l| l.posted) {
+            l.posted = false;
+            let until = *deadline.get_or_insert_with(|| {
+                self.deadline
+                    .unwrap_or_else(|| Instant::now() + Duration::from_secs(1))
+            });
+            if l.lane.join(until).is_ok() {
+                Self::take_back(slots, l, false, &mut self.retired);
+            } else {
+                l.counts.late += 1;
+                l.away = true;
+            }
+        }
+        // Every slot's sound into its track, in slot order: the same sums
+        // as with every slot here.
+        for s in slots.iter_mut().filter(|s| s.go && !s.away) {
+            let w = &mut s.work;
+            if w.reset {
+                s.held = [0; 128];
+                s.stats.resets += 1;
+            }
+            if w.wrote {
+                Self::add(
+                    s.track,
+                    &mut w.left[..n],
+                    &mut w.right[..n],
+                    fading,
+                    fade0,
+                    out,
+                );
+            }
+            if w.ring_wrote {
+                Self::add(
+                    s.track,
+                    &mut w.ring_left[..n],
+                    &mut w.ring_right[..n],
+                    fading,
+                    fade0,
+                    out,
+                );
+            }
+            // With the retired list full it rings on (quietly) until the
+            // control thread makes room.
+            if w.ring_done && self.retired.len() < self.retired.capacity() {
+                if let Some(r) = w.ringing.take() {
+                    self.retired.push(r.inst);
                 }
             }
         }
@@ -698,18 +948,220 @@ impl TrackHost {
             if self.fade == 0 {
                 self.fading = false;
                 for s in &mut self.slots {
-                    if let Some(inst) = s.inst.as_mut() {
-                        inst.node.reset();
-                    }
-                    s.held = [0; 128];
-                    if self.retired.len() < self.retired.capacity() {
-                        if let Some(r) = s.ringing.take() {
-                            self.retired.push(r.inst);
-                        }
-                    } else if let Some(r) = s.ringing.as_mut() {
-                        r.inst.node.reset();
+                    if s.away {
+                        s.reset_due = true;
+                    } else {
+                        Self::end_fade(s, &mut self.retired);
                     }
                 }
+            }
+        }
+    }
+
+    /// STOP's fade has ended: the slot's instrument is reset and an old
+    /// one ringing out retired (reset, if the retired list is full).
+    fn end_fade(s: &mut Slot, retired: &mut Vec<Instrument>) {
+        if let Some(inst) = s.work.inst.as_mut() {
+            inst.node.reset();
+        }
+        s.held = [0; 128];
+        if retired.len() < retired.capacity() {
+            if let Some(r) = s.work.ringing.take() {
+                retired.push(r.inst);
+            }
+        } else if let Some(r) = s.work.ringing.as_mut() {
+            r.inst.node.reset();
+        }
+    }
+
+    /// A joined lane's slots back home. `late`: their period's sound was
+    /// left out, so only what the render did to the slot is kept (a reset,
+    /// a ring-out that ended, STOP's reset due meanwhile).
+    fn take_back(slots: &mut [Slot], l: &mut HostLane, late: bool, retired: &mut Vec<Instrument>) {
+        let Some(job) = l.lane.job() else {
+            return;
+        };
+        while let (Some(w), Some(i)) = (job.works.pop(), job.index.pop()) {
+            let Some(s) = slots.get_mut(i) else {
+                continue;
+            };
+            s.work = w;
+            s.away = false;
+            if late {
+                if s.work.reset {
+                    s.held = [0; 128];
+                    s.stats.resets += 1;
+                }
+                if s.work.ring_done && retired.len() < retired.capacity() {
+                    if let Some(r) = s.work.ringing.take() {
+                        retired.push(r.inst);
+                    }
+                }
+                if std::mem::take(&mut s.reset_due) {
+                    Self::end_fade(s, retired);
+                }
+            }
+        }
+        l.away = false;
+    }
+
+    /// After a late period: takes the lanes' slots back, waiting until
+    /// `deadline` at most (the next period's); past it this waits for them
+    /// as long as it takes, since the next render needs them, and counts
+    /// the wait. Call it right after each write: the write's own wait has
+    /// usually given the lanes the time to finish. Does nothing after a
+    /// period in time. Never allocates.
+    pub fn settle(&mut self, deadline: Instant) {
+        let TrackHost {
+            slots,
+            lanes,
+            retired,
+            ..
+        } = self;
+        for l in lanes.iter_mut().filter(|l| l.away) {
+            if l.lane.join(deadline).is_err() {
+                l.counts.waits += 1;
+                while l
+                    .lane
+                    .join(Instant::now() + Duration::from_secs(1))
+                    .is_err()
+                {}
+            }
+            Self::take_back(slots, l, true, retired);
+        }
+    }
+
+    /// Every slot home now, waiting for a late lane if need be (counted).
+    fn home(&mut self) {
+        if self.lanes.iter().any(|l| l.away) {
+            self.settle(Instant::now());
+        }
+    }
+
+    // ------------------------------------------------------------ lanes
+
+    /// Splits the slots into groups: this thread's and one per lane in
+    /// `configs` (none: every slot renders here again). Allocates and
+    /// starts the lanes' threads: call it between renders, as the sound
+    /// starts. Gives each lane's setup (where its worker runs, or why its
+    /// jobs run here).
+    pub fn set_lanes(&mut self, configs: Vec<LaneConfig>) -> Vec<LaneSetup> {
+        self.home();
+        let n = self.slots.len();
+        self.lanes = configs
+            .into_iter()
+            .map(|c| HostLane {
+                lane: Lane::new(
+                    Group {
+                        works: Vec::with_capacity(n),
+                        index: Vec::with_capacity(n),
+                        ctx: Ctx::new(self.rate, 0),
+                        n: 0,
+                        profiling: false,
+                    },
+                    c,
+                ),
+                posted: false,
+                away: false,
+                counts: LaneCounts::default(),
+            })
+            .collect();
+        self.order = Vec::with_capacity(n);
+        self.plan = vec![0; n];
+        self.loads = vec![0.0; self.lanes.len() + 1];
+        for s in &mut self.slots {
+            s.group = 0;
+        }
+        // Spread at once, by what each has cost so far (nothing timed:
+        // one each).
+        self.place_now(true);
+        self.lanes.iter().map(|l| l.lane.setup().clone()).collect()
+    }
+
+    /// When the lanes' joins stop waiting in the next renders (the
+    /// period's one deadline). None: a second from the join.
+    pub fn set_deadline(&mut self, at: Option<Instant>) {
+        self.deadline = at;
+    }
+
+    /// Lanes beside this thread (0: every slot renders here).
+    pub fn lanes(&self) -> usize {
+        self.lanes.len()
+    }
+
+    /// Lane `k`'s counts since it started.
+    pub fn lane_counts(&self, k: usize) -> Option<LaneCounts> {
+        self.lanes.get(k).map(|l| l.counts)
+    }
+
+    /// The group rendering slot `slot`: 0 this thread, `k` lane `k - 1`.
+    pub fn group_of(&self, slot: usize) -> Option<usize> {
+        self.slots.get(slot).map(|s| s.group)
+    }
+
+    /// Slots moved between groups since the lanes started.
+    pub fn moves(&self) -> u64 {
+        self.moves
+    }
+
+    /// What slot `slot`'s render costs, ns, smoothed (timed while the host
+    /// has lanes; 0 before).
+    pub fn cost_ns(&self, slot: usize) -> f32 {
+        self.slots.get(slot).map_or(0.0, |s| s.work.cost)
+    }
+
+    /// The group with the least placed on it now.
+    fn least_loaded(&mut self) -> usize {
+        if self.lanes.is_empty() {
+            return 0;
+        }
+        self.loads.fill(0.0);
+        for s in self.slots.iter().filter(|s| s.work.busy()) {
+            self.loads[s.group] += s.work.cost.max(PLACE_FLOOR_NS);
+        }
+        least(&self.loads)
+    }
+
+    /// Places the slots again (see the crate docs), if every lane is home.
+    fn place(&mut self) {
+        self.since_place = 0;
+        if self.lanes.iter().any(|l| l.away) {
+            return;
+        }
+        self.place_now(false);
+    }
+
+    /// The most costly slot first, each on the group with the least placed
+    /// so far; taken if the busiest group gets [`PLACE_GAIN`] lighter, or
+    /// always with `force`. No allocation.
+    fn place_now(&mut self, force: bool) {
+        let cost = |s: &Slot| s.work.cost.max(PLACE_FLOOR_NS);
+        self.loads.fill(0.0);
+        for s in self.slots.iter().filter(|s| s.work.busy()) {
+            self.loads[s.group] += cost(s);
+        }
+        let busiest_now = self.loads.iter().copied().fold(0.0, f32::max);
+        self.order.clear();
+        self.order
+            .extend((0..self.slots.len()).filter(|&i| self.slots[i].work.busy()));
+        let slots = &self.slots;
+        self.order
+            .sort_unstable_by(|&a, &b| cost(&slots[b]).total_cmp(&cost(&slots[a])).then(a.cmp(&b)));
+        self.loads.fill(0.0);
+        for &i in &self.order {
+            let g = least(&self.loads);
+            self.plan[i] = g;
+            self.loads[g] += cost(&self.slots[i]);
+        }
+        let busiest = self.loads.iter().copied().fold(0.0, f32::max);
+        if !force && busiest > busiest_now * PLACE_GAIN {
+            return;
+        }
+        for &i in &self.order {
+            let s = &mut self.slots[i];
+            if s.group != self.plan[i] {
+                s.group = self.plan[i];
+                self.moves += 1;
             }
         }
     }
@@ -763,8 +1215,20 @@ impl TrackHost {
     /// A slot's instrument timing, to take its window
     /// ([`Probe::take_window`]). The probe moves with its instrument.
     pub fn probe_mut(&mut self, slot: usize) -> Option<&mut Probe> {
-        Some(&mut *self.slots.get_mut(slot)?.inst.as_mut()?.probe)
+        Some(&mut *self.slots.get_mut(slot)?.work.inst.as_mut()?.probe)
     }
+}
+
+/// The group with the least load; on a tie the last, so the lanes fill
+/// before this thread, which has the rest of the period's work besides.
+fn least(loads: &[f32]) -> usize {
+    let mut best = loads.len().saturating_sub(1);
+    for (g, &l) in loads.iter().enumerate().rev() {
+        if l < loads[best] {
+            best = g;
+        }
+    }
+    best
 }
 
 /// The sequencer's notes: [`Out::dest`] is the slot; `AllOff` to [`ALL`]

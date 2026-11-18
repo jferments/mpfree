@@ -88,6 +88,8 @@ use mpfree_lanes::os::IdleCounts;
 use mpfree_lanes::{Config as LaneConfig, Job, Lane, Setup as LaneSetup};
 use mpfree_ui::Tone;
 
+use crate::instruments::Instruments;
+use crate::mixing::MixHost;
 use crate::sampler::Player;
 use crate::synth::Synth;
 use crate::PERIOD;
@@ -271,11 +273,23 @@ pub struct Counts {
     /// Stops with no late input left to hand the reverb: a block of the
     /// return's input lost (a fallback; it should stay 0).
     pub returns_lost: u64,
+    /// Periods the tracks' instruments rendered on lanes (each lane's
+    /// periods, added up).
+    pub track_periods: u64,
+    /// Of those, the ones a lane missed the deadline for (its tracks'
+    /// instruments left out of that period: a fallback).
+    pub track_late: u64,
+    /// Late lanes still not back by the next deadline, which the audio
+    /// thread then waited for (a stall).
+    pub track_waits: u64,
+    /// Instruments moved from one core to another to even out the cores.
+    pub track_moves: u64,
 }
 
 impl Counts {
-    pub fn read(player: &Player, mixer: &Mixer, synth: &SynthSlot) -> Counts {
-        let (c, m) = (player.counters(), mixer.stats());
+    pub fn read(player: &Player, mix: &MixHost, synth: &SynthSlot) -> Counts {
+        let (c, m) = (player.counters(), mix.mixer.stats());
+        let t = mix.instruments.lane_counts();
         Counts {
             voice_parts: c.lane_parts,
             voice_late: c.lane_late,
@@ -289,6 +303,10 @@ impl Counts {
             returns_starts: m.pipe_starts,
             returns_stops: m.pipe_stops,
             returns_lost: m.pipe_lost_input,
+            track_periods: t.periods,
+            track_late: t.late,
+            track_waits: t.waits,
+            track_moves: mix.instruments.lane_moves(),
         }
     }
 
@@ -299,6 +317,8 @@ impl Counts {
             + self.synth_waits
             + self.returns_late
             + self.returns_lost
+            + self.track_late
+            + self.track_waits
     }
 
     fn values(&self) -> [u64; COUNTS] {
@@ -315,12 +335,16 @@ impl Counts {
             self.returns_starts,
             self.returns_stops,
             self.returns_lost,
+            self.track_periods,
+            self.track_late,
+            self.track_waits,
+            self.track_moves,
         ]
     }
 }
 
 /// How many numbers [`Counts`] holds.
-const COUNTS: usize = 12;
+const COUNTS: usize = 16;
 
 /// The synth, played on the audio thread, or (`three`) on a lane on core
 /// 1 while the drums render. Between periods it is always here, so the
@@ -516,6 +540,10 @@ impl CoreShared {
             returns_starts: get(9),
             returns_stops: get(10),
             returns_lost: get(11),
+            track_periods: get(12),
+            track_late: get(13),
+            track_waits: get(14),
+            track_moves: get(15),
         }
     }
 
@@ -681,6 +709,36 @@ impl Cores {
             .push(("Reverb returns lane".to_string(), text, tone));
     }
 
+    /// `two` and `three`: the tracks' own instruments share the sound's
+    /// cores, a group each: the audio thread's, a lane on core 2 and, in
+    /// `three`, a lane on core 1 (`mpfree_track::TrackHost::set_lanes`).
+    /// They render while the drums and the pad synth are done and the
+    /// mixer's lanes not yet started, so the lanes have their cores to
+    /// themselves. Call it right after [`Cores::start_mixer`], before the
+    /// loop: it allocates and starts the lanes' threads.
+    pub fn start_tracks(&mut self, instruments: &mut Instruments) {
+        if !self.lanes {
+            return;
+        }
+        let mut configs = vec![self.lane("mpfree-lane-trk", self.pins.lane)];
+        if self.mode == SoundCores::Three {
+            configs.push(self.lane("mpfree-lane-trk1", self.pins.synth));
+        }
+        let cores = [LANE_CORE, SYNTH_CORE];
+        for (k, setup) in instruments.set_lanes(configs).iter().enumerate() {
+            let (text, tone) = lane_text(setup, "tracks' instruments");
+            self.lines.push(format!(
+                "sound cores: track instruments lane {} {text}",
+                k + 1
+            ));
+            self.rows.push((
+                format!("Track instruments lane (core {})", cores[k]),
+                text,
+                tone,
+            ));
+        }
+    }
+
     fn lane(&self, name: &str, core: Option<usize>) -> LaneConfig {
         LaneConfig {
             name: name.to_string(),
@@ -730,14 +788,20 @@ impl Cores {
             c.returns_late - self.noted.returns_late,
             c.returns_lost - self.noted.returns_lost,
         );
+        let (dt, dtw) = (
+            c.track_late - self.noted.track_late,
+            c.track_waits - self.noted.track_waits,
+        );
         self.noted = c;
         self.noted_at = Some(now);
         let s = |n: u64| if n == 1 { "" } else { "s" };
         Some(format!(
             "sound cores: late: {dv} part{} with half the drum voices unheard, {dm} mixer stage{} \
              with those strips silent, {dr} returns block{} with the reverbs silent, {dl} block{} \
-             of a return's input lost and {ds} period{} with the synth left out (fallbacks), {dw} \
-             wait{} for the synth past the next deadline; {}, {}, {}, {}, {} and {} since the start",
+             of a return's input lost, {ds} period{} with the synth left out and {dt} with \
+             tracks' instruments left out (fallbacks), {dw} wait{} for the synth and {dtw} for \
+             tracks' instruments past the next deadline; {}, {}, {}, {}, {}, {}, {} and {} since \
+             the start",
             s(dv),
             s(dm),
             s(dr),
@@ -749,7 +813,9 @@ impl Cores {
             c.returns_late,
             c.returns_lost,
             c.synth_late,
-            c.synth_waits
+            c.track_late,
+            c.synth_waits,
+            c.track_waits
         ))
     }
 
@@ -758,7 +824,8 @@ impl Cores {
         let lanes = || {
             format!(
                 "sound cores {}: drum voices {} parts on core 2, {} late; mixer {} stages on core 2, \
-                 {} late; returns {} blocks on core 2, {} late, {} starts, {} stops, {} lost",
+                 {} late; returns {} blocks on core 2, {} late, {} starts, {} stops, {} lost; \
+                 track instruments {} periods on lanes, {} late, {} waited for, {} moves",
                 self.mode.name(),
                 c.voice_parts,
                 c.voice_late,
@@ -768,7 +835,11 @@ impl Cores {
                 c.returns_late,
                 c.returns_starts,
                 c.returns_stops,
-                c.returns_lost
+                c.returns_lost,
+                c.track_periods,
+                c.track_late,
+                c.track_waits,
+                c.track_moves
             )
         };
         match self.mode {
@@ -857,6 +928,14 @@ pub fn rows(shared: &CoreShared) -> Vec<Row> {
                 c.returns_blocks, c.returns_late, c.returns_lost
             ),
             tone(c.returns_late + c.returns_lost),
+        ));
+        rows.push((
+            "Track instruments on lanes · late · waited · moves".to_string(),
+            format!(
+                "{} periods · {} late · {} waited · {} moves",
+                c.track_periods, c.track_late, c.track_waits, c.track_moves
+            ),
+            tone(c.track_late + c.track_waits),
         ));
     }
     if *mode == SoundCores::Three {
@@ -1052,7 +1131,7 @@ mod tests {
         for _ in 0..20 {
             p.render_routed_until(128, &mut pads, Instant::now() + Duration::from_secs(5));
         }
-        let n = Counts::read(&p, &mix.mixer, &slot());
+        let n = Counts::read(&p, &mix, &slot());
         assert!(n.voice_parts > 0, "{n:?}");
         assert_eq!(n.voice_late, 0, "{n:?}");
         let shared = CoreShared::default();
@@ -1070,7 +1149,8 @@ mod tests {
                 "Reverb returns lane",
                 "Drum voices on core 2 · late",
                 "Mixer inserts on core 2 · late",
-                "Reverb returns on core 2 · late · lost"
+                "Reverb returns on core 2 · late · lost",
+                "Track instruments on lanes · late · waited · moves"
             ]
         );
         assert_eq!(rows[5].1, format!("{} parts · 0 late", n.voice_parts));
@@ -1078,6 +1158,44 @@ mod tests {
         assert_eq!(rows[7].1, "0 blocks · 0 late · 0 lost");
         assert_eq!(rows[7].2, Tone::Good);
         assert!(c.status(n).starts_with("sound cores two: drum voices "));
+    }
+
+    #[test]
+    fn two_and_three_give_the_tracks_instruments_a_lane_on_each_other_core() {
+        let none: [&str; 0] = [];
+        for (mode, want) in [
+            (SoundCores::Shared, &none[..]),
+            (SoundCores::Two, &["Track instruments lane (core 2)"][..]),
+            (
+                SoundCores::Three,
+                &[
+                    "Track instruments lane (core 2)",
+                    "Track instruments lane (core 1)",
+                ][..],
+            ),
+        ] {
+            let mut mix = crate::mixing::MixHost::new(44_100, -6.0, -6.0);
+            let mut c = Cores::start_on(mode, &mut player(), &mut slot(), NONE);
+            c.start_mixer(&mut mix.mixer);
+            let (rows_before, lines_before) = (c.rows.len(), c.take_lines().len());
+            assert!(lines_before > 0);
+            c.start_tracks(&mut mix.instruments);
+            assert_eq!(mix.instruments.lanes(), want.len(), "{mode:?}");
+            let labels: Vec<&str> = c.rows[rows_before..].iter().map(|r| r.0.as_str()).collect();
+            assert_eq!(labels, want, "{mode:?}");
+            let lines = c.take_lines();
+            assert_eq!(lines.len(), want.len(), "{lines:?}");
+            for (k, line) in lines.iter().enumerate() {
+                assert_eq!(
+                    line,
+                    &format!(
+                        "sound cores: track instruments lane {} any core, the priority it \
+                         inherits: tracks' instruments",
+                        k + 1
+                    )
+                );
+            }
+        }
     }
 
     #[test]
@@ -1106,13 +1224,13 @@ mod tests {
         assert!(
             line.contains(
                 "2 mixer stages with those strips silent, 0 returns blocks with the reverbs \
-                 silent, 0 blocks of a return's input lost and 0 periods with the synth left out \
-                 (fallbacks), 0 waits"
+                 silent, 0 blocks of a return's input lost, 0 periods with the synth left out and \
+                 0 with tracks' instruments left out (fallbacks), 0 waits"
             ),
             "{line}"
         );
         assert!(
-            line.ends_with("; 1, 2, 0, 0, 0 and 0 since the start"),
+            line.ends_with("; 1, 2, 0, 0, 0, 0, 0 and 0 since the start"),
             "{line}"
         );
         // A late synth is left out, and a wait for it past the next
@@ -1122,7 +1240,22 @@ mod tests {
         let line = c.late_note(n, t + Duration::from_secs(2)).unwrap();
         assert!(
             line.contains(
-                "1 period with the synth left out (fallbacks), 1 wait for the synth past the next deadline"
+                "1 period with the synth left out and 0 with tracks' instruments left out \
+                 (fallbacks), 1 wait for the synth and 0 for tracks' instruments past the next \
+                 deadline"
+            ),
+            "{line}"
+        );
+        // So are tracks' instruments left out, and waited for.
+        n.track_periods = 50;
+        n.track_late = 2;
+        n.track_waits = 1;
+        let line = c.late_note(n, t + Duration::from_secs(3)).unwrap();
+        assert!(
+            line.contains(
+                "0 periods with the synth left out and 2 with tracks' instruments left out \
+                 (fallbacks), 0 waits for the synth and 1 for tracks' instruments past the next \
+                 deadline"
             ),
             "{line}"
         );
@@ -1143,7 +1276,7 @@ mod tests {
             "{line}"
         );
         assert!(
-            line.ends_with("; 1, 2, 1, 1, 1 and 1 since the start"),
+            line.ends_with("; 1, 2, 1, 1, 1, 2, 1 and 1 since the start"),
             "{line}"
         );
         // Late ones show red on the Dev page.
@@ -1158,11 +1291,23 @@ mod tests {
             .find(|r| r.0.starts_with("Mixer inserts on"))
             .unwrap();
         assert_eq!((mix.1.as_str(), mix.2), ("40 stages · 2 late", Tone::Bad));
-        assert_eq!(r.last().unwrap().1, "30 blocks · 1 late · 1 lost");
+        let returns = r
+            .iter()
+            .find(|r| r.0.starts_with("Reverb returns on"))
+            .unwrap();
+        assert_eq!(
+            (returns.1.as_str(), returns.2),
+            ("30 blocks · 1 late · 1 lost", Tone::Bad)
+        );
+        assert_eq!(
+            r.last().unwrap().1,
+            "50 periods · 2 late · 1 waited · 0 moves"
+        );
         assert_eq!(r.last().unwrap().2, Tone::Bad);
-        assert!(two
-            .status(n)
-            .ends_with("; returns 30 blocks on core 2, 1 late, 0 starts, 0 stops, 1 lost"));
+        assert!(two.status(n).ends_with(
+            "; returns 30 blocks on core 2, 1 late, 0 starts, 0 stops, 1 lost; track instruments \
+             50 periods on lanes, 2 late, 1 waited for, 0 moves"
+        ));
     }
 
     /// The synth's notes for a few periods: two held notes and pressure.
@@ -1217,9 +1362,9 @@ mod tests {
         }
         assert!(heard > 0.01, "the synth played: peak {heard}");
         assert_eq!(here.active_voices(), there.active_voices());
-        let n = Counts::read(&p, &mix.mixer, &there);
+        let n = Counts::read(&p, &mix, &there);
         assert_eq!(n.synth_periods, 60, "{n:?}");
-        assert_eq!(Counts::read(&p, &mix.mixer, &here).synth_periods, 0);
+        assert_eq!(Counts::read(&p, &mix, &here).synth_periods, 0);
         let shared = CoreShared::default();
         c.show(&shared);
         c.publish(&shared, n);
@@ -1237,10 +1382,12 @@ mod tests {
                 "Drum voices on core 2 · late",
                 "Mixer inserts on core 2 · late",
                 "Reverb returns on core 2 · late · lost",
+                "Track instruments on lanes · late · waited · moves",
                 "Synth on core 1 · late · waited"
             ]
         );
-        assert_eq!(rows[9].1, "60 periods · 0 late · 0 waited");
+        assert_eq!(rows[9].1, "0 periods · 0 late · 0 waited · 0 moves");
+        assert_eq!(rows[10].1, "60 periods · 0 late · 0 waited");
         let status = c.status(n);
         assert!(
             status.starts_with("sound cores three: drum voices "),
@@ -1280,7 +1427,7 @@ mod tests {
             assert!(there.home.is_some(), "period {i}: back");
             assert!(there.active_voices() > 0);
         }
-        let n = Counts::read(&p, &mixing_host().mixer, &there);
+        let n = Counts::read(&p, &mixing_host(), &there);
         assert_eq!(n.synth_periods, 200);
         assert_eq!(n.synth_late, left_out);
         assert_eq!(

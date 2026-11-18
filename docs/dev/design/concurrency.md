@@ -247,8 +247,8 @@ runs again after the second boot it already makes to check saved settings;
 | --- | --- | --- | --- |
 | `shared` | SCHED_FIFO 70, wherever the kernel puts it (cores 0 and 1 on the test stick) | idle | shared with the rest |
 | `core3` | pinned to core 3, SCHED_FIFO 70 | idle | the rest |
-| `two` | pinned to core 3, SCHED_FIFO 70 | two lanes at SCHED_FIFO 69: the sampler's second voice pool (`Engine::split`, half the voices) and about half the pad channels' and tracks' inserts (`Mixer::set_lane`); and the reverb returns a block late at SCHED_FIFO 68 (`Mixer::set_pipelined_returns`) | the rest |
-| `three` (a test) | pinned to core 3, SCHED_FIFO 70 | as `two` | the synth's lane at SCHED_FIFO 69 (`SynthSlot`), beside the rest |
+| `two` | pinned to core 3, SCHED_FIFO 70 | three lanes at SCHED_FIFO 69: the sampler's second voice pool (`Engine::split`, half the voices), about half the pad channels' and tracks' inserts (`Mixer::set_lane`), and the tracks' own instruments placed there (`TrackHost::set_lanes`); and the reverb returns a block late at SCHED_FIFO 68 (`Mixer::set_pipelined_returns`) | the rest |
+| `three` (a test) | pinned to core 3, SCHED_FIFO 70 | as `two` | two lanes at SCHED_FIFO 69: the synth's (`SynthSlot`) and the tracks' own instruments placed there, beside the rest |
 
 Core 0 is never asked for: Linux on ARM sends hardware interrupts to core 0
 unless something moves them (an assumption for the MPC until a read-only
@@ -275,15 +275,35 @@ there. Jay (12 Nov): keep one core for interrupts.
   the synth on its lane, the CPU by engine page's synth row is only the
   audio thread's wait for it.
 
+- **The tracks' own instruments on the sound cores** (`two` and `three`,
+  built 18 Nov; [Track host](track-host.md#other-cores-lanes)).
+  `Cores::start_tracks` gives the track host a lane on core 2 and, in
+  `three`, one on core 1 too. Each period, after the drums and the pad
+  synth and before the mixer, the host posts each lane its instruments,
+  renders its own on the audio thread, joins the lanes by the period's
+  deadline and adds every instrument's sound into its mixer track in slot
+  order, so the sound is the same to the bit as on one core. Twice a second
+  it places the instruments again by what each costs, the most costly
+  first, where the least is placed, and moves them only if the busiest core
+  gets clearly lighter. A late lane leaves its instruments out of that
+  period; `Instruments::settle`, right after the write, takes them back, and
+  the next period waits for them only if they are still out (counted). The
+  Dev page has a row for each lane ("Track instruments lane (core N)") and
+  one for the counts ("Track instruments on lanes · late · waited ·
+  moves"); the late ones are in the log within a second and in the 30 s
+  status.
+
 - **When.** The audio thread pins itself and splits the sampler just before
   the sound card opens, and the mixer's lane starts right after the mixer is
   made, all before the first period. Nothing changes while the sound plays.
   An audio buffer change in Prefs reopens the sound card on the same thread,
   which keeps its core.
-- **One core for three lanes.** Each lane has its own worker thread (the
-  sampler, the mixer's inserts and the reverb returns each own theirs), all
-  on core 2. The sampler's lane never runs at the same time as the mixer's
-  two: within a period it is joined before the mixer posts. The returns'
+- **One core for four lanes.** Each lane has its own worker thread (the
+  sampler, the tracks' instruments, the mixer's inserts and the reverb
+  returns each own theirs), all on core 2. The sampler's lane never runs at
+  the same time as the others: within a period it is joined before the
+  tracks' instruments are posted, and those are joined before the mixer
+  posts. The returns'
   lane is posted at the start of the mixer's block and joined at the
   returns, after the pad channels, tracks and submixes, so it overlaps the
   inserts lane's stages. It runs one priority lower (SCHED_FIFO 68): the
@@ -322,7 +342,8 @@ there. Jay (12 Nov): keep one core for interrupts.
   two blocks. The counts are on the Dev tab's CPU by engine page (red
   once one is late), in the 30 s `status:` line (`sound cores two: drum
   voices N parts on core 2, N late; mixer N stages on core 2, N late;
-  returns N blocks on core 2, N late, N starts, N stops, N lost`, and
+  returns N blocks on core 2, N late, N starts, N stops, N lost; track
+  instruments N periods on lanes, N late, N waited for, N moves`, and
   `three` adds `; synth N periods on core 1, N late (left out), N waited
   for`), and in a log line within a second of a late one (`sound cores:
   late: ...`). A late part is a bug or an over-budget design to fix, not a
@@ -347,12 +368,17 @@ there. Jay (12 Nov): keep one core for interrupts.
   the synth on its lane sounds the same bit for bit, that a late synth is
   left out and comes back after the write, the deadline's arithmetic, that
   no lane starts without the audio thread's pin, and that a lane without its
-  core plays on the audio thread; mpfree-lanes checks strict lanes, and the
+  core plays on the audio thread, and that `two` and `three` give the
+  tracks' instruments a lane on each other core; mpfree-track checks that
+  instruments on lanes sound the same to the bit, that a late lane's
+  instruments are left out and come back, and that two costly ones sharing a
+  core are parted; mpfree-lanes checks strict lanes, and the
   mixer's tests that a block's deadline holds for every join in it and only
   that block; `rt_safety.rs`
   runs the sound path for 35 s on two cores, and with the synth on three
-  (unpinned), with a reverb on a return running a block late, with no
-  allocation on the sound path.
+  (unpinned), with a reverb on a return running a block late, and a track's
+  own Poly on the tracks' lane on two cores, with no allocation on the
+  sound path.
 - **Other devices.** The cores above are the MPC One's. The MPC Gen 2 (8
   cores, 4 GB, bookmarked by Jay 12 Nov for later) would get its own plan:
   more lanes (each synth, the mixer and the returns on cores of their own),
@@ -383,9 +409,12 @@ Runs only the lane cases: the handoff alone (an empty job, the worker
 sleeping or spinning), the sampler case as one engine, as two engines of 12
 voices on one core, and as two engines on two cores, the bench song's mixer
 with every insert on one core, with its track inserts split over two, and with its returns a block late on a second core (Full and Eco reverb),
-and the sampler with Poly Init's 8-voice chords on one core and on two. On the MPC,
+the sampler with Poly Init's 8-voice chords on one core and on two, and eight synth
+tracks of eight engines in the track host (`cases::SONG_TRACKS`, chords changing
+every half second) on one core, on two and on three. On the MPC,
 `--lane-cores 3,2` pins the bench's own thread to core 3 and the workers to
-core 2. A test checks that the two-core cases make exactly the same sound as
+core 2, and the three-core case's second lane to core 1 (the first core from
+1 that is neither; a worker left unpinned would start on the bench's core). A test checks that the two-core cases make exactly the same sound as
 the one-core ones.
 
 On a shared desktop VM (2026-11-11, noisy) the handoff cost about 1 to 17 µs
@@ -394,3 +423,7 @@ sampler's mean block went from about 90 µs on one engine to 66 to 79 µs split
 over two cores with a sleeping worker, and 52 to 70 µs with a spinning one. On the MPC the
 engines are about 6.6 times slower and the handoff is unmeasured, so the
 real gain is for the device run to say.
+
+The eight synth tracks (18 Nov, the same VM, `--quick`): 214 µs a block on
+average on one core, 112 µs on two and 92 µs on three. The worst blocks on the
+VM vary too much from run to run to read; the device's numbers decide.
