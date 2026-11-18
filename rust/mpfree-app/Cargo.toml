@@ -18,6 +18,7 @@ mpfree-touch = { path = "../mpfree-touch" }
 mpfree-touch-evdev = { path = "../mpfree-touch-evdev" }
 mpfree-ui = { path = "../mpfree-ui" }
 mpfree-sampler = { path = "../mpfree-sampler" }
+mpfree-grain = { path = "../mpfree-grain" }
 mpfree-transport = { path = "../mpfree-transport" }
 mpfree-seq = { path = "../mpfree-seq" }
 # Each track's own instrument (instruments.rs).

@@ -305,6 +305,17 @@ fn shots() -> Vec<Shot> {
             pick: Some("Transport and tempo"),
         },
         Shot {
+            name: "io-learn-clips",
+            about: "Learn with Clips and scenes tapped: a track's Mute, Solo and Stop, then Stop all and Back to song, for a controller to learn (what SHIFT + a tap on the Clips grid can't)",
+            section: 3,
+            model: learn.clone(),
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: None,
+            pick: Some("Clips and scenes"),
+        },
+        Shot {
             name: "io-learn-learning",
             about: "Learn after Learn again on the Bass volume: the banner says what the next control moved will take, with Cancel",
             section: 3,
