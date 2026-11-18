@@ -11537,11 +11537,23 @@ pub fn sample_sampler(fonts: Fonts) -> Player {
     p
 }
 
-/// Waits (up to 10 s) for the Sample tab's sounds to be analysed off the
-/// screen thread, as the screen does a moment after a sound is shown.
+/// How long the screens and tests wait for the Sample tab's worker threads
+/// (the analysis, a load, a process). Under a second on its own, but a
+/// coverage build on a busy CI runner took over 10 s for one sound's
+/// analysis, so the wait is long, and running out of it is a failure that
+/// says so, never a screen or a test going on with half a sound.
+pub const WORKER_WAIT: Duration = Duration::from_secs(120);
+
+/// Waits for the Sample tab's sounds to be analysed off the screen thread,
+/// as the screen does a moment after a sound is shown. Panics if they still
+/// aren't after [`WORKER_WAIT`].
 pub fn settle_views(p: &mut Player) {
-    let end = Instant::now() + Duration::from_secs(10);
-    while p.sample.analysing() && Instant::now() < end {
+    let end = Instant::now() + WORKER_WAIT;
+    while p.sample.analysing() {
+        assert!(
+            Instant::now() < end,
+            "the Sample tab's sounds were still being analysed after {WORKER_WAIT:?}"
+        );
         std::thread::sleep(Duration::from_millis(2));
         p.tick(0.0);
     }
@@ -19195,9 +19207,9 @@ mod tests {
     }
 
     /// Ticks until `done` (the sample page's threads finish), for at most
-    /// five seconds.
+    /// [`WORKER_WAIT`].
     fn tick_until(p: &mut Player, mut done: impl FnMut(&mut Player) -> bool) {
-        let end = Instant::now() + Duration::from_secs(5);
+        let end = Instant::now() + WORKER_WAIT;
         while !done(p) {
             assert!(Instant::now() < end, "{:?}", events_log(p));
             std::thread::sleep(Duration::from_millis(5));
