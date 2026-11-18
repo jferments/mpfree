@@ -14114,6 +14114,27 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         levels.take_actions();
         out.push(("sample-play-levels", levels));
     }
+    // The Movement section: a sine LFO on the pitch at 5 Hz (a vibrato),
+    // and a pitch envelope that starts an octave up and drops back over
+    // 200 ms (sampler R5 part 4).
+    {
+        use mpfree_sampler_ui::play_tab::{Row, LIST};
+        let mut moving = sample_sampler(fonts());
+        moving.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
+        });
+        for (row, delta) in [(Row::LfoTo, 1), (Row::PitchEnv, 12), (Row::PitchDecay, 1)] {
+            let index = play_row(&mut moving, row);
+            moving.on_event(UiEvent {
+                widget: LIST.into(),
+                kind: EventKind::Step { index, delta },
+            });
+            moving.apply(ToUi::SampleLift);
+        }
+        moving.take_actions();
+        out.push(("sample-play-movement", moving));
+    }
     // 16 LEVEL on Play: the 16 Levels panel, by tune, pad 12 held.
     {
         let mut levels = sample_sampler(fonts());

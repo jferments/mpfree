@@ -19,10 +19,11 @@ The **Play** page shapes how the picked pad sounds each time you hit it:
 - **Layers:** different sounds for soft and hard hits. Drag a layer's edges to set its velocity range.
 - **Envelope:** how the volume rises and falls: **attack**, **hold**, **decay**, **sustain** and **release**. Drag the points on the drawing, or use the Q-Links.
 - **Filter:** darken or thin out the sound. Drag the dot.
+- **Movement:** an LFO that wobbles the pitch, filter, level or pan, and a pitch envelope that drops or rises at each hit.
 
-Its settings come in six **sections**, a button each across the top of the page, with what is in each one written under its name: **Layers**, **Amp**, **Filter**, **Pitch**, **Mod** and **Pad**. Tap one and the page shows that section:
+Its settings come in **sections**, a button each across the top of the page, with what is in each one written under its name: **Layers**, **Amp**, **Filter**, **Pitch**, **Mod**, **Movement** and **Pad**, and **Slices** for a sliced pad (see [Sampling](sampling.md)). Tap one and the page shows that section:
 
-- **Its picture, across the page:** the layer map on Layers, Mod and Pad; the volume envelope over the sound on Amp and Pitch; the filter beside its envelope on Filter; and the keyboard on Pitch and Pad while the pad is a keygroup or the pads play notes.
+- **Its picture, across the page:** the layer map on Layers, Mod and Pad; the volume envelope over the sound on Amp and Pitch; the filter beside its envelope on Filter; the LFO's wave beside the pitch envelope on Movement; and the keyboard on Pitch and Pad while the pad is a keygroup or the pads play notes.
 - **Its controls, in the panel under the picture:** knobs (drag up or down), buttons for a choice, ‹ › selectors, − + steppers and switches, in labelled groups as on a hardware sampler. A finger on a control gives it the wheel and **–** / **+**. The scenes sit beside them on every section.
 - **Q-Links 1 to 4** turn that section's four main settings. The hint line names them.
 
@@ -32,7 +33,8 @@ Its settings come in six **sections**, a button each across the top of the page,
 | **Amp** | the pad's Level and Pan, Attack, Hold, Decay, Sustain and Release | attack, decay, sustain, release |
 | **Filter** | the filter's type, Cutoff, Resonance, and its envelope: Env depth, Env attack, Env decay, Env sustain, Env release | cutoff, resonance, env depth, env decay |
 | **Pitch** | Tune, Wow & flutter, Vintage, and the keys: Keys, Low key, High key, Root key, Key fade | tune, wow, low key, high key |
-| **Mod** | Vel → level, Vel → start, Pressure and its Depth | all four |
+| **Mod** | Vel → level, Vel → start, Vel → cutoff, Vel → pitch, Pressure and its Depth | vel → level, vel → start, pressure, depth |
+| **Movement** | LFO to, LFO wave, LFO rate, LFO depth, Sync to tempo, Retrigger, Pitch env and Pitch decay | LFO rate, LFO depth, pitch env, pitch decay |
 | **Pad** | Polyphony, Mute group, Stops, Also plays, Latch, and the kit's Pads play, Pads from and Levels by | voices, mute group, pads play, pads from |
 
 On a Q-Link, SHIFT turns finer. A setting that has nothing to change right now (the filter's while it is off, the keys' while the pad isn't a keygroup) shows its control and its card faint, and a tap on it says why.
@@ -79,6 +81,26 @@ The **Vintage** switch of the Pitch section turns that off for one pad, its grai
 
 Up to two semitones up, clean and Vintage sound exactly the same: what folds back there is above hearing. Past that, a clean pad takes a little more of the MPC's power for each sound it plays, and a Vintage one doesn't.
 
+### Movement: an LFO and a pitch envelope
+
+{{shot: sample-play-movement | The Movement section: a sine LFO on the pitch at 5 Hz, a vibrato, and a pitch envelope that starts an octave up and drops back over 200 ms.}}
+
+The **Movement** section makes a pad move while it plays, the way the LFO and the pitch envelope of a hardware sampler do. Its picture draws two cycles of the LFO's wave beside the pitch envelope, and says what each does. Both start off.
+
+**The LFO** moves one thing over and over:
+
+- **LFO to** picks what: **Pitch** (a vibrato, up to 12 semitones either way), **Cutoff** (a filter wobble, up to 4 octaves either way, on a pad with a filter), **Level** (a tremolo, down to silence at full depth) or **Pan** (from side to side). **Off** stops it.
+- **LFO wave** is the same set as the Grain page's: **Sine**, **Triangle**, **Saw up**, **Saw down**, **Square**, **Hold** (a new random value each cycle, held) and **Drift** (a new random value each cycle, glided to).
+- **LFO rate** runs from 0.05 to 40 Hz. With **Sync to tempo** on, it is a note length instead, from 4 bars to 1/32, with dotted and triplet values, and follows the project tempo.
+- **LFO depth** says how far, up to 100 % either way: a minus depth moves the other way. At 10 % on Pitch the LFO is a gentle vibrato of just over a semitone.
+- **Retrigger**, at **On**, starts the wave from the top at each hit, so every hit wobbles alike. At **Off**, every hit joins one wave that runs on between hits, and a synced one keeps to the beat while the transport plays: a filter that opens on every bar, whichever hit lands where.
+
+**The pitch envelope** bends each hit: **Pitch env** sets where it starts, up to 24 semitones up or down, and **Pitch decay** how long it takes to come back to the pad's pitch, from 1 ms to 10 s. A few semitones down over 50 ms gives a kick its punch; an octave up over a second makes a riser out of any sound.
+
+Velocity can move the pitch and the filter too, on the **Mod** section: **Vel → pitch** sets how many semitones lower the softest hit plays than the hardest (a minus value plays soft hits higher), and **Vel → cutoff** how much darker a soft hit is, up to 4 octaves at 100 %.
+
+A pad that keeps its pitch (warped to the tempo, or played as grains) doesn't follow the pitch envelope, Vel → pitch or an LFO on Pitch, and those controls show faint. A change to the LFO reaches a sound that is still playing; the pitch envelope and the velocity settings play from the next hit. Scenes morph the LFO depth and the pitch envelope with the rest.
+
 ### Scenes: mangle, morph and go back
 
 {{shot: sample-play-scenes | The scenes on the Play page: A and B stored, the crossfader 40 % of the way to B.}}
@@ -86,7 +108,7 @@ Up to two semitones up, clean and Vintage sound exactly the same: what folds bac
 The **Scenes** group, on the right of the **Play** page's panel on every section, holds two **scenes** of the whole kit, as on the Octatrack:
 
 - **Store A** keeps every pad of the kit as it is now: its sound, trim, level, tune, filter, envelope, everything. **Store B** keeps a second version. Make A, change some pads (tune the snare down, close the hats' filter, push the kick), then make B.
-- The **crossfader** (touch or drag it; it moves once A and B are both stored) morphs the kit from A to B as it plays: each pad's level, pan, tune, filter and envelope times move between their values in A and in B. Settings that are the same in both scenes stay as they are. Sliding it changes nothing in the kit itself, so you can perform with it freely.
+- The **crossfader** (touch or drag it; it moves once A and B are both stored) morphs the kit from A to B as it plays: each pad's level, pan, tune, filter, envelope times, LFO depth and pitch envelope move between their values in A and in B. Settings that are the same in both scenes stay as they are. Sliding it changes nothing in the kit itself, so you can perform with it freely.
 - **Return to A** puts every pad back exactly as A stored it and sets the crossfader to A. Mangle the kit as much as you like, then return. **UNDO** takes the return back.
 
 The scenes are saved with the kit.

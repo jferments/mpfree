@@ -846,6 +846,14 @@ impl Player {
         self.engine.set_tempo(bpm);
     }
 
+    /// Where the transport is, in beats, at the start of the coming
+    /// render (None while it is stopped): a pad's LFO synced to the tempo,
+    /// with Retrigger off, keeps to the beats (sampler R5 part 4). Every
+    /// period, with the tempo.
+    pub fn set_beat(&mut self, beat: Option<f64>) {
+        self.engine.set_beat(beat);
+    }
+
     /// Fades every sound out (over a few milliseconds; a Grains pad over its
     /// release).
     pub fn stop_all(&mut self) {

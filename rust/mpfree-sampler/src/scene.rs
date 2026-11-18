@@ -6,9 +6,10 @@
 //!   kit when it is saved.
 //! - [`morph`] gives the live values ([`crate::engine::Event::PadLive`])
 //!   for a crossfader position between A (0) and B (1): for each pad with a
-//!   sound in both, its level, pan, tune, cutoff, resonance and the amp
-//!   envelope's attack, decay and release, each between its value in A and
-//!   in B (the cutoff on an octave scale). A setting that is the same in
+//!   sound in both, its level, pan, tune, cutoff, resonance, the amp
+//!   envelope's attack, decay and release, its LFO's depth and its pitch
+//!   envelope (sampler R5 part 4), each between its value in A and in B
+//!   (the cutoff on an octave scale). A setting that is the same in
 //!   both is left to the pad's own, and so is a pad either scene has no
 //!   sound on. Nothing in the kit changes: the engine plays the values
 //!   until they are cleared ([`clear`]) or the kit's next view comes in.
@@ -69,6 +70,9 @@ pub fn own(p: &Pad, field: PadField) -> f32 {
         PadField::Decay => p.amp.decay_ms,
         PadField::Release => p.amp.release_ms,
         PadField::Slice => f32::from(p.slice),
+        PadField::LfoDepth => p.lfo.depth,
+        PadField::PitchEnv => p.pitch_env.semitones,
+        PadField::PitchDecay => p.pitch_env.decay_ms,
     }
 }
 

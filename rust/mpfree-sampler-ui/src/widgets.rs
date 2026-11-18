@@ -1129,9 +1129,16 @@ impl Widget for SectionChips {
                 if open { t.text } else { t.text_dim },
                 &chip.name,
             );
+            // A line a little too long for its chip (eight on Play) is
+            // drawn smaller before it is cut.
+            let px = if cx.measure(FontId::Sans, t.size_small, &chip.sub) > bottom.w {
+                t.size_small - 2.0
+            } else {
+                t.size_small
+            };
             cx.text(
                 FontId::Sans,
-                t.size_small,
+                px,
                 bottom,
                 Align::Left,
                 t.text_faint,
