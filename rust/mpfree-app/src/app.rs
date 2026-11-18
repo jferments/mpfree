@@ -1317,6 +1317,8 @@ pub struct App {
     /// The throws a Perform pad plays (held or latched), a bit for each
     /// place in [`crate::play_page::THROW_LIST`].
     throws_on: u8,
+    /// The macros a Perform pad holds, a bit each (Macro 1 the lowest).
+    macros_on: u8,
     /// The kit's page on the pads (PAD BANK A = 0 to H = 7): pad n plays
     /// the kit's pad 16 * page + n (sampler R3 part 2b). One page for
     /// every kit, as Akai's MPC has one pad bank.
@@ -1568,6 +1570,7 @@ impl App {
             perform_bank: 0,
             perform_shown: false,
             throws_on: 0,
+            macros_on: 0,
             pad_page: 0,
             kit_held: [None; 16],
             track_count: 0,
@@ -2273,7 +2276,8 @@ impl App {
         let bit = 1u8.checked_shl(u32::from(t.index))?;
         let was = self.throws_on & bit != 0;
         let now = match (t.hold, down) {
-            (Hold::WhileHeld, d) => d,
+            // A bar's throw: lit while held; the Perform FX plays its bar.
+            (Hold::WhileHeld | Hold::Bar, d) => d,
             (Hold::Latch, true) => !was,
             (Hold::Latch, false) => was,
         };
@@ -2282,6 +2286,41 @@ impl App {
         }
         self.throws_on ^= bit;
         Some(now)
+    }
+
+    /// A macro pad pressed (`down`) or let go: macro `card` held by a pad
+    /// or not (for its light).
+    pub fn perform_macro(&mut self, card: u8, down: bool) {
+        let bit = 1u8.checked_shl(u32::from(card)).unwrap_or(0);
+        if down {
+            self.macros_on |= bit;
+        } else {
+            self.macros_on &= !bit;
+        }
+    }
+
+    /// The macros Perform pads hold now (for their lights).
+    pub fn macros_on(&self) -> u8 {
+        self.macros_on
+    }
+
+    /// Page `page` of the Perform set named `name` (the Perform view's
+    /// Name page and its UNDO). The project is unsaved; the screen gets
+    /// the new set.
+    pub fn set_perform_name(&mut self, page: usize, name: &str) -> Vec<Effect> {
+        let Some(p) = self.perform_set.pages.get_mut(page) else {
+            return Vec::new();
+        };
+        p.name = name.trim().to_string();
+        let mut fx = Vec::new();
+        if self.loop_keys {
+            fx.push(self.status());
+        }
+        fx.push(Effect::PerformSet {
+            set: Box::new(self.perform_set.clone()),
+            opened: false,
+        });
+        fx
     }
 
     /// Every throw a Perform pad plays let go (the set off, another
@@ -8213,10 +8252,7 @@ mod tests {
         assert!(!fx.iter().any(|e| matches!(e, Effect::Bank { .. })));
         assert!(!app.status_now().loop_keys, "page B isn't the loop keys");
         assert!(app.pads_are_loop_keys(), "the set is still on the pads");
-        let reverb = Throw {
-            index: 1,
-            hold: Hold::WhileHeld,
-        };
+        let reverb = Throw::new(1, Hold::WhileHeld);
         assert_eq!(app.perform_page().action(1), PadAction::Throw(reverb));
         // Held: on with the press, off with the lift, once each.
         assert_eq!(app.perform_throw(reverb, true), Some(true));
@@ -8226,15 +8262,27 @@ mod tests {
         assert_eq!(app.throws_on(), 0);
         // Latched: a hit starts it, the lift does nothing, the next hit
         // lets it go.
-        let brake = Throw {
-            index: 7,
-            hold: Hold::Latch,
-        };
+        let brake = Throw::new(7, Hold::Latch);
         assert_eq!(app.perform_throw(brake, true), Some(true));
         assert_eq!(app.perform_throw(brake, false), None);
         assert_eq!(app.throws_on(), 0b1000_0000);
         assert_eq!(app.perform_throw(brake, true), Some(false));
         assert_eq!(app.perform_throw(brake, false), None);
+        // A bar's: lit while held (the Perform FX plays the bar out); a
+        // macro pad's light follows the finger.
+        let bar = Throw::new(2, Hold::Bar);
+        assert_eq!(app.perform_throw(bar, true), Some(true));
+        assert_eq!(app.perform_throw(bar, false), Some(false));
+        app.perform_macro(3, true);
+        assert_eq!(app.macros_on(), 0b1000);
+        app.perform_macro(3, false);
+        assert_eq!(app.macros_on(), 0);
+        // Page C named: the screen gets the set with its name.
+        let fx = app.set_perform_name(2, " Drops ");
+        assert_eq!(app.perform_set().pages[2].name, "Drops");
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::PerformSet { opened: false, .. })));
         // Latched again, then SHIFT + SAMPLER: the set goes off and the
         // throw lets go.
         app.perform_throw(brake, true);
@@ -8325,10 +8373,7 @@ mod tests {
         assert!(!app.perform_page_to(1).is_empty());
         assert!(app.perform_page_to(1).is_empty(), "already there");
         // B8, Vinyl brake, latched and playing: made a scene, it lets go.
-        let brake = Throw {
-            index: 7,
-            hold: Hold::Latch,
-        };
+        let brake = Throw::new(7, Hold::Latch);
         app.set_perform_pad(1, 7, PadAction::Throw(brake));
         app.perform_throw(brake, true);
         let fx = app.set_perform_pad(1, 7, PadAction::Scene(2));

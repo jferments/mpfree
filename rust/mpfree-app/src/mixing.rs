@@ -272,8 +272,16 @@ pub enum PlayFx {
     PadSolo { pad: usize, solo: bool },
     /// Drop drums: these pads (a bit each) muted while held, as well.
     Drop(u16),
-    /// A throw held or let go.
-    Throw { fx: ThrowFx, down: bool },
+    /// A throw held or let go: as the Perform FX pad's own settings say
+    /// (`how` None, Play's throw cards), or as a Perform pad's say.
+    Throw {
+        fx: ThrowFx,
+        down: bool,
+        how: Option<ThrowHow>,
+    },
+    /// Macro `card` (0 to 7) held at `value` (0 to 1) by a Perform pad, or
+    /// let go (None): back to where it was.
+    Macro { card: u8, value: Option<f32> },
     /// The XY pad: where the finger is (0 to 1 each way), and whether it
     /// is down.
     Xy { x: f32, y: f32, down: bool },
@@ -300,6 +308,18 @@ static XY_START: [[(u16, f32); 2]; 9] = {
     }
     out
 };
+
+/// How a Perform pad's throw plays: the Perform FX pad's Starts (1 at
+/// once, 2 on the next 1/16, 3 on the next beat; 0 its own Punch in), Let
+/// go (cut, else ring out) and Plays (for a bar, else while held), set
+/// for the pad's hit and put back after it, so Play's throw cards and the
+/// Perform FX page keep the pad's own settings.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ThrowHow {
+    pub starts: u8,
+    pub cut: bool,
+    pub bar: bool,
+}
 
 /// The performance effects a throw holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1212,15 +1232,38 @@ impl MixHost {
             PlayFx::Filter { strip, position } => {
                 self.insert(strip, FILTER_SLOT, dj_filter::POSITION, position);
             }
-            PlayFx::Throw { fx, down } => {
+            PlayFx::Throw { fx, down, how } => {
                 // The throw holds its Perform FX pad (the default bank's,
-                // as the FX thread laid it out for the throws).
+                // as the FX thread laid it out for the throws). A Perform
+                // pad's settings go on the pad for the hit (the node reads
+                // Starts and Plays on the press, Let go on the release, in
+                // the order they come) and the pad's own come back after.
+                let k = fx.pad();
+                let own = how.map(|h| {
+                    let set = [
+                        (perf::starts(k), f32::from(h.starts)),
+                        (perf::let_go(k), if h.cut { 1.0 } else { 0.0 }),
+                        (perf::plays(k), if h.bar { 1.0 } else { 0.0 }),
+                    ];
+                    let own = set.map(|(id, _)| (id, self.perform_param(id).unwrap_or(0.0)));
+                    for (id, v) in set {
+                        self.insert(StripId::Master, PERFORM_SLOT, id, v);
+                    }
+                    own
+                });
                 self.insert(
                     StripId::Master,
                     PERFORM_SLOT,
-                    perf::hold(fx.pad()),
+                    perf::hold(k),
                     if down { 1.0 } else { 0.0 },
                 );
+                for (id, v) in own.into_iter().flatten() {
+                    self.insert(StripId::Master, PERFORM_SLOT, id, v);
+                }
+            }
+            PlayFx::Macro { card, value } => {
+                let addr = ParamAddr::macro_value(card.min(7));
+                self.modu.lock(&self.mixer, 0, addr, value);
             }
             PlayFx::Xy { x, y, down } => match self.xy_effect {
                 Some(_) => {
@@ -1308,6 +1351,14 @@ impl MixHost {
             .chain(StripId::Master)
             .and_then(|c| c.node(PERFORM_SLOT))
             .is_some_and(|n| n.param(perf::hold(fx.pad())) > 0.5)
+    }
+
+    /// A parameter of the master's Perform FX as it is now.
+    fn perform_param(&self, id: u16) -> Option<f32> {
+        self.mixer
+            .chain(StripId::Master)
+            .and_then(|c| c.node(PERFORM_SLOT))
+            .map(|n| n.param(id))
     }
 
     /// The master's XY FX, the first on its chain, if it has one.
@@ -2671,6 +2722,7 @@ mod tests {
         h.play(PlayFx::Throw {
             fx: ThrowFx::Delay,
             down: true,
+            how: None,
         });
         h.play(PlayFx::Xy {
             x: 0.0,
@@ -2688,6 +2740,7 @@ mod tests {
         h.play(PlayFx::Throw {
             fx: ThrowFx::Delay,
             down: false,
+            how: None,
         });
         h.play(PlayFx::Xy {
             x: 0.5,
@@ -2777,6 +2830,85 @@ mod tests {
         assert_eq!(h.mixer.chain(StripId::Master).map_or(0, |c| c.len()), n);
     }
 
+    /// A Perform pad's throw plays as the pad says (a bar, from the next
+    /// beat, cut) and leaves the Perform FX pad's own settings as they
+    /// were, for Play's card and the Perform FX page.
+    #[test]
+    fn a_perform_pads_throw_plays_its_way_and_puts_the_pads_settings_back() {
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        run(&mut h, 10, 0.0, 0.0);
+        let k = ThrowFx::Reverb.pad();
+        let state = |h: &MixHost| h.perform_param(perf::slot(k) + 3);
+        h.play(PlayFx::Throw {
+            fx: ThrowFx::Reverb,
+            down: true,
+            how: Some(ThrowHow {
+                starts: 1,
+                cut: true,
+                bar: true,
+            }),
+        });
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(h.perform_param(perf::hold(k)), Some(1.0));
+        assert_eq!(state(&h), Some(2.0), "on: it started at once");
+        for id in [perf::starts(k), perf::let_go(k), perf::plays(k)] {
+            assert_eq!(h.perform_param(id), Some(0.0), "id {id} put back");
+        }
+        // Let go at once: it plays its bar on.
+        h.play(PlayFx::Throw {
+            fx: ThrowFx::Reverb,
+            down: false,
+            how: Some(ThrowHow {
+                starts: 1,
+                cut: true,
+                bar: true,
+            }),
+        });
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(h.perform_param(perf::hold(k)), Some(0.0));
+        assert_eq!(state(&h), Some(2.0), "still in its bar");
+        assert_eq!(h.perform_param(perf::let_go(k)), Some(0.0));
+        // Play's card plays the pad as it is: held, so let go, it stops.
+        h.play(PlayFx::Throw {
+            fx: ThrowFx::Delay,
+            down: true,
+            how: None,
+        });
+        run(&mut h, 2, 0.0, 0.0);
+        h.play(PlayFx::Throw {
+            fx: ThrowFx::Delay,
+            down: false,
+            how: None,
+        });
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(
+            h.perform_param(perf::slot(ThrowFx::Delay.pad()) + 3),
+            Some(0.0)
+        );
+    }
+
+    /// A macro pad holds its macro at its value while held, then lets go
+    /// back to the value underneath.
+    #[test]
+    fn a_macro_pad_holds_its_macro_while_held() {
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        run(&mut h, 2, 0.0, 0.0);
+        let m = ParamAddr::macro_value(2);
+        let before = h.modu.engine().value(m).unwrap_or(0.0);
+        h.play(PlayFx::Macro {
+            card: 2,
+            value: Some(1.0),
+        });
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(h.modu.engine().value(m), Some(1.0));
+        h.play(PlayFx::Macro {
+            card: 2,
+            value: None,
+        });
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(h.modu.engine().value(m), Some(before));
+    }
+
     /// Jay after live test 3: several throws at once, a finger on each.
     #[test]
     fn two_throws_held_at_once_each_hold_their_pad() {
@@ -2789,7 +2921,11 @@ mod tests {
         };
         run(&mut h, 10, 0.0, 0.0);
         for fx in [ThrowFx::Delay, ThrowFx::Reverb] {
-            h.play(PlayFx::Throw { fx, down: true });
+            h.play(PlayFx::Throw {
+                fx,
+                down: true,
+                how: None,
+            });
         }
         run(&mut h, 2, 0.0, 0.0);
         assert_eq!(held(&h, ThrowFx::Delay), Some(1.0));
@@ -2798,6 +2934,7 @@ mod tests {
         h.play(PlayFx::Throw {
             fx: ThrowFx::Delay,
             down: false,
+            how: None,
         });
         run(&mut h, 2, 0.0, 0.0);
         assert_eq!(held(&h, ThrowFx::Delay), Some(0.0));
