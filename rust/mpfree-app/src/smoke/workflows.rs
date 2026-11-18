@@ -441,8 +441,7 @@ mod tests {
     fn the_pads_tab_effects_row_opens_the_pads_chain_in_mix() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("header", "tab", "Pads");
-            s.press("smp-pads-bar", "tab", "Pad").run_for(0.3);
+            s.press("header", "tab", "Pads").run_for(0.3);
             assert_eq!(s.view(), View::Pads);
             // A pad with no effects: + FX, and the picker up in Mix.
             s.press("smp-pads-list", "row-button", "+ FX").run_for(0.2);
@@ -817,7 +816,8 @@ mod tests {
     fn the_io_view_follows_its_section_and_says_why_a_setting_stays() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("header", "io-icon", "");
+            s.press("header", "tab", "Mix");
+            s.press("mixer", "view", "I/O");
             assert_eq!(s.view(), View::Mixer);
             let audio_hint = s.hint();
             s.press("mixer", "io-section", "Sync");

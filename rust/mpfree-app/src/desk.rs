@@ -163,7 +163,7 @@ impl Desk<'_> {
                     out.show(gui::ToUi::Level { db: **level_db });
                 }
             }
-            gui::FromUi::IoIcon => fx.extend(app.toggle_io(crate::io_shown(mix))),
+            gui::FromUi::FolderIcon => fx.extend(app.toggle_browser()),
             gui::FromUi::OpenIo => fx.extend(app.open_io()),
             // The Play page: filters, sends, faders, speakers, throws, XY.
             gui::FromUi::PlayFx(p) => mix.play(p),
@@ -337,10 +337,8 @@ impl Desk<'_> {
             gui::FromUi::LoopSteps(n) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Steps(n)))
             }
-            // The Pads tab's switch: the browser or the pad's settings.
-            gui::FromUi::PadsView(v) => {
-                app.set_pads_browse(v == mpfree_sampler_ui::pads_tab::BROWSE)
-            }
+            // The Pads tab's Browse for: the browser, as BROWSE opens it.
+            gui::FromUi::PadsBrowse => fx.extend(app.open_browser()),
             // The audio loop's own: named one by one, so a new action has
             // to be given a home here or there.
             a @ (gui::FromUi::Pad { .. }

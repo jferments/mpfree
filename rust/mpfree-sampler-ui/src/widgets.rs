@@ -9,8 +9,8 @@ use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, W
 // ---------------------------------------------------------------- pad bar
 
 /// The bar over the pad editor: the pad's colour and name, a line about its
-/// sound, and the editor's tabs on the right. A tap on an enabled tab gives
-/// [`EventKind::Tab`].
+/// sound, and the editor's tabs (or one button) on the right. A tap on an
+/// enabled tab gives [`EventKind::Tab`].
 pub struct PadBar {
     pub color: Color,
     pub title: String,
@@ -23,11 +23,17 @@ pub struct PadBar {
     /// a tap on it (the swatch, title and subtitle) gives
     /// [`EventKind::Type`] 0, for the text keyboard.
     pub nameable: bool,
+    /// A button in the switch's place (the Pads tab's "Browse for A5"):
+    /// drawn raised with a folder at its left, always on; a tap gives
+    /// [`EventKind::Tab`] 0. Used when `tabs` is empty.
+    pub button: Option<String>,
 }
 
 const SEG_H: i32 = 40;
 const SEG_PAD: i32 = 4;
 const SEG_TAB_W: i32 = 84;
+/// The width of the bar's button ([`PadBar::button`]).
+const BUTTON_W: i32 = 220;
 
 impl PadBar {
     pub fn new(tabs: &[&str]) -> PadBar {
@@ -39,6 +45,7 @@ impl PadBar {
             active: 0,
             enabled: vec![true; tabs.len()],
             nameable: false,
+            button: None,
         }
     }
 
@@ -48,8 +55,18 @@ impl PadBar {
         Rect::new(r.x, r.y, (tabs.x - r.x - 10).max(0), r.h)
     }
 
-    /// The box holding the tabs.
+    /// The bar's button, when it has one (and no tabs).
+    pub fn button_rect(&self, r: Rect) -> Option<Rect> {
+        self.button.as_ref().filter(|_| self.tabs.is_empty())?;
+        Some(self.tabs_rect(r))
+    }
+
+    /// The box holding the tabs (or the button).
     fn tabs_rect(&self, r: Rect) -> Rect {
+        if self.tabs.is_empty() && self.button.is_some() {
+            let h = SEG_H + 2 * SEG_PAD;
+            return Rect::new(r.right() - 10 - BUTTON_W, r.y + (r.h - h) / 2, BUTTON_W, h);
+        }
         let w = self.tabs.len() as i32 * SEG_TAB_W + 2 * SEG_PAD;
         let h = SEG_H + 2 * SEG_PAD;
         Rect::new(r.right() - 10 - w, r.y + (r.h - h) / 2, w, h)
@@ -110,6 +127,21 @@ impl Widget for PadBar {
             t.text_dim,
             &self.subtitle,
         );
+        if let (Some(b), Some(label)) = (self.button_rect(r), self.button.as_ref()) {
+            // The button: raised, a folder at its left, the label after it.
+            cx.canvas.fill_round_rect(b, 12, t.raised);
+            let (fw, fh) = (20, 15);
+            let (x0, y0) = (b.x + 16, b.y + (b.h - fh) / 2 + 1);
+            cx.canvas
+                .fill_round_rect(Rect::new(x0, y0 - 3, 9, 5), 2, t.text);
+            cx.canvas
+                .fill_round_rect(Rect::new(x0, y0, fw, fh), 3, t.text);
+            cx.canvas
+                .fill_round_rect(Rect::new(x0 + 2, y0 + 4, fw - 4, fh - 6), 2, t.raised);
+            let text = Rect::new(x0 + fw + 10, b.y, b.right() - x0 - fw - 20, b.h);
+            cx.text(FontId::Bold, t.size_body, text, Align::Left, t.text, label);
+            return;
+        }
         cx.canvas.fill_round_rect(tabs, 12, t.bg);
         for (i, name) in self.tabs.iter().enumerate() {
             let tr = self.tab_rect(r, i);
@@ -152,6 +184,9 @@ impl Widget for PadBar {
                 self.name_rect(r),
             ));
         }
+        if let (Some(b), Some(label)) = (self.button_rect(r), self.button.as_ref()) {
+            out.push(Target::tap("button", 0, label.clone(), b));
+        }
         out
     }
 
@@ -161,6 +196,9 @@ impl Widget for PadBar {
         }
         if self.nameable && self.name_rect(r).contains(x, y) {
             return Some(EventKind::Type(0));
+        }
+        if self.button_rect(r).is_some_and(|b| b.contains(x, y)) {
+            return Some(EventKind::Tab(0));
         }
         let i = (0..self.tabs.len()).find(|&i| self.tab_rect(r, i).contains(x, y))?;
         self.enabled
