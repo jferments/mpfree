@@ -56,7 +56,7 @@ Akai's Hype puts six macros on every preset (MPC 3.6 user guide); the Digitone's
 
 ## 10. How we will judge quality
 
-The FX quality method, applied to synths: the targets tables on each type page (proposed values in brackets until a baseline confirms them), a measure-only baseline of today's engines, a quality ratchet on CI, the instruction gate, blind loudness-matched A/B listening pages as in the FX rounds, and device rounds for cost. Listening covers each engine and a sample of its presets.
+The FX quality method, applied to synths: the targets tables on each type page (proposed values in brackets until a baseline confirms them), a measure-only baseline of today's engines ([Synth quality](../design/synth-quality.md), built 18 Nov), a quality ratchet on CI, the instruction gate, blind loudness-matched A/B listening pages as in the FX rounds, and device rounds for cost. Listening covers each engine and a sample of its presets.
 
 ## Sources
 

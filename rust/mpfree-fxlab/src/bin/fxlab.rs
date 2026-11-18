@@ -29,6 +29,12 @@
 //!     The FX quality report: every target of each class (all of them when
 //!     none is named), met or not; writes DIR/quality.json
 //!     (docs/dev/design/fx-quality.md).
+//! fxlab synth [--rate HZ] [--renders] [--out DIR]
+//!     The synth library's baseline: every engine and factory preset
+//!     against its targets, met or not, and a count by measure; writes
+//!     DIR/synth.txt. With --renders, also each preset's listening phrase
+//!     as DIR/renders/ENGINE/NN-PRESET.wav and each drum kit's tour
+//!     (docs/dev/design/synth-quality.md).
 //! ```
 
 use std::path::PathBuf;
@@ -37,7 +43,7 @@ use mpfree_fxlab::card::{self, Options};
 use mpfree_fxlab::dut::{Dut, NodeDut};
 use mpfree_fxlab::plan::{self, Context, ControlList, PlanOptions};
 use mpfree_fxlab::programme::{self, Programme, Schedule};
-use mpfree_fxlab::{capture, quality, wav};
+use mpfree_fxlab::{capture, quality, synth, wav};
 
 fn usage() -> ! {
     eprintln!("usage: fxlab cards [--rate HZ] [--quick] [--presets] [--effect ID]... [--out DIR]");
@@ -47,6 +53,7 @@ fn usage() -> ! {
     eprintln!("       fxlab plan (--effect ID | --controls LIST.tsv) [--points N] [--grid N] [--random N] [--seed N]");
     eprintln!("                  [--gains DB,DB...] [--programme FILE] [--out DIR]");
     eprintln!("       fxlab sweep --effect ID [plan options] [--out DIR]");
+    eprintln!("       fxlab synth [--rate HZ] [--renders] [--out DIR]");
     eprintln!("       fxlab quality [--class delay|eq|reverb|drive|crush|compressor|filter|lofi|amp|modulation|limiter|gate|deesser|multiband|ducker|transient|strip|movement|pitch|voice]... [--rate HZ] [--out DIR]");
     std::process::exit(2);
 }
@@ -64,6 +71,7 @@ struct Args {
     gain: f64,
     reverb: bool,
     dynamics: bool,
+    renders: bool,
     controls: Option<PathBuf>,
     plan: PlanOptions,
 }
@@ -82,6 +90,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Args {
         gain: 0.0,
         reverb: false,
         dynamics: false,
+        renders: false,
         controls: None,
         plan: PlanOptions::default(),
     };
@@ -101,6 +110,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Args {
             "--gain" => a.gain = num(),
             "--reverb" => a.reverb = true,
             "--dynamics" => a.dynamics = true,
+            "--renders" => a.renders = true,
             "--points" => a.plan.sweep_points = num() as usize,
             "--grid" => a.plan.grid_points = num() as usize,
             "--random" => a.plan.random = num() as usize,
@@ -330,6 +340,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let path = a.out.join("quality.json");
             std::fs::write(&path, quality::to_json(&reports))?;
             eprintln!("wrote {}", path.display());
+        }
+        "synth" => {
+            let rows = synth::report(a.rate);
+            let text = format!("{}\n{}", synth::to_text(&rows), synth::summary(&rows));
+            print!("{text}");
+            std::fs::create_dir_all(&a.out)?;
+            std::fs::write(a.out.join("synth.txt"), &text)?;
+            if a.renders {
+                for e in synth::Engine::ALL {
+                    let dir = a.out.join("renders").join(e.name());
+                    std::fs::create_dir_all(&dir)?;
+                    for (i, name) in e.presets().iter().enumerate() {
+                        let file: String = name
+                            .chars()
+                            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                            .collect();
+                        let path = dir.join(format!("{:02}-{file}.wav", i + 1));
+                        wav::write(&path, &synth::phrase(e, i, a.rate))?;
+                    }
+                }
+                let dir = a.out.join("renders").join("Drums");
+                std::fs::create_dir_all(&dir)?;
+                for (i, name) in synth::kits().iter().enumerate() {
+                    let file: String = name
+                        .chars()
+                        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                        .collect();
+                    let path = dir.join(format!("{:02}-{file}.wav", i + 1));
+                    wav::write(&path, &synth::kit_tour(i, a.rate))?;
+                }
+            }
+            eprintln!("wrote {}", a.out.display());
         }
         "cut" => {
             if a.rest.len() != 2 {
