@@ -121,6 +121,30 @@ impl Pedals {
         again
     }
 
+    /// The quick path for the usual case, no pedal down and no note held
+    /// by one: notes the key (for a sostenuto later) and returns true when
+    /// `ev` passes as it came. False when it needs [`Pedals::filter`]: a
+    /// pedal moving, or anything while a pedal is down or holds notes.
+    #[inline]
+    pub fn pass(&mut self, ev: &NodeEvent) -> bool {
+        if self.sustain || self.sostenuto || !self.held.is_empty() || !self.caught.is_empty() {
+            return false;
+        }
+        match *ev {
+            NodeEvent::NoteOn { note, velocity } if velocity > 0 => self.down.put(note),
+            NodeEvent::NoteOn { note, .. } | NodeEvent::NoteOff { note } => {
+                self.down.take(note);
+            }
+            NodeEvent::Control {
+                ctl: Ctl::Sustain | Ctl::Sostenuto,
+                ..
+            } => return false,
+            NodeEvent::AllOff => self.down.clear(),
+            _ => {}
+        }
+        true
+    }
+
     /// A key comes up. True when its note ends now; false when a pedal
     /// holds it.
     pub fn lift(&mut self, note: u8) -> bool {
@@ -234,6 +258,49 @@ mod tests {
             p.filter(e, |x| out.push(x));
         }
         out
+    }
+
+    #[test]
+    fn the_quick_path_gives_what_the_filter_gives() {
+        let sus = |v: f32| NodeEvent::Control {
+            ctl: Ctl::Sustain,
+            value: v,
+        };
+        let sos = |v: f32| NodeEvent::Control {
+            ctl: Ctl::Sostenuto,
+            value: v,
+        };
+        let script = [
+            on(60),
+            on(64),
+            off(60),
+            sos(1.0),
+            off(64),
+            on(67),
+            sus(1.0),
+            off(67),
+            on(67),
+            sus(0.0),
+            sos(0.0),
+            on(72),
+            NodeEvent::AllOff,
+            on(48),
+            off(48),
+            off(48),
+            NodeEvent::Bend { value: 0.5 },
+        ];
+        let (mut a, mut b) = (Pedals::new(), Pedals::new());
+        let (mut out_a, mut out_b) = (Vec::new(), Vec::new());
+        for &e in &script {
+            a.filter(e, |x| out_a.push(x));
+            if b.pass(&e) {
+                out_b.push(e);
+            } else {
+                b.filter(e, |x| out_b.push(x));
+            }
+            assert_eq!(out_a, out_b, "after {e:?}");
+            assert_eq!(a, b, "after {e:?}");
+        }
     }
 
     fn on(note: u8) -> NodeEvent {
