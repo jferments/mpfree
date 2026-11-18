@@ -14391,6 +14391,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-song sample: {e}"),
     }
+    // The song's tempo points on the lane over the bars: 100 BPM from
+    // bar 3 ramping to 128 at bar 6, the ramping point picked (its Ramp
+    // and Delete in place of the clip buttons).
+    match mpfree_time_ui::sample::song_tempo_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song-tempo", p));
+        }
+        Err(e) => eprintln!("arrange-song-tempo sample: {e}"),
+    }
     // The same with two audio lanes under the song (layout spec 4c): a
     // vocal punched in over bars 5-8 and that region picked, a guitar
     // armed. Real takes from the audio tracks engine.

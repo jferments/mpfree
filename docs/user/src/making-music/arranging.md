@@ -91,13 +91,15 @@ You can move the song around with your finger:
 
 The **Tempo** lane under the ruler shows the song's tempo: a line across the bars, with a dot on each tempo point and its tempo beside it. Before the first point the song plays the project's tempo, the one on Play's transport bar.
 
+{{shot: arrange-song-tempo | The Tempo lane: the project's 92 BPM, then 100 BPM from bar 3 ramping up to 128 at bar 6. The point at bar 3 is picked, so the last two buttons read Ramp (lit) and Delete.}}
+
 - **Tap the lane** where there is no point to add one on the nearest bar line. It starts at the tempo playing there, and it is picked.
 - **Tap a point** to pick it, and tap it again to let it go. Push the wheel to grab it, then turn: its tempo moves 1 BPM a click. Push again to let go.
 - **Drag a point** along the lane to move it to another bar. A tag says its tempo and the bar it lands on.
 - With a point picked, the last two buttons read **Ramp** and **Delete**. **Ramp** makes the tempo glide from this point to the next one's, arriving on the next point: the line slopes, and Ramp is lit. Tap it again to step instead. A ramp on the last point waits for a point after it.
 - **UNDO** takes back any of these, one at a time. Turning the wheel on one point is one undo however far you turn it.
 
-**Song on** plays the points. While it does, turning the tempo (the Tempo row, a tempo you type on Play, or a tempo knob you taught with MIDI Learn) changes the point in effect at the playhead, so what you hear is what you set; before the first point it adds a point on the playhead's bar. The project's tempo stays as it was, and **TAP TEMPO** still sets it. With Song off, the project's tempo plays throughout and the points wait.
+**Song on** plays the points. While it does, turning the tempo (the Tempo row, a tempo you type on Play, or a tempo knob you taught with MIDI Learn) changes the point in effect at the playhead, so what you hear is what you set; before the first point it adds a point on the playhead's bar. Inside a ramp it changes the point the ramp starts from, and the glide follows it. The project's tempo stays as it was, and **TAP TEMPO** still sets it. With Song off, the project's tempo plays throughout and the points wait.
 
 A ramp plays as a quick staircase of tempos, one step every 1/16 note, each step landing where a smooth glide would put it. Effects that follow the tempo, such as a synced delay, and the synth follow it too. A MIDI file exported from the song has a tempo for every step of a ramp.
 
