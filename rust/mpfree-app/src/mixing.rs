@@ -560,6 +560,12 @@ pub struct MixHost {
     /// Each track's own instrument (instruments.rs), rendered into its
     /// mixer track before the mixer runs.
     pub instruments: Instruments,
+    /// Each synth-voice pad's own synth (pad_synths.rs), rendered into its
+    /// pad's strip after the tracks' instruments.
+    pub pad_synths: crate::pad_synths::PadSynths,
+    /// What the last synth-voice pad's copy the builder made came to, for
+    /// the log ([`MixHost::take_pad_landed`]).
+    pad_landed: Option<PadLanded>,
     /// The tracks whose channels a kit plays into (a kit other than kit
     /// 1, on the first track that plays it), a bit each, as the last
     /// period's [`MixHost::pads_homed`] had them.
@@ -673,6 +679,22 @@ impl crate::takes::Memory for TakeMem<'_> {
     }
 }
 
+/// What became of a synth-voice pad's copy the builder made
+/// ([`MixHost::poll_instruments`]), for the log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PadLanded {
+    /// The pad plays its own `name` now.
+    Playing {
+        pad: crate::pad_synths::PadFor,
+        name: &'static str,
+    },
+    /// It couldn't be made: the pad plays through the Synth channel.
+    Failed { pad: crate::pad_synths::PadFor },
+    /// The pad wasn't waiting for it any more (it changed meanwhile), or
+    /// no slot was free: dropped.
+    Unwanted { pad: crate::pad_synths::PadFor },
+}
+
 /// What [`MixHost::poll_instruments`] put in (or couldn't) for the log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Landed {
@@ -783,6 +805,8 @@ impl MixHost {
             plugins: Arc::new(Plugins::none()),
             opening: None,
             instruments: Instruments::new(rate, PERIOD),
+            pad_synths: crate::pad_synths::PadSynths::new(rate, PERIOD),
+            pad_landed: None,
             kit_tracks: 0,
             homes: [0; KITS],
             pad_channels: PadChannels::default(),
@@ -822,10 +846,33 @@ impl MixHost {
         while let Some(old) = self.instruments.pop_retired() {
             self.drop_instrument(old);
         }
+        while let Some(old) = self.pad_synths.pop_retired() {
+            self.drop_instrument(old);
+        }
         let m = match self.builder.as_mut() {
             Some(b) => b.take_instrument()?,
             None => self.made.pop()?,
         };
+        // A synth-voice pad's copy goes to the pads' synths.
+        if let Some(pad) = m.pad {
+            self.pad_landed = Some(match m.made {
+                None => {
+                    self.pad_synths.failed(pad);
+                    PadLanded::Failed { pad }
+                }
+                Some((inst, held)) => match self.pad_synths.put(pad, inst, &m.tuning) {
+                    Ok(()) => PadLanded::Playing {
+                        pad,
+                        name: held.name,
+                    },
+                    Err(back) => {
+                        self.drop_instrument(back);
+                        PadLanded::Unwanted { pad }
+                    }
+                },
+            });
+            return None;
+        }
         let Some((inst, held)) = m.made else {
             return Some(Landed::Failed {
                 track: m.track,
@@ -854,6 +901,29 @@ impl MixHost {
                 })
             }
         }
+    }
+
+    /// What became of the last synth-voice pad's copy the builder made,
+    /// once.
+    pub fn take_pad_landed(&mut self) -> Option<PadLanded> {
+        self.pad_landed.take()
+    }
+
+    /// Where pad `pad` of kit `kit` sounds, as the sampler's pads do
+    /// ([`Pads`]): a channel lent to it, a pad channel by its place for a
+    /// kit no track is home to, else its kit's track
+    /// ([`MixHost::kit_track`]). Never allocates.
+    pub fn pad_dest(&self, kit: usize, pad: usize) -> crate::pad_synths::Dest {
+        use crate::pad_synths::Dest;
+        if kit > 0 || pad >= PADS {
+            if let Some(StripId::Pad(s)) = self.pad_channels.channel(kit, pad) {
+                return Dest::Pad(s);
+            }
+        }
+        if self.homes.get(kit).copied().unwrap_or(0) == 0 && pad < PADS {
+            return Dest::Pad(pad);
+        }
+        Dest::Track(self.kit_track(kit))
     }
 
     /// Plugin synth `id`'s own presets, once listed (None until then, or if
@@ -2174,6 +2244,17 @@ impl MixHost {
         } else {
             self.instruments.render(ctx, PERIOD, &mut self.mixer);
             self.instrument_time = Duration::ZERO;
+        }
+        // Each synth-voice pad's own synth into its pad's strip, timed
+        // with the instruments, while any has one or rings out.
+        if self.pad_synths.count() > 0 || self.pad_synths.busy() {
+            let mut dest = [None; crate::pad_synths::HOST_SLOTS];
+            for (s, d) in dest.iter_mut().enumerate() {
+                *d = self.pad_synths.pad_of(s).map(|(k, p)| self.pad_dest(k, p));
+            }
+            let t = Instant::now();
+            self.pad_synths.render(ctx, PERIOD, &mut self.mixer, &dest);
+            self.instrument_time += t.elapsed();
         }
         if self.line_open {
             let (hl, hr) = self.mixer.hw_input();
