@@ -13,7 +13,7 @@
 //! step's, played before the line). Each note keeps its distance from the
 //! line, so a note played a little early or late moves with its step.
 
-use mpfree_seq::{Direction, DIRECTION_STEP};
+use mpfree_seq::{Clip, Direction, Speed, DIRECTION_STEP};
 use mpfree_transport::time::Tick;
 
 use crate::view::ClipView;
@@ -103,8 +103,47 @@ impl Steps {
 /// are exactly `length × den` song ticks): pass numbers for trig
 /// conditions and directions count from it.
 pub(crate) fn first_pass(clip: &ClipView, origin: Tick, start: Tick) -> i64 {
-    ((start - origin) * Tick::from(clip.speed.num.max(1)))
-        .div_euclid(clip.length.max(1) * Tick::from(clip.speed.den.max(1)))
+    pass_of(clip.speed, clip.length, origin, start)
+}
+
+fn pass_of(speed: Speed, length: Tick, origin: Tick, start: Tick) -> i64 {
+    ((start - origin) * Tick::from(speed.num.max(1)))
+        .div_euclid(length.max(1) * Tick::from(speed.den.max(1)))
+}
+
+/// The step a launched clip with a play direction plays, for a step
+/// playhead (the Play page's pattern, the step pads): the same order the
+/// player plays, from the project's clip, so the light is on the step
+/// heard rather than on the step under the clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StepOrder(Steps);
+
+impl StepOrder {
+    /// `clip` in `slot` on `track`, launched on song tick `start` from
+    /// `origin` (a [`crate::Launch`]): None when it plays its steps
+    /// forward, as the player does ([`Clip::direction_steps`]).
+    pub fn of(
+        clip: &Clip,
+        track: usize,
+        slot: usize,
+        origin: Tick,
+        start: Tick,
+    ) -> Option<StepOrder> {
+        let n = clip.direction_steps()?;
+        Some(StepOrder(Steps {
+            direction: clip.direction,
+            n,
+            first: pass_of(clip.speed, clip.length, origin, start),
+            seed: seed(track, slot),
+        }))
+    }
+
+    /// The clip step played while play step `big` sounds: the steps
+    /// counted forward from the origin, from line to line (step `big`
+    /// from its line until the next).
+    pub fn step(&self, big: i64) -> usize {
+        self.0.pick(big) as usize
+    }
 }
 
 /// Random's seed for the clip in `slot` on `track`: the same every time
@@ -158,5 +197,35 @@ mod tests {
         for x in [0.0, 100.0, 300.0, 470.0] {
             assert_eq!(f.heard(x).0, x);
         }
+    }
+
+    /// A step playhead's order from the project's clip is the player's
+    /// own, launched mid-clip at half speed too (passes count from the
+    /// launch); forward and part steps have none.
+    #[test]
+    fn a_step_playhead_follows_the_order_the_player_plays() {
+        use crate::view::view_of;
+        let mut clip = Clip::new("Hats", 8 * DIRECTION_STEP);
+        clip.speed = Speed { num: 1, den: 2 };
+        for direction in [Direction::Reverse, Direction::PingPong, Direction::Random] {
+            clip.direction = direction;
+            // Launched in its third pass from an origin of bar 2.
+            let (origin, start) = (3840, 3840 + 2 * 2 * 8 * DIRECTION_STEP + 480);
+            let order = StepOrder::of(&clip, 3, 5, origin, start).expect("a direction");
+            let view = view_of(&clip, None, 5, origin, start);
+            let played = Steps::of(&view, 3, origin, start).expect("the player's");
+            for big in 0..64 {
+                assert_eq!(
+                    order.step(big),
+                    played.pick(big) as usize,
+                    "{direction:?} {big}"
+                );
+            }
+        }
+        clip.direction = Direction::Forward;
+        assert_eq!(StepOrder::of(&clip, 3, 5, 0, 0), None);
+        clip.direction = Direction::Reverse;
+        clip.length = 8 * DIRECTION_STEP + 60;
+        assert_eq!(StepOrder::of(&clip, 3, 5, 0, 0), None);
     }
 }
