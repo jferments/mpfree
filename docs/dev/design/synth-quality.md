@@ -69,6 +69,69 @@ Met against rows with a target: L2 66 of 83, L3 75/83, L5 32/71, L6 81/83, L8 83
 
 `mpfree-bench --afford [--filter TEXT]` now plays every factory preset of every keyboard engine at 1, 2, 4, 8 and 16 voices (keys held, for the organ; a mono preset once, on a line), fits `p99 = fixed + voices × per voice` and says how many voices fit in the synth budget, with the worst block over the mean at the most voices beside it ([Profiling, What can we afford?](profiling.md#what-can-we-afford---afford)). It is not a ratchet row: costs on a shared VM are too noisy, and the instruction gate counts the bench's synth cases already. On the workstation (Xeon, 18 Nov) a voice costs about 4 µs a block for Poly Init (6.7 for Supersaw), 5 for Analog, 3 to 5 for FM, 3.5 to 7.7 for Wavetable, 5 for Keys, 1.8 for Pluck and about 1 for the organ's keys (its wheels cost the same whatever is held). The MPC's numbers come from a device round.
 
+## Wave 1 targets: Bass, Keys and Strings (stage 4)
+
+The bar each wave 1 pull request is judged by ([Architecture and roadmap](synth-architecture.md#7-roadmap)). The ids are the research pages' (B, K, S) and the voice core's (V). Each row joins the report and the ratchet in the pull request that builds what it measures; until then it is listed here only. "Today" is the baseline's number for the nearest thing there is. Bracketed targets on the research pages are now the bar; listening can still move one, and the page says when it does.
+
+**The voice core (V)**, on every engine built on it and every new preset:
+
+| Id | Measure | Target | Today |
+|---|---|---|---|
+| V1 | Level from velocity 20 to 127 (L6) | The preset's Velocity range within 1 dB; Keys presets 30 to 40 dB, others at least 18 dB (ours) | Poly 7 to 8 dB, Keys 12 to 22 dB |
+| V2 | The square-law fit (L6) | Within 2 dB | 81 of 83 presets |
+| V3 | Tone against velocity (L5) | At least 0.1 octave, every preset but the organ's | 32 of 71 presets |
+| V4 | Envelope times | Attack reaches 1 dB under full level within 10 % of its label; Release falls 60 dB within 10 % of its label | Poly: Attack at 31 %, Release at 85 % |
+| V5 | Sustain pedal (K5) | A note let go with the pedal down sounds until the pedal comes up, then releases; a key struck again under the pedal restarts its note; the same through the host's fallback for an engine that doesn't hear the pedal | No pedal |
+| V6 | Note priority and legato | Last, low and high each pick the right note as keys go down and up; legato with retrigger off never restarts the envelopes | Last note only |
+| V7 | Glide by rate | Covers an octave in the time its rate gives, within 10 %; lands within 2 cents (B2) | Time only |
+| V8 | DC (L3) | Under −60 dBFS | 8 presets over |
+| V9 | An 8-note chord at full velocity (L2) | Under 0 dBFS | 17 presets clip |
+
+**Bass (B)**, on the Bass engine's plain patch and presets:
+
+| Id | Measure | Target | Today |
+|---|---|---|---|
+| B1 | Pitch of a held note 100 ms in, C0 to C3, both bodies | Within 3 cents | Not measured below C1 |
+| B2 | Glide (with V7) | Lands within 2 cents; time within 10 % | Poly: 0.04 cents, 1.2 % |
+| B3 | The 808's drop | Amount and time as set, within 5 %; then settles per B1 | No 808 that plays a line |
+| B4 | The note's start | Largest step in the first four frames under −40 dBFS with start phase 0° | 16 of 16 bass presets |
+| B5 | Heard on small speakers | 100 to 400 Hz at least −12 dB against below 100 Hz, C1 and C2, default drive | 9 of 16 bass presets |
+| B6 | Level across the keys | Loudness spread under 3 dB, C0 to C3 | Reported in L11 (C1 to C3) |
+| B7 | Low end stays mono | Correlation at least 0.95 under 120 Hz | 16 of 16 |
+| B9 | The ladder | Within 1 dB of the analog prototype at rest; resonance peak within 25 cents | Poly's: 0.16 dB, 5.3 cents |
+| B10 | Aliasing at full drive | Worst alias under −60 dB at C5 | Poly saw with 24 dB drive: −42 dB at C5 |
+| B11 | Cost | One voice under 5 % of a period in the worst block on the MPC; the workstation's reported | Device round |
+
+**Keys (K)**, on Keys' presets, the clav's included:
+
+| Id | Measure | Target | Today |
+|---|---|---|---|
+| K1 | Second harmonic, velocity 127 against 40, C4 | At least 12 dB more | 11 of 12 |
+| K2 | Level against velocity | V1 and V2, range 30 to 40 dB | 12 to 22 dB |
+| K3 | Decay against pitch | T60 within 20 % of the label; slope within 0.15 of the engine's law | 48 of 48 |
+| K4 | The end of a note | The clav drops 3 ± 0.5 semitones at release; any damper sound is under the note's level | No clav |
+| K5 | Sustain pedal | V5 | No pedal |
+| K6 | Level across the keys | Loudness spread under 3 dB, C1 to C7 | 0 of 12 (4.4 to 12.8 dB) |
+| K7 | Clav pickups | Notches where the pickup's place predicts, within 5 % | No clav |
+| K9 | Tremolo | Rate within 5 % of its label | 3 of 3 |
+| K10 | Cost | 16 tine voices and 10 clav voices under the synth line on the MPC | Device round |
+
+**Strings (S)**, on the Strings engine and the Ensemble effect:
+
+| Id | Measure | Target | Today |
+|---|---|---|---|
+| S1 | The ensemble's pitch movement | Slow and fast rates within 5 % of their labels; depth in cents as labelled | No engine |
+| S2 | The lines' movement | 120° apart, within 5° | |
+| S3 | Width | Correlation 0.2 to 0.6 with the ensemble on; mono fold-down loss under 3 dB | |
+| S4 | Top end | The wet path 3 dB down between 6 and 9 kHz | |
+| S5 | Cost against keys held | Flat within 10 % from 1 to 49 keys (workstation bench, then the MPC) | Drawbar's bank: 0.4 to 1.2 µs a key |
+| S6 | Tuning | Every key within 1 cent in every built-in tuning; 24-TET through the per-key fallback | |
+| S7 | Crescendo and Sustain | Within 10 % of their labels | |
+| S8 | Aliasing | Worst alias under −60 dB at C7 | |
+| S9 | Chords | A 6-note chord within 6 dB of its notes' power sum (L12) | |
+
+The Ensemble effect also meets the FX method's own rows: no dip as Mix goes up (within −1 to +1.5 LU of the dry), no zipper over 3 dB on any control, and no cut-off tail ([FX quality](fx-quality.md#delay), D6, D7 and D12).
+
 ## Not measured yet
 
 Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), drift (P10), the 808 kick and metal bank against their papers (D1, D2, D9), chokes and retriggers (D6), sustain-pedal behaviour (K5: there is no pedal event yet), clav and piano partials (K7, K8), FM envelope rates and banks (F4, F6), the string machine, organs, winds and choirs (S, O: no engines yet), and cost on the MPC. Each joins the report when stage 3 or 4 builds or changes what it measures.

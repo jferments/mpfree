@@ -1,6 +1,6 @@
 # Synth library: topics every type shares
 
-**Status:** research, 2026-11-18 (synth library stage 1). The common ground under the type pages: [Bass](bass.md), [Keys](keys.md), [String machines](string-machine.md), [Poly and wavetable](poly-synth.md), [FM](fm.md), [Organs, winds, choirs and tape](organ-wind-choir.md) and [Drums](drums.md). Plan: "Synth library: stock-take and research plan" (https://claude.ai/artifact/36gY5Lf3qTVZp21RM9pzUp). Nothing here has run on the MPC.
+**Status:** research, 2026-11-18 (synth library stage 1). The common ground under the type pages: [Bass](bass.md), [Keys](keys.md), [String machines](string-machine.md), [Poly and wavetable](poly-synth.md), [FM](fm.md), [Organs, winds, choirs and tape](organ-wind-choir.md) and [Drums](drums.md). Plan: "Synth library: stock-take and research plan" (https://claude.ai/artifact/36gY5Lf3qTVZp21RM9pzUp). What stage 3 decided from it: [Synth library: architecture and roadmap](../design/synth-architecture.md). Nothing here has run on the MPC.
 
 Where a point comes from a source it is linked; where it is our own reading, arithmetic or a target we propose, it says so.
 
