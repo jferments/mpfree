@@ -981,3 +981,104 @@ fn the_sound_section_turns_the_pad_as_the_play_page_does() {
     };
     assert_ne!(g1, g2);
 }
+
+/// One-page step 2a: the recorder row sits on the Wave page; REC asks for
+/// a take and its cards step the Rec settings; while REC is on, the panel
+/// under the wave is Input, whose steps are the recorder's, and the
+/// region's settings come back when it stops.
+#[test]
+fn the_recorder_row_records_and_the_panel_is_input_while_rec_is_on() {
+    use mpfree_sampler_ui::recorder::{self, Recorder, RecorderAction, RecorderView};
+    let mut s = sample();
+    let st = s.state.clone();
+    let row = s.ui.rect_of(recorder::RECORDER).unwrap();
+    let bar = s.ui.rect_of(wave_tab::BAR).unwrap();
+    let wave = s.ui.rect_of(wave_tab::WAVE).unwrap();
+    assert!(
+        row.y >= bar.bottom() && row.bottom() <= wave.y,
+        "between the bar and the wave"
+    );
+    let rec = Recorder::rec_rect(row);
+    let ev = s.ui.touch(1, Touch::Down, rec.x + 5, rec.y + 5).unwrap();
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(WaveAction::Rec(RecorderAction::Record))
+    );
+    s.ui.touch(1, Touch::Up, 0, 0);
+    let ends = Recorder::card_rect(row, 2);
+    let ev =
+        s.ui.touch(2, Touch::Down, ends.right() - 5, ends.y + 5)
+            .unwrap();
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(WaveAction::Rec(RecorderAction::Step(rec_tab::Row::End, 1)))
+    );
+    s.ui.touch(2, Touch::Up, 0, 0);
+    // REC on: the panel is Input.
+    let on = RecorderView {
+        sources: vec!["Line in".into()],
+        recording: true,
+        status: "Recording onto A1 · 0:01.0".into(),
+        ..Default::default()
+    };
+    s.tab.set_recorder(&mut s.ui, on, &st);
+    let list = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
+    let names: Vec<&str> = list.rows.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, ["Source", "Channels", "Threshold", "Pre-roll"]);
+    let ev = UiEvent {
+        widget: wave_tab::REGION.into(),
+        kind: EventKind::Step { index: 2, delta: 1 },
+    };
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(WaveAction::Rec(RecorderAction::Step(
+            rec_tab::Row::Threshold,
+            1
+        )))
+    );
+    // And the Q-Links: 2 turns the Threshold, 3 the Pre-roll; 1 and 4 are
+    // faint and say why.
+    let card = |s: &Sample, k: usize| {
+        let c = s.ui.get::<KnobCard>(wave_tab::QLINKS[k]).unwrap();
+        (c.label.clone(), c.value.clone(), c.enabled, c.why.clone())
+    };
+    assert_eq!(card(&s, 1).0, "Q-Link 2 · Threshold");
+    assert_eq!(card(&s, 1).1, "-30 dB");
+    assert_eq!(card(&s, 2).0, "Q-Link 3 · Pre-roll");
+    assert!(!card(&s, 0).2 && !card(&s, 3).2);
+    assert_eq!(card(&s, 0).3, recorder::QLINK_IDLE);
+    assert_eq!(
+        s.tab.qlink(&mut s.ui, &st, 1, -2, false),
+        Some(WaveAction::Rec(RecorderAction::Step(
+            rec_tab::Row::Threshold,
+            -2
+        )))
+    );
+    assert_eq!(
+        s.tab.qlink(&mut s.ui, &st, 2, 1, false),
+        Some(WaveAction::Rec(RecorderAction::Step(
+            rec_tab::Row::PreRoll,
+            1
+        )))
+    );
+    assert_eq!(s.tab.qlink(&mut s.ui, &st, 0, 1, false), None);
+    assert_eq!(s.tab.qlink(&mut s.ui, &st, 3, 1, false), None);
+    let tap = s.ui.touch(3, Touch::Down, rec.x + 5, rec.y + 5).unwrap();
+    assert_eq!(
+        s.tab.action(&mut s.ui, &tap, &st),
+        Some(WaveAction::Rec(RecorderAction::Stop))
+    );
+    s.ui.touch(3, Touch::Up, 0, 0);
+    // Stopped: the region's settings again.
+    s.tab.set_recorder(&mut s.ui, RecorderView::default(), &st);
+    let list = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
+    assert_eq!(list.rows.len(), Row::ALL.len());
+    assert!(step(&mut s, Row::Reverse, 1).is_some());
+    // The Q-Links move the markers again.
+    assert_eq!(card(&s, 0).0, "Q-Link 1 · Start");
+    assert!(card(&s, 0).2);
+    assert!(matches!(
+        s.tab.qlink(&mut s.ui, &st, 1, -1, false),
+        Some(WaveAction::Region { .. })
+    ));
+}
