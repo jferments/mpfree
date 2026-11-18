@@ -706,10 +706,24 @@ fn an_instrument_pad_picks_its_engine_and_note() {
     assert_eq!(
         footer(&s),
         Some((
-            "A hit plays the Synth tab's FM sound at C2, through the Synth strip on Mix".into(),
+            "A hit plays the Synth tab's FM sound at C2, through this pad's channel on Mix".into(),
             false
         ))
     );
+    // Past the sixteen with a synth of their own (the app says which).
+    s.state.on_synth = 1 << 10;
+    let st = s.state.clone();
+    s.tab.update(&mut s.ui, &st);
+    assert_eq!(
+        footer(&s),
+        Some((
+            "A hit plays the Synth tab's FM sound at C2, through the Synth channel: no synth of its own (16 pads at most have one)".into(),
+            true
+        ))
+    );
+    s.state.on_synth = 0;
+    let st = s.state.clone();
+    s.tab.update(&mut s.ui, &st);
     let map = s.ui.get::<PadMap>(pads_tab::MAP).unwrap();
     assert_eq!(
         (

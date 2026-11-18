@@ -405,6 +405,10 @@ pub struct PadsState {
     pub engines: Vec<String>,
     /// The MIDI outputs a MIDI out pad can send to. The app fills it.
     pub ports: Vec<OutPort>,
+    /// The kit's Instrument pads that play through the Synth channel, a
+    /// bit each (pad 0 the lowest): past the sixteen that have a synth of
+    /// their own, or whose own couldn't be made. The app fills it.
+    pub on_synth: u128,
 }
 
 /// Pad `p` plays a sound of its own: what Map to keys maps.
@@ -456,6 +460,7 @@ impl PadsState {
             bpm: 120.0,
             engines: Vec::new(),
             ports: Vec::new(),
+            on_synth: 0,
         }
     }
 
@@ -1346,9 +1351,16 @@ fn footer(p: &Pad, st: &PadsState) -> Option<(String, bool)> {
                 .iter()
                 .find(|e| e.eq_ignore_ascii_case(engine))
             {
+                Some(name) if st.on_synth & 1 << st.pad.min(127) != 0 => (
+                    format!(
+                        "A hit plays the Synth tab's {name} sound at {}, through the Synth channel: no synth of its own (16 pads at most have one)",
+                        note_name(*note)
+                    ),
+                    true,
+                ),
                 Some(name) => (
                     format!(
-                        "A hit plays the Synth tab's {name} sound at {}, through the Synth strip on Mix",
+                        "A hit plays the Synth tab's {name} sound at {}, through this pad's channel on Mix",
                         note_name(*note)
                     ),
                     false,

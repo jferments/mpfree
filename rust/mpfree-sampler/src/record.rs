@@ -422,6 +422,27 @@ impl Take {
         }
     }
 
+    /// A take still waiting for its threshold listens for `level` from
+    /// here on, keeping `pre_roll` frames from before its start. False
+    /// once it has started, or when it isn't armed on a threshold.
+    pub fn set_threshold(&mut self, level: f32, pre_roll: u64) -> bool {
+        match (&mut self.arm, self.start) {
+            (
+                Arm::Threshold {
+                    level: l,
+                    pre_roll: p,
+                    ..
+                },
+                None,
+            ) => {
+                *l = level;
+                *p = pre_roll;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Stops the take at `frame` (for example the frame of the button
     /// press), ringing out or not, and before a length it had not reached.
     pub fn stop_at(&mut self, frame: u64) {
@@ -1155,6 +1176,28 @@ impl Recording {
             }
         }
         Ok(self.progress())
+    }
+
+    /// A recording still waiting for its threshold listens for `level`
+    /// from here on, keeping `pre_roll` frames from before its start (the
+    /// Threshold and Pre-roll turned while it waits). False once it has
+    /// started, or when it doesn't start on a threshold.
+    pub fn set_threshold(&mut self, level: f32, pre_roll: u64) -> bool {
+        if self.started_at().is_some() {
+            return false;
+        }
+        let Start::Threshold {
+            level: l,
+            pre_roll: p,
+        } = &mut self.start
+        else {
+            return false;
+        };
+        *l = level;
+        *p = pre_roll;
+        self.take
+            .as_mut()
+            .is_some_and(|t| t.set_threshold(level, pre_roll))
     }
 
     /// Stops it now: a recording that has started ends here; one still

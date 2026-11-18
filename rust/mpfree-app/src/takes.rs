@@ -934,6 +934,7 @@ mod tests {
         let strip = StripId::Track(crate::mixing::track_channel(1));
         let job = crate::control::InstrumentJob {
             track: 1,
+            pad: None,
             id: "mpfree.poly",
             extras: Vec::new(),
             values: crate::synth::engine_node("mpfree.poly", RATE)
