@@ -644,6 +644,12 @@ impl MpcNode {
                     self.set_param(id, value);
                     continue;
                 }
+                NodeEvent::Control { ctl, value } => {
+                    let Some(v) = mpfree_node::Ctl::clamp(value) else {
+                        continue;
+                    };
+                    [0xb0, ctl.cc(), (v * 127.0).round() as u8]
+                }
                 _ => continue,
             };
             self.push_midi(&mut k, t.offset, msg);

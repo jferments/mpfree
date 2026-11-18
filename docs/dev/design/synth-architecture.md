@@ -156,7 +156,7 @@ A preset today is the engine's settings, a name, tags and its Q-Link sets ([Pres
 
 ### A controller event
 
-`mpfree-node` gets one more event, `NodeEvent::Control { ctl, value }`, for the controllers that belong to the whole instrument: sustain (CC 64), sostenuto (66), soft pedal (67), mod wheel (1), breath (2) and foot controller (11), each 0 to 1. MIDI in sends them to the armed track's instrument (the MIDI thread owns `midi_in.rs`, so the wiring is agreed with it); a plugin gets them as its MIDI controllers.
+`mpfree-node` gets one more event, `NodeEvent::Control { ctl, value }`, for the controllers that belong to the whole instrument: sustain (CC 64), sostenuto (66), soft pedal (67), mod wheel (1), breath (2) and foot controller (11), each 0 to 1. MIDI in sends them to the armed track's instrument (the MIDI thread owns `midi_in.rs`, so the wiring is agreed with it); a plugin gets the wheel, breath and foot as its MIDI controllers, and the pedals as notes the host holds.
 
 - An engine on the voice core handles sustain and sostenuto in its note stack, and routes the rest through its play routes.
 - **An engine that doesn't hear the pedal yet still sustains**: the track host holds its note-offs while the pedal is down and sends them when it comes up. So the pedal works on every engine from the first pull request.
