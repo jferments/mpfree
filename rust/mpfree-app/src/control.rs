@@ -419,6 +419,9 @@ pub struct Built {
 /// for a plugin the plugins' lines say why).
 pub struct MadeInstrument {
     pub track: usize,
+    /// A synth-voice pad's copy (`pad_synths.rs`) rather than track
+    /// `track`'s instrument.
+    pub pad: Option<crate::pad_synths::PadFor>,
     pub id: &'static str,
     pub made: Option<(Instrument, crate::instruments::Held)>,
     pub pads: [Pad; PADS],
@@ -429,6 +432,8 @@ pub struct MadeInstrument {
 /// What a track's instrument is made from.
 pub struct InstrumentJob {
     pub track: usize,
+    /// A synth-voice pad's copy (`pad_synths.rs`): `track` is unused then.
+    pub pad: Option<crate::pad_synths::PadFor>,
     pub id: &'static str,
     /// A synth engine's sound: its design lines (none for a plain engine)
     /// and its values (none for a plugin).
@@ -841,6 +846,7 @@ pub fn make_instrument(
 ) -> MadeInstrument {
     MadeInstrument {
         track: job.track,
+        pad: job.pad,
         id: job.id,
         made: crate::instruments::make(plugins, job.id, &job.extras, &job.values, rate, block),
         pads: job.pads,

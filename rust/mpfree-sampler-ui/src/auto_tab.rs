@@ -23,7 +23,8 @@
 //!   ([`AutoAction::StartGear`]). The first button then cancels it,
 //!   keeping the notes done. The instrument lands as one undo step, and
 //!   the kit's pads then play notes.
-//! - **Rec** goes back to recording.
+//! - **Rec** goes back to recording (**Wave** when the Wave page's REC
+//!   opened it, with Auto-sample as its Source: [`AutoTab::back`]).
 //!
 //! External gear is offered only once the app says which MIDI out it can
 //! play it through ([`AutoState::gear`]); until then the Source row has
@@ -452,6 +453,10 @@ pub struct AutoTab {
     synth: Option<String>,
     gear: Option<String>,
     running: bool,
+    /// The tab its second button goes back to, by its place in [`TABS`]:
+    /// the Rec tab's, or the Wave page's when its recorder opened it (the
+    /// one Sample page's step 2e). The pad bar lights it.
+    pub back: usize,
 }
 
 impl AutoTab {
@@ -480,6 +485,7 @@ impl AutoTab {
             synth: st.synth.clone(),
             gear: st.gear.clone(),
             running: false,
+            back: rec_tab::TAB,
         };
         tab.update(ui, st);
         Ok(tab)
@@ -523,7 +529,7 @@ impl AutoTab {
         };
         if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
             bar.color = pad_color(st.target.unwrap_or(st.pad));
-            bar.active = rec_tab::TAB;
+            bar.active = self.back;
             bar.title = match (&source, &pads) {
                 (None, _) if s.gear.is_some() => {
                     "Auto-sample: no MIDI out for the gear".to_string()
@@ -629,7 +635,7 @@ impl AutoTab {
         if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
             b.labels = vec![
                 if self.running { "Cancel" } else { "Start" }.to_string(),
-                "Rec".to_string(),
+                TABS.get(self.back).copied().unwrap_or("Rec").to_string(),
             ];
             b.enabled = vec![self.running || can, !self.running];
             let start = match (&source, &fault) {
