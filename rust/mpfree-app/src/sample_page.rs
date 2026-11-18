@@ -139,6 +139,11 @@ pub const INPUT_SECONDS: u32 = 75;
 /// (`record::input16`, about 21 MB at 44.1 kHz). The audio thread makes it
 /// at start and the screen gets its reading end (`ToUi::SampleRecall`).
 pub const RECALL_SECONDS: u32 = 120;
+/// What the sample screens and the tests keep in place of
+/// [`RECALL_SECONDS`]: more than any of them feeds (40 s at most), at 8.5 MB
+/// rather than 21. The ARMv7 tests run as 32-bit programs, several at once,
+/// and a 21 MB buffer in each ran them out of room.
+pub const SCREEN_RECALL_SECONDS: u32 = 48;
 /// The tag on Sample Recall's undo steps, which the history names
 /// "Recall to A6" ([`model::Project::tag_last`]).
 const TAG_RECALL: u8 = 1;
@@ -5549,10 +5554,11 @@ impl SamplePage {
     /// thread keeps from start (Sample Recall). The Rec tab's Master source
     /// reads it from now on.
     pub fn set_recall(&mut self, ui: &mut Ui, input: Input) {
+        let seconds = input.audio.capacity() / u64::from(input.rate.max(1));
         self.lines.push(format!(
             "sample: Sample Recall keeps the master's last {}:{:02} ({:.1} MB)",
-            RECALL_SECONDS / 60,
-            RECALL_SECONDS % 60,
+            seconds / 60,
+            seconds % 60,
             input.audio.bytes() as f64 / 1e6
         ));
         self.recall = Some(input);
