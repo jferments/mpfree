@@ -82,7 +82,7 @@ Mutes and solos aren't undo steps, and with **Rec song** on they go into the son
 
 The last kind in the column, **Transpose**, moves a playing line instead of a sound. The pads shift the armed track, and every track you've set to follow it, while its clips play: pad 9 plays as written, pad 14 is up 5 semitones (a fourth), pad 16 up 7 (a fifth), pad 1 down 8. It latches, so the shift stays until you hit another pad, and it lands on the track's next note: notes already sounding finish at their old pitch, so you can tap transposes in time with the music. Nothing in the clip changes, and pad 9 always brings it back.
 
-- When the armed track plays the synth (Synth, the last row of the kit chip's list), **16 LEVEL** opens Transpose at once. On a kit it's the last kind in the column.
+- When the armed track plays the synth (Synth, the last row of the list of kits), **16 LEVEL** opens Transpose at once. On a kit it's the last kind in the column.
 - When the synth's pads play **In key** (or chords), Transpose steps through the key instead of semitones, so the line stays in key: pad 16 is an octave up in a seven-note scale and pad 2 an octave down. The heading says the key ("Bass · -3 in C Minor").
 - The heading names the armed track and the tracks that follow it, and where they are ("Bass, with Keys · +5 st"). The pad it's on is lit, on the screen and on the MPC's pads. Pick pad does nothing here.
 - Only tracks that play notes move: a track that plays the synth, or a track's own instrument. A drum kit's notes are its pads, so a kit track, the Drums engine and Loop tracks stay as they are, and the heading says so.

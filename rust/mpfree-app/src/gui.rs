@@ -172,8 +172,7 @@ pub const KITS_PAGE: &str = "Kits";
 /// one on the armed track.
 pub const NEW_KIT: &str = "New kit";
 pub const KITS_LAYOUT: &str = "col(header:60, row(kits:*, kits-card:400):*, hint:26)";
-const KITS_HINT: &str =
-    "Tap a kit: load it on the pads   ·   Back, the kit chip or a tab: close the list";
+const KITS_HINT: &str = "Tap a kit: load it on the pads   ·   Back or a tab: close the list";
 
 const CONSOLE_HINT: &str =
     "Switch the MPC off with its power switch to return to the stock firmware";
@@ -467,7 +466,9 @@ fn ram_tone(pct: f64) -> Tone {
     }
 }
 
-/// A kit's name as the header's chip shows it: words, not dashes
+/// A kit's name as Play's "pads play" and the Pads tab's Kit show it (the
+/// header's kit chip did until the Play, Pads and Sequencer redesign):
+/// words, not dashes
 /// (`ClassicHouse-Kit-Classy` is "ClassicHouse Kit Classy"), at most 28
 /// characters; "Kit N" for a kit with no name.
 pub fn chip_kit_name(name: &str, kit: usize) -> String {
@@ -692,7 +693,7 @@ pub fn no_pad_mutes(what: &str, kit: Option<usize>, page: usize) -> Option<Strin
 }
 
 /// Writes what each track plays under its name: its own instrument's
-/// name, else what it plays of the kit chip's list (`kits`): "Kit" (kit
+/// name, else what it plays of the list of kits (`kits`): "Kit" (kit
 /// 1), "Kit 2" and on, or "Synth"; a Loop track's input ("Pads", for the
 /// pads and the synth). And which tracks play notes, so transpose moves
 /// them (`TrackInfo::melodic`): one with its own instrument (not the drum
@@ -787,7 +788,7 @@ pub enum ToUi {
     /// What each track plays as its own instrument (None: the kit), for
     /// the line under its name on Arrange. Sent when it changes.
     TrackSounds(Box<TrackSounds>),
-    /// What each track plays of the kit chip's list, when it changes.
+    /// What each track plays of the list of kits, when it changes.
     TrackKits(Box<crate::sampler::TrackKits>),
     /// An open done: the engines it replaced, to free here.
     ProjectBack(Box<crate::project::Opening>),
@@ -1547,17 +1548,15 @@ pub struct Player {
     clock_from: Option<String>,
     /// The tempo chip's place among the header's chips, while it shows.
     tempo_chip: Option<usize>,
-    /// The kit chip's place among the header's chips: a tap opens the list
-    /// of kits over the page.
-    kit_chip: Option<usize>,
     /// The Full level or Half level chip's place: a tap turns it off.
     level_chip: Option<usize>,
     /// The "Pads: steps" chip's place: a tap gives the pads back.
     steps_chip: Option<usize>,
     /// The MAKE or PERFORM chip's place: a tap switches (sequencer S4).
     perform_chip: Option<usize>,
-    /// The list of kits is open over the page (the kit chip); the view
-    /// underneath stays `view`.
+    /// The list of kits is open over the page (from what the pads play on
+    /// Play's transport, or the Pads tab's Kit); the view underneath
+    /// stays `view`.
     kit_list: bool,
     /// The list of kits' rows: each a kit (or the synth), None for New kit.
     kit_rows: Vec<Option<usize>>,
@@ -1950,7 +1949,6 @@ impl Player {
             arp_chip: None,
             clock_from: None,
             tempo_chip: None,
-            kit_chip: None,
             level_chip: None,
             steps_chip: None,
             perform_chip: None,
@@ -2005,7 +2003,8 @@ impl Player {
         })
     }
 
-    /// The list of kits the kit chip opens: every kit and the synth, but
+    /// The list of kits (Play's "pads play", the Pads tab's Kit): every
+    /// kit and the synth, but
     /// the spare user kits, then **New kit** while one is left (None).
     fn kit_rows(&self) -> Vec<Option<usize>> {
         let mut rows: Vec<Option<usize>> = (0..self.kits.len())
@@ -3109,6 +3108,54 @@ impl Player {
         }
     }
 
+    /// What the pads play, for Play's transport card: the armed track, then
+    /// its kit and the bank on the pads ("Drums · Boom Bap · A"; the kit's
+    /// name as the kit chip had it, live test 3), or the synth's line
+    /// ("Keys · Poly · C3 to D#4"). Not on the Sequencer, whose card has
+    /// Steps | Notes there.
+    fn pads_play(&self) -> Option<play_widgets::PadsPlay> {
+        if self.play.sequencer {
+            return None;
+        }
+        let k = self.kits.get(self.kit)?;
+        let what = match &k.chip {
+            Some(chip) => chip.clone(),
+            None => format!(
+                "{} · {}",
+                chip_kit_name(&k.name, self.kit),
+                crate::app::bank_letter(self.pad_page)
+            ),
+        };
+        // The track Play's rows show (the armed one), as their head names it.
+        let t = self.play.steps.track;
+        let track = self
+            .time
+            .tracks
+            .get(t)
+            .map_or_else(|| format!("Track {}", t + 1), |i| i.name.clone());
+        Some(play_widgets::PadsPlay {
+            track,
+            what,
+            color: time_view::track_color(t),
+        })
+    }
+
+    /// Play's transport follows what the pads play.
+    fn refresh_pads_play(&mut self) {
+        let pads = self.pads_play();
+        // Only when it changed: this runs every second with the chips, and
+        // taking the card to change it draws it again.
+        if self
+            .ui
+            .get::<PlayTransport>(play_page::TRANSPORT)
+            .is_some_and(|t| t.look.pads != pads)
+        {
+            if let Some(t) = self.ui.get_mut::<PlayTransport>(play_page::TRANSPORT) {
+                t.look.pads = pads;
+            }
+        }
+    }
+
     /// Open or close the REC chip's target list in place of Play's or the
     /// Sequencer's view.
     fn toggle_rec_list(&mut self) {
@@ -3371,6 +3418,7 @@ impl Player {
         );
         let mut look = self.play.transport_look();
         look.rec = Some(self.refresh_rec_chip());
+        look.pads = self.pads_play();
         if self
             .ui
             .get::<PlayTransport>(play_page::TRANSPORT)
@@ -3855,11 +3903,13 @@ impl Player {
         }
     }
 
-    /// The header's chips, right to left: session, kit, level, tempo, then
-    /// the modes that are on, and the time left in the timed step.
+    /// The header's chips, right to left: session, level, tempo, then the
+    /// modes that are on, and the time left in the timed step. (The kit
+    /// chip left for Play's transport in the Play, Pads and Sequencer
+    /// redesign: [`Player::pads_play`].)
     fn refresh_chips(&mut self) {
-        // The first chip sits at the right end (the mockups: the CPU, then
-        // the kit). The session shows only when something is wrong with it.
+        // The first chip sits at the right end (the mockups: the CPU). The
+        // session shows only when something is wrong with it.
         let mut chips = Vec::new();
         // A tap on a chip that only shows says what it shows.
         let mut why = Vec::new();
@@ -3878,25 +3928,9 @@ impl Player {
             ));
             chips.push(Chip::new(self.session.0.clone(), self.session.1));
         }
-        // A tap on the kit chip opens the list of kits (Jay's card, 13 Nov
-        // 14:57Z).
-        self.kit_chip = self.kits.get(self.kit).map(|_| chips.len());
-        match self.kits.get(self.kit) {
-            Some(KitView {
-                chip: Some(chip), ..
-            }) => chips.push(Chip::new(chip.clone(), Tone::Normal)),
-            // The kit's name (live test 3: "Kit 1 of 10" said nothing about
-            // which kit was Grains), and its bank.
-            Some(k) => chips.push(Chip::new(
-                format!(
-                    "{} · Bank {}",
-                    chip_kit_name(&k.name, self.kit),
-                    crate::app::bank_letter(self.pad_page)
-                ),
-                Tone::Normal,
-            )),
-            None => {}
-        }
+        // What the pads play is on Play's transport now, and follows the
+        // kit, the bank and the track's name from here.
+        self.refresh_pads_play();
         // While an outside clock sets the tempo, the tempo chip says so,
         // with a green dot (layout spec, section 4d); a tap opens the I/O
         // view at Sync.
@@ -8195,7 +8229,8 @@ impl Player {
         self.refresh_qlinks();
     }
 
-    /// The kit chip: the list of kits over the page, or the page again.
+    /// What the pads play on Play's transport, or the Pads tab's Kit: the
+    /// list of kits over the page, or the page again.
     fn toggle_kit_list(&mut self) {
         if self.kit_list {
             self.show_view(self.view);
@@ -8692,6 +8727,13 @@ impl Player {
             self.refresh_qlinks();
             return a;
         }
+        // The Pads tab's Kit: the list of kits over the page.
+        if ev.widget == mpfree_sampler_ui::pads_tab::BAR
+            && ev.kind == EventKind::Tab(mpfree_sampler_ui::pads_tab::KIT_BUTTON)
+        {
+            self.toggle_kit_list();
+            return None;
+        }
         // The Pads tab's Kit of row: a track arms it; + Kit track adds a
         // track and gives it an empty kit once it is armed.
         if ev.widget == mpfree_sampler_ui::pads_tab::KITS {
@@ -8792,6 +8834,11 @@ impl Player {
             }
             (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_BPM)) => {
                 Some(FromUi::TapTempo)
+            }
+            // What the pads play: the list of kits.
+            (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_PADS)) => {
+                self.toggle_kit_list();
+                None
             }
             // The REC chip, on Play's and the Sequencer's card or Arrange's
             // bar (its only chip). On the card it opens and closes its
@@ -9213,10 +9260,6 @@ impl Player {
             ("options", EventKind::Step { index, delta }) => Some(FromUi::MenuStep(index, delta)),
             ("guide", EventKind::Tab(i)) => Some(FromUi::GuideButton(i)),
             ("header", EventKind::Select(i)) if Some(i) == self.arp_chip => Some(FromUi::ArpChip),
-            ("header", EventKind::Select(i)) if Some(i) == self.kit_chip => {
-                self.toggle_kit_list();
-                None
-            }
             ("header", EventKind::Select(i)) if Some(i) == self.level_chip => {
                 Some(FromUi::PadLevelOff)
             }
@@ -11480,8 +11523,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }));
     list.toggle_rec_list();
     out.push(("play-rec-list", list));
-    // The list of kits the kit chip opens over the page (Jay's card, 13 Nov
-    // 14:57Z).
+    // The list of kits over the page (Jay's card, 13 Nov 14:57Z), opened
+    // from what the pads play or the Pads tab's Kit.
     let mut kits = sample_player(fonts());
     kits.toggle_kit_list();
     out.push(("kits", kits));
@@ -15896,8 +15939,8 @@ mod tests {
     }
 
     /// R3 part 2b: PAD BANK B puts the kit's pads B1-B16 on the 16 pads:
-    /// their names, the heading and the kit chip say so, and a hit there
-    /// is the kit's pad on the Sample tab.
+    /// their names, the heading and Play's "pads play" say so, and a hit
+    /// there is the kit's pad on the Sample tab.
     #[test]
     fn pad_bank_b_shows_the_kits_next_sixteen_pads_and_the_sample_tab_edits_them() {
         use crate::play_widgets::MiniPads;
@@ -15929,12 +15972,7 @@ mod tests {
         assert_eq!(shown(&p), ("Pads · Bank A".into(), "Break 92".into()));
         p.apply(ToUi::PadPage(1));
         assert_eq!(shown(&p), ("Pads · Bank B".into(), "Break B5".into()));
-        let chips = &p.ui.get::<Header>("header").unwrap().chips;
-        assert!(
-            chips.iter().any(|c| c.text.ends_with("· Bank B")),
-            "{:?}",
-            chips.iter().map(|c| &c.text).collect::<Vec<_>>()
-        );
+        assert!(pads_play(&p).ends_with(" · B"), "{}", pads_play(&p));
         // Pad 5 is B5: the Sample tab edits it.
         p.apply(ToUi::PadDown { pad, velocity: 100 });
         p.apply(ToUi::PadUp(pad));
@@ -16527,10 +16565,19 @@ mod tests {
         assert_eq!(p.page(), MIXER_PAGE);
     }
 
-    /// Live test 3: the kit chip names the kit (not "Kit 1 of 10"), and a
-    /// RAM chip sits beside the CPU's.
+    /// What the pads play on Play's transport, as its tap target names it.
+    fn pads_play(p: &Player) -> String {
+        p.ui.get::<PlayTransport>(play_page::TRANSPORT)
+            .and_then(|t| t.look.pads.as_ref())
+            .map(play_widgets::PadsPlay::text)
+            .unwrap_or_default()
+    }
+
+    /// Live test 3: the kit is named (not "Kit 1 of 10"), now on Play's
+    /// transport: the top bar has no kit chip (the Play, Pads and
+    /// Sequencer redesign, step 4). A RAM chip sits beside the CPU's.
     #[test]
-    fn the_header_names_the_kit_and_shows_ram() {
+    fn play_names_the_kit_and_the_header_shows_ram() {
         let mut p = sample_player(Fonts::embedded());
         p.set_ram(17.4);
         let chips: Vec<String> =
@@ -16541,7 +16588,8 @@ mod tests {
                 .map(|c| c.text.clone())
                 .collect();
         assert!(chips.iter().any(|c| c == "RAM 17 %"), "{chips:?}");
-        assert!(!chips.iter().any(|c| c.contains(" of ")), "{chips:?}");
+        assert!(!chips.iter().any(|c| c.contains("Bank")), "{chips:?}");
+        assert_eq!(pads_play(&p), "Track 1 · Classic House · A");
         assert_eq!(
             chip_kit_name("ClassicHouse-Kit-Classy", 0),
             "ClassicHouse Kit Classy"
@@ -22825,14 +22873,6 @@ mod tests {
     fn the_synth_kit_and_page_follow_an_engine_switch_and_a_scale() {
         let mut p = sample_player(Fonts::embedded());
         let synth_kit = sample_kits().len();
-        let chips = |p: &Player| -> Vec<String> {
-            p.ui.get::<Header>("header")
-                .unwrap()
-                .chips
-                .iter()
-                .map(|c| c.text.clone())
-                .collect()
-        };
         p.apply(ToUi::Kit(synth_kit));
         let mut s = crate::synth::Synth::new(44_100);
         let mut set = s.settings();
@@ -22847,13 +22887,9 @@ mod tests {
             p.ui.get::<ListView>("kits").unwrap().items[synth_kit].text,
             "Synth: FM"
         );
-        assert!(
-            chips(&p).contains(&"FM · C3 to D#4".to_string()),
-            "{:?}",
-            chips(&p)
-        );
+        assert_eq!(pads_play(&p), "Track 1 · FM · C3 to D#4");
         assert_eq!(p.synth.as_ref().unwrap().state.info.id, "mpfree.fm");
-        // A scale and Chord pads: the chip says so and the pads name their chords.
+        // A scale and Chord pads: Play says so and the pads name their chords.
         set.scale = mpfree_arp::scale::by_name("Minor")
             .map(|d| mpfree_arp::scale::Scale::with_down(9, d.mask, d.down));
         set.set_layout(mpfree_arp::scale::pads::PadLayout::Chords);
@@ -22862,11 +22898,7 @@ mod tests {
             kit: synth_kit,
             view: s.kit_view(),
         });
-        assert!(
-            chips(&p).contains(&"FM · A Minor · chord pads".to_string()),
-            "{:?}",
-            chips(&p)
-        );
+        assert_eq!(pads_play(&p), "Track 1 · FM · A Minor · chord pads");
         assert_eq!(
             p.ui.get::<MiniPads>(play_page::PADS)
                 .map(|m| &m.grid)
@@ -22894,25 +22926,9 @@ mod tests {
     fn the_synth_page_shows_poly_and_sends_its_changes() {
         let mut p = sample_player(Fonts::embedded());
         let synth_kit = sample_kits().len();
-        let chips = |p: &Player| -> Vec<String> {
-            p.ui.get::<Header>("header")
-                .unwrap()
-                .chips
-                .iter()
-                .map(|c| c.text.clone())
-                .collect()
-        };
-        assert!(
-            chips(&p).contains(&"Classic House · Bank A".to_string()),
-            "{:?}",
-            chips(&p)
-        );
+        assert_eq!(pads_play(&p), "Track 1 · Classic House · A");
         p.apply(ToUi::Kit(synth_kit));
-        assert!(
-            chips(&p).contains(&"Poly · C3 to D#4".to_string()),
-            "{:?}",
-            chips(&p)
-        );
+        assert_eq!(pads_play(&p), "Track 1 · Poly · C3 to D#4");
         assert_eq!(
             p.ui.get::<MiniPads>(play_page::PADS)
                 .map(|m| &m.grid)
@@ -23005,17 +23021,13 @@ mod tests {
         s.load_preset(3);
         p.apply(ToUi::SynthValues(s.values()));
         assert_eq!(p.synth.as_ref().unwrap().state.values, s.values());
-        // An octave up relabels the synth's pads and its chip.
+        // An octave up relabels the synth's pads and what Play says they play.
         s.shift_octave(1);
         p.apply(ToUi::KitChanged {
             kit: synth_kit,
             view: s.kit_view(),
         });
-        assert!(
-            chips(&p).contains(&"Poly · C4 to D#5".to_string()),
-            "{:?}",
-            chips(&p)
-        );
+        assert_eq!(pads_play(&p), "Track 1 · Poly · C4 to D#5");
         assert_eq!(
             p.ui.get::<MiniPads>(play_page::PADS)
                 .map(|m| &m.grid)

@@ -25,9 +25,8 @@ Every page in MPFree is laid out the same way, so once you know one, you know th
 | **Sample** | Recording, chopping and shaping the sound on one pad. |
 | **Mix** | The mixer and every sound's effects (next build). See [Mixing and effects](../making-music/mixing-and-effects.md). |
 
-**The status chips** on the right show what is going on: the kit's name and pad bank, how much of the processor (**CPU**) and memory (**RAM**) is in use, whether Full Level is on, and anything that needs your attention. When memory runs so short that new sounds can't load, the hint line says so (see [Sampling](../making-music/sampling.md#the-pads-tab-sounds-onto-pads)). Three of them do something when tapped:
+**The status chips** on the right show what is going on: how much of the processor (**CPU**) and memory (**RAM**) is in use, whether Full Level is on, and anything that needs your attention. When memory runs so short that new sounds can't load, the hint line says so (see [Sampling](../making-music/sampling.md#the-pads-tab-sounds-onto-pads)). What the pads play is on the Play page's transport bar (below). Two of the chips do something when tapped:
 
-- **The kit chip** (such as **Classic House · Bank A**) opens a list of every kit over the page. Tap a kit to load it on the pads; the list closes and you are back where you were. The synth comes after the kits, and the last row, **New kit**, puts an empty kit on the selected track. **Back**, the kit chip again or any tab closes the list and keeps the kit that is playing.
 - **The Full level or Half level chip** turns that level off, as pressing **FULL LEVEL** again would: the pads play as hard as you hit them again.
 - **The Pads: steps chip** (such as **Pads: steps · Kick**) shows while **STEP SEQ** has made the pads the steps of a sound. With a synth on the pads it names the synth and the note or chord new steps play (**Pads: steps · Poly · C3 + G3**). Tap it to play the pads again, as pressing **STEP SEQ** again would. See [Program a pattern on the pads](first-beat.md#program-a-pattern-on-the-pads).
 
@@ -37,7 +36,11 @@ The small **folder** at the far right opens the browser over the page, as **BROW
 
 ## The transport bar
 
-On the Play page and the Sequencer tab, a bar under the tabs shows time: whether MPFree is stopped, playing or recording, the position (bar, beat and step), the tempo in BPM (tap it in time to set the tempo, as with **TAP TEMPO**, or hold a finger on it to type the tempo), and dots that light up with each bar and beat. On the right of it is the view switch: **All** and **Loop** on Play (see [Playing live](../making-music/playing-live.md)), **Steps** and **Notes** on the Sequencer.
+On the Play page and the Sequencer tab, a bar under the tabs shows time: whether MPFree is stopped, playing or recording, the position (bar, beat and step), the tempo in BPM (tap it in time to set the tempo, as with **TAP TEMPO**, or hold a finger on it to type the tempo), and what **REC** records. On the right of it is the view switch: **All** and **Loop** on Play (see [Playing live](../making-music/playing-live.md)), **Steps** and **Notes** on the Sequencer.
+
+On Play, **PADS PLAY** before the switch says what the pads play: the selected track, its kit and the pad bank, such as **Drums · Boom Bap · A** (or the synth, such as **Keys · Poly · C3 to D#4**). Tap it for the list of kits. On the Sequencer, dots that light up with each bar and beat stand there instead.
+
+**The list of kits** opens over the page from **PADS PLAY** on Play or **Kit** on the Pads tab. Tap a kit to load it on the pads; the list closes and you are back where you were. The synth comes after the kits, and the last row, **New kit**, puts an empty kit on the selected track. **Back** or any tab closes the list and keeps the kit that is playing.
 
 ## The Q-Link column and the master bar
 
@@ -62,9 +65,9 @@ Some things are not tabs. They open over the page you are on, and close the same
 - **The browser:** press **BROWSE**, or tap the folder at the top right. See [Saving your work](../making-music/saving.md#the-browser).
 - **The mixer's I/O view:** tap **I/O** on the **Mix** tab. See [the I/O view](../making-music/mixing-and-effects.md#the-io-view). (The mixer itself is the **Mix** tab from the next build; on the current test build it opens over the page with **TRACK MIX** or the sliders icon.)
 - **The Arp panel:** hold **NOTE REPEAT** and press **MENU**.
-- **The list of kits:** tap the kit chip in the top bar.
+- **The list of kits:** tap **PADS PLAY** on Play's transport bar, or **Kit** on the Pads tab.
 
-{{shot: kits | The list of kits, opened from the kit chip. Tap a kit to load it on the pads; Back closes the list.}}
+{{shot: kits | The list of kits, opened from PADS PLAY. Tap a kit to load it on the pads; Back closes the list.}}
 
 {{shot: options | Play's options, opened with MENU. Turn the wheel or tap to pick a row; – and + change it.}}
 
@@ -84,7 +87,7 @@ On the Play page, the Looper tab, the mixer and the FX chain editor, the data wh
 - On the mixer and the chain editor, the wheel keeps its old job (the selected strip's volume, the first knob) until you tap a control. Changing page, or tapping an empty spot, takes the outline away.
 - While the list of effects is open, the wheel moves through the effects and its push opens presets and then adds, as always (see [Adding an effect](../making-music/mixing-and-effects.md#adding-an-effect)).
 
-To change the kit, tap the kit chip or hold **SHIFT** and turn the wheel on the Play page. The **PAD BANK** buttons put the kit's other banks of 16 pads on the pads.
+To change the kit, tap **PADS PLAY** on Play (or **Kit** on the Pads tab), or hold **SHIFT** and turn the wheel on the Play page. The **PAD BANK** buttons put the kit's other banks of 16 pads on the pads.
 
 ## Hold and turn
 

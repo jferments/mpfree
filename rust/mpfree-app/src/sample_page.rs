@@ -1435,14 +1435,19 @@ impl SamplePage {
             Some(n) => format!("Kit {} · {n}", self.kit + 1),
             None => format!("Kit {}", self.kit + 1),
         };
+        // The bar's Kit button: the kit's name, as the list of kits has it.
+        let name = match self.names.get(self.kit) {
+            Some(n) => crate::gui::chip_kit_name(n, self.kit),
+            None => format!("Kit {}", self.kit + 1),
+        };
         match self.pads.as_mut() {
             Some(tab) => {
-                (tab.bank, tab.kit) = (bank, kit);
+                (tab.bank, tab.kit, tab.kit_name) = (bank, kit, name);
                 tab.update(ui, &st);
             }
             None => match PadsTab::add(ui, PADS_PAGE, &st) {
                 Ok(mut tab) => {
-                    (tab.bank, tab.kit) = (bank, kit);
+                    (tab.bank, tab.kit, tab.kit_name) = (bank, kit, name);
                     tab.update(ui, &st);
                     self.pads = Some(tab);
                 }
