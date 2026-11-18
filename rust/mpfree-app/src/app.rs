@@ -2319,6 +2319,10 @@ impl App {
             fx.extend(self.toggle_mixer(shift));
         } else if let Some(e) = self.mode_button(note, shift) {
             fx.extend(e);
+        } else if shift && Some(note) == self.map.rec && self.view == View::Looper {
+            // SHIFT + REC on the Looper tab: the last bars heard become a
+            // loop (the looper's Capture).
+            fx.push(Effect::Looper(LoopAction::Capture));
         } else if shift && Some(note) == self.map.rec {
             // SHIFT + REC: Capture, on every page (Jay, 20:40Z).
             fx.push(Effect::Time(TimeAction::Capture));
@@ -4963,21 +4967,21 @@ mod tests {
             Some(Effect::Menu(m)) => m.rows[at].1.clone(),
             _ => panic!("{fx:?}"),
         };
-        assert_eq!(app.item_text(Item::LoopMemory).1, "5 min, 110 MB");
+        assert_eq!(app.item_text(Item::LoopMemory).1, "5 min, 120 MB");
         let fx = app.step_item(at, 1);
-        assert_eq!(value(&fx), "10 min, 219 MB (next start)");
+        assert_eq!(value(&fx), "10 min, 230 MB (next start)");
         assert!(fx.contains(&Effect::Note(
             "loop memory: 10 min from the next start (now 5 min)".into()
         )));
-        assert_eq!(value(&app.step_item(at, 1)), "20 min, 437 MB (next start)");
-        assert_eq!(value(&app.step_item(at, 1)), "20 min, 437 MB (next start)");
+        assert_eq!(value(&app.step_item(at, 1)), "20 min, 448 MB (next start)");
+        assert_eq!(value(&app.step_item(at, 1)), "20 min, 448 MB (next start)");
         for _ in 0..5 {
             app.step_item(at, -1);
         }
         assert_eq!(app.settings.loop_memory, LoopMemory::Min1);
         assert_eq!(
             app.item_text(Item::LoopMemory).1,
-            "1 min, 22 MB (next start)"
+            "1 min, 33 MB (next start)"
         );
         // Kept as minutes; the next start makes it and says no more.
         let kept = app.app_settings();
@@ -4987,7 +4991,7 @@ mod tests {
         assert_eq!(next.settings.loop_memory, LoopMemory::Min1);
         assert!(notes[0].contains(", loop memory 1 min,"), "{notes:?}");
         next.set_loop_memory_now(LoopMemory::Min1);
-        assert_eq!(next.item_text(Item::LoopMemory).1, "1 min, 22 MB");
+        assert_eq!(next.item_text(Item::LoopMemory).1, "1 min, 33 MB");
         // A size it doesn't offer is left out, and the default stays.
         let mut odd = mpfree_store::Settings::default();
         odd.set_i64("loop-memory", 7);
@@ -8210,14 +8214,18 @@ mod tests {
         assert!(fx.contains(&Effect::Time(TimeAction::Transport(Command::StopAndRewind))));
         assert!(fx.contains(&Effect::StopSounds));
         assert!(!fx.contains(&Effect::Show(View::Console)));
-        // SHIFT + REC (90 here): Capture, on the Looper tab too.
-        for v in [View::Play, View::Looper] {
-            app.open_tab(v);
-            assert_eq!(
-                held(&mut app, SHIFT, |a| press(a, 90)),
-                [Effect::Time(TimeAction::Capture)]
-            );
-        }
+        // SHIFT + REC (90 here): Capture of notes; on the Looper tab, of
+        // what the looper heard.
+        app.open_tab(View::Play);
+        assert_eq!(
+            held(&mut app, SHIFT, |a| press(a, 90)),
+            [Effect::Time(TimeAction::Capture)]
+        );
+        app.open_tab(View::Looper);
+        assert_eq!(
+            held(&mut app, SHIFT, |a| press(a, 90)),
+            [Effect::Looper(LoopAction::Capture)]
+        );
         // SHIFT + PLAY START (93): the metronome.
         let fx = held(&mut app, SHIFT, |a| press(a, 93));
         assert_eq!(fx[0], Effect::Metronome { on: true, db: -24 });

@@ -4608,8 +4608,9 @@ fn looper_action(
             out.note(&looper.steps(n));
             Vec::new()
         }
+        looping::LoopAction::Capture => vec![app::Effect::Tell(looper.capture())],
         looping::LoopAction::Source(s) => {
-            looper.source = s;
+            looper.set_source(s);
             out.note(&format!("looper: records from {}", s.name().to_lowercase()));
             Vec::new()
         }
@@ -4649,6 +4650,10 @@ fn looper_action(
         }
         looping::LoopAction::ToggleMute(n) => {
             out.note(&looper.toggle_mute(n));
+            Vec::new()
+        }
+        looping::LoopAction::ToggleSolo(n) => {
+            out.note(&looper.toggle_solo(n));
             Vec::new()
         }
         looping::LoopAction::Level(n, level) => {

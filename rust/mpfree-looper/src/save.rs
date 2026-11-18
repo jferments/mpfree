@@ -17,6 +17,11 @@
 //! layer level=1 pan=0 muted=0 solo=0 faded=1 file=3f0c...e1.wav
 //! ```
 //!
+//! A loop at another speed ([`crate::Edit::Speed`]) adds `speed=` and
+//! `octaves=` to its line (its speed, and the octaves its audio plays
+//! faster than it is, [`crate::Status::rate`]); a loop as recorded leaves
+//! them out.
+//!
 //! A line is `key=value` words; `file=` comes last and takes the rest of
 //! the line. Unknown keys and lines are skipped, so a newer build's text
 //! still loads.
@@ -41,6 +46,10 @@ pub struct LoopFile {
     pub bars: Option<u32>,
     pub after: After,
     pub fade_old: f32,
+    /// Its speed ([`crate::Status::speed`]) and the octaves its layers'
+    /// audio plays faster than it is ([`crate::Status::rate`]).
+    pub speed: i8,
+    pub rate: i8,
     pub layers: Vec<LayerFile>,
 }
 
@@ -95,6 +104,10 @@ pub fn to_text(saved: &Saved) -> String {
             flag(l.muted),
             l.fade_old
         ));
+        if l.speed != 0 || l.rate != 0 {
+            s.pop();
+            s.push_str(&format!(" speed={} octaves={}\n", l.speed, l.rate));
+        }
         for y in &l.layers {
             s.push_str(&format!(
                 "layer level={} pan={} muted={} solo={} faded={} file={}\n",
@@ -139,6 +152,18 @@ fn level(kv: &[(&str, &str)], key: &str, line: usize, lo: f32, hi: f32) -> Resul
         return Err(format!("line {line}: {key} is not a number"));
     }
     Ok(v.clamp(lo, hi))
+}
+
+/// A small whole number from -`most` to `most`, 0 when it isn't there.
+fn small(kv: &[(&str, &str)], key: &str, line: usize, most: i8) -> Result<i8, String> {
+    match get(kv, key) {
+        None => Ok(0),
+        Some(v) => v
+            .parse::<i8>()
+            .ok()
+            .filter(|x| x.abs() <= most)
+            .ok_or_else(|| format!("line {line}: {key}={v}")),
+    }
 }
 
 fn bit(kv: &[(&str, &str)], key: &str) -> bool {
@@ -199,6 +224,8 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
                         _ => After::Play,
                     },
                     fade_old: level(&kv, "fade_old", n, 0.0, 1.0).unwrap_or(1.0),
+                    speed: small(&kv, "speed", n, 1)?,
+                    rate: small(&kv, "octaves", n, 2)?,
                     layers: Vec::new(),
                 },
             ));
@@ -332,6 +359,8 @@ mod tests {
                         bars: None,
                         after: After::Overdub,
                         fade_old: 0.9,
+                        speed: -1,
+                        rate: -2,
                         layers: vec![layer(1.0, "a b.wav"), layer(0.1, "c.wav")],
                     },
                 ),
@@ -346,6 +375,8 @@ mod tests {
                         bars: Some(4),
                         after: After::Play,
                         fade_old: 1.0,
+                        speed: 0,
+                        rate: 0,
                         layers: vec![layer(1.0 / 3.0, "d.wav")],
                     },
                 ),
@@ -382,6 +413,7 @@ mod tests {
         // A loop with no layers.
         let cut = t.lines().take(6).collect::<Vec<_>>().join("\n");
         assert!(from_text(&cut).unwrap_err().contains("loop 2"));
+        assert!(from_text(&t.replace("speed=-1", "speed=3")).is_err());
         // Out-of-range mixes are kept in range.
         let s = from_text(&t.replace("level=0.7", "level=9")).unwrap();
         assert_eq!(s.loops[0].1.level, 2.0);

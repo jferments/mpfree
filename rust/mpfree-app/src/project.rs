@@ -1446,6 +1446,8 @@ mod tests {
                     bars: None,
                     after: mpfree_looper::After::Play,
                     fade_old: 1.0,
+                    speed: 0,
+                    rate: 0,
                     layers,
                 },
             )
