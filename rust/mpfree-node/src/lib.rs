@@ -34,8 +34,10 @@
 //!   host resets it ([`Node::reset`]) and counts it.
 #![forbid(unsafe_code)]
 
+pub mod held;
 pub mod pressure;
 
+pub use held::{Held, HeldStep, HELD_VALUES};
 pub use pressure::{
     Pressure, PressureChord, PressureCoefs, PressureCurve, PressureMode, PressureRelease,
     PressureShape,
@@ -430,6 +432,15 @@ pub trait Node: Send {
     /// Real-time safe.
     fn cull(&mut self) -> bool {
         false
+    }
+    /// Copies the sound the node holds (a granular effect's memory) into
+    /// `into`, at most `max_frames` frames a call, oldest first: the first
+    /// call begins the copy ([`Held::begin`]), each later one goes on from
+    /// where the last stopped. Called on the audio thread between blocks,
+    /// so it never allocates, locks or waits. The default: nothing held.
+    fn copy_held(&mut self, into: &mut Held, max_frames: usize) -> HeldStep {
+        let _ = (into, max_frames);
+        HeldStep::Nothing
     }
 }
 

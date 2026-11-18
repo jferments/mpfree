@@ -149,6 +149,17 @@ impl SkinWidget {
         self.image.px = c.px;
     }
 
+    /// The parameter id of the control at (`x`, `y`) on screen, with the
+    /// skin in `r`: what SHIFT + a touch hands MIDI Learn, as a knob on
+    /// MPFree's own Synth page does. None off the controls, on one bound
+    /// to nothing, or with an overlay open.
+    pub fn param_id_at(&self, x: i32, y: i32, r: Rect) -> Option<u16> {
+        let i = self
+            .view
+            .param_at(&self.vals, (x - r.x) as f32, (y - r.y) as f32)?;
+        self.vals.ids.get(i).copied()
+    }
+
     /// The skin's edits since the last call, as the Synth page's own:
     /// parameter id and value.
     pub fn take_edits(&mut self) -> Vec<(u16, f32)> {

@@ -102,7 +102,7 @@ checked: 2026-11-14 b76c3c7
 
 **Send** — How much of a sound goes to one of the four shared effects (send returns A to D).
 
-**Sequencer** — The tab after Pads: the armed track's clip as steps (**Steps**) or as notes in the note editor (**Notes**). **STEP SEQ** opens it.
+**Sequencer** — The tab after Play: the armed track's clip as steps (**Steps**) or as notes in the note editor (**Notes**). **STEP SEQ** opens it.
 
 **Skip back** — Keep what came into the Rec page in the last seconds or bars, without having pressed Record.
 

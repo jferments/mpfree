@@ -57,6 +57,10 @@ pub struct NotesState {
     /// "Juno · ch 2") and a line under it.
     pub plays_on: String,
     pub plays_detail: String,
+    /// Why the controllers the track sends to MIDI out go nowhere ("sends
+    /// nothing: the track plays its own sound"), for the CC effects'
+    /// header in place of what they do; None while they go out.
+    pub ccs_send_nothing: Option<String>,
 }
 
 impl NotesState {
@@ -159,6 +163,7 @@ fn unit_of(fx: &Fx, k: usize) -> Unit {
         }
         (Fx::Chord(_), 5) | (Fx::Length { .. }, 2) | (Fx::Echo(_), 2) => Unit::Ms,
         (Fx::Humanize { .. }, 0) | (Fx::Strum(_), 0) | (Fx::Randomize(_), 3) => Unit::Ms,
+        (Fx::CcSmooth(_), 1) => Unit::Ms,
         _ => Unit::None,
     }
 }
@@ -646,7 +651,9 @@ pub fn page_layout(page: Rect, ns: &NotesState) -> PageLayout {
         let cols = 4;
         let gap = 10;
         let w = (body.w - gap * (cols - 1)) / cols;
-        let h = 120;
+        // As tall as the rows of them fit, up to 120.
+        let rows = (all.len() as i32 + cols - 1) / cols;
+        let h = ((body.h - 8 - gap * (rows - 1)) / rows).min(120);
         out.tiles = (0..all.len() as i32)
             .map(|i| {
                 Rect::new(
@@ -858,23 +865,34 @@ pub fn page_targets(l: &PageLayout, ns: &NotesState, out: &mut Vec<Target>) {
     }
 }
 
-/// The header for a Notes page: the name, then where it sits and what
-/// it does ("Notes 2 of 4 · adds notes to each one played").
-pub fn paint_header(cx: &mut PaintCx, t: &Theme, header: Rect, ns: &NotesState) {
-    cx.canvas.fill_round_rect(header, t.radius, t.surface);
-    let (title, line) = if ns.picking {
-        (
+/// The header's title and line for a Notes page: the name, then where it
+/// sits and what it does ("Notes 2 of 4 · adds notes to each one
+/// played"); a CC effect on a track that plays its own sound says it
+/// sends nothing instead. None with no row picked.
+pub fn header_text(ns: &NotesState) -> Option<(String, String)> {
+    if ns.picking {
+        return Some((
             "Add a MIDI effect".to_string(),
             "It goes above the arp; move it with Up and Down".to_string(),
-        )
-    } else {
-        let Some(row) = ns.selected else { return };
-        let does = match ns.page_fx() {
-            Some((_, _, fx)) => fx.does(),
-            None => "plays the held notes in turn",
-        };
-        let name = ns.row_view(row).map(|v| v.0).unwrap_or_default();
-        (name, format!("{} · {does}", ns.position(row)))
+        ));
+    }
+    let row = ns.selected?;
+    let does = match ns.page_fx() {
+        Some((_, _, fx)) if fx.is_cc() => {
+            ns.ccs_send_nothing.as_deref().unwrap_or_else(|| fx.does())
+        }
+        Some((_, _, fx)) => fx.does(),
+        None => "plays the held notes in turn",
+    };
+    let name = ns.row_view(row).map(|v| v.0).unwrap_or_default();
+    Some((name, format!("{} · {does}", ns.position(row))))
+}
+
+/// The header for a Notes page ([`header_text`]).
+pub fn paint_header(cx: &mut PaintCx, t: &Theme, header: Rect, ns: &NotesState) {
+    cx.canvas.fill_round_rect(header, t.radius, t.surface);
+    let Some((title, line)) = header_text(ns) else {
+        return;
     };
     let inner = header.inset_xy(16, 0);
     let w = cx.measure(FontId::Bold, t.size_title, &title);
@@ -1258,6 +1276,7 @@ pub fn example() -> NotesState {
         picking: false,
         plays_on: "Its own sound".to_string(),
         plays_detail: "Change it in MIDI, Tracks out".to_string(),
+        ccs_send_nothing: None,
     }
 }
 
@@ -1398,6 +1417,34 @@ mod tests {
                 assert!(r.value.bottom() <= c.rect.bottom(), "{}", c.title);
             }
         }
+    }
+
+    /// A CC effect's header says what it does while the track's
+    /// controllers go out, and that it sends nothing while the track
+    /// plays its own sound; other effects say what they do either way.
+    #[test]
+    fn a_cc_effect_says_in_place_when_it_sends_nothing() {
+        let mut ns = board7();
+        let row = ns.fx.add(Fx::CcSmooth(mpfree_notefx::CcSmooth::default()));
+        ns.selected = row;
+        let (title, line) = header_text(&ns).unwrap();
+        assert_eq!(title, "CC smooth");
+        assert_eq!(line, "Notes 3 of 5 · smooths a MIDI out controller's steps");
+        ns.ccs_send_nothing = Some("sends nothing: the track plays its own sound".to_string());
+        assert_eq!(
+            header_text(&ns).unwrap().1,
+            "Notes 3 of 5 · sends nothing: the track plays its own sound"
+        );
+        ns.selected = Some(1);
+        assert_eq!(
+            header_text(&ns).unwrap().1,
+            "Notes 2 of 5 · adds notes to each one played"
+        );
+        // Its glide reads in ms on a Q-Link card.
+        let smooth = Fx::CcSmooth(mpfree_notefx::CcSmooth::default());
+        assert_eq!(unit_of(&smooth, 1), Unit::Ms);
+        assert_eq!(smooth.value_text(0), "All");
+        assert_eq!(smooth.value_text(2), "Jumps");
     }
 
     #[test]

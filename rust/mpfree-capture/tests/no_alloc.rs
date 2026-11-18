@@ -1,8 +1,9 @@
-//! `Capture::input`, `Capture::process` and `Capture::pending` must not
-//! allocate or free. A counting global allocator watches a capture that
-//! follows a busy transport (play, loops, tempo changes, locates, stop,
-//! free playing while stopped) for long enough that the history wraps,
-//! at period sizes from 1 to 4096 frames.
+//! `Capture::input`, `Capture::input_on`, `Capture::process` and
+//! `Capture::pending` must not allocate or free. A counting global
+//! allocator watches a capture that follows a busy transport (play,
+//! loops, tempo changes, locates, stop, free playing while stopped), with
+//! keys routed to 40 tracks in turn, for long enough that the history
+//! wraps, at period sizes from 1 to 4096 frames.
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -93,6 +94,20 @@ fn capturing_never_allocates() {
                         Event::NoteOff { note: note - 1 }
                     };
                     c.input(off, ev);
+                }
+                // Keys a route plays on 40 tracks in turn, more than can
+                // hold at once over the run, each let go before the next.
+                if f % 64 == 16 {
+                    let track = (f / 128 % 40) as u8;
+                    let ev = if f / 64 % 2 == 0 {
+                        Event::NoteOn {
+                            note: 60,
+                            velocity: 90,
+                        }
+                    } else {
+                        Event::NoteOff { note: 60 }
+                    };
+                    c.input_on(track, off, ev);
                 }
                 // Pressure on the held pads, every 8 frames, sometimes
                 // one step (left to settle).

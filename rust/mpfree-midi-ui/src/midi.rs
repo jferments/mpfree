@@ -97,29 +97,66 @@ fn thru_field(m: &IoModel, from: &str) -> (String, Option<usize>) {
     }
 }
 
+/// Why nothing sent to the port named `port` would leave, in the Plays on
+/// row's words ("sends nothing: MIDI out is off", "sends nothing: Volca
+/// Kick is not plugged in"); None when it would go out. For whatever else
+/// names a port of its own, such as a kit pad's MIDI out on the Pads tab,
+/// so it says so in place as a track does.
+pub fn sends_nothing(m: &IoModel, port: &str) -> Option<String> {
+    let shown = m.setup.shown(port);
+    match m.live.port(port) {
+        None => Some(format!("sends nothing: {shown} is not plugged in")),
+        Some(_) if !m.live.built.notes_out => Some("sends nothing: MIDI out is off".to_string()),
+        Some(l) if !l.has_out => Some(format!("sends nothing: {shown} has no output")),
+        Some(l) if !l.sending => Some("sends nothing: its output didn't open".to_string()),
+        Some(_) => None,
+    }
+}
+
 /// A track's "Plays on" choices in order: inside, then each output port's
-/// 16 channels.
+/// 16 channels, or one choice for MPE gear (its zone's master channel),
+/// whose notes each take a channel of their own.
 fn plays_on_list(m: &IoModel) -> Vec<Option<TrackOut>> {
     let mut v = vec![None];
     for (p, _) in out_ports(m) {
-        for ch in 0..16 {
-            v.push(Some(TrackOut::new(&p, ch)));
+        match mpe_zone(m, &p).and_then(|z| z.master()) {
+            Some(master) => v.push(Some(TrackOut::new(&p, master))),
+            None => v.extend((0..16).map(|ch| Some(TrackOut::new(&p, ch)))),
         }
     }
     v
 }
 
 /// A track's Plays on as the screen says it: its port by the name shown
-/// ([`mpfree_midi::setup::MidiSetup::shown`]) and its channel.
+/// ([`mpfree_midi::setup::MidiSetup::shown`]) and its channel, or "MPE"
+/// for MPE gear, where each note takes a channel of the zone and the
+/// channel picked isn't used.
 fn plays_on_text(m: &IoModel, o: &TrackOut) -> String {
-    format!("{} · ch {}", m.setup.shown(&o.port), o.channel + 1)
+    match mpe_zone(m, &o.port) {
+        Some(_) => format!("{} · MPE", m.setup.shown(&o.port)),
+        None => format!("{} · ch {}", m.setup.shown(&o.port), o.channel + 1),
+    }
+}
+
+/// The MPE zone of the gear on `port`, from its profile's `mpe` line.
+fn mpe_zone(m: &IoModel, port: &str) -> Option<mpfree_midi::mpe::Zone> {
+    m.profile(port)
+        .and_then(|p| p.mpe)
+        .filter(|z| *z != mpfree_midi::mpe::Zone::Off)
 }
 
 fn plays_on_index(m: &IoModel, t: &Option<TrackOut>) -> usize {
-    let key = t.as_ref().map(|t| (t.port.as_str(), t.channel));
+    // On MPE gear any channel is the port's one choice.
+    let key = |o: &Option<TrackOut>| {
+        o.as_ref().map(|t| {
+            let ch = mpe_zone(m, &t.port).map_or(Some(t.channel), |_| None);
+            (t.port.clone(), ch)
+        })
+    };
+    let want = key(t);
     plays_on_list(m)
         .iter()
-        .position(|o| o.as_ref().map(|t| (t.port.as_str(), t.channel)) == key)
+        .position(|o| key(o) == want)
         .unwrap_or(0)
 }
 
@@ -224,30 +261,23 @@ impl Form for Midi {
                         .field(Field::choice("Program", "—", 0, 129).off(false));
                 }
                 Some(o) => {
-                    let live = m.live.port(&o.port);
-                    let plugged = live.is_some();
-                    row = match live {
-                        None => row.note(
-                            format!(
-                                "sends nothing: {} is not plugged in",
-                                m.setup.shown(&o.port)
+                    let plugged = m.live.port(&o.port).is_some();
+                    row = match sends_nothing(m, &o.port) {
+                        Some(why) => row.note(why, Tone::Warn),
+                        None => match mpe_zone(m, &o.port) {
+                            Some(z) => row.note(
+                                format!(
+                                    "plays out of {}: each note on its own channel, {}",
+                                    m.setup.shown(&o.port),
+                                    z.words()
+                                ),
+                                Tone::Normal,
                             ),
-                            Tone::Warn,
-                        ),
-                        Some(_) if !built.notes_out => {
-                            row.note("sends nothing: MIDI out is off", Tone::Warn)
-                        }
-                        Some(l) if !l.has_out => row.note(
-                            format!("sends nothing: {} has no output", m.setup.shown(&o.port)),
-                            Tone::Warn,
-                        ),
-                        Some(l) if !l.sending => {
-                            row.note("sends nothing: its output didn't open", Tone::Warn)
-                        }
-                        Some(_) => row.note(
-                            format!("plays out of {}", m.setup.shown(&o.port)),
-                            Tone::Normal,
-                        ),
+                            None => row.note(
+                                format!("plays out of {}", m.setup.shown(&o.port)),
+                                Tone::Normal,
+                            ),
+                        },
                     };
                     let prog = o
                         .program
@@ -367,11 +397,14 @@ impl Form for Midi {
                 enabled: true,
             });
         }
+        // MPE gear: each note takes a channel of the zone, so there is no
+        // channel to pick.
+        let mpe = t.as_ref().is_some_and(|t| mpe_zone(m, &t.port).is_some());
         let channels = (0..16)
             .map(|c| Choice {
                 text: (c + 1).to_string(),
-                on: t.as_ref().is_some_and(|t| t.channel == c),
-                enabled: true,
+                on: !mpe && t.as_ref().is_some_and(|t| t.channel == c),
+                enabled: !mpe,
             })
             .collect();
         Some(Picker {
@@ -550,6 +583,32 @@ mod tests {
         assert!(Midi.banner(&s.lock().unwrap()).is_none());
     }
 
+    /// Whatever else names a port (a kit pad's MIDI out) gets the same
+    /// words as a track's Plays on.
+    #[test]
+    fn a_port_that_would_send_nothing_says_why_in_plays_ons_words() {
+        let s = model();
+        let why = |port: &str| sends_nothing(&s.lock().unwrap(), port);
+        assert_eq!(
+            why("Volca Kick").as_deref(),
+            Some("sends nothing: Volca Kick is not plugged in")
+        );
+        assert_eq!(
+            why(DIN_NAME).as_deref(),
+            Some("sends nothing: MIDI out is off")
+        );
+        s.lock().unwrap().live.built = Built {
+            notes_out: true,
+            ..Built::default()
+        };
+        assert_eq!(
+            why(DIN_NAME).as_deref(),
+            Some("sends nothing: its output didn't open")
+        );
+        s.lock().unwrap().live.ports[0].sending = true;
+        assert_eq!(why(DIN_NAME), None);
+    }
+
     /// A USB device plays its tracks once MIDI out sends to it; one with
     /// no output says so on the track that names it, and thru says when it
     /// sends nothing.
@@ -590,6 +649,53 @@ mod tests {
             row(&r, "port:MIDI").note,
             "thru sends nothing: MIDI out is off"
         );
+    }
+
+    /// A track on MPE gear (its profile says `mpe = lower 15`) shows MPE in
+    /// place of a channel, and its note says each note takes its own
+    /// channel of the zone.
+    #[test]
+    fn a_track_on_mpe_gear_says_each_note_takes_its_own_channel() {
+        use mpfree_midi::profile::Profile;
+        let s = model();
+        {
+            let mut m = s.lock().unwrap();
+            let text = "mpfree-profile 1\nname = Seaboard\nmatch = Keystep 37\nmpe = lower 15\n";
+            let (p, _) = Profile::parse(text).unwrap();
+            m.profiles.add(p).unwrap();
+            m.live.built = Built {
+                notes_out: true,
+                ..Built::default()
+            };
+            m.live.ports[1].sending = true;
+            m.setup.tracks[1] = Some(TrackOut::new("Keystep 37", 4));
+        }
+        let r = rows(&s);
+        let t = row(&r, "track:1");
+        assert_eq!(t.fields[0].text, "Keystep 37 · MPE");
+        assert_eq!(
+            t.note,
+            "plays out of Keystep 37: each note on its own channel, \
+             MPE lower zone, channels 2 to 16"
+        );
+        // Not plugged in or not sending: it says so as for any gear.
+        s.lock().unwrap().live.ports[1].sending = false;
+        let r = rows(&s);
+        assert_eq!(
+            row(&r, "track:1").note,
+            "sends nothing: its output didn't open"
+        );
+        // There is no channel to pick: the picker's channels are off, and
+        // stepping takes the port once (as its master channel), not 16
+        // times.
+        let p = Midi.picker(&s.lock().unwrap(), "track:1", 0).unwrap();
+        assert!(p.groups[1].choices.iter().all(|c| !c.enabled && !c.on));
+        let mut m = s.lock().unwrap();
+        assert!(Midi.step(&mut m, "track:1", 0, -1));
+        assert_eq!(m.setup.tracks[1], Some(TrackOut::new(DIN_NAME, 15)));
+        assert!(Midi.step(&mut m, "track:1", 0, 1));
+        assert_eq!(m.setup.tracks[1], Some(TrackOut::new("Keystep 37", 0)));
+        assert!(!Midi.step(&mut m, "track:1", 0, 1));
     }
 
     #[test]

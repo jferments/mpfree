@@ -310,6 +310,13 @@ pub static MAIN_PAGES: &[MainPage] = &[
         ["Size", "Density", "Pitch", "Mix"],
     ),
     main(
+        "mpfree.grains",
+        &[
+            "Size", "Density", "Feedback", "Mix", "Position", "Pitch", "Repeat", "Freeze",
+        ],
+        ["Size", "Density", "Feedback", "Mix"],
+    ),
+    main(
         "mpfree.fx.harmonizer",
         &[
             "Level 1", "Level 2", "Glide", "Dry", "Key", "Scale", "Voice 1", "Voice 2",

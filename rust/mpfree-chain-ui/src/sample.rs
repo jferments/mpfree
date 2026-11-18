@@ -868,6 +868,8 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         ui
     };
     let strip_comp = drawn("mpfree.fx.channel_strip", Some("Vocal"), 2)?;
+    let grains = drawn("mpfree.grains", Some("Trail cloud"), 0)?;
+    let grains_texture = drawn("mpfree.grains", Some("Glitch dust"), 1)?;
     let m0 = song.macros_state(0);
     let m1 = song.macros_state(1);
     let mut editing = song.macros_state(0);
@@ -898,6 +900,8 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         Sample { name: "chain-notes-chord", about: "A note track's chain (board 7, layout spec 4b): NOTES above SOUND, with Scale, Chord, the arp and Humanize (off) in order and Plays on between the groups. Chord's page in the effect frame: its shapes as chips (m7 lit), what goes in and what comes out on a keyboard (C3 in, C3 Eb3 G3 Bb3 out), Voicing and Added notes as cards; the Q-Links turn Chord, Voicing, Inversion and Velocity", ui: notes_chord },
         Sample { name: "chain-notes-arp", about: "The arp's row picked: what it plays now and a way to its panel; Up and Down move it among the MIDI effects (those above change what it gets, those below what it plays), and it can't be removed", ui: notes_arp },
         Sample { name: "chain-notes-add", about: "+ MIDI effect: the eleven MIDI effects as tiles, each with what it does; a tap adds it above the arp", ui: notes_pick },
+        Sample { name: "chain-mixer-keys-grains", about: "Grains, the grain engine as an effect (Trail cloud preset), on its Main page: where in the last eight seconds the grains read, their size and density (the live grain count beside them), their pitch, Feedback and Freeze to hold the sound, and the Mix. The Q-Links turn Size, Density, Feedback and Mix; Open › goes to Texture, and Capture › in Hold puts the memory on a pad, playing as grains", ui: grains },
+        Sample { name: "chain-mixer-keys-grains-texture", about: "Grains on its Texture page (Glitch dust preset): random timing, the grains' Shape, how much their size and level vary, and Peaked spray", ui: grains_texture },
         Sample { name: "chain-strip-list", about: "The strip button's list over the keys chain: the groups down the left, the tracks as tiles with what each holds (the open one outlined); a tap opens that strip's chain", ui: strips },
         Sample { name: "macros-1-4", about: "The macros panel over the page (a long press on a macro card; no tab lit, Back closes it): Macros 1-4 with their targets and ranges, the Q-Links on Macros 1-4, the morph 64 % of the way from Dry verse to Wash drop", ui: screen(fonts(), &mut song, Place::Over, None, Some(m0))? },
         Sample { name: "macros-5-8", about: "Macros 5-8, not yet assigned; the Q-Links on Macros 5-8", ui: screen(fonts(), &mut song, Place::Over, None, Some(m1))? },
@@ -961,7 +965,7 @@ mod tests {
     #[test]
     fn the_samples_read_real_state_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 29);
+        assert_eq!(s.len(), 31);
         for mut sample in s {
             let (w, h) = sample.ui.size();
             let mut c = SoftCanvas::new(w, h);
@@ -1761,6 +1765,54 @@ mod tests {
                 ChainAction::Release(gate_addr),
                 ChainAction::Group(2)
             ]
+        );
+    }
+
+    /// A summary passes over a choice that is Off, and its value is then
+    /// the choice's own: an EQ with no low cut names band 1's shelf and its
+    /// frequency, not the cut's; Grains with nothing switched on shows its
+    /// first two values, and with a filter on, the filter and its cutoff.
+    #[test]
+    fn a_summary_passes_over_a_choice_that_is_off() {
+        use mpfree_fx::registry;
+        let eq = registry::make(crate::state::EQ_ID).unwrap();
+        assert_eq!(crate::state::summary(&*eq), "Low shelf · 100 Hz");
+        let mut grains = registry::make("mpfree.grains").unwrap();
+        let plain = crate::state::summary(&*grains);
+        assert!(!plain.contains("Off"), "{plain}");
+        // Filter (`mpfree_grain::node::param::FILTER`) to Low pass.
+        grains.set_param(18, 1.0);
+        assert!(
+            crate::state::summary(&*grains).starts_with("Low pass · "),
+            "{}",
+            crate::state::summary(&*grains)
+        );
+    }
+
+    /// The Grains effect's Hold heading says Capture ›, and a tap on it
+    /// asks for the insert's memory on a pad.
+    #[test]
+    fn the_grains_capture_in_its_hold_heading_asks_for_its_memory() {
+        let mut song = Song::new();
+        let grains = mpfree_fx::registry::make("mpfree.grains").unwrap();
+        let slot = song.keys.push(grains);
+        let st = song.chain_state(KEYS, slot, 0, None);
+        let hold = st.sections.iter().find(|s| s.key == "hold").unwrap();
+        assert_eq!(hold.action, Some("Capture"));
+        let mut ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(st), None).unwrap();
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+        let t = v
+            .targets(r)
+            .into_iter()
+            .find(|t| t.id == "section-link" && t.label == "Hold")
+            .expect("Hold's heading is a link");
+        assert_eq!(v.page().sections[2].link_text.as_deref(), Some("Capture ›"));
+        let (x, y) = t.centre();
+        tap(&mut ui, x, y);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Capture(slot)]
         );
     }
 

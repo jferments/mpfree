@@ -35,7 +35,7 @@ use mpfree_looper::print::{frames_at, PrintJob};
 use mpfree_looper::save::Saved;
 use mpfree_looper::{
     Bounce, Command, Edit, History, LayerCommand, LayerInfo, LoopFile, Looper, Memory, Phase,
-    Print, Stats, Status, Step, Take, HEARD_SECONDS, MAX_LAYERS, MAX_LOOPS,
+    Print, Starts, Stats, Status, Step, Take, HEARD_SECONDS, MAX_LAYERS, MAX_LOOPS,
 };
 use mpfree_seq::loops::{LoopNow, LoopPlan};
 use mpfree_transport::time::{Tick, PPQ};
@@ -1112,6 +1112,15 @@ pub struct LoopHost {
     pads_dry: Option<&'static str>,
     /// The latency the looper was last given.
     latency_set: u32,
+    /// Whether the looper was last told to listen by ear (the line input)
+    /// for a loop that starts when you play ([`Command::StartsByEar`]).
+    by_ear_set: bool,
+    /// The frame a pad hit was last told on ([`LoopHost::played`]): one a
+    /// period is enough.
+    played_at: Option<u64>,
+    /// Starts on a note refused ([`LoopHost::start_refused`]): counted,
+    /// logged and said on the screen.
+    pub starts_refused: u64,
     input: Vec<f32>,
     out: Vec<f32>,
     last: Status,
@@ -1479,6 +1488,9 @@ impl LoopHost {
             pads_latency: 0,
             pads_dry: None,
             latency_set: 0,
+            by_ear_set: false,
+            played_at: None,
+            starts_refused: 0,
             input: vec![0.0; 2 * PERIOD],
             out: vec![0.0; 2 * PERIOD],
             last,
@@ -1816,6 +1828,13 @@ impl LoopHost {
             (Command::Undo | Command::Redo, Phase::Playing) if moved.is_some() => {
                 moved.unwrap_or_default()
             }
+            (Command::Record, Phase::Empty) if s.starts == Starts::Play && !self.resample => {
+                format!(
+                    "Record: armed, the first pass starts when you play {} ({})",
+                    self.first_note(),
+                    bars_text(s.bars)
+                )
+            }
             (Command::Record, Phase::Empty) => format!(
                 "Record: armed, the first pass starts on the next bar line ({})",
                 bars_text(s.bars)
@@ -1901,6 +1920,15 @@ impl LoopHost {
             }
             (Command::SetBars(b), _) => format!("first pass length {}", bars_text(b)),
             (Command::SetAfter(a), _) => format!("after recording: {a:?}"),
+            (Command::SetStarts(Starts::Bar), _) => "starts: on the bar".to_string(),
+            (Command::SetStarts(Starts::Play), _) => {
+                format!("starts: when you play {}", self.first_note())
+            }
+            (Command::Played(f), _) => format!("a note played on frame {f}"),
+            (Command::StartsByEar(on), _) => format!(
+                "a loop that starts when you play listens to {}",
+                if on { "the line input" } else { "the pads" }
+            ),
             (Command::SetFadeOld(k), _) => format!("fade old: {:.0} % kept a pass", 100.0 * k),
             (Command::SetLatency(l), _) => {
                 format!("latency {l} frames ({:.1} ms)", l as f64 / 44.1)
@@ -2483,6 +2511,12 @@ impl LoopHost {
         {
             self.latency_set = self.pads_latency;
         }
+        // A loop that starts when you play listens to the line input; the
+        // pads' sound has the song in it, so a pad hit is told instead.
+        let by_ear = self.source == LoopSource::Line;
+        if by_ear != self.by_ear_set && self.looper.command(Command::StartsByEar(by_ear)) {
+            self.by_ear_set = by_ear;
+        }
         if let Some(span) = block.spans().first() {
             self.beats_per_bar = u32::from(span.meter.beats);
             self.bar_ticks = span.meter.bar_ticks();
@@ -2770,6 +2804,11 @@ impl LoopHost {
             } else {
                 String::new()
             }
+            + &if self.starts_refused > 0 {
+                format!("; {} starts on a note refused", self.starts_refused)
+            } else {
+                String::new()
+            }
     }
 
     /// What the Looper tab shows; takes the meter's peaks.
@@ -2969,6 +3008,58 @@ impl LoopHost {
         format!(
             "looper: Capture: {} become Loop {}{fewer}",
             bars_words(number(t.origin), t.bars),
+            n + 1
+        )
+    }
+
+    /// What starts a loop set to start when you play, for the log and
+    /// the screen: "(the first pad you play)".
+    pub fn first_note(&self) -> &'static str {
+        match self.source {
+            LoopSource::Pads => "(the first pad you play)",
+            LoopSource::Line => "(the line input's first note over -40 dB)",
+        }
+    }
+
+    /// Starts: When I play, with the pads: the loop listening for a pad
+    /// hit, if one is (the pads are what it records, and no hit was told
+    /// on `frame` yet).
+    pub fn listens_for_pads(&self, frame: u64) -> Option<usize> {
+        if self.source != LoopSource::Pads || self.resample || self.played_at == Some(frame) {
+            return None;
+        }
+        (0..MAX_LOOPS).find(|&n| self.looper.loop_status(n).is_some_and(|s| s.listening))
+    }
+
+    /// A pad hit on song frame `frame` (the coming period's first: the
+    /// pads are read before the transport runs): a loop listening for one
+    /// starts on it ([`LoopHost::listens_for_pads`]).
+    pub fn played(&mut self, frame: u64) -> bool {
+        self.played_at = Some(frame);
+        self.looper.command(Command::Played(frame))
+    }
+
+    /// After the looper's period: a loop that heard you play with the song
+    /// stopped asks for it to start, on the next period's first frame, so
+    /// bar 1 is your note. Some(loop) once a note.
+    pub fn take_start(&mut self) -> Option<usize> {
+        self.looper.take_start()
+    }
+
+    /// The song can't start on loop `n`'s note (`why`): the loop forgets
+    /// it and listens again. Counted; the line for the log and the screen.
+    pub fn start_refused(&mut self, n: usize, why: &str) -> String {
+        self.looper.start_refused();
+        self.note_refused(n, why)
+    }
+
+    /// A note that would start loop `n` and the song, which can't start
+    /// (`why`): counted; the line for the log and the screen. The loop
+    /// still listens.
+    pub fn note_refused(&mut self, n: usize, why: &str) -> String {
+        self.starts_refused += 1;
+        format!(
+            "looper: Loop {} heard you, but the song can't start: {why}. It listens again",
             n + 1
         )
     }

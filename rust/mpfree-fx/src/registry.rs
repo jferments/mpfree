@@ -17,7 +17,7 @@ use crate::presets as p;
 use crate::{
     Amp, AutoPan, AutoWah, ChannelStrip, Character, Chorus, Cloud, Comb, Compressor, Crush,
     DeEsser, Delay, DjFilter, Drive, Ducker, Eq, Exciter, Flanger, FreqShifter, Fuzz, Gate,
-    Granulator, Harmonizer, Limiter, LoFi, MasterSafety, MultiFilter, MultiTap,
+    GrainNode, Granulator, Harmonizer, Limiter, LoFi, MasterSafety, MultiFilter, MultiTap,
     MultibandCompressor, Perform, Phaser, PitchCorrect, PitchShifter, Plate, Preset, RingMod, Room,
     Rotary, SampleDelay, Spring, StereoWidth, TalkBox, TapeDelay, TransientShaper, Tremolo, Tuner,
     XyFx,
@@ -117,6 +117,10 @@ const fn e(
 }
 
 use Category::*;
+
+/// The Grains effect's random sequence: the same for every one made, so a
+/// project renders the same each time it plays.
+const GRAINS_SEED: u64 = 0x6772_6169_6e73;
 
 /// Every effect, grouped by category in the picker's order.
 pub static EFFECTS: &[FxEntry] = &[
@@ -407,6 +411,14 @@ pub static EFFECTS: &[FxEntry] = &[
         DelayReverb,
         || Box::new(Granulator::new()),
         crate::grains::PRESETS,
+    ),
+    e(
+        "mpfree.grains",
+        "Grains",
+        "Grain clouds, frozen or fed back",
+        DelayReverb,
+        || Box::new(GrainNode::new(GRAINS_SEED)),
+        p::GRAINS,
     ),
     e(
         "mpfree.fx.pitch",

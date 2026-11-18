@@ -16,7 +16,7 @@ use mpfree_ui::{Align, Fonts, Theme, Tone, Ui};
 
 use crate::auto_tab::{self, AutoSettings, AutoState, AutoTab, Onto, Running};
 use crate::chop_tab::{self, ChopState, ChopTab};
-use crate::grain_tab::{self, GrainState, GrainTab};
+use crate::grain_tab::{self, CloudNow, GrainState, GrainTab};
 use crate::pads_tab::{self, PadsState, PadsTab};
 use crate::play_tab::{self, PlayState, PlayTab};
 use crate::rec_tab::{self, EndAt, RecState, RecTab, Skip, StartAt};
@@ -29,7 +29,7 @@ pub const SCREEN: (i32, i32) = (1280, 800);
 /// The app's header tabs, the one list mpfree-ui shares (the pad player's
 /// layout spec, approved by Jay on 2026-11-11).
 pub use mpfree_ui::widgets::APP_TABS;
-pub const EDITOR_TAB: usize = 6;
+pub const EDITOR_TAB: usize = 3;
 /// The page names the samples add the Wave, Chop and Play tabs under.
 pub const PAGE: &str = "Sample · Wave";
 pub const CHOP_PAGE: &str = "Sample · Chop";
@@ -1170,6 +1170,61 @@ pub fn grain_project() -> (Project, Arc<SourceView>) {
     (p, view)
 }
 
+/// The grain pad set up to show off one section of the Grain tab:
+/// Movement, a triangle LFO drifting the position and the envelope opening
+/// the size out after each hit; Filter and keys, a resonant band pass on
+/// each grain, its cutoff sprayed, with glide and the size following the
+/// keys; Presets, Shimmer fifths put on the pad. Grains is
+/// [`grain_project`] as it is.
+pub fn grain_section_project(
+    section: grain_tab::View,
+) -> Result<(Project, Arc<SourceView>), String> {
+    use mpfree_sampler::model::{
+        GrainEnv, GrainFilter, GrainFilterKind, GrainKeys, GrainLfo, LfoShape, MotionTarget,
+    };
+    let (mut p, view) = grain_project();
+    let Some(mut pad) = p.pad(PAD).cloned() else {
+        return Err("no pad".into());
+    };
+    let r = &mut pad.layers[0].region;
+    match section {
+        grain_tab::View::Grains => {}
+        grain_tab::View::Movement => {
+            r.grain.lfo = GrainLfo {
+                shape: LfoShape::Triangle,
+                rate_hz: 0.5,
+                beats: None,
+                target: MotionTarget::Position,
+                depth: 0.4,
+            };
+            r.grain.env = GrainEnv {
+                attack_ms: 500.0,
+                decay_ms: 1500.0,
+                sustain: 0.4,
+                target: MotionTarget::Size,
+                depth: 0.6,
+            };
+        }
+        grain_tab::View::FilterKeys => {
+            r.grain.filter = GrainFilter {
+                kind: GrainFilterKind::Band,
+                cutoff_hz: 1_200.0,
+                resonance: 0.6,
+                spray: 1.0,
+            };
+            r.grain_keys = GrainKeys {
+                size: true,
+                scan: false,
+            };
+            r.grain_glide_ms = 300.0;
+        }
+        grain_tab::View::Presets => *r = mpfree_sampler::grain_presets::apply(r, 4),
+    }
+    p.set_pad(PAD, Some(pad), None)
+        .map_err(|e| format!("{e:?}"))?;
+    Ok((p, view))
+}
+
 /// The Grain tab on `project`'s pad A5, shown.
 pub fn grain_on(
     fonts: Fonts,
@@ -1193,24 +1248,68 @@ pub fn grain_on(
 /// What the engine plays of pad A5 `seconds` after a hit: its grains, its
 /// reading place and how many grains play in all.
 pub fn grains_after(project: &Project, seconds: f32) -> (Vec<GrainView>, Option<f32>, usize) {
+    let (grains, now) = cloud_after(project, seconds);
+    (grains, now.playhead, now.live)
+}
+
+/// What the engine plays of pad A5 `seconds` after a hit: its grains, and
+/// what else the Grain tab draws of them, as the app reports them, a
+/// report every 40 ms of the last second (so the cloud has its path).
+pub fn cloud_after(project: &Project, seconds: f32) -> (Vec<GrainView>, CloudNow) {
+    let (grains, now, _) = cloud_reports(project, seconds);
+    (grains, now)
+}
+
+/// [`cloud_after`] with the reading places reported over the last second
+/// before it, oldest first.
+pub fn cloud_reports(project: &Project, seconds: f32) -> (Vec<GrainView>, CloudNow, Vec<f32>) {
     let mut e = Engine::new(RATE, 8);
     e.set_view(EngineView::build(project, RATE));
     e.apply(Event::NoteOn {
         pad: PAD as u8,
         velocity: 100,
     });
+    let region = &project.pad(PAD).expect("pad A5").layers[0].region;
+    let head = |e: &Engine| {
+        e.playheads()
+            .find(|h| h.0 == PAD as u8 && h.1 == 0)
+            .map(|h| ((h.2 as f64 - region.start as f64) / region.frames().max(1) as f64) as f32)
+    };
     let (mut l, mut r) = (vec![0.0; 128], vec![0.0; 128]);
-    for _ in 0..(seconds * RATE as f32 / 128.0) as usize {
+    let blocks = (seconds * RATE as f32 / 128.0) as usize;
+    // A report every 40 ms (about 14 blocks) over the last second.
+    let every = (RATE as usize / 25).div_ceil(128);
+    let mut path = Vec::new();
+    for b in 0..blocks {
         e.render(&mut l, &mut r);
+        let left = blocks - 1 - b;
+        if left > 0 && left.is_multiple_of(every) && left <= 25 * every {
+            path.extend(head(&e));
+        }
     }
     let mut views = [GrainView::default(); 64];
     let n = e.grains_of(PAD as u8, 0, &mut views);
-    let region = &project.pad(PAD).expect("pad A5").layers[0].region;
-    let head = e
-        .playheads()
-        .find(|h| h.0 == PAD as u8 && h.1 == 0)
-        .map(|h| ((h.2 as f64 - region.start as f64) / region.frames().max(1) as f64) as f32);
-    (views[..n].to_vec(), head, e.live_grains())
+    let now = CloudNow {
+        playhead: head(&e),
+        state: e.cloud_of(PAD as u8, 0),
+        live: e.live_grains(),
+    };
+    (views[..n].to_vec(), now, path)
+}
+
+/// Shows on `s` what its pad plays `seconds` after a hit, as the app's
+/// reports over the last second would have.
+fn show_played(s: &mut GrainSample, seconds: f32) {
+    let (grains, now, path) = cloud_reports(&s.project, seconds);
+    let st = s.state.clone();
+    for h in path {
+        let then = CloudNow {
+            playhead: Some(h),
+            ..now
+        };
+        s.tab.set_cloud(&mut s.ui, &st, &grains, then);
+    }
+    s.tab.set_cloud(&mut s.ui, &st, &grains, now);
 }
 
 /// The Grain tab's sample screens.
@@ -1222,9 +1321,7 @@ pub fn grain_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<GrainSample>, Stri
         "grain",
         "A cloud from the middle of the loop, 1.5 s after a hit: the engine's own grains",
     );
-    let (grains, head, live) = grains_after(&s.project, 1.5);
-    let st = s.state.clone();
-    s.tab.set_cloud(&mut s.ui, &st, &grains, head, live);
+    show_played(&mut s, 1.5);
     out.push(s);
 
     // The loop as the Wave tab leaves it: it doesn't play grains yet.
@@ -1237,5 +1334,56 @@ pub fn grain_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<GrainSample>, Stri
     let st = s.state.clone();
     s.tab.update(&mut s.ui, &st);
     out.push(s);
+
+    // The same pad with 1.5 s grains: 180 wanted at once, so the voice
+    // thins them; its spray peaked, and its LFO opening it out.
+    let (mut p, view) = grain_project();
+    if let Some(mut pad) = p.pad(PAD).cloned() {
+        let g = &mut pad.layers[0].region.grain;
+        g.size_ms = 1_500.0;
+        g.spray_shape = mpfree_sampler::model::GrainSprayShape::Peaked;
+        g.lfo = mpfree_sampler::model::GrainLfo {
+            shape: mpfree_sampler::model::LfoShape::Sine,
+            rate_hz: 0.2,
+            beats: None,
+            target: mpfree_sampler::model::MotionTarget::Spray,
+            depth: 0.3,
+        };
+        p.set_pad(PAD, Some(pad), None)
+            .map_err(|e| format!("{e:?}"))?;
+    }
+    let mut s = grain_on(fonts(), p, view)?;
+    (s.name, s.about) = (
+        "grain-thinned",
+        "1.5 s grains, 120 a second: thinned to fit, the spray peaked and opened out by the LFO",
+    );
+    show_played(&mut s, 1.5);
+    out.push(s);
+
+    for (view, name, about) in [
+        (
+            grain_tab::View::Movement,
+            "grain-movement",
+            "Movement: a triangle LFO drifts the position, the envelope opens the size after each hit",
+        ),
+        (
+            grain_tab::View::FilterKeys,
+            "grain-filter",
+            "Filter and keys: a resonant band pass on each grain, its cutoff sprayed; glide and size follow key",
+        ),
+        (
+            grain_tab::View::Presets,
+            "grain-presets",
+            "Presets: the eight starting points as buttons, Shimmer fifths on the pad and lit",
+        ),
+    ] {
+        let (p, source) = grain_section_project(view)?;
+        let mut s = grain_on(fonts(), p, source)?;
+        (s.name, s.about) = (name, about);
+        let st = s.state.clone();
+        s.tab.open(&mut s.ui, &st, view);
+        show_played(&mut s, 1.5);
+        out.push(s);
+    }
     Ok(out)
 }
