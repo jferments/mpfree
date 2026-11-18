@@ -10,9 +10,19 @@
 //! turns a learned control's values into presses and a tempo: a press when
 //! the value goes past the middle, a let-go when it comes back under.
 //!
+//! The Clips grid works the same way (sequencer S5, "being driven";
+//! `Owner::Clips`, its ids in [`mpfree_play::mpfree_param::clips`]): a
+//! learned button launches a clip or a scene, stops a track or all of
+//! them, goes back to the song or arms a track, as a tap on the grid does
+//! ([`Remote::clips_write`] says which, the app finds the tap with
+//! `mpfree_time_ui::view::clips_press`); a learned key, knob or fader
+//! mutes or solos a track, on the launch line in Perform as TRACK MUTE's
+//! pads do.
+//!
 //! The MPC's own buttons never come here, and nothing here sends MIDI.
 
 use mpfree_node::{Curve, ParamInfo, Unit};
+use mpfree_play::mpfree_param::clips::{self, Clips};
 use mpfree_play::mpfree_param::transport;
 
 /// The tempo a learned knob sets, over the app's range (`App::set_tempo`).
@@ -47,6 +57,55 @@ pub const PLAYING: ParamInfo = ParamInfo {
 pub struct Now {
     pub rolling: bool,
     pub bpm: f64,
+    /// The tracks muted, bit `t` for track `t`, as they will be once the
+    /// mute queue lands (`TimeHost::mute_bits`).
+    pub muted: u128,
+    /// The tracks soloed, the same way.
+    pub soloed: u128,
+}
+
+/// A track's mute as MIDI Learn reads and sets it: on while muted.
+pub const MUTE: ParamInfo = ParamInfo {
+    id: 0,
+    name: "Mute",
+    group: "Clips",
+    min: 0.0,
+    max: 1.0,
+    default: 0.0,
+    unit: Unit::None,
+    curve: Curve::Toggle,
+    readonly: false,
+};
+
+/// A track's solo: on while soloed.
+pub const SOLO: ParamInfo = ParamInfo {
+    name: "Solo",
+    ..MUTE
+};
+
+/// A Clips grid parameter described with its value now: a track's mute or
+/// solo. None for the presses, which have no value to read.
+pub fn describe_clips(id: u16, now: Now) -> Option<(ParamInfo, f32)> {
+    let on = |bits: u128, t: u8| if (bits >> t) & 1 == 1 { 1.0 } else { 0.0 };
+    match clips::of(id)? {
+        Clips::Mute(t) => Some((ParamInfo { id, ..MUTE }, on(now.muted, t))),
+        Clips::Solo(t) => Some((ParamInfo { id, ..SOLO }, on(now.soloed, t))),
+        _ => None,
+    }
+}
+
+/// What a learned control on the Clips grid does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipsAct {
+    Nothing,
+    /// Pressed: do what a tap on the grid does now.
+    Press(Clips),
+    /// Mute (or with `solo`, solo) track `track`, or let it play.
+    Mute {
+        track: usize,
+        solo: bool,
+        on: bool,
+    },
 }
 
 /// A transport parameter described with its value now; None for the
@@ -77,6 +136,8 @@ pub enum Act {
 #[derive(Debug, Default)]
 pub struct Remote {
     held: [bool; transport::ALL.len()],
+    /// The Clips grid's presses held down now, by id.
+    clips_held: Vec<u16>,
 }
 
 impl Remote {
@@ -111,6 +172,41 @@ impl Remote {
             _ => Act::Nothing,
         }
     }
+
+    /// A learned control set Clips grid parameter `id` to `value` (0 to
+    /// 1). A press goes past the middle once; a mute or solo is on from
+    /// the middle up, and does something only when that isn't where the
+    /// track stands (or will, once the mute queue lands).
+    pub fn clips_write(&mut self, id: u16, value: f32, now: Now) -> ClipsAct {
+        let Some(c) = clips::of(id) else {
+            return ClipsAct::Nothing;
+        };
+        let on = value >= 0.5;
+        if let Clips::Mute(t) | Clips::Solo(t) = c {
+            let solo = matches!(c, Clips::Solo(_));
+            let bits = if solo { now.soloed } else { now.muted };
+            if ((bits >> t) & 1 == 1) == on {
+                return ClipsAct::Nothing;
+            }
+            return ClipsAct::Mute {
+                track: usize::from(t),
+                solo,
+                on,
+            };
+        }
+        let held = self.clips_held.contains(&id);
+        match (on, held) {
+            (true, false) => {
+                self.clips_held.push(id);
+                ClipsAct::Press(c)
+            }
+            (false, true) => {
+                self.clips_held.retain(|&h| h != id);
+                ClipsAct::Nothing
+            }
+            _ => ClipsAct::Nothing,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -120,10 +216,12 @@ mod tests {
     const STOPPED: Now = Now {
         rolling: false,
         bpm: 120.0,
+        muted: 0,
+        soloed: 0,
     };
     const PLAYING_NOW: Now = Now {
         rolling: true,
-        bpm: 120.0,
+        ..STOPPED
     };
 
     #[test]
@@ -201,5 +299,77 @@ mod tests {
             assert_eq!(describe(id, STOPPED), None);
         }
         assert_eq!(Remote::new().write(99, 1.0, STOPPED), Act::Nothing);
+    }
+
+    #[test]
+    fn a_clips_button_presses_once_each_time_it_goes_down() {
+        let mut r = Remote::new();
+        let scene = clips::scene(2);
+        assert_eq!(
+            r.clips_write(scene, 1.0, STOPPED),
+            ClipsAct::Press(Clips::Scene(2))
+        );
+        assert_eq!(r.clips_write(scene, 0.7, STOPPED), ClipsAct::Nothing);
+        assert_eq!(r.clips_write(scene, 0.0, STOPPED), ClipsAct::Nothing);
+        assert_eq!(
+            r.clips_write(scene, 1.0, STOPPED),
+            ClipsAct::Press(Clips::Scene(2))
+        );
+        // Each control keeps its own.
+        let clip = clips::clip(3, 1);
+        assert_eq!(
+            r.clips_write(clip, 1.0, STOPPED),
+            ClipsAct::Press(Clips::Clip(3, 1))
+        );
+        assert_eq!(
+            r.clips_write(clips::STOP_ALL, 1.0, STOPPED),
+            ClipsAct::Press(Clips::StopAll)
+        );
+        assert_eq!(
+            r.clips_write(9, 1.0, STOPPED),
+            ClipsAct::Nothing,
+            "no such id"
+        );
+        assert_eq!(describe_clips(scene, STOPPED), None, "a press has no value");
+    }
+
+    #[test]
+    fn a_mute_is_set_only_where_the_track_isnt() {
+        let mut r = Remote::new();
+        let now = Now {
+            muted: 1 << 5,
+            soloed: 1 << 127,
+            ..PLAYING_NOW
+        };
+        assert_eq!(r.clips_write(clips::mute(5), 1.0, now), ClipsAct::Nothing);
+        assert_eq!(
+            r.clips_write(clips::mute(5), 0.0, now),
+            ClipsAct::Mute {
+                track: 5,
+                solo: false,
+                on: false
+            }
+        );
+        assert_eq!(
+            r.clips_write(clips::mute(4), 0.9, now),
+            ClipsAct::Mute {
+                track: 4,
+                solo: false,
+                on: true
+            }
+        );
+        assert_eq!(r.clips_write(clips::solo(127), 1.0, now), ClipsAct::Nothing);
+        assert_eq!(
+            r.clips_write(clips::solo(127), 0.0, now),
+            ClipsAct::Mute {
+                track: 127,
+                solo: true,
+                on: false
+            }
+        );
+        let (info, v) = describe_clips(clips::mute(5), now).unwrap();
+        assert_eq!((info.name, info.id, v), ("Mute", clips::mute(5), 1.0));
+        assert_eq!(describe_clips(clips::mute(4), now).unwrap().1, 0.0);
+        assert_eq!(describe_clips(clips::solo(127), now).unwrap().1, 1.0);
     }
 }

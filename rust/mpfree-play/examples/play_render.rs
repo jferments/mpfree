@@ -585,7 +585,8 @@ impl EventLog {
             Event::Lock { .. }
             | Event::Lane { .. }
             | Event::Unlock { .. }
-            | Event::Pressure { .. } => return,
+            | Event::Pressure { .. }
+            | Event::Program { .. } => return,
         };
         if kind == 1 {
             self.notes += 1;
@@ -644,7 +645,9 @@ fn to_sampler(engine: &mut Engine, o: &Out) {
         Event::NoteOff { note } => SEvent::NoteOff { pad: note },
         Event::AllOff => SEvent::AllOff,
         Event::Pressure { note, value } => SEvent::Pressure { pad: note, value },
-        Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => return,
+        Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } | Event::Program { .. } => {
+            return
+        }
     };
     engine.schedule(o.offset, ev);
 }

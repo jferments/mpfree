@@ -231,9 +231,10 @@ fails if any engine allocated inside a block. `--json FILE` writes the
 results (each case has `mem_bytes`); `--filter TEXT` picks cases by name or
 module.
 
-On the desktop, the biggest holders are the looper (20 MB for 60 s of
-stereo; the app's Prefs "Loop memory" default of 5 minutes is about 110 MB,
-and 20 minutes about 437 MB, all locked in RAM), the Cloud reverb (9.4 MB per instance), the master grain effect and
+On the desktop, the biggest holders are the looper (about 33 MB for 60 s of
+stereo, 11 MB of it the 30 s Capture keeps; the app's Prefs "Loop memory"
+default of 5 minutes is about 120 MB, and 20 minutes about 448 MB, all locked
+in RAM), the Cloud reverb (9.4 MB per instance), the master grain effect and
 Grains FX (about 2.7 MB each) and the delay (1.4 MB). The CPU budget is per
 period; memory is per instance, so an engine that is cheap to run can still
 be costly to have many of. The sampler's Rec tab (line input into the

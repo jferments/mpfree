@@ -284,6 +284,7 @@ fn the_same_events_for_every_period_size() {
                 sounding.contains(&(e.1, e.2, note)),
                 "{e:?} presses a silent note"
             ),
+            Event::Program { .. } => unreachable!("no programs here"),
         }
     }
     assert!(reference.iter().any(|e| e.3 == Event::AllOff));

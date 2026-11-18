@@ -186,6 +186,8 @@ pub enum To {
     Learned(ParamAddr),
     /// MIDI Learn was armed: this control now moves this parameter.
     Took(ParamAddr),
+    /// MIDI Follow: the controller's knob turned this Q-Link (0 to 3).
+    QLink(u8),
     /// The port's input is "Learn only" and nothing learned this.
     LearnOnly,
     /// The tempo follows this port's clock (its Start, Stop and Song
@@ -211,6 +213,10 @@ pub enum To {
     ThruFrom(PortId),
     /// Out: the Sample tab's auto-sample played it on outside gear.
     Sampler,
+    /// Out: controller mode sent it (the MPC's pads and Q-Links).
+    Controller,
+    /// Out: MIDI Follow sent a Q-Link's value back to its controller.
+    SentBack,
 }
 
 /// The monitor's filter groups, as bits of [`Filter::kinds`].

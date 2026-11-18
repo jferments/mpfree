@@ -1,5 +1,5 @@
-//! The MIDI, Routing, Learn, Sync, CV and Monitor sections of the mixer's
-//! I/O view.
+//! The MIDI, Routing, Learn, Controller, Sync, CV and Monitor sections of
+//! the mixer's I/O view.
 //!
 //! The owner's calls (2026-11-12): a project's routing lives in an I/O view
 //! inside the mixer, opened by the I/O icon beside the mixer icon. The
@@ -49,11 +49,14 @@ use std::time::Duration;
 
 pub use learn::control_text;
 pub use monitor::words as monitor_words;
+pub use monitor::words_named as monitor_words_named;
 pub use monitor::DevMonitor;
 use mpfree_midi::cv::CV_OUTS;
 pub use mpfree_midi::monitor::Monitor;
+pub use mpfree_midi::profile::{Profile, Profiles};
 pub use mpfree_midi::setup::MidiSetup;
 
+mod controller;
 mod cv;
 mod form;
 mod learn;
@@ -86,6 +89,10 @@ pub struct PortLive {
     pub sending: bool,
     /// When something last arrived on its input (the app's clock).
     pub last_in: Option<Duration>,
+    /// MPFree's clock as it left this port over the last beat: the gap
+    /// between pulses and their spread either side of it, in ms. None
+    /// while no clock goes out.
+    pub clock_measured: Option<(f32, f32)>,
 }
 
 /// Which parts of MIDI work in this run. A setting whose part is missing
@@ -126,6 +133,8 @@ pub struct Live {
     /// MIDI Learn is armed: what the next control moved will take, in
     /// words ("Drive (Filter, Bass)").
     pub learning: Option<String>,
+    /// MIDI Follow's Learn knobs listens: how many knobs it has found.
+    pub follow_learning: Option<usize>,
     pub built: Built,
     /// The developer tools are on (Prefs › Show developer tools): the app
     /// lists the MPC's own controller and its events, and writes the
@@ -157,6 +166,7 @@ impl Default for Live {
                 has_out: true,
                 sending: false,
                 last_in: None,
+                clock_measured: None,
             }],
             tracks: Vec::new(),
             clock_in: None,
@@ -164,6 +174,7 @@ impl Default for Live {
             learn_names: Vec::new(),
             learn_live: Vec::new(),
             learning: None,
+            follow_learning: None,
             built: Built::default(),
             debug: false,
             saves_logs: false,
@@ -213,6 +224,27 @@ pub struct IoModel {
     /// What the sections asked the app to do, taken by the app at its next
     /// look at the model.
     pub asks: Asks,
+    /// The device profiles there are: the built-in ones and the
+    /// musician's, which the app reads from the store at start. Not part
+    /// of the setup: `gen` doesn't move.
+    pub profiles: Profiles,
+}
+
+impl IoModel {
+    /// The profile that names the controls of the port named `name` (its
+    /// own name): the one it picked, or for Auto the first made for it.
+    pub fn profile(&self, name: &str) -> Option<&Profile> {
+        let pick = self.setup.ports.iter().find(|p| p.name == name);
+        match pick {
+            Some(p) => self.profiles.of(&p.profile, name),
+            None => self.profiles.matching(name),
+        }
+    }
+
+    /// The profile of the port with id `port` in the Monitor's table.
+    pub fn profile_of(&self, port: mpfree_midi::PortId) -> Option<&Profile> {
+        self.profile(self.monitor.own_name(port)?)
+    }
 }
 
 /// What a section asks the app for (each is taken once).
@@ -245,6 +277,10 @@ pub struct Asks {
     ///
     /// [`MidiSetup::set_shown`]: mpfree_midi::setup::MidiSetup::set_shown
     pub name_port: Option<String>,
+    /// The Learn section's MIDI Follow card: Learn knobs (`true`: listen
+    /// for the controller's knobs, one at a time, from none) or Done
+    /// (`false`: stop listening, keeping those found).
+    pub follow_learn: Option<bool>,
 }
 
 /// What a port's page asks MIDI out to send to it.
@@ -323,17 +359,22 @@ pub type Shared = Arc<Mutex<IoModel>>;
 pub const MIDI: &str = "MIDI";
 pub const ROUTING: &str = "Routing";
 pub const LEARN: &str = "Learn";
+pub const CONTROLLER: &str = "Controller";
 pub const SYNC: &str = "Sync";
 pub const CV: &str = "CV";
 pub const MONITOR: &str = "Monitor";
 
-/// The six sections, in the order the I/O view lists them, all on one
+/// The seven sections, in the order the I/O view lists them, all on one
 /// model. Hand each to `mpfree_mixer_ui::add_io_section`.
 pub fn sections(model: &Shared) -> Vec<Box<dyn mpfree_mixer_ui::IoSection>> {
     vec![
         Box::new(form::FormSection::new(midi::Midi, model.clone())),
         Box::new(routing::Routing::new(model.clone())),
         Box::new(learn_section::Learn::new(model.clone())),
+        Box::new(form::FormSection::new(
+            controller::Controller,
+            model.clone(),
+        )),
         Box::new(form::FormSection::new(sync::Sync, model.clone())),
         Box::new(form::FormSection::new(cv::Cv, model.clone())),
         Box::new(monitor::MonitorSection::new(model.clone())),

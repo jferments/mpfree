@@ -12,11 +12,19 @@
 //! - **Start and stop** (`Follow::start_stop`): Start plays from the top
 //!   at the first pulse after it, Continue from the leader's Song Position,
 //!   and Stop stops. Without `Follow::position` both play from where the
-//!   song stands.
+//!   song stands. While the leader is stopped, PLAY waits for it
+//!   ([`Follower::waits`]: the app says "Waiting for clock"), and a take
+//!   the app has ready ([`Follower::take_waits`]) records from the same
+//!   pulse: `Play` and `Record` on one frame, a punch-in with no count-in
+//!   ([`Follower::took`] tells the host to ready the clip).
 //! - **Position** (`Follow::position`): a Song Position while both are
 //!   stopped moves the song there. While both play, the leader's position
 //!   is the one to keep: more than a sixteenth away, the transport jumps to
-//!   it (counted in [`FollowCounts::jumps`]).
+//!   it (counted in [`FollowCounts::jumps`]). The leader owns the timeline,
+//!   so the transport's loop is off for as long as position is followed:
+//!   the follower holds it ([`Follower::held_loop`]), keeps a loop set
+//!   meanwhile in its place ([`Follower::keep_loop`]), and gives it back
+//!   when following position stops.
 //! - **Tempo**: a phase-locked loop. The phase error is measured at every
 //!   pulse and averaged over a few pulses ([`SMOOTH`]). The loop's tempo
 //!   for the leader starts from the leader's measured tempo and moves with
@@ -43,7 +51,7 @@
 
 use mpfree_midi_clock::{ClockIn, InEvent, PPQN, PULSE_TICKS};
 use mpfree_transport::time::{ticks_in, MAX_BPM, MIN_BPM};
-use mpfree_transport::{Command, State, Transport, PPQ};
+use mpfree_transport::{Command, State, Tick, Transport, PPQ};
 
 /// The most the tempo is nudged from the loop's to close a phase error.
 pub const MAX_NUDGE: f64 = 0.03;
@@ -129,6 +137,15 @@ pub struct Follower {
     err: Option<f64>,
     absolute: bool,
     counts: FollowCounts,
+    /// A take is ready: at the leader's start it records, adding (true)
+    /// or replacing.
+    take: Option<bool>,
+    /// A take started at the leader's start, until [`Follower::took`].
+    took: bool,
+    /// Following position: the transport's loop is off, and this is the
+    /// one it gets back.
+    hold: bool,
+    held: Option<(Tick, Tick)>,
 }
 
 impl Follower {
@@ -152,18 +169,63 @@ impl Follower {
             err: None,
             absolute: false,
             counts: FollowCounts::default(),
+            take: None,
+            took: false,
+            hold: false,
+            held: None,
         }
     }
 
     /// Follow another device's clock with these options, or not (None).
-    /// A change starts again from nothing known; the counts stay.
+    /// A change starts again from nothing known; the counts, a ready take
+    /// and a held loop stay (the next period gives the loop back if
+    /// position isn't followed now).
     pub fn set(&mut self, follow: Option<Follow>) {
         if follow != self.follow {
-            let counts = self.counts;
-            *self = Follower::new(self.rate);
-            self.follow = follow;
-            self.counts = counts;
+            let fresh = Follower {
+                follow,
+                ..Follower::new(self.rate)
+            };
+            let old = std::mem::replace(self, fresh);
+            self.counts = old.counts;
+            self.take = old.take;
+            self.hold = old.hold;
+            self.held = old.held;
         }
+    }
+
+    /// Following start and stop with the leader stopped: PLAY waits for
+    /// its Start.
+    pub fn waits(&self) -> bool {
+        self.follow.is_some_and(|f| f.start_stop) && !self.playing
+    }
+
+    /// A take the app has ready (REC pressed while stopped), adding
+    /// (true) or replacing, or none. Told every period; while
+    /// [`Follower::waits`], the leader's start records it.
+    pub fn take_waits(&mut self, take: Option<bool>) {
+        self.take = take;
+    }
+
+    /// True once after the leader's start began a take, so the host makes
+    /// the clip it records into.
+    pub fn took(&mut self) -> bool {
+        std::mem::take(&mut self.took)
+    }
+
+    /// While following position: the loop the transport gets back when
+    /// that stops (None: no loop).
+    pub fn held_loop(&self) -> Option<Option<(Tick, Tick)>> {
+        self.hold.then_some(self.held)
+    }
+
+    /// A loop set while following position is kept for later, not set:
+    /// true if it was.
+    pub fn keep_loop(&mut self, range: Option<(Tick, Tick)>) -> bool {
+        if self.hold {
+            self.held = range;
+        }
+        self.hold
     }
 
     /// The leader's tempo while following and its clock arrives, to show
@@ -191,9 +253,22 @@ impl Follower {
     }
 
     /// Once a period, just before the transport runs (it runs what the
-    /// follower sent): a clock that stopped arriving.
-    pub fn period(&mut self, t: &Transport) {
+    /// follower sent): the loop held or given back, and a clock that
+    /// stopped arriving.
+    pub fn period(&mut self, t: &mut Transport) {
         self.moved = false;
+        let hold = self.follow.is_some_and(|f| f.position);
+        if hold != self.hold {
+            self.hold = hold;
+            if hold {
+                self.held = t.loop_range();
+                if self.held.is_some() {
+                    self.command(t, Command::SetLoop(None));
+                }
+            } else if let Some(range) = self.held.take() {
+                self.command(t, Command::SetLoop(Some(range)));
+            }
+        }
         let Some(last) = self.last else {
             return;
         };
@@ -270,7 +345,18 @@ impl Follower {
             if let Some(tick) = from {
                 self.command(t, Command::Locate(tick));
             }
+            // A ready take records from here: the mode first, then a
+            // punch-in on the frame it starts (no count-in: the leader
+            // counts).
+            let take = self.take.take();
+            if take.is_some_and(|add| add != t.overdub()) {
+                self.command(t, Command::ToggleOverdub);
+            }
             self.command(t, Command::Play);
+            if take.is_some() {
+                self.command(t, Command::Record);
+                self.took = true;
+            }
             self.moved = true;
             self.err = None;
         }
@@ -529,7 +615,7 @@ mod tests {
                 t.command(p, Command::Play);
             }
             hook(&mut t);
-            fl.period(&t);
+            fl.period(&mut t);
             assert!(t.process(period, &mut b));
             spans.extend_from_slice(b.spans());
             marks.extend(b.markers().iter().map(|m| (m.frame, m.mark)));
@@ -697,6 +783,93 @@ mod tests {
         assert_eq!(r.counts, FollowCounts::default());
     }
 
+    /// Following start and stop, PLAY waits while the leader is stopped
+    /// (and again after its Stop). A ready take records from the leader's
+    /// first pulse after Start: Play and Record on one frame, so no
+    /// count-in although one is set, adding as the take asked; the host
+    /// hears of it once.
+    #[test]
+    fn a_ready_take_records_from_the_leaders_first_pulse() {
+        let s = script(&[
+            Lead::Clock(2.0, 120.0),
+            Lead::Start,
+            Lead::Clock(4.0, 120.0),
+            Lead::Stop,
+            Lead::Clock(1.0, 120.0),
+        ]);
+        let mut t = Transport::new(RATE, 120.0).unwrap();
+        assert!(t.command(0, Command::SetCountIn(1)));
+        let mut fl = Follower::new(RATE);
+        fl.set(Some(ALL));
+        fl.take_waits(Some(true));
+        let mut b = Block::new();
+        let (mut marks, mut waited, mut next, mut took) = (Vec::new(), Vec::new(), 0, 0);
+        let end = s.bytes.last().unwrap().0 + 256;
+        while t.frame() < end {
+            let p = t.frame();
+            while next < s.bytes.len() && s.bytes[next].0 < p {
+                let (at, ref bytes) = s.bytes[next];
+                fl.bytes(&mut t, at, bytes);
+                next += 1;
+            }
+            waited.push(fl.waits());
+            took += usize::from(fl.took());
+            fl.period(&mut t);
+            assert!(t.process(128, &mut b));
+            marks.extend(b.markers().iter().map(|m| (m.frame, m.mark)));
+        }
+        let at = after(first_pulse_after(&s, START), 128);
+        for m in [
+            Mark::Overdub(true),
+            Mark::Started { tick: 0 },
+            Mark::RecordOn { tick: 0 },
+        ] {
+            assert!(marks.contains(&(at, m)), "{m:?} at {at}: {marks:?}");
+        }
+        assert!(!marks.iter().any(|m| matches!(m.1, Mark::CountIn { .. })));
+        assert_eq!(took, 1);
+        assert_eq!(
+            (waited.first(), waited.contains(&false), waited.last()),
+            (Some(&true), true, Some(&true))
+        );
+        // Without start and stop, PLAY never waits.
+        fl.set(Some(Follow {
+            start_stop: false,
+            position: true,
+        }));
+        assert!(!fl.waits());
+    }
+
+    /// Following position, the leader owns the timeline: the transport's
+    /// loop is off while it is followed, a loop set meanwhile is kept in
+    /// its place, and the transport gets it back when following position
+    /// stops.
+    #[test]
+    fn following_position_holds_the_loop_off_and_gives_it_back() {
+        let mut t = Transport::new(RATE, 120.0).unwrap();
+        let mut b = Block::new();
+        let mut fl = Follower::new(RATE);
+        let mut run = |fl: &mut Follower, t: &mut Transport| {
+            fl.period(t);
+            assert!(t.process(128, &mut b));
+            (t.loop_range(), fl.held_loop())
+        };
+        assert!(t.command(0, Command::SetLoop(Some((0, 3840)))));
+        assert_eq!(run(&mut fl, &mut t), (Some((0, 3840)), None));
+        fl.set(Some(Follow {
+            start_stop: true,
+            position: false,
+        }));
+        assert_eq!(run(&mut fl, &mut t), (Some((0, 3840)), None));
+        fl.set(Some(ALL));
+        assert_eq!(run(&mut fl, &mut t), (None, Some(Some((0, 3840)))));
+        assert!(fl.keep_loop(Some((0, 7680))));
+        assert_eq!(run(&mut fl, &mut t), (None, Some(Some((0, 7680)))));
+        fl.set(None);
+        assert_eq!(run(&mut fl, &mut t), (Some((0, 7680)), None));
+        assert!(!fl.keep_loop(None));
+    }
+
     /// Without "follow position", Song Position is ignored and Continue
     /// plays on from where the transport stopped; without "follow
     /// start/stop", Start and Stop are ignored and only the tempo follows.
@@ -827,7 +1000,7 @@ mod tests {
             fl.bytes(&mut t, *at, b);
         }
         let mut block = Block::new();
-        fl.period(&t);
+        fl.period(&mut t);
         assert!(t.process(128, &mut block));
         assert!(block.markers().is_empty());
         assert_eq!(

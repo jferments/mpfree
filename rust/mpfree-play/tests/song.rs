@@ -11,7 +11,7 @@ use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Sink, Started, SONG
 use mpfree_seq::mpfree_moves::{Kind, Map, Target};
 use mpfree_seq::mpfree_param::{OnTrack, ParamAddr, RelAddr};
 use mpfree_seq::MorphRows;
-use mpfree_seq::{Clip, Note, Placement, Project, Track};
+use mpfree_seq::{Clip, ClipProgram, Note, Placement, Project, Track};
 use mpfree_transport::{Block, Command, Transport};
 
 const BAR: i64 = 3840;
@@ -400,5 +400,65 @@ fn song_mode_off_lets_the_songs_lane_go() {
             }
         ),
         "{song:?}"
+    );
+}
+
+/// A clip's program change (sequencer S5) goes out as each placement of
+/// it starts, after the notes ending there and before its own, and again
+/// on the far side of a loop jump.
+#[test]
+fn each_placement_sends_its_clips_program_as_it_starts() {
+    let mut s = session(at(6 * BAR));
+    let program = |program, bank| Some(ClipProgram { program, bank });
+    s.project.tracks[0].slots[0].as_mut().unwrap().program = program(4, None);
+    s.project.tracks[0].slots[1].as_mut().unwrap().program = program(9, Some(130));
+    let song = &mut s.project.arrangement;
+    song.place(Placement::linked(0, 0, 0, 2 * BAR)).unwrap();
+    song.place(Placement::linked(0, 1, 2 * BAR, BAR)).unwrap();
+    song.place(Placement::linked(0, 0, 3 * BAR, BAR)).unwrap();
+    s.commands
+        .push((0, Command::SetLoop(Some((2 * BAR, 4 * BAR)))));
+    let r = same_everywhere(&s);
+    let a = Event::Program {
+        program: 4,
+        bank: None,
+    };
+    let b = Event::Program {
+        program: 9,
+        bank: Some(130),
+    };
+    let programs: Vec<(u64, Event)> = r
+        .played
+        .iter()
+        .filter(|e| matches!(e.2, Event::Program { .. }))
+        .map(|&(f, _, e)| (f, e))
+        .collect();
+    assert_eq!(
+        programs,
+        vec![
+            (0, a),
+            (at(2 * BAR), b),
+            (at(3 * BAR), a),
+            (at(4 * BAR), b),
+            (at(5 * BAR), a)
+        ]
+    );
+    // On bar 4, B's last note ends, then A's program, then A's first note.
+    let bar_4: Vec<Event> = r
+        .played
+        .iter()
+        .filter(|e| e.0 == at(3 * BAR))
+        .map(|e| e.2)
+        .collect();
+    assert_eq!(
+        bar_4,
+        vec![
+            Event::NoteOff { note: 13 },
+            a,
+            Event::NoteOn {
+                note: 1,
+                velocity: 100
+            }
+        ]
     );
 }
