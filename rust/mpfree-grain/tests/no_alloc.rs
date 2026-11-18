@@ -174,6 +174,15 @@ fn grains_never_allocate() {
             fx.set_mix(((period / 100) % 4) as f32 / 3.0);
         }
         fx.set_frozen(period % 300 > 150);
+        // Repeats of a few lengths, rolls and stops.
+        match period % 250 {
+            40 => fx.start_repeat(0.25),
+            90 => fx.start_repeat(0.125),
+            140 => fx.stop_repeat(),
+            200 => fx.start_repeat(2.0),
+            240 => fx.stop_repeat(),
+            _ => {}
+        }
         if period % 500 == 499 {
             fx.set_params(Params {
                 position: (period % 7) as f32 / 7.0,
@@ -209,6 +218,7 @@ fn grains_never_allocate() {
         };
         node.process(&Ctx::new(rate, t), events, &mut nl, &mut nr);
         node.set_param(param::SIZE, 20.0 + (period % 9) as f32 * 30.0);
+        node.set_param(param::REPEAT, ((period / 90) % 6) as f32);
         if period % 700 == 699 {
             node.reset();
         }

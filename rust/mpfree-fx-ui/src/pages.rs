@@ -231,6 +231,7 @@ fn known(info: &NodeInfo, count: u16) -> Option<Vec<Plan>> {
                     grains::PITCH_SPRAY,
                     grains::REVERSE,
                     grains::FEEDBACK,
+                    grains::REPEAT,
                     grains::FREEZE,
                     grains::MIX,
                     grains::SPREAD,

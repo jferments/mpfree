@@ -312,7 +312,7 @@ pub static MAIN_PAGES: &[MainPage] = &[
     main(
         "mpfree.grains",
         &[
-            "Size", "Density", "Feedback", "Mix", "Position", "Spray", "Pitch", "Freeze",
+            "Size", "Density", "Feedback", "Mix", "Position", "Pitch", "Repeat", "Freeze",
         ],
         ["Size", "Density", "Feedback", "Mix"],
     ),

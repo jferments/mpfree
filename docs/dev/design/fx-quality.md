@@ -687,6 +687,7 @@ What changed (design: [fx-dynamics.md](fx-dynamics.md#transient-shaper); decisio
 | G13 | `move[...]/level_change_lu`, `extra_swing_db` | within 1 LU; 3 dB | A sprayed cloud (80 ms, 80 a second, spray 0.3) on pink and the pad moved by its LFO (a 0.5 Hz sine) on position (full depth), size, density, pitch (half depth) and spray (from 0.5, full), or by its envelope on size (0.5 s up, 1 s down to half): the loudness against the cloud unmoved, and how much further its level (400 ms windows every 100 ms) swings over two cycles (step B3) |
 | G1 | `vary[...]/level_change_lu` | within 1 LU | Full size spray, full level spray and peaked spray, each against the same cloud without it (40 a second, spray 0.3), on pink and the pad (step B1) |
 | G14 | `preset[...]/level_change_lu` | within 1.5 LU (the stutter: of -4) | Each grain preset (`mpfree_sampler::grain_presets`) on pink and the pad at the lab's position: the loudness against the default cloud's there. The stutter's grains fill half of each sixteenth with their fades, so it sits about 4 LU down (step B6) |
+| G16 | `repeat[pink, 1/4 and 1/16]/level_change_db`; `repeat[tone 110 Hz, 1/4 and 1/16]/join_step_ratio` | within 0.5 dB; 1.5 | The Grains effect fully dry at 120 BPM, repeating a quarter note and a sixteenth from 2 s: on pink, the level from half a second on against the stretch of pink it repeats; on a 110 Hz tone at -20 dBFS, the biggest step from one sample to the next within 10 ms of each join against the tone's own (a cut with no fade jumps up to 140 times as far) (step C2) |
 | G15 | `feedback[pink -14 dBFS, full]/peak_dbfs`, `growth_db` | 3 dBFS; 1 dB | The Grains effect (`GrainFx`, 2 s of memory, fully wet, reading half way back, spray 0.1) on 4 s of pink at -14 dBFS RMS (peaks near full scale) then 16 s of silence, at full feedback: the sample peak, and how far the level rises from seconds 8-12 to 16-20. The level held (seconds 16-20) and, at half feedback, how fast the trail falls (seconds 5-7 to 14-16) are shown (step C1) |
 | G2 | `coherent[pink, overlap N]/stretch_over_sprayed_lu` | within 1.5 LU | A granular time stretch (scan 1, no spray) against the same cloud sprayed, at overlaps 16 (200 ms) and 64 (400 ms) |
 | G3 | `smooth[...]/ripple_db`, `modulation_db` | 0.5 dB, -40 dB | The DC level through the grains: largest over smallest, and the RMS of the change against the mean; at the defaults (overlap 1.6) and with each window at overlap 2, including the Shape knob's square, triangle, swell and pluck (step B2). The exponential window is percussive on purpose: shown, not kept |
@@ -807,6 +808,15 @@ The Grains effect (`GrainFx`, and the `mpfree.grains` node's Feedback) writes it
 - **G15 met:** at full feedback a loud input (pink, -14 dBFS RMS) peaks at +2.2 dBFS, and the trail doesn't grow: it falls 2.2 dB from seconds 8-12 to 16-20 and holds near -16.5 dBFS. At half feedback it falls 8.3 dB a second.
 - First try: a ceiling of full scale (knee at half) let a -6 dBFS input peak at +9.6 dBFS (the input's own peaks plus a full-scale loop), so the ceiling is half of full scale.
 - **Unchanged:** every other row, bit for bit (at 0 the buffer holds the input exactly; `tests/fx.rs` checks a feedback of 0 against none).
+
+### Step C2: Grains effect repeat (2026-11-18)
+
+The Grains effect's Repeat (`GrainFx::start_repeat`, the `mpfree.grains` node's Repeat, a choice from a half note to a 32nd) plays the last stretch of the input again and again on the beat grid, in place of the input and the cloud, from a grain voice of its own; one repeat crossfades into the next over 3 ms ([sampler architecture, Granular engine](sampler-architecture.md#granular-engine-mpfree-grain)). New rows: G16.
+
+- **G16 met:** the repeats sit within 0.06 dB of the stretch they repeat (quarter notes -0.02, sixteenths -0.05), and a join steps no further than the tone does (quarter notes 1.0 times, sixteenths 1.4: the fade is 3 ms, a third of the tone's period).
+- First try measured the level against the pink's long-term level, which a 128 ms stretch of pink misses by up to a dB either way, and the joins by their level over the fade, which measures the pink at the slice's two ends rather than the fade; the rows now measure against the stretch itself, and the joins by their steps on a tone.
+- `tests/fx.rs` checks each repeat against the input sample for sample away from the joins, the roll, the 10 ms crossfade back (the input exactly after it at Mix 0), the held memory under a repeat longer than it, and the same output at any period size; `tests/node.rs` checks the start on the grid line and Off on its frame.
+- **Unchanged:** every other row, bit for bit (with Repeat off the effect runs as before).
 
 ## Round 5: movement, pitch and voice
 

@@ -1,6 +1,7 @@
 //! The granular effect: grains from the last few seconds of a live signal,
-//! mixed back in, with freeze.
+//! mixed back in, with freeze, feedback and repeat.
 
+use mpfree_grain::fx::REPEAT_FADE_S;
 use mpfree_grain::{Budget, GrainFx, GrainView, Params, MAX_GRAINS};
 
 const RATE: u32 = 44_100;
@@ -53,6 +54,8 @@ fn run(
                 Change::Mix(m) => fx.set_mix(m),
                 Change::Freeze(on) => fx.set_frozen(on),
                 Change::Feedback(f) => fx.set_feedback(f),
+                Change::Repeat(beats) => fx.start_repeat(beats),
+                Change::StopRepeat => fx.stop_repeat(),
             }
             next += 1;
         }
@@ -72,6 +75,51 @@ enum Change {
     Mix(f32),
     Freeze(bool),
     Feedback(f32),
+    Repeat(f64),
+    StopRepeat,
+}
+
+/// White noise at `level`, the same every run.
+fn noise(frames: usize, level: f32) -> Vec<f32> {
+    let mut seed = 0x1234_5678u32;
+    (0..frames)
+        .map(|_| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            level * ((seed >> 8) as f32 / (1u32 << 23) as f32 - 1.0)
+        })
+        .collect()
+}
+
+/// Output frames per beat at 120 BPM, the effect's tempo until set.
+const FPB: f64 = 22_050.0;
+
+/// A repeat of `beats`: its length and its slice's (frames).
+fn slice_of(beats: f64) -> (f64, usize) {
+    let len = beats * FPB;
+    let fade = (REPEAT_FADE_S * RATE as f64).max(len / 99.0).ceil();
+    (len, (len + fade).ceil() as usize)
+}
+
+/// The worst difference, over each repeat `k` in `ks` from frame `t0`
+/// every `len` frames, between the output and the input from `from`, away
+/// from the joins.
+fn repeat_error(
+    out: &[f32],
+    input: &[f32],
+    t0: usize,
+    len: f64,
+    from: usize,
+    ks: std::ops::Range<usize>,
+) -> f32 {
+    let edge = (REPEAT_FADE_S * RATE as f64).max(len / 99.0).ceil() as usize + 20;
+    let mut worst = 0.0f32;
+    for k in ks {
+        let at = t0 + (k as f64 * len).round() as usize;
+        for j in edge..len as usize - edge {
+            worst = worst.max((out[at + j] - input[from + j]).abs());
+        }
+    }
+    worst
 }
 
 /// A second of 440 Hz then `secs` of silence through a full-wet cloud
@@ -373,4 +421,145 @@ fn position_one_reads_the_newest_audio() {
         &views[..n]
     );
     assert!(fx.playhead() > 0.99);
+}
+
+#[test]
+fn repeat_plays_the_last_stretch_again_and_again_in_place_of_the_input() {
+    let input = noise(RATE as usize * 3, 0.3);
+    let mut fx = GrainFx::new(RATE, 2.0, 3).unwrap();
+    fx.set_params(cloud());
+    let mut budget = Budget::new(64);
+    // Fully dry, so all that differs from the input is the repeat: a
+    // sixteenth (a quarter beat) from frame t0.
+    let t0 = 44_100;
+    let (len, whole) = slice_of(0.25);
+    let (l, r) = run(
+        &mut fx,
+        &mut budget,
+        &input,
+        128,
+        &[(t0, Change::Repeat(0.25))],
+    );
+    assert_eq!(l[..t0], input[..t0], "the input until it starts");
+    assert!(fx.repeating());
+    // Each repeat is the slice that ended on t0, from its start.
+    let from = t0 - whole + 1;
+    let worst = repeat_error(&l, &input, t0, len, from, 1..12);
+    assert!(worst < 1e-3, "left: {worst}");
+    let minus: Vec<f32> = input.iter().map(|x| -x).collect();
+    let worst = repeat_error(&r, &minus, t0, len, from, 1..12);
+    assert!(worst < 1e-3, "right: {worst}");
+    // At the level of the input, joins included.
+    let after = &l[t0 + 2 * len as usize..t0 + 10 * len as usize];
+    let db = 20.0 * (rms(after) / rms(&input[..t0])).log10();
+    assert!(db.abs() < 0.5, "{db:.2} dB");
+}
+
+#[test]
+fn stopping_a_repeat_crossfades_back_to_the_input_in_10_ms() {
+    let input = noise(RATE as usize * 2, 0.3);
+    let mut fx = GrainFx::new(RATE, 2.0, 3).unwrap();
+    fx.set_params(cloud());
+    let mut budget = Budget::new(64);
+    let (t0, t1) = (20_000, 50_000);
+    let changes = [(t0, Change::Repeat(0.5)), (t1, Change::StopRepeat)];
+    let (l, r) = run(&mut fx, &mut budget, &input, 128, &changes);
+    let diff: Vec<f32> = l[t0 + 441..t1]
+        .iter()
+        .zip(&input[t0 + 441..t1])
+        .map(|(a, b)| a - b)
+        .collect();
+    assert!(rms(&diff) > 0.1, "repeating: {}", rms(&diff));
+    // 10 ms (441 frames) after the stop, and the rest of the chunk, it is
+    // the input exactly again.
+    let back = t1 + 441 + GrainFx::CHUNK;
+    assert_eq!(l[back..], input[back..]);
+    assert!(r[back..].iter().zip(&input[back..]).all(|(a, b)| *a == -b));
+    assert!(!fx.repeating());
+    assert_eq!(fx.live(), 0);
+}
+
+#[test]
+fn a_shorter_repeat_while_repeating_rolls_the_start_of_the_slice() {
+    let input = noise(RATE as usize * 5, 0.3);
+    let mut fx = GrainFx::new(RATE, 2.0, 3).unwrap();
+    fx.set_params(cloud());
+    let mut budget = Budget::new(64);
+    // A beat from t0, then eighths from three beats on.
+    let t0 = 30_000;
+    let (len, whole) = slice_of(1.0);
+    let t1 = t0 + 3 * len as usize;
+    let (half, _) = slice_of(0.5);
+    let changes = [(t0, Change::Repeat(1.0)), (t1, Change::Repeat(0.5))];
+    let (l, _) = run(&mut fx, &mut budget, &input, 128, &changes);
+    let from = t0 - whole + 1;
+    assert!(repeat_error(&l, &input, t0, len, from, 1..3) < 1e-3);
+    // The eighths repeat the first half of the same slice.
+    let worst = repeat_error(&l, &input, t1, half, from, 1..8);
+    assert!(worst < 1e-3, "{worst}");
+}
+
+#[test]
+fn a_long_repeat_holds_the_memory_so_its_slice_is_never_overwritten() {
+    // Two seconds of memory, one-second repeats for four seconds.
+    let input = noise(RATE as usize * 7, 0.3);
+    let mut fx = GrainFx::new(RATE, 2.0, 3).unwrap();
+    fx.set_params(cloud());
+    let mut budget = Budget::new(64);
+    let t0 = 60_000;
+    let (len, whole) = slice_of(2.0);
+    let t1 = t0 + 4 * len as usize + 1000;
+    let (l, _) = run(
+        &mut fx,
+        &mut budget,
+        &input[..t1],
+        128,
+        &[(t0, Change::Repeat(2.0))],
+    );
+    let worst = repeat_error(&l, &input, t0, len, t0 - whole + 1, 1..4);
+    assert!(worst < 1e-3, "{worst}");
+    let held = fx.buffer().written();
+    assert!(held < t1 as u64 - 44_100, "held at {held}");
+    // Once it has faded back, the input goes in again.
+    fx.stop_repeat();
+    let mut rest = input[t1..].to_vec();
+    let mut minus: Vec<f32> = rest.iter().map(|x| -x).collect();
+    fx.process(&mut budget, t1 as u64, &mut rest, &mut minus);
+    assert!(fx.buffer().written() >= held + rest.len() as u64 - 1000);
+}
+
+#[test]
+fn a_repeat_is_the_same_at_any_period_size() {
+    let input = noise(RATE as usize * 2, 0.3);
+    let changes = [
+        (0, Change::Mix(0.5)),
+        (10_007, Change::Repeat(0.25)),
+        (21_000, Change::Repeat(0.125)),
+        (33_333, Change::StopRepeat),
+        (40_001, Change::Repeat(0.5)),
+        (40_300, Change::StopRepeat),
+        (40_500, Change::Repeat(0.25)),
+    ];
+    let render = |block: usize| {
+        let mut fx = GrainFx::new(RATE, 1.0, 5).unwrap();
+        fx.set_params(Params {
+            pitch: 5.0,
+            reverse: 0.4,
+            ..cloud()
+        });
+        let mut budget = Budget::new(64);
+        run(&mut fx, &mut budget, &input, block, &changes)
+    };
+    let first = render(128);
+    for block in [1, 37, 64, 500, 4096] {
+        let other = render(block);
+        let worst = first
+            .0
+            .iter()
+            .chain(&first.1)
+            .zip(other.0.iter().chain(&other.1))
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 1e-4, "period {block}: {worst}");
+    }
 }

@@ -337,15 +337,20 @@ pub fn source_name(s: Source) -> String {
 
 /// A one-line summary of a node's settings: its first choice of sound
 /// (not a Mix curve or a Quality, which [`mpfree_fx::page_keeps`] says are
-/// not the sound) and its first two continuous parameters ("Tube · +9.5 dB
-/// · 3.2 kHz").
+/// not the sound, nor a choice that is Off, such as Grains' Repeat) and
+/// its first two continuous parameters ("Tube · +9.5 dB · 3.2 kHz").
 fn summary(n: &dyn Node) -> String {
     let ps = n.params();
     let mut parts: Vec<String> = Vec::new();
-    if let Some(p) = ps.iter().find(|p| {
-        matches!(p.curve, Curve::Choice(_)) && !p.readonly && !mpfree_fx::page_keeps(p.name)
-    }) {
-        parts.push(value_text(p, n.param(p.id)));
+    if let Some(text) = ps
+        .iter()
+        .filter(|p| {
+            matches!(p.curve, Curve::Choice(_)) && !p.readonly && !mpfree_fx::page_keeps(p.name)
+        })
+        .map(|p| value_text(p, n.param(p.id)))
+        .find(|t| t != "Off")
+    {
+        parts.push(text);
     }
     for p in ps
         .iter()
