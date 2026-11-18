@@ -277,7 +277,29 @@ pub enum PlayFx {
     /// The XY pad: where the finger is (0 to 1 each way), and whether it
     /// is down.
     Xy { x: f32, y: f32, down: bool },
+    /// What the XY pad plays, picked from its chip's list (Jay, 18 Nov
+    /// 2026 07:34Z): None, the Perform FX's DJ filter and echo (as
+    /// before); `Some(k)`, effect `k` of the XY FX
+    /// (`mpfree_fx::xyfx::EFFECTS`), put on the master after the Perform
+    /// FX the first time it is picked.
+    XyEffect(Option<usize>),
 }
+
+/// The XY FX's node id: what the XY pad plays when an effect is picked.
+pub const XY_FX: &str = "mpfree.fx.xy";
+
+/// What the master's XY FX starts with when the pad puts it there: the
+/// effect picked, closed (Active off) until a finger lands.
+static XY_START: [[(u16, f32); 2]; 9] = {
+    use mpfree_fx::xyfx::ids as xy;
+    let mut out = [[(xy::EFFECT, 0.0), (xy::ACTIVE, 0.0)]; 9];
+    let mut k = 0;
+    while k < 9 {
+        out[k][0].1 = k as f32;
+        k += 1;
+    }
+    out
+};
 
 /// The performance effects a throw holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -376,6 +398,8 @@ pub struct MixHost {
     dropped: u16,
     /// Pads soloed (a bit each): while any is, the others are silent.
     pad_solos: u16,
+    /// What the XY pad plays ([`PlayFx::XyEffect`]).
+    xy_effect: Option<usize>,
     /// The pad strips' mutes as `apply_mutes` last set them (a bit each):
     /// a strip's parameter reads its old value until the next period, so
     /// two changes in one period compare with what was sent.
@@ -558,6 +582,7 @@ impl MixHost {
             dropped: 0,
             pad_solos: 0,
             mutes_sent: 0,
+            xy_effect: None,
             builder: None,
             landing: None,
             plugins: Arc::new(Plugins::none()),
@@ -1143,10 +1168,46 @@ impl MixHost {
                     if down { 1.0 } else { 0.0 },
                 );
             }
-            PlayFx::Xy { x, y, .. } => {
-                let pad = mpfree_fx::XyPad::perform();
-                for (axis, pos) in [(pad.x, x), (pad.y, y)] {
-                    self.insert(StripId::Master, PERFORM_SLOT, axis.param, axis.value(pos));
+            PlayFx::Xy { x, y, down } => match self.xy_effect {
+                Some(_) => {
+                    use mpfree_fx::xyfx::ids as xy;
+                    // Still being built: the next move plays it.
+                    let Some(slot) = self.xy_slot() else {
+                        return;
+                    };
+                    self.insert(StripId::Master, slot, xy::X, x.clamp(0.0, 1.0) * 100.0);
+                    self.insert(StripId::Master, slot, xy::Y, y.clamp(0.0, 1.0) * 100.0);
+                    let open = if down { 1.0 } else { 0.0 };
+                    self.insert(StripId::Master, slot, xy::ACTIVE, open);
+                }
+                None => {
+                    let pad = mpfree_fx::XyPad::perform();
+                    for (axis, pos) in [(pad.x, x), (pad.y, y)] {
+                        self.insert(StripId::Master, PERFORM_SLOT, axis.param, axis.value(pos));
+                    }
+                }
+            },
+            PlayFx::XyEffect(pick) => {
+                use mpfree_fx::xyfx::ids as xy;
+                let pick = pick.filter(|&k| k < XY_START.len());
+                self.xy_effect = pick;
+                match (pick, self.xy_slot()) {
+                    (Some(k), Some(slot)) => {
+                        self.insert(StripId::Master, slot, xy::EFFECT, k as f32);
+                        self.insert(StripId::Master, slot, xy::ACTIVE, 0.0);
+                    }
+                    (Some(k), None) => {
+                        // Busy: the next pick or start tries again.
+                        let _ = self.add_insert_with(StripId::Master, XY_FX, &XY_START[k]);
+                    }
+                    // Back to the DJ filter and echo: the XY FX closes, on
+                    // its Filter, an insert that doesn't run while closed
+                    // (a closed echo or wash keeps running to ring out).
+                    (None, Some(slot)) => {
+                        self.insert(StripId::Master, slot, xy::ACTIVE, 0.0);
+                        self.insert(StripId::Master, slot, xy::EFFECT, 0.0);
+                    }
+                    (None, None) => {}
                 }
             }
             PlayFx::PadMute { pad, mute } if pad < PADS => {
@@ -1183,6 +1244,12 @@ impl MixHost {
         }
         self.mixer
             .queue_insert(strip, slot, Timed::new(0, NodeEvent::Param { id, value }));
+    }
+
+    /// The master's XY FX, the first on its chain, if it has one.
+    fn xy_slot(&self) -> Option<usize> {
+        let c = self.mixer.chain(StripId::Master)?;
+        (0..c.len()).find(|&i| c.node(i).is_some_and(|n| n.info().id == XY_FX))
     }
 
     /// A strip control as the mixer panel set it, for UNDO: a pad's mute
@@ -2515,6 +2582,70 @@ mod tests {
         pads.sort_unstable();
         pads.dedup();
         assert_eq!(pads.len(), all.len());
+    }
+
+    /// The XY pad's chip picks what it plays: an XY FX effect goes on the
+    /// master after the Perform FX, closed until a finger lands; the pad
+    /// then plays X, Y and Active; Filter + echo plays the Perform FX
+    /// again and the XY FX closes.
+    #[test]
+    fn the_xy_pads_pick_puts_an_xy_fx_on_the_master_and_plays_it() {
+        use mpfree_fx::xyfx::ids as xy;
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        run(&mut h, 10, 0.0, 0.0);
+        assert_eq!(h.xy_slot(), None, "none until picked");
+        h.play(PlayFx::XyEffect(Some(3)));
+        run(&mut h, 10, 0.0, 0.0);
+        let slot = h.xy_slot().expect("the XY FX on the master");
+        assert!(slot > PERFORM_SLOT, "after the Perform FX");
+        let xyfx = |h: &MixHost, id: u16| {
+            h.mixer
+                .chain(StripId::Master)
+                .and_then(|c| c.node(slot))
+                .map(|n| n.param(id))
+        };
+        assert_eq!(xyfx(&h, xy::EFFECT), Some(3.0), "Wash");
+        assert_eq!(xyfx(&h, xy::ACTIVE), Some(0.0), "closed");
+        h.play(PlayFx::Xy {
+            x: 0.25,
+            y: 1.0,
+            down: true,
+        });
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(xyfx(&h, xy::X), Some(25.0));
+        assert_eq!(xyfx(&h, xy::Y), Some(100.0));
+        assert_eq!(xyfx(&h, xy::ACTIVE), Some(1.0), "open while held");
+        let dj = |h: &MixHost| {
+            h.mixer
+                .chain(StripId::Master)
+                .and_then(|c| c.node(PERFORM_SLOT))
+                .map(|n| n.param(perf::DJ_FILTER))
+        };
+        assert_eq!(dj(&h), Some(0.0), "the DJ filter is left alone");
+        h.play(PlayFx::Xy {
+            x: 0.25,
+            y: 1.0,
+            down: false,
+        });
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(xyfx(&h, xy::ACTIVE), Some(0.0), "lifting lets it go");
+        // Another effect: the same insert, no second one.
+        h.play(PlayFx::XyEffect(Some(1)));
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(xyfx(&h, xy::EFFECT), Some(1.0));
+        let n = h.mixer.chain(StripId::Master).map_or(0, |c| c.len());
+        // Filter + echo: the Perform FX again, the XY FX closed.
+        h.play(PlayFx::XyEffect(None));
+        h.play(PlayFx::Xy {
+            x: 0.0,
+            y: 1.0,
+            down: true,
+        });
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(dj(&h), Some(-100.0), "low-pass");
+        assert_eq!(xyfx(&h, xy::ACTIVE), Some(0.0));
+        assert_eq!(xyfx(&h, xy::EFFECT), Some(0.0), "on the Filter, idle");
+        assert_eq!(h.mixer.chain(StripId::Master).map_or(0, |c| c.len()), n);
     }
 
     /// Jay after live test 3: several throws at once, a finger on each.

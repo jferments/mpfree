@@ -155,6 +155,7 @@ mod touch_dev;
 mod touchlab_page;
 mod undo;
 mod views;
+mod xy_list;
 
 use mpfree_arp::scale::{pads::MAX_PAD_NOTES, Shift};
 use mpfree_controller::midi::{Message, Parser};
