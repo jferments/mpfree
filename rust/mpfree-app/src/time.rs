@@ -299,7 +299,10 @@ pub trait Pads {
     /// MIDI port whose gear needs more than the sound's lead), handed over
     /// before its period: `o.offset` counts from this period's first
     /// frame and may be past its end. Only MIDI out takes it; true when it
-    /// did. By default nothing is.
+    /// did. By default nothing is. Also a lock, a lane's value or their
+    /// end on the track's own MIDI out control (`mpfree_play::is_gear_control`)
+    /// that the forecast missed, in its own period, or that went ahead and
+    /// wasn't played (its unlock): false leaves it to the mod engine.
     fn out_ahead(&mut self, o: &Out) -> bool {
         let _ = o;
         false
@@ -2599,6 +2602,85 @@ mod tests {
             "notes ahead of the stop: {:?}",
             h.ahead_counts()
         );
+    }
+
+    /// Sequencer S5's controls ahead: a lock on the track's own MIDI out
+    /// control goes ahead with its note, once; one taken off its step
+    /// after it went ahead is put back (its unlock) when the real pass
+    /// doesn't play it.
+    #[test]
+    fn slow_gear_gets_a_lock_ahead_once_and_its_unlock_when_the_lock_is_taken_off() {
+        use mpfree_play::mpfree_param::{OnTrack, Owner, ParamAddr, RelAddr};
+        const AHEAD: u64 = 3_000;
+        const STEP: f64 = 5_512.5;
+        let mut h = gear_host();
+        let cc = RelAddr::new(OnTrack::Midi, 74);
+        let addr = ParamAddr::new(Owner::Midi(0), 74);
+        h.step_action(StepAction::Lock {
+            pad: 2,
+            steps: 1 << 8,
+            addr: cc,
+            value: Some(100.0),
+        })
+        .unwrap();
+        h.set_ahead(&[AHEAD as u32]);
+        h.command(Command::Play);
+        let mut g = Gear::default();
+        let locks = |g: &Gear| -> Vec<(u64, u64, Event)> {
+            g.midi
+                .iter()
+                .filter(|m| matches!(m.2, Event::Lock { .. } | Event::Unlock { .. }))
+                .copied()
+                .collect()
+        };
+        // The first pass: the lock goes out ahead, with step 9's note.
+        g.run(&mut h, BAR);
+        let first = locks(&g);
+        let step_9 = (8.0 * STEP).round() as u64;
+        let lock = first
+            .iter()
+            .find(|m| m.2 == Event::Lock { addr, value: 100.0 })
+            .copied()
+            .expect("the lock");
+        assert!(lock.0.abs_diff(step_9) <= 1, "{first:?}");
+        assert!(lock.1 + AHEAD <= lock.0, "ahead: {lock:?}");
+        let note = g
+            .midi
+            .iter()
+            .find(|m| m.0 == lock.0 && matches!(m.2, Event::NoteOn { note: 2, .. }))
+            .expect("step 9's note");
+        assert_eq!(note.1, lock.1, "handed over with its note");
+        assert_eq!(
+            first.iter().filter(|m| m.2 == lock.2).count(),
+            1,
+            "once: {first:?}"
+        );
+        assert_eq!(h.ahead_counts().late, 0, "{:?}", h.ahead_counts());
+        // The second pass: taken off its step 2,000 frames before it, after
+        // it went ahead. It isn't played, so its unlock follows.
+        let at = BAR + step_9 - 2_000;
+        g.run(&mut h, at);
+        h.step_action(StepAction::Lock {
+            pad: 2,
+            steps: 1 << 8,
+            addr: cc,
+            value: None,
+        })
+        .unwrap();
+        let before = g.midi.len();
+        g.run(&mut h, 2 * BAR);
+        let second: Vec<_> = g.midi[before..]
+            .iter()
+            .filter(|m| matches!(m.2, Event::Lock { .. } | Event::Unlock { .. }))
+            .copied()
+            .collect();
+        assert!(
+            matches!(second[..], [(_, _, Event::Unlock { addr: a })] if a == addr),
+            "only its unlock: {second:?}"
+        );
+        // In the period that held the lock's frame, from its start.
+        assert!(second[0].0 + u64::from(PERIOD) > BAR + step_9, "{second:?}");
+        assert!(h.ahead_counts().wrong >= 1, "{:?}", h.ahead_counts());
     }
 
     /// Perform FX gestures at frames: (frame, value or None for letting go).

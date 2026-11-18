@@ -7,12 +7,15 @@
 //! ahead, in frames. After each real period, while the transport rolls, a
 //! copy of the transport and the player plays on that far with the same
 //! view (the forecast); the ahead tracks' events in it are handed to MIDI
-//! out before their own period, each once, and logged. The real pass then
+//! out before their own period, each once, and logged: its notes, their
+//! pressure, its clips' programs, and its locks and lanes on its own MIDI
+//! out controls (`Owner::Midi`). The real pass then
 //! checks the log: what it plays that the forecast had is struck off, what
 //! the forecast missed goes out late, and a note-on the forecast sent that
 //! the real pass didn't play gets its note-off. Nothing here allocates
 //! after [`Ahead::new`].
 
+use crate::mpfree_param::{Owner, ParamAddr};
 use crate::{Event, Out, PlayView, Player, Sink, ALL};
 use mpfree_seq::MAX_TRACKS;
 use mpfree_transport::{Block, Transport};
@@ -26,6 +29,9 @@ const _: () = assert!(MAX_TRACKS <= 128);
 const MAX_KEPT: usize = 1_024;
 /// Events handed over ahead and not yet reached by the real pass.
 const MAX_SENT: usize = 2_048;
+/// A period's controls the real pass played without the forecast having
+/// sent them (late), for [`Ahead::check`].
+const MAX_LATE_CONTROLS: usize = 64;
 
 /// What the look-ahead did, for the log.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -44,16 +50,36 @@ pub struct AheadCounts {
 }
 
 /// Whether an event of a track that plays ahead goes ahead: what MIDI out
-/// sends of a clip (notes, pressure, programs). Locks and lanes go to the
-/// mod engine in their own period, and a panic is never forecast.
-fn goes_ahead(e: &Event) -> bool {
+/// sends of a clip (notes, pressure, programs), and its locks and lanes on
+/// the track's own MIDI out controls ([`is_gear_control`]). Other locks
+/// and lanes go to the mod engine in their own period, and a panic is
+/// never forecast.
+fn goes_ahead(o: &Out) -> bool {
     matches!(
-        e,
+        o.event,
         Event::NoteOn { .. }
             | Event::NoteOff { .. }
             | Event::Pressure { .. }
             | Event::Program { .. }
-    )
+    ) || is_gear_control(o)
+}
+
+/// The address of a lock, a lane's value or their end.
+fn lock_addr(e: &Event) -> Option<ParamAddr> {
+    match *e {
+        Event::Lock { addr, .. } | Event::Lane { addr, .. } | Event::Unlock { addr } => Some(addr),
+        _ => None,
+    }
+}
+
+/// A lock, a lane's value or their end on one of the event's own track's
+/// MIDI out controls (`Owner::Midi`): a controller, the bend or the
+/// pressure of the gear the track plays. On a track that plays ahead it
+/// goes ahead with the notes: the app hands it to MIDI out, not the mod
+/// engine, unless something else moves that control.
+pub fn is_gear_control(o: &Out) -> bool {
+    lock_addr(&o.event)
+        .is_some_and(|a| matches!(a.owner, Owner::Midi(t) if u16::from(t) == o.track))
 }
 
 /// A sink that keeps the ahead tracks' events of the forecast.
@@ -70,7 +96,7 @@ impl Sink for Kept<'_> {
             .frames
             .get(usize::from(out.track))
             .is_some_and(|&a| a > 0);
-        if !ahead || !goes_ahead(&out.event) {
+        if !ahead || !goes_ahead(&out) {
             return;
         }
         if let Some(o) = self.out.get_mut(*self.n) {
@@ -95,11 +121,19 @@ pub struct Ahead {
     upto: [u64; MAX_TRACKS],
     kept: Box<[Out]>,
     n_kept: usize,
-    /// Handed over ahead, in the order they went, until the real pass
-    /// reaches their frame; `struck` marks those it played.
+    /// Offered ahead, in the order they were, until the real pass reaches
+    /// their frame; `went` marks those MIDI out took (the rest it refused,
+    /// and they go in their own period as before), `struck` those the real
+    /// pass played.
     sent: Box<[Out]>,
+    went: Box<[bool]>,
     struck: Box<[bool]>,
     n_sent: usize,
+    /// This period's controls the real pass played that hadn't gone
+    /// ahead (track, address): a control sent ahead that it didn't play
+    /// is put back only when the real pass sent it nothing.
+    late_controls: [(u16, ParamAddr); MAX_LATE_CONTROLS],
+    n_late_controls: usize,
     counts: AheadCounts,
 }
 
@@ -123,8 +157,11 @@ impl Ahead {
             kept: vec![blank; MAX_KEPT].into_boxed_slice(),
             n_kept: 0,
             sent: vec![blank; MAX_SENT].into_boxed_slice(),
+            went: vec![false; MAX_SENT].into_boxed_slice(),
             struck: vec![false; MAX_SENT].into_boxed_slice(),
             n_sent: 0,
+            late_controls: [(0, ParamAddr::new(Owner::Midi(0), 0)); MAX_LATE_CONTROLS],
+            n_late_controls: 0,
             counts: AheadCounts::default(),
         }
     }
@@ -148,14 +185,20 @@ impl Ahead {
         self.counts
     }
 
+    /// Whether track `t` plays ahead now.
+    pub fn plays_ahead(&self, t: u16) -> bool {
+        self.frames.get(usize::from(t)).is_some_and(|&a| a > 0)
+    }
+
     /// The real pass's event `o`: true when it went out ahead already (the
     /// forecast had it), so MIDI out must not have it again. An event the
     /// forecast missed is false, and counted late when its track is past
-    /// where it went out to. A note-off the forecast missed is also true,
-    /// skipped, when the forecast already sent the same note starting
-    /// again after it, which ends the old one.
+    /// where it went out to; one MIDI out refused ahead is false and not
+    /// late. A note-off the forecast missed is also true, skipped, when
+    /// the forecast already sent the same note starting again after it,
+    /// which ends the old one.
     pub fn sent_already(&mut self, o: &Out) -> bool {
-        if o.track == ALL || !goes_ahead(&o.event) {
+        if o.track == ALL || !goes_ahead(o) {
             return false;
         }
         let t = usize::from(o.track);
@@ -167,11 +210,16 @@ impl Ahead {
         };
         if let Some(i) = (0..self.n_sent).find(|&i| !self.struck[i] && same(&self.sent[i])) {
             self.struck[i] = true;
-            return true;
+            if !self.went[i] {
+                self.note_late_control(o);
+            }
+            return self.went[i];
         }
         if let Event::NoteOff { note } = o.event {
-            let again = self.sent[..self.n_sent].iter().any(|s| {
-                s.track == o.track
+            let again = (0..self.n_sent).any(|i| {
+                let s = &self.sent[i];
+                self.went[i]
+                    && s.track == o.track
                     && s.dest == o.dest
                     && s.frame > o.frame
                     && matches!(s.event, Event::NoteOn { note: n, .. } if n == note)
@@ -181,41 +229,80 @@ impl Ahead {
             }
         }
         self.counts.late += 1;
+        self.note_late_control(o);
         false
+    }
+
+    /// A control of `o`'s that goes out in the real pass, not ahead.
+    fn note_late_control(&mut self, o: &Out) {
+        let Some(addr) = lock_addr(&o.event).filter(|_| is_gear_control(o)) else {
+            return;
+        };
+        if let Some(l) = self.late_controls.get_mut(self.n_late_controls) {
+            *l = (o.track, addr);
+            self.n_late_controls += 1;
+        }
     }
 
     /// After the real pass of the period that ends on frame `end`: each
     /// note-on sent ahead for before `end` that the real pass didn't play,
     /// with no note-off sent after it, is handed to `off` as the note-off
-    /// it needs; then the log keeps only what is still ahead.
+    /// it needs; a control's lock or lane value sent ahead that it didn't
+    /// play is handed to `off` as the control's unlock, unless the real
+    /// pass sent that control something itself (an edit's new value).
+    /// Then the log keeps only what is still ahead.
     pub fn check(&mut self, end: u64, mut off: impl FnMut(&Out)) {
         let mut keep = 0;
         for i in 0..self.n_sent {
             let s = self.sent[i];
             if s.frame >= end {
                 self.sent[keep] = s;
+                self.went[keep] = self.went[i];
                 self.struck[keep] = self.struck[i];
                 keep += 1;
                 continue;
             }
-            if self.struck[i] {
+            if self.struck[i] || !self.went[i] {
                 continue;
             }
-            if let Event::NoteOn { note, .. } = s.event {
-                let ended = (i + 1..self.n_sent).any(|j| {
-                    let e = &self.sent[j];
-                    e.track == s.track && e.dest == s.dest && e.event == Event::NoteOff { note }
-                });
-                self.counts.wrong += 1;
-                if !ended {
-                    off(&Out {
-                        event: Event::NoteOff { note },
-                        ..s
+            match s.event {
+                Event::NoteOn { note, .. } => {
+                    let ended = (i + 1..self.n_sent).any(|j| {
+                        let e = &self.sent[j];
+                        self.went[j]
+                            && e.track == s.track
+                            && e.dest == s.dest
+                            && e.event == Event::NoteOff { note }
                     });
+                    self.counts.wrong += 1;
+                    if !ended {
+                        off(&Out {
+                            event: Event::NoteOff { note },
+                            ..s
+                        });
+                    }
                 }
+                Event::Lock { addr, .. } | Event::Lane { addr, .. } => {
+                    self.counts.wrong += 1;
+                    let later = |j: usize| {
+                        let e = &self.sent[j];
+                        self.went[j] && e.track == s.track && lock_addr(&e.event) == Some(addr)
+                    };
+                    let resent = self.late_controls[..self.n_late_controls]
+                        .contains(&(s.track, addr))
+                        || (i + 1..self.n_sent).any(later);
+                    if !resent {
+                        off(&Out {
+                            event: Event::Unlock { addr },
+                            ..s
+                        });
+                    }
+                }
+                _ => {}
             }
         }
         self.n_sent = keep;
+        self.n_late_controls = 0;
     }
 
     /// The forecast: after the real pass of `frames` frames (the
@@ -281,10 +368,12 @@ impl Ahead {
                 offset: u32::try_from(o.frame - start).unwrap_or(u32::MAX),
                 ..o
             };
-            if send(&ahead) {
-                self.sent[self.n_sent] = ahead;
-                self.struck[self.n_sent] = false;
-                self.n_sent += 1;
+            let went = send(&ahead);
+            self.sent[self.n_sent] = ahead;
+            self.went[self.n_sent] = went;
+            self.struck[self.n_sent] = false;
+            self.n_sent += 1;
+            if went {
                 self.counts.ahead += 1;
             }
         }
