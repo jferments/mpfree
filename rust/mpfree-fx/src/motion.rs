@@ -382,6 +382,16 @@ pub mod ringmod {
 }
 
 const WAVES: &[&str] = &["Sine", "Triangle", "Square"];
+/// Triangle and Square scaled to the sine's RMS, so a change of Wave
+/// changes the tone and not the level (FX quality Z4).
+const TRI_GAIN: f32 = 1.224_744_9;
+const SQUARE_GAIN: f32 = std::f32::consts::FRAC_1_SQRT_2;
+/// The ring mod's half-bands for Triangle and Square, which run at twice
+/// the rate: nine sections, flat to 0.46 of the base rate and 92 dB down
+/// from 0.52, so a product above Nyquist is gone before it can fold back
+/// (FX quality Z3).
+const RING_SECTIONS: usize = 9;
+const RING_TBW: f64 = 0.02;
 
 static RINGMOD_INFO: NodeInfo = NodeInfo {
     id: "mpfree.fx.ringmod",
@@ -449,7 +459,28 @@ pub struct RingMod {
     pitch: Smooth,
     sweep: Smooth,
     mix: Smooth,
-    phase: f32,
+    /// The carrier's phase in cycles, double precision so its error never
+    /// shows as spurs.
+    phase: f64,
+    /// How much of each Wave is heard, and the first of the two one-poles
+    /// that glide it after a change (so a change mid-way carries on).
+    shares: [f32; 3],
+    pull: [f32; 3],
+    fading: bool,
+    share_k: f32,
+    /// Triangle and Square: each side's half-bands for the product at
+    /// twice the rate, and the carrier's, which keep it under Nyquist.
+    os: [IirPair<RING_SECTIONS>; 2],
+    carrier: IirPair<RING_SECTIONS>,
+    /// Frames since the stream started, modulo [`SETTLE`].
+    settle: u32,
+}
+
+/// Each Wave's share when `wave` is chosen.
+fn wave_shares(wave: usize) -> [f32; 3] {
+    let mut w = [0.0; 3];
+    w[wave.min(2)] = 1.0;
+    w
 }
 
 impl Default for RingMod {
@@ -469,6 +500,13 @@ impl RingMod {
             sweep: Smooth::new(v[2]),
             mix: Smooth::new(v[5] / 100.0),
             phase: 0.0,
+            shares: wave_shares(v[1] as usize),
+            pull: wave_shares(v[1] as usize),
+            fading: false,
+            share_k: 1.0,
+            os: [IirPair::new(RING_TBW), IirPair::new(RING_TBW)],
+            carrier: IirPair::new(RING_TBW),
+            settle: 0,
         };
         m.setup(48_000);
         m
@@ -478,18 +516,66 @@ impl RingMod {
             ringmod::FREQ => self.pitch.target = v.log2(),
             ringmod::SWEEP => self.sweep.target = v,
             ringmod::MIX => self.mix.target = v / 100.0,
+            ringmod::WAVE => self.fading = true,
             _ => {}
         }
     }
     fn begin(&mut self, _ctx: &Ctx) {}
+    /// A frame of a Wave change: the shares a step toward the new Wave's,
+    /// through two one-poles, until they are there.
+    #[cold]
+    #[inline(never)]
+    fn fade_shares(&mut self) {
+        let to = wave_shares(self.v[1] as usize);
+        let c = self.share_k;
+        let mut gap = 0.0f32;
+        for k in 0..3 {
+            self.pull[k] += (to[k] - self.pull[k]) * c;
+            self.shares[k] += (self.pull[k] - self.shares[k]) * c;
+            gap = gap.max((to[k] - self.shares[k]).abs());
+        }
+        if gap < 1e-5 {
+            self.shares = to;
+            self.pull = to;
+            self.fading = false;
+            if to[0] == 1.0 {
+                // Back to the Sine alone: the half-bands stop, so they
+                // start from rest next time rather than from what they
+                // held.
+                self.carrier.reset();
+                for os in &mut self.os {
+                    os.reset();
+                }
+            }
+        }
+    }
+    /// Triangle's and Square's carrier at twice the rate for the frame
+    /// whose phase went from `from` by `dt`: band-limited steps and
+    /// corners, then through a half-band pair so nothing is left above the
+    /// base rate's Nyquist.
+    #[inline]
+    fn carrier_2x(&mut self, from: f64, dt: f32) -> [f32; 2] {
+        let [_, tri, square_w] = self.shares;
+        let d2 = 0.5 * dt;
+        let at = |p: f64| {
+            let p = kit::wrap(p as f32);
+            tri * TRI_GAIN * triangle(p, d2) + square_w * SQUARE_GAIN * square(p, d2)
+        };
+        let raw = [at(from + f64::from(d2)), at(from + f64::from(dt))];
+        let base = self.carrier.down(raw);
+        self.carrier.up(base)
+    }
     fn run(&mut self, ctx: &Ctx, from: usize, l: &mut [f32], r: &mut [f32]) {
         self.lfo.follow(ctx, from, self.v[4] as usize);
         self.lfo.set(self.v[3], self.v[4] as usize, self.rate);
-        let wave = self.v[1] as usize;
         let per = 1.0 / self.rate as f32;
         let top = 0.45 * self.rate as f32;
         // With Sweep at 0 the LFO only keeps time.
         let swept = self.sweep.value != 0.0 || self.sweep.target != 0.0;
+        if !self.fading && self.shares[0] == 1.0 {
+            self.run_sine(l, r, swept, per, top);
+            return;
+        }
         for i in 0..l.len() {
             let sweep = if swept {
                 let [m] = self.lfo.step([0.0]);
@@ -499,27 +585,99 @@ impl RingMod {
                 0.0
             };
             let hz = fast_exp2(self.pitch.glide() + sweep).min(top);
-            self.phase = kit::wrap(self.phase + hz * per);
             let dt = hz * per;
-            let c = match wave {
-                1 => triangle(self.phase, dt),
-                2 => square(self.phase, dt),
-                _ => kit::sine(self.phase),
+            let was = self.phase;
+            self.phase += f64::from(dt);
+            if self.phase >= 1.0 {
+                self.phase -= 1.0;
+            }
+            // The half-bands drop what is too small to hear every SETTLE
+            // frames from the stream's start (the same in any block size).
+            self.settle = (self.settle + 1) % SETTLE;
+            if self.settle == 0 {
+                self.carrier.settle();
+                for os in &mut self.os {
+                    os.settle();
+                }
+            }
+            if self.fading {
+                self.fade_shares();
+            }
+            let sine = self.shares[0];
+            let c = if sine != 0.0 {
+                sine * kit::sine_fine(self.phase as f32)
+            } else {
+                0.0
             };
+            let twice = sine != 1.0;
+            let c2 = if twice {
+                self.carrier_2x(was, dt)
+            } else {
+                [0.0; 2]
+            };
+            let mix = self.mix.glide();
+            for (ch, s) in [&mut l[i], &mut r[i]].into_iter().enumerate() {
+                let x = *s;
+                let mut y = x * c;
+                if twice {
+                    let u = self.os[ch].up(x);
+                    y += self.os[ch].down([u[0] * c2[0], u[1] * c2[1]]);
+                }
+                *s = lerp(x, y, mix);
+            }
+        }
+    }
+    /// The Sine alone (the default): nothing runs at twice the rate, and
+    /// with the pitch still and no Sweep, the step is worked out once.
+    /// The same samples as [`RingMod::run`]'s loop would give.
+    fn run_sine(&mut self, l: &mut [f32], r: &mut [f32], swept: bool, per: f32, top: f32) {
+        let still = !swept && self.pitch.settled();
+        let still_dt = fast_exp2(self.pitch.value + 0.0).min(top) * per;
+        for i in 0..l.len() {
+            let dt = if still {
+                self.lfo.tick();
+                still_dt
+            } else {
+                let sweep = if swept {
+                    let [m] = self.lfo.step([0.0]);
+                    self.sweep.glide() * (0.5 + 0.5 * m)
+                } else {
+                    self.lfo.tick();
+                    0.0
+                };
+                fast_exp2(self.pitch.glide() + sweep).min(top) * per
+            };
+            self.phase += f64::from(dt);
+            if self.phase >= 1.0 {
+                self.phase -= 1.0;
+            }
+            let c = kit::sine_fine(self.phase as f32);
             let mix = self.mix.glide();
             l[i] = lerp(l[i], l[i] * c, mix);
             r[i] = lerp(r[i], r[i] * c, mix);
         }
+        // The half-bands rest, but the count goes on.
+        self.settle = (self.settle + (l.len() % SETTLE as usize) as u32) % SETTLE;
     }
     fn setup(&mut self, rate: u32) {
         self.rate = rate;
         self.pitch.set_time(rate, 30.0);
         self.sweep.set_time(rate, 30.0);
         self.mix.set_time(rate, 20.0);
+        // Each one-pole 2.5 ms: a Wave change glides over about 20 ms.
+        self.share_k = 1.0 - (-1.0 / (0.0025 * rate as f32).max(1.0)).exp();
     }
     fn clear(&mut self) {
         self.lfo.reset();
         self.phase = 0.0;
+        self.shares = wave_shares(self.v[1] as usize);
+        self.pull = self.shares;
+        self.fading = false;
+        self.carrier.reset();
+        for os in &mut self.os {
+            os.reset();
+        }
+        self.settle = 0;
         self.pitch.snap(self.pitch.target);
         self.sweep.snap(self.sweep.target);
         self.mix.snap(self.mix.target);
@@ -534,50 +692,76 @@ impl RingMod {
 
 node_impl!(RingMod, RINGMOD_INFO, RINGMOD_PARAMS);
 
-/// The PolyBLEP step correction at phase `t` for a step of +2 at phase 0
-/// (`dt` is the phase step per frame).
+/// The step correction at phase `t` for a step of +2 at phase 0 (`dt` is
+/// the phase step per frame): the step smoothed by a cubic B-spline across
+/// four frames, less the step itself. Its aliases fall as sinc to the
+/// fourth, about 25 dB below the two-frame PolyBLEP's where a carrier's
+/// harmonics fold back (FX quality Z3).
 #[inline]
 fn blep(t: f32, dt: f32) -> f32 {
-    if t < dt {
+    if t < 2.0 * dt {
+        // After the step, `x` frames on.
         let x = t / dt;
-        2.0 * x - x * x - 1.0
-    } else if t > 1.0 - dt {
+        if x < 1.0 {
+            let x2 = x * x;
+            -1.0 + x * (4.0 / 3.0) + x2 * (x * (-2.0 / 3.0) + x * x * 0.25)
+        } else {
+            let u = 2.0 - x;
+            let u2 = u * u;
+            -u2 * u2 / 12.0
+        }
+    } else if t > 1.0 - 2.0 * dt {
+        // Before it, `x` frames back (negative).
         let x = (t - 1.0) / dt;
-        x * x + 2.0 * x + 1.0
+        if x > -1.0 {
+            let x2 = x * x;
+            1.0 + x * (4.0 / 3.0) + x2 * (x * (-2.0 / 3.0) - x * x * 0.25)
+        } else {
+            let u = 2.0 + x;
+            let u2 = u * u;
+            u2 * u2 / 12.0
+        }
     } else {
         0.0
     }
 }
 
-/// The PolyBLAMP corner correction at phase `t` for a unit change of
-/// slope (per frame) at phase 0.
+/// The corner correction at phase `t` for a unit change of slope (per
+/// frame) at phase 0: the corner smoothed by the same cubic B-spline as
+/// [`blep`], less the corner itself. It is the same either side.
 #[inline]
 fn blamp(t: f32, dt: f32) -> f32 {
-    if t < dt {
-        let x = t / dt - 1.0;
-        -x * x * x / 3.0
-    } else if t > 1.0 - dt {
-        let x = (t - 1.0) / dt + 1.0;
-        x * x * x / 3.0
+    let x = if t < 2.0 * dt {
+        t / dt
+    } else if t > 1.0 - 2.0 * dt {
+        (1.0 - t) / dt
     } else {
-        0.0
+        return 0.0;
+    };
+    if x < 1.0 {
+        let x2 = x * x;
+        7.0 / 30.0 - 0.5 * x + x2 * (1.0 / 3.0 + x2 * (x / 40.0 - 1.0 / 12.0))
+    } else {
+        let u = 2.0 - x;
+        let u2 = u * u;
+        u2 * u2 * u / 120.0
     }
 }
 
-/// A square wave (+1 then -1) with its steps band-limited (PolyBLEP), so a
-/// high carrier doesn't alias.
+/// A square wave (+1 then -1) with its steps band-limited across four
+/// frames, so a high carrier doesn't alias.
 #[inline]
 pub(crate) fn square(t: f32, dt: f32) -> f32 {
-    let dt = dt.clamp(1e-6, 0.5);
+    let dt = dt.clamp(1e-6, 0.25);
     let naive = if t < 0.5 { 1.0 } else { -1.0 };
     naive + blep(t, dt) - blep(kit::wrap(t + 0.5), dt)
 }
 
 /// A triangle wave (-1 at phase 0, +1 at a half) with its corners
-/// band-limited (PolyBLAMP).
+/// band-limited across four frames.
 #[inline]
 pub(crate) fn triangle(t: f32, dt: f32) -> f32 {
-    let dt = dt.clamp(1e-6, 0.5);
+    let dt = dt.clamp(1e-6, 0.25);
     let naive = 1.0 - 4.0 * (t - 0.5).abs();
     // The slope turns from -4 to +4 at phase 0 and back at a half: a change
     // of 8 per cycle, 8 dt per frame.
@@ -1071,5 +1255,84 @@ mod tests {
         }
         assert!(worst < 3.0 * own, "{worst} against {own}");
         assert!(!r.driving, "back to the plain stage");
+    }
+
+    #[test]
+    fn the_band_limited_steps_and_corners_join_up() {
+        // Smoothed by the B-spline, the square has no step and the
+        // triangle no corner: fine steps of the phase move them only a
+        // little, where the plain waves jump by 2 and turn by 8.
+        let fine = 1e-5f32;
+        for dt in [0.01f32, 0.1, 0.2] {
+            let (mut sq, mut tri, mut turn) = (0.0f32, 0.0f32, 0.0f32);
+            let mut mean = 0.0f64;
+            let n = (1.0 / fine) as usize;
+            let mut was = (square(1.0 - fine, dt), triangle(1.0 - fine, dt));
+            let mut slope = (triangle(1.0 - fine, dt) - triangle(1.0 - 2.0 * fine, dt)) / fine;
+            for i in 0..n {
+                let t = i as f32 * fine;
+                let now = (square(t, dt), triangle(t, dt));
+                sq = sq.max((now.0 - was.0).abs());
+                tri = tri.max((now.1 - was.1).abs());
+                let s = (now.1 - was.1) / fine;
+                turn = turn.max((s - slope).abs());
+                slope = s;
+                mean += f64::from(now.0);
+                was = now;
+            }
+            assert!(sq < 0.01, "dt {dt}: square steps {sq}");
+            assert!(tri < 4.1 * fine, "dt {dt}: triangle steps {tri}");
+            assert!(turn < 0.5, "dt {dt}: the slope turns {turn}");
+            assert!((mean / n as f64).abs() < 1e-3, "dt {dt}: mean {mean}");
+        }
+    }
+
+    /// The RMS of the ring mod's output over its last half second, a
+    /// steady 0.5 in, the carrier at 440 Hz in `wave`.
+    fn ring_rms(wave: f32) -> f32 {
+        let rate = 44_100;
+        let mut m = RingMod::new();
+        m.set_param(ringmod::FREQ, 440.0);
+        m.set_param(ringmod::WAVE, wave);
+        m.prepare(rate, 128);
+        m.reset();
+        let ctx = Ctx::new(rate, 0);
+        let mut sum = 0.0f64;
+        for k in 0..(rate as usize / 128) {
+            let (mut l, mut r) = ([0.5f32; 128], [0.5f32; 128]);
+            m.process(&ctx, &[], &mut l, &mut r);
+            if k >= rate as usize / 256 {
+                sum += l.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+            }
+        }
+        (sum / ((rate as usize / 128 - rate as usize / 256) * 128) as f64).sqrt() as f32
+    }
+
+    #[test]
+    fn every_wave_is_as_loud() {
+        let sine = ring_rms(0.0);
+        assert!((sine - 0.5 * std::f32::consts::FRAC_1_SQRT_2).abs() < 0.005);
+        for wave in [1.0, 2.0] {
+            let db = 20.0 * (ring_rms(wave) / sine).log10();
+            assert!(db.abs() < 0.2, "wave {wave}: {db} dB");
+        }
+    }
+
+    #[test]
+    fn a_wave_change_glides() {
+        let rate = 48_000;
+        let mut m = RingMod::new();
+        m.prepare(rate, 128);
+        m.reset();
+        let ctx = Ctx::new(rate, 0);
+        m.set_param(ringmod::WAVE, 2.0);
+        let (mut l, mut r) = ([0.1f32; 1], [0.1f32; 1]);
+        m.process(&ctx, &[], &mut l, &mut r);
+        // A frame on, still nearly all Sine; 60 ms on, all Square.
+        assert!(m.shares[0] > 0.99 && m.fading, "{:?}", m.shares);
+        let (mut l, mut r) = (vec![0.1f32; 2880], vec![0.1f32; 2880]);
+        m.process(&ctx, &[], &mut l, &mut r);
+        assert_eq!(m.shares, wave_shares(2));
+        assert!(!m.fading);
     }
 }
