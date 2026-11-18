@@ -232,6 +232,10 @@ pub struct Session {
     /// The boxes the screen lent the audio thread.
     preview: Option<Box<crate::preview::Preview>>,
     rec_feed: Option<Box<crate::sampler::RecFeed>>,
+    /// The line input's sound ([`Session::line_in`]): a sine of this many
+    /// Hz, and where it is in its cycle.
+    line_tone: Option<f32>,
+    line_phase: f32,
     cloud: Option<Box<crate::sampler::Cloud>>,
     /// Simulated time: periods run, and the clock the rate limits read.
     periods: u64,
@@ -337,6 +341,8 @@ impl Session {
             kit_to: None,
             preview: None,
             rec_feed: None,
+            line_tone: None,
+            line_phase: 0.0,
             cloud: None,
             periods: 0,
             t0: Instant::now(),
@@ -899,6 +905,16 @@ impl Session {
 
     /// Run `n` periods: what the screen sent, the app's effects, the time
     /// engine, and the screen taking what came back.
+    /// The line input on, with a sine of `hz` on it at half scale (the
+    /// session has no audio in), or off with None. The sampler's input
+    /// takes it every period, with the bar lines, as main.rs feeds it.
+    pub fn line_in(&mut self, hz: Option<f32>) -> &mut Session {
+        self.line_tone = hz;
+        self.app.settings.line_input = hz.is_some();
+        self.out.show(ToUi::Settings(self.app.settings.clone()));
+        self.settle()
+    }
+
     pub fn run_periods(&mut self, n: u64) -> &mut Session {
         for _ in 0..n {
             self.period();
@@ -1065,6 +1081,16 @@ impl Session {
         }
         if let Some(c) = self.cloud.take() {
             self.out.show(ToUi::SampleGrains(c));
+        }
+        // The sampler's input: the line input's sine, when it is on.
+        if let (Some(feed), Some(hz)) = (self.rec_feed.as_mut(), self.line_tone) {
+            let step = hz / RATE as f32;
+            let mut l = [0f32; PERIOD];
+            for x in l.iter_mut() {
+                *x = 0.5 * (self.line_phase * std::f32::consts::TAU).sin();
+                self.line_phase = (self.line_phase + step).fract();
+            }
+            feed.period(self.time.block(), &l, &l, 0);
         }
         // The looper's period, as main.rs runs it: the pads as heard in the
         // last period's mix (silence when that can't be had: the session

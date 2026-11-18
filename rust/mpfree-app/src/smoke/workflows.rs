@@ -2344,7 +2344,8 @@ mod tests {
             s.pad_edge(4, 0, false);
             s.button("REC").settle();
             assert_eq!(s.app.rec.ready, None);
-            // Bank B is empty: B5 held + REC arms a pad take.
+            // With the line input off, the recorder ends the take at once
+            // and says why: REC records the notes again.
             s.button("PAD BANK B/F").settle();
             s.pad_edge(4, 100, true);
             let t = s.t();
@@ -2357,8 +2358,6 @@ mod tests {
             assert_eq!((take.kit, take.pad, take.started), (0, 20, false));
             assert_eq!(chip(&s).line(), "REC → Pad B5 · Line in");
             assert_eq!(s.app.rec.target, Target::Notes, "the arm is kept");
-            // The recorder's side ended it (until the sampler builds its
-            // half, at once): REC records the notes again.
             let fx = s.app.button(note, false, t);
             s.fx.extend(fx);
             s.run_periods(4);
@@ -2367,14 +2366,52 @@ mod tests {
             assert_eq!(s.app.rec.pad, None);
             assert_eq!(chip(&s).state, RecState::Armed);
             assert_eq!(chip(&s).what, "Track 1 · new clip");
+            let said = s.said();
             assert!(
-                s.said()
-                    .iter()
+                said.iter()
                     .any(|l| l.contains("Pad B5 of kit 1 armed for one take")),
-                "{:?}",
-                s.said()
+                "{said:?}"
             );
-            assert_eq!(s.time.info().state, State::Stopped);
+            assert!(
+                said.iter()
+                    .any(|l| l.ends_with("no take on Pad B5: the line input is off")),
+                "{said:?}"
+            );
+            // The line input on: B5 held + REC arms the take, PLAY starts
+            // it, and REC lands it on B5 with the music playing on.
+            s.line_in(Some(220.0));
+            s.pad_edge(4, 100, true);
+            let t = s.t();
+            let fx = s.app.button(note, true, t);
+            s.fx.extend(fx);
+            s.settle();
+            let fx = s.app.button(note, false, t);
+            s.fx.extend(fx);
+            s.run_periods(4);
+            s.pad_edge(4, 0, false);
+            s.settle();
+            let take = s.app.rec.pad.expect("armed, waiting for the music");
+            assert_eq!((take.started, take.recording), (false, false));
+            assert_eq!(chip(&s).line(), "REC → Pad B5 · Line in");
+            s.button("PLAY").settle();
+            s.run_periods(40);
+            let take = s.app.rec.pad.expect("recording");
+            assert_eq!((take.started, take.recording), (true, true));
+            assert_eq!(chip(&s).line(), "● REC → Pad B5 · Line in");
+            s.button("REC").settle();
+            s.run_periods(4);
+            assert_eq!(s.app.rec.pad, None, "one take");
+            assert_eq!(chip(&s).what, "Track 1 · new clip");
+            assert_eq!(s.time.info().state, State::Playing, "the music plays on");
+            let pad = s.screen.sample.project(0).unwrap().pad(20).cloned();
+            assert_eq!(pad.map(|p| p.name).as_deref(), Some("Take 1"));
+            let said = s.said();
+            for want in [
+                "sample: take armed for pad B5 (one take, from REC): start now, end stop, left + right",
+                "stereo on pad B5",
+            ] {
+                assert!(said.iter().any(|l| l.contains(want)), "{want}: {said:?}");
+            }
         });
     }
 
