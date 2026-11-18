@@ -1,0 +1,182 @@
+mpfree-preset = 1
+engine = mpfree.drums
+name = Init Kit
+
+mpfree-preset = 1
+engine = mpfree.drums
+name = Boom Kit
+
+# Pad 1
+pad-1.tune = -4
+pad-1.decay = 1800
+pad-1.snap = 15
+pad-1.sweep = 14
+pad-1.sweep-time = 70
+pad-1.drive = 20
+
+# Pad 2
+pad-2.decay = 300
+pad-2.tone = 40
+pad-2.noise = 45
+
+# Pad 3
+pad-3.decay = 450
+pad-3.tone = 40
+
+# Pad 4
+pad-4.decay = 50
+pad-4.tone = 75
+
+# Pad 5
+pad-5.decay = 700
+pad-5.tone = 75
+
+# Pad 6
+pad-6.decay = 900
+
+# Pad 7
+pad-7.decay = 800
+
+# Pad 8
+pad-8.decay = 700
+
+# Pad 14
+pad-14.tune = -7
+pad-14.decay = 3000
+pad-14.drive = 45
+
+mpfree-preset = 1
+engine = mpfree.drums
+name = Tight Kit
+
+# Pad 1
+pad-1.tune = 2
+pad-1.decay = 280
+pad-1.snap = 75
+pad-1.sweep = 30
+pad-1.sweep-time = 25
+pad-1.drive = 30
+
+# Pad 2
+pad-2.tune = 2
+pad-2.decay = 160
+pad-2.tone = 75
+pad-2.snap = 80
+pad-2.noise = 70
+
+# Pad 3
+pad-3.decay = 220
+pad-3.tone = 65
+
+# Pad 4
+pad-4.decay = 40
+pad-4.tone = 85
+
+# Pad 5
+pad-5.decay = 280
+pad-5.tone = 85
+
+# Pad 6
+pad-6.decay = 250
+
+# Pad 7
+pad-7.decay = 220
+
+# Pad 8
+pad-8.decay = 200
+
+# Pad 9
+pad-9.decay = 40
+
+# Pad 11
+pad-11.decay = 1200
+pad-11.tone = 80
+
+mpfree-preset = 1
+engine = mpfree.drums
+name = Grit Kit
+
+# Pad 1
+pad-1.decay = 600
+pad-1.tone = 60
+pad-1.drive = 70
+
+# Pad 2
+pad-2.tone = 35
+pad-2.noise = 80
+pad-2.drive = 60
+
+# Pad 3
+pad-3.tone = 30
+pad-3.drive = 50
+
+# Pad 4
+pad-4.tone = 30
+pad-4.drive = 40
+
+# Pad 5
+pad-5.tone = 30
+pad-5.drive = 40
+
+# Pad 6
+pad-6.drive = 50
+
+# Pad 7
+pad-7.drive = 50
+
+# Pad 8
+pad-8.drive = 50
+
+# Pad 14
+pad-14.decay = 2200
+pad-14.tone = 70
+pad-14.drive = 90
+
+# Kit
+kit.level = -3
+
+mpfree-preset = 1
+engine = mpfree.drums
+name = Electro Kit
+
+# Pad 1
+pad-1.decay = 380
+pad-1.snap = 60
+pad-1.sweep = 40
+pad-1.sweep-time = 18
+
+# Pad 2
+pad-2.model = Clap
+pad-2.decay = 180
+pad-2.tone = 70
+
+# Pad 6
+pad-6.model = Zap
+pad-6.tune = -5
+pad-6.decay = 300
+pad-6.sweep = 30
+pad-6.sweep-time = 40
+
+# Pad 7
+pad-7.model = Zap
+pad-7.decay = 250
+pad-7.sweep = 36
+pad-7.sweep-time = 30
+
+# Pad 8
+pad-8.model = Zap
+pad-8.tune = 7
+pad-8.decay = 200
+pad-8.sweep = 42
+pad-8.sweep-time = 20
+
+# Pad 13
+pad-13.tune = 12
+pad-13.decay = 160
+pad-13.tone = 80
+
+# Pad 15
+pad-15.model = FM perc
+pad-15.tune = -12
+pad-15.decay = 350
+pad-15.tone = 35

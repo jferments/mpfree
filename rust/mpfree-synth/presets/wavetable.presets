@@ -1,0 +1,279 @@
+mpfree-preset = 1
+engine = mpfree.wavetable
+name = Init
+
+mpfree-preset = 1
+engine = mpfree.wavetable
+name = Morph Pad
+
+# Osc A
+osc-a.table = Vowels
+osc-a.position = 10
+
+# Osc B
+osc-b.table = Drift
+osc-b.position = 30
+osc-b.fine = 9
+osc-b.level = 60
+
+# Unison
+unison.unison = 3
+unison.detune = 14
+unison.spread = 80
+
+# Filter
+filter.cutoff = 3500
+filter.resonance = 15
+
+# Amp env
+amp-env.attack = 900
+amp-env.decay = 1500
+amp-env.sustain = 85
+amp-env.release = 2000
+
+# LFO
+lfo.shape = Triangle
+lfo.rate = 0.15
+lfo.to-pos-a = 60
+lfo.to-pos-b = 40
+
+# Voice
+voice.voices = 6
+
+# Output
+output.level = -4
+
+# Pressure
+pressure.to-1 = Position
+pressure.depth-1 = 40
+pressure.to-2 = Level
+pressure.depth-2 = 25
+
+mpfree-preset = 1
+engine = mpfree.wavetable
+name = Vowel Lead
+
+# Osc A
+osc-a.table = Vowels
+
+# Osc B
+osc-b.table = Basic
+osc-b.position = 66
+osc-b.octave = -1
+osc-b.level = 35
+
+# Filter
+filter.cutoff = 6000
+
+# Mod env
+mod-env.decay = 900
+mod-env.sustain = 40
+mod-env.to-pos-a = 70
+
+# LFO
+lfo.rate = 5.5
+lfo.to-pitch = 0.2
+
+# Voice
+voice.mode = Legato
+voice.glide = 70
+voice.bend-range = 12
+
+# Pressure
+pressure.to-1 = Position
+pressure.depth-1 = 60
+pressure.to-2 = Vibrato
+pressure.depth-2 = 40
+
+mpfree-preset = 1
+engine = mpfree.wavetable
+name = Sync Sweep
+
+# Osc A
+osc-a.table = Sync
+
+# Osc B
+osc-b.table = Basic
+osc-b.position = 66
+osc-b.octave = -1
+osc-b.level = 40
+
+# Filter
+filter.cutoff = 9000
+filter.drive = 6
+
+# Mod env
+mod-env.decay = 450
+mod-env.sustain = 10
+mod-env.to-pos-a = 100
+mod-env.vel-to-pos = 30
+
+# Amp env
+amp-env.decay = 600
+amp-env.sustain = 60
+amp-env.release = 200
+
+mpfree-preset = 1
+engine = mpfree.wavetable
+name = Digital Bell
+
+# Osc A
+osc-a.table = FM
+osc-a.position = 70
+osc-a.warp = Sync
+
+# Osc B
+osc-b.table = Resonance
+osc-b.position = 40
+osc-b.octave = 1
+osc-b.level = 30
+
+# Filter
+filter.cutoff = 12000
+
+# Mod env
+mod-env.decay = 800
+mod-env.to-pos-a = -70
+mod-env.to-warp = 25
+mod-env.vel-to-pos = 30
+
+# Amp env
+amp-env.decay = 1800
+amp-env.sustain = 0
+amp-env.release = 1200
+
+# Pressure
+pressure.to-1 = Warp
+pressure.depth-1 = 30
+pressure.to-2 = Off
+
+mpfree-preset = 1
+engine = mpfree.wavetable
+name = Growl Bass
+
+# Osc A
+osc-a.table = Resonance
+osc-a.warp = Bend
+osc-a.warp-amt = 20
+osc-a.octave = -1
+
+# Osc B
+osc-b.table = Basic
+osc-b.position = 100
+osc-b.octave = -2
+osc-b.level = 50
+
+# Filter
+filter.cutoff = 1400
+filter.resonance = 30
+filter.drive = 12
+filter.key-track = 30
+
+# Amp env
+amp-env.sustain = 100
+amp-env.release = 80
+
+# LFO
+lfo.shape = Triangle
+lfo.sync = 1/16
+lfo.to-pos-a = 70
+
+# Voice
+voice.mode = Legato
+voice.glide = 30
+
+# Pressure
+pressure.to-1 = Warp
+pressure.depth-1 = 50
+pressure.to-2 = Cutoff
+pressure.depth-2 = 25
+
+mpfree-preset = 1
+engine = mpfree.wavetable
+name = Organ
+
+# Osc A
+osc-a.table = Organ
+osc-a.position = 45
+
+# Osc B
+osc-b.level = 0
+
+# Filter
+filter.cutoff = 12000
+
+# Amp env
+amp-env.attack = 4
+amp-env.sustain = 100
+amp-env.release = 60
+amp-env.velocity = 0
+
+# LFO
+lfo.rate = 6.5
+lfo.to-pitch = 0.08
+
+# Pressure
+pressure.to-1 = Position
+pressure.depth-1 = 55
+pressure.to-2 = Off
+
+mpfree-preset = 1
+engine = mpfree.wavetable
+name = Harmonic Pluck
+
+# Osc A
+osc-a.table = Harmonics
+osc-a.position = 100
+
+# Osc B
+osc-b.level = 0
+
+# Filter
+filter.cutoff = 14000
+
+# Mod env
+mod-env.decay = 350
+mod-env.sustain = 0
+mod-env.to-pos-a = -100
+mod-env.vel-to-pos = -40
+
+# Amp env
+amp-env.decay = 700
+amp-env.sustain = 0
+amp-env.release = 400
+
+# Pressure
+pressure.to-1 = Off
+pressure.to-2 = Off
+
+mpfree-preset = 1
+engine = mpfree.wavetable
+name = FM Keys
+
+# Osc A
+osc-a.table = Basic
+osc-a.position = 0
+osc-a.warp = FM
+osc-a.warp-amt = 8
+
+# Osc B
+osc-b.table = Basic
+osc-b.octave = 1
+osc-b.level = 0
+
+# Filter
+filter.cutoff = 10000
+
+# Mod env
+mod-env.decay = 900
+mod-env.to-warp = 45
+
+# Amp env
+amp-env.decay = 1400
+amp-env.sustain = 30
+amp-env.release = 500
+
+# Pressure
+pressure.to-1 = Warp
+pressure.depth-1 = 35
+pressure.to-2 = Off

@@ -137,6 +137,7 @@
 823688	Sampler, the 16 sample pads alone
 630801	Sampler, the 4 granular pads alone
 4085464	Song: sampler, 2 synths, mixer+FX, time, looper
+254066	Sound Keys Init with Ensemble, 8 voices
 137967	Spring reverb
 59214	Squelch Acid Line, a line
 61774	Squelch Distorted, a line

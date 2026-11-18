@@ -93,7 +93,7 @@ use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
 use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab, SceneAction};
 use mpfree_sampler_ui::rec_tab::{self, RecAction, RecState, RecTab, Skip};
 use mpfree_sampler_ui::rec_widgets::Strip;
-use mpfree_sampler_ui::recorder::{RecorderAction, RecorderView};
+use mpfree_sampler_ui::recorder::{KeepView, RecorderAction, RecorderView, KEEP_NOT_YET};
 use mpfree_sampler_ui::send;
 use mpfree_sampler_ui::source::{cache_file, SourceView};
 use mpfree_sampler_ui::warp_tab::{self, WarpTab};
@@ -323,7 +323,11 @@ fn flatten_lift(f: &Flatten) -> FromUi {
 
 /// Why the recorder row's REC can't take while the line input is off
 /// (the Rec page's [`rec_tab::OFF_NOTE`], as short as the row needs).
-pub const RECORDER_OFF: &str = "Line input off: Looper tab, MENU";
+pub const RECORDER_OFF: &str = "Line in off: Looper tab, MENU";
+
+/// The Keep card's line while a take is ready, counting in or recording:
+/// it waits, as Sample Recall does (REC arm rule 6).
+pub const KEEP_WAITS: &str = "finish the take first";
 
 /// How long the recorder row says why the arm refused its REC.
 const HERE_NO_SECONDS: f32 = 4.0;
@@ -689,6 +693,14 @@ pub struct SamplePage {
     /// The Wave page's REC asks the arm for a pad take on this kit and pad,
     /// or to end the one running ([`SamplePage::take_rec_here`]).
     rec_here: Option<(usize, usize)>,
+    /// A finger came down on the recorder row's Keep card (one-page step
+    /// 2c): the screen keeps the last bars when it lifts, or opens Sample
+    /// Recall when it stays ([`SamplePage::take_keep_press`]).
+    keep_press: bool,
+    /// A take is ready, counting in or recording somewhere (the notes, a
+    /// loop, a pad take; the screen's `Player::take_waits`): the Keep
+    /// card waits.
+    take_waits: bool,
     /// Why the arm refused the Wave page's REC, and the seconds it is
     /// still said on the row.
     here_no: Option<(String, f32)>,
@@ -891,6 +903,8 @@ impl SamplePage {
             lines: Vec::new(),
             pad_said: std::collections::VecDeque::new(),
             rec_here: None,
+            keep_press: false,
+            take_waits: false,
             here_no: None,
             pad_run: None,
             told: Vec::new(),
@@ -3323,8 +3337,84 @@ impl SamplePage {
                 }
                 self.refresh_rec_state(ui);
             }
+            // The screen times the finger: a lift keeps, a hold opens
+            // Sample Recall. A faint card says why it keeps nothing.
+            RecorderAction::Keep => {
+                let k = self.keep_view();
+                if k.ready {
+                    self.keep_press = true;
+                } else {
+                    self.lines.push(format!("sample: nothing kept: {}", k.line));
+                    // Waiting for a take: Sample Recall's words.
+                    self.told.push(if k.line == KEEP_WAITS {
+                        crate::desk::KEEP_WAITS.to_string()
+                    } else {
+                        format!("{}: {}", k.title, k.line)
+                    });
+                }
+            }
         }
         self.feed_recorder(ui, 0.0);
+    }
+
+    /// Whether a take is ready, counting in or recording (the screen says
+    /// each tick): the Keep card waits for it, as Sample Recall does.
+    pub fn set_take_waits(&mut self, on: bool) {
+        self.take_waits = on;
+    }
+
+    /// Whether a finger came down on the Keep card since last asked (the
+    /// screen then keeps on the lift, or opens Sample Recall on a hold).
+    pub fn take_keep_press(&mut self) -> bool {
+        std::mem::take(&mut self.keep_press)
+    }
+
+    /// The Keep card now: what a tap keeps of what Sample Recall holds
+    /// (the last 4 bars while the music plays, fewer early on; the last
+    /// 10 s stopped), and where it goes (where Onto says, as REC's take
+    /// would), or why it keeps nothing now.
+    fn keep_view(&self) -> KeepView {
+        use mpfree_sampler_ui::recall::{Recall, OPEN_BARS, OPEN_SECONDS};
+        let Some(input) = self.recall.as_ref() else {
+            return KeepView::default();
+        };
+        let r = Recall::last(input, OPEN_BARS, OPEN_SECONDS, self.pad, self.pad, PADS);
+        let title = r.length.keep_text();
+        let lands = self.lands_now(self.kit);
+        let stays = self.rec_settings_now().onto == rec_tab::Onto::Stay;
+        let (line, ready) = if self.take.is_some() || self.pad_run.is_some() || self.take_waits {
+            (KEEP_WAITS.to_string(), false)
+        } else if r.bracket(input).is_none() {
+            ("nothing has played yet".to_string(), false)
+        } else if stays {
+            ("what just played, as a new take".to_string(), true)
+        } else if let Some(pad) = lands {
+            (
+                format!("what just played, onto {}", self.pad_text(self.kit, pad)),
+                true,
+            )
+        } else {
+            ("no empty pad in this bank".to_string(), false)
+        };
+        KeepView { title, line, ready }
+    }
+
+    /// The Keep card tapped (one-page step 2c): what Sample Recall holds
+    /// of the last bars (as [`Self::keep_view`] says) kept as a new take,
+    /// where Onto says: on the page (Stay here), or on the pad Next empty
+    /// or This pad finds. One undo step. Where it went ("the page", "A6"),
+    /// or why nothing was kept.
+    pub fn keep_last(&mut self, ui: &mut Ui) -> Result<String, String> {
+        use mpfree_sampler_ui::recall::{Recall, OPEN_BARS, OPEN_SECONDS};
+        let k = self.keep_view();
+        if !k.ready {
+            return Err(k.line);
+        }
+        let input = self.recall.as_ref().ok_or(KEEP_NOT_YET)?;
+        let lands = self.lands_now(self.kit);
+        let onto = lands.unwrap_or(self.pad);
+        let r = Recall::last(input, OPEN_BARS, OPEN_SECONDS, self.pad, onto, PADS);
+        self.keep_recall(ui, &r, lands)
     }
 
     /// What the recorder row shows now.
@@ -3353,26 +3443,25 @@ impl SamplePage {
                 Some(pad)
             }
         };
+        // REC's second line (one-page step 2c): where the take goes, and
+        // how long it has run or what it waits for.
         let onto = |kit: usize, at: Option<usize>| match at {
-            Some(pad) => format!("Onto {}", self.pad_text(kit, pad)),
-            None => "Stays here".to_string(),
+            Some(pad) => format!("onto {}", self.pad_text(kit, pad)),
+            None => "stays here".to_string(),
         };
         let status = match (take, started) {
             (Some(t), Some(at)) => {
                 let now = self.input.as_ref().map_or(at, Input::now);
                 let time = take_time(now.saturating_sub(at), self.rate);
-                match lands(t.kit, t.pad, t.chooses) {
-                    Some(pad) => format!("Recording onto {} · {time}", self.pad_text(t.kit, pad)),
-                    None => format!("Recording · {time} · stays here"),
-                }
+                format!("{time} · {}", onto(t.kit, lands(t.kit, t.pad, t.chooses)))
             }
             (Some(t), None) => format!(
                 "{} · {}",
-                onto(t.kit, lands(t.kit, t.pad, t.chooses)),
                 match settings.start {
-                    rec_tab::StartAt::NextBar => "waits for the bar line".to_string(),
-                    _ => format!("waits for {:.0} dB", settings.threshold_db),
-                }
+                    rec_tab::StartAt::NextBar => "for the bar line".to_string(),
+                    _ => format!("for {:.0} dB", settings.threshold_db),
+                },
+                onto(t.kit, lands(t.kit, t.pad, t.chooses)),
             ),
             // A held pad's take waits for PLAY (or the arm's answer).
             (None, _) if self.pad_run.is_some() || self.rec_here.is_some() => {
@@ -3381,12 +3470,12 @@ impl SamplePage {
                     .map(|r| (r.kit, r.pad, r.here))
                     .or(self.rec_here.map(|(k, p)| (k, p, true)))
                     .unwrap_or((self.kit, 0, false));
-                format!("{} · waits for PLAY", onto(kit, lands(kit, pad, here)))
+                format!("for PLAY · {}", onto(kit, lands(kit, pad, here)))
             }
             (None, _) => match (settings.onto, st.target) {
-                (rec_tab::Onto::Stay, _) => "Next take stays here".to_string(),
-                (_, Some(p)) => format!("Next take onto {}", self.pad_text(self.kit, p)),
-                (_, None) => "No pad for a take".to_string(),
+                (rec_tab::Onto::Stay, _) => "next take stays here".to_string(),
+                (_, Some(p)) => format!("next take onto {}", self.pad_text(self.kit, p)),
+                (_, None) => "no pad for a take".to_string(),
             },
         };
         let recording = take.is_some() || self.pad_run.is_some();
@@ -3397,6 +3486,7 @@ impl SamplePage {
             waiting: recording && started.is_none(),
             cannot,
             status,
+            keep: self.keep_view(),
         }
     }
 
@@ -3974,6 +4064,7 @@ impl SamplePage {
         };
         match i {
             _ if i.takes && i.pads > 0 => format!("Take onto {}", pads(i.pads)),
+            _ if i.takes && i.sources > 0 && i.tag == TAG_RECALL => "Recall take".to_string(),
             _ if i.takes && i.sources > 0 => "New take".to_string(),
             _ if i.takes => "Take".to_string(),
             _ if i.tag == TAG_RECALL => format!("Recall to {first}"),
@@ -5711,7 +5802,19 @@ impl SamplePage {
         ui: &mut Ui,
         r: &mpfree_sampler_ui::recall::Recall,
     ) -> Result<String, String> {
-        let input = self.recall.as_ref().ok_or("the master isn't kept yet")?;
+        self.keep_recall(ui, r, Some(r.onto))
+    }
+
+    /// [`Self::recall_keep`] onto pad `onto`, or as a take on the page
+    /// when None ("Recall take", one-page step 2c's Keep card). Where it
+    /// went ("A6", "the page"), or why it wasn't kept.
+    fn keep_recall(
+        &mut self,
+        ui: &mut Ui,
+        r: &mpfree_sampler_ui::recall::Recall,
+        onto: Option<usize>,
+    ) -> Result<String, String> {
+        let input = self.recall.as_ref().ok_or(KEEP_NOT_YET)?;
         let b = r
             .bracket(input)
             .ok_or("the bracket reaches past what is kept")?;
@@ -5728,7 +5831,7 @@ impl SamplePage {
         let edits = self.edits;
         let bpm = r.warps().then(|| self.tempo());
         let (warp, warped) = warp_at(bpm);
-        self.keep_as(ui, kit, r.onto, src, &what, &warped, |layer| {
+        let set = |layer: &mut Layer| {
             layer.region.warp = warp;
             if fade > 0 {
                 layer.region.fade_in = Fade {
@@ -5737,14 +5840,18 @@ impl SamplePage {
                 };
                 layer.region.fade_out = layer.region.fade_in;
             }
-        });
+        };
+        match onto {
+            Some(pad) => self.keep_as(ui, kit, pad, src, &what, &warped, set),
+            None => self.keep_take_as(ui, kit, src, &what, &warped, set),
+        }
         if self.edits == edits {
             return Err("not kept: the log says why".to_string());
         }
         if let Some(p) = self.projects.get_mut(kit) {
             p.tag_last(TAG_RECALL);
         }
-        Ok(self.pad_text(kit, r.onto))
+        Ok(onto.map_or_else(|| "the page".to_string(), |pad| self.pad_text(kit, pad)))
     }
 
     /// What the input records from, when the audio thread hasn't been told;
@@ -7182,6 +7289,22 @@ impl SamplePage {
     /// warped at `bpm` when given, one undo step; the Wave page shows it.
     fn keep_take(&mut self, ui: &mut Ui, kit: usize, src: Source, what: &str, bpm: Option<f64>) {
         let (warp, warped) = warp_at(bpm);
+        self.keep_take_as(ui, kit, src, what, &warped, |layer| {
+            layer.region.warp = warp
+        });
+    }
+
+    /// [`Self::keep_take`] with `set` changing the new layer first, and
+    /// `after` said after what was kept.
+    fn keep_take_as(
+        &mut self,
+        ui: &mut Ui,
+        kit: usize,
+        src: Source,
+        what: &str,
+        warped: &str,
+        set: impl FnOnce(&mut Layer),
+    ) {
         let (frames, rate, ch) = (src.frames(), src.rate(), src.channels());
         let Some(project) = self.projects.get_mut(kit) else {
             self.lines
@@ -7189,7 +7312,7 @@ impl SamplePage {
             return;
         };
         let made = project.add_take_of(src, |name, mut layer| {
-            layer.region.warp = warp;
+            set(&mut layer);
             crate::sampler::kit_pad_with(name, layer)
         });
         match made {
@@ -7481,6 +7604,31 @@ impl SamplePage {
 
 #[cfg(test)]
 mod tests {
+    /// REC's second line on the recorder row (one-page step 2c) holds
+    /// every reason REC can't start and every status, uncut, in the
+    /// built-in font.
+    #[test]
+    fn every_line_under_rec_fits_it() {
+        use mpfree_sampler_ui::recorder::REC_LINE_W;
+        use mpfree_ui::{FontId, Fonts};
+        let mut f = Fonts::embedded();
+        for line in [
+            super::RECORDER_OFF,
+            "No empty pad left in this bank",
+            "Wait for Flatten to finish",
+            "next take stays here",
+            "next take onto A16",
+            "no pad for a take",
+            "for the bar line · onto A16",
+            "for -60 dB · stays here",
+            "for PLAY · onto H16",
+            &format!("{} · onto H16", super::take_time(3_599 * 44_100, 44_100)),
+        ] {
+            let w = f.measure(FontId::Sans, 12.5, line);
+            assert!(w <= REC_LINE_W, "{line:?} is {w} px of {REC_LINE_W}");
+        }
+    }
+
     use super::*;
     use mpfree_sampler::phrase::Hit;
 

@@ -655,11 +655,16 @@ pub fn wave_sample(fonts: Fonts) -> Result<Sample, String> {
 }
 
 /// The recorder row as the app shows it with the line input on and pad
-/// A2 empty (one-page step 2a).
+/// A2 empty (one-page step 2a), the music playing (Keep, step 2c).
 fn recorder_idle() -> crate::recorder::RecorderView {
     crate::recorder::RecorderView {
         sources: vec!["Line in".into(), "Master".into()],
-        status: "Next take onto A2".into(),
+        status: "next take onto A2".into(),
+        keep: crate::recorder::KeepView {
+            title: "Keep last 4 bars".into(),
+            line: "what just played, onto A2".into(),
+            ready: true,
+        },
         ..Default::default()
     }
 }
@@ -1187,7 +1192,9 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let mut on = recorder_idle();
     on.settings.start = crate::rec_tab::StartAt::Threshold;
     on.recording = true;
-    on.status = "Recording onto A2 · 0:05.1".into();
+    on.status = "0:05.1 · onto A2".into();
+    on.keep.line = "finish the take first".into();
+    on.keep.ready = false;
     s.tab.set_recorder(&mut s.ui, on, &s.state.clone());
     s.tab.meter(&mut s.ui, [0.5, 0.4], 0.0);
     out.push(s);

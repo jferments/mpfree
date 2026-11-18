@@ -728,7 +728,7 @@ impl Drawbar {
     }
 
     pub fn presets() -> &'static [Preset] {
-        PRESETS
+        crate::factory::presets!("drawbar.presets", &INFO, PARAMS)
     }
 
     /// Keys held down.
