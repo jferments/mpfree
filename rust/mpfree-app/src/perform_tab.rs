@@ -92,6 +92,7 @@ const NAME: usize = 3;
 /// The buttons under the Pad list.
 const EDIT_FX: usize = 0;
 const HEAR: usize = 1;
+const LEARN: usize = 2;
 
 /// What a Perform FX pad's Length and Amount do for each effect, in
 /// `mpfree_fx::PERFORM_EFFECTS` order, as the Q-Links name them (Q1 and
@@ -702,7 +703,10 @@ impl PerformTab {
         ui.add(PICK_A, SectionChips::new(&[]));
         ui.add(PICK_B, SectionChips::new(&[]));
         ui.add(LIST, SettingList::new("Pad"));
-        ui.add(ACTS, ButtonRow::new(&["Edit the effect ›", "Hear it"]));
+        ui.add(
+            ACTS,
+            ButtonRow::new(&["Edit the effect ›", "Hear it", "Learn a key"]),
+        );
         ui.add_page(PAGE, LAYOUT)?;
         self.built = true;
         Ok(())
@@ -896,9 +900,14 @@ impl PerformTab {
                 }
                 _ => format!("{label} plays on Play and the Looper tab with the set on the pads"),
             };
-            b.labels = vec!["Edit the effect ›".to_string(), "Hear it".to_string()];
-            b.enabled = vec![throw.is_some(), throw.is_some()];
-            b.why = vec![why.clone(), why];
+            b.labels = vec![
+                "Edit the effect ›".to_string(),
+                "Hear it".to_string(),
+                "Learn a key".to_string(),
+            ];
+            // A key learned on an empty pad plays what the pad gets later.
+            b.enabled = vec![throw.is_some(), throw.is_some(), true];
+            b.why = vec![why.clone(), why, String::new()];
         }
         if let Some(c) = ui.get_mut::<SectionChips>(TYPE) {
             c.chips = Kind::ALL
@@ -1136,6 +1145,38 @@ impl PerformTab {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// Learn a key (board 7): MIDI Learn waits for a key, pad or pedal on
+    /// outside gear to play the picked pad, as SHIFT + a touch hands it
+    /// any value; again, while it waits, cancels.
+    fn learn(&self) -> Act {
+        use mpfree_play::mpfree_param::{perform, Owner, ParamAddr};
+        let id = perform::pad(self.page.min(PAGES - 1) as u8, self.pad.min(PADS - 1) as u8);
+        Act::Send(FromUi::LearnValue(crate::gui::LearnValue::Param(
+            ParamAddr::new(Owner::Perform, id),
+        )))
+    }
+
+    /// SHIFT + a touch on a pad of the map: the pad picked, and Learn a key
+    /// for it (it doesn't play). None for any other touch.
+    pub fn learn_touch(&mut self, ev: &UiEvent) -> Option<Vec<Act>> {
+        let k = match (ev.widget.as_str(), &ev.kind) {
+            (MAP, EventKind::Select(k))
+            | (
+                MAP,
+                EventKind::Pad {
+                    index: k,
+                    down: true,
+                },
+            ) => *k,
+            _ => return None,
+        };
+        if k >= PADS {
+            return None;
+        }
+        self.pad = k;
+        Some(vec![self.learn()])
     }
 
     /// Pad `pad` (0 is pad 1) hit on the hardware: picked.
@@ -1556,6 +1597,7 @@ impl PerformTab {
                 }
                 _ => Vec::new(),
             },
+            (ACTS, EventKind::Tab(LEARN)) => vec![self.learn()],
             (ACTS, EventKind::Select(i)) => ui
                 .get::<ButtonRow>(ACTS)
                 .and_then(|b| b.why_faint(*i))
@@ -2243,5 +2285,75 @@ mod tests {
             },
         );
         assert!(tab.event(&mut ui, &tap(HEAR), &n).is_empty());
+    }
+
+    /// Learn a key hands the picked pad to MIDI Learn, on any kind of pad
+    /// (an empty one too: the key plays what it gets later); SHIFT + a
+    /// pad on the map picks that pad and hands it over without playing
+    /// it, and any other touch is the view's own.
+    #[test]
+    fn learn_a_key_hands_the_picked_pad_to_midi_learn() {
+        use mpfree_play::mpfree_param::{perform, Owner, ParamAddr};
+        let n = names();
+        let (mut tab, _) = delay_on_drums();
+        let mut ui = Ui::new(
+            mpfree_ui::Theme::dark(),
+            mpfree_ui::Fonts::embedded(),
+            1280,
+            800,
+        );
+        // The row alone (the page's frame is the GUI's).
+        ui.add(ACTS, ButtonRow::new(&["", "", ""]));
+        tab.show(&mut ui, &n);
+        let learn = |page, pad| {
+            vec![Act::Send(FromUi::LearnValue(
+                crate::gui::LearnValue::Param(ParamAddr::new(
+                    Owner::Perform,
+                    perform::pad(page, pad),
+                )),
+            ))]
+        };
+        let tap = UiEvent {
+            widget: ACTS.into(),
+            kind: EventKind::Tab(LEARN),
+        };
+        assert_eq!(tab.event(&mut ui, &tap, &n), learn(1, 0));
+        assert_eq!(
+            ui.get::<ButtonRow>(ACTS).map(|b| b.enabled.clone()),
+            Some(vec![true, true, true])
+        );
+        tab.pad = 14;
+        tab.show(&mut ui, &n);
+        assert_eq!(
+            ui.get::<ButtonRow>(ACTS).map(|b| b.enabled.clone()),
+            Some(vec![false, false, true]),
+            "an empty pad: learn, but nothing to edit or hear"
+        );
+        assert_eq!(tab.event(&mut ui, &tap, &n), learn(1, 14));
+        // SHIFT + a pad: picked and handed over, never played.
+        let touch = |kind| UiEvent {
+            widget: MAP.into(),
+            kind,
+        };
+        assert_eq!(
+            tab.learn_touch(&touch(EventKind::Select(5))),
+            Some(learn(1, 5))
+        );
+        assert_eq!(tab.pad, 5);
+        assert_eq!(
+            tab.learn_touch(&touch(EventKind::Pad {
+                index: 5,
+                down: true
+            })),
+            Some(learn(1, 5))
+        );
+        assert_eq!(
+            tab.learn_touch(&touch(EventKind::Pad {
+                index: 5,
+                down: false
+            })),
+            None
+        );
+        assert_eq!(tab.learn_touch(&touch(EventKind::Tab(2))), None, "a page");
     }
 }

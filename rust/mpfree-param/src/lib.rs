@@ -120,6 +120,12 @@ pub enum Owner {
     /// presses Undo, Redo, Capture or Clear. Its parameter ids are in
     /// [`looper`]. Locks, macros and the mod matrix never target it.
     Looper,
+    /// The project's Perform pads, for MIDI Learn's remote control (the
+    /// Play, Pads and Sequencer redesign's board 7, Learn a key): a
+    /// learned key, pad or footswitch plays one Perform pad as its pad
+    /// does, whatever the MPC's pads show. Its parameter ids are in
+    /// [`perform`]. Locks, macros and the mod matrix never target it.
+    Perform,
 }
 
 /// [`Owner::Midi`]'s parameters: a track's controllers, pitch bend and
@@ -403,6 +409,33 @@ pub mod looper {
     }
 }
 
+/// [`Owner::Perform`]'s parameters: one per Perform pad, page A's pad 1
+/// first. The numbers are fixed and never renumbered: a rig keeps its
+/// learned keys by them.
+pub mod perform {
+    /// The Perform set's pages (A to H).
+    pub const PAGES: u8 = 8;
+    /// The pads on a page.
+    pub const PADS: u8 = 16;
+
+    /// Page `page`'s pad `pad` (0 is page A, pad 1).
+    pub const fn pad(page: u8, pad: u8) -> u16 {
+        page as u16 * PADS as u16 + pad as u16
+    }
+
+    /// The page and the pad parameter `id` plays, if it is one.
+    pub fn of(id: u16) -> Option<(u8, u8)> {
+        let (page, pad) = (id / u16::from(PADS), id % u16::from(PADS));
+        (page < u16::from(PAGES)).then_some((page as u8, pad as u8))
+    }
+
+    /// The pad's name, as the Perform view labels it: "B2".
+    pub fn name(id: u16) -> Option<String> {
+        let (page, pad) = of(id)?;
+        Some(format!("{}{}", (b'A' + page) as char, u16::from(pad) + 1))
+    }
+}
+
 /// [`Owner::Transport`]'s parameters.
 pub mod transport {
     /// PLAY and STOP on one button: on plays (as PLAY), off stops (as
@@ -653,6 +686,7 @@ impl fmt::Display for Owner {
             Owner::Transport => f.write_str("transport"),
             Owner::Clips => f.write_str("clips"),
             Owner::Looper => f.write_str("looper"),
+            Owner::Perform => f.write_str("perform"),
             o => {
                 let (t, on) = o.split().expect("every other owner is on a track");
                 write!(f, "t{t}.{on}")
@@ -736,6 +770,7 @@ fn owner(words: &[&str]) -> Option<Owner> {
         ["transport"] => Some(Owner::Transport),
         ["clips"] => Some(Owner::Clips),
         ["looper"] => Some(Owner::Looper),
+        ["perform"] => Some(Owner::Perform),
         [w] => num(w, "macro")
             .map(Owner::Macro)
             .or_else(|| num(w, "mod").map(Owner::Mod))
@@ -812,6 +847,7 @@ mod tests {
             Owner::Transport,
             Owner::Clips,
             Owner::Looper,
+            Owner::Perform,
         ];
         for s in strips {
             v.push(Owner::Strip(s));
@@ -864,6 +900,10 @@ mod tests {
             (ParamAddr::new(Owner::Clips, clips::scene(2)), "clips.258"),
             (ParamAddr::new(Owner::Looper, looper::key(2)), "looper.258"),
             (ParamAddr::new(Owner::Looper, looper::CLEAR), "looper.6"),
+            (
+                ParamAddr::new(Owner::Perform, perform::pad(1, 1)),
+                "perform.17",
+            ),
         ];
         for (a, s) in cases {
             assert_eq!(a.to_string(), s);
@@ -972,6 +1012,27 @@ mod tests {
         );
         assert_eq!(looper::name(looper::mute(0)).unwrap(), "Loop 1 mute");
         assert_eq!(looper::name(looper::NEXT_LOOP).unwrap(), "Next loop");
+    }
+
+    /// The Perform pads' ids are fixed numbers (a rig keeps its learned
+    /// keys by them): page A's pad 1 is 0, page H's pad 16 is 127, each
+    /// reads back to its page and pad, and nothing past them is one.
+    #[test]
+    fn the_perform_pads_ids_are_fixed_and_each_names_its_pad() {
+        assert_eq!(perform::pad(0, 0), 0);
+        assert_eq!(perform::pad(1, 1), 17);
+        assert_eq!(perform::pad(7, 15), 127);
+        let mut names = std::collections::HashSet::new();
+        for page in 0..perform::PAGES {
+            for pad in 0..perform::PADS {
+                let id = perform::pad(page, pad);
+                assert_eq!(perform::of(id), Some((page, pad)));
+                assert!(names.insert(perform::name(id).unwrap()), "{id}");
+            }
+        }
+        assert_eq!(perform::of(128), None);
+        assert_eq!(perform::name(perform::pad(1, 1)).as_deref(), Some("B2"));
+        assert_eq!(perform::name(perform::pad(7, 15)).as_deref(), Some("H16"));
     }
 
     /// A track's MIDI out controls: controllers 0-119 by their own number,

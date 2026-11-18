@@ -216,6 +216,10 @@ fn learning_hint(name: &str) -> String {
     )
 }
 
+/// SHIFT held on the Pads tab's Perform view (board 7's Learn a key).
+const SHIFT_PERFORM_HINT: &str = "SHIFT + a pad: learn a key on your gear for it   ·   \
+     SHIFT + wheel: pick a pad   ·   SHIFT + UNDO: redo";
+
 /// SHIFT held on Arrange's Clips grid (sequencer S5: a tap learns).
 const SHIFT_CLIPS_HINT: &str =
     "SHIFT +   tap a clip, a scene or a track's name: MIDI Learn   ·   drag a clip: copy   ·   \
@@ -5390,6 +5394,8 @@ impl Player {
             SHIFT_SYNTH_HINT.to_string()
         } else if self.status.shift && self.ready && self.clips_showing() {
             SHIFT_CLIPS_HINT.to_string()
+        } else if self.status.shift && self.ready && self.perform_showing() {
+            SHIFT_PERFORM_HINT.to_string()
         } else if self.status.shift && self.ready && self.view == View::Sample {
             SHIFT_SAMPLE_HINT.to_string()
         } else if self.status.shift && self.ready && self.status.steps.is_some_and(|s| !s.picking) {
@@ -10644,6 +10650,14 @@ impl Player {
             };
         }
         if ev.widget.starts_with(crate::perform_tab::PREFIX) {
+            // SHIFT + a pad: Learn a key for it (layout spec 4d's SHIFT +
+            // a touch).
+            if self.status.shift {
+                if let Some(acts) = self.perform.learn_touch(&ev) {
+                    self.perform_acts(acts);
+                    return None;
+                }
+            }
             let names = self.perform_names();
             let acts = self.perform.event(&mut self.ui, &ev, &names);
             self.perform_acts(acts);
@@ -28425,6 +28439,64 @@ mod tests {
         assert_eq!(p.kits[0].tags[10], None);
         p.apply(ToUi::Show(View::Play));
         assert_eq!(lane(&p), Some((true, None)));
+    }
+
+    /// Learn a key on the Perform view: SHIFT held says what SHIFT + a
+    /// pad does; SHIFT + a tap on a pad picks it and hands it to MIDI
+    /// Learn without playing it; the hint names the pad while Learn waits;
+    /// and the Learn a key button hands the picked pad over too.
+    #[test]
+    fn shift_and_a_perform_pad_or_learn_a_key_hand_the_pad_to_midi_learn() {
+        use crate::perform_pads::PerformSet;
+        use crate::perform_tab;
+        use mpfree_play::mpfree_param::{perform, Owner, ParamAddr};
+        use mpfree_sampler_ui::pads_tab;
+        let mut p = sample_sampler(Fonts::embedded());
+        open_pads(&mut p);
+        sample_kit_tracks(&mut p);
+        p.apply(ToUi::PerformSet {
+            set: Box::new(PerformSet::default()),
+            opened: true,
+        });
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        ev(&mut p, pads_tab::KITS, EventKind::Tab(1));
+        // PAD BANK B on the app: page B.
+        let mut st = p.status.clone();
+        st.perform_bank = 1;
+        p.apply(ToUi::Status(st));
+        let _ = p.take_actions();
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let learn = |page, pad| {
+            FromUi::LearnValue(LearnValue::Param(ParamAddr::new(
+                Owner::Perform,
+                perform::pad(page, pad),
+            )))
+        };
+        p.status.shift = true;
+        p.refresh_hint();
+        assert!(
+            hint(&p).starts_with("SHIFT + a pad: learn a key"),
+            "{}",
+            hint(&p)
+        );
+        ev(&mut p, perform_tab::MAP, EventKind::Select(1));
+        assert_eq!(p.take_actions(), [learn(1, 1)], "picked, not played");
+        p.apply(ToUi::Learning(Some("Perform pads B2".into())));
+        assert!(
+            hint(&p).starts_with("LEARNING   Perform pads B2: move a knob, a key or a pedal"),
+            "{}",
+            hint(&p)
+        );
+        p.apply(ToUi::Learning(None));
+        p.status.shift = false;
+        p.refresh_hint();
+        ev(&mut p, perform_tab::ACTS, EventKind::Tab(2));
+        assert_eq!(p.take_actions(), [learn(1, 1)]);
     }
 
     /// The Pads tab's Perform view (board 7): the Pads of row's Perform
