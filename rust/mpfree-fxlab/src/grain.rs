@@ -76,6 +76,13 @@
 //!   position: the loudness against the default cloud's there. A
 //!   stutter's grains fill half of each sixteenth, with their fades, so
 //!   it sits about 4 LU down.
+//! - **G15, feedback can't run away (step C1):** the Grains effect
+//!   (`GrainFx`, 2 s of memory, fully wet, reading half way back) on 4 s
+//!   of pink at -14 dBFS RMS (peaks near full scale), then 16 s of
+//!   silence, at full feedback: its
+//!   sample peak, and how far its level rises from seconds 8-12 to 16-20
+//!   (none, if the loop holds). Half feedback: how fast the trail falls,
+//!   dB a second over seconds 6 to 16, shown.
 //!
 //! Cost is the bench's (`mpfree-bench`'s "Sampler grains (per grain)"
 //! scaling case, on CI by the instruction gate and on the MPC in the
@@ -83,8 +90,8 @@
 //! engine"); plan: mpfree-claude `sampler/granular/plan.md`.
 
 use mpfree_grain::{
-    Budget, GrainEnv, GrainLfo, GrainVoice, LfoShape, MotionTarget, Params, SprayShape, Stats,
-    Window,
+    Budget, GrainEnv, GrainFx, GrainLfo, GrainVoice, LfoShape, MotionTarget, Params, SprayShape,
+    Stats, Window,
 };
 use mpfree_sampler::bandlimit::Octaves;
 use mpfree_sampler::grain_clip::GrainClip;
@@ -125,6 +132,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     hits(&mut rows, &lab);
     movement(&mut rows, &lab);
     presets(&mut rows, &lab);
+    feedback(&mut rows, &lab);
     rows
 }
 
@@ -1221,4 +1229,80 @@ fn presets(rows: &mut Vec<Row>, lab: &Lab) {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// G15: the Grains effect's feedback (step C1).
+
+/// 4 s of `src` scaled by `gain`, then silence, `secs` in all, through a
+/// fully wet Grains effect with `feedback`.
+fn fed_back(src: &[f32], rate: u32, gain: f32, feedback: f32, secs: usize) -> Stereo {
+    let mut fx = GrainFx::new(rate, 2.0, 15).expect("a lab effect");
+    fx.set_params(Params {
+        position: 0.5,
+        spray: 0.1,
+        ..Params::default()
+    });
+    fx.set_mix(1.0);
+    fx.set_feedback(feedback);
+    let mut budget = Budget::new(64);
+    let n = secs * rate as usize;
+    let k = (4 * rate as usize).min(src.len());
+    let mut l = vec![0.0f32; n];
+    l[..k].iter_mut().zip(src).for_each(|(o, x)| *o = x * gain);
+    let mut r = l.clone();
+    for s in (0..n).step_by(128) {
+        let e = (s + 128).min(n);
+        fx.process(&mut budget, s as u64, &mut l[s..e], &mut r[s..e]);
+    }
+    let f = |x: Vec<f32>| x.into_iter().map(f64::from).collect::<Vec<f64>>();
+    Stereo::new(f(l), f(r), rate)
+}
+
+fn feedback(rows: &mut Vec<Row>, lab: &Lab) {
+    let rate = lab.rate as usize;
+    // The lab's pink is -20 dBFS RMS: twice is -14, peaking near 0 dBFS.
+    let full = fed_back(&lab.pink, lab.rate, 2.0, 1.0, 20);
+    let level = |s: &Stereo, a: usize, b: usize| db(rms(&s.left[a * rate..b * rate]));
+    put(
+        rows,
+        "G15",
+        "feedback[pink -14 dBFS, full]".into(),
+        "peak_dbfs",
+        loudness::sample_peak(&full),
+        Better::Lower,
+        Some(3.0),
+        0.1,
+    );
+    put(
+        rows,
+        "G15",
+        "feedback[pink -14 dBFS, full]".into(),
+        "growth_db",
+        level(&full, 16, 20) - level(&full, 8, 12),
+        Better::Lower,
+        Some(1.0),
+        0.3,
+    );
+    put(
+        rows,
+        "G15",
+        "feedback[pink -14 dBFS, full]".into(),
+        "held_dbfs",
+        level(&full, 16, 20),
+        Better::Info,
+        None,
+        0.0,
+    );
+    let half = fed_back(&lab.pink, lab.rate, 2.0, 0.5, 16);
+    put(
+        rows,
+        "G15",
+        "feedback[pink -14 dBFS, half]".into(),
+        "fall_db_per_s",
+        (level(&half, 5, 7) - level(&half, 14, 16)) / 9.0,
+        Better::Info,
+        None,
+        0.0,
+    );
 }

@@ -52,6 +52,7 @@ fn run(
             match changes[next].1 {
                 Change::Mix(m) => fx.set_mix(m),
                 Change::Freeze(on) => fx.set_frozen(on),
+                Change::Feedback(f) => fx.set_feedback(f),
             }
             next += 1;
         }
@@ -70,6 +71,27 @@ fn run(
 enum Change {
     Mix(f32),
     Freeze(bool),
+    Feedback(f32),
+}
+
+/// A second of 440 Hz then `secs` of silence through a full-wet cloud
+/// reading a second back, with `feedback`, in blocks of `block`: left.
+fn trails(feedback: f32, secs: usize, block: usize) -> Vec<f32> {
+    let mut input = sine(RATE as usize, 440.0, 0.5);
+    input.resize(RATE as usize * (1 + secs), 0.0);
+    let mut fx = GrainFx::new(RATE, 2.0, 3).unwrap();
+    fx.set_params(Params {
+        position: 0.5,
+        ..cloud()
+    });
+    let mut budget = Budget::new(64);
+    let changes = [(0, Change::Mix(1.0)), (0, Change::Feedback(feedback))];
+    run(&mut fx, &mut budget, &input, block, &changes).0
+}
+
+/// RMS of second `k` of `x`.
+fn second(x: &[f32], k: usize) -> f32 {
+    rms(&x[k * RATE as usize..(k + 1) * RATE as usize])
 }
 
 #[test]
@@ -133,6 +155,62 @@ fn freeze_keeps_the_sound_after_the_input_stops() {
     // And it is still the 440 Hz tone (880 crossings a second).
     let c = crossings(&held) as f32;
     assert!((c / 880.0 - 1.0).abs() < 0.05, "{c} crossings");
+}
+
+#[test]
+fn feedback_plays_the_grains_again_and_dies_away_below_full() {
+    let none = trails(0.0, 9, 128);
+    let half = trails(0.5, 9, 128);
+    // Without feedback the cloud has played the tone through by second 3.
+    assert!(second(&none, 3) < 1e-4, "{}", second(&none, 3));
+    // With it the tone comes round again, a little quieter each time.
+    let levels: Vec<f32> = (2..9).map(|k| second(&half, k)).collect();
+    assert!(levels[0] > 0.05, "{levels:?}");
+    assert!(levels[6] < 0.5 * levels[0], "it dies away: {levels:?}");
+    assert!(levels.iter().all(|x| x.is_finite() && *x > 0.0));
+    // At 0 the effect is exactly as it was (the same as not setting it).
+    let mut fx = GrainFx::new(RATE, 2.0, 3).unwrap();
+    fx.set_params(Params {
+        position: 0.5,
+        ..cloud()
+    });
+    let mut input = sine(RATE as usize, 440.0, 0.5);
+    input.resize(RATE as usize * 10, 0.0);
+    let plain = run(
+        &mut fx,
+        &mut Budget::new(64),
+        &input,
+        128,
+        &[(0, Change::Mix(1.0))],
+    )
+    .0;
+    assert_eq!(plain, none);
+}
+
+#[test]
+fn full_feedback_keeps_the_cloud_going_and_never_runs_away() {
+    // Loud input and full feedback: the trail keeps going, bounded.
+    let full = trails(1.0, 19, 128);
+    let late: Vec<f32> = (10..20).map(|k| second(&full, k)).collect();
+    assert!(late.iter().all(|x| *x > 0.02), "it keeps going: {late:?}");
+    let peak = full.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+    assert!(peak.is_finite() && peak < 2.0, "peak {peak}");
+    // No growth over its last ten seconds.
+    assert!(late[9] < 1.5 * late[0], "{late:?}");
+}
+
+#[test]
+fn feedback_is_the_same_at_any_period_size() {
+    let a = trails(0.7, 3, 128);
+    for block in [1, 64, 333, 4096] {
+        let b = trails(0.7, 3, block);
+        let worst = a
+            .iter()
+            .zip(&b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0, f32::max);
+        assert!(worst < 1e-4, "block {block}: {worst}");
+    }
 }
 
 #[test]
