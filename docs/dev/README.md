@@ -154,6 +154,14 @@ M4 was host-only safety tooling and the [handoff state-machine simulator](../../
 - [Tonewheel organs and rotary speakers: what the research says](research/tonewheel-organ.md): tonewheel generator, drawbars, click, percussion, scanner vibrato and the rotating speaker from papers, measurements and service documentation, and what the Drawbar engine takes from them (2026-11-14).
 - [Acid bass: what the circuit analyses say](research/acid-bass.md): the mono acid bass's oscillator, diode ladder filter, envelopes, accent and slide from circuit analyses, service notes and theses, what the Squelch engine takes from them, and open-source emulations to learn from (2026-11-14).
 - [Vintage analog polysynths: what the research says](research/vintage-poly.md): voice cards that differ and drift, the oscillator and envelope chips, poly-mod, the OTA four-pole and two-pole filters and the bucket-brigade chorus from datasheets, papers and makers' notes, and what the Analog engine takes from them (2026-11-14).
+- [Synth library: topics every type shares](research/synth-topics.md): voices and the shared synth budget, a shared voice core, anti-aliasing, analog character, expression and its gaps (no sustain pedal or breath yet), effects in presets, macros, preset craft and how quality will be judged; the index to the type pages below (2026-11-18).
+- [Bass and the 808: what makes a great one](research/bass.md): the 808 bass drum circuit, mono bass oscillators, filters, glide and note priority, measures B1 to B11, knobs, a preset canon and pitfalls (2026-11-18).
+- [Keys: electric piano, clav, electric grand and piano](research/keys.md): velocity that changes tone, the clav's waveguide string and pickups, the piano's inharmonic strings, the sustain pedal, measures K1 to K10 (2026-11-18).
+- [String machines and ensemble pads](research/string-machine.md): divide-down banks, registers, the three- and four-line ensemble with its LFO rates and phases, measures S1 to S9 (2026-11-18).
+- [Poly and wavetable synths](research/poly-synth.md): band-limited oscillators, the supersaw's detune curve and phases, wavetable mips and integrated tables, macros, measures P1 to P11 (2026-11-18).
+- [FM synths](research/fm.md): ratios and the index, Chowning's instrument recipes, the DX7's chip, an approachable macro layer, measures F1 to F10 (2026-11-18).
+- [Organs, winds, choirs and tape](research/organ-wind-choir.md): combo and pipe organs, waveguide winds and breath, formant choirs, tape-replay character, measures O1 to O10 (2026-11-18).
+- [Drum synths](research/drums.md): a few chosen knobs per drum, processing as part of the drum, the 808 cymbal's oscillator bank, the 909's hybrid, measures D1 to D10 (2026-11-18).
 
 - [RK3288 BootROM, p1 ID block and reset modes](research/bootrom.md): offline reverse engineering of the boot ROM and the first eMMC stage (2026-11-10).
 
