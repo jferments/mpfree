@@ -73,11 +73,6 @@ pub enum Pick {
     /// Projects. Opening one replaces the work in progress, so it asks
     /// first when that has changed since it was last saved.
     Project,
-    /// The Pads tab's browser beside the pad bank (the owner's pick, 12 Nov
-    /// 2026): sounds, as [`Pick::Sample`], but it stays open. Load hands
-    /// the file over for the pad picked ([`BrowseAction::LoadSample`]),
-    /// Load to pad for the next pad hit ([`BrowseAction::LoadToPad`]).
-    Pads,
 }
 
 impl Pick {
@@ -86,9 +81,6 @@ impl Pick {
         let places: &[Place] = match self {
             Pick::Preset { .. } => &[Place::Instruments],
             Pick::Sample => &[Place::Samples, Place::Recordings],
-            // The Pads tab's picker loads whole kits too, and saves the
-            // kit the pads play (Save kit, in Kits).
-            Pick::Pads => &[Place::Samples, Place::Kits, Place::Recordings],
             Pick::Project => &[Place::Projects],
         };
         SOURCES
@@ -109,7 +101,7 @@ impl Pick {
             Pick::Preset { engine } => Loc::top(Place::Instruments)
                 .join(engine)
                 .unwrap_or_else(|_| Loc::top(Place::Instruments)),
-            Pick::Sample | Pick::Pads => Loc::top(Place::Samples),
+            Pick::Sample => Loc::top(Place::Samples),
             Pick::Project => Loc::top(Place::Projects),
         }
     }
@@ -120,7 +112,6 @@ impl Pick {
             Pick::Preset { engine } if !engine.is_empty() => format!("{engine} presets"),
             Pick::Preset { .. } => "Presets".into(),
             Pick::Sample => "Load a sound".into(),
-            Pick::Pads => "Sounds".into(),
             Pick::Project => "Open a project".into(),
         }
     }
@@ -138,37 +129,15 @@ impl Pick {
                 matches!(r.kind, Kind::Folder | Kind::Audio(_))
                     && matches!(loc.place, Place::Samples | Place::Recordings)
             }
-            Pick::Pads => {
-                matches!(r.kind, Kind::Folder | Kind::Audio(_) | Kind::Kit)
-                    && matches!(loc.place, Place::Samples | Place::Kits | Place::Recordings)
-            }
             Pick::Project => r.kind == Kind::Project,
         }
     }
 
     fn allows(&self, b: Button) -> bool {
-        match self {
-            // It stays open: nothing to cancel, and both loads.
-            Pick::Pads => matches!(
-                b,
-                Button::Load
-                    | Button::LoadToPad
-                    | Button::Open
-                    | Button::Audition
-                    | Button::Favourite
-                    | Button::SaveKit
-            ),
-            _ => matches!(
-                b,
-                Button::Load | Button::Open | Button::Audition | Button::Favourite | Button::Cancel
-            ),
-        }
-    }
-
-    /// Whether loading something closes it (every picker but the Pads
-    /// tab's).
-    fn closes_on_load(&self) -> bool {
-        *self != Pick::Pads
+        matches!(
+            b,
+            Button::Load | Button::Open | Button::Audition | Button::Favourite | Button::Cancel
+        )
     }
 }
 
@@ -544,6 +513,9 @@ pub struct Screen {
     pub export: Option<ExportPanel>,
     /// The Plugins place, while it is the place shown.
     pub plugins: Option<PluginsScreen>,
+    /// The pad Load puts a sound on (`"A5"`, the pad picked), named on
+    /// the button: Load on A5.
+    pub load_on: Option<String>,
 }
 
 impl Screen {
@@ -571,6 +543,7 @@ impl Screen {
             sort: Sort::Name,
             export: None,
             plugins: None,
+            load_on: None,
         }
     }
 }
@@ -672,6 +645,8 @@ pub struct Browser {
     /// The sounds MPFree has put in the library, by their version
     /// (`bundled = ...` in the lists): the app adds them once.
     bundled: Option<String>,
+    /// The pad Load puts a sound on, as the app last gave it.
+    pad_target: Option<String>,
 }
 
 impl Browser {
@@ -729,6 +704,7 @@ impl Browser {
             plugin_rows: 8,
             kit_into: None,
             bundled: None,
+            pad_target: None,
         };
         b.refresh();
         b
@@ -936,9 +912,10 @@ impl Browser {
                 self.unsaved = false;
                 self.remember(loc.clone());
                 self.actions.push(BrowseAction::ProjectOpened { loc, snap });
-                // Opened at start (Prefs > At start), the Pads tab's
-                // picker stays where it is.
-                if self.pick.is_some() && !std::mem::take(&mut self.opening_last) {
+                // Opened at start (Prefs > At start), a picker opened
+                // meanwhile stays where it is.
+                let at_start = std::mem::take(&mut self.opening_last);
+                if self.pick.is_some() && !at_start {
                     self.close_pick(true);
                 }
             }
@@ -1826,13 +1803,15 @@ impl Browser {
                                 format!("Loading the kit {}", r.name)
                             } else if to_pad {
                                 format!("{}: hit a pad to put it there", r.name)
+                            } else if let Some(pad) = &self.pad_target {
+                                format!("Loaded {} on {pad}", r.name)
                             } else {
                                 format!("Loaded {}", r.name)
                             },
                             false,
                         ));
                         self.remember(loc);
-                        if self.pick.as_ref().is_some_and(Pick::closes_on_load) {
+                        if self.pick.is_some() {
                             self.close_pick(true);
                         }
                     }
@@ -2099,7 +2078,7 @@ impl Browser {
     }
 
     /// Opens the last project (Prefs > At start), as the Projects list
-    /// would, without closing the Pads tab's picker. False when there is
+    /// would, without closing a picker opened meanwhile. False when there is
     /// none. It comes as [`BrowseAction::ProjectOpened`], or
     /// [`BrowseAction::LastNotOpened`] if the library can't open it.
     pub fn open_last(&mut self) -> bool {
@@ -2409,14 +2388,6 @@ impl Browser {
             filter: self.filter,
             detail: self.detail(),
             list_buttons: match src {
-                // The Pads tab's stays open: nothing to cancel. In Kits it
-                // saves the kit the pads play.
-                Source::Place(Place::Kits)
-                    if self.pick == Some(Pick::Pads) && self.mode == Mode::Folder =>
-                {
-                    vec![Button::SaveKit]
-                }
-                _ if self.pick == Some(Pick::Pads) => Vec::new(),
                 _ if self.pick.is_some() => vec![Button::Cancel],
                 // Nothing to make or paste in a search or a project's saves.
                 _ if self.mode != Mode::Folder => Vec::new(),
@@ -2465,7 +2436,15 @@ impl Browser {
             sort: self.sort,
             export: self.export.clone().filter(|_| self.pick.is_none()),
             plugins: self.plugins_shown().then(|| self.plugins.clone()),
+            load_on: self.pad_target.clone(),
         }
+    }
+
+    /// The pad Load puts a sound on (`"A5"`: the pad picked, which a pad
+    /// hit changes), so the button says where it goes: Load on A5. None
+    /// says plain Load.
+    pub fn set_pad_target(&mut self, pad: Option<String>) {
+        self.pad_target = pad;
     }
 
     fn detail(&self) -> Detail {

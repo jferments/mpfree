@@ -70,8 +70,12 @@ fn the_map_shows_the_banks_pads_and_the_list_the_kits_sounds() {
         bar.subtitle,
         "6 of 16 pads with a sound · 3 sounds in the kit"
     );
-    assert_eq!(bar.tabs, ["Browse", "Pad"]);
-    assert_eq!(bar.active, pads_tab::PAD_VIEW);
+    // No Browse | Pad switch: a button that opens the browser for A5.
+    assert!(bar.tabs.is_empty());
+    assert_eq!(bar.button.as_deref(), Some("Browse for A5"));
+    assert!(bar
+        .button_rect(s.ui.rect_of(pads_tab::BAR).unwrap())
+        .is_some());
     let map = s.ui.get::<PadMap>(pads_tab::MAP).unwrap();
     assert_eq!(map.title, "Kit 1 · Breaks");
     let names: Vec<&str> = map.cells.iter().take(9).map(|c| c.name.as_str()).collect();
@@ -145,6 +149,33 @@ fn the_map_shows_the_banks_pads_and_the_list_the_kits_sounds() {
         b.enabled,
         vec![true, false, true, true],
         "nothing copied yet; the bank has sounds to map to keys"
+    );
+}
+
+#[test]
+fn browse_for_asks_for_the_browser_and_follows_the_pad_picked() {
+    let mut s = pads(PAD);
+    // A touch on the button gives Tab(0), which asks for the browser.
+    let r = s.ui.rect_of(pads_tab::BAR).unwrap();
+    let b =
+        s.ui.get::<PadBar>(pads_tab::BAR)
+            .unwrap()
+            .button_rect(r)
+            .unwrap();
+    let bar = s.ui.get_mut::<PadBar>(pads_tab::BAR).unwrap();
+    assert_eq!(
+        mpfree_ui::Widget::touch(bar, 1, Touch::Down, b.x + 10, b.y + 10, r),
+        Some(EventKind::Tab(0))
+    );
+    assert_eq!(
+        act(&mut s, pads_tab::BAR, EventKind::Tab(0)),
+        Some(PadsAction::Browse)
+    );
+    // Another pad picked: the button names it.
+    pick(&mut s, 1);
+    assert_eq!(
+        s.ui.get::<PadBar>(pads_tab::BAR).unwrap().button.as_deref(),
+        Some("Browse for A2")
     );
 }
 

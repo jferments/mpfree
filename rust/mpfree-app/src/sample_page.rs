@@ -113,13 +113,8 @@ pub const PAGE: &str = "Sample";
 pub const CHOP_PAGE: &str = "Sample · Chop";
 /// The Play tab's page.
 pub const PLAY_PAGE: &str = "Sample · Play";
-/// The Pads tab's Pad view: the pad's settings and the kit's sounds.
+/// The Pads tab: the pads, the pad's settings and the kit's sounds.
 pub const PADS_PAGE: &str = "Pads · Pad";
-/// The Pads tab's Browse view: the browser beside the pads.
-pub const PADS_BROWSE_PAGE: &str = "Pads · Browse";
-/// The card the Browse view shows beside the pads while there is no
-/// library (the app runs without a data folder).
-pub const NO_LIBRARY: &str = "pads-no-library";
 /// The Grain tab's page.
 pub const GRAIN_PAGE: &str = "Sample · Grain";
 /// The Rec tab's page.
@@ -520,11 +515,6 @@ pub struct SamplePage {
     editor: Editor,
     /// The Sample tab's editor, kept while the Pads tab shows.
     sample_editor: Editor,
-    /// The widget beside the pads on the Browse view: the browser, or
-    /// [`NO_LIBRARY`].
-    browse_with: &'static str,
-    /// The Pads tab's view (of `pads_tab::VIEWS`; Browse at first).
-    pads_view: usize,
     /// The Chop tab, added the first time it is opened.
     chop: Option<ChopTab>,
     chop_state: Option<ChopState>,
@@ -685,17 +675,6 @@ impl SamplePage {
     pub fn add(ui: &mut Ui) -> Result<SamplePage, String> {
         ui.add(EMPTY, Card::new("Sample"));
         ui.add_page(EMPTY_PAGE, EMPTY_LAYOUT)?;
-        let mut none = Card::new("No library on this run");
-        none.lines = [
-            "The browser needs the data folder: the app starts with --data",
-            "(the test stick's partition 4).",
-            "",
-            "The Pad view (top right) works without it.",
-        ]
-        .into_iter()
-        .map(|l| (l.to_string(), Tone::Dim))
-        .collect();
-        ui.add(NO_LIBRARY, none);
         let mut p = SamplePage {
             projects: Vec::new(),
             names: Vec::new(),
@@ -708,8 +687,6 @@ impl SamplePage {
             state: None,
             editor: Editor::Wave,
             sample_editor: Editor::Wave,
-            browse_with: NO_LIBRARY,
-            pads_view: pads_tab::BROWSE,
             chop: None,
             chop_state: None,
             play: None,
@@ -1110,6 +1087,12 @@ impl SamplePage {
         }
     }
 
+    /// The pad picked as the browser's Load names it (`"A5"`), or None
+    /// while the pads play the synth (no kit to load onto).
+    pub fn load_target(&self) -> Option<String> {
+        (self.kit < self.projects.len()).then(|| self.pad_text(self.kit, self.pad))
+    }
+
     /// Pad `pad`'s name as the 16 Levels panel shows it ("A2") and its
     /// sound's name (empty without one).
     pub fn pad_names(&self, pad: usize) -> (String, String) {
@@ -1178,7 +1161,6 @@ impl SamplePage {
     pub fn page(&self) -> &'static str {
         match self.editor {
             Editor::Pads => match (&self.pads, &self.pads_state) {
-                (Some(t), Some(_)) if t.view == pads_tab::BROWSE => PADS_BROWSE_PAGE,
                 (Some(_), Some(_)) => PADS_PAGE,
                 _ => EMPTY_PAGE,
             },
@@ -1458,12 +1440,9 @@ impl SamplePage {
                 (tab.bank, tab.kit) = (bank, kit);
                 tab.update(ui, &st);
             }
-            None => match PadsTab::add(ui, PADS_PAGE, &st).and_then(|t| {
-                ui.add_page(PADS_BROWSE_PAGE, &pads_tab::browse_layout(self.browse_with))?;
-                Ok(t)
-            }) {
+            None => match PadsTab::add(ui, PADS_PAGE, &st) {
                 Ok(mut tab) => {
-                    (tab.bank, tab.kit, tab.view) = (bank, kit, self.pads_view);
+                    (tab.bank, tab.kit) = (bank, kit);
                     tab.update(ui, &st);
                     self.pads = Some(tab);
                 }
@@ -2008,7 +1987,6 @@ impl SamplePage {
         self.refresh_if_stale(ui);
     }
 
-    /// The Pads tab's view (Browse or Pad, of `pads_tab::VIEWS`).
     /// The effects on the mixer's pad channels changed (`fx[pad]`, the
     /// first [`crate::mixing::PADS`] pads): the Pad list's Effects row
     /// names them.
@@ -2020,28 +1998,6 @@ impl SamplePage {
         if let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_mut()) {
             st.effects = self.pad_fx.get(st.pad).cloned();
             tab.update(ui, st);
-        }
-    }
-
-    pub fn set_pads_view(&mut self, ui: &mut Ui, view: usize) {
-        self.pads_view = view;
-        if let Some(tab) = self.pads.as_mut() {
-            tab.view = view;
-            if let Some(st) = self.pads_state.as_ref() {
-                tab.update(ui, st);
-            }
-        }
-    }
-
-    /// The widget the Browse view shows beside the pads: the browser once
-    /// there is a library, else [`NO_LIBRARY`].
-    pub fn set_browse_with(&mut self, ui: &mut Ui, widget: &'static str) {
-        self.browse_with = widget;
-        if self.pads.is_some() {
-            if let Err(e) = ui.set_layout(PADS_BROWSE_PAGE, &pads_tab::browse_layout(widget)) {
-                self.lines
-                    .push(format!("sample: Browse view not laid out ({e})"));
-            }
         }
     }
 
@@ -2253,11 +2209,9 @@ impl SamplePage {
 
     fn act_pads(&mut self, ui: &mut Ui, a: PadsAction, out: &mut Vec<FromUi>) {
         match &a {
-            // The switch: the app's controls follow it.
-            PadsAction::View(i) => {
-                self.pads_view = *i;
-                out.push(FromUi::PadsView(*i));
-            }
+            // Browse for: the app's browser, whose Load puts a sound on the
+            // pad picked.
+            PadsAction::Browse => out.push(FromUi::PadsBrowse),
             PadsAction::Pick(pad) => {
                 self.pick(*pad);
                 self.refresh(ui);

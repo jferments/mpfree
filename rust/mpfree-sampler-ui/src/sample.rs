@@ -916,7 +916,6 @@ pub fn pads_sample(fonts: Fonts, pad: usize) -> Result<PadsSample, String> {
     }
     let mut tab = PadsTab::add(&mut ui, PADS_PAGE, &state)?;
     tab.kit = "Kit 1 · Breaks".into();
-    tab.view = pads_tab::PAD_VIEW;
     tab.update(&mut ui, &state);
     ui.show(PADS_PAGE)?;
     Ok(PadsSample {
