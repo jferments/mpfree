@@ -132,7 +132,7 @@ pub(crate) const DEBUG_HINT: &str =
 pub(crate) const HINT: &str = "Tap a light: only that port and channel  ·  wheel: scroll back  ·  Hold stops the list  ·  Save log: to the stick";
 
 /// The hint line while the Now view shows.
-pub(crate) const NOW_HINT: &str = "Tap a port: what it holds now  ·  wheel or ‹ ›: channel  ·  Hold freezes the view  ·  the I/O icon or TRACK MIX closes";
+pub(crate) const NOW_HINT: &str = "Tap a port: what it holds now  ·  wheel or ‹ ›: channel  ·  Hold freezes the view  ·  TRACK MIX: back";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Hit {

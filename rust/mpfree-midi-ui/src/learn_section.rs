@@ -21,6 +21,12 @@
 //!   REC, OVERDUB, TAP TEMPO and Tempo. A tap arms Learn on one
 //!   ([`Asks::learn_target`]); the control that takes it works in every
 //!   project.
+//! - **Clips and scenes** (the button beside it; the owner's card of 18
+//!   Nov 2026, "Both: grid taps and a Learn card"): what SHIFT + a tap on
+//!   Arrange's Clips grid can't learn. A track, picked with its stepper
+//!   (or the MPC's - and +), and its **Mute**, **Solo** and **Stop**, then
+//!   **Stop all** and **Back to song** (`Owner::Clips`, [`clips`]). The
+//!   control that takes one is kept with the song, as the grid's are.
 //! - **MIDI Follow** (the card beside the picked row's, or in its place
 //!   from the heading's MIDI Follow when the section is narrower than the
 //!   two): the **Controller**, **Follow** Off or On, its **Knobs** (its
@@ -48,7 +54,7 @@ use std::cell::Cell;
 use mpfree_midi::learn::{Encoding, Mode, Saved, Source, Takeover};
 use mpfree_midi::setup::{Kept, PortInput, DIN_NAME, FOLLOW_KNOBS};
 use mpfree_mixer_ui::{IoInput, IoKnob, IoReply, IoSection};
-use mpfree_param::{transport, Owner, ParamAddr};
+use mpfree_param::{clips, transport, Owner, ParamAddr};
 use mpfree_ui::{Align, Color, FontId, PaintCx, Rect, Target, Touch};
 
 use crate::{note_name, IoModel, Shared};
@@ -67,6 +73,14 @@ const LINE_H: i32 = 40;
 const SEG_W: i32 = 104;
 /// The heading's Transport and tempo button.
 const TRANSPORT_W: i32 = 190;
+/// The heading's Clips and scenes button.
+const CLIPS_W: i32 = 150;
+/// The Clips and scenes card's track stepper's - and +.
+const CLIP_STEP_W: i32 = 34;
+/// Where the heading's key may start, after its words ("WHAT YOUR
+/// CONTROLLERS MOVE · 12"), and the least room it is drawn in.
+const KEY_FROM: i32 = 290;
+const KEY_MIN_W: i32 = 250;
 /// The transport card's buttons: four a row.
 const PICK_H: i32 = 44;
 /// A range end's step, a tap or a Q-Link detent (SHIFT: a tenth).
@@ -84,6 +98,35 @@ const FOLLOW_LABEL_W: i32 = 100;
 const SAYS_LINE_H: i32 = 16;
 
 pub(crate) const HINT: &str = "Tap a row to edit it  ·  wheel: pick  ·  - and +: works as  ·  Q-Links: range, works as, takeover";
+/// The hint line while the Clips and scenes card shows.
+pub(crate) const CLIPS_HINT: &str =
+    "Tap one, then press a button on your controller  ·  - and +: the track  ·  wheel: pick a row";
+
+/// The card of buttons to learn that shows in the picked row's place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Buttons {
+    /// The transport's eight ([`transport::ALL`]).
+    Transport,
+    /// A track's Mute, Solo and Stop, Stop all and Back to song.
+    Clips,
+}
+
+/// The Clips and scenes card's buttons, after the track's stepper: the
+/// picked track's three, then the grid's two.
+const CLIP_BUTTONS: [&str; 5] = ["Mute", "Solo", "Stop", "Stop all", "Back to song"];
+
+/// The address the Clips and scenes card's button `i` arms, for track
+/// `track` (from 0).
+fn clip_target(i: usize, track: u8) -> ParamAddr {
+    let id = match i {
+        0 => clips::mute(track),
+        1 => clips::solo(track),
+        2 => clips::stop(track),
+        3 => clips::STOP_ALL,
+        _ => clips::BACK_TO_SONG,
+    };
+    ParamAddr::new(Owner::Clips, id)
+}
 
 /// How a learned control can move its parameter, in the order Works as
 /// steps through them.
@@ -137,10 +180,18 @@ enum Hit {
     /// The heading's Transport and tempo: the card shows them, or the
     /// picked row again.
     Transport,
-    /// The transport card's Back to the picked row.
+    /// The transport card's (or the Clips and scenes card's) Back to the
+    /// picked row.
     Back,
     /// One of the transport card's buttons ([`transport::ALL`]).
     Pick(usize),
+    /// The heading's Clips and scenes: the card shows them, or the picked
+    /// row again.
+    Clips,
+    /// The Clips and scenes card's track, down or up.
+    ClipTrack(i32),
+    /// One of its buttons ([`CLIP_BUTTONS`]).
+    Clip(usize),
     /// The heading's MIDI Follow, in a narrow section: the card shows it,
     /// or the picked row again.
     Follow,
@@ -162,6 +213,8 @@ struct Layout {
     head: Rect,
     /// The heading's Transport and tempo button.
     transport: Rect,
+    /// The heading's Clips and scenes button, left of it.
+    clips: Rect,
     /// The heading's key (RIG and PROJECT), where there is room for it.
     key: Option<Rect>,
     /// The heading's MIDI Follow button, in a section too narrow for the
@@ -203,7 +256,12 @@ fn layout(r: Rect, learning: bool) -> Layout {
     });
     let right = follow_button.map_or(head.right(), |b| b.x - 8);
     let transport = Rect::new(right - TRANSPORT_W, head.y, TRANSPORT_W, head.h);
-    let key = wide.then(|| Rect::new(transport.x - 12 - 300, head.y, 300, head.h));
+    let clips = Rect::new(transport.x - 8 - CLIPS_W, head.y, CLIPS_W, head.h);
+    // The key between the heading's words and the buttons, where they
+    // leave it room.
+    let key_x = head.x + KEY_FROM;
+    let key = (wide && clips.x - 12 - key_x >= KEY_MIN_W)
+        .then(|| Rect::new(key_x, head.y, clips.x - 12 - key_x, head.h));
     y += HEAD_H;
     let bottom = Rect::new(r.x, r.bottom() - CARD_H, r.w, CARD_H);
     let (card, follow) = if wide {
@@ -239,6 +297,7 @@ fn layout(r: Rect, learning: bool) -> Layout {
         cancel,
         head,
         transport,
+        clips,
         key,
         follow_button,
         table,
@@ -523,6 +582,19 @@ fn pick_target(i: usize) -> ParamAddr {
     ParamAddr::new(Owner::Transport, transport::ALL[i].0)
 }
 
+/// The Clips and scenes card's parts, on the transport card's grid: the
+/// track's stepper (- and +) in the first place, its Mute, Solo and Stop
+/// beside it, then Stop all and Back to song on the second row.
+fn clip_rects(l: &Layout) -> ([Rect; 2], [Rect; 5]) {
+    let p = pick_rects(l);
+    let s = p[0];
+    let steps = [
+        Rect::new(s.x, s.y, CLIP_STEP_W, s.h),
+        Rect::new(s.right() - CLIP_STEP_W, s.y, CLIP_STEP_W, s.h),
+    ];
+    (steps, [p[1], p[2], p[3], p[4], p[5]])
+}
+
 /// The table's columns: Control, Moves, Now, Kept in (x and width).
 fn columns(body: Rect) -> [(i32, i32); 4] {
     let kept = 96;
@@ -653,11 +725,13 @@ pub(crate) struct Learn {
     note: Option<String>,
     /// The row whose Learn again was tapped, lit while Learn waits.
     again: Option<usize>,
-    /// The card shows the transport's buttons, not the picked row (it
-    /// does while nothing is learned too).
-    transport: bool,
-    /// The transport button tapped, lit while Learn waits.
-    armed: Option<usize>,
+    /// The card shows buttons to learn, not the picked row (the
+    /// transport's while nothing is learned too: [`Learn::buttons_shown`]).
+    buttons: Option<Buttons>,
+    /// What the button tapped arms, lit while Learn waits for it.
+    armed: Option<ParamAddr>,
+    /// The Clips and scenes card's track, from 0.
+    clip_track: usize,
     /// The card shows MIDI Follow, in a section too narrow for it beside
     /// the picked row's.
     follow: bool,
@@ -675,8 +749,9 @@ impl Learn {
             down: None,
             note: None,
             again: None,
-            transport: false,
+            buttons: None,
             armed: None,
+            clip_track: 0,
             follow: false,
             drawn: (u64::MAX, false, 0),
         }
@@ -684,6 +759,77 @@ impl Learn {
 
     fn rows_shown(body: Rect) -> usize {
         (body.h / ROW_H).max(1) as usize
+    }
+
+    /// The card of buttons that shows in the picked row's place, with `n`
+    /// controls learned: the one asked for, else the transport's while
+    /// there is no row to show.
+    fn buttons_shown(&self, n: usize) -> Option<Buttons> {
+        self.buttons.or((n == 0).then_some(Buttons::Transport))
+    }
+
+    /// The tracks the Clips and scenes card steps through (the I/O view's,
+    /// at least one).
+    fn clip_tracks(m: &IoModel) -> usize {
+        m.live.tracks.len().clamp(1, usize::from(clips::TRACKS))
+    }
+
+    /// The Clips and scenes card's track, named as the project names it.
+    fn clip_track_name(&self, m: &IoModel) -> String {
+        let t = self.clip_track.min(Self::clip_tracks(m) - 1);
+        m.live
+            .tracks
+            .get(t)
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .unwrap_or_else(|| format!("Track {}", t + 1))
+    }
+
+    /// The Clips and scenes card's track, a step down or up.
+    fn clip_step(&mut self, d: i32) -> IoReply {
+        let n = {
+            let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+            Self::clip_tracks(&m)
+        };
+        let at = self.clip_track.min(n - 1) as i32;
+        let to = (at + d.signum()).clamp(0, n as i32 - 1);
+        if to == at {
+            self.note = Some(if d < 0 {
+                "The first track is picked".to_string()
+            } else {
+                "The last track is picked".to_string()
+            });
+            return IoReply::Handled;
+        }
+        self.clip_track = to as usize;
+        IoReply::Redraw
+    }
+
+    /// The heading's Transport and tempo or Clips and scenes: its card
+    /// shows, or the picked row's again when it showed already.
+    fn show_buttons(&mut self, b: Buttons) -> IoReply {
+        let n = {
+            let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+            m.setup.all_learned().count()
+        };
+        self.buttons = (self.buttons_shown(n) != Some(b)).then_some(b);
+        self.follow = false;
+        IoReply::Redraw
+    }
+
+    /// Learn waits for a control to take `target`, named `what` on the
+    /// hint line: a button on a card of buttons.
+    fn arm(&mut self, target: ParamAddr, what: &str) -> IoReply {
+        let mut m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+        m.asks.learn_target = Some(target);
+        m.asks.learn_again = None;
+        m.asks.cancel_learn = false;
+        self.again = None;
+        self.armed = Some(target);
+        self.note = Some(format!(
+            "{what}: press a button or move a knob on your controller"
+        ));
+        IoReply::Redraw
     }
 
     fn top_for(&self, rows: usize, shown: usize) -> usize {
@@ -717,8 +863,11 @@ impl Learn {
             return Some(Hit::Cancel);
         }
         let n = m.setup.all_learned().count();
-        if n > 0 && l.transport.contains(x, y) {
+        if l.transport.contains(x, y) {
             return Some(Hit::Transport);
+        }
+        if l.clips.contains(x, y) {
+            return Some(Hit::Clips);
         }
         if l.follow_button.is_some_and(|b| b.contains(x, y)) {
             return Some(Hit::Follow);
@@ -735,14 +884,23 @@ impl Learn {
         if !l.card.contains(x, y) {
             return None;
         }
-        if self.transport || n == 0 {
+        if let Some(b) = self.buttons_shown(n) {
             if n > 0 && l.remove.contains(x, y) {
                 return Some(Hit::Back);
             }
-            return pick_rects(&l)
-                .iter()
-                .position(|p| p.contains(x, y))
-                .map(Hit::Pick);
+            return match b {
+                Buttons::Transport => pick_rects(&l)
+                    .iter()
+                    .position(|p| p.contains(x, y))
+                    .map(Hit::Pick),
+                Buttons::Clips => {
+                    let (steps, buttons) = clip_rects(&l);
+                    match steps.iter().position(|p| p.contains(x, y)) {
+                        Some(i) => Some(Hit::ClipTrack(if i == 0 { -1 } else { 1 })),
+                        None => buttons.iter().position(|p| p.contains(x, y)).map(Hit::Clip),
+                    }
+                }
+            };
         }
         if l.again.contains(x, y) {
             return Some(Hit::Again);
@@ -963,7 +1121,7 @@ impl Learn {
         match h {
             Hit::Row(k) => {
                 self.pick = k;
-                self.transport = false;
+                self.buttons = None;
                 self.follow = false;
                 IoReply::Redraw
             }
@@ -976,10 +1134,20 @@ impl Learn {
                 self.armed = None;
                 IoReply::Redraw
             }
-            Hit::Transport => {
-                self.transport = !self.transport;
-                self.follow = false;
-                IoReply::Redraw
+            Hit::Transport => self.show_buttons(Buttons::Transport),
+            Hit::Clips => self.show_buttons(Buttons::Clips),
+            Hit::ClipTrack(d) => self.clip_step(d),
+            Hit::Clip(i) => {
+                let name = {
+                    let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+                    self.clip_track_name(&m)
+                };
+                let track = self.clip_track as u8;
+                let what = match i {
+                    0..=2 => format!("{} {name}", CLIP_BUTTONS[i]),
+                    _ => CLIP_BUTTONS[i].to_string(),
+                };
+                self.arm(clip_target(i, track), &what)
             }
             Hit::Follow => {
                 self.follow = !self.follow;
@@ -999,22 +1167,10 @@ impl Learn {
                 IoReply::Redraw
             }
             Hit::Back => {
-                self.transport = false;
+                self.buttons = None;
                 IoReply::Redraw
             }
-            Hit::Pick(i) => {
-                let mut m = self.model.lock().unwrap_or_else(|e| e.into_inner());
-                m.asks.learn_target = Some(pick_target(i));
-                m.asks.learn_again = None;
-                m.asks.cancel_learn = false;
-                self.again = None;
-                self.armed = Some(i);
-                self.note = Some(format!(
-                    "{}: press a button or move a knob on your controller",
-                    transport::ALL[i].1
-                ));
-                IoReply::Redraw
-            }
+            Hit::Pick(i) => self.arm(pick_target(i), transport::ALL[i].1),
             Hit::Again => {
                 let mut m = self.model.lock().unwrap_or_else(|e| e.into_inner());
                 if m.setup.learned_at(self.pick).is_some() {
@@ -1150,9 +1306,13 @@ impl Learn {
             t.text_dim,
             "Tap one, then press a button or move a knob on your controller. It works in every project.",
         );
-        let waiting = m.asks.learn_target.is_some() || m.live.learning.is_some();
         for (i, r) in pick_rects(l).into_iter().enumerate() {
-            button(cx, r, transport::ALL[i].1, waiting && self.armed == Some(i));
+            button(
+                cx,
+                r,
+                transport::ALL[i].1,
+                self.waits_for(m, pick_target(i)),
+            );
         }
         let last = pick_rects(l)[7];
         para(
@@ -1170,7 +1330,61 @@ impl Learn {
         );
     }
 
-    /// The cards under the list: the picked row's (or the transport's)
+    /// Whether Learn waits for a control to take `target`, armed from one
+    /// of this section's buttons: that button is lit.
+    fn waits_for(&self, m: &IoModel, target: ParamAddr) -> bool {
+        let waiting = m.asks.learn_target.is_some() || m.live.learning.is_some();
+        waiting && self.armed == Some(target)
+    }
+
+    /// The Clips and scenes card: the picked track's Mute, Solo and Stop,
+    /// then Stop all and Back to song, the one Learn waits for lit.
+    fn paint_clips(&self, cx: &mut PaintCx, m: &IoModel, l: &Layout, back: bool) {
+        let t = cx.theme.clone();
+        cx.canvas.fill_round_rect(l.card, 12, t.surface);
+        let ci = l.card.inset(14);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            Rect::new(ci.x, ci.y, l.again.x - ci.x - 8, BUTTON_H),
+            Align::Left,
+            t.text_dim,
+            "CLIPS AND SCENES",
+        );
+        if back {
+            button(cx, l.remove, "Back", false);
+        }
+        para(
+            cx,
+            t.size_small * 0.9,
+            Rect::new(ci.x, ci.y + BUTTON_H, ci.w, 2 * SAYS_LINE_H),
+            t.text_dim,
+            "Pick a track, tap one, then press a button on your controller. It is kept with this song.",
+        );
+        let (steps, buttons) = clip_rects(l);
+        stepper(cx, steps[0], steps[1], &self.clip_track_name(m));
+        let track = self.clip_track.min(Self::clip_tracks(m) - 1) as u8;
+        for (i, r) in buttons.into_iter().enumerate() {
+            let lit = self.waits_for(m, clip_target(i, track));
+            button(cx, r, CLIP_BUTTONS[i], lit);
+        }
+        let last = pick_rects(l)[7];
+        para(
+            cx,
+            t.size_small * 0.9,
+            Rect::new(
+                ci.x,
+                last.bottom() + 6,
+                ci.w,
+                ci.bottom() - last.bottom() - 6,
+            ),
+            t.text_faint,
+            "A key turns Mute and Solo on, then off; in Perform they wait for the line. \
+             Clips and scenes: hold SHIFT and tap them on Arrange's Clips grid.",
+        );
+    }
+
+    /// The cards under the list: the picked row's (or a card of buttons)
     /// and MIDI Follow's, side by side or the one asked for.
     fn paint_cards(&self, cx: &mut PaintCx, m: &IoModel, l: &Layout, n: usize) {
         if self.follow_shown(l) {
@@ -1179,10 +1393,10 @@ impl Learn {
         if !self.card_shown(l) {
             return;
         }
-        if self.transport || n == 0 {
-            self.paint_transport(cx, m, l, n > 0);
-        } else {
-            self.paint_card(cx, m, l, self.pick.min(n - 1));
+        match self.buttons_shown(n) {
+            Some(Buttons::Transport) => self.paint_transport(cx, m, l, n > 0),
+            Some(Buttons::Clips) => self.paint_clips(cx, m, l, n > 0),
+            None => self.paint_card(cx, m, l, self.pick.min(n - 1)),
         }
     }
 
@@ -1342,6 +1556,9 @@ impl IoSection for Learn {
     }
 
     fn hint(&self) -> Option<&str> {
+        if self.buttons == Some(Buttons::Clips) && !self.follow {
+            return Some(CLIPS_HINT);
+        }
         Some(HINT)
     }
 
@@ -1378,17 +1595,30 @@ impl IoSection for Learn {
         }
         // The heading and the key.
         let all: Vec<(Kept, &Saved)> = m.setup.all_learned().collect();
+        // The words end before the buttons (cut short rather than under
+        // them).
+        let words = Rect::new(l.head.x, l.head.y, l.clips.x - 8 - l.head.x, l.head.h);
         cx.text(
             FontId::Bold,
             t.size_small,
-            l.head,
+            words,
             Align::Left,
             t.text_dim,
             &format!("WHAT YOUR CONTROLLERS MOVE · {}", all.len()),
         );
-        if !all.is_empty() {
-            button(cx, l.transport, "Transport and tempo", self.transport);
-        }
+        let card = self.buttons_shown(all.len());
+        button(
+            cx,
+            l.transport,
+            "Transport and tempo",
+            card == Some(Buttons::Transport),
+        );
+        button(
+            cx,
+            l.clips,
+            "Clips and scenes",
+            card == Some(Buttons::Clips),
+        );
         if let Some(b) = l.follow_button {
             button(cx, b, "MIDI Follow", self.follow);
         }
@@ -1574,14 +1804,13 @@ impl IoSection for Learn {
             out.push(Target::tap("learn-cancel", 0, "Cancel learning", l.cancel));
         }
         let all: Vec<(Kept, &Saved)> = m.setup.all_learned().collect();
-        if !all.is_empty() {
-            out.push(Target::tap(
-                "learn-transport",
-                0,
-                "Transport and tempo",
-                l.transport,
-            ));
-        }
+        out.push(Target::tap(
+            "learn-transport",
+            0,
+            "Transport and tempo",
+            l.transport,
+        ));
+        out.push(Target::tap("learn-clips", 0, "Clips and scenes", l.clips));
         if let Some(b) = l.follow_button {
             out.push(Target::tap("learn-follow", 0, "MIDI Follow", b));
         }
@@ -1607,12 +1836,39 @@ impl IoSection for Learn {
         if !self.card_shown(&l) {
             return out;
         }
-        if self.transport || all.is_empty() {
+        if let Some(b) = self.buttons_shown(all.len()) {
             if !all.is_empty() {
                 out.push(Target::tap("learn-back", 0, "Back", l.remove));
             }
-            for (i, r) in pick_rects(&l).into_iter().enumerate() {
-                out.push(Target::tap("learn-pick", i, transport::ALL[i].1, r));
+            match b {
+                Buttons::Transport => {
+                    for (i, r) in pick_rects(&l).into_iter().enumerate() {
+                        out.push(Target::tap("learn-pick", i, transport::ALL[i].1, r));
+                    }
+                }
+                Buttons::Clips => {
+                    let (steps, buttons) = clip_rects(&l);
+                    let name = self.clip_track_name(&m);
+                    out.push(Target::tap(
+                        "learn-clip-track",
+                        0,
+                        format!("Track before {name}"),
+                        steps[0],
+                    ));
+                    out.push(Target::tap(
+                        "learn-clip-track",
+                        1,
+                        format!("Track after {name}"),
+                        steps[1],
+                    ));
+                    for (i, r) in buttons.into_iter().enumerate() {
+                        let label = match i {
+                            0..=2 => format!("{} {name}", CLIP_BUTTONS[i]),
+                            _ => CLIP_BUTTONS[i].to_string(),
+                        };
+                        out.push(Target::tap("learn-clip", i, label, r));
+                    }
+                }
             }
             return out;
         }
@@ -1690,7 +1946,12 @@ impl IoSection for Learn {
                 self.pick = to;
                 IoReply::Redraw
             }
-            IoInput::Step(_) if self.transport || self.follow || n == 0 => IoReply::Handled,
+            IoInput::Step(d)
+                if d != 0 && !self.follow && self.buttons_shown(n) == Some(Buttons::Clips) =>
+            {
+                self.clip_step(d)
+            }
+            IoInput::Step(_) if self.buttons_shown(n).is_some() || self.follow => IoReply::Handled,
             IoInput::Step(d) if d != 0 => self.mode(d.signum()),
             IoInput::Step(_) => IoReply::Handled,
         }
@@ -1721,7 +1982,7 @@ impl IoSection for Learn {
         let Some((_, s)) = m
             .setup
             .learned_at(self.pick)
-            .filter(|_| !self.transport && !self.follow)
+            .filter(|_| self.buttons.is_none() && !self.follow)
         else {
             return Some([off(), off(), off(), off()]);
         };
@@ -1764,7 +2025,7 @@ impl IoSection for Learn {
     }
 
     fn qlink_turn(&mut self, knob: usize, detents: i32, fine: bool) -> IoReply {
-        if detents == 0 || self.transport || self.follow {
+        if detents == 0 || self.buttons.is_some() || self.follow {
             return IoReply::Ignored;
         }
         let step = if fine { RANGE_STEP / 10.0 } else { RANGE_STEP };
@@ -1901,15 +2162,28 @@ mod tests {
         }
         // With nothing learned it says how to learn one, and the card
         // offers the transport.
-        let s = Learn::new(Arc::new(Mutex::new(crate::sample::rig())));
+        let mut s = Learn::new(Arc::new(Mutex::new(crate::sample::rig())));
         let _ = paint(&s);
         let empty = ids(&s, AREA);
-        assert_eq!(empty[0], "learn-follow");
-        assert_eq!(empty[1..], ["learn-pick"; 8]);
-        // The transport card fits too.
-        let mut s = Learn::new(model());
-        assert_eq!(tap(&mut s, "learn-transport", 0), IoReply::Redraw);
+        assert_eq!(
+            empty[..3],
+            ["learn-transport", "learn-clips", "learn-follow"]
+        );
+        assert_eq!(empty[3..], ["learn-pick"; 8]);
+        // Clips and scenes in its place, and back.
+        tap(&mut s, "learn-clips", 0);
         fits(&s, AREA);
+        assert!(ids(&s, AREA).contains(&"learn-clip"));
+        assert!(!ids(&s, AREA).contains(&"learn-back"));
+        tap(&mut s, "learn-clips", 0);
+        assert!(ids(&s, AREA).contains(&"learn-pick"));
+        // The transport card fits too, and Clips and scenes'.
+        for card in ["learn-transport", "learn-clips"] {
+            let mut s = Learn::new(model());
+            assert_eq!(tap(&mut s, card, 0), IoReply::Redraw);
+            fits(&s, AREA);
+            fits(&s, WIDE);
+        }
         // On the MPC's screen the Follow card is beside the others.
         for transport in [false, true] {
             let m = model();
@@ -2116,6 +2390,104 @@ mod tests {
         tap(&mut s, "learn-row", 1);
         assert!(s.targets(AREA).iter().any(|t| t.id == "learn-again"));
         assert_eq!(s.pick, 1);
+    }
+
+    #[test]
+    fn the_clips_card_arms_learn_on_a_tracks_mute_solo_and_stop_and_the_grids_two() {
+        let m = model();
+        let mut s = Learn::new(m.clone());
+        let _ = paint(&s);
+        assert!(!ids(&s, AREA).contains(&"learn-clip"));
+        assert_eq!(tap(&mut s, "learn-clips", 0), IoReply::Redraw);
+        assert_eq!(s.hint(), Some(CLIPS_HINT));
+        let labels = |s: &Learn| -> Vec<String> {
+            s.targets(AREA)
+                .into_iter()
+                .filter(|t| t.id == "learn-clip")
+                .map(|t| t.label)
+                .collect()
+        };
+        // The sample rig's first track.
+        assert_eq!(
+            labels(&s),
+            [
+                "Mute Drums",
+                "Solo Drums",
+                "Stop Drums",
+                "Stop all",
+                "Back to song"
+            ]
+        );
+        // The Q-Links have nothing to turn while it shows.
+        assert!(s.qlinks().unwrap().iter().all(|k| !k.enabled));
+        assert_eq!(s.qlink_turn(0, 1, false), IoReply::Ignored);
+        // - is at the first track; + and the stepper go on to the next.
+        assert_eq!(s.input(IoInput::Step(-1)), IoReply::Handled);
+        assert_eq!(s.take_note().as_deref(), Some("The first track is picked"));
+        assert_eq!(s.input(IoInput::Step(1)), IoReply::Redraw);
+        assert_eq!(tap(&mut s, "learn-clip-track", 1), IoReply::Redraw);
+        assert_eq!(labels(&s)[0], "Mute Pads");
+        tap(&mut s, "learn-clip-track", 0);
+        assert_eq!(labels(&s)[1], "Solo Bass");
+        // Solo Bass: Learn waits for a control to take track 2's solo.
+        assert_eq!(tap(&mut s, "learn-clip", 1), IoReply::Redraw);
+        assert_eq!(
+            m.lock().unwrap().asks.learn_target,
+            Some(ParamAddr::new(Owner::Clips, clips::solo(1)))
+        );
+        assert_eq!(
+            s.take_note().unwrap(),
+            "Solo Bass: press a button or move a knob on your controller"
+        );
+        // Lit while the app says it waits.
+        m.lock().unwrap().asks.learn_target = None;
+        m.lock().unwrap().live.learning = Some("Solo Bass".into());
+        assert!(s.waits_for(
+            &m.lock().unwrap(),
+            ParamAddr::new(Owner::Clips, clips::solo(1))
+        ));
+        let _ = paint(&s);
+        // The grid's two in its place.
+        tap(&mut s, "learn-clip", 3);
+        assert_eq!(
+            m.lock().unwrap().asks.learn_target,
+            Some(ParamAddr::new(Owner::Clips, clips::STOP_ALL))
+        );
+        tap(&mut s, "learn-clip", 4);
+        assert_eq!(
+            m.lock().unwrap().asks.learn_target,
+            Some(ParamAddr::new(Owner::Clips, clips::BACK_TO_SONG))
+        );
+        tap(&mut s, "learn-clip", 2);
+        assert_eq!(
+            m.lock().unwrap().asks.learn_target,
+            Some(ParamAddr::new(Owner::Clips, clips::stop(1)))
+        );
+        // The last of the six tracks: + says so.
+        for _ in 0..8 {
+            s.input(IoInput::Step(1));
+        }
+        assert_eq!(s.take_note().as_deref(), Some("The last track is picked"));
+        assert_eq!(labels(&s)[0], "Mute Perc");
+        tap(&mut s, "learn-clip", 0);
+        assert_eq!(
+            m.lock().unwrap().asks.learn_target,
+            Some(ParamAddr::new(Owner::Clips, clips::mute(5)))
+        );
+        // The transport's in its place, then Back to the picked row.
+        tap(&mut s, "learn-transport", 0);
+        assert!(ids(&s, AREA).contains(&"learn-pick"));
+        assert_eq!(s.hint(), Some(HINT));
+        tap(&mut s, "learn-clips", 0);
+        tap(&mut s, "learn-back", 0);
+        assert!(ids(&s, AREA).contains(&"learn-again"));
+        // A track the I/O view has no name for is named by its number.
+        m.lock().unwrap().live.tracks[0].clear();
+        tap(&mut s, "learn-clips", 0);
+        for _ in 0..8 {
+            s.input(IoInput::Step(-1));
+        }
+        assert_eq!(labels(&s)[0], "Mute Track 1");
     }
 
     #[test]

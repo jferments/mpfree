@@ -12046,25 +12046,49 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // The Learn section (board 8, without MIDI Follow): the keyboard's
     // filter knob for this song, picking up over part of its range, and
     // the drum machine's mute key kept for every project.
-    let mut rig = mpfree_midi_ui::sample::rig();
-    for (kept, text) in [
-        (
-            mpfree_midi::setup::Kept::Project,
-            "port Keystep 37 | ch 1 | cc 74 | t1.fx1.0 | 0.35 0.8 | absolute | pickup",
-        ),
-        (
-            mpfree_midi::setup::Kept::Rig,
-            "port MIDI | ch 10 | note 36 | t6.mix.2 | 0 1 | toggle | jump",
-        ),
-    ] {
-        let l = mpfree_midi::learn::Saved::parse(text).expect("a learned control");
-        rig.setup.learned_in(kept, l);
-    }
-    rig.live.learn_names = vec!["Cutoff (Filter, Drums)".into(), "Mute (Perc)".into()];
+    let learn_rig = || {
+        let mut rig = mpfree_midi_ui::sample::rig();
+        for (kept, text) in [
+            (
+                mpfree_midi::setup::Kept::Project,
+                "port Keystep 37 | ch 1 | cc 74 | t1.fx1.0 | 0.35 0.8 | absolute | pickup",
+            ),
+            (
+                mpfree_midi::setup::Kept::Rig,
+                "port MIDI | ch 10 | note 36 | t6.mix.2 | 0 1 | toggle | jump",
+            ),
+        ] {
+            let l = mpfree_midi::learn::Saved::parse(text).expect("a learned control");
+            rig.setup.learned_in(kept, l);
+        }
+        rig.live.learn_names = vec!["Cutoff (Filter, Drums)".into(), "Mute (Perc)".into()];
+        rig
+    };
     out.push((
         "mixer-io-learn",
-        io_section_screen(fonts(), &io_state, rig, mpfree_midi_ui::LEARN),
+        io_section_screen(fonts(), &io_state, learn_rig(), mpfree_midi_ui::LEARN),
     ));
+    // Its Clips and scenes card (the owner's card of 18 Nov 2026, "Both"),
+    // on the second track: a track's Mute, Solo and Stop, Stop all and
+    // Back to song.
+    let mut clips = io_section_screen(fonts(), &io_state, learn_rig(), mpfree_midi_ui::LEARN);
+    for (id, label) in [
+        ("learn-clips", "Clips and scenes"),
+        ("learn-clip-track", "Track after"),
+    ] {
+        if let Some(t) = clips.ui.targets().into_iter().find(|t| {
+            t.widget == mpfree_mixer_ui::MIXER
+                && t.target.id == id
+                && t.target.label.starts_with(label)
+        }) {
+            let (x, y) = t.target.centre();
+            clips.touch(1, Touch::Down, x, y);
+            clips.touch(1, Touch::Up, x, y);
+        }
+    }
+    let _ = clips.take_actions();
+    clips.ui.invalidate();
+    out.push(("mixer-io-learn-clips", clips));
     // The CV section with an envelope and two LFOs, each with its two
     // more rows.
     out.push((
