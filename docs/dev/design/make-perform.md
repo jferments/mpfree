@@ -1,6 +1,6 @@
 # Make and Perform
 
-**Status:** sequencer roadmap S4, parts one to six (`rust/mpfree-app`, `rust/mpfree-seq`, `rust/mpfree-play`, `rust/mpfree-perform`, `rust/mpfree-time-ui`, `rust/mpfree-ui`, 2026-11-17). Jay's sequencer decisions 4 and 5 (16 Nov 2026): Make and Perform as designed, with mutes landing on the bar in Perform. Design: the sequencer review (mpfree-claude `sequencer/rethink/README.md`, "Make and Perform: the toggle and when mutes land", mockups C and K). Not run on the MPC One yet.
+**Status:** sequencer roadmap S4, parts one to nine (`rust/mpfree-app`, `rust/mpfree-seq`, `rust/mpfree-play`, `rust/mpfree-perform`, `rust/mpfree-time-ui`, `rust/mpfree-ui`, `rust/mpfree-scale`, `rust/mpfree-sampler-ui`, 2026-11-17). Jay's sequencer decisions 4 and 5 (16 Nov 2026): Make and Perform as designed, with mutes landing on the bar in Perform. Design: the sequencer review (mpfree-claude `sequencer/rethink/README.md`, "Make and Perform: the toggle and when mutes land", mockups C and K). Not run on the MPC One yet.
 
 ## The rule
 
@@ -92,6 +92,18 @@ The review's third launch mode (restart, legato, one-shot; the clip card's Mode 
 - **The model.** `Clip::once` (and `ClipSettings::once`), saved as a `once` line in the clip. Legato and once are separate flags; the card's Mode row (`MODES`, `mode_of`) makes them one choice of three.
 - **The stop.** `Perform::due` cues a one-shot's stop (`Cue { slot: None }`) in the bar before the end of the pass its launch started in (`once_end`: passes counted from the launch's origin, so a legato one-shot ends with the pass it took over), on that tick exactly: `LaunchGrid::At(tick)`, a cue line that is never a setting (`LaunchGrid::ok` refuses it) and whose `next` is the tick, or at once when past. The player lands it as any stop: the track's notes end there, and in song mode the track goes back to the song. The clip's follow waits; a cue already waiting on the track wins, as for a follow. While stopped nothing is cued; the stop is cued once the transport rolls.
 
+## Live transpose, as built (the ninth part)
+
+Jay's card of 17 Nov, "16 Levels gets a Transpose kind", with the changes he agreed to (21:43Z): the pads step In key when they play In key, the Record tab's row and the Q-Link reach two octaves, and a track can follow another's transpose.
+
+- **The shift.** `mpfree_scale::Shift { by, key }` (`shift.rs`): `apply(note)` moves a note `by` semitones, or with a key `by` notes of that scale going up (both ways, so a melodic minor moves as it rises), a note outside the key moving with the key note below it and keeping its distance; None off the keyboard, so the note is left out. Within `MAX_SHIFT` 24 either way. `Held` remembers what each note started by number became, counted, so each of a note's ends ends one start whatever the shift is by then (256 bytes, nothing allocated).
+- **The model.** `Track::transpose` (`Transpose { by, in_key }`, within `MAX_TRANSPOSE` 24, `ModelError::BadTranspose`) and `Track::follows` ("Follows transpose"), saved as `transpose <by>[ key]` and `follows` lines in the track (`save.rs`). It is a performance setting: no clip changes, and 0 plays as written.
+- **The control.** `TimeAction::Transpose { track, to }` sets the track and every track that follows to `to` ("transpose: Bass +5 st, with Keys"); `TimeAction::FollowsTranspose { track, on }`. `Tracks::of` gives each track's `TrackSet::transpose` to the audio half, and `TimeHost::transposes()` hands them to the pads each period.
+- **Where notes move.** In `SeqPads` (`main.rs`), after the pad layout, where each track's pads become notes: `SeqPads::shift(track)` is the track's transpose as a `Shift`, with the synth's key (`Synth::transpose_key`: its scale while the pads play In key or chords) when it moves in key, and none for a track that plays a kit (`TrackKits`: only a track that plays the synth, or its own instrument, plays notes), the Drums engine or loops. A clip's note-on on the synth is started by the pads' track-first `hit_at` with `Synth::note_on_shifted`; on a track's own instrument by `Instruments::pad_on_shifted`; on MIDI Out, CV and an export's tap as the pad's notes moved (`shifted`). Each remembers what a pad started, so a note-off and pressure reach those notes: **a note already sounding keeps its pitch** and the next note moves. The arps' notes by number (a synth pad layout) go through each track's `Held` (`SeqPads::sounding`), sounding where the shift took them and recording as written, so a take plays back as it was heard; one the shift takes off the keyboard sounds nowhere and still records (`live_unheard`). A panic clears them.
+- **The pads.** 16 Levels' kinds gain Transpose (`levels_panel::Kind`, the column's last), and with the synth on the pads 16 LEVEL opens it at once (a kit's levels can't be of a synth). `App::levels_shown(on, open, transpose)` and `App::pads_transpose`; while it is the kind, a pad is `transpose_pad` (`main.rs`): the armed track to `Levels::semitones(pad)` (-8 to +7, pad 9 as written), in key when the synth has a key, latched until another pad. A track that plays no notes stays and the log says why. The pads light the step the armed track is on (`transpose_colours`). The panel heading names the track, the tracks that follow it and where it is ("Bass, with Keys · +5 st", "-3 in C Minor"); Pick pad is faint.
+- **The Record tab.** Rows 9 and 10, Transpose and Follows, for the armed track (`TRANSPOSE_ROW`, `FOLLOWS_ROW`, `transpose_step`): – / + a semitone or a note of the key, within 24; "–" with none armed or a track that plays a kit.
+- **The Q-Link.** On Play, while 16 Levels shows Transpose, Tune's Q-Link is Transpose (`Knob::Transpose`, `PlayPage::transpose`), the armed track's, two octaves either way.
+
 ## Still to come in S4
 
 In the order they are planned, each as its own part:
@@ -103,9 +115,11 @@ In the order they are planned, each as its own part:
 5. **The song list**, built (the sixth part, 17 Nov): above. Not built: reordering a step by dragging it.
 6. **The scene editor**, built (the seventh part, 17 Nov): above. Not built: a scene's colour, and taking a name off.
 7. **One-shot clips**, built (the eighth part, 17 Nov): above, the clip card's Mode: Once.
-8. Live transpose.
+8. **Live transpose**, built (the ninth part, 17 Nov): above.
 
 ## Tests
+
+The ninth part's: `mpfree_scale`'s `a_shift_moves_by_semitones_or_by_notes_of_its_key` and `a_held_note_ends_where_it_went_whatever_the_shift_is_now`, the save round trip and refusals (`transpose`, `follows`), `synth::tests::a_shifted_pad_starts_its_notes_moved_and_ends_them`, `time::tests::transpose_moves_the_track_and_the_tracks_that_follow_it`, `rt_safety::a_tracks_transpose_moves_its_notes_and_a_sounding_note_ends_where_it_went` (MIDI Out's bytes for a note whose shift changed while it sounded, the synth's pads, the arp's notes by number), the time-ui record rows test (Transpose and Follows), the levels panel's `transpose_shows_the_track_and_the_step_it_is_on`, `gui::tests::sixteen_level_on_the_synth_transposes_the_armed_track` (the kind, the heading, the step lit, the chip, the Q-Link), `app` (`pads_transpose`) and `tests::transpose_lights_the_step_the_armed_track_is_on`.
 
 The eighth part's: the perform crate's `a_one_shot_clip_cues_its_stop_at_the_end_of_its_pass` (the bar before, `At`, the follow waiting, a cue waiting wins, legato and half speed in `once_end`), `time::tests::a_one_shot_clip_plays_one_pass_and_its_track_stops` (three beats, three hits, the stop waiting and landing off the bar line), the time-ui card test (Mode's three values and ends) and the save round trip (`once`).
 

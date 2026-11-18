@@ -200,7 +200,11 @@ impl Desk<'_> {
             gui::FromUi::PadLevelOff => fx.extend(app.pad_level_off()),
             gui::FromUi::StepsOff => fx.extend(app.steps_off()),
             gui::FromUi::StepPage(page) => fx.extend(app.set_step_page(page)),
-            gui::FromUi::Levels { on, open } => fx.extend(app.levels_shown(on, open)),
+            gui::FromUi::Levels {
+                on,
+                open,
+                transpose,
+            } => fx.extend(app.levels_shown(on, open, transpose)),
             gui::FromUi::Time(a) => {
                 use crate::rec_arm::Press;
                 use mpfree_time_ui::TimeAction::Transport;
