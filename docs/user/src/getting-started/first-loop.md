@@ -36,7 +36,7 @@ The loop records MPFree's own sound as you hear it: the pads and the synth with 
 
 **Undo** fades out the newest layer; **Redo** brings it back. Tapping a layer's name (or the speaker beside it) mutes just that layer, so you can drop the drums out for a breakdown and bring them back.
 
-**Mute** silences the whole loop without losing it. **Clear** deletes the loop so you can start again.
+**Mute** silences the whole loop without losing it. **Clear** deletes the loop so you can start again; if you didn't mean it, **Undo** brings it back.
 
 ## Record from an instrument
 

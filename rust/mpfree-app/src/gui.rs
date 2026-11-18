@@ -179,7 +179,7 @@ const CONSOLE_HINT: &str =
     "Switch the MPC off with its power switch to return to the stock firmware";
 /// The hint line while ERASE is held (Jay after live test 3: ERASE + a
 /// tap deletes what is tapped).
-pub const ERASE_HINT: &str = "ERASE held: tap a clip (Arrange), a lane's name (Play) or a layer (Looper) to delete it   ·   \
+pub const ERASE_HINT: &str = "ERASE held: tap a clip (Arrange), a lane's name (Play), a layer or a ring (Looper) to delete it   ·   \
                               UNDO brings it back";
 /// SHIFT held on the mixer, the chain editor or the macros panel, where
 /// a touch on a value arms MIDI Learn (layout spec 4d).
@@ -1346,6 +1346,9 @@ pub enum FromUi {
     /// Loop `n`'s mute turned over without picking it (the picked loop's
     /// with None).
     LoopMute(Option<usize>),
+    /// Loop `n`'s solo turned over without picking it: the deck's S,
+    /// SHIFT + a mute pad.
+    LoopSolo(usize),
     /// Loop `n`'s level (0 to 2) without picking it: the Looper tab's
     /// Q-Links, a loop's level bar.
     LoopLevel(usize, f32),
@@ -1356,6 +1359,9 @@ pub enum FromUi {
     /// the "Pads: loop keys" chip (SHIFT + SAMPLER on the Looper tab does
     /// the same).
     LoopKeys,
+    /// Capture: the last bars heard become a loop (the deck's Capture,
+    /// What you played's button).
+    LoopCapture,
     /// The Looper tab's Length: the picked loop's first pass, 1 to 8 bars
     /// or free (None); MENU's First pass length follows.
     LoopBars(Option<u32>),
@@ -3570,9 +3576,9 @@ impl Player {
     /// UNDO takes back deletes it. `Some` is the answer to the touch; `None`
     /// lets the tap do what it always does. Only deletes with an undo are
     /// here: an Arrange clip (the takes' undo), a Play lane's steps (the
-    /// same), and a Looper tab layer (the looper's undo). Song blocks,
-    /// whole loops, effects and macros have no undo yet, so ERASE leaves
-    /// them alone.
+    /// same), and a Looper tab layer or whole loop (the looper's undo, in
+    /// [`Self::looper_acts`]). Song blocks, effects and macros have no undo
+    /// yet, so ERASE leaves them alone.
     fn erase_tap(&mut self, ev: &UiEvent) -> Option<Option<FromUi>> {
         match (ev.widget.as_str(), &ev.kind) {
             // A lane's speaker: that pad's steps (any of the kit's 128).
@@ -3626,7 +3632,8 @@ impl Player {
 
     /// What the Looper tab's panels asked for: the first as the answer to
     /// the touch, the rest after it. With ERASE held, a layer tapped is
-    /// deleted (the looper's UNDO brings it back).
+    /// deleted and a loop's ring or name clears the loop (the looper's
+    /// UNDO brings either back).
     fn looper_acts(&mut self) -> Option<FromUi> {
         use crate::looper_tab::{Ctl, LoopAct};
         use mpfree_looper::Command as C;
@@ -3643,17 +3650,10 @@ impl Player {
                     erased.push(k);
                     LoopAct::LayerCmd(k, mpfree_looper::LayerCommand::Delete)
                 }
-                LoopAct::Pick(_)
-                | LoopAct::Tap(_)
-                | LoopAct::Clear(_)
-                | LoopAct::Strip(Ctl::Clear)
-                    if erase =>
-                {
-                    self.tell(
-                        "ERASE: a whole loop has no undo yet, so ERASE leaves it; hold its ring to clear it",
-                    );
-                    continue;
-                }
+                // ERASE + a ring (or its name, or Clear) clears the loop,
+                // and UNDO brings it back.
+                LoopAct::Pick(n) | LoopAct::Tap(n) if erase => LoopAct::Clear(n),
+                LoopAct::Strip(Ctl::Clear) if erase => LoopAct::Clear(self.looper.selected),
                 a => a,
             };
             let s = self.looper.status;
@@ -3666,12 +3666,17 @@ impl Player {
                     let l = self.looper.loops.get(n).copied();
                     if l.is_some_and(|l| l.phase == mpfree_looper::Phase::Playing && l.muted) {
                         out.push(FromUi::LoopMute(Some(n)));
+                    } else if l.is_some_and(|l| l.capturing.is_some()) {
+                        // Capturing: the tap calls it off.
+                        out.push(FromUi::LoopCapture);
                     } else {
                         out.push(FromUi::Looper(crate::looper_page::B_RECORD));
                     }
                 }
                 LoopAct::Mute(n) => out.push(FromUi::LoopMute(Some(n))),
+                LoopAct::Solo(n) => out.push(FromUi::LoopSolo(n)),
                 LoopAct::PadKeys => out.push(FromUi::LoopKeys),
+                LoopAct::Capture => out.push(FromUi::LoopCapture),
                 LoopAct::Clear(n) => {
                     out.push(FromUi::LoopPick(n));
                     out.push(FromUi::LoopCommand(C::Clear));
@@ -4235,8 +4240,9 @@ impl Player {
                 View::Arrange => CLIPS_HINT.to_string(),
                 View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
                                          drag: scroll   ·   Undo history: close   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
-                View::Looper => format!("Tap a ring: record, play, overdub   ·   hold it: clear   ·   tap a name: pick   ·   \
-                                         Q-Links: {}   ·   Q-LINK: next bank   ·   hold a layer, drag: to a loop   ·   {stop}",
+                View::Looper => format!("Tap a ring: record, play, overdub   ·   hold it: clear   ·   \
+                                         SHIFT + REC: capture   ·   Q-Links: {}   ·   Q-LINK: next bank   ·   \
+                                         hold a layer, drag: to a loop   ·   {stop}",
                                         self.looper_page.bank().name()),
                 View::Synth if self.skin_showing() => format!("{}'s own screen   ·   tap a control: pick it   ·   Wheel: pick one, push and turn: change it   ·   \
                                         Q-Links 1-4: the skin's knobs   ·   MPFree page: MPFree's own page   ·   {stop}",
@@ -4902,7 +4908,11 @@ impl Player {
     /// Pads tabs too, whose UNDO the app sends straight on).
     fn undo_ready(&self) -> bool {
         match self.undo_source() {
-            Some(HistoryOf::Loop) => !self.looper.history.done().is_empty(),
+            Some(HistoryOf::Loop) => {
+                !self.looper.history.done().is_empty()
+                    || (self.looper.status.kept
+                        && self.looper.status.phase == mpfree_looper::Phase::Empty)
+            }
             Some(HistoryOf::Takes) => !self.time.done.is_empty(),
             Some(HistoryOf::Sample) => self.sample.can_undo(),
             Some(HistoryOf::Turns(UndoOn::Synth)) => self.turns_ready.0,
@@ -5668,10 +5678,14 @@ impl Player {
             ToUi::Map(m) => DebugPages::set_map(&mut self.ui, &m),
             ToUi::Engines(shared) => self.engines = Some(shared),
             ToUi::Looper(v) => {
-                // The picked loop's history moved: UNDO on All takes it.
+                // The picked loop's history moved, or a loop was cleared
+                // (a key held on Play picks it as it clears): UNDO on All
+                // takes it.
                 let h = &v.history;
                 let seen = (v.selected, h.done().len(), h.redo().len());
-                if seen.0 == self.seen_loop.0 && seen != self.seen_loop {
+                let cleared = v.status.kept
+                    && !(self.looper.status.kept && self.looper.selected == v.selected);
+                if (seen.0 == self.seen_loop.0 && seen != self.seen_loop) || cleared {
                     self.undo_loop = true;
                 }
                 self.seen_loop = seen;
@@ -11214,6 +11228,12 @@ fn sample_instrument_mixer(synth: &crate::synth::Synth) -> mpfree_mixer_ui::MixS
 /// a chop, the chop muted, the bass on the Q-Links), loop 2 two bars of
 /// hats, muted.
 fn sample_looper(fonts: Fonts) -> Result<Player, String> {
+    sample_looper_picking(fonts, 0)
+}
+
+/// [`sample_looper`] with loop `picked` picked (an empty one shows What
+/// you played: the last bars heard, and Capture over the last two).
+fn sample_looper_picking(fonts: Fonts, picked: usize) -> Result<Player, String> {
     use crate::looping::{LoopHost, PERIOD};
     use mpfree_looper::{Command as L, Phase};
     use mpfree_transport::{Block, Command as T, Transport};
@@ -11275,10 +11295,18 @@ fn sample_looper(fonts: Fonts) -> Result<Player, String> {
     if let Some(l) = v.layers[2].as_mut() {
         l.level = 10f32.powf(-6.0 / 20.0);
     }
+    if picked > 1 {
+        v.selected = picked;
+        v.status = v.loops[picked];
+        v.layers = [None; mpfree_looper::MAX_LAYERS];
+        v.capture_into = Some((picked, 2));
+    }
     p.apply(ToUi::Looper(Box::new(v)));
     p.looper_page.set_names(&["Drums", "Bass", "Chop"]);
-    p.apply(ToUi::LoopWave(Arc::clone(wave)));
-    p.looper_page.pick_layer(&mut p.ui, 1);
+    if picked <= 1 {
+        p.apply(ToUi::LoopWave(Arc::clone(wave)));
+        p.looper_page.pick_layer(&mut p.ui, 1);
+    }
     Ok(p)
 }
 
@@ -12478,6 +12506,12 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     match sample_looper(fonts()) {
         Ok(p) => out.push(("looper", p)),
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
+    // Loop 5 picked, empty: What you played, the last 8 bars heard with
+    // their bar lines, and Capture over the last two.
+    match sample_looper_picking(fonts(), 4) {
+        Ok(p) => out.push(("looper-empty", p)),
         Err(e) => eprintln!("looper sample: {e}"),
     }
     // The same with the undo history open: the bass and the chop overdubs.
@@ -14336,6 +14370,10 @@ mod tests {
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
         p.take_actions();
         let r = p.ui.rect_of(DECK).unwrap();
+        // The header's Capture beside it asks for the last bars heard.
+        let (x, y) = centre_of(LoopDeck::capture_rect(r));
+        assert_eq!(p.touch(1, Touch::Down, x, y), Some(FromUi::LoopCapture));
+        p.touch(1, Touch::Up, x, y);
         let (x, y) = centre_of(LoopDeck::pads_rect(r));
         assert_eq!(p.touch(1, Touch::Down, x, y), Some(FromUi::LoopKeys));
         p.touch(1, Touch::Up, x, y);
@@ -14403,6 +14441,8 @@ mod tests {
             tap(&mut p, centre_of(two.mute)),
             Some(FromUi::LoopMute(Some(1)))
         );
+        // Its S solos it, without picking it.
+        assert_eq!(tap(&mut p, centre_of(two.solo)), Some(FromUi::LoopSolo(1)));
         // Its ring, muted: unmuted on the press; held a second, cleared.
         assert_eq!(
             p.touch(1, Touch::Down, two.ring.x + 46, two.ring.y + 46),
@@ -14479,7 +14519,10 @@ mod tests {
         // The hint says what the tab's controls do.
         let h = hint(&p);
         assert!(
-            h.contains("Tap a ring") && h.contains("hold it: clear") && h.contains("hold a layer"),
+            h.contains("Tap a ring")
+                && h.contains("hold it: clear")
+                && h.contains("SHIFT + REC: capture")
+                && h.contains("hold a layer"),
             "{h}"
         );
         // An empty loop picked: Line in opens the line input; Loops
@@ -15936,8 +15979,8 @@ mod tests {
         let empty = cell(&p, 1, 0);
         assert_eq!(tap(&mut p, empty), None, "no new clip while erasing");
         assert!(hint(&p).contains("empty"), "{}", hint(&p));
-        // Looper tab: a layer's lane or its head deletes it; a loop is
-        // left alone (a cleared loop has no undo yet).
+        // Looper tab: a layer's lane or its head deletes it; a loop's name
+        // or ring clears the loop (UNDO brings it back).
         use crate::looper_tab::LoopEditor;
         let mut p = sample_looper(Fonts::embedded()).unwrap();
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
@@ -15952,11 +15995,15 @@ mod tests {
                 command: mpfree_looper::LayerCommand::Delete,
             })
         );
+        let clear = || vec![FromUi::LoopCommand(mpfree_looper::Command::Clear)];
         let two = channel_of(&p, 1);
-        assert_eq!(tap(&mut p, (two.name.x + 30, two.name.y + 10)), None);
-        assert_eq!(tap(&mut p, centre_of(two.ring)), None);
-        assert!(hint(&p).contains("no undo yet"), "{}", hint(&p));
-        assert_eq!(p.take_actions(), vec![]);
+        assert_eq!(
+            tap(&mut p, (two.name.x + 30, two.name.y + 10)),
+            Some(FromUi::LoopPick(1))
+        );
+        assert_eq!(p.take_actions(), clear());
+        assert_eq!(tap(&mut p, centre_of(two.ring)), Some(FromUi::LoopPick(1)));
+        assert_eq!(p.take_actions(), clear(), "no record while erasing");
     }
 
     #[test]
@@ -18869,6 +18916,8 @@ mod tests {
                     bars: Some(1),
                     after: mpfree_looper::After::Play,
                     fade_old: 1.0,
+                    speed: 0,
+                    rate: 0,
                     layers: vec![mpfree_looper::save::LayerFile {
                         level: 0.5,
                         pan: -0.25,
