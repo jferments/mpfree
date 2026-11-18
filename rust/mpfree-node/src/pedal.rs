@@ -45,9 +45,11 @@ impl NoteSet {
         let n = note & 0x7F;
         self.0[usize::from(n >> 6)] &= !(1 << (n & 63));
     }
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.0 == [0; 2]
     }
+    #[inline]
     pub fn clear(&mut self) {
         self.0 = [0; 2];
     }
@@ -121,24 +123,51 @@ impl Pedals {
         again
     }
 
-    /// The quick path for the usual case, no pedal down and no note held
-    /// by one: notes the key (for a sostenuto later) and returns true when
-    /// `ev` passes as it came. False when it needs [`Pedals::filter`]: a
-    /// pedal moving, or anything while a pedal is down or holds notes.
+    /// Whether both pedals are up. A pedal holds notes only while it is
+    /// down (the held notes end when it comes up), so then every event
+    /// but a pedal's own passes as it came.
+    #[inline]
+    pub fn idle(&self) -> bool {
+        !(self.sustain | self.sostenuto)
+    }
+
+    /// Whether `ev` moves a pedal.
+    #[inline]
+    pub fn moves(ev: &NodeEvent) -> bool {
+        matches!(
+            ev,
+            NodeEvent::Control {
+                ctl: Ctl::Sustain | Ctl::Sostenuto,
+                ..
+            }
+        )
+    }
+
+    /// The keys down, for a caller that counts them itself (the track
+    /// host) and so passes events on while the pedals are idle without
+    /// [`Pedals::pass`]. It calls this before the first event it sends
+    /// through [`Pedals::filter`] after an idle spell, so a sostenuto
+    /// catches the right notes.
+    pub fn set_keys(&mut self, down: NoteSet) {
+        debug_assert!(self.idle());
+        self.down = down;
+    }
+
+    /// The quick path for the usual case, both pedals up: notes the key
+    /// (for a sostenuto later) and returns true when `ev` passes as it
+    /// came. False when it needs [`Pedals::filter`]: a pedal moving, or
+    /// anything while a pedal is down.
     #[inline]
     pub fn pass(&mut self, ev: &NodeEvent) -> bool {
-        if self.sustain || self.sostenuto || !self.held.is_empty() || !self.caught.is_empty() {
+        if !self.idle() || Self::moves(ev) {
             return false;
         }
+        debug_assert!(self.held.is_empty() && self.caught.is_empty());
         match *ev {
             NodeEvent::NoteOn { note, velocity } if velocity > 0 => self.down.put(note),
             NodeEvent::NoteOn { note, .. } | NodeEvent::NoteOff { note } => {
                 self.down.take(note);
             }
-            NodeEvent::Control {
-                ctl: Ctl::Sustain | Ctl::Sostenuto,
-                ..
-            } => return false,
             NodeEvent::AllOff => self.down.clear(),
             _ => {}
         }
