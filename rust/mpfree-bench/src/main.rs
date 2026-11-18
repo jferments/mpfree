@@ -6,7 +6,7 @@
 //!              [--check-allocs]
 //! mpfree-bench --calibrate [--machine NAME]
 //! mpfree-bench --compare A.json B.json
-//! mpfree-bench --afford [--quick] [--calibration FILE]
+//! mpfree-bench --afford [--quick] [--filter TEXT] [--calibration FILE]
 //! mpfree-bench --lanes [--lane-cores A,B] [--quick] [--json FILE]
 //! mpfree-bench --count [--blocks N] [--filter TEXT]
 //! mpfree-bench --soak [--blocks N] [--filter TEXT]
@@ -24,10 +24,12 @@
 //! - `--compare A.json B.json` puts two `--json` reports side by side, case
 //!   by case: B's p99 and worst as a share of A's (the default and the
 //!   cortex-a17 build on the MPC, or a change against main).
-//! - `--afford` measures each synth preset and the sampler at several voice
-//!   counts, fits a fixed cost plus a cost per voice to the p99 blocks, and
-//!   says how many voices fit in the module's budget: on this machine, as an
-//!   MPC estimate with `--calibration`, or for real on the MPC.
+//! - `--afford` measures each synth preset of every keyboard engine and the
+//!   sampler at several voice counts, fits a fixed cost plus a cost per
+//!   voice to the p99 blocks, and says how many voices fit in the module's
+//!   budget: on this machine, as an MPC estimate with `--calibration`, or
+//!   for real on the MPC. It also gives the worst block over the mean at
+//!   the most voices. `--filter` keeps the engines whose name holds TEXT.
 //! - The "mem MB" column is what each engine holds once it is built (its
 //!   buffers, delay lines, sample memory), from the counting allocator.
 //!
@@ -587,7 +589,7 @@ fn grain_budget(budget_ns: f64, grains: (f64, f64), voices: (f64, f64)) -> Optio
 }
 
 /// The `--afford` table: cost per voice and voices per budget.
-fn afford(quick: bool, model: Option<&Model>, on_device: bool) {
+fn afford(quick: bool, filter: Option<&str>, model: Option<&Model>, on_device: bool) {
     let blocks = (if quick { 2 } else { 6 } * MPC.rate / MPC.frames) as u64;
     let (factor, lo, hi) = model.map_or((1.0, 1.0, 1.0), |m| m.factor());
     let place = if on_device {
@@ -604,15 +606,25 @@ fn afford(quick: bool, model: Option<&Model>, on_device: bool) {
     }
     println!();
     println!(
-        "{:<30} {:>9} {:>11}  {:<40}  {:>8}  voices that fit",
-        "engine", "fixed us", "us / voice", "p99 us at each voice count", "budget"
+        "{:<36} {:>9} {:>11}  {:<40}  {:>10}  {:>8}  voices that fit",
+        "engine", "fixed us", "us / voice", "p99 us at each voice count", "worst/mean", "budget"
     );
-    // (fixed, per voice) of the cases the grain budget needs, scaled.
+    // (fixed, per voice) of the cases the grain budget needs, scaled
+    // (with a filter that leaves them out, there is no budget line).
     let (mut grains, mut sample_voices, mut sampler_ns) = (None, None, 0.0);
-    for mut sc in cases::scaling(MPC.rate) {
+    let wanted = |name: &str| filter.is_none_or(|f| name.to_lowercase().contains(f));
+    for mut sc in cases::scaling(MPC.rate)
+        .into_iter()
+        .filter(|s| wanted(&s.name))
+    {
         let mut pts = Vec::new();
+        // The worst block against the mean at the most voices: how much
+        // room spikes take that steady work doesn't.
+        let mut spike = 1.0;
         for (n, c) in sc.points.iter_mut() {
-            pts.push((*n, time_case(c, blocks).p99_ns as f64));
+            let sum = time_case(c, blocks);
+            spike = sum.max_ns as f64 / sum.mean_ns.max(1.0);
+            pts.push((*n, sum.p99_ns as f64));
         }
         let (a, b) = cases::fit(&pts);
         let budget = budget::for_module(sc.module).expect("module budget");
@@ -652,11 +664,12 @@ fn afford(quick: bool, model: Option<&Model>, on_device: bool) {
             format!("{:.2}", b * factor / 1e3)
         };
         println!(
-            "{:<30} {:>9.1} {:>11}  {:<40}  {:>4.0} us  {}{range}",
+            "{:<36} {:>9.1} {:>11}  {:<40}  {:>10.1}  {:>4.0} us  {}{range}",
             sc.name,
             a * factor / 1e3,
             per_voice,
             counts,
+            spike,
             budget_ns / 1e3,
             show(fits(factor))
         );
@@ -664,7 +677,8 @@ fn afford(quick: bool, model: Option<&Model>, on_device: bool) {
     println!();
     println!("\"voices that fit\" is for that engine alone in its whole module budget (synth 20 %, sampler 25 % of a period, worst block);");
     println!("several synth tracks share the synth budget. \"16+ (87)\": every count measured fits, and the line runs out at 87 (Poly plays");
-    println!("at most 16). A preset whose cost does not grow with voices shows a per-voice cost near 0: its p99 is set by something else.");
+    println!("at most 16). A preset whose cost does not grow with voices shows a per-voice cost near 0: its p99 is set by something else");
+    println!("(an organ's wheels turn whatever is held). \"worst/mean\" is the worst block over the mean at the most voices measured.");
     println!("In \"Sampler grains (per grain)\" a voice is one live grain (4 granular pads held, 16 to 256 grains alive): \"us / voice\" is");
     println!(
         "the cost of a grain, and 256 is the engine's grain budget, the most a burst can reach."
@@ -698,7 +712,7 @@ fn main() -> ExitCode {
             eprintln!("usage: mpfree-bench [--quick] [--filter TEXT] [--calibration FILE] [--json FILE] [--check-allocs]\n       \
                        mpfree-bench --calibrate [--machine NAME]\n       \
                        mpfree-bench --compare A.json B.json\n       \
-                       mpfree-bench --afford [--quick] [--calibration FILE]\n       \
+                       mpfree-bench --afford [--quick] [--filter TEXT] [--calibration FILE]\n       \
                        mpfree-bench --lanes [--lane-cores A,B] [--quick] [--json FILE]\n       \
                        mpfree-bench --count [--blocks N] [--filter TEXT]\n       \
                        mpfree-bench --soak [--blocks N] [--filter TEXT]");
@@ -762,7 +776,12 @@ fn main() -> ExitCode {
     };
 
     if o.afford {
-        afford(o.quick, model.as_ref().map(|(m, _)| m), on_device);
+        afford(
+            o.quick,
+            o.filter.as_deref(),
+            model.as_ref().map(|(m, _)| m),
+            on_device,
+        );
         return ExitCode::SUCCESS;
     }
 

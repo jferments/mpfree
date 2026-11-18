@@ -1138,7 +1138,7 @@ impl SamplePage {
         self.projects.get_mut(kit)
     }
 
-    #[cfg(test)]
+    /// Kit `kit` (the browser's pad map reads its pads).
     pub fn project(&self, kit: usize) -> Option<&Project> {
         self.projects.get(kit)
     }
@@ -3062,6 +3062,14 @@ impl SamplePage {
             p.filter.cutoff_hz
         };
         Some([p.tune_cents as f32, decay, cutoff, p.level_db])
+    }
+
+    /// A sliced pad of the playing kit (the sampler's R4): how many slices
+    /// it plays from and its own slice, from 0. None when it isn't sliced.
+    pub fn pad_slices(&self, pad: usize) -> Option<(usize, f32)> {
+        let p = self.projects.get(self.kit)?.pad(pad)?;
+        let n = mpfree_sampler_ui::play_tab::slices(p);
+        (n > 1).then_some((n, f32::from(p.slice)))
     }
 
     /// A Play page Q-Link on `pad` of the playing kit: its tuning or its

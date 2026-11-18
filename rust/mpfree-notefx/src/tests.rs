@@ -745,7 +745,97 @@ fn every_effect_has_a_name_and_says_what_it_does() {
             "Strum: 30 ms · up",
             "Latch: next chord",
             "Randomize: ±5 st on 30 % of notes",
+            "CC scale: all CCs · 20 to 100",
+            "CC smooth: all CCs · 100 ms · jumps on a note",
         ]
+    );
+}
+
+/// The CC effects leave the notes alone: a chain of them plays what goes
+/// in, on its frames, as an empty chain does.
+#[test]
+fn the_cc_effects_pass_the_notes_untouched() {
+    let input = [
+        Ev::on(10, 60, 90),
+        Ev::on(700, 64, 30),
+        Ev::off(900, 60),
+        Ev::off(1500, 64),
+    ];
+    let mut c = chain_of(&[
+        Fx::CcScale(CcScale::default()),
+        Fx::CcSmooth(CcSmooth::default()),
+    ]);
+    let mut empty = Box::new(Chain::new());
+    let got = run(&mut c, &input, 256, 4096);
+    assert_eq!(got, input);
+    assert_eq!(run(&mut empty, &input, 256, 4096), got);
+}
+
+/// What MIDI out sends for a controller: each CC scale that is on and
+/// takes it, top to bottom, and the last CC smooth's glide.
+#[test]
+fn a_controller_goes_through_each_cc_scale_and_takes_the_last_smooth() {
+    let scale = |cc, low, high| Fx::CcScale(CcScale { cc, low, high });
+    let smooth = |cc, ms| {
+        Fx::CcSmooth(CcSmooth {
+            cc,
+            ms,
+            glide_on_note: false,
+        })
+    };
+    let mut t = TrackFx::default();
+    assert!(!t.shapes_ccs());
+    assert_eq!(t.cc_out(74, 64), (64, None));
+    t.add(scale(None, 0, 100));
+    t.add(scale(Some(74), 127, 0));
+    t.add(smooth(None, 50));
+    t.add(smooth(Some(1), 300));
+    assert!(t.shapes_ccs());
+    // CC 74: 127 -> 100 -> 27; glides 50 ms.
+    let (v, g) = t.cc_out(74, 127);
+    assert_eq!((v, g.map(|g| g.ms)), (27, Some(50)));
+    // CC 1: only the first scale; the last smooth that takes it.
+    let (v, g) = t.cc_out(1, 127);
+    assert_eq!((v, g.map(|g| g.ms)), (100, Some(300)));
+    assert_eq!(t.cc_out(1, 0).0, 0);
+    // Past CC 119 nothing shapes it.
+    assert_eq!(t.cc_out(120, 127), (127, None));
+    // An effect turned off does nothing.
+    for s in t.slots.iter_mut().flatten() {
+        s.on = false;
+    }
+    assert!(!t.shapes_ccs());
+    assert_eq!(t.cc_out(74, 127), (127, None));
+}
+
+#[test]
+fn a_cc_scale_fits_the_whole_range_to_the_nearest_step() {
+    let s = |low, high| CcScale {
+        cc: None,
+        low,
+        high,
+    };
+    let all: Vec<u8> = (0..=127).map(|v| s(0, 127).apply(v)).collect();
+    assert_eq!(
+        all,
+        (0..=127).collect::<Vec<u8>>(),
+        "the full range is as it was"
+    );
+    assert_eq!(
+        (0..=127).map(|v| s(127, 0).apply(v)).collect::<Vec<u8>>(),
+        (0..=127).rev().collect::<Vec<u8>>(),
+        "upside down"
+    );
+    assert_eq!((s(20, 100).apply(0), s(20, 100).apply(127)), (20, 100));
+    assert_eq!(s(20, 100).apply(64), 60);
+    assert_eq!(s(64, 64).apply(3), 64);
+    assert!(
+        s(0, 1).takes(5)
+            && !CcScale {
+                cc: Some(7),
+                ..s(0, 1)
+            }
+            .takes(5)
     );
 }
 

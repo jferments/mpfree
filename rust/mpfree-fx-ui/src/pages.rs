@@ -7,7 +7,9 @@
 //! Any other node (a hosted plugin) gets the Synth tab's pages from its
 //! parameter groups.
 
-use mpfree_fx::ids::{autowah, channel_strip as strip, grains, granulator, talkbox, width};
+use mpfree_fx::ids::{
+    autowah, channel_strip as strip, grains, granulator, talkbox, vocoder as voc, width,
+};
 use mpfree_fx::ids::{
     character, chorus, cloud, comb, compressor as comp, crush, delay, dj_filter as dj, drive,
     ducker, eq, filter, flanger, harmonizer as harm, lofi, master, perform, phaser, pitch,
@@ -212,6 +214,7 @@ fn known(info: &NodeInfo, count: u16) -> Option<Vec<Plan>> {
             talkbox::LFO_DEPTH,
             talkbox::MIX,
         ]),
+        "mpfree.fx.vocoder" => one(&[voc::FORMANT, voc::BANDWIDTH, voc::RELEASE, voc::MIX]),
         "mpfree.fx.width" => one(&[width::WIDTH, width::LOW, width::HIGH, width::DELAY]),
         "mpfree.fx.granulator" => one(&[
             granulator::SIZE,

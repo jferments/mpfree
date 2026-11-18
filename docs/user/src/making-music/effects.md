@@ -60,7 +60,7 @@ The Pads tab's **Effects** row opens the chain editor on the pad picked, in the 
 
 ## MIDI effects: a track's Notes
 
-A track that plays notes (not a Loop track) can change its notes before they reach its sound: make each note a chord, keep notes in a scale, move them, set how hard they play, make them all as long, echo them, loosen them up, let some through only by chance, strum a chord, hold notes after you let go, or move notes at random. These are its **MIDI effects**, and with the track's arp they are its **Notes**. They work on the pads, a keyboard and the track's clips, and on what the track sends out of MIDI.
+A track that plays notes (not a Loop track) can change its notes before they reach its sound: make each note a chord, keep notes in a scale, move them, set how hard they play, make them all as long, echo them, loosen them up, let some through only by chance, strum a chord, hold notes after you let go, or move notes at random; and, for a track that plays a synth on MIDI out, fit its controllers into a range or smooth their steps. These are its **MIDI effects**, and with the track's arp they are its **Notes**. They work on the pads, a keyboard and the track's clips, and on what the track sends out of MIDI.
 
 {{shot: chain-notes | A track's chain: NOTES above SOUND, with Scale, Chord, the arp and Humanize (off) in order. Chord's page shows its shapes, what goes in and what comes out on a keyboard, and its settings; the Q-Links turn Chord, Voicing, Inversion and Velocity.}}
 
@@ -70,7 +70,7 @@ Open a track's chain in the chain editor (its strip's **+ FX**, or an effect in 
 - **Plays on**, between the groups, says where the track's notes go: **Its own sound**, or a MIDI out port and channel. Tap it to change that in the mixer's I/O view, in the MIDI section's **Tracks out** (see [Playing a synth from a track](midi-and-cv.md#playing-a-synth-from-a-track)).
 - **SOUND**, the effects on the track's sound, as before.
 
-**+ MIDI effect** opens the eleven MIDI effects as tiles, each with what it does. Tap one to add it, just above the arp, with its page open. **Cancel** closes the tiles.
+**+ MIDI effect** opens the thirteen MIDI effects as tiles, each with what it does. Tap one to add it, just above the arp, with its page open. **Cancel** closes the tiles.
 
 | MIDI effect | What it does |
 |---|---|
@@ -85,6 +85,8 @@ Open a track's chain in the chain editor (its strip's **+ FX**, or an effect in 
 | **Strum** | Plays the notes of a chord one after another, 1 to 200 ms apart: **Up** (lowest first), **Down** or **As played**. Notes that start within 40 ms of each other are one chord. Up and Down sort a chord from a clip, the pads or a Chord effect above; keys you play by hand strum in the order you play them. Each note keeps its length |
 | **Latch** | Keeps notes on after you let go. **Next chord**: they end when you next play with no key held, and the new notes stay instead. **Toggle**: press a note to turn it on, press it again to turn it off. Switch Latch off or remove it to end what it holds |
 | **Randomize** | Moves some notes up or down at random (**Pitch**, up to 24 semitones, on **How often** of them), spreads how hard they play (**Velocity**) and makes them last a little longer (**Longer by**, up to 1 second), never the same way twice. A setting at 0 leaves that part alone |
+| **CC scale** | Fits a controller the track sends to MIDI out into a range: 0 to 127 becomes **Lowest** to **Highest** (Lowest above Highest turns it upside down). **Controller** is one CC, 0 to 119, or **All**. It changes what the track's CC lanes, locks, macros, LFOs and learned knobs send to the synth, not the notes |
+| **CC smooth** | Glides a controller the track sends to MIDI out to each new value over **Glide** (1 to 2000 ms), so a lane's steps sweep instead of jumping. **Controller** is one CC or **All**. **With a note**: **Jumps** (the value goes out at once, ahead of a note that starts with it, as some synths read the controller when the note starts) or **Glides** |
 
 Tap a MIDI effect's row for its page. Its choices are along the top as buttons (Chord's shapes, Scale's root), a keyboard shows what goes in and what comes out (for Chord, Scale and Transpose), and its settings sit in sections under it: tap a choice, or – and + to step a value, or rest a finger on a setting's row and turn the data wheel (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)). The four with a **Q1** to **Q4** badge are on the Q-Links. The page's line under its name says where it is among the Notes ("after Scale, before Arp").
 
@@ -94,6 +96,7 @@ Tap a MIDI effect's row for its page. Its choices are along the top as buttons (
 - A key held while you change an effect ends as it started, so nothing hangs.
 - The track's MIDI effects are saved with the project.
 - On a drum track, the pads go through them but the track's clips don't.
+- **CC scale** and **CC smooth** leave the notes alone and work only on what goes out of MIDI out: while the track plays its own sound, their page's line says they send nothing. On the 5-pin MIDI Out, a gliding controller sends at most one message every 4 ms, so the notes and the clock keep their room. When the song starts, or the track's port changes, each controller goes straight to its value.
 - On a drum track the MIDI effects see pads, not notes: **Transpose** by 1 plays the next pad, a pad moved off the kit doesn't play, and **Randomize**'s Pitch plays other pads at random. Velocity, Note length, Echo, Humanize, Chance, Strum and Latch work the same on any track.
 
 Touch a MIDI effect's setting and the **Modulate** row under the page works on it, as it does for a sound's knob: tap a macro number to put it on that macro, **Learn** to put it on the next Q-Link you turn, or **+ LFO** to sweep it (a choice, such as Chord's shape, takes a macro but not an LFO). A step can lock it, and while you record, a Q-Link turn of it records with the clip and plays back with it. What these do is heard from the next note; a note already playing keeps what it started as. Until you touch a setting, the row says which settings the Q-Links turn. Returns, submixes, the master and Loop tracks have no Notes.
@@ -135,6 +138,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Pitch correct** | Tunes a voice to the notes of a key. Pick the **Key** and **Scale**; **Speed** sets how quickly it pulls a note in (0 snaps straight to it, for the hard, stepped sound; 50 ms or more keeps slides and vibrato natural) and **Amount** how far. **Flex-Tune** leaves notes you sing well away from the note alone, so slides and deliberate bends stay yours, and **Humanize** lets a long held note keep its vibrato while quick notes still snap in (both 0 by default, on the Voice page). The **Note** and **Correction** readouts show the note it hears and how far it is moving it. |
 | **Harmonizer** | Sings along with you: up to two extra voices a 3rd, 4th, 5th, 6th or octave above or below each note you sing, that stay in the key (a 3rd is major or minor as the key has it), each with its own level and pan. **Glide** smooths a voice into its next note, and **Dry** is your own voice. The voices stay clean and in tune with you, without a buzz. |
 | **Talk box** | Makes a sound say vowels, from "oo" to "ee". The vowel moves with how loud you play or in time with the music; **Formant** makes the mouth smaller or bigger. Best on rich sounds: synth chords, organs, guitars (see [The Talk box](#the-talk-box)). |
+| **Vocoder** | Makes a sound speak with a voice: the robot voice, a whispering choir, a synth that sings your words. Put it on a voice and it plays a buzzing saw that follows your pitch, or noise for a whisper (see [The Vocoder](#the-vocoder)). |
 | **Perform FX** | The throws, stutters, beat repeats, tape stops and the XY pad, as an effect you can put on any strip. On the master it is what the Play page's throws play (see [Playing live](playing-live.md#throws)); on a pad, its 16 slots play stutters and repeats on that pad alone. |
 | **XY FX** | One effect at a time played from two controls at once, X and Y: see [XY FX](#xy-fx). |
 | **Tuner** | Tunes a guitar, a bass, a voice or a synth: put it on the strip the instrument comes in on (an input, usually) and play one note at a time. It shows the note, how many cents sharp or flat (the needle is green when you're within 3 cents) and the frequency. **Reference** sets the pitch of A, 440 Hz unless your band tunes to something else; **Mute** silences the strip while you tune. It doesn't change the sound and adds no delay. |
@@ -300,6 +304,21 @@ It works best on sounds with plenty of harmonics: a saw lead, a synth chord, an 
 
 > [!NOTE]
 > Projects saved before this change sound different through the Talk box: it goes in at the level of the sound going in, about 6 dB louder than it was (5 to 8 dB in the presets), and the vowels are fuller and clearer, with no hollow dip between their formants. A Formant shift now makes the vowels a little wider or narrower along with the mouth.
+
+### The Vocoder
+
+The Vocoder splits a voice into bands, from low to high, and lets each band's level set the level of the same band of another sound, the carrier, so the carrier seems to speak. Put it on a voice: with **Carrier** on **Saw** (the default) it plays a bright saw that follows the pitch you sing, for the robot voice; **Pitch** moves it up or down in semitones, an octave down for a deep robot. **Noise** turns the voice into a whisper.
+
+- **Bands** sets how many: 16 is clear speech, 8 or fewer sounds vintage, more adds detail. **Low** and **High** set the range they cover; **Bandwidth** narrows them (a ringing, metallic sound) or widens them (smoother).
+- **Formant** moves the carrier's bands up or down against the voice's: a smaller mouth or a bigger one.
+- **Attack** and **Release** set how fast the bands follow the voice: short for crisp speech, longer for a smooth, singing sound.
+- **Unvoiced** mixes in the voice's own highs, so an "s" or a "t" is heard. **Gate** silences the vocoder when the voice is quieter than it, so the mic's hiss doesn't come through; turned fully down it is off.
+- **Spread** sends alternate bands left and right, for a wide choir. **Mix** blends in the dry voice.
+- **Voice level** shows how loud the voice it hears is.
+
+It sounds about as loud as the voice going in, and it adds no delay, so you can sing through it live. Changing **Carrier** or **Bands** dips the sound for a moment; every other control glides.
+
+**Input** is the classic vocoder on a synth: the track's own sound is the carrier and the voice comes from another track, as the effect's sidechain key. MPFree can't choose that key yet, except from a project that sets one, so on Input with no key the vocoder is silent and **Voice level** stays at the bottom. The presets all use Saw or Noise, so they work on a voice track as they are.
 
 ### Lo-fi
 

@@ -223,6 +223,9 @@ pub enum Button {
     Export,
     /// Saves the kit the pads play as a kit folder here (Kits place).
     SaveKit,
+    /// A kit: a new track (as + Track adds one, armed) that plays it, in
+    /// an empty kit of its own.
+    NewTrack,
 }
 
 impl Button {
@@ -248,6 +251,7 @@ impl Button {
             Button::NewProject => "New project",
             Button::Export => "Export",
             Button::SaveKit => "Save kit",
+            Button::NewTrack => "New track with this kit",
         }
     }
 }
@@ -288,6 +292,14 @@ pub enum Input {
     Export(ExportInput),
     /// A touch in the Plugins place.
     Plugins(PluginInput),
+    /// A finger on pad `pad` (0 to 15) of the pad map's bank shown,
+    /// pressed (`down`) or lifted.
+    MapPad {
+        pad: usize,
+        down: bool,
+    },
+    /// The pad map's arrows: the bank before (-1) or after (1).
+    MapBank(i32),
 }
 
 /// The order of a list.
@@ -334,6 +346,13 @@ pub enum BrowseAction {
     /// the kit the pads play, or in an empty kit of its own for the armed
     /// track when other tracks play that kit.
     LoadKit {
+        loc: Loc,
+        path: PathBuf,
+    },
+    /// New track with this kit: the app adds a track, as + Track does,
+    /// and once it is there and armed loads this kit (`path`, as for
+    /// [`BrowseAction::LoadKit`]) into an empty kit for it alone.
+    NewTrackWithKit {
         loc: Loc,
         path: PathBuf,
     },
@@ -420,6 +439,14 @@ pub enum BrowseAction {
     /// The Plugins place's touches, dial and buttons, for the app, which
     /// answers with [`Browser::set_plugins`].
     Plugins(PluginInput),
+    /// A finger on the pad map (the Selected column's pads): kit pad `pad`
+    /// (0 is A1) pressed or lifted. The app picks it, as a hit on the
+    /// MPC's pad does, so Load names it, and plays what is on it while the
+    /// finger is down.
+    PadPress {
+        pad: usize,
+        down: bool,
+    },
 }
 
 /// What waits for a yes.
@@ -476,6 +503,42 @@ pub struct Detail {
     pub buttons: Vec<Button>,
 }
 
+/// The kit on the pads, for the Selected column's pad map (the Play, Pads
+/// and Sequencer redesign's board 8): each pad's sound and the pad
+/// picked. The app gives it before each step ([`Browser::set_pad_map`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PadMap {
+    /// Whose kit it is, for the map's heading ("Drums' kit").
+    pub kit: String,
+    /// Each pad's sound's name, A1 first, 16 a bank (None: empty).
+    pub pads: Vec<Option<String>>,
+    /// The pad picked (0 is A1): Load puts a sound there.
+    pub picked: usize,
+}
+
+/// A bank of the pad map, as the Selected column shows it under a sound.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapShown {
+    /// "Drums' kit · bank B · tap a pad".
+    pub title: String,
+    /// The bank shown (0 is A) and how many the kit has.
+    pub bank: usize,
+    pub banks: usize,
+    /// Its 16 pads, pad 1 (bottom left) first.
+    pub cells: Vec<MapCell>,
+}
+
+/// A pad on the pad map.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapCell {
+    /// "B13".
+    pub label: String,
+    /// Its sound, or None for an empty pad.
+    pub name: Option<String>,
+    /// The pad picked.
+    pub picked: bool,
+}
+
 /// Everything the widget draws.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Screen {
@@ -513,9 +576,15 @@ pub struct Screen {
     pub export: Option<ExportPanel>,
     /// The Plugins place, while it is the place shown.
     pub plugins: Option<PluginsScreen>,
+    /// The track a kit's Load gives the kit to (the armed track's name,
+    /// `"Drums"`), named on the button: Load on Drums.
+    pub kit_on: Option<String>,
     /// The pad Load puts a sound on (`"A5"`, the pad picked), named on
     /// the button: Load on A5.
     pub load_on: Option<String>,
+    /// The kit's pads under a sound selected, to pick and hear a pad
+    /// (none in a picker, or with no kit on the pads).
+    pub pad_map: Option<MapShown>,
 }
 
 impl Screen {
@@ -543,7 +612,9 @@ impl Screen {
             sort: Sort::Name,
             export: None,
             plugins: None,
+            kit_on: None,
             load_on: None,
+            pad_map: None,
         }
     }
 }
@@ -645,8 +716,15 @@ pub struct Browser {
     /// The sounds MPFree has put in the library, by their version
     /// (`bundled = ...` in the lists): the app adds them once.
     bundled: Option<String>,
+    /// The track a kit's Load gives the kit to, as the app last gave it.
+    kit_target: Option<String>,
     /// The pad Load puts a sound on, as the app last gave it.
     pad_target: Option<String>,
+    /// The kit on the pads, for the pad map, and the bank it shows.
+    pad_map: Option<PadMap>,
+    map_bank: usize,
+    /// The kit pad a finger holds down on the map, to lift.
+    map_down: Option<usize>,
 }
 
 impl Browser {
@@ -704,7 +782,11 @@ impl Browser {
             plugin_rows: 8,
             kit_into: None,
             bundled: None,
+            kit_target: None,
             pad_target: None,
+            pad_map: None,
+            map_bank: 0,
+            map_down: None,
         };
         b.refresh();
         b
@@ -1608,6 +1690,17 @@ impl Browser {
     // ------------------------------------------------------------ input
 
     pub fn input(&mut self, i: Input) {
+        // A finger off the pad map lets go of the pad it pressed, whatever
+        // came up or turned since.
+        if let Input::MapPad { down: false, .. } = i {
+            if let Some(p) = self.map_down.take() {
+                self.actions.push(BrowseAction::PadPress {
+                    pad: p,
+                    down: false,
+                });
+            }
+            return;
+        }
         // The Export panel, over everything, takes only its own touches.
         match (self.export_shown().is_some(), &i) {
             (true, Input::Export(e)) => return self.export_input(*e),
@@ -1679,6 +1772,23 @@ impl Browser {
             }
             Input::Plugins(p) => {
                 self.send_plugins(p);
+            }
+            Input::MapPad { pad, .. } => {
+                let p = self.map_bank * 16 + pad;
+                if pad < 16 && self.pad_map.as_ref().is_some_and(|m| p < m.pads.len()) {
+                    if let Some(q) = self.map_down.replace(p) {
+                        self.actions.push(BrowseAction::PadPress {
+                            pad: q,
+                            down: false,
+                        });
+                    }
+                    self.actions
+                        .push(BrowseAction::PadPress { pad: p, down: true });
+                }
+            }
+            Input::MapBank(d) => {
+                let banks = self.map_banks() as i32;
+                self.map_bank = (self.map_bank as i32 + d).rem_euclid(banks) as usize;
             }
         }
     }
@@ -1800,7 +1910,10 @@ impl Browser {
                         });
                         self.status = Some((
                             if r.kind == Kind::Kit {
-                                format!("Loading the kit {}", r.name)
+                                match &self.kit_target {
+                                    Some(t) => format!("Loading the kit {} on {t}", r.name),
+                                    None => format!("Loading the kit {}", r.name),
+                                }
                             } else if to_pad {
                                 format!("{}: hit a pad to put it there", r.name)
                             } else if let Some(pad) = &self.pad_target {
@@ -1830,6 +1943,22 @@ impl Browser {
                     }
                     _ => self.status = Some((format!("{} is not a sound", r.name), true)),
                 }
+            }
+            Button::NewTrack => {
+                let Some(r) = row.filter(|r| r.kind == Kind::Kit) else {
+                    return;
+                };
+                let Some(loc) = loc else { return };
+                let Ok(path) = self.library().kit_path(&loc) else {
+                    self.status = Some((format!("{}: {} is not there", b.label(), r.name), true));
+                    return;
+                };
+                self.actions.push(BrowseAction::NewTrackWithKit {
+                    loc: loc.clone(),
+                    path,
+                });
+                self.status = Some((format!("A new track for the kit {}", r.name), false));
+                self.remember(loc);
             }
             Button::Open => {
                 let Some(r) = row else {
@@ -2436,8 +2565,68 @@ impl Browser {
             sort: self.sort,
             export: self.export.clone().filter(|_| self.pick.is_none()),
             plugins: self.plugins_shown().then(|| self.plugins.clone()),
+            kit_on: self.kit_target.clone(),
             load_on: self.pad_target.clone(),
+            pad_map: self.map_shown(),
         }
+    }
+
+    /// The track a kit's Load gives the kit to (the armed track's name:
+    /// the kit it plays is the one replaced), so the button says where it
+    /// goes: Load on Drums. None (no track armed, or the pads play an
+    /// instrument) says plain Load.
+    pub fn set_kit_target(&mut self, track: Option<String>) {
+        self.kit_target = track;
+    }
+
+    /// The kit on the pads (None: the pads play an instrument), for the
+    /// pad map under a sound. The map shows the picked pad's bank, until
+    /// its arrows turn it; a pad picked in another bank brings that one.
+    pub fn set_pad_map(&mut self, map: Option<PadMap>) {
+        if let Some(m) = &map {
+            if self.pad_map.as_ref().map(|o| o.picked) != Some(m.picked) {
+                self.map_bank = m.picked / 16;
+            }
+        }
+        self.pad_map = map;
+    }
+
+    /// The pad map's banks (16 pads a bank, at least one).
+    fn map_banks(&self) -> usize {
+        self.pad_map
+            .as_ref()
+            .map_or(1, |m| m.pads.len().div_ceil(16).max(1))
+    }
+
+    /// The pad map's bank as the Selected column shows it: under a sound
+    /// selected, out of a picker, with a kit on the pads.
+    fn map_shown(&self) -> Option<MapShown> {
+        let m = self.pad_map.as_ref()?;
+        let sound = self
+            .selected_row()
+            .is_some_and(|r| matches!(r.kind, Kind::Audio(_)) && r.trash_id.is_none());
+        if self.pick.is_some() || !sound || m.pads.is_empty() {
+            return None;
+        }
+        let banks = self.map_banks();
+        let bank = self.map_bank.min(banks - 1);
+        let letter = char::from(b'A' + bank as u8);
+        let cells = (0..16)
+            .map(|i| {
+                let p = bank * 16 + i;
+                MapCell {
+                    label: format!("{letter}{}", i + 1),
+                    name: m.pads.get(p).cloned().flatten(),
+                    picked: p == m.picked,
+                }
+            })
+            .collect();
+        Some(MapShown {
+            title: format!("{} · bank {letter} · tap a pad", m.kit),
+            bank,
+            banks,
+            cells,
+        })
     }
 
     /// The pad Load puts a sound on (`"A5"`: the pad picked, which a pad
@@ -2606,9 +2795,12 @@ impl Browser {
                 d.lines
                     .push(("Load".into(), "In place of the kit the pads play".into()));
                 d.lines
+                    .push(("New track".into(), "On a new track, in its own kit".into()));
+                d.lines
                     .push(("Sounds".into(), "+ shows them one by one".into()));
                 d.buttons = vec![
                     Button::Load,
+                    Button::NewTrack,
                     Button::Rename,
                     Button::Copy,
                     Button::Cut,

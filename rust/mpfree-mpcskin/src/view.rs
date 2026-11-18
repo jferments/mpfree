@@ -1629,6 +1629,37 @@ impl View {
         }
     }
 
+    /// The plugin parameter the control a finger at (`x`, `y`), in the
+    /// tab's coordinates, would set: what MIDI Learn by SHIFT + a touch
+    /// takes. The control is the one a touch there hits. None with an
+    /// overlay open, on a component, or on a control bound to no
+    /// parameter.
+    pub fn param_at(&self, params: &dyn Params, x: f32, y: f32) -> Option<usize> {
+        if self.overlay.is_some() {
+            return None;
+        }
+        let f = self.frame();
+        let items = self.items_now(params, &f);
+        let (px, py) = (x.floor() as i32, y.floor() as i32);
+        let k = (0..items.len()).rev().find(|&k| {
+            let i = &items[k];
+            i.clip.contains(px, py)
+                && match &i.what {
+                    What::Widget { w, .. } => is_interactive(w),
+                    What::Comp {
+                        actions,
+                        ignore_mouse,
+                        ..
+                    } => !ignore_mouse && (!actions.is_empty() || i.focusable),
+                    What::Back(..) => false,
+                }
+        })?;
+        match &items[k].what {
+            What::Widget { handle, .. } => self.param_of(params, handle),
+            _ => None,
+        }
+    }
+
     /// Where a finger does something now, in the tab's coordinates: each
     /// control and each component with actions (for the GUI's control
     /// audit).
@@ -2149,6 +2180,32 @@ mod tests {
         // Where a finger does something: the two slots, the knob in each,
         // and the button.
         assert_eq!(v.controls(&p).len(), 5);
+    }
+
+    /// SHIFT + a touch's MIDI Learn takes the parameter of the control
+    /// a touch there hits: each knob's, the button's; nothing off the
+    /// controls or with an overlay open.
+    #[test]
+    fn the_control_under_a_finger_names_its_parameter() {
+        let mut v = view();
+        let p = Vals(vec![0.5, 0.25, 0.0]);
+        assert_eq!(v.param_at(&p, 200.0, 200.0), Some(0));
+        assert_eq!(v.param_at(&p, 500.0, 200.0), Some(1));
+        assert_eq!(v.param_at(&p, 750.0, 130.0), Some(2));
+        assert_eq!(v.param_at(&p, 1200.0, 600.0), None);
+        for ms in [0, 100] {
+            v.touch(
+                &p,
+                Touch::Down {
+                    x: 500.0,
+                    y: 200.0,
+                    ms,
+                },
+            );
+            v.touch(&p, Touch::Up { x: 500.0, y: 200.0 });
+        }
+        assert!(v.overlay_open());
+        assert_eq!(v.param_at(&p, 200.0, 200.0), None);
     }
 
     #[test]

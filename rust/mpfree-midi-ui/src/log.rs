@@ -218,7 +218,7 @@ mod tests {
         assert!(all.iter().all(|l| l.split('\t').count() == 9), "{all:?}");
         let pad = all
             .iter()
-            .find(|l| l.contains("Drums, pad 1"))
+            .find(|l| l.contains("Drums, pad A1"))
             .expect("the drum machine's note");
         let f: Vec<&str> = pad.split('\t').collect();
         assert_eq!(&f[2..6], ["MIDI", "in", "10", "notes"]);

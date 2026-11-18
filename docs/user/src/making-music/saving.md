@@ -105,13 +105,13 @@ MPFree opens the project you last saved or opened: once the sound is going, it o
 
 - **Places** on the left: Projects, Samples, Kits, Instruments, Patterns and Recordings, plus Recent, Favourites, the Trash, and Factory (read-only kits). **Plugins** finds and installs MPC plugins (see [Getting plugins](plugins.md)).
 - **The list** in the middle, folders first, in natural order (Kick 2 before Kick 10), with filters for audio, projects and kits. Each row has a **star** at its right end: tap it to add the item to Favourites, and again to take it out.
-- **The selected item** on the right: a sound's length and waveform, a project's tempo and when it was saved, and buttons to Load (for a sound, **Load on A5**: the pad picked), Next pad hit, Audition, Rename, Copy, Cut and Delete.
+- **The selected item** on the right: a sound's length and waveform, a project's tempo and when it was saved, and buttons to Load (for a sound, **Load on A5**: the pad picked), Next pad hit, Audition, Rename, Copy, Cut and Delete. Under a sound, the kit's pads show what each pad holds; a finger on one picks it and plays it (see [Finding sounds](sampling.md#finding-sounds-browse-for)).
 
 **Opening things.** Tap a folder to open it. Tap anything else to pick it (a sound plays once), and tap it again to open it (a project) or load it (a sound, a kit, a preset, a MIDI file). Pushing the data wheel does the same as that second tap.
 
 **MIDI files.** A `.mid` file loads as clips, from the armed track on: see [Bringing in a MIDI file](clips.md#bringing-in-a-midi-file). The MIDI file an export makes (in Recordings) loads back the same way.
 
-**Kits.** A kit is kept as a folder with its sounds and a `kit.txt` file listing every pad and its settings, so it reads on any computer. Kits show with a green icon wherever they are. Loading one puts it in place of the kit the pads play (or in a new kit for the selected track, when other tracks play that kit); **+** opens it to show its sounds. **Save kit** at the top of the **Kits** place saves the kit the pads play there, named after it. MPFree's own drum kits and its free kits of recorded drums ([Sampling](sampling.md)) are in **Kits > MPFree**.
+**Kits.** A kit is kept as a folder with its sounds and a `kit.txt` file listing every pad and its settings, so it reads on any computer. Kits show with a green icon wherever they are. Loading one (its button names the selected track: **Load on Drums**) puts it in place of the kit the pads play (or in a new kit for the selected track, when other tracks play that kit); **New track with this kit** puts it on a new track of its own instead. **+** opens it to show its sounds. **Save kit** at the top of the **Kits** place saves the kit the pads play there, named after it. MPFree's own drum kits and its free kits of recorded drums ([Sampling](sampling.md)) are in **Kits > MPFree**.
 
 A folder with thousands of sounds lists straight away; the sizes fill in a moment later.
 
