@@ -247,6 +247,8 @@ impl Rig {
         // A track's own instrument goes in, and retired ones go back, as
         // the loop does before the notes.
         let _ = mix.poll_instruments();
+        // The synth-voice pads' copies follow the Synth tab.
+        mix.pad_synths.follow(synth);
         let mut seq = SeqPads {
             player,
             synth,
@@ -261,6 +263,7 @@ impl Rig {
             midi,
             cv,
             own: &mut mix.instruments,
+            pad_synths: &mut mix.pad_synths,
             tap,
             only: None,
             shifts: [mpfree_seq::Transpose::NONE; mpfree_seq::MAX_TRACKS],
@@ -736,6 +739,7 @@ fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
         midi: &mut rig.midi,
         cv: &mut rig.cv,
         own: &mut rig.mix.instruments,
+        pad_synths: &mut rig.mix.pad_synths,
         tap: &mut rig.tap,
         only: None,
         shifts: [mpfree_seq::Transpose::NONE; mpfree_seq::MAX_TRACKS],
@@ -814,6 +818,7 @@ fn a_tracks_transpose_moves_its_notes_and_a_sounding_note_ends_where_it_went() {
         midi: &mut rig.midi,
         cv: &mut rig.cv,
         own: &mut rig.mix.instruments,
+        pad_synths: &mut rig.mix.pad_synths,
         tap: &mut rig.tap,
         only: None,
         shifts,
@@ -955,6 +960,7 @@ fn routed_keys_play_their_track_where_its_clips_play() {
                 &mut rig.midi,
                 &mut rig.cv,
                 &mut rig.mix.instruments,
+                &mut rig.mix.pad_synths,
                 &mut rig.synth,
                 false,
                 &mut rig.player,
@@ -1057,6 +1063,7 @@ fn live_pads_on_a_track_with_its_own_instrument_play_it() {
         midi: &mut rig.midi,
         cv: &mut rig.cv,
         own: &mut rig.mix.instruments,
+        pad_synths: &mut rig.mix.pad_synths,
         tap: &mut rig.tap,
         only: None,
         shifts: [mpfree_seq::Transpose::NONE; mpfree_seq::MAX_TRACKS],
@@ -1262,6 +1269,7 @@ fn each_track_plays_its_own_kit_at_once() {
         midi: &mut rig.midi,
         cv: &mut rig.cv,
         own: &mut rig.mix.instruments,
+        pad_synths: &mut rig.mix.pad_synths,
         tap: &mut rig.tap,
         only: None,
         shifts: [mpfree_seq::Transpose::NONE; mpfree_seq::MAX_TRACKS],
@@ -1348,6 +1356,7 @@ fn a_kits_instrument_and_midi_out_pads_play_the_synth_and_the_gear() {
         midi: &mut rig.midi,
         cv: &mut rig.cv,
         own: &mut rig.mix.instruments,
+        pad_synths: &mut rig.mix.pad_synths,
         tap: &mut rig.tap,
         only: None,
         shifts: [mpfree_seq::Transpose::NONE; mpfree_seq::MAX_TRACKS],
@@ -1465,6 +1474,7 @@ fn routed_keys_play_a_kits_midi_out_and_instrument_pads_by_their_kind() {
                 &mut rig.midi,
                 &mut rig.cv,
                 &mut rig.mix.instruments,
+                &mut rig.mix.pad_synths,
                 &mut rig.synth,
                 false,
                 &mut rig.player,
@@ -1500,5 +1510,93 @@ fn routed_keys_play_a_kits_midi_out_and_instrument_pads_by_their_kind() {
         *sink.0.lock().unwrap(),
         [0x99, 36, 100, 0x89, 36, 64],
         "pad 3's own note on channel 10, and its end"
+    );
+}
+
+/// A synth-voice pad with a synth of its own (Jay's card, 18 Nov 20:15Z):
+/// asked for, made and put in as the loop does, a clip's hit on it plays
+/// its own copy of the engine, not the shared synth, into the pad's own
+/// channel (kit 1's pad 4: the A4 strip), not the Synth strip; the periods
+/// it sounds in, the copy following the Synth tab, never allocate.
+#[test]
+fn a_synth_voice_pads_own_synth_plays_into_its_pad_channel() {
+    use crate::synth::Engine;
+    use mpfree_fx::StripId;
+    let mut rig = Rig::new(false);
+    let mut routes = vec![None; mpfree_sampler::model::PADS];
+    routes[3] = Some(sampler::PadRoute::Voice(Engine::Analog, 48));
+    let mut swap = sampler::ViewSwap {
+        kit: 0,
+        view: Some(mpfree_sampler::engine::EngineView::build(
+            &mpfree_sampler::model::Project::new(),
+            RATE,
+        )),
+        routes,
+    };
+    assert!(rig.player.swap_view(&mut swap));
+    // The time engine drops its first view on the first periods: get
+    // that out of the way before counting.
+    for i in 0..4 {
+        rig.period(i);
+    }
+    let plan = rig.mix.pad_synths.plan(rig.player.voice_pads(), &rig.synth);
+    let p = plan.asks[0].expect("pad 4's copy asked for");
+    assert_eq!((p.kit, p.pad, p.engine), (0, 3, Engine::Analog));
+    assert_eq!(plan.asks[1], None);
+    let (id, extras, values) = rig.synth.sound_of(Engine::Analog);
+    assert!(rig.mix.build_instrument(crate::control::InstrumentJob {
+        track: 0,
+        pad: Some(p),
+        id,
+        extras,
+        values,
+        pads: rig.synth.pads_for(Engine::Analog),
+        tuning: rig.synth.tuning_now(),
+    }));
+    assert_eq!(rig.mix.poll_instruments(), None, "a pad's, not a track's");
+    assert!(matches!(
+        rig.mix.take_pad_landed(),
+        Some(mixing::PadLanded::Playing { name: "Analog", .. })
+    ));
+    let mut seq = SeqPads {
+        player: &mut rig.player,
+        synth: &mut rig.synth,
+        kits: &rig.track_kits,
+        shown: 0,
+        flashes: [0; 128],
+        hits: 0,
+        live: rig.app.live_map(),
+        live_hits: [(0, 0); MAX_LIVE_HITS],
+        n_live: 0,
+        silent: 0,
+        midi: &mut rig.midi,
+        cv: &mut rig.cv,
+        own: &mut rig.mix.instruments,
+        pad_synths: &mut rig.mix.pad_synths,
+        tap: &mut rig.tap,
+        only: None,
+        shifts: [mpfree_seq::Transpose::NONE; mpfree_seq::MAX_TRACKS],
+        key: None,
+        by_note: &mut [mpfree_arp::scale::Held::new(); 2],
+    };
+    assert!(time::Pads::hit_at(&mut seq, 0, 3, 100, 0));
+    assert!(
+        seq.synth.queued_on(Engine::Analog).is_empty(),
+        "not the shared synth"
+    );
+    let _ = rig.mix.mixer.take_peaks(StripId::Pad(3));
+    let _ = rig.mix.mixer.take_peaks(StripId::Track(mixing::SYNTH));
+    let ((), calls) = crate::sys::alloc_count::calls(|| {
+        for i in 4..12 {
+            rig.period(i);
+        }
+    });
+    assert_eq!(calls, 0, "allocations or frees while the copy plays");
+    let pad = rig.mix.mixer.take_peaks(StripId::Pad(3));
+    assert!(pad[0] > 0.0 && pad[1] > 0.0, "the A4 strip: {pad:?}");
+    assert_eq!(
+        rig.mix.mixer.take_peaks(StripId::Track(mixing::SYNTH)),
+        [0.0, 0.0],
+        "nothing on the Synth strip"
     );
 }
