@@ -1,7 +1,8 @@
 //! Instruments for MPFree: sound presets that any node can save and load.
 //!
-//! - [`preset`]: a node's settings as plain `key = value` text and back.
-//!   A user preset is one such file in the library
+//! - [`preset`]: a node's settings as plain `key = value` text and back
+//!   (in `mpfree-node`, so the engines read their factory presets with it
+//!   too). A user preset is one such file in the library
 //!   (`library/Instruments/<engine>/<name>.preset`); the library crate
 //!   writes and lists the files, so this crate does no file I/O.
 //!
@@ -14,7 +15,7 @@
 
 #![forbid(unsafe_code)]
 
-pub mod preset;
+pub use mpfree_node::preset;
 pub mod sound;
 
 pub use preset::{Error, Preset};

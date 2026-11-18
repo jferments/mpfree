@@ -1,4 +1,5 @@
-//! The Poly synth's parameters and factory presets.
+//! The Poly synth's parameters; its factory presets are in
+//! `presets/poly.presets` ([`crate::factory::read`]).
 
 use mpfree_node::{pressure as np, Curve, ParamInfo, Unit};
 
@@ -558,210 +559,16 @@ const fn all() -> [ParamInfo; N_PARAMS] {
 static ALL: [ParamInfo; N_PARAMS] = all();
 pub static PARAMS: &[ParamInfo] = &ALL;
 
-/// A factory preset: a name and the values that differ from the defaults.
+/// A factory preset: a name and the values that differ from the defaults,
+/// read from the engine's preset file ([`crate::factory::read`]).
 #[derive(Clone, Copy, Debug)]
 pub struct Preset {
     pub name: &'static str,
     pub values: &'static [(u16, f32)],
+    /// The preset as it is in the file, with any lines for what hosts the
+    /// engine (a sound's effects and macros, `mpfree-instruments`).
+    pub text: &'static str,
 }
-
-pub static PRESETS: &[Preset] = &[
-    Preset {
-        name: "Init",
-        values: &[],
-    },
-    Preset {
-        name: "Grit Bass",
-        values: &[
-            (OSC1_OCT, -1.0),
-            (OSC2_WAVE, 1.0),
-            (OSC2_OCT, -1.0),
-            (OSC2_FINE, -9.0),
-            (OSC2_LEVEL, 70.0),
-            (SUB_LEVEL, 70.0),
-            (CUTOFF, 260.0),
-            (RESONANCE, 35.0),
-            // Its grit after the filter (Jay after live test 3): before
-            // it, the 260 Hz cutoff takes the grit out.
-            (DIST, 18.0),
-            (FENV_AMOUNT, 3.2),
-            (FENV_D, 220.0),
-            (FENV_S, 10.0),
-            (AMP_D, 400.0),
-            (AMP_S, 70.0),
-            (AMP_R, 90.0),
-            (VOICE_MODE, 2.0),
-            (GLIDE, 40.0),
-            (KEY_TRACK, 30.0),
-            (LEVEL, 6.0),
-            // Pressure adds grit: 6 dB more distortion.
-            (press_target(0), target::DIST as f32),
-            (press_depth(0), 25.0),
-        ],
-    },
-    Preset {
-        name: "Acid",
-        values: &[
-            (OSC2_LEVEL, 0.0),
-            (OSC1_OCT, -1.0),
-            (CUTOFF, 380.0),
-            (RESONANCE, 82.0),
-            (DRIVE, 12.0),
-            (FENV_AMOUNT, 3.8),
-            (FENV_D, 180.0),
-            (FENV_S, 0.0),
-            (AMP_S, 90.0),
-            (AMP_R, 40.0),
-            (VOICE_MODE, 2.0),
-            (GLIDE, 70.0),
-            (VEL_CUTOFF, 2.0),
-            (LEVEL, 5.0),
-            // Pressure opens the filter 2 octaves and adds 20 % resonance.
-            (press_depth(0), 50.0),
-            (press_target(1), target::RESONANCE as f32),
-            (press_depth(1), 20.0),
-        ],
-    },
-    Preset {
-        name: "Supersaw",
-        values: &[
-            (UNISON, 4.0),
-            (UNISON_DETUNE, 28.0),
-            (UNISON_SPREAD, 90.0),
-            (OSC2_OCT, 1.0),
-            (OSC2_FINE, 4.0),
-            (OSC2_LEVEL, 45.0),
-            (CUTOFF, 6_000.0),
-            (RESONANCE, 10.0),
-            (FENV_AMOUNT, 0.8),
-            (AMP_A, 5.0),
-            (AMP_R, 500.0),
-            (FILTER_MODE, 1.0),
-            (LEVEL, -3.0),
-        ],
-    },
-    Preset {
-        name: "Dust Pad",
-        values: &[
-            (OSC1_WAVE, 1.0),
-            (OSC1_PW, 35.0),
-            (OSC2_FINE, 11.0),
-            (OSC2_LEVEL, 80.0),
-            (NOISE_LEVEL, 8.0),
-            (UNISON, 2.0),
-            (UNISON_DETUNE, 12.0),
-            (CUTOFF, 900.0),
-            (RESONANCE, 25.0),
-            (FENV_AMOUNT, 1.2),
-            (FENV_A, 900.0),
-            (FENV_D, 2_000.0),
-            (FENV_S, 50.0),
-            (FENV_R, 1_500.0),
-            (AMP_A, 700.0),
-            (AMP_D, 1_500.0),
-            (AMP_S, 85.0),
-            (AMP_R, 1_800.0),
-            (LFO_SHAPE, 1.0),
-            (LFO_RATE, 0.3),
-            (LFO_PW, 20.0),
-            (LFO_CUTOFF, 0.6),
-            (LEVEL, -6.0),
-            // Pressure swells it 6 dB and adds 0.3 semitones of vibrato.
-            (press_target(0), target::LEVEL as f32),
-            (press_depth(0), 25.0),
-            (press_target(1), target::VIBRATO as f32),
-            (press_depth(1), 30.0),
-        ],
-    },
-    Preset {
-        name: "Pluck",
-        values: &[
-            (OSC2_WAVE, 1.0),
-            (OSC2_OCT, 1.0),
-            (OSC2_LEVEL, 35.0),
-            (CUTOFF, 400.0),
-            (RESONANCE, 30.0),
-            (FENV_AMOUNT, 4.0),
-            (FENV_D, 160.0),
-            (FENV_S, 0.0),
-            (FENV_R, 160.0),
-            (AMP_D, 450.0),
-            (AMP_S, 0.0),
-            (AMP_R, 300.0),
-            (VEL_CUTOFF, 1.5),
-            // No pressure: the sound decays, and pressure would fight the hit.
-            (press_target(0), target::OFF as f32),
-        ],
-    },
-    Preset {
-        name: "Brass",
-        values: &[
-            (OSC2_FINE, 5.0),
-            (OSC2_LEVEL, 90.0),
-            (CUTOFF, 700.0),
-            (RESONANCE, 10.0),
-            (FENV_AMOUNT, 2.5),
-            (FENV_A, 60.0),
-            (FENV_D, 500.0),
-            (FENV_S, 50.0),
-            (AMP_A, 30.0),
-            (AMP_S, 90.0),
-            (LFO_PITCH, 0.15),
-            (LFO_RATE, 5.5),
-            // Pressure swells it 9 dB and opens the filter 1.5 octaves.
-            (press_target(0), target::LEVEL as f32),
-            (press_depth(0), 37.5),
-            (press_target(1), target::CUTOFF as f32),
-            (press_depth(1), 37.5),
-        ],
-    },
-    Preset {
-        name: "Sub Bass",
-        values: &[
-            (OSC1_WAVE, 3.0),
-            (OSC1_OCT, -1.0),
-            (OSC2_WAVE, 2.0),
-            (OSC2_OCT, -1.0),
-            (OSC2_FINE, 0.0),
-            (OSC2_LEVEL, 40.0),
-            (CUTOFF, 1_200.0),
-            (RESONANCE, 0.0),
-            (FENV_AMOUNT, 0.0),
-            (AMP_S, 100.0),
-            (AMP_R, 120.0),
-            (VOICE_MODE, 1.0),
-            (GLIDE, 25.0),
-            (press_target(0), target::DRIVE as f32),
-            (press_depth(0), 25.0),
-        ],
-    },
-    Preset {
-        name: "Lead",
-        values: &[
-            (OSC1_WAVE, 1.0),
-            (OSC1_PW, 40.0),
-            (OSC2_FINE, 12.0),
-            (OSC2_LEVEL, 80.0),
-            (CUTOFF, 1_800.0),
-            (RESONANCE, 40.0),
-            (DRIVE, 9.0),
-            (FENV_AMOUNT, 1.8),
-            (FENV_D, 300.0),
-            (FENV_S, 40.0),
-            (VOICE_MODE, 2.0),
-            (GLIDE, 90.0),
-            (LFO_PITCH, 0.3),
-            (LFO_RATE, 5.8),
-            (BEND_RANGE, 12.0),
-            (LEVEL, 3.0),
-            // Pressure adds 0.5 semitones of vibrato and opens the filter an octave.
-            (press_target(0), target::VIBRATO as f32),
-            (press_depth(0), 50.0),
-            (press_target(1), target::CUTOFF as f32),
-            (press_depth(1), 25.0),
-        ],
-    },
-];
 
 /// Looks up a parameter by id.
 pub fn info(id: u16) -> Option<&'static ParamInfo> {

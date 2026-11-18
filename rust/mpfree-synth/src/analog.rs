@@ -884,7 +884,7 @@ impl Analog {
     }
 
     pub fn presets() -> &'static [Preset] {
-        PRESETS
+        crate::factory::presets!("analog.presets", &INFO, PARAMS)
     }
 
     /// Cards sounding, then one while the chorus rings out.

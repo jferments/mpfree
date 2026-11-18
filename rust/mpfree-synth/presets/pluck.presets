@@ -1,0 +1,163 @@
+mpfree-preset = 1
+engine = mpfree.pluck
+name = Init
+
+mpfree-preset = 1
+engine = mpfree.pluck
+name = Nylon
+
+# Model
+model.decay = 3000
+model.release = 250
+
+# String
+string.brightness = 35
+string.pick = 45
+string.position = 20
+
+mpfree-preset = 1
+engine = mpfree.pluck
+name = Steel String
+
+# Model
+model.decay = 6000
+model.release = 400
+
+# String
+string.brightness = 80
+string.pick = 85
+string.position = 12
+
+mpfree-preset = 1
+engine = mpfree.pluck
+name = Harp
+
+# Model
+model.decay = 5000
+model.release = 5000
+
+# String
+string.brightness = 55
+string.pick = 50
+string.position = 30
+
+# Output
+output.spread = 60
+
+mpfree-preset = 1
+engine = mpfree.pluck
+name = Koto
+
+# Model
+model.decay = 2500
+model.release = 600
+
+# String
+string.brightness = 75
+string.pick = 95
+string.position = 5
+
+mpfree-preset = 1
+engine = mpfree.pluck
+name = Muted Bass
+
+# Model
+model.decay = 1200
+model.release = 60
+
+# String
+string.brightness = 20
+string.pick = 40
+string.position = 25
+
+# Voice
+voice.transpose = -12
+
+# Output
+output.level = 2
+output.spread = 0
+
+mpfree-preset = 1
+engine = mpfree.pluck
+name = Marimba
+
+# Model
+model.model = Mallet
+model.decay = 1200
+model.release = 5000
+
+# Mallet
+mallet.material = Marimba
+mallet.hardness = 45
+
+mpfree-preset = 1
+engine = mpfree.pluck
+name = Vibes
+
+# Model
+model.model = Mallet
+model.decay = 6000
+model.release = 400
+
+# Mallet
+mallet.material = Vibes
+mallet.hardness = 55
+mallet.high-damp = 30
+
+mpfree-preset = 1
+engine = mpfree.pluck
+name = Bell
+
+# Model
+model.model = Mallet
+model.decay = 9000
+model.release = 5000
+
+# Mallet
+mallet.material = Bell
+mallet.hardness = 80
+mallet.high-damp = 40
+
+# Output
+output.level = -2
+
+mpfree-preset = 1
+engine = mpfree.pluck
+name = Glass
+
+# Model
+model.model = Mallet
+model.decay = 4000
+model.release = 3000
+
+# Mallet
+mallet.material = Glass
+mallet.hardness = 70
+mallet.strike = 35
+
+mpfree-preset = 1
+engine = mpfree.pluck
+name = Kalimba
+
+# Model
+model.model = Mallet
+model.decay = 1800
+model.release = 2000
+
+# Mallet
+mallet.material = Kalimba
+mallet.hardness = 60
+
+mpfree-preset = 1
+engine = mpfree.pluck
+name = Steel Drum
+
+# Model
+model.model = Mallet
+model.decay = 2000
+model.release = 1500
+
+# Mallet
+mallet.material = Steel drum
+mallet.hardness = 65
+mallet.stretch = 2

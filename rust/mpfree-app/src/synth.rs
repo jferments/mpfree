@@ -43,7 +43,7 @@ use mpfree_arp::scale::pads::{
 };
 use mpfree_arp::scale::{Scale, Shift, NOTE_NAMES};
 use mpfree_instruments::preset::{engine_of, Error as PresetError};
-use mpfree_instruments::sound::is_design_key;
+use mpfree_instruments::sound::{has_design, is_design_key};
 use mpfree_instruments::{Design, Designed, Sound, SoundError};
 use mpfree_node::pedal::Pedals;
 use mpfree_node::{Ctl, Ctx, Cull, Node, NodeEvent, ParamInfo, Timed};
@@ -580,6 +580,14 @@ pub fn engine_node(id: &str, rate: u32) -> Option<Box<dyn Node>> {
     })
 }
 
+/// A preset as a track's own copy takes it: its name, design lines and
+/// values ([`Synth::preset_values`]).
+pub type PresetSound = (String, Vec<(String, String)>, Vec<f32>);
+
+/// A sound as a track's own copy is built from it ([`fresh_node`]): its
+/// design lines and every value in the node's order.
+pub type SoundCopy = (Vec<(String, String)>, Vec<f32>);
+
 /// The index of the preset called `name`, or 0.
 fn start_preset(presets: &[Preset], name: &str) -> usize {
     presets.iter().position(|p| p.name == name).unwrap_or(0)
@@ -795,8 +803,9 @@ impl Synth {
         self.meters[e.index()] = meters_of(self.sound(e));
     }
 
-    /// Engine `e` plays a plain preset (a factory one): the effects and
-    /// macros an earlier preset brought go.
+    /// Engine `e` plays a plain preset (a factory one with no effects or
+    /// macros of its own): the effects and macros an earlier preset brought
+    /// go.
     fn make_plain(&mut self, e: Engine) {
         if !self.sound(e).is_plain() {
             // An empty design always builds.
@@ -1784,14 +1793,23 @@ impl Synth {
         if i >= count {
             return None;
         }
-        self.make_plain(e);
         if e == Engine::Fm {
+            self.make_plain(e);
             let p = self.fm_presets.get(i)?;
             self.fm.load_preset(p);
             self.presets[e.index()] = i;
             return Some(&p.name);
         }
         let p = static_presets(e).get(i)?;
+        if has_design(p.text) {
+            // A factory sound with its own effects and macros loads as a
+            // user's preset does. Every factory preset loads (the tests
+            // load each one), so this never fails.
+            self.put_text(p.text).ok()?;
+            self.presets[e.index()] = i;
+            return Some(p.name);
+        }
+        self.make_plain(e);
         match e {
             Engine::Drums => {
                 let names = self.drum_names();
@@ -2020,10 +2038,11 @@ impl Synth {
         }
     }
 
-    /// Preset `i` of engine `engine` as every value in the node's order
-    /// (and its name), for a track's own copy of the engine: loaded into a
+    /// Preset `i` of engine `engine` as a track's own copy of the engine
+    /// takes it ([`fresh_node`]): its name, its design lines (none for a
+    /// plain preset) and every value in the node's order. Loaded into a
     /// scratch engine, so this synth's sound is left alone. Allocates.
-    pub fn preset_values(&self, engine: Engine, i: usize) -> Option<(String, Vec<f32>)> {
+    pub fn preset_values(&self, engine: Engine, i: usize) -> Option<PresetSound> {
         fn values(n: &dyn Node) -> Vec<f32> {
             n.params().iter().map(|p| n.param(p.id)).collect()
         }
@@ -2032,9 +2051,15 @@ impl Synth {
             let p = self.fm_presets.get(i)?;
             let mut n = Fm::new(rate);
             n.load_preset(p);
-            return Some((p.name.clone(), values(&n)));
+            return Some((p.name.clone(), Vec::new(), values(&n)));
         }
         let p = static_presets(engine).get(i)?;
+        if has_design(p.text) {
+            let mut s =
+                Sound::new(engine_node(engine.node_id(), rate)?, &Design::default()).ok()?;
+            s.load_text(p.text).ok()?;
+            return Some((p.name.to_string(), s.save_extras(), values(&s)));
+        }
         let v = match engine {
             Engine::Drums => {
                 let mut n = Drums::new(rate);
@@ -2087,7 +2112,7 @@ impl Synth {
                 values(&n)
             }
         };
-        Some((p.name.to_string(), v))
+        Some((p.name.to_string(), Vec::new(), v))
     }
 
     /// What the Synth tab shows for a track's own instrument `node`
@@ -2830,6 +2855,46 @@ mod tests {
         let mut bad = st.extras.clone();
         bad.push(("fx.2".into(), "mpfree.fx.nothing".into()));
         assert!(fresh_node(st.info.id, &bad, &st.values, rate).is_none());
+    }
+
+    /// A factory sound brings its own effects and macros, on the pads and
+    /// to a track's copy; a plain factory preset after it takes them away.
+    #[test]
+    fn a_factory_sound_brings_its_effects_and_macros() {
+        let rate = 48_000;
+        let mut s = Synth::new(rate);
+        with(&mut s, |p| p.engine = Engine::Keys);
+        let n = s.node().params().len();
+        let i = s
+            .preset_names(Engine::Keys)
+            .iter()
+            .position(|p| p == "Phase Tines")
+            .unwrap();
+        assert_eq!(s.load_preset(i), Some("Phase Tines"));
+        assert_eq!(s.preset_name(), "Phase Tines");
+        let st = s.state();
+        assert_eq!(st.params[0].name, "Tone", "the macros first");
+        assert!(
+            st.extras
+                .iter()
+                .any(|(k, v)| k == "fx.1" && v == "mpfree.fx.phaser"),
+            "{:?}",
+            st.extras
+        );
+        // A track's copy plays the same sound.
+        let (name, extras, values) = s.preset_values(Engine::Keys, i).unwrap();
+        assert_eq!(name, "Phase Tines");
+        assert_eq!(extras, st.extras);
+        assert_eq!(values, st.values);
+        let mut copy = fresh_node("mpfree.keys", &extras, &values, rate).unwrap();
+        let k = s.notes(0)[0];
+        let theirs = note(s.node_mut(), k);
+        assert!(peak(&theirs) > 0.001);
+        assert_eq!(note(copy.as_mut(), k), theirs);
+        // A plain factory preset takes them away.
+        assert_eq!(s.load_preset(0), Some("Init"));
+        assert_eq!(s.node().params().len(), n);
+        assert!(s.state().extras.is_empty());
     }
 
     #[test]

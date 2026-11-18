@@ -327,7 +327,7 @@ impl Poly {
     }
 
     pub fn presets() -> &'static [Preset] {
-        PRESETS
+        crate::factory::presets!("poly.presets", &INFO, PARAMS)
     }
 
     /// Voices sounding or fading.

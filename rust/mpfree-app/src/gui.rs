@@ -15247,7 +15247,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut own = sample_player(fonts());
     let (id, extras, values) = fm
         .preset_values(crate::synth::Engine::Fm, 1)
-        .map(|(_, v)| (crate::synth::Engine::Fm.node_id(), Vec::new(), v))
+        .map(|(_, x, v)| (crate::synth::Engine::Fm.node_id(), x, v))
         .unwrap_or_else(|| fm.sound_of(crate::synth::Engine::Fm));
     if let Some(node) = crate::synth::fresh_node(id, &extras, &values, 44_100) {
         own.apply(ToUi::Synth(fm.state_of(
