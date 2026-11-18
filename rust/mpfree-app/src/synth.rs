@@ -1606,15 +1606,9 @@ impl Synth {
             if self.fading {
                 self.fade = fade0.saturating_sub((end - start) as u32);
                 if self.fade == 0 {
-                    self.poly.reset();
-                    self.fm.reset();
-                    self.drums.reset();
-                    self.pluck.reset();
-                    self.wt.reset();
-                    self.keys.reset();
-                    self.drawbar.reset();
-                    self.squelch.reset();
-                    self.analog.reset();
+                    for e in Engine::ALL {
+                        self.engine_node_mut(e).reset();
+                    }
                     self.playing = [Held::default(); PADS];
                     self.holders = [0; 128];
                     self.fading = false;
@@ -2913,6 +2907,31 @@ mod tests {
         // A pad let go after STOP sends nothing.
         s.note_off(0, 0);
         assert_eq!(s.len, [0; ENGINES]);
+    }
+
+    /// Every engine, on the pads with a chord ringing, is silent after
+    /// STOP's fade: nothing comes back once the fade ends (a release tail,
+    /// a string machine's ensemble).
+    #[test]
+    fn stop_silences_every_engine() {
+        for e in Engine::ALL {
+            let mut s = Synth::new(44_100);
+            with(&mut s, |p| p.engine = e);
+            let mut frame = 0;
+            for pad in [0, 4, 7] {
+                s.note_on(pad, 120, 0);
+            }
+            let before = run(&mut s, &mut frame, 40, 128);
+            assert!(peak(&before) > 1e-3, "{e:?} plays");
+            s.stop();
+            let out = run(&mut s, &mut frame, 200, 128);
+            assert!(
+                out[2 * FADE as usize..].iter().all(|&x| x == 0.0),
+                "{e:?} rings on after STOP: {}",
+                peak(&out[2 * FADE as usize..])
+            );
+            assert_eq!(s.active_voices(), 0, "{e:?}");
+        }
     }
 
     #[test]

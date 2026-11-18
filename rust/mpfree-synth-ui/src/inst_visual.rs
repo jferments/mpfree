@@ -5,8 +5,9 @@
 //! [`mpfree_synth::strings`]), so they follow a knob the moment it turns.
 //!
 //! - Keys: the pickup's curve with the swing of a hit across it, the
-//!   hammer's contact, how long notes ring across the keyboard, and the
-//!   tremolo.
+//!   hammer's (or the clav tangent's) contact, how long notes ring across
+//!   the keyboard, and the tremolo; for the clav, also which partials its
+//!   pickups hear through the tone switch and how long each rings.
 //! - Drawbar: the nine drawbars, the wave they add up to, the percussion's
 //!   fall and the rotors' speeds after a switch.
 //! - Squelch: one cycle of the wave, the filter's response at rest and at
@@ -82,25 +83,51 @@ pub const DECAY_DB: f32 = 60.0;
 
 /// Whether Keys plays the Reed model.
 pub fn keys_reed(v: &impl Values) -> bool {
-    v.get(kp::MODEL) >= 0.5
+    v.get(kp::MODEL).round() == kp::REED
 }
 
-/// The pickup's curve across the range the tine or reed can reach (the
-/// tine's flux, the reed's capacitance), the stretch of it a hit at
-/// velocity 100 on middle C swings across, and where the voice rests.
+/// Whether Keys plays the Clav model.
+pub fn keys_clav(v: &impl Values) -> bool {
+    v.get(kp::MODEL).round() == kp::CLAV
+}
+
+/// The pickup's curve across the range the voice can reach (the tine's
+/// flux, the reed's capacitance, the clav's off-centre curve), the stretch
+/// of it a hit at velocity 100 on middle C swings across, and where the
+/// voice rests.
 pub fn keys_pickup(v: &impl Values) -> (Pts, Pts, f32) {
-    let reed = keys_reed(v);
-    let (rest, scale) = keys::pickup_shape(reed, v.get(kp::VOICING), v.get(kp::BARK), 0.0);
-    let swing = scale * keys::strike_amp(KEYS_VEL) * keys::register_swing(KEYS_HZ);
-    let (lo, hi) = if reed { (-0.85, 0.85) } else { (-1.6, 1.6) };
+    let (reed, clav) = (keys_reed(v), keys_clav(v));
+    let (rest, swing) = if clav {
+        (
+            0.0,
+            keys::clav_swing(v.get(kp::BARK), v.get(kp::PICKUP), KEYS_VEL),
+        )
+    } else {
+        let (rest, scale) = keys::pickup_shape(reed, v.get(kp::VOICING), v.get(kp::BARK), 0.0);
+        (
+            rest,
+            scale * keys::strike_amp(KEYS_VEL) * keys::register_swing(KEYS_HZ),
+        )
+    };
+    // The clav's curve folds over at 2.5: drawn a little past the furthest
+    // a full hit at Bark 100 reaches.
+    let (lo, hi) = match (reed, clav) {
+        (_, true) => (-3.5, 3.5),
+        (true, _) => (-0.85, 0.85),
+        _ => (-1.6, 1.6),
+    };
     let curve = |u: f32| {
-        if reed {
+        if clav {
+            keys::clav_curve(u)
+        } else if reed {
             keys::capacitance(u)
         } else {
             keys::flux(u)
         }
     };
-    let (c_lo, c_hi) = if reed {
+    let (c_lo, c_hi) = if clav {
+        (curve(lo), curve(2.5))
+    } else if reed {
         (curve(lo), curve(hi))
     } else {
         (curve(hi), curve(0.0))
@@ -123,13 +150,23 @@ pub fn keys_pickup(v: &impl Values) -> (Pts, Pts, f32) {
     (full, hit, x(rest.clamp(lo, hi)))
 }
 
-/// The hammer's force over its contact on middle C, for a soft hit
-/// (velocity 40) and a full one: half sines as long as each contact and as
-/// high as each strikes.
-pub fn keys_hammer(v: &impl Values) -> [Pts; 2] {
+/// How long a hit at `vel` (0 to 1) touches middle C: the hammer's
+/// contact, or the clav tangent's (which the mute lengthens).
+fn keys_touch(v: &impl Values, vel: f32) -> f32 {
     let hard = v.get(kp::HARDNESS);
+    if keys_clav(v) {
+        keys::clav_contact(hard, v.get(kp::MUTE), vel, KEYS_HZ)
+    } else {
+        keys::contact_secs(hard, vel, KEYS_HZ)
+    }
+}
+
+/// The hammer's (or the clav tangent's) force over its contact on middle
+/// C, for a soft hit (velocity 40) and a full one: half sines as long as
+/// each contact and as high as each strikes.
+pub fn keys_hammer(v: &impl Values) -> [Pts; 2] {
     let pulse = |vel: f32| -> Pts {
-        let len = keys::contact_secs(hard, vel, KEYS_HZ);
+        let len = keys_touch(v, vel);
         let amp = keys::strike_amp(vel) / keys::strike_amp(1.0);
         let n = POINTS / 2;
         let mut pts: Pts = (0..=n)
@@ -149,7 +186,17 @@ pub fn keys_hammer(v: &impl Values) -> [Pts; 2] {
 
 /// How long a full hit's contact lasts on middle C, in seconds.
 pub fn keys_contact(v: &impl Values) -> f32 {
-    keys::contact_secs(v.get(kp::HARDNESS), 1.0, KEYS_HZ)
+    keys_touch(v, 1.0)
+}
+
+/// How long a held note at `hz` rings, seconds to fall 60 dB (the clav's
+/// shortened by its mute).
+fn keys_ring(v: &impl Values, hz: f32) -> f32 {
+    if keys_clav(v) {
+        keys::clav_decay(v.get(kp::DECAY), v.get(kp::MUTE), hz)
+    } else {
+        keys::decay_for(v.get(kp::DECAY), hz)
+    }
 }
 
 /// The notes the Decay card draws: C2, C4 (middle C) and C6.
@@ -157,17 +204,29 @@ pub const DECAY_NOTES: [f32; 3] = [65.41, 261.63, 1046.5];
 
 /// The Decay card's span in seconds: one and a half times middle C's ring.
 pub fn keys_decay_secs(v: &impl Values) -> f32 {
-    (keys::decay_for(v.get(kp::DECAY), KEYS_HZ) * 1.5).clamp(0.5, 40.0)
+    (keys_ring(v, KEYS_HZ) * 1.5).clamp(0.5, 40.0)
 }
 
 /// The level of a held C2, C4 and C6 over the Decay card's span, in dB
-/// (the fundamental's parts: one for a tine, a long and a quick one for a
-/// reed).
+/// (the fundamental's parts: one for a tine or a clav string, a long and a
+/// quick one for a reed).
 pub fn keys_decay(v: &impl Values) -> [Pts; 3] {
-    let modes = if keys_reed(v) { keys::REED } else { keys::TINE };
+    let one = [keys::Mode {
+        ratio: 1.0,
+        level: 1.0,
+        decay: 1.0,
+        bell: false,
+    }];
+    let modes: &[keys::Mode] = if keys_clav(v) {
+        &one
+    } else if keys_reed(v) {
+        &keys::REED
+    } else {
+        &keys::TINE
+    };
     let secs = keys_decay_secs(v);
     let ring = |hz: f32| -> Pts {
-        let t60 = keys::decay_for(v.get(kp::DECAY), hz).max(1e-3);
+        let t60 = keys_ring(v, hz).max(1e-3);
         let parts: Vec<_> = modes.iter().filter(|m| m.ratio == 1.0).collect();
         let start: f32 = parts.iter().map(|m| m.level).sum();
         (0..=POINTS)
@@ -183,6 +242,55 @@ pub fn keys_decay(v: &impl Values) -> [Pts; 3] {
             .collect()
     };
     DECAY_NOTES.map(ring)
+}
+
+/// The note the Pickups card is drawn for: C2, low enough that the
+/// pickups' notches fall among its first partials.
+pub const PICKUPS_HZ: f32 = 65.41;
+/// The partials the Pickups card shows.
+pub const PICKUPS_PARTIALS: usize = 20;
+/// The partials of middle C the Mute card shows.
+pub const MUTE_PARTIALS: usize = 16;
+/// The rate the Mute card works out the string's losses at.
+const CARD_RATE: f32 = 48_000.0;
+
+/// What the clav's pickups hear of C2's first [`PICKUPS_PARTIALS`]
+/// partials through the tone switch, each 0 to 1 over 40 dB under the
+/// loudest (`keys::pickup_response`, `keys::clav_tone_gain`).
+pub fn keys_pickups(v: &impl Values) -> Vec<f32> {
+    let (pickup, tone) = (v.get(kp::PICKUP), v.get(kp::CLAV_TONE));
+    let gains: Vec<f32> = (1..=PICKUPS_PARTIALS)
+        .map(|k| {
+            let k = k as f32;
+            keys::pickup_response(pickup, k) * keys::clav_tone_gain(tone, k * PICKUPS_HZ)
+        })
+        .collect();
+    let top = gains.iter().copied().fold(1e-9, f32::max);
+    gains.iter().map(|g| level_y(g / top, 40.0)).collect()
+}
+
+/// The Pickups card's caption: the pickups and the tone switch.
+pub fn keys_pickups_caption(v: &impl Values) -> String {
+    format!(
+        "{} · {}",
+        pick(kp::PICKUPS, v.get(kp::PICKUP)),
+        pick(kp::CLAV_TONES, v.get(kp::CLAV_TONE)).to_lowercase()
+    )
+}
+
+/// How long each of middle C's first [`MUTE_PARTIALS`] partials rings on
+/// the clav, against the open string's fundamental: 1 as long, down to 0
+/// at a thousandth (a log scale), so the mute pulls the top down first
+/// (`keys::clav_ring`).
+pub fn keys_mute(v: &impl Values) -> Vec<f32> {
+    let decay = v.get(kp::DECAY);
+    let open = keys::clav_ring(decay, 0.0, KEYS_HZ, 1.0, CARD_RATE);
+    (1..=MUTE_PARTIALS)
+        .map(|k| {
+            let t = keys::clav_ring(decay, v.get(kp::MUTE), KEYS_HZ, k as f32, CARD_RATE);
+            (1.0 + (t / open).log10() / 3.0).clamp(0.0, 1.0)
+        })
+        .collect()
 }
 
 /// Two cycles of the tremolo's gains: left and right for Pan, one curve
@@ -914,12 +1022,18 @@ fn keys_cards(v: &impl Values) -> Vec<(Card, &'static str)> {
     let secs = keys_decay_secs(v);
     let [low, mid, high] = keys_decay(v);
     let (curve, hit, rest) = keys_pickup(v);
-    let ring = keys::decay_for(v.get(kp::DECAY), KEYS_HZ);
-    vec![
+    let ring = keys_ring(v, KEYS_HZ);
+    let clav = keys_clav(v);
+    let contact = keys_contact(v) * 1000.0;
+    let mut cards = vec![
         (
             Card {
                 title: "Hammer".into(),
-                caption: format!("{:.1} ms at full force", keys_contact(v) * 1000.0),
+                caption: match (clav, contact < 1.0) {
+                    (true, _) => format!("tangent · {contact:.2} ms at full force"),
+                    (false, true) => format!("{contact:.2} ms at full force"),
+                    (false, false) => format!("{contact:.1} ms at full force"),
+                },
                 traces: vec![
                     trace(soft, TEXT_DIM, 2.0, false, false),
                     trace(full, TEXT, 2.5, true, false),
@@ -942,7 +1056,14 @@ fn keys_cards(v: &impl Values) -> Vec<(Card, &'static str)> {
         (
             Card {
                 title: "Pickup".into(),
-                caption: if keys_reed(v) { "reed" } else { "tine" }.into(),
+                caption: if clav {
+                    "clav"
+                } else if keys_reed(v) {
+                    "reed"
+                } else {
+                    "tine"
+                }
+                .into(),
                 traces: vec![
                     trace(curve, TEXT_FAINT, 1.5, false, false),
                     trace(hit, blue, 3.0, false, false),
@@ -965,7 +1086,44 @@ fn keys_cards(v: &impl Values) -> Vec<(Card, &'static str)> {
             },
             "Amp",
         ),
-    ]
+    ];
+    // The clav's own: drawn only while it plays (its controls say so).
+    if clav {
+        let num = |n: usize, every: usize| -> Vec<String> {
+            (1..=n)
+                .map(|k| {
+                    if k == 1 || k % every == 0 {
+                        k.to_string()
+                    } else {
+                        String::new()
+                    }
+                })
+                .collect()
+        };
+        cards.push((
+            Card {
+                title: "Pickups".into(),
+                caption: keys_pickups_caption(v),
+                bars: keys_pickups(v),
+                bar_color: Some(blue),
+                bar_labels: num(PICKUPS_PARTIALS, 5),
+                ..Card::default()
+            },
+            "Clav",
+        ));
+        cards.push((
+            Card {
+                title: "Mute".into(),
+                caption: format!("{} at middle C", kv::secs_text(ring)),
+                bars: keys_mute(v),
+                bar_color: Some(green),
+                bar_labels: num(MUTE_PARTIALS, 4),
+                ..Card::default()
+            },
+            "Clav",
+        ));
+    }
+    cards
 }
 
 /// Drawbar: the drawbars and their wave (Drawbars), the percussion
@@ -1431,6 +1589,65 @@ mod tests {
         let v = |id: u16| if id == kp::DECAY { 8000.0 } else { 0.0 };
         let [c2, _, c6] = keys_decay(&v);
         assert!(c6[POINTS / 2].1 < c2[POINTS / 2].1);
+    }
+
+    #[test]
+    fn clav_drawings_follow_the_engine() {
+        let at = |pairs: &[(u16, f32)]| {
+            let pairs = pairs.to_vec();
+            move |id: u16| {
+                pairs.iter().find(|p| p.0 == id).map_or_else(
+                    || kp::PARAMS.iter().find(|p| p.id == id).unwrap().default,
+                    |p| p.1,
+                )
+            }
+        };
+        let clav = (kp::MODEL, kp::CLAV);
+        // Each pickup takes out the partial over its node: the neck the
+        // 5th (and 10th), the bridge the 14th.
+        let neck = keys_pickups(&at(&[clav, (kp::PICKUP, kp::NECK)]));
+        assert!(neck[4] < 0.05 && neck[9] < 0.05, "{neck:?}");
+        assert!(neck[13] > 0.5);
+        let bridge = keys_pickups(&at(&[clav, (kp::PICKUP, kp::BRIDGE)]));
+        assert!(bridge[13] < 0.05 && bridge[4] > 0.5, "{bridge:?}");
+        // Brilliant takes the low end the Soft switch keeps.
+        let soft = keys_pickups(&at(&[clav, (kp::CLAV_TONE, kp::SOFT)]));
+        let brilliant = keys_pickups(&at(&[clav, (kp::CLAV_TONE, kp::BRILLIANT)]));
+        assert!(brilliant[0] < soft[0] - 0.3, "{} {}", brilliant[0], soft[0]);
+        // The mute shortens every partial, the top most; open, the
+        // fundamental rings the whole time.
+        let open = keys_mute(&at(&[clav]));
+        let muted = keys_mute(&at(&[clav, (kp::MUTE, 100.0)]));
+        assert!((open[0] - 1.0).abs() < 0.01, "{open:?}");
+        assert!(open[15] < open[0]);
+        assert!(
+            (muted[0] - (1.0 + 0.15f32.log10() / 3.0)).abs() < 0.02,
+            "{muted:?}"
+        );
+        assert!(
+            open[15] - muted[15] > open[0] - muted[0],
+            "{open:?} {muted:?}"
+        );
+        // The tangent is shorter than the hammer; the mute lengthens it.
+        let tine = keys_contact(&at(&[]));
+        let tangent = keys_contact(&at(&[clav]));
+        let felt = keys_contact(&at(&[clav, (kp::MUTE, 100.0)]));
+        assert!(
+            tangent < tine * 0.5 && felt > tangent * 2.0,
+            "{tine} {tangent} {felt}"
+        );
+        // Bark swings a hit further across the clav's curve.
+        let span = |bark: f32| {
+            let (_, hit, _) = keys_pickup(&at(&[clav, (kp::BARK, bark)]));
+            hit.last().unwrap().0 - hit[0].0
+        };
+        assert!(span(100.0) > span(0.0) * 2.0);
+        // Only the clav draws its own two cards.
+        let titles = |v: &dyn Fn(u16) -> f32| -> Vec<String> {
+            keys_cards(&v).into_iter().map(|(c, _)| c.title).collect()
+        };
+        assert_eq!(titles(&at(&[clav])).len(), 6);
+        assert_eq!(titles(&at(&[])).len(), 4);
     }
 
     #[test]

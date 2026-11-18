@@ -1,7 +1,9 @@
 //! Behaviour tests for the electric piano (Keys) through the mpfree-node interface.
 
 use mpfree_node::{check_params, Ctx, Node, NodeEvent, Timed, MAX_BLOCK};
+use mpfree_synth::keys::{clav_voicing, pickup_response, PICKUP_AT};
 use mpfree_synth::keys_params::*;
+use mpfree_synth::voice::velocity_gain;
 use mpfree_synth::Keys;
 
 const RATE: u32 = 48_000;
@@ -114,8 +116,18 @@ fn pitch_near(x: &[f32], guess: f32) -> f32 {
 }
 
 #[test]
-fn both_models_play_in_tune() {
-    for name in ["Init", "Barking Tines", "Bell Keys", "Reed", "Reed Bite"] {
+fn every_model_plays_in_tune() {
+    for name in [
+        "Init",
+        "Barking Tines",
+        "Bell Keys",
+        "Reed",
+        "Reed Bite",
+        "Clav",
+        "Funk Clav",
+        "Muted Clav",
+        "Thin Clav",
+    ] {
         for note in [36u8, 48, 60, 72, 84, 96] {
             let mut s = preset(name);
             let (l, _) = render(&mut s, 28_800, &[(0, on(note, 110))], |_| 128);
@@ -203,6 +215,33 @@ fn same_output_for_any_block_size() {
         ),
         (16_000, on(64, 127)),
         (20_000, NodeEvent::AllOff),
+        (
+            30_000,
+            NodeEvent::Param {
+                id: MODEL,
+                value: CLAV,
+            },
+        ),
+        (30_100, on(36, 127)),
+        (30_200, on(60, 90)),
+        (31_000, NodeEvent::Bend { value: -0.7 }),
+        (
+            32_000,
+            NodeEvent::Param {
+                id: PICKUP,
+                value: OUT_OF_PHASE,
+            },
+        ),
+        (33_000, off(60)),
+        (
+            34_000,
+            NodeEvent::Param {
+                id: MUTE,
+                value: 60.0,
+            },
+        ),
+        (35_000, off(36)),
+        (36_000, on(72, 127)),
     ];
     for k in 0..20u64 {
         ev.push((22_000 + k * 97, on(40 + k as u8, 64 + k as u8)));
@@ -210,6 +249,7 @@ fn same_output_for_any_block_size() {
     ev.sort_by_key(|e| e.0);
     let frames = 40_000;
     let (rl, rr) = render(&mut Keys::new(RATE), frames, &ev, |_| 128);
+    assert!(peak(&rl[30_100..]) > 0.01, "the clav plays");
     assert!(peak(&rl) > 0.01);
     for size in [1usize, 7, 16, 17, 64, 1000, 8192] {
         let (l, r) = render(&mut Keys::new(RATE), frames, &ev, |_| size);
@@ -238,8 +278,10 @@ fn every_preset_plays_at_a_sane_level_and_ends() {
                 |_| 256,
             );
             let pk = db(peak(&l).max(peak(&r)));
+            // The clav's string pulses peak higher for the same loudness.
+            let top = if s.param(MODEL) == CLAV { -3.0 } else { -6.0 };
             assert!(
-                (-20.0..=-6.0).contains(&pk),
+                (-20.0..=top).contains(&pk),
                 "{} note {note}: {pk:.1} dBFS",
                 p.name
             );
@@ -264,7 +306,9 @@ fn a_hard_chord_stays_under_full_scale() {
             .collect();
         let (l, r) = render(&mut s, 24_000, &ev, |_| 128);
         let pk = db(peak(&l).max(peak(&r)));
-        assert!((-12.0..=0.0).contains(&pk), "{}: {pk:.1} dBFS", p.name);
+        // The presets are matched by loudness, so a driven one, which
+        // peaks little over its loudness, sits low here.
+        assert!((-20.0..=0.0).contains(&pk), "{}: {pk:.1} dBFS", p.name);
         println!("chord {}: {pk:.1}", p.name);
     }
 }
@@ -438,5 +482,171 @@ fn extreme_settings_stay_finite() {
                 );
             }
         }
+    }
+}
+
+/// The pitch, in semitones against `note`, of a clav note's last moments:
+/// held half a second, then 10 to 50 ms after it is let go.
+fn clav_drop(drop: f32, note: u8) -> f32 {
+    let mut s = preset("Clav");
+    s.set_param(DROP, drop);
+    s.set_param(RELEASE, 400.0);
+    let (l, _) = render(
+        &mut s,
+        27_000,
+        &[(0, on(note, 100)), (24_000, off(note))],
+        |_| 128,
+    );
+    let want = hz(f32::from(note) - drop);
+    let got = pitch_near(&l[24_480..26_400], want);
+    12.0 * (got / hz(f32::from(note))).log2()
+}
+
+#[test]
+fn a_clav_note_drops_when_let_go() {
+    for note in [36u8, 48, 60, 72] {
+        let st = clav_drop(3.0, note);
+        assert!((st + 3.0).abs() < 0.5, "note {note}: {st:+.2} semitones");
+    }
+    let st = clav_drop(0.0, 60);
+    assert!(st.abs() < 0.1, "no drop: {st:+.2} semitones");
+    let st = clav_drop(6.0, 48);
+    assert!((st + 6.0).abs() < 0.5, "6: {st:+.2} semitones");
+}
+
+/// The level of partial `k` of a clav C2 against its neighbours', dB.
+fn clav_notch(pickup: f32, k: f32) -> f32 {
+    let mut s = preset("Clav");
+    s.set_param(PICKUP, pickup);
+    s.set_param(CLAV_TONE, BRILLIANT);
+    s.set_param(KEY_NOISE, 0.0);
+    let (l, _) = render(&mut s, 33_600, &[(0, on(36, 50))], |_| 128);
+    let x = &l[4800..33_600];
+    let f = hz(36.0);
+    let at = |k: f32| db(tone(x, f * k));
+    at(k) - 0.5 * (at(k - 1.0) + at(k + 1.0))
+}
+
+#[test]
+fn the_clav_pickups_notch_where_they_sit() {
+    // Each pickup hears nothing of the partials that have a node over it:
+    // the neck pickup a fifth of the way along, every fifth; the bridge
+    // pickup every fourteenth.
+    let neck = clav_notch(NECK, 1.0 / PICKUP_AT[0]);
+    let bridge = clav_notch(BRIDGE, (1.0 / PICKUP_AT[1]).round());
+    assert!(neck < -15.0, "neck: 5th partial {neck:.1} dB");
+    assert!(bridge < -15.0, "bridge: 14th partial {bridge:.1} dB");
+    // Both pickups together fill in each other's notches.
+    let both = clav_notch(BOTH, 5.0);
+    assert!(both > -10.0, "both: 5th partial {both:.1} dB");
+    // The picture on the Synth tab says the same.
+    assert!(pickup_response(NECK, 5.0) < 1e-3);
+    assert!(pickup_response(BRIDGE, 14.0) < 1e-3);
+    assert!(pickup_response(BOTH, 5.0) > 0.1);
+}
+
+#[test]
+fn out_of_phase_is_thin() {
+    // Out of phase, what the pickups share cancels: the fundamental most.
+    let low = |pickup: f32| {
+        let mut s = preset("Clav");
+        s.set_param(PICKUP, pickup);
+        s.set_param(KEY_NOISE, 0.0);
+        let (l, _) = render(&mut s, 14_400, &[(0, on(48, 80))], |_| 128);
+        let x = &l[4800..14_400];
+        let f = hz(48.0);
+        let mid = (3..=5).map(|k| db(tone(x, f * k as f32))).sum::<f32>() / 3.0;
+        db(tone(x, f)) - mid
+    };
+    let (both, oop) = (low(BOTH), low(OUT_OF_PHASE));
+    assert!(
+        oop < both - 3.0,
+        "fundamental against the 3rd to 5th: both {both:.1} dB, out of phase {oop:.1} dB"
+    );
+}
+
+#[test]
+fn the_clav_switches_change_the_colour_not_the_level() {
+    let level = |pickup: f32, tone: f32| {
+        let mut s = preset("Clav");
+        s.set_param(PICKUP, pickup);
+        s.set_param(CLAV_TONE, tone);
+        s.set_param(KEY_NOISE, 0.0);
+        let (l, _) = render(&mut s, 24_000, &[(0, on(48, 80))], |_| 128);
+        db(rms(&l[2400..24_000]))
+    };
+    let base = level(BOTH, MEDIUM);
+    for p in [NECK, BRIDGE, OUT_OF_PHASE] {
+        let d = level(p, MEDIUM) - base;
+        assert!(d.abs() < 3.0, "pickup {p}: {d:+.1} dB");
+    }
+    for t in [SOFT, TREBLE, BRILLIANT] {
+        let d = level(BOTH, t) - base;
+        assert!(d.abs() < 3.0, "tone {t}: {d:+.1} dB");
+    }
+    // The voicing makes up what a switch takes away, and no more than 12 dB.
+    for p in [NECK, BRIDGE, BOTH, OUT_OF_PHASE] {
+        for t in [SOFT, MEDIUM, TREBLE, BRILLIANT] {
+            for n in [24.0, 60.0, 96.0] {
+                let g = clav_voicing(p, t, hz(n));
+                assert!(
+                    g.is_finite() && (0.1..=4.0).contains(&g),
+                    "{p} {t} {n}: {g}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_mute_shortens_and_darkens() {
+    let run = |mute: f32| {
+        let mut s = preset("Clav");
+        s.set_param(MUTE, mute);
+        s.set_param(KEY_NOISE, 0.0);
+        let (l, _) = render(&mut s, 28_800, &[(0, on(48, 100))], |_| 128);
+        let early = &l[2400..7200];
+        let bright = db(tone(early, hz(48.0) * 6.0)) - db(tone(early, hz(48.0)));
+        let ring = db(rms(&l[24_000..28_800])) - db(rms(early));
+        (bright, ring)
+    };
+    let (open_b, open_r) = run(0.0);
+    let (mute_b, mute_r) = run(80.0);
+    assert!(
+        mute_b < open_b - 6.0,
+        "6th partial: open {open_b:.1}, muted {mute_b:.1}"
+    );
+    assert!(
+        mute_r < open_r - 6.0,
+        "ring: open {open_r:.1}, muted {mute_r:.1}"
+    );
+}
+
+#[test]
+fn velocity_follows_its_range() {
+    // Level against velocity follows the voice core's square law for the
+    // Velocity range, whatever the model; with no range every velocity
+    // plays about as loud (only the tone changes).
+    for model in [TINE, REED, CLAV] {
+        let level = |range: f32, vel: u8| {
+            let mut s = Keys::new(RATE);
+            s.set_param(MODEL, model);
+            s.set_param(VELOCITY, range);
+            s.set_param(KEY_NOISE, 0.0);
+            s.set_param(BARK, 0.0);
+            s.set_param(VEL_TONE, 0.0);
+            let (l, _) = render(&mut s, 9_600, &[(0, on(60, vel))], |_| 128);
+            db(rms(&l[480..9_600]))
+        };
+        for range in [20.0, 40.0] {
+            let got = level(range, 30) - level(range, 127);
+            let want = db(velocity_gain(30, range));
+            assert!(
+                (got - want).abs() < 2.0,
+                "model {model} range {range}: {got:.1} dB, law {want:.1}"
+            );
+        }
+        let flat = level(0.0, 30) - level(0.0, 127);
+        assert!(flat.abs() < 3.0, "model {model} no range: {flat:.1} dB");
     }
 }

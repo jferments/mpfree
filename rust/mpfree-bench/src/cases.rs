@@ -1018,8 +1018,16 @@ pub fn all(rate: u32) -> Vec<Case> {
     ] {
         v.push(measured(|| pluck(name, rate, voices)));
     }
-    // Keys: a tine and a reed preset, and the tremolo and drive on top.
-    for (name, voices) in [("Init", 8), ("Init", 16), ("Reed", 16), ("Dusty Keys", 16)] {
+    // Keys: a tine and a reed preset, the tremolo and drive on top, and
+    // the clav (its string loop and the bus's tone switch and rotator).
+    for (name, voices) in [
+        ("Init", 8),
+        ("Init", 16),
+        ("Reed", 16),
+        ("Dusty Keys", 16),
+        ("Clav", 8),
+        ("Clav", 16),
+    ] {
         v.push(measured(|| {
             let p = Keys::presets()
                 .iter()
