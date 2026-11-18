@@ -219,7 +219,7 @@ MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controll
 **The quick way: SHIFT + touch.** Hold **SHIFT**, touch the value on the screen, then move the control on your keyboard. Until a control takes it, the hint line reads *LEARNING Volume (Bass): move a knob, a key or a pedal on any controller*; then it says what the control moves (*Learned: CC 74 on Keystep 37 moves Poly cutoff (Track 2)*). While SHIFT is held the touch only picks the value: the fader doesn't move. Touch the same value with SHIFT again to cancel, or another one to learn that instead. It works on:
 
 - the mixer's Faders look: a strip's fader, pan and sends, and its **M** (mute) and **S** (solo);
-- the tempo on the Play page;
+- on the Play page: the tempo, the master bar (the master's level), and the Q-Link cards that set a level or a send (the drums' send; on the Loop view the looper's level and send and the line input's level). The other cards, such as Swing and the filters, learn nothing yet;
 - the [chain editor](effects.md#adding-an-effect-the-chain-editor): an effect's knobs, faders, sliders and drawbars;
 - the macros panel: a macro's knob;
 - the Synth tab: the synth's knobs, faders, sliders and drawbars, for the track it shows (the track's own instrument, or the synth on the pads), and an MPC plugin's own screen (its skin): its knobs, sliders and buttons.

@@ -8689,7 +8689,8 @@ impl Player {
     /// Learn: a mixer strip's fader, pan, send, M or S (the Faders look), a
     /// knob, fader, slider or drawbar on the chain editor or the Synth tab
     /// (an MPC plugin's skin's controls too), a macro's knob on the macros
-    /// panel, or Play's tempo. None anywhere
+    /// panel, Play's tempo, its master bar, or a Play Q-Link card that
+    /// turns a strip's send or level ([`play_page::Knob::learn_addr`]). None anywhere
     /// else (a value that
     /// learns nothing yet, or no value at all: SHIFT + a touch there keeps
     /// its own job). The smallest control there, as the outline picks.
@@ -8708,6 +8709,24 @@ impl Player {
                 mpfree_play::mpfree_param::Owner::Transport,
                 mpfree_play::mpfree_param::transport::TEMPO,
             )));
+        }
+        // Play's master bar: the master's level, as the mixer's master
+        // fader learns it.
+        if w == play_page::MASTER {
+            return Some(LearnValue::Param(ParamAddr::new(
+                mpfree_play::mpfree_param::Owner::Strip(mpfree_play::mpfree_param::Strip::Master),
+                mpfree_fx::ids::mixer::VOLUME,
+            )));
+        }
+        // A Play Q-Link card that turns a strip's send or level (not the
+        // audio tracks' or a band's cards, which turn other things).
+        if w == play_page::QLINKS
+            && matches!(self.view, View::Play | View::Sequencer | View::Arrange)
+            && !self.band_showing()
+            && self.audio_cards().is_none()
+        {
+            let knob = *self.play.knobs().get(t.index)?;
+            return knob.learn_addr().map(LearnValue::Param);
         }
         if w == mpfree_mixer_ui::MIXER {
             let (sid, param) = mpfree_mixer_ui::param_of(&self.ui, t)?;
@@ -15898,6 +15917,82 @@ mod tests {
 
     /// Remote control: SHIFT + a touch on Play's tempo or a strip's M arms
     /// MIDI Learn on it. Arrange's PLAY is no value: it keeps its job.
+    #[test]
+    fn shift_and_a_touch_on_plays_master_or_a_strip_card_arms_midi_learn() {
+        use mpfree_play::mpfree_param::{Owner, Strip};
+        use mpfree_ui::Rect;
+        let strip = |s, id| FromUi::LearnValue(LearnValue::Param(ParamAddr::new(s, id)));
+        let send = mpfree_fx::ids::mixer::send(crate::mixing::DELAY_RETURN);
+        let vol = mpfree_fx::ids::mixer::VOLUME;
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::Show(View::Play));
+        p.show_play_view(play_page::PlayView::All);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let cards = |p: &Player| QLinkColumn::card_rects(p.ui.rect_of(play_page::QLINKS).unwrap());
+        let centre = |r: Rect| (r.x + r.w / 2, r.y + r.h / 2);
+        let press = |p: &mut Player, (x, y): (i32, i32)| {
+            let mut acts: Vec<FromUi> =
+                [p.touch(1, Touch::Down, x, y), p.touch(1, Touch::Up, x, y)]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+            acts.extend(p.take_actions());
+            acts
+        };
+        p.take_actions();
+        p.status.shift = true;
+        // All: Swing, Tune, the drums' filter and send. The send learns the
+        // drums strip's delay send; Swing and the filter keep their touch.
+        assert_eq!(
+            {
+                let at = centre(cards(&p)[3]);
+                press(&mut p, at)
+            },
+            [strip(Owner::Strip(Strip::Track(0)), send)]
+        );
+        for k in [0, 2] {
+            let at = centre(cards(&p)[k]);
+            assert!(
+                !press(&mut p, at)
+                    .iter()
+                    .any(|a| matches!(a, FromUi::LearnValue(_))),
+                "card {k}"
+            );
+        }
+        // The master bar: the master's level.
+        let master = p.ui.rect_of(play_page::MASTER).unwrap();
+        assert_eq!(
+            press(&mut p, centre(master)),
+            [strip(Owner::Strip(Strip::Master), vol)]
+        );
+        // Loop: the looper's level and send, and the line input's level.
+        p.show_play_view(play_page::PlayView::Loop);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        let looper = Owner::Strip(Strip::Track(crate::mixing::LOOP as u8));
+        assert_eq!(
+            {
+                let at = centre(cards(&p)[0]);
+                press(&mut p, at)
+            },
+            [strip(looper, vol)]
+        );
+        assert_eq!(
+            {
+                let at = centre(cards(&p)[1]);
+                press(&mut p, at)
+            },
+            [strip(looper, send)]
+        );
+        assert_eq!(
+            {
+                let at = centre(cards(&p)[2]);
+                press(&mut p, at)
+            },
+            [strip(Owner::Strip(Strip::Input(0)), vol)]
+        );
+    }
+
     #[test]
     fn shift_and_a_touch_on_the_tempo_or_a_mute_arms_midi_learn() {
         use mpfree_play::mpfree_param::{transport as tr, Owner};
