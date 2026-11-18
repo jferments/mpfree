@@ -2087,7 +2087,7 @@ impl Player {
         let mut pass = first_pass;
         while pass <= last_pass {
             let start = origin + pass * clip.song_len;
-            self.collect_run(
+            self.collect_run::<false>(
                 &c,
                 &mut passes,
                 Run {
@@ -2126,7 +2126,7 @@ impl Player {
             let shift = steps.line(big) - k_line;
             // The clip step's ticks around its line: for the first step,
             // from its line, and the clip's last half step before it.
-            self.collect_run(
+            self.collect_run::<true>(
                 c,
                 passes,
                 Run {
@@ -2140,7 +2140,7 @@ impl Player {
             );
             if k_line == 0.0 {
                 let shift = shift - len;
-                self.collect_run(
+                self.collect_run::<true>(
                     c,
                     passes,
                     Run {
@@ -2158,8 +2158,13 @@ impl Player {
     }
 
     /// The notes and locks of one run of a clip's ticks ([`Run`]) whose
-    /// tick is in the span.
-    fn collect_run(&mut self, c: &Collect, passes: &mut Passes, r: Run) {
+    /// tick is in the span. `STEPPED`: a run of a play direction's step,
+    /// which ends short of `r.end` and plays `r.shift` later; forward, a
+    /// whole pass, which needs neither (it is the hot path of every clip
+    /// playing, so it keeps the cost it had before play directions:
+    /// mpfree-bench's Time cases).
+    #[inline(always)]
+    fn collect_run<const STEPPED: bool>(&mut self, c: &Collect, passes: &mut Passes, r: Run) {
         let Collect {
             clip,
             track,
@@ -2175,10 +2180,11 @@ impl Player {
         }
         let first = clip.notes.partition_point(|n| n.local < r.from);
         for n in &clip.notes[first..] {
-            if n.local > r.to || n.local >= r.end {
+            if n.local > r.to || (STEPPED && n.local >= r.end) {
                 break;
             }
-            let straight = r.start + clip.speed.to_song(n.local + r.shift);
+            let local = if STEPPED { n.local + r.shift } else { n.local };
+            let straight = r.start + clip.speed.to_song(local);
             let tick = swing.apply(straight).round() as Tick;
             if !ticks.contains(&tick) {
                 continue;
@@ -2249,10 +2255,11 @@ impl Player {
         }
         let first = clip.locks.partition_point(|l| l.local < r.from);
         for l in &clip.locks[first..] {
-            if l.local > r.to || l.local >= r.end {
+            if l.local > r.to || (STEPPED && l.local >= r.end) {
                 break;
             }
-            let straight = r.start + clip.speed.to_song(l.local + r.shift);
+            let local = if STEPPED { l.local + r.shift } else { l.local };
+            let straight = r.start + clip.speed.to_song(local);
             let tick = swing.apply(straight).round() as Tick;
             if !ticks.contains(&tick) {
                 continue;
@@ -2465,7 +2472,6 @@ impl Player {
     }
 }
 
-/// A 64-bit mix (splitmix64's finaliser), for the chance rolls.
 /// The greatest common divisor of two positive numbers.
 fn gcd(mut a: i64, mut b: i64) -> i64 {
     while b != 0 {
@@ -2474,6 +2480,7 @@ fn gcd(mut a: i64, mut b: i64) -> i64 {
     a.max(1)
 }
 
+/// A 64-bit mix (splitmix64's finaliser), for the chance rolls.
 fn mix(x: u64) -> u64 {
     let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
