@@ -21,7 +21,6 @@ use crate::grain_tool::GrainPart;
 use crate::pads_tab::{self, PadsState, PadsTab};
 use crate::play_tab::{self, PlayState, PlayTab};
 use crate::source::SourceView;
-use crate::warp_tab::{self, WarpTab};
 use crate::wave_tab::{pad_label, WaveState, WaveTab, HINT};
 
 /// The MPC One's screen, turned.
@@ -35,7 +34,6 @@ pub const PAGE: &str = "Sample · Wave";
 pub const CHOP_PAGE: &str = "Sample · Chop";
 pub const PLAY_PAGE: &str = "Sample · Play";
 pub const PADS_PAGE: &str = "Pads · Pad";
-pub const WARP_PAGE: &str = "Sample · Warp";
 pub const AUTO_PAGE: &str = "Sample · Auto-sample";
 pub const RATE: u32 = 44_100;
 pub const BPM: f64 = 92.0;
@@ -133,18 +131,8 @@ pub fn loose_project() -> (Project, Arc<SourceView>) {
     (p, view)
 }
 
-/// One sample screen of the Warp tab.
-pub struct WarpSample {
-    pub name: &'static str,
-    pub about: &'static str,
-    pub ui: Ui,
-    pub tab: WarpTab,
-    pub project: Project,
-    pub state: WaveState,
-}
-
-impl WarpSample {
-    /// Applies what the tab asked for and shows the project after it.
+impl Sample {
+    /// Applies what the page asked for and shows the project after it.
     pub fn apply(&mut self, a: Option<crate::wave_tab::WaveAction>) -> Result<(), String> {
         if let Some(a) = a {
             a.apply(&mut self.project).map_err(|e| format!("{e:?}"))?;
@@ -155,7 +143,7 @@ impl WarpSample {
         Ok(())
     }
 
-    /// A touch on one of the tab's widgets.
+    /// A touch on one of the page's widgets.
     pub fn event(&mut self, widget: &str, kind: mpfree_ui::EventKind) -> Result<(), String> {
         let ev = mpfree_ui::UiEvent {
             widget: widget.into(),
@@ -167,16 +155,19 @@ impl WarpSample {
     }
 }
 
-/// The Warp tab on `project`'s pad A5.
+/// The Sample page with the Warp tool on `project`'s pad A5.
 pub fn warp_sample(
     fonts: Fonts,
     (project, view): (Project, Arc<SourceView>),
-) -> Result<WarpSample, String> {
-    let state = WaveState::from_project(&project, PAD, 0, view).ok_or("no pad")?;
-    let mut ui = app_ui_with(fonts, &project, warp_tab::HINT);
-    let tab = WarpTab::add(&mut ui, WARP_PAGE, &state)?;
-    ui.show(WARP_PAGE)?;
-    Ok(WarpSample {
+) -> Result<Sample, String> {
+    let state = WaveState::from_project(&project, PAD, 0, view.clone()).ok_or("no pad")?;
+    let mut ui = app_ui_with(fonts, &project, crate::wave_tab::WARP_HINT);
+    let mut tab = WaveTab::add(&mut ui, PAGE, &state)?;
+    tab.set_sound(&mut ui, sound_state(&project, &view));
+    tab.set_recorder(&mut ui, recorder_idle(), &state);
+    tab.set_tool(&mut ui, &state, crate::wave_tab::Tool::Warp);
+    ui.show(PAGE)?;
+    Ok(Sample {
         name: "warp",
         about: "A loop played loosely, warped: its hits off the grid",
         ui,
@@ -186,27 +177,29 @@ pub fn warp_sample(
     })
 }
 
-/// The Warp tab's sample screens.
-pub fn warp_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<WarpSample>, String> {
+/// The Warp tool's sample screens.
+pub fn warp_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
+    use crate::warp_tool::Row;
+    use crate::wave_tab::REGION;
     let mut out = vec![warp_sample(fonts(), loose_project())?];
 
     // Pin hits on the eighths: every hit on its line, one pin picked.
     let mut s = warp_sample(fonts(), loose_project())?;
     s.name = "warp-pinned";
     s.about = "Pin hits on a 1/8 grid: each hit pinned to its eighth, the fifth pin picked";
-    let grid_row = warp_tab::Row::Grid.index();
     s.event(
-        warp_tab::LIST,
+        REGION,
         mpfree_ui::EventKind::Step {
-            index: grid_row,
+            index: Row::Grid.index(),
             delta: -1,
         },
     )?;
-    s.event(
-        warp_tab::LIST,
-        mpfree_ui::EventKind::Tab(warp_tab::Row::PinHits.index()),
-    )?;
-    s.event(warp_tab::VIEW, mpfree_ui::EventKind::Select(4))?;
+    s.event(REGION, mpfree_ui::EventKind::Tab(Row::PinHits.index()))?;
+    let st = s.state.clone();
+    for _ in 0..5 {
+        let a = s.tab.qlink(&mut s.ui, &st, 0, 1, false);
+        s.apply(a)?;
+    }
     s.tab
         .set_playheads(&mut s.ui, &[(f64::from(RATE) * 60.0 / BPM * 3.3) as u64]);
     out.push(s);
@@ -216,11 +209,12 @@ pub fn warp_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<WarpSample>, String
     s.name = "warp-zoomed";
     s.about =
         "Zoomed round the fifth pin (wheel), nudged 2/64 of a beat late by Q-Link 2, 1/16 grid";
-    s.event(
-        warp_tab::LIST,
-        mpfree_ui::EventKind::Tab(warp_tab::Row::PinHits.index()),
-    )?;
-    s.event(warp_tab::VIEW, mpfree_ui::EventKind::Select(4))?;
+    s.event(REGION, mpfree_ui::EventKind::Tab(Row::PinHits.index()))?;
+    let st = s.state.clone();
+    for _ in 0..5 {
+        let a = s.tab.qlink(&mut s.ui, &st, 0, 1, false);
+        s.apply(a)?;
+    }
     let st = s.state.clone();
     for _ in 0..6 {
         s.tab.wheel(&mut s.ui, &st, 1);
@@ -229,14 +223,14 @@ pub fn warp_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<WarpSample>, String
     s.apply(a)?;
     out.push(s);
 
-    // Not warped: the tab says how to start.
+    // Not warped: the section says so.
     let (mut project, view) = loose_project();
     project
         .edit_pad(PAD, None, |p| p.layers[0].region.warp = None)
         .map_err(|e| format!("{e:?}"))?;
     let mut s = warp_sample(fonts(), (project, view))?;
     s.name = "warp-off";
-    s.about = "A layer that isn't warped: the tab says to turn Warp to Stretch";
+    s.about = "A layer that isn't warped: Warp is Off, the hits are ticks along the wave's foot";
     out.push(s);
     Ok(out)
 }
