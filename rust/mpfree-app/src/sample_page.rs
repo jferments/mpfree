@@ -325,6 +325,10 @@ fn flatten_lift(f: &Flatten) -> FromUi {
 /// (the Rec page's [`rec_tab::OFF_NOTE`], as short as the row needs).
 pub const RECORDER_OFF: &str = "Line in off: Looper tab, MENU";
 
+/// The Keep card's line while a take is ready, counting in or recording:
+/// it waits, as Sample Recall does (REC arm rule 6).
+pub const KEEP_WAITS: &str = "finish the take first";
+
 /// How long the recorder row says why the arm refused its REC.
 const HERE_NO_SECONDS: f32 = 4.0;
 
@@ -693,6 +697,10 @@ pub struct SamplePage {
     /// 2c): the screen keeps the last bars when it lifts, or opens Sample
     /// Recall when it stays ([`SamplePage::take_keep_press`]).
     keep_press: bool,
+    /// A take is ready, counting in or recording somewhere (the notes, a
+    /// loop, a pad take; the screen's `Player::take_waits`): the Keep
+    /// card waits.
+    take_waits: bool,
     /// Why the arm refused the Wave page's REC, and the seconds it is
     /// still said on the row.
     here_no: Option<(String, f32)>,
@@ -896,6 +904,7 @@ impl SamplePage {
             pad_said: std::collections::VecDeque::new(),
             rec_here: None,
             keep_press: false,
+            take_waits: false,
             here_no: None,
             pad_run: None,
             told: Vec::new(),
@@ -3332,11 +3341,22 @@ impl SamplePage {
                     self.keep_press = true;
                 } else {
                     self.lines.push(format!("sample: nothing kept: {}", k.line));
-                    self.told.push(format!("{}: {}", k.title, k.line));
+                    // Waiting for a take: Sample Recall's words.
+                    self.told.push(if k.line == KEEP_WAITS {
+                        crate::desk::KEEP_WAITS.to_string()
+                    } else {
+                        format!("{}: {}", k.title, k.line)
+                    });
                 }
             }
         }
         self.feed_recorder(ui, 0.0);
+    }
+
+    /// Whether a take is ready, counting in or recording (the screen says
+    /// each tick): the Keep card waits for it, as Sample Recall does.
+    pub fn set_take_waits(&mut self, on: bool) {
+        self.take_waits = on;
     }
 
     /// Whether a finger came down on the Keep card since last asked (the
@@ -3358,8 +3378,8 @@ impl SamplePage {
         let title = r.length.keep_text();
         let lands = self.lands_now(self.kit);
         let stays = self.rec_settings_now().onto == rec_tab::Onto::Stay;
-        let (line, ready) = if self.take.is_some() || self.pad_run.is_some() {
-            ("after this take".to_string(), false)
+        let (line, ready) = if self.take.is_some() || self.pad_run.is_some() || self.take_waits {
+            (KEEP_WAITS.to_string(), false)
         } else if r.bracket(input).is_none() {
             ("nothing has played yet".to_string(), false)
         } else if stays {
