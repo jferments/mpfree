@@ -1445,6 +1445,7 @@ mod tests {
                     muted: false,
                     bars: None,
                     after: mpfree_looper::After::Play,
+                    starts: mpfree_looper::Starts::Bar,
                     fade_old: 1.0,
                     speed: 0,
                     rate: 0,

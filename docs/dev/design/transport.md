@@ -44,7 +44,7 @@ The tempo map (up to 32 segments, steps for now; ramps come later as another seg
 ## Limits
 
 - Sample rates 22,050 to 192,000 Hz, which keeps every tick on a frame of its own. Tempo 20 to 400 BPM (the same as the ClickEngine). Periods of 1 to 8192 frames.
-- Loops and tempo segments are at least a 1/16 long. 64 queued commands, 16 applied per period (the rest wait one period and are counted). 64 spans and 128 markers per block, with room to spare: the limits above allow under 40 spans and under 90 markers.
+- Loops and tempo segments are at least a 1/16 long. 64 queued commands, 16 applied per period (the rest wait one period and are counted); `queue_room` says how many more fit, for a caller whose commands must all go in or none (the looper's start on a note). 64 spans and 128 markers per block, with room to spare: the limits above allow under 40 spans and under 90 markers.
 - `Stats` counts late, refused and deferred commands, and block overflow (which should stay 0).
 
 ## Tests

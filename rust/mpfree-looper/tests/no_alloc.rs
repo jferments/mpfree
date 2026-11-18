@@ -5,7 +5,9 @@
 //! loops, clear and its undo, one-pass overdubs, a loop solo, mute, level
 //! and latency
 //! changes, a full memory, locates, a transport loop, tempo changes, stop
-//! and count-in, at period sizes from 1 to 4096 frames.
+//! and count-in, at period sizes from 1 to 4096 frames; and loops that
+//! start when you play (by ear and on a pad, the song stopped, playing and
+//! counting in, a start refused).
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -17,7 +19,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use mpfree_looper::{
-    After, Command as L, Edit as E, LayerCommand as Lc, Looper, Overdubs, Phase, MAX_LOOPS,
+    After, Command as L, Edit as E, LayerCommand as Lc, Looper, Overdubs, Phase, Starts, MAX_LOOPS,
 };
 use mpfree_transport::{Block, Command as T, Transport};
 
@@ -411,4 +413,99 @@ fn saving_and_loading_never_allocate() {
     assert!(l.take_loaded(5).is_some());
     drop(loaded);
     assert_eq!(calls(), 0, "allocated while saving or loading");
+}
+
+/// Starts: When I play: listening by ear and for pads, a note starting
+/// the song, one refused, a late note copied in from what was heard, a
+/// pickup and a count-in, at every period size, without allocating.
+#[test]
+fn starting_when_you_play_never_allocates() {
+    const RATE: u32 = 44_100;
+    let mut t = Transport::new(RATE, 120.0).unwrap();
+    let mut l = Looper::new(RATE, 30);
+    let mut b = Block::new();
+    let mut input = vec![0.0f32; 2 * 4096];
+    let mut out = vec![0.0f32; 2 * 4096];
+    let sizes = [1usize, 7, 128, 333, 4096, 64, 256];
+    let mut starts = 0;
+    let mut refused = false;
+    let mut leads = 0;
+    let mut playing = 0u32;
+    watch(true);
+    for k in 0..4 {
+        let _ = l.select_loop(k);
+        let _ = l.command(L::SetStarts(Starts::Play));
+        let _ = l.command(L::SetBars(Some(1)));
+    }
+    let _ = l.select_loop(0);
+    let _ = l.command(L::StartsByEar(true));
+    let _ = l.command(L::Record);
+    for i in 0..4000u64 {
+        let f = t.frame();
+        match i {
+            // Loop 1 armed for a pad hit while loop 0 plays; loop 2 hears
+            // a note late in a bar (a pickup); the song stops, and loop 3
+            // hears one counting in.
+            1200 => {
+                let _ = l.command(L::StartsByEar(false));
+                let _ = l.select_loop(1);
+                let _ = l.command(L::Record);
+            }
+            1500 => {
+                let _ = l.command(L::Played(f));
+            }
+            2000 => {
+                let _ = l.command(L::StartsByEar(true));
+                let _ = l.select_loop(2);
+                let _ = l.command(L::Record);
+            }
+            2900 => {
+                let _ = t.command(f, T::Stop);
+                let _ = l.select_loop(3);
+                let _ = l.command(L::Record);
+            }
+            3000 => {
+                let _ = t.command(f, T::SetCountIn(1));
+                let _ = t.command(f, T::Record);
+            }
+            _ => {}
+        }
+        let n = sizes[(i % sizes.len() as u64) as usize];
+        // Silence, then a note now and then.
+        let loud = matches!(i % 700, 300..=320);
+        for k in 0..n {
+            let x = if loud {
+                0.2 * ((k % 17) as f32 - 8.0) / 8.0
+            } else {
+                0.0
+            };
+            input[2 * k] = x;
+            input[2 * k + 1] = -x;
+        }
+        out[..2 * n].fill(0.0);
+        assert!(t.process(n as u32, &mut b));
+        l.process(&b, &input[..2 * n], &mut out[..2 * n]);
+        // The host: the first start asked for is refused, the rest start
+        // the song.
+        if l.take_start().is_some() {
+            if refused {
+                let _ = t.command(t.frame(), T::Play);
+                starts += 1;
+            } else {
+                l.start_refused();
+                refused = true;
+            }
+        }
+        for k in 0..4 {
+            let s = l.loop_status(k).unwrap();
+            playing |= u32::from(s.phase == Phase::Playing) << k;
+            leads = leads.max(s.lead);
+        }
+        let _ = l.stats();
+    }
+    watch(false);
+    assert_eq!(calls(), 0, "allocated while starting when you play");
+    assert!(refused && starts >= 1, "{refused} {starts}");
+    assert_eq!(playing, 0b1111, "loops playing: {playing:b}");
+    assert!(leads > 0, "no pickup");
 }
