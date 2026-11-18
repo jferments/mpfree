@@ -188,6 +188,17 @@ const VOICE: Voice = Voice {
     thin: [THIN; 128],
 };
 
+impl Voice {
+    /// Holding nothing, for `track`; in place, so nothing its size goes
+    /// on the stack.
+    fn reset(&mut self, track: u8) {
+        self.track = track;
+        self.held.fill(false);
+        self.n_held = 0;
+        self.thin.fill(THIN);
+    }
+}
+
 /// The phrase being played, kept up to date as notes come.
 #[derive(Clone, Copy, Debug)]
 struct Head {
@@ -329,7 +340,7 @@ pub struct Capture {
     n_touch_input: usize,
     /// Voice 0 is the armed track's; the others a routed track's while
     /// it holds notes.
-    voices: Box<[Voice; MAX_VOICES]>,
+    voices: Box<[Voice]>,
     /// The capture clock at the end of the last period.
     clock: f64,
     /// While rolling: clock = song + shift, a whole number of bars.
@@ -366,7 +377,7 @@ impl Capture {
             touch_pushed: 0,
             touch_input: [(0, ARMED, 0, 0); MAX_TOUCH_INPUT],
             n_touch_input: 0,
-            voices: Box::new([VOICE; MAX_VOICES]),
+            voices: vec![VOICE; MAX_VOICES].into_boxed_slice(),
             clock: 0.0,
             shift: 0,
             rolling: false,
@@ -437,7 +448,7 @@ impl Capture {
             return Some(v);
         }
         let v = (1..MAX_VOICES).find(|&v| self.voices[v].n_held == 0)?;
-        self.voices[v] = Voice { track, ..VOICE };
+        self.voices[v].reset(track);
         Some(v)
     }
 
@@ -688,7 +699,7 @@ impl Capture {
                 };
                 let x = &mut self.voices[v];
                 self.n_held -= x.n_held;
-                *x = Voice { track, ..VOICE };
+                x.reset(track);
                 if self.n_held == 0 {
                     self.quiet_since = at;
                 }
@@ -889,7 +900,9 @@ impl Capture {
     pub fn clear(&mut self) {
         self.pushed = 0;
         self.touch_pushed = 0;
-        *self.voices = [VOICE; MAX_VOICES];
+        for v in self.voices.iter_mut() {
+            v.reset(ARMED);
+        }
         self.n_held = 0;
         self.quiet_since = f64::NEG_INFINITY;
         self.head = None;

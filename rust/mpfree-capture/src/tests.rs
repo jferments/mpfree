@@ -863,6 +863,35 @@ fn a_tracks_all_off_ends_only_its_own_notes() {
     );
 }
 
+/// A routed note whose end never comes holds its phrase open; the
+/// track's All off ends it, so the quiet after it ends the phrase and the
+/// next note starts a new one.
+#[test]
+fn a_routed_tracks_all_off_lets_a_new_phrase_start_after_the_gap() {
+    let f = |t: Tick| t as u64 * TICK;
+    let held = Event::NoteOn {
+        note: 2,
+        velocity: 90,
+    };
+    let phrase = |all_off: bool| {
+        let mut r = Rig::new(128);
+        r.command(0, Command::Play);
+        r.event_on(4, f(BEAT), held);
+        if all_off {
+            r.event_on(4, f(BAR), Event::AllOff);
+        }
+        r.note_on(4, f(4 * BAR), f(100), 3, 90);
+        r.run_to(f(6 * BAR));
+        r.capture.phrase().unwrap()
+    };
+    let stuck = phrase(false);
+    assert_eq!(stuck.song_start, Some(0), "held open from bar 1");
+    assert_eq!(stuck.played.len(), 2);
+    let p = phrase(true);
+    assert_eq!(on_tracks(&p), vec![(4, 0, 100, 3)]);
+    assert_eq!(p.song_start, Some(4 * BAR));
+}
+
 /// A key's pressure goes on its own track's note, and stays with it when
 /// the phrase parts.
 #[test]

@@ -140,7 +140,7 @@ MPFree is always listening to the pads, and to keyboards a route plays on other 
 - If you played it in time over a clip that was playing, the notes go into that clip.
 - Otherwise it becomes a new clip, named "Capture 1", "Capture 2" and so on, and starts playing in time.
 - It keeps how hard you pressed the pads as you held them, as recording does (see [Pad pressure](#pad-pressure)), unless the track's **Pressure** setting is **Off**.
-- The pads' notes go into the armed track. What a keyboard played on another track through a route goes into that track, so a jam of drums on the pads and bass on a keyboard comes back as two clips that play together. Each key goes in as the pad that plays its note on that track; a note no pad plays there isn't kept.
+- The pads' notes go into the armed track. What a keyboard played on another track through a route goes into that track, so a jam of drums on the pads and bass on a keyboard comes back as two clips that play together. Each key goes in as the pad that plays its note on that track; a note no pad plays there isn't kept. The FX moves you made over the phrase (the XY pad, the DJ knob) go with the armed track's notes; when only a keyboard played, on other tracks, they're left out and the line under the screen says so.
 
 UNDO takes a capture back like any other take, every track's part of it at once.
 

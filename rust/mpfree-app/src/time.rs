@@ -875,8 +875,9 @@ impl TimeHost {
 
     /// A key a route played on `track`, which isn't armed (the I/O view's
     /// Routing), in the coming period at `offset`: the pad that plays its
-    /// note there, its end or its pressure. CAPTURE's history keeps it,
-    /// and CAPTURE puts it in that track; nothing records it.
+    /// note there, its end or its pressure; `AllOff` ends every note held
+    /// there. CAPTURE's history keeps it, and CAPTURE puts it in that
+    /// track; nothing records it.
     pub fn routed_played(&mut self, track: u8, offset: u32, event: Event) {
         self.audio.routed(track, offset, event);
     }
@@ -4827,6 +4828,107 @@ mod tests {
         h.act(TimeAction::Redo).unwrap();
         let st = h.state();
         assert!((0..3).all(|t| st.clip(t, 0).is_some()));
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// A routed note whose end never came stops holding CAPTURE's phrase
+    /// open once its track's notes all end (`AllOff`): the next note after
+    /// the quiet starts a phrase of its own.
+    #[test]
+    fn a_routed_all_off_ends_a_held_note_for_capture() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let keys = [
+            (
+                BAR + 1000,
+                Event::NoteOn {
+                    note: 5,
+                    velocity: 90,
+                },
+            ),
+            (2 * BAR, Event::AllOff),
+            (
+                5 * BAR + 100,
+                Event::NoteOn {
+                    note: 6,
+                    velocity: 90,
+                },
+            ),
+            (5 * BAR + 4000, Event::NoteOff { note: 6 }),
+        ];
+        while pads.frame < 6 * BAR + BAR / 2 {
+            let end = pads.frame + u64::from(PERIOD);
+            for &(at, ev) in &keys {
+                if (pads.frame..end).contains(&at) {
+                    h.routed_played(1, (at - pads.frame) as u32, ev);
+                }
+            }
+            run(&mut h, &mut pads, end, &[]);
+        }
+        assert_eq!(
+            h.act(TimeAction::Capture).unwrap(),
+            "capture 1: 1 notes, 1 bar, new clip in slot 1 of Track 2"
+        );
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// The moves made over a phrase go with the armed track's notes; when
+    /// only routed keys played, they stay out, and the line says so.
+    #[test]
+    fn capture_of_routed_keys_alone_leaves_the_moves_out_and_says_so() {
+        use mpfree_play::mpfree_param::{Owner, ParamAddr};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let knob = ParamAddr::new(Owner::Inst(0), 5);
+        let keys = [
+            (
+                BAR + 1000,
+                Event::NoteOn {
+                    note: 5,
+                    velocity: 90,
+                },
+            ),
+            (BAR + 9000, Event::NoteOff { note: 5 }),
+        ];
+        let mut moves: Vec<(u64, Option<f32>)> = (0..5)
+            .map(|i| (BAR + 3000 + i * 1500, Some(0.2 * i as f32)))
+            .collect();
+        moves.push((BAR + 12_000, None));
+        while pads.frame < 3 * BAR {
+            let end = pads.frame + u64::from(PERIOD);
+            for &(at, ev) in &keys {
+                if (pads.frame..end).contains(&at) {
+                    h.routed_played(1, (at - pads.frame) as u32, ev);
+                }
+            }
+            for &(at, v) in &moves {
+                if (pads.frame..end).contains(&at) {
+                    let input = match v {
+                        Some(value) => Input::Move {
+                            addr: knob,
+                            value,
+                            map: mpfree_seq::mpfree_moves::Map::linear(0.0, 1.0),
+                        },
+                        None => Input::End { addr: knob },
+                    };
+                    h.gesture((at - pads.frame) as u32, input);
+                }
+            }
+            h.period(PERIOD, &mut pads);
+            pads.frame = end;
+        }
+        assert_eq!(
+            h.act(TimeAction::Capture).unwrap(),
+            "capture 1: 1 notes, 1 bar, new clip in slot 1 of Track 2; \
+             1 move left out: it goes with the armed track's notes"
+        );
+        let clip = h.control.project.clip(1, 0).expect("Track 2's clip");
+        assert!(clip.moves.is_empty(), "no move went into Track 2's clip");
+        assert!(h.control.project.clip(0, 0).is_none());
         assert_eq!(h.dropped(), 0);
     }
 
