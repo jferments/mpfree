@@ -9796,9 +9796,17 @@ impl Player {
                 }
             }
             // SHIFT + the clip card's arrows: Length and Speed halve or
-            // double.
-            (time_view::CLIP_CARD, EventKind::Step { index, delta }) if self.status.shift => {
-                match time_view::card_action(&self.time, index, delta, true) {
+            // double, Bank steps a whole CC 0; on the scene editor, Bank
+            // does too.
+            (time_view::CLIP_CARD | time_view::SCENE_CARD, EventKind::Step { index, delta })
+                if self.status.shift =>
+            {
+                let a = if ev.widget == time_view::CLIP_CARD {
+                    time_view::card_action(&self.time, index, delta, true)
+                } else {
+                    time_view::scene_action(&self.time, index, delta, true)
+                };
+                match a {
                     Ok(a) => Some(FromUi::Time(a)),
                     Err(why) => {
                         if !why.is_empty() {
@@ -12826,9 +12834,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("clips-card sample: {e}"),
     }
-    // The Record panel's Scene tab (sequencer S4): scene 2, named Drop,
-    // moves on to the next scene after 4 bars four times in five (else
-    // plays again), and mutes Track 2 when it starts.
+    // The Record panel's Scene tab (sequencer S4 and S5): scene 2, named
+    // Drop, moves on to the next scene after 4 bars four times in five
+    // (else plays again), mutes Track 2 when it starts, and sends Track
+    // 1's gear program 12.
     match sample_clips(fonts()) {
         Ok(mut p) => {
             let mut st = p.time.clone();
@@ -12841,11 +12850,30 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                     chance: 80,
                     ..mpfree_seq::Follow::after(4, mpfree_seq::FollowAction::Next)
                 }),
+                programs: vec![mpfree_seq::TrackProgram {
+                    track: 0,
+                    program: mpfree_seq::ClipProgram {
+                        program: 11,
+                        bank: None,
+                    },
+                }],
             };
             p.time_page.scene_card = true;
-            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Time(Box::new(st.clone())));
             p.apply(ToUi::Show(View::Arrange));
             out.push(("clips-scene", p));
+            // The same scene's program change rows (S5), scrolled to: the
+            // armed track's Program and Bank, and Sent to.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                st.armed = Some(0);
+                p.time_page.scene_card = true;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                if let Some(l) = p.ui.get_mut::<OptionList>(time_view::SCENE_CARD) {
+                    l.selected = mpfree_time_ui::view::SCENE_ROWS.len() - 1;
+                }
+                out.push(("clips-scene-program", p));
+            }
         }
         Err(e) => eprintln!("clips-scene sample: {e}"),
     }
@@ -14440,7 +14468,10 @@ mod tests {
                 "After —",
                 "Chance —",
                 "Or —",
-                "Mutes as they are"
+                "Mutes as they are",
+                "Program off",
+                "Bank —",
+                "Sent to none"
             ]
         );
         // The wheel on the Scene row: the next scene.
