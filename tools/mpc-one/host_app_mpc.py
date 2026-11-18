@@ -167,16 +167,24 @@ say() { printf '%s\n' "$*"; }
 bad() { printf 'PROBLEM: %s\n' "$*"; fail=1; }
 rel=$(cat "$R/proc/sys/kernel/osrelease")
 say "release: $rel"
-[ "$rel" = '@@NEW@@' ] || bad "running $rel, not the test build's @@NEW@@"
+case "$rel" in
+  '@@NEW@@') ;;
+  '@@OWN@@') say "  MPFree's own kernel (the stick's --own-kernel): the chain restarted into it" ;;
+  *) bad "running $rel, not the test build's @@WANT@@" ;;
+esac
 if [ -e "$R/run/mpfree-hook/soft-reboot" ]; then
   say "started by: the boot hook's soft-reboot (asked at $(cat "$R/run/mpfree-hook/soft-reboot") s after power-on)"
 else
   say "started by: no soft-reboot marker: a kexec (the boot hook's opt-in kexec_file route or its chain, or --kexec-boot on 3.6.0), or a direct boot"
 fi
 if ls "$R/sys/block" | grep -q '^mmcblk'; then bad "an MMC block device exists"; else say "no MMC block device"; fi
-v=$(cat "$R/proc/sys/kernel/kexec_load_disabled" 2>/dev/null)
-say "kexec_load_disabled: $v"
-[ "$v" = 1 ] || bad "kexec is not disabled"
+if [ -e "$R/proc/sys/kernel/kexec_load_disabled" ] || [ -e "$R/sys/kernel/kexec_loaded" ]; then
+  v=$(cat "$R/proc/sys/kernel/kexec_load_disabled" 2>/dev/null)
+  say "kexec_load_disabled: $v"
+  [ "$v" = 1 ] || bad "kexec is not disabled"
+else
+  say "kexec: not in this kernel"   # MPFree's own kernel is built without it
+fi
 ropts=""; runopts=""
 while read -r dev mnt type opts rest; do
   [ "$mnt" = / ] && ropts=$opts
@@ -207,6 +215,26 @@ done
 [ "$n" = 0 ] && say "  none"
 [ "$fail" = 0 ] && say CHECKS-OK || say CHECKS-STOP
 """
+def test_build_releases(folder):
+    """(Akai's release, MPFree's own or None) from the test build's report.txt. A stick built with
+    --own-kernel names a second one (`its own kernel release:`): the chain's second kernel runs it."""
+    with open(os.path.join(folder, "report.txt")) as fh:
+        text = fh.read()
+    found = re.search(r"^its kernel release: (\S+)$", text, re.M)
+    if not found or not kexec.RELEASE.match(found.group(1)):
+        raise Stop(f"{folder}/report.txt does not name the test build's kernel release")
+    own = re.search(r"^its own kernel release: (\S+) ", text, re.M)
+    if own and not kexec.RELEASE.match(own.group(1)):
+        raise Stop(f"{folder}/report.txt names an unusual own kernel release")
+    return found.group(1), own.group(1) if own else None
+
+
+def check_script(new, own=None):
+    """CHECK for a test build whose kernel is `new` (Akai's) or, on an own-kernel stick, `own` too."""
+    own = own or new
+    return kexec.fill(CHECK, NEW=new, OWN=own, WANT=new if own == new else f"{new} or {own}")
+
+
 # Writes only into /run/mpfree-app (RAM). A report from an earlier run in this boot is kept.
 PREPARE = r"""R=''
 umask 077
@@ -984,11 +1012,9 @@ def main(argv):
     out.say(f"  {len(data)} bytes, sha256 {digest}, static ARM EABI5 hard-float")
     folder = kexec.newest_build(os.path.realpath(args.work))
     out.say(f"  test build: {folder}")
-    with open(os.path.join(folder, "report.txt")) as fh:
-        found = re.search(r"^its kernel release: (\S+)$", fh.read(), re.M)
-    if not found or not kexec.RELEASE.match(found.group(1)):
-        raise Stop(f"{folder}/report.txt does not name the test build's kernel release")
-    new = found.group(1)
+    new, own = test_build_releases(folder)
+    if own:
+        out.say(f"  its kernels: {new} (Akai's), then MPFree's own {own} on the chain's second kernel")
     kit = kit_digest = None
     need_kits = [n for n in ("drums", "play") if n in steps]
     if need_kits:
@@ -1014,7 +1040,7 @@ def main(argv):
     mpc = kexec.Mpc(args, os.path.join(folder, "known_hosts"))
 
     out.say(f"\n[2/{total}] Checks on the test build (read-only; only its own host key is accepted)")
-    rc, text = mpc.run(kexec.fill(CHECK, NEW=new), test=True)
+    rc, text = mpc.run(check_script(new, own), test=True)
     for line in text.splitlines():
         out.say(f"  {line}")
     if rc == 255 and "CHECKS-" not in text:

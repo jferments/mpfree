@@ -17,7 +17,7 @@ Every page in MPFree is laid out the same way, so once you know one, you know th
 | Tab | What it is for |
 |---|---|
 | **Play** | The home page: finger drumming, beats and live looping. |
-| **Pads** | The kit's 16 pads beside the browser: put sounds on pads and set each pad up. |
+| **Pads** | The kit's 16 pads beside the pad's settings: set each pad up, and **Browse for** a sound to put on it. |
 | **Arrange** | Clips: recording them, keeping takes and launching them. |
 | **Synth** | MPFree's synths and their sounds, or an MPC plugin's own screen ([The plugin's own screen](../making-music/synths.md#the-plugins-own-screen)). |
 | **Looper** | Up to eight loops side by side: record, overdub and mute each with a tap, and edit the layers of the one you pick. |
@@ -26,13 +26,13 @@ Every page in MPFree is laid out the same way, so once you know one, you know th
 
 **The status chips** on the right show what is going on: the kit's name and pad bank, how much of the processor (**CPU**) and memory (**RAM**) is in use, whether Full Level is on, and anything that needs your attention. When memory runs so short that new sounds can't load, the hint line says so (see [Sampling](../making-music/sampling.md#the-pads-tab-sounds-onto-pads)). Three of them do something when tapped:
 
-- **The kit chip** (such as **Classic House · Bank A**) opens a list of every kit over the page. Tap a kit to load it on the pads; the list closes and you are back where you were. The last row is the synth. **Back**, the kit chip again or any tab closes the list and keeps the kit that is playing.
+- **The kit chip** (such as **Classic House · Bank A**) opens a list of every kit over the page. Tap a kit to load it on the pads; the list closes and you are back where you were. The synth comes after the kits, and the last row, **New kit**, puts an empty kit on the selected track. **Back**, the kit chip again or any tab closes the list and keeps the kit that is playing.
 - **The Full level or Half level chip** turns that level off, as pressing **FULL LEVEL** again would: the pads play as hard as you hit them again.
 - **The Pads: steps chip** (such as **Pads: steps · Kick**) shows while **STEP SEQ** has made the pads the steps of a sound. With a synth on the pads it names the synth and the note or chord new steps play (**Pads: steps · Poly · C3 + G3**). Tap it to play the pads again, as pressing **STEP SEQ** again would. See [Program a pattern on the pads](first-beat.md#program-a-pattern-on-the-pads).
 
 Tap any other chip and the hint line says what it shows.
 
-The small **I/O icon** at the far right opens the mixer's I/O view, where the project's audio, MIDI, sync and CV are routed. While the tempo follows a clock from another device, a tempo chip such as **120.0 from MIDI In** shows it, with a green dot.
+The small **folder** at the far right opens the browser over the page, as **BROWSE** does, and tapping it again closes it. The mixer's I/O view, where the project's audio, MIDI, sync and CV are routed, is on the **Mix** tab (tap **I/O** there). While the tempo follows a clock from another device, a tempo chip such as **120.0 from MIDI In** shows it, with a green dot; tapping it opens the I/O view too.
 
 ## The transport bar
 
@@ -58,7 +58,8 @@ Some things are not tabs. They open over the page you are on, and close the same
 
 - **Options:** press **MENU** for the current page's settings, such as the repeat rate or the tempo on the Play page.
 - **Prefs:** press **SHIFT + MENU** for MPFree's settings. See [Prefs](../reference/prefs.md).
-- **The mixer's I/O view:** tap the I/O icon at the top right. See [the I/O view](../making-music/mixing-and-effects.md#the-io-view). (The mixer itself is the **Mix** tab from the next build; on the current test build it opens over the page with **TRACK MIX** or the sliders icon.)
+- **The browser:** press **BROWSE**, or tap the folder at the top right. See [Saving your work](../making-music/saving.md#the-browser).
+- **The mixer's I/O view:** tap **I/O** on the **Mix** tab. See [the I/O view](../making-music/mixing-and-effects.md#the-io-view). (The mixer itself is the **Mix** tab from the next build; on the current test build it opens over the page with **TRACK MIX** or the sliders icon.)
 - **The Arp panel:** hold **NOTE REPEAT** and press **MENU**.
 - **The list of kits:** tap the kit chip in the top bar.
 
@@ -68,7 +69,7 @@ Some things are not tabs. They open over the page you are on, and close the same
 
 In a list of settings like this one, turn the data wheel or tap to pick a row, and press **–** or **+** (or tap the arrows) to change it. Or push the data wheel: the row's value is outlined, the wheel now changes it, and a second push sets it so the wheel moves between rows again. The panel on the right explains the row you picked. A list longer than its panel scrolls a row at a time as you pick, and a finger can drag it up or down; the thin bar at its right shows where you are.
 
-The settings beside the Sample tab's pages and the Pads tab's Pad view, the Synth tab's tiles and Arrange's Record settings work the same way: the wheel picks, **–** and **+** change, and the push lets the wheel change it. Holding **SHIFT** gives the wheel its other job on that page (the next pad, the next page, scrolling).
+The settings beside the Sample tab's pages and on the Pads tab, the Synth tab's tiles and Arrange's Record settings work the same way: the wheel picks, **–** and **+** change, and the push lets the wheel change it. Holding **SHIFT** gives the wheel its other job on that page (the next pad, the next page, scrolling).
 
 ## The wheel's outline
 
@@ -82,7 +83,7 @@ On the Play page, the Looper tab, the mixer and the FX chain editor, the data wh
 - On the mixer and the chain editor, the wheel keeps its old job (the selected strip's volume, the first knob) until you tap a control. Changing page, or tapping an empty spot, takes the outline away.
 - While the list of effects is open, the wheel moves through the effects and its push opens presets and then adds, as always (see [Adding an effect](../making-music/mixing-and-effects.md#adding-an-effect)).
 
-To change the kit, tap the kit chip, press a **PAD BANK** button, or hold **SHIFT** and turn the wheel on the Play page.
+To change the kit, tap the kit chip or hold **SHIFT** and turn the wheel on the Play page. The **PAD BANK** buttons put the kit's other banks of 16 pads on the pads.
 
 ## Hold and turn
 

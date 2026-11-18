@@ -1,31 +1,35 @@
 //! The pad editor's Play tab: how a pad plays its sound.
 //!
 //! - **Section chips** (Layers, Amp, Filter, Pitch, Mod, Pad, [`Section`])
-//!   split the pad's rows: a tap on one shows its rows (eight at most, so
-//!   the list never scrolls) and gives Q-Links 1 to 4 its four rows.
+//!   split the pad's rows: a tap on one shows its picture across the page
+//!   ([`Section::view`]: the layer map, the envelope, the filter beside its
+//!   envelope, or the keyboard), its rows as a panel of controls under it
+//!   ([`crate::panel`]), and gives Q-Links 1 to 4 its four rows.
 //! - The **layer map** shows the pad's layers on a velocity axis, with a
 //!   line at the last hit's velocity. Dragging a layer's left or right edge
 //!   sets the velocities it plays; a tap picks the layer that the Layers
 //!   section's rows edit and the envelope is drawn over. **Add layer**
 //!   copies the picked layer onto the upper half of its velocities,
 //!   **Remove layer** takes it out ([`PlayAction::AddLayer`],
-//!   [`PlayAction::RemoveLayer`]).
+//!   [`PlayAction::RemoveLayer`]): buttons on the Layers section's panel.
 //! - The **amp envelope** is drawn over the sound it shapes: Attack, Hold,
 //!   Decay, Sustain and Release as points to drag. Sustain sits where the
 //!   sound ends; Release follows it. In the Filter section the same view
 //!   shows the filter envelope.
 //! - The **filter** shows its response on a log frequency axis, with a dot
 //!   at the cutoff to drag sideways.
-//! - The **list** holds the open section's rows: the picked layer's sound,
-//!   velocities, level, pan and tune; the pad's level, pan and envelope;
-//!   the filter, its envelope's depth and times; tune, wow and flutter and
-//!   the keys it plays; what velocity and pressure do; voices, mute group,
-//!   chokes, links and latch. A tap on a row picks it and its arrows step
-//!   it; the **wheel** steps the row picked.
+//! - The **panel** (the list, drawn as knobs, buttons, selectors, steppers
+//!   and switches in groups) holds the open section's rows: the picked
+//!   layer's sound, velocities, level, pan and tune; the pad's level, pan
+//!   and envelope; the filter, its envelope's depth and times; tune, wow
+//!   and flutter and the keys it plays; what velocity and pressure do;
+//!   voices, mute group, chokes, links and latch. A touch on a control
+//!   picks its row and changes it; the **wheel** steps the row picked.
 //! - **Keys** make the pad a keygroup: it plays the notes from Low key to
 //!   High key, a semitone higher for each note above Root key (the sound's
 //!   own pitch, as heard, when Keys turn on). While the pad is a keygroup or
-//!   the pads play notes, a **keyboard** spans the top of the tab with every
+//!   the pads play notes, the Pitch and Pad sections show a **keyboard**
+//!   across the page with every
 //!   keygroup of the kit over the keys it plays: the pad picked has handles
 //!   to drag its lowest and highest key and its root, a tap on another zone
 //!   picks that pad ([`PlayAction::Pick`]), and keys pressed on it play the
@@ -35,7 +39,7 @@
 //!   each pad a semitone up, played by the keygroups that hold them; or
 //!   **16 Levels** of the pad, each pad a step of what **Levels by** says
 //!   (velocity, tune, cutoff, decay or start).
-//! - The **scene strip** under them holds the kit's scenes
+//! - The **scenes**, beside the panel on every section, hold the kit's scenes
 //!   (`mpfree_sampler::scene`): **Store A** and **Store B** keep the pads
 //!   as they are, the **crossfader** morphs every pad's level, pan, tune,
 //!   filter and envelope times from A to B while it plays (the kit itself
@@ -61,18 +65,16 @@ use mpfree_sampler::model::{
     PressureTarget, Project, Source, SourceId, KEYGROUP_POLYPHONY, MAX_KEY_FADE, MAX_LAYERS,
     MAX_VEL_FADE, PADS,
 };
-use mpfree_ui::widgets::Fader;
 use mpfree_ui::{Color, EventKind, Ui, UiEvent};
 
 use crate::chop_tab::pad_text;
 use crate::keys_widgets::{KeyZones, Zone};
 use crate::pads_tab::{sound_region, Sound};
+use crate::panel::{self, Control, Item, Look, Panel};
 use crate::play_widgets::{EnvelopeView, FilterCurve, LayerBar, LayerMap};
 use crate::source::SourceView;
 use crate::wave_tab::{self, duration_text, mode_label, pad_color, TABS};
-use crate::widgets::{
-    ButtonRow, KnobCard, PadBar, SectionChip, SectionChips, Setting, SettingList,
-};
+use crate::widgets::{KnobCard, PadBar, SectionChip, SectionChips, Setting, SettingList};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
 pub const BAR: &str = "smp-play-bar";
@@ -82,34 +84,32 @@ pub const FILTER: &str = "smp-play-filter";
 pub const LIST: &str = "smp-play-list";
 pub const KEYS: &str = "smp-play-keys";
 pub const QLINKS: [&str; 4] = ["smp-play-q1", "smp-play-q2", "smp-play-q3", "smp-play-q4"];
-/// The scene strip: Store A, Store B and Return, and the crossfader.
+/// The scenes, beside the section's controls: Store A, Store B and
+/// Return to A, and the crossfader (a panel of its own, [`SCENE_ROWS`]).
 pub const SCENES: &str = "smp-play-scenes";
-pub const FADER: &str = "smp-play-fader";
 /// The section chips over the page: Layers, Amp, Filter, Pitch, Mod, Pad.
 pub const SECTIONS: &str = "smp-play-sections";
-/// Add layer and Remove layer, under the layer map.
-pub const LAYER_EDIT: &str = "smp-play-layer-edit";
+/// The scenes' rows: Store A, Store B, Return to A (buttons, whose taps
+/// are [`EventKind::Tab`] with the row) and the crossfader
+/// ([`EventKind::Value`]).
+pub const SCENE_ROWS: usize = 4;
 
-/// The tab's page: the section chips, then the layer map, the envelope
-/// over the filter, and under them the layer buttons and the scene strip,
-/// beside the section's list (tall enough for its eight rows), between the
-/// pad bar and the Q-Link cards.
+/// The tab's page with the Layers section open: the section chips, the
+/// open section's picture across the page, and under it the section's
+/// controls beside the scenes, between the pad bar and the Q-Link cards.
+/// Each section has its own picture ([`layout`]).
 pub const LAYOUT: &str = "col(header:60, row(smp-play-bar:*, smp-send:330):60, \
-                          row(col(smp-play-sections:56, row(col(row(smp-play-layers:*, \
-                          col(smp-play-env:3*, smp-play-filter:2*):*):*, \
-                          row(smp-play-layer-edit:260, smp-play-scenes:*):56):*, \
-                          col(smp-play-list:*, smp-play-fader:56):340):*):*, \
+                          row(col(smp-play-sections:56, smp-play-layers:*, \
+                          row(smp-play-list:*, smp-play-scenes:356):242):*, \
                           col(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4):128):*, hint:26)";
 
-/// The page while the pad is a keygroup or the pads play notes: the
-/// keyboard over the layer map, the envelope and the filter side by side
-/// (a layout file can set it under the page's name with `.keys` after it).
-pub const KEYS_LAYOUT: &str = "col(header:60, row(smp-play-bar:*, smp-send:330):60, \
-                               row(col(smp-play-sections:56, row(col(smp-play-keys:190, \
-                               row(smp-play-layers:*, smp-play-env:*, smp-play-filter:*):*, \
-                               row(smp-play-layer-edit:260, smp-play-scenes:*):56):*, \
-                               col(smp-play-list:*, smp-play-fader:56):340):*):*, \
-                               col(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4):128):*, hint:26)";
+/// The page with section `s` open, its picture [`Section::view`] (the
+/// keyboard on Pitch and Pad when `keys`). A layout file can set it under
+/// the page's name with the section's after it (`.amp`, `.filter`), and
+/// `.keys` after that for the keyboard (`.pitch.keys`).
+pub fn layout(s: Section, keys: bool) -> String {
+    LAYOUT.replace("smp-play-layers:*", &format!("{}:*", s.view(keys)))
+}
 
 /// The velocity a key pressed on the keyboard plays at.
 pub const KEY_VELOCITY: u8 = 100;
@@ -118,13 +118,13 @@ pub const KEY_VELOCITY: u8 = 100;
 pub const TAB: usize = 3;
 
 /// The hint line the app shows under the tab.
-pub const HINT: &str = "Tap a section for its rows · drag a layer's edges for its velocities · drag the envelope's points and the \
-                        filter's dot · the wheel picks a row, - / + change it · SHIFT + Q-Link: finer";
+pub const HINT: &str = "Tap a section for its controls · drag a layer's edges for its velocities · drag the envelope's points and the \
+                        filter's dot · the wheel picks a control, - / + change it · SHIFT + Q-Link: finer";
 
 /// The hint line while the keyboard shows.
 pub const KEYS_HINT: &str =
     "Drag the pad's zone edges and root dot · tap a zone to pick its pad · press keys to hear \
-                             them · the wheel picks a row, - / + change it";
+                             them · the wheel picks a control, - / + change it";
 
 /// The highest note pad 1 may play, so that pad 16 is a MIDI note.
 const MAX_PADS_FROM: u8 = 127 - 15;
@@ -224,10 +224,15 @@ pub enum Row {
     EnvDecay,
     EnvSustain,
     EnvRelease,
+    /// The layer picked copied onto the upper half of its velocities
+    /// ([`PlayAction::AddLayer`]): a button.
+    AddLayer,
+    /// The layer picked taken out ([`PlayAction::RemoveLayer`]): a button.
+    RemoveLayer,
 }
 
 impl Row {
-    pub const ALL: [Row; 43] = [
+    pub const ALL: [Row; 45] = [
         Row::Polyphony,
         Row::MuteGroup,
         Row::Chokes,
@@ -271,6 +276,8 @@ impl Row {
         Row::EnvDecay,
         Row::EnvSustain,
         Row::EnvRelease,
+        Row::AddLayer,
+        Row::RemoveLayer,
     ];
 
     pub fn label(self) -> &'static str {
@@ -318,6 +325,8 @@ impl Row {
             Row::EnvDecay => "Env decay",
             Row::EnvSustain => "Env sustain",
             Row::EnvRelease => "Env release",
+            Row::AddLayer => "Add layer",
+            Row::RemoveLayer => "Remove layer",
         }
     }
 
@@ -413,6 +422,8 @@ impl Section {
                 Row::LayerLevel,
                 Row::LayerPan,
                 Row::LayerTune,
+                Row::AddLayer,
+                Row::RemoveLayer,
             ],
             Section::Amp => &[
                 Row::Level,
@@ -468,7 +479,26 @@ impl Section {
             Section::Pad => [Row::Polyphony, Row::MuteGroup, Row::PadsPlay, Row::PadsFrom],
         }
     }
+
+    /// The picture the section shows across the page: the layer map
+    /// (Layers, Mod, Pad), the envelope over the sound (Amp, Pitch), the
+    /// filter beside its envelope (Filter), or the keyboard on Pitch and
+    /// Pad while `keys` (the pad is a keygroup or the pads play notes).
+    pub fn view(self, keys: bool) -> &'static str {
+        match self {
+            Section::Pitch | Section::Pad if keys => KEYS,
+            Section::Layers | Section::Mod | Section::Pad => LAYERS,
+            Section::Amp | Section::Pitch => ENV,
+            Section::Filter => "row(smp-play-filter:*, smp-play-env:*)",
+        }
+    }
 }
+
+/// The ways a hit picks layers, as the Layers row steps through them.
+const SELECTS: [LayerSelect; 3] = [LayerSelect::All, LayerSelect::Cycle, LayerSelect::Random];
+
+/// What the kit's pads play, as the Pads play row steps through them.
+const PADS_PLAY: [&str; 3] = ["Their sounds", "Notes", "16 Levels"];
 
 /// The filter types the Filter row steps through.
 const FILTERS: [(FilterKind, u8); 7] = [
@@ -667,7 +697,7 @@ impl PlayState {
                     PadsPlay::Keys { .. } => 1,
                     PadsPlay::Levels { .. } => 2,
                 };
-                match (at + delta.signum()).rem_euclid(3) {
+                match (at + delta).rem_euclid(3) {
                     0 => PadsPlay::Pads,
                     1 => {
                         let root = self.settings.keys.map_or(48, |k| k.root);
@@ -864,6 +894,8 @@ pub struct PlayTab {
     next_gesture: u64,
     /// Whether the page has the keyboard.
     keys_shown: bool,
+    /// The section and keyboard the page is laid out for.
+    laid_out: (Section, bool),
     /// The crossfader, 0 (A) to 1 (B).
     fade: f32,
     /// The section open.
@@ -889,7 +921,6 @@ impl PlayTab {
         ui.add(KEYS, KeyZones::new("Keys"));
         let labels: Vec<&str> = Section::ALL.iter().map(|s| s.label()).collect();
         ui.add(SECTIONS, SectionChips::new(&labels));
-        ui.add(LAYER_EDIT, ButtonRow::new(&["Add layer", "Remove layer"]));
         ui.add(LIST, SettingList::new("Layers"));
         let t = ui.theme.clone();
         let colors = [t.accent, t.good, t.warn, Color::rgb(0xC77DFF)];
@@ -900,11 +931,10 @@ impl PlayTab {
                     .on(k, Section::Layers.label()),
             );
         }
-        ui.add(
-            SCENES,
-            ButtonRow::new(&["Store A", "Store B", "Return to A"]),
-        );
-        ui.add(FADER, Fader::new("Scenes · A to B"));
+        let mut scenes = SettingList::new("Scenes");
+        scenes.outlined = false;
+        scenes.buttons = vec![0, 1, 2];
+        ui.add(SCENES, scenes);
         ui.add_page(name, LAYOUT)?;
         let mut tab = PlayTab {
             name: name.to_string(),
@@ -915,6 +945,7 @@ impl PlayTab {
             gesture: None,
             next_gesture: GESTURE_BASE,
             keys_shown: false,
+            laid_out: (Section::Layers, false),
             fade: 0.0,
             section: Section::Layers,
         };
@@ -927,7 +958,8 @@ impl PlayTab {
         self.section
     }
 
-    /// Opens section `section`, its first row picked.
+    /// Opens section `section`, its first row picked and its picture
+    /// across the page.
     pub fn open_section(&mut self, ui: &mut Ui, st: &PlayState, section: Section) {
         if section != self.section {
             self.section = section;
@@ -937,6 +969,7 @@ impl PlayTab {
                 list.editing = false;
             }
         }
+        self.lay_out(ui, st.shows_keys());
         self.show(ui, st);
     }
 
@@ -998,7 +1031,7 @@ impl PlayTab {
             self.last_velocity = None;
         }
         self.layer = self.layer.min(st.settings.layers.len().saturating_sub(1));
-        self.show_keys(ui, st.shows_keys());
+        self.lay_out(ui, st.shows_keys());
         self.show(ui, st);
     }
 
@@ -1016,18 +1049,22 @@ impl PlayTab {
         }
     }
 
-    /// Lays the page out with the keyboard, or without it.
-    fn show_keys(&mut self, ui: &mut Ui, on: bool) {
-        if on == self.keys_shown {
+    /// Lays the page out for the section open: its picture across the
+    /// page, the keyboard on Pitch and Pad while `keys` ([`layout`]).
+    fn lay_out(&mut self, ui: &mut Ui, keys: bool) {
+        let s = self.section;
+        let keys = keys && matches!(s, Section::Pitch | Section::Pad);
+        if self.laid_out == (s, keys) {
             return;
         }
-        let spec = if on {
-            ui.layout_for(&format!("{}.keys", self.name), KEYS_LAYOUT)
-        } else {
-            ui.layout_for(&self.name, LAYOUT)
-        };
+        let mut key = format!("{}.{}", self.name, s.label().to_lowercase());
+        if keys {
+            key.push_str(".keys");
+        }
+        let spec = ui.layout_for(&key, &layout(s, keys));
         if ui.set_layout(&self.name, &spec).is_ok() {
-            self.keys_shown = on;
+            self.laid_out = (s, keys);
+            self.keys_shown = keys;
         }
     }
 
@@ -1046,38 +1083,66 @@ impl PlayTab {
         self.show_scenes(ui, st);
     }
 
+    /// The scenes' panel: Store A and B, Return to A, and the crossfader,
+    /// which moves once both are stored.
     fn show_scenes(&self, ui: &mut Ui, st: &PlayState) {
-        if let Some(b) = ui.get_mut::<ButtonRow>(SCENES) {
-            b.labels = vec![
-                if st.scenes[0] {
-                    "Store A again"
-                } else {
-                    "Store A"
-                }
-                .into(),
-                if st.scenes[1] {
-                    "Store B again"
-                } else {
-                    "Store B"
-                }
-                .into(),
-                "Return to A".into(),
-            ];
-            b.enabled = vec![true, true, st.scenes[0]];
-            b.why = vec![String::new(), String::new(), "Store A first".to_string()];
-        }
-        if let Some(f) = ui.get_mut::<Fader>(FADER) {
-            f.value = self.fade;
-            f.text = match st.scenes {
-                [true, true] => match (self.fade * 100.0).round() as u32 {
-                    0 => "A".into(),
-                    100 => "B".into(),
+        let store = |k: usize| {
+            let ab = ["A", "B"][k];
+            if st.scenes[k] {
+                format!("Store {ab} again")
+            } else {
+                format!("Store {ab}")
+            }
+        };
+        let (fade, why) = match st.scenes {
+            [true, true] => (
+                match (self.fade * 100.0).round() as u32 {
+                    0 => "A".to_string(),
+                    100 => "B".to_string(),
                     n => format!("{n} % to B"),
                 },
-                [false, _] => "store A first".into(),
-                [true, false] => "store B first".into(),
-            };
-        }
+                None,
+            ),
+            [false, _] => ("A".to_string(), Some("Store A first")),
+            [true, false] => ("A".to_string(), Some("Store B first")),
+        };
+        let Some(l) = ui.get_mut::<SettingList>(SCENES) else {
+            return;
+        };
+        let button = |text: String| Setting {
+            name: text,
+            value: String::new(),
+        };
+        l.rows = vec![
+            button(store(0)),
+            button(store(1)),
+            button("Return to A".into()),
+            Setting {
+                name: "A → B".into(),
+                value: fade,
+            },
+        ];
+        l.controls = vec![
+            Control::new(Look::Button(store(0))),
+            Control::new(Look::Button(store(1))),
+            Control::new(Look::Button("Return to A".into()))
+                .faint_because(!st.scenes[0], "Store A first"),
+            Control::new(Look::Slider { pos: self.fade })
+                .faint_because(why.is_some(), why.unwrap_or_default()),
+        ];
+        let it = Item::new;
+        l.panel = Some(Panel {
+            sections: vec![panel::Section::new(
+                "Scenes · A to B",
+                356,
+                vec![vec![it(0), it(1), it(2)], vec![it(3).labelled()]],
+            )
+            .note(match st.scenes {
+                [false, _] => "store A first",
+                [true, false] => "store B first",
+                _ => "the kit's pads",
+            })],
+        });
     }
 
     fn show(&self, ui: &mut Ui, st: &PlayState) {
@@ -1225,8 +1290,18 @@ impl PlayTab {
             })
             .collect();
         let sound = st.sounds.get(self.layer).map_or("", |s| s.name.as_str());
+        let controls = self.controls(st);
+        let panel = self.panel(st);
+        let buttons = if self.section == Section::Layers {
+            vec![Row::AddLayer.place(), Row::RemoveLayer.place()]
+        } else {
+            Vec::new()
+        };
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.rows = rows;
+            list.controls = controls;
+            list.panel = Some(panel);
+            list.buttons = buttons;
             list.selected = list.selected.min(list.rows.len() - 1);
             (list.title, list.right) = match self.section {
                 Section::Layers if n > 1 => (
@@ -1237,14 +1312,6 @@ impl PlayTab {
                 Section::Pad => ("Pad".into(), "and the kit's pads".into()),
                 s => (s.label().into(), "the whole pad".into()),
             };
-        }
-        if let Some(b) = ui.get_mut::<ButtonRow>(LAYER_EDIT) {
-            b.labels = vec!["Add layer".into(), "Remove layer".into()];
-            b.enabled = vec![n < MAX_LAYERS, n > 1];
-            b.why = vec![
-                format!("{MAX_LAYERS} layers at most"),
-                "A pad keeps one layer at least".into(),
-            ];
         }
         if let Some(c) = ui.get_mut::<SectionChips>(SECTIONS) {
             c.selected = Section::ALL
@@ -1260,6 +1327,251 @@ impl PlayTab {
                 .collect();
         }
         self.show_cards(ui, st);
+    }
+
+    /// How each of the open section's rows looks on the panel, in its
+    /// list's order.
+    fn controls(&self, st: &PlayState) -> Vec<Control> {
+        let p = &st.settings;
+        let n = p.layers.len();
+        let source = p.layers.get(self.layer).map(|l| l.region.source);
+        let times = TIMES_MS.len() as u32 - 1;
+        let level = ((LEVEL_RANGE_DB.1 - LEVEL_RANGE_DB.0) / LEVEL_STEP_DB) as u32;
+        let tune = (2 * TUNE_LIMIT_CENTS / 100) as u32;
+        self.section
+            .rows()
+            .iter()
+            .map(|&row| {
+                let knob = |steps: u32, bipolar: bool| Look::Knob {
+                    pos: knob_pos(st, self.layer, row),
+                    steps,
+                    bipolar,
+                };
+                let look = match row {
+                    Row::Layers => Look::Choice {
+                        options: SELECTS.iter().map(|s| select_label(*s).into()).collect(),
+                        on: SELECTS.iter().position(|s| *s == p.select).unwrap_or(0),
+                        off: Vec::new(),
+                    },
+                    Row::PadsPlay => Look::Choice {
+                        options: PADS_PLAY.iter().map(|s| s.to_string()).collect(),
+                        on: match st.pads_play {
+                            PadsPlay::Pads => 0,
+                            PadsPlay::Keys { .. } => 1,
+                            PadsPlay::Levels { .. } => 2,
+                        },
+                        off: Vec::new(),
+                    },
+                    Row::Level | Row::LayerLevel => knob(level, false),
+                    Row::Pan | Row::LayerPan | Row::Depth => knob(40, true),
+                    Row::Tune | Row::LayerTune => knob(tune, true),
+                    Row::Wow => knob(10, false),
+                    Row::Attack
+                    | Row::Hold
+                    | Row::Decay
+                    | Row::Release
+                    | Row::EnvAttack
+                    | Row::EnvDecay
+                    | Row::EnvRelease => knob(times, false),
+                    Row::Sustain
+                    | Row::EnvSustain
+                    | Row::Resonance
+                    | Row::VelToLevel
+                    | Row::VelToStart => knob(20, false),
+                    // A third of an octave a step, 20 Hz to 20 kHz.
+                    Row::Cutoff => knob(30, false),
+                    Row::FilterEnv => knob((2.0 * ENV_OCTAVES / 0.25) as u32, true),
+                    Row::Vintage => Look::Toggle(p.vintage),
+                    Row::Keys => Look::Toggle(p.keys.is_some()),
+                    Row::Latch => Look::Toggle(p.latch),
+                    Row::VelLow
+                    | Row::VelHigh
+                    | Row::LowKey
+                    | Row::HighKey
+                    | Row::RootKey
+                    | Row::KeyFade
+                    | Row::PadsFrom => Look::Stepper,
+                    Row::AddLayer | Row::RemoveLayer => Look::Button(row.label().into()),
+                    Row::Sound
+                    | Row::VelFade
+                    | Row::Filter
+                    | Row::Pressure
+                    | Row::Polyphony
+                    | Row::MuteGroup
+                    | Row::Chokes
+                    | Row::Links
+                    | Row::LevelsBy => Look::Chip,
+                };
+                let why = match row {
+                    Row::AddLayer if n >= MAX_LAYERS => {
+                        Some(format!("{MAX_LAYERS} layers at most"))
+                    }
+                    Row::RemoveLayer if n < 2 => Some("A pad keeps one layer at least".into()),
+                    Row::Sound if !st.kit_sounds.iter().any(|s| Some(s.id) != source) => {
+                        Some("The kit has no other sound".into())
+                    }
+                    Row::KeyFade if st.zones.is_empty() => {
+                        Some("No pad of the kit is a keygroup: turn Keys on".into())
+                    }
+                    _ => faint_why(st, row).map(str::to_string),
+                };
+                Control::new(look).faint_because(why.is_some(), why.as_deref().unwrap_or(""))
+            })
+            .collect()
+    }
+
+    /// The open section's panel: its rows as controls, in sections of
+    /// their own.
+    fn panel(&self, st: &PlayState) -> Panel {
+        let p = &st.settings;
+        let n = p.layers.len();
+        let it = |r: Row| Item::new(r.place());
+        let part = panel::Section::new;
+        let sections = match self.section {
+            Section::Layers => {
+                let sound = st.sounds.get(self.layer).map_or("", |s| s.name.as_str());
+                vec![
+                    part(
+                        "Layers",
+                        250,
+                        vec![vec![it(Row::Layers)], vec![it(Row::VelFade).labelled()]],
+                    )
+                    .note(if n > 1 {
+                        "how a hit picks"
+                    } else {
+                        "one so far"
+                    }),
+                    part(
+                        &format!("Layer {}", self.layer + 1),
+                        500,
+                        vec![
+                            vec![
+                                it(Row::Sound).labelled(),
+                                it(Row::VelLow).labelled().wide(124),
+                                it(Row::VelHigh).labelled().wide(124),
+                            ],
+                            vec![
+                                it(Row::LayerLevel),
+                                it(Row::LayerPan),
+                                it(Row::LayerTune),
+                                it(Row::AddLayer).wide(112),
+                                it(Row::RemoveLayer).wide(112),
+                            ],
+                        ],
+                    )
+                    .note(&if n > 1 {
+                        format!("of {n} · tap one on the map")
+                    } else {
+                        sound.to_string()
+                    }),
+                ]
+            }
+            Section::Amp => vec![
+                part("Level", 220, vec![vec![it(Row::Level), it(Row::Pan)]]).note("the whole pad"),
+                part(
+                    "Envelope",
+                    520,
+                    vec![vec![
+                        it(Row::Attack),
+                        it(Row::Hold),
+                        it(Row::Decay),
+                        it(Row::Sustain),
+                        it(Row::Release),
+                    ]],
+                )
+                .note("drag the points, or turn"),
+            ],
+            Section::Filter => vec![
+                part(
+                    "Filter",
+                    390,
+                    vec![
+                        vec![it(Row::Filter).labelled()],
+                        vec![it(Row::Cutoff), it(Row::Resonance), it(Row::FilterEnv)],
+                    ],
+                )
+                .note(if p.filter.kind == FilterKind::Off {
+                    "off"
+                } else {
+                    "drag the dot"
+                }),
+                part(
+                    "Filter envelope",
+                    350,
+                    vec![vec![
+                        it(Row::EnvAttack),
+                        it(Row::EnvDecay),
+                        it(Row::EnvSustain),
+                        it(Row::EnvRelease),
+                    ]],
+                )
+                .note("its hold on the picture"),
+            ],
+            Section::Pitch => vec![
+                part(
+                    "Pitch",
+                    300,
+                    vec![vec![it(Row::Tune), it(Row::Wow)], vec![it(Row::Vintage)]],
+                )
+                .note("the whole pad"),
+                part(
+                    "Keys",
+                    440,
+                    vec![
+                        vec![
+                            it(Row::Keys).wide(150),
+                            it(Row::KeyFade).labelled().wide(150),
+                        ],
+                        vec![
+                            it(Row::LowKey).labelled(),
+                            it(Row::HighKey).labelled(),
+                            it(Row::RootKey).labelled(),
+                        ],
+                    ],
+                )
+                .note(if p.keys.is_some() {
+                    "a keygroup"
+                } else {
+                    "on: the pad plays notes"
+                }),
+            ],
+            Section::Mod => vec![
+                part(
+                    "Velocity",
+                    300,
+                    vec![vec![it(Row::VelToLevel), it(Row::VelToStart)]],
+                )
+                .note("how hard a hit is"),
+                part(
+                    "Pressure",
+                    440,
+                    vec![vec![it(Row::Pressure).labelled(), it(Row::Depth).wide(96)]],
+                )
+                .note("the pad held down"),
+            ],
+            Section::Pad => vec![
+                part(
+                    "Pad",
+                    420,
+                    vec![
+                        vec![it(Row::Polyphony).labelled(), it(Row::MuteGroup).labelled()],
+                        vec![it(Row::Chokes).labelled(), it(Row::Links).labelled()],
+                        vec![it(Row::Latch)],
+                    ],
+                )
+                .note("hit a pad to add it"),
+                part(
+                    "The kit's pads",
+                    320,
+                    vec![
+                        vec![it(Row::PadsPlay)],
+                        vec![it(Row::PadsFrom).labelled(), it(Row::LevelsBy).labelled()],
+                    ],
+                )
+                .note("every pad"),
+            ],
+        };
+        Panel { sections }
     }
 
     fn show_zones(&self, z: &mut KeyZones, st: &PlayState) {
@@ -1359,7 +1671,7 @@ impl PlayTab {
                 self.show_scenes(ui, st);
                 Some(PlayAction::Scene(SceneAction::Return))
             }
-            (FADER, EventKind::Value(x)) => {
+            (SCENES, EventKind::Value(x)) => {
                 if st.scenes != [true, true] {
                     // Nothing to fade between yet: the fader stays at A.
                     self.show_scenes(ui, st);
@@ -1387,27 +1699,6 @@ impl PlayTab {
                 let section = *Section::ALL.get(*i)?;
                 self.open_section(ui, st, section);
                 None
-            }
-            (LAYER_EDIT, EventKind::Tab(0)) => {
-                let n = st.settings.layers.len();
-                if n >= MAX_LAYERS {
-                    return None;
-                }
-                let after = self.layer.min(n - 1);
-                self.lift();
-                // The new layer is picked once it is there.
-                self.layer = after + 1;
-                Some(PlayAction::AddLayer { pad: st.pad, after })
-            }
-            (LAYER_EDIT, EventKind::Tab(1)) => {
-                let n = st.settings.layers.len();
-                if n < 2 {
-                    return None;
-                }
-                let layer = self.layer.min(n - 1);
-                self.lift();
-                self.layer = layer.saturating_sub(1);
-                Some(PlayAction::RemoveLayer { pad: st.pad, layer })
             }
             (KEYS, EventKind::Select(pad)) => (*pad != st.pad).then_some(PlayAction::Pick(*pad)),
             (KEYS, EventKind::Pad { index, down }) => Some(PlayAction::Note {
@@ -1454,6 +1745,11 @@ impl PlayTab {
                     (*frame as f32).clamp(CUTOFF_RANGE_HZ.0, CUTOFF_RANGE_HZ.1);
                 self.edit(st, Key::Cutoff, after)
             }
+            (LIST, EventKind::Tab(i)) => match self.section.rows().get(*i)? {
+                Row::AddLayer => self.add_layer(st),
+                Row::RemoveLayer => self.remove_layer(st),
+                _ => None,
+            },
             (LIST, EventKind::Step { index, delta }) => {
                 let row = *self.section.rows().get(*index)?;
                 let a = self.step(st, row, *delta);
@@ -1621,6 +1917,31 @@ impl PlayTab {
 }
 
 impl PlayTab {
+    /// Add layer: a copy of the layer picked, which the new one becomes.
+    fn add_layer(&mut self, st: &PlayState) -> Option<PlayAction> {
+        let n = st.settings.layers.len();
+        if n >= MAX_LAYERS {
+            return None;
+        }
+        let after = self.layer.min(n - 1);
+        self.lift();
+        // The new layer is picked once it is there.
+        self.layer = after + 1;
+        Some(PlayAction::AddLayer { pad: st.pad, after })
+    }
+
+    /// Remove layer: the layer picked out, the one before it picked.
+    fn remove_layer(&mut self, st: &PlayState) -> Option<PlayAction> {
+        let n = st.settings.layers.len();
+        if n < 2 {
+            return None;
+        }
+        let layer = self.layer.min(n - 1);
+        self.lift();
+        self.layer = layer.saturating_sub(1);
+        Some(PlayAction::RemoveLayer { pad: st.pad, layer })
+    }
+
     /// The layer picked's Sound row stepped: the next of the kit's sounds,
     /// whole, as one undo step. None when the kit has no other sound.
     fn step_sound(&mut self, st: &PlayState, delta: i32) -> Option<PlayAction> {
@@ -2043,6 +2364,8 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
         | Row::LayerLevel
         | Row::LayerPan
         | Row::LayerTune => {}
+        // Buttons: see [`PlayTab::action`].
+        Row::AddLayer | Row::RemoveLayer => {}
     }
     p
 }
@@ -2176,7 +2499,7 @@ pub fn value_text(p: &Pad, row: Row) -> String {
         Row::EnvRelease => ms_text(p.filter_env.release_ms),
         // A layer's rows show the first layer's (the tab shows the layer
         // picked's: [`PlayState::layer_text`]).
-        Row::Sound => String::new(),
+        Row::Sound | Row::AddLayer | Row::RemoveLayer => String::new(),
         Row::VelLow | Row::VelHigh | Row::LayerLevel | Row::LayerPan | Row::LayerTune => {
             let Some(l) = p.layers.first() else {
                 return "–".into();

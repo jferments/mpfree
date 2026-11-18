@@ -853,11 +853,18 @@ impl Widget for BrowserView {
         if s.can_go_back {
             out.push(Target::tap("back", 0, "‹ Back", g.back));
         }
-        for (b, br) in g.list_buttons.iter().chain(g.detail_buttons.iter()) {
+        for (b, br) in &g.list_buttons {
             out.push(Target::tap("button", *b as usize, b.label(), *br));
         }
+        for (b, br) in &g.detail_buttons {
+            let label = detail_label(s, *b);
+            out.push(Target::tap("button", *b as usize, &label, *br));
+        }
+        // The filter showing is drawn lit: a tap on it changes nothing.
         for (f, fr) in &g.filters {
-            out.push(Target::tap("filter", *f as usize, f.label(), *fr));
+            out.push(
+                Target::tap("filter", *f as usize, f.label(), *fr).disabled_if(*f == s.filter),
+            );
         }
         out.push(Target::tap("search", 0, "Search", g.search));
         out.push(Target::tap("sort", 0, "Sort", g.sort));
@@ -932,6 +939,26 @@ impl Widget for BrowserView {
                 None
             }
         }
+    }
+}
+
+/// What a detail button says. For a sound, Load names the pad it goes on
+/// (Load on A5) and Load to pad says when (Next pad hit); Audition says
+/// whether it is on.
+fn detail_label(s: &Screen, b: Button) -> String {
+    let sound = s
+        .selected
+        .and_then(|i| s.rows.get(i))
+        .is_some_and(|r| matches!(r.kind, Kind::Audio(_)));
+    match b {
+        Button::Load if sound => s
+            .load_on
+            .as_ref()
+            .map_or_else(|| b.label().into(), |pad| format!("Load on {pad}")),
+        Button::LoadToPad if sound => "Next pad hit".into(),
+        Button::Audition if s.audition => "Audition on".into(),
+        Button::Audition => "Audition off".into(),
+        _ => b.label().into(),
     }
 }
 
@@ -1362,17 +1389,7 @@ fn paint_files(cx: &mut PaintCx, g: &Geo, s: &Screen) {
             Button::Audition => s.audition,
             _ => false,
         };
-        let label = match b {
-            Button::Audition => {
-                if s.audition {
-                    "Audition on"
-                } else {
-                    "Audition off"
-                }
-            }
-            _ => b.label(),
-        };
-        button(cx, *br, label, lit, *b == Button::Delete);
+        button(cx, *br, &detail_label(s, *b), lit, *b == Button::Delete);
     }
 }
 

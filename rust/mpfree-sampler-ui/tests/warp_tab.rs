@@ -3,10 +3,10 @@
 
 use mpfree_sampler::model::{Pin, WarpMethod};
 use mpfree_sampler_ui::sample::{loose_project, warp_sample, WarpSample, BPM, PAD, RATE};
-use mpfree_sampler_ui::warp_tab::{self, Row, BUTTONS, LIST, VIEW};
+use mpfree_sampler_ui::warp_tab::{self, Row, LIST, VIEW};
 use mpfree_sampler_ui::warp_widgets::{WarpView, TICKS};
 use mpfree_sampler_ui::wave_tab::{WaveAction, WaveState};
-use mpfree_sampler_ui::widgets::{ButtonRow, KnobCard, PadBar};
+use mpfree_sampler_ui::widgets::{KnobCard, PadBar, SettingList};
 use mpfree_ui::{EventKind, Fonts, Touch, UiEvent};
 
 fn sample() -> WarpSample {
@@ -51,6 +51,12 @@ fn hits(s: &mut WarpSample) -> Vec<u64> {
         .collect()
 }
 
+/// Whether Pin hits, Remove pin and Clear pins can be pressed (not faint).
+fn buttons_on(s: &WarpSample) -> [bool; 3] {
+    let l = s.ui.get::<SettingList>(LIST).unwrap();
+    [Row::PinHits, Row::RemovePin, Row::ClearPins].map(|k| !l.controls[k.index()].faint)
+}
+
 #[test]
 fn the_tab_shows_the_region_in_its_beats() {
     let s = sample();
@@ -66,8 +72,8 @@ fn the_tab_shows_the_region_in_its_beats() {
     assert!(v.pins_on);
     assert!(v.hits.len() >= 12, "{}", v.hits.len());
     assert_eq!(v.right, format!("{} hits found", v.hits.len()));
-    let b = s.ui.get::<ButtonRow>(BUTTONS).unwrap();
-    assert_eq!(b.enabled, vec![true, false, false]);
+    assert_eq!(v.zoom, "whole region");
+    assert_eq!(buttons_on(&s), [true, false, false]);
 }
 
 #[test]
@@ -101,7 +107,7 @@ fn a_tap_pins_the_nearest_hit_to_the_grid_and_a_second_picks_it() {
 #[test]
 fn dragging_a_handle_moves_its_pin_along_the_grid() {
     let mut s = sample();
-    go(&mut s, BUTTONS, EventKind::Tab(0));
+    go(&mut s, LIST, EventKind::Tab(Row::PinHits.index()));
     let before = pins(&s);
     assert!(before.len() >= 10);
     // Grab pin 3's handle in the ruler and drag it a little right.
@@ -153,7 +159,7 @@ fn dragging_a_handle_moves_its_pin_along_the_grid() {
 fn pin_hits_remove_and_clear() {
     let mut s = sample();
     let found = hits(&mut s);
-    go(&mut s, BUTTONS, EventKind::Tab(0));
+    go(&mut s, LIST, EventKind::Tab(Row::PinHits.index()));
     let p = pins(&s);
     assert!(p.len() >= 10, "{}", p.len());
     for pin in &p {
@@ -166,21 +172,20 @@ fn pin_hits_remove_and_clear() {
     let st = s.state.clone();
     assert!(s.tab.qlink(&mut s.ui, &st, 0, 2, false).is_none());
     assert_eq!(s.tab.selected(), Some(1));
-    go(&mut s, BUTTONS, EventKind::Tab(1));
+    go(&mut s, LIST, EventKind::Tab(Row::RemovePin.index()));
     let q = pins(&s);
     assert_eq!(q.len(), p.len() - 1);
     assert!(!q.contains(&p[1]));
     assert_eq!(s.tab.selected(), None);
-    go(&mut s, BUTTONS, EventKind::Tab(2));
+    go(&mut s, LIST, EventKind::Tab(Row::ClearPins.index()));
     assert!(pins(&s).is_empty());
-    let b = s.ui.get::<ButtonRow>(BUTTONS).unwrap();
-    assert_eq!(b.enabled, vec![true, false, false]);
+    assert_eq!(buttons_on(&s), [true, false, false]);
 }
 
 #[test]
 fn q_links_nudge_the_pin_and_tune_the_tempo_in_one_step_a_turn() {
     let mut s = sample();
-    go(&mut s, BUTTONS, EventKind::Tab(0));
+    go(&mut s, LIST, EventKind::Tab(Row::PinHits.index()));
     s.tab.lift();
     let st = s.state.clone();
     s.tab.qlink(&mut s.ui, &st, 0, 5, false);
@@ -238,7 +243,7 @@ fn the_rows_turn_warp_on_and_step_the_pin() {
     // Grid to eighths, pin the hits, step pin 1 on by an eighth.
     assert_eq!(act(&mut s, LIST, step(Row::Grid, -1)), None);
     assert_eq!(s.tab.grid, warp_tab::Grid::Eighth);
-    go(&mut s, BUTTONS, EventKind::Tab(0));
+    go(&mut s, LIST, EventKind::Tab(Row::PinHits.index()));
     for p in pins(&s) {
         assert_eq!(p.beat * 2.0, (p.beat * 2.0).round(), "on an eighth");
     }
@@ -266,7 +271,7 @@ fn the_rows_turn_warp_on_and_step_the_pin() {
 #[test]
 fn the_wheel_zooms_round_the_pin_and_q_link_4_scrolls() {
     let mut s = sample();
-    go(&mut s, BUTTONS, EventKind::Tab(0));
+    go(&mut s, LIST, EventKind::Tab(Row::PinHits.index()));
     act(&mut s, VIEW, EventKind::Select(6));
     let beat = pins(&s)[6].beat;
     let st = s.state.clone();
@@ -315,7 +320,7 @@ fn the_wheel_on_a_sound_shorter_than_half_a_beat_shows_it_whole() {
 #[test]
 fn moving_the_start_on_the_wave_tab_keeps_the_pins_on_their_hits() {
     let mut s = sample();
-    go(&mut s, BUTTONS, EventKind::Tab(0));
+    go(&mut s, LIST, EventKind::Tab(Row::PinHits.index()));
     let before = pins(&s);
     let r = &s.state.region;
     // The start moved to the first pin's hit (Wave tab's Start marker).
@@ -384,9 +389,8 @@ fn process_asks_for_a_new_sound_moved_by_shift_and_stops_while_it_runs() {
             .clone()
     };
     let list = s.ui.get::<SettingList>(LIST).unwrap();
-    assert_eq!(
-        list.buttons,
-        vec![Row::Process.index()],
+    assert!(
+        list.buttons.contains(&Row::Process.index()),
         "Process is a button"
     );
     assert_eq!(value(&s, Row::Shift), "0 st");
@@ -442,4 +446,59 @@ fn process_asks_for_a_new_sound_moved_by_shift_and_stops_while_it_runs() {
     assert_eq!(process(&mut s), Some(WaveAction::StopProcess));
     s.tab.set_processing(&mut s.ui, &st, None);
     assert_eq!(value(&s, Row::Process), warp_tab::PROCESS_TEXT);
+}
+
+#[test]
+fn the_settings_and_pin_buttons_are_a_panel_under_the_picture() {
+    let mut s = sample();
+    let view = s.ui.rect_of(VIEW).unwrap();
+    let band = s.ui.rect_of(LIST).unwrap();
+    assert!(view.w >= 1100, "{view:?}");
+    assert_eq!((band.x, band.w, band.h), (view.x, view.w, 242));
+    let l = s.ui.get::<SettingList>(LIST).unwrap();
+    let panel = l.panel.as_ref().unwrap();
+    let titles: Vec<&str> = panel.sections.iter().map(|s| s.title.as_str()).collect();
+    assert_eq!(titles, ["Warp", "Hits", "Pin", "Pitch and process"]);
+    let placed: Vec<usize> = panel
+        .place(band, &l.controls)
+        .iter()
+        .map(|p| p.row)
+        .collect();
+    assert_eq!(
+        placed,
+        (0..Row::ALL.len()).collect::<Vec<_>>(),
+        "the wheel's order"
+    );
+    // A faint button tapped says why, and leaves the wheel where it was.
+    let picked = l.selected;
+    let t =
+        s.ui.targets()
+            .into_iter()
+            .find(|t| t.widget == LIST && t.target.label == "Remove pin")
+            .unwrap()
+            .target;
+    assert!(!t.enabled);
+    let (x, y) = t.centre();
+    let ev = s.ui.touch(3, Touch::Down, x, y).unwrap();
+    s.ui.touch(3, Touch::Up, x, y);
+    assert_eq!(ev.kind, EventKind::Select(Row::RemovePin.index()));
+    let l = s.ui.get::<SettingList>(LIST).unwrap();
+    assert_eq!(l.selected, picked);
+    assert_eq!(l.why_faint(Row::RemovePin.index()), Some("Tap a pin first"));
+    assert_eq!(l.why_faint(Row::PinHits.index()), None, "it can be pressed");
+    // Pin hits pressed on the panel pins them, and the pin buttons wake.
+    let t =
+        s.ui.targets()
+            .into_iter()
+            .find(|t| t.widget == LIST && t.target.label == "Pin hits")
+            .unwrap()
+            .target;
+    let (x, y) = t.centre();
+    let ev = s.ui.touch(3, Touch::Down, x, y).unwrap();
+    s.ui.touch(3, Touch::Up, x, y);
+    let st = s.state.clone();
+    let a = s.tab.action(&mut s.ui, &ev, &st);
+    apply(&mut s, a);
+    assert!(pins(&s).len() >= 4);
+    assert_eq!(buttons_on(&s), [true, false, true]);
 }

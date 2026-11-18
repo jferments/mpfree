@@ -783,7 +783,8 @@ const R16: f32 = 0.0;
 const R8: f32 = 1.0;
 const R2: f32 = 3.0;
 
-/// Ducker: the kick pushing the bass and pads down, or a pump in time.
+/// Ducker: the kick pushing the bass and pads down (on its own track, or
+/// picked out of a drum bus by the key's low-pass), or a pump in time.
 pub static DUCKER: &[Preset] = &[
     Preset {
         name: "Kick duck",
@@ -834,6 +835,18 @@ pub static DUCKER: &[Preset] = &[
             (ducker::ATTACK, 20.0),
             (ducker::RELEASE, 1500.0),
             (ducker::SHAPE, 0.0),
+        ],
+    },
+    // Appended (FX quality round 4), so saved choices keep their place.
+    Preset {
+        name: "Kick from drums",
+        values: &[
+            (ducker::THRESHOLD, -30.0),
+            (ducker::DEPTH, 12.0),
+            (ducker::ATTACK, 1.0),
+            (ducker::HOLD, 10.0),
+            (ducker::RELEASE, 120.0),
+            (ducker::KEY_LP, 120.0),
         ],
     },
 ];

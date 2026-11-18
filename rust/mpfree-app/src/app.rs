@@ -81,8 +81,8 @@ pub const DOUBLE_PRESS_SECONDS: f64 = 0.4;
 pub enum View {
     Play,
     /// The pads (the owner's pick, 12 Nov 2026 15:46Z): the pad bank beside
-    /// the browser (Browse) or the pad's settings (Pad); the sampler's
-    /// pad screens (`mpfree_sampler_ui::pads_tab`) and the browser.
+    /// the pad's settings (Pad), whose "Browse for" opens the full browser;
+    /// the sampler's pad screens (`mpfree_sampler_ui::pads_tab`).
     Pads,
     /// Arrange: the time engine's launch grid, record settings and takes
     /// (the Clips tab until Jay renamed it, 12:55Z).
@@ -158,6 +158,15 @@ pub fn tabs(dev: bool) -> Vec<View> {
         t.push(View::Debug);
     }
     t
+}
+
+/// The pages of a kit's 128 pads on the 16 pads: PAD BANK A to H.
+pub const KIT_PAGES: usize = 8;
+
+/// A kit pad's name: its page's letter and its number there, as Akai's
+/// MPC names them ("A1" is pad 1, "B5" pad 21).
+pub fn kit_pad_name(pad: usize) -> String {
+    format!("{}{}", bank_letter(pad / 16), pad % 16 + 1)
 }
 
 /// The bank a PAD BANK button picks (0 = A ... 7 = H): SHIFT picks E-H,
@@ -908,6 +917,9 @@ pub struct Status {
     pub mute_keys: MuteKeys,
     /// TRACK MUTE's bank (A = 0: tracks 1-16).
     pub mute_bank: usize,
+    /// The loop keys are on (SHIFT + SAMPLER on the Looper tab): the pads
+    /// are the loop keys on the Looper tab and Play.
+    pub loop_keys: bool,
     /// STEP SEQ: the pads as steps, or STEP SEQ held to pick the sound.
     pub steps: Option<StepPads>,
     /// ERASE held: the next tap on the screen deletes what it lands on
@@ -1198,9 +1210,6 @@ pub struct App {
     timed: bool,
     shift: bool,
     repeat_held: bool,
-    /// The Pads tab shows the browser (its Browse view), as the screen
-    /// last said: the wheel, its push, - / + and PLAY go to the browser.
-    pads_browse: bool,
     /// ERASE is down: SHIFT and ERASE held, then TAP TEMPO, is the
     /// Console's chord.
     erase_held: bool,
@@ -1219,6 +1228,18 @@ pub struct App {
     mute_bank: usize,
     /// TRACK MUTE held (without SHIFT): a pad tapped solos its track.
     mute_hold: Option<MuteHold>,
+    /// The Perform pads' page on the pads (SHIFT + SAMPLER on the Looper
+    /// tab), and the page: the loop keys
+    /// ([`crate::perform_pads::PerformPage::loop_keys`]).
+    loop_keys: bool,
+    perform_page: crate::perform_pads::PerformPage,
+    /// The kit's page on the pads (PAD BANK A = 0 to H = 7): pad n plays
+    /// the kit's pad 16 * page + n (sampler R3 part 2b). One page for
+    /// every kit, as Akai's MPC has one pad bank.
+    pad_page: usize,
+    /// The kit pad each pad held pressed, so it lets go of that one even
+    /// if the page turned while it was down.
+    kit_held: [Option<u8>; 16],
     /// The project's tracks (the audio loop tells it).
     track_count: usize,
     /// The 16 Levels panel shows on Play: the wheel picks its kind.
@@ -1440,7 +1461,6 @@ impl App {
             timed,
             shift: false,
             repeat_held: false,
-            pads_browse: true,
             erase_held: false,
             repeat_pressed_at: None,
             latched: false,
@@ -1450,6 +1470,10 @@ impl App {
             mute_keys: MuteKeys::Off,
             mute_bank: 0,
             mute_hold: None,
+            loop_keys: false,
+            perform_page: crate::perform_pads::PerformPage::loop_keys(),
+            pad_page: 0,
+            kit_held: [None; 16],
             track_count: 0,
             levels_open: false,
             levels_on: false,
@@ -1596,6 +1620,30 @@ impl App {
     /// `16 * bank + 16`.
     pub fn mute_bank(&self) -> usize {
         self.mute_bank
+    }
+
+    /// The kit's page on the pads: PAD BANK A = 0 to H = 7.
+    pub fn pad_page(&self) -> usize {
+        self.pad_page
+    }
+
+    /// PAD BANK picked page `page` of the kit (0 = A, up to 7 = H). Pads
+    /// held keep the kit pads they pressed until let go.
+    pub fn set_pad_page(&mut self, page: usize) {
+        self.pad_page = page.min(KIT_PAGES - 1);
+    }
+
+    /// The kit pad that pad `slot` (0 to 15) plays: the one it pressed
+    /// while held, else the page's, 16 * page + slot. With the synth's
+    /// pad layout on the pads, the slot itself.
+    pub fn kit_pad(&self, slot: usize) -> usize {
+        if self.pad_layout.is_some() {
+            return slot;
+        }
+        match self.kit_held.get(slot).copied().flatten() {
+            Some(k) => usize::from(k),
+            None => self.pad_page * 16 + slot,
+        }
     }
 
     /// What TRACK MUTE's pads are in the bank picked, for the log.
@@ -1787,12 +1835,13 @@ impl App {
     /// A pad pressed: it plays, and writes a step while recording a pattern.
     pub fn pad_down(&mut self, slot: usize, velocity: u8) -> Vec<Effect> {
         self.step_pad_played(slot);
+        let pad = self.kit_pad(slot) as u8;
         if !self.free_time_recording() {
             // In Free time the pads only write steps; the pattern keeps
             // playing the latched notes.
             self.press_pad(slot, velocity.max(1));
         }
-        self.record_press(slot as u8, velocity)
+        self.record_press(pad, velocity)
     }
 
     /// What a pad press gives the clip recorder "as pressed" (a track whose
@@ -1808,7 +1857,8 @@ impl App {
         if self.free_time_recording() || slot >= 16 {
             return None;
         }
-        let note = slot as u8;
+        // A kit's pad on the page (or the one it pressed), else the slot.
+        let note = self.kit_pad(slot) as u8;
         Some(if down {
             mpfree_play::Event::NoteOn {
                 note,
@@ -1821,17 +1871,20 @@ impl App {
 
     pub fn pad_up(&mut self, slot: usize) -> Vec<Effect> {
         self.step_pad_let_go(slot);
+        let pad = self.kit_pad(slot) as u8;
         if !self.free_time_recording() {
             self.release_pad(slot);
         }
-        self.record_release(slot as u8)
+        if let Some(h) = self.kit_held.get_mut(slot) {
+            *h = None;
+        }
+        self.record_release(pad)
     }
 
     pub fn pressure(&mut self, slot: usize, value: u8) {
         if self.pad_layout.is_none() {
-            self.arps
-                .engine_at_mut(self.track)
-                .pressure(slot as u8, value);
+            let pad = self.kit_pad(slot) as u8;
+            self.arps.engine_at_mut(self.track).pressure(pad, value);
             return;
         }
         // Every note of a chord pad gets the pad's pressure.
@@ -1858,7 +1911,7 @@ impl App {
                 .arps
                 .engine_at(self.track)
                 .active()
-                .contains(slot as u8),
+                .contains(self.kit_pad(slot) as u8),
             Some(l) => l.get(slot).is_some_and(|p| {
                 p.notes()
                     .iter()
@@ -1900,6 +1953,66 @@ impl App {
     /// step more, -8 to +7.
     pub fn pads_transpose(&self) -> bool {
         self.levels_on && self.levels_transpose
+    }
+
+    /// The pads are the loop keys now: turned on (SHIFT + SAMPLER on the
+    /// Looper tab, or the deck's Pads switch), on the Looper tab or Play.
+    /// Elsewhere they play the kit, and come back as loop keys on return.
+    pub fn pads_are_loop_keys(&self) -> bool {
+        self.loop_keys && matches!(self.view, View::Looper | View::Play)
+    }
+
+    /// The Perform pads' page the pads show as loop keys.
+    pub fn perform_page(&self) -> &crate::perform_pads::PerformPage {
+        &self.perform_page
+    }
+
+    /// The loop keys on or off (SHIFT + SAMPLER on the Looper tab, the
+    /// deck's Pads switch). One pad mode at a time: STEP SEQ, TRACK MUTE
+    /// and 16 Levels give the pads up to them.
+    pub fn toggle_loop_keys(&mut self) -> Vec<Effect> {
+        self.set_loop_keys(!self.loop_keys)
+    }
+
+    fn set_loop_keys(&mut self, on: bool) -> Vec<Effect> {
+        if on == self.loop_keys {
+            return Vec::new();
+        }
+        let mut fx = Vec::new();
+        if on {
+            fx.extend(self.steps_off());
+            self.mute_hold = None;
+            if self.mute_keys != MuteKeys::Off {
+                fx.extend(self.set_mute_keys(MuteKeys::Off));
+            }
+            if self.levels_on {
+                // 16 Levels give the pads up too (the screen says back).
+                fx.push(Effect::SixteenLevels);
+            }
+            fx.retain(|e| !matches!(e, Effect::Status(_) | Effect::Note(_)));
+        }
+        self.loop_keys = on;
+        fx.extend([
+            self.status(),
+            Effect::Note(if on {
+                "SHIFT + SAMPLER: the pads are the loop keys (top two rows: \
+                 each loop's key; bottom two: its mute)"
+                    .to_string()
+            } else {
+                "SHIFT + SAMPLER: the pads play again".to_string()
+            }),
+        ]);
+        fx
+    }
+
+    /// Another pad mode took the pads (STEP SEQ, TRACK MUTE, 16 Levels):
+    /// the loop keys go off.
+    fn loop_keys_off(&mut self) -> Vec<Effect> {
+        if !self.loop_keys {
+            return Vec::new();
+        }
+        self.loop_keys = false;
+        vec![self.status()]
     }
 
     /// A pad tapped as a mute key: what it does. In Make a mute acts at
@@ -2026,6 +2139,7 @@ impl App {
             bpm: self.settings.bpm,
             mute_keys: self.mute_keys,
             mute_bank: self.mute_bank,
+            loop_keys: self.loop_keys,
             steps: self.step_pads(),
             erase: self.erase_held,
             copy: self.copy_held(),
@@ -2395,7 +2509,13 @@ impl App {
         } else if is(m.next_seq) {
             self.go(View::Arrange)
         } else if is(m.sampler) {
-            self.go(if shift { View::Looper } else { View::Sample })
+            // SHIFT + SAMPLER: the Looper tab; pressed again there, the
+            // pads become the loop keys, or play again.
+            if shift && self.view == View::Looper {
+                self.toggle_loop_keys()
+            } else {
+                self.go(if shift { View::Looper } else { View::Sample })
+            }
         } else if is(m.sample_edit) {
             let mut fx = vec![Effect::SampleEditor(crate::sample_page::Editor::Wave)];
             fx.extend(self.go(View::Sample));
@@ -2429,8 +2549,10 @@ impl App {
             } else {
                 MuteKeys::Tracks
             };
-            // One pad mode at a time: STEP SEQ gives the pads up.
+            // One pad mode at a time: STEP SEQ and the loop keys give the
+            // pads up.
             let mut off = self.steps_off();
+            off.extend(self.loop_keys_off());
             self.mute_keys = if self.mute_keys == want {
                 MuteKeys::Off
             } else {
@@ -2488,9 +2610,10 @@ impl App {
         self.levels_transpose = on && transpose;
         let mut fx = Vec::new();
         if on && !self.levels_on {
-            // One pad mode at a time: STEP SEQ and TRACK MUTE give the
-            // pads up to 16 Levels.
+            // One pad mode at a time: STEP SEQ, TRACK MUTE and the loop
+            // keys give the pads up to 16 Levels.
             fx.extend(self.steps_off());
+            fx.extend(self.loop_keys_off());
             self.mute_hold = None;
             if self.mute_keys != MuteKeys::Off {
                 self.mute_keys = MuteKeys::Off;
@@ -2705,10 +2828,6 @@ impl App {
             View::Synth if self.shift => vec![Effect::SynthPage(delta.signum())],
             View::Browser if self.shift => vec![Effect::Browse(BrowseKey::Places(delta.signum()))],
             View::Browser => vec![Effect::Browse(BrowseKey::Wheel(delta))],
-            View::Pads if self.pads_browse && self.shift => {
-                vec![Effect::Browse(BrowseKey::Places(delta.signum()))]
-            }
-            View::Pads if self.pads_browse => vec![Effect::Browse(BrowseKey::Wheel(delta))],
             View::Sample | View::Pads if self.shift => vec![Effect::SamplePad(delta.signum())],
             // Pages with rows: the wheel picks a row, or, once the wheel's
             // push opened it, changes its value (RowKey).
@@ -2825,14 +2944,20 @@ impl App {
         fx
     }
 
-    /// The bar's I/O icon (layout spec, section 2): the mixer opens on its
-    /// I/O view; on a strips view the mixer turns to I/O; on the I/O view
-    /// (`io_showing`) it closes back to the page, as TRACK MIX does.
-    pub fn toggle_io(&mut self, io_showing: bool) -> Vec<Effect> {
-        if self.view == View::Mixer && io_showing {
-            return self.toggle_mixer(false);
+    /// The bar's folder icon (layout spec, section 2): the browser opens
+    /// over the page, or closes back to it, as BROWSE does.
+    pub fn toggle_browser(&mut self) -> Vec<Effect> {
+        self.toggle(View::Browser)
+    }
+
+    /// The Pads tab's Browse for: the browser opens over the page (its
+    /// Load puts a sound on the pad picked); BROWSE or the folder icon
+    /// closes it back to the Pads tab.
+    pub fn open_browser(&mut self) -> Vec<Effect> {
+        if self.view == View::Browser {
+            return Vec::new();
         }
-        self.open_io()
+        self.show(View::Browser)
     }
 
     /// The tempo chip: the mixer's I/O view, whatever shows (the app picks
@@ -2941,27 +3066,20 @@ impl App {
     }
 
     /// Open a tab's page.
-    /// The Pads tab shows its browser (Browse) or the pad's settings
-    /// (Pad), as the screen says when its switch is tapped.
-    pub fn set_pads_browse(&mut self, on: bool) {
-        self.pads_browse = on;
-    }
-
-    /// The wheel, its push, - / + and PLAY go to the Pads tab's browser.
+    /// The wheel, its push, - / + and PLAY go to the browser.
     fn browsing(&self) -> bool {
-        (self.view == View::Pads && self.pads_browse) || self.view == View::Browser
+        self.view == View::Browser
     }
 
     /// A page whose rows the wheel, - / + and the wheel's push work
-    /// ([`RowKey`]): the Sample tab, the Pads tab's Pad view, the Synth tab
-    /// and Arrange. Not while NOTE REPEAT holds the wheel for the arp.
+    /// ([`RowKey`]): the Sample tab, the Pads tab, the Synth tab and
+    /// Arrange. Not while NOTE REPEAT holds the wheel for the arp.
     fn has_rows(&self) -> bool {
         !self.repeat_held
-            && match self.view {
-                View::Sample | View::Synth | View::Arrange => true,
-                View::Pads => !self.pads_browse,
-                _ => false,
-            }
+            && matches!(
+                self.view,
+                View::Sample | View::Synth | View::Arrange | View::Pads
+            )
     }
 
     pub fn open_tab(&mut self, v: View) -> Vec<Effect> {
@@ -5171,14 +5289,13 @@ mod tests {
     /// Live test 2 (Jay, 13 Nov): on a page with rows the wheel scrolls
     /// through them, - / + cycle the highlighted row's options, and the
     /// wheel's push makes the wheel cycle them until the next push. The
-    /// same on the Sample tab, the Pads tab's Pad view, the Synth tab and
-    /// Arrange; SHIFT keeps each page's second job.
+    /// same on the Sample tab, the Pads tab, the Synth tab and Arrange;
+    /// SHIFT keeps each page's second job.
     #[test]
     fn the_wheel_picks_rows_and_its_push_opens_one_on_every_page_with_rows() {
         let mut app = ready();
         let pick = |d| vec![Effect::Rows(RowKey::Pick(d))];
         let step = |d| vec![Effect::Rows(RowKey::Step(d))];
-        app.set_pads_browse(false);
         for v in [View::Sample, View::Synth, View::Arrange, View::Pads] {
             app.open_tab(v);
             assert_eq!(app.view(), v);
@@ -5830,38 +5947,16 @@ mod tests {
         );
     }
 
+    /// The Pads tab has no browser of its own (Browse for opens BROWSE's,
+    /// 18 Nov): the wheel picks its rows, - and + change them, and PLAY
+    /// is the transport's, as on the Sample tab.
     #[test]
-    fn the_pads_tab_follows_play_and_its_browser_takes_the_wheel_push_minus_plus_and_play() {
+    fn the_pads_tab_follows_play_and_takes_the_sample_tabs_controls() {
         let mut app = ready();
         assert_eq!(View::Pads.tab_index(false), Some(1));
         assert_eq!(app.tab(1), vec![Effect::Show(View::Pads)]);
         assert!(View::Pads.sampler() && View::Sample.sampler() && !View::Play.sampler());
         app.map.data_push = Some(111);
-        // Browse (the view it opens on): the browser's.
-        assert_eq!(app.wheel(2), vec![Effect::Browse(BrowseKey::Wheel(2))]);
-        app.button(button::SHIFT, true, 0.0);
-        assert_eq!(app.wheel(-3), vec![Effect::Browse(BrowseKey::Places(-1))]);
-        app.button(button::SHIFT, false, 0.0);
-        assert_eq!(press(&mut app, 111), vec![Effect::Browse(BrowseKey::Push)]);
-        assert_eq!(
-            press(&mut app, button::PLUS),
-            vec![Effect::Browse(BrowseKey::Enter)]
-        );
-        assert_eq!(
-            press(&mut app, button::MINUS),
-            vec![Effect::Browse(BrowseKey::Back)]
-        );
-        assert_eq!(
-            press(&mut app, button::PLAY),
-            vec![Effect::Browse(BrowseKey::Play)]
-        );
-        // UNDO undoes the pads' edits, as on Sample.
-        assert_eq!(
-            press(&mut app, 92),
-            vec![Effect::SampleUndo { redo: false }, Effect::UndoButton(true)]
-        );
-        // The Pad view: the Sample tab's controls.
-        app.set_pads_browse(false);
         assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
         assert_eq!(
             press(&mut app, button::PLUS),
@@ -5869,10 +5964,16 @@ mod tests {
         );
         assert!(press(&mut app, button::PLAY)
             .contains(&Effect::Time(TimeAction::Transport(Command::Play))));
-        // Elsewhere PLAY is the transport's again.
-        app.set_pads_browse(true);
-        app.tab(0);
-        assert!(!press(&mut app, button::PLAY).contains(&Effect::Browse(BrowseKey::Play)));
+        // UNDO undoes the pads' edits, as on Sample.
+        assert_eq!(
+            press(&mut app, 92),
+            vec![Effect::SampleUndo { redo: false }, Effect::UndoButton(true)]
+        );
+        // Browse for asks for the browser over the page; asked again, it
+        // stays.
+        assert_eq!(app.open_browser(), vec![Effect::Show(View::Browser)]);
+        assert!(app.open_browser().is_empty());
+        assert_eq!(app.view(), View::Browser);
     }
 
     #[test]
@@ -6177,6 +6278,54 @@ mod tests {
             (bank_letter(0), bank_letter(7), bank_letter(9)),
             ('A', 'H', 'B')
         );
+    }
+
+    /// R3 part 2b: PAD BANK pages a kit's 128 pads. Pad 5 on bank B is
+    /// the kit's pad B5 (21) for the arp, the recorder and STEP SEQ, and a
+    /// pad held while the page turns lets go of the pad it pressed.
+    #[test]
+    fn pad_bank_pages_the_kit_and_a_held_pad_lets_go_where_it_pressed() {
+        let mut app = ready();
+        assert_eq!((app.pad_page(), app.kit_pad(4)), (0, 4));
+        assert_eq!(
+            (kit_pad_name(0), kit_pad_name(20), kit_pad_name(127)),
+            ("A1".into(), "B5".into(), "H16".into())
+        );
+        app.set_pad_page(1);
+        assert_eq!(app.kit_pad(4), 20);
+        assert_eq!(
+            app.pressed_event(4, 100, true),
+            Some(mpfree_play::Event::NoteOn {
+                note: 20,
+                velocity: 100
+            })
+        );
+        app.pad_down(4, 100);
+        assert!(app.eng().active().contains(20) && !app.eng().active().contains(4));
+        assert!(app.active(4), "pad 5 lights for B5");
+        // The page turns while it is down: it still lets go of B5.
+        app.set_pad_page(0);
+        assert_eq!(app.kit_pad(4), 20, "held: the pad it pressed");
+        assert_eq!(
+            app.pressed_event(4, 0, false),
+            Some(mpfree_play::Event::NoteOff { note: 20 })
+        );
+        app.pad_up(4);
+        assert!(app.eng().active().is_empty());
+        assert_eq!(app.kit_pad(4), 4, "let go: bank A's again");
+        // STEP SEQ's sound is the pad played last, on any bank.
+        app.set_pad_page(7);
+        app.pad_down(15, 100);
+        app.pad_up(15);
+        assert_eq!(app.step_pads(), None);
+        let fx = click(&mut app, button::STEP_SEQ);
+        assert_eq!(app.step_pads().map(|s| s.sound), Some(127));
+        assert!(fx.contains(&Effect::Note(
+            "STEP SEQ: the pads are pad H16's steps, page 1".into()
+        )));
+        // The page never goes past H.
+        app.set_pad_page(9);
+        assert_eq!(app.pad_page(), 7);
     }
 
     #[test]
@@ -7269,6 +7418,74 @@ mod tests {
         assert_eq!(app.mute_keys(), MuteKeys::Off);
     }
 
+    /// SHIFT + SAMPLER pressed again on the Looper tab: the pads are the
+    /// loop keys (the Looper as an instrument, step 2), on the Looper tab
+    /// and Play and not elsewhere, until SHIFT + SAMPLER again. One pad
+    /// mode at a time: the loop keys take the pads from TRACK MUTE and
+    /// STEP SEQ, and give them up to either.
+    #[test]
+    fn shift_sampler_again_on_the_looper_tab_makes_the_pads_loop_keys() {
+        const SHIFT: u8 = button::SHIFT;
+        const SAMPLER: u8 = button::SAMPLER;
+        const STEP_SEQ: u8 = button::STEP_SEQ;
+        let mut app = ready();
+        // SHIFT + SAMPLER elsewhere opens the Looper tab and leaves the
+        // pads as they were.
+        held(&mut app, SHIFT, |a| press(a, SAMPLER));
+        assert_eq!(app.view(), View::Looper);
+        assert!(!app.pads_are_loop_keys());
+        // Again, there: the loop keys.
+        let fx = held(&mut app, SHIFT, |a| press(a, SAMPLER));
+        assert!(app.pads_are_loop_keys());
+        assert!(app.status_now().loop_keys);
+        assert!(
+            fx.iter()
+                .any(|e| matches!(e, Effect::Note(n) if n.contains("the pads are the loop keys"))),
+            "{fx:?}"
+        );
+        assert_eq!(
+            app.perform_page().action(12),
+            crate::perform_pads::PadAction::LoopKey(0),
+            "pad 13 is Loop 1's key"
+        );
+        // On Play they stay keys; on Sample the pads play, and back on
+        // the Looper tab they are keys again.
+        app.open_tab(View::Play);
+        assert!(app.pads_are_loop_keys());
+        app.open_tab(View::Sample);
+        assert!(!app.pads_are_loop_keys());
+        app.open_tab(View::Looper);
+        assert!(app.pads_are_loop_keys());
+        // TRACK MUTE takes the pads, and the loop keys go off.
+        const TRACK_MUTE: u8 = 68;
+        app.map.learn(mapper::Job::TrackMute, Some(TRACK_MUTE));
+        press(&mut app, TRACK_MUTE);
+        assert_eq!(app.mute_keys(), MuteKeys::Tracks);
+        assert!(!app.pads_are_loop_keys());
+        // The loop keys take them back from TRACK MUTE.
+        held(&mut app, SHIFT, |a| press(a, SAMPLER));
+        assert!(app.pads_are_loop_keys());
+        assert_eq!(app.mute_keys(), MuteKeys::Off);
+        // STEP SEQ takes them too (and opens Play's Beats, as always).
+        click(&mut app, STEP_SEQ);
+        assert!(app.pads_are_steps());
+        assert!(!app.pads_are_loop_keys());
+        assert_eq!(app.view(), View::Play);
+        // SHIFT + SAMPLER on Play opens the Looper tab; again there, the
+        // loop keys.
+        held(&mut app, SHIFT, |a| press(a, SAMPLER));
+        assert_eq!(app.view(), View::Looper);
+        assert!(!app.pads_are_loop_keys());
+        held(&mut app, SHIFT, |a| press(a, SAMPLER));
+        assert!(app.pads_are_loop_keys());
+        assert!(!app.pads_are_steps(), "and give STEP SEQ's pads back");
+        // SHIFT + SAMPLER again: the pads play.
+        let fx = held(&mut app, SHIFT, |a| press(a, SAMPLER));
+        assert!(!app.pads_are_loop_keys());
+        assert!(fx.contains(&Effect::Note("SHIFT + SAMPLER: the pads play again".into())));
+        assert_eq!(app.view(), View::Looper);
+    }
+
     /// TRACK MUTE held with a pad tapped: a solo, and letting go leaves
     /// the pad mode as it was before the press. A quick press still
     /// toggles the mode. In Make a tap acts at once and in Perform it
@@ -7564,7 +7781,7 @@ mod tests {
     /// wheel, its push and - / + go to the outline, never to the kit; on
     /// the mixer and the chain editor once the outline is on a control.
     #[test]
-    fn the_wheel_moves_the_outline_and_kits_stay_on_the_pad_bank_buttons() {
+    fn the_wheel_moves_the_outline_and_never_the_kit() {
         let mut app = ready();
         let nav = |n| vec![Effect::Nav(n)];
         for v in [View::Play, View::Looper] {

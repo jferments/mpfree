@@ -12,7 +12,7 @@
 //! (`Recent::catch_up`); one that cannot goes back with a request to
 //! compile again, and the view that holds everything plays on.
 
-use mpfree_notefx::{Chain, TrackFx};
+use mpfree_notefx::{Chain, Slot, TrackFx, MAX_FX};
 use mpfree_play::{Event, Out, PlayView, Player, Rec, Recent, Recorder, TrackArps};
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::mpfree_moves::{Input, Kind};
@@ -30,6 +30,18 @@ use super::{Click, Collect, HitInfo, LaneOut, LockOut, Pads, MAX_HITS, MAX_LOCKS
 /// until they can go back to be freed there.
 const RETURNS: usize = 8;
 
+/// MIDI effect settings the mod engine can hold at once on one track.
+pub const NOTE_MODS: usize = 16;
+
+/// A value the mod engine holds on one MIDI effect setting: the effect's
+/// id on the track (0: none), the setting and its value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct NoteMod {
+    id: u16,
+    k: u8,
+    value: i32,
+}
+
 pub struct TimeAudio {
     // Boxed: the fixed tables are large.
     transport: Box<Transport>,
@@ -44,6 +56,13 @@ pub struct TimeAudio {
     tracks: Tracks,
     /// The tracks' MIDI effects, as the control half last sent them.
     note_fx: Box<[TrackFx; MAX_TRACKS]>,
+    /// What the mod engine holds on the tracks' MIDI effect settings (a
+    /// macro, an LFO, a step's lock), on top of `note_fx` until it lets
+    /// go ([`TimeAudio::modulate_note_fx`]).
+    note_mods: Box<[[NoteMod; NOTE_MODS]; MAX_TRACKS]>,
+    note_mods_dropped: u64,
+    /// `note_fx` changed since [`TimeAudio::take_note_fx_moved`].
+    note_fx_moved: bool,
     /// Chains for the tracks' MIDI effects the control half sent, until
     /// [`TimeAudio::dress_arps`] hands them to the arps.
     chains_in: [Option<Box<Chain>>; MAX_TRACKS],
@@ -66,7 +85,7 @@ pub struct TimeAudio {
     n_hits: usize,
     /// Each pad's pressure last sent to CAPTURE's history, None after a
     /// press: a value that did not change is not sent again.
-    pressure_sent: [Option<u8>; 16],
+    pressure_sent: [Option<u8>; 128],
     /// The clips' parameter locks and lanes' values this period, for the
     /// mixer's mod engine.
     locks: Vec<LockOut>,
@@ -119,6 +138,9 @@ impl TimeAudio {
             recent: Box::new(Recent::new()),
             tracks,
             note_fx: Box::new([TrackFx::default(); MAX_TRACKS]),
+            note_mods: Box::new([[NoteMod::default(); NOTE_MODS]; MAX_TRACKS]),
+            note_mods_dropped: 0,
+            note_fx_moved: false,
             chains_in: std::array::from_fn(|_| None),
             follower: Follower::new(rate),
             follow_sent: FollowCounts::default(),
@@ -128,7 +150,7 @@ impl TimeAudio {
             jump_pending: false,
             hits: [HitInfo::default(); MAX_HITS],
             n_hits: 0,
-            pressure_sent: [None; 16],
+            pressure_sent: [None; 128],
             locks: Vec::with_capacity(MAX_LOCKS),
             lanes: Vec::with_capacity(MAX_LOCKS),
             locks_dropped: 0,
@@ -167,16 +189,16 @@ impl TimeAudio {
                         *set = s;
                     }
                 }
-                ToAudio::NoteFx { track, place, slot } => {
-                    if let Some(fx) = self.note_fx.get_mut(usize::from(track)) {
-                        if let Some(s) = fx.slots.get_mut(usize::from(place)) {
-                            *s = slot;
-                        }
-                    }
-                }
+                ToAudio::NoteFx {
+                    track,
+                    place,
+                    slot,
+                    id,
+                } => self.note_place(usize::from(track), usize::from(place), slot, id),
                 ToAudio::NoteArp { track, at } => {
                     if let Some(fx) = self.note_fx.get_mut(usize::from(track)) {
                         fx.arp_at = at;
+                        self.note_fx_moved = true;
                     }
                 }
                 ToAudio::Chain(t, c) => match self.chains_in.get_mut(usize::from(t)) {
@@ -385,7 +407,7 @@ impl TimeAudio {
     }
 
     pub fn pad_pressure(&mut self, offset: u32, pad: u8, value: u8) {
-        if pad >= 16 {
+        if pad >= 128 {
             return;
         }
         let event = Event::Pressure { note: pad, value };
@@ -570,8 +592,79 @@ impl TimeAudio {
                     self.free_chain(back);
                 }
             }
-            arps.set_notes(t, &self.note_fx[t]);
+            // The mod engine's values on top of the track's own.
+            let mut fx = self.note_fx[t];
+            for m in self.note_mods[t].iter().filter(|m| m.id != 0) {
+                fx.set_value(m.id, usize::from(m.k), m.value);
+            }
+            arps.set_notes(t, &fx);
         }
+    }
+
+    /// One place of a track's MIDI effects, as the control half sent it.
+    /// What the mod engine held on the effect that was there goes when
+    /// another effect (or another id) takes the place.
+    fn note_place(&mut self, t: usize, place: usize, slot: Option<Slot>, id: u16) {
+        let (Some(fx), Some(mods)) = (self.note_fx.get_mut(t), self.note_mods.get_mut(t)) else {
+            return;
+        };
+        if place >= MAX_FX {
+            return;
+        }
+        let kind = |s: Option<Slot>| s.map(|s| std::mem::discriminant(&s.fx));
+        let (old, old_id) = (fx.slots[place], fx.ids[place]);
+        if kind(old) != kind(slot) || old_id != id {
+            for m in mods
+                .iter_mut()
+                .filter(|m| m.id != 0 && (m.id == old_id || m.id == id))
+            {
+                *m = NoteMod::default();
+            }
+        }
+        fx.slots[place] = slot;
+        fx.ids[place] = id;
+        self.note_fx_moved = true;
+    }
+
+    /// The mod engine's value for setting `k` of the effect with id `id` on
+    /// `track` (`Some`), or its end (`None`: the track's own value comes
+    /// back). It applies from the next period. Never allocates: one more
+    /// than [`NOTE_MODS`] on a track is counted and dropped.
+    pub fn modulate_note_fx(&mut self, track: usize, id: u16, k: u8, value: Option<i32>) {
+        let (Some(fx), Some(mods)) = (self.note_fx.get(track), self.note_mods.get_mut(track))
+        else {
+            return;
+        };
+        let at = mods.iter().position(|m| m.id == id && m.k == k);
+        match (value, at) {
+            (None, Some(i)) => mods[i] = NoteMod::default(),
+            (None, None) => {}
+            (Some(value), Some(i)) => mods[i].value = value,
+            (Some(value), None) => {
+                if id == 0 || fx.value(id, usize::from(k)).is_none() {
+                    return;
+                }
+                match mods.iter().position(|m| m.id == 0) {
+                    Some(i) => mods[i] = NoteMod { id, k, value },
+                    None => self.note_mods_dropped += 1,
+                }
+            }
+        }
+    }
+
+    /// The tracks' MIDI effects as this half has them (with their ids).
+    pub fn note_fx(&self) -> &[TrackFx; MAX_TRACKS] {
+        &self.note_fx
+    }
+
+    /// Whether the tracks' MIDI effects changed since the last call.
+    pub fn take_note_fx_moved(&mut self) -> bool {
+        std::mem::take(&mut self.note_fx_moved)
+    }
+
+    /// MIDI effect values the mod engine sent with no room for them.
+    pub fn note_mods_dropped(&self) -> u64 {
+        self.note_mods_dropped
     }
 
     /// One period: the transport (unless [`TimeAudio::advance`] ran it),

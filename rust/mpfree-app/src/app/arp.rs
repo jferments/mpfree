@@ -1049,6 +1049,7 @@ impl App {
                 self.release_pad(slot);
             }
             self.release_keys();
+            self.kit_held = [None; 16];
         }
         self.pad_layout = layout;
         self.arp_dirty = true;
@@ -1087,9 +1088,12 @@ impl App {
 
     pub(crate) fn press_pad(&mut self, slot: usize, velocity: u8) {
         let Some(layout) = &self.pad_layout else {
-            self.arps
-                .engine_at_mut(self.track)
-                .press(slot as u8, velocity);
+            // A kit: the pad of the page, kept until it is let go.
+            let pad = self.kit_pad(slot) as u8;
+            if let Some(h) = self.kit_held.get_mut(slot) {
+                *h = Some(pad);
+            }
+            self.arps.engine_at_mut(self.track).press(pad, velocity);
             return;
         };
         let Some(&pad) = layout.get(slot) else { return };
@@ -1149,7 +1153,8 @@ impl App {
 
     pub(crate) fn release_pad(&mut self, slot: usize) {
         if self.pad_layout.is_none() {
-            self.arps.engine_at_mut(self.track).release(slot as u8);
+            let pad = self.kit_pad(slot) as u8;
+            self.arps.engine_at_mut(self.track).release(pad);
             return;
         }
         let Some(pad) = self.pad_pressed.get_mut(slot).map(std::mem::take) else {

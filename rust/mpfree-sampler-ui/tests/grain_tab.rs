@@ -3,15 +3,16 @@
 //! drags change the region in a real project, one undo step each.
 
 use mpfree_sampler::engine::{Engine, EngineView, Event};
-use mpfree_sampler::model::{GrainWindow, PlayMode, Project};
+use mpfree_sampler::model::{GrainMode, GrainWindow, PlayMode, Project};
 use mpfree_sampler_ui::grain_tab::{
     self, describe, size_at, size_place, GrainAction, GrainState, Row,
 };
 use mpfree_sampler_ui::grain_widgets::{GrainCloud, XyPad};
+use mpfree_sampler_ui::panel::Look;
 use mpfree_sampler_ui::sample::{
     self, grain_project, grain_samples, grains_after, GrainSample, PAD, RATE,
 };
-use mpfree_sampler_ui::widgets::{InfoCard, KnobCard, PadBar, SettingList};
+use mpfree_sampler_ui::widgets::{KnobCard, PadBar, SettingList};
 use mpfree_ui::{EventKind, Fonts, Rect, SoftCanvas, Touch, UiEvent};
 
 /// The Grain tab on the granular pad (or on the loop, not granular yet),
@@ -162,10 +163,48 @@ fn the_tab_shows_the_layers_grain_settings_and_the_engines_cloud() {
         Row::Scan,
         "the wheel starts on the scan speed"
     );
+    assert_eq!(row_value(&s, Row::Scan), "0.25×");
+    // The panel: Cloud's knobs and Shape's selectors; the Q-Links' rows
+    // are on their cards and the touch pad.
+    let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
+    let panel = list.panel.as_ref().unwrap();
+    let titles: Vec<&str> = panel.sections.iter().map(|s| s.title.as_str()).collect();
+    assert_eq!(titles, ["Cloud", "Shape"]);
+    let placed: Vec<Row> = panel
+        .sections
+        .iter()
+        .flat_map(|s| s.lines.iter().flatten().map(|i| Row::ALL[i.row]))
+        .collect();
     assert_eq!(
-        s.ui.get::<InfoCard>(grain_tab::WHEEL).unwrap().text,
-        "Scan speed: 0.25×"
+        placed,
+        [
+            Row::Scan,
+            Row::Spray,
+            Row::SizeSpray,
+            Row::PitchSpray,
+            Row::LevelSpray,
+            Row::Timing,
+            Row::Reverse,
+            Row::Spread,
+            Row::Level,
+            Row::SprayShape,
+            Row::Mode,
+            Row::GrainMode,
+            Row::Shape,
+            Row::Quantise,
+            Row::Sync
+        ]
     );
+    assert!(grain_tab::QLINK_ROWS.iter().all(|r| !placed.contains(r)));
+    let cloud = GrainMode::Cloud;
+    assert!(matches!(
+        list.controls[Row::Scan.index_in(cloud).unwrap()].look,
+        Look::Knob { bipolar: true, .. }
+    ));
+    assert!(matches!(
+        list.controls[Row::Shape.index_in(cloud).unwrap()].look,
+        Look::Knob { .. }
+    ));
     let xy = s.ui.get::<XyPad>(grain_tab::XY).unwrap();
     assert_eq!((xy.x, xy.y), (0.56, size_place(150.0)));
     // The cloud: the engine's own grains, all inside the region.
@@ -371,18 +410,32 @@ fn a_grain_mode_starts_from_its_own_settings_and_shows_its_rows() {
     assert_eq!(
         names(&s),
         [
+            "Scan",
+            "Stereo",
+            "Level",
             "Mode",
             "Grain mode",
-            "Scan speed",
+            "Shape",
             "Position",
             "Size",
             "Density",
-            "Pitch",
-            "Shape",
-            "Stereo spread",
-            "Level"
-        ]
+            "Pitch"
+        ],
+        "the panel's order"
     );
+    // The panel names its first section after the mode and holds only the
+    // mode's rows.
+    let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
+    let panel = list.panel.as_ref().unwrap();
+    let titles: Vec<&str> = panel.sections.iter().map(|s| s.title.as_str()).collect();
+    assert_eq!(titles, ["Stretch", "Shape"]);
+    let on_panel = panel
+        .sections
+        .iter()
+        .flat_map(|s| s.lines.iter().flatten())
+        .count();
+    assert_eq!(on_panel, 6, "Scan, Stereo, Level; Mode, Grain mode, Shape");
+    assert_eq!(list.controls.len(), list.rows.len());
     for (row, value) in [
         (Row::Scan, "1×"),
         (Row::Size, "90 ms"),
@@ -454,7 +507,10 @@ fn a_tone_plays_a_note_that_steps_by_semitones_and_keeps_its_cycles() {
     );
     let list = s.ui.get::<SettingList>(grain_tab::LIST).unwrap();
     assert_eq!(list.rows.len(), 12);
-    assert_eq!(list.rows[2].name, "Density");
+    assert_eq!(
+        list.rows[Row::Density.index_in(GrainMode::Tone).unwrap()].name,
+        "Density"
+    );
     assert_eq!(row_value(&s, Row::Density), "A2 · 110 Hz");
     assert_eq!(row_value(&s, Row::Size), "36 ms · 4.0 cycles");
     let g = s.state.region.grain;
@@ -642,9 +698,9 @@ fn the_wheel_steps_the_row_picked() {
     let a = s.tab.wheel(&mut s.ui, &st, 1).unwrap();
     apply(&mut s, &a);
     assert_eq!(row_value(&s, Row::Density), "150 /s");
-    assert_eq!(
-        s.ui.get::<InfoCard>(grain_tab::WHEEL).unwrap().text,
-        "Density: 150 /s"
+    assert!(
+        s.ui.get::<KnobCard>(grain_tab::QLINKS[2]).unwrap().focused,
+        "its card shows the wheel is on it"
     );
 }
 

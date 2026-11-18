@@ -7,6 +7,12 @@ grain/coherent[pink, overlap 16]/stretch_over_sprayed_lu	0.3802
 grain/coherent[pink, overlap 64]/stretch_over_sprayed_lu	0.4197
 grain/frozen[1 kHz, density 15 to 60]/swing_db	2.4223
 grain/frozen[pad, density 15 to 60]/swing_db	2.7254
+grain/hits[drums, double speed]/attack_ms	0.4989
+grain/hits[drums, double speed]/flam_db	0.3936
+grain/hits[drums, double speed]/pre_db	-30.1024
+grain/hits[drums, half speed]/attack_ms	0.4989
+grain/hits[drums, half speed]/flam_db	1.934
+grain/hits[drums, half speed]/pre_db	-70.7699
 grain/level[pad, defaults]/offset_lu	-0.5097
 grain/level[pad]/range_lu	0.6416
 grain/level[pink, defaults]/offset_lu	0.3452

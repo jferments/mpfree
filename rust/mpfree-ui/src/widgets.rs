@@ -52,10 +52,18 @@ pub struct Header {
     /// the chips (layout spec, section 2): `Some(open)`, lit while the
     /// mixer is open. A tap gives `Select(MIXER_ICON)`.
     pub mixer_icon: Option<bool>,
-    /// The I/O icon (an arrow in over an arrow out) just left of the mixer
-    /// icon (layout spec, section 2): `Some(open)`, lit while the mixer's
-    /// I/O view shows. A tap gives `Select(IO_ICON)`.
+    /// The I/O icon (an arrow in over an arrow out) left of the folder and
+    /// mixer icons: `Some(open)`, lit while the mixer's I/O view shows. A
+    /// tap gives `Select(IO_ICON)`. The pad player's bar has the folder
+    /// icon in its place now (the Mix tab's I/O view and the tempo chip
+    /// still open the I/O view).
     pub io_icon: Option<bool>,
+    /// The folder icon at the bar's right edge (layout spec, section 2;
+    /// Jay's redesign of Play, Pads and the Sequencer tab, approved 18 Nov
+    /// 2026): `Some(open)`, lit while the browser shows. A tap gives
+    /// `Select(FOLDER_ICON)`, which opens or closes the browser as BROWSE
+    /// does.
+    pub folder_icon: Option<bool>,
     /// Where each chip was last drawn (chip index, rect), for taps: a chip's
     /// width depends on its text, which only painting can measure.
     drawn_chips: RefCell<Vec<(usize, Rect)>>,
@@ -65,6 +73,8 @@ pub struct Header {
 pub const MIXER_ICON: usize = usize::MAX;
 /// What a tap on the header's I/O icon gives: `Select(IO_ICON)`.
 pub const IO_ICON: usize = usize::MAX - 1;
+/// What a tap on the header's folder icon gives: `Select(FOLDER_ICON)`.
+pub const FOLDER_ICON: usize = usize::MAX - 2;
 /// The mixer icon's size.
 const ICON_W: i32 = 44;
 
@@ -83,6 +93,7 @@ impl Header {
             chips: Vec::new(),
             mixer_icon: None,
             io_icon: None,
+            folder_icon: None,
             drawn_chips: RefCell::new(Vec::new()),
         }
     }
@@ -99,11 +110,23 @@ impl Header {
         ))
     }
 
-    /// Where the I/O icon sits, when the bar has one: left of the mixer
-    /// icon, or at the right edge without one.
+    /// Where the folder icon sits, when the bar has one: left of the
+    /// mixer icon, or at the right edge without one.
+    pub fn folder_icon_rect(&self, r: Rect) -> Option<Rect> {
+        self.folder_icon?;
+        let right = self.icon_rect(r).map_or(r.right(), |b| b.x - 8);
+        let side = ICON_W.min(r.h);
+        Some(Rect::new(right - side, r.y + (r.h - side) / 2, side, side))
+    }
+
+    /// Where the I/O icon sits, when the bar has one: left of the folder
+    /// or mixer icon, or at the right edge without either.
     pub fn io_icon_rect(&self, r: Rect) -> Option<Rect> {
         self.io_icon?;
-        let right = self.icon_rect(r).map_or(r.right(), |b| b.x - 8);
+        let right = self
+            .folder_icon_rect(r)
+            .or(self.icon_rect(r))
+            .map_or(r.right(), |b| b.x - 8);
         let side = ICON_W.min(r.h);
         Some(Rect::new(right - side, r.y + (r.h - side) / 2, side, side))
     }
@@ -202,11 +225,29 @@ impl Widget for Header {
                 }
             }
         }
+        // The folder icon: a folder's outline, its tab at the top left.
+        if let (Some(b), Some(open)) = (self.folder_icon_rect(r), self.folder_icon) {
+            let well = if open { t.raised } else { t.surface };
+            cx.canvas.fill_round_rect(b, 10, well);
+            if open {
+                let bar = Rect::new(b.x + 10, b.bottom() - 4, b.w - 20, 3);
+                cx.canvas.fill_round_rect(bar, 1, t.accent);
+            }
+            let ink = if open { t.text } else { t.text_dim };
+            let (w, h) = (24, 18);
+            let (x0, y0) = (b.x + (b.w - w) / 2, b.y + (b.h - h) / 2 + 1);
+            cx.canvas
+                .fill_round_rect(Rect::new(x0, y0 - 3, 11, 6), 2, ink);
+            cx.canvas.fill_round_rect(Rect::new(x0, y0, w, h), 3, ink);
+            cx.canvas
+                .fill_round_rect(Rect::new(x0 + 2, y0 + 4, w - 4, h - 6), 2, well);
+        }
         // Chips from the right edge (or the icons) leftwards; stop before
         // the tabs.
         let limit = self.tab_rect(r, self.tabs.len()).x;
         let mut right = self
             .io_icon_rect(r)
+            .or(self.folder_icon_rect(r))
             .or(self.icon_rect(r))
             .map_or(r.right(), |b| b.x - 8);
         let h = 34.min(r.h);
@@ -243,6 +284,9 @@ impl Widget for Header {
         if let Some(b) = self.icon_rect(r) {
             out.push(Target::tap("mixer-icon", 0, "mixer", b));
         }
+        if let Some(b) = self.folder_icon_rect(r) {
+            out.push(Target::tap("folder-icon", 0, "browser", b));
+        }
         if let Some(b) = self.io_icon_rect(r) {
             out.push(Target::tap("io-icon", 0, "I/O", b));
         }
@@ -263,6 +307,9 @@ impl Widget for Header {
         }
         if self.icon_rect(r).is_some_and(|b| b.contains(x, y)) {
             return Some(EventKind::Select(MIXER_ICON));
+        }
+        if self.folder_icon_rect(r).is_some_and(|b| b.contains(x, y)) {
+            return Some(EventKind::Select(FOLDER_ICON));
         }
         if self.io_icon_rect(r).is_some_and(|b| b.contains(x, y)) {
             return Some(EventKind::Select(IO_ICON));
@@ -2245,5 +2292,34 @@ mod tests {
             .touch(2, Touch::Down, mixer.x + 10, mixer.y + 10)
             .unwrap();
         assert_eq!(e.kind, EventKind::Select(MIXER_ICON));
+    }
+
+    #[test]
+    fn the_folder_icon_sits_at_the_right_edge_and_a_tap_on_it_says_so() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        let mut h = Header::new(&["Play", "Pads"]);
+        h.chips = vec![Chip::new("MAKE", Tone::Normal)];
+        h.folder_icon = Some(false);
+        ui.add("header", h);
+        ui.add("rest", Label::new("", Tone::Dim, Align::Left));
+        ui.add_page("p", "col(header:60, rest:*)").unwrap();
+        ui.paint(&mut SoftCanvas::new(1280, 800));
+        let r = ui.rect_of("header").unwrap();
+        let h = ui.get::<Header>("header").unwrap();
+        let folder = h.folder_icon_rect(r).unwrap();
+        assert_eq!(folder.right(), r.right());
+        assert!(h.io_icon_rect(r).is_none() && h.icon_rect(r).is_none());
+        assert!(
+            h.chip_rect(0).unwrap().right() < folder.x,
+            "the chip is left of the icon"
+        );
+        assert!(h
+            .targets(r)
+            .iter()
+            .any(|t| t.id == "folder-icon" && t.rect == folder));
+        let e = ui
+            .touch(1, Touch::Down, folder.x + 10, folder.y + 10)
+            .unwrap();
+        assert_eq!(e.kind, EventKind::Select(FOLDER_ICON));
     }
 }

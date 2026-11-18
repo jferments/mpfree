@@ -12,7 +12,8 @@ In this chapter you play a drum kit, set the tempo, program a pattern one step a
 
 MPFree starts on the **Play** page with a drum kit on the pads. Hit a few pads: the kick is usually on pad 1, the snare on pad 2 and the hi-hats nearby. The pattern on the screen has a row for each pad, named after its sound.
 
-- **Change the kit:** press **PAD BANK B**, **C** or **D** (with **SHIFT** for E to H), or hold **SHIFT** and turn the data wheel to step through every kit. Press **PAD BANK A** to come back. The chip at the top right shows which kit you're on ("Kit 2 of 7 · Bank A").
+- **Change the kit:** hold **SHIFT** and turn the data wheel to step through every kit, or tap the chip at the top right for the list. The chip shows which kit you're on and its bank ("Kit 2 of 7 · Bank A").
+- **More pads:** a kit has 128 pads, 16 to a bank. **PAD BANK B**, **C** or **D** (with **SHIFT** for E to H) put the kit's other banks on the pads, and **PAD BANK A** brings the first 16 back.
 - **Louder or softer:** drag the master bar at the right of the screen, or turn the **MASTER VOL** knob on the back for the outputs and headphones.
 
 ## Set the tempo
