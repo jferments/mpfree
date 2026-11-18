@@ -104,7 +104,7 @@ use mpfree_node::Cull;
 use crate::bandlimit::{self, OctaveCell, Reach};
 use crate::dsp::{
     db_to_gain, equal_power, hermite, pan_gains, vowel_formants, vowel_gain, vowel_resonance,
-    Ahdsr, Envelope, Filter, FilterKind, Ladder, Rng, Sample, Svf, FORMANT_2, TINY,
+    Ahdsr, Comb, Envelope, Filter, FilterKind, Ladder, Rng, Sample, Svf, FORMANT_2, TINY,
 };
 use crate::grain_clip::GrainClip;
 use crate::hits::{self, HitCell};
@@ -1398,6 +1398,12 @@ struct Voice {
     /// its formants (sampler R5.6).
     ladder: Ladder,
     vowel_gain: f32,
+    /// The Comb filter's line (sampler R5.6), made with the pool and
+    /// kept from note to note ([`Comb::reset`]), so nothing allocates.
+    comb: Comb,
+    /// Its sound has ended (or its envelope), and its Comb rings on
+    /// ([`ring_out`]).
+    ringing: bool,
     filter_count: u32,
     /// The envelope level and pressure factor (as bits) the filter was
     /// last set for.
@@ -1662,8 +1668,12 @@ impl Pool {
     /// renders into.
     fn new(rate: u32, first: usize, n: usize, lane: bool) -> Pool {
         let out = if lane { n * LANE_BLOCK } else { 0 };
+        let mut voices = vec![Voice::default(); n];
+        for v in &mut voices {
+            v.comb = Comb::new(rate as f32);
+        }
         Pool {
-            voices: vec![Voice::default(); n],
+            voices,
             grains: (first..first + n)
                 .map(|i| GrainVoice::new(rate, i as u64))
                 .collect(),
@@ -2094,7 +2104,9 @@ impl Engine {
     /// kit. `held` is [`Engine::held`], all 0, and left so. Never
     /// allocates.
     fn victim(pool: &Voices, held: &mut [u16], full_only: bool) -> usize {
-        let rel = |x: &Voice| x.kill_left > 0 || x.amp.as_ref().is_some_and(|a| a.is_releasing());
+        let rel = |x: &Voice| {
+            x.kill_left > 0 || x.ringing || x.amp.as_ref().is_some_and(|a| a.is_releasing())
+        };
         // One kit: a table on the stack, zeroed as it is made, as an
         // engine of one kit always had; more kits count in `held`, which
         // is zeroed again after.
@@ -3742,6 +3754,9 @@ impl Engine {
         let Some(v) = self.pool.voice_mut(slot) else {
             return;
         };
+        // The comb's line stays with the slot.
+        let mut comb = std::mem::take(&mut v.comb);
+        comb.reset();
         *v = Voice {
             active: true,
             kit: at as u8,
@@ -3778,6 +3793,8 @@ impl Engine {
             svf: [Svf::default(); 2],
             ladder: Ladder::default(),
             vowel_gain: 1.0,
+            comb,
+            ringing: false,
             filter_count: 0,
             filter_key: None,
             kill_left: 0,
@@ -4710,6 +4727,7 @@ fn silence(pool: &mut Pool) {
             g.kill(budget);
         }
         v.active = false;
+        v.ringing = false;
         v.granular = false;
         v.held = false;
         v.kill_left = 0;
@@ -4883,6 +4901,8 @@ fn motion_step(v: &mut Voice) {
 fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
     match f.kind {
         FilterKind::Ladder => v.ladder.flush(),
+        // Its line flushes as it goes ([`Comb::process`]).
+        FilterKind::Comb => {}
         FilterKind::Vowel => v.svf.iter_mut().for_each(Svf::flush),
         _ => {
             v.svf[0].flush();
@@ -4900,6 +4920,8 @@ fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
     let fc = f.cutoff_hz * (f.env_octaves * e).exp2() * moved;
     match f.kind {
         FilterKind::Ladder => v.ladder.set(fc, f.resonance, f.drive_db, rate),
+        // The cutoff is its pitch; it glides there by the next retune.
+        FilterKind::Comb => v.comb.set(fc, f.resonance, rate, FILTER_STEP),
         // The cutoff picks the vowel: its two formants, in parallel.
         FilterKind::Vowel => {
             let (f1, f2) = vowel_formants(fc);
@@ -4962,6 +4984,7 @@ fn finish<const FOLLOW: bool>(
                 l = v.ladder.process(0, l);
                 r = v.ladder.process(1, r);
             }
+            FilterKind::Comb => (l, r) = v.comb.process(l, r),
             FilterKind::Vowel => {
                 let [a, b] = &mut v.svf;
                 let g = v.vowel_gain;
@@ -4992,6 +5015,8 @@ fn finish<const FOLLOW: bool>(
         v.kill_left -= 1;
         if v.kill_left == 0 {
             v.active = false;
+            // Cut, not ended: a Comb doesn't ring on.
+            v.comb.reset();
         }
     }
     if v.amp.as_ref().is_some_and(|a| a.is_done()) {
@@ -5005,21 +5030,37 @@ fn finish<const FOLLOW: bool>(
 /// events start that, and they come between calls), so a voice that isn't
 /// following runs the loop it always did.
 fn render_voice(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32]) {
-    if v.bl || v.step > v.bl_above.0 {
-        render_voice_bl(v, rate, left, right);
+    if v.ringing {
+        ring_out(v, left, right);
     } else {
-        let done = if v.follow.moving {
-            render_voice_as::<true, false>(v, rate, left, right)
-        } else if plain_now(v) {
-            render_plain(v, left, right);
-            left.len()
+        let done = if v.bl || v.step > v.bl_above.0 {
+            render_voice_bl(v, rate, left, right)
         } else {
-            render_voice_as::<false, false>(v, rate, left, right)
+            let done = if v.follow.moving {
+                render_voice_as::<true, false>(v, rate, left, right)
+            } else if plain_now(v) {
+                render_plain(v, left, right);
+                left.len()
+            } else {
+                render_voice_as::<false, false>(v, rate, left, right)
+            };
+            if done < left.len() && v.active {
+                // Its step passed CLEAN_ABOVE on a frame (a glide,
+                // pressure): the rest of the block is the band-limited
+                // read's.
+                done + render_voice_bl(v, rate, &mut left[done..], &mut right[done..])
+            } else {
+                done
+            }
         };
-        if done < left.len() && v.active {
-            // Its step passed CLEAN_ABOVE on a frame (a glide, pressure):
-            // the rest of the block is the band-limited read's.
-            render_voice_bl(v, rate, &mut left[done..], &mut right[done..]);
+        if !v.active && done < left.len() && rings_on(v) {
+            v.active = true;
+            v.ringing = true;
+            ring_out(v, &mut left[done..], &mut right[done..]);
+        } else if !v.active && rings_on(v) {
+            // Ended on the block's last frame: it rings from the next.
+            v.active = true;
+            v.ringing = true;
         }
     }
     v.heard = (v.heard * HEARD_FALL).max(v.last_l.abs().max(v.last_r.abs()));
@@ -5031,12 +5072,48 @@ fn render_voice(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32]) {
 /// [`render_voice`] for a voice reading band-limited, from now on. Kept
 /// out of line, so the plain and Hermite paths stay as small as they were.
 #[inline(never)]
-fn render_voice_bl(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32]) {
+fn render_voice_bl(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32]) -> usize {
     v.bl = true;
     if v.follow.moving {
-        render_voice_as::<true, true>(v, rate, left, right);
+        render_voice_as::<true, true>(v, rate, left, right)
     } else {
-        render_voice_as::<false, true>(v, rate, left, right);
+        render_voice_as::<false, true>(v, rate, left, right)
+    }
+}
+
+/// Whether a voice that just ended goes on as its Comb's ringing: its
+/// sound or its envelope ended (a cut resets the comb, [`finish`]), and
+/// the comb still holds something to hear.
+#[inline]
+fn rings_on(v: &Voice) -> bool {
+    v.filter.is_some_and(|f| f.kind == FilterKind::Comb) && v.comb.rings()
+}
+
+/// A Comb's ringing after its voice's sound ended, added into `left` and
+/// `right`, until it is too quiet to hear ([`Comb::rings`]) or a cut's
+/// fade ends. The delay stays where the sound left it.
+#[cold]
+#[inline(never)]
+fn ring_out(v: &mut Voice, left: &mut [f32], right: &mut [f32]) {
+    for (ol, or) in left.iter_mut().zip(right.iter_mut()) {
+        let (mut l, mut r) = v.comb.process(0.0, 0.0);
+        if v.kill_left > 0 {
+            let t = f32::from(v.kill_left) / f32::from(KILL_FRAMES);
+            (l, r) = (l * t, r * t);
+            v.kill_left -= 1;
+            if v.kill_left == 0 {
+                v.comb.reset();
+            }
+        }
+        *ol += l;
+        *or += r;
+        v.last_l = l;
+        v.last_r = r;
+        if !v.comb.rings() {
+            v.active = false;
+            v.ringing = false;
+            break;
+        }
     }
 }
 

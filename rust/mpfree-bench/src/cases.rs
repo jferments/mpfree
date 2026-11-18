@@ -1221,6 +1221,9 @@ pub fn all(rate: u32) -> Vec<Case> {
         new_filter_pads(rate, 16, FilterKind::Vowel, 0.0)
     }));
     v.push(measured(|| {
+        new_filter_pads(rate, 16, FilterKind::Comb, 0.0)
+    }));
+    v.push(measured(|| {
         sampler(
             "Sampler, the 4 granular pads alone",
             rate,
@@ -2142,7 +2145,8 @@ fn moving_pads(rate: u32, n: usize) -> Case {
 /// The sampler with `n` looping pads held down, as [`held_pads`], through
 /// one of sampler R5.6's filters with its envelope moving the cutoff (set
 /// again every 16 frames): the Ladder (with `drive_db` of Drive, its curve
-/// at twice the rate) or the Vowel (two formants).
+/// at twice the rate), the Vowel (two formants) or the Comb (its delay
+/// gliding to each new pitch).
 fn new_filter_pads(rate: u32, n: usize, kind: FilterKind, drive_db: f32) -> Case {
     let s = Source::new("noise", rate, 2, bench_sound(rate as usize, false)).expect("source");
     let mut p = Project::new();
@@ -2177,6 +2181,10 @@ fn new_filter_pads(rate: u32, n: usize, kind: FilterKind, drive_db: f32) -> Case
         FilterKind::Ladder => (
             format!("Sampler x{n} held, driven ladder"),
             "looping pads held down through a ladder driven 12 dB, its envelope moving",
+        ),
+        FilterKind::Comb => (
+            format!("Sampler x{n} held, comb"),
+            "looping pads held down through a comb with feedback, its envelope moving its pitch",
         ),
         _ => (
             format!("Sampler x{n} held, vowel"),
