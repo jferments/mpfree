@@ -385,3 +385,94 @@ fn names_with_line_breaks_stay_on_their_line() {
     assert_eq!(opened.kits[0].0, "Kit  name");
     assert_eq!(opened.kits[0].1.pad(0).unwrap().name, "Line break = in it");
 }
+
+/// Pad types (the Play, Pads and Sequencer redesign's step 6): an engine's
+/// voice and a note out save as their words with their settings, a loop
+/// pad's on_launch as a flag, and a kit saved before them opens as Sample
+/// pads. The sampler plays only the Sample pads.
+#[test]
+fn pad_kinds_and_on_launch_save_and_open_and_only_sample_pads_sound() {
+    use mpfree_sampler::engine::EngineView;
+    let s = noise(3_000, 2, 4, "Sub");
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    let pad = |name: &str, kind: PadKind, on_launch: bool| {
+        let mut pd = Pad::new(name, Layer::new(Region::whole(&s)));
+        pd.kind = kind;
+        pd.on_launch = on_launch;
+        pd
+    };
+    let kinds = [
+        pad("Loop", PadKind::Sample, true),
+        pad(
+            "Sub",
+            PadKind::Instrument {
+                engine: "poly".into(),
+                note: 24,
+            },
+            false,
+        ),
+        pad(
+            "Volca kick",
+            PadKind::MidiOut {
+                port: "MIDI Out".into(),
+                channel: 10,
+                note: 36,
+            },
+            false,
+        ),
+    ];
+    for (i, k) in kinds.into_iter().enumerate() {
+        p.set_pad(i, Some(k), None).unwrap();
+    }
+    let (text, files) = save(&[("Kinds", &p)], 0);
+    for line in [
+        "kit.0.pad.0.kind = sample",
+        "kit.0.pad.0.on_launch = yes",
+        "kit.0.pad.1.kind = instrument",
+        "kit.0.pad.1.kind.engine = poly",
+        "kit.0.pad.1.kind.note = 24",
+        "kit.0.pad.1.on_launch = no",
+        "kit.0.pad.2.kind = midi_out",
+        "kit.0.pad.2.kind.port = MIDI Out",
+        "kit.0.pad.2.kind.channel = 10",
+        "kit.0.pad.2.kind.note = 36",
+    ] {
+        assert!(text.lines().any(|l| l == line), "{line} in\n{text}");
+    }
+    let read = |text: &str| {
+        from_text(text, &mut |f| wav::read("x", &files[f]))
+            .unwrap()
+            .kits
+            .remove(0)
+            .1
+    };
+    assert_same(&read(&text), &p);
+    // Out of range, the nearest; without the lines (an older build's), a
+    // Sample pad.
+    let odd = text
+        .replace("pad.2.kind.channel = 10", "pad.2.kind.channel = 40")
+        .replace("pad.2.kind.note = 36", "pad.2.kind.note = 200");
+    let kind = read(&odd).pad(2).unwrap().kind.clone();
+    assert_eq!(
+        kind,
+        PadKind::MidiOut {
+            port: "MIDI Out".into(),
+            channel: 16,
+            note: 127
+        }
+    );
+    let old: String = text
+        .lines()
+        .filter(|l| !l.contains(".kind") && !l.contains(".on_launch"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let old = read(&old);
+    assert!((0..3).all(|i| {
+        let pd = old.pad(i).unwrap();
+        pd.kind == PadKind::Sample && !pd.on_launch
+    }));
+    // The sampler plays the Sample pad, not the other two.
+    let view = EngineView::build(&p, RATE);
+    assert!(view.has_pad(0) && !view.has_pad(1) && !view.has_pad(2));
+}

@@ -1524,9 +1524,12 @@ fn slice_pad(name: String, mut region: Region, template: Option<&Pad>) -> Pad {
             Pad {
                 name,
                 layers: vec![Layer::new(region)],
-                // A slice is a pad; chop to keys gives it its note.
+                // A slice is a pad; chop to keys gives it its note. It is
+                // hit, not launched, and plays its sound.
                 keys: None,
                 slice: 0,
+                kind: PadKind::Sample,
+                on_launch: false,
                 ..t.clone()
             }
         }
@@ -1566,6 +1569,31 @@ impl Layer {
             pan: 0.0,
             tune_cents: 0,
         }
+    }
+}
+
+/// What a hit on a kit pad does (the Play, Pads and Sequencer redesign's
+/// pad types, its step 6, 18 Nov 2026). A pad keeps its layers whatever
+/// its kind, so switching back to [`PadKind::Sample`] loses nothing. A
+/// loop pad is a Sample pad with latch, a Forward loop, warp and
+/// [`Pad::on_launch`], not a kind of its own.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum PadKind {
+    /// It plays its layers (every pad before 18 Nov).
+    #[default]
+    Sample,
+    /// It plays one voice of the Synth tab's engine `engine` (its id, as
+    /// "poly") at MIDI note `note`; the sampler plays nothing for it.
+    Instrument { engine: String, note: u8 },
+    /// It sends MIDI note `note` on `channel` (1 to 16) to the port named
+    /// `port`, and nothing plays inside MPFree.
+    MidiOut { port: String, channel: u8, note: u8 },
+}
+
+impl PadKind {
+    /// The sampler plays this pad's layers when it is hit.
+    pub fn sounds(&self) -> bool {
+        *self == PadKind::Sample
     }
 }
 
@@ -1629,6 +1657,15 @@ pub struct Pad {
     /// [`crate::engine::PadField::Slice`] picks another for a hit; a note
     /// on keys plays its own slice.
     pub slice: u8,
+    /// What a hit does: plays its layers, an engine's voice, or a note out
+    /// to gear ([`PadKind`]).
+    pub kind: PadKind,
+    /// A hit played live (the pads, a tap on the screen; not a clip's
+    /// note) waits for the project's launch line while the transport
+    /// plays, as a clip's launch does; with latch the next hit stops it on
+    /// the line, held its release waits for the line after it. Loop pads
+    /// and a recall kept in Perform have it.
+    pub on_launch: bool,
 }
 
 /// The longest key fade, in notes.
@@ -1845,6 +1882,8 @@ impl Pad {
             vel_fade: 0,
             vintage: false,
             slice: 0,
+            kind: PadKind::Sample,
+            on_launch: false,
         }
     }
 
@@ -1872,10 +1911,13 @@ impl Pad {
     /// there was none: what [`Project::put_source`] puts.
     pub fn replacing(name: &str, layer: Layer, old: Option<&Pad>) -> Pad {
         match old {
+            // A sound put on a pad of another kind makes it a Sample pad
+            // again: it is there to be heard.
             Some(old) => Pad {
                 name: name.to_string(),
                 layers: vec![layer],
                 select: LayerSelect::All,
+                kind: PadKind::Sample,
                 ..old.clone()
             },
             None => Pad::new(name, layer),
