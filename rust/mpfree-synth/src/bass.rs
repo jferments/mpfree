@@ -444,7 +444,7 @@ impl Bass {
     }
 
     pub fn presets() -> &'static [Preset] {
-        PRESETS
+        crate::factory::presets!("bass.presets", &INFO, PARAMS)
     }
 
     pub fn load_preset(&mut self, preset: &Preset) {

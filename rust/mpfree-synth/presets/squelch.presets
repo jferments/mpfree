@@ -1,0 +1,113 @@
+mpfree-preset = 1
+engine = mpfree.squelch
+name = Init
+
+mpfree-preset = 1
+engine = mpfree.squelch
+name = Acid Line
+
+# Synth
+synth.cutoff = 320
+synth.resonance = 85
+synth.env-mod = 65
+synth.decay = 350
+synth.accent = 80
+
+mpfree-preset = 1
+engine = mpfree.squelch
+name = Deep Bass
+
+# Synth
+synth.cutoff = 180
+synth.resonance = 25
+synth.env-mod = 30
+synth.decay = 700
+synth.accent = 40
+
+# Output
+output.level = 2
+
+mpfree-preset = 1
+engine = mpfree.squelch
+name = Square Acid
+
+# Synth
+synth.wave = Square
+synth.cutoff = 250
+synth.resonance = 90
+synth.env-mod = 75
+synth.decay = 300
+synth.accent = 85
+
+mpfree-preset = 1
+engine = mpfree.squelch
+name = Distorted
+
+# Synth
+synth.cutoff = 400
+synth.resonance = 75
+synth.env-mod = 70
+synth.decay = 450
+synth.accent = 90
+
+# Play
+play.drive = 70
+
+mpfree-preset = 1
+engine = mpfree.squelch
+name = Rubber
+
+# Synth
+synth.cutoff = 220
+synth.resonance = 70
+synth.env-mod = 55
+synth.decay = 1500
+synth.accent = 50
+
+# Play
+play.slide = 140
+
+mpfree-preset = 1
+engine = mpfree.squelch
+name = Plucky
+
+# Synth
+synth.cutoff = 300
+synth.resonance = 65
+synth.env-mod = 80
+synth.decay = 200
+synth.accent = 70
+
+# Play
+play.amp-decay = 400
+
+mpfree-preset = 1
+engine = mpfree.squelch
+name = Acid Lead
+
+# Synth
+synth.cutoff = 600
+synth.resonance = 80
+synth.env-mod = 60
+synth.decay = 400
+
+# Play
+play.key-track = 70
+play.drive = 30
+
+# Voice
+voice.transpose = 12
+
+mpfree-preset = 1
+engine = mpfree.squelch
+name = Screamer
+
+# Synth
+synth.cutoff = 700
+synth.resonance = 100
+synth.env-mod = 50
+synth.decay = 600
+synth.accent = 100
+
+# Play
+play.drive = 40

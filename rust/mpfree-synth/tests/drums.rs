@@ -3,7 +3,7 @@
 use mpfree_node::{check_params, Ctx, Node, NodeEvent, Timed, MAX_BLOCK};
 use mpfree_synth::drum::hit_shape;
 use mpfree_synth::drum_params::{
-    field, model, pad_id, BASE_NOTE, KITS, LEVEL, METER_VOICES, MODELS, PADS, PARAMS,
+    field, model, pad_id, BASE_NOTE, LEVEL, METER_VOICES, MODELS, PADS, PARAMS,
 };
 use mpfree_synth::Drums;
 
@@ -59,7 +59,7 @@ fn rms(x: &[f32]) -> f32 {
 fn parameters_and_kits_are_valid() {
     check_params(&PARAMS).unwrap();
     assert_eq!(PARAMS.len(), PADS * field::COUNT + 3);
-    for kit in KITS {
+    for kit in Drums::presets() {
         for &(id, v) in kit.values {
             let p = PARAMS
                 .iter()
@@ -127,7 +127,7 @@ fn same_output_for_any_block_size() {
 
 #[test]
 fn every_pad_and_kit_plays_at_a_sane_level_and_ends() {
-    for kit in KITS {
+    for kit in Drums::presets() {
         for pad in 0..PADS as u8 {
             let mut d = Drums::new(RATE);
             d.load_preset(kit);

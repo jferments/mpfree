@@ -1,12 +1,11 @@
-//! The drum synth's parameters, its default kit and its factory kits.
+//! The drum synth's parameters and its default kit; its factory kits are
+//! in `presets/drums.presets` ([`crate::factory::read`]).
 //!
 //! Each of the 16 pads has the same 14 parameters at ids `pad * 16 + field`
 //! ([`pad_id`]), grouped as "Pad 1" to "Pad 16". Kit-wide parameters start
 //! at 300.
 
 use mpfree_node::{Curve, ParamInfo, Unit};
-
-use crate::params::Preset;
 
 /// Pads in a kit.
 pub const PADS: usize = 16;
@@ -278,128 +277,3 @@ const fn build() -> [ParamInfo; N_PARAMS] {
 
 /// Every parameter: Pad 1 to Pad 16, then Kit.
 pub static PARAMS: [ParamInfo; N_PARAMS] = build();
-
-use field as f;
-
-/// Factory kits. Each starts from [`INIT_KIT`] and changes what it lists.
-pub static KITS: &[Preset] = &[
-    Preset {
-        name: "Init Kit",
-        values: &[],
-    },
-    Preset {
-        // Long, low, round: 808-style booms, soft snare, sizzling hats.
-        name: "Boom Kit",
-        values: &[
-            (pad_id(0, f::TUNE), -4.0),
-            (pad_id(0, f::DECAY), 1800.0),
-            (pad_id(0, f::SWEEP), 14.0),
-            (pad_id(0, f::SWEEP_TIME), 70.0),
-            (pad_id(0, f::SNAP), 15.0),
-            (pad_id(0, f::DRIVE), 20.0),
-            (pad_id(1, f::DECAY), 300.0),
-            (pad_id(1, f::TONE), 40.0),
-            (pad_id(1, f::NOISE), 45.0),
-            (pad_id(2, f::DECAY), 450.0),
-            (pad_id(2, f::TONE), 40.0),
-            (pad_id(3, f::DECAY), 50.0),
-            (pad_id(3, f::TONE), 75.0),
-            (pad_id(4, f::DECAY), 700.0),
-            (pad_id(4, f::TONE), 75.0),
-            (pad_id(5, f::DECAY), 900.0),
-            (pad_id(6, f::DECAY), 800.0),
-            (pad_id(7, f::DECAY), 700.0),
-            (pad_id(13, f::TUNE), -7.0),
-            (pad_id(13, f::DECAY), 3000.0),
-            (pad_id(13, f::DRIVE), 45.0),
-        ],
-    },
-    Preset {
-        // Short, punchy, bright: 909-style kick click, crisp snare, tight hats.
-        name: "Tight Kit",
-        values: &[
-            (pad_id(0, f::TUNE), 2.0),
-            (pad_id(0, f::DECAY), 280.0),
-            (pad_id(0, f::SNAP), 75.0),
-            (pad_id(0, f::SWEEP), 30.0),
-            (pad_id(0, f::SWEEP_TIME), 25.0),
-            (pad_id(0, f::DRIVE), 30.0),
-            (pad_id(1, f::TUNE), 2.0),
-            (pad_id(1, f::DECAY), 160.0),
-            (pad_id(1, f::TONE), 75.0),
-            (pad_id(1, f::SNAP), 80.0),
-            (pad_id(1, f::NOISE), 70.0),
-            (pad_id(2, f::DECAY), 220.0),
-            (pad_id(2, f::TONE), 65.0),
-            (pad_id(3, f::DECAY), 40.0),
-            (pad_id(3, f::TONE), 85.0),
-            (pad_id(4, f::DECAY), 280.0),
-            (pad_id(4, f::TONE), 85.0),
-            (pad_id(5, f::DECAY), 250.0),
-            (pad_id(6, f::DECAY), 220.0),
-            (pad_id(7, f::DECAY), 200.0),
-            (pad_id(8, f::DECAY), 40.0),
-            (pad_id(10, f::DECAY), 1200.0),
-            (pad_id(10, f::TONE), 80.0),
-        ],
-    },
-    Preset {
-        // Grimy: everything driven, dark tops, a distorted boom on pad 14.
-        name: "Grit Kit",
-        values: &[
-            (pad_id(0, f::DRIVE), 70.0),
-            (pad_id(0, f::TONE), 60.0),
-            (pad_id(0, f::DECAY), 600.0),
-            (pad_id(1, f::DRIVE), 60.0),
-            (pad_id(1, f::TONE), 35.0),
-            (pad_id(1, f::NOISE), 80.0),
-            (pad_id(2, f::DRIVE), 50.0),
-            (pad_id(2, f::TONE), 30.0),
-            (pad_id(3, f::TONE), 30.0),
-            (pad_id(3, f::DRIVE), 40.0),
-            (pad_id(4, f::TONE), 30.0),
-            (pad_id(4, f::DRIVE), 40.0),
-            (pad_id(5, f::DRIVE), 50.0),
-            (pad_id(6, f::DRIVE), 50.0),
-            (pad_id(7, f::DRIVE), 50.0),
-            (pad_id(13, f::DRIVE), 90.0),
-            (pad_id(13, f::DECAY), 2200.0),
-            (pad_id(13, f::TONE), 70.0),
-            (LEVEL, -3.0),
-        ],
-    },
-    Preset {
-        // Electro: zaps, FM blips and a snappy kick, toms swapped for zaps.
-        name: "Electro Kit",
-        values: &[
-            (pad_id(0, f::SWEEP), 40.0),
-            (pad_id(0, f::SWEEP_TIME), 18.0),
-            (pad_id(0, f::DECAY), 380.0),
-            (pad_id(0, f::SNAP), 60.0),
-            (pad_id(1, f::MODEL), CLAP as f32),
-            (pad_id(1, f::DECAY), 180.0),
-            (pad_id(1, f::TONE), 70.0),
-            (pad_id(5, f::MODEL), ZAP as f32),
-            (pad_id(5, f::TUNE), -5.0),
-            (pad_id(5, f::SWEEP), 30.0),
-            (pad_id(5, f::SWEEP_TIME), 40.0),
-            (pad_id(5, f::DECAY), 300.0),
-            (pad_id(6, f::MODEL), ZAP as f32),
-            (pad_id(6, f::SWEEP), 36.0),
-            (pad_id(6, f::SWEEP_TIME), 30.0),
-            (pad_id(6, f::DECAY), 250.0),
-            (pad_id(7, f::MODEL), ZAP as f32),
-            (pad_id(7, f::TUNE), 7.0),
-            (pad_id(7, f::SWEEP), 42.0),
-            (pad_id(7, f::SWEEP_TIME), 20.0),
-            (pad_id(7, f::DECAY), 200.0),
-            (pad_id(12, f::TONE), 80.0),
-            (pad_id(12, f::TUNE), 12.0),
-            (pad_id(12, f::DECAY), 160.0),
-            (pad_id(14, f::MODEL), FM_PERC as f32),
-            (pad_id(14, f::TONE), 35.0),
-            (pad_id(14, f::TUNE), -12.0),
-            (pad_id(14, f::DECAY), 350.0),
-        ],
-    },
-];

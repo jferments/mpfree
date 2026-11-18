@@ -16,7 +16,7 @@
 
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_synth::params::*;
-use mpfree_synth::{Poly, PRESETS};
+use mpfree_synth::Poly;
 
 const RATE: u32 = 48_000;
 const BPM: f64 = 92.0;
@@ -43,7 +43,7 @@ struct Part {
 }
 
 fn preset(name: &str) -> &'static Preset {
-    PRESETS
+    Poly::presets()
         .iter()
         .find(|p| p.name == name)
         .unwrap_or_else(|| panic!("no preset {name}"))

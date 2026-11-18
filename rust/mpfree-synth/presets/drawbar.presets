@@ -1,0 +1,303 @@
+mpfree-preset = 1
+engine = mpfree.drawbar
+name = Init
+
+# Drawbars
+drawbars.16 = 8
+drawbars.5-1-3 = 8
+drawbars.8 = 8
+drawbars.4 = 0
+drawbars.2-2-3 = 0
+drawbars.2 = 0
+drawbars.1-3-5 = 0
+drawbars.1-1-3 = 0
+drawbars.1 = 0
+
+mpfree-preset = 1
+engine = mpfree.drawbar
+name = Jazz Perc
+
+# Drawbars
+drawbars.16 = 8
+drawbars.5-1-3 = 8
+drawbars.8 = 8
+drawbars.4 = 0
+drawbars.2-2-3 = 0
+drawbars.2 = 0
+drawbars.1-3-5 = 0
+drawbars.1-1-3 = 0
+drawbars.1 = 0
+
+# Percussion
+percussion.percussion = On
+percussion.perc-harm = Third
+percussion.perc-decay = Fast
+
+# Vibrato
+vibrato.vibrato = C3
+
+# Tone
+tone.click = 60
+
+# Output
+output.level = 2
+
+mpfree-preset = 1
+engine = mpfree.drawbar
+name = Gospel
+
+# Drawbars
+drawbars.16 = 8
+drawbars.5-1-3 = 8
+drawbars.8 = 8
+drawbars.4 = 8
+drawbars.2-2-3 = 0
+drawbars.2 = 0
+drawbars.1-3-5 = 0
+drawbars.1-1-3 = 0
+drawbars.1 = 0
+
+# Vibrato
+vibrato.vibrato = C3
+
+# Tone
+tone.click = 55
+tone.drive = 25
+
+# Rotary
+rotary.speed = Fast
+
+# Output
+output.level = -1
+
+mpfree-preset = 1
+engine = mpfree.drawbar
+name = Full Organ
+
+# Drawbars
+drawbars.16 = 8
+drawbars.5-1-3 = 8
+drawbars.8 = 8
+drawbars.4 = 8
+drawbars.2-2-3 = 8
+drawbars.2 = 8
+drawbars.1-3-5 = 8
+drawbars.1-1-3 = 8
+drawbars.1 = 8
+
+# Vibrato
+vibrato.vibrato = C1
+
+# Tone
+tone.drive = 20
+
+# Output
+output.level = -6
+
+mpfree-preset = 1
+engine = mpfree.drawbar
+name = Rock Drive
+
+# Drawbars
+drawbars.16 = 8
+drawbars.5-1-3 = 8
+drawbars.8 = 8
+drawbars.4 = 6
+drawbars.2-2-3 = 0
+drawbars.2 = 0
+drawbars.1-3-5 = 0
+drawbars.1-1-3 = 0
+drawbars.1 = 0
+
+# Vibrato
+vibrato.vibrato = C3
+
+# Tone
+tone.click = 75
+tone.drive = 70
+tone.tone = 15
+
+# Output
+output.level = -8
+
+mpfree-preset = 1
+engine = mpfree.drawbar
+name = Ballad
+
+# Drawbars
+drawbars.16 = 0
+drawbars.5-1-3 = 0
+drawbars.8 = 8
+drawbars.4 = 8
+drawbars.2-2-3 = 0
+drawbars.2 = 0
+drawbars.1-3-5 = 0
+drawbars.1-1-3 = 0
+drawbars.1 = 0
+
+# Vibrato
+vibrato.vibrato = V3
+
+# Tone
+tone.click = 25
+tone.tone = -20
+
+# Output
+output.level = 3
+
+mpfree-preset = 1
+engine = mpfree.drawbar
+name = Flute
+
+# Drawbars
+drawbars.16 = 0
+drawbars.5-1-3 = 0
+drawbars.8 = 8
+drawbars.4 = 0
+drawbars.2-2-3 = 0
+drawbars.2 = 0
+drawbars.1-3-5 = 0
+drawbars.1-1-3 = 0
+drawbars.1 = 0
+
+# Vibrato
+vibrato.vibrato = V1
+
+# Tone
+tone.click = 15
+tone.tone = -30
+
+# Output
+output.level = 5
+
+mpfree-preset = 1
+engine = mpfree.drawbar
+name = Church
+
+# Drawbars
+drawbars.16 = 8
+drawbars.5-1-3 = 6
+drawbars.8 = 8
+drawbars.4 = 8
+drawbars.2-2-3 = 6
+drawbars.2 = 8
+drawbars.1-3-5 = 4
+drawbars.1-1-3 = 4
+drawbars.1 = 6
+
+# Vibrato
+vibrato.vibrato = C1
+
+# Tone
+tone.click = 10
+
+# Rotary
+rotary.rotary = Off
+
+# Output
+output.level = -5
+
+mpfree-preset = 1
+engine = mpfree.drawbar
+name = Reedy
+
+# Drawbars
+drawbars.16 = 0
+drawbars.5-1-3 = 0
+drawbars.8 = 8
+drawbars.4 = 0
+drawbars.2-2-3 = 8
+drawbars.2 = 0
+drawbars.1-3-5 = 8
+drawbars.1-1-3 = 0
+drawbars.1 = 0
+
+# Vibrato
+vibrato.vibrato = C2
+
+# Tone
+tone.click = 40
+
+# Output
+output.level = 2
+
+mpfree-preset = 1
+engine = mpfree.drawbar
+name = Bright Perc
+
+# Drawbars
+drawbars.16 = 8
+drawbars.5-1-3 = 0
+drawbars.8 = 0
+drawbars.4 = 0
+drawbars.2-2-3 = 0
+drawbars.2 = 0
+drawbars.1-3-5 = 8
+drawbars.1-1-3 = 8
+drawbars.1 = 8
+
+# Percussion
+percussion.percussion = On
+percussion.perc-harm = Second
+percussion.perc-decay = Fast
+
+# Tone
+tone.click = 70
+
+# Output
+output.level = 1
+
+mpfree-preset = 1
+engine = mpfree.drawbar
+name = Hollow
+
+# Drawbars
+drawbars.16 = 8
+drawbars.5-1-3 = 0
+drawbars.8 = 8
+drawbars.4 = 0
+drawbars.2-2-3 = 0
+drawbars.2 = 0
+drawbars.1-3-5 = 0
+drawbars.1-1-3 = 0
+drawbars.1 = 0
+
+# Vibrato
+vibrato.vibrato = V2
+
+# Tone
+tone.click = 30
+
+# Rotary
+rotary.speed = Stop
+
+# Output
+output.level = 2
+
+mpfree-preset = 1
+engine = mpfree.drawbar
+name = Soft Bass
+
+# Drawbars
+drawbars.16 = 8
+drawbars.5-1-3 = 5
+drawbars.8 = 0
+drawbars.4 = 0
+drawbars.2-2-3 = 0
+drawbars.2 = 0
+drawbars.1-3-5 = 0
+drawbars.1-1-3 = 0
+drawbars.1 = 0
+
+# Tone
+tone.click = 35
+tone.tone = -40
+
+# Rotary
+rotary.rotary = Off
+
+# Voice
+voice.transpose = -12
+
+# Output
+output.level = 3
