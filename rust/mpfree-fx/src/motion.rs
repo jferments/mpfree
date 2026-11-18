@@ -9,11 +9,14 @@
 
 use mpfree_node::{Ctx, Kind, NodeInfo, ParamInfo, Smooth};
 
+use crate::adaa::{Adaa, Flat2x};
+use crate::character::soft_big;
 use crate::kit::{
     self, node_impl, param, Choice, Glide, Hz, Lfo, Line, Linear, Log, Ms, Percent, NONE,
 };
+use crate::oversample::IirPair;
 use crate::svf::{Svf, SvfMode};
-use crate::{defaults, fast_exp2, fast_tanh, lerp, Preset};
+use crate::{defaults, fast_exp2, flush, lerp, soft, Preset};
 
 const SQRT2: f32 = std::f32::consts::SQRT_2;
 
@@ -600,7 +603,46 @@ const HORN_HZ: [f32; 3] = [0.0, 0.8, 6.7];
 const DRUM_HZ: [f32; 3] = [0.0, 0.67, 5.7];
 /// The horn spins up faster than the heavy drum.
 const HORN_RAMP: f32 = 0.25;
+/// Ramp is the time the drum takes from Slow to within 10 % of Fast: a
+/// one-pole covers that gap (5.03 Hz, to 0.57) in ln(5.03 / 0.57) = 2.18
+/// time constants. The horn takes [`HORN_RAMP`] of it (1.1 s at the
+/// default 4.5 s), as a Leslie's light horn does.
+const RAMP_TAUS: f32 = 2.18;
+/// Both rotors coast down a quarter more slowly than the motor speeds
+/// them up (Smith, Serafin, Abel and Berners: the two differ).
+const COAST: f32 = 1.25;
 const CROSSOVER_HZ: f32 = 800.0;
+/// The horn's treble beam: facing away from a microphone, it heard
+/// through a one-pole low-pass at this corner, so the highs swirl more
+/// than the mids (after Smith et al.'s angle-dependent filtering).
+const BEAM_HZ: f32 = 2000.0;
+/// The horn's and the drum's levels at the microphones, so the cabinet
+/// goes in at the dry's level (fxlab W11) with the beam and the level
+/// swings it adds.
+const HORN_GAIN: f32 = 1.07;
+const DRUM_GAIN: f32 = 1.28;
+/// The drive's half-band filters: Drive's Eco design (flat to 0.19 of the
+/// doubled rate, 71 dB down from 0.31), and the frames it and ADAA's flat
+/// filter delay the sound by.
+const OS_SECTIONS: usize = 5;
+const OS_TBW: f64 = 0.06;
+const OS_DELAY: usize = 2 + Flat2x::STEPS / 2;
+/// Drive 100 % drives the input this much more (21 dB) into [`soft`].
+const DRIVE_GAIN: f32 = 11.0;
+/// What [`soft`]'s output settles at in size on loud noise, against the
+/// -18 dBFS reference.
+const SOFT_TOP: f32 = 0.14;
+/// How often the drive's half-bands flush their states, frames.
+const SETTLE: u32 = 32;
+
+/// The level after the drive's gain `g` and [`soft`] that keeps noise at
+/// -18 dBFS RMS as loud as it went in (within 0.3 dB from Drive 0 to 100,
+/// a Gaussian's numbers): `1 / g` while the curve is straight, and the
+/// curve's ceiling once it saturates.
+#[inline]
+fn undrive(g: f32) -> f32 {
+    (1.0 / (g * g) + SOFT_TOP * SOFT_TOP).sqrt()
+}
 
 static ROTARY_INFO: NodeInfo = NodeInfo {
     id: "mpfree.fx.rotary",
@@ -636,22 +678,83 @@ pub static ROTARY_PRESETS: &[Preset] = &[
     },
 ];
 
+/// The rotary's drive at twice the rate: [`soft`] averaged by first-order
+/// ADAA between Drive's Eco half-bands, as Lo-fi's saturation (FX quality
+/// W13). [`OS_DELAY`] frames late.
+#[derive(Clone, Debug)]
+struct Sat {
+    iir: IirPair<OS_SECTIONS>,
+    adaa: Adaa,
+    flat: Flat2x,
+    /// The last input at twice the rate, for the straight line's average.
+    v1: f32,
+}
+
+impl Sat {
+    fn new() -> Sat {
+        Sat {
+            iir: IirPair::new(OS_TBW),
+            adaa: Adaa::default(),
+            flat: Flat2x::default(),
+            v1: 0.0,
+        }
+    }
+    /// One base frame: `soft(g x) * undrive`, faded in from the straight
+    /// line by `blend`.
+    #[inline]
+    fn run(&mut self, x: f32, g: f32, undrive: f32, blend: f32) -> f32 {
+        let up = self.iir.up(x);
+        let mut out = [0.0f32; 2];
+        for (o, &v) in out.iter_mut().zip(&up) {
+            // In its straight part ADAA is the two-point mean.
+            let line = 0.5 * (v + self.v1);
+            let c = self.adaa.run(g * v, soft, soft_big) * undrive;
+            self.v1 = v;
+            *o = self.flat.run(line + (c - line) * blend);
+        }
+        self.iir.down(out)
+    }
+    fn reset(&mut self) {
+        self.iir.reset();
+        self.adaa.reset();
+        self.flat.reset();
+        self.v1 = 0.0;
+    }
+}
+
 /// A spinning speaker cabinet: the highs go to a horn and the lows to a
 /// drum, each spinning at its own speed past two microphones, so the sound
 /// moves in pitch (Doppler), level and space. Changing Speed ramps the
-/// rotors up or down the way the real thing does, the light horn first.
+/// rotors up or down the way the real thing does, the light horn first,
+/// and they coast down more slowly than they speed up. The drum turns the
+/// other way from the horn, and the horn's treble beams: its highs swing
+/// more than its mids as it turns.
 pub struct Rotary {
     v: [f32; 6],
     rate: u32,
     horn_hz: f32,
     drum_hz: f32,
-    horn_k: f32,
-    drum_k: f32,
+    /// One-pole steps toward the speed: speeding up, coasting down.
+    horn_k: [f32; 2],
+    drum_k: [f32; 2],
     horn_phase: f32,
     drum_phase: f32,
     xover: kit::Crossover,
     horn: Line,
     drum: Line,
+    /// The beam's low-pass, one a microphone, and its step.
+    beam: [f32; 2],
+    beam_a: f32,
+    /// The drive at twice the rate while Drive is up (or fading out), and
+    /// the input [`OS_DELAY`] frames late for when it isn't, so the
+    /// cabinet's timing never changes; `driven` crossfades the two.
+    sat: Sat,
+    driving: bool,
+    driven: Smooth,
+    late: [f32; OS_DELAY],
+    late_at: usize,
+    /// Frames since the stream started, modulo [`SETTLE`].
+    settle: u32,
     balance: Smooth,
     width: Smooth,
     drive: Smooth,
@@ -673,13 +776,21 @@ impl Rotary {
             rate: 48_000,
             horn_hz: HORN_HZ[s],
             drum_hz: DRUM_HZ[s],
-            horn_k: 0.0,
-            drum_k: 0.0,
+            horn_k: [0.0; 2],
+            drum_k: [0.0; 2],
             horn_phase: 0.0,
             drum_phase: 0.25,
             xover: kit::Crossover::default(),
             horn: Line::default(),
             drum: Line::default(),
+            beam: [0.0; 2],
+            beam_a: 0.0,
+            sat: Sat::new(),
+            driving: false,
+            driven: Smooth::new(0.0),
+            late: [0.0; OS_DELAY],
+            late_at: 0,
+            settle: 0,
             balance: Smooth::new(v[2] / 100.0),
             width: Smooth::new(v[3] / 100.0),
             drive: Smooth::new(v[4] / 100.0),
@@ -699,28 +810,61 @@ impl Rotary {
         }
     }
     fn set_ramp(&mut self) {
-        let ms = self.v[rotary::RAMP as usize];
-        self.drum_k = kit::coef(ms / 3.0, self.rate);
-        self.horn_k = kit::coef(ms * HORN_RAMP / 3.0, self.rate);
+        let tau = self.v[rotary::RAMP as usize] / RAMP_TAUS;
+        let rate = self.rate;
+        self.drum_k = [kit::coef(tau, rate), kit::coef(tau * COAST, rate)];
+        let tau = tau * HORN_RAMP;
+        self.horn_k = [kit::coef(tau, rate), kit::coef(tau * COAST, rate)];
     }
     fn begin(&mut self, _ctx: &Ctx) {}
+    /// The input, driven or not, [`OS_DELAY`] frames late.
+    #[inline]
+    fn input(&mut self, m: f32) -> f32 {
+        // A ring of OS_DELAY frames: what is read is what went in that
+        // long ago.
+        let late = std::mem::replace(&mut self.late[self.late_at], m);
+        self.late_at = (self.late_at + 1) % OS_DELAY;
+        // The half-bands drop what is too small to hear every SETTLE
+        // frames from the stream's start (the same in any block size).
+        self.settle = (self.settle + 1) % SETTLE;
+        if !self.driving {
+            return late;
+        }
+        if self.settle == 0 {
+            self.sat.iir.settle();
+        }
+        let d = self.drive.glide();
+        let g = 1.0 + DRIVE_GAIN * d * d;
+        let y = self.sat.run(m, g, undrive(g), d);
+        let w = self.driven.glide();
+        if w == 0.0 && self.driven.target == 0.0 {
+            self.driving = false;
+        }
+        late + (y - late) * w
+    }
     fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
         let s = (self.v[0] as usize).min(2);
         let (horn_to, drum_to) = (HORN_HZ[s], DRUM_HZ[s]);
+        let hk = self.horn_k[usize::from(horn_to < self.horn_hz)];
+        let dk = self.drum_k[usize::from(drum_to < self.drum_hz)];
         let ms = self.rate as f32 * 0.001;
         let per = 1.0 / self.rate as f32;
+        // Drive comes in through the oversampled stage, which starts from
+        // rest, and goes out the same way once it is back at 0.
+        let wants = self.drive.target > 0.0 || self.drive.value > 0.0;
+        if wants && !self.driving {
+            self.sat.reset();
+            self.driving = true;
+        }
+        self.driven.target = if wants { 1.0 } else { 0.0 };
         for i in 0..l.len() {
-            self.horn_hz += (horn_to - self.horn_hz) * self.horn_k;
-            self.drum_hz += (drum_to - self.drum_hz) * self.drum_k;
+            self.horn_hz += (horn_to - self.horn_hz) * hk;
+            self.drum_hz += (drum_to - self.drum_hz) * dk;
             self.horn_phase = kit::wrap(self.horn_phase + self.horn_hz * per);
-            self.drum_phase = kit::wrap(self.drum_phase + self.drum_hz * per);
+            // The drum turns the other way.
+            self.drum_phase = kit::wrap(self.drum_phase - self.drum_hz * per);
 
-            let drive = self.drive.glide();
-            let mut m = 0.5 * (l[i] + r[i]);
-            if drive > 0.0 {
-                let g = 1.0 + 15.0 * drive * drive;
-                m = lerp(m, fast_tanh(m * g) / g.sqrt(), drive);
-            }
+            let m = self.input(0.5 * (l[i] + r[i]));
             let (lo, hi) = self.xover.split(0, m);
             self.horn.push(hi);
             self.drum.push(lo);
@@ -728,25 +872,42 @@ impl Rotary {
             // The two microphones sit either side of the cabinet; Width
             // swings them up to 45 degrees apart from the front.
             let spread = 0.125 * self.width.glide();
+            let bal = self.balance.value;
+            let (hg, dg) = (
+                (1.0 + bal).min(1.0) * HORN_GAIN,
+                (1.0 - bal).min(1.0) * DRUM_GAIN,
+            );
+            // Each rotor's angle at each microphone, from the rotor's and
+            // the spread's sines by the angle sums (six sines, not eight).
+            let (ss, cs) = (kit::sine(spread), kit::cosine(spread));
+            let (sh, ch) = (kit::sine(self.horn_phase), kit::cosine(self.horn_phase));
+            let (sd, cd) = (kit::sine(self.drum_phase), kit::cosine(self.drum_phase));
             let mut out = [0.0f32; 2];
-            for (k, a) in [-spread, spread].into_iter().enumerate() {
-                let hp = self.horn_phase - a;
+            // The left microphone sees each rotor `spread` ahead, the
+            // right `spread` behind.
+            for (k, side) in [ss, -ss].into_iter().enumerate() {
                 // The horn's mouth swings about 17 cm: +-0.5 ms of
                 // Doppler at the microphone.
-                let hd = (1.0 + 0.5 * kit::sine(hp)) * ms;
-                let ha = 1.0 + 0.5 * kit::cosine(hp);
-                let dp = self.drum_phase - a;
-                let dd = (1.0 + 0.12 * kit::sine(dp)) * ms;
-                let da = 1.0 + 0.25 * kit::cosine(dp);
-                let bal = self.balance.value;
-                let (hg, dg) = ((1.0 + bal).min(1.0), (1.0 - bal).min(1.0));
-                out[k] = self.horn.read(hd) * ha * 0.67 * hg + self.drum.read(dd) * da * 0.8 * dg;
+                let hd = (1.0 + 0.5 * (sh * cs + ch * side)) * ms;
+                let facing = ch * cs - sh * side;
+                let ha = 1.0 + 0.5 * facing;
+                // Facing away, the horn is heard through the beam's
+                // low-pass; facing the microphone, whole.
+                let h = self.horn.read(hd);
+                let b = self.beam[k] + (h - self.beam[k]) * self.beam_a;
+                self.beam[k] = b;
+                let h = b + (h - b) * (0.5 + 0.5 * facing);
+                let dd = (1.0 + 0.12 * (sd * cs + cd * side)) * ms;
+                let da = 1.0 + 0.25 * (cd * cs - sd * side);
+                out[k] = h * ha * hg + self.drum.read(dd) * da * dg;
             }
             self.balance.glide();
             let mix = self.mix.glide();
             l[i] = lerp(l[i], out[0], mix);
             r[i] = lerp(r[i], out[1], mix);
         }
+        // The beam's state can fall away to nothing in silence.
+        self.beam = self.beam.map(flush);
     }
     fn setup(&mut self, rate: u32) {
         self.rate = rate;
@@ -754,11 +915,13 @@ impl Rotary {
         let frames = (rate as usize * 4) / 1000 + 8;
         self.horn = Line::new(frames);
         self.drum = Line::new(frames);
+        self.beam_a = 1.0 - (-std::f32::consts::TAU * BEAM_HZ / rate as f32).exp();
         for s in [
             &mut self.balance,
             &mut self.width,
             &mut self.drive,
             &mut self.mix,
+            &mut self.driven,
         ] {
             s.set_time(rate, 20.0);
         }
@@ -773,6 +936,11 @@ impl Rotary {
         self.xover.reset();
         self.horn.clear();
         self.drum.clear();
+        self.beam = [0.0; 2];
+        self.sat.reset();
+        self.late = [0.0; OS_DELAY];
+        self.late_at = 0;
+        self.settle = 0;
         for s in [
             &mut self.balance,
             &mut self.width,
@@ -781,6 +949,8 @@ impl Rotary {
         ] {
             s.snap(s.target);
         }
+        self.driving = self.drive.target > 0.0;
+        self.driven.snap(if self.driving { 1.0 } else { 0.0 });
     }
     fn tail(&self) -> u32 {
         self.rate / 100
@@ -791,3 +961,115 @@ impl Rotary {
 }
 
 node_impl!(Rotary, ROTARY_INFO, ROTARY_PARAMS);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mpfree_node::Node;
+
+    /// Seconds for the horn's or the drum's speed to get within `near`
+    /// (a share of the gap, or of the target when `of_target`) of the
+    /// speed `to`, from `from`, run a block at a time.
+    fn ramp_s(from: f32, to: f32, horn: bool, near: f32, of_target: bool) -> f32 {
+        let rate = 48_000;
+        let mut r = Rotary::new();
+        r.setup(rate);
+        r.set_param(rotary::SPEED, from);
+        r.reset();
+        r.set_param(rotary::SPEED, to);
+        let speed = |r: &Rotary| if horn { r.horn_hz } else { r.drum_hz };
+        let want = if horn { HORN_HZ } else { DRUM_HZ }[to as usize];
+        let within = near
+            * if of_target {
+                want
+            } else {
+                (speed(&r) - want).abs()
+            };
+        let ctx = Ctx::new(rate, 0);
+        let (mut l, mut rr) = (vec![0.0f32; 128], vec![0.0f32; 128]);
+        for n in 0..20 * rate as usize / 128 {
+            r.run(&ctx, 0, &mut l, &mut rr);
+            if (speed(&r) - want).abs() <= within {
+                return (n + 1) as f32 * 128.0 / rate as f32;
+            }
+        }
+        f32::MAX
+    }
+
+    #[test]
+    fn the_rotors_ramp_as_a_leslie_and_coast_down_slower() {
+        // From Slow to within 10 % of Fast at the default Ramp: the drum
+        // in the Ramp's 4.5 s, the horn in about a quarter of it.
+        let drum = ramp_s(1.0, 2.0, false, 0.1, true);
+        let horn = ramp_s(1.0, 2.0, true, 0.1, true);
+        assert!((drum - 4.5).abs() < 0.2, "drum {drum} s");
+        assert!((horn - 1.1).abs() < 0.15, "horn {horn} s");
+        // Coasting down 90 % of the way takes a quarter longer than
+        // speeding up 90 % of the way.
+        for horn in [false, true] {
+            let up = ramp_s(1.0, 2.0, horn, 0.1, false);
+            let down = ramp_s(2.0, 1.0, horn, 0.1, false);
+            assert!(
+                (down / up - COAST).abs() < 0.05,
+                "{horn}: {down} against {up}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_drum_turns_the_other_way_from_the_horn() {
+        let rate = 48_000;
+        let mut r = Rotary::new();
+        r.setup(rate);
+        r.set_param(rotary::SPEED, 2.0);
+        r.reset();
+        let ctx = Ctx::new(rate, 0);
+        let (mut l, mut rr) = (vec![0.0f32; 16], vec![0.0f32; 16]);
+        let (h0, d0) = (r.horn_phase, r.drum_phase);
+        r.run(&ctx, 0, &mut l, &mut rr);
+        let turn = |a: f32, b: f32| kit::wrap(b - a + 0.5) - 0.5;
+        assert!(turn(h0, r.horn_phase) > 0.0);
+        assert!(turn(d0, r.drum_phase) < 0.0);
+    }
+
+    #[test]
+    fn drive_comes_in_and_goes_out_without_moving_the_sound_in_time() {
+        // A low tone through Drive 0, then Drive up to 30 % and back: the
+        // driven stage is as late as the plain one, so the tone never
+        // steps (no frame-to-frame change more than twice the tone's own).
+        let rate = 48_000;
+        let mut r = Rotary::new();
+        r.setup(rate);
+        r.set_param(rotary::SPEED, 0.0);
+        r.reset();
+        let ctx = Ctx::new(rate, 0);
+        let hz = 100.0;
+        let amp = 0.1;
+        let own = amp * std::f32::consts::TAU * hz / rate as f32;
+        let mut last = 0.0f32;
+        let mut worst = 0.0f32;
+        let mut t = 0usize;
+        for block in 0..(3 * rate as usize / 128) {
+            if block == rate as usize / 128 {
+                r.set_param(rotary::DRIVE, 30.0);
+            }
+            if block == 2 * rate as usize / 128 {
+                r.set_param(rotary::DRIVE, 0.0);
+            }
+            let mut l: Vec<f32> = (0..128)
+                .map(|i| amp * (std::f32::consts::TAU * hz * (t + i) as f32 / rate as f32).sin())
+                .collect();
+            let mut rr = l.clone();
+            r.run(&ctx, 0, &mut l, &mut rr);
+            for &v in &l {
+                if t > 4_800 {
+                    worst = worst.max((v - last).abs());
+                }
+                last = v;
+                t += 1;
+            }
+        }
+        assert!(worst < 3.0 * own, "{worst} against {own}");
+        assert!(!r.driving, "back to the plain stage");
+    }
+}
