@@ -516,6 +516,24 @@ fn place_in<T: PartialEq>(list: &[T], now: &T) -> f32 {
     i as f32 / (list.len().max(2) - 1) as f32
 }
 
+/// Threshold's or Pre-roll's knob, lit to where `s` has it among its
+/// steps (another row: a chip).
+pub(crate) fn knob(s: &RecSettings, row: Row) -> Control {
+    let (pos, len) = match row {
+        Row::Threshold => (
+            place_in(&THRESHOLDS_DB, &s.threshold_db),
+            THRESHOLDS_DB.len(),
+        ),
+        Row::PreRoll => (place_in(&PRE_ROLLS_MS, &s.pre_roll_ms), PRE_ROLLS_MS.len()),
+        _ => return Control::new(Look::Chip),
+    };
+    Control::new(Look::Knob {
+        pos,
+        steps: len.saturating_sub(1) as u32,
+        bipolar: false,
+    })
+}
+
 /// What the tab shows besides the input: the pad picked and where a take
 /// would go.
 #[derive(Clone, Debug, PartialEq)]

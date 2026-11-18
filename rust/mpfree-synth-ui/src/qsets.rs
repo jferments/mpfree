@@ -276,6 +276,22 @@ const STRINGS: &[Curated] = &[
     ),
 ];
 
+use mpfree_synth::bass_params as ebs;
+
+/// Bass: the filter's sweep and the glide for a synth line, the 808's
+/// drop and boom, and the reese's movement.
+const BASS: &[Curated] = &[
+    set(
+        "Synth",
+        [ebs::CUTOFF, ebs::ENV_AMOUNT, ebs::DRIVE, ebs::GLIDE],
+    ),
+    set("808", [ebs::DROP, ebs::DECAY, ebs::DRIVE, ebs::TONE]),
+    set(
+        "Reese",
+        [ebs::DETUNE, ebs::CUTOFF, ebs::RESONANCE, ebs::SUB],
+    ),
+];
+
 use mpfree_synth::drum_params::{field as df, pad_id, PADS, STRIDE};
 
 /// Drums, on pad 1 ([`on_pad`] moves them): the hit, its body, its mix.
@@ -322,6 +338,7 @@ fn curated(id: &str) -> Option<&'static [Curated]> {
         "mpfree.squelch" => Some(SQUELCH),
         "mpfree.analog" => Some(ANALOG),
         "mpfree.strings" => Some(STRINGS),
+        "mpfree.bass" => Some(BASS),
         DRUMS_ID => Some(DRUMS),
         _ => None,
     }
@@ -518,13 +535,14 @@ mod tests {
     use mpfree_mod::Bindings;
     use mpfree_node::{Curve, Kind, Node, Unit};
     use mpfree_synth::{
-        Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable,
+        Analog, Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable,
     };
 
     fn engines() -> Vec<Box<dyn Node>> {
         vec![
             Box::new(Analog::new(48_000)),
             Box::new(Strings::new(48_000)),
+            Box::new(Bass::new(48_000)),
             Box::new(Squelch::new(48_000)),
             Box::new(Drawbar::new(48_000)),
             Box::new(Keys::new(48_000)),

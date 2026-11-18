@@ -17,6 +17,9 @@
 //!   set.
 //! - Strings: the registers' tone as mixed, a held key's swell in and
 //!   fade, and the ensemble's lines sweeping.
+//! - Bass ([`mpfree_synth::bass`]): the oscillators with the sub and the
+//!   fifth over the sub's cycle, the ladder's response at rest and at the
+//!   envelope's peak, the pitch drop, and a sine through the drive.
 //!
 //! Points are in a unit box, as in [`crate::visual`]: x from 0 to 1 left to
 //! right, y from 0 (bottom) to 1 (top).
@@ -25,11 +28,12 @@ use crate::kit_visual as kv;
 use crate::visual::{freq_x, Values, DB_BOTTOM, DB_TOP, F_HI, F_LO, POINTS};
 use crate::widgets::{Card, Trace, QLINK_COLORS, TEXT, TEXT_DIM, TEXT_FAINT};
 use mpfree_synth::analog_params as an;
+use mpfree_synth::bass_params as bsp;
 use mpfree_synth::drawbar_params as db;
 use mpfree_synth::keys_params as kp;
 use mpfree_synth::squelch_params as sq;
 use mpfree_synth::strings_params as stp;
-use mpfree_synth::{analog, drawbar, keys, squelch, strings};
+use mpfree_synth::{analog, bass, drawbar, keys, squelch, strings};
 use mpfree_ui::Color;
 use std::f32::consts::{PI, TAU};
 
@@ -756,11 +760,131 @@ pub fn strings_ensemble(v: &impl Values) -> Vec<Pts> {
         .collect()
 }
 
+// ------------------------------------------------------------ Bass
+
+/// One cycle of the sub (the oscillator four times, with the sub and the
+/// fifth on it), scaled to fill the card.
+pub fn bass_wave(v: &impl Values) -> Pts {
+    let y = bass::wave_shape(|id| v.get(id), POINTS + 1);
+    let top = y.iter().fold(1e-6f32, |m, x| m.max(x.abs()));
+    y.into_iter()
+        .enumerate()
+        .map(|(i, y)| (i as f32 / POINTS as f32, 0.5 + 0.42 * y / top))
+        .collect()
+}
+
+/// The Wave card's caption: "saw + sub", "808 · sine", "reese · saw pair".
+pub fn bass_wave_caption(v: &impl Values) -> String {
+    let body = v.get(bsp::BODY).round();
+    let wave = pick(bsp::WAVES, v.get(bsp::WAVE)).to_lowercase();
+    let sub = if v.get(bsp::SUB) > 0.0 { " + sub" } else { "" };
+    if body == bsp::B808 {
+        let wave = if v.get(bsp::WAVE).round() == bsp::TRIANGLE {
+            "triangle"
+        } else {
+            "sine"
+        };
+        format!("808 · {wave}{sub}")
+    } else if body == bsp::REESE {
+        format!("reese · {wave} pair{sub}")
+    } else {
+        format!("{wave}{sub}")
+    }
+}
+
+/// Whether the body runs through the ladder (the 808 has none).
+pub fn bass_filtered(v: &impl Values) -> bool {
+    v.get(bsp::BODY).round() != bsp::B808
+}
+
+/// Where the filter rests and where a note's envelope takes it, Hz.
+pub fn bass_cutoffs(v: &impl Values) -> (f32, f32) {
+    let rest = v.get(bsp::CUTOFF);
+    let peak = rest * (bass::ENV_OCT * v.get(bsp::ENV_AMOUNT) * 0.01).exp2();
+    (rest, peak.clamp(10.0, 20_000.0))
+}
+
+/// The ladder's response at rest, and where the envelope takes it (the
+/// dashed line; empty with no Env amount). Both empty for the 808.
+pub fn bass_filter(v: &impl Values) -> [Pts; 2] {
+    if !bass_filtered(v) {
+        return [Vec::new(), Vec::new()];
+    }
+    let (rest, peak) = bass_cutoffs(v);
+    let res = v.get(bsp::RESONANCE);
+    let curve = |fc: f32| response(|hz| bass::ladder_response(fc, res, hz));
+    let moved = if (peak / rest - 1.0).abs() > 0.01 {
+        curve(peak)
+    } else {
+        Vec::new()
+    };
+    [curve(rest), moved]
+}
+
+/// The Drop card's height: semitones above the note at the top.
+pub const DROP_TOP: f32 = 24.0;
+
+/// The Drop card's span in seconds: past the drop's landing.
+pub fn bass_drop_secs(v: &impl Values) -> f32 {
+    (0.001 * v.get(bsp::DROP_TIME) * 1.25).clamp(0.05, 1.25)
+}
+
+/// The pitch over the Drop card's span, as semitones above the note.
+pub fn bass_drop(v: &impl Values) -> Pts {
+    let secs = bass_drop_secs(v);
+    bass::drop_curve(|id| v.get(id), secs, POINTS + 1)
+        .into_iter()
+        .enumerate()
+        .map(|(i, semis)| {
+            let y = 0.05 + 0.9 * (semis / DROP_TOP).clamp(0.0, 1.0);
+            (i as f32 / POINTS as f32, y)
+        })
+        .collect()
+}
+
+/// The Drop card's caption: "12 semitones in 40 ms", or "no drop".
+pub fn bass_drop_caption(v: &impl Values) -> String {
+    let drop = v.get(bsp::DROP);
+    let punch = if v.get(bsp::PUNCH) > 0.0 {
+        " + punch"
+    } else {
+        ""
+    };
+    if drop <= 0.0 {
+        format!("no drop{punch}")
+    } else {
+        format!(
+            "{drop:.0} st in {}{punch}",
+            kv::secs_text(v.get(bsp::DROP_TIME) * 0.001)
+        )
+    }
+}
+
+/// A sine through the drive, and the sine itself (the dashed line).
+pub fn bass_drive(v: &impl Values) -> [Pts; 2] {
+    let hard = v.get(bsp::DRIVE_MODE).round() == bsp::HARD;
+    let at = |y: Vec<f32>| -> Pts {
+        y.into_iter()
+            .enumerate()
+            .map(|(i, y)| (i as f32 / POINTS as f32, (0.5 + 0.42 * y).clamp(0.0, 1.0)))
+            .collect()
+    };
+    [
+        at(bass::drive_shape(v.get(bsp::DRIVE), hard, POINTS + 1)),
+        at(bass::drive_shape(0.0, hard, POINTS + 1)),
+    ]
+}
+
 /// Whether this module draws the engine with this id.
 pub fn draws(id: &str) -> bool {
     matches!(
         id,
-        "mpfree.keys" | "mpfree.drawbar" | "mpfree.squelch" | "mpfree.analog" | "mpfree.strings"
+        "mpfree.keys"
+            | "mpfree.drawbar"
+            | "mpfree.squelch"
+            | "mpfree.analog"
+            | "mpfree.strings"
+            | "mpfree.bass"
     )
 }
 
@@ -773,6 +897,7 @@ pub fn cards(id: &str, v: &impl Values, page: &str) -> Vec<(Card, &'static str)>
         "mpfree.squelch" => squelch_cards(v),
         "mpfree.analog" => analog_cards_strip(v),
         "mpfree.strings" => strings_cards(v),
+        "mpfree.bass" => bass_cards(v),
         _ => Vec::new(),
     };
     for (c, home) in &mut cards {
@@ -1079,6 +1204,82 @@ fn strings_cards(v: &impl Values) -> Vec<(Card, &'static str)> {
                 ..Card::default()
             },
             "Ensemble",
+        ),
+    ]
+}
+
+/// Bass: the oscillators (Source), the filter (Filter), the drop
+/// (Shape) and the drive (Output).
+fn bass_cards(v: &impl Values) -> Vec<(Card, &'static str)> {
+    let (blue, green, amber) = (QLINK_COLORS[0], QLINK_COLORS[1], QLINK_COLORS[2]);
+    let [rest_curve, peak_curve] = bass_filter(v);
+    let (rest, _) = bass_cutoffs(v);
+    let [driven, plain] = bass_drive(v);
+    let drive = v.get(bsp::DRIVE);
+    let drive_caption = if drive <= 0.0 {
+        "off".to_string()
+    } else {
+        format!(
+            "{} · {drive:.0} %",
+            pick(bsp::DRIVE_MODES, v.get(bsp::DRIVE_MODE)).to_lowercase()
+        )
+    };
+    let filtered = bass_filtered(v);
+    vec![
+        (
+            Card {
+                title: "Wave".into(),
+                caption: bass_wave_caption(v),
+                traces: vec![bright(bass_wave(v), blue)],
+                midline: true,
+                ..Card::default()
+            },
+            "Source",
+        ),
+        (
+            Card {
+                title: "Filter".into(),
+                caption: if filtered {
+                    format!("rests at {}", hz_text(rest))
+                } else {
+                    "the 808 has none".into()
+                },
+                traces: (!rest_curve.is_empty())
+                    .then(|| trace(rest_curve, blue, 2.5, true, false))
+                    .into_iter()
+                    .chain(
+                        (!peak_curve.is_empty())
+                            .then(|| trace(peak_curve, TEXT_DIM, 1.5, false, true)),
+                    )
+                    .collect(),
+                grid: freq_grid(),
+                dot: filtered.then(|| freq_x(rest)),
+                ..Card::default()
+            },
+            "Filter",
+        ),
+        (
+            Card {
+                title: "Drop".into(),
+                caption: bass_drop_caption(v),
+                traces: vec![trace(bass_drop(v), green, 2.5, true, false)],
+                grid: kv::time_grid(bass_drop_secs(v)),
+                ..Card::default()
+            },
+            "Shape",
+        ),
+        (
+            Card {
+                title: "Drive".into(),
+                caption: drive_caption,
+                traces: vec![
+                    trace(plain, TEXT_DIM, 1.5, false, true),
+                    bright(driven, amber),
+                ],
+                midline: true,
+                ..Card::default()
+            },
+            "Output",
         ),
     ]
 }
