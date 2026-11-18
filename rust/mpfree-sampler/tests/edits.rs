@@ -250,6 +250,7 @@ fn a_cutoff_edit_reaches_a_held_sound_and_a_filter_comes_in_from_open() {
         cutoff_hz: hz,
         resonance: 0.0,
         env_octaves: 0.0,
+        drive_db: 0.0,
     };
     // A low-pass at 8 kHz, edited down to 300 Hz while held.
     let mut p = kit(&s, PlayMode::Gate, None);

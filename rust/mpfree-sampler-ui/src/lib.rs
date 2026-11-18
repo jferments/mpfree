@@ -17,7 +17,7 @@
 //!   picture is in [`warp_widgets`].
 //! - [`panel`]: the Sample tab's control panel: a settings list drawn as
 //!   labelled sections of knobs, buttons, selectors and switches under the
-//!   wave (the Wave page so far).
+//!   wave.
 //! - [`pads_tab`]: the app's Pads tab: the kit's pads on a compact map to
 //!   pick one, copy, paste and clear it, and a Browse | Pad switch between
 //!   the browser beside them and the pad's main settings with the kit's
@@ -33,9 +33,6 @@
 //!   grain cloud the engine plays over it, a touch pad for position and
 //!   size, and every grain setting, each change a [`GrainAction`]. Its
 //!   pictures are in [`grain_widgets`].
-//! - [`fx_tab`]: the pad editor's FX tab: the effects on the pad's own
-//!   mixer channel as a pedal board, each with its switch and first three
-//!   knobs, the picked one on the Q-Links ([`FxAction`]).
 //! - [`rec_tab`]: the pad editor's Rec tab: the line input's meters and
 //!   its last half minute, takes that start now, over a threshold or on the
 //!   next bar and end on a press, silence or a length, and Skip back over
@@ -47,6 +44,9 @@
 //!   Its picture is in [`auto_widgets`].
 //! - [`send`]: the Send to pad and Chop to pads buttons beside every editor
 //!   tab's bar.
+//! - [`sound_panel`]: the Sound section beside the Wave page's panel: how
+//!   the pad plays its sound (Amp, Filter, Pitch, Movement), four of the
+//!   Play page's controls at a time (the one Sample page, 18 Nov 2026).
 //! - [`sample`]: sample screens for the workstation preview and the tests.
 //!
 //! No device I/O and no audio: the app draws the screens, feeds them
@@ -57,7 +57,6 @@
 pub mod auto_tab;
 pub mod auto_widgets;
 pub mod chop_tab;
-pub mod fx_tab;
 pub mod grain_tab;
 pub mod grain_widgets;
 pub mod keys_widgets;
@@ -71,6 +70,7 @@ pub mod rec_widgets;
 pub mod recall;
 pub mod sample;
 pub mod send;
+pub mod sound_panel;
 pub mod source;
 pub mod warp_tab;
 pub mod warp_widgets;
@@ -79,7 +79,6 @@ pub mod widgets;
 
 pub use auto_tab::{AutoAction, AutoState, AutoTab};
 pub use chop_tab::{ChopAction, ChopState, ChopTab};
-pub use fx_tab::{FxAction, FxState, FxTab};
 pub use grain_tab::{GrainAction, GrainState, GrainTab};
 pub use mpfree_analysis::note_name;
 pub use pads_tab::{PadsAction, PadsState, PadsTab};

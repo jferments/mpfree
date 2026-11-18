@@ -195,6 +195,7 @@ fn a_16_bit_sound_plays_as_its_floats_do() {
                     cutoff_hz: 900.0,
                     resonance: 0.7,
                     env_octaves: 2.0,
+                    drive_db: 0.0,
                 };
             }),
         ),

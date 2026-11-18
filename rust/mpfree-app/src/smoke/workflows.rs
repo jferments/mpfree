@@ -701,57 +701,6 @@ mod tests {
         });
     }
 
-    /// Sample > FX shows the pad's effects as pedals; its Whole chain opens
-    /// the pad's chain first, then a tap on the track's scope shows the
-    /// drum track's chain (its DJ filter); an effect added there is on the
-    /// Drums strip in the mixer. The header's Sample tab goes back to the
-    /// FX page.
-    #[test]
-    fn the_sample_tabs_fx_shows_the_pad_then_the_track() {
-        on_big_stack(|| {
-            let mut s = Session::new();
-            s.press("header", "tab", "Sample");
-            s.press("smp-bar", "tab", "FX").run_for(0.1);
-            assert_eq!(s.view(), View::Sample, "the pedals, on the Sample tab");
-            s.press("smp-fx-list", "button", "Whole chain").run_for(0.1);
-            assert_eq!(s.view(), View::Chain);
-            let t = engine(&mut s);
-            assert_eq!(t.title, "Pad 5 FX", "the pad's chain first");
-            assert!(t.slots.is_empty());
-            agree(&mut s, "the pad's chain");
-
-            s.press("chain", "scope", "Drums");
-            let t = engine(&mut s);
-            assert_eq!(t.title, "Drums FX");
-            assert_eq!(names(&t), ["Filter · DJ"]);
-            agree(&mut s, "the track's chain");
-
-            s.press("chain", "add", "+ Add effect");
-            s.press("chain", "section", "Delay and reverb");
-            s.press("chain", "pick", "Delay").run_for(0.1);
-            assert_eq!(names(&engine(&mut s)), ["Filter · DJ", "Delay · Digital"]);
-            agree(&mut s, "a delay on the track");
-
-            // Back to the pad's chain: still empty.
-            s.press("chain", "scope", "Pad 5");
-            assert!(engine(&mut s).slots.is_empty());
-            agree(&mut s, "the pad's chain again");
-
-            s.press("header", "tab", "Sample");
-            assert_eq!(s.view(), View::Sample);
-            assert!(
-                s.control("smp-fx-bar", "tab", "FX").is_some(),
-                "back on the FX page's pedals"
-            );
-
-            s.press("header", "tab", "Mix").run_for(0.1);
-            assert_eq!(
-                strip_inserts(&s, "Drums"),
-                ["Filter · DJ", "Delay · Digital"]
-            );
-        });
-    }
-
     /// The strip as the mixer screen shows it.
     fn strip(s: &Session, name: &str) -> mpfree_mixer_ui::StripView {
         let st = s

@@ -185,6 +185,7 @@ fn a_p_locked_hit_plays_as_a_pad_set_that_way() {
         cutoff_hz: 800.0,
         resonance: 0.5,
         env_octaves: 0.0,
+        drive_db: 0.0,
     };
     pad.amp = Ahdsr {
         attack_ms: 5.0,
@@ -384,6 +385,7 @@ fn a_locked_hit_plays_as_a_pad_set_that_way_and_a_live_value_goes_over_it() {
         cutoff_hz: 800.0,
         resonance: 0.0,
         env_octaves: 0.0,
+        drive_db: 0.0,
     };
     let own = play(
         &mut engine(&kit(&s, pad)),
@@ -661,6 +663,7 @@ fn the_view_tells_each_pads_own_values() {
             cutoff_hz: 900.0,
             resonance: 0.3,
             env_octaves: 0.0,
+            drive_db: 0.0,
         }
     })
     .unwrap();

@@ -101,6 +101,7 @@ fn kit() -> Project {
         cutoff_hz: 1500.0,
         resonance: 0.4,
         env_octaves: 2.0,
+        drive_db: 0.0,
     };
     p.set_pad(1, Some(pad), None).unwrap();
     let mut pad = Pad::new("gate", Layer::new(gate));
