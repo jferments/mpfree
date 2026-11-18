@@ -47,6 +47,8 @@ use mpfree_ui::numpad::NumberAsk;
 use mpfree_ui::wave::{Beats, Marker, MarkerKind, Peaks, WaveOverview, WaveView, Waveform};
 use mpfree_ui::{Color, EventKind, Rect, Ui, UiEvent};
 
+use crate::grain_tab::{self, CloudNow};
+use crate::grain_tool::{self, GrainPart};
 use crate::panel::{Control, Item, Look, Panel, Section};
 use crate::play_tab::{PlayAction, PlayState};
 use crate::sound_panel::{self, SoundPanel};
@@ -78,9 +80,11 @@ pub const LAYOUT: &str = "col(header:60, row(smp-bar:*, smp-send:330):60, \
 /// 2026 ([`crate::pads_tab`]).
 /// FX left them on 18 Nov 2026 (Jay: a pad's effects are in Mix, which
 /// the Pads tab's Effects row opens).
-pub const TABS: [&str; 6] = ["Wave", "Warp", "Chop", "Play", "Grain", "Rec"];
+/// Grain left them on 18 Nov 2026 too: it is a tool on this page
+/// ([`Tool::Grain`]).
+pub const TABS: [&str; 5] = ["Wave", "Warp", "Chop", "Play", "Rec"];
 /// The tabs built so far; the others are drawn faint.
-pub const BUILT: [&str; 6] = ["Wave", "Warp", "Chop", "Play", "Grain", "Rec"];
+pub const BUILT: [&str; 5] = ["Wave", "Warp", "Chop", "Play", "Rec"];
 /// The Wave tab's place in [`TABS`].
 pub const TAB: usize = 0;
 
@@ -117,7 +121,7 @@ pub enum Tool {
     Slice,
     /// Hits and pins (the Warp page's for now).
     Warp,
-    /// The grain window (the Grain page's for now).
+    /// The grain window ([`crate::grain_tool`]).
     Grain,
 }
 
@@ -141,10 +145,22 @@ impl Tool {
             Tool::Trim => None,
             Tool::Slice => Some(crate::chop_tab::TAB),
             Tool::Warp => Some(crate::warp_tab::TAB),
-            Tool::Grain => Some(crate::grain_tab::TAB),
+            Tool::Grain => None,
+        }
+    }
+
+    /// The hint line the app shows under the page with this tool.
+    pub fn hint(self) -> &'static str {
+        match self {
+            Tool::Grain => GRAIN_HINT,
+            _ => HINT,
         }
     }
 }
+
+/// The hint line with the Grain tool.
+pub const GRAIN_HINT: &str = "Drag GRAIN to move where grains start, SIZE for their length · tap the wave: \
+                              grains start there · hit the pad to hear the cloud · SHIFT + Q-Link 1 / 4: the sprays";
 
 /// Why the tools are faint while a take records (the mockup's "tools wait
 /// for the take").
@@ -248,6 +264,9 @@ pub struct WaveState {
     pub source: Arc<SourceView>,
     /// A take kept on the page, not a pad.
     pub take: Option<TakeShown>,
+    /// The project's tempo, for a grain size synced to it (120 until the
+    /// app says).
+    pub bpm: f64,
 }
 
 impl WaveState {
@@ -300,6 +319,7 @@ impl WaveState {
             used_by: p.users_of(s.id()).len() + p.takes_using(s.id()),
             source,
             take: None,
+            bpm: 120.0,
         })
     }
 
@@ -360,6 +380,8 @@ pub enum WaveAction {
     /// The recorder row, or the Input section while REC is on, asked for
     /// a take or a setting ([`crate::recorder`]).
     Rec(RecorderAction),
+    /// Say this on the hint line (why a touch did nothing).
+    Say(String),
 }
 
 /// The key a typed Warp tempo comes back with ([`NumberAsk::key`]).
@@ -622,6 +644,9 @@ pub(crate) fn next_zero_crossing(x: &[f32], at: usize, ahead: usize) -> Option<u
 enum Key {
     Marker(Mark),
     Row(Row),
+    /// A Grain tool row, or the grain window ([`grain_tab::Row::Position`]
+    /// and [`grain_tab::Row::Size`] for its tabs).
+    Grain(grain_tab::Row),
 }
 
 /// The Wave tab's widgets and what their touches mean. It keeps the snap
@@ -650,6 +675,10 @@ pub struct WaveTab {
     rec: RecorderView,
     /// The tool in use.
     tool: Tool,
+    /// The Grain tool's part open.
+    grain_part: GrainPart,
+    /// What the engine last said of the cloud playing, and how many grains.
+    cloud: (CloudNow, usize),
 }
 
 impl WaveTab {
@@ -697,6 +726,8 @@ impl WaveTab {
             sound,
             rec: RecorderView::default(),
             tool: Tool::default(),
+            grain_part: GrainPart::default(),
+            cloud: (CloudNow::default(), 0),
         };
         tab.update(ui, st);
         Ok(tab)
@@ -709,6 +740,63 @@ impl WaveTab {
     /// The tool in use.
     pub fn tool(&self) -> Tool {
         self.tool
+    }
+
+    /// Picks tool `tool` (the app's way in: SAMPLE EDIT, a device check).
+    /// A tool not on the page yet stays where it is.
+    pub fn set_tool(&mut self, ui: &mut Ui, st: &WaveState, tool: Tool) {
+        if tool.page().is_some() || tool == self.tool {
+            return;
+        }
+        self.tool = tool;
+        self.gesture = None;
+        if let Some(list) = ui.get_mut::<SettingList>(REGION) {
+            list.selected = 0;
+        }
+        self.show_tools(ui);
+        self.update(ui, st);
+    }
+
+    /// The Grain tool's part open.
+    pub fn grain_part(&self) -> GrainPart {
+        self.grain_part
+    }
+
+    /// Opens part `part` of the Grain section.
+    pub fn open_grain_part(&mut self, ui: &mut Ui, st: &WaveState, part: GrainPart) {
+        if part == self.grain_part {
+            return;
+        }
+        self.grain_part = part;
+        self.gesture = None;
+        if let Some(list) = ui.get_mut::<SettingList>(REGION) {
+            list.selected = 0;
+        }
+        if self.tool == Tool::Grain && !self.rec.recording {
+            self.show_list(ui, st);
+            self.show_grain_cards(ui, st);
+        }
+    }
+
+    /// The hint line for the tool in use.
+    pub fn hint(&self) -> &'static str {
+        self.tool.hint()
+    }
+
+    /// The grains the engine plays now for the sound shown, and what else
+    /// it says of the cloud: the spray as it moves draws on the wave, and
+    /// the Grain section's note says how many play and when it is thinned.
+    pub fn set_cloud(&mut self, ui: &mut Ui, st: &WaveState, grains: usize, now: CloudNow) {
+        if self.cloud == (now, grains) {
+            return;
+        }
+        self.cloud = (now, grains);
+        if self.tool == Tool::Grain {
+            self.show_wave(ui, st);
+            if !self.rec.recording {
+                self.show_list(ui, st);
+            }
+        }
     }
 
     /// The marker the wheel zooms round.
@@ -784,6 +872,7 @@ impl WaveTab {
 
     /// Shows `st`.
     pub fn update(&mut self, ui: &mut Ui, st: &WaveState) {
+        self.sound.layer = st.layer;
         let r = &st.region;
         let src = &st.source;
         if st.region.sustain_loop.is_none() && self.focus.is_loop() {
@@ -859,12 +948,12 @@ impl WaveTab {
                 _ => w.set_peaks(Some(src.peaks.clone()), width),
             }
             self.shown = Some((src.id, src.peaks.clone()));
-            w.set_markers(markers(r));
             w.set_region(Some((r.start, r.end)));
             w.set_loop(r.sustain_loop.map(|l| (l.start, l.end)));
             w.set_fades(u64::from(r.fade_in.frames), u64::from(r.fade_out.frames));
             w.set_beats(st.beats());
         }
+        self.show_wave(ui, st);
         if let Some(o) = ui.get_mut::<WaveOverview>(OVERVIEW) {
             o.set_peaks(Some(src.peaks.clone()));
             o.set_region(Some((r.start, r.end)));
@@ -873,6 +962,28 @@ impl WaveTab {
         self.show_list(ui, st);
         self.show_cards(ui, st);
         self.update_wheel(ui, st);
+    }
+
+    /// The marks on the wave: every tool's drawn, but only the tool
+    /// picked has tabs in the strip; the other tools' marks are faint
+    /// lines with no tab ([`Marker::line_only`]). Trim's are the region's
+    /// and the loop's (a sliced sound's cuts are the Slice tool's); the
+    /// Grain tool's the grain window and its two tabs. A sound playing as
+    /// grains shows its window with every tool.
+    fn show_wave(&self, ui: &mut Ui, st: &WaveState) {
+        let r = &st.region;
+        let grains = self.tool == Tool::Grain || r.mode == PlayMode::Granular;
+        let span = grains
+            .then(|| grain_tool::span(r, st.rate, st.bpm, self.cloud.0.state.map(|c| c.spray)));
+        let mut all = markers(r);
+        if let (Tool::Grain, Some(s)) = (self.tool, span.as_ref()) {
+            all = all.into_iter().map(|m| m.faint().line_only()).collect();
+            all.extend(grain_tool::markers(s));
+        }
+        if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
+            w.set_markers(all);
+            w.set_window(span);
+        }
     }
 
     /// The tools strip: the tool in use, faint while a take records.
@@ -915,6 +1026,10 @@ impl WaveTab {
             }
             return;
         }
+        if self.tool == Tool::Grain {
+            self.show_grain_cards(ui, st);
+            return;
+        }
         let (r, src) = (&st.region, &st.source);
         for (k, m) in Mark::ALL.iter().enumerate() {
             if let Some(card) = ui.get_mut::<KnobCard>(QLINKS[k]) {
@@ -935,6 +1050,68 @@ impl WaveTab {
         }
     }
 
+    /// The Q-Link cards with the Grain tool: Position, Size, Density and
+    /// Pitch, as the Grain section's rows.
+    fn show_grain_cards(&self, ui: &mut Ui, st: &WaveState) {
+        let r = &st.region;
+        let g = &r.grain;
+        let picked = self.grain_row(ui, st);
+        for (k, row) in grain_tab::QLINK_ROWS.iter().enumerate() {
+            let Some(card) = ui.get_mut::<KnobCard>(QLINKS[k]) else {
+                continue;
+            };
+            card.label = format!("Q-Link {} · {}", k + 1, row.short());
+            (card.value, card.sub) = grain_tab::split_unit(&grain_tab::value_text(r, *row));
+            card.pos = match row {
+                grain_tab::Row::Position => g.position,
+                grain_tab::Row::Size => grain_tab::size_y(g),
+                grain_tab::Row::Density => {
+                    let (lo, hi) = grain_tab::DENSITY_RANGE;
+                    (g.density / lo).ln() / (hi / lo).ln()
+                }
+                _ => (g.pitch + grain_tab::PITCH_LIMIT) / (2.0 * grain_tab::PITCH_LIMIT),
+            }
+            .clamp(0.0, 1.0);
+            card.enabled = true;
+            card.why = String::new();
+            card.focused = Some(*row) == picked || Some(grain_tab::SHIFT_ROWS[k]) == picked;
+        }
+    }
+
+    /// The Grain tool's row picked on the panel, if one is.
+    fn grain_row(&self, ui: &Ui, st: &WaveState) -> Option<grain_tab::Row> {
+        let i = ui.get::<SettingList>(REGION)?.selected;
+        self.grain_part
+            .rows(&st.region)
+            .get(i.checked_sub(1)?)
+            .copied()
+    }
+
+    /// What the Grain section's note says: what the cloud is doing, or
+    /// the part open's own word ([`grain_tool::part_note`]).
+    fn grain_note(&self, st: &WaveState) -> String {
+        let r = &st.region;
+        if r.mode != PlayMode::Granular {
+            return format!("Mode is {}: pick Granular in Shape", mode_label(r.mode));
+        }
+        if let Some(note) = grain_tool::part_note(r, self.grain_part) {
+            return note.to_string();
+        }
+        let (now, n) = &self.cloud;
+        let mut parts = vec![match n {
+            0 => "hit the pad to hear it".to_string(),
+            1 => "1 grain playing".to_string(),
+            n => format!("{n} grains playing"),
+        }];
+        if now.state.is_some_and(|c| c.thinned) {
+            parts.push(format!(
+                "thinned to fit {}",
+                mpfree_sampler::engine::MAX_GRAINS
+            ));
+        }
+        parts.join(" · ")
+    }
+
     /// The settings' rows, controls and panel.
     fn show_list(&self, ui: &mut Ui, st: &WaveState) {
         if self.rec.recording {
@@ -947,6 +1124,21 @@ impl WaveTab {
                 list.typed = Vec::new();
                 list.buttons = Vec::new();
                 list.selected = list.selected.min(INPUT_ROWS.len() - 1);
+            }
+            return;
+        }
+        if self.tool == Tool::Grain {
+            let (rows, controls, panel) =
+                grain_tool::section(&st.region, self.grain_part, &self.grain_note(st));
+            let n = rows.len();
+            if let Some(list) = ui.get_mut::<SettingList>(REGION) {
+                list.right = "grains".to_string();
+                list.rows = rows;
+                list.controls = controls;
+                list.panel = Some(panel);
+                list.typed = Vec::new();
+                list.buttons = Vec::new();
+                list.selected = list.selected.min(n - 1);
             }
             return;
         }
@@ -1085,6 +1277,15 @@ impl WaveTab {
     /// on other widgets, or that only change what the tab shows.
     pub fn action(&mut self, ui: &mut Ui, ev: &UiEvent, st: &WaveState) -> Option<WaveAction> {
         if ev.widget == sound_panel::SOUND {
+            if let Some((row, delta)) = self.sound.grain_step(ev) {
+                // The Grain chip's four are the region's, as the Q-Links'.
+                self.sound.lift();
+                if delta == 0 || st.region.mode != PlayMode::Granular {
+                    return None;
+                }
+                let r = grain_tab::stepped(&st.region, row, delta, st.bpm);
+                return self.edit(st, Key::Grain(row), r);
+            }
             // The Sound section's own undo steps; the panel's ends.
             self.gesture = None;
             return self.sound.action(ui, ev).map(WaveAction::Play);
@@ -1109,11 +1310,24 @@ impl WaveTab {
                     // Not on the page yet: its old page.
                     Some(page) => Some(WaveAction::Tab(page)),
                     None => {
-                        self.tool = tool;
-                        self.show_tools(ui);
+                        self.set_tool(ui, st, tool);
                         None
                     }
                 }
+            }
+            (WAVE, EventKind::Marker { index, frame }) if self.tool == Tool::Grain => {
+                self.grain_marker(ui, st, *index, *frame)
+            }
+            (WAVE, EventKind::Frame(f)) if self.tool == Tool::Grain => {
+                let r = grain_tool::moved_start(&st.region, *f);
+                self.edit(st, Key::Grain(grain_tab::Row::Position), r)
+            }
+            (REGION, EventKind::Step { index, delta }) if self.tool == Tool::Grain => {
+                self.grain_step(ui, st, *index, *delta)
+            }
+            (REGION, EventKind::Select(_)) if self.tool == Tool::Grain => {
+                self.show_grain_cards(ui, st);
+                None
             }
             (WAVE, EventKind::Marker { index, frame }) => {
                 let m = *markers_order(&st.region).get(*index)?;
@@ -1157,6 +1371,11 @@ impl WaveTab {
                     layer: st.layer,
                 })
             }
+            (name, EventKind::Select(_)) if QLINKS.contains(&name) && self.tool == Tool::Grain => {
+                let k = QLINKS.iter().position(|q| *q == name)?;
+                self.pick_grain_row(ui, st, grain_tab::QLINK_ROWS[k]);
+                None
+            }
             (name, EventKind::Select(_)) if QLINKS.contains(&name) => {
                 let k = QLINKS.iter().position(|q| *q == name)?;
                 self.focus = Mark::ALL[k];
@@ -1184,6 +1403,23 @@ impl WaveTab {
         if self.rec.recording {
             return recorder::qlink_action(knob, delta, fine).map(WaveAction::Rec);
         }
+        if self.tool == Tool::Grain {
+            // Position, Size, Density, Pitch; with
+            // SHIFT the spray, finer size and density, the pitch spray.
+            let row = if fine {
+                *grain_tab::SHIFT_ROWS.get(knob)?
+            } else {
+                *grain_tab::QLINK_ROWS.get(knob)?
+            };
+            self.pick_grain_row(ui, st, row);
+            if delta == 0 {
+                return None;
+            }
+            let finer = fine && matches!(row, grain_tab::Row::Size | grain_tab::Row::Density);
+            let mut r = st.region.clone();
+            r.grain = grain_tab::turned(&r.grain, row, delta as f32, finer);
+            return self.edit(st, Key::Grain(row), r);
+        }
         let m = *Mark::ALL.get(knob)?;
         let now = m.frame(&st.region)?;
         self.focus = m;
@@ -1207,7 +1443,10 @@ impl WaveTab {
     /// or round the middle if it is out of view.
     pub fn wheel(&mut self, ui: &mut Ui, st: &WaveState, delta: i32) {
         let width = self.wave_w;
-        let at = self.focus.frame(&st.region);
+        let at = match self.tool {
+            Tool::Grain => Some(grain_tool::span(&st.region, st.rate, st.bpm, None).at),
+            _ => self.focus.frame(&st.region),
+        };
         if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
             let v = w.view();
             let mid = f64::from(width) / 2.0;
@@ -1220,6 +1459,105 @@ impl WaveTab {
         }
         self.sync_overview(ui);
         self.update_wheel(ui, st);
+    }
+
+    /// A grain window's tab touched or dragged with the Grain tool (the
+    /// other tools' marks have no tab to touch).
+    fn grain_marker(
+        &mut self,
+        ui: &mut Ui,
+        st: &WaveState,
+        index: usize,
+        frame: u64,
+    ) -> Option<WaveAction> {
+        let r = &st.region;
+        let marks = markers(r);
+        let (row, after) = match index.checked_sub(marks.len()) {
+            Some(0) => (grain_tab::Row::Position, grain_tool::moved_start(r, frame)),
+            Some(1) => (
+                grain_tab::Row::Size,
+                grain_tool::moved_end(r, frame, st.rate, st.bpm),
+            ),
+            _ => return None,
+        };
+        // The tab follows the finger; put it where the window really is.
+        let s = grain_tool::span(&after, st.rate, st.bpm, None);
+        if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
+            let to = if row == grain_tab::Row::Position {
+                s.at
+            } else {
+                s.at + s.len
+            };
+            w.set_marker_frame(index, to);
+        }
+        self.pick_grain_row(ui, st, row);
+        self.edit(st, Key::Grain(row), after)
+    }
+
+    /// The Grain section's row `index` stepped `delta` steps: the parts'
+    /// switch, a preset's button, a switch flipped, or a row stepped as
+    /// its row steps ([`grain_tab::stepped`]).
+    fn grain_step(
+        &mut self,
+        ui: &mut Ui,
+        st: &WaveState,
+        index: usize,
+        delta: i32,
+    ) -> Option<WaveAction> {
+        use grain_tab::Row as G;
+        if index == grain_tool::PARTS_ROW {
+            let n = GrainPart::ALL.len() as i32;
+            let to = (self.grain_part.index() as i32 + delta).rem_euclid(n) as usize;
+            self.grain_part = GrainPart::ALL[to];
+            self.gesture = None;
+            self.show_list(ui, st);
+            self.show_grain_cards(ui, st);
+            return None;
+        }
+        let row = *self.grain_part.rows(&st.region).get(index - 1)?;
+        let r = &st.region;
+        let after = match row {
+            G::Preset | G::PresetMore => {
+                let first = if row == G::Preset {
+                    0
+                } else {
+                    grain_tab::PRESETS_A_LINE
+                };
+                let i = first as i32 + grain_tab::preset_on(r, row) as i32 + delta;
+                let n = mpfree_sampler::grain_presets::presets().len() as i32;
+                if !(0..n).contains(&i) {
+                    return None;
+                }
+                mpfree_sampler::grain_presets::apply(r, i as usize)
+            }
+            _ if grain_tab::is_switch(row) => {
+                let d = if grain_tab::switch_on(r, row) { -1 } else { 1 };
+                grain_tab::stepped(r, row, d, st.bpm)
+            }
+            _ => grain_tab::stepped(r, row, delta, st.bpm),
+        };
+        let key = if matches!(row, G::PresetMore) {
+            G::Preset
+        } else {
+            row
+        };
+        self.edit(st, Key::Grain(key), after)
+    }
+
+    /// Puts the Grain section's highlight on `row` if the part open shows
+    /// it, and lights its Q-Link card.
+    fn pick_grain_row(&self, ui: &mut Ui, st: &WaveState, row: grain_tab::Row) {
+        if let Some(i) = self
+            .grain_part
+            .rows(&st.region)
+            .iter()
+            .position(|r| *r == row)
+        {
+            if let Some(list) = ui.get_mut::<SettingList>(REGION) {
+                list.selected = i + 1;
+            }
+        }
+        self.show_grain_cards(ui, st);
     }
 
     fn focus_cards(&self, ui: &mut Ui) {
@@ -1491,8 +1829,8 @@ fn markers_order(r: &Region) -> Vec<Mark> {
 }
 
 /// The region's markers ([`markers_order`]), then a sliced region's cuts
-/// (R4), each at the start of its slice and numbered from 2, fixed: they
-/// move on the Chop tab.
+/// (R4), each at the start of its slice, numbered from 2: the Slice
+/// tool's, so faint lines with no tab (they move on the Chop tab).
 fn markers(r: &Region) -> Vec<Marker> {
     let mut all: Vec<Marker> = markers_order(r)
         .into_iter()
@@ -1505,11 +1843,11 @@ fn markers(r: &Region) -> Vec<Marker> {
             m.frame(r).map(|f| Marker::new(f, m.tab(), kind))
         })
         .collect();
-    all.extend(
-        r.cuts()
-            .enumerate()
-            .map(|(k, f)| Marker::new(f, &(k + 2).to_string(), MarkerKind::Slice).fixed()),
-    );
+    all.extend(r.cuts().enumerate().map(|(k, f)| {
+        Marker::new(f, &(k + 2).to_string(), MarkerKind::Slice)
+            .faint()
+            .line_only()
+    }));
     all
 }
 

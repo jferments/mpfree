@@ -56,6 +56,7 @@
 
 use mpfree_analysis::note_name;
 use mpfree_midi::profile::{PadOut, KIT_NOTES};
+use mpfree_sampler::engine::PadField;
 use mpfree_sampler::model::{
     ChannelPick, Fade, GrainKeys, GrainMode, GrainParams, Layer, Loop, LoopMode, ModelError, Pad,
     PadKind, PlayMode, Project, Region, SourceId, Warp, PADS, WARP_BPM,
@@ -157,6 +158,21 @@ impl Row {
             Row::Port => "Port",
             Row::Channel => "Channel",
         }
+    }
+
+    /// The pad setting row `t`'s index names on the Pad list ([`LIST`]),
+    /// whose rows follow the picked pad's type ([`PadType::rows`]), for
+    /// SHIFT + a touch (MIDI Learn): Level, Pan and Tune, as the Play
+    /// tab's rows ([`play_tab::Row::field`]). None for the other rows, so
+    /// nothing on an Instrument or MIDI out pad.
+    pub fn field_at(st: &PadsState, t: &mpfree_ui::Target) -> Option<PadField> {
+        if !play_tab::is_value_target(t) {
+            return None;
+        }
+        PadType::rows(st.picked_type())
+            .get(t.index)?
+            .play_row()?
+            .field()
     }
 
     /// The Play tab's row for the same setting.
@@ -405,6 +421,10 @@ pub struct PadsState {
     pub engines: Vec<String>,
     /// The MIDI outputs a MIDI out pad can send to. The app fills it.
     pub ports: Vec<OutPort>,
+    /// The kit's Instrument pads that play through the Synth channel, a
+    /// bit each (pad 0 the lowest): past the sixteen that have a synth of
+    /// their own, or whose own couldn't be made. The app fills it.
+    pub on_synth: u128,
 }
 
 /// Pad `p` plays a sound of its own: what Map to keys maps.
@@ -456,6 +476,7 @@ impl PadsState {
             bpm: 120.0,
             engines: Vec::new(),
             ports: Vec::new(),
+            on_synth: 0,
         }
     }
 
@@ -1346,9 +1367,16 @@ fn footer(p: &Pad, st: &PadsState) -> Option<(String, bool)> {
                 .iter()
                 .find(|e| e.eq_ignore_ascii_case(engine))
             {
+                Some(name) if st.on_synth & 1 << st.pad.min(127) != 0 => (
+                    format!(
+                        "A hit plays the Synth tab's {name} sound at {}, through the Synth channel: no synth of its own (16 pads at most have one)",
+                        note_name(*note)
+                    ),
+                    true,
+                ),
                 Some(name) => (
                     format!(
-                        "A hit plays the Synth tab's {name} sound at {}, through the Synth strip on Mix",
+                        "A hit plays the Synth tab's {name} sound at {}, through this pad's channel on Mix",
                         note_name(*note)
                     ),
                     false,

@@ -1,9 +1,10 @@
 //! The Sync section: where the tempo comes from, what following does, the
-//! clock arriving now, and each port's clock out.
+//! clock arriving now, what other gear's MMC and program changes do, and
+//! each port's clock out.
 
 use std::time::Duration;
 
-use mpfree_midi::setup::{ClockOut, TempoSource};
+use mpfree_midi::setup::{ClockOut, ProgramIn, TempoSource};
 
 use crate::form::{clamp_step, Field, Form, Row, Tone};
 use crate::midi::ports;
@@ -115,6 +116,38 @@ impl Form for Sync {
                 .light(true),
             None => arriving.note("none", Tone::Faint).light(false),
         });
+        rows.push(Row::heading("From other gear", vec!["Does", ""]));
+        let mmc = Row::item("mmc", "MMC in").field(Field::choice(
+            "MMC in",
+            on_off(s.mmc_in),
+            s.mmc_in as usize,
+            2,
+        ));
+        rows.push(if s.mmc_in {
+            mmc.note(
+                "its MIDI Machine Control plays, stops, records and moves the playhead",
+                Tone::Normal,
+            )
+        } else {
+            mmc.note("MIDI Machine Control does nothing", Tone::Faint)
+        });
+        let at = ProgramIn::ALL
+            .iter()
+            .position(|p| *p == s.program_in)
+            .unwrap_or(0);
+        let program = Row::item("program", "Program change in").field(Field::choice(
+            "Program change in",
+            s.program_in.label(),
+            at,
+            ProgramIn::ALL.len(),
+        ));
+        rows.push(match s.program_in {
+            ProgramIn::Off => program.note("does nothing here", Tone::Faint),
+            ProgramIn::Scene => program.note(
+                "program 1 launches scene 1, 2 scene 2, and so on",
+                Tone::Normal,
+            ),
+        });
         rows.push(Row::heading("Clock out", vec!["Sends"]));
         for (name, live) in ports(m) {
             if live.is_some_and(|l| !l.has_out) {
@@ -161,6 +194,24 @@ impl Form for Sync {
                 let to = if to == at && delta == 1 { 0 } else { to };
                 let changed = src[to] != m.setup.tempo;
                 m.setup.tempo = src[to].clone();
+                changed
+            }
+            "mmc" => {
+                if delta == 0 {
+                    return false;
+                }
+                m.setup.mmc_in = !m.setup.mmc_in;
+                true
+            }
+            "program" => {
+                let n = ProgramIn::ALL.len() as i32;
+                let at = ProgramIn::ALL
+                    .iter()
+                    .position(|p| *p == m.setup.program_in)
+                    .unwrap_or(0) as i32;
+                let to = ProgramIn::ALL[(at + delta).rem_euclid(n) as usize];
+                let changed = to != m.setup.program_in;
+                m.setup.program_in = to;
                 changed
             }
             "follow" => {
@@ -316,6 +367,33 @@ mod tests {
         assert_eq!(sec.tick(Duration::ZERO), IoReply::Ignored);
         s.lock().unwrap().live.clock_in = Some((DIN_NAME.into(), 121.5));
         assert_eq!(sec.tick(Duration::ZERO), IoReply::Redraw);
+    }
+
+    /// MMC in and Program change in: off until set, each saying what it
+    /// does; a tap flips or steps them.
+    #[test]
+    fn mmc_and_program_change_in_say_what_they_do() {
+        let s = model();
+        assert_eq!(row(&s, "mmc").fields[0].text, "Off");
+        assert_eq!(row(&s, "mmc").note, "MIDI Machine Control does nothing");
+        assert!(Sync.step(&mut s.lock().unwrap(), "mmc", 0, 1));
+        assert!(s.lock().unwrap().setup.mmc_in);
+        assert_eq!(row(&s, "mmc").fields[0].text, "On");
+        assert_eq!(
+            row(&s, "mmc").note,
+            "its MIDI Machine Control plays, stops, records and moves the playhead"
+        );
+        assert_eq!(row(&s, "program").fields[0].text, "Off");
+        assert!(Sync.step(&mut s.lock().unwrap(), "program", 0, 1));
+        assert_eq!(s.lock().unwrap().setup.program_in, ProgramIn::Scene);
+        assert_eq!(row(&s, "program").fields[0].text, "Launches a scene");
+        assert_eq!(
+            row(&s, "program").note,
+            "program 1 launches scene 1, 2 scene 2, and so on"
+        );
+        // A tap on the last choice goes round.
+        assert!(Sync.step(&mut s.lock().unwrap(), "program", 0, 1));
+        assert_eq!(s.lock().unwrap().setup.program_in, ProgramIn::Off);
     }
 
     #[test]

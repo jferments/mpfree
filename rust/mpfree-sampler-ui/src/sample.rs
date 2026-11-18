@@ -16,7 +16,8 @@ use mpfree_ui::{Align, Fonts, Theme, Tone, Ui};
 
 use crate::auto_tab::{self, AutoSettings, AutoState, AutoTab, Onto, Running};
 use crate::chop_tab::{self, ChopState, ChopTab};
-use crate::grain_tab::{self, CloudNow, GrainState, GrainTab};
+use crate::grain_tab::{self, CloudNow};
+use crate::grain_tool::GrainPart;
 use crate::pads_tab::{self, PadsState, PadsTab};
 use crate::play_tab::{self, PlayState, PlayTab};
 use crate::rec_tab::{self, EndAt, RecState, RecTab, Skip, StartAt};
@@ -35,7 +36,6 @@ pub const PAGE: &str = "Sample · Wave";
 pub const CHOP_PAGE: &str = "Sample · Chop";
 pub const PLAY_PAGE: &str = "Sample · Play";
 pub const PADS_PAGE: &str = "Pads · Pad";
-pub const GRAIN_PAGE: &str = "Sample · Grain";
 pub const REC_PAGE: &str = "Sample · Rec";
 pub const WARP_PAGE: &str = "Sample · Warp";
 pub const AUTO_PAGE: &str = "Sample · Auto-sample";
@@ -304,16 +304,6 @@ pub struct PlaySample {
     pub tab: PlayTab,
     pub project: Project,
     pub state: PlayState,
-}
-
-/// One sample screen of the Grain tab.
-pub struct GrainSample {
-    pub name: &'static str,
-    pub about: &'static str,
-    pub ui: Ui,
-    pub tab: GrainTab,
-    pub project: Project,
-    pub state: GrainState,
 }
 
 /// One sample screen of the Pads tab.
@@ -1199,6 +1189,43 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     s.tab.meter(&mut s.ui, [0.5, 0.4], 0.0);
     out.push(s);
 
+    // The page's pad as the Source (one-page step 2e): REC has played it
+    // and records it until it goes quiet; the cards are its velocity and
+    // hold, and the Input section's Gain, Threshold, Pre-roll and
+    // Monitor are faint.
+    let mut s = wave_sample(fonts())?;
+    s.name = "wave-flatten";
+    s.about = "Source Flatten A5: REC played the pad at 120, held 500 ms, and records it until it goes quiet, to stay on the page";
+    let mut on = recorder_idle();
+    on.sources
+        .extend(["Flatten A5".into(), "Auto-sample".into()]);
+    on.settings.source = 2;
+    on.settings.flatten_velocity = 120;
+    on.settings.flatten_hold_ms = 500;
+    on.plays = crate::recorder::Plays::Pad;
+    on.recording = true;
+    on.status = "0:00.4 · stays here".into();
+    on.line_only = Some(crate::recorder::LINE_ONLY.into());
+    on.keep.line = "finish the take first".into();
+    on.keep.ready = false;
+    s.tab.set_recorder(&mut s.ui, on, &s.state.clone());
+    s.tab.meter(&mut s.ui, [0.7, 0.6], 0.0);
+    out.push(s);
+
+    // Auto-sample as the Source: REC opens it over the page; its own
+    // page sets how it plays, so the cards are faint.
+    let mut s = wave_sample(fonts())?;
+    s.name = "wave-auto-source";
+    s.about = "Source Auto-sample: REC opens Auto-sample over the page; the Starts and Ends cards are its page's";
+    let mut on = recorder_idle();
+    on.sources
+        .extend(["Flatten A5".into(), "Auto-sample".into()]);
+    on.settings.source = 3;
+    on.plays = crate::recorder::Plays::Notes;
+    on.status = "opens Auto-sample".into();
+    s.tab.set_recorder(&mut s.ui, on, &s.state.clone());
+    out.push(s);
+
     // Zoomed in round the loop start, snapping to sixteenths, after a
     // Q-Link turn.
     let mut s = wave_sample(fonts())?;
@@ -1339,17 +1366,17 @@ pub fn grain_section_project(
     Ok((p, view))
 }
 
-/// The Grain tab on `project`'s pad A5, shown.
-pub fn grain_on(
-    fonts: Fonts,
-    project: Project,
-    view: Arc<SourceView>,
-) -> Result<GrainSample, String> {
-    let state = GrainState::from_project(&project, PAD, 0, |_| view.clone()).ok_or("no pad")?;
-    let mut ui = app_ui_with(fonts, &project, grain_tab::HINT);
-    let tab = GrainTab::add(&mut ui, GRAIN_PAGE, &state)?;
-    ui.show(GRAIN_PAGE)?;
-    Ok(GrainSample {
+/// The Sample page with the Grain tool on `project`'s pad A5, shown.
+pub fn grain_on(fonts: Fonts, project: Project, view: Arc<SourceView>) -> Result<Sample, String> {
+    // At 120 BPM, as the app's project starts (the Sound section's too).
+    let state = WaveState::from_project(&project, PAD, 0, view.clone()).ok_or("no pad")?;
+    let mut ui = app_ui_with(fonts, &project, crate::wave_tab::GRAIN_HINT);
+    let mut tab = WaveTab::add(&mut ui, PAGE, &state)?;
+    tab.set_sound(&mut ui, sound_state(&project, &view));
+    tab.set_recorder(&mut ui, recorder_idle(), &state);
+    tab.set_tool(&mut ui, &state, crate::wave_tab::Tool::Grain);
+    ui.show(PAGE)?;
+    Ok(Sample {
         name: "grain",
         about: "",
         ui,
@@ -1413,21 +1440,14 @@ pub fn cloud_reports(project: &Project, seconds: f32) -> (Vec<GrainView>, CloudN
 
 /// Shows on `s` what its pad plays `seconds` after a hit, as the app's
 /// reports over the last second would have.
-fn show_played(s: &mut GrainSample, seconds: f32) {
-    let (grains, now, path) = cloud_reports(&s.project, seconds);
+fn show_played(s: &mut Sample, seconds: f32) {
+    let (grains, now) = cloud_after(&s.project, seconds);
     let st = s.state.clone();
-    for h in path {
-        let then = CloudNow {
-            playhead: Some(h),
-            ..now
-        };
-        s.tab.set_cloud(&mut s.ui, &st, &grains, then);
-    }
-    s.tab.set_cloud(&mut s.ui, &st, &grains, now);
+    s.tab.set_cloud(&mut s.ui, &st, grains.len(), now);
 }
 
 /// The Grain tab's sample screens.
-pub fn grain_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<GrainSample>, String> {
+pub fn grain_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let mut out = Vec::new();
     let (p, view) = grain_project();
     let mut s = grain_on(fonts(), p, view)?;
@@ -1443,7 +1463,7 @@ pub fn grain_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<GrainSample>, Stri
     let mut s = grain_on(fonts(), p, view)?;
     (s.name, s.about) = (
         "grain-off",
-        "The pad still plays as a loop: the tab says how to make it play grains",
+        "The pad still plays as a loop: the Grain section says so, and Shape's Mode makes it play grains",
     );
     let st = s.state.clone();
     s.tab.update(&mut s.ui, &st);
@@ -1474,19 +1494,28 @@ pub fn grain_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<GrainSample>, Stri
     show_played(&mut s, 1.5);
     out.push(s);
 
-    for (view, name, about) in [
+    for (view, part, name, about) in [
         (
             grain_tab::View::Movement,
+            GrainPart::Lfo,
             "grain-movement",
-            "Movement: a triangle LFO drifts the position, the envelope opens the size after each hit",
+            "LFO: a triangle LFO drifts the position (the envelope opens the size after each hit)",
         ),
         (
             grain_tab::View::FilterKeys,
+            GrainPart::Filter,
             "grain-filter",
-            "Filter and keys: a resonant band pass on each grain, its cutoff sprayed; glide and size follow key; Quality Tape",
+            "Filter: a resonant band pass on each grain, its cutoff sprayed",
+        ),
+        (
+            grain_tab::View::FilterKeys,
+            GrainPart::Shape,
+            "grain-shape",
+            "Shape: the play mode, the grain mode and Quality (Tape lit)",
         ),
         (
             grain_tab::View::Presets,
+            GrainPart::Presets,
             "grain-presets",
             "Presets: the eight starting points as buttons, Shimmer fifths on the pad and lit",
         ),
@@ -1495,7 +1524,7 @@ pub fn grain_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<GrainSample>, Stri
         let mut s = grain_on(fonts(), p, source)?;
         (s.name, s.about) = (name, about);
         let st = s.state.clone();
-        s.tab.open(&mut s.ui, &st, view);
+        s.tab.open_grain_part(&mut s.ui, &st, part);
         show_played(&mut s, 1.5);
         out.push(s);
     }

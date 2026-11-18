@@ -250,10 +250,17 @@ pub fn opening(
         .find(|(k, _)| k == SWING)
         .and_then(|(_, v)| parse_swing(v));
     let mut note_fx = None;
+    let since_4b = saved_since_4b(snap);
     let time = snap.part(CLIPS).and_then(|text| {
-        let p = mpfree_seq::save::from_text(text)
+        let mut p = mpfree_seq::save::from_text(text)
             .map_err(|e| notes.push(format!("project: the clips weren't opened ({e})")))
             .ok()?;
+        if !since_4b {
+            let old = old_strip_targets(&mut p);
+            if old != OldStripTargets::default() {
+                notes.push(old.line());
+            }
+        }
         let mut fx = Box::new([mpfree_notefx::TrackFx::default(); mpfree_seq::MAX_TRACKS]);
         for (t, tr) in p.tracks.iter().enumerate().take(mpfree_seq::MAX_TRACKS) {
             fx[t] = tr.note_fx;
@@ -534,6 +541,167 @@ pub fn new_snapshot(d: &Defaults) -> Snapshot {
             (SYNTH.to_string(), d.synth.clone()),
         ],
     }
+}
+
+// ------------------------------------------------------------ old strip targets
+
+/// Whether the project was saved since Drums became track 1's strip
+/// (sampler R3 part 4b): its mixer part has a `track1` line
+/// ([`mixer_text_lent`]).
+fn saved_since_4b(snap: &Snapshot) -> bool {
+    snap.part(MIXER)
+        .is_some_and(|t| t.lines().any(|l| l.trim_start().starts_with("track1 ")))
+}
+
+/// What [`old_strip_targets`] did to a project saved before part 4b.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OldStripTargets {
+    /// Lanes on tracks 2 and up that named the track's strip or one of its
+    /// inserts, now naming that strip by number, so they move what they did.
+    pub lanes: usize,
+    /// Such lanes left as they were, because the clip already had a lane on
+    /// that strip's parameter (they now move the track's own strip).
+    pub clashes: usize,
+    /// Step locks on tracks 2 and up on the track's strip: a lock can only
+    /// name its own track's ([`mpfree_seq::Lock::addr`]). Most came from the
+    /// step lanes, which meant the track's own strip, so they are kept and
+    /// now reach it (the sequencer thread's call, 18 Nov).
+    pub strip_locks: usize,
+    /// Step locks on tracks 2 and up on an insert: only a knob on another
+    /// strip's effect (Synth's, Loop's, Audio's) made those, and kept they
+    /// would turn whatever effect has that slot id on the track's own
+    /// strip, so they are dropped.
+    pub effect_locks: usize,
+}
+
+impl OldStripTargets {
+    /// The open's log line.
+    pub fn line(&self) -> String {
+        let mut parts = Vec::new();
+        if self.lanes > 0 {
+            parts.push(format!(
+                "{} lanes on tracks 2 and up keep the strip they moved (Synth, Loop, Audio or another, now named by number)",
+                self.lanes
+            ));
+        }
+        if self.clashes > 0 {
+            parts.push(format!(
+                "{} such lanes clashed with a lane already there and now move their track's own strip",
+                self.clashes
+            ));
+        }
+        if self.strip_locks > 0 {
+            parts.push(format!(
+                "{} strip locks on tracks 2 and up now reach their track's own strip",
+                self.strip_locks
+            ));
+        }
+        if self.effect_locks > 0 {
+            parts.push(format!(
+                "{} effect locks on tracks 2 and up dropped: they turned another strip's effects (Synth, Loop or Audio), not this track's",
+                self.effect_locks
+            ));
+        }
+        format!(
+            "project: saved before Drums was track 1's strip: {}",
+            parts.join("; ")
+        )
+    }
+}
+
+/// Where a clip on track `t` reached with "this track's strip" (or an
+/// insert on it) before sampler R3 part 4b: mixer track `t`, by number
+/// (`OnTrack::on` used the track as the strip: Synth for track 2, Loop
+/// for 3, Audio for 4). Track 1's reached Drums, as it does now.
+fn old_strip_target(
+    target: mpfree_seq::mpfree_moves::Target,
+    t: u8,
+) -> Option<mpfree_seq::mpfree_moves::Target> {
+    use mpfree_seq::mpfree_moves::Target;
+    use mpfree_seq::mpfree_param::{OnTrack, Owner, ParamAddr, Strip};
+    let Target::Track(rel) = target else {
+        return None;
+    };
+    let owner = match rel.on {
+        OnTrack::Strip => Owner::Strip(Strip::Track(t)),
+        OnTrack::Insert(uid) => Owner::Insert(Strip::Track(t), uid),
+        _ => return None,
+    };
+    (t > 0).then_some(Target::Fixed(ParamAddr::new(owner, rel.param)))
+}
+
+/// A clip's lanes with the old strip targets of track `t` named by their
+/// strip (`old_strip_target`): (rewritten, clashed). Allocates, once.
+fn old_strip_lanes(m: &mut mpfree_seq::mpfree_moves::Moves, t: u8) -> (usize, usize) {
+    if !m
+        .lanes()
+        .iter()
+        .any(|l| old_strip_target(l.target, t).is_some())
+    {
+        return (0, 0);
+    }
+    let (mut moved, mut clashed) = (0, 0);
+    let mut out = mpfree_seq::mpfree_moves::Moves::new();
+    let taken: Vec<_> = m.lanes().iter().map(|l| l.target).collect();
+    for l in m.lanes() {
+        let target = match old_strip_target(l.target, t) {
+            Some(fixed) if !taken.contains(&fixed) => {
+                moved += 1;
+                fixed
+            }
+            Some(_) => {
+                clashed += 1;
+                l.target
+            }
+            None => l.target,
+        };
+        // The lanes were checked as they were read; the same points under
+        // another target fit as well.
+        let _ = out
+            .reserve(target, l.map, l.points.len())
+            .and_then(|_| out.restore(target, l.map, 0, u32::MAX, &l.points));
+    }
+    *m = out;
+    (moved, clashed)
+}
+
+/// A clip's step locks on track 2 and up (`old_strip_targets`): those on
+/// the track's strip are kept and counted, those on an insert dropped and
+/// counted.
+fn old_strip_locks(locks: &mut Vec<mpfree_seq::Lock>, out: &mut OldStripTargets) {
+    use mpfree_seq::mpfree_param::OnTrack;
+    out.strip_locks += locks.iter().filter(|l| l.addr.on == OnTrack::Strip).count();
+    let before = locks.len();
+    locks.retain(|l| !matches!(l.addr.on, OnTrack::Insert(_)));
+    out.effect_locks += before - locks.len();
+}
+
+/// A project saved before Drums was track 1's strip (sampler R3 part 4b)
+/// plays as it did: each clip on track 2 and up whose lanes named "this
+/// track's strip" or one of its inserts now names the strip they moved
+/// (`old_strip_target`), its Original's too. A step lock can only name its
+/// own track's strip: one there now reaches it, one on an insert is
+/// dropped (`old_strip_locks`). Track 1's reach Drums, as before.
+pub fn old_strip_targets(p: &mut mpfree_seq::Project) -> OldStripTargets {
+    let mut out = OldStripTargets::default();
+    for (t, track) in p.tracks.iter_mut().enumerate().skip(1) {
+        let Ok(t) = u8::try_from(t) else {
+            break;
+        };
+        for clip in track.slots.iter_mut().flatten() {
+            let (moved, clashed) = old_strip_lanes(&mut clip.moves, t);
+            out.lanes += moved;
+            out.clashes += clashed;
+            old_strip_locks(&mut clip.locks, &mut out);
+            if let Some(o) = clip.original.as_mut() {
+                let (moved, clashed) = old_strip_lanes(&mut o.moves, t);
+                out.lanes += moved;
+                out.clashes += clashed;
+                old_strip_locks(&mut o.locks, &mut out);
+            }
+        }
+    }
+    out
 }
 
 // ------------------------------------------------------------ the mixer
@@ -1915,6 +2083,108 @@ mod tests {
         snap.parts.retain(|(name, _)| name != PERFORM);
         let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none());
         assert_eq!(o.perform, None);
+    }
+
+    /// A project saved before Drums was track 1's strip plays its clips'
+    /// strip moves as it did (the sequencer thread's review of #624): an
+    /// old clip on track 2 with a `t:fx1.2` lane still turns mixer track 1's
+    /// (Synth's) insert 1; its strip lock now reaches track 2's own strip,
+    /// and its effect lock, which turned Synth's effect, is dropped. All
+    /// counted on the open's line. Track 1's, and a project saved since,
+    /// are left as they are.
+    #[test]
+    fn an_old_projects_strip_moves_on_track_2_keep_their_strip() {
+        use mpfree_seq::mpfree_moves::{Map, Point, Target};
+        use mpfree_seq::mpfree_param::{track_strip, OnTrack, Owner, ParamAddr, RelAddr, Strip};
+        use mpfree_seq::{Clip, Lock, Track};
+        let fx = RelAddr::new(OnTrack::Insert(1), 2);
+        let vol = RelAddr::new(OnTrack::Strip, 0);
+        let mut clips = mpfree_seq::Project::default();
+        for t in 0..3u16 {
+            let mut track = Track::new(&format!("Track {}", t + 1), t);
+            let mut clip = Clip::new("c", 3840);
+            let lane = Target::Track(fx);
+            let map = Map::linear(0.0, 1.0);
+            let points = [Point::step(0, 0.25), Point::step(1920, 0.75)];
+            clip.moves.reserve(lane, map, points.len()).unwrap();
+            clip.moves.restore(lane, map, 0, 3840, &points).unwrap();
+            clip.add_lock(Lock::new(0, None, vol, 0.5)).unwrap();
+            clip.add_lock(Lock::new(960, None, fx, 0.5)).unwrap();
+            track.slots[0] = Some(clip);
+            clips.tracks.push(track);
+        }
+        let open = |mixer: String| {
+            let c = Collected {
+                tempo: 120.0,
+                swing: mpfree_transport::time::Swing::new(240, 50).unwrap(),
+                clips: clips.clone(),
+                mixer,
+                modu: String::new(),
+                synth: String::new(),
+                arp: String::new(),
+                perform: String::new(),
+                instruments: format!("{INSTRUMENTS_FORMAT}\n"),
+                track_kits: String::new(),
+                loops: None,
+                audio: None,
+            };
+            let o = opening(
+                &snapshot(&c, Vec::new()),
+                44_100,
+                "a test",
+                &crate::plugins::Plugins::none(),
+            );
+            let Some(time) = o.time else {
+                panic!("the clips: {:?}", o.notes);
+            };
+            (time.project().clone(), o.notes)
+        };
+        let clip = |p: &mpfree_seq::Project, t: usize| p.tracks[t].slots[0].clone().unwrap();
+
+        let (p, notes) = open(format!("{MIXER_FORMAT}\npadmutes 0\n"));
+        let synth_fx = ParamAddr::new(Owner::Insert(Strip::Track(1), 1), 2);
+        let two = clip(&p, 1);
+        assert_eq!(two.moves.lanes().len(), 1);
+        let lane = two.moves.lanes()[0].target;
+        assert_eq!(lane, Target::Fixed(synth_fx));
+        assert_eq!(
+            lane.on(1),
+            synth_fx,
+            "track 2's lane still turns Synth's insert 1"
+        );
+        assert_eq!(two.moves.lanes()[0].points.len(), 2);
+        assert_eq!(two.locks, vec![Lock::new(0, None, vol, 0.5)]);
+        assert_eq!(two.locks[0].addr.on(1).owner, Owner::Strip(track_strip(1)));
+        // Track 3's lane keeps Loop's insert; track 1's are as they were.
+        assert_eq!(
+            clip(&p, 2).moves.lanes()[0].target,
+            Target::Fixed(ParamAddr::new(Owner::Insert(Strip::Track(2), 1), 2))
+        );
+        assert_eq!(clip(&p, 0), clips.tracks[0].slots[0].clone().unwrap());
+        let line = notes
+            .iter()
+            .find(|n| n.starts_with("project: saved before Drums was track 1's strip"))
+            .unwrap_or_else(|| panic!("{notes:?}"));
+        assert!(
+            line.contains("2 lanes on tracks 2 and up keep the strip they moved"),
+            "{line}"
+        );
+        assert!(
+            line.contains("2 strip locks on tracks 2 and up now reach their track's own strip"),
+            "{line}"
+        );
+        assert!(
+            line.contains("2 effect locks on tracks 2 and up dropped"),
+            "{line}"
+        );
+
+        // Saved since: as written.
+        let (p, notes) = open(format!("{MIXER_FORMAT}\npadmutes 0\ntrack1 t0\n"));
+        assert_eq!(clip(&p, 1), clips.tracks[1].slots[0].clone().unwrap());
+        assert!(
+            !notes.iter().any(|n| n.contains("saved before Drums")),
+            "{notes:?}"
+        );
     }
 
     /// The mixer's load knows whether track 1 has its own instrument, for
