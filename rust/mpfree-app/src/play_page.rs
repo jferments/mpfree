@@ -2382,7 +2382,7 @@ impl PlayPage {
             State::Playing => ("PLAYING", Tone::Good),
         };
         let bar_ticks = t.meter.bar_ticks().max(1);
-        let (start, bars) = match t.loop_range {
+        let (start, bars) = match t.playing_loop() {
             Some((a, b)) if b > a => (a, ((b - a) / bar_ticks).clamp(1, 8) as usize),
             _ => (0, 4),
         };

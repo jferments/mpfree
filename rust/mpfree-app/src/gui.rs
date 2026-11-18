@@ -196,6 +196,10 @@ fn learning_hint(name: &str) -> String {
     )
 }
 
+/// SHIFT held on Arrange's Clips grid (sequencer S5: a tap learns).
+const SHIFT_CLIPS_HINT: &str =
+    "SHIFT +   tap a clip, a scene or a track's name: MIDI Learn   ·   drag a clip: copy   ·   \
+     + Track: Loop track   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_HINT: &str =
     "SHIFT +   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
 /// SHIFT held with the pads as steps.
@@ -4133,6 +4137,8 @@ impl Player {
             SHIFT_MENU_HINT.to_string()
         } else if self.status.shift && self.ready && self.view == View::Synth {
             SHIFT_SYNTH_HINT.to_string()
+        } else if self.status.shift && self.ready && self.clips_showing() {
+            SHIFT_CLIPS_HINT.to_string()
         } else if self.status.shift && self.ready && self.view == View::Sample {
             SHIFT_SAMPLE_HINT.to_string()
         } else if self.status.shift && self.ready && self.status.steps.is_some_and(|s| !s.picking) {
@@ -4718,6 +4724,15 @@ impl Player {
             Nav::Push => self.nav_push(),
         }
         self.refresh_hint();
+    }
+
+    /// Arrange shows the Clips grid (not the Song view, the song list or
+    /// the note editor).
+    fn clips_showing(&self) -> bool {
+        self.view == View::Arrange
+            && !self.time.song_view
+            && !self.time.list_view
+            && self.time.edit.is_none()
     }
 
     /// The page showing has the wheel's outline: the pages
@@ -9257,6 +9272,16 @@ impl Player {
                     }
                 }
             }
+            // SHIFT + a tap on a clip, a row's scene button, Stop all, Back
+            // to song or a track's name: MIDI Learn waits for a control to
+            // press it (sequencer S5, Jay's card of 18 Nov). SHIFT + a drag
+            // still copies, and SHIFT + "+ Track" adds a Loop track.
+            (time_view::CLIPS, EventKind::Select(_) | EventKind::Toggle(_) | EventKind::Tab(_))
+                if self.status.shift && time_view::learn_target(&ev, &self.time).is_some() =>
+            {
+                time_view::learn_target(&ev, &self.time)
+                    .map(|a| FromUi::LearnValue(LearnValue::Param(a)))
+            }
             (time_view::CLIPS, EventKind::Toggle(_))
             | (
                 time_view::RECORD | time_view::CLIP_CARD | time_view::SCENE_CARD,
@@ -12179,8 +12204,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             let mut st = p.time.clone();
             st.perform = true;
             st.mute_wait = Some(mpfree_time_ui::view::MuteWait {
-                line: mpfree_seq::LaunchGrid::Bars(1),
                 want: vec![(1, true, false), (2, false, true)],
+                ..mpfree_time_ui::view::MuteWait::new(mpfree_seq::LaunchGrid::Bars(1))
             });
             p.apply(ToUi::Time(Box::new(st)));
             p.apply(ToUi::Show(View::Arrange));
@@ -15645,6 +15670,68 @@ mod tests {
         );
     }
 
+    /// SHIFT + a tap on the Clips grid (sequencer S5, Jay's card of 18
+    /// Nov): MIDI Learn waits for a control to press the clip, the scene,
+    /// Stop all or the track's arm; SHIFT + a drag still copies a clip.
+    #[test]
+    fn shift_and_a_tap_on_the_grid_arms_midi_learn() {
+        use mpfree_play::mpfree_param::{clips, Owner};
+        use mpfree_time_ui::widgets::ClipGrid;
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let learn = |id| {
+            Some(FromUi::LearnValue(LearnValue::Param(ParamAddr::new(
+                Owner::Clips,
+                id,
+            ))))
+        };
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let mut p = sample_clips(Fonts::embedded()).unwrap();
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let grid = p.ui.rect_of(time_view::CLIPS).unwrap();
+        let g = p.ui.get::<ClipGrid>(time_view::CLIPS).unwrap();
+        let mid = |r: mpfree_ui::Rect| (r.x + r.w / 2, r.y + r.h / 2);
+        let clip = mid(g.cell_rect(grid, 0, 0).unwrap());
+        let empty = mid(g.cell_rect(grid, 2, 1).unwrap());
+        let scene = mid(g.scene_rect(grid, 3).unwrap());
+        let mut s = p.status.clone();
+        s.shift = true;
+        p.apply(ToUi::Status(s));
+        assert!(
+            hint(&p).contains("tap a clip, a scene or a track's name: MIDI Learn"),
+            "{}",
+            hint(&p)
+        );
+        assert_eq!(tap(&mut p, clip), learn(clips::clip(0, 0)));
+        assert_eq!(tap(&mut p, empty), learn(clips::clip(2, 1)));
+        assert_eq!(tap(&mut p, scene), learn(clips::scene(3)));
+        // SHIFT + a drag from the clip to the empty cell: a copy.
+        let (x0, y0) = clip;
+        let (x1, y1) = empty;
+        assert_eq!(p.touch(1, Touch::Down, x0, y0), None);
+        let mut got = None;
+        for i in 1..=8 {
+            let (x, y) = (x0 + (x1 - x0) * i / 8, y0 + (y1 - y0) * i / 8);
+            got = got.or(p.touch(1, Touch::Move, x, y));
+        }
+        assert_eq!(got, None);
+        assert_eq!(
+            p.touch(1, Touch::Up, x1, y1),
+            Some(FromUi::Time(TimeAction::DropClip {
+                from: (0, 0),
+                to: (2, 1),
+                copy: true
+            }))
+        );
+        // Without SHIFT a tap launches as always.
+        let mut s = p.status.clone();
+        s.shift = false;
+        p.apply(ToUi::Status(s));
+        assert!(!matches!(tap(&mut p, scene), Some(FromUi::LearnValue(_))));
+    }
+
     /// ERASE held (Jay after live test 3): the tap deletes what it lands
     /// on, where UNDO brings it back; elsewhere a tap does what it does.
     #[test]
@@ -18685,7 +18772,7 @@ mod tests {
             tempo: 98.0,
             swing: mpfree_transport::time::Swing::new(240, 62).unwrap(),
             clips: clips.clone(),
-            mixer: project::mixer_text(&mix.mixer, 0),
+            mixer: project::mixer_text(&mix.mixer, 0, 0),
             modu: String::new(),
             synth: project::synth_text(&Default::default(), &synth.sounds()),
             arp: "mpfree-arp 1\ntrack 1\nmode = arp\n".to_string(),
@@ -18854,6 +18941,7 @@ mod tests {
                 mixer: project::mixer_text(
                     &crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer,
                     0,
+                    0,
                 ),
                 modu: String::new(),
                 synth: project::synth_text(&Default::default(), &synth.sounds()),
@@ -18981,7 +19069,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let lib = mpfree_library::Library::at(&dir).unwrap();
         let synth = crate::synth::Synth::new(44_100);
-        let mixer = project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0);
+        let mixer =
+            project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0, 0);
         let synth_text = project::synth_text(&Default::default(), &synth.sounds());
         let defaults = || {
             Box::new(Defaults {

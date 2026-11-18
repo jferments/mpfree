@@ -539,6 +539,7 @@ pub fn rec_now(time: &time::TimeHost, looper: &looping::LoopHost) -> crate::rec_
         loop_taking,
         loop_armed,
         notes,
+        clock: time.waiting_for().map(str::to_string),
     }
 }
 

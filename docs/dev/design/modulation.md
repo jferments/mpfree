@@ -23,6 +23,7 @@ Agreed on 2026-11-11 with the threads that own the neighbours: the time engine (
 | `Mod(n)` | mod source `n`: LFOs 0 to 7, followers 8 to 11 | `mod4.1` |
 | `Morph(n)` | the morph position (param 0), 0 to 1 | `morph0.0` |
 | `Transport` | MIDI Learn's remote control only: PLAY and STOP, the transport's buttons and the tempo (`mpfree_param::transport`; see [MIDI I/O, M5](midi-io.md#m5-midi-learn)). Locks, macros and the mod matrix never target it | `transport.7` |
+| `Clips` | MIDI Learn's remote control only: the Clips grid's clips, scenes, Stop all, Back to song, and a track's stop, mute, solo and arm (`mpfree_param::clips`; see [MIDI I/O, M5](midi-io.md#m5-midi-learn)). Locks, macros and the mod matrix never target it | `clips.258` |
 
 Strips are `t<n>` (track), `in<n>` (input), `ps<n>` (a pad channel of the mixer's pool), `bus<n>`, `ret<n>` and `master`. Indexes count from 0.
 
