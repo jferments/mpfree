@@ -115,6 +115,7 @@ mod svf;
 mod transient;
 mod tuner;
 mod vocal;
+mod vocoder;
 mod wah;
 mod xy;
 pub mod xyfx;
@@ -168,6 +169,7 @@ pub use vocal::{
     interval_semis, nearest_note, Harmonizer, PitchCorrect, INTERVALS as VOCAL_INTERVALS,
     KEYS as VOCAL_KEYS, RANGES as VOCAL_RANGES, SCALES as VOCAL_SCALES,
 };
+pub use vocoder::{Vocoder, CARRIERS as VOCODER_CARRIERS};
 pub use wah::{AutoWah, TalkBox};
 pub use xy::{XyAxis, XyPad};
 pub use xyfx::XyFx;
@@ -222,6 +224,7 @@ pub mod ids {
     pub use crate::tuner::ids as tuner;
     pub use crate::vocal::harm_ids as harmonizer;
     pub use crate::vocal::tune_ids as pitch_correct;
+    pub use crate::vocoder::ids as vocoder;
     pub use crate::wah::autowah;
     pub use crate::wah::talkbox;
     pub use crate::xyfx::ids as xyfx;
@@ -238,12 +241,15 @@ pub struct Preset {
 
 /// The hint line's words while control `name` is touched, set to
 /// `value`, for a control that explains its choices (the delays' and
-/// reverbs' Mix curve); None for every other control.
+/// reverbs' Mix curve, the vocoder's Carrier); None for every other
+/// control.
 pub fn control_hint(name: &str, value: f32) -> Option<&'static str> {
-    (name == "Mix curve").then(|| {
-        let i = (value.max(0.0) as usize).min(kit::MIX_CURVE_HINTS.len() - 1);
-        kit::MIX_CURVE_HINTS[i]
-    })
+    let pick = |hints: &[&'static str]| hints[(value.max(0.0) as usize).min(hints.len() - 1)];
+    match name {
+        "Mix curve" => Some(pick(&kit::MIX_CURVE_HINTS)),
+        "Carrier" => Some(pick(&vocoder::CARRIER_HINTS)),
+        _ => None,
+    }
 }
 
 /// A crossfade from `a` (at 0) to `b` (at 1) that is exact at both ends,

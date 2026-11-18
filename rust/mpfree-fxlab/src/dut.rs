@@ -45,6 +45,8 @@ pub struct NodeDut {
     rate: u32,
     frame: u64,
     block: usize,
+    /// The input is also the sidechain key ([`NodeDut::keyed_by_input`]).
+    self_key: bool,
 }
 
 impl NodeDut {
@@ -55,7 +57,16 @@ impl NodeDut {
             rate,
             frame: 0,
             block: 128,
+            self_key: false,
         }
+    }
+
+    /// Feeds the input to the node's sidechain key too, as a strip keyed
+    /// by its own signal (the vocoder with its input as the carrier, so
+    /// round 3's click measure plays the same tone as voice and carrier).
+    pub fn keyed_by_input(mut self) -> NodeDut {
+        self.self_key = true;
+        self
     }
 
     /// A registry effect by node id, at its defaults.
@@ -98,6 +109,11 @@ impl Dut for NodeDut {
         let n = input.len();
         let mut left: Vec<f32> = input.left.iter().map(|x| *x as f32).collect();
         let mut right: Vec<f32> = input.right.iter().map(|x| *x as f32).collect();
+        let key = if self.self_key {
+            (left.clone(), right.clone())
+        } else {
+            (Vec::new(), Vec::new())
+        };
         let mut next = 0;
         let mut events: Vec<Timed> = Vec::new();
         let mut at = 0;
@@ -123,7 +139,9 @@ impl Dut for NodeDut {
                 bpm: 120.0,
                 beats,
                 playing: true,
-                sidechain: None,
+                sidechain: self
+                    .self_key
+                    .then(|| (&key.0[at..at + len], &key.1[at..at + len])),
             };
             self.node.process(
                 &ctx,

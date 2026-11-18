@@ -338,6 +338,20 @@ pub static MAIN_PAGES: &[MainPage] = &[
         ["Vowel", "Formant", "Env depth", "Mix"],
     ),
     main(
+        "mpfree.fx.vocoder",
+        &[
+            "Formant",
+            "Bandwidth",
+            "Release",
+            "Mix",
+            "Carrier",
+            "Pitch",
+            "Bands",
+            "Unvoiced",
+        ],
+        ["Formant", "Bandwidth", "Release", "Mix"],
+    ),
+    main(
         "mpfree.fx.perform",
         &[
             "DJ filter",
