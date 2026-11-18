@@ -480,6 +480,24 @@ impl Instruments {
         true
     }
 
+    /// A controller (a pedal, the mod wheel, breath) for track `track`'s
+    /// instrument, 0 to 1, `offset` frames into the next block. The host
+    /// holds the notes for an instrument that doesn't hear the pedals.
+    #[allow(dead_code)] // MIDI in's controller wiring calls it (the MIDI thread)
+    pub fn control(
+        &mut self,
+        track: usize,
+        ctl: mpfree_node::Ctl,
+        value: f32,
+        offset: u32,
+    ) -> bool {
+        let Some(s) = self.slot(track) else {
+            return false;
+        };
+        self.host.control(s, offset, ctl, value);
+        true
+    }
+
     /// A keyboard's pitch wheel on track `track`'s instrument, -1 to 1 of
     /// its bend range.
     pub fn bend(&mut self, track: usize, value: f32) -> bool {
