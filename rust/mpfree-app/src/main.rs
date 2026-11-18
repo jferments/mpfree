@@ -3274,7 +3274,8 @@ fn kit_views(kits: &[kit::Kit], users: Range<usize>, synth: &synth::Synth) -> Ve
 /// The entry SHIFT + wheel turns to from `from`, `d` detents on among `n`
 /// (the kits, then the synth): a user kit slot (`users`) counts only once
 /// it is in use, with sounds (`sounds(k)`) or a track playing it, so the
-/// wheel never stops on an empty spare slot.
+/// wheel never stops on an empty spare slot, nor on a kit set aside with
+/// a track UNDO took away (`TrackKits::set_aside`).
 fn kit_turned(
     from: usize,
     d: i32,
@@ -3284,12 +3285,13 @@ fn kit_turned(
     kits: &sampler::TrackKits,
 ) -> usize {
     let n = n.max(1);
-    let spare = |k: usize| users.contains(&k) && sounds(k) == 0 && !kits.plays(k);
+    let skip =
+        |k: usize| kits.set_aside(k) || (users.contains(&k) && sounds(k) == 0 && !kits.plays(k));
     let mut at = from;
     for _ in 0..d.unsigned_abs() {
         for _ in 0..n {
             at = (at as i64 + i64::from(d.signum())).rem_euclid(n as i64) as usize;
-            if !spare(at) {
+            if !skip(at) {
                 break;
             }
         }
@@ -5518,6 +5520,9 @@ fn player_session(
     // every track until a pick). The pads play the armed track's; each
     // track's clips play its own.
     let mut track_kits = sampler::TrackKits::new(drum_kits);
+    // The time engine's REDOs seen so far: a track one brings back gets its
+    // kit back (`TrackKits::follow`).
+    let mut redos_seen = 0u64;
     // The armed track changed: next period the pads follow it to what it
     // plays (as a pick would, but nothing changes what a track plays).
     let mut kit_follow: Option<usize> = None;
@@ -8189,10 +8194,13 @@ fn player_session(
             out.note(&format!("time: {line}"));
         }
         app.set_track_count(time.track_count());
-        // A track UNDO took away gives its kit back: its place plays kit 1
-        // again, for a track added there later (the screen hears of it
-        // with the track kits below).
-        track_kits.forget_past(time.track_count());
+        // A track UNDO took away sets its kit aside (its place plays kit 1
+        // again, for a track added there later), and a REDO that brings it
+        // back gives it its kit again, so the two go together (the screen
+        // hears of it with the track kits below).
+        let (redos, can_redo) = time.redos();
+        track_kits.follow(time.track_count(), redos != redos_seen, can_redo);
+        redos_seen = redos;
         // The transport buttons' lights follow the transport and the
         // loops (only the ones that changed; next period's effects).
         {
@@ -11197,6 +11205,13 @@ mod tests {
             6,
             "3, 4, then past 5 to the synth"
         );
+        // A kit set aside with a track UNDO took away is no stop, even
+        // with sounds, until REDO brings the track back.
+        assert!(kits.follow(3, false, true));
+        let b0 = |k| if k == 3 { 1u128 } else { 0 };
+        assert_eq!(kit_turned(2, 1, 7, &users, b0, &kits), 6);
+        assert!(kits.follow(4, true, true));
+        assert_eq!(kit_turned(2, 1, 7, &users, b0, &kits), 3);
     }
 
     #[test]
