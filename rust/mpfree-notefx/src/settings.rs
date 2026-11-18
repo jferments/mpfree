@@ -6,7 +6,8 @@
 use mpfree_scale::{Scale, SCALES};
 
 use crate::fx::{
-    Chord, Echo, Fx, LatchMode, Randomize, Shape, StrumOrder, Time, Velocity, Voicing, NOTE_VALUES,
+    Chord, Echo, Fx, LatchMode, Randomize, Shape, StrumOrder, Time, Velocity, Voicing, CC_MOST,
+    NOTE_VALUES,
 };
 
 /// How a setting is shown and changed.
@@ -150,6 +151,26 @@ const RANDOMIZE: [Setting; 4] = [
     number("Longer by", "Velocity and length", 0, 1000),
 ];
 
+const CC_SCALE: [Setting; 3] = [
+    number("Controller", "Controller", -1, CC_MOST as i32),
+    number("Lowest", "Range", 0, 127),
+    number("Highest", "Range", 0, 127),
+];
+const ON_NOTE: [&str; 2] = ["Jumps", "Glides"];
+const CC_SMOOTH: [Setting; 3] = [
+    number("Controller", "Controller", -1, CC_MOST as i32),
+    number("Glide", "Glide", 1, 2000),
+    choice("With a note", "Glide", &ON_NOTE),
+];
+
+fn cc_get(cc: Option<u8>) -> i32 {
+    cc.map_or(-1, i32::from)
+}
+
+fn cc_set(v: i32) -> Option<u8> {
+    (v >= 0).then_some(v as u8)
+}
+
 fn note_value_index(t: u32) -> i32 {
     NOTE_VALUES.iter().position(|(v, _)| *v == t).unwrap_or(7) as i32
 }
@@ -212,6 +233,8 @@ impl Fx {
             Fx::Strum(_) => &STRUM,
             Fx::Latch { .. } => &LATCH,
             Fx::Randomize(_) => &RANDOMIZE,
+            Fx::CcScale(_) => &CC_SCALE,
+            Fx::CcSmooth(_) => &CC_SMOOTH,
         }
     }
 
@@ -266,6 +289,8 @@ impl Fx {
             Fx::Strum(_) => &[0, 1],
             Fx::Latch { .. } => &[0],
             Fx::Randomize(_) => &[0, 1, 2, 3],
+            Fx::CcScale(_) => &[1, 2, 0],
+            Fx::CcSmooth(_) => &[1, 0, 2],
         }
     }
 
@@ -337,6 +362,16 @@ impl Fx {
                 2 => i32::from(velocity),
                 _ => i32::from(longer_ms),
             },
+            Fx::CcScale(c) => match k {
+                0 => cc_get(c.cc),
+                1 => i32::from(c.low),
+                _ => i32::from(c.high),
+            },
+            Fx::CcSmooth(c) => match k {
+                0 => cc_get(c.cc),
+                1 => i32::from(c.ms),
+                _ => i32::from(c.glide_on_note),
+            },
         }
     }
 
@@ -381,6 +416,16 @@ impl Fx {
                 2 => r.velocity = v as u8,
                 _ => r.longer_ms = v as u16,
             },
+            Fx::CcScale(c) => match k {
+                0 => c.cc = cc_set(v),
+                1 => c.low = v as u8,
+                _ => c.high = v as u8,
+            },
+            Fx::CcSmooth(c) => match k {
+                0 => c.cc = cc_set(v),
+                1 => c.ms = v as u16,
+                _ => c.glide_on_note = v == 1,
+            },
         }
     }
 
@@ -403,6 +448,9 @@ impl Fx {
         match (self, k) {
             (Fx::Transpose { .. }, _) => signed(" st"),
             (Fx::Chord(_), 3) if v < 0 => "Off".to_string(),
+            (Fx::CcScale(_), 0) | (Fx::CcSmooth(_), 0) if v < 0 => "All".to_string(),
+            (Fx::CcScale(_), 0) | (Fx::CcSmooth(_), 0) => format!("CC {v}"),
+            (Fx::CcSmooth(_), 1) => format!("{v} ms"),
             (Fx::Chord(_), 3) => mpfree_scale::note_name(v as i16),
             (Fx::Chord(_), 4) | (Fx::Echo(_), 4) | (Fx::Chance { .. }, _) => format!("{v} %"),
             (Fx::Chord(_), 5) | (Fx::Length { .. }, 2) | (Fx::Echo(_), 2) => format!("{v} ms"),
@@ -466,6 +514,8 @@ impl Fx {
             Fx::Strum(_) => "plays a chord's notes one after another",
             Fx::Latch { .. } => "keeps notes on after the keys let go",
             Fx::Randomize(_) => "moves notes at random, never the same",
+            Fx::CcScale(_) => "fits a MIDI out controller into a range",
+            Fx::CcSmooth(_) => "smooths a MIDI out controller's steps",
         }
     }
 }

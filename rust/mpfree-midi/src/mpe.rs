@@ -101,7 +101,7 @@ impl Zone {
         match self {
             Zone::Off => "MPE off".into(),
             Zone::Lower(n) => format!("MPE lower zone, channels 2 to {}", n + 1),
-            Zone::Upper(n) => format!("MPE upper zone, channels {} to 15", 15 - n),
+            Zone::Upper(n) => format!("MPE upper zone, channels {} to 15", 16 - n.clamp(1, 15)),
         }
     }
 }
@@ -553,6 +553,7 @@ mod tests {
         assert!(Zone::parse("lower 16").is_err());
         assert!(Zone::parse("middle").is_err());
         assert_eq!(Zone::Lower(15).words(), "MPE lower zone, channels 2 to 16");
-        assert_eq!(Zone::Upper(4).words(), "MPE upper zone, channels 11 to 15");
+        // Upper: master 16, members 15 down, four of them 12 to 15.
+        assert_eq!(Zone::Upper(4).words(), "MPE upper zone, channels 12 to 15");
     }
 }

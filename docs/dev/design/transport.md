@@ -59,7 +59,7 @@ On the build host, one 128-frame period (process plus reading every tick and 1/1
 ## Next
 
 - Tempo ramps, as another kind of tempo-map segment. The transport already cuts each period at every segment boundary.
-- Following a clock: the MIDI thread wires the followed port's bytes to `TimeHost::clock_in`, then a device test with a real leader. A quicker answer to a leader whose tempo jumps, and stamping the bytes half a period earlier, are in [midi-clock.md](midi-clock.md#following-the-time-engine).
+- Following a clock: the MIDI thread wires the followed port's bytes to `TimeHost::clock_in`, then a device test with a real leader. A quicker answer to a leader whose tempo jumps is in [midi-clock.md](midi-clock.md#following-the-time-engine); the bytes are stamped half a period earlier (`TimeHost::clock_read`), so the transport sits on the leader's beats.
 - Measuring the transport's cost on the MPC.
 
 The playback engine (T2) is [playback.md](playback.md).

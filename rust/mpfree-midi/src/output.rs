@@ -414,6 +414,13 @@ pub struct OutputRouter {
     /// Thru's notes on per output port, so a panic skips the ports with
     /// none.
     thru_on: [u32; MAX_PORTS],
+    /// Kit pads' note-ons not yet ended on ports of their own
+    /// ([`OutputRouter::send_to`]), per port, channel and note.
+    pad_sounding: Box<[u8]>,
+    /// The track whose pad played each.
+    pad_track: Box<[u8]>,
+    /// Pads' notes on per port, so an end skips the ports with none.
+    pad_on: [u32; MAX_PORTS],
     pub dropped: u64,
 }
 
@@ -442,6 +449,9 @@ impl OutputRouter {
             thru_sounding: vec![0u8; MAX_PORTS * CHANNELS * NOTES].into_boxed_slice(),
             thru_src: vec![0u8; MAX_PORTS * CHANNELS * NOTES].into_boxed_slice(),
             thru_on: [0; MAX_PORTS],
+            pad_sounding: vec![0u8; MAX_PORTS * CHANNELS * NOTES].into_boxed_slice(),
+            pad_track: vec![0u8; MAX_PORTS * CHANNELS * NOTES].into_boxed_slice(),
+            pad_on: [0; MAX_PORTS],
             dropped: 0,
         }
     }
@@ -514,6 +524,91 @@ impl OutputRouter {
             _ => {}
         }
         q.push(Timed::msg(offset, m).by(track));
+    }
+
+    /// A kit pad's message on a port and channel of its own (`to`), not
+    /// track `track`'s route: a pad that plays other gear (the Pads tab's
+    /// MIDI out pad), whether the track has a route or not. Its notes are
+    /// kept by port, channel and note with the track that played them, so
+    /// a note-off ends one there (one never started, or already ended,
+    /// sends nothing), and the track's pads' end
+    /// ([`OutputRouter::pads_off`]), the port's ([`OutputRouter::port_off`])
+    /// and a panic ([`OutputRouter::all_off`]) end them all. A change of
+    /// the track's route leaves them alone. A track past [`MAX_TRACKS`] or
+    /// a port past [`MAX_PORTS`] sends nothing and is counted in
+    /// `dropped`. Never allocates.
+    pub fn send_to(
+        &mut self,
+        track: u8,
+        to: OutRoute,
+        msg: Msg,
+        offset: u32,
+        queues: &mut [OutQueue],
+    ) {
+        let p = usize::from(to.port.0);
+        let q = queues
+            .get_mut(p)
+            .filter(|_| p < MAX_PORTS && usize::from(track) < MAX_TRACKS);
+        let Some(q) = q else {
+            self.dropped += 1;
+            return;
+        };
+        let m = msg.on_channel(to.channel & 0x0F);
+        match m {
+            Msg::NoteOn { ch, note, .. } => {
+                let i = thru_idx(p, ch, note);
+                self.pad_track[i] = track;
+                let c = &mut self.pad_sounding[i];
+                if *c < u8::MAX {
+                    *c += 1;
+                    self.pad_on[p] += 1;
+                }
+            }
+            Msg::NoteOff { ch, note, .. } => {
+                let c = &mut self.pad_sounding[thru_idx(p, ch, note)];
+                if *c == 0 {
+                    return;
+                }
+                *c -= 1;
+                self.pad_on[p] -= 1;
+            }
+            _ => {}
+        }
+        q.push(Timed::msg(offset, m).by(track));
+    }
+
+    /// Ends the notes track `track`'s pads have on ports of their own
+    /// ([`OutputRouter::send_to`]), at `offset`: a mute, the track's end.
+    pub fn pads_off(&mut self, track: u8, offset: u32, queues: &mut [OutQueue]) {
+        for p in 0..MAX_PORTS {
+            self.pad_port_off(p, Some(track), offset, queues);
+        }
+    }
+
+    /// Ends the pads' notes on port `p` (only `track`'s, if given), at
+    /// `offset`.
+    fn pad_port_off(&mut self, p: usize, track: Option<u8>, offset: u32, queues: &mut [OutQueue]) {
+        if self.pad_on[p] == 0 {
+            return;
+        }
+        let Some(q) = queues.get_mut(p) else {
+            return;
+        };
+        for ch in 0..CHANNELS as Channel {
+            for note in 0..NOTES as u8 {
+                let i = thru_idx(p, ch, note);
+                let by = self.pad_track[i];
+                if self.pad_sounding[i] == 0 || track.is_some_and(|t| t != by) {
+                    continue;
+                }
+                let n = std::mem::take(&mut self.pad_sounding[i]);
+                self.pad_on[p] -= u32::from(n);
+                for _ in 0..n {
+                    let off = Msg::NoteOff { ch, note, vel: 64 };
+                    q.push(Timed::msg(offset, off).by(by));
+                }
+            }
+        }
     }
 
     /// A message thru passes on from the input port `from` to the output
@@ -603,15 +698,19 @@ impl OutputRouter {
     }
 
     /// Ends the sounding notes of every track that plays on `port`, and
-    /// thru's there, at `offset`: the port went away, or its page's All
-    /// notes off.
+    /// thru's and the pads' there, at `offset`: the port went away, or its
+    /// page's All notes off.
     pub fn port_off(&mut self, port: PortId, offset: u32, queues: &mut [OutQueue]) {
         for t in 0..MAX_TRACKS {
             if self.routes[t].is_some_and(|r| r.port == port) {
                 self.track_off(t, offset, queues);
             }
         }
-        self.thru_off(usize::from(port.0), offset, queues);
+        let p = usize::from(port.0);
+        self.thru_off(p, offset, queues);
+        if p < MAX_PORTS {
+            self.pad_port_off(p, None, offset, queues);
+        }
     }
 
     /// Ends every sounding note of every track (stop, panic), at `offset`.
@@ -623,14 +722,17 @@ impl OutputRouter {
         }
         for p in 0..MAX_PORTS {
             self.thru_off(p, offset, queues);
+            self.pad_port_off(p, None, offset, queues);
         }
     }
 
-    /// Notes on now, over every track and thru.
+    /// Notes on now, over every track, thru and the pads on ports of
+    /// their own.
     pub fn sounding(&self) -> usize {
         self.sounding
             .iter()
             .chain(self.thru_sounding.iter())
+            .chain(self.pad_sounding.iter())
             .map(|&c| usize::from(c))
             .sum()
     }
@@ -842,6 +944,85 @@ mod tests {
         r.all_off(5, &mut q);
         assert_eq!(bytes(&q), vec![vec![0x8F, 36, 64]]);
         assert_eq!(r.sounding(), 0);
+    }
+
+    /// A kit pad on a port and channel of its own (the Pads tab's MIDI
+    /// out pad): its notes end there, whatever the track's route does, and
+    /// its track's pads' end, the port's end and a panic end them.
+    #[test]
+    fn a_pads_notes_on_a_port_of_their_own_end_there() {
+        let mut r = OutputRouter::new();
+        let mut q = queues();
+        let on = |note| Msg::NoteOn {
+            ch: 0,
+            note,
+            vel: 100,
+        };
+        let off = |note| Msg::NoteOff {
+            ch: 0,
+            note,
+            vel: 0,
+        };
+        let volca = OutRoute {
+            port: PortId(3),
+            channel: 9,
+        };
+        let route = |port| {
+            Some(OutRoute {
+                port: PortId(port),
+                channel: 0,
+            })
+        };
+        // Track 1 plays on port 0; one of its pads plays port 3, channel
+        // 10, and so does a pad of track 2, which has no route.
+        r.set_route(0, route(0), 0, &mut q);
+        r.send_to(0, volca, on(36), 0, &mut q);
+        r.send_to(1, volca, on(38), 0, &mut q);
+        assert_eq!(r.sounding(), 2);
+        // Track 1's route changing leaves its pad's note on.
+        r.set_route(0, route(1), 1, &mut q);
+        assert_eq!(r.sounding(), 2);
+        // An off ends its note; a second sends nothing.
+        r.send_to(0, volca, off(36), 2, &mut q);
+        r.send_to(0, volca, off(36), 3, &mut q);
+        // Track 1's pads end only its own; the port's end ends the rest.
+        r.send_to(0, volca, on(40), 4, &mut q);
+        r.pads_off(0, 5, &mut q);
+        assert_eq!(r.sounding(), 1);
+        r.port_off(PortId(3), 6, &mut q);
+        assert_eq!(r.sounding(), 0);
+        // A panic too.
+        r.send_to(2, volca, on(50), 7, &mut q);
+        r.all_off(8, &mut q);
+        assert_eq!(r.sounding(), 0);
+        let sent: Vec<(u32, Vec<u8>, Option<u8>)> = q[3]
+            .as_slice()
+            .iter()
+            .map(|t| (t.offset, t.bytes().to_vec(), t.track()))
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                (0, vec![0x99, 36, 100], Some(0)),
+                (0, vec![0x99, 38, 100], Some(1)),
+                (2, vec![0x89, 36, 0], Some(0)),
+                (4, vec![0x99, 40, 100], Some(0)),
+                (5, vec![0x89, 40, 64], Some(0)),
+                (6, vec![0x89, 38, 64], Some(1)),
+                (7, vec![0x99, 50, 100], Some(2)),
+                (8, vec![0x89, 50, 64], Some(2)),
+            ]
+        );
+        assert!(q[0].as_slice().is_empty() && q[1].as_slice().is_empty());
+        // A port or track past the tables sends nothing and is counted.
+        let far = OutRoute {
+            port: PortId(MAX_PORTS as u8),
+            channel: 0,
+        };
+        r.send_to(0, far, on(1), 0, &mut q);
+        r.send_to(MAX_TRACKS as u8, volca, on(1), 0, &mut q);
+        assert_eq!(r.dropped, 2);
+        assert_eq!(q[3].as_slice().len(), 8);
     }
 
     #[test]
