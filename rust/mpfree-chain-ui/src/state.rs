@@ -192,6 +192,11 @@ pub struct ChainState {
     pub presets: Vec<PresetPick>,
     /// The one of [`ChainState::presets`] its settings are now, if any.
     pub preset: Option<usize>,
+    /// A note track's Notes stage above its sound (its MIDI effects and its
+    /// arp, [`crate::notes`]); None on every other strip (returns, the
+    /// master, Loop tracks). While one of its rows is selected, `selected`
+    /// is None and `params` and `main_four` are that effect's settings.
+    pub notes: Option<crate::notes::NotesState>,
 }
 
 /// One entry of the header's presets list: its name and every value
@@ -308,6 +313,7 @@ impl Default for ChainState {
             eq: false,
             presets: Vec::new(),
             preset: None,
+            notes: None,
         }
     }
 }
@@ -613,6 +619,7 @@ impl ChainState {
             eq,
             presets,
             preset,
+            notes: None,
         }
     }
 
@@ -649,11 +656,16 @@ impl ChainState {
     /// Mode chooser), or the first four of the page shown when it has none;
     /// and the effect's name.
     pub fn qlinks(&self) -> (String, [Option<Binding>; KNOBS]) {
-        let name = self
-            .selected
-            .and_then(|s| self.slots.get(s))
-            .map(|s| s.name.clone())
-            .unwrap_or_default();
+        let midi = self.notes.as_ref().and_then(|n| n.page_fx());
+        let name = match midi {
+            // A MIDI effect's page: its four, under its name.
+            Some((_, _, fx)) => fx.name().to_string(),
+            None => self
+                .selected
+                .and_then(|s| self.slots.get(s))
+                .map(|s| s.name.clone())
+                .unwrap_or_default(),
+        };
         let four = if self.main_four.is_empty() {
             &self.params
         } else {

@@ -379,3 +379,4 @@ The owner handles the legal review; this section only records the technical fact
 5. The free CC0 kits' sound on the MPC: picked by measurement, still to be heard ([as built](#the-free-cc0-kits-as-built)).
 6. The update file's whole SHA-256 in `SUPPORTED`, read from the owner's copy.
 7. The MPC's keygroup instruments in the first-start setup, as a later step, after #382 (owner, 2026-11-15).
+8. Akai's kits read straight from the eMMC, with the backup left out ([Leaving the backup or Akai's kits out](#leaving-the-backup-or-akais-kits-out)): rehearsed in tests only. The creator round's block C11 is its first run on the MPC; until it passes, the manual says to keep the backup ticked.

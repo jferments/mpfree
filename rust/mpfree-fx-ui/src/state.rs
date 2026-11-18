@@ -180,6 +180,8 @@ impl StripScratch {
             (comp::ATTACK, cs::COMP_ATTACK),
             (comp::RELEASE, cs::COMP_RELEASE),
             (comp::MAKEUP, cs::MAKEUP),
+            (comp::STYLE, cs::STYLE),
+            (comp::AUTO_MAKEUP, cs::AUTO_MAKEUP),
         ] {
             self.comp.set_param(id, v(to));
         }
