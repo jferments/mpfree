@@ -888,8 +888,11 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
         }
         "mpfree.keys" => {
             use mpfree_synth::keys_params as ek;
+            let clav = v(ek::MODEL).round() == ek::CLAV;
             match id {
                 ek::TREM_RATE | ek::TREM_MODE if v(ek::TREMOLO) <= 0.0 => Some("tremolo is off"),
+                ek::BELL | ek::VOICING if clav => Some("tine and reed only"),
+                ek::PICKUP | ek::CLAV_TONE | ek::MUTE | ek::DROP if !clav => Some("clav only"),
                 _ => None,
             }
         }
