@@ -77,7 +77,8 @@ pub enum Owner {
     /// replacing and saving, so a lock or a macro follows the effect, not
     /// the position.
     Insert(Strip, u16),
-    /// A track's arpeggiator settings.
+    /// A track's arpeggiator settings: its rate, gate, swing and octaves
+    /// for MIDI Learn, ids in [`arp`].
     Arp(u8),
     /// A setting of one of a track's MIDI effects (its Notes stage),
     /// named by the effect's id on the track (`mpfree_notefx::TrackFx::ids`),
@@ -321,6 +322,34 @@ pub mod transport {
     /// Whether `id` is a press (a button of the MPC's), not a value.
     pub const fn is_press(id: u16) -> bool {
         matches!(id, PLAY | STOP | PLAY_START | REC | OVERDUB | TAP_TEMPO)
+    }
+}
+
+/// [`Owner::Arp`]'s parameters: the arp settings its Q-Links turn, for MIDI
+/// Learn (a learned knob turns a track's arp as Q-Links 1 to 4 do while
+/// NOTE REPEAT is held). Learned controls are saved with these numbers in
+/// the rig and the project, so they never change: a new setting takes the
+/// next number.
+pub mod arp {
+    /// The rate, through the rates from 1/4 to 1/32T.
+    pub const RATE: u16 = 0;
+    /// The gate: a note's length, 1 to 100 % of a step.
+    pub const GATE: u16 = 1;
+    /// The swing, 50 % (straight) to 75 %.
+    pub const SWING: u16 = 2;
+    /// The octaves an order climbs, 1 to 4.
+    pub const OCTAVES: u16 = 3;
+    /// Every one, in Q-Link order, with its name.
+    pub const ALL: [(u16, &str); 4] = [
+        (RATE, "Rate"),
+        (GATE, "Gate"),
+        (SWING, "Swing"),
+        (OCTAVES, "Octaves"),
+    ];
+
+    /// The name of parameter `id`, if it is one.
+    pub fn name(id: u16) -> Option<&'static str> {
+        ALL.iter().find(|(i, _)| *i == id).map(|(_, n)| *n)
     }
 }
 

@@ -214,7 +214,7 @@ MPFree can also send its own clock from **MIDI OUT**, or to a USB device, so a d
 
 ## MIDI Learn
 
-MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controller turn a value in MPFree: a mixer strip's fader, pan or send, its mute or solo, an effect's knob, a macro, a knob on the Synth tab, the tempo, or the transport's buttons (see [Playing and stopping from your controller](#playing-and-stopping-from-your-controller)).
+MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controller turn a value in MPFree: a mixer strip's fader, pan or send, its mute or solo, an effect's knob, a macro, a knob on the Synth tab, the arp's rate, gate, swing and octaves, the tempo, or the transport's buttons (see [Playing and stopping from your controller](#playing-and-stopping-from-your-controller)).
 
 **The quick way: SHIFT + touch.** Hold **SHIFT**, touch the value on the screen, then move the control on your keyboard. Until a control takes it, the hint line reads *LEARNING Volume (Bass): move a knob, a key or a pedal on any controller*; then it says what the control moves (*Learned: CC 74 on Keystep 37 moves Poly cutoff (Track 2)*). While SHIFT is held the touch only picks the value: the fader doesn't move. Touch the same value with SHIFT again to cancel, or another one to learn that instead. It works on:
 
@@ -222,7 +222,8 @@ MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controll
 - on the Play page: the tempo, the master bar (the master's level), and the Q-Link cards that set a level or a send (the drums' send; on the Loop view the looper's level and send and the line input's level). The other cards, such as Swing and the filters, learn nothing yet;
 - the [chain editor](effects.md#adding-an-effect-the-chain-editor): an effect's knobs, faders, sliders and drawbars;
 - the macros panel: a macro's knob;
-- the Synth tab: the synth's knobs, faders, sliders and drawbars, for the track it shows (the track's own instrument, or the synth on the pads), and an MPC plugin's own screen (its skin): its knobs, sliders and buttons.
+- the Synth tab: the synth's knobs, faders, sliders and drawbars, for the track it shows (the track's own instrument, or the synth on the pads), and an MPC plugin's own screen (its skin): its knobs, sliders and buttons;
+- the arp: the [Arp panel](note-repeat-and-arp.md#the-arp-panel)'s Rate, Gate, Swing and Octaves sliders, and the Q-Link cards while NOTE REPEAT is held or latched. The control turns the armed track's arp, and keeps turning that track's arp when you arm another. A learned Swing is the arp's own swing from then on, as when you turn Q-Link 3.
 
 Anywhere else SHIFT + a touch keeps its own job, such as SHIFT + drag on an audio region.
 

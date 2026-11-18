@@ -6960,6 +6960,42 @@ mod tests {
         assert!(free.iter().all(|&g| g.abs_diff(5512) <= 1), "{free:?}");
     }
 
+    /// MIDI Learn turns a track's arp as its Q-Links do: the armed
+    /// track's through the panel, another track's in place, which the
+    /// panel shows once that track is armed.
+    #[test]
+    fn a_learned_control_turns_a_tracks_arp() {
+        use mpfree_play::mpfree_param::arp as ids;
+        let mut app = ready();
+        let (info, v) = app.arp_param(0, ids::GATE).unwrap();
+        assert_eq!((info.name, v), ("Gate", 50.0));
+        let (rate, v) = app.arp_param(0, ids::RATE).unwrap();
+        assert_eq!(mpfree_mod::text::value_text(&rate, v), "1/16");
+        assert!(app.arp_param(0, 9).is_none());
+        assert!(app.set_arp_param(0, 9, 1.0).is_empty());
+        // The armed track: as Q-Link 2 sets it, and the panel hears.
+        assert!(!app.set_arp_param(0, ids::GATE, 80.0).is_empty());
+        assert_eq!((app.arp.gate, app.eng().settings().gate), (80, 80));
+        app.set_arp_param(0, ids::RATE, 1.0);
+        assert_eq!(app.settings.rate, Rate::Eighth);
+        assert!(
+            app.set_arp_param(0, ids::RATE, 1.2).is_empty(),
+            "the same step"
+        );
+        app.set_arp_param(0, ids::OCTAVES, 9.0);
+        assert_eq!(app.arp.octaves, 4, "kept to the range");
+        assert!(app.take_project_edit());
+        // Track 3, not armed: its engine plays on with it.
+        assert!(app.set_arp_param(2, ids::SWING, 60.0).is_empty());
+        assert_eq!(app.arps.engine_at(2).settings().swing, 60);
+        assert_eq!(app.arp_param(2, ids::SWING).unwrap().1, 60.0);
+        assert_eq!(app.arp.swing, 50, "the armed track's arp is as it was");
+        assert!(app.take_project_edit());
+        app.set_track(2);
+        assert_eq!((app.arp.swing, app.arp.gate), (60, 50));
+        assert!(!app.swing_from_transport, "a turned swing is the arp's own");
+    }
+
     #[test]
     fn the_arps_go_in_the_project_and_an_open_puts_them_back() {
         let mut app = ready();

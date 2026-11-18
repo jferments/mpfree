@@ -135,7 +135,8 @@ impl Desk<'_> {
             }
             // SHIFT + a touch on a value (layout spec 4d): MIDI Learn waits
             // for a control to take it, and the same value again cancels.
-            // A knob on the Synth tab is the selected track's synth's.
+            // A knob on the Synth tab is the selected track's synth's, and
+            // an arp slider the armed track's arp's.
             gui::FromUi::LearnValue(v) => {
                 use mpfree_play::mpfree_param::{Owner, ParamAddr};
                 let addr = match v {
@@ -143,6 +144,10 @@ impl Desk<'_> {
                     gui::LearnValue::Synth(id) => {
                         let t = u8::try_from(app.track()).unwrap_or(u8::MAX);
                         ParamAddr::new(Owner::Inst(t), id)
+                    }
+                    gui::LearnValue::Arp(id) => {
+                        let t = u8::try_from(app.track()).unwrap_or(u8::MAX);
+                        ParamAddr::new(Owner::Arp(t), id)
                     }
                 };
                 if music.armed() == Some(addr) && music.waits() {
