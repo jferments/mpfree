@@ -44,14 +44,23 @@
 //!   as its own, so nothing changes). If the leader was playing, it is
 //!   counted ([`FollowCounts::lost`]).
 //!
-//! Bytes the app reads once a period seem to come at the period's start,
-//! up to a period after they did: followed that way, the transport plays
-//! about half a period behind the leader (1.5 ms at 128 frames), within a
-//! period.
+//! Bytes the app reads once a period came during the period before, up to
+//! a period before it read them. Stamped with the period's start, the
+//! transport would play about half a period behind the leader (1.5 ms at
+//! 128 frames), so the app stamps them half a period earlier
+//! ([`read_stamp`]): on average when they came. Followed that way, the
+//! transport keeps within half a period of the leader, centred on it.
 
 use mpfree_midi_clock::{ClockIn, InEvent, PPQN, PULSE_TICKS};
 use mpfree_transport::time::{ticks_in, MAX_BPM, MIN_BPM};
 use mpfree_transport::{Command, State, Tick, Transport, PPQ};
+
+/// The frame to stamp bytes with that were read at the start of a period
+/// of `period` frames beginning at frame `top`: they came during the
+/// period before, so half a period earlier is when they came on average.
+pub fn read_stamp(top: u64, period: u32) -> u64 {
+    top.saturating_sub(u64::from(period / 2))
+}
 
 /// The most the tempo is nudged from the loop's to close a phase error.
 pub const MAX_NUDGE: f64 = 0.03;
@@ -582,13 +591,27 @@ mod tests {
                 })
                 .fold(0.0, f64::max)
         }
+
+        /// The mean of our position less the leader's at its pulses after
+        /// the first `skip`, in ticks: below 0 when we play behind it.
+        fn mean(&self, s: &Script, skip: usize) -> f64 {
+            let errs: Vec<f64> = s
+                .pulses
+                .iter()
+                .filter_map(|&(g, t)| t.map(|t| (g, t)))
+                .skip(skip)
+                .map(|(g, t)| self.at(g).expect("ran that far").1 - t as f64)
+                .collect();
+            errs.iter().sum::<f64>() / errs.len().max(1) as f64
+        }
     }
 
     /// Run a transport at `bpm` following `s` in periods of `period`
     /// frames. Bytes reach the follower at the top of the period after
-    /// they came: at their own frames, or (`read_time`) all at that
-    /// period's first frame, as the app reads MIDI. `play_at` presses PLAY
-    /// on the transport itself at that frame.
+    /// they came: at their own frames, or (`read_time`) all stamped as the
+    /// app reads MIDI, half a period before that period's first frame
+    /// ([`read_stamp`]). `play_at` presses PLAY on the transport itself at
+    /// that frame.
     fn follow(
         s: &Script,
         f: Follow,
@@ -608,7 +631,8 @@ mod tests {
             let p = t.frame();
             while next < s.bytes.len() && s.bytes[next].0 < p {
                 let (at, ref bytes) = s.bytes[next];
-                fl.bytes(&mut t, if read_time { p } else { at }, bytes);
+                let frame = if read_time { read_stamp(p, period) } else { at };
+                fl.bytes(&mut t, frame, bytes);
                 next += 1;
             }
             if play_at.is_some_and(|a| (p..p + u64::from(period)).contains(&a)) {
@@ -686,12 +710,14 @@ mod tests {
         assert_eq!(r.counts, FollowCounts::default());
     }
 
-    /// The app reads MIDI once a period, so every byte seems to come at
-    /// the period's start, up to a period late. Followed that way, the
-    /// transport lags the leader by about half a period and wanders by no
-    /// more than a period, and the tempo shown stays within 0.1 BPM.
+    /// The app reads MIDI once a period, so every byte comes up to a
+    /// period before it is read, and is stamped half a period before the
+    /// period it was read at ([`read_stamp`]). Followed that way, the
+    /// transport is centred on the leader (within a tick on average) and
+    /// wanders by no more than half a period, and the tempo shown stays
+    /// within 0.1 BPM.
     #[test]
-    fn a_clock_read_once_a_period_is_followed_within_a_period() {
+    fn a_clock_read_once_a_period_is_followed_within_half_a_period() {
         let s = script(&[
             Lead::Clock(2.0, 128.0),
             Lead::Start,
@@ -701,9 +727,14 @@ mod tests {
             let r = plain(&s, ALL, period, true, 120.0);
             let period_ticks = ticks_in(f64::from(period), 128.0, RATE);
             let worst = r.worst(&s, 4 * 24);
+            let mean = r.mean(&s, 4 * 24);
             assert!(
-                worst <= period_ticks + 1.0,
+                worst <= period_ticks / 2.0 + 1.0,
                 "period {period}: {worst:.2} ticks off, a period is {period_ticks:.2}"
+            );
+            assert!(
+                mean.abs() <= 1.0,
+                "period {period}: {mean:.2} ticks on average"
             );
             let shown = r.shown.unwrap();
             assert!((shown - 128.0).abs() < 0.1, "period {period}: {shown}");

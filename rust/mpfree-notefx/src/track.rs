@@ -8,7 +8,8 @@ use mpfree_scale::{Scale, Snap};
 
 use crate::chain::{Slot, MAX_FX};
 use crate::fx::{
-    Chord, Echo, Fx, LatchMode, Randomize, Shape, Strum, StrumOrder, Time, Velocity, Voicing,
+    CcScale, CcSmooth, Chord, Echo, Fx, LatchMode, Randomize, Shape, Strum, StrumOrder, Time,
+    Velocity, Voicing, CC_MOST,
 };
 
 /// A track's Notes stage: up to [`MAX_FX`] effects in places, top to
@@ -82,6 +83,33 @@ impl TrackFx {
     /// them on the notes going into it, and the rest on what it plays.
     pub fn arp_place(&self) -> usize {
         usize::from(self.arp_at).min(MAX_FX)
+    }
+
+    /// Whether an effect that is on acts on the controllers the track
+    /// sends to MIDI out ([`TrackFx::cc_out`]).
+    pub fn shapes_ccs(&self) -> bool {
+        self.slots.iter().flatten().any(|s| s.on && s.fx.is_cc())
+    }
+
+    /// What MIDI out sends for controller `cc` given `value` (0 to 127):
+    /// the value after each CC scale that is on and takes it, top to
+    /// bottom, and how long it glides there, in ms, from the last CC
+    /// smooth that is on and takes it (None: it jumps), with whether it
+    /// glides when it comes with a note. Never allocates.
+    pub fn cc_out(&self, cc: u8, value: u8) -> (u8, Option<CcSmooth>) {
+        let mut v = value.min(127);
+        let mut glide = None;
+        if cc > CC_MOST {
+            return (v, None);
+        }
+        for s in self.slots.iter().flatten().filter(|s| s.on) {
+            match s.fx {
+                Fx::CcScale(c) if c.takes(cc) => v = c.apply(v),
+                Fx::CcSmooth(c) if c.takes(cc) => glide = Some(c),
+                _ => {}
+            }
+        }
+        (v, glide)
     }
 }
 
@@ -387,6 +415,20 @@ impl Slot {
                 "random pitch={} often={} vel={} longer={}",
                 r.pitch, r.often, r.velocity, r.longer_ms
             ),
+            Fx::CcScale(c) => write!(
+                s,
+                "ccscale cc={} low={} high={}",
+                opt_word(c.cc),
+                c.low,
+                c.high
+            ),
+            Fx::CcSmooth(c) => write!(
+                s,
+                "ccsmooth cc={} ms={} note={}",
+                opt_word(c.cc),
+                c.ms,
+                if c.glide_on_note { "glide" } else { "jump" }
+            ),
         };
         s
     }
@@ -416,6 +458,8 @@ impl Slot {
                 mode: LatchMode::NextChord,
             },
             "random" => Fx::Randomize(Randomize::default()),
+            "ccscale" => Fx::CcScale(CcScale::default()),
+            "ccsmooth" => Fx::CcSmooth(CcSmooth::default()),
             k => return Err(format!("no effect {k}")),
         };
         for pair in w {
@@ -489,6 +533,24 @@ impl Slot {
                     "longer" => r.longer_ms = num(v, 0, 1000, k)?,
                     _ => {}
                 },
+                Fx::CcScale(c) => match k {
+                    "cc" => c.cc = opt_from(v, 0, CC_MOST, k)?,
+                    "low" => c.low = num(v, 0, 127, k)?,
+                    "high" => c.high = num(v, 0, 127, k)?,
+                    _ => {}
+                },
+                Fx::CcSmooth(c) => match k {
+                    "cc" => c.cc = opt_from(v, 0, CC_MOST, k)?,
+                    "ms" => c.ms = num(v, 1, 2000, k)?,
+                    "note" => {
+                        c.glide_on_note = match v {
+                            "glide" => true,
+                            "jump" => false,
+                            _ => return Err(format!("bad note {v}")),
+                        }
+                    }
+                    _ => {}
+                },
             }
         }
         Ok(Slot { fx, on })
@@ -543,6 +605,16 @@ mod tests {
             often: 100,
             velocity: 64,
             longer_ms: 1000,
+        }));
+        list.push(Fx::CcScale(CcScale {
+            cc: Some(74),
+            low: 127,
+            high: 0,
+        }));
+        list.push(Fx::CcSmooth(CcSmooth {
+            cc: Some(0),
+            ms: 2000,
+            glide_on_note: true,
         }));
         for (i, fx) in list.into_iter().enumerate() {
             let slot = Slot { fx, on: i % 2 == 0 };
