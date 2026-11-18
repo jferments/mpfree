@@ -100,6 +100,16 @@ The take goes onto the next pad with no sound, starting from the pad picked, and
 
 The picture shows the source's level on two meters, and the last 30 seconds of it scrolling past with the bar lines, so you can see what came in.
 
+### Recording from the Wave page
+
+You can also record without leaving the **Wave** page: the row over the wave is a recorder, with the Rec page's own settings (a change on one shows on the other).
+
+{{shot: sample-recording | The Wave page while REC is on: REC lit, the take counting on the right, and the panel under the wave showing the Input section.}}
+
+- **REC** starts a take at once, onto the pad the line beside the cards names ("Next take onto A6"); with **Starts** on **Next bar** it waits for the music's next bar line, so with the music stopped it waits for **PLAY**. It lights while the take records, and the **REC** chip at the top says where it goes ("● REC → Pad A6 · Line in"). **REC** again (on the screen or on the MPC) or **STOP** keeps the take, and the music plays on; **UNDO** throws it away. Then **REC** on the MPC records what it did before. When REC can't take, the line says why in orange: the line input is off, there is no empty pad left in the bank, or another take is counting in or recording ("Finish the take first: Drums records").
+- **Source**, **Starts** and **Ends** are cards: tap a card's left half to step it back and its right half to step it on. **Source** is what you record, with its level on the two little bars. **Starts** is **Now**, **On input** (when the sound crosses the threshold) or **Next bar**. **Ends** is **On STOP**, **On silence** or **After** a number of bars.
+- While REC is on, the panel under the wave shows **Input** (**Source**, **Channels**, **Threshold** and **Pre-roll**) in place of the region's settings, and **Q-Link 2** turns the **Threshold** and **Q-Link 3** the **Pre-roll** (Q-Links 1 and 4 rest meanwhile). The region's settings and the four markers come back when the take stops, and the page moves to the new take's pad.
+
 ### Skip back: keep what you just played
 
 The Rec page is always listening while its source is on. **Skip back** keeps what has already come in, without your having pressed Record: the last 10 seconds to begin with, or whatever the selector beside the **Skip back** button says (5 seconds to a minute, or 1 to 8 whole bars cut on the bar lines). The blue span on the picture shows what it would keep. It is the sampler's version of [Capture](clips.md#capture-keep-what-you-just-played): play something good, then keep it.
@@ -193,7 +203,7 @@ The pad's name at the top left of every Sample page has a dotted line under it: 
 
 ## Wave: trim, loop and sound
 
-{{shot: sample | The Wave page: the whole sample at the top, the zoomed region across the page, the region's knobs, buttons and switches under it in three sections with the pad's Sound beside them, and the four Q-Links (Start, End, Loop start, Loop end) down the right. Send to pad and Chop to pads are at the top right.}}
+{{shot: sample | The Wave page: the recorder row at the top (REC, Source, Starts and Ends), the whole sample under it, the zoomed region across the page, the region's knobs, buttons and switches under it in three sections with the pad's Sound beside them, and the four Q-Links (Start, End, Loop start, Loop end) down the right. Send to pad and Chop to pads are at the top right.}}
 
 The **Wave** page shows the sample across the screen. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links, or rest a finger on a marker's tab and turn the data wheel: it moves a screen pixel a turn, or one frame at a time with **SHIFT** (next build; see [Hold and turn](../getting-started/the-screen.md#hold-and-turn)). Hold **SHIFT** and press **+** to zoom in, **SHIFT + –** to zoom out (the Warp and Chop pages too); the card beside the strip at the top says how far in you are. Tap the wave to hear it.
 

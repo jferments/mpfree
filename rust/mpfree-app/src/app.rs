@@ -8602,6 +8602,7 @@ mod tests {
             pad: 4,
             started: true,
             recording: false,
+            here: false,
         });
         let fx = press(&mut app, button::STOP);
         assert_eq!(fx[0], Effect::Rec(Press::Stop));
