@@ -183,9 +183,21 @@ Pins only work while the sound is stretched. With Warp on Repitch, the sound pla
 1. Under the wave, tap a **Method**: **Transient** cuts at each hit, **Beat** on the beats, **Grid** into equal pieces, **Silence** at the gaps, **Manual** leaves the cuts to you, and **Live** cuts where you play (below).
 2. Drag the **Sensitivity** knob up for more slices, down for fewer (on Beat, Grid and Silence the knob sets the slice length, the number of slices or the threshold).
 3. Tap a slice to hear it. **Split** and **Merge** add or remove a cut by hand; drag a cut's tab, or turn the Q-Links, to move it. The first marker and **END** are the pad's own start and end, so they stay put here: move them on the Wave page.
-4. Tap the big **Chop to** button to put the slices on the pads. They go on the first empty pads after the one you chopped, running on past A16 into bank B (and so on, up to H16), so the pad itself and the sounds around it stay; the button names the pads ("Chop to A6–B4"), and **PAD BANK B** plays the ones on bank B. To start somewhere else, turn **Pads** (or Q-Link 4); the list says which pads already have a sound. Chop the same pad again and the new slices replace the ones you just made. **Put on** picks where they go: the pads, the pads and **Keys**, the pads and a **Phrase** that plays them in time, or **Files**.
+4. Tap the big **Chop to** button to put the slices on the pads. They go on the first empty pads after the one you chopped, running on past A16 into bank B (and so on, up to H16), so the pad itself and the sounds around it stay; the button names the pads ("Chop to A6–B4"), and **PAD BANK B** plays the ones on bank B. To start somewhere else, turn **Pads** (or Q-Link 4); the list says which pads already have a sound. Chop the same pad again and the new slices replace the ones you just made. **Put on** picks where they go: the **Pads**, **1 pad** (every slice on one pad, below), the pads and **Keys**, or **Files**. Turn **Phrase** on to get a clip that plays the slices in time as well (for a sound with a beat, on Pads or 1 pad).
 
 **Your chop stays with the sound.** Once you change the cuts (a method, a split, a cut moved, a live take), MPFree keeps them for that sound: pick another pad and come back, or open the project tomorrow, and the Chop page shows your slices as you left them, not a fresh chop. Keeping them isn't an edit, so **UNDO** leaves them be; they go on pads only when you tap **Chop to**.
+
+### One pad: a whole break on one pad
+
+{{shot: sample-chop-one-pad | The Chop page with Put on at 1 pad: the break's 15 slices are ready to go on pad A5 itself, and the button reads Slices on A5.}}
+
+With **Put on** at **1 pad**, every slice goes on one pad instead of a pad each, so a whole break plays from one pad and one track. The button reads **Slices on A5**: the pad you chopped becomes the sliced pad (turn **Pads** or Q-Link 4 to put it on another pad), and no other pad changes. Up to 128 slices fit on one pad.
+
+- A **hit** on the pad plays slice 1.
+- A **step lock** picks the slice that step plays: lock **Slice** on a step and that hit plays that slice. With **Phrase** on, the clip already has a Slice lock on every hit, so it plays the break back slice by slice, and you can move, mute or re-lock any hit.
+- On a **keyboard** (the Play page's keys, or a kit playing notes), C2 plays slice 1, C#2 slice 2 and so on up, each at the sound's own pitch.
+
+Each slice plays as it would on a pad of its own: from its cut to the next, with **Gate** or **One shot** as the pad is set (a **Loop** pad plays each slice as Gate). **UNDO** gives the pad back as it was.
 
 ### Live: chop by playing
 

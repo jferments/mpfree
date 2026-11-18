@@ -71,14 +71,14 @@ use std::time::{Duration, Instant};
 use mpfree_chain_ui::state::Pedal;
 use mpfree_chain_ui::ChainAction;
 use mpfree_node::Node;
-use mpfree_play::mpfree_param::ParamAddr;
+use mpfree_play::mpfree_param::{OnTrack, ParamAddr, RelAddr};
 use mpfree_sampler::autosample::{Finished, Gear, Job, Plan, PlanError};
-use mpfree_sampler::engine::EngineView;
+use mpfree_sampler::engine::{EngineView, PadField};
 use mpfree_sampler::export;
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
     self as model, ChannelPick, ChopSet, Fade, Levels, LoopMode, Pad, PadsPlay, PlayMode, Project,
-    Region, Source, SourceId, Warp, KEPT_CHOP, PADS, WARP_BPM,
+    Region, Source, SourceId, Warp, KEPT_CHOP, PADS, SLICE_KEYS_FROM, WARP_BPM,
 };
 use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::record::{self, Input, Looped, Progress, Recording};
@@ -102,7 +102,7 @@ use mpfree_sampler_ui::wave_tab::{
     self, duration_text, mode_label, WaveAction, WaveState, WaveTab,
 };
 use mpfree_sampler_ui::widgets::SettingList;
-use mpfree_seq::{Clip, Note};
+use mpfree_seq::{Clip, Lock, Note};
 use mpfree_transport::PPQ;
 use mpfree_ui::widgets::Card;
 use mpfree_ui::{EventKind, Tone, Ui, UiEvent};
@@ -2378,6 +2378,7 @@ impl SamplePage {
                 bounds,
                 mode,
                 keys_from,
+                one_pad,
                 ..
             } => {
                 let kit = self.kit;
@@ -2395,7 +2396,7 @@ impl SamplePage {
                         }
                         self.mark_renamed(kit);
                         let n = bounds.len() - 1;
-                        let to = if n == 1 {
+                        let to = if pads.len() == 1 {
                             self.pad_text(kit, pads.start)
                         } else {
                             format!(
@@ -2407,6 +2408,13 @@ impl SamplePage {
                         let s = |f: u64| format!("{:.3} s", f as f64 / f64::from(self.rate.max(1)));
                         let span = format!("{} to {}", s(bounds[0]), s(bounds[n]));
                         let to = match keys_from {
+                            _ if *one_pad => format!(
+                                "pad {to}, sliced: a hit plays slice 1, keys {} to {} a slice each",
+                                mpfree_sampler_ui::note_name(SLICE_KEYS_FROM),
+                                mpfree_sampler_ui::note_name(
+                                    (usize::from(SLICE_KEYS_FROM) + n - 1).min(127) as u8
+                                )
+                            ),
                             Some(k) => format!(
                                 "keys {} to {} (pads {to}; the pads now play notes)",
                                 mpfree_sampler_ui::note_name(*k),
@@ -2417,7 +2425,9 @@ impl SamplePage {
                         self.lines.push(format!("sample: {} pad {} {name}: chopped {span} into {n} slice{} ({mode:?}) on \
                                                  {to}", self.kit_text_of(kit), self.pad_text(kit, *pad),
                                                 if n == 1 { "" } else { "s" }));
-                        match phrase.map(|p| p.map(|p| phrase_clip(&name, &p, pads.start))) {
+                        match phrase
+                            .map(|p| p.map(|p| phrase_clip(&name, &p, pads.start, *one_pad)))
+                        {
                             Ok(None) => {}
                             Ok(Some(Ok(clip))) => {
                                 self.lines.push(format!(
@@ -5815,11 +5825,18 @@ pub fn describe(a: &Region, b: &Region, rate: u32) -> String {
 /// A phrase as a clip of the time engine, at [`PPQ`]: slice `k` is a note
 /// for pad `first_pad + k` at full velocity, the clip as long as the
 /// phrase's whole beats. A track's clips play any of its kit's 128 pads.
-fn phrase_clip(name: &str, p: &Phrase, first_pad: usize) -> Result<Clip, String> {
+///
+/// On one sliced pad (`one_pad`, R4), every hit is a note on `first_pad`
+/// with a Slice lock on its step, so each plays its own slice.
+fn phrase_clip(name: &str, p: &Phrase, first_pad: usize, one_pad: bool) -> Result<Clip, String> {
     let ppq = i64::from(PPQ);
     let mut clip = Clip::new(&format!("{name} phrase"), i64::from(p.beats) * ppq);
     for h in &p.hits {
-        let pad = first_pad + h.slice;
+        let pad = if one_pad {
+            first_pad
+        } else {
+            first_pad + h.slice
+        };
         let note = u8::try_from(pad)
             .ok()
             .filter(|&n| usize::from(n) < PADS)
@@ -5828,6 +5845,11 @@ fn phrase_clip(name: &str, p: &Phrase, first_pad: usize) -> Result<Clip, String>
         let len = i64::try_from(h.ticks(PPQ)).map_err(|_| "too long")?;
         clip.add_note(Note::new(at, len, note, 127))
             .map_err(|e| format!("{e:?}"))?;
+        if one_pad {
+            let slice = RelAddr::new(OnTrack::Pad(note), PadField::Slice as u16);
+            clip.add_lock(Lock::new(at, Some(note), slice, h.slice as f32))
+                .map_err(|e| format!("{e:?}"))?;
+        }
     }
     clip.check().map_err(|e| format!("{e:?}"))?;
     Ok(clip)
@@ -6204,7 +6226,7 @@ mod tests {
             hits: vec![hit(0, 0.0, 0.25), hit(1, 0.25, 0.5), hit(2, 2.75, 1.0)],
             beats: 4,
         };
-        let c = phrase_clip("Break", &p, 12).unwrap();
+        let c = phrase_clip("Break", &p, 12, false).unwrap();
         assert_eq!((c.name.as_str(), c.length), ("Break phrase", 4 * 960));
         let notes: Vec<_> = c
             .notes
@@ -6217,10 +6239,43 @@ mod tests {
         );
         // Pads past 16 are the kit's next page (PAD BANK B); past 128,
         // refused.
-        assert_eq!(phrase_clip("Break", &p, 14).unwrap().notes[2].note, 16);
+        assert!(c.locks.is_empty());
         assert_eq!(
-            phrase_clip("Break", &p, 126).unwrap_err(),
+            phrase_clip("Break", &p, 14, false).unwrap().notes[2].note,
+            16
+        );
+        assert_eq!(
+            phrase_clip("Break", &p, 126, false).unwrap_err(),
             "past the kit's last pad"
         );
+    }
+
+    #[test]
+    fn a_phrase_on_one_pad_is_a_note_per_slice_each_with_a_slice_lock() {
+        let hit = |slice, beat, beats| Hit { slice, beat, beats };
+        let p = Phrase {
+            hits: vec![hit(0, 0.0, 0.25), hit(1, 0.25, 0.5), hit(2, 2.75, 1.0)],
+            beats: 4,
+        };
+        let c = phrase_clip("Break", &p, 20, true).unwrap();
+        let notes: Vec<_> = c.notes.iter().map(|n| (n.tick, n.note)).collect();
+        assert_eq!(notes, [(0, 20), (240, 20), (2640, 20)], "all on B5");
+        let slice = RelAddr::new(OnTrack::Pad(20), PadField::Slice as u16);
+        let locks: Vec<_> = c
+            .locks
+            .iter()
+            .map(|l| (l.tick, l.sound, l.addr, l.value))
+            .collect();
+        assert_eq!(
+            locks,
+            [
+                (0, Some(20), slice, 0.0),
+                (240, Some(20), slice, 1.0),
+                (2640, Some(20), slice, 2.0)
+            ]
+        );
+        // Pad 128 holds a phrase on one pad; past it, refused.
+        assert!(phrase_clip("Break", &p, 127, true).is_ok());
+        assert!(phrase_clip("Break", &p, 128, true).is_err());
     }
 }
