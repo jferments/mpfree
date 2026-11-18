@@ -311,6 +311,29 @@ impl Desk<'_> {
                     out.show(gui::ToUi::Rec(app.rec));
                 }
             }
+            // The Wave page's REC (the one Sample page's step 2a): a pad
+            // take there that goes at once, or the one running ends; while
+            // another take counts in or records, the row says why.
+            gui::FromUi::RecHere { kit, pad } => {
+                let now = rec_now(time, looper);
+                match app.rec.rec_here(kit, pad, &now) {
+                    Ok(done) => {
+                        if let Some(p) = app.rec.pad.filter(|p| p.here) {
+                            out.note(&format!(
+                                "rec: {} of kit {} for one take, from the Wave page's REC",
+                                p.name(),
+                                p.kit + 1
+                            ));
+                        }
+                        fx.extend(rec_effects(done, time, looper));
+                        out.show(gui::ToUi::Rec(app.rec));
+                    }
+                    Err(why) => {
+                        out.note(&format!("rec: the Wave page's REC refused: {why}"));
+                        out.show(gui::ToUi::RecHereNo(why));
+                    }
+                }
+            }
             gui::FromUi::RecPin(on) => {
                 app.rec.pinned = on;
                 out.note(if on {

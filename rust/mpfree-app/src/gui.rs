@@ -904,6 +904,10 @@ pub enum ToUi {
     /// For the Sample tab's recorder: a pad take (sampler R5.7,
     /// [`SamplePage::pad_take`]).
     PadTake(crate::rec_arm::PadDo),
+    /// The Wave page's REC was refused (another take counts in or
+    /// records): why, for the recorder row's second line
+    /// ([`SamplePage::rec_here_refused`]).
+    RecHereNo(String),
     /// The wheel, its push, - or + for the outline ([`Player::nav`]).
     Nav(Nav),
     /// The wheel or - / + turned the control a finger rests on by `delta`
@@ -1240,6 +1244,13 @@ pub enum FromUi {
     /// The Sample tab's recorder on the pad take: it records, or it ended
     /// ([`SamplePage::take_pad_now`]).
     PadTake(crate::rec_arm::PadNow),
+    /// The Wave page's REC (the one Sample page's step 2a): a pad take onto
+    /// pad `pad` of kit `kit` that goes at once, or the pad take running
+    /// ends ([`crate::rec_arm::RecArm::rec_here`]).
+    RecHere {
+        kit: usize,
+        pad: usize,
+    },
     /// Save the project: the audio loop sends its engines' parts back
     /// (`ToUi::ProjectParts`).
     SaveProject,
@@ -1625,9 +1636,9 @@ pub struct Player {
     timed: bool,
     /// The menu's selected row is open for the wheel (its push opened it).
     menu_editing: bool,
-    /// The Sample page's Play tab showed its keyboard, and a row that pad
-    /// hits edit (each changes its hint).
-    sample_keys: (bool, bool),
+    /// The Sample page's Play tab showed its keyboard, a row that pad hits
+    /// edit, and the Wave page's REC on (each changes its hint).
+    sample_keys: (bool, bool, bool),
     /// What the Play page's Q-Links turn, as its hint names them.
     sample_qlinks: String,
     /// The Chop tab chopped live (its hint says how).
@@ -2158,7 +2169,7 @@ impl Player {
             screen_row: ("-".to_string(), Tone::Dim),
             timed,
             menu_editing: false,
-            sample_keys: (false, false),
+            sample_keys: (false, false, false),
             sample_qlinks: String::new(),
             sample_live: false,
             mix_view: None,
@@ -5422,6 +5433,18 @@ impl Player {
                 View::Synth => format!("Pads play {}   ·   Q-Links 1-4: the marked knobs   ·   Wheel: pick a knob   ·   \
                                         - / +, or push the wheel and turn: change it   ·   SHIFT + wheel: page   ·   {stop}",
                                        self.synth.as_ref().map_or("the synth", |p| p.state.info.name)),
+                // REC on the Wave page (one-page step 2a): a pad take, so
+                // REC, STOP and UNDO end it or throw it away (the music
+                // plays on); the Q-Links turn the Input's Threshold and
+                // Pre-roll.
+                View::Sample if self.sample.page() == sample_page::PAGE && self.sample.pad_take_on() => {
+                    "REC again or STOP: stop and keep the take   ·   UNDO: throw it away   ·   the music plays on   ·   \
+                     Q-Links 2-3: Threshold, Pre-roll".to_string()
+                }
+                View::Sample if self.sample.page() == sample_page::PAGE && self.sample.recorder_on() => {
+                    format!("Tap REC: stop, keep the take   ·   Q-Links 2-3: Threshold, Pre-roll   ·   {ROWS_HINT}   ·   \
+                     SHIFT + - / +: zoom")
+                }
                 View::Sample if self.sample.page() == sample_page::PAGE => {
                     format!("Hit a pad to edit it   ·   Q-Links 1-4: Start, End, loop   ·   {ROWS_HINT}   ·   \
                      SHIFT + - / +: zoom")
@@ -6778,6 +6801,7 @@ impl Player {
                 }
             }
             ToUi::PadTake(d) => self.sample.pad_take(&mut self.ui, d),
+            ToUi::RecHereNo(why) => self.sample.rec_here_refused(&mut self.ui, why),
             ToUi::Nav(n) => self.nav(n),
             ToUi::Held { delta, fine } => self.held_turn(delta, fine),
             ToUi::TurnsReady { synth, mixer } => self.turns_ready = (synth, mixer),
@@ -8046,10 +8070,12 @@ impl Player {
         }
         // The keyboard came or went on the Play tab, a row that pad hits
         // edit was picked, another section (with its own Q-Links) opened,
-        // or the Chop tab went live: its hint with it.
+        // the Chop tab went live, or the Wave page's REC went on or off:
+        // its hint with it.
         let keys = (
             self.sample.play_keys_shown(),
             self.sample.play_takes_pads(&self.ui),
+            self.sample.recorder_on(),
         );
         let qlinks = self.sample.play_qlinks_text();
         let live = self.sample.chop_live_method();
@@ -10459,6 +10485,11 @@ impl Player {
             let name = self.auto_synth_name();
             self.sample.set_auto_synth(&mut self.ui, name);
             self.sample.event(&mut self.ui, &ev, &mut self.outbox);
+            // The Wave page's REC goes to the arm with the press, not a
+            // frame later.
+            if let Some((kit, pad)) = self.sample.take_rec_here() {
+                self.outbox.push(FromUi::RecHere { kit, pad });
+            }
             if let Some(ask) = self.sample.take_number_ask() {
                 self.open_numpad(ask, TypeTo::Sample);
             }
@@ -11405,8 +11436,12 @@ impl Player {
         let before = self.sample.page();
         self.sample.tick(&mut self.ui, dt, self.view.sampler());
         // The pad take (sampler R5.7): recording, or over.
-        if let Some(n) = self.sample.take_pad_now() {
+        while let Some(n) = self.sample.take_pad_now() {
             self.outbox.push(FromUi::PadTake(n));
+        }
+        // The Wave page's REC: a pad take there, or the one running ends.
+        if let Some((kit, pad)) = self.sample.take_rec_here() {
+            self.outbox.push(FromUi::RecHere { kit, pad });
         }
         // The browser: its touches and the worker's answers (a save's too,
         // made from another page); a preview's file and an opened
@@ -13743,6 +13778,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             pad: 20,
             started: true,
             recording: true,
+            here: false,
         }),
         ..Default::default()
     }));
@@ -15406,6 +15442,61 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         rec.take_actions();
     }
     out.push(("sample-rec", rec));
+    // The Wave page's recorder row with REC on (one-page step 2a): the
+    // line input on, 5 s of drums in, a take starting on the input, and
+    // the panel the Input section.
+    let mut recording = sample_sampler(fonts());
+    let mut s = recording.settings.clone();
+    s.line_input = true;
+    recording.apply(ToUi::Settings(s));
+    if let Some(FromUi::SampleInput(Some(mut feed))) = recording
+        .take_actions()
+        .into_iter()
+        .find(|a| matches!(a, FromUi::SampleInput(_)))
+    {
+        use mpfree_sampler_ui::recorder::RECORDER;
+        use mpfree_sampler_ui::sample::feed_input;
+        feed_input(&mut feed.0, 2.0, 0.4, true);
+        recording.tick(0.033);
+        recording.on_event(UiEvent {
+            widget: RECORDER.into(),
+            kind: EventKind::Step { index: 1, delta: 1 },
+        });
+        recording.on_event(UiEvent {
+            widget: RECORDER.into(),
+            kind: EventKind::Tab(0),
+        });
+        // REC is a pad take through the arm, as the audio loop's desk
+        // answers it (stopped, so the REC chip names it at once).
+        recording.tick(0.033);
+        let mut arm = crate::rec_arm::RecArm::default();
+        let stopped = crate::rec_arm::Now {
+            state: mpfree_transport::State::Stopped,
+            overdub: false,
+            loop_taking: false,
+            loop_armed: false,
+            notes: "Drums".into(),
+            clock: None,
+        };
+        for a in recording.take_actions() {
+            if let FromUi::RecHere { kit, pad } = a {
+                for d in arm.rec_here(kit, pad, &stopped).unwrap_or_default() {
+                    if let crate::rec_arm::Do::Pad(d) = d {
+                        recording.apply(ToUi::PadTake(d));
+                    }
+                }
+            }
+        }
+        feed_input(&mut feed.0, 5.1, 0.4, true);
+        recording.tick(0.033);
+        for a in recording.take_actions() {
+            if let FromUi::PadTake(n) = a {
+                arm.pad_now(n);
+            }
+        }
+        recording.apply(ToUi::Rec(arm));
+    }
+    out.push(("sample-recording", recording));
     // Sample Recall over Play (sampler R5 part 2): 40 s of the master at
     // the break's 92 BPM with the transport playing, opened on pad A5,
     // which has the break, so it lands on A6.
@@ -25683,6 +25774,291 @@ mod tests {
         );
     }
 
+    /// One-page step 2a: the Wave page's recorder row records the line
+    /// input onto the next empty pad as the Rec tab does, with the same
+    /// settings; its cards step them, it says why REC can't start a take,
+    /// and while it records the panel under the wave is Input.
+    #[test]
+    fn the_wave_pages_recorder_row_records_a_take_with_the_rec_settings() {
+        use mpfree_sampler_ui::rec_tab;
+        use mpfree_sampler_ui::recorder::{self, Recorder, RecorderView};
+        use mpfree_sampler_ui::sample::feed_input;
+        use mpfree_sampler_ui::wave_tab;
+        use mpfree_sampler_ui::widgets::SettingList;
+        let mut p = sample_sampler(Fonts::embedded());
+        open_sample(&mut p, sample_page::Editor::Wave);
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let take = |p: &mut Player| {
+            let (sent, rest) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+            rest
+        };
+        let row = |p: &Player| -> RecorderView {
+            p.ui.get::<Recorder>(recorder::RECORDER)
+                .unwrap()
+                .view
+                .clone()
+        };
+        let panel = |p: &Player| -> Vec<String> {
+            let list = p.ui.get::<SettingList>(wave_tab::REGION).unwrap();
+            list.rows.iter().map(|r| r.name.clone()).collect()
+        };
+        p.tick(0.033);
+        // The line input off: REC can't start a take, and says why.
+        assert_eq!(row(&p).cannot.as_deref(), Some(sample_page::RECORDER_OFF));
+        ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
+        assert!(!row(&p).recording);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: no take: the line input is off"));
+        // The hint line says why for a while, then what the page does.
+        p.tick(TELL_SECONDS + 0.1);
+        // Ends steps on to On silence and back; the setting is the Rec
+        // tab's.
+        ev(
+            &mut p,
+            recorder::RECORDER,
+            EventKind::Step { index: 2, delta: 1 },
+        );
+        assert_eq!(p.sample.rec_settings_now().end, rec_tab::EndAt::Silence);
+        assert_eq!(row(&p).settings.end, rec_tab::EndAt::Silence);
+        ev(
+            &mut p,
+            recorder::RECORDER,
+            EventKind::Step {
+                index: 2,
+                delta: -1,
+            },
+        );
+        assert_eq!(p.sample.rec_settings_now().end, rec_tab::EndAt::Press);
+        // The line input on: the meter moves and REC can take.
+        let mut s = p.settings.clone();
+        s.line_input = true;
+        p.apply(ToUi::Settings(s));
+        let Some(FromUi::SampleInput(Some(mut feed))) = take(&mut p).pop() else {
+            panic!("the input's writer");
+        };
+        feed_input(&mut feed.0, 2.0, 0.4, true);
+        p.tick(0.033);
+        let v = row(&p);
+        assert_eq!(v.cannot, None);
+        assert_eq!(v.status, "Next take onto A6");
+        let level = p.ui.get::<Recorder>(recorder::RECORDER).unwrap().level();
+        assert!(level[0] > 0.5, "{level:?}");
+        // REC: a pad take through the arm (the sequencer thread's line,
+        // 18 Nov), which goes at once; the row counts it, the panel is
+        // Input.
+        let stopped = rec_now_in(mpfree_transport::State::Stopped);
+        let mut arm = crate::rec_arm::RecArm::default();
+        ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert!(
+            arm.pad
+                .is_some_and(|t| t.here && t.started && (t.kit, t.pad) == (0, 5)),
+            "{arm:?}"
+        );
+        feed_input(&mut feed.0, 1.5, 0.4, true);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert!(arm.pad.is_some_and(|t| t.recording), "{arm:?}");
+        let v = row(&p);
+        assert!(v.recording && !v.waiting, "{v:?}");
+        assert!(
+            v.status.starts_with("Recording onto A6 · 0:01."),
+            "{}",
+            v.status
+        );
+        assert_eq!(panel(&p), ["Source", "Channels", "Threshold", "Pre-roll"]);
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(
+            hint(&p).starts_with("REC again or STOP: stop and keep the take")
+                && hint(&p).contains("Q-Links 2-3: Threshold, Pre-roll"),
+            "{}",
+            hint(&p)
+        );
+        // Q-Link 2 turns the Threshold, Q-Link 3 the Pre-roll: the Rec
+        // tab's settings; Q-Link 1 moves no marker meanwhile.
+        let before = p.sample.rec_settings_now();
+        p.apply(ToUi::SampleQLink(1, -2));
+        p.apply(ToUi::SampleQLink(2, 1));
+        p.apply(ToUi::SampleQLink(0, 3));
+        p.apply(ToUi::SampleLift);
+        let after = p.sample.rec_settings_now();
+        assert!(after.threshold_db < before.threshold_db, "{after:?}");
+        assert!(after.pre_roll_ms > before.pre_roll_ms, "{after:?}");
+        assert_eq!(row(&p).settings, after);
+        p.tick(0.033);
+        assert_eq!(rec_desk(&mut p, &mut arm, &stopped), 0, "no pad was edited");
+        // REC again: the arm ends the take, Take 1 lands on A6, and the
+        // region's settings are back.
+        ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert_eq!(arm.pad, None, "REC records what it did before");
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l
+                == "sample: take armed for pad A6 (one take, from the Wave page's REC): \
+                    start now, end stop, left + right"),
+            "{log:?}"
+        );
+        assert!(
+            log.iter()
+                .any(|l| l.starts_with("sample: recorded: Take 1, 1.5")
+                    && l.ends_with(" stereo on pad A6")),
+            "{log:?}"
+        );
+        let name = p
+            .sample
+            .project(0)
+            .unwrap()
+            .pad(5)
+            .map(|pd| pd.name.clone());
+        assert_eq!(name.as_deref(), Some("Take 1"));
+        assert!(!row(&p).recording);
+        assert_eq!(panel(&p).len(), wave_tab::Row::ALL.len());
+        assert!(
+            hint(&p).contains("Q-Links 1-4: Start, End, loop"),
+            "{}",
+            hint(&p)
+        );
+        // A held pad's take waiting for PLAY shows on the row with REC lit,
+        // and the row's REC calls it off; REC again takes onto A7. The old
+        // take's end, heard late, leaves the row's take armed.
+        for d in arm.arm_pad(0, 20, &stopped) {
+            if let crate::rec_arm::Do::Pad(d) = d {
+                p.apply(ToUi::PadTake(d));
+            }
+        }
+        p.tick(0.033);
+        assert_eq!(row(&p).status, "Onto B5 · waits for PLAY");
+        assert!(row(&p).recording && row(&p).waiting);
+        ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert_eq!(arm.pad, None);
+        p.tick(0.033);
+        assert_eq!(row(&p).status, "Next take onto A7");
+        ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        feed_input(&mut feed.0, 1.0, 0.4, true);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert!(!arm.pad_now(crate::rec_arm::PadNow::Ended { kit: 0, pad: 20 }));
+        assert!(
+            arm.pad.is_some_and(|t| t.here && t.pad == 6 && t.recording),
+            "{arm:?}"
+        );
+        assert!(
+            row(&p).status.starts_with("Recording onto A7"),
+            "{}",
+            row(&p).status
+        );
+        ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert_eq!(arm.pad, None);
+        let name = p
+            .sample
+            .project(0)
+            .unwrap()
+            .pad(6)
+            .map(|pd| pd.name.clone());
+        assert_eq!(name.as_deref(), Some("Take 2"));
+        assert!(
+            p.sample.project(0).unwrap().pad(20).is_none(),
+            "B5 stays empty"
+        );
+        // While the notes count in, the arm refuses it and the row says
+        // why for a while.
+        ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
+        p.tick(0.033);
+        rec_desk(
+            &mut p,
+            &mut arm,
+            &rec_now_in(mpfree_transport::State::CountIn),
+        );
+        p.tick(0.033);
+        assert_eq!(arm.pad, None);
+        assert_eq!(
+            row(&p).cannot.as_deref(),
+            Some("Finish the take first: Drums records")
+        );
+        p.tick(TELL_SECONDS + 0.1);
+        assert_eq!(row(&p).cannot, None);
+    }
+
+    /// What the arm knows of the transport, for [`rec_desk`].
+    fn rec_now_in(state: mpfree_transport::State) -> crate::rec_arm::Now {
+        crate::rec_arm::Now {
+            state,
+            overdub: false,
+            loop_taking: false,
+            loop_armed: false,
+            notes: "Drums".into(),
+            clock: None,
+        }
+    }
+
+    /// The audio loop's side of the Wave page's REC and the pad take, as
+    /// `desk.rs` does it, with `arm` and the transport `now`: the page's
+    /// asks go to the arm and what it does comes back. Views go back at
+    /// once; how many were sent.
+    fn rec_desk(
+        p: &mut Player,
+        arm: &mut crate::rec_arm::RecArm,
+        now: &crate::rec_arm::Now,
+    ) -> usize {
+        use crate::rec_arm::Do;
+        let mut sent = 0;
+        loop {
+            let (views_sent, rest) = views(p.take_actions());
+            sent += views_sent.len();
+            for v in views_sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+            let mut asked = false;
+            for a in rest {
+                match a {
+                    FromUi::RecHere { kit, pad } => {
+                        asked = true;
+                        match arm.rec_here(kit, pad, now) {
+                            Ok(done) => {
+                                for d in done {
+                                    if let Do::Pad(d) = d {
+                                        p.apply(ToUi::PadTake(d));
+                                    }
+                                }
+                            }
+                            Err(why) => p.apply(ToUi::RecHereNo(why)),
+                        }
+                    }
+                    FromUi::PadTake(n) => {
+                        asked = true;
+                        arm.pad_now(n);
+                    }
+                    _ => {}
+                }
+            }
+            if !asked {
+                return sent;
+            }
+        }
+    }
+
     #[test]
     fn a_pad_take_records_onto_its_pad_and_says_when_it_records_and_ends() {
         use crate::rec_arm::{PadDo, PadNow};
@@ -25710,7 +26086,7 @@ mod tests {
         let has_sound = |p: &Player, pad: usize| p.sample.project(0).unwrap().pad(pad).is_some();
         // No line input: it ends at once, saying why.
         p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
-        assert_eq!(told(&mut p), [PadNow::Ended]);
+        assert_eq!(told(&mut p), [PadNow::Ended { kit: 0, pad: 20 }]);
         said(&p, "sample: no take on Pad B5: the line input is off");
         // The line input on, 2 s in.
         let mut s = p.settings.clone();
@@ -25726,7 +26102,7 @@ mod tests {
         feed_input(&mut feed.0, 2.0, 0.4, true);
         // A pad with a sound is refused.
         p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 4 }));
-        assert_eq!(told(&mut p), [PadNow::Ended]);
+        assert_eq!(told(&mut p), [PadNow::Ended { kit: 0, pad: 4 }]);
         said(&p, "sample: no take on Pad A5: it has a sound");
         // Armed, then ended before the music played: called off.
         p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
@@ -25736,7 +26112,7 @@ mod tests {
             "sample: take armed for pad B5 (one take, from REC): start now, end stop, left + right",
         );
         p.apply(ToUi::PadTake(PadDo::End));
-        assert_eq!(told(&mut p), [PadNow::Ended]);
+        assert_eq!(told(&mut p), [PadNow::Ended { kit: 0, pad: 20 }]);
         said(
             &p,
             "sample: no take on Pad B5: called off before it started",
@@ -25747,20 +26123,20 @@ mod tests {
         p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
         p.apply(ToUi::PadTake(PadDo::Start));
         feed_input(&mut feed.0, 1.0, 0.4, true);
-        assert_eq!(told(&mut p), [PadNow::Recording]);
+        assert_eq!(told(&mut p), [PadNow::Recording { kit: 0, pad: 20 }]);
         feed_input(&mut feed.0, 0.5, 0.4, true);
         assert_eq!(told(&mut p), [], "said once");
         p.apply(ToUi::PadTake(PadDo::Throw));
-        assert_eq!(told(&mut p), [PadNow::Ended]);
+        assert_eq!(told(&mut p), [PadNow::Ended { kit: 0, pad: 20 }]);
         said(&p, "sample: no take on Pad B5: thrown away");
         assert!(!has_sound(&p, 20));
         // Again, and REC: 1.5 s lands on B5 as a Rec tab take does.
         p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
         p.apply(ToUi::PadTake(PadDo::Start));
         feed_input(&mut feed.0, 1.5, 0.4, true);
-        assert_eq!(told(&mut p), [PadNow::Recording]);
+        assert_eq!(told(&mut p), [PadNow::Recording { kit: 0, pad: 20 }]);
         p.apply(ToUi::PadTake(PadDo::End));
-        assert_eq!(told(&mut p), [PadNow::Ended]);
+        assert_eq!(told(&mut p), [PadNow::Ended { kit: 0, pad: 20 }]);
         let pad = p.sample.project(0).unwrap().pad(20).cloned().unwrap();
         assert_eq!(pad.name, "Take 1");
         said(&p, "stereo on pad B5");

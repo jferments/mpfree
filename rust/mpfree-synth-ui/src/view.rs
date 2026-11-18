@@ -794,6 +794,34 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
         }
     }
     match st.info.id {
+        "mpfree.bass" => {
+            use mpfree_synth::bass_params as bp;
+            let body = v(bp::BODY).round();
+            match id {
+                bp::CUTOFF
+                | bp::RESONANCE
+                | bp::ENV_AMOUNT
+                | bp::KEY_TRACK
+                | bp::FILTER_DRIVE
+                | bp::FILTER_DECAY
+                    if body == bp::B808 =>
+                {
+                    Some("not on the 808")
+                }
+                bp::DETUNE if body != bp::REESE => Some("reese only"),
+                bp::PW if v(bp::WAVE).round() != bp::PULSE || body == bp::B808 => {
+                    Some("pulse only")
+                }
+                bp::SUB_MODE if v(bp::SUB) <= 0.0 => Some("sub is off"),
+                bp::FILTER_DECAY if v(bp::ENV_AMOUNT) == 0.0 => Some("no envelope"),
+                bp::DROP_TIME if v(bp::DROP) <= 0.0 => Some("no drop"),
+                bp::GLIDE_MODE | bp::GLIDE_ON if v(bp::GLIDE) <= 0.0 => Some("glide is off"),
+                bp::DRIVE_MODE if v(bp::DRIVE) <= 0.0 => Some("drive is off"),
+                bp::PRESSURE if v(bp::PRESS_TO).round() == bp::PRESS_OFF => Some("pressure is off"),
+                bp::DECAY if v(bp::SUSTAIN) >= 100.0 => Some("sustain is full"),
+                _ => None,
+            }
+        }
         "mpfree.strings" => {
             use mpfree_synth::strings_params as sp;
             match id {
@@ -1375,7 +1403,7 @@ fn wt_cards(st: &SynthState, page: &str) -> Strip {
     s
 }
 
-/// Keys', Drawbar's, Squelch's, Analog's and Strings' cards
+/// Keys', Drawbar's, Squelch's, Analog's, Strings' and Bass' cards
 /// ([`crate::inst_visual`]).
 fn inst_cards(st: &SynthState, page: &str) -> Strip {
     let v = |id: u16| st.value(id);

@@ -419,6 +419,42 @@ const STRINGS: &[PlanPage] = &[
     ),
 ];
 
+use mpfree_synth::bass_params as bp;
+
+/// Bass: the body and its oscillators, the filter, the pitch drop with
+/// the amp, the playing (glide, keys, tuning, pressure), then the output
+/// (drive and tone). The Q-Links take what players ride under a line: the
+/// sub, the fifth, the reese's detune and the pulse width; the filter's
+/// four knobs; the drop and the decays; the glide and the bend; the drive
+/// and the tone.
+const BASS: &[PlanPage] = &[
+    pg(
+        "Source",
+        &["Body", "Source"],
+        &[bp::SUB, bp::FIFTH, bp::DETUNE, bp::PW],
+    ),
+    pg(
+        "Filter",
+        &["Filter"],
+        &[bp::CUTOFF, bp::RESONANCE, bp::ENV_AMOUNT, bp::FILTER_DECAY],
+    ),
+    pg(
+        "Shape",
+        &["Pitch", "Amp"],
+        &[bp::DROP, bp::DROP_TIME, bp::DECAY, bp::RELEASE],
+    ),
+    pg(
+        "Play",
+        &["Play", "Pressure"],
+        &[bp::GLIDE, bp::FINE, bp::BEND_RANGE, bp::PRESSURE],
+    ),
+    pg(
+        "Output",
+        &["Output"],
+        &[bp::DRIVE, bp::TONE, bp::HIGH_PASS, bp::LEVEL],
+    ),
+];
+
 fn known(id: &str) -> Option<&'static [PlanPage]> {
     match id {
         "mpfree.poly" => Some(POLY),
@@ -431,6 +467,7 @@ fn known(id: &str) -> Option<&'static [PlanPage]> {
         "mpfree.squelch" => Some(SQUELCH),
         "mpfree.analog" => Some(ANALOG),
         "mpfree.strings" => Some(STRINGS),
+        "mpfree.bass" => Some(BASS),
         _ => None,
     }
 }
@@ -740,6 +777,22 @@ mod tests {
             .map(|&i| params[i].name)
             .collect();
         assert_eq!(q, ["Violin", "Viola", "Cello", "Contrabass"]);
+    }
+
+    #[test]
+    fn bass_has_its_own_pages() {
+        use mpfree_node::Node;
+        let b = mpfree_synth::Bass::new(48_000);
+        let params = b.params();
+        let pages = plan(b.info(), params);
+        let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Source", "Filter", "Shape", "Play", "Output"]);
+        every_param_once(&pages, params.len());
+        let q: Vec<&str> = qlink_targets(&pages[0], params)
+            .iter()
+            .map(|&i| params[i].name)
+            .collect();
+        assert_eq!(q, ["Sub", "Fifth", "Detune", "Pulse width"]);
     }
 
     #[test]

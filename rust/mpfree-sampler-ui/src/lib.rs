@@ -33,6 +33,8 @@
 //!   grain cloud the engine plays over it, a touch pad for position and
 //!   size, and every grain setting, each change a [`GrainAction`]. Its
 //!   pictures are in [`grain_widgets`].
+//! - [`recorder`]: the one Sample page's recorder row (REC, Source,
+//!   Starts, Ends) on the Wave page, with the Input section while REC is on.
 //! - [`rec_tab`]: the pad editor's Rec tab: the line input's meters and
 //!   its last half minute, takes that start now, over a threshold or on the
 //!   next bar and end on a press, silence or a length, and Skip back over
@@ -68,6 +70,7 @@ pub mod play_widgets;
 pub mod rec_tab;
 pub mod rec_widgets;
 pub mod recall;
+pub mod recorder;
 pub mod sample;
 pub mod send;
 pub mod sound_panel;
