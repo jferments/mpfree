@@ -1,7 +1,8 @@
-//! The drawn visuals of Keys, Drawbar, Squelch and Analog, worked out from
-//! their values with the engines' own formulas ([`mpfree_synth::keys`],
-//! [`mpfree_synth::drawbar`], [`mpfree_synth::squelch`],
-//! [`mpfree_synth::analog`]), so they follow a knob the moment it turns.
+//! The drawn visuals of Keys, Drawbar, Squelch, Analog and Strings, worked
+//! out from their values with the engines' own formulas
+//! ([`mpfree_synth::keys`], [`mpfree_synth::drawbar`],
+//! [`mpfree_synth::squelch`], [`mpfree_synth::analog`],
+//! [`mpfree_synth::strings`]), so they follow a knob the moment it turns.
 //!
 //! - Keys: the pickup's curve with the swing of a hit across it, the
 //!   hammer's contact, how long notes ring across the keyboard, and the
@@ -14,6 +15,8 @@
 //! - Analog: both oscillators, the filter's response, the two envelopes,
 //!   the LFO with its delay, and each voice card's own tuning at the Age
 //!   set.
+//! - Strings: the registers' tone as mixed, a held key's swell in and
+//!   fade, and the ensemble's lines sweeping.
 //!
 //! Points are in a unit box, as in [`crate::visual`]: x from 0 to 1 left to
 //! right, y from 0 (bottom) to 1 (top).
@@ -25,7 +28,8 @@ use mpfree_synth::analog_params as an;
 use mpfree_synth::drawbar_params as db;
 use mpfree_synth::keys_params as kp;
 use mpfree_synth::squelch_params as sq;
-use mpfree_synth::{analog, drawbar, keys, squelch};
+use mpfree_synth::strings_params as stp;
+use mpfree_synth::{analog, drawbar, keys, squelch, strings};
 use mpfree_ui::Color;
 use std::f32::consts::{PI, TAU};
 
@@ -699,11 +703,64 @@ fn hz_text(hz: f32) -> String {
     }
 }
 
+// ------------------------------------------------------------ Strings
+
+/// The registers' tone as mixed, on the filter cards' scale.
+pub fn strings_tone(v: &impl Values) -> Pts {
+    response(strings::tone_response(|id| v.get(id)))
+}
+
+/// The registers up: one or two by name ("violin and viola"), more by
+/// count ("4 registers"), or "no register up".
+pub fn strings_registers(v: &impl Values) -> String {
+    let up: Vec<String> = stp::REGISTERS
+        .iter()
+        .filter(|(id, _)| v.get(*id) > 0.0)
+        .map(|(_, name)| name.to_lowercase())
+        .collect();
+    match up.len() {
+        0 => "no register up".into(),
+        1 | 2 => up.join(" and "),
+        n => format!("{n} registers"),
+    }
+}
+
+/// When the Swell card's key is let go, and the card's span, seconds: the
+/// crescendo and a little more, then the fade.
+pub fn strings_swell_secs(v: &impl Values) -> (f32, f32) {
+    let held = (0.0013 * v.get(stp::CRESCENDO)).max(0.25);
+    (held, held + (0.0014 * v.get(stp::SUSTAIN)).max(0.1))
+}
+
+/// A held key's level over the Swell card's span, 60 dB from top to
+/// bottom, so the fade reaches the bottom at Sustain.
+pub fn strings_swell(v: &impl Values) -> Pts {
+    let (held, secs) = strings_swell_secs(v);
+    strings::swell_curve(|id| v.get(id), held, secs, POINTS + 1)
+        .into_iter()
+        .enumerate()
+        .map(|(i, l)| (i as f32 / POINTS as f32, level_y(l, 60.0)))
+        .collect()
+}
+
+/// The ensemble's lines over one slow cycle; none with it off.
+pub fn strings_ensemble(v: &impl Values) -> Vec<Pts> {
+    strings::ensemble_lines(|id| v.get(id), POINTS + 1)
+        .into_iter()
+        .map(|line| {
+            line.into_iter()
+                .enumerate()
+                .map(|(i, d)| (i as f32 / POINTS as f32, (0.5 + 0.45 * d).clamp(0.0, 1.0)))
+                .collect()
+        })
+        .collect()
+}
+
 /// Whether this module draws the engine with this id.
 pub fn draws(id: &str) -> bool {
     matches!(
         id,
-        "mpfree.keys" | "mpfree.drawbar" | "mpfree.squelch" | "mpfree.analog"
+        "mpfree.keys" | "mpfree.drawbar" | "mpfree.squelch" | "mpfree.analog" | "mpfree.strings"
     )
 }
 
@@ -715,6 +772,7 @@ pub fn cards(id: &str, v: &impl Values, page: &str) -> Vec<(Card, &'static str)>
         "mpfree.drawbar" => drawbar_cards(v),
         "mpfree.squelch" => squelch_cards(v),
         "mpfree.analog" => analog_cards_strip(v),
+        "mpfree.strings" => strings_cards(v),
         _ => Vec::new(),
     };
     for (c, home) in &mut cards {
@@ -965,11 +1023,71 @@ fn analog_cards_strip(v: &impl Values) -> Vec<(Card, &'static str)> {
     ]
 }
 
+/// Strings: the tone (Tone, also on Registers), the swell (Tone) and the
+/// ensemble (Ensemble).
+fn strings_cards(v: &impl Values) -> Vec<(Card, &'static str)> {
+    let (blue, green, amber) = (QLINK_COLORS[0], QLINK_COLORS[1], QLINK_COLORS[2]);
+    let shared = v.get(stp::SWELL) >= 0.5;
+    let (held, secs) = strings_swell_secs(v);
+    let lines = strings_ensemble(v);
+    let ens_caption = if lines.is_empty() {
+        "off".to_string()
+    } else {
+        format!(
+            "{} lines · slow {:.2} Hz · fast {:.2} Hz",
+            lines.len(),
+            v.get(stp::SLOW_RATE),
+            v.get(stp::FAST_RATE)
+        )
+    };
+    let colors = [blue, green, amber, TEXT];
+    vec![
+        (
+            Card {
+                title: "Tone".into(),
+                caption: strings_registers(v),
+                traces: vec![trace(strings_tone(v), blue, 2.5, true, false)],
+                grid: freq_grid(),
+                ..Card::default()
+            },
+            "Tone",
+        ),
+        (
+            Card {
+                title: "Swell".into(),
+                caption: format!(
+                    "{} · let go at {}",
+                    if shared { "shared" } else { "per key" },
+                    kv::secs_text(held)
+                ),
+                traces: vec![trace(strings_swell(v), green, 2.5, true, false)],
+                grid: kv::time_grid(secs),
+                ..Card::default()
+            },
+            "Tone",
+        ),
+        (
+            Card {
+                title: "Ensemble".into(),
+                caption: ens_caption,
+                traces: lines
+                    .into_iter()
+                    .zip(colors)
+                    .map(|(p, c)| bright(p, c))
+                    .collect(),
+                midline: true,
+                ..Card::default()
+            },
+            "Ensemble",
+        ),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use mpfree_node::{Node, ParamInfo};
-    use mpfree_synth::{Analog, Drawbar, Keys, Squelch};
+    use mpfree_synth::{Analog, Drawbar, Keys, Squelch, Strings};
 
     fn in_box(pts: &[(f32, f32)]) -> bool {
         pts.iter().all(|&(x, y)| {
@@ -1004,11 +1122,12 @@ mod tests {
 
     #[test]
     fn every_card_stays_in_its_box_with_its_dot_and_bars() {
-        let mut nodes: [(Box<dyn Node>, &[mpfree_synth::Preset]); 4] = [
+        let mut nodes: [(Box<dyn Node>, &[mpfree_synth::Preset]); 5] = [
             (Box::new(Keys::new(48_000)), Keys::presets()),
             (Box::new(Drawbar::new(48_000)), Drawbar::presets()),
             (Box::new(Squelch::new(48_000)), Squelch::presets()),
             (Box::new(Analog::new(48_000)), Analog::presets()),
+            (Box::new(Strings::new(48_000)), Strings::presets()),
         ];
         for (node, presets) in &mut nodes {
             let id = node.info().id;
@@ -1028,6 +1147,46 @@ mod tests {
         }
         assert!(!draws("mpfree.poly"));
         assert!(cards("mpfree.poly", &|_: u16| 0.0, "Osc").is_empty());
+    }
+
+    #[test]
+    fn strings_drawings_follow_the_engine() {
+        use std::collections::HashMap;
+        let mut vals: HashMap<u16, f32> = mpfree_synth::strings_params::PARAMS
+            .iter()
+            .map(|p| (p.id, p.default))
+            .collect();
+        let at = |v: &HashMap<u16, f32>| {
+            let v = v.clone();
+            move |id: u16| v[&id]
+        };
+        // The swell: full by the crescendo's label, 60 dB down (the card's
+        // bottom) by the sustain's label after the key is let go.
+        let v = at(&vals);
+        let (held, secs) = strings_swell_secs(&v);
+        let pts = strings_swell(&v);
+        let y_at = |t: f32| pts[((t / secs) * POINTS as f32).round() as usize].1;
+        assert!(y_at(0.42) > 0.99, "{}", y_at(0.42));
+        assert!(y_at(held + 1.52) < 0.02, "{}", y_at(held + 1.52));
+        assert!(y_at(held + 0.5) > 0.5);
+        // Brighter moves the tone's top up.
+        let top = |v: &dyn Fn(u16) -> f32| {
+            let r = strings::tone_response(v);
+            r(8_000.0) / r(1_000.0)
+        };
+        let dull = top(&at(&vals));
+        vals.insert(stp::BRIGHTNESS, 100.0);
+        let bright_top = top(&at(&vals));
+        assert!(bright_top > dull * 1.5, "{dull} to {bright_top}");
+        // Three lines a third of a cycle apart; four with Lines at 4; none
+        // with the ensemble off.
+        let lines = strings_ensemble(&at(&vals));
+        assert_eq!(lines.len(), 3);
+        vals.insert(stp::LINES, 1.0);
+        assert_eq!(strings_ensemble(&at(&vals)).len(), 4);
+        vals.insert(stp::ENSEMBLE, 0.0);
+        assert!(strings_ensemble(&at(&vals)).is_empty());
+        assert_eq!(strings_registers(&at(&vals)), "violin and viola");
     }
 
     #[test]

@@ -794,6 +794,17 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
         }
     }
     match st.info.id {
+        "mpfree.strings" => {
+            use mpfree_synth::strings_params as sp;
+            match id {
+                sp::LINES | sp::SLOW_RATE | sp::FAST_RATE | sp::DEPTH | sp::WIDTH
+                    if v(sp::ENSEMBLE) <= 0.0 =>
+                {
+                    Some("ensemble is off")
+                }
+                _ => None,
+            }
+        }
         "mpfree.analog" => {
             use mpfree_synth::analog_params as an;
             let pulse = |w: u16| matches!(v(w).round() as i32, 1 | 2);
@@ -1364,7 +1375,7 @@ fn wt_cards(st: &SynthState, page: &str) -> Strip {
     s
 }
 
-/// Keys', Drawbar's, Squelch's and Analog's cards
+/// Keys', Drawbar's, Squelch's, Analog's and Strings' cards
 /// ([`crate::inst_visual`]).
 fn inst_cards(st: &SynthState, page: &str) -> Strip {
     let v = |id: u16| st.value(id);

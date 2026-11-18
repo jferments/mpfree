@@ -61,6 +61,47 @@ pub fn poly_blep(t: f32, dt: f32) -> f32 {
     }
 }
 
+/// The four-point band-limited step correction (the integrated cubic
+/// B-spline's residual, Välimäki, Pekonen and Nam, "Perceptually informed
+/// synthesis of bandlimited classical waveforms using integrated
+/// polynomial interpolation", JASA 2012) at phase `t` for a phase
+/// increment `dt`: the same sign and scale as [`poly_blep`], spread over
+/// two samples either side of the step, so far less folds back. It rolls
+/// the top octave off a little more than [`poly_blep`]. Needs `dt` under
+/// a quarter; above that it gives [`poly_blep`].
+#[inline]
+pub fn poly_blep4(t: f32, dt: f32) -> f32 {
+    if dt >= 0.25 {
+        return poly_blep(t, dt);
+    }
+    let two = dt + dt;
+    if t < two {
+        // x samples after the step, 0 to 2.
+        let x = t / dt;
+        if x < 1.0 {
+            let x2 = x * x;
+            2.0 * (-0.5 + x * (2.0 / 3.0) - x2 * x * (1.0 / 3.0) + x2 * x2 * 0.125)
+        } else {
+            let u = 2.0 - x;
+            let u2 = u * u;
+            -2.0 * u2 * u2 * (1.0 / 24.0)
+        }
+    } else if t > 1.0 - two {
+        // x samples before the step, -2 to 0.
+        let x = (t - 1.0) / dt;
+        if x > -1.0 {
+            let x2 = x * x;
+            2.0 * (0.5 + x * (2.0 / 3.0) - x2 * x * (1.0 / 3.0) - x2 * x2 * 0.125)
+        } else {
+            let u = x + 2.0;
+            let u2 = u * u;
+            2.0 * u2 * u2 * (1.0 / 24.0)
+        }
+    } else {
+        0.0
+    }
+}
+
 /// Oscillator shapes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Wave {
@@ -676,6 +717,23 @@ pub fn note_hz(note: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_four_point_step_correction_is_continuous_and_meets_the_step() {
+        let dt = 0.01;
+        // At the step it jumps by 2, as the naive saw falls by 2.
+        let before = poly_blep4(1.0 - 1e-7, dt);
+        let after = poly_blep4(0.0, dt);
+        assert!((before - after - 2.0).abs() < 1e-3, "{before} {after}");
+        // Continuous where the pieces meet, and 0 at the window's ends.
+        for t in [dt, 1.0 - dt] {
+            let (a, b) = (poly_blep4(t - 1e-6, dt), poly_blep4(t + 1e-6, dt));
+            assert!((a - b).abs() < 1e-3, "{t}: {a} {b}");
+        }
+        assert!(poly_blep4(2.0 * dt - 1e-6, dt).abs() < 1e-4);
+        assert!(poly_blep4(1.0 - 2.0 * dt + 1e-6, dt).abs() < 1e-4);
+        assert_eq!(poly_blep4(0.5, dt), 0.0);
+    }
+
     use super::*;
 
     #[test]

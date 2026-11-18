@@ -6,7 +6,7 @@ checked: 2026-11-14 b76c3c7
 
 # Synths
 
-MPFree has nine synths built in. Put one on the pads and they become a keyboard: bass lines, chords, leads and pads, played by hand, through the arpeggiator or into a pattern.
+MPFree has ten synths built in. Put one on the pads and they become a keyboard: bass lines, chords, leads and pads, played by hand, through the arpeggiator or into a pattern.
 
 ## Put a synth on the pads
 
@@ -17,9 +17,9 @@ Each track plays a kit or a synth, and the pads play what the selected track pla
 
 Opening the **Synth** tab changes nothing that plays: it shows the synth, and if the selected track plays a kit, the line at the bottom of the screen says how to put the synth on it. To go back to drums, tap the chip (it names the synth now) and pick a kit, or set the track's instrument back to **Kit**. While the selected track plays the synth, **PAD BANK** changes the pads' layout and **SHIFT** + the wheel their octave, not the kit.
 
-## The nine synths
+## The ten synths
 
-Any of the nine can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.
+Any of the ten can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.
 
 | Synth | What it is | Good for | Presets |
 |---|---|---|---|
@@ -32,6 +32,7 @@ Any of the nine can be a track's own instrument (see [A synth for each track](#a
 | **Drawbar** | A tonewheel organ with drawbars, percussion, scanner vibrato and a rotating speaker | Jazz and gospel comping, rock riffs, church chords, soft pads | Jazz Perc, Gospel, Full Organ, Rock Drive, Ballad, Flute, Church, Reedy, Bright Perc, Hollow, Soft Bass |
 | **Squelch** | A mono acid bass: one oscillator into a squelchy resonant filter, with accent and slide | Acid lines, rubbery basses, screaming leads | Acid Line, Deep Bass, Square Acid, Distorted, Rubber, Plucky, Acid Lead, Screamer |
 | **Analog** | A vintage analog poly: voices that each sound a little different, poly-mod and a chorus | Brass, warm pads, string ensembles, sync leads, clangy bells | Poly Brass, Warm Pad, Sync Lead, Chorus Strings, Square Keys, Clang Bell, Unison Bass, Slow Sweep, Hollow Pulse, Worn Cards |
+| **Strings** | A string machine, like the string ensembles of the 1970s: every key you hold sounds, through violin, viola, cello, contrabass, horn and trumpet sounds, with its own swirling ensemble | Lush string pads and chords, disco and synth-pop strings, slow swells, brassy stabs | Classic Strings, Bright Strings, Cello and Viola, Full Ensemble, Orchestra, Brass Ensemble, Slow Swell, Staccato Strings, Swirl Strings, Dark Strings, High Strings, Low Strings, Paraphonic 70s, Disco Strings, Ballad Pad, Lo-fi Strings, Wide Strings, Mono Ensemble, Dry Divider, Bowed, Horn Section, Brassy Lead, Vox Strings |
 
 Each synth also has an **Init** preset (Init Kit on Drums): a plain starting point to build your own sound.
 
@@ -41,7 +42,7 @@ Every track can play its own instrument: Poly on one, FM on another, a plugin sy
 
 1. Select the track.
 2. Press **MENU** on the Synth tab. The top row is named after the track: **Track 2 instrument**.
-3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Wavetable**, **Keys**, **Drawbar**, **Squelch** and **Analog**, then any plugin synths you have put in `files/plugins/` on the stick: CLAP synths and MPC plugin instruments (see [Effects](effects.md#plugins) for where to put them).
+3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Wavetable**, **Keys**, **Drawbar**, **Squelch**, **Analog** and **Strings**, then any plugin synths you have put in `files/plugins/` on the stick: CLAP synths and MPC plugin instruments (see [Effects](effects.md#plugins) for where to put them).
 
 {{shot: synth-instrument | Track 2's instrument set to a plugin synth, with the row's help on the right.}}
 
@@ -132,6 +133,17 @@ Its pictures: the **Wave**, the **Filter**'s curve where it rests between notes 
 Its pictures: both oscillators (**Osc**; with Sync on, oscillator 1 restarts with each of oscillator 2's cycles), the **Filter**'s curve, both envelopes (**Env**), the **LFO**, and each voice board's own tuning at the Age set (**Voices**).
 
 The Q-Links take the pulse widths and detune on the Osc page, the filter's four main knobs on the Filter page, the envelopes' times, the vibrato and poly-mod depths on the Mod page, and Age, Glide, Detune and Level on the Voice page.
+
+**Strings** plays like the string machines of the 1970s. Every key you hold sounds, however many, so you can hold big chords with both hands, and the swirl that makes it sound like a string section comes from its built-in **Ensemble**. Hit harder and a note is louder and a little brighter; set **Velocity** to 0 and every hit sounds the same, as on the old machines. It has four pages:
+
+- **Registers:** six faders, **Violin**, **Viola**, **Cello**, **Contrabass**, **Horn** and **Trumpet**. Any mix sounds at once, and a mix of several is about as loud as one alone. Violin and Viola play the note you play (Violin brighter, with a little of the octave above), Cello adds the octave below and Contrabass is the octave below alone; Horn is mellow and Trumpet bright and biting. **Octave** moves the notes you play next up or down, by up to two octaves. The picture is the tone of the mix you have up.
+- **Tone:** **Brightness** opens or closes the tone of every register, by up to an octave either way. **Body** is the woody resonance of each register (0 takes it out), and **Bow noise** a breathy edge that follows how loud you play. The **Swell** shapes every key: **Crescendo** is how long a held key takes to come in, from a quick 2 ms to 8 seconds, and **Sustain** how long it takes to die away when you let go. **Envelope** **Per key** gives each key its own swell; **Shared** is how the old machines did it: a chord swells in together, the last chord fades out, and a key you let go while others are held stops at once. **Velocity** is how much quieter a soft hit is than a hard one (soft hits are darker too). The picture shows a held key coming in and dying away.
+- **Ensemble:** **Amount** (0 is dry, with none of the swirl), **Lines** (3 or 4: four is a little thicker), **Width** (how wide it spreads between the speakers), and the two wobbles that make it: **Slow rate**, **Fast rate** and **Depth** (how far they move, against the ensemble's own). With Amount at 0 the other ensemble controls are drawn faint. The picture shows the lines moving over one slow cycle.
+- **Voice:** transpose, fine tuning, bend range, level, and how many keys are held.
+
+The Q-Links take four registers on the Registers page (Violin, Viola, Cello and Contrabass), Brightness, Crescendo, Sustain and Bow noise on the Tone page, Amount, Depth, Slow rate and Width on the Ensemble page, and Transpose, Fine, Bend range and Level on the Voice page. A Strings track with no keys held stops working after a tenth of a second, so it takes almost none of the MPC's power until you play it.
+
+Coming: the sustain and soft pedals, the mod wheel (vibrato) and a foot pedal (volume) from a keyboard on MIDI in. Strings already answers them; the MIDI in side is still to come.
 
 The Synth tab takes its colours from the theme picked in **Prefs > Appearance**, like the rest of MPFree: the sections' colours, the curves and the boxes in the pictures all change with it. The Q-Links keep their own four colours under every theme.
 
