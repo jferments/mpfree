@@ -1850,6 +1850,12 @@ impl MixHost {
         self.mixer.param(StripId::Master, mx::VOLUME)
     }
 
+    /// How loud Monitor plays the line input: its strip's fader, dB (the
+    /// Sample page's recorder shows and turns it; one-page step 2d).
+    pub fn line_level(&self) -> f32 {
+        self.mixer.param(LINE, mx::VOLUME)
+    }
+
     /// Follows the looper: whether the line input is open, and whether it
     /// is heard (Monitor). Cheap to call every period.
     pub fn follow(&mut self, line_open: bool, monitor_on: bool) {
