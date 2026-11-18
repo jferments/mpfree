@@ -92,6 +92,7 @@ use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
 use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab, SceneAction};
 use mpfree_sampler_ui::rec_tab::{self, RecAction, RecState, RecTab, Skip};
 use mpfree_sampler_ui::send;
+use mpfree_sampler_ui::source::{cache_file, SourceView};
 use mpfree_sampler_ui::warp_tab::{self, WarpTab};
 use mpfree_sampler_ui::wave_tab::{
     self, duration_text, mode_label, WaveAction, WaveState, WaveTab,
@@ -138,6 +139,20 @@ pub const EMPTY_LAYOUT: &str = "col(header:60, sample-empty:*, hint:26)";
 /// The pad editor's widgets all start with this (the Chop tab's with
 /// `smp-chop-`, the Play tab's with `smp-play-`).
 pub const PREFIX: &str = "smp-";
+/// The editors whose pad bar's title names the pad and its sound.
+const NAMED_BARS: [&str; 5] = [
+    wave_tab::BAR,
+    warp_tab::BAR,
+    chop_tab::BAR,
+    play_tab::BAR,
+    grain_tab::BAR,
+];
+/// The text keyboard's keys for a pad's name and its sound's.
+pub const NAME_PAD: &str = "pad";
+pub const NAME_SOUND: &str = "sound";
+/// The most characters a name typed may have (one from a file may be
+/// longer, until shortened).
+pub const NAME_MAX: usize = 32;
 const CHOP_PREFIX: &str = "smp-chop-";
 const PLAY_PREFIX: &str = "smp-play-";
 const PADS_PREFIX: &str = "smp-pads-";
@@ -377,6 +392,9 @@ struct AutoJob {
     /// The notes it samples, low to high, and takes a note.
     notes: Vec<u8>,
     per_note: usize,
+    /// The gear's MIDI out, told (no bytes) when the job is over, so it
+    /// ends every note the job left on.
+    end: Option<MidiSend>,
 }
 
 impl AutoJob {
@@ -479,6 +497,9 @@ type KitLoading = (Receiver<Read>, usize, String);
 /// Kits read from a file, with what was converted to the output's rate
 /// on the way ([`opened_at_rate`]), one log line each.
 type Read = Result<(Opened, Vec<String>), String>;
+/// A project's kits as opened: [`Read`]'s, and the views read from the
+/// sounds' cache files ([`cached_views`]).
+type ProjectRead = Result<(Opened, Vec<String>, Vec<Arc<SourceView>>), String>;
 
 pub type ReadSample = Box<dyn Fn(&str) -> Result<Vec<u8>, String> + Send>;
 
@@ -621,6 +642,10 @@ pub struct SamplePage {
     /// A number to be typed, asked for by a tab (the Warp tempo): the
     /// screen opens the number pad ([`SamplePage::take_number_ask`]).
     number_ask: Option<mpfree_ui::numpad::NumberAsk>,
+    /// Names to be typed (a tap on the pad bar's title: the pad's and its
+    /// sound's): the screen opens the text keyboard
+    /// ([`SamplePage::take_text_ask`]).
+    text_ask: Option<Vec<mpfree_ui::textpad::TextAsk>>,
     auto_job: Option<AutoJob>,
     /// The Warp tab's Process, while one runs.
     processing: Option<Processing>,
@@ -632,7 +657,7 @@ pub struct SamplePage {
     /// has one open.
     gear_out: Option<GearOut>,
     /// A project's kits being read and decoded ([`SamplePage::open_part`]).
-    opening: Option<Receiver<Read>>,
+    opening: Option<Receiver<ProjectRead>>,
     /// A kit file being read and decoded ([`SamplePage::open_kit`]): it
     /// goes in place of this kit, under this name.
     kit_loading: Option<KitLoading>,
@@ -739,6 +764,7 @@ impl SamplePage {
             auto_synth: None,
             auto_request: None,
             number_ask: None,
+            text_ask: None,
             auto_job: None,
             processing: None,
             auto_last: String::new(),
@@ -788,7 +814,10 @@ impl SamplePage {
             self.lines
                 .push("sample: the take was dropped (the kits were loaded again)".to_string());
         }
-        if self.auto_job.take().is_some() {
+        if let Some(j) = self.auto_job.take() {
+            if let Some(end) = &j.end {
+                end(&[]);
+            }
             // Dropping it cancels it; its thread ends on its own.
             self.lines.push(
                 "sample: the auto-sample was cancelled (the kits were loaded again)".to_string(),
@@ -955,12 +984,12 @@ impl SamplePage {
             .projects
             .iter()
             .flat_map(Project::held)
-            .map(|s| (s.data().as_ptr() as usize, s.data().len()))
+            .map(|s| (s.data().addr(), s.data().bytes()))
             .collect();
         seen.sort_unstable();
         seen.dedup();
         SampleMemory {
-            sounds: seen.iter().map(|&(_, n)| n * 4).sum(),
+            sounds: seen.iter().map(|&(_, n)| n).sum(),
             count: seen.len(),
             copies: self.warps.bytes(),
             input: if self.input.is_some() {
@@ -1287,6 +1316,15 @@ impl SamplePage {
             .and_then(|p| p.pad(self.pad))
             .is_some_and(|pd| !pd.layers.is_empty());
         send::show(ui, has_sound, self.sending.is_some());
+        // The pad bar's title names the pad (and its sound) on the editors
+        // of a pad with a sound.
+        for bar in NAMED_BARS {
+            if let Some(b) = ui.get_mut::<mpfree_sampler_ui::widgets::PadBar>(bar) {
+                if b.nameable != has_sound {
+                    b.nameable = has_sound;
+                }
+            }
+        }
         self.shown_heads.clear();
         if let Some(tab) = self.tab.as_ref() {
             tab.set_playheads(ui, &[]);
@@ -1626,6 +1664,15 @@ impl SamplePage {
     /// A touch on one of the editor's widgets. Taps that play the pad go
     /// in `out`, for the audio thread.
     pub fn event(&mut self, ui: &mut Ui, ev: &UiEvent, out: &mut Vec<FromUi>) {
+        // A tap on the pad bar's title: type the pad's name, or its sound's.
+        if ev.kind == EventKind::Type(0)
+            && ui
+                .get::<mpfree_sampler_ui::widgets::PadBar>(&ev.widget)
+                .is_some()
+        {
+            self.ask_names();
+            return;
+        }
         // A finger dragged on a Q-Link card turns that knob, as the knob
         // would (the drag is one undo step: the finger's lift ends it).
         if let EventKind::Step { index, delta } = ev.kind {
@@ -2499,6 +2546,33 @@ impl SamplePage {
         }
     }
 
+    /// The wheel turned a marker's tab that a finger rests on (Jay, 17 Nov:
+    /// hold a control and turn the wheel): on the Wave page it moves as
+    /// the marker's Q-Link moves it, a screen pixel a detent snapped the
+    /// way it turns, or a frame unsnapped with SHIFT (`fine`). False when
+    /// `widget` is not the Wave page's waveform.
+    pub fn held_marker(
+        &mut self,
+        ui: &mut Ui,
+        widget: &str,
+        index: usize,
+        delta: i32,
+        fine: bool,
+    ) -> bool {
+        if widget != wave_tab::WAVE || self.page() != PAGE {
+            return false;
+        }
+        let Some(k) = self
+            .state
+            .as_ref()
+            .and_then(|st| wave_tab::marker_knob(st, index))
+        else {
+            return false;
+        };
+        self.qlink(ui, k, delta, fine);
+        true
+    }
+
     /// The pad's tuning (semitones) and decay (None: it plays out) in the
     /// playing kit, for the Play page's Q-Links. None when the kit has no
     /// sound on the pad, or the synth has the pads.
@@ -2957,6 +3031,110 @@ impl SamplePage {
     /// tempo), for the screen's number pad.
     pub fn take_number_ask(&mut self) -> Option<mpfree_ui::numpad::NumberAsk> {
         self.number_ask.take()
+    }
+
+    /// Names a tap on the pad bar asked to be typed, for the screen's text
+    /// keyboard.
+    pub fn take_text_ask(&mut self) -> Option<Vec<mpfree_ui::textpad::TextAsk>> {
+        self.text_ask.take()
+    }
+
+    /// The pad shown, and the sound of its layer the tabs edit, to be
+    /// named: the pad first, its sound on the keyboard's switch.
+    fn ask_names(&mut self) {
+        let kit = self.kit;
+        let at = self.pad_text(kit, self.pad);
+        let layer = self.layer();
+        let Some(project) = self.projects.get(kit) else {
+            return;
+        };
+        let Some(pad) = project.pad(self.pad).filter(|p| !p.layers.is_empty()) else {
+            return;
+        };
+        let mut asks = vec![mpfree_ui::textpad::TextAsk {
+            key: NAME_PAD.to_string(),
+            label: "Pad".to_string(),
+            title: format!("Name pad {at}"),
+            value: pad.name.clone(),
+            max_len: NAME_MAX,
+        }];
+        let sound = pad
+            .layers
+            .get(layer)
+            .and_then(|l| project.source(l.region.source));
+        if let Some(s) = sound {
+            let users = project.users_of(s.id()).len();
+            let on = if users > 1 {
+                format!(" (on {users} pads)")
+            } else {
+                String::new()
+            };
+            asks.push(mpfree_ui::textpad::TextAsk {
+                key: NAME_SOUND.to_string(),
+                label: "Sound".to_string(),
+                title: format!("Name pad {at}'s sound{on}"),
+                value: s.name.clone(),
+                max_len: NAME_MAX.max(s.name.chars().count()),
+            });
+        }
+        // A pad named from a long file name keeps it until shortened.
+        asks[0].max_len = NAME_MAX.max(pad.name.chars().count());
+        self.text_ask = Some(asks);
+    }
+
+    /// The names typed (by [`NAME_PAD`] and [`NAME_SOUND`]): the pad shown
+    /// and the sound of its layer take them, one undo step, with a line
+    /// in the log and on the hint line.
+    pub fn named(&mut self, ui: &mut Ui, names: &[(String, String)]) {
+        if names.is_empty() {
+            return;
+        }
+        self.lift();
+        let kit = self.kit;
+        let pad = self.pad;
+        let at = self.pad_text(kit, pad);
+        let layer = self.layer();
+        let Some(project) = self.projects.get_mut(kit) else {
+            return;
+        };
+        let Some(source) = project
+            .pad(pad)
+            .and_then(|p| p.layers.get(layer))
+            .map(|l| l.region.source)
+        else {
+            return;
+        };
+        let typed = |key: &str| {
+            names
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, n)| n.as_str())
+        };
+        let pad_name = typed(NAME_PAD);
+        let sound_name = typed(NAME_SOUND);
+        match project.rename(pad_name.map(|n| (pad, n)), sound_name.map(|n| (source, n))) {
+            Ok(()) => {
+                self.edits += 1;
+                if let Some(d) = self.dirty.get_mut(kit) {
+                    *d = true;
+                }
+                if pad_name.is_some() {
+                    self.mark_renamed(kit);
+                }
+                let line = match (pad_name, sound_name) {
+                    (Some(p), Some(s)) => format!("pad {at} named {p}, its sound {s}"),
+                    (Some(p), None) => format!("pad {at} named {p}"),
+                    (None, Some(s)) => format!("pad {at}'s sound named {s}"),
+                    (None, None) => return,
+                };
+                self.told.push(format!("P{}", &line[1..]));
+                self.lines.push(format!("sample: {line}"));
+            }
+            Err(e) => self
+                .lines
+                .push(format!("sample: pad {at} not named ({e:?})")),
+        }
+        self.refresh(ui);
     }
 
     /// The number typed for `key`: the tab showing makes the change, an
@@ -3511,6 +3689,25 @@ impl SamplePage {
         (text, sounds)
     }
 
+    /// The analysis of each sound [`SamplePage::save_part`] names, to keep
+    /// beside it in the project's `samples/` (`<id>.a1.peaks`,
+    /// [`cache_file`]): each sound's view as far as it is worked out
+    /// (ready, with its peaks), so the project opens again without
+    /// analysing them. A sound still being worked out has none yet; the
+    /// next save keeps its file.
+    #[allow(dead_code)] // the app's browser wiring calls it
+    pub fn cache_part(&self) -> Vec<(String, Arc<SourceView>)> {
+        let mut seen = HashSet::new();
+        self.projects
+            .iter()
+            .flat_map(|p| p.sources())
+            .filter(|s| seen.insert(s.id()))
+            .filter_map(|s| self.sources.ready(s.id()))
+            .filter(|v| v.pyramid.is_some())
+            .map(|v| (cache_file(v.id), v))
+            .collect()
+    }
+
     /// Opens the sampler's part of a project (`text`, as
     /// [`SamplePage::save_part`] made it). The sounds are read (`read` gives
     /// a file's bytes from the project's `samples/`) and decoded on a
@@ -3536,7 +3733,11 @@ impl SamplePage {
                     )?;
                     wav::read(f, &bytes)
                 });
-                let _ = tx.send(r.map(|o| opened_at_rate(o, rate, free)));
+                let _ = tx.send(r.map(|o| {
+                    let (o, said) = opened_at_rate(o, rate, free);
+                    let views = cached_views(&o, &read);
+                    (o, said, views)
+                }));
             });
         match spawned {
             Ok(_) => {
@@ -3730,10 +3931,29 @@ impl SamplePage {
         };
         self.opening = None;
         match r {
-            Ok((o, converted)) => {
+            Ok((o, converted, views)) => {
                 self.apply_opened(ui, o);
                 for n in converted {
                     self.lines.push(format!("sample: {n}"));
+                }
+                // The views kept beside the sounds: each sound still here
+                // shows its peaks, hits, tempo and note at once.
+                let here: HashSet<SourceId> = self
+                    .projects
+                    .iter()
+                    .flat_map(|p| p.sources())
+                    .map(|s| s.id())
+                    .collect();
+                let mut n = 0;
+                for v in views.into_iter().filter(|v| here.contains(&v.id)) {
+                    self.sources.known(v);
+                    n += 1;
+                }
+                if n > 0 {
+                    self.lines.push(format!(
+                        "sample: the analysis of {n} sound{} read from the project",
+                        if n == 1 { "" } else { "s" }
+                    ));
                 }
             }
             Err(e) => self
@@ -4263,6 +4483,13 @@ impl SamplePage {
     /// auto-sample already running keeps the one it started with.
     #[allow(dead_code)] // the app's MIDI out wiring calls it, after the MIDI out check
     pub fn set_gear(&mut self, ui: &mut Ui, out: Option<GearOut>) {
+        self.lines.push(match &out {
+            Some(o) => format!("sample: auto-sample can play outside gear on {}", o.name),
+            None => {
+                "sample: auto-sample can't play outside gear now (no MIDI out open and sending)"
+                    .to_string()
+            }
+        });
         self.gear_out = out;
         self.refresh_auto_state(ui);
     }
@@ -4296,12 +4523,26 @@ impl SamplePage {
         };
         let gear = Gear::new(input.audio.clone(), channel);
         let how = format!(" (MIDI channel {} on {})", channel + 1, out.name);
-        let send = out.send;
+        let send = out.send.clone();
         self.begin_auto(ui, plan, how, move |plan| {
-            Job::start_gear(plan, gear, Box::new(move |m: [u8; 3]| send(&m[..])))
+            // The job lets go of the gear with All Notes Off; the MIDI out
+            // takes notes only, and no bytes as the end of a job, which
+            // ends every note the job left on.
+            Job::start_gear(
+                plan,
+                gear,
+                Box::new(move |m: [u8; 3]| {
+                    if m[0] & 0xf0 == 0xb0 && m[1] == 123 {
+                        send(&[]);
+                    } else {
+                        send(&m[..]);
+                    }
+                }),
+            )
         });
         if let Some(j) = self.auto_job.as_mut() {
             j.gear = true;
+            j.end = Some(out.send);
         }
     }
 
@@ -4352,6 +4593,7 @@ impl SamplePage {
                     gear: false,
                     notes,
                     per_note,
+                    end: None,
                 });
             }
             Err(e) => {
@@ -4389,7 +4631,11 @@ impl SamplePage {
             return;
         };
         let (kit, onto, gear) = (j.kit, j.onto, j.gear);
+        let end = j.end.clone();
         let f = j.job.finish();
+        if let Some(end) = end {
+            end(&[]);
+        }
         self.land_auto(ui, kit, onto, gear, f);
     }
 
@@ -5347,9 +5593,15 @@ impl ToRate {
         if let Some(m) = self.made.get(&s.id()) {
             return Some(m.clone());
         }
-        // The new sound twice over: made, then moved into place.
+        // The new sound twice over: made, then moved into place; and a
+        // 16-bit sound as floats, which the conversion reads.
         let frames = s.frames() as f64 * f64::from(self.rate) / f64::from(s.rate());
-        let need = (frames.ceil() as u64) * u64::from(s.channels()) * 4 * 2;
+        let floats = if s.data().is_16_bit() {
+            s.data().len() as u64 * 4
+        } else {
+            0
+        };
+        let need = (frames.ceil() as u64) * u64::from(s.channels()) * 4 * 2 + floats;
         if crate::memory::room_in((self.free)(), need).is_err() {
             self.skipped.insert(s.id());
             self.kept.push((s.name.clone(), s.rate()));
@@ -5448,6 +5700,23 @@ fn at_rate(mut l: LoadedSound, rate: u32, free: fn() -> Option<u64>) -> LoadedSo
 /// [`ToRate`]: its sounds at other rates converted, its pads, scenes and
 /// slices moved along), with a log line for each kit that had sounds
 /// converted and one for sounds kept at their rate.
+/// The views of `o`'s sounds kept in their cache files, read with `read`
+/// (a file of the project's `samples/`): each one whose file is there and is
+/// this sound's ([`SourceView::from_cache`]). A sound without one is
+/// analysed when it is shown, as before.
+fn cached_views(o: &Opened, read: &ReadSample) -> Vec<Arc<SourceView>> {
+    let mut seen = HashSet::new();
+    o.kits
+        .iter()
+        .flat_map(|(_, p)| p.sources())
+        .filter(|s| seen.insert(s.id()))
+        .filter_map(|s| {
+            let bytes = read(&cache_file(s.id())).ok()?;
+            SourceView::from_cache(s, &bytes).map(Arc::new)
+        })
+        .collect()
+}
+
 fn opened_at_rate(mut o: Opened, rate: u32, free: fn() -> Option<u64>) -> (Opened, Vec<String>) {
     let mut to = ToRate::new(rate, free);
     let mut said = Vec::new();

@@ -21,8 +21,10 @@
 //! Hermite read whatever its pitch, aliasing and all.
 //!
 //! A region in [`PlayMode::Granular`] plays through the voice's own
-//! [`GrainVoice`] (from `mpfree-grain`) instead of the Hermite read; the
-//! envelope, gain, pan, filter and fades after it are the same. One grain
+//! [`GrainVoice`] (from `mpfree-grain`) instead of the Hermite read; its
+//! grains read the sound through [`GrainClip`], clean when pitched up past
+//! two semitones as a voice is (not on a Vintage pad). The envelope, gain,
+//! pan, filter and fades after it are the same. One grain
 //! [`Budget`] ([`GRAIN_BUDGET`]) caps the grains of all voices together.
 //!
 //! The master effect is a [`GrainFx`] on everything the voices play: grains
@@ -63,11 +65,24 @@
 //! once, its grain settings, and glides to its new level, pan, cutoff and
 //! resonance as it does for live settings. [`Engine::set_view`] is for
 //! another kit: its voices finish as they began.
+//!
+//! **Kits.** An engine made with [`Engine::with_kits`] plays several kits
+//! at once from one voice pool, as a kit per track does: each kit has its
+//! own view ([`Engine::set_kit_view`], [`Engine::edit_kit_view`]), live
+//! settings and locks, and the events for it go in with
+//! [`Engine::schedule_for`] or [`Engine::apply_for`]. A voice knows its
+//! kit and pad, so mute groups, chokes, links, polyphony and a pad's
+//! release stay within its kit, and [`PadOut`] gets each voice's kit with
+//! its pad. Stealing looks at every voice, whatever its kit. Kit 0 is the
+//! one [`Engine::new`] makes and the calls without a kit address, so an
+//! engine of one kit works as it always has. [`Event::AllOff`],
+//! [`Event::Freeze`] and [`Event::Tape`] are for the whole engine, from
+//! any kit.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use mpfree_grain::{Budget, Clip, GrainFx, GrainVoice};
+use mpfree_grain::{Budget, GrainFx, GrainSource, GrainVoice};
 pub use mpfree_grain::{GrainView, MAX_GRAINS};
 /// The lane types [`Engine::split`] takes and reports, so callers need no
 /// dependency of their own on `mpfree-lanes`.
@@ -77,12 +92,13 @@ use mpfree_node::Cull;
 
 use crate::bandlimit::{self, OctaveCell, Reach};
 use crate::dsp::{
-    db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Svf,
-    TINY,
+    db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Sample,
+    Svf, TINY,
 };
+use crate::grain_clip::GrainClip;
 use crate::model::{
-    edge_gain, ChannelPick, Fade, GrainParams, Keys, LayerSelect, Levels, LoopMode, MasterFx,
-    PadsPlay, PlayMode, PressureRoute, PressureTarget, Project, WarpMethod, PADS,
+    edge_gain, ChannelPick, Fade, GrainMode, GrainParams, Keys, LayerSelect, Levels, LoopMode,
+    MasterFx, PadsPlay, Pcm, PlayMode, PressureRoute, PressureTarget, Project, WarpMethod, PADS,
 };
 use crate::warp::{CopyMap, Warps};
 
@@ -96,6 +112,9 @@ pub const STEAL_FRAMES: u16 = 32;
 pub const JUMP_FRAMES: u16 = 64;
 /// Events that can wait for the next render.
 pub const MAX_EVENTS: usize = 256;
+/// The most kits one engine plays ([`Engine::with_kits`]): one for each of
+/// the sequencer's 128 tracks.
+pub const MAX_KITS: usize = 128;
 /// What a hit on a pad plays.
 #[derive(Clone, Copy)]
 enum Target {
@@ -217,12 +236,13 @@ impl Default for BlAbove {
 /// Where [`Engine::render_routed`] puts each pad's sound: one stereo pair
 /// per pad, such as a mixer's pad channels.
 pub trait PadOut {
-    /// Pad `pad`'s pair for this block, both sides at least the block
-    /// long. The engine adds the pad's voices into the start and never
-    /// clears it. It may ask for the same pad more than once in a block.
-    /// `None` leaves the pad unheard: its voices still play on (into a
-    /// scratch buffer) and end on time.
-    fn pad(&mut self, pad: usize) -> Option<(&mut [f32], &mut [f32])>;
+    /// Pad `pad` of kit `kit`: its pair for this block, both sides at
+    /// least the block long. The engine adds the pad's voices into the
+    /// start and never clears it. It may ask for the same pad more than
+    /// once in a block. `None` leaves the pad unheard: its voices still
+    /// play on (into a scratch buffer) and end on time. An engine of one
+    /// kit asks for kit 0 only.
+    fn pad(&mut self, kit: usize, pad: usize) -> Option<(&mut [f32], &mut [f32])>;
 }
 
 /// Every pad into one pair: what [`Engine::render`] renders into.
@@ -232,7 +252,7 @@ struct Mixed<'a> {
 }
 
 impl PadOut for Mixed<'_> {
-    fn pad(&mut self, _pad: usize) -> Option<(&mut [f32], &mut [f32])> {
+    fn pad(&mut self, _kit: usize, _pad: usize) -> Option<(&mut [f32], &mut [f32])> {
         Some((&mut *self.left, &mut *self.right))
     }
 }
@@ -248,7 +268,7 @@ pub struct ViewLoop {
 /// A layer resolved into plain numbers and a handle to its audio.
 #[derive(Clone, Debug)]
 pub struct ViewLayer {
-    data: Arc<[f32]>,
+    data: Pcm,
     stereo: bool,
     pick: ChannelPick,
     start: i64,
@@ -271,6 +291,9 @@ pub struct ViewLayer {
     src_rate: u32,
     /// Grain settings with the layer's tune and reverse folded in.
     grain: mpfree_grain::Params,
+    /// A Tone region: tune moves its density, not its grains' pitch
+    /// ([`pitched_grain`]).
+    tone: bool,
     /// The tempo the layer's audio is at, when it is warped (0 if not):
     /// the voice plays it `tempo / warp_bpm` times as fast.
     warp_bpm: f64,
@@ -423,8 +446,12 @@ impl EngineView {
                         let g = unit_gain * pad_gain;
                         let cents = f64::from(r.tune_cents + l.tune_cents + p.tune_cents);
                         let ratio = f64::from(s.rate()) / f64::from(rate) * (cents / 1200.0).exp2();
-                        let mut grain = r.grain;
-                        grain.pitch += (cents / 100.0) as f32;
+                        let tone = r.grain_mode == GrainMode::Tone;
+                        let mut grain = pitched_grain(r.grain, (cents / 100.0) as f32, tone);
+                        // A stretch of a sound with a tempo keeps time.
+                        if r.grain_mode == GrainMode::Stretch {
+                            grain.scan_tempo = r.warp.as_ref().map(|w| w.bpm);
+                        }
                         if r.reverse {
                             grain.reverse = 1.0;
                         }
@@ -453,14 +480,24 @@ impl EngineView {
                             vel_hi: l.vel_hi,
                             src_rate: s.rate(),
                             grain,
+                            tone,
                             warp_bpm: 0.0,
                             copy: false,
                             source_at: None,
                             octaves: None,
                         };
-                        if !p.vintage && r.mode != PlayMode::Granular {
+                        if !p.vintage {
                             v.octaves = Some(s.octaves().clone());
-                            if may_pass_an_octave(p, ratio, project.pads_play()) {
+                            // Grains go as far up as their pitch and its
+                            // spray take them.
+                            let up = if r.mode == PlayMode::Granular {
+                                let g = &r.grain;
+                                let semis = g.pitch.max(0.0) + g.pitch_spray.clamp(0.0, 24.0);
+                                ratio * f64::from(semis / 12.0).exp2()
+                            } else {
+                                ratio
+                            };
+                            if may_pass_an_octave(p, up, project.pads_play()) {
                                 bandlimit::prepare(s.octaves(), s.data(), s.channels());
                             }
                         }
@@ -482,7 +519,7 @@ impl EngineView {
                                 let map = CopyMap::new(w, s.rate(), &k);
                                 let at = |x: u64| map.at(x as f64).round() as i64;
                                 let len = k.frames as i64;
-                                v.data = data;
+                                v.data = Pcm::F32(data);
                                 v.start = 0;
                                 v.end = len;
                                 v.sustain_loop = r.sustain_loop.map(|lp| {
@@ -845,9 +882,11 @@ struct Follow {
 #[derive(Clone, Debug, Default)]
 struct Voice {
     active: bool,
+    /// The kit whose pad started it ([`Engine::with_kits`]).
+    kit: u8,
     pad: u8,
     layer: u8,
-    data: Option<Arc<[f32]>>,
+    data: Option<Pcm>,
     stereo: bool,
     pick_l: u8,
     pick_r: u8,
@@ -893,6 +932,10 @@ struct Voice {
     src_rate: u32,
     /// Grain settings before pressure moves them.
     grain_base: GrainParams,
+    /// A Tone voice ([`ViewLayer::tone`]), and the semitones its hit added
+    /// (a keygroup's, a live tune's), kept for a live edit.
+    grain_tone: bool,
+    grain_hit: f32,
     route: PressureRoute,
     /// Pressure asked for and the smoothed value in use, 0 to 1.
     press_target: f32,
@@ -948,6 +991,9 @@ struct Voice {
     bl: bool,
     /// Its sound's octave copies, when made by the time it started.
     octaves: Option<Arc<OctaveCell>>,
+    /// A granular voice's grains read band-limited when pitched up
+    /// ([`GrainClip::clean`]): not on a Vintage pad.
+    grain_clean: bool,
     /// The step the band-limited read was last aimed for ([`aim_bl`]),
     /// the octave copy it reads (0: the sound) and the sinc's stretch.
     bl_step: i64,
@@ -969,12 +1015,12 @@ struct Voice {
 
 impl Voice {
     #[inline]
-    fn at(&self, data: &[f32], i: i64, ch: u8) -> f32 {
+    fn at<S: Sample>(&self, data: &[S], i: i64, ch: u8) -> f32 {
         let i = i.clamp(self.start, self.end - 1) as usize;
         if self.stereo {
-            data[2 * i + usize::from(ch)]
+            data[2 * i + usize::from(ch)].f()
         } else {
-            data[i]
+            data[i].f()
         }
     }
 
@@ -982,7 +1028,7 @@ impl Voice {
     /// every neighbour clamped to the region: the edge case of [`Voice::read2`].
     #[cold]
     #[inline(never)]
-    fn read(&self, data: &[f32], pos: i64, pick: u8) -> f32 {
+    fn read<S: Sample>(&self, data: &[S], pos: i64, pick: u8) -> f32 {
         let i = pos >> 32;
         let t = frac(pos);
         let ch = |k: i64| -> f32 {
@@ -1003,7 +1049,7 @@ impl Voice {
     /// Away from the region's edges (nearly always) the four neighbours are
     /// read straight from the data, once for both channels, with no clamps.
     #[inline(always)]
-    fn read2(&self, data: &[f32], pos: i64) -> (f32, f32) {
+    fn read2<S: Sample>(&self, data: &[S], pos: i64) -> (f32, f32) {
         let i = pos >> 32;
         if i - 1 < self.start || i + 2 >= self.end {
             return (
@@ -1015,7 +1061,8 @@ impl Voice {
         let k = (i - 1) as usize;
         if !self.stereo {
             // Mono plays the same on both sides.
-            let w: &[f32; 4] = data[k..k + 4].try_into().expect("four frames");
+            let w: &[S; 4] = data[k..k + 4].try_into().expect("four frames");
+            let w = w.map(S::f);
             let x = if t == 0.0 {
                 w[1]
             } else {
@@ -1023,7 +1070,8 @@ impl Voice {
             };
             return (x, x);
         }
-        let w: &[f32; 8] = data[2 * k..2 * k + 8].try_into().expect("four frames");
+        let w: &[S; 8] = data[2 * k..2 * k + 8].try_into().expect("four frames");
+        let w = w.map(S::f);
         let side = |pick: u8| -> [f32; 4] {
             match pick {
                 0 => [w[0], w[2], w[4], w[6]],
@@ -1149,7 +1197,7 @@ impl Pool {
             if !v.active {
                 continue;
             }
-            match out.pad(usize::from(v.pad)) {
+            match out.pad(usize::from(v.kit), usize::from(v.pad)) {
                 Some((l, r)) => play(
                     v,
                     g,
@@ -1220,7 +1268,7 @@ impl Pool {
             if !self.played[k] {
                 continue;
             }
-            if let Some((l, r)) = out.pad(usize::from(v.pad)) {
+            if let Some((l, r)) = out.pad(usize::from(v.kit), usize::from(v.pad)) {
                 let at = k * LANE_BLOCK;
                 for (o, x) in l[a..a + frames]
                     .iter_mut()
@@ -1387,14 +1435,23 @@ pub struct Stats {
 
 pub struct Engine {
     rate: f32,
-    view: EngineView,
+    /// Each kit's view ([`Engine::with_kits`]).
+    views: Vec<EngineView>,
+    /// The kit the event being applied is for.
+    at: usize,
+    /// The kit whose view the master effect takes its settings from.
+    master_kit: usize,
     /// The voices, with their grain voices, grain budgets and buffers.
     pool: Voices,
     /// Split: the second share of the voices renders here, on another core.
     lane: Option<Lane<Carrier>>,
-    events: Vec<(u32, Event)>,
-    /// Each pad's turn for Cycle (see [`TURNS`]).
+    /// (frame offset, kit, event).
+    events: Vec<(u32, u8, Event)>,
+    /// Each pad's turn for Cycle (see [`TURNS`]), [`PADS`] a kit.
     cycle: Vec<u32>,
+    /// [`Engine::victim`]'s count of each kit's pads' held voices, all 0
+    /// between calls, [`PADS`] a kit.
+    held: Vec<u16>,
     rng: Rng,
     clock: u64,
     fixed_velocity: Option<u8>,
@@ -1411,22 +1468,24 @@ pub struct Engine {
     tape_rate: f32,
     /// Whether the voices still have to follow a tape that moved.
     tape_moved: bool,
-    /// Live settings ([`Event::PadLive`], [`Event::ProgramLive`]).
-    live: Live,
+    /// Each kit's live settings ([`Event::PadLive`], [`Event::ProgramLive`]).
+    lives: Vec<Live>,
     /// The one-pole step playing voices follow them with, per
     /// [`FILTER_STEP`] frames.
     live_k: f32,
     /// Split: [`Engine::stop_all`] came while the lane's share was away;
     /// it stops when it comes back.
     stop_lane: bool,
-    /// Split: an edit ([`Engine::edit_view`]) came while the lane's share
-    /// was away; its voices follow the view when it comes back.
-    edit_lane: bool,
+    /// Split: an edit ([`Engine::edit_view`]) of a kit came while the
+    /// lane's share was away; its voices follow the view when it comes
+    /// back. One a kit.
+    edit_lane: Vec<bool>,
     /// Voices this old or newer (by `clock`) were started by the hit being
     /// played, so its links don't choke each other.
     spare_from: u64,
-    /// Live chop: the pad whose audition marks are taken from.
+    /// Live chop: the pad whose audition marks are taken from, and its kit.
     chop_pad: Option<u8>,
+    chop_kit: u8,
     /// Live chop's cuts, in source frames: cut `i` at `marks[i % MAX_MARKS]`.
     marks: [u64; MAX_MARKS],
     marks_made: u64,
@@ -1443,12 +1502,23 @@ const TAPE_FADE: f32 = 0.25;
 
 impl Engine {
     /// `voices` is the size of the fixed pool. All memory is reserved here.
+    /// One kit, kit 0.
     pub fn new(rate: u32, voices: usize) -> Engine {
+        Engine::with_kits(rate, voices, 1)
+    }
+
+    /// An engine playing `kits` kits at once (1 to [`MAX_KITS`]) from one
+    /// pool of `voices` voices, each kit with an empty view until it gets
+    /// one ([`Engine::set_kit_view`]). All memory is reserved here.
+    pub fn with_kits(rate: u32, voices: usize, kits: usize) -> Engine {
+        let kits = kits.clamp(1, MAX_KITS);
         // Made here, so the audio thread's first clean read finds it.
         bandlimit::kernel();
         Engine {
             rate: rate as f32,
-            view: EngineView::empty(),
+            views: vec![EngineView::empty(); kits],
+            at: 0,
+            master_kit: 0,
             pool: Voices {
                 a: Pool::new(rate, 0, voices.max(1), false),
                 b: None,
@@ -1458,7 +1528,8 @@ impl Engine {
             },
             lane: None,
             events: Vec::with_capacity(MAX_EVENTS),
-            cycle: vec![0; PADS],
+            cycle: vec![0; PADS * kits],
+            held: vec![0; PADS * kits],
             rng: Rng::new(0x5A4D_5052),
             clock: 0,
             fixed_velocity: None,
@@ -1470,16 +1541,20 @@ impl Engine {
             tape_target: 1.0,
             tape_rate: 0.0,
             tape_moved: false,
-            live: Live {
-                pads: Live::OWN,
-                locks: Live::OWN,
-                program: [0.0; ProgramField::COUNT],
-            },
+            lives: vec![
+                Live {
+                    pads: Live::OWN,
+                    locks: Live::OWN,
+                    program: [0.0; ProgramField::COUNT],
+                };
+                kits
+            ],
             live_k: 1.0 - (-(FILTER_STEP as f32) / (LIVE_SMOOTH_S * rate as f32)).exp(),
             stop_lane: false,
-            edit_lane: false,
+            edit_lane: vec![false; kits],
             spare_from: u64::MAX,
             chop_pad: None,
+            chop_kit: 0,
             marks: [0; MAX_MARKS],
             marks_made: 0,
             full_limit: voices.max(1),
@@ -1498,28 +1573,48 @@ impl Engine {
 
     /// The voice slot a new voice takes when there is no free one (or no
     /// free full voice, with `full_only`): a releasing voice first, then
-    /// the oldest voice of the pad holding the most voices. Never
+    /// the oldest voice of the pad holding the most voices, whatever its
+    /// kit. `held` is [`Engine::held`], all 0, and left so. Never
     /// allocates.
-    fn victim(&self, full_only: bool) -> usize {
+    fn victim(pool: &Voices, held: &mut [u16], full_only: bool) -> usize {
         let rel = |x: &Voice| x.kill_left > 0 || x.amp.as_ref().is_some_and(|a| a.is_releasing());
-        let mut held = [0u16; crate::model::PADS];
-        for (v, _) in self.pool.iter() {
-            if v.active && !rel(v) {
-                if let Some(n) = held.get_mut(usize::from(v.pad)) {
+        // One kit: a table on the stack, zeroed as it is made, as an
+        // engine of one kit always had; more kits count in `held`, which
+        // is zeroed again after.
+        let one = held.len() <= PADS;
+        let mut own = [0u16; PADS];
+        let table: &mut [u16] = if one { &mut own } else { held };
+        let at = |x: &Voice| usize::from(x.kit) * PADS + usize::from(x.pad);
+        for (v, _) in pool.iter() {
+            if v.active && !rel(v) && usize::from(v.pad) < PADS {
+                if let Some(n) = table.get_mut(at(v)) {
                     *n += 1;
                 }
             }
         }
-        let count = |x: &Voice| held.get(usize::from(x.pad)).copied().unwrap_or(0);
         type Key = (bool, u16, std::cmp::Reverse<u64>);
         let mut best: Option<(usize, Key)> = None;
-        for (i, (v, _)) in self.pool.iter().enumerate() {
+        for (i, (v, _)) in pool.iter().enumerate() {
             if full_only && (!v.active || v.light) {
                 continue;
             }
-            let key = (rel(v), count(v), std::cmp::Reverse(v.age));
+            let count = if usize::from(v.pad) < PADS {
+                table.get(at(v)).copied().unwrap_or(0)
+            } else {
+                0
+            };
+            let key = (rel(v), count, std::cmp::Reverse(v.age));
             if best.is_none_or(|(_, b)| key > b) {
                 best = Some((i, key));
+            }
+        }
+        if !one {
+            for (v, _) in pool.iter() {
+                if usize::from(v.pad) < PADS {
+                    if let Some(n) = table.get_mut(at(v)) {
+                        *n = 0;
+                    }
+                }
             }
         }
         best.map_or(0, |(i, _)| i)
@@ -1584,10 +1679,25 @@ impl Engine {
     }
 
     fn apply_master(&mut self) {
-        if let Some(fx) = &mut self.master {
-            fx.set_params(self.view.master.grain);
-            fx.set_mix(self.view.master.mix);
+        if let (Some(fx), Some(view)) = (&mut self.master, self.views.get(self.master_kit)) {
+            fx.set_params(view.master.grain);
+            fx.set_mix(view.master.mix);
         }
+    }
+
+    /// The master effect takes its settings from kit `kit`'s view from now
+    /// on (kit 0 until this is called), as when another kit plays on the
+    /// pads. Out of range does nothing.
+    pub fn set_master_kit(&mut self, kit: usize) {
+        if kit < self.views.len() && kit != self.master_kit {
+            self.master_kit = kit;
+            self.apply_master();
+        }
+    }
+
+    /// How many kits the engine plays ([`Engine::with_kits`]).
+    pub fn kits(&self) -> usize {
+        self.views.len()
     }
 
     /// Frames rendered so far. Synced grains start on frames of this
@@ -1608,10 +1718,23 @@ impl Engine {
     /// there over 10 ms). The pads' live settings ([`Event::PadLive`]) go
     /// back to the pads' own; the program's offsets stay.
     pub fn set_view(&mut self, view: EngineView) -> EngineView {
-        self.live.pads = Live::OWN;
-        self.edit_lane = false;
-        let old = std::mem::replace(&mut self.view, view);
-        self.apply_master();
+        self.set_kit_view(0, view)
+    }
+
+    /// [`Engine::set_view`] for kit `kit`: the other kits and their voices
+    /// are left as they are. The master effect takes the new view's
+    /// settings only if it follows this kit ([`Engine::set_master_kit`]).
+    /// A kit out of range gets nothing, and `view` comes back.
+    pub fn set_kit_view(&mut self, kit: usize, view: EngineView) -> EngineView {
+        let Some(slot) = self.views.get_mut(kit) else {
+            return view;
+        };
+        let old = std::mem::replace(slot, view);
+        self.lives[kit].pads = Live::OWN;
+        self.edit_lane[kit] = false;
+        if kit == self.master_kit {
+            self.apply_master();
+        }
         old
     }
 
@@ -1629,27 +1752,45 @@ impl Engine {
     /// (an edit that changes those, or puts another sound on the pad, is
     /// heard from the next hit). Never allocates.
     pub fn edit_view(&mut self, view: EngineView) -> EngineView {
+        self.edit_kit_view(0, view)
+    }
+
+    /// [`Engine::edit_view`] for kit `kit`: its voices hear the edit, the
+    /// other kits' voices are left as they are. A kit out of range gets
+    /// nothing, and `view` comes back.
+    pub fn edit_kit_view(&mut self, kit: usize, view: EngineView) -> EngineView {
+        let Some(live) = self.lives.get(kit) else {
+            return view;
+        };
         // The pads whose voices follow a live value, which goes now.
         let live_pads: [bool; PADS] = std::array::from_fn(|p| {
             PadField::ALL
                 .iter()
-                .any(|&f| f.follows() && !self.live.pads[p][f as usize].is_nan())
+                .any(|&f| f.follows() && !live.pads[p][f as usize].is_nan())
         });
-        let old = self.set_view(view);
+        let old = self.set_kit_view(kit, view);
         let Engine {
-            pool, view, live, ..
+            pool, views, lives, ..
         } = self;
+        let (view, live) = (&views[kit], &lives[kit]);
         for (v, g) in pool.iter_mut() {
             let p = usize::from(v.pad);
-            if v.active && p < PADS {
+            if v.active && usize::from(v.kit) == kit && p < PADS {
                 follow_edit(v, g, view, &live.row(p), &live.program, live_pads[p]);
             }
         }
-        self.edit_lane = self.pool.split && self.pool.b.is_none();
+        self.edit_lane[kit] = self.pool.split && self.pool.b.is_none();
         old
     }
+
+    /// The revision of kit 0's view.
     pub fn view_revision(&self) -> u64 {
-        self.view.revision
+        self.kit_revision(0)
+    }
+
+    /// The revision of kit `kit`'s view (0 for a kit out of range).
+    pub fn kit_revision(&self, kit: usize) -> u64 {
+        self.views.get(kit).map_or(0, |v| v.revision)
     }
 
     /// Full Level (Some(127)), Half Level (Some(64)), or off (None).
@@ -1714,10 +1855,16 @@ impl Engine {
     /// A granular voice reports its reading position (before spray); a
     /// voice playing a stretched copy, the source frame that part of the
     /// copy was made from.
+    /// Kit 0's.
     pub fn playheads(&self) -> impl Iterator<Item = (u8, u8, u64)> + '_ {
+        self.kit_playheads(0)
+    }
+
+    /// [`Engine::playheads`] of kit `kit`'s voices.
+    pub fn kit_playheads(&self, kit: usize) -> impl Iterator<Item = (u8, u8, u64)> + '_ {
         self.pool
             .iter()
-            .filter(|(v, _)| v.active)
+            .filter(move |(v, _)| v.active && usize::from(v.kit) == kit)
             .map(|(v, g)| (v.pad, v.layer, self.source_frame(v, g)))
     }
 
@@ -1738,29 +1885,49 @@ impl Engine {
     /// The map of the stretched copy voice `v` plays, if it plays one.
     fn copy_map(&self, v: &Voice) -> Option<&CopyMap> {
         let l = self
-            .view
+            .views
+            .get(usize::from(v.kit))?
             .pads
             .get(usize::from(v.pad))?
             .as_ref()?
             .layers
             .get(usize::from(v.layer))?;
-        let same = v.data.as_ref().is_some_and(|d| Arc::ptr_eq(d, &l.data));
+        let same = v.data.as_ref().is_some_and(|d| d.ptr_eq(&l.data));
         l.source_at.as_ref().filter(|_| same)
     }
+    /// The voices kit 0's pad `pad` plays now, not counting those fading out.
     pub fn pad_voices(&self, pad: u8) -> usize {
+        self.kit_pad_voices(0, pad)
+    }
+
+    /// [`Engine::pad_voices`] of kit `kit`'s pad.
+    pub fn kit_pad_voices(&self, kit: usize, pad: u8) -> usize {
         self.pool
             .iter()
-            .filter(|(v, _)| v.active && v.pad == pad && v.kill_left == 0)
+            .filter(|(v, _)| {
+                v.active && usize::from(v.kit) == kit && v.pad == pad && v.kill_left == 0
+            })
             .count()
     }
 
     /// The pads whose hit keeps a latched voice playing, as bits (pad `k`
     /// is bit `k`): a pad lights while it is latched. Hits only: a latched
-    /// keygroup note or 16 Levels step isn't a pad of its own.
+    /// keygroup note or 16 Levels step isn't a pad of its own. Kit 0's.
     pub fn latched_pads(&self) -> u16 {
+        self.kit_latched_pads(0)
+    }
+
+    /// [`Engine::latched_pads`] of kit `kit`.
+    pub fn kit_latched_pads(&self, kit: usize) -> u16 {
         let mut bits = 0u16;
         for (v, _) in self.pool.iter() {
-            if v.active && v.latch && v.held && v.note == NO_NOTE && v.by < 16 {
+            if v.active
+                && usize::from(v.kit) == kit
+                && v.latch
+                && v.held
+                && v.note == NO_NOTE
+                && v.by < 16
+            {
                 bits |= 1 << v.by;
             }
         }
@@ -1771,11 +1938,22 @@ impl Engine {
     /// playing it: each one's reading position (0 to 1 across the region),
     /// window level and direction, for drawing the cloud. Fills `out` from
     /// the start and returns how many it holds (grains past its end are
-    /// left out). Never allocates.
+    /// left out). Never allocates. Kit 0's.
     pub fn grains_of(&self, pad: u8, layer: u8, out: &mut [GrainView]) -> usize {
+        self.kit_grains_of(0, pad, layer, out)
+    }
+
+    /// [`Engine::grains_of`] for kit `kit`'s pad.
+    pub fn kit_grains_of(&self, kit: usize, pad: u8, layer: u8, out: &mut [GrainView]) -> usize {
         let mut n = 0;
         for (v, g) in self.pool.iter() {
-            if v.active && v.granular && v.pad == pad && v.layer == layer && n < out.len() {
+            if v.active
+                && usize::from(v.kit) == kit
+                && v.granular
+                && v.pad == pad
+                && v.layer == layer
+                && n < out.len()
+            {
                 n += g.grains(&mut out[n..]);
             }
         }
@@ -1784,19 +1962,38 @@ impl Engine {
 
     /// Queues an event `offset` frames into the next render (later renders if
     /// the offset is past its end). Events at the same offset keep their order.
-    /// Returns false, and counts it, if the queue is full.
+    /// Returns false, and counts it, if the queue is full. For kit 0.
     pub fn schedule(&mut self, offset: u32, ev: Event) -> bool {
+        self.schedule_for(0, offset, ev)
+    }
+
+    /// [`Engine::schedule`] for kit `kit`: its pads, its live settings. One
+    /// queue holds every kit's events, in the order they come. Returns
+    /// false for a kit out of range, which is not counted.
+    pub fn schedule_for(&mut self, kit: usize, offset: u32, ev: Event) -> bool {
+        if kit >= self.views.len() {
+            return false;
+        }
         if self.events.len() >= MAX_EVENTS {
             self.stats.dropped_events += 1;
             return false;
         }
-        let i = self.events.partition_point(|(o, _)| *o <= offset);
-        self.events.insert(i, (offset, ev));
+        let i = self.events.partition_point(|(o, _, _)| *o <= offset);
+        self.events.insert(i, (offset, kit as u8, ev));
         true
     }
 
-    /// Applies an event now (before the next rendered frame).
+    /// Applies an event now (before the next rendered frame). For kit 0.
     pub fn apply(&mut self, ev: Event) {
+        self.apply_for(0, ev)
+    }
+
+    /// [`Engine::apply`] for kit `kit`. A kit out of range gets nothing.
+    pub fn apply_for(&mut self, kit: usize, ev: Event) {
+        if kit >= self.views.len() {
+            return;
+        }
+        self.at = kit;
         match ev {
             // With the pads playing notes, a pad is the note it plays;
             // with 16 Levels, the one pad at its level.
@@ -1816,7 +2013,7 @@ impl Engine {
             Event::Pressure { pad, value } => {
                 let t = self.target(pad);
                 for (v, _) in self.pool.iter_mut() {
-                    if v.active && t.played(v) && v.kill_left == 0 {
+                    if v.active && usize::from(v.kit) == kit && t.played(v) && v.kill_left == 0 {
                         v.press_target = f32::from(value.min(127)) / 127.0;
                     }
                 }
@@ -1863,13 +2060,17 @@ impl Engine {
             Event::ProgramLive { field, value } => self.program_live(field, value),
             Event::LiveChop { pad } => {
                 if let (None, Some(was)) = (pad, self.chop_pad) {
+                    let chop_kit = self.chop_kit;
                     for (v, _) in self.pool.iter_mut() {
-                        if v.active && v.audition && v.pad == was {
+                        if v.active && v.audition && v.kit == chop_kit && v.pad == was {
                             Self::kill(v);
                         }
                     }
                 }
                 self.chop_pad = pad;
+                if pad.is_some() {
+                    self.chop_kit = kit as u8;
+                }
             }
             Event::Mark => {
                 if let Some(at) = self.chop_pad.and_then(|p| self.audition_at(p)) {
@@ -1880,11 +2081,13 @@ impl Engine {
         }
     }
 
-    /// Where pad `pad`'s newest audition is in its source, if one plays.
+    /// Where live chop's kit's pad `pad`'s newest audition is in its
+    /// source, if one plays.
     fn audition_at(&self, pad: u8) -> Option<u64> {
         let mut best: Option<(u64, u64)> = None;
         for (v, g) in self.pool.iter() {
-            if v.active && v.audition && v.pad == pad && v.kill_left == 0 {
+            if v.active && v.audition && v.kit == self.chop_kit && v.pad == pad && v.kill_left == 0
+            {
                 let at = self.source_frame(v, g);
                 if best.is_none_or(|(age, _)| v.age > age) {
                     best = Some((v.age, at));
@@ -1902,6 +2105,12 @@ impl Engine {
         self.chop_pad.filter(|&p| self.audition_at(p).is_some())
     }
 
+    /// The kit live chop was last turned on for ([`Event::LiveChop`]
+    /// through [`Engine::apply_for`] or [`Engine::schedule_for`]).
+    pub fn marking_kit(&self) -> usize {
+        usize::from(self.chop_kit)
+    }
+
     /// How many cuts live chop has made.
     pub fn marks_made(&self) -> u64 {
         self.marks_made
@@ -1916,7 +2125,7 @@ impl Engine {
 
     /// [`Event::PadLive`]: the table, then the playing voices of the pad.
     fn pad_live(&mut self, pad: u8, field: PadField, value: f32) {
-        let Some(row) = self.live.pads.get_mut(usize::from(pad)) else {
+        let Some(row) = self.lives[self.at].pads.get_mut(usize::from(pad)) else {
             return;
         };
         row[field as usize] = field.clamp(value);
@@ -1925,7 +2134,7 @@ impl Engine {
 
     /// [`Event::PadLock`]: the table, then the playing voices of the pad.
     fn pad_lock(&mut self, pad: u8, field: PadField, value: f32) {
-        let Some(row) = self.live.locks.get_mut(usize::from(pad)) else {
+        let Some(row) = self.lives[self.at].locks.get_mut(usize::from(pad)) else {
             return;
         };
         row[field as usize] = field.clamp(value);
@@ -1936,9 +2145,10 @@ impl Engine {
     /// follow `field`.
     fn follow_pad(&mut self, pad: u8, field: PadField) {
         if field.follows() {
-            let (live, program) = (self.live.row(usize::from(pad)), self.live.program);
+            let at = self.at;
+            let (live, program) = (self.lives[at].row(usize::from(pad)), self.lives[at].program);
             for (v, _) in self.pool.iter_mut() {
-                if v.active && v.pad == pad {
+                if v.active && usize::from(v.kit) == at && v.pad == pad {
                     retarget(v, &live, &program);
                 }
             }
@@ -1947,31 +2157,51 @@ impl Engine {
 
     /// [`Event::ProgramLive`]: the offset, then every playing voice.
     fn program_live(&mut self, field: ProgramField, value: f32) {
-        self.live.program[field as usize] = field.clamp(value);
-        let program = self.live.program;
-        let live = &self.live;
+        let at = self.at;
+        self.lives[at].program[field as usize] = field.clamp(value);
+        let program = self.lives[at].program;
+        let live = &self.lives[at];
         for (v, _) in self.pool.iter_mut() {
-            if v.active && usize::from(v.pad) < PADS {
+            if v.active && usize::from(v.kit) == at && usize::from(v.pad) < PADS {
                 retarget(v, &live.row(usize::from(v.pad)), &program);
             }
         }
     }
 
     /// Pad `pad`'s live `field`, or `None` where the pad's own applies.
+    /// Kit 0's.
     pub fn pad_live_value(&self, pad: u8, field: PadField) -> Option<f32> {
-        let x = self.live.pads.get(usize::from(pad))?[field as usize];
+        self.kit_pad_live_value(0, pad, field)
+    }
+
+    /// [`Engine::pad_live_value`] of kit `kit`'s pad.
+    pub fn kit_pad_live_value(&self, kit: usize, pad: u8, field: PadField) -> Option<f32> {
+        let x = self.lives.get(kit)?.pads.get(usize::from(pad))?[field as usize];
         (!x.is_nan()).then_some(x)
     }
 
     /// Pad `pad`'s step lock on `field` ([`Event::PadLock`]), if one holds.
+    /// Kit 0's.
     pub fn pad_lock_value(&self, pad: u8, field: PadField) -> Option<f32> {
-        let x = self.live.locks.get(usize::from(pad))?[field as usize];
+        self.kit_pad_lock_value(0, pad, field)
+    }
+
+    /// [`Engine::pad_lock_value`] of kit `kit`'s pad.
+    pub fn kit_pad_lock_value(&self, kit: usize, pad: u8, field: PadField) -> Option<f32> {
+        let x = self.lives.get(kit)?.locks.get(usize::from(pad))?[field as usize];
         (!x.is_nan()).then_some(x)
     }
 
-    /// The program's offset on `field` (0 when none).
+    /// The program's offset on `field` (0 when none). Kit 0's.
     pub fn program_live_value(&self, field: ProgramField) -> f32 {
-        self.live.program[field as usize]
+        self.kit_program_live_value(0, field)
+    }
+
+    /// [`Engine::program_live_value`] of kit `kit` (0 out of range).
+    pub fn kit_program_live_value(&self, kit: usize, field: ProgramField) -> f32 {
+        self.lives
+            .get(kit)
+            .map_or(0.0, |l| l.program[field as usize])
     }
 
     /// The hard stop: every voice and its grains go idle at once, without a
@@ -2044,9 +2274,9 @@ impl Engine {
         }
     }
 
-    /// What a hit on pad `pad` plays.
+    /// What a hit on pad `pad` of the kit being played plays.
     fn target(&self, pad: u8) -> Target {
-        match self.view.pads_play {
+        match self.views[self.at].pads_play {
             PadsPlay::Pads => Target::Own(pad),
             PadsPlay::Keys { from } => Target::Key(from.saturating_add(pad).min(127)),
             PadsPlay::Levels { pad: p, by } => Target::Level {
@@ -2063,8 +2293,8 @@ impl Engine {
             self.release(|v| v.note == note);
             return;
         }
-        for p in 0..self.view.pads.len() {
-            let Some(k) = self.view.pads[p].as_ref().and_then(|vp| vp.keys) else {
+        for p in 0..self.views[self.at].pads.len() {
+            let Some(k) = self.views[self.at].pads[p].as_ref().and_then(|vp| vp.keys) else {
                 continue;
             };
             if k.contains(note) {
@@ -2082,11 +2312,12 @@ impl Engine {
         }
     }
 
-    /// Lets go of the held voices `which` picks.
+    /// Lets go of the held voices `which` picks, of the kit being played.
     fn release(&mut self, which: impl Fn(&Voice) -> bool) {
+        let at = self.at;
         for (v, g) in self.pool.iter_mut() {
             // A latched voice waits for its pad's next hit.
-            if !v.active || !which(v) || !v.held || v.latch {
+            if !v.active || usize::from(v.kit) != at || !which(v) || !v.held || v.latch {
                 continue;
             }
             match v.mode {
@@ -2122,7 +2353,8 @@ impl Engine {
         }
         let velocity = self.fixed_velocity.unwrap_or(velocity.min(127));
         let p = usize::from(pad);
-        let Some(Some(vp)) = self.view.pads.get(p) else {
+        let at = self.at;
+        let Some(Some(vp)) = self.views[at].pads.get(p) else {
             return;
         };
         let li = usize::from(layer);
@@ -2133,7 +2365,7 @@ impl Engine {
         let vel = f32::from(velocity) / 127.0;
         let level = (1.0 - vp.vel_to_level) + vp.vel_to_level * vel * vel;
         for (v, _) in self.pool.iter_mut() {
-            if v.active && v.pad == pad {
+            if v.active && usize::from(v.kit) == at && v.pad == pad {
                 Self::kill(v);
             }
         }
@@ -2154,7 +2386,7 @@ impl Engine {
         }
         let mut links = [0u8; PADS];
         let mut n = 0;
-        if let Some(Some(vp)) = self.view.pads.get(usize::from(pad)) {
+        if let Some(Some(vp)) = self.views[self.at].pads.get(usize::from(pad)) {
             for &l in &vp.links {
                 links[n] = l as u8;
                 n += 1;
@@ -2184,7 +2416,8 @@ impl Engine {
             .velocity
             .unwrap_or(self.fixed_velocity.unwrap_or(velocity.min(127)));
         let p = usize::from(pad);
-        let Some(Some(vp)) = self.view.pads.get(p) else {
+        let at = self.at;
+        let Some(Some(vp)) = self.views[at].pads.get(p) else {
             return;
         };
         self.stats.hits += 1;
@@ -2194,6 +2427,7 @@ impl Engine {
         let mut toggled_off = false;
         for (v, g) in self.pool.iter_mut() {
             if v.active
+                && usize::from(v.kit) == at
                 && v.pad == pad
                 && v.note == note
                 && v.held
@@ -2211,13 +2445,15 @@ impl Engine {
         // on the pads it links to).
         let group = vp.mute_group;
         for (v, _) in self.pool.iter_mut() {
-            if !v.active || v.pad == pad || v.age >= self.spare_from {
+            if !v.active || usize::from(v.kit) != at || v.pad == pad || v.age >= self.spare_from {
                 continue;
             }
             let other = usize::from(v.pad);
             let same_group = group.is_some()
-                && self.view.pads[other]
-                    .as_ref()
+                && self.views[at]
+                    .pads
+                    .get(other)
+                    .and_then(Option::as_ref)
                     .is_some_and(|o| o.mute_group == group);
             if same_group || vp.chokes.contains(&other) {
                 Self::kill(v);
@@ -2245,8 +2481,9 @@ impl Engine {
             }
             LayerSelect::Cycle | LayerSelect::Random if sets => {
                 let k = if vp.select == LayerSelect::Cycle {
-                    let k = self.cycle[p] % TURNS;
-                    self.cycle[p] = (k + 1) % TURNS;
+                    let turn = &mut self.cycle[at * PADS + p];
+                    let k = *turn % TURNS;
+                    *turn = (k + 1) % TURNS;
                     k as usize
                 } else {
                     self.rng.below(TURNS) as usize
@@ -2263,8 +2500,9 @@ impl Engine {
             }
             LayerSelect::Cycle | LayerSelect::Random => {
                 let k = if vp.select == LayerSelect::Cycle {
-                    let k = self.cycle[p] as usize % n_match;
-                    self.cycle[p] = ((k + 1) % n_match) as u32;
+                    let turn = &mut self.cycle[at * PADS + p];
+                    let k = *turn as usize % n_match;
+                    *turn = ((k + 1) % n_match) as u32;
                     k
                 } else {
                     self.rng.below(n_match as u32) as usize
@@ -2299,7 +2537,7 @@ impl Engine {
                 let mut n = 0;
                 let mut oldest: Option<(usize, u64)> = None;
                 for (i, (v, _)) in self.pool.iter().enumerate() {
-                    if v.active && v.pad == pad && v.kill_left == 0 {
+                    if v.active && usize::from(v.kit) == at && v.pad == pad && v.kill_left == 0 {
                         n += 1;
                         if oldest.is_none_or(|(_, age)| age > v.age) {
                             oldest = Some((i, v.age));
@@ -2323,7 +2561,8 @@ impl Engine {
     /// region: once, forward, without fades or a loop.
     fn start_voice(&mut self, p: usize, li: usize, level: f32, vel: f32, note: u8, vary: Vary) {
         let semis = vary.semis;
-        let Some(vp) = self.view.pads[p].as_ref() else {
+        let at = self.at;
+        let Some(vp) = self.views[at].pads[p].as_ref() else {
             return;
         };
         let l = &vp.layers[li];
@@ -2379,18 +2618,19 @@ impl Engine {
             )
         };
         // The pad's live settings and locks, where set, in place of its own.
-        let live = self.live.row(p);
-        let program = self.live.program;
+        let kit_live = &self.lives[at];
+        let live = kit_live.row(p);
+        let program = kit_live.program;
         let set = |f: PadField| Some(live[f as usize]).filter(|x| !x.is_nan());
         let mut amp = vp.amp;
         if let Some(ms) = set(PadField::Attack) {
             amp.attack_ms = ms;
         }
-        if self.live.pads[p][PadField::Decay as usize].is_nan() {
+        if kit_live.pads[p][PadField::Decay as usize].is_nan() {
             // A locked decay decays to silence, as the Play page's Decay
             // knob shortens a sound.
             if let Some(ms) =
-                Some(self.live.locks[p][PadField::Decay as usize]).filter(|x| !x.is_nan())
+                Some(kit_live.locks[p][PadField::Decay as usize]).filter(|x| !x.is_nan())
             {
                 (amp.decay_ms, amp.sustain) = (ms, 0.0);
             }
@@ -2436,10 +2676,9 @@ impl Engine {
                 program[ProgramField::Tune as usize],
             )
         };
-        let mut grain = l.grain;
-        grain.pitch += semis as f32;
+        let mut grain = pitched_grain(l.grain, semis as f32, l.tone);
         if tune != 0.0 {
-            grain.pitch += tune / 100.0;
+            grain = pitched_grain(grain, tune / 100.0, l.tone);
         }
         if let Some(at) = vary.start {
             grain.position = (at * 16.0 / 15.0).min(1.0);
@@ -2514,9 +2753,12 @@ impl Engine {
                 .count()
         };
         let slot = if !light && full_now >= self.full_limit {
-            self.victim(true)
+            Self::victim(&self.pool, &mut self.held, true)
         } else {
-            self.pool.free_slot().unwrap_or_else(|| self.victim(false))
+            match self.pool.free_slot() {
+                Some(slot) => slot,
+                None => Self::victim(&self.pool, &mut self.held, false),
+            }
         };
         let Some(old) = self.pool.voice(slot) else {
             return;
@@ -2537,6 +2779,7 @@ impl Engine {
         };
         *v = Voice {
             active: true,
+            kit: at as u8,
             pad: p as u8,
             layer: li as u8,
             data: Some(l.data.clone()),
@@ -2580,6 +2823,8 @@ impl Engine {
             granular,
             src_rate: l.src_rate,
             grain_base: grain,
+            grain_tone: l.tone,
+            grain_hit: semis as f32 + tune / 100.0,
             route: vp.pressure,
             press_target: 0.0,
             press: 0.0,
@@ -2625,6 +2870,7 @@ impl Engine {
             } else {
                 l.octaves.as_ref().filter(|c| c.get().is_some()).cloned()
             },
+            grain_clean: !vp.vintage,
             bl_step: 0,
             bl_octave: 0,
             bl_reach: Reach::default(),
@@ -2648,7 +2894,7 @@ impl Engine {
         let beat = self.frames_per_beat();
         if let Some(g) = self.pool.grain_mut(slot).filter(|_| granular) {
             g.set_tempo(beat);
-            g.set_params(tuned_grain(grain, cents));
+            g.set_params(tuned_grain(grain, cents, l.tone));
             // Seeded from the hit count, so the same performance renders the same.
             g.reseed(0x6772_6169_6e00 ^ self.clock);
             g.start();
@@ -2770,16 +3016,17 @@ impl Engine {
                 silence(b);
             }
         }
-        if std::mem::take(&mut self.edit_lane) {
+        if self.edit_lane.iter().any(|&e| e) {
             if let Some(b) = self.pool.b.as_deref_mut() {
                 for (v, g) in b.voices.iter_mut().zip(b.grains.iter_mut()) {
-                    let p = usize::from(v.pad);
-                    if v.active && p < PADS {
-                        let row = self.live.row(p);
-                        follow_edit(v, g, &self.view, &row, &self.live.program, true);
+                    let (k, p) = (usize::from(v.kit), usize::from(v.pad));
+                    if v.active && p < PADS && self.edit_lane.get(k) == Some(&true) {
+                        let live = &self.lives[k];
+                        follow_edit(v, g, &self.views[k], &live.row(p), &live.program, true);
                     }
                 }
             }
+            self.edit_lane.fill(false);
         }
         let tempo = self.tempo;
         for (v, _) in self.pool.iter_mut() {
@@ -2824,14 +3071,14 @@ impl Engine {
             let mut next = n;
             if home {
                 // Apply every event due now.
-                while let Some(&(o, ev)) = self.events.get(applied) {
+                while let Some(&(o, kit, ev)) = self.events.get(applied) {
                     if o > at {
                         break;
                     }
                     applied += 1;
-                    self.apply(ev);
+                    self.apply_for(usize::from(kit), ev);
                 }
-                next = self.events.get(applied).map_or(n, |&(o, _)| o.min(n));
+                next = self.events.get(applied).map_or(n, |&(o, _, _)| o.min(n));
             }
             if self.pool.split {
                 next = next.min(at + LANE_BLOCK as u32);
@@ -2875,7 +3122,7 @@ impl Engine {
                 }
             }
             if master {
-                if let (Some(fx), Some((l, r))) = (&mut self.master, out.pad(0)) {
+                if let (Some(fx), Some((l, r))) = (&mut self.master, out.pad(0, 0)) {
                     let budget = &mut self.pool.a.budget;
                     if self.pool.split {
                         let others = self
@@ -2943,11 +3190,52 @@ fn render_granular(
         v.active = false;
         return;
     };
-    let Some(clip) = Clip::new(&data, if v.stereo { 2 } else { 1 }, v.src_rate) else {
-        v.active = false;
-        return;
-    };
-    let clip = clip.with_range(v.start.max(0) as u64, v.end.max(0) as u64);
+    let ch = if v.stereo { 2 } else { 1 };
+    let (start, end) = (v.start.max(0) as u64, v.end.max(0) as u64);
+    // Clean pitching unless the pad is Vintage, from the sound's octave
+    // copies when they were made by the time the voice started.
+    let clean = v.grain_clean;
+    let cell = v.octaves.take();
+    let octaves = cell.as_deref().and_then(OctaveCell::get);
+    match &data {
+        Pcm::F32(d) => match GrainClip::new(&d[..], ch, v.src_rate) {
+            Some(c) => {
+                let c = c.with_range(start, end);
+                let c = if clean { c.clean(octaves) } else { c };
+                grains(v, g, &c, budget, frame, rate, left, right, sl, sr)
+            }
+            None => v.active = false,
+        },
+        Pcm::I16(d) => match GrainClip::new(&d[..], ch, v.src_rate) {
+            Some(c) => {
+                let c = c.with_range(start, end);
+                let c = if clean { c.clean(octaves) } else { c };
+                grains(v, g, &c, budget, frame, rate, left, right, sl, sr)
+            }
+            None => v.active = false,
+        },
+    }
+    v.octaves = cell;
+    if v.active {
+        v.data = Some(data);
+    }
+}
+
+/// [`render_granular`]'s grains from `clip`.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn grains<C: GrainSource>(
+    v: &mut Voice,
+    g: &mut GrainVoice,
+    clip: &C,
+    budget: &mut Budget,
+    frame: u64,
+    rate: f32,
+    left: &mut [f32],
+    right: &mut [f32],
+    sl: &mut [f32],
+    sr: &mut [f32],
+) {
     let mut at = 0;
     while at < left.len() && v.active {
         let n = (left.len() - at).min(sl.len());
@@ -2959,10 +3247,11 @@ fn render_granular(
             g.set_params(tuned_grain(
                 pressed_grain(v.grain_base, v.route, v.press),
                 cents,
+                v.grain_tone,
             ));
             v.grain_cents = cents;
         }
-        g.render(&clip, budget, frame + at as u64, bl, br);
+        g.render(clip, budget, frame + at as u64, bl, br);
         let follow = v.follow.moving;
         for k in 0..n {
             let (l, r) = if follow {
@@ -2978,15 +3267,27 @@ fn render_granular(
         }
         at += n;
     }
-    if v.active {
-        v.data = Some(data);
-    }
 }
 
 /// Grain settings `cents` higher (the program's tune).
-fn tuned_grain(mut g: GrainParams, cents: f32) -> GrainParams {
+fn tuned_grain(g: GrainParams, cents: f32, tone: bool) -> GrainParams {
     if cents != 0.0 {
-        g.pitch += cents / 100.0;
+        pitched_grain(g, cents / 100.0, tone)
+    } else {
+        g
+    }
+}
+
+/// Grain settings `semis` higher: the grains' pitch, or for a Tone region
+/// (`tone`) the density, with the size shortened as much so each grain
+/// keeps as many cycles of the note.
+fn pitched_grain(mut g: GrainParams, semis: f32, tone: bool) -> GrainParams {
+    if tone {
+        let k = (semis / 12.0).exp2();
+        g.density *= k;
+        g.size_ms /= k;
+    } else {
+        g.pitch += semis;
     }
     g
 }
@@ -3117,7 +3418,7 @@ fn follow_edit(
     };
     let same_sound = v.stereo == l.stereo
         && v.src_rate == l.src_rate
-        && v.data.as_ref().is_some_and(|d| Arc::ptr_eq(d, &l.data));
+        && v.data.as_ref().is_some_and(|d| d.ptr_eq(&l.data));
     if !same_sound {
         return;
     }
@@ -3178,7 +3479,11 @@ fn follow_edit(
     // added (a keygroup's semitones, 16 Levels' position) kept.
     if v.granular && l.mode == PlayMode::Granular && l.grain != v.layer_grain {
         let mut p = l.grain;
-        p.pitch += v.grain_base.pitch - v.layer_grain.pitch;
+        if v.grain_tone {
+            p = pitched_grain(p, v.grain_hit, true);
+        } else {
+            p.pitch += v.grain_base.pitch - v.layer_grain.pitch;
+        }
         if v.grain_base.position != v.layer_grain.position {
             p.position = v.grain_base.position;
         }
@@ -3187,6 +3492,7 @@ fn follow_edit(
         g.set_params(tuned_grain(
             pressed_grain(p, v.route, v.press),
             v.follow.cents,
+            v.grain_tone,
         ));
         v.grain_cents = v.follow.cents;
     }
@@ -3255,9 +3561,11 @@ fn follow_loop(v: &mut Voice, l: &ViewLayer) {
     };
     // The read on each side of the jump, so the step fades out instead
     // of clicking (with what is left of an earlier jump's).
-    if let Some(data) = v.data.as_deref() {
-        let (al, ar) = v.read2(data, v.pos);
-        let (bl, br) = v.read2(data, pos);
+    if let Some(data) = v.data.as_ref() {
+        let ((al, ar), (bl, br)) = match data {
+            Pcm::F32(d) => (v.read2(d, v.pos), v.read2(d, pos)),
+            Pcm::I16(d) => (v.read2(d, v.pos), v.read2(d, pos)),
+        };
         let left = f32::from(v.jump_left) / f32::from(JUMP_FRAMES);
         v.jump = [v.jump[0] * left + al - bl, v.jump[1] * left + ar - br];
         v.jump_left = JUMP_FRAMES;
@@ -3603,6 +3911,18 @@ fn render_plain(v: &mut Voice, left: &mut [f32], right: &mut [f32]) {
         v.active = false;
         return;
     };
+    match &data {
+        Pcm::F32(d) => render_plain_from(v, d, left, right),
+        Pcm::I16(d) => render_plain_from(v, d, left, right),
+    }
+    if v.active {
+        v.data = Some(data);
+    }
+}
+
+/// [`render_plain`] from the samples as the sound holds them.
+#[inline(always)]
+fn render_plain_from<S: Sample>(v: &mut Voice, data: &[S], left: &mut [f32], right: &mut [f32]) {
     let i = v.pos >> 32;
     let n = if i < v.start {
         0
@@ -3613,6 +3933,9 @@ fn render_plain(v: &mut Voice, left: &mut [f32], right: &mut [f32]) {
     // voice's gain on each side.
     let g = v.amp.as_ref().map_or(1.0, |a| a.level());
     let (gl, gr) = (g * v.gain_l, g * v.gain_r);
+    // Raw samples times the gain with the samples' scale in it: exactly
+    // the scaled samples times the gain (the scale is a power of two).
+    let (sl, sr) = (gl * S::SCALE, gr * S::SCALE);
     if n > 0 {
         let k = i as usize;
         let (left, right) = (&mut left[..n], &mut right[..n]);
@@ -3623,27 +3946,25 @@ fn render_plain(v: &mut Voice, left: &mut [f32], right: &mut [f32]) {
                 .zip(right.iter_mut())
                 .zip(src.chunks_exact(2))
             {
-                *ol += f[0] * gl;
-                *or += f[1] * gr;
+                *ol += f[0].raw() * sl;
+                *or += f[1].raw() * sr;
             }
-            v.last_l = src[2 * n - 2] * gl;
-            v.last_r = src[2 * n - 1] * gr;
+            v.last_l = src[2 * n - 2].raw() * sl;
+            v.last_r = src[2 * n - 1].raw() * sr;
         } else {
             let src = &data[k..k + n];
             for ((ol, or), x) in left.iter_mut().zip(right.iter_mut()).zip(src) {
-                *ol += x * gl;
-                *or += x * gr;
+                *ol += x.raw() * sl;
+                *or += x.raw() * sr;
             }
-            v.last_l = src[n - 1] * gl;
-            v.last_r = src[n - 1] * gr;
+            v.last_l = src[n - 1].raw() * sl;
+            v.last_r = src[n - 1].raw() * sr;
         }
         v.pos += (n as i64) << 32;
     }
     if n < left.len() {
         // It reached its end within the block, as the full loop finds.
         v.active = false;
-    } else {
-        v.data = Some(data);
     }
 }
 
@@ -3674,28 +3995,23 @@ fn aim_bl(v: &mut Voice, octaves: Option<&bandlimit::Octaves>) {
 /// Both output channels of a band-limited voice at `pos` ([`aim_bl`] says
 /// from what).
 #[inline(always)]
-fn read_bl(
+fn read_bl<S: Sample>(
     v: &Voice,
     kernel: &bandlimit::Kernel,
-    data: &[f32],
+    data: &[S],
     octaves: Option<&bandlimit::Octaves>,
     pos: i64,
 ) -> (f32, f32) {
     let k = v.bl_octave;
-    let src: &[f32] = match octaves.and_then(|o| o.level(k as usize)) {
-        Some(copy) if k > 0 => copy,
-        _ => data,
-    };
-    bandlimit::read2(
-        kernel,
-        src,
-        v.stereo,
-        v.start >> k,
-        (v.end - 1) >> k,
-        pos >> k,
-        v.bl_reach,
-        (v.pick_l, v.pick_r),
-    )
+    let (lo, hi, at) = (v.start >> k, (v.end - 1) >> k, pos >> k);
+    let picks = (v.pick_l, v.pick_r);
+    match octaves.and_then(|o| o.level(k as usize)) {
+        // The copies are floats, whatever the sound holds.
+        Some(copy) if k > 0 => {
+            bandlimit::read2(kernel, &copy[..], v.stereo, lo, hi, at, v.bl_reach, picks)
+        }
+        _ => bandlimit::read2(kernel, data, v.stereo, lo, hi, at, v.bl_reach, picks),
+    }
 }
 
 /// A sample voice's next frames, added into `left` and `right`, read with
@@ -3716,6 +4032,25 @@ fn render_voice_as<const FOLLOW: bool, const BL: bool>(
         v.active = false;
         return left.len();
     };
+    let done = match &data {
+        Pcm::F32(d) => render_voice_from::<f32, FOLLOW, BL>(v, d, rate, left, right),
+        Pcm::I16(d) => render_voice_from::<i16, FOLLOW, BL>(v, d, rate, left, right),
+    };
+    if v.active {
+        v.data = Some(data);
+    }
+    done
+}
+
+/// [`render_voice_as`] from the samples as the sound holds them.
+#[inline(always)]
+fn render_voice_from<S: Sample, const FOLLOW: bool, const BL: bool>(
+    v: &mut Voice,
+    data: &[S],
+    rate: f32,
+    left: &mut [f32],
+    right: &mut [f32],
+) -> usize {
     // The band-limited read's copies, taken only by a voice that reads
     // with them, and its kernel, fetched once a call.
     let octaves = if BL { v.octaves.take() } else { None };
@@ -3723,9 +4058,9 @@ fn render_voice_as<const FOLLOW: bool, const BL: bool>(
     let kernel = bandlimit::kernel();
     let read = |v: &Voice, pos: i64| -> (f32, f32) {
         if BL {
-            read_bl(v, kernel, &data, copies, pos)
+            read_bl(v, kernel, data, copies, pos)
         } else {
-            v.read2(&data, pos)
+            v.read2(data, pos)
         }
     };
     let mut done = left.len();
@@ -3816,11 +4151,8 @@ fn render_voice_as<const FOLLOW: bool, const BL: bool>(
             break;
         }
     }
-    if v.active {
-        v.data = Some(data);
-        if BL {
-            v.octaves = octaves;
-        }
+    if v.active && BL {
+        v.octaves = octaves;
     }
     done
 }
@@ -3875,6 +4207,50 @@ mod tests {
         }
     }
 
+    /// A sound held as 16 bits reads as its floats do, bit for bit: the
+    /// direct read and the clamped one, mono and stereo, every pick, at
+    /// whole and fractional frames and the region's edges.
+    #[test]
+    fn a_16_bit_sound_reads_as_its_floats_do() {
+        let frames = 64usize;
+        let ints: Vec<i16> = (0..frames * 2)
+            .map(|i| (((i * 7919) % 1000) as i32 * 65 - 32_500) as i16)
+            .collect();
+        let floats: Vec<f32> = ints.iter().map(|&k| f32::from(k) / 32_768.0).collect();
+        let fracs = [0u64, 1, 1 << 31, 0x1234_5678, u64::from(u32::MAX)];
+        for is_stereo in [true, false] {
+            let n = if is_stereo { frames * 2 } else { frames };
+            let (ints, floats) = (&ints[..n], &floats[..n]);
+            for pick in [
+                ChannelPick::Stereo,
+                ChannelPick::MonoSum,
+                ChannelPick::Left,
+                ChannelPick::Right,
+            ] {
+                let (pick_l, pick_r) = picks(is_stereo, pick);
+                let v = Voice {
+                    stereo: is_stereo,
+                    pick_l,
+                    pick_r,
+                    start: 5,
+                    end: 40,
+                    ..Voice::default()
+                };
+                for i in 0..frames as i64 {
+                    for &t in &fracs {
+                        let pos = (i << 32) | t as i64;
+                        let (a, b) = (v.read2(ints, pos), v.read2(floats, pos));
+                        assert_eq!(
+                            (a.0.to_bits(), a.1.to_bits()),
+                            (b.0.to_bits(), b.1.to_bits()),
+                            "{pick:?} stereo {is_stereo} at {i} + {t:#x}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Pressure let go lands on zero: its smoothing never creeps toward
     /// zero through the denormals, which cost far more than a normal
     /// number (7 times, for 16 pads held after pressure).
@@ -3918,7 +4294,23 @@ mod tests {
             .map(|i| ((i * 104_729) % 977) as f32 / 488.5 - 1.0)
             .collect::<Vec<_>>()
             .into();
-        for (data, is_stereo) in [(&stereo, true), (&mono, false)] {
+        // And the same held as 16 bits.
+        let stereo16: Arc<[i16]> = (0..frames * 2)
+            .map(|i| (((i * 7919) % 1000) as i32 * 65 - 32_500) as i16)
+            .collect::<Vec<_>>()
+            .into();
+        let mono16: Arc<[i16]> = (0..frames)
+            .map(|i| (((i * 104_729) % 977) as i32 * 67 - 32_700) as i16)
+            .collect::<Vec<_>>()
+            .into();
+        let sounds = [
+            (Pcm::F32(stereo), true),
+            (Pcm::F32(mono), false),
+            (Pcm::I16(stereo16), true),
+            (Pcm::I16(mono16), false),
+        ];
+        for (data, is_stereo) in &sounds {
+            let is_stereo = *is_stereo;
             for sustain in [1.0f32, 0.7] {
                 for (start, end, from) in [(0i64, 300i64, 0i64), (10, 256, 30), (3, 131, 3)] {
                     let mut amp = Envelope::start(
@@ -3935,7 +4327,7 @@ mod tests {
                     let (pick_l, pick_r) = picks(is_stereo, ChannelPick::Stereo);
                     let v = Voice {
                         active: true,
-                        data: Some(Arc::clone(data)),
+                        data: Some(data.clone()),
                         stereo: is_stereo,
                         pick_l,
                         pick_r,

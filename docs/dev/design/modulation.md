@@ -140,7 +140,7 @@ Two panels on `mpfree-ui`, drawn with theme tokens only: a macro's colour is the
 
 - The **chain editor** takes the mixer's place when a strip's insert row is tapped (`MixAction::OpenInsert`), no tab lit, with "‹ Mixer" in the list's corner (`ChainState::back`, `ChainAction::Back`); the mixer's "+" on a strip (`MixAction::AddInsert`) opens it with the effect picker up (`ChainState::picking`). In the Sample tab it sits in the FX sub-tab under the pad bar, with a switch between the pad's chain and the track's (`ChainState::scopes`, `ChainAction::Scope`). It shows the pad's own chain first (kit pad `p` is the mixer's pad channel `p`), as agreed with the sampler thread.
 - **Macros 1-4 and 5-8** are banks of the Q-Link column; a long press on a macro card opens the **macros panel** over the page under the top bar, no tab lit, with "‹ Back" in its corner (`MacroAction::Back`).
-- The Q-Link column is the Play page's (168 px) beside the panel; the hint line says what the buttons do on the page.
+- The Q-Link column is the Play page's (128 px) beside the panel; the hint line says what the buttons do on the page.
 
 Previews: `cargo run -p mpfree-chain-ui --bin mpfree-chain-preview` (workstation only; writes PNGs to a new folder). The preview draws the app's top bar (`Header::app`) and a stand-in for the Q-Link column in the Play mockups' card shape. Nine screens: the drum bus's Drive, filter and the keys' Delay from the mixer, a pad's chain in Sample > FX, an empty chain, the effect picker, Macros 1-4 and 5-8, and the target editor.
 

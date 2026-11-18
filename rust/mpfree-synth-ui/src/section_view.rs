@@ -1029,6 +1029,27 @@ impl Widget for SectionView {
         out
     }
 
+    /// A finger resting on a knob, fader, slider, drawbar, choice, stepper,
+    /// switch or a section's switch puts that parameter under the wheel
+    /// (Jay, 17 Nov); the page turns it as the wheel turns the selected
+    /// one, by its own step. A meter, a drawing or a heading has nothing
+    /// to turn.
+    fn held(&self, x: i32, y: i32, r: Rect) -> Option<Target> {
+        let geo = self.geometry(r);
+        if let Some(i) = self.switch_at(&geo, x, y) {
+            let (s, g) = self
+                .sections
+                .iter()
+                .zip(&geo)
+                .find(|(s, _)| s.switch.as_ref().is_some_and(|c| c.index == i))?;
+            return Some(Target::tap("tile", i, s.title.clone(), g.switch?));
+        }
+        let (si, ci) = self.hit(&geo, x, y)?;
+        let c = &self.sections[si].controls[ci];
+        (!matches!(c.kind, Kind::Meter))
+            .then(|| Target::tap("tile", c.index, c.label.clone(), geo[si].controls[ci].cell))
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         match phase {
             Touch::Down => {
@@ -1715,7 +1736,7 @@ mod tests {
     #[test]
     fn controls_stay_inside_their_sections_and_apart() {
         let v = view();
-        let r = Rect::new(0, 0, 844, 598);
+        let r = Rect::new(0, 0, 884, 598);
         for g in v.geometry(r) {
             for (k, c) in g.controls.iter().enumerate() {
                 assert!(c.cell.w > 0 && c.cell.h > 0);
@@ -1730,7 +1751,7 @@ mod tests {
     #[test]
     fn a_drag_turns_a_knob_and_a_lift_steps_a_choice() {
         let mut v = view();
-        let r = Rect::new(0, 0, 844, 598);
+        let r = Rect::new(0, 0, 884, 598);
         let geo = v.geometry(r);
         let hero = &geo[0].controls[1];
         let (x, y) = (hero.cell.x + hero.cell.w / 2, hero.cell.y + 10);
@@ -1837,7 +1858,7 @@ mod tests {
             ..knob_ctl(20, Tier::Std)
         });
         assert!(!v.sections[0].switched_off());
-        let r = Rect::new(0, 0, 844, 598);
+        let r = Rect::new(0, 0, 884, 598);
         let g = v.geometry(r);
         let sw = g[0].switch.unwrap();
         assert!(g[0].head.right() < sw.x, "the name and note stay clear");

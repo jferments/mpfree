@@ -10,6 +10,7 @@
 //! output is the same for any period size. No allocation: fixed buffers.
 
 use mpfree_arp::{Clock, Engine, EventKind, Events};
+use mpfree_notefx::{Ev, Notes};
 use mpfree_transport::{Block, Mark, Span};
 
 use crate::player::Event;
@@ -63,6 +64,40 @@ impl ArpHost {
         }
         self.input[i] = (offset, event);
         self.n_input += 1;
+    }
+
+    /// Where the first panic (`AllOff`) among the coming period's notes
+    /// is, if there is one.
+    pub fn first_all_off(&self) -> Option<u32> {
+        self.input[..self.n_input]
+            .iter()
+            .find(|(_, e)| matches!(e, Event::AllOff))
+            .map(|(offset, _)| *offset)
+    }
+
+    /// Moves the coming period's notes on and off to `out`, on the frame
+    /// count from `start` (the period's first frame), in order, for a
+    /// track's MIDI effects before the arp; what they make comes back
+    /// through [`ArpHost::input`]. A panic and pressure stay.
+    pub fn take_notes(&mut self, start: u64, out: &mut Notes) {
+        let mut kept = 0;
+        for i in 0..self.n_input {
+            let (offset, e) = self.input[i];
+            let at = start + u64::from(offset);
+            match e {
+                Event::NoteOn { note, velocity } => {
+                    out.push(Ev::on(at, note, velocity));
+                }
+                Event::NoteOff { note } => {
+                    out.push(Ev::off(at, note));
+                }
+                _ => {
+                    self.input[kept] = (offset, e);
+                    kept += 1;
+                }
+            }
+        }
+        self.n_input = kept;
     }
 
     /// Run the engine over the period described by `block`. `out` gets

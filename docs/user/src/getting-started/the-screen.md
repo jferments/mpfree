@@ -40,7 +40,7 @@ On the Play page, a bar under the tabs shows time: whether MPFree is stopped, pl
 
 ## The Q-Link column and the master bar
 
-At the right edge, the **Q-Link column** shows four cards, one for each Q-Link knob beside the screen, in the same order (knob 1 at the top). Each card names what its knob controls, what part of MPFree it belongs to, and its value. Turn the knob, or drag up and down on its card.
+At the right edge, the **Q-Link column** shows four cards, one for each Q-Link knob beside the screen, in the same order (knob 1 at the top). Each card shows the knob's number and what it controls, centred over a ring with its value in it. Turn the knob, or drag up and down on its card.
 
 Next to it, the **master bar** shows how loud MPFree's output is, with a meter that holds its peak. Drag the handle to set the overall level. It starts at -6 dB, the level the browser auditions sounds at, so a sound plays as loud on the pads as it did when you heard it in the browser, and goes up to 0 dB. "LIM" lights when the limiter is stopping the output from distorting.
 
@@ -83,6 +83,18 @@ On the Play page, the Looper tab, the mixer and the FX chain editor, the data wh
 - While the list of effects is open, the wheel moves through the effects and its push opens presets and then adds, as always (see [Adding an effect](../making-music/mixing-and-effects.md#adding-an-effect)).
 
 To change the kit, tap the kit chip, press a **PAD BANK** button, or hold **SHIFT** and turn the wheel on the Play page.
+
+## Hold and turn
+
+On every page, **rest a finger on anything with a value and turn the data wheel**: the wheel turns that value for as long as your finger stays down, and **–** and **+** step it. It gets a thick outline, and the line at the bottom of the screen says what it is and what it reads now. Lift your finger and the wheel goes back to its usual job on that page (picking rows, moving the outline, zooming). There is no wait: the wheel takes the control as soon as your finger is down (next build).
+
+- **What it turns:** knobs, faders, pans and sends, sliders, Q-Link cards and macro cards, an effect's knobs, the Synth tab's knobs, choices and switches, the settings rows of the Sample and Pads tabs, Arrange and Prefs (the whole row, not just its arrows), and the Wave page's markers. A marker moves a screen pixel a turn at the zoom showing, snapped as its Q-Link moves it. On buttons, pads, tabs and list rows that only pick something, the wheel keeps its usual job.
+- **Hold SHIFT** as well for finer steps on the mixer's faders, pans and sends, an effect's knobs and sliders, and markers (one frame at a time, not snapped). Press SHIFT after your finger is down: SHIFT and a touch on a value is MIDI Learn.
+- **A tap is still a tap.** If you don't turn the wheel, the touch does what it always did. Once you have turned it, lifting your finger presses nothing: a value you can type (dotted line) doesn't open the number pad, and a macro card held still doesn't open the macros panel if you turned the wheel first.
+- **Dragging** a value and turning the wheel both move it. Dragging a list scrolls it and gives the wheel back.
+- **Two fingers:** the wheel turns the one you put down last. Lift it and the wheel goes back to the first.
+- **The push** does nothing while your finger is down, so a slip of the thumb can't press anything.
+- **Undo:** on the Sample and Pads tabs a whole hold is one UNDO. On the Synth tab and the mixer, turns of one control less than a moment apart are one UNDO, as always.
 
 ## Touch
 

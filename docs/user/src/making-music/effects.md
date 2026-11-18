@@ -67,13 +67,13 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Compressor** | Evens out levels and adds punch or glue. **Attack** is how long it takes to get most of the way down (63 %, the usual convention) and **Release** how long to come most of the way back. **Style** sets how it moves: **Clean** does exactly what the knobs say; **Opto** eases in and comes back slowly after long, heavy compression, for smooth levelling (vocals, bass); **Bus** comes back quickly after a hit and slower under a steady mix, for glue; **FET** adds a little grit as it turns down, more the harder it works, for drums and aggressive vocals. **Auto makeup** turns it back up by what it takes from a sound at a mix level, so comparing it with bypass is fair (**Makeup** still adds on top). **Range** limits how far it turns down; **Link** at 100 % moves both sides together, lower lets each side follow itself. It can be keyed from another strip, for side-chain pumping. **SC filter** keeps low end (a kick) from pushing it, so a whole mix doesn't pump; **Detect** picks **Peak**, which catches every hit, or **RMS**, which follows the loudness and is smoother on a bus or a vocal. |
 | **Ducker** | The pump: turns the sound down on each kick (keyed from another strip) or on every 1/16, 1/8, 1/4, 1/2 or bar of the tempo, and brings it back on a curve you shape. |
 | **Transient shaper** | More or less punch at the start of each hit and more or less ring after it, at any level, with no threshold to set. |
-| **Limiter** | A brick wall: nothing gets past the ceiling. **True peak** also catches peaks between samples; **Auto release** keeps a loud mix from pumping. |
+| **Limiter** | A brick wall: nothing gets past the ceiling. **True peak** also catches the peaks a converter makes between samples; **Auto release** keeps a loud mix from pumping. See [The Limiter](#the-limiter). |
 | **Gate** | Silences (or turns down) what falls under the threshold, so drums stop ringing. It can open from another strip's sound, for rhythmic gating. |
 | **De-esser** | Turns down harsh "s" and "t" sounds. **Listen** plays only what it hears, to find the right frequency. |
-| **Multiband comp** | Three compressors, on the lows, mids and highs. |
+| **Multiband comp** | Three compressors, on the lows, mids and highs ([more](#the-multiband-comp)). |
 | **Channel strip** | A gate, a compressor and an EQ in one, as on a mixing desk. Its first page, **Main**, shows the three as sections, each with its switch, then the **Signal path** (**Order**: the EQ before or after the gate and compressor) and **Output**; then a page each for the gate, the compressor and the EQ. |
 | **EQ** | Shapes the tone with up to eight bands (each a bell, a shelf or a notch) and low and high cuts: cut mud, add air, take out a ring, thin out a sound. Its page is a graph with a dot for each band (see [The EQ's page](#the-eqs-page)); each band can be on (**ON**), switched off with its settings kept (**OFF**), or removed. Bands 1 to 4 start on and bands 5 to 8 start removed. |
-| **Filter** | **Multi**: low-pass, high-pass, band-pass and more, with resonance. The resonance sings on quiet sounds and holds back on loud ones instead of clipping, as an analog filter does, so a full-Resonance sweep over a whole loop stays under full scale. Changing **Type** or **Slope** crossfades, so it doesn't click. **Drive** pushes the sound into a soft saturator before the filter, cleanly (no fizz on high notes). **DJ**: one knob, turn left for a low-pass, right for a high-pass. |
+| **Filter** | **Multi**: low-pass, high-pass, band-pass and more, with resonance. The resonance sings on quiet sounds and holds back on loud ones instead of clipping, as an analog filter does, so a full-Resonance sweep over a whole loop stays under full scale. Changing **Type** or **Slope** crossfades, so it doesn't click. **Drive** pushes the sound into a soft saturator before the filter, cleanly (no fizz on high notes). **Model** picks **Multi** or **Ladder**, a round, Moog-style 24 dB low-pass whose bass thins a little as the resonance rises and which, near the top of **Resonance**, sings on its own at the cutoff: play it like an oscillator by moving **Cutoff**. **Res mode** picks how the resonance holds back on loud sounds, on either model: **Soft** bends (the default, described above); **Hard** clips, for a harder, buzzier scream, as some classic analog synth filters do, while quiet sounds still ring up fully; **Clean** holds nothing back, for the deepest ring, but a loud sound at the cutoff can clip, and the ladder never sings on its own. Changing it while playing doesn't click. **DJ**: one knob, turn left for a low-pass, right for a high-pass. |
 | **Comb** | Short tuned delays for metallic, resonant tones. |
 | **Auto wah** | A wah that follows your playing: louder notes open it further. It can also sweep in time (**Source** LFO) or stay where you put it (**Source** Pedal: turn **Center** with a Q-Link, like rocking a pedal). |
 | **Drive** | Warm saturation up to hard distortion: **Soft**, **Hard**, **Tube**, **Foldback**, **Fuzz** and **Rectify**; and the colour of a mixing desk or a tape machine: **Console**, **Tape**, **Iron** and **Soften**. Auto-gain keeps the level steady as you turn it up, so you hear more grit, not more volume. **Bias** makes the curve lopsided, for a fuller sound with even harmonics, in every mode but Soft (there it is dimmed). Changing the mode or the Quality fades over 10 ms, so it doesn't click while you play. |
@@ -82,7 +82,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Exciter** | Adds sparkle and air to the top end. |
 | **Crush** | Bit and sample-rate reduction, from a touch of grit to a broken toy. **Bits** and **Rate** are the sound of old samplers and game consoles. **Tails**: **Cut** silences whatever falls under the smallest step, as most crushers do; **Buzz** keeps quiet tails as a buzz instead. **Filters** adds the low-passes an old sampler had before and after its converter (**Before**, **After** or **Both**), for a rounder, darker sound; the vintage presets have them on. **Jitter** wobbles the sampling clock. **Dither** turns the distortion of a few bits into a steady hiss. **Output** sets the crushed sound's level. |
 | **Lo-fi** | Worn tape and dusty vinyl under one **Amount** knob, from a hint of age to a broken machine. **Wow** is slow pitch drift that wanders like a worn tape, not a steady wobble, at about **Rate**; **Stereo** lets the two sides drift apart; **Flutter** is a fast waver; **Saturation** is the tape's soft grit; **Dropouts** are short dips in level where the tape is worn. **Crackle**, **Noise** (hiss) and **Hum** (at your country's **Mains**, 50 or 60 Hz) follow the music while **Follow** is at 100 %: they come in with the sound and fade about a second after it stops, so a stopped track is silent. Turn Follow down for a bed of noise that keeps going. **Low cut**, **High cut** and **Width** set the tone. At Amount 0 it is exactly the sound going in (see [Lo-fi](#lo-fi)). |
-| **Chorus**, **Flanger**, **Phaser** | Movement and width. The Chorus is below. |
+| **Chorus**, **Flanger**, **Phaser** | Movement and width. Each is below. |
 | **Tremolo** | Volume (**Volume**) or position (**Auto-pan**) moved in time with the music. **Harmonic** is the swirl of 1960s amps. |
 | **Ring mod** | Bells, clangs and robot voices. |
 | **Rotary** | A spinning organ speaker: switch **Speed** between Slow and Fast and it ramps up or down like the real one. |
@@ -113,6 +113,15 @@ Changing the curve glides from one blend to the other, so it doesn't click. A pr
 > [!NOTE]
 > Projects saved before the Mix curve open at **Equal**, so a delay or reverb set between 0 and 100 % sounds a little louder and wetter than it did (at Mix 35 %, about 3 dB). Pick **Linear** for the blend it had before. The Room reverb is also about 4 dB louder than before, as loud as the other reverbs.
 
+### The chorus's, flanger's and phaser's sweep
+
+All three move with an LFO, set in their **Movement** section:
+
+- **Rate** sets how fast it sweeps, in Hz. With **Sync** on a note value it follows the tempo instead: 1/16 to 8 bars a cycle and, at the end of the list, the triplet and dotted eighths and quarters (**1/8T**, **1/8D**, **1/4T**, **1/4D**).
+- **Shape** is **Sine** (the default: the sweep slows and lingers at each end) or **Triangle** (it moves at an even speed and turns round quickly at each end). On the chorus a Triangle bends the pitch up and down by a steady amount, the classic synth-chorus sound; on the flanger and phaser the notches glide at an even pace. Its corners are rounded, so the turn is quick but never a jump, and a change of Shape glides from one to the other.
+
+Projects saved before Shape open on Sine, as they sounded.
+
 ### The Chorus
 
 - **Delay** sets where the copies sit, from 2 to 40 ms; **Depth** sets how far they swing either way, up to 5 ms at 100 %. The two are separate: a longer Delay doesn't make the chorus wobble more.
@@ -123,6 +132,27 @@ Changing the curve glides from one blend to the other, so it doesn't click. A pr
 
 > [!NOTE]
 > Choruses saved before this change sound a little different: at the same Mix they are about 3 dB louder (pick **Linear** for the old blend), with three or four voices they are wide, and Depth now means the same swing at every Delay, so a chorus with a long Delay wobbles less than it did and one with a short Delay a little more. The presets keep the swing they had.
+
+### The Flanger
+
+- **Delay** is the middle of the sweep (a pedal's Manual), from 0.1 to 10 ms, and **Depth** swings it up to two octaves either way, so the notches glide evenly up and down the sound. The sweep never goes past 20 ms, where a flanger turns into a doubler: from a Delay of 5 ms up, full Depth swings a little less, the same both ways.
+- **Feedback** sends the copy round again: up for a metallic ring, down (below 0) for a hollow one. The flanger stays as loud as the sound going in at any Feedback and Mix: more Feedback sharpens the notches and the peaks between them, it doesn't make the sound louder.
+- The notches stay deep all the way up, however the sweep moves, and the curve on its page is the one you hear.
+- **Mix** is a plain crossfade: 50 % is the deepest notch.
+- **Through zero** (off by default) is the tape flange, the sound of two tape machines playing together while one is slowed by a thumb on its reel. The sound waits 5 ms and the copy, flipped over, swings either side of it, so twice a cycle the two meet and, at Mix 50 %, the sound vanishes for a moment. **Delay** times **Depth** is how far the copy swings each way, up to the 5 ms wait. The mixer makes up the 5 ms, so the track stays in time with the others. Feedback rings at about 5 ms, so keep it low for the classic sound: the **Tape flange** preset has none. Turning it on or off glides, so it doesn't click.
+
+> [!NOTE]
+> Flangers saved before this change sound a little different: they go in at the level of the sound going in, so at the defaults they are about 2 dB louder than before and with Feedback near either end up to about 4 dB quieter; their highs are brighter; and with a Delay over 5 ms and a deep Depth the sweep stops at 20 ms.
+
+### The Phaser
+
+- **Center** is the middle of the sweep, from 100 Hz to 8 kHz, and **Depth** swings it up to two and a half octaves either way. **Stages** sets how many notches move through the sound: 2 stages make one, 4 make two (the classic pedal), and 12 make six.
+- **Feedback** sends the sound round again: up for a sharper, vocal sweep, down (below 0) for a hollower one. The phaser stays about as loud as the sound going in at any Feedback: more Feedback sharpens the peaks between the notches, it doesn't make the sound louder. The lowest few hertz don't go round, so high Feedback never builds up rumble.
+- **Width** moves the right side's sweep away from the left's, and **Stereo** (beside **Sync**, under the sweep's drawing) sets how far full Width goes: **Quarter** (a quarter of a cycle, the default) or **Opposite** (half a cycle, so one side's notches rise while the other's fall). Width 0 moves both sides together.
+- **Mix** is a plain crossfade: 50 % is the deepest notch.
+
+> [!NOTE]
+> Phasers saved before this change sound a little different: at the defaults and in the presets they are 0.5 to 2 dB louder, and with Feedback near either end about 4 to 5 dB quieter. They keep their quarter-cycle stereo.
 
 ### A delay's repeats
 
@@ -175,6 +205,20 @@ The **Spring** reverb is the tank in a guitar amp or an old organ: the sound sen
 > [!NOTE]
 > The Spring was rebuilt, so projects saved before it sound a little different on a Spring: Decay is what it says, an echo comes back every Length, and a sound keeps its side. Every setting and preset still loads and does what it did.
 
+### Hall, Cloud and Echoes
+
+The **Hall**, **Cloud** and **Echoes** reverbs are the large ones. The **Hall** is a concert hall: a spread of early reflections, then a smooth tail that builds slowly. The **Cloud** is an endless ambient wash for pads and long fades. **Echoes** is a few distinct repeats that blur as they fade, somewhere between a reverb and a delay.
+
+- **Decay** is how long the tail takes to fall away (60 dB, to near silence) in the mids, and low notes no longer ring on after the rest. **Damping** makes the highs die sooner.
+- Turning **Decay** changes how long the tail rings, not how loud it is, so you can set the length without riding the level.
+- **Size** makes the space bigger; **Pre-delay** waits before it answers. Turning either never bends the pitch: the reverb fades over to the new size or time.
+- **Diffusion** sets how quickly the echoes blur into a wash; **Modulation** and **Mod rate** keep the tail from ringing on a note with a slow drift.
+- **Early** sets the level of the first reflections; **Width** goes from mono to wide; **Low cut** and **High cut** shape what goes in.
+- A sound on the left stays on the left as the reverb starts.
+
+> [!NOTE]
+> Projects saved before this change sound a little different on a Hall, Cloud or Echoes (and on a Cloud reverb set to its own Plate or Room): Decay is what it says at every setting, a long Decay is no louder than a short one, and the Hall's tail is smoother at big sizes. Every setting and preset still loads and does what it did.
+
 ### The EQ's page
 
 {{shot: chain-mixer-drums-eq | The EQ on the drum bus: its curve with a dot for each band and the cuts, band 2 picked in the panel underneath.}}
@@ -209,9 +253,34 @@ Lo-fi plays about as loud as the sound going in, so switching it on and off comp
 > [!NOTE]
 > Projects saved before this change sound a little different through Lo-fi: high notes no longer fizz through the saturation, the wow wanders instead of wobbling evenly, and it is 1 to 1.5 dB louder than before (as loud as the sound going in). Stereo, Dropouts and Hum start at 0 and Follow at 100 %, so nothing new is added to a saved Lo-fi.
 
+### The Limiter
+
+**Gain** pushes the sound into the Limiter and **Ceiling** is as loud as it can come out. **Release** is how long the level takes to come most of the way back (63 %) after a peak; before it lets go, it holds for a moment (a quarter of Release, at most 5 ms), so a bass note isn't turned up and down inside each wave, which would make it buzz. With **Auto release** on (the default), it comes back in about a third of Release after a single hit and takes about three times Release after a long loud stretch, so a pushed mix doesn't pump. With **True peak** on, it also holds the peaks a converter rebuilds between samples at the ceiling, which is what a streaming service or a mastering engineer measures.
+
+It holds the sound back about 1.8 ms to see the peaks coming, and the mixer holds everything else back to match, so the mix stays in time.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through the Limiter: pushed hard, it is cleaner on bass and a little quieter (about 0.6 dB on a mix pushed 6 dB), and Auto release now acts.
+
+### The Multiband comp
+
+**Low | mid** and **Mid | high** split the sound into three bands, and each band has its own **Threshold**, **Ratio** and **Gain**; **Attack** and **Release** are shared and mean the same as on the Compressor (most of the way, 63 %, in the time shown). **Solo** plays one band alone while you set it up. **Mix** blends in the sound before compression for parallel squash, and any Mix stays even across the bands (the blend no longer dips at the split points). **Auto makeup** turns each band back up by what it takes from a sound at a mix level, so comparing it with bypass is fair; it is off at first and on in every preset, and **Gain** still adds on top.
+
+> [!NOTE]
+> Projects saved before this change sound a little different through the Multiband comp: it compresses as far as its curve says (it used to fall short, and react about 1.7 times slower than Attack showed), a Mix under 100 % no longer dips around the split points, and turning a threshold or ratio is smooth. The Drum crush preset now uses Auto makeup instead of +6 dB on each band.
+
 ### Master safety
 
-The master strip always ends in **Master safety**, a limiter that keeps the output from going past -0.3 dB. It isn't in the list: it is always there. See [The master and Master safety](mixing-and-effects.md#the-master-and-master-safety).
+The master strip always ends in **Master safety**, which keeps the output from going past its **Ceiling** (-0.3 dB), including the peaks a converter rebuilds between samples. It isn't in the list: it is always there. Its **Mode**:
+
+- **Safe limiter** (the default): a limiter that is down before a peak arrives.
+- **Soft clip**: rounds the loudest moments off from 6 dB under the ceiling, a warmer, denser sound, and still never goes past the ceiling.
+- **Raw**: no limiting. Anything over 0 dB clips harshly in the converter. Only for when you want that.
+
+Changing the mode crossfades, so it doesn't click. **Trim** turns the whole mix up or down going in, and **Release** is how long the limiter takes to come back. See [The master and Master safety](mixing-and-effects.md#the-master-and-master-safety).
+
+> [!NOTE]
+> Projects saved before this change sound a little different when the master is pushed into Master safety: a little quieter and cleaner, with no peaks between samples over the ceiling. A Soft clip master no longer makes a gritty fold-back on loud high notes.
 
 ## Effects with modes
 
@@ -300,7 +369,7 @@ A plugin's settings are saved with your project. If you open the project on a st
 
 ## Coming next
 
-- **Automation**: knob moves recorded into clips.
+- **Automation lanes**: knob moves recorded as smooth lanes. Today a move made while recording goes into the clip as a lock on its step (see [Knob moves while you record](clips.md#knob-moves-while-you-record)).
 - **Perform FX from the pads**: effects played by hitting pads.
 
 > [!MPC]

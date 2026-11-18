@@ -69,7 +69,7 @@ static GLOBAL: Counting = Counting;
 struct Channels(Vec<[Vec<f32>; 2]>);
 
 impl PadOut for Channels {
-    fn pad(&mut self, pad: usize) -> Option<(&mut [f32], &mut [f32])> {
+    fn pad(&mut self, _kit: usize, pad: usize) -> Option<(&mut [f32], &mut [f32])> {
         let [l, r] = self.0.get_mut(pad)?;
         Some((&mut l[..], &mut r[..]))
     }
@@ -87,8 +87,22 @@ fn render_and_events_never_allocate() {
             .collect(),
     )
     .unwrap();
+    // The same noise as 16-bit values: every pad's second layer and two
+    // grain clouds read 16-bit samples.
+    let s16 = Source::new(
+        "noise 16",
+        rate,
+        2,
+        s.data()
+            .iter()
+            .map(|x| ((x * 32_767.0).round() + 0.0) / 32_768.0)
+            .collect(),
+    )
+    .unwrap();
+    assert!(s16.data().is_16_bit());
     let mut p = Project::new();
     p.add_source(s.clone());
+    p.add_source(s16.clone());
     for i in 0..16usize {
         let mut r = Region::whole(&s);
         r.mode = [
@@ -121,6 +135,7 @@ fn render_and_events_never_allocate() {
             _ => None,
         };
         let mut pad = Pad::new("p", Layer::new(r.clone()));
+        r.source = s16.id();
         pad.layers.push(Layer::new(r));
         pad.select = [LayerSelect::All, LayerSelect::Cycle, LayerSelect::Random][i % 3];
         pad.polyphony = 2;
@@ -175,9 +190,11 @@ fn render_and_events_never_allocate() {
         p.set_pad(i, Some(pad), None).unwrap();
     }
     // Four granular pads: busy clouds, one reversed, one synced, so the grain
-    // budget fills and voices are stolen while grains play.
+    // budget fills and voices are stolen while grains play. (Free-running
+    // clouds thin to fit a voice; the synced one keeps its grid and wants
+    // more grains than a voice holds.)
     for i in 16..20usize {
-        let mut r = Region::whole(&s);
+        let mut r = Region::whole(if i % 2 == 0 { &s } else { &s16 });
         r.mode = PlayMode::Granular;
         r.reverse = i == 17;
         r.tune_cents = (i as i32 - 18) * 700;
@@ -194,8 +211,8 @@ fn render_and_events_never_allocate() {
             r.grain.window = GrainWindow::Exponential { decay: 6.0 };
             r.grain.sync = Some(TempoSync {
                 frames_per_beat: 22_050.0,
-                grains_per_beat: Some(8.0),
-                size_beats: Some(0.25),
+                grains_per_beat: Some(96.0),
+                size_beats: Some(1.0),
             });
         }
         let mut pad = Pad::new("g", Layer::new(r));
@@ -539,4 +556,140 @@ fn render_and_events_never_allocate() {
 /// (clamped) for others, the way a careless caller might send it.
 fn live_value(block: u32) -> f32 {
     (block * 37 % 2000) as f32 - 500.0
+}
+
+/// Several kits from one pool ([`Engine::with_kits`]), as a kit per track
+/// plays: hits and lifts on every kit, stealing across them, each kit's
+/// live settings and locks, swapping and editing one kit's view while the
+/// others play, and the master effect following another kit, rendered
+/// routed and mixed. None of it allocates or frees.
+#[test]
+fn kits_never_allocate() {
+    let rate = 44_100;
+    const KITS: usize = 4;
+    let kit = |seed: usize| {
+        let s = Source::new(
+            "noise",
+            rate,
+            2,
+            (0..20_000)
+                .map(|i| (((i + seed) * 7919) % 2000) as f32 / 1000.0 - 1.0)
+                .collect(),
+        )
+        .unwrap();
+        let mut p = Project::new();
+        p.add_source(s.clone());
+        for i in 0..8usize {
+            let mut r = Region::whole(&s);
+            r.mode = [PlayMode::OneShot, PlayMode::Gate, PlayMode::Loop][i % 3];
+            r.sustain_loop = Some(Loop {
+                start: 2000,
+                end: 6000,
+                crossfade: 100,
+                mode: LoopMode::Forward,
+            });
+            r.tune_cents = (i as i32 - 4) * 100 + seed as i32;
+            let mut pad = Pad::new("p", Layer::new(r));
+            pad.mute_group = (i % 4 == 0).then_some(1);
+            p.set_pad(i, Some(pad), None).unwrap();
+        }
+        p
+    };
+    let projects: Vec<Project> = (0..KITS).map(|k| kit(k * 13)).collect();
+    // Two views a kit, built before the watch: they swap back and forth.
+    let mut spare: Vec<Option<EngineView>> = projects
+        .iter()
+        .enumerate()
+        .map(|(k, p)| {
+            let mut v = EngineView::build(p, rate);
+            v.revision = 100 + k as u64;
+            Some(v)
+        })
+        .collect();
+    let mut e = Engine::with_kits(rate, 12, KITS);
+    let fx = Engine::make_master_fx(rate);
+    e.set_master_fx(fx);
+    for (k, p) in projects.iter().enumerate() {
+        e.set_kit_view(k, EngineView::build(p, rate));
+    }
+    let mut chans = Channels((0..8).map(|_| [vec![0.0; 128], vec![0.0; 128]]).collect());
+    let (mut l, mut r) = (vec![0.0f32; 128], vec![0.0f32; 128]);
+
+    watch(true);
+    for block in 0..1500u32 {
+        let k = (block as usize * 7) % KITS;
+        let pad = ((block * 5) % 8) as u8;
+        e.schedule_for(k, block % 128, Event::NoteOn { pad, velocity: 100 });
+        e.schedule_for(
+            (k + 1) % KITS,
+            (block * 3) % 128,
+            Event::NoteOff {
+                pad: ((block * 3) % 8) as u8,
+            },
+        );
+        if block % 7 == 0 {
+            e.schedule_for(
+                (k + 2) % KITS,
+                5,
+                Event::PadLive {
+                    pad,
+                    field: PadField::ALL[block as usize % PadField::COUNT],
+                    value: live_value(block),
+                },
+            );
+            e.schedule_for(
+                (k + 3) % KITS,
+                9,
+                Event::PadLock {
+                    pad,
+                    field: PadField::Cutoff,
+                    value: 800.0 + block as f32,
+                },
+            );
+            e.schedule_for(
+                k,
+                11,
+                Event::ProgramLive {
+                    field: ProgramField::Level,
+                    value: -((block % 12) as f32),
+                },
+            );
+        }
+        if block % 50 == 25 {
+            // One kit's view swaps in place while the others play on: an
+            // edit every other time, another view the rest.
+            let swap = (block as usize / 50) % KITS;
+            if let Some(v) = spare[swap].take() {
+                let old = if block % 100 == 25 {
+                    e.edit_kit_view(swap, v)
+                } else {
+                    e.set_kit_view(swap, v)
+                };
+                spare[swap] = Some(old);
+            }
+            e.set_master_kit(swap);
+        }
+        if block % 4 == 0 {
+            e.render(&mut l, &mut r);
+        } else {
+            for [cl, cr] in chans.0.iter_mut() {
+                cl.fill(0.0);
+                cr.fill(0.0);
+            }
+            e.render_routed(128, &mut chans);
+        }
+    }
+    e.apply_for(3, Event::AllOff);
+    for _ in 0..100 {
+        e.render(&mut l, &mut r);
+    }
+    watch(false);
+    assert_eq!(
+        CALLS.load(Ordering::SeqCst),
+        0,
+        "allocations or frees while rendering kits"
+    );
+    assert!(e.stats().hits > 1000);
+    assert!(e.stats().steals > 100, "the pool filled across kits");
+    assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()));
 }

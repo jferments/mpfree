@@ -237,6 +237,34 @@ crush/crush[Soft grit]/lu_pink18	-0.3847
 crush/crush[Soft grit]/off_grid_at_16bits	-68.2937
 crush/crush[Wobbly clock]/lu_pink18	-0.736
 crush/crush[Wobbly clock]/off_grid_at_16bits	-59.0316
+deesser/absolute/one_side_error_db	4.3972
+deesser/absolute/voice_reduction_db_-18dbfs	0.0007
+deesser/absolute/voice_reduction_db_-30dbfs	0
+deesser/absolute/voice_reduction_db_-6dbfs	0.2993
+deesser/deesser/zipper_freq	0.0859
+deesser/deesser/zipper_range	0.3259
+deesser/deesser/zipper_threshold	0.6083
+deesser/relative/one_side_error_db	0.6955
+deesser/relative/s_reduction_spread_db	0
+deesser/relative/voice_reduction_db_-18dbfs	0.04
+deesser/relative/voice_reduction_db_-30dbfs	0.04
+deesser/relative/voice_reduction_db_-6dbfs	0.04
+deesser/split/lift_db_range10_3000hz	1.3229
+deesser/split/lift_db_range10_6000hz	1.3064
+deesser/split/lift_db_range24_3000hz	1.8419
+deesser/split/lift_db_range24_6000hz	1.8122
+deesser/split/range_error_db_range10_3000hz	7.6944
+deesser/split/range_error_db_range10_6000hz	6.9197
+deesser/split/range_error_db_range24_3000hz	22.1214
+deesser/split/range_error_db_range24_6000hz	21.1912
+deesser/wide/lift_db_range10_3000hz	-10
+deesser/wide/lift_db_range10_6000hz	-10
+deesser/wide/lift_db_range24_3000hz	-24
+deesser/wide/lift_db_range24_6000hz	-24
+deesser/wide/range_error_db_range10_3000hz	0
+deesser/wide/range_error_db_range10_6000hz	0
+deesser/wide/range_error_db_range24_3000hz	0
+deesser/wide/range_error_db_range24_6000hz	0
 delay/digital/alias_5k_0_db	-95.5582
 delay/digital/hidden_loss_10k_db	-0.0045
 delay/digital/hidden_loss_15k_db	-0.0102
@@ -490,6 +518,24 @@ drive/tube/subsonic_hits_bias100	-23.4997
 drive/tube/zipper_db	0.1266
 drive/tube[Tube glow]/alias_5k_0dbfs	-80.1329
 drive/tube[Tube glow]/zipper_db	0.5672
+ducker/ducker/response_ms_attack0.1ms	0.4271
+ducker/ducker/response_ms_attack2ms	0.4271
+ducker/ducker[Big pump]/beat_error_db	17.7959
+ducker/ducker[Big pump]/drawing_error_db	1.0612
+ducker/ducker[Eighth pulse]/beat_error_db	19.7732
+ducker/ducker[Eighth pulse]/drawing_error_db	1.1791
+ducker/ducker[Sixteenth gate]/beat_error_db	34.3673
+ducker/ducker[Sixteenth gate]/drawing_error_db	8.2449
+ducker/ducker[Slow swell]/beat_error_db	15.4482
+ducker/ducker[Slow swell]/drawing_error_db	8.5167
+ducker/tempo/beat_error_db	17.7959
+ducker/tempo/drawing_error_db	1.0612
+ducker/tempo/drawing_error_db_after_jump	17.7088
+ducker/tempo/drawing_error_db_after_wrap	1.0612
+ducker/tempo/zipper_depth	0.0892
+ducker/tempo/zipper_mix	0.0327
+ducker/tempo/zipper_release	0.0231
+ducker/tempo/zipper_shape	2.901
 eq/bell_12k_q0.71_width_ratio	1.009
 eq/bell_12k_q0.71_worst_db	0.9284
 eq/bell_12k_q1.41_width_ratio	1.0342
@@ -595,6 +641,23 @@ filter/dj/lowpass_corner_hz_at_left	80
 filter/dj/null_middle_dbfs	-140
 filter/dj/position_sweep50ms_res0	2.2861
 filter/dj/swept_pink_peak_res100	-3.8864
+filter/ladder/click_multi_to_ladder	1.2479
+filter/ladder/drive0_alias_5k_0dbfs	-114.8815
+filter/ladder/drive12_alias_5k_0dbfs	-52.359
+filter/ladder/heard_vs_drawn_res50	0.0022
+filter/ladder/selfosc_cents_100	-0.0554
+filter/ladder/selfosc_cents_1000	-0.0547
+filter/ladder/selfosc_cents_300	-0.0549
+filter/ladder/selfosc_cents_3000	-0.0485
+filter/ladder/selfosc_cents_5000	-0.0379
+filter/ladder/selfosc_level_spread_db	0.0099
+filter/ladder/swept_pink_peak_res100	-2.2006
+filter/ladder/swept_pink_peak_res75	-6.2813
+filter/ladder_clean/click_soft_to_clean	0.0457
+filter/ladder_clean/selfosc_level_dbfs_1k	-140
+filter/ladder_hard/click_soft_to_hard	0.0008
+filter/ladder_hard/selfosc_cents_1000	-0.2381
+filter/ladder_hard/swept_pink_peak_res100	-3.5633
 filter/multi/click_12_to_24db	1.191
 filter/multi/click_lp_to_hp_24db	0
 filter/multi/cutoff_error_pct_12db	0.015
@@ -623,6 +686,14 @@ filter/multi/swept_pink_peak_res100_12db	-2.0143
 filter/multi/swept_pink_peak_res100_24db	-3.0867
 filter/multi/swept_pink_peak_res75_12db	-2.765
 filter/multi/swept_pink_peak_res75_24db	-3.2405
+filter/multi_clean/click_soft_to_clean	0
+filter/multi_hard/click_soft_to_hard	0.5014
+filter/multi_hard/heard_vs_drawn_lp_res50_12db	0
+filter/multi_hard/heard_vs_drawn_lp_res50_24db	0
+filter/multi_hard/peak_gain_m40dbfs_res100_12db	32.0408
+filter/multi_hard/peak_gain_m40dbfs_res100_24db	32.0421
+filter/multi_hard/swept_pink_peak_res100_12db	-1.6079
+filter/multi_hard/swept_pink_peak_res100_24db	-1.9191
 fuzz/face/alias_1k_m6dbfs_fuzz100	-73.0099
 fuzz/face/alias_1k_m6dbfs_fuzz60	-85.0631
 fuzz/face/alias_5k_m12dbfs_fuzz100	-65.8952
@@ -683,6 +754,99 @@ fuzz/octave/model_change_db	0
 fuzz/octave/silence_out_dbfs_fuzz100_gate0	-140
 fuzz/octave/silence_out_dbfs_fuzz100_gate100	-140
 fuzz/octave/sustain_drop_db_fuzz100	2.494
+gate/gate/onset_1ms_db_attack0.1ms	0
+gate/gate/onset_1ms_db_attack0.5ms	0
+gate/gate/onset_1ms_db_attack1ms	0
+gate/gate/range_change_while_shut_error_db	88
+gate/gate/release_ratio_120ms	0.9979
+gate/gate/release_ratio_500ms	0.9997
+gate/gate/release_ratio_50ms	0.9988
+gate/gate/ripple_db_1000hz_hold0ms	0
+gate/gate/ripple_db_1000hz_hold30ms	0
+gate/gate/ripple_db_100hz_hold0ms	0.4082
+gate/gate/ripple_db_100hz_hold30ms	0
+gate/gate/ripple_db_40hz_hold0ms	3.7188
+gate/gate/ripple_db_40hz_hold30ms	0
+gate/gate/ripple_db_60hz_hold0ms	2.2978
+gate/gate/ripple_db_60hz_hold30ms	0
+gate/gate/shut_error_db_1000hz_hold0ms	1.0966
+gate/gate/shut_error_db_1000hz_hold30ms	0.0989
+gate/gate/shut_error_db_100hz_hold0ms	3.8334
+gate/gate/shut_error_db_100hz_hold30ms	2.9
+gate/gate/shut_error_db_40hz_hold0ms	3.7502
+gate/gate/shut_error_db_40hz_hold30ms	2.9168
+gate/gate/shut_error_db_60hz_hold0ms	3.8334
+gate/gate/shut_error_db_60hz_hold30ms	2.9445
+gate/gate/zipper_attack	0.0229
+gate/gate/zipper_hold	0.0229
+gate/gate/zipper_key-hp	0.0229
+gate/gate/zipper_key-lp	0.0229
+gate/gate/zipper_range	0
+gate/gate/zipper_release	0.0229
+gate/gate/zipper_threshold	0.0229
+gate/gate[Gated snare]/onset_1ms_db	0
+gate/gate[Kick trigger]/onset_1ms_db	0
+gate/gate[Soft cleanup]/onset_1ms_db	0
+gate/gate[Tight drums]/onset_1ms_db	0
+limiter/limiter-auto-off/release_ratio_20ms	0.9903
+limiter/limiter-auto-off/release_ratio_300ms	0.9937
+limiter/limiter-auto-off/release_ratio_80ms	0.9931
+limiter/limiter-auto-off/sample_peak_over_ceiling_db	0
+limiter/limiter-auto-off/thd_100hz_12db_over	-124.6005
+limiter/limiter-auto-off/thd_100hz_6db_over	-124.5997
+limiter/limiter-auto-off/thd_50hz_12db_over	-64.104
+limiter/limiter-auto-off/thd_50hz_6db_over	-64.104
+limiter/limiter-auto-off/true_peak_over_ceiling_db	0.8944
+limiter/limiter-true-peak/alias_5khz_12db_over	-140
+limiter/limiter-true-peak/alias_5khz_6db_over	-140
+limiter/limiter-true-peak/release_slowdown	9.1883
+limiter/limiter-true-peak/sample_peak_over_ceiling_db	0
+limiter/limiter-true-peak/thd_100hz_12db_over	-125.0279
+limiter/limiter-true-peak/thd_100hz_6db_over	-125.059
+limiter/limiter-true-peak/thd_50hz_12db_over	-54.2301
+limiter/limiter-true-peak/thd_50hz_6db_over	-54.2304
+limiter/limiter-true-peak/true_peak_over_ceiling_db	0.0028
+limiter/limiter/alias_5khz_12db_over	-130.2411
+limiter/limiter/alias_5khz_6db_over	-127.5073
+limiter/limiter/latency_spread_frames	0
+limiter/limiter/release_slowdown	9.1883
+limiter/limiter/sample_peak_over_ceiling_db	0
+limiter/limiter/thd_100hz_12db_over	-124.6005
+limiter/limiter/thd_100hz_6db_over	-124.5997
+limiter/limiter/thd_50hz_12db_over	-53.9322
+limiter/limiter/thd_50hz_6db_over	-53.9322
+limiter/limiter/true_peak_over_ceiling_db	0.8944
+limiter/limiter/zipper_ceiling	0.0229
+limiter/limiter/zipper_gain	0.3207
+limiter/limiter/zipper_release	0.0229
+limiter/limiter[Drum smash]/sample_peak_over_ceiling_db	0
+limiter/limiter[Drum smash]/thd_50hz_6db_over	-53.2942
+limiter/limiter[Drum smash]/true_peak_over_ceiling_db	0.8944
+limiter/limiter[Loud master]/sample_peak_over_ceiling_db	0
+limiter/limiter[Loud master]/thd_50hz_6db_over	-54.2301
+limiter/limiter[Loud master]/true_peak_over_ceiling_db	0.0028
+limiter/limiter[Safe peaks]/sample_peak_over_ceiling_db	0
+limiter/limiter[Safe peaks]/thd_50hz_6db_over	-53.9322
+limiter/limiter[Safe peaks]/true_peak_over_ceiling_db	0.8944
+limiter/master-safety/alias_5khz_12db_over	-140
+limiter/master-safety/alias_5khz_6db_over	-140
+limiter/master-safety/latency_spread_frames	0
+limiter/master-safety/release_ratio_20ms	0.9995
+limiter/master-safety/release_ratio_300ms	0.9937
+limiter/master-safety/release_ratio_80ms	0.988
+limiter/master-safety/sample_peak_over_ceiling_db	0
+limiter/master-safety/thd_100hz_12db_over	-140
+limiter/master-safety/thd_100hz_6db_over	-140
+limiter/master-safety/thd_50hz_12db_over	-63.1231
+limiter/master-safety/thd_50hz_6db_over	-63.1234
+limiter/master-safety/true_peak_over_ceiling_db	0.0005
+limiter/master-safety/zipper_ceiling	0.0229
+limiter/master-safety/zipper_release	0.0229
+limiter/master-safety/zipper_trim	0.0485
+limiter/master-soft-clip/alias_5khz_12db_over	-62.3275
+limiter/master-soft-clip/alias_5khz_6db_over	-81.7906
+limiter/master-soft-clip/sample_peak_over_ceiling_db	0
+limiter/master-soft-clip/true_peak_over_ceiling_db	0.0024
 lofi/lofi/cuts_heard_vs_drawn_420_3200	0.0059
 lofi/lofi/cuts_heard_vs_drawn_80_8000	0.0059
 lofi/lofi/dropout_depth_error_db	0.005
@@ -725,9 +889,11 @@ lofi/lofi[Worn tape]/mean_pitch_error_pct	0.0006
 lofi/lofi[Worn tape]/zipper_db	0.2229
 modulation/chorus/bend_cents_depth100_r10_d2	95.7365
 modulation/chorus/bend_cents_depth100_r10_d40	95.6743
+modulation/chorus/bend_cents_depth100_r10_d40_triangle	68.1908
 modulation/chorus/bend_cents_depth100_r1_d40	57.4683
 modulation/chorus/bend_ratio_delay5_to_40	1.0012
 modulation/chorus/click_db_over_6k	-84.5306
+modulation/chorus/click_db_over_6k_shape	-85.8639
 modulation/chorus/half_frame_db_to_16k	0.1609
 modulation/chorus/insert_lu_hits	-0.4566
 modulation/chorus/insert_lu_pink	-0.5431
@@ -758,135 +924,433 @@ modulation/chorus[Subtle widen]/click_db_over_6k	-84.3067
 modulation/chorus[Subtle widen]/insert_lu_hits	0.0599
 modulation/chorus[Subtle widen]/insert_lu_pink	-0.2473
 modulation/chorus[Subtle widen]/mono_fold_lu	-0.8499
-modulation/flanger/click_db_over_6k	-77.9885
-modulation/flanger/drawn_err_db_half_fbm90	46.3333
-modulation/flanger/drawn_err_db_half_fbp0	8.9369
-modulation/flanger/drawn_err_db_half_fbp90	16.2841
-modulation/flanger/drawn_err_db_whole_fbp0	0.0005
-modulation/flanger/drawn_err_db_whole_fbp90	0.0005
-modulation/flanger/feedback_lu_m70	1.4125
-modulation/flanger/feedback_lu_m95	6.4533
-modulation/flanger/feedback_lu_p70	1.5191
-modulation/flanger/feedback_lu_p95	6.0206
-modulation/flanger/half_frame_notch_db_12k_16k	-21.4374
-modulation/flanger/insert_lu_hits	-2.3342
-modulation/flanger/insert_lu_pink	-2.368
-modulation/flanger/longest_delay_ms	40
-modulation/flanger/mono_fold_lu	-1.177
+modulation/flanger/click_db_over_6k	-71.6272
+modulation/flanger/click_db_over_6k_shape	-89.5863
+modulation/flanger/drawn_err_db_half_fbm90	0.0002
+modulation/flanger/drawn_err_db_half_fbp0	0.0003
+modulation/flanger/drawn_err_db_half_fbp90	0.0002
+modulation/flanger/drawn_err_db_tz_fbp0	0
+modulation/flanger/drawn_err_db_tz_fbp90	0.0007
+modulation/flanger/drawn_err_db_whole_fbp0	0.0003
+modulation/flanger/drawn_err_db_whole_fbp90	0.0002
+modulation/flanger/feedback_lu_m70	-0.2522
+modulation/flanger/feedback_lu_m95	-0.8257
+modulation/flanger/feedback_lu_p70	-0.1448
+modulation/flanger/feedback_lu_p95	-1.195
+modulation/flanger/half_frame_notch_db_12k_16k	-54.8163
+modulation/flanger/insert_lu_hits	0.0288
+modulation/flanger/insert_lu_pink	0.0164
+modulation/flanger/longest_delay_ms	20
+modulation/flanger/mono_fold_lu	-1.1919
 modulation/flanger/rest_dbfs_fast_short_fbm95	-140
 modulation/flanger/rest_dbfs_fast_short_fbp95	-140
-modulation/flanger/rest_dbfs_slow_long_fbm95	-89.358
-modulation/flanger/rest_dbfs_slow_long_fbp95	-89.1098
+modulation/flanger/rest_dbfs_slow_long_fbm95	-78.4374
+modulation/flanger/rest_dbfs_slow_long_fbp95	-79.2498
 modulation/flanger/wet_corr_300hz	0.0043
-modulation/flanger[Gentle flange]/click_db_over_6k	-83.7706
-modulation/flanger[Gentle flange]/insert_lu_hits	-2.9411
-modulation/flanger[Gentle flange]/insert_lu_pink	-2.9182
-modulation/flanger[Gentle flange]/mono_fold_lu	-1.0497
-modulation/flanger[Hollow flange]/click_db_over_6k	-77.9355
-modulation/flanger[Hollow flange]/insert_lu_hits	-1.651
-modulation/flanger[Hollow flange]/insert_lu_pink	-1.63
-modulation/flanger[Hollow flange]/mono_fold_lu	-1.5396
-modulation/flanger[Jet sweep]/click_db_over_6k	-54.4268
-modulation/flanger[Jet sweep]/insert_lu_hits	-1.4089
-modulation/flanger[Jet sweep]/insert_lu_pink	-1.3564
-modulation/flanger[Jet sweep]/mono_fold_lu	-1.745
-modulation/flanger[Metallic]/click_db_over_6k	-82.471
-modulation/flanger[Metallic]/insert_lu_hits	-0.4861
-modulation/flanger[Metallic]/insert_lu_pink	-0.2646
-modulation/flanger[Metallic]/mono_fold_lu	-1.2521
-modulation/flanger[Two-bar sweep]/click_db_over_6k	-83.328
-modulation/flanger[Two-bar sweep]/insert_lu_hits	-2.419
-modulation/flanger[Two-bar sweep]/insert_lu_pink	-2.1118
-modulation/flanger[Two-bar sweep]/mono_fold_lu	-1.359
-modulation/phaser/click_db_over_6k	-85.2938
-modulation/phaser/drawn_err_db_st1_c4000_fbp90	0
+modulation/flanger[Gentle flange]/click_db_over_6k	-77.4118
+modulation/flanger[Gentle flange]/insert_lu_hits	-0.0101
+modulation/flanger[Gentle flange]/insert_lu_pink	0.0368
+modulation/flanger[Gentle flange]/mono_fold_lu	-1.0618
+modulation/flanger[Hollow flange]/click_db_over_6k	-66.6442
+modulation/flanger[Hollow flange]/insert_lu_hits	-0.2557
+modulation/flanger[Hollow flange]/insert_lu_pink	-0.2434
+modulation/flanger[Hollow flange]/mono_fold_lu	-1.562
+modulation/flanger[Jet sweep]/click_db_over_6k	-55.0035
+modulation/flanger[Jet sweep]/insert_lu_hits	-0.4545
+modulation/flanger[Jet sweep]/insert_lu_pink	-0.3869
+modulation/flanger[Jet sweep]/mono_fold_lu	-1.7729
+modulation/flanger[Metallic]/click_db_over_6k	-80.7858
+modulation/flanger[Metallic]/insert_lu_hits	-0.0607
+modulation/flanger[Metallic]/insert_lu_pink	0.0895
+modulation/flanger[Metallic]/mono_fold_lu	-1.2892
+modulation/flanger[Tape flange]/click_db_over_6k	-63.4158
+modulation/flanger[Tape flange]/insert_lu_hits	-0.3438
+modulation/flanger[Tape flange]/insert_lu_pink	0.2336
+modulation/flanger[Tape flange]/mono_fold_lu	-1.3027
+modulation/flanger[Two-bar sweep]/click_db_over_6k	-81.5742
+modulation/flanger[Two-bar sweep]/insert_lu_hits	-0.4209
+modulation/flanger[Two-bar sweep]/insert_lu_pink	-0.1092
+modulation/flanger[Two-bar sweep]/mono_fold_lu	-1.3806
+modulation/phaser/click_db_over_6k	-89.7777
+modulation/phaser/click_db_over_6k_shape	-102.1102
+modulation/phaser/drawn_err_db_st1_c4000_fbp90	0.0001
 modulation/phaser/drawn_err_db_st1_c700_fbm70	0
 modulation/phaser/drawn_err_db_st1_c700_fbp0	0
 modulation/phaser/drawn_err_db_st1_c700_fbp30	0
 modulation/phaser/drawn_err_db_st4_c300_fbp0	0.0001
-modulation/phaser/feedback_lu_m70	0.7972
-modulation/phaser/feedback_lu_m95	5.6618
-modulation/phaser/feedback_lu_p70	1.9562
-modulation/phaser/feedback_lu_p95	7.354
-modulation/phaser/insert_lu_hits	-1.4513
-modulation/phaser/insert_lu_pink	-1.4942
-modulation/phaser/mono_fold_lu	-0.8095
+modulation/phaser/feedback_lu_m70	-0.584
+modulation/phaser/feedback_lu_m95	-0.997
+modulation/phaser/feedback_lu_p70	0.697
+modulation/phaser/feedback_lu_p95	1.1671
+modulation/phaser/insert_lu_hits	0.2759
+modulation/phaser/insert_lu_pink	0.2323
+modulation/phaser/mono_fold_lu	-0.8132
 modulation/phaser/rest_dbfs_fast_high_fbm95	-140
 modulation/phaser/rest_dbfs_fast_high_fbp95	-140
 modulation/phaser/rest_dbfs_slow_low_fbm95	-140
 modulation/phaser/rest_dbfs_slow_low_fbp95	-140
-modulation/phaser/wet_corr_300hz	0.2318
-modulation/phaser[Deep phase]/click_db_over_6k	-81.0185
-modulation/phaser[Deep phase]/insert_lu_hits	-0.9636
-modulation/phaser[Deep phase]/insert_lu_pink	-0.9229
-modulation/phaser[Deep phase]/mono_fold_lu	-1.2421
-modulation/phaser[Funk wobble]/click_db_over_6k	-90.88
-modulation/phaser[Funk wobble]/insert_lu_hits	-1.7599
-modulation/phaser[Funk wobble]/insert_lu_pink	-1.5995
-modulation/phaser[Funk wobble]/mono_fold_lu	-0.9187
-modulation/phaser[Liquid]/click_db_over_6k	-89.794
-modulation/phaser[Liquid]/insert_lu_hits	-0.9614
-modulation/phaser[Liquid]/insert_lu_pink	-0.923
-modulation/phaser[Liquid]/mono_fold_lu	-1.6716
-modulation/phaser[Quarter pulse]/click_db_over_6k	-84.8089
-modulation/phaser[Quarter pulse]/insert_lu_hits	-1.9339
-modulation/phaser[Quarter pulse]/insert_lu_pink	-1.5608
-modulation/phaser[Quarter pulse]/mono_fold_lu	-1.1628
-modulation/phaser[Slow swirl]/click_db_over_6k	-76.0671
-modulation/phaser[Slow swirl]/insert_lu_hits	-1.6276
-modulation/phaser[Slow swirl]/insert_lu_pink	-1.5391
-modulation/phaser[Slow swirl]/mono_fold_lu	-0.6947
-reverb/cloud/decay_error_pct@1s	19.4439
-reverb/cloud/decay_error_pct@2.5s	21.7053
-reverb/cloud/decay_error_pct@6s	8.2076
+modulation/phaser/wet_corr_300hz	0.232
+modulation/phaser[Deep phase]/click_db_over_6k	-79.9542
+modulation/phaser[Deep phase]/insert_lu_hits	0.109
+modulation/phaser[Deep phase]/insert_lu_pink	0.1395
+modulation/phaser[Deep phase]/mono_fold_lu	-1.2506
+modulation/phaser[Funk wobble]/click_db_over_6k	-79.5215
+modulation/phaser[Funk wobble]/insert_lu_hits	-0.1518
+modulation/phaser[Funk wobble]/insert_lu_pink	0.0009
+modulation/phaser[Funk wobble]/mono_fold_lu	-0.9202
+modulation/phaser[Liquid]/click_db_over_6k	-89.4322
+modulation/phaser[Liquid]/insert_lu_hits	-0.4136
+modulation/phaser[Liquid]/insert_lu_pink	-0.3604
+modulation/phaser[Liquid]/mono_fold_lu	-1.6787
+modulation/phaser[Quarter pulse]/click_db_over_6k	-83.4319
+modulation/phaser[Quarter pulse]/insert_lu_hits	-0.5098
+modulation/phaser[Quarter pulse]/insert_lu_pink	-0.1675
+modulation/phaser[Quarter pulse]/mono_fold_lu	-1.1706
+modulation/phaser[Slow swirl]/click_db_over_6k	-80.62
+modulation/phaser[Slow swirl]/insert_lu_hits	0.1815
+modulation/phaser[Slow swirl]/insert_lu_pink	0.2712
+modulation/phaser[Slow swirl]/mono_fold_lu	-0.6968
+movement/autopan/click_db_centre	-83.5336
+movement/autopan/click_db_depth	-105.7593
+movement/autopan/click_db_rate	-105.782
+movement/autopan/click_db_shape	-21.4146
+movement/autopan/click_db_sync	-80.2763
+movement/autopan/power_swing_db	0.0092
+movement/autowah/click_db_attack	-87.514
+movement/autowah/click_db_center	-75.0656
+movement/autowah/click_db_depth	-61.6632
+movement/autowah/click_db_filter	-8.4291
+movement/autowah/click_db_high	-63.1606
+movement/autowah/click_db_low	-70.0613
+movement/autowah/click_db_mix	-105.7603
+movement/autowah/click_db_rate	-101.2058
+movement/autowah/click_db_release	-86.7648
+movement/autowah/click_db_resonance	-42.2719
+movement/autowah/click_db_sensitivity	-62.9123
+movement/autowah/click_db_source	-54.0629
+movement/autowah/click_db_sync	-101.2058
+movement/autowah/lu_pink	-5.7402
+movement/autowah/lu_vs_res60_band-pass_res0	3.6354
+movement/autowah/lu_vs_res60_band-pass_res100	-2.1543
+movement/autowah/lu_vs_res60_band-pass_res30	2.4979
+movement/autowah/lu_vs_res60_wah_res0	0.4909
+movement/autowah/lu_vs_res60_wah_res100	1.7886
+movement/autowah/lu_vs_res60_wah_res30	0.0744
+movement/autowah/peak_error_pct_res0	3.017
+movement/autowah/peak_error_pct_res100	0.1418
+movement/autowah/peak_error_pct_res60	0.5761
+movement/autowah[Down wah]/lu_pink	-6.9558
+movement/autowah[Eighth sweep]/lu_pink	-5.3438
+movement/autowah[Funk quack]/lu_pink	-4.4083
+movement/autowah[Pedal]/lu_pink	-5.8737
+movement/autowah[Slow bloom]/lu_pink	0.1278
+movement/freqshift/click_db_mix	-103.0425
+movement/freqshift/click_db_mode	-13.374
+movement/freqshift/feedback95_ringout_db	-140
+movement/freqshift/image_db_44k1_shift100	-44.4363
+movement/freqshift/image_db_44k1_shift1000	-44.4363
+movement/freqshift/image_db_48k_shift100	-44.289
+movement/freqshift/image_db_48k_shift1000	-44.2891
+movement/freqshift/spurs_db_44k1_shift100	-60.7855
+movement/freqshift/spurs_db_44k1_shift1000	-60.5845
+movement/freqshift/spurs_db_48k_shift100	-59.7691
+movement/freqshift/spurs_db_48k_shift1000	-59.9474
+movement/lfo/click_db_ramp-down_0.5hz	-30.8157
+movement/lfo/click_db_ramp-down_0.5hz_48k	-31.3575
+movement/lfo/click_db_ramp-down_20hz	-18.0302
+movement/lfo/click_db_ramp-down_20hz_48k	-18.0111
+movement/lfo/click_db_ramp-down_4hz	-18.1812
+movement/lfo/click_db_ramp-down_4hz_48k	-18.1157
+movement/lfo/click_db_ramp-up_0.5hz	-30.8156
+movement/lfo/click_db_ramp-up_0.5hz_48k	-31.3575
+movement/lfo/click_db_ramp-up_20hz	-18.0303
+movement/lfo/click_db_ramp-up_20hz_48k	-18.0111
+movement/lfo/click_db_ramp-up_4hz	-18.1812
+movement/lfo/click_db_ramp-up_4hz_48k	-18.1157
+movement/lfo/click_db_random_0.5hz	-102.3253
+movement/lfo/click_db_random_0.5hz_48k	-102.2417
+movement/lfo/click_db_random_20hz	-102.4031
+movement/lfo/click_db_random_20hz_48k	-17.3228
+movement/lfo/click_db_random_4hz	-102.5062
+movement/lfo/click_db_random_4hz_48k	-19.6337
+movement/lfo/click_db_sine_0.5hz	-102.5331
+movement/lfo/click_db_sine_0.5hz_48k	-102.4969
+movement/lfo/click_db_sine_20hz	-102.5335
+movement/lfo/click_db_sine_20hz_48k	-102.4848
+movement/lfo/click_db_sine_4hz	-102.5291
+movement/lfo/click_db_sine_4hz_48k	-102.4845
+movement/lfo/click_db_square_0.5hz	-102.5124
+movement/lfo/click_db_square_0.5hz_48k	-102.4805
+movement/lfo/click_db_square_20hz	-62.1
+movement/lfo/click_db_square_20hz_48k	-62.9818
+movement/lfo/click_db_square_4hz	-76.703
+movement/lfo/click_db_square_4hz_48k	-76.2128
+movement/lfo/click_db_triangle_0.5hz	-96.3787
+movement/lfo/click_db_triangle_0.5hz_48k	-96.4178
+movement/lfo/click_db_triangle_20hz	-74.5962
+movement/lfo/click_db_triangle_20hz_48k	-74.6853
+movement/lfo/click_db_triangle_4hz	-88.5762
+movement/lfo/click_db_triangle_4hz_48k	-88.734
+movement/lfo/edge_ms_0.5hz	85.805
+movement/lfo/edge_ms_20hz	2.1769
+movement/lfo/edge_ms_4hz	10.7483
+movement/lfo/jump_ramp-down_0.5hz	1
+movement/lfo/jump_ramp-down_0.5hz_48k	1
+movement/lfo/jump_ramp-down_20hz	0.9995
+movement/lfo/jump_ramp-down_20hz_48k	0.9996
+movement/lfo/jump_ramp-down_4hz	0.9999
+movement/lfo/jump_ramp-down_4hz_48k	0.9999
+movement/lfo/jump_ramp-up_0.5hz	1
+movement/lfo/jump_ramp-up_0.5hz_48k	1
+movement/lfo/jump_ramp-up_20hz	0.9995
+movement/lfo/jump_ramp-up_20hz_48k	0.9996
+movement/lfo/jump_ramp-up_4hz	0.9999
+movement/lfo/jump_ramp-up_4hz_48k	0.9999
+movement/lfo/jump_random_0.5hz	0
+movement/lfo/jump_random_0.5hz_48k	0
+movement/lfo/jump_random_20hz	0.0006
+movement/lfo/jump_random_20hz_48k	0.907
+movement/lfo/jump_random_4hz	0.0001
+movement/lfo/jump_random_4hz_48k	0.5968
+movement/lfo/jump_sine_0.5hz	0
+movement/lfo/jump_sine_0.5hz_48k	0
+movement/lfo/jump_sine_20hz	0.0014
+movement/lfo/jump_sine_20hz_48k	0.0013
+movement/lfo/jump_sine_4hz	0.0003
+movement/lfo/jump_sine_4hz_48k	0.0003
+movement/lfo/jump_square_0.5hz	0.0002
+movement/lfo/jump_square_0.5hz_48k	0.0002
+movement/lfo/jump_square_20hz	0.0085
+movement/lfo/jump_square_20hz_48k	0.0078
+movement/lfo/jump_square_4hz	0.0017
+movement/lfo/jump_square_4hz_48k	0.0016
+movement/lfo/jump_triangle_0.5hz	0
+movement/lfo/jump_triangle_0.5hz_48k	0
+movement/lfo/jump_triangle_20hz	0.0009
+movement/lfo/jump_triangle_20hz_48k	0.0008
+movement/lfo/jump_triangle_4hz	0.0002
+movement/lfo/jump_triangle_4hz_48k	0.0002
+movement/lfo/sync_error_cycles_autopan	0.5
+movement/lfo/sync_error_cycles_tremolo	0.5
+movement/ringmod/alias_db_square	-36.7524
+movement/ringmod/alias_db_triangle	-62.4564
+movement/ringmod/click_db_lfo-rate	-84.2811
+movement/ringmod/click_db_lfo-sync	-84.2811
+movement/ringmod/click_db_mix	-84.5552
+movement/ringmod/spurs_db_sine	-62.2123
+movement/ringmod/wave_click_db_sine-to-triangle	5.8398
+movement/ringmod/wave_click_db_square-to-sine	0
+movement/ringmod/wave_click_db_triangle-to-square	0.0063
+movement/ringmod/wave_spread_lu	4.9968
+movement/rotary/alias_db_5khz_drive100	-13.3488
+movement/rotary/alias_db_5khz_drive50	-30.7833
+movement/rotary/beam_db	-1.6842
+movement/rotary/click_db_balance	-98.1474
+movement/rotary/click_db_mix	-105.0676
+movement/rotary/click_db_ramp	-95.0848
+movement/rotary/click_db_speed	-99.3214
+movement/rotary/click_db_width	-100.8996
+movement/rotary/drum_doppler_cents	8.0518
+movement/rotary/drum_hz_fast	5.7003
+movement/rotary/drum_hz_slow	0.6685
+movement/rotary/horn_doppler_cents	36.8434
+movement/rotary/horn_hz_fast	6.6996
+movement/rotary/horn_hz_slow	0.7973
+movement/rotary/lu_hits_fast	-3.0061
+movement/rotary/lu_hits_slow	-3.2284
+movement/rotary/lu_pink_fast	-3.1862
+movement/rotary/lu_pink_slow	-3.1719
+movement/rotary/opposite_rotation	0
+movement/rotary/ramp_down_over_up_drum	1.0366
+movement/rotary/ramp_down_over_up_horn	1.0488
+movement/rotary/ramp_up_s_drum	3.28
+movement/rotary/ramp_up_s_horn	0.82
+movement/rotary[Chorale]/lu_pink	-3.1703
+movement/rotary[Gritty organ]/lu_pink	0.2001
+movement/rotary[Quick ramp]/lu_pink	-3.1862
+movement/rotary[Tremolo fast]/lu_pink	-3.1862
+movement/tremolo/click_db_depth	-105.4405
+movement/tremolo/click_db_mode	-22.7576
+movement/tremolo/click_db_rate	-106.0162
+movement/tremolo/click_db_shape	-28.7939
+movement/tremolo/click_db_sync	-97.965
+movement/tremolo/click_db_width	-108.252
+movement/tremolo/depth_error_db_25	0
+movement/tremolo/depth_error_db_50	0
+movement/tremolo/depth_error_db_75	0
+movement/tremolo/harmonic_3khz_swing_db	33.1396
+movement/tremolo/harmonic_whole_swing_db	4.0451
+movement/tremolo/trough_db_depth100	-80
+multiband/multiband/attack_ratio_10ms	0.974
+multiband/multiband/attack_ratio_1ms	1.441
+multiband/multiband/attack_ratio_30ms	0.943
+multiband/multiband/curve_error_mid_1khz	0.1213
+multiband/multiband/idle_error_db	0.0624
+multiband/multiband/lu_pink_auto	-0.3112
+multiband/multiband/ratio1_error_db_mix25	0.0624
+multiband/multiband/ratio1_error_db_mix50	0.0624
+multiband/multiband/ratio1_error_db_mix75	0.0624
+multiband/multiband/release_ratio_150ms	0.9967
+multiband/multiband/release_ratio_500ms	0.9955
+multiband/multiband/release_ratio_60ms	0.9987
+multiband/multiband/thd_100hz_12db_over	-74.4017
+multiband/multiband/thd_50hz_12db_over	-61.6697
+multiband/multiband/zipper_attack	0.0907
+multiband/multiband/zipper_high-gain	0.0285
+multiband/multiband/zipper_high-ratio	0.023
+multiband/multiband/zipper_high-thresh	0.0232
+multiband/multiband/zipper_low-gain	0.0234
+multiband/multiband/zipper_low-mid	0.5447
+multiband/multiband/zipper_low-ratio	0.023
+multiband/multiband/zipper_low-thresh	0.023
+multiband/multiband/zipper_mid-gain	0.0427
+multiband/multiband/zipper_mid-high	0.5813
+multiband/multiband/zipper_mid-ratio	0.0254
+multiband/multiband/zipper_mid-thresh	0.0477
+multiband/multiband/zipper_mix	0.0249
+multiband/multiband/zipper_output	0.0426
+multiband/multiband/zipper_release	0.0749
+multiband/multiband[Drum crush]/lu_pink_auto	0.79
+multiband/multiband[Drum crush]/thd_50hz_12db_over	-34.5091
+multiband/multiband[Master glue]/lu_pink_auto	-0.3138
+multiband/multiband[Master glue]/thd_50hz_12db_over	-69.671
+multiband/multiband[Tight low end]/lu_pink_auto	0.1897
+multiband/multiband[Tight low end]/thd_50hz_12db_over	-58.4684
+multiband/multiband[Vocal smooth]/lu_pink_auto	-0.1619
+multiband/multiband[Vocal smooth]/thd_50hz_12db_over	-52.3859
+pitch/harmonizer/click_db_dry	-65.4819
+pitch/harmonizer/click_db_glide	-64.9319
+pitch/harmonizer/click_db_key	-63.8981
+pitch/harmonizer/click_db_level-1	-67.3433
+pitch/harmonizer/click_db_level-2	-65.3561
+pitch/harmonizer/click_db_pan-1	-64.6517
+pitch/harmonizer/click_db_pan-2	-61.1558
+pitch/harmonizer/click_db_range	-19.5365
+pitch/harmonizer/click_db_scale	-64.1156
+pitch/harmonizer/click_db_voice-1	-57.1372
+pitch/harmonizer/click_db_voice-2	-63.2913
+pitch/harmonizer/formant_f1_error_harmonics_5th-up	0.0045
+pitch/harmonizer/formant_f1_error_harmonics_octave-down	0
+pitch/harmonizer/formant_f1_error_harmonics_octave-up	0
+pitch/harmonizer/formant_f2_error_harmonics_5th-up	0.3394
+pitch/harmonizer/formant_f2_error_harmonics_octave-down	0
+pitch/harmonizer/formant_f2_error_harmonics_octave-up	0
+pitch/harmonizer/interval_error_cents_3rd-down	0.0023
+pitch/harmonizer/interval_error_cents_3rd-up	0.0032
+pitch/harmonizer/interval_error_cents_octave-up	0.055
+pitch/harmonizer/latency_error_frames	0
+pitch/harmonizer/voice_off_harmonic_db_3rd-down	-26.0031
+pitch/harmonizer/voice_off_harmonic_db_3rd-up	-26.8785
+pitch/harmonizer/voice_off_harmonic_db_octave-up	-27.6143
+pitch/pitch-correct/accuracy_cents_high	11.4285
+pitch/pitch-correct/accuracy_cents_low	4.073
+pitch/pitch-correct/accuracy_cents_mid	3.3497
+pitch/pitch-correct/click_db_amount	-85.8987
+pitch/pitch-correct/click_db_key	-83.1829
+pitch/pitch-correct/click_db_mix	-85.8914
+pitch/pitch-correct/click_db_range	-78.4726
+pitch/pitch-correct/click_db_scale	-73.9545
+pitch/pitch-correct/click_db_speed	-80.1551
+pitch/pitch-correct/correcting_off_harmonic_db	-33.9356
+pitch/pitch-correct/in_tune_off_harmonic_over_input_db	19.9514
+pitch/pitch-correct/latency_error_frames_high	0
+pitch/pitch-correct/latency_error_frames_low	0
+pitch/pitch-correct/latency_error_frames_mid	0
+pitch/pitch-correct/noise_change_db	0.0007
+pitch/pitch-correct/settle_ms_speed0	7.2789
+pitch/pitch-correct/settle_ms_speed100	144.9887
+pitch/pitch-correct/settle_ms_speed20	24.5125
+pitch/pitch-correct/settle_ms_speed200	289.3424
+pitch/pitch-correct/settle_ms_speed50	68.7302
+pitch/pitch-correct/vibrato_kept_speed100	1.1495
+pitch/pitch-correct/vibrato_left_cents_speed0	16.7313
+pitch/pitch-correct/wobble_cents_high	2.6818
+pitch/pitch-correct/wobble_cents_low	2.1825
+pitch/pitch-correct/wobble_cents_mid	1.0047
+pitch/pitch-correct/wrong_notes	0
+pitch/pitch-shifter/chord_off_target_db	-5.7618
+pitch/pitch-shifter/click_db_fine	-64.4123
+pitch/pitch-shifter/click_db_mix	-102.5562
+pitch/pitch-shifter/click_db_pitch	-60.2354
+pitch/pitch-shifter/click_db_spread	-83.0261
+pitch/pitch-shifter/click_db_window	-57.5396
+pitch/pitch-shifter/delay_ms	25.0113
+pitch/pitch-shifter/hf_tilt_error_db_up1	-2.2779
+pitch/pitch-shifter/level_swing_db_down12	12.3668
+pitch/pitch-shifter/level_swing_db_down5	12.9276
+pitch/pitch-shifter/level_swing_db_up12	11.7137
+pitch/pitch-shifter/level_swing_db_up7	12.7219
+pitch/pitch-shifter/off_target_db_down12	64.7601
+pitch/pitch-shifter/off_target_db_down5	-3.4961
+pitch/pitch-shifter/off_target_db_up12	68.7203
+pitch/pitch-shifter/off_target_db_up7	-2.5161
+pitch/pitch-shifter/pitch_error_cents_down12	114.3542
+pitch/pitch-shifter/pitch_error_cents_down5	37.5313
+pitch/pitch-shifter/pitch_error_cents_up12	53.906
+pitch/pitch-shifter/pitch_error_cents_up7	36.2027
+pitch/pitch-shifter/reported_latency_frames	0
+pitch/tuner/click_db_mute	-74.6294
+pitch/tuner/click_db_reference	-105.7552
+pitch/tuner/error_cents_saw	0.0797
+pitch/tuner/error_cents_saw-noise	0.3438
+pitch/tuner/error_cents_sine	0.0005
+pitch/tuner/jitter_cents_saw	0.04
+pitch/tuner/jitter_cents_saw-noise	0.4914
+pitch/tuner/jitter_cents_sine	0.0001
+pitch/tuner/settle_ms_saw	81.2698
+pitch/tuner/settle_ms_saw-noise	81.2698
+pitch/tuner/settle_ms_sine	81.2698
+reverb/cloud/decay_error_pct@1s	-2.3747
+reverb/cloud/decay_error_pct@2.5s	-2.1424
+reverb/cloud/decay_error_pct@6s	-0.1823
 reverb/cloud/diffuse_ms	49.9093
-reverb/cloud/early_side_db	21.4479
-reverb/cloud/edt_t30_log2	0.1608
-reverb/cloud/iacc_tail	0.0313
-reverb/cloud/mix_bump_lu	0
-reverb/cloud/mix_dip_lu	-0.6512
-reverb/cloud/mono_sum_lu	-3.0168
+reverb/cloud/early_side_db	21.4552
+reverb/cloud/edt_t30_log2	0.473
+reverb/cloud/iacc_tail	0.028
+reverb/cloud/mix_bump_lu	0.6185
+reverb/cloud/mix_dip_lu	0
+reverb/cloud/mono_sum_lu	-3.0318
 reverb/cloud/predelay_error_frames	0
-reverb/cloud/tail_excess_over_ideal_db	0.7384
-reverb/cloud/wet_lu	-0.6512
-reverb/cloud/wobble_cents	3.5537
-reverb/cloud/zipper_worst_db	2.9922
-reverb/cloud[Endless cloud]/wet_lu	1.2125
-reverb/cloud[Endless cloud]/zipper_worst_db	2.8841
-reverb/echoes/decay_error_pct@1s	-1.4844
-reverb/echoes/decay_error_pct@2.5s	-14.2006
-reverb/echoes/decay_error_pct@6s	-26.816
-reverb/echoes/diffuse_ms	1204.2857
-reverb/echoes/early_side_db	17.4004
-reverb/echoes/edt_t30_log2	1.3072
-reverb/echoes/iacc_tail	0.0647
+reverb/cloud/tail_excess_over_ideal_db	0.2891
+reverb/cloud/wet_lu	0.6185
+reverb/cloud/wobble_cents	1.8595
+reverb/cloud/zipper_worst_db	2.2288
+reverb/cloud[Endless cloud]/wet_lu	-0.6184
+reverb/cloud[Endless cloud]/zipper_worst_db	2.8642
+reverb/echoes/decay_error_pct@1s	3.8958
+reverb/echoes/decay_error_pct@2.5s	1.026
+reverb/echoes/decay_error_pct@6s	1.1248
+reverb/echoes/diffuse_ms	1169.3651
+reverb/echoes/early_side_db	25.4374
+reverb/echoes/edt_t30_log2	1.0887
+reverb/echoes/iacc_tail	0.0171
 reverb/echoes/mix_bump_lu	0
-reverb/echoes/mix_dip_lu	-0.7304
-reverb/echoes/mono_sum_lu	-3.0378
+reverb/echoes/mix_dip_lu	-0.546
+reverb/echoes/mono_sum_lu	-3.0094
 reverb/echoes/predelay_error_frames	0
-reverb/echoes/tail_excess_over_ideal_db	0.6486
-reverb/echoes/wet_lu	-0.7304
-reverb/echoes/wobble_cents	3.0363
-reverb/echoes/zipper_worst_db	18.0639
-reverb/echoes[Echo chamber]/wet_lu	-0.8344
-reverb/echoes[Echo chamber]/zipper_worst_db	21.1586
-reverb/hall/decay_error_pct@1s	8.1698
-reverb/hall/decay_error_pct@2.5s	0.9218
-reverb/hall/decay_error_pct@6s	-1.6534
+reverb/echoes/tail_excess_over_ideal_db	0.2805
+reverb/echoes/wet_lu	-0.546
+reverb/echoes/wobble_cents	2.6315
+reverb/echoes/zipper_worst_db	0.4604
+reverb/echoes[Echo chamber]/wet_lu	0.5418
+reverb/echoes[Echo chamber]/zipper_worst_db	0.9549
+reverb/hall/decay_error_pct@1s	4.6664
+reverb/hall/decay_error_pct@2.5s	-0.0519
+reverb/hall/decay_error_pct@6s	0.3573
 reverb/hall/diffuse_ms	45.9184
-reverb/hall/early_side_db	9.2775
-reverb/hall/edt_t30_log2	0.2589
-reverb/hall/iacc_tail	0.0223
-reverb/hall/mix_bump_lu	0.7915
-reverb/hall/mix_dip_lu	0
-reverb/hall/mono_sum_lu	-3.0647
+reverb/hall/early_side_db	9.2997
+reverb/hall/edt_t30_log2	0.1416
+reverb/hall/iacc_tail	0.0455
+reverb/hall/mix_bump_lu	0
+reverb/hall/mix_dip_lu	-0.2051
+reverb/hall/mono_sum_lu	-3.0568
 reverb/hall/predelay_error_frames	0
-reverb/hall/tail_excess_over_ideal_db	2.2291
-reverb/hall/wet_lu	0.7915
-reverb/hall/wobble_cents	3.1489
-reverb/hall/zipper_worst_db	2.676
-reverb/hall[Big hall]/wet_lu	0.646
-reverb/hall[Big hall]/zipper_worst_db	1.9465
+reverb/hall/tail_excess_over_ideal_db	0.9947
+reverb/hall/wet_lu	-0.2051
+reverb/hall/wobble_cents	2.6911
+reverb/hall/zipper_worst_db	0.4686
+reverb/hall[Big hall]/wet_lu	0.2411
+reverb/hall[Big hall]/zipper_worst_db	1.5225
 reverb/plate/decay_error_pct@0.5s	0.1843
 reverb/plate/decay_error_pct@2s	-1.0946
 reverb/plate/decay_error_pct@6s	-0.0789
@@ -954,3 +1418,82 @@ reverb/spring[Dub splash]/wet_lu	-0.0081
 reverb/spring[Dub splash]/zipper_worst_db	0.0431
 reverb/spring[Short tank]/wet_lu	0.7099
 reverb/spring[Short tank]/zipper_worst_db	1.4206
+strip/strip/comp_attack_ratio	1.0013
+strip/strip/comp_curve_error	0.0112
+strip/strip/comp_release_ratio	0.9951
+strip/strip/comp_thd_50hz_13db_over	-58.7892
+strip/strip/gate_onset_1ms_db	0
+strip/strip/gate_ripple_db_1000hz	0
+strip/strip/gate_ripple_db_40hz	0
+strip/strip/gate_shut_error_db_1000hz	0.1034
+strip/strip/gate_shut_error_db_40hz	2.7501
+strip/strip/latency_spread_frames	0
+strip/strip/switch_click_db_comp_off	0.3019
+strip/strip/switch_click_db_eq_off	9.2506
+strip/strip/switch_click_db_gate_on	12.911
+strip/strip/switch_click_db_order	54.3865
+transient/transient/front_spread_db_attack-100	4.3294
+transient/transient/front_spread_db_attack100	3.1068
+transient/transient/front_spread_db_attack50	8.7297
+transient/transient/ripple_db_attack100	0.3613
+transient/transient/ripple_db_sustain-100	0.0083
+transient/transient/ripple_db_sustain100	0.0083
+transient/transient/zipper_attack	0.0229
+transient/transient/zipper_mix	0.0229
+transient/transient/zipper_output	0.0412
+transient/transient/zipper_speed	0.0228
+transient/transient/zipper_sustain	0.0228
+voice/talkbox/click_db_attack	-103.4626
+voice/talkbox/click_db_env-depth	-43.402
+voice/talkbox/click_db_formant	-42.7997
+voice/talkbox/click_db_lfo-depth	-40.7862
+voice/talkbox/click_db_lfo-rate	-103.4626
+voice/talkbox/click_db_lfo-shape	-103.4626
+voice/talkbox/click_db_lfo-sync	-103.4626
+voice/talkbox/click_db_mix	-105.766
+voice/talkbox/click_db_release	-103.4626
+voice/talkbox/click_db_resonance	-50.9774
+voice/talkbox/click_db_sensitivity	-103.4626
+voice/talkbox/click_db_vowel	-38.0864
+voice/talkbox/dip_excess_db_ae	16.3067
+voice/talkbox/dip_excess_db_ah	11.07
+voice/talkbox/dip_excess_db_aw	9.9702
+voice/talkbox/dip_excess_db_ee	11.027
+voice/talkbox/dip_excess_db_eh	15.2022
+voice/talkbox/dip_excess_db_ih	13.6511
+voice/talkbox/dip_excess_db_oo	7.0558
+voice/talkbox/dip_excess_db_ou	10.3913
+voice/talkbox/dip_excess_db_uh	13.1749
+voice/talkbox/f2_level_error_db_ae	5.1146
+voice/talkbox/f2_level_error_db_ah	0.0488
+voice/talkbox/f2_level_error_db_aw	0.7618
+voice/talkbox/f2_level_error_db_ee	10.132
+voice/talkbox/f2_level_error_db_eh	3.6045
+voice/talkbox/f2_level_error_db_ih	0.7137
+voice/talkbox/f2_level_error_db_oo	1.3335
+voice/talkbox/f2_level_error_db_ou	7.2528
+voice/talkbox/f2_level_error_db_uh	1.0314
+voice/talkbox/f3_level_error_db_ae	3.2181
+voice/talkbox/f3_level_error_db_ah	2.2606
+voice/talkbox/f3_level_error_db_aw	2.4726
+voice/talkbox/f3_level_error_db_ee	5.8267
+voice/talkbox/f3_level_error_db_eh	2.3116
+voice/talkbox/f3_level_error_db_ih	2.0952
+voice/talkbox/f3_level_error_db_oo	4.6602
+voice/talkbox/f3_level_error_db_ou	0.0733
+voice/talkbox/f3_level_error_db_uh	0.9601
+voice/talkbox/formant_error_pct_ae	0.881
+voice/talkbox/formant_error_pct_ah	1.1024
+voice/talkbox/formant_error_pct_aw	1.4395
+voice/talkbox/formant_error_pct_ee	0.2886
+voice/talkbox/formant_error_pct_eh	0.6384
+voice/talkbox/formant_error_pct_ih	0.4883
+voice/talkbox/formant_error_pct_oo	1.7104
+voice/talkbox/formant_error_pct_ou	1.2673
+voice/talkbox/formant_error_pct_uh	0.9369
+voice/talkbox/lu_pink	-6.4344
+voice/talkbox/vowel_spread_lu	6.7597
+voice/talkbox[Robot choir]/lu_pink	-8.2018
+voice/talkbox[Small mouth]/lu_pink	-7.1038
+voice/talkbox[Wow wow]/lu_pink	-4.944
+voice/talkbox[Yeah]/lu_pink	-6.4578

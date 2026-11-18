@@ -47,13 +47,16 @@
 #![forbid(unsafe_code)]
 
 pub mod arrange;
+pub mod loops;
 pub mod notes;
 pub mod save;
 pub mod scenes;
 pub mod steps;
 
 pub use arrange::{Arrangement, Marker, MorphRows, Placement, Source};
-pub use scenes::{Follow, FollowAction, Scene, SCENES};
+pub use scenes::{
+    Follow, FollowAction, ListStep, Scene, SceneSettings, SongList, MAX_SCENE_NAME, SCENES,
+};
 
 pub use mpfree_moves;
 use mpfree_moves::Moves;
@@ -77,6 +80,9 @@ pub const MAX_NOTES: usize = 8192;
 pub const MAX_LOCKS: usize = 8192;
 /// Pressure values in one clip, every note's together ([`Clip::touch`]).
 pub const MAX_TOUCH_POINTS: usize = 65536;
+/// The looper's loops, which a Loop track's cells name ([`Clip::looped`]):
+/// `mpfree_looper::MAX_LOOPS`.
+pub const LOOPS: usize = 8;
 
 /// One note in a clip, in the clip's own ticks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -355,6 +361,78 @@ impl Quantise {
     }
 }
 
+/// When a launched clip starts, and a stop or a mute lands (launch
+/// quantise, sequencer S4): at once, on the next line of a note grid, or
+/// on the next line of a number of bars counted from the song's start.
+/// The project has one ([`Project::launch`], 1 bar for a new one), and a
+/// clip can have its own ([`Clip::launch`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LaunchGrid {
+    /// At once: the next tick the playhead plays.
+    Now,
+    /// The next line of a grid this many ticks apart (1/16 is 240).
+    Ticks(u32),
+    /// The next line of this many bars.
+    Bars(u8),
+    /// This song tick, or at once once it is past: where a one-shot
+    /// clip's pass ends ([`Clip::once`]). Never a clip's or the project's
+    /// own setting.
+    At(Tick),
+}
+
+impl Default for LaunchGrid {
+    fn default() -> Self {
+        LaunchGrid::Bars(1)
+    }
+}
+
+/// The launch grids the screens step through, finest first: at once, 1/16
+/// to 1/2, then 1 to 8 bars.
+pub const LAUNCH_GRIDS: [LaunchGrid; 9] = [
+    LaunchGrid::Now,
+    LaunchGrid::Ticks(PPQ / 4),
+    LaunchGrid::Ticks(PPQ / 2),
+    LaunchGrid::Ticks(PPQ),
+    LaunchGrid::Ticks(PPQ * 2),
+    LaunchGrid::Bars(1),
+    LaunchGrid::Bars(2),
+    LaunchGrid::Bars(4),
+    LaunchGrid::Bars(8),
+];
+
+impl LaunchGrid {
+    /// In range: a note grid of a tick to a whole note, or 1 to 16 bars.
+    /// `At` is only ever a cue's, never a setting.
+    pub fn ok(self) -> bool {
+        match self {
+            LaunchGrid::Now => true,
+            LaunchGrid::Ticks(t) => (1..=PPQ * 4).contains(&t),
+            LaunchGrid::Bars(n) => (1..=16).contains(&n),
+            LaunchGrid::At(_) => false,
+        }
+    }
+
+    /// The distance between its lines, in song ticks, with bars of `bar`
+    /// ticks: 1 for at once, so the next line is the next tick.
+    /// `At`'s one line is 1 apart, as at once, past its tick.
+    pub fn line(self, bar: Tick) -> Tick {
+        match self {
+            LaunchGrid::Now | LaunchGrid::At(_) => 1,
+            LaunchGrid::Ticks(t) => Tick::from(t.max(1)),
+            LaunchGrid::Bars(n) => bar.max(1) * Tick::from(n.max(1)),
+        }
+    }
+
+    /// Its first line at or after song tick `t`, with bars of `bar` ticks.
+    pub fn next(self, t: Tick, bar: Tick) -> Tick {
+        if let LaunchGrid::At(at) = self {
+            return at.max(t);
+        }
+        let line = self.line(bar);
+        t.div_euclid(line) * line + if t.rem_euclid(line) == 0 { 0 } else { line }
+    }
+}
+
 /// A parameter lock: `addr` set to `value` on a step, from `tick` until
 /// the track's next note without a lock on it (see the crate docs).
 ///
@@ -437,6 +515,36 @@ pub struct Clip {
     /// After some bars, its track plays another clip or stops
     /// ([`scenes`]).
     pub follow: Option<Follow>,
+    /// A Loop track's cell: the looper's loop it launches (0 to
+    /// [`LOOPS`] - 1). Such a clip has no notes, locks, pressure or moves,
+    /// and is as long as its loop ([`loops`]).
+    pub looped: Option<u8>,
+    /// Its own launch quantise; None: the project's ([`Project::launch`]).
+    pub launch: Option<LaunchGrid>,
+    /// Legato: launched while another clip plays on its track, it takes
+    /// over that clip's place in its pass instead of starting from its
+    /// top (sequencer S4).
+    pub legato: bool,
+    /// One-shot (sequencer S4): its track stops at the end of the pass it
+    /// started in, in place of looping; a follow action of its own waits.
+    pub once: bool,
+}
+
+/// A clip's settings that are not its notes: how fast it plays, its own
+/// swing and quantise, and what its track does after it (the clip
+/// settings card, sequencer S3). Read with [`Clip::settings`], changed as
+/// one with [`Clip::set_settings`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClipSettings {
+    pub speed: Speed,
+    pub swing: Option<Swing>,
+    pub quantise: Option<Quantise>,
+    pub follow: Option<Follow>,
+    /// Its launch quantise (None: the project's), legato and one-shot
+    /// (S4).
+    pub launch: Option<LaunchGrid>,
+    pub legato: bool,
+    pub once: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -474,9 +582,63 @@ pub enum ModelError {
     BadPlacement,
     /// No room for it (song to scenes: no run of empty rows long enough).
     NoRoom,
+    /// A launch quantise out of range ([`LaunchGrid::ok`]).
+    BadLaunch,
+    /// A loop cell names no loop or holds notes, or a clip is on a track
+    /// of the other kind (a loop cell on a note track, a note clip on a
+    /// Loop track).
+    BadLoop,
 }
 
 impl Clip {
+    /// Its speed, swing, quantise, follow action, launch quantise and
+    /// legato.
+    pub fn settings(&self) -> ClipSettings {
+        ClipSettings {
+            speed: self.speed,
+            swing: self.swing,
+            quantise: self.quantise,
+            follow: self.follow,
+            launch: self.launch,
+            legato: self.legato,
+            once: self.once,
+        }
+    }
+
+    /// Change its speed, swing, quantise, follow action, launch quantise
+    /// and legato, all or none: `BadSpeed`, `BadSwing`, `BadQuantise`,
+    /// `BadLaunch` or the follow action's own refusal leaves the clip as it
+    /// was.
+    pub fn set_settings(&mut self, s: ClipSettings) -> Result<(), ModelError> {
+        if Speed::new(s.speed.num, s.speed.den).is_none() {
+            return Err(ModelError::BadSpeed);
+        }
+        if s.swing
+            .is_some_and(|w| Swing::new(w.grid, w.amount).is_none())
+        {
+            return Err(ModelError::BadSwing);
+        }
+        if s.quantise
+            .is_some_and(|q| Quantise::new(q.grid, q.strength).is_none())
+        {
+            return Err(ModelError::BadQuantise);
+        }
+        if let Some(f) = &s.follow {
+            f.check()?;
+        }
+        if s.launch.is_some_and(|g| !g.ok()) {
+            return Err(ModelError::BadLaunch);
+        }
+        self.speed = s.speed;
+        self.swing = s.swing;
+        self.quantise = s.quantise;
+        self.follow = s.follow;
+        self.launch = s.launch;
+        self.legato = s.legato;
+        self.once = s.once;
+        Ok(())
+    }
+
     /// An empty clip of `length` ticks at normal speed.
     pub fn new(name: &str, length: Tick) -> Clip {
         Clip {
@@ -490,6 +652,19 @@ impl Clip {
             moves: Moves::new(),
             follow: None,
             touch: Vec::new(),
+            looped: None,
+            launch: None,
+            legato: false,
+            once: false,
+        }
+    }
+
+    /// A Loop track's cell for loop `n` (0 based), `ticks` long: named
+    /// after its loop ("Loop 2"), with no notes.
+    pub fn new_loop(n: u8, ticks: Tick) -> Clip {
+        Clip {
+            looped: Some(n),
+            ..Clip::new(&format!("Loop {}", u32::from(n) + 1), loops::length(ticks))
         }
     }
 
@@ -603,6 +778,9 @@ impl Clip {
         {
             return Err(ModelError::BadQuantise);
         }
+        if self.launch.is_some_and(|g| !g.ok()) {
+            return Err(ModelError::BadLaunch);
+        }
         for (i, n) in self.notes.iter().enumerate() {
             if !self.note_ok(n) {
                 return Err(ModelError::BadNote(i));
@@ -618,6 +796,15 @@ impl Clip {
         }
         if let Some(f) = &self.follow {
             f.check()?;
+        }
+        if self.looped.is_some_and(|n| {
+            usize::from(n) >= LOOPS
+                || !self.notes.is_empty()
+                || !self.locks.is_empty()
+                || !self.touch.is_empty()
+                || !self.moves.is_empty()
+        }) {
+            return Err(ModelError::BadLoop);
         }
         let len = u32::try_from(self.length).map_err(|_| ModelError::ClipLength)?;
         self.moves.check(len).map_err(|_| ModelError::BadMoves)
@@ -655,6 +842,9 @@ pub struct Track {
     /// none of its own.
     pub swing: Option<Swing>,
     pub mute: bool,
+    /// Soloed (sequencer S4): while any track is, the tracks that aren't
+    /// are silent ([`Project::silent`]). A muted track stays silent soloed.
+    pub solo: bool,
     /// "Clips through the arp": the track's clips play through its arp,
     /// as the live pads do, and recording keeps the pads as pressed (on:
     /// melodic tracks, which record the chord). Off (the default; drum
@@ -665,7 +855,76 @@ pub struct Track {
     /// "Record pad pressure": while the track records, the pads' pressure
     /// goes into its notes ([`Note::touch`]). On by default.
     pub record_touch: bool,
+    /// "Record quantise" (sequencer S3, the MPC's Timing Correct while
+    /// recording): the notes recorded on this track go in on the nearest
+    /// line of this grid, at full strength, in place of where they were
+    /// played; none (the default) keeps them as played. The clip's own
+    /// quantise ([`Clip::quantise`]) still applies on playback.
+    pub record_quantise: Option<u32>,
+    /// The track's MIDI effects (its Notes stage) and where its arp sits
+    /// among them. They change what reaches the arp (the live pads, and the
+    /// clips with [`Track::through_arp`] on) and what it plays, by the same
+    /// rule: a part is never put through them twice.
+    pub note_fx: mpfree_notefx::TrackFx,
+    /// A note track (the pads play it and its clips hold notes), or a Loop
+    /// track, whose cells launch the looper's loops ([`loops`]).
+    pub kind: TrackKind,
     pub slots: [Option<Clip>; SLOTS],
+}
+
+/// What a track is: see [`Track::kind`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TrackKind {
+    #[default]
+    Notes,
+    /// A Loop track and what its new loops record.
+    Loops(LoopInput),
+}
+
+/// What a Loop track's new loops record (recording from the grid, Loop
+/// tracks part 4): the pads and the synth as heard (the looper's source
+/// today), the line input, or the other loops as heard.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LoopInput {
+    #[default]
+    Pads,
+    Line,
+    Resample,
+}
+
+impl LoopInput {
+    pub const ALL: [LoopInput; 3] = [LoopInput::Pads, LoopInput::Line, LoopInput::Resample];
+
+    /// As the screens say it in full.
+    pub fn name(self) -> &'static str {
+        match self {
+            LoopInput::Pads => "Pads + synth",
+            LoopInput::Line => "Line in",
+            LoopInput::Resample => "Resample",
+        }
+    }
+
+    /// As the Clips grid says it, under the track's name.
+    pub fn short(self) -> &'static str {
+        match self {
+            LoopInput::Pads => "Pads",
+            LoopInput::Line => "Line in",
+            LoopInput::Resample => "Resample",
+        }
+    }
+
+    /// As a saved project writes it.
+    pub fn word(self) -> &'static str {
+        match self {
+            LoopInput::Pads => "pads",
+            LoopInput::Line => "line",
+            LoopInput::Resample => "resample",
+        }
+    }
+
+    pub fn from_word(w: &str) -> Option<LoopInput> {
+        LoopInput::ALL.into_iter().find(|i| i.word() == w)
+    }
 }
 
 impl Track {
@@ -675,10 +934,35 @@ impl Track {
             dest,
             swing: None,
             mute: false,
+            solo: false,
             through_arp: false,
             record_touch: true,
+            record_quantise: None,
+            note_fx: mpfree_notefx::TrackFx::default(),
+            kind: TrackKind::Notes,
             slots: Default::default(),
         }
+    }
+
+    /// An empty Loop track recording the pads and the synth. Its `dest`
+    /// is unused: nothing plays notes into it.
+    pub fn new_loops(name: &str, dest: DestId) -> Track {
+        Track {
+            kind: TrackKind::Loops(LoopInput::Pads),
+            ..Track::new(name, dest)
+        }
+    }
+
+    /// A Loop track's input; None for a note track.
+    pub fn loops(&self) -> Option<LoopInput> {
+        match self.kind {
+            TrackKind::Notes => None,
+            TrackKind::Loops(i) => Some(i),
+        }
+    }
+
+    pub fn is_loops(&self) -> bool {
+        self.loops().is_some()
     }
 }
 
@@ -690,11 +974,27 @@ pub struct Project {
     pub scenes: Vec<Scene>,
     /// The song: clips on a timeline ([`arrange`]).
     pub arrangement: Arrangement,
+    /// Make (false, a new project's) or Perform (sequencer roadmap S4,
+    /// Jay's decisions 4 and 5): how the app answers the hands, never
+    /// what plays. Saved, so a set opens as it was left.
+    pub perform: bool,
+    /// When a launch, a stop or a scene lands (launch quantise, S4): the
+    /// transport bar's "Launch 1 bar". A clip can have its own.
+    pub launch: LaunchGrid,
 }
 
 impl Project {
     pub fn new() -> Project {
         Project::default()
+    }
+
+    /// Whether track `t` is silent: muted, or not soloed while another
+    /// track is (sequencer S4's solo). False past the last track.
+    pub fn silent(&self, t: usize) -> bool {
+        let soloing = self.tracks.iter().any(|t| t.solo);
+        self.tracks
+            .get(t)
+            .is_some_and(|tr| tr.mute || (soloing && !tr.solo))
     }
 
     /// Every track and clip in range.
@@ -703,6 +1003,9 @@ impl Project {
         for t in &self.tracks {
             for c in t.slots.iter().flatten() {
                 c.check()?;
+                if c.looped.is_some() != t.is_loops() {
+                    return Err(ModelError::BadLoop);
+                }
             }
         }
         if self.scenes.len() > SCENES {
@@ -710,6 +1013,9 @@ impl Project {
         }
         for s in &self.scenes {
             s.check()?;
+        }
+        if !self.launch.ok() {
+            return Err(ModelError::BadLaunch);
         }
         self.arrangement.check(&self.tracks)
     }
@@ -1018,6 +1324,44 @@ mod tests {
         assert_eq!(q.apply(110.0), 55.0);
         assert_eq!(Quantise::new(240, 100).unwrap().apply(130.0), 240.0);
         assert!(Quantise::new(0, 50).is_none() && Quantise::new(240, 101).is_none());
+    }
+
+    /// Launch quantise (S4): the next line of the grid, at once for Now,
+    /// and only grids in range pass.
+    #[test]
+    fn launch_grids_find_their_next_line() {
+        let bar = 3840;
+        assert_eq!(LaunchGrid::default(), LaunchGrid::Bars(1));
+        assert_eq!(LaunchGrid::Now.next(1234, bar), 1234);
+        assert_eq!(LaunchGrid::Ticks(240).next(1234, bar), 1440);
+        assert_eq!(LaunchGrid::Ticks(240).next(1440, bar), 1440);
+        assert_eq!(LaunchGrid::Bars(1).next(1, bar), 3840);
+        assert_eq!(LaunchGrid::Bars(2).next(3841, bar), 7680);
+        assert_eq!(LaunchGrid::Bars(4).next(0, bar), 0);
+        // Before the song's start (a count-in), lines count back from 0.
+        assert_eq!(LaunchGrid::Bars(1).next(-100, bar), 0);
+        assert_eq!(LaunchGrid::Bars(1).next(-3940, bar), -3840);
+        assert!(LAUNCH_GRIDS.iter().all(|g| g.ok()));
+        for bad in [
+            LaunchGrid::Ticks(0),
+            LaunchGrid::Ticks(PPQ * 4 + 1),
+            LaunchGrid::Bars(0),
+            LaunchGrid::Bars(17),
+        ] {
+            assert!(!bad.ok(), "{bad:?}");
+        }
+        let mut c = Clip::new("c", 960);
+        let mut s = c.settings();
+        s.launch = Some(LaunchGrid::Bars(0));
+        assert_eq!(c.set_settings(s), Err(ModelError::BadLaunch));
+        assert_eq!(c.launch, None);
+        s.launch = Some(LaunchGrid::Now);
+        s.legato = true;
+        assert_eq!(c.set_settings(s), Ok(()));
+        assert_eq!((c.launch, c.legato), (Some(LaunchGrid::Now), true));
+        let mut p = Project::new();
+        p.launch = LaunchGrid::Bars(99);
+        assert_eq!(p.check(), Err(ModelError::BadLaunch));
     }
 
     #[test]

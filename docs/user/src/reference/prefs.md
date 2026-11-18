@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-app/src/app.rs rust/mpfree-app/src/gui.rs rust/mpfree-app/src/app/saved.rs
+covers: rust/mpfree-app/src/app.rs rust/mpfree-app/src/gui.rs rust/mpfree-app/src/app/saved.rs rust/mpfree-app/src/setup.rs
 checked: 2026-11-14 b76c3c7
 -->
 
@@ -30,7 +30,24 @@ checked: 2026-11-14 b76c3c7
 | **Export** | How an export (BROWSE, Projects, **Export**) plays the song. **Fast, quiet** (the default): faster than real time, with the speakers quiet. **Listen:** once in real time, and you hear it as it records. A song that plays outside gear (over MIDI, CV or clock, through the line input, or with plugins) listens anyway. See [Exporting your music](../making-music/exporting.md#fast-or-listen). |
 | **Export file** | The WAV files an export makes, as the Export panel starts each time: **24-bit** (the default), **16-bit** (with a little dither noise, for CDs and older gear) or **32-bit float** (exactly what the mixer made, levels over full scale kept). The panel can change it for one export. See [File formats](../making-music/exporting.md#file-formats). |
 | **Export rate** | The export's sample rate: **44.1 kHz** (the default, the rate MPFree plays at) or **48 kHz** (for video, converted as the files are written). The panel can change it for one export. |
+| **Backup and Akai kits** | Opens two rows for the first start's long steps: the backup of your MPC, and Akai's drum kits and samples. Each shows whether it is done, and can ask for it at the next start ([below](#backup-and-akai-kits)). |
 | **Touch screen** | Opens the touchscreen's own rows: **Screen pad velocity** (the velocity of pads played on the screen, which can't sense how hard you tap), **Calibrate touch** (tap a target in each corner to check touches land where you touch; this version only reports the result) and **Touch lab** (a test page for touches). |
+
+## Backup and Akai kits
+
+The first start backs up your MPC and brings in Akai's drum kits and samples, unless you left them out in the USB creator ([Installing MPFree](../getting-started/installing.md#leaving-out-the-backup-or-akais-kits)). These rows show where each stands and let you ask for it later.
+
+{{shot: prefs-setup | Prefs, Backup and Akai kits: a backup made, and Akai's kits asked for at the next start.}}
+
+| Row | What it shows, and what a push does |
+|---|---|
+| **Backup of your MPC** | **Made** and the day, **Not made yet**, or **Left out**. Press the wheel or **+** to back up your MPC at the next start (**At the next start**, or **New one at the next start** when there is one already; it is kept). Press again, or **–**, to take it back. A backup takes 10 to 20 minutes and about 8 GB on the stick. |
+| **Akai's kits and samples** | **In BROWSE** once they are in, otherwise **Not in yet** or **Left out**. Press the wheel or **+** to bring them in at the next start (about 10 minutes); press again, or **–**, to take it back. Without a backup on the stick, they are read straight from the MPC, which is only read, never changed. |
+
+Nothing runs while you play: a line says what happens at the next start, with the stick in. To start it now, press the power button and choose **Restart**. **Back to Prefs** or **MENU** goes back. On a stick the USB creator didn't make, both rows say **Not on this stick**.
+
+> [!NOTE]
+> Reading Akai's kits straight from the MPC, without a backup, is new and hasn't been checked on an MPC yet.
 
 Prefs are yours, not the song's: they are kept on the stick and stay the same whichever project you open (see [Saving your work](../making-music/saving.md#your-song-and-your-setup)). The line input is the exception: it is off every time MPFree starts.
 

@@ -1123,6 +1123,15 @@ fn kind_icon(cx: &mut PaintCx, r: Rect, k: Kind, c: Color) {
                     .fill_rect(Rect::new(x - 11 + i * 6, y + 7 - h, 4, h), c);
             }
         }
+        Kind::Midi => {
+            // A 5-pin socket: a ring and its pins.
+            cx.canvas
+                .stroke_round_rect(Rect::new(x - 11, y - 11, 22, 22), 11, 2, c);
+            for (dx, dy) in [(-6, -1), (-4, 4), (0, 6), (4, 4), (6, -1)] {
+                cx.canvas
+                    .fill_rect(Rect::new(x + dx - 1, y + dy - 1, 3, 3), c);
+            }
+        }
         Kind::Other => {
             cx.canvas
                 .stroke_round_rect(Rect::new(x - 8, y - 11, 16, 22), 2, 2, c);

@@ -110,15 +110,16 @@ pub struct TrackStem {
 /// `rest`).
 /// - A track with its own instrument has its own strip: the first pass
 ///   hears it alone.
-/// - Tracks on the pads share the kit's (or the synth's) strip `pads`:
-///   each gets a replay, unless it is the only one there (then the first
-///   pass hears it alone) or the strip is frozen (it plays its take
-///   whatever the tracks do: one stem for the strip, named after it).
+/// - Tracks on the pads play into their kit's (or the synth's) strip,
+///   `pads(track)` with whether it is frozen. Those that share one each
+///   get a replay, unless it is the only one there (then the first pass
+///   hears it alone) or the strip is frozen (it plays its take whatever
+///   the tracks do: one stem for the strip, named after it).
 /// - The audio tracks that sound share the Audio strip the same way.
 /// - A track on outside gear, a muted one and one with no notes get none.
 pub fn track_stems(
     tracks: &[(String, Plays)],
-    pads: (StripId, bool),
+    pads: &dyn Fn(usize) -> (StripId, bool),
     audio: &[(u8, String)],
     audio_frozen: bool,
     rest: &[(String, StripId)],
@@ -130,19 +131,40 @@ pub fn track_stems(
         audio,
     };
     let mut out = Vec::new();
-    let on_pads = tracks.iter().filter(|t| t.1 == Plays::Pads).count();
-    let (pad_strip, pads_frozen) = pads;
+    let on_pads: Vec<(usize, StripId, bool)> = tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.1 == Plays::Pads)
+        .map(|(k, _)| {
+            let (strip, frozen) = pads(k);
+            (k, strip, frozen)
+        })
+        .collect();
+    let sharing = |s: StripId| on_pads.iter().filter(|p| p.1 == s).count();
     for (k, (name, plays)) in tracks.iter().enumerate() {
         match plays {
             Plays::Own => out.push(stem(name, StripId::Track(TRACKS + k), None, false)),
-            Plays::Pads if pads_frozen => {}
-            Plays::Pads if on_pads == 1 => out.push(stem(name, pad_strip, None, false)),
-            Plays::Pads => out.push(stem(name, pad_strip, Some(Only::Track(k as u16)), false)),
+            Plays::Pads => {
+                let Some(&(_, strip, frozen)) = on_pads.iter().find(|p| p.0 == k) else {
+                    continue;
+                };
+                if frozen {
+                } else if sharing(strip) == 1 {
+                    out.push(stem(name, strip, None, false));
+                } else {
+                    out.push(stem(name, strip, Some(Only::Track(k as u16)), false));
+                }
+            }
             Plays::Outside | Plays::Nothing => {}
         }
     }
-    if pads_frozen && on_pads > 0 {
-        out.push(stem(&mixing::name(pad_strip), pad_strip, None, false));
+    // Each frozen strip the tracks play into, once.
+    let mut frozen: Vec<StripId> = Vec::new();
+    for &(_, strip, _) in on_pads.iter().filter(|p| p.2) {
+        if !frozen.contains(&strip) {
+            frozen.push(strip);
+            out.push(stem(&mixing::name(strip), strip, None, false));
+        }
     }
     let a = StripId::Track(mixing::AUDIO);
     match audio {
@@ -227,21 +249,21 @@ impl Facts {
     /// those exist, as in the smoke tests' session).
     ///
     /// For stems by track: `outside`, the tracks on outside gear (MIDI
-    /// Out); `pads`, the strip the pads play into now (the drum kit's or
-    /// the synth's); `audio`, the audio tracks that sound (their number
-    /// and name).
+    /// Out); `pads`, the strip each track on the pads plays into (its
+    /// kit's or the synth's); `audio`, the audio tracks that sound (their
+    /// number and name).
     pub fn gather(
         time: &crate::time::TimeHost,
         mix: &mixing::MixHost,
         rig: Rig,
         outside: &dyn Fn(usize) -> bool,
-        pads: StripId,
+        pads: &dyn Fn(usize) -> StripId,
         audio: &[(u8, String)],
     ) -> Facts {
         let info = time.info();
         let project = time.project();
         let tracks = track_names(time);
-        let stems = stem_strips(&mix.mixer, mix.instruments.in_use(), &tracks);
+        let stems = stem_strips(&mix.mixer, mix.channels_in_use(), &tracks);
         let plays: Vec<(String, Plays)> = project
             .tracks
             .iter()
@@ -268,7 +290,7 @@ impl Facts {
         let frozen = |s: StripId| mix.mixer.frozen(s).is_some();
         let by_track = track_stems(
             &plays,
-            (pads, frozen(pads)),
+            &|k| (pads(k), frozen(pads(k))),
             audio,
             frozen(StripId::Track(mixing::AUDIO)),
             &rest,
@@ -926,7 +948,7 @@ mod tests {
                     ("Bass".into(), Plays::Own),
                     ("Hats".into(), Plays::Pads),
                 ],
-                (StripId::Track(mixing::DRUMS), false),
+                &|_| (StripId::Track(mixing::DRUMS), false),
                 &[(0, "Audio 1".into()), (2, "Audio 3".into())],
                 false,
                 &[("Return A".into(), StripId::Return(0))],
@@ -1081,12 +1103,12 @@ mod tests {
 
     struct Quiet;
     impl crate::time::Pads for Quiet {
-        fn hit_at(&mut self, _: usize, _: u8, _: u32) -> bool {
+        fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
             true
         }
-        fn release_at(&mut self, _: usize, _: u32) {}
+        fn release_at(&mut self, _: u16, _: usize, _: u32) {}
         fn stop_all(&mut self) {}
-        fn pressure_at(&mut self, _: usize, _: u8, _: u32) {}
+        fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
     }
 
     struct Loop {
@@ -1130,7 +1152,7 @@ mod tests {
                 bar_ticks: info.meter.bar_ticks(),
                 tempos: vec![(0, 120.0)],
                 tracks: vec!["Track 1".into()],
-                stems: stem_strips(&self.mix.mixer, self.mix.instruments.in_use(), &[]),
+                stems: stem_strips(&self.mix.mixer, self.mix.channels_in_use(), &[]),
                 by_track: Vec::new(),
                 song_on: false,
                 rig: Rig::default(),
@@ -1388,7 +1410,7 @@ mod tests {
             ("Hats".to_string(), Plays::Pads),
         ];
         let audio = [(1, "Audio 2".to_string()), (4, "Audio 5".to_string())];
-        let got = track_stems(&tracks, (drums, false), &audio, false, &rest);
+        let got = track_stems(&tracks, &|_| (drums, false), &audio, false, &rest);
         let short: Vec<(&str, StripId, Option<Only>)> = got
             .iter()
             .map(|t| (t.name.as_str(), t.strip, t.only))
@@ -1408,16 +1430,40 @@ mod tests {
         assert!(got[3].audio && !got[0].audio);
         // One track on the pads, one audio track: the first pass hears
         // each alone.
-        let got = track_stems(&tracks[..4], (drums, false), &audio[..1], false, &[]);
+        let got = track_stems(&tracks[..4], &|_| (drums, false), &audio[..1], false, &[]);
         assert_eq!(got[0].only, None);
         assert_eq!((got[0].name.as_str(), got[0].strip), ("Kick", drums));
         assert_eq!((got[2].name.as_str(), got[2].only), ("Audio 2", None));
         // A frozen kit plays its take whatever the tracks do: one stem,
         // the kit's.
-        let got = track_stems(&tracks, (drums, true), &audio, true, &[]);
+        let got = track_stems(&tracks, &|_| (drums, true), &audio, true, &[]);
         let names: Vec<&str> = got.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["Keys", "Drums", "Audio"]);
         assert!(got.iter().all(|t| t.only.is_none()));
+        // Hats on a kit of its own, on its own channel: each track is alone
+        // on its strip, so neither needs a replay.
+        let hats = StripId::Track(TRACKS + 4);
+        let strip = |k: usize| (if k == 4 { hats } else { drums }, false);
+        let got = track_stems(&tracks, &strip, &[], false, &[]);
+        let short: Vec<(&str, StripId, Option<Only>)> = got
+            .iter()
+            .map(|t| (t.name.as_str(), t.strip, t.only))
+            .collect();
+        assert_eq!(
+            short,
+            [
+                ("Kick", drums, None),
+                ("Keys", StripId::Track(TRACKS + 1), None),
+                ("Hats", hats, None),
+            ]
+        );
+        // Only the Drums strip frozen: its one stem, and Hats as before.
+        let frozen = |k: usize| (if k == 4 { hats } else { drums }, k != 4);
+        let names: Vec<String> = track_stems(&tracks, &frozen, &[], false, &[])
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(names, ["Keys", "Hats", "Drums"]);
     }
 
     #[test]

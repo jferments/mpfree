@@ -27,6 +27,8 @@ The switch at the top right shows **Browse** or **Pad** beside the pads.
 - **Audition**, or **PLAY**, lets you hear it first, at the level Q-Link 3 sets.
 - The **star** at the right end of each row adds it to Favourites; tap it again to take it out.
 
+**16-bit sounds take half the memory.** A 16-bit WAV or AIFF, and anything you trim, slice or cut from one, is kept as 16 bits: about 10 MB a minute of stereo, half what a 24-bit or 32-bit float sound takes. It sounds exactly the same.
+
 **Sounds at other rates.** MPFree plays at 44.1 kHz. A sound recorded at another rate (48 kHz from a video or a phone, 96 kHz from a studio, 22 kHz from an old sampler) is converted to 44.1 kHz as it loads, and the Console says so ("converted from 48 kHz to 44.1 kHz"). Nothing you can hear changes: it plays at its own pitch, and as lightly as a sound recorded at 44.1 kHz. Whatever its settings file places on it (trim, loop, fades, warp and slices) moves with it to the same moments, and the file itself stays as it was. Kits and projects convert their sounds as they open, too. When memory is short, a sound stays at its own rate; it still plays at its pitch, and the Console lists it.
 
 **Whole kits.** A kit (green icon) loads all at once: pick it and tap it again, push the data wheel, or tap **Load**. It takes the place of the kit the pads play now, with every pad's sound and settings. To see the sounds inside a kit one by one, press **+**. **Save kit**, at the top of the **Kits** place, keeps the kit the pads play as a kit of its own, so you can load it in another project; save it before you load another kit over it if you want to keep your changes. MPFree puts its own drum kits in **Kits > MPFree** the first time it starts with your library.
@@ -49,6 +51,16 @@ The data wheel, its push, **–** and **+** move through the browser too; see [B
 - **Effects**: the effects on the pad's own mixer channel (**+ FX** when it has none). Tap it, or push the wheel on it, to open the pad's chain in the Mix tab, and **‹** brings you back (see [Effects](effects.md#adding-an-effect-the-chain-editor)). Only the first 16 pads have a channel of their own; the others show a dash.
 
 Q-Links 1 to 4 turn level, pan, tune and voices. **Put on** places the sound picked on the right onto the pad, the whole of it; the hint line says when the pad plays all of it already.
+
+## A kit for each track
+
+Each track plays a kit of its own, as each track plays a program on the MPC, and every track's kit sounds at the same time: a drum kit on track 1, chopped vocals on track 2 and one-shot stabs on track 3 all play together in the song.
+
+- **The pads play the selected track's kit.** Select another track (on Arrange, or with the track chip) and the pads play its kit. A track's clips play its kit whichever track is selected.
+- **To change a track's kit,** select the track and pick the kit in the kit chip's list at the top right, or with **SHIFT** + the data wheel on the Play page, or with **PAD BANK**. Only these change what a track plays: opening a page never does. The list's last row is the synth (see [Put a synth on the pads](synths.md#put-a-synth-on-the-pads)).
+- **Every track starts on kit 1,** so a project saved before tracks had a kit each plays as it did.
+- **In the mixer,** kit 1 plays through the 16 pad channels and the **Drums** strip, as before. Another kit plays into the strip of the first track that plays it (**Track 2**, say), with its own fader, effects and sends; tracks that play the same kit share it. That kit's pads have no channels of their own yet, so put its effects on the track's strip, and mute the track rather than a pad: on its track the Play page's pad speakers and **TRACK MUTE**'s pad mutes say so and mute nothing.
+- **The project keeps** which kit each track plays.
 
 ## Recording a sample
 
@@ -107,15 +119,25 @@ The two buttons at the top right of every Sample page:
 
 Both buttons are faint while the pad picked has no sound.
 
+## Naming a pad and its sound
+
+{{shot: sample-name | The text keyboard: the pad's name with the cursor at its end, Pad and Sound at the top right, and Cancel, Space and Enter along the bottom.}}
+
+The pad's name at the top left of every Sample page has a dotted line under it: tap it to type a new one. The keyboard opens with the name as it is, so **Delete** takes off the last letter and **Clear** the whole name. **Shift** gives one capital (or the symbol shown on the key); an empty name starts with one. **#+=** turns the letter keys into symbols (# & + = ( ) [ ] ! ? @ ~ and more) until you press it again (it says **ABC** then). Turn the data wheel, or press **–** / **+**, to move the cursor and fix a letter in the middle.
+
+{{shot: sample-name-symbols | The keyboard with #+= on: the letter keys type symbols, and the key says ABC to turn them back.}}
+
+**Pad** and **Sound** at the top right pick which name you are typing: the pad's, or the name of the sound it plays (a recording's "Take 3", say). A sound's name is the same on every pad that plays it, and the keyboard says how many that is. Tap **Enter** (or push the wheel) to keep both names; **Cancel** leaves them as they were. One **UNDO** takes both back. A name can have up to 32 characters, and can't be empty.
+
 ## Wave: trim and loop
 
 {{shot: sample | The Wave page: the whole sample at the top, the zoomed region below, the region's settings beside it, and the four Q-Links (Start, End, Loop start, Loop end) down the right. Send to pad and Chop to pads are at the top right.}}
 
-The **Wave** page shows the sample. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links. Hold **SHIFT** and press **+** to zoom in, **SHIFT + –** to zoom out (the Warp and Chop pages too). Tap the wave to hear it. On the right, set the region's **gain**, **tune**, **crossfade** (smooths a loop's seam), **warp** and **reverse**.
+The **Wave** page shows the sample. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links, or rest a finger on a marker's tab and turn the data wheel: it moves a screen pixel a turn, or one frame at a time with **SHIFT** (next build; see [Hold and turn](../getting-started/the-screen.md#hold-and-turn)). Hold **SHIFT** and press **+** to zoom in, **SHIFT + –** to zoom out (the Warp and Chop pages too). Tap the wave to hear it. On the right, set the region's **gain**, **tune**, **crossfade** (smooths a loop's seam), **warp** and **reverse**.
 
 **Normalize** (under Gain) turns the gain so the loudest moment between Start and End plays at full level, 0 dB, and never over. Tap it, or push the wheel on it. It only sets the gain, so after moving Start or End you can tap it again for the new part; **UNDO** takes it back. A silent part is left as it is.
 
-MPFree finds each sound's hits, tempo and note (for Chop, Warp, the 16ths snap and Map to keys) while you work, never holding up the screen. A long sound shows as a flat line for a moment, then its wave, then its hits and tempo a little later: a minute-long sound takes a second or two on the MPC. The pages fill in as soon as each is found, and a sound already looked at is ready at once.
+MPFree finds each sound's hits, tempo and note (for Chop, Warp, the 16ths snap and Map to keys) while you work, never holding up the screen. A long sound shows as a flat line for a moment, then its wave, then its hits and tempo a little later: a minute-long sound takes a second or two on the MPC. The pages fill in as soon as each is found, and a sound already looked at is ready at once. A saved project keeps what was found beside each sound, so when you open it again its sounds are ready at once too.
 
 **Warp** plays the sound in time with the project's tempo: **Stretch** keeps its pitch, **Repitch** speeds it up or slows it down like a record. **Warp tempo** is the tempo it was played at.
 
@@ -190,8 +212,7 @@ The **Source** row says what plays:
 - **The Synth tab's patch.** MPFree plays a copy of it, much faster than real time, so a whole instrument takes seconds.
 - **External gear**, on a MIDI channel from 1 to 16. MPFree plays your synth through **MIDI OUT** and records it from the line input, in real time. Connect the synth's audio out to the line input, set it to the channel you picked and turn the line input on. MPFree first plays the middle note twice to hear how loud the synth is and how late it answers, so no note starts late or cut off. If the line input stops or you switch the Rec page to another source while it runs, it stops, lets go of the note and keeps the notes done.
 
-> [!NOTE]
-> **Not yet:** **External gear** needs MIDI OUT, which is still off in this build (see [Playing other gear](midi-and-cv.md)). Until then the Source row offers the Synth tab's patch only.
+The notes go out of the 5-pin **MIDI OUT** jack. MIDI out is built but not yet checked on an MPC One, so it only sends while **Send MIDI and CV out** is on in [Prefs](../reference/prefs.md) (see [Playing other gear](midi-and-cv.md)). Until then the Source row offers the Synth tab's patch only, and with the gear picked the bar says there is no MIDI out for it. Every note it plays is let go when it ends or you cancel it, and the MIDI Monitor shows them as sent by the auto-sample.
 
 > [!MPC]
 > The MPC's Sampler, Sample Edit and Program Edit modes are all on one tab in MPFree, always on the pad you last hit. **SAMPLER** opens the Sample tab, **SAMPLE EDIT** its Wave page, and **PROG EDIT** the Pads tab's Pad view. **UNDO** takes back any edit on the Sample and Pads tabs.

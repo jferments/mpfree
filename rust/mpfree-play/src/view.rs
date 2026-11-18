@@ -28,10 +28,10 @@ use mpfree_param::RelAddr;
 use mpfree_seq::arrange::SONG_LANE_LEN;
 use mpfree_seq::mpfree_moves::{Kind, Map, Moves, Target};
 use mpfree_seq::{
-    touch_fits, Clip, DestId, Lock, ModelError, Note, Project, Quantise, Source, Speed, Touch,
-    TouchPoint, MAX_LOCKS, MAX_NOTES, MAX_TRACKS, SLOTS,
+    touch_fits, Clip, DestId, LaunchGrid, Lock, ModelError, Note, Project, Quantise, Source, Speed,
+    Touch, TouchPoint, MAX_LOCKS, MAX_NOTES, MAX_TRACKS, SLOTS,
 };
-use mpfree_transport::time::{ceil_to, Swing, Tick};
+use mpfree_transport::time::{Swing, Tick};
 
 use crate::recorded::{Includes, Rec};
 
@@ -74,6 +74,30 @@ pub struct Started {
     /// The track's mute from `at` on, when the cue switched it (a
     /// scene's mutes): the control thread sets `Track::mute` to it.
     pub mute: Option<bool>,
+    /// Where the new clip counts its passes from: `at`, or for a legato
+    /// clip earlier, where the clip it took over started its pass.
+    pub from: Tick,
+}
+
+/// A mute or solo change waiting on a track for its line (sequencer S4's
+/// mute queue): from the first line of `line` the playhead plays, the
+/// track is `silent` or heard. Every change the host queued together has
+/// the same `id` (they rise, one a queue) and line, so they land together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MuteCue {
+    pub silent: bool,
+    pub line: LaunchGrid,
+    pub id: u32,
+}
+
+/// A [`MuteCue`] the player carried out: from song tick `at`, `track` is
+/// `silent` (or heard). The host applies its queue `id` to the project.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MuteLanded {
+    pub track: usize,
+    pub silent: bool,
+    pub at: Tick,
+    pub id: u32,
 }
 
 impl Started {
@@ -86,7 +110,7 @@ impl Started {
                 track: self.track,
                 slot,
                 origin: self.origin,
-                start: self.at,
+                start: self.from,
             });
         }
         if let Some(i) = cues
@@ -96,6 +120,14 @@ impl Started {
             cues.remove(i);
         }
     }
+}
+
+/// How many song ticks a clip with `origin`, `length` and `speed` is
+/// into its pass at song tick `at`: 0 on a pass's first tick.
+pub fn pass_into(at: Tick, origin: Tick, length: Tick, speed: Speed) -> Tick {
+    // `num` passes are `length * den` song ticks: in units of 1/num tick.
+    let (num, den) = (Tick::from(speed.num.max(1)), Tick::from(speed.den.max(1)));
+    ((at - origin) * num).rem_euclid(length.max(1) * den) / num
 }
 
 /// The earliest song tick an [`anchored`] clip plays from: about 12 days
@@ -384,6 +416,12 @@ pub(crate) struct CueView {
     pub clip: Option<ClipView>,
     /// The track's mute from the cue's bar line on (a scene's mutes).
     pub mute: Option<bool>,
+    /// The line it lands on (launch quantise, S4): the cued clip's own,
+    /// else the project's; a scene's or a follow's as
+    /// [`PlayView::set_cue_line`] sets it.
+    pub line: LaunchGrid,
+    /// The cued clip takes over the playing clip's place in its pass.
+    pub legato: bool,
 }
 
 /// A placement of the song, compiled: its clip (from `clip.start`, with
@@ -402,6 +440,11 @@ pub(crate) struct TrackView {
     pub cue: Option<CueView>,
     /// The track's placements, in order, in song mode (else none).
     pub regions: Vec<RegionView>,
+    /// Its record quantise grid (`Track::record_quantise`): the recorder
+    /// puts the notes it records on this grid's nearest line.
+    pub record_quantise: Option<u32>,
+    /// A mute or solo change waiting for its line ([`PlayView::set_mute_cue`]).
+    pub mute_cue: Option<MuteCue>,
 }
 
 impl TrackView {
@@ -459,12 +502,15 @@ impl PlayView {
         let mut tracks: Vec<TrackView> = project
             .tracks
             .iter()
-            .map(|t| TrackView {
+            .enumerate()
+            .map(|(i, t)| TrackView {
                 dest: t.dest,
-                mute: t.mute,
+                mute: project.silent(i),
                 clip: None,
                 cue: None,
                 regions: Vec::new(),
+                record_quantise: t.record_quantise,
+                mute_cue: None,
             })
             .collect();
         for l in launches {
@@ -483,10 +529,13 @@ impl PlayView {
                 .slot
                 .map(|slot| clip_view(project, c.track, slot, 0, 0))
                 .transpose()?;
+            let model = c.slot.and_then(|slot| project.clip(c.track, slot));
             tracks[c.track].cue = Some(CueView {
                 slot: c.slot,
                 clip,
                 mute: None,
+                line: model.and_then(|m| m.launch).unwrap_or(project.launch),
+                legato: model.is_some_and(|m| m.legato),
             });
         }
         Ok(PlayView {
@@ -815,6 +864,38 @@ impl PlayView {
         }
     }
 
+    /// Track `track` goes silent or is heard again on the first line of
+    /// the cue's launch quantise the playhead plays (the mute queue). False
+    /// when there is no such track.
+    pub fn set_mute_cue(&mut self, track: usize, cue: MuteCue) -> bool {
+        match self.tracks.get_mut(track) {
+            Some(t) => {
+                t.mute_cue = Some(cue);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The mute cue waiting on `track`, if any.
+    pub fn mute_cue(&self, track: usize) -> Option<MuteCue> {
+        self.tracks.get(track)?.mute_cue
+    }
+
+    /// Track `track`'s cue lands on `line` in place of its clip's own
+    /// launch quantise (a scene's cues together, a follow on its point).
+    /// False when the track has no cue. Call it on the control thread,
+    /// after compiling.
+    pub fn set_cue_line(&mut self, track: usize, line: LaunchGrid) -> bool {
+        match self.tracks.get_mut(track).and_then(|t| t.cue.as_mut()) {
+            Some(c) => {
+                c.line = line;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The cue waiting on `track`: `Some(Some(slot))` for a launch,
     /// `Some(None)` for a stop.
     pub fn cue(&self, track: usize) -> Option<Option<usize>> {
@@ -976,8 +1057,10 @@ pub struct NowPlaying {
 struct Switch {
     slot: Option<usize>,
     origin: Tick,
-    /// The tick it started on.
+    /// The tick its pass counts from (earlier than `at` for legato).
     start: Tick,
+    /// The tick it switched on.
+    at: Tick,
     /// The track's mute from then on, when the cue switches it.
     mute: Option<bool>,
 }
@@ -1034,7 +1117,8 @@ impl Switches {
     }
 
     /// Where the cue on `track` starts in a span playing `ticks`, if it
-    /// does: the first bar line among them.
+    /// does: the first line of its launch quantise among them (with bars
+    /// of `bar` ticks), the span's first tick for at once.
     pub fn due(
         &self,
         view: &PlayView,
@@ -1045,22 +1129,31 @@ impl Switches {
         if self.on.get(track).is_none_or(Option::is_some) {
             return None;
         }
-        view.tracks.get(track)?.cue.as_ref()?;
-        let at = ceil_to(ticks.start, bar);
+        let cue = view.tracks.get(track)?.cue.as_ref()?;
+        let at = cue.line.next(ticks.start, bar);
         (at < ticks.end).then_some(at)
     }
 
-    /// Carry out the cue on `track` at song tick `at`.
+    /// Carry out the cue on `track` at song tick `at`. A legato clip
+    /// launched over a playing one starts as if it had started when that
+    /// one's pass did, so it plays on from the same place in the bar.
     pub fn start(&mut self, view: &PlayView, track: usize, at: Tick) -> Option<Started> {
         let cue = view.tracks.get(track)?.cue.as_ref()?;
+        // Legato: the song ticks the playing clip is into its pass.
+        let into = match (cue.legato, &cue.clip, self.playing_from(view, track)) {
+            (true, Some(_), Some((old, origin, _))) => pass_into(at, origin, old.length, old.speed),
+            _ => 0,
+        };
+        let from = at - into;
         let origin = cue
             .clip
             .as_ref()
-            .map_or(at, |c| anchored(at, c.length, c.speed));
+            .map_or(at, |c| anchored(from, c.length, c.speed));
         *self.on.get_mut(track)? = Some(Switch {
             slot: cue.slot,
             origin,
-            start: at,
+            start: from,
+            at,
             mute: cue.mute,
         });
         self.made[track] = self.made[track].wrapping_add(1);
@@ -1071,7 +1164,15 @@ impl Switches {
             at,
             origin,
             mute: cue.mute,
+            from,
         })
+    }
+
+    /// The mute a cue set on `track` when it started, and the tick it
+    /// started on, while the view doesn't show it yet.
+    pub fn mute_switch(&self, track: usize) -> Option<(bool, Tick)> {
+        let s = self.on.get(track).copied().flatten()?;
+        s.mute.map(|m| (m, s.at))
     }
 
     /// Whether `track` is muted now: as its cue set it when that started,
@@ -1431,6 +1532,7 @@ mod tests {
             at: 7680,
             origin: -100,
             mute: None,
+            from: 7680,
         }
         .apply(&mut launches, &mut cues);
         assert_eq!(
@@ -1456,6 +1558,7 @@ mod tests {
             at: 7680,
             origin: 7680,
             mute: None,
+            from: 7680,
         }
         .apply(&mut launches, &mut cues);
         assert_eq!(

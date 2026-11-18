@@ -2,6 +2,7 @@
 //! those, they only show what the page put in their fields and report
 //! touches.
 
+use mpfree_ui::qlink;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
 // ---------------------------------------------------------------- pad bar
@@ -17,6 +18,10 @@ pub struct PadBar {
     pub active: usize,
     /// Tabs that can be opened; the others are drawn faint and ignore taps.
     pub enabled: Vec<bool>,
+    /// The title is a name that can be typed: a dotted line under it, and
+    /// a tap on it (the swatch, title and subtitle) gives
+    /// [`EventKind::Type`] 0, for the text keyboard.
+    pub nameable: bool,
 }
 
 const SEG_H: i32 = 40;
@@ -32,7 +37,14 @@ impl PadBar {
             tabs: tabs.iter().map(|s| s.to_string()).collect(),
             active: 0,
             enabled: vec![true; tabs.len()],
+            nameable: false,
         }
+    }
+
+    /// The part a tap names the pad in: the swatch, title and subtitle.
+    pub fn name_rect(&self, r: Rect) -> Rect {
+        let tabs = self.tabs_rect(r);
+        Rect::new(r.x, r.y, (tabs.x - r.x - 10).max(0), r.h)
     }
 
     /// The box holding the tabs.
@@ -77,6 +89,18 @@ impl Widget for PadBar {
             t.text,
             &self.title,
         );
+        if self.nameable {
+            // A dotted line under the title: it can be typed.
+            let w = cx
+                .measure(FontId::Bold, t.size_title + 1.0, &self.title)
+                .min(top.w);
+            let y = top.bottom() - 3;
+            let mut x = top.x;
+            while x + 4 <= top.x + w {
+                cx.canvas.fill_rect(Rect::new(x, y, 4, 2), t.text_dim);
+                x += 8;
+            }
+        }
         cx.text(
             FontId::Sans,
             t.size_small,
@@ -112,18 +136,30 @@ impl Widget for PadBar {
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
-        (0..self.tabs.len())
+        let mut out: Vec<Target> = (0..self.tabs.len())
             .map(|i| {
                 // Faint tabs, and the tab already open, change nothing.
                 let on = self.enabled.get(i).copied().unwrap_or(false) && i != self.active;
                 Target::tap("tab", i, self.tabs[i].clone(), self.tab_rect(r, i)).disabled_if(!on)
             })
-            .collect()
+            .collect();
+        if self.nameable {
+            out.push(Target::tap(
+                "name",
+                0,
+                self.title.clone(),
+                self.name_rect(r),
+            ));
+        }
+        out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
+        }
+        if self.nameable && self.name_rect(r).contains(x, y) {
+            return Some(EventKind::Type(0));
         }
         let i = (0..self.tabs.len()).find(|&i| self.tab_rect(r, i).contains(x, y))?;
         self.enabled
@@ -138,10 +174,10 @@ impl Widget for PadBar {
 
 /// A Q-Link's card: a knob showing where its marker sits in the sound, the
 /// Q-Link's job, and the marker's position in bars and beats (or seconds).
-/// In the page's Q-Link column (less than twice as wide as it is high) it is drawn as the
-/// shared column's cards are (`mpfree_ui::qlink`): the knob's number and
-/// the page, the job, then the ring with the value in it; in a strip, the
-/// ring beside the text.
+/// In the page's Q-Link column (less than twice as wide as it is high) it is
+/// drawn as the shared column's cards are (`mpfree_ui::qlink`): the knob's
+/// number and the job centred over the ring with the value in it; in a
+/// strip, the ring beside the text.
 ///
 /// A tap gives [`EventKind::Select`]`(0)`; the page makes it the wheel's
 /// focus. A tap on a faint card with a reason in `why` gives
@@ -152,7 +188,8 @@ impl Widget for PadBar {
 pub struct KnobCard {
     /// "Q-Link 1 · Start": the knob, then its job.
     pub label: String,
-    /// The page, in capitals over the job in the column ("WAVE").
+    /// The page ("Wave"): not drawn since the column narrowed (Jay, 17
+    /// Nov), kept for the page's tests.
     pub scope: String,
     /// Which Q-Link (0 to 3): the index a drag's steps carry.
     pub knob: usize,
@@ -208,8 +245,8 @@ impl KnobCard {
             .map_or(self.label.as_str(), |(_, j)| j)
     }
 
-    /// As the shared column's card: a coloured edge; "Q1" and the page; the
-    /// job; the ring with the value in it, and the small text under it.
+    /// As the shared column's card: a coloured edge; "Q1" and the job
+    /// centred; the ring with the value in it, and the small text under it.
     fn paint_tall(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         let col = if self.enabled {
@@ -226,33 +263,10 @@ impl KnobCard {
             cx.canvas
                 .fill_round_rect(Rect::new(r.x, r.y + 14, 4, (r.h - 28).max(0)), 2, col);
         }
-        let inner = r.inset_xy(14, 10);
-        let (top, rest) = inner.take_top(18);
-        cx.text(
-            FontId::Bold,
-            13.0,
-            top,
-            Align::Left,
-            col,
-            &format!("Q{}", self.knob + 1),
-        );
-        cx.text(
-            FontId::Sans,
-            12.0,
-            top.take_left(28).1,
-            Align::Right,
-            t.text_faint,
-            &self.scope.to_uppercase(),
-        );
-        let (name, rest) = rest.take_top(24);
-        cx.text(
-            FontId::Bold,
-            16.0,
-            name,
-            Align::Left,
-            if self.enabled { t.text } else { t.text_faint },
-            self.job(),
-        );
+        // As the shared column's cards: the number and the job centred
+        // over the knob, where the job lives not drawn.
+        let ink = if self.enabled { t.text } else { t.text_faint };
+        let rest = qlink::card_head(cx, qlink::card_inner(r), self.knob, self.job(), col, ink);
         let (ring, sub) = if self.sub.is_empty() {
             (rest, None)
         } else {
@@ -271,11 +285,7 @@ impl KnobCard {
             "—"
         };
         // A long value ("12 of 15") a size smaller, to stay inside the ring.
-        let px = if cx.measure(FontId::Bold, 16.0, value) > vr.w - 6 {
-            13.0
-        } else {
-            16.0
-        };
+        let px = qlink::fitting(cx, value, vr.w - 6);
         cx.text(
             FontId::Bold,
             px,
@@ -319,8 +329,8 @@ fn arc(cx: &mut PaintCx, (x, y): (f32, f32), rad: f32, from: f32, sweep: f32, do
 
 impl Widget for KnobCard {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
-        // In a column (168 px wide) rather than a strip (about three times
-        // as wide as high).
+        // In a column (`qlink::COLUMN_WIDTH` wide) rather than a strip
+        // (about three times as wide as high).
         if r.w < 2 * r.h {
             return self.paint_tall(cx, r);
         }
@@ -455,6 +465,9 @@ pub struct SettingList {
     /// Pad list's Effects: no arrows, and a tap on it is a
     /// [`EventKind::Tab`] with the row's index.
     pub buttons: Vec<usize>,
+    /// A finger on a typed value: the number pad opens when it lifts, not
+    /// when the wheel turned the value while it was held.
+    typing: Option<(u64, usize)>,
 }
 
 const SET_ROW_H: i32 = 44;
@@ -471,6 +484,7 @@ impl SettingList {
             editing: false,
             typed: Vec::new(),
             buttons: Vec::new(),
+            typing: None,
         }
     }
 
@@ -632,9 +646,46 @@ impl Widget for SettingList {
         out
     }
 
-    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
-        if phase != Touch::Down {
+    /// A finger resting on a row (not a button) puts its value under the
+    /// wheel, whichever part of the row it is on.
+    fn held(&self, x: i32, y: i32, r: Rect) -> Option<Target> {
+        let k = (0..self.rows.len()).find(|&k| {
+            self.row_rects(r, k)
+                .is_some_and(|(row, _)| row.contains(x, y))
+        })?;
+        if self.buttons.contains(&k) {
             return None;
+        }
+        let (row, _) = self.row_rects(r, k)?;
+        Some(Target::tap("row", k, self.rows[k].name.clone(), row))
+    }
+
+    /// The held row's value, a step a detent, as its arrows step it.
+    fn held_step(&mut self, t: &Target, delta: i32, _fine: bool, _r: Rect) -> Option<EventKind> {
+        if t.index >= self.rows.len() || delta == 0 {
+            return None;
+        }
+        self.selected = t.index;
+        Some(EventKind::Step {
+            index: t.index,
+            delta,
+        })
+    }
+
+    fn touch(&mut self, f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        match phase {
+            Touch::Down => {}
+            // A typed value opens the number pad on the lift, so a value
+            // turned by the wheel while held (a cancel) opens nothing.
+            Touch::Up => {
+                let (_, k) = self.typing.take().filter(|(g, _)| *g == f)?;
+                return (k < self.rows.len()).then_some(EventKind::Type(k));
+            }
+            Touch::Cancel => {
+                self.typing = self.typing.filter(|(g, _)| *g != f);
+                return None;
+            }
+            Touch::Move => return None,
         }
         let k = (0..self.rows.len()).find(|&k| {
             self.row_rects(r, k)
@@ -652,7 +703,8 @@ impl Widget for SettingList {
         } else if value.contains(x, y) && x >= value.right() - SET_ARROW_W {
             Some(EventKind::Step { index: k, delta: 1 })
         } else if value.contains(x, y) && self.typed.contains(&k) {
-            Some(EventKind::Type(k))
+            self.typing = Some((f, k));
+            Some(EventKind::Select(k))
         } else {
             Some(EventKind::Select(k))
         }

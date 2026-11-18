@@ -49,6 +49,7 @@ A **project** is one song: everything you need to pick it up again where you lef
 | The kits, with every sound on their pads and each pad's settings |
 | The synth sounds, and the Synth tab's options: the engine on the pads, the scale and its root, each pad bank's layout, In key rows, and the tuning with its root and A4 |
 | Each track's own instrument (Poly, FM, a plugin synth...), with its sound or the plugin's settings |
+| Which kit, or the synth, each other track plays |
 | Each track's arpeggiator: its mode, rate (the rate Note Repeat plays at too), order, octaves, gate, swing, scale and the other options, and its pattern with your edits |
 | The mixer: each strip's level, pan, sends and mutes, the effects and their settings (plugins' too), and the macros |
 | The Looper's loops, with each layer's mix |
@@ -82,7 +83,7 @@ A short press of the power button asks whether to save before the MPC switches o
 
 ### Opening a project
 
-Press **BROWSE**, pick **Projects** on the left, pick a project and push the data wheel (or tap it again). Playback stops, and the project's clips, kits, synth sounds, tracks' instruments and mixer come in together. A plugin the project used that isn't in `files/plugins/` on this stick is left out, and the Events log names its file so you can put it back: a missing plugin effect leaves its strip without it, and a track whose plugin synth is missing plays the kit. The loops you had fade out, and the project's loops come in a moment later. The same goes for the audio tracks: a recording ends, and the project's takes come in a moment later. If the project's takes don't all fit in **Audio track memory** ([Prefs](../reference/prefs.md)), the Events log says which were left out. A part MPFree can't read (from a newer version, say) is left as it is, and the Events log says which.
+Press **BROWSE**, pick **Projects** on the left, pick a project and push the data wheel (or tap it again). Playback stops, and the project's clips, kits, synth sounds, tracks' instruments and mixer come in together. A plugin the project used that isn't in `files/plugins/` on this stick is left out, and the Events log names its file so you can put it back: a missing plugin effect leaves its strip without it, and a track whose plugin synth is missing plays the kit. The loops you had fade out, and the project's loops come in a moment later, in their cells on the Loop tracks, waiting for a launch as the clips do. A project saved before Loop tracks opens with each loop on a Loop track of its own, in row 1, all playing as they did (see [Loops in the Clips grid](looping.md#loops-in-the-clips-grid)). The same goes for the audio tracks: a recording ends, and the project's takes come in a moment later. If the project's takes don't all fit in **Audio track memory** ([Prefs](../reference/prefs.md)), the Events log says which were left out. A part MPFree can't read (from a newer version, say) is left as it is, and the Events log says which.
 
 ### Starting a new project
 
@@ -106,7 +107,9 @@ MPFree opens the project you last saved or opened: once the sound is going, it o
 - **The list** in the middle, folders first, in natural order (Kick 2 before Kick 10), with filters for audio, projects and kits. Each row has a **star** at its right end: tap it to add the item to Favourites, and again to take it out.
 - **The selected item** on the right: a sound's length and waveform, a project's tempo and when it was saved, and buttons to Load, Load to pad, Audition, Rename, Copy, Cut and Delete.
 
-**Opening things.** Tap a folder to open it. Tap anything else to pick it (a sound plays once), and tap it again to open it (a project) or load it (a sound, a kit, a preset). Pushing the data wheel does the same as that second tap.
+**Opening things.** Tap a folder to open it. Tap anything else to pick it (a sound plays once), and tap it again to open it (a project) or load it (a sound, a kit, a preset, a MIDI file). Pushing the data wheel does the same as that second tap.
+
+**MIDI files.** A `.mid` file loads as clips, from the armed track on: see [Bringing in a MIDI file](clips.md#bringing-in-a-midi-file). The MIDI file an export makes (in Recordings) loads back the same way.
 
 **Kits.** A kit is kept as a folder with its sounds and a `kit.txt` file listing every pad and its settings, so it reads on any computer. Kits show with a green icon wherever they are. Loading one puts it in place of the kit the pads play; **+** opens it to show its sounds. **Save kit** at the top of the **Kits** place saves the kit the pads play there, named after it. MPFree's own drum kits and its free kits of recorded drums ([Sampling](sampling.md)) are in **Kits > MPFree**.
 

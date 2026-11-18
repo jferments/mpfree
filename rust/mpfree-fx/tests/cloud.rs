@@ -72,6 +72,58 @@ fn t60(l: &[f32], r: &[f32], rate: u32) -> f32 {
     2.0 * (b - a) as f32 / rate as f32
 }
 
+/// `x` through a band-pass an octave wide at `hz` (two RBJ band-passes).
+fn octave(x: &[f64], hz: f64, rate: u32) -> Vec<f64> {
+    let w = std::f64::consts::TAU * hz / rate as f64;
+    let alpha = w.sin() / (2.0 * 1.41);
+    let a0 = 1.0 + alpha;
+    let (b0, a1, a2) = (alpha / a0, -2.0 * w.cos() / a0, (1.0 - alpha) / a0);
+    let mut y = x.to_vec();
+    for _ in 0..2 {
+        let (mut x1, mut x2, mut y1, mut y2) = (0.0, 0.0, 0.0, 0.0);
+        for v in &mut y {
+            let out = b0 * *v - b0 * x2 - a1 * y1 - a2 * y2;
+            (x2, x1, y2, y1) = (x1, *v, y1, out);
+            *v = out;
+        }
+    }
+    y
+}
+
+/// Decay as the Cloud's Decay means it: the 60 dB decay time of the 500 Hz
+/// and 1 kHz octaves (their mean), each the slope of a line fitted to its
+/// Schroeder curve over the whole fall from -5 to -60 dB. At a big Size
+/// and a short Decay each pass round a line is a good part of the decay,
+/// so the tail comes in clusters and the curve falls in steps; a fit over
+/// several steps reads their true slope where the usual -5 to -35 dB
+/// reading lands on one step's edge.
+fn t60_mid(l: &[f32], r: &[f32], rate: u32) -> f32 {
+    let t = |hz: f64| {
+        let (bl, br) = (
+            octave(&l.iter().map(|v| *v as f64).collect::<Vec<_>>(), hz, rate),
+            octave(&r.iter().map(|v| *v as f64).collect::<Vec<_>>(), hz, rate),
+        );
+        let e: Vec<f64> = bl.iter().zip(&br).map(|(a, b)| a * a + b * b).collect();
+        let mut tail = vec![0.0; e.len() + 1];
+        for i in (0..e.len()).rev() {
+            tail[i] = tail[i + 1] + e[i];
+        }
+        let level = |i: usize| 10.0 * (tail[i] / tail[0]).log10();
+        let a = (0..e.len()).find(|&i| level(i) < -5.0).unwrap();
+        let b = (0..e.len()).find(|&i| level(i) < -60.0).unwrap();
+        // Least squares: level against seconds.
+        let n = (b - a) as f64;
+        let (mut st, mut sl, mut stt, mut stl) = (0.0, 0.0, 0.0, 0.0);
+        for i in a..b {
+            let (x, y) = (i as f64 / rate as f64, level(i));
+            (st, sl, stt, stl) = (st + x, sl + y, stt + x * x, stl + x * y);
+        }
+        let slope = (n * stl - st * sl) / (n * stt - st * st);
+        -60.0 / slope
+    };
+    (0.5 * (t(500.0) + t(1000.0))) as f32
+}
+
 /// The flat, wide-open settings for measuring decay.
 const OPEN: [(u16, f32); 6] = [
     (MIX, 100.0),
@@ -86,8 +138,9 @@ const OPEN: [(u16, f32); 6] = [
 fn decay_is_the_time_to_fall_60_db_at_any_rate() {
     // Cloud's long early diffuser adds its own ring to short decays, so it
     // is measured at the long ones it is made for.
-    // The last two: big sizes, where long diffuser stages would outlast a
-    // short decay without their feedback cap.
+    // The last three: big sizes, where long diffuser stages would outlast a
+    // short decay without their feedback cap, and long lines would leave
+    // gaps between passes without the taps' spread.
     let cases = [
         (0.0, 1000.0, 48_000, 120.0),
         (0.0, 4000.0, 44_100, 120.0),
@@ -95,25 +148,30 @@ fn decay_is_the_time_to_fall_60_db_at_any_rate() {
         (2.0, 4000.0, 48_000, 120.0),
         (3.0, 4000.0, 48_000, 120.0),
         (3.0, 8000.0, 44_100, 120.0),
+        (1.0, 700.0, 48_000, 40.0),
+        (1.0, 2500.0, 96_000, 120.0),
+        (4.0, 3000.0, 48_000, 260.0),
+        (4.0, 1000.0, 44_100, 120.0),
         (3.0, 3000.0, 48_000, 400.0),
         (2.0, 1500.0, 48_000, 600.0),
+        (2.0, 2000.0, 44_100, 1000.0),
     ];
     for (character, decay_ms, rate, size) in cases {
         let mut v = OPEN.to_vec();
         v.extend([(CHARACTER, character), (DECAY, decay_ms), (SIZE, size)]);
         let mut c = cloud(rate, &v);
-        let frames = (rate as f32 * (decay_ms / 1000.0 * 1.5 + 0.5)) as usize;
+        let frames = (rate as f32 * (decay_ms / 1000.0 * 2.0 + 0.5)) as usize;
         let (mut l, mut r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
         l[0] = 1.0;
         r[0] = 1.0;
         run(&mut c, rate, &mut l, &mut r);
-        let t = t60(&l, &r, rate);
+        let t = t60_mid(&l, &r, rate);
         let want = decay_ms / 1000.0;
         println!(
             "character {character}, size {size} ms, decay {want} s at {rate} Hz: T60 {t:.2} s"
         );
         assert!(
-            (t / want - 1.0).abs() < 0.2,
+            (t / want - 1.0).abs() < 0.08,
             "character {character}, size {size} ms, decay {want} s at {rate} Hz: T60 {t:.2} s"
         );
     }
@@ -546,5 +604,167 @@ fn presets_are_in_range_and_play() {
         run(&mut node, RATE, &mut l, &mut r);
         assert!(l.iter().chain(&r).all(|v| v.is_finite()), "{}", p.name);
         assert!(rms(&l[RATE as usize / 2..]) > 0.01, "{} is audible", p.name);
+    }
+}
+
+/// The 60 dB decay time of the octave at `hz`, from a line fitted to its
+/// Schroeder curve's fall from -5 to -35 dB.
+fn t60_at(l: &[f32], r: &[f32], hz: f64, rate: u32) -> f32 {
+    let bl = octave(&l.iter().map(|v| *v as f64).collect::<Vec<_>>(), hz, rate);
+    let br = octave(&r.iter().map(|v| *v as f64).collect::<Vec<_>>(), hz, rate);
+    let e: Vec<f64> = bl.iter().zip(&br).map(|(a, b)| a * a + b * b).collect();
+    let mut tail = vec![0.0; e.len() + 1];
+    for i in (0..e.len()).rev() {
+        tail[i] = tail[i + 1] + e[i];
+    }
+    let level = |i: usize| 10.0 * (tail[i] / tail[0]).log10();
+    let a = (0..e.len()).find(|&i| level(i) < -5.0).unwrap();
+    let b = (0..e.len()).find(|&i| level(i) < -35.0).unwrap();
+    2.0 * (b - a) as f32 / rate as f32
+}
+
+#[test]
+fn every_pitch_fades_at_one_rate() {
+    // The all-pass diffusers in each line hold some pitches longer than
+    // others; the loss is spread over each line and its diffusers by their
+    // delays, so (the in-loop shelves being up at 5 kHz and more) the
+    // octaves from 250 Hz to 2 kHz fall together. Echoes is left out: its
+    // shelves at 250 Hz and 3.5 kHz thin and darken every repeat.
+    for character in 0..4 {
+        let mut v = OPEN.to_vec();
+        v.extend([(CHARACTER, character as f32), (DECAY, 3000.0)]);
+        let mut c = cloud(RATE, &v);
+        let frames = RATE as usize * 7 / 2;
+        let (mut l, mut r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
+        l[0] = 1.0;
+        r[0] = 1.0;
+        run(&mut c, RATE, &mut l, &mut r);
+        let t: Vec<f32> = [250.0, 500.0, 1000.0, 2000.0]
+            .iter()
+            .map(|&hz| t60_at(&l, &r, hz, RATE))
+            .collect();
+        println!("character {character}: 250 Hz to 2 kHz T60 {t:.2?} s");
+        let (lo, hi) = t
+            .iter()
+            .fold((f32::MAX, 0.0f32), |(a, b), &v| (a.min(v), b.max(v)));
+        assert!(hi / lo < 1.25, "character {character}: {t:.2?} s");
+    }
+}
+
+/// The share of `x`'s energy (dB) more than `width` Hz from `hz`, under a
+/// Hann window.
+fn off_pitch_db(x: &[f32], hz: f32, width: f32, rate: u32) -> f32 {
+    let n = x.len();
+    let w: Vec<f64> = (0..n)
+        .map(|i| x[i] as f64 * (0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / n as f64).cos()))
+        .collect();
+    let total: f64 = w.iter().map(|v| v * v).sum::<f64>() * n as f64 / 2.0;
+    // Goertzel power over the band around `hz`, at a quarter-bin step.
+    let step = rate as f32 / n as f32 / 4.0;
+    let mut near = 0.0f64;
+    let mut f = hz - width;
+    while f <= hz + width {
+        let k = 2.0 * (std::f64::consts::TAU * f as f64 / rate as f64).cos();
+        let (mut s1, mut s2) = (0.0f64, 0.0f64);
+        for &v in &w {
+            let s0 = v + k * s1 - s2;
+            (s2, s1) = (s1, s0);
+        }
+        near += (s1 * s1 + s2 * s2 - k * s1 * s2) / 4.0;
+        f += step;
+    }
+    10.0 * (1.0 - (near / total).min(1.0)).max(1e-12).log10() as f32
+}
+
+#[test]
+fn size_and_pre_delay_changes_never_slide_the_pitch() {
+    // A held 1 kHz tone, and Size or Pre-delay jumped: each crossfades from
+    // the old length to the new, so what comes out stays at 1 kHz: under
+    // a sixteenth of the energy more than 60 Hz off, in the eighth of a second
+    // after the jump (a sliding length bends it up or down as it moves:
+    // before the crossfades, nearly all of it was off).
+    let tone = |n: usize, from: usize| -> Vec<f32> {
+        (from..from + n)
+            .map(|i| 0.3 * (std::f32::consts::TAU * 1000.0 * i as f32 / RATE as f32).sin())
+            .collect()
+    };
+    for character in 0..5 {
+        for (id, from, to) in [
+            (SIZE, 120.0, 200.0),
+            (SIZE, 200.0, 120.0),
+            (PRE_DELAY, 0.0, 60.0),
+        ] {
+            let mut v = OPEN.to_vec();
+            v.extend([(CHARACTER, character as f32), (MODULATION, 0.0), (id, from)]);
+            let mut c = cloud(RATE, &v);
+            let n = RATE as usize;
+            let (mut l, mut r) = (tone(n, 0), tone(n, 0));
+            run(&mut c, RATE, &mut l, &mut r);
+            c.set_param(id, to);
+            let m = RATE as usize / 8;
+            let (mut l, mut r) = (tone(m, n), tone(m, n));
+            for (i, (a, b)) in l.chunks_mut(128).zip(r.chunks_mut(128)).enumerate() {
+                c.process(&Ctx::new(RATE, (n + i * 128) as u64), &[], a, b);
+            }
+            let off =
+                off_pitch_db(&l, 1000.0, 60.0, RATE).max(off_pitch_db(&r, 1000.0, 60.0, RATE));
+            println!("character {character}, {id} {from} to {to}: {off:.1} dB off pitch");
+            assert!(
+                off < -12.0,
+                "character {character}, {id} {from} to {to}: {off:.1} dB"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_longer_decay_rings_longer_not_louder() {
+    for character in 0..5 {
+        let level = |decay: f32| {
+            let mut v = OPEN.to_vec();
+            v.extend([(CHARACTER, character as f32), (DECAY, decay)]);
+            let mut c = cloud(RATE, &v);
+            let n = 5 * RATE as usize;
+            let (mut l, mut r) = (noise(1, n, 0.3), noise(2, n, 0.3));
+            run(&mut c, RATE, &mut l, &mut r);
+            // The last second, octave by octave from 250 Hz to 4 kHz.
+            let from = 4 * RATE as usize;
+            let (l, r): (Vec<f64>, Vec<f64>) = (
+                l.iter().map(|v| *v as f64).collect(),
+                r.iter().map(|v| *v as f64).collect(),
+            );
+            let e: f64 = [250.0, 500.0, 1000.0, 2000.0, 4000.0]
+                .iter()
+                .map(|&hz| {
+                    let (bl, br) = (octave(&l, hz, RATE), octave(&r, hz, RATE));
+                    bl[from..]
+                        .iter()
+                        .chain(&br[from..])
+                        .map(|v| v * v)
+                        .sum::<f64>()
+                })
+                .sum();
+            10.0 * (e / (n - from) as f64).log10() as f32
+        };
+        let (short, long) = (level(500.0), level(8000.0));
+        println!("character {character}: {short:.1} dB at 0.5 s, {long:.1} dB at 8 s");
+        assert!(
+            (long - short).abs() < 1.5,
+            "character {character}: {short:.1} dB at 0.5 s, {long:.1} dB at 8 s"
+        );
+    }
+}
+
+#[test]
+fn a_source_keeps_its_side() {
+    for character in 0..5 {
+        let mut c = cloud(RATE, &[(CHARACTER, character as f32), (MIX, 100.0)]);
+        let n = RATE as usize / 10;
+        let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+        l[0] = 1.0;
+        run(&mut c, RATE, &mut l, &mut r);
+        let side = db(rms(&l) / rms(&r));
+        println!("character {character}: the left's first 100 ms {side:.1} dB stronger");
+        assert!(side > 3.0, "character {character}: {side:.1} dB");
     }
 }

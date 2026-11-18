@@ -7,7 +7,7 @@
 //!   it, and its ON pill (bypass with spillover). A tap selects an effect
 //!   and a drag moves it along the chain; under the list, Add effect opens
 //!   the effect picker, and Up, Down and Remove act on the selected one.
-//! - **The effect** (the rest: 844 px on the MPC): a header with the
+//! - **The effect** (the rest: 884 px on the MPC): a header with the
 //!   effect's name and its Mode chooser (a button per mode, or ‹ › round a
 //!   chip that opens the list of them), or its page tabs when it has more
 //!   than one page; then the page, its controls in labelled sections in
@@ -141,8 +141,8 @@ pub enum ChainAction {
     },
 }
 
-/// The chain column's width (the effect column takes the rest: 844 px on
-/// the MPC, beside the app's 168 px Q-Link column).
+/// The chain column's width (the effect column takes the rest: 884 px on
+/// the MPC, beside the app's 128 px Q-Link column).
 pub const LIST_W: i32 = 220;
 /// Space between the columns, and between the chain column's cards.
 const GAP: i32 = 12;
@@ -1999,36 +1999,12 @@ impl Widget for ChainView {
     /// one place along the chain per detent (turned up, later in the
     /// chain), as Up and Down do.
     fn step(&mut self, t: &Target, delta: i32, _r: Rect) -> Option<EventKind> {
-        if t.id == "eq-band" {
-            let b = self.eq.band_target(t.index)?;
-            let mut out = Vec::new();
-            self.eq.wheel(b, delta, &mut out);
-            for a in out {
-                self.push(a);
-            }
-            return Some(EventKind::Select(self.actions.len()));
-        }
-        if t.id == "slot" {
-            let n = self.state.slots.len();
-            let from = self.state.selected.unwrap_or(t.index);
-            let to = (from as i64 + delta as i64).clamp(0, n.max(1) as i64 - 1) as usize;
-            if to == from || from >= n {
-                return None;
-            }
-            self.move_slot(from, to);
-            return Some(EventKind::Select(self.actions.len()));
-        }
-        let p = self.state.params.get(t.index)?;
-        let (addr, pos, from) = (p.addr, p.pos, p.value);
-        let value = (1..=100)
-            .map(|n| p.info.from_unit(pos + (delta * n) as f32 * WHEEL_STEP))
-            .find(|v| *v != from)?;
-        if self.state.focus != Some(addr) {
-            self.push(ChainAction::Focus(addr));
-        }
-        self.push(ChainAction::Set { addr, value });
-        self.push(ChainAction::Release(addr));
-        Some(EventKind::Select(self.actions.len()))
+        self.turn(t, delta, WHEEL_STEP)
+    }
+
+    /// Held with SHIFT: a knob, fader or slider moves a tenth as far.
+    fn held_step(&mut self, t: &Target, delta: i32, fine: bool, _r: Rect) -> Option<EventKind> {
+        self.turn(t, delta, if fine { WHEEL_STEP / 10.0 } else { WHEEL_STEP })
     }
 
     /// A grabbed effect the wheel moved is listed at its new place.
@@ -2054,6 +2030,41 @@ impl Widget for ChainView {
 const WHEEL_STEP: f32 = 0.01;
 
 impl ChainView {
+    /// The wheel on control `t` by `delta` detents, `each` of a knob's
+    /// travel per detent ([`Widget::step`], [`Widget::held_step`]).
+    fn turn(&mut self, t: &Target, delta: i32, each: f32) -> Option<EventKind> {
+        if t.id == "eq-band" {
+            let b = self.eq.band_target(t.index)?;
+            let mut out = Vec::new();
+            self.eq.wheel(b, delta, &mut out);
+            for a in out {
+                self.push(a);
+            }
+            return Some(EventKind::Select(self.actions.len()));
+        }
+        if t.id == "slot" {
+            let n = self.state.slots.len();
+            let from = self.state.selected.unwrap_or(t.index);
+            let to = (from as i64 + delta as i64).clamp(0, n.max(1) as i64 - 1) as usize;
+            if to == from || from >= n {
+                return None;
+            }
+            self.move_slot(from, to);
+            return Some(EventKind::Select(self.actions.len()));
+        }
+        let p = self.state.params.get(t.index)?;
+        let (addr, pos, from) = (p.addr, p.pos, p.value);
+        let value = (1..=100)
+            .map(|n| p.info.from_unit(pos + (delta * n) as f32 * each))
+            .find(|v| *v != from)?;
+        if self.state.focus != Some(addr) {
+            self.push(ChainAction::Focus(addr));
+        }
+        self.push(ChainAction::Set { addr, value });
+        self.push(ChainAction::Release(addr));
+        Some(EventKind::Select(self.actions.len()))
+    }
+
     /// The Modulate row's buttons, for the control touched, and its matrix
     /// rows while they are open.
     fn modulate_targets(&self, l: &Layout, out: &mut Vec<Target>) {

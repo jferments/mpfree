@@ -11,16 +11,27 @@ use mpfree_node::{Ctx, Kind, NodeInfo, ParamInfo, Smooth};
 use crate::kit::{
     self, meter, node_impl, param, Choice, Db, Glide, Hz, Linear, Log, Ms, Percent, Toggle, NONE,
 };
+use crate::limit::PeakLimit;
 use crate::svf::{Svf, SvfMode};
-use crate::{
-    db_to_gain, defaults, fast_db_to_gain, fast_level_db, flush, gain_to_db, lerp, Preset,
-};
+use crate::{db_to_gain, defaults, fast_db_to_gain, fast_level_db, flush, gain_to_db, Preset};
 
 /// The soft-knee gain reduction in dB for `over` dB above the threshold at
 /// `ratio`, with a knee `knee` dB wide.
 #[inline]
 fn knee_reduction(over: f32, ratio: f32, knee: f32) -> f32 {
-    let slope = 1.0 - 1.0 / ratio.max(1.0);
+    slope_reduction(over, ratio_slope(ratio), knee)
+}
+
+/// The curve's slope above the knee for `ratio`: the share of each dB
+/// over the threshold that is taken off.
+#[inline]
+fn ratio_slope(ratio: f32) -> f32 {
+    1.0 - 1.0 / ratio.max(1.0)
+}
+
+/// [`knee_reduction`] with the slope given (so it can glide).
+#[inline]
+fn slope_reduction(over: f32, slope: f32, knee: f32) -> f32 {
     let h = 0.5 * knee;
     if over <= -h {
         0.0
@@ -47,39 +58,6 @@ pub mod limiter {
 
 /// The look-ahead, fixed so the latency never moves.
 const LIMIT_AHEAD_MS: f32 = 1.5;
-/// Taps of each true-peak interpolation phase (BS.1770's 4x filter has 12
-/// a phase too), and how far behind the newest input the detector runs.
-const TP_TAPS: usize = 12;
-const TP_LAG: usize = TP_TAPS / 2;
-
-/// The true-peak filter: for the points a quarter, a half and three
-/// quarters of the way between two samples, Hann-windowed sinc taps over
-/// the 12 samples around them, each phase normalised to unity at DC.
-fn tp_phases() -> [[f32; TP_TAPS]; 3] {
-    let mut out = [[0.0f32; TP_TAPS]; 3];
-    for (k, ph) in out.iter_mut().enumerate() {
-        let frac = (k + 1) as f64 * 0.25;
-        let mut sum = 0.0;
-        for (j, tap) in ph.iter_mut().enumerate() {
-            // Sample j sits at (j - (TP_LAG - 1)) from the left sample of
-            // the gap; the point is at frac.
-            let x = j as f64 - (TP_LAG as f64 - 1.0) - frac;
-            let sinc = if x.abs() < 1e-9 {
-                1.0
-            } else {
-                (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
-            };
-            let w = 0.5 + 0.5 * (std::f64::consts::PI * x / (TP_LAG as f64 + 0.5)).cos();
-            let v = sinc * w;
-            *tap = v as f32;
-            sum += v;
-        }
-        for tap in ph.iter_mut() {
-            *tap /= sum as f32;
-        }
-    }
-    out
-}
 
 static LIMITER_INFO: NodeInfo = NodeInfo {
     id: "mpfree.fx.limiter",
@@ -120,38 +98,20 @@ pub static LIMITER_PRESETS: &[Preset] = &[
 ];
 
 /// A brick-wall look-ahead limiter: the gain is down before each peak
-/// arrives, so nothing passes the ceiling and there is no overshoot. Auto
-/// release lets go fast after a short peak and slowly under a sustained
+/// arrives, so nothing passes the ceiling and there is no overshoot. The
+/// gain holds still for a moment after a peak (a quarter of Release, at
+/// most 5 ms), so it doesn't ride inside bass cycles, then comes back in
+/// decibels, 63 % of the way by Release. Auto release lets go at a third
+/// of Release after a short peak and at three times it after a sustained
 /// push, which keeps loud material from pumping. True peak also catches
-/// the peaks between samples that a converter would make.
+/// the peaks between samples that a converter would make, as a 4x meter
+/// reads them. See [`crate::limit`].
 pub struct Limiter {
     v: [f32; 6],
     rate: u32,
-    /// Look-ahead window in frames.
-    w: usize,
     gain: Smooth,
     ceiling: Smooth,
-    rel_fast: f32,
-    rel_slow: f32,
-    att_slow: f32,
-    env_fast: f32,
-    env_slow: f32,
-    /// Sliding minimum of the wanted gain: (frame, value), increasing.
-    dq: Vec<(u64, f32)>,
-    dq_head: usize,
-    dq_len: usize,
-    /// The minima of the last `w` frames, and their sum.
-    box_buf: Vec<f32>,
-    box_pos: usize,
-    box_sum: f64,
-    /// Input history for the detector, written twice so the last
-    /// TP_TAPS frames always sit side by side from `hist_at` (oldest
-    /// first), and the audio delay.
-    hist: [[f32; 2 * TP_TAPS]; 2],
-    hist_at: usize,
-    tp: [[f32; TP_TAPS]; 3],
-    delay: [kit::Line; 2],
-    frame: u64,
+    core: PeakLimit,
     least: f32,
 }
 
@@ -167,25 +127,9 @@ impl Limiter {
         let mut l = Limiter {
             v,
             rate: 48_000,
-            w: 1,
             gain: Smooth::new(db_to_gain(v[0])),
             ceiling: Smooth::new(db_to_gain(v[1])),
-            rel_fast: 0.0,
-            rel_slow: 0.0,
-            att_slow: 0.0,
-            env_fast: 1.0,
-            env_slow: 1.0,
-            dq: Vec::new(),
-            dq_head: 0,
-            dq_len: 0,
-            box_buf: Vec::new(),
-            box_pos: 0,
-            box_sum: 0.0,
-            hist: [[0.0; 2 * TP_TAPS]; 2],
-            hist_at: 0,
-            tp: tp_phases(),
-            delay: [kit::Line::default(), kit::Line::default()],
-            frame: 0,
+            core: PeakLimit::new(),
             least: 1.0,
         };
         l.setup(48_000);
@@ -195,155 +139,58 @@ impl Limiter {
         match id {
             limiter::GAIN => self.gain.target = db_to_gain(v),
             limiter::CEILING => self.ceiling.target = db_to_gain(v),
-            limiter::RELEASE | limiter::AUTO => self.set_release(),
+            limiter::RELEASE | limiter::AUTO => self.core.set_release(
+                self.v[limiter::RELEASE as usize],
+                self.v[limiter::AUTO as usize] >= 0.5,
+            ),
+            limiter::TRUE_PEAK => self.core.set_true_peak(v >= 0.5),
             _ => {}
-        }
-    }
-    fn set_release(&mut self) {
-        let ms = self.v[limiter::RELEASE as usize];
-        if self.v[limiter::AUTO as usize] >= 0.5 {
-            // Short peaks recover at a third of Release; a push that lasts
-            // pulls the slow envelope down, which lets go at three times
-            // Release.
-            self.rel_fast = kit::coef(ms / 3.0, self.rate);
-            self.rel_slow = kit::coef(ms * 3.0, self.rate);
-            self.att_slow = kit::coef(80.0, self.rate);
-        } else {
-            self.rel_fast = kit::coef(ms, self.rate);
-            self.rel_slow = 1.0;
-            self.att_slow = 0.0;
-        }
-    }
-
-    /// The detector's level for the sample TP_LAG frames back (with the
-    /// points between it and the next sample when True peak is on).
-    #[inline]
-    fn level(&self, ch: usize, tp: bool) -> f32 {
-        let h = &self.hist[ch][self.hist_at..self.hist_at + TP_TAPS];
-        let mut p = h[TP_LAG - 1].abs();
-        if tp {
-            for ph in &self.tp {
-                let mut y = 0.0;
-                for j in 0..TP_TAPS {
-                    y += ph[j] * h[j];
-                }
-                p = p.max(y.abs());
-            }
-        }
-        p
-    }
-
-    fn push_min(&mut self, g: f32) {
-        let cap = self.dq.len();
-        // Indices wrap by one subtraction: a `%` is a library call on
-        // the MPC's ARM, which has no divide instruction.
-        let wrap = |i: usize| if i >= cap { i - cap } else { i };
-        // Drop values no smaller than the new one from the back.
-        while self.dq_len > 0 {
-            let back = wrap(self.dq_head + self.dq_len - 1);
-            if self.dq[back].1 >= g {
-                self.dq_len -= 1;
-            } else {
-                break;
-            }
-        }
-        let at = wrap(self.dq_head + self.dq_len);
-        self.dq[at] = (self.frame, g);
-        self.dq_len += 1;
-        // Drop the front once it leaves the window.
-        let oldest = (self.frame + 1).saturating_sub(self.w as u64);
-        while self.dq[self.dq_head].0 < oldest {
-            self.dq_head = wrap(self.dq_head + 1);
-            self.dq_len -= 1;
         }
     }
 
     fn begin(&mut self, _ctx: &Ctx) {}
     fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
-        let tp = self.v[limiter::TRUE_PEAK as usize] >= 0.5;
-        let auto = self.v[limiter::AUTO as usize] >= 0.5;
-        let inv_w = 1.0 / self.w as f64;
+        // A quiet piece with the limiter at rest needs no limiting, only
+        // its delay (the same numbers as frame by frame).
+        let steady = self.gain.settled() && self.ceiling.settled();
+        if steady
+            && self
+                .core
+                .quiet_block(l, r, self.gain.target, self.ceiling.target)
+        {
+            return self.show_reduction();
+        }
         for i in 0..l.len() {
             let gain = self.gain.glide();
             let ceiling = self.ceiling.glide();
-            let x = [l[i] * gain, r[i] * gain];
-            for ch in 0..2 {
-                self.hist[ch][self.hist_at] = x[ch];
-                self.hist[ch][self.hist_at + TP_TAPS] = x[ch];
-                self.delay[ch].push(x[ch]);
-            }
-            self.hist_at += 1;
-            if self.hist_at == TP_TAPS {
-                self.hist_at = 0;
-            }
-            let peak = self.level(0, tp).max(self.level(1, tp));
-            let want = if peak > ceiling { ceiling / peak } else { 1.0 };
-            // Release: down at once, up at the release rate.
-            self.env_fast = if want < self.env_fast {
-                want
-            } else {
-                flush(self.env_fast + (want - self.env_fast) * self.rel_fast)
-            };
-            let env = if auto {
-                let k = if want < self.env_slow {
-                    self.att_slow
-                } else {
-                    self.rel_slow
-                };
-                self.env_slow = flush(self.env_slow + (want - self.env_slow) * k);
-                // The slow envelope only holds the gain down (it never
-                // goes under what a peak needs on its own).
-                self.env_fast.min(self.env_slow.max(want))
-            } else {
-                self.env_fast
-            };
-            self.push_min(env);
-            let m = self.dq[self.dq_head].1;
-            self.box_sum += f64::from(m) - f64::from(self.box_buf[self.box_pos]);
-            self.box_buf[self.box_pos] = m;
-            self.box_pos += 1;
-            if self.box_pos >= self.w {
-                self.box_pos = 0;
-            }
-            self.frame += 1;
-            let g = ((self.box_sum * inv_w) as f32).min(1.0);
+            let ([a, b], g) = self.core.run([l[i] * gain, r[i] * gain], ceiling);
             self.least = self.least.min(g);
-            // The audio, latency frames late (the detector runs TP_LAG
-            // frames behind the newest input, and the window adds w - 1);
-            // a tap of 1 is the newest frame.
-            let d = self.lat() as usize + 1;
-            l[i] = (self.delay[0].tap(d) * g).clamp(-ceiling, ceiling);
-            r[i] = (self.delay[1].tap(d) * g).clamp(-ceiling, ceiling);
+            // The gain already keeps every frame under the ceiling; the
+            // clamp only acts while the ceiling glides down.
+            l[i] = (a * g).clamp(-ceiling, ceiling);
+            r[i] = (b * g).clamp(-ceiling, ceiling);
         }
+        self.show_reduction();
+    }
+    fn show_reduction(&mut self) {
         self.v[limiter::REDUCTION as usize] = -gain_to_db(self.least).min(0.0);
         self.least = 1.0;
     }
     fn setup(&mut self, rate: u32) {
         self.rate = rate;
-        self.w = ((LIMIT_AHEAD_MS * 0.001 * rate as f32).round() as usize).max(1);
-        self.dq = vec![(0, 1.0); self.w + 2];
-        self.box_buf = vec![1.0; self.w];
-        let d = self.w + TP_LAG + 4;
-        self.delay = [kit::Line::new(d), kit::Line::new(d)];
         self.gain.set_time(rate, 20.0);
         self.ceiling.set_time(rate, 20.0);
-        self.set_release();
+        self.core.set_release(
+            self.v[limiter::RELEASE as usize],
+            self.v[limiter::AUTO as usize] >= 0.5,
+        );
+        self.core
+            .set_true_peak(self.v[limiter::TRUE_PEAK as usize] >= 0.5);
+        self.core.setup(rate, LIMIT_AHEAD_MS);
         self.clear();
     }
     fn clear(&mut self) {
-        self.env_fast = 1.0;
-        self.env_slow = 1.0;
-        self.dq_head = 0;
-        self.dq_len = 0;
-        self.box_buf.fill(1.0);
-        self.box_pos = 0;
-        self.box_sum = self.w as f64;
-        self.hist = [[0.0; 2 * TP_TAPS]; 2];
-        self.hist_at = 0;
-        for d in &mut self.delay {
-            d.clear();
-        }
-        self.frame = 0;
+        self.core.clear();
         self.least = 1.0;
         self.v[limiter::REDUCTION as usize] = 0.0;
         self.gain.snap(self.gain.target);
@@ -353,17 +200,10 @@ impl Limiter {
         self.lat()
     }
     fn rest(&self) -> u32 {
-        // The gain lets go over ten of its slowest release (three times
-        // Release with Auto on), and the look-ahead window and true-peak
-        // history fill with silence.
-        let mut ms = self.v[limiter::RELEASE as usize];
-        if self.v[limiter::AUTO as usize] >= 0.5 {
-            ms *= 3.0;
-        }
-        (10.0 * ms * 0.001 * self.rate as f32) as u32 + self.lat()
+        self.core.rest()
     }
     fn lat(&self) -> u32 {
-        (self.w + TP_LAG - 1) as u32
+        self.core.latency()
     }
 }
 
@@ -873,6 +713,8 @@ pub mod multiband {
     pub const fn reduction(b: usize) -> u16 {
         16 + b as u16
     }
+    /// Adds back what each band's curve takes from a mix-level sound.
+    pub const AUTO_MAKEUP: u16 = 19;
     pub const BANDS: usize = 3;
 }
 
@@ -883,7 +725,7 @@ static MULTIBAND_INFO: NodeInfo = NodeInfo {
     name: "Multiband comp",
     kind: Kind::Effect,
 };
-static MULTIBAND_PARAMS: [ParamInfo; 19] = [
+static MULTIBAND_PARAMS: [ParamInfo; 20] = [
     param(0, "Low/mid", "Bands", 40.0, 1000.0, 200.0, Hz, Log),
     param(1, "Mid/high", "Bands", 1000.0, 12_000.0, 2500.0, Hz, Log),
     param(2, "Low thresh", "Low", -60.0, 0.0, -18.0, Db, Linear),
@@ -903,7 +745,17 @@ static MULTIBAND_PARAMS: [ParamInfo; 19] = [
     meter(16, "Low red.", "Low", 0.0, 30.0, Db),
     meter(17, "Mid red.", "Mid", 0.0, 30.0, Db),
     meter(18, "High red.", "High", 0.0, 30.0, Db),
+    param(19, "Auto makeup", "Bands", 0.0, 1.0, 0.0, NONE, Toggle),
 ];
+
+/// The bands' knee, dB.
+const MB_KNEE: f32 = 6.0;
+
+/// Where Auto makeup reads each band's curve: about the peak level the
+/// detector reads from pink noise at -18 dBFS RMS (a mix level), less the
+/// band's share of it by octaves. A dB under the Compressor's -10, which
+/// left the heavy ratios (Drum crush's 8:1) 1.7 LU loud on pink.
+const AUTO_REF_DB: f32 = -11.0;
 
 use multiband as mb;
 
@@ -920,6 +772,7 @@ pub static MULTIBAND_PRESETS: &[Preset] = &[
             (mb::ratio(2), 2.0),
             (mb::ATTACK, 20.0),
             (mb::RELEASE, 200.0),
+            (mb::AUTO_MAKEUP, 1.0),
         ],
     },
     Preset {
@@ -931,6 +784,7 @@ pub static MULTIBAND_PRESETS: &[Preset] = &[
             (mb::gain(0), 2.0),
             (mb::ratio(1), 1.0),
             (mb::ratio(2), 1.0),
+            (mb::AUTO_MAKEUP, 1.0),
         ],
     },
     Preset {
@@ -943,6 +797,7 @@ pub static MULTIBAND_PRESETS: &[Preset] = &[
             (mb::threshold(2), -26.0),
             (mb::ratio(2), 4.0),
             (mb::ATTACK, 3.0),
+            (mb::AUTO_MAKEUP, 1.0),
         ],
     },
     Preset {
@@ -950,15 +805,13 @@ pub static MULTIBAND_PRESETS: &[Preset] = &[
         values: &[
             (mb::threshold(0), -30.0),
             (mb::ratio(0), 8.0),
-            (mb::gain(0), 6.0),
             (mb::threshold(1), -30.0),
             (mb::ratio(1), 8.0),
-            (mb::gain(1), 6.0),
             (mb::threshold(2), -30.0),
             (mb::ratio(2), 8.0),
-            (mb::gain(2), 6.0),
             (mb::ATTACK, 1.0),
             (mb::RELEASE, 60.0),
+            (mb::AUTO_MAKEUP, 1.0),
         ],
     },
 ];
@@ -966,10 +819,16 @@ pub static MULTIBAND_PRESETS: &[Preset] = &[
 /// A three-band compressor: two Linkwitz-Riley crossovers split the sound,
 /// each band has its own threshold, ratio and gain, and the bands sum back
 /// flat (the low band passes an all-pass at the upper crossover, so all
-/// three stay in phase). Attack and release are shared; Solo plays one
-/// band alone while setting up.
+/// three stay in phase). The dry is the bands' sum at unity (the input
+/// through the crossovers' all-passes), so any Mix adds the two in phase.
+/// Each band's detector is the
+/// Compressor's (the smooth decoupled peak detector on the reduction in
+/// decibels, its release solved through the attack), so the curve, Attack
+/// and Release mean what they say. Thresholds and ratios glide. Attack and
+/// release are shared; Solo plays one band alone while setting up; Auto
+/// makeup adds back what each band's curve takes from a mix-level sound.
 pub struct MultibandCompressor {
-    v: [f32; 19],
+    v: [f32; 20],
     rate: u32,
     lo_x: kit::Crossover,
     hi_x: kit::Crossover,
@@ -978,7 +837,15 @@ pub struct MultibandCompressor {
     x_lo: Smooth,
     x_hi: Smooth,
     tick: u32,
-    env: [kit::Follower; 3],
+    /// Per band: the threshold (dB) and the curve's slope (1 - 1/ratio).
+    thr: [Smooth; 3],
+    slope: [Smooth; 3],
+    /// Per band, in positive dB of reduction: the detector's hold (up at
+    /// once, down at the release) and the attack's smoothing after it.
+    hold: [f32; 3],
+    env: [f32; 3],
+    att: f32,
+    rel: f32,
     makeup: [Smooth; 3],
     mix: Smooth,
     out: Smooth,
@@ -994,6 +861,8 @@ impl Default for MultibandCompressor {
 impl MultibandCompressor {
     pub fn new() -> MultibandCompressor {
         let v = defaults(&MULTIBAND_PARAMS);
+        let thr = |b: usize| Smooth::new(v[mb::threshold(b) as usize]);
+        let slope = |b: usize| Smooth::new(ratio_slope(v[mb::ratio(b) as usize]));
         let mut m = MultibandCompressor {
             v,
             rate: 48_000,
@@ -1003,7 +872,12 @@ impl MultibandCompressor {
             x_lo: Smooth::new(v[0].log2()),
             x_hi: Smooth::new(v[1].log2()),
             tick: 0,
-            env: [kit::Follower::default(); 3],
+            thr: [thr(0), thr(1), thr(2)],
+            slope: [slope(0), slope(1), slope(2)],
+            hold: [0.0; 3],
+            env: [0.0; 3],
+            att: 0.0,
+            rel: 0.0,
             makeup: [Smooth::new(1.0), Smooth::new(1.0), Smooth::new(1.0)],
             mix: Smooth::new(1.0),
             out: Smooth::new(1.0),
@@ -1012,6 +886,42 @@ impl MultibandCompressor {
         m.setup(48_000);
         m
     }
+
+    /// Band `b`'s edges, Hz: 20 Hz, the two crossovers (the upper at least
+    /// an octave over the lower), 20 kHz.
+    fn edges(&self, b: usize) -> (f32, f32) {
+        let lo = self.v[mb::LOW_X as usize];
+        let hi = self.v[mb::HIGH_X as usize].max(2.0 * lo);
+        match b {
+            0 => (20.0, lo),
+            1 => (lo, hi),
+            _ => (hi, 20_000.0),
+        }
+    }
+
+    /// Auto makeup for band `b`, dB (0 when it is off): what the band's
+    /// curve takes at its share of a mix-level sound, the share by octaves
+    /// (pink noise has the same power in each).
+    pub fn auto_db(&self, b: usize) -> f32 {
+        if self.v[mb::AUTO_MAKEUP as usize] < 0.5 {
+            return 0.0;
+        }
+        let (lo, hi) = self.edges(b);
+        let share = (hi / lo).log2() / (20_000.0f32 / 20.0).log2();
+        let at = AUTO_REF_DB + 10.0 * share.log10();
+        knee_reduction(
+            at - self.v[mb::threshold(b) as usize],
+            self.v[mb::ratio(b) as usize],
+            MB_KNEE,
+        )
+    }
+
+    fn set_makeup(&mut self) {
+        for b in 0..mb::BANDS {
+            self.makeup[b].target = db_to_gain(self.v[mb::gain(b) as usize] + self.auto_db(b));
+        }
+    }
+
     fn apply(&mut self, id: u16, v: f32) {
         match id {
             mb::LOW_X => self.x_lo.target = v.log2(),
@@ -1020,20 +930,28 @@ impl MultibandCompressor {
             mb::MIX => self.mix.target = v / 100.0,
             mb::OUTPUT => self.out.target = db_to_gain(v),
             _ => {
-                for b in 0..3 {
-                    if id == mb::gain(b) {
-                        self.makeup[b].target = db_to_gain(v);
+                for b in 0..mb::BANDS {
+                    if id == mb::threshold(b) {
+                        self.thr[b].target = v;
+                    } else if id == mb::ratio(b) {
+                        self.slope[b].target = ratio_slope(v);
                     }
                 }
             }
         }
+        // A gain, Auto makeup, a threshold, a ratio or a crossover moves
+        // what each band gets back.
+        self.set_makeup();
     }
+
     fn set_times(&mut self) {
-        let (a, r) = (self.v[mb::ATTACK as usize], self.v[mb::RELEASE as usize]);
-        for e in &mut self.env {
-            e.set(a, r, self.rate);
-        }
+        let fs = self.rate as f32;
+        let attack = self.v[mb::ATTACK as usize] * 0.001;
+        let release = self.v[mb::RELEASE as usize] * 0.001;
+        self.att = (-1.0 / (attack * fs)).exp();
+        self.rel = (-1.0 / (crate::comp::release_tau(attack, false, release) * fs)).exp();
     }
+
     fn set_crossovers(&mut self) {
         // The upper crossover stays at least an octave over the lower.
         let lo = crate::fast_exp2(self.x_lo.value);
@@ -1042,11 +960,12 @@ impl MultibandCompressor {
         self.hi_x.set(hi, self.rate);
         self.lo_ap.set(hi, self.rate);
     }
+
     fn begin(&mut self, _ctx: &Ctx) {}
+
     fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
         let solo = self.v[mb::SOLO as usize] as usize;
-        let thr = [0, 1, 2].map(|b| self.v[mb::threshold(b) as usize]);
-        let ratio = [0, 1, 2].map(|b| self.v[mb::ratio(b) as usize]);
+        let (att, rel) = (self.att, self.rel);
         for i in 0..l.len() {
             // The crossovers follow gliding frequencies every 16 frames,
             // and land on them the frame the glides end (as a reset would
@@ -1072,35 +991,52 @@ impl MultibandCompressor {
                 bands[1][ch] = mid;
                 bands[2][ch] = hi;
             }
+            // The dry is the bands at unity, so each band's weight is its
+            // gain mixed with 1 (a band soloed out keeps only the dry's).
+            let mix = self.mix.glide();
+            let dry = 1.0 - mix;
             let mut y = [0.0f32; 2];
             for b in 0..3 {
                 let level = bands[b][0].abs().max(bands[b][1].abs());
-                let db = fast_level_db(self.env[b].run(level));
-                let red = knee_reduction(db - thr[b], ratio[b], 6.0);
+                let t = self.thr[b].glide();
+                let k = self.slope[b].glide();
+                let want = slope_reduction(fast_level_db(level) - t, k, MB_KNEE);
+                // The Compressor's detector: the hold jumps to what the
+                // curve asks for and lets go at the release, toward it; the
+                // attack smooths the hold.
+                self.hold[b] = flush(want.max(rel * self.hold[b] + (1.0 - rel) * want));
+                self.env[b] = flush(att * self.env[b] + (1.0 - att) * self.hold[b]);
+                let red = self.env[b];
                 self.most[b] = self.most[b].max(red);
                 let g = fast_db_to_gain(-red) * self.makeup[b].glide();
-                if solo == 0 || solo == b + 1 {
-                    y[0] += bands[b][0] * g;
-                    y[1] += bands[b][1] * g;
-                }
+                let w = if solo == 0 || solo == b + 1 {
+                    dry + mix * g
+                } else {
+                    dry
+                };
+                y[0] += bands[b][0] * w;
+                y[1] += bands[b][1] * w;
             }
-            let mix = self.mix.glide();
             let out = self.out.glide();
-            // Dry is the input itself: the mix is for parallel squash, so a
-            // little phase difference between the two is part of the sound.
-            l[i] = lerp(x[0], y[0], mix) * out;
-            r[i] = lerp(x[1], y[1], mix) * out;
+            l[i] = y[0] * out;
+            r[i] = y[1] * out;
         }
         for b in 0..3 {
             self.v[mb::reduction(b) as usize] = self.most[b];
             self.most[b] = 0.0;
         }
     }
+
     fn setup(&mut self, rate: u32) {
         self.rate = rate;
         self.x_lo.set_time(rate, 30.0);
         self.x_hi.set_time(rate, 30.0);
-        for s in self.makeup.iter_mut() {
+        for s in self
+            .makeup
+            .iter_mut()
+            .chain(self.thr.iter_mut())
+            .chain(self.slope.iter_mut())
+        {
             s.set_time(rate, 20.0);
         }
         self.mix.set_time(rate, 20.0);
@@ -1108,6 +1044,7 @@ impl MultibandCompressor {
         self.set_times();
         self.clear();
     }
+
     fn clear(&mut self) {
         self.x_lo.snap(self.x_lo.target);
         self.x_hi.snap(self.x_hi.target);
@@ -1115,12 +1052,14 @@ impl MultibandCompressor {
         self.lo_x.reset();
         self.hi_x.reset();
         self.lo_ap.reset();
-        for e in &mut self.env {
-            e.reset();
-        }
-        for (b, s) in self.makeup.iter_mut().enumerate() {
-            s.target = db_to_gain(self.v[mb::gain(b) as usize]);
-            s.snap(s.target);
+        self.hold = [0.0; 3];
+        self.env = [0.0; 3];
+        self.set_makeup();
+        for b in 0..mb::BANDS {
+            self.thr[b].snap(self.v[mb::threshold(b) as usize]);
+            self.slope[b].snap(ratio_slope(self.v[mb::ratio(b) as usize]));
+            let m = self.makeup[b].target;
+            self.makeup[b].snap(m);
         }
         self.mix.target = self.v[mb::MIX as usize] / 100.0;
         self.mix.snap(self.mix.target);
@@ -1132,14 +1071,17 @@ impl MultibandCompressor {
             self.v[mb::reduction(b) as usize] = 0.0;
         }
     }
+
     fn tail(&self) -> u32 {
         0
     }
+
     fn rest(&self) -> u32 {
         // Ten of the bands' release, and the crossovers settling.
         let ms = 10.0 * self.v[mb::RELEASE as usize] + 100.0;
         (ms * 0.001 * self.rate as f32) as u32
     }
+
     fn lat(&self) -> u32 {
         0
     }

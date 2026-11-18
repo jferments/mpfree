@@ -646,6 +646,46 @@ impl Widget for Waveform {
         out
     }
 
+    /// A finger resting on a marker's tab puts the marker under the wheel
+    /// (Jay, 17 Nov), with the same room round the tab as a drag has.
+    fn held(&self, x: i32, y: i32, r: Rect) -> Option<Target> {
+        self.peaks.as_ref()?;
+        if y >= Self::wave_rect(r).y {
+            return None;
+        }
+        let painted = self.painted.borrow();
+        let tabs = &painted.tabs;
+        let i = (0..self.markers.len().min(tabs.len()))
+            .rev()
+            .find(|&i| tabs[i].is_some_and(|t| t.inset_xy(-6, -3).contains(x, y)))?;
+        let tab = tabs[i]?;
+        (!self.markers[i].fixed)
+            .then(|| Target::drag("marker", i, self.markers[i].label.clone(), tab))
+    }
+
+    /// The wheel nudges the held marker one screen pixel a detent at the
+    /// zoom showing (at least a frame), one frame with SHIFT, and says so
+    /// as a drag would.
+    fn held_step(&mut self, t: &Target, delta: i32, fine: bool, _r: Rect) -> Option<EventKind> {
+        let m = self.markers.get(t.index).filter(|m| !m.fixed)?;
+        let each = if fine {
+            1.0
+        } else {
+            self.view.frames_per_px.round().max(1.0)
+        };
+        let to = (m.frame as f64 + f64::from(delta) * each)
+            .round()
+            .clamp(0.0, self.frames() as f64) as u64;
+        if to == m.frame {
+            return None;
+        }
+        self.set_marker_frame(t.index, to);
+        Some(EventKind::Marker {
+            index: t.index,
+            frame: to,
+        })
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let wave = Self::wave_rect(r);
         let frames = self.frames();

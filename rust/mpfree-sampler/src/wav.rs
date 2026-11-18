@@ -21,7 +21,7 @@
 
 use std::io::{self, Write};
 
-use crate::model::Source;
+use crate::model::{Pcm, Source};
 
 /// The most samples (frames × channels) [`read`] takes into memory: 64 Mi,
 /// about 12 minutes of stereo at 44.1 kHz (256 MiB as floats).
@@ -61,7 +61,11 @@ const S24: f32 = 8_388_608.0;
 
 /// The smallest encoding that gives every sample of `s` back exactly.
 pub fn encoding(s: &Source) -> Encoding {
-    let d = s.data();
+    let d = match s.data() {
+        // Held as 16 bits because every sample is one.
+        Pcm::I16(_) => return Encoding::Pcm16,
+        Pcm::F32(d) => d,
+    };
     if d.iter().all(|&x| exact(x, S16, -S16, S16 - 1.0).is_some()) {
         Encoding::Pcm16
     } else if d.iter().all(|&x| exact(x, S24, -S24, S24 - 1.0).is_some()) {
@@ -114,7 +118,20 @@ pub fn write(s: &Source, out: &mut dyn Write) -> io::Result<()> {
     h.extend_from_slice(&(data_len as u32).to_le_bytes());
     out.write_all(&h)?;
     let mut buf = Vec::with_capacity(64 * 1024);
-    for chunk in s.data().chunks(16 * 1024) {
+    if let Pcm::I16(d) = s.data() {
+        for chunk in d.chunks(16 * 1024) {
+            buf.clear();
+            for k in chunk {
+                buf.extend_from_slice(&k.to_le_bytes());
+            }
+            out.write_all(&buf)?;
+        }
+    }
+    let floats: &[f32] = match s.data() {
+        Pcm::F32(d) => d,
+        Pcm::I16(_) => &[],
+    };
+    for chunk in floats.chunks(16 * 1024) {
         buf.clear();
         for &x in chunk {
             match enc {
@@ -498,14 +515,14 @@ mod tests {
             b
         };
         let s = read("eight", &wav(1, 1, 8, None, &[128, 255, 0])).unwrap();
-        assert_eq!(&s.data()[..], &[0.0, 127.0 / 128.0, -1.0]);
+        assert_eq!(s.data().to_vec(), [0.0, 127.0 / 128.0, -1.0]);
         assert_eq!((s.channels(), s.rate(), &s.name[..]), (1, 44_100, "eight"));
         let s = read(
             "ext",
             &wav(0xFFFE, 2, 24, Some(1), &[0, 0, 0x80, 0xff, 0xff, 0x7f]),
         )
         .unwrap();
-        assert_eq!(&s.data()[..], &[-1.0, 8_388_607.0 / S24]);
+        assert_eq!(s.data().to_vec(), [-1.0, 8_388_607.0 / S24]);
         // Cut short mid-frame: the whole frames it has.
         let mut b = wav(1, 2, 16, None, &[1, 0, 2, 0, 3, 0, 4, 0]);
         b.truncate(b.len() - 3);

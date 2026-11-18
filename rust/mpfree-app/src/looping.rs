@@ -37,6 +37,7 @@ use mpfree_looper::{
     Bounce, Command, History, LayerCommand, LayerInfo, LoopFile, Looper, Memory, Phase, Print,
     Stats, Status, Step, MAX_LAYERS, MAX_LOOPS,
 };
+use mpfree_seq::loops::{LoopNow, LoopPlan};
 use mpfree_transport::Block;
 use mpfree_ui::wave::{Peaks, WaveColumn};
 use std::ops::Range;
@@ -71,6 +72,11 @@ const WAVE_SLICE: usize = WAVE_BUDGET;
 const LIVE_EVERY: u64 = 12;
 /// Waves the audio thread makes again in place (see `WavePool`).
 const WAVES: usize = 4;
+/// Columns of a loop's small wave on its Clips grid cells.
+pub use mpfree_time_ui::widgets::CELL_WAVE;
+/// Periods between looks for a loop whose small wave is out of date
+/// (about 23 ms).
+const CELL_WAVE_EVERY: u64 = 8;
 
 /// Where the looper records from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -486,8 +492,18 @@ fn column(a: Acc) -> WaveColumn {
 /// (column `c` starts at frame `ceil(c * len / WAVE_COLUMNS)`), each with
 /// its frames, counted from `from`.
 fn runs(from: usize, n: usize, len: usize) -> impl Iterator<Item = (usize, Range<usize>)> {
+    runs_in(from, n, len, WAVE_COLUMNS)
+}
+
+/// [`runs`] for a wave of `cols` columns.
+fn runs_in(
+    from: usize,
+    n: usize,
+    len: usize,
+    cols: usize,
+) -> impl Iterator<Item = (usize, Range<usize>)> {
     let (start, end, len) = (from as u64, (from + n) as u64, len.max(1) as u64);
-    let cols = WAVE_COLUMNS as u64;
+    let cols = cols as u64;
     let mut f = start;
     std::iter::from_fn(move || {
         if f >= end {
@@ -721,6 +737,107 @@ impl WaveBuilder {
     }
 }
 
+/// A loop's small wave for its cells on the Clips grid: each column's
+/// peak over every layer, 0 to 255.
+pub type CellWave = [u8; CELL_WAVE];
+
+/// Makes each loop's [`CellWave`] in turn, a slice a period ([`WAVE_BUDGET`]
+/// layer-frames, as the loop's own wave), whenever a loop's frames, layers
+/// or sound (`Status::version`) changed. A loop recording or overdubbing
+/// keeps the one it had until it plays.
+struct CellWaves {
+    /// Each loop's wave, and what it is of: frames, layers and version.
+    done: [CellWave; MAX_LOOPS],
+    of: [(usize, usize, u64); MAX_LOOPS],
+    /// The loop being made and what of, how far it is, and its peaks.
+    making: Option<(usize, (usize, usize, u64))>,
+    at: usize,
+    peaks: [f32; CELL_WAVE],
+    buf: Vec<[f32; 2]>,
+}
+
+impl CellWaves {
+    fn new() -> CellWaves {
+        CellWaves {
+            done: [[0; CELL_WAVE]; MAX_LOOPS],
+            of: [(0, 0, 0); MAX_LOOPS],
+            making: None,
+            at: 0,
+            peaks: [0.0; CELL_WAVE],
+            buf: vec![[0.0; 2]; WAVE_SLICE],
+        }
+    }
+
+    /// One slice of the wave being made, or every [`CELL_WAVE_EVERY`]
+    /// periods a look for a loop whose wave is out of date.
+    fn step(&mut self, looper: &Looper, period: u64) {
+        if self.making.is_none() {
+            if !period.is_multiple_of(CELL_WAVE_EVERY) {
+                return;
+            }
+            for n in 0..MAX_LOOPS {
+                let Some(s) = looper.loop_status(n) else {
+                    continue;
+                };
+                let of = (s.frames, s.layers, s.version);
+                let busy = matches!(
+                    s.phase,
+                    Phase::Armed | Phase::Recording | Phase::Overdubbing
+                );
+                if busy || of == self.of[n] {
+                    continue;
+                }
+                if s.frames == 0 || s.phase == Phase::Empty {
+                    self.done[n] = [0; CELL_WAVE];
+                    self.of[n] = of;
+                    continue;
+                }
+                self.making = Some((n, of));
+                self.at = 0;
+                self.peaks = [0.0; CELL_WAVE];
+                break;
+            }
+        }
+        let Some((n, of)) = self.making else {
+            return;
+        };
+        // The loop changed under it: it starts again on the next look.
+        let now = looper
+            .loop_status(n)
+            .map(|s| (s.frames, s.layers, s.version));
+        if now != Some(of) {
+            self.making = None;
+            return;
+        }
+        let (len, layers, _) = of;
+        let from = self.at;
+        let k = (WAVE_BUDGET / layers.max(1))
+            .clamp(WAVE_MIN, WAVE_SLICE)
+            .min(len - from);
+        for layer in 0..layers.min(MAX_LAYERS) {
+            let Some(l) = looper.loop_layer(n, layer) else {
+                continue;
+            };
+            if l.len() < 2 * (from + k) {
+                continue;
+            }
+            let buf = &mut self.buf[..k];
+            l.read(from, buf);
+            for (c, r) in runs_in(from, k, len, CELL_WAVE) {
+                self.peaks[c] = peak_of(self.peaks[c], &buf[r]);
+            }
+        }
+        self.at += k;
+        if self.at >= len {
+            for (d, p) in self.done[n].iter_mut().zip(&self.peaks) {
+                *d = (p.min(1.0) * 255.0).round() as u8;
+            }
+            self.of[n] = of;
+            self.making = None;
+        }
+    }
+}
+
 /// The first pass's waveform as it records, the new frames each period.
 struct LiveWave {
     /// The loop whose first pass it is (None: not making one).
@@ -838,6 +955,11 @@ pub struct LooperView {
     pub rate: u32,
     /// The picked loop's undo history.
     pub history: History,
+    /// Each loop's small wave, for its cells on the Clips grid.
+    pub cell_waves: [CellWave; MAX_LOOPS],
+    /// The loop a whole loop copies into ([`LoopHost::copy_loop`]), until
+    /// every layer is in.
+    pub copy_into: Option<usize>,
 }
 
 impl Default for LooperView {
@@ -859,6 +981,8 @@ impl Default for LooperView {
             memory: l.memory(),
             rate: 44_100,
             history: l.history(),
+            cell_waves: [[0; CELL_WAVE]; MAX_LOOPS],
+            copy_into: None,
         }
     }
 }
@@ -892,6 +1016,8 @@ pub struct LoopHost {
     waves: WavePool,
     /// The screen shows a wave (not the empty one).
     wave_shown: bool,
+    /// Each loop's small wave for its cells on the Clips grid.
+    cells: CellWaves,
     /// The recorded source's peaks since the last view.
     meter: [f32; 2],
     /// The song's meter and tempo as the last period played.
@@ -921,6 +1047,37 @@ pub struct LoopHost {
     /// Undo (below 0) or Redo (above 0) presses the undo history asked for
     /// that the command queue had no room for yet ([`LoopHost::steps`]).
     steps_left: i32,
+    /// A whole loop copying into an empty one ([`LoopHost::copy_loop`]),
+    /// and how the last one ended, until [`LoopHost::copy_ended`] takes it.
+    copy: Option<LoopCopy>,
+    copy_end: Option<CopyEnd>,
+}
+
+/// A whole loop copying into an empty one, a layer at a time
+/// ([`LoopHost::copy_loop`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LoopCopy {
+    from: usize,
+    to: usize,
+    /// The source's layers by id, in play order, and how many.
+    ids: [u8; MAX_LAYERS],
+    layers: usize,
+    /// Layers asked for so far.
+    asked: usize,
+    /// Periods since the last layer was asked for with nothing to show
+    /// for it (refused, or not started yet), and tries in all.
+    waited: u32,
+    tries: u32,
+}
+
+/// How a whole loop's copy ended ([`LoopHost::copy_ended`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CopyEnd {
+    pub from: usize,
+    pub to: usize,
+    /// Layers that went in, of how many.
+    pub layers: usize,
+    pub of: usize,
 }
 
 /// A save under way ([`LoopHost::save`]).
@@ -1210,6 +1367,7 @@ impl LoopHost {
             live: LiveWave::new(),
             waves: WavePool::new(),
             wave_shown: false,
+            cells: CellWaves::new(),
             meter: [0.0; 2],
             beats_per_bar: 4,
             bpm: 120.0,
@@ -1224,6 +1382,8 @@ impl LoopHost {
             settle: 0,
             steps_left: 0,
             picked: 0,
+            copy: None,
+            copy_end: None,
         }
     }
 
@@ -1809,6 +1969,79 @@ impl LoopHost {
         )
     }
 
+    /// Loop `n` on or off, as a clip launches (Loop tracks): from the bar
+    /// line at song tick `at`, on the frame it falls on, or with `None` at
+    /// once ([`Looper::launch`]). The line for the log.
+    pub fn launch(&mut self, n: usize, on: bool, at: Option<mpfree_transport::Tick>) -> String {
+        let what = if on { "on" } else { "off" };
+        if n >= MAX_LOOPS {
+            return format!("looper: loop {}: not there", n + 1);
+        }
+        if !self.looper.launch(n, on, at) {
+            return format!(
+                "looper: loop {} {what}: NOT done, the command queue is full",
+                n + 1
+            );
+        }
+        match at {
+            Some(t) => {
+                let bar = mpfree_transport::PPQ as i64 * i64::from(self.beats_per_bar.max(1));
+                format!(
+                    "looper: loop {} {what} from bar {}",
+                    n + 1,
+                    t.div_euclid(bar.max(1)) + 1
+                )
+            }
+            None => format!("looper: loop {} {what}", n + 1),
+        }
+    }
+
+    /// The loops as the Loop tracks need them
+    /// ([`crate::time::TimeHost::loops_are`]): which have a first pass, how
+    /// long and from where. None while an open's loops are going out or
+    /// coming in, so a project's cells aren't emptied by the old loops
+    /// fading out.
+    pub fn grid_now(&self) -> Option<[LoopNow; MAX_LOOPS]> {
+        if self.opening() {
+            return None;
+        }
+        Some(std::array::from_fn(|n| match self.looper.loop_status(n) {
+            Some(s) if matches!(s.phase, Phase::Playing | Phase::Overdubbing) && s.ticks > 0 => {
+                LoopNow {
+                    pass: true,
+                    ticks: s.ticks,
+                    origin: s.origin,
+                }
+            }
+            _ => LoopNow::default(),
+        }))
+    }
+
+    /// The Loop tracks' launches ([`crate::time::TimeHost::loop_plan`]),
+    /// before the period: each loop that isn't where the plan has it goes
+    /// on or off, on the frame of the bar line the plan names, or at once.
+    /// An empty loop waits. Lines for the log; allocates only then. A full
+    /// queue tries again next period.
+    pub fn follow_plan(&mut self, plan: &LoopPlan) -> Vec<String> {
+        let mut lines = Vec::new();
+        for n in 0..MAX_LOOPS {
+            let Some(s) = self.looper.loop_status(n) else {
+                continue;
+            };
+            let (on, at) = (plan.on[n], plan.at[n]);
+            let there = match (s.cue, at) {
+                (None, _) => s.on == on,
+                (Some(cue), Some(t)) => cue == (on, t),
+                (Some(_), None) => false,
+            };
+            if there || s.phase == Phase::Empty || self.looper.room() == 0 {
+                continue;
+            }
+            lines.push(self.launch(n, on, at));
+        }
+        lines
+    }
+
     /// A layer dragged onto another loop ([`Looper::copy_layer`]): what
     /// it does, as the screen says it, and why not when it can't. A loop's
     /// only layer goes as a copy (the loop keeps it).
@@ -2025,6 +2258,7 @@ impl LoopHost {
             self.printer.tend(&mut self.looper, span.bpm);
         }
         self.tend_save();
+        self.tend_copy();
         note
     }
 
@@ -2091,10 +2325,190 @@ impl LoopHost {
         (taking, self.looper.status().phase == Phase::Armed)
     }
 
+    /// The loop a new one records into, for a Loop cell armed on the
+    /// grid: the picked loop if it is empty, else the first empty one; or
+    /// why there is none, as REC says it. Less than a second of memory
+    /// left is full: a first pass with no memory for it is thrown away.
+    pub fn free_loop(&self) -> Result<usize, String> {
+        let copy = self.copy.map(|c| c.to);
+        let empty = |n: usize| {
+            copy != Some(n)
+                && self.looper.loop_status(n).is_some_and(|s| {
+                    s.phase == Phase::Empty && s.copying.is_none() && s.loading.is_none()
+                })
+        };
+        let n = if empty(self.picked) {
+            self.picked
+        } else {
+            (0..MAX_LOOPS).find(|&n| empty(n)).ok_or_else(|| {
+                format!("{MAX_LOOPS} loops in use: clear one on the Looper tab to record another")
+            })?
+        };
+        let m = self.looper.memory();
+        if m.capacity.saturating_sub(m.used) < self.rate as usize {
+            return Err(
+                "The loops' memory is full: clear a loop on the Looper tab to record another"
+                    .to_string(),
+            );
+        }
+        Ok(n)
+    }
+
+    /// Copy loop `from` into `to`, an empty loop: every layer, with its
+    /// mix, and the loop's level (loop-tracks.md part 6, a loop cell
+    /// copied onto another Loop track). The copy is launched off, so it
+    /// stays silent until its cell is launched. The layers copy in one at
+    /// a time in the background while the loops play on
+    /// ([`Looper::copy_layer`], each a step the looper's UNDO takes
+    /// back); [`LoopHost::copy_ended`] says when it is all in or stopped.
+    /// Refused, saying why, while another copy runs, when `from` isn't
+    /// just playing, `to` isn't empty or the memory can't hold the
+    /// layers.
+    pub fn copy_loop(&mut self, from: usize, to: usize) -> Result<String, String> {
+        if let Some(c) = self.copy {
+            return Err(format!(
+                "Loop {} is still copying into Loop {}: wait for it to finish",
+                c.from + 1,
+                c.to + 1
+            ));
+        }
+        let (Some(a), Some(b)) = (self.looper.loop_status(from), self.looper.loop_status(to))
+        else {
+            return Err("No such loop".to_string());
+        };
+        let still = a.merging.is_none()
+            && a.fitting.is_none()
+            && a.loading.is_none()
+            && a.copying.is_none();
+        if from == to || a.phase != Phase::Playing || a.layers == 0 || !still {
+            return Err(format!(
+                "Loop {} can't be copied while it records or changes: try again when it just plays",
+                from + 1
+            ));
+        }
+        if b.phase != Phase::Empty || b.loading.is_some() || b.copying.is_some() {
+            return Err(format!("Loop {} isn't empty", to + 1));
+        }
+        let m = self.looper.memory();
+        let need = a.layers * a.frames + self.rate as usize;
+        if m.capacity.saturating_sub(m.used) < need {
+            return Err(format!(
+                "The loops' memory can't hold a copy of Loop {} ({} layer{}): clear a loop on the Looper tab first",
+                from + 1,
+                a.layers,
+                if a.layers == 1 { "" } else { "s" }
+            ));
+        }
+        let mut ids = [0u8; MAX_LAYERS];
+        let mut layers = 0;
+        for (k, id) in ids.iter_mut().enumerate().take(a.layers) {
+            if let Some(l) = self.looper.loop_layer_info(from, k) {
+                *id = l.id;
+                layers = k + 1;
+            }
+        }
+        if layers == 0 || self.looper.room() < 4 {
+            return Err(format!("Loop {} can't be copied now: try again", from + 1));
+        }
+        // Off until its cell is launched, at the source's level.
+        self.looper.launch(to, false, None);
+        self.looper.select_loop(to);
+        self.looper.command(Command::SetLevel(a.level));
+        self.looper.select_loop(self.picked);
+        self.copy = Some(LoopCopy {
+            from,
+            to,
+            ids,
+            layers,
+            asked: 0,
+            waited: 0,
+            tries: 0,
+        });
+        self.copy_end = None;
+        Ok(format!(
+            "looper: loop {} copies into loop {}, {} layer{}",
+            from + 1,
+            to + 1,
+            layers,
+            if layers == 1 { "" } else { "s" }
+        ))
+    }
+
+    /// The end of the last whole loop's copy, once: all its layers in, or
+    /// as many as went in before it stopped (none: the copy's loop is
+    /// empty, so its cells should go).
+    pub fn copy_ended(&mut self) -> Option<CopyEnd> {
+        self.copy_end.take()
+    }
+
+    /// One period of a whole loop's copy: once the last layer asked for
+    /// is in, the next is asked for. A layer that doesn't start (the
+    /// loops were busy or fading) is asked for again, for up to two
+    /// seconds; the copy stops then, or when its loop is cleared or
+    /// undone, or its source no longer plays. Allocates nothing.
+    fn tend_copy(&mut self) {
+        let Some(mut c) = self.copy else {
+            return;
+        };
+        let (Some(a), Some(b)) = (
+            self.looper.loop_status(c.from),
+            self.looper.loop_status(c.to),
+        ) else {
+            self.copy = None;
+            return;
+        };
+        let have = if b.phase == Phase::Empty { 0 } else { b.layers };
+        let ended = CopyEnd {
+            from: c.from,
+            to: c.to,
+            layers: have,
+            of: c.layers,
+        };
+        if b.copying.is_some() {
+            c.waited = 0;
+            self.copy = Some(c);
+            return;
+        }
+        // All in; or cleared or undone under it: it stops with what it has.
+        if have == c.layers || have + 1 < c.asked {
+            self.copy = None;
+            self.copy_end = Some(ended);
+            return;
+        }
+        if c.asked > have {
+            // Asked, but not started: it starts with the next period, or
+            // it was refused.
+            c.waited += 1;
+            if c.waited <= 2 {
+                self.copy = Some(c);
+                return;
+            }
+            c.asked = have;
+            c.tries += 1;
+        }
+        let limit = 2 * self.rate / PERIOD as u32;
+        let gone = a.phase != Phase::Playing || (b.phase != Phase::Empty && b.ticks != a.ticks);
+        if gone || c.tries > limit {
+            self.copy = None;
+            self.copy_end = Some(ended);
+            return;
+        }
+        if self.looper.room() > 0 && self.looper.copy_layer(c.from, c.ids[have], c.to, true) {
+            c.asked = have + 1;
+            c.waited = 0;
+        }
+        self.copy = Some(c);
+    }
+
     /// What the picked loop is doing (armed, recording, overdubbing...).
-    #[cfg(test)]
     pub fn phase(&self) -> Phase {
         self.looper.status().phase
+    }
+
+    /// Loop `n` as the looper has it.
+    #[cfg(test)]
+    pub fn loop_status(&self, n: usize) -> Option<Status> {
+        self.looper.loop_status(n)
     }
 
     /// The `status: looper: ...` line.
@@ -2162,6 +2576,8 @@ impl LoopHost {
             memory: self.looper.memory(),
             rate: self.rate,
             history: self.looper.history(),
+            cell_waves: self.cells.done,
+            copy_into: self.copy.map(|c| c.to),
         }
     }
 
@@ -2171,8 +2587,18 @@ impl LoopHost {
     /// selected loop's first pass records, its wave so far instead, every
     /// [`LIVE_EVERY`] periods. Costs at most [`WAVE_BUDGET`] layer-frames
     /// a period, and never allocates: the waves are made again in place
-    /// once the screen lets go of them.
+    /// once the screen lets go of them. While that wave is done, each
+    /// loop's small wave for its cells on the Clips grid instead
+    /// ([`LooperView::cell_waves`]), on the same budget.
     pub fn wave_step(&mut self, period: u64, refresh: u64) -> Option<Arc<LoopWave>> {
+        let w = self.loop_wave_step(period, refresh);
+        if w.is_none() && !self.wave.building && self.live.of.is_none() {
+            self.cells.step(&self.looper, period);
+        }
+        w
+    }
+
+    fn loop_wave_step(&mut self, period: u64, refresh: u64) -> Option<Arc<LoopWave>> {
         let sel = self.looper.selected();
         let s = self.looper.status();
         if s.phase == Phase::Recording {
@@ -2432,6 +2858,170 @@ mod tests {
         assert_eq!(v.selected, 1);
         assert!(v.status.resampling, "{:?}", v.status);
         assert_eq!(v.loops[0].phase, Phase::Playing);
+    }
+
+    /// A Loop cell armed on the grid records into the picked loop if it is
+    /// empty, else the first empty one; with all 8 in use, or the memory
+    /// full, REC says why (loop-tracks.md part 4).
+    #[test]
+    fn a_new_loop_goes_into_a_free_one_or_says_why_not() {
+        fn record(h: &mut LoopHost, n: usize) {
+            let mut t = Transport::new(44_100, 120.0).unwrap();
+            let mut b = Block::new();
+            t.command(0, T::Play);
+            h.select(n);
+            h.command(Command::Record);
+            for _ in 0..2000 {
+                if h.looper.loop_status(n).map(|s| s.phase) == Some(Phase::Playing) {
+                    return;
+                }
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.1; PERIOD], [0.1; PERIOD]);
+                h.take_pads(&l, &r);
+                h.period(&b, &mut l, &mut r);
+            }
+            panic!(
+                "loop {} never played: {:?}, {:?}",
+                n + 1,
+                h.looper.loop_status(n),
+                h.looper.memory()
+            );
+        }
+        let mut h = LoopHost::new(44_100, 60);
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::SetLatency(0));
+        assert_eq!(h.free_loop(), Ok(0));
+        record(&mut h, 0);
+        assert_eq!(h.free_loop(), Ok(1), "loop 1 holds a loop");
+        h.select(4);
+        assert_eq!(h.free_loop(), Ok(4), "the picked one, empty");
+        for n in 1..MAX_LOOPS {
+            record(&mut h, n);
+        }
+        assert_eq!(
+            h.free_loop().unwrap_err(),
+            "8 loops in use: clear one on the Looper tab to record another"
+        );
+        // Less than a second of memory left: full.
+        let mut h = LoopHost::new(44_100, 2);
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::SetLatency(0));
+        record(&mut h, 0);
+        let m = h.looper.memory();
+        assert_eq!(
+            h.free_loop().unwrap_err(),
+            "The loops' memory is full: clear a loop on the Looper tab to record another",
+            "{m:?}"
+        );
+    }
+
+    /// A loop cell copied onto another Loop track (loop-tracks.md part 6):
+    /// every layer of the loop copies into an empty one, a layer at a
+    /// time, with the loop's level, off until launched; the copy's loop
+    /// isn't free meanwhile, and a busy or full looper says why.
+    #[test]
+    fn a_whole_loop_copies_into_an_empty_one_a_layer_at_a_time() {
+        let mut h = LoopHost::new(44_100, 20);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::SetLatency(0));
+        t.command(0, T::Play);
+        let mut run = |h: &mut LoopHost, until: &dyn Fn(&LoopHost) -> bool| {
+            for _ in 0..4000 {
+                if until(h) {
+                    return;
+                }
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.1; PERIOD], [0.1; PERIOD]);
+                h.take_pads(&l, &r);
+                h.period(&b, &mut l, &mut r);
+            }
+            panic!("never: {:?}", h.looper.loop_status(3));
+        };
+        let st = |h: &LoopHost, n: usize| h.looper.loop_status(n).unwrap();
+        // Loop 1: a first pass and an overdub, at half level.
+        h.command(Command::Record);
+        run(&mut h, &|h| st(h, 0).phase == Phase::Playing);
+        h.command(Command::Overdub);
+        run(&mut h, &|h| st(h, 0).phase == Phase::Overdubbing);
+        run(&mut h, &|h| st(h, 0).position > 0.9);
+        h.command(Command::Overdub);
+        run(&mut h, &|h| {
+            st(h, 0).phase == Phase::Playing && st(h, 0).layers == 2
+        });
+        h.command(Command::SetLevel(0.5));
+        run(&mut h, &|h| st(h, 0).level == 0.5);
+
+        // Refused: an empty source.
+        assert!(h.copy_loop(5, 3).unwrap_err().contains("can't be copied"));
+
+        assert_eq!(
+            h.copy_loop(0, 3),
+            Ok("looper: loop 1 copies into loop 4, 2 layers".to_string())
+        );
+        assert_eq!(
+            h.copy_loop(0, 5).unwrap_err(),
+            "Loop 1 is still copying into Loop 4: wait for it to finish"
+        );
+        assert_eq!(h.view(120.0).copy_into, Some(3));
+        h.select(3);
+        assert_eq!(h.free_loop(), Ok(1), "not the copy's loop, though picked");
+        h.select(0);
+        run(&mut h, &|h| h.copy_end.is_some());
+        assert_eq!(
+            h.copy_ended(),
+            Some(CopyEnd {
+                from: 0,
+                to: 3,
+                layers: 2,
+                of: 2
+            })
+        );
+        assert_eq!(h.copy_ended(), None, "once");
+        let (a, c) = (st(&h, 0), st(&h, 3));
+        assert_eq!(
+            (c.phase, c.layers, c.ticks, c.frames),
+            (Phase::Playing, 2, a.ticks, a.frames)
+        );
+        assert_eq!(
+            (c.on, c.level),
+            (false, 0.5),
+            "silent until its cell is launched"
+        );
+        assert_eq!(h.view(120.0).copy_into, None);
+        assert_eq!(h.copy_loop(0, 3).unwrap_err(), "Loop 4 isn't empty");
+        for k in 0..2 {
+            let (x, y) = (
+                h.looper.loop_layer_info(0, k).unwrap(),
+                h.looper.loop_layer_info(3, k).unwrap(),
+            );
+            assert_eq!((x.level, x.pan, x.muted), (y.level, y.pan, y.muted));
+        }
+
+        // The memory can't hold another copy and a second's room.
+        let mut h = LoopHost::new(44_100, 3);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::SetLatency(0));
+        t.command(0, T::Play);
+        h.command(Command::Record);
+        for _ in 0..4000 {
+            if st(&h, 0).phase == Phase::Playing {
+                break;
+            }
+            assert!(t.process(PERIOD as u32, &mut b));
+            let (mut l, mut r) = ([0.1; PERIOD], [0.1; PERIOD]);
+            h.take_pads(&l, &r);
+            h.period(&b, &mut l, &mut r);
+        }
+        assert!(
+            h.copy_loop(0, 1)
+                .unwrap_err()
+                .starts_with("The loops' memory can't hold a copy of Loop 1 (1 layer)"),
+            "{:?}",
+            h.looper.memory()
+        );
     }
 
     /// The undo history goes back and forward by as many steps as asked,
@@ -3353,5 +3943,55 @@ mod tests {
         assert_eq!(shown.map(|w| w.frames), Some(0), "cleared");
         assert_eq!(calls, 0, "allocations or frees making waves");
         assert_eq!(h.waves.waits, 0);
+    }
+
+    /// Each loop's small wave for its cells on the Clips grid: made after
+    /// the loop's own wave, each column the peak of its frames, and
+    /// emptied with the loop.
+    #[test]
+    fn each_loop_gets_a_small_wave_for_its_cells() {
+        let (mut h, mut t, mut b) = wave_rig(Some(1));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let (mut n, mut p) = (0, 0u64);
+        while h.looper.status().phase != Phase::Playing {
+            wave_period(&mut h, &mut t, &mut b, &mut n, pads_at);
+            h.wave_step(p, 0);
+            p += 1;
+        }
+        // The loop's own wave first, then its small one.
+        let mut own = false;
+        while h.view(120.0).cell_waves[0] == [0; CELL_WAVE] {
+            assert!(p < 2_000, "no small wave");
+            wave_period(&mut h, &mut t, &mut b, &mut n, |_| (0.0, 0.0));
+            if h.wave_step(p, 0).is_some() {
+                own = true;
+                assert_eq!(h.view(120.0).cell_waves[0], [0; CELL_WAVE]);
+            }
+            p += 1;
+        }
+        assert!(own);
+        let len = h.looper.status().frames;
+        let mut frames = vec![[0.0f32; 2]; len];
+        h.looper.layer(0).unwrap().read(0, &mut frames);
+        let mut want = [0u8; CELL_WAVE];
+        for (c, w) in want.iter_mut().enumerate() {
+            let from = (c * len).div_ceil(CELL_WAVE);
+            let to = ((c + 1) * len).div_ceil(CELL_WAVE);
+            let peak = frames[from..to]
+                .iter()
+                .fold(0.0f32, |m, x| m.max(x[0].abs()).max(x[1].abs()));
+            *w = (peak.min(1.0) * 255.0).round() as u8;
+        }
+        assert_eq!(h.view(120.0).cell_waves[0], want);
+        assert!(want.iter().all(|&w| w > 100), "{want:?}");
+        // Cleared: empty again.
+        h.command(Command::Clear);
+        for _ in 0..200 {
+            wave_period(&mut h, &mut t, &mut b, &mut n, |_| (0.0, 0.0));
+            h.wave_step(p, 0);
+            p += 1;
+        }
+        assert_eq!(h.view(120.0).cell_waves[0], [0; CELL_WAVE]);
     }
 }

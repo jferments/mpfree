@@ -18,7 +18,7 @@ The notes are bars on a piano roll: higher notes higher up, time running left to
 - **Move them.** Drag a picked note and every picked note moves with it, along time and up or down in pitch. Moves land on the snap's lines (**Snap**, 1/16 to begin with).
 - **Velocity.** Slide a finger along the velocity lane to set the picked notes' velocity.
 - **Draw and erase.** The tool button switches between Select, Draw and Erase. With Draw, tap an empty spot to add a note there. With Erase, tap a note to take it out.
-- **Duplicate** copies the picked notes to just after them. **Delete** takes them out.
+- **Duplicate** copies the picked notes to just after them. **Delete** takes them out (in Perform, hold it for half a second).
 - **Grid, List, Tracker.** The second button says which view is showing (**Grid** to begin with) and switches to the next. **List** shows the notes as a list, one row per note, with its position, note, velocity, length and chance. **Tracker** shows every step, described below.
 
 {{shot: arrange-notes-list | The same notes as a list, the picked ones lit.}}
@@ -63,5 +63,5 @@ The Euclidean fill spreads a number of hits as evenly as they go over a number o
 Each turn of Hits, Steps or Rotate writes the pattern straight away, repeated through the whole clip. Steps that keep a hit keep their notes as they were; new hits are a step long and as loud as the sound's first note. Other sounds stay as they are. A pattern of 12 steps on a 16-step clip runs on into the next bar, for a part that drifts against the others. A run of turns is one take, so one **UNDO** puts the row back as it was.
 
 > [!MPC]
-> This is the MPC's Grid View, List Edit and Timing Correct in one place. TC here corrects notes already recorded. Correcting while you record is coming. The tracker and the Euclidean fill aren't on the MPC: the fill is like the Euclidean mode of Elektron's Digitakt.
+> This is the MPC's Grid View, List Edit and Timing Correct in one place. TC here corrects notes already recorded. To correct notes as you record them, set **Quantise** on the Record tab (see [Recording a clip](clips.md#recording-a-clip)). The tracker and the Euclidean fill aren't on the MPC: the fill is like the Euclidean mode of Elektron's Digitakt.
 

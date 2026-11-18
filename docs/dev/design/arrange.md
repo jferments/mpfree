@@ -39,6 +39,7 @@ The model is in `rust/mpfree-seq/src/arrange.rs`, song-mode playback in `rust/mp
   - The rows are chained by follow actions: Next after the section's bars, and Stop on the last. Launching the first row plays the song.
   - With no run of empty rows long enough, it changes nothing and says so (`ModelError::NoRoom`).
   - A section that starts part way into a placement gets the whole clip, from its top.
+- **The song list → song (`list_to_song`, sequencer S4).** The song list's steps (`Arrangement::list`) laid out as Scenes → song lays rows, each step for its span (`list_spans`: its scene's `scene_length` times its times), so a scene in the list twice is in the song twice. The list itself plays on its own: [make-perform.md](make-perform.md#the-song-list-as-built-the-sixth-part).
 
 ## Song mode (`mpfree-play`)
 
@@ -155,4 +156,4 @@ The audio tracks (`rust/mpfree-audiotracks`, the audio tracks thread's engine: s
 - Recording notes straight into the song. REC records into the session's clips, and live to song records which clips played.
 - Hand mutes in live to song. The pad player has no mute button for the time engine yet, so only a scene's mutes are recorded there.
 - The morph's rows in song mode. The song lane plays the crossfader on the mixer's mod engine, but the rows the song keeps are not loaded at their ticks yet, so it morphs between the rows loaded at the time.
-- Song mode itself (on or off) is not saved: the project keeps the song (placements, markers, morphs, song lanes) and the scenes, in the `clips` part (`mpfree_seq::save`, format `mpfree-clips 1`; see [browser.md](browser.md#the-parts)), and opens with song mode off.
+- Song mode itself (on or off) is not saved: the project keeps the song (placements, markers, morphs, song lanes, the song list) and the scenes, in the `clips` part (`mpfree_seq::save`, format `mpfree-clips 1`; see [browser.md](browser.md#the-parts)), and opens with song mode off.

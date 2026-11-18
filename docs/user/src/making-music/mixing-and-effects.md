@@ -20,7 +20,7 @@ Along the top are the mixer's five views:
 
 | View | Shows |
 |---|---|
-| **Tracks** | One strip per instrument: **Drums** (the kit on the pads), **Synth**, **Loop** and **Audio** (every audio track on the Song view, summed), then a strip for each track that has its own instrument (**Track 1**, **Track 2** ...), shown only while it has one (see [A synth for each track](synths.md#a-synth-for-each-track)). |
+| **Tracks** | One strip per instrument: **Drums** (the kit on the pads), **Synth**, **Loop** and **Audio** (every audio track on the Song view, summed), then a strip for each track that has its own instrument (**Track 1**, **Track 2** ...), shown only while it has one (see [A synth for each track](synths.md#a-synth-for-each-track)). A kit other than kit 1 plays into the strip of the first track that plays it, so it shows there too (see [A kit for each track](sampling.md#a-kit-for-each-track)). |
 | **Pads** | A strip for each of the kit's 16 pads, so you can set the kick's level or put an effect on just the snare. |
 | **Inputs** | The line input. |
 | **Submixes** | Eight submixes for grouping, then the four send returns A to D. |
@@ -123,14 +123,14 @@ Both record in real time while the song plays, so the strip shows **Freezing** o
 
 The **Master** strip on the right is everything you hear. Its fader is the same level as the master bar on the Play page.
 
-The last thing on the master is **Master safety**, a limiter that keeps the output from going past -0.3 dB, so a loud moment never distorts harshly or hurts your ears. It shows how many times it has caught a peak. If it is catching all the time, turn something down.
+The last thing on the master is **Master safety**, a limiter that keeps the output from going past -0.3 dB, so a loud moment never distorts harshly or hurts your ears. It also catches the peaks a converter rebuilds between samples, which can go over the samples themselves. It shows how many times it has caught a peak. If it is catching all the time, turn something down. Its modes are in [Master safety](effects.md#master-safety).
 
 > [!TIP]
 > Distortion you want is fine: put Drive, Crush or Lo-fi on a strip and push it. Master safety only stops the final output from clipping by accident.
 
 ## Coming next
 
-- **Automation**: fader and knob moves recorded into clips.
+- **Automation lanes**: fader and knob moves recorded as smooth lanes. Today a move made while recording goes into the clip as a lock on its step (see [Knob moves while you record](clips.md#knob-moves-while-you-record)).
 
 > [!MPC]
 > The mixer covers the MPC's routing: pad channels, tracks, submixes, four send returns and the master, with sends before or after the fader and side-chain keys. The differences: the mixer opens over any page instead of being its own mode, solo keeps everything the strip feeds, and the master always ends in a safety limiter. Freeze is the MPC's track freeze, but it records a loop rather than the whole sequence and follows the song's tempo; Print is like the MPC's bounce to sample.

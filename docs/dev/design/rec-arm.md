@@ -9,7 +9,7 @@ Until now the page decided what REC recorded: the looper on Play's All and Loop 
 REC records the last recordable thing you opened or armed, and the transport bar names it.
 
 - **The notes:** the armed track (the one the pads play), into its clip: the one the pattern shows, or a new clip in its first empty slot, as the time engine's Record does (`ready_to_record`).
-- **A loop:** the looper's picked loop.
+- **A loop:** the looper's picked loop; or, with an empty Loop cell armed on the Clips grid, a new loop for that cell ([loop-tracks.md](loop-tracks.md) part 4).
 
 One thing is armed at a time, unless **SHIFT + Arm** adds the other (`RecArm::both`, `RecArm::add`): then REC records the notes into the clip and the loop in one pass, as the MPC arms several tracks with SHIFT and Live with Ctrl. A new or opened project arms the notes alone. The arm isn't saved and isn't an undo step. SHIFT + REC is still Capture, whatever is armed.
 
@@ -17,7 +17,7 @@ One thing is armed at a time, unless **SHIFT + Arm** adds the other (`RecArm::bo
 
 1. **A tap on an Arm pill** (the loop strip's, the pattern's) or a row of the chip's target list arms what it names, even when pinned (`Mover::Tap`, `FromUi::ArmTap`); so does **the loop's own Record or Overdub** (the Loop view's strip, the Looper tab), letting go of the notes' ready.
 2. Opening Play's **Beats** view arms the notes; Play's **Loop** view and the **Looper** tab arm the loop (`Mover::Page`, `Player::arm_for_page`, once each time the page is shown, so an arm moved on it since stays).
-3. **Picking a track** (`Mover::Track`, `TimeAction::Arm(Some(_))`) arms its notes.
+3. **Picking a track** (`Mover::Track`, `TimeAction::Arm(Some(_))`) arms its notes. **A tap on an empty Loop cell** on the Clips grid arms the loop, as a tap on its pill does, and that cell (`TimeAction::LoopCell`, `desk::arm_loop_cell`); the notes armed alone let go of the cell.
 4. Nothing else: Play's All view, Mix, Synth, Pads, Sample, the Song view, the menus and Prefs leave it where it is.
 5. **Pinned** (the target list's Pin the arm, `RecArm::pinned`, `FromUi::RecPin`), only a tap moves it: pages and track picks leave it. Pin isn't saved either.
 6. **Nothing moves it while a take records** (the notes recording or counting in, or a loop recording its first pass or overdubbing); a tap then says "Finish the take first".
@@ -37,7 +37,7 @@ With the notes armed (`RecArm::press`):
 
 Ready is the app's own (`App::rec`); the transport only hears Record and ToggleOverdub when the take starts, so REC held and PLAY pressed records at once, the MPC's way. The transport's Replace / Overdub mode is set to the take's as it starts.
 
-With a loop armed, REC is the looper's Record and OVERDUB its Overdub, as the Looper tab's were: REC stopped arms the loop and PLAY starts its first pass; the looper's armed loop is its ready.
+With a loop armed, REC is the looper's Record and OVERDUB its Overdub, as the Looper tab's were: REC stopped arms the loop and PLAY starts its first pass; the looper's armed loop is its ready. With a Loop cell armed (`desk::loop_take`), Record goes into an empty loop (Resample on a Resample track), or says why with 8 loops in use or the memory full, and Overdub layers the loop that Loop track plays; a first pass or an overdub under way takes them as before.
 
 With both armed (`RecArm::press_both`), each does what it does alone, in step. Stopped, REC readies the notes and arms the loop (REC again or STOP lets go of both); PLAY starts the notes' take and, with it, the loop's first pass, after the count-in (the looper waits for the transport to start, not for the count-in). Playing with nothing recording, REC punches the notes in and the loop starts on the next bar line (or overdubs, if it has a take). While either records, REC goes only to what records: the notes punch out and the loop's first pass closes on the bar line (an overdub punches out). OVERDUB does the same with the notes' added take and the looper's Overdub.
 
@@ -50,7 +50,7 @@ While a take records, UNDO throws it away (`RecArm::throw`, from the desk's `Eff
 - **The REC chip** on Play's transport card, between the tempo and the bar dots (the dots narrowed to 8 px a 16th for it): "REC → Drums · Clip 1" in grey with a red dot while armed ("REC · PINNED" while pinned; "Drums + Loop 1" with both armed, as far along as the one further on); "READY · PLAY starts → Loop 1" outlined in red while ready ("READY TO ADD" for OVERDUB); solid red "● REC" or "● OVERDUB" while recording. Arrange's transport bar shows the same as a chip at its right end ("REC → Loop 1"), and its Rec, Play and Stop are REC, PLAY and STOP. A tap on either chip says what REC records and what arms another target.
 - **The loop strip's empty text** says what REC does: "Empty: REC records the notes now. Open the Loop view to record a loop here" while the notes are armed, "Empty: REC records the pads and the synth" while the loop is (`LooperPage::set_rec_loop`).
 - **The Arm pills** at the left of the loop strip's and the pattern's heading (`play_widgets::ArmPill`, `paint_arm`): grey "Arm" on what REC doesn't record, red "Armed", "Ready" or "Rec" on what it does (both red with both armed, each with its own state); the armed panel gets a red edge, a dashed red outline while ready and a solid one while recording (mockups F and G).
-- **The target list** (mockup H, `rec_list.rs`, page `Play · rec`): a tap on Play's chip opens it in place of the view; rows for the notes and the loop, Rec song, Pin the arm, Close, and what moves the arm and the chip's three looks. The chip again, Close or a view picked closes it.
+- **The target list** (mockup H, `rec_list.rs`, page `Play · rec`): a tap on Play's chip opens it in place of the view; rows for the notes and the loop, Rec song, Pin the arm, Close, and what moves the arm and the chip's three looks. The chip again, Close or a view picked closes it. In Perform the Rec song switch is **Rec song with REC** ([make-perform.md](make-perform.md)): on while the take will bring Rec song, a tap takes it off for one take (`gui::rec_song_switch`).
 - **The header chip** while REC is ready or recording, on pages without a transport bar: "READY → Track 1", "● REC → Loop 1"; a tap says what REC records.
 - **The hint line** while the notes are ready: "PLAY: record Drums · Clip 1 · PLAY START: from bar 1 · STOP: not ready".
 - **The lights:** the notes ready blink REC (OVERDUB for an added take) with PLAY, as an armed loop does.
