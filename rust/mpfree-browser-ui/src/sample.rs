@@ -307,12 +307,19 @@ pub fn samples(fonts: impl Fn() -> Fonts, data: &Path) -> Result<Vec<Sample>, St
     )?;
     shot(
         "12-preset-picker",
-        "The preset picker from the Synth page: only FM presets; turning the dial plays each on the track; Load or Cancel (puts the old sound back)",
+        "The preset picker from the Synth tab's title: the engine's own presets (Factory) and yours; turning the dial plays each; Load keeps it, Cancel puts the old sound back",
         Theme::dark(),
         &|b| {
-            b.open_picker(Pick::Preset {
-                engine: "FM".into(),
-            });
+            let own = ["Init", "Glass Keys", "E-Piano", "Bell Pad", "Metal Bass"];
+            b.open_preset_picker(
+                "FM",
+                own.iter().map(|s| s.to_string()).collect(),
+                crate::PresetNow {
+                    name: "E-Piano".into(),
+                    factory: Some(2),
+                    changed: true,
+                },
+            );
             b.dial(1);
         },
     )?;

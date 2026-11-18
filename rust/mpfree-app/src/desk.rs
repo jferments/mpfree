@@ -514,6 +514,10 @@ impl Desk<'_> {
             }
             // The Pads tab's Browse for: the browser, as BROWSE opens it.
             gui::FromUi::PadsBrowse => fx.extend(app.open_browser()),
+            // The Synth tab's preset picker: the browser over the page, and
+            // back to it once the picker closes (presets.rs).
+            gui::FromUi::PresetPicker(true) => fx.extend(app.open_browser()),
+            gui::FromUi::PresetPicker(false) => fx.extend(app.close_browser()),
             // The audio loop's own: named one by one, so a new action has
             // to be given a home here or there.
             a @ (gui::FromUi::Pad { .. }
@@ -522,6 +526,7 @@ impl Desk<'_> {
             | gui::FromUi::Kit(_)
             | gui::FromUi::SaveTouch(_)
             | gui::FromUi::Synth(_)
+            | gui::FromUi::Preset(_)
             | gui::FromUi::SkinValues
             | gui::FromUi::Slice { .. }
             | gui::FromUi::SampleLiveChop { .. }
