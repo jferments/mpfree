@@ -528,6 +528,83 @@ fn gate_shuts_on_quiet_noise_and_opens_without_chatter() {
 }
 
 #[test]
+fn gate_holds_open_through_a_bass_notes_cycles() {
+    // A 40 Hz note 2 dB over the threshold, Hold 0: the dips between its
+    // peaks (12.5 ms apart) don't count, so it passes whole.
+    let amp = 10f32.powf(-38.0 / 20.0);
+    let x: Vec<f32> = sine(40.0, 48_000).iter().map(|v| v * 2.0 * amp).collect();
+    let mut g = make("mpfree.fx.gate");
+    g.set_param(ids::gate::THRESHOLD, -40.0);
+    g.set_param(ids::gate::HOLD, 0.0);
+    g.reset();
+    let (l, _) = render(&mut *g, &(x.clone(), x.clone()), &[], 128);
+    let d = g.latency() as usize;
+    for i in 4800..48_000 {
+        assert!((l[i] - x[i - d]).abs() < 1e-6, "{i}: {} {}", l[i], x[i - d]);
+    }
+}
+
+#[test]
+fn gate_range_moved_while_shut_takes_effect() {
+    // A tone under the threshold keeps it shut; Range from -80 to -40.
+    let x = sine(997.0, 48_000);
+    let mut g = make("mpfree.fx.gate");
+    g.set_param(ids::gate::THRESHOLD, 0.0);
+    g.set_param(ids::gate::RANGE, -80.0);
+    g.reset();
+    let (l, _) = render(
+        &mut *g,
+        &(x.clone(), x.clone()),
+        &[(24_000, ids::gate::RANGE, -40.0)],
+        128,
+    );
+    assert!(peak(&l[12_000..23_000]) < 0.5 * 1e-4 * 1.01);
+    let got = 20.0 * (rms(&l[36_000..]) / rms(&x[36_000..])).log10();
+    assert!((got + 40.0).abs() < 0.1, "{got}");
+}
+
+#[test]
+fn the_expander_turns_down_by_its_ratio_under_the_threshold() {
+    for (hz, under, ratio) in [(1000.0, 6.0, 2.0), (40.0, 6.0, 2.0), (1000.0, 4.0, 3.0)] {
+        let amp = 10f32.powf((-40.0 - under) / 20.0);
+        let x: Vec<f32> = sine(hz, 48_000).iter().map(|v| v * 2.0 * amp).collect();
+        let mut g = make("mpfree.fx.gate");
+        g.set_param(ids::gate::MODE, 1.0);
+        g.set_param(ids::gate::THRESHOLD, -40.0);
+        g.set_param(ids::gate::RATIO, ratio);
+        g.reset();
+        let (l, _) = render(&mut *g, &(x.clone(), x.clone()), &[], 128);
+        let got = 20.0 * (rms(&l[24_000..]) / rms(&x[24_000..])).log10();
+        let want = -under * (ratio - 1.0);
+        assert!(
+            (got - want).abs() < 0.3,
+            "{hz} Hz {under} dB under at {ratio}: {got}"
+        );
+    }
+}
+
+#[test]
+fn gate_listen_plays_the_filtered_key() {
+    // Key HP at 1 kHz: Listen plays the 5 kHz part of the sound, not the
+    // 100 Hz part.
+    let x: Vec<f32> = sine(100.0, 24_000)
+        .iter()
+        .zip(sine(5000.0, 24_000))
+        .map(|(a, b)| a + 0.1 * b)
+        .collect();
+    let mut g = make("mpfree.fx.gate");
+    g.set_param(ids::gate::KEY_HP, 1000.0);
+    g.set_param(ids::gate::LISTEN, 1.0);
+    g.reset();
+    let (l, _) = render(&mut *g, &(x.clone(), x.clone()), &[], 128);
+    let got = rms(&l[12_000..]);
+    assert!(
+        (got - 0.05 * std::f32::consts::FRAC_1_SQRT_2).abs() < 0.005,
+        "{got}"
+    );
+}
+
+#[test]
 fn gate_opens_from_the_sidechain_key() {
     let n = 24_000;
     let pad = vec![0.3f32; n];
@@ -569,15 +646,24 @@ fn de_esser_turns_down_sibilance_and_leaves_the_rest() {
     let mut d = make("mpfree.fx.deesser");
     d.reset();
     let (l, _) = render(&mut *d, &(x.clone(), x.clone()), &[], 128);
-    // What the de-esser did to the hiss: the output less the low tone
-    // (which split mode passes untouched).
-    let hiss_out: Vec<f32> = l.iter().zip(&low).map(|(a, b)| a - b).collect();
+    // What the de-esser did to the hiss: the output less the low tone on
+    // its own (which split mode passes through its all-pass, unchanged in
+    // level, and as late as the look-ahead).
+    d.reset();
+    let (low_out, _) = render(&mut *d, &(low.clone(), low.clone()), &[], 128);
+    let lat = d.latency() as usize;
+    let hiss_out: Vec<f32> = l[lat..]
+        .iter()
+        .zip(&low_out[lat..])
+        .map(|(a, b)| a - b)
+        .collect();
+    let hiss = &hiss[..hiss.len() - lat];
     let burst = |y: &[f32]| rms(&y[6500..11_900]);
     let quiet = |y: &[f32]| rms(&y[1000..5900]);
     assert!(
-        db(burst(&hiss_out)) < db(burst(&hiss)) - 3.0,
+        db(burst(&hiss_out)) < db(burst(hiss)) - 3.0,
         "sibilance down: {} to {}, reduction {}",
-        db(burst(&hiss)),
+        db(burst(hiss)),
         db(burst(&hiss_out)),
         d.param(ids::deesser::REDUCTION)
     );
@@ -586,6 +672,32 @@ fn de_esser_turns_down_sibilance_and_leaves_the_rest() {
         "the low tone untouched"
     );
     assert!(d.param(ids::deesser::REDUCTION) >= 0.0);
+}
+
+#[test]
+fn de_esser_catches_an_s_from_its_start() {
+    // A burst of bright noise out of silence, at full reduction: with the
+    // look-ahead its first millisecond already comes out turned down.
+    let mut rng = Lcg(5);
+    let mut x = vec![0.0f32; 24_000];
+    let mut hp = 0.0f32;
+    for v in x[12_000..].iter_mut() {
+        let n = rng.unit() - 0.5;
+        *v = 0.5 * (n - hp);
+        hp = n;
+    }
+    let mut d = make("mpfree.fx.deesser");
+    d.set_param(ids::deesser::DETECT, 1.0);
+    d.set_param(ids::deesser::THRESHOLD, -60.0);
+    d.set_param(ids::deesser::RANGE, 12.0);
+    d.set_param(ids::deesser::MODE, 1.0);
+    d.reset();
+    let (l, _) = render(&mut *d, &(x.clone(), x.clone()), &[], 64);
+    let lat = d.latency() as usize;
+    assert!(lat > 0, "it looks ahead");
+    let ms = RATE as usize / 1000;
+    let first = db(rms(&l[12_000 + lat..12_000 + lat + ms])) - db(rms(&x[12_000..12_000 + ms]));
+    assert!(first < -9.0, "the first ms came out {first:.1} dB");
 }
 
 #[test]

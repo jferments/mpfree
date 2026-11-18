@@ -25,28 +25,43 @@
 //!   then. The set-up saves as text with the macros' names
 //!   ([`ModMix::save`], [`ModMix::load`]). See `modpanels.rs`.
 //!
+//! - A track's MIDI effect settings (`Owner::NoteFx`) are targets too: a
+//!   macro, an LFO or a step's lock moves them. The engine knows them from
+//!   the tracks' effects as the sound loop has them
+//!   ([`ModMix::set_note_fx`]), and their values go to the time engine
+//!   ([`ModMix::take_note_values`], `TimeHost::modulate_note_fx`), which
+//!   puts them on the track's chain from the next period.
+//!
 //! Locks, turns and [`ModMix::process`] don't allocate after
 //! [`ModMix::new`]; set-up changes and saving run on the same loop between
 //! periods, as the mixer panel's edits do, and may.
 
-use mpfree_fx::mpfree_node::{Ctx, ParamInfo, Timed};
+use mpfree_fx::mpfree_node::{Ctx, NodeEvent, ParamInfo, Timed};
 use mpfree_fx::{mixer_param_applies as param_applies, strip_params, Mixer, StripId};
 use mpfree_mod::{
     Change, ModEngine, ModError, ModEvent, ModTimed, DEFAULT_TICK, FOLLOWERS, MACROS,
 };
+use mpfree_notefx::TrackFx;
 use mpfree_perform::morph::Loaded;
 use mpfree_perform::{save_scene, SceneMorph};
 use mpfree_play::mpfree_param::{Owner, ParamAddr, Strip};
-use mpfree_seq::Project;
+use mpfree_seq::{Project, MAX_TRACKS};
 
 /// Events one period can carry (locks, unlocks, the host's turns).
 const EVENTS: usize = 256;
+
+/// MIDI effect values one period can send on.
+const NOTE_VALUES: usize = 256;
 
 pub struct ModMix {
     engine: ModEngine,
     events: Vec<ModTimed>,
     unrouted: u64,
     dropped: u64,
+    /// The tracks' MIDI effects, for their settings' descriptions.
+    note_fx: Box<[TrackFx; MAX_TRACKS]>,
+    /// This period's values on MIDI effect settings, for the time engine.
+    note_values: Vec<(ParamAddr, f32)>,
     /// The macros' names on their cards ("Wash", "Grit"), saved with the
     /// set-up.
     names: Vec<String>,
@@ -107,8 +122,53 @@ impl ModMix {
             events: Vec::with_capacity(EVENTS),
             unrouted: 0,
             dropped: 0,
+            note_fx: Box::new([TrackFx::default(); MAX_TRACKS]),
+            note_values: Vec::with_capacity(NOTE_VALUES),
             names: (1..=MACROS).map(|m| format!("Macro {m}")).collect(),
         }
+    }
+
+    /// The tracks' MIDI effects, as the sound loop has them (with their
+    /// ids): what the engine knows a MIDI effect setting by. Copies, never
+    /// allocates.
+    pub fn set_note_fx(&mut self, fx: &[TrackFx; MAX_TRACKS]) {
+        *self.note_fx = *fx;
+    }
+
+    /// A parameter's description and value now: a mixer's, or a track's
+    /// MIDI effect setting.
+    pub fn param(&self, mixer: &Mixer, addr: ParamAddr) -> Option<(ParamInfo, f32)> {
+        match addr.owner {
+            Owner::NoteFx(..) => note_param(&self.note_fx, addr),
+            _ => describe(mixer, addr),
+        }
+    }
+
+    /// A MIDI effect setting's name on the macro cards: "Chord inversion
+    /// (Track 3)".
+    pub fn note_label(&self, addr: ParamAddr) -> Option<String> {
+        let Owner::NoteFx(t, id) = addr.owner else {
+            return None;
+        };
+        let fx = self.note_fx.get(usize::from(t))?;
+        let fx = fx.slots[fx.place_of(id)?]?.fx;
+        let setting = fx.settings().get(usize::from(addr.param))?.name;
+        let name = fx.name();
+        Some(if setting.starts_with(name) {
+            format!("{setting} (Track {})", u16::from(t) + 1)
+        } else {
+            format!(
+                "{name} {} (Track {})",
+                setting.to_lowercase(),
+                u16::from(t) + 1
+            )
+        })
+    }
+
+    /// This period's values on MIDI effect settings (`Owner::NoteFx`):
+    /// for `TimeHost::modulate_note_fx`, then cleared.
+    pub fn take_note_values(&mut self) -> std::vec::Drain<'_, (ParamAddr, f32)> {
+        self.note_values.drain(..)
     }
 
     pub fn engine(&self) -> &ModEngine {
@@ -159,7 +219,9 @@ impl ModMix {
                 // Not held (the engine full, or no such parameter): the
                 // lock passes through as a plain value, as for a parameter
                 // the engine doesn't know.
-                self.hold(mixer, addr);
+                if !self.hold_or_skip(mixer, addr) {
+                    return;
+                }
                 ModEvent::Lock { addr, value }
             }
             None => ModEvent::Unlock { addr },
@@ -171,8 +233,18 @@ impl ModMix {
     /// parameter as a lock does, but a hand on the control beats it
     /// (`ModEvent::Lane`). The lane's end comes as a lock's `None`.
     pub fn lane(&mut self, mixer: &Mixer, offset: u32, addr: ParamAddr, value: f32) {
-        self.hold(mixer, addr);
-        self.queue(offset, ModEvent::Lane { addr, value });
+        if self.hold_or_skip(mixer, addr) {
+            self.queue(offset, ModEvent::Lane { addr, value });
+        }
+    }
+
+    /// Holds `addr` for a lock or a lane. False only for a MIDI effect
+    /// setting the engine can't hold (its effect isn't on the track, or
+    /// the engine is full): its lock is dropped, since a plain value
+    /// would hold the setting in the time engine with nothing to let go
+    /// of it. Anything else passes through as a plain value when not held.
+    fn hold_or_skip(&mut self, mixer: &Mixer, addr: ParamAddr) -> bool {
+        self.hold(mixer, addr) || !matches!(addr.owner, Owner::NoteFx(..))
     }
 
     /// Makes a mixer parameter a target, with the value the mixer has now,
@@ -182,7 +254,7 @@ impl ModMix {
         if self.engine.is_target(addr) {
             return true;
         }
-        describe(mixer, addr)
+        self.param(mixer, addr)
             .is_some_and(|(info, now)| self.engine.add_target(addr, info, now).is_ok())
     }
 
@@ -265,7 +337,11 @@ impl ModMix {
             }
         }
         self.names = names;
-        self.engine.load(&rest, &|a| describe(mixer, a))
+        let note_fx = &*self.note_fx;
+        self.engine.load(&rest, &|a| match a.owner {
+            Owner::NoteFx(..) => note_param(note_fx, a),
+            _ => describe(mixer, a),
+        })
     }
 
     /// The scene morph (`mpfree_perform::SceneMorph`): put rows `a` and
@@ -360,15 +436,37 @@ impl ModMix {
     /// goes into the mixer's queues on its frame.
     pub fn process(&mut self, ctx: &Ctx, len: usize, mixer: &mut Mixer) {
         let unrouted = &mut self.unrouted;
+        let notes = &mut self.note_values;
         self.engine.process(
             ctx,
             len,
             &self.events,
             &[None; FOLLOWERS],
-            &mut |addr, t| route(mixer, addr, t, unrouted),
+            &mut |addr, t| match (addr.owner, t.ev) {
+                // A MIDI effect setting: the time engine's, next period.
+                (Owner::NoteFx(..), NodeEvent::Param { value, .. }) => {
+                    if notes.len() < notes.capacity() {
+                        notes.push((addr, value));
+                    } else {
+                        *unrouted += 1;
+                    }
+                }
+                _ => route(mixer, addr, t, unrouted),
+            },
         );
         self.events.clear();
     }
+}
+
+/// A MIDI effect setting's description and value now, from `fx`.
+fn note_param(fx: &[TrackFx; MAX_TRACKS], addr: ParamAddr) -> Option<(ParamInfo, f32)> {
+    let Owner::NoteFx(t, id) = addr.owner else {
+        return None;
+    };
+    let fx = fx.get(usize::from(t))?;
+    let slot = fx.slots[fx.place_of(id)?]?;
+    let info = mpfree_chain_ui::notes::info(&slot.fx, usize::from(addr.param))?;
+    Some((info, info.default))
 }
 
 fn route(mixer: &mut Mixer, addr: ParamAddr, t: Timed, unrouted: &mut u64) {
@@ -465,6 +563,57 @@ mod tests {
         assert!(h.modu.save_scene(&mut p, 5).is_some_and(|n| n >= 2));
         let v = p.scene(5).unwrap().value(vol(LOOP)).unwrap();
         assert!((v + 4.0).abs() < 0.05, "{v}");
+    }
+
+    /// A track's MIDI effect setting: a step's lock and a macro move it,
+    /// and its values go to the time engine, not the mixer. The engine
+    /// knows it only once it has the track's effects; it saves and loads
+    /// by the effect's id, and forgets an effect that left its track.
+    #[test]
+    fn a_midi_effect_setting_is_locked_and_moved_by_a_macro() {
+        use mpfree_mod::{MacroMap, MapCurve};
+        use mpfree_notefx::Fx;
+        let mut h = MixHost::new(RATE, 0.0, 6.0);
+        let mut fx = Box::new([TrackFx::default(); MAX_TRACKS]);
+        fx[2].add(Fx::Chance { percent: 50 });
+        let id = fx[2].ids[0];
+        let chance = ParamAddr::new(Owner::NoteFx(2, id), 0);
+        let values = |h: &mut MixHost| h.modu.take_note_values().collect::<Vec<_>>();
+        // Not known yet: a lock is dropped, and nothing is sent.
+        h.lock(0, chance, Some(80.0));
+        run(&mut h, 4, 0);
+        assert!(!h.modu.engine().is_target(chance));
+        assert!(values(&mut h).is_empty());
+        h.modu.set_note_fx(&fx);
+        h.lock(0, chance, Some(80.0));
+        run(&mut h, 4, 4);
+        assert_eq!(values(&mut h), [(chance, 80.0)]);
+        h.lock(0, chance, None);
+        run(&mut h, 4, 8);
+        assert_eq!(values(&mut h), [(chance, 50.0)], "back to its own");
+        // A macro from 20 % to 100 %, turned half way.
+        let map = MacroMap {
+            target: chance,
+            from: 0.2,
+            to: 1.0,
+            curve: MapCurve::Linear,
+        };
+        assert!(h.modu.change(&h.mixer, Change::Map { m: 1, map }).is_ok());
+        h.modu.set(ParamAddr::macro_value(1), 0.5);
+        run(&mut h, 4, 12);
+        assert_eq!(values(&mut h).last(), Some(&(chance, 60.0)));
+        assert_eq!(h.modu.unrouted(), 0);
+        // Saved by the effect's id, and read back.
+        let text = h.modu.save();
+        assert!(text.contains(&format!("t2.nfx{id}.0")), "{text}");
+        let mut fresh = MixHost::new(RATE, 0.0, 6.0);
+        assert_eq!(fresh.modu.load(&fresh.mixer, &text), 1, "unknown before");
+        fresh.modu.set_note_fx(&fx);
+        assert_eq!(fresh.modu.load(&fresh.mixer, &text), 0);
+        assert!(fresh.modu.engine().is_target(chance));
+        // The effect leaves its track: its settings go.
+        h.modu.forget(Owner::NoteFx(2, id));
+        assert!(!h.modu.engine().is_target(chance));
     }
 
     #[test]

@@ -38,7 +38,7 @@
 27650	Compressor
 36221	Crush
 13406	DJ filter
-42431	De-esser
+58964	De-esser
 70889	Delay
 129473	Drawbar Church, 8 keys
 173856	Drawbar Full Organ, 8 keys
@@ -48,7 +48,7 @@
 430284	Drive (HQ 4x)
 572112	Drums Boom Kit, a hit every block
 417001	Drums Init Kit, a hit every 4 blocks
-14765	Ducker (tempo)
+16073	Ducker (tempo)
 108120	EQ (4 bands and both cuts)
 256118	EQ (4 bands and both cuts), Freq gliding
 188280	EQ (4 bands and both cuts), HQ 2x
@@ -56,7 +56,7 @@
 92618	Flanger, through zero
 55287	Frequency shifter
 386476	Fuzz
-17437	Gate
+17292	Gate
 472729	Grains FX (dense)
 99325	Harmonizer
 188538	Keys Dusty Keys, 16 voices
@@ -110,7 +110,7 @@
 374672	Poly Supersaw, 8 voices
 20295	Ring mod
 145867	Room reverb
-115746	Rotary
+108213	Rotary
 546477	Sampler x16 held
 1515282	Sampler x16 held up
 1774420	Sampler x16 held up, 16-bit sound
@@ -134,7 +134,7 @@
 8528	Time: transport, 8 clips, arp
 53727	Track host alone, 16 tracks, 8 events each per block
 406148	Track host, 4 Poly tracks of 4 voices
-26028	Transient shaper
+27052	Transient shaper
 11340	Tremolo
 32159	Tuner
 476604	Wavetable Digital Bell, 8 voices
