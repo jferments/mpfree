@@ -130,3 +130,55 @@ fn takes_save_and_open_with_the_kit() {
         .collect();
     assert!(open(&old).takes().is_empty());
 }
+
+#[test]
+fn a_new_sound_kept_as_a_take_is_one_undo_step() {
+    let mut p = Project::new();
+    let s = sound(3_000, 9, "Take 4");
+    let i = p
+        .add_take_of(s.clone(), |name, layer| {
+            assert_eq!(name, "Take 4");
+            let mut t = Pad::new(name, layer);
+            t.level_db = -3.0;
+            t
+        })
+        .unwrap();
+    assert_eq!((i, p.sources().len()), (0, 1));
+    assert_eq!(p.take(0).unwrap().level_db, -3.0);
+    assert_eq!(p.take(0).unwrap().layers[0].region.end, 3_000);
+    assert!(p.undo());
+    assert!(p.takes().is_empty() && p.sources().is_empty(), "one step");
+    assert!(p.redo());
+    assert_eq!(p.takes().len(), 1);
+    // A take of another sound, or a wrong one, is refused and adds nothing.
+    let other = sound(100, 3, "Other");
+    let bad = p.add_take_of(sound(200, 4, "Bad"), |n, _| take_of(&other, n));
+    assert_eq!(bad, Err(ModelError::UnknownSource));
+    let bad = p.add_take_of(sound(200, 5, "Bad"), |n, l| {
+        let mut t = Pad::new(n, l);
+        t.polyphony = 0;
+        t
+    });
+    assert_eq!(bad, Err(ModelError::BadPad));
+    assert_eq!((p.sources().len(), p.takes().len()), (1, 1));
+}
+
+/// A take recorded in bars is warped, as a pad would be: its stretched copy
+/// is wanted at the tempo like a pad's, so it plays in time on the page.
+#[test]
+fn a_warped_take_wants_its_stretched_copy() {
+    use mpfree_sampler::warp::Warps;
+    let s = sound(44_100, 6, "Take 5");
+    let mut p = Project::new();
+    p.add_take_of(s, |name, mut layer| {
+        layer.region.warp = Some(Warp::new(90.0));
+        Pad::new(name, layer)
+    })
+    .unwrap();
+    let w = Warps::new(120.0);
+    let wanted = w.wanted(&p);
+    assert_eq!(wanted.len(), 1);
+    assert_eq!(w.missing(&p), wanted);
+    let pin_free = Warps::spec(&p, &wanted[0]);
+    assert!(pin_free.is_ok());
+}

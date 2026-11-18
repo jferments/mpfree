@@ -13,7 +13,9 @@
 //!   Next bar, Ends among On STOP, On silence and a length in bars.
 //! - While REC is on, the panel under the wave is **Input** instead of
 //!   the region's settings ([`INPUT_ROWS`]): the source, its channels,
-//!   the threshold and the pre-roll.
+//!   where the take goes when it stops (Onto: Stay here, the default,
+//!   keeps it on the page; one-page step 2b), the threshold and the
+//!   pre-roll.
 
 use std::cell::RefCell;
 
@@ -33,7 +35,13 @@ pub const STEPS: [Row; 3] = [Row::Source, Row::Start, Row::End];
 
 /// The rows of the Input section the panel shows while REC is on, in its
 /// order (the [`EventKind::Step`] index on the panel).
-pub const INPUT_ROWS: [Row; 4] = [Row::Source, Row::Input, Row::Threshold, Row::PreRoll];
+pub const INPUT_ROWS: [Row; 5] = [
+    Row::Source,
+    Row::Input,
+    Row::Threshold,
+    Row::PreRoll,
+    Row::Onto,
+];
 
 /// What the Q-Links turn while REC is on (the plan's step 2a): Q-Link 2
 /// the Threshold, Q-Link 3 the Pre-roll. Q-Links 1 and 4 are faint until
@@ -115,7 +123,10 @@ pub fn input_list(v: &RecorderView) -> (Vec<Setting>, Vec<Control>, Panel) {
         sections: vec![Section::new(
             "Input",
             1,
-            vec![vec![it(0).labelled(), it(1).labelled()], vec![it(2), it(3)]],
+            vec![
+                vec![it(0).labelled(), it(1).labelled(), it(4).labelled()],
+                vec![it(2), it(3)],
+            ],
         )
         .note("while REC is on")],
     };
@@ -470,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn the_input_section_has_the_source_channels_threshold_and_pre_roll() {
+    fn the_input_section_has_the_source_channels_threshold_pre_roll_and_onto() {
         let v = RecorderView {
             sources: vec!["Line in".into(), "Master".into()],
             recording: true,
@@ -478,7 +489,11 @@ mod tests {
         };
         let (rows, controls, panel) = input_list(&v);
         let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["Source", "Channels", "Threshold", "Pre-roll"]);
+        assert_eq!(
+            names,
+            ["Source", "Channels", "Threshold", "Pre-roll", "Onto"]
+        );
+        assert_eq!(rows[4].value, "Stay here", "a take stays on the page");
         assert_eq!(rows[0].value, "Line in");
         assert_eq!(rows[2].value, "-30 dB");
         assert!(controls[0].faint, "a take keeps its source");

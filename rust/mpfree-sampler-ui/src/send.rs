@@ -7,6 +7,10 @@
 //! - **Chop to pads:** the Chop tab, where the sound is cut and its slices
 //!   go onto pads; on the Chop tab it is the tab's own Chop to pads.
 //!
+//! With a take kept on the Wave page (one-page step 2b), Send to pad puts
+//! the take itself on the pad hit (it leaves the page, one undo step);
+//! Chop to pads waits until it is on a pad ([`show_take`]).
+//!
 //! Each tab's page puts [`SEND`] at the right of its bar row
 //! ([`SEND_W`] wide); the app applies the presses.
 
@@ -45,6 +49,24 @@ pub fn show(ui: &mut Ui, has_sound: bool, sending: bool) {
         .to_string();
         b.enabled = vec![has_sound; BUTTONS.len()];
         b.why = vec!["The pad picked has no sound".to_string(); BUTTONS.len()];
+    }
+}
+
+/// Why Chop to pads is faint for a take kept on the page.
+pub const TAKE_FIRST: &str = "Put the take on a pad first: Send to pad, then hit a pad";
+
+/// Shows the buttons for a take kept on the page: Send to pad puts it on
+/// the pad hit; Chop to pads waits until it is on a pad.
+pub fn show_take(ui: &mut Ui, sending: bool) {
+    if let Some(b) = ui.get_mut::<ButtonRow>(SEND) {
+        b.labels[SEND_TO_PAD] = if sending {
+            SENDING
+        } else {
+            BUTTONS[SEND_TO_PAD]
+        }
+        .to_string();
+        b.enabled = vec![true, false];
+        b.why = vec![String::new(), TAKE_FIRST.to_string()];
     }
 }
 

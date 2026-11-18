@@ -2401,6 +2401,48 @@ impl Project {
         Ok(self.takes.len() - 1)
     }
 
+    /// Keeps a new sound `s` as a take on the page, what `make` makes of
+    /// its name and a layer playing it whole (as [`Project::put_source_as`]
+    /// puts one on a pad), as one undo step with the sound's adding; gives
+    /// its place in [`Project::takes`]. Refused, changing nothing, with
+    /// [`MAX_TAKES`] kept already or a take `make` gets wrong.
+    pub fn add_take_of(
+        &mut self,
+        s: Source,
+        make: impl FnOnce(&str, Layer) -> Pad,
+    ) -> Result<usize, ModelError> {
+        if self.takes.len() >= MAX_TAKES {
+            return Err(ModelError::BadTake);
+        }
+        let take = make(&s.name, Layer::new(Region::whole(&s)));
+        let id = s.id();
+        if take.layers.iter().any(|l| l.region.source != id) {
+            return Err(ModelError::UnknownSource);
+        }
+        let added = self.source(id).is_none();
+        if added {
+            self.sources.push(s);
+        }
+        if let Err(e) = self.check_pad(&take) {
+            if added {
+                self.sources.pop();
+            }
+            return Err(e);
+        }
+        let before = self.takes.clone();
+        self.takes.push(take);
+        let mut steps = Vec::with_capacity(2);
+        if added {
+            steps.push(Undo::AddSource { id });
+        }
+        steps.push(Undo::Takes {
+            before,
+            gesture: None,
+        });
+        self.push_undo(Undo::Group(steps));
+        Ok(self.takes.len() - 1)
+    }
+
     /// Edits take `index` through a closure, as [`Project::edit_pad`] edits
     /// a pad: checked, and one undo step for a run with the same
     /// `gesture`.
