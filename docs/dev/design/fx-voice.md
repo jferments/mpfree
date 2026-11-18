@@ -136,7 +136,8 @@ The Vocoder (PR 8), the gate's case at its defaults (16 bands, the saw following
 - FX quality round 5 (17 Nov): research, baseline and plan (mpfree-claude #211, plan-5.md); the measuring PR (#510): 29 of 54 voice targets met. PR W (17 Nov) gave it the shared LFO's fixes.
 - PR 7 (18 Nov): the alternating-sign bank with fitted levels, a make-up per vowel, level held across Resonance, bandwidths scaled with Formant, and every change glided: 54 of 54.
 - PR 8 (18 Nov): the Vocoder (decision 12.1), every V6 target met: 4 to 40 alternating-sign bands, quadrature envelopes, a level that holds as the bands change, Saw, Noise and Input carriers, Unvoiced, a gate and Spread.
-- Next: a key picker in the mixer, so Input can be chosen in the app (the mixer's job); a multirate bank if the vocoder's cost on the MPC needs cutting; pitch correct's MIDI mode is on [fx-pitch.md](fx-pitch.md)'s list.
+- The sidechain picker (18 Nov, #577): Input's voice is picked in the app, from the Carrier heading's "Voice: Mic ›" ([layout-spec.md](layout-spec.md) 4b, "Sidechain"); with nothing picked the section's note and the effect's row say so in red.
+- Next: a multirate bank if the vocoder's cost on the MPC needs cutting; pitch correct's MIDI mode is on [fx-pitch.md](fx-pitch.md)'s list.
 
 ## 11. Sources
 
