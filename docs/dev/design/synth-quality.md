@@ -120,17 +120,17 @@ The bar each wave 1 pull request is judged by ([Architecture and roadmap](synth-
 
 | Id | Measure | Target | Today |
 |---|---|---|---|
-| S1 | The ensemble's pitch movement | Slow and fast rates within 5 % of their labels; depth in cents as labelled | No engine |
-| S2 | The lines' movement | 120° apart, within 5° | |
-| S3 | Width | Correlation 0.2 to 0.6 with the ensemble on; mono fold-down loss under 3 dB | |
-| S4 | Top end | The wet path 3 dB down between 6 and 9 kHz | |
+| S1 | The ensemble's pitch movement | Slow and fast rates within 5 % of their labels; depth in cents as labelled | Ensemble effect: met, within 2 % of the label at 5 to 30 cents (frame by frame, `ensemble.rs` tests) |
+| S2 | The lines' movement | 120° apart, within 5° | Ensemble effect: exact (a third of a cycle; a quarter with four lines) |
+| S3 | Width | Correlation 0.2 to 0.6 with the ensemble on; mono fold-down loss under 3 dB | Ensemble effect: 0.51 (three lines) and 0.58 (four) above 300 Hz; mono fold -1.1 LU |
+| S4 | Top end | The wet path 3 dB down between 6 and 9 kHz | Ensemble effect: met (-1.4 dB at 6 kHz, -5.4 at 9) |
 | S5 | Cost against keys held | Flat within 10 % from 1 to 49 keys (workstation bench, then the MPC) | Drawbar's bank: 0.4 to 1.2 µs a key |
 | S6 | Tuning | Every key within 1 cent in every built-in tuning; 24-TET through the per-key fallback | |
 | S7 | Crescendo and Sustain | Within 10 % of their labels | |
 | S8 | Aliasing | Worst alias under −60 dB at C7 | |
 | S9 | Chords | A 6-note chord within 6 dB of its notes' power sum (L12) | |
 
-The Ensemble effect also meets the FX method's own rows: no dip as Mix goes up (within −1 to +1.5 LU of the dry), no zipper over 3 dB on any control, and no cut-off tail ([FX quality](fx-quality.md#delay), D6, D7 and D12).
+The Ensemble effect also meets the FX method's own rows: no dip as Mix goes up (within −1 to +1.5 LU of the dry), no zipper over 3 dB on any control, and no cut-off tail ([FX quality](fx-quality.md#delay), D6, D7 and D12). Built 18 Nov: in the `modulation` class it meets all of them (mix dip -0.33 LU, no bump; every control's click at least 60 dB under the tone; on insert within ±0.4 LU at the defaults and every preset).
 
 ## Not measured yet
 

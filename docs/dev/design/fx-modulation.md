@@ -1,5 +1,5 @@
 <!--
-covers: rust/mpfree-fx/src/modfx.rs
+covers: rust/mpfree-fx/src/modfx.rs rust/mpfree-fx/src/ensemble.rs
 checked: 2026-11-18 b4fe3b81
 -->
 # Modulation: Chorus, Flanger and Phaser
@@ -13,6 +13,7 @@ This page is the design of MPFree's three modulation effects as one effect type:
 | Chorus | `mpfree.fx.chorus` | [`modfx.rs`](../../../rust/mpfree-fx/src/modfx.rs) | Up to four voices of a delay of 2 to 40 ms swept slowly: thickening, width, ensemble |
 | Flanger | `mpfree.fx.flanger` | `modfx.rs` | A delay of 0.1 to 10 ms swept in octaves (never past 20 ms), with feedback: the jet sweep and metallic combs |
 | Phaser | `mpfree.fx.phaser` | `modfx.rs` | 2 to 12 all-pass stages swept around a centre, with feedback: the swirl |
+| Ensemble | `mpfree.fx.ensemble` | [`ensemble.rs`](../../../rust/mpfree-fx/src/ensemble.rs) | The string machine's chorus: three or four lines, each swept by a slow and a fast LFO at once (synth library wave 1, 18 Nov) |
 
 ## 1. What they are for
 
@@ -76,6 +77,20 @@ From M4, **Shape**: Sine, or a Triangle in step with it (0, 1, 0, -1 at the quar
 
 The chorus also gets a Main page (Rate, Depth, Delay, Mix on the knobs), since it has nine controls with the Mix curve.
 
+### Ensemble
+
+Built for the synth library's Strings engine (wave 1, 18 Nov; targets S1 to S4 in [synth-quality.md](synth-quality.md#wave-1-targets-bass-keys-and-strings-stage-4), research in [string-machine.md](../research/string-machine.md)), and usable on any track. In the picker it is a mode of the **Chorus** family (Chorus or Ensemble), so the list keeps one chorus tile.
+
+- **Three lines or four** (Lines), sharing one delay, each swept by two LFOs at once: a slow one, the chorus (0.1 to 3 Hz, 0.66 by default), and a fast one, the vibrato (2 to 12 Hz, 6.25), the rates the string ensembles used. Each line's LFOs sit a third of a cycle (four lines: a quarter) from the next line's, so every copy wobbles differently.
+- **Depth in cents.** Each LFO's depth is how far it bends the pitch each way (slow 0 to 30 cents, 12 by default; fast 0 to 15, 5): a sweep of `A` seconds at `f` Hz bends by a ratio of `1 ± 2πfA`, and `A` is set so the bends up and down average the cents asked for (`x = tanh(cents · ln 2 / 1200)`, `A = x / 2πf`). So a depth means the same at any rate, which is what the S1 target checks frame by frame.
+- **The shared delay** sits 5 ms above the deepest the sweeps reach (6.7 ms at the defaults, up to 33 ms at the slowest, deepest settings). It glides over 500 ms when a depth or rate moves it, in f64: in f32, `Smooth` dropped the step (a few millionths of a frame, under an f32's resolution at hundreds of frames) and snapped to the target, a 0.15-frame jump in the delay at every knob step and a click 50 dB under the tone (M13; -88 dB and better now).
+- **The lines are panned** evenly from left to right (three at left, centre and right; four at thirds), each at equal power, and each side scaled so the lines' powers sum to one: a third of a cycle apart, the copies add as powers above a few hundred Hz. Width 85 % by default puts the sides' correlation at 0.51 above 300 Hz (S3 asks 0.2 to 0.6) and loses 1.1 LU in mono (M4); at 100 % they correlate 0.36 and lose 1.6. A stereo input keeps its sides: each side's lines read that side.
+- **Top end.** The summed wet passes a two-pole low-pass at **Tone** (2 to 20 kHz, 7.5 kHz), 3 dB down there, as the bucket-brigade lines were (S4: between 6 and 9 kHz), then a +1 dB trim, so it goes in at the dry's loudness on pink noise (M1: -0.27 LU at the defaults).
+- **Lines** 3 to 4 glides over 500 ms: the fourth line fades in while the others move to their new places and phases.
+- The reads are the chorus's flat sinc (`FlatLine`, always inlined: a call there cost the chorus 10 to 17 % once the ensemble read it too); the LFOs are the shared polynomial sine with f64 phases. Mix 100 % by default, as the machines had no dry path, with the Mix curve.
+- **A mono path** (`Ensemble::process_mono`) for an instrument's own output, such as the Strings engine's: the left input is copied to the right and each line is read once for both sides, the same to the bit as the stereo path on a mono input (tested).
+- **Cost:** 138k instructions per 128-frame block with three lines and 173k with four (callgrind, x86; CI's instruction gate), against 147k for the four-voice chorus.
+
 ### Flanger
 
 One line a side, swept in octaves around **Delay** (0.1 to 10 ms), ±2 octaves at full **Depth**, so the comb moves evenly to the ear. **Feedback** (-95 to +95 %) takes the read back into the line: positive is metallic, negative hollow. Width offsets the right side's LFO; Mix is linear, since 50 % is the deepest notch. `Flanger::response_db` draws the comb for the page at any point of the sweep. **Before M2** the line was read with the cubic, the sweep reached 40 ms (Delay 10 ms times two octaves) and nothing held the level: the flanger went in 0.3 to 2.9 LU quieter and up to 6.5 LU louder at ±95 % Feedback.
@@ -114,6 +129,7 @@ From M3 (before it the phaser went in 0.9 to 1.9 LU quieter and up to 7.4 LU lou
 |---|---|
 | Chorus | Rate (0.05 to 10 Hz, 0.6), Sync (Free, 1/16 to 8 bars), Depth (0 to 100 %, 40), Delay (2 to 40 ms, 12), Voices (1 to 4, 2), Width (0 to 100 %, 100), Tone (1 to 20 kHz, 9 kHz), Mix (0 to 100 %, 50); from M1, Mix curve (Equal); from M4, Shape (Sine, Triangle; Sine) |
 | Flanger | Rate (0.02 to 10 Hz, 0.2), Sync, Depth (0 to 100 %, 60), Delay (0.1 to 10 ms, 1.5), Feedback (-95 to +95 %, +50), Width (0 to 100 %, 100), Mix (0 to 100 %, 50); from M2, Through zero (Off, On; Off); from M4, Shape |
+| Ensemble | Slow rate (0.1 to 3 Hz, 0.66), Slow depth (0 to 30 cents, 12), Fast rate (2 to 12 Hz, 6.25), Fast depth (0 to 15 cents, 5), Lines (3, 4; 3), Width (0 to 100 %, 85), Tone (2 to 20 kHz, 7.5 kHz), Mix (0 to 100 %, 100), Mix curve (Equal) |
 | Phaser | Rate (0.02 to 10 Hz, 0.3), Sync, Depth (0 to 100 %, 70), Centre (100 Hz to 8 kHz, 700 Hz), Stages (2, 4, 6, 8, 12; 4), Feedback (-95 to +95 %, +30), Width (0 to 100 %, 100), Mix (0 to 100 %, 50), Stereo (Quarter, Opposite; Quarter, from M3); from M4, Shape |
 
 What the shared names mean:
@@ -135,7 +151,8 @@ What the shared names mean:
 | Chorus | Mix 50 %, Equal from M1 | The classic 50/50 (the CE-2); Equal power so it doesn't go in 3 dB quieter (Jay's pick, 17 Nov) |
 | Flanger | Delay 1.5 ms, Depth 60 %, Rate 0.2 Hz, Feedback +50 % | In the strong flange zone, a slow jet sweep with clear resonance |
 | Phaser | 4 stages, Centre 700 Hz, Rate 0.3 Hz, Feedback +30 % | The Phase 90 / Small Stone shape: two notches (held, 290 and 1684 Hz without feedback, 292 and 1740 Hz with it); a little feedback for character |
-| All | Width 100 % | A stereo sweep is what these effects are for; Width 0 is there for mono sources that must stay centred |
+| Ensemble | Slow 0.66 Hz ±12 cents, fast 6.25 Hz ±5 cents, 3 lines, Width 85 %, Tone 7.5 kHz, Mix 100 % | The string ensembles' rates (Anwander's notes on the Roland choruses); depths that read as an ensemble, not a detune; Width and Tone to meet S3 and S4 with the mono fold inside M4 |
+| All | Width 100 % (the Ensemble 85 %) | A stereo sweep is what these effects are for; Width 0 is there for mono sources that must stay centred |
 
 **Presets** (a preset never sets Mix, Mix curve or Quality):
 
@@ -157,6 +174,12 @@ What the shared names mean:
 | | Funk wobble | Rate 2.5 Hz, Depth 60 %, Centre 1.2 kHz, 4 stages, Feedback +40 % | A fast funk wobble |
 | | Liquid | Rate 0.1 Hz, Depth 85 %, Centre 500 Hz, 12 stages, Feedback +70 % | Six notches, very resonant |
 | | Quarter pulse | Sync 1/4, Depth 70 %, Centre 900 Hz, 6 stages, Feedback +50 % | A pulse on every beat |
+| Ensemble | String machine | The defaults | The classic three-line string ensemble |
+| | Four lines | 4 lines, slow 0.5 Hz ±10 cents, fast 5.5 Hz ±4 cents | The four-line ensembles' thicker sound |
+| | Slow shimmer | Slow 0.3 Hz ±18 cents, fast ±2 cents, Tone 9 kHz | A slow, deep shimmer for pads |
+| | Vibrato strings | Slow ±6 cents, fast 7 Hz ±10 cents | More vibrato than chorus |
+| | Pad widener | Slow 0.4 Hz ±8 cents, fast 5 Hz ±2 cents, Tone 12 kHz | Gentle width for pads and keys from other engines (lower Mix for less) |
+| | Mono ensemble | Width 0 | The ensemble on a mono sound that must stay centred |
 
 The chorus presets' M1 Depth values keep each preset's sweep in milliseconds as it was: on `main` a preset's sweep was ±(Depth/2) of its Delay (Subtle widen ±0.6 ms, Lush ensemble ±5.4, Dimension ±0.75, Fast wobble ±1.0, Bar swirl ±3.85), and the new values give the same sweep (Lush ensemble's ±5.4 meets the ±5 ms ceiling). Saved choruses with their own settings change with the new meaning: a long Delay gets less pitchy, a short one a little more; the PR lists it.
 
@@ -237,6 +260,7 @@ The rise is the read: 8 taps a voice a side where the cubic took 4. A first sinc
 - **M2** (flanger, 17 Nov): the flat read round the loop (fading to the cubic by the write), the drawing from the same weights, the 20 ms ceiling and the level trim; 99 of 113. Through-zero flanging, off by default, with a Tape flange preset (Jay's pick, 17 Nov); 105 of 119.
 - **M3** (phaser, 17 Nov): the level trim, a high-pass in the feedback, the Stereo choice (Quarter or Opposite) and a Main page; 115 of 119.
 - **M4** (all three, 17 Nov): the LFO's Shape (Sine or a rounded Triangle), the dotted and triplet syncs, the frame's sweeps worked out together, and a Main page for the flanger; 119 of 123.
+- **Ensemble** (synth library wave 1, 18 Nov): the string machine's chorus, a mode of a new Chorus family, measured in the `modulation` class (M1, M4, M13 at its defaults and six presets, S3 width, the mix law): every row met.
 - **Next:** if Jay wants it, the last familiar extra (plan-3 P2): a Vintage colour for the chorus (a BBD's band limit, emphasis, soft clip and hiss). The MPC's own chorus, flanger and phaser are not yet captured as references (FXProbe).
 
 ## 11. Sources
