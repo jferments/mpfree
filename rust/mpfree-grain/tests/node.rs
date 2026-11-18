@@ -1,9 +1,9 @@
 //! The granular effect as an FX-chain node: its parameters, what it does
 //! through the node interface, and the rules every node keeps.
 
-use mpfree_grain::node::param;
-use mpfree_grain::GrainNode;
-use mpfree_node::{check_params, Ctx, Kind, Node, NodeEvent, Timed};
+use mpfree_grain::node::{param, voice_params};
+use mpfree_grain::{FilterKind, GrainFilter, GrainNode};
+use mpfree_node::{check_params, Ctx, Held, HeldStep, Kind, Node, NodeEvent, Timed};
 
 const RATE: u32 = 44_100;
 
@@ -155,6 +155,9 @@ fn the_output_is_the_same_at_any_block_size() {
         (47_777, set(param::FREEZE, 0.0)),
         (60_000, set(param::MIX, 100.0)),
         (70_001, NodeEvent::AllOff), // means nothing to an effect
+        (72_222, set(param::REPEAT, 4.0)),
+        (75_000, set(param::REPEAT, 5.0)),
+        (80_000, set(param::REPEAT, 0.0)),
     ];
     let first = run(&mut node(), &input, 128, &events);
     for block in [1, 37, 64, 500, 4096] {
@@ -192,4 +195,180 @@ fn reset_silences_it_and_forgets_what_it_heard() {
         (GrainNode::MEMORY_S * 48_000.0) as usize
     );
     assert_eq!(n.fx().unwrap().mix(), 1.0);
+}
+
+/// Runs `n` over `input` as the transport plays at 120 BPM from beat 0.
+fn run_playing(
+    n: &mut GrainNode,
+    input: &[f32],
+    block: usize,
+    events: &[(usize, NodeEvent)],
+) -> Vec<f32> {
+    let (mut l, mut r) = (input.to_vec(), input.to_vec());
+    let mut at = 0;
+    while at < input.len() {
+        let len = block.min(input.len() - at);
+        let timed: Vec<Timed> = events
+            .iter()
+            .filter(|(f, _)| (at..at + len).contains(f))
+            .map(|&(f, ev)| Timed::new((f - at) as u32, ev))
+            .collect();
+        let ctx = Ctx {
+            playing: true,
+            beats: at as f64 / 22_050.0,
+            ..Ctx::new(RATE, at as u64)
+        };
+        n.process(&ctx, &timed, &mut l[at..at + len], &mut r[at..at + len]);
+        at += len;
+    }
+    l
+}
+
+#[test]
+fn repeat_starts_on_its_line_of_the_beat_grid_and_plays_at_any_mix() {
+    let input: Vec<f32> = sine(RATE as usize * 3, 220.0, 0.3)
+        .iter()
+        .enumerate()
+        .map(|(i, x)| x * (1.0 + (i / 3000 % 5) as f32) / 5.0)
+        .collect();
+    // Fully dry; a quarter-note repeat asked for between beats 0 and 1.
+    let mut n = node();
+    n.set_param(param::MIX, 0.0);
+    let events = [(10_000, set(param::REPEAT, 2.0))];
+    let out = run_playing(&mut n, &input, 128, &events);
+    assert_eq!(n.param(param::REPEAT), 2.0);
+    // It waits for beat 1 (frame 22,050), then the beat before it plays
+    // again every beat.
+    assert_eq!(out[..22_050], input[..22_050]);
+    let beat = 22_050;
+    let off = 22_050 + 500;
+    let diff = |a: usize, b: usize| {
+        (0..20_000)
+            .map(|j| (out[a + j] - out[b + j]).abs())
+            .fold(0.0f32, f32::max)
+    };
+    assert!(
+        diff(off + beat, off + 2 * beat) < 1e-3,
+        "every beat the same"
+    );
+    assert!(
+        (0..20_000).any(|j| (out[off + beat + j] - input[off + beat + j]).abs() > 0.05),
+        "not the input"
+    );
+    assert_eq!(n.tail_frames(), u32::MAX, "it plays on while it repeats");
+    assert!(n.param(param::GRAINS) >= 1.0);
+}
+
+#[test]
+fn repeat_off_crossfades_back_on_its_frame() {
+    let input = sine(RATE as usize * 2, 330.0, 0.4);
+    let mut n = node();
+    n.set_param(param::MIX, 0.0);
+    let events = [
+        (5_000, set(param::REPEAT, 3.0)),
+        (40_000, set(param::REPEAT, 0.0)),
+    ];
+    let (l, _) = run(&mut n, &input, 256, &events);
+    // Stopped transport: it starts on the frame it is set.
+    assert_eq!(l[..5_000], input[..5_000]);
+    assert!((5_441..40_000).any(|i| (l[i] - input[i]).abs() > 0.05));
+    let back = 40_000 + 441 + 64;
+    assert_eq!(l[back..], input[back..], "the input exactly, 10 ms on");
+    assert_eq!(n.tail_frames(), 0);
+    assert_eq!(n.param(param::REPEAT), 0.0);
+}
+
+#[test]
+fn its_memory_and_settings_go_out_for_a_capture() {
+    let mut n = node();
+    n.set_param(param::PITCH, 7.0);
+    n.set_param(param::SHAPE, 25.0);
+    n.set_param(param::REVERSE, 30.0);
+    n.set_param(param::FILTER, 2.0);
+    n.set_param(param::CUTOFF, 640.0);
+    n.set_param(param::FREEZE, 1.0);
+    let mut held = Held::new(2, RATE as usize * 9);
+    assert_eq!(
+        n.copy_held(&mut held, 4096),
+        HeldStep::Nothing,
+        "nothing heard yet"
+    );
+    n.set_param(param::FREEZE, 0.0);
+    run(
+        &mut n,
+        &sine(RATE as usize, 440.0, 0.5),
+        256,
+        &[(30_000, set(param::FREEZE, 1.0))],
+    );
+    let mut calls = 1;
+    while n.copy_held(&mut held, 4096) == HeldStep::More {
+        calls += 1;
+    }
+    assert_eq!(
+        held.span(),
+        Some((0, 30_000)),
+        "everything up to the freeze"
+    );
+    assert_eq!(calls, 8);
+    held.keep_values(&n);
+    assert!(
+        held.values().iter().all(|&(id, _)| id != param::GRAINS),
+        "no meter"
+    );
+    let fx = n.fx().unwrap();
+    assert_eq!(
+        &voice_params(held.values()),
+        fx.params(),
+        "the pad plays as the effect did"
+    );
+    // Unprepared, it holds nothing.
+    let mut cold = GrainNode::new(1);
+    assert_eq!(
+        cold.copy_held(&mut Held::new(2, 10), 4096),
+        HeldStep::Nothing
+    );
+}
+
+#[test]
+fn its_filter_reaches_every_grain() {
+    let mut n = node();
+    let filter = |n: &GrainNode| n.fx().unwrap().params().filter;
+    assert_eq!(filter(&n), GrainFilter::default(), "off by default");
+    n.set_param(param::FILTER, 3.0);
+    n.set_param(param::CUTOFF, 5_000.0);
+    n.set_param(param::RESONANCE, 40.0);
+    n.set_param(param::FILTER_SPRAY, 50.0);
+    assert_eq!(
+        filter(&n),
+        GrainFilter {
+            kind: FilterKind::High,
+            cutoff_hz: 5_000.0,
+            resonance: 0.4,
+            spray: 0.5,
+        }
+    );
+    n.set_param(param::CUTOFF, 1.0e6);
+    assert_eq!(n.param(param::CUTOFF), 20_000.0);
+    // A dark filter on a bright input takes its highs away.
+    let mut x = 9u32;
+    let noise: Vec<f32> = (0..RATE as usize)
+        .map(|_| {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (x >> 8) as f32 / (1u32 << 23) as f32 - 1.0
+        })
+        .collect();
+    let bright = |n: &mut GrainNode| {
+        n.set_param(param::MIX, 100.0);
+        let (out, _) = run(n, &noise, 256, &[]);
+        let y = &out[RATE as usize / 2..];
+        let p: f32 = y.iter().map(|v| v * v).sum();
+        let d: f32 = y.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum();
+        d / p
+    };
+    let open = bright(&mut node());
+    let mut dark = node();
+    dark.set_param(param::FILTER, 1.0);
+    dark.set_param(param::CUTOFF, 300.0);
+    let shut = bright(&mut dark);
+    assert!(shut < open / 10.0, "{shut} against {open}");
 }

@@ -215,6 +215,9 @@ pub struct LiveBuffer {
     head: usize,
     reserve: u64,
     frozen: bool,
+    /// How many times it was cleared: a copy out of it ([`LiveBuffer::frames`])
+    /// keeps this as its mark, so it knows if the memory changed under it.
+    clears: u64,
 }
 
 impl LiveBuffer {
@@ -233,6 +236,7 @@ impl LiveBuffer {
             head: 0,
             reserve: frames as u64 / 4,
             frozen: false,
+            clears: 0,
         })
     }
 
@@ -262,6 +266,33 @@ impl LiveBuffer {
     pub fn clear(&mut self) {
         self.written = 0;
         self.head = 0;
+        self.clears += 1;
+    }
+
+    /// How many times it has been cleared.
+    pub fn clears(&self) -> u64 {
+        self.clears
+    }
+
+    /// Frames `from..to` (absolute frame numbers) as they sit in memory,
+    /// interleaved: the part before the wrap and the part after it (often
+    /// empty). `None` unless every frame is still held.
+    pub fn frames(&self, from: u64, to: u64) -> Option<(&[f32], &[f32])> {
+        let (oldest, end) = self.held();
+        if to < from || (from as i64) < oldest || (to as i64) > end {
+            return None;
+        }
+        if to == from {
+            return Some((&[], &[]));
+        }
+        let c = self.channels;
+        let a = self.slot(from as i64);
+        let n = (to - from) as usize;
+        let first = n.min(self.capacity as usize - a);
+        Some((
+            &self.data[a * c..(a + first) * c],
+            &self.data[..(n - first) * c],
+        ))
     }
 
     /// Appends interleaved frames (in this buffer's channel count). Ignored
