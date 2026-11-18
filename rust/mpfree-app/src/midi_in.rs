@@ -61,6 +61,7 @@ use std::time::Duration;
 use mpfree_midi::input::{ChanFilter, In, InputRouter, PortFilter, Route, Thru};
 use mpfree_midi::learn::{Input, LearnMap, Mode, Saved, Source, Write};
 use mpfree_midi::monitor::{Dir, Feed, Steady, To, What};
+use mpfree_midi::mpe::{MpeIn, Took};
 use mpfree_midi::msg::Msg;
 pub use mpfree_midi::port::DIN;
 use mpfree_midi::port::{PortId, Ports, MAX_PORTS};
@@ -76,7 +77,7 @@ use crate::time::Follow;
 const CLOCK_RATE: u32 = 1_000_000;
 
 /// What a keyboard did, for the armed track.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Key {
     Down {
         note: u8,
@@ -85,11 +86,41 @@ pub enum Key {
     Up {
         note: u8,
     },
-    /// Poly aftertouch on a held key.
+    /// Poly aftertouch on a held key (or a channel's pressure, or an MPE
+    /// note's own: [`mpfree_midi::mpe`]).
     Pressure {
         note: u8,
         value: u8,
     },
+    /// The pitch wheel: every note, -1 to 1 of the instrument's bend range.
+    Bend {
+        value: f32,
+    },
+    /// An MPE note's own slide (semitones) or tone (0 to 1).
+    Expr {
+        note: u8,
+        kind: mpfree_node::Expr,
+        value: f32,
+    },
+}
+
+/// What an expression does, as a key.
+fn expr_key(e: mpfree_midi::mpe::Expr) -> Key {
+    use mpfree_midi::mpe::Expr;
+    match e {
+        Expr::Bend(value) => Key::Bend { value },
+        Expr::Slide { note, semis } => Key::Expr {
+            note,
+            kind: mpfree_node::Expr::Slide,
+            value: semis,
+        },
+        Expr::Tone { note, value } => Key::Expr {
+            note,
+            kind: mpfree_node::Expr::Tone,
+            value,
+        },
+        Expr::Pressure { note, value } => Key::Pressure { note, value },
+    }
 }
 
 /// The tracks a route may name (`mpfree_midi::setup::ROUTE_TRACKS`).
@@ -142,7 +173,9 @@ impl RoutedHeld {
                 *held &= !bit(note);
                 was || !armed
             }
-            Key::Pressure { note, .. } => *held & bit(note) != 0 || !armed,
+            Key::Pressure { note, .. } | Key::Expr { note, .. } => *held & bit(note) != 0 || !armed,
+            // The wheel bends the track it is routed to, as it is now.
+            Key::Bend { .. } => !armed,
         }
     }
 }
@@ -447,6 +480,8 @@ pub struct MusicIn {
     thru_dropped: u64,
     /// MIDI Follow: the controller's knobs on the Q-Links.
     knobs: Knobs,
+    /// Per port: its pitch wheel, channel pressure and MPE.
+    mpe: Vec<MpeIn>,
 }
 
 impl Default for MusicIn {
@@ -500,6 +535,7 @@ impl MusicIn {
             thru: Vec::with_capacity(THRU_MSGS),
             thru_dropped: 0,
             knobs: Knobs::new(),
+            mpe: (0..MAX_PORTS).map(|_| MpeIn::new()).collect(),
         }
     }
 
@@ -828,6 +864,11 @@ impl MusicIn {
                 }
                 self.router.set_ignore(p.id, set.ignore);
                 self.router.set_port_blocks(p.id, set.blocks);
+                // Its MPE zone, as its gear's profile says (else what the
+                // controller itself says).
+                if let Some(x) = self.mpe.get_mut(usize::from(p.id.0)) {
+                    x.set_zone(m.profile(&p.name).and_then(|f| f.mpe).unwrap_or_default());
+                }
             }
             // Routes to tracks, on this run's port numbers: a route whose
             // port hasn't been plugged in yet waits for it (plugging a
@@ -1030,6 +1071,14 @@ impl MusicIn {
             .filter(|k| matches!(k, Key::Up { .. }))
             .count()
             + routed_ended;
+        // Its wheel let go too.
+        if self
+            .mpe
+            .get_mut(usize::from(port.0))
+            .is_some_and(MpeIn::reset)
+        {
+            keys.push(Key::Bend { value: 0.0 });
+        }
         self.ports.unplugged(port);
         self.ports_changed = true;
         if let Some(c) = self.clock.get_mut(usize::from(port.0)) {
@@ -1159,6 +1208,9 @@ impl MusicIn {
             );
             let (thru, dropped) = (&mut self.thru, &mut self.thru_dropped);
             let knobs = &mut self.knobs;
+            // The port's wheel, channel pressure and MPE.
+            let mpe = &mut self.mpe[p];
+            let mut zone_said = None;
             // Learn or MIDI Follow took the message: it reaches nothing
             // else, however many routes and thru name its channel. They
             // hear it as it came, before any route's blocks.
@@ -1213,6 +1265,13 @@ impl MusicIn {
                             To::Nothing
                         };
                         routed_key(other, routed);
+                        // Its bend and pressure (after its note, which
+                        // they may come with).
+                        match mpe.msg(msg, &mut |e| routed.push((track, expr_key(e)))) {
+                            Took::Expr => to = To::Routed { track },
+                            Took::Zone(z) => zone_said = Some(z),
+                            Took::No => {}
+                        }
                         return;
                     }
                     // "Learn only" plays nothing, but a note-off still
@@ -1223,10 +1282,27 @@ impl MusicIn {
                                 to = armed_to(armed, note);
                             }
                         }
-                        key_of(other, keys)
+                        key_of(other, keys);
+                        // Its bend and pressure, on the armed track (after
+                        // its note, which they may come with).
+                        if let (false, In::Track { msg, .. }) = (learn_only, other) {
+                            match mpe.msg(msg, &mut |e| keys.push(expr_key(e))) {
+                                Took::Expr if armed.1 => {
+                                    to = To::Track {
+                                        track: armed.0,
+                                        pad: None,
+                                    }
+                                }
+                                Took::Zone(z) => zone_said = Some(z),
+                                _ => {}
+                            }
+                        }
                     }
                 }
             });
+            if let Some(z) = zone_said {
+                log(format!("+{t:.3} s {label}: {} (it said so)", z.words()));
+            }
             // Nothing played it (a route's blocks dropped it, or no track
             // takes it): Learn and MIDI Follow still hear it.
             if let (Some(raw), false) = (seen, got) {
@@ -2209,6 +2285,137 @@ mod tests {
         "t1.inst.12".parse().unwrap()
     }
 
+    /// Expression in (3.7): any keyboard's wheel and channel pressure
+    /// reach the armed track; an MPE controller's member channels slide,
+    /// press and shade their own notes, each after its note; a route gets
+    /// its port's; unplugging puts the wheel back.
+    #[test]
+    fn a_keyboards_wheel_and_an_mpe_controllers_notes_reach_the_tracks() {
+        use mpfree_midi::mpe::Zone;
+        use mpfree_midi::profile::Profile;
+        use mpfree_midi::setup::TrackRoute;
+        use mpfree_node::Expr;
+        let mut m = MusicIn::new();
+        let io = model();
+        let usb = m.plugged("Keystep 37").unwrap();
+        let mpe = m.plugged("Seaboard").unwrap();
+        {
+            let mut v = io.lock().unwrap();
+            let (p, _) = Profile::parse(
+                "mpfree-profile 1\nname = Seaboard\nmatch = Seaboard\nmpe = lower 15\n",
+            )
+            .unwrap();
+            v.profiles.add(p).unwrap();
+            v.gen += 1;
+        }
+        m.sync(&io, 0.5);
+        assert_eq!(m.mpe[usize::from(mpe.0)].zone(), Zone::Lower(15));
+        assert_eq!(m.mpe[usize::from(usb.0)].zone(), Zone::Off);
+        // Any keyboard: a note, the wheel half up, the channel pressed.
+        let (keys, _) = run(&mut m, usb, &[0x90, 60, 96, 0xE0, 0, 0x60, 0xD0, 70]);
+        assert_eq!(
+            keys,
+            [
+                Key::Down {
+                    note: 60,
+                    velocity: 96
+                },
+                Key::Bend { value: 0.5 },
+                Key::Pressure {
+                    note: 60,
+                    value: 70
+                },
+            ]
+        );
+        // MPE: channel 2's slide and tone come just after its note, then
+        // its own bend slides only it; the master's bend bends them all.
+        let (keys, _) = run(
+            &mut m,
+            mpe,
+            &[
+                0xE1, 0, 0x50, 0xB1, 74, 127, 0x91, 64, 80, 0x92, 67, 80, 0xE1, 0, 0x30, 0xE0, 0,
+                0x30,
+            ],
+        );
+        assert_eq!(
+            keys,
+            [
+                Key::Down {
+                    note: 64,
+                    velocity: 80
+                },
+                Key::Expr {
+                    note: 64,
+                    kind: Expr::Slide,
+                    value: 12.0
+                },
+                Key::Expr {
+                    note: 64,
+                    kind: Expr::Tone,
+                    value: 1.0
+                },
+                Key::Down {
+                    note: 67,
+                    velocity: 80
+                },
+                Key::Expr {
+                    note: 64,
+                    kind: Expr::Slide,
+                    value: -12.0
+                },
+                Key::Bend { value: -0.25 },
+            ]
+        );
+        // Unplugged: its keys up, and the wheel it left bent put back.
+        let mut keys = Vec::new();
+        m.unplugged(mpe, &mut keys);
+        assert_eq!(keys.last(), Some(&Key::Bend { value: 0.0 }));
+        assert!(keys.contains(&Key::Up { note: 64 }) && keys.contains(&Key::Up { note: 67 }));
+        // A route takes its port's wheel, for its own track.
+        {
+            let mut v = io.lock().unwrap();
+            v.setup.routes = vec![TrackRoute {
+                port: mpfree_midi::setup::DIN_NAME.to_string(),
+                channel: Some(3),
+                track: 5,
+                blocks: Default::default(),
+            }];
+            v.gen += 1;
+        }
+        m.sync(&io, 1.0);
+        let (keys, _) = run(&mut m, DIN, &[0xE3, 0x7F, 0x7F]);
+        assert!(keys.is_empty(), "{keys:?}");
+        let routed: Vec<_> = m.take_routed().collect();
+        assert_eq!(routed.len(), 1);
+        assert!(matches!(routed[0], (5, Key::Bend { value }) if value > 0.99));
+    }
+
+    /// An MPE controller that says its zone (RPN 6 on channel 1) is heard
+    /// as one, and the log says so.
+    #[test]
+    fn an_mpe_controller_that_says_its_zone_is_heard() {
+        use mpfree_node::Expr;
+        let mut m = MusicIn::new();
+        let usb = m.plugged("Linnstrument").unwrap();
+        let (keys, lines) = run(&mut m, usb, &[0xB0, 101, 0, 0xB0, 100, 6, 0xB0, 6, 7]);
+        assert!(keys.is_empty());
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.ends_with("MPE lower zone, channels 2 to 8 (it said so)")),
+            "{lines:?}"
+        );
+        let (keys, _) = run(&mut m, usb, &[0x93, 50, 90, 0xB3, 74, 0]);
+        assert_eq!(
+            keys[1],
+            Key::Expr {
+                note: 50,
+                kind: Expr::Tone,
+                value: 0.0
+            }
+        );
+    }
+
     /// The MIDI monitor: each message in is listed once, with where it
     /// went, and `sync` moves the lines to the I/O view and says the
     /// monitor is fed.
@@ -2228,7 +2435,7 @@ mod tests {
         // A kit on track 3: a key plays the pad its note plays, or none.
         m.set_armed(2, false);
         run(&mut m, usb, &[0x99, 37, 100, 0x99, 20, 90]);
-        // A synth on track 2: by note; a bend nothing takes yet.
+        // A synth on track 2: by note, and its wheel.
         m.set_armed(1, true);
         run(&mut m, usb, &[0x90, 60, 96, 0xE0, 0, 0x50]);
         // Learn: armed, a knob takes the parameter; then it moves it.
@@ -2262,7 +2469,13 @@ mod tests {
                         pad: None
                     }
                 ),
-                (usb, To::Nothing),
+                (
+                    usb,
+                    To::Track {
+                        track: 1,
+                        pad: None
+                    }
+                ),
                 (usb, To::Took(cutoff())),
                 (usb, To::Learned(cutoff())),
                 (DIN, To::Follows),

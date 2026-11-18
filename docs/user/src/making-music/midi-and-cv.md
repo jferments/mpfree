@@ -18,6 +18,21 @@ Plug a keyboard into **MIDI IN**, or a USB keyboard into the **USB** port, and i
 - **With a drum kit,** the keys that match the MPC's own pad notes hit the pads: C#2 is pad 1, C2 is pad 2, and so on. Other keys play nothing.
 - The pad velocity setting, and Full Level, shape the keys' velocity as they do the pads'.
 
+### The pitch wheel, pressure and MPE
+
+A keyboard's **pitch wheel** bends every note of the sound it plays, by that sound's own *Bend range* on the Synth tab. **Pressure** on a key (polyphonic aftertouch) or on the whole keyboard (channel aftertouch) goes to the sound's pressure destinations, as pressing a pad harder does: channel aftertouch presses every key held on its channel. A route's track takes its port's wheel and pressure too.
+
+An **MPE** controller (an expressive keyboard that gives each finger its own channel, such as a Seaboard, a LinnStrument or an Osmose) plays each note with its own expression:
+
+- sliding a finger bends only its note (48 semitones across the wheel's range, unless the controller says another),
+- pressing harder presses only its note,
+- moving a finger up the key (MPE's Y axis, CC 74) shades its note's **tone**, which each sound sends where it offers, as it does pressure,
+- the wheel and pressure on the zone's main channel still move every note.
+
+Most MPE controllers say they are MPE when they start, and MPFree hears it: its log says *MPE lower zone, channels 2 to 16 (it said so)*. If yours doesn't, give its port a [profile](#device-profiles) with an **mpe** line.
+
+The wheel, pressure and MPE play MPFree's own sounds: the synth and a track's own instrument (a kit's pads take pressure only). They go into the arpeggiator's and the MIDI effects' notes only while those notes are the keys as they came: a note the MIDI effects moved, or one the arpeggiator plays, takes the wheel but not its key's slide or tone. MIDI out and the CV outputs don't take them yet; to play an outside synth with them, send the keyboard there with [Thru](#thru-a-keyboard-straight-to-a-synth). Recording them into a clip comes later.
+
 ## Playing several tracks from your keyboards
 
 {{shot: mixer-io-routing | The I/O view's Routing section: channel 10 of MIDI IN plays Drums, whichever track is armed, and the rest of its notes play the armed track. The keyboard's channel 3 goes thru to MIDI out; with MIDI out off in Prefs, its square says so.}}
@@ -128,6 +143,7 @@ program.1 = Init
 - **name** is what the port's page shows: at most 32 characters, and not *Auto* or *None*. Two profiles can't share a name, so one with the name of the built-in General MIDI is left out.
 - **match** is a name a USB device calls itself (the page says it: *it calls itself …*). A port set to **Auto** takes the first profile with its name. Put up to 8 **match** lines in one profile, or none.
 - **cc.N** names CC N (0 to 127); **nrpn.MSB.LSB** names the NRPN parameter sent as CC 99 = MSB and CC 98 = LSB; **program.N** names program N, counted from 1 as everywhere on screen. Each name has at most 32 characters.
+- **mpe** says the controller plays [MPE](#the-pitch-wheel-pressure-and-mpe): `mpe = lower 15` (main channel 1, notes on channels 2 to 16; fewer channels with a smaller number), `mpe = upper 15` (main channel 16) or `mpe = off`.
 - **knobs** lists a controller's knobs by their CCs, in order, up to 16 (`knobs = 74 71 76 77`). [MIDI Follow](#midi-follow-your-controllers-knobs-on-the-q-links) turns Q-Links 1 to 4 with the first four, unless you taught it the controller's knobs yourself.
 - **pad.A1** to **pad.H16** (or **pad.1** to **pad.128**) is the note a kit's pad plays on a drum machine on this port, as a number (0 to 127) or a name (*C2*, *F#1*, *Bb0*; C4 is 60), and after **ch**, a channel of its own (1 to 16): `pad.A1 = 36 ch 10`. A pad without a line plays its usual note on the track's channel (see [A kit on a drum machine](#a-kit-on-a-drum-machine)).
 - A line starting with `#` is a note to yourself. A line MPFree can't read is skipped, and the rest of the profile still works; a file with no **name** isn't a profile. MPFree's log says what it skipped and which profiles it found.

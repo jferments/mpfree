@@ -19,6 +19,7 @@
 //! knobs = 74 71 76 77
 //! pad.A1 = 36 ch 10
 //! pad.B3 = F#1
+//! mpe = lower 15
 //! ```
 //!
 //! `match` (any number of them) is a USB name the profile is for: a port
@@ -31,7 +32,10 @@
 //! `pad.128`) is the note a kit pad plays on a drum machine, as a number
 //! or a name (C4 is 60), with its own channel after `ch` if it has one
 //! (Jay's card 17 Nov 23:28Z: drum pads out by the gear's profile); a pad
-//! it leaves out plays [`kit_note`]. A line that can't be read is skipped
+//! it leaves out plays [`kit_note`]. `mpe` is an MPE controller's zone
+//! (`lower` or `upper`, with its member channels, or `off`;
+//! [`crate::mpe::Zone`]), for one that doesn't say so itself. A line that
+//! can't be read is skipped
 //! with a warning; a file without a name isn't a profile.
 //!
 //! [`Profiles`] holds the built-in profiles ([`Profiles::builtin`]: General
@@ -135,6 +139,8 @@ pub struct Profile {
     /// What a drum machine's kit pads play, by pad (0 is A1), in pad
     /// order.
     pads: Vec<(u8, PadOut)>,
+    /// An MPE controller's zone, if the profile says.
+    pub mpe: Option<crate::mpe::Zone>,
 }
 
 impl Profile {
@@ -240,6 +246,9 @@ impl Profile {
             }
             s.push('\n');
         }
+        if let Some(z) = self.mpe {
+            let _ = writeln!(s, "mpe = {}", z.to_text());
+        }
         s
     }
 
@@ -336,6 +345,7 @@ impl Profile {
                 };
                 self.set_pad(pad, PadOut { note, channel });
             }
+            ["mpe"] => self.mpe = Some(crate::mpe::Zone::parse(v)?),
             _ => return Err("unknown key".into()),
         }
         Ok(())
@@ -809,6 +819,24 @@ mod tests {
             p.to_text()
         );
         assert_eq!((back, w), (p, vec![]));
+    }
+
+    /// An MPE controller's profile names its zone; a bad zone is skipped
+    /// with why.
+    #[test]
+    fn an_mpe_controllers_profile_names_its_zone() {
+        use crate::mpe::Zone;
+        let (p, warn) =
+            Profile::parse("mpfree-profile 1\nname = Seaboard\nmpe = lower 15\n").unwrap();
+        assert_eq!((p.mpe, warn.len()), (Some(Zone::Lower(15)), 0));
+        assert!(p.to_text().contains("mpe = lower 15\n"));
+        assert_eq!(Profile::parse(&p.to_text()).unwrap().0, p);
+        let (p, warn) = Profile::parse("mpfree-profile 1\nname = X\nmpe = sideways\n").unwrap();
+        assert_eq!(p.mpe, None);
+        assert!(
+            warn[0].contains("\"sideways\" is not off, lower or upper"),
+            "{warn:?}"
+        );
     }
 
     /// Without a profile's note, bank A plays the MPC's own pad notes and

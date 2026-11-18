@@ -1247,6 +1247,33 @@ impl Synth {
         }
     }
 
+    /// A keyboard's pitch wheel, -1 to 1 of the engine's bend range, on
+    /// every note.
+    pub fn bend(&mut self, value: f32) {
+        if value.is_finite() {
+            self.push(
+                self.settings.engine,
+                0,
+                NodeEvent::Bend {
+                    value: value.clamp(-1.0, 1.0),
+                },
+            );
+        }
+    }
+
+    /// One note's own expression (an MPE controller's slide or tone), while
+    /// something holds the note: a note the MIDI effects moved elsewhere
+    /// keeps nothing for a later note.
+    pub fn expression_note(&mut self, note: u8, kind: mpfree_node::Expr, value: f32) {
+        if note <= 127 && self.holders[usize::from(note)] > 0 {
+            self.push(
+                self.settings.engine,
+                0,
+                NodeEvent::Expression { note, kind, value },
+            );
+        }
+    }
+
     /// Every note ends with its release (the pads went back to drums).
     pub fn all_off(&mut self) {
         self.push(self.settings.engine, 0, NodeEvent::AllOff);
@@ -2040,6 +2067,40 @@ mod tests {
         set.set_layout(PadLayout::Chromatic);
         s.set_settings(set);
         assert_eq!(s.transpose_key(), None);
+    }
+
+    /// A keyboard's wheel bends every note; an MPE note's own slide or
+    /// tone reaches only a note something holds, so a note the MIDI
+    /// effects moved keeps nothing for a later one.
+    #[test]
+    fn the_wheel_bends_and_a_notes_expression_needs_the_note_held() {
+        use mpfree_node::Expr;
+        let mut s = Synth::new(44_100);
+        s.note_on_note(60, 90, 0);
+        s.bend(0.5);
+        s.bend(f32::NAN);
+        s.bend(3.0);
+        s.expression_note(60, Expr::Slide, 2.0);
+        s.expression_note(64, Expr::Tone, 0.5);
+        s.note_off_note(60, 0);
+        s.expression_note(60, Expr::Tone, 0.5);
+        assert_eq!(
+            queued(&s),
+            vec![
+                NodeEvent::NoteOn {
+                    note: 60,
+                    velocity: 90
+                },
+                NodeEvent::Bend { value: 0.5 },
+                NodeEvent::Bend { value: 1.0 },
+                NodeEvent::Expression {
+                    note: 60,
+                    kind: Expr::Slide,
+                    value: 2.0
+                },
+                NodeEvent::NoteOff { note: 60 },
+            ]
+        );
     }
 
     #[test]
