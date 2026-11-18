@@ -505,14 +505,33 @@ impl Session {
     }
 
     /// Press `t` as a finger would, and let the session run a few periods.
-    /// Picks the synth from the kit chip's list (its last row) for the
-    /// armed track, as taps on the chip and the row would.
-    pub fn pick_synth(&mut self) -> &mut Session {
-        let chip = self
-            .control("header", "chip", "")
-            .expect("the kit chip")
+    /// Opens the list of kits as a musician would: what the pads play on
+    /// Play's transport, or from any other page the Pads tab's Kit (the
+    /// top bar's kit chip went in the Play, Pads and Sequencer redesign).
+    pub fn open_kits(&mut self) -> &mut Session {
+        if let Some(c) = self.control(crate::play_page::TRANSPORT, "pads", "") {
+            return self.press_target(&c.target);
+        }
+        self.press("header", "tab", "Pads");
+        let kit = self
+            .control(mpfree_sampler_ui::pads_tab::BAR, "kit", "")
+            .expect("the Pads tab's Kit")
             .target;
-        self.press_target(&chip);
+        self.press_target(&kit)
+    }
+
+    /// What the pads play, as Play's transport says it ("Track 1 ·
+    /// Classic House · A"); empty off Play.
+    pub fn pads_play(&mut self) -> String {
+        self.control(crate::play_page::TRANSPORT, "pads", "")
+            .map(|c| c.target.label)
+            .unwrap_or_default()
+    }
+
+    /// Picks the synth from the list of kits (its last row) for the armed
+    /// track, as taps would ([`Session::open_kits`]).
+    pub fn pick_synth(&mut self) -> &mut Session {
+        self.open_kits();
         let row = self
             .controls()
             .into_iter()

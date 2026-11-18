@@ -12,7 +12,7 @@ MPFree has nine synths built in. Put one on the pads and they become a keyboard:
 
 Each track plays a kit or a synth, and the pads play what the selected track plays. There are two ways to put a synth on a track:
 
-- Tap the kit chip at the top right and pick the last row, **Synth: Poly** (or the synth it had before tracks got their own). On the Play page, holding **SHIFT** and turning the data wheel past the last kit does the same. The selected track plays the synth from then on: the pads play it whenever that track is selected, and so do the track's clips. The other tracks keep what they play.
+- Tap **PADS PLAY** on Play's transport bar (or **Kit** on the Pads tab) and pick the last row of the list of kits, **Synth: Poly** (or the synth it had before tracks got their own). On the Play page, holding **SHIFT** and turning the data wheel past the last kit does the same. The selected track plays the synth from then on: the pads play it whenever that track is selected, and so do the track's clips. The other tracks keep what they play.
 - Give a track its own synth: see [A synth for each track](#a-synth-for-each-track).
 
 Opening the **Synth** tab changes nothing that plays: it shows the synth, and if the selected track plays a kit, the line at the bottom of the screen says how to put the synth on it. To go back to drums, tap the chip (it names the synth now) and pick a kit, or set the track's instrument back to **Kit**. While the selected track plays the synth, **PAD BANK** changes the pads' layout and **SHIFT** + the wheel their octave, not the kit.

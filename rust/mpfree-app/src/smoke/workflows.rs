@@ -1483,8 +1483,8 @@ mod tests {
     }
 
     /// The Pads tab's strip of banks turns the kit's bank as PAD BANK
-    /// does: the pads, the log, the kit chip and the tab all go to B, and
-    /// a hit on pad 5 is then B5.
+    /// does: the pads, the log, Play's "pads play" and the tab all go to
+    /// B, and a hit on pad 5 is then B5.
     #[test]
     fn the_pads_tabs_strip_puts_bank_b_on_the_pads() {
         on_big_stack(|| {
@@ -1499,10 +1499,12 @@ mod tests {
                 "{:?}",
                 &s.lines[n..]
             );
-            assert!(kit_chip(&mut s).label.ends_with("Bank B"));
             assert_eq!(s.screen.sample.pad() / 16, 1, "the tab is on bank B");
             s.pad(4, 100, 0.05);
             assert_eq!(s.screen.sample.pad(), 20, "pad 5 is B5");
+            s.press("header", "tab", "Play");
+            assert!(s.pads_play().ends_with(" · B"), "{}", s.pads_play());
+            s.press("header", "tab", "Pads");
             s.press(mpfree_sampler_ui::pads_tab::MAP, "bank", "Bank A")
                 .run_for(0.1);
             assert_eq!(s.app.pad_page(), 0);
@@ -1596,8 +1598,7 @@ mod tests {
             // The arm reaches the app with the next periods.
             s.run_for(0.05);
             assert_eq!(s.app.track(), 1);
-            let chip = s.control("header", "chip", "").unwrap().target;
-            s.press_target(&chip);
+            s.open_kits();
             let rows: Vec<_> = s
                 .controls()
                 .into_iter()
@@ -1629,15 +1630,14 @@ mod tests {
 
     /// Opening the Synth tab changes what no track plays (the sequencer
     /// thread's point, 17 Nov 17:43Z): the armed track keeps its kit, and
-    /// the hint says how to play the synth on it. Picked from the kit
-    /// chip's list, the synth is the track's, and stays after leaving the
-    /// tab (the header says so) until a kit is picked there. The wheel
+    /// the hint says how to play the synth on it. Picked from the list of
+    /// kits, the synth is the track's, and stays after leaving the tab
+    /// (Play's "pads play" says so) until a kit is picked there. The wheel
     /// alone moves the outline and keeps the synth.
     #[test]
     fn the_synth_plays_on_a_track_once_picked_until_a_kit_is() {
         on_big_stack(|| {
             let mut s = Session::new();
-            let chip = |s: &mut Session| s.control("header", "chip", "").unwrap().target.label;
             assert!(!s.synth_on);
             s.press("header", "tab", "Synth");
             assert_eq!(s.view(), View::Synth);
@@ -1648,20 +1648,19 @@ mod tests {
             assert!(s.track_kits.plays_synth(s.app.track()), "the armed track's");
             s.press("header", "tab", "Play");
             assert!(s.synth_on, "and still on Play");
-            assert!(chip(&mut s).starts_with("Poly"), "{}", chip(&mut s));
+            assert!(s.pads_play().contains(" · Poly"), "{}", s.pads_play());
             s.wheel(-1).run_for(0.2);
             assert!(s.synth_on, "the wheel alone moves the outline");
-            let c = s.control("header", "chip", "").unwrap().target;
-            s.press_target(&c);
+            s.open_kits();
             let rows: Vec<_> = s
                 .controls()
                 .into_iter()
                 .filter(|c| c.widget == "kits" && c.target.id == "row")
                 .collect();
             s.press_target(&rows[s.kits() - 1].target).run_for(0.2);
-            assert!(!s.synth_on, "the chip's list picked a kit");
+            assert!(!s.synth_on, "the list picked a kit");
             assert_eq!(s.kit, s.kits() - 1, "the last kit, just before the synth");
-            assert!(chip(&mut s).contains("· Bank"), "{}", chip(&mut s));
+            assert!(s.pads_play().ends_with(" · A"), "{}", s.pads_play());
         });
     }
 
@@ -1929,14 +1928,14 @@ mod tests {
         });
     }
 
-    /// SHIFT + the wheel on Play changes the kit: the header names it,
-    /// and the pads play it. The wheel alone moves the outline and leaves
-    /// the kit alone.
+    /// SHIFT + the wheel on Play changes the kit: Play's "pads play" names
+    /// it, and the pads play it. The wheel alone moves the outline and
+    /// leaves the kit alone.
     #[test]
     fn shift_and_the_wheel_on_play_change_the_kit() {
         on_big_stack(|| {
             let mut s = Session::new();
-            let chip = |s: &mut Session| s.control("header", "chip", "").unwrap().target.label;
+            let chip = |s: &mut Session| s.pads_play();
             let first = chip(&mut s);
             assert_eq!(s.kit, 0);
             s.wheel(1).run_for(0.2);
@@ -1944,36 +1943,33 @@ mod tests {
             assert_eq!(chip(&mut s), first);
             s.wheel_with("SHIFT", 1).run_for(0.2);
             assert_eq!(s.kit, 1, "the next kit plays");
-            assert_ne!(chip(&mut s), first, "the header names it");
+            assert_ne!(chip(&mut s), first, "Play names it");
             // The pad bank is the app's, not the kit's: still A.
-            assert!(chip(&mut s).ends_with("Bank A"), "{}", chip(&mut s));
+            assert!(chip(&mut s).ends_with(" · A"), "{}", chip(&mut s));
             s.wheel_with("SHIFT", -1).run_for(0.2);
             assert_eq!(s.kit, 0);
             assert_eq!(chip(&mut s), first);
         });
     }
 
-    /// The header's kit chip, whatever chips sit beside it.
-    fn kit_chip(s: &mut Session) -> mpfree_ui::Target {
-        s.controls()
-            .into_iter()
-            .find(|c| {
-                c.widget == "header" && c.target.id == "chip" && c.target.label.contains("· Bank")
-            })
-            .map(|c| c.target)
-            .expect("the kit chip")
-    }
-
-    /// The kit chip opens the list of kits over any page: a kit tapped
-    /// there loads and the page comes back; Back, the chip again or a tab
-    /// close it and keep the kit (Jay's card, 13 Nov 14:57Z).
+    /// The list of kits opens over the page from what the pads play on
+    /// Play's transport, and from the Pads tab's Kit (the top bar's kit
+    /// chip went in the Play, Pads and Sequencer redesign): a kit tapped
+    /// there loads and the page comes back; Back, the button again or a
+    /// tab close it and keep the kit (Jay's card, 13 Nov 14:57Z).
     #[test]
-    fn the_kit_chip_opens_a_list_of_kits_over_the_page() {
+    fn what_the_pads_play_and_the_pads_tabs_kit_open_the_list_of_kits() {
         on_big_stack(|| {
             let mut s = Session::new();
+            assert!(
+                !s.controls().iter().any(|c| c.widget == "header"
+                    && c.target.id == "chip"
+                    && c.target.label.contains("Bank")),
+                "no kit chip in the top bar"
+            );
             let play = s.page();
-            let chip = kit_chip(&mut s);
-            s.press_target(&chip);
+            assert!(s.pads_play().ends_with(" · A"), "{}", s.pads_play());
+            s.open_kits();
             assert_eq!(s.page(), crate::gui::KITS_PAGE, "the list is open");
             assert_eq!(s.view(), View::Play, "over Play");
             assert!(s.hint().starts_with("Tap a kit"), "{}", s.hint());
@@ -1986,32 +1982,32 @@ mod tests {
             s.press_target(&rows[2].target).run_for(0.2);
             assert_eq!(s.kit, 2, "the kit tapped plays");
             assert_eq!(s.page(), play, "and Play is back");
-            assert!(
-                kit_chip(&mut s).label.ends_with("Bank A"),
-                "{}",
-                kit_chip(&mut s).label
-            );
+            assert!(s.pads_play().ends_with(" · A"), "{}", s.pads_play());
 
-            // Over the mixer: Back keeps the kit and the mixer.
-            s.press("header", "tab", "Mix").run_for(0.1);
-            let mixer = s.page();
-            let chip = kit_chip(&mut s);
-            s.press_target(&chip);
+            // From the Pads tab: Back keeps the kit and the tab.
+            s.open_kits();
+            s.press("header", "tab", "Pads");
+            let pads = s.page();
+            let kit = |s: &mut Session| {
+                s.control(mpfree_sampler_ui::pads_tab::BAR, "kit", "")
+                    .expect("the Pads tab's Kit")
+                    .target
+            };
+            assert!(
+                kit(&mut s).label.starts_with("Kit "),
+                "{}",
+                kit(&mut s).label
+            );
+            let k = kit(&mut s);
+            s.press_target(&k);
             assert_eq!(s.page(), crate::gui::KITS_PAGE);
             s.press("kits-card", "button", "Back");
-            assert_eq!((s.page(), s.view()), (mixer.clone(), View::Mixer));
+            assert_eq!((s.page(), s.view()), (pads.clone(), View::Pads));
             assert_eq!(s.kit, 2, "Back changed no kit");
 
-            // The chip again closes it.
-            let chip = kit_chip(&mut s);
-            s.press_target(&chip);
-            let chip = kit_chip(&mut s);
-            s.press_target(&chip);
-            assert_eq!(s.page(), mixer, "the chip closed the list");
-
             // A tab closes it and opens its page.
-            let chip = kit_chip(&mut s);
-            s.press_target(&chip);
+            let k = kit(&mut s);
+            s.press_target(&k);
             s.press("header", "tab", "Arrange");
             assert_eq!(s.view(), View::Arrange);
             assert_ne!(s.page(), crate::gui::KITS_PAGE);
@@ -2019,8 +2015,8 @@ mod tests {
             assert_eq!(s.kit, 2);
 
             // The list's last row is the synth, as the wheel's last step.
-            let chip = kit_chip(&mut s);
-            s.press_target(&chip);
+            s.press("header", "tab", "Play");
+            s.open_kits();
             let synth = s
                 .controls()
                 .into_iter()
@@ -2028,7 +2024,7 @@ mod tests {
             s.press_target(&synth.expect("the synth's row").target)
                 .run_for(0.2);
             assert!(s.synth_on, "the pads play the synth");
-            assert_eq!(s.view(), View::Arrange);
+            assert_eq!(s.view(), View::Play);
         });
     }
 

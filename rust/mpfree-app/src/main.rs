@@ -4860,7 +4860,7 @@ fn synth_status(synth: &synth::Synth, time: &RenderTime) -> String {
 /// plays a kit: opening the tab leaves what the track plays alone.
 fn synth_tab_hint(track: usize) -> String {
     format!(
-        "Track {} plays a kit: pick Synth in the kit chip's list (or SHIFT + wheel) to play the synth on it",
+        "Track {} plays a kit: pick Synth in the list of kits (Kit on the Pads tab, or SHIFT + wheel on Play) to play the synth on it",
         track + 1
     )
 }

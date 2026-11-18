@@ -643,7 +643,7 @@ CHECKS = (
     Check(
         "live-transpose", "16 Levels' Transpose moves a playing synth line live, from its next note",
         "S4: live transpose (Jay's card, 17 Nov: 16 Levels gets a Transpose kind)", "hands",
-        ["1. On Play, tap the kit chip (top right) and pick Synth, the list's last row: Track 1 plays it.",
+        ["1. On Play, tap PADS PLAY (left of All | Loop) and pick Synth, the list's last row: Track 1 plays it.",
          "   Hit pad 1 and let go, press STEP SEQ, hit pads 1, 5, 9 and 13 and let go (four steps of C3),",
          "   press STEP SEQ again (the pads play), then press PLAY.",
          "2. Press 16 LEVEL: the 16 Levels panel shows Transpose, its heading names Track 1 and says as",
