@@ -148,7 +148,7 @@ impl ChainPage {
         if v == self.at {
             return;
         }
-        if matches!(self.at, View::Play | View::Arrange) {
+        if matches!(self.at, View::Play | View::Sequencer | View::Arrange) {
             self.play_bank = self.bind.shown();
         }
         self.press = None;
@@ -166,7 +166,7 @@ impl ChainPage {
                 let bank = self.macros.as_ref().map_or(0, |m| m.bank);
                 self.bind.show(1 + bank.min(MACRO_BANKS - 1));
             }
-            View::Play | View::Arrange => {
+            View::Play | View::Sequencer | View::Arrange => {
                 // Play's own knobs are the Play page's; the bindings hold
                 // only its macro banks (a knob learned on the chain editor
                 // stays there).
@@ -224,7 +224,7 @@ impl ChainPage {
         match v {
             View::Chain | View::Macros => true,
             View::Mixer => self.mix_pick,
-            View::Play | View::Arrange => self.at == v && self.macro_bank_shown(),
+            View::Play | View::Sequencer | View::Arrange => self.at == v && self.macro_bank_shown(),
             _ => false,
         }
     }

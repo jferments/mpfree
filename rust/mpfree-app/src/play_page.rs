@@ -30,8 +30,8 @@
 
 use crate::mixing::{self, PlayFx, PlayLevels, ThrowFx};
 use crate::play_widgets::{
-    Lane, Marks, RecChip, RecState, StepGrid, Throw, Throws, TimedHit, TransportLook, XyPad,
-    YourTiming,
+    BankHead, Lane, Marks, RecChip, RecState, StepGrid, Throw, Throws, TimedHit, TransportLook,
+    XyPad, YourTiming,
 };
 use crate::time::{HitInfo, StepAction, StepsData, LINE, STEP_TICKS};
 use mpfree_arp::scale::pads::PadLayout;
@@ -40,6 +40,7 @@ use mpfree_fx::ids::mixer as mixer_ids;
 use mpfree_fx::StripId;
 use mpfree_node::{Curve, ParamInfo};
 use mpfree_play::mpfree_param::RelAddr;
+use mpfree_sampler_ui::wave_tab::pad_label;
 use mpfree_seq::steps::{Change, Step, PAGE};
 use mpfree_seq::Cond;
 use mpfree_time_ui::view::TransportInfo;
@@ -67,8 +68,16 @@ pub const INSPECTOR: &str = "step-inspector";
 /// The pads heading on the Synth tab, over its presets: always the synth.
 pub const SYNTH_PADS_HEAD: &str = "synth-pads-head";
 
-/// The views, in the switch's order.
-pub const VIEWS: [&str; 3] = ["All", "Beats", "Loop"];
+/// Play's views, in its switch's order (MAIN steps through them). Beats
+/// is the Sequencer tab's Steps view, so it is not one of them.
+pub const PLAY_VIEWS: [PlayView; 2] = [PlayView::All, PlayView::Loop];
+/// Play's switch.
+pub const PLAY_SWITCH: [&str; 2] = ["All", "Loop"];
+/// The Sequencer's switch: Steps (Beats' pages) and Notes (the note
+/// editor).
+pub const SEQ_SWITCH: [&str; 2] = ["Steps", "Notes"];
+/// The Sequencer switch's Notes.
+pub const SEQ_NOTES: usize = 1;
 /// Beats with the Your timing strip (Play's options, Timing strip On).
 pub const BEATS_TIMING_PAGE: &str = "Play · Beats · timing";
 /// Beats with a step held or picked: the step inspector in the throws'
@@ -91,16 +100,20 @@ pub enum PlayView {
 impl PlayView {
     pub const ALL: [PlayView; 3] = [PlayView::All, PlayView::Beats, PlayView::Loop];
 
-    pub fn index(self) -> usize {
-        self as usize
-    }
-
-    pub fn from_index(i: usize) -> PlayView {
-        PlayView::ALL[i.min(PlayView::ALL.len() - 1)]
-    }
-
     pub fn name(self) -> &'static str {
-        VIEWS[self.index()]
+        match self {
+            PlayView::All => "All",
+            PlayView::Beats => "Steps",
+            PlayView::Loop => "Loop",
+        }
+    }
+
+    /// Play's view after this one (MAIN on Play): All and Loop in turn.
+    pub fn next_on_play(self) -> PlayView {
+        match self {
+            PlayView::All => PlayView::Loop,
+            PlayView::Beats | PlayView::Loop => PlayView::All,
+        }
     }
 
     /// The view's page in the `Ui`. All, the home view, is "Play", as
@@ -663,6 +676,9 @@ pub const TAP_VELOCITY: u8 = 100;
 /// draws: the widgets in `play_widgets` do.
 pub struct PlayPage {
     pub view: PlayView,
+    /// The page shows on the Sequencer tab (its Steps view, Beats' pages):
+    /// the transport's switch is Steps | Notes there.
+    pub sequencer: bool,
     pub steps: StepsData,
     /// The page of steps shown (16 a page).
     pub page: usize,
@@ -709,6 +725,35 @@ pub struct PlayPage {
     /// 16 Levels' Transpose with an armed track that plays notes: the
     /// second Q-Link turns its transpose (the screen fills it in).
     pub transpose: Option<TransposeKnob>,
+    /// Play's rows (the Play, Pads and Sequencer redesign): the track the
+    /// pads play, as its head shows it (the screen fills it in).
+    pub track: TrackLook,
+    /// The first of the bank's rows Play shows (a swipe moves it; a new
+    /// bank starts at its first pad).
+    pub rows_top: usize,
+    /// Play's page follows the playhead (its head's Follow).
+    pub follow: bool,
+}
+
+/// The track Play's rows are, for their head: its name, "Track 1" under
+/// it, its colour, and whether the switch has another to go to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrackLook {
+    pub name: String,
+    pub sub: String,
+    pub color: Color,
+    pub switch: bool,
+}
+
+impl Default for TrackLook {
+    fn default() -> TrackLook {
+        TrackLook {
+            name: "Track 1".to_string(),
+            sub: String::new(),
+            color: mpfree_time_ui::view::track_color(0),
+            switch: false,
+        }
+    }
 }
 
 /// What the step inspector shows (Beats, a step held or picked; the
@@ -764,6 +809,7 @@ impl Default for PlayPage {
     fn default() -> Self {
         PlayPage {
             view: PlayView::All,
+            sequencer: false,
             steps: StepsData::default(),
             page: 0,
             selected: None,
@@ -794,6 +840,9 @@ impl Default for PlayPage {
             fold: false,
             low: None,
             transpose: None,
+            track: TrackLook::default(),
+            rows_top: 0,
+            follow: false,
         }
     }
 }
@@ -1755,6 +1804,13 @@ impl PlayPage {
         if keep {
             self.transport.swing = swing;
         }
+        // Play's Follow: the page the playhead is on.
+        if self.follow && self.on_play_rows() {
+            if let Some((page, _)) = self.playhead().filter(|(p, _)| *p != self.page) {
+                self.page = page;
+                self.selected = None;
+            }
+        }
         // Hits older than the window go.
         let window = (TIMING_BARS * t.meter.bar_ticks()) as f64;
         let now = t.position as f64;
@@ -1893,6 +1949,17 @@ impl PlayPage {
     fn lanes(&self) -> Vec<Lane> {
         let has_notes = |p: usize| self.has_notes(p);
         let has_sound = |p: usize| self.pads.get(p).is_some_and(|i| i.label.is_some());
+        if self.on_play_rows() && !self.pitched() {
+            // Play's rows: the bank's 16 pads in order, empty ones too.
+            let from = self.pad_page * 16;
+            return (from..from + 16)
+                .map(|p| Lane {
+                    label: Some(pad_label(p)),
+                    empty: !has_sound(p),
+                    ..self.lane(p)
+                })
+                .collect();
+        }
         // The lane on the pads comes first, so it always shows.
         let on_pads = self.on_pads.map(|s| usize::from(s.sound));
         let mut wanted: Vec<usize> = on_pads.into_iter().collect();
@@ -1953,7 +2020,31 @@ impl PlayPage {
             marks: marks(row, locks, from),
             note: pitch.map(|x| x.note),
             root: pitch.is_some_and(|x| x.root),
+            label: None,
+            empty: false,
         }
+    }
+
+    /// Play shows its rows: the armed track's pads, a bank at a time,
+    /// under the head with the track switch (the Play, Pads and Sequencer
+    /// redesign, Jay 18 Nov). The Sequencer's Steps keep the pattern's
+    /// lanes, most wanted first.
+    pub fn on_play_rows(&self) -> bool {
+        self.view == PlayView::All && !self.sequencer
+    }
+
+    /// A swipe on Play's rows: `delta` rows on (the rows below show). On
+    /// a synth's scale rows, high on top, the window goes down as far.
+    /// `n` is how many note rows show.
+    pub fn scroll_rows(&mut self, delta: i32, n: usize) {
+        if self.pitched() {
+            let rows = self.note_rows();
+            let top = rows.len().saturating_sub(n.max(1));
+            let low = self.low_row(&rows).min(top) as i32;
+            self.low = Some((low - delta).clamp(0, top as i32) as usize);
+            return;
+        }
+        self.rows_top = (self.rows_top as i32 + delta).clamp(0, 15) as usize;
     }
 
     /// Fill the pattern panel.
@@ -2037,6 +2128,18 @@ impl PlayPage {
         });
         if g.pitched != pitched {
             g.pitched = pitched;
+        }
+        let bank = self.on_play_rows().then(|| BankHead {
+            track: self.track.name.clone(),
+            sub: self.track.sub.clone(),
+            color: self.track.color,
+            switch: self.track.switch,
+            bank: (!self.pitched()).then_some(self.pad_page),
+            follow: self.follow,
+            top: self.rows_top,
+        });
+        if g.bank != bank {
+            g.bank = bank;
         }
     }
 
@@ -2401,8 +2504,18 @@ impl PlayPage {
             step: rolling.then(|| ((pos % bar_ticks) / STEP_TICKS).clamp(0, 15) as usize),
             bar: (((pos - start).max(0) / bar_ticks) as usize) % bars,
             bars,
-            view: self.view.index(),
+            views: if self.sequencer {
+                &SEQ_SWITCH
+            } else {
+                &PLAY_SWITCH
+            },
+            view: if self.sequencer {
+                0
+            } else {
+                PLAY_VIEWS.iter().position(|&v| v == self.view).unwrap_or(0)
+            },
             rec: None,
+            pads: None,
         }
     }
 }

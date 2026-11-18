@@ -982,7 +982,7 @@ mod tests {
         use mpfree_fx::FreezeState;
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("play-transport", "view", "Beats");
+            s.play_view("Beats");
             for k in [1, 5, 9, 13] {
                 s.press("steps", "step", &format!("Kick step {k}"));
             }
@@ -1035,7 +1035,7 @@ mod tests {
     fn steps_tapped_on_beats_play_in_time() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("play-transport", "view", "Beats");
+            s.play_view("Beats");
             for k in [1, 5, 9, 13] {
                 s.press("steps", "step", &format!("Kick step {k}"));
             }
@@ -1112,7 +1112,7 @@ mod tests {
     fn beats_inspects_the_step_picked_and_its_banks_pick_the_q_links() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("play-transport", "view", "Beats");
+            s.play_view("Beats");
             for k in [1, 5] {
                 s.press("steps", "step", &format!("Kick step {k}"));
             }
@@ -1191,7 +1191,7 @@ mod tests {
             s.run_for(0.1);
             // Pad 5, the kit pad with a sample, on the pads as steps.
             s.pad(4, 100, 0.05);
-            s.press("play-transport", "view", "Beats");
+            s.play_view("Beats");
             s.button("STEP SEQ");
             s.pad(0, 100, 0.05);
             s.pad(4, 100, 0.05);
@@ -1270,7 +1270,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("a scratch folder");
             let mut s = Session::with_library(&dir);
-            s.press("play-transport", "view", "Beats");
+            s.play_view("Beats");
             for k in [1, 5, 9, 13] {
                 s.press("steps", "step", &format!("Kick step {k}"));
             }
@@ -1316,7 +1316,7 @@ mod tests {
                 );
                 s.run_for(0.3);
                 s.press("header", "tab", "Play");
-                s.press("play-transport", "view", "Beats");
+                s.play_view("Beats");
             };
             open(&mut s);
             let kick = s
@@ -1418,7 +1418,7 @@ mod tests {
     fn rec_on_beats_shows_hits_as_they_go_in_and_undo_takes_them_out() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("play-transport", "view", "Beats");
+            s.play_view("Beats");
             // A step first: the pattern's clip (REC has nothing to record
             // into on an empty track yet; see the app thread).
             s.press("steps", "step", "Snare step 1");
@@ -1460,7 +1460,7 @@ mod tests {
     fn pad_bank_b_records_and_plays_the_kits_next_pads() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("play-transport", "view", "Beats");
+            s.play_view("Beats");
             s.press("steps", "step", "Snare step 1");
             s.button("PAD BANK B/F");
             assert_eq!(s.app.pad_page(), 1, "bank B");
@@ -1483,8 +1483,8 @@ mod tests {
     }
 
     /// The Pads tab's strip of banks turns the kit's bank as PAD BANK
-    /// does: the pads, the log, the kit chip and the tab all go to B, and
-    /// a hit on pad 5 is then B5.
+    /// does: the pads, the log, Play's "pads play" and the tab all go to
+    /// B, and a hit on pad 5 is then B5.
     #[test]
     fn the_pads_tabs_strip_puts_bank_b_on_the_pads() {
         on_big_stack(|| {
@@ -1499,10 +1499,12 @@ mod tests {
                 "{:?}",
                 &s.lines[n..]
             );
-            assert!(kit_chip(&mut s).label.ends_with("Bank B"));
             assert_eq!(s.screen.sample.pad() / 16, 1, "the tab is on bank B");
             s.pad(4, 100, 0.05);
             assert_eq!(s.screen.sample.pad(), 20, "pad 5 is B5");
+            s.press("header", "tab", "Play");
+            assert!(s.pads_play().ends_with(" · B"), "{}", s.pads_play());
+            s.press("header", "tab", "Pads");
             s.press(mpfree_sampler_ui::pads_tab::MAP, "bank", "Bank A")
                 .run_for(0.1);
             assert_eq!(s.app.pad_page(), 0);
@@ -1516,7 +1518,7 @@ mod tests {
     fn a_speaker_on_play_and_m_in_the_pad_mixer_are_one_mute() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("play-transport", "view", "Beats");
+            s.play_view("Beats");
             let kick = lane(&s, "Kick").0;
             s.press("steps", "mute", "Kick speaker");
             assert!(
@@ -1548,7 +1550,7 @@ mod tests {
     fn track_mute_turns_the_pads_into_track_mutes_and_back() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("play-transport", "view", "Beats");
+            s.play_view("Beats");
             for k in [1, 5, 9, 13] {
                 s.press("steps", "step", &format!("Kick step {k}"));
             }
@@ -1596,8 +1598,7 @@ mod tests {
             // The arm reaches the app with the next periods.
             s.run_for(0.05);
             assert_eq!(s.app.track(), 1);
-            let chip = s.control("header", "chip", "").unwrap().target;
-            s.press_target(&chip);
+            s.open_kits();
             let rows: Vec<_> = s
                 .controls()
                 .into_iter()
@@ -1629,15 +1630,14 @@ mod tests {
 
     /// Opening the Synth tab changes what no track plays (the sequencer
     /// thread's point, 17 Nov 17:43Z): the armed track keeps its kit, and
-    /// the hint says how to play the synth on it. Picked from the kit
-    /// chip's list, the synth is the track's, and stays after leaving the
-    /// tab (the header says so) until a kit is picked there. The wheel
+    /// the hint says how to play the synth on it. Picked from the list of
+    /// kits, the synth is the track's, and stays after leaving the tab
+    /// (Play's "pads play" says so) until a kit is picked there. The wheel
     /// alone moves the outline and keeps the synth.
     #[test]
     fn the_synth_plays_on_a_track_once_picked_until_a_kit_is() {
         on_big_stack(|| {
             let mut s = Session::new();
-            let chip = |s: &mut Session| s.control("header", "chip", "").unwrap().target.label;
             assert!(!s.synth_on);
             s.press("header", "tab", "Synth");
             assert_eq!(s.view(), View::Synth);
@@ -1648,20 +1648,19 @@ mod tests {
             assert!(s.track_kits.plays_synth(s.app.track()), "the armed track's");
             s.press("header", "tab", "Play");
             assert!(s.synth_on, "and still on Play");
-            assert!(chip(&mut s).starts_with("Poly"), "{}", chip(&mut s));
+            assert!(s.pads_play().contains(" · Poly"), "{}", s.pads_play());
             s.wheel(-1).run_for(0.2);
             assert!(s.synth_on, "the wheel alone moves the outline");
-            let c = s.control("header", "chip", "").unwrap().target;
-            s.press_target(&c);
+            s.open_kits();
             let rows: Vec<_> = s
                 .controls()
                 .into_iter()
                 .filter(|c| c.widget == "kits" && c.target.id == "row")
                 .collect();
             s.press_target(&rows[s.kits() - 1].target).run_for(0.2);
-            assert!(!s.synth_on, "the chip's list picked a kit");
+            assert!(!s.synth_on, "the list picked a kit");
             assert_eq!(s.kit, s.kits() - 1, "the last kit, just before the synth");
-            assert!(chip(&mut s).contains("· Bank"), "{}", chip(&mut s));
+            assert!(s.pads_play().ends_with(" · A"), "{}", s.pads_play());
         });
     }
 
@@ -1702,7 +1701,7 @@ mod tests {
             assert_eq!(s.view(), View::Play);
             // The Loop view arms the loop; REC arms it to record, and REC
             // and PLAY blink.
-            s.press("play-transport", "view", "Loop").settle();
+            s.play_view("Loop").settle();
             s.button("REC");
             s.run_for(0.1);
             assert_eq!(s.looper.phase(), Phase::Armed, "REC armed the loop");
@@ -1780,7 +1779,7 @@ mod tests {
             let mut s = Session::new();
             // Armed on Play's Loop view, then STOP: disarmed, the lights
             // dark.
-            s.press("play-transport", "view", "Loop").settle();
+            s.play_view("Loop").settle();
             s.button("REC").run_for(0.1);
             assert_eq!(s.looper.phase(), Phase::Armed);
             s.button("STOP").run_for(0.3);
@@ -1929,14 +1928,14 @@ mod tests {
         });
     }
 
-    /// SHIFT + the wheel on Play changes the kit: the header names it,
-    /// and the pads play it. The wheel alone moves the outline and leaves
-    /// the kit alone.
+    /// SHIFT + the wheel on Play changes the kit: Play's "pads play" names
+    /// it, and the pads play it. The wheel alone moves the outline and
+    /// leaves the kit alone.
     #[test]
     fn shift_and_the_wheel_on_play_change_the_kit() {
         on_big_stack(|| {
             let mut s = Session::new();
-            let chip = |s: &mut Session| s.control("header", "chip", "").unwrap().target.label;
+            let chip = |s: &mut Session| s.pads_play();
             let first = chip(&mut s);
             assert_eq!(s.kit, 0);
             s.wheel(1).run_for(0.2);
@@ -1944,36 +1943,33 @@ mod tests {
             assert_eq!(chip(&mut s), first);
             s.wheel_with("SHIFT", 1).run_for(0.2);
             assert_eq!(s.kit, 1, "the next kit plays");
-            assert_ne!(chip(&mut s), first, "the header names it");
+            assert_ne!(chip(&mut s), first, "Play names it");
             // The pad bank is the app's, not the kit's: still A.
-            assert!(chip(&mut s).ends_with("Bank A"), "{}", chip(&mut s));
+            assert!(chip(&mut s).ends_with(" · A"), "{}", chip(&mut s));
             s.wheel_with("SHIFT", -1).run_for(0.2);
             assert_eq!(s.kit, 0);
             assert_eq!(chip(&mut s), first);
         });
     }
 
-    /// The header's kit chip, whatever chips sit beside it.
-    fn kit_chip(s: &mut Session) -> mpfree_ui::Target {
-        s.controls()
-            .into_iter()
-            .find(|c| {
-                c.widget == "header" && c.target.id == "chip" && c.target.label.contains("· Bank")
-            })
-            .map(|c| c.target)
-            .expect("the kit chip")
-    }
-
-    /// The kit chip opens the list of kits over any page: a kit tapped
-    /// there loads and the page comes back; Back, the chip again or a tab
-    /// close it and keep the kit (Jay's card, 13 Nov 14:57Z).
+    /// The list of kits opens over the page from what the pads play on
+    /// Play's transport, and from the Pads tab's Kit (the top bar's kit
+    /// chip went in the Play, Pads and Sequencer redesign): a kit tapped
+    /// there loads and the page comes back; Back, the button again or a
+    /// tab close it and keep the kit (Jay's card, 13 Nov 14:57Z).
     #[test]
-    fn the_kit_chip_opens_a_list_of_kits_over_the_page() {
+    fn what_the_pads_play_and_the_pads_tabs_kit_open_the_list_of_kits() {
         on_big_stack(|| {
             let mut s = Session::new();
+            assert!(
+                !s.controls().iter().any(|c| c.widget == "header"
+                    && c.target.id == "chip"
+                    && c.target.label.contains("Bank")),
+                "no kit chip in the top bar"
+            );
             let play = s.page();
-            let chip = kit_chip(&mut s);
-            s.press_target(&chip);
+            assert!(s.pads_play().ends_with(" · A"), "{}", s.pads_play());
+            s.open_kits();
             assert_eq!(s.page(), crate::gui::KITS_PAGE, "the list is open");
             assert_eq!(s.view(), View::Play, "over Play");
             assert!(s.hint().starts_with("Tap a kit"), "{}", s.hint());
@@ -1986,32 +1982,32 @@ mod tests {
             s.press_target(&rows[2].target).run_for(0.2);
             assert_eq!(s.kit, 2, "the kit tapped plays");
             assert_eq!(s.page(), play, "and Play is back");
-            assert!(
-                kit_chip(&mut s).label.ends_with("Bank A"),
-                "{}",
-                kit_chip(&mut s).label
-            );
+            assert!(s.pads_play().ends_with(" · A"), "{}", s.pads_play());
 
-            // Over the mixer: Back keeps the kit and the mixer.
-            s.press("header", "tab", "Mix").run_for(0.1);
-            let mixer = s.page();
-            let chip = kit_chip(&mut s);
-            s.press_target(&chip);
+            // From the Pads tab: Back keeps the kit and the tab.
+            s.open_kits();
+            s.press("header", "tab", "Pads");
+            let pads = s.page();
+            let kit = |s: &mut Session| {
+                s.control(mpfree_sampler_ui::pads_tab::BAR, "kit", "")
+                    .expect("the Pads tab's Kit")
+                    .target
+            };
+            assert!(
+                kit(&mut s).label.starts_with("Kit "),
+                "{}",
+                kit(&mut s).label
+            );
+            let k = kit(&mut s);
+            s.press_target(&k);
             assert_eq!(s.page(), crate::gui::KITS_PAGE);
             s.press("kits-card", "button", "Back");
-            assert_eq!((s.page(), s.view()), (mixer.clone(), View::Mixer));
+            assert_eq!((s.page(), s.view()), (pads.clone(), View::Pads));
             assert_eq!(s.kit, 2, "Back changed no kit");
 
-            // The chip again closes it.
-            let chip = kit_chip(&mut s);
-            s.press_target(&chip);
-            let chip = kit_chip(&mut s);
-            s.press_target(&chip);
-            assert_eq!(s.page(), mixer, "the chip closed the list");
-
             // A tab closes it and opens its page.
-            let chip = kit_chip(&mut s);
-            s.press_target(&chip);
+            let k = kit(&mut s);
+            s.press_target(&k);
             s.press("header", "tab", "Arrange");
             assert_eq!(s.view(), View::Arrange);
             assert_ne!(s.page(), crate::gui::KITS_PAGE);
@@ -2019,8 +2015,8 @@ mod tests {
             assert_eq!(s.kit, 2);
 
             // The list's last row is the synth, as the wheel's last step.
-            let chip = kit_chip(&mut s);
-            s.press_target(&chip);
+            s.press("header", "tab", "Play");
+            s.open_kits();
             let synth = s
                 .controls()
                 .into_iter()
@@ -2028,7 +2024,7 @@ mod tests {
             s.press_target(&synth.expect("the synth's row").target)
                 .run_for(0.2);
             assert!(s.synth_on, "the pads play the synth");
-            assert_eq!(s.view(), View::Arrange);
+            assert_eq!(s.view(), View::Play);
         });
     }
 
@@ -2169,7 +2165,7 @@ mod tests {
             s.settle();
             assert_eq!(chip(&s).state, RecState::Recording);
             // The Loop view opened while it records doesn't take the arm.
-            s.press("play-transport", "view", "Loop").settle();
+            s.play_view("Loop").settle();
             assert_eq!(s.app.rec.target, Target::Notes);
             s.pad(0, 100, 0.05);
             s.run_for(0.2);
@@ -2178,8 +2174,8 @@ mod tests {
             assert_eq!(s.looper.phase(), Phase::Empty, "the loop recorded nothing");
             // Opened again with nothing recording, the Loop view arms the
             // loop, and REC arms it.
-            s.press("play-transport", "view", "Beats").settle();
-            s.press("play-transport", "view", "Loop").settle();
+            s.play_view("Beats").settle();
+            s.play_view("Loop").settle();
             assert_eq!(s.app.rec.target, Target::Loop);
             assert_eq!(chip(&s).what, "Loop 1");
             s.button("REC").settle();
@@ -2189,7 +2185,7 @@ mod tests {
             assert_eq!(chip(&s).state, RecState::Ready);
             // Beats takes the arm back with its ready: the loop lets go and
             // the notes wait for PLAY.
-            s.press("play-transport", "view", "Beats").settle();
+            s.play_view("Beats").settle();
             s.run_periods(12).settle();
             assert_eq!(
                 s.app.rec,
@@ -2227,10 +2223,14 @@ mod tests {
             let notes =
                 "Empty: REC records the notes now. Open the Loop view to record a loop here";
             assert_eq!(note(&s), notes);
-            s.press("play-transport", "view", "Loop").settle();
+            s.play_view("Loop").settle();
             assert_eq!(note(&s), "Empty: REC records the pads and the synth");
-            s.press("play-transport", "view", "Beats").settle();
-            s.press("play-transport", "view", "All").settle();
+            // The Sequencer arms the notes; Play comes back on All, which
+            // leaves the arm where it is.
+            s.play_view("All").settle();
+            s.play_view("Beats").settle();
+            assert_eq!(s.app.rec.target, Target::Notes);
+            s.play_view("All").settle();
             assert_eq!(note(&s), notes);
             // A notes take keeps the arm when the Loop view opens.
             s.button("REC").button("PLAY");
@@ -2238,7 +2238,7 @@ mod tests {
             while s.time.info().state != State::Recording && s.t() < end {
                 s.run_periods(1);
             }
-            s.press("play-transport", "view", "Loop").settle();
+            s.play_view("Loop").settle();
             assert_eq!(s.app.rec.target, Target::Notes);
             assert_eq!(note(&s), notes);
             s.button("STOP").settle();
@@ -2359,7 +2359,7 @@ mod tests {
             assert_eq!(s.app.rec.target, Target::Loop, "a row arms, pinned or not");
             s.press("rec-list", "close", "Close").settle();
             assert_ne!(s.screen.ui.page(), crate::rec_list::REC_PAGE);
-            s.press("play-transport", "view", "Beats").settle();
+            s.play_view("Beats").settle();
             assert_eq!(s.app.rec.target, Target::Loop, "pinned: Beats leaves it");
             // Rec song is the grid's.
             let chip = s.control("play-transport", "rec", "").unwrap().target;
@@ -2371,7 +2371,7 @@ mod tests {
             s.press("rec-list", "switch", "Pin the arm").settle();
             assert!(!s.app.rec.pinned);
             // A view picked closes it.
-            s.press("play-transport", "view", "All").settle();
+            s.play_view("All").settle();
             assert_eq!(s.screen.ui.page(), "Play");
         });
     }
@@ -2422,8 +2422,8 @@ mod tests {
             assert_eq!(pills(&s), (Some(ArmPill::Armed), Some(ArmPill::Armed)));
             assert!(chip(&s).what.ends_with(" + Loop 1"), "{:?}", chip(&s));
             // Beats finds the notes armed already: both stay.
-            s.press("play-transport", "view", "Beats").settle();
-            s.press("play-transport", "view", "All").settle();
+            s.play_view("Beats").settle();
+            s.play_view("All").settle();
             assert!(s.app.rec.both);
             // A bar's count-in: the loop waits for it too.
             s.route(crate::gui::FromUi::Time(
@@ -2581,7 +2581,7 @@ mod tests {
         on_big_stack(|| {
             let mut s = Session::new();
             s.make_sounds();
-            s.press("play-transport", "view", "Loop").settle();
+            s.play_view("Loop").settle();
             let from = s.lines.len();
             s.button("REC").button("PLAY");
             until(&mut s, 0, Phase::Recording);
@@ -2940,7 +2940,7 @@ mod tests {
         on_big_stack(|| {
             let mut s = Session::new();
             s.make_sounds();
-            s.press("play-transport", "view", "Loop").settle();
+            s.play_view("Loop").settle();
             s.button("REC").button("PLAY");
             until(&mut s, 0, Phase::Recording);
             s.pad(0, 120, 0.3);
@@ -3030,7 +3030,7 @@ mod tests {
             let mut s = Session::new();
             s.make_sounds();
             // Loop 1: a first pass and an overdub, on Loops A row 1.
-            s.press("play-transport", "view", "Loop").settle();
+            s.play_view("Loop").settle();
             s.button("REC").button("PLAY");
             until(&mut s, "recording", &phase(0, Phase::Recording));
             s.pad(0, 120, 0.3);
@@ -3173,7 +3173,7 @@ mod tests {
     fn in_perform_a_track_mute_waits_for_the_bar_and_held_it_solos() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("play-transport", "view", "Beats");
+            s.play_view("Beats");
             for k in [1, 5, 9, 13] {
                 s.press("steps", "step", &format!("Kick step {k}"));
             }
@@ -3230,7 +3230,7 @@ mod tests {
     fn in_perform_a_kit_pad_mute_waits_for_the_bar_and_held_it_solos() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("play-transport", "view", "Beats");
+            s.play_view("Beats");
             for k in [1, 5, 9, 13] {
                 s.press("steps", "step", &format!("Kick step {k}"));
             }
@@ -3290,7 +3290,7 @@ mod tests {
     fn reload_clip_brings_a_saved_pattern_back_on_the_bar() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("play-transport", "view", "Beats");
+            s.play_view("Beats");
             for k in [1, 5, 9, 13] {
                 s.press("steps", "step", &format!("Kick step {k}"));
             }
@@ -3351,7 +3351,7 @@ mod tests {
     fn the_song_list_plays_from_a_step_in_perform() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("play-transport", "view", "Beats");
+            s.play_view("Beats");
             for k in [1, 5, 9, 13] {
                 s.press("steps", "step", &format!("Kick step {k}"));
             }
@@ -3394,7 +3394,7 @@ mod tests {
     fn in_perform_rec_brings_rec_song_with_the_take() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("play-transport", "view", "Beats");
+            s.play_view("Beats");
             for k in [1, 5, 9, 13] {
                 s.press("steps", "step", &format!("Kick step {k}"));
             }

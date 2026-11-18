@@ -907,7 +907,7 @@ pub fn qlink_to_screen(page: app::View, k: usize, ticks: i32) -> Option<gui::ToU
         View::Looper => gui::ToUi::LooperQLink(k, ticks),
         View::Chain | View::Macros => gui::ToUi::ChainQLink(k, ticks),
         View::Sample | View::Pads => gui::ToUi::SampleQLink(k, ticks),
-        View::Play | View::Arrange => gui::ToUi::PlayQLink(k, ticks),
+        View::Play | View::Sequencer | View::Arrange => gui::ToUi::PlayQLink(k, ticks),
         _ => return None,
     })
 }

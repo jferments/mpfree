@@ -136,7 +136,7 @@ While it is on:
 - The Q-Links send their CCs on every page, and the Q-Link column shows them: the name of what each moves and the value it sent last. A Q-Link turned up or down moves its value from 0 to 127. Each starts at 0, because MPFree can't know where your gear's control is.
 - **FULL LEVEL** and **HALF LEVEL** still set how hard the pads play.
 - STEP SEQ, TRACK MUTE and 16 LEVEL wait: the pads are the controller's.
-- In the top bar, a chip takes the kit chip's place: *Controller → Juno-X · ch 3 · A* (the port, the channel and the pads' bank), or why nothing goes (*Controller: MIDI out is off in Prefs*). A tap on the chip turns controller mode off.
+- In the top bar, a chip says so: *Controller → Juno-X · ch 3 · A* (the port, the channel and the pads' bank), or why nothing goes (*Controller: MIDI out is off in Prefs*). A tap on the chip turns controller mode off.
 
 {{shot: play-controller | Play with controller mode on: the Controller chip in the top bar, and the Q-Link column showing the four CCs the Q-Links send to the Juno-X, the first two turned.}}
 

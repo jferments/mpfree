@@ -1,10 +1,10 @@
 <!--
-covers: rust/mpfree-fx/src/motion.rs rust/mpfree-fx/src/shift.rs
-checked: 2026-11-18 b4fe3b81
+covers: rust/mpfree-fx/src/motion.rs rust/mpfree-fx/src/shift.rs rust/mpfree-fx/src/wah.rs
+checked: 2026-11-18 1a0b4bde
 -->
 # Movement: tremolo, auto-pan, rotary, ring mod, frequency shifter and auto wah
 
-**Status:** built (F2 and the MPC coverage round); FX quality round 5 is under way. Its research, targets and measuring are done (101 of 171 movement targets met before any fix, at 44.1 kHz). PR W (17 Nov) rebuilds the LFO they share and crossfades the tremolo's Mode: 136 of 171 met, every LFO, tremolo and auto-pan row among them. PR 2 (17 Nov) rebuilds the rotary's motion, beam, level and drive: 148 of 171, every rotary row among them. The auto wah, and the ring mod with the frequency shifter come next, a PR each. Below, "before PR W" and "before PR 2" describe what was there before.
+**Status:** built (F2 and the MPC coverage round), and through FX quality round 5's movement fixes (17 and 18 Nov): every movement target met. Its research, targets and measuring are done (101 of 171 movement targets met before any fix, at 44.1 kHz). PR W (17 Nov) rebuilds the LFO they share and crossfades the tremolo's Mode: 136 of 171 met, every LFO, tremolo and auto-pan row among them. PR 2 (17 Nov) rebuilds the rotary's motion, beam, level and drive: 148 of 171, every rotary row among them. PR 3 (17 Nov) sets the auto wah's level by its Q and glides every change: 158 of 171, every auto wah row among them. PR 4 (18 Nov) band-limits the ring mod's waves at twice the rate and rebuilds the frequency shifter's 90° network: all 171 met. The pitch effects' fixes are in [fx-pitch.md](fx-pitch.md); the talk box, which shares the LFO and the auto wah's filter, is held for a later session with the vocoder. Below, "before PR W" to "before PR 4" describe what was there before.
 
 This page is the design of MPFree's movement effects as one effect type: what they are for, the ideas underneath them, the research behind ours, which algorithms each uses and why, how quality and cost are measured, and how the defaults and presets were chosen. The parameter-by-parameter summary lives in [fx.md](fx.md); the measured targets and their history in [fx-quality.md](fx-quality.md#round-5-movement-pitch-and-voice). The research notes, plan and baseline probe are in jferments/mpfree-claude `fx/quality/` (research-movement.md, plan-5.md, baseline-r5-2026-11-17.md, tools/r5_baseline.rs).
 
@@ -96,15 +96,36 @@ Measured before PR 2 (round 5's baseline): the speeds within 0.1 % and the Doppl
 
 ### Ring mod
 
-The input times a carrier from 20 Hz to 5 kHz (capped at 0.45 of the rate): Sine, or Triangle and Square band-limited with PolyBLAMP and PolyBLEP. Sweep moves the carrier up to four octaves with the LFO's sine (read only while Sweep is up). Freq and Sweep glide in octaves over 30 ms, Mix over 20 ms. Measured: the sine leaves spurs at -62.2 dB; a triangle aliases at -62.5 dB and a square at -36.8; the waves are 5.0 LU apart; a Wave change spikes 5.8 dB. PR 4's (plan-5 section 8).
+The input times a carrier from 20 Hz to 5 kHz (capped at 0.45 of the rate): Sine, Triangle or Square, all at the sine's RMS (Triangle times √1.5, Square times √½), so a change of Wave changes the tone and not the level. Sweep moves the carrier up to four octaves with the LFO's sine (read only while Sweep is up). Freq and Sweep glide in octaves over 30 ms, Mix over 20 ms.
+
+- **Sine:** a fitted polynomial (within 2·10⁻⁷) of a double-precision phase, so the carrier adds no spurs of its own.
+- **Triangle and Square** are worked out at twice the rate, their corners and steps smoothed by a cubic B-spline across four frames (a four-point PolyBLAMP and PolyBLEP, whose aliases fall as sinc to the fourth: about 25 dB under the two-point ones where a 440 Hz square's 160th harmonic folds back), then kept under the base rate's Nyquist by a nine-section half-band (`IirPair`, flat to 0.46 of the rate and 92 dB down from 0.52). The input goes up through its own half-band, is multiplied at twice the rate and comes down through another, so a product above Nyquist is gone before it can fold back.
+- **Wave:** a change crossfades. Each wave's share glides toward 1 or 0 through two one-poles of 2.5 ms, so a change mid-way carries on from where it is.
+- **The Sine alone** (the default) runs nothing at twice the rate, and works out the phase step once while the pitch is still and Sweep is down. When a change back to it ends, the half-bands are cleared, so the next Triangle or Square starts them from rest.
+
+Measured before PR 4 (round 5's baseline): the sine left spurs at -62.2 dB; a triangle aliased at -62.5 dB and a square at -36.8; the waves were 5.0 LU apart; a Wave change spiked 5.8 dB. After it every ring mod target is met: the sine's spurs at -100.6 dB, a triangle's aliasing at -100.0 and a square's at -68.2 (what is left is products just above Nyquist folding into 21 to 22 kHz through the half-band's transition); the waves within 0.25 LU; a Wave change at most 0.1 dB over the steady level; every other control -104 dB or under.
 
 ### Frequency shifter
 
-Single-sideband shifting by 0.01 Hz to 5 kHz: Olli Niemitalo's eighth-order pair of all-pass chains, 90° apart within 0.7° from 20 Hz to 22 kHz, makes the analytic signal, and a phasor (its phase in double precision, so 0.01 Hz still turns smoothly) shifts it. Modes as the AIR one: Up, Down, Up and down, Stereo (left up, right down). Feedback to 95 % through a soft clip, the output scaled by √(1 - g²), since each pass lands on new frequencies and the passes add in power. No latency. Measured: the image is -44.4 dB, the spurs -59.8 to -60.8, and a Mode change clicks at -13.4 dB. PR 4's.
+Single-sideband shifting by 0.01 Hz to 5 kHz. A pair of all-pass chains makes the analytic signal and a phasor shifts it; Modes as the AIR one: Up, Down, Up and down, Stereo (left up, right down). No latency.
+
+- **The 90° pair:** Valenzuela and Constantinides' elliptic design, the IIR half-band's (`oversample::iir_halfband`) turned a quarter of the rate. Twelve coefficients are worked out for the rate with the band starting at 35 Hz: the odd ones go to the chain that lags (which ends with a one-frame delay), the even ones to the one that leads. They stay 90° apart within about 0.06° from 35 Hz to as far below Nyquist, so the image is 65 dB down or more at 44.1 and 48 kHz (59.5 at 96 kHz). The chains run in single precision.
+- **The phasor:** the fine sine and cosine (the ring mod's polynomial) of a double-precision phase, so 0.01 Hz still turns smoothly and the phasor adds no spurs. While the Shift is still, its step is worked out once.
+- **Mode:** a change crossfades each side's share of the up and the down shift, through two one-poles of 2.5 ms, as the ring mod's Wave.
+- **Feedback** to 95 % through a soft clip, the output scaled by √(1 - g²), since each pass lands on new frequencies and the passes add in power. The loop is kept between 20 Hz and 18 kHz (a one-pole high-pass and a bilinear one-pole low-pass with its zero at Nyquist): at 0 Hz and at Nyquist the two chains are in or out of phase rather than 90° apart, so a shift folds a sound there back onto itself up to 3 dB louder, and at high Feedback it rang on for ever (a 100 Hz shift at 44.1 kHz, near Nyquist). With Feedback at 0 the loop is skipped; its states stay at 0 on every frame whose Feedback is 0, so the samples are the same either way.
+
+Measured before PR 4 (round 5's baseline): the image at -44.4 dB; the spurs at -59.8 to -60.8 (within ±6 Hz) and -62.1 to -62.2 beyond ±30 Hz (the measure PR 4 moved to, as below); a Mode change clicked at -13.4 dB. After it every shifter target is met: the image at -65.8 to -67.1 dB; the spurs at -90.2 to -99.2; a Mode change at -92.6 dB; at 95 % Feedback the sound rings out (-140 dB, as before).
 
 ### Auto wah
 
-One Simper state-variable filter swept evenly in pitch between Low and High (100 Hz to 6 kHz) by the sound's level (a follower with Sensitivity, Attack and Release), by the LFO (its sine, read when the filter retunes), or by hand (Source Pedal: Center is the pedal). A negative Depth sweeps down. Shapes: Wah (the band-pass with the low end leaking through at about -9 dB, as a pedal's does), Band-pass (level-normalised), Low-pass and High-pass. It retunes every 16 frames from a smoothed position. Measured: the peak within 0.6 % at Resonance 60 and 100, 3 % at 0; 5.7 LU quieter at the defaults; Band-pass 3.6 LU louder at Resonance 0 than at 60; Filter clicks at -8.4 dB and a fast Resonance move at -42.3. PR 3's (plan-5 section 7).
+One Simper state-variable filter swept evenly in pitch between Low and High (100 Hz to 6 kHz) by the sound's level (a follower with Sensitivity, Attack and Release), by the LFO (its sine, read when the filter retunes), or by hand (Source Pedal: Center is the pedal). A negative Depth sweeps down. Shapes: Wah (the band-pass with the low end leaking through at about -9 dB, as a pedal's does), Band-pass, Low-pass and High-pass.
+
+- **Level:** a band-pass passes about 1/Q of a broad sound's power, so the band's gain is 1.95·√Q (`BAND_GAIN`): a sharper peak keeps the effect's level, and the defaults go in at the dry's level on pink noise. The peak itself is that much up: +12.6 dB at the default Resonance, +16.6 dB at 100, so a tone sitting on it comes out louder, as through a pedal.
+- **Retuning:** every 16 frames from a smoothed position, and the coefficients (and the gains they scale) glide in a straight line from one retune to the next, so a fast sweep doesn't buzz at the retune rate. Resonance, Low and High glide over 20 ms, a retune at a time.
+- **Filter:** a change crossfades the shapes: each shape's share glides toward 1 or 0 through two one-poles of 2.5 ms, so they add up to 1, start and stop gently, and a change mid-way carries on from where it is.
+- **Source:** a change glides the sweep from where the old Source had it to where the new one has it, a raised cosine over 30 ms.
+
+Measured before PR 3 (round 5's baseline): the peak within 0.6 % at Resonance 60 and 100, 3.0 % at 0; 5.7 LU quieter at the defaults and 7.0 to 4.4 LU quieter in four presets; Band-pass 3.6 LU louder at Resonance 0 than at 60; Filter clicked at -8.4 dB, a fast Resonance move at -42.3 and a Source change at -54.1. After it every auto wah target is met: the peak within 1.2 %; the defaults within 0.2 LU of the dry and every preset within 1.4; Band-pass within 0.7 LU of its level at 60 from Resonance 0 to 100; every control -85 dB or under, the Filter switch -87.2.
 
 ## 5. Controls
 
@@ -117,7 +138,7 @@ One Simper state-variable filter swept evenly in pitch between Low and High (100
 | Frequency shifter | Shift, Mode (Up, Down, Up and down, Stereo), Feedback, Mix |
 | Auto wah | Source (Envelope, LFO, Pedal), Center, Depth, Sensitivity, Attack, Release, Rate, Sync, Low, High, Resonance, Filter, Mix |
 
-PR W and PR 2 change no control and no id, so saved projects open as they were; they sound as described above (a saved rotary now goes in at the dry's level, its drum turns the other way, its horn beams and its ramp takes the Ramp's time).
+PR W, PR 2 and PR 3 change no control and no id, so saved projects open as they were; they sound as described above (a saved rotary now goes in at the dry's level, its drum turns the other way, its horn beams and its ramp takes the Ramp's time; a saved auto wah in the Wah or Band-pass shape goes in at the dry's level, about 5 LU louder than it was).
 
 ## 6. Defaults and presets
 
@@ -137,6 +158,7 @@ fxlab's `movement` class (`quality/round5.rs`, ids W and Z) measures them, and t
 - **Clicks on every control** (W4, W7, and the rest): round 3's M13, each control swept end to end in 50 ms and back under a 997 Hz tone (≤ -60 dB).
 - **Depth, Harmonic, power** (W5, W6, W8): the swing against `20 log10(1/(1 - d))`; Harmonic's whole and its 3 kHz tone on two steady tones; the auto-pan's L² + R².
 - **The rotary** (W9 to W14), **the auto wah** (W15 to W18), **the ring mod and shifter** (Z1 to Z6): speeds, Doppler and ramps from the analytic signal of tones through the rotors; level, beam, direction and drive; the wah's peak and level; products, images, spurs and feedback.
+- Unit tests in `motion.rs` and `shift.rs` (PR 4): the ring mod's band-limited steps and corners join up (no step and no turn of slope, the square's mean 0), every wave as loud on a steady input (within 0.2 dB), a Wave change glides; the shifter's image 60 dB down from 40 Hz to 15 kHz at 44.1 and 48 kHz, a Mode change glides, and 95 % Feedback rings out at a 5, 100 and 2000 Hz shift.
 - Unit tests in `kit.rs`: every shape in range at any offset; no frame-to-frame step over 0.05 of the range at 0.5, 4, 19.7 and 20 Hz, at 44.1 and 48 kHz, at offsets 0, a quarter and a half; a Square's edge 1 to 4 ms at 0.5, 4 and 20 Hz; a synced LFO after a loop wrap equal to a fresh one within 20 ms and gliding there; a Shape change between any two shapes gliding.
 
 ## 8. Cost
@@ -147,14 +169,16 @@ The instruction gate, rustc 1.97.0, a 128-frame block at 44.1 kHz, at the defaul
 |---|---|---|
 | Tremolo | 16.7k | 11.3k |
 | Auto-pan | 22.0k | 21.3k |
-| Ring mod | 24.6k | 20.3k |
-| Auto wah | 28.5k | 25.5k |
-| Frequency shifter | 55.3k | 55.3k |
+| Ring mod | 24.6k | 12.9k |
+| Auto wah | 28.5k | 26.0k |
+| Frequency shifter | 55.3k | 53.4k |
 | Rotary | 115.7k | 108.2k |
 
 PR W's LFO does more and costs less: its glide and wrap are out of line, the Sine is tested first, the tremolo works out one value a frame in its usual case, and the auto wah and talk box read the LFO only when they retune. The first version, with the glide in line and the shape matched for every value, cost the tremolo 45 % more.
 
-PR 2's rotary does more for 6.5 % less: the angle sums take two sines a frame off, more than the beam's two one-poles and the drive's delay cost.
+PR 4's ring mod costs 36 % less than after PR W at its default, the Sine alone: nothing runs at twice the rate, and the phase step is worked out once while the pitch is still. Triangle and Square cost more, since three nine-section half-bands run at twice the rate while they are heard. PR 4's shifter does more for 3.4 % less: twelve coefficients and the fine phasor cost more, but the loop is skipped with no Feedback and the phasor's step is worked out once while the Shift is still.
+
+PR 3's auto wah costs 2.1 % more than after PR W (the ramps of the coefficients and gains, five adds a frame), 8.8 % less than before round 5. PR 2's rotary does more for 6.5 % less: the angle sums take two sines a frame off, more than the beam's two one-poles and the drive's delay cost.
 
 ## 9. Pitfalls and how the design avoids them
 
@@ -167,7 +191,14 @@ PR 2's rotary does more for 6.5 % less: the angle sums take two sines a frame of
 - **Rotors that turn together, a horn with no beam** (the rotary before PR 2): a flatter swirl. The drum turns the other way, and the horn's highs are low-passed while it faces away.
 - **A ramp read one rotation at a time** (plan-5's 4.5 s for the drum was 3.28 s at every moment): the ramp is set from the speed at every moment, and slowing down is slower than speeding up.
 - **Saturation at the base rate** (the rotary's Drive before PR 2): fold-back at -13 dB. It runs 2x oversampled with ADAA, and the plain path waits as long, so switching never shifts the sound.
-- **The ring mod's aliasing, the shifter's image, the wah's level:** measured, and the subjects of the next PRs (plan-5 sections 7 and 8).
+- **A band-pass normalised for its peak** (the auto wah before PR 3): a broad sound loses about 1/Q of its power, 5.7 LU at the defaults. The band's gain follows √Q.
+- **Coefficients that step at each retune** (the auto wah before PR 3): a buzz at the retune rate on a fast sweep (-42 dB on Resonance). They glide between retunes.
+- **A shape switched in one frame, or a crossfade that restarts** (the Filter switch: -8.4 dB before PR 3, -33 with a crossfade that restarted on each change): shares that glide through two one-poles carry on from where they are.
+- **Steps that alias at twice the rate** (the ring mod's Square before PR 4: -36.8 dB at the base rate, -58.4 with two-point PolyBLEP at twice the rate): where a 440 Hz square's 160th harmonic folds back, the two-point correction leaves it about 25 dB down; a four-point B-spline takes that 25 dB lower again.
+- **Waves at their peak level, not their power** (the ring mod before PR 4): Square and Triangle were 5 LU apart. They are scaled to the sine's RMS.
+- **A short 90° network** (the shifter's eight coefficients before PR 4): its image was only 44 dB down. Twelve, designed for the rate, give 65 dB.
+- **Feedback round a shifter at the band's edges:** at 0 Hz and Nyquist there is no 90°, so a shift folds the sound back onto itself, louder, and high Feedback rings on. The loop is kept between 20 Hz and 18 kHz.
+- **A spur measure inside the window's skirt:** within ±6 Hz of a tone is still the Hann window's own skirt (-67 to -80 dB), which read as the shifter's spurs. They are counted beyond ±30 Hz, as the ring mod's.
 
 ## 10. History and next
 
@@ -175,7 +206,9 @@ PR 2's rotary does more for 6.5 % less: the angle sums take two sines a frame of
 - FX quality round 5 (17 Nov): research, baseline and plan (mpfree-claude #211, plan-5.md); the measuring PR (#510): 101 of 171 movement targets met.
 - PR W (17 Nov): the shared LFO rebuilt and the tremolo's Mode crossfaded: 136 of 171.
 - PR 2 (17 Nov): the rotary's ramp, coast, opposite rotation, treble beam, level and oversampled drive: 148 of 171.
-- Next: PR 3 the auto wah (level, retuning, the Filter switch), PR 4 the ring mod and frequency shifter (the square's aliasing, the waves' level, a better 90° network, the Mode switch).
+- PR 3 (17 Nov): the auto wah's level by Q, gliding coefficients, Resonance, Low and High, and glided Filter and Source changes: 158 of 171.
+- PR 4 (18 Nov): the ring mod's Triangle and Square band-limited across four frames at twice the rate, its waves at one level and a glided Wave; the shifter's twelve-coefficient network, fine phasor, glided Mode and band-limited feedback: 171 of 171, every movement target met.
+- Next: round 5's voice effects, the talk box and a new vocoder (plan-5 section 11), held for a later session; the pitch effects are done ([fx-pitch.md](fx-pitch.md)). Not measured, so not targets: the Sine's own fold-back at the top of the band (its products above Nyquist; reported), and Triangle's and Square's cost while heard.
 
 ## 11. Sources
 

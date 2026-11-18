@@ -469,6 +469,22 @@ impl Session {
         })
     }
 
+    /// Show the steps (`"Beats"`: the Sequencer tab's Steps, which were
+    /// Play's Beats view) or Play's view `"All"` or `"Loop"`, as a
+    /// musician would: the tab, then the view on Play's switch.
+    pub fn play_view(&mut self, name: &str) -> &mut Session {
+        if name == "Beats" {
+            return self.press("header", "tab", "Sequencer");
+        }
+        if self.view() != View::Play {
+            self.press("header", "tab", "Play");
+        }
+        if self.control("play-transport", "view", name).is_some() {
+            self.press("play-transport", "view", name);
+        }
+        self
+    }
+
     /// Press the control `widget/id` labelled `label` the way its gesture
     /// says (a tap, a drag or a long press), then let the session run a few
     /// periods. Panics, naming what the page has, when it is not there.
@@ -489,14 +505,33 @@ impl Session {
     }
 
     /// Press `t` as a finger would, and let the session run a few periods.
-    /// Picks the synth from the kit chip's list (its last row) for the
-    /// armed track, as taps on the chip and the row would.
-    pub fn pick_synth(&mut self) -> &mut Session {
-        let chip = self
-            .control("header", "chip", "")
-            .expect("the kit chip")
+    /// Opens the list of kits as a musician would: what the pads play on
+    /// Play's transport, or from any other page the Pads tab's Kit (the
+    /// top bar's kit chip went in the Play, Pads and Sequencer redesign).
+    pub fn open_kits(&mut self) -> &mut Session {
+        if let Some(c) = self.control(crate::play_page::TRANSPORT, "pads", "") {
+            return self.press_target(&c.target);
+        }
+        self.press("header", "tab", "Pads");
+        let kit = self
+            .control(mpfree_sampler_ui::pads_tab::BAR, "kit", "")
+            .expect("the Pads tab's Kit")
             .target;
-        self.press_target(&chip);
+        self.press_target(&kit)
+    }
+
+    /// What the pads play, as Play's transport says it ("Track 1 ·
+    /// Classic House · A"); empty off Play.
+    pub fn pads_play(&mut self) -> String {
+        self.control(crate::play_page::TRANSPORT, "pads", "")
+            .map(|c| c.target.label)
+            .unwrap_or_default()
+    }
+
+    /// Picks the synth from the list of kits (its last row) for the armed
+    /// track, as taps would ([`Session::open_kits`]).
+    pub fn pick_synth(&mut self) -> &mut Session {
+        self.open_kits();
         let row = self
             .controls()
             .into_iter()
@@ -669,7 +704,7 @@ impl Session {
     pub fn qlink(&mut self, knob: usize, delta: i32) -> &mut Session {
         let page = self.app.view();
         if let Some(m) = crate::desk::qlink_to_screen(page, knob, delta)
-            .filter(|_| !matches!(page, View::Play | View::Arrange))
+            .filter(|_| !matches!(page, View::Play | View::Sequencer | View::Arrange))
         {
             self.out.show(m);
         } else if let Some(e) = self.app.qlink(knob, delta, None) {

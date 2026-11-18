@@ -15,7 +15,7 @@
 //! in and decides what the events do. Each redraws only what changed where
 //! that matters on the MPC (the transport's numbers, a pad, a step).
 
-use crate::play_page::{SynthPads, LAYOUT_SWITCH, LOCKED, VIEWS};
+use crate::play_page::{SynthPads, LAYOUT_SWITCH, LOCKED, PLAY_SWITCH};
 use mpfree_arp::scale::pads::PadLayout;
 use mpfree_seq::Cond;
 use mpfree_ui::draw::{self, card, card_head, dot, pill, speaker, KNOB};
@@ -41,10 +41,37 @@ pub struct TransportLook {
     /// The bar playing within `bars` (the loop's, or 4).
     pub bar: usize,
     pub bars: usize,
+    /// The switch's views: All | Loop on Play, Steps | Notes on the
+    /// Sequencer.
+    pub views: &'static [&'static str],
     /// The view lit in the switch.
     pub view: usize,
     /// The REC chip: what REC records ([`crate::rec_arm`]).
     pub rec: Option<RecChip>,
+    /// What the pads play, on Play's card only.
+    pub pads: Option<PadsPlay>,
+}
+
+/// What the pads play, on Play's transport card: the armed track, its kit
+/// and the bank on the pads, "Drums · Boom Bap · A" (the Play, Pads and
+/// Sequencer redesign, step 4: it took the top bar's kit chip's place, and
+/// names the bank since the PAD BANK lights can't show E to H). A tap
+/// gives [`TAP_PADS`]: the app opens the list of kits.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PadsPlay {
+    /// "Drums": the track, left out first when the line is too long.
+    pub track: String,
+    /// "Boom Bap · A": the kit and the bank, or the synth's line.
+    pub what: String,
+    /// The track's colour, for the dot before the text.
+    pub color: Color,
+}
+
+impl PadsPlay {
+    /// The whole line: "Drums · Boom Bap · A".
+    pub fn text(&self) -> String {
+        format!("{} · {}", self.track, self.what)
+    }
 }
 
 /// Where a take stands, for the REC chip; ordered by how far along it is.
@@ -267,6 +294,51 @@ pub fn paint_rec_chip(cx: &mut PaintCx, r: Rect, c: &RecChip) {
     );
 }
 
+/// What the pads play ([`PadsPlay`]), raised as a button: "PADS PLAY"
+/// over the track's dot and the text.
+fn paint_pads_play(cx: &mut PaintCx, r: Rect, p: &PadsPlay) {
+    let t = cx.theme.clone();
+    cx.canvas.fill_round_rect(r, 10, t.raised);
+    let half = r.h / 2;
+    cx.text(
+        FontId::Bold,
+        11.0,
+        Rect::new(r.x + 12, r.y + 4, r.w - 22, half - 2),
+        Align::Left,
+        t.text_dim,
+        "PADS PLAY",
+    );
+    let line = Rect::new(r.x + 12, r.y + half - 2, r.w - 22, half);
+    cx.canvas.fill_round_rect(
+        Rect::new(line.x, line.y + (line.h - 8) / 2, 8, 8),
+        4,
+        p.color,
+    );
+    let text = Rect::new(line.x + 14, line.y, line.w - 14, line.h);
+    // Too long: the track goes first (Play's rows name it), then the
+    // kit's name is cut, but the bank at its end stays.
+    let mut s = p.text();
+    if cx.measure(FontId::Bold, 14.0, &s) > text.w {
+        s.clone_from(&p.what);
+    }
+    if cx.measure(FontId::Bold, 14.0, &s) > text.w {
+        if let Some((kit, bank)) = s.rsplit_once(" · ") {
+            let tail = format!(" · {bank}");
+            let room = text.w - cx.measure(FontId::Bold, 14.0, &tail);
+            let mut cut = String::new();
+            for c in kit.chars() {
+                let next = format!("{cut}{c}…");
+                if cx.measure(FontId::Bold, 14.0, &next) > room {
+                    break;
+                }
+                cut.push(c);
+            }
+            s = format!("{}…{tail}", cut.trim_end());
+        }
+    }
+    cx.text(FontId::Bold, 14.0, text, Align::Left, t.text, &s);
+}
+
 impl Default for TransportLook {
     fn default() -> Self {
         TransportLook {
@@ -277,8 +349,10 @@ impl Default for TransportLook {
             step: None,
             bar: 0,
             bars: 4,
+            views: &PLAY_SWITCH,
             view: 0,
             rec: None,
+            pads: None,
         }
     }
 }
@@ -292,6 +366,8 @@ struct TransportAreas {
     bpm: Rect,
     /// The REC chip, if it was drawn.
     rec: Rect,
+    /// What the pads play, if it was drawn.
+    pads: Rect,
 }
 
 /// [`PlayTransport`]'s event for a tap on the tempo
@@ -301,6 +377,9 @@ pub const TAP_BPM: usize = 0;
 /// [`PlayTransport`]'s event for a tap on the REC chip: what REC records
 /// and how to change it is said.
 pub const TAP_REC: usize = 1;
+/// [`PlayTransport`]'s event for a tap on what the pads play
+/// ([`PadsPlay`]): the app opens the list of kits.
+pub const TAP_PADS: usize = 2;
 
 /// The transport card. A tap on the switch gives `Tab(view)`.
 #[derive(Default)]
@@ -310,6 +389,9 @@ pub struct PlayTransport {
 }
 
 const SWITCH_SEG_W: i32 = 70;
+/// What the pads play: as wide as its text, within these.
+const PADS_MIN_W: i32 = 132;
+const PADS_MAX_W: i32 = 224;
 const SWITCH_SEG_H: i32 = 44;
 
 impl PlayTransport {
@@ -323,24 +405,26 @@ impl PlayTransport {
         r.inset_xy(16, 12)
     }
 
-    /// The view switch's box and its segments.
-    pub fn switch(r: Rect) -> (Rect, [Rect; VIEWS.len()]) {
+    /// The view switch's box and its `n` segments.
+    pub fn switch(r: Rect, n: usize) -> (Rect, Vec<Rect>) {
         let inner = PlayTransport::inner(r);
-        let w = VIEWS.len() as i32 * SWITCH_SEG_W + 8;
+        let w = n as i32 * SWITCH_SEG_W + 8;
         let b = Rect::new(
             inner.right() - w,
             inner.y + (inner.h - SWITCH_SEG_H - 8) / 2,
             w,
             SWITCH_SEG_H + 8,
         );
-        let segs = std::array::from_fn(|i| {
-            Rect::new(
-                b.x + 4 + i as i32 * SWITCH_SEG_W,
-                b.y + 4,
-                SWITCH_SEG_W,
-                SWITCH_SEG_H,
-            )
-        });
+        let segs = (0..n)
+            .map(|i| {
+                Rect::new(
+                    b.x + 4 + i as i32 * SWITCH_SEG_W,
+                    b.y + 4,
+                    SWITCH_SEG_W,
+                    SWITCH_SEG_H,
+                )
+            })
+            .collect();
         (b, segs)
     }
 
@@ -416,7 +500,7 @@ impl Widget for PlayTransport {
         if self.look.pos != old.pos {
             parts.push(areas.pos);
         }
-        if self.look.step != old.step || self.look.bar != old.bar {
+        if (self.look.step != old.step || self.look.bar != old.bar) && !areas.dots.is_empty() {
             parts.push(areas.dots);
         }
         Some(parts)
@@ -476,13 +560,30 @@ impl Widget for PlayTransport {
             "BPM",
         );
         // The view switch at the right end: one tap each.
-        let (b, segs) = PlayTransport::switch(r);
-        // The REC chip between the tempo and where the bar is.
-        let gw = 16 * DOT_CELL + 3 * 6;
+        let (b, segs) = PlayTransport::switch(r, self.look.views.len());
+        // What the pads play, before the switch (Play's card only).
+        let mut pads = Rect::default();
+        let mut end = b.x - DOTS_GAP;
+        if let Some(p) = &self.look.pads {
+            let tw = cx.measure(FontId::Bold, 14.0, &p.text()) + 12 + 14 + 12;
+            let w = tw.clamp(PADS_MIN_W, PADS_MAX_W);
+            let h = REC_CHIP_H.min(inner.h);
+            pads = Rect::new(b.x - 12 - w, inner.y + (inner.h - h) / 2, w, h);
+            paint_pads_play(cx, pads, p);
+            end = pads.x - 12;
+        }
+        // The REC chip between the tempo and where the bar is. On Play,
+        // what the pads play takes the dots' room (the mockup had no view
+        // switch): the position and Play's rows say where the bar is.
+        let left = x + bw + 6 + bpm_word + 14;
+        let gw = if self.look.pads.is_some() {
+            0
+        } else {
+            16 * DOT_CELL + 3 * 6
+        };
         let mut rec = Rect::default();
         if let Some(c) = &self.look.rec {
-            let left = x + bw + 6 + bpm_word + 14;
-            let right = b.x - DOTS_GAP - gw - 14;
+            let right = if gw == 0 { end } else { end - gw - 14 };
             if right - left >= 96 {
                 let h = REC_CHIP_H.min(inner.h);
                 let cr = Rect::new(left, inner.y + (inner.h - h) / 2, right - left, h);
@@ -491,7 +592,7 @@ impl Widget for PlayTransport {
             }
         }
         cx.canvas.fill_round_rect(b, 12, t.bg.mix(t.surface, 0.3));
-        for (i, (sr, name)) in segs.iter().zip(VIEWS).enumerate() {
+        for (i, (sr, name)) in segs.iter().zip(self.look.views).enumerate() {
             let on = i == self.look.view;
             if on {
                 cx.canvas.fill_round_rect(*sr, 10, t.accent);
@@ -506,8 +607,13 @@ impl Widget for PlayTransport {
             );
         }
         // Where the bar is: the loop's bars above, the 16ths of this bar below.
-        let dots = Rect::new(b.x - DOTS_GAP - gw, inner.y + 6, gw, 18 + 26);
-        self.paint_dots(cx, dots);
+        let dots = if gw == 0 {
+            Rect::default()
+        } else {
+            let dots = Rect::new(end - gw, inner.y + 6, gw, 18 + 26);
+            self.paint_dots(cx, dots);
+            dots
+        };
         // The tempo's tap area: its number and "BPM", the card's full height
         // (at least 64 px wide for a finger).
         let bpm = Rect::new(x - 8, r.y, (bw + 52).max(64), r.h);
@@ -519,16 +625,20 @@ impl Widget for PlayTransport {
                 dots,
                 bpm,
                 rec,
+                pads,
             },
         ));
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
-        let (_, segs) = PlayTransport::switch(r);
+        let (_, segs) = PlayTransport::switch(r, self.look.views.len());
         let mut out: Vec<Target> = segs
             .iter()
+            .zip(self.look.views)
             .enumerate()
-            .map(|(i, s)| Target::tap("view", i, VIEWS[i], *s).disabled_if(i == self.look.view))
+            .map(|(i, (s, name))| {
+                Target::tap("view", i, *name, *s).disabled_if(i == self.look.view)
+            })
             .collect();
         if let Some((pr, _, a)) = self.painted.borrow().as_ref() {
             if *pr == r && !a.bpm.is_empty() {
@@ -542,6 +652,9 @@ impl Widget for PlayTransport {
             if let (true, false, Some(c)) = (*pr == r, a.rec.is_empty(), &self.look.rec) {
                 out.push(Target::tap("rec", 0, c.line(), a.rec));
             }
+            if let (true, false, Some(p)) = (*pr == r, a.pads.is_empty(), &self.look.pads) {
+                out.push(Target::tap("pads", 0, p.text(), a.pads));
+            }
         }
         out
     }
@@ -550,7 +663,7 @@ impl Widget for PlayTransport {
         if phase != Touch::Down {
             return None;
         }
-        let (_, segs) = PlayTransport::switch(r);
+        let (_, segs) = PlayTransport::switch(r, self.look.views.len());
         if let Some(i) = segs.iter().position(|s| s.contains(x, y)) {
             return Some(EventKind::Tab(i));
         }
@@ -563,6 +676,8 @@ impl Widget for PlayTransport {
             Some(EventKind::Select(TAP_BPM))
         } else if !a.rec.is_empty() && a.rec.contains(x, y) {
             Some(EventKind::Select(TAP_REC))
+        } else if !a.pads.is_empty() && a.pads.contains(x, y) {
+            Some(EventKind::Select(TAP_PADS))
         } else {
             None
         }
@@ -865,6 +980,11 @@ pub struct Lane {
     /// whether it is the key's root, shaded.
     pub note: Option<u8>,
     pub root: bool,
+    /// On Play's rows of a bank: the pad's name on the MPC ("A1"), at the
+    /// right of the lane's name.
+    pub label: Option<String>,
+    /// A pad with no sound: its row stays, dashed, with no speaker.
+    pub empty: bool,
 }
 
 /// A synth track's pattern as scale rows (the sequencer design's mockup
@@ -944,10 +1064,65 @@ pub struct StepGrid {
     pub arm: Option<ArmPill>,
     /// A synth track's scale rows; None for a kit's sounds.
     pub pitched: Option<Pitched>,
+    /// Play's head over the armed track's pads, its lanes a bank's 16 in
+    /// pad order; None on the Sequencer's Steps.
+    pub bank: Option<BankHead>,
     /// The finger on a scale row's name, and its pad, until it lifts.
     sounding: Option<(u64, usize)>,
+    /// A finger on Play's rows: a tap until it moves, then a swipe.
+    swipe: Option<Swipe>,
     painted: RefCell<Option<(Rect, StepLook)>>,
 }
+
+/// Play's head over the armed track's pads (the Play, Pads and Sequencer
+/// redesign's board 1, Jay 18 Nov): the Arm pill, then the track with its
+/// switch, the kit's banks A to H, the pages with Follow, and the way to
+/// the Sequencer tab, in place of the title and the length.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BankHead {
+    /// The track's name, and "Track 1" under it, by a dot in its colour.
+    pub track: String,
+    pub sub: String,
+    pub color: Color,
+    /// Another track the switch can go to.
+    pub switch: bool,
+    /// The kit's bank the rows are (0 is A); None on the synth's pads,
+    /// which have no banks.
+    pub bank: Option<usize>,
+    /// The page follows the playhead.
+    pub follow: bool,
+    /// The first of the bank's rows shown (a swipe moves it).
+    pub top: usize,
+}
+
+/// A finger on Play's rows: where it went down, the top row then, the
+/// rows it has moved them, and the tap it gives if it lifts unmoved.
+#[derive(Clone, Debug, PartialEq)]
+struct Swipe {
+    finger: u64,
+    y: i32,
+    top: usize,
+    moved: i32,
+    swiping: bool,
+    tap: Option<EventKind>,
+}
+
+/// Play's head: the track switch's ‹ and ›, Follow, and the Sequencer
+/// tab, as `Tab` indices; bank A's button is `HEAD_BANK`, B to H after it.
+pub const HEAD_TRACK_PREV: usize = 7;
+pub const HEAD_TRACK_NEXT: usize = 8;
+pub const HEAD_FOLLOW: usize = 9;
+pub const HEAD_SEQUENCER: usize = 10;
+pub const HEAD_BANK: usize = 16;
+/// A swipe on Play's rows: `Step { index: ROWS, delta }`, the rows to
+/// move the first one shown by.
+pub const ROWS: usize = 0;
+/// A finger moves this far before it swipes.
+const SWIPE_PX: i32 = 12;
+/// Play's names are wider: the pad's name on the MPC beside the sound's.
+const BANK_NAMES_W: i32 = 232;
+const BANK_BTN_W: i32 = 34;
+const RAIL_W: i32 = 6;
 
 /// The head's controls, as `Tab` indices.
 pub const HEAD_PREV: usize = 0;
@@ -976,6 +1151,7 @@ struct StepLook {
     held: Vec<(usize, usize)>,
     arm: Option<ArmPill>,
     pitched: Option<Pitched>,
+    bank: Option<BankHead>,
 }
 
 /// The pattern head's controls, right to left: + and - round the length,
@@ -1061,6 +1237,76 @@ impl Head {
     }
 }
 
+/// Play's head over the armed track's pads ([`BankHead`]), left to
+/// right after the Arm pill: the track with ‹ and › at its ends (each half
+/// of it goes that way), the banks A to H, the page with ‹ and ›, Follow,
+/// then the Sequencer tab to the right edge.
+struct BankLayout {
+    track: Rect,
+    banks: [Rect; 8],
+    prev: Rect,
+    page: Rect,
+    next: Rect,
+    follow: Rect,
+    sequencer: Rect,
+}
+
+impl BankLayout {
+    fn of(r: Rect) -> BankLayout {
+        let (h, body) = card_head(r);
+        let band = Rect::new(h.x, r.y, h.w, body.y - 2 - r.y);
+        let mut x = h.x + ARM_PILL_W + 8;
+        let mut take = |w: i32, gap: i32| {
+            let b = Rect::new(x, band.y, w, band.h);
+            x += w + gap;
+            b
+        };
+        let track = take(196, 10);
+        let mut banks = [Rect::new(0, 0, 0, 0); 8];
+        for (i, b) in banks.iter_mut().enumerate() {
+            *b = take(BANK_BTN_W, if i == 7 { 10 } else { 4 });
+        }
+        let prev = take(40, 0);
+        let page = take(92, 0);
+        let next = take(40, 8);
+        let follow = take(76, 8);
+        let sequencer = Rect::new(x, band.y, (h.right() - x).max(0), band.h);
+        BankLayout {
+            track,
+            banks,
+            prev,
+            page,
+            next,
+            follow,
+            sequencer,
+        }
+    }
+
+    /// The control under (`x`, `y`), as its `Tab` index.
+    fn at(&self, x: i32, y: i32) -> Option<usize> {
+        if self.track.contains(x, y) {
+            let left = x < self.track.x + self.track.w / 2;
+            return Some(if left {
+                HEAD_TRACK_PREV
+            } else {
+                HEAD_TRACK_NEXT
+            });
+        }
+        if let Some(i) = self.banks.iter().position(|b| b.contains(x, y)) {
+            return Some(HEAD_BANK + i);
+        }
+        [
+            (self.prev, HEAD_PREV),
+            (self.next, HEAD_NEXT),
+            (self.follow, HEAD_FOLLOW),
+            (self.sequencer, HEAD_SEQUENCER),
+        ]
+        .into_iter()
+        .find(|(b, _)| b.contains(x, y))
+        .map(|(_, i)| i)
+    }
+}
+
 /// Lanes are about this tall at least.
 const LANE_MIN_H: i32 = 34;
 const LANE_MAX_H: i32 = 44;
@@ -1113,7 +1359,14 @@ impl GridGeom {
 impl StepGrid {
     fn geom(&self, r: Rect) -> GridGeom {
         let (_, body) = card_head(r);
-        let (names, grid) = body.take_left(NAMES_W);
+        // Play's rows: wider names, and the rail at the right.
+        let (names, grid) = match self.bank {
+            Some(_) => {
+                let (names, grid) = body.take_left(BANK_NAMES_W);
+                (names, grid.take_right(RAIL_W + 8).1)
+            }
+            None => body.take_left(NAMES_W),
+        };
         let fit = ((grid.h + LANE_GAP) / (LANE_MIN_H + LANE_GAP)).clamp(1, 8) as usize;
         let rows = fit.min(self.lanes.len()).max(1);
         let rh = ((grid.h - (rows as i32 - 1) * LANE_GAP) / rows as i32).min(LANE_MAX_H);
@@ -1131,6 +1384,11 @@ impl StepGrid {
     /// scale rows, the line (if it is there) on top, then the notes from
     /// the window's lowest up, high on top.
     fn shown(&self, rows: usize) -> Vec<&Lane> {
+        if let (Some(b), None) = (&self.bank, self.pitched) {
+            // Play's rows: the bank's pads in order, from the swipe's top.
+            let top = b.top.min(self.lanes.len().saturating_sub(rows));
+            return self.lanes.iter().skip(top).take(rows).collect();
+        }
         let Some(p) = self.pitched else {
             let mut v: Vec<&Lane> = self.lanes.iter().take(rows).collect();
             v.sort_by_key(|l| l.pad);
@@ -1186,6 +1444,7 @@ impl StepGrid {
             held: self.held.clone(),
             arm: self.arm,
             pitched: self.pitched,
+            bank: self.bank.clone(),
         }
     }
 
@@ -1298,6 +1557,104 @@ impl StepGrid {
         );
     }
 
+    /// Play's head ([`BankHead`]): the track with ‹ and ›, the banks (the
+    /// one shown lit), the steps shown of how many with ‹ and ›, Follow
+    /// (lit while on), and the Sequencer tab.
+    fn paint_bank_head(&self, cx: &mut PaintCx, r: Rect, b: &BankHead) {
+        let t = cx.theme.clone();
+        let l = BankLayout::of(r);
+        let (h, _) = card_head(r);
+        let mid = h.y + h.h / 2;
+        let face = |b: Rect| Rect::new(b.x, mid - 14, b.w, 28);
+        // The track: a dot in its colour, its name over "Track 1".
+        let tr = face(l.track);
+        cx.canvas.fill_round_rect(tr, 8, t.raised);
+        let ink = t.button_ink(b.switch);
+        cx.text(
+            FontId::Bold,
+            16.0,
+            tr.take_left(22).0,
+            Align::Center,
+            ink,
+            "‹",
+        );
+        cx.text(
+            FontId::Bold,
+            16.0,
+            tr.take_right(22).0,
+            Align::Center,
+            ink,
+            "›",
+        );
+        cx.canvas
+            .fill_round_rect(Rect::new(tr.x + 26, mid - 4, 8, 8), 4, b.color);
+        let text_r = Rect::new(tr.x + 40, tr.y, tr.w - 64, tr.h);
+        if b.sub.is_empty() {
+            cx.text(FontId::Bold, 14.0, text_r, Align::Left, t.text, &b.track);
+        } else {
+            let (name_r, sub_r) = text_r.take_top(16);
+            cx.text(FontId::Bold, 14.0, name_r, Align::Left, t.text, &b.track);
+            cx.text(FontId::Sans, 10.0, sub_r, Align::Left, t.text_dim, &b.sub);
+        }
+        // The banks: A to H, the one shown lit.
+        for (i, br) in l.banks.iter().enumerate() {
+            let f = face(*br);
+            let lit = b.bank == Some(i);
+            let (fill, ink) = if lit {
+                (t.accent, t.bg)
+            } else {
+                (t.raised, t.button_ink(b.bank.is_some()))
+            };
+            cx.canvas.fill_round_rect(f, 8, fill);
+            let letter = ((b'A' + i as u8) as char).to_string();
+            cx.text(FontId::Bold, 14.0, f, Align::Center, ink, &letter);
+        }
+        // The page: the steps shown, of how many.
+        let (prev, next, _, _) = self.usable();
+        for (br, label, usable) in [(l.prev, "‹", prev), (l.next, "›", next)] {
+            let f = face(br).inset_xy(3, 0);
+            cx.canvas.fill_round_rect(f, 8, t.raised);
+            cx.text(
+                FontId::Bold,
+                16.0,
+                f,
+                Align::Center,
+                t.button_ink(usable),
+                label,
+            );
+        }
+        let total = self.length.max(MIN_STEPS);
+        let from = (self.page * 16 + 1).min(total);
+        let to = (self.page * 16 + self.steps.max(1)).min(total);
+        cx.text(
+            FontId::Bold,
+            draw::HEAD_PX,
+            Rect::new(l.page.x, h.y, l.page.w, h.h),
+            Align::Center,
+            t.text_dim,
+            &format!("{from}–{to} of {total}"),
+        );
+        // Follow, lit while on; then the way to the Sequencer tab.
+        let f = face(l.follow);
+        let (fill, ink) = if b.follow {
+            (t.accent, t.bg)
+        } else {
+            (t.raised, t.text)
+        };
+        cx.canvas.fill_round_rect(f, 8, fill);
+        cx.text(FontId::Bold, 13.0, f, Align::Center, ink, "Follow");
+        let f = face(l.sequencer);
+        cx.canvas.fill_round_rect(f, 8, t.raised);
+        cx.text(
+            FontId::Bold,
+            13.0,
+            f,
+            Align::Center,
+            t.text,
+            "Sequencer tab ›",
+        );
+    }
+
     /// The lanes shown on a page this tall (for the app's tests).
     #[cfg(test)]
     pub fn lanes_shown(&self, r: Rect) -> Vec<usize> {
@@ -1310,6 +1667,36 @@ impl StepGrid {
     pub fn name_at(&self, r: Rect, k: usize) -> (i32, i32) {
         let g = self.geom(r);
         (g.names.x + 20, g.row_y(k) + g.rh / 2)
+    }
+
+    /// The middle of row `k`'s step `s` (for the app's tests).
+    #[cfg(test)]
+    pub fn step_at(&self, r: Rect, k: usize, s: usize) -> (i32, i32) {
+        let c = self.geom(r).cell(k, s);
+        (c.x + c.w / 2, c.y + c.h / 2)
+    }
+
+    /// The middle of Play's head control `k` (`HEAD_TRACK_PREV` ...,
+    /// `HEAD_BANK + i`), for the app's tests.
+    #[cfg(test)]
+    pub fn bank_head_at(r: Rect, k: usize) -> (i32, i32) {
+        let l = BankLayout::of(r);
+        let b = match k {
+            HEAD_TRACK_PREV => l.track.take_left(l.track.w / 2).0,
+            HEAD_TRACK_NEXT => l.track.take_right(l.track.w / 2).0,
+            HEAD_PREV => l.prev,
+            HEAD_NEXT => l.next,
+            HEAD_FOLLOW => l.follow,
+            HEAD_SEQUENCER => l.sequencer,
+            k => l.banks[k - HEAD_BANK],
+        };
+        (b.x + b.w / 2, b.y + b.h / 2)
+    }
+
+    /// How many rows show in `r` (for the app's tests).
+    #[cfg(test)]
+    pub fn rows_shown(&self, r: Rect) -> usize {
+        self.geom(r).rows
     }
 }
 
@@ -1455,6 +1842,14 @@ impl Widget for StepGrid {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
         match self.arm {
+            // Play's head has no title: the track says it.
+            Some(pill) if self.bank.is_some() => {
+                card(cx, r, "", "");
+                paint_arm(cx, r, pill);
+            }
+            None if self.bank.is_some() => {
+                card(cx, r, "", "");
+            }
             // The Arm pill takes the heading's left, the title after it.
             Some(pill) => {
                 card(cx, r, "", "");
@@ -1479,7 +1874,10 @@ impl Widget for StepGrid {
                 card(cx, r, &self.title, "");
             }
         }
-        self.paint_head(cx, r);
+        match &self.bank {
+            Some(b) => self.paint_bank_head(cx, r, b),
+            None => self.paint_head(cx, r),
+        }
         let g = self.geom(r);
         let lanes = self.shown(g.rows);
         if let Some(p) = self.play.filter(|&p| p < self.steps) {
@@ -1519,10 +1917,41 @@ impl Widget for StepGrid {
                 if lane.root {
                     cx.text(FontId::Sans, 11.0, tag, Align::Right, t.text_dim, "root");
                 }
+            } else if lane.empty {
+                // A pad with no sound keeps its row: dashed, "empty".
+                let box_r = Rect::new(g.names.x, y, g.names.w - 10, g.rh);
+                dashed_outline(cx, box_r, t.outline);
+                cx.text(
+                    FontId::Sans,
+                    14.0,
+                    box_r.inset_xy(12, 0),
+                    Align::Left,
+                    t.text_faint,
+                    "empty",
+                );
+                if let Some(label) = &lane.label {
+                    cx.text(
+                        FontId::Bold,
+                        12.0,
+                        box_r.inset_xy(12, 0),
+                        Align::Right,
+                        t.text_faint,
+                        label,
+                    );
+                }
             } else {
                 cx.canvas
                     .fill_round_rect(Rect::new(nr.x, y + g.rh / 2 - 5, 10, 10), 3, c);
                 let ink = if lane.muted { t.text_faint } else { t.text };
+                // Play's rows: the pad's name on the MPC before the speaker.
+                let nr = match &lane.label {
+                    Some(label) => {
+                        let (tag, rest) = nr.take_right(40);
+                        cx.text(FontId::Bold, 12.0, tag, Align::Right, t.text_dim, label);
+                        rest
+                    }
+                    None => nr,
+                };
                 // STEP SEQ's lane: its name over a small "ON THE PADS".
                 let name_r = if on_pads {
                     let (top, bottom) = nr.take_left(18).1.take_top(g.rh * 3 / 5);
@@ -1569,25 +1998,69 @@ impl Widget for StepGrid {
                 cx.canvas.stroke_round_rect(lane_r, 8, 2, t.accent);
             }
         }
+        // Play's rows: a rail at the right, where the rows shown sit
+        // among the bank's.
+        if self.bank.is_some() && self.pitched.is_none() && self.lanes.len() > g.rows {
+            let n = self.lanes.len();
+            let top = self.bank.as_ref().map_or(0, |b| b.top.min(n - g.rows));
+            let rail_h = g.row_y(g.rows - 1) + g.rh - g.grid.y;
+            let rail = Rect::new(g.grid.right() + 8, g.grid.y, RAIL_W, rail_h);
+            cx.canvas.fill_round_rect(rail, 3, t.raised);
+            let y0 = rail.y + rail_h * top as i32 / n as i32;
+            let y1 = rail.y + rail_h * (top + g.rows) as i32 / n as i32;
+            cx.canvas
+                .fill_round_rect(Rect::new(rail.x, y0, RAIL_W, y1 - y0), 3, t.text_dim);
+        }
         *self.painted.borrow_mut() = Some((r, self.look()));
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
         let g = self.geom(r);
         let mut out = Vec::new();
-        // The head: ‹ › turn the pages of 16, - + halve or double the
-        // steps (faint when they can't; a tap then says why).
         let h = Head::of(r, self.pitched.is_some());
         let (prev, next, shorter, longer) = self.usable();
+        if let Some(b) = &self.bank {
+            // Play's head: the track's ‹ and ›, the banks, the pages,
+            // Follow and the Sequencer tab.
+            let l = BankLayout::of(r);
+            let (left, right) = l.track.take_left(l.track.w / 2);
+            out.push(
+                Target::tap("head", HEAD_TRACK_PREV, "Previous track", left).disabled_if(!b.switch),
+            );
+            out.push(
+                Target::tap("head", HEAD_TRACK_NEXT, "Next track", right).disabled_if(!b.switch),
+            );
+            for (i, br) in l.banks.iter().enumerate() {
+                let name = format!("Bank {}", (b'A' + i as u8) as char);
+                out.push(
+                    Target::tap("head", HEAD_BANK + i, name, *br)
+                        .disabled_if(b.bank.is_none() || b.bank == Some(i)),
+                );
+            }
+            out.push(Target::tap("head", HEAD_PREV, "Previous page", l.prev).disabled_if(!prev));
+            out.push(Target::tap("head", HEAD_NEXT, "Next page", l.next).disabled_if(!next));
+            out.push(Target::tap("head", HEAD_FOLLOW, "Follow", l.follow));
+            out.push(Target::tap(
+                "head",
+                HEAD_SEQUENCER,
+                "Sequencer tab",
+                l.sequencer,
+            ));
+        }
+        // The head: ‹ › turn the pages of 16, - + halve or double the
+        // steps (faint when they can't; a tap then says why).
         for (k, label, rect, can) in [
             (HEAD_PREV, "Previous page", h.prev, prev),
             (HEAD_NEXT, "Next page", h.next, next),
             (HEAD_SHORTER, "Fewer steps", h.shorter, shorter),
             (HEAD_LONGER, "More steps", h.longer, longer),
-        ] {
+        ]
+        .into_iter()
+        .filter(|_| self.bank.is_none())
+        {
             out.push(Target::tap("head", k, label, rect).disabled_if(!can));
         }
-        if self.pitched.is_some() {
+        if self.pitched.is_some() && self.bank.is_none() {
             let (lower, higher) = self.octave_usable(g.rows);
             for (k, label, rect, can) in [
                 (HEAD_FOLD, "Fold", h.fold, true),
@@ -1609,7 +2082,7 @@ impl Widget for StepGrid {
                     format!("{}: play", lane.name),
                     g.mute_hit(k),
                 ));
-            } else {
+            } else if !lane.empty {
                 // The lane's whole name is its mute button (bigger mutes).
                 out.push(Target::tap(
                     "mute",
@@ -1641,15 +2114,84 @@ impl Widget for StepGrid {
                 });
             }
         }
+        if self.bank.is_some() && phase != Touch::Down {
+            return self.swipe_on(f, phase, y, r);
+        }
         if phase != Touch::Down {
             return None;
         }
-        if let Some(i) = Head::of(r, self.pitched.is_some()).at(x, y) {
+        if self.bank.is_some() {
+            if let Some(i) = BankLayout::of(r).at(x, y) {
+                return Some(EventKind::Tab(i));
+            }
+        } else if let Some(i) = Head::of(r, self.pitched.is_some()).at(x, y) {
             return Some(EventKind::Tab(i));
         }
         if self.arm.is_some() && arm_pill_hit(r).contains(x, y) {
             return Some(EventKind::Select(0));
         }
+        let tap = self.tap_at(f, x, y, r);
+        if self.bank.is_none() || matches!(tap, Some(EventKind::Pad { .. })) {
+            return tap;
+        }
+        // Play's rows: the tap waits for the finger to lift, so a swipe
+        // can move the rows instead.
+        let (_, body) = card_head(r);
+        if body.contains(x, y) {
+            let top = self.bank.as_ref().map_or(0, |b| b.top);
+            self.swipe = Some(Swipe {
+                finger: f,
+                y,
+                top,
+                moved: 0,
+                swiping: false,
+                tap,
+            });
+        }
+        None
+    }
+}
+
+impl StepGrid {
+    /// A finger moving on Play's rows, or lifting: past [`SWIPE_PX`] it
+    /// swipes, the rows following it (`Step { index: ROWS, delta }`); one
+    /// that lifts before that gives its tap.
+    fn swipe_on(&mut self, f: u64, phase: Touch, y: i32, r: Rect) -> Option<EventKind> {
+        let mut s = self.swipe.clone().filter(|s| s.finger == f)?;
+        match phase {
+            Touch::Up => {
+                self.swipe = None;
+                if s.swiping {
+                    None
+                } else {
+                    s.tap
+                }
+            }
+            Touch::Cancel => {
+                self.swipe = None;
+                None
+            }
+            _ => {
+                let dy = y - s.y;
+                s.swiping |= dy.abs() > SWIPE_PX;
+                let g = self.geom(r);
+                let pitch = g.rh + LANE_GAP;
+                // A finger moving up shows the rows below.
+                let want = -dy / pitch.max(1);
+                let last = self.lanes.len().saturating_sub(g.rows) as i32;
+                let to = (s.top as i32 + want).clamp(0, last);
+                let delta = to - (s.top as i32 + s.moved);
+                s.moved += delta;
+                let swiping = s.swiping;
+                self.swipe = Some(s);
+                (swiping && delta != 0).then_some(EventKind::Step { index: ROWS, delta })
+            }
+        }
+    }
+
+    /// What a finger down at (`x`, `y`) on the rows taps: a lane's name
+    /// (its mute, or a scale row's note), or a step.
+    fn tap_at(&mut self, f: u64, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let g = self.geom(r);
         let lanes = self.shown(g.rows);
         for (k, lane) in lanes.iter().enumerate() {
@@ -1661,6 +2203,9 @@ impl Widget for StepGrid {
                         index: pad,
                         down: true,
                     });
+                }
+                if lane.empty {
+                    return None;
                 }
                 return Some(EventKind::Toggle(lane.pad));
             }
@@ -2567,15 +3112,24 @@ mod tests {
     fn the_switch_taps_give_the_views() {
         let mut tr = PlayTransport::default();
         let r = Rect::new(12, 84, 998, 84);
-        let (_, segs) = PlayTransport::switch(r);
+        let (_, segs) = PlayTransport::switch(r, tr.look.views.len());
         for (i, s) in segs.iter().enumerate() {
             assert_eq!(
                 tr.touch(1, Touch::Down, s.x + s.w / 2, s.y + s.h / 2, r),
                 Some(EventKind::Tab(i))
             );
         }
-        assert_eq!(segs.len(), 3, "All, Beats, Loop");
-        assert!(segs[2].right() <= r.right() - 16);
+        assert_eq!(segs.len(), 2, "All, Loop");
+        assert!(segs[1].right() <= r.right() - 16);
+        // The Sequencer's switch: Steps and Notes, named as the targets.
+        tr.look.views = &crate::play_page::SEQ_SWITCH;
+        let names: Vec<String> = tr
+            .targets(r)
+            .into_iter()
+            .filter(|t| t.id == "view")
+            .map(|t| t.label)
+            .collect();
+        assert_eq!(names, ["Steps", "Notes"]);
     }
 
     #[test]
@@ -2611,7 +3165,117 @@ mod tests {
             marks: Vec::new(),
             note: None,
             root: false,
+            label: None,
+            empty: false,
         }
+    }
+
+    /// Play's rows (the Play, Pads and Sequencer redesign's board 1): the
+    /// bank's pads in order from the swipe's top, a tap that waits for the
+    /// finger to lift, a swipe that moves the rows instead, an empty pad
+    /// with no mute, and the head's track switch, banks and Sequencer tab.
+    #[test]
+    fn play_rows_show_the_bank_in_order_and_a_swipe_moves_them() {
+        let mut g = StepGrid {
+            steps: 16,
+            length: 16,
+            pages: 1,
+            bank: Some(BankHead {
+                track: "Drums".into(),
+                sub: "Track 1 · armed".into(),
+                color: KNOB[0],
+                switch: true,
+                bank: Some(0),
+                follow: false,
+                top: 0,
+            }),
+            ..Default::default()
+        };
+        g.lanes = (0..16)
+            .map(|p| Lane {
+                label: Some(format!("A{}", p + 1)),
+                empty: p == 15,
+                ..lane(p, &[0; 16])
+            })
+            .collect();
+        let r = Rect::new(0, 0, 1038, 330);
+        let rows = g.rows_shown(r);
+        assert!((6..=8).contains(&rows), "{rows}");
+        assert_eq!(g.lanes_shown(r), (0..rows).collect::<Vec<_>>());
+        // A tap on a step waits for the lift.
+        let (x, y) = g.step_at(r, 1, 4);
+        assert_eq!(g.touch(1, Touch::Down, x, y, r), None);
+        assert_eq!(
+            g.touch(1, Touch::Up, x, y, r),
+            Some(EventKind::Cell { row: 1, col: 4 })
+        );
+        // A name: its mute, on the lift.
+        let (x, y) = g.name_at(r, 2);
+        assert_eq!(g.touch(1, Touch::Down, x, y, r), None);
+        assert_eq!(g.touch(1, Touch::Up, x, y, r), Some(EventKind::Toggle(2)));
+        // A swipe up: the rows below, a row at a time; no tap at the end.
+        let (x, y) = g.step_at(r, 3, 4);
+        assert_eq!(g.touch(1, Touch::Down, x, y, r), None);
+        let pitch = g.step_at(r, 1, 0).1 - g.step_at(r, 0, 0).1;
+        assert_eq!(
+            g.touch(1, Touch::Move, x, y - 6, r),
+            None,
+            "not a swipe yet"
+        );
+        assert_eq!(
+            g.touch(1, Touch::Move, x, y - 2 * pitch - 4, r),
+            Some(EventKind::Step {
+                index: ROWS,
+                delta: 2
+            })
+        );
+        // Past the last row it stops.
+        assert_eq!(
+            g.touch(1, Touch::Move, x, y - 20 * pitch, r),
+            Some(EventKind::Step {
+                index: ROWS,
+                delta: (16 - rows) as i32 - 2
+            })
+        );
+        assert_eq!(g.touch(1, Touch::Up, x, y - 20 * pitch, r), None);
+        // The screen moves the rows: the bank's last ones show, the empty
+        // pad's row dashed, with no mute.
+        if let Some(b) = g.bank.as_mut() {
+            b.top = 16 - rows;
+        }
+        assert_eq!(g.lanes_shown(r), (16 - rows..16).collect::<Vec<_>>());
+        let (x, y) = g.name_at(r, rows - 1);
+        g.touch(1, Touch::Down, x, y, r);
+        assert_eq!(
+            g.touch(1, Touch::Up, x, y, r),
+            None,
+            "an empty pad has no mute"
+        );
+        let ts = g.targets(r);
+        assert!(!ts.iter().any(|t| t.id == "mute" && t.index == 15));
+        // The head: on the press.
+        for k in [
+            HEAD_TRACK_PREV,
+            HEAD_TRACK_NEXT,
+            HEAD_BANK + 2,
+            HEAD_FOLLOW,
+            HEAD_SEQUENCER,
+        ] {
+            let (x, y) = StepGrid::bank_head_at(r, k);
+            assert_eq!(
+                g.touch(1, Touch::Down, x, y, r),
+                Some(EventKind::Tab(k)),
+                "{k}"
+            );
+            g.touch(1, Touch::Up, x, y, r);
+        }
+        // No length's - and + on Play; the bank shown can't be picked again.
+        assert!(!ts.iter().any(|t| t.id == "head" && t.index == HEAD_LONGER));
+        let bank_a = ts
+            .iter()
+            .find(|t| t.id == "head" && t.index == HEAD_BANK)
+            .unwrap();
+        assert!(!bank_a.enabled);
     }
 
     /// A synth track's scale rows (the sequencer design's mockup B): the

@@ -1630,7 +1630,12 @@ pub static PLANS: &[Plan] = &[
                 },
                 Section {
                     rows: &["Range"],
-                    ..s("voice", "Voice", Voice, &["Range", "Mix"])
+                    ..s(
+                        "voice",
+                        "Voice",
+                        Voice,
+                        &["Range", "Flex-Tune", "Humanize", "Mix"],
+                    )
                 },
             ],
         )],

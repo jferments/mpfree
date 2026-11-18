@@ -1,5 +1,6 @@
-//! The note editor of the Arrange page (the MPC's Grid View and List
-//! Edit): one clip's notes through one of three lenses ([`Lens`]): a
+//! The note editor, the Sequencer tab's Notes view (the MPC's Grid View
+//! and List Edit; it was the Arrange page's until the Play, Pads and
+//! Sequencer redesign): one clip's notes through one of three lenses ([`Lens`]): a
 //! piano roll, a list, or a tracker (one row per step, empty steps
 //! included). The tools run along the bottom, and beside it the Edit
 //! options: Timing Correct; the selection's nudge, transpose, velocity,
@@ -43,7 +44,7 @@ use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, W
 /// The buttons along the bottom, left to right. Some show a state in
 /// place of their name (see [`NoteGrid::button_label`]).
 pub const EDIT_BUTTONS: [&str; 8] = [
-    "‹ Clips",
+    "‹ Steps",
     "Grid",
     "Tool",
     "Snap",
@@ -1004,7 +1005,7 @@ const VEL_H: i32 = 64;
 const TOOLS_H: i32 = 48;
 const GAP: i32 = 6;
 const ROW_H: i32 = 18;
-/// About how many rows the roll shows on the Arrange page.
+/// About how many rows the roll shows in the note editor.
 pub const ROLL_ROWS: u8 = 22;
 const LIST_H: i32 = 34;
 /// A tracker row: tighter than the list's, so a bar of 1/16s shows.
