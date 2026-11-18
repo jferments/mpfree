@@ -263,9 +263,11 @@ fn live_value(f: usize, own: f32, offset: f32) -> f32 {
         PadField::Attack | PadField::Decay | PadField::Release => {
             own.max(TIME_FLOOR_MS) * offset / 100.0
         }
-        // The node's pads have no Slice setting (field::COUNT stops at
-        // Release).
-        PadField::Slice => f32::NAN,
+        // The node's pads have no Slice, LFO or pitch envelope settings
+        // (field::COUNT stops at Release).
+        PadField::Slice | PadField::LfoDepth | PadField::PitchEnv | PadField::PitchDecay => {
+            f32::NAN
+        }
     }
 }
 

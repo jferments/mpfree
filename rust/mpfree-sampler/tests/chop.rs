@@ -193,6 +193,29 @@ fn the_history_says_what_each_step_changed() {
     assert_eq!(redo[1].pads, 8);
 }
 
+/// A page can tag its newest step (Sample Recall's "Recall to A6"): the
+/// tag goes with the step through undo and redo, and undoes nothing more.
+#[test]
+fn a_tagged_step_keeps_its_tag_through_undo_and_redo() {
+    let s = Source::new("b", RATE, 1, vec![0.1; 1_000]).unwrap();
+    let mut p = Project::new();
+    assert!(!p.tag_last(7), "nothing to tag");
+    p.put_source_as(5, s, |name, layer, _| Pad::new(name, layer))
+        .unwrap();
+    assert!(p.tag_last(7));
+    let (done, _) = p.history();
+    assert_eq!(
+        (done.len(), done[0].tag, done[0].first_pad),
+        (1, 7, Some(5))
+    );
+    assert!(p.undo());
+    assert!(p.pad(5).is_none_or(|pad| pad.layers.is_empty()));
+    assert_eq!(p.history().1[0].tag, 7);
+    assert!(p.redo());
+    assert_eq!(p.history().0[0].tag, 7);
+    assert!(p.pad(5).is_some_and(|pad| !pad.layers.is_empty()));
+}
+
 #[test]
 fn markers_from_any_list_are_cleaned() {
     let s = Source::new("s", RATE, 1, vec![0.1; 1_000]).unwrap();

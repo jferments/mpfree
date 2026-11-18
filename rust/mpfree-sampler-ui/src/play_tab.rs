@@ -69,9 +69,10 @@ use std::sync::Arc;
 
 use mpfree_analysis::note_name;
 use mpfree_sampler::model::{
-    Ahdsr, Filter, FilterKind, Keys, LayerSelect, Levels, ModelError, Pad, PadsPlay, PlayMode,
-    PressureTarget, Project, SliceSet, Source, SourceId, KEYGROUP_POLYPHONY, MAX_KEY_FADE,
-    MAX_LAYERS, MAX_VEL_FADE, PADS, SLICE_CUTOFF_HZ, SLICE_FADE_MS, SLICE_LEVEL_DB, SLICE_TUNE,
+    Ahdsr, Filter, FilterKind, Keys, LayerSelect, Levels, LfoShape, LfoTarget, ModelError, Pad,
+    PadLfo, PadsPlay, PlayMode, PressureTarget, Project, SliceSet, Source, SourceId,
+    KEYGROUP_POLYPHONY, LFO_RATE_HZ, MAX_KEY_FADE, MAX_LAYERS, MAX_VEL_FADE, PADS, PITCH_DECAY_MS,
+    PITCH_ENV_ST, SLICE_CUTOFF_HZ, SLICE_FADE_MS, SLICE_LEVEL_DB, SLICE_TUNE,
 };
 use mpfree_ui::layout;
 use mpfree_ui::wave::{Marker, MarkerKind, WaveView, Waveform};
@@ -81,7 +82,7 @@ use crate::chop_tab::pad_text;
 use crate::keys_widgets::{KeyZones, Zone};
 use crate::pads_tab::{sound_region, Sound};
 use crate::panel::{self, Control, Item, Look, Panel};
-use crate::play_widgets::{EnvelopeView, FilterCurve, LayerBar, LayerMap};
+use crate::play_widgets::{EnvelopeView, FilterCurve, LayerBar, LayerMap, MotionView};
 use crate::source::SourceView;
 use crate::wave_tab::{self, duration_text, mode_label, pad_color, TABS};
 use crate::widgets::{KnobCard, PadBar, SectionChip, SectionChips, Setting, SettingList};
@@ -96,12 +97,15 @@ pub const KEYS: &str = "smp-play-keys";
 /// The Slices section's picture: the sliced layer's sound, its slices
 /// numbered (R4 part 5).
 pub const SLICES: &str = "smp-play-slices";
+/// The Movement section's picture: the LFO's wave and the pitch
+/// envelope (sampler R5 part 4).
+pub const MOTION: &str = "smp-play-motion";
 pub const QLINKS: [&str; 4] = ["smp-play-q1", "smp-play-q2", "smp-play-q3", "smp-play-q4"];
 /// The scenes, beside the section's controls: Store A, Store B and
 /// Return to A, and the crossfader (a panel of its own, [`SCENE_ROWS`]).
 pub const SCENES: &str = "smp-play-scenes";
-/// The section chips over the page: Layers, Amp, Filter, Pitch, Mod, Pad,
-/// Slices.
+/// The section chips over the page: Layers, Amp, Filter, Pitch, Mod,
+/// Movement, Pad, Slices.
 pub const SECTIONS: &str = "smp-play-sections";
 /// The scenes' rows: Store A, Store B, Return to A (buttons, whose taps
 /// are [`EventKind::Tab`] with the row) and the crossfader
@@ -256,10 +260,25 @@ pub enum Row {
     SliceCutoff,
     SliceFade,
     SliceTo,
+    /// Velocity on the cutoff and on the pitch (sampler R5 part 4).
+    VelToCutoff,
+    VelToPitch,
+    /// The pad's LFO (sampler R5 part 4): what it moves, its wave, rate,
+    /// depth, whether its rate is in beats, and whether each hit starts it.
+    LfoTo,
+    LfoWave,
+    LfoRate,
+    LfoDepth,
+    LfoSync,
+    LfoRetrig,
+    /// The pitch envelope: where a hit starts, in semitones, and how long
+    /// it takes to come back.
+    PitchEnv,
+    PitchDecay,
 }
 
 impl Row {
-    pub const ALL: [Row; 53] = [
+    pub const ALL: [Row; 63] = [
         Row::Polyphony,
         Row::MuteGroup,
         Row::Chokes,
@@ -313,6 +332,16 @@ impl Row {
         Row::SliceCutoff,
         Row::SliceFade,
         Row::SliceTo,
+        Row::VelToCutoff,
+        Row::VelToPitch,
+        Row::LfoTo,
+        Row::LfoWave,
+        Row::LfoRate,
+        Row::LfoDepth,
+        Row::LfoSync,
+        Row::LfoRetrig,
+        Row::PitchEnv,
+        Row::PitchDecay,
     ];
 
     pub fn label(self) -> &'static str {
@@ -370,6 +399,16 @@ impl Row {
             Row::SliceCutoff => "Filter",
             Row::SliceFade => "Fade out",
             Row::SliceTo => "Plays to",
+            Row::VelToCutoff => "Vel → cutoff",
+            Row::VelToPitch => "Vel → pitch",
+            Row::LfoTo => "LFO to",
+            Row::LfoWave => "LFO wave",
+            Row::LfoRate => "LFO rate",
+            Row::LfoDepth => "LFO depth",
+            Row::LfoSync => "Sync to tempo",
+            Row::LfoRetrig => "Retrigger",
+            Row::PitchEnv => "Pitch env",
+            Row::PitchDecay => "Pitch decay",
         }
     }
 
@@ -440,6 +479,8 @@ pub enum Section {
     Pitch,
     /// What velocity and pressure change.
     Mod,
+    /// The LFO and the pitch envelope (sampler R5 part 4).
+    Movement,
     /// Voices, mute group, stops, also plays, latch, and what the kit's
     /// pads play.
     Pad,
@@ -448,12 +489,13 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 7] = [
+    pub const ALL: [Section; 8] = [
         Section::Layers,
         Section::Amp,
         Section::Filter,
         Section::Pitch,
         Section::Mod,
+        Section::Movement,
         Section::Pad,
         Section::Slices,
     ];
@@ -465,6 +507,7 @@ impl Section {
             Section::Filter => "Filter",
             Section::Pitch => "Pitch",
             Section::Mod => "Mod",
+            Section::Movement => "Movement",
             Section::Pad => "Pad",
             Section::Slices => "Slices",
         }
@@ -514,7 +557,24 @@ impl Section {
                 Row::RootKey,
                 Row::KeyFade,
             ],
-            Section::Mod => &[Row::VelToLevel, Row::VelToStart, Row::Pressure, Row::Depth],
+            Section::Mod => &[
+                Row::VelToLevel,
+                Row::VelToStart,
+                Row::VelToCutoff,
+                Row::VelToPitch,
+                Row::Pressure,
+                Row::Depth,
+            ],
+            Section::Movement => &[
+                Row::LfoTo,
+                Row::LfoWave,
+                Row::LfoRate,
+                Row::LfoDepth,
+                Row::LfoSync,
+                Row::LfoRetrig,
+                Row::PitchEnv,
+                Row::PitchDecay,
+            ],
             Section::Pad => &[
                 Row::Polyphony,
                 Row::MuteGroup,
@@ -546,6 +606,7 @@ impl Section {
             Section::Filter => [Row::Cutoff, Row::Resonance, Row::FilterEnv, Row::EnvDecay],
             Section::Pitch => [Row::Tune, Row::Wow, Row::LowKey, Row::HighKey],
             Section::Mod => [Row::VelToLevel, Row::VelToStart, Row::Pressure, Row::Depth],
+            Section::Movement => [Row::LfoRate, Row::LfoDepth, Row::PitchEnv, Row::PitchDecay],
             Section::Pad => [Row::Polyphony, Row::MuteGroup, Row::PadsPlay, Row::PadsFrom],
             Section::Slices => [
                 Row::SlicePick,
@@ -558,12 +619,14 @@ impl Section {
 
     /// The picture the section shows across the page: the layer map
     /// (Layers, Mod, Pad), the envelope over the sound (Amp, Pitch), the
-    /// filter beside its envelope (Filter), the sound with its slices
-    /// (Slices), or the keyboard on Pitch and Pad while `keys` (the pad is
-    /// a keygroup or the pads play notes).
+    /// filter beside its envelope (Filter), the LFO's wave beside the pitch
+    /// envelope (Movement), the sound with its slices (Slices), or the
+    /// keyboard on Pitch and Pad while `keys` (the pad is a keygroup or the
+    /// pads play notes).
     pub fn view(self, keys: bool) -> &'static str {
         match self {
             Section::Slices => SLICES,
+            Section::Movement => MOTION,
             Section::Pitch | Section::Pad if keys => KEYS,
             Section::Layers | Section::Mod | Section::Pad => LAYERS,
             Section::Amp | Section::Pitch => ENV,
@@ -599,6 +662,47 @@ const PRESSURE: [PressureTarget; 8] = [
     PressureTarget::GrainPosition,
     PressureTarget::GrainSpray,
 ];
+
+/// What the LFO moves, as the LFO to row steps (sampler R5 part 4).
+const LFO_TARGETS: [(&str, LfoTarget); 5] = [
+    ("Off", LfoTarget::Off),
+    ("Pitch", LfoTarget::Pitch),
+    ("Cutoff", LfoTarget::Cutoff),
+    ("Level", LfoTarget::Level),
+    ("Pan", LfoTarget::Pan),
+];
+/// The LFO's waves, as the Grain page names them.
+const LFO_WAVES: [(&str, LfoShape); 7] = [
+    ("Sine", LfoShape::Sine),
+    ("Triangle", LfoShape::Triangle),
+    ("Saw up", LfoShape::SawUp),
+    ("Saw down", LfoShape::SawDown),
+    ("Square", LfoShape::Square),
+    ("Hold", LfoShape::Hold),
+    ("Drift", LfoShape::Drift),
+];
+/// Free LFO rates the arrows step through, Hz (the Grain page's).
+const LFO_RATES: [f32; 20] = [
+    0.05, 0.1, 0.2, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 16.0,
+    20.0, 30.0, 40.0,
+];
+/// A synced LFO's cycles, in beats, and their names (bars of four
+/// beats), slowest first.
+const LFO_SYNCS: [(f32, &str); 11] = [
+    (16.0, "4 bars"),
+    (8.0, "2 bars"),
+    (4.0, "1 bar"),
+    (2.0, "1/2"),
+    (1.5, "1/4 D"),
+    (1.0, "1/4"),
+    (2.0 / 3.0, "1/4 T"),
+    (0.5, "1/8"),
+    (1.0 / 3.0, "1/8 T"),
+    (0.25, "1/16"),
+    (0.125, "1/32"),
+];
+/// Semitones the Vel → pitch row reaches either way.
+const VEL_PITCH_ST: f32 = 12.0;
 
 fn is_grain(t: PressureTarget) -> bool {
     matches!(
@@ -644,6 +748,9 @@ pub struct PlayState {
     pub scenes: [bool; 2],
     /// The kit's sounds, for a layer's Sound row.
     pub kit_sounds: Vec<Sound>,
+    /// The project's tempo, for an LFO synced to it (the app sets it; 120
+    /// until then).
+    pub bpm: f64,
 }
 
 impl PlayState {
@@ -699,6 +806,7 @@ impl PlayState {
                     pads: p.users_of(s.id()),
                 })
                 .collect(),
+            bpm: 120.0,
         })
     }
 
@@ -1004,6 +1112,7 @@ impl PlayTab {
         ui.add(FILTER, FilterCurve::new("Filter"));
         ui.add(KEYS, KeyZones::new("Keys"));
         ui.add(SLICES, Waveform::new());
+        ui.add(MOTION, MotionView::new());
         let labels: Vec<&str> = Section::ALL.iter().map(|s| s.label()).collect();
         ui.add(SECTIONS, SectionChips::new(&labels));
         ui.add(LIST, SettingList::new("Layers"));
@@ -1402,6 +1511,13 @@ impl PlayTab {
         if let Some(z) = ui.get_mut::<KeyZones>(KEYS) {
             self.show_zones(z, st);
         }
+        if let Some(m) = ui.get_mut::<MotionView>(MOTION) {
+            m.lfo = p.lfo;
+            m.env = p.pitch_env;
+            m.lfo_on = lfo_heard(p);
+            m.env_on = p.pitch_env.semitones != 0.0 && !keeps_pitch(p);
+            m.caption = motion_caption(p);
+        }
         self.show_slices(ui, st);
         let rows = self
             .section
@@ -1497,7 +1613,7 @@ impl PlayTab {
                         off: Vec::new(),
                     },
                     Row::Level | Row::LayerLevel => knob(level, false),
-                    Row::Pan | Row::LayerPan | Row::Depth => knob(40, true),
+                    Row::Pan | Row::LayerPan | Row::Depth | Row::LfoDepth => knob(40, true),
                     Row::Tune | Row::LayerTune => knob(tune, true),
                     Row::Wow => knob(10, false),
                     Row::Attack
@@ -1511,7 +1627,25 @@ impl PlayTab {
                     | Row::EnvSustain
                     | Row::Resonance
                     | Row::VelToLevel
-                    | Row::VelToStart => knob(20, false),
+                    | Row::VelToStart
+                    | Row::VelToCutoff => knob(20, false),
+                    Row::VelToPitch => knob((2.0 * VEL_PITCH_ST) as u32, true),
+                    Row::PitchEnv => knob((2.0 * PITCH_ENV_ST) as u32, true),
+                    Row::PitchDecay => knob(times, false),
+                    Row::LfoRate => match p.lfo.beats {
+                        Some(_) => knob(LFO_SYNCS.len() as u32 - 1, false),
+                        None => knob(LFO_RATES.len() as u32 - 1, false),
+                    },
+                    Row::LfoTo => Look::Choice {
+                        options: LFO_TARGETS.iter().map(|t| t.0.to_string()).collect(),
+                        on: LFO_TARGETS
+                            .iter()
+                            .position(|t| t.1 == p.lfo.target)
+                            .unwrap_or(0),
+                        off: Vec::new(),
+                    },
+                    Row::LfoSync => Look::Toggle(p.lfo.beats.is_some()),
+                    Row::LfoRetrig => Look::Toggle(p.lfo.retrig),
                     // A third of an octave a step, 20 Hz to 20 kHz.
                     Row::Cutoff => knob(30, false),
                     Row::FilterEnv => knob((2.0 * ENV_OCTAVES / 0.25) as u32, true),
@@ -1548,7 +1682,8 @@ impl PlayTab {
                     | Row::MuteGroup
                     | Row::Chokes
                     | Row::Links
-                    | Row::LevelsBy => Look::Chip,
+                    | Row::LevelsBy
+                    | Row::LfoWave => Look::Chip,
                 };
                 let why = match row {
                     Row::AddLayer if n >= MAX_LAYERS => {
@@ -1686,16 +1821,46 @@ impl PlayTab {
             Section::Mod => vec![
                 part(
                     "Velocity",
-                    300,
-                    vec![vec![it(Row::VelToLevel), it(Row::VelToStart)]],
+                    420,
+                    vec![vec![
+                        it(Row::VelToLevel),
+                        it(Row::VelToStart),
+                        it(Row::VelToCutoff),
+                        it(Row::VelToPitch),
+                    ]],
                 )
                 .note("how hard a hit is"),
                 part(
                     "Pressure",
-                    440,
+                    320,
                     vec![vec![it(Row::Pressure).labelled(), it(Row::Depth).wide(96)]],
                 )
                 .note("the pad held down"),
+            ],
+            Section::Movement => vec![
+                part(
+                    "LFO",
+                    470,
+                    vec![
+                        vec![
+                            it(Row::LfoTo).labelled().wide(300),
+                            it(Row::LfoWave).labelled(),
+                        ],
+                        vec![
+                            it(Row::LfoRate),
+                            it(Row::LfoDepth),
+                            it(Row::LfoSync).wide(130),
+                            it(Row::LfoRetrig).wide(110),
+                        ],
+                    ],
+                )
+                .note(lfo_note(p)),
+                part(
+                    "Pitch envelope",
+                    270,
+                    vec![vec![it(Row::PitchEnv), it(Row::PitchDecay)]],
+                )
+                .note(env_note(st)),
             ],
             Section::Pad => vec![
                 part(
@@ -2158,6 +2323,9 @@ impl PlayTab {
         if row == Row::Sound {
             return self.step_sound(st, delta);
         }
+        if row == Row::LfoSync {
+            return self.edit(st, Key::Row(row), synced(&st.settings, st.bpm));
+        }
         if row.of_layer() {
             let p = stepped_layer(&st.settings, self.layer, row, delta);
             return self.edit(st, Key::Row(row), p);
@@ -2314,6 +2482,30 @@ fn turned(p: &Pad, layer: usize, row: Row, delta: i32, fine: bool) -> Option<Pad
         Row::VelToLevel => p.vel_to_level = frac(p.vel_to_level, 0.0),
         Row::VelToStart => p.vel_to_start = frac(p.vel_to_start, 0.0),
         Row::Depth => p.pressure.depth = frac(p.pressure.depth, -1.0),
+        Row::VelToCutoff => p.vel_to_cutoff = frac(p.vel_to_cutoff, 0.0),
+        Row::LfoDepth => p.lfo.depth = frac(p.lfo.depth, -1.0),
+        // Semitones: one a detent, a tenth with SHIFT.
+        Row::VelToPitch | Row::PitchEnv => {
+            let step = if fine { 0.1 } else { 1.0 };
+            let (x, lim) = if row == Row::VelToPitch {
+                (&mut p.vel_to_pitch, VEL_PITCH_ST)
+            } else {
+                (&mut p.pitch_env.semitones, PITCH_ENV_ST)
+            };
+            *x = round_to(*x + d * step, 0.1).clamp(-lim, lim);
+        }
+        Row::PitchDecay => {
+            let (lo, hi) = (*PITCH_DECAY_MS.start(), *PITCH_DECAY_MS.end());
+            p.pitch_env.decay_ms = turn_ms(p.pitch_env.decay_ms, d, fine, lo).min(hi);
+        }
+        // A free rate: a sixth of an octave a detent, a 24th with SHIFT.
+        // A synced one steps its list.
+        Row::LfoRate if p.lfo.beats.is_none() => {
+            let oct = d / if fine { 24.0 } else { 6.0 };
+            let (lo, hi) = (*LFO_RATE_HZ.start(), *LFO_RATE_HZ.end());
+            let hz = p.lfo.rate_hz * oct.exp2();
+            p.lfo.rate_hz = round_to(hz, 0.01).clamp(lo, hi);
+        }
         Row::LayerLevel | Row::LayerPan | Row::LayerTune => {
             let l = p.layers.get_mut(layer)?;
             match row {
@@ -2349,6 +2541,20 @@ fn faint_why(st: &PlayState, row: Row) -> Option<&'static str> {
         }
         Row::Depth if p.pressure.target == PressureTarget::Off => {
             Some("Pressure is off: pick what it changes first")
+        }
+        Row::LfoWave | Row::LfoRate | Row::LfoDepth | Row::LfoSync | Row::LfoRetrig
+            if p.lfo.target == LfoTarget::Off =>
+        {
+            Some("The LFO is off: pick what it moves in LFO to")
+        }
+        Row::VelToCutoff if p.filter.kind == FilterKind::Off => {
+            Some("The filter is off: pick one in the Filter section")
+        }
+        Row::VelToPitch | Row::PitchEnv | Row::PitchDecay if keeps_pitch(p) => {
+            Some("This pad keeps its pitch: it is warped or plays grains")
+        }
+        Row::PitchDecay if p.pitch_env.semitones == 0.0 => {
+            Some("The pitch envelope is off: give Pitch env an amount")
         }
         Row::PadsFrom if !matches!(st.pads_play, PadsPlay::Keys { .. }) => {
             Some("The pads play their sounds: set Pads play to Notes")
@@ -2401,6 +2607,22 @@ fn knob_pos(st: &PlayState, layer: usize, row: Row) -> f32 {
         Row::Wow => p.wow,
         Row::VelToLevel => p.vel_to_level,
         Row::VelToStart => p.vel_to_start,
+        Row::VelToCutoff => p.vel_to_cutoff,
+        Row::VelToPitch => (p.vel_to_pitch + VEL_PITCH_ST) / (2.0 * VEL_PITCH_ST),
+        Row::PitchEnv => (p.pitch_env.semitones + PITCH_ENV_ST) / (2.0 * PITCH_ENV_ST),
+        Row::PitchDecay => time(p.pitch_env.decay_ms),
+        Row::LfoDepth => (p.lfo.depth + 1.0) / 2.0,
+        // Faster is further round, synced or free.
+        Row::LfoRate => match p.lfo.beats {
+            Some(b) => {
+                let i = nearest(LFO_SYNCS.iter().map(|s| s.0), b);
+                i as f32 / (LFO_SYNCS.len() - 1) as f32
+            }
+            None => {
+                let (lo, hi) = (LFO_RATES[0], LFO_RATES[LFO_RATES.len() - 1]);
+                (p.lfo.rate_hz.max(lo) / lo).ln() / (hi / lo).ln()
+            }
+        },
         Row::Depth => (p.pressure.depth + 1.0) / 2.0,
         Row::Pressure => {
             let i = PRESSURE.iter().position(|t| *t == p.pressure.target);
@@ -2470,23 +2692,27 @@ fn section_text(st: &PlayState, s: Section) -> String {
             n => format!("{n} · {}", select_label(p.select).to_lowercase()),
         },
         Section::Amp => {
-            // Milliseconds without their unit, to fit.
+            // Milliseconds without their unit, and no spaces, to fit beside
+            // seven other chips: "A2 D310 S60%".
             let ms = |ms: f32| match ms_text(ms).strip_suffix(" ms") {
                 Some(n) => n.to_string(),
-                None => ms_text(ms),
+                None => ms_text(ms).replace(' ', ""),
             };
             format!(
-                "A {} · D {} · S {} %",
+                "A{} D{} S{}%",
                 ms(p.amp.attack_ms),
                 ms(p.amp.decay_ms),
                 percent(p.amp.sustain)
             )
         }
+        // "LP2 · 2.40 kHz".
         Section::Filter => match p.filter.kind {
             FilterKind::Off => "Off".into(),
             _ => format!(
                 "{} · {}",
-                filter_label(&p.filter),
+                filter_label(&p.filter)
+                    .replace(" 2-pole", "2")
+                    .replace(" 4-pole", "4"),
                 hz_text(p.filter.cutoff_hz)
             ),
         },
@@ -2499,6 +2725,20 @@ fn section_text(st: &PlayState, s: Section) -> String {
                 t.push_str(" · vintage");
             }
             t
+        }
+        // Short, to fit beside seven other chips: "pitch LFO", "pitch env
+        // +12 st", "cutoff LFO + env".
+        Section::Movement => {
+            let target = lfo_target_label(p.lfo.target).to_lowercase();
+            let env = p.pitch_env.semitones != 0.0;
+            match (p.lfo.target, env) {
+                (LfoTarget::Off, false) => "Off".into(),
+                (LfoTarget::Off, true) => {
+                    format!("pitch env {}", semis_text(p.pitch_env.semitones))
+                }
+                (_, false) => format!("{target} LFO · {}", lfo_rate_text(&p.lfo)),
+                (_, true) => format!("{target} LFO + env"),
+            }
         }
         Section::Mod => match p.pressure.target {
             PressureTarget::Off => format!("vel → level {} %", percent(p.vel_to_level)),
@@ -2806,6 +3046,56 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
         Row::Depth => {
             p.pressure.depth = round_to(p.pressure.depth + d * 0.05, 0.05).clamp(-1.0, 1.0)
         }
+        Row::VelToCutoff => {
+            p.vel_to_cutoff = round_to(p.vel_to_cutoff + d * 0.05, 0.05).clamp(0.0, 1.0)
+        }
+        Row::VelToPitch => {
+            p.vel_to_pitch = round_to(p.vel_to_pitch + d, 1.0).clamp(-VEL_PITCH_ST, VEL_PITCH_ST)
+        }
+        Row::LfoTo => {
+            let i = LFO_TARGETS
+                .iter()
+                .position(|t| t.1 == p.lfo.target)
+                .unwrap_or(0) as i32;
+            let n = LFO_TARGETS.len() as i32;
+            p.lfo.target = LFO_TARGETS[(i + delta).rem_euclid(n) as usize].1;
+            // An LFO turned on moves something at once.
+            if p.lfo.target != LfoTarget::Off && p.lfo.depth == 0.0 {
+                p.lfo.depth = 0.1;
+            }
+        }
+        Row::LfoWave => {
+            let i = LFO_WAVES
+                .iter()
+                .position(|w| w.1 == p.lfo.shape)
+                .unwrap_or(0) as i32;
+            let n = LFO_WAVES.len() as i32;
+            p.lfo.shape = LFO_WAVES[(i + delta).rem_euclid(n) as usize].1;
+        }
+        // A step up is faster: a higher rate, or a shorter cycle.
+        Row::LfoRate => match p.lfo.beats {
+            Some(b) => {
+                let i = nearest(LFO_SYNCS.iter().map(|s| s.0), b);
+                p.lfo.beats = Some(LFO_SYNCS[shift(i, delta, LFO_SYNCS.len())].0);
+            }
+            None => {
+                let i = nearest(LFO_RATES.iter().copied(), p.lfo.rate_hz);
+                p.lfo.rate_hz = LFO_RATES[shift(i, delta, LFO_RATES.len())];
+            }
+        },
+        Row::LfoDepth => p.lfo.depth = round_to(p.lfo.depth + d * 0.05, 0.05).clamp(-1.0, 1.0),
+        Row::LfoRetrig => p.lfo.retrig = !p.lfo.retrig,
+        // It needs the tempo: see [`PlayTab::step`].
+        Row::LfoSync => {}
+        Row::PitchEnv => {
+            p.pitch_env.semitones =
+                round_to(p.pitch_env.semitones + d, 1.0).clamp(-PITCH_ENV_ST, PITCH_ENV_ST)
+        }
+        Row::PitchDecay => {
+            let hi = *PITCH_DECAY_MS.end();
+            p.pitch_env.decay_ms =
+                step_time(p.pitch_env.decay_ms, delta, *PITCH_DECAY_MS.start()).min(hi);
+        }
         Row::Attack => p.amp.attack_ms = step_time(p.amp.attack_ms, delta, 0.0),
         Row::Hold => p.amp.hold_ms = step_time(p.amp.hold_ms, delta, 0.0),
         Row::Decay => p.amp.decay_ms = step_time(p.amp.decay_ms, delta, 0.0),
@@ -2984,6 +3274,16 @@ pub fn value_text(p: &Pad, row: Row) -> String {
         },
         Row::Pressure => pressure_label(p.pressure.target).into(),
         Row::Depth => format!("{:+} %", (p.pressure.depth * 100.0).round() as i32),
+        Row::VelToCutoff => format!("{} %", percent(p.vel_to_cutoff)),
+        Row::VelToPitch => semis_text(p.vel_to_pitch),
+        Row::LfoTo => lfo_target_label(p.lfo.target).into(),
+        Row::LfoWave => lfo_wave_label(p.lfo.shape).into(),
+        Row::LfoRate => lfo_rate_text(&p.lfo),
+        Row::LfoDepth => format!("{:+} %", percent(p.lfo.depth)),
+        Row::LfoSync => if p.lfo.beats.is_some() { "On" } else { "Off" }.into(),
+        Row::LfoRetrig => if p.lfo.retrig { "On" } else { "Off" }.into(),
+        Row::PitchEnv => semis_text(p.pitch_env.semitones),
+        Row::PitchDecay => ms_text(p.pitch_env.decay_ms),
         Row::Attack => ms_text(p.amp.attack_ms),
         Row::Hold => ms_text(p.amp.hold_ms),
         Row::Decay => ms_text(p.amp.decay_ms),
@@ -3025,6 +3325,148 @@ pub fn value_text(p: &Pad, row: Row) -> String {
 
 fn percent(x: f32) -> i32 {
     (x * 100.0).round() as i32
+}
+
+/// Semitones as a row shows them: "+12 st", "-0.5 st", "Off" at 0.
+fn semis_text(st: f32) -> String {
+    if st == 0.0 {
+        "Off".into()
+    } else if st.fract() == 0.0 {
+        format!("{st:+.0} st")
+    } else {
+        format!("{st:+.1} st")
+    }
+}
+
+pub fn lfo_target_label(t: LfoTarget) -> &'static str {
+    LFO_TARGETS.iter().find(|x| x.1 == t).map_or("Off", |x| x.0)
+}
+
+pub fn lfo_wave_label(s: LfoShape) -> &'static str {
+    LFO_WAVES.iter().find(|x| x.1 == s).map_or("Sine", |x| x.0)
+}
+
+/// An LFO's rate as the list shows it: its cycle's name when synced
+/// ("1/4", "2 bars", or "3.0 beats" off the list), else Hz.
+pub fn lfo_rate_text(l: &PadLfo) -> String {
+    match l.beats {
+        Some(b) => LFO_SYNCS
+            .iter()
+            .find(|s| (s.0 - b).abs() < 1e-3)
+            .map_or_else(|| format!("{b:.2} beats"), |s| s.1.to_string()),
+        None if l.rate_hz < 1.0 => format!("{:.2} Hz", l.rate_hz),
+        None => format!("{:.1} Hz", l.rate_hz),
+    }
+}
+
+/// The pad with its LFO synced to the tempo, or free again: on, the
+/// cycle nearest the rate heard at `bpm`; off, the rate nearest the
+/// cycle's (as the Grain page's Sync to tempo).
+fn synced(p: &Pad, bpm: f64) -> Pad {
+    let mut p = p.clone();
+    let beat_hz = (bpm.clamp(20.0, 400.0) / 60.0) as f32;
+    p.lfo.beats = match p.lfo.beats {
+        None => {
+            let beats = beat_hz / p.lfo.rate_hz.max(0.01);
+            Some(LFO_SYNCS[nearest(LFO_SYNCS.iter().map(|s| s.0), beats)].0)
+        }
+        Some(b) => {
+            let hz = beat_hz / b.max(0.01);
+            p.lfo.rate_hz = LFO_RATES[nearest(LFO_RATES.iter().copied(), hz)];
+            None
+        }
+    };
+    p
+}
+
+/// Whether every layer of the pad keeps its pitch (warped, or played as
+/// grains), so nothing the pitch envelope or velocity does to the pitch
+/// is heard.
+fn keeps_pitch(p: &Pad) -> bool {
+    !p.layers.is_empty()
+        && p.layers
+            .iter()
+            .all(|l| l.region.warp.is_some() || l.region.mode == PlayMode::Granular)
+}
+
+/// Whether the pad's LFO is heard: it moves something the pad has.
+fn lfo_heard(p: &Pad) -> bool {
+    p.lfo.moves()
+        && match p.lfo.target {
+            LfoTarget::Cutoff => p.filter.kind != FilterKind::Off,
+            LfoTarget::Pitch => !keeps_pitch(p),
+            _ => true,
+        }
+}
+
+/// The Movement picture's caption: how far the LFO moves what, how fast,
+/// and the pitch envelope's start and decay.
+fn motion_caption(p: &Pad) -> String {
+    let l = &p.lfo;
+    let d = l.depth.abs();
+    let lfo = match l.target {
+        LfoTarget::Off => "LFO off".to_string(),
+        t => {
+            let how = match t {
+                LfoTarget::Pitch => format!("±{} st", trim(12.0 * d)),
+                LfoTarget::Cutoff => format!("±{} oct", trim(4.0 * d)),
+                LfoTarget::Level => format!("dips {} %", percent(d)),
+                _ => format!("±{} %", percent(d)),
+            };
+            format!(
+                "LFO: {} on {}, {how} at {}",
+                lfo_wave_label(l.shape).to_lowercase(),
+                lfo_target_label(t).to_lowercase(),
+                lfo_rate_text(l)
+            )
+        }
+    };
+    let e = &p.pitch_env;
+    if e.semitones == 0.0 {
+        format!("{lfo} · pitch envelope off")
+    } else {
+        format!(
+            "{lfo} · pitch from {} over {}",
+            semis_text(e.semitones),
+            ms_text(e.decay_ms)
+        )
+    }
+}
+
+/// A number with at most one decimal, without a trailing ".0".
+fn trim(x: f32) -> String {
+    let r = (x * 10.0).round() / 10.0;
+    if r.fract() == 0.0 {
+        format!("{r:.0}")
+    } else {
+        format!("{r:.1}")
+    }
+}
+
+/// The LFO section's note: what it does now.
+fn lfo_note(p: &Pad) -> &'static str {
+    match p.lfo.target {
+        LfoTarget::Off => "off: pick what it moves",
+        LfoTarget::Cutoff if p.filter.kind == FilterKind::Off => {
+            "the filter is off: nothing to move"
+        }
+        LfoTarget::Pitch if keeps_pitch(p) => "this pad keeps its pitch",
+        _ if p.lfo.retrig => "over and over, from each hit",
+        _ if p.lfo.beats.is_some() => "on the beat, between hits",
+        _ => "runs on between hits",
+    }
+}
+
+/// The pitch envelope section's note.
+fn env_note(st: &PlayState) -> &'static str {
+    let p = &st.settings;
+    if keeps_pitch(p) {
+        "this pad keeps its pitch"
+    } else if p.pitch_env.semitones == 0.0 {
+        "off: give it an amount"
+    } else {
+        "once, from each hit"
+    }
 }
 
 /// A set of pads as the list shows it: "Off", or their names in order.
@@ -3208,9 +3650,19 @@ pub fn describe(a: &Pad, b: &Pad) -> String {
         Row::RootKey,
         Row::VelToLevel,
         Row::VelToStart,
+        Row::VelToCutoff,
+        Row::VelToPitch,
         Row::VelFade,
         Row::Pressure,
         Row::Depth,
+        Row::LfoTo,
+        Row::LfoWave,
+        Row::LfoRate,
+        Row::LfoDepth,
+        Row::LfoSync,
+        Row::LfoRetrig,
+        Row::PitchEnv,
+        Row::PitchDecay,
         Row::Attack,
         Row::Hold,
         Row::Decay,

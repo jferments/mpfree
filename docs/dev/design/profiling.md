@@ -482,7 +482,8 @@ data side is here:
   CPU): under the audio loop's rows on CPU by engine, what each part holds,
   from what it knows of its own buffers: every kit's sounds (those undo
   keeps included, a sound two kits share counted once), the stretched
-  copies, the Rec tab's input buffer while it is held, the looper's sound
+  copies, the Rec tab's input buffer while it is held, the master Sample
+  Recall always keeps (21.2 MB, sampler R5 part 1), the looper's sound
   used and set aside, and the synth's wavetables. Then "Everything else",
   the app's resident memory (from the developer tools' /proc sample) less
   what the rows count, where a leak would show, and the app in all against

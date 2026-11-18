@@ -544,6 +544,95 @@ pub struct PressureRoute {
     pub depth: f32,
 }
 
+/// What a pad's LFO moves (sampler R5 part 4), and how far at full depth
+/// (a depth of -1 moves it as far the other way).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LfoTarget {
+    #[default]
+    Off,
+    /// The pitch: up to 12 semitones either way. A warped layer and a
+    /// grain voice keep their pitch.
+    Pitch,
+    /// The filter's cutoff: up to 4 octaves either way. A pad whose filter
+    /// is off has none to move.
+    Cutoff,
+    /// The level: from full down to silence at full depth (a tremolo).
+    Level,
+    /// The pan: from side to side at full depth.
+    Pan,
+}
+
+/// A pad's LFO (sampler R5 part 4): one on each voice, with the waves of
+/// the Grain page's ([`LfoShape`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PadLfo {
+    pub shape: LfoShape,
+    /// Cycles a second when it runs free ([`LFO_RATE_HZ`]).
+    pub rate_hz: f32,
+    /// Synced: one cycle every this many beats at the project tempo
+    /// ([`LFO_BEATS`]), in place of the rate.
+    pub beats: Option<f32>,
+    pub target: LfoTarget,
+    /// -1 to 1.
+    pub depth: f32,
+    /// Each hit starts the cycle from its start. Off, every voice of the
+    /// pad joins one cycle that runs on between hits: on the transport's
+    /// beats when synced and playing.
+    pub retrig: bool,
+}
+
+/// The free LFO's rates, in Hz.
+pub const LFO_RATE_HZ: std::ops::RangeInclusive<f32> = 0.01..=40.0;
+/// The synced LFO's cycles, in beats.
+pub const LFO_BEATS: std::ops::RangeInclusive<f32> = 0.125..=64.0;
+
+impl Default for PadLfo {
+    /// Off, and when it is given a target: a sine at 5 Hz, a tenth of the
+    /// way (a vibrato of 1.2 semitones on Pitch), from each hit.
+    fn default() -> PadLfo {
+        PadLfo {
+            shape: LfoShape::Sine,
+            rate_hz: 5.0,
+            beats: None,
+            target: LfoTarget::Off,
+            depth: 0.1,
+            retrig: true,
+        }
+    }
+}
+
+impl PadLfo {
+    /// Whether it moves anything.
+    pub fn moves(&self) -> bool {
+        self.target != LfoTarget::Off && self.depth != 0.0
+    }
+}
+
+/// A pad's pitch envelope (sampler R5 part 4): each hit starts
+/// `semitones` from its pitch and comes back to it over `decay_ms`, on an
+/// exponential curve (a kick's drop, a zap, a riser played backwards).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PitchEnv {
+    /// -24 to +24 ([`PITCH_ENV_ST`]); 0 is off.
+    pub semitones: f32,
+    /// How long it takes to come back, in ms ([`PITCH_DECAY_MS`]).
+    pub decay_ms: f32,
+}
+
+/// The pitch envelope's furthest start, in semitones either way.
+pub const PITCH_ENV_ST: f32 = 24.0;
+/// The pitch envelope's decay times, in ms.
+pub const PITCH_DECAY_MS: std::ops::RangeInclusive<f32> = 1.0..=10_000.0;
+
+impl Default for PitchEnv {
+    fn default() -> PitchEnv {
+        PitchEnv {
+            semitones: 0.0,
+            decay_ms: 100.0,
+        }
+    }
+}
+
 /// How a warped region meets the project tempo.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WarpMethod {
@@ -1524,9 +1613,12 @@ fn slice_pad(name: String, mut region: Region, template: Option<&Pad>) -> Pad {
             Pad {
                 name,
                 layers: vec![Layer::new(region)],
-                // A slice is a pad; chop to keys gives it its note.
+                // A slice is a pad; chop to keys gives it its note. It is
+                // hit, not launched, and plays its sound.
                 keys: None,
                 slice: 0,
+                kind: PadKind::Sample,
+                on_launch: false,
                 ..t.clone()
             }
         }
@@ -1566,6 +1658,31 @@ impl Layer {
             pan: 0.0,
             tune_cents: 0,
         }
+    }
+}
+
+/// What a hit on a kit pad does (the Play, Pads and Sequencer redesign's
+/// pad types, its step 6, 18 Nov 2026). A pad keeps its layers whatever
+/// its kind, so switching back to [`PadKind::Sample`] loses nothing. A
+/// loop pad is a Sample pad with latch, a Forward loop, warp and
+/// [`Pad::on_launch`], not a kind of its own.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum PadKind {
+    /// It plays its layers (every pad before 18 Nov).
+    #[default]
+    Sample,
+    /// It plays one voice of the Synth tab's engine `engine` (its id, as
+    /// "poly") at MIDI note `note`; the sampler plays nothing for it.
+    Instrument { engine: String, note: u8 },
+    /// It sends MIDI note `note` on `channel` (1 to 16) to the port named
+    /// `port`, and nothing plays inside MPFree.
+    MidiOut { port: String, channel: u8, note: u8 },
+}
+
+impl PadKind {
+    /// The sampler plays this pad's layers when it is hit.
+    pub fn sounds(&self) -> bool {
+        *self == PadKind::Sample
     }
 }
 
@@ -1629,6 +1746,26 @@ pub struct Pad {
     /// [`crate::engine::PadField::Slice`] picks another for a hit; a note
     /// on keys plays its own slice.
     pub slice: u8,
+    /// The pad's LFO (sampler R5 part 4).
+    pub lfo: PadLfo,
+    /// The pad's pitch envelope (sampler R5 part 4).
+    pub pitch_env: PitchEnv,
+    /// 0 to 1: how much darker a soft hit is than the hardest, up to 4
+    /// octaves lower at the softest when 1 (where the pad has a filter).
+    pub vel_to_cutoff: f32,
+    /// Semitones the softest hit plays below the hardest (-12 to +12; below
+    /// 0, softer hits play higher). A warped layer and a grain voice keep
+    /// their pitch.
+    pub vel_to_pitch: f32,
+    /// What a hit does: plays its layers, an engine's voice, or a note out
+    /// to gear ([`PadKind`]).
+    pub kind: PadKind,
+    /// A hit played live (the pads, a tap on the screen; not a clip's
+    /// note) waits for the project's launch line while the transport
+    /// plays, as a clip's launch does; with latch the next hit stops it on
+    /// the line, held its release waits for the line after it. Loop pads
+    /// and a recall kept in Perform have it.
+    pub on_launch: bool,
 }
 
 /// The longest key fade, in notes.
@@ -1845,6 +1982,12 @@ impl Pad {
             vel_fade: 0,
             vintage: false,
             slice: 0,
+            lfo: PadLfo::default(),
+            pitch_env: PitchEnv::default(),
+            vel_to_cutoff: 0.0,
+            vel_to_pitch: 0.0,
+            kind: PadKind::Sample,
+            on_launch: false,
         }
     }
 
@@ -1867,15 +2010,31 @@ impl Pad {
         self.vel_fade = fade;
     }
 
+    /// Whether its LFO, pitch envelope and velocity routes are in their
+    /// ranges (sampler R5 part 4).
+    fn movement_ok(&self) -> bool {
+        let (l, e) = (&self.lfo, &self.pitch_env);
+        LFO_RATE_HZ.contains(&l.rate_hz)
+            && l.beats.is_none_or(|b| LFO_BEATS.contains(&b))
+            && (-1.0..=1.0).contains(&l.depth)
+            && (-PITCH_ENV_ST..=PITCH_ENV_ST).contains(&e.semitones)
+            && PITCH_DECAY_MS.contains(&e.decay_ms)
+            && (0.0..=1.0).contains(&self.vel_to_cutoff)
+            && (-12.0..=12.0).contains(&self.vel_to_pitch)
+    }
+
     /// The pad `old` with `layer` as its only layer and named `name` (its
     /// envelopes, filter, mute group and the rest kept), or a new pad when
     /// there was none: what [`Project::put_source`] puts.
     pub fn replacing(name: &str, layer: Layer, old: Option<&Pad>) -> Pad {
         match old {
+            // A sound put on a pad of another kind makes it a Sample pad
+            // again: it is there to be heard.
             Some(old) => Pad {
                 name: name.to_string(),
                 layers: vec![layer],
                 select: LayerSelect::All,
+                kind: PadKind::Sample,
                 ..old.clone()
             },
             None => Pad::new(name, layer),
@@ -1914,6 +2073,9 @@ enum Undo {
     },
     /// Several steps made by one command (chop to pads), undone together.
     Group(Vec<Undo>),
+    /// Changes nothing: what made the step it is in, for its name in the
+    /// undo history ([`Project::tag_last`]).
+    Tag(u8),
 }
 
 impl Undo {
@@ -1936,6 +2098,7 @@ impl Undo {
             Undo::PadsPlay { .. } => i.pads_play = true,
             Undo::Rename { .. } => i.named += 1,
             Undo::Group(steps) => steps.iter().for_each(|u| u.add_info(i)),
+            Undo::Tag(t) => i.tag = *t,
         }
     }
 }
@@ -1957,6 +2120,9 @@ pub struct StepInfo {
     pub pads_play: bool,
     /// How many sounds it names.
     pub named: usize,
+    /// What made it, as the page tagged it ([`Project::tag_last`]); 0 if
+    /// untagged.
+    pub tag: u8,
 }
 
 /// The sampler's project: its sources, chop sets, pads and undo history.
@@ -2090,6 +2256,7 @@ impl Project {
             || pad.mute_group.is_some_and(|g| !(1..=16).contains(&g))
             || !depth.is_finite()
             || depth.abs() > 1.0
+            || !pad.movement_ok()
         {
             return Err(ModelError::BadPad);
         }
@@ -2938,6 +3105,7 @@ impl Project {
                 };
                 Undo::Rename { id, before }
             }
+            Undo::Tag(t) => Undo::Tag(t),
             Undo::Group(steps) => {
                 Undo::Group(steps.into_iter().rev().map(|u| self.reverse(u)).collect())
             }
@@ -3004,6 +3172,23 @@ impl Project {
     }
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
+    }
+
+    /// Tags the newest undo step with `tag` (not 0), for its name in the
+    /// undo history ([`StepInfo::tag`]); it undoes as before. False if
+    /// there is no step to tag.
+    pub fn tag_last(&mut self, tag: u8) -> bool {
+        let Some(u) = self.undo.pop() else {
+            return false;
+        };
+        self.undo.push(match u {
+            Undo::Group(mut steps) => {
+                steps.push(Undo::Tag(tag));
+                Undo::Group(steps)
+            }
+            u => Undo::Group(vec![u, Undo::Tag(tag)]),
+        });
+        true
     }
 
     /// The undo history: the steps undo takes back, oldest first, and the

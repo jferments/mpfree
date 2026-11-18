@@ -609,6 +609,14 @@ struct HistoryOpen {
     ask_in: f32,
 }
 
+/// Sample Recall open over a page: the page to go back to, the overlay,
+/// and whether an audition may still be playing.
+struct RecallOpen {
+    back: String,
+    page: mpfree_sampler_ui::recall::RecallPage,
+    heard: bool,
+}
+
 /// The power card open over a page (power.rs): the page to go back to,
 /// and while a save runs before a shut down, how long it has waited and
 /// whether the library's worker has taken it.
@@ -1084,6 +1092,15 @@ pub enum ToUi {
     /// ([`FromUi::Capture`]), and how that ended: for the Sample page to
     /// put on a pad, then free.
     Captured(Box<Held>, crate::mixing::Captured),
+    /// The reading end of the master's last two minutes, which the audio
+    /// thread keeps from start (Sample Recall, sampler decision 3).
+    SampleRecall(Box<mpfree_sampler::record::Input>),
+    /// Sample Recall over the page (sampler R5 part 2): opened on a pad
+    /// (hold a pad + SHIFT + REC), or PLAY, REC or STOP while it is open.
+    Recall(crate::app::RecallKey),
+    /// Q-Link `k` (0 to 3) turned `ticks` while Sample Recall is open:
+    /// Length, Ends at, Fade, Pad.
+    RecallQLink(usize, i32),
     /// One kit's entry changed: its name, pad labels and chip (the synth,
     /// after an octave, engine or pad layout change).
     KitChanged {
@@ -1302,6 +1319,9 @@ pub enum FromUi {
     /// open (true) or closed: while open, the wheel, its push and - / +
     /// are its (as [`crate::app::RowKey`]s) on every page.
     Overlay(bool),
+    /// Sample Recall opened (true) or closed: while open, PLAY, REC and
+    /// STOP are its ([`crate::app::RecallKey`]) and so are Q-Links 1 to 4.
+    Recall(bool),
     /// Whether the wheel's outline is on a control, when that changes (the
     /// mixer's, the chain editor's and the macros panel's wheel then moves
     /// it: [`crate::app::App::set_outline`]).
@@ -1799,6 +1819,8 @@ pub struct Player {
     learning: Option<String>,
     /// The undo history is open over a page.
     history: Option<HistoryOpen>,
+    /// Sample Recall is open over a page (sampler R5 part 2).
+    recall: Option<RecallOpen>,
     /// UNDO is held, and for how long (s).
     undo_held: Option<f32>,
     seen_loop: (usize, usize, usize),
@@ -2062,6 +2084,7 @@ impl Player {
             learn_finger: None,
             learning: None,
             history: None,
+            recall: None,
             undo_held: None,
             seen_loop: (0, 0, 0),
             turns_ready: (false, false),
@@ -5021,6 +5044,8 @@ impl Player {
             .to_string()
         } else if self.history.is_some() {
             HISTORY_HINT.to_string()
+        } else if self.recall.is_some() {
+            mpfree_sampler_ui::recall::HINT.to_string()
         } else if self.kit_list {
             KITS_HINT.to_string()
         } else if self.lane_list {
@@ -5962,6 +5987,179 @@ impl Player {
     }
 
     /// Closes the power card and shows the page it was opened over.
+    /// Opens Sample Recall over the page on kit pad `pad` (hold a pad +
+    /// SHIFT + REC): the master's last two minutes, a bracket over the
+    /// last bars (or seconds), and PLAY, REC and STOP to hear, keep or
+    /// close. The music plays on throughout.
+    fn open_recall(&mut self, pad: usize) {
+        if self.recall.is_some() || self.power.is_some() {
+            return;
+        }
+        if self.sample.recall().is_none() {
+            self.tell("Sample Recall: the master isn't kept yet");
+            return;
+        }
+        let Some((onto, filled)) = self.sample.recall_pads(pad) else {
+            self.tell("Sample Recall: the kits are still loading");
+            return;
+        };
+        self.close_numpad();
+        self.close_history();
+        use mpfree_sampler_ui::recall::{Recall, RecallPage, PAGE};
+        let Some(input) = self.sample.recall() else {
+            return;
+        };
+        if let Err(e) = RecallPage::add(&mut self.ui, input.rate) {
+            self.say(format!("sample: Sample Recall can't open ({e})"));
+            return;
+        }
+        let back = self.ui.page().to_string();
+        let r = Recall::open(input, pad, onto, filled.len());
+        let page = RecallPage::open(&mut self.ui, input, r, self.sample.tempo(), filled);
+        if self.ui.show(PAGE).is_err() {
+            return;
+        }
+        self.recall = Some(RecallOpen {
+            back,
+            page,
+            heard: false,
+        });
+        self.outbox.push(FromUi::Overlay(true));
+        self.outbox.push(FromUi::Recall(true));
+        self.say(format!(
+            "sample: Sample Recall opened on pad {}",
+            crate::app::kit_pad_name(pad)
+        ));
+        self.refresh_hint();
+    }
+
+    /// Closes Sample Recall and shows the page it was opened over; an
+    /// audition still playing stops.
+    fn close_recall(&mut self) {
+        let Some(r) = self.recall.take() else {
+            return;
+        };
+        if r.heard {
+            self.outbox.push(FromUi::PreviewStop);
+        }
+        let _ = self.ui.show(&r.back);
+        self.outbox.push(FromUi::Overlay(false));
+        self.outbox.push(FromUi::Recall(false));
+        self.refresh_hint();
+    }
+
+    /// While Sample Recall is open: the wheel picks a control, - / + step
+    /// it and the push presses it; PLAY, REC and STOP hear, keep and close;
+    /// the Q-Links turn its four. A change of page closes it (false: the
+    /// change goes on).
+    fn recall_input(&mut self, msg: &ToUi) -> bool {
+        use crate::app::{RecallKey, RowKey};
+        let Some(input) = self.sample.recall() else {
+            return false;
+        };
+        let Some(open) = self.recall.as_mut() else {
+            return false;
+        };
+        let ask = match msg {
+            ToUi::SampleWheel(d) | ToUi::Rows(RowKey::Pick(d)) => {
+                open.page.wheel(&mut self.ui, input, *d, false)
+            }
+            ToUi::Rows(RowKey::Step(d)) => open.page.wheel(&mut self.ui, input, *d, true),
+            ToUi::Rows(RowKey::Editing(_)) => open.page.wheel(&mut self.ui, input, 0, true),
+            ToUi::RecallQLink(k, ticks) => {
+                open.page.qlink(&mut self.ui, input, *k, *ticks);
+                mpfree_sampler_ui::recall::Ask::Nothing
+            }
+            ToUi::Recall(RecallKey::Audition) => mpfree_sampler_ui::recall::Ask::Audition,
+            ToUi::Recall(RecallKey::Keep) => mpfree_sampler_ui::recall::Ask::Keep,
+            ToUi::Recall(RecallKey::Close) => {
+                self.close_recall();
+                return true;
+            }
+            // Open again while open: it stays as it is.
+            ToUi::Recall(RecallKey::Open { .. }) => return true,
+            ToUi::Show(_) | ToUi::PlayView(_) => {
+                self.close_recall();
+                return false;
+            }
+            _ => return false,
+        };
+        self.recall_ask(ask);
+        true
+    }
+
+    /// What a press in Sample Recall asks for: hear the bracket, or keep
+    /// it on its pad and close.
+    fn recall_ask(&mut self, ask: mpfree_sampler_ui::recall::Ask) {
+        use mpfree_sampler_ui::recall::Ask;
+        let Some(open) = self.recall.as_mut() else {
+            return;
+        };
+        let r = open.page.recall;
+        match ask {
+            Ask::Nothing => {}
+            Ask::Audition => match self.sample.recall_audition(&r) {
+                Ok(src) => {
+                    open.heard = true;
+                    let p = crate::preview::Preview::new(&src, self.preview_db);
+                    self.outbox.push(FromUi::Preview(Box::new(p)));
+                }
+                Err(e) => self.tell(&format!("Nothing to hear: {e}")),
+            },
+            Ask::Keep => {
+                let before = self.sample.page();
+                let kept = self.sample.recall_keep(&mut self.ui, &r);
+                self.sample_after(before);
+                self.print_sample_lines();
+                match kept {
+                    Ok(pad) => {
+                        self.close_recall();
+                        self.tell(&format!(
+                            "Kept on {pad} · UNDO on Sample or Pads takes it back"
+                        ));
+                    }
+                    Err(e) => self.tell(&format!("Not kept: {e}")),
+                }
+            }
+        }
+    }
+
+    /// A touch on Sample Recall's panel or Q-Link cards.
+    fn recall_event(&mut self, ev: &UiEvent) {
+        use mpfree_sampler_ui::recall::{Ask, LIST, QLINKS};
+        let Some(input) = self.sample.recall() else {
+            return;
+        };
+        let Some(open) = self.recall.as_mut() else {
+            return;
+        };
+        let ask = match (ev.widget.as_str(), &ev.kind) {
+            (LIST, EventKind::Step { index, delta }) => {
+                open.page.step(&mut self.ui, input, *index, *delta)
+            }
+            (LIST, EventKind::Tab(k)) => open.page.step(&mut self.ui, input, *k, 0),
+            (LIST, EventKind::Select(k)) => {
+                // A faint control says why.
+                let why = self
+                    .ui
+                    .get::<mpfree_sampler_ui::widgets::SettingList>(LIST)
+                    .and_then(|l| l.controls.get(*k))
+                    .filter(|c| c.faint && !c.why.is_empty())
+                    .map(|c| c.why.clone());
+                if let Some(why) = why {
+                    self.tell(&why);
+                }
+                Ask::Nothing
+            }
+            (QLINKS, EventKind::Step { index, delta }) => {
+                open.page.qlink(&mut self.ui, input, *index, *delta);
+                Ask::Nothing
+            }
+            _ => Ask::Nothing,
+        };
+        self.recall_ask(ask);
+    }
+
     fn close_power(&mut self) {
         let Some(p) = self.power.take() else {
             return;
@@ -6269,6 +6467,10 @@ impl Player {
                 ToUi::Show(_) | ToUi::PlayView(_) => self.close_history(),
                 _ => {}
             }
+        }
+        // Sample Recall takes them too, and a change of page closes it.
+        if self.recall.is_some() && self.recall_input(&msg) {
+            return;
         }
         // The engines' news of an edit made with the controls (a clip
         // recorded, a knob turned): the work is unsaved.
@@ -7065,6 +7267,14 @@ impl Player {
                 self.sample.captured(&mut self.ui, *held, end);
                 self.print_sample_lines();
             }
+            ToUi::SampleRecall(r) => {
+                self.sample.set_recall(&mut self.ui, *r);
+                self.print_sample_lines();
+            }
+            ToUi::Recall(crate::app::RecallKey::Open { pad }) => self.open_recall(pad),
+            // PLAY, REC and STOP with Sample Recall closed (it closed as
+            // they were pressed): nothing.
+            ToUi::Recall(_) | ToUi::RecallQLink(..) => {}
             ToUi::KitChanged { kit, view } => {
                 if let Some(item) = self
                     .ui
@@ -9152,6 +9362,7 @@ impl Player {
                 | FromUi::UndoReady(_)
                 | FromUi::UndoHistory(_)
                 | FromUi::Overlay(_)
+                | FromUi::Recall(_)
                 | FromUi::SampleFx { .. }
                 | FromUi::SamplePedals(_)
         );
@@ -9881,6 +10092,10 @@ impl Player {
                 EventKind::Tab(_) => self.add_kit_track(),
                 _ => None,
             };
+        }
+        if ev.widget.starts_with(mpfree_sampler_ui::recall::WIDGETS) {
+            self.recall_event(&ev);
+            return None;
         }
         if ev.widget.starts_with(sample_page::PREFIX) {
             let before = self.sample.page();
@@ -10712,6 +10927,10 @@ impl Player {
         if let Some(h) = self.history.as_mut() {
             h.ask_in -= dt.max(0.0);
             self.refresh_history();
+        }
+        // Sample Recall open: it follows the master as it comes in.
+        if let (Some(open), Some(input)) = (self.recall.as_mut(), self.sample.recall()) {
+            open.page.tick(&mut self.ui, input, dt.max(0.0));
         }
         // A finger held on Play's BPM: type the tempo.
         if let Some((f, held, x, y)) = self.tempo_press {
@@ -12201,6 +12420,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::UndoButton(down) => p.apply(ToUi::UndoButton(down)),
             // The desk carries it out (the transport and the looper).
             Effect::Rec(_) => {}
+            Effect::Recall(k) => p.apply(ToUi::Recall(k)),
             Effect::Nav(n) => p.apply(ToUi::Nav(n)),
             Effect::Held { delta, fine } => p.apply(ToUi::Held { delta, fine }),
             Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
@@ -12858,6 +13078,20 @@ fn add_io_sections(ui: &mut Ui, model: &mpfree_midi_ui::Shared) -> Vec<String> {
 /// has overflowed its stack"). Twice that leaves room for the screens to
 /// come.
 pub const SCREENS_STACK: usize = 16 << 20;
+
+/// Held by each test that builds every sample screen at once, so no two
+/// of them run together: each holds about 0.9 GB in a debug build (the
+/// display-list test, which builds two sets, 1.6 GB), and the ARMv7 tests
+/// run as 32-bit programs, where three at once ran out of room (18 Nov
+/// 2026, "memory allocation of 5632000 bytes failed").
+#[cfg(test)]
+pub(crate) static ALL_SCREENS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// [`ALL_SCREENS`], taken even after a test that held it failed.
+#[cfg(test)]
+pub(crate) fn all_screens() -> std::sync::MutexGuard<'static, ()> {
+    ALL_SCREENS.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// Run `f` on a thread with [`SCREENS_STACK`], for the commands that draw
 /// every sample screen (`--preview`, `--display-lists`). It may borrow.
@@ -14510,6 +14744,27 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         rec.take_actions();
     }
     out.push(("sample-rec", rec));
+    // Sample Recall over Play (sampler R5 part 2): 40 s of the master at
+    // the break's 92 BPM with the transport playing, opened on pad A5,
+    // which has the break, so it lands on A6.
+    let mut recall = sample_sampler(fonts());
+    {
+        use crate::sample_page::SCREEN_RECALL_SECONDS;
+        use mpfree_sampler_ui::sample::{feed_input, BPM, PAD, RATE};
+        recall.apply(ToUi::Transport(TransportInfo {
+            bpm: BPM,
+            ..TransportInfo::default()
+        }));
+        settle_views(&mut recall);
+        let (mut feed, input) = mpfree_sampler::record::input16(SCREEN_RECALL_SECONDS, RATE);
+        recall.apply(ToUi::SampleRecall(Box::new(input)));
+        feed_input(&mut feed, 40.0, 0.4, true);
+        recall.apply(ToUi::Show(View::Play));
+        recall.apply(ToUi::Recall(crate::app::RecallKey::Open { pad: PAD }));
+        recall.tick(0.2);
+        recall.take_actions();
+    }
+    out.push(("sample-recall", recall));
     // The FX tab: pad A5's channel with Filter, Drive, Compressor and an
     // EQ switched off, Drive picked (its knobs on the Q-Links).
     let mut fx = sample_sampler(fonts());
@@ -14778,6 +15033,27 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         });
         levels.take_actions();
         out.push(("sample-play-levels", levels));
+    }
+    // The Movement section: a sine LFO on the pitch at 5 Hz (a vibrato),
+    // and a pitch envelope that starts an octave up and drops back over
+    // 200 ms (sampler R5 part 4).
+    {
+        use mpfree_sampler_ui::play_tab::{Row, LIST};
+        let mut moving = sample_sampler(fonts());
+        moving.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
+        });
+        for (row, delta) in [(Row::LfoTo, 1), (Row::PitchEnv, 12), (Row::PitchDecay, 1)] {
+            let index = play_row(&mut moving, row);
+            moving.on_event(UiEvent {
+                widget: LIST.into(),
+                kind: EventKind::Step { index, delta },
+            });
+            moving.apply(ToUi::SampleLift);
+        }
+        moving.take_actions();
+        out.push(("sample-play-movement", moving));
     }
     // 16 LEVEL on Play: the 16 Levels panel, by tune, pad 12 held.
     {
@@ -24756,6 +25032,179 @@ mod tests {
     }
 
     #[test]
+    fn sample_recall_opens_over_arrange_and_keeps_the_last_bars_on_the_next_free_pad() {
+        use crate::app::{RecallKey, RowKey};
+        use crate::sample_page::SCREEN_RECALL_SECONDS;
+        use mpfree_sampler_ui::recall::{self, RecallView};
+        use mpfree_sampler_ui::sample::{feed_input, PAD, RATE};
+        let mut p = sample_sampler(Fonts::embedded());
+        let (mut feed, input) = mpfree_sampler::record::input16(SCREEN_RECALL_SECONDS, RATE);
+        p.apply(ToUi::SampleRecall(Box::new(input)));
+        feed_input(&mut feed, 20.0, 0.4, true);
+        p.apply(ToUi::Show(View::Arrange));
+        let back = p.ui.page().to_string();
+        p.take_actions();
+        // Held on the pad with the break: it lands on the next free one.
+        p.apply(ToUi::Recall(RecallKey::Open { pad: PAD }));
+        assert_eq!(p.ui.page(), recall::PAGE);
+        let acts = p.take_actions();
+        assert!(acts.contains(&FromUi::Overlay(true)) && acts.contains(&FromUi::Recall(true)));
+        let next = crate::app::kit_pad_name(PAD + 1);
+        let v = p.ui.get::<RecallView>(recall::VIEW).unwrap();
+        assert_eq!(v.chip, format!("REC → Pad {next} · Master, effects on"));
+        assert!(v.caption.starts_with("Bars "), "{}", v.caption);
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(
+            hint.starts_with("Hold a pad + SHIFT + REC opened this"),
+            "{hint}"
+        );
+        // It follows the master while open.
+        feed_input(&mut feed, 3.0, 0.4, true);
+        p.tick(0.2);
+        // The wheel to Audition and its push: heard, the music playing on.
+        p.apply(ToUi::Rows(RowKey::Pick(3)));
+        p.apply(ToUi::Rows(RowKey::Editing(true)));
+        assert!(p
+            .take_actions()
+            .iter()
+            .any(|a| matches!(a, FromUi::Preview(_))));
+        // Fade from 5 to 10 ms on its Q-Link.
+        p.apply(ToUi::RecallQLink(2, 5));
+        // REC: kept, and closed over the page it opened on.
+        p.apply(ToUi::Recall(RecallKey::Keep));
+        assert_eq!(p.ui.page(), back);
+        let acts = p.take_actions();
+        assert!(
+            acts.contains(&FromUi::PreviewStop) && acts.contains(&FromUi::Recall(false)),
+            "{acts:?}"
+        );
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l.starts_with("sample: recall bars ")
+                && l.contains(": Recall 1, ")
+                && l.contains(&format!(" stereo on pad {next}, warped at "))),
+            "{log:?}"
+        );
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert_eq!(
+            hint,
+            format!("Kept on {next} · UNDO on Sample or Pads takes it back")
+        );
+        // One undo step, named for it; the fades are its region's.
+        let (_, rows, now) = p.sample.history_rows().unwrap();
+        assert_eq!(rows[now], format!("Recall to {next}"));
+        let layer = &p.sample.project(0).unwrap().pad(PAD + 1).unwrap().layers[0];
+        assert_eq!(layer.region.fade_in.frames, RATE / 100);
+        assert_eq!(layer.region.fade_out.frames, RATE / 100);
+        assert!(layer.region.warp.is_some());
+        // Opened again on the same pad: the next free pad is the one after.
+        p.apply(ToUi::Recall(RecallKey::Open { pad: PAD }));
+        let v = p.ui.get::<RecallView>(recall::VIEW).unwrap();
+        let after = crate::app::kit_pad_name(PAD + 2);
+        assert_eq!(v.chip, format!("REC → Pad {after} · Master, effects on"));
+        // STOP closes it; a change of page would too.
+        p.apply(ToUi::Recall(RecallKey::Close));
+        assert_eq!(p.ui.page(), back);
+        p.apply(ToUi::Recall(RecallKey::Open { pad: PAD }));
+        p.apply(ToUi::Show(View::Play));
+        assert_ne!(p.ui.page(), recall::PAGE);
+        assert!(p.take_actions().contains(&FromUi::Recall(false)));
+    }
+
+    #[test]
+    fn the_rec_tabs_master_reads_what_sample_recall_keeps_with_no_buffer_of_its_own() {
+        use crate::sample_page::{master_source, SCREEN_RECALL_SECONDS};
+        use crate::sampler::RecSource;
+        use mpfree_sampler_ui::rec_tab::{self, Row};
+        use mpfree_sampler_ui::sample::{feed_input, RATE};
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let take = |p: &mut Player| {
+            let (sent, rest) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+            rest
+        };
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(rec_tab::TAB),
+        );
+        let source = Row::ALL.iter().position(|r| *r == Row::Source).unwrap();
+        let step = |p: &mut Player, delta: i32| {
+            p.on_event(UiEvent {
+                widget: rec_tab::LIST.into(),
+                kind: EventKind::Step {
+                    index: source,
+                    delta,
+                },
+            })
+        };
+        // Before the recall's reading end comes, Master gets a buffer of its
+        // own, as before.
+        step(&mut p, 1);
+        take(&mut p);
+        let mut acts = take(&mut p);
+        let Some(FromUi::SampleInput(Some(own))) = acts.pop() else {
+            panic!("the input's writer");
+        };
+        // The audio thread's buffer of the master comes: Master reads it,
+        // and its own buffer is asked back to be freed.
+        let (mut recall, input) = mpfree_sampler::record::input16(SCREEN_RECALL_SECONDS, RATE);
+        p.apply(ToUi::SampleRecall(Box::new(input)));
+        let log = events_log(&p);
+        assert!(
+            log.iter()
+                .any(|l| l == "sample: Sample Recall keeps the master's last 0:48 (8.5 MB)")
+                && log.iter().any(|l| l
+                    == "sample: the sampler resamples the master from what Sample Recall keeps \
+                        (nothing more held)"),
+            "{log:?}"
+        );
+        let mut acts = take(&mut p);
+        assert!(matches!(acts.pop(), Some(FromUi::SampleInput(None))));
+        p.apply(ToUi::SampleInputBack(own));
+        let m = p.sample.memory();
+        assert_eq!((m.input, m.recall), (0, 8_467_200));
+        // What the master played before it was picked is there too: Skip
+        // back keeps the last 10 s of it.
+        feed_input(&mut recall, 12.0, 0.4, true);
+        p.tick(0.033);
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Tab(Row::BUTTONS[1].index()),
+        );
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == "sample: skip back 10 s: Master take 1, 10.00 s stereo on pad A6"),
+            "{:?}",
+            events_log(&p)
+        );
+        // To the line input (off) and back: nothing to hand back or send.
+        step(&mut p, -1);
+        assert!(matches!(
+            take(&mut p).as_slice(),
+            [FromUi::SampleSource(RecSource::Line)]
+        ));
+        assert!(take(&mut p).is_empty(), "the master's buffer stays");
+        step(&mut p, 1);
+        assert!(matches!(
+            take(&mut p).as_slice(),
+            [FromUi::SampleSource(s)] if *s == master_source()
+        ));
+        assert!(take(&mut p).is_empty(), "no buffer of its own");
+        assert_eq!(p.sample.memory().input, 0);
+    }
+
+    #[test]
     fn bars_printed_to_a_pad_loop_and_land_warped_at_the_project_tempo() {
         use mpfree_sampler_ui::rec_tab::{self, Row, Skip, TailAt};
         use mpfree_sampler_ui::sample::feed_input;
@@ -27043,6 +27492,7 @@ mod tests {
 
     #[test]
     fn every_sample_screen_draws() {
+        let _alone = all_screens();
         // sample_screens builds every screen's Player in one frame, which in
         // a debug build outgrows the 2 MiB test thread, so draw them on a
         // thread with SCREENS_STACK.
@@ -27094,6 +27544,7 @@ mod tests {
     /// each list sends (`--nocapture` prints the table).
     #[test]
     fn every_sample_screen_plays_back_the_same_from_its_display_list() {
+        let _alone = all_screens();
         std::thread::Builder::new()
             .stack_size(SCREENS_STACK)
             .spawn(|| {
@@ -27315,6 +27766,7 @@ mod tests {
     /// every row of it).
     #[test]
     fn no_page_redraws_while_idle() {
+        let _alone = all_screens();
         // The sample screens outgrow the 2 MiB test thread in a debug build
         // (as above).
         std::thread::Builder::new()

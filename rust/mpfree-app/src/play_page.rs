@@ -1456,6 +1456,15 @@ impl PlayPage {
                 }
                 p if p == PadField::Attack as u16 => ("Attack".to_string(), format!("{v:.0} ms")),
                 p if p == PadField::Release as u16 => ("Release".to_string(), format!("{v:.0} ms")),
+                p if p == PadField::LfoDepth as u16 => {
+                    ("LFO depth".to_string(), format!("{:+.0} %", v * 100.0))
+                }
+                p if p == PadField::PitchEnv as u16 => {
+                    ("Pitch env".to_string(), format!("{v:+.1} st"))
+                }
+                p if p == PadField::PitchDecay as u16 => {
+                    ("Pitch decay".to_string(), format!("{v:.0} ms"))
+                }
                 // Slices count from 1 on the screen, from 0 in the engine.
                 p if p == PadField::Slice as u16 => (
                     "Slice".to_string(),
