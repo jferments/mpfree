@@ -13824,6 +13824,27 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         rec.take_actions();
     }
     out.push(("sample-rec", rec));
+    // Sample Recall over Play (sampler R5 part 2): 40 s of the master at
+    // the break's 92 BPM with the transport playing, opened on pad A5,
+    // which has the break, so it lands on A6.
+    let mut recall = sample_sampler(fonts());
+    {
+        use crate::sample_page::RECALL_SECONDS;
+        use mpfree_sampler_ui::sample::{feed_input, BPM, PAD, RATE};
+        recall.apply(ToUi::Transport(TransportInfo {
+            bpm: BPM,
+            ..TransportInfo::default()
+        }));
+        settle_views(&mut recall);
+        let (mut feed, input) = mpfree_sampler::record::input16(RECALL_SECONDS, RATE);
+        recall.apply(ToUi::SampleRecall(Box::new(input)));
+        feed_input(&mut feed, 40.0, 0.4, true);
+        recall.apply(ToUi::Show(View::Play));
+        recall.apply(ToUi::Recall(crate::app::RecallKey::Open { pad: PAD }));
+        recall.tick(0.2);
+        recall.take_actions();
+    }
+    out.push(("sample-recall", recall));
     // The FX tab: pad A5's channel with Filter, Drive, Compressor and an
     // EQ switched off, Drive picked (its knobs on the Q-Links).
     let mut fx = sample_sampler(fonts());

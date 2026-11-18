@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/warp_tab.rs rust/mpfree-sampler-ui/src/chop_tab.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
+covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/recall.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/warp_tab.rs rust/mpfree-sampler-ui/src/chop_tab.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
 checked: 2026-11-16 ececc7e
 -->
 
@@ -112,7 +112,31 @@ A take that starts on the bar line and lasts whole bars lands warped to the proj
 Use it to free up a busy pad, or to chop a sound you have already shaped.
 
 > [!TIP]
-> Resampling is the classic MPC trick: play the loop, the synth or the whole mix into a pad, then chop it and play it again. Pick **Master** as the Source and use **Skip back** after a jam you liked. MPFree always keeps the last two minutes of what you hear, so Skip back on **Master** reaches back to before you picked it.
+> Resampling is the classic MPC trick: play the loop, the synth or the whole mix into a pad, then chop it and play it again. Pick **Master** as the Source and use **Skip back** after a jam you liked. MPFree always keeps the last two minutes of what you hear, so Skip back on **Master** reaches back to before you picked it. From any other page, [Sample Recall](#sample-recall-keep-what-just-played-from-any-page) does the same without leaving it.
+
+## Sample Recall: keep what just played, from any page
+
+MPFree always keeps the last two minutes of what you hear. When something good just happened (a fill, a lucky loop, a few bars of the whole mix), you can put it on a pad without stopping or leaving the page you're on.
+
+1. **Hold the pad** you want it on and press **SHIFT + REC**.
+2. Sample Recall opens over the page. While the music plays it brackets the **last 4 whole bars**; stopped, the **last 10 seconds**.
+3. Press **PLAY** to hear the bracket over the music, **REC** to keep it, or **STOP** to close without keeping. The music keeps playing either way.
+
+{{shot: sample-recall | Sample Recall opened from Play on pad A5: the last two minutes along the top with their bar numbers, bars 12 to 15 bracketed and drawn large, and Keep landing them on A6, the next free pad.}}
+
+Kept, the bracket lands on the pad you held if it is empty, or else on the next empty pad in its bank (the panel says which: "Pad A6 · next free"). It is cut on the bar lines, with a short fade in and out, and with **Warp** on it plays in time at the project's tempo from then on. The pad is picked, so **SAMPLE EDIT** opens it on the Sample tab, ready to chop. It is one step on the Sample and Pads tabs: **UNDO** there takes it back (the history calls it "Recall to A6").
+
+| Control | What it does |
+|---|---|
+| **Length** | 1, 2, 4, 8 or 16 whole bars, ending on the last bar line; or **Free**, a number of seconds ending where Sample Recall opened. |
+| **Lands on** | The pad it keeps onto. Step it to another pad; on a pad that already has a sound it says "replaces its sound". |
+| **Warp** | On: whole bars play in time at the project's tempo. Free always lands as played. |
+| **Audition**, **Keep** | The same as PLAY and REC. |
+
+The Q-Links turn **Length** (through the bars, then Free's seconds up to two minutes), **Ends at** (a bar further back each step, or a tenth of a second on Free), **Fade** (0 to 50 ms) and **Pad**.
+
+> [!NOTE]
+> **SHIFT + REC** without a pad held is still [Capture](clips.md#capture-keep-what-you-just-played). A held pad only counts while the pads play the kit: with **STEP SEQ**, **TRACK MUTE** or **16 LEVEL** on, or a synth on the pads, SHIFT + REC is Capture too. While a recording is ready, counting in or running, Sample Recall waits: finish the take first.
 
 ## Send to pad and Chop to pads
 
