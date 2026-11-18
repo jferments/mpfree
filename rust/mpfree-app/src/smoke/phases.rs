@@ -807,6 +807,45 @@ mod looper {
         });
     }
 
+    /// Learn a key (board 7): a key learned on a Perform pad plays it on
+    /// any page, whatever the MPC's pads show. On Play, with the pads
+    /// playing the kit, B2's key plays Reverb wash while held and lets it
+    /// go; an empty pad's key says so; and a controller unplugged with the
+    /// key held lets the throw go.
+    #[test]
+    fn a_key_learned_on_a_perform_pad_plays_it_from_any_page() {
+        use mpfree_play::mpfree_param::perform;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Play");
+            assert!(!s.app.pads_are_perform());
+            let b2 = perform::pad(1, 1);
+            s.perform_key(b2, 1.0);
+            assert_eq!(s.app.throws_on().len(), 1, "Reverb wash plays");
+            let said = s.said();
+            assert!(said
+                .iter()
+                .any(|l| l == "perform: Perform pads B2, from a learned key"));
+            assert!(said.iter().any(|l| l == "perform: Reverb wash"));
+            s.perform_key(b2, 0.0);
+            assert!(s.app.throws_on().is_empty(), "let go");
+            // An empty pad: nothing plays, and the log says why.
+            s.perform_key(perform::pad(1, 15), 1.0);
+            assert!(s.app.throws_on().is_empty());
+            assert!(s
+                .said()
+                .iter()
+                .any(|l| l == "perform: Perform pads B16 has nothing on it, from a learned key"));
+            s.perform_key(perform::pad(1, 15), 0.0);
+            // Unplugged while held: the throw lets go.
+            s.perform_key(b2, 1.0);
+            assert_eq!(s.app.throws_on().len(), 1);
+            s.unplug_perform_keys();
+            assert!(s.app.throws_on().is_empty(), "nothing stays held");
+            assert!(!s.app.pads_are_perform(), "the pads never moved");
+        });
+    }
+
     /// The Perform view's Q-Links on a throw that plays on Drums turn its
     /// Feedback on the Drums track's Perform FX, through the desk to the
     /// mixer; a run of turns is one UNDO step there; Edit the effect opens
@@ -1815,6 +1854,35 @@ mod track_kits {
             assert_eq!(s.time.armed(), Some(n));
             assert_eq!(s.track_kits.entry(n), 0);
             assert_eq!(s.kit, 0, "the pads play kit 1");
+            assert!(!s.track_kits.set_aside(1), "the kit is the project's again");
+        });
+    }
+
+    /// A new track given a kit of its own, UNDO, REDO: one UNDO takes the
+    /// track and its kit (set aside, out of the list of kits), and one
+    /// REDO brings both back.
+    #[test]
+    fn redo_brings_a_track_back_with_its_kit() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            assert!(s.kits() > 1, "a second kit to give");
+            let n = s.time.track_count();
+            s.route(FromUi::Time(TimeAction::AddTrack));
+            s.run_periods(4);
+            s.route(FromUi::Kit(1));
+            s.run_periods(4);
+            assert_eq!(s.track_kits.entry(n), 1);
+            s.route(FromUi::Time(TimeAction::Undo));
+            s.run_periods(4);
+            assert_eq!(s.time.track_count(), n);
+            assert_eq!(s.track_kits.entry(n), 0);
+            assert!(s.track_kits.set_aside(1), "kit 2 waits for REDO");
+            s.route(FromUi::Time(TimeAction::Redo));
+            s.run_periods(4);
+            assert_eq!(s.time.track_count(), n + 1);
+            assert_eq!(s.track_kits.entry(n), 1, "back on its kit");
+            assert!(!s.track_kits.set_aside(1));
         });
     }
 }

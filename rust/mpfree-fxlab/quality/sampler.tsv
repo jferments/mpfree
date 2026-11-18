@@ -1,11 +1,17 @@
 # The sampler's quality ratchet: every number may stay or get better, never worse.
 # Written by `MPFREE_QUALITY_BLESS=1 cargo test --locked -p mpfree-fxlab --test sampler`;
 # see docs/dev/design/fx-quality.md ("The sampler"). key<TAB>value
+sampler/comb[220 Hz, resonance 1, pink noise]/level_db	-2.2325
+sampler/comb[220 Hz, resonance 1, white noise]/level_db	-3.9048
+sampler/comb[220 Hz, resonance 1]/pitch_error_cents	0.0496
+sampler/comb[3300 Hz, resonance 1]/pitch_error_cents	0.3023
 sampler/drive[ladder open, 12 dB, 2.5 kHz at 0 dBFS]/alias_worst_db	-108.9352
 sampler/drive[ladder open, 12 dB, 5 kHz at 0 dBFS]/alias_worst_db	-83.9248
 sampler/drive[ladder open, 24 dB, 2.5 kHz at 0 dBFS]/alias_worst_db	-64.9792
 sampler/drive[ladder open, 24 dB, 5 kHz at 0 dBFS]/alias_worst_db	-44.3166
 sampler/filter[band-pass 2-pole, resonance 0.5, 1 kHz]/error_db	1.0164
+sampler/filter[comb, resonance 0.5, 1 kHz]/error_db	0.0481
+sampler/filter[comb, resonance 0.9, 1 kHz]/error_db	0.3362
 sampler/filter[high-pass 2-pole, 1 kHz]/error_db	0.0279
 sampler/filter[ladder, 1 kHz]/error_db	0.1355
 sampler/filter[ladder, resonance 0.5, 1 kHz]/error_db	0.2804

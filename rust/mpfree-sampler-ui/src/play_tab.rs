@@ -674,9 +674,9 @@ const SELECTS: [LayerSelect; 3] = [LayerSelect::All, LayerSelect::Cycle, LayerSe
 /// What the kit's pads play, as the Pads play row steps through them.
 const PADS_PLAY: [&str; 3] = ["Their sounds", "Notes", "16 Levels"];
 
-/// The filter types the Filter row steps through (the Ladder is 4-pole and
-/// the Vowel two formants, whatever the poles).
-const FILTERS: [(FilterKind, u8); 11] = [
+/// The filter types the Filter row steps through (the Ladder is 4-pole,
+/// the Vowel two formants and the Comb a delay, whatever the poles).
+const FILTERS: [(FilterKind, u8); 12] = [
     (FilterKind::Off, 2),
     (FilterKind::LowPass, 2),
     (FilterKind::LowPass, 4),
@@ -688,6 +688,7 @@ const FILTERS: [(FilterKind, u8); 11] = [
     (FilterKind::Notch, 4),
     (FilterKind::Ladder, 4),
     (FilterKind::Vowel, 2),
+    (FilterKind::Comb, 2),
 ];
 
 const PRESSURE: [PressureTarget; 8] = [
@@ -1576,6 +1577,9 @@ impl PlayTab {
                     }
                     FilterKind::Vowel => {
                         f.caption += &format!(" · \"{}\"", vowel_name(p.filter.cutoff_hz))
+                    }
+                    FilterKind::Comb => {
+                        f.caption += &format!(" · rings at {}", note_of(p.filter.cutoff_hz))
                     }
                     _ => {}
                 }
@@ -2842,6 +2846,7 @@ fn section_text(st: &PlayState, s: Section) -> String {
         Section::Filter => match p.filter.kind {
             FilterKind::Off => "Off".into(),
             FilterKind::Vowel => format!("Vowel · {}", vowel_name(p.filter.cutoff_hz)),
+            FilterKind::Comb => format!("Comb · {}", note_of(p.filter.cutoff_hz)),
             _ => format!(
                 "{} · {}",
                 filter_label(&p.filter)
@@ -3445,6 +3450,12 @@ pub fn value_text(p: &Pad, row: Row) -> String {
             hz_text(p.filter.cutoff_hz),
             vowel_name(p.filter.cutoff_hz)
         ),
+        // A comb's cutoff is its pitch: "220 Hz · A3".
+        Row::Cutoff if p.filter.kind == FilterKind::Comb => format!(
+            "{} · {}",
+            hz_text(p.filter.cutoff_hz),
+            note_of(p.filter.cutoff_hz)
+        ),
         Row::Cutoff => hz_text(p.filter.cutoff_hz),
         Row::Resonance => format!("{} %", percent(p.filter.resonance)),
         Row::Drive if p.filter.drive_db == 0.0 => "Off".into(),
@@ -3694,6 +3705,19 @@ pub fn pressure_label(t: PressureTarget) -> &'static str {
     }
 }
 
+/// The note nearest `hz` (A4 = 440 Hz, C4 middle C): "A3", "C#5".
+pub fn note_of(hz: f32) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let midi = (69.0 + 12.0 * (hz.max(1.0) / 440.0).log2()).round() as i32;
+    format!(
+        "{}{}",
+        NAMES[midi.rem_euclid(12) as usize],
+        midi.div_euclid(12) - 1
+    )
+}
+
 pub fn filter_label(f: &Filter) -> String {
     let kind = match f.kind {
         FilterKind::Off => return "Off".into(),
@@ -3703,6 +3727,7 @@ pub fn filter_label(f: &Filter) -> String {
         FilterKind::Notch => "Notch",
         FilterKind::Ladder => return "Ladder".into(),
         FilterKind::Vowel => return "Vowel".into(),
+        FilterKind::Comb => return "Comb".into(),
     };
     format!("{kind} {}-pole", if f.poles >= 4 { 4 } else { 2 })
 }

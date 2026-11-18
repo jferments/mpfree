@@ -263,6 +263,10 @@ pub enum FilterKind {
     /// through "oh", "ah" and "eh" to "ee" ([`vowel_formants`], sampler
     /// R5.6).
     Vowel,
+    /// A comb with feedback: the sound plus itself a short delay later,
+    /// over and over, so it rings at the cutoff's pitch and its overtones.
+    /// Resonance is the feedback ([`Comb`], sampler R5.6).
+    Comb,
 }
 
 /// A filter setting. `poles` is 2 or 4 (4 = two 2-pole stages in series).
@@ -558,6 +562,192 @@ impl Ladder {
     }
 }
 
+/// The comb's lowest pitch: its delay line holds one cycle of it.
+pub const COMB_MIN_HZ: f32 = 20.0;
+
+/// The comb's feedback at Resonance 1: it rings for about a second at
+/// 100 Hz (-60 dB in `6.9 / (-ln 0.97)` cycles, about 230), and never runs
+/// away.
+pub const COMB_FEEDBACK: f32 = 0.97;
+
+/// The comb's gain after the loop at `resonance` (0 to 1): `sqrt(1 - g²)`
+/// for feedback `g`, so noise or a full sound comes out at its own
+/// loudness (RMS) at any feedback; a tone right on a peak comes out up to
+/// `sqrt((1 + g) / (1 - g))` louder (18 dB at full feedback).
+pub fn comb_gain(resonance: f32) -> f32 {
+    let g = COMB_FEEDBACK * resonance.clamp(0.0, 1.0);
+    (1.0 - g * g).sqrt()
+}
+
+/// A Comb filter's gain at `hz` (dB): the loop `1 / (1 - g e^(-jwD))` at
+/// the cutoff's delay `D`, times [`comb_gain`]. For the Play page's
+/// picture.
+pub fn comb_db(cutoff_hz: f32, resonance: f32, hz: f32) -> f32 {
+    let g = COMB_FEEDBACK * resonance.clamp(0.0, 1.0);
+    let phase = 2.0 * PI * hz / cutoff_hz.max(COMB_MIN_HZ);
+    let (re, im) = (1.0 - g * phase.cos(), g * phase.sin());
+    let k = comb_gain(resonance);
+    // The DC blocker, as an analog one-pole high-pass.
+    let x = hz / COMB_DC_HZ;
+    let hp = x * x / (1.0 + x * x);
+    10.0 * (hp * k * k / (re * re + im * im)).max(1e-12).log10()
+}
+
+/// A feedback comb filter, both channels (sampler R5.6): `y = x + g y(t -
+/// D)` with `D` one cycle of the cutoff, read between samples with
+/// [`hermite`], then [`comb_gain`] and a DC blocker ([`COMB_DC_HZ`]). The delay glides to a new cutoff over
+/// the frames until the next [`Comb::set`], so an envelope or a knob
+/// sweeping it doesn't step. Its line is made with the voice
+/// ([`Comb::new`], before the sound starts) and only reused after:
+/// [`Comb::reset`] forgets what it held without clearing it (a read past
+/// what was written since gives silence). One per voice.
+#[derive(Clone, Debug, Default)]
+pub struct Comb {
+    /// The line, a power of two long: each frame's two channels.
+    line: Box<[[f32; 2]]>,
+    /// The next frame's place in the line.
+    at: usize,
+    /// Frames written since the reset, up to the line's length.
+    written: usize,
+    /// The delay (frames) now, where it glides to and by how much a frame,
+    /// and the frames left of the glide. 0: not set since the reset.
+    delay: f32,
+    delay_to: f32,
+    delay_step: f32,
+    glide_left: u32,
+    feedback: f32,
+    gain: f32,
+    /// The DC blocker after it: its pole, and each channel's last input
+    /// and output.
+    pole: f32,
+    dc: [[f32; 2]; 2],
+    /// The loudest output since `cycle_left` last ran out, the loudest
+    /// over the last whole cycle before that, and the frames left of this
+    /// one.
+    peak_now: f32,
+    peak_cycle: f32,
+    cycle_left: u32,
+}
+
+/// Under this (-80 dBFS) for a whole cycle, the comb's ringing is over
+/// ([`Comb::rings`]).
+pub const COMB_QUIET: f32 = 1.0e-4;
+
+/// Where the comb's DC blocker turns (Hz): its loop's lowest peak is at
+/// 0 Hz, which would lift rumble and any offset 18 dB.
+pub const COMB_DC_HZ: f32 = 10.0;
+
+impl Comb {
+    /// A comb whose line holds one cycle of [`COMB_MIN_HZ`] at `rate`.
+    /// Allocates.
+    pub fn new(rate: f32) -> Comb {
+        let n = ((rate / COMB_MIN_HZ).ceil() as usize + 8).next_power_of_two();
+        Comb {
+            line: vec![[0.0; 2]; n].into_boxed_slice(),
+            gain: 1.0,
+            pole: 1.0 - 2.0 * PI * COMB_DC_HZ / rate,
+            ..Comb::default()
+        }
+    }
+
+    /// For a new note: the line holds nothing (without touching it).
+    pub fn reset(&mut self) {
+        self.written = 0;
+        self.delay = 0.0;
+        self.glide_left = 0;
+        self.dc = [[0.0; 2]; 2];
+        self.peak_now = 0.0;
+        self.peak_cycle = 0.0;
+        self.cycle_left = 0;
+    }
+
+    /// Whether it still rings: something was written since the reset, and
+    /// its output reached [`COMB_QUIET`] in the last whole cycle or the
+    /// one under way.
+    #[inline]
+    pub fn rings(&self) -> bool {
+        self.written > 0 && self.peak_cycle.max(self.peak_now) >= COMB_QUIET
+    }
+
+    /// Pitch `cutoff_hz` (its delay one cycle of it), feedback from
+    /// `resonance` (0 to 1), gliding there over the next `frames` frames
+    /// (at once after a reset).
+    pub fn set(&mut self, cutoff_hz: f32, resonance: f32, rate: f32, frames: u32) {
+        let longest = self.line.len().saturating_sub(4).max(2) as f32;
+        let d = (rate / cutoff_hz.max(COMB_MIN_HZ)).clamp(2.0, longest);
+        self.feedback = COMB_FEEDBACK * resonance.clamp(0.0, 1.0);
+        self.gain = comb_gain(resonance);
+        self.delay_to = d;
+        if self.delay == 0.0 || frames == 0 {
+            self.delay = d;
+            self.glide_left = 0;
+        } else {
+            self.delay_step = (d - self.delay) / frames as f32;
+            self.glide_left = frames;
+        }
+    }
+
+    /// The frame `k` frames back (1: the last one written), or silence
+    /// past what was written since the reset.
+    #[inline(always)]
+    fn back(&self, k: usize) -> [f32; 2] {
+        if k > self.written {
+            return [0.0; 2];
+        }
+        self.line[self.at.wrapping_sub(k) & (self.line.len() - 1)]
+    }
+
+    /// One frame of both channels.
+    #[inline]
+    pub fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        let n = self.line.len();
+        if n == 0 {
+            return (l, r);
+        }
+        if self.glide_left > 0 {
+            self.glide_left -= 1;
+            self.delay = if self.glide_left == 0 {
+                self.delay_to
+            } else {
+                self.delay + self.delay_step
+            };
+        }
+        // `delay` frames back: between `i` and `i + 1` back.
+        let i = self.delay as usize;
+        let t = self.delay - i as f32;
+        let (a, b, c, d) = (
+            self.back(i - 1),
+            self.back(i),
+            self.back(i + 1),
+            self.back(i + 2),
+        );
+        let fl = hermite(a[0], b[0], c[0], d[0], t);
+        let fr = hermite(a[1], b[1], c[1], d[1], t);
+        let tiny = |x: f32| if x.abs() < TINY { 0.0 } else { x };
+        let y = [tiny(l + self.feedback * fl), tiny(r + self.feedback * fr)];
+        self.line[self.at] = y;
+        self.at = (self.at + 1) & (n - 1);
+        if self.written < n {
+            self.written += 1;
+        }
+        let mut out = [0.0; 2];
+        for (c, o) in out.iter_mut().enumerate() {
+            let [x1, y1] = self.dc[c];
+            let x = y[c] * self.gain;
+            *o = tiny(x - x1 + self.pole * y1);
+            self.dc[c] = [x, *o];
+        }
+        self.peak_now = self.peak_now.max(out[0].abs()).max(out[1].abs());
+        if self.cycle_left == 0 {
+            self.peak_cycle = self.peak_now;
+            self.peak_now = 0.0;
+            self.cycle_left = self.delay as u32 + 1;
+        }
+        self.cycle_left -= 1;
+        (out[0], out[1])
+    }
+}
+
 /// The two formants (Hz) of the vowel at `cutoff_hz` (sampler R5.6): 200 Hz
 /// and below is "oo", then "oh", "ah", "eh" and, from 5 kHz, "ee", each
 /// gliding into the next. Male voice formants (Peterson and Barney 1952).
@@ -689,8 +879,9 @@ impl Svf {
             FilterKind::Notch => x - self.k * v1,
             // A formant: the band-pass, its peak at unity.
             FilterKind::Vowel => self.k * v1,
-            // The ladder runs on its own ([`Ladder`]).
-            FilterKind::Ladder => v2,
+            // The ladder and the comb run on their own ([`Ladder`],
+            // [`Comb`]).
+            FilterKind::Ladder | FilterKind::Comb => v2,
         }
     }
 }

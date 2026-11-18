@@ -978,6 +978,44 @@ pub fn perform_pad_up(
     }
 }
 
+/// A key learned on a Perform pad (Learn a key; `remote::PerformAct`), on
+/// any page: pressed, the pad's action plays as a hit on it does
+/// ([`perform_pad_on`], with the drum pads Drop drums mutes, `drums`), and
+/// the log says which pad; let go, its let-go ([`perform_pad_up`]). A
+/// loop key's hold clears its loop through [`perform_pad_held`].
+pub fn perform_remote(
+    app: &mut app::App,
+    time: &time::TimeHost,
+    looper: &looping::LoopHost,
+    out: &mut Out,
+    act: crate::remote::PerformAct,
+    drums: u16,
+) -> Vec<app::Effect> {
+    use crate::perform_pads::PadAction;
+    use crate::remote::PerformAct;
+    match act {
+        PerformAct::Nothing => Vec::new(),
+        PerformAct::Down { page, pad, action } => {
+            let label = crate::perform_tab::pad_label(usize::from(page), usize::from(pad));
+            if action == PadAction::None {
+                out.note(&format!(
+                    "perform: Perform pads {label} has nothing on it, from a learned key"
+                ));
+                return Vec::new();
+            }
+            out.note(&format!(
+                "perform: Perform pads {label}, from a learned key"
+            ));
+            let (fx, line) = perform_pad_on(app, time, looper, out, action, drums);
+            if !line.is_empty() {
+                out.note(&line);
+            }
+            fx
+        }
+        PerformAct::Up(action) => perform_pad_up(app, action),
+    }
+}
+
 /// A learned control on the looper (its footswitch; `remote::LooperAct`),
 /// on any page: a loop's key does what its pad does ([`perform_pad_on`]),
 /// a mute mutes the loop or lets it play, Next loop picks the next one,
