@@ -261,8 +261,12 @@ const XY_LIST_HINT: &str =
     "Tap what the XY pad plays   ·   the chip or Close: close   ·   a view: close";
 
 /// The hint while the REC chip's target list is open.
+/// The REC chip names the armed tracks one by one up to this many
+/// characters ("Drums + Bass + Keys"), else "Drums + 2 tracks".
+const ARMED_NAMES_MAX: usize = 24;
+
 const REC_LIST_HINT: &str =
-    "Tap a row: record into it   ·   SHIFT + tap: both   ·   Rec song: the grid into the song   ·   \
+    "Tap a row: record into it   ·   SHIFT + tap: that too   ·   Rec song: the grid into the song   ·   \
      Pin: only a tap on Arm moves the arm   ·   the chip or Close: close";
 
 /// The hint while the notes are ready ([`crate::rec_arm`]): what PLAY
@@ -1317,6 +1321,12 @@ pub enum FromUi {
     /// SHIFT + a tap on an Arm pill or a row: REC records both targets, or,
     /// with both armed, lets go of the one tapped.
     ArmAdd(crate::rec_arm::Target),
+    /// A plain tap on a track's row of the target list: that track plays
+    /// the pads and its notes record, alone (as picking it does).
+    ArmTrack(usize),
+    /// SHIFT + a tap on a track's row: REC records that track's notes too
+    /// (what its MIDI input sends it), or lets go of it (`RecArm::add_track`).
+    ArmTrackAdd(usize),
     /// The target list's Pin the arm: only a tap on Arm moves it.
     RecPin(bool),
     /// The Sample tab's recorder on the pad take: it records, or it ended
@@ -1760,7 +1770,7 @@ pub struct Player {
     menu_editing: bool,
     /// The Sample page's Play tab showed its keyboard, a row that pad hits
     /// edit, and the Wave page's REC on (each changes its hint).
-    sample_keys: (bool, bool, bool, bool, bool),
+    sample_keys: (bool, bool, bool, bool, (bool, bool)),
     /// What the REC chip last called the Wave page's REC take.
     here_chip: Option<String>,
     /// What the Play page's Q-Links turn, as its hint names them.
@@ -2296,7 +2306,7 @@ impl Player {
             screen_row: ("-".to_string(), Tone::Dim),
             timed,
             menu_editing: false,
-            sample_keys: (false, false, false, false, false),
+            sample_keys: (false, false, false, false, (false, false)),
             here_chip: None,
             sample_qlinks: String::new(),
             sample_live: false,
@@ -4445,22 +4455,76 @@ impl Player {
                 if st.layers == 1 { "" } else { "s" }
             )
         };
-        let rows = vec![
-            ListRow {
+        // A row for each track's notes, in track order (not the Loop
+        // tracks: the loop's row records them), then the loop.
+        let main = self.time.armed;
+        let notes_pill = pill(Target::Notes);
+        let mut rows: Vec<ListRow> = self
+            .time
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, tr)| tr.loops.is_none())
+            .map(|(t, tr)| {
+                let also = self.time.also & (1u128 << t.min(127)) != 0;
+                let armed = self.rec.armed(Target::Notes) && (main == Some(t) || also);
+                if main == Some(t) {
+                    ListRow {
+                        target: Target::Notes,
+                        track: Some(t),
+                        pill: if armed {
+                            notes_pill
+                        } else {
+                            play_widgets::ArmPill::Arm
+                        },
+                        // The clip the pattern shows, as the chip names it.
+                        title: format!(
+                            "{} · {}",
+                            tr.name,
+                            notes.split_once(" · ").map_or(notes.as_str(), |(_, c)| c)
+                        ),
+                        sub: "plays the pads".to_string(),
+                        right: count_in.clone(),
+                    }
+                } else {
+                    ListRow {
+                        target: Target::Notes,
+                        track: Some(t),
+                        pill: if armed {
+                            notes_pill
+                        } else {
+                            play_widgets::ArmPill::Arm
+                        },
+                        title: format!("{} · {}", tr.name, self.time_clip_name(t)),
+                        sub: if armed {
+                            "records its MIDI input too"
+                        } else {
+                            "SHIFT + tap: record it too"
+                        }
+                        .to_string(),
+                        right: String::new(),
+                    }
+                }
+            })
+            .collect();
+        if rows.is_empty() {
+            rows.push(ListRow {
                 target: Target::Notes,
-                pill: pill(Target::Notes),
+                track: None,
+                pill: notes_pill,
                 title: format!("Notes · {notes}"),
                 sub: "the track the pads play; picking another track moves it".to_string(),
                 right: count_in,
-            },
-            ListRow {
-                target: Target::Loop,
-                pill: pill(Target::Loop),
-                title: format!("Looper · Loop {}", self.looper.selected + 1),
-                sub: looped,
-                right: String::new(),
-            },
-        ];
+            });
+        }
+        rows.push(ListRow {
+            target: Target::Loop,
+            track: None,
+            pill: pill(Target::Loop),
+            title: format!("Looper · Loop {}", self.looper.selected + 1),
+            sub: looped,
+            right: String::new(),
+        });
         let song = self.time.song_rec || self.time.song_with_take;
         let (perform, pinned, what) = (self.time.perform, self.rec.pinned, chip.what.clone());
         let fresh = self.ui.get::<RecList>(REC_LIST).is_some_and(|l| {
@@ -4479,6 +4543,36 @@ impl Player {
                 l.what = what;
             }
         }
+    }
+
+    /// Track `t`'s clip, as a take would record into it: the one playing,
+    /// else "new clip".
+    fn time_clip_name(&self, t: usize) -> String {
+        self.time
+            .launches
+            .iter()
+            .find(|l| l.track == t)
+            .and_then(|l| self.time.clip(t, l.slot))
+            .map_or_else(|| "new clip".to_string(), |c| c.name.clone())
+    }
+
+    /// A tap on a track's row of the target list: SHIFT held, REC records
+    /// it too or lets go of it; a plain tap arms it alone, as picking it
+    /// does (the pads' track armed alone already: says what REC records).
+    fn arm_track_tap(&mut self, t: usize) -> Option<FromUi> {
+        use crate::rec_arm::Target;
+        if self.status.shift {
+            return Some(FromUi::ArmTrackAdd(t));
+        }
+        if self.time.armed == Some(t)
+            && self.rec.target == Target::Notes
+            && !self.rec.both
+            && self.time.also == 0
+        {
+            self.tell_rec();
+            return None;
+        }
+        Some(FromUi::ArmTrack(t))
     }
 
     /// A tap on an Arm pill or a target list's row: arms `t`, or, armed
@@ -4602,7 +4696,24 @@ impl Player {
                 pinned: false,
             };
         }
-        let mut chip = if self.rec.both {
+        let tracks = self.armed_tracks_name();
+        let mut chip = if let Some(names) = tracks {
+            // Several tracks (SHIFT + a track's row): "Drums + Bass + Keys",
+            // "Drums + 2 tracks" when it doesn't fit; with the loop too,
+            // "+ Loop 1" after them.
+            let n = self.rec_chip_of(Target::Notes);
+            if self.rec.both {
+                let l = self.rec_chip_of(Target::Loop);
+                play_widgets::RecChip {
+                    state: n.state.max(l.state),
+                    what: format!("{names} + {}", l.what),
+                    add: if n.state >= l.state { n.add } else { l.add },
+                    pinned: false,
+                }
+            } else {
+                play_widgets::RecChip { what: names, ..n }
+            }
+        } else if self.rec.both {
             let (n, l) = (
                 self.rec_chip_of(Target::Notes),
                 self.rec_chip_of(Target::Loop),
@@ -4626,6 +4737,44 @@ impl Player {
             chip.what.push_str(" + Rec song");
         }
         chip
+    }
+
+    /// The armed tracks' names for the REC chip while more than one is
+    /// armed ("Drums + Bass + Keys"), or "Drums + 2 tracks" past
+    /// [`ARMED_NAMES_MAX`] characters. None with one track.
+    fn armed_tracks_name(&self) -> Option<String> {
+        use crate::rec_arm::Target;
+        let main = self.time.armed?;
+        if self.time.also == 0 || !self.rec.armed(Target::Notes) {
+            return None;
+        }
+        let name = |t: usize| {
+            self.time
+                .tracks
+                .get(t)
+                .map_or_else(|| format!("Track {}", t + 1), |tr| tr.name.clone())
+        };
+        let others: Vec<String> = (0..self.time.tracks.len().min(128))
+            .filter(|&t| t != main && self.time.also & (1u128 << t) != 0)
+            .map(name)
+            .collect();
+        if others.is_empty() {
+            return None;
+        }
+        let all = std::iter::once(name(main))
+            .chain(others.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" + ");
+        Some(if all.chars().count() <= ARMED_NAMES_MAX {
+            all
+        } else {
+            format!(
+                "{} + {} track{}",
+                name(main),
+                others.len(),
+                if others.len() == 1 { "" } else { "s" }
+            )
+        })
     }
 
     /// One target's part of the REC chip.
@@ -5635,6 +5784,10 @@ impl Player {
                 }
                 // The Grain tool (one Sample page step 5): the grain window
                 // on the wave, the Grain section's parts.
+                View::Sample if self.sample.warp_tool() => {
+                    format!("Tap a hit: pin it to the grid   ·   Q-Links 1-4: pin, its beat, warp tempo, scroll   ·   \
+                     {ROWS_HINT}   ·   SHIFT + - / +: zoom")
+                }
                 View::Sample if self.sample.grain_tool() => {
                     format!("Drag GRAIN: where grains start, SIZE: how long   ·   Q-Links 1-4: position, size, \
                      density, pitch (SHIFT: sprays, finer)   ·   {ROWS_HINT}   ·   SHIFT + - / +: zoom")
@@ -5642,10 +5795,6 @@ impl Player {
                 View::Sample if self.sample.page() == sample_page::PAGE => {
                     format!("Hit a pad to edit it   ·   Q-Links 1-4: Start, End, loop   ·   {ROWS_HINT}   ·   \
                      SHIFT + - / +: zoom")
-                }
-                View::Sample if self.sample.page() == sample_page::WARP_PAGE => {
-                    format!("Tap a hit: pin it to the grid   ·   Q-Links 1-4: pin, its beat, warp tempo, scroll   ·   \
-                     {ROWS_HINT}   ·   SHIFT + - / +: zoom")
                 }
                 View::Sample if self.sample.chop_live_method() => {
                     "Start plays the sound: hit pads in time to drop cuts   ·   Pull to hits: each onto the nearest hit   ·   \
@@ -8332,13 +8481,13 @@ impl Player {
         // edit was picked, another section (with its own Q-Links) opened,
         // the Chop tab went live, the Wave page's REC went on or off, a
         // take kept on the page came or went on the Wave page, or its
-        // Grain tool was picked or put down: its hint with it.
+        // Warp or Grain tool was picked or put down: its hint with it.
         let keys = (
             self.sample.play_keys_shown(),
             self.sample.play_takes_pads(&self.ui),
             self.sample.recorder_on(),
             self.sample.take_shown().is_some(),
-            self.sample.grain_tool(),
+            (self.sample.warp_tool(), self.sample.grain_tool()),
         );
         // The Wave page's REC take is named on the REC chip by where it
         // goes, which its Onto can change while it records.
@@ -11009,11 +11158,14 @@ impl Player {
                 None
             }
             (crate::rec_list::REC_LIST, EventKind::Tab(i)) => {
-                let t = self
+                let (t, track) = self
                     .ui
                     .get::<crate::rec_list::RecList>(crate::rec_list::REC_LIST)
-                    .and_then(|l| l.rows.get(i).map(|r| r.target))?;
-                self.arm_tap(t)
+                    .and_then(|l| l.rows.get(i).map(|r| (r.target, r.track)))?;
+                match track {
+                    Some(track) => self.arm_track_tap(track),
+                    None => self.arm_tap(t),
+                }
             }
             (crate::rec_list::REC_LIST, EventKind::Toggle(crate::rec_list::TAP_SONG)) => {
                 Some(FromUi::Time(rec_song_switch(&self.time)))
@@ -14290,6 +14442,40 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }));
     list.toggle_rec_list();
     out.push(("play-rec-list", list));
+    // Several tracks armed (SHIFT + a track's row; the MPC 3.10.1 guide's
+    // Rec Arm Behavior): the chip names them, and the list shows each
+    // track's row in order, the armed ones red.
+    let named = |also: u128| {
+        let mut st = crate::time::TimeHost::new(44_100, 120.0)
+            .map(|h| h.state())
+            .unwrap_or_default();
+        for (t, name) in st
+            .tracks
+            .iter_mut()
+            .zip(["Drums", "Bass", "Keys", "Lead", "Pad", "Perc", "FX", "Vox"])
+        {
+            t.name = name.to_string();
+        }
+        st.armed = Some(0);
+        st.also = also;
+        st
+    };
+    let mut tracks = sample_player(fonts());
+    tracks.apply(ToUi::Time(Box::new(named(1 << 1 | 1 << 2))));
+    tracks.apply(ToUi::Rec(crate::rec_arm::RecArm {
+        ready: Some(crate::rec_arm::Take::Replace),
+        also: 1 << 1 | 1 << 2,
+        ..Default::default()
+    }));
+    out.push(("play-rec-tracks", tracks));
+    let mut tracks = sample_player(fonts());
+    tracks.apply(ToUi::Time(Box::new(named(1 << 2))));
+    tracks.apply(ToUi::Rec(crate::rec_arm::RecArm {
+        also: 1 << 2,
+        ..Default::default()
+    }));
+    tracks.toggle_rec_list();
+    out.push(("play-rec-tracks-list", tracks));
     // The XY pad's list (Jay, 18 Nov 07:34Z): opened from its chip, Wash
     // picked.
     let mut xy = sample_player(fonts());
@@ -15799,24 +15985,29 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     chop.apply(ToUi::SampleQLink(0, 2));
     chop.take_actions();
     out.push(("sample-chop", chop));
-    // The Warp tab on the same pad: warped to stretch, its hits pinned to
+    // The Warp tool on the same pad: warped to stretch, its hits pinned to
     // the sixteenths, the fourth pin picked.
     let mut warp = sample_sampler(fonts());
+    if let Some(i) = mpfree_sampler_ui::wave_tab::Tool::ALL
+        .iter()
+        .position(|t| *t == mpfree_sampler_ui::wave_tab::Tool::Warp)
+    {
+        warp.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::TOOLS.into(),
+            kind: EventKind::Tab(i),
+        });
+    }
     warp.on_event(UiEvent {
-        widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-        kind: EventKind::Tab(mpfree_sampler_ui::warp_tab::TAB),
-    });
-    warp.on_event(UiEvent {
-        widget: mpfree_sampler_ui::warp_tab::LIST.into(),
+        widget: mpfree_sampler_ui::wave_tab::REGION.into(),
         kind: EventKind::Step {
-            index: mpfree_sampler_ui::warp_tab::Row::Warp.index(),
+            index: mpfree_sampler_ui::warp_tool::Row::Warp.index(),
             delta: 1,
         },
     });
     warp.apply(ToUi::SampleLift);
     warp.on_event(UiEvent {
-        widget: mpfree_sampler_ui::warp_tab::LIST.into(),
-        kind: EventKind::Tab(mpfree_sampler_ui::warp_tab::Row::PinHits.index()),
+        widget: mpfree_sampler_ui::wave_tab::REGION.into(),
+        kind: EventKind::Tab(mpfree_sampler_ui::warp_tool::Row::PinHits.index()),
     });
     warp.apply(ToUi::SampleQLink(0, 4));
     warp.take_actions();
@@ -18075,7 +18266,8 @@ mod tests {
     /// step.
     #[test]
     fn a_held_sample_row_turns_and_its_lift_opens_no_number_pad() {
-        use mpfree_sampler_ui::warp_tab::{Row, LIST};
+        use mpfree_sampler_ui::warp_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
         let mut p = sample_sampler(Fonts::embedded());
         warp_page(&mut p);
         p.on_event(UiEvent {
@@ -18102,7 +18294,7 @@ mod tests {
         p.touch(5, Touch::Down, at.0, at.1);
         assert_eq!(
             p.page(),
-            sample_page::WARP_PAGE,
+            sample_page::PAGE,
             "no pad while the finger is down"
         );
         for _ in 0..3 {
@@ -18114,18 +18306,14 @@ mod tests {
         let turned = bpm(&p);
         assert!(turned > before, "{before} to {turned}");
         p.touch(5, Touch::Up, at.0, at.1);
-        assert_eq!(
-            p.page(),
-            sample_page::WARP_PAGE,
-            "a turned hold opens no pad"
-        );
+        assert_eq!(p.page(), sample_page::PAGE, "a turned hold opens no pad");
         assert_eq!(bpm(&p), turned);
         p.apply(ToUi::SampleUndo(false));
         assert_eq!(bpm(&p), before, "one undo step takes the whole hold back");
         // A tap still opens the pad, on its lift.
         let at = mid(&mut p);
         p.touch(6, Touch::Down, at.0, at.1);
-        assert_eq!(p.page(), sample_page::WARP_PAGE, "not before the lift");
+        assert_eq!(p.page(), sample_page::PAGE, "not before the lift");
         p.touch(6, Touch::Up, at.0, at.1);
         assert_eq!(p.page(), NUMPAD_PAGE);
     }
@@ -21193,7 +21381,8 @@ mod tests {
     #[test]
     fn the_warp_tempo_can_be_typed_on_the_number_pad() {
         use crate::app::RowKey;
-        use mpfree_sampler_ui::warp_tab::{Row, LIST};
+        use mpfree_sampler_ui::warp_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
         use mpfree_sampler_ui::widgets::SettingList;
         use mpfree_ui::numpad::{NumPad, KEY_CANCEL, KEY_ENTER, KEY_POINT};
         let mut p = sample_sampler(Fonts::embedded());
@@ -21246,7 +21435,7 @@ mod tests {
             key(&mut p, k);
         }
         assert_eq!(key(&mut p, KEY_ENTER), None);
-        assert_eq!(p.page(), sample_page::WARP_PAGE);
+        assert_eq!(p.page(), sample_page::PAGE);
         assert_eq!(bpm(&p), 128.5);
         // One undo step takes it back.
         p.apply(ToUi::SampleUndo(false));
@@ -21263,13 +21452,13 @@ mod tests {
             "Warp tempo: type 20 to 999 BPM"
         );
         key(&mut p, KEY_CANCEL);
-        assert_eq!((p.page(), bpm(&p)), (sample_page::WARP_PAGE, before));
+        assert_eq!((p.page(), bpm(&p)), (sample_page::PAGE, before));
         // The wheel steps from the tempo now (a tenth a detent here) and
         // its push is Enter.
         open(&mut p);
         p.apply(ToUi::SampleWheel(3));
         p.apply(ToUi::Rows(RowKey::Editing(true)));
-        assert_eq!(p.page(), sample_page::WARP_PAGE);
+        assert_eq!(p.page(), sample_page::PAGE);
         assert!((bpm(&p) - (before + 0.3)).abs() < 0.001, "{}", bpm(&p));
     }
 
@@ -22676,12 +22865,10 @@ mod tests {
 
     /// The Sample tab's Warp page open (its Warp and Warp tempo rows were
     /// the Wave page's until the one Sample page, 18 Nov).
+    /// Picks the Sample page's Warp tool.
     fn warp_page(p: &mut Player) {
-        p.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(mpfree_sampler_ui::warp_tab::TAB),
-        });
-        assert_eq!(p.page(), sample_page::WARP_PAGE);
+        pick_tool(p, mpfree_sampler_ui::wave_tab::Tool::Warp);
+        assert!(p.sample.warp_tool());
         p.take_actions();
     }
 
@@ -22700,7 +22887,8 @@ mod tests {
 
     #[test]
     fn a_warped_pad_follows_the_tempo_and_plays_its_stretched_copy_when_ready() {
-        use mpfree_sampler_ui::warp_tab::{Row, LIST};
+        use mpfree_sampler_ui::warp_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         warp_page(&mut p);
@@ -22774,7 +22962,8 @@ mod tests {
     /// and that is said once, until the tempo changes.
     #[test]
     fn a_stretched_copy_that_would_leave_too_little_memory_is_not_made_and_the_pad_repitches() {
-        use mpfree_sampler_ui::warp_tab::{Row, LIST};
+        use mpfree_sampler_ui::warp_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         p.sample.set_mem_free(|| Some(crate::memory::FLOOR));
@@ -22914,22 +23103,21 @@ mod tests {
     }
 
     #[test]
-    fn the_warp_tab_pins_the_hits_and_the_copy_goes_through_them() {
-        use mpfree_sampler_ui::warp_tab::{self, Row};
-        use mpfree_sampler_ui::widgets::PadBar;
+    fn the_warp_tool_pins_the_hits_and_the_copy_goes_through_them() {
+        use mpfree_sampler_ui::warp_tool::Row;
+        use mpfree_sampler_ui::wave_tab::{Tool, REGION as LIST, TOOLS};
+        use mpfree_sampler_ui::widgets::ToolStrip;
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
-        // The pad bar's Warp tab, after Wave.
-        let r = p.ui.rect_of(mpfree_sampler_ui::wave_tab::BAR).unwrap();
-        let t =
-            p.ui.get::<PadBar>(mpfree_sampler_ui::wave_tab::BAR)
-                .unwrap()
-                .tab_rect(r, warp_tab::TAB);
+        // The tools strip's Warp, after Trim and Slice.
+        let r = p.ui.rect_of(TOOLS).unwrap();
+        let i = Tool::ALL.iter().position(|t| *t == Tool::Warp).unwrap();
+        let t = p.ui.get::<ToolStrip>(TOOLS).unwrap().tool_rect(r, i);
         assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
         p.touch(9, Touch::Up, t.x + 5, t.y + 5);
         assert_eq!(
-            (p.page(), p.sample.editor()),
-            (sample_page::WARP_PAGE, sample_page::Editor::Warp)
+            (p.page(), p.sample.editor(), p.sample.tool()),
+            (sample_page::PAGE, sample_page::Editor::Wave, Tool::Warp)
         );
         assert!(p
             .ui
@@ -22939,7 +23127,7 @@ mod tests {
             .contains("Tap a hit: pin it to the grid"));
         // Warp on (Stretch), then Pin hits.
         p.on_event(UiEvent {
-            widget: warp_tab::LIST.into(),
+            widget: LIST.into(),
             kind: EventKind::Step {
                 index: Row::Warp.index(),
                 delta: 1,
@@ -22949,7 +23137,7 @@ mod tests {
         p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
         p.apply(ToUi::SampleLift);
         p.on_event(UiEvent {
-            widget: warp_tab::LIST.into(),
+            widget: LIST.into(),
             kind: EventKind::Tab(Row::PinHits.index()),
         });
         let w = p.sample.state().unwrap().region.warp.clone().unwrap();
@@ -22961,7 +23149,7 @@ mod tests {
             use crate::app::RowKey;
             use mpfree_sampler_ui::widgets::SettingList;
             let list = |p: &Player| {
-                let l = p.ui.get::<SettingList>(warp_tab::LIST).unwrap();
+                let l = p.ui.get::<SettingList>(LIST).unwrap();
                 (
                     l.selected,
                     l.editing,
@@ -23013,7 +23201,7 @@ mod tests {
         p.apply(ToUi::SampleUndo(false));
         let w = p.sample.state().unwrap().region.warp.clone().unwrap();
         assert!(w.pins.is_empty());
-        assert_eq!(p.page(), sample_page::WARP_PAGE);
+        assert_eq!(p.page(), sample_page::PAGE);
     }
 
     fn events_log(p: &Player) -> Vec<String> {
@@ -24180,14 +24368,12 @@ mod tests {
     #[test]
     fn process_makes_a_new_sound_on_a_worker_in_one_undo_step_and_can_be_stopped() {
         use mpfree_sampler::model::WarpMethod;
-        use mpfree_sampler_ui::warp_tab::{self, Row, LIST};
+        use mpfree_sampler_ui::warp_tool::{self, Row};
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
         use mpfree_sampler_ui::widgets::SettingList;
         let mut p = sample_sampler(Fonts::embedded());
-        p.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(warp_tab::TAB),
-        });
-        assert_eq!(p.page(), crate::sample_page::WARP_PAGE);
+        warp_page(&mut p);
+        assert_eq!(p.page(), crate::sample_page::PAGE);
         let ev = |p: &mut Player, kind: EventKind| {
             p.on_event(UiEvent {
                 widget: LIST.into(),
@@ -24211,11 +24397,11 @@ mod tests {
                 .clone()
         };
         let before = p.sample.state().unwrap().region.clone();
-        // Not warped and no Shift: it would come out the same.
+        // Not warped and the new sound's pitch 0: it would come out the same.
         process(&mut p);
         assert!(events_log(&p).iter().any(|l| l
-            == "sample: pad A5 not processed (it would come out the same: set Shift, or turn Warp on)"));
-        assert_eq!(value(&p, Row::Process), warp_tab::PROCESS_TEXT);
+            == "sample: pad A5 not processed (it would come out the same: set New sound's pitch, or turn Warp on)"));
+        assert_eq!(value(&p, Row::Process), warp_tool::PROCESS_TEXT);
         // Three semitones up: the same length, a new sound.
         for _ in 0..3 {
             step(&mut p, Row::Shift, 1);
@@ -24230,7 +24416,7 @@ mod tests {
                 l.starts_with("sample: pad A5 processed into a new sound, 3 semitones higher: ")
             })
         });
-        assert_eq!(value(&p, Row::Process), warp_tab::PROCESS_TEXT);
+        assert_eq!(value(&p, Row::Process), warp_tool::PROCESS_TEXT);
         let after = p.sample.state().unwrap().region.clone();
         let kit = p.sample.project(0).unwrap();
         let made = kit.source(after.source).unwrap();
@@ -24289,7 +24475,7 @@ mod tests {
                 .any(|l| l == "sample: pad A5 not processed (stopped)")
         });
         assert_eq!(p.sample.state().unwrap().region, now);
-        assert_eq!(value(&p, Row::Process), warp_tab::PROCESS_TEXT);
+        assert_eq!(value(&p, Row::Process), warp_tool::PROCESS_TEXT);
     }
 
     /// The Play, Pads and Sequencer redesign (Jay, 18 Nov): the browser's
@@ -29616,31 +29802,27 @@ mod tests {
         use mpfree_sampler_ui::wave_tab::{self, Tool};
         let mut p = sample_sampler(Fonts::embedded());
         assert_eq!(p.page(), sample_page::PAGE);
-        // Slice and Warp aren't on the page yet: each opens its old page,
-        // and the pad bar's first tab comes back to Trim.
-        for (i, page) in [(1, sample_page::CHOP_PAGE), (2, sample_page::WARP_PAGE)] {
-            p.on_event(UiEvent {
-                widget: wave_tab::TOOLS.into(),
-                kind: EventKind::Tab(i),
-            });
-            assert_eq!(p.page(), page, "{:?}", Tool::ALL[i]);
-            let bar = match page {
-                sample_page::CHOP_PAGE => "smp-chop-bar",
-                _ => "smp-warp-bar",
-            };
-            p.on_event(UiEvent {
-                widget: bar.into(),
-                kind: EventKind::Tab(wave_tab::TAB),
-            });
-            assert_eq!(p.page(), sample_page::PAGE);
-            assert_eq!(p.sample.tool(), Tool::Trim);
-        }
-        // Grain is: it stays on the page, with its hint.
-        pick_tool(&mut p, Tool::Grain);
+        // Slice isn't on the page yet: it opens its old page, and the pad
+        // bar's first tab comes back to Trim.
+        pick_tool(&mut p, Tool::Slice);
+        assert_eq!(p.page(), sample_page::CHOP_PAGE);
+        p.on_event(UiEvent {
+            widget: "smp-chop-bar".into(),
+            kind: EventKind::Tab(wave_tab::TAB),
+        });
         assert_eq!(p.page(), sample_page::PAGE);
-        assert_eq!(p.sample.tool(), Tool::Grain);
-        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
-        assert!(hint.starts_with("Drag GRAIN"), "{hint}");
+        assert_eq!(p.sample.tool(), Tool::Trim);
+        // Warp and Grain are: each stays on the page, with its hint.
+        for (tool, starts) in [
+            (Tool::Warp, "Tap a hit: pin it"),
+            (Tool::Grain, "Drag GRAIN"),
+        ] {
+            pick_tool(&mut p, tool);
+            assert_eq!(p.page(), sample_page::PAGE);
+            assert_eq!(p.sample.tool(), tool);
+            let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+            assert!(hint.starts_with(starts), "{hint}");
+        }
         pick_tool(&mut p, Tool::Trim);
         // While a take records the tools are faint and a tap says why.
         let strip =

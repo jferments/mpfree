@@ -24,7 +24,7 @@ The time this takes is unbounded, because it grows with the project. On the MPC 
 | Half | Owns | Runs |
 |---|---|---|
 | **Control** (`TimeControl`, `control.rs`) | The project, the takes, the launches and cues, scenes and follow actions (`Perform`), live to song, the note editor, the morph's settings, the selection, the armed track, CAPTURE's history and the move log, the steps for the Play page, every compile, and the `TimeState` for the screens | At its own pace: on each screen or MIDI event, and on a timer of a few ms (the app thread's control thread, step 3). Never needed once per period. |
-| **Audio** (`TimeAudio`, `audio.rs`) | The transport and its block, the follower of another device's clock (`follow.rs`, see [midi-clock.md](midi-clock.md#following-the-time-engine)), the player, the recorder, the view it plays, the last recorded changes (`Recent`), the click, the pad hits and the locks and lanes going out | Once per period, on the audio thread, with no allocation and no free |
+| **Audio** (`TimeAudio`, `audio.rs`) | The transport and its block, the follower of another device's clock (`follow.rs`, see [midi-clock.md](midi-clock.md#following-the-time-engine)), the player, the recorder (and a notes-only one for each other armed track, [rec-arm.md](rec-arm.md#several-tracks)), the view it plays, the last recorded changes (`Recent`), the click, the pad hits and the locks and lanes going out | Once per period, on the audio thread, with no allocation and no free |
 
 They talk through two bounded queues (`link.rs`), one each way.
 

@@ -54,6 +54,16 @@ pub struct TimeAudio {
     transport: Box<Transport>,
     player: Box<Player>,
     recorder: Box<Recorder>,
+    /// The other armed tracks' recorders, notes only
+    /// ([`Recorder::also`]): recorder `k` records the view's `k`th other
+    /// armed track ([`PlayView::also_track`]), up to [`super::MAX_ALSO`].
+    also: Vec<Recorder>,
+    /// How many of `also` recorded last period, so one whose track let go
+    /// is run once more to drop what it held.
+    also_live: usize,
+    /// Routed keys for another armed track past [`super::MAX_ALSO`]: not
+    /// recorded.
+    also_dropped: u64,
     block: Box<Block>,
     pub(super) sink: Box<Collect>,
     pub(super) view: Box<PlayView>,
@@ -151,6 +161,9 @@ impl TimeAudio {
             transport,
             player: Box::new(Player::new()),
             recorder: Box::new(Recorder::new()),
+            also: (0..super::MAX_ALSO).map(Recorder::also).collect(),
+            also_live: 0,
+            also_dropped: 0,
             block: Box::new(Block::new()),
             sink: Box::new(Collect {
                 out: [blank; MAX_OUT],
@@ -684,8 +697,20 @@ impl TimeAudio {
     /// A key a route played on `track`, not the armed one, as the pad
     /// that plays its note there (a note, its end or its pressure), or
     /// `AllOff` for every note held there ending at once, for CAPTURE's
-    /// history only: nothing records it.
+    /// history; and, on another armed track ([`PlayView::set_also`]), for
+    /// its recorder while the transport records (its notes, not its
+    /// pressure: that is the armed track's alone for now).
     pub fn routed(&mut self, track: u8, offset: u32, event: Event) {
+        if matches!(
+            event,
+            Event::NoteOn { .. } | Event::NoteOff { .. } | Event::AllOff
+        ) {
+            match self.view.also_rank(usize::from(track)) {
+                Some(k) if k < self.also.len() => self.also[k].input(offset, event),
+                Some(_) => self.also_dropped += 1,
+                None => {}
+            }
+        }
         if matches!(
             event,
             Event::NoteOn { .. } | Event::NoteOff { .. } | Event::Pressure { .. } | Event::AllOff
@@ -1116,7 +1141,16 @@ impl TimeAudio {
             .forecast(&self.transport, &self.player, &self.view, frames, |o| {
                 pads.out_ahead(o)
             });
+        let take = self.recorder.take();
         self.recorder.process(&self.view, &self.block);
+        // The other armed tracks, numbering the take as the armed one's.
+        let live = (self.view.also().count_ones() as usize).min(self.also.len());
+        let ran = live.max(self.also_live);
+        for r in &mut self.also[..ran] {
+            r.set_take(take);
+            r.process(&self.view, &self.block);
+        }
+        self.also_live = live;
         // Cues that started on a bar line: the player switched already;
         // the control half makes them the tracks' launches.
         for i in 0..self.player.started().len() {
@@ -1148,6 +1182,11 @@ impl TimeAudio {
         }
         for k in self.recorder.taken() {
             made.make(Rec::Note(*k), self.recorder.touch_points(&k.note), &[]);
+        }
+        for r in &self.also[..ran] {
+            for k in r.taken() {
+                made.make(Rec::Note(*k), &[], &[]);
+            }
         }
         for k in self.recorder.taken_locks() {
             made.make(Rec::Lock(*k), &[], &[]);
@@ -1189,6 +1228,8 @@ impl TimeAudio {
         Counts {
             dropped: self.sink.dropped
                 + self.recorder.dropped()
+                + self.also.iter().map(Recorder::dropped).sum::<u64>()
+                + self.also_dropped
                 + self.player.stats().dropped
                 + self.locks_dropped,
             touch_dropped: self.recorder.touch_dropped(),
