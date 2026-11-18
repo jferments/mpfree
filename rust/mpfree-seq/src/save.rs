@@ -26,6 +26,7 @@
 //! legato
 //! once
 //! program 4 bank 2
+//! direction pingpong
 //! touch 0:10 50:40
 //! note 0 240 36 100 100 - 1 0 2
 //! note 240 240 38 90 100 - 4 0 0 ramp:-40 slide
@@ -56,6 +57,10 @@
 //! only when set (sequencer S6): `off` (the step is off), `ramp:<n>` (its
 //! ratchet's velocity ramp), `tie` or `slide` ([`crate::Join`]). An older
 //! build reads the note and skips them.
+//!
+//! A clip's `direction` line is its play direction (sequencer S6:
+//! `reverse`, `pingpong` or `random`; none for forward); an older build
+//! skips it, and a word it doesn't know, and plays the clip forward.
 //!
 //! A scene's `program <track> <program>[ bank <bank>]` lines are the
 //! program changes it sends as it starts (sequencer S5), one a track, in
@@ -218,6 +223,9 @@ fn clip_body(s: &mut String, c: &Clip) {
     }
     if let Some(p) = c.program {
         let _ = writeln!(s, "program {}", program_text(p));
+    }
+    if c.direction != crate::Direction::Forward {
+        let _ = writeln!(s, "direction {}", c.direction.word());
     }
     // Pressure first: the notes name runs of it.
     for chunk in c.touch.chunks(TOUCH_PER_LINE) {
@@ -573,6 +581,11 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             ("once", At::Clip(c, _)) => c.once = true,
             ("program", At::Clip(c, _)) => {
                 c.program = Some(program(&mut w).ok_or_else(|| bad("program"))?)
+            }
+            // A newer build's direction plays forward here.
+            ("direction", At::Clip(c, _)) => {
+                let word = w.next().ok_or_else(|| bad("direction"))?;
+                c.direction = crate::Direction::from_word(word).unwrap_or_default();
             }
             ("launch", At::Top) => p.launch = launch(&mut w).ok_or_else(|| bad("launch"))?,
             ("touch", At::Clip(c, _)) => {
@@ -932,6 +945,7 @@ mod tests {
             program: 4,
             bank: Some(300),
         });
+        c.direction = crate::Direction::PingPong;
         let pts: Vec<TouchPoint> = (0..150)
             .map(|k| TouchPoint {
                 at: k * 3,
@@ -1178,6 +1192,41 @@ mod tests {
             let t = text.replace("program 4 bank 300", bad);
             assert!(from_text(&t).is_err(), "{bad}");
         }
+    }
+
+    /// A clip's play direction (S6): read back; none is forward, and so
+    /// is a newer build's word; a line with no word refuses the part.
+    #[test]
+    fn a_clips_direction_reads_back() {
+        let text = to_text(&full());
+        assert!(
+            text.contains("program 4 bank 300\ndirection pingpong\n"),
+            "{text}"
+        );
+        let dir = |t: &str| {
+            from_text(t).unwrap().tracks[0].slots[0]
+                .as_ref()
+                .unwrap()
+                .direction
+        };
+        assert_eq!(dir(&text), crate::Direction::PingPong);
+        for d in crate::Direction::ALL {
+            let t = text.replace("direction pingpong\n", &format!("direction {}\n", d.word()));
+            assert_eq!(dir(&t), d);
+        }
+        assert_eq!(
+            dir(&text.replace("direction pingpong\n", "")),
+            crate::Direction::Forward
+        );
+        assert!(
+            !to_text(&from_text(&text.replace("direction pingpong\n", "")).unwrap())
+                .contains("direction")
+        );
+        assert_eq!(
+            dir(&text.replace("direction pingpong", "direction sideways")),
+            crate::Direction::Forward
+        );
+        assert!(from_text(&text.replace("direction pingpong", "direction")).is_err());
     }
 
     #[test]

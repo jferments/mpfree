@@ -52,9 +52,9 @@ use mpfree_play::mpfree_param::{Owner, ParamAddr};
 use mpfree_play::{anchored, ClipDrop, Cue, Launch, SongChange, Take, Takes};
 use mpfree_seq::scenes::MAX_FOLLOW_BARS;
 use mpfree_seq::{
-    Clip, ClipProgram, ClipSettings, Follow, FollowAction, LaunchGrid, Project, Quantise,
-    SceneSettings, Source, Speed, TrackProgram, Transpose, LAUNCH_GRIDS, MAX_CLIP_TICKS,
-    MAX_TRACKS, MAX_TRANSPOSE, SLOTS,
+    direction_steps, Clip, ClipProgram, ClipSettings, Direction, Follow, FollowAction, LaunchGrid,
+    Project, Quantise, SceneSettings, Source, Speed, TrackProgram, Transpose, LAUNCH_GRIDS,
+    MAX_CLIP_TICKS, MAX_TRACKS, MAX_TRANSPOSE, SLOTS,
 };
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
@@ -228,10 +228,32 @@ pub const OTHERS: [FollowAction; 9] = [
     FollowAction::Stop,
 ];
 /// The clip settings card's rows, top to bottom.
-pub const CLIP_ROWS: [&str; 11] = [
-    "Length", "Speed", "Swing", "Quantise", "Strength", "Follow", "After", "Launch", "Mode",
-    "Program", "Bank",
+pub const CLIP_ROWS: [&str; 12] = [
+    "Length",
+    "Speed",
+    "Swing",
+    "Quantise",
+    "Strength",
+    "Follow",
+    "After",
+    "Launch",
+    "Mode",
+    "Program",
+    "Bank",
+    "Direction",
 ];
+/// The clip card's Direction row (S6).
+pub const CLIP_DIRECTION: usize = 11;
+
+/// A play direction (S6) as the clip card names it.
+pub fn direction_name(d: Direction) -> &'static str {
+    match d {
+        Direction::Forward => "Forward",
+        Direction::Reverse => "Reverse",
+        Direction::PingPong => "Ping pong",
+        Direction::Random => "Random",
+    }
+}
 /// The clip card's Mode row: Restart, Legato (takes over the playing
 /// clip's place), Once (a one-shot: one pass, then the track stops).
 pub const MODES: [&str; 3] = ["Restart", "Legato", "Once"];
@@ -2407,9 +2429,18 @@ pub fn card_rows(length: Tick, s: ClipSettings) -> Vec<OptionRow> {
         row(
             10,
             match s.program {
-                None => dash,
+                None => dash.clone(),
                 Some(ClipProgram { bank: None, .. }) => "off".to_string(),
                 Some(ClipProgram { bank: Some(b), .. }) => bank_name(b),
+            },
+        ),
+        // The order it plays its steps in (S6); "—" on a clip it can't
+        // move (not two whole 1/16 steps or more), which plays forward.
+        row(
+            CLIP_DIRECTION,
+            match s.direction {
+                d if d != Direction::Forward && direction_steps(d, length).is_none() => dash,
+                d => direction_name(d).to_string(),
             },
         ),
     ]
@@ -2743,6 +2774,31 @@ fn card_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, Str
             }
         }
         10 => bank_step(st, delta, 1),
+        // Forward, Reverse, Ping-pong, Random (S6). On a clip it can't
+        // move, back to Forward, then why not.
+        CLIP_DIRECTION if direction_steps(Direction::Reverse, c.length).is_none() => {
+            if s.direction == Direction::Forward {
+                return Err("Direction moves the clip's 1/16 steps: it needs a clip of 2 whole steps or more, so this one plays forward".into());
+            }
+            s.direction = Direction::Forward;
+            set(s)
+        }
+        CLIP_DIRECTION => {
+            let now = Direction::ALL
+                .iter()
+                .position(|&x| x == s.direction)
+                .unwrap_or(0);
+            match step(now, Direction::ALL.len()) {
+                Some(k) => {
+                    s.direction = Direction::ALL[k];
+                    set(s)
+                }
+                None => end(
+                    "Direction is at its first, Forward".into(),
+                    "Direction is at its last, Random".into(),
+                ),
+            }
+        }
         _ => Err(String::new()),
     }
 }
@@ -4301,7 +4357,10 @@ mod tests {
                 program: 127,
                 bank: Some(ClipProgram::MAX_BANK),
             }),
+            // Its longest word.
+            direction: Direction::PingPong,
         };
+        values.extend(card_rows(CARD_STEP, card).into_iter().map(|r| r.value));
         values.extend(card_rows(MAX_CLIP_TICKS, card).into_iter().map(|r| r.value));
         values.extend(
             card_rows(999 * CARD_STEP, card)
@@ -5665,7 +5724,8 @@ mod tests {
                 "Launch project",
                 "Mode Restart",
                 "Program off",
-                "Bank —"
+                "Bank —",
+                "Direction Forward"
             ]
         );
         let step = |st: &TimeState, index: usize, delta: i32| {
@@ -5947,6 +6007,47 @@ mod tests {
 
     /// SHIFT + the card's arrows: Length doubles with its notes repeated or
     /// halves, Speed doubles or halves; the other rows step as without it.
+    /// The Direction row (S6) steps Forward, Reverse, Ping-pong and
+    /// Random, but moves only a clip of two whole 1/16 steps or more.
+    #[test]
+    fn the_clip_cards_direction_row_steps_the_play_direction() {
+        let mut st = state();
+        st.armed = Some(1);
+        let step = |st: &TimeState, delta| match card_step(st, CLIP_DIRECTION, delta) {
+            Ok(TimeAction::ClipSettings { row, settings, .. }) => {
+                assert_eq!(usize::from(row), CLIP_DIRECTION);
+                Ok(settings.direction)
+            }
+            other => Err(format!("{other:?}")),
+        };
+        let set = |st: &mut TimeState, d| {
+            st.tracks[1].slots[1].as_mut().unwrap().settings.direction = d;
+        };
+        assert_eq!(step(&st, 1), Ok(Direction::Reverse));
+        assert!(step(&st, -1).unwrap_err().contains("its first, Forward"));
+        set(&mut st, Direction::PingPong);
+        assert_eq!(step(&st, 1), Ok(Direction::Random));
+        assert_eq!(step(&st, -1), Ok(Direction::Reverse));
+        set(&mut st, Direction::Random);
+        assert!(step(&st, 1).unwrap_err().contains("its last, Random"));
+        let shown = |st: &TimeState| clip_rows(st)[CLIP_DIRECTION].value.clone();
+        assert_eq!(shown(&st), "Random");
+        // A clip of one step plays forward: the row says "—", a step
+        // puts it back to Forward, and then says why it can't move.
+        st.tracks[1].slots[1].as_mut().unwrap().length = CARD_STEP;
+        assert_eq!(shown(&st), "—");
+        assert_eq!(step(&st, 1), Ok(Direction::Forward));
+        set(&mut st, Direction::Forward);
+        assert_eq!(shown(&st), "Forward");
+        assert_eq!(
+            step(&st, 1),
+            Err(format!("{:?}", Err::<(), _>("Direction moves the clip's 1/16 steps: it needs a clip of 2 whole steps or more, so this one plays forward")))
+        );
+        // A loop cell plays its loop as recorded.
+        st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
+        assert!(step(&st, 1).unwrap_err().contains("loop cell"));
+    }
+
     #[test]
     fn shift_doubles_or_halves_the_cards_length_and_speed() {
         let mut st = state();

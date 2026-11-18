@@ -89,6 +89,7 @@ use mpfree_transport::time::{Swing, Tick};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
 use crate::player::Event;
+use crate::steps::{Steps, STEP};
 use crate::view::{ClipView, PlayView, Switches};
 
 /// Notes one period can bring to the recorder.
@@ -1022,13 +1023,63 @@ impl Recorder {
         if !value.is_finite() {
             return;
         }
-        let Some((clip, origin)) = self.switches.playing(view, track) else {
+        let Some((clip, origin, start)) = self.switches.playing_from(view, track) else {
             return;
         };
         let Some((at, pass)) = clip_tick(clip, origin, song) else {
             return;
         };
         let scope = Lock::scope(rel);
+        let found = match Steps::of(clip, track, origin, start) {
+            Some(steps) => self.lock_heard(clip, &steps, track, origin, song, scope),
+            None => self.lock_forward(clip, track, origin, (at, pass), scope),
+        };
+        let Some((tick, base)) = found else { return };
+        // Where the player will play it in that pass, as for a note.
+        let q = clip.quantise.map_or(tick as f64, |q| q.apply(tick as f64));
+        let straight = origin as f64 + base + clip.speed.to_song(q);
+        let plays = clip.swing.unwrap_or(swing).apply(straight).round() as Tick;
+        let same = |k: &PendingLock| {
+            (
+                k.taken.track,
+                k.taken.slot,
+                k.taken.lock.tick,
+                k.taken.lock.sound,
+            ) == (track, clip.slot, tick, scope)
+                && k.taken.lock.addr == rel
+        };
+        let pending = &mut self.pending_locks[..self.n_pending_locks];
+        if let Some(k) = pending.iter_mut().find(|k| same(k)) {
+            k.taken.lock.value = value;
+            return;
+        }
+        if self.n_pending_locks == MAX_LOCKS_TAKEN {
+            self.dropped += 1;
+            return;
+        }
+        self.pending_locks[self.n_pending_locks] = PendingLock {
+            taken: TakenLock {
+                track,
+                slot: clip.slot,
+                lock: Lock::new(tick, scope, rel, value),
+                take: self.take,
+            },
+            release: plays + 2,
+        };
+        self.n_pending_locks += 1;
+    }
+
+    /// The clip tick a knob move at clip tick `at` of pass `pass` locks
+    /// (see [`Recorder::lock`]), and the song ticks from the origin to
+    /// where the clip tick plays from (the start of its pass).
+    fn lock_forward(
+        &self,
+        clip: &ClipView,
+        track: usize,
+        origin: Tick,
+        (at, pass): (Tick, i64),
+        scope: Option<u8>,
+    ) -> Option<(Tick, f64)> {
         let mine = |n: u8| scope.is_none_or(|p| p == n);
         let since = |from: Tick| (at - from).rem_euclid(clip.length);
         // The pass a clip tick at or just before the move falls in.
@@ -1070,38 +1121,76 @@ impl Recorder {
                 pass + line.div_euclid(clip.length),
             )
         });
-        // Where the player will play it in that pass, as for a note.
-        let q = clip.quantise.map_or(tick as f64, |q| q.apply(tick as f64));
-        let straight = origin as f64 + tick_pass as f64 * clip.song_len + clip.speed.to_song(q);
-        let plays = clip.swing.unwrap_or(swing).apply(straight).round() as Tick;
-        let same = |k: &PendingLock| {
-            (
-                k.taken.track,
-                k.taken.slot,
-                k.taken.lock.tick,
-                k.taken.lock.sound,
-            ) == (track, clip.slot, tick, scope)
-                && k.taken.lock.addr == rel
+        Some((tick, tick_pass as f64 * clip.song_len))
+    }
+
+    /// [`Recorder::lock_forward`] for a clip with a play direction (S6),
+    /// for a move at song tick `song`: by where each note was heard, not
+    /// where the clip holds it.
+    fn lock_heard(
+        &self,
+        clip: &ClipView,
+        steps: &Steps,
+        track: usize,
+        origin: Tick,
+        song: Tick,
+        scope: Option<u8>,
+    ) -> Option<(Tick, f64)> {
+        let mine = |n: u8| scope.is_none_or(|p| p == n);
+        // Play ticks, from the origin.
+        let x = clip.speed.to_clip((song - origin) as f64);
+        let reach = LOCK_REACH as f64;
+        let near = |heard: f64| (0.0..reach).contains(&(x - heard));
+        // A pad held now: the lock goes on its note, where it was heard.
+        let held = (0..128u8)
+            .filter(|&n| self.held[usize::from(n)].on && mine(n))
+            .map(|n| {
+                clip.speed
+                    .to_clip((self.held[usize::from(n)].tick - origin) as f64)
+            })
+            .filter(|&h| near(h))
+            .max_by(f64::total_cmp)
+            .map(|h| (steps.heard(h).0.round() as Tick, h));
+        // Else the note heard last, not long ago: in the play steps the
+        // reach spans, the notes of the clip step each played (one in the
+        // clip but not erased by the replace pass, or one this take
+        // recorded), each where it was heard.
+        let played = || {
+            let recent = self.recent[..self.n_recent.min(RECENT)]
+                .iter()
+                .filter(|k| (k.track, k.slot) == (track, clip.slot))
+                .map(|k| k.note);
+            let mut best: Option<(Tick, f64)> = None;
+            for big in Steps::at(x - reach)..=Steps::at(x) {
+                let k = steps.pick(big);
+                let erased = self.replacing == Some(steps.pass(big));
+                let notes = clip
+                    .notes
+                    .iter()
+                    .map(|n| n.src)
+                    .filter(|_| !erased)
+                    .chain(recent.clone());
+                for n in notes.filter(|n| mine(n.note)) {
+                    let (step, off) = steps.step_of(n.tick as f64);
+                    let heard = big as f64 * STEP + off;
+                    if step == k && near(heard) && best.is_none_or(|(_, b)| heard > b) {
+                        best = Some((n.tick, heard));
+                    }
+                }
+            }
+            best
         };
-        let pending = &mut self.pending_locks[..self.n_pending_locks];
-        if let Some(k) = pending.iter_mut().find(|k| same(k)) {
-            k.taken.lock.value = value;
-            return;
-        }
-        if self.n_pending_locks == MAX_LOCKS_TAKEN {
-            self.dropped += 1;
-            return;
-        }
-        self.pending_locks[self.n_pending_locks] = PendingLock {
-            taken: TakenLock {
-                track,
-                slot: clip.slot,
-                lock: Lock::new(tick, scope, rel, value),
-                take: self.take,
-            },
-            release: plays + 2,
-        };
-        self.n_pending_locks += 1;
+        let (tick, heard) = held.or_else(played).unwrap_or_else(|| {
+            // Trigless, on the nearest step line heard.
+            let grid = clip
+                .quantise
+                .map_or(LOCK_REACH, |q| Tick::from(q.grid))
+                .max(1) as f64;
+            let line = (x / grid).round() * grid;
+            (steps.heard(line).0.round() as Tick, line)
+        });
+        let tick = tick.rem_euclid(clip.length);
+        Some((tick, clip.speed.to_song(heard - tick as f64)))
     }
 
     fn finish_all(&mut self, view: &PlayView, swing: Swing, tick: Tick) {
@@ -1122,7 +1211,7 @@ impl Recorder {
         let Some(track) = self.armed else {
             return self.free_buf(h.buf);
         };
-        let Some((clip, origin)) = self.switches.playing(view, track) else {
+        let Some((clip, origin, start)) = self.switches.playing_from(view, track) else {
             return self.free_buf(h.buf);
         };
         let Some((played, pass)) = clip_tick(clip, origin, h.tick) else {
@@ -1144,9 +1233,21 @@ impl Recorder {
         };
         let len = (clip.speed.to_clip((end - h.tick).max(1) as f64).round() as Tick)
             .clamp(1, clip.length);
+        // With a play direction (S6), the step played there takes it, as
+        // far from its line as it was heard.
+        // `base`: the song ticks from the origin to where the clip tick
+        // it takes plays from.
+        let (tick, base) = match Steps::of(clip, track, origin, start) {
+            Some(steps) => {
+                let heard = pass as f64 * clip.length as f64 + tick as f64;
+                let local = (steps.heard(heard).0.round() as Tick).rem_euclid(clip.length);
+                (local, clip.speed.to_song(heard - local as f64))
+            }
+            None => (tick, pass as f64 * clip.song_len),
+        };
         // Where the player will play it in this pass.
         let at = clip.quantise.map_or(tick as f64, |q| q.apply(tick as f64));
-        let straight = origin as f64 + pass as f64 * clip.song_len + clip.speed.to_song(at);
+        let straight = origin as f64 + base + clip.speed.to_song(at);
         let plays = clip
             .swing
             .unwrap_or(transport_swing)

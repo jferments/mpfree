@@ -122,10 +122,13 @@ use std::ops::Range;
 
 use mpfree_param::ParamAddr;
 use mpfree_seq::mpfree_moves::Out as MoveOut;
-use mpfree_seq::{ClipProgram, Cond, DestId, Join, Lock, Note, Speed, Touch, MAX_TRACKS};
+use mpfree_seq::{
+    ClipProgram, Cond, DestId, Direction, Join, Lock, Note, Speed, Touch, MAX_TRACKS,
+};
 use mpfree_transport::time::{Swing, Tick};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
+use crate::steps::{first_pass, Steps, HALF, STEP};
 use crate::view::{ClipView, MuteLanded, NowPlaying, PlayView, Started, Switches, TrackView};
 
 /// Notes sounding at once, across all tracks.
@@ -586,6 +589,54 @@ struct Erase {
     notes: u128,
 }
 
+/// What [`Player::collect`] plays, for each of its runs.
+#[derive(Clone, Copy)]
+struct Collect<'a> {
+    clip: &'a ClipView,
+    track: u16,
+    dest: DestId,
+    swing: Swing,
+    ticks: &'a Range<Tick>,
+    erase: Erase,
+    sound: bool,
+    cut: Option<Tick>,
+}
+
+/// A run of a clip's ticks that one pass plays in a span: from `from` to
+/// `to` (both in) and short of `end`, each tick played `shift` clip ticks
+/// later in the pass. Going forward, the whole pass; with a play
+/// direction (S6), a step.
+#[derive(Clone, Copy, Debug)]
+struct Run {
+    /// The pass, counted from the clip's origin.
+    pass: i64,
+    /// The song tick the pass starts on.
+    start: f64,
+    from: f64,
+    to: f64,
+    end: f64,
+    shift: f64,
+}
+
+/// Pass numbers for the trig conditions: from 1 at the pass `start` is
+/// in, worked out when first asked.
+struct Passes {
+    origin: Tick,
+    start: Tick,
+    first: Option<i64>,
+}
+
+impl Passes {
+    /// Pass `pass` (counted from the origin), counted from 1 at `start`'s.
+    fn number(&mut self, clip: &ClipView, pass: i64) -> i32 {
+        let (origin, start) = (self.origin, self.start);
+        let first = *self
+            .first
+            .get_or_insert_with(|| first_pass(clip, origin, start));
+        (pass - first + 1).clamp(-(1 << 30), 1 << 30) as i32
+    }
+}
+
 const NO_ERASE: Erase = Erase {
     pass: None,
     notes: 0,
@@ -780,20 +831,36 @@ impl Player {
     /// follows a track's loop, such as a frozen mixer strip. Never
     /// allocates.
     pub fn now_playing(&self, view: &PlayView, track: usize, tick: Tick) -> Option<NowPlaying> {
-        let (clip, origin) = match self.switches.playing(view, track) {
+        let (clip, origin, start) = match self.switches.playing_from(view, track) {
             Some(p) => p,
             None if view.song => {
                 let r = view.tracks.get(track)?.region_at(tick)?;
-                (&r.clip, r.clip.origin)
+                (&r.clip, r.clip.origin, r.clip.start)
             }
             None => return None,
+        };
+        // A play direction (S6): ping-pong comes round the same every
+        // 2n - 2 steps, a whole number of passes counted from the one its
+        // launch started in; random never does.
+        let (origin, song_len, repeats) = match clip.direction {
+            Direction::PingPong if clip.steps >= 2 => {
+                let n = i64::from(clip.steps);
+                let turn = 2 * n - 2;
+                let passes = turn / gcd(n, turn);
+                let first = first_pass(clip, origin, start) as f64;
+                let origin = origin + (first * clip.song_len).round() as Tick;
+                (origin, passes as f64 * clip.song_len, true)
+            }
+            Direction::Random if clip.steps >= 2 => (origin, clip.song_len, false),
+            _ => (origin, clip.song_len, true),
         };
         Some(NowPlaying {
             slot: clip.slot,
             origin,
-            song_len: clip.song_len,
+            song_len,
             stamp: clip.stamp,
             muted: self.muted(view, track),
+            repeats,
         })
     }
 
@@ -1962,7 +2029,9 @@ impl Player {
     /// `erase`, the notes of its pass, and those of its sounds on any pass,
     /// are erased instead; without
     /// `sound`, the rest are not played. With `cut`, notes end there at the
-    /// latest. Passes count from 1 at `start`, for the trig conditions.
+    /// latest. Passes count from 1 at `start`, for the trig conditions. A
+    /// clip with a play direction (S6) plays its steps in the order it
+    /// picks ([`crate::steps`]).
     #[allow(clippy::too_many_arguments)]
     fn collect(
         &mut self,
@@ -1983,23 +2052,32 @@ impl Player {
         {
             return;
         }
-        // The pass `start` is in, counted from the origin (`num` passes
-        // are exactly `length * den` song ticks), worked out at the first
-        // note: most spans have none.
-        let mut first_number = None;
-        let number_of = |pass: f64, first: &mut Option<i64>| {
-            let first = *first.get_or_insert_with(|| {
-                ((start - origin) * Tick::from(clip.speed.num.max(1)))
-                    .div_euclid(clip.length.max(1) * Tick::from(clip.speed.den.max(1)))
-            });
-            (pass as i64 - first + 1).clamp(-(1 << 30), 1 << 30) as i32
-        };
         let swing = clip.swing.unwrap_or(transport_swing);
+        let c = Collect {
+            clip,
+            track,
+            dest,
+            swing,
+            ticks,
+            erase,
+            sound,
+            cut,
+        };
+        // The pass `start` is in, counted from the origin, worked out at
+        // the first note: most spans have none.
+        let mut passes = Passes {
+            origin,
+            start,
+            first: None,
+        };
         // Swing only delays notes, by at most this much; rounding moves them
         // by half a tick. Look a little wider and keep the exact matches.
         let delay = f64::from(swing.grid) * f64::from(swing.amount.saturating_sub(50)) / 50.0;
         let lo = ticks.start as f64 - delay - 1.0;
         let hi = ticks.end as f64 + 1.0;
+        if let Some(steps) = Steps::of(clip, usize::from(track), origin, start) {
+            return self.collect_steps(&c, &steps, &mut passes, lo, hi);
+        }
         let origin = origin as f64;
         let first_pass = ((lo - origin) / clip.song_len).floor().max(0.0);
         let last_pass = ((hi - origin) / clip.song_len).floor();
@@ -2009,120 +2087,201 @@ impl Player {
         let mut pass = first_pass;
         while pass <= last_pass {
             let start = origin + pass * clip.song_len;
+            self.collect_run(
+                &c,
+                &mut passes,
+                Run {
+                    pass: pass as i64,
+                    start,
+                    from: clip.speed.to_clip(lo - start),
+                    to: clip.speed.to_clip(hi - start),
+                    end: f64::INFINITY,
+                    shift: 0.0,
+                },
+            );
+            pass += 1.0;
+        }
+    }
+
+    /// [`Player::collect`] for a clip with a play direction: the play
+    /// steps whose notes can land between song ticks `lo` and `hi`, each
+    /// playing the clip step its direction picks.
+    fn collect_steps(&mut self, c: &Collect, steps: &Steps, passes: &mut Passes, lo: f64, hi: f64) {
+        let clip = c.clip;
+        let origin = passes.origin as f64;
+        let len = steps.len();
+        // A play step's notes play within half a step of its line.
+        let x_lo = clip.speed.to_clip(lo - origin);
+        let x_hi = clip.speed.to_clip(hi - origin);
+        let mut big = (((x_lo - HALF) / STEP).floor() as i64 + 1).max(0);
+        let last = ((x_hi + HALF) / STEP).floor() as i64;
+        while big <= last {
+            let pass = steps.pass(big);
+            let start = origin + pass as f64 * clip.song_len;
             let from = clip.speed.to_clip(lo - start);
             let to = clip.speed.to_clip(hi - start);
-            let first = clip.notes.partition_point(|n| n.local < from);
-            for n in &clip.notes[first..] {
-                if n.local > to {
-                    break;
-                }
-                let straight = start + clip.speed.to_song(n.local);
-                let tick = swing.apply(straight).round() as Tick;
-                if !ticks.contains(&tick) {
-                    continue;
-                }
-                if erase.pass == Some(pass as i64) || erase.sound(n.note) {
-                    if self.n_erased == MAX_ERASED {
-                        self.stats.dropped += 1;
-                    } else {
-                        self.erased[self.n_erased] = Erased {
-                            track: usize::from(track),
-                            slot: clip.slot,
-                            note: n.src,
-                            take: self.take,
-                        };
-                        self.n_erased += 1;
-                        self.stats.erased += 1;
-                    }
-                    continue;
-                }
-                if !sound {
-                    continue;
-                }
-                // A ratchet's first hit lasts its share of the note.
-                let ratchet = n.src.ratchet.max(1);
-                let off = if ratchet > 1 {
-                    tick + (n.len / f64::from(ratchet)).round() as Tick
+            // Nothing before the origin, as going forward.
+            let from = from.max(-(pass as f64) * len);
+            let k_line = f64::from(steps.pick(big)) * STEP;
+            let shift = steps.line(big) - k_line;
+            // The clip step's ticks around its line: for the first step,
+            // from its line, and the clip's last half step before it.
+            self.collect_run(
+                c,
+                passes,
+                Run {
+                    pass,
+                    start,
+                    from: (from - shift).max(k_line - HALF).max(0.0),
+                    to: to - shift,
+                    end: k_line + HALF,
+                    shift,
+                },
+            );
+            if k_line == 0.0 {
+                let shift = shift - len;
+                self.collect_run(
+                    c,
+                    passes,
+                    Run {
+                        pass,
+                        start,
+                        from: (from - shift).max(len - HALF),
+                        to: to - shift,
+                        end: len,
+                        shift,
+                    },
+                );
+            }
+            big += 1;
+        }
+    }
+
+    /// The notes and locks of one run of a clip's ticks ([`Run`]) whose
+    /// tick is in the span.
+    fn collect_run(&mut self, c: &Collect, passes: &mut Passes, r: Run) {
+        let Collect {
+            clip,
+            track,
+            dest,
+            swing,
+            ticks,
+            erase,
+            sound,
+            cut,
+        } = *c;
+        if r.to < r.from {
+            return;
+        }
+        let first = clip.notes.partition_point(|n| n.local < r.from);
+        for n in &clip.notes[first..] {
+            if n.local > r.to || n.local >= r.end {
+                break;
+            }
+            let straight = r.start + clip.speed.to_song(n.local + r.shift);
+            let tick = swing.apply(straight).round() as Tick;
+            if !ticks.contains(&tick) {
+                continue;
+            }
+            if erase.pass == Some(r.pass) || erase.sound(n.note) {
+                if self.n_erased == MAX_ERASED {
+                    self.stats.dropped += 1;
                 } else {
-                    swing.apply(straight + n.len).round() as Tick
-                };
-                let off = off.max(tick + 1);
-                let off = cut.map_or(off, |c| off.min(c));
-                let key = mix(mix(mix(u64::from(track)) ^ clip.slot as u64) ^ n.src.tick as u64)
-                    ^ u64::from(n.note);
-                // The whole note's end (a ratchet's last hit's too), for its
-                // pressure.
-                let whole = (swing.apply(straight + n.len).round() as Tick).max(tick + 1);
-                let until = cut.map_or(whole, |c| whole.min(c));
-                self.push_start(Start {
+                    self.erased[self.n_erased] = Erased {
+                        track: usize::from(track),
+                        slot: clip.slot,
+                        note: n.src,
+                        take: self.take,
+                    };
+                    self.n_erased += 1;
+                    self.stats.erased += 1;
+                }
+                continue;
+            }
+            if !sound {
+                continue;
+            }
+            // A ratchet's first hit lasts its share of the note.
+            let ratchet = n.src.ratchet.max(1);
+            let off = if ratchet > 1 {
+                tick + (n.len / f64::from(ratchet)).round() as Tick
+            } else {
+                swing.apply(straight + n.len).round() as Tick
+            };
+            let off = off.max(tick + 1);
+            let off = cut.map_or(off, |c| off.min(c));
+            let key = mix(mix(mix(u64::from(track)) ^ clip.slot as u64) ^ n.src.tick as u64)
+                ^ u64::from(n.note);
+            // The whole note's end (a ratchet's last hit's too), for its
+            // pressure.
+            let whole = (swing.apply(straight + n.len).round() as Tick).max(tick + 1);
+            let until = cut.map_or(whole, |c| whole.min(c));
+            self.push_start(Start {
+                tick,
+                track,
+                dest,
+                note: n.note,
+                velocity: n.velocity,
+                off,
+                chance: n.src.chance,
+                key,
+                cond: n.src.cond,
+                pass: passes.number(clip, r.pass),
+                ratchet,
+                len: n.len as f32,
+                ramp: n.src.ramp,
+                join: n.src.join,
+                reset: false,
+                program: None,
+                scene: false,
+                plays: n.src.on,
+                touch: n.src.touch,
+                slot: clip.slot,
+                speed: clip.speed,
+                until,
+            });
+        }
+        // The run's locks, placed as its notes are. A pass being replaced
+        // erases them, and live erase its sounds' own; a muted track sends
+        // none.
+        if !(sound || erase.pass == Some(r.pass) || erase.notes != 0) {
+            return;
+        }
+        let first = clip.locks.partition_point(|l| l.local < r.from);
+        for l in &clip.locks[first..] {
+            if l.local > r.to || l.local >= r.end {
+                break;
+            }
+            let straight = r.start + clip.speed.to_song(l.local + r.shift);
+            let tick = swing.apply(straight).round() as Tick;
+            if !ticks.contains(&tick) {
+                continue;
+            }
+            if erase.pass == Some(r.pass) || l.src.sound.is_some_and(|s| erase.sound(s)) {
+                if self.n_erased_locks == MAX_ERASED {
+                    self.stats.dropped += 1;
+                } else {
+                    self.erased_locks[self.n_erased_locks] = ErasedLock {
+                        track: usize::from(track),
+                        slot: clip.slot,
+                        lock: l.src,
+                        take: self.take,
+                    };
+                    self.n_erased_locks += 1;
+                    self.stats.erased += 1;
+                }
+            } else if sound {
+                self.push_lock(LockStart {
+                    kind: LockKind::Step,
                     tick,
                     track,
                     dest,
-                    note: n.note,
-                    velocity: n.velocity,
-                    off,
-                    chance: n.src.chance,
-                    key,
-                    cond: n.src.cond,
-                    pass: number_of(pass, &mut first_number),
-                    ratchet,
-                    len: n.len as f32,
-                    ramp: n.src.ramp,
-                    join: n.src.join,
-                    reset: false,
-                    program: None,
-                    scene: false,
-                    plays: n.src.on,
-                    touch: n.src.touch,
-                    slot: clip.slot,
-                    speed: clip.speed,
-                    until,
+                    addr: Some(l.addr.on(track as u8)),
+                    value: l.value,
+                    scope: Lock::scope(l.addr),
+                    row: l.src.sound,
                 });
             }
-            // The pass's locks, placed as its notes are. A pass being
-            // replaced erases them, and live erase its sounds' own; a
-            // muted track sends none.
-            if sound || erase.pass == Some(pass as i64) || erase.notes != 0 {
-                let first = clip.locks.partition_point(|l| l.local < from);
-                for l in &clip.locks[first..] {
-                    if l.local > to {
-                        break;
-                    }
-                    let straight = start + clip.speed.to_song(l.local);
-                    let tick = swing.apply(straight).round() as Tick;
-                    if !ticks.contains(&tick) {
-                        continue;
-                    }
-                    if erase.pass == Some(pass as i64)
-                        || l.src.sound.is_some_and(|s| erase.sound(s))
-                    {
-                        if self.n_erased_locks == MAX_ERASED {
-                            self.stats.dropped += 1;
-                        } else {
-                            self.erased_locks[self.n_erased_locks] = ErasedLock {
-                                track: usize::from(track),
-                                slot: clip.slot,
-                                lock: l.src,
-                                take: self.take,
-                            };
-                            self.n_erased_locks += 1;
-                            self.stats.erased += 1;
-                        }
-                    } else if sound {
-                        self.push_lock(LockStart {
-                            kind: LockKind::Step,
-                            tick,
-                            track,
-                            dest,
-                            addr: Some(l.addr.on(track as u8)),
-                            value: l.value,
-                            scope: Lock::scope(l.addr),
-                            row: l.src.sound,
-                        });
-                    }
-                }
-            }
-            pass += 1.0;
         }
     }
 
@@ -2307,6 +2466,14 @@ impl Player {
 }
 
 /// A 64-bit mix (splitmix64's finaliser), for the chance rolls.
+/// The greatest common divisor of two positive numbers.
+fn gcd(mut a: i64, mut b: i64) -> i64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a.max(1)
+}
+
 fn mix(x: u64) -> u64 {
     let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);

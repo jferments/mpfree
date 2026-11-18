@@ -25,7 +25,8 @@ use mpfree_play::{
 use mpfree_seq::mpfree_moves::{Input, Kind, Map, Target};
 use mpfree_seq::mpfree_param::{OnTrack, Owner, ParamAddr, RelAddr, Strip};
 use mpfree_seq::{
-    Clip, Cond, Lock, MorphRows, Note, Placement, Project, Quantise, Speed, TouchPoint, Track,
+    Clip, Cond, Direction, Lock, MorphRows, Note, Placement, Project, Quantise, Speed, TouchPoint,
+    Track,
 };
 use mpfree_transport::time::Swing;
 use mpfree_transport::{Block, Command, Transport};
@@ -183,6 +184,14 @@ fn playing_never_allocates() {
             c.swing = Some(Swing::new(240, 70).unwrap());
             c.quantise = Quantise::new(120, 60);
         }
+        // Play directions (S6): ping-pong at 3/2 speed, random, reverse.
+        c.direction = [
+            Direction::Forward,
+            Direction::PingPong,
+            Direction::Forward,
+            Direction::Random,
+            Direction::Reverse,
+        ][i];
         if i == 0 {
             t.slots[9] = Some(c.clone());
         }

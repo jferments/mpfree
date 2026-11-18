@@ -12828,9 +12828,26 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                     Some(mpfree_seq::Follow::after(4, mpfree_seq::FollowAction::Next));
             }
             p.time_page.clip_card = true;
-            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Time(Box::new(st.clone())));
             p.apply(ToUi::Show(View::Arrange));
             out.push(("clips-card", p));
+            // The same clip playing its steps in reverse (S6), scrolled to
+            // its Direction row.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                if let Some(c) = st
+                    .focus()
+                    .and_then(|(t, s)| st.tracks.get_mut(t)?.slots.get_mut(s)?.as_mut())
+                {
+                    c.settings.direction = mpfree_seq::Direction::Reverse;
+                }
+                p.time_page.clip_card = true;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                if let Some(l) = p.ui.get_mut::<OptionList>(time_view::CLIP_CARD) {
+                    l.selected = time_view::CLIP_DIRECTION;
+                }
+                out.push(("clips-card-direction", p));
+            }
         }
         Err(e) => eprintln!("clips-card sample: {e}"),
     }
