@@ -969,6 +969,56 @@ pub fn looper_remote(
     }
 }
 
+/// What learned controls did to Play this pass (the Learn section's Play
+/// card; `remote::PlayMoves`), on any page: its Swing and Drums filter
+/// as its Q-Links turn them (the project's, so the work is unsaved), and
+/// its XY pad as a finger moves it, the pad on the screen following.
+/// Nothing when nothing moved.
+pub fn play_remote(
+    time: &time::TimeHost,
+    mix: &mut mixing::MixHost,
+    out: &mut Out,
+    moves: &mut crate::remote::PlayMoves,
+) -> Vec<app::Effect> {
+    use mpfree_transport::{time::Swing, Command};
+    let mut fx = Vec::new();
+    if *moves == crate::remote::PlayMoves::default() {
+        return fx;
+    }
+    let swing = time.info().swing;
+    let acts = moves.take(play_now(time, mix));
+    if let Some(amount) = acts.swing {
+        fx.push(app::Effect::Time(mpfree_time_ui::TimeAction::Transport(
+            Command::SetSwing(Swing { amount, ..swing }),
+        )));
+    }
+    if let Some(position) = acts.filter {
+        mix.play(mixing::PlayFx::Filter {
+            strip: mpfree_fx::StripId::Track(mixing::DRUMS),
+            position,
+        });
+    }
+    if acts.swing.is_some() || acts.filter.is_some() {
+        out.show(gui::ToUi::Edited);
+    }
+    if let Some((x, y, down)) = acts.xy {
+        mix.play(mixing::PlayFx::Xy { x, y, down });
+        out.show(gui::ToUi::PlayXy { x, y, down });
+    }
+    fx
+}
+
+/// What Play's learned controls read (`remote::Now`): the swing, the
+/// Drums filter and where the XY pad stands.
+pub fn play_now(time: &time::TimeHost, mix: &mixing::MixHost) -> crate::remote::Now {
+    crate::remote::Now {
+        swing: time.info().swing.amount,
+        drums_filter: mix.play_levels().drums_filter,
+        xy: mix.xy_at(),
+        ..crate::remote::Now::default()
+    }
+}
+
 /// What the looper's learned controls read (`remote::Now`): the loop
 /// picked and the loops muted.
 pub fn looper_now(looper: &looping::LoopHost) -> crate::remote::Now {

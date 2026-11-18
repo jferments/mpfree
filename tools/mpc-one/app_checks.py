@@ -2422,6 +2422,7 @@ AREAS = (
       "the_mixer_strip_controls_set_the_mixer",
       "the_effects_look_adds_picks_turns_and_moves_an_effect",
       "learn_puts_a_knob_on_the_next_qlink_turned",
+      "learned_knobs_turn_plays_swing_filter_and_xy_pad_from_any_page",
       "a_learned_q_link_follows_its_control_to_a_new_engine",
       "a_mode_across_engines_swaps_in_place_and_switching_back_restores",
       "a_knob_given_to_a_macro_moves_with_the_macro",

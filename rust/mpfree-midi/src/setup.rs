@@ -2343,6 +2343,31 @@ mod tests {
         assert_eq!(back.rig_learn, [key, picked, mute, undo]);
     }
 
+    /// A knob learned on Play's Swing and one on the XY pad (the Learn
+    /// section's Play card) are the rig's and read back by Play's fixed
+    /// numbers.
+    #[test]
+    fn plays_learned_knobs_read_back_from_the_rig() {
+        use mpfree_param::{play, Owner, ParamAddr};
+        let mut m = MidiSetup::default();
+        let swing = Saved {
+            target: ParamAddr::new(Owner::Play, play::SWING),
+            ..learned(Some("Knobs"), 21)
+        };
+        let up = Saved {
+            target: ParamAddr::new(Owner::Play, play::XY_UP),
+            ..learned(Some("Knobs"), 22)
+        };
+        for l in [&swing, &up] {
+            assert!(m.learned_in(Kept::Rig, l.clone()));
+        }
+        let text = m.rig_text();
+        assert!(text.contains("play.0") && text.contains("play.3"), "{text}");
+        let (back, w) = MidiSetup::parse(&text);
+        assert!(w.is_empty(), "{w:?}\n{text}");
+        assert_eq!(back.rig_learn, [swing, up]);
+    }
+
     #[test]
     fn a_new_project_writes_only_the_header() {
         assert_eq!(MidiSetup::default().to_text(), "mpfree-midi 1\n");

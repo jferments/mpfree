@@ -29,12 +29,20 @@
 //! The MPC One has no footswitch jack: a footswitch comes in through a
 //! MIDI controller or pedal.
 //!
+//! Play's own controls work this way too (the Learn section's Play card,
+//! Jay's pick on 18 Nov 2026; `Owner::Play`, its ids in
+//! [`mpfree_play::mpfree_param::play`]): a learned knob turns the Swing or
+//! the Filter (track 1's, which Play calls Drums) as Play's Q-Links do, or moves the XY pad across or up
+//! as a finger does ([`PlayMoves`] says how, once a period). The XY pad's
+//! effect plays while the pad is away from where it rests: across in the
+//! middle, up at the bottom. Play's own touches stay as they are.
+//!
 //! The MPC's own buttons never come here, and nothing here sends MIDI.
 
 use mpfree_node::{Curve, ParamInfo, Unit};
 use mpfree_play::mpfree_param::clips::{self, Clips};
 use mpfree_play::mpfree_param::looper::{self, Looper, Which};
-use mpfree_play::mpfree_param::transport;
+use mpfree_play::mpfree_param::{play, transport};
 
 /// The tempo a learned knob sets, over the app's range (`App::set_tempo`).
 /// Shown and read in whole BPM; set to a tenth.
@@ -77,6 +85,13 @@ pub struct Now {
     pub picked: usize,
     /// The loops muted, bit `n` for loop `n` (`LoopHost::mute_bits`).
     pub loops_muted: u8,
+    /// Play's Swing, 50 to 75 %.
+    pub swing: u8,
+    /// The Drums filter, -100 to 100 (`PlayLevels::drums_filter`).
+    pub drums_filter: f32,
+    /// Where the XY pad stands, 0 to 1 across and up
+    /// (`MixHost::xy_at`).
+    pub xy: (f32, f32),
 }
 
 /// A track's mute as MIDI Learn reads and sets it: on while muted.
@@ -187,6 +202,130 @@ pub fn describe(id: u16, now: Now) -> Option<(ParamInfo, f32)> {
         transport::TEMPO => Some((TEMPO, now.bpm as f32)),
         transport::PLAYING => Some((PLAYING, if now.rolling { 1.0 } else { 0.0 })),
         _ => None,
+    }
+}
+
+/// Play's Swing as a learned knob turns it, in whole percents.
+pub const SWING: ParamInfo = ParamInfo {
+    id: play::SWING,
+    name: "Swing",
+    group: "Play",
+    min: 50.0,
+    max: 75.0,
+    default: 50.0,
+    unit: Unit::Percent,
+    curve: Curve::Stepped,
+    readonly: false,
+};
+
+/// Play's Filter, track 1's DJ filter: -100 (low-pass) to 100
+/// (high-pass), 0 off.
+pub const FILTER: ParamInfo = ParamInfo {
+    id: play::FILTER,
+    name: "Filter",
+    group: "Play",
+    min: -100.0,
+    max: 100.0,
+    default: 0.0,
+    unit: Unit::Percent,
+    curve: Curve::Linear,
+    readonly: false,
+};
+
+/// The XY pad across, 0 (left) to 1 (right).
+pub const XY_ACROSS: ParamInfo = ParamInfo {
+    id: play::XY_ACROSS,
+    name: "XY across",
+    group: "Play",
+    min: 0.0,
+    max: 1.0,
+    default: 0.5,
+    unit: Unit::None,
+    curve: Curve::Linear,
+    readonly: false,
+};
+
+/// The XY pad up, 0 (bottom) to 1 (top).
+pub const XY_UP: ParamInfo = ParamInfo {
+    id: play::XY_UP,
+    name: "XY up",
+    default: 0.0,
+    ..XY_ACROSS
+};
+
+/// One of Play's controls described with its value now.
+pub fn describe_play(id: u16, now: Now) -> Option<(ParamInfo, f32)> {
+    match id {
+        play::SWING => Some((SWING, f32::from(now.swing))),
+        play::FILTER => Some((FILTER, now.drums_filter)),
+        play::XY_ACROSS => Some((XY_ACROSS, now.xy.0)),
+        play::XY_UP => Some((XY_UP, now.xy.1)),
+        _ => None,
+    }
+}
+
+/// How near where it rests (across in the middle, up at the bottom) the
+/// XY pad counts as resting: a 7-bit knob's step, so a knob's middle (63
+/// or 64) is the middle.
+pub const XY_REST: f32 = 1.0 / 127.0;
+/// A Drums filter this near 0 is off, so a knob's middle is off.
+const FILTER_OFF: f32 = 1.0;
+
+/// Play's controls as learned controls set them this period (the last
+/// value each was given, 0 to 1 over its range), done once a period
+/// ([`PlayMoves::take`]), so the XY pad's two ways move together.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PlayMoves([Option<f32>; play::ALL.len()]);
+
+/// What learned controls do to Play this period.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PlayActs {
+    /// Set the swing, 50 to 75 %.
+    pub swing: Option<u8>,
+    /// Set the Drums filter, -100 to 100.
+    pub filter: Option<f32>,
+    /// Move the XY pad: across, up, and whether it is held away from
+    /// where it rests (as a finger down: its effect plays).
+    pub xy: Option<(f32, f32, bool)>,
+}
+
+impl PlayMoves {
+    /// A learned control set Play's control `id` to `value` (0 to 1).
+    pub fn set(&mut self, id: u16, value: f32) {
+        if let Some(v) = self.0.get_mut(usize::from(id)) {
+            *v = Some(value.clamp(0.0, 1.0));
+        }
+    }
+
+    /// What this period's moves do, with Play standing at `now`; the moves
+    /// are spent. The XY pad's other way stays where it is.
+    pub fn take(&mut self, now: Now) -> PlayActs {
+        let [swing, filter, across, up] = std::mem::take(&mut self.0);
+        let swing = swing
+            .map(|v| SWING.from_unit(v).round().clamp(50.0, 75.0) as u8)
+            .filter(|&a| a != now.swing);
+        let filter = filter
+            .map(|v| {
+                let p = FILTER.from_unit(v);
+                if p.abs() < FILTER_OFF {
+                    0.0
+                } else {
+                    p
+                }
+            })
+            .filter(|&p| p != now.drums_filter);
+        let xy = (across.is_some() || up.is_some()).then(|| {
+            let mut x = across.unwrap_or(now.xy.0);
+            let mut y = up.unwrap_or(now.xy.1);
+            if (x - 0.5).abs() < XY_REST {
+                x = 0.5;
+            }
+            if y < XY_REST {
+                y = 0.0;
+            }
+            (x, y, x != 0.5 || y != 0.0)
+        });
+        PlayActs { swing, filter, xy }
     }
 }
 
@@ -409,6 +548,9 @@ mod tests {
         soloed: 0,
         picked: 0,
         loops_muted: 0,
+        swing: 50,
+        drums_filter: 0.0,
+        xy: (0.5, 0.0),
     };
     const PLAYING_NOW: Now = Now {
         rolling: true,
@@ -718,5 +860,76 @@ mod tests {
             r.looper_write(looper::mute(0), 1.0, STOPPED, 1.0),
             LooperAct::Mute { n: 0, on: true }
         );
+    }
+    /// The Play card's knobs: the Swing in whole percents, the Drums
+    /// filter off in a knob's middle, and only what changed.
+    #[test]
+    fn plays_swing_and_filter_turn_as_its_q_links_do() {
+        let mut m = PlayMoves::default();
+        m.set(play::SWING, 0.32);
+        m.set(play::FILTER, 0.25);
+        let a = m.take(STOPPED);
+        assert_eq!(a.swing, Some(58));
+        assert_eq!(a.filter, Some(-50.0));
+        assert_eq!(a.xy, None);
+        assert_eq!(m.take(STOPPED), PlayActs::default(), "spent");
+        // A knob's middle (63 or 64 of 127) is the filter off; the swing
+        // where it is already does nothing.
+        for v in [63.0 / 127.0, 64.0 / 127.0] {
+            m.set(play::FILTER, v);
+            let now = Now {
+                drums_filter: 30.0,
+                ..STOPPED
+            };
+            assert_eq!(m.take(now).filter, Some(0.0));
+        }
+        m.set(play::SWING, 0.0);
+        m.set(play::FILTER, 0.5);
+        assert_eq!(m.take(STOPPED), PlayActs::default());
+        // An id Play hasn't got is nothing.
+        m.set(9, 1.0);
+        assert_eq!(m.take(STOPPED), PlayActs::default());
+    }
+
+    /// XY across and up move together, the other way where it is; the
+    /// pad is held (its effect plays) until both are back where it rests.
+    #[test]
+    fn the_xy_pad_moves_both_ways_and_rests_in_the_middle_at_the_bottom() {
+        let mut m = PlayMoves::default();
+        m.set(play::XY_ACROSS, 0.9);
+        m.set(play::XY_UP, 0.4);
+        assert_eq!(m.take(STOPPED).xy, Some((0.9, 0.4, true)));
+        // Only up moves: across stays where the pad has it.
+        let now = Now {
+            xy: (0.9, 0.4),
+            ..STOPPED
+        };
+        m.set(play::XY_UP, 0.0);
+        assert_eq!(m.take(now).xy, Some((0.9, 0.0, true)), "across still off");
+        let now = Now {
+            xy: (0.9, 0.0),
+            ..STOPPED
+        };
+        m.set(play::XY_ACROSS, 64.0 / 127.0);
+        assert_eq!(m.take(now).xy, Some((0.5, 0.0, false)), "resting: let go");
+        m.set(play::XY_UP, 1.0 / 127.0);
+        assert_eq!(m.take(STOPPED).xy, Some((0.5, 1.0 / 127.0, true)));
+    }
+
+    /// Learn reads each where it stands, in its own units.
+    #[test]
+    fn plays_controls_read_where_they_stand() {
+        let now = Now {
+            swing: 62,
+            drums_filter: -40.0,
+            xy: (0.25, 0.75),
+            ..STOPPED
+        };
+        let read = |id| describe_play(id, now).map(|(i, v)| (i.id, i.to_unit(v)));
+        assert_eq!(read(play::SWING), Some((play::SWING, 12.0 / 25.0)));
+        assert_eq!(read(play::FILTER), Some((play::FILTER, 0.3)));
+        assert_eq!(read(play::XY_ACROSS), Some((play::XY_ACROSS, 0.25)));
+        assert_eq!(read(play::XY_UP), Some((play::XY_UP, 0.75)));
+        assert_eq!(describe_play(4, now), None);
     }
 }

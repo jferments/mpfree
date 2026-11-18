@@ -4042,6 +4042,7 @@ fn learn_describe(
         Owner::Transport => return remote::describe(addr.param, now),
         Owner::Clips => return remote::describe_clips(addr.param, now),
         Owner::Looper => return remote::describe_looper(addr.param, now),
+        Owner::Play => return remote::describe_play(addr.param, now),
         // A track's controller, bend or pressure out: where the engine has
         // it, else its default.
         Owner::Midi(_) => {
@@ -4103,7 +4104,7 @@ fn learn_label(
     time: &time::TimeHost,
     addr: mpfree_play::mpfree_param::ParamAddr,
 ) -> String {
-    use mpfree_play::mpfree_param::{arp, looper, transport, Owner};
+    use mpfree_play::mpfree_param::{arp, looper, play, transport, Owner};
     let t = match addr.owner {
         Owner::Inst(t) => t,
         Owner::Arp(t) => {
@@ -4127,6 +4128,7 @@ fn learn_label(
             let name = looper::name(addr.param);
             return format!("Looper · {}", name.as_deref().unwrap_or("?"));
         }
+        Owner::Play => return format!("Play · {}", play::name(addr.param).unwrap_or("?")),
         _ => return modpanels::label(mix, addr),
     };
     // As the time engine and the I/O view name the tracks.
@@ -5835,6 +5837,9 @@ fn player_session(
     // and whether the log said a learned tempo waits for a followed clock.
     let mut remote = remote::Remote::new();
     let mut remote_tempo_waits = false;
+    // Learned controls on Play's Swing, Drums filter and XY pad (the Learn
+    // section's Play card), done once a pass.
+    let mut play_moves = remote::PlayMoves::default();
     let mut learn_names_gen: Option<u64> = None;
     let mut learn_now_at = 0.0_f64;
     // The gear lanes' pink ~: the MIDI out controls the mod matrix moves,
@@ -7123,6 +7128,13 @@ fn player_session(
                         }
                     }
                 }
+                // Play's own controls (the Learn section's Play card): the
+                // last value each was given goes once the pass is done.
+                midi_in::Learning::Set(w)
+                    if w.target.owner == mpfree_play::mpfree_param::Owner::Play =>
+                {
+                    play_moves.set(w.target.param, w.value);
+                }
                 // The looper (its footswitch): a loop's key does what its
                 // pad does, a mute mutes or lets the loop play, and the
                 // presses are the Looper tab's buttons, on the picked loop.
@@ -7174,6 +7186,8 @@ fn player_session(
         if !pads_learned.is_empty() {
             out.show(gui::ToUi::PadsLearned(std::mem::take(&mut pads_learned)));
         }
+        // Play's Swing, Drums filter and XY pad, once a pass.
+        fx.extend(desk::play_remote(&time, &mut mix, out, &mut play_moves));
         if synth_learned && mt >= synth_learned_at {
             synth_learned = false;
             synth_learned_at = mt + 0.05;
@@ -7202,7 +7216,9 @@ fn player_session(
             bpm: app.bpm(),
             muted,
             soloed,
-            ..desk::looper_now(&looper)
+            picked: looper.picked(),
+            loops_muted: looper.mute_bits(),
+            ..desk::play_now(&time, &mix)
         };
         let pad_now = |t: u8, pad: u8, id: u16| pad_describe(&player, &track_kits, t, pad, id);
         music.observe_learned(mt, |addr| {
@@ -11227,6 +11243,36 @@ mod tests {
         .is_none());
         assert!(midi_in::key_toggles(at(clips::mute(1))));
         assert!(!midi_in::key_toggles(at(clips::clip(1, 2))));
+    }
+
+    /// Play's learned controls (the Learn section's Play card) are named
+    /// "Play · Swing" and read where Play has them; a key on one holds it
+    /// while held, and they are never switches.
+    #[test]
+    fn plays_controls_are_named_and_read_for_learn() {
+        use mpfree_play::mpfree_param::{play, Owner, ParamAddr};
+        let mix = mixing::MixHost::new(44_100, 0.0, 6.0);
+        let synth = synth::Synth::new(44_100);
+        let time = time::TimeHost::new(44_100, 120.0).unwrap();
+        let app = app::App::new(44_100, false);
+        let at = |id| ParamAddr::new(Owner::Play, id);
+        let name = |id| learn_label(&mix, &synth, &time, at(id));
+        assert_eq!(name(play::SWING), "Play · Swing");
+        assert_eq!(name(play::FILTER), "Play · Filter");
+        assert_eq!(name(play::XY_ACROSS), "Play · XY across");
+        assert_eq!(name(play::XY_UP), "Play · XY up");
+        assert_eq!(name(9), "Play · ?");
+        let now = desk::play_now(&time, &mix);
+        assert_eq!((now.swing, now.drums_filter, now.xy), (50, 0.0, (0.5, 0.0)));
+        let read = |id| learn_describe(&mix, &synth, &app, &|_, _, _| None, now, at(id));
+        let (info, v) = read(play::SWING).unwrap();
+        assert_eq!(
+            (info.name, info.min, info.max, v),
+            ("Swing", 50.0, 75.0, 50.0)
+        );
+        assert_eq!(read(play::XY_ACROSS).unwrap().1, 0.5);
+        assert!(read(9).is_none());
+        assert!(!midi_in::key_toggles(at(play::XY_UP)));
     }
 
     /// The looper's learned controls (its footswitch) are named so the

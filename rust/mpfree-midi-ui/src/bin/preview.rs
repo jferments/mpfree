@@ -327,6 +327,17 @@ fn shots() -> Vec<Shot> {
             pick: Some("Looper controls"),
         },
         Shot {
+            name: "io-learn-play",
+            about: "Learn with Play tapped: Play's Swing, Filter, XY across and XY up for a knob to learn (what SHIFT + a touch on Play can't), beside MIDI Follow",
+            section: 3,
+            model: learn.clone(),
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: None,
+            pick: Some("Play controls"),
+        },
+        Shot {
             name: "io-learn-learning",
             about: "Learn after Learn again on the Bass volume: the banner says what the next control moved will take, with Cancel",
             section: 3,
