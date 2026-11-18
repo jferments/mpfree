@@ -212,9 +212,11 @@ The pad's name at the top left of every Sample page has a dotted line under it: 
 
 ## Wave: trim, loop and sound
 
-{{shot: sample | The Wave page: the recorder row at the top (REC, Source, Starts and Ends), the whole sample under it, the zoomed region across the page, the region's knobs, buttons and switches under it in three sections with the pad's Sound beside them, and the four Q-Links (Start, End, Loop start, Loop end) down the right. Send to pad and Chop to pads are at the top right.}}
+{{shot: sample | The Wave page: the recorder row at the top (REC, Source, Starts and Ends), the tools (Trim, Slice, Warp and Grain) beside the whole sample under it, the zoomed region across the page, the region's knobs, buttons and switches under it in three sections with the pad's Sound beside them, and the four Q-Links (Start, End, Loop start, Loop end) down the right. Send to pad and Chop to pads are at the top right.}}
 
 The **Wave** page shows the sample across the screen. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links, or rest a finger on a marker's tab and turn the data wheel: it moves a screen pixel a turn, or one frame at a time with **SHIFT** (next build; see [Hold and turn](../getting-started/the-screen.md#hold-and-turn)). Hold **SHIFT** and press **+** to zoom in, **SHIFT + –** to zoom out (the Warp and Chop pages too); the card beside the strip at the top says how far in you are. Tap the wave to hear it.
+
+**The tools.** At the left of the strip over the wave are four tools: **Trim**, **Slice**, **Warp** and **Grain**. The tool you pick decides what a finger on the wave moves and what the Q-Links turn. **Trim** is what this page does now: Start, End, the loop and the fades. The other three are moving onto this page one at a time; until each one has, its button opens its own page (**Slice** opens [Chop](#chop-slice-across-the-pads), **Warp** opens [Warp](#warp-put-the-hits-on-the-beat), **Grain** opens [Grain](shaping-a-pad.md#grain-stretch-and-smear)), and **Wave** at the top right brings you back. While a take records the tools are grey: they wait for the take.
 
 Under the wave, the region's settings are laid out like an instrument's panel, in three sections, with the pad's **Sound** beside them:
 
