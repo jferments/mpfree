@@ -193,7 +193,7 @@ impl Desk<'_> {
                     fx.extend(app.set_xy_effect(e));
                 }
                 mix.play(p);
-                tell_throw_said(mix, out);
+                let _ = tell_throw_said(mix, out);
             }
             gui::FromUi::Steps(a) => {
                 // ERASE + a lane's name: said in place of the hint.
@@ -374,8 +374,19 @@ impl Desk<'_> {
             gui::FromUi::PerformShown(on) => {
                 if on {
                     out.show(throw_strips(mix, time));
+                    out.show(throw_knobs(mix, app.perform_set()));
                 }
                 fx.extend(app.show_perform(on))
+            }
+            // The Perform view's Q-Links: a throw's setting on its strip's
+            // Perform FX, as the chain editor's knobs set theirs.
+            gui::FromUi::ThrowKnob { addr, value } => {
+                let recording = time.info().state == mpfree_transport::State::Recording;
+                modpanels::set_param(mix, addr, value, recording);
+            }
+            gui::FromUi::ThrowKnobLift(addr) => mix.modu.release(addr),
+            gui::FromUi::ThrowEffect { on, fx: throw } => {
+                fx.extend(panels.open_throw_mix(app, mix, on, throw))
             }
             gui::FromUi::PerformPage(page) => fx.extend(app.perform_page_to(page)),
             gui::FromUi::PerformPad { page, pad, action } => {
@@ -597,15 +608,17 @@ impl Desk<'_> {
             // A Perform pad's throw, and its track mute.
             app::Effect::PlayFx(p) => {
                 mix.play(p);
-                tell_throw_said(mix, out);
+                let _ = tell_throw_said(mix, out);
             }
             // The set changed: the strips its throws play on get their
             // Perform FX (picking On is where the mix changes, never a hit).
             app::Effect::PerformSet { set, opened } => {
                 mix.perform_strips(&set.throw_strips(), opened);
-                tell_throw_said(mix, out);
+                let _ = tell_throw_said(mix, out);
+                let knobs = throw_knobs(mix, &set);
                 out.show(gui::ToUi::PerformSet { set, opened });
                 out.show(throw_strips(mix, time));
+                out.show(knobs);
             }
             app::Effect::TrackMute { track, wait } => {
                 let line = time
@@ -748,12 +761,37 @@ pub fn throw_strips(mix: &mixing::MixHost, time: &time::TimeHost) -> gui::ToUi {
 
 /// What the Perform set's throws on tracks and submixes said (a Perform
 /// FX put on or taken off, or why a throw couldn't play), in the log and
-/// on the screen.
-pub fn tell_throw_said(mix: &mut mixing::MixHost, out: &mut Out) {
-    for line in mix.take_throw_said() {
+/// on the screen. Whether there was anything (a Perform FX may have come
+/// or gone: [`throw_knobs`] again).
+pub fn tell_throw_said(mix: &mut mixing::MixHost, out: &mut Out) -> bool {
+    let said = mix.take_throw_said();
+    let any = !said.is_empty();
+    for line in said {
         out.note(&line);
         out.show(gui::ToUi::Tell(line));
     }
+    any
+}
+
+/// Each throw of `set` (one per effect and strip) as its strip's Perform
+/// FX has it: what the Perform view's Q-Links show and turn.
+pub fn throw_knobs(mix: &mixing::MixHost, set: &crate::perform_pads::PerformSet) -> gui::ToUi {
+    use crate::perform_pads::PadAction;
+    let mut knobs: Vec<mixing::ThrowKnobs> = Vec::new();
+    for page in &set.pages {
+        for a in &page.pads {
+            let PadAction::Throw(t) = *a else {
+                continue;
+            };
+            let Some(fx) = t.fx() else {
+                continue;
+            };
+            if !knobs.iter().any(|k| k.on == t.on && k.fx == fx) {
+                knobs.push(mix.throw_knobs(t.on, fx));
+            }
+        }
+    }
+    gui::ToUi::ThrowKnobs(knobs)
 }
 
 pub fn perform_pad_on(

@@ -1206,6 +1206,11 @@ pub enum ToUi {
     /// them (`mixing::throw_strips`): with the set, and when the Perform
     /// view shows.
     ThrowStrips(Vec<(String, mpfree_fx::StripId)>),
+    /// Each throw of the Perform set as its strip's Perform FX has it
+    /// (`MixHost::throw_knobs`): what the Perform view's Q-Links show and
+    /// turn. With the set, when the view shows, and when a Perform FX goes
+    /// on or comes off.
+    ThrowKnobs(Vec<crate::mixing::ThrowKnobs>),
 }
 
 /// Not `Clone`: [`FromUi::SampleInput`] carries the one writer of the
@@ -1477,6 +1482,24 @@ pub enum FromUi {
     PerformName {
         page: usize,
         name: String,
+    },
+    /// A Q-Link on the Perform view turned a throw's setting on its
+    /// strip's Perform FX (`ThrowKnobs::addr`), or its UNDO put it back:
+    /// set as the chain editor's knobs set theirs, so a turn while the
+    /// transport records records too.
+    ThrowKnob {
+        addr: ParamAddr,
+        value: f32,
+    },
+    /// The finger left that Q-Link: the mod engine lets go of the
+    /// parameter (after a recorded move).
+    ThrowKnobLift(ParamAddr),
+    /// The Perform view's Edit the effect: throw `fx`'s Perform FX pad on
+    /// strip `on`, in the Mix tab's chain editor, with ‹ back to the
+    /// Pads tab.
+    ThrowEffect {
+        on: mpfree_fx::StripId,
+        fx: crate::mixing::ThrowFx,
     },
     /// Capture: the last bars heard become a loop (the deck's Capture,
     /// What you played's button).
@@ -2392,7 +2415,18 @@ impl Player {
         if self.perform_showing() && self.ready {
             let names = self.perform_names();
             self.perform.show(&mut self.ui, &names);
+            self.refresh_qlinks();
+            self.refresh_hint();
         }
+    }
+
+    /// Q-Link `k` turned `ticks` on the Perform view: the picked throw's
+    /// setting on its strip's Perform FX (SHIFT: finer), or why not.
+    fn perform_qlink(&mut self, k: usize, ticks: i32) {
+        let names = self.perform_names();
+        let acts = self.perform.qlink(k, ticks, self.status.shift, &names);
+        self.perform_acts(acts);
+        self.refresh_history();
     }
 
     /// The Pads tab shows the Perform set (`on`) or the kit's pads: the
@@ -3178,6 +3212,11 @@ impl Player {
             });
             held_title = format!("Q-Links · Controller {}", c.bank_words());
             (held_title.as_str(), cards)
+        } else if self.perform_showing() {
+            // The Perform view: the picked throw's own settings on its
+            // strip's Perform FX (Q3 and Q4 faint).
+            let names = self.perform_names();
+            ("Q-Links · Perform", self.perform.qlink_cards(&names))
         } else if let Some((title, cards)) = &chain {
             (title.as_str(), cards.clone())
         } else if let Some(knobs) = self
@@ -5439,7 +5478,8 @@ impl Player {
                      {ROWS_HINT}   ·   SHIFT + - / +: zoom")
                 }
                 View::Pads if self.perform.shown && self.ui.page() == crate::perform_tab::PAGE => {
-                    crate::perform_tab::HINT.to_string()
+                    let names = self.perform_names();
+                    crate::perform_tab::hint(self.perform.qlink_hint(&names))
                 }
                 View::Pads if self.sample.page() == sample_page::PADS_PAGE => {
                     format!("Hit or tap a pad to pick it, again to hear it   ·   A-H: the kit's banks   ·   \
@@ -7034,7 +7074,12 @@ impl Player {
                 }
             }
             ToUi::QLinkTouch(k, on) => {
-                if !on && self.chain_page.drives(self.view) {
+                if !on && self.perform_showing() {
+                    // A run of turns ends: one UNDO step.
+                    let names = self.perform_names();
+                    let acts = self.perform.qlink_lift(k, &names);
+                    self.perform_acts(acts);
+                } else if !on && self.chain_page.drives(self.view) {
                     // A knob of the effect lets go after a recorded move.
                     if let Some(Turned::Chain(a)) = self.chain_page.released(k) {
                         self.outbox.push(FromUi::Chain(a));
@@ -7503,8 +7548,8 @@ impl Player {
                 self.sample_changed();
             }
             ToUi::SampleViewBack(swap) => self.sample.view_back(swap),
-            // The Perform view has no Q-Links: nothing turns behind it.
-            ToUi::SampleQLink(..) if self.perform_showing() => {}
+            // The Perform view's Q-Links: the picked throw's settings.
+            ToUi::SampleQLink(k, ticks) if self.perform_showing() => self.perform_qlink(k, ticks),
             ToUi::SampleQLink(k, ticks) => {
                 if self.browsing() {
                     self.browser_qlink(k, ticks);
@@ -7790,6 +7835,12 @@ impl Player {
             ToUi::ThrowStrips(strips) => {
                 if self.throw_strips != strips {
                     self.throw_strips = strips;
+                    self.refresh_perform();
+                }
+            }
+            ToUi::ThrowKnobs(knobs) => {
+                if self.perform.knobs != knobs {
+                    self.perform.knobs = knobs;
                     self.refresh_perform();
                 }
             }
@@ -9716,6 +9767,11 @@ impl Player {
     }
 
     fn show_view(&mut self, v: View) {
+        if v == View::Pads && self.view != View::Pads && self.perform.shown {
+            // Back on the Perform view: the app sends its throws' settings
+            // again (the Mix tab may have turned them).
+            self.outbox.push(FromUi::PerformShown(true));
+        }
         self.close_touch_page();
         // Any page change closes the list of kits; another tab or the
         // note editor, the REC chip's target list (Play's and the
@@ -10670,6 +10726,11 @@ impl Player {
             (play_page::TRANSPORT, EventKind::Tab(_)) => None,
             (play_page::MASTER, EventKind::Value(v)) => {
                 Some(FromUi::LevelDb(mpfree_ui::draw::meter_db(v)))
+            }
+            // The Perform view's cards: a faint one says why itself.
+            (play_page::QLINKS, EventKind::Step { index, delta }) if self.perform_showing() => {
+                self.perform_qlink(index, delta);
+                None
             }
             // A blank card has nothing to move here: say why in place.
             (play_page::QLINKS, EventKind::Step { index, .. }) if self.qlink_blank(index) => {
@@ -13053,6 +13114,7 @@ fn pads_perform(fonts: Fonts) -> Player {
             .collect();
     strips.extend((0..8).map(|b| (format!("Sub {}", b + 1), mpfree_fx::StripId::Bus(b))));
     p.apply(ToUi::ThrowStrips(strips));
+    p.apply(ToUi::ThrowKnobs(sample_throw_knobs(&p.perform.set)));
     p.on_event(UiEvent {
         widget: mpfree_sampler_ui::pads_tab::KITS.into(),
         kind: EventKind::Tab(1),
@@ -13064,6 +13126,48 @@ fn pads_perform(fonts: Fonts) -> Player {
         widget: crate::perform_tab::MAP.into(),
         kind: EventKind::Select(1),
     });
+    let _ = p.take_actions();
+    p
+}
+
+/// Each throw of `set` with the Perform FX's own settings for it (its
+/// default bank), as the app sends them once the strips have their Perform
+/// FX.
+fn sample_throw_knobs(set: &crate::perform_pads::PerformSet) -> Vec<crate::mixing::ThrowKnobs> {
+    use crate::perform_pads::PadAction;
+    use mpfree_fx::ids::perform as pf;
+    use mpfree_node::Node;
+    let node = mpfree_fx::Perform::new();
+    let mut out: Vec<crate::mixing::ThrowKnobs> = Vec::new();
+    for a in set.pages.iter().flat_map(|p| p.pads.iter()) {
+        let PadAction::Throw(t) = *a else { continue };
+        let Some(fx) = t.fx() else { continue };
+        if out.iter().any(|k| k.on == t.on && k.fx == fx) {
+            continue;
+        }
+        let v = |o: u16| node.param(pf::slot(fx.pad()) + o);
+        out.push(crate::mixing::ThrowKnobs {
+            on: t.on,
+            fx,
+            uid: Some(1),
+            effect: v(pf::EFFECT) as u8,
+            length: v(pf::LENGTH),
+            amount: v(pf::AMOUNT),
+        });
+    }
+    out
+}
+
+/// The Perform view on B13, the Delay throw on Drums: Q1 and Q2 its Time
+/// and Feedback on the Drums track's Perform FX, Q2 turned.
+fn pads_perform_knobs(fonts: Fonts) -> Player {
+    let mut p = pads_perform(fonts);
+    p.on_event(UiEvent {
+        widget: crate::perform_tab::MAP.into(),
+        kind: EventKind::Select(12),
+    });
+    p.apply(ToUi::SampleQLink(1, 7));
+    p.apply(ToUi::QLinkTouch(1, true));
     let _ = p.take_actions();
     p
 }
@@ -15166,6 +15270,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // The Perform view: page B of the project's Perform set, B2 picked
     // (board 7).
     out.push(("pads-perform", pads_perform(fonts())));
+    out.push(("pads-perform-knobs", pads_perform_knobs(fonts())));
     // The browser from the Pads tab's Browse for A5, over a scratch
     // library: Samples / Drums with Kick 01 selected, Load on A5.
     match browser_samples(fonts()) {
