@@ -188,7 +188,7 @@ With the synth on the pads, the pattern on the **Sequencer** tab's **Steps** (an
 
 {{shot: sequencer-steps-synth | The Sequencer's Steps on a synth track in C minor: the rows are the scale's notes from C3 to C4, the roots shaded. Step 1 holds a C minor triad, with an accent, a 50 % note and a 1:2 note later on.}}
 
-- **Tap a step in a row** to put that note there, and tap more rows on the same step for a chord. Tap a lit step to pick it for the Q-Links, and again to take it off.
+- **Tap a step in a row** to put that note there, and tap more rows on the same step for a chord. Tap a lit step to pick it for the Q-Links, and again to switch it off (it keeps its notes and settings; another tap brings it back). **ERASE** + a tap takes it out.
 - **Hold a row's name** to hear its note.
 - **‹** and **›** beside **Oct** show the rows an octave lower or higher. The pattern starts from the root under the lowest note you've used.
 - **Fold** shows only the notes the pattern uses, so a bass line or a chord part fits on one screen. Tap it again for every note.
@@ -205,7 +205,7 @@ Press **STEP SEQ** with the synth on the pads and the 16 pads become the steps o
 3. **Hit a lit step and let go** to take the whole step off.
 4. **Pick another note** at any time the same way, holding **STEP SEQ**: the steps already there keep theirs.
 
-On the Sequencer's Steps the line is the lane on the pads, named **Line**. Tap an empty step there to put the note or chord on it; tap a lit one to pick it, and tap it again to take it off.
+On the Sequencer's Steps the line is the lane on the pads, named **Line**. Tap an empty step there to put the note or chord on it; tap a lit one to pick it, and tap it again to switch the whole step off, kept, until a tap brings it back.
 
 **Changing a step's notes.** Hold a step and turn **Q-Link 1**: its card says **Note** (or **Chord**) and the lowest note, and each click moves the step a pad up or down, a chord keeping its shape. Or, with a keyboard on **MIDI IN** or the USB socket, hold a step and play: the keys you hold together go on the step in place of what it had, each as loud as you played it. Hold several steps to give them all the same notes. The keys play the pads' notes, so with a scale on, a key outside it (or past the pads' range) can't go on a step, and the hint line says so. **UNDO** takes the whole chord back in one go.
 

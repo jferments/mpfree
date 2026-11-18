@@ -18,6 +18,10 @@ use std::sync::Arc;
 pub struct Chip {
     pub text: String,
     pub tone: Tone,
+    /// The widest text the chip shows ("CPU 100 %"): it is always that
+    /// wide, so a reading that changes width doesn't nudge the chips
+    /// beside it (Jay, 18 Nov 2026 07:28Z).
+    pub room: Option<&'static str>,
 }
 
 impl Chip {
@@ -25,7 +29,14 @@ impl Chip {
         Chip {
             text: text.into(),
             tone,
+            room: None,
         }
+    }
+
+    /// The chip as wide as `widest` (or its text, if that is wider).
+    pub fn room(mut self, widest: &'static str) -> Chip {
+        self.room = Some(widest);
+        self
     }
 }
 
@@ -35,15 +46,16 @@ impl Chip {
 /// Pads joined between Play and Arrange on 12 Nov 2026 (Jay, 15:46Z), Mix
 /// (the mixer and the effects) last on 14 Nov (Jay's card, 07:15Z), and
 /// the Sequencer after Pads on 18 Nov (the Play, Pads and Sequencer
-/// redesign, Jay 00:30Z).
+/// redesign, Jay 00:30Z). Jay put them in this order on 18 Nov 2026
+/// (07:28Z): Play, Sequencer, Looper, Sample, Synth, Arrange, Pads, Mix.
 pub const APP_TABS: [&str; 8] = [
     "Play",
-    "Pads",
     "Sequencer",
-    "Arrange",
-    "Synth",
     "Looper",
     "Sample",
+    "Synth",
+    "Arrange",
+    "Pads",
     "Mix",
 ];
 /// The tab after them while Prefs > "Show developer tools" is on.
@@ -284,6 +296,9 @@ impl Widget for Header {
         drawn.clear();
         for (i, chip) in self.chips.iter().enumerate() {
             let tw = cx.measure(FontId::Sans, t.size_small, &chip.text);
+            let tw = chip
+                .room
+                .map_or(tw, |r| tw.max(cx.measure(FontId::Sans, t.size_small, r)));
             let w = tw + 40;
             if right - w < limit {
                 break;
@@ -1871,12 +1886,12 @@ mod tests {
             APP_TABS,
             [
                 "Play",
-                "Pads",
                 "Sequencer",
-                "Arrange",
-                "Synth",
                 "Looper",
                 "Sample",
+                "Synth",
+                "Arrange",
+                "Pads",
                 "Mix"
             ]
         );
@@ -1900,7 +1915,7 @@ mod tests {
             let end = h.tab_rect(r, tabs.len()).x;
             assert!(end <= LEFT_W + TABS_W, "{end}");
             assert_eq!(end, rects[tabs.len() - 1].right() + TAB_GAP);
-            let seq = rects[2];
+            let seq = rects[1];
             assert!(rects.iter().all(|t| t.w <= seq.w), "{rects:?}");
             assert!(seq.w >= 100, "Sequencer is {} px", seq.w);
             assert!(rects.iter().all(|t| t.w >= 60), "{rects:?}");
@@ -2305,6 +2320,30 @@ mod tests {
             None,
             "between the chips and the tabs"
         );
+    }
+
+    /// A chip with room for its widest reading keeps its width as the
+    /// reading changes, so the chips to its left stay put.
+    #[test]
+    fn a_reading_that_changes_width_moves_no_chip() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Debug"]));
+        ui.add_full_page("p", "col(header:60)").unwrap();
+        let mut at = |cpu: &str| {
+            ui.get_mut::<Header>("header").unwrap().chips = vec![
+                Chip::new(cpu, Tone::Good).room("CPU 100 %"),
+                Chip::new("RAM 17 %", Tone::Good).room("RAM 100 %"),
+            ];
+            let mut c = SoftCanvas::new(1280, 800);
+            ui.paint(&mut c);
+            let h = ui.get::<Header>("header").unwrap();
+            (h.chip_rect(0).unwrap(), h.chip_rect(1).unwrap())
+        };
+        let (cpu1, ram1) = at("CPU 1 %");
+        let (cpu100, ram100) = at("CPU 100 %");
+        assert_eq!((cpu1, ram1), (cpu100, ram100));
+        // A chip with no room is as wide as its text.
+        assert!(Chip::new("CPU 1 %", Tone::Good).room.is_none());
     }
 
     #[test]

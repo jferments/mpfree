@@ -22,14 +22,15 @@ There are no pads on the Play page: you play the real ones, and the room goes to
 
 ## The pads as rows of steps
 
-The All view is a simple step sequencer, as on a Digitakt: one row for each pad of the track the pads play, in the bank on the pads (**A1** to **A16** on bank A). Each row has the sound's name, the pad's name on the right ("A1") and a speaker; an empty pad keeps its row, dashed, so a pad is always in the same place. A tap on a step puts a note there, and another tap takes it off. Six rows fit at a time: swipe up or down on the rows to see the others (the rail on the right shows where you are).
+The All view is a simple step sequencer, as on a Digitakt: one row for each pad of the track the pads play, in the bank on the pads (**A1** to **A16** on bank A). Each row has the sound's name, the pad's name on the right ("A1") and a speaker; an empty pad keeps its row, dashed, so a pad is always in the same place. A tap on an empty step puts a note there. A tap on a lit step switches it off but keeps it: it shows as an outline with **off** in it, and the next tap brings it back as it was, with its velocity, length, condition and locks (set them on the [Sequencer tab](../getting-started/first-beat.md#program-a-pattern)), so you can drop a hit out of the beat and back in without losing anything. To take a step out for good, hold **ERASE** and tap it (**UNDO** brings it back). Six rows fit at a time: swipe up or down on the rows to see the others (the rail on the right shows where you are).
 
 The heading over the rows:
 
 - **‹ Track 1 ›**: the track the pads play. Tap its right half for the next track and its left half for the one before; that track gets armed and the pads play its kit. Loop tracks are skipped, since they have no pads.
 - **A** to **H**: the kit's banks. Tap one, or press **PAD BANK**, and the pads and the rows go to that bank.
 - **‹ 1–16 of 32 ›**: the steps shown, for a pattern longer than a bar. **Follow** turns the page as the pattern plays; turning a page yourself turns it off.
-- **Sequencer tab ›** opens the Sequencer, where the pattern's length, the step inspector and your timing are.
+
+The pattern's length, the step inspector and your timing are on the **Sequencer** tab, next to Play in the top bar.
 
 ## Throws
 
@@ -41,7 +42,11 @@ The heading over the rows:
 
 ## The XY pad
 
-The **XY pad** is a filter and an echo under one finger. Left of the middle is a low-pass filter (darker), right of it a high-pass filter (thinner), and the middle is no filter at all. Higher up adds more echo. When you lift your finger the pad glides back to the middle and the bottom, so the sound comes back clean. Its label says where it is, for example "HP 173 Hz · echo 62 %".
+The **XY pad** plays an effect on the whole mix under one finger. The chip at its top left says what it plays, for example **XY · Filter + echo**.
+
+**Filter + echo** (what it plays at first) is a filter and an echo together. Left of the middle is a low-pass filter (darker), right of it a high-pass filter (thinner), and the middle is no filter at all. Higher up adds more echo. When you lift your finger the pad glides back to the middle and the bottom, so the sound comes back clean. Its label says where it is, for example "HP 173 Hz · echo 62 %".
+
+**To play something else,** tap the chip. A list takes the place of the pattern: Filter + echo, then the nine effects of [XY FX](effects.md#xy-fx) (Filter, Echo, Dub echo, Wash, Crush, Flanger, Phaser, Ring mod and Gate), each saying what across and up do. Tap one and the pad plays it from then on; **Close** or the chip again leaves it as it was. With one of the nine, the effect opens when your finger lands and lets go when it lifts (an echo or the wash rings out), and the dot stays where you lifted it. The pad's label names both settings, for example "Decay 2.4 s · Amount 40 %". MPFree remembers your pick, like the other settings in Prefs.
 
 ## Fills
 
