@@ -155,7 +155,7 @@ For Ethernet-equivalent over USB, **ECM or NCM gadget networking** could provide
 | IO-4 | Optional, short, rate-limited native UDP transport timing | Only after isolated test program security/realtime review, separate user consent; no active devices. |
 | IO-5 | ARM hard-float userspace network receive-only program | Cross-compile and check ABI; test without opening ALSA, no persistent writes. |
 | IO-6 | MPC ACVA playback with network streams | **Blocked:** restoration and stock service handoff unproven. |
-| IO-7 | Optional USB gadget networking/audio | **Blocked:** gadget driver capabilities and safe role handoff unproven. |
+| IO-7 | Optional USB gadget networking/audio | **Blocked:** gadget driver capabilities and safe role handoff unproven. The read-only check that comes first, for USB MIDI to a computer, is [USB-B MIDI](usb-b-midi.md) (`--usb-device`). |
 | IO-8 | General installer/plugin pairing for end users | **Blocked:** firmware compatibility matrix, signatures, rollback and recovery. |
 
 ## 6. Exact replication commands
