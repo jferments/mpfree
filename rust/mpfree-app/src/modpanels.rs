@@ -950,6 +950,14 @@ fn moved(s: usize, from: usize, to: usize) -> usize {
 
 /// A knob turned on the editor: through the engine when it holds the
 /// parameter, else straight to the mixer.
+/// Parameter `addr` set to `value` by a hand on the screen (the chain
+/// editor's knobs, the Perform view's Q-Links): through the mod engine, so
+/// it records over a move lane while `recording`, else straight onto the
+/// mixer.
+pub fn set_param(h: &mut MixHost, addr: ParamAddr, value: f32, recording: bool) {
+    set(h, addr, value, recording)
+}
+
 fn set(h: &mut MixHost, addr: ParamAddr, value: f32, recording: bool) {
     if h.modu.hand(addr, value, recording) {
         return;
@@ -1350,6 +1358,35 @@ impl Panels {
         let Some(mut h) = host else {
             return vec![Effect::Tell(no_channel(kit, pad))];
         };
+        h.back = Some("Pads".into());
+        self.chain = Some(h);
+        self.sent_at = None;
+        app.open_chain()
+    }
+
+    /// The Perform view's Edit the effect: throw `fx`'s pad of strip
+    /// `on`'s Perform FX in the Mix tab's chain editor, on that pad's page
+    /// ("Slots 9-12" for the Delay throw), with ‹ back to the Pads tab.
+    pub fn open_throw_mix(
+        &mut self,
+        app: &mut App,
+        mix: &mut MixHost,
+        on: StripId,
+        fx: mixing::ThrowFx,
+    ) -> Vec<Effect> {
+        self.picked = false;
+        let host = mix
+            .perform_slot(on)
+            .and_then(|slot| ChainHost::from_mixer(on, Some(slot)));
+        let Some(h) = host else {
+            return vec![Effect::Tell(format!(
+                "perform: {} has no Perform FX for the throw: pick the pad's On again on the Pads tab",
+                mix.strip_name(on)
+            ))];
+        };
+        let mut h = h.named(mix, on);
+        // The Perform FX's pages: Perform, then four slots to a page.
+        h.group = 1 + fx.pad() / 4;
         h.back = Some("Pads".into());
         self.chain = Some(h);
         self.sent_at = None;
