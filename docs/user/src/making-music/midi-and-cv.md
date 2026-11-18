@@ -31,7 +31,7 @@ An **MPE** controller (an expressive keyboard that gives each finger its own cha
 
 Most MPE controllers say they are MPE when they start, and MPFree hears it: its log says *MPE lower zone, channels 2 to 16 (it said so)*. If yours doesn't, give its port a [profile](#device-profiles) with an **mpe** line.
 
-The wheel, pressure and MPE play MPFree's own sounds: the synth and a track's own instrument (a kit's pads take pressure only). They go into the arpeggiator's and the MIDI effects' notes only while those notes are the keys as they came: a note the MIDI effects moved, or one the arpeggiator plays, takes the wheel but not its key's slide or tone. MIDI out and the CV outputs don't take them yet; to play an outside synth with them, send the keyboard there with [Thru](#thru-a-keyboard-straight-to-a-synth). Recording them into a clip comes later.
+The wheel, pressure and MPE play MPFree's own sounds: the synth and a track's own instrument (a kit's pads take pressure only). They go into the arpeggiator's and the MIDI effects' notes only while those notes are the keys as they came: a note the MIDI effects moved, or one the arpeggiator plays, takes the wheel but not its key's slide or tone. A track that plays a synth through MIDI out sends them to that synth ([The wheel, pressure and MPE on a synth](#the-wheel-pressure-and-mpe-on-a-synth)). The CV outputs don't take them yet, and recording them into a clip comes later.
 
 ## Playing several tracks from your keyboards
 
@@ -95,6 +95,16 @@ If a track would send nothing, it says why under the track's name: no port is pi
 
 > [!MPC]
 > On the MPC, a MIDI track needs two settings with nearly the same name before a note leaves the jack: the track's MIDI output channel and its MIDI Out routing. In MPFree it's one setting, the port and the channel together.
+
+### The wheel, pressure and MPE on a synth
+
+A track that plays a synth through MIDI out passes your keyboard's [pitch wheel, pressure and MPE](#the-pitch-wheel-pressure-and-mpe) on to it, so the synth answers them as MPFree's own sounds do. Most synths have one bend, one pressure and one tone for all their notes, so MPFree makes one of each from the keys you hold:
+
+- **Bend:** the wheel, plus the slide of the key you played last, over the synth's bend range. That is 2 semitones unless the synth's [profile](#device-profiles) has a **bend** line; set it to the range the synth is set to, so a finger slid a semitone bends the synth a semitone.
+- **Pressure:** the hardest-pressed key's, as channel pressure (aftertouch). A synth that takes each note's own pressure (polyphonic aftertouch) gets each key's on its note instead when its profile says `pressure = poly`.
+- **Tone:** the tone of the key you played last, as CC 74, which most synths have on their filter cutoff.
+
+Each goes out only when it changes. When you let go of the last key, the bend goes back to the wheel's and the pressure to 0, and a stop, a panic or a new **Plays on** puts the synth back at rest. Keys that play a kit's pads send each pad's pressure on its notes, and no bend. To send a synth the keyboard's own messages as they came (an MPE synth's channels and all), use [Thru](#thru-a-keyboard-straight-to-a-synth) instead.
 
 ### A kit on a drum machine
 
@@ -173,11 +183,13 @@ program.1 = Init
 - **match** is a name a USB device calls itself (the page says it: *it calls itself …*). A port set to **Auto** takes the first profile with its name. Put up to 8 **match** lines in one profile, or none.
 - **cc.N** names CC N (0 to 127); **nrpn.MSB.LSB** names the NRPN parameter sent as CC 99 = MSB and CC 98 = LSB; **program.N** names program N, counted from 1 as everywhere on screen. Each name has at most 32 characters.
 - **mpe** says the controller plays [MPE](#the-pitch-wheel-pressure-and-mpe): `mpe = lower 15` (main channel 1, notes on channels 2 to 16; fewer channels with a smaller number), `mpe = upper 15` (main channel 16) or `mpe = off`.
+- **bend** is a synth's pitch bend range in semitones, 1 to 96 (`bend = 12`), which your keyboard's [wheel and slides](#the-wheel-pressure-and-mpe-on-a-synth) bend it by. Without it MPFree takes 2, the range most synths start with.
+- **pressure** is what a synth takes for your keys' pressure: `pressure = channel` (one value for all its notes, which most synths take, and what MPFree sends without the line) or `pressure = poly` (each note's own).
 - **knobs** lists a controller's knobs by their CCs, in order, up to 16 (`knobs = 74 71 76 77`). [MIDI Follow](#midi-follow-your-controllers-knobs-on-the-q-links) turns Q-Links 1 to 4 with the first four, unless you taught it the controller's knobs yourself.
 - **pad.A1** to **pad.H16** (or **pad.1** to **pad.128**) is the note a kit's pad plays on a drum machine on this port, as a number (0 to 127) or a name (*C2*, *F#1*, *Bb0*; C4 is 60), and after **ch**, a channel of its own (1 to 16): `pad.A1 = 36 ch 10`. A pad without a line plays its usual note on the track's channel (see [A kit on a drum machine](#a-kit-on-a-drum-machine)).
 - A line starting with `#` is a note to yourself. A line MPFree can't read is skipped, and the rest of the profile still works; a file with no **name** isn't a profile. MPFree's log says what it skipped and which profiles it found.
 
-A port's profile names what comes in from it and what goes out to it. Only its **pad** lines change what MPFree sends: the notes and channels a kit's pads play there. Everything else only names.
+A port's profile names what comes in from it and what goes out to it. Only its **pad**, **bend** and **pressure** lines change what MPFree sends: the notes and channels a kit's pads play there, and how your keyboard's expression bends and presses a synth. Everything else only names.
 
 ## Staying in time with other gear
 
@@ -256,6 +268,7 @@ The **MIDI Follow** card is in the **Learn** section. Tap **MIDI Follow** by the
 
 - **Controller**: the device whose knobs follow (– and + step through the ports with an input).
 - **Follow**: **Off** or **On**. **On** picks the first device plugged in if none is picked.
+- **Send values back**: **Off** or **On** (Off until you turn it on). On, each knob is sent its Q-Link's value whenever it changes: on another page, by a turn on the MPC, or by an LFO. A controller with lights round its knobs or motor faders then shows where each value is. Turn it on only for a controller like that: a plain knob can't move, so its next turn would jump. Nothing goes back to a knob while you turn it, or for a moment after.
 - **Knobs**: the CCs of the knobs that turn Q-Links 1 to 4. Tap **Learn knobs**, then turn the knobs you want, one at a time, in Q-Link order: after the fourth, or when you tap **Done**, it keeps them. **Clear** forgets them, and the controller's [device profile](#device-profiles) gives its knobs instead (its **knobs** line), if it has one.
 
 The line under them says what it does now, or why it waits (*Keystep 37 isn't plugged in: Follow waits for it.*).
@@ -263,7 +276,7 @@ The line under them says what it does now, or why it waits (*Keystep 37 isn't pl
 - A knob turns its Q-Link by as much as it moves, so a value never jumps when you start turning. The first move after you plug the controller in or turn Follow on only tells MPFree where the knob is.
 - The controller's keys still play the armed track, as any keyboard's do, and its other controls do what they did. A control you taught with MIDI Learn keeps its job: Learn wins over Follow.
 - MIDI Follow is kept with the rig, so it stays when you open another project.
-- Nothing is sent back to the controller yet, so its lights or motor faders don't follow the screen.
+- Values go back only while **Send values back** is on and **Send MIDI and CV out** is on in Prefs, and only to a controller with an output. Each goes on the CC and channel its knob sends.
 
 ## MIDI files
 

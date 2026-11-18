@@ -215,6 +215,8 @@ pub enum To {
     Sampler,
     /// Out: controller mode sent it (the MPC's pads and Q-Links).
     Controller,
+    /// Out: MIDI Follow sent a Q-Link's value back to its controller.
+    SentBack,
 }
 
 /// The monitor's filter groups, as bits of [`Filter::kinds`].

@@ -152,6 +152,8 @@ enum Hit {
     FollowLearn,
     /// Its Clear: the controller's profile's knobs again.
     FollowClear,
+    /// Its Send values back: Off (false) or On (true).
+    FollowBack(bool),
 }
 
 struct Layout {
@@ -266,7 +268,16 @@ struct FollowRects {
     clear: Rect,
     /// What Follow does now, or why it waits.
     says: Rect,
+    /// Send values back: its label, Off and On. On the Follow line where
+    /// the card is wide enough (the MPC's screen swaps it in at the
+    /// card's full width), else a line at the foot.
+    back_label: Rect,
+    back: [Rect; 2],
+    wide: bool,
 }
+
+/// Send values back's label, where it shares the Follow line.
+const BACK_LABEL_W: i32 = 150;
 
 fn follow_rects(card: Rect) -> FollowRects {
     let ci = card.inset(14);
@@ -278,6 +289,24 @@ fn follow_rects(card: Rect) -> FollowRects {
     let [l0, l1, l2] = lines;
     let seg = 90;
     let clear = Rect::new(ci.right() - 80, l2.y, 80, l2.h);
+    let says_y = l2.bottom() + 8;
+    let wide = ci.w >= FOLLOW_LABEL_W + 2 * seg + 6 + 24 + BACK_LABEL_W + 2 * seg + 6;
+    let (back_label, bx, by, bh, says_bottom) = if wide {
+        let lx = x + 2 * seg + 6 + 24;
+        (
+            Rect::new(lx, l1.y, BACK_LABEL_W, l1.h),
+            lx + BACK_LABEL_W,
+            l1.y,
+            l1.h,
+            ci.bottom(),
+        )
+    } else {
+        // A little lower than the lines above, so the line saying what
+        // Follow does keeps one line of its own.
+        let h = l2.h - 4;
+        let y = ci.bottom() - h;
+        (Rect::new(ci.x, y, FOLLOW_LABEL_W, h), x, y, h, y - 4)
+    };
     FollowRects {
         title,
         learn,
@@ -292,7 +321,13 @@ fn follow_rects(card: Rect) -> FollowRects {
         ],
         knobs: Rect::new(x, l2.y, clear.x - 8 - x, l2.h),
         clear,
-        says: Rect::new(ci.x, l2.bottom() + 8, ci.w, ci.bottom() - l2.bottom() - 8),
+        says: Rect::new(ci.x, says_y, ci.w, (says_bottom - says_y).max(0)),
+        back_label,
+        back: [
+            Rect::new(bx, by, seg, bh),
+            Rect::new(bx + seg + 6, by, seg, bh),
+        ],
+        wide,
     }
 }
 
@@ -310,6 +345,9 @@ fn follow_hit(m: &IoModel, card: Rect, x: i32, y: i32) -> Option<Hit> {
     }
     if follow_clearable(m) && r.clear.contains(x, y) {
         return Some(Hit::FollowClear);
+    }
+    if let Some(i) = r.back.iter().position(|p| p.contains(x, y)) {
+        return Some(Hit::FollowBack(i == 1));
     }
     None
 }
@@ -329,6 +367,18 @@ fn follow_targets(m: &IoModel, card: Rect, out: &mut Vec<Target>) {
     if follow_clearable(m) {
         out.push(Target::tap("follow-clear", 0, "Clear the knobs", r.clear));
     }
+    out.push(Target::tap(
+        "follow-back",
+        0,
+        "Send values back off",
+        r.back[0],
+    ));
+    out.push(Target::tap(
+        "follow-back",
+        1,
+        "Send values back on",
+        r.back[1],
+    ));
 }
 
 /// "MIDI in", or a USB device's name (the one given to it, if any).
@@ -414,9 +464,16 @@ fn follow_says(m: &IoModel) -> String {
     if f.knobs_of(m.profile(&f.port)).is_empty() {
         return "No knobs yet: tap Learn knobs, then turn up to four of its knobs.".to_string();
     }
-    "Its keys play the armed track and its knobs turn whatever the Q-Links turn on screen. \
-     A learned control wins."
-        .to_string()
+    let back = match m.live.port(&f.port) {
+        _ if !f.send_back => "",
+        Some(p) if !p.has_out => " It has no output, so no values go back.",
+        _ if !m.live.built.notes_out => " Values go back once MIDI out is on (Prefs).",
+        _ => " Its lights or faders follow the Q-Links' values.",
+    };
+    format!(
+        "Its keys play the armed track and its knobs turn whatever the Q-Links turn on screen. \
+         A learned control wins.{back}"
+    )
 }
 
 /// `text` in `r`, a line of [`SAYS_LINE_H`] at a time, broken between
@@ -932,6 +989,15 @@ impl Learn {
             Hit::FollowOn(on) => self.follow_on(on),
             Hit::FollowLearn => self.follow_learn(),
             Hit::FollowClear => self.follow_clear(),
+            Hit::FollowBack(on) => {
+                let mut m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+                if m.setup.follow.send_back == on {
+                    return IoReply::Handled;
+                }
+                m.setup.follow.send_back = on;
+                m.gen += 1;
+                IoReply::Redraw
+            }
             Hit::Back => {
                 self.transport = false;
                 IoReply::Redraw
@@ -1043,6 +1109,20 @@ impl Learn {
         if follow_clearable(m) {
             button(cx, r.clear, "Clear", false);
         }
+        cx.text(
+            FontId::Sans,
+            t.size_body,
+            r.back_label,
+            Align::Left,
+            t.text,
+            if r.wide {
+                "Send values back"
+            } else {
+                "Send back"
+            },
+        );
+        segment(cx, r.back[0], "Off", !f.send_back, true);
+        segment(cx, r.back[1], "On", f.send_back, true);
         para(cx, t.size_small * 0.9, r.says, t.text_dim, &follow_says(m));
     }
 
@@ -1914,6 +1994,24 @@ mod tests {
         m.lock().unwrap().live.follow_learning = None;
         assert!(says(&m).starts_with("Its keys play"), "{}", says(&m));
         assert_eq!(label(&s).as_deref(), Some("Learn knobs"));
+        // Send values back: off until asked for; on, the line says what
+        // goes back (MIDI out is off in the sample rig).
+        assert!(!m.lock().unwrap().setup.follow.send_back);
+        let gen = m.lock().unwrap().gen;
+        assert_eq!(tap(&mut s, "follow-back", 1), IoReply::Redraw);
+        assert!(m.lock().unwrap().setup.follow.send_back);
+        assert!(m.lock().unwrap().gen > gen);
+        assert_eq!(tap(&mut s, "follow-back", 1), IoReply::Handled);
+        assert!(
+            says(&m).ends_with("Values go back once MIDI out is on (Prefs)."),
+            "{}",
+            says(&m)
+        );
+        m.lock().unwrap().live.built.notes_out = true;
+        assert!(says(&m).ends_with("Its lights or faders follow the Q-Links' values."));
+        let _ = paint(&s);
+        assert_eq!(tap(&mut s, "follow-back", 0), IoReply::Redraw);
+        assert!(!m.lock().unwrap().setup.follow.send_back);
         // Clear: the keyboard's profile's knobs again (the Q-Links' four).
         let (p, _) = mpfree_midi::profile::Profile::parse(
             "mpfree-profile 1\nname = Keystep\nmatch = Keystep 37\nknobs = 74 71 76 77 93\n",

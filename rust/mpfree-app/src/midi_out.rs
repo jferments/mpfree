@@ -67,6 +67,7 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, TryLockError};
 use std::time::{Duration, Instant};
 
+use mpfree_midi::expr_out::{self, ExprOut};
 use mpfree_midi::msg::Msg;
 use mpfree_midi::output::{DinPacer, OutQueue, OutRoute, OutputRouter, Timed, MAX_TRACKS};
 use mpfree_midi::port::{PortId, DIN, MAX_PORTS};
@@ -532,6 +533,10 @@ struct PortOut {
     /// What its device profile has each kit pad play (None: the pad's own
     /// note on the track's channel), by pad.
     pads: Box<[Option<PadOut>]>,
+    /// Its profile's bend range in semitones (0: it doesn't say), and
+    /// whether its gear takes each note's own pressure (`pressure = poly`).
+    bend: u8,
+    poly_pressure: bool,
     clock: PortClock,
     /// Its page's test note still on: its channel and the frames until its
     /// note-off.
@@ -556,6 +561,8 @@ impl PortOut {
             early: Duration::ZERO,
             nudge_tenths: 0,
             pads: vec![None; KIT_PADS].into_boxed_slice(),
+            bend: 0,
+            poly_pressure: false,
             clock: PortClock::new(),
             test_off: None,
             queued: 0,
@@ -607,6 +614,9 @@ pub struct MidiOut {
     /// Bank and program to send before this period's notes.
     program_due: [bool; MAX_TRACKS],
     chords: Chords,
+    /// Each track's keys' expression for its gear, made one bend, pressure
+    /// and CC 74 ([`MidiOut::expression`]).
+    expr: Box<[ExprOut]>,
     applied_gen: Option<u64>,
     shown_on: Option<bool>,
     rolling: bool,
@@ -625,6 +635,8 @@ pub struct MidiOut {
     thru_unsent: u64,
     /// Messages controller mode couldn't send, as for thru.
     controller_unsent: u64,
+    /// MIDI Follow's values sent back to its controller.
+    sent_back: u64,
     /// The Sample tab's auto-sample of outside gear, out of the jacks.
     gear: Gear,
 }
@@ -662,6 +674,7 @@ impl MidiOut {
             tracks: [None; MAX_TRACKS],
             program_due: [false; MAX_TRACKS],
             chords: Chords::new(),
+            expr: vec![ExprOut::new(); MAX_TRACKS].into_boxed_slice(),
             applied_gen: None,
             shown_on: None,
             rolling: false,
@@ -672,6 +685,7 @@ impl MidiOut {
             said: Vec::new(),
             thru_unsent: 0,
             controller_unsent: 0,
+            sent_back: 0,
             gear: Gear::new(),
         }
     }
@@ -916,6 +930,8 @@ impl MidiOut {
             for (pad, out) in p.pads.iter_mut().enumerate() {
                 *out = profile.and_then(|f| f.pad(pad));
             }
+            p.bend = profile.and_then(|f| f.bend).unwrap_or(0);
+            p.poly_pressure = profile.is_some_and(|f| f.poly_pressure);
         }
         for t in 0..MAX_TRACKS {
             let want = m.setup.tracks[t]
@@ -934,8 +950,10 @@ impl MidiOut {
             });
             if route != was {
                 // Another port or channel, or none: what is on ends where
-                // it started. A new program alone leaves held notes alone.
+                // it started, and its gear's bend and pressure go back to
+                // rest. A new program alone leaves held notes alone.
                 self.end_chords(t, 0);
+                self.release_expression(t, 0);
                 self.router.set_route(t as u8, route, 0, &mut self.queue);
             }
             self.tracks[t] = want;
@@ -1117,6 +1135,69 @@ impl MidiOut {
         true
     }
 
+    /// A value MIDI Follow sends back to its controller on `to` (a knob's
+    /// CC, so its lights or motor fader show the Q-Link's value), at the
+    /// start of this period. False when nothing can send it, as for
+    /// [`MidiOut::controller`]; it isn't counted then, since the next
+    /// change sends again.
+    pub fn send_back(&mut self, to: PortId, msg: Msg) -> bool {
+        let i = usize::from(to.0);
+        if !self.sending || !self.ports.get(i).is_some_and(|p| p.writer.is_some()) {
+            return false;
+        }
+        let Some(q) = self.queue.get_mut(i) else {
+            return false;
+        };
+        q.push(Timed::msg(0, msg).sent_back());
+        self.sent_back += 1;
+        true
+    }
+
+    /// A key's expression for track `t`'s gear, at the start of this
+    /// period: a keyboard's wheel and pressure, an MPE controller's slide,
+    /// pressure and tone on each of its notes, and its keys going down and
+    /// up (which say whose count). Gear without MPE takes them as one bend
+    /// (over its profile's `bend` range), one pressure and one CC 74
+    /// ([`ExprOut`]); gear whose profile says `pressure = poly` takes each
+    /// key's pressure on its note. True when MIDI out takes the track, so
+    /// the pads and instruments don't.
+    pub fn expression(&mut self, track: u16, i: expr_out::In) -> bool {
+        if !self.takes(track) {
+            return false;
+        }
+        let t = usize::from(track);
+        let (bend, poly) = self.tracks[t]
+            .and_then(|a| self.ports.get(usize::from(a.port.0)))
+            .map_or((0, false), |p| (p.bend, p.poly_pressure));
+        let (router, queue) = (&mut self.router, &mut self.queue);
+        match i {
+            expr_out::In::Pressure { note, value } if poly => {
+                let m = Msg::PolyPressure {
+                    ch: 0,
+                    note: note & 0x7F,
+                    value: value.min(127),
+                };
+                router.send(t as u8, m, 0, queue);
+            }
+            _ => self.expr[t].take(i, bend, |m| router.send(t as u8, m, 0, queue)),
+        }
+        true
+    }
+
+    /// Track `track`'s gear's bend and pressure back to rest (another
+    /// track is armed), at the start of this period.
+    pub fn rest_expression(&mut self, track: usize) {
+        self.release_expression(track, 0);
+    }
+
+    /// Track `t`'s gear's bend and pressure back to rest, at `offset`.
+    fn release_expression(&mut self, t: usize, offset: u32) {
+        let (router, queue) = (&mut self.router, &mut self.queue);
+        if let Some(e) = self.expr.get_mut(t) {
+            e.release(|m| router.send(t as u8, m, offset, queue));
+        }
+    }
+
     fn end_chords(&mut self, t: usize, offset: u32) {
         let (router, queue) = (&mut self.router, &mut self.queue);
         self.chords
@@ -1125,9 +1206,13 @@ impl MidiOut {
 
     /// Ends every note MIDI out has on, on every port (a panic, a stop),
     /// at `offset`: only the notes that are on, never 2048 blind
-    /// note-offs.
+    /// note-offs. A gear bent or pressed by the keys goes back to rest.
     pub fn all_off(&mut self, offset: u32) {
         self.chords.clear();
+        // Bend and pressure back to rest, where they aren't.
+        for t in 0..MAX_TRACKS {
+            self.release_expression(t, offset);
+        }
         self.router.all_off(offset, &mut self.queue);
         self.gear_off(offset);
     }
@@ -1489,6 +1574,12 @@ impl MidiOut {
                 self.thru_unsent
             ));
         }
+        if self.sent_back > 0 {
+            lines.push(format!(
+                "MIDI Follow: {} values sent back to its controller",
+                self.sent_back
+            ));
+        }
         if self.controller_unsent > 0 {
             lines.push(format!(
                 "Controller mode: {} messages not sent (MIDI out off, or no output to send them to)",
@@ -1696,6 +1787,86 @@ mod tests {
             [
                 0x92, 36, 100, 0x99, 40, 90, 0x99, b5, 80, 0x82, 36, 64, 0x99, 37, 70, 0x89, 37,
                 64, 0x89, 40, 64, 0x89, b5, 64
+            ]
+        );
+    }
+
+    /// Expression out: a track's keys bend and press its gear, as one
+    /// bend over its profile's range, the hardest key's channel pressure
+    /// and the newest key's tone on CC 74; a panic puts the gear back at
+    /// rest, keeping the wheel, as closing does; a profile that says poly
+    /// gets each key's pressure on its note. A track not on MIDI out isn't
+    /// taken.
+    #[test]
+    fn the_keys_bend_and_press_the_gear() {
+        use mpfree_midi::expr_out::In;
+        use mpfree_midi::profile::Profile;
+        use mpfree_midi::setup::ProfilePick;
+        let (mut mo, sink) = open(Duration::ZERO);
+        let m = model(&[(1, TrackOut::new(DIN_NAME, 2))]);
+        let pick = |m: &Shared, p: Profile| {
+            let mut g = m.lock().unwrap();
+            let name = p.name.clone();
+            g.profiles.add(p).unwrap();
+            g.setup
+                .set_port(DIN_NAME, |p| p.profile = ProfilePick::Named(name.clone()));
+            g.gen += 1;
+        };
+        let mut juno = Profile::new("Juno");
+        juno.bend = Some(12);
+        pick(&m, juno);
+        mo.sync(&m, false);
+        assert!(!mo.expression(0, In::Wheel(0.5)), "not on MIDI out");
+        assert!(mo.expression(1, In::Wheel(0.5)));
+        assert!(mo.expression(1, In::Down { note: 60 }));
+        assert!(mo.expression(
+            1,
+            In::Slide {
+                note: 60,
+                semis: 3.0
+            }
+        ));
+        assert!(mo.expression(
+            1,
+            In::Pressure {
+                note: 60,
+                value: 50
+            }
+        ));
+        assert!(mo.expression(
+            1,
+            In::Tone {
+                note: 60,
+                value: 0.5
+            }
+        ));
+        mo.all_off(0);
+        mo.period_end(PERIOD, Instant::now());
+        let mut osmose = Profile::new("Osmose");
+        osmose.poly_pressure = true;
+        pick(&m, osmose);
+        mo.sync(&m, false);
+        assert!(mo.expression(1, In::Down { note: 62 }));
+        assert!(mo.expression(
+            1,
+            In::Pressure {
+                note: 62,
+                value: 70
+            }
+        ));
+        mo.period_end(PERIOD, Instant::now());
+        assert!(mo.close());
+        assert_eq!(
+            sink.bytes(),
+            [
+                // The wheel halfway (4096), then a quarter of the 12
+                // semitones more (6144), on channel 3.
+                0xE2, 0, 96, 0xE2, 0, 112, // The pressure, and the tone on CC 74.
+                0xD2, 50, 0xB2, 74, 64, // The panic: bend and pressure at rest.
+                0xE2, 0, 64, 0xD2, 0, // The wheel still held bends the next key.
+                0xE2, 0, 96, // Each key's own pressure, on its note.
+                0xA2, 62, 70, // Closing puts the bend back at rest too.
+                0xE2, 0, 64
             ]
         );
     }
