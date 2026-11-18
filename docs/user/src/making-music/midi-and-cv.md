@@ -231,12 +231,29 @@ The **CV/Gate** jacks play modular synths. Each of the eight outputs has one job
 - a track's **pitch**, 1 V per octave (or Hz per volt, for older Korg and Yamaha synths), with the lowest, highest or last note winning when several are held;
 - a track's **gate**, high while a note is held, or a short **trigger** on each note (of every note, or of one note, for a drum module);
 - a track's **velocity**, or one of its **CCs**, as a voltage;
+- an **LFO** or an **envelope** that moves on its own (see [LFOs and envelopes](#lfos-and-envelopes));
 - a **clock** at the rate you pick, **run** (high while the song plays) or **reset** (a pulse when the song starts from the top);
 - or a **fixed** voltage.
 
 The outputs are set in the mixer's I/O view, under CV. A track that drives CV still plays its own sound too, so turn it down in the mixer if you only want the module.
 
 When one note ends just as the next starts, as a sequence's notes do, the gate drops for 2 ms between them, so the module's envelope starts again. Hold two notes at once for a legato line instead.
+
+### LFOs and envelopes
+
+An output whose job is **LFO** or **Envelope** moves by itself, so a filter can sweep or a VCA can open without a module of its own for it. Its row gets two more rows under it for the rest of its settings; the wheel and the Q-Links work on them as on any row.
+
+{{shot: mixer-io-cv-moving | The CV section with an envelope of the Drums track's keys on CV 2, a Drift LFO on CV 3 that follows the song's bar and plays A minor pentatonic, and a free sine LFO on CV 4.}}
+
+An **LFO** sweeps between its **Low** and **High** voltages in one of seven shapes: **Sine**, **Triangle**, **Ramp up**, **Ramp down**, **Square**, **Random** (a new level each cycle, held) and **Drift** (gliding from one random level to the next).
+
+- **Follows**: **Tempo** sets its speed in bars and notes (16 bars down to 1/32, with triplets), and while the song plays its cycle starts on the beat, so a one-bar LFO starts again with every bar and a Random one plays the same levels each time the song comes round. **Seconds** sets it in hertz, from 0.02 to 20, running free.
+- **Restart** (the row's Track column): pick a track and the LFO starts its cycle again at each of that track's notes; **Runs free** for none.
+- **Notes**: **Smooth** leaves the voltage as it is. Pick **Semitones**, **Major**, **Minor**, **Major pent.**, **Minor pent.**, **Fifths** or **Octaves** and the voltage snaps to those notes at 1 V per octave, from the **Root** you pick, so a Random or Drift LFO into an oscillator plays a melody in key. C is 0 V, so tune the oscillator to a C at 0 V.
+
+An **Envelope** opens on the row's track's keys: up to its top in **Attack**, down to the **Sustain** level in **Decay**, held while any of the track's keys is down, and down to 0 V in **Release** once the last key lets go. A new note while keys are held starts the attack again from where it is. The row's setting is the top voltage. **Fixed top** goes all the way up on every note; with **By velocity** each note's velocity sets how high it goes.
+
+An LFO or an envelope sends a new value every 4 ms while it moves (and right at a note), and nothing while it holds still. Changing a setting while it runs doesn't start it again.
 
 CV 1 to 4 send while **Send MIDI and CV out** is on in Prefs. They haven't been checked on an MPC One with a meter yet, so treat their volts as a first guess; CV 5 to 8 come after that check. Until an output works, its row in the I/O view says it sends nothing. Modules differ, so each output will also be tunable against your module.
 

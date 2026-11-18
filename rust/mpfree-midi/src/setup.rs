@@ -29,6 +29,7 @@
 
 use crate::blocks::Blocks;
 use crate::cv::{CvAssign, Priority, Scale, CV_OUTS};
+use crate::cv_mod::{self, Env, Lfo, Notes, Rate, Shape};
 use crate::learn::Saved;
 use crate::msg::{Channel, Msg};
 use crate::output::MAX_TRACKS;
@@ -1408,6 +1409,37 @@ fn cv_text(a: &CvAssign) -> String {
         CvAssign::Clock { ppqn, volts, ms } => {
             format!("clock ppqn={ppqn} volts={} ms={}", f(volts), f(ms))
         }
+        CvAssign::Lfo(l) => {
+            let rate = match l.rate {
+                Rate::Hz(hz) => format!("hz={}", f(hz)),
+                Rate::Beats(b) => format!("beats={}", f(b)),
+            };
+            let restart = l
+                .restart
+                .map(|t| format!(" restart={}", t + 1))
+                .unwrap_or_default();
+            let notes = if l.notes.is_off() {
+                String::new()
+            } else {
+                format!(" notes={:03x} root={}", l.notes.mask & 0xFFF, l.notes.root)
+            };
+            format!(
+                "lfo shape={} {rate} low={} high={}{restart}{notes}",
+                l.shape.word(),
+                f(l.low_volts),
+                f(l.high_volts)
+            )
+        }
+        CvAssign::Envelope(e) => format!(
+            "envelope track={} attack-ms={} decay-ms={} sustain={} release-ms={} volts={} velocity={}",
+            e.track + 1,
+            f(e.attack_ms),
+            f(e.decay_ms),
+            f(e.sustain),
+            f(e.release_ms),
+            f(e.volts),
+            if e.velocity { "on" } else { "off" }
+        ),
         CvAssign::Run { volts } => format!("run volts={}", f(volts)),
         CvAssign::Reset { volts, ms } => format!("reset volts={} ms={}", f(volts), f(ms)),
         CvAssign::Fixed { volts } => format!("fixed volts={}", f(volts)),
@@ -1453,6 +1485,14 @@ fn parse_cv(v: &str) -> Result<CvAssign, String> {
         }
     };
     let byte = |k: &str| -> Result<u8, String> { Ok(number(need(k)?, 0, 127)? as u8) };
+    let float = |k: &str, lo: f32, hi: f32, unit: &str| -> Result<f32, String> {
+        let x: f32 = need(k)?.parse().map_err(|_| format!("{k}: not a number"))?;
+        if (lo..=hi).contains(&x) {
+            Ok(x)
+        } else {
+            Err(format!("{k}: {x} is outside {lo} to {hi}{unit}"))
+        }
+    };
     for (k, _) in &kv {
         let known: &[&str] = match kind {
             "pitch" => &["track", "zero", "bend", "priority", "v/oct", "hz/v"],
@@ -1464,6 +1504,18 @@ fn parse_cv(v: &str) -> Result<CvAssign, String> {
             "run" => &["volts"],
             "reset" => &["volts", "ms"],
             "fixed" => &["volts"],
+            "lfo" => &[
+                "shape", "hz", "beats", "low", "high", "restart", "notes", "root",
+            ],
+            "envelope" => &[
+                "track",
+                "attack-ms",
+                "decay-ms",
+                "sustain",
+                "release-ms",
+                "volts",
+                "velocity",
+            ],
             _ => &[],
         };
         if !known.contains(k) && kind != "off" {
@@ -1548,6 +1600,58 @@ fn parse_cv(v: &str) -> Result<CvAssign, String> {
         "fixed" => CvAssign::Fixed {
             volts: volts("volts")?,
         },
+        "lfo" => {
+            let shape = need("shape")?;
+            let shape = Shape::from_word(shape).ok_or(format!("lfo: unknown shape \"{shape}\""))?;
+            let rate = match (get("hz"), get("beats")) {
+                (Some(_), None) => {
+                    Rate::Hz(float("hz", cv_mod::LFO_MIN_HZ, cv_mod::LFO_MAX_HZ, " Hz")?)
+                }
+                (None, Some(_)) => Rate::Beats(float(
+                    "beats",
+                    cv_mod::LFO_MIN_BEATS,
+                    cv_mod::LFO_MAX_BEATS,
+                    " beats",
+                )?),
+                _ => return Err("lfo: one of hz or beats".into()),
+            };
+            let notes = match get("notes") {
+                None => Notes::OFF,
+                Some(n) => Notes {
+                    mask: u16::from_str_radix(n, 16)
+                        .ok()
+                        .filter(|m| *m <= 0xFFF)
+                        .ok_or(format!("notes: \"{n}\" is not 12 notes in hex"))?,
+                    root: number(need("root")?, 0, 11)? as u8,
+                },
+            };
+            CvAssign::Lfo(Lfo {
+                shape,
+                rate,
+                low_volts: volts("low")?,
+                high_volts: volts("high")?,
+                restart: get("restart")
+                    .map(|t| index(t, MAX_TRACKS).map(|t| t as u8))
+                    .transpose()?,
+                notes,
+            })
+        }
+        "envelope" => {
+            let ms = |k: &str| float(k, 0.0, cv_mod::ENV_MAX_MS, " ms");
+            CvAssign::Envelope(Env {
+                track: track()?,
+                attack_ms: ms("attack-ms")?,
+                decay_ms: ms("decay-ms")?,
+                sustain: float("sustain", 0.0, 1.0, "")?,
+                release_ms: ms("release-ms")?,
+                volts: volts("volts")?,
+                velocity: match need("velocity")? {
+                    "on" => true,
+                    "off" => false,
+                    v => return Err(format!("velocity: \"{v}\" is not on or off")),
+                },
+            })
+        }
         k => return Err(format!("unknown job \"{k}\"")),
     })
 }
@@ -2098,6 +2202,66 @@ mod tests {
             "line 8: port.2.input: unknown input \"loud\"",
             "line 9: follow.position: expected on or off",
             "a port with settings but no name",
+        ] {
+            assert!(all.contains(want), "missing {want:?} in\n{all}");
+        }
+    }
+
+    #[test]
+    fn lfos_and_envelopes_read_back_and_bad_ones_say_why() {
+        let mut m = MidiSetup::default();
+        m.cv[0] = CvAssign::Lfo(Lfo {
+            shape: Shape::Drift,
+            rate: Rate::Beats(2.0 / 3.0),
+            low_volts: 0.5,
+            high_volts: 2.5,
+            restart: Some(3),
+            notes: Notes {
+                mask: 0xAB5,
+                root: 7,
+            },
+        });
+        m.cv[1] = CvAssign::Lfo(Lfo {
+            rate: Rate::Hz(0.25),
+            ..Lfo::default()
+        });
+        m.cv[2] = CvAssign::Envelope(Env {
+            velocity: true,
+            sustain: 0.35,
+            ..Env::new(9)
+        });
+        let text = m.to_text();
+        assert!(
+            text.contains("cv.2 = lfo shape=sine hz=0.25 low=0 high=5\n"),
+            "{text}"
+        );
+        assert!(text.contains(
+            "cv.1 = lfo shape=drift beats=0.6666667 low=0.5 high=2.5 restart=4 notes=ab5 root=7\n"
+        ));
+        assert!(text.contains(
+            "cv.3 = envelope track=10 attack-ms=5 decay-ms=200 sustain=0.35 release-ms=300 volts=5 velocity=on\n"
+        ));
+        let (back, warn) = MidiSetup::parse(&text);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(back.cv, m.cv);
+
+        let text = "mpfree-midi 1\n\
+                    cv.1 = lfo shape=wobble hz=1 low=0 high=5\n\
+                    cv.2 = lfo shape=sine hz=50 low=0 high=5\n\
+                    cv.3 = lfo shape=sine low=0 high=5\n\
+                    cv.4 = lfo shape=sine beats=1 low=0 high=5 notes=fff1 root=0\n\
+                    cv.5 = envelope track=1 attack-ms=20000 decay-ms=1 sustain=1 release-ms=1 volts=5 velocity=off\n\
+                    cv.6 = envelope track=1 attack-ms=1 decay-ms=1 sustain=1 release-ms=1 volts=5 velocity=maybe\n";
+        let (m, w) = MidiSetup::parse(text);
+        assert!(m.cv.iter().all(|a| *a == CvAssign::Off));
+        let all = w.join("\n");
+        for want in [
+            "line 2: cv.1: lfo: unknown shape \"wobble\"",
+            "line 3: cv.2: hz: 50 is outside 0.01 to 20 Hz",
+            "line 4: cv.3: lfo: one of hz or beats",
+            "line 5: cv.4: notes: \"fff1\" is not 12 notes in hex",
+            "line 6: cv.5: attack-ms: 20000 is outside 0 to 10000 ms",
+            "line 7: cv.6: velocity: \"maybe\" is not on or off",
         ] {
             assert!(all.contains(want), "missing {want:?} in\n{all}");
         }

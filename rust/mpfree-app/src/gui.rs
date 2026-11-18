@@ -11203,6 +11203,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         "mixer-io-learn",
         io_section_screen(fonts(), &io_state, rig, mpfree_midi_ui::LEARN),
     ));
+    // The CV section with an envelope and two LFOs, each with its two
+    // more rows.
+    out.push((
+        "mixer-io-cv-moving",
+        io_section_screen(
+            fonts(),
+            &io_state,
+            mpfree_midi_ui::sample::moving_cv(mpfree_midi_ui::sample::rig()),
+            mpfree_midi_ui::CV,
+        ),
+    ));
     // The FX chain editor in the mixer's place (a strip's insert row): the
     // drum bus, Drive selected, Tone touched; and the macros panel over the
     // page (a long press on a macro card), layout spec 4b.

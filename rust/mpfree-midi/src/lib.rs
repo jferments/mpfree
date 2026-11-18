@@ -33,6 +33,7 @@
 
 pub mod blocks;
 pub mod cv;
+pub mod cv_mod;
 pub mod cv_wire;
 pub mod input;
 pub mod learn;
