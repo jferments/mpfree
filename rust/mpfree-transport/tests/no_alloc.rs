@@ -98,6 +98,9 @@ fn commands_and_periods_never_allocate() {
             150 => {
                 let _ = t.command(f + 3, Command::ToggleOverdub);
             }
+            180 => {
+                let _ = t.change_tempo_map(f + 5, map);
+            }
             200 => {
                 let _ = t.command(f, Command::Locate((i as i64 * 37) % 9000 - 500));
             }

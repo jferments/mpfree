@@ -481,8 +481,8 @@ impl Session {
     }
 
     /// Show the steps (`"Beats"`: the Sequencer tab's Steps, which were
-    /// Play's Beats view) or Play's view `"All"` or `"Loop"`, as a
-    /// musician would: the tab, then the view on Play's switch.
+    /// Play's Beats view) or Play (`"All"`, its one view since the looper
+    /// redesign's step 5), as a musician would: the tab.
     pub fn play_view(&mut self, name: &str) -> &mut Session {
         if name == "Beats" {
             return self.press("header", "tab", "Sequencer");
@@ -490,8 +490,19 @@ impl Session {
         if self.view() != View::Play {
             self.press("header", "tab", "Play");
         }
-        if self.control("play-transport", "view", name).is_some() {
-            self.press("play-transport", "view", name);
+        self
+    }
+
+    /// Arm the loop for REC as a musician would on Play: the loop row's
+    /// Arm pill (Play's Loop view did it before the looper redesign's step
+    /// 5). Already armed, it leaves it.
+    pub fn arm_loop(&mut self) -> &mut Session {
+        self.play_view("All");
+        if self
+            .control(crate::loop_row::LOOP_ROW, "arm", "Arm")
+            .is_some()
+        {
+            self.press(crate::loop_row::LOOP_ROW, "arm", "Arm");
         }
         self
     }

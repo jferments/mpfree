@@ -1,7 +1,7 @@
 <!--
 status: changing
-covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/recall.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/warp_tab.rs rust/mpfree-sampler-ui/src/chop_tab.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
-checked: 2026-11-16 ececc7e
+covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/recall.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/sound_panel.rs rust/mpfree-sampler-ui/src/warp_tab.rs rust/mpfree-sampler-ui/src/chop_tab.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
+checked: 2026-11-18 ec8cb82
 -->
 
 # Sampling
@@ -11,7 +11,7 @@ checked: 2026-11-16 ececc7e
 Two tabs share the work:
 
 - The **Pads** tab, next to Play, shows the whole bank of 16 pads beside the settings of the pad picked: which sound is on which pad, and how it plays. **Browse for** at its top right opens the browser to find a sound for that pad, and **Kit** beside it opens the list of kits, to put another kit on the selected track.
-- The **Sample** tab works on one pad at a time. **Hit a pad** to pick it; its name and sound are at the top left of the page. Along the top are a page for each job: **Wave**, **Warp**, **Chop**, **Play**, **Grain**, **FX** and **Rec**. Beside them, **Send to pad** and **Chop to pads** work from any page (see [below](#send-to-pad-and-chop-to-pads)). The four **Q-Link** cards are down the right-hand side, as on every other page: each says what its knob turns here, and you can drag a card up or down to turn it from the screen.
+- The **Sample** tab works on one pad at a time. **Hit a pad** to pick it; its name and sound are at the top left of the page. Along the top are a page for each job: **Wave**, **Warp**, **Chop**, **Play**, **Grain** and **Rec**. Beside them, **Send to pad** and **Chop to pads** work from any page (see [below](#send-to-pad-and-chop-to-pads)). The four **Q-Link** cards are down the right-hand side, as on every other page: each says what its knob turns here, and you can drag a card up or down to turn it from the screen.
 
 ## The Pads tab: sounds onto pads
 
@@ -26,7 +26,7 @@ Beside the pads are the settings of the pad picked:
 - how many notes can ring at once (**Polyphony**). Kit pads, and a sound you load onto an empty pad, start at 4: hit a pad again (or let Note Repeat do it) and its fifth hit stops its oldest, while other pads' sounds ring on. MPFree plays up to 64 sounds at once: plain drum hits (One shot, no filter, the envelope open, at the sound's own pitch) can use all 64, and sounds with a filter, an envelope, a loop, grains or a tune up to 24 of them. When too many sounds play at once, MPFree stops the oldest sound of the pad that has the most playing first;
 - a **mute group**: pads in the same group cut each other off, like an open and a closed hi-hat;
 - its **level**, **pan** and **tune**;
-- **Effects**: the effects on the pad's own mixer channel (**+ FX** when it has none). Tap it, or push the wheel on it, to open the pad's chain in the Mix tab, and **‹** brings you back (see [Effects](effects.md#adding-an-effect-the-chain-editor)). A pad without a channel of its own (any but kit 1's A1 to A16) gets one when you add an effect, and gives it back once it has none (see [FX](shaping-a-pad.md#fx-effects-on-one-pad-or-on-the-whole-kit)).
+- **Effects**: the effects on the pad's own mixer channel (**+ FX** when it has none). Tap it, or push the wheel on it, to open the pad's chain in the Mix tab, and **‹** brings you back (see [Effects](effects.md#adding-an-effect-the-chain-editor)). A pad without a channel of its own (any but kit 1's A1 to A16) gets one when you add an effect, and gives it back once it has none (see [Effects on one pad](shaping-a-pad.md#effects-on-one-pad-or-on-the-whole-kit)).
 
 Q-Links 1 to 4 turn level, pan, tune and voices. **Put on** places the sound picked on the right onto the pad, the whole of it; the hint line says when the pad plays all of it already.
 
@@ -83,7 +83,7 @@ Each track plays a kit of its own, as each track plays a program on the MPC, and
 - **To change a track's kit,** select the track and pick the kit in the list of kits (tap **Kit** at the top of the Pads tab, or **PADS PLAY** on Play's transport bar), or with **SHIFT** + the data wheel on the Play page. Only these change what a track plays: opening a page never does. The synth comes after the kits (see [Put a synth on the pads](synths.md#put-a-synth-on-the-pads)), and the list's last row, **New kit**, gives the selected track an empty kit of its own (Kit 8, say): fill its pads by loading sounds, recording, or sending pads to it. Up to eight new kits are free in a session; one shows in the list once a track plays it or it has sounds, and the project keeps it with its sounds.
 - **A kit has 128 pads,** 16 in each of the banks A to H. **PAD BANK** puts another bank on the pads: **B** plays pads B1 to B16, and **SHIFT** (or a second press) reaches E to H. The bank stays when you select another track, and **PADS PLAY** on Play ("Drums · Boom Bap · B") and the Pads tab's banks say which one is on the pads. Whatever you play on bank B records onto those pads, and the Sample tab edits the pad you hit last on any bank. Load or record a sound onto an empty pad of any bank, or send a pad there with **Send to pad**.
 - **Every track starts on kit 1,** so a project saved before tracks had a kit each plays as it did.
-- **In the mixer,** kit 1 plays through the 16 pad channels and the **Drums** strip, as before. Another kit plays into the strip of the first track that plays it (**Track 2**, say), with its own fader, effects and sends; tracks that play the same kit share it. Put effects for the whole kit on the track's strip; a pad that needs effects of its own gets a channel when you add one (see [FX](shaping-a-pad.md#fx-effects-on-one-pad-or-on-the-whole-kit)). Pad mutes are kit 1's A1 to A16 alone for now, so mute the track rather than a pad: on another kit's track the Play page's pad speakers and **TRACK MUTE**'s pad mutes say so and mute nothing.
+- **In the mixer,** kit 1 plays through the 16 pad channels and the **Drums** strip, as before. Another kit plays into the strip of the first track that plays it (**Track 2**, say), with its own fader, effects and sends; tracks that play the same kit share it. Put effects for the whole kit on the track's strip; a pad that needs effects of its own gets a channel when you add one (see [Effects on one pad](shaping-a-pad.md#effects-on-one-pad-or-on-the-whole-kit)). Pad mutes are kit 1's A1 to A16 alone for now, so mute the track rather than a pad: on another kit's track the Play page's pad speakers and **TRACK MUTE**'s pad mutes say so and mute nothing.
 - **The project keeps** which kit each track plays.
 
 ## Recording a sample
@@ -191,27 +191,24 @@ The pad's name at the top left of every Sample page has a dotted line under it: 
 
 **Pad** and **Sound** at the top right pick which name you are typing: the pad's, or the name of the sound it plays (a recording's "Take 3", say). A sound's name is the same on every pad that plays it, and the keyboard says how many that is. Tap **Enter** (or push the wheel) to keep both names; **Cancel** leaves them as they were. One **UNDO** takes both back. A name can have up to 32 characters, and can't be empty.
 
-## Wave: trim and loop
+## Wave: trim, loop and sound
 
-{{shot: sample | The Wave page: the whole sample at the top, the zoomed region across the page, the region's knobs, buttons and switches under it in five sections, and the four Q-Links (Start, End, Loop start, Loop end) down the right. Send to pad and Chop to pads are at the top right.}}
+{{shot: sample | The Wave page: the whole sample at the top, the zoomed region across the page, the region's knobs, buttons and switches under it in three sections with the pad's Sound beside them, and the four Q-Links (Start, End, Loop start, Loop end) down the right. Send to pad and Chop to pads are at the top right.}}
 
 The **Wave** page shows the sample across the screen. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links, or rest a finger on a marker's tab and turn the data wheel: it moves a screen pixel a turn, or one frame at a time with **SHIFT** (next build; see [Hold and turn](../getting-started/the-screen.md#hold-and-turn)). Hold **SHIFT** and press **+** to zoom in, **SHIFT + –** to zoom out (the Warp and Chop pages too); the card beside the strip at the top says how far in you are. Tap the wave to hear it.
 
-Under the wave, the region's settings are laid out like an instrument's panel, in five sections:
+Under the wave, the region's settings are laid out like an instrument's panel, in three sections, with the pad's **Sound** beside them:
 
 - **Mode:** how a hit plays (**One shot**, **Gate**, **Toggle**, **Loop** or **Granular**), the **Loop** (**Off**, **Forward** or **Ping-pong**) and its **Crossfade**, which smooths a forward loop's seam. Tap a button to pick it.
-- **Level:** the **Gain** and **Tune** knobs, and **Normalize to 0 dB**.
-- **Fades:** **Fade in** and **Fade out**.
-- **Warp:** **Off**, **Stretch** or **Repitch**, and the **Warp tempo** (tap the number to type one).
+- **Gain and fades:** the **Gain**, **Fade in** and **Fade out** knobs, and **Normalize to 0 dB**.
 - **Options:** **Reverse**, how markers **Snap** (off, to a zero crossing, or to 16ths) and which **Channels** play.
+- **Sound:** how the pad plays its sound, four controls at a time. Tap **Amp** for its envelope (**Attack**, **Decay**, **Sustain**, **Release**), **Filter** for the filter (its type, **Cutoff**, **Resonance** and **Env depth**), **Pitch** for **Tune**, **Wow & flutter**, **Vel → pitch** (harder hits play higher) and **Vintage**, or **Movement** for what the LFO moves (**LFO to**), its **LFO rate** and **LFO depth**, and the **Pitch env**. These are the Play page's own controls (see [Shaping how a pad plays](shaping-a-pad.md)): a change here shows there, and the other way round. Turning **Tune** here tunes the whole pad.
 
-Drag a knob up to turn it up and down to turn it down; one drag is one **UNDO**. Tap ‹ › or − + to step a setting. Touching a control also gives it the wheel and **–** / **+**, and an outline shows which one has it; turn the wheel to pick the next control along. Or rest a finger on any control with a value and turn the wheel: it turns that control until you lift (see [Hold and turn](../getting-started/the-screen.md#hold-and-turn)). A grey control has nothing to do yet, such as Crossfade without a forward loop.
+Drag a knob up to turn it up and down to turn it down; one drag is one **UNDO**. Tap ‹ › or − + to step a setting. Touching a control also gives it the wheel and **–** / **+**, and an outline shows which one has it; turn the wheel to pick the next control along. Or rest a finger on any control with a value and turn the wheel: it turns that control until you lift (see [Hold and turn](../getting-started/the-screen.md#hold-and-turn)). A grey control has nothing to do yet, such as Crossfade without a forward loop, or the filter's controls while the filter is off; tap it and the hint line says why.
 
-**Normalize to 0 dB** (under Gain and Tune) turns the gain so the loudest moment between Start and End plays at full level, 0 dB, and never over. Tap it, or push the wheel on it. It only sets the gain, so after moving Start or End you can tap it again for the new part; **UNDO** takes it back. A silent part is left as it is.
+**Normalize to 0 dB** (under the Gain and fades knobs) turns the gain so the loudest moment between Start and End plays at full level, 0 dB, and never over. Tap it, or push the wheel on it. It only sets the gain, so after moving Start or End you can tap it again for the new part; **UNDO** takes it back. A silent part is left as it is.
 
 MPFree finds each sound's hits, tempo and note (for Chop, Warp, the 16ths snap and Map to keys) while you work, never holding up the screen. A long sound shows as a flat line for a moment, then its wave, then its hits and tempo a little later: a minute-long sound takes a second or two on the MPC. The pages fill in as soon as each is found, and a sound already looked at is ready at once. A saved project keeps what was found beside each sound, so when you open it again its sounds are ready at once too.
-
-**Warp** plays the sound in time with the project's tempo: **Stretch** keeps its pitch, **Repitch** speeds it up or slows it down like a record. **Warp tempo** is the tempo it was played at.
 
 **Edits you hear while it plays.** Hold a looping pad (or tap the wave in Loop mode, so it keeps sounding) and move its loop: the loop that is playing moves too. Moved behind the sound, it jumps into the new loop without a click; moved ahead, you hear it when the sound gets there. The pad's level, pan, tune, gain, filter cutoff and resonance, and a grain cloud's settings change on a sound still playing too, smoothly. The start, end, fades, reverse, mode, envelope and filter type, and a new sound on the pad, are heard from the next hit.
 
@@ -219,12 +216,12 @@ MPFree finds each sound's hits, tempo and note (for Chop, Warp, the 16ths snap a
 
 {{shot: sample-warp | The Warp page: a break at 92 BPM with 14 hits pinned to the 1/16 grid, pin 4 picked, and its settings in the panel under it.}}
 
-The **Warp** page is for a warped sound whose hits don't sit quite on the beat, such as a loop played by hand. It draws the sound against the bars and beats of its warp tempo, with the hits MPFree finds marked along the bottom.
+**Warp** plays the sound in time with the project's tempo: **Stretch** keeps its pitch, **Repitch** speeds it up or slows it down like a record. **Warp tempo** is the tempo it was played at. Both are on the **Warp** page, which is also for a warped sound whose hits don't sit quite on the beat, such as a loop played by hand. It draws the sound against the bars and beats of its warp tempo, with the hits MPFree finds marked along the bottom.
 
 - **Tap near a hit** to pin it to the nearest grid line. A pin is a numbered flag; the sound between two pins stretches to fit.
 - **Drag a pin's handle** to move it along the grid.
 - **Pin hits** pins every hit near a grid line onto it, which tightens a loose loop in one go. **Remove pin** takes the picked pin off, and **Clear pins** all of them.
-- The panel under the sound holds **Warp** and **Warp tempo** (as on the Wave page) with the **Grid** (1/4 to 1/32); which **Hits** it finds (**Strongest**, **Most** or **All**) with **Pin hits**; the picked **Pin** and its **Pin beat** with **Remove pin** and **Clear pins**; and **Shift** and **Process**. A grey button says why when you tap it, such as "Tap a pin first".
+- The panel under the sound holds **Warp** (**Off**, **Stretch** or **Repitch**) and **Warp tempo** (tap the number to type one) with the **Grid** (1/4 to 1/32); which **Hits** it finds (**Strongest**, **Most** or **All**) with **Pin hits**; the picked **Pin** and its **Pin beat** with **Remove pin** and **Clear pins**; and **Shift** and **Process**. A grey button says why when you tap it, such as "Tap a pin first".
 - **Process** makes a new sound from the region. With Warp on, the new sound is at the project's tempo, its pinned hits right on their beats, so it plays without stretching. **Shift** first moves it up or down, in semitones (–24 to +24), keeping its length and its hits sharp; with Warp off, Shift alone is what changes. Tap **New sound**: it is made in the background while you work, the button shows how far it has got, and tapping it again stops it. The new sound takes the region's place; **UNDO** brings the old one back.
 - The Q-Links pick a pin, nudge its beat, fine-tune the warp tempo and scroll. Hold **SHIFT** for finer steps.
 

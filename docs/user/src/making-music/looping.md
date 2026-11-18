@@ -1,14 +1,14 @@
 <!--
 status: changing
-covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/looper_deck.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs rust/mpfree-seq/src/loops.rs
-checked: 2026-11-17 3a1575d
+covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/loop_row.rs rust/mpfree-app/src/looper_deck.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs rust/mpfree-seq/src/loops.rs
+checked: 2026-11-18 d6973f7
 -->
 
 # Recording loops
 
 [Your first loop](../getting-started/first-loop.md) showed the basics: record a pass, overdub layers on top, undo one. This chapter covers how the looper works in more depth, the **Looper** tab, recording from an instrument, and getting the timing right.
 
-You play the loops on the **Looper** tab, or on the Play page next to your patterns (the looper strip in the All view, or the bigger Loop view).
+You play the loops on the Play page, where the loop row under the transport bar shows all eight next to your pattern, or on the **Looper** tab, where you also shape them.
 
 ## How the looper keeps time
 
@@ -21,24 +21,24 @@ The looper is part of the song, not a separate machine running beside it:
 
 ## Layers
 
-The first pass is the loop's first **layer**. Each overdub adds another, up to 16. **Undo** fades out the newest layer and **Redo** brings it back, until you record a new overdub. The loop shows the layers in different colours, and on the Play page each layer has a speaker icon to mute it on its own. An overdub in which you played nothing (only silence came in) leaves no layer, so it takes no memory and no step of the history.
+The first pass is the loop's first **layer**. Each overdub adds another, up to 16. **Undo** fades out the newest layer and **Redo** brings it back, until you record a new overdub. The loop shows the layers in different colours, and on the Play page the picked loop's layers are chips at the top of the loop row: tap one to mute that layer on its own. An overdub in which you played nothing (only silence came in) leaves no layer, so it takes no memory and no step of the history.
 
-To get rid of a whole loop, first pass included, use **Clear** (on the Play page or the Looper tab), or hold the loop's ring on the Looper tab. The **×** on a loop's last remaining layer does the same. **UNDO brings a cleared loop back** as it was, layers, history and all, until you record into that loop again or the memory is needed for another loop's layers (the oldest cleared loop goes first). In Perform, **Clear** and **×** take a half-second hold, so a stray touch can't clear a loop mid-set (see [Make and Perform](playing-live.md#make-and-perform)); the ring's hold is a second long already.
+To get rid of a whole loop, first pass included, use **Clear** on the Looper tab, or hold the loop's ring for a second (on the Looper tab or Play's loop row). The **×** on a loop's last remaining layer does the same. **UNDO brings a cleared loop back** as it was, layers, history and all, until you record into that loop again or the memory is needed for another loop's layers (the oldest cleared loop goes first). In Perform, **Clear** and **×** take a half-second hold, so a stray touch can't clear a loop mid-set (see [Make and Perform](playing-live.md#make-and-perform)); the ring's hold is a second long already.
 
 The looper holds five minutes of stereo sound across all its loops and layers (the Looper tab shows how much is left). At 120 BPM a bar lasts two seconds, so that is room for about 37 four-bar layers, spread over up to eight loops of up to 16 layers each. If you need more or less, **Loop memory** in [Prefs](../reference/prefs.md) (also in the Looper tab's MENU) sets it from 1 to 20 minutes. The memory is set aside when MPFree starts, so a new size takes effect from the next start; the row says "(next start)" until then, and shows how many megabytes it uses (with the 30 seconds the looper keeps for [Capture](#capture-keep-what-you-just-played): 120 MB for five minutes).
 
 ## The buttons
 
-These are on the Play page's Loop view. The MPC's own **REC** and **OVERDUB** do the same on the loop picked while the loop is armed: the Loop view and the Looper tab arm it, and the REC chip on the transport bar says "→ Loop 1" (see [What REC records](../getting-started/first-beat.md#what-rec-records)). On the home view, the **Arm** pill at the left of the loop strip arms the loop too: red when REC records it, grey when it doesn't. **SHIFT** + Arm adds the loop to the pattern, so one REC and PLAY record the pads into a clip and a loop's first pass together, from the same bar line. **UNDO** while the first pass or an overdub records throws that take away and the loop plays on. On the Looper tab, **SHIFT + REC** captures the last bars you played into a loop (see [Capture](#capture-keep-what-you-just-played)). **UNDO** (and **SHIFT + UNDO** for Redo) works on the loop on the Looper tab and the Loop view, and on the All view when the loop is what you changed last. To record a pattern from the pads with REC, open the Sequencer tab (it arms the notes) or pick a track on the Arrange tab:
+The MPC's own **REC**, **OVERDUB** and **UNDO** work the picked loop while the loop is armed: the **Arm** pill at the left of Play's loop row arms it (red when REC records it, grey when it doesn't), so does opening the Looper tab, and the REC chip on the transport bar then says "→ Loop 1" (see [What REC records](../getting-started/first-beat.md#what-rec-records)). A tap on a loop's ring does the loop's next step without arming anything (see [The Looper tab](#the-looper-tab)). **SHIFT** + Arm adds the loop to the pattern, so one REC and PLAY record the pads into a clip and a loop's first pass together, from the same bar line. **UNDO** while the first pass or an overdub records throws that take away and the loop plays on. On the Looper tab, **SHIFT + REC** captures the last bars you played into a loop (see [Capture](#capture-keep-what-you-just-played)). **UNDO** (and **SHIFT + UNDO** for Redo) works on the loop on the Looper tab, and on the Play page when the loop is what you changed last. To record a pattern from the pads with REC, open the Sequencer tab (it arms the notes) or pick a track on the Arrange tab:
 
 | Button | Empty loop | Recording the first pass | Playing |
 |---|---|---|---|
-| **Record** | Waits for the next bar line (or, stopped, for PLAY), then records. Press again before it starts to cancel. | Ends the loop on the next bar line. | Starts an overdub. |
-| **Overdub** | Nothing. | Goes straight on into an overdub when the first pass ends. | Starts an overdub; press again to stop adding. |
-| **Undo** | Brings back the loop you cleared, if there is one. | Throws the recording away. | Removes the newest layer (or the overdub in progress). |
-| **Redo** | Nothing. | Nothing. | Brings back the last layer undone. |
-| **Clear** | | | Deletes the whole loop, so you can start again. UNDO brings it back. |
-| **Mute** | | | Silences the loop without losing it. Press again to hear it. |
+| **REC** | Waits for the next bar line (or, stopped, for PLAY), then records. Press again before it starts to cancel. | Ends the loop on the next bar line. | Starts an overdub. |
+| **OVERDUB** | Nothing. | Goes straight on into an overdub when the first pass ends. | Starts an overdub; press again to stop adding. |
+| **UNDO** | Brings back the loop you cleared, if there is one. | Throws the recording away. | Removes the newest layer (or the overdub in progress). |
+| **SHIFT + UNDO** | Nothing. | Nothing. | Brings back the last layer undone. |
+| **Clear** (Looper tab), or a ring held a second | | | Deletes the whole loop, so you can start again. UNDO brings it back. |
+| **The loop's speaker** | | | Silences the loop without losing it. Tap again to hear it. |
 
 **STOP** while the first pass records stops it at once and keeps what you played, up to the next bar line, so a loop is never lost. Stopping the transport while you overdub ends the overdub. With the transport stopped, Record or Overdub on a loop that has something in it waits for **PLAY**, with OVERDUB and PLAY blinking; **STOP** then lets go of it (and of a loop armed with Record), so nothing is left blinking.
 
@@ -155,7 +155,7 @@ When you tap the ring (or press REC) again, the loop closes there and its length
 
 {{shot: looper-free | Loop 1 recording free with the music stopped: closing it sets the tempo.}}
 
-Two things to know about recording the pads with their effects. The loop's own echo is recorded too if you turn up the **Looper**'s Delay send on the Play page, since that echo is part of the mix. And if you send the Loop or Audio track (or the line input) to a submix in the mixer, the looper can't leave it out of the mix, so it records the pads and the synth without their effects until that track goes back to the master.
+Two things to know about recording the pads with their effects. The loop's own echo is recorded too if you turn up the Loop track's delay send in the mixer, since that echo is part of the mix. And if you send the Loop or Audio track (or the line input) to a submix in the mixer, the looper can't leave it out of the mix, so it records the pads and the synth without their effects until that track goes back to the master.
 
 Press **MENU** on the Looper tab for the rarer settings as a list, with an explanation beside each: the line input itself, the latency to make up for, **Loop level** (-24 to +6 dB), **Tempo from the first loop** ([above](#tempo-from-the-first-loop)) and **Loop memory**. The Loop level, Tempo from the first loop, and the latency once you set it by hand, are kept for you whatever project is open; the line input is off at every start, so the Looper records the pads until you turn it on.
 
@@ -198,7 +198,7 @@ The pads can play the loops instead of the kit, so you can record, overdub and m
 
 The pads light as the rings do: a key is dark while its loop is empty, blinks red while it waits for its bar, is red while it records the first pass and amber while it overdubs, and has the loop's colour while it plays, flashing brighter on the loop's first beat. A muted loop's key is faint and its mute is red. A soloed loop's mute is blue, and the keys of the loops it leaves out are faint.
 
-The pads stay loop keys on the Looper tab and the Play page, so you can play the loops beside your patterns; on Play a **Pads: loop keys** chip in the top bar says so, and a tap on it gives the pads back. On the other tabs the pads play the kit as usual, and they are loop keys again when you come back. **SHIFT + SAMPLER** on the Looper tab, or **Pads as loop keys** again, gives the pads back for good. So do **TRACK MUTE**, **STEP SEQ** and **16 Levels**, since the pads do one job at a time.
+The pads stay loop keys on the Looper tab and the Play page, so you can play the loops beside your patterns; on Play the loop row's **Pads: loop keys** lights, and a tap on it gives the pads back. On the other tabs the pads play the kit as usual, and they are loop keys again when you come back. **SHIFT + SAMPLER** on the Looper tab, or **Pads as loop keys** again, gives the pads back for good. So do **TRACK MUTE**, **STEP SEQ** and **16 Levels**, since the pads do one job at a time.
 
 ### More pages: the Perform set
 
@@ -298,7 +298,7 @@ Loop tracks have lanes in the **Song view** too (tap **Song ›** above the grid
 
 ### A loop's name
 
-The Play page's loop strip, the Looper tab and the REC chip name a loop by its place on the grid: **Loops B · Loop 2 · Verse** is Loop 2, on Loops B, in the row of the Verse scene ("row 2" for a row with no scene name). On the Looper tab, the picked loop's header shows its track and row ("Loops B · Verse · 2 bars · 3 layers"). **Show in Clips**, under **Send**, opens the Arrange tab with the loop's cell in view.
+The Looper tab and the REC chip name a loop by its place on the grid: **Loops B · Loop 2 · Verse** is Loop 2, on Loops B, in the row of the Verse scene ("row 2" for a row with no scene name). On the Looper tab, the picked loop's header shows its track and row ("Loops B · Verse · 2 bars · 3 layers"). **Show in Clips**, under **Send**, opens the Arrange tab with the loop's cell in view.
 
 ## Recording an instrument
 

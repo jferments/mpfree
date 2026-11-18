@@ -78,7 +78,7 @@ The Mix tab's **Effects** look shows the same: **SC from Kick** under an effect 
 
 **Cancel** closes the list without adding anything.
 
-The Pads tab's **Effects** row opens the chain editor on the pad picked, in the Mix tab, and **‹** comes back to the Pads tab (see [Sampling](sampling.md#the-pads-tab-sounds-onto-pads)). The Sample tab's **FX** page shows the pad's effects as pedals, with their switches and first knobs, and its **Whole chain** opens the same chain editor on the pad you are editing, with a switch between the pad's own channel and the Drums track (see [Shaping how a pad plays](shaping-a-pad.md#fx-effects-on-one-pad-or-on-the-whole-kit)).
+The Pads tab's **Effects** row opens the chain editor on the pad picked, in the Mix tab, and **‹** comes back to the Pads tab (see [Sampling](sampling.md#the-pads-tab-sounds-onto-pads)). An effect there plays on that pad alone; one on the kit's track (**Drums** for kit 1) plays on the whole kit (see [Shaping how a pad plays](shaping-a-pad.md#effects-on-one-pad-or-on-the-whole-kit)).
 
 ## MIDI effects: a track's Notes
 
@@ -147,7 +147,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Exciter** | Adds sparkle and air to the top end. |
 | **Crush** | Bit and sample-rate reduction, from a touch of grit to a broken toy. **Bits** and **Rate** are the sound of old samplers and game consoles. **Tails**: **Cut** silences whatever falls under the smallest step, as most crushers do; **Buzz** keeps quiet tails as a buzz instead. **Filters** adds the low-passes an old sampler had before and after its converter (**Before**, **After** or **Both**), for a rounder, darker sound; the vintage presets have them on. **Jitter** wobbles the sampling clock. **Dither** turns the distortion of a few bits into a steady hiss. **Output** sets the crushed sound's level. |
 | **Lo-fi** | Worn tape and dusty vinyl under one **Amount** knob, from a hint of age to a broken machine. **Wow** is slow pitch drift that wanders like a worn tape, not a steady wobble, at about **Rate**; **Stereo** lets the two sides drift apart; **Flutter** is a fast waver; **Saturation** is the tape's soft grit; **Dropouts** are short dips in level where the tape is worn. **Crackle**, **Noise** (hiss) and **Hum** (at your country's **Mains**, 50 or 60 Hz) follow the music while **Follow** is at 100 %: they come in with the sound and fade about a second after it stops, so a stopped track is silent. Turn Follow down for a bed of noise that keeps going. **Low cut**, **High cut** and **Width** set the tone. At Amount 0 it is exactly the sound going in (see [Lo-fi](#lo-fi)). |
-| **Chorus**, **Flanger**, **Phaser** | Movement and width. Each is below. |
+| **Chorus**, **Flanger**, **Phaser** | Movement and width. Each is below. The Chorus has a second mode, **Ensemble**: the shimmer of a 1970s string machine, for pads and strings. |
 | **Tremolo** | Volume (**Volume**) or position (**Auto-pan**) moved in time with the music. **Harmonic** is the swirl of 1960s amps. Every **Shape** is smooth: a Square chops crisply at any speed without a click, and the ramps return in a few milliseconds. Synced, it stays on the beat when a loop starts again or you jump in the song, and changing Shape, Sync or Mode while it plays glides instead of clicking. |
 | **Ring mod** | Bells, clangs and robot voices. **Sine** is the purest; **Triangle** and **Square** are buzzier but stay clean even with a high **Freq**. All three are about as loud, and you can change **Wave** while it plays without a click. |
 | **Rotary** | A spinning organ speaker: switch **Speed** between Slow and Fast and it ramps up or down like the real one, the small horn first and the big drum after, slowing down more gently than it speeds up. **Ramp** is how long the drum takes. The horn's top end swirls the most, and it sounds as loud as the dry signal. |
@@ -169,7 +169,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 
 ### A delay's, reverb's or chorus's Mix
 
-**Mix** sets how much of the echoes, the room or the chorus you hear against the sound going in: 0 is the sound alone and 100 % the effect alone. Every delay and reverb mode, and the Chorus, also has a **Mix curve** in its Output section, a small choice you step with its arrows, for how the two blend in between. Touch it and the hint line at the bottom of the screen says what the choice does.
+**Mix** sets how much of the echoes, the room or the chorus you hear against the sound going in: 0 is the sound alone and 100 % the effect alone. Every delay and reverb mode, and the Chorus and Ensemble, also has a **Mix curve** in its Output section, a small choice you step with its arrows, for how the two blend in between. Touch it and the hint line at the bottom of the screen says what the choice does.
 
 - **Equal** (equal power, the default): the level stays the same as you turn Mix, so the effect comes in without the sound dipping half way.
 - **Dry first**: up to half way, Mix only adds the effect, with the sound going in at full level; from half way the dry sound fades out.
@@ -199,6 +199,19 @@ Projects saved before Shape open on Sine, as they sounded.
 
 > [!NOTE]
 > Choruses saved before this change sound a little different: at the same Mix they are about 3 dB louder (pick **Linear** for the old blend), with three or four voices they are wide, and Depth now means the same swing at every Delay, so a chorus with a long Delay wobbles less than it did and one with a short Delay a little more. The presets keep the swing they had.
+
+### The Ensemble
+
+The Chorus's **Ensemble** mode is the sound that made a 1970s string machine sound like a string section: three copies of the sound (four with **Lines** at 4), each wobbling in pitch in its own way, spread from left to right. Put it on a pad, an organ or the Strings sound.
+
+- Each copy wobbles two ways at once: slowly (**Slow rate**, about two-thirds of a wobble a second) and quickly, like a vibrato (**Fast rate**, about six a second).
+- **Slow depth** and **Fast depth** are how far each wobble bends the pitch, in cents (a hundredth of a semitone), up and down. A depth means the same at any rate: 12 cents is 12 cents however fast it goes.
+- **Width** spreads the copies from left to right. At 0 the sound stays in the middle. It still sounds full when the mix is played in mono.
+- **Tone** takes the top off the copies, as the old machines did: lower is warmer.
+- **Mix** is 100 % by default, all ensemble, as on the old machines. Turn it down to keep some of the sound as it went in.
+- Turning any knob, or switching between 3 and 4 lines, glides, so it doesn't click while you play.
+
+Presets: String machine, Four lines, Slow shimmer, Vibrato strings, Pad widener and Mono ensemble.
 
 ### The Flanger
 
@@ -425,7 +438,7 @@ Changing the mode crossfades, so it doesn't click. **Trim** turns the whole mix 
 
 ## Effects with modes
 
-**Reverb**, **Delay**, **Drive**, **Filter** and **Tremolo** each show once in the list of effects, and come in several modes. Hold one (or tap its presets line) to see every mode's presets, with the mode under each name; a preset adds the effect in its mode. A tap adds it in its first mode (a Room, a Digital delay, a Soft drive).
+**Reverb**, **Delay**, **Drive**, **Filter**, **Chorus** and **Tremolo** each show once in the list of effects, and come in several modes. Hold one (or tap its presets line) to see every mode's presets, with the mode under each name; a preset adds the effect in its mode. A tap adds it in its first mode (a Room, a Digital delay, a Soft drive).
 
 In the chain editor the **mode chooser** sits beside the effect's name, with the mode it is in lit: tap a mode to switch to it. Drive has too many to fit, so it shows the one it is in, with **‹** and **›** to step to the mode before or after: tap the mode's name for the list of all ten, and tap one. When you switch:
 

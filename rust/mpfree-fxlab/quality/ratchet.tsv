@@ -931,6 +931,38 @@ modulation/chorus[Subtle widen]/click_db_over_6k	-84.3067
 modulation/chorus[Subtle widen]/insert_lu_hits	0.0599
 modulation/chorus[Subtle widen]/insert_lu_pink	-0.2473
 modulation/chorus[Subtle widen]/mono_fold_lu	-0.8499
+modulation/ensemble/click_db_over_6k	-65.3735
+modulation/ensemble/insert_lu_hits	-0.255
+modulation/ensemble/insert_lu_pink	-0.2666
+modulation/ensemble/mix_bump_lu	0
+modulation/ensemble/mix_dip_lu	-0.334
+modulation/ensemble/mono_fold_lu	-1.1447
+modulation/ensemble/wet_corr_300hz_3lines	0.5101
+modulation/ensemble/wet_corr_300hz_4lines	0.5808
+modulation/ensemble[Four lines]/click_db_over_6k	-65.142
+modulation/ensemble[Four lines]/insert_lu_hits	0.1354
+modulation/ensemble[Four lines]/insert_lu_pink	-0.0931
+modulation/ensemble[Four lines]/mono_fold_lu	-0.9137
+modulation/ensemble[Mono ensemble]/click_db_over_6k	-62.1005
+modulation/ensemble[Mono ensemble]/insert_lu_hits	-0.0934
+modulation/ensemble[Mono ensemble]/insert_lu_pink	-0.1172
+modulation/ensemble[Mono ensemble]/mono_fold_lu	0
+modulation/ensemble[Pad widener]/click_db_over_6k	-64.6136
+modulation/ensemble[Pad widener]/insert_lu_hits	0.3389
+modulation/ensemble[Pad widener]/insert_lu_pink	0.3619
+modulation/ensemble[Pad widener]/mono_fold_lu	-1.1859
+modulation/ensemble[Slow shimmer]/click_db_over_6k	-60.7213
+modulation/ensemble[Slow shimmer]/insert_lu_hits	-0.1101
+modulation/ensemble[Slow shimmer]/insert_lu_pink	-0.2056
+modulation/ensemble[Slow shimmer]/mono_fold_lu	-1.2744
+modulation/ensemble[String machine]/click_db_over_6k	-65.3735
+modulation/ensemble[String machine]/insert_lu_hits	-0.255
+modulation/ensemble[String machine]/insert_lu_pink	-0.2666
+modulation/ensemble[String machine]/mono_fold_lu	-1.1447
+modulation/ensemble[Vibrato strings]/click_db_over_6k	-80.9608
+modulation/ensemble[Vibrato strings]/insert_lu_hits	0.0838
+modulation/ensemble[Vibrato strings]/insert_lu_pink	0.0562
+modulation/ensemble[Vibrato strings]/mono_fold_lu	-0.9795
 modulation/flanger/click_db_over_6k	-71.6272
 modulation/flanger/click_db_over_6k_shape	-89.5863
 modulation/flanger/drawn_err_db_half_fbm90	0.0002

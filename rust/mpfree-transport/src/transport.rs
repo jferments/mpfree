@@ -35,10 +35,12 @@ pub const MIN_RATE: u32 = 22_050;
 pub const MAX_RATE: u32 = 192_000;
 /// Commands waiting in the queue.
 pub const MAX_COMMANDS: usize = 64;
+/// New tempo maps that may wait in the queue at once.
+pub const MAX_STAGED_MAPS: usize = 4;
 /// Commands applied in one period; the rest wait for the next period.
 pub const MAX_COMMANDS_PER_PERIOD: usize = 16;
-/// Spans and markers one block can hold. Loops and tempo segments are at
-/// least a 1/16 long, which is 827 frames at 400 BPM and 22.05 kHz, so an
+/// Spans and markers one block can hold. Loops, tempo segments and the
+/// steps of a tempo ramp are at least a 1/16 long, which is 827 frames at 400 BPM and 22.05 kHz, so an
 /// 8192-frame period crosses at most about 20 boundaries; with 16 commands
 /// that is under 40 spans and under 90 markers.
 pub const MAX_SPANS: usize = 64;
@@ -130,9 +132,9 @@ pub enum Mark {
         end: Tick,
         start: Tick,
     },
-    /// The tempo is now this, from this frame: a tempo segment, a live
-    /// change, or a jump into another segment. Comes after the marker of
-    /// the jump that caused it.
+    /// The tempo is now this, from this frame: a tempo segment, each 1/16
+    /// step of a tempo ramp, a live change, or a jump into another segment.
+    /// Comes after the marker of the jump that caused it.
     Tempo(f64),
     Swing(Swing),
     LoopSet(Option<(Tick, Tick)>),
@@ -427,6 +429,26 @@ enum Boundary {
     Segment,
 }
 
+/// A tempo change that waits while rolling: one tempo for the whole song,
+/// or a new tempo map. There is only ever one, inside the transport, so
+/// the map's size costs nothing and boxing it would allocate on the audio
+/// thread.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Copy, Debug)]
+enum NewTempo {
+    Bpm(f64),
+    Map(TempoMap),
+}
+
+/// What waits in the command queue: a command, or a map
+/// [`Transport::change_tempo_map`] staged in a slot (kept out of
+/// [`Command`], which stays small).
+#[derive(Clone, Copy, Debug)]
+enum Queued {
+    Command(Command),
+    TempoMap(usize),
+}
+
 /// Steps one period may take (commands, crossings, spans) before the guard
 /// ends it; far above what the limits above allow.
 const MAX_STEPS: usize = 4 * (MAX_SPANS + MAX_MARKERS);
@@ -450,8 +472,10 @@ pub struct Transport {
     record_at: Tick,
     overdub: bool,
     tempo_grid: Tick,
-    pending_tempo: Option<(Tick, f64)>,
-    queue: [(u64, Command); MAX_COMMANDS],
+    pending_tempo: Option<(Tick, NewTempo)>,
+    /// Maps queued by [`Transport::change_tempo_map`], by slot.
+    staged_maps: [Option<TempoMap>; MAX_STAGED_MAPS],
+    queue: [(u64, Queued); MAX_COMMANDS],
     queued: usize,
     stats: Stats,
 }
@@ -479,7 +503,8 @@ impl Transport {
             overdub: false,
             tempo_grid: MIN_SPAN_TICKS,
             pending_tempo: None,
-            queue: [(0, Command::Play); MAX_COMMANDS],
+            staged_maps: [None; MAX_STAGED_MAPS],
+            queue: [(0, Queued::Command(Command::Play)); MAX_COMMANDS],
             queued: 0,
             stats: Stats::default(),
         })
@@ -541,7 +566,8 @@ impl Transport {
     }
 
     /// Replace the tempo map, while stopped. Building a map is not real-time
-    /// work; copying one in is.
+    /// work; copying one in is. While rolling, use
+    /// [`Transport::change_tempo_map`].
     pub fn set_tempo_map(&mut self, map: TempoMap) -> Result<(), ConfigError> {
         if self.state.rolling() {
             return Err(ConfigError::Rolling);
@@ -574,6 +600,30 @@ impl Transport {
     /// Queue a command for absolute frame `at`. Commands on the same frame
     /// apply in the order given. Returns false if the queue is full.
     pub fn command(&mut self, at: u64, cmd: Command) -> bool {
+        self.queue(at, Queued::Command(cmd))
+    }
+
+    /// Queue a new tempo map for absolute frame `at`, in order with the
+    /// commands. Stopped, it takes over at once. Rolling, it takes over on
+    /// the next tempo-grid line, or at a loop jump or locate if one comes
+    /// first, as [`Command::SetTempo`] does; the clock enters a ramp there
+    /// on its staircase. A later tempo change or map replaces one still
+    /// waiting for its line. Copying the map is real-time work. Returns
+    /// false if the queue is full, or [`MAX_STAGED_MAPS`] maps already wait
+    /// in it.
+    pub fn change_tempo_map(&mut self, at: u64, map: TempoMap) -> bool {
+        let Some(slot) = self.staged_maps.iter().position(Option::is_none) else {
+            self.stats.queue_full += 1;
+            return false;
+        };
+        if !self.queue(at, Queued::TempoMap(slot)) {
+            return false;
+        }
+        self.staged_maps[slot] = Some(map);
+        true
+    }
+
+    fn queue(&mut self, at: u64, item: Queued) -> bool {
         if self.queued == MAX_COMMANDS {
             self.stats.queue_full += 1;
             return false;
@@ -584,7 +634,7 @@ impl Transport {
             self.queue[i] = self.queue[i - 1];
             i -= 1;
         }
-        self.queue[i] = (at, cmd);
+        self.queue[i] = (at, item);
         self.queued += 1;
         true
     }
@@ -615,11 +665,18 @@ impl Transport {
             }
             // 1. Commands due by now, in order.
             while self.queued > 0 && self.queue[0].0 <= at && applied < MAX_COMMANDS_PER_PERIOD {
-                let (when, cmd) = self.pop();
+                let (when, item) = self.pop();
                 if when < start {
                     self.stats.late += 1;
                 }
-                self.apply(at, cmd, out);
+                match item {
+                    Queued::Command(cmd) => self.apply(at, cmd, out),
+                    Queued::TempoMap(slot) => {
+                        if let Some(map) = self.staged_maps[slot].take() {
+                            self.new_tempo(at, NewTempo::Map(map));
+                        }
+                    }
+                }
                 self.note_tempo(at, &mut bpm, out);
                 applied += 1;
             }
@@ -653,7 +710,7 @@ impl Transport {
         true
     }
 
-    fn pop(&mut self) -> (u64, Command) {
+    fn pop(&mut self) -> (u64, Queued) {
         let first = self.queue[0];
         self.queue.copy_within(1..self.queued, 0);
         self.queued -= 1;
@@ -720,24 +777,44 @@ impl Transport {
         }
     }
 
-    /// Start the clock at frame `f` with tick `tick` on it.
+    /// Start the clock at frame `f` with tick `tick` on it. On a ramp the
+    /// tempo is the step's, so the next line lands on its whole frame.
     fn anchor(&mut self, f: u64, tick: Tick) {
         self.anchor_frame = f;
         self.anchor_tick = tick;
+        self.bpm = self.map.play_bpm(tick, self.rate);
+    }
+
+    /// The song takes a new tempo (a live or stopped tempo change), and
+    /// the tempo now is the map's at `tick`. The caller anchors the clock
+    /// if it is rolling.
+    fn take_tempo(&mut self, new: NewTempo, tick: Tick) {
+        match new {
+            NewTempo::Bpm(bpm) => {
+                if let Some(map) = TempoMap::constant(bpm) {
+                    self.map = map;
+                }
+            }
+            NewTempo::Map(map) => self.map = map,
+        }
         self.bpm = self.map.bpm_at(tick);
     }
 
-    /// The whole song takes one tempo (a live or stopped tempo change).
-    fn set_constant_tempo(&mut self, bpm: f64) {
-        if let Some(map) = TempoMap::constant(bpm) {
-            self.map = map;
-            self.bpm = bpm;
+    /// A tempo change from a command or a new map, on frame `at`: at once
+    /// while stopped, else on the next tempo-grid line.
+    fn new_tempo(&mut self, at: u64, new: NewTempo) {
+        if self.state.rolling() {
+            let now = self.tick_now(at);
+            self.pending_tempo = Some((ceil_to(now, self.tempo_grid), new));
+        } else {
+            self.take_tempo(new, self.position);
         }
     }
 
     /// The next boundary while rolling, as (frame, kind), seen from frame
-    /// `at`. Every candidate is at or before the next tempo segment, so the
-    /// current tempo places it exactly.
+    /// `at`. Every candidate is at or before the next tempo change (a
+    /// segment, or a ramp's next line), so the current tempo places it
+    /// exactly.
     fn next_boundary(&self, at: u64) -> Option<(u64, Boundary)> {
         if !self.state.rolling() {
             return None;
@@ -778,14 +855,14 @@ impl Transport {
                 if let Some((start, end)) = self.loop_range {
                     self.anchor(at, start);
                     self.mark(out, at, Mark::Looped { end, start });
-                    if let Some((_, bpm)) = self.pending_tempo.take() {
-                        self.live_tempo(at, start, bpm);
+                    if let Some((_, new)) = self.pending_tempo.take() {
+                        self.live_tempo(at, start, new);
                     }
                 }
             }
             Boundary::PendingTempo => {
-                if let Some((t, bpm)) = self.pending_tempo.take() {
-                    self.live_tempo(at, t, bpm);
+                if let Some((t, new)) = self.pending_tempo.take() {
+                    self.live_tempo(at, t, new);
                 }
             }
             Boundary::Segment => {
@@ -796,10 +873,10 @@ impl Transport {
         }
     }
 
-    /// A live tempo change: the whole song takes the new tempo from tick
-    /// `t` (on frame `at`) on.
-    fn live_tempo(&mut self, at: u64, t: Tick, bpm: f64) {
-        self.set_constant_tempo(bpm);
+    /// A live tempo change: the song takes the new tempo (or map) from
+    /// tick `t` (on frame `at`) on.
+    fn live_tempo(&mut self, at: u64, t: Tick, new: NewTempo) {
+        self.take_tempo(new, t);
         self.anchor(at, t);
     }
 
@@ -839,8 +916,8 @@ impl Transport {
                     }
                     self.state = State::Stopped;
                     self.position = resume;
-                    if let Some((_, bpm)) = self.pending_tempo.take() {
-                        self.set_constant_tempo(bpm);
+                    if let Some((_, new)) = self.pending_tempo.take() {
+                        self.take_tempo(new, resume);
                     }
                     self.bpm = self.map.bpm_at(resume);
                     self.mark(out, at, Mark::Stopped { tick: resume });
@@ -914,12 +991,10 @@ impl Transport {
                 }
             },
             Command::SetTempo(bpm) => {
-                if !valid_bpm(bpm) {
-                    self.stats.rejected += 1;
-                } else if self.state.rolling() {
-                    self.pending_tempo = Some((ceil_to(now, self.tempo_grid), bpm));
+                if valid_bpm(bpm) {
+                    self.new_tempo(at, NewTempo::Bpm(bpm));
                 } else {
-                    self.set_constant_tempo(bpm);
+                    self.stats.rejected += 1;
                 }
             }
             Command::SetSwing(s) => {
@@ -951,8 +1026,8 @@ impl Transport {
 
     /// Jump while rolling. A tempo change still waiting takes effect here.
     fn locate(&mut self, at: u64, from: Tick, to: Tick, out: &mut Block) {
-        if let Some((_, bpm)) = self.pending_tempo.take() {
-            self.set_constant_tempo(bpm);
+        if let Some((_, new)) = self.pending_tempo.take() {
+            self.take_tempo(new, to);
         }
         self.anchor(at, to);
         self.mark(out, at, Mark::Located { from, to });
@@ -1087,6 +1162,154 @@ mod tests {
             (240, 5513, 90.0)
         );
         assert_eq!(t.tempo_map().segments().len(), 1);
+    }
+
+    /// 120 BPM gliding to 60 over two bars, then 60.
+    fn slowing_map() -> TempoMap {
+        use crate::time::Segment;
+        TempoMap::new(&[
+            Segment {
+                start: 0,
+                bpm: 120.0,
+            },
+            Segment {
+                start: 7680,
+                bpm: 60.0,
+            },
+        ])
+        .unwrap()
+        .ramp(0)
+        .unwrap()
+    }
+
+    #[test]
+    fn a_new_tempo_map_takes_over_at_once_while_stopped() {
+        let mut t = Transport::new(44_100, 90.0).unwrap();
+        t.command(0, Command::Locate(3840));
+        // In order with the commands: the map comes after this tempo.
+        t.command(0, Command::SetTempo(100.0));
+        assert!(t.change_tempo_map(0, slowing_map()));
+        let b = run(&mut t, 64);
+        assert_eq!(t.tempo_map(), &slowing_map());
+        assert_eq!(t.bpm(), slowing_map().bpm_at(3840));
+        assert_eq!(t.bpm(), 90.0);
+        assert_eq!(
+            marks(&b),
+            vec![(0, Mark::Tempo(100.0)), (0, Mark::Tempo(90.0))]
+        );
+        // And a tempo after the map replaces it.
+        assert!(t.change_tempo_map(100, slowing_map()));
+        t.command(100, Command::SetTempo(100.0));
+        run(&mut t, 200);
+        assert_eq!(t.tempo_map().segments().len(), 1);
+        assert_eq!(t.bpm(), 100.0);
+        // Four maps may wait at once.
+        let f = t.frame() + 10;
+        for _ in 0..MAX_STAGED_MAPS {
+            assert!(t.change_tempo_map(f, slowing_map()));
+        }
+        assert!(!t.change_tempo_map(f, slowing_map()));
+        assert_eq!(t.stats().queue_full, 1);
+        run(&mut t, 64);
+        assert!(t.change_tempo_map(f, slowing_map()));
+    }
+
+    #[test]
+    fn a_new_tempo_map_waits_for_the_next_sixteenth_while_rolling() {
+        let rate = 44_100;
+        let mut t = Transport::new(rate, 120.0).unwrap();
+        t.command(0, Command::Play);
+        // Tick 100 is at frame 2297; the next 1/16 is tick 240, frame 5513.
+        assert!(t.change_tempo_map(2297, slowing_map()));
+        let mut all = vec![];
+        let mut b = Block::new();
+        while t.frame() < 400_000 {
+            t.process(1024, &mut b);
+            all.extend(marks(&b));
+        }
+        let map = slowing_map();
+        // It enters the ramp on its staircase: the step from tick 240.
+        assert_eq!(all[1], (5513, Mark::Tempo(map.play_bpm(240, rate))));
+        assert_eq!(t.tempo_map(), &map);
+        // One tempo per step to bar 3 (31 steps after the first), then 60.
+        let tempos: Vec<_> = all[1..]
+            .iter()
+            .filter(|m| matches!(m.1, Mark::Tempo(_)))
+            .collect();
+        assert_eq!(tempos.len(), 32);
+        let (f, last) = tempos[31];
+        assert_eq!(*last, Mark::Tempo(60.0));
+        let want = 5513.0 + map.frames_between(240.0, 7680.0, rate);
+        assert!((*f as f64 - want).abs() <= 1.0, "{f} vs {want}");
+    }
+
+    #[test]
+    fn a_waiting_tempo_map_takes_over_at_a_loop_jump_locate_or_stop() {
+        let rate = 44_100;
+        let map = slowing_map();
+        // The loop's end (tick 3840, frame 88 200) comes before the next
+        // grid line after it, so the map takes over at the jump.
+        let mut t = Transport::new(rate, 120.0).unwrap();
+        t.command(0, Command::Play);
+        t.command(0, Command::SetLoop(Some((0, 3840))));
+        assert!(t.change_tempo_map(85_000, map));
+        let mut all = vec![];
+        let mut b = Block::new();
+        while t.frame() < 90_000 {
+            t.process(1000, &mut b);
+            all.extend(marks(&b));
+        }
+        let at = all
+            .iter()
+            .position(|m| matches!(m.1, Mark::Looped { .. }))
+            .unwrap();
+        assert_eq!(all[at].0, 88_200);
+        assert_eq!(all[at + 1], (88_200, Mark::Tempo(map.play_bpm(0, rate))));
+        assert_eq!(t.tempo_map(), &map);
+
+        // A locate takes it at once, on the tick it jumps to.
+        let mut t = Transport::new(rate, 120.0).unwrap();
+        t.command(0, Command::Play);
+        assert!(t.change_tempo_map(1000, map));
+        t.command(2000, Command::Locate(1920));
+        let b = run(&mut t, 4000);
+        let last = b.spans().last().unwrap();
+        assert_eq!(
+            (last.anchor_tick, last.anchor_frame, last.bpm),
+            (1920, 2000, map.play_bpm(1920, rate))
+        );
+        assert_eq!(t.tempo_map(), &map);
+
+        // Stop takes it too, with the tempo where it stopped.
+        let mut t = Transport::new(rate, 120.0).unwrap();
+        t.command(0, Command::Play);
+        assert!(t.change_tempo_map(1000, map));
+        t.command(2000, Command::Stop);
+        run(&mut t, 4000);
+        assert_eq!(t.tempo_map(), &map);
+        assert_eq!(t.bpm(), map.bpm_at(t.position()));
+    }
+
+    #[test]
+    fn a_live_tempo_replaces_a_waiting_map_and_the_other_way_round() {
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        t.command(0, Command::Play);
+        assert!(t.change_tempo_map(1000, slowing_map()));
+        t.command(2000, Command::SetTempo(90.0));
+        let b = run(&mut t, 8192);
+        assert_eq!(marks(&b)[1], (5513, Mark::Tempo(90.0)));
+        assert_eq!(t.tempo_map().segments().len(), 1);
+
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        t.command(0, Command::Play);
+        t.command(1000, Command::SetTempo(90.0));
+        assert!(t.change_tempo_map(2000, slowing_map()));
+        let b = run(&mut t, 8192);
+        assert_eq!(
+            marks(&b)[1],
+            (5513, Mark::Tempo(slowing_map().play_bpm(240, 44_100)))
+        );
+        assert_eq!(t.tempo_map(), &slowing_map());
     }
 
     #[test]

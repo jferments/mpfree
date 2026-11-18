@@ -134,7 +134,7 @@ class JudgeTests(unittest.TestCase):
         w = checks.Window(lines(midi("button 73 pressed"), "looper: Record: armed, the first pass ..."))
         got = dict((what, ok) for ok, what in self.judge("rec-arm", w))
         self.assertFalse(got["REC (73) readied the notes"])
-        self.assertFalse(got["the Loop view armed the loop"])
+        self.assertFalse(got["the loop row's Arm armed the loop"])
         # A loop with a take already: REC's overdub waits for PLAY.
         w = checks.Window(lines("rec: the loop armed", "looper: overdub on (layer 2)"))
         got = dict((what, ok) for ok, what in self.judge("rec-arm", w))

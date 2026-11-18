@@ -150,6 +150,7 @@ fn filter_pressure_opens_and_closes_the_cutoff() {
             cutoff_hz: 500.0,
             resonance: 0.0,
             env_octaves: 0.0,
+            drive_db: 0.0,
         };
         routed(&mut pad, PressureTarget::Filter, depth);
         let mut e = engine_for(&[(0, pad)], &s);
@@ -356,6 +357,7 @@ fn pressure_is_deterministic_and_every_target_stays_finite() {
                 cutoff_hz: 1500.0,
                 resonance: 0.3,
                 env_octaves: 0.0,
+                drive_db: 0.0,
             };
             routed(&mut g, t, if i % 2 == 0 { 1.0 } else { -1.0 });
             let mut p = sample_pad(&s);
