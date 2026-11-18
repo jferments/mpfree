@@ -134,6 +134,7 @@ fn the_tab_shows_the_input_the_bar_lines_and_what_skip_back_keeps() {
         [
             ("Source", "Line in"),
             ("Channels", "Left + right"),
+            ("Gain", "+0 dB"),
             ("Start", "Now"),
             ("Threshold", "-30 dB"),
             ("Pre-roll", "20 ms"),

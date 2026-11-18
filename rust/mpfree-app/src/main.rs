@@ -5626,6 +5626,13 @@ fn player_session(
     let mut rec_back: Option<Box<sampler::RecFeed>> = None;
     // What the sampler's input records from (the Rec tab's Source).
     let mut rec_source = sampler::RecSource::Line;
+    // The recorder's Gain on the line input, linear (one-page step 2d),
+    // and where the last period's ramp ended.
+    let mut rec_gain = 1.0f32;
+    let mut rec_gain_was = 1.0f32;
+    // Monitor's level (the line input strip's fader) the screen was last
+    // told, dB.
+    let mut line_level_said: Option<f32> = None;
     // Sample Recall (sampler decision 3): the master as heard, its last two
     // minutes always kept, made here once and never freed; its reading end
     // goes to the screen as soon as there is room.
@@ -6770,6 +6777,7 @@ fn player_session(
                         }
                     }
                 }
+                gui::FromUi::SampleGain(db) => rec_gain = 10f32.powf(db / 20.0),
                 gui::FromUi::SampleSource(src) => {
                     if src != rec_source {
                         rec_source = src;
@@ -8988,10 +8996,13 @@ fn player_session(
         // The same line input into the sampler's buffer, with the bar lines
         // (the Sample page's Rec tab and Skip back). A point in the mix
         // goes in after the mixer, below.
+        // Turned by the recorder's Gain, ramped over the period.
+        let gain = (rec_gain_was, rec_gain);
+        rec_gain_was = rec_gain;
         if let (Some(f), sampler::RecSource::Line) = (rec_feed.as_mut(), rec_source) {
             let t_rec = Instant::now();
             let (l, r) = looper.input();
-            f.period(time.block(), l, r, 0);
+            f.period_gain(time.block(), l, r, 0, gain);
             engines.add(engines::SAMPLER, t_rec.elapsed());
         }
         if let Some(f) = rec_back.take() {
@@ -9118,6 +9129,13 @@ fn player_session(
         parts.lap(parts::PADS);
         let t_mix = Span::start();
         mix.follow(looper.line.is_open(), looper.monitor);
+        // Monitor's level, for the Sample page's recorder, when it moves.
+        let line_level = mix.line_level();
+        if line_level_said != Some(line_level)
+            && out.try_show(gui::ToUi::LineLevel(line_level)).is_ok()
+        {
+            line_level_said = Some(line_level);
+        }
         let ctx = mixing::ctx(RATE, i * PERIOD as u64, time.info().bpm, time.block());
         // The mixer's lanes (each stage's inserts, the returns) keep the
         // same deadline.
