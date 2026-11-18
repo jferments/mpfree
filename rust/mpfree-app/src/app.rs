@@ -8600,6 +8600,7 @@ mod tests {
         app.rec.pad = Some(PadTake {
             kit: 0,
             pad: 4,
+            id: 1,
             started: true,
             recording: false,
             here: false,

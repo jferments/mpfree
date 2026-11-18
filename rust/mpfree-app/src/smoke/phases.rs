@@ -807,6 +807,102 @@ mod looper {
         });
     }
 
+    /// The Perform view's Q-Links on a throw that plays on Drums turn its
+    /// Feedback on the Drums track's Perform FX, through the desk to the
+    /// mixer; a run of turns is one UNDO step there; Edit the effect opens
+    /// that Perform FX in the chain editor on the Delay throw's page.
+    #[test]
+    fn the_perform_views_q_links_turn_a_throw_on_its_strips_perform_fx() {
+        use crate::gui::FromUi;
+        use crate::perform_pads::{Hold, PadAction, Throw};
+        use mpfree_fx::ids::perform as pf;
+        use mpfree_fx::StripId;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let drums = StripId::Track(crate::mixing::DRUMS);
+            let on_drums = Throw {
+                on: drums,
+                ..Throw::new(0, Hold::WhileHeld)
+            };
+            s.route(FromUi::PerformPad {
+                page: 1,
+                pad: 0,
+                action: PadAction::Throw(on_drums),
+            });
+            s.run_for(0.1);
+            let feedback = |s: &Session| {
+                let c = s.mix.mixer.chain(drums).expect("Drums' chain");
+                (0..c.len())
+                    .filter_map(|i| c.node(i))
+                    .find(|n| n.info().id == crate::mixing::PERFORM_FX)
+                    .map(|n| n.param(pf::slot(crate::mixing::ThrowFx::Delay.pad()) + pf::AMOUNT))
+            };
+            assert_eq!(feedback(&s), Some(55.0));
+            // The Pads tab's Perform view, page B, pad 1.
+            s.press("header", "tab", "Pads");
+            s.press(mpfree_sampler_ui::pads_tab::KITS, "perform", "Perform pads");
+            s.button("PAD BANK B/F");
+            s.pad_edge(0, 100, true);
+            s.run_periods(2);
+            s.pad_edge(0, 0, false);
+            s.run_periods(4);
+            let cards = |s: &Session| {
+                s.screen
+                    .ui
+                    .get::<mpfree_ui::qlink::QLinkColumn>(crate::play_page::QLINKS)
+                    .map(|q| {
+                        q.cards
+                            .each_ref()
+                            .map(|c| (c.name.clone(), c.value.clone()))
+                    })
+            };
+            assert_eq!(
+                cards(&s).map(|c| [c[0].clone(), c[1].clone()]),
+                Some([
+                    ("Time".to_string(), "1/8D".to_string()),
+                    ("Feedback".to_string(), "55 %".to_string())
+                ])
+            );
+            // Q2 turned up 5, then 3 more: on the mixer, one UNDO step.
+            s.qlink(1, 5);
+            s.qlink(1, 3);
+            s.run_periods(4);
+            assert_eq!(feedback(&s), Some(63.0));
+            s.screen.apply(crate::gui::ToUi::QLinkTouch(1, false));
+            s.run_periods(4);
+            assert!(s
+                .said()
+                .iter()
+                .any(|l| l == "perform: Perform pads: Delay throw on Drums: Feedback 63 %"));
+            s.button("UNDO");
+            s.run_periods(10);
+            assert_eq!(feedback(&s), Some(55.0));
+            assert!(s
+                .said()
+                .iter()
+                .any(|l| l == "perform: Undo: Delay throw's Feedback on Drums back to 55 %"));
+            // Q3 turns nothing, and says why.
+            s.qlink(2, 1);
+            assert!(s.said().iter().any(|l| l.ends_with(
+                "A throw has two settings, on Q1 and Q2: Delay throw has no others here"
+            )));
+            // Edit the effect: the Drums Perform FX on its Slots 9-12 page.
+            let slot = s.mix.perform_slot(drums);
+            s.press(crate::perform_tab::ACTS, "button", "Edit the effect ›");
+            s.run_periods(4);
+            assert_eq!(s.app.view(), crate::app::View::Chain);
+            let page = s
+                .screen
+                .ui
+                .get::<mpfree_chain_ui::ChainView>(mpfree_chain_ui::CHAIN)
+                .map(|v| {
+                    let st = v.state();
+                    (st.groups.get(st.group).cloned(), st.selected)
+                });
+            assert_eq!(page, Some((Some("Slots 9-12".to_string()), slot)));
+        });
+    }
+
     /// The Perform set's pages past A are actions, not notes (the
     /// sequencer thread's rec-arm rule): with the notes armed and
     /// recording, throw, track mute and scene pads put nothing in the

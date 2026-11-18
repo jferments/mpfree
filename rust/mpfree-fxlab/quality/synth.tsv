@@ -679,129 +679,338 @@ synth/FM[Steel Pluck]/key_spread_db	2.3721
 synth/FM[Steel Pluck]/mono_loss_db	0
 synth/FM[Steel Pluck]/vel_curve_err_db	0.7034
 synth/FM[Steel Pluck]/vel_tone_oct	0.0021
-synth/Keys[Ballad]/chord6_vs_power_db	-0.2286
-synth/Keys[Ballad]/chord8_peak_dbfs	-0.9242
+synth/Keys[Ballad]/chord6_vs_power_db	-0.2322
+synth/Keys[Ballad]/chord8_peak_dbfs	-3.1683
 synth/Keys[Ballad]/dc_dbfs	-140
-synth/Keys[Ballad]/decay_c4_err_pct	0.2702
+synth/Keys[Ballad]/decay_c4_err_pct	0.2705
 synth/Keys[Ballad]/decay_slope	-0.7558
 synth/Keys[Ballad]/h2_rise_db	13.3475
-synth/Keys[Ballad]/key_spread_db	7.4874
+synth/Keys[Ballad]/key_spread_db	2.5857
 synth/Keys[Ballad]/mono_loss_db	0
-synth/Keys[Ballad]/vel_curve_err_db	0.397
-synth/Keys[Ballad]/vel_tone_oct	0.0059
-synth/Keys[Barking Tines]/chord6_vs_power_db	-2.7371
-synth/Keys[Barking Tines]/chord8_peak_dbfs	-3.9105
-synth/Keys[Barking Tines]/dc_dbfs	-65.4179
-synth/Keys[Barking Tines]/decay_c4_err_pct	0.8929
-synth/Keys[Barking Tines]/decay_slope	-0.7816
-synth/Keys[Barking Tines]/h2_rise_db	18.5123
-synth/Keys[Barking Tines]/key_spread_db	4.7248
+synth/Keys[Ballad]/vel_curve_err_db	0.0778
+synth/Keys[Ballad]/vel_tone_oct	0.0061
+synth/Keys[Barking Tines]/chord6_vs_power_db	-2.3131
+synth/Keys[Barking Tines]/chord8_peak_dbfs	-9.5789
+synth/Keys[Barking Tines]/dc_dbfs	-77.4287
+synth/Keys[Barking Tines]/decay_c4_err_pct	0.8562
+synth/Keys[Barking Tines]/decay_slope	-0.7771
+synth/Keys[Barking Tines]/h2_rise_db	18.3067
+synth/Keys[Barking Tines]/key_spread_db	1.7407
 synth/Keys[Barking Tines]/mono_loss_db	0
-synth/Keys[Barking Tines]/vel_curve_err_db	1.3358
-synth/Keys[Barking Tines]/vel_tone_oct	0.7643
-synth/Keys[Bell Keys]/chord6_vs_power_db	-0.0838
-synth/Keys[Bell Keys]/chord8_peak_dbfs	-0.6401
+synth/Keys[Barking Tines]/vel_curve_err_db	1.1834
+synth/Keys[Barking Tines]/vel_tone_oct	0.7562
+synth/Keys[Bell Keys]/chord6_vs_power_db	-0.1004
+synth/Keys[Bell Keys]/chord8_peak_dbfs	-0.8167
 synth/Keys[Bell Keys]/dc_dbfs	-140
-synth/Keys[Bell Keys]/decay_c4_err_pct	0.1936
+synth/Keys[Bell Keys]/decay_c4_err_pct	0.1926
 synth/Keys[Bell Keys]/decay_slope	-0.7535
 synth/Keys[Bell Keys]/h2_rise_db	13.7625
-synth/Keys[Bell Keys]/key_spread_db	6.7188
+synth/Keys[Bell Keys]/key_spread_db	2.6193
 synth/Keys[Bell Keys]/mono_loss_db	0
-synth/Keys[Bell Keys]/vel_curve_err_db	0.409
-synth/Keys[Bell Keys]/vel_tone_oct	0.0116
-synth/Keys[Bright Tines]/chord6_vs_power_db	-0.1242
-synth/Keys[Bright Tines]/chord8_peak_dbfs	-0.1308
+synth/Keys[Bell Keys]/vel_curve_err_db	0.2121
+synth/Keys[Bell Keys]/vel_tone_oct	0.0098
+synth/Keys[Bright Reed]/chord6_vs_power_db	-0.6096
+synth/Keys[Bright Reed]/chord8_peak_dbfs	-2.6111
+synth/Keys[Bright Reed]/dc_dbfs	-140
+synth/Keys[Bright Reed]/decay_c4_err_pct	0.1207
+synth/Keys[Bright Reed]/decay_slope	-0.7503
+synth/Keys[Bright Reed]/h2_rise_db	17.158
+synth/Keys[Bright Reed]/key_spread_db	2.9924
+synth/Keys[Bright Reed]/mono_loss_db	0
+synth/Keys[Bright Reed]/vel_curve_err_db	0.2476
+synth/Keys[Bright Reed]/vel_tone_oct	0.0408
+synth/Keys[Bright Tines]/chord6_vs_power_db	-0.145
+synth/Keys[Bright Tines]/chord8_peak_dbfs	-0.3403
 synth/Keys[Bright Tines]/dc_dbfs	-140
-synth/Keys[Bright Tines]/decay_c4_err_pct	0.4289
+synth/Keys[Bright Tines]/decay_c4_err_pct	0.4331
 synth/Keys[Bright Tines]/decay_slope	-0.754
-synth/Keys[Bright Tines]/h2_rise_db	13.8235
-synth/Keys[Bright Tines]/key_spread_db	4.4275
+synth/Keys[Bright Tines]/h2_rise_db	13.8236
+synth/Keys[Bright Tines]/key_spread_db	2.4458
 synth/Keys[Bright Tines]/mono_loss_db	0
-synth/Keys[Bright Tines]/vel_curve_err_db	0.4804
-synth/Keys[Bright Tines]/vel_tone_oct	0.1909
-synth/Keys[Dusty Keys]/chord6_vs_power_db	-5.0744
-synth/Keys[Dusty Keys]/chord8_peak_dbfs	-9.3698
-synth/Keys[Dusty Keys]/dc_dbfs	-57.873
-synth/Keys[Dusty Keys]/decay_c4_err_pct	1.4604
-synth/Keys[Dusty Keys]/decay_slope	-0.7941
-synth/Keys[Dusty Keys]/h2_rise_db	12.1011
-synth/Keys[Dusty Keys]/key_spread_db	6.7535
+synth/Keys[Bright Tines]/vel_curve_err_db	0.2138
+synth/Keys[Bright Tines]/vel_tone_oct	0.173
+synth/Keys[Brilliant Clav]/chord6_vs_power_db	0.6147
+synth/Keys[Brilliant Clav]/chord8_peak_dbfs	-3.259
+synth/Keys[Brilliant Clav]/dc_dbfs	-140
+synth/Keys[Brilliant Clav]/decay_c4_err_pct	-12.4144
+synth/Keys[Brilliant Clav]/decay_slope	-0.7826
+synth/Keys[Brilliant Clav]/key_spread_db	1.5205
+synth/Keys[Brilliant Clav]/mono_loss_db	0
+synth/Keys[Brilliant Clav]/pickup_notch_db	-21.9577
+synth/Keys[Brilliant Clav]/release_drop_err_st	0.0027
+synth/Keys[Brilliant Clav]/vel_curve_err_db	0.9112
+synth/Keys[Brilliant Clav]/vel_tone_oct	0.1397
+synth/Keys[Clav]/chord6_vs_power_db	1.203
+synth/Keys[Clav]/chord8_peak_dbfs	-3.6652
+synth/Keys[Clav]/dc_dbfs	-140
+synth/Keys[Clav]/decay_c4_err_pct	-8.1244
+synth/Keys[Clav]/decay_slope	-0.7564
+synth/Keys[Clav]/key_spread_db	1.8645
+synth/Keys[Clav]/mono_loss_db	0
+synth/Keys[Clav]/release_drop_err_st	-0.0006
+synth/Keys[Clav]/vel_curve_err_db	0.9201
+synth/Keys[Clav]/vel_tone_oct	0.1239
+synth/Keys[Dirty Reed]/chord6_vs_power_db	-1.4848
+synth/Keys[Dirty Reed]/chord8_peak_dbfs	-6.3419
+synth/Keys[Dirty Reed]/dc_dbfs	-140
+synth/Keys[Dirty Reed]/decay_c4_err_pct	-0.0412
+synth/Keys[Dirty Reed]/decay_slope	-0.75
+synth/Keys[Dirty Reed]/h2_rise_db	13.4226
+synth/Keys[Dirty Reed]/key_spread_db	0.9055
+synth/Keys[Dirty Reed]/mono_loss_db	0
+synth/Keys[Dirty Reed]/vel_curve_err_db	1.1141
+synth/Keys[Dirty Reed]/vel_tone_oct	0.0516
+synth/Keys[Driven Clav]/chord6_vs_power_db	-1.7899
+synth/Keys[Driven Clav]/chord8_peak_dbfs	-12.6767
+synth/Keys[Driven Clav]/dc_dbfs	-71.672
+synth/Keys[Driven Clav]/decay_c4_err_pct	-7.5287
+synth/Keys[Driven Clav]/decay_slope	-0.7667
+synth/Keys[Driven Clav]/key_spread_db	2.6964
+synth/Keys[Driven Clav]/mono_loss_db	0
+synth/Keys[Driven Clav]/release_drop_err_st	0
+synth/Keys[Driven Clav]/vel_curve_err_db	1.8794
+synth/Keys[Driven Clav]/vel_tone_oct	0.1071
+synth/Keys[Dusty Keys]/chord6_vs_power_db	-3.3435
+synth/Keys[Dusty Keys]/chord8_peak_dbfs	-13.9998
+synth/Keys[Dusty Keys]/dc_dbfs	-75.8589
+synth/Keys[Dusty Keys]/decay_c4_err_pct	1.103
+synth/Keys[Dusty Keys]/decay_slope	-0.7568
+synth/Keys[Dusty Keys]/h2_rise_db	12.9146
+synth/Keys[Dusty Keys]/key_spread_db	2.7076
 synth/Keys[Dusty Keys]/mono_loss_db	0
-synth/Keys[Dusty Keys]/trem_rate_err_pct	0.3089
-synth/Keys[Dusty Keys]/vel_curve_err_db	2.0668
-synth/Keys[Dusty Keys]/vel_tone_oct	0.2516
-synth/Keys[Hollow Tines]/chord6_vs_power_db	0.004
-synth/Keys[Hollow Tines]/chord8_peak_dbfs	-1.9341
+synth/Keys[Dusty Keys]/trem_rate_err_pct	0.3086
+synth/Keys[Dusty Keys]/vel_curve_err_db	1.4483
+synth/Keys[Dusty Keys]/vel_tone_oct	0.2223
+synth/Keys[Funk Clav]/chord6_vs_power_db	0.6499
+synth/Keys[Funk Clav]/chord8_peak_dbfs	-2.3117
+synth/Keys[Funk Clav]/dc_dbfs	-140
+synth/Keys[Funk Clav]/decay_c4_err_pct	-11.2864
+synth/Keys[Funk Clav]/decay_slope	-0.7943
+synth/Keys[Funk Clav]/key_spread_db	1.9308
+synth/Keys[Funk Clav]/mono_loss_db	0
+synth/Keys[Funk Clav]/pickup_notch_db	-19.5749
+synth/Keys[Funk Clav]/release_drop_err_st	-0.0002
+synth/Keys[Funk Clav]/vel_curve_err_db	1.0758
+synth/Keys[Funk Clav]/vel_tone_oct	0.1718
+synth/Keys[Hard Tines]/chord6_vs_power_db	-0.1861
+synth/Keys[Hard Tines]/chord8_peak_dbfs	-0.5299
+synth/Keys[Hard Tines]/dc_dbfs	-140
+synth/Keys[Hard Tines]/decay_c4_err_pct	0.5567
+synth/Keys[Hard Tines]/decay_slope	-0.7567
+synth/Keys[Hard Tines]/h2_rise_db	15.1255
+synth/Keys[Hard Tines]/key_spread_db	1.9109
+synth/Keys[Hard Tines]/mono_loss_db	0
+synth/Keys[Hard Tines]/vel_curve_err_db	0.1503
+synth/Keys[Hard Tines]/vel_tone_oct	0.4888
+synth/Keys[Hollow Tines]/chord6_vs_power_db	-0.0938
+synth/Keys[Hollow Tines]/chord8_peak_dbfs	-1.5732
 synth/Keys[Hollow Tines]/dc_dbfs	-140
-synth/Keys[Hollow Tines]/decay_c4_err_pct	-0.2396
-synth/Keys[Hollow Tines]/decay_slope	-0.6418
-synth/Keys[Hollow Tines]/h2_rise_db	13.9326
-synth/Keys[Hollow Tines]/key_spread_db	12.8267
+synth/Keys[Hollow Tines]/decay_c4_err_pct	0.2598
+synth/Keys[Hollow Tines]/decay_slope	-0.7123
+synth/Keys[Hollow Tines]/h2_rise_db	13.9775
+synth/Keys[Hollow Tines]/key_spread_db	2.5663
 synth/Keys[Hollow Tines]/mono_loss_db	0
-synth/Keys[Hollow Tines]/vel_curve_err_db	0.9616
-synth/Keys[Hollow Tines]/vel_tone_oct	0.6145
-synth/Keys[Init]/chord6_vs_power_db	-0.161
-synth/Keys[Init]/chord8_peak_dbfs	-1.0077
+synth/Keys[Hollow Tines]/vel_curve_err_db	0.5667
+synth/Keys[Hollow Tines]/vel_tone_oct	0.391
+synth/Keys[Init]/chord6_vs_power_db	-0.1931
+synth/Keys[Init]/chord8_peak_dbfs	-1.0678
 synth/Keys[Init]/dc_dbfs	-140
 synth/Keys[Init]/decay_c4_err_pct	0.4477
 synth/Keys[Init]/decay_slope	-0.756
 synth/Keys[Init]/h2_rise_db	14.4501
-synth/Keys[Init]/key_spread_db	5.1194
+synth/Keys[Init]/key_spread_db	0.8172
 synth/Keys[Init]/mono_loss_db	0
-synth/Keys[Init]/vel_curve_err_db	0.4734
+synth/Keys[Init]/vel_curve_err_db	0.1857
 synth/Keys[Init]/vel_tone_oct	0.0976
-synth/Keys[Pan Tines]/chord6_vs_power_db	-0.1641
-synth/Keys[Pan Tines]/chord8_peak_dbfs	-1.6603
-synth/Keys[Pan Tines]/dc_dbfs	-133.9806
+synth/Keys[Lo-fi Tines]/chord6_vs_power_db	-3.4073
+synth/Keys[Lo-fi Tines]/chord8_peak_dbfs	-13.9188
+synth/Keys[Lo-fi Tines]/dc_dbfs	-73.2598
+synth/Keys[Lo-fi Tines]/decay_c4_err_pct	0.9681
+synth/Keys[Lo-fi Tines]/decay_slope	-0.7627
+synth/Keys[Lo-fi Tines]/h2_rise_db	12.6625
+synth/Keys[Lo-fi Tines]/key_spread_db	2.6526
+synth/Keys[Lo-fi Tines]/mono_loss_db	0
+synth/Keys[Lo-fi Tines]/trem_rate_err_pct	0.1289
+synth/Keys[Lo-fi Tines]/vel_curve_err_db	1.7182
+synth/Keys[Lo-fi Tines]/vel_tone_oct	0.1244
+synth/Keys[Long Tines]/chord6_vs_power_db	-0.3833
+synth/Keys[Long Tines]/chord8_peak_dbfs	-1.981
+synth/Keys[Long Tines]/dc_dbfs	-140
+synth/Keys[Long Tines]/decay_c4_err_pct	0.6319
+synth/Keys[Long Tines]/decay_slope	-0.7632
+synth/Keys[Long Tines]/h2_rise_db	14.3288
+synth/Keys[Long Tines]/key_spread_db	1.7518
+synth/Keys[Long Tines]/mono_loss_db	0
+synth/Keys[Long Tines]/vel_curve_err_db	0.0702
+synth/Keys[Long Tines]/vel_tone_oct	0.1002
+synth/Keys[Mellow Reed]/chord6_vs_power_db	-0.7544
+synth/Keys[Mellow Reed]/chord8_peak_dbfs	-6.4552
+synth/Keys[Mellow Reed]/dc_dbfs	-140
+synth/Keys[Mellow Reed]/decay_c4_err_pct	0.1535
+synth/Keys[Mellow Reed]/decay_slope	-0.7504
+synth/Keys[Mellow Reed]/h2_rise_db	16.4694
+synth/Keys[Mellow Reed]/key_spread_db	2.2499
+synth/Keys[Mellow Reed]/mono_loss_db	0
+synth/Keys[Mellow Reed]/vel_curve_err_db	0.1655
+synth/Keys[Mellow Reed]/vel_tone_oct	0.0274
+synth/Keys[Mellow Tines]/chord6_vs_power_db	-0.2625
+synth/Keys[Mellow Tines]/chord8_peak_dbfs	-2.1722
+synth/Keys[Mellow Tines]/dc_dbfs	-140
+synth/Keys[Mellow Tines]/decay_c4_err_pct	0.4026
+synth/Keys[Mellow Tines]/decay_slope	-0.7522
+synth/Keys[Mellow Tines]/h2_rise_db	13.5619
+synth/Keys[Mellow Tines]/key_spread_db	2.0926
+synth/Keys[Mellow Tines]/mono_loss_db	0
+synth/Keys[Mellow Tines]/vel_curve_err_db	0.0659
+synth/Keys[Mellow Tines]/vel_tone_oct	0.0016
+synth/Keys[Muted Clav]/chord6_vs_power_db	2.4963
+synth/Keys[Muted Clav]/chord8_peak_dbfs	-0.7205
+synth/Keys[Muted Clav]/dc_dbfs	-140
+synth/Keys[Muted Clav]/decay_c4_err_pct	-0.8224
+synth/Keys[Muted Clav]/decay_slope	-0.6297
+synth/Keys[Muted Clav]/key_spread_db	2.4443
+synth/Keys[Muted Clav]/mono_loss_db	0
+synth/Keys[Muted Clav]/release_drop_err_st	0.001
+synth/Keys[Muted Clav]/vel_curve_err_db	0.6955
+synth/Keys[Muted Clav]/vel_tone_oct	-0.0315
+synth/Keys[Pan Clav]/chord6_vs_power_db	1.4884
+synth/Keys[Pan Clav]/chord8_peak_dbfs	-0.94
+synth/Keys[Pan Clav]/dc_dbfs	-140
+synth/Keys[Pan Clav]/decay_c4_err_pct	-6.3119
+synth/Keys[Pan Clav]/decay_slope	-0.7584
+synth/Keys[Pan Clav]/key_spread_db	1.0761
+synth/Keys[Pan Clav]/mono_loss_db	0.2781
+synth/Keys[Pan Clav]/release_drop_err_st	-0.0006
+synth/Keys[Pan Clav]/trem_rate_err_pct	0.2353
+synth/Keys[Pan Clav]/vel_curve_err_db	0.9488
+synth/Keys[Pan Clav]/vel_tone_oct	0.1948
+synth/Keys[Pan Reed]/chord6_vs_power_db	-0.5328
+synth/Keys[Pan Reed]/chord8_peak_dbfs	-1.2467
+synth/Keys[Pan Reed]/dc_dbfs	-92.0952
+synth/Keys[Pan Reed]/decay_c4_err_pct	0.1661
+synth/Keys[Pan Reed]/decay_slope	-0.7504
+synth/Keys[Pan Reed]/h2_rise_db	17.149
+synth/Keys[Pan Reed]/key_spread_db	0.7203
+synth/Keys[Pan Reed]/mono_loss_db	0.2748
+synth/Keys[Pan Reed]/trem_rate_err_pct	-0.0243
+synth/Keys[Pan Reed]/vel_curve_err_db	0.2601
+synth/Keys[Pan Reed]/vel_tone_oct	0.0274
+synth/Keys[Pan Tines]/chord6_vs_power_db	-0.1964
+synth/Keys[Pan Tines]/chord8_peak_dbfs	-1.7104
+synth/Keys[Pan Tines]/dc_dbfs	-135.3202
 synth/Keys[Pan Tines]/decay_c4_err_pct	0.4818
 synth/Keys[Pan Tines]/decay_slope	-0.7565
 synth/Keys[Pan Tines]/h2_rise_db	14.4502
-synth/Keys[Pan Tines]/key_spread_db	4.719
-synth/Keys[Pan Tines]/mono_loss_db	0.4074
+synth/Keys[Pan Tines]/key_spread_db	1.7288
+synth/Keys[Pan Tines]/mono_loss_db	0.4077
 synth/Keys[Pan Tines]/trem_rate_err_pct	0.3806
-synth/Keys[Pan Tines]/vel_curve_err_db	0.4235
+synth/Keys[Pan Tines]/vel_curve_err_db	0.1465
 synth/Keys[Pan Tines]/vel_tone_oct	0.1029
-synth/Keys[Reed Bite]/chord6_vs_power_db	-1.565
-synth/Keys[Reed Bite]/chord8_peak_dbfs	-6.79
-synth/Keys[Reed Bite]/dc_dbfs	-45.58
-synth/Keys[Reed Bite]/decay_c4_err_pct	-0.1903
-synth/Keys[Reed Bite]/decay_slope	-0.7497
-synth/Keys[Reed Bite]/h2_rise_db	10.3702
-synth/Keys[Reed Bite]/key_spread_db	8.2726
+synth/Keys[Reed Bite]/chord6_vs_power_db	-1.5548
+synth/Keys[Reed Bite]/chord8_peak_dbfs	-4.8643
+synth/Keys[Reed Bite]/dc_dbfs	-140
+synth/Keys[Reed Bite]/decay_c4_err_pct	-0.0447
+synth/Keys[Reed Bite]/decay_slope	-0.7502
+synth/Keys[Reed Bite]/h2_rise_db	12.7779
+synth/Keys[Reed Bite]/key_spread_db	2.1138
 synth/Keys[Reed Bite]/mono_loss_db	0
-synth/Keys[Reed Bite]/vel_curve_err_db	1.3463
-synth/Keys[Reed Bite]/vel_tone_oct	0.0515
-synth/Keys[Reed]/chord6_vs_power_db	-0.5107
-synth/Keys[Reed]/chord8_peak_dbfs	-5.2004
-synth/Keys[Reed]/dc_dbfs	-50.0241
-synth/Keys[Reed]/decay_c4_err_pct	0.083
+synth/Keys[Reed Bite]/vel_curve_err_db	1.0303
+synth/Keys[Reed Bite]/vel_tone_oct	0.0523
+synth/Keys[Reed]/chord6_vs_power_db	-0.5328
+synth/Keys[Reed]/chord8_peak_dbfs	-3.1896
+synth/Keys[Reed]/dc_dbfs	-140
+synth/Keys[Reed]/decay_c4_err_pct	0.133
 synth/Keys[Reed]/decay_slope	-0.7507
-synth/Keys[Reed]/h2_rise_db	14.707
-synth/Keys[Reed]/key_spread_db	7.0419
+synth/Keys[Reed]/h2_rise_db	17.1516
+synth/Keys[Reed]/key_spread_db	0.7203
 synth/Keys[Reed]/mono_loss_db	0
-synth/Keys[Reed]/vel_curve_err_db	0.3458
-synth/Keys[Reed]/vel_tone_oct	0.027
-synth/Keys[Soft Tines]/chord6_vs_power_db	-0.3751
-synth/Keys[Soft Tines]/chord8_peak_dbfs	-2.0487
+synth/Keys[Reed]/vel_curve_err_db	0.2476
+synth/Keys[Reed]/vel_tone_oct	0.0275
+synth/Keys[Soft Clav]/chord6_vs_power_db	1.3998
+synth/Keys[Soft Clav]/chord8_peak_dbfs	-5.6247
+synth/Keys[Soft Clav]/dc_dbfs	-140
+synth/Keys[Soft Clav]/decay_c4_err_pct	-2.4108
+synth/Keys[Soft Clav]/decay_slope	-0.756
+synth/Keys[Soft Clav]/key_spread_db	2.1699
+synth/Keys[Soft Clav]/mono_loss_db	0
+synth/Keys[Soft Clav]/pickup_notch_db	-31.3735
+synth/Keys[Soft Clav]/release_drop_err_st	-0.0002
+synth/Keys[Soft Clav]/vel_curve_err_db	0.7356
+synth/Keys[Soft Clav]/vel_tone_oct	0.2936
+synth/Keys[Soft Reed]/chord6_vs_power_db	-0.7625
+synth/Keys[Soft Reed]/chord8_peak_dbfs	-5.6378
+synth/Keys[Soft Reed]/dc_dbfs	-140
+synth/Keys[Soft Reed]/decay_c4_err_pct	0.1455
+synth/Keys[Soft Reed]/decay_slope	-0.7501
+synth/Keys[Soft Reed]/h2_rise_db	15.4279
+synth/Keys[Soft Reed]/key_spread_db	2.2505
+synth/Keys[Soft Reed]/mono_loss_db	0
+synth/Keys[Soft Reed]/vel_curve_err_db	0.2898
+synth/Keys[Soft Reed]/vel_tone_oct	0.0192
+synth/Keys[Soft Tines]/chord6_vs_power_db	-0.4054
+synth/Keys[Soft Tines]/chord8_peak_dbfs	-1.6167
 synth/Keys[Soft Tines]/dc_dbfs	-140
 synth/Keys[Soft Tines]/decay_c4_err_pct	0.4117
 synth/Keys[Soft Tines]/decay_slope	-0.7535
 synth/Keys[Soft Tines]/h2_rise_db	13.3504
-synth/Keys[Soft Tines]/key_spread_db	6.2267
+synth/Keys[Soft Tines]/key_spread_db	2.3483
 synth/Keys[Soft Tines]/mono_loss_db	0
-synth/Keys[Soft Tines]/vel_curve_err_db	0.4186
+synth/Keys[Soft Tines]/vel_curve_err_db	0.1067
 synth/Keys[Soft Tines]/vel_tone_oct	0.0126
-synth/Keys[Trem Reed]/chord6_vs_power_db	-0.5339
-synth/Keys[Trem Reed]/chord8_peak_dbfs	-5.3319
-synth/Keys[Trem Reed]/dc_dbfs	-54.3532
-synth/Keys[Trem Reed]/decay_c4_err_pct	0.3521
+synth/Keys[Stab Clav]/chord6_vs_power_db	2.2209
+synth/Keys[Stab Clav]/chord8_peak_dbfs	-0.883
+synth/Keys[Stab Clav]/dc_dbfs	-140
+synth/Keys[Stab Clav]/decay_c4_err_pct	-9.0966
+synth/Keys[Stab Clav]/decay_slope	-0.687
+synth/Keys[Stab Clav]/key_spread_db	1.7942
+synth/Keys[Stab Clav]/mono_loss_db	0
+synth/Keys[Stab Clav]/release_drop_err_st	0.0027
+synth/Keys[Stab Clav]/vel_curve_err_db	1.0226
+synth/Keys[Stab Clav]/vel_tone_oct	-0.0202
+synth/Keys[Stage Tines]/chord6_vs_power_db	-0.1479
+synth/Keys[Stage Tines]/chord8_peak_dbfs	-0.8895
+synth/Keys[Stage Tines]/dc_dbfs	-127.8577
+synth/Keys[Stage Tines]/decay_c4_err_pct	0.4959
+synth/Keys[Stage Tines]/decay_slope	-0.7596
+synth/Keys[Stage Tines]/h2_rise_db	14.9111
+synth/Keys[Stage Tines]/key_spread_db	1.9132
+synth/Keys[Stage Tines]/mono_loss_db	0.1149
+synth/Keys[Stage Tines]/trem_rate_err_pct	0.1304
+synth/Keys[Stage Tines]/vel_curve_err_db	0.178
+synth/Keys[Stage Tines]/vel_tone_oct	0.2548
+synth/Keys[Thin Clav]/chord6_vs_power_db	-0.0985
+synth/Keys[Thin Clav]/chord8_peak_dbfs	-4.4481
+synth/Keys[Thin Clav]/dc_dbfs	-140
+synth/Keys[Thin Clav]/decay_c4_err_pct	-6.8469
+synth/Keys[Thin Clav]/decay_slope	-0.7634
+synth/Keys[Thin Clav]/key_spread_db	2.5527
+synth/Keys[Thin Clav]/mono_loss_db	0
+synth/Keys[Thin Clav]/release_drop_err_st	-0.0006
+synth/Keys[Thin Clav]/vel_curve_err_db	0.5196
+synth/Keys[Thin Clav]/vel_tone_oct	0.253
+synth/Keys[Trem Clav]/chord6_vs_power_db	1.1385
+synth/Keys[Trem Clav]/chord8_peak_dbfs	-0.972
+synth/Keys[Trem Clav]/dc_dbfs	-140
+synth/Keys[Trem Clav]/decay_c4_err_pct	-3.7047
+synth/Keys[Trem Clav]/decay_slope	-0.7466
+synth/Keys[Trem Clav]/key_spread_db	1.8226
+synth/Keys[Trem Clav]/mono_loss_db	0
+synth/Keys[Trem Clav]/pickup_notch_db	-34.212
+synth/Keys[Trem Clav]/release_drop_err_st	-0.0004
+synth/Keys[Trem Clav]/trem_rate_err_pct	0.0407
+synth/Keys[Trem Clav]/vel_curve_err_db	0.8891
+synth/Keys[Trem Clav]/vel_tone_oct	0.4019
+synth/Keys[Trem Reed]/chord6_vs_power_db	-0.5688
+synth/Keys[Trem Reed]/chord8_peak_dbfs	-0.8215
+synth/Keys[Trem Reed]/dc_dbfs	-140
+synth/Keys[Trem Reed]/decay_c4_err_pct	0.3957
 synth/Keys[Trem Reed]/decay_slope	-0.7372
-synth/Keys[Trem Reed]/h2_rise_db	14.8941
-synth/Keys[Trem Reed]/key_spread_db	7.2206
+synth/Keys[Trem Reed]/h2_rise_db	17.3436
+synth/Keys[Trem Reed]/key_spread_db	0.9061
 synth/Keys[Trem Reed]/mono_loss_db	0
-synth/Keys[Trem Reed]/trem_rate_err_pct	0.4096
-synth/Keys[Trem Reed]/vel_curve_err_db	0.3821
-synth/Keys[Trem Reed]/vel_tone_oct	0.018
+synth/Keys[Trem Reed]/trem_rate_err_pct	0.4098
+synth/Keys[Trem Reed]/vel_curve_err_db	0.244
+synth/Keys[Trem Reed]/vel_tone_oct	0.0183
 synth/Pluck[Bell]/chord6_vs_power_db	1.3883
 synth/Pluck[Bell]/chord8_peak_dbfs	2.935
 synth/Pluck[Bell]/dc_dbfs	-128.2917

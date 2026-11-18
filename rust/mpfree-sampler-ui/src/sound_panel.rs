@@ -106,7 +106,8 @@ impl SoundPanel {
 
     /// Shows pad `st` (None: no pad with a sound, every control faint).
     pub fn update(&mut self, ui: &mut Ui, st: Option<PlayState>) {
-        if self.shown.as_ref().map(|s| s.pad) != st.as_ref().map(|s| s.pad) {
+        let which = |s: &PlayState| (s.pad, s.take.clone());
+        if self.shown.as_ref().map(which) != st.as_ref().map(which) {
             self.lift();
         }
         self.shown = st;
@@ -225,9 +226,13 @@ impl SoundPanel {
                 }
             })
             .collect();
-        let note = self.shown.as_ref().map_or(String::new(), |st| {
-            format!("pad {}", crate::wave_tab::pad_label(st.pad))
-        });
+        let note = self
+            .shown
+            .as_ref()
+            .map_or(String::new(), |st| match &st.take {
+                Some(name) => name.clone(),
+                None => format!("pad {}", crate::wave_tab::pad_label(st.pad)),
+            });
         let panel = Panel {
             sections: vec![
                 Section::new("Sound", WIDTH, vec![vec![Item::new(PARTS_ROW)], items]).note(&note),

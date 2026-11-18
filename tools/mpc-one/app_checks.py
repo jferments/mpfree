@@ -2404,6 +2404,27 @@ CHECKS = (
          "a_throw_steps_where_it_plays_and_says_when_that_plays_nothing"],
         needs=['PAD BANK B/F', 'PLAY', 'STOP', 'UNDO']),
     Check(
+        "perform-throw-knobs", "A throw's own settings on the Perform view's Q-Links",
+        "The Play, Pads and Sequencer redesign's board 7, the Q-Link column: Q2 turns the Delay throw's "
+        "Feedback on the master's Perform FX, and UNDO takes the turn back (state-changing only in the app "
+        "until UNDO; don't save)", "hands",
+        ["1. Tap Pads in the top bar, then Perform pads. Press PAD BANK B, then hit pad 1: B1, Delay throw, is",
+         "   picked. The Q-Link column shows Time and Feedback; Q3 and Q4 are faint.",
+         "2. Press PLAY. Hold pad 1 and turn Q-Link 2 to the right by about a quarter turn: the echo's repeats",
+         "   ring on longer and the Feedback card climbs. Let go of the knob, then the pad.",
+         "3. Turn Q-Link 3 a little: nothing changes, and the hint says a throw has two settings.",
+         "4. Press STOP, then UNDO once: the Feedback card is back where it started. Don't save."],
+        [("pad 1 played the throw", seen(r"^perform: Delay throw$")),
+         ("Q2 turned the Feedback", seen(r"^perform: Perform pads: Delay throw on Master: Feedback \d+(\.\d)? %$")),
+         ("Q3 said why it turns nothing",
+          seen(r"^perform: A throw has two settings, on Q1 and Q2: Delay throw has no others here$")),
+         ("UNDO took the turn back", seen(r"^perform: Undo: Delay throw's Feedback on the master back to \d+(\.\d)? %$")),
+         ("the app kept running", stayed_up())],
+        "Did the echo ring on longer as you turned Q-Link 2, and drop back after UNDO?",
+        ["the_perform_views_q_links_turn_a_throw_on_its_strips_perform_fx",
+         "a_throws_knobs_are_its_pad_on_its_strips_perform_fx"],
+        needs=['PAD BANK B/F', 'PLAY', 'STOP', 'UNDO']),
+    Check(
         "hour", "An hour of play with no underrun",
         "#273's underruns at 25 and 51 minutes", "auto",
         looks=[("an hour, no underrun, no restart", hour_long())],

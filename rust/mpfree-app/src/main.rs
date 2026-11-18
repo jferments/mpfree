@@ -2934,6 +2934,8 @@ fn knob_turn(
             )
         }
         gui::FromUi::Chain(mpfree_chain_ui::ChainAction::Set { addr, value }) => (*addr, *value),
+        // The Perform view's Q-Links on a throw's Perform FX.
+        gui::FromUi::ThrowKnob { addr, value } => (*addr, *value),
         _ => return None,
     };
     // A MIDI effect's setting records as a lock too: the mod engine plays
@@ -6389,6 +6391,8 @@ fn player_session(
                         player.release_kit_at(kit, pad, 0);
                     }
                 }
+                // The take the Wave page shows, kept off the pads.
+                gui::FromUi::SampleTake { kit, down } => player.take_at(kit, down, 0),
                 gui::FromUi::SampleKey {
                     kit,
                     note,
@@ -8899,8 +8903,11 @@ fn player_session(
             out.note(line);
         }
         // A Perform FX the set put on and no throw plays on now, taken
-        // off once it was in.
-        desk::tell_throw_said(&mut mix, out);
+        // off once it was in; one put on that came in: the Perform view's
+        // Q-Links can turn its throws now.
+        if desk::tell_throw_said(&mut mix, out) {
+            out.show(desk::throw_knobs(&mix, app.perform_set()));
+        }
         // A switch of mode that came in: Q-Links and MIDI controls learned
         // on the insert's controls follow them.
         for landed in mix.modes.take_landed() {

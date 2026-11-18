@@ -36,10 +36,11 @@
 
 use mpfree_node::{Ctx, Cull, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Tuning};
 
-use crate::dsp::{drive_n, drive_norm, Rng};
+use crate::dsp::{drive_n, drive_norm, Filter, FilterCoefs, FilterMode, Rng};
 use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::keys_params::*;
 use crate::params::Preset;
+use crate::voice::velocity_gain;
 
 /// Frames per control step.
 pub const CTRL: u64 = 16;
@@ -59,6 +60,367 @@ const VOICE_GAIN: f32 = 0.17;
 const DRIVE_REF: f32 = 2.0;
 /// The longest hammer contact, in seconds.
 const MAX_CONTACT: f32 = 0.008;
+/// The clav string's delay line, samples: enough for C1 with a 6-semitone
+/// release drop at 48 kHz, or 3 at 96 kHz (lower, the note stops falling).
+pub const STRING_LEN: usize = 4096;
+const STRING_MASK: usize = STRING_LEN - 1;
+/// Where the clav's two pickups sit along the string, as a share of its
+/// length from the end the tangent strikes near: each makes a comb whose
+/// notches fall on every `1 / share`-th partial. The neck pickup's fifth
+/// is as measured on A-sharp 2 (Gabrielli et al. 2013); the bridge's
+/// fourteenth is our reading.
+pub const PICKUP_AT: [f32; 2] = [0.2, 1.0 / 14.0];
+/// The clav pickup's curve, off centre: a hard hit adds even harmonics.
+const CLAV_NL: f32 = 0.2;
+/// A clav hit's first swing across the pickup's curve per unit of Bark's
+/// drive and strike: measured (see [`clav_swing`]).
+const CLAV_SWING: f32 = 3.07;
+/// The clav's displacement integrator leaks this fast, Hz, so it never
+/// drifts.
+const CLAV_LEAK_HZ: f32 = 2.0;
+/// How long the top of a clav note's band rings against its fundamental:
+/// a string loses its high partials far sooner.
+const CLAV_TOP_DECAY: f32 = 0.06;
+/// Where the clav's mute starts to bite, Hz.
+const MUTE_HZ: f32 = 1_000.0;
+/// How much loudness the full mute takes from the low and middle notes.
+const MUTE_LOSS_DB: f32 = 16.0;
+/// How long the release drop takes, ms: the yarn meets the string at once.
+const DROP_MS: f32 = 3.0;
+/// The clav's level against the tine's, so the models sit together.
+const CLAV_GAIN: f32 = 0.39;
+/// The clav preamp's headroom on the bus: it passes the sound unchanged
+/// up to the knee (8 dB under full scale at Level 0 dB) and rounds what
+/// goes past it toward the ceiling (2 dB under).
+const CLAV_KNEE: f32 = 0.4 / VOICE_GAIN;
+const CLAV_CEIL: f32 = 0.8 / VOICE_GAIN;
+/// The Reed model's index (`REED` here is its modes).
+const REED_MODEL: f32 = crate::keys_params::REED;
+
+/// The clav tone switch's high-pass and low-pass corners, Hz, for Soft,
+/// Medium, Treble and Brilliant (our reading of the switches' networks:
+/// Soft keeps the body and takes the top, Brilliant the reverse).
+pub const CLAV_TONE_HZ: [(f32, f32); 4] = [
+    (30.0, 2_000.0),
+    (50.0, 5_000.0),
+    (150.0, 9_000.0),
+    (400.0, 14_000.0),
+];
+
+/// A pickup's comb at partial `k` for a pickup `at` (share of the
+/// string) along it: `|1 - e^(-2 pi i k at)|`, 0 on every `1 / at`-th
+/// partial.
+pub fn comb_gain(at: f32, k: f32) -> f32 {
+    2.0 * (std::f32::consts::PI * k * at).sin().abs()
+}
+
+/// The most partials [`clav_voicing`] counts.
+pub const CLAV_PARTIALS: usize = 128;
+/// A clav note's partials reach about this high, Hz (the tangent's
+/// width): [`clav_voicing`] evens the switches over those under it.
+const CLAV_TOP_HZ: f32 = 6_000.0;
+/// The phase rotator's corners on the clav bus, Hz: first-order all-pass
+/// stages in pairs.
+const ROTATOR_HZ: [f32; 6] = [100.0, 100.0, 300.0, 300.0, 900.0, 900.0];
+
+/// The two combs together with weights `w`, at partial `k`.
+fn combs(w: [f32; 2], k: f32) -> f32 {
+    // Each comb `1 - e^(-i theta)`: its real and imaginary parts.
+    let (mut re, mut im) = (0.0f32, 0.0f32);
+    for (at, w) in PICKUP_AT.iter().zip(w) {
+        let th = std::f32::consts::TAU * k * at;
+        re += w * (1.0 - th.cos());
+        im += w * th.sin();
+    }
+    (re * re + im * im).sqrt()
+}
+
+/// The two pickups' weights for **Pickup** `pickup`: one, the other, both
+/// alike, or one less the other.
+pub fn pickup_mix(pickup: f32) -> [f32; 2] {
+    match pickup.round() as i32 {
+        0 => [1.0, 0.0],
+        1 => [0.0, 1.0],
+        2 => [0.5, 0.5],
+        _ => [0.5, -0.5],
+    }
+}
+
+/// The level the pickups give partial `k` (1 the fundamental) of a clav
+/// note for **Pickup** `pickup`, before the pickup's curve and
+/// [`clav_voicing`]: for the Synth tab's picture and the tests.
+pub fn pickup_response(pickup: f32, k: f32) -> f32 {
+    combs(pickup_mix(pickup), k)
+}
+
+/// The clav tone switch's gain at `hz` for **Clav tone** `tone`: its
+/// high-pass and low-pass, two-pole Butterworth each.
+pub fn clav_tone_gain(tone: f32, hz: f32) -> f32 {
+    let (hp, lp) = CLAV_TONE_HZ[(tone.round().max(0.0) as usize).min(3)];
+    let h = (hz / hp).powi(4);
+    let l = (hz / lp).powi(4);
+    (h / ((1.0 + h) * (1.0 + l))).sqrt()
+}
+
+/// How loud the ear finds a partial at `hz` against one at 1 kHz, in
+/// power: the loudness meter's weighting (BS.1770's high shelf, 4 dB up
+/// over 2 kHz), near enough.
+fn ear_weight(hz: f32) -> f32 {
+    let f2 = hz * hz;
+    1.0 + 1.5 * f2 / (f2 + 1_700.0 * 1_700.0)
+}
+
+/// The gain that keeps a clav note at `hz` about as loud whatever the
+/// Pickup and Clav tone switches: one over their gain across the partials
+/// the note has (those under [`CLAV_TOP_HZ`]), weighted as the ear hears
+/// them. So a switch changes the colour, not the level. At most 12 dB.
+pub fn clav_voicing(pickup: f32, tone: f32, hz: f32) -> f32 {
+    let w = pickup_mix(pickup);
+    voicing_from(|k| combs(w, k as f32).powi(2), tone, hz)
+}
+
+/// [`clav_voicing`] from the pickups' power at each partial (1 the
+/// fundamental).
+#[inline]
+fn voicing_from(comb2: impl Fn(usize) -> f32, tone: f32, hz: f32) -> f32 {
+    let n = ((CLAV_TOP_HZ / hz.max(1.0)) as usize).clamp(1, CLAV_PARTIALS);
+    let (mut heard, mut flat) = (0.0f32, 0.0f32);
+    for k in 1..=n {
+        let f = k as f32 * hz;
+        let e = ear_weight(f);
+        heard += e * comb2(k) * clav_tone_gain(tone, f).powi(2);
+        flat += e;
+    }
+    (heard / flat).sqrt().max(0.25).recip()
+}
+
+/// The clav tangent's contact in seconds, from Hardness (0 to 100) and the
+/// velocity (0 to 1): shorter than a hammer's (a metal tangent on a
+/// string), longer for a soft hit; never more than a third of the note's
+/// period.
+pub fn tangent_secs(hardness: f32, vel: f32, hz: f32) -> f32 {
+    let soft = 1.0 - (hardness / 100.0).clamp(0.0, 1.0);
+    let full = 0.000_08 + 0.000_8 * soft * soft;
+    (full * vel.max(0.08).powf(-0.47))
+        .min(MAX_CONTACT)
+        .min(0.33 / hz.max(1.0))
+}
+
+/// The clav tangent's contact as struck: [`tangent_secs`], longer by up
+/// to four times under **Mute** `mute` (0 to 100; the mute's felt is on
+/// the string as the tangent lands), never more than a third of the
+/// note's period.
+pub fn clav_contact(hardness: f32, mute: f32, vel: f32, hz: f32) -> f32 {
+    (tangent_secs(hardness, vel, hz) * (1.0 + 3.0 * mute / 100.0)).min(0.33 / hz.max(1.0))
+}
+
+/// How long a held clav note at `hz` rings, seconds to fall 60 dB:
+/// **Decay**'s law ([`decay_for`]), shortened by **Mute** `mute` (0 to
+/// 100) to 15 % at full.
+pub fn clav_decay(decay_ms: f32, mute: f32, hz: f32) -> f32 {
+    (decay_for(decay_ms, hz) * (1.0 - 0.85 * mute / 100.0)).max(0.02)
+}
+
+/// How long partial `k` (1 the fundamental) of a held clav note at `hz`
+/// rings at `rate`, seconds to fall 60 dB, for **Decay** `decay_ms` and
+/// **Mute** `mute` (0 to 100): the string loop's own losses, as the engine
+/// sets them.
+pub fn clav_ring(decay_ms: f32, mute: f32, hz: f32, k: f32, rate: f32) -> f32 {
+    let w0 = std::f32::consts::TAU * hz / rate;
+    let trip = 1.0 / hz;
+    let w_mute = std::f32::consts::TAU * MUTE_HZ / rate;
+    let t60 = clav_decay(decay_ms, mute, hz);
+    let (gd, a) = clav_loop(w0, trip, t60, mute / 100.0, w_mute);
+    let w = (k * w0).min(std::f32::consts::PI);
+    let (re, im) = (1.0 - a * w.cos(), a * w.sin());
+    let g = (gd * (1.0 - a) / (re * re + im * im).sqrt()).clamp(1e-9, 0.999_999);
+    -3.0 * trip / g.log10()
+}
+
+/// The clav pickup's curve, from where the string sits over it to what it
+/// hears: off centre, so a hard hit adds even harmonics.
+pub fn clav_curve(u: f32) -> f32 {
+    u - CLAV_NL * u * u
+}
+
+/// How far a clav hit's first swing reaches across [`clav_curve`], for
+/// **Bark** `bark` (0 to 100), **Pickup** `pickup` and the velocity `vel`
+/// (0 to 1): the same over either pickup or both, half Out of phase (what
+/// the two share cancels). Measured on middle C, within 2 %; the top
+/// octaves swing less (their tangent is narrower than its push).
+pub fn clav_swing(bark: f32, pickup: f32, vel: f32) -> f32 {
+    let oop = if pickup.round() >= OUT_OF_PHASE {
+        0.5
+    } else {
+        1.0
+    };
+    CLAV_SWING * (0.5 + (bark / 100.0).powi(2)) * strike_amp(vel) * oop
+}
+
+/// How strong a clav note's fundamental is against middle C's at `hz`:
+/// lower notes carry more harmonics under the tangent's width, so their
+/// fundamental is weaker (as `sqrt(hz)`) for about the same loudness.
+pub fn clav_register(hz: f32) -> f32 {
+    (hz / 261.63).sqrt().clamp(0.25, 4.0)
+}
+
+/// The clav's preamp: unchanged under [`CLAV_KNEE`], then rounded toward
+/// [`CLAV_CEIL`]. The string's sharpest peaks, when a hard chord lines
+/// them up, are all it touches.
+#[inline]
+pub fn clav_preamp(x: f32) -> f32 {
+    let a = x.abs();
+    if a <= CLAV_KNEE {
+        x
+    } else {
+        let room = CLAV_CEIL - CLAV_KNEE;
+        (CLAV_KNEE + room * ((a - CLAV_KNEE) / room).tanh()).copysign(x)
+    }
+}
+
+/// The four Lagrange weights reading a delay line at fractional delay
+/// `1 + f` from its first tap (`f` 0 to 1).
+#[inline]
+fn lagrange(f: f32) -> [f32; 4] {
+    let (a, b, c) = (f + 1.0, f - 1.0, f - 2.0);
+    [
+        -f * b * c / 6.0,
+        a * b * c / 2.0,
+        -a * f * c / 2.0,
+        a * f * b / 6.0,
+    ]
+}
+
+/// The clav string loop's losses for a note at `w0` (radians a sample),
+/// `trip` seconds round the loop, ringing for `t60` seconds with **Mute**
+/// `mute` (0 to 1): a one-pole low-pass, its gain at DC and its pole.
+/// Its gain at the note gives the decay; at the top of the band the top
+/// dies in [`CLAV_TOP_DECAY`] of the time. The mute's felt damps what is
+/// over about [`MUTE_HZ`] (`w_mute` radians a sample; for a note above it,
+/// its octave): that dies in 0.02^Mute of the note's time.
+fn clav_loop(w0: f32, trip: f32, t60: f32, mute: f32, w_mute: f32) -> (f32, f32) {
+    let g_for = |t: f32| 10f32.powf(-3.0 * trip / t);
+    let g0 = g_for(t60);
+    let gn = g_for(t60 * CLAV_TOP_DECAY);
+    let c = w0.cos();
+    let shape = |a: f32| {
+        let (re, im) = (1.0 - a * c, a * w0.sin());
+        (1.0 - a) / (re * re + im * im).sqrt()
+    };
+    // The most it may roll off: what is under the note (DC most) must
+    // still die within four times the note's decay, so its gain at DC is
+    // at most g0^(1/4) and at the note g0^(3/4) of that.
+    let s2 = g0.powf(1.5);
+    let (qa, qb) = (1.0 - s2, 1.0 - s2 * c);
+    let a_max = qa / (qb + (qb * qb - qa * qa).max(0.0).sqrt());
+    // The mute's roll-off: with u = 2(1 - cos w), the one-pole's power is
+    // q / (q + u) for q = (1 - a)^2 / a, so the ratio r between the eighth
+    // partial (or the top of the band) and the note fixes q.
+    let a_mute = if mute > 0.0 {
+        let r = 10f32.powf(-3.0 * trip / t60 * (0.02f32.powf(-mute) - 1.0));
+        let wm = w_mute.max(2.0 * w0).min(2.5);
+        let (u0, u8) = (2.0 * (1.0 - c), 2.0 * (1.0 - wm.cos()));
+        let r2 = r * r;
+        let q = ((r2 * u8 - u0) / (1.0 - r2).max(1e-9)).max(1e-9);
+        let b = 2.0 + q;
+        (b - (b * b - 4.0).max(0.0).sqrt()) * 0.5
+    } else {
+        0.0
+    };
+    // Its gain at DC, so that at the note it is g0: a few steps.
+    let pick = |gd: f32| (((gd - gn) / (gd + gn)).max(a_mute)).clamp(0.0, a_max);
+    let mut gd = g0;
+    for _ in 0..3 {
+        gd = (g0 / shape(pick(gd))).min(0.999_95);
+    }
+    (gd, pick(gd))
+}
+
+/// The make-up gain for what the mute takes from a clav note at `hz`,
+/// ahead of the preamp, so a muted clav plays about as loud as an open
+/// one (its attack, still bright, is what the preamp rounds). The felt
+/// bites over [`MUTE_HZ`]: it dulls the low and middle notes' many
+/// partials (about `MUTE_LOSS_DB Mute^0.85` of their loudness, measured)
+/// but leaves a top note's few, so the make-up fades from an octave under
+/// it to none an octave over.
+pub fn mute_makeup(mute: f32, hz: f32) -> f32 {
+    if mute <= 0.0 {
+        return 1.0;
+    }
+    let lost = MUTE_LOSS_DB * mute.powf(0.85);
+    let share = ((hz / (0.5 * MUTE_HZ)).log2() * 0.5).clamp(0.0, 1.0);
+    10f32.powf(lost * (1.0 - share) / 20.0)
+}
+
+/// One frame of a clav voice: the tangent's push `x` into the string's
+/// loop, the two pickups' combs, the displacement they see and the
+/// pickup's curve. Returns the pickup's output and the displacement (for
+/// the level follower).
+/// The tangent's or hammer's push on a voice this sample, while it lasts:
+/// a half sine.
+#[inline(always)]
+fn strike(v: &mut Voice) -> f32 {
+    if v.pulse_at < v.pulse_len {
+        let t = (v.pulse_at as f32 + 0.5) / v.pulse_len as f32;
+        v.pulse_at += 1;
+        v.pulse_amp * (std::f32::consts::PI * t).sin()
+    } else {
+        0.0
+    }
+}
+
+/// A voice's sample `y` (its motion `d`) onto its bus `out`, at its gain
+/// and through a steal's fade; follows its level and frees it once
+/// silent. True when it is free, so the rest of the stretch is skipped.
+#[inline(always)]
+fn voice_out(v: &mut Voice, y: f32, d: f32, out: &mut f32) -> bool {
+    let mut y = y * v.gain;
+    if v.state == State::Kill {
+        y *= v.kill;
+        v.kill -= v.kill_step;
+        if v.kill <= 0.0 {
+            v.state = State::Free;
+        }
+    }
+    let a = d.abs();
+    v.follow = if a > v.follow { a } else { v.follow * 0.9995 };
+    v.frames = v.frames.saturating_add(1);
+    if v.follow < SILENT && v.frames > 256 && v.pulse_at >= v.pulse_len {
+        v.state = State::Free;
+    }
+    *out += y;
+    v.state == State::Free
+}
+
+#[inline]
+fn clav_tick(v: &mut Voice, string: &mut [f32; STRING_LEN], x: f32, leak: f32) -> (f32, f32) {
+    let w = v.sw;
+    let at = |string: &[f32; STRING_LEN], d: usize| string[w.wrapping_sub(d) & STRING_MASK];
+    // The loop: a Lagrange read, the losses' low-pass, the loop gain.
+    let b = v.di - 1;
+    let s = v.lw[0] * at(string, b)
+        + v.lw[1] * at(string, b + 1)
+        + v.lw[2] * at(string, b + 2)
+        + v.lw[3] * at(string, b + 3);
+    v.slp = s + v.sa * (v.slp - s);
+    let fb = v.sg * v.slp + x;
+    string[w] = fb;
+    v.sw = (w + 1) & STRING_MASK;
+    // Each pickup hears the wave less its reflection: a comb.
+    let mut m = 0.0;
+    for k in 0..2 {
+        let (d, f) = (v.pi[k], v.pf[k]);
+        let (a0, a1) = (at(string, d), at(string, d + 1));
+        m += v.pmix[k] * (fb - (a0 + f * (a1 - a0)));
+    }
+    // The wave is the string's velocity: its integral is where the string
+    // sits over the pickup, which the pickup's curve hears.
+    v.sx = v.sx * leak + v.sint * m;
+    let c = clav_curve(v.swing * v.sx);
+    let y = (c - v.last) * v.norm;
+    v.last = c;
+    (y, v.sx)
+}
 
 static INFO: NodeInfo = NodeInfo {
     id: "mpfree.keys",
@@ -132,6 +494,13 @@ pub fn flux(u: f32) -> f32 {
 fn flux_slope(u: f32) -> f32 {
     let d = 1.0 + u * u;
     -2.0 * u / (d * d)
+}
+
+/// [`flux`]'s curvature.
+#[inline]
+fn flux_bend(u: f32) -> f32 {
+    let d = 1.0 + u * u;
+    (6.0 * u * u - 2.0) / (d * d * d)
 }
 
 /// The reed's limit: it never reaches the plate.
@@ -211,6 +580,26 @@ pub fn strike_amp(vel: f32) -> f32 {
     0.06 + 0.94 * vel * vel.sqrt()
 }
 
+/// Each model's voicing across the keys, dB at C1, C2 ... C7 (a straight
+/// line between): what a technician does key by key so the instrument
+/// plays evenly. Fitted to the factory sounds' loudness (velocity 100,
+/// held 1.5 s), so each note sounds about as loud as middle C's octave.
+const KEY_CURVE: [[f32; 7]; 3] = [
+    [3.85, 0.25, -0.45, 0.45, 2.65, 3.55, 3.35],
+    [6.65, 2.85, -0.05, 0.05, 1.45, 2.05, -0.05],
+    [-3.59, -2.71, -0.9, 0.9, 3.07, 3.76, 3.64],
+];
+
+/// The voicing's gain for `model` (0 Tine, 1 Reed, 2 Clav) at `pitch`
+/// (a MIDI note, fractional).
+pub fn key_level(model: f32, pitch: f32) -> f32 {
+    let c = &KEY_CURVE[(model.round().max(0.0) as usize).min(2)];
+    let x = ((pitch - 24.0) / 12.0).clamp(0.0, 6.0);
+    let i = (x as usize).min(5);
+    let db = c[i] + (c[i + 1] - c[i]) * (x - i as f32);
+    10f32.powf(db / 20.0)
+}
+
 /// A key's own small difference (-1 to 1), the same every time it plays:
 /// no two tines are voiced quite alike.
 pub fn key_spread(note: u8) -> f32 {
@@ -263,6 +652,35 @@ struct Voice {
     swing: f32,
     norm: f32,
     last: f32,
+    /// The output gain: the velocity's level (over the strike's own) and
+    /// the key's.
+    gain: f32,
+    /// The clav string: the loop's read delay now (samples), where it is
+    /// going and how far it moves a control step (the release drop), its
+    /// whole part and Lagrange weights, the loop's gain and low-pass, and
+    /// where the next sample goes.
+    sd: f32,
+    sd_to: f32,
+    sd_rate: f32,
+    di: usize,
+    lw: [f32; 4],
+    sg: f32,
+    sa: f32,
+    slp: f32,
+    sw: usize,
+    /// The pickups: each one's comb delay (whole and fraction) and weight.
+    pi: [usize; 2],
+    pf: [f32; 2],
+    pmix: [f32; 2],
+    /// Whether this voice is a clav string (set when it is struck, so a
+    /// voice fading out as the model changes keeps its own sound), the
+    /// string's displacement at the pickups (the integral of the wave the
+    /// loop carries) and its scale.
+    clav: bool,
+    sx: f32,
+    sint: f32,
+    /// [`clav_voicing`] for this note.
+    voicing: f32,
 }
 
 /// The electric piano. See the module docs.
@@ -309,13 +727,36 @@ pub struct Keys {
     tuning: Tuning,
     exprs: NoteExprs,
     expr_c: f32,
+    /// The clav's strings, one per voice slot, and its tone switch (a
+    /// high-pass and a low-pass on the bus).
+    strings: Box<[[f32; STRING_LEN]]>,
+    clav_hp: Filter,
+    clav_lp: Filter,
+    clav_hc: FilterCoefs,
+    clav_lc: FilterCoefs,
+    clav_leak: f32,
+    /// Each Pickup choice's power at partials 1 to [`CLAV_PARTIALS`], for
+    /// [`clav_voicing`] at a strike.
+    comb2: [[f32; CLAV_PARTIALS]; 4],
+    /// The reed preamp's output coupling (a high-pass): its pole and its
+    /// last input and output.
+    dc_r: f32,
+    dc_x: f32,
+    dc_y: f32,
+    /// The clav bus's phase rotator: each stage's coefficient and its last
+    /// input and output.
+    rot_a: [f32; 6],
+    rot_x: [f32; 6],
+    rot_y: [f32; 6],
 }
 
 /// The reed preamp's rest point on its curve: transistors are not
 /// symmetric, so it adds even harmonics as it is pushed.
 const PRE_REST: f32 = 0.35;
+/// The reed preamp's output coupling's corner, Hz.
+const REED_COUPLING_HZ: f32 = 20.0;
 /// The reed model's make-up gain, so both models sit at the same level.
-const REED_GAIN: f32 = 1.5;
+const REED_GAIN: f32 = 1.9;
 
 /// The reed piano's preamp: [`pickup`]'s soft curve around a rest point,
 /// scaled so small signals pass unchanged.
@@ -366,6 +807,22 @@ impl Keys {
             tuning: Tuning::standard(),
             exprs: NoteExprs::new(),
             expr_c: 1.0,
+            strings: vec![[0.0; STRING_LEN]; POOL].into_boxed_slice(),
+            clav_hp: Filter::default(),
+            clav_lp: Filter::default(),
+            clav_hc: FilterCoefs::default(),
+            clav_lc: FilterCoefs::default(),
+            clav_leak: 1.0,
+            comb2: [0.0, 1.0, 2.0, 3.0].map(|p| {
+                let w = pickup_mix(p);
+                std::array::from_fn(|k| combs(w, (k + 1) as f32).powi(2))
+            }),
+            rot_a: [0.0; 6],
+            rot_x: [0.0; 6],
+            rot_y: [0.0; 6],
+            dc_r: 1.0,
+            dc_x: 0.0,
+            dc_y: 0.0,
         };
         s.prepare(rate, mpfree_node::MAX_BLOCK);
         s
@@ -401,7 +858,16 @@ impl Keys {
     }
 
     fn reed(&self) -> bool {
-        self.v(MODEL) >= 0.5
+        self.v(MODEL).round() == REED_MODEL
+    }
+
+    fn clav(&self) -> bool {
+        self.v(MODEL).round() == CLAV
+    }
+
+    /// Whether any clav string still sounds.
+    fn clav_alive(&self) -> bool {
+        self.voices.iter().any(|v| v.clav && v.state != State::Free)
     }
 
     fn update_out(&mut self) {
@@ -436,10 +902,14 @@ impl Keys {
 
     fn update_model(&mut self) {
         let r = self.rate as f32;
-        // The pickup network's high-pass: low for a tine, higher for the
-        // reed's RC load.
+        // The pickup network's high-pass: low for a tine or the clav,
+        // higher for the reed's RC load.
         let hz = if self.reed() { 120.0 } else { 30.0 };
         self.hp_a = (-std::f32::consts::TAU * hz / r).exp();
+        let (hp, lp) = CLAV_TONE_HZ[(self.v(CLAV_TONE).round() as usize).min(3)];
+        // Butterworth: the shared filter's damping at Resonance 0.3.
+        self.clav_hc = FilterCoefs::new(hp, 0.3, r);
+        self.clav_lc = FilterCoefs::new(lp, 0.3, r);
     }
 
     /// The pitch a voice plays now, in fractional MIDI notes.
@@ -461,6 +931,10 @@ impl Keys {
 
     /// Sets a voice's resonators and pickup for its pitch and gate.
     fn tune(&self, v: &mut Voice, pitch: f32) {
+        if v.clav {
+            self.tune_clav(v, pitch);
+            return;
+        }
         let rate = self.rate as f32;
         let held = v.state == State::On;
         let reed = self.reed();
@@ -505,7 +979,11 @@ impl Keys {
         let slope = if reed {
             capacitance_slope(rest)
         } else {
-            flux_slope(rest).abs().max(0.3)
+            // Near the axis the slope vanishes and the curve's bend makes
+            // the octave instead: the pickup's gain is the two together.
+            flux_slope(rest)
+                .hypot(0.5 * flux_bend(rest) * swing)
+                .max(0.05)
         };
         if v.rest != rest || v.swing != swing {
             let x = v.y1.iter().sum::<f32>();
@@ -519,6 +997,81 @@ impl Keys {
         v.swing = swing;
         v.norm = 1.0 / (swing * w0 * slope);
         v.tuned = pitch;
+    }
+
+    /// Sets a voice's clav string for its pitch and gate: the loop's
+    /// delay (less its low-pass's own delay at the note, so it is in tune),
+    /// its loss for the decay (or, let go, the release, with the drop), and
+    /// the pickups.
+    fn tune_clav(&self, v: &mut Voice, pitch: f32) {
+        let rate = self.rate as f32;
+        let held = v.state == State::On;
+        let lowest = (rate / (STRING_LEN - 8) as f32).max(10.0);
+        let f0 = self.tuning.hz(pitch).clamp(lowest, rate * 0.2);
+        let period = rate / f0;
+        let w0 = std::f32::consts::TAU * f0 / rate;
+        let mute = self.v(MUTE) / 100.0;
+        let t60 = if held {
+            clav_decay(self.v(DECAY), self.v(MUTE), f0)
+        } else {
+            (self.v(RELEASE) * 0.001).max(0.004)
+        };
+        let trip = period / rate;
+        let w_mute = std::f32::consts::TAU * MUTE_HZ / rate;
+        let (gd, a) = clav_loop(w0, trip, t60, mute, w_mute);
+        let (re, im) = (1.0 - a * w0.cos(), a * w0.sin());
+        let d_lp = im.atan2(re) / w0;
+        v.sg = gd;
+        v.sa = a;
+        if v.tuned.is_nan() {
+            // Struck, or a switch moved (not on every bend).
+            let c = &self.comb2[(self.v(PICKUP).round().max(0.0) as usize).min(3)];
+            v.voicing = voicing_from(|k| c[k - 1], self.v(CLAV_TONE), f0) * mute_makeup(mute, f0);
+        }
+        // Let go, the yarn damps the string and its speaking part grows:
+        // the note falls by Release drop.
+        let drop = if held { 0.0 } else { self.v(DROP) };
+        let to = (period * (drop / 12.0).exp2() - d_lp).clamp(2.0, (STRING_LEN - 4) as f32);
+        if v.sd.is_nan() || held {
+            v.sd = to;
+            v.sd_rate = 0.0;
+        } else if v.sd_rate == 0.0 && v.sd != to {
+            // The release starts: the drop takes DROP_MS.
+            let steps = (DROP_MS * 0.001 * rate / CTRL as f32).max(1.0);
+            v.sd_rate = (to - v.sd).abs() / steps;
+        }
+        v.sd_to = to;
+        Self::set_read(v);
+        for k in 0..2 {
+            let d = (PICKUP_AT[k] * period).max(1.0);
+            v.pi[k] = d as usize;
+            v.pf[k] = d - d.floor();
+        }
+        v.pmix = pickup_mix(self.v(PICKUP));
+        // The pickup's curve: a hard hit (Bark) pushes it further. It
+        // hears the curve's change, so its output grows with the note:
+        // divided out.
+        // The string's displacement grows toward the bass (see `note_on`):
+        // the swing takes that out, so Bark drives every note alike.
+        let swing = (0.5 + (self.v(BARK) / 100.0).powi(2)) * clav_register(f0).recip();
+        if v.swing != swing {
+            let u = swing * v.sx;
+            v.last = clav_curve(u);
+        }
+        v.rest = 0.0;
+        v.swing = swing;
+        v.sint = w0;
+        v.norm = CLAV_GAIN * v.voicing / (swing * w0);
+        v.tuned = pitch;
+    }
+
+    /// The loop's read point from its delay: the whole samples and the
+    /// Lagrange weights.
+    fn set_read(v: &mut Voice) {
+        let d = v.sd.max(2.0);
+        let di = d.floor();
+        v.di = di as usize;
+        v.lw = lagrange(d - di);
     }
 
     fn note_on(&mut self, note: u8, velocity: u8) {
@@ -568,12 +1121,26 @@ impl Keys {
                 self.voices[free] = Voice {
                     tuned: f32::NAN,
                     rest: f32::NAN,
+                    sd: f32::NAN,
                     ..Voice::default()
                 };
                 free
             }
         };
         let mut v = self.voices[slot];
+        let clav = self.clav();
+        if v.clav != clav || (clav && same.is_none()) {
+            // A fresh string (nothing left from the slot's last note), or
+            // the same note struck again after the model changed.
+            v = Voice {
+                tuned: f32::NAN,
+                rest: f32::NAN,
+                sd: f32::NAN,
+                ..Voice::default()
+            };
+            self.strings[slot].fill(0.0);
+        }
+        v.clav = clav;
         v.state = State::On;
         v.note = note;
         v.age = self.clock;
@@ -595,12 +1162,31 @@ impl Keys {
         let tone_vel = 1.0 - vt * (1.0 - vel);
         let hz = self.tuning.hz(pitch);
         let rate = self.rate as f32;
-        let len = (contact_secs(self.v(HARDNESS), tone_vel, hz) * rate).max(2.0);
+        let secs = if clav {
+            clav_contact(self.v(HARDNESS), self.v(MUTE), tone_vel, hz)
+        } else {
+            contact_secs(self.v(HARDNESS), tone_vel, hz)
+        };
+        let len = (secs * rate).max(2.0);
         v.pulse_len = len as u32;
         v.pulse_at = 0;
-        // Unit area: the fundamental rings at the strike's level whatever
-        // the hammer.
-        v.pulse_amp = strike_amp(vel) * std::f32::consts::FRAC_PI_2 / len;
+        let amp = strike_amp(vel);
+        v.pulse_amp = if clav {
+            // The string carries the tangent's push round its loop once a
+            // period: a half-sine of area `amp * period / 2` gives a
+            // fundamental of `amp`, with every harmonic as strong up to
+            // the push's own width. A low note has more of them, so its
+            // fundamental is brought down by the register.
+            let period = rate / hz.max(1.0);
+            amp * clav_register(hz) * std::f32::consts::PI * period / (4.0 * len)
+        } else {
+            // Unit area: the fundamental rings at the strike's level
+            // whatever the hammer.
+            amp * std::f32::consts::FRAC_PI_2 / len
+        };
+        // The level follows Velocity's range; the strike's own level only
+        // sets how hard the pickup is driven.
+        v.gain = velocity_gain(velocity, self.v(VELOCITY)) / amp * key_level(self.v(MODEL), pitch);
         self.voices[slot] = v;
         self.thump += self.v(KEY_NOISE) / 100.0 * (0.3 + 0.7 * vel) * 0.05;
     }
@@ -724,10 +1310,30 @@ impl Keys {
                 self.tune(&mut v, p);
                 self.voices[i] = v;
             }
+            // The clav's release drop, on its way.
+            let v = &mut self.voices[i];
+            if v.clav && v.sd_rate > 0.0 && v.sd != v.sd_to {
+                let step = v.sd_to - v.sd;
+                v.sd = if step.abs() <= v.sd_rate {
+                    v.sd_to
+                } else {
+                    v.sd + v.sd_rate.copysign(step)
+                };
+                Self::set_read(v);
+            }
         }
         // The bus filters' tails: flushed once inaudible, so a silent
-        // Keys puts out exact zeros (and never runs on denormals).
+        // Keys puts out exact zeros (and never runs on denormals). The
+        // clav's tone switch rests once its strings have stopped.
+        if !self.clav_alive() {
+            self.clav_hp.clear();
+            self.clav_lp.clear();
+            self.rot_x = [0.0; 6];
+            self.rot_y = [0.0; 6];
+        }
         for x in [
+            &mut self.dc_x,
+            &mut self.dc_y,
             &mut self.hp_x,
             &mut self.hp_y,
             &mut self.tone_lp,
@@ -750,44 +1356,65 @@ impl Keys {
         let reed = self.reed();
         let n_modes = if reed { 5 } else { 3 };
         let amp_trem = self.v(TREM_MODE) >= 0.5;
-        for i in from..to {
-            let mut bus = 0.0f32;
-            for v in self.voices.iter_mut() {
-                if v.state == State::Free {
-                    continue;
-                }
-                let x = if v.pulse_at < v.pulse_len {
-                    let t = (v.pulse_at as f32 + 0.5) / v.pulse_len as f32;
-                    v.pulse_at += 1;
-                    v.pulse_amp * (std::f32::consts::PI * t).sin()
-                } else {
-                    0.0
-                };
-                let mut d = 0.0;
-                for k in 0..n_modes {
-                    let y = v.b0[k] * x + v.c1[k] * v.y1[k] - v.c2[k] * v.y2[k];
-                    v.y2[k] = v.y1[k];
-                    v.y1[k] = y;
-                    d += y;
-                }
-                let u = v.rest + v.swing * d;
-                let c = if reed { capacitance(u) } else { flux(u) };
-                let mut y = (c - v.last) * v.norm;
-                v.last = c;
-                if v.state == State::Kill {
-                    y *= v.kill;
-                    v.kill -= v.kill_step;
-                    if v.kill <= 0.0 {
-                        v.state = State::Free;
+        let clav_on = self.clav_alive();
+        let len = to - from;
+        // Each voice across the stretch in turn (at most a control block),
+        // so its state stays in registers: the tines and reeds into one
+        // bus, the clav strings into theirs, summed in the voices' order.
+        let mut buses = [0.0f32; CTRL as usize];
+        let mut clavs = [0.0f32; CTRL as usize];
+        let leak = self.clav_leak;
+        for (v, string) in self.voices.iter_mut().zip(self.strings.iter_mut()) {
+            if v.state == State::Free {
+                continue;
+            }
+            if v.clav {
+                for o in clavs[..len].iter_mut() {
+                    let x = strike(v);
+                    let (y, d) = clav_tick(v, string, x, leak);
+                    if voice_out(v, y, d, o) {
+                        break;
                     }
                 }
-                let a = d.abs();
-                v.follow = if a > v.follow { a } else { v.follow * 0.9995 };
-                v.frames = v.frames.saturating_add(1);
-                if v.follow < SILENT && v.frames > 256 && v.pulse_at >= v.pulse_len {
-                    v.state = State::Free;
+            } else {
+                for o in buses[..len].iter_mut() {
+                    let x = strike(v);
+                    let mut d = 0.0;
+                    for k in 0..n_modes {
+                        let y = v.b0[k] * x + v.c1[k] * v.y1[k] - v.c2[k] * v.y2[k];
+                        v.y2[k] = v.y1[k];
+                        v.y1[k] = y;
+                        d += y;
+                    }
+                    let u = v.rest + v.swing * d;
+                    let c = if reed { capacitance(u) } else { flux(u) };
+                    let y = (c - v.last) * v.norm;
+                    v.last = c;
+                    if voice_out(v, y, d, o) {
+                        break;
+                    }
                 }
-                bus += y;
+            }
+        }
+        for (j, i) in (from..to).enumerate() {
+            let mut bus = buses[j];
+            let clav_bus = clavs[j];
+            if clav_on {
+                // The clav's tone switch, then a phase rotator (as
+                // broadcast processors use): it spreads the string's sharp
+                // pulses in time without changing the spectrum, so chords
+                // peak about 4 dB lower for the same loudness.
+                let h = self
+                    .clav_hp
+                    .process(FilterMode::Hp12, &self.clav_hc, clav_bus);
+                let mut c = self.clav_lp.process(FilterMode::Lp12, &self.clav_lc, h);
+                for k in 0..6 {
+                    let y = self.rot_a[k] * (c - self.rot_y[k]) + self.rot_x[k];
+                    self.rot_x[k] = c;
+                    self.rot_y[k] = y;
+                    c = y;
+                }
+                bus += clav_preamp(c);
             }
             if self.thump > 1e-6 {
                 let n = self.rng.bipolar() * self.thump;
@@ -825,9 +1452,15 @@ impl Keys {
                 (self.trem_l, self.trem_r)
             };
             if reed {
+                // The preamp's output coupling: its curve is lopsided, so
+                // it leaves an offset (moving with the tremolo) that the
+                // instrument's output capacitor keeps from the speaker.
+                let hp = y - self.dc_x + self.dc_r * self.dc_y;
+                self.dc_x = y;
+                self.dc_y = hp;
                 // The reed piano's preamp makes up the electrostatic
                 // pickup's lower output.
-                y *= REED_GAIN;
+                y = hp * REED_GAIN;
             }
             left[i] += y * tl * self.out_l.next();
             right[i] += y * tr * self.out_r.next();
@@ -862,10 +1495,13 @@ impl Node for Keys {
             LEVEL | PAN => self.update_out(),
             TONE => self.update_tone(),
             DRIVE => self.update_drive(),
-            MODEL => self.update_model(),
+            MODEL | CLAV_TONE => self.update_model(),
             _ => {}
         }
-        if matches!(id, MODEL | DECAY | RELEASE | BELL | VOICING | BARK) {
+        if matches!(
+            id,
+            MODEL | DECAY | RELEASE | BELL | VOICING | BARK | PICKUP | CLAV_TONE | MUTE | DROP
+        ) {
             for v in self.voices.iter_mut() {
                 v.tuned = f32::NAN;
             }
@@ -899,6 +1535,12 @@ impl Node for Keys {
         self.tone_a = 1.0 - (-std::f32::consts::TAU * 900.0 / r).exp();
         self.thump_a = 1.0 - (-std::f32::consts::TAU * 500.0 / r).exp();
         self.thump_fall = (-1.0 / (0.012 * r)).exp();
+        self.clav_leak = (-std::f32::consts::TAU * CLAV_LEAK_HZ / r).exp();
+        self.dc_r = (-std::f32::consts::TAU * REED_COUPLING_HZ / r).exp();
+        self.rot_a = ROTATOR_HZ.map(|hz| {
+            let t = (std::f32::consts::PI * hz / r).tan();
+            (t - 1.0) / (t + 1.0)
+        });
         self.reset();
     }
 
@@ -928,6 +1570,15 @@ impl Node for Keys {
         self.thump = 0.0;
         self.thump_lp1 = 0.0;
         self.thump_lp2 = 0.0;
+        for s in self.strings.iter_mut() {
+            s.fill(0.0);
+        }
+        self.clav_hp.clear();
+        self.clav_lp.clear();
+        self.rot_x = [0.0; 6];
+        self.rot_y = [0.0; 6];
+        self.dc_x = 0.0;
+        self.dc_y = 0.0;
     }
 
     fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {

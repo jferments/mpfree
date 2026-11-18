@@ -86,7 +86,14 @@ fn keep(s: &mut RecSample, project: &mut Project, pick: Pick) -> usize {
 
 #[test]
 fn the_tab_shows_the_input_the_bar_lines_and_what_skip_back_keeps() {
-    let s = screen("rec");
+    let mut s = screen("rec");
+    let bar = s.ui.get::<PadBar>(rec_tab::BAR).unwrap();
+    assert_eq!(
+        bar.title,
+        rec_tab::STAYS_TITLE,
+        "a take stays until it is put somewhere"
+    );
+    step(&mut s, Row::Onto, 1);
     let bar = s.ui.get::<PadBar>(rec_tab::BAR).unwrap();
     assert_eq!(bar.title, "Record onto pad A10", "A5 to A9 have sounds");
     assert_eq!(bar.active, rec_tab::TAB);
@@ -271,7 +278,7 @@ fn skip_back_by_bars_and_onto_this_pad() {
     let mut s = screen("rec");
     step(&mut s, Row::SkipBack, 6);
     assert_eq!(s.tab.settings.skip, Skip::Bars(4));
-    step(&mut s, Row::Onto, 1);
+    step(&mut s, Row::Onto, 2);
     assert_eq!(s.tab.settings.onto, Onto::ThisPad);
     let list = s.ui.get::<SettingList>(rec_tab::LIST).unwrap();
     assert_eq!(list.rows[Row::SkipBack.index()].value, "4 bars");

@@ -202,10 +202,12 @@ const PLUCK: &[Curated] = &[
 
 use mpfree_synth::keys_params as ek;
 
-/// Keys: how it is struck, the pickup's tone, and the amp.
+/// Keys: how it is struck, the pickup's tone, the clav's damping and
+/// bite, and the amp.
 const KEYS: &[Curated] = &[
     set("Strike", [ek::HARDNESS, ek::BELL, ek::DECAY, ek::RELEASE]),
     set("Tone", [ek::VOICING, ek::BARK, ek::TONE, ek::VEL_TONE]),
+    set("Clav", [ek::MUTE, ek::DROP, ek::HARDNESS, ek::BARK]),
     set("Amp", [ek::TREMOLO, ek::TREM_RATE, ek::DRIVE, ek::LEVEL]),
 ];
 
