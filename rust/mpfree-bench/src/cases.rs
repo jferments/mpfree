@@ -13,7 +13,7 @@ use mpfree_fx::{
     Harmonizer, Limiter, LoFi, MasterSafety, Mixer, MixerConfig, MultiFilter, MultiTap,
     MultibandCompressor, Perform, Phaser, PitchCorrect, PitchShifter, Plate, Print, PrintJob,
     PrintState, RingMod, Room, Rotary, Spring, StripId, Tail, TalkBox, TapeDelay, TransientShaper,
-    Tremolo, Tuner,
+    Tremolo, Tuner, Vocoder,
 };
 use mpfree_grain::GrainNode;
 use mpfree_lanes::{Config as LaneConfig, Job, Lane};
@@ -1445,6 +1445,11 @@ pub fn all(rate: u32) -> Vec<Case> {
     }));
     v.push(measured(|| {
         effect("Talk box", rate, Box::new(TalkBox::new()), &[])
+    }));
+    // The vocoder at its defaults: 16 bands, the saw following the
+    // voice's pitch (the tracker runs).
+    v.push(measured(|| {
+        effect("Vocoder", rate, Box::new(Vocoder::new()), &[])
     }));
     // Perform FX: idle (no pad held), the default bank one pad at a time,
     // the heaviest stack (pitch drop with a gate, both sweeps, crush, the
