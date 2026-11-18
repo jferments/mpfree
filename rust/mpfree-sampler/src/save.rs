@@ -110,6 +110,11 @@ pub fn to_text(
             let Some(pad) = p.pad(i) else { continue };
             write_pad(&mut w, &format!("pad.{i}"), pad);
         }
+        // The takes kept on the Sample page, not on a pad yet.
+        w.line("takes", p.takes().len());
+        for (i, t) in p.takes().iter().enumerate() {
+            write_pad(&mut w, &format!("take.{i}"), t);
+        }
         // Scenes A and B: their pads as the kit's are written.
         for (k, scene) in p.scenes.iter().enumerate() {
             let Some(scene) = scene else { continue };
@@ -311,6 +316,28 @@ fn read_kit(
             Err(e) => r
                 .notes
                 .push(format!("{kit}: pad {} ({name}) left out ({e})", i + 1)),
+        }
+    }
+    // The takes kept on the Sample page (a kit saved before them has
+    // none).
+    let takes = r
+        .get::<usize>("takes")
+        .unwrap_or(0)
+        .min(crate::model::MAX_TAKES);
+    for i in 0..takes {
+        match read_pad(r, &format!("take.{i}"), &|n| source(&p, n)) {
+            Some((Some(t), _)) => {
+                let name = t.name.clone();
+                if let Err(e) = p.add_take(t) {
+                    r.notes
+                        .push(format!("{kit}: take {} ({name}) left out ({e})", i + 1));
+                }
+            }
+            Some((None, _)) => r.notes.push(format!(
+                "{kit}: take {} left out (its sound is missing)",
+                i + 1
+            )),
+            None => {}
         }
     }
     // Scenes A and B, after the pads (whose sounds they share).

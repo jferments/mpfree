@@ -1705,6 +1705,7 @@ impl Session {
             | FromUi::Slice { .. }
             | FromUi::SampleLiveChop { .. }
             | FromUi::SampleHit { .. }
+            | FromUi::SampleTake { .. }
             | FromUi::SampleKey { .. }
             | FromUi::SamplePadLive { .. }
             | FromUi::SaveBrowserLists(_) => {}

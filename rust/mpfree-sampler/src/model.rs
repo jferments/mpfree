@@ -17,6 +17,11 @@ pub use crate::dsp::{Ahdsr, Filter, FilterKind};
 
 /// Pads in a program: 8 banks of 16.
 pub const PADS: usize = 128;
+
+/// How many takes a kit keeps on the Sample page before they go on pads
+/// (the one Sample page's decision 1): enough for a session's tries, and a
+/// bound on the sound they hold.
+pub const MAX_TAKES: usize = 32;
 /// Layers per pad.
 pub const MAX_LAYERS: usize = 16;
 /// Slices per chop set, and the most a sliced region plays as (R4: a
@@ -35,6 +40,8 @@ pub enum ModelError {
     BadMasterFx,
     /// A name with nothing in it.
     BadName,
+    /// No take there, or no room for another ([`MAX_TAKES`]).
+    BadTake,
 }
 
 impl std::fmt::Display for ModelError {
@@ -2106,6 +2113,13 @@ enum Undo {
         id: SourceId,
         before: String,
     },
+    /// The takes kept on the page changed (one kept, edited, put on a pad
+    /// or let go): the list before. A run of edits with one gesture is one
+    /// step.
+    Takes {
+        before: Vec<Pad>,
+        gesture: Option<u64>,
+    },
     /// Several steps made by one command (chop to pads), undone together.
     Group(Vec<Undo>),
     /// Changes nothing: what made the step it is in, for its name in the
@@ -2132,6 +2146,7 @@ impl Undo {
             Undo::AddChop { .. } => i.chop = true,
             Undo::PadsPlay { .. } => i.pads_play = true,
             Undo::Rename { .. } => i.named += 1,
+            Undo::Takes { .. } => i.takes = true,
             Undo::Group(steps) => steps.iter().for_each(|u| u.add_info(i)),
             Undo::Tag(t) => i.tag = *t,
         }
@@ -2155,6 +2170,8 @@ pub struct StepInfo {
     pub pads_play: bool,
     /// How many sounds it names.
     pub named: usize,
+    /// It changes the takes kept on the page.
+    pub takes: bool,
     /// What made it, as the page tagged it ([`Project::tag_last`]); 0 if
     /// untagged.
     pub tag: u8,
@@ -2185,6 +2202,11 @@ pub struct Project {
     /// it is saved with the project and moves with its sound when the
     /// sound is converted to another rate.
     kept_chops: Vec<ChopSet>,
+    /// The takes kept on the Sample page, not on a pad yet (the one Sample
+    /// page's decision 1; mpfree-claude `sampler/onepage/take-slot-check.md`):
+    /// each what a pad would be, its one layer on the take's sound. They
+    /// have no pad number, so nothing that walks the pads sees them.
+    takes: Vec<Pad>,
 }
 
 impl Project {
@@ -2270,6 +2292,15 @@ impl Project {
             .collect()
     }
 
+    /// How many of the takes kept on the Sample page play source `id`
+    /// ([`Project::users_of`] counts the pads).
+    pub fn takes_using(&self, id: SourceId) -> usize {
+        self.takes
+            .iter()
+            .filter(|t| t.layers.iter().any(|l| l.region.source == id))
+            .count()
+    }
+
     pub(crate) fn check_pad(&self, pad: &Pad) -> Result<(), ModelError> {
         if pad.layers.len() > MAX_LAYERS {
             return Err(ModelError::TooManyLayers);
@@ -2334,6 +2365,146 @@ impl Project {
             self.redo.clear();
             self.revision += 1;
         }
+        Ok(())
+    }
+
+    /// The takes kept on the Sample page, not on a pad yet, oldest first.
+    pub fn takes(&self) -> &[Pad] {
+        &self.takes
+    }
+
+    pub fn take(&self, index: usize) -> Option<&Pad> {
+        self.takes.get(index)
+    }
+
+    /// Keeps `take` on the page (one undo step) and gives its place in
+    /// [`Project::takes`]. Its sounds must be the project's. Refused with
+    /// [`MAX_TAKES`] kept already.
+    pub fn add_take(&mut self, take: Pad) -> Result<usize, ModelError> {
+        self.check_pad(&take)?;
+        if take
+            .layers
+            .iter()
+            .any(|l| self.source(l.region.source).is_none())
+        {
+            return Err(ModelError::UnknownSource);
+        }
+        if self.takes.len() >= MAX_TAKES {
+            return Err(ModelError::BadTake);
+        }
+        let before = self.takes.clone();
+        self.takes.push(take);
+        self.push_undo(Undo::Takes {
+            before,
+            gesture: None,
+        });
+        Ok(self.takes.len() - 1)
+    }
+
+    /// Keeps a new sound `s` as a take on the page, what `make` makes of
+    /// its name and a layer playing it whole (as [`Project::put_source_as`]
+    /// puts one on a pad), as one undo step with the sound's adding; gives
+    /// its place in [`Project::takes`]. Refused, changing nothing, with
+    /// [`MAX_TAKES`] kept already or a take `make` gets wrong.
+    pub fn add_take_of(
+        &mut self,
+        s: Source,
+        make: impl FnOnce(&str, Layer) -> Pad,
+    ) -> Result<usize, ModelError> {
+        if self.takes.len() >= MAX_TAKES {
+            return Err(ModelError::BadTake);
+        }
+        let take = make(&s.name, Layer::new(Region::whole(&s)));
+        let id = s.id();
+        if take.layers.iter().any(|l| l.region.source != id) {
+            return Err(ModelError::UnknownSource);
+        }
+        let added = self.source(id).is_none();
+        if added {
+            self.sources.push(s);
+        }
+        if let Err(e) = self.check_pad(&take) {
+            if added {
+                self.sources.pop();
+            }
+            return Err(e);
+        }
+        let before = self.takes.clone();
+        self.takes.push(take);
+        let mut steps = Vec::with_capacity(2);
+        if added {
+            steps.push(Undo::AddSource { id });
+        }
+        steps.push(Undo::Takes {
+            before,
+            gesture: None,
+        });
+        self.push_undo(Undo::Group(steps));
+        Ok(self.takes.len() - 1)
+    }
+
+    /// Edits take `index` through a closure, as [`Project::edit_pad`] edits
+    /// a pad: checked, and one undo step for a run with the same
+    /// `gesture`.
+    pub fn edit_take(
+        &mut self,
+        index: usize,
+        gesture: Option<u64>,
+        f: impl FnOnce(&mut Pad),
+    ) -> Result<(), ModelError> {
+        let mut t = self.take(index).cloned().ok_or(ModelError::BadTake)?;
+        f(&mut t);
+        self.check_pad(&t)?;
+        let before = self.takes.clone();
+        self.takes[index] = t;
+        let merge = gesture.is_some()
+            && matches!(self.undo.last(), Some(Undo::Takes { gesture: g, .. }) if *g == gesture);
+        if merge {
+            self.redo.clear();
+            self.revision += 1;
+        } else {
+            self.push_undo(Undo::Takes { before, gesture });
+        }
+        Ok(())
+    }
+
+    /// Puts take `index` on pad `pad` (replacing what the pad had) and lets
+    /// the take go from the page, as one undo step.
+    pub fn put_take_on(&mut self, index: usize, pad: usize) -> Result<(), ModelError> {
+        if pad >= PADS {
+            return Err(ModelError::BadPad);
+        }
+        let take = self.take(index).cloned().ok_or(ModelError::BadTake)?;
+        self.check_pad(&take)?;
+        let takes = self.takes.clone();
+        let was = self.pads[pad].replace(take);
+        self.takes.remove(index);
+        self.push_undo(Undo::Group(vec![
+            Undo::Pad {
+                index: pad,
+                before: was.map(Box::new),
+                gesture: None,
+            },
+            Undo::Takes {
+                before: takes,
+                gesture: None,
+            },
+        ]));
+        Ok(())
+    }
+
+    /// Lets take `index` go from the page (one undo step); its sound stays
+    /// in the project until saved without it.
+    pub fn remove_take(&mut self, index: usize) -> Result<(), ModelError> {
+        if index >= self.takes.len() {
+            return Err(ModelError::BadTake);
+        }
+        let before = self.takes.clone();
+        self.takes.remove(index);
+        self.push_undo(Undo::Takes {
+            before,
+            gesture: None,
+        });
         Ok(())
     }
 
@@ -3140,6 +3311,10 @@ impl Project {
                 };
                 Undo::Rename { id, before }
             }
+            Undo::Takes { before, gesture } => Undo::Takes {
+                before: std::mem::replace(&mut self.takes, before),
+                gesture,
+            },
             Undo::Tag(t) => Undo::Tag(t),
             Undo::Group(steps) => {
                 Undo::Group(steps.into_iter().rev().map(|u| self.reverse(u)).collect())

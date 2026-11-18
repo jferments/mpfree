@@ -499,9 +499,18 @@ impl ViewPad {
 pub struct EngineView {
     pub revision: u64,
     pads: Vec<Option<ViewPad>>,
+    /// The take the Sample page shows, kept off the pads (the one Sample
+    /// page's decision 1): played by [`Event::TakeOn`], its voices on
+    /// [`TAKE_PAD`].
+    take: Option<ViewPad>,
     master: MasterFx,
     pads_play: PadsPlay,
 }
+
+/// The pad number a take's voices carry: past every pad, so no table
+/// indexed by pad reaches it (mpfree-claude
+/// `sampler/onepage/take-slot-check.md`).
+pub const TAKE_PAD: u8 = u8::MAX;
 
 impl EngineView {
     /// Whether a live hit on pad `i` waits for the launch line while the
@@ -579,6 +588,7 @@ impl EngineView {
         EngineView {
             revision: 0,
             pads: vec![None; PADS],
+            take: None,
             master: MasterFx::default(),
             pads_play: PadsPlay::Pads,
         }
@@ -589,7 +599,7 @@ impl EngineView {
     /// as they were recorded; [`EngineView::build_warped`] plays them at
     /// the project tempo.
     pub fn build(project: &Project, rate: u32) -> EngineView {
-        Self::resolve(project, rate, None)
+        Self::resolve(project, rate, None, None)
     }
 
     /// As [`EngineView::build`], with warped regions at the tempo of
@@ -598,225 +608,259 @@ impl EngineView {
     /// to repitch always repitches. The engine needs the same tempo
     /// ([`Engine::set_tempo`]).
     pub fn build_warped(project: &Project, rate: u32, warps: &mut Warps) -> EngineView {
-        Self::resolve(project, rate, Some(warps))
+        Self::resolve(project, rate, Some(warps), None)
     }
 
-    fn resolve(project: &Project, rate: u32, mut warps: Option<&mut Warps>) -> EngineView {
+    /// As [`EngineView::build_warped`], with take `take` of the project
+    /// (the one the Sample page shows) ready to play ([`Event::TakeOn`]).
+    pub fn build_with_take(
+        project: &Project,
+        rate: u32,
+        warps: &mut Warps,
+        take: Option<usize>,
+    ) -> EngineView {
+        Self::resolve(project, rate, Some(warps), take)
+    }
+
+    /// Whether the view has a take to play.
+    pub fn has_take(&self) -> bool {
+        self.take.as_ref().is_some_and(|t| !t.layers.is_empty())
+    }
+
+    /// Pad `p`'s view, or the take's for [`TAKE_PAD`].
+    fn pad_or_take(&self, p: usize) -> Option<&ViewPad> {
+        if p == usize::from(TAKE_PAD) {
+            self.take.as_ref()
+        } else {
+            self.pads.get(p).and_then(Option::as_ref)
+        }
+    }
+
+    fn resolve(
+        project: &Project,
+        rate: u32,
+        mut warps: Option<&mut Warps>,
+        take: Option<usize>,
+    ) -> EngineView {
         let mut pads = Vec::with_capacity(PADS);
+        // Pad `i`'s view (a take's: `i` is PADS, past every pad).
+        let mut view_of = |i: usize, p: &crate::model::Pad| {
+            let pad_gain = db_to_gain(p.level_db);
+            let layers = p
+                .layers
+                .iter()
+                .filter_map(|l| {
+                    let s = project.source(l.region.source)?;
+                    let r = &l.region;
+                    let (pl, pr) = pan_gains(l.pan + p.pan);
+                    let unit_gain = db_to_gain(r.gain_db) * db_to_gain(l.level_db);
+                    let g = unit_gain * pad_gain;
+                    let cents = f64::from(r.tune_cents + l.tune_cents + p.tune_cents);
+                    let ratio = f64::from(s.rate()) / f64::from(rate) * (cents / 1200.0).exp2();
+                    let follow = KeyFollow {
+                        tone: r.grain_mode == GrainMode::Tone,
+                        size: r.grain_keys.size,
+                        scan: r.grain_keys.scan,
+                    };
+                    let mut grain = pitched_grain(r.grain, (cents / 100.0) as f32, follow);
+                    // A stretch of a sound with a tempo keeps time.
+                    if r.grain_mode == GrainMode::Stretch {
+                        grain.scan_tempo = r.warp.as_ref().map(|w| w.bpm);
+                    }
+                    if r.reverse {
+                        grain.reverse = 1.0;
+                    }
+                    let mut v = ViewLayer {
+                        data: s.data().clone(),
+                        stereo: s.channels() == 2,
+                        pick: r.channels,
+                        start: r.start as i64,
+                        end: r.end as i64,
+                        sustain_loop: r.sustain_loop.map(|lp| ViewLoop {
+                            start: lp.start as i64,
+                            end: lp.end as i64,
+                            crossfade: i64::from(lp.crossfade),
+                            ping_pong: lp.mode == LoopMode::PingPong,
+                        }),
+                        fade_in: r.fade_in,
+                        fade_out: r.fade_out,
+                        reverse: r.reverse,
+                        mode: r.mode,
+                        gain_l: g * pl,
+                        gain_r: g * pr,
+                        unit_gain,
+                        pan: l.pan,
+                        step: ((ratio * ONE as f64).round() as i64).max(1),
+                        vel_lo: l.vel_lo,
+                        vel_hi: l.vel_hi,
+                        src_rate: s.rate(),
+                        grain,
+                        follow,
+                        glide: (r.grain_glide_ms.clamp(0.0, GRAIN_GLIDE_MAX_MS) / 1000.0
+                            * rate as f32) as u32,
+                        warp_bpm: 0.0,
+                        copy: false,
+                        source_at: None,
+                        octaves: None,
+                        hits: None,
+                        cuts: if r.mode == PlayMode::Granular {
+                            Vec::new()
+                        } else {
+                            r.cuts().map(|x| x as i64).collect()
+                        },
+                        slice_sets: if r.mode == PlayMode::Granular || r.slice_count() < 2 {
+                            Vec::new()
+                        } else {
+                            r.slice_sets
+                                .iter()
+                                .take(r.slice_count())
+                                .map(|x| ViewSlice::of(x, s.rate()))
+                                .collect()
+                        },
+                    };
+                    if r.mode == PlayMode::Granular && r.grain_mode == GrainMode::Stretch {
+                        hits::prepare(s.hits(), s.data(), s.channels(), s.rate());
+                        v.hits = Some(s.hits().clone());
+                    }
+                    if !p.vintage {
+                        v.octaves = Some(s.octaves().clone());
+                        // Grains go as far up as their pitch and its
+                        // spray take them.
+                        let up = if r.mode == PlayMode::Granular {
+                            let g = &r.grain;
+                            let semis = g.pitch.max(0.0) + g.pitch_spray.clamp(0.0, 24.0);
+                            ratio * f64::from(semis / 12.0).exp2()
+                        } else {
+                            // A slice's own pitch up (R4 part 5).
+                            let st = r.slice_sets.iter().map(|x| x.tune_st).max();
+                            ratio * (f64::from(st.unwrap_or(0).max(0)) / 12.0).exp2()
+                        };
+                        if may_pass_an_octave(p, up, project.pads_play()) {
+                            bandlimit::prepare(s.octaves(), s.data(), s.channels());
+                        }
+                    }
+                    let warp = r.warp.as_ref().filter(|_| r.mode != PlayMode::Granular);
+                    if let (Some(w), Some(ws)) = (warp, warps.as_deref_mut()) {
+                        // Tune is in the copy, or left out (repitch):
+                        // the tempo alone sets the speed.
+                        let plain = f64::from(s.rate()) / f64::from(rate);
+                        v.step = ((plain * ONE as f64).round() as i64).max(1);
+                        v.warp_bpm = f64::from(w.bpm);
+                        let copy = match w.method {
+                            WarpMethod::Stretch => ws
+                                .key_for(r, l.tune_cents + p.tune_cents)
+                                .and_then(|k| ws.copy(&k).map(|d| (k, d))),
+                            WarpMethod::Repitch => None,
+                        };
+                        if let Some((k, data)) = copy {
+                            let scale = k.scale();
+                            let map = CopyMap::new(w, s.rate(), &k);
+                            let at = |x: u64| map.at(x as f64).round() as i64;
+                            let len = k.frames as i64;
+                            v.data = Pcm::F32(data);
+                            v.start = 0;
+                            v.end = len;
+                            v.cuts = r.cuts().map(at).filter(|&x| x > 0 && x < len).collect();
+                            v.cuts.dedup();
+                            v.sustain_loop = r.sustain_loop.map(|lp| {
+                                let (a, b) = (at(lp.start), at(lp.end).min(len));
+                                ViewLoop {
+                                    start: a,
+                                    end: b.max(a + 1),
+                                    crossfade: ((f64::from(lp.crossfade) * scale) as i64)
+                                        .min((b - a) / 2)
+                                        .min(a),
+                                    ping_pong: lp.mode == LoopMode::PingPong,
+                                }
+                            });
+                            let fade = |f: Fade| Fade {
+                                frames: (f64::from(f.frames) * scale).round() as u32,
+                                ..f
+                            };
+                            v.fade_in = fade(r.fade_in);
+                            v.fade_out = fade(r.fade_out);
+                            if i64::from(v.fade_in.frames) + i64::from(v.fade_out.frames) > len {
+                                (v.fade_in, v.fade_out) = (r.fade_in, r.fade_out);
+                            }
+                            // The copy is at the tempo it was made for.
+                            v.warp_bpm *= (r.frames() as f64) / (len as f64);
+                            v.copy = true;
+                            v.source_at = Some(map);
+                            // The copies are of the source, not this.
+                            v.octaves = None;
+                        }
+                    }
+                    Some(v)
+                })
+                .collect();
+            ViewPad {
+                layers,
+                select: p.select,
+                polyphony: p.polyphony,
+                mute_group: p.mute_group,
+                chokes: p.chokes.clone(),
+                links: p
+                    .links
+                    .iter()
+                    .copied()
+                    .filter(|&l| l < PADS && l != i)
+                    .collect(),
+                latch: p.latch,
+                on_launch: p.on_launch,
+                amp: p.amp,
+                filter: p.filter,
+                filter_env: p.filter_env,
+                vel_to_level: p.vel_to_level.clamp(0.0, 1.0),
+                vel_to_start: p.vel_to_start.clamp(0.0, 1.0),
+                pressure: p.pressure,
+                keys: p.keys,
+                wow: p.wow.clamp(0.0, 1.0),
+                key_fade: p.key_fade.min(crate::model::MAX_KEY_FADE),
+                vel_fade: p.vel_fade.min(crate::model::MAX_VEL_FADE),
+                level_db: p.level_db,
+                pan: p.pan,
+                tune_cents: p.tune_cents,
+                vintage: p.vintage,
+                slice: p.slice,
+                lfo: PadLfo {
+                    rate_hz: p
+                        .lfo
+                        .rate_hz
+                        .clamp(*LFO_RATE_HZ.start(), *LFO_RATE_HZ.end()),
+                    beats: p
+                        .lfo
+                        .beats
+                        .map(|b| b.clamp(*LFO_BEATS.start(), *LFO_BEATS.end())),
+                    depth: p.lfo.depth.clamp(-1.0, 1.0),
+                    ..p.lfo
+                },
+                pitch_env: PitchEnv {
+                    semitones: p.pitch_env.semitones.clamp(-PITCH_ENV_ST, PITCH_ENV_ST),
+                    decay_ms: p
+                        .pitch_env
+                        .decay_ms
+                        .clamp(*PITCH_DECAY_MS.start(), *PITCH_DECAY_MS.end()),
+                },
+                vel_to_cutoff: p.vel_to_cutoff.clamp(0.0, 1.0),
+                vel_to_pitch: p.vel_to_pitch.clamp(-12.0, 12.0),
+                mono: Mono {
+                    glide_ms: p.mono.glide_ms.clamp(*GLIDE_MS.start(), *GLIDE_MS.end()),
+                    ..p.mono
+                },
+            }
+        };
         for i in 0..PADS {
             // A pad of another kind (an engine's voice, a note out) plays
             // nothing here: the app sends its hits where they go.
             let pad = project.pad(i).filter(|p| p.kind.sounds());
-            pads.push(pad.map(|p| {
-                let pad_gain = db_to_gain(p.level_db);
-                let layers = p
-                    .layers
-                    .iter()
-                    .filter_map(|l| {
-                        let s = project.source(l.region.source)?;
-                        let r = &l.region;
-                        let (pl, pr) = pan_gains(l.pan + p.pan);
-                        let unit_gain = db_to_gain(r.gain_db) * db_to_gain(l.level_db);
-                        let g = unit_gain * pad_gain;
-                        let cents = f64::from(r.tune_cents + l.tune_cents + p.tune_cents);
-                        let ratio = f64::from(s.rate()) / f64::from(rate) * (cents / 1200.0).exp2();
-                        let follow = KeyFollow {
-                            tone: r.grain_mode == GrainMode::Tone,
-                            size: r.grain_keys.size,
-                            scan: r.grain_keys.scan,
-                        };
-                        let mut grain = pitched_grain(r.grain, (cents / 100.0) as f32, follow);
-                        // A stretch of a sound with a tempo keeps time.
-                        if r.grain_mode == GrainMode::Stretch {
-                            grain.scan_tempo = r.warp.as_ref().map(|w| w.bpm);
-                        }
-                        if r.reverse {
-                            grain.reverse = 1.0;
-                        }
-                        let mut v = ViewLayer {
-                            data: s.data().clone(),
-                            stereo: s.channels() == 2,
-                            pick: r.channels,
-                            start: r.start as i64,
-                            end: r.end as i64,
-                            sustain_loop: r.sustain_loop.map(|lp| ViewLoop {
-                                start: lp.start as i64,
-                                end: lp.end as i64,
-                                crossfade: i64::from(lp.crossfade),
-                                ping_pong: lp.mode == LoopMode::PingPong,
-                            }),
-                            fade_in: r.fade_in,
-                            fade_out: r.fade_out,
-                            reverse: r.reverse,
-                            mode: r.mode,
-                            gain_l: g * pl,
-                            gain_r: g * pr,
-                            unit_gain,
-                            pan: l.pan,
-                            step: ((ratio * ONE as f64).round() as i64).max(1),
-                            vel_lo: l.vel_lo,
-                            vel_hi: l.vel_hi,
-                            src_rate: s.rate(),
-                            grain,
-                            follow,
-                            glide: (r.grain_glide_ms.clamp(0.0, GRAIN_GLIDE_MAX_MS) / 1000.0
-                                * rate as f32) as u32,
-                            warp_bpm: 0.0,
-                            copy: false,
-                            source_at: None,
-                            octaves: None,
-                            hits: None,
-                            cuts: if r.mode == PlayMode::Granular {
-                                Vec::new()
-                            } else {
-                                r.cuts().map(|x| x as i64).collect()
-                            },
-                            slice_sets: if r.mode == PlayMode::Granular || r.slice_count() < 2 {
-                                Vec::new()
-                            } else {
-                                r.slice_sets
-                                    .iter()
-                                    .take(r.slice_count())
-                                    .map(|x| ViewSlice::of(x, s.rate()))
-                                    .collect()
-                            },
-                        };
-                        if r.mode == PlayMode::Granular && r.grain_mode == GrainMode::Stretch {
-                            hits::prepare(s.hits(), s.data(), s.channels(), s.rate());
-                            v.hits = Some(s.hits().clone());
-                        }
-                        if !p.vintage {
-                            v.octaves = Some(s.octaves().clone());
-                            // Grains go as far up as their pitch and its
-                            // spray take them.
-                            let up = if r.mode == PlayMode::Granular {
-                                let g = &r.grain;
-                                let semis = g.pitch.max(0.0) + g.pitch_spray.clamp(0.0, 24.0);
-                                ratio * f64::from(semis / 12.0).exp2()
-                            } else {
-                                // A slice's own pitch up (R4 part 5).
-                                let st = r.slice_sets.iter().map(|x| x.tune_st).max();
-                                ratio * (f64::from(st.unwrap_or(0).max(0)) / 12.0).exp2()
-                            };
-                            if may_pass_an_octave(p, up, project.pads_play()) {
-                                bandlimit::prepare(s.octaves(), s.data(), s.channels());
-                            }
-                        }
-                        let warp = r.warp.as_ref().filter(|_| r.mode != PlayMode::Granular);
-                        if let (Some(w), Some(ws)) = (warp, warps.as_deref_mut()) {
-                            // Tune is in the copy, or left out (repitch):
-                            // the tempo alone sets the speed.
-                            let plain = f64::from(s.rate()) / f64::from(rate);
-                            v.step = ((plain * ONE as f64).round() as i64).max(1);
-                            v.warp_bpm = f64::from(w.bpm);
-                            let copy = match w.method {
-                                WarpMethod::Stretch => ws
-                                    .key_for(r, l.tune_cents + p.tune_cents)
-                                    .and_then(|k| ws.copy(&k).map(|d| (k, d))),
-                                WarpMethod::Repitch => None,
-                            };
-                            if let Some((k, data)) = copy {
-                                let scale = k.scale();
-                                let map = CopyMap::new(w, s.rate(), &k);
-                                let at = |x: u64| map.at(x as f64).round() as i64;
-                                let len = k.frames as i64;
-                                v.data = Pcm::F32(data);
-                                v.start = 0;
-                                v.end = len;
-                                v.cuts = r.cuts().map(at).filter(|&x| x > 0 && x < len).collect();
-                                v.cuts.dedup();
-                                v.sustain_loop = r.sustain_loop.map(|lp| {
-                                    let (a, b) = (at(lp.start), at(lp.end).min(len));
-                                    ViewLoop {
-                                        start: a,
-                                        end: b.max(a + 1),
-                                        crossfade: ((f64::from(lp.crossfade) * scale) as i64)
-                                            .min((b - a) / 2)
-                                            .min(a),
-                                        ping_pong: lp.mode == LoopMode::PingPong,
-                                    }
-                                });
-                                let fade = |f: Fade| Fade {
-                                    frames: (f64::from(f.frames) * scale).round() as u32,
-                                    ..f
-                                };
-                                v.fade_in = fade(r.fade_in);
-                                v.fade_out = fade(r.fade_out);
-                                if i64::from(v.fade_in.frames) + i64::from(v.fade_out.frames) > len
-                                {
-                                    (v.fade_in, v.fade_out) = (r.fade_in, r.fade_out);
-                                }
-                                // The copy is at the tempo it was made for.
-                                v.warp_bpm *= (r.frames() as f64) / (len as f64);
-                                v.copy = true;
-                                v.source_at = Some(map);
-                                // The copies are of the source, not this.
-                                v.octaves = None;
-                            }
-                        }
-                        Some(v)
-                    })
-                    .collect();
-                ViewPad {
-                    layers,
-                    select: p.select,
-                    polyphony: p.polyphony,
-                    mute_group: p.mute_group,
-                    chokes: p.chokes.clone(),
-                    links: p
-                        .links
-                        .iter()
-                        .copied()
-                        .filter(|&l| l < PADS && l != i)
-                        .collect(),
-                    latch: p.latch,
-                    on_launch: p.on_launch,
-                    amp: p.amp,
-                    filter: p.filter,
-                    filter_env: p.filter_env,
-                    vel_to_level: p.vel_to_level.clamp(0.0, 1.0),
-                    vel_to_start: p.vel_to_start.clamp(0.0, 1.0),
-                    pressure: p.pressure,
-                    keys: p.keys,
-                    wow: p.wow.clamp(0.0, 1.0),
-                    key_fade: p.key_fade.min(crate::model::MAX_KEY_FADE),
-                    vel_fade: p.vel_fade.min(crate::model::MAX_VEL_FADE),
-                    level_db: p.level_db,
-                    pan: p.pan,
-                    tune_cents: p.tune_cents,
-                    vintage: p.vintage,
-                    slice: p.slice,
-                    lfo: PadLfo {
-                        rate_hz: p
-                            .lfo
-                            .rate_hz
-                            .clamp(*LFO_RATE_HZ.start(), *LFO_RATE_HZ.end()),
-                        beats: p
-                            .lfo
-                            .beats
-                            .map(|b| b.clamp(*LFO_BEATS.start(), *LFO_BEATS.end())),
-                        depth: p.lfo.depth.clamp(-1.0, 1.0),
-                        ..p.lfo
-                    },
-                    pitch_env: PitchEnv {
-                        semitones: p.pitch_env.semitones.clamp(-PITCH_ENV_ST, PITCH_ENV_ST),
-                        decay_ms: p
-                            .pitch_env
-                            .decay_ms
-                            .clamp(*PITCH_DECAY_MS.start(), *PITCH_DECAY_MS.end()),
-                    },
-                    vel_to_cutoff: p.vel_to_cutoff.clamp(0.0, 1.0),
-                    vel_to_pitch: p.vel_to_pitch.clamp(-12.0, 12.0),
-                    mono: Mono {
-                        glide_ms: p.mono.glide_ms.clamp(*GLIDE_MS.start(), *GLIDE_MS.end()),
-                        ..p.mono
-                    },
-                }
-            }));
+            pads.push(pad.map(|p| view_of(i, p)));
         }
+        // The take the Sample page shows, kept off the pads.
+        let take = take.and_then(|t| project.take(t)).map(|p| view_of(PADS, p));
         EngineView {
             revision: project.revision(),
             pads,
+            take,
             master: *project.master(),
             pads_play: project.pads_play(),
         }
@@ -905,6 +949,16 @@ pub enum Event {
         end: u32,
         velocity: u8,
     },
+    /// Plays the take the view holds (the one the Sample page shows, kept
+    /// off the pads) at `velocity`, as a pad of one sound would: its own
+    /// voices end first. Its voices carry [`TAKE_PAD`]; it has no round
+    /// robin, Mono, mute group, chokes, live values or locks, which are
+    /// the pads'. Nothing plays without a take.
+    TakeOn {
+        velocity: u8,
+    },
+    /// Lets the take go, as a pad let go does (a Gate or Loop take stops).
+    TakeOff,
     /// Changes one of pad `pad`'s settings while it plays, as a knob, a
     /// p-lock or a modulation does: `value` replaces the pad's own until
     /// the next change (NaN gives the pad's own back) or a new view
@@ -2259,14 +2313,15 @@ impl Engine {
         let (view, live) = (&views[kit], &lives[kit]);
         for (v, g) in pool.iter_mut() {
             let p = usize::from(v.pad);
-            if v.active && usize::from(v.kit) == kit && p < PADS {
+            // A pad's voices, and the take's (TAKE_PAD: no live values).
+            if v.active && usize::from(v.kit) == kit && (p < PADS || v.pad == TAKE_PAD) {
                 follow_edit(
                     v,
                     g,
                     view,
                     &live.row(p),
                     &live.program,
-                    live_pads[p],
+                    live_pads.get(p).copied().unwrap_or(false),
                     *tempo,
                 );
             }
@@ -2379,9 +2434,7 @@ impl Engine {
         let l = self
             .views
             .get(usize::from(v.kit))?
-            .pads
-            .get(usize::from(v.pad))?
-            .as_ref()?
+            .pad_or_take(usize::from(v.pad))?
             .layers
             .get(usize::from(v.layer))?;
         let same = v.data.as_ref().is_some_and(|d| d.ptr_eq(&l.data));
@@ -2578,6 +2631,8 @@ impl Engine {
                 end,
                 velocity,
             } => self.audition(pad, layer, start, end, velocity),
+            Event::TakeOn { velocity } => self.take_on(velocity),
+            Event::TakeOff => self.release(|v| v.pad == TAKE_PAD),
             Event::PadLive { pad, field, value } => self.pad_live(pad, field, value),
             Event::PadLock { pad, field, value } => self.pad_lock(pad, field, value),
             Event::ProgramLive { field, value } => self.program_live(field, value),
@@ -2685,8 +2740,10 @@ impl Engine {
         let program = self.lives[at].program;
         let live = &self.lives[at];
         for (v, _) in self.pool.iter_mut() {
-            if v.active && usize::from(v.kit) == at && usize::from(v.pad) < PADS {
-                retarget(v, &live.row(usize::from(v.pad)), &program);
+            // The pads' voices and the take's (no live values of its own).
+            let p = usize::from(v.pad);
+            if v.active && usize::from(v.kit) == at && (p < PADS || v.pad == TAKE_PAD) {
+                retarget(v, &live.row(p), &program);
             }
         }
     }
@@ -3015,6 +3072,39 @@ impl Engine {
                 _ => {} // one-shot ignores it; toggle waits for the next hit
             }
         }
+    }
+
+    /// [`Event::TakeOn`].
+    fn take_on(&mut self, velocity: u8) {
+        let at = self.at;
+        let Some(vp) = self.views[at].take.as_ref() else {
+            return;
+        };
+        if velocity == 0 || vp.layers.is_empty() {
+            return;
+        }
+        let velocity = self.fixed_velocity.unwrap_or(velocity.min(127));
+        let vel = f32::from(velocity) / 127.0;
+        let level = (1.0 - vp.vel_to_level) + vp.vel_to_level * vel * vel;
+        let li = vp
+            .layers
+            .iter()
+            .position(|l| (l.vel_lo..=l.vel_hi).contains(&velocity))
+            .unwrap_or(0);
+        self.stats.hits += 1;
+        for (v, _) in self.pool.iter_mut() {
+            if v.active && usize::from(v.kit) == at && v.pad == TAKE_PAD {
+                Self::kill(v);
+            }
+        }
+        self.start_voice(
+            usize::from(TAKE_PAD),
+            li,
+            level,
+            vel,
+            NO_NOTE,
+            Vary::default(),
+        );
     }
 
     fn audition(&mut self, pad: u8, layer: u8, start: u32, end: u32, velocity: u8) {
@@ -3359,7 +3449,10 @@ impl Engine {
     fn start_voice(&mut self, p: usize, li: usize, level: f32, vel: f32, note: u8, vary: Vary) {
         let semis = vary.semis;
         let at = self.at;
-        let Some(vp) = self.views[at].pads[p].as_ref() else {
+        // A pad's, or the take's on TAKE_PAD: none of the tables below
+        // indexed by pad reaches it (they read it with `get`, or not at
+        // all).
+        let Some(vp) = self.views[at].pad_or_take(p) else {
             return;
         };
         let l = &vp.layers[li];
@@ -3475,12 +3568,14 @@ impl Engine {
         if let Some(ms) = set(PadField::Attack) {
             amp.attack_ms = ms;
         }
-        if kit_live.pads[p][PadField::Decay as usize].is_nan() {
+        let decay = |rows: &[[f32; PadField::COUNT]; PADS]| {
+            rows.get(p)
+                .map_or(f32::NAN, |r| r[PadField::Decay as usize])
+        };
+        if decay(&kit_live.pads).is_nan() {
             // A locked decay decays to silence, as the Play page's Decay
             // knob shortens a sound.
-            if let Some(ms) =
-                Some(kit_live.locks[p][PadField::Decay as usize]).filter(|x| !x.is_nan())
-            {
+            if let Some(ms) = Some(decay(&kit_live.locks)).filter(|x| !x.is_nan()) {
                 (amp.decay_ms, amp.sustain) = (ms, 0.0);
             }
         } else if let Some(ms) = set(PadField::Decay) {
@@ -3535,12 +3630,12 @@ impl Engine {
         let tune = tune + own.cents;
         // A gliding layer's voice starts from the pad's last key.
         let hit = semis as f32 + tune / 100.0;
-        let from = if granular && l.glide > 0 {
+        let from = if granular && l.glide > 0 && p < PADS {
             self.last_key[at * PADS + p].filter(|k| *k != hit)
         } else {
             None
         };
-        if granular {
+        if granular && p < PADS {
             self.last_key[at * PADS + p] = Some(hit);
         }
         let mut grain = pitched_grain(l.grain, from.unwrap_or(hit), l.follow);
@@ -3898,7 +3993,8 @@ impl Engine {
             if let Some(b) = self.pool.b.as_deref_mut() {
                 for (v, g) in b.voices.iter_mut().zip(b.grains.iter_mut()) {
                     let (k, p) = (usize::from(v.kit), usize::from(v.pad));
-                    if v.active && p < PADS && self.edit_lane.get(k) == Some(&true) {
+                    let ours = p < PADS || v.pad == TAKE_PAD;
+                    if v.active && ours && self.edit_lane.get(k) == Some(&true) {
                         let live = &self.lives[k];
                         let (row, program) = (live.row(p), live.program);
                         follow_edit(v, g, &self.views[k], &row, &program, true, self.tempo);
@@ -4345,7 +4441,7 @@ fn follow_edit(
     if !v.active || v.kill_left > 0 || v.audition {
         return;
     }
-    let Some(vp) = view.pads.get(usize::from(v.pad)).and_then(Option::as_ref) else {
+    let Some(vp) = view.pad_or_take(usize::from(v.pad)) else {
         return;
     };
     // The LFO's wave, target, rate and depth, from where it is in its

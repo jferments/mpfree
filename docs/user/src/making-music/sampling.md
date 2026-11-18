@@ -96,7 +96,7 @@ The **Rec** page records onto a pad: from the INPUTS on the back of the MPC, or 
 2. Set how the take starts and ends (below), or leave them: by default it starts when you press **Record** and ends when you press **Stop**.
 3. Tap **Record**, play, and tap **Stop**.
 
-The take goes onto the next pad with no sound, starting from the pad picked, and the Sample tab moves to that pad so you can trim it straight away. The title says which pad it will land on ("Record onto pad A6"). Set **Onto** to **This pad** to replace the picked pad's sound instead. One **UNDO** takes a take off its pad again.
+The take stays on the Sample page until you put it on a pad: the **Wave** page shows it as a new take ("Take 3 · new"), ready to hear and trim (see [A take on the page](#a-take-on-the-page)). The title says so ("Record: the take stays here"). To put each take straight onto a pad instead, set **Onto** to **Next empty**: the take goes onto the next pad with no sound, starting from the pad picked, the Sample tab moves to that pad, and the title says which pad it will land on ("Record onto pad A6"). **This pad** replaces the picked pad's sound. One **UNDO** takes a take off the page, or off its pad, again.
 
 The picture shows the source's level on two meters, and the last 30 seconds of it scrolling past with the bar lines, so you can see what came in.
 
@@ -106,9 +106,18 @@ You can also record without leaving the **Wave** page: the row over the wave is 
 
 {{shot: sample-recording | The Wave page while REC is on: REC lit, the take counting on the right, and the panel under the wave showing the Input section.}}
 
-- **REC** starts a take at once, onto the pad the line beside the cards names ("Next take onto A6"); with **Starts** on **Next bar** it waits for the music's next bar line, so with the music stopped it waits for **PLAY**. It lights while the take records, and the **REC** chip at the top says where it goes ("● REC → Pad A6 · Line in"). **REC** again (on the screen or on the MPC) or **STOP** keeps the take, and the music plays on; **UNDO** throws it away. Then **REC** on the MPC records what it did before. When REC can't take, the line says why in orange: the line input is off, there is no empty pad left in the bank, or another take is counting in or recording ("Finish the take first: Drums records").
+- **REC** starts a take at once; the line beside the cards says where it goes ("Next take stays here", or "Next take onto A6" with **Onto** on **Next empty**). With **Starts** on **Next bar** it waits for the music's next bar line, so with the music stopped it waits for **PLAY**. It lights while the take records, and the **REC** chip at the top names the take ("● REC → Take 4 · Line in"), or the pad it goes onto ("● REC → Pad A6 · Line in"). **REC** again (on the screen or on the MPC) or **STOP** keeps the take, and the music plays on; **UNDO** throws it away. Then **REC** on the MPC records what it did before. When REC can't take, the line says why in orange: the line input is off, there is no empty pad left in the bank for **Next empty**, or another take is counting in or recording ("Finish the take first: Drums records").
 - **Source**, **Starts** and **Ends** are cards: tap a card's left half to step it back and its right half to step it on. **Source** is what you record, with its level on the two little bars. **Starts** is **Now**, **On input** (when the sound crosses the threshold) or **Next bar**. **Ends** is **On STOP**, **On silence** or **After** a number of bars.
-- While REC is on, the panel under the wave shows **Input** (**Source**, **Channels**, **Threshold** and **Pre-roll**) in place of the region's settings, and **Q-Link 2** turns the **Threshold** and **Q-Link 3** the **Pre-roll** (Q-Links 1 and 4 rest meanwhile). The region's settings and the four markers come back when the take stops, and the page moves to the new take's pad.
+- While REC is on, the panel under the wave shows **Input** (**Source**, **Channels**, **Onto**, **Threshold** and **Pre-roll**) in place of the region's settings, and **Q-Link 2** turns the **Threshold** and **Q-Link 3** the **Pre-roll** (Q-Links 1 and 4 rest meanwhile). **Onto** is where the take goes when it stops (**Stay here**, **Next empty** or **This pad**), so you can change your mind while it records. The region's settings and the four markers come back when the take stops, and the page shows the new take, or moves to its pad.
+
+### A take on the page
+
+A take that stays is kept with the kit, on no pad, until you put it somewhere. The **Wave** page shows it with a red swatch and its name ("Take 3 · new"), and works on it as it does on a pad: tap the wave to hear it, set its start, end and loop with the Q-Links or the markers, shape it with the region's settings, **Normalize to 0 dB** and the **Sound** controls. Each change is one **UNDO**, as on a pad.
+
+- **Send to pad**, then hit a pad: the take goes on that pad, replacing any sound there, and leaves the page; the page shows the pad. One **UNDO** puts it back on the page.
+- **SHIFT + the wheel** steps through the takes on the page, then the pads with a sound (**SHIFT + –** / **+** still zooms).
+- **Chop to pads**, the other pages and **Process** work on pads, so put the take on a pad first; they say so if you try.
+- A take on the page is part of the kit, so you never lose one without being asked: saving the project keeps it, autosave keeps it too, and opening another project or **New project** asks first, as for any change you haven't saved. The page keeps up to 32 takes.
 
 ### Skip back: keep what you just played
 
@@ -144,14 +153,14 @@ The panel under the picture sets up the take, in five sections: **Input** (Sourc
 | **Tail** | What a take of a Length does at its end. **Cut** ends on the bar line. **Ring out** keeps recording until the sound dies away (up to 20 seconds more), for a one-shot with its reverb. **Loop** makes a loop of exactly its bars, with the ringing folded onto its start, so it loops with no seam. |
 | **Silence for** | How long the quiet must last (250 ms to 4 s) to end a take on silence, or a Ring out. |
 | **Skip back** | How far Skip back reaches. |
-| **Onto** | **Next empty** or **This pad** (above). |
+| **Onto** | **Stay here** (the take stays on the Sample page until you put it on a pad), **Next empty** or **This pad** (above). Skip back keeps what it reaches the same way. |
 | **Flatten velocity**, **Flatten hold** | How Flatten plays the pad (below). |
 
 A take that starts on the bar line and lasts whole bars lands warped to the project's tempo, so it stays in time if you change the tempo later. A take can be up to three minutes long.
 
 ### Flatten: print a pad to a new sound
 
-**Flatten** records the picked pad as it sounds now, with its layers, envelope, filter, warp and pan in one new sound. It plays the pad once at the **Flatten velocity**, lets go after the **Flatten hold**, and records until the sound has been silent for the Silence time. Onto the next empty pad, the pad channel's effects are printed in too; onto the pad itself they are left out, because the channel will play them again.
+**Flatten** records the picked pad as it sounds now, with its layers, envelope, filter, warp and pan in one new sound. It plays the pad once at the **Flatten velocity**, lets go after the **Flatten hold**, and records until the sound has been silent for the Silence time. Onto the next empty pad (where it goes with **Onto** on **Stay here** too), the pad channel's effects are printed in too; onto the pad itself they are left out, because the channel will play them again.
 
 Use it to free up a busy pad, or to chop a sound you have already shaped.
 
