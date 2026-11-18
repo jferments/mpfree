@@ -328,6 +328,13 @@ when an effect's mode switch moved the controls a Q-Link had learned.
   `env!("CARGO_BIN_EXE_<name>")`: its arguments, exit codes and output files.
   Tests write only under `env!("CARGO_TARGET_TMPDIR")`, never a fixed `/tmp`
   name, so parallel tests and the self-hosted runners don't collide.
+- **A test that waits for a worker thread fails when the wait runs out,
+  never carries on.** The coverage job's instrumented build on a busy runner
+  is many times slower than `cargo test`: a sound's analysis that takes under
+  a second here took over 10 s there, and tests that carried on after a
+  silent 10 s wait chopped half-analysed sounds. The Sample tab's waits
+  (`gui::settle_views`, the tests' `tick_until`) share one long limit,
+  `gui::WORKER_WAIT` (120 s), and panic with a message when it runs out.
 - **No test touches a device.** Tests that need device-like input use
   fixtures, fakes (`tools/mpc-one/tests/fake_mpc_ssh.py`) or qemu.
 - **Clippy is pinned** (`MPFREE_CLIPPY_TOOLCHAIN` in the workflow), so a new
