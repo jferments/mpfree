@@ -4027,6 +4027,8 @@ fn learn_describe(
         Owner::Transport => return remote::describe(addr.param, now),
         Owner::Clips => return remote::describe_clips(addr.param, now),
         Owner::Looper => return remote::describe_looper(addr.param, now),
+        // A Perform pad is pressed, with no value to read.
+        Owner::Perform => return None,
         // A track's controller, bend or pressure out: where the engine has
         // it, else its default.
         Owner::Midi(_) => {
@@ -4061,7 +4063,8 @@ fn synth_describe(
 /// track's arp, "PLAY and STOP" or "Tempo" for the transport, "Launch
 /// Bass · row 2" or "Mute Bass" on the Clips grid ([`clips_label`]),
 /// "Looper · Loop 3 key" or "Looper · picked loop's key" on the looper,
-/// else as the chain editor names it ([`modpanels::label`]).
+/// "Perform pads B2" on the Perform pads, else as the chain editor names
+/// it ([`modpanels::label`]).
 fn learn_label(
     mix: &mixing::MixHost,
     synth: &synth::Synth,
@@ -4083,6 +4086,10 @@ fn learn_label(
         Owner::Looper => {
             let name = looper::name(addr.param);
             return format!("Looper · {}", name.as_deref().unwrap_or("?"));
+        }
+        Owner::Perform => {
+            let name = mpfree_play::mpfree_param::perform::name(addr.param);
+            return format!("Perform pads {}", name.as_deref().unwrap_or("?"));
         }
         _ => return modpanels::label(mix, addr),
     };
@@ -5813,6 +5820,8 @@ fn player_session(
     // Learned controls on the transport (remote.rs): the presses they hold,
     // and whether the log said a learned tempo waits for a followed clock.
     let mut remote = remote::Remote::new();
+    // Keys learned on the Perform pads (Learn a key): the pads they hold.
+    let mut perform_keys = remote::PerformKeys::default();
     let mut remote_tempo_waits = false;
     let mut learn_names_gen: Option<u64> = None;
     let mut learn_now_at = 0.0_f64;
@@ -6920,6 +6929,11 @@ fn player_session(
         // looper's learned keys let go, clearing nothing.
         if music.take_unplugged() {
             remote.let_go();
+            // And the Perform pads its keys held let go, so no throw
+            // stays on.
+            for action in perform_keys.let_go() {
+                fx.extend(desk::perform_pad_up(&mut app, action));
+            }
         }
         for l in music.learning() {
             match l {
@@ -7063,6 +7077,20 @@ fn player_session(
                     let now = desk::looper_now(&looper);
                     let act = remote.looper_write(w.target.param, w.value, now, t);
                     fx.extend(desk::looper_remote(&mut app, &time, &looper, out, act));
+                }
+                // A Perform pad (Learn a key): played as a hit on it plays
+                // it, whatever the pads show, and let go of what it pressed.
+                midi_in::Learning::Set(w)
+                    if w.target.owner == mpfree_play::mpfree_param::Owner::Perform =>
+                {
+                    let set = app.perform_set();
+                    let act = perform_keys.write(w.target.param, w.value, t, |page, pad| {
+                        set.page(page).action(pad)
+                    });
+                    let drums = kit_drums(&kits, player.kit());
+                    fx.extend(desk::perform_remote(
+                        &mut app, &time, &looper, out, act, drums,
+                    ));
                 }
                 // A synth's knob: as the Synth tab turns it, and the tab
                 // follows (a few times a second at most).
@@ -7737,6 +7765,14 @@ fn player_session(
             let (more, line) = desk::perform_pad_held(key);
             fx.extend(more);
             out.note(&format!("{line}, from a learned control"));
+        }
+        // And a key learned on a Perform pad that is a loop key.
+        for key in perform_keys.holds(t, perform_pads::CLEAR_HOLD_S) {
+            let (more, line) = desk::perform_pad_held(key);
+            fx.extend(more);
+            if !line.is_empty() {
+                out.note(&format!("{line}, from a learned key"));
+            }
         }
         fx.extend(app.tick(t));
         // As set, not rounded: the song plays at it, and a project saves it
@@ -11030,6 +11066,30 @@ mod tests {
         assert!(learn_describe(&mix, &synth, &app, now, at(clips::clip(1, 2))).is_none());
         assert!(midi_in::key_toggles(at(clips::mute(1))));
         assert!(!midi_in::key_toggles(at(clips::clip(1, 2))));
+    }
+
+    /// A key learned on a Perform pad (Learn a key) is named by the pad,
+    /// has no value to read, and plays while held whatever sends it: a
+    /// key, a footswitch's CC or a pad.
+    #[test]
+    fn a_perform_pads_learned_key_is_named_by_its_pad_and_plays_while_held() {
+        use mpfree_midi::learn::{Mode, Source};
+        use mpfree_play::mpfree_param::{perform, Owner, ParamAddr};
+        let mix = mixing::MixHost::new(44_100, 0.0, 6.0);
+        let synth = synth::Synth::new(44_100);
+        let time = time::TimeHost::new(44_100, 120.0).unwrap();
+        let app = app::App::new(44_100, false);
+        let b2 = ParamAddr::new(Owner::Perform, perform::pad(1, 1));
+        assert_eq!(learn_label(&mix, &synth, &time, b2), "Perform pads B2");
+        assert_eq!(
+            learn_label(&mix, &synth, &time, ParamAddr::new(Owner::Perform, 200)),
+            "Perform pads ?"
+        );
+        assert!(learn_describe(&mix, &synth, &app, remote::Now::default(), b2).is_none());
+        for source in [Source::Note(40), Source::Cc(64)] {
+            assert_eq!(midi_in::learned_mode(&source, b2), Some(Mode::Momentary));
+        }
+        assert!(!midi_in::key_toggles(b2));
     }
 
     /// The looper's learned controls (its footswitch) are named so the
