@@ -567,6 +567,9 @@ pub struct Player {
     /// Notes sending their pressure.
     touching: [Touching; MAX_TOUCHING],
     n_touching: usize,
+    /// The tracks it plays, a bit each (all, but in the look-ahead's
+    /// copy: [`Player::only`]).
+    only: u128,
 }
 
 const NO_ERASED_LOCK: ErasedLock = ErasedLock {
@@ -724,6 +727,7 @@ impl Player {
             song_lanes: false,
             touching: [NO_TOUCHING; MAX_TOUCHING],
             n_touching: 0,
+            only: u128::MAX,
         }
     }
 
@@ -748,6 +752,104 @@ impl Player {
     /// The sounds live erase erases (see [`Player::set_erasing`]).
     pub fn erasing(&self) -> u128 {
         self.erasing
+    }
+
+    /// Becomes what `src` is, for [`Player::process`]: the look-ahead's
+    /// copy ([`crate::Ahead`]) each period. Its tables are fixed (no heap),
+    /// and only their used part is copied (about 15 kB of the 140 kB),
+    /// in place. Real-time safe.
+    pub fn copy_from(&mut self, src: &Player) {
+        // Every field by name, so a new one can't be left out.
+        let Player {
+            sounding,
+            n_sounding,
+            starts,
+            n_starts,
+            seq,
+            stats,
+            erased,
+            n_erased,
+            erased_locks,
+            n_erased_locks,
+            replacing,
+            erasing,
+            replaced,
+            take,
+            switches,
+            started,
+            n_started,
+            mute_landed,
+            landed,
+            n_landed,
+            lock_starts,
+            n_lock_starts,
+            held,
+            n_held,
+            hits,
+            n_hits,
+            last,
+            seen,
+            programmed,
+            scene_landed,
+            scene_sent,
+            fill,
+            anchored,
+            dice_from,
+            fill_changes,
+            n_fill_changes,
+            left_out,
+            moves_pos,
+            song_lanes,
+            touching,
+            n_touching,
+            only,
+        } = src;
+        fn used<T: Copy>(to: &mut [T], from: &[T], n: usize) -> usize {
+            let n = n.min(from.len());
+            to[..n].copy_from_slice(&from[..n]);
+            n
+        }
+        self.n_sounding = used(&mut self.sounding, sounding, *n_sounding);
+        self.n_starts = used(&mut self.starts, starts, *n_starts);
+        self.n_erased = used(&mut self.erased, erased, *n_erased);
+        self.n_erased_locks = used(&mut self.erased_locks, erased_locks, *n_erased_locks);
+        self.n_started = used(&mut self.started, started, *n_started);
+        self.n_landed = used(&mut self.landed, landed, *n_landed);
+        self.n_lock_starts = used(&mut self.lock_starts, lock_starts, *n_lock_starts);
+        self.n_held = used(&mut self.held, held, *n_held);
+        self.n_hits = used(&mut self.hits, hits, *n_hits);
+        self.n_fill_changes = used(&mut self.fill_changes, fill_changes, *n_fill_changes);
+        self.n_touching = used(&mut self.touching, touching, *n_touching);
+        self.seq = *seq;
+        self.stats = *stats;
+        self.replacing = *replacing;
+        self.erasing = *erasing;
+        self.replaced = *replaced;
+        self.take = *take;
+        self.switches = *switches;
+        self.mute_landed = *mute_landed;
+        self.last = *last;
+        self.seen = *seen;
+        self.programmed = *programmed;
+        self.scene_landed = *scene_landed;
+        self.scene_sent = *scene_sent;
+        self.fill = *fill;
+        self.anchored = *anchored;
+        self.dice_from = *dice_from;
+        self.left_out = *left_out;
+        self.moves_pos = *moves_pos;
+        self.song_lanes = *song_lanes;
+        self.only = *only;
+    }
+
+    /// Plays only the tracks whose bit is set in `tracks` (bit `i`:
+    /// track `i`; all until this is called), for a copy that only some
+    /// tracks' events matter from: the look-ahead's ([`crate::Ahead`]),
+    /// which plays on ahead for the tracks on slow gear alone. Never for
+    /// the real player: a track left out misses its notes' starts and
+    /// ends.
+    pub fn only(&mut self, tracks: u128) {
+        self.only = tracks;
     }
 
     /// Turn FILL on or off from frame `offset` of the coming period (the
@@ -968,6 +1070,9 @@ impl Player {
         self.n_lock_starts = 0;
         let bar = span.meter.bar_ticks();
         for i in 0..view.tracks.len() {
+            if (self.only >> i) & 1 == 0 {
+                continue;
+            }
             // A mute cue (the mute queue) splits the track's part of the
             // span on its line: the track as it was up to it, then as the
             // cue has it.

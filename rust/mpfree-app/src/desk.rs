@@ -192,7 +192,8 @@ impl Desk<'_> {
                     out.note(&format!("XY pad: plays {name}"));
                     fx.extend(app.set_xy_effect(e));
                 }
-                mix.play(p)
+                mix.play(p);
+                tell_throw_said(mix, out);
             }
             gui::FromUi::Steps(a) => {
                 // ERASE + a lane's name: said in place of the hint.
@@ -370,7 +371,12 @@ impl Desk<'_> {
             gui::FromUi::LoopKeys => fx.extend(app.toggle_loop_keys()),
             gui::FromUi::PerformOff => fx.extend(app.perform_off()),
             gui::FromUi::PerformOn => fx.extend(app.perform_on()),
-            gui::FromUi::PerformShown(on) => fx.extend(app.show_perform(on)),
+            gui::FromUi::PerformShown(on) => {
+                if on {
+                    out.show(throw_strips(mix, time));
+                }
+                fx.extend(app.show_perform(on))
+            }
             gui::FromUi::PerformPage(page) => fx.extend(app.perform_page_to(page)),
             gui::FromUi::PerformPad { page, pad, action } => {
                 fx.extend(app.set_perform_pad(page, pad, action))
@@ -589,9 +595,17 @@ impl Desk<'_> {
                 later.extend(crate::looper_action(out, looper, app, *card, a))
             }
             // A Perform pad's throw, and its track mute.
-            app::Effect::PlayFx(p) => mix.play(p),
+            app::Effect::PlayFx(p) => {
+                mix.play(p);
+                tell_throw_said(mix, out);
+            }
+            // The set changed: the strips its throws play on get their
+            // Perform FX (picking On is where the mix changes, never a hit).
             app::Effect::PerformSet { set, opened } => {
-                out.show(gui::ToUi::PerformSet { set, opened })
+                mix.perform_strips(&set.throw_strips(), opened);
+                tell_throw_said(mix, out);
+                out.show(gui::ToUi::PerformSet { set, opened });
+                out.show(throw_strips(mix, time));
             }
             app::Effect::TrackMute { track, wait } => {
                 let line = time
@@ -723,6 +737,25 @@ pub fn perform_pad(
 /// playing). A throw pad plays its throw (held, or latched until the next
 /// hit); a track mute pad mutes or unmutes its track, at the launch line
 /// in Perform; a scene pad launches its row.
+/// The strips a Perform pad's throw can play on now, for the screen.
+pub fn throw_strips(mix: &mixing::MixHost, time: &time::TimeHost) -> gui::ToUi {
+    gui::ToUi::ThrowStrips(mixing::throw_strips(
+        &mix.mixer,
+        mix.channels_in_use(),
+        &crate::export::track_names(time),
+    ))
+}
+
+/// What the Perform set's throws on tracks and submixes said (a Perform
+/// FX put on or taken off, or why a throw couldn't play), in the log and
+/// on the screen.
+pub fn tell_throw_said(mix: &mut mixing::MixHost, out: &mut Out) {
+    for line in mix.take_throw_said() {
+        out.note(&line);
+        out.show(gui::ToUi::Tell(line));
+    }
+}
+
 pub fn perform_pad_on(
     app: &mut app::App,
     time: &time::TimeHost,

@@ -4540,16 +4540,10 @@ impl time::Pads for SeqPads<'_> {
     /// the pads don't play it (its pad still flashes). A panic ends MIDI
     /// Out's notes and goes on to the pads.
     fn out(&mut self, o: &mpfree_play::Out) -> bool {
-        use mpfree_play::Event;
         if self.quiet(o) {
             return true;
         }
-        let pad = match o.event {
-            Event::NoteOn { note, .. } | Event::NoteOff { note } | Event::Pressure { note, .. } => {
-                usize::from(note)
-            }
-            _ => 0,
-        };
+        let pad = event_pad(o.event);
         // A track that plays notes plays its pad's notes moved by its live
         // transpose (S4); a note-off goes to what its note-on sent.
         let shift = self.shift(o.track);
@@ -4562,12 +4556,63 @@ impl time::Pads for SeqPads<'_> {
         self.cv.send(o, is);
         self.tap.send(o, is);
         let taken = self.midi.send(o, is) || self.clip_own(o, &shift);
-        if let (true, Event::NoteOn { velocity, .. }) = (taken, o.event) {
-            if let Some(f) = self.flashes.get_mut(pad) {
-                *f = velocity.max(1);
-            }
+        if taken {
+            self.flash(o);
         }
         taken
+    }
+
+    /// A clip's event on a track whose gear needs more than the sound's
+    /// lead (sequencer S5), before its period: MIDI out alone sends it
+    /// now, early enough for the gear's delay.
+    fn out_ahead(&mut self, o: &mpfree_play::Out) -> bool {
+        if self.quiet(o) {
+            return false;
+        }
+        let shift = self.shift(o.track);
+        let mut buf = [0; MAX_PAD_NOTES];
+        let is = shifted_is(
+            pad_is(
+                synth_seen(self.kits, self.synth, o.track),
+                event_pad(o.event),
+            ),
+            &shift,
+            &mut buf,
+        );
+        self.midi.send(o, is)
+    }
+
+    /// The same event in its own period, MIDI out having sent it ahead:
+    /// the rest of what `out` does (CV out, an export's MIDI file, the
+    /// pad's flash).
+    fn out_sent(&mut self, o: &mpfree_play::Out) {
+        if self.quiet(o) {
+            return;
+        }
+        let shift = self.shift(o.track);
+        let mut buf = [0; MAX_PAD_NOTES];
+        let is = shifted_is(
+            pad_is(
+                synth_seen(self.kits, self.synth, o.track),
+                event_pad(o.event),
+            ),
+            &shift,
+            &mut buf,
+        );
+        self.cv.send(o, is);
+        self.tap.send(o, is);
+        self.flash(o);
+    }
+}
+
+/// The pad a clip's note event is on (0 for the rest).
+fn event_pad(e: mpfree_play::Event) -> usize {
+    use mpfree_play::Event;
+    match e {
+        Event::NoteOn { note, .. } | Event::NoteOff { note } | Event::Pressure { note, .. } => {
+            usize::from(note)
+        }
+        _ => 0,
     }
 }
 
@@ -4581,6 +4626,16 @@ fn synth_seen<'s>(
 }
 
 impl SeqPads<'_> {
+    /// A note-on that went out elsewhere (MIDI out, a track's own
+    /// instrument) still flashes its pad.
+    fn flash(&mut self, o: &mpfree_play::Out) {
+        if let mpfree_play::Event::NoteOn { velocity, .. } = o.event {
+            if let Some(f) = self.flashes.get_mut(event_pad(o.event)) {
+                *f = velocity.max(1);
+            }
+        }
+    }
+
     /// The synth, if track `track` plays it rather than a kit.
     fn synth_of(&mut self, track: u16) -> Option<&mut synth::Synth> {
         if self.kits.plays_synth(usize::from(track)) {
@@ -8160,6 +8215,9 @@ fn player_session(
         // the song starts, before this period's notes.
         midi_out.sync(&io_model, time.info().state.rolling());
         midi_out.clock(time.block());
+        // The tracks on gear slower than the sound's lead play their clips
+        // that much ahead (sequencer S5).
+        time.set_ahead(&midi_out.ahead());
         // CV out takes the outputs' jobs; run, reset and clock follow the
         // transport.
         cv_out.sync(&io_model);
@@ -8840,6 +8898,9 @@ fn player_session(
         if let Some(line) = mix.poll_built() {
             out.note(line);
         }
+        // A Perform FX the set put on and no throw plays on now, taken
+        // off once it was in.
+        desk::tell_throw_said(&mut mix, out);
         // A switch of mode that came in: Q-Links and MIDI controls learned
         // on the insert's controls follow them.
         for landed in mix.modes.take_landed() {
@@ -9429,6 +9490,15 @@ fn player_session(
     }
     for line in summary {
         out.say(&line);
+    }
+    let ahead = time.ahead_counts();
+    if ahead != Default::default() {
+        out.say(&format!(
+            "MIDI out ahead (gear slower than the sound's lead): {} clip events sent early, {} \
+             late (changed inside the look-ahead), {} notes ended (sent early, then not played), \
+             {} found no room and went late",
+            ahead.ahead, ahead.late, ahead.wrong, ahead.dropped
+        ));
     }
     // CV 1 to 4 go to 0 V before the port lets go.
     let summary = cv_out.summary();
