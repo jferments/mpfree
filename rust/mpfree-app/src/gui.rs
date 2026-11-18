@@ -3060,6 +3060,55 @@ impl Player {
         moved
     }
 
+    /// The tracks Play's switch goes through: every track but the Loop
+    /// tracks, which have no pads.
+    fn pad_tracks(&self) -> Vec<usize> {
+        let tracks = &self.time.tracks;
+        (0..tracks.len())
+            .filter(|&t| tracks[t].loops.is_none())
+            .collect()
+    }
+
+    /// The track `d` places after (or before) the one the pads play, round
+    /// the ends; None with no other.
+    fn next_track(&self, d: i32) -> Option<usize> {
+        let tracks = self.pad_tracks();
+        let now = self.play.steps.track;
+        if tracks.iter().all(|&t| t == now) {
+            return None;
+        }
+        let n = tracks.len() as i32;
+        let at = tracks.iter().position(|&t| t == now);
+        let to = match at {
+            Some(i) => (i as i32 + d).rem_euclid(n),
+            None if d > 0 => 0,
+            None => n - 1,
+        };
+        tracks.get(to as usize).copied()
+    }
+
+    /// Play's rows' head: the track the pads play, its name and number,
+    /// its colour, and whether the switch has another.
+    fn track_look(&self) -> play_page::TrackLook {
+        let t = self.play.steps.track;
+        let name = self
+            .time
+            .tracks
+            .get(t)
+            .map_or_else(|| format!("Track {}", t + 1), |i| i.name.clone());
+        let sub = if self.time.armed == Some(t) {
+            format!("Track {} · armed", t + 1)
+        } else {
+            format!("Track {}", t + 1)
+        };
+        play_page::TrackLook {
+            name,
+            sub,
+            color: time_view::track_color(t),
+            switch: self.next_track(1).is_some(),
+        }
+    }
+
     /// Open or close the REC chip's target list in place of Play's or the
     /// Sequencer's view.
     fn toggle_rec_list(&mut self) {
@@ -3343,6 +3392,7 @@ impl Player {
             g.on_pads = old.on_pads;
             g.held.clone_from(&old.held);
             g.pitched = old.pitched;
+            g.bank.clone_from(&old.bank);
         }
         self.play.fill_steps(&mut g);
         let same = self
@@ -3359,6 +3409,7 @@ impl Player {
                     && old.on_pads == g.on_pads
                     && old.held == g.held
                     && old.pitched == g.pitched
+                    && old.bank == g.bank
             });
         if !same {
             if let Some(w) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
@@ -3372,6 +3423,7 @@ impl Player {
                 w.on_pads = g.on_pads;
                 w.held = g.held;
                 w.pitched = g.pitched;
+                w.bank = g.bank;
             }
         }
         let mut th = Throws::default();
@@ -4100,6 +4152,13 @@ impl Player {
                      {WHEEL_HINT}   ·   {stop}", self.chain_page.bind.title())
         } else {
             match self.view {
+                // The All view: the armed track's pads as rows (the Play,
+                // Pads and Sequencer redesign's board 1).
+                View::Play if self.play.on_play_rows() => format!(
+                    "Tap a step: on or off   ·   a name: mute   ·   A–H or PAD BANK: the bank   ·   \
+                     swipe: the bank's 16 pads   ·   ‹ {} ›: the next track   ·   Loop: the loop view",
+                    self.play.track.name
+                ),
                 View::Play => format!("Tap All or Loop: the view   ·   {WHEEL_HINT}   ·   PAD BANK: bank   ·   \
                                        NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
                 View::Sequencer if self.time.edit.is_some() => {
@@ -5374,6 +5433,8 @@ impl Player {
                     // lanes (any of the kit's pads), with the page's empty
                     // pads last.
                     self.play.pad_page = page;
+                    // Play's rows: the new bank from its first pad.
+                    self.play.rows_top = 0;
                     self.set_kit(self.kit);
                     self.refresh_play();
                     // The Sample and Pads tabs go to the same pad of the
@@ -5408,7 +5469,12 @@ impl Player {
                 }
             }
             ToUi::Steps(st) => {
+                if st.track != self.play.steps.track {
+                    // Another track's pads: from their first row.
+                    self.play.rows_top = 0;
+                }
                 self.play.set_steps(*st);
+                self.play.track = self.track_look();
                 self.refresh_play();
                 if matches!(self.view, View::Play | View::Sequencer) {
                     self.refresh_qlinks();
@@ -6060,6 +6126,7 @@ impl Player {
                 self.time = *st;
                 self.kit_track_armed();
                 self.refresh_kit_tracks();
+                self.play.track = self.track_look();
                 if self.levels.transpose {
                     // The armed track, and where it is transposed to.
                     self.refresh_levels();
@@ -8840,11 +8907,72 @@ impl Player {
                 self.refresh_qlinks();
                 a.map(FromUi::Steps)
             }
+            // Play's rows: a swipe moves them through the bank's 16 (or a
+            // synth's scale rows).
+            (play_page::STEPS, EventKind::Step { index, delta }) if index == play_widgets::ROWS => {
+                let n = self
+                    .ui
+                    .rect_of(play_page::STEPS)
+                    .zip(self.ui.get::<StepGrid>(play_page::STEPS))
+                    .map_or(6, |(r, g)| g.note_rows(r));
+                self.play.scroll_rows(delta, n);
+                self.refresh_play();
+                None
+            }
+            // Play's head: the track switch arms the track before or after
+            // the armed one (Loop tracks have no pads, so it skips them).
+            (play_page::STEPS, EventKind::Tab(k))
+                if k == play_widgets::HEAD_TRACK_PREV || k == play_widgets::HEAD_TRACK_NEXT =>
+            {
+                let d = if k == play_widgets::HEAD_TRACK_PREV {
+                    -1
+                } else {
+                    1
+                };
+                match self.next_track(d) {
+                    Some(t) => Some(FromUi::Time(TimeAction::Arm(Some(t)))),
+                    None => {
+                        self.tell("tracks: no other track with pads (Arrange's + Track adds one)");
+                        None
+                    }
+                }
+            }
+            // A bank: the pads and the rows go to it, as PAD BANK does.
+            (play_page::STEPS, EventKind::Tab(k))
+                if (play_widgets::HEAD_BANK..play_widgets::HEAD_BANK + 8).contains(&k) =>
+            {
+                if self.play.pitched() {
+                    self.tell("banks: the synth's pads have layouts, not banks");
+                    return None;
+                }
+                Some(FromUi::PadBank(k - play_widgets::HEAD_BANK))
+            }
+            (play_page::STEPS, EventKind::Tab(play_widgets::HEAD_FOLLOW)) => {
+                self.play.follow = !self.play.follow;
+                self.tell(if self.play.follow {
+                    "steps: Follow: the page turns with the playhead"
+                } else {
+                    "steps: Follow off: the page stays"
+                });
+                self.refresh_play();
+                None
+            }
+            (play_page::STEPS, EventKind::Tab(play_widgets::HEAD_SEQUENCER)) => {
+                let tab = mpfree_ui::widgets::APP_TABS
+                    .iter()
+                    .position(|t| *t == "Sequencer")
+                    .unwrap_or(2);
+                Some(FromUi::Tab(tab))
+            }
             // The pattern head: the page, and the length (32, 64, 128 steps).
             (play_page::STEPS, EventKind::Tab(k))
                 if k == play_widgets::HEAD_PREV || k == play_widgets::HEAD_NEXT =>
             {
                 let d = if k == play_widgets::HEAD_PREV { -1 } else { 1 };
+                if self.play.on_play_rows() {
+                    // A page picked by hand: Follow lets go.
+                    self.play.follow = false;
+                }
                 let moved = self.play.turn_page(d);
                 if !moved {
                     self.tell(if d < 0 {
@@ -15459,6 +15587,90 @@ mod tests {
         assert_eq!(p.take_actions(), vec![]);
     }
 
+    /// Play's rows (the Play, Pads and Sequencer redesign's board 1): the
+    /// armed track's pads, a bank at a time in pad order, under a head
+    /// whose switch arms the next track, whose banks turn PAD BANK, whose
+    /// Follow follows the playhead and whose last button opens the
+    /// Sequencer tab; a swipe moves the rows. The Sequencer's Steps keep
+    /// the pattern's lanes.
+    #[test]
+    fn play_shows_the_armed_tracks_pads_a_bank_at_a_time() {
+        let mut p = sample_player(Fonts::embedded());
+        let h = crate::time::TimeHost::new(44_100, 120.0).unwrap();
+        p.apply(ToUi::Time(Box::new(h.state())));
+        p.apply(ToUi::Steps(Box::new(h.steps())));
+        p.apply(ToUi::Show(View::Play));
+        p.take_actions();
+        fn grid(p: &Player) -> &StepGrid {
+            p.ui.get::<StepGrid>(play_page::STEPS).unwrap()
+        }
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let g = grid(&p);
+        let b = g.bank.clone().expect("Play's head");
+        assert_eq!(
+            (b.track.as_str(), b.sub.as_str()),
+            ("Track 1", "Track 1 · armed")
+        );
+        assert!(b.switch, "eight tracks to switch through");
+        assert_eq!(b.bank, Some(0));
+        let labels: Vec<String> = g.lanes.iter().filter_map(|l| l.label.clone()).collect();
+        assert_eq!(labels.len(), 16);
+        assert_eq!((labels[0].as_str(), labels[15].as_str()), ("A1", "A16"));
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(
+            hint(&p).contains("‹ Track 1 ›: the next track"),
+            "{}",
+            hint(&p)
+        );
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let head = |k: usize| StepGrid::bank_head_at(r, k);
+        // The switch: the next track, round the ends.
+        assert_eq!(
+            tap(&mut p, head(play_widgets::HEAD_TRACK_NEXT)),
+            Some(FromUi::Time(TimeAction::Arm(Some(1))))
+        );
+        assert_eq!(
+            tap(&mut p, head(play_widgets::HEAD_TRACK_PREV)),
+            Some(FromUi::Time(TimeAction::Arm(Some(crate::time::TRACKS - 1))))
+        );
+        // A bank: PAD BANK's; the rows follow the pads' page from its top.
+        assert_eq!(
+            tap(&mut p, head(play_widgets::HEAD_BANK + 1)),
+            Some(FromUi::PadBank(1))
+        );
+        p.play.rows_top = 3;
+        p.apply(ToUi::PadPage(1));
+        let g = grid(&p);
+        assert_eq!(g.bank.as_ref().map(|b| (b.bank, b.top)), Some((Some(1), 0)));
+        assert_eq!(g.lanes[0].label.as_deref(), Some("B1"));
+        // A swipe up shows the rows below.
+        let (x, y) = g.step_at(r, 2, 3);
+        let pitch = g.step_at(r, 1, 0).1 - g.step_at(r, 0, 0).1;
+        assert_eq!(p.touch(1, Touch::Down, x, y), None);
+        assert_eq!(p.touch(1, Touch::Move, x, y - pitch - 4), None);
+        assert_eq!(p.touch(1, Touch::Up, x, y - pitch - 4), None);
+        assert_eq!(p.play.rows_top, 1);
+        assert_eq!(grid(&p).bank.as_ref().map(|b| b.top), Some(1));
+        // Follow on and off; the Sequencer tab.
+        assert_eq!(tap(&mut p, head(play_widgets::HEAD_FOLLOW)), None);
+        assert!(p.play.follow);
+        assert_eq!(tap(&mut p, head(play_widgets::HEAD_FOLLOW)), None);
+        assert!(!p.play.follow);
+        assert_eq!(
+            tap(&mut p, head(play_widgets::HEAD_SEQUENCER)),
+            Some(FromUi::Tab(2))
+        );
+        // The Sequencer's Steps: the pattern's head, its lanes most wanted
+        // first.
+        p.apply(ToUi::Show(View::Sequencer));
+        let g = grid(&p);
+        assert_eq!(g.bank, None);
+        assert!(g.lanes.iter().all(|l| l.label.is_none()));
+    }
+
     /// Play's switch is All | Loop; the Sequencer's Steps are Beats'
     /// pages (the Play, Pads and Sequencer redesign), with Steps | Notes
     /// in the same place.
@@ -15737,7 +15949,10 @@ mod tests {
                 .unwrap()
                 .title
         );
-        // Beats' lanes still take the sounds of every bank.
+        // Play's rows are bank B's pads, in order.
+        assert_eq!(p.play.lane_pads(), (16..32).collect::<Vec<_>>());
+        // The Sequencer's lanes still take the sounds of every bank.
+        p.apply(ToUi::Show(View::Sequencer));
         let lanes: Vec<usize> = p.play.lane_pads();
         assert_eq!(lanes.iter().filter(|&&l| l >= 16).count(), 16, "{lanes:?}");
         assert!(
@@ -15857,35 +16072,25 @@ mod tests {
         let mut p = sample_play(Fonts::embedded(), PlayView::All);
         p.play.throw(2, false);
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
-        // The pattern: the programmed beat's lanes, the clap muted.
+        // The pattern: the bank's pads in order (Play's rows), the clap
+        // muted.
         let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
         assert_eq!(g.title, "Pattern 1 · Track 1");
         let r = p.ui.rect_of(play_page::STEPS).unwrap();
         assert_eq!(
             g.lanes_shown(r),
-            [0, 2, 4, 5, 7, 10],
-            "the sounds with notes, in pad order"
+            (0..g.rows_shown(r)).collect::<Vec<_>>(),
+            "bank A's pads, in order"
         );
         assert!(g.lanes.iter().find(|l| l.pad == 7).unwrap().muted);
         assert_eq!(g.lanes[0].steps[0], 120, "the kick on the one");
         assert_eq!(g.play, Some(1));
-        // A step tapped: on, for the sequencer.
+        let (at, speaker) = (g.step_at(r, 0, 1), g.name_at(r, 2));
+        // A step tapped: on, for the sequencer, when the finger lifts.
         let tap = |p: &mut Player, (x, y): (i32, i32)| {
             let down = p.touch(1, Touch::Down, x, y);
             down.or(p.touch(1, Touch::Up, x, y))
         };
-        let cell = |p: &Player, lane: usize, step: usize| {
-            let r = p.ui.rect_of(play_page::STEPS).unwrap();
-            let (_, body) = mpfree_ui::draw::card_head(r);
-            let grid = body.take_left(118).1;
-            let cw = (grid.w - 3 * 10 - 15 * 4) / 16;
-            let rh = ((grid.h - 5 * 5) / 6).min(44);
-            (
-                grid.x + step as i32 * (cw + 4) + (step as i32 / 4) * 6 + cw / 2,
-                grid.y + lane as i32 * (rh + 5) + rh / 2,
-            )
-        };
-        let at = cell(&p, 0, 1);
         assert_eq!(
             tap(&mut p, at),
             Some(FromUi::Steps(StepAction::Tap {
@@ -15895,11 +16100,8 @@ mod tests {
             }))
         );
         // A speaker: the pad's mute, for the mixer.
-        let (_, body) = mpfree_ui::draw::card_head(r);
-        let names = body.take_left(118).0;
-        let (_, y) = cell(&p, 1, 0);
         assert_eq!(
-            tap(&mut p, (names.right() - 14, y)),
+            tap(&mut p, speaker),
             Some(FromUi::PlayFx(PlayFx::PadMute { pad: 2, mute: true }))
         );
         // A throw held and let go: the performance effect on the master.
@@ -17698,12 +17900,15 @@ mod tests {
     #[test]
     fn touches_become_actions_once_ready() {
         let mut p = sample_player(Fonts::embedded());
-        // A step of the pattern on Play: on, then nothing more on the lift.
+        // A step of Play's rows: on when the finger lifts (so a swipe can
+        // move the rows instead).
         let steps = p.ui.rect_of(play_page::STEPS).unwrap();
         assert!(p
             .touch(1, Touch::Down, steps.x + steps.w / 2, steps.y + steps.h / 2)
+            .is_none());
+        assert!(p
+            .touch(1, Touch::Up, steps.x + steps.w / 2, steps.y + steps.h / 2)
             .is_some());
-        p.touch(1, Touch::Up, steps.x + steps.w / 2, steps.y + steps.h / 2);
         let header = p.ui.rect_of("header").unwrap();
         let tab1 = p.ui.get::<Header>("header").unwrap().tab_rect(header, 1);
         // The second tab: the app decides; the page stays until it says.
@@ -22922,12 +23127,13 @@ mod tests {
         );
         s.shift = false;
         p.apply(ToUi::Status(s.clone()));
+        // Play's own hint is back.
         assert!(p
             .ui
             .get::<Label>("hint")
             .unwrap()
             .text
-            .contains("NOTE REPEAT: repeat"));
+            .starts_with("Tap a step: on or off"));
         // TRACK MUTE: the hint says what the pads are now, on any page.
         let tracks = p.time.tracks.len();
         for (keys, bank, hint) in [
