@@ -91,7 +91,7 @@ use mpfree_sampler_ui::auto_tab::{
 };
 use mpfree_sampler_ui::chop_tab::{self, ChopAction, ChopState, ChopTab};
 use mpfree_sampler_ui::fx_tab::{self, FxAction, FxKnob, FxPedal, FxState, FxTab};
-use mpfree_sampler_ui::grain_tab::{self, GrainAction, GrainState, GrainTab};
+use mpfree_sampler_ui::grain_tab::{self, CloudNow, GrainAction, GrainState, GrainTab};
 use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
 use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab, SceneAction};
 use mpfree_sampler_ui::rec_tab::{self, RecAction, RecState, RecTab, Skip};
@@ -5638,7 +5638,12 @@ impl SamplePage {
                     let head = c
                         .head
                         .map(|h| ((h as f64 - r.start as f64) / r.frames().max(1) as f64) as f32);
-                    tab.set_cloud(ui, st, c.grains(), head, c.live);
+                    let now = CloudNow {
+                        playhead: head,
+                        state: c.state,
+                        live: c.live,
+                    };
+                    tab.set_cloud(ui, st, c.grains(), now);
                 }
                 self.cloud_shown = busy;
             }
