@@ -179,7 +179,7 @@ const CONSOLE_HINT: &str =
     "Switch the MPC off with its power switch to return to the stock firmware";
 /// The hint line while ERASE is held (Jay after live test 3: ERASE + a
 /// tap deletes what is tapped).
-pub const ERASE_HINT: &str = "ERASE held: tap a clip (Arrange), a lane's name (Play) or a layer (Looper) to delete it   ·   \
+pub const ERASE_HINT: &str = "ERASE held: tap a clip (Arrange), a lane's name (Play), a layer or a ring (Looper) to delete it   ·   \
                               UNDO brings it back";
 /// SHIFT held on the mixer, the chain editor or the macros panel, where
 /// a touch on a value arms MIDI Learn (layout spec 4d).
@@ -1309,6 +1309,9 @@ pub enum FromUi {
     /// Loop `n`'s mute turned over without picking it (the picked loop's
     /// with None).
     LoopMute(Option<usize>),
+    /// Loop `n`'s solo turned over without picking it: the deck's S,
+    /// SHIFT + a mute pad.
+    LoopSolo(usize),
     /// Loop `n`'s level (0 to 2) without picking it: the Looper tab's
     /// Q-Links, a loop's level bar.
     LoopLevel(usize, f32),
@@ -3472,9 +3475,9 @@ impl Player {
     /// UNDO takes back deletes it. `Some` is the answer to the touch; `None`
     /// lets the tap do what it always does. Only deletes with an undo are
     /// here: an Arrange clip (the takes' undo), a Play lane's steps (the
-    /// same), and a Looper tab layer (the looper's undo). Song blocks,
-    /// whole loops, effects and macros have no undo yet, so ERASE leaves
-    /// them alone.
+    /// same), and a Looper tab layer or whole loop (the looper's undo, in
+    /// [`Self::looper_acts`]). Song blocks, effects and macros have no undo
+    /// yet, so ERASE leaves them alone.
     fn erase_tap(&mut self, ev: &UiEvent) -> Option<Option<FromUi>> {
         match (ev.widget.as_str(), &ev.kind) {
             // A lane's speaker: that pad's steps (any of the kit's 128).
@@ -3528,7 +3531,8 @@ impl Player {
 
     /// What the Looper tab's panels asked for: the first as the answer to
     /// the touch, the rest after it. With ERASE held, a layer tapped is
-    /// deleted (the looper's UNDO brings it back).
+    /// deleted and a loop's ring or name clears the loop (the looper's
+    /// UNDO brings either back).
     fn looper_acts(&mut self) -> Option<FromUi> {
         use crate::looper_tab::{Ctl, LoopAct};
         use mpfree_looper::Command as C;
@@ -3545,17 +3549,10 @@ impl Player {
                     erased.push(k);
                     LoopAct::LayerCmd(k, mpfree_looper::LayerCommand::Delete)
                 }
-                LoopAct::Pick(_)
-                | LoopAct::Tap(_)
-                | LoopAct::Clear(_)
-                | LoopAct::Strip(Ctl::Clear)
-                    if erase =>
-                {
-                    self.tell(
-                        "ERASE: a whole loop has no undo yet, so ERASE leaves it; hold its ring to clear it",
-                    );
-                    continue;
-                }
+                // ERASE + a ring (or its name, or Clear) clears the loop,
+                // and UNDO brings it back.
+                LoopAct::Pick(n) | LoopAct::Tap(n) if erase => LoopAct::Clear(n),
+                LoopAct::Strip(Ctl::Clear) if erase => LoopAct::Clear(self.looper.selected),
                 a => a,
             };
             let s = self.looper.status;
@@ -3573,6 +3570,7 @@ impl Player {
                     }
                 }
                 LoopAct::Mute(n) => out.push(FromUi::LoopMute(Some(n))),
+                LoopAct::Solo(n) => out.push(FromUi::LoopSolo(n)),
                 LoopAct::PadKeys => out.push(FromUi::LoopKeys),
                 LoopAct::Clear(n) => {
                     out.push(FromUi::LoopPick(n));
@@ -4762,7 +4760,11 @@ impl Player {
     /// Pads tabs too, whose UNDO the app sends straight on).
     fn undo_ready(&self) -> bool {
         match self.undo_source() {
-            Some(HistoryOf::Loop) => !self.looper.history.done().is_empty(),
+            Some(HistoryOf::Loop) => {
+                !self.looper.history.done().is_empty()
+                    || (self.looper.status.kept
+                        && self.looper.status.phase == mpfree_looper::Phase::Empty)
+            }
             Some(HistoryOf::Takes) => !self.time.done.is_empty(),
             Some(HistoryOf::Sample) => self.sample.can_undo(),
             Some(HistoryOf::Turns(UndoOn::Synth)) => self.turns_ready.0,
@@ -5520,10 +5522,14 @@ impl Player {
             ToUi::Map(m) => DebugPages::set_map(&mut self.ui, &m),
             ToUi::Engines(shared) => self.engines = Some(shared),
             ToUi::Looper(v) => {
-                // The picked loop's history moved: UNDO on All takes it.
+                // The picked loop's history moved, or a loop was cleared
+                // (a key held on Play picks it as it clears): UNDO on All
+                // takes it.
                 let h = &v.history;
                 let seen = (v.selected, h.done().len(), h.redo().len());
-                if seen.0 == self.seen_loop.0 && seen != self.seen_loop {
+                let cleared = v.status.kept
+                    && !(self.looper.status.kept && self.looper.selected == v.selected);
+                if (seen.0 == self.seen_loop.0 && seen != self.seen_loop) || cleared {
                     self.undo_loop = true;
                 }
                 self.seen_loop = seen;
@@ -14012,6 +14018,8 @@ mod tests {
             tap(&mut p, centre_of(two.mute)),
             Some(FromUi::LoopMute(Some(1)))
         );
+        // Its S solos it, without picking it.
+        assert_eq!(tap(&mut p, centre_of(two.solo)), Some(FromUi::LoopSolo(1)));
         // Its ring, muted: unmuted on the press; held a second, cleared.
         assert_eq!(
             p.touch(1, Touch::Down, two.ring.x + 46, two.ring.y + 46),
@@ -15483,8 +15491,8 @@ mod tests {
         let empty = cell(&p, 1, 0);
         assert_eq!(tap(&mut p, empty), None, "no new clip while erasing");
         assert!(hint(&p).contains("empty"), "{}", hint(&p));
-        // Looper tab: a layer's lane or its head deletes it; a loop is
-        // left alone (a cleared loop has no undo yet).
+        // Looper tab: a layer's lane or its head deletes it; a loop's name
+        // or ring clears the loop (UNDO brings it back).
         use crate::looper_tab::LoopEditor;
         let mut p = sample_looper(Fonts::embedded()).unwrap();
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
@@ -15499,11 +15507,15 @@ mod tests {
                 command: mpfree_looper::LayerCommand::Delete,
             })
         );
+        let clear = || vec![FromUi::LoopCommand(mpfree_looper::Command::Clear)];
         let two = channel_of(&p, 1);
-        assert_eq!(tap(&mut p, (two.name.x + 30, two.name.y + 10)), None);
-        assert_eq!(tap(&mut p, centre_of(two.ring)), None);
-        assert!(hint(&p).contains("no undo yet"), "{}", hint(&p));
-        assert_eq!(p.take_actions(), vec![]);
+        assert_eq!(
+            tap(&mut p, (two.name.x + 30, two.name.y + 10)),
+            Some(FromUi::LoopPick(1))
+        );
+        assert_eq!(p.take_actions(), clear());
+        assert_eq!(tap(&mut p, centre_of(two.ring)), Some(FromUi::LoopPick(1)));
+        assert_eq!(p.take_actions(), clear(), "no record while erasing");
     }
 
     #[test]

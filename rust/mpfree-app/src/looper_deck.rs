@@ -47,6 +47,8 @@ const NAME_H: i32 = 28;
 const RING: i32 = 92;
 /// The level bar beside the ring answers a finger this wide.
 const LEVEL_HIT_W: i32 = 30;
+/// The S beside the speaker, at most.
+const SOLO_W: i32 = 44;
 
 /// What a loop is doing, as its ring shows it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -75,7 +77,9 @@ impl RingState {
             Phase::Recording => RingState::Recording,
             Phase::Overdubbing => RingState::Overdubbing,
             Phase::Playing if l.muted => RingState::Muted,
-            Phase::Playing if !l.on => RingState::Off,
+            // Silent in its place: stopped on its Loop track, or another
+            // loop is soloed.
+            Phase::Playing if !l.on || l.solo_out => RingState::Off,
             Phase::Playing => RingState::Playing,
         }
     }
@@ -109,8 +113,11 @@ pub struct Channel {
     pub level: f32,
     /// How loud it plays now, 0 to 1 along the level bar.
     pub meter: f32,
-    /// Under an empty ring: what it records from ("Pads", "Line in").
+    /// Under an empty ring: what it records from ("Pads", "Line in"), or
+    /// that UNDO brings back the loop cleared.
     pub foot: String,
+    /// Soloed: the S beside the speaker lit.
+    pub solo: bool,
 }
 
 impl Default for Channel {
@@ -127,6 +134,7 @@ impl Default for Channel {
             level: 1.0,
             meter: 0.0,
             foot: String::new(),
+            solo: false,
         }
     }
 }
@@ -155,6 +163,8 @@ pub struct ChannelParts {
     pub level: Rect,
     pub level_hit: Rect,
     pub mute: Rect,
+    /// The S beside the speaker: solo.
+    pub solo: Rect,
 }
 
 /// A finger on a ring: which loop, how long it has stayed, and whether
@@ -230,7 +240,10 @@ impl LoopDeck {
         let level = Rect::new(card.right() - 17, ring.y + 8, 7, ring.h - 16);
         let level_hit = Rect::new(card.right() - LEVEL_HIT_W, ring.y, LEVEL_HIT_W, ring.h);
         let by = ring.bottom() + 8;
-        let mute = Rect::new(card.x + 8, by, card.w - 16, card.bottom() - 8 - by);
+        let row = Rect::new(card.x + 8, by, card.w - 16, card.bottom() - 8 - by);
+        let solo_w = (row.w / 3).clamp(30, SOLO_W);
+        let mute = Rect::new(row.x, row.y, row.w - solo_w - 6, row.h);
+        let solo = Rect::new(row.right() - solo_w, row.y, solo_w, row.h);
         ChannelParts {
             card,
             name: Rect::new(card.x, card.y, card.w, NAME_H),
@@ -238,6 +251,7 @@ impl LoopDeck {
             level,
             level_hit,
             mute,
+            solo,
         }
     }
 
@@ -604,6 +618,14 @@ impl LoopDeck {
             cx.canvas.fill_round_rect(p.mute, 10, b);
             let (sx, sy) = (p.mute.x + p.mute.w / 2, p.mute.y + p.mute.h / 2);
             speaker(cx, sx, sy, if muted { t.bad } else { t.text }, muted);
+            // The solo: lit while this loop is soloed.
+            let (fill, ink) = if ch.solo {
+                (t.accent, t.on_accent)
+            } else {
+                (t.raised, t.text_dim)
+            };
+            cx.canvas.fill_round_rect(p.solo, 10, fill);
+            cx.text(FontId::Bold, 15.0, p.solo, Align::Center, ink, "S");
         } else {
             cx.text(
                 FontId::Sans,
@@ -714,6 +736,12 @@ impl Widget for LoopDeck {
                     format!("{} speaker", ch.name),
                     p.mute,
                 ));
+                out.push(Target::tap(
+                    "loop-solo",
+                    i,
+                    format!("{} solo{}", ch.name, if ch.solo { " (on)" } else { "" }),
+                    p.solo,
+                ));
                 out.push(Target::drag(
                     "loop-level",
                     i,
@@ -766,6 +794,10 @@ impl Widget for LoopDeck {
                 let state = self.channels[i].state;
                 if state.has_sound() && p.mute.contains(x, y) {
                     self.acts.push(LoopAct::Mute(i));
+                    return Some(EventKind::Toggle(i));
+                }
+                if state.has_sound() && p.solo.contains(x, y) {
+                    self.acts.push(LoopAct::Solo(i));
                     return Some(EventKind::Toggle(i));
                 }
                 if state.has_sound() && p.level_hit.contains(x, y) {

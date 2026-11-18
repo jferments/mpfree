@@ -21,7 +21,7 @@ mod looper {
 
     use super::super::{on_big_stack, Session};
     use crate::app::View;
-    use mpfree_looper::{Phase, Status};
+    use mpfree_looper::{Overdubs, Phase, Status};
     use mpfree_transport::time::PPQ;
 
     fn status(s: &Session) -> Status {
@@ -64,6 +64,7 @@ mod looper {
     fn rec_closes_on_the_bar_line_and_stop_stops_the_loop_at_once() {
         on_big_stack(|| {
             let mut s = Session::new();
+            s.make_sounds();
             s.press("header", "tab", "Looper");
             assert_eq!(s.view(), View::Looper);
             s.button("PLAY").run_for(0.3);
@@ -75,10 +76,11 @@ mod looper {
             assert_eq!(st.bars, None, "free length by default (Jay, 16 Nov)");
             assert_eq!(st.layers, 1);
 
-            // OVERDUB: a layer from the next pass; REC ends it.
+            // OVERDUB: a layer from the next pass (a pad played into it:
+            // an overdub of silence leaves none); REC ends it.
             s.button("OVERDUB");
             until_phase(&mut s, Phase::Overdubbing, 4.5);
-            s.run_for(1.0);
+            s.pad(0, 120, 0.3).run_for(0.7);
             s.button("REC");
             until_phase(&mut s, Phase::Playing, 4.5);
             assert_eq!(status(&s).layers, 2, "the overdub is a layer");
@@ -226,12 +228,14 @@ mod looper {
     /// A loop of two layers, playing, on the Looper tab.
     fn two_layers() -> Session {
         let mut s = Session::new();
+        s.make_sounds();
         s.press("header", "tab", "Looper");
         s.button("PLAY").run_for(0.3);
         record_a_loop(&mut s);
         s.button("OVERDUB");
         until_phase(&mut s, Phase::Overdubbing, 4.5);
-        s.run_for(1.0);
+        // A pad into it: an overdub of silence leaves no layer.
+        s.pad(0, 120, 0.3).run_for(0.7);
         s.button("REC");
         until_phase(&mut s, Phase::Playing, 4.5);
         assert_eq!(status(&s).layers, 2);
@@ -542,7 +546,7 @@ mod looper {
             s.press_target(&t).run_for(0.1);
             s.button("OVERDUB");
             until_phase(&mut s, Phase::Overdubbing, 4.5);
-            s.run_for(1.0);
+            s.pad(0, 120, 0.3).run_for(0.7);
             s.button("REC");
             until_phase(&mut s, Phase::Playing, 4.5);
             assert_eq!(layers_of(&s, 0), 2);
@@ -568,7 +572,8 @@ mod looper {
     /// The pads as loop keys (the Looper as an instrument, step 2):
     /// SHIFT + SAMPLER again on the Looper tab. Pad 13 is Loop 1's key: a hit
     /// records from the next bar line, a hit ends the first pass on the
-    /// bar line, a hit overdubs, a hit plays on. Pad 5, two rows under it,
+    /// bar line, a hit overdubs, a hit plays on (nothing was played into
+    /// the overdub, so it leaves no layer). Pad 5, two rows under it,
     /// mutes it and lets it play. Pad 14 is Loop 2's key, and a hit picks
     /// it. Held a second, a key clears its loop. The deck's Pads switch
     /// gives the pads back, and on the Sample tab they play the kit.
@@ -594,7 +599,8 @@ mod looper {
                 "a hit ends the first pass on the bar line"
             );
             until_phase(&mut s, Phase::Playing, 2.5);
-            // A hit overdubs, and another plays on with the layer.
+            // A hit overdubs, and another plays on. Nothing was played into
+            // it (the pads are keys), so it leaves no layer.
             s.pad(12, 100, 0.05);
             let end = s.t() + 2.5;
             while loop1(&s).phase != Phase::Overdubbing && s.t() < end {
@@ -605,7 +611,7 @@ mod looper {
             s.pad(12, 100, 0.05);
             s.run_for(0.2);
             assert_eq!(loop1(&s).phase, Phase::Playing);
-            assert_eq!(loop1(&s).layers, 2);
+            assert_eq!(loop1(&s).layers, 1, "an overdub of silence leaves none");
             // Pad 5 mutes Loop 1 and lets it play again.
             s.pad(4, 100, 0.05);
             assert!(loop1(&s).muted, "pad 5 muted Loop 1");
@@ -634,6 +640,107 @@ mod looper {
             // On the Sample tab the pads play the kit again.
             s.press("header", "tab", "Sample");
             assert!(!s.app.pads_are_loop_keys());
+            s.button("STOP");
+        });
+    }
+
+    /// A finger on loop `n`'s ring for `seconds`, then lifted.
+    fn hold_ring(s: &mut Session, n: usize, seconds: f64) {
+        let ring = at(s, "ldeck", "ring", n).rect;
+        let (x, y) = (ring.x + ring.w / 2, ring.y + ring.h / 2);
+        let down = s.screen.touch(7, mpfree_ui::Touch::Down, x, y);
+        for a in down.into_iter().chain(s.screen.take_actions()) {
+            s.route(a);
+        }
+        s.run_for(seconds);
+        let up = s.screen.touch(7, mpfree_ui::Touch::Up, x, y);
+        for a in up.into_iter().chain(s.screen.take_actions()) {
+            s.route(a);
+        }
+        s.run_for(0.3);
+    }
+
+    /// The forgiving looper (the Looper as an instrument, step 3a):
+    /// Overdubs: Once records one pass and plays on; a loop's S solos it
+    /// and the other loops go quiet in their places, as SHIFT + its mute
+    /// pad does with the pads as loop keys; a loop cleared (its ring held,
+    /// ERASE + its ring, its key held) comes back with UNDO, as it was
+    /// before the press that started an overdub.
+    #[test]
+    fn once_solo_and_a_clear_that_undo_brings_back() {
+        on_big_stack(|| {
+            let mut s = two_layers();
+            let l = |s: &Session, n: usize| s.looper.looper.loop_status(n).unwrap();
+            // Overdubs: Once. A tap on the ring records one pass with a
+            // pad in it, then the loop plays on by itself.
+            s.press("leditor", "overdubs", "Once").run_for(0.1);
+            assert_eq!(status(&s).overdubs, Overdubs::Once);
+            let t = at(&mut s, "ldeck", "ring", 0);
+            s.press_target(&t);
+            until_phase(&mut s, Phase::Overdubbing, 4.5);
+            s.pad(1, 120, 0.3);
+            until_phase(&mut s, Phase::Playing, 5.0);
+            assert_eq!(status(&s).layers, 3, "one pass, one layer");
+
+            // Loop 2 from its ring, with a pad in it.
+            let t = at(&mut s, "ldeck", "ring", 1);
+            s.press_target(&t).run_for(0.1);
+            until_phase(&mut s, Phase::Recording, 2.5);
+            s.pad(2, 120, 0.3).run_for(2.7);
+            let t = at(&mut s, "ldeck", "ring", 1);
+            s.press_target(&t);
+            until_phase(&mut s, Phase::Playing, 2.5);
+
+            // Loop 2's S: Loop 1 goes quiet in its place; S again lets go.
+            let t = at(&mut s, "ldeck", "loop-solo", 1);
+            s.press_target(&t).run_for(0.1);
+            assert!(l(&s, 1).solo && l(&s, 0).solo_out, "loop 2 soloed");
+            assert_eq!(l(&s, 0).phase, Phase::Playing, "loop 1 keeps its place");
+            let t = at(&mut s, "ldeck", "loop-solo", 1);
+            s.press_target(&t).run_for(0.1);
+            assert!(!l(&s, 1).solo && !l(&s, 0).solo_out);
+
+            // Loop 1's ring held a second: its press started an overdub,
+            // the hold clears it. UNDO brings it back as it was.
+            hold_ring(&mut s, 0, f64::from(crate::looper_deck::CLEAR_HOLD_S) + 0.2);
+            assert_eq!((l(&s, 0).phase, l(&s, 0).kept), (Phase::Empty, true));
+            assert!(s.said().iter().any(|l| l.contains("UNDO brings it back")));
+            s.button("UNDO").run_for(0.3);
+            assert_eq!(
+                (l(&s, 0).phase, l(&s, 0).layers, l(&s, 0).kept),
+                (Phase::Playing, 3, false),
+                "UNDO brought loop 1 back, all three layers"
+            );
+
+            // ERASE + Loop 2's ring: cleared at once, and UNDO again.
+            s.button_edge("ERASE", true);
+            let t = at(&mut s, "ldeck", "ring", 1);
+            s.press_target(&t).run_for(0.3);
+            s.button_edge("ERASE", false);
+            assert_eq!(l(&s, 1).phase, Phase::Empty, "ERASE + the ring cleared it");
+            assert_eq!(s.looper.looper.selected(), 1);
+            s.button("UNDO").run_for(0.3);
+            assert_eq!(l(&s, 1).phase, Phase::Playing, "and UNDO brought it back");
+
+            // The pads as loop keys: SHIFT + pad 6 (Loop 2's mute) solos
+            // Loop 2, and again lets go.
+            s.button_with("SHIFT", "SAMPLER");
+            assert!(s.app.pads_are_loop_keys());
+            s.button_edge("SHIFT", true);
+            s.pad(5, 100, 0.05);
+            s.button_edge("SHIFT", false);
+            assert!(l(&s, 1).solo, "SHIFT + its mute pad soloed loop 2");
+            assert!(!l(&s, 1).muted);
+            s.button_edge("SHIFT", true);
+            s.pad(5, 100, 0.05);
+            s.button_edge("SHIFT", false);
+            assert!(!l(&s, 1).solo);
+            // Pad 13 held: Loop 1 cleared; UNDO brings it back.
+            s.pad(12, 100, 1.3);
+            s.run_periods(4);
+            assert_eq!(l(&s, 0).phase, Phase::Empty, "the held key cleared it");
+            s.button("UNDO").run_for(0.3);
+            assert_eq!((l(&s, 0).phase, l(&s, 0).layers), (Phase::Playing, 3));
             s.button("STOP");
         });
     }

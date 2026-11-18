@@ -2780,7 +2780,8 @@ mod tests {
             assert_eq!(s.time.loop_cell(), Some((8, 0)));
             s.button("OVERDUB");
             until(&mut s, 0, Phase::Overdubbing);
-            s.run_for(1.0);
+            // A pad into it: an overdub of silence leaves no layer.
+            s.pad(0, 120, 0.3).run_for(0.7);
             s.button("OVERDUB");
             until(&mut s, 0, Phase::Playing);
             assert_eq!(s.looper.loop_status(0).map(|l| l.layers), Some(2));

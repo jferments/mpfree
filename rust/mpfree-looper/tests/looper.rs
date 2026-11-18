@@ -9,7 +9,7 @@
 //! 22.05 kHz at 240 BPM in 4/4 makes a bar exactly 22 050 frames (1 s).
 
 use mpfree_looper::{
-    After, Command as L, Edit as E, LayerCommand as Lc, Looper, Phase, Step, BLOCK, FADE,
+    After, Command as L, Edit as E, LayerCommand as Lc, Looper, Overdubs, Phase, Step, BLOCK, FADE,
     MAX_LAYERS, MAX_LOOPS,
 };
 use mpfree_transport::{Block, Command as T, Transport};
@@ -811,7 +811,8 @@ fn set_to_overdub_after_recording_the_first_pass_goes_straight_into_one() {
     r.run(START + BAR as u64 + 1, &z);
     assert_eq!(r.l.status().phase, Phase::Overdubbing);
     r.cmd(L::Overdub);
-    r.run(START + 2 * BAR as u64, &z);
+    // (Something played: an overdub of silence leaves no layer.)
+    r.run(START + 2 * BAR as u64, &dc(0.1));
     assert_eq!(r.l.status().layers, 2);
     // Overdub during the first pass cancels it for that pass; the setting
     // stays for the next loop.
@@ -1819,11 +1820,12 @@ fn edits_wait_for_play_and_refuse_what_cannot_be_made() {
     r.run(START / 2, &z);
     assert_eq!(r.l.stats().refused, 1);
     record_one_bar(&mut r, &dc(0.25));
-    // Not while an overdub records.
+    // Not while an overdub records (of something: one of silence leaves
+    // no layer).
     r.cmd(L::Overdub);
-    wait(&mut r);
+    r.run(r.frame + 4 * FADE as u64, &dc(0.1));
     r.cmd(L::Edit(E::Reverse));
-    wait(&mut r);
+    r.run(r.frame + 4 * FADE as u64, &dc(0.1));
     assert_eq!(
         (r.l.stats().refused, r.l.status().phase),
         (2, Phase::Overdubbing)
@@ -2387,4 +2389,261 @@ fn a_launch_the_song_jumps_past_lands_on_the_next_line() {
     assert!(r.l.launch(MAX_LOOPS, true, None));
     r.run(r.frame + 128, &z);
     assert_eq!(r.l.stats().no_layer, before + 1);
+}
+
+/// Clear fades the loop out and keeps it: Undo on the empty loop brings
+/// it back as it was (its layers and history), fading in, at the song's
+/// place. Meanwhile the memory gauge counts it as free.
+#[test]
+fn clear_keeps_the_loop_and_undo_brings_it_back() {
+    let mut r = Rig::new(10, 128);
+    let z = dc(0.0);
+    record_one_bar(&mut r, &dc(0.25));
+    r.overdub(2_000, &dc(0.1));
+    // A whole pass as it plays, to compare with after.
+    r.run(r.frame + BAR as u64, &z);
+    let (layers, history) = (r.l.status().layers, r.l.history());
+    assert_eq!((layers, r.l.memory().used), (2, held(2)));
+    r.cmd(L::Clear);
+    let c = r.frame;
+    r.run(c + 4 * FADE as u64, &z);
+    assert!(r.max_step(c, r.frame) <= 0.35 / FADE as f32 + 1e-5);
+    let s = r.l.status();
+    assert_eq!(
+        (s.phase, s.layers, s.kept, s.used),
+        (Phase::Empty, 0, true, 0)
+    );
+    assert_eq!(r.l.memory().used, 0, "the gauge counts it as free");
+    assert_eq!(r.left(r.frame - 1), 0.0);
+    // Undo: it fades back in, as it was.
+    r.cmd(L::Undo);
+    let u = r.frame;
+    r.run(u + 4 * FADE as u64, &z);
+    let s = r.l.status();
+    assert_eq!((s.phase, s.layers, s.kept), (Phase::Playing, 2, false));
+    assert_eq!(r.l.history(), history);
+    assert_eq!(r.l.memory().used, held(2));
+    assert!(r.max_step(u, r.frame) <= 0.35 / FADE as f32 + 1e-5);
+    // At full level it plays what it played a bar before the clear.
+    for f in r.frame - 200..r.frame {
+        let was = f - BAR as u64;
+        assert!(was < c);
+        assert!((r.left(f) - r.left(was)).abs() < 1e-6, "frame {f}");
+        assert!((r.right(f) - r.right(was)).abs() < 1e-6, "frame {f}");
+    }
+    // Its own undo history works on: the overdub comes off.
+    r.cmd(L::Undo);
+    r.run(r.frame + 4 * FADE as u64, &z);
+    assert_eq!(r.l.status().layers, 1);
+}
+
+/// A clear during an overdub (a loop key held to clear started one on its
+/// press): the overdub is undone first, so UNDO brings the loop back as it
+/// was before it, and Redo brings what the overdub recorded.
+#[test]
+fn a_clear_during_an_overdub_comes_back_without_it() {
+    let mut r = Rig::new(10, 128);
+    let z = dc(0.0);
+    record_one_bar(&mut r, &dc(0.25));
+    r.cmd(L::Overdub);
+    r.run(r.frame + 3_000, &dc(0.1));
+    assert_eq!(r.l.status().phase, Phase::Overdubbing);
+    r.cmd(L::Clear);
+    r.run(r.frame + 4 * FADE as u64, &z);
+    let s = r.l.status();
+    assert_eq!((s.phase, s.kept), (Phase::Empty, true));
+    r.cmd(L::Undo);
+    r.run(r.frame + BAR as u64, &z);
+    let s = r.l.status();
+    assert_eq!(
+        (s.phase, s.layers, s.redo, s.kept),
+        (Phase::Playing, 1, 1, false)
+    );
+    // The first pass alone, at full level.
+    assert!((r.left(r.frame - 1) - 0.25).abs() < 1e-6);
+    r.cmd(L::Redo);
+    r.run(r.frame + 4 * FADE as u64, &z);
+    assert_eq!(r.l.status().layers, 2);
+}
+
+/// What was kept goes once the loop records again (from its bar line:
+/// an arm cancelled keeps it), or with Forget, which has no undo.
+#[test]
+fn a_kept_loop_goes_when_the_loop_records_again_and_forget_keeps_nothing() {
+    let mut r = Rig::new(10, 128);
+    let z = dc(0.0);
+    record_one_bar(&mut r, &dc(0.25));
+    r.cmd(L::Clear);
+    r.run(r.frame + 4 * FADE as u64, &z);
+    assert!(r.l.status().kept);
+    // Armed and cancelled with Undo: still kept.
+    r.cmd(L::Record);
+    r.run(r.frame + 128, &z);
+    assert_eq!(
+        (r.l.status().phase, r.l.status().kept),
+        (Phase::Armed, true)
+    );
+    r.cmd(L::Undo);
+    r.run(r.frame + 128, &z);
+    assert_eq!(
+        (r.l.status().phase, r.l.status().kept),
+        (Phase::Empty, true)
+    );
+    // Recording from the bar line: gone.
+    r.cmd(L::Record);
+    r.run(START + 2 * BAR as u64 + 100, &dc(0.125));
+    let s = r.l.status();
+    assert_eq!((s.phase, s.kept), (Phase::Recording, false));
+    r.run(START + 3 * BAR as u64 + 1, &dc(0.125));
+    assert_eq!(r.l.status().phase, Phase::Playing);
+    assert_eq!(r.l.memory().used, held(1));
+    // Forget: nothing to bring back.
+    r.cmd(L::Forget);
+    r.run(r.frame + 4 * FADE as u64, &z);
+    let s = r.l.status();
+    assert_eq!((s.phase, s.kept), (Phase::Empty, false));
+    assert_eq!(r.l.memory().used, 0);
+    r.cmd(L::Undo);
+    r.run(r.frame + 4 * FADE as u64, &z);
+    assert_eq!(r.l.status().phase, Phase::Empty);
+    // Forget on a kept loop lets it go too.
+    r.cmd(L::Record);
+    r.run(START + 6 * BAR as u64 + 1, &dc(0.125));
+    r.cmd(L::Clear);
+    r.run(r.frame + 4 * FADE as u64, &z);
+    assert!(r.l.status().kept);
+    r.cmd(L::Forget);
+    r.run(r.frame + 128, &z);
+    assert!(!r.l.status().kept);
+}
+
+/// A kept loop's memory goes to a loop that needs it (the oldest kept
+/// first); then Undo has nothing to bring back.
+#[test]
+fn another_loop_takes_the_memory_a_kept_loop_holds() {
+    // 3 seconds: room for three one-second layers.
+    let mut r = Rig::new(3, 128);
+    let z = dc(0.0);
+    record_one_bar(&mut r, &dc(0.25));
+    r.overdub(2_000, &dc(0.1));
+    r.select(1);
+    r.cmd(L::SetBars(Some(1)));
+    r.cmd(L::Record);
+    r.run(START + 4 * BAR as u64 + 1, &dc(0.125));
+    assert_eq!(r.phase(1), Phase::Playing);
+    assert_eq!(r.l.memory().used, held(3));
+    // Full: clearing loop 1 keeps its two layers for Undo.
+    r.select(0);
+    r.cmd(L::Clear);
+    r.run(r.frame + 4 * FADE as u64, &z);
+    assert!(r.l.loop_status(0).unwrap().kept);
+    assert_eq!(r.l.memory().used, held(1));
+    // Loop 2's overdub needs that memory: it takes it.
+    r.select(1);
+    r.overdub(2_000, &dc(0.1));
+    assert_eq!((r.l.status().layers, r.l.stats().refused), (2, 0));
+    assert!(!r.l.loop_status(0).unwrap().kept);
+    assert_eq!(r.l.memory().used, held(2));
+    r.select(0);
+    r.cmd(L::Undo);
+    r.run(r.frame + 4 * FADE as u64, &z);
+    assert_eq!(r.phase(0), Phase::Empty);
+}
+
+/// Overdubs set to Once record one pass and the loop plays by itself:
+/// the overdub's end crossfades into its start (made up for latency), so
+/// a steady input plays back steady round the whole loop.
+#[test]
+fn an_overdub_set_to_once_records_one_pass_whose_ends_crossfade() {
+    for latency in [0u32, 300] {
+        let mut r = Rig::new(10, 128);
+        r.cmd(L::SetLatency(latency));
+        record_one_bar(&mut r, &dc(0.25));
+        r.cmd(L::SetOverdubs(Overdubs::Once));
+        // (The first pass's writer runs `latency` frames on.)
+        r.run(r.frame + 2_000, &dc(0.25));
+        r.cmd(L::Overdub);
+        r.run(r.frame + BAR as u64 / 2, &dc(0.1));
+        assert_eq!(r.l.status().phase, Phase::Overdubbing);
+        r.run(r.frame + BAR as u64 / 2 + 2 * FADE as u64, &dc(0.1));
+        let s = r.l.status();
+        assert_eq!(
+            (s.phase, s.layers, s.overdubs),
+            (Phase::Playing, 2, Overdubs::Once),
+            "latency {latency}"
+        );
+        // It took only one pass: everywhere round the loop, 0.25 + 0.1.
+        let from = r.frame;
+        r.run(from + BAR as u64, &dc(0.7));
+        for f in from..r.frame {
+            assert!(
+                near(&r, f, [0.35, -0.35]),
+                "latency {latency}, frame {f}: {}",
+                r.left(f)
+            );
+        }
+    }
+}
+
+/// An overdub that took only silence leaves no layer and no step: it
+/// doesn't use up a layer or an undo. One with Fade old turning the
+/// older layers down stays, since it changed the loop.
+#[test]
+fn an_overdub_of_silence_leaves_no_layer() {
+    let mut r = Rig::new(10, 128);
+    record_one_bar(&mut r, &dc(0.25));
+    r.overdub(2_000, &dc(0.0005));
+    let s = r.l.status();
+    assert_eq!((s.layers, s.redo), (1, 0));
+    assert_eq!(r.l.history().done(), &[]);
+    assert_eq!(r.l.memory().used, held(1));
+    // Something played: a layer.
+    r.overdub(2_000, &dc(0.01));
+    assert_eq!(r.l.status().layers, 2);
+    // Silence over a whole pass with Fade old: a layer, the fade's undo.
+    r.cmd(L::SetFadeOld(0.5));
+    r.overdub(BAR as u64 + 1_000, &dc(0.0));
+    assert_eq!(r.l.status().layers, 3);
+    assert_eq!(r.l.history().done().len(), 2);
+}
+
+/// A loop soloed: the others fade out, and back in when it lets go or
+/// is cleared. Undo brings the cleared loop back as it was, soloed.
+#[test]
+fn a_soloed_loop_silences_the_others_until_it_lets_go_or_clears() {
+    let mut r = Rig::new(10, 128);
+    let z = dc(0.0);
+    record_one_bar(&mut r, &dc(0.25));
+    r.select(1);
+    r.cmd(L::SetBars(Some(1)));
+    r.cmd(L::Record);
+    r.run(START + 3 * BAR as u64 + 1, &dc(0.125));
+    assert_eq!(r.phase(1), Phase::Playing);
+    r.run(r.frame + 1_000, &z);
+    assert!(near(&r, r.frame - 1, [0.375, -0.375]));
+    r.cmd(L::Solo(true));
+    let o = r.frame;
+    r.run(o + 4 * FADE as u64, &z);
+    assert!(near(&r, r.frame - 1, [0.125, -0.125]));
+    assert!(r.max_step(o, r.frame) <= 0.25 / FADE as f32 + 1e-5);
+    let (a, b) = (r.l.loop_status(0).unwrap(), r.l.loop_status(1).unwrap());
+    assert_eq!(
+        (a.solo, a.solo_out, b.solo, b.solo_out),
+        (false, true, true, false)
+    );
+    // Let go: both play.
+    r.cmd(L::Solo(false));
+    r.run(r.frame + 4 * FADE as u64, &z);
+    assert!(near(&r, r.frame - 1, [0.375, -0.375]));
+    // Soloed and cleared: loop 1 plays alone; Undo brings loop 2 back,
+    // still soloed.
+    r.cmd(L::Solo(true));
+    r.cmd(L::Clear);
+    r.run(r.frame + 4 * FADE as u64, &z);
+    assert!(near(&r, r.frame - 1, [0.25, -0.25]));
+    assert!(!r.l.loop_status(0).unwrap().solo_out);
+    r.cmd(L::Undo);
+    r.run(r.frame + 4 * FADE as u64, &z);
+    assert!(near(&r, r.frame - 1, [0.125, -0.125]));
+    assert!(r.l.loop_status(1).unwrap().solo);
 }

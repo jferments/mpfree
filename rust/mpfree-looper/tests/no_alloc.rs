@@ -2,7 +2,8 @@
 //! `layer`) must not allocate or free. A counting global allocator checks
 //! that across a busy session: the first pass, overdubs, undo and redo,
 //! edits, merges, bounces, a resample and layers copied and moved between
-//! loops, clear, mute, level and latency
+//! loops, clear and its undo, one-pass overdubs, a loop solo, mute, level
+//! and latency
 //! changes, a full memory, locates, a transport loop, tempo changes, stop
 //! and count-in, at period sizes from 1 to 4096 frames.
 //!
@@ -15,7 +16,9 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
-use mpfree_looper::{After, Command as L, Edit as E, LayerCommand as Lc, Looper, Phase, MAX_LOOPS};
+use mpfree_looper::{
+    After, Command as L, Edit as E, LayerCommand as Lc, Looper, Overdubs, Phase, MAX_LOOPS,
+};
 use mpfree_transport::{Block, Command as T, Transport};
 
 struct Counting;
@@ -112,6 +115,16 @@ fn commands_and_periods_never_allocate() {
         L::Merge,
         L::Undo,
         L::Redo,
+        // One-pass overdubs, a loop solo, a clear Undo brings back, and
+        // one it doesn't.
+        L::SetOverdubs(Overdubs::Once),
+        L::Overdub,
+        L::Solo(true),
+        L::Clear,
+        L::Undo,
+        L::Solo(false),
+        L::SetOverdubs(Overdubs::Add),
+        L::Forget,
     ];
     let mut seen_playing = false;
     let mut layers = 0usize;

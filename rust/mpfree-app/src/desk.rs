@@ -322,6 +322,9 @@ impl Desk<'_> {
             gui::FromUi::LoopMute(n) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::ToggleMute(n)))
             }
+            gui::FromUi::LoopSolo(n) => {
+                fx.push(app::Effect::Looper(looping::LoopAction::ToggleSolo(n)))
+            }
             gui::FromUi::LoopLevel(n, level) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Level(n, level)))
             }
@@ -570,7 +573,8 @@ fn arm(
 /// key picks its loop and takes its next step (a muted loop plays again;
 /// otherwise Record: record from the next bar line, cancel, end the first
 /// pass, overdub, play), arming the loop for REC as the ring does; a mute
-/// pad mutes or unmutes its loop without picking it. The line for the log.
+/// pad mutes or unmutes its loop without picking it, and with SHIFT held
+/// solos it or lets go. The line for the log.
 pub fn perform_pad(
     app: &mut app::App,
     time: &time::TimeHost,
@@ -604,6 +608,24 @@ pub fn perform_pad(
                 }
                 fx.extend(app.looper_tap(crate::looper_page::B_RECORD));
                 format!("loop keys: Loop {}'s key", n + 1)
+            }
+        }
+        PadAction::LoopMute(n) if app.shift_held() => {
+            let n = usize::from(n);
+            let s = looper.loop_status(n);
+            if s.is_none_or(|s| s.phase == mpfree_looper::Phase::Empty) {
+                format!("loop keys: Loop {} is empty, nothing to solo", n + 1)
+            } else {
+                fx.push(app::Effect::Looper(LoopAction::ToggleSolo(n)));
+                format!(
+                    "loop keys: Loop {} {}",
+                    n + 1,
+                    if s.is_some_and(|s| s.solo) {
+                        "solo off"
+                    } else {
+                        "soloed"
+                    }
+                )
             }
         }
         PadAction::LoopMute(n) => {
