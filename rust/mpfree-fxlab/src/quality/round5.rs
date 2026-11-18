@@ -299,6 +299,58 @@ fn if_cents(y: &[f64], rate: u32, near: f64) -> Vec<f64> {
         .collect()
 }
 
+/// The pitch of the tone near `near` in `y`, in cents against `near`, for
+/// the vocal effects: as [`if_cents`] (the first and last tenth left out,
+/// smoothed over 2.2 ms, so [`if_start`] holds), but the tone is taken
+/// through a band with soft edges, flat from 0.85 to 1.15 of `near` and
+/// down to nothing at 0.7 and 1.3, from a transform twice the length. The
+/// brick-wall band rings for the whole of a one-second cut: a pure saw at
+/// 70 Hz read a 12 Hz wobble of 3 cents (2.9 cents RMS), more than the
+/// 2-cent target, and its floor falls only as the note rises.
+fn tone_cents(y: &[f64], rate: u32, near: f64) -> Vec<f64> {
+    let n = crate::fft::pow2_at_least(2 * y.len());
+    let fft = Fft::new(n);
+    let mut re = vec![0.0; n];
+    let mut im = vec![0.0; n];
+    re[..y.len()].copy_from_slice(y);
+    fft.forward(&mut re, &mut im);
+    for k in 0..n {
+        let x = if k <= n / 2 {
+            (k as f64 * rate as f64 / n as f64 / near - 1.0).abs()
+        } else {
+            f64::MAX
+        };
+        let g = if x <= 0.15 {
+            2.0
+        } else if x < 0.3 {
+            1.0 + (std::f64::consts::PI * (x - 0.15) / 0.15).cos()
+        } else {
+            0.0
+        };
+        re[k] *= g;
+        im[k] *= g;
+    }
+    fft.inverse(&mut re, &mut im);
+    let k = rate as f64 / TAU;
+    let f: Vec<f64> = (1..y.len())
+        .map(|i| {
+            let d = im[i].atan2(re[i]) - im[i - 1].atan2(re[i - 1]);
+            (d + 3.0 * std::f64::consts::PI).rem_euclid(TAU) - std::f64::consts::PI
+        })
+        .map(|d| d * k)
+        .collect();
+    let w = ((0.0022 * rate as f64) as usize).max(1);
+    let smooth: Vec<f64> = f
+        .windows(w)
+        .map(|v| v.iter().sum::<f64>() / w as f64)
+        .collect();
+    let cut = smooth.len() / 10;
+    smooth[cut..smooth.len() - cut]
+        .iter()
+        .map(|f| cents(*f, near))
+        .collect()
+}
+
 /// The frame of `y` that `flutter::instantaneous_hz(y)`'s first value is
 /// centred on.
 fn if_start(len: usize, rate: u32) -> usize {
@@ -1467,7 +1519,7 @@ fn correct(r: &mut Report) {
             let y = d
                 .render(&mono(saw(f, 0.2, 2 * sec, rate, 0.0, 0.0), rate), 0)
                 .left;
-            let c = if_cents(&y[sec..], rate, want);
+            let c = tone_cents(&y[sec..], rate, want);
             let mean = c.iter().sum::<f64>() / c.len() as f64;
             let sd = (c.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / c.len() as f64).sqrt();
             errs.push(mean.abs());
@@ -1495,7 +1547,7 @@ fn correct(r: &mut Report) {
     // H7: a ±40-cent vibrato at 5.5 Hz on A4.
     let vib = saw(440.0, 0.2, 4 * sec, rate, 40.0, 5.5);
     let vibrato = |y: &[f64]| {
-        let c = if_cents(&y[sec..], rate, 440.0);
+        let c = tone_cents(&y[sec..], rate, 440.0);
         let w = rate as usize / 100;
         let sm: Vec<f64> = c
             .windows(w)
@@ -1538,7 +1590,7 @@ fn correct(r: &mut Report) {
         x.extend(saw(447.7, 0.2, 2 * sec, rate, 0.0, 0.0));
         let y = d.render(&mono(x, rate), 0).left;
         let w = rate as usize / 100;
-        let c: Vec<f64> = if_cents(&y, rate, 440.0)
+        let c: Vec<f64> = tone_cents(&y, rate, 440.0)
             .windows(w)
             .map(|v| v.iter().sum::<f64>() / w as f64)
             .collect();

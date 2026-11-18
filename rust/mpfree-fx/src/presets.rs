@@ -929,7 +929,11 @@ const OCT_UP: f32 = 11.0;
 pub static PITCH_CORRECT: &[Preset] = &[
     Preset {
         name: "Natural",
-        values: &[(tune::SPEED, 60.0), (tune::AMOUNT, 80.0)],
+        values: &[
+            (tune::SPEED, 30.0),
+            (tune::FLEX_TUNE, 10.0),
+            (tune::HUMANIZE, 60.0),
+        ],
     },
     Preset {
         name: "Hard tune",
@@ -937,7 +941,7 @@ pub static PITCH_CORRECT: &[Preset] = &[
     },
     Preset {
         name: "A minor snap",
-        values: &[(tune::KEY, KEY_A), (tune::SCALE, MINOR), (tune::SPEED, 5.0)],
+        values: &[(tune::KEY, KEY_A), (tune::SCALE, MINOR), (tune::SPEED, 2.0)],
     },
     Preset {
         name: "Pentatonic glide",

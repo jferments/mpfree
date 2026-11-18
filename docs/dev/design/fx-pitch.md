@@ -1,10 +1,10 @@
 <!--
 covers: rust/mpfree-fx/src/pitch.rs rust/mpfree-fx/src/vocal.rs rust/mpfree-fx/src/tuner.rs
-checked: 2026-11-18 b4fe3b81
+checked: 2026-11-18 1a0b4bde
 -->
 # Pitch: pitch shifter, pitch correct, harmonizer and tuner
 
-**Status:** built (F2 and the vocal effects); FX quality round 5 is under way. Its research, targets and measuring are done (53 of 82 pitch targets met before any fix, at 44.1 kHz). PR 5 (18 Nov) rebuilds the pitch shifter as a WSOLA shifter with aligned splices, a twelve-tap sinc read and a 30 ms default Window: every pitch shifter target met. Pitch correct and the harmonizer come next (PR 6). Below, "before PR 5" describes what was there before.
+**Status:** built (F2 and the vocal effects), and through FX quality round 5: every pitch target met (84 of 84 at 44.1 kHz; 53 of 82 before round 5's fixes). PR 5 (18 Nov) rebuilt the pitch shifter as a WSOLA shifter with aligned splices, a twelve-tap sinc read and a 30 ms default Window. PR 6 (18 Nov) rebuilt pitch correct's and the harmonizer's analysis and grains (a steadier period, looks lined up with the grains, marks and grains between frames read through the same twelve-tap sinc) and added Flex-Tune and Humanize. Below, "before PR 5" and "before PR 6" describe what was there before.
 
 This page is the design of MPFree's pitch effects as one effect type: what they are for, the ideas underneath them, the research behind ours, which algorithms each uses and why, how quality and cost are measured, and how the defaults and presets were chosen. The parameter-by-parameter summary lives in [fx.md](fx.md); the measured targets and their history in [fx-quality.md](fx-quality.md#round-5-movement-pitch-and-voice). The research notes, plan and baseline probe are in jferments/mpfree-claude `fx/quality/` (research-pitch.md, plan-5.md, baseline-r5-2026-11-17.md, tools/r5_baseline.rs).
 
@@ -42,6 +42,12 @@ The familiar units set what musicians expect: Eventide's H910 (1975) and its de-
 
 **Formants move with a delay-line shifter.** It resamples everything, the vocal tract's resonances too: a 5th up moves F1 from 780 to 974 Hz (the chipmunk). Keeping the formants needs the pitch, which is what pitch correct and the harmonizer have (PSOLA grains keep their content and move their spacing).
 
+**A correction is as steady as the pitch it hears.** Pitch correct's ratio is the note less the pitch heard, so every wobble in the tracker is a wobble in the voice, and a ratio that shakes makes every grain a little different: roughness. A look that misses by 3 cents once in ten was enough to bury a corrected saw's harmonics in buzz 48 dB down. The period is found again at the full rate on a smooth (low-passed) copy, where the difference function's dip is a parabola and a parabola through it is right.
+
+**Read the note for the sound being played.** The grains a voice lays now read the input a latency behind, so the note that sets their ratio must be the note of that stretch, not the newest look's. Each look's note is kept with the middle of the stretch it heard and read where the grains read: a vibrato is followed, not chased half a cycle late.
+
+**Every grain reads at its own fraction, so the read must sound the same at all of them.** A grain sits between frames by the mark's fraction less its own, which differs from grain to grain; a straight-line read dulls the top by a different amount at each, and the difference is heard as roughness. The pitch shifter's twelve-tap sinc is flat at every fraction, and a grain takes one set of taps for its whole length.
+
 ## 3. Research
 
 research-pitch.md has the detail and the sources. In short:
@@ -70,7 +76,19 @@ Before PR 5 the shifter was the classic two-head design: two reads half a window
 
 ### Pitch correct and harmonizer
 
-Both rest on a YIN tracker (de Cheveigné and Kawahara 2002) every 5 ms on the input low-passed and taken down to 6, 8 or 12 kHz for the Low, Mid and High Range, and on a PSOLA shifter: marks a period apart on the waveform's peaks, grains of two periods laid down at the new period, `sin²` windows that sum to one, the formants kept. Pitch correct moves the voice to the nearest note of the key and scale at Speed (a one-pole in cents), by Amount; the harmonizer adds up to two voices a scale's intervals away, each with a level. Both report their latency (two and a half of the Range's longest periods): 41.7, 27.8 and 16.7 ms. [fx.md](fx.md) has every control. Round 5's PR 6 places the marks and grains between frames, centres the analysis on the grain played, re-derives Speed, crossfades a Range change and adds Flex-Tune and Humanize (plan-5 section 10).
+Both rest on three parts (PR 6 rebuilt the second and third, and the tracker's last step):
+
+- **The tracker:** YIN (de Cheveigné and Kawahara 2002) every 5 ms on the input low-passed and taken down to 6, 8 or 12 kHz for the Low, Mid and High Range; then the period found again at the full rate on the low-passed middle (two one-poles at 800 Hz, the copy marks are found on): the difference function over the newest period (at least 4 ms) from the lag nearest YIN's downhill to its dip, and a parabola through it. A saw from 82 Hz to 1 kHz reads within a hundredth of a frame. The low-passed copy is written twice, a buffer apart, so the refinement reads it in place.
+- **The looks:** each look's note sits at the middle of the stretch it heard (a voiced look's, the refinement's window and a period before it; an unvoiced look's, the tracker's whole stretch), sixteen kept. The note is read where the grains laid now read (the latency behind, a period on), on a straight line between voiced looks; from an unvoiced look to a voiced one it is the voiced one's note, so a note's start is corrected with it (Speed 0 settles 4 ms in).
+- **The grains (PSOLA):** marks a period apart on the low-passed middle's peaks (every 5 ms while unvoiced), each between frames at the top of a parabola. A voice lays a grain from the mark nearest its target time every local period divided by its ratio, centred between frames; it rises over the gap back to the mark before and falls over the gap on to the mark after in a smootherstep (flat in slope and curve at both ends) and one minus it, so neighbours sum to one, and where faster grains overlap more the windows' sum divides the output back down. A grain reads the input at one fraction (the mark's less its own) through the pitch shifter's twelve-tap sinc: the taps are worked out once a grain and the grain is laid 128 frames at a time, four frames at a time through the taps; on a whole frame it reads the frame itself, so a note held in tune comes out as the input, a latency late, sample for sample. Near ratio 1 a grain that is off its mark eases back, by up to 0.1 % of a period a grain, fully within 0.03 % of 1 and fading out by 0.1 %. The input is written twice, a buffer apart, so each read's taps sit side by side.
+
+**Pitch correct** moves the voice to the nearest note of the key and scale (worked out again only when the pitch leaves the stretch where that note is the nearest) by Amount, through a one-pole whose time constant is Speed: at Speed 200 a note 30 cents off is within 5 cents in 1.79 × 200 ms, as such a one-pole is. **Flex-Tune** corrects only notes sung near the note: the correction fades out between half a reach and the reach, which shrinks from half a semitone to 5 cents as Flex-Tune goes from 0 to 100 (at 0 every note is corrected), so slides and gestures survive. **Humanize** slows the correction on a note held past 100 ms, by up to 400 ms more at 100 % (all of it from 200 ms), so a held note keeps its vibrato while quick notes still snap. A **Range** change dips the output for 5 ms either side of it, since the tracker starts again and the latency changes. The ratio is worked out again only when the correction moves.
+
+**The harmonizer** adds up to two mono voices a scale's intervals from the note sung (each worked out again only when that note changes), each with a level and pan, each through a DC blocker at 5 Hz: shifted up by a ratio between 1 and 2, the grains overlap unevenly over each period and their weighted sum leans to one side (a 3rd up on a saw carried a DC 28 dB under the voice). Its Range change dips the same way.
+
+Both report their latency (two and a half of the Range's longest periods): 41.7, 27.8 and 16.7 ms at 44.1 kHz. [fx.md](fx.md) has every control.
+
+Before PR 6, the marks sat on whole frames, the grains read by a straight line between frames, the note was the newest look's (ahead of the grains by the latency), Speed ran faster than its label (a 30-cent step settled in 25 ms at Speed 20, 289 ms at 200), a Range change reset the tracker in the middle of the sound, and the harmony voices carried a DC.
 
 ### Tuner
 
@@ -81,16 +99,17 @@ The same YIN tracker over one wide band (27 to 1600 Hz) at about 6 kHz every 20 
 | Effect | Controls (in id order) |
 |---|---|
 | Pitch shifter | Pitch (±24 semitones), Fine (±100 cents), Spread (0 to 50 cents), Window (20 to 120 ms), Feedback (0 to 90 %), Mix |
-| Pitch correct | Key, Scale, Speed, Amount, Range, Mix, and the Note and Correction meters |
+| Pitch correct | Key, Scale, Speed, Amount, Range, Mix, the Note and Correction meters, Flex-Tune and Humanize (0 to 100 %, both 0 by default; ids 8 and 9, on the Voice page with Range and Mix) |
 | Harmonizer | Key, Scale, Voice 1, Level 1, Pan 1, Voice 2, Level 2, Pan 2, Glide, Dry, Range, and the Note meter |
 | Tuner | Reference, Mute, and the Note, Cents and Frequency meters |
 
-PR 5 changes no control and no id, so saved projects open as they were. The Window's default moved from 50 to 30 ms (a new shifter is tighter); a saved shifter keeps its Window and now splices where the sound lines up, so every note comes out clean, at the same level and on pitch, and its delay is about half its Window, as before.
+PR 6 adds Flex-Tune and Humanize at 0, which leaves a saved pitch correct as it was set; no other control or id changes in PR 5 or PR 6, so saved projects open as they were. The Window's default moved from 50 to 30 ms (a new shifter is tighter); a saved shifter keeps its Window and now splices where the sound lines up, so every note comes out clean, at the same level and on pitch, and its delay is about half its Window, as before.
 
 ## 6. Defaults and presets
 
 - **Pitch shifter** an octave up, Window 30 ms, Mix 100 %. Presets: Octave down (-12, Window 50: the octave down's splices are longer, and a low note's period is long), Fifth up, Wide doubler (0 semitones, Spread 24 cents), Rising stairs (+5, Feedback 60 %), Chipmunk (+19, Window 25).
-- **Pitch correct**, **Harmonizer** and **Tuner**: [fx.md](fx.md).
+- **Pitch correct**: Key C, Chromatic, Speed 20 ms, Amount 100 %, Mid, Mix 100 %. Presets: Natural (Speed 30, Flex-Tune 10, Humanize 60: a gentle pull that leaves slides and held vibrato; before PR 6, Speed 60 and Amount 80), Hard tune, A minor snap (Speed 2; 5 before PR 6, when Speed ran faster than its label), Pentatonic glide, Low voice.
+- **Harmonizer** and **Tuner**: [fx.md](fx.md).
 
 ## 7. Measuring quality
 
@@ -104,6 +123,19 @@ fxlab's `pitch` class (`quality/round5.rs`, ids H) measures them, and the ratche
 - **Clicks on every control:** round 3's M13 (≤ -60 dB); Feedback is left out, since stairs move the sound past 6 kHz by design.
 - Unit tests in `pitch.rs`: 56, 112, 440 and 1760 Hz an octave up and down come out at their level (within 0.02) with everything else under 1e-3; the mean delay at +12, +7, -5 and -12 under 15 to 22 ms, and none reported; the twelve-tap read passes the lows exactly at every fraction.
 
+Pitch correct and the harmonizer (H6 to H13):
+
+- **Accuracy** (H6): saws across each Range's span, Key C major at Speed 0, within 3 cents of the nearest note on average and wobbling at most 2; each harmony voice within 3 cents of its interval.
+- **Vibrato** (H7): a ±40-cent vibrato at 5.5 Hz on A4, at most 5 cents left at Speed 0, at least 90 % kept at Speed 100.
+- **Settling** (H8): a saw 30 cents sharp from silence, within 5 cents for good in at most 1.8 × Speed + 25 ms after the latency.
+- **Smoothness** (H9): the energy off the harmonics, in tune (within 3 dB of the input's own), correcting 45 cents (≤ -50 dB), and each harmony voice (≤ -40 dB).
+- **Formants** (H10): an "AH" at 130 Hz, F1 and F2 within one harmonic after an octave up or down or a 5th up.
+- **Noise and notes** (H11): white noise within 0.5 dB; the Note meter right on a sine, saw, square and missing fundamental at A2, A3 and A4.
+- **Latency** (H12): pink's delay within a frame of the reported latency.
+- **Clicks** (H13): every control at most -60 dB, Flex-Tune and Humanize among them.
+- **The pitch meter** (`tone_cents`, PR 6): the pitch is the phase's slope in a soft band around the note it should be (full within 15 % of it, a cosine down to nothing at 30 %), smoothed over 2.2 ms, its first and last tenth left out. The meter before it cut the band off hard, and its ringing read 2 to 3 cents of wobble on a plain saw at 70 to 100 Hz, more than the effect's own; it reads 0.02 to 0.4 now. The rotary's Doppler keeps the old meter.
+- Unit tests in `vocal.rs`: a voice at ratio 1 is the input (within 1e-5); the period is refined to a hundredth of a frame (82.4, 220, 451.6 and 1046.5 Hz); Flex-Tune leaves notes sung far off alone; Humanize slows a held note; a harmony voice carries no DC (its mean under 0.5 % of its RMS; 5 % without the blocker).
+
 ## 8. Cost
 
 The instruction gate, rustc 1.97.0, a 128-frame block at 44.1 kHz, at the defaults:
@@ -111,11 +143,13 @@ The instruction gate, rustc 1.97.0, a 128-frame block at 44.1 kHz, at the defaul
 | Case | Before round 5's fixes | Now |
 |---|---|---|
 | Pitch shifter | 59.0k | 72.0k |
-| Pitch correct | 60.1k | 60.1k |
-| Harmonizer | 99.3k | 99.3k |
+| Pitch correct | 60.1k | 74.4k |
+| Harmonizer | 99.3k | 99.1k |
 | Tuner | 32.2k | 32.2k |
 
 PR 5's pitch shifter costs 22 % more than the two-head shifter it replaces: about half of it is the twelve-tap read (the old read was two linear interpolations a voice), the rest the search, about 45 times a second a voice. The first version cost 46 % more: its sums were vectorised two lanes wide, pairing each sample's two products, until the lanes were summed in order (`sum4`), and the read took two float conversions where one does.
+
+PR 6's pitch correct costs 24 % more: the twelve-tap reads (stereo, two a frame, where the grains overlap), the period found again at the full rate every look, and the looks lined up with the grains. The harmonizer's two mono voices read one channel each, and it costs what it did. The first version cost 60 % and 45 % more, until a grain was laid 128 frames at a time, four frames at a time through the taps (a window of 15 frames as a fixed-size array, so the compiler vectorises it), the low-passed copy was written twice instead of copied for each refinement, each ratio was worked out once a change, and the read hint was cast through 32 bits (a float to a 64-bit integer is a library call on ARM).
 
 ## 9. Pitfalls and how the design avoids them
 
@@ -127,13 +161,21 @@ PR 5's pitch shifter costs 22 % more than the two-head shifter it replaces: abou
 - **An eight-tap sinc:** its images were 62 dB down, and the click measure heard them on a Pitch sweep (-58.7 dB). Twelve taps put them at 76 dB.
 - **An old read that runs into the write** while it fades out, shifting up by a lot: the splice comes early by the fade's travel, and the fade is shorter at big shifts.
 - **A long default window** (50 ms before PR 5): a 25 ms slapback against the dry. 30 ms, with aligned splices, lags about 11 ms.
+- **A period found again on the full band** (a step on the way in PR 6): the difference function's dip is a V whose bottom moves with the overtones, and it read up to 3 cents off now and then. The ratio jittered with it, and the jitter was heard as roughness (a note in tune came out 4.6 to 6 dB rougher than it went in). The period is found on the low-passed copy, where the dip is round.
+- **A straight line between frames:** each grain loses a different share of its highs, with its fraction, and the change from grain to grain is heard as roughness. The twelve-tap sinc reads every grain alike; on a whole frame it reads the frame, since the sinc's ripple took 0.6 dB off noise.
+- **An ease that switches:** near ratio 1 the grains ease back to their marks; switched on and off at one threshold, it made 9-cent pulses on a 700 Hz note. It fades in between 0.1 % and 0.03 % of ratio 1, and moves by at most 0.1 % of a period a grain, which a vibrato doesn't hear.
+- **A smoothstep window:** its overtone floor put the harmonizer's Voice and Pan clicks at -59.5 dB. A smootherstep is flat in curve as well as slope at its ends.
+- **Uneven overlap:** shifting up by less than an octave, the grains overlap more on one side of a period than the other, and the weighted sum leans: a DC 28 dB under the voice. A blocker at 5 Hz on each voice.
+- **A look stamped when it was made:** an unvoiced look stamped at the moment it was made held a note's start back until the next voiced look reached the grains (21.9 ms at Speed 0). It is stamped at the middle of what it heard, and the next voiced note fills it in.
+- **A meter that rings:** the brick-wall band read its own ringing as the effect's wobble. Soft band edges.
 
 ## 10. History and next
 
 - F2: the pitch shifter (`pitch.rs`); the vocal effects: pitch correct and the harmonizer (`vocal.rs`) and the tuner (`tuner.rs`).
 - FX quality round 5 (17 Nov): research, baseline and plan (mpfree-claude #211, plan-5.md); the measuring PR (#510): 53 of 82 pitch targets met.
 - PR 5 (18 Nov): the pitch shifter rebuilt as WSOLA (aligned splices searched coarse, fine and between frames; a match-gained smoothstep fade), a twelve-tap sinc read, a low-pass going down, and a 30 ms default Window: every pitch shifter target met.
-- Next: PR 6, pitch correct and the harmonizer (H6 to H13, with Flex-Tune and Humanize). Not targets: the shifter's formants (it has no pitch to keep them by; pitch correct and the harmonizer do), and its transients (H3, reported: a hit near a splice is heard twice, 15 ms apart at most at the default Window).
+- PR 6 (18 Nov): pitch correct and the harmonizer: the period found again on the low-passed copy, looks stamped at what they heard and read where the grains are, marks and grains between frames through the twelve-tap sinc, smootherstep windows, a gentle ease near ratio 1, Speed as a one-pole of Speed ms, a dip on a Range change, a DC blocker on each harmony voice; Flex-Tune and Humanize (plan-5 decision 12.3), and the Natural preset made with them. Every pitch target met (84 of 84). The Range change dips instead of crossfading two trackers as the plan said: a dip of 5 ms either side costs nothing while it isn't moving, and is under -85 dB on the click measure.
+- Next: the talk box and the vocoder (round 5's PRs 7 and 8, plan-5 sections 10 and 11) are held for a later session; their design page will be fx-voice.md. Not targets: the shifter's formants (it has no pitch to keep them by; pitch correct and the harmonizer do), and its transients (H3, reported: a hit near a splice is heard twice, 15 ms apart at most at the default Window).
 
 ## 11. Sources
 
