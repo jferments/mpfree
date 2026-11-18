@@ -267,10 +267,7 @@ impl Job {
             });
         }
         let hits = if settings.transients {
-            let found = mpfree_analysis::OnsetAnalysis::analyse(&data, ch, rate)
-                .map(|o| o.pick(settings.sensitivity.clamp(0.0, 1.0)))
-                .unwrap_or_default();
-            sharp(&data, ch, &found, n)
+            find_hits(&data, ch, rate, settings.sensitivity, n)
         } else {
             Vec::new()
         };
@@ -376,6 +373,26 @@ impl Job {
     pub fn into_output(self) -> Option<Vec<f32>> {
         self.is_finished().then_some(self.output)
     }
+}
+
+/// The hits in `data` (interleaved, 1 or 2 channels, at `rate`) that a
+/// stretch keeps sharp, as frames in order: the onsets found at
+/// `sensitivity` (0 to 1; [`Settings::sensitivity`]) that really jump, as a
+/// job with [`Settings::transients`] finds them (at [`auto_window`]'s
+/// window). The sampler's granular Stretch keeps these too. Takes a moment
+/// on a long sound: off the audio thread.
+pub fn hits(data: &[f32], channels: usize, rate: u32, sensitivity: f32) -> Vec<u64> {
+    if !(1..=2).contains(&channels) || rate == 0 || data.len() < channels {
+        return Vec::new();
+    }
+    find_hits(data, channels, rate, sensitivity, auto_window(rate))
+}
+
+fn find_hits(data: &[f32], ch: usize, rate: u32, sensitivity: f32, n: usize) -> Vec<u64> {
+    let found = mpfree_analysis::OnsetAnalysis::analyse(data, ch, rate)
+        .map(|o| o.pick(sensitivity.clamp(0.0, 1.0)))
+        .unwrap_or_default();
+    sharp(data, ch, &found, n)
 }
 
 /// The hits in `found` that really jump: the brightness (the energy of
