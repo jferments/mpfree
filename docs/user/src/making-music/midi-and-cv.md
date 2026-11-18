@@ -96,6 +96,10 @@ If a track would send nothing, it says why under the track's name: no port is pi
 > [!MPC]
 > On the MPC, a MIDI track needs two settings with nearly the same name before a note leaves the jack: the track's MIDI output channel and its MIDI Out routing. In MPFree it's one setting, the port and the channel together.
 
+### Moving the synth's controls step by step (CC lanes)
+
+On the **Sequencer** tab's **Steps**, a track that plays a synth through MIDI out can lock the synth's own controls step by step: its filter on the downbeats, a bend into the fourth step. **+ Lane** lists the CCs the synth's [device profile](#device-profiles) names (Cutoff, Resonance, whatever its profile calls them), or with no profile the controls most gear shares (Mod wheel, Volume, Pan, Expression, Sustain, Resonance on CC 71, Cutoff on CC 74 and a few more), then **Bend** and **Pressure**. **Another CC** on the list's card takes any CC from 0 to 119 by number. Each control you pick gets a lane under the notes: tap a step on it to lock it at the value the control has before anything moves it (as General MIDI resets it: 64 for the sound controls 70 to 79, such as Cutoff on 74, 100 for Volume, the middle for the bend and 0 for most others), then drag it up or down, 4 a detent (1 with **SHIFT**). The synth gets the CC on that step. The bank select, data entry and RPN numbers aren't on the list, because they change what the synth's other controls mean; **Another CC** still reaches them. See [Your first beat](../getting-started/first-beat.md#program-a-pattern) for lock lanes.
+
 ### The wheel, pressure and MPE on a synth
 
 A track that plays a synth through MIDI out passes your keyboard's [pitch wheel, pressure and MPE](#the-pitch-wheel-pressure-and-mpe) on to it, so the synth answers them as MPFree's own sounds do. Most synths have one bend, one pressure and one tone for all their notes, so MPFree makes one of each from the keys you hold:
