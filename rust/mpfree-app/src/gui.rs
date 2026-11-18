@@ -961,8 +961,6 @@ pub enum ToUi {
     },
     /// A control for the Pads tab's browser (its Browse view).
     Browse(crate::app::BrowseKey),
-    /// The Pads tab's view to show (PROG EDIT: the Pad view).
-    PadsView(usize),
     /// The browser's preview, played out or replaced, to free here.
     PreviewBack(Box<crate::preview::Preview>),
     /// On the Sample page: a Q-Link let go (the turn is one undo step).
@@ -1115,8 +1113,9 @@ pub enum FromUi {
     /// An opened project's audio tracks with their takes' audio, read on
     /// their own thread: they go in once the old ones are emptied.
     OpenAudio(Box<mpfree_audiotracks::save::Saved>),
-    /// The Pads tab's switch: Browse or Pad (`mpfree_sampler_ui::pads_tab`).
-    PadsView(usize),
+    /// The Pads tab's Browse for: open the browser, whose Load puts a
+    /// sound on the pad picked.
+    PadsBrowse,
     /// The browser's preview: hear this sound once (it replaces one
     /// playing).
     Preview(Box<crate::preview::Preview>),
@@ -1295,9 +1294,9 @@ pub enum FromUi {
     /// meant (`mpfree_mixer_ui::take_actions`, `qlink_turn`), for the mixer
     /// on the audio thread.
     Mixer(mpfree_mixer_ui::MixAction),
-    /// The top bar's I/O icon: open the mixer on its I/O view, or close it
-    /// (the app decides).
-    IoIcon,
+    /// The top bar's folder icon: open the browser, or close it, as BROWSE
+    /// does.
+    FolderIcon,
     /// Open the mixer's I/O view on the section already picked (the tempo
     /// chip: Sync); it never closes it.
     OpenIo,
@@ -1642,8 +1641,10 @@ impl Player {
         let mut ui = Ui::new(Theme::dark(), fonts, size.0, size.1);
         let names: Vec<&str> = tabs(false).iter().map(|v| v.name()).collect();
         let mut header = Header::new(&names);
-        // The Mix tab took the mixer icon's job; the I/O icon stays.
-        header.io_icon = Some(false);
+        // The Mix tab took the mixer icon's job, and the folder icon took
+        // the I/O icon's place (the Play, Pads and Sequencer redesign, Jay
+        // 18 Nov 2026): the Mix tab's I/O view and the tempo chip open I/O.
+        header.folder_icon = Some(false);
         ui.add("header", header);
         let mut loading = Loading::new("MPFree", "Pad player");
         loading.set_backdrop(backdrop);
@@ -3941,10 +3942,6 @@ impl Player {
                     format!("Hit a pad to chop it   ·   tap a slice: hear it   ·   Q-Links 1-4: slice, its start, setting, first pad   ·   \
                      {ROWS_HINT}   ·   SHIFT + - / +: zoom")
                 }
-                View::Pads if self.sample.page() == sample_page::PADS_BROWSE_PAGE => {
-                    "Hit or tap a pad to pick it   ·   Load: onto the pad picked   ·   Load to pad: onto the next pad hit   ·   \
-                     PLAY: hear it   ·   Wheel: move   ·   push: open or load   ·   - / +: up / into a folder".to_string()
-                }
                 View::Pads if self.sample.page() == sample_page::PADS_PAGE => {
                     format!("Hit or tap a pad to pick it, again to hear it   ·   A-H: the kit's banks   ·   \
                      Q-Links 1-4: level, pan, tune, voices   ·   {ROWS_HINT}")
@@ -5297,12 +5294,6 @@ impl Player {
             }
             ToUi::Library { dir, lists } => self.open_library(&dir, &lists),
             ToUi::Browse(k) => self.browse_key(k),
-            ToUi::PadsView(v) => {
-                self.sample.set_pads_view(&mut self.ui, v);
-                if self.ready && self.view == View::Pads {
-                    self.show_view(View::Pads);
-                }
-            }
             // Played out or replaced: freed here, not on the audio thread.
             ToUi::PreviewBack(p) => drop(p),
             ToUi::SampleEditor(e) => {
@@ -6227,22 +6218,18 @@ impl Player {
     /// `lists`.
     pub(crate) fn set_browser(&mut self, mut b: mpfree_browser_ui::Browser, lists: &str) {
         b.load_lists(lists);
-        b.open_picker(mpfree_browser_ui::Pick::Pads);
         self.browser = Some(Box::new(b));
         // Exported pads have somewhere to go: the Chop page offers Files.
         self.sample.set_files(&mut self.ui, true);
         // The start's own news (the empty song, the first states) is not
         // an edit.
         self.opened_at = Some(Instant::now());
-        self.sample
-            .set_browse_with(&mut self.ui, mpfree_browser_ui::BROWSER);
         self.step_browser();
     }
 
-    /// The Pads tab shows its browser.
+    /// The browser shows.
     fn browsing(&self) -> bool {
-        (self.view == View::Pads && self.sample.page() == sample_page::PADS_BROWSE_PAGE)
-            || self.view == View::Browser
+        self.view == View::Browser
     }
 
     /// A control on the Pads tab's browser (the app sends them only while
@@ -6268,9 +6255,13 @@ impl Player {
     /// Touches on the browser, the worker's answers and what they ask of
     /// the app (once a frame while it shows, and after a control).
     pub(crate) fn step_browser(&mut self) {
+        // Load names the pad it puts a sound on: the pad picked, which a
+        // pad hit moves (none while the pads play an instrument).
+        let target = self.sample.load_target();
         let Some(b) = self.browser.as_mut() else {
             return;
         };
+        b.set_pad_target(target);
         for a in mpfree_browser_ui::step(&mut self.ui, b) {
             self.browse_action(a);
         }
@@ -6367,10 +6358,9 @@ impl Player {
                 self.plugin_page.input(pi, rows, &self.project_plugins);
                 self.show_plugins();
             }
-            // The Pads tab's browser offers sounds only; anything else
-            // is said, never dropped quietly.
+            // Not wired yet; said, never dropped quietly.
             other => self.say(format!(
-                "browser: {} is not wired on the Pads tab",
+                "browser: {} is not wired yet",
                 match other {
                     A::LoadFactoryKit { .. } => "a factory kit",
                     A::LoadPreset { .. } | A::TryPreset { .. } | A::RevertPreset => "a preset",
@@ -7651,7 +7641,7 @@ impl Player {
             FromUi::Pad { .. }
                 | FromUi::Audition { .. }
                 | FromUi::PadBank(_)
-                | FromUi::PadsView(_)
+                | FromUi::PadsBrowse
                 | FromUi::Preview(_)
                 | FromUi::PreviewStop
                 | FromUi::SaveBrowserLists(_)
@@ -7741,9 +7731,8 @@ impl Player {
             View::Arp => ARP_PAGE.to_string(),
             View::Pattern => self.workspace.page().to_string(),
             View::Browser => {
-                // The same browser as the Pads tab's, its picker put
-                // away: the whole library, Projects with New, Save and
-                // Save as.
+                // The whole library, Projects with New, Save and Save as;
+                // a picker left open is put away.
                 if let Some(b) = self.browser.as_mut() {
                     if b.picking().is_some() {
                         b.cancel_picker();
@@ -7755,12 +7744,6 @@ impl Player {
                 mpfree_browser_ui::BROWSER_PAGE.to_string()
             }
         };
-        if self.view == View::Browser && v != View::Browser {
-            // The Pads tab's picker again, where it was.
-            if let Some(b) = self.browser.as_mut() {
-                b.open_picker(mpfree_browser_ui::Pick::Pads);
-            }
-        }
         let relabel = (self.view == View::Pattern) != (v == View::Pattern);
         if self.view.sampler() && v != self.view {
             // A pad a tap on the waveform (or the pad map) holds is let go.
@@ -7836,12 +7819,12 @@ impl Player {
     /// The header highlights the page's tab, or none (Prefs, menus, the guide).
     fn mark_tab(&mut self) {
         let tab = self.view.tab_index(self.settings.debug_mode);
-        // The I/O icon is lit on the I/O view.
-        let io = self.io_showing();
+        // The folder icon is lit while the browser shows.
+        let browsing = self.view == View::Browser;
         if let Some(h) = self.ui.get_mut::<Header>("header") {
             h.active = tab.unwrap_or(usize::MAX);
-            if h.io_icon.is_some() && h.io_icon != Some(io) {
-                h.io_icon = Some(io);
+            if h.folder_icon.is_some() && h.folder_icon != Some(browsing) {
+                h.folder_icon = Some(browsing);
             }
         }
     }
@@ -8761,7 +8744,9 @@ impl Player {
                 self.outbox.extend(acts);
                 first
             }
-            ("header", EventKind::Select(mpfree_ui::widgets::IO_ICON)) => Some(FromUi::IoIcon),
+            ("header", EventKind::Select(mpfree_ui::widgets::FOLDER_ICON)) => {
+                Some(FromUi::FolderIcon)
+            }
             (play_page::SYNTH_PADS_HEAD, EventKind::Tab(i)) => {
                 Some(FromUi::PadsLayout { in_key: i == 1 })
             }
@@ -10561,10 +10546,8 @@ pub fn sample_clips(fonts: Fonts) -> Result<Player, String> {
 /// The pad player on the Sample page: kit 1's pad 5 holds the sampler UI's
 /// made-up drum loop ("Break 92", trimmed, looping, with fades), and a voice
 /// is playing it. Kit 1's other pads are empty here.
-/// The Pads tab on `view` (of `pads_tab::VIEWS`), as a tap on its tab
-/// and its switch would show it.
-pub fn open_pads(p: &mut Player, view: usize) {
-    p.apply(ToUi::PadsView(view));
+/// The Pads tab, as a tap on its tab would show it.
+pub fn open_pads(p: &mut Player) {
     p.apply(ToUi::Show(View::Pads));
 }
 
@@ -10797,16 +10780,20 @@ fn sample_panels(p: &mut Player, view: View) {
     p.apply(ToUi::Macros(Box::new(song.macros_state(0))));
 }
 
-/// The Pads tab's Browse view over a library filled in a scratch folder
-/// (removed again once the browser has read what it shows).
-fn pads_browse(fonts: Fonts) -> Result<Player, String> {
+/// The browser over the page, opened from the Pads tab's Browse for A5,
+/// in Samples / Drums with Kick 01 picked: Load on A5 and Next pad hit.
+/// Over a library filled in a scratch folder (removed again once the
+/// browser has read what it shows).
+fn browser_samples(fonts: Fonts) -> Result<Player, String> {
     use mpfree_browser_ui::sample::{fill, open, select, source};
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let dir =
-        std::env::temp_dir().join(format!("mpfree-pads-browse-{}-{nanos}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "mpfree-browser-samples-{}-{nanos}",
+        std::process::id()
+    ));
     let built = (|| {
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let lib = fill(&dir)?;
@@ -10816,7 +10803,8 @@ fn pads_browse(fonts: Fonts) -> Result<Player, String> {
             "recent = Samples/Drums/Kick 01.wav\nfavourite = Samples/Drums/Snare tight.wav\n",
         );
         sample_kit_tracks(&mut p);
-        open_pads(&mut p, mpfree_sampler_ui::pads_tab::BROWSE);
+        open_pads(&mut p);
+        p.apply(ToUi::Show(View::Browser));
         let b = p.browser.as_mut().ok_or("no browser")?;
         b.go_source(source("Samples"));
         open(b, "Drums");
@@ -12038,7 +12026,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     out.push(("sample-name-symbols", symbols));
     // The Pads tab's Pad view: A5 copied onto A2, A5 picked again.
     let mut pads = sample_sampler(fonts());
-    open_pads(&mut pads, mpfree_sampler_ui::pads_tab::PAD_VIEW);
+    open_pads(&mut pads);
     pads.on_event(UiEvent {
         widget: mpfree_sampler_ui::pads_tab::BUTTONS.into(),
         kind: EventKind::Tab(0),
@@ -12071,11 +12059,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     sample_kit_tracks(&mut pads);
     pads.take_actions();
     out.push(("pads-pad", pads));
-    // The Pads tab's Browse view: the browser beside the pads over a
-    // scratch library, Samples / Drums with Kick 01 selected.
-    match pads_browse(fonts()) {
-        Ok(browse) => out.push(("pads-browse", browse)),
-        Err(e) => eprintln!("pads-browse: not drawn ({e})"),
+    // The browser from the Pads tab's Browse for A5, over a scratch
+    // library: Samples / Drums with Kick 01 selected, Load on A5.
+    match browser_samples(fonts()) {
+        Ok(browse) => out.push(("browser-samples", browse)),
+        Err(e) => eprintln!("browser-samples: not drawn ({e})"),
     }
     // The whole browser (BROWSE) in Projects, Night drive picked.
     match browser_projects(fonts()) {
@@ -12370,7 +12358,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             });
         };
         use mpfree_sampler_ui::{pads_tab, play_tab};
-        open_pads(&mut mapped, pads_tab::PAD_VIEW);
+        open_pads(&mut mapped);
         ev(&mut mapped, pads_tab::BUTTONS, EventKind::Tab(3));
         open_sample(&mut mapped, sample_page::Editor::Play);
         play_row(&mut mapped, play_tab::Row::Keys);
@@ -12415,7 +12403,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         use mpfree_sampler_ui::pads_tab;
         use mpfree_sampler_ui::play_tab::{Row, LIST};
         use mpfree_sampler_ui::widgets::SettingList;
-        open_pads(&mut faded, pads_tab::PAD_VIEW);
+        open_pads(&mut faded);
         ev(&mut faded, pads_tab::BUTTONS, EventKind::Tab(3));
         open_sample(&mut faded, sample_page::Editor::Play);
         let index = play_row(&mut faded, Row::KeyFade);
@@ -13388,7 +13376,6 @@ mod tests {
         p.apply(ToUi::SampleEditor(sample_page::Editor::Wave));
         assert_eq!(p.page(), sample_page::PAGE);
         // PROG EDIT, as the audio loop sends it with a kit on the pads.
-        p.apply(ToUi::PadsView(mpfree_sampler_ui::pads_tab::PAD_VIEW));
         p.apply(ToUi::Show(View::Pads));
         assert_eq!(p.page(), sample_page::PADS_PAGE);
     }
@@ -15278,7 +15265,7 @@ mod tests {
         });
         p.apply(ToUi::PadDown { pad, velocity: 90 });
         p.apply(ToUi::PadUp(pad));
-        open_pads(&mut p, pads_tab::PAD_VIEW);
+        open_pads(&mut p);
         assert_eq!(p.page(), sample_page::PADS_PAGE);
         assert!(
             p.ui.get::<Label>("hint")
@@ -15340,7 +15327,7 @@ mod tests {
             p.sample.step_pad(1);
         }
         p.apply(ToUi::Show(View::Play));
-        open_pads(&mut p, pads_tab::PAD_VIEW);
+        open_pads(&mut p);
         assert_eq!(p.sample.pad(), 16 + pad);
         p.take_actions();
         let c = cell(&p);
@@ -15586,24 +15573,41 @@ mod tests {
     }
 
     #[test]
-    fn the_io_icon_opens_the_mixers_io_view_and_the_tempo_chip_opens_it_too() {
+    fn the_folder_icon_opens_the_browser_and_the_tempo_chip_opens_the_io_view() {
         use mpfree_mixer_ui::{MixState, MixView, MIXER_HINT_IO, MIXER_PAGE};
         let mut p = sample_player(Fonts::embedded());
         let mut app = sample_app();
-        // The I/O icon sits at the bar's right edge (the Mix tab took the
-        // mixer icon's job) and asks the app.
+        // The folder icon sits at the bar's right edge, where the I/O icon
+        // was (the Play, Pads and Sequencer redesign), and asks the app.
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
         let r = p.ui.rect_of("header").unwrap();
         let h = p.ui.get::<Header>("header").unwrap();
-        let io = h.io_icon_rect(r).unwrap();
-        assert!(h.icon_rect(r).is_none());
-        assert_eq!(io.right(), r.right());
+        let folder = h.folder_icon_rect(r).unwrap();
+        assert!(h.icon_rect(r).is_none() && h.io_icon_rect(r).is_none());
+        assert_eq!(folder.right(), r.right());
         assert_eq!(
-            p.touch(1, Touch::Down, io.x + 10, io.y + 10),
-            Some(FromUi::IoIcon)
+            p.touch(1, Touch::Down, folder.x + 10, folder.y + 10),
+            Some(FromUi::FolderIcon)
         );
-        // From Play: the mixer opens on I/O.
-        let fx = app.toggle_io(false);
+        // From Play: the browser opens, as BROWSE opens it, and the icon is
+        // lit; again, it closes back to Play.
+        let fx = app.toggle_browser();
+        assert_eq!(fx.first(), Some(&crate::app::Effect::Show(View::Browser)));
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), mpfree_browser_ui::BROWSER_PAGE);
+        let h = p.ui.get::<Header>("header").unwrap();
+        assert_eq!((h.folder_icon, h.io_icon), (Some(true), None));
+        let fx = app.toggle_browser();
+        assert_eq!(fx.first(), Some(&crate::app::Effect::Show(View::Play)));
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), "Play");
+        assert_eq!(
+            p.ui.get::<Header>("header").unwrap().folder_icon,
+            Some(false)
+        );
+        // The I/O view is the Mix tab's (and the tempo chip's): from Play
+        // the mixer opens on it.
+        let fx = app.open_io();
         assert_eq!(
             fx.first(),
             Some(&crate::app::Effect::Mixer(Some(MixView::Io)))
@@ -15613,9 +15617,9 @@ mod tests {
         let mut m = mpfree_mixer_ui::sample::song_mixer();
         let st = MixState::from_mixer(&mut m, MixView::Io, &mpfree_mixer_ui::sample::name);
         p.apply(ToUi::Mixer(Box::new(st)));
-        // The icon lit, the I/O view's hint.
+        // The I/O view's hint; the folder icon stays dark.
         let h = p.ui.get::<Header>("header").unwrap();
-        assert_eq!((h.io_icon, h.mixer_icon), (Some(true), None));
+        assert_eq!(h.folder_icon, Some(false));
         assert_eq!(p.ui.get::<Label>("hint").unwrap().text, MIXER_HINT_IO);
         assert!(p.io_showing());
         // The wheel is the I/O view's now, not Q-Link 1's: nothing is sent
@@ -15634,13 +15638,11 @@ mod tests {
         app.map.learn(crate::app::mapper::Job::Plus, Some(55));
         fx.extend(app.button(55, true, 0.0));
         assert_eq!(fx, [crate::app::Effect::MixerStep(1)]);
-        // The I/O icon again closes it, back to Play.
-        let fx = app.toggle_io(p.io_showing());
+        // TRACK MIX closes it, back to Play.
+        let fx = app.toggle_mixer(false);
         assert_eq!(fx.first(), Some(&crate::app::Effect::Mixer(None)));
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), "Play");
-        let h = p.ui.get::<Header>("header").unwrap();
-        assert_eq!((h.io_icon, h.mixer_icon), (Some(false), None));
         // While an outside clock sets the tempo, the tempo chip shows; a
         // tap opens the I/O view (at Sync once that section is there).
         p.apply(ToUi::ClockFrom(Some("MIDI In".into())));
@@ -17128,7 +17130,7 @@ mod tests {
         // Track 3 plays Boom Bap (kit 2) by a pick.
         assert!(tk.set(2, 1));
         p.apply(ToUi::TrackKits(Box::new(tk)));
-        open_pads(&mut p, pads_tab::PAD_VIEW);
+        open_pads(&mut p);
         let armed = p.time.armed.expect("a track is armed");
         let row = |p: &Player| {
             p.ui.get::<KitTracks>(pads_tab::KITS)
@@ -18160,7 +18162,7 @@ mod tests {
         q.apply(ToUi::ProjectDefaults(defaults()));
         let at_start = opens(&mut q).expect("the last project opens");
         assert_eq!(at_start.what, loc.name());
-        assert!(q.browser.as_ref().unwrap().picking().is_some());
+        assert!(q.browser.as_ref().unwrap().picking().is_none());
         assert!(opens(&mut q).is_none(), "once");
         // New project leaves the empty one.
         let mut n = sample_sampler(Fonts::embedded());
@@ -18712,6 +18714,25 @@ mod tests {
         });
         assert_eq!(p.sample.state().unwrap().region, now);
         assert_eq!(value(&p, Row::Process), warp_tab::PROCESS_TEXT);
+    }
+
+    /// The Play, Pads and Sequencer redesign (Jay, 18 Nov): the browser's
+    /// Load names the pad picked, Load on A5, and a pad hit while it shows
+    /// picks another pad, which the button follows.
+    #[test]
+    fn the_browsers_load_names_the_pad_picked_and_follows_a_pad_hit() {
+        let mut p = browser_samples(Fonts::embedded()).unwrap();
+        assert_eq!(p.page(), mpfree_browser_ui::BROWSER_PAGE);
+        let load_on = |p: &Player| p.browser.as_ref().unwrap().screen().load_on;
+        assert_eq!(load_on(&p).as_deref(), Some("A5"));
+        p.apply(ToUi::PadDown {
+            pad: 1,
+            velocity: 100,
+        });
+        p.apply(ToUi::PadUp(1));
+        p.tick(0.033);
+        assert_eq!(load_on(&p).as_deref(), Some("A2"));
+        assert_eq!(p.page(), mpfree_browser_ui::BROWSER_PAGE, "it stays open");
     }
 
     #[test]
@@ -21706,16 +21727,20 @@ mod tests {
                 kind,
             })
         };
-        // The Pads tab opens on the same pad; its switch shows the Pad
-        // view, and the app's controls follow it.
-        open_pads(&mut p, pads_tab::BROWSE);
+        // The Pads tab opens on the same pad, the pad's settings beside
+        // the pads; its bar's Browse for A5 asks the app for the browser.
+        open_pads(&mut p);
         assert_eq!(
             (p.page(), p.sample.editor()),
-            (sample_page::PADS_BROWSE_PAGE, sample_page::Editor::Pads)
+            (sample_page::PADS_PAGE, sample_page::Editor::Pads)
         );
         assert_eq!(p.ui.get::<Header>("header").unwrap().active, 1);
-        ev(&mut p, pads_tab::BAR, EventKind::Tab(pads_tab::PAD_VIEW));
-        assert_eq!(p.take_actions(), vec![FromUi::PadsView(pads_tab::PAD_VIEW)]);
+        assert_eq!(
+            p.ui.get::<PadBar>(pads_tab::BAR).unwrap().button.as_deref(),
+            Some("Browse for A5")
+        );
+        ev(&mut p, pads_tab::BAR, EventKind::Tab(0));
+        assert_eq!(p.take_actions(), vec![FromUi::PadsBrowse]);
         assert_eq!(p.page(), sample_page::PADS_PAGE);
         assert!(p
             .ui
@@ -21841,7 +21866,7 @@ mod tests {
             rate: mpfree_sampler_ui::sample::RATE,
         });
         let keys = |p: &Player, pad: usize| p.sample.project(0).unwrap().pad(pad).unwrap().keys;
-        open_pads(&mut p, pads_tab::PAD_VIEW);
+        open_pads(&mut p);
         assert_eq!(p.page(), sample_page::PADS_PAGE);
         p.take_actions();
         // Map to keys: each pad at its sound's note, spread halfway to the

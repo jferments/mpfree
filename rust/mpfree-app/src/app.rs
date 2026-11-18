@@ -1207,9 +1207,6 @@ pub struct App {
     timed: bool,
     shift: bool,
     repeat_held: bool,
-    /// The Pads tab shows the browser (its Browse view), as the screen
-    /// last said: the wheel, its push, - / + and PLAY go to the browser.
-    pads_browse: bool,
     /// ERASE is down: SHIFT and ERASE held, then TAP TEMPO, is the
     /// Console's chord.
     erase_held: bool,
@@ -1453,7 +1450,6 @@ impl App {
             timed,
             shift: false,
             repeat_held: false,
-            pads_browse: true,
             erase_held: false,
             repeat_pressed_at: None,
             latched: false,
@@ -2731,10 +2727,6 @@ impl App {
             View::Synth if self.shift => vec![Effect::SynthPage(delta.signum())],
             View::Browser if self.shift => vec![Effect::Browse(BrowseKey::Places(delta.signum()))],
             View::Browser => vec![Effect::Browse(BrowseKey::Wheel(delta))],
-            View::Pads if self.pads_browse && self.shift => {
-                vec![Effect::Browse(BrowseKey::Places(delta.signum()))]
-            }
-            View::Pads if self.pads_browse => vec![Effect::Browse(BrowseKey::Wheel(delta))],
             View::Sample | View::Pads if self.shift => vec![Effect::SamplePad(delta.signum())],
             // Pages with rows: the wheel picks a row, or, once the wheel's
             // push opened it, changes its value (RowKey).
@@ -2851,14 +2843,20 @@ impl App {
         fx
     }
 
-    /// The bar's I/O icon (layout spec, section 2): the mixer opens on its
-    /// I/O view; on a strips view the mixer turns to I/O; on the I/O view
-    /// (`io_showing`) it closes back to the page, as TRACK MIX does.
-    pub fn toggle_io(&mut self, io_showing: bool) -> Vec<Effect> {
-        if self.view == View::Mixer && io_showing {
-            return self.toggle_mixer(false);
+    /// The bar's folder icon (layout spec, section 2): the browser opens
+    /// over the page, or closes back to it, as BROWSE does.
+    pub fn toggle_browser(&mut self) -> Vec<Effect> {
+        self.toggle(View::Browser)
+    }
+
+    /// The Pads tab's Browse for: the browser opens over the page (its
+    /// Load puts a sound on the pad picked); BROWSE or the folder icon
+    /// closes it back to the Pads tab.
+    pub fn open_browser(&mut self) -> Vec<Effect> {
+        if self.view == View::Browser {
+            return Vec::new();
         }
-        self.open_io()
+        self.show(View::Browser)
     }
 
     /// The tempo chip: the mixer's I/O view, whatever shows (the app picks
@@ -2967,27 +2965,20 @@ impl App {
     }
 
     /// Open a tab's page.
-    /// The Pads tab shows its browser (Browse) or the pad's settings
-    /// (Pad), as the screen says when its switch is tapped.
-    pub fn set_pads_browse(&mut self, on: bool) {
-        self.pads_browse = on;
-    }
-
-    /// The wheel, its push, - / + and PLAY go to the Pads tab's browser.
+    /// The wheel, its push, - / + and PLAY go to the browser.
     fn browsing(&self) -> bool {
-        (self.view == View::Pads && self.pads_browse) || self.view == View::Browser
+        self.view == View::Browser
     }
 
     /// A page whose rows the wheel, - / + and the wheel's push work
-    /// ([`RowKey`]): the Sample tab, the Pads tab's Pad view, the Synth tab
-    /// and Arrange. Not while NOTE REPEAT holds the wheel for the arp.
+    /// ([`RowKey`]): the Sample tab, the Pads tab, the Synth tab and
+    /// Arrange. Not while NOTE REPEAT holds the wheel for the arp.
     fn has_rows(&self) -> bool {
         !self.repeat_held
-            && match self.view {
-                View::Sample | View::Synth | View::Arrange => true,
-                View::Pads => !self.pads_browse,
-                _ => false,
-            }
+            && matches!(
+                self.view,
+                View::Sample | View::Synth | View::Arrange | View::Pads
+            )
     }
 
     pub fn open_tab(&mut self, v: View) -> Vec<Effect> {
@@ -5181,14 +5172,13 @@ mod tests {
     /// Live test 2 (Jay, 13 Nov): on a page with rows the wheel scrolls
     /// through them, - / + cycle the highlighted row's options, and the
     /// wheel's push makes the wheel cycle them until the next push. The
-    /// same on the Sample tab, the Pads tab's Pad view, the Synth tab and
-    /// Arrange; SHIFT keeps each page's second job.
+    /// same on the Sample tab, the Pads tab, the Synth tab and Arrange;
+    /// SHIFT keeps each page's second job.
     #[test]
     fn the_wheel_picks_rows_and_its_push_opens_one_on_every_page_with_rows() {
         let mut app = ready();
         let pick = |d| vec![Effect::Rows(RowKey::Pick(d))];
         let step = |d| vec![Effect::Rows(RowKey::Step(d))];
-        app.set_pads_browse(false);
         for v in [View::Sample, View::Synth, View::Arrange, View::Pads] {
             app.open_tab(v);
             assert_eq!(app.view(), v);
@@ -5840,38 +5830,16 @@ mod tests {
         );
     }
 
+    /// The Pads tab has no browser of its own (Browse for opens BROWSE's,
+    /// 18 Nov): the wheel picks its rows, - and + change them, and PLAY
+    /// is the transport's, as on the Sample tab.
     #[test]
-    fn the_pads_tab_follows_play_and_its_browser_takes_the_wheel_push_minus_plus_and_play() {
+    fn the_pads_tab_follows_play_and_takes_the_sample_tabs_controls() {
         let mut app = ready();
         assert_eq!(View::Pads.tab_index(false), Some(1));
         assert_eq!(app.tab(1), vec![Effect::Show(View::Pads)]);
         assert!(View::Pads.sampler() && View::Sample.sampler() && !View::Play.sampler());
         app.map.data_push = Some(111);
-        // Browse (the view it opens on): the browser's.
-        assert_eq!(app.wheel(2), vec![Effect::Browse(BrowseKey::Wheel(2))]);
-        app.button(button::SHIFT, true, 0.0);
-        assert_eq!(app.wheel(-3), vec![Effect::Browse(BrowseKey::Places(-1))]);
-        app.button(button::SHIFT, false, 0.0);
-        assert_eq!(press(&mut app, 111), vec![Effect::Browse(BrowseKey::Push)]);
-        assert_eq!(
-            press(&mut app, button::PLUS),
-            vec![Effect::Browse(BrowseKey::Enter)]
-        );
-        assert_eq!(
-            press(&mut app, button::MINUS),
-            vec![Effect::Browse(BrowseKey::Back)]
-        );
-        assert_eq!(
-            press(&mut app, button::PLAY),
-            vec![Effect::Browse(BrowseKey::Play)]
-        );
-        // UNDO undoes the pads' edits, as on Sample.
-        assert_eq!(
-            press(&mut app, 92),
-            vec![Effect::SampleUndo { redo: false }, Effect::UndoButton(true)]
-        );
-        // The Pad view: the Sample tab's controls.
-        app.set_pads_browse(false);
         assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
         assert_eq!(
             press(&mut app, button::PLUS),
@@ -5879,10 +5847,16 @@ mod tests {
         );
         assert!(press(&mut app, button::PLAY)
             .contains(&Effect::Time(TimeAction::Transport(Command::Play))));
-        // Elsewhere PLAY is the transport's again.
-        app.set_pads_browse(true);
-        app.tab(0);
-        assert!(!press(&mut app, button::PLAY).contains(&Effect::Browse(BrowseKey::Play)));
+        // UNDO undoes the pads' edits, as on Sample.
+        assert_eq!(
+            press(&mut app, 92),
+            vec![Effect::SampleUndo { redo: false }, Effect::UndoButton(true)]
+        );
+        // Browse for asks for the browser over the page; asked again, it
+        // stays.
+        assert_eq!(app.open_browser(), vec![Effect::Show(View::Browser)]);
+        assert!(app.open_browser().is_empty());
+        assert_eq!(app.view(), View::Browser);
     }
 
     #[test]

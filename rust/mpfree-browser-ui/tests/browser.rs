@@ -500,38 +500,65 @@ fn the_sample_picker_loads_one_sound_for_the_pad() {
     assert_eq!(b.screen().path, "Kits");
 }
 
+/// The labels of the browser's buttons, as painted.
+fn button_labels(ui: &mut mpfree_ui::Ui, b: &mut Browser) -> Vec<String> {
+    step(ui, b);
+    let mut c = SoftCanvas::new(1280, 800);
+    ui.paint(&mut c);
+    ui.targets()
+        .into_iter()
+        .filter(|t| t.widget == BROWSER && t.target.id == "button")
+        .map(|t| t.target.label)
+        .collect()
+}
+
 #[test]
-fn the_pads_tab_browser_stays_open_and_offers_both_loads() {
+fn load_names_the_pad_picked_and_next_pad_hit_waits_for_a_hit() {
     let (mut b, _) = browser();
-    b.open_picker(Pick::Pads);
-    assert_eq!(b.screen().title, "Sounds");
-    assert_eq!(
-        place_labels(&b),
-        ["Samples", "Kits", "Recordings", "Recent", "Favourites"]
-    );
-    assert!(b.screen().list_buttons.is_empty(), "nothing to cancel");
+    let mut ui = mpfree_ui::Ui::new(mpfree_ui::Theme::dark(), Fonts::embedded(), 1280, 800);
+    ui.add("header", mpfree_ui::widgets::Header::app("Play"));
+    mpfree_browser_ui::add(&mut ui, &b).unwrap();
+    ui.show(mpfree_browser_ui::BROWSER_PAGE).unwrap();
+    // Without a pad, plain Load.
     select(&mut b, "Rhodes chord.wav");
+    assert!(button_labels(&mut ui, &mut b).contains(&"Load".to_string()));
+    // The pad picked names the button, and a pad hit moves it.
+    b.set_pad_target(Some("A5".into()));
+    assert_eq!(b.screen().load_on.as_deref(), Some("A5"));
+    let labels = button_labels(&mut ui, &mut b);
+    assert!(
+        labels.contains(&"Load on A5".to_string()) && labels.contains(&"Next pad hit".to_string()),
+        "{labels:?}"
+    );
+    b.set_pad_target(Some("B14".into()));
+    assert!(button_labels(&mut ui, &mut b).contains(&"Load on B14".to_string()));
+    // Load: onto that pad, and the line under the list says so. The
+    // browser stays open.
     b.take_actions();
-    let buttons = b.screen().detail.buttons;
-    assert!(buttons.contains(&Button::Load) && buttons.contains(&Button::LoadToPad));
-    assert!(!buttons.contains(&Button::Delete) && !buttons.contains(&Button::Cancel));
-    // Load: for the pad picked; it stays where it is.
     b.push();
     let a = b.take_actions();
     assert!(
         matches!(&a[0], BrowseAction::LoadSample { loc, .. } if loc.name() == "Rhodes chord.wav"),
         "{a:?}"
     );
-    assert!(!a.contains(&BrowseAction::PickerClosed { loaded: true }));
-    assert!(b.picking().is_some());
-    assert_eq!(b.screen().path, "Samples");
-    // Load to pad: for the next pad hit.
+    assert_eq!(
+        b.screen().status.unwrap().0,
+        "Loaded Rhodes chord.wav on B14"
+    );
+    assert!(b.picking().is_none());
+    // Next pad hit: held for the next pad hit.
     b.input(Input::Button(Button::LoadToPad));
     assert!(matches!(
         &b.take_actions()[0],
         BrowseAction::LoadToPad { .. }
     ));
-    assert!(b.picking().is_some());
+    // A kit loads whole, in place of the kit the pads play: plain Load.
+    b.go_source(src("Kits"));
+    let labels = button_labels(&mut ui, &mut b);
+    assert!(
+        labels.contains(&"Load".to_string()) && !labels.iter().any(|l| l.starts_with("Load on")),
+        "{labels:?}"
+    );
 }
 
 #[test]
@@ -1101,27 +1128,6 @@ fn a_midi_file_loads_as_clips() {
     // It is remembered in Recent, as a sound is.
     assert!(matches!(&a[1], BrowseAction::SaveLists(t) if t.contains("Patterns/Sequence01.mid")));
     assert!(b.screen().status.unwrap().0.contains("as clips"));
-}
-
-#[test]
-fn the_pads_tab_browser_loads_and_saves_kits() {
-    let (mut b, _) = browser();
-    b.open_picker(Pick::Pads);
-    assert!(b.screen().list_buttons.is_empty());
-    b.go_source(src("Kits"));
-    assert_eq!(b.screen().path, "Kits");
-    assert_eq!(names(&b), ["Boom bap"]);
-    assert_eq!(b.screen().list_buttons, [Button::SaveKit]);
-    b.take_actions();
-    b.push();
-    assert!(matches!(&b.take_actions()[0], BrowseAction::LoadKit { .. }));
-    // It stays open, as for a sound.
-    assert!(b.picking().is_some());
-    b.input(Input::Button(Button::SaveKit));
-    assert_eq!(b.take_actions(), [BrowseAction::SaveKitRequested]);
-    // A kit in Samples shows there too, as a kit.
-    b.go_source(src("Samples"));
-    assert!(b.screen().list_buttons.is_empty());
 }
 
 #[test]

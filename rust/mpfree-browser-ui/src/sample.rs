@@ -208,9 +208,10 @@ pub fn samples(fonts: impl Fn() -> Fonts, data: &Path) -> Result<Vec<Sample>, St
     };
     shot(
         "01-samples-drums",
-        "Samples / Drums with Kick 01 selected: its length, format and a quick waveform; Load, Load to pad, Audition, Favourite, Rename, Copy, Cut, Delete",
+        "Samples / Drums with Kick 01 selected: its length, format and a quick waveform; Load on A1 (the pad picked), Next pad hit, Audition, Rename, Copy, Cut, Delete",
         Theme::dark(),
         &|b| {
+            b.set_pad_target(Some("A1".into()));
             b.go_source(source("Samples"));
             open(b, "Drums");
             select(b, "Kick 01.wav");

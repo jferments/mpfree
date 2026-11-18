@@ -46,9 +46,9 @@ LINKED_SRC = (os.path.join(REPO, "rust", "mpfree-touch", "src"), os.path.join(RE
 LIBRARY_NEEDLES = (
     # Reviewed by the app thread, 12 Nov 2026. Every path is the library's root joined with a place's folder and
     # names checked by valid_name (Library::path), or a .part / temp / trash slot beside one; links are refused
-    # (symlink_metadata, O_NOFOLLOW). The Pads tab's browser reaches only Save kit (kit.rs, below): its picker
-    # refuses every button but Load, Load to pad, Open, Audition, Favourite, which read, and Save kit
-    # (Pick::allows); Recent and Favourites are saved through mpfree-store. The full browser (BROWSE, 13 Nov 2026) reaches them all:
+    # (symlink_metadata, O_NOFOLLOW). A picker (a pad's sound, presets, Open project) writes nothing: it
+    # refuses every button but Load, Open, Audition, Favourite and Cancel, which read (Pick::allows; the Pads
+    # tab's own picker went on 18 Nov 2026); Recent and Favourites are saved through mpfree-store. The full browser (BROWSE, 13 Nov 2026) reaches them all:
     # New folder, Rename, Copy and Paste, Delete into the Trash (asks first; Put back undoes it), Empty
     # Trash (asks first; for good, the Trash only) and the project save (SHIFT + BROWSE, Save, Save as),
     # each inside library/ under --data and nowhere else. At start, Library::at makes library/ and its
