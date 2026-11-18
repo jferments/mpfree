@@ -93,6 +93,7 @@ use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
 use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab, SceneAction};
 use mpfree_sampler_ui::rec_tab::{self, RecAction, RecState, RecTab, Skip};
 use mpfree_sampler_ui::rec_widgets::Strip;
+use mpfree_sampler_ui::recall::RecallFrom;
 use mpfree_sampler_ui::recorder::{
     self, KeepView, MonitorView, Plays, RecorderAction, RecorderView, KEEP_NOT_YET, LINE_ONLY,
 };
@@ -345,6 +346,10 @@ fn flatten_point(pad: usize, target: Option<usize>) -> CapturePoint {
 /// Why the recorder row's REC can't take while the line input is off
 /// (the Rec page's [`rec_tab::OFF_NOTE`], as short as the row needs).
 pub const RECORDER_OFF: &str = "Line in off: Looper tab, MENU";
+
+/// Why Sample Recall's From offers no second choice while the recorder
+/// listens to the master: Master is it.
+pub const RECALL_SOURCE_MASTER: &str = "The recorder's Source is the master: From Master has it";
 
 /// The Keep card's line while a take is ready, counting in or recording:
 /// it waits, as Sample Recall does (REC arm rule 6).
@@ -6230,6 +6235,29 @@ impl SamplePage {
         self.recall.as_ref()
     }
 
+    /// What Sample Recall reads `from` (one-page step 2f): the master's
+    /// last two minutes, or what the sampler's Source has kept (the Rec
+    /// page's Skip back), while it has a buffer of its own.
+    pub fn recall_from(&self, from: RecallFrom) -> Option<&Input> {
+        match from {
+            RecallFrom::Master => self.recall.as_ref(),
+            RecallFrom::Source => self.input.as_ref().filter(|_| !self.input_shared),
+        }
+    }
+
+    /// Sample Recall's From, second choice: the recorder's Source by name,
+    /// or why there is nothing of it to read.
+    pub fn recall_second(&self) -> Result<String, String> {
+        if self.source == master_source() {
+            return Err(RECALL_SOURCE_MASTER.to_string());
+        }
+        match self.recall_from(RecallFrom::Source) {
+            Some(_) => Ok(self.source_name()),
+            None if self.source == RecSource::Line => Err(RECORDER_OFF.to_string()),
+            None => Err(format!("{} isn't kept now", self.source_name())),
+        }
+    }
+
     /// Sample Recall opened on pad `pad` of the kit the pads play: the pad
     /// it lands on (the held pad when it has no sound, else the next empty
     /// one in its bank, as the Rec tab's Next empty; in a full bank the
@@ -6252,7 +6280,12 @@ impl SamplePage {
         name: &str,
         faded: bool,
     ) -> Result<Source, String> {
-        let input = self.recall.as_ref().ok_or("the master isn't kept yet")?;
+        let input = match r.from {
+            RecallFrom::Master => self.recall.as_ref().ok_or("the master isn't kept yet")?,
+            RecallFrom::Source => self
+                .recall_from(r.from)
+                .ok_or("the Source isn't kept now")?,
+        };
         let b = r
             .bracket(input)
             .ok_or("the bracket reaches past what is kept")?;
@@ -6302,7 +6335,12 @@ impl SamplePage {
         r: &mpfree_sampler_ui::recall::Recall,
         onto: Option<usize>,
     ) -> Result<String, String> {
-        let input = self.recall.as_ref().ok_or(KEEP_NOT_YET)?;
+        let input = match r.from {
+            RecallFrom::Master => self.recall.as_ref().ok_or(KEEP_NOT_YET)?,
+            RecallFrom::Source => self
+                .recall_from(r.from)
+                .ok_or("the Source isn't kept now")?,
+        };
         let b = r
             .bracket(input)
             .ok_or("the bracket reaches past what is kept")?;
@@ -6310,11 +6348,14 @@ impl SamplePage {
         let fade = recall_fade(r, rate).min(b.frames() as u32 / 2);
         self.recalls += 1;
         let src = self.recall_source(r, &format!("Recall {}", self.recalls), false)?;
-        let what = match b.bars {
+        let mut what = match b.bars {
             Some((a, z)) if a == z => format!("recall bar {a}"),
             Some((a, z)) => format!("recall bars {a} to {z}"),
             None => format!("recall {}", duration_text(b.frames(), rate)),
         };
+        if r.from == RecallFrom::Source {
+            what = format!("{what} of {}", self.source_name());
+        }
         let kit = self.kit;
         let edits = self.edits;
         let bpm = r.warps().then(|| self.tempo());

@@ -129,6 +129,8 @@ A take that stays is kept with the kit, on no pad, until you put it somewhere. T
 
 The Rec page is always listening while its source is on. **Skip back** keeps what has already come in, without your having pressed Record: the last 10 seconds to begin with, or whatever the selector beside the **Skip back** button says (5 seconds to a minute, or 1 to 8 whole bars cut on the bar lines). The blue span on the picture shows what it would keep. It is the sampler's version of [Capture](clips.md#capture-keep-what-you-just-played): play something good, then keep it.
 
+[Sample Recall](#sample-recall-keep-what-just-played-from-any-page) does the same from any page: set its **From** to the recorder's Source ("Line in") and it reads what the Source has kept, with its bars, its bracket and **Audition**. Skip back's place is there from now on: the Rec page is going.
+
 ### Hold an empty pad and press REC: one take, from any page
 
 You don't have to open the Rec page to record onto a pad. **Hold a pad that has no sound and press REC**, on any page: the Rec page's recorder is armed onto that pad for one take, with the Rec page's settings (its Source, Start and End). The REC chip on the transport bar says so, **REC → Pad A5 · Line in**, and pages without a transport bar show it at the top. Let go of the pad; the take waits.
@@ -186,10 +188,13 @@ MPFree always keeps the last two minutes of what you hear. When something good j
 
 {{shot: sample-recall | Sample Recall opened from Play on pad A5: the last two minutes along the top with their bar numbers, bars 12 to 15 bracketed and drawn large, and Keep landing them on A6, the next free pad.}}
 
+{{shot: sample-recall-from | Sample Recall with From on Line in: the line input's last 1:15 along the top, its bars 8 to 11 bracketed, and the REC chip saying "Pad A6 · Line in".}}
+
 Kept, the bracket lands on the pad you held if it is empty, or else on the next empty pad in its bank (the panel says which: "Pad A6 · next free"). It is cut on the bar lines, with a short fade in and out, and with **Warp** on it plays in time at the project's tempo from then on. The pad is picked, so **SAMPLE EDIT** opens it on the Sample tab, ready to chop. It is one step on the Sample and Pads tabs: **UNDO** there takes it back (the history calls it "Recall to A6").
 
 | Control | What it does |
 |---|---|
+| **From** | **Master**, the whole mix as you hear it (its last two minutes), or the recorder's Source ("Line in", or the track or channel the Sample page's **Source** card is on): what came in over its last 1:15, as **Skip back** keeps it. It opens on Master. The Source's choice is faint when there is nothing of it to read (the line input is off: "Line in off: Looper tab, MENU"), or when the Source is the master, which **Master** already is; a tap says so. |
 | **Length** | 1, 2, 4, 8 or 16 whole bars, ending on the last bar line; or **Free**, a number of seconds ending where Sample Recall opened. |
 | **Lands on** | The pad it keeps onto. Step it to another pad; on a pad that already has a sound it says "replaces its sound". |
 | **Warp** | On: whole bars play in time at the project's tempo. Free always lands as played. |
