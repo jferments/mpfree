@@ -1185,6 +1185,16 @@ impl MixHost {
             .queue_insert(strip, slot, Timed::new(0, NodeEvent::Param { id, value }));
     }
 
+    /// Whether throw `fx` holds its Perform FX pad on the master now (the
+    /// tests').
+    #[cfg(test)]
+    pub fn throw_held(&self, fx: ThrowFx) -> bool {
+        self.mixer
+            .chain(StripId::Master)
+            .and_then(|c| c.node(PERFORM_SLOT))
+            .is_some_and(|n| n.param(perf::hold(fx.pad())) > 0.5)
+    }
+
     /// A strip control as the mixer panel set it, for UNDO: a pad's mute
     /// is its own, not Drop drums' held over it.
     pub fn value(&self, strip: StripId, id: u16) -> f32 {

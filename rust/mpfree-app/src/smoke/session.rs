@@ -821,8 +821,8 @@ impl Session {
             return;
         }
         if down && pad < 16 && self.app.pads_are_loop_keys() {
-            self.keys_held.press(pad, self.t());
             let action = self.app.perform_page().action(pad);
+            self.keys_held.press_action(pad, self.t(), action);
             let (fx, line) = crate::desk::perform_pad(
                 &mut self.app,
                 &self.time,
@@ -836,7 +836,13 @@ impl Session {
             }
             return;
         }
-        if !down && self.keys_held.release(pad) {
+        if let Some(action) = (!down)
+            .then(|| self.keys_held.release_action(pad))
+            .flatten()
+        {
+            // A held throw lets go with its pad.
+            let fx = crate::desk::perform_pad_up(&mut self.app, action);
+            self.fx.extend(fx);
             self.out.show(ToUi::PadUp(pad));
             return;
         }
@@ -1288,6 +1294,7 @@ impl Session {
             modu: self.mix.modu.save(),
             synth: crate::project::synth_text(&self.app.synth_settings(), &self.synth.sounds()),
             arp: self.app.arp_part(),
+            perform: self.app.perform_set().text(),
             instruments: crate::project::instruments_text(&self.mix.instruments),
             track_kits: self.track_kits.text(),
             loops,
@@ -1362,6 +1369,11 @@ impl Session {
         }
         self.kit_to = Some(self.track_kits.entry(self.app.track()));
         let (notes, fx) = self.app.open_arp(o.arp.as_deref());
+        for line in notes {
+            self.out.note(&line);
+        }
+        self.fx.extend(fx);
+        let (notes, fx) = self.app.open_perform(o.perform.as_deref());
         for line in notes {
             self.out.note(&line);
         }
