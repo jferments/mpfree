@@ -15,8 +15,8 @@
 44291	Audio tracks: 6 playing comped takes, 2 recording
 44270	Audio tracks: 8 playing comped takes
 54516	Audio tracks: 8 streaming comped takes
-28533	Auto wah
-21968	Auto-pan
+25491	Auto wah
+21329	Auto-pan
 339781	Chain: drive, filter, delay, comp
 104245	Character (Console)
 120120	Character (Iron)
@@ -84,7 +84,7 @@
 143678	Multi filter (LP 24, drive)
 92010	Multi filter (ladder)
 95212	Multi-tap delay
-141467	Multiband compressor
+149907	Multiband compressor
 212533	Perform FX, 7 pads held (pitch drop, gate, sweeps, crush, riser, echo)
 61602	Perform FX, a wash throw held
 3388	Perform FX, idle
@@ -108,7 +108,7 @@
 209421	Poly Pluck, 8 voices
 33542	Poly Sub Bass, 8 voices
 374672	Poly Supersaw, 8 voices
-24644	Ring mod
+20295	Ring mod
 145867	Room reverb
 115746	Rotary
 546477	Sampler x16 held
@@ -128,14 +128,14 @@
 59214	Squelch Acid Line, a line
 61774	Squelch Distorted, a line
 64328	Squelch Square Acid, a line
-37255	Talk box
+30240	Talk box
 87944	Tape delay
 8130	Time with trig conditions and ratchets, 8 clips, arp
 8528	Time: transport, 8 clips, arp
 53727	Track host alone, 16 tracks, 8 events each per block
 406148	Track host, 4 Poly tracks of 4 voices
 26028	Transient shaper
-16713	Tremolo
+11340	Tremolo
 32159	Tuner
 476604	Wavetable Digital Bell, 8 voices
 479074	Wavetable FM Keys, 8 voices

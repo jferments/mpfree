@@ -587,8 +587,9 @@ pub static PLANS: &[Plan] = &[
                 },
                 s("timing", "Timing", Shape, &["Attack", "Release"]),
                 Section {
+                    rows: &["Auto makeup"],
                     trim: &["Output"],
-                    ..s("output", "Output", Voice, &["Mix", "Output"])
+                    ..s("output", "Output", Voice, &["Mix", "Output", "Auto makeup"])
                 },
             ],
         )],

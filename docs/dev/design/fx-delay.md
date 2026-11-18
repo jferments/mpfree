@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-fx/src/delay.rs rust/mpfree-fx/src/echoes.rs rust/mpfree-fx/src/kit.rs
-checked: 2026-11-17 68709b4
+checked: 2026-11-17 8ac941f3
 -->
 # Delays: Digital, Tape and Multi-tap
 

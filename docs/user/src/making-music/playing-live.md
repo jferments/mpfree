@@ -59,13 +59,24 @@ Mutes and solos aren't undo steps, and with **Rec song** on they go into the son
 **16 LEVEL** spreads one sound over all 16 pads: the pad you hit last plays on every pad, each one a step of something else. Press **16 LEVEL** and the 16 Levels panel opens on the Play page, under the transport bar:
 
 - The cells are the pads, pad 1 at the bottom left. Each one shows what that pad plays, and they are lit in the same colour as the pads, with the pad you are holding bright.
-- The column on the right picks what the steps change: **Velocity** (8 to 127), **Tune** (a semitone a pad, pad 9 as recorded), **Cutoff** (100 Hz to 20 kHz), **Decay** (25 ms to 4.5 s) or **Start** (where in the sound it starts). Tap one, or turn the wheel.
+- The column on the right picks what the steps change: **Velocity** (8 to 127), **Tune** (a semitone a pad, pad 9 as recorded), **Cutoff** (100 Hz to 20 kHz), **Decay** (25 ms to 4.5 s), **Start** (where in the sound it starts) or **Transpose** (the armed track's notes, below). Tap one, or turn the wheel.
 - **Pick pad**, then hit a pad: the levels play that pad's sound instead.
 - **Close** hides the panel and keeps the pads on 16 Levels. **Off**, or **16 LEVEL** again, gives the pads their own sounds back. The 16 LEVEL button is lit while 16 Levels is on, and a **16 Levels** chip in the top bar says what the steps change.
 
-16 Levels belongs to the kit, so it is saved with it and one UNDO on the Sample tab takes it back. The synth's pads don't have it: pick a kit first.
+16 Levels belongs to the kit, so it is saved with it and one UNDO on the Sample tab takes it back.
 
 {{shot: play-16-levels | The 16 Levels panel by Tune: pad 9 plays the sound as recorded, the others a semitone apart, and pad 12 is held.}}
+
+### Transpose
+
+The last kind in the column, **Transpose**, moves a playing line instead of a sound. The pads shift the armed track, and every track you've set to follow it, while its clips play: pad 9 plays as written, pad 14 is up 5 semitones (a fourth), pad 16 up 7 (a fifth), pad 1 down 8. It latches, so the shift stays until you hit another pad, and it lands on the track's next note: notes already sounding finish at their old pitch, so you can tap transposes in time with the music. Nothing in the clip changes, and pad 9 always brings it back.
+
+- When the armed track plays the synth (Synth, the last row of the kit chip's list), **16 LEVEL** opens Transpose at once. On a kit it's the last kind in the column.
+- When the synth's pads play **In key** (or chords), Transpose steps through the key instead of semitones, so the line stays in key: pad 16 is an octave up in a seven-note scale and pad 2 an octave down. The heading says the key ("Bass · -3 in C Minor").
+- The heading names the armed track and the tracks that follow it, and where they are ("Bass, with Keys · +5 st"). The pad it's on is lit, on the screen and on the MPC's pads. Pick pad does nothing here.
+- Only tracks that play notes move: a track that plays the synth, or a track's own instrument. A drum kit's notes are its pads, so a kit track, the Drums engine and Loop tracks stay as they are, and the heading says so.
+- The second Q-Link (Tune's place) turns Transpose too, two octaves either way, and so does the Record panel's **Transpose** row (see [Recording a clip](clips.md#recording-a-clip)). The Record panel's **Follows** row sets which tracks move with the armed one, so a bass and its chords can change key together.
+- What you record while transposed goes in as written and plays back transposed, so it sounds as you heard it.
 
 ## Your timing
 
@@ -100,11 +111,10 @@ Two more things help on a stage, in Make and Perform alike:
 - **Back to song.** With **Song on**, a clip you launch takes its track over from the song. While any clip plays over the song, **Back to song** shows on the grid's title line: tap it and every clip stops on the next Launch line, and the song plays every track from there, on the beat (see [The song](arranging.md#the-song)).
 - **Reload a clip.** Before you take a pattern apart live, tap **Save state** on the Clip tab (see [Clip settings](clips.md#clip-settings)). Add steps, change its speed, erase half of it; then tap **Reload clip** on the morph bar, and the pattern comes back as you saved it on the next Launch line, so it lands on the beat. In Perform, NEXT says when ("Verse B reloads in 2 beats"). Tap Reload clip again before then to take it back, and **UNDO** puts the wrecked version back if you liked it after all.
 
+- **Live transpose.** Move a playing bass line or arp to another key from the pads, with 16 Levels' **Transpose** (see [Transpose](#transpose)): a progression from one loop, a lift for the last chorus, an octave jump for a build.
 - **The song list.** Line your scenes up in the order they play, each so many times ("Intro × 2, Verse × 4, Drop × 4"), and let the list play them on the bar while your hands are free (see [The song list](arranging.md#the-song-list)).
 
 {{shot: arrange-list | The song list in Perform: seven steps, the Drop playing its third pass of four, the Break picked.}}
-
-Coming next: a scene editor and live transpose.
 
 ## The Q-Links on the Play page
 
@@ -113,6 +123,7 @@ The four knobs change with the view:
 | View | Q-Link 1 | Q-Link 2 | Q-Link 3 | Q-Link 4 |
 |---|---|---|---|---|
 | All and Beats | Swing | Tune (last pad played) | Drums' filter | Drums' delay send |
+| All and Beats, with 16 Levels on Transpose | Swing | Transpose (the armed track) | Drums' filter | Drums' delay send |
 | Beats, with a step picked | Velocity | Length | Nudge | Chance |
 | Loop | Loop level | Loop's delay send | Line input level | Loop filter |
 
