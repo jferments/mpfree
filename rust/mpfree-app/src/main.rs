@@ -7198,8 +7198,9 @@ fn player_session(
                     if controller.on()
                         && (Some(note) == app.map.q_link || app.map.bank_of(note).is_some()) => {}
                 // The Pads tab's Perform view: a pad picks the set's pad
-                // there; a throw plays while held, so it can be heard (held
-                // even when the pad latches, so nothing keeps playing). The
+                // there; a throw plays while held (or its bar), so it can
+                // be heard (held even when the pad latches, so nothing keeps
+                // playing), and a macro pad turns its macro while held. The
                 // kit's pads don't play.
                 Some(ControlEvent::PadDown { pad, .. })
                     if (pad as usize) < 16 && app.perform_editing() =>
@@ -7207,12 +7208,16 @@ fn player_session(
                     let pad = pad as usize;
                     out.show(gui::ToUi::PerformHit(pad));
                     let heard = match app.perform_page().action(pad) {
-                        perform_pads::PadAction::Throw(t) => {
+                        perform_pads::PadAction::Throw(t)
+                            if t.hold == perform_pads::Hold::Latch =>
+                        {
                             perform_pads::PadAction::Throw(perform_pads::Throw {
                                 hold: perform_pads::Hold::WhileHeld,
                                 ..t
                             })
                         }
+                        a @ (perform_pads::PadAction::Throw(_)
+                        | perform_pads::PadAction::Macro { .. }) => a,
                         _ => perform_pads::PadAction::None,
                     };
                     keys_held.press_action(pad, t, heard);
@@ -8371,6 +8376,7 @@ fn player_session(
             let blink = ((t * 4.0) as u64).is_multiple_of(2);
             let lit = perform_pads::Lit {
                 throws: app.throws_on(),
+                macros: app.macros_on(),
                 muted: (0..time.project().tracks.len().min(128))
                     .filter(|&t| time.muted(t) == Some(true))
                     .fold(0u128, |m, t| m | 1 << t),
