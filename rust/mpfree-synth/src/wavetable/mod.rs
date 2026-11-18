@@ -903,6 +903,8 @@ impl Wavetable {
             NodeEvent::AllOff => self.all_off(),
             NodeEvent::Param { id, value } => self.set_param(id, value),
             NodeEvent::Expression { note, kind, value } => self.expression(note, kind, value),
+            // The pedals are held by the host for this engine (`Node::hears`).
+            NodeEvent::Control { .. } => {}
         }
     }
 

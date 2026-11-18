@@ -77,6 +77,10 @@ impl Desk<'_> {
             gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::OpenInsert { strip, slot }) => {
                 fx.extend(panels.open_insert(app, mix, strip, Some(slot)))
             }
+            // Its "SC from ..." or "Nothing picked": the sidechain list too.
+            gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::OpenSidechain { strip, slot }) => {
+                fx.extend(panels.open_sidechain(app, mix, strip, slot))
+            }
             gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::AddInsert { strip }) => {
                 fx.extend(panels.open_insert(app, mix, strip, None))
             }
@@ -365,6 +369,12 @@ impl Desk<'_> {
             gui::FromUi::LoopBars(bars) => fx.extend(app.set_loop_bars(bars)),
             gui::FromUi::LoopKeys => fx.extend(app.toggle_loop_keys()),
             gui::FromUi::PerformOff => fx.extend(app.perform_off()),
+            gui::FromUi::PerformOn => fx.extend(app.perform_on()),
+            gui::FromUi::PerformShown(on) => fx.extend(app.show_perform(on)),
+            gui::FromUi::PerformPage(page) => fx.extend(app.perform_page_to(page)),
+            gui::FromUi::PerformPad { page, pad, action } => {
+                fx.extend(app.set_perform_pad(page, pad, action))
+            }
             gui::FromUi::LoopCapture => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Capture))
             }
@@ -577,6 +587,9 @@ impl Desk<'_> {
             }
             // A Perform pad's throw, and its track mute.
             app::Effect::PlayFx(p) => mix.play(p),
+            app::Effect::PerformSet { set, opened } => {
+                out.show(gui::ToUi::PerformSet { set, opened })
+            }
             app::Effect::TrackMute { track, wait } => {
                 let line = time
                     .mute_or_solo(track, wait, false)

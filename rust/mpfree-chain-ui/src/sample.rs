@@ -542,6 +542,119 @@ pub fn screen(
 
 const QLINKS: &str = "qlinks";
 
+/// The sidechain samples' song: a Compressor on the keys set to listen
+/// (the kick pad feeds it, [`sidechain_state`]), and a Ducker after it as
+/// it starts, on Sidechain with nothing picked.
+fn sidechain_song() -> Result<(Song, usize, usize), String> {
+    let mut song = Song::new();
+    let mut comp = mpfree_fx::registry::make("mpfree.fx.compressor").ok_or("no compressor")?;
+    comp.set_param(ids::compressor::SIDECHAIN, 1.0);
+    let comp = song.keys.push(comp);
+    let ducker = mpfree_fx::registry::make("mpfree.fx.ducker").ok_or("no ducker")?;
+    let ducker = song.keys.push(ducker);
+    Ok((song, comp, ducker))
+}
+
+/// The keys' Compressor listening to the kick pad, as the app sends it
+/// (layout spec 4b, "Sidechain"), and with `list` the sidechain list open
+/// over it on the tracks: for the app's preview (the manual's screens).
+pub fn sidechain_example(list: bool) -> Result<(Song, ChainState), String> {
+    let (song, comp, _) = sidechain_song()?;
+    let mut st = sidechain_state(&song, comp, |mut st| {
+        st.back = Some("Mixer".into());
+        st.strip_name = "Keys".into();
+        st.strip_kind = "Track 5".into();
+        st
+    });
+    if list {
+        st.list = Some(sidechain_tracks());
+    }
+    Ok((song, st))
+}
+
+/// The keys chain with `selected` picked, the Compressor (slot `comp` of
+/// [`sidechain_song`]) fed the kick pad.
+fn sidechain_state(
+    song: &Song,
+    selected: usize,
+    dress: impl Fn(ChainState) -> ChainState,
+) -> ChainState {
+    let mut st = dress(song.chain_state(KEYS, selected, 0, None));
+    let comp = song.keys.len() - 2;
+    st.set_sidechains(&song.keys, |slot| {
+        (slot == comp).then(|| (KICK, "Kick".to_string()))
+    });
+    st
+}
+
+/// A tap on the selected effect's track button on its Sidechain row (the
+/// Compressor's "Kick ›"), the app's list on the pads (`pads`), then a tap
+/// on the list's Tracks: the sidechain list open on the tracks.
+fn open_sidechain_list(ui: &mut Ui, pads: ChainState) -> Result<(), String> {
+    let r = ui.rect_of(crate::CHAIN).ok_or("the chain editor")?;
+    let v = ui
+        .get::<crate::ChainView>(crate::CHAIN)
+        .ok_or("the chain editor")?;
+    let st = v.state();
+    let sc = st.sidechain.as_ref().ok_or("no sidechain")?;
+    let k = st
+        .params
+        .iter()
+        .position(|p| p.addr.param == sc.listens.param)
+        .ok_or("no sidechain control")?;
+    let (_, g) = v
+        .page()
+        .control_geom(v.layout(r).page, k)
+        .ok_or("the Sidechain row")?;
+    let b = *g.parts.get(1).ok_or("the track's button")?;
+    ui.touch(1, mpfree_ui::Touch::Down, b.x + 5, b.y + 5);
+    ui.touch(1, mpfree_ui::Touch::Up, b.x + 5, b.y + 5);
+    crate::update_chain(ui, pads);
+    let tracks = ui
+        .get::<crate::ChainView>(crate::CHAIN)
+        .ok_or("the chain editor")?
+        .targets(r)
+        .into_iter()
+        .find(|t| t.id == "strips-group" && t.index == 0)
+        .ok_or("the Tracks group")?;
+    let (x, y) = tracks.centre();
+    ui.touch(1, mpfree_ui::Touch::Down, x, y);
+    ui.touch(1, mpfree_ui::Touch::Up, x, y);
+    let _ = crate::take_chain_actions(ui);
+    Ok(())
+}
+
+/// The sidechain list on the tracks for the keys' Compressor, as the app
+/// fills it.
+fn sidechain_tracks() -> crate::StripList {
+    let pick = |t: u8, name: &str, sub: &str, refused: Option<&'static str>| crate::StripPick {
+        strip: Strip::Track(t),
+        name: name.into(),
+        sub: sub.into(),
+        refused,
+    };
+    crate::StripList {
+        group: 0,
+        counts: [8, 16, 1, 0, 0, 0],
+        strips: vec![
+            pick(0, "Drums", "4 effects", None),
+            pick(1, "Synth", "no effects", None),
+            pick(2, "Loop", "1 effect", None),
+            pick(3, "Audio", "no effects", None),
+            pick(4, "Keys", "", Some(mpfree_fx::sidechain::Refusal::Itself.text())),
+            pick(5, "Bass", "", Some(mpfree_fx::sidechain::Refusal::Loop.text())),
+            pick(6, "Vocal chop", "muted · still works", None),
+            pick(7, "Pad", "no effects", None),
+        ],
+        sidechain: Some(crate::SidechainFor {
+            title: "SIDECHAIN FOR KEYS · COMPRESSOR · TAP WHAT IT LISTENS TO".into(),
+            now: "Now: Kick".into(),
+            note: "Returns and submixes come after this track in the mix, so they can't feed its sidechain.".into(),
+            current: Some(KICK),
+        }),
+    }
+}
+
 /// Every sample screen.
 pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let mut song = Song::new();
@@ -657,6 +770,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         strip: Strip::Track(t),
         name: name.into(),
         sub: sub.into(),
+        refused: None,
     };
     listed.list = Some(crate::StripList {
         group: 0,
@@ -671,6 +785,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
             pick(6, "Vocal chop", "muted · no effects"),
             pick(7, "Pad", "no effects"),
         ],
+        sidechain: None,
     });
     let mut strips = screen(fonts(), &mut song, Place::Mixer, Some(keys), None)?;
     let r = strips.rect_of(crate::CHAIN).ok_or("the chain editor")?;
@@ -808,6 +923,30 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let mut tape_presets = drawn("mpfree.fx.tape_delay", Some("Space heads"), 0)?;
     tap_on(&mut tape_presets, |l| l.preset_chip)?;
     let multitap = drawn("mpfree.fx.multitap", None, 0)?;
+    // The sidechain (layout spec 4b, "Sidechain"): the keys' Compressor
+    // listening to the kick pad, a Ducker after it with nothing picked,
+    // and the sidechain list over the Compressor.
+    let (mut sc_song, comp, ducker) = sidechain_song()?;
+    let sc_comp = sidechain_state(&sc_song, comp, from_mixer);
+    let sc_comp_ui = screen(fonts(), &mut sc_song, Place::Mixer, Some(sc_comp), None)?;
+    let sc_duck = sidechain_state(&sc_song, ducker, from_mixer);
+    let sc_duck_ui = screen(fonts(), &mut sc_song, Place::Mixer, Some(sc_duck), None)?;
+    let sc_again = sidechain_state(&sc_song, comp, from_mixer);
+    let mut sc_list = screen(fonts(), &mut sc_song, Place::Mixer, Some(sc_again), None)?;
+    let mut pads = sidechain_state(&sc_song, comp, from_mixer);
+    pads.list = Some(crate::StripList {
+        group: 1,
+        strips: Vec::new(),
+        ..sidechain_tracks()
+    });
+    open_sidechain_list(&mut sc_list, pads)?;
+    let mut listed = sidechain_state(&sc_song, comp, from_mixer);
+    listed.list = Some(sidechain_tracks());
+    crate::update_chain(&mut sc_list, listed);
+    let text = crate::chain_hint(&sc_list).to_string();
+    if let Some(h) = sc_list.get_mut::<Label>("hint") {
+        h.text = text;
+    }
     // The Hall with its Mix curve touched and set to Dry first: the chip in
     // Output, and the hint line saying what the choice does.
     let hall = {
@@ -860,6 +999,9 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         Sample { name: "chain-notes-add", about: "+ MIDI effect: the eleven MIDI effects as tiles, each with what it does; a tap adds it above the arp", ui: notes_pick },
         Sample { name: "chain-mixer-keys-grains", about: "Grains, the grain engine as an effect (Trail cloud preset), on its Main page: where in the last eight seconds the grains read, their size and density (the live grain count beside them), their pitch, Feedback and Freeze to hold the sound, and the Mix, Spread and Quality (Clean, Tape or Lo-fi) it comes out with. The Q-Links turn Size, Density, Feedback and Mix; Open › goes to Texture, and Capture › in Hold puts the memory on a pad, playing as grains", ui: grains },
         Sample { name: "chain-mixer-keys-grains-texture", about: "Grains on its Texture page (Glitch dust preset): random timing, the grains' Shape, how much their size and level vary, and Peaked spray", ui: grains_texture },
+        Sample { name: "chain-sidechain-comp", about: "The keys' Compressor listening to the kick pad (layout spec 4b, Sidechain): its switch is one row in Detector, Sidechain: Off | Kick ›, Kick lit; a tap on Kick opens the sidechain list, Off goes back to its own sound. Its row in the chain reads SC Kick first. The Ducker under it has nothing picked: its row says so in red", ui: sc_comp_ui },
+        Sample { name: "chain-sidechain-ducker", about: "A Ducker just added: it starts on Sidechain with nothing picked, so its Source row reads Pick a track › | Tempo and its section says in red that it won't duck", ui: sc_duck_ui },
+        Sample { name: "chain-sidechain-list", about: "The sidechain list over the Compressor: Off above the groups, only the groups that can feed a track (submixes and returns come after it, and the line under the groups says so), what it hears now beside Back, and the tracks it can't hear greyed with why (this strip; it listens to this one, so the two would loop)", ui: sc_list },
         Sample { name: "chain-strip-list", about: "The strip button's list over the keys chain: the groups down the left, the tracks as tiles with what each holds (the open one outlined); a tap opens that strip's chain", ui: strips },
         Sample { name: "macros-1-4", about: "The macros panel over the page (a long press on a macro card; no tab lit, Back closes it): Macros 1-4 with their targets and ranges, the Q-Links on Macros 1-4, the morph 64 % of the way from Dry verse to Wash drop", ui: screen(fonts(), &mut song, Place::Over, None, Some(m0))? },
         Sample { name: "macros-5-8", about: "Macros 5-8, not yet assigned; the Q-Links on Macros 5-8", ui: screen(fonts(), &mut song, Place::Over, None, Some(m1))? },
@@ -872,6 +1014,7 @@ mod tests {
     use super::*;
     use crate::{ChainAction, MacroAction};
     use mpfree_fx::picker::Section;
+    use mpfree_synth_ui::section_view::Kind;
     use mpfree_ui::{SoftCanvas, Touch};
 
     fn tap(ui: &mut Ui, x: i32, y: i32) {
@@ -923,7 +1066,7 @@ mod tests {
     #[test]
     fn the_samples_read_real_state_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 30);
+        assert_eq!(s.len(), 33);
         for mut sample in s {
             let (w, h) = sample.ui.size();
             let mut c = SoftCanvas::new(w, h);
@@ -1913,13 +2056,16 @@ mod tests {
                     strip: Strip::Track(0),
                     name: "Drums".into(),
                     sub: "4 effects".into(),
+                    refused: None,
                 },
                 crate::StripPick {
                     strip: KEYS,
                     name: "Keys".into(),
                     sub: "3 effects".into(),
+                    refused: None,
                 },
             ],
+            sidechain: None,
         });
         crate::update_chain(&mut ui, listed);
         let targets = ui.get::<crate::ChainView>(crate::CHAIN).unwrap().targets(r);
@@ -1956,7 +2102,9 @@ mod tests {
                 strip: Strip::Track(0),
                 name: "Drums".into(),
                 sub: "4 effects".into(),
+                refused: None,
             }],
+            sidechain: None,
         });
         crate::update_chain(&mut ui, listed);
         let tile = ui
@@ -1984,6 +2132,267 @@ mod tests {
             [ChainAction::Strips(None)]
         );
         assert!(view(&ui).list.is_none());
+    }
+
+    /// The keys chain of [`sidechain_song`] on `selected`, the Compressor
+    /// fed the kick pad when `fed`, on screen; and where the selected
+    /// effect's sidechain control is.
+    fn sidechain_screen(
+        selected: impl Fn(usize, usize) -> usize,
+        comp_on: bool,
+        fed: bool,
+    ) -> (Ui, Rect, ParamAddr) {
+        let (mut song, comp, ducker) = sidechain_song().unwrap();
+        song.keys
+            .node_mut(comp)
+            .unwrap()
+            .set_param(ids::compressor::SIDECHAIN, if comp_on { 1.0 } else { 0.0 });
+        let at = selected(comp, ducker);
+        let mut st = song.chain_state(KEYS, at, 0, None);
+        st.set_sidechains(&song.keys, |slot| {
+            (fed && slot == comp).then(|| (KICK, "Kick".to_string()))
+        });
+        let sc = st.sidechain.clone().expect("its sidechain");
+        let addr = st
+            .params
+            .iter()
+            .find(|p| p.addr.param == sc.listens.param)
+            .unwrap()
+            .addr;
+        let ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(st), None).unwrap();
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        (ui, r, addr)
+    }
+
+    /// The Sidechain row's buttons: (its own sound, the track).
+    fn sidechain_buttons(ui: &Ui, r: Rect) -> (Rect, Rect) {
+        let v = ui.get::<crate::ChainView>(crate::CHAIN).unwrap();
+        let st = v.state();
+        let sc = st.sidechain.as_ref().unwrap();
+        let k = st
+            .params
+            .iter()
+            .position(|p| p.addr.param == sc.listens.param)
+            .unwrap();
+        let (c, g) = v.page().control_geom(v.layout(r).page, k).unwrap();
+        let Kind::Choice { names, .. } = &c.kind else {
+            panic!("the Sidechain row is a choice: {:?}", c.kind);
+        };
+        assert_eq!(names.len(), 2);
+        match sc.listens.row {
+            mpfree_fx::sidechain::Row::Source => (g.parts[1], g.parts[0]),
+            _ => (g.parts[0], g.parts[1]),
+        }
+    }
+
+    fn mid(b: Rect) -> (i32, i32) {
+        (b.x + b.w / 2, b.y + b.h / 2)
+    }
+
+    /// Layout spec 4b, "Sidechain": the Compressor's switch is one row,
+    /// Off | Kick ›. A tap on Kick while it is lit opens the sidechain
+    /// list (no change); Off in the list turns the switch off and keeps
+    /// Kick, and a tap on Kick then goes back to it.
+    #[test]
+    fn the_sidechain_row_opens_the_list_or_goes_back_to_the_track() {
+        let (mut ui, r, addr) = sidechain_screen(|c, _| c, true, true);
+        let view = |ui: &Ui| {
+            ui.get::<crate::ChainView>(crate::CHAIN)
+                .unwrap()
+                .state()
+                .clone()
+        };
+        let (off, kick) = sidechain_buttons(&ui, r);
+        let st = view(&ui);
+        let row = st.slots.iter().find(|s| s.name == "Compressor").unwrap();
+        assert!(row.summary.starts_with("SC Kick"), "{}", row.summary);
+        let duck = st.slots.iter().find(|s| s.name == "Ducker").unwrap();
+        assert_eq!((duck.summary.as_str(), duck.warn), ("Nothing picked", true));
+        let (x, y) = mid(kick);
+        tap(&mut ui, x, y);
+        let acts = crate::take_chain_actions(&mut ui);
+        assert!(
+            acts.contains(&ChainAction::SidechainList(Some(1))),
+            "{acts:?}"
+        );
+        assert!(sets(&acts).is_empty(), "nothing changes: {acts:?}");
+        assert_eq!(crate::chain_hint(&ui), crate::SIDECHAIN_HINT);
+        let list = view(&ui).list.expect("the sidechain list");
+        assert!(list.sidechain.is_some());
+        // Off: its own sound, Kick kept.
+        let ll = crate::view::list_layout_for(
+            r,
+            Some(crate::view::ScParts {
+                shown: [false, true, false, false, false, false],
+                off: true,
+            }),
+        );
+        let (x, y) = mid(ll.off.unwrap());
+        tap(&mut ui, x, y);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::SetSidechain {
+                control: addr,
+                strip: None
+            }]
+        );
+        let st = view(&ui);
+        assert!(st.list.is_none(), "shut");
+        let sc = st.sidechain.clone().unwrap();
+        assert!(!sc.listening);
+        assert_eq!(sc.track.map(|t| t.1).as_deref(), Some("Kick"));
+        // The app's next state: the switch off.
+        let as_app = |ui: &mut Ui, mut st: ChainState, on: bool| {
+            for p in st.params.iter_mut().filter(|p| p.addr == addr) {
+                p.value = if on { 1.0 } else { 0.0 };
+            }
+            st.sidechain.as_mut().unwrap().listening = on;
+            crate::update_chain(ui, st);
+        };
+        as_app(&mut ui, st, false);
+        // Kick again, while Off is lit: back to it, at once.
+        let (x, y) = mid(kick);
+        tap(&mut ui, x, y);
+        let acts = crate::take_chain_actions(&mut ui);
+        assert_eq!(sets(&acts), [(addr.param, 1.0)], "{acts:?}");
+        assert!(!acts
+            .iter()
+            .any(|a| matches!(a, ChainAction::SidechainList(_))));
+        // And Off on the page turns it off.
+        let st = view(&ui);
+        as_app(&mut ui, st, true);
+        let (x, y) = mid(off);
+        tap(&mut ui, x, y);
+        assert_eq!(
+            sets(&crate::take_chain_actions(&mut ui)),
+            [(addr.param, 0.0)]
+        );
+    }
+
+    /// Nothing picked: the section says so in red and the row reads "Pick
+    /// a track ›", which opens the list whether the switch is on or off
+    /// (it never turns on with nothing to hear).
+    #[test]
+    fn with_nothing_picked_the_track_button_opens_the_list() {
+        for on in [true, false] {
+            let (mut ui, r, _) = sidechain_screen(|c, _| c, on, false);
+            let v = ui.get::<crate::ChainView>(crate::CHAIN).unwrap();
+            let detector = v
+                .page()
+                .sections
+                .iter()
+                .find(|s| s.controls.iter().any(|c| c.label == "Sidechain"))
+                .unwrap();
+            assert_eq!(detector.note_warn, on);
+            if on {
+                assert_eq!(detector.note, "Nothing picked: it hears its own track");
+            }
+            let (_, pick) = sidechain_buttons(&ui, r);
+            let (x, y) = mid(pick);
+            tap(&mut ui, x, y);
+            let acts = crate::take_chain_actions(&mut ui);
+            assert!(
+                acts.contains(&ChainAction::SidechainList(Some(0))),
+                "{acts:?}"
+            );
+            assert!(sets(&acts).is_empty(), "{acts:?}");
+        }
+    }
+
+    /// The Ducker's row is Source: Pick a track › | Tempo; Tempo sets its
+    /// Source to Tempo.
+    #[test]
+    fn the_duckers_row_is_the_track_or_tempo() {
+        let (mut ui, r, addr) = sidechain_screen(|_, d| d, true, true);
+        let (tempo, pick) = sidechain_buttons(&ui, r);
+        let v = ui.get::<crate::ChainView>(crate::CHAIN).unwrap();
+        let st = v.state();
+        let k = st.params.iter().position(|p| p.addr == addr).unwrap();
+        let (c, _) = v.page().control_geom(v.layout(r).page, k).unwrap();
+        assert_eq!(
+            c.kind,
+            Kind::Choice {
+                names: vec!["Pick a track ›".into(), "Tempo".into()],
+                index: 0
+            }
+        );
+        let trigger = v
+            .page()
+            .sections
+            .iter()
+            .find(|s| s.controls.iter().any(|c| c.index == k))
+            .unwrap();
+        assert_eq!(
+            (trigger.note.as_str(), trigger.note_warn),
+            ("Nothing picked: it won't duck", true)
+        );
+        assert!(pick.x < tempo.x);
+        let (x, y) = mid(tempo);
+        tap(&mut ui, x, y);
+        assert_eq!(
+            sets(&crate::take_chain_actions(&mut ui)),
+            [(mpfree_fx::ids::ducker::SOURCE, 1.0)]
+        );
+    }
+
+    /// The sidechain list: a strip the mixer would refuse is greyed and a
+    /// tap on it does nothing; one it can hear is picked, and the page
+    /// shows it at once.
+    #[test]
+    fn the_sidechain_list_picks_a_strip_it_can_hear() {
+        let (mut ui, r, addr) = sidechain_screen(|c, _| c, true, true);
+        let (_, kick) = sidechain_buttons(&ui, r);
+        let (x, y) = mid(kick);
+        tap(&mut ui, x, y);
+        let _ = crate::take_chain_actions(&mut ui);
+        let mut st = ui
+            .get::<crate::ChainView>(crate::CHAIN)
+            .unwrap()
+            .state()
+            .clone();
+        st.list = Some(crate::StripList {
+            group: 1,
+            ..sidechain_tracks()
+        });
+        crate::update_chain(&mut ui, st);
+        let targets = ui.get::<crate::ChainView>(crate::CHAIN).unwrap().targets(r);
+        assert!(targets.iter().any(|t| t.id == "sidechain-off"));
+        assert!(
+            !targets
+                .iter()
+                .any(|t| t.id == "strips-group" && (3..6).contains(&t.index)),
+            "returns, submixes and the master can't feed a track: not shown"
+        );
+        let keys = targets
+            .iter()
+            .find(|t| t.id == "strips-pick" && t.label == "Keys")
+            .unwrap();
+        assert!(!keys.enabled, "this strip");
+        let (x, y) = keys.centre();
+        tap(&mut ui, x, y);
+        assert!(crate::take_chain_actions(&mut ui).is_empty());
+        let drums = targets
+            .iter()
+            .find(|t| t.id == "strips-pick" && t.label == "Drums")
+            .unwrap();
+        let (x, y) = drums.centre();
+        tap(&mut ui, x, y);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::SetSidechain {
+                control: addr,
+                strip: Some(Strip::Track(0))
+            }]
+        );
+        let st = ui
+            .get::<crate::ChainView>(crate::CHAIN)
+            .unwrap()
+            .state()
+            .clone();
+        assert!(st.list.is_none());
+        let sc = st.sidechain.unwrap();
+        assert_eq!(sc.track.map(|t| t.1).as_deref(), Some("Drums"));
+        assert!(sc.listening);
     }
 
     #[test]

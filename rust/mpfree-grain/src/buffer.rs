@@ -44,6 +44,17 @@ pub trait GrainSource {
         read_slow(self, frame, t)
     }
 
+    /// A grain's next `out.len()` frames read with [`GrainSource::read`]:
+    /// frame `k` at `pos` plus `inc` added `k` times (one at a time, as the
+    /// voice moves a grain), split into its whole frame and the fraction.
+    /// One call a grain a part, so a source can check its range and find
+    /// its frames once for the run. The default reads frame by frame; a
+    /// source's own must give the same values.
+    #[inline]
+    fn read_run(&self, pos: f64, inc: f64, out: &mut [[f32; 2]]) {
+        read_run_each(self, pos, inc, out);
+    }
+
     /// How to read a grain that moves `speed` source frames an output
     /// frame (its size, whichever way it goes). The default reads every
     /// grain with [`GrainSource::read`].
@@ -61,6 +72,21 @@ pub trait GrainSource {
         let _ = aim;
         let f = pos.floor();
         self.read(f as i64, (pos - f) as f32)
+    }
+
+    /// A clean grain's next `out.len()` frames: frame `k` is
+    /// [`GrainSource::read_aimed`] at `pos` plus `inc` added `k` times
+    /// (added one at a time, as the voice moves a grain, so the positions
+    /// are the same to the bit). One call a grain a part, so a source can
+    /// work out once what every frame of the run shares. The default reads
+    /// frame by frame; a source's own must give the same values.
+    #[inline]
+    fn read_aimed_run(&self, pos: f64, inc: f64, aim: Aim, out: &mut [[f32; 2]]) {
+        let mut pos = pos;
+        for o in out {
+            *o = self.read_aimed(pos, aim);
+            pos += inc;
+        }
     }
 
     /// The first hit (where a drum or a note starts) after frame `from`
@@ -84,6 +110,73 @@ pub fn first_hit(hits: &[u64], from: f64, to: f64) -> Option<f64> {
     }
     let i = hits.partition_point(|&h| h as f64 <= from);
     hits.get(i).map(|&h| h as f64).filter(|&h| h <= to)
+}
+
+/// Frame positions below this (2^31 less a margin for rounding) go through
+/// an `i32`, which ARMv7 converts to and from a double in one instruction
+/// each; an `i64` takes two library calls. Same result either way.
+pub const SMALL_FRAMES: f64 = 2_147_000_000.0;
+
+/// Whether a run of `n` frames from `pos`, `inc` apart, stays at or above
+/// frame 0 and under [`SMALL_FRAMES`] (with a frame to spare at the end).
+#[inline(always)]
+pub fn small_run(pos: f64, inc: f64, n: usize) -> bool {
+    let last = pos + inc * n as f64;
+    pos.min(last) >= 0.0 && pos.max(last) < SMALL_FRAMES
+}
+
+/// [`GrainSource::read_run`] frame by frame through [`GrainSource::read`].
+#[inline(always)]
+pub fn read_run_each<S: GrainSource + ?Sized>(src: &S, pos: f64, inc: f64, out: &mut [[f32; 2]]) {
+    let mut pos = pos;
+    if small_run(pos, inc, out.len()) {
+        for o in out {
+            let f = pos as i32;
+            *o = src.read(i64::from(f), (pos - f64::from(f)) as f32);
+            pos += inc;
+        }
+    } else {
+        for o in out {
+            let f = pos as i64;
+            *o = src.read(f, (pos - f as f64) as f32);
+            pos += inc;
+        }
+    }
+}
+
+/// The whole frames the first and the last of a small run read from
+/// (`pos` as the run moves it, truncated), lowest first.
+#[inline(always)]
+pub fn run_frames(pos: f64, inc: f64, n: usize) -> (i64, i64) {
+    let mut last = pos;
+    for _ in 1..n {
+        last += inc;
+    }
+    let (a, b) = (pos as i32, last as i32);
+    (i64::from(a.min(b)), i64::from(a.max(b)))
+}
+
+/// A small run's frames read from `data` (interleaved, `channels` 1 or 2)
+/// where frame `f` starts at index `(f + shift) * channels` and every
+/// frame the run's Hermite reads is known to be there.
+#[inline(always)]
+fn read_run_in(
+    data: &[f32],
+    channels: usize,
+    shift: i64,
+    pos: f64,
+    inc: f64,
+    out: &mut [[f32; 2]],
+) {
+    let mut pos = pos;
+    let shift = shift as isize - 1;
+    for o in out {
+        let f = pos as i32;
+        let t = (pos - f64::from(f)) as f32;
+        let at = (f as isize + shift) as usize * channels;
+        *o = read4(&data[at..at + 4 * channels], channels, t);
+        pos += inc;
+    }
 }
 
 /// Interpolates four interleaved frames that are known to be in range.
@@ -172,6 +265,16 @@ impl GrainSource for Clip<'_> {
         let c = self.channels;
         let at = (frame - 1) as usize * c;
         read4(&self.data[at..at + 4 * c], c, t)
+    }
+    #[inline]
+    fn read_run(&self, pos: f64, inc: f64, out: &mut [[f32; 2]]) {
+        if small_run(pos, inc, out.len()) {
+            let (lo, hi) = run_frames(pos, inc, out.len());
+            if lo > self.start && hi + 2 < self.end {
+                return read_run_in(self.data, self.channels, 0, pos, inc, out);
+            }
+        }
+        read_run_each(self, pos, inc, out);
     }
     #[inline]
     fn next_hit(&self, from: f64, to: f64) -> Option<f64> {
@@ -393,5 +496,22 @@ impl GrainSource for LiveBuffer {
         }
         let c = self.channels;
         read4(&self.data[first * c..(first + 4) * c], c, t)
+    }
+    #[inline]
+    fn read_run(&self, pos: f64, inc: f64, out: &mut [[f32; 2]]) {
+        if small_run(pos, inc, out.len()) {
+            let (lo, hi) = run_frames(pos, inc, out.len());
+            let (oldest, end) = self.held();
+            if lo > oldest && hi + 2 < end {
+                // Frames lo - 1 ..= hi + 2 in one piece of `data`, unless
+                // they wrap round its end.
+                let first = self.slot(lo - 1);
+                if first + (hi - lo) as usize + 4 <= self.capacity as usize {
+                    let shift = first as i64 - (lo - 1);
+                    return read_run_in(&self.data, self.channels, shift, pos, inc, out);
+                }
+            }
+        }
+        read_run_each(self, pos, inc, out);
     }
 }

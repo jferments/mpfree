@@ -128,6 +128,9 @@ pub struct SlotView {
     pub macros: Vec<usize>,
     /// Whether a matrix row moves one of its parameters.
     pub modulated: bool,
+    /// Its summary is a warning ("Nothing picked": set to listen to a
+    /// sidechain with no track picked), drawn in the theme's bad colour.
+    pub warn: bool,
 }
 
 /// A matrix row aimed at the focused parameter.
@@ -143,24 +146,96 @@ pub struct RowView {
 /// spec section 3a).
 pub const STRIP_GROUPS: [&str; 6] = ["Tracks", "Pads", "Inputs", "Returns", "Submixes", "Master"];
 
-/// A strip the strip list offers: a tap opens its chain.
+/// A strip the strip list offers: a tap opens its chain (or, in the
+/// sidechain list, makes it what the effect listens to).
 #[derive(Clone, Debug, PartialEq)]
 pub struct StripPick {
     pub strip: Strip,
     pub name: String,
     /// What it holds: "no effects", "3 effects", "muted · 1 effect".
     pub sub: String,
+    /// In the sidechain list: why it can't feed this effect ("this strip",
+    /// "it listens to this one": the two would loop); it is greyed and a tap
+    /// does nothing.
+    pub refused: Option<&'static str>,
 }
 
-/// The strip list, open over the editor from the strip button.
+/// The strip list, open over the editor from the strip button, or as the
+/// sidechain list from an effect's Sidechain row.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StripList {
     /// The group shown, in [`STRIP_GROUPS`].
     pub group: usize,
-    /// How many strips each group has.
+    /// How many strips each group has. In the sidechain list a group that
+    /// can't feed the effect counts none, and isn't shown.
     pub counts: [usize; 6],
     /// The group's strips, in order.
     pub strips: Vec<StripPick>,
+    /// The sidechain list's words; None for the strip list.
+    pub sidechain: Option<SidechainFor>,
+}
+
+/// The sidechain list's words (layout spec 4b, "Sidechain").
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SidechainFor {
+    /// The head: "SIDECHAIN FOR KEYS · COMPRESSOR · TAP WHAT IT LISTENS TO".
+    pub title: String,
+    /// What it hears now, beside Back: "Now: Kick" (empty: nothing).
+    pub now: String,
+    /// Under the groups: the groups that can't feed it, and why ("Submixes
+    /// and returns come after the tracks in the mix, so they can't feed a
+    /// track's sidechain").
+    pub note: String,
+    /// The strip it hears now: its tile is outlined.
+    pub current: Option<Strip>,
+}
+
+/// The group the sidechain list opens on (of [`STRIP_GROUPS`]): the one
+/// of the strip the effect listens to (`current`), else the effect's own
+/// strip's when its kind can feed it (a track, a pad, an input), else the
+/// tracks.
+pub fn sidechain_group(strip: Strip, current: Option<Strip>) -> usize {
+    match current.unwrap_or(strip) {
+        Strip::Pad(_) => 1,
+        Strip::Input(_) => 2,
+        Strip::Return(_) if current.is_some() => 3,
+        Strip::Bus(_) if current.is_some() => 4,
+        _ => 0,
+    }
+}
+
+/// The selected effect's sidechain (layout spec 4b, "Sidechain"): its
+/// control, as `mpfree_fx::sidechain::listens` names it, and what the
+/// mixer feeds it. The app fills it; the page shows the control as one
+/// row, Off (or Tempo) or the track.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SidechainView {
+    /// The insert.
+    pub slot: usize,
+    pub listens: mpfree_fx::sidechain::Listens,
+    /// The control is set to listen to the sidechain.
+    pub listening: bool,
+    /// The strip the mixer feeds it and its name ("Kick"): kept while the
+    /// control is off, so a tap on its button goes back to it.
+    pub track: Option<(Strip, String)>,
+}
+
+impl SidechainView {
+    /// Set to listen with nothing picked: its section says so in red.
+    pub fn missing(&self) -> bool {
+        self.listening && self.track.is_none()
+    }
+
+    /// The track's button: "Kick ›", or "Pick a track ›" with none picked
+    /// ("Pick a voice ›" on the Vocoder).
+    pub fn button(&self) -> String {
+        match (&self.track, self.listens.row) {
+            (Some((_, name)), mpfree_fx::sidechain::Row::Voice) => format!("Voice: {name} ›"),
+            (Some((_, name)), _) => format!("{name} ›"),
+            (None, mpfree_fx::sidechain::Row::Voice) => "Pick a voice ›".to_string(),
+            (None, _) => "Pick a track ›".to_string(),
+        }
+    }
 }
 
 /// The chain editor's state.
@@ -239,6 +314,9 @@ pub struct ChainState {
     /// master, Loop tracks). While one of its rows is selected, `selected`
     /// is None and `params` and `main_four` are that effect's settings.
     pub notes: Option<crate::notes::NotesState>,
+    /// The selected effect's sidechain, when it is one that can listen to
+    /// another track ([`SidechainView`]).
+    pub sidechain: Option<SidechainView>,
 }
 
 /// One entry of the header's presets list: its name and every value
@@ -356,6 +434,7 @@ impl Default for ChainState {
             presets: Vec::new(),
             preset: None,
             notes: None,
+            sidechain: None,
         }
     }
 }
@@ -389,8 +468,17 @@ pub(crate) fn summary(n: &dyn Node) -> String {
     let mut parts: Vec<String> = Vec::new();
     let mut passed_off = false;
     let mut from = 0;
+    // A Sidechain switch or a Ducker's Source says nothing alone ("On"):
+    // the app puts what it hears first ([`sidechain_summary`]).
+    let sc = mpfree_fx::sidechain::listens(n.info().id)
+        .filter(|l| l.row != mpfree_fx::sidechain::Row::Voice)
+        .map(|l| l.param);
     for (i, p) in ps.iter().enumerate() {
-        if !matches!(p.curve, Curve::Choice(_)) || p.readonly || mpfree_fx::page_keeps(p.name) {
+        if !matches!(p.curve, Curve::Choice(_))
+            || p.readonly
+            || mpfree_fx::page_keeps(p.name)
+            || Some(p.id) == sc
+        {
             continue;
         }
         let text = value_text(p, n.param(p.id));
@@ -412,6 +500,35 @@ pub(crate) fn summary(n: &dyn Node) -> String {
         parts.push(value_text(p, n.param(p.id)));
     }
     parts.join(" · ")
+}
+
+/// An effect's row summary with what it listens to first: "SC Kick · Peak
+/// · -18.0 dB", "Tempo · 1/4", "Voice Mic · Input", or "Nothing picked"
+/// (a warning) when it is set to listen and none is picked. `summary` is
+/// the row's own; `sc` the effect's sidechain as the app reads it (its
+/// control, whether that listens, and the strip's name). Returns the line
+/// and whether it is a warning.
+pub fn sidechain_summary(
+    summary: &str,
+    sc: &mpfree_fx::sidechain::Listens,
+    listening: bool,
+    track: Option<&str>,
+) -> (String, bool) {
+    use mpfree_fx::sidechain::Row;
+    let join = |head: String| {
+        if summary.is_empty() {
+            head
+        } else {
+            format!("{head} · {summary}")
+        }
+    };
+    match (listening, track, sc.row) {
+        (true, None, _) => ("Nothing picked".to_string(), true),
+        (true, Some(t), Row::Voice) => (join(format!("Voice {t}")), false),
+        (true, Some(t), _) => (join(format!("SC {t}")), false),
+        (false, _, Row::Source) => (join("Tempo".to_string()), false),
+        (false, _, _) => (summary.to_string(), false),
+    }
 }
 
 /// One page of an effect in the chain editor: its tab's label and its
@@ -592,6 +709,7 @@ impl ChainState {
                 on: chain.is_on(i),
                 macros,
                 modulated,
+                warn: false,
             });
         }
         let selected = selected
@@ -677,6 +795,7 @@ impl ChainState {
             presets,
             preset,
             notes: None,
+            sidechain: None,
         }
     }
 
@@ -698,7 +817,43 @@ impl ChainState {
             eq: false,
             presets: Vec::new(),
             preset: None,
+            sidechain: None,
             ..self
+        }
+    }
+
+    /// What the chain's effects listen to (layout spec 4b, "Sidechain"):
+    /// each such effect's row leads with it ([`sidechain_summary`]; "Nothing
+    /// picked" in red when it listens to none), and the selected one's page
+    /// gets its Sidechain row ([`SidechainView`]). `track(slot)`: the strip
+    /// the mixer feeds insert `slot` (`Mixer::key`) and its name.
+    pub fn set_sidechains(
+        &mut self,
+        chain: &Chain,
+        track: impl Fn(usize) -> Option<(Strip, String)>,
+    ) {
+        self.sidechain = None;
+        for i in 0..chain.len() {
+            let (Some(n), Some(uid)) = (chain.node(i), chain.uid(i)) else {
+                continue;
+            };
+            let Some(l) = mpfree_fx::sidechain::listens(n.info().id) else {
+                continue;
+            };
+            let listening = l.listening(n.param(l.param));
+            let picked = track(i);
+            if let Some(row) = self.slots.iter_mut().find(|s| s.uid == uid) {
+                let name = picked.as_ref().map(|t| t.1.as_str());
+                (row.summary, row.warn) = sidechain_summary(&row.summary, &l, listening, name);
+            }
+            if self.selected == Some(i) && !self.params.is_empty() {
+                self.sidechain = Some(SidechainView {
+                    slot: i,
+                    listens: l,
+                    listening,
+                    track: picked,
+                });
+            }
         }
     }
 
@@ -929,5 +1084,48 @@ impl ChainState {
         let mut p = picks(self.strip);
         p.extend_from_slice(&self.plugins);
         p
+    }
+}
+
+#[cfg(test)]
+mod sidechain_tests {
+    use super::*;
+
+    /// An effect's row leads with what it listens to, and says "Nothing
+    /// picked" (a warning) when it listens to none.
+    #[test]
+    fn a_row_says_what_its_effect_listens_to() {
+        let comp = mpfree_fx::sidechain::listens("mpfree.fx.compressor").unwrap();
+        let duck = mpfree_fx::sidechain::listens("mpfree.fx.ducker").unwrap();
+        let voc = mpfree_fx::sidechain::listens("mpfree.fx.vocoder").unwrap();
+        let s = "Peak · -18.0 dB";
+        let cases = [
+            (comp, true, Some("Kick"), "SC Kick · Peak · -18.0 dB", false),
+            (comp, false, Some("Kick"), "Peak · -18.0 dB", false),
+            (comp, true, None, "Nothing picked", true),
+            (duck, false, Some("Kick"), "Tempo · Peak · -18.0 dB", false),
+            (duck, true, None, "Nothing picked", true),
+            (voc, true, Some("Mic"), "Voice Mic · Peak · -18.0 dB", false),
+        ];
+        for (l, on, track, line, warn) in cases {
+            assert_eq!(
+                sidechain_summary(s, &l, on, track),
+                (line.to_string(), warn),
+                "{l:?} {on} {track:?}"
+            );
+        }
+    }
+
+    /// The list opens on the group of the strip it listens to, else the
+    /// effect's own strip's when that kind can feed it, else the tracks.
+    #[test]
+    fn the_sidechain_list_opens_where_the_track_is() {
+        assert_eq!(sidechain_group(Strip::Track(4), Some(Strip::Pad(0))), 1);
+        assert_eq!(sidechain_group(Strip::Track(4), None), 0);
+        assert_eq!(sidechain_group(Strip::Pad(3), None), 1);
+        assert_eq!(sidechain_group(Strip::Input(0), None), 2);
+        assert_eq!(sidechain_group(Strip::Bus(2), None), 0);
+        assert_eq!(sidechain_group(Strip::Bus(2), Some(Strip::Bus(0))), 4);
+        assert_eq!(sidechain_group(Strip::Master, None), 0);
     }
 }

@@ -32,6 +32,9 @@
 //!   the engine as `Change`s ([`ModMix::change`]), so the parameter becomes
 //!   a target then.
 //! - Learn, the full effect page and Back are for the app ([`ChainOut`]).
+//! - A sidechain picked in the sidechain list goes to the mixer
+//!   (`Mixer::set_key`) and turns the effect's control on; Off turns it
+//!   off and keeps the strip fed (layout spec 4b, "Sidechain").
 //!
 //! Building a state, adding an effect (its node allocates) and removing one
 //! allocate; they run between periods, as the mixer panel's edits do.
@@ -92,6 +95,9 @@ pub struct ChainHost {
     scopes: Vec<(Strip, String)>,
     /// The strip list's group while it is open (the strip button).
     listing: Option<usize>,
+    /// The sidechain list's group while it is open (the selected effect's
+    /// Sidechain row, or a Ducker just added).
+    sidechain_list: Option<usize>,
     scope: usize,
     selected: Option<usize>,
     group: usize,
@@ -170,6 +176,7 @@ impl ChainHost {
         ChainHost {
             scopes,
             listing: None,
+            sidechain_list: None,
             scope: 0,
             selected: None,
             group: 0,
@@ -383,6 +390,16 @@ impl ChainHost {
                 self.selected = Some(slot);
                 self.landing = None;
                 self.page_shut = false;
+                // A Ducker starts on Sidechain with nothing picked: the
+                // sidechain list opens at once (layout spec 4b).
+                let n = c.node(slot);
+                let waits = n.zip(n.and_then(|n| mpfree_fx::sidechain::listens(n.info().id)));
+                if let Some((n, l)) = waits {
+                    if l.listening(n.param(l.param)) && h.mixer.key(sid, slot).is_none() {
+                        self.sidechain_list =
+                            Some(mpfree_chain_ui::sidechain_group(self.strip(), None));
+                    }
+                }
             }
         }
         let title = format!("{} FX", self.scopes[self.scope].1);
@@ -406,6 +423,12 @@ impl ChainHost {
         if self.page_shut && self.selected.is_none() {
             st = st.without_page();
         }
+        if let Some(c) = h.mixer.chain(sid) {
+            st.set_sidechains(c, |slot| {
+                let k = h.mixer.key(sid, slot)?;
+                Some((strip_of(k)?, mixing::name(k)))
+            });
+        }
         st.macro_names = h.modu.names().to_vec();
         st.plugins = crate::plugins::picks(h.plugins());
         st.learning = self.learning;
@@ -420,8 +443,30 @@ impl ChainHost {
             st.strip_name = mixing::name(sid);
             st.strip_kind = kind(sid);
         }
-        st.list = self.listing.map(|g| strip_list(h, g));
+        st.list = match (self.sidechain_list, &st.sidechain) {
+            (Some(g), Some(sc)) => Some(sidechain_list(h, sid, sc, g)),
+            _ => self.listing.map(|g| strip_list(h, g)),
+        };
         st
+    }
+
+    /// Opens the sidechain list over the selected effect's page (a tap on
+    /// its "SC from ..." or "Nothing picked" on the mixer's Effects look).
+    pub fn list_sidechain(&mut self, h: &MixHost) {
+        let Some(slot) = self.selected else {
+            return;
+        };
+        let sid = self.sid();
+        let listens = h
+            .mixer
+            .chain(sid)
+            .and_then(|c| c.node(slot))
+            .and_then(|n| mpfree_fx::sidechain::listens(n.info().id));
+        if listens.is_some() {
+            let now = h.mixer.key(sid, slot).and_then(strip_of);
+            self.sidechain_list = Some(mpfree_chain_ui::sidechain_group(self.strip(), now));
+            self.listing = None;
+        }
     }
 
     /// Applies one action to the mixer and the engine. `recording`: the
@@ -432,6 +477,7 @@ impl ChainHost {
         match *a {
             ChainAction::Select(i) => {
                 self.selected = Some(i);
+                self.sidechain_list = None;
                 self.page_shut = false;
                 self.group = 0;
                 self.focus = None;
@@ -625,6 +671,15 @@ impl ChainHost {
             }
             ChainAction::Strips(g) => {
                 self.listing = g.filter(|&g| g < mpfree_chain_ui::STRIP_GROUPS.len());
+                self.sidechain_list = None;
+            }
+            ChainAction::SidechainList(g) => {
+                self.sidechain_list = g.filter(|&g| g < mpfree_chain_ui::STRIP_GROUPS.len());
+                self.listing = None;
+            }
+            ChainAction::SetSidechain { control, strip } => {
+                self.sidechain_list = None;
+                return set_sidechain(h, control, strip.map(strip_id), recording);
             }
             ChainAction::OpenStrip(s) => {
                 self.listing = None;
@@ -676,7 +731,48 @@ impl ChainHost {
     }
 }
 
-/// Where slot `s` is after a move from `from` to `to`.
+/// What insert `control.owner` listens to: strip `key` fed to it
+/// (`Mixer::set_key`) with its sidechain control turned on, or (None) the
+/// control turned off and the strip it had left fed, so a tap on its button
+/// goes back to it. Its sidechain list's choice, and UNDO's.
+pub fn set_sidechain(
+    h: &mut MixHost,
+    control: ParamAddr,
+    key: Option<StripId>,
+    recording: bool,
+) -> ChainOut {
+    let Owner::Insert(s, uid) = control.owner else {
+        return ChainOut::Refused("That effect has changed");
+    };
+    let sid = strip_id(s);
+    let found = h.mixer.chain(sid).and_then(|c| {
+        let slot = c.slot_of(uid)?;
+        let l = mpfree_fx::sidechain::listens(c.node(slot)?.info().id)?;
+        (l.param == control.param).then_some((slot, l))
+    });
+    let Some((slot, l)) = found else {
+        return ChainOut::Refused("That effect has changed");
+    };
+    let value = match key {
+        Some(k) => {
+            if let Some(why) = h.mixer.sidechain_refusal(sid, k) {
+                return ChainOut::Refused(why.text());
+            }
+            if !h.mixer.set_key(sid, slot, Some(k)) {
+                return ChainOut::Refused("The mixer is busy");
+            }
+            l.on
+        }
+        None => match l.off {
+            Some(off) => off,
+            None => return ChainOut::Shown,
+        },
+    };
+    set(h, control, value, recording);
+    h.modu.release(control);
+    ChainOut::Shown
+}
+
 /// Which strip `s` is, for the strip button ("Track 4", "Submix 2").
 fn kind(s: StripId) -> String {
     match s {
@@ -689,34 +785,53 @@ fn kind(s: StripId) -> String {
     }
 }
 
-/// The strip list on group `g` (of `mpfree_chain_ui::STRIP_GROUPS`): the
-/// strips each group has (the tracks as the mixer shows them) and the
-/// group's, with what each holds.
-fn strip_list(h: &MixHost, g: usize) -> mpfree_chain_ui::StripList {
-    let groups: [Vec<StripId>; 6] = [
+/// The strips of each group of the strip list
+/// (`mpfree_chain_ui::STRIP_GROUPS`): the tracks as the mixer shows them,
+/// the pads, inputs, returns, submixes and the master.
+fn strip_groups(h: &MixHost) -> [Vec<StripId>; 6] {
+    [
         h.track_strips(),
         (0..mixing::PADS).map(StripId::Pad).collect(),
         (0..h.mixer.inputs()).map(StripId::Input).collect(),
         (0..mpfree_fx::RETURNS).map(StripId::Return).collect(),
         (0..mpfree_fx::BUSES).map(StripId::Bus).collect(),
         vec![StripId::Master],
-    ];
+    ]
+}
+
+/// What strip `id` holds, for its tile: "no effects", "muted · 3 effects".
+fn holds(h: &MixHost, id: StripId) -> String {
+    let n = h.mixer.chain(id).map_or(0, |c| c.len());
+    let fx = match n {
+        0 => "no effects".to_string(),
+        1 => "1 effect".to_string(),
+        n => format!("{n} effects"),
+    };
+    if muted(h, id) {
+        format!("muted · {fx}")
+    } else {
+        fx
+    }
+}
+
+fn muted(h: &MixHost, id: StripId) -> bool {
+    id != StripId::Master && h.mixer.param(id, mpfree_fx::ids::mixer::MUTE) >= 0.5
+}
+
+/// The strip list on group `g` (of `mpfree_chain_ui::STRIP_GROUPS`): the
+/// strips each group has (the tracks as the mixer shows them) and the
+/// group's, with what each holds.
+fn strip_list(h: &MixHost, g: usize) -> mpfree_chain_ui::StripList {
+    let groups = strip_groups(h);
     let counts = std::array::from_fn(|i| groups[i].len());
     let strips = groups[g.min(5)]
         .iter()
         .filter_map(|&id| {
-            let n = h.mixer.chain(id).map_or(0, |c| c.len());
-            let fx = match n {
-                0 => "no effects".to_string(),
-                1 => "1 effect".to_string(),
-                n => format!("{n} effects"),
-            };
-            let muted =
-                id != StripId::Master && h.mixer.param(id, mpfree_fx::ids::mixer::MUTE) >= 0.5;
             Some(mpfree_chain_ui::StripPick {
                 strip: strip_of(id)?,
                 name: mixing::name(id),
-                sub: if muted { format!("muted · {fx}") } else { fx },
+                sub: holds(h, id),
+                refused: None,
             })
         })
         .collect();
@@ -724,9 +839,103 @@ fn strip_list(h: &MixHost, g: usize) -> mpfree_chain_ui::StripList {
         group: g.min(5),
         counts,
         strips,
+        sidechain: None,
     }
 }
 
+/// The sidechain list for the effect `sc` on strip `sid`, on group `g`
+/// (layout spec 4b, "Sidechain"): only the groups that can feed it (a
+/// strip hears those before it in the mix; the master feeds none), each
+/// strip greyed with why when the mixer would refuse it, the line that
+/// says which groups can't and why, and what it hears now.
+fn sidechain_list(
+    h: &MixHost,
+    sid: StripId,
+    sc: &mpfree_chain_ui::SidechainView,
+    g: usize,
+) -> mpfree_chain_ui::StripList {
+    use mpfree_fx::sidechain::{Refusal, Row};
+    let groups = strip_groups(h);
+    let refusal = |k: StripId| h.mixer.sidechain_refusal(sid, k);
+    let can = |k: &StripId| *k != StripId::Master && refusal(*k) != Some(Refusal::Later);
+    let counts: [usize; 6] = std::array::from_fn(|i| groups[i].iter().filter(|k| can(k)).count());
+    let g = g.min(5);
+    let strips = groups[g]
+        .iter()
+        .filter(|k| can(k))
+        .filter_map(|&id| {
+            Some(mpfree_chain_ui::StripPick {
+                strip: strip_of(id)?,
+                name: mixing::name(id),
+                // It is heard before its fader and mute.
+                sub: if muted(h, id) {
+                    "muted · still works".to_string()
+                } else {
+                    holds(h, id)
+                },
+                refused: refusal(id).map(Refusal::text),
+            })
+        })
+        .collect();
+    let effect = h
+        .mixer
+        .chain(sid)
+        .and_then(|c| c.node(sc.slot))
+        .map_or_else(String::new, |n| n.info().name.to_uppercase());
+    let me = mixing::name(sid).to_uppercase();
+    let title = match sc.listens.row {
+        Row::Voice => format!("VOICE FOR {me} · {effect} · TAP THE VOICE IT PLAYS"),
+        _ => format!("SIDECHAIN FOR {me} · {effect} · TAP WHAT IT LISTENS TO"),
+    };
+    let now = match (&sc.track, sc.listening, sc.listens.row) {
+        (Some((_, name)), true, _) => format!("Now: {name}"),
+        (None, true, _) => "Now: nothing picked".to_string(),
+        (_, false, Row::Source) => "Now: Tempo".to_string(),
+        (_, false, _) => "Now: Off".to_string(),
+    };
+    // The groups left out, but for the master (it comes last of all).
+    let out: Vec<String> = mpfree_chain_ui::STRIP_GROUPS[..5]
+        .iter()
+        .zip(counts)
+        .filter(|(_, n)| *n == 0)
+        .map(|(name, _)| name.to_lowercase())
+        .collect();
+    let kind = match sid {
+        StripId::Track(_) => "track",
+        StripId::Pad(_) => "pad",
+        StripId::Input(_) => "input",
+        StripId::Bus(_) => "submix",
+        StripId::Return(_) => "return",
+        StripId::Master => "master",
+    };
+    let note = match out.as_slice() {
+        [] => String::new(),
+        [one] => {
+            format!("{one} come after this {kind} in the mix, so they can't feed its sidechain.")
+        }
+        [rest @ .., last] => format!(
+            "{} and {last} come after this {kind} in the mix, so they can't feed its sidechain.",
+            rest.join(", ")
+        ),
+    };
+    let mut note = note;
+    if let Some(c) = note.get_mut(..1) {
+        c.make_ascii_uppercase();
+    }
+    mpfree_chain_ui::StripList {
+        group: g,
+        counts,
+        strips,
+        sidechain: Some(mpfree_chain_ui::SidechainFor {
+            title,
+            now,
+            note,
+            current: sc.track.as_ref().map(|t| t.0),
+        }),
+    }
+}
+
+/// Where slot `s` is after a move from `from` to `to`.
 fn moved(s: usize, from: usize, to: usize) -> usize {
     if s == from {
         to
@@ -991,6 +1200,23 @@ impl Panels {
         self.sent_at = None;
         self.picked = false;
         app.open_chain()
+    }
+
+    /// A tap on an effect's "SC from ..." or "Nothing picked" on the
+    /// mixer's Effects look: the effect in the chain editor with its
+    /// sidechain list up (layout spec 4a).
+    pub fn open_sidechain(
+        &mut self,
+        app: &mut App,
+        mix: &MixHost,
+        strip: StripId,
+        slot: usize,
+    ) -> Vec<Effect> {
+        let fx = self.open_insert(app, mix, strip, Some(slot));
+        if let Some(h) = self.chain.as_mut() {
+            h.list_sidechain(mix);
+        }
+        fx
     }
 
     /// An effect picked on the mixer's Effects look (`MixAction::PickInsert`):
@@ -1958,6 +2184,137 @@ mod tests {
             c.action(&mut r.h, &ChainAction::Back, false),
             ChainOut::Back
         );
+    }
+
+    /// Layout spec 4b, "Sidechain": a Ducker added opens the sidechain
+    /// list at once (it starts listening, with nothing picked). The list
+    /// has only what can feed a track, the strip itself and one that
+    /// listens to it greyed; a strip picked feeds the effect and turns it
+    /// to listen, Off keeps the strip, and one the mixer would refuse is
+    /// refused with why.
+    #[test]
+    fn a_sidechain_picked_in_the_list_feeds_the_effect() {
+        use mpfree_fx::ids::{compressor, ducker};
+        let mut r = Rig::new();
+        let synth = StripId::Track(mixing::SYNTH);
+        // The synth's compressor listens to the drums: the drums can't
+        // listen to the synth (it would loop).
+        let mut s = ChainHost::from_mixer(synth, None).unwrap();
+        s.action(&mut r.h, &ChainAction::Add("mpfree.fx.compressor"), false);
+        r.run(20);
+        let st = s.state(&r.h);
+        let comp = st.selected.unwrap();
+        let control = st
+            .params
+            .iter()
+            .find(|p| p.addr.param == compressor::SIDECHAIN)
+            .unwrap()
+            .addr;
+        assert_eq!(
+            s.action(
+                &mut r.h,
+                &ChainAction::SetSidechain {
+                    control,
+                    strip: Some(Strip::Track(DRUMS as u8)),
+                },
+                false
+            ),
+            ChainOut::Shown
+        );
+        r.run(4);
+        assert_eq!(r.h.mixer.key(synth, comp), Some(drums()));
+        assert_eq!(r.param(control), 1.0, "it listens");
+        let st = s.state(&r.h);
+        let row = &st.slots[comp];
+        assert!(row.summary.starts_with("SC Drums"), "{}", row.summary);
+        // The Ducker on the drums: the list opens on the tracks.
+        let mut c = ChainHost::from_mixer(drums(), None).unwrap();
+        c.action(&mut r.h, &ChainAction::Add("mpfree.fx.ducker"), false);
+        r.run(20);
+        let st = c.state(&r.h);
+        let slot = st.selected.unwrap();
+        let sc = st.sidechain.clone().expect("the Ducker's sidechain");
+        assert!(sc.missing());
+        assert_eq!(st.slots[slot].summary, "Nothing picked");
+        assert!(st.slots[slot].warn);
+        let list = st.list.clone().expect("the sidechain list, at once");
+        let words = list.sidechain.clone().expect("its words");
+        assert_eq!(list.group, 0);
+        assert_eq!(
+            &list.counts[3..],
+            [0, 0, 0],
+            "returns, submixes, the master"
+        );
+        assert!(list.counts[1] > 0 && list.counts[2] > 0, "pads and inputs");
+        assert_eq!(
+            words.note,
+            "Returns and submixes come after this track in the mix, so they can't feed its sidechain."
+        );
+        assert_eq!(words.now, "Now: nothing picked");
+        assert!(
+            words.title.starts_with("SIDECHAIN FOR DRUMS · DUCKER"),
+            "{}",
+            words.title
+        );
+        let refused = |t: usize| {
+            let p = list
+                .strips
+                .iter()
+                .find(|p| p.strip == Strip::Track(t as u8));
+            p.unwrap().refused
+        };
+        assert_eq!(refused(DRUMS), Some("this strip"));
+        assert_eq!(refused(mixing::SYNTH), Some("it listens to this one"));
+        // A pad picked: it feeds the Ducker, which listens.
+        let control = st
+            .params
+            .iter()
+            .find(|p| p.addr.param == ducker::SOURCE)
+            .unwrap()
+            .addr;
+        let pick = |strip| ChainAction::SetSidechain { control, strip };
+        assert_eq!(
+            c.action(&mut r.h, &pick(Some(Strip::Pad(0))), false),
+            ChainOut::Shown
+        );
+        r.run(4);
+        assert_eq!(r.h.mixer.key(drums(), slot), Some(StripId::Pad(0)));
+        let st = c.state(&r.h);
+        assert!(st.list.is_none(), "the list shut");
+        let sc = st.sidechain.unwrap();
+        assert!(sc.listening && !sc.missing());
+        assert_eq!(sc.track.unwrap().0, Strip::Pad(0));
+        // Off (Tempo on the Ducker): the pad stays fed.
+        c.action(&mut r.h, &pick(None), false);
+        r.run(4);
+        assert_eq!(r.param(control), 1.0, "Tempo");
+        assert_eq!(r.h.mixer.key(drums(), slot), Some(StripId::Pad(0)));
+        let st = c.state(&r.h);
+        assert!(st.slots[slot].summary.starts_with("Tempo"));
+        // Refused: the strip itself, and the synth (it listens to the drums).
+        assert_eq!(
+            c.action(&mut r.h, &pick(Some(Strip::Track(DRUMS as u8))), false),
+            ChainOut::Refused("this strip")
+        );
+        assert_eq!(
+            c.action(
+                &mut r.h,
+                &pick(Some(Strip::Track(mixing::SYNTH as u8))),
+                false
+            ),
+            ChainOut::Refused("it listens to this one")
+        );
+        // The Mix tab's "SC from ..." opens the list on the pad's group.
+        let mut m = ChainHost::from_mixer(drums(), Some(slot)).unwrap();
+        m.list_sidechain(&r.h);
+        let st = m.state(&r.h);
+        assert_eq!(
+            st.list.map(|l| (l.group, l.sidechain.is_some())),
+            Some((1, true))
+        );
+        // The project keeps the pick.
+        let text = crate::project::mixer_text(&r.h.mixer, r.h.pad_mutes(), r.h.pad_solos());
+        assert!(text.contains("key="), "{text}");
     }
 
     /// Jay, 16 Nov: a reverb or delay added on a send return starts at

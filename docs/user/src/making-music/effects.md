@@ -44,6 +44,28 @@ Touch a control on the page and the **Modulate** row under the page names it. Th
 - Tap **Learn**, then turn a Q-Link, or move a knob or fader on your keyboard, to give the control a control of its own (see [MIDI Learn](midi-and-cv.md#midi-learn)).
 - Tap **+ LFO** or **+ Follower** to have an LFO or an envelope follower move it. A ring round the knob shows how far it moves. The row opens the control's **mod rows** over the page: drag a row's bar to set how far and which way it moves the control, and tap **x** to take it off. The line under the control's name says what moves it ("LFO 1 · +30 %"); tap it to open the rows again. A touch anywhere else closes them. A switch takes macros only.
 
+### Listening to another track: the sidechain
+
+A **sidechain** lets an effect listen to another track's sound while it works on its own: a compressor on the bass that pumps with the kick, a gate on the pads that opens on the hats, a Ducker that dips the keys under the kick, a Vocoder that speaks with a voice from another track. Four effects can: the **Compressor**, the **Gate**, the **Ducker** and the **Vocoder** (on **Input**).
+
+{{shot: chain-sidechain | The keys' Compressor listening to the kick pad: Sidechain reads Off or Kick, and Kick is lit.}}
+
+Each has one row for it on its page. The Compressor's and the Gate's read **Sidechain: Off | Kick ›**, and the Ducker's **Source: Kick › | Tempo**; the button with **›** names the track it listens to.
+
+- Tap the track's button while it is lit, or while it reads **Pick a track ›**, to open the **sidechain list**.
+- Tap **Off** (on the Ducker, **Tempo**) to have it hear its own sound again. The track stays picked, so a tap on its button switches back to it, to compare the two.
+- On the Vocoder, set **Carrier** to **Input**: its Carrier heading then reads **Voice: Mic ›** (or **Pick a voice ›**), and a tap there opens the list. The track the Vocoder is on is what speaks, and the track picked is the voice.
+
+{{shot: chain-sidechain-list | The sidechain list: Off above the groups, only the groups that can feed a track, and the tracks it can't hear greyed with why.}}
+
+The list shows the strips by group, as the strip list does, with **Off** above them. A strip can only listen to sound that comes earlier in the mix: inputs, pads and tracks can feed anything after them, and a submix can hear lower-numbered submixes. So only the groups that can feed this strip are listed, and a line under them says which can't and why. A strip it can't hear is greyed, with the reason under its name: **this strip**, or **it listens to this one** when the two would wait for each other. Tap a strip to pick it: the effect turns on its sidechain and listens to it. **Back** keeps things as they were.
+
+It listens before the other track's fader and mute, so a muted kick still pumps the bass. The track picked is saved with the project.
+
+If an effect is set to listen and no track is picked (a Ducker just added, or a project whose track is gone), its section says so in red ("Nothing picked: it won't duck") and its row in the chain reads **Nothing picked**, so it never quietly does something else. Adding a Ducker opens the list at once.
+
+The Mix tab's **Effects** look shows the same: **SC from Kick** under an effect that listens to the kick, **Nothing picked** in red, and a tap on that line opens the effect with the list up (see [Every chain at once: Effects](mixing-and-effects.md#every-chain-at-once-effects)).
+
 ### Choosing an effect
 
 **+ FX** on a strip, or **+ Add effect** in the chain editor, opens the list of effects over the chain editor. The line at its top says where the effect will go: which strip, and which slot of its chain.
@@ -107,8 +129,8 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 
 | Effect | What it does |
 |---|---|
-| **Compressor** | Evens out levels and adds punch or glue. **Attack** is how long it takes to get most of the way down (63 %, the usual convention) and **Release** how long to come most of the way back. **Style** sets how it moves: **Clean** does exactly what the knobs say; **Opto** eases in and comes back slowly after long, heavy compression, for smooth levelling (vocals, bass); **Bus** comes back quickly after a hit and slower under a steady mix, for glue; **FET** adds a little grit as it turns down, more the harder it works, for drums and aggressive vocals. **Auto makeup** turns it back up by what it takes from a sound at a mix level, so comparing it with bypass is fair (**Makeup** still adds on top). **Range** limits how far it turns down; **Link** at 100 % moves both sides together, lower lets each side follow itself. It can be keyed from another strip, for side-chain pumping. **SC filter** keeps low end (a kick) from pushing it, so a whole mix doesn't pump; **Detect** picks **Peak**, which catches every hit, or **RMS**, which follows the loudness and is smoother on a bus or a vocal. |
-| **Ducker** | The pump: turns the sound down on each kick (keyed from another strip) or on every 1/16, 1/8, 1/4, 1/2, bar, dotted or triplet beat of the tempo, and brings it back on a curve you shape. |
+| **Compressor** | Evens out levels and adds punch or glue. **Attack** is how long it takes to get most of the way down (63 %, the usual convention) and **Release** how long to come most of the way back. **Style** sets how it moves: **Clean** does exactly what the knobs say; **Opto** eases in and comes back slowly after long, heavy compression, for smooth levelling (vocals, bass); **Bus** comes back quickly after a hit and slower under a steady mix, for glue; **FET** adds a little grit as it turns down, more the harder it works, for drums and aggressive vocals. **Auto makeup** turns it back up by what it takes from a sound at a mix level, so comparing it with bypass is fair (**Makeup** still adds on top). **Range** limits how far it turns down; **Link** at 100 % moves both sides together, lower lets each side follow itself. It can listen to another track, for sidechain pumping (**Sidechain** in its Detector section; see [the sidechain](#listening-to-another-track-the-sidechain)). **SC filter** keeps low end (a kick) from pushing it, so a whole mix doesn't pump; **Detect** picks **Peak**, which catches every hit, or **RMS**, which follows the loudness and is smoother on a bus or a vocal. |
+| **Ducker** | The pump: turns the sound down on each kick (it listens to the kick's track) or on every 1/16, 1/8, 1/4, 1/2, bar, dotted or triplet beat of the tempo, and brings it back on a curve you shape. |
 | **Transient shaper** | More or less punch at the start of each hit and more or less ring after it, at any level, with no threshold to set. |
 | **Limiter** | A brick wall: nothing gets past the ceiling. **True peak** also catches the peaks a converter makes between samples; **Auto release** keeps a loud mix from pumping. See [The Limiter](#the-limiter). |
 | **Gate** | Silences (or turns down) what falls under the threshold, so drums stop ringing; as an **Expander** it turns quiet sound down gently instead. It can open from another strip's sound, for rhythmic gating. |
@@ -318,7 +340,7 @@ The Vocoder splits a voice into bands, from low to high, and lets each band's le
 
 It sounds about as loud as the voice going in, and it adds no delay, so you can sing through it live. Changing **Carrier** or **Bands** dips the sound for a moment; every other control glides.
 
-**Input** is the classic vocoder on a synth: the track's own sound is the carrier and the voice comes from another track, as the effect's sidechain key. MPFree can't choose that key yet, except from a project that sets one, so on Input with no key the vocoder is silent and **Voice level** stays at the bottom. The presets all use Saw or Noise, so they work on a voice track as they are.
+**Input** is the classic vocoder on a synth: the track's own sound is the carrier and the voice comes from another track, picked with **Voice: Mic ›** in the Carrier heading (see [the sidechain](#listening-to-another-track-the-sidechain)). On Input with no voice picked it is silent, **Voice level** stays at the bottom, and the section says so in red. The presets all use Saw or Noise, so they work on a voice track as they are.
 
 ### Lo-fi
 
@@ -358,7 +380,7 @@ It holds the sound back 2 ms so it is already turning down when each "s" arrives
 
 **Mode** picks how it turns down. **Gate** shuts all the way to Range. **Expander** turns the sound down gradually under the threshold, by **Ratio**: at 2, a sound 3 dB under the threshold comes out 6 dB under, at most down to Range. It is a gentler clean-up for guitars, vocals and room noise; the Soft cleanup preset uses it.
 
-**Key HP** and **Key LP** filter what it listens to, so a kick's thump or a hi-hat's hiss doesn't open it, and **Key** picks the strip's own sound or another strip's (**Sidechain**), for rhythmic gating. **Listen** plays what it listens to, so you can set the filters by ear.
+What opens it is in its **TRIGGER** section. **Sidechain** picks the strip's own sound (**Off**) or another track's, for rhythmic gating (see [the sidechain](#listening-to-another-track-the-sidechain)). **SC low cut** and **SC high cut** filter what it listens to, so a kick's thump or a hi-hat's hiss doesn't open it. **Listen** plays what it listens to, so you can set the filters by ear.
 
 > [!NOTE]
 > Projects saved before this change sound a little different through the Gate: with Hold under 20 ms it now stays open through low notes (it used to flutter on bass under 100 Hz), it shuts closer to 4 dB under the threshold, and a Range moved while it is shut takes effect. Saved gates stay gates.
@@ -372,7 +394,7 @@ The **Gate**, **Comp** and **EQ** switches fade their stage in or out over 20 ms
 
 ### The Ducker
 
-**Source** picks what makes it duck. On **Sidechain** it listens to another strip (usually the kick) and ducks when that goes over **Threshold**; **Key HP** and **Key LP** filter what it listens to, so with Key LP around 120 Hz it ducks on the kick of a whole drum bus and not on the hats (the Kick from drums preset). On **Tempo** it ducks on every step of **Rate**, from 1/16 to a bar, or a dotted or triplet eighth or quarter, in time with the song, and it is already down when each beat lands: it starts going down **Attack** before the beat. **Nudge** moves the duck up to 20 ms later or earlier, for a kick that sits behind or ahead of the beat.
+**Source** picks what makes it duck: a track (usually the kick; see [the sidechain](#listening-to-another-track-the-sidechain)) or **Tempo**. On a track it ducks when that track goes over **Threshold**; **SC low cut** and **SC high cut** filter what it listens to, so with SC high cut around 120 Hz it ducks on the kick of a whole drum bus and not on the hats (the Kick from drums preset). A Ducker starts on a track, so adding one opens the list to pick it. On **Tempo** it ducks on every step of **Rate**, from 1/16 to a bar, or a dotted or triplet eighth or quarter, in time with the song, and it is already down when each beat lands: it starts going down **Attack** before the beat. **Nudge** moves the duck up to 20 ms later or earlier, for a kick that sits behind or ahead of the beat.
 
 **Depth** is how far it turns down, **Hold** how long it stays there, and **Release** how long it takes to come back, on a curve **Shape** bends from straight to a slow start and fast finish, the classic pump. If the Release is longer than the step, the duck never comes all the way back before the next one, and the drawing shows it as you hear it.
 
