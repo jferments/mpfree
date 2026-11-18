@@ -19,7 +19,7 @@ use mpfree_mod::{
 };
 use mpfree_param::{Owner, ParamAddr, Strip};
 use mpfree_sampler_ui::widgets::PadBar;
-use mpfree_ui::widgets::{Chip, Header, Label, APP_TABS};
+use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::Fonts;
 use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Theme, Tone, Ui, Widget};
 
@@ -518,9 +518,9 @@ pub fn screen(
     // The top bar: Sample lit for its FX sub-tab; Mix for the editor
     // itself (the chain editor is the Mix tab's).
     let mut header = Header::app(if place == Place::SampleFx {
-        APP_TABS[5]
+        "Sample"
     } else {
-        APP_TABS[6]
+        "Mix"
     });
     header.chips = vec![
         Chip::new("92 BPM", Tone::Normal),

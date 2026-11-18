@@ -6,19 +6,30 @@ checked: 2026-11-16 d7c844c
 
 # Playing live
 
-The **Play** page is MPFree's home: the place for finger drumming, making beats and live looping. It has three **views**, each arranged for a different way of playing. Tap **All**, **Beats** or **Loop** on the right of the transport bar to switch; the page remembers your view while you visit other tabs.
+The **Play** page is MPFree's home: the place for finger drumming, making beats and live looping. It has two **views**, each arranged for a different way of playing. Tap **All** or **Loop** on the right of the transport bar to switch, or press **MAIN** on Play; the page remembers your view while you visit other tabs. The pattern on its own, with your timing under it, is the **Sequencer** tab's **Steps** view, next to Pads (see [Your first beat](../getting-started/first-beat.md)).
 
-## The three views
+## The views
 
 | View | Made for | What's on it |
 |---|---|---|
-| **All** | Everything at once (the home view) | The loop, the pattern across the page, the throws and the XY pad |
-| **Beats** | Programming patterns and practising finger drumming | The whole pattern, your timing under it, and all eight throws |
+| **All** | Everything at once (the home view) | The loop, the armed track's pads as rows of steps, the throws and the XY pad |
+| **Steps**, on the **Sequencer** tab | Programming patterns and practising finger drumming | The whole pattern, your timing under it, and all eight throws |
 | **Loop** | Live looping | The loop, large, with its buttons; the throws and the XY pad |
 
 There are no pads on the Play page: you play the real ones, and the room goes to the pattern, the loop and the effects. The pads' own settings and sounds are on the Pads tab, next to Play.
 
 {{shot: play | The All view.}}
+
+## The pads as rows of steps
+
+The All view is a simple step sequencer, as on a Digitakt: one row for each pad of the track the pads play, in the bank on the pads (**A1** to **A16** on bank A). Each row has the sound's name, the pad's name on the right ("A1") and a speaker; an empty pad keeps its row, dashed, so a pad is always in the same place. A tap on a step puts a note there, and another tap takes it off. Six rows fit at a time: swipe up or down on the rows to see the others (the rail on the right shows where you are).
+
+The heading over the rows:
+
+- **‹ Track 1 ›**: the track the pads play. Tap its right half for the next track and its left half for the one before; that track gets armed and the pads play its kit. Loop tracks are skipped, since they have no pads.
+- **A** to **H**: the kit's banks. Tap one, or press **PAD BANK**, and the pads and the rows go to that bank.
+- **‹ 1–16 of 32 ›**: the steps shown, for a pattern longer than a bar. **Follow** turns the page as the pattern plays; turning a page yourself turns it off.
+- **Sequencer tab ›** opens the Sequencer, where the pattern's length, the step inspector and your timing are.
 
 ## Throws
 
@@ -71,7 +82,7 @@ Mutes and solos aren't undo steps, and with **Rec song** on they go into the son
 
 The last kind in the column, **Transpose**, moves a playing line instead of a sound. The pads shift the armed track, and every track you've set to follow it, while its clips play: pad 9 plays as written, pad 14 is up 5 semitones (a fourth), pad 16 up 7 (a fifth), pad 1 down 8. It latches, so the shift stays until you hit another pad, and it lands on the track's next note: notes already sounding finish at their old pitch, so you can tap transposes in time with the music. Nothing in the clip changes, and pad 9 always brings it back.
 
-- When the armed track plays the synth (Synth, the last row of the kit chip's list), **16 LEVEL** opens Transpose at once. On a kit it's the last kind in the column.
+- When the armed track plays the synth (Synth, the last row of the list of kits), **16 LEVEL** opens Transpose at once. On a kit it's the last kind in the column.
 - When the synth's pads play **In key** (or chords), Transpose steps through the key instead of semitones, so the line stays in key: pad 16 is an octave up in a seven-note scale and pad 2 an octave down. The heading says the key ("Bass · -3 in C Minor").
 - The heading names the armed track and the tracks that follow it, and where they are ("Bass, with Keys · +5 st"). The pad it's on is lit, on the screen and on the MPC's pads. Pick pad does nothing here.
 - Only tracks that play notes move: a track that plays the synth, or a track's own instrument. A drum kit's notes are its pads, so a kit track, the Drums engine and Loop tracks stay as they are, and the heading says so.
@@ -80,11 +91,11 @@ The last kind in the column, **Transpose**, moves a playing line instead of a so
 
 ## Your timing
 
-The **Beats** view has a **Your timing** strip under the pattern: it reads the last two bars you played against the sixteenth-note grid. **Average** says how early or late you play on average, **Spread** how consistent you are, and **Velocity** how hard you hit; the bars on the right show how your hits spread, from 30 ms early to 30 ms late, with the green bar on the grid.
+The **Sequencer** tab's **Steps** view has a **Your timing** strip under the pattern: it reads the last two bars you played against the sixteenth-note grid. **Average** says how early or late you play on average, **Spread** how consistent you are, and **Velocity** how hard you hit; the bars on the right show how your hits spread, from 30 ms early to 30 ms late, with the green bar on the grid.
 
-The strip takes a little room from the pattern. To give the pattern more rows, press **MENU** on Play and set **Timing strip** to **Off**; set it back to **On** to see your timing again. MPFree remembers the choice.
+The strip takes a little room from the pattern. To give the pattern more rows, press **MENU** there and set **Timing strip** to **Off**; set it back to **On** to see your timing again. MPFree remembers the choice.
 
-{{shot: play-beats | The Beats view: the pattern, your timing (7 ms early on average) and the throws.}}
+{{shot: sequencer-steps | The Sequencer tab's Steps: the pattern, your timing (7 ms early on average) and the throws.}}
 
 ## Make and Perform
 
@@ -122,9 +133,9 @@ The four knobs change with the view:
 
 | View | Q-Link 1 | Q-Link 2 | Q-Link 3 | Q-Link 4 |
 |---|---|---|---|---|
-| All and Beats | Swing | Tune (last pad played) | Drums' filter | Drums' delay send |
-| All and Beats, with 16 Levels on Transpose | Swing | Transpose (the armed track) | Drums' filter | Drums' delay send |
-| Beats, with a step picked | Velocity | Length | Nudge | Chance |
+| All, and the Sequencer's Steps | Swing | Tune (last pad played) | Drums' filter | Drums' delay send |
+| All and Steps, with 16 Levels on Transpose | Swing | Transpose (the armed track) | Drums' filter | Drums' delay send |
+| Steps, with a step picked | Velocity | Length | Nudge | Chance |
 | Loop | Loop level | Loop's delay send | Line input level | Loop filter |
 
 Swing reads **off** at 50 %, which is straight time, as it does in the transport bar. Turn it up for a shuffle.

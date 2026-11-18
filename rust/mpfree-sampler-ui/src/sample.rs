@@ -29,7 +29,7 @@ pub const SCREEN: (i32, i32) = (1280, 800);
 /// The app's header tabs, the one list mpfree-ui shares (the pad player's
 /// layout spec, approved by Jay on 2026-11-11).
 pub use mpfree_ui::widgets::APP_TABS;
-pub const EDITOR_TAB: usize = 5;
+pub const EDITOR_TAB: usize = 6;
 /// The page names the samples add the Wave, Chop and Play tabs under.
 pub const PAGE: &str = "Sample · Wave";
 pub const CHOP_PAGE: &str = "Sample · Chop";

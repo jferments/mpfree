@@ -32,8 +32,9 @@
 //! lane on the pads from [`super::Status::steps`].
 
 use super::{bank_target, App, Effect, MuteKeys, View, LIGHT_OFF, LIGHT_ON};
-use crate::play_page::PlayView;
 use crate::time::{StepAction, LINE, MAX_PEN};
+use mpfree_time_ui::editor::EditAction;
+use mpfree_time_ui::TimeAction;
 
 /// Pages the pads reach: 8 of 16 steps, the 128 steps a pattern can have.
 pub const PAGES: usize = 8;
@@ -324,8 +325,8 @@ impl App {
     }
 
     /// The pads become `sound`'s steps: TRACK MUTE and 16 Levels go off
-    /// (one pad mode at a time), and with `open` Play shows Beats, as
-    /// STEP SEQ always did.
+    /// (one pad mode at a time), and with `open` the Sequencer shows its
+    /// Steps (Beats' pages, which were Play's until the redesign).
     fn steps_on(&mut self, sound: u8, open: bool) -> Vec<Effect> {
         self.step_seq.on = true;
         self.step_seq.sound = sound.min(127);
@@ -361,8 +362,11 @@ impl App {
         fx.push(Effect::Note(line));
         fx.push(Effect::BankLights);
         if open {
-            fx.extend(self.go(View::Play));
-            fx.push(Effect::PlayView(Some(PlayView::Beats)));
+            // The Sequencer's Steps: the note editor closes (‹ Steps).
+            fx.extend(self.go(View::Sequencer));
+            if self.notes_open {
+                fx.push(Effect::Time(TimeAction::Edit(EditAction::Button(0))));
+            }
         }
         fx
     }

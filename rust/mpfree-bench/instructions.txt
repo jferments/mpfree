@@ -15,7 +15,7 @@
 44291	Audio tracks: 6 playing comped takes, 2 recording
 44270	Audio tracks: 8 playing comped takes
 54516	Audio tracks: 8 streaming comped takes
-25491	Auto wah
+26033	Auto wah
 21329	Auto-pan
 339781	Chain: drive, filter, delay, comp
 104245	Character (Console)
@@ -54,7 +54,7 @@
 188280	EQ (4 bands and both cuts), HQ 2x
 64907	Flanger
 92618	Flanger, through zero
-55287	Frequency shifter
+53403	Frequency shifter
 386476	Fuzz
 17292	Gate
 472729	Grains FX (dense)
@@ -91,8 +91,8 @@
 37002	Perform FX, the 16 pads in turn
 107805	Phaser (12 stages)
 66460	Phaser (4 stages)
-60128	Pitch correct
-58972	Pitch shifter
+74424	Pitch correct
+71972	Pitch shifter
 155797	Plate reverb
 307019	Pluck Bell, 16 voices
 249183	Pluck Harp, 16 voices
@@ -108,7 +108,7 @@
 209421	Poly Pluck, 8 voices
 33542	Poly Sub Bass, 8 voices
 374672	Poly Supersaw, 8 voices
-20295	Ring mod
+12921	Ring mod
 145867	Room reverb
 108213	Rotary
 546477	Sampler x16 held
