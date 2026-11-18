@@ -3475,6 +3475,12 @@ impl SamplePage {
                         }
                     }
                 }
+                // Silence for and Tail (one-page step 2f) reach the take
+                // running, until it has ended or is past its length; a
+                // Flatten's take ends on the pad's silence.
+                if matches!(row, Row::Silence | Row::Tail) {
+                    self.take_hears_ending(&s, row);
+                }
                 self.refresh_rec_state(ui);
             }
             // The line input's one monitor (step 2d): the Looper's switch,
@@ -6201,6 +6207,48 @@ impl SamplePage {
             RecallFrom::Master => self.recall.as_ref(),
             RecallFrom::Source => self.input.as_ref().filter(|_| !self.input_shared),
         }
+    }
+
+    /// Silence for or Tail turned while a take runs: the take hears it, or
+    /// the log says it is for the next one.
+    fn take_hears_ending(&mut self, s: &rec_tab::RecSettings, row: rec_tab::Row) {
+        let rate = self.rate;
+        let Some(t) = self.take.as_mut() else {
+            return;
+        };
+        let silence = s.silence_frames(rate);
+        let heard = match row {
+            rec_tab::Row::Silence => {
+                // On silence (a Flatten too), or the quiet a tail waits for.
+                let ended = t.rec.set_silence(silence);
+                let rang = matches!(
+                    t.rec.tail(),
+                    record::Tail::Ring(_) | record::Tail::Loop { .. }
+                ) && t.rec.set_tail(s.tail_as(rate));
+                (ended || rang).then(|| {
+                    format!(
+                        "ends after {} of silence",
+                        rec_tab::value_text(s, rec_tab::Row::Silence, &[])
+                    )
+                })
+            }
+            _ if self.flatten.is_some() => None,
+            _ => t.rec.set_tail(s.tail_as(rate)).then(|| {
+                match s.tail {
+                    rec_tab::TailAt::Cut => "ends on its length",
+                    rec_tab::TailAt::Ring => "rings out after its length",
+                    rec_tab::TailAt::Loop => "becomes a loop of its length",
+                }
+                .to_string()
+            }),
+        };
+        self.lines.push(match heard {
+            Some(what) => format!("sample: the take now {what}"),
+            None => format!(
+                "sample: {} is for the next take: this one has gone past where it applies",
+                row.label()
+            ),
+        });
     }
 
     /// Sample Recall read the Source and its buffer went, so it reads the

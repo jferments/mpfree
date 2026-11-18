@@ -836,6 +836,72 @@ fn a_ring_out_ends_at_its_longest_and_follows_a_length_too() {
     assert_eq!(rec.progress(), Progress::Done { frames: 6_000 });
 }
 
+/// Tail and Silence for turned while a take runs (the one Sample page's
+/// step 2f puts them in the recorder's Input section, shown while REC is
+/// on): the take hears them until they have passed.
+#[test]
+fn a_running_take_hears_its_tail_and_silence_until_they_have_passed() {
+    let (mut f, i) = input(10, RATE);
+    let bar = 10_000;
+    let loud = |_: u64| 0.5;
+    feed_sound(&mut f, 10, bar, &loud);
+    let ring = RingOut { max: 5_000, ..RING };
+    // Four thousand frames, cut: a ring-out turned on 1 280 frames in.
+    let mut rec = Recording::new(&i, Start::Now, End::Frames(4_000), RATE as u64 * 60);
+    feed_sound(&mut f, 10, bar, &loud);
+    assert!(matches!(rec.poll(&i), Ok(Progress::Recording { .. })));
+    assert!(rec.set_tail(Tail::Ring(ring)));
+    assert_eq!(rec.tail(), Tail::Ring(ring));
+    run(&mut f, &i, &mut rec, bar, &loud);
+    assert_eq!(rec.progress(), Progress::Done { frames: 9_000 });
+    assert!(!rec.set_tail(Tail::Cut), "it has ended");
+    // Past its length, ringing: too late, and it keeps the tail it has.
+    let mut rec = Recording::with_tail(
+        &i,
+        Start::Now,
+        End::Frames(1_000),
+        Tail::Ring(ring),
+        RATE as u64 * 60,
+    );
+    feed_sound(&mut f, 10, bar, &loud);
+    rec.poll(&i).unwrap();
+    assert!(!rec.set_tail(Tail::Cut));
+    assert_eq!(rec.tail(), Tail::Ring(ring));
+    // Waiting for its bar line: it begins with the tail it is given.
+    let mut rec = Recording::new(&i, Start::NextBar, End::Bars(1), RATE as u64 * 60);
+    assert!(rec.set_tail(LOOP));
+    assert_eq!(rec.tail(), LOOP);
+    // A press end has no tail: kept, for nothing; and no silence to time.
+    let mut rec = Recording::new(&i, Start::Now, End::Press, RATE as u64 * 60);
+    assert!(rec.set_tail(Tail::Ring(ring)));
+    assert!(!rec.set_silence(1_000));
+    // On silence: a longer silence from here on keeps it going.
+    let stop_at = f.audio.written() + 2_560;
+    let fading = move |x: u64| if x < stop_at { 0.5 } else { 0.0 };
+    let mut rec = Recording::new(
+        &i,
+        Start::Now,
+        End::Silence {
+            level: 0.1,
+            frames: 1_000,
+        },
+        RATE as u64 * 60,
+    );
+    feed_sound(&mut f, 10, bar, &fading);
+    rec.poll(&i).unwrap();
+    assert!(rec.set_silence(3_000));
+    // 2 048 frames of silence: still recording.
+    feed_sound(&mut f, 26, bar, &fading);
+    assert!(
+        matches!(rec.poll(&i), Ok(Progress::Recording { .. })),
+        "1 000 frames would have ended it"
+    );
+    // 3 328: ended where the sound did.
+    feed_sound(&mut f, 10, bar, &fading);
+    assert_eq!(rec.poll(&i), Ok(Progress::Done { frames: 2_560 }));
+    assert!(!rec.set_silence(500), "it has ended");
+}
+
 #[test]
 fn a_loop_folds_its_ringing_onto_its_start_and_keeps_its_length() {
     let (mut f, i) = input(10, RATE);

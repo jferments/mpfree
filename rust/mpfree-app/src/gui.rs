@@ -26847,7 +26847,9 @@ mod tests {
                 "Gain",
                 "Threshold",
                 "Pre-roll",
-                "Monitor"
+                "Monitor",
+                "Tail",
+                "Silence for"
             ]
         );
         // The panel's Onto steps to Next empty while it records: the take
@@ -27772,6 +27774,110 @@ mod tests {
         );
         ev(&mut p, auto_tab::BUTTONS, EventKind::Tab(1));
         assert_eq!(p.sample.editor(), sample_page::Editor::Wave);
+    }
+
+    /// Silence for and Tail (one-page step 2f: the Rec page's last
+    /// settings, in the Input section while REC is on) reach the take
+    /// running: a longer silence keeps it going; a ring-out turned on
+    /// before its length is heard; past it, the log says it is for the
+    /// next take.
+    #[test]
+    fn the_input_sections_silence_for_and_tail_reach_the_take_running() {
+        use mpfree_sampler_ui::rec_tab::{EndAt, TailAt};
+        use mpfree_sampler_ui::recorder::{self, Recorder};
+        use mpfree_sampler_ui::sample::feed_input;
+        use mpfree_sampler_ui::wave_tab;
+        let mut p = sample_sampler(Fonts::embedded());
+        open_sample(&mut p, sample_page::Editor::Wave);
+        let card = |p: &mut Player, index: usize, delta: i32| {
+            p.on_event(UiEvent {
+                widget: recorder::RECORDER.into(),
+                kind: EventKind::Step { index, delta },
+            })
+        };
+        let input = |p: &mut Player, index: usize, delta: i32| {
+            p.on_event(UiEvent {
+                widget: wave_tab::REGION.into(),
+                kind: EventKind::Step { index, delta },
+            })
+        };
+        let rec = |p: &mut Player| {
+            p.on_event(UiEvent {
+                widget: recorder::RECORDER.into(),
+                kind: EventKind::Tab(0),
+            })
+        };
+        let recording = |p: &Player| {
+            p.ui.get::<Recorder>(recorder::RECORDER)
+                .unwrap()
+                .view
+                .recording
+        };
+        let logged = |p: &Player, line: &str| events_log(p).iter().any(|l| l == line);
+        let mut s = p.settings.clone();
+        s.line_input = true;
+        p.apply(ToUi::Settings(s));
+        let stopped = rec_now_in(mpfree_transport::State::Stopped);
+        let mut arm = crate::rec_arm::RecArm::default();
+        let Some(FromUi::SampleInput(Some(mut feed))) =
+            rec_desk_keep(&mut p, &mut arm, &stopped).pop()
+        else {
+            panic!("the input's writer");
+        };
+        // Ends › On silence (1 s), and REC: a second of sound.
+        card(&mut p, 2, 1);
+        assert_eq!(p.sample.rec_settings_now().end, EndAt::Silence);
+        rec(&mut p);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        feed_input(&mut feed.0, 1.0, 0.4, false);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert!(arm.pad.is_some_and(|t| t.recording), "{arm:?}");
+        // Silence for › 2 s: the take hears it. 1.5 s of silence goes by
+        // and it still records; a second more and it is kept.
+        input(&mut p, 8, 1);
+        assert_eq!(p.sample.rec_settings_now().silence_ms, 2000);
+        assert!(logged(&p, "sample: the take now ends after 2 s of silence"));
+        feed_input(&mut feed.0, 1.5, 0.0, false);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert!(recording(&p), "1 s would have ended it");
+        feed_input(&mut feed.0, 1.0, 0.0, false);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert!(!recording(&p) && arm.pad.is_none(), "{arm:?}");
+        // Ends › After 4 bars; REC, and Tail › Ring out while it records.
+        card(&mut p, 2, 1);
+        assert_eq!(p.sample.rec_settings_now().end, EndAt::Length);
+        rec(&mut p);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        feed_input(&mut feed.0, 0.5, 0.4, false);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        input(&mut p, 7, 1);
+        assert_eq!(p.sample.rec_settings_now().tail, TailAt::Ring);
+        assert!(logged(
+            &p,
+            "sample: the take now rings out after its length"
+        ));
+        // Past its 4 bars (10.4 s at 92 BPM), ringing: Tail is for the
+        // next take.
+        feed_input(&mut feed.0, 11.0, 0.4, false);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert!(recording(&p), "it rings on");
+        input(&mut p, 7, 1);
+        assert_eq!(p.sample.rec_settings_now().tail, TailAt::Loop);
+        assert!(logged(
+            &p,
+            "sample: Tail is for the next take: this one has gone past where it applies"
+        ));
+        assert!(!logged(
+            &p,
+            "sample: the take now becomes a loop of its length"
+        ));
     }
 
     /// Threshold and Pre-roll turned while REC's take waits for its sound:

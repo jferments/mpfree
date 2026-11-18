@@ -1074,7 +1074,9 @@ fn the_recorder_row_records_and_the_panel_is_input_while_rec_is_on() {
             "Gain",
             "Threshold",
             "Pre-roll",
-            "Monitor"
+            "Monitor",
+            "Tail",
+            "Silence for"
         ]
     );
     let ev = UiEvent {
