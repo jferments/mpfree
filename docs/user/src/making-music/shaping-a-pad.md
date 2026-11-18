@@ -31,7 +31,7 @@ Its settings come in **sections**, a button each across the top of the page, wit
 | --- | --- | --- |
 | **Layers** | how a hit picks layers, Vel fade, the picked layer's Sound, Vel low, Vel high, Level, Pan and Tune, and Add layer and Remove layer | the layer's level, pan, tune and lowest velocity |
 | **Amp** | the pad's Level and Pan, Attack, Hold, Decay, Sustain and Release | attack, decay, sustain, release |
-| **Filter** | the filter's type, Cutoff, Resonance, and its envelope: Env depth, Env attack, Env decay, Env sustain, Env release | cutoff, resonance, env depth, env decay |
+| **Filter** | the filter's type, Cutoff, Resonance, Drive (the Ladder's), and its envelope: Env depth, Env attack, Env decay, Env sustain, Env release | cutoff, resonance, env depth, env decay |
 | **Pitch** | Tune, Wow & flutter, Vintage, and the keys: Keys, Low key, High key, Root key, Key fade, and Mono, Legato, Glide and Glide on | tune, wow, low key, high key |
 | **Mod** | Vel → level, Vel → start, Vel → cutoff, Vel → pitch, Pressure and its Depth | vel → level, vel → start, pressure, depth |
 | **Movement** | LFO to, LFO wave, LFO rate, LFO depth, Sync to tempo, Retrigger, Pitch env and Pitch decay | LFO rate, LFO depth, pitch env, pitch decay |
@@ -41,7 +41,21 @@ On a Q-Link, SHIFT turns finer. A setting that has nothing to change right now (
 
 On the **Filter** section the drawing shows the filter's own envelope instead of the volume's: how far and how fast the cutoff moves on each hit. **Env depth** says how far, up to 4 octaves up or down; drag the points for its times, or turn their knobs.
 
-A cutoff or resonance change reaches a sound that is still playing, gliding there; a new envelope or filter type plays from the next hit.
+A cutoff or resonance change reaches a sound that is still playing, gliding there, and so does Drive; a new envelope or filter type plays from the next hit.
+
+### Filter types: low pass to vowel
+
+The **Filter** selector steps through the types:
+
+- **LP**, **HP** and **BP** (low pass, high pass, band pass), each **2-pole** (gentle, 12 dB an octave) or **4-pole** (steep, 24 dB an octave). Low pass darkens, high pass thins, band pass keeps a slice around the cutoff.
+- **Notch** (2-pole or 4-pole): the opposite of band pass. It takes out a band around the cutoff and leaves the rest, for a hollow, phasey sound; sweep it with the envelope or the LFO. 4-pole takes out a wider band.
+- **Ladder**: a 4-pole low pass in the style of the classic analog synth filter, warm and round. Its Resonance sings: turned right up, it rings at the cutoff on its own, at a steady level, however long you hold the note. **Drive** pushes the sound into the filter harder, from Off up to 24 dB, for grit and growl. It keeps the level of an ordinary sound about the same as you turn it, so turning it up adds bite rather than volume, and it stays clean of the harsh, out-of-tune fizz cheap drives add on high notes. Drive is the Ladder's alone: on another type its knob is faint and says so.
+- **Vowel**: two narrow peaks where a voice has them, so the sound "says" a vowel. Cutoff picks the vowel: from 200 Hz and below it says "oo", then "oh", "ah" and "eh", up to "ee" from 5 kHz, sliding smoothly between them, and the Cutoff's value names the vowel ("1.00 kHz · ah"). Resonance makes the peaks narrower and more nasal. Sweep the Cutoff with the filter envelope or the LFO and a pad talks: "oo-ah" on each hit. It works best on rich sounds (pads, saws, choirs, breaks); a pure tone right on a peak comes out louder.
+
+{{shot: sample-play-ladder | The Filter section with the Ladder: a 1 kHz cutoff, Resonance at 70 %, so the curve peaks at the cutoff, and 12 dB of Drive.}}
+
+> [!MPC]
+> The MPC offers many more filter models. MPFree keeps a smaller set and measures each one in its quality lab against the analog filter it follows.
 
 ### Layers: more than one sound on a pad
 

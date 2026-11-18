@@ -699,6 +699,7 @@ pub fn layered_project() -> (Project, Arc<SourceView>) {
                 cutoff_hz: 2400.0,
                 resonance: 0.35,
                 env_octaves: 0.5,
+                drive_db: 0.0,
             },
             vel_to_start: 0.2,
             pressure: PressureRoute {

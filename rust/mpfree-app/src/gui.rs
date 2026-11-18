@@ -15313,6 +15313,32 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         mono.take_actions();
         out.push(("sample-play-mono", mono));
     }
+    // The Filter section's Ladder, resonant and driven 12 dB (sampler
+    // R5.6): Filter steps Off, LP2, LP4, HP2, HP4, BP2, BP4, Notch2, Notch4,
+    // Ladder.
+    {
+        use mpfree_sampler_ui::play_tab::{Row, LIST};
+        let mut ladder = sample_sampler(fonts());
+        ladder.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
+        });
+        for (row, delta) in [
+            (Row::Filter, 9),
+            (Row::Cutoff, -3),
+            (Row::Resonance, 14),
+            (Row::Drive, 4),
+        ] {
+            let index = play_row(&mut ladder, row);
+            ladder.on_event(UiEvent {
+                widget: LIST.into(),
+                kind: EventKind::Step { index, delta },
+            });
+            ladder.apply(ToUi::SampleLift);
+        }
+        ladder.take_actions();
+        out.push(("sample-play-ladder", ladder));
+    }
     // 16 LEVEL on Play: the 16 Levels panel, by tune, pad 12 held.
     {
         let mut levels = sample_sampler(fonts());

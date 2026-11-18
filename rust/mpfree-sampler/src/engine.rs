@@ -103,8 +103,8 @@ use mpfree_node::Cull;
 
 use crate::bandlimit::{self, OctaveCell, Reach};
 use crate::dsp::{
-    db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Sample,
-    Svf, TINY,
+    db_to_gain, equal_power, hermite, pan_gains, vowel_formants, vowel_gain, vowel_resonance,
+    Ahdsr, Envelope, Filter, FilterKind, Ladder, Rng, Sample, Svf, FORMANT_2, TINY,
 };
 use crate::grain_clip::GrainClip;
 use crate::hits::{self, HitCell};
@@ -284,6 +284,7 @@ const OPEN_FILTER: Filter = Filter {
     cutoff_hz: 22_000.0,
     resonance: 0.0,
     env_octaves: 0.0,
+    drive_db: 0.0,
 };
 const ONE: i64 = 1 << 32;
 
@@ -1321,6 +1322,10 @@ struct Voice {
     fenv: Option<Envelope>,
     filter: Option<Filter>,
     svf: [Svf; 2],
+    /// The ladder's state, for a Ladder filter, and a Vowel's gain after
+    /// its formants (sampler R5.6).
+    ladder: Ladder,
+    vowel_gain: f32,
     filter_count: u32,
     /// The envelope level and pressure factor (as bits) the filter was
     /// last set for.
@@ -3475,6 +3480,7 @@ impl Engine {
                 cutoff_hz: hz,
                 resonance: 0.0,
                 env_octaves: 0.0,
+                drive_db: 0.0,
             }),
             Some(hz) => Some(Filter {
                 cutoff_hz: hz,
@@ -3651,6 +3657,8 @@ impl Engine {
             fenv: filter.map(|_| Envelope::start(&vp.filter_env, self.rate)),
             filter,
             svf: [Svf::default(); 2],
+            ladder: Ladder::default(),
+            vowel_gain: 1.0,
             filter_count: 0,
             filter_key: None,
             kill_left: 0,
@@ -4266,6 +4274,7 @@ fn retarget(v: &mut Voice, live: &[f32; PadField::COUNT], program: &[f32; Progra
         v.filter = Some(OPEN_FILTER);
         v.fenv = Some(Envelope::idle());
         v.svf = [Svf::default(); 2];
+        v.ladder = Ladder::default();
         v.filter_key = None;
         f.own_fc = OPEN_FILTER.cutoff_hz;
     }
@@ -4362,6 +4371,7 @@ fn follow_edit(
             });
             v.fenv = Some(Envelope::idle());
             v.svf = [Svf::default(); 2];
+            v.ladder = Ladder::default();
             v.filter_key = None;
             (pf.cutoff_hz, pf.resonance)
         }
@@ -4370,6 +4380,16 @@ fn follow_edit(
     if fc != f.own_fc || res != f.own_res {
         (v.follow.own_fc, v.follow.own_res) = (fc, res);
         moved = true;
+    }
+    // A ladder's Drive at once (it keeps its level as it turns).
+    if let Some(cur) = v.filter.as_mut() {
+        if cur.kind == FilterKind::Ladder
+            && pf.kind == FilterKind::Ladder
+            && cur.drive_db != pf.drive_db
+        {
+            cur.drive_db = pf.drive_db;
+            v.filter_key = None;
+        }
     }
 
     // Tune: the layer's speed against the one it played at. A warped
@@ -4741,9 +4761,15 @@ fn motion_step(v: &mut Voice) {
 /// loop, it costs nothing measurable).
 #[inline(never)]
 fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
-    v.svf[0].flush();
-    if f.poles >= 4 {
-        v.svf[1].flush();
+    match f.kind {
+        FilterKind::Ladder => v.ladder.flush(),
+        FilterKind::Vowel => v.svf.iter_mut().for_each(Svf::flush),
+        _ => {
+            v.svf[0].flush();
+            if f.poles >= 4 {
+                v.svf[1].flush();
+            }
+        }
     }
     let moved = v.press_fc * v.motion.fc;
     let key = (e.to_bits(), moved.to_bits());
@@ -4752,9 +4778,22 @@ fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
     }
     v.filter_key = Some(key);
     let fc = f.cutoff_hz * (f.env_octaves * e).exp2() * moved;
-    v.svf[0].set(fc, f.resonance, rate);
-    if f.poles >= 4 {
-        v.svf[1].set(fc, f.resonance * 0.5, rate);
+    match f.kind {
+        FilterKind::Ladder => v.ladder.set(fc, f.resonance, f.drive_db, rate),
+        // The cutoff picks the vowel: its two formants, in parallel.
+        FilterKind::Vowel => {
+            let (f1, f2) = vowel_formants(fc);
+            let res = vowel_resonance(f.resonance);
+            v.svf[0].set(f1, res, rate);
+            v.svf[1].set(f2, res, rate);
+            v.vowel_gain = vowel_gain(f.resonance);
+        }
+        _ => {
+            v.svf[0].set(fc, f.resonance, rate);
+            if f.poles >= 4 {
+                v.svf[1].set(fc, f.resonance * 0.5, rate);
+            }
+        }
     }
 }
 
@@ -4798,11 +4837,25 @@ fn finish<const FOLLOW: bool>(
             retune(v, f, e, rate);
         }
         v.filter_count = (v.filter_count + 1) % FILTER_STEP;
-        l = v.svf[0].process(0, l, f.kind);
-        r = v.svf[0].process(1, r, f.kind);
-        if f.poles >= 4 {
-            l = v.svf[1].process(0, l, f.kind);
-            r = v.svf[1].process(1, r, f.kind);
+        match f.kind {
+            FilterKind::Ladder => {
+                l = v.ladder.process(0, l);
+                r = v.ladder.process(1, r);
+            }
+            FilterKind::Vowel => {
+                let [a, b] = &mut v.svf;
+                let g = v.vowel_gain;
+                l = g * (a.process(0, l, f.kind) + FORMANT_2 * b.process(0, l, f.kind));
+                r = g * (a.process(1, r, f.kind) + FORMANT_2 * b.process(1, r, f.kind));
+            }
+            _ => {
+                l = v.svf[0].process(0, l, f.kind);
+                r = v.svf[0].process(1, r, f.kind);
+                if f.poles >= 4 {
+                    l = v.svf[1].process(0, l, f.kind);
+                    r = v.svf[1].process(1, r, f.kind);
+                }
+            }
         }
     }
 
