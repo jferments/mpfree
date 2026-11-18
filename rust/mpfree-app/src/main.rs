@@ -7407,6 +7407,10 @@ fn player_session(
             out.note(&format!("time: {line}"));
         }
         app.set_track_count(time.track_count());
+        // A track UNDO took away gives its kit back: its place plays kit 1
+        // again, for a track added there later (the screen hears of it
+        // with the track kits below).
+        track_kits.forget_past(time.track_count());
         // The transport buttons' lights follow the transport and the
         // loops (only the ones that changed; next period's effects).
         {
