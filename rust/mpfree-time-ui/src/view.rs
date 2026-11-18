@@ -50,8 +50,9 @@ use mpfree_audiotracks::{Input, Monitor};
 use mpfree_play::{anchored, ClipDrop, Cue, Launch, SongChange, Take, Takes};
 use mpfree_seq::scenes::MAX_FOLLOW_BARS;
 use mpfree_seq::{
-    Clip, ClipSettings, Follow, FollowAction, LaunchGrid, Project, Quantise, SceneSettings, Source,
-    Speed, Transpose, LAUNCH_GRIDS, MAX_CLIP_TICKS, MAX_TRACKS, MAX_TRANSPOSE, SLOTS,
+    Clip, ClipProgram, ClipSettings, Follow, FollowAction, LaunchGrid, Project, Quantise,
+    SceneSettings, Source, Speed, Transpose, LAUNCH_GRIDS, MAX_CLIP_TICKS, MAX_TRACKS,
+    MAX_TRANSPOSE, SLOTS,
 };
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
@@ -218,8 +219,9 @@ pub const OTHERS: [FollowAction; 9] = [
     FollowAction::Stop,
 ];
 /// The clip settings card's rows, top to bottom.
-pub const CLIP_ROWS: [&str; 9] = [
+pub const CLIP_ROWS: [&str; 11] = [
     "Length", "Speed", "Swing", "Quantise", "Strength", "Follow", "After", "Launch", "Mode",
+    "Program", "Bank",
 ];
 /// The clip card's Mode row: Restart, Legato (takes over the playing
 /// clip's place), Once (a one-shot: one pass, then the track stops).
@@ -2177,26 +2179,57 @@ pub fn card_rows(length: Tick, s: ClipSettings) -> Vec<OptionRow> {
             s.follow
                 .map_or_else(|| "off".to_string(), |f| follow_name(f.action).to_string()),
         ),
-        row(6, s.follow.map_or(dash, |f| bars_label(i64::from(f.bars)))),
+        row(
+            6,
+            s.follow
+                .map_or(dash.clone(), |f| bars_label(i64::from(f.bars))),
+        ),
         // The project's launch quantise unless it has its own.
         row(
             7,
             s.launch.map_or_else(|| "project".to_string(), launch_name),
         ),
         row(8, MODES[mode_of(&s)].to_string()),
+        // The program change it sends its track's outside gear as it
+        // starts (S5): shown 1 to 128, as on the gear.
+        row(
+            9,
+            s.program.map_or_else(
+                || "off".to_string(),
+                |p| (u16::from(p.program) + 1).to_string(),
+            ),
+        ),
+        // Its bank select as the two numbers sent, CC 0 / CC 32.
+        row(
+            10,
+            match s.program {
+                None => dash,
+                Some(ClipProgram { bank: None, .. }) => "off".to_string(),
+                Some(ClipProgram { bank: Some(b), .. }) => bank_name(b),
+            },
+        ),
     ]
+}
+
+/// A bank select as the gear's manual names it: CC 0's value / CC 32's.
+pub fn bank_name(bank: u16) -> String {
+    format!("{}/{}", bank >> 7, bank & 0x7F)
 }
 
 /// What a step of the card's row `index` asks for, with SHIFT held or
 /// not, or why it asks for nothing (empty when there is nothing to say).
-/// With SHIFT, Length doubles (the notes repeated) or halves, and Speed
-/// doubles or halves; the other rows step as without it.
+/// With SHIFT, Length doubles (the notes repeated) or halves, Speed
+/// doubles or halves, and Bank steps a whole CC 0 (128); the other rows
+/// step as without it.
 pub fn card_action(
     st: &TimeState,
     index: usize,
     delta: i32,
     shift: bool,
 ) -> Result<TimeAction, String> {
+    if shift && index == 10 {
+        return bank_step(st, delta, 128);
+    }
     if !shift || index > 1 {
         return card_step(st, index, delta);
     }
@@ -2277,7 +2310,7 @@ fn card_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, Str
         .focus()
         .ok_or("No clip to set: arm a track with a clip, or make one")?;
     let c = st.clip(track, slot).ok_or("No clip to set")?;
-    if c.looped.is_some() && (index < 5 || index == 8) {
+    if c.looped.is_some() && !(5..8).contains(&index) {
         return Err(
             "A loop cell plays its loop as recorded: only Follow, After and Launch apply".into(),
         );
@@ -2483,8 +2516,80 @@ fn card_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, Str
                 "Mode is at its last, Once: the clip plays one pass, then its track stops".into(),
             ),
         },
+        // Off, then 1 to 128.
+        9 => {
+            let now = s.program.map_or(0, |p| usize::from(p.program) + 1);
+            match step(now, 129) {
+                Some(0) => {
+                    s.program = None;
+                    set(s)
+                }
+                Some(k) => {
+                    let bank = s.program.and_then(|p| p.bank);
+                    s.program = Some(ClipProgram {
+                        program: (k - 1) as u8,
+                        bank,
+                    });
+                    set(s)
+                }
+                None => end(
+                    "Program is off already: the clip sends no program change".into(),
+                    "Program is at its last, 128".into(),
+                ),
+            }
+        }
+        10 => bank_step(st, delta, 1),
         _ => Err(String::new()),
     }
+}
+
+/// A step of the card's Bank row by `by` (1, or 128 with SHIFT: a whole
+/// CC 0): off, then 0/0 up to 127/127.
+fn bank_step(st: &TimeState, delta: i32, by: i32) -> Result<TimeAction, String> {
+    let (track, slot) = st
+        .focus()
+        .ok_or("No clip to set: arm a track with a clip, or make one")?;
+    let c = st.clip(track, slot).ok_or("No clip to set")?;
+    if c.looped.is_some() {
+        return Err(
+            "A loop cell plays its loop as recorded: only Follow, After and Launch apply".into(),
+        );
+    }
+    let mut s = c.settings;
+    let p = s
+        .program
+        .ok_or("Set Program first: the bank goes with its program change")?;
+    // Off is one below 0/0.
+    let now = p.bank.map_or(-1, i32::from);
+    let max = i32::from(ClipProgram::MAX_BANK);
+    let next = if delta > 0 {
+        if now >= max {
+            return Err(format!(
+                "Bank is at its last, {}",
+                bank_name(ClipProgram::MAX_BANK)
+            ));
+        }
+        (now + by).min(max)
+    } else {
+        match now {
+            ..0 => {
+                return Err("Bank is off already: no bank select goes before the program".into())
+            }
+            // 0/0, then off.
+            0 => -1,
+            _ => (now - by).max(0),
+        }
+    };
+    s.program = Some(ClipProgram {
+        bank: u16::try_from(next).ok(),
+        ..p
+    });
+    Ok(TimeAction::ClipSettings {
+        track,
+        slot,
+        row: 10,
+        settings: s,
+    })
 }
 
 // ---------------------------------------------------------------- texts
@@ -3989,6 +4094,10 @@ mod tests {
             launch: None,
             legato: true,
             once: false,
+            program: Some(ClipProgram {
+                program: 127,
+                bank: Some(ClipProgram::MAX_BANK),
+            }),
         };
         values.extend(card_rows(MAX_CLIP_TICKS, card).into_iter().map(|r| r.value));
         values.extend(
@@ -5266,7 +5375,9 @@ mod tests {
                 "Follow off",
                 "After —",
                 "Launch project",
-                "Mode Restart"
+                "Mode Restart",
+                "Program off",
+                "Bank —"
             ]
         );
         let step = |st: &TimeState, index: usize, delta: i32| {
@@ -5441,10 +5552,91 @@ mod tests {
             })
         );
         cs(&mut st).once = false;
+        // Program (S5): off, then 1 to 128; Bank only with a program: off,
+        // then 0/0 up to 127/127, SHIFT a whole CC 0.
+        ends(step(&st, 9, -1), "off already");
+        ends(step(&st, 10, 1), "Set Program first");
+        let prog = |program, bank| Some(ClipProgram { program, bank });
+        assert_eq!(
+            step(&st, 9, 1),
+            set(&st, 9, |s| s.program = Some(ClipProgram {
+                program: 0,
+                bank: None
+            }))
+        );
+        cs(&mut st).program = prog(4, None);
+        assert_eq!(clip_rows(&st)[9].value, "5");
+        assert_eq!(clip_rows(&st)[10].value, "off");
+        assert_eq!(
+            step(&st, 9, -1),
+            set(&st, 9, |s| s.program = Some(ClipProgram {
+                program: 3,
+                bank: None
+            }))
+        );
+        ends(step(&st, 10, -1), "Bank is off already");
+        assert_eq!(
+            step(&st, 10, 1),
+            set(&st, 10, |s| s.program = Some(ClipProgram {
+                program: 4,
+                bank: Some(0)
+            }))
+        );
+        cs(&mut st).program = prog(127, Some(130));
+        assert_eq!(clip_rows(&st)[9].value, "128");
+        assert_eq!(clip_rows(&st)[10].value, "1/2");
+        ends(step(&st, 9, 1), "last, 128");
+        let shifted = |st: &TimeState, delta| (card_action(st, 10, delta, true).ok(), None);
+        assert_eq!(
+            shifted(&st, 1),
+            set(&st, 10, |s| s.program = Some(ClipProgram {
+                program: 127,
+                bank: Some(258)
+            }))
+        );
+        assert_eq!(
+            shifted(&st, -1),
+            set(&st, 10, |s| s.program = Some(ClipProgram {
+                program: 127,
+                bank: Some(2)
+            }))
+        );
+        cs(&mut st).program = prog(127, Some(5));
+        assert_eq!(
+            shifted(&st, -1),
+            set(&st, 10, |s| s.program = Some(ClipProgram {
+                program: 127,
+                bank: Some(0)
+            }))
+        );
+        cs(&mut st).program = prog(127, Some(0));
+        assert_eq!(
+            step(&st, 10, -1),
+            set(&st, 10, |s| s.program = Some(ClipProgram {
+                program: 127,
+                bank: None
+            }))
+        );
+        cs(&mut st).program = prog(127, Some(ClipProgram::MAX_BANK));
+        assert_eq!(clip_rows(&st)[10].value, "127/127");
+        ends(step(&st, 10, 1), "last, 127/127");
+        // Its bank is kept as the program steps, and goes when it turns off.
+        cs(&mut st).program = prog(0, Some(9));
+        assert_eq!(
+            step(&st, 9, 1),
+            set(&st, 9, |s| s.program = Some(ClipProgram {
+                program: 1,
+                bank: Some(9)
+            }))
+        );
+        assert_eq!(step(&st, 9, -1), set(&st, 9, |s| s.program = None));
+        cs(&mut st).program = None;
         // A loop cell: only Follow, After and Launch.
         st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
         ends(step(&st, 1, 1), "loop cell");
         ends(step(&st, 8, 1), "loop cell");
+        ends(step(&st, 9, 1), "loop cell");
+        ends(step(&st, 10, 1), "loop cell");
         assert!(step(&st, 6, 1).0.is_some());
         assert!(step(&st, 7, -1).0.is_some());
         // A settings take in the Takes list.

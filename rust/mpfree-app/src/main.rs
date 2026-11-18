@@ -3947,7 +3947,13 @@ impl time::Pads for SeqPads<'_> {
                 None
             }
             (Event::NoteOn { .. }, _)
-            | (Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. }, _) => None,
+            | (
+                Event::Lock { .. }
+                | Event::Lane { .. }
+                | Event::Unlock { .. }
+                | Event::Program { .. },
+                _,
+            ) => None,
         }
     }
 
@@ -4159,7 +4165,12 @@ impl SeqPads<'_> {
                 self.own.all_off(track);
                 false
             }
-            Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => false,
+            // A clip's program change is for outside gear (S5), not the
+            // track's own instrument.
+            Event::Lock { .. }
+            | Event::Lane { .. }
+            | Event::Unlock { .. }
+            | Event::Program { .. } => false,
         }
     }
 
@@ -4227,7 +4238,8 @@ impl SeqPads<'_> {
                 Event::Pressure { .. }
                 | Event::Lock { .. }
                 | Event::Lane { .. }
-                | Event::Unlock { .. },
+                | Event::Unlock { .. }
+                | Event::Program { .. },
                 _,
             ) => None,
         }
@@ -4344,7 +4356,13 @@ impl SeqPads<'_> {
                 None
             }
             (Event::NoteOn { .. }, _)
-            | (Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. }, _) => None,
+            | (
+                Event::Lock { .. }
+                | Event::Lane { .. }
+                | Event::Unlock { .. }
+                | Event::Program { .. },
+                _,
+            ) => None,
         }
     }
 }

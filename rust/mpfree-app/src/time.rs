@@ -318,7 +318,10 @@ pub trait Pads {
                 self.pressure_at(o.track, usize::from(note), value, o.offset);
                 None
             }
-            Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => None,
+            Event::Lock { .. }
+            | Event::Lane { .. }
+            | Event::Unlock { .. }
+            | Event::Program { .. } => None,
         }
     }
 }
@@ -5096,6 +5099,69 @@ mod tests {
         h.period(PERIOD, &mut r);
         assert!(r.all_off > 0);
         assert_eq!(r.pads.stops, 1);
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// The clip card's Program row (sequencer S5): one take, saved with
+    /// the clip, and its program change offered first to a track that
+    /// plays elsewhere as the clip starts, before its first note, once
+    /// while it loops; on the pads it changes nothing.
+    #[test]
+    fn the_clip_cards_program_goes_out_as_the_clip_starts() {
+        use mpfree_seq::{ClipProgram, ClipSettings};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for (t, note) in [(0, 4), (1, 9)] {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            h.control.project.tracks[t].slots[0] = Some(c);
+            h.act(TimeAction::Launch { track: t, slot: 0 }).unwrap();
+        }
+        let program = Some(ClipProgram {
+            program: 4,
+            bank: Some(2),
+        });
+        for track in [0, 1] {
+            let was = h.state().clip(track, 0).unwrap().settings;
+            let said = h
+                .act(TimeAction::ClipSettings {
+                    track,
+                    slot: 0,
+                    row: 9,
+                    settings: ClipSettings { program, ..was },
+                })
+                .unwrap();
+            assert!(said.contains("beat · Program 5"), "{said}");
+        }
+        assert_eq!(h.state().clip(1, 0).unwrap().settings.program, program);
+        let saved = mpfree_seq::save::to_text(&h.control.project);
+        assert!(saved.contains("program 4 bank 2\n"), "{saved}");
+        let mut r = Routed {
+            track: 1,
+            ..Routed::default()
+        };
+        h.command(Command::Play);
+        while r.pads.frame < 2 * BAR - 1000 {
+            h.period(PERIOD, &mut r);
+            r.pads.frame += u64::from(PERIOD);
+        }
+        let on = Event::NoteOn {
+            note: 9,
+            velocity: 100,
+        };
+        let sent = Event::Program {
+            program: 4,
+            bank: Some(2),
+        };
+        let starts: Vec<(u64, Event)> = r
+            .taken
+            .iter()
+            .copied()
+            .filter(|(_, e)| !matches!(e, Event::NoteOff { .. }))
+            .collect();
+        assert_eq!(starts, vec![(0, sent), (0, on), (BAR, on)]);
+        // The pads' track: its notes as before, nothing from its program.
+        let hits: Vec<(u64, usize)> = r.pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+        assert_eq!(hits, vec![(0, 4), (BAR, 4)]);
         assert_eq!(h.dropped(), 0);
     }
 
