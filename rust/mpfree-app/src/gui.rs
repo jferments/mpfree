@@ -21431,7 +21431,7 @@ mod tests {
         assert_eq!(p.page(), sample_page::PAGE);
         assert_eq!(
             p.ui.get::<Header>("header").unwrap().active,
-            6,
+            3,
             "the Sample tab, after Looper"
         );
         assert_eq!(p.ui.get::<PadBar>(BAR).unwrap().title, "Pad A5 · Break 92");
@@ -24312,7 +24312,11 @@ mod tests {
             (p.page(), p.sample.editor()),
             (sample_page::PADS_PAGE, sample_page::Editor::Pads)
         );
-        assert_eq!(p.ui.get::<Header>("header").unwrap().active, 1);
+        assert_eq!(
+            p.ui.get::<Header>("header").unwrap().active,
+            6,
+            "the Pads tab, after Arrange"
+        );
         assert_eq!(
             p.ui.get::<PadBar>(pads_tab::BAR).unwrap().button.as_deref(),
             Some("Browse for A5")
