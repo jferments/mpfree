@@ -32,6 +32,7 @@ use mpfree_controller::mpc_one::{button_name, ControlEvent};
 use mpfree_midi::monitor::{
     Dir, Event, Filter, Kind, Monitor, Mpc, Seen, Steady, To, What, MPC, SYSTEM,
 };
+use mpfree_midi::profile::{cc_name, Profile};
 use mpfree_midi::{Msg, PortId};
 use mpfree_mixer_ui::{IoInput, IoReply, IoSection};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Theme, Touch, Widget};
@@ -228,38 +229,6 @@ pub(crate) fn port_text(m: &Monitor, port: PortId, d: Dir) -> String {
     }
 }
 
-/// The controllers most gear agrees on.
-pub(crate) fn cc_name(cc: u8) -> Option<&'static str> {
-    Some(match cc {
-        0 => "Bank select",
-        1 => "Mod wheel",
-        2 => "Breath",
-        4 => "Foot",
-        5 => "Glide time",
-        6 => "Data entry",
-        7 => "Volume",
-        8 => "Balance",
-        10 => "Pan",
-        11 => "Expression",
-        32 => "Bank select fine",
-        64 => "Sustain",
-        65 => "Glide",
-        66 => "Sostenuto",
-        67 => "Soft pedal",
-        71 => "Resonance",
-        74 => "Cutoff",
-        120 => "All sound off",
-        121 => "Reset controllers",
-        122 => "Local control",
-        123 => "All notes off",
-        124 => "Omni off",
-        125 => "Omni on",
-        126 => "Mono",
-        127 => "Poly",
-        _ => return None,
-    })
-}
-
 /// A SysEx maker's name, for the ones seen on stages most.
 fn maker_name(id: [u8; 3]) -> Option<&'static str> {
     Some(match id {
@@ -290,8 +259,16 @@ fn steady_name(s: Steady) -> &'static str {
 
 /// A message in words, without its port or channel ("Note on · C3 ·
 /// vel 100"). Notes are named as everywhere in the app (48 is C3);
-/// programs and songs count from 1.
+/// programs and songs count from 1. Controllers are named as most gear
+/// names them ([`words_named`] uses a port's profile).
 pub fn words(s: &Seen) -> String {
+    words_named(s, None)
+}
+
+/// [`words`], with CCs and programs named by `profile` (the port's) where
+/// it names them ("CC 74 Filter cutoff · 64", "Program 34 Electric Bass
+/// (finger)").
+pub fn words_named(s: &Seen, profile: Option<&Profile>) -> String {
     match s.what {
         What::Channel { msg, .. } => match msg {
             Msg::NoteOn { note, vel, .. } => {
@@ -301,11 +278,14 @@ pub fn words(s: &Seen) -> String {
             Msg::PolyPressure { note, value, .. } => {
                 format!("Pressure · {} · {value}", note_name(note))
             }
-            Msg::Cc { cc, value, .. } => match cc_name(cc) {
+            Msg::Cc { cc, value, .. } => match cc_name(profile, cc) {
                 Some(n) => format!("CC {cc} {n} · {value}"),
                 None => format!("CC {cc} · {value}"),
             },
-            Msg::Program { program, .. } => format!("Program {}", u16::from(program) + 1),
+            Msg::Program { program, .. } => match profile.and_then(|p| p.program_name(program)) {
+                Some(n) => format!("Program {} {n}", u16::from(program) + 1),
+                None => format!("Program {}", u16::from(program) + 1),
+            },
             Msg::ChanPressure { value, .. } => format!("Channel pressure · {value}"),
             Msg::PitchBend { value, .. } => format!("Pitch bend · {value:+}"),
         },
@@ -429,15 +409,17 @@ fn event_words(e: Event, name: impl Fn(PortId) -> String) -> String {
     }
 }
 
-/// A line's message in words, naming the ports an event is about.
-pub(crate) fn line_words(mon: &Monitor, s: &Seen) -> String {
+/// A line's message in words, naming the ports an event is about and a
+/// message's controls by its port's profile.
+pub(crate) fn line_words(m: &IoModel, s: &Seen) -> String {
+    let mon = &m.monitor;
     match s.what {
         What::Event(e) => event_words(e, |p| match mon.port_name(p) {
             Some(n) if p == mpfree_midi::DIN => format!("{n} (5-pin jacks)"),
             Some(n) => n.to_string(),
             None => format!("port {}", p.0 + 1),
         }),
-        _ => words(s),
+        _ => words_named(s, m.profile_of(s.port)),
     }
 }
 
@@ -494,6 +476,7 @@ pub(crate) fn went_to(m: &IoModel, to: To) -> (String, Went) {
         To::Thru { .. } => ("thru: not sent, MIDI out is off".to_string(), Went::Nothing),
         To::Learned(a) => (format!("Learn: {}", param(a)), Went::Learn),
         To::Took(a) => (format!("Learn took it: {}", param(a)), Went::Learn),
+        To::QLink(k) => (format!("MIDI Follow: Q-Link {}", k + 1), Went::Learn),
         To::LearnOnly => ("not played: Learn only".to_string(), Went::Nothing),
         To::Follows => ("clock: the tempo follows it".to_string(), Went::Clock),
         To::NotFollowed => ("not followed".to_string(), Went::Nothing),
@@ -507,6 +490,8 @@ pub(crate) fn went_to(m: &IoModel, to: To) -> (String, Went) {
             "sent by the Sample tab's auto-sample".to_string(),
             Went::Sent,
         ),
+        To::Controller => ("sent by controller mode".to_string(), Went::Sent),
+        To::SentBack => ("MIDI Follow: a value sent back".to_string(), Went::Sent),
         To::ThruFrom(p) => (
             format!("thru from {}", port_text(&m.monitor, p, Dir::In)),
             Went::Sent,
@@ -1242,7 +1227,7 @@ impl MonitorSection {
                 row,
                 FontId::Sans,
                 kind_ink,
-                &line_words(mon, s),
+                &line_words(m, s),
             );
             col(
                 cx,
@@ -1928,6 +1913,36 @@ mod tests {
             ..at(What::Arriving(Steady::Clock))
         };
         assert_eq!(words(&out), "Clock going out (counted, not listed)");
+        // A port's profile names its controllers and programs; the rest
+        // as most gear names them.
+        let chan = |msg: Msg| What::Channel {
+            msg,
+            bytes: [0; 3],
+            len: 2,
+        };
+        let cc = |cc| {
+            at(chan(Msg::Cc {
+                ch: 0,
+                cc,
+                value: 64,
+            }))
+        };
+        let gm = mpfree_midi::profile::general_midi();
+        let (juno, _) = Profile::parse("name = Juno\ncc.74 = Filter cutoff\n").unwrap();
+        assert_eq!(words(&cc(74)), "CC 74 Cutoff · 64");
+        assert_eq!(
+            words_named(&cc(74), Some(&juno)),
+            "CC 74 Filter cutoff · 64"
+        );
+        assert_eq!(words_named(&cc(64), Some(&juno)), "CC 64 Sustain · 64");
+        assert_eq!(words_named(&cc(91), Some(&gm)), "CC 91 Reverb · 64");
+        assert_eq!(words_named(&cc(91), None), "CC 91 · 64");
+        let program = at(chan(Msg::Program { ch: 0, program: 33 }));
+        assert_eq!(words(&program), "Program 34");
+        assert_eq!(
+            words_named(&program, Some(&gm)),
+            "Program 34 Electric Bass (finger)"
+        );
         assert_eq!(
             bytes_text(&What::SysEx {
                 len: 12,
@@ -2077,7 +2092,7 @@ mod tests {
                     format!(
                         "{} | {}",
                         port_text(&m.monitor, l.port, l.dir),
-                        line_words(&m.monitor, l)
+                        line_words(&m, l)
                     )
                 })
                 .collect()

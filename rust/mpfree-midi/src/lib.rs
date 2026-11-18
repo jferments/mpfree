@@ -12,6 +12,9 @@
 //! - [`cv`]: the eight CV/gate outputs as voltages.
 //! - [`setup`]: a project's MIDI, sync and CV settings (what the mixer's
 //!   I/O view edits), saved as the project's `midi` part.
+//! - [`profile`]: device profiles, what a synth or a controller calls its
+//!   CCs, NRPNs and programs (General MIDI built in, the musician's own
+//!   from text files).
 //! - [`cv_wire`]: the bytes Akai's app sends to the controller to set the
 //!   CV jacks (channel 16 CC pairs on cable 1), as captured.
 //! - [`smf`]: Standard MIDI Files for the export: the notes a pass played
@@ -28,14 +31,19 @@
 //! (docs/dev/design/midi-io.md).
 #![forbid(unsafe_code)]
 
+pub mod blocks;
 pub mod cv;
+pub mod cv_mod;
 pub mod cv_wire;
+pub mod expr_out;
 pub mod input;
 pub mod learn;
 pub mod monitor;
+pub mod mpe;
 pub mod msg;
 pub mod output;
 pub mod port;
+pub mod profile;
 pub mod setup;
 pub mod smf;
 

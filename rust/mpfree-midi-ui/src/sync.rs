@@ -229,6 +229,7 @@ mod tests {
             has_out: false,
             sending: false,
             last_in: None,
+            clock_measured: None,
         });
         Arc::new(Mutex::new(IoModel {
             setup: MidiSetup::default(),

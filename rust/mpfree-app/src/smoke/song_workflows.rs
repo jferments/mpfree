@@ -403,7 +403,8 @@ mod tests {
                 s.qlink(1, -6);
                 let _ = v0;
                 let edited = s.time.project().clone();
-                let mixer = crate::project::mixer_text(&s.mix.mixer, s.mix.pad_mutes());
+                let mixer =
+                    crate::project::mixer_text(&s.mix.mixer, s.mix.pad_mutes(), s.mix.pad_solos());
 
                 s.button_with("SHIFT", "BROWSE");
                 let saved = format!("project: saved {}", song.name);
@@ -436,7 +437,7 @@ mod tests {
                 );
                 s.run_for(0.5);
                 assert_eq!(
-                    crate::project::mixer_text(&s.mix.mixer, s.mix.pad_mutes()),
+                    crate::project::mixer_text(&s.mix.mixer, s.mix.pad_mutes(), s.mix.pad_solos()),
                     mixer,
                     "{}: the mixer as edited",
                     song.name

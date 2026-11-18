@@ -26,7 +26,7 @@ Beside the pads are the settings of the pad picked:
 - how many notes can ring at once (**Polyphony**). Kit pads, and a sound you load onto an empty pad, start at 4: hit a pad again (or let Note Repeat do it) and its fifth hit stops its oldest, while other pads' sounds ring on. MPFree plays up to 64 sounds at once: plain drum hits (One shot, no filter, the envelope open, at the sound's own pitch) can use all 64, and sounds with a filter, an envelope, a loop, grains or a tune up to 24 of them. When too many sounds play at once, MPFree stops the oldest sound of the pad that has the most playing first;
 - a **mute group**: pads in the same group cut each other off, like an open and a closed hi-hat;
 - its **level**, **pan** and **tune**;
-- **Effects**: the effects on the pad's own mixer channel (**+ FX** when it has none). Tap it, or push the wheel on it, to open the pad's chain in the Mix tab, and **‹** brings you back (see [Effects](effects.md#adding-an-effect-the-chain-editor)). Only the first 16 pads have a channel of their own; the others show a dash.
+- **Effects**: the effects on the pad's own mixer channel (**+ FX** when it has none). Tap it, or push the wheel on it, to open the pad's chain in the Mix tab, and **‹** brings you back (see [Effects](effects.md#adding-an-effect-the-chain-editor)). A pad without a channel of its own (any but kit 1's A1 to A16) gets one when you add an effect, and gives it back once it has none (see [FX](shaping-a-pad.md#fx-effects-on-one-pad-or-on-the-whole-kit)).
 
 Q-Links 1 to 4 turn level, pan, tune and voices. **Put on** places the sound picked on the right onto the pad, the whole of it; the hint line says when the pad plays all of it already.
 
@@ -63,7 +63,7 @@ Each track plays a kit of its own, as each track plays a program on the MPC, and
 - **To change a track's kit,** select the track and pick the kit in the list of kits (tap **Kit** at the top of the Pads tab, or **PADS PLAY** on Play's transport bar), or with **SHIFT** + the data wheel on the Play page. Only these change what a track plays: opening a page never does. The synth comes after the kits (see [Put a synth on the pads](synths.md#put-a-synth-on-the-pads)), and the list's last row, **New kit**, gives the selected track an empty kit of its own (Kit 8, say): fill its pads by loading sounds, recording, or sending pads to it. Up to eight new kits are free in a session; one shows in the list once a track plays it or it has sounds, and the project keeps it with its sounds.
 - **A kit has 128 pads,** 16 in each of the banks A to H. **PAD BANK** puts another bank on the pads: **B** plays pads B1 to B16, and **SHIFT** (or a second press) reaches E to H. The bank stays when you select another track, and **PADS PLAY** on Play ("Drums · Boom Bap · B") and the Pads tab's banks say which one is on the pads. Whatever you play on bank B records onto those pads, and the Sample tab edits the pad you hit last on any bank. Load or record a sound onto an empty pad of any bank, or send a pad there with **Send to pad**.
 - **Every track starts on kit 1,** so a project saved before tracks had a kit each plays as it did.
-- **In the mixer,** kit 1 plays through the 16 pad channels and the **Drums** strip, as before. Another kit plays into the strip of the first track that plays it (**Track 2**, say), with its own fader, effects and sends; tracks that play the same kit share it. That kit's pads have no channels of their own yet, so put its effects on the track's strip, and mute the track rather than a pad: on its track the Play page's pad speakers and **TRACK MUTE**'s pad mutes say so and mute nothing. The same goes for kit 1's pads past A16 (banks B to H), until any pad can have a channel of its own.
+- **In the mixer,** kit 1 plays through the 16 pad channels and the **Drums** strip, as before. Another kit plays into the strip of the first track that plays it (**Track 2**, say), with its own fader, effects and sends; tracks that play the same kit share it. Put effects for the whole kit on the track's strip; a pad that needs effects of its own gets a channel when you add one (see [FX](shaping-a-pad.md#fx-effects-on-one-pad-or-on-the-whole-kit)). Pad mutes are kit 1's A1 to A16 alone for now, so mute the track rather than a pad: on another kit's track the Play page's pad speakers and **TRACK MUTE**'s pad mutes say so and mute nothing.
 - **The project keeps** which kit each track plays.
 
 ## Recording a sample
@@ -180,12 +180,54 @@ Pins only work while the sound is stretched. With Warp on Repitch, the sound pla
 
 **Chopping** cuts a sample into slices, one per pad, so you can replay a drum break in a new order or pick out single hits.
 
-1. Under the wave, tap a **Method**: **Transient** cuts at each hit, **Beat** on the beats, **Grid** into equal pieces, **Silence** at the gaps, **Manual** leaves the cuts to you, and **Live** cuts where you play (below).
-2. Drag the **Sensitivity** knob up for more slices, down for fewer (on Beat, Grid and Silence the knob sets the slice length, the number of slices or the threshold).
+1. Under the wave, tap a **Method**: **Transient** cuts at each hit, **Beat** on the beats, **Grid** into equal pieces, **Silence** at the gaps, **Pitch** where the note changes (below), **Manual** leaves the cuts to you, and **Live** cuts where you play (below).
+2. Drag the **Sensitivity** knob up for more slices, down for fewer (on Beat, Grid, Silence and Pitch the knob sets the slice length, the number of slices, the threshold or the change).
 3. Tap a slice to hear it. **Split** and **Merge** add or remove a cut by hand; drag a cut's tab, or turn the Q-Links, to move it. The first marker and **END** are the pad's own start and end, so they stay put here: move them on the Wave page.
-4. Tap the big **Chop to** button to put the slices on the pads. They go on the first empty pads after the one you chopped, running on past A16 into bank B (and so on, up to H16), so the pad itself and the sounds around it stay; the button names the pads ("Chop to A6–B4"), and **PAD BANK B** plays the ones on bank B. To start somewhere else, turn **Pads** (or Q-Link 4); the list says which pads already have a sound. Chop the same pad again and the new slices replace the ones you just made. **Put on** picks where they go: the pads, the pads and **Keys**, the pads and a **Phrase** that plays them in time, or **Files**.
+4. Tap the big **Chop to** button to put the slices on the pads. They go on the first empty pads after the one you chopped, running on past A16 into bank B (and so on, up to H16), so the pad itself and the sounds around it stay; the button names the pads ("Chop to A6–B4"), and **PAD BANK B** plays the ones on bank B. To start somewhere else, turn **Pads** (or Q-Link 4); the list says which pads already have a sound. Chop the same pad again and the new slices replace the ones you just made. **Put on** picks where they go: the **Pads**, **1 pad** (every slice on one pad, below), the pads and **Keys**, or **Files**. Turn **Phrase** on to get a clip that plays the slices in time as well (for a sound with a beat, on Pads or 1 pad).
 
 **Your chop stays with the sound.** Once you change the cuts (a method, a split, a cut moved, a live take), MPFree keeps them for that sound: pick another pad and come back, or open the project tomorrow, and the Chop page shows your slices as you left them, not a fresh chop. Keeping them isn't an edit, so **UNDO** leaves them be; they go on pads only when you tap **Chop to**.
+
+### One pad: a whole break on one pad
+
+{{shot: sample-chop-one-pad | The Chop page with Put on at 1 pad: the break's 15 slices are ready to go on pad A5 itself, and the button reads Slices on A5.}}
+
+With **Put on** at **1 pad**, every slice goes on one pad instead of a pad each, so a whole break plays from one pad and one track. The button reads **Slices on A5**: the pad you chopped becomes the sliced pad (turn **Pads** or Q-Link 4 to put it on another pad), and no other pad changes. Up to 128 slices fit on one pad.
+
+- A **hit** on the pad plays slice 1, or the one **Slice** picks on the Play page's **Pad** section ("3 of 15").
+- A **step lock** picks the slice that step plays: lock **Slice** on a step and that hit plays that slice. With **Phrase** on, the clip already has a Slice lock on every hit, so it plays the break back slice by slice, and you can move, mute or re-lock any hit.
+- On a **keyboard** (the Play page's keys, or a kit playing notes), C2 plays slice 1, C#2 slice 2 and so on up, each at the sound's own pitch.
+
+Each slice plays as it would on a pad of its own: from its cut to the next, with **Gate** or **One shot** as the pad is set (a **Loop** pad plays each slice as Gate). **UNDO** gives the pad back as it was.
+
+A sliced pad shows its slices everywhere: numbered lines on the **Wave** page (move them on the Chop page), "15 slices" under its name on the **Pads** tab, and the **Chop** page opens on its own slices, so you can move a cut and chop it again.
+
+#### Each slice its own sound
+
+{{shot: sample-play-slices | The Play page's Slices section on a break sliced in 8: slice 3 is picked and shaded, up 5 semitones with its own 2.4 kHz filter.}}
+
+The Play page's **Slices** section gives each slice of a sliced pad its own settings, on top of the pad's. Tap a slice on the picture (or turn **Slice**, Q-Link 1) to pick it, then set:
+
+- **Pitch**: up or down, in semitones (±24), so one snare can sit a fifth higher.
+- **Level**: louder or quieter, in dB.
+- **Reverse**: that slice alone backwards.
+- **Filter**: a low-pass of its own, in place of the pad's filter for that slice. **Off** (all the way up) uses the pad's.
+- **Fade out**: a fade at its end, to cut off a tail that runs into the next hit. **Region's** keeps the pad's own fade.
+- **Plays to**: **Its end** (the next cut), or **Sound end**, so the slice plays on through the rest of the break.
+
+Q-Links 2 to 4 turn the picked slice's pitch, level and filter. The **Slices** chip says how many slices have settings of their own ("8 · 1 set"). Each change is one **UNDO** step. Chopping the pad again onto itself keeps the settings of the slices that are still there, by number.
+
+### Pitch: a slice a note
+
+{{shot: sample-chop-pitch | Pitch chop: a sung line cut into a slice a note, at each change of a semitone or more and after its rest.}}
+
+**Pitch** cuts a melody into its notes: a sung line, a bass part or a lead, a slice for each note. It follows the sound's pitch and cuts where the note moves, and where a note starts after a rest.
+
+- The knob is the **Change**: how far the note has to move to count, in semitones, from **1 semi** (every note) up to an **Octave** (only big leaps, and notes after a rest). Turn it up when a slide or a wobbly note makes too many slices.
+- Vibrato and slides don't cut; notes shorter than 50 ms (a scoop into a note) don't count.
+- Drums and noise have no pitch to follow, so Pitch makes few cuts on them: use Transient there.
+- With **Snap** on, each cut moves to the nearest zero crossing, so a slice starts without a click.
+
+The first time you pick Pitch on a sound, MPFree listens through it in the background; on a long sound the slices show a moment later.
 
 ### Live: chop by playing
 

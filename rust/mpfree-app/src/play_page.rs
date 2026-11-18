@@ -1253,6 +1253,11 @@ impl PlayPage {
                 }
                 p if p == PadField::Attack as u16 => ("Attack".to_string(), format!("{v:.0} ms")),
                 p if p == PadField::Release as u16 => ("Release".to_string(), format!("{v:.0} ms")),
+                // Slices count from 1 on the screen, from 0 in the engine.
+                p if p == PadField::Slice as u16 => (
+                    "Slice".to_string(),
+                    format!("{}", v.round().max(0.0) as i64 + 1),
+                ),
                 p => (format!("Pad setting {p}"), format!("{v:.2}")),
             },
             OnTrack::Inst => (format!("Synth {}", addr.param), format!("{v:.2}")),
@@ -2485,7 +2490,7 @@ impl PlayPage {
             State::Playing => ("PLAYING", Tone::Good),
         };
         let bar_ticks = t.meter.bar_ticks().max(1);
-        let (start, bars) = match t.loop_range {
+        let (start, bars) = match t.playing_loop() {
             Some((a, b)) if b > a => (a, ((b - a) / bar_ticks).clamp(1, 8) as usize),
             _ => (0, 4),
         };

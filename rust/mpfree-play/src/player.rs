@@ -109,7 +109,7 @@ use std::ops::Range;
 
 use mpfree_param::ParamAddr;
 use mpfree_seq::mpfree_moves::Out as MoveOut;
-use mpfree_seq::{Cond, DestId, Lock, Note, Speed, Touch, MAX_TRACKS};
+use mpfree_seq::{ClipProgram, Cond, DestId, Lock, Note, Speed, Touch, MAX_TRACKS};
 use mpfree_transport::time::{Swing, Tick};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
@@ -196,6 +196,15 @@ pub enum Event {
     Unlock {
         addr: ParamAddr,
     },
+    /// A clip's program change as it starts (sequencer S5,
+    /// [`mpfree_seq::Clip::program`]): after the clip before it ends its
+    /// notes on that tick, before the clip's first note. For outside gear
+    /// (MIDI Out sends bank select, then the program change); the pads
+    /// take nothing from it.
+    Program {
+        program: u8,
+        bank: Option<u16>,
+    },
 }
 
 // A lock's value comes from a clip, which holds only finite values.
@@ -275,6 +284,8 @@ struct Start {
     /// Not a note: the track's clip starts here, so its last result
     /// (for PRE and NEI) starts again at "not played".
     reset: bool,
+    /// With `reset`, the program change the clip starting here sends.
+    program: Option<ClipProgram>,
     /// Decided before the span plays: the note plays.
     plays: bool,
     /// Its recorded pressure in the clip in `slot` (at `speed`), sent
@@ -437,6 +448,7 @@ const NO_START: Start = Start {
     ratchet: 1,
     len: 0.0,
     reset: false,
+    program: None,
     plays: true,
     touch: Touch::NONE,
     slot: 0,
@@ -485,6 +497,10 @@ pub struct Player {
     last: [bool; MAX_TRACKS],
     /// The clip each track played in the last span: its slot and start.
     seen: [Option<(usize, Tick)>; MAX_TRACKS],
+    /// The clip start each track sent its program change for (or found
+    /// none to send): its slot and start, as `seen`. A stop or a jump
+    /// forgets them, so the gear is set again when the music starts.
+    programmed: [Option<(usize, Tick)>; MAX_TRACKS],
     fill: bool,
     /// [`Player::anchor_dice`]: chance rolls count frames from `dice_from`,
     /// the frame the transport last started on.
@@ -610,6 +626,7 @@ impl Player {
             n_hits: 0,
             last: [false; MAX_TRACKS],
             seen: [None; MAX_TRACKS],
+            programmed: [None; MAX_TRACKS],
             fill: false,
             anchored: false,
             dice_from: 0,
@@ -797,9 +814,11 @@ impl Player {
                 self.unlock_where(m.offset, m.frame, out, false, |_| true);
                 self.moves_pos = [None; MAX_TRACKS + 1];
                 // A loop jump keeps the last results, so a PRE chain
-                // carries round the loop.
+                // carries round the loop, and the programs sent: the clips
+                // starting on its far side send their own.
                 if !matches!(m.mark, Mark::Looped { .. }) {
                     self.last = [false; MAX_TRACKS];
+                    self.programmed = [None; MAX_TRACKS];
                 }
             }
             Mark::Panic => {
@@ -918,6 +937,21 @@ impl Player {
             // Notes ending on or before this tick end first, and ratchet
             // hits on or before it play.
             self.advance(view, s.tick, true, first, span, out);
+            // A clip starting here sends its program change, after the
+            // notes ending here and before its own.
+            if let Some(p) = s.program {
+                let (offset, frame) = place(span, s.tick);
+                out.send(Out {
+                    offset,
+                    frame,
+                    track: s.track,
+                    dest: s.dest,
+                    event: Event::Program {
+                        program: p.program,
+                        bank: p.bank,
+                    },
+                });
+            }
             if s.reset || !s.plays {
                 continue;
             }
@@ -1006,13 +1040,12 @@ impl Player {
         // Song mode: a track with no clip launched plays its
         // placements.
         let song = view.song && playing.is_none();
-        let region = if song {
-            track
-                .region_at(ticks.start)
-                .map(|r| (r.clip.slot, r.clip.start))
+        let placed = if song {
+            track.region_at(ticks.start)
         } else {
             None
         };
+        let region = placed.map(|r| (r.clip.slot, r.clip.start));
         // A clip started since the last span (a launch, not a cue):
         // the track's last result starts again.
         let now = playing.map(|(c, _, start)| (c.slot, start)).or(region);
@@ -1021,6 +1054,13 @@ impl Player {
                 *seen = now;
                 *last = false;
             }
+        }
+        // Its program change, once: on its start, or here when it
+        // started before (the music starting, a jump into it).
+        let clip = playing.map(|(c, _, _)| c).or(placed.map(|r| &r.clip));
+        if let (Some(key), Some(c)) = (now, clip) {
+            let at = key.1.clamp(ticks.start, ticks.end - 1);
+            self.program_start(i, key, c.program, at, track.dest, false);
         }
         // A track gone quiet lets its locks and ratchets go at once.
         if muted || (playing.is_none() && region.is_none()) {
@@ -1072,16 +1112,29 @@ impl Player {
         // The old clip's locks end on the switch, before the new one's.
         self.end_locks(at, i as u16, track.dest);
         // The new clip's last result starts at "not played", on the
-        // switch, after the old clip's notes before it.
-        self.push_start(Start {
-            tick: at,
-            track: i as u16,
-            reset: true,
-            ..NO_START
-        });
+        // switch, after the old clip's notes before it; its program change
+        // goes there too.
         let playing = self.switches.playing_from(view, i);
+        let key = playing.map(|(c, _, start)| (c.slot, start));
+        match (key, playing) {
+            (Some(key), Some((c, _, _))) => {
+                self.program_start(i, key, c.program, at, track.dest, true);
+            }
+            _ => {
+                self.push_start(Start {
+                    tick: at,
+                    track: i as u16,
+                    reset: true,
+                    ..NO_START
+                });
+                // Stopped: the next clip sends its program again.
+                if let Some(p) = self.programmed.get_mut(i) {
+                    *p = None;
+                }
+            }
+        }
         if let Some(seen) = self.seen.get_mut(i) {
-            *seen = playing.map(|(c, _, start)| (c.slot, start));
+            *seen = key;
         }
         if view.armed == Some(i) {
             self.replacing = None;
@@ -1247,6 +1300,38 @@ impl Player {
         }
         self.starts[self.n_starts] = s;
         self.n_starts += 1;
+    }
+
+    /// Track `i`'s clip `key` (its slot and the tick it started on) starts
+    /// on `tick`: its reset there (with `reset`, always; else only to carry
+    /// a program change), and its `program` change the first time this
+    /// start is seen.
+    fn program_start(
+        &mut self,
+        i: usize,
+        key: (usize, Tick),
+        program: Option<ClipProgram>,
+        tick: Tick,
+        dest: DestId,
+        reset: bool,
+    ) {
+        let program = match self.programmed.get_mut(i) {
+            Some(p) if *p != Some(key) => {
+                *p = Some(key);
+                program
+            }
+            _ => None,
+        };
+        if reset || program.is_some() {
+            self.push_start(Start {
+                tick,
+                track: i as u16,
+                dest,
+                reset: true,
+                program,
+                ..NO_START
+            });
+        }
     }
 
     /// Queue the later hits of `starts[i]`, a ratchet whose first hit
@@ -1694,12 +1779,8 @@ impl Player {
             }
             let part = ticks.start.max(r.clip.start)..ticks.end.min(r.end);
             if ticks.contains(&r.clip.start) {
-                self.push_start(Start {
-                    tick: r.clip.start,
-                    track: t,
-                    reset: true,
-                    ..NO_START
-                });
+                let key = (r.clip.slot, r.clip.start);
+                self.program_start(i, key, r.clip.program, r.clip.start, track.dest, true);
             }
             let end = cut.map_or(r.end, |c| c.min(r.end));
             let clip = &r.clip;
@@ -1843,6 +1924,7 @@ impl Player {
                     ratchet,
                     len: n.len as f32,
                     reset: false,
+                    program: None,
                     plays: true,
                     touch: n.src.touch,
                     slot: clip.slot,

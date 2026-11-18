@@ -68,6 +68,7 @@ pub fn own(p: &Pad, field: PadField) -> f32 {
         PadField::Attack => p.amp.attack_ms,
         PadField::Decay => p.amp.decay_ms,
         PadField::Release => p.amp.release_ms,
+        PadField::Slice => f32::from(p.slice),
     }
 }
 

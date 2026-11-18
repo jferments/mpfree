@@ -1,8 +1,8 @@
-//! mpfree-midi-preview: WORKSTATION ONLY. Draws the MIDI, Routing, Sync,
-//! CV and Monitor sections inside the mixer's real I/O view as PNG files, with a sample
-//! rig (the 5-pin jacks, a USB keyboard, a drum machine the project names
-//! but that isn't plugged in), so the screens can be looked at before they
-//! go on the MPC. Opens no device.
+//! mpfree-midi-preview: WORKSTATION ONLY. Draws the MIDI, Routing, Learn,
+//! Controller, Sync, CV and Monitor sections inside the mixer's real I/O
+//! view as PNG files, with a sample rig (the 5-pin jacks, a USB keyboard,
+//! a drum machine the project names but that isn't plugged in), so the
+//! screens can be looked at before they go on the MPC. Opens no device.
 //!
 //! Options: `--out DIR` (default `~/mpfree-work/midi-preview-<UTC>`; must be
 //! a new or empty folder).
@@ -15,9 +15,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use mpfree_midi::blocks::Blocks;
 use mpfree_midi::learn::Takeover;
 use mpfree_midi::setup::{
-    ClockOut, IgnoreSet, Ignored, Kept, ThruRoute, TrackOut, TrackRoute, DIN_NAME,
+    ClockOut, IgnoreSet, Ignored, Kept, PortInput, ThruRoute, TrackOut, TrackRoute, DIN_NAME,
 };
 use mpfree_midi_ui::{sample, sections, Built, IoModel, LearnLive};
 use mpfree_mixer_ui::sample::{name, play, screen, song_mixer};
@@ -62,6 +63,7 @@ fn shots() -> Vec<Shot> {
         p.sending = p.has_out;
     }
     built.live.cv_volts = [2.0, 5.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0];
+    let moving = sample::moving_cv(built.clone());
     // Four learned controls: a knob, an endless encoder, a key, and one on
     // the drum machine that isn't plugged in.
     for (text, name) in [
@@ -116,6 +118,17 @@ fn shots() -> Vec<Shot> {
             hi_text: "On".into(),
         },
     ];
+    // MIDI Follow on the keyboard, with the four knobs it learned.
+    learn.setup.follow = mpfree_midi::setup::FollowSetup {
+        on: true,
+        port: "Keystep 37".into(),
+        knobs: vec![74, 71, 76, 77],
+        ..Default::default()
+    };
+    // Learn knobs listening, two found.
+    let mut knobs = learn.clone();
+    knobs.setup.follow.knobs = vec![74, 71];
+    knobs.live.follow_learning = Some(2);
     let mut learning = learn.clone();
     learning.live.learning = Some("Volume (Bass)".into());
     learning.asks.learn_again = Some(1);
@@ -136,7 +149,12 @@ fn shots() -> Vec<Shot> {
             .with(Ignored::Clock, true)
             .with(Ignored::Aftertouch, true);
         p.delay_tenths = 65;
+        p.clock_divide = 2;
+        p.clock_nudge_tenths = 10;
     });
+    if let Some(p) = din_port.live.ports.iter_mut().find(|p| p.name == DIN_NAME) {
+        p.clock_measured = Some((41.7, 0.3));
+    }
     // Routing: the drum machine on the 5-pin jacks' channel 10 plays
     // Drums, and the keyboard (Learn only) plays Bass on channel 2 and Lead
     // on channel 1, whichever track is armed.
@@ -145,6 +163,7 @@ fn shots() -> Vec<Shot> {
         port: port.into(),
         channel: Some(channel),
         track,
+        blocks: Blocks::NONE,
     };
     routing.setup.routes = vec![
         route(DIN_NAME, 9, 0),
@@ -160,8 +179,19 @@ fn shots() -> Vec<Shot> {
             from: "Keystep 37".into(),
             channel: Some(c),
             to: DIN_NAME.into(),
+            blocks: Blocks::NONE,
         })
         .collect();
+    // Blocks: the keyboard plays the armed track an octave down, softer
+    // playing louder, its program changes dropped; the drum machine's
+    // route to Drums keeps its notes between C1 and B2.
+    let mut blocks = routing.clone();
+    blocks.setup.set_port("Keystep 37", |p| {
+        p.input = PortInput::Both;
+        p.blocks = Blocks::parse("filter program; transpose -12; velocity soft 20 127")
+            .expect("three blocks");
+    });
+    blocks.setup.routes[0].blocks = Blocks::parse("split 24 47").expect("a block");
     vec![
         Shot {
             name: "io-midi",
@@ -209,9 +239,20 @@ fn shots() -> Vec<Shot> {
             pick: Some("Keystep 37 → MIDI out"),
         },
         Shot {
+            name: "io-routing-blocks",
+            about: "Routing: the keyboard's Armed track square picked: its notes reach the armed track through three blocks (Filter, Transpose, Velocity), shown as tiles with + Block; the last line waits for a note",
+            section: 2,
+            model: blocks,
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: None,
+            pick: Some("Keystep 37 → Armed"),
+        },
+        Shot {
             name: "io-sync",
             about: "Sync: tempo from the 5-pin jacks with clock arriving, following, and clock out per port; following not built yet",
-            section: 4,
+            section: 5,
             model: rig.clone(),
             wheel: 0,
             taps: vec![],
@@ -222,7 +263,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "io-cv",
             about: "CV: the eight outputs with job, track and main setting; CV out not built yet",
-            section: 5,
+            section: 6,
             model: rig,
             wheel: 0,
             taps: vec![],
@@ -243,7 +284,7 @@ fn shots() -> Vec<Shot> {
         },
         Shot {
             name: "io-learn",
-            about: "Learn (board 8, without MIDI Follow): what the controllers move, where each stands and where it is kept; the drum machine's key kept for every project, one on a device that isn't plugged in; the keyboard's filter knob picked, with its range in hertz, Pick up and Project",
+            about: "Learn (board 8): what the controllers move, where each stands and where it is kept; the drum machine's key kept for every project, one on a device that isn't plugged in; the keyboard's filter knob picked, with its range in hertz, Pick up and Project; MIDI Follow on the keyboard with the four knobs it learned",
             section: 3,
             model: learn.clone(),
             wheel: 0,
@@ -251,6 +292,17 @@ fn shots() -> Vec<Shot> {
             at: 1,
             open: None,
             pick: None,
+        },
+        Shot {
+            name: "io-learn-transport",
+            about: "Learn with Transport and tempo tapped: the transport's eight beside MIDI Follow, whose Learn knobs has found two of the keyboard's knobs",
+            section: 3,
+            model: knobs,
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: None,
+            pick: Some("Transport and tempo"),
         },
         Shot {
             name: "io-learn-learning",
@@ -264,9 +316,31 @@ fn shots() -> Vec<Shot> {
             pick: Some("Keystep 37 CC 16"),
         },
         Shot {
+            name: "io-controller",
+            about: "Controller (powerhouse 3.10): controller mode on, the pads and Q-Links playing a Juno-X on the 5-pin jacks' channel 3, its kit notes and poly pressure, the first bank's CCs named by its profile",
+            section: 4,
+            model: sample::controlling(sample::rig()),
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: None,
+            pick: None,
+        },
+        Shot {
+            name: "io-controller-off",
+            about: "Controller with controller mode off and nothing picked; MIDI out is off, so the banner says it would send nothing",
+            section: 4,
+            model: sample::rig(),
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: None,
+            pick: None,
+        },
+        Shot {
             name: "io-cv-built",
             about: "CV once CV out is built: each output's volts now",
-            section: 5,
+            section: 6,
             model: built.clone(),
             wheel: 0,
             taps: vec![],
@@ -275,9 +349,20 @@ fn shots() -> Vec<Shot> {
             pick: None,
         },
         Shot {
+            name: "io-cv-moving",
+            about: "CV with an envelope of the Bass track's keys on CV 2 and two LFOs: a Drift on the song's bar snapped to A minor pentatonic, and a free sine",
+            section: 6,
+            model: moving,
+            wheel: 3,
+            taps: vec![],
+            at: 1,
+            open: None,
+            pick: None,
+        },
+        Shot {
             name: "io-monitor",
             about: "Monitor: a keyboard's chord and mod wheel coming in, the Bass track playing out of the 5-pin jacks, clock arriving with its tempo, each line with where it went; lights per port and channel, in on top and out below",
-            section: 6,
+            section: 7,
             model: sample::monitored(built.clone()),
             wheel: 0,
             taps: vec![],
@@ -288,7 +373,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "io-monitor-channel",
             about: "Monitor after a tap on the keyboard's channel 1 light: only what came in on it",
-            section: 6,
+            section: 7,
             model: sample::monitored(built.clone()),
             wheel: 0,
             // y -1: the keyboard's channel 1 light, in.
@@ -300,7 +385,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "io-monitor-now",
             about: "Monitor, Now view, 45 s into a session: the keyboard's chord held with E4 pressed harder, the controls that moved (the learned knob says what it moves), program and bank, the clock from the 5-pin jacks with a pulse lost, bend and pressure, and the Bass track's C2 stuck on MIDI out",
-            section: 6,
+            section: 7,
             model: sample::held_now(built),
             wheel: 0,
             // y -2: the Now half of List | Now.
@@ -333,7 +418,7 @@ fn shots() -> Vec<Shot> {
         },
         Shot {
             name: "io-midi-port-din",
-            about: "The 5-pin jacks' page with MIDI out on: clock and aftertouch ignored, the gear 6.5 ms late so MIDI out sends that early, the newest message in and out, test note and All notes off",
+            about: "The 5-pin jacks' page with MIDI out on: clock and aftertouch ignored, its clock at half the tempo and nudged 1 ms later, with what was measured as it left, the gear 6.5 ms late so MIDI out sends that early, the newest message in and out, test note and All notes off",
             section: 1,
             model: din_port,
             wheel: 0,

@@ -63,7 +63,11 @@ pub enum Ctl {
     Clear,
     /// A loop that plays.
     Feedback,
+    /// Overdubs: 0 Add, 1 Replace, 2 Once.
+    Overdubs(u8),
     Reverse,
+    /// Speed: 0 half, 1 as recorded, 2 double ([`SPEED_CHOICES`]).
+    Speed(u8),
     Half,
     Double,
     Undo,
@@ -80,6 +84,17 @@ pub enum Ctl {
     Then(u8),
 }
 
+/// The Overdubs choices: on top until Overdub again, in place of what was
+/// there, or one pass.
+pub const OVERDUB_CHOICES: [&str; 3] = ["Add", "Replace", "Once"];
+
+/// The Speed choices, like tape: half (an octave down, twice the bars),
+/// as recorded, double.
+pub const SPEED_CHOICES: [&str; 3] = ["½×", "1×", "2×"];
+
+/// Merge's width at the strip's right end.
+const MERGE_W: i32 = 100;
+
 /// The Length choices' bars (None: free).
 pub const BAR_CHOICES: [Option<u32>; 5] = [None, Some(1), Some(2), Some(4), Some(8)];
 
@@ -94,6 +109,8 @@ pub enum LoopAct {
     /// Loop `n`'s speaker: mute it or let it play, without picking it. A
     /// muted loop stays silent when PLAY starts the others (Jay, 13 Nov).
     Mute(usize),
+    /// Loop `n`'s S: solo it or let go, without picking it.
+    Solo(usize),
     /// Clear loop `n`: every layer, the first pass too (its ring held, or
     /// Clear on the picked loop).
     Clear(usize),
@@ -101,6 +118,9 @@ pub enum LoopAct {
     Level(usize, f32),
     /// The deck's Pads switch: the pads as loop keys, or playing again.
     PadKeys,
+    /// Capture (the deck's, What you played's): the last bars heard
+    /// become a loop.
+    Capture,
     /// Show layer `k` (play order) on the Q-Links: it is picked.
     Layer(usize),
     /// A control of layer `k` (play order).
@@ -370,7 +390,11 @@ pub enum Strip {
     Plays {
         /// Feedback: the share of the older layers kept a pass, 0.5 to 1.
         feedback: f32,
+        /// How overdubs record: 0 Add, 1 Replace, 2 Once.
+        overdubs: u8,
         reversed: bool,
+        /// Into [`SPEED_CHOICES`]: 0 half, 1 as recorded, 2 double.
+        speed: u8,
         /// "4 bars".
         length: String,
         /// ½, × 2 and Reverse work (the loop plays, nothing renders).
@@ -405,17 +429,42 @@ impl Default for Strip {
     }
 }
 
-/// While the picked loop has no layers: what the lanes' space shows.
+/// While the picked loop has no layers, the lanes' space shows What you
+/// played: the input's last 8 bars, and what Capture takes from it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EmptyLook {
-    /// "INPUT · LINE IN".
+    /// "WHAT YOU PLAYED · LINE IN".
     pub title: String,
     /// What a tap on its ring or REC does now.
     pub says: String,
     /// "REC starts on bar 13", while it waits for its bar.
     pub waits: Option<String>,
-    /// The input's level over the last few seconds, oldest first, 0 to 1.
+    /// What the looper heard over the last 8 bars, oldest first, 0 to 1.
     pub input: Vec<f32>,
+    /// The bar lines over it: each bar's number and where it starts, 0
+    /// to 1.
+    pub bars: Vec<(i64, f32)>,
+    /// What Capture takes now: where it starts and ends (0 to 1), and
+    /// its button's words ("Capture bars 10 and 11"); None when there is
+    /// nothing to take.
+    pub take: Option<(f32, f32, String)>,
+}
+
+/// What you played's Capture button, over the bars it takes, in the
+/// lanes' space `lanes`.
+pub fn empty_capture_rect(lanes: Rect, e: &EmptyLook) -> Option<Rect> {
+    let (a, b, _) = e.take.as_ref()?;
+    let w = empty_wave_rect(lanes);
+    let mid = w.x + ((a + b) / 2.0 * w.w as f32) as i32;
+    let bw = 250.min(w.w);
+    let x = (mid - bw / 2).clamp(w.x, w.right() - bw);
+    Some(Rect::new(x, w.y + w.h / 2 - 22, bw, 44))
+}
+
+/// Where What you played draws the input, in the lanes' space.
+fn empty_wave_rect(lanes: Rect) -> Rect {
+    let inner = lanes.inset_xy(14, 10);
+    Rect::new(inner.x, inner.y + 22, inner.w, inner.h - 22 - 46)
 }
 
 /// Send's choices: title and what it does, and whether it is built.
@@ -790,51 +839,72 @@ impl LoopEditor {
                     "Feedback".to_string(),
                     true,
                 ));
-                let x2 = x + 92;
+                let xo = x + 84;
+                for (i, l) in OVERDUB_CHOICES.iter().enumerate() {
+                    out.push((
+                        Ctl::Overdubs(i as u8),
+                        Rect::new(xo + 3 + i as i32 * 70, y + 3, 66, CTRL_H - 6),
+                        l.to_string(),
+                        true,
+                    ));
+                }
+                let x2 = xo + OVERDUB_CHOICES.len() as i32 * 70 + 26;
                 let rev = if *reversed { "Reverse on" } else { "Reverse" };
                 out.push((
                     Ctl::Reverse,
-                    Rect::new(x2, y, 124, CTRL_H),
+                    Rect::new(x2, y, 104, CTRL_H),
                     rev.to_string(),
                     *edits,
                 ));
-                let x3 = x2 + 140;
+                let xs = x2 + 104 + 16;
+                for (i, l) in SPEED_CHOICES.iter().enumerate() {
+                    out.push((
+                        Ctl::Speed(i as u8),
+                        Rect::new(xs + 3 + i as i32 * 44, y + 3, 40, CTRL_H - 6),
+                        format!("Speed {l}"),
+                        *edits,
+                    ));
+                }
+                let x3 = xs + SPEED_CHOICES.len() as i32 * 44 + 16;
                 out.push((
                     Ctl::Half,
-                    Rect::new(x3, y, 50, CTRL_H),
+                    Rect::new(x3, y, 46, CTRL_H),
                     format!("½ ({length})"),
                     *edits,
                 ));
                 out.push((
                     Ctl::Double,
-                    Rect::new(x3 + 50 + 76, y, 50, CTRL_H),
+                    Rect::new(x3 + 46 + 60, y, 46, CTRL_H),
                     format!("× 2 ({length})"),
                     *edits,
                 ));
-                let x4 = x3 + 50 + 76 + 50 + 30;
+                let x4 = x3 + 46 + 60 + 46 + 28;
                 out.push((
                     Ctl::Undo,
-                    Rect::new(x4, y, 52, CTRL_H),
+                    Rect::new(x4, y, 48, CTRL_H),
                     "Undo".to_string(),
                     *undo,
                 ));
-                let shown = LoopEditor::chips_shown(chips.len());
+                // The chips take the room between Undo and Redo, Redo
+                // sitting clear of Merge.
+                let room = (s.right() - MERGE_W - 12 - 48 - 6) - (x4 + 54) - 6;
+                let shown = LoopEditor::chips_shown(chips.len(), room);
                 let cw = (shown as i32 * 17).max(17) + 6;
                 out.push((
                     Ctl::History,
-                    Rect::new(x4 + 58, y, cw, CTRL_H),
+                    Rect::new(x4 + 54, y, cw, CTRL_H),
                     "History".to_string(),
                     !chips.is_empty(),
                 ));
                 out.push((
                     Ctl::Redo,
-                    Rect::new(x4 + 58 + cw + 6, y, 52, CTRL_H),
+                    Rect::new(x4 + 54 + cw + 6, y, 48, CTRL_H),
                     "Redo".to_string(),
                     *redo,
                 ));
                 out.push((
                     Ctl::Merge,
-                    Rect::new(s.right() - 120, y, 120, CTRL_H),
+                    Rect::new(s.right() - MERGE_W, y, MERGE_W, CTRL_H),
                     merge.0.clone(),
                     merge.1,
                 ));
@@ -883,9 +953,10 @@ impl LoopEditor {
         out
     }
 
-    /// How many history chips fit (the newest are shown).
-    fn chips_shown(n: usize) -> usize {
-        n.min(18)
+    /// How many history chips fit in `room` pixels (the newest are
+    /// shown).
+    fn chips_shown(n: usize, room: i32) -> usize {
+        n.min((room.max(0) / 17) as usize)
     }
 
     /// The layer being dragged (play order) and where its card is now:
@@ -1449,17 +1520,56 @@ impl LoopEditor {
             t.text_dim,
             &e.title,
         );
-        // The input's level over the last few seconds, now at the right.
-        let w = Rect::new(inner.x, inner.y + 22, inner.w, inner.h - 22 - 46);
+        // What Capture takes, behind the input.
+        let w = empty_wave_rect(lanes);
+        let at = |f: f32| w.x + (f.clamp(0.0, 1.0) * w.w as f32) as i32;
+        if let Some((a, b, _)) = &e.take {
+            let (a, b) = (at(*a), at(*b));
+            cx.canvas.fill_rect(
+                Rect::new(a, w.y, (b - a).max(1), w.h),
+                t.accent.mix(t.bg, 0.78),
+            );
+        }
+        // The bar lines and their numbers.
+        for (bar, f) in &e.bars {
+            let x = at(*f);
+            cx.canvas.fill_rect(Rect::new(x, w.y, 1, w.h), t.outline);
+            cx.text(
+                FontId::Bold,
+                12.0,
+                Rect::new(x + 5, w.y + 2, 40, 14),
+                Align::Left,
+                t.text_dim,
+                &bar.to_string(),
+            );
+        }
+        // The input's level over the last 8 bars, now at the right.
         let n = e.input.len().max(1);
         let mid = w.y + w.h / 2;
         let half = w.h as f32 / 2.0 - 2.0;
+        let cw = (w.w / n as i32).max(2);
         for (i, v) in e.input.iter().enumerate() {
             let x = w.x + (i as f32 / n as f32 * w.w as f32) as i32;
             let h = ((v.clamp(0.0, 1.0) * half) as i32).max(1);
             cx.canvas.fill_rect(
-                Rect::new(x, mid - h, 2, 2 * h),
+                Rect::new(x, mid - h, (cw - 1).max(1), 2 * h),
                 self.colour.mix(t.surface, 0.2),
+            );
+        }
+        if let Some(b) = empty_capture_rect(lanes, e) {
+            let label = e.take.as_ref().map_or("", |t| t.2.as_str());
+            cx.canvas.fill_round_rect(b, 10, t.accent);
+            let tw = cx.measure(FontId::Bold, 15.0, label);
+            let icon_x = b.x + (b.w - tw - 26) / 2;
+            let icon = Rect::new(icon_x, b.y + b.h / 2 - 9, 18, 18);
+            crate::looper_deck::capture_icon(cx, icon, t.on_accent);
+            cx.text(
+                FontId::Bold,
+                15.0,
+                Rect::new(icon.right() + 8, b.y, tw + 4, b.h),
+                Align::Left,
+                t.on_accent,
+                label,
             );
         }
         cx.canvas
@@ -1575,13 +1685,28 @@ impl LoopEditor {
         match &self.strip {
             Strip::Plays {
                 feedback,
+                overdubs,
                 reversed,
+                speed,
                 length,
                 chips,
                 merge,
                 ..
             } => {
                 group_label(cx, s.x, s.y, "FEEDBACK");
+                let od: Vec<(Rect, &str, bool)> = ctls
+                    .iter()
+                    .filter_map(|c| match c.0 {
+                        Ctl::Overdubs(i) => Some((c.1, c.2.as_str(), i == *overdubs)),
+                        _ => None,
+                    })
+                    .collect();
+                if let Some(first) = od.first() {
+                    cx.canvas
+                        .fill_rect(Rect::new(first.0.x - 17, s.y + 2, 1, s.h - 4), t.outline);
+                    group_label(cx, first.0.x - 3, s.y, "OVERDUBS");
+                }
+                segments(cx, &od);
                 if let Some(k) = rect(Ctl::Feedback) {
                     let v = (feedback - 0.5) / 0.5;
                     let lit = if *feedback < 0.999 { t.warn } else { t.accent };
@@ -1614,6 +1739,17 @@ impl LoopEditor {
                         "Reverse",
                     );
                 }
+                let sp: Vec<(Rect, &str, bool)> = ctls
+                    .iter()
+                    .filter_map(|c| match c.0 {
+                        Ctl::Speed(i) => Some((c.1, SPEED_CHOICES[i as usize], i == *speed)),
+                        _ => None,
+                    })
+                    .collect();
+                if let Some(first) = sp.first() {
+                    group_label(cx, first.0.x - 3, s.y, "SPEED");
+                }
+                segments(cx, &sp);
                 if let (Some(h), Some(d)) = (rect(Ctl::Half), rect(Ctl::Double)) {
                     group_label(cx, h.x, s.y, "LENGTH");
                     button(cx, h, "½", on(Ctl::Half), false, 17.0);
@@ -1636,7 +1772,7 @@ impl LoopEditor {
                     group_label(cx, u.x, s.y, "HISTORY");
                     button(cx, u, "Undo", on(Ctl::Undo), false, 14.0);
                     button(cx, re, "Redo", on(Ctl::Redo), false, 14.0);
-                    let shown = LoopEditor::chips_shown(chips.len());
+                    let shown = LoopEditor::chips_shown(chips.len(), hi.w - 6);
                     let first = chips.len() - shown;
                     for (i, c) in chips[first..].iter().enumerate() {
                         let b = Rect::new(hi.x + 3 + i as i32 * 17, hi.y + 8, 12, hi.h - 16);
@@ -1796,7 +1932,9 @@ impl Widget for LoopEditor {
         for (c, b, label, on) in self.strip_controls(p.strip) {
             let t = match c {
                 Ctl::Feedback => Target::drag("feedback", 0, label, b),
+                Ctl::Overdubs(i) => Target::tap("overdubs", i as usize, label, b),
                 Ctl::Reverse => Target::tap("reverse", 0, label, b),
+                Ctl::Speed(i) => Target::tap("speed", i as usize, label, b),
                 Ctl::Half => Target::tap("half", 0, label, b),
                 Ctl::Double => Target::tap("double", 0, label, b),
                 Ctl::Undo => Target::tap("undo", 0, label, b),
@@ -1813,6 +1951,8 @@ impl Widget for LoopEditor {
                 (Strip::Records { source, .. }, Ctl::Source(i)) => *source == i,
                 (Strip::Records { bars, .. }, Ctl::Bars(i)) => *bars == i,
                 (Strip::Records { then, .. }, Ctl::Then(i)) => *then == i,
+                (Strip::Plays { overdubs, .. }, Ctl::Overdubs(i)) => *overdubs == i,
+                (Strip::Plays { speed, .. }, Ctl::Speed(i)) => *speed == i,
                 _ => false,
             };
             out.push(t.disabled_if(!on || chosen));
@@ -1835,6 +1975,11 @@ impl Widget for LoopEditor {
             return out;
         }
         if self.layers.is_empty() {
+            if let Some(e) = &self.empty {
+                if let (Some(b), Some((_, _, label))) = (empty_capture_rect(p.lanes, e), &e.take) {
+                    out.push(Target::tap("capture", 0, label.clone(), b));
+                }
+            }
             return out;
         }
         if let Some(ticks) = self.trim_ticks.filter(|&t| t > 0) {
@@ -2018,6 +2163,14 @@ impl Widget for LoopEditor {
                     return None;
                 }
                 if self.layers.is_empty() {
+                    let capture = self
+                        .empty
+                        .as_ref()
+                        .and_then(|e| empty_capture_rect(p.lanes, e));
+                    if capture.is_some_and(|b| b.contains(x, y)) {
+                        self.acts.push(LoopAct::Capture);
+                        return Some(EventKind::Tab(4));
+                    }
                     return None;
                 }
                 if let Some(ticks) = self.trim_ticks.filter(|&t| t > 0) {
@@ -2307,7 +2460,9 @@ mod tests {
     fn plays() -> Strip {
         Strip::Plays {
             feedback: 1.0,
+            overdubs: 0,
             reversed: false,
+            speed: 1,
             length: "4 bars".into(),
             edits: true,
             chips: vec![
@@ -2511,6 +2666,36 @@ mod tests {
             acts(&mut ui),
             vec![LoopAct::Strip(Ctl::Bars(3)), LoopAct::Strip(Ctl::Monitor)]
         );
+        // What you played: Capture over the bars it takes, while it has
+        // some to take.
+        let e = ui.get_mut::<LoopEditor>(EDITOR).unwrap();
+        e.empty = Some(EmptyLook {
+            title: "WHAT YOU PLAYED · LINE IN".into(),
+            bars: vec![(9, 0.1), (10, 0.35), (11, 0.6), (12, 0.85)],
+            take: Some((0.35, 0.85, "Capture bars 10 and 11".into())),
+            ..EmptyLook::default()
+        });
+        let ts = e.targets(r);
+        let c = ts.iter().find(|t| t.id == "capture").expect("Capture");
+        assert_eq!(c.label, "Capture bars 10 and 11");
+        assert!(
+            c.rect.h >= 44 && c.rect.w >= 200,
+            "a fingertip: {:?}",
+            c.rect
+        );
+        let lanes = LoopEditor::parts(r).lanes;
+        let mid = lanes.x + 14 + (0.6 * (lanes.w - 28) as f32) as i32;
+        assert!(
+            (c.rect.x + c.rect.w / 2 - mid).abs() <= 2,
+            "over bars 10 and 11"
+        );
+        let (x, y) = (c.rect.x + 10, c.rect.y + 10);
+        tap(&mut ui, x, y);
+        assert_eq!(acts(&mut ui), vec![LoopAct::Capture]);
+        let e = ui.get_mut::<LoopEditor>(EDITOR).unwrap();
+        e.empty.as_mut().unwrap().take = None;
+        assert!(!e.targets(r).iter().any(|t| t.id == "capture"));
+        ui.paint(&mut mpfree_ui::SoftCanvas::new(1280, 800));
     }
 
     #[test]

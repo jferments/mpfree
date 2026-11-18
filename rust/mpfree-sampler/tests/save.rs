@@ -174,6 +174,8 @@ fn busy_kit() -> Project {
     p.add_chop_set(chop.unwrap()).unwrap();
     p.add_chop_set(ChopSet::grid("Even", &c, 4).unwrap())
         .unwrap();
+    let notes = ChopSet::from_markers("Notes", &c, ChopMode::Pitch, [6_000, 13_500]);
+    p.add_chop_set(notes.unwrap()).unwrap();
     // The Chop tab's slices on the break, kept as last left.
     let kept = ChopSet::from_markers(KEPT_CHOP, &a, ChopMode::Beat, [2_000, 9_000, 15_500]);
     p.keep_chop(kept.unwrap()).unwrap();

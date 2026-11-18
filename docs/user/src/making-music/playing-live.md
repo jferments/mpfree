@@ -63,7 +63,7 @@ Hold **ERASE** and tap a row's name to delete that sound's steps from the patter
 
 **Solo.** Hold **TRACK MUTE** and tap a pad: that track plays alone and the others go quiet. The soloed pad is lit blue, and the tracks it silences are red, like muted ones. Tap more pads while you hold it to solo more tracks, and tap a soloed pad to let go of its solo. A quick press of TRACK MUTE still turns the mute keys on and off; after a hold with a pad tapped, the pads are left as they were before you pressed it. A solo lands at once or on the line, just like a mute, and the project saves it. A soloed track's name on the Clips grid is outlined.
 
-Mutes and solos aren't undo steps, and with **Rec song** on they go into the song: a track muted for a stretch leaves a gap there. The kit's pads (**SHIFT + TRACK MUTE**) always mute at once and have no solo yet.
+Mutes and solos aren't undo steps, and with **Rec song** on they go into the song: a track muted for a stretch leaves a gap there. The kit's pads (**SHIFT + TRACK MUTE**) work the same way: in Perform a pad's mute waits for the line with the tracks' (WAITING names it, "Pad 3 at 9.1"), and holding **TRACK MUTE** over them solos a pad of the kit. The soloed pad lights blue and the pads it silences go red; letting go of TRACK MUTE leaves the pads on the kit. The project saves the kit's pad solos too.
 
 ## 16 Levels
 

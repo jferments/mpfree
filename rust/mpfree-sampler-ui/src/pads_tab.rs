@@ -193,9 +193,9 @@ pub struct PadsState {
     /// The clip each pad of the bank launches, if any (none yet: the time
     /// engine doesn't launch clips from pads).
     pub clips: Vec<Option<String>>,
-    /// The effects on the picked pad's mixer strip, in order; None when the
-    /// pad has no strip of its own (only the first 16 pads have one). The
-    /// app fills it from the mixer.
+    /// The effects on the picked pad's mixer strip, in order: none for a
+    /// pad with no strip of its own yet (its + FX lends it one). None
+    /// until the app has heard from the mixer.
     pub effects: Option<Vec<String>>,
     /// Each of the kit's banks A to H: its pads with a sound, pad 1 of the
     /// bank the lowest bit.
@@ -327,6 +327,9 @@ pub fn sound_region(old: Option<&Region>, id: SourceId, frames: u64) -> Region {
             start: 0,
             end: frames,
             sustain_loop: None,
+            // Another sound's slices don't fit this one.
+            slices: Vec::new(),
+            slice_sets: Vec::new(),
             ..o.clone()
         },
         None => Region {
@@ -344,6 +347,8 @@ pub fn sound_region(old: Option<&Region>, id: SourceId, frames: u64) -> Region {
             grain: GrainParams::default(),
             grain_mode: GrainMode::Cloud,
             warp: None,
+            slices: Vec::new(),
+            slice_sets: Vec::new(),
         },
     };
     (r.fade_in, r.fade_out) = (Fade::NONE, Fade::NONE);
@@ -760,11 +765,16 @@ impl PadsTab {
     }
 }
 
-/// "3 layers · Loop", for the map.
+/// "3 layers · Loop", for the map; a sliced pad's slices first ("16
+/// slices · One shot").
 fn pad_detail(p: &Pad) -> String {
     let mode = p.layers.first().map_or("", |l| mode_label(l.region.mode));
+    let mode = match crate::play_tab::slices(p) {
+        0 | 1 => mode.to_string(),
+        n => format!("{n} slices · {mode}"),
+    };
     match p.layers.len() {
-        1 => mode.to_string(),
+        1 => mode,
         n => format!("{n} layers · {mode}"),
     }
 }
