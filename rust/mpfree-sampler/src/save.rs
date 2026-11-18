@@ -625,6 +625,9 @@ const FILTERS: &[(&str, FilterKind)] = &[
     ("low-pass", FilterKind::LowPass),
     ("high-pass", FilterKind::HighPass),
     ("band-pass", FilterKind::BandPass),
+    ("notch", FilterKind::Notch),
+    ("ladder", FilterKind::Ladder),
+    ("vowel", FilterKind::Vowel),
 ];
 const PRESSURE: &[(&str, PressureTarget)] = &[
     ("off", PressureTarget::Off),
@@ -1087,12 +1090,14 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
             cutoff_hz,
             resonance,
             env_octaves,
+            drive_db,
         } = filter;
         f.word("kind", kind, FILTERS);
         f.num("poles", poles);
         f.num("cutoff_hz", cutoff_hz);
         f.num("resonance", resonance);
         f.num("env_octaves", env_octaves);
+        f.num("drive_db", drive_db);
     });
     f.scope("filter_env", |f| visit_envelope(f, filter_env));
     f.num("vel_to_level", vel_to_level);

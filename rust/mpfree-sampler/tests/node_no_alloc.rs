@@ -92,6 +92,7 @@ fn kit() -> Project {
                 cutoff_hz: 1_500.0 + 100.0 * i as f32,
                 resonance: 0.2,
                 env_octaves: 0.0,
+                drive_db: 0.0,
             };
         }
         pad.keys = (i == 2).then_some(Keys {

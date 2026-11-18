@@ -68,6 +68,7 @@
 use std::sync::Arc;
 
 use mpfree_analysis::note_name;
+use mpfree_sampler::dsp::{vowel_name, MAX_DRIVE_DB};
 use mpfree_sampler::model::{
     Ahdsr, Filter, FilterKind, Keys, LayerSelect, Levels, LfoShape, LfoTarget, ModelError, Pad,
     PadLfo, PadsPlay, PlayMode, PressureTarget, Project, SliceSet, Source, SourceId, GLIDE_MS,
@@ -234,6 +235,8 @@ pub enum Row {
     Filter,
     Cutoff,
     Resonance,
+    /// How hard the Ladder is driven, 0 to 24 dB (sampler R5.6).
+    Drive,
     /// How far the filter envelope moves the cutoff, in octaves.
     FilterEnv,
     /// The layer picked's: its sound, one of the kit's.
@@ -293,7 +296,7 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 67] = [
+    pub const ALL: [Row; 68] = [
         Row::Polyphony,
         Row::MuteGroup,
         Row::Chokes,
@@ -327,6 +330,7 @@ impl Row {
         Row::Filter,
         Row::Cutoff,
         Row::Resonance,
+        Row::Drive,
         Row::FilterEnv,
         Row::Sound,
         Row::VelLow,
@@ -398,6 +402,7 @@ impl Row {
             Row::Filter => "Filter",
             Row::Cutoff => "Cutoff",
             Row::Resonance => "Resonance",
+            Row::Drive => "Drive",
             Row::FilterEnv => "Env depth",
             Row::Sound => "Sound",
             Row::VelLow => "Vel low",
@@ -564,6 +569,7 @@ impl Section {
                 Row::Filter,
                 Row::Cutoff,
                 Row::Resonance,
+                Row::Drive,
                 Row::FilterEnv,
                 Row::EnvAttack,
                 Row::EnvDecay,
@@ -668,8 +674,9 @@ const SELECTS: [LayerSelect; 3] = [LayerSelect::All, LayerSelect::Cycle, LayerSe
 /// What the kit's pads play, as the Pads play row steps through them.
 const PADS_PLAY: [&str; 3] = ["Their sounds", "Notes", "16 Levels"];
 
-/// The filter types the Filter row steps through.
-const FILTERS: [(FilterKind, u8); 7] = [
+/// The filter types the Filter row steps through (the Ladder is 4-pole and
+/// the Vowel two formants, whatever the poles).
+const FILTERS: [(FilterKind, u8); 11] = [
     (FilterKind::Off, 2),
     (FilterKind::LowPass, 2),
     (FilterKind::LowPass, 4),
@@ -677,6 +684,10 @@ const FILTERS: [(FilterKind, u8); 7] = [
     (FilterKind::HighPass, 4),
     (FilterKind::BandPass, 2),
     (FilterKind::BandPass, 4),
+    (FilterKind::Notch, 2),
+    (FilterKind::Notch, 4),
+    (FilterKind::Ladder, 4),
+    (FilterKind::Vowel, 2),
 ];
 
 const PRESSURE: [PressureTarget; 8] = [
@@ -1533,6 +1544,15 @@ impl PlayTab {
                     percent(p.filter.resonance),
                     octaves_text(p.filter.env_octaves)
                 );
+                match p.filter.kind {
+                    FilterKind::Ladder if p.filter.drive_db > 0.0 => {
+                        f.caption += &format!(" · drive {:.1} dB", p.filter.drive_db)
+                    }
+                    FilterKind::Vowel => {
+                        f.caption += &format!(" · \"{}\"", vowel_name(p.filter.cutoff_hz))
+                    }
+                    _ => {}
+                }
             }
         }
         if let Some(z) = ui.get_mut::<KeyZones>(KEYS) {
@@ -1683,6 +1703,7 @@ impl PlayTab {
                     },
                     // A third of an octave a step, 20 Hz to 20 kHz.
                     Row::Cutoff => knob(30, false),
+                    Row::Drive => knob(MAX_DRIVE_DB as u32, false),
                     Row::FilterEnv => knob((2.0 * ENV_OCTAVES / 0.25) as u32, true),
                     Row::Vintage => Look::Toggle(p.vintage),
                     Row::Keys => Look::Toggle(p.keys.is_some()),
@@ -1805,7 +1826,12 @@ impl PlayTab {
                     390,
                     vec![
                         vec![it(Row::Filter).labelled()],
-                        vec![it(Row::Cutoff), it(Row::Resonance), it(Row::FilterEnv)],
+                        vec![
+                            it(Row::Cutoff),
+                            it(Row::Resonance),
+                            it(Row::Drive),
+                            it(Row::FilterEnv),
+                        ],
                     ],
                 )
                 .note(if p.filter.kind == FilterKind::Off {
@@ -2509,6 +2535,11 @@ fn turned(p: &Pad, layer: usize, row: Row, delta: i32, fine: bool) -> Option<Pad
             p.filter.cutoff_hz = hz.round().clamp(CUTOFF_RANGE_HZ.0, CUTOFF_RANGE_HZ.1);
         }
         Row::Resonance => p.filter.resonance = frac(p.filter.resonance, 0.0),
+        // Half a dB a detent, a tenth with SHIFT.
+        Row::Drive => {
+            let step = if fine { 0.1 } else { 0.5 };
+            p.filter.drive_db = round_to(p.filter.drive_db + d * step, 0.1).clamp(0.0, MAX_DRIVE_DB)
+        }
         Row::FilterEnv => {
             let step = if fine { 0.01 } else { 0.05 };
             p.filter.env_octaves =
@@ -2567,6 +2598,7 @@ fn faint_why(st: &PlayState, row: Row) -> Option<&'static str> {
     match row {
         Row::Cutoff
         | Row::Resonance
+        | Row::Drive
         | Row::FilterEnv
         | Row::EnvAttack
         | Row::EnvDecay
@@ -2575,6 +2607,9 @@ fn faint_why(st: &PlayState, row: Row) -> Option<&'static str> {
             if p.filter.kind == FilterKind::Off =>
         {
             Some("The filter is off: pick one in the Filter row")
+        }
+        Row::Drive if p.filter.kind != FilterKind::Ladder => {
+            Some("Drive is the Ladder's: pick Ladder in the Filter row")
         }
         Row::LowKey | Row::HighKey | Row::RootKey if p.keys.is_none() => {
             Some("The pad is no keygroup: turn Keys on")
@@ -2647,6 +2682,7 @@ fn knob_pos(st: &PlayState, layer: usize, row: Row) -> f32 {
             (p.filter.cutoff_hz / lo).ln() / (hi / lo).ln()
         }
         Row::Resonance => p.filter.resonance,
+        Row::Drive => p.filter.drive_db / MAX_DRIVE_DB,
         Row::FilterEnv => (p.filter.env_octaves + ENV_OCTAVES) / (2.0 * ENV_OCTAVES),
         Row::Level => level(p.level_db),
         Row::Pan => (p.pan + 1.0) / 2.0,
@@ -2753,9 +2789,10 @@ fn section_text(st: &PlayState, s: Section) -> String {
                 percent(p.amp.sustain)
             )
         }
-        // "LP2 · 2.40 kHz".
+        // "LP2 · 2.40 kHz", "Vowel · ah".
         Section::Filter => match p.filter.kind {
             FilterKind::Off => "Off".into(),
+            FilterKind::Vowel => format!("Vowel · {}", vowel_name(p.filter.cutoff_hz)),
             _ => format!(
                 "{} · {}",
                 filter_label(&p.filter)
@@ -3184,6 +3221,9 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
         Row::Resonance => {
             p.filter.resonance = round_to(p.filter.resonance + d * 0.05, 0.05).clamp(0.0, 1.0)
         }
+        Row::Drive => {
+            p.filter.drive_db = round_to(p.filter.drive_db + d * 3.0, 3.0).clamp(0.0, MAX_DRIVE_DB)
+        }
         Row::FilterEnv => {
             p.filter.env_octaves =
                 round_to(p.filter.env_octaves + d * 0.25, 0.25).clamp(-ENV_OCTAVES, ENV_OCTAVES);
@@ -3350,8 +3390,16 @@ pub fn value_text(p: &Pad, row: Row) -> String {
         Row::Sustain => format!("{} %", percent(p.amp.sustain)),
         Row::Release => ms_text(p.amp.release_ms),
         Row::Filter => filter_label(&p.filter),
+        // A vowel's cutoff picks the vowel: "1.00 kHz · ah".
+        Row::Cutoff if p.filter.kind == FilterKind::Vowel => format!(
+            "{} · {}",
+            hz_text(p.filter.cutoff_hz),
+            vowel_name(p.filter.cutoff_hz)
+        ),
         Row::Cutoff => hz_text(p.filter.cutoff_hz),
         Row::Resonance => format!("{} %", percent(p.filter.resonance)),
+        Row::Drive if p.filter.drive_db == 0.0 => "Off".into(),
+        Row::Drive => format!("{:.1} dB", p.filter.drive_db),
         Row::FilterEnv => octaves_text(p.filter.env_octaves),
         Row::EnvAttack => ms_text(p.filter_env.attack_ms),
         Row::EnvDecay => ms_text(p.filter_env.decay_ms),
@@ -3603,6 +3651,9 @@ pub fn filter_label(f: &Filter) -> String {
         FilterKind::LowPass => "LP",
         FilterKind::HighPass => "HP",
         FilterKind::BandPass => "BP",
+        FilterKind::Notch => "Notch",
+        FilterKind::Ladder => return "Ladder".into(),
+        FilterKind::Vowel => return "Vowel".into(),
     };
     format!("{kind} {}-pole", if f.poles >= 4 { 4 } else { 2 })
 }
@@ -3745,6 +3796,7 @@ pub fn describe(a: &Pad, b: &Pad) -> String {
         Row::Filter,
         Row::Cutoff,
         Row::Resonance,
+        Row::Drive,
         Row::FilterEnv,
         Row::EnvAttack,
         Row::EnvDecay,

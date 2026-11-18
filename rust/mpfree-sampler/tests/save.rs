@@ -99,6 +99,7 @@ fn busy_kit() -> Project {
         cutoff_hz: 1234.5,
         resonance: 0.45,
         env_octaves: -1.5,
+        drive_db: 0.0,
     };
     pad.filter_env = Ahdsr {
         attack_ms: 1.0,
@@ -587,4 +588,54 @@ fn mono_legato_and_glide_save_and_open() {
         .map(|l| format!("{l}\n"))
         .collect();
     assert_eq!(read(&old).pad(5).unwrap().mono, Mono::default());
+}
+
+#[test]
+fn the_new_filters_and_drive_save_and_open() {
+    let s = noise(3_000, 2, 7, "Pad");
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    for (i, (kind, poles, drive_db)) in [
+        (FilterKind::Notch, 4, 0.0),
+        (FilterKind::Ladder, 4, 12.5),
+        (FilterKind::Vowel, 2, 0.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut pd = Pad::new("Pad", Layer::new(Region::whole(&s)));
+        pd.filter = Filter {
+            kind,
+            poles,
+            cutoff_hz: 900.0,
+            resonance: 0.6,
+            env_octaves: 1.0,
+            drive_db,
+        };
+        p.set_pad(i, Some(pd), None).unwrap();
+    }
+    let (text, files) = save(&[("Pads", &p)], 0);
+    for line in [
+        "kit.0.pad.0.filter.kind = notch",
+        "kit.0.pad.1.filter.kind = ladder",
+        "kit.0.pad.1.filter.drive_db = 12.5",
+        "kit.0.pad.2.filter.kind = vowel",
+    ] {
+        assert!(text.lines().any(|l| l == line), "{line} in\n{text}");
+    }
+    let read = |text: &str| {
+        from_text(text, &mut |f| wav::read("x", &files[f]))
+            .unwrap()
+            .kits
+            .remove(0)
+            .1
+    };
+    assert_same(&read(&text), &p);
+    // An older file has no Drive: none.
+    let old: String = text
+        .lines()
+        .filter(|l| !l.contains(".drive_db"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert_eq!(read(&old).pad(1).unwrap().filter.drive_db, 0.0);
 }
