@@ -179,6 +179,9 @@ pub enum LoopAction {
     /// Loop `n`'s mute turned over without picking it, or the picked
     /// loop's (None): a muted loop stays silent when PLAY starts.
     ToggleMute(Option<usize>),
+    /// Loop `n`'s solo turned over without picking it: while any loop
+    /// with sound is soloed only the soloed ones play.
+    ToggleSolo(usize),
     /// Loop `n`'s level (0 to 2, 1 as recorded), without picking it: the
     /// Looper tab's Q-Links and a ring held while the wheel turns.
     Level(usize, f32),
@@ -1531,7 +1534,7 @@ impl LoopHost {
             }
             for n in 0..MAX_LOOPS {
                 self.looper.select_loop(n);
-                self.looper.command(Command::Clear);
+                self.looper.command(Command::Forget);
             }
             self.looper.select_loop(0);
             self.picked = 0;
@@ -1752,6 +1755,9 @@ impl LoopHost {
             (Command::Undo, Phase::Playing) if s.layers > 1 => {
                 format!("Undo: layer {} fades out", s.layers)
             }
+            (Command::Undo, Phase::Empty) if s.kept => {
+                "Undo: the cleared loop comes back".to_string()
+            }
             (Command::Undo, _) => {
                 "Undo: nothing to undo (Clear removes the first pass)".to_string()
             }
@@ -1760,7 +1766,22 @@ impl LoopHost {
             }
             (Command::Redo, _) => "Redo: nothing to redo".to_string(),
             (Command::Clear, Phase::Empty) => "Clear: nothing to clear".to_string(),
-            (Command::Clear, _) => format!("Clear: the loop fades out ({} layers)", s.layers),
+            (Command::Clear, _) => format!(
+                "Clear: the loop fades out ({} layers); UNDO brings it back",
+                s.layers
+            ),
+            (Command::Forget, Phase::Empty) => "Forget: nothing kept".to_string(),
+            (Command::Forget, _) => {
+                format!("Forget: the loop fades out ({} layers), no undo", s.layers)
+            }
+            (Command::Solo(o), _) => {
+                if o {
+                    "soloed: the loops not soloed go quiet".to_string()
+                } else {
+                    "solo off".to_string()
+                }
+            }
+            (Command::SetOverdubs(o), _) => format!("overdubs: {}", overdubs_text(o)),
             (Command::Mute(m), _) => {
                 if m {
                     "muted".to_string()
@@ -1970,6 +1991,44 @@ impl LoopHost {
             "looper: loop {} level {}",
             n + 1,
             crate::looper_tab::level_text(level)
+        )
+    }
+
+    /// Loop `n`'s solo turned over, leaving the picked loop picked. An
+    /// empty loop has nothing to solo.
+    pub fn toggle_solo(&mut self, n: usize) -> String {
+        let picked = self.picked;
+        let n = n.min(MAX_LOOPS - 1);
+        let Some(s) = self.looper.loop_status(n) else {
+            return format!("looper: loop {}: not there", n + 1);
+        };
+        if s.phase == Phase::Empty {
+            return format!("looper: loop {}: empty, nothing to solo", n + 1);
+        }
+        let on = !s.solo;
+        // Pick it, solo, pick the old one back: all three or none.
+        let need = if n == picked { 1 } else { 3 };
+        if self.looper.room() < need {
+            return format!(
+                "looper: loop {} solo: NOT done, the command queue is full",
+                n + 1
+            );
+        }
+        if n != picked {
+            self.looper.select_loop(n);
+        }
+        self.looper.command(Command::Solo(on));
+        if n != picked {
+            self.looper.select_loop(picked);
+        }
+        format!(
+            "looper: loop {} {}",
+            n + 1,
+            if on {
+                "soloed: the loops not soloed go quiet"
+            } else {
+                "solo off"
+            }
         )
     }
 
@@ -2711,6 +2770,14 @@ pub fn bars_text(b: Option<u32>) -> String {
     }
 }
 
+/// How a loop's overdubs record, as the log says it.
+pub fn overdubs_text(o: mpfree_looper::Overdubs) -> &'static str {
+    match o {
+        mpfree_looper::Overdubs::Add => "Add (each pass adds a layer until you stop it)",
+        mpfree_looper::Overdubs::Once => "Once (one pass, then back to playing)",
+    }
+}
+
 fn ticks_text(ticks: i64, beats_per_bar: u32) -> String {
     let bar = 960 * i64::from(beats_per_bar.max(1));
     if ticks % bar == 0 {
@@ -3088,6 +3155,8 @@ mod tests {
         let mut run = |h: &mut LoopHost, periods: u64| {
             for _ in 0..periods {
                 assert!(t.process(PERIOD as u32, &mut b));
+                // The pads play on: an overdub of silence leaves no layer.
+                h.take_pads(&[0.1; PERIOD], &[0.1; PERIOD]);
                 let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
                 h.period(&b, &mut l, &mut r);
             }
@@ -3143,6 +3212,8 @@ mod tests {
         let mut run = |h: &mut LoopHost, periods: u64| {
             for _ in 0..periods {
                 assert!(t.process(PERIOD as u32, &mut b));
+                // The pads play on: an overdub of silence leaves no layer.
+                h.take_pads(&[0.1; PERIOD], &[0.1; PERIOD]);
                 let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
                 h.period(&b, &mut l, &mut r);
             }
@@ -3190,6 +3261,8 @@ mod tests {
         let mut run = |h: &mut LoopHost, periods: u64| {
             for _ in 0..periods {
                 assert!(t.process(PERIOD as u32, &mut b));
+                // The pads play on: an overdub of silence leaves no layer.
+                h.take_pads(&[0.1; PERIOD], &[0.1; PERIOD]);
                 let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
                 h.period(&b, &mut l, &mut r);
             }
@@ -3227,7 +3300,10 @@ mod tests {
         assert_eq!(v.status.layers, 1);
         let only = v.layers[0].unwrap();
         let line = h.layer_command(only.id, LayerCommand::Delete);
-        assert_eq!(line, "looper: Clear: the loop fades out (1 layers)");
+        assert_eq!(
+            line,
+            "looper: Clear: the loop fades out (1 layers); UNDO brings it back"
+        );
         run(&mut h, 20);
         let v = h.view(120.0);
         assert_eq!(v.loops[0].phase, Phase::Empty);

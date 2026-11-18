@@ -4459,6 +4459,10 @@ fn looper_action(
             out.note(&looper.toggle_mute(n));
             Vec::new()
         }
+        looping::LoopAction::ToggleSolo(n) => {
+            out.note(&looper.toggle_solo(n));
+            Vec::new()
+        }
         looping::LoopAction::Level(n, level) => {
             out.note(&looper.set_level(n, level));
             Vec::new()

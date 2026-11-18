@@ -19,8 +19,8 @@ use crate::looper_tab::{
 };
 use crate::looping::{LoopSource, LoopWave, LooperView};
 use mpfree_looper::{
-    After, Command, Edit, History, LayerCommand, LayerInfo, Phase, Status, Step, MAX_LAYERS,
-    MAX_LOOPS, MAX_SEAM,
+    After, Command, Edit, History, LayerCommand, LayerInfo, Overdubs, Phase, Status, Step,
+    MAX_LAYERS, MAX_LOOPS, MAX_SEAM,
 };
 use mpfree_time_ui::view::{LoopPlace, TransportInfo};
 use mpfree_transport::State;
@@ -578,6 +578,12 @@ pub fn strip_command(c: Ctl, s: &Status) -> Option<Command> {
             After::Play
         } else {
             After::Overdub
+        })),
+        // The next overdub's way, even while one records.
+        Ctl::Overdubs(i) => Some(Command::SetOverdubs(if i == 0 {
+            Overdubs::Add
+        } else {
+            Overdubs::Once
         })),
         _ => None,
     }
@@ -1352,7 +1358,18 @@ impl LooperPage {
                             ),
                         }
                     }
-                    RingState::Off => (l.position, bars, ("off".to_string(), String::new())),
+                    RingState::Off => (
+                        l.position,
+                        bars,
+                        (
+                            "off".to_string(),
+                            if l.solo_out {
+                                "by solo".to_string()
+                            } else {
+                                String::new()
+                            },
+                        ),
+                    ),
                     _ => {
                         let at = ((l.position * bars as f32) as usize).min(bars.saturating_sub(1));
                         (
@@ -1387,9 +1404,13 @@ impl LooperPage {
                     meter: (meter * 20.0).round() / 20.0,
                     foot: if state.has_sound() {
                         String::new()
+                    } else if l.kept && state == RingState::Empty {
+                        // Cleared: UNDO on it brings it back.
+                        "Cleared · UNDO".to_string()
                     } else {
                         foot.clone()
                     },
+                    solo: l.solo,
                 }
             })
             .collect();
@@ -1531,6 +1552,10 @@ impl LooperPage {
             };
             Strip::Plays {
                 feedback: s.fade_old,
+                overdubs: match s.overdubs {
+                    Overdubs::Add => 0,
+                    Overdubs::Once => 1,
+                },
                 reversed,
                 length: bars_word(bars_of(s.ticks, v.beats_per_bar)),
                 edits: editable(s),
@@ -1555,6 +1580,10 @@ impl LooperPage {
             title: format!("INPUT · {}", source.to_uppercase()),
             says: match s.phase {
                 Phase::Armed => format!("Loop {} records from the next bar line", n + 1),
+                _ if s.kept => format!(
+                    "Loop {} cleared: UNDO brings it back, or tap its ring to record",
+                    n + 1
+                ),
                 _ => format!("Tap Loop {}'s ring or press REC: it {records}", n + 1),
             },
             waits: match s.phase {
@@ -2328,6 +2357,15 @@ mod tests {
             Some(Command::SetAfter(After::Overdub))
         );
         assert_eq!(strip_command(Ctl::Undo, &s), None, "UNDO's own");
+        // Overdubs: Add, or Once (one pass, then back to playing).
+        assert_eq!(
+            strip_command(Ctl::Overdubs(1), &s),
+            Some(Command::SetOverdubs(Overdubs::Once))
+        );
+        assert_eq!(
+            strip_command(Ctl::Overdubs(0), &s),
+            Some(Command::SetOverdubs(Overdubs::Add))
+        );
         // One layer has nothing to merge, and says so.
         s.layers = 1;
         assert_eq!(strip_command(Ctl::Merge, &s), None);

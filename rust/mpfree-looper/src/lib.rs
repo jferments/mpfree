@@ -145,6 +145,9 @@ const STEP: f32 = 1.0 / FADE as f32;
 pub const HANDOFF_FADE: usize = 32;
 /// A table entry with no block.
 const NONE: u16 = u16::MAX;
+/// An overdub whose input never went over this (-60 dB) took silence, and
+/// leaves no layer ([`Overdubs`]).
+pub const SILENT: f32 = 0.001;
 static SILENCE: f32 = 0.0;
 
 /// What the looper's buttons and screen ask for. Each applies to the
@@ -164,9 +167,21 @@ pub enum Command {
     Undo,
     /// Bring back the overdub undone last.
     Redo,
-    /// Fade out and forget the loop.
+    /// Fade out the loop, every layer and the first pass. Undo on the
+    /// empty loop brings it back as it was, fading in, until the loop
+    /// records, loads or takes a layer again, or another loop needs the
+    /// memory it holds ([`Status::kept`]); the gauge counts that memory
+    /// as free ([`Looper::memory`]).
     Clear,
+    /// As Clear, with no undo: the loop and what Undo could bring back go
+    /// for good (a project closing).
+    Forget,
     Mute(bool),
+    /// While any loop with sound is soloed, only soloed loops play (each
+    /// fading out and in as a mute does). Clear lets go of the solo.
+    Solo(bool),
+    /// How the loop's next overdubs record (see [`Overdubs`]).
+    SetOverdubs(Overdubs),
     /// Bars in the next first pass; None records until Record again.
     SetBars(Option<u32>),
     /// What the loop does when its first pass ends (see [`After`]).
@@ -414,6 +429,17 @@ pub enum After {
     Overdub,
 }
 
+/// How an overdub records: the Looper tab's Overdubs setting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Overdubs {
+    /// On top, for as long as it records (until Overdub again).
+    #[default]
+    Add,
+    /// One pass, then the loop plays by itself: the overdub ends where it
+    /// started, its end crossfading into its start.
+    Once,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
     #[default]
@@ -510,12 +536,21 @@ pub struct Status {
     /// STOP cut the first pass short: the frames of it that hold sound.
     /// The rest, to `frames`, is silent. None otherwise.
     pub cut: Option<usize>,
+    /// Cleared, and Undo can bring it back ([`Command::Clear`]).
+    pub kept: bool,
+    /// Soloed ([`Command::Solo`]).
+    pub solo: bool,
+    /// Silent because another loop is soloed.
+    pub solo_out: bool,
+    /// How its overdubs record ([`Command::SetOverdubs`]).
+    pub overdubs: Overdubs,
 }
 
 /// The memory gauge: all the loops together.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Memory {
-    /// Frames held by every loop, in whole blocks.
+    /// Frames held by every loop, in whole blocks (not counting cleared
+    /// loops kept for Undo, whose memory goes when it is needed).
     pub used: usize,
     /// Frames the loops share.
     pub capacity: usize,
@@ -820,6 +855,13 @@ struct Store {
     free: Vec<u16>,
     n_free: usize,
     n_blocks: usize,
+    /// Each loop as it was when cleared, for Undo ([`Command::Clear`]):
+    /// the slots whose blocks it keeps (none: nothing kept), and when it
+    /// was kept (the oldest goes first when the memory is needed).
+    kept: Vec<Loop>,
+    kept_mask: [u16; MAX_LOOPS],
+    kept_at: [u64; MAX_LOOPS],
+    kept_seq: u64,
 }
 
 impl Store {
@@ -831,6 +873,10 @@ impl Store {
             free: (0..n_blocks as u16).rev().collect(),
             n_free: n_blocks,
             n_blocks,
+            kept: vec![Loop::NEW; MAX_LOOPS],
+            kept_mask: [0; MAX_LOOPS],
+            kept_at: [0; MAX_LOOPS],
+            kept_seq: 0,
         }
     }
 
@@ -898,10 +944,19 @@ impl Store {
 
     /// Give a slot blocks until it holds `n`. False, with what it got, if
     /// the memory ran out.
+    /// A loop kept for Undo gives its blocks up first, the oldest kept
+    /// first. Inline, since a first pass asks on every frame and nearly
+    /// always holds them already.
+    #[inline]
     fn grow(&mut self, lp: usize, slot: usize, n: usize) -> bool {
+        (self.held[lp][slot] as usize) >= n || self.grow_to(lp, slot, n)
+    }
+
+    #[inline(never)]
+    fn grow_to(&mut self, lp: usize, slot: usize, n: usize) -> bool {
         let t = self.table(lp, slot);
         while (self.held[lp][slot] as usize) < n {
-            if self.n_free == 0 {
+            if self.n_free == 0 && !self.drop_oldest_kept(lp) {
                 return false;
             }
             self.n_free -= 1;
@@ -937,6 +992,73 @@ impl Store {
 
     fn blocks(&self, lp: usize) -> usize {
         self.held[lp].iter().map(|&h| h as usize).sum()
+    }
+
+    /// Keep loop `lp` as it is (cleared, faded out) for Undo, with the
+    /// blocks its slots hold. Copies, never allocates.
+    fn keep(&mut self, lp: usize, l: &Loop) {
+        self.drop_kept(lp);
+        self.kept[lp].clone_from(l);
+        let mut mask = 0u16;
+        for k in 0..MAX_LAYERS {
+            if self.held[lp][k] > 0 {
+                mask |= 1 << k;
+            }
+        }
+        self.kept_seq += 1;
+        self.kept_mask[lp] = mask;
+        self.kept_at[lp] = self.kept_seq;
+    }
+
+    /// Loop `lp` is kept for Undo.
+    fn has_kept(&self, lp: usize) -> bool {
+        self.kept_mask[lp] != 0
+    }
+
+    /// Slot `k` of loop `lp` holds blocks the loop kept for Undo needs.
+    fn kept_holds(&self, lp: usize, k: usize) -> bool {
+        self.kept_mask[lp] & (1 << k) != 0
+    }
+
+    /// Forget loop `lp`'s kept loop: its blocks go back.
+    fn drop_kept(&mut self, lp: usize) {
+        let mask = std::mem::take(&mut self.kept_mask[lp]);
+        for k in 0..MAX_LAYERS {
+            if mask & (1 << k) != 0 {
+                self.release(lp, k);
+            }
+        }
+    }
+
+    /// Forget the oldest kept loop but `lp`'s. False if there is none.
+    #[cold]
+    fn drop_oldest_kept(&mut self, lp: usize) -> bool {
+        let oldest = (0..MAX_LOOPS)
+            .filter(|&n| n != lp && self.kept_mask[n] != 0)
+            .min_by_key(|&n| self.kept_at[n]);
+        match oldest {
+            Some(n) => {
+                self.drop_kept(n);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Blocks loop `lp` keeps for Undo.
+    fn kept_blocks_of(&self, lp: usize) -> usize {
+        (0..MAX_LAYERS)
+            .filter(|&k| self.kept_holds(lp, k))
+            .map(|k| self.held[lp][k] as usize)
+            .sum()
+    }
+
+    /// Blocks free, or free once the kept loops give theirs up.
+    fn available(&self) -> usize {
+        self.n_free
+            + (0..MAX_LOOPS)
+                .map(|lp| self.kept_blocks_of(lp))
+                .sum::<usize>()
     }
 }
 
@@ -1128,9 +1250,25 @@ struct Loop {
     od_fade: usize,
     od_stop_in: Option<u32>,
     od_out: usize,
+    /// Frames of the writer's fade-out (an overdub of one pass ends with
+    /// its fade-in's length, so its end and start crossfade).
+    od_out_len: usize,
+    /// How overdubs record, and whether this one ends after a pass.
+    overdubs: Overdubs,
+    od_once: bool,
+    /// The loudest input sample this overdub took, and whether Fade old
+    /// turned the older layers down during it: an overdub of silence that
+    /// faded nothing leaves no layer.
+    od_peak: f32,
+    od_faded: bool,
     // Gains.
     gain: f32,
     clearing: bool,
+    /// The clear fading out keeps the loop for Undo ([`Command::Clear`]).
+    keep_clear: bool,
+    /// Soloed, and silent because another loop is.
+    solo: bool,
+    solo_out: bool,
     pos: f64,
     /// A jump's crossfade: frames left, and where the old place is now.
     jump: usize,
@@ -1282,8 +1420,16 @@ impl Loop {
         od_fade: FADE,
         od_stop_in: None,
         od_out: 0,
+        od_out_len: FADE,
+        overdubs: Overdubs::Add,
+        od_once: false,
+        od_peak: 0.0,
+        od_faded: false,
         gain: 0.0,
         clearing: false,
+        keep_clear: false,
+        solo: false,
+        solo_out: false,
         pos: 0.0,
         jump: 0,
         jump_pos: 0.0,
@@ -1500,7 +1646,7 @@ impl Looper {
             merging: l.merging.then(|| l.mg_done as f32 / l.len.max(1) as f32),
             resampling: l.resample && (l.first_in_progress() || l.phase == Phase::Armed),
             capacity: self.capacity,
-            used: self.store.blocks(n) * BLOCK,
+            used: (self.store.blocks(n) - self.store.kept_blocks_of(n)) * BLOCK,
             version: l.version,
             printed: l.print_on > 0.0,
             fitting: l
@@ -1518,6 +1664,10 @@ impl Looper {
                 0
             },
             cut: (l.len > 0 && l.cut < l.len).then_some(l.cut),
+            kept: self.store.has_kept(n),
+            solo: l.solo,
+            solo_out: l.solo_out,
+            overdubs: l.overdubs,
         })
     }
 
@@ -1631,11 +1781,13 @@ impl Looper {
         if !ok {
             return Err(f);
         }
-        l.reclaim(&mut self.store, n);
         let need = f.layers.len() * blocks_for(f.frames);
-        if self.store.n_free < need {
+        if self.store.available() < need {
             return Err(f);
         }
+        // A loaded loop takes the place of one kept for Undo.
+        self.store.drop_kept(n);
+        l.reclaim(&mut self.store, n);
         for (k, y) in f.layers.iter().enumerate() {
             self.store.grow(n, k, blocks_for(f.frames));
             let mut s = Slot {
@@ -1768,7 +1920,7 @@ impl Looper {
     /// The memory gauge.
     pub fn memory(&self) -> Memory {
         Memory {
-            used: (self.store.n_blocks - self.store.n_free) * BLOCK,
+            used: (self.store.n_blocks - self.store.available()) * BLOCK,
             capacity: self.capacity,
         }
     }
@@ -1866,6 +2018,11 @@ impl Looper {
             .min(out.len() / 2);
         self.now = block.start_frame;
         self.apply_commands();
+        // A loop with sound soloed: the others fall silent.
+        let any_solo = self.loops.iter().any(|l| l.solo && l.phase != Phase::Empty);
+        for l in &mut self.loops {
+            l.solo_out = any_solo && !l.solo;
+        }
         let end = block.start_frame + n as u64;
         for k in 0..self.loops.len() {
             if self.loops[k].adding {
@@ -2117,12 +2274,12 @@ impl Looper {
                 }
             }
             Queued::Copy { from, id, to, keep } => self.start_copy(from, id, to, keep),
-            Queued::Loop(Command::Clear) if self.loops[s].loading => {
+            Queued::Loop(Command::Clear | Command::Forget) if self.loops[s].loading => {
                 // Called off: the memory goes back (below).
                 self.loops[s].loading = false;
             }
             // A copy in or out of the loop is called off, then it clears.
-            Queued::Loop(Command::Clear)
+            Queued::Loop(Command::Clear | Command::Forget)
                 if self.loops[s].adding || self.loops[s].lend.is_some() =>
             {
                 self.call_off_copy(s);
@@ -2212,9 +2369,11 @@ impl Looper {
         let (len, ticks, origin, layers) = (src.len, src.len_ticks, src.origin, src.layers());
         let l = &mut self.loops[to];
         let k = if empty {
+            // The layer's loop takes the place of one kept for Undo.
+            self.store.drop_kept(to);
             l.reclaim(&mut self.store, to);
             let need = blocks_for(len);
-            (self.store.n_free >= need && self.store.grow(to, 0, need)).then_some(0)
+            (self.store.available() >= need && self.store.grow(to, 0, need)).then_some(0)
         } else {
             l.free_slot(&mut self.store, to)
         };
@@ -2446,6 +2605,7 @@ impl Loop {
     fn reclaim(&self, store: &mut Store, me: usize) {
         for k in 0..MAX_LAYERS {
             let in_use = self.holds(k)
+                || store.kept_holds(me, k)
                 || (k == 0 && self.first_in_progress())
                 || (self.od_open && self.od_layer == k)
                 || (self.merging && self.mg_slot == k)
@@ -2640,6 +2800,8 @@ impl Loop {
         if !matches!(
             c,
             Command::Mute(_)
+                | Command::Solo(_)
+                | Command::SetOverdubs(_)
                 | Command::SetBars(_)
                 | Command::SetAfter(_)
                 | Command::SetFadeOld(_)
@@ -2677,31 +2839,16 @@ impl Loop {
             },
             Command::Undo => match self.phase {
                 Phase::Armed | Phase::Recording => self.abort(stats),
-                Phase::Overdubbing | Phase::Playing if self.od_open => {
-                    // Throw the overdub away (recording, or still writing
-                    // its tail): it stops and fades out, and Redo can
-                    // bring back what it recorded.
-                    self.od_open = false;
-                    self.phase = Phase::Playing;
-                    let slot = self.od_layer;
-                    if !self.drop_empty_overdub() {
-                        if let Some(i) = self.done[..self.n_done]
-                            .iter()
-                            .rposition(|a| a.kind == Kind::Overdub && a.slot as usize == slot)
-                        {
-                            let mut a = self.take_done(i);
-                            self.swap_ages(&mut a);
-                            self.push_undone(a);
-                        }
-                        self.slots[slot].leaving = true;
-                    }
-                }
+                Phase::Overdubbing | Phase::Playing if self.od_open => self.undo_open_overdub(),
                 Phase::Playing if self.merging => self.merging = false,
                 Phase::Playing if self.fitting => {
                     self.fitting = false;
                     self.fit_overdub = false;
                 }
                 Phase::Playing => self.undo(),
+                Phase::Empty if store.has_kept(me) && !self.loading && !self.adding => {
+                    self.unclear(store, me)
+                }
                 _ => {}
             },
             Command::Redo => {
@@ -2709,15 +2856,30 @@ impl Loop {
                     self.redo();
                 }
             }
-            Command::Clear => match self.phase {
-                Phase::Empty => {}
-                Phase::Armed | Phase::Recording => self.abort(stats),
-                Phase::Playing | Phase::Overdubbing => {
-                    self.od_open = false;
-                    self.clearing = true;
+            Command::Clear | Command::Forget => {
+                let keep = c == Command::Clear;
+                if !keep {
+                    store.drop_kept(me);
                 }
-            },
+                match self.phase {
+                    Phase::Empty => {}
+                    Phase::Armed | Phase::Recording => self.abort(stats),
+                    Phase::Playing | Phase::Overdubbing => {
+                        // An overdub under way is undone first, so UNDO
+                        // brings the loop back as it was before it (a key
+                        // held to clear started one on its press), and
+                        // Redo then brings what it recorded.
+                        if self.od_open {
+                            self.undo_open_overdub();
+                        }
+                        self.clearing = true;
+                        self.keep_clear = keep;
+                    }
+                }
+            }
             Command::Mute(m) => self.muted = m,
+            Command::Solo(o) => self.solo = o,
+            Command::SetOverdubs(o) => self.overdubs = o,
             Command::SetBars(b) => self.bars = b.filter(|&b| b > 0),
             Command::SetAfter(a) => self.after = a,
             Command::SetFadeOld(k) if k.is_finite() => self.fade_old = k.clamp(0.0, 1.0),
@@ -3386,6 +3548,7 @@ impl Loop {
             Kind::Added if self.layers() <= 1 => {
                 self.od_open = false;
                 self.clearing = true;
+                self.keep_clear = false;
             }
             Kind::Added => self.slots[a.slot as usize].leaving = true,
             Kind::Edit => self.swap_shape(a.slot as usize),
@@ -3414,6 +3577,7 @@ impl Loop {
     /// silent.
     fn fade_older(&mut self) {
         self.touch();
+        self.od_faded = true;
         let k = self.od_layer;
         for &s in &self.order[..self.in_order] {
             if s as usize != k {
@@ -3507,6 +3671,9 @@ impl Loop {
         self.written = 0;
         self.od_open = false;
         self.clearing = false;
+        self.keep_clear = false;
+        // A cleared loop lets go of its solo, so the others play.
+        self.solo = false;
         self.gain = 0.0;
         self.pos = 0.0;
         self.jump = 0;
@@ -3525,6 +3692,42 @@ impl Loop {
             stats.aborted += 1;
         }
         self.reset();
+    }
+
+    /// Undo on a cleared loop: it comes back as it was kept, fading in,
+    /// at the song's place, with today's latency and launch. Whatever was
+    /// under way when it was cleared (an overdub, a merge) stays stopped;
+    /// a print is made again.
+    fn unclear(&mut self, store: &mut Store, me: usize) {
+        let (latency, on, cue) = (self.latency, self.on, self.cue);
+        self.clone_from(&store.kept[me]);
+        // The blocks are the loop's again.
+        store.kept_mask[me] = 0;
+        self.latency = latency;
+        self.on = on;
+        self.cue = cue;
+        self.clearing = false;
+        self.keep_clear = false;
+        self.gain = 0.0;
+        self.od_open = false;
+        if self.phase == Phase::Overdubbing {
+            self.phase = Phase::Playing;
+        }
+        self.jump = 0;
+        self.xf = 0;
+        self.merging = false;
+        self.fitting = false;
+        self.fit_overdub = false;
+        self.swapping = false;
+        self.bouncing = false;
+        self.loading = false;
+        self.adding = false;
+        self.lend = None;
+        self.print_on = 0.0;
+        self.p_frames = 0;
+        self.mixing = true;
+        self.touch();
+        self.reclaim(store, me);
     }
 
     fn marker(&mut self, store: &mut Store, stats: &mut Stats, me: usize, mark: Mark, frame: u64) {
@@ -3577,6 +3780,8 @@ impl Loop {
                 self.next_bar = span.frame_of((t + self.bar) as f64);
             }
             Phase::Armed if t >= 0 && matches!(span.state, State::Playing | State::Recording) => {
+                // The new loop takes the place of one kept for Undo.
+                store.drop_kept(me);
                 self.phase = Phase::Recording;
                 self.origin = t;
                 self.start_frame = f;
@@ -3782,7 +3987,7 @@ impl Loop {
                 .map(|k| store.held[me][k] as usize)
                 .sum();
             let slot = (0..MAX_LAYERS).find(|&k| !self.live(k));
-            if let Some(k) = slot.filter(|_| store.n_free + redo_blocks >= need) {
+            if let Some(k) = slot.filter(|_| store.available() + redo_blocks >= need) {
                 self.n_undone = 0;
                 self.reclaim(store, me);
                 return store.grow(me, k, need).then_some(k);
@@ -3830,7 +4035,13 @@ impl Loop {
         self.od_in = 0;
         self.od_fade = fade;
         self.od_stop_in = None;
-        self.od_out = FADE;
+        self.od_once = self.overdubs == Overdubs::Once;
+        // One pass ends with a fade as long as its start's: the two
+        // crossfade where they meet.
+        self.od_out_len = if self.od_once { fade.max(1) } else { FADE };
+        self.od_out = self.od_out_len;
+        self.od_peak = 0.0;
+        self.od_faded = false;
         self.phase = Phase::Overdubbing;
     }
 
@@ -3845,11 +4056,37 @@ impl Loop {
 
     /// An overdub that never wrote a frame leaves no layer behind, and
     /// nothing to undo. True if it was dropped.
+    /// Throw the overdub away (recording, or still writing its tail): it
+    /// stops and fades out, and Redo can bring back what it recorded.
+    fn undo_open_overdub(&mut self) {
+        self.od_open = false;
+        self.phase = Phase::Playing;
+        let slot = self.od_layer;
+        if !self.drop_empty_overdub() {
+            if let Some(i) = self.done[..self.n_done]
+                .iter()
+                .rposition(|a| a.kind == Kind::Overdub && a.slot as usize == slot)
+            {
+                let mut a = self.take_done(i);
+                self.swap_ages(&mut a);
+                self.push_undone(a);
+            }
+            self.slots[slot].leaving = true;
+        }
+    }
+
     fn drop_empty_overdub(&mut self) -> bool {
-        let k = self.od_layer;
-        if self.slots[k].valid.1 != 0 {
+        if self.slots[self.od_layer].valid.1 != 0 {
             return false;
         }
+        self.drop_overdub();
+        true
+    }
+
+    /// Take the overdub's layer out of the play order and its step out of
+    /// the history.
+    fn drop_overdub(&mut self) {
+        let k = self.od_layer;
         if let Some(at) = self.order[..self.in_order]
             .iter()
             .position(|&s| s as usize == k)
@@ -3862,14 +4099,18 @@ impl Loop {
         {
             self.take_done(i);
         }
-        true
     }
 
     fn close_overdub(&mut self, store: &mut Store, me: usize) {
         self.mixing = true;
         self.touch();
         self.od_open = false;
-        self.drop_empty_overdub();
+        // An overdub that took only silence (below [`SILENT`]) and faded
+        // nothing leaves no layer and no step to undo. It goes at once:
+        // what it holds is too quiet to click.
+        if !self.drop_empty_overdub() && self.od_peak < SILENT && !self.od_faded {
+            self.drop_overdub();
+        }
         if self.phase == Phase::Overdubbing {
             self.phase = Phase::Playing;
         }
@@ -3899,16 +4140,25 @@ impl Loop {
 
     fn write_overdub(&mut self, store: &mut Store, me: usize, x: [f32; 2]) {
         let len = self.len;
+        // One pass: it punches out `latency` frames early, so that its
+        // fade-out starts on the frame it started on.
+        if self.od_once
+            && self.od_stop_in.is_none()
+            && self.od_in >= len.saturating_sub(self.latency as usize).max(1)
+        {
+            self.punch_out();
+        }
         let mut g = if self.od_in < self.od_fade {
             (self.od_in as f32 + 0.5) / self.od_fade as f32
         } else {
             1.0
         };
         self.od_in += 1;
+        self.od_peak = self.od_peak.max(x[0].abs()).max(x[1].abs());
         let mut last = false;
         match self.od_stop_in {
             Some(0) => {
-                g *= (self.od_out as f32 - 0.5) * STEP;
+                g *= (self.od_out as f32 - 0.5) / self.od_out_len as f32;
                 self.od_out -= 1;
                 last = self.od_out == 0;
             }
@@ -4049,6 +4299,7 @@ impl Loop {
             && self.gain == 1.0
             && self.on
             && !self.muted
+            && !self.solo_out
             && !self.clearing
             && self.jump == 0
             && self.xf == 0
@@ -4188,6 +4439,7 @@ impl Loop {
             && playing
             && self.on
             && !self.muted
+            && !self.solo_out
             && !self.clearing
             && !self.swapping;
         if audible {
@@ -4196,6 +4448,9 @@ impl Loop {
             self.gain = (self.gain - STEP).max(0.0);
         }
         if self.clearing && self.gain == 0.0 {
+            if self.keep_clear {
+                store.keep(me, self);
+            }
             self.reset();
             self.reclaim(store, me);
             return [0.0; 2];

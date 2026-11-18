@@ -63,6 +63,8 @@ pub enum Ctl {
     Clear,
     /// A loop that plays.
     Feedback,
+    /// Overdubs: 0 Add, 1 Once.
+    Overdubs(u8),
     Reverse,
     Half,
     Double,
@@ -80,6 +82,9 @@ pub enum Ctl {
     Then(u8),
 }
 
+/// The Overdubs choices: on top until Overdub again, or one pass.
+pub const OVERDUB_CHOICES: [&str; 2] = ["Add", "Once"];
+
 /// The Length choices' bars (None: free).
 pub const BAR_CHOICES: [Option<u32>; 5] = [None, Some(1), Some(2), Some(4), Some(8)];
 
@@ -94,6 +99,8 @@ pub enum LoopAct {
     /// Loop `n`'s speaker: mute it or let it play, without picking it. A
     /// muted loop stays silent when PLAY starts the others (Jay, 13 Nov).
     Mute(usize),
+    /// Loop `n`'s S: solo it or let go, without picking it.
+    Solo(usize),
     /// Clear loop `n`: every layer, the first pass too (its ring held, or
     /// Clear on the picked loop).
     Clear(usize),
@@ -370,6 +377,8 @@ pub enum Strip {
     Plays {
         /// Feedback: the share of the older layers kept a pass, 0.5 to 1.
         feedback: f32,
+        /// How overdubs record: 0 Add, 1 Once.
+        overdubs: u8,
         reversed: bool,
         /// "4 bars".
         length: String,
@@ -790,7 +799,16 @@ impl LoopEditor {
                     "Feedback".to_string(),
                     true,
                 ));
-                let x2 = x + 92;
+                let xo = x + 92;
+                for (i, l) in OVERDUB_CHOICES.iter().enumerate() {
+                    out.push((
+                        Ctl::Overdubs(i as u8),
+                        Rect::new(xo + 3 + i as i32 * 74, y + 3, 70, CTRL_H - 6),
+                        l.to_string(),
+                        true,
+                    ));
+                }
+                let x2 = xo + 2 * 74 + 34;
                 let rev = if *reversed { "Reverse on" } else { "Reverse" };
                 out.push((
                     Ctl::Reverse,
@@ -1575,6 +1593,7 @@ impl LoopEditor {
         match &self.strip {
             Strip::Plays {
                 feedback,
+                overdubs,
                 reversed,
                 length,
                 chips,
@@ -1582,6 +1601,19 @@ impl LoopEditor {
                 ..
             } => {
                 group_label(cx, s.x, s.y, "FEEDBACK");
+                let od: Vec<(Rect, &str, bool)> = ctls
+                    .iter()
+                    .filter_map(|c| match c.0 {
+                        Ctl::Overdubs(i) => Some((c.1, c.2.as_str(), i == *overdubs)),
+                        _ => None,
+                    })
+                    .collect();
+                if let Some(first) = od.first() {
+                    cx.canvas
+                        .fill_rect(Rect::new(first.0.x - 17, s.y + 2, 1, s.h - 4), t.outline);
+                    group_label(cx, first.0.x - 3, s.y, "OVERDUBS");
+                }
+                segments(cx, &od);
                 if let Some(k) = rect(Ctl::Feedback) {
                     let v = (feedback - 0.5) / 0.5;
                     let lit = if *feedback < 0.999 { t.warn } else { t.accent };
@@ -1796,6 +1828,7 @@ impl Widget for LoopEditor {
         for (c, b, label, on) in self.strip_controls(p.strip) {
             let t = match c {
                 Ctl::Feedback => Target::drag("feedback", 0, label, b),
+                Ctl::Overdubs(i) => Target::tap("overdubs", i as usize, label, b),
                 Ctl::Reverse => Target::tap("reverse", 0, label, b),
                 Ctl::Half => Target::tap("half", 0, label, b),
                 Ctl::Double => Target::tap("double", 0, label, b),
@@ -1813,6 +1846,7 @@ impl Widget for LoopEditor {
                 (Strip::Records { source, .. }, Ctl::Source(i)) => *source == i,
                 (Strip::Records { bars, .. }, Ctl::Bars(i)) => *bars == i,
                 (Strip::Records { then, .. }, Ctl::Then(i)) => *then == i,
+                (Strip::Plays { overdubs, .. }, Ctl::Overdubs(i)) => *overdubs == i,
                 _ => false,
             };
             out.push(t.disabled_if(!on || chosen));
@@ -2307,6 +2341,7 @@ mod tests {
     fn plays() -> Strip {
         Strip::Plays {
             feedback: 1.0,
+            overdubs: 0,
             reversed: false,
             length: "4 bars".into(),
             edits: true,
