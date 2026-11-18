@@ -134,13 +134,18 @@ pub struct Design {
     pub macros: Vec<Macro>,
 }
 
-/// A native engine with its effects and macros, as one node.
-pub struct Sound {
-    engine: Box<dyn Node>,
+/// A native engine with its effects and macros, as one node. `E` is the
+/// engine's type: a host that needs the engine's own calls (a factory
+/// preset, a drum kit's pads) holds a `Sound<Keys>` and reaches them
+/// through `Deref`; any other holds a `Sound` (of `dyn Node`). Settings
+/// changed on the engine directly are the engine's: the sound's own
+/// settings (its effects', its macros') go through [`Node::set_param`].
+pub struct Sound<E: Node + ?Sized = dyn Node> {
+    engine: Box<E>,
     fx: Chain,
     fx_ids: Vec<&'static str>,
     macros: Vec<Macro>,
-    /// Each macro's position, 0 to 1.
+    /// Each macro's position, as set (0 to 100 %).
     macro_at: [f32; MAX_MACROS],
     params: &'static [ParamInfo],
     /// The engine's events for this block (notes, its own settings, the
@@ -149,21 +154,35 @@ pub struct Sound {
     dropped_events: u64,
 }
 
-impl Sound {
-    /// A sound from `engine`, the effects named in `design` (their node ids
-    /// in `mpfree-fx`'s registry) and its macros. Allocates; every setting
-    /// starts at its default and every macro at 0.
-    pub fn new(engine: Box<dyn Node>, design: &Design) -> Result<Sound, SoundError> {
+/// What a sound adds to its engine, built from a [`Design`].
+struct Parts {
+    fx: Chain,
+    fx_ids: Vec<&'static str>,
+    macros: Vec<Macro>,
+    params: &'static [ParamInfo],
+}
+
+impl Parts {
+    /// Builds the effects (prepared at `rate` and `max_block`) and checks
+    /// the macros against the sound's settings. Allocates.
+    fn build(
+        engine: &NodeInfo,
+        engine_params: &'static [ParamInfo],
+        design: &Design,
+        rate: u32,
+        max_block: usize,
+    ) -> Result<Parts, SoundError> {
         if design.fx.len() > MAX_FX {
             return Err(SoundError::TooMany("effects"));
         }
         if design.macros.len() > MAX_MACROS {
             return Err(SoundError::TooMany("macros"));
         }
-        if engine.params().iter().any(|p| p.id >= FX_BASE) {
+        if engine_params.iter().any(|p| p.id >= FX_BASE) {
             return Err(SoundError::EngineIds);
         }
         let mut fx = Chain::with_capacity(MAX_FX);
+        fx.prepare(rate, max_block);
         let mut fx_ids = Vec::with_capacity(design.fx.len());
         for id in &design.fx {
             let node =
@@ -185,7 +204,7 @@ impl Sound {
             }
             names.push(name);
         }
-        let params = params_for(engine.as_ref(), &fx, &fx_ids, &names);
+        let params = params_for(engine.id, engine_params, &fx, &fx_ids, &names);
         let macros: Vec<Macro> = design
             .macros
             .iter()
@@ -204,76 +223,169 @@ impl Sound {
                 }
             }
         }
-        Ok(Sound {
-            engine,
+        Ok(Parts {
             fx,
             fx_ids,
             macros,
-            macro_at: [0.0; MAX_MACROS],
             params,
+        })
+    }
+}
+
+impl<E: Node + ?Sized> Sound<E> {
+    /// A sound from `engine`, the effects named in `design` (their node ids
+    /// in `mpfree-fx`'s registry) and its macros. Allocates; the effects'
+    /// settings start at their defaults and every macro at 0, and the
+    /// effects are prepared for 48 kHz until [`Node::prepare`] or
+    /// [`Sound::prepare_effects`].
+    pub fn new(engine: Box<E>, design: &Design) -> Result<Sound<E>, SoundError> {
+        let parts = Parts::build(
+            engine.info(),
+            engine.params(),
+            design,
+            48_000,
+            mpfree_node::MAX_BLOCK,
+        )?;
+        Ok(Sound {
+            engine,
+            fx: parts.fx,
+            fx_ids: parts.fx_ids,
+            macros: parts.macros,
+            macro_at: [0.0; MAX_MACROS],
+            params: parts.params,
             events: Vec::with_capacity(MAX_EVENTS),
             dropped_events: 0,
         })
+    }
+
+    /// Prepares the effects alone, for a host that made the engine at its
+    /// rate and never prepares it (the app's pad synth). Allocates.
+    pub fn prepare_effects(&mut self, rate: u32, max_block: usize) {
+        self.fx.prepare(rate, max_block);
+    }
+
+    /// Puts a new design in: new effects (at their defaults), new macros
+    /// (at 0); the engine and its settings stay. On an error nothing
+    /// changes. Allocates, and the old effects are dropped here: the
+    /// control thread's job, or a moment the host allows it (a preset).
+    pub fn set_design(&mut self, design: &Design) -> Result<(), SoundError> {
+        let parts = Parts::build(
+            self.engine.info(),
+            self.engine.params(),
+            design,
+            self.fx.rate(),
+            self.fx.max_block(),
+        )?;
+        self.put(parts);
+        Ok(())
+    }
+
+    fn put(&mut self, parts: Parts) {
+        self.fx = parts.fx;
+        self.fx_ids = parts.fx_ids;
+        self.macros = parts.macros;
+        self.params = parts.params;
+        self.macro_at = [0.0; MAX_MACROS];
     }
 
     /// A sound from a preset's text: its design lines build the sound on
     /// `engine`, then its settings are applied (each missing one at its
     /// default). Returns the preset too, with the design lines taken out
     /// of its extra lines.
-    pub fn from_preset(engine: Box<dyn Node>, text: &str) -> Result<(Sound, Preset), SoundError> {
-        // First the engine alone, for the design (its lines are extra to
-        // the engine) and for the macros' targets on the engine.
-        let bare =
-            Preset::parse(text, engine.info(), engine.params()).map_err(SoundError::Preset)?;
-        let fx: Vec<String> = numbered(&bare.extra, "fx")
-            .into_iter()
-            .map(|(_, v)| v.to_string())
-            .collect();
-        let macro_names: Vec<(usize, String)> = numbered(&bare.extra, "macro")
-            .into_iter()
-            .map(|(n, v)| (n, v.to_string()))
-            .collect();
-        // Build with the effects and macro names only, to have the full
-        // list of settings the maps may name.
-        let shell = Design {
-            fx: fx.clone(),
-            macros: macro_names
-                .iter()
-                .map(|(_, name)| Macro {
-                    name: name.clone(),
-                    maps: Vec::new(),
-                })
-                .collect(),
-        };
-        let mut sound = Sound::new(engine, &shell)?;
-        for (k, (n, _)) in macro_names.iter().enumerate() {
-            let key = format!("macro.{n}.map");
-            for (_, line) in bare.extra.iter().filter(|(k2, _)| *k2 == key) {
-                let map = parse_map(sound.params, line)
-                    .ok_or_else(|| SoundError::NoTarget(line.clone()))?;
-                if sound.macros[k].maps.len() >= MAX_MAPS {
-                    return Err(SoundError::TooMany("settings on one macro"));
-                }
-                sound.macros[k].maps.push(map);
-            }
+    pub fn from_preset(engine: Box<E>, text: &str) -> Result<(Sound<E>, Preset), SoundError> {
+        let mut sound = Sound::new(engine, &Design::default())?;
+        let preset = sound.load_text(text)?;
+        Ok((sound, preset))
+    }
+
+    /// Plays a preset's text from now on: its design (none for a plain
+    /// preset) and every setting (each missing one at its default; the
+    /// macros at their saved places, without moving what they map, which
+    /// the file holds as saved). Notes keep sounding on the engine. Returns
+    /// the preset, with the design lines taken out of its extra lines. On
+    /// an error nothing changes. Allocates.
+    pub fn load_text(&mut self, text: &str) -> Result<Preset, SoundError> {
+        let (parts, preset) = self.read_text(text)?;
+        // The same design keeps its effects running (no restart, no click).
+        if parts.fx_ids != self.fx_ids || parts.macros != self.macros {
+            self.put(parts);
         }
-        let mut preset =
-            Preset::parse(text, sound.engine.info(), sound.params).map_err(SoundError::Preset)?;
-        preset.extra.retain(|(k, _)| !is_design_key(k));
-        // Settings first, then the macros' own positions (without moving
-        // what they map: the file holds where each setting was saved).
-        for p in sound.params {
+        for p in self.params {
             if p.readonly || p.id >= MACRO_BASE {
                 continue;
             }
             let v = preset.value(p.id).unwrap_or(p.default);
-            sound.set_param(p.id, p.clamp(v));
+            self.set_param(p.id, p.clamp(v));
         }
-        for (k, p) in sound.macro_params().iter().enumerate() {
+        for (k, p) in self.macro_params().iter().enumerate() {
             let v = preset.value(p.id).unwrap_or(p.default);
-            sound.macro_at[k] = p.to_unit(v);
+            self.macro_at[k] = p.clamp(v);
         }
-        Ok((sound, preset))
+        Ok(preset)
+    }
+
+    /// A preset's text read for this sound's engine: the parts its design
+    /// builds and the preset (design lines taken out). Changes nothing.
+    fn read_text(&self, text: &str) -> Result<(Parts, Preset), SoundError> {
+        let (info, engine_params) = (self.engine.info(), self.engine.params());
+        // First the engine alone, for the design (its lines are extra to
+        // the engine).
+        let bare = Preset::parse(text, info, engine_params).map_err(SoundError::Preset)?;
+        let parts = self.parts_from_lines(&bare.extra)?;
+        let mut preset = Preset::parse(text, info, parts.params).map_err(SoundError::Preset)?;
+        preset.extra.retain(|(k, _)| !is_design_key(k));
+        Ok((parts, preset))
+    }
+
+    /// The parts the design lines among `lines` build on this engine
+    /// (lines that aren't a design's are passed over). Changes nothing.
+    fn parts_from_lines(&self, lines: &[(String, String)]) -> Result<Parts, SoundError> {
+        let (info, engine_params) = (self.engine.info(), self.engine.params());
+        let macro_names: Vec<(usize, &str)> = numbered(lines, "macro");
+        // The effects and the macros' names give every setting a map may
+        // name; then the maps.
+        let mut design = Design {
+            fx: numbered(lines, "fx")
+                .into_iter()
+                .map(|(_, v)| v.to_string())
+                .collect(),
+            macros: macro_names
+                .iter()
+                .map(|(_, name)| Macro {
+                    name: name.to_string(),
+                    maps: Vec::new(),
+                })
+                .collect(),
+        };
+        let (rate, max_block) = (self.fx.rate(), self.fx.max_block());
+        let shell = Parts::build(info, engine_params, &design, rate, max_block)?;
+        for (k, (n, _)) in macro_names.iter().enumerate() {
+            let key = format!("macro.{n}.map");
+            for (_, line) in lines.iter().filter(|(k2, _)| *k2 == key) {
+                let map = parse_map(shell.params, line)
+                    .ok_or_else(|| SoundError::NoTarget(line.clone()))?;
+                if design.macros[k].maps.len() >= MAX_MAPS {
+                    return Err(SoundError::TooMany("settings on one macro"));
+                }
+                design.macros[k].maps.push(map);
+            }
+        }
+        if design.macros.iter().any(|m| !m.maps.is_empty()) {
+            Parts::build(info, engine_params, &design, rate, max_block)
+        } else {
+            Ok(shell)
+        }
+    }
+
+    /// Puts in the design that `lines` describe ([`Sound::design_lines`],
+    /// as [`Node::save_extras`] gives them; other lines are passed over),
+    /// as [`Sound::set_design`] does: the engine keeps its settings, the
+    /// effects start at their defaults and the macros at 0. On an error
+    /// nothing changes. Allocates.
+    pub fn set_design_lines(&mut self, lines: &[(String, String)]) -> Result<(), SoundError> {
+        let parts = self.parts_from_lines(lines)?;
+        self.put(parts);
+        Ok(())
     }
 
     /// The preset of the sound now, as text: its settings and the lines of
@@ -321,12 +433,12 @@ impl Sound {
         }
     }
 
-    pub fn engine(&self) -> &dyn Node {
-        self.engine.as_ref()
+    pub fn engine(&self) -> &E {
+        &self.engine
     }
 
-    pub fn engine_mut(&mut self) -> &mut dyn Node {
-        self.engine.as_mut()
+    pub fn engine_mut(&mut self) -> &mut E {
+        &mut self.engine
     }
 
     /// The effects' chain (to watch its meters or bypass a slot).
@@ -348,13 +460,9 @@ impl Sound {
         self.dropped_events
     }
 
+    /// The macros' settings: the list's first.
     fn macro_params(&self) -> &'static [ParamInfo] {
-        let first = self
-            .params
-            .iter()
-            .position(|p| p.id >= MACRO_BASE)
-            .unwrap_or(self.params.len());
-        &self.params[first..]
+        &self.params[..self.macros.len()]
     }
 
     /// The value macro `k` at position `t` gives each of its settings.
@@ -404,7 +512,7 @@ fn place(id: u16, fx: usize, macros: usize) -> Place {
     }
 }
 
-impl Node for Sound {
+impl<E: Node + ?Sized> Node for Sound<E> {
     fn info(&self) -> &'static NodeInfo {
         self.engine.info()
     }
@@ -422,7 +530,7 @@ impl Node for Sound {
                     return;
                 };
                 let t = p.to_unit(value);
-                self.macro_at[k] = t;
+                self.macro_at[k] = p.clamp(value);
                 for i in 0..self.macros[k].maps.len() {
                     let Some((target, v)) = self.macro_targets(k, t).nth(i) else {
                         break;
@@ -442,7 +550,7 @@ impl Node for Sound {
                 .params
                 .iter()
                 .find(|p| p.id == id)
-                .map_or(f32::NAN, |p| p.from_unit(self.macro_at[k])),
+                .map_or(f32::NAN, |_| self.macro_at[k]),
             Place::None => f32::NAN,
         }
     }
@@ -482,7 +590,7 @@ impl Node for Sound {
                         continue;
                     };
                     let at = p.to_unit(value);
-                    self.macro_at[k] = at;
+                    self.macro_at[k] = p.clamp(value);
                     for i in 0..self.macros[k].maps.len() {
                         let Some((target, v)) = self.macro_targets(k, at).nth(i) else {
                             break;
@@ -563,7 +671,54 @@ impl Node for Sound {
     }
 }
 
-impl Sound {
+impl<E: Node + ?Sized> std::ops::Deref for Sound<E> {
+    type Target = E;
+    fn deref(&self) -> &E {
+        &self.engine
+    }
+}
+
+impl<E: Node + ?Sized> std::ops::DerefMut for Sound<E> {
+    fn deref_mut(&mut self) -> &mut E {
+        &mut self.engine
+    }
+}
+
+/// A sound of any engine, for a host that holds several behind one type
+/// (the app's pad synth, which keeps each engine's concrete type): what
+/// [`Sound`] adds to a node, as [`Sound`]'s own calls of the same names.
+pub trait Designed: Node {
+    fn design(&self) -> Design;
+    fn set_design(&mut self, design: &Design) -> Result<(), SoundError>;
+    fn set_design_lines(&mut self, lines: &[(String, String)]) -> Result<(), SoundError>;
+    fn load_text(&mut self, text: &str) -> Result<Preset, SoundError>;
+    fn to_text(&self, name: &str, tags: &[&str], extra: &[(String, String)]) -> String;
+    /// Whether the sound adds nothing to its engine.
+    fn is_plain(&self) -> bool;
+}
+
+impl<E: Node + ?Sized> Designed for Sound<E> {
+    fn design(&self) -> Design {
+        Sound::design(self)
+    }
+    fn set_design(&mut self, design: &Design) -> Result<(), SoundError> {
+        Sound::set_design(self, design)
+    }
+    fn set_design_lines(&mut self, lines: &[(String, String)]) -> Result<(), SoundError> {
+        Sound::set_design_lines(self, lines)
+    }
+    fn load_text(&mut self, text: &str) -> Result<Preset, SoundError> {
+        Sound::load_text(self, text)
+    }
+    fn to_text(&self, name: &str, tags: &[&str], extra: &[(String, String)]) -> String {
+        Sound::to_text(self, name, tags, extra)
+    }
+    fn is_plain(&self) -> bool {
+        self.fx_ids.is_empty() && self.macros.is_empty()
+    }
+}
+
+impl<E: Node + ?Sized> Sound<E> {
     fn push_engine(&mut self, t: Timed) {
         if self.events.len() < self.events.capacity() {
             self.events.push(t);
@@ -576,7 +731,8 @@ impl Sound {
 /// The sound's parameter list: the engine's, each effect's (re-numbered,
 /// grouped by slot) and the macros. Made once per design and kept.
 fn params_for(
-    engine: &dyn Node,
+    engine: &str,
+    engine_params: &'static [ParamInfo],
     fx: &Chain,
     fx_ids: &[&'static str],
     macros: &[&str],
@@ -584,7 +740,7 @@ fn params_for(
     static CACHE: OnceLock<Mutex<HashMap<String, &'static [ParamInfo]>>> = OnceLock::new();
     let key = format!(
         "{}|{}|{}",
-        engine.info().id,
+        engine,
         fx_ids.join(","),
         macros
             .iter()
@@ -600,7 +756,25 @@ fn params_for(
     if let Some(p) = cache.get(&key) {
         return p;
     }
-    let mut list: Vec<ParamInfo> = engine.params().to_vec();
+    // The macros first: a host that sets every value in the list's order
+    // (a project, a copy) sets each macro before what it moves, so the
+    // settings end as saved.
+    let mut list: Vec<ParamInfo> = macros
+        .iter()
+        .enumerate()
+        .map(|(k, m)| ParamInfo {
+            id: MACRO_BASE + k as u16,
+            name: leak(clean_macro_name(m)),
+            group: "Macros",
+            min: 0.0,
+            max: 100.0,
+            default: 0.0,
+            unit: Unit::Percent,
+            curve: Curve::Linear,
+            readonly: false,
+        })
+        .collect();
+    list.extend_from_slice(engine_params);
     for (slot, id) in fx_ids.iter().enumerate() {
         let Some(node) = fx.node(slot) else { continue };
         let group: &'static str = leak(format!("FX {}", slot + 1));
@@ -621,19 +795,6 @@ fn params_for(
             });
         }
         let _ = id;
-    }
-    for (k, m) in macros.iter().enumerate() {
-        list.push(ParamInfo {
-            id: MACRO_BASE + k as u16,
-            name: leak(clean_macro_name(m)),
-            group: "Macros",
-            min: 0.0,
-            max: 100.0,
-            default: 0.0,
-            unit: Unit::Percent,
-            curve: Curve::Linear,
-            readonly: false,
-        });
     }
     let list: &'static [ParamInfo] = Box::leak(list.into_boxed_slice());
     cache.insert(key, list);
@@ -669,7 +830,7 @@ fn numbered<'a>(extra: &'a [(String, String)], prefix: &str) -> Vec<(usize, &'a 
 }
 
 /// A design line's key: `fx.N`, `macro.N` or `macro.N.map`.
-fn is_design_key(k: &str) -> bool {
+pub fn is_design_key(k: &str) -> bool {
     let rest = k
         .strip_prefix("fx.")
         .or_else(|| k.strip_prefix("macro."))
@@ -1027,6 +1188,92 @@ mod tests {
             Sound::from_preset(keys(), &text).err().unwrap(),
             SoundError::NoTarget(_)
         ));
+    }
+
+    /// A sound loads another preset in place: a plain one takes its
+    /// effects and macros away, a designed one brings its own; one that
+    /// can't be read changes nothing.
+    #[test]
+    fn a_sound_loads_presets_in_place_and_a_bad_one_changes_nothing() {
+        let mut s = Sound::new(keys(), &Design::default()).unwrap();
+        let designed = {
+            let mut d = Sound::new(keys(), &design()).unwrap();
+            d.set_param(MACRO_BASE, 60.0);
+            d.set_param(kp::DECAY, 2500.0);
+            d.to_text("Designed", &[], &[])
+        };
+        s.load_text(&designed).unwrap();
+        assert_eq!(s.design(), design());
+        assert_eq!(s.param(MACRO_BASE), 60.0);
+        assert_eq!(s.param(kp::DECAY), 2500.0);
+        let before: Vec<u32> = s.params().iter().map(|p| s.param(p.id).to_bits()).collect();
+        let mut broken = designed.clone();
+        broken.push_str("fx.2 = mpfree.fx.nothing\n");
+        assert_eq!(
+            s.load_text(&broken).err(),
+            Some(SoundError::NoEffect("mpfree.fx.nothing".into()))
+        );
+        assert_eq!(s.design(), design(), "nothing changed");
+        let after: Vec<u32> = s.params().iter().map(|p| s.param(p.id).to_bits()).collect();
+        assert_eq!(before, after);
+        // A plain preset: the engine's settings only, the design gone.
+        let k = keys();
+        let plain = Preset::capture(k.as_ref(), "Plain", &[]).to_text(k.params());
+        s.load_text(&plain).unwrap();
+        assert_eq!(s.design(), Design::default());
+        assert_eq!(s.params().len(), k.params().len());
+        assert_eq!(s.param(kp::DECAY), k.param(kp::DECAY));
+    }
+
+    /// `set_design` keeps the engine's settings and starts the effects and
+    /// macros afresh; a sound of a concrete engine reaches its own calls.
+    #[test]
+    fn a_new_design_keeps_the_engine_and_the_engine_is_reachable() {
+        let mut k = Keys::new(RATE);
+        k.prepare(RATE, 128);
+        let mut s: Sound<Keys> = Sound::new(Box::new(k), &Design::default()).unwrap();
+        s.set_param(kp::DECAY, 3000.0);
+        s.set_design(&design()).unwrap();
+        assert_eq!(s.param(kp::DECAY), 3000.0);
+        assert_eq!(s.param(MACRO_BASE), 0.0);
+        assert_eq!(s.fx().len(), 1);
+        // The engine's own calls, through the sound.
+        let init = &Keys::presets()[0];
+        s.load_preset(init);
+        assert_eq!(s.active_voices(), 0);
+        assert_eq!(s.engine().param(kp::DECAY), s.param(kp::DECAY));
+        assert!(s
+            .set_design(&Design {
+                fx: vec!["mpfree.fx.nothing".into()],
+                ..Design::default()
+            })
+            .is_err());
+        assert_eq!(s.design(), design(), "a failed design changes nothing");
+    }
+
+    /// A host that copies a sound by setting every value in the list's
+    /// order (a project, a track's copy) gets the same sound, even when a
+    /// setting was turned after its macro: the macros come first.
+    #[test]
+    fn every_value_set_in_order_copies_the_sound() {
+        let mut a = Sound::new(keys(), &design()).unwrap();
+        a.set_param(MACRO_BASE, 70.0);
+        a.set_param(kp::TONE, -12.0);
+        assert_eq!(a.params()[0].id, MACRO_BASE);
+        let mut b = Sound::new(keys(), &design()).unwrap();
+        for p in a.params() {
+            if !p.readonly {
+                b.set_param(p.id, a.param(p.id));
+            }
+        }
+        for p in a.params() {
+            assert_eq!(
+                b.param(p.id).to_bits(),
+                a.param(p.id).to_bits(),
+                "{}",
+                p.name
+            );
+        }
     }
 
     #[test]

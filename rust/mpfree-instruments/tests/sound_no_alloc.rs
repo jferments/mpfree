@@ -96,7 +96,7 @@ fn design() -> Design {
 /// A busy session: random notes, pressure, bend, controllers, every
 /// setting automated (the macros among them), AllOff, a reset half way
 /// and load shedding between blocks. Returns the allocations counted.
-fn exercise(s: &mut Sound) -> usize {
+fn exercise(s: &mut dyn Node) -> usize {
     let params = s.params();
     let mut l = vec![0.0f32; 128];
     let mut r = vec![0.0f32; 128];

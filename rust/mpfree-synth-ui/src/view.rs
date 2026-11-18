@@ -78,6 +78,9 @@ pub struct SynthState {
     pub params: &'static [ParamInfo],
     /// The node's values, in `params` order.
     pub values: Vec<f32>,
+    /// What the node keeps beyond its values ([`Node::save_extras`]: a
+    /// sound's effects and macros), so a copy of it can be made.
+    pub extras: Vec<(String, String)>,
     /// The track it plays on, such as "Bass", and its colour.
     pub track: String,
     pub color: Color,
@@ -104,6 +107,7 @@ impl SynthState {
             info: node.info(),
             params,
             values: params.iter().map(|p| node.param(p.id)).collect(),
+            extras: node.save_extras(),
             track: track.to_string(),
             color,
             presets,

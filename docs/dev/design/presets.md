@@ -35,8 +35,8 @@ qset = 31 32 34 33 Tone
 - `Preset::capture(node, name, tags)` takes the node's sound now.
 - `Preset::to_text(params)` writes it; `Preset::parse(text, info, params)` reads it, checking the format and the engine.
 - `Preset::apply(node)` sets every setting: the preset's value, or the default when it has none, clamped. Sounding notes carry on, as with a factory preset. A preset for another engine changes nothing.
-- **On the pads** (`mpfree-app`, `synth.rs`), the app's synth reads and plays user presets for the browser's preset picker (`Pick::Preset`). The picker names a file's engine by its folder under Instruments, the engine's name (`Poly`, `FM`, `Wavetable`, `Pluck`, `Drums`); `Engine::from_folder` maps it back, and a file straight in Instruments goes by its `engine` line.
-  - `try_preset(folder, text)` (the picker's `TryPreset`, one per dial turn) plays the file on the engine on the pads and keeps the sound from before the first try.
+- **On the pads** (`mpfree-app`, `synth.rs`), the app's synth holds each engine as a sound (`Sound<Poly>` and so on), so a preset that brings effects and macros plays them, and it reads and plays user presets for the browser's preset picker (`Pick::Preset`). The picker names a file's engine by its folder under Instruments, the engine's name (`Poly`, `FM`, `Wavetable`, `Pluck`, `Drums`); `Engine::from_folder` maps it back, and a file straight in Instruments goes by its `engine` line.
+  - `try_preset(folder, text)` (the picker's `TryPreset`, one per dial turn) plays the file on the engine on the pads, effects and macros too, and keeps the sound from before the first try (as text, with its design).
   - `revert_preset()` (`RevertPreset`, on Cancel or BROWSE) puts that sound back, every setting to the bit.
   - `load_preset_file(folder, text)` (`LoadPreset`) plays the file from then on and forgets the kept sound.
   - `save_preset(name, tags, extra)` gives the folder and the text to write, with `extra` lines such as the Q-Link sets.
@@ -73,9 +73,11 @@ macros.brightness = 35
 
 - `info()` is the engine's, so the Synth tab draws the engine's own pages, and every id the engine uses keeps its meaning.
 - Slot N's effect settings are `61440 + (N − 1) × 1024 + id`, in the group "FX N"; macro K is `64512 + K − 1`, in the group "Macros", 0 to 100 %. A step lock, an LFO or MIDI Learn on any of them needs no new code.
+- The macros come first in the sound's list of settings, then the engine's, then each effect's. A host that copies a sound by setting every value in the list's order (a project, a track's copy) so sets each macro before what it moves, and a setting turned after its macro ends as saved.
 - Moving a macro moves its settings; a setting turned by hand afterwards stays until the macro moves again (the last move wins). A macro moved on a frame (a lock, automation) moves its settings on that frame.
 - The Synth tab puts a node's "Macros" group on its first page, and Q-Links 1 to 4 turn the first four macros (`mpfree_synth_ui::pages::plan`). The effects get a page each after the engine's own.
 - Notes, the tuning, load shedding (`cull`), voice counts and the latency go to the engine; the tail is the engine's plus each effect's.
+- `Sound<E>` keeps the engine's type: a host that needs the engine's own calls (a factory preset, a drum kit's pads) holds a `Sound<Keys>` and reaches them through `Deref`. `set_design` and `load_text` change a sound in place (the engine keeps its notes; a preset with the same design keeps its effects running); on an error nothing changes. The `Designed` trait gives the same calls on a sound of any engine.
 - Building a sound allocates (the chain, the parameter list, made once per design and kept, since nodes hand out `&'static` lists); after `prepare`, `process` never does (`tests/sound_no_alloc.rs`). On the workstation the wrapper adds about 3,000 instructions a block to the engine and its effects (bench case "Sound Keys Init with Ensemble, 8 voices": 254k, against Keys Init's 113k and the Ensemble's 138k).
 
 ## Tests
@@ -86,11 +88,12 @@ macros.brightness = 35
 - A setting missing from the file takes its default; a preset for another engine is refused and changes nothing.
 - Keys, the id fallback, choices and switches by name or number, unknown lines kept and written back, names and tags kept on one line, and every refusal with its reason.
 - Sounds (`sound.rs`): a sound with nothing added plays bit for bit as its engine; its effects play bit for bit as the same chain by hand; effect settings get their own ids and groups, and one design gets one parameter list; a macro moves its settings along their curves, on the frame it moves; a sound saved as text loads back to the bit (settings, effects, macros and their positions); a plain preset loads as a sound with nothing added; every refusal says why. A sound's `process` allocates nothing through a busy session with every setting automated (`tests/sound_no_alloc.rs`).
+- In `mpfree-app`: a user preset with its own effects and macros plays them on the pads, Cancel brings the plain sound back to the bit, a factory preset takes them away, and a project keeps them (`synth.rs`); a track's copy of such a sound plays it as the pads do, and a design that can't be built makes nothing (`synth.rs`); a track's sound reads back from the project to the bit (`project.rs`).
 - In `mpfree-app`'s `synth.rs`: trying two presets and cancelling brings back every setting to the bit; Load after trying keeps the tried sound; another engine's file or folder, and a file that isn't a preset, change nothing; a file straight in Instruments goes by its engine line; Q-Link sets ride along in a save; a Drums kit tried moves the pads and Cancel moves them back.
 
 ## Not yet
 
-- **Sounds in the app.** The pads' synth and the tracks still hold bare engines, and a project saves an instrument as its engine and values; the next step (roadmap row 8, [Architecture](synth-architecture.md#7-roadmap)) makes them hold sounds, saves the design with the track, and moves the factory presets to files that can carry effects and macros. Send hints, the category and the play lines (section 5's table) come with it.
+- **Factory sounds.** The factory presets are still the engines' Rust tables, so none brings effects or macros yet; loading one makes the engine's sound plain. They move to files that can carry a design next (roadmap row 8, [Architecture](synth-architecture.md#7-roadmap)). Send hints, the category and the play lines (section 5's table) come with them.
 
 - A Wavetable sound on a user table (one made from a sample) saves the table choice "User" but not the table itself; the preset will name the table's file once the library holds it.
 - Plugins: a CLAP plugin's own state chunk is not saved in a sound preset yet. A plugin's own presets (its factory and user files, listed and loaded through CLAP) are the plugin's, not this format: see [Plugins](plugins.md#in-the-app).

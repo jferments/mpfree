@@ -10593,7 +10593,12 @@ impl Player {
                 // A copy of the patch, made here: the audio thread keeps
                 // playing its own and is never asked for anything.
                 let node = self.synth.as_ref().and_then(|p| {
-                    crate::synth::fresh_node(p.state.info.id, &p.state.values, plan.rate)
+                    crate::synth::fresh_node(
+                        p.state.info.id,
+                        &p.state.extras,
+                        &p.state.values,
+                        plan.rate,
+                    )
                 });
                 self.sample.start_auto(&mut self.ui, plan, node);
             }
@@ -13423,8 +13428,10 @@ fn sample_instrument_mixer(synth: &crate::synth::Synth) -> mpfree_mixer_ui::MixS
         (0usize, Engine::Poly, [57u8, 60, 64]),
         (1, Engine::Fm, [45, 52, 57]),
     ] {
-        let (id, values) = synth.sound_of(engine);
-        if let Some(made) = crate::instruments::make(&plugins, id, &values, 44_100, crate::PERIOD) {
+        let (id, extras, values) = synth.sound_of(engine);
+        if let Some(made) =
+            crate::instruments::make(&plugins, id, &extras, &values, 44_100, crate::PERIOD)
+        {
             let pads = synth.pads_for(engine);
             let _ = mix.instruments.put(track, made, pads, &synth.tuning_now());
         }
@@ -15238,11 +15245,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     out.push(("synth-instrument", inst));
     // The Synth tab on track 2's own FM, its second preset loaded.
     let mut own = sample_player(fonts());
-    let (id, values) = fm
+    let (id, extras, values) = fm
         .preset_values(crate::synth::Engine::Fm, 1)
-        .map(|(_, v)| (crate::synth::Engine::Fm.node_id(), v))
+        .map(|(_, v)| (crate::synth::Engine::Fm.node_id(), Vec::new(), v))
         .unwrap_or_else(|| fm.sound_of(crate::synth::Engine::Fm));
-    if let Some(node) = crate::synth::fresh_node(id, &values, 44_100) {
+    if let Some(node) = crate::synth::fresh_node(id, &extras, &values, 44_100) {
         own.apply(ToUi::Synth(fm.state_of(
             node.as_ref(),
             Some(crate::synth::Engine::Fm),
@@ -21313,6 +21320,7 @@ mod tests {
             info,
             params,
             values: vec![0.5, 0.25, 0.0],
+            extras: Vec::new(),
             track: "Track 1".into(),
             color: Color::rgb(0xFF_8800),
             presets: Vec::new(),
