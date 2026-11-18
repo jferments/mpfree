@@ -1314,9 +1314,9 @@ pub struct App {
     /// The Pads tab shows the Perform set (its Perform view): there the
     /// pads pick the set's pads and PAD BANK its pages.
     perform_shown: bool,
-    /// The throws a Perform pad plays (held or latched), a bit for each
-    /// place in [`crate::play_page::THROW_LIST`].
-    throws_on: u8,
+    /// The throws Perform pads play (held or latched), each with the strip
+    /// it plays on.
+    throws_on: Vec<crate::perform_pads::Playing>,
     /// The macros a Perform pad holds, a bit each (Macro 1 the lowest).
     macros_on: u8,
     /// The kit's page on the pads (PAD BANK A = 0 to H = 7): pad n plays
@@ -1569,7 +1569,7 @@ impl App {
             perform_set: crate::perform_pads::PerformSet::default(),
             perform_bank: 0,
             perform_shown: false,
-            throws_on: 0,
+            throws_on: Vec::new(),
             macros_on: 0,
             pad_page: 0,
             kit_held: [None; 16],
@@ -2206,13 +2206,10 @@ impl App {
         let before = std::mem::replace(slot, action);
         let mut fx = Vec::new();
         if let PadAction::Throw(t) = before {
-            let bit = 1u8.checked_shl(u32::from(t.index)).unwrap_or(0);
-            if before != action && self.throws_on & bit != 0 {
-                self.throws_on &= !bit;
-                fx.extend(
-                    crate::perform_pads::throw_fx(usize::from(t.index), false, 0)
-                        .map(Effect::PlayFx),
-                );
+            let p = t.playing();
+            if before != action && self.throws_on.contains(&p) {
+                self.throws_on.retain(|&q| q != p);
+                fx.extend(crate::perform_pads::release_fx(p).map(Effect::PlayFx));
             }
         }
         fx.push(Effect::PerformSet {
@@ -2264,8 +2261,8 @@ impl App {
     }
 
     /// The throws Perform pads play now (for their lights).
-    pub fn throws_on(&self) -> u8 {
-        self.throws_on
+    pub fn throws_on(&self) -> &[crate::perform_pads::Playing] {
+        &self.throws_on
     }
 
     /// A throw pad pressed (`down`) or let go: whether its throw now plays,
@@ -2273,8 +2270,8 @@ impl App {
     /// a press starts it and the next lets it go; the lift does nothing.
     pub fn perform_throw(&mut self, t: crate::perform_pads::Throw, down: bool) -> Option<bool> {
         use crate::perform_pads::Hold;
-        let bit = 1u8.checked_shl(u32::from(t.index))?;
-        let was = self.throws_on & bit != 0;
+        let p = t.playing();
+        let was = self.throws_on.contains(&p);
         let now = match (t.hold, down) {
             // A bar's throw: lit while held; the Perform FX plays its bar.
             (Hold::WhileHeld | Hold::Bar, d) => d,
@@ -2284,7 +2281,11 @@ impl App {
         if now == was {
             return None;
         }
-        self.throws_on ^= bit;
+        if now {
+            self.throws_on.push(p);
+        } else {
+            self.throws_on.retain(|&q| q != p);
+        }
         Some(now)
     }
 
@@ -2326,10 +2327,9 @@ impl App {
     /// Every throw a Perform pad plays let go (the set off, another
     /// project).
     fn throws_off(&mut self) -> Vec<Effect> {
-        let on = std::mem::take(&mut self.throws_on);
-        (0..8u8)
-            .filter(|i| on & (1 << i) != 0)
-            .filter_map(|i| crate::perform_pads::throw_fx(usize::from(i), false, 0))
+        std::mem::take(&mut self.throws_on)
+            .into_iter()
+            .filter_map(crate::perform_pads::release_fx)
             .map(Effect::PlayFx)
             .collect()
     }
@@ -8256,16 +8256,32 @@ mod tests {
         assert_eq!(app.perform_page().action(1), PadAction::Throw(reverb));
         // Held: on with the press, off with the lift, once each.
         assert_eq!(app.perform_throw(reverb, true), Some(true));
-        assert_eq!(app.throws_on(), 0b10);
+        assert_eq!(app.throws_on(), [(1, mpfree_fx::StripId::Master)]);
         assert_eq!(app.perform_throw(reverb, true), None);
         assert_eq!(app.perform_throw(reverb, false), Some(false));
-        assert_eq!(app.throws_on(), 0);
+        assert!(app.throws_on().is_empty());
         // Latched: a hit starts it, the lift does nothing, the next hit
         // lets it go.
         let brake = Throw::new(7, Hold::Latch);
         assert_eq!(app.perform_throw(brake, true), Some(true));
         assert_eq!(app.perform_throw(brake, false), None);
-        assert_eq!(app.throws_on(), 0b1000_0000);
+        assert_eq!(app.throws_on(), [(7, mpfree_fx::StripId::Master)]);
+        // The same throw on Drums is another: it plays beside it, and
+        // lets go there.
+        let on_drums = Throw {
+            on: mpfree_fx::StripId::Track(0),
+            ..brake
+        };
+        assert_eq!(app.perform_throw(on_drums, true), Some(true));
+        assert_eq!(
+            app.throws_on(),
+            [
+                (7, mpfree_fx::StripId::Master),
+                (7, mpfree_fx::StripId::Track(0))
+            ]
+        );
+        assert_eq!(app.perform_throw(on_drums, true), Some(false));
+        assert_eq!(app.throws_on(), [(7, mpfree_fx::StripId::Master)]);
         assert_eq!(app.perform_throw(brake, true), Some(false));
         assert_eq!(app.perform_throw(brake, false), None);
         // A bar's: lit while held (the Perform FX plays the bar out); a
@@ -8290,7 +8306,7 @@ mod tests {
         assert!(!app.pads_are_loop_keys());
         let let_go = crate::perform_pads::throw_fx(7, false, 0).unwrap();
         assert!(fx.contains(&Effect::PlayFx(let_go)), "{fx:?}");
-        assert_eq!(app.throws_on(), 0);
+        assert!(app.throws_on().is_empty());
         // Out of the set, PAD BANK picks kits.
         assert_eq!(
             press(&mut app, BANK_B),
@@ -8330,7 +8346,7 @@ mod tests {
             crate::perform_pads::throw_fx(1, false, 0).unwrap()
         )));
         assert!(app.status_now().perform.is_some(), "the screen hears");
-        assert_eq!(app.throws_on(), 0);
+        assert!(app.throws_on().is_empty());
         assert_eq!(app.perform_page().action(0), PadAction::Scene(0));
         assert_eq!(app.perform_page().action(1), PadAction::None);
         // A project saved before the part: a new project's set.
@@ -8379,7 +8395,7 @@ mod tests {
         let fx = app.set_perform_pad(1, 7, PadAction::Scene(2));
         let let_go = crate::perform_pads::throw_fx(7, false, 0).unwrap();
         assert!(fx.contains(&Effect::PlayFx(let_go)), "{fx:?}");
-        assert_eq!(app.throws_on(), 0);
+        assert!(app.throws_on().is_empty());
         assert!(fx.iter().any(
             |e| matches!(e, Effect::PerformSet { set, opened: false } if set.page(1).action(7) == PadAction::Scene(2))
         ));

@@ -680,7 +680,7 @@ mod looper {
             s.pad_edge(1, 100, true);
             s.run_periods(4);
             assert!(s.mix.throw_held(ThrowFx::Reverb), "held");
-            assert_eq!(s.app.throws_on(), 0b10);
+            assert_eq!(s.app.throws_on(), [(1, mpfree_fx::StripId::Master)]);
             s.pad_edge(1, 0, false);
             s.run_periods(4);
             assert!(!s.mix.throw_held(ThrowFx::Reverb), "let go with the pad");
@@ -714,6 +714,75 @@ mod looper {
             s.button("PAD BANK A/E");
             assert_eq!(s.app.perform_bank(), 0);
             assert!(s.hint().starts_with("Pads: loop keys"), "{}", s.hint());
+        });
+    }
+
+    /// A Perform pad's throw on the Drums track (board 7's On): picking
+    /// On puts a Perform FX on Drums and says so, a hit plays the throw
+    /// there and not on the master, and On back to the master takes it off
+    /// again.
+    #[test]
+    fn a_throw_on_drums_plays_on_a_perform_fx_its_on_put_there() {
+        use crate::gui::FromUi;
+        use crate::perform_pads::{Hold, PadAction, Throw};
+        use mpfree_fx::StripId;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let drums = StripId::Track(crate::mixing::DRUMS);
+            let perform_on = |s: &Session| {
+                let c = s.mix.mixer.chain(drums)?;
+                (0..c.len()).find(|&i| {
+                    c.node(i)
+                        .is_some_and(|n| n.info().id == crate::mixing::PERFORM_FX)
+                })
+            };
+            let delay = Throw::new(0, Hold::WhileHeld);
+            let on_drums = Throw { on: drums, ..delay };
+            assert_eq!(perform_on(&s), None);
+            s.route(FromUi::PerformPad {
+                page: 1,
+                pad: 0,
+                action: PadAction::Throw(on_drums),
+            });
+            s.run_for(0.1);
+            assert!(s.said().iter().any(|l| l
+                == "perform: Perform FX put on Drums for the Perform pads' throws (the Mix tab \
+                    shows it)"));
+            let slot = perform_on(&s).expect("a Perform FX on Drums");
+            // The set on the pads at page B: pad 1 throws on Drums.
+            s.press("header", "tab", "Looper");
+            s.button_with("SHIFT", "SAMPLER");
+            s.button("PAD BANK B/F");
+            s.pad_edge(0, 100, true);
+            s.run_periods(4);
+            let held = |s: &Session, strip: StripId, slot: usize| {
+                s.mix
+                    .mixer
+                    .chain(strip)
+                    .and_then(|c| c.node(slot))
+                    .is_some_and(|n| n.param(mpfree_fx::ids::perform::hold(9)) > 0.5)
+            };
+            assert!(held(&s, drums, slot), "on Drums");
+            assert!(
+                !s.mix.throw_held(crate::mixing::ThrowFx::Delay),
+                "not the master"
+            );
+            s.pad_edge(0, 0, false);
+            s.run_periods(4);
+            assert!(!held(&s, drums, slot));
+            // On back to the master: the Perform FX comes off Drums.
+            s.route(FromUi::PerformPad {
+                page: 1,
+                pad: 0,
+                action: PadAction::Throw(delay),
+            });
+            s.run_for(0.1);
+            assert!(s
+                .said()
+                .iter()
+                .any(|l| l
+                    == "perform: Perform FX taken off Drums (no Perform pad throws there now)"));
+            assert_eq!(perform_on(&s), None);
         });
     }
 

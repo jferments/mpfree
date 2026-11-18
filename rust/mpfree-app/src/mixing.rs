@@ -313,12 +313,66 @@ static XY_START: [[(u16, f32); 2]; 9] = {
 /// once, 2 on the next 1/16, 3 on the next beat; 0 its own Punch in), Let
 /// go (cut, else ring out) and Plays (for a bar, else while held), set
 /// for the pad's hit and put back after it, so Play's throw cards and the
-/// Perform FX page keep the pad's own settings.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Perform FX page keep the pad's own settings; and the strip it plays on
+/// (`on`: the master, a track or a submix), whose Perform FX it holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ThrowHow {
     pub starts: u8,
     pub cut: bool,
     pub bar: bool,
+    pub on: StripId,
+}
+
+impl Default for ThrowHow {
+    fn default() -> ThrowHow {
+        ThrowHow {
+            starts: 0,
+            cut: false,
+            bar: false,
+            on: StripId::Master,
+        }
+    }
+}
+
+/// The Perform FX's id: on the master from the start, and put on a track
+/// or a submix the first time a Perform pad's throw plays there.
+pub const PERFORM_FX: &str = "mpfree.fx.perform";
+
+/// Throws held while the Perform FX they play on is being put on their
+/// strip, at most: each plays when it lands.
+const WAITING: usize = 4;
+
+/// A Perform pad's throw held while its strip's Perform FX is being put
+/// on ([`MixHost::play`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Waiting {
+    fx: ThrowFx,
+    how: ThrowHow,
+}
+
+/// The strips a Perform pad's throw can play on, named as the Mix tab
+/// names them: the master, the engines' tracks, each track's own channel
+/// in use (named after its track, as the stems are), and the submixes.
+pub fn throw_strips(mixer: &Mixer, in_use: u128, tracks: &[String]) -> Vec<(String, StripId)> {
+    let mut out = vec![(name(StripId::Master), StripId::Master)];
+    let mut subs = Vec::new();
+    for s in mixer.strips() {
+        match s {
+            StripId::Track(t) if t < TRACKS => out.push((name(s), s)),
+            StripId::Track(t) if t - TRACKS < 128 && in_use & (1 << (t - TRACKS)) != 0 => {
+                let named = tracks
+                    .get(t - TRACKS)
+                    .filter(|n| !n.trim().is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| name(s));
+                out.push((named, s));
+            }
+            StripId::Bus(_) => subs.push((name(s), s)),
+            _ => {}
+        }
+    }
+    out.extend(subs);
+    out
 }
 
 /// The performance effects a throw holds.
@@ -420,6 +474,19 @@ pub struct MixHost {
     pad_solos: u16,
     /// What the XY pad plays ([`PlayFx::XyEffect`]).
     xy_effect: Option<usize>,
+    /// Perform pads' throws held while their strip's Perform FX is being
+    /// put on: each plays when it lands ([`MixHost::poll_built`]).
+    waiting: [Option<Waiting>; WAITING],
+    /// What the Perform set's throws on tracks and submixes said, for the
+    /// log and the screen: a Perform FX put on or taken off, or why a
+    /// throw couldn't play.
+    throw_said: Vec<String>,
+    /// The tracks and submixes the Perform set's throws play on
+    /// ([`MixHost::perform_strips`]), the ones whose Perform FX the set put
+    /// on this session, and the ones being put on now.
+    perform_want: Vec<StripId>,
+    perform_added: Vec<StripId>,
+    perform_building: Vec<StripId>,
     /// The pad strips' mutes as `apply_mutes` last set them (a bit each):
     /// a strip's parameter reads its old value until the next period, so
     /// two changes in one period compare with what was sent.
@@ -648,6 +715,11 @@ impl MixHost {
             pad_solos: 0,
             mutes_sent: 0,
             xy_effect: None,
+            waiting: [None; WAITING],
+            throw_said: Vec::new(),
+            perform_want: Vec::new(),
+            perform_added: Vec::new(),
+            perform_building: Vec::new(),
             builder: None,
             landing: None,
             plugins: Arc::new(Plugins::none()),
@@ -1208,6 +1280,14 @@ impl MixHost {
             }
         }
         crate::fxmodes::land(self);
+        let unwanted = self
+            .perform_added
+            .iter()
+            .any(|s| !self.perform_want.contains(s));
+        if !self.perform_building.is_empty() || unwanted {
+            self.play_waiting();
+            self.take_off_unwanted();
+        }
         said
     }
 
@@ -1233,32 +1313,10 @@ impl MixHost {
                 self.insert(strip, FILTER_SLOT, dj_filter::POSITION, position);
             }
             PlayFx::Throw { fx, down, how } => {
-                // The throw holds its Perform FX pad (the default bank's,
-                // as the FX thread laid it out for the throws). A Perform
-                // pad's settings go on the pad for the hit (the node reads
-                // Starts and Plays on the press, Let go on the release, in
-                // the order they come) and the pad's own come back after.
-                let k = fx.pad();
-                let own = how.map(|h| {
-                    let set = [
-                        (perf::starts(k), f32::from(h.starts)),
-                        (perf::let_go(k), if h.cut { 1.0 } else { 0.0 }),
-                        (perf::plays(k), if h.bar { 1.0 } else { 0.0 }),
-                    ];
-                    let own = set.map(|(id, _)| (id, self.perform_param(id).unwrap_or(0.0)));
-                    for (id, v) in set {
-                        self.insert(StripId::Master, PERFORM_SLOT, id, v);
-                    }
-                    own
-                });
-                self.insert(
-                    StripId::Master,
-                    PERFORM_SLOT,
-                    perf::hold(k),
-                    if down { 1.0 } else { 0.0 },
-                );
-                for (id, v) in own.into_iter().flatten() {
-                    self.insert(StripId::Master, PERFORM_SLOT, id, v);
+                let on = how.map_or(StripId::Master, |h| h.on);
+                match self.perform_slot(on) {
+                    Some(slot) => self.throw(slot, fx, down, how),
+                    None => self.throw_waits(fx, down, how.unwrap_or_default()),
                 }
             }
             PlayFx::Macro { card, value } => {
@@ -1354,11 +1412,191 @@ impl MixHost {
     }
 
     /// A parameter of the master's Perform FX as it is now.
+    #[cfg(test)]
     fn perform_param(&self, id: u16) -> Option<f32> {
+        self.perform_param_on(StripId::Master, id)
+    }
+
+    /// A parameter of strip `on`'s Perform FX as it is now.
+    fn perform_param_on(&self, on: StripId, id: u16) -> Option<f32> {
+        let slot = self.perform_slot(on)?;
         self.mixer
-            .chain(StripId::Master)
-            .and_then(|c| c.node(PERFORM_SLOT))
+            .chain(on)
+            .and_then(|c| c.node(slot))
             .map(|n| n.param(id))
+    }
+
+    /// Strip `on`'s Perform FX: the first on its chain (the master's own
+    /// is its first insert), if it has one.
+    fn perform_slot(&self, on: StripId) -> Option<usize> {
+        let c = self.mixer.chain(on)?;
+        (0..c.len()).find(|&i| c.node(i).is_some_and(|n| n.info().id == PERFORM_FX))
+    }
+
+    /// Throw `fx` held (`down`) or let go on the Perform FX in `slot` of
+    /// its strip (`how.on`; the master's for Play's cards). It holds the
+    /// Perform FX pad the FX thread laid out for it in the default bank.
+    /// A Perform pad's settings go on the pad for the hit (the node reads
+    /// Starts and Plays on the press, Let go on the release, in the order
+    /// they come) and the pad's own come back after.
+    fn throw(&mut self, slot: usize, fx: ThrowFx, down: bool, how: Option<ThrowHow>) {
+        let on = how.map_or(StripId::Master, |h| h.on);
+        let k = fx.pad();
+        let own = how.map(|h| {
+            let set = [
+                (perf::starts(k), f32::from(h.starts)),
+                (perf::let_go(k), if h.cut { 1.0 } else { 0.0 }),
+                (perf::plays(k), if h.bar { 1.0 } else { 0.0 }),
+            ];
+            let own = set.map(|(id, _)| (id, self.perform_param_on(on, id).unwrap_or(0.0)));
+            for (id, v) in set {
+                self.insert(on, slot, id, v);
+            }
+            own
+        });
+        self.insert(on, slot, perf::hold(k), if down { 1.0 } else { 0.0 });
+        for (id, v) in own.into_iter().flatten() {
+            self.insert(on, slot, id, v);
+        }
+    }
+
+    /// A throw on a track or a submix with no Perform FX there: while the
+    /// one its On put on is still being built, it waits and plays when it
+    /// lands (let go before that, a held throw doesn't play at all; a
+    /// bar's still does). With none coming, it doesn't play: a throw never
+    /// changes the mix, picking On does ([`MixHost::perform_strips`]).
+    fn throw_waits(&mut self, fx: ThrowFx, down: bool, how: ThrowHow) {
+        let on = how.on;
+        let same = |w: &Option<Waiting>| w.is_some_and(|w| w.how.on == on && w.fx == fx);
+        if !down {
+            if !how.bar {
+                for w in self.waiting.iter_mut().filter(|w| same(w)) {
+                    *w = None;
+                }
+            }
+            return;
+        }
+        if !self.perform_building.contains(&on) {
+            self.throw_said.push(format!(
+                "perform: {} has no Perform FX for the throw: pick the pad's On again on the \
+                 Pads tab",
+                name(on)
+            ));
+            return;
+        }
+        let held = Waiting { fx, how };
+        match self.waiting.iter_mut().find(|w| same(w) || w.is_none()) {
+            Some(w) => *w = Some(held),
+            None => {
+                self.waiting.rotate_left(1);
+                self.waiting[WAITING - 1] = Some(held);
+            }
+        }
+    }
+
+    /// The tracks and submixes the Perform set's throws play on (`want`),
+    /// after the set changed: each gets a Perform FX at the end of its
+    /// chain if it has none (it shows on the Mix tab, is saved with the
+    /// project and can be taken off there), and one this set put on that
+    /// no throw plays on any more comes off again, so stepping a pad's On
+    /// through the strips leaves nothing behind. One that was there
+    /// already, or that a project brought, stays. `opened`: a project's
+    /// set, whose mixer brings its own: nothing is put on or taken off.
+    pub fn perform_strips(&mut self, want: &[StripId], opened: bool) {
+        self.perform_want = want.to_vec();
+        if opened {
+            self.perform_added.clear();
+            self.perform_building.clear();
+            return;
+        }
+        for &on in want {
+            if self.perform_slot(on).is_some() || self.perform_building.contains(&on) {
+                continue;
+            }
+            if self.mixer.chain(on).map_or(SLOTS, |c| c.len()) >= SLOTS {
+                self.throw_said.push(format!(
+                    "perform: {} has no free effect slot for the throw's Perform FX",
+                    name(on)
+                ));
+                continue;
+            }
+            match self.add_insert_with(on, PERFORM_FX, &[]) {
+                Ok(()) => {
+                    self.perform_building.push(on);
+                    self.perform_added.push(on);
+                    self.throw_said.push(format!(
+                        "perform: Perform FX put on {} for the Perform pads' throws (the Mix \
+                         tab shows it)",
+                        name(on)
+                    ));
+                }
+                Err(e) => self
+                    .throw_said
+                    .push(format!("perform: {e}: no Perform FX on {}", name(on))),
+            }
+        }
+        self.take_off_unwanted();
+    }
+
+    /// The Perform FX the set put on that no throw plays on now, taken off
+    /// once they are in (one still being built comes off when it lands).
+    /// Allocates only to say what came off.
+    fn take_off_unwanted(&mut self) {
+        let mut i = 0;
+        while i < self.perform_building.len() {
+            if self.perform_slot(self.perform_building[i]).is_some() {
+                self.perform_building.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        let mut i = 0;
+        while i < self.perform_added.len() {
+            let on = self.perform_added[i];
+            if self.perform_want.contains(&on) || self.perform_building.contains(&on) {
+                i += 1;
+                continue;
+            }
+            let Some(at) = self.perform_slot(on) else {
+                self.perform_added.swap_remove(i);
+                continue;
+            };
+            if self.mixer.edit(Edit::Remove { strip: on, at }).is_err() {
+                // The mixer's edits are full: the next poll tries again.
+                i += 1;
+                continue;
+            }
+            self.perform_added.swap_remove(i);
+            for w in self.waiting.iter_mut() {
+                if w.is_some_and(|w| w.how.on == on) {
+                    *w = None;
+                }
+            }
+            self.throw_said.push(format!(
+                "perform: Perform FX taken off {} (no Perform pad throws there now)",
+                name(on)
+            ));
+        }
+    }
+
+    /// The throws held while their Perform FX was being put on, played on
+    /// it once it is there.
+    fn play_waiting(&mut self) {
+        for i in 0..WAITING {
+            let Some(w) = self.waiting[i] else {
+                continue;
+            };
+            if let Some(slot) = self.perform_slot(w.how.on) {
+                self.waiting[i] = None;
+                self.throw(slot, w.fx, true, Some(w.how));
+            }
+        }
+    }
+
+    /// What the Perform set's throws on tracks and submixes said since
+    /// last asked.
+    pub fn take_throw_said(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.throw_said)
     }
 
     /// The master's XY FX, the first on its chain, if it has one.
@@ -2846,6 +3084,7 @@ mod tests {
                 starts: 1,
                 cut: true,
                 bar: true,
+                on: StripId::Master,
             }),
         });
         run(&mut h, 2, 0.0, 0.0);
@@ -2862,6 +3101,7 @@ mod tests {
                 starts: 1,
                 cut: true,
                 bar: true,
+                on: StripId::Master,
             }),
         });
         run(&mut h, 2, 0.0, 0.0);
@@ -2885,6 +3125,140 @@ mod tests {
             h.perform_param(perf::slot(ThrowFx::Delay.pad()) + 3),
             Some(0.0)
         );
+    }
+
+    /// A Perform pad's throw on a track or a submix: picking its On puts a
+    /// Perform FX at the end of that strip's chain (said), and the throw
+    /// plays there, the master's at rest. A hit while it is still going in
+    /// waits for it; a hit on a strip with none says so and changes
+    /// nothing. When no throw plays on a strip any more, the Perform FX
+    /// the set put there comes off; a project's set changes nothing; a
+    /// full chain says why nothing went on.
+    #[test]
+    fn picking_a_throws_strip_puts_a_perform_fx_there_and_it_plays_on_it() {
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        // The inserts go in once each strip has ducked out (about 10 ms).
+        run(&mut h, 10, 0.0, 0.0);
+        let drums = StripId::Track(DRUMS);
+        let sub = StripId::Bus(1);
+        let k = ThrowFx::Delay.pad();
+        let how = |on| ThrowHow {
+            starts: 1,
+            on,
+            ..ThrowHow::default()
+        };
+        let throw = |h: &mut MixHost, on, down: bool| {
+            h.play(PlayFx::Throw {
+                fx: ThrowFx::Delay,
+                down,
+                how: Some(how(on)),
+            })
+        };
+        let settle = |h: &mut MixHost| {
+            run(h, 10, 0.0, 0.0);
+            assert_eq!(h.poll_built(), None);
+            run(h, 2, 0.0, 0.0);
+        };
+        // A hit on Drums before anything put a Perform FX there: said, and
+        // nothing goes on.
+        let before = h.mixer.chain(drums).map_or(0, |c| c.len());
+        throw(&mut h, drums, true);
+        assert_eq!(
+            h.take_throw_said(),
+            [
+                "perform: Drums has no Perform FX for the throw: pick the pad's On again on the \
+              Pads tab"
+            ]
+        );
+        settle(&mut h);
+        assert_eq!(h.mixer.chain(drums).map_or(0, |c| c.len()), before);
+        throw(&mut h, drums, false);
+        // On picks Drums: a Perform FX at the end of its chain.
+        h.perform_strips(&[drums], false);
+        assert_eq!(
+            h.take_throw_said(),
+            [
+                "perform: Perform FX put on Drums for the Perform pads' throws (the Mix tab \
+              shows it)"
+            ]
+        );
+        settle(&mut h);
+        assert_eq!(h.perform_slot(drums), Some(before));
+        throw(&mut h, drums, true);
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(h.perform_param_on(drums, perf::hold(k)), Some(1.0));
+        assert_eq!(
+            h.perform_param(perf::hold(k)),
+            Some(0.0),
+            "not the master's"
+        );
+        throw(&mut h, drums, false);
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(h.perform_param_on(drums, perf::hold(k)), Some(0.0));
+        // Sub 2 picked too, and hit while its Perform FX goes in: the hit
+        // waits and plays once it is there. The same set again changes
+        // nothing.
+        h.perform_strips(&[drums, sub], false);
+        throw(&mut h, sub, true);
+        assert_eq!(h.take_throw_said().len(), 1, "Sub 2's put on");
+        h.perform_strips(&[drums, sub], false);
+        assert!(h.take_throw_said().is_empty());
+        settle(&mut h);
+        assert_eq!(h.perform_param_on(sub, perf::hold(k)), Some(1.0));
+        throw(&mut h, sub, false);
+        // No throw on Drums any more: its Perform FX comes off.
+        h.perform_strips(&[sub], false);
+        assert_eq!(
+            h.take_throw_said(),
+            ["perform: Perform FX taken off Drums (no Perform pad throws there now)"]
+        );
+        settle(&mut h);
+        assert_eq!(h.perform_slot(drums), None);
+        assert_eq!(h.mixer.chain(drums).map_or(0, |c| c.len()), before);
+        // A project's set: its mixer brings its own, so nothing goes on or
+        // comes off, and Sub 2's stays as the project's.
+        let synth = StripId::Track(SYNTH);
+        h.perform_strips(&[synth], true);
+        settle(&mut h);
+        assert_eq!(h.perform_slot(synth), None);
+        assert!(h.perform_slot(sub).is_some());
+        h.perform_strips(&[], false);
+        settle(&mut h);
+        assert!(
+            h.perform_slot(sub).is_some(),
+            "not this session's to take off"
+        );
+        assert!(h.take_throw_said().is_empty());
+        // A full chain: said, and nothing put on.
+        while h.mixer.chain(synth).map_or(SLOTS, |c| c.len()) < SLOTS {
+            h.add_insert(synth, "mpfree.fx.compressor").unwrap();
+            run(&mut h, 10, 0.0, 0.0);
+        }
+        h.perform_strips(&[synth], false);
+        assert_eq!(
+            h.take_throw_said(),
+            ["perform: Synth has no free effect slot for the throw's Perform FX"]
+        );
+        settle(&mut h);
+        assert_eq!(h.perform_slot(synth), None);
+    }
+
+    /// The strips a throw can play on: the master, the engines' tracks, a
+    /// track's own channel only while in use (by its track's name), and
+    /// the submixes.
+    #[test]
+    fn a_throw_plays_on_the_master_a_track_or_a_submix() {
+        let h = MixHost::new(RATE, 0.0, 0.0);
+        let names = ["Breaks".to_string(), "Keys".to_string()];
+        let strips = throw_strips(&h.mixer, 0b10, &names);
+        let named: Vec<&str> = strips.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            named[..6],
+            ["Master", "Drums", "Synth", "Loop", "Audio", "Keys"]
+        );
+        assert_eq!(strips[5].1, StripId::Track(TRACKS + 1));
+        assert_eq!(strips[6], ("Sub 1".to_string(), StripId::Bus(0)));
+        assert_eq!(strips.len(), 6 + 8, "eight submixes");
     }
 
     /// A macro pad holds its macro at its value while held, then lets go
