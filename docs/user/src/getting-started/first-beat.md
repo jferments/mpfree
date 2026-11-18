@@ -98,9 +98,9 @@ Programming steps is precise; playing in feels human. Try both.
 
 ### What REC records
 
-The REC chip on the transport bar always names what REC records: the notes of the track the pads play (into its clip), or a loop. Opening the **Sequencer** tab arms the notes, the **Loop** view and the **Looper** tab arm the loop, and picking a track on Arrange arms its notes. The All view leaves it as it was, so on the home view REC records whatever you armed last; an empty loop strip says which. Nothing changes it while a take records. If you open the Loop view while the notes are ready, the loop gets the ready (and back again). The **Rec** button on the Arrange tab's transport bar is REC too, and its **Play** and **Stop** start a ready take or let it go.
+The REC chip on the transport bar always names what REC records: the notes of the track the pads play (into its clip), or a loop. Opening the **Sequencer** tab arms the notes, the **Looper** tab arms the loop, and picking a track on Arrange arms its notes. The Play page leaves it as it was, so there REC records whatever you armed last; the red **Arm** pill (below) says which. Nothing changes it while a take records. If you open the Looper tab while the notes are ready, the loop gets the ready (and back again). The **Rec** button on the Arrange tab's transport bar is REC too, and its **Play** and **Stop** start a ready take or let it go.
 
-The loop strip and the pattern each start their heading with an **Arm** pill: red on what REC records, grey on the other. Tap a grey one to record that instead, or hold **SHIFT** and tap it to record both in one pass: the pads into the clip and what you play into a loop (the chip says "Track 1 + Loop 1"; a plain tap on one pill goes back to that one alone). Tap the REC chip for the list of everything that can record: tap a row to arm it, and turn on **Pin the arm** to keep pages and track picks from moving it, so only a tap on Arm does (the chip says "REC · PINNED"). If you started recording by mistake, press **UNDO**: the take so far is thrown away and the music plays on.
+On the Play page, the loop row and the pattern each start their heading with an **Arm** pill: red on what REC records, grey on the other. Tap a grey one to record that instead, or hold **SHIFT** and tap it to record both in one pass: the pads into the clip and what you play into a loop (the chip says "Track 1 + Loop 1"; a plain tap on one pill goes back to that one alone). Tap the REC chip for the list of everything that can record: tap a row to arm it, and turn on **Pin the arm** to keep pages and track picks from moving it, so only a tap on Arm does (the chip says "REC · PINNED"). If you started recording by mistake, press **UNDO**: the take so far is thrown away and the music plays on.
 
 > [!MPC]
 > As on the MPC, **REC** readies recording and **PLAY** starts it. MPFree's REC chip shows what it will record before you start.
@@ -109,7 +109,7 @@ Every recording is kept as a **take**, so UNDO and SHIFT + UNDO step back and fo
 
 ## Make it groove
 
-With the pattern playing, turn the Q-Links on the **All** view (tap **All** in the view switch):
+With the pattern playing, turn the Q-Links on the **Play** page:
 
 - **Swing** delays every other step a little, for a shuffled, less robotic feel. Try 55 to 60 %.
 - **Tune** raises or lowers the pitch of the pad you last played.

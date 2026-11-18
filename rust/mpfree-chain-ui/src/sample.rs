@@ -18,7 +18,6 @@ use mpfree_mod::{
     lfo, Bindings, MacroMap, MapCurve, ModEngine, ModEvent, ModTimed, Row, Source, DEFAULT_TICK,
 };
 use mpfree_param::{Owner, ParamAddr, Strip};
-use mpfree_sampler_ui::widgets::PadBar;
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::Fonts;
 use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Theme, Tone, Ui, Widget};
@@ -283,17 +282,6 @@ impl Song {
         }
     }
 
-    /// The Drums chain as the Sample tab's FX tab shows it: Filter, Drive,
-    /// Compressor and EQ, the EQ switched off (as in the mockup Jay
-    /// approved, 17 Nov).
-    pub fn pedals(&self) -> Vec<crate::state::Pedal> {
-        let mut p = crate::state::pedals(&self.drums, DRUMS, &self.engine);
-        if let Some(eq) = p.get_mut(3) {
-            eq.on = false;
-        }
-        p
-    }
-
     pub fn chain(&self, s: Strip) -> &Chain {
         match s {
             DRUMS => &self.drums,
@@ -494,15 +482,9 @@ impl Widget for QLinkColumn {
 pub enum Place {
     /// The chain editor in the mixer's place (no tab lit, Back to the mixer).
     Mixer,
-    /// The chain editor in the Sample tab's FX sub-tab, under the pad bar.
-    SampleFx,
     /// The macros panel over the page, under the top bar (no tab lit).
     Over,
 }
-
-/// The pages: the top bar, the panel and the Q-Link column (under the
-/// pad bar on Sample), the hint line.
-const PREVIEW_SAMPLE: &str = "col(header:60, smp-bar:60, row(chain:*, qlinks:128):*, hint:26)";
 
 /// The app's screen around a panel. For the chain editor, the Q-Links
 /// show the selected effect's first four knobs (bank 0, the page's own);
@@ -515,13 +497,8 @@ pub fn screen(
     macros: Option<MacrosState>,
 ) -> Result<Ui, String> {
     let mut ui = Ui::new(Theme::dark(), fonts, 1280, 800);
-    // The top bar: Sample lit for its FX sub-tab; Mix for the editor
-    // itself (the chain editor is the Mix tab's).
-    let mut header = Header::app(if place == Place::SampleFx {
-        "Sample"
-    } else {
-        "Mix"
-    });
+    // The top bar: Mix lit (the chain editor is the Mix tab's).
+    let mut header = Header::app("Mix");
     header.chips = vec![
         Chip::new("92 BPM", Tone::Normal),
         Chip::new("Night drive", Tone::Normal),
@@ -542,15 +519,8 @@ pub fn screen(
     ui.add(QLINKS, QLinkColumn::new(song));
     let (hint, layout) = match place {
         Place::Mixer => (crate::CHAIN_HINT, crate::CHAIN_LAYOUT),
-        Place::SampleFx => (crate::CHAIN_HINT, PREVIEW_SAMPLE),
         Place::Over => (crate::MACROS_HINT, crate::MACROS_LAYOUT),
     };
-    let mut bar = PadBar::new(&mpfree_sampler_ui::wave_tab::TABS);
-    bar.color = Theme::dark().bad;
-    bar.title = "Pad 1 · Kick".into();
-    bar.subtitle = "kick_tight · 1 layer · Drums".into();
-    bar.active = 5;
-    ui.add("smp-bar", bar);
     ui.add("hint", Label::new(hint, Tone::Dim, Align::Left));
     ui.add(crate::CHAIN, ChainView::new());
     ui.add(crate::MACROS_W, MacrosView::new());
@@ -691,7 +661,6 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let drive_uid = song.drums.uid(1).unwrap();
     let filter_uid = song.drums.uid(0).unwrap();
     let delay_uid = song.keys.uid(2).unwrap();
-    let kick_uid = song.kick.uid(0).unwrap();
     let from_mixer = |mut st: ChainState| {
         st.back = Some("Mixer".into());
         st.strip_name = st.title.trim_end_matches(" FX").to_string();
@@ -731,16 +700,6 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
             ids::delay::MIX,
         )),
     ));
-    let mut kick = song.chain_state(
-        KICK,
-        0,
-        0,
-        Some(ParamAddr::new(
-            Owner::Insert(KICK, kick_uid),
-            ids::drive::DRIVE,
-        )),
-    );
-    kick.scopes = vec!["Pad 1 · Kick".into(), "Track · Drums".into()];
     let empty = ChainState::from_chain(
         &chain(vec![]),
         Strip::Track(6),
@@ -1023,7 +982,6 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         Sample { name: "chain-mixer-drums-eq-hq", about: "The same EQ at Quality HQ 2x: the Quality chip at the end of the type row lit (a tap swaps Normal and HQ 2x); the bands run at twice the rate, so a bell keeps its analog shape to 20 kHz", ui: eq_hq_ui },
         Sample { name: "chain-mixer-drums-eq-held", about: "Band 2's dot held and dragged down and left: it follows the finger, frequency across and gain up, with a readout over it", ui: held },
         Sample { name: "chain-mixer-keys-strip", about: "An effect of several pages: a Channel strip (Vocal preset) on its first page, a tab per page beside its name. Its stages are sections with their switches (the gate off here, so its controls are dim) and Open › to each stage's page. The Q-Links are the strip's four on every page: Comp thresh, Makeup, Low cut, High gain", ui: screen(fonts(), &mut song, Place::Mixer, Some(strip_st), None)? },
-        Sample { name: "chain-sample-fx-pad", about: "In the Sample tab's FX sub-tab, under the pad bar: pad 1's own chain, with a switch to the drum track's (to agree with the sampler thread)", ui: screen(fonts(), &mut song, Place::SampleFx, Some(kick), None)? },
         Sample { name: "chain-mixer-empty", about: "From the mixer: a track with no effects yet, + Add effect; the Q-Links have nothing of the page's, so they show free", ui: screen(fonts(), &mut song, Place::Mixer, Some(empty), None)? },
         Sample { name: "chain-mixer-add-effect", about: "The effect picker, a category browser over the page (+ Add effect, or the mixer's + on a strip): Favourites, Recent and the categories with their counts; with no favourites it opens on Dynamics. A tap adds an effect at its defaults, the star keeps it, a hold or its presets line opens its presets", ui: screen(fonts(), &mut song, Place::Mixer, Some(adding), None)? },
         Sample { name: "chain-mixer-add-favourites", about: "The picker opens on Favourites once there are any (starred, in the order they were starred; Recent holds the last 12 added)", ui: screen(fonts(), &mut song, Place::Mixer, Some(starred), None)? },
@@ -1108,7 +1066,7 @@ mod tests {
     #[test]
     fn the_samples_read_real_state_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 34);
+        assert_eq!(s.len(), 33);
         for mut sample in s {
             let (w, h) = sample.ui.size();
             let mut c = SoftCanvas::new(w, h);
@@ -2912,21 +2870,13 @@ mod tests {
     }
 
     #[test]
-    fn the_sample_tab_chain_switches_between_pad_and_track() {
+    fn a_chain_of_two_scopes_switches_between_pad_and_track() {
         let mut song = Song::new();
         let mut st = song.chain_state(KICK, 0, 0, None);
         st.scopes = vec!["Pad 1 · Kick".into(), "Track · Drums".into()];
-        let mut ui = screen(
-            Fonts::embedded(),
-            &mut song,
-            Place::SampleFx,
-            Some(st),
-            None,
-        )
-        .unwrap();
+        let mut ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(st), None).unwrap();
         let r = ui.rect_of(crate::CHAIN).unwrap();
         let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
-        assert!(l.back.is_none());
         tap(&mut ui, l.scopes[1].x + 5, l.scopes[1].y + 5);
         assert_eq!(crate::take_chain_actions(&mut ui), [ChainAction::Scope(1)]);
         assert_eq!(ui.get::<ChainView>(crate::CHAIN).unwrap().state().scope, 1);

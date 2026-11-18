@@ -16,8 +16,8 @@ use mpfree_node::Node;
 use crate::presets as p;
 use crate::{
     Amp, AutoPan, AutoWah, ChannelStrip, Character, Chorus, Cloud, Comb, Compressor, Crush,
-    DeEsser, Delay, DjFilter, Drive, Ducker, Eq, Exciter, Flanger, FreqShifter, Fuzz, Gate,
-    GrainNode, Granulator, Harmonizer, Limiter, LoFi, MasterSafety, MultiFilter, MultiTap,
+    DeEsser, Delay, DjFilter, Drive, Ducker, Ensemble, Eq, Exciter, Flanger, FreqShifter, Fuzz,
+    Gate, GrainNode, Granulator, Harmonizer, Limiter, LoFi, MasterSafety, MultiFilter, MultiTap,
     MultibandCompressor, Perform, Phaser, PitchCorrect, PitchShifter, Plate, Preset, RingMod, Room,
     Rotary, SampleDelay, Spring, StereoWidth, TalkBox, TapeDelay, TransientShaper, Tremolo, Tuner,
     Vocoder, XyFx,
@@ -291,6 +291,14 @@ pub static EFFECTS: &[FxEntry] = &[
         Modulation,
         || Box::new(Chorus::new()),
         p::CHORUS,
+    ),
+    e(
+        "mpfree.fx.ensemble",
+        "Ensemble",
+        "The string machine's shimmer",
+        Modulation,
+        || Box::new(Ensemble::new()),
+        crate::ensemble::PRESETS,
     ),
     e(
         "mpfree.fx.flanger",

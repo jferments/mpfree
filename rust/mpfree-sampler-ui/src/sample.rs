@@ -629,12 +629,19 @@ pub fn app_ui_with(fonts: Fonts, p: &Project, hint: &str) -> Ui {
     ui
 }
 
+/// The Sound section's pad on `project`, as the app makes it for the Wave
+/// page.
+pub fn sound_state(project: &Project, view: &Arc<SourceView>) -> Option<PlayState> {
+    PlayState::from_project(project, PAD, |_| view.clone())
+}
+
 /// The Wave tab on the sample project, shown.
 pub fn wave_sample(fonts: Fonts) -> Result<Sample, String> {
     let (project, view) = project();
-    let state = WaveState::from_project(&project, PAD, 0, view).ok_or("no pad")?;
+    let state = WaveState::from_project(&project, PAD, 0, view.clone()).ok_or("no pad")?;
     let mut ui = app_ui(fonts, &project);
-    let tab = WaveTab::add(&mut ui, PAGE, &state)?;
+    let mut tab = WaveTab::add(&mut ui, PAGE, &state)?;
+    tab.set_sound(&mut ui, sound_state(&project, &view));
     ui.show(PAGE)?;
     Ok(Sample {
         name: "wave",
@@ -699,6 +706,7 @@ pub fn layered_project() -> (Project, Arc<SourceView>) {
                 cutoff_hz: 2400.0,
                 resonance: 0.35,
                 env_octaves: 0.5,
+                drive_db: 0.0,
             },
             vel_to_start: 0.2,
             pressure: PressureRoute {
@@ -1199,9 +1207,10 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
             r.gain_db = 0.0;
         })
         .map_err(|e| format!("{e:?}"))?;
-    let state = WaveState::from_project(&project, PAD, 0, view).ok_or("no pad")?;
+    let state = WaveState::from_project(&project, PAD, 0, view.clone()).ok_or("no pad")?;
     let mut ui = app_ui(fonts(), &project);
-    let tab = WaveTab::add(&mut ui, PAGE, &state)?;
+    let mut tab = WaveTab::add(&mut ui, PAGE, &state)?;
+    tab.set_sound(&mut ui, sound_state(&project, &view));
     ui.show(PAGE)?;
     tab.set_playheads(&mut ui, &[(f64::from(RATE) * 60.0 / BPM * 2.6) as u64]);
     out.push(Sample {

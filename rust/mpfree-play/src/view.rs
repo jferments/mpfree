@@ -31,7 +31,7 @@ use mpfree_seq::{
     touch_fits, Clip, ClipProgram, DestId, Direction, LaunchGrid, Lock, ModelError, Note, Project,
     Quantise, Source, Speed, Touch, TouchPoint, MAX_LOCKS, MAX_NOTES, MAX_TRACKS, SLOTS,
 };
-use mpfree_transport::time::{Swing, Tick};
+use mpfree_transport::time::{Swing, TempoMap, Tick};
 
 use crate::recorded::{Includes, Rec};
 
@@ -494,12 +494,32 @@ pub struct PlayView {
     pub(crate) song_lanes: Option<ClipView>,
     /// What it includes, when its host says ([`PlayView::set_includes`]).
     pub(crate) includes: Option<Includes>,
+    /// The song's tempo map while song mode plays its tempo points
+    /// ([`PlayView::set_tempo_map`]), for the host's transport.
+    pub(crate) tempo: Option<TempoMap>,
+    /// The project's launch quantise ([`Project::launch`]): the line a
+    /// live hit on a pad that starts on the line waits for (sampler
+    /// R5.3b; the host waits, [`PlayView::launch`]).
+    pub(crate) launch: LaunchGrid,
 }
 
 impl PartialEq for PlayView {
     fn eq(&self, other: &Self) -> bool {
-        (&self.tracks, self.armed, self.song, &self.song_lanes)
-            == (&other.tracks, other.armed, other.song, &other.song_lanes)
+        (
+            &self.tracks,
+            self.armed,
+            self.song,
+            &self.song_lanes,
+            &self.tempo,
+            self.launch,
+        ) == (
+            &other.tracks,
+            other.armed,
+            other.song,
+            &other.song_lanes,
+            &other.tempo,
+            other.launch,
+        )
     }
 }
 
@@ -571,7 +591,30 @@ impl PlayView {
             song: false,
             song_lanes: None,
             includes: None,
+            tempo: None,
+            launch: project.launch,
         })
+    }
+
+    /// The tempo map the song plays (song mode with tempo points, made by
+    /// `mpfree_seq::arrange::Arrangement::tempo_map` with the project's
+    /// tempo), or None for the project's tempo throughout. The view only
+    /// carries it, so it reaches the audio thread with the song it goes
+    /// with; the host hands it to the transport
+    /// (`Transport::change_tempo_map`).
+    pub fn set_tempo_map(&mut self, map: Option<TempoMap>) {
+        self.tempo = map;
+    }
+
+    pub fn tempo_map(&self) -> Option<&TempoMap> {
+        self.tempo.as_ref()
+    }
+
+    /// The project's launch quantise as it was compiled: where a live hit
+    /// on a pad that starts on the line (a Loop pad, sampler R5.3b) waits
+    /// for, while the transport plays.
+    pub fn launch(&self) -> LaunchGrid {
+        self.launch
     }
 
     /// Song mode on (the arrangement's placements compiled in: a track

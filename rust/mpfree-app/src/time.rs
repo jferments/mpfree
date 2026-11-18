@@ -67,6 +67,7 @@ mod audio;
 mod control;
 mod follow;
 pub mod link;
+mod pad_wait;
 
 use mpfree_play::mpfree_param::{Owner, ParamAddr, RelAddr};
 use mpfree_play::{Event, Out, Sink, TrackArps};
@@ -82,6 +83,7 @@ pub use audio::TimeAudio;
 pub use control::{MuteLight, PadTap, TimeControl};
 pub use follow::Follow;
 use link::Tracks;
+pub use pad_wait::{DuePads, PadFrom, PadWait, MAX_WAITS};
 
 /// Tracks in a new project.
 pub const TRACKS: usize = 8;
@@ -737,10 +739,30 @@ impl TimeHost {
         self.audio.command_at(at, cmd)
     }
 
-    /// Follow the app's tempo (TAP TEMPO, the menu). Does nothing while
-    /// a followed clock arrives ([`TimeHost::followed_bpm`]).
+    /// Follow the app's tempo (TAP TEMPO, the menu), the project's: the
+    /// whole song's, or while song mode plays the song's tempo points
+    /// the tempo before the first. Does nothing while a followed clock
+    /// arrives ([`TimeHost::followed_bpm`]).
     pub fn follow_tempo(&mut self, bpm: f64) {
+        if self.audio.followed_bpm().is_none() {
+            self.control.project_tempo(bpm);
+            self.audio.receive();
+        }
         self.audio.follow_tempo(bpm);
+    }
+
+    /// Song mode plays the song's tempo points: the tempo turned sets the
+    /// point in effect at the playhead (`TempoEdit::AtPlayhead`), not the
+    /// project's tempo.
+    pub fn song_tempo_plays(&self) -> bool {
+        self.control.song_tempo_plays()
+    }
+
+    /// While song mode plays the song's tempo points, the tempo of the
+    /// point in effect at the playhead (None before the first): what the
+    /// tempo turned steps from.
+    pub fn tempo_here(&self) -> Option<f64> {
+        self.control.tempo_here()
     }
 
     /// Follow another device's MIDI clock with these options (the
@@ -919,6 +941,39 @@ impl TimeHost {
     #[allow(dead_code)]
     pub fn pad_pressed(&mut self, offset: u32, event: Event) {
         self.audio.pad_pressed(offset, event);
+    }
+
+    /// Whether a live hit on a pad that starts on the launch line waits
+    /// for it now ([`TimeAudio::pads_wait`], sampler R5.3b).
+    pub fn pads_wait(&self) -> bool {
+        self.audio.pads_wait()
+    }
+
+    /// Whether something played on `from` waits for its line.
+    pub fn waits_on(&self, from: PadFrom) -> bool {
+        self.audio.waits_on(from)
+    }
+
+    /// `w` waits for its launch line; false when too many wait.
+    pub fn wait_pad(&mut self, w: PadWait) -> bool {
+        self.audio.wait_pad(w)
+    }
+
+    /// Whether `w` lets go of a pad whose hit STOP dropped while it was
+    /// held: it plays nothing.
+    pub fn lets_go_of_dropped(&mut self, w: PadWait) -> bool {
+        self.audio.lets_go_of_dropped(w)
+    }
+
+    /// The pads of bank `page` whose hit waits for its line (they blink).
+    pub fn hits_waiting(&self, page: usize) -> u16 {
+        self.audio.hits_waiting(page)
+    }
+
+    /// What waited and plays in the period [`TimeHost::advance`] ran
+    /// ([`TimeAudio::due_pads`]); returns how many hits STOP dropped.
+    pub fn due_pads(&mut self, due: &mut DuePads) -> usize {
+        self.audio.due_pads(due)
     }
 
     /// A pad note as heard (after the arp) in the coming period, at
@@ -2722,6 +2777,140 @@ mod tests {
         h.period(PERIOD, &mut pads);
         h.advance(PERIOD);
         assert_eq!(h.arp_clock(), None);
+    }
+
+    /// Plays the periods up to frame `to` as the sound loop does, with
+    /// what waited for the launch line and played in each (sampler
+    /// R5.3b), at its frame.
+    /// Periods until frame `to`, the waits that play kept in `got` by
+    /// their frame; returns how many hits STOP dropped.
+    fn run_waits(
+        h: &mut TimeHost,
+        pads: &mut Fake,
+        to: u64,
+        got: &mut Vec<(u64, PadWait)>,
+    ) -> usize {
+        let mut due = DuePads::default();
+        let mut dropped = 0;
+        while pads.frame < to {
+            h.advance(PERIOD);
+            dropped += h.due_pads(&mut due);
+            got.extend(
+                due.as_slice()
+                    .iter()
+                    .map(|&(w, at)| (pads.frame + u64::from(at), w)),
+            );
+            h.period(PERIOD, pads);
+            pads.frame += u64::from(PERIOD);
+        }
+        dropped
+    }
+
+    /// Sampler R5.3b: a Loop pad's live hit made while the song plays
+    /// waits for the project's launch line and plays on its frame, its
+    /// let-go on the line after; the Launch setting moves the line, at
+    /// once plays what waits a frame apart and lets hits play at once,
+    /// and a stop drops the hits still waiting with their let-gos.
+    #[test]
+    fn a_loop_pads_hit_waits_for_the_launch_line_and_plays_on_it() {
+        use mpfree_seq::LaunchGrid;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let hit = |p| PadWait {
+            from: PadFrom::Pad(p),
+            down: true,
+            velocity: 99,
+            kit_pad: p,
+        };
+        let up = |p| PadWait {
+            from: PadFrom::Pad(p),
+            down: false,
+            velocity: 0,
+            kit_pad: p,
+        };
+        let mut got = Vec::new();
+        run_waits(&mut h, &mut pads, u64::from(PERIOD), &mut got);
+        assert!(!h.pads_wait(), "stopped: a hit plays at once");
+        h.command(Command::Play);
+        // The song's first frame.
+        let start = pads.frame;
+        run_waits(&mut h, &mut pads, start + BAR / 4, &mut got);
+        assert!(h.pads_wait());
+        // A quarter into bar 1: it starts on bar 2 and is let go on bar 3.
+        assert!(h.wait_pad(hit(2)) && h.wait_pad(up(2)));
+        assert!(h.waits_on(PadFrom::Pad(2)) && !h.waits_on(PadFrom::Pad(3)));
+        run_waits(&mut h, &mut pads, start + 2 * BAR + BAR / 4, &mut got);
+        assert_eq!(got, [(start + BAR, hit(2)), (start + 2 * BAR, up(2))]);
+        assert!(!h.waits_on(PadFrom::Pad(2)));
+        // Launch on the beat: the next beat line.
+        h.act(TimeAction::LaunchGrid(LaunchGrid::Ticks(960)))
+            .unwrap();
+        let next = pads.frame + u64::from(PERIOD);
+        run_waits(&mut h, &mut pads, next, &mut got);
+        got.clear();
+        let from = pads.frame;
+        assert!(h.wait_pad(hit(3)));
+        run_waits(&mut h, &mut pads, from + BAR / 2, &mut got);
+        let beat = BAR / 4;
+        let line = start + (from - start).div_ceil(beat) * beat;
+        assert_eq!(got, [(line, hit(3))]);
+        // At once: what waits plays now, a frame apart, and nothing waits
+        // after.
+        got.clear();
+        assert!(h.wait_pad(hit(5)) && h.wait_pad(up(5)));
+        h.act(TimeAction::LaunchGrid(LaunchGrid::Now)).unwrap();
+        let at = pads.frame;
+        run_waits(&mut h, &mut pads, at + u64::from(PERIOD), &mut got);
+        assert_eq!(got, [(at, hit(5)), (at + 1, up(5))]);
+        assert!(!h.pads_wait());
+        // A stop drops the hits still waiting, with their let-gos (pad 4's
+        // made, pad 7's still held), and plays the let-go of pad 6's hit,
+        // which sounded.
+        h.act(TimeAction::LaunchGrid(LaunchGrid::Bars(1))).unwrap();
+        let next = pads.frame + u64::from(PERIOD);
+        run_waits(&mut h, &mut pads, next, &mut got);
+        got.clear();
+        assert!(h.pads_wait() && h.wait_pad(hit(6)));
+        let bar = start + (pads.frame - start).div_ceil(BAR) * BAR;
+        let dropped = run_waits(&mut h, &mut pads, bar + u64::from(PERIOD), &mut got);
+        assert_eq!((dropped, &got[..]), (0, &[(bar, hit(6))][..]));
+        got.clear();
+        for w in [up(6), hit(4), up(4), hit(7)] {
+            assert!(h.wait_pad(w));
+        }
+        assert_eq!(h.hits_waiting(0), 1 << 4 | 1 << 7);
+        h.command(Command::Stop);
+        let at = pads.frame;
+        let dropped = run_waits(&mut h, &mut pads, at + u64::from(PERIOD), &mut got);
+        assert_eq!((dropped, &got[..]), (2, &[(at, up(6))][..]));
+        assert!(!h.pads_wait() && !h.waits_on(PadFrom::Pad(4)));
+        assert_eq!(h.hits_waiting(0), 0);
+        assert!(h.lets_go_of_dropped(up(7)) && !h.lets_go_of_dropped(up(4)));
+    }
+
+    /// Sampler R5.3b: a Loop pad's hit made during a count-in waits for
+    /// the first line after it, the record start, not a count-in's line.
+    #[test]
+    fn a_loop_pads_hit_in_a_count_in_waits_for_the_record_start() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let hit = PadWait {
+            from: PadFrom::Pad(1),
+            down: true,
+            velocity: 99,
+            kit_pad: 1,
+        };
+        let mut got = Vec::new();
+        assert!(h.command(Command::SetCountIn(2)));
+        assert!(h.command(Command::Record));
+        // The count-in's first frame: two bars before the record start.
+        let start = pads.frame;
+        run_waits(&mut h, &mut pads, start + BAR / 4, &mut got);
+        assert_eq!(h.info().state, State::CountIn);
+        assert!(h.pads_wait() && h.wait_pad(hit));
+        run_waits(&mut h, &mut pads, start + 3 * BAR, &mut got);
+        assert_eq!(h.info().state, State::Recording);
+        assert_eq!(got, [(start + 2 * BAR, hit)]);
     }
 
     #[test]
@@ -5344,6 +5533,139 @@ mod tests {
         h.follow_tempo(96.0);
         h.period(PERIOD, &mut pads);
         assert_eq!(h.info().bpm, 96.0);
+    }
+
+    /// Tempo ramps in the app. The Song view's tempo lane edits the
+    /// song's points (UNDO takes them back; the wheel's and the tempo's
+    /// turns on one point are one undo). Song mode plays them: the
+    /// project's tempo before the first, a ramp gliding on the
+    /// transport's staircase, then the last point's; off, the project's
+    /// tempo throughout. Turning the tempo sets the point in effect at the
+    /// playhead, or before the first adds one at the playhead's bar. The
+    /// project's tempo moves the song's before its first point only.
+    #[test]
+    fn song_mode_plays_the_songs_tempo_points() {
+        use mpfree_time_ui::TempoEdit::{Add, AtPlayhead, Bpm, Delete, Ramp};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let tempo = |h: &mut TimeHost, e| h.act(TimeAction::SongTempo(e));
+        // Bar 3 at 100 gliding to 140 on bar 5.
+        tempo(&mut h, Add(2 * 3840)).unwrap();
+        assert_eq!(
+            (h.state().tempo_points, h.state().tempo_pick),
+            (vec![(7680, 120.0, false)], Some(0))
+        );
+        tempo(
+            &mut h,
+            Bpm {
+                index: 0,
+                bpm: 101.0,
+            },
+        )
+        .unwrap();
+        tempo(
+            &mut h,
+            Bpm {
+                index: 0,
+                bpm: 100.0,
+            },
+        )
+        .unwrap();
+        tempo(&mut h, Add(4 * 3840)).unwrap();
+        tempo(
+            &mut h,
+            Bpm {
+                index: 1,
+                bpm: 140.0,
+            },
+        )
+        .unwrap();
+        tempo(&mut h, Ramp { index: 0, on: true }).unwrap();
+        let points = vec![(7680, 100.0, true), (15_360, 140.0, false)];
+        assert_eq!(h.state().tempo_points, points);
+        // Add, the wheel's two turns, add, a turn, the ramp.
+        assert_eq!(h.state().done.len(), 5);
+        let period = |h: &mut TimeHost, pads: &mut Fake, bpm: f64| {
+            h.follow_tempo(bpm);
+            h.period(PERIOD, pads);
+            pads.frame += u64::from(PERIOD);
+        };
+
+        // Song mode off: the project's tempo throughout.
+        period(&mut h, &mut pads, 120.0);
+        assert_eq!(h.tempo_map().segments().len(), 1);
+        assert!(!h.song_tempo_plays() && h.state().tempo_here.is_none());
+        h.act(TimeAction::SongMode(true)).unwrap();
+        period(&mut h, &mut pads, 120.0);
+        let map = h.control.project.arrangement.tempo_map(120.0).unwrap();
+        assert_eq!(*h.tempo_map(), map);
+        assert!(h.song_tempo_plays());
+
+        // Playing: 120 for two bars, gliding up over bars 3 and 4, then 140.
+        assert!(h.command(Command::Play));
+        let mut heard: Vec<(Tick, f64)> = Vec::new();
+        while h.info().position < 6 * 3840 {
+            period(&mut h, &mut pads, 120.0);
+            let i = h.info();
+            heard.push((i.position, i.bpm));
+        }
+        assert!(heard.iter().filter(|h| h.0 < 7680).all(|h| h.1 == 120.0));
+        // (A period that ends on a line takes its tempo in the next.)
+        let ramp: Vec<f64> = heard
+            .iter()
+            .filter(|h| h.0 > 7680 && h.0 <= 15_360)
+            .map(|h| h.1)
+            .collect();
+        assert!(ramp.windows(2).all(|w| w[1] >= w[0]));
+        assert!(ramp[0] > 100.0 && ramp[0] < 102.0, "{}", ramp[0]);
+        let last = *ramp.last().unwrap();
+        assert!(last > 138.0 && last < 140.0, "{last}");
+        // A step every 1/16 through the ramp.
+        let mut steps = ramp.clone();
+        steps.dedup();
+        assert_eq!(steps.len(), 32);
+        assert!(heard.iter().filter(|h| h.0 > 15_360).all(|h| h.1 == 140.0));
+        assert_eq!(h.state().tempo_here, Some(140.0));
+
+        // The tempo turned in bar 6: the point on bar 5 takes it, and the
+        // turns are one undo.
+        let done = h.state().done.len();
+        tempo(&mut h, AtPlayhead(141.0)).unwrap();
+        tempo(&mut h, AtPlayhead(142.0)).unwrap();
+        assert_eq!(h.state().tempo_points[1], (15_360, 142.0, false));
+        assert_eq!(h.state().done.len(), done + 1);
+        for _ in 0..50 {
+            period(&mut h, &mut pads, 120.0);
+        }
+        assert_eq!(h.info().bpm, 142.0);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.state().tempo_points, points);
+        for _ in 0..50 {
+            period(&mut h, &mut pads, 120.0);
+        }
+        assert_eq!(h.info().bpm, 140.0);
+
+        // Back to bar 1: the project's tempo moves the song's before its
+        // first point; turning the tempo there adds a point on bar 1.
+        assert!(h.command(Command::StopAndRewind));
+        period(&mut h, &mut pads, 90.0);
+        period(&mut h, &mut pads, 90.0);
+        assert_eq!((h.info().position, h.info().bpm), (0, 90.0));
+        assert_eq!(h.tempo_map().segments()[1].bpm, 100.0);
+        assert_eq!(h.state().tempo_base, 90.0);
+        tempo(&mut h, AtPlayhead(95.0)).unwrap();
+        assert_eq!(h.state().tempo_points[0], (0, 95.0, false));
+        period(&mut h, &mut pads, 90.0);
+        assert_eq!(h.info().bpm, 95.0);
+        tempo(&mut h, Delete(0)).unwrap();
+
+        // Song mode off: the project's tempo throughout again.
+        h.act(TimeAction::SongMode(false)).unwrap();
+        period(&mut h, &mut pads, 90.0);
+        period(&mut h, &mut pads, 90.0);
+        assert_eq!(h.tempo_map().segments().len(), 1);
+        assert_eq!(h.info().bpm, 90.0);
+        assert_eq!(h.state().tempo_points, points, "the points stay");
     }
 
     /// The looper's Starts: When I play (start_at): the song starts on

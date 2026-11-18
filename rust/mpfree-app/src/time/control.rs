@@ -42,9 +42,10 @@ use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::{
     bars_label, card_rows, clips_after, grid_name, scene_rows, AudioAction, EditInfo, FollowNext,
-    MorphInfo, MuteWait, RegionId, TakeRow, TimeAction, TimeState, TransportInfo, SCENE_NAME,
+    MorphInfo, MuteWait, RegionId, TakeRow, TempoEdit, TimeAction, TimeState, TransportInfo,
+    SCENE_NAME,
 };
-use mpfree_transport::time::Tick;
+use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::{Block, Command, State};
 
 use super::follow::FollowCounts;
@@ -236,6 +237,13 @@ pub struct TimeControl {
     /// The section picked on the Song view (by its marker), for the
     /// wheel; never set with `selected` or `region`.
     section: Option<usize>,
+    /// The tempo point picked on the Song view (tempo ramps), for the
+    /// wheel and the Ramp and Delete buttons; never set with `selected`,
+    /// `region` or `section`.
+    tempo_pick: Option<usize>,
+    /// The project's tempo (the app's, [`TimeControl::project_tempo`]):
+    /// the song's tempo before its first tempo point.
+    project_bpm: f64,
     /// Live to song: records what the grid plays into the song.
     song_rec: SongRecorder,
     /// Perform's Rec song with REC: armed by the take, or taken off for
@@ -393,6 +401,8 @@ impl TimeControl {
             selected: None,
             region: None,
             section: None,
+            tempo_pick: None,
+            project_bpm: info.bpm,
             song_rec: SongRecorder::default(),
             song_take: SongTake::Idle,
             taking: false,
@@ -927,6 +937,7 @@ impl TimeControl {
         v.set_armed(self.armed);
         v.set_song(&self.project, self.song)
             .map_err(|e| format!("song: {e:?}"))?;
+        v.set_tempo_map(self.song_tempo()?);
         // A scene's mutes switch with its cues; while a track is soloed,
         // one it unmutes stays silent unless it is soloed too.
         self.perform.dress(&mut v);
@@ -1182,6 +1193,13 @@ impl TimeControl {
             Some(SongChange::Scenes { .. }) => return format!("{} → song", r.short()),
             Some(SongChange::List) => return format!("{} · the song list", r.short()),
             Some(SongChange::ListToSong { .. }) => return format!("{} · list → song", r.short()),
+            Some(SongChange::Tempo { at }) => {
+                return format!(
+                    "{} · the song's tempo at {}",
+                    r.short(),
+                    bar_beat(at, self.info.meter)
+                )
+            }
             None => {}
         }
         if let Some(row) = r.scene {
@@ -2075,7 +2093,7 @@ impl TimeControl {
                 if self.project.tracks.get(track).is_some_and(|t| t.is_loops()) =>
             {
                 Err(format!(
-                    "{} is a Loop track: record a loop on Play's Loop view or the Looper tab, \
+                    "{} is a Loop track: record a loop on Play's loop row or the Looper tab, \
                      and it lands here",
                     self.project.tracks[track].name
                 ))
@@ -2412,6 +2430,7 @@ impl TimeControl {
                 self.selected = i.filter(|&i| i < self.project.arrangement.placements.len());
                 self.region = None;
                 self.section = None;
+                self.tempo_pick = None;
                 self.changed = true;
                 Ok(String::new())
             }
@@ -2420,6 +2439,7 @@ impl TimeControl {
                 if self.section.is_some() {
                     self.selected = None;
                     self.region = None;
+                    self.tempo_pick = None;
                 }
                 self.changed = true;
                 Ok(String::new())
@@ -2430,6 +2450,7 @@ impl TimeControl {
                 if r.is_some() {
                     self.selected = None;
                     self.section = None;
+                    self.tempo_pick = None;
                 }
                 self.changed = true;
                 Ok(String::new())
@@ -2437,6 +2458,45 @@ impl TimeControl {
             // The audio tracks' engine is the app's to wire (AudioHost);
             // until it takes these, say so rather than drop them quietly.
             TimeAction::Audio(a) => Err(format!("audio tracks: {a:?} is not wired yet")),
+            TimeAction::SongTempo(TempoEdit::Pick(k)) => {
+                self.tempo_pick = k.filter(|&k| k < self.project.arrangement.tempo.len());
+                if self.tempo_pick.is_some() {
+                    self.selected = None;
+                    self.region = None;
+                    self.section = None;
+                }
+                self.changed = true;
+                Ok(String::new())
+            }
+            TimeAction::SongTempo(e) => {
+                // An edit of the song alone, which UNDO takes back; the
+                // wheel turning one point's tempo is one undo.
+                let before = self.project.arrangement.clone();
+                let (line, at, join) = match self.edit_tempo(e) {
+                    Ok(done) => done,
+                    Err(e) => {
+                        self.project.arrangement = before;
+                        return Err(e);
+                    }
+                };
+                if self.project.arrangement == before {
+                    self.changed = true;
+                    return Ok(line);
+                }
+                // The map rides in the view, so the transport takes it
+                // with the song it goes with (only song mode plays it).
+                if self.song {
+                    if let Err(e) = self.compile() {
+                        self.project.arrangement = before;
+                        self.compile()?;
+                        return Err(e);
+                    }
+                }
+                self.takes
+                    .song_edit_joining(&self.project, SongChange::Tempo { at }, before, join);
+                self.changed = true;
+                Ok(line)
+            }
             TimeAction::SongToScenes => {
                 // The rows change, not the song: no undo.
                 let bar = info.meter.bar_ticks();
@@ -2643,6 +2703,199 @@ impl TimeControl {
 
     /// The Song view's edits of the arrangement (and, for Song → scenes,
     /// the rows). A line for the log, and what changed for the undo list.
+    /// The song's tempo map while song mode plays its tempo points, made
+    /// with the project's tempo before the first; None plays the
+    /// project's tempo throughout.
+    fn song_tempo(&self) -> Result<Option<TempoMap>, String> {
+        let song = &self.project.arrangement;
+        if !self.song || song.tempo.is_empty() {
+            return Ok(None);
+        }
+        song.tempo_map(self.project_bpm)
+            .map(Some)
+            .map_err(|e| format!("song: its tempo points don't make a tempo map ({e:?})"))
+    }
+
+    /// The tempo of the song's point in effect at the playhead, while
+    /// song mode plays the song's tempo points; None before the first
+    /// point, or when they don't play.
+    pub fn tempo_here(&self) -> Option<f64> {
+        let tempo = &self.project.arrangement.tempo;
+        if !self.song || tempo.is_empty() {
+            return None;
+        }
+        let i = tempo.partition_point(|p| p.at <= self.info.position);
+        i.checked_sub(1).map(|i| tempo[i].bpm)
+    }
+
+    /// The project's tempo (the app's: the tempo chip, TAP TEMPO, a
+    /// project opened), which the song plays before its first tempo
+    /// point. A change while song mode plays points after bar 1 compiles
+    /// the view again, with the new map.
+    pub fn project_tempo(&mut self, bpm: f64) {
+        if bpm == self.project_bpm {
+            return;
+        }
+        self.project_bpm = bpm;
+        let lead = self
+            .project
+            .arrangement
+            .tempo
+            .first()
+            .is_some_and(|p| p.at > 0);
+        if self.song && lead {
+            if let Err(e) = self.compile() {
+                self.later_note = Some(format!("tempo: {e}"));
+            }
+        }
+    }
+
+    /// While song mode plays the song's tempo points, the tempo turned
+    /// sets the point in effect at the playhead (Jay's card, 18 Nov), and
+    /// [`TimeControl::project_tempo`] does not change.
+    pub fn song_tempo_plays(&self) -> bool {
+        self.song && !self.project.arrangement.tempo.is_empty()
+    }
+
+    /// Edit the song's tempo points as `e` asks: what to say, the tick
+    /// of the point it changed, and what joins a turn of the wheel to the
+    /// take before it. The caller puts the song back on an error.
+    fn edit_tempo(&mut self, e: TempoEdit) -> Result<(String, Tick, Option<u64>), String> {
+        // The app's range (App::set_tempo).
+        let clamp = |bpm: f64| ((bpm * 10.0).round() / 10.0).clamp(30.0, 300.0);
+        // A point's own key for the wheel and the tempo turned.
+        let key = |at: Tick| Some(0x7e3d_0000_0000_0000 ^ at as u64);
+        let meter = self.info.meter;
+        let bar = meter.bar_ticks().max(1);
+        let at_bar = |t: Tick| bar_beat(t, meter);
+        let base = self.project_bpm;
+        let song = &mut self.project.arrangement;
+        let point = |song: &mpfree_seq::arrange::Arrangement, k: usize| {
+            song.tempo
+                .get(k)
+                .copied()
+                .ok_or_else(|| "tempo: that point is gone".to_string())
+        };
+        let refused = |at: Tick| {
+            format!(
+                "tempo: no point can go at {}: points are a 1/16 apart at least, {} at most",
+                at_bar(at),
+                mpfree_seq::arrange::MAX_TEMPO_POINTS
+            )
+        };
+        let picked = |song: &mpfree_seq::arrange::Arrangement, at: Tick| {
+            song.tempo.iter().position(|p| p.at == at)
+        };
+        match e {
+            TempoEdit::Pick(_) => Ok((String::new(), 0, None)),
+            TempoEdit::Add(at) => {
+                let at = at.max(0);
+                if let Some(k) = picked(song, at) {
+                    self.tempo_pick = Some(k);
+                    return Ok((
+                        format!("tempo: the point at {} picked", at_bar(at)),
+                        at,
+                        None,
+                    ));
+                }
+                let bpm = clamp(song.tempo_map(base).map_or(base, |m| m.bpm_at(at)));
+                song.set_tempo(at, bpm, Some(false))
+                    .map_err(|_| refused(at))?;
+                self.tempo_pick = picked(song, at);
+                (self.selected, self.region, self.section) = (None, None, None);
+                Ok((
+                    format!(
+                        "tempo: a point at {}, {bpm:.1} BPM (UNDO takes it back)",
+                        at_bar(at)
+                    ),
+                    at,
+                    None,
+                ))
+            }
+            TempoEdit::Move { index, at } => {
+                let p = point(song, index)?;
+                let at = at.max(0);
+                if at == p.at {
+                    return Ok((String::new(), at, None));
+                }
+                if picked(song, at).is_some() {
+                    return Err(format!("tempo: {} has a point already", at_bar(at)));
+                }
+                song.remove_tempo(p.at);
+                song.set_tempo(at, p.bpm, Some(p.ramp))
+                    .map_err(|_| refused(at))?;
+                self.tempo_pick = picked(song, at);
+                Ok((
+                    format!(
+                        "tempo: the point moved to {} (UNDO takes it back)",
+                        at_bar(at)
+                    ),
+                    at,
+                    None,
+                ))
+            }
+            TempoEdit::Bpm { index, bpm } => {
+                let p = point(song, index)?;
+                let bpm = clamp(bpm);
+                song.set_tempo(p.at, bpm, None).map_err(|_| refused(p.at))?;
+                Ok((
+                    format!("tempo: {bpm:.1} BPM from {}", at_bar(p.at)),
+                    p.at,
+                    key(p.at),
+                ))
+            }
+            TempoEdit::Ramp { index, on } => {
+                let p = point(song, index)?;
+                song.set_tempo(p.at, p.bpm, Some(on))
+                    .map_err(|_| refused(p.at))?;
+                let line = match (on, song.tempo.get(index + 1)) {
+                    (false, _) => format!("tempo: {} steps to its tempo", at_bar(p.at)),
+                    (true, Some(next)) => format!(
+                        "tempo: {} glides from {:.1} to {:.1} BPM at {}",
+                        at_bar(p.at),
+                        p.bpm,
+                        next.bpm,
+                        at_bar(next.at)
+                    ),
+                    (true, None) => format!(
+                        "tempo: {} glides once a point after it says to what",
+                        at_bar(p.at)
+                    ),
+                };
+                Ok((line, p.at, None))
+            }
+            TempoEdit::Delete(index) => {
+                let p = point(song, index)?;
+                song.remove_tempo(p.at);
+                self.tempo_pick = None;
+                Ok((
+                    format!(
+                        "tempo: the point at {} deleted (UNDO brings it back)",
+                        at_bar(p.at)
+                    ),
+                    p.at,
+                    None,
+                ))
+            }
+            TempoEdit::AtPlayhead(bpm) => {
+                let bpm = clamp(bpm);
+                let now = self.info.position.max(0);
+                let i = song.tempo.partition_point(|p| p.at <= now);
+                let at = match i.checked_sub(1) {
+                    Some(k) => song.tempo[k].at,
+                    // Before the first point: one on the playhead's bar.
+                    None => now.div_euclid(bar) * bar,
+                };
+                song.set_tempo(at, bpm, None).map_err(|_| refused(at))?;
+                Ok((
+                    format!("tempo: {bpm:.1} BPM from {}", at_bar(at)),
+                    at,
+                    key(at),
+                ))
+            }
+        }
+    }
+
     fn edit_song(
         &mut self,
         a: TimeAction,
@@ -2730,6 +2983,11 @@ impl TimeControl {
                     .map_or_else(String::new, |m| m.name.clone());
                 match song.move_section(tracks, marker, gap, copy, bar) {
                     Ok(()) => {}
+                    Err(ModelError::BadMoves) if !song.tempo.is_empty() => {
+                        return Err(format!(
+                            "song: {name} can't move while the song has tempo points: they would stay where they are"
+                        ))
+                    }
                     Err(ModelError::BadMoves) => {
                         return Err(format!(
                             "song: {name} can't move while the song has morph moves: they would stay where they are"
@@ -4095,6 +4353,9 @@ impl TimeControl {
         st.selected = self.selected;
         st.region = self.region;
         st.section = self.section;
+        st.tempo_base = self.project_bpm;
+        st.tempo_pick = self.tempo_pick.filter(|&k| k < st.tempo_points.len());
+        st.tempo_here = self.tempo_here();
         st.song_rec = self.song_rec.armed();
         st.song_with_take = self.song_with_take();
         st.follow_next = self

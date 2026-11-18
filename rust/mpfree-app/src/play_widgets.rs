@@ -15,7 +15,7 @@
 //! in and decides what the events do. Each redraws only what changed where
 //! that matters on the MPC (the transport's numbers, a pad, a step).
 
-use crate::play_page::{SynthPads, LAYOUT_SWITCH, LOCKED, PLAY_SWITCH};
+use crate::play_page::{SynthPads, LAYOUT_SWITCH, LOCKED};
 use mpfree_arp::scale::pads::PadLayout;
 use mpfree_seq::Cond;
 use mpfree_ui::draw::{self, card, card_head, dot, pill, speaker, KNOB};
@@ -41,8 +41,8 @@ pub struct TransportLook {
     /// The bar playing within `bars` (the loop's, or 4).
     pub bar: usize,
     pub bars: usize,
-    /// The switch's views: All | Loop on Play, Steps | Notes on the
-    /// Sequencer.
+    /// The switch's views: Steps | Notes on the Sequencer, none on Play
+    /// (one view since the looper redesign's step 5).
     pub views: &'static [&'static str],
     /// The view lit in the switch.
     pub view: usize,
@@ -144,7 +144,7 @@ impl RecChip {
     }
 }
 
-/// An Arm pill at the left of a panel's heading (the loop strip, the
+/// An Arm pill at the left of a panel's heading (Play's loop row, the
 /// pattern; mockups F and G): grey "Arm" on what REC doesn't record, red
 /// on what it does. A tap gives `Select(0)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -375,7 +375,7 @@ impl Default for TransportLook {
             step: None,
             bar: 0,
             bars: 4,
-            views: &PLAY_SWITCH,
+            views: &[],
             view: 0,
             rec: None,
             pads: None,
@@ -431,9 +431,13 @@ impl PlayTransport {
         r.inset_xy(16, 12)
     }
 
-    /// The view switch's box and its `n` segments.
+    /// The view switch's box and its `n` segments (none: an empty box at
+    /// the card's right end).
     pub fn switch(r: Rect, n: usize) -> (Rect, Vec<Rect>) {
         let inner = PlayTransport::inner(r);
+        if n == 0 {
+            return (Rect::new(inner.right(), inner.y, 0, inner.h), Vec::new());
+        }
         let w = n as i32 * SWITCH_SEG_W + 8;
         let b = Rect::new(
             inner.right() - w,
@@ -585,24 +589,31 @@ impl Widget for PlayTransport {
             t.text_dim,
             "BPM",
         );
-        // The view switch at the right end: one tap each.
+        // The view switch at the right end: one tap each (the Sequencer's;
+        // Play has none).
         let (b, segs) = PlayTransport::switch(r, self.look.views.len());
-        // What the pads play, before the switch (Play's card only).
+        let (stop, mut end) = if segs.is_empty() {
+            (inner.right(), inner.right())
+        } else {
+            (b.x - 12, b.x - DOTS_GAP)
+        };
+        // What the pads play, before the switch or at the right end (Play's
+        // card only).
         let mut pads = Rect::default();
-        let mut end = b.x - DOTS_GAP;
         if let Some(p) = &self.look.pads {
             let tw = cx.measure(FontId::Bold, 14.0, &p.text()) + 12 + 14 + 12;
             let w = tw.clamp(PADS_MIN_W, PADS_MAX_W);
             let h = REC_CHIP_H.min(inner.h);
-            pads = Rect::new(b.x - 12 - w, inner.y + (inner.h - h) / 2, w, h);
+            pads = Rect::new(stop - w, inner.y + (inner.h - h) / 2, w, h);
             paint_pads_play(cx, pads, p);
             end = pads.x - 12;
         }
-        // The REC chip between the tempo and where the bar is. On Play,
-        // what the pads play takes the dots' room (the mockup had no view
-        // switch): the position and Play's rows say where the bar is.
+        // The REC chip between the tempo and where the bar is. The dots go
+        // wherever there's no switch beside what the pads play (Play's
+        // card has the dots beside PADS PLAY, board 1 of the looper
+        // redesign's step 5).
         let left = x + bw + 6 + bpm_word + 14;
-        let gw = if self.look.pads.is_some() {
+        let gw = if self.look.pads.is_some() && !segs.is_empty() {
             0
         } else {
             16 * DOT_CELL + 3 * 6
@@ -617,7 +628,9 @@ impl Widget for PlayTransport {
                 rec = cr;
             }
         }
-        cx.canvas.fill_round_rect(b, 12, t.bg.mix(t.surface, 0.3));
+        if !segs.is_empty() {
+            cx.canvas.fill_round_rect(b, 12, t.bg.mix(t.surface, 0.3));
+        }
         for (i, (sr, name)) in segs.iter().zip(self.look.views).enumerate() {
             let on = i == self.look.view;
             if on {
@@ -725,12 +738,16 @@ pub struct MiniPads {
     /// The kit's name, on the right.
     pub right: String,
     pub synth: Option<SynthPads>,
+    /// The pads whose hit waits for the launch line (bit `i` for pad
+    /// `i`, sampler R5.3b): an amber outline until it sounds.
+    pub waiting: u16,
     fingers: Vec<(u64, usize)>,
     painted: RefCell<Option<PaintedPads>>,
 }
 
-/// What [`MiniPads`] last drew: where, the pads, its heading and switch.
-type PaintedPads = (Rect, Vec<Pad>, String, String, Option<SynthPads>);
+/// What [`MiniPads`] last drew: where, the pads, its heading, switch and
+/// the pads waiting.
+type PaintedPads = (Rect, Vec<Pad>, String, String, Option<SynthPads>, u16);
 
 impl Default for MiniPads {
     fn default() -> Self {
@@ -739,6 +756,7 @@ impl Default for MiniPads {
             title: "Pads".into(),
             right: String::new(),
             synth: None,
+            waiting: 0,
             fingers: Vec::new(),
             painted: RefCell::new(None),
         }
@@ -842,13 +860,17 @@ impl MiniPads {
         } else {
             cx.text(FontId::Sans, 12.0, ir, Align::Left, ink, &pad.label);
         }
+        // Its hit waits for the launch line: outlined as a cued clip is.
+        if self.waiting & (1 << i) != 0 {
+            cx.canvas.stroke_round_rect(cr.inset(-3), 10, 2, t.warn);
+        }
     }
 }
 
 impl Widget for MiniPads {
     fn changed_parts(&self, r: Rect) -> Option<Vec<Rect>> {
         let painted = self.painted.borrow();
-        let (at, old, title, right, synth) = painted.as_ref()?;
+        let (at, old, title, right, synth, waiting) = painted.as_ref()?;
         if *at != r
             || *title != self.title
             || *right != self.right
@@ -860,7 +882,9 @@ impl Widget for MiniPads {
         let (_, _, body) = self.parts(r);
         Some(
             (0..self.grid.pads.len())
-                .filter(|&i| old[i] != self.grid.pads[i])
+                .filter(|&i| {
+                    old[i] != self.grid.pads[i] || (waiting ^ self.waiting) & (1 << i) != 0
+                })
                 .map(|i| MiniPads::cell(body, i).inset(-4))
                 .collect(),
         )
@@ -937,6 +961,7 @@ impl Widget for MiniPads {
             self.title.clone(),
             self.right.clone(),
             self.synth,
+            self.waiting,
         ));
     }
 
@@ -3628,6 +3653,11 @@ mod tests {
     fn the_switch_taps_give_the_views() {
         let mut tr = PlayTransport::default();
         let r = Rect::new(12, 84, 998, 84);
+        // Play's card: one view, so no switch.
+        assert!(PlayTransport::switch(r, tr.look.views.len()).1.is_empty());
+        // The Sequencer's switch: Steps and Notes, a tap each, named as the
+        // targets.
+        tr.look.views = &crate::play_page::SEQ_SWITCH;
         let (_, segs) = PlayTransport::switch(r, tr.look.views.len());
         for (i, s) in segs.iter().enumerate() {
             assert_eq!(
@@ -3635,10 +3665,8 @@ mod tests {
                 Some(EventKind::Tab(i))
             );
         }
-        assert_eq!(segs.len(), 2, "All, Loop");
+        assert_eq!(segs.len(), 2, "Steps, Notes");
         assert!(segs[1].right() <= r.right() - 16);
-        // The Sequencer's switch: Steps and Notes, named as the targets.
-        tr.look.views = &crate::play_page::SEQ_SWITCH;
         let names: Vec<String> = tr
             .targets(r)
             .into_iter()

@@ -103,6 +103,7 @@ mod imagecopy;
 mod instruments;
 mod kit;
 mod locks;
+mod loop_row;
 mod looper_deck;
 mod looper_page;
 mod looper_tab;
@@ -167,7 +168,7 @@ use mpfree_midi::profile::{self, KIT_PADS};
 use mpfree_screen_log::Rotation;
 use mpfree_synth_ui::{SynthAction, SynthState};
 use mpfree_time_ui::view::AudioAction;
-use mpfree_time_ui::{TimeAction, TransportInfo};
+use mpfree_time_ui::{TempoEdit, TimeAction, TransportInfo};
 use mpfree_transport::Command;
 use mpfree_ui::fb::FbTarget;
 use mpfree_ui::{Fonts, SoftCanvas, Theme, Tone};
@@ -2682,6 +2683,107 @@ fn pad_starts_loop(
     Some((line, false))
 }
 
+/// Sampler R5.3b: whether a live hit or let-go `w` (on its kit pad)
+/// waits for the launch line, and if so it waits. It does while the pads
+/// play a kit (not the synth, not Free time's steps), the transport plays
+/// with a launch quantise and the pad starts on the line (a Loop pad), or
+/// when something played on the same pad waits already, so they keep
+/// their order. A full table plays it at once: counted, logged and said.
+/// True too for the let-go of a hit STOP dropped: it plays nothing.
+fn waits_for_line(
+    time: &mut time::TimeHost,
+    player: &sampler::Player,
+    app: &app::App,
+    synth_on: bool,
+    w: time::PadWait,
+    full: &mut u64,
+    out: &mut Out,
+) -> bool {
+    // The let-go of a hit STOP dropped while its pad was held: nothing
+    // sounded, so there is nothing to let go of.
+    if time.lets_go_of_dropped(w) {
+        return true;
+    }
+    let starts = !synth_on
+        && !app.free_time_recording()
+        && time.pads_wait()
+        && player.starts_on_line(player.kit(), usize::from(w.kit_pad));
+    if !starts && !time.waits_on(w.from) {
+        return false;
+    }
+    if time.wait_pad(w) {
+        return true;
+    }
+    *full += 1;
+    let s = format!(
+        "Pads: {} hits already wait for the launch line, so this one plays at once ({} so far)",
+        time::MAX_WAITS,
+        *full
+    );
+    out.note(&s);
+    out.show(gui::ToUi::Tell(s));
+    false
+}
+
+/// Sampler R5.3b: STOP dropped `n` Loop pad hits still waiting for the
+/// launch line (with their let-gos): counted in `total` and logged.
+fn note_stop_dropped(n: usize, total: &mut usize, out: &mut Out) {
+    if n == 0 {
+        return;
+    }
+    *total += n;
+    out.note(&format!(
+        "pads: STOP dropped {n} Loop pad hit(s) still waiting for the launch line ({total} so far)"
+    ));
+}
+
+/// Sampler R5.3b: a hit or let-go that waited for the launch line, played
+/// `offset` frames into the period on the kit pad it was made on, as it
+/// would have been when it was made: the clip recorder hears it as pressed there, the armed track's
+/// arp plays it there, and the screen shows the pad down when it sounds
+/// and up when its let-go does.
+fn play_waited(
+    app: &mut app::App,
+    time: &mut time::TimeHost,
+    awaiting: &mut [bool; 16],
+    w: time::PadWait,
+    offset: u32,
+    out: &mut Out,
+) -> Vec<app::Effect> {
+    app.pads_at(offset);
+    match w.from {
+        time::PadFrom::Pad(slot) => {
+            // The kit pad it was made on, though PAD BANK turned since: the
+            // hit plays that one, and its let-go lets go of it (`kit_held`).
+            let slot = usize::from(slot);
+            if let Some(ev) = app.pressed_pad_event(w.kit_pad, w.velocity, w.down) {
+                time.pad_pressed(offset, ev);
+            }
+            // The screen shows it down while its bank shows.
+            let shown = usize::from(w.kit_pad) / 16 == app.pad_page();
+            if let Some(a) = awaiting.get_mut(slot) {
+                *a = w.down && shown;
+            }
+            if w.down {
+                app.pad_down_on(slot, Some(w.kit_pad), w.velocity)
+            } else {
+                out.show(gui::ToUi::PadUp(slot));
+                app.pad_up(slot)
+            }
+        }
+        time::PadFrom::Key(pad) => {
+            if let Some(ev) = app.pressed_pad_event(pad, w.velocity, w.down) {
+                time.pad_pressed(offset, ev);
+            }
+            if w.down {
+                app.kit_key_down(pad, w.velocity)
+            } else {
+                app.kit_key_up(pad)
+            }
+        }
+    }
+}
+
 /// Starts: When I play, after the looper's period: a loop that heard the
 /// line input with the song stopped starts the song on the next period's
 /// first frame (its first pass lines up with that, from your note).
@@ -3682,7 +3784,7 @@ fn io_shown(mix: &mixing::MixHost) -> bool {
 }
 
 /// Whether `view` shows the loop's playhead: the Looper tab, or the Play
-/// page with its loop strip.
+/// page with its loop row.
 fn strip_shown(view: app::View) -> bool {
     matches!(view, app::View::Looper | app::View::Play)
 }
@@ -4988,9 +5090,16 @@ fn time_action(
     mix: &mut mixing::MixHost,
     a: TimeAction,
 ) -> Vec<app::Effect> {
-    if let TimeAction::Transport(Command::SetTempo(bpm)) = a {
-        return app.set_tempo(bpm);
-    }
+    // While song mode plays the song's tempo points, the tempo turned
+    // sets the point in effect at the playhead (Jay's card, 18 Nov) and
+    // the project's tempo stays; otherwise it is the project's.
+    let a = match a {
+        TimeAction::Transport(Command::SetTempo(bpm)) if time.song_tempo_plays() => {
+            TimeAction::SongTempo(TempoEdit::AtPlayhead(bpm))
+        }
+        TimeAction::Transport(Command::SetTempo(bpm)) => return app.set_tempo(bpm),
+        a => a,
+    };
     // The audio lanes' touches go to the audio tracks; a pick stays with
     // the time engine, which keeps the selection.
     if let TimeAction::Audio(aa) = a {
@@ -5027,7 +5136,7 @@ fn time_action(
             | TimeAction::MoveSection { .. }
             | TimeAction::DeletePlacement(_)
             | TimeAction::Perform(_)
-    );
+    ) || matches!(a, TimeAction::SongTempo(e) if !matches!(e, TempoEdit::Pick(_)));
     // PLAY or PLAY START while the transport follows another device's
     // Start and Stop and it is stopped: its Start plays, and the screen
     // says so.
@@ -5745,7 +5854,16 @@ fn player_session(
     // (Note Repeat starts a pad on the next step of its grid), and lit.
     let mut held = [false; 16];
     let mut awaiting = [false; 16];
-    let mut lit = [false; 16];
+    // Each pad's colour over its resting one (None: resting).
+    let mut lit: [Option<[u8; 3]>; 16] = [None; 16];
+    // Live hits on Loop pads waiting for the launch line (sampler R5.3b):
+    // those that play each period, how many found the table full and
+    // played at once, how many STOP dropped, and the pads shown waiting
+    // on screen.
+    let mut due_pads = time::DuePads::default();
+    let mut waits_full = 0u64;
+    let mut stop_dropped = 0usize;
+    let mut waiting_shown = 0u16;
     // TRACK MUTE: pads pressed as mute keys, or as 16 Levels' Transpose
     // steps (their release plays nothing), and the colours the mute keys
     // show (None: the pads show as usual).
@@ -6003,25 +6121,44 @@ fn player_session(
                         take,
                         export.running(),
                     ));
-                    if let Some(ev) = app.pressed_event(pad, v, true) {
-                        time.pad_pressed(0, ev);
-                    }
-                    fx.extend(app.pad_down(pad, v));
                     held[pad] = true;
-                    awaiting[pad] = true;
                     screen_hits += 1;
-                    if direct {
-                        pending.push(t_read);
+                    // A Loop pad's hit waits for the launch line (R5.3b).
+                    let w = time::PadWait {
+                        from: time::PadFrom::Pad(pad as u8),
+                        down: true,
+                        velocity: v,
+                        kit_pad: app.kit_pad(pad) as u8,
+                    };
+                    if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
+                    {
+                        if let Some(ev) = app.pressed_event(pad, v, true) {
+                            time.pad_pressed(0, ev);
+                        }
+                        fx.extend(app.pad_down(pad, v));
+                        awaiting[pad] = true;
+                        if direct {
+                            pending.push(t_read);
+                        }
                     }
                 }
                 gui::FromUi::Pad { pad, down: false } if pad < 16 => {
-                    if let Some(ev) = app.pressed_event(pad, 0, false) {
-                        time.pad_pressed(0, ev);
-                    }
-                    fx.extend(app.pad_up(pad));
                     held[pad] = false;
-                    awaiting[pad] = false;
-                    out.show(gui::ToUi::PadUp(pad));
+                    let w = time::PadWait {
+                        from: time::PadFrom::Pad(pad as u8),
+                        down: false,
+                        velocity: 0,
+                        kit_pad: app.kit_pad(pad) as u8,
+                    };
+                    if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
+                    {
+                        if let Some(ev) = app.pressed_event(pad, 0, false) {
+                            time.pad_pressed(0, ev);
+                        }
+                        fx.extend(app.pad_up(pad));
+                        awaiting[pad] = false;
+                        out.show(gui::ToUi::PadUp(pad));
+                    }
                 }
                 gui::FromUi::Pad { .. } => {}
                 // A scale row's name on Beats: the pad sounds while held.
@@ -6730,7 +6867,9 @@ fn player_session(
                 {
                     let now = remote::Now {
                         rolling: app.rolling(),
-                        bpm: app.bpm(),
+                        // While song mode plays the song's tempo points,
+                        // the point's in effect at the playhead.
+                        bpm: time.tempo_here().unwrap_or(app.bpm()),
                         ..remote::Now::default()
                     };
                     match remote.write(w.target.param, w.value, now) {
@@ -6748,6 +6887,17 @@ fn player_session(
                                     "MIDI Learn: the tempo follows another device's clock, \
                                      so a learned tempo control does nothing until it stops",
                                 );
+                            }
+                        }
+                        // While song mode plays the song's tempo points,
+                        // the point in effect at the playhead takes it
+                        // (one undo while the knob turns).
+                        remote::Act::Tempo(bpm) if time.song_tempo_plays() => {
+                            remote_tempo_waits = false;
+                            if let Err(e) =
+                                time.act(TimeAction::SongTempo(TempoEdit::AtPlayhead(bpm)))
+                            {
+                                out.midi(&format!("MIDI Learn: {e}"));
                             }
                         }
                         remote::Act::Tempo(bpm) => {
@@ -7030,18 +7180,37 @@ fn player_session(
                 // as STEP SEQ's, TRACK MUTE's or the loop keys' pads.
                 midi_in::Key::Down { note, velocity } if kit_keys => {
                     let pad = profile::kit_pad_of_note(note) as u8;
-                    if let Some(ev) = app.pressed_pad_event(pad, velocity, true) {
-                        time.pad_pressed(0, ev);
+                    // A Loop pad's hit waits for the launch line (R5.3b).
+                    let w = time::PadWait {
+                        from: time::PadFrom::Key(pad),
+                        down: true,
+                        velocity,
+                        kit_pad: pad,
+                    };
+                    if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
+                    {
+                        if let Some(ev) = app.pressed_pad_event(pad, velocity, true) {
+                            time.pad_pressed(0, ev);
+                        }
+                        fx.extend(app.kit_key_down(pad, velocity));
                     }
-                    fx.extend(app.kit_key_down(pad, velocity));
                     None
                 }
                 midi_in::Key::Up { note } if kit_keys => {
                     let pad = profile::kit_pad_of_note(note) as u8;
-                    if let Some(ev) = app.pressed_pad_event(pad, 0, false) {
-                        time.pad_pressed(0, ev);
+                    let w = time::PadWait {
+                        from: time::PadFrom::Key(pad),
+                        down: false,
+                        velocity: 0,
+                        kit_pad: pad,
+                    };
+                    if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
+                    {
+                        if let Some(ev) = app.pressed_pad_event(pad, 0, false) {
+                            time.pad_pressed(0, ev);
+                        }
+                        fx.extend(app.kit_key_up(pad));
                     }
-                    fx.extend(app.kit_key_up(pad));
                     None
                 }
                 midi_in::Key::Pressure { note, value } if kit_keys => {
@@ -7284,24 +7453,44 @@ fn player_session(
                         take,
                         export.running(),
                     ));
-                    if let Some(ev) = app.pressed_event(pad, velocity, true) {
-                        time.pad_pressed(0, ev);
-                    }
-                    fx.extend(app.pad_down(pad, velocity));
                     held[pad] = true;
-                    awaiting[pad] = true;
-                    if direct {
-                        pending.push(t_read);
+                    // A Loop pad's hit waits for the launch line (R5.3b).
+                    let w = time::PadWait {
+                        from: time::PadFrom::Pad(pad as u8),
+                        down: true,
+                        velocity,
+                        kit_pad: app.kit_pad(pad) as u8,
+                    };
+                    if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
+                    {
+                        if let Some(ev) = app.pressed_event(pad, velocity, true) {
+                            time.pad_pressed(0, ev);
+                        }
+                        fx.extend(app.pad_down(pad, velocity));
+                        awaiting[pad] = true;
+                        if direct {
+                            pending.push(t_read);
+                        }
                     }
                 }
                 Some(ControlEvent::PadUp { pad }) if (pad as usize) < 16 => {
-                    if let Some(ev) = app.pressed_event(pad as usize, 0, false) {
-                        time.pad_pressed(0, ev);
+                    let pad = pad as usize;
+                    held[pad] = false;
+                    let w = time::PadWait {
+                        from: time::PadFrom::Pad(pad as u8),
+                        down: false,
+                        velocity: 0,
+                        kit_pad: app.kit_pad(pad) as u8,
+                    };
+                    if !waits_for_line(&mut time, &player, &app, synth_on, w, &mut waits_full, out)
+                    {
+                        if let Some(ev) = app.pressed_event(pad, 0, false) {
+                            time.pad_pressed(0, ev);
+                        }
+                        fx.extend(app.pad_up(pad));
+                        awaiting[pad] = false;
+                        out.show(gui::ToUi::PadUp(pad));
                     }
-                    fx.extend(app.pad_up(pad as usize));
-                    held[pad as usize] = false;
-                    awaiting[pad as usize] = false;
-                    out.show(gui::ToUi::PadUp(pad as usize));
                 }
                 // A Perform pad's pressure: it plays no note, so it presses
                 // nothing (and records nothing).
@@ -7538,7 +7727,7 @@ fn player_session(
                             "the synth's pad colours",
                             &as_slices(&pad_colours(&rest)),
                         )?;
-                        lit = [false; 16];
+                        lit = [None; 16];
                         mute_shown = None;
                     }
                 }
@@ -7578,7 +7767,7 @@ fn player_session(
                             "the synth's pad colours",
                             &as_slices(&pad_colours(&rest)),
                         )?;
-                        lit = [false; 16];
+                        lit = [None; 16];
                         mute_shown = None;
                         bank_lights = true;
                     }
@@ -7791,7 +7980,7 @@ fn player_session(
                     &as_slices(&pad_colours(&rest)),
                 )?;
             }
-            lit = [false; 16];
+            lit = [None; 16];
             mute_shown = None;
             // The arp plays the synth's layout notes, or a kit's pad slots.
             app.set_pad_layout(synth_on.then(|| synth.pad_layout()));
@@ -7812,7 +8001,7 @@ fn player_session(
                     "the page's pad colours",
                     &as_slices(&pad_colours(&rest)),
                 )?;
-                lit = [false; 16];
+                lit = [None; 16];
             }
             out.show(gui::ToUi::PadPage(app.pad_page()));
         }
@@ -8089,6 +8278,20 @@ fn player_session(
         for (addr, value) in mix.modu.take_note_values() {
             time.modulate_note_fx(addr, Some(value));
         }
+        // Sampler R5.3b: the live hits on Loop pads that waited for the
+        // launch line play on it, through the arp as when they were made.
+        let dropped = time.due_pads(&mut due_pads);
+        note_stop_dropped(dropped, &mut stop_dropped, out);
+        for &(w, offset) in due_pads.as_slice() {
+            fx.extend(play_waited(
+                &mut app,
+                &mut time,
+                &mut awaiting,
+                w,
+                offset,
+                out,
+            ));
+        }
         // The clips and every track's arp (the pads go through the armed
         // track's) play into the kit or the synth: the clips as recorded,
         // the arps' notes as live playing (SeqPads::live).
@@ -8249,7 +8452,7 @@ fn player_session(
             for pad in 0..16 {
                 if fresh[pad] != rest[pad] {
                     rest[pad] = fresh[pad];
-                    if !lit[pad] && mute_shown.is_none() {
+                    if lit[pad].is_none() && mute_shown.is_none() {
                         ports.send(false, &akai::pad_colour(pad as u8, rest[pad]))?;
                     }
                 }
@@ -8418,7 +8621,7 @@ fn player_session(
                 "the pads' colours",
                 &as_slices(&pad_colours(&rest)),
             )?;
-            lit = [false; 16];
+            lit = [None; 16];
         }
         // Pad lights: lit while held, while the arp keeps them going (latched, or held on its grid),
         // or while a pad set to Latch in the sampler plays on.
@@ -8428,19 +8631,37 @@ fn player_session(
         } else {
             (player.latched_pads() >> (app.pad_page() * 16)) as u16
         };
+        // A Loop pad's hit waiting for the launch line blinks amber (twice
+        // a second, as a cued clip's mute key does) until it sounds, and
+        // the screen's pad has an amber outline (sampler R5.3b).
+        let waiting = time.hits_waiting(app.pad_page());
+        if waiting != waiting_shown {
+            waiting_shown = waiting;
+            out.show(gui::ToUi::PadsWaiting(waiting));
+        }
+        let amber = akai::KIT_COLOURS[0];
+        let blink = ((t * 4.0) as u64).is_multiple_of(2);
         for pad in 0..16 {
             if mute_shown.is_some() {
                 break;
             }
-            let want =
-                held[pad] || (app.generating() && app.active(pad)) || latched & (1 << pad) != 0;
+            let want = if waiting & (1 << pad) != 0 {
+                Some(if blink {
+                    akai::hit_colour(amber)
+                } else {
+                    amber
+                })
+            } else if held[pad]
+                || (app.generating() && app.active(pad))
+                || latched & (1 << pad) != 0
+            {
+                Some(akai::hit_colour(rest[pad]))
+            } else {
+                None
+            };
             if want != lit[pad] {
                 lit[pad] = want;
-                let colour = if want {
-                    akai::hit_colour(rest[pad])
-                } else {
-                    rest[pad]
-                };
+                let colour = want.unwrap_or(rest[pad]);
                 ports.send(false, &akai::pad_colour(pad as u8, colour))?;
             }
         }
@@ -8477,7 +8698,10 @@ fn player_session(
         // With a synth lane (Cores 3, 2 and 1) the synth starts on its core
         // now and renders beside the drums; otherwise this only notes the
         // frame and tempo, and it renders below as before.
-        synth.start(i * PERIOD as u64, app.settings.bpm);
+        // The synth's and the effects' tempo is the transport's: the
+        // project's, a followed clock's, or the song's tempo points and
+        // ramps while song mode plays them.
+        synth.start(i * PERIOD as u64, time.info().bpm);
         let homes = track_kits.homes(|t| !mix.instruments.holds(t) && !midi_out.takes(t as u16));
         let mut pads = mix.pads_homed(&homes);
         // With the drums split (Cores 3 and 2), the lane's voices are waited
@@ -8689,7 +8913,7 @@ fn player_session(
         parts.lap(parts::PADS);
         let t_mix = Span::start();
         mix.follow(looper.line.is_open(), looper.monitor);
-        let ctx = mixing::ctx(RATE, i * PERIOD as u64, app.settings.bpm, time.block());
+        let ctx = mixing::ctx(RATE, i * PERIOD as u64, time.info().bpm, time.block());
         // The mixer's lanes (each stage's inserts, the returns) keep the
         // same deadline.
         mix.mixer.set_lane_deadline(Some(lane_until));
@@ -8859,7 +9083,7 @@ fn player_session(
         if let Some(wave) = loop_wave {
             out.show(gui::ToUi::LoopWave(wave));
         }
-        // The Looper tab and the Play page's strip follow the loop as often
+        // The Looper tab and Play's loop row follow the loops as often
         // as the transport card, so the playhead moves smoothly; elsewhere
         // four times a second is enough.
         if strip_shown(app.view()) && loop_shown_at.elapsed() >= TRANSPORT_EVERY {

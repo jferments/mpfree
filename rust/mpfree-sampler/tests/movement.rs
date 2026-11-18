@@ -163,6 +163,7 @@ fn velocity_moves_the_pitch_and_darkens_the_cutoff_of_soft_hits() {
         cutoff_hz: 2_000.0,
         resonance: 0.0,
         env_octaves: 0.0,
+        drive_db: 0.0,
     };
     pad.vel_to_cutoff = 1.0;
     let (hard, _) = played(&pad, &s, 127, 0.3);
@@ -211,6 +212,7 @@ fn an_lfo_on_cutoff_opens_and_closes_the_filter() {
         cutoff_hz: 1_000.0,
         resonance: 0.0,
         env_octaves: 0.0,
+        drive_db: 0.0,
     };
     // A square at 4 Hz, half way: 2 octaves up, then 2 down.
     pad.lfo = lfo(LfoTarget::Cutoff, LfoShape::Square, 4.0, 0.5);

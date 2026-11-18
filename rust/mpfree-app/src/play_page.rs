@@ -5,16 +5,20 @@
 //! Each view is laid out exactly as Jay's approved mockups F to I
 //! (/mnt/project-files/hello-mpc/play-mockups/source/src/main.rs, `views`):
 //!
-//! - the frame, the same in every view: the transport card (84 px) with
-//!   the view switch at its right end, the view under it, and beside them,
-//!   from under the top bar to the hint line, the master meter (66 px) and
-//!   the four Q-Link cards (128 px) next to the MPC's Q-Link knobs;
-//! - **All** (home, F): the looper strip, the pattern, and the throws
-//!   beside the XY pad;
-//! - **Beats** (G): the whole pattern, then (unless Play's options turn
-//!   it off) the Your timing strip, then the throws;
-//! - **Loop** (H): the loop big with its buttons, then the throws and the
-//!   XY pad.
+//! - the frame, the same in every view: the transport card (84 px), the
+//!   view under it, and beside them, from under the top bar to the hint
+//!   line, the master meter (66 px) and the four Q-Link cards (128 px)
+//!   next to the MPC's Q-Link knobs;
+//! - **All** (home, F): the loop row (every loop, [`crate::loop_row`]),
+//!   the pattern, and the throws beside the XY pad;
+//! - **Beats** (G), the Sequencer tab's Steps: the whole pattern, then
+//!   (unless Play's options turn it off) the Your timing strip, then the
+//!   throws.
+//!
+//! The Loop view (H) is gone since the looper redesign's step 5 (Jay, 17
+//! Nov 22:51Z): the loop row shows every loop on All, and the Looper tab
+//! is where a loop is shaped. So Play has one view, and its transport card
+//! has the bar dots where the All | Loop switch was.
 //!
 //! The Drum view (I) is gone since 13 Nov: Jay folded its timing into
 //! Beats as a strip after live test 3 ("Fold timing into Beats, drop
@@ -53,7 +57,7 @@ use mpfree_ui::{Color, EventKind, PaintCx, Rect, Tone, Touch, Widget};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-/// Widget names on the page. The loop strip is the Looper tab's.
+/// Widget names on the page. The loop row is [`crate::loop_row`]'s.
 pub const TRANSPORT: &str = "play-transport";
 pub const MASTER: &str = "master";
 pub const QLINKS: &str = "qlinks";
@@ -68,11 +72,6 @@ pub const INSPECTOR: &str = "step-inspector";
 /// The pads heading on the Synth tab, over its presets: always the synth.
 pub const SYNTH_PADS_HEAD: &str = "synth-pads-head";
 
-/// Play's views, in its switch's order (MAIN steps through them). Beats
-/// is the Sequencer tab's Steps view, so it is not one of them.
-pub const PLAY_VIEWS: [PlayView; 2] = [PlayView::All, PlayView::Loop];
-/// Play's switch.
-pub const PLAY_SWITCH: [&str; 2] = ["All", "Loop"];
 /// The Sequencer's switch: Steps (Beats' pages) and Notes (the note
 /// editor).
 pub const SEQ_SWITCH: [&str; 2] = ["Steps", "Notes"];
@@ -89,30 +88,22 @@ pub const TIMING_STRIP_H: i32 = 72;
 /// The transport card's height.
 pub const TRANSPORT_H: i32 = 84;
 
+/// The views in Play's frame: Play's own (All) and the Sequencer tab's
+/// Steps (Beats' pages).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PlayView {
     #[default]
     All,
     Beats,
-    Loop,
 }
 
 impl PlayView {
-    pub const ALL: [PlayView; 3] = [PlayView::All, PlayView::Beats, PlayView::Loop];
+    pub const ALL: [PlayView; 2] = [PlayView::All, PlayView::Beats];
 
     pub fn name(self) -> &'static str {
         match self {
             PlayView::All => "All",
             PlayView::Beats => "Steps",
-            PlayView::Loop => "Loop",
-        }
-    }
-
-    /// Play's view after this one (MAIN on Play): All and Loop in turn.
-    pub fn next_on_play(self) -> PlayView {
-        match self {
-            PlayView::All => PlayView::Loop,
-            PlayView::Beats | PlayView::Loop => PlayView::All,
         }
     }
 
@@ -122,7 +113,6 @@ impl PlayView {
         match self {
             PlayView::All => "Play",
             PlayView::Beats => "Play · Beats",
-            PlayView::Loop => "Play · Loop",
         }
     }
 
@@ -150,17 +140,13 @@ impl PlayView {
                 format!("{slot}:*")
             }
         };
-        let strip = crate::looper_page::LOOP_STRIP;
+        let row = crate::loop_row::LOOP_ROW;
         match self {
-            PlayView::All => format!(
-                "{strip}:150, {}, row({THROWS}:*, {XY}:280):120",
-                first(STEPS)
-            ),
+            PlayView::All => format!("{row}:150, {}, row({THROWS}:*, {XY}:280):120", first(STEPS)),
             PlayView::Beats if timing => {
                 format!("{}, {TIMING}:{TIMING_STRIP_H}, {THROWS}:196", first(STEPS))
             }
             PlayView::Beats => format!("{}, {THROWS}:196", first(STEPS)),
-            PlayView::Loop => format!("{}, row({THROWS}:*, {XY}:300):196", first(strip)),
         }
     }
 
@@ -380,10 +366,6 @@ pub enum Knob {
     Tune,
     DrumsFilter,
     DrumsSend,
-    LoopLevel,
-    LoopSend,
-    LineLevel,
-    LoopFilter,
     /// The step picked in Beats, or the step pads held (their Step bank).
     Velocity,
     Length,
@@ -425,12 +407,6 @@ impl Knob {
                 StripId::Track(mixing::DRUMS),
                 mixer_ids::send(mixing::DELAY_RETURN),
             ),
-            Knob::LoopSend => (
-                StripId::Track(mixing::LOOP),
-                mixer_ids::send(mixing::DELAY_RETURN),
-            ),
-            Knob::LoopLevel => (StripId::Track(mixing::LOOP), mixer_ids::VOLUME),
-            Knob::LineLevel => (mixing::LINE, mixer_ids::VOLUME),
             _ => return None,
         };
         Some(ParamAddr::new(
@@ -1202,12 +1178,6 @@ impl PlayPage {
                 };
                 [Knob::Swing, two, Knob::DrumsFilter, Knob::DrumsSend]
             }
-            PlayView::Loop => [
-                Knob::LoopLevel,
-                Knob::LoopSend,
-                Knob::LineLevel,
-                Knob::LoopFilter,
-            ],
         }
     }
 
@@ -1671,37 +1641,16 @@ impl PlayPage {
                 c.bipolar = true;
                 c
             }
-            Knob::DrumsFilter | Knob::LoopFilter => {
-                let (v, scope) = if knob == Knob::DrumsFilter {
-                    (l.drums_filter, "Drums")
-                } else {
-                    (l.loop_filter, "Looper")
-                };
-                let mut c = QLinkCard::new("Filter", scope, &filter_text(v), (v + 100.0) / 200.0);
+            Knob::DrumsFilter => {
+                let v = l.drums_filter;
+                let mut c = QLinkCard::new("Filter", "Drums", &filter_text(v), (v + 100.0) / 200.0);
                 c.bipolar = true;
                 c
             }
-            Knob::DrumsSend | Knob::LoopSend => {
-                let (db, scope) = if knob == Knob::DrumsSend {
-                    (l.drums_send_db, "Drums")
-                } else {
-                    (l.loop_send_db, "Looper")
-                };
-                let p = send_pos(db);
-                QLinkCard::new("Delay send", scope, &pct(p), p)
+            Knob::DrumsSend => {
+                let p = send_pos(l.drums_send_db);
+                QLinkCard::new("Delay send", "Drums", &pct(p), p)
             }
-            Knob::LoopLevel => QLinkCard::new(
-                "Loop level",
-                "Looper",
-                &db_text(l.loop_db),
-                ((l.loop_db + 60.0) / 66.0).clamp(0.0, 1.0),
-            ),
-            Knob::LineLevel => QLinkCard::new(
-                "Line level",
-                "Line in",
-                &db_text(l.line_db),
-                ((l.line_db + 60.0) / 66.0).clamp(0.0, 1.0),
-            ),
             Knob::Sound(k) => {
                 let Some((sk, v, locked)) = self.sound_value(usize::from(k)) else {
                     return QLinkCard::default();
@@ -1882,42 +1831,21 @@ impl PlayPage {
                 t.by = by;
                 Turn::Transpose(by)
             }
-            Knob::DrumsFilter | Knob::LoopFilter => {
-                let (v, strip) = if knob == Knob::DrumsFilter {
-                    (&mut l.drums_filter, StripId::Track(mixing::DRUMS))
-                } else {
-                    (&mut l.loop_filter, StripId::Track(mixing::LOOP))
-                };
+            Knob::DrumsFilter => {
+                let v = &mut l.drums_filter;
                 *v = (*v + d * if fine { 0.5 } else { 2.0 }).clamp(-100.0, 100.0);
                 Turn::Fx(PlayFx::Filter {
-                    strip,
+                    strip: StripId::Track(mixing::DRUMS),
                     position: *v,
                 })
             }
-            Knob::DrumsSend | Knob::LoopSend => {
-                let (db, strip) = if knob == Knob::DrumsSend {
-                    (&mut l.drums_send_db, StripId::Track(mixing::DRUMS))
-                } else {
-                    (&mut l.loop_send_db, StripId::Track(mixing::LOOP))
-                };
+            Knob::DrumsSend => {
+                let db = &mut l.drums_send_db;
                 let p = (send_pos(*db) + d * if fine { 0.005 } else { 0.02 }).clamp(0.0, 1.0);
                 *db = send_db(p);
                 Turn::Fx(PlayFx::Strip {
-                    strip,
+                    strip: StripId::Track(mixing::DRUMS),
                     id: mixer_ids::send(mixing::DELAY_RETURN),
-                    value: *db,
-                })
-            }
-            Knob::LoopLevel | Knob::LineLevel => {
-                let (db, strip) = if knob == Knob::LoopLevel {
-                    (&mut l.loop_db, StripId::Track(mixing::LOOP))
-                } else {
-                    (&mut l.line_db, mixing::LINE)
-                };
-                *db = (*db + d * if fine { 0.1 } else { 0.5 }).clamp(-60.0, 6.0);
-                Turn::Fx(PlayFx::Strip {
-                    strip,
-                    id: mixer_ids::VOLUME,
                     value: *db,
                 })
             }
@@ -3229,16 +3157,10 @@ impl PlayPage {
             step: rolling.then(|| ((pos % bar_ticks) / STEP_TICKS).clamp(0, 15) as usize),
             bar: (((pos - start).max(0) / bar_ticks) as usize) % bars,
             bars,
-            views: if self.sequencer {
-                &SEQ_SWITCH
-            } else {
-                &PLAY_SWITCH
-            },
-            view: if self.sequencer {
-                0
-            } else {
-                PLAY_VIEWS.iter().position(|&v| v == self.view).unwrap_or(0)
-            },
+            // Play has one view since the Loop view went: no switch, the
+            // bar dots in its place.
+            views: if self.sequencer { &SEQ_SWITCH } else { &[] },
+            view: 0,
             rec: None,
             pads: None,
         }
@@ -3754,8 +3676,9 @@ mod tests {
     #[test]
     fn the_views_are_laid_out_as_the_mockups() {
         let all = PlayView::All.layout();
-        let strip = crate::looper_page::LOOP_STRIP;
-        assert_eq!(rect(&all, strip), Rect::new(12, 180, 1038, 150));
+        // The loop row, in the room the looper strip had (step 5).
+        let row = crate::loop_row::LOOP_ROW;
+        assert_eq!(rect(&all, row), Rect::new(12, 180, 1038, 150));
         // The pattern fills the room the mini pads had (Jay, 12 Nov 15:45Z).
         assert_eq!(rect(&all, STEPS), Rect::new(12, 342, 1038, 276));
         assert_eq!(rect(&all, THROWS), Rect::new(12, 630, 746, 120));
@@ -3763,10 +3686,6 @@ mod tests {
         let beats = PlayView::Beats.layout();
         assert_eq!(rect(&beats, STEPS), Rect::new(12, 180, 1038, 362));
         assert_eq!(rect(&beats, THROWS), Rect::new(12, 554, 1038, 196));
-        let lp = PlayView::Loop.layout();
-        assert_eq!(rect(&lp, strip), Rect::new(12, 180, 1038, 362));
-        assert_eq!(rect(&lp, THROWS), Rect::new(12, 554, 726, 196));
-        assert_eq!(rect(&lp, XY), Rect::new(750, 554, 300, 196));
         // Beats with the timing strip (Jay 13 Nov: the Drum view's
         // timing folded into Beats): the pattern keeps six lanes, as All's.
         let timed = PlayView::Beats.layout_for(true);
@@ -3778,7 +3697,7 @@ mod tests {
         assert_eq!(rect(&timed, THROWS), rect(&beats, THROWS));
         const { assert!(TIMING_STRIP_H < crate::play_widgets::YourTiming::FULL_H) };
         assert_eq!(PlayView::Beats.page_with(true, false), BEATS_TIMING_PAGE);
-        assert_eq!(PlayView::Loop.page_with(true, true), PlayView::Loop.page());
+        assert_eq!(PlayView::All.page_with(true, true), PlayView::All.page());
         // No view has a pads panel.
         for v in PlayView::ALL {
             for spec in [v.layout(), v.quick_layout()] {

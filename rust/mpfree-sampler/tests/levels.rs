@@ -138,6 +138,7 @@ fn cutoff_levels_open_the_filter_pad_by_pad() {
             cutoff_hz: 200.0,
             resonance: 0.0,
             env_octaves: 0.0,
+            drive_db: 0.0,
         }
     })
     .unwrap();
