@@ -3593,15 +3593,20 @@ fn tuned_grain(g: GrainParams, cents: f32, follow: KeyFollow) -> GrainParams {
 /// Tone region the density, with the size shortened as much so each grain
 /// keeps as many cycles of the note.
 fn pitched_grain(mut g: GrainParams, semis: f32, follow: KeyFollow) -> GrainParams {
+    if !follow.tone {
+        g.pitch += semis;
+    }
+    // Every voice's hit comes here, granular or not: the ratio only when
+    // something follows it (k is exactly 1 at 0, so nothing changes then).
+    if semis == 0.0 || !(follow.tone || follow.size || follow.scan) {
+        return g;
+    }
     let k = (semis / 12.0).exp2();
     if follow.tone {
         g.density *= k;
         g.size_ms /= k;
-    } else {
-        g.pitch += semis;
-        if follow.size {
-            g.size_ms /= k;
-        }
+    } else if follow.size {
+        g.size_ms /= k;
     }
     if follow.scan {
         g.scan *= k;

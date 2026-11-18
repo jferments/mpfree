@@ -118,10 +118,10 @@
 548284	Sampler x16 held, 16-bit sound
 1435285	Sampler, 20 pads
 2018120	Sampler, 20 pads + master grains
-75022	Sampler, 4 drum kits, 64 voices
-39166	Sampler, drum kit, 24 voices
-41183	Sampler, drum kit, 24 voices, 16-bit sounds
-74456	Sampler, drum kit, 64 voices
+77512	Sampler, 4 drum kits, 64 voices
+41593	Sampler, drum kit, 24 voices
+43007	Sampler, drum kit, 24 voices, 16-bit sounds
+79457	Sampler, drum kit, 64 voices
 823688	Sampler, the 16 sample pads alone
 630801	Sampler, the 4 granular pads alone
 4085464	Song: sampler, 2 synths, mixer+FX, time, looper
