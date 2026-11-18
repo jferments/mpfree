@@ -148,11 +148,14 @@ pub enum ToAudio {
     Tracks { n: usize, armed: Option<usize> },
     /// One track's settings changed.
     Track(usize, TrackSet),
-    /// One place of a track's MIDI effects changed (`Track::note_fx`).
+    /// One place of a track's MIDI effects changed (`Track::note_fx`):
+    /// its effect and the effect's id on the track (what names its
+    /// settings for the mod engine).
     NoteFx {
         track: u16,
         place: u8,
         slot: Option<Slot>,
+        id: u16,
     },
     /// Where a track's arp sits among its MIDI effects changed.
     NoteArp { track: u16, at: u8 },
