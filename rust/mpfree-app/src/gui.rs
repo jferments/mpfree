@@ -181,8 +181,13 @@ const CONSOLE_HINT: &str =
 /// tap deletes what is tapped).
 pub const ERASE_HINT: &str = "ERASE held: tap a clip (Arrange), a step or a lane's name (Play), a layer or a ring (Looper) to delete it   ·   \
                               UNDO brings it back";
-/// SHIFT held on the mixer, the chain editor or the macros panel, where
-/// a touch on a value arms MIDI Learn (layout spec 4d).
+/// The Q-Link column's title while its cards turn the arp (NOTE REPEAT
+/// held or latched, or the Arp panel open).
+const ARP_QLINKS: &str = "Q-Links · Arp";
+
+/// SHIFT held on the mixer, the chain editor, the macros panel or the Arp
+/// panel's sliders, where a touch on a value arms MIDI Learn (layout spec
+/// 4d).
 const SHIFT_LEARN_HINT: &str =
     "SHIFT +   touch a value: MIDI Learn   ·   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   \
      NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
@@ -1490,6 +1495,9 @@ pub enum LearnValue {
     /// A knob of the synth the Synth tab shows (the selected track's), by
     /// its parameter id.
     Synth(u16),
+    /// One of the armed track's arp settings its Q-Links turn, by its id
+    /// in `mpfree_param::arp`.
+    Arp(u16),
 }
 
 /// A track asked of the time engine for a kit: by "+ Kit track", or by a
@@ -2752,7 +2760,7 @@ impl Player {
                 let name = row.label.split(" · ").next().unwrap_or(&row.label);
                 *card = QLinkCard::new(name, "Arp", &row.text, row.value);
             }
-            ("Q-Links · Arp", cards)
+            (ARP_QLINKS, cards)
         } else {
             let knobs = self.play.knobs();
             let pad = self.sample.pad_knobs(self.play.last_pad);
@@ -4503,7 +4511,8 @@ impl Player {
             SHIFT_STEPS_HINT.to_string()
         } else if self.status.shift
             && self.ready
-            && matches!(self.view, View::Mixer | View::Chain | View::Macros)
+            && (matches!(self.view, View::Mixer | View::Chain | View::Macros)
+                || (self.view == View::Arp && self.ui.rect_of(arp_view::QLINKS).is_some()))
             && (self.view != View::Mixer || mpfree_mixer_ui::io_hint(&self.ui).is_none())
         {
             SHIFT_LEARN_HINT.to_string()
@@ -8982,6 +8991,17 @@ impl Player {
                 mpfree_play::mpfree_param::Owner::Strip(mpfree_play::mpfree_param::Strip::Master),
                 mpfree_fx::ids::mixer::VOLUME,
             )));
+        }
+        // The arp's rate, gate, swing and octaves: the Arp panel's sliders,
+        // and the Q-Link column's cards while they turn the arp.
+        let arp_cards = || {
+            self.ui
+                .get::<QLinkColumn>(play_page::QLINKS)
+                .is_some_and(|q| q.title == ARP_QLINKS)
+        };
+        if w == arp_view::QLINKS || (w == play_page::QLINKS && arp_cards()) {
+            let (id, _) = mpfree_play::mpfree_param::arp::ALL.get(t.index)?;
+            return Some(LearnValue::Arp(*id));
         }
         // A Play Q-Link card that turns a strip's send or level (not the
         // audio tracks' or a band's cards, which turn other things).
@@ -16353,6 +16373,84 @@ mod tests {
 
     /// Remote control: SHIFT + a touch on Play's tempo or a strip's M arms
     /// MIDI Learn on it. Arrange's PLAY is no value: it keeps its job.
+    /// SHIFT + a touch on the Arp panel's sliders, or on the Q-Link
+    /// column's cards while they turn the arp (NOTE REPEAT held), arms
+    /// MIDI Learn on that arp setting; without SHIFT a slider moves.
+    #[test]
+    fn shift_and_a_touch_on_the_arps_sliders_arms_midi_learn() {
+        use mpfree_controller::mpc_one::button::NOTE_REPEAT;
+        use mpfree_play::mpfree_param::arp;
+        use mpfree_ui::Rect;
+        let mut p = sample_player(Fonts::embedded());
+        let mut app = sample_app();
+        let centre = |r: Rect| (r.x + r.w / 2, r.y + r.h / 2);
+        let press = |p: &mut Player, (x, y): (i32, i32)| {
+            let mut acts: Vec<FromUi> =
+                [p.touch(1, Touch::Down, x, y), p.touch(1, Touch::Up, x, y)]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+            acts.extend(p.take_actions());
+            acts
+        };
+        let learn = |id| [FromUi::LearnValue(LearnValue::Arp(id))];
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        // NOTE REPEAT held: the column's cards turn the arp.
+        apply_effects(&mut p, app.button(NOTE_REPEAT, true, 0.0));
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        p.status.shift = true;
+        let cards = QLinkColumn::card_rects(p.ui.rect_of(play_page::QLINKS).unwrap());
+        assert_eq!(press(&mut p, centre(cards[0])), learn(arp::RATE));
+        assert_eq!(press(&mut p, centre(cards[3])), learn(arp::OCTAVES));
+        p.status.shift = false;
+        apply_effects(&mut p, app.button(NOTE_REPEAT, false, 0.1));
+        // Play's own cards again: the first (Swing) learns nothing.
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        p.status.shift = true;
+        let cards = QLinkColumn::card_rects(p.ui.rect_of(play_page::QLINKS).unwrap());
+        assert!(!press(&mut p, centre(cards[0]))
+            .iter()
+            .any(|a| matches!(a, FromUi::LearnValue(_))));
+        p.status.shift = false;
+        // The Arp panel: its sliders, and the hint line says so.
+        let mut fx = app.toggle_panel();
+        fx.extend(app.arp_poll());
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), ARP_PAGE);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        p.status.shift = true;
+        p.refresh_hint();
+        assert!(
+            hint(&p).starts_with("SHIFT +   touch a value: MIDI Learn"),
+            "{}",
+            hint(&p)
+        );
+        let r = p.ui.rect_of(arp_view::QLINKS).unwrap();
+        let sliders = p.ui.get::<SliderStack>(arp_view::QLINKS).unwrap();
+        let (gate, swing) = (sliders.row_rects(r, 1).1, sliders.row_rects(r, 2).1);
+        assert_eq!(press(&mut p, centre(gate)), learn(arp::GATE));
+        assert_eq!(press(&mut p, centre(swing)), learn(arp::SWING));
+        p.status.shift = false;
+        let (x, y) = centre(gate);
+        let mut acts: Vec<FromUi> = [
+            p.touch(2, Touch::Down, x, y),
+            p.touch(2, Touch::Move, gate.right() - 4, y),
+            p.touch(2, Touch::Up, gate.right() - 4, y),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        acts.extend(p.take_actions());
+        assert!(
+            acts.iter()
+                .any(|a| matches!(a, FromUi::Arp(ArpAction::Settings(_)))),
+            "without SHIFT the slider moves: {acts:?}"
+        );
+    }
+
     #[test]
     fn shift_and_a_touch_on_plays_master_or_a_strip_card_arms_midi_learn() {
         use mpfree_play::mpfree_param::{Owner, Strip};
