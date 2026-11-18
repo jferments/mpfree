@@ -26,6 +26,16 @@
 //! records the pads into a clip and the line into a loop in one pass, each
 //! as it would alone; SHIFT + a tap on one of the two lets go of it.
 //!
+//! **Several tracks** ([`RecArm::add_track`], the MPC 3.10.1 guide's Rec
+//! Arm Behavior, p. 62: SHIFT + each track's record button arms more
+//! tracks): SHIFT + a tap on a track's row of the target list adds that
+//! track to the notes ([`RecArm::also`]), so one take records the pads'
+//! track and each other armed track's notes (what its MIDI input sends
+//! it) into their own clips, one undo step in all; SHIFT + a tap on an
+//! added track lets go of it. A plain tap on a row, picking a track or a
+//! plain tap on an Arm pill arms one again. The time engine holds the set
+//! too (`TimeAction::ArmAlso`, from [`Do::Tracks`]).
+//!
 //! UNDO while a take records throws the take so far away
 //! ([`RecArm::throw`]): recording stops and the music plays on.
 //!
@@ -229,6 +239,9 @@ pub enum Do {
     StopWaiting,
     /// To the sampler's recorder, for a pad take.
     Pad(PadDo),
+    /// The other armed tracks changed: these now, a bit each
+    /// (`TimeAction::ArmAlso`).
+    Tracks(u128),
     /// Said on the hint line and in the log.
     Tell(String),
     /// Written to the log only (the hint line says it already).
@@ -252,6 +265,10 @@ pub struct RecArm {
     pub pad: Option<PadTake>,
     /// The last pad take's number: each one armed counts up from it.
     pub taken: u32,
+    /// The other tracks whose notes REC records with the armed track's,
+    /// a bit each ([`RecArm::add_track`]); 0 for the armed track alone.
+    /// Only while the notes are armed.
+    pub also: u128,
 }
 
 /// The transport's mode set for `take`, if it isn't already.
@@ -410,13 +427,20 @@ impl RecArm {
             out.push(Do::Pad(PadDo::End));
             out.push(Do::Tell(format!("{} take called off", take.name())));
         }
+        let also = self.also;
         out.extend(self.move_arm(target, by, now));
+        self.tidy(also, &mut out);
         out
     }
 
     fn move_arm(&mut self, target: Target, by: Mover, now: &Now) -> Vec<Do> {
         if self.pinned && by != Mover::Tap {
             return Vec::new();
+        }
+        // A tap or a track picked arms one track again (a page opened
+        // keeps the tracks armed with it).
+        if by != Mover::Page && !now.taking() {
+            self.also = 0;
         }
         // Both armed: a page or a pick finds its target armed already; a
         // tap keeps only the one tapped.
@@ -451,7 +475,7 @@ impl RecArm {
     }
 
     /// What a tap says while a take records.
-    fn busy(&self, now: &Now) -> Do {
+    pub fn busy(&self, now: &Now) -> Do {
         Do::Tell(format!(
             "Finish the take first: REC records {} until it stops",
             self.taking_what(now)
@@ -477,6 +501,13 @@ impl RecArm {
     /// too, the notes added to an armed loop get ready. Refused while a take
     /// records, pinned or not.
     pub fn add(&mut self, target: Target, now: &Now) -> Vec<Do> {
+        let also = self.also;
+        let mut out = self.add_target(target, now);
+        self.tidy(also, &mut out);
+        out
+    }
+
+    fn add_target(&mut self, target: Target, now: &Now) -> Vec<Do> {
         if let Some(take) = self.pad {
             return vec![Do::Tell(format!(
                 "A pad take records alone: REC ends {}'s, then SHIFT + Arm adds",
@@ -508,6 +539,74 @@ impl RecArm {
             now.notes
         )));
         out
+    }
+
+    /// SHIFT + a tap on track `track`'s row of the target list (`name`
+    /// names it; `main` is the armed track, the one the pads play): add it
+    /// to the tracks REC records (the loop armed alone: the notes too, as
+    /// SHIFT + Arm on them), or let go of it if it was added. The armed
+    /// track can't be let go of this way: a plain tap on another row moves
+    /// it. Refused while a take records, with a pad take armed, and past
+    /// [`crate::time::MAX_ALSO`] other tracks.
+    pub fn add_track(
+        &mut self,
+        track: usize,
+        name: &str,
+        main: Option<usize>,
+        now: &Now,
+    ) -> Vec<Do> {
+        if let Some(take) = self.pad {
+            return vec![Do::Tell(format!(
+                "A pad take records alone: REC ends {}'s, then SHIFT + a track adds it",
+                take.name()
+            ))];
+        }
+        if now.taking() {
+            return vec![self.busy(now)];
+        }
+        let Some(bit) = 1u128.checked_shl(track as u32) else {
+            return Vec::new();
+        };
+        let was = self.also;
+        let mut out = Vec::new();
+        if main == Some(track) {
+            if self.armed(Target::Notes) {
+                return vec![Do::Tell(format!(
+                    "{name} plays the pads and records: SHIFT + a tap on another track records it too"
+                ))];
+            }
+            out.extend(self.add_target(Target::Notes, now));
+        } else if self.also & bit != 0 {
+            self.also &= !bit;
+            out.push(Do::Note(format!("rec: {name} let go")));
+        } else if self.also.count_ones() as usize >= crate::time::MAX_ALSO {
+            return vec![Do::Tell(format!(
+                "{} tracks at most record at once: SHIFT + a tap lets go of one",
+                crate::time::MAX_ALSO + 1
+            ))];
+        } else {
+            if !self.armed(Target::Notes) {
+                out.extend(self.add_target(Target::Notes, now));
+            }
+            self.also |= bit;
+            out.push(Do::Note(format!(
+                "rec: {name} armed too: REC records it with {}",
+                now.notes
+            )));
+        }
+        self.tidy(was, &mut out);
+        out
+    }
+
+    /// The other tracks go with the notes: armed alone, the loop has
+    /// none. Tell the time engine when they changed from `was`.
+    fn tidy(&mut self, was: u128, out: &mut Vec<Do>) {
+        if !self.both && self.target != Target::Notes {
+            self.also = 0;
+        }
+        if self.also != was {
+            out.push(Do::Tracks(self.also));
+        }
     }
 
     /// With both armed, let go of `t`: the other records alone. The
@@ -1437,5 +1536,92 @@ mod tests {
         let err = a.rec_here(0, 5, &now(State::CountIn)).unwrap_err();
         assert_eq!(err, "Finish the take first: Drums records");
         assert_eq!(a.pad, None);
+    }
+
+    /// SHIFT + a tap on a track's row adds it to the notes (the MPC's
+    /// SHIFT + a track's arm), and again lets go of it; the time engine
+    /// hears each change. A plain tap, a track picked or the loop armed
+    /// alone arm one track again; a page opened keeps them.
+    #[test]
+    fn shift_and_a_track_row_add_it_and_a_plain_tap_arms_one_again() {
+        let stopped = now(State::Stopped);
+        let mut a = RecArm::default();
+        let done = a.add_track(1, "Bass", Some(0), &stopped);
+        assert_eq!(a.also, 1 << 1);
+        assert!(done.contains(&Do::Tracks(1 << 1)), "{done:?}");
+        a.add_track(4, "Keys", Some(0), &stopped);
+        assert_eq!(a.also, 1 << 1 | 1 << 4);
+        // REC readies them all: the transport records them in one take.
+        a.press(Press::Rec, &stopped);
+        assert_eq!(a.ready, Some(Take::Replace));
+        assert_eq!(a.also, 1 << 1 | 1 << 4, "the ready keeps them");
+        // Again: lets go of it.
+        let done = a.add_track(1, "Bass", Some(0), &stopped);
+        assert_eq!(a.also, 1 << 4);
+        assert!(done.contains(&Do::Tracks(1 << 4)));
+        // The pads' track can't be let go of this way.
+        let done = a.add_track(0, "Drums", Some(0), &stopped);
+        assert!(matches!(&done[..], [Do::Tell(_)]), "{done:?}");
+        assert_eq!(a.also, 1 << 4);
+        // A page keeps them; a plain tap arms one track again.
+        assert!(a.move_to(Target::Notes, Mover::Page, &stopped).is_empty());
+        assert_eq!(a.also, 1 << 4);
+        let done = a.move_to(Target::Notes, Mover::Tap, &stopped);
+        assert_eq!(a.also, 0);
+        assert_eq!(done, vec![Do::Tracks(0)]);
+        // So does a track picked, and the loop armed alone.
+        a.add_track(2, "Keys", Some(0), &stopped);
+        a.move_to(Target::Notes, Mover::Track, &stopped);
+        assert_eq!(a.also, 0);
+        a.add_track(2, "Keys", Some(0), &stopped);
+        let done = a.move_to(Target::Loop, Mover::Tap, &stopped);
+        assert_eq!((a.target, a.also), (Target::Loop, 0));
+        assert!(done.contains(&Do::Tracks(0)));
+    }
+
+    /// With the loop armed alone, SHIFT + a track's row arms the notes too
+    /// (both), with that track; SHIFT + Arm on the notes then lets go of
+    /// the notes and their tracks.
+    #[test]
+    fn a_track_added_to_the_loop_arms_the_notes_with_it() {
+        let stopped = now(State::Stopped);
+        let mut a = RecArm {
+            target: Target::Loop,
+            ..RecArm::default()
+        };
+        a.add_track(3, "Keys", Some(0), &stopped);
+        assert!(a.both && a.armed(Target::Notes) && a.armed(Target::Loop));
+        assert_eq!(a.also, 1 << 3);
+        let done = a.add(Target::Notes, &stopped);
+        assert_eq!((a.both, a.target, a.also), (false, Target::Loop, 0));
+        assert!(done.contains(&Do::Tracks(0)), "{done:?}");
+    }
+
+    /// Nothing changes the tracks while a take records or counts in, nor
+    /// with a pad take armed; past 16 tracks in all REC says so.
+    #[test]
+    fn the_tracks_stay_while_a_take_records_and_sixteen_record_at_most() {
+        let mut a = RecArm::default();
+        a.add_track(1, "Bass", Some(0), &now(State::Stopped));
+        for state in [State::Recording, State::CountIn] {
+            let busy = now(state);
+            let done = a.add_track(2, "Keys", Some(0), &busy);
+            assert!(matches!(&done[..], [Do::Tell(s)] if s.starts_with("Finish the take first")));
+            assert_eq!(a.move_to(Target::Notes, Mover::Track, &busy), vec![]);
+            a.move_to(Target::Notes, Mover::Tap, &busy);
+            assert_eq!(a.also, 1 << 1, "{state:?}");
+        }
+        let mut p = a;
+        p.arm_pad(0, 5, &now(State::Stopped));
+        let done = p.add_track(2, "Keys", Some(0), &now(State::Stopped));
+        assert!(matches!(&done[..], [Do::Tell(s)] if s.starts_with("A pad take records alone")));
+        let stopped = now(State::Stopped);
+        for t in 2..=crate::time::MAX_ALSO {
+            a.add_track(t, "T", Some(0), &stopped);
+        }
+        assert_eq!(a.also.count_ones() as usize, crate::time::MAX_ALSO);
+        let done = a.add_track(40, "T", Some(0), &stopped);
+        assert!(matches!(&done[..], [Do::Tell(s)] if s.starts_with("16 tracks at most")));
+        assert_eq!(a.also.count_ones() as usize, crate::time::MAX_ALSO);
     }
 }

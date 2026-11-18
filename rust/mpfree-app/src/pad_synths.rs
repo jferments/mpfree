@@ -26,7 +26,13 @@
 //!   comes back through [`PadSynths::pop_retired`], to be dropped off the
 //!   audio thread.
 //!
-//! Everything after [`PadSynths::new`] never allocates, frees or locks.
+//! - **On the sound cores.** With Prefs "Sound cores" on two or three, the
+//!   copies render on lanes on the other cores beside the audio thread,
+//!   placed by what each costs ([`PadSynths::set_lanes`], as the tracks'
+//!   own synths are); the sound is the same to the bit.
+//!
+//! Everything after [`PadSynths::new`] and [`PadSynths::set_lanes`] never
+//! allocates, frees or locks.
 
 use crate::synth::{Engine, Synth};
 use mpfree_fx::Mixer;
@@ -498,6 +504,54 @@ impl PadSynths {
     /// A copy taken out (after its ring-out), to drop off the audio thread.
     pub fn pop_retired(&mut self) -> Option<Instrument> {
         self.host.pop_retired()
+    }
+
+    // ------------------------------------------------------------ lanes
+
+    /// The copies split over the audio thread and a lane per config, by
+    /// what each costs (`TrackHost::set_lanes`, as the tracks' own synths
+    /// are; [`crate::cores::Cores::start_pads`]). The sound into each
+    /// strip is the same to the bit. Allocates and starts the lanes'
+    /// threads: call it before the sound starts.
+    pub fn set_lanes(&mut self, configs: Vec<mpfree_lanes::Config>) -> Vec<mpfree_lanes::Setup> {
+        self.host.set_lanes(configs)
+    }
+
+    /// When the lanes' joins stop waiting this period (the period's one
+    /// deadline, [`crate::cores::lane_deadline`]).
+    pub fn set_lane_deadline(&mut self, at: Option<std::time::Instant>) {
+        self.host.set_deadline(at);
+    }
+
+    /// After a late period: the lanes' copies back, waiting until
+    /// `deadline` at most and past it as long as it takes (counted). Call
+    /// it right after each write. Never allocates.
+    pub fn settle(&mut self, deadline: std::time::Instant) {
+        self.host.settle(deadline);
+    }
+
+    /// Lanes beside the audio thread (0: every copy plays on it).
+    #[cfg(test)]
+    pub fn lanes(&self) -> usize {
+        self.host.lanes()
+    }
+
+    /// Every lane's counts added up.
+    pub fn lane_counts(&self) -> mpfree_track::LaneCounts {
+        let mut all = mpfree_track::LaneCounts::default();
+        for k in 0..self.host.lanes() {
+            if let Some(c) = self.host.lane_counts(k) {
+                all.periods += c.periods;
+                all.late += c.late;
+                all.waits += c.waits;
+            }
+        }
+        all
+    }
+
+    /// Copies moved between cores since the lanes started.
+    pub fn lane_moves(&self) -> u64 {
+        self.host.moves()
     }
 
     /// The copies take the Synth tab's values for their engines, every
