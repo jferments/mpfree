@@ -174,6 +174,18 @@ pub enum MarkerKind {
     Cue,
 }
 
+/// Where a marker's tab sits on its line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TabSide {
+    /// Centred on it.
+    #[default]
+    Centre,
+    /// Ending at it, to its left.
+    Before,
+    /// Starting at it, to its right.
+    After,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Marker {
     pub frame: u64,
@@ -183,6 +195,18 @@ pub struct Marker {
     /// [`EventKind::Marker`] (so the owner can say why), but a drag doesn't
     /// move it.
     pub fixed: bool,
+    /// Drawn faint: another tool's mark (the one Sample page draws every
+    /// tool's marks, the tool's bright and the rest faint lines with no
+    /// tab, [`Marker::line_only`]).
+    pub faint: bool,
+    /// Its colour, in place of its kind's.
+    pub color: Option<Color>,
+    /// Where its tab sits: a pair hugging a span from outside (the grain
+    /// window's) keep clear of each other however close they come.
+    pub side: TabSide,
+    /// Has a tab. Without one it is only a line down the wave, which no
+    /// finger takes hold of ([`Marker::line_only`]).
+    pub tab: bool,
 }
 
 impl Marker {
@@ -192,7 +216,30 @@ impl Marker {
             label: label.to_string(),
             kind,
             fixed: false,
+            faint: false,
+            color: None,
+            side: TabSide::Centre,
+            tab: true,
         }
+    }
+
+    /// The same marker, faint and staying put: another tool's.
+    pub fn faint(mut self) -> Marker {
+        self.faint = true;
+        self.fixed = true;
+        self
+    }
+
+    /// The same marker in colour `c`.
+    pub fn colored(mut self, c: Color) -> Marker {
+        self.color = Some(c);
+        self
+    }
+
+    /// The same marker with its tab on side `side`.
+    pub fn tab_on(mut self, side: TabSide) -> Marker {
+        self.side = side;
+        self
     }
 
     /// The same marker, staying put ([`Marker::fixed`]).
@@ -200,6 +247,27 @@ impl Marker {
         self.fixed = true;
         self
     }
+
+    /// The same marker as a line only, with no tab: another tool's mark,
+    /// as the strip holds only the tabs of the tool picked.
+    pub fn line_only(mut self) -> Marker {
+        self.tab = false;
+        self.fixed = true;
+        self
+    }
+}
+
+/// A grain window over the wave ([`Waveform::set_window`]): where grains
+/// start (`at`), how long each reads (`len` frames), and the band the
+/// spray scatters their starts over round `at` (`spray` frames wide,
+/// wrapping round the region `within`), in `color`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GrainSpan {
+    pub at: u64,
+    pub len: u64,
+    pub spray: u64,
+    pub within: (u64, u64),
+    pub color: Color,
 }
 
 /// Bar lines: the frame of the first downbeat, frames per beat and beats
@@ -250,6 +318,7 @@ pub struct Waveform {
     markers: Vec<Marker>,
     region: Option<(u64, u64)>,
     loop_span: Option<(u64, u64)>,
+    window: Option<GrainSpan>,
     fades: (u64, u64),
     beats: Option<Beats>,
     playheads: Vec<u64>,
@@ -289,6 +358,7 @@ impl Waveform {
             markers: Vec::new(),
             region: None,
             loop_span: None,
+            window: None,
             fades: (0, 0),
             beats: None,
             playheads: Vec::new(),
@@ -354,6 +424,19 @@ impl Waveform {
         self.changed();
     }
 
+    /// The grain window shaded, if one is.
+    pub fn window(&self) -> Option<GrainSpan> {
+        self.window
+    }
+
+    /// Shades a grain window (None: none).
+    pub fn set_window(&mut self, window: Option<GrainSpan>) {
+        if self.window != window {
+            self.window = window;
+            self.changed();
+        }
+    }
+
     /// Fade-in and fade-out lengths in frames, drawn from the region's ends.
     pub fn set_fades(&mut self, fade_in: u64, fade_out: u64) {
         self.fades = (fade_in, fade_out);
@@ -404,18 +487,28 @@ impl Waveform {
         f64::from(wave.x) + self.view.x_of(frame)
     }
 
-    /// The tab of marker `i`, `w` pixels wide, centred on the marker and kept
-    /// inside the strip; None when a slice or cue is off screen (start, end
-    /// and loop tabs stay pinned to the edge, to show which way they are).
+    /// The tab of marker `i`, `w` pixels wide, on its side of the marker
+    /// ([`Marker::side`]) and kept inside the strip; None when a slice or
+    /// cue is off screen (start, end and loop tabs stay pinned to the
+    /// edge, to show which way they are).
     fn tab_rect(&self, r: Rect, i: usize, w: i32) -> Option<Rect> {
         let m = &self.markers[i];
+        if !m.tab {
+            return None;
+        }
         let wave = Self::wave_rect(r);
         let x = self.x_in(wave, m.frame as f64).round() as i32;
         let pinned = matches!(m.kind, MarkerKind::Edge | MarkerKind::Loop);
         if !pinned && (x < wave.x || x > wave.right()) {
             return None;
         }
-        let left = (x - w / 2).clamp(r.x + 4, (r.right() - 4 - w).max(r.x + 4));
+        // The line is two pixels wide, x - 1 to x + 1.
+        let left = match m.side {
+            TabSide::Centre => x - w / 2,
+            TabSide::Before => x + 1 - w,
+            TabSide::After => x - 1,
+        };
+        let left = left.clamp(r.x + 4, (r.right() - 4 - w).max(r.x + 4));
         Some(Rect::new(left, r.y + 3, w, TABS_H - 6))
     }
 
@@ -464,6 +557,38 @@ impl Widget for Waveform {
                 wave.h,
             );
             cx.canvas.fill_rect(span, t.good.with_alpha(34));
+        }
+        if let Some(w) = self.window {
+            let shade = |cx: &mut PaintCx, a: u64, b: u64, alpha: u8| {
+                let (xa, xb) = (
+                    (self.x_in(wave, a as f64).round() as i32).max(wave.x),
+                    (self.x_in(wave, b as f64).round() as i32).min(wave.right()),
+                );
+                if xb > xa {
+                    cx.canvas.fill_rect(
+                        Rect::new(xa, wave.y, xb - xa, wave.h),
+                        w.color.with_alpha(alpha),
+                    );
+                }
+            };
+            // The spray's band round the start, wrapping round the region.
+            let (lo, hi) = w.within;
+            let span = hi.saturating_sub(lo).max(1);
+            let half = w.spray.min(span) / 2;
+            if w.spray >= span {
+                shade(cx, lo, hi, 26);
+            } else if half > 0 {
+                let (a, b) = (w.at as i64 - half as i64, w.at + half);
+                shade(cx, a.max(lo as i64) as u64, b.min(hi), 26);
+                if a < lo as i64 {
+                    shade(cx, (hi as i64 + a - lo as i64) as u64, hi, 26);
+                }
+                if b > hi {
+                    shade(cx, lo, lo + (b - hi), 26);
+                }
+            }
+            // One grain, from the start.
+            shade(cx, w.at, w.at + w.len.max(1), 60);
         }
         if let Some(b) = self.beats {
             let first = ((self.view.start - b.first) / b.frames_per_beat).floor() as i64;
@@ -574,7 +699,8 @@ impl Widget for Waveform {
         let mut tabs = Vec::with_capacity(self.markers.len());
         for i in 0..self.markers.len() {
             let m = &self.markers[i];
-            let c = marker_color(&t, m.kind);
+            let c = m.color.unwrap_or_else(|| marker_color(&t, m.kind));
+            let c = if m.faint { c.mix(t.surface, 0.62) } else { c };
             let x = self.x_in(wave, m.frame as f64).round() as i32;
             if x >= wave.x && x <= wave.right() {
                 cx.canvas.fill_rect(Rect::new(x - 1, wave.y, 2, wave.h), c);

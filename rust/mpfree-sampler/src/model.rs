@@ -460,8 +460,8 @@ pub enum ChannelPick {
     Right,
 }
 
-/// How a granular region's Grain page starts and which of its controls it
-/// shows (the granular engine plan's decision 1). The grains underneath
+/// How a granular region's grains start and which of their controls the
+/// Grain tool shows (the granular engine plan's decision 1). The grains underneath
 /// are the same in every mode: a mode is a starting point and a set of
 /// controls, and its settings stay when another mode is picked until that
 /// mode's own are put in.
@@ -570,7 +570,7 @@ pub enum LfoTarget {
 }
 
 /// A pad's LFO (sampler R5 part 4): one on each voice, with the waves of
-/// the Grain page's ([`LfoShape`]).
+/// grain LFO's ([`LfoShape`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PadLfo {
     pub shape: LfoShape,
@@ -1049,7 +1049,7 @@ pub struct Region {
     /// Grain settings, used when `mode` is [`PlayMode::Granular`]. Kept
     /// with the region in every mode, so switching modes loses nothing.
     pub grain: GrainParams,
-    /// Which controls the Grain page shows for `grain`, and where it
+    /// Which controls the Grain tool shows for `grain`, and where it
     /// started them.
     pub grain_mode: GrainMode,
     /// What the keys move besides the grains' pitch.
