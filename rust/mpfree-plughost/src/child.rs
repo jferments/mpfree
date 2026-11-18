@@ -17,7 +17,7 @@ use crate::shm::{self, Mapping};
 use crate::wire::{self, Hello, ToChild, ToHost};
 use mpfree_clap::{ClapControl, ClapNode, Library, ParamSpec, Place, Preset};
 use mpfree_mpchost::{MpcControl, MpcNode};
-use mpfree_node::{Ctx, Expr, Kind, Node, NodeEvent, Timed, MAX_BLOCK};
+use mpfree_node::{Ctl, Ctx, Expr, Kind, Node, NodeEvent, Timed, MAX_BLOCK};
 use std::ffi::OsString;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd};
@@ -571,6 +571,10 @@ fn event_of(e: &shm::ShmEvent) -> Option<NodeEvent> {
             id: u16::try_from(e.a).ok()?,
             value: e.value,
         },
+        shm::EV_CONTROL => NodeEvent::Control {
+            ctl: Ctl::from_cc(u8::try_from(e.a).ok()?)?,
+            value: e.value,
+        },
         _ => return None,
     })
 }
@@ -736,6 +740,14 @@ mod tests {
             })
         );
         assert_eq!(event_of(&e(shm::EV_EXPRESSION, 62, 9, 0.75)), None);
+        assert_eq!(
+            event_of(&e(shm::EV_CONTROL, 2, 0, 0.5)),
+            Some(NodeEvent::Control {
+                ctl: Ctl::Breath,
+                value: 0.5
+            })
+        );
+        assert_eq!(event_of(&e(shm::EV_CONTROL, 7, 0, 0.5)), None);
         assert_eq!(event_of(&e(99, 0, 0, 0.0)), None);
     }
 }
