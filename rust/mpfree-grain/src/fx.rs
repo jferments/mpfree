@@ -27,9 +27,26 @@
 //! to at most half, so the loop can't run away: what goes back is never
 //! more than half of full scale on top of the input. Loud trails grit up,
 //! on purpose (the granular plan's decision 4: grit in the engine).
+//!
+//! Repeat ([`GrainFx::start_repeat`], R7 step C2) is a synced stutter: from
+//! the frame it starts on, the last stretch of the input (a beat, an
+//! eighth) plays again and again, once a stretch, in place of the input
+//! and the cloud. It has a grain voice of its own reading that slice, so
+//! the output crossfades from the input and the cloud to the repeat over
+//! 10 ms and back when it stops ([`GrainFx::stop_repeat`]), and the cloud
+//! starts afresh. Each repeat is one grain a little longer than the
+//! stretch, so one repeat crossfades into the next over a few ms
+//! ([`REPEAT_FADE_S`]) without a click; Pitch and Reverse play through it.
+//! Starting again while it repeats, with another length, re-cuts the same
+//! slice from its start: going from quarters to eighths to sixteenths
+//! rolls the start of the beat, as a beat repeat does. The buffer keeps
+//! taking the input meanwhile (feedback rests, as the cloud is silent),
+//! unless that would overwrite the slice: then it holds, as when frozen,
+//! until the repeat ends.
 
-use crate::buffer::LiveBuffer;
-use crate::voice::{Budget, GrainView, GrainVoice, Params, Stats};
+use crate::buffer::{GrainSource, LiveBuffer};
+use crate::voice::{Budget, GrainView, GrainVoice, Params, Stats, TempoSync};
+use crate::window::Window;
 
 /// A granular insert on a stereo signal.
 #[derive(Clone, Debug)]
@@ -66,7 +83,98 @@ pub struct GrainFx {
     hp_a: f32,
     hp_x: [f32; 2],
     hp_y: [f32; 2],
+    /// The repeat's own voice and its output for a chunk.
+    rvoice: GrainVoice,
+    rep_l: Vec<f32>,
+    rep_r: Vec<f32>,
+    /// The repeat while it plays or fades out.
+    rep: Option<Repeat>,
+    /// How far the output has gone over to the repeat (0 the input and the
+    /// cloud, 1 the repeat): now, where it glides to, its step and the
+    /// frames left of the glide.
+    rg: f32,
+    rg_to: f32,
+    rg_step: f32,
+    rg_left: u32,
+    /// The buffer holds still because new audio would overwrite the slice.
+    held: bool,
+    /// The cloud rests: only the repeat is heard.
+    resting: bool,
+    /// Output frames per beat, for the repeat's length.
+    fpb: f64,
+    rate: u32,
 }
+
+/// The repeat's slice and clock.
+#[derive(Clone, Copy, Debug)]
+struct Repeat {
+    /// The slice of the buffer it plays, in absolute frames.
+    start: i64,
+    end: i64,
+    /// Frames since it started: its grid counts from here.
+    clock: u64,
+}
+
+/// Each repeat runs on into the next by this long (or a 99th of a repeat,
+/// if that is longer), fading out as the next fades in, so the joins don't
+/// click.
+pub const REPEAT_FADE_S: f64 = 0.003;
+
+/// The repeat's slice of the buffer: the buffer's audio, with only
+/// `start..end` open to new grains.
+struct Slice<'a> {
+    buf: &'a LiveBuffer,
+    start: i64,
+    end: i64,
+}
+
+impl GrainSource for Slice<'_> {
+    fn rate(&self) -> u32 {
+        self.buf.rate()
+    }
+    fn channels(&self) -> usize {
+        self.buf.channels()
+    }
+    fn span(&self) -> (i64, i64) {
+        (self.start, self.end)
+    }
+    #[inline]
+    fn sample(&self, ch: usize, frame: i64) -> f32 {
+        self.buf.sample(ch, frame)
+    }
+    #[inline(always)]
+    fn read(&self, frame: i64, t: f32) -> [f32; 2] {
+        self.buf.read(frame, t)
+    }
+}
+
+/// The repeat voice's settings: one grain a repeat, on the beat grid from
+/// the repeat's start, each `beats` long plus the crossfade `fade` (output
+/// frames) into the next, from the slice's start; the effect's pitch,
+/// reverse and level, and nothing random.
+fn repeat_params(p: &Params, beats: f64, fpb: f64, fade: f64) -> Params {
+    let len = beats * fpb + fade;
+    Params {
+        position: 0.0,
+        pitch: p.pitch,
+        scale: p.scale,
+        reverse: p.reverse,
+        gain: p.gain,
+        timing: 0.0,
+        window: Window::Trapezoid {
+            ramp: (fade / len) as f32,
+        },
+        sync: Some(TempoSync {
+            frames_per_beat: fpb,
+            grains_per_beat: Some((1.0 / beats) as f32),
+            size_beats: Some((len / fpb) as f32),
+        }),
+        ..Params::default()
+    }
+}
+
+/// The repeat voice's random sequence, apart from the cloud's.
+const REPEAT_SEED: u64 = 0x7265_7065_6174;
 
 /// Feedback's high-pass corner, Hz.
 const FEEDBACK_HP_HZ: f32 = 40.0;
@@ -142,6 +250,18 @@ impl GrainFx {
             hp_a: (-std::f32::consts::TAU * FEEDBACK_HP_HZ / rate as f32).exp(),
             hp_x: [0.0; 2],
             hp_y: [0.0; 2],
+            rvoice: GrainVoice::new(rate, seed ^ REPEAT_SEED),
+            rep_l: vec![0.0; Self::CHUNK],
+            rep_r: vec![0.0; Self::CHUNK],
+            rep: None,
+            rg: 0.0,
+            rg_to: 0.0,
+            rg_step: 0.0,
+            rg_left: 0,
+            held: false,
+            resting: false,
+            fpb: 0.5 * f64::from(rate), // 120 BPM
+            rate,
         })
     }
 
@@ -223,18 +343,93 @@ impl GrainFx {
             self.flush();
         }
         self.frozen = on;
-        self.buffer.set_frozen(on);
+        self.buffer.set_frozen(on || self.held);
+    }
+
+    /// The tempo the repeat follows, as output frames per beat (60 × rate
+    /// / BPM). Ignored unless finite and at least one frame.
+    pub fn set_tempo(&mut self, frames_per_beat: f64) {
+        if frames_per_beat.is_finite() && frames_per_beat >= 1.0 {
+            self.fpb = frames_per_beat;
+            self.rvoice.set_tempo(frames_per_beat);
+        }
+    }
+
+    /// Starts repeating from the next frame: the last `beats` beats of the
+    /// input (at the tempo set), again every `beats` beats, in place of the
+    /// input and the cloud (a 10 ms crossfade). While it already repeats,
+    /// re-cuts its slice from the same start to the new length, so a
+    /// shorter length rolls the start of the slice. Ignored unless `beats`
+    /// is finite and the repeat is at least 1 ms.
+    pub fn start_repeat(&mut self, beats: f64) {
+        let len = beats * self.fpb;
+        let rate = f64::from(self.rate);
+        if !len.is_finite() || len < 0.001 * rate {
+            return;
+        }
+        let fade = (REPEAT_FADE_S * rate).max(len / 99.0).ceil();
+        let whole = (len + fade).ceil() as i64;
+        // The slice reaches the frame it starts on.
+        self.flush();
+        let now = self.buffer.written() as i64;
+        let (start, end) = match self.rep {
+            Some(r) if self.rg_to > 0.0 => (r.start, (r.start + whole).min(now)),
+            _ => (now - whole, now),
+        };
+        self.rep = Some(Repeat {
+            start,
+            end,
+            clock: 0,
+        });
+        let p = repeat_params(self.voice.params(), beats, self.fpb, fade);
+        self.rvoice.set_params(p);
+        self.rvoice.set_tempo(self.fpb);
+        self.rvoice.start();
+        self.glide_repeat(1.0);
+    }
+
+    /// Stops repeating: the output crossfades back to the input and the
+    /// cloud over 10 ms, and the cloud starts again.
+    pub fn stop_repeat(&mut self) {
+        if self.rep.is_some() {
+            self.glide_repeat(0.0);
+        }
+    }
+
+    /// True while the repeat plays (not while it fades out).
+    pub fn repeating(&self) -> bool {
+        self.rep.is_some() && self.rg_to > 0.0
+    }
+
+    fn glide_repeat(&mut self, to: f32) {
+        self.rg_to = to;
+        self.rg_step = (to - self.rg) / self.ramp_frames as f32;
+        self.rg_left = if self.rg == to { 0 } else { self.ramp_frames };
     }
 
     /// Silences the grains at once and hands them back to the budget (call
-    /// it before dropping or replacing the effect while it plays).
+    /// it before dropping or replacing the effect while it plays). A
+    /// repeat ends.
     pub fn kill(&mut self, budget: &mut Budget) {
         self.voice.kill(budget);
         self.running = false;
+        self.end_repeat(budget);
+    }
+
+    fn end_repeat(&mut self, budget: &mut Budget) {
+        self.rvoice.kill(budget);
+        self.rep = None;
+        (self.rg, self.rg_to, self.rg_left) = (0.0, 0.0, 0);
+        self.resting = false;
+        if self.held {
+            self.held = false;
+            self.buffer.set_frozen(self.frozen);
+        }
     }
 
     /// Silences the grains, forgets the audio it holds and finishes any mix
-    /// glide at once; the settings, the mix and freeze stay. Doesn't allocate.
+    /// glide at once; the settings, the mix and freeze stay, and a repeat
+    /// ends. Doesn't allocate.
     pub fn reset(&mut self, budget: &mut Budget) {
         self.kill(budget);
         self.buffer.clear();
@@ -251,6 +446,10 @@ impl GrainFx {
     }
     pub fn stats(&self) -> Stats {
         self.voice.stats()
+    }
+    /// Grains playing now, the cloud's and the repeat's.
+    pub fn live(&self) -> usize {
+        self.voice.stats().active + self.rvoice.stats().active
     }
     /// The grains playing now, for drawing them; returns how many.
     pub fn grains(&self, out: &mut [GrainView]) -> usize {
@@ -283,12 +482,21 @@ impl GrainFx {
         let mut at = 0;
         while at < n {
             let k = (Self::CHUNK - (self.frame % chunk) as usize).min(n - at);
-            let wants = self.wet_to > 0.0 || self.ramp_left > 0;
+            // The cloud rests while only the repeat is heard, from the first
+            // chunk boundary there (so at the same frame whatever the
+            // period size).
+            if self.rg_to < 1.0 {
+                self.resting = false;
+            } else if self.rg >= 1.0 && self.frame.is_multiple_of(chunk) {
+                self.resting = true;
+            }
+            let wants = (self.wet_to > 0.0 || self.ramp_left > 0) && !self.resting;
             if wants && !self.running {
                 self.voice.start();
                 self.running = true;
             } else if !wants && self.running {
-                self.kill(budget);
+                self.voice.kill(budget);
+                self.running = false;
             }
             let (wl, wr) = (&mut self.wet_l[..k], &mut self.wet_r[..k]);
             wl.fill(0.0);
@@ -296,6 +504,24 @@ impl GrainFx {
             if self.running {
                 self.voice
                     .render(&self.buffer, budget, transport_frame + at as u64, wl, wr);
+            }
+            if let Some(r) = &mut self.rep {
+                // Hold the buffer before new audio reaches the slice.
+                let reach = self.buffer.written() as i64 + 2 * chunk as i64;
+                if !self.held && reach >= r.start + self.buffer.capacity() as i64 {
+                    self.held = true;
+                    self.buffer.set_frozen(true);
+                }
+                let (rl, rr) = (&mut self.rep_l[..k], &mut self.rep_r[..k]);
+                rl.fill(0.0);
+                rr.fill(0.0);
+                let slice = Slice {
+                    buf: &self.buffer,
+                    start: r.start,
+                    end: r.end,
+                };
+                self.rvoice.render(&slice, budget, r.clock, rl, rr);
+                r.clock += k as u64;
             }
             for i in 0..k {
                 let (x, y) = (left[at + i], right[at + i]);
@@ -307,7 +533,15 @@ impl GrainFx {
                         self.fb + self.fb_step
                     };
                 }
-                if !self.frozen {
+                if self.rg_left > 0 {
+                    self.rg_left -= 1;
+                    self.rg = if self.rg_left == 0 {
+                        self.rg_to
+                    } else {
+                        self.rg + self.rg_step
+                    };
+                }
+                if !self.frozen && !self.held {
                     let (mut bx, mut by) = (x, y);
                     if self.fb > 0.0 {
                         let w = [self.wet_l[i], self.wet_r[i]];
@@ -332,11 +566,24 @@ impl GrainFx {
                         self.wet += self.wet_step;
                     }
                 }
-                left[at + i] = x * self.dry + self.wet_l[i] * self.wet;
-                right[at + i] = y * self.dry + self.wet_r[i] * self.wet;
+                if self.rep.is_some() {
+                    let (g, a) = (self.rg, 1.0 - self.rg);
+                    left[at + i] =
+                        a * (x * self.dry + self.wet_l[i] * self.wet) + g * self.rep_l[i];
+                    right[at + i] =
+                        a * (y * self.dry + self.wet_r[i] * self.wet) + g * self.rep_r[i];
+                } else {
+                    left[at + i] = x * self.dry + self.wet_l[i] * self.wet;
+                    right[at + i] = y * self.dry + self.wet_r[i] * self.wet;
+                }
             }
             self.frame += k as u64;
             at += k;
+            let edge = self.frame.is_multiple_of(chunk);
+            if edge && self.rep.is_some() && self.rg_to <= 0.0 && self.rg <= 0.0 {
+                // Faded back: the repeat is over.
+                self.end_repeat(budget);
+            }
             if self.frame.is_multiple_of(chunk) {
                 self.flush();
             }

@@ -17,6 +17,10 @@
 //! - The mix glides over 10 ms; grain settings change from the next grain,
 //!   and every grain is windowed, so nothing clicks.
 //! - Out-of-range values are clamped.
+//! - Repeat ([`param::REPEAT`], R7 step C2) starts on the next line of its
+//!   own length on the transport's beat grid (at once while the transport
+//!   is stopped) and ends on the frame it is set Off; a new length while
+//!   it repeats rolls the slice from the next line of the new length.
 
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Unit};
 
@@ -53,10 +57,19 @@ pub mod param {
     /// How much of the grains goes back into the memory, per cent: trails
     /// that build, and at 100 an endless cloud ([`crate::GrainFx::set_feedback`]).
     pub const FEEDBACK: u16 = 16;
+    /// A synced stutter of the last stretch of the input: Off, or how long
+    /// each repeat is, a half note to a 32nd ([`super::REPEAT_BEATS`],
+    /// [`crate::GrainFx::start_repeat`]).
+    pub const REPEAT: u16 = 17;
 }
 
 /// Parameters, counting the meter's id.
-const COUNT: usize = 17;
+const COUNT: usize = 18;
+
+/// Repeat's choices, as the page shows them.
+pub const REPEAT_NAMES: &[&str] = &["Off", "1/2", "1/4", "1/8", "1/16", "1/32"];
+/// Each choice's length in beats (Off: none).
+pub const REPEAT_BEATS: [f64; 6] = [0.0, 2.0, 1.0, 0.5, 0.25, 0.125];
 
 #[allow(clippy::too_many_arguments)]
 const fn p(
@@ -243,6 +256,16 @@ static PARAMS: [ParamInfo; COUNT] = [
         Unit::Percent,
         Curve::Linear,
     ),
+    p(
+        param::REPEAT,
+        "Repeat",
+        "Mix",
+        0.0,
+        5.0,
+        0.0,
+        Unit::None,
+        Curve::Choice(REPEAT_NAMES),
+    ),
     ParamInfo {
         id: param::GRAINS,
         name: "Grains",
@@ -271,6 +294,8 @@ pub struct GrainNode {
     values: [f32; COUNT],
     rate: u32,
     seed: u64,
+    /// A repeat waiting for its line on the grid: its length in beats.
+    armed: Option<f64>,
 }
 
 impl GrainNode {
@@ -292,6 +317,7 @@ impl GrainNode {
             values,
             rate: 0,
             seed,
+            armed: None,
         }
     }
 
@@ -344,6 +370,68 @@ impl GrainNode {
             fx.set_frozen(frozen);
             fx.set_feedback(feedback);
         }
+        self.arm();
+    }
+
+    /// The repeat's length in beats, if Repeat is on.
+    fn repeat_beats(&self) -> Option<f64> {
+        let i = self.values[usize::from(param::REPEAT)] as usize;
+        REPEAT_BEATS.get(i).copied().filter(|&b| b > 0.0)
+    }
+
+    /// Repeat set: wait for its line on the grid; Off: stop now.
+    fn arm(&mut self) {
+        self.armed = self.repeat_beats();
+        if self.armed.is_none() {
+            if let Some(fx) = &mut self.fx {
+                fx.stop_repeat();
+            }
+        }
+    }
+
+    /// Runs frames `from..to` of the block, starting an armed repeat on its
+    /// line: the first frame at or after the next multiple of its length
+    /// in beats (at once while the transport is stopped).
+    fn run(&mut self, ctx: &Ctx, from: usize, to: usize, left: &mut [f32], right: &mut [f32]) {
+        let Some(fx) = &mut self.fx else { return };
+        let fpb = if ctx.bpm.is_finite() && ctx.bpm > 0.0 {
+            60.0 * f64::from(self.rate) / ctx.bpm
+        } else {
+            0.5 * f64::from(self.rate)
+        };
+        fx.set_tempo(fpb);
+        let mut at = from;
+        if let Some(beats) = self.armed {
+            let wait = if ctx.playing {
+                // Beats at frame `at`, and the frames to the next line
+                // (a line within a millionth of a beat counts as here).
+                let b = ctx.beats + at as f64 / fpb;
+                let line = (b / beats - 1e-6).ceil() * beats;
+                ((line - b) * fpb - 1e-6).ceil().max(0.0) as usize
+            } else {
+                0
+            };
+            if at + wait < to {
+                let k = at + wait;
+                fx.process(
+                    &mut self.budget,
+                    ctx.frame + at as u64,
+                    &mut left[at..k],
+                    &mut right[at..k],
+                );
+                at = k;
+                fx.start_repeat(beats);
+                self.armed = None;
+            }
+        }
+        if at < to {
+            fx.process(
+                &mut self.budget,
+                ctx.frame + at as u64,
+                &mut left[at..to],
+                &mut right[at..to],
+            );
+        }
     }
 }
 
@@ -364,7 +452,14 @@ impl Node for GrainNode {
             return;
         }
         let v = info.clamp(value);
+        let was = self.values[usize::from(id)];
         self.values[usize::from(id)] = v;
+        if id == param::REPEAT {
+            if v != was {
+                self.arm();
+            }
+            return;
+        }
         let p = self.grain_params();
         let Some(fx) = &mut self.fx else { return };
         match id {
@@ -377,7 +472,7 @@ impl Node for GrainNode {
 
     fn param(&self, id: u16) -> f32 {
         match id {
-            param::GRAINS => self.fx.as_ref().map_or(0.0, |fx| fx.stats().active as f32),
+            param::GRAINS => self.fx.as_ref().map_or(0.0, |fx| fx.live() as f32),
             _ if usize::from(id) < self.values.len() => self.values[usize::from(id)],
             _ => f32::NAN,
         }
@@ -395,10 +490,12 @@ impl Node for GrainNode {
         self.apply_all();
     }
 
+    /// A repeat ends; with Repeat still on, the next starts on its line.
     fn reset(&mut self) {
         if let Some(fx) = &mut self.fx {
             fx.reset(&mut self.budget);
         }
+        self.armed = self.repeat_beats();
     }
 
     fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
@@ -407,14 +504,7 @@ impl Node for GrainNode {
         for e in events {
             let o = (e.offset as usize).min(n);
             if o > at {
-                if let Some(fx) = &mut self.fx {
-                    fx.process(
-                        &mut self.budget,
-                        ctx.frame + at as u64,
-                        &mut left[at..o],
-                        &mut right[at..o],
-                    );
-                }
+                self.run(ctx, at, o, left, right);
                 at = o;
             }
             if let NodeEvent::Param { id, value } = e.ev {
@@ -422,25 +512,21 @@ impl Node for GrainNode {
             }
         }
         if at < n {
-            if let Some(fx) = &mut self.fx {
-                fx.process(
-                    &mut self.budget,
-                    ctx.frame + at as u64,
-                    &mut left[at..n],
-                    &mut right[at..n],
-                );
-            }
+            self.run(ctx, at, n, left, right);
         }
     }
 
-    /// Frozen, or with feedback of 99 % or more, it plays on for as long as
-    /// it is called; otherwise its grains can reach back the whole memory,
-    /// plus one grain, once for each time round the feedback loop it takes
-    /// to fall 60 dB. Fully dry, nothing.
+    /// Repeating (or about to), frozen, or with feedback of 99 % or more, it
+    /// plays on for as long as it is called; otherwise its grains can reach
+    /// back the whole memory, plus one grain, once for each time round the
+    /// feedback loop it takes to fall 60 dB. Fully dry, nothing.
     fn tail_frames(&self) -> u32 {
         let Some(fx) = &self.fx else { return 0 };
         let feedback = self.values[usize::from(param::FEEDBACK)] / 100.0;
-        if self.values[usize::from(param::MIX)] <= 0.0 {
+        if fx.repeating() || self.armed.is_some() {
+            // A repeat plays at any Mix.
+            u32::MAX
+        } else if self.values[usize::from(param::MIX)] <= 0.0 {
             0
         } else if fx.frozen() || feedback >= 0.99 {
             u32::MAX
