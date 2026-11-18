@@ -1,8 +1,13 @@
 //! The REC chip's target list (sequencer decision 1, mockup H): a tap on
 //! the chip on Play's transport card opens it in place of the view. It
-//! lists what can record, the armed one red with its pill, and a tap on a
-//! row arms it; Rec song and Pin the arm are switches beside them; on the
-//! right, what moves the arm and the chip's three looks.
+//! lists what can record, the armed ones red with their pills: a row for
+//! each track's notes, in track order, then the loop. A tap on a row arms
+//! it, and SHIFT + a tap on a track's row records that track too (the
+//! MPC's SHIFT + a track's arm; [`crate::rec_arm::RecArm::add_track`]).
+//! With more rows than fit in one column they go in two, shorter; past
+//! what two columns hold, the first tracks and the loop show. Rec song and
+//! Pin the arm are switches under them; on the right, what moves the arm
+//! and the chip's three looks.
 
 use std::cell::RefCell;
 
@@ -23,8 +28,10 @@ pub const TAP_PIN: usize = 1;
 #[derive(Clone, Debug, PartialEq)]
 pub struct ListRow {
     pub target: crate::rec_arm::Target,
+    /// A track's row: its notes (track 0 the first). None for the loop.
+    pub track: Option<usize>,
     pub pill: ArmPill,
-    /// "Notes · Track 1 · Clip 1", "Looper · Loop 1".
+    /// "Drums · Clip 1" (a track's notes), "Looper · Loop 1".
     pub title: String,
     /// What it records into, and what moves it.
     pub sub: String,
@@ -57,9 +64,10 @@ struct Hits {
 }
 
 /// What moves the arm, as the right-hand panel lists it.
-pub const MOVES: [&str; 8] = [
+pub const MOVES: [&str; 9] = [
     "A tap on Arm: the loop row, the pattern, here",
     "SHIFT + Arm: both, in one pass",
+    "SHIFT + a track here: record it too",
     "The Sequencer tab: the notes",
     "The Looper tab: the loop",
     "Picking a track: its notes",
@@ -69,8 +77,12 @@ pub const MOVES: [&str; 8] = [
 ];
 
 const ROW_H: i32 = 66;
+/// The shortest a row gets with many tracks (two columns).
+const ROW_MIN: i32 = 40;
 const SWITCH_H: i32 = 56;
 const GAP: i32 = 10;
+/// Between rows in two columns.
+const GAP_2: i32 = 6;
 
 impl RecList {
     /// Where the parts go in `r`: the rows, the two switches, Close, and
@@ -81,12 +93,19 @@ impl RecList {
         let body = Rect::new(inner.x, inner.y + 48, inner.w, inner.h - 48);
         let left_w = body.w * 3 / 5;
         let right = Rect::new(body.x + left_w + 20, body.y, body.w - left_w - 20, body.h);
-        let mut y = body.y;
-        let mut rows = Vec::new();
-        for _ in &self.rows {
-            rows.push(Rect::new(body.x, y, left_w, ROW_H));
-            y += ROW_H + GAP;
-        }
+        let rows = Self::rows(self.rows.len(), Rect::new(body.x, body.y, left_w, body.h));
+        // The switches under the rows' column.
+        let y = rows
+            .iter()
+            .flatten()
+            .map(|r| r.bottom() + GAP)
+            .max()
+            .unwrap_or(body.y)
+            .min(body.bottom() - 2 * SWITCH_H - GAP);
+        let rows = rows
+            .into_iter()
+            .map(|r| r.unwrap_or(Rect::new(0, 0, 0, 0)))
+            .collect();
         let song = Rect::new(body.x, y, left_w, SWITCH_H);
         let pin = Rect::new(body.x, y + SWITCH_H + GAP, left_w, SWITCH_H);
         (
@@ -98,6 +117,45 @@ impl RecList {
             },
             right,
         )
+    }
+
+    /// Where `n` rows go in `col` (the left column, switches under them):
+    /// one column of full rows while they fit, else two columns of shorter
+    /// ones, down to [`ROW_MIN`]. Past that the first rows and the last
+    /// (the loop) show; the others get None.
+    fn rows(n: usize, col: Rect) -> Vec<Option<Rect>> {
+        let room = col.h - 2 * (SWITCH_H + GAP);
+        let n_i = n as i32;
+        if n_i * (ROW_H + GAP) <= room {
+            return (0..n_i)
+                .map(|i| Some(Rect::new(col.x, col.y + i * (ROW_H + GAP), col.w, ROW_H)))
+                .collect();
+        }
+        let per = (n_i + 1) / 2;
+        let fit = ((room + GAP_2) / (ROW_MIN + GAP_2)).max(1);
+        let per = per.min(fit);
+        let h = ((room - (per - 1) * GAP_2) / per).clamp(ROW_MIN, ROW_H);
+        let w = (col.w - GAP_2) / 2;
+        let cells = (2 * per) as usize;
+        (0..n)
+            .map(|i| {
+                // Too many: the last cell is the last row's.
+                let k = if n > cells && i == n - 1 {
+                    cells - 1
+                } else if n > cells && i >= cells - 1 {
+                    return None;
+                } else {
+                    i
+                } as i32;
+                let (c, r) = (k / per, k % per);
+                Some(Rect::new(
+                    col.x + c * (w + GAP_2),
+                    col.y + r * (h + GAP_2),
+                    w,
+                    h,
+                ))
+            })
+            .collect()
     }
 
     fn paint_switch(cx: &mut PaintCx, r: Rect, label: &str, sub: &str, on: bool) {
@@ -174,6 +232,13 @@ impl Widget for RecList {
         );
         // The rows: the armed one red.
         for (row, rr) in self.rows.iter().zip(&hits.rows) {
+            if rr.w == 0 {
+                continue;
+            }
+            // Two columns: a narrower pill, and the sub line only if it
+            // fits under the title.
+            let narrow = rr.w < 400;
+            let pill_w = if narrow { 76 } else { 92 };
             let armed = row.pill != ArmPill::Arm;
             if armed {
                 cx.canvas
@@ -186,11 +251,23 @@ impl Widget for RecList {
             }
             paint_pill(
                 cx,
-                Rect::new(rr.x + 14, rr.y + rr.h / 2 - 15, 92, 30),
+                Rect::new(rr.x + 14, rr.y + rr.h / 2 - 15, pill_w, 30),
                 row.pill,
             );
-            let x = rr.x + 124;
-            let rw = if row.right.is_empty() {
+            let x = rr.x + pill_w + 32;
+            if rr.h < 60 {
+                cx.text(
+                    FontId::Bold,
+                    15.0,
+                    Rect::new(x, rr.y, rr.right() - x - 8, rr.h),
+                    Align::Left,
+                    t.text,
+                    &row.title,
+                );
+                continue;
+            }
+            // Two columns leave the settings out: the title needs the room.
+            let rw = if row.right.is_empty() || narrow {
                 0
             } else {
                 cx.measure(FontId::Sans, 12.0, &row.right) + 16
@@ -252,7 +329,7 @@ impl Widget for RecList {
         let (_, body) = draw::card_head(top);
         let mut y = body.y;
         for (i, line) in MOVES.iter().enumerate() {
-            let ink = if i < 5 { t.text } else { t.text_dim };
+            let ink = if i < 6 { t.text } else { t.text_dim };
             cx.text(
                 FontId::Sans,
                 13.0,
@@ -310,6 +387,7 @@ impl Widget for RecList {
             .iter()
             .zip(&hits.rows)
             .enumerate()
+            .filter(|(_, (_, rr))| rr.w > 0)
             .map(|(i, (row, rr))| Target::tap("row", i, row.title.clone(), *rr))
             .collect();
         out.push(Target::tap("switch", TAP_SONG, "Rec song", hits.song));
@@ -323,7 +401,7 @@ impl Widget for RecList {
             return None;
         }
         let (hits, _) = self.layout(r);
-        if let Some(i) = hits.rows.iter().position(|h| h.contains(x, y)) {
+        if let Some(i) = hits.rows.iter().position(|h| h.w > 0 && h.contains(x, y)) {
             return Some(EventKind::Tab(i));
         }
         if hits.song.contains(x, y) {
@@ -346,6 +424,7 @@ mod tests {
             rows: vec![
                 ListRow {
                     target: Rt::Notes,
+                    track: Some(0),
                     pill: ArmPill::Armed,
                     title: "Notes · Track 1 · Clip 1".into(),
                     sub: "the track the pads play".into(),
@@ -353,6 +432,7 @@ mod tests {
                 },
                 ListRow {
                     target: Rt::Loop,
+                    track: None,
                     pill: ArmPill::Arm,
                     title: "Looper · Loop 1".into(),
                     sub: "empty".into(),
@@ -385,5 +465,57 @@ mod tests {
         // Everything fits in the list's rectangle.
         assert!(t.iter().all(|x| r.contains(x.rect.x, x.rect.y)
             && r.contains(x.rect.right() - 1, x.rect.bottom() - 1)));
+    }
+
+    /// Eight tracks and the loop go in two columns of shorter rows, in
+    /// order, every row a tap of its own; with more than fit, the first
+    /// tracks and the loop show.
+    #[test]
+    fn many_tracks_go_in_two_columns_and_the_loop_always_shows() {
+        let r = Rect::new(12, 180, 998, 570);
+        for n in [9usize, 17, 40] {
+            let mut l = list();
+            let lp = l.rows.pop().unwrap();
+            let one = l.rows.pop().unwrap();
+            for t in 0..n - 1 {
+                l.rows.push(ListRow {
+                    track: Some(t),
+                    title: format!("Track {}", t + 1),
+                    ..one.clone()
+                });
+            }
+            l.rows.push(lp);
+            let t = l.targets(r);
+            let rows: Vec<_> = t.iter().filter(|x| x.id == "row").collect();
+            assert!(
+                t.iter().all(|x| r.contains(x.rect.x, x.rect.y)
+                    && r.contains(x.rect.right() - 1, x.rect.bottom() - 1)),
+                "{n} rows fit"
+            );
+            assert!(rows.iter().all(|x| x.rect.h >= ROW_MIN && x.rect.w > 280));
+            assert_eq!(rows.last().unwrap().index, n - 1, "the loop shows");
+            if n == 9 {
+                assert_eq!(rows.len(), 9);
+                assert!(rows.iter().all(|x| x.rect.h >= 60), "with its sub line");
+            }
+            for x in &rows {
+                let (px, py) = (x.rect.x + x.rect.w / 2, x.rect.y + x.rect.h / 2);
+                assert_eq!(
+                    l.touch(1, Touch::Down, px, py, r),
+                    Some(EventKind::Tab(x.index))
+                );
+            }
+            // No two rows overlap.
+            for a in &rows {
+                for b in &rows {
+                    let (a, b) = (a, b);
+                    let apart = a.rect.right() <= b.rect.x
+                        || b.rect.right() <= a.rect.x
+                        || a.rect.bottom() <= b.rect.y
+                        || b.rect.bottom() <= a.rect.y;
+                    assert!(a.index == b.index || apart);
+                }
+            }
+        }
     }
 }

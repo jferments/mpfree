@@ -241,6 +241,8 @@ fn playing_never_allocates() {
     ];
     let mut view = PlayView::compile_cued(&p, &launches, &cues).unwrap();
     view.set_armed(Some(3));
+    // Tracks 1 and 2 are armed too: each records its routed keys.
+    view.set_also(1 << 1 | 1 << 2);
     view.set_song(&p, true).unwrap();
     let mut t = Transport::new(44_100, 120.0).unwrap();
     let mut player = Player::new();
@@ -264,6 +266,8 @@ fn playing_never_allocates() {
     };
     let mut arp_notes = 0u64;
     let mut rec = Recorder::new();
+    let mut also = [Recorder::also(0), Recorder::also(1)];
+    let mut recorded_also = 0usize;
     let mut recorded = 0usize;
     let mut recorded_locks = 0usize;
     let mut recorded_moves = 0usize;
@@ -375,7 +379,25 @@ fn playing_never_allocates() {
             };
             rec.input_move((i as u32 * (11 + k as u32)) % n, input);
         }
+        let take = rec.take();
         rec.process(&view, &block);
+        // Routed keys on the other armed tracks.
+        for (k, a) in also.iter_mut().enumerate() {
+            let note = ((i + k as u64) % 5) as u8 + 40;
+            a.input(
+                (i as u32 * (19 + k as u32)) % n,
+                Event::NoteOn { note, velocity: 90 },
+            );
+            a.input(
+                (i as u32 * 23) % n,
+                Event::NoteOff {
+                    note: ((i + k as u64 + 3) % 5) as u8 + 40,
+                },
+            );
+            a.set_take(take);
+            a.process(&view, &block);
+            recorded_also += a.taken().len();
+        }
         recorded += rec.taken().len();
         recorded_locks += rec.taken_locks().len();
         recorded_moves += rec.taken_moves().count();
@@ -403,6 +425,8 @@ fn playing_never_allocates() {
     assert!(arp_notes > 500, "{arp_notes}");
     assert_eq!(sink.arp.dropped(), 0);
     assert!(recorded > 500, "{recorded}");
+    assert!(recorded_also > 500, "{recorded_also}");
+    assert!(also.iter().all(|a| a.dropped() == 0));
     assert!(recorded_moves > 200, "{recorded_moves}");
     assert!(recorded_locks > 500, "{recorded_locks}");
     assert_eq!(rec.stray_locks(), 0);
