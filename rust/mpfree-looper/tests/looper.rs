@@ -2647,3 +2647,155 @@ fn a_soloed_loop_silences_the_others_until_it_lets_go_or_clears() {
     assert!(near(&r, r.frame - 1, [0.125, -0.125]));
     assert!(r.l.loop_status(1).unwrap().solo);
 }
+
+/// An overdub of `input` for `frames` frames, the input going on through
+/// its fade-out (as playing does).
+fn overdub_through(r: &mut Rig, frames: u64, input: &dyn Fn(u64) -> [f32; 2]) {
+    r.cmd(L::Overdub);
+    r.run(r.frame + frames, input);
+    r.cmd(L::Overdub);
+    r.run(r.frame + 2 * FADE as u64, input);
+}
+
+/// How many frames of `a..b` read `want` (to 1e-4).
+fn count_near(r: &Rig, a: u64, b: u64, want: [f32; 2]) -> usize {
+    (a..b).filter(|&f| near(r, f, want)).count()
+}
+
+/// Overdubs: Replace. Over the frames it wrote the layers under it are
+/// silent, crossfading at its ends; the rest of the loop plays as before.
+/// Undo takes it away and they are back, Redo brings it again, and while
+/// it is muted they play.
+#[test]
+fn a_replace_takes_the_place_of_the_layers_under_it_where_it_was_written() {
+    let mut r = Rig::new(10, 128);
+    let z = dc(0.0);
+    r.cmd(L::SetLatency(0));
+    record_one_bar(&mut r, &dc(0.25));
+    r.cmd(L::SetOverdubs(Overdubs::Replace));
+    overdub_through(&mut r, BAR as u64 / 4, &dc(0.1));
+    let s = r.l.status();
+    assert_eq!((s.layers, s.overdubs), (2, Overdubs::Replace));
+    let id = r.ids()[1];
+    assert!(r.l.layer_info(1).unwrap().replace);
+    assert!(!r.l.layer_info(0).unwrap().replace);
+    // A pass: a quarter of it the new part alone, the rest the old.
+    let from = r.frame + 100;
+    r.run(from + BAR as u64, &z);
+    let (to, quarter) = (r.frame, BAR / 4);
+    let new = count_near(&r, from, to, [0.1, -0.1]);
+    let old = count_near(&r, from, to, [0.25, -0.25]);
+    assert!(new + 2 * FADE >= quarter && new <= quarter, "new {new}");
+    assert!(old + 2 * FADE >= BAR - quarter, "old {old}");
+    assert_eq!(count_near(&r, from, to, [0.35, -0.35]), 0, "nothing on top");
+    assert!(r.max_step(from, to) <= 0.15 / FADE as f32 + 1e-5);
+    // Undo: the old part is back everywhere.
+    r.cmd(L::Undo);
+    let u = r.frame;
+    r.run(u + 4 * FADE as u64, &z);
+    let from = r.frame;
+    r.run(from + BAR as u64, &z);
+    assert_eq!(count_near(&r, from, r.frame, [0.25, -0.25]), BAR);
+    assert!(r.max_step(u, r.frame) <= 0.15 / FADE as f32 + 1e-5);
+    // Redo, then muted: the old part plays under it.
+    r.cmd(L::Redo);
+    r.run(r.frame + 4 * FADE as u64, &z);
+    let from = r.frame;
+    r.run(from + BAR as u64, &z);
+    assert!(count_near(&r, from, r.frame, [0.1, -0.1]) + 2 * FADE >= quarter);
+    r.layer(id, Lc::Mute(true));
+    let m = r.frame;
+    r.run(m + 4 * FADE as u64, &z);
+    let from = r.frame;
+    r.run(from + BAR as u64, &z);
+    assert_eq!(count_near(&r, from, r.frame, [0.25, -0.25]), BAR);
+    assert!(r.max_step(m, r.frame) <= 0.15 / FADE as f32 + 1e-5);
+}
+
+/// A Replace held over more than a pass takes the place of everything,
+/// its own first pass too, where its second pass plays; and a Replace of
+/// silence stays (it silences those frames).
+#[test]
+fn a_replace_over_a_pass_replaces_its_own_first_pass_too() {
+    let mut r = Rig::new(10, 128);
+    let z = dc(0.0);
+    r.cmd(L::SetLatency(0));
+    record_one_bar(&mut r, &dc(0.25));
+    r.cmd(L::SetOverdubs(Overdubs::Replace));
+    let start = r.frame;
+    let second = start + BAR as u64;
+    overdub_through(&mut r, BAR as u64 + BAR as u64 / 2, &move |f| {
+        if f < second {
+            [0.1, -0.1]
+        } else {
+            [0.05, -0.05]
+        }
+    });
+    let from = r.frame;
+    r.run(from + BAR as u64, &z);
+    let to = r.frame;
+    let a = count_near(&r, from, to, [0.1, -0.1]);
+    let b = count_near(&r, from, to, [0.05, -0.05]);
+    assert!(a + b + 2 * FADE >= BAR, "{a} + {b}");
+    assert!(b + 2 * FADE >= BAR / 2 && a + 2 * FADE >= BAR / 2);
+    assert_eq!(count_near(&r, from, to, [0.25, -0.25]), 0);
+    // One step: where the input itself stepped, as the second pass began.
+    // Elsewhere, crossfades.
+    let steps = (from + 1..to)
+        .filter(|&f| (r.left(f) - r.left(f - 1)).abs() > 0.05 / FADE as f32 + 1e-5)
+        .count();
+    assert_eq!(steps, 1);
+    assert!(r.max_step(from, to) <= 0.05 + 1e-5);
+    // Silence replaced: those frames are silent, and the layer stays.
+    r.cmd(L::Undo);
+    r.run(r.frame + 4 * FADE as u64, &z);
+    r.overdub(BAR as u64 / 2, &z);
+    assert_eq!(r.l.status().layers, 2, "a Replace of silence stays");
+    let from = r.frame;
+    r.run(from + BAR as u64, &z);
+    let silent = count_near(&r, from, r.frame, [0.0, 0.0]);
+    assert!(
+        silent + 2 * FADE >= BAR / 2 && silent <= BAR / 2,
+        "{silent}"
+    );
+}
+
+/// A merge, and a layer read for a save, sound as the loop does under a
+/// Replace layer.
+#[test]
+fn a_merge_and_a_save_keep_what_a_replace_did() {
+    let mut r = Rig::new(10, 128);
+    let z = dc(0.0);
+    r.cmd(L::SetLatency(0));
+    record_one_bar(&mut r, &noise);
+    r.cmd(L::SetOverdubs(Overdubs::Replace));
+    overdub_through(&mut r, BAR as u64 / 3, &sine);
+    r.run(r.frame + 1_000, &z);
+    // The first pass as saved is silent where the Replace covers it, and
+    // with the Replace's it adds up to what plays.
+    let mut first = vec![0.0f32; 2 * BAR];
+    let mut top = vec![0.0f32; 2 * BAR];
+    assert!(r.l.read_layer(0, 0, 0, &mut first).is_some());
+    assert!(r.l.read_layer(0, 1, 0, &mut top).is_some());
+    let silent = first.chunks(2).filter(|x| x == &[0.0, 0.0]).count();
+    assert!(silent + 2 * FADE >= BAR / 3, "{silent}");
+    // A bar as it plays, then merged, then a bar again: the same.
+    let from = r.frame;
+    r.run(from + BAR as u64, &z);
+    let before: Vec<f32> = r.out[2 * from as usize..].to_vec();
+    let pos = |f: u64| ((f - START) % BAR as u64) as usize;
+    for f in (from..r.frame).step_by(97) {
+        let p = pos(f);
+        let sum = [first[2 * p] + top[2 * p], first[2 * p + 1] + top[2 * p + 1]];
+        assert!((sum[0] - r.left(f)).abs() < 1e-5, "frame {f}");
+        assert!((sum[1] - r.right(f)).abs() < 1e-5, "frame {f}");
+    }
+    r.cmd(L::Merge);
+    r.run(r.frame + 2 * BAR as u64, &z);
+    assert_eq!(r.l.status().layers, 1, "merged");
+    let from = r.frame - BAR as u64;
+    for (i, f) in (from..r.frame).enumerate() {
+        let (a, b) = (before[2 * i], r.left(f));
+        assert!((a - b).abs() < 1e-5, "frame {f}: {a} then {b}");
+    }
+}

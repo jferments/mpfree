@@ -63,7 +63,7 @@ pub enum Ctl {
     Clear,
     /// A loop that plays.
     Feedback,
-    /// Overdubs: 0 Add, 1 Once.
+    /// Overdubs: 0 Add, 1 Replace, 2 Once.
     Overdubs(u8),
     Reverse,
     Half,
@@ -82,8 +82,9 @@ pub enum Ctl {
     Then(u8),
 }
 
-/// The Overdubs choices: on top until Overdub again, or one pass.
-pub const OVERDUB_CHOICES: [&str; 2] = ["Add", "Once"];
+/// The Overdubs choices: on top until Overdub again, in place of what was
+/// there, or one pass.
+pub const OVERDUB_CHOICES: [&str; 3] = ["Add", "Replace", "Once"];
 
 /// The Length choices' bars (None: free).
 pub const BAR_CHOICES: [Option<u32>; 5] = [None, Some(1), Some(2), Some(4), Some(8)];
@@ -377,7 +378,7 @@ pub enum Strip {
     Plays {
         /// Feedback: the share of the older layers kept a pass, 0.5 to 1.
         feedback: f32,
-        /// How overdubs record: 0 Add, 1 Once.
+        /// How overdubs record: 0 Add, 1 Replace, 2 Once.
         overdubs: u8,
         reversed: bool,
         /// "4 bars".
@@ -808,7 +809,7 @@ impl LoopEditor {
                         true,
                     ));
                 }
-                let x2 = xo + 2 * 74 + 34;
+                let x2 = xo + OVERDUB_CHOICES.len() as i32 * 74 + 34;
                 let rev = if *reversed { "Reverse on" } else { "Reverse" };
                 out.push((
                     Ctl::Reverse,

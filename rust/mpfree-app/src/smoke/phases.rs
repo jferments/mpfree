@@ -644,6 +644,39 @@ mod looper {
         });
     }
 
+    /// Overdubs: Replace (step 3b): an overdub with a pad in it takes the
+    /// place of what was there for as long as it records; its lane says
+    /// "replace", and UNDO takes it away.
+    #[test]
+    fn a_replace_overdub_takes_the_place_of_what_was_there() {
+        on_big_stack(|| {
+            let mut s = two_layers();
+            s.press("leditor", "overdubs", "Replace").run_for(0.1);
+            assert_eq!(status(&s).overdubs, Overdubs::Replace);
+            s.button("OVERDUB");
+            until_phase(&mut s, Phase::Overdubbing, 4.5);
+            s.pad(3, 120, 0.3).run_for(0.5);
+            s.button("REC");
+            until_phase(&mut s, Phase::Playing, 4.5);
+            s.run_for(0.2);
+            assert_eq!(status(&s).layers, 3);
+            assert!(layer(&s, 0, 2).replace, "the new layer replaces");
+            assert!(!layer(&s, 0, 1).replace);
+            let e = s
+                .screen
+                .ui
+                .get::<crate::looper_tab::LoopEditor>(crate::looper_tab::EDITOR)
+                .expect("the editor");
+            assert!(
+                e.layers.iter().any(|l| l.tag.ends_with("· replace")),
+                "a lane says replace"
+            );
+            s.button("UNDO").run_for(0.3);
+            assert_eq!(status(&s).layers, 2, "UNDO took it away");
+            s.button("STOP");
+        });
+    }
+
     /// A finger on loop `n`'s ring for `seconds`, then lifted.
     fn hold_ring(s: &mut Session, n: usize, seconds: f64) {
         let ring = at(s, "ldeck", "ring", n).rect;

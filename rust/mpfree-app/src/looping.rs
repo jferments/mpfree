@@ -2774,6 +2774,9 @@ pub fn bars_text(b: Option<u32>) -> String {
 pub fn overdubs_text(o: mpfree_looper::Overdubs) -> &'static str {
     match o {
         mpfree_looper::Overdubs::Add => "Add (each pass adds a layer until you stop it)",
+        mpfree_looper::Overdubs::Replace => {
+            "Replace (what you play takes the place of what was there)"
+        }
         mpfree_looper::Overdubs::Once => "Once (one pass, then back to playing)",
     }
 }
