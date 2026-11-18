@@ -453,6 +453,9 @@ pub enum SoundKind {
     Cutoff,
     /// A kit pad's level, in dB.
     Level,
+    /// A send's level, in dB, shown as a share of full as Play's Delay
+    /// send card shows it.
+    Send,
     /// An instrument's parameter, as its node describes it.
     Param(ParamInfo),
 }
@@ -512,6 +515,10 @@ impl SoundKind {
                 false,
             ),
             SoundKind::Level => (db_text(v), ((v + 60.0) / 72.0).clamp(0.0, 1.0), false),
+            SoundKind::Send => {
+                let p = send_pos(v);
+                (pct(p), p, false)
+            }
             SoundKind::Param(p) => (
                 mpfree_synth_ui::format::value_line(&p, v),
                 p.to_unit(v),
@@ -536,6 +543,9 @@ impl SoundKind {
                 (from * (d / if fine { 48.0 } else { 12.0 }).exp2()).clamp(20.0, CUTOFF_OPEN_HZ)
             }
             SoundKind::Level => (v + d * if fine { 0.1 } else { 0.5 }).clamp(-60.0, 12.0),
+            SoundKind::Send => {
+                send_db((send_pos(v) + d * if fine { 0.005 } else { 0.02 }).clamp(0.0, 1.0))
+            }
             SoundKind::Param(p) => match p.curve {
                 Curve::Stepped | Curve::Choice(_) | Curve::Toggle => p.clamp(v + d),
                 _ => {
@@ -741,6 +751,15 @@ pub struct PlayPage {
     pub rows_top: usize,
     /// Play's page follows the playhead (its head's Follow).
     pub follow: bool,
+    /// The settings lock lanes turn, with their own values (the screen
+    /// fills them in): the sounds' of the lanes and the pad hit last, and
+    /// the track's.
+    pub lock_knobs: Vec<SoundKnob>,
+    /// Lock lanes + Lane added, or whose last lock a tap took off, on
+    /// (track, clip slot): they stay with no locks.
+    added_lanes: Vec<(usize, usize, LockLane)>,
+    /// The Sequencer's Steps with lock lanes: the first row shown.
+    pub steps_top: usize,
 }
 
 /// The track Play's rows are, for their head: its name, "Track 1" under
@@ -761,6 +780,28 @@ impl Default for TrackLook {
             color: mpfree_time_ui::view::track_color(0),
             switch: false,
         }
+    }
+}
+
+/// A lock lane on the Sequencer's Steps (the Play, Pads and Sequencer
+/// redesign's board 3): one setting's locks, step by step, on a sound
+/// (`row` its pad) or on the track (`row` [`LINE`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LockLane {
+    pub row: u8,
+    pub addr: RelAddr,
+}
+
+impl LockLane {
+    /// The lane of a knob's setting: a pad's on its sound, anything else
+    /// the track's.
+    pub fn of(addr: RelAddr) -> LockLane {
+        use mpfree_play::mpfree_param::OnTrack;
+        let row = match addr.on {
+            OnTrack::Pad(p) => p,
+            _ => LINE,
+        };
+        LockLane { row, addr }
     }
 }
 
@@ -869,6 +910,9 @@ impl Default for PlayPage {
             track: TrackLook::default(),
             rows_top: 0,
             follow: false,
+            lock_knobs: Vec::new(),
+            added_lanes: Vec::new(),
+            steps_top: 0,
         }
     }
 }
@@ -2154,7 +2198,266 @@ impl PlayPage {
                 order.push(p);
             }
         }
-        order.into_iter().map(|p| self.lane(p)).collect()
+        let mut lanes: Vec<Lane> = order.into_iter().map(|p| self.lane(p)).collect();
+        // The Sequencer's lock lanes, after the sounds (the grid puts each
+        // under its sound).
+        lanes.extend(
+            self.lock_lanes()
+                .into_iter()
+                .enumerate()
+                .map(|(id, l)| self.lock_lane(id, l)),
+        );
+        lanes
+    }
+
+    /// The Sequencer's lock lanes on a kit's sounds, in order: every
+    /// setting the clip locks, and the lanes added, by row and setting.
+    pub fn lock_lanes(&self) -> Vec<LockLane> {
+        if !self.sequencer || self.pitched() {
+            return Vec::new();
+        }
+        let Some(c) = self.steps.clip.as_ref() else {
+            return Vec::new();
+        };
+        let mut v: Vec<LockLane> = c
+            .lock_values
+            .iter()
+            .map(|&(row, _, addr, _)| LockLane { row, addr })
+            .chain(
+                self.added_lanes
+                    .iter()
+                    .filter(|(t, slot, _)| (*t, *slot) == (self.steps.track, c.slot))
+                    .map(|(_, _, l)| *l),
+            )
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// The knob a lock lane's setting turns, if the screen knows it.
+    fn lock_knob(&self, addr: RelAddr) -> Option<&SoundKnob> {
+        self.lock_knobs.iter().find(|k| k.addr == addr)
+    }
+
+    /// A lock lane's name, as its knob or the inspector names it.
+    fn lock_name(&self, addr: RelAddr) -> String {
+        self.lock_knob(addr)
+            .map_or_else(|| self.lock_text(addr, 0.0).0, |k| k.name.clone())
+    }
+
+    /// A lock's value as text and where its bar reaches.
+    fn lock_cell(&self, addr: RelAddr, v: f32) -> (f32, String) {
+        match self.lock_knob(addr) {
+            Some(k) => {
+                let (text, pos, _) = k.kind.read(v);
+                (pos, text)
+            }
+            None => (0.5, self.lock_text(addr, v).1),
+        }
+    }
+
+    /// Lock lane `id` on the page shown.
+    fn lock_lane(&self, id: usize, l: LockLane) -> Lane {
+        use mpfree_play::mpfree_param::OnTrack;
+        let clip = self.steps.clip.as_ref();
+        let from = self.page * PAGE;
+        let sub = if l.row != LINE {
+            format!("lock lane · {}", self.pad_name(usize::from(l.row)))
+        } else if matches!(l.addr.on, OnTrack::Strip | OnTrack::Insert(_)) {
+            "lock lane · track FX".to_string()
+        } else {
+            "lock lane · whole step".to_string()
+        };
+        Lane {
+            pad: crate::play_widgets::LOCK_LANE + id,
+            name: self.lock_name(l.addr),
+            color: LOCKED,
+            muted: false,
+            steps: Vec::new(),
+            marks: Vec::new(),
+            note: None,
+            root: false,
+            label: None,
+            empty: false,
+            lock: Some(crate::play_widgets::LockCells {
+                sub,
+                owner: (l.row != LINE).then_some(usize::from(l.row)),
+                cells: (from..from + PAGE)
+                    .map(|i| {
+                        let v = clip?.lock_value(l.row, i, l.addr)?;
+                        Some(self.lock_cell(l.addr, v))
+                    })
+                    .collect(),
+            }),
+        }
+    }
+
+    /// A lock lane's step `col` of the page tapped: a step with a lock
+    /// loses it, one without takes the setting's own value (a drag or the
+    /// wheel then sets it). The step action and what to say, or why not.
+    pub fn tap_lock(&mut self, id: usize, col: usize) -> Result<(StepAction, String), String> {
+        let l = *self
+            .lock_lanes()
+            .get(id)
+            .ok_or("steps: that lane is gone")?;
+        let i = self.page * PAGE + col;
+        let c = self
+            .steps
+            .clip
+            .as_ref()
+            .ok_or("steps: tap a step to start a pattern first")?;
+        if i >= c.steps.min(128) {
+            return Err("steps: past the clip's end".to_string());
+        }
+        let name = self.lock_name(l.addr);
+        let steps = 1u128 << i;
+        if c.lock_value(l.row, i, l.addr).is_some() {
+            // Off; the lane stays though its last lock goes.
+            self.keep_lane(l);
+            if let Some(c) = self.steps.clip.as_mut() {
+                c.lock_values
+                    .retain(|v| !((v.0, v.1, v.2) == (l.row, i, l.addr)));
+            }
+            let a = StepAction::Lock {
+                pad: l.row,
+                steps,
+                addr: l.addr,
+                value: None,
+            };
+            return Ok((a, format!("steps: {name} unlocked on step {}", i + 1)));
+        }
+        let own = self
+            .lock_knob(l.addr)
+            .map(|k| k.own)
+            .ok_or_else(|| format!("steps: {name} can't be locked from here yet"))?;
+        let a = StepAction::Lock {
+            pad: l.row,
+            steps,
+            addr: l.addr,
+            value: Some(own),
+        };
+        self.apply_locally(a);
+        let text = self.lock_cell(l.addr, own).1;
+        Ok((
+            a,
+            format!(
+                "steps: {name} locked on step {} at {text} (drag it, or hold it and turn the wheel)",
+                i + 1
+            ),
+        ))
+    }
+
+    /// A lock lane's cell (its number times 16 plus the step on the page)
+    /// turned `delta` detents (`fine`: SHIFT held), from its lock or, on
+    /// a step without one, from the setting's own value.
+    pub fn turn_lock(
+        &mut self,
+        cell: usize,
+        delta: i32,
+        fine: bool,
+    ) -> Result<(StepAction, String), String> {
+        let (id, col) = (cell / PAGE, cell % PAGE);
+        let l = *self
+            .lock_lanes()
+            .get(id)
+            .ok_or("steps: that lane is gone")?;
+        let i = self.page * PAGE + col;
+        let c = self
+            .steps
+            .clip
+            .as_ref()
+            .ok_or("steps: tap a step to start a pattern first")?;
+        if i >= c.steps.min(128) {
+            return Err("steps: past the clip's end".to_string());
+        }
+        let name = self.lock_name(l.addr);
+        let k = self
+            .lock_knob(l.addr)
+            .cloned()
+            .ok_or_else(|| format!("steps: {name} can't be set from here yet"))?;
+        let from = c.lock_value(l.row, i, l.addr).unwrap_or(k.own);
+        let to = k.kind.turn(from, delta, fine);
+        let a = StepAction::Lock {
+            pad: l.row,
+            steps: 1u128 << i,
+            addr: l.addr,
+            value: Some(to),
+        };
+        self.apply_locally(a);
+        let text = self.lock_cell(l.addr, to).1;
+        Ok((a, format!("steps: {name} {text} on step {}", i + 1)))
+    }
+
+    /// A lock lane's ×: it goes, its locks too. The step action, if it
+    /// had locks.
+    pub fn clear_lock_lane(&mut self, id: usize) -> Option<StepAction> {
+        let l = *self.lock_lanes().get(id)?;
+        self.added_lanes.retain(|(_, _, a)| *a != l);
+        let c = self.steps.clip.as_mut()?;
+        let mut steps = 0u128;
+        for v in c
+            .lock_values
+            .iter()
+            .filter(|v| (v.0, v.2) == (l.row, l.addr))
+        {
+            if v.1 < 128 {
+                steps |= 1u128 << v.1;
+            }
+        }
+        c.lock_values.retain(|v| (v.0, v.2) != (l.row, l.addr));
+        (steps != 0).then_some(StepAction::Lock {
+            pad: l.row,
+            steps,
+            addr: l.addr,
+            value: None,
+        })
+    }
+
+    /// + Lane picked a setting: its lock lane shows, with no locks yet.
+    /// Its number among the lock lanes; None with no clip.
+    pub fn add_lock_lane(&mut self, l: LockLane) -> Option<usize> {
+        self.keep_lane(l);
+        self.lock_lanes().iter().position(|x| *x == l)
+    }
+
+    /// Lane `l` stays on the clip's Steps with no locks.
+    fn keep_lane(&mut self, l: LockLane) {
+        let Some(slot) = self.steps.clip.as_ref().map(|c| c.slot) else {
+            return;
+        };
+        let at = (self.steps.track, slot, l);
+        if !self.added_lanes.contains(&at) {
+            self.added_lanes.push(at);
+        }
+    }
+
+    /// What + Lane offers: the settings of the pad hit last, then the
+    /// track's, each with its name, what it is on, and whether its lane
+    /// shows already.
+    pub fn lane_choices(&self) -> Vec<(LockLane, String, String, bool)> {
+        let shown = self.lock_lanes();
+        let pad = self.last_pad;
+        let track = if self.steps.track_name.is_empty() {
+            format!("Track {}", self.steps.track + 1)
+        } else {
+            self.steps.track_name.clone()
+        };
+        let mut v: Vec<(LockLane, String, String, bool)> = Vec::new();
+        for k in &self.lock_knobs {
+            let l = LockLane::of(k.addr);
+            let on = if l.row == LINE {
+                format!("{track} · track FX")
+            } else if usize::from(l.row) == pad {
+                format!("{} · the pad hit last", self.pad_name(pad))
+            } else {
+                continue;
+            };
+            v.push((l, k.name.clone(), on, shown.contains(&l)));
+        }
+        // The pad's first, then the track's.
+        v.sort_by_key(|(l, ..)| l.row == LINE);
+        v
     }
 
     /// Pad `p`'s lane on the page shown.
@@ -2192,6 +2495,7 @@ impl PlayPage {
             root: pitch.is_some_and(|x| x.root),
             label: None,
             empty: false,
+            lock: None,
         }
     }
 
@@ -2298,6 +2602,13 @@ impl PlayPage {
         });
         if g.pitched != pitched {
             g.pitched = pitched;
+        }
+        if g.top != self.steps_top {
+            g.top = self.steps_top;
+        }
+        let add_lane = self.sequencer && !self.pitched();
+        if g.add_lane != add_lane {
+            g.add_lane = add_lane;
         }
         let bank = self.on_play_rows().then(|| BankHead {
             track: self.track.name.clone(),
