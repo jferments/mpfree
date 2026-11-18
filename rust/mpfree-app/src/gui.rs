@@ -13599,12 +13599,21 @@ fn add_io_sections(ui: &mut Ui, model: &mpfree_midi_ui::Shared) -> Vec<String> {
 /// The stack for a thread that builds the sample screens
 /// ([`sample_screens`]): the tests' (`smoke::on_big_stack` and below), and
 /// `--preview` and `--display-lists` ([`on_screens_stack`]). Every screen's
-/// `Player` sits in its one frame, which in a debug build is about 7 MiB
-/// (7,376,832 bytes on 17 Nov 2026): the main thread's 8 MiB left the sweep
-/// about 14 KB, so one more screen ran it out of stack ("thread '<unknown>'
-/// has overflowed its stack"). Twice that leaves room for the screens to
-/// come.
-pub const SCREENS_STACK: usize = 16 << 20;
+/// `Player` sits in its one frame, which in a debug build was about 7 MiB
+/// on 17 Nov 2026 (7,376,832 bytes): the main thread's 8 MiB left the
+/// sweep about 14 KB, so one more screen ran it out of stack ("thread
+/// '<unknown>' has overflowed its stack"), and this was made 16 MiB.
+///
+/// On 18 Nov the frame was 15,768,112 bytes (x86-64 debug, read from the
+/// function's prologue), and a screen that builds a `TimeHost` under it
+/// (`sample_beats_synth`: its own frame, `TimeAudio::new` and
+/// mpfree-play's `Player::new`, about 0.7 MB more) ran past 16 MiB once
+/// the Strings engine (#595) came in. 32 MiB leaves room again; release
+/// builds share the frame's slots and need a small part of it. A screen
+/// whose setup calls deep into the engines is best its own
+/// `#[inline(never)]` function, as `io_section_screen` is, so its locals
+/// leave the frame when it returns.
+pub const SCREENS_STACK: usize = 32 << 20;
 
 /// Held by each test that builds every sample screen at once, so no two
 /// of them run together: each holds about 0.9 GB in a debug build (the
