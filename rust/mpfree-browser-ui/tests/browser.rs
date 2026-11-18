@@ -552,12 +552,28 @@ fn load_names_the_pad_picked_and_next_pad_hit_waits_for_a_hit() {
         &b.take_actions()[0],
         BrowseAction::LoadToPad { .. }
     ));
-    // A kit loads whole, in place of the kit the pads play: plain Load.
+    // A kit loads whole, in place of the kit the pads play: its Load
+    // names the armed track whose kit it replaces, plain Load with none.
     b.go_source(src("Kits"));
     let labels = button_labels(&mut ui, &mut b);
     assert!(
         labels.contains(&"Load".to_string()) && !labels.iter().any(|l| l.starts_with("Load on")),
         "{labels:?}"
+    );
+    b.set_kit_target(Some("Drums".into()));
+    assert_eq!(b.screen().kit_on.as_deref(), Some("Drums"));
+    let labels = button_labels(&mut ui, &mut b);
+    assert!(
+        labels.contains(&"Load on Drums".to_string())
+            && labels.contains(&"New track with this kit".to_string()),
+        "{labels:?}"
+    );
+    b.take_actions();
+    b.push();
+    assert!(matches!(&b.take_actions()[0], BrowseAction::LoadKit { .. }));
+    assert_eq!(
+        b.screen().status.unwrap().0,
+        "Loading the kit Boom bap on Drums"
     );
 }
 
