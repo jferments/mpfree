@@ -3,6 +3,7 @@
 
 use mpfree_grain::fx::REPEAT_FADE_S;
 use mpfree_grain::{Budget, GrainFx, GrainView, Params, MAX_GRAINS};
+use mpfree_node::{Held, HeldStep};
 
 const RATE: u32 = 44_100;
 
@@ -562,4 +563,112 @@ fn a_repeat_is_the_same_at_any_period_size() {
             .fold(0.0f32, f32::max);
         assert!(worst < 1e-4, "period {block}: {worst}");
     }
+}
+
+/// The input as the memory keeps it with no feedback: left `x`, right `-x`
+/// (as [`run`] feeds it), interleaved.
+fn kept(input: &[f32]) -> Vec<f32> {
+    input.iter().flat_map(|&x| [x, -x]).collect()
+}
+
+/// Feeds `input` to `fx` as [`run`] does, in one go from `frame` on.
+fn feed(fx: &mut GrainFx, budget: &mut Budget, input: &[f32], frame: usize) {
+    let mut l = input.to_vec();
+    let mut r: Vec<f32> = input.iter().map(|x| -x).collect();
+    fx.process(budget, frame as u64, &mut l, &mut r);
+}
+
+#[test]
+fn a_capture_copies_the_frozen_memory_exactly_a_piece_at_a_time() {
+    let input = noise(66_150, 0.5);
+    let mut fx = GrainFx::new(RATE, 1.0, 9).unwrap();
+    fx.set_params(cloud());
+    let mut budget = Budget::new(64);
+    run(&mut fx, &mut budget, &input, 128, &[(0, Change::Mix(1.0))]);
+    fx.set_frozen(true);
+    let mut held = Held::new(2, RATE as usize * 2);
+    let (mut calls, mut at) = (0, input.len());
+    loop {
+        calls += 1;
+        match fx.copy_held(&mut held, 4096) {
+            HeldStep::More => {
+                // The cloud plays on between pieces; frozen, its memory
+                // stays as it was.
+                feed(&mut fx, &mut budget, &noise(256, 0.9), at);
+                at += 256;
+            }
+            HeldStep::Done => break,
+            s => panic!("{s:?}"),
+        }
+    }
+    assert_eq!(calls, 11, "44,100 frames, 4,096 a call");
+    let from = input.len() - RATE as usize;
+    assert_eq!(held.span(), Some((from as u64, input.len() as u64)));
+    assert_eq!((held.channels(), held.rate()), (2, RATE));
+    assert!(
+        held.data() == &kept(&input)[2 * from..],
+        "the memory, exactly"
+    );
+}
+
+#[test]
+fn a_capture_while_audio_comes_in_keeps_the_span_it_began_with() {
+    let input = noise(RATE as usize * 3, 0.5);
+    let mut fx = GrainFx::new(RATE, 1.0, 9).unwrap();
+    fx.set_params(cloud());
+    let mut budget = Budget::new(64);
+    let first = RATE as usize * 2;
+    run(
+        &mut fx,
+        &mut budget,
+        &input[..first],
+        128,
+        &[(0, Change::Mix(1.0))],
+    );
+    let written = fx.buffer().written() as usize;
+    let mut held = Held::new(2, RATE as usize);
+    let mut at = first;
+    loop {
+        match fx.copy_held(&mut held, 2048) {
+            HeldStep::More => {
+                feed(&mut fx, &mut budget, &input[at..at + 512], at);
+                at += 512;
+            }
+            HeldStep::Done => break,
+            s => panic!("{s:?}"),
+        }
+    }
+    assert!(
+        fx.buffer().written() as usize > written + 8_000,
+        "audio came in"
+    );
+    // All but the oldest quarter, which new audio was about to overwrite.
+    let from = written - RATE as usize * 3 / 4;
+    assert_eq!(held.span(), Some((from as u64, written as u64)));
+    assert!(held.data() == &kept(&input)[2 * from..2 * written]);
+}
+
+#[test]
+fn a_capture_says_when_there_is_nothing_or_the_memory_went() {
+    let mut fx = GrainFx::new(RATE, 1.0, 9).unwrap();
+    let mut budget = Budget::new(64);
+    let mut held = Held::new(2, RATE as usize);
+    assert_eq!(fx.copy_held(&mut held, 4096), HeldStep::Nothing, "empty");
+    feed(&mut fx, &mut budget, &noise(20_000, 0.5), 0);
+    assert_eq!(fx.copy_held(&mut held, 4096), HeldStep::More);
+    // A reset forgets the memory being copied.
+    fx.reset(&mut budget);
+    feed(&mut fx, &mut budget, &noise(20_000, 0.5), 0);
+    assert_eq!(fx.copy_held(&mut held, 4096), HeldStep::Lost);
+    // A copy far slower than the audio coming in is overtaken.
+    let mut held = Held::new(2, RATE as usize);
+    feed(&mut fx, &mut budget, &noise(RATE as usize, 0.5), 20_000);
+    let mut at = 20_000 + RATE as usize;
+    let lost = (0..100).any(|_| {
+        let step = fx.copy_held(&mut held, 16);
+        feed(&mut fx, &mut budget, &noise(4096, 0.5), at);
+        at += 4096;
+        step == HeldStep::Lost
+    });
+    assert!(lost, "overwritten, never a mix of old and new");
 }

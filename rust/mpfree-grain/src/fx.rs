@@ -47,6 +47,7 @@
 use crate::buffer::{GrainSource, LiveBuffer};
 use crate::voice::{Budget, GrainView, GrainVoice, Params, Stats, TempoSync};
 use crate::window::Window;
+use mpfree_node::{Held, HeldStep};
 
 /// A granular insert on a stereo signal.
 #[derive(Clone, Debug)]
@@ -443,6 +444,42 @@ impl GrainFx {
     /// The buffer the grains read, for drawing it.
     pub fn buffer(&self) -> &LiveBuffer {
         &self.buffer
+    }
+
+    /// Copies the memory the cloud plays from into `into`, at most
+    /// `max_frames` frames a call, oldest first: the Grains effect's
+    /// capture onto a pad (step C3). The first call takes the span the
+    /// cloud reads now: all the memory while frozen (or held by a repeat),
+    /// else all but the oldest quarter, which new audio is about to
+    /// overwrite. Copying runs far faster than writing, so the span stays
+    /// whole while it goes on. [`HeldStep::Lost`] if the memory was cleared
+    /// (a reset) or overwritten all the same. Never allocates.
+    pub fn copy_held(&self, into: &mut Held, max_frames: usize) -> HeldStep {
+        let b = &self.buffer;
+        if into.span().is_none() {
+            let (from, to) = b.span();
+            let (from, to) = (from.max(0) as u64, to.max(0) as u64);
+            if !into.begin(from, to, b.channels(), b.rate(), b.clears()) {
+                return HeldStep::Nothing;
+            }
+        }
+        let Some((at, left)) = into.next() else {
+            return HeldStep::Nothing;
+        };
+        if into.mark() != b.clears() {
+            return HeldStep::Lost;
+        }
+        let n = left.min(max_frames) as u64;
+        let Some((first, wrapped)) = b.frames(at, at + n) else {
+            return HeldStep::Lost;
+        };
+        into.push(first);
+        into.push(wrapped);
+        if into.left() == 0 {
+            HeldStep::Done
+        } else {
+            HeldStep::More
+        }
     }
     pub fn stats(&self) -> Stats {
         self.voice.stats()
