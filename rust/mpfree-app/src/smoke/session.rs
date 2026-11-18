@@ -882,6 +882,16 @@ impl Session {
             self.out.show(ToUi::PadUp(pad));
             return;
         }
+        let take = self
+            .app
+            .rec
+            .ready
+            .map(|take| take == crate::rec_arm::Take::Add);
+        if down {
+            let exporting = self.export.running();
+            let said = crate::pad_starts_loop(&mut self.looper, &mut self.time, take, exporting);
+            self.out.loop_start(said);
+        }
         if let Some(ev) = self.app.pressed_event(pad, velocity, down) {
             self.time.pad_pressed(0, ev);
         }
@@ -1111,6 +1121,14 @@ impl Session {
         if let Some(line) = self.looper.run(self.time.block(), &mut ll, &mut lr) {
             self.out.note(&line);
         }
+        let take = self
+            .app
+            .rec
+            .ready
+            .map(|take| take == crate::rec_arm::Take::Add);
+        let exporting = self.export.running();
+        let said = crate::loop_starts_song(&mut self.looper, &mut self.time, take, exporting);
+        self.out.loop_start(said);
         // The Looper tab and the Play page's strip follow the loop, as
         // main.rs shows them: its wave a slice at a time, its changes in
         // the log, and the loop's view about as often as the transport card

@@ -295,6 +295,7 @@ impl ChainHost {
             picking: self.notes_picking,
             plays_on: String::new(),
             plays_detail: String::new(),
+            ccs_send_nothing: None,
         };
         if ns.picking || self.notes_row.is_some() {
             *st = std::mem::take(st).without_page();

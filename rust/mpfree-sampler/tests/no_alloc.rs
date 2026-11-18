@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use mpfree_sampler::dsp::{Ahdsr, Filter, FilterKind};
 use mpfree_sampler::engine::{Engine, EngineView, Event, PadField, PadOut, ProgramField};
 use mpfree_sampler::model::*;
-use mpfree_sampler::record::{bar_lines, rolling};
+use mpfree_sampler::record::{bar_lines, rolling, rolling16};
 
 struct Counting;
 thread_local! {
@@ -309,6 +309,8 @@ fn render_and_events_never_allocate() {
     e.render(&mut l, &mut r); // warm up outside the watch
                               // The rolling "skip back" buffer the audio thread fills every period.
     let (mut rec, reader) = rolling(2, 44_100 * 2);
+    // And the 16-bit one Sample Recall keeps of the master.
+    let (mut recall, recall_reader) = rolling16(44_100 * 2);
     // And the transport's bar lines in its frames, for takes in time.
     let (mut bars, bar_reader) = bar_lines();
     // The master effect is made and put in before the watch; inside it, a
@@ -519,6 +521,7 @@ fn render_and_events_never_allocate() {
         }
         bars.set_bar(Some(88_200.0));
         rec.push_planar(&l, &r);
+        recall.push_planar(&l, &r);
     }
     // Then only the granular pads, held long enough to fill the grain budget.
     for pad in 16..20u8 {
@@ -562,6 +565,7 @@ fn render_and_events_never_allocate() {
         "the grain budget never filled; the test is not busy enough"
     );
     assert_eq!(reader.written(), 2200 * 128);
+    assert_eq!(recall_reader.written(), 2000 * 128);
     assert_eq!(bar_reader.count(), 2000 / 16);
     assert_eq!(e.live_grains(), 0, "every grain handed back after AllOff");
     assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()));

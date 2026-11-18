@@ -678,6 +678,13 @@ const GRAIN_FILTERS: &[(&str, GrainFilterKind)] = &[
     ("band", GrainFilterKind::Band),
     ("high", GrainFilterKind::High),
 ];
+const PAD_LFO_TARGETS: &[(&str, LfoTarget)] = &[
+    ("off", LfoTarget::Off),
+    ("pitch", LfoTarget::Pitch),
+    ("cutoff", LfoTarget::Cutoff),
+    ("level", LfoTarget::Level),
+    ("pan", LfoTarget::Pan),
+];
 const LFO_SHAPES: &[(&str, LfoShape)] = &[
     ("sine", LfoShape::Sine),
     ("triangle", LfoShape::Triangle),
@@ -1049,6 +1056,12 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
         vel_fade,
         vintage,
         slice,
+        lfo,
+        pitch_env,
+        vel_to_cutoff,
+        vel_to_pitch,
+        kind,
+        on_launch,
     } = p;
     f.text_field("name", name);
     f.word("select", select, SELECTS);
@@ -1099,4 +1112,99 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
     f.num("vel_fade", vel_fade);
     f.flag("vintage", vintage);
     f.num("slice", slice);
+    // Saves before sampler R5 part 4 open with no LFO, no pitch envelope
+    // and velocity on neither.
+    f.scope("lfo", |f| {
+        let PadLfo {
+            shape,
+            rate_hz,
+            beats,
+            target,
+            depth,
+            retrig,
+        } = lfo;
+        f.word("shape", shape, LFO_SHAPES);
+        f.num("rate_hz", rate_hz);
+        f.opt_num("beats", beats);
+        f.word("target", target, PAD_LFO_TARGETS);
+        f.num("depth", depth);
+        f.flag("retrig", retrig);
+    });
+    f.scope("pitch_env", |f| {
+        let PitchEnv {
+            semitones,
+            decay_ms,
+        } = pitch_env;
+        f.num("semitones", semitones);
+        f.num("decay_ms", decay_ms);
+    });
+    f.num("vel_to_cutoff", vel_to_cutoff);
+    f.num("vel_to_pitch", vel_to_pitch);
+    visit_kind(f, kind);
+    f.flag("on_launch", on_launch);
+}
+
+/// What a pad's kind is called in the text, as a word.
+#[derive(Clone, Copy, PartialEq)]
+enum KindWord {
+    Sample,
+    Instrument,
+    MidiOut,
+}
+
+const KINDS: &[(&str, KindWord)] = &[
+    ("sample", KindWord::Sample),
+    ("instrument", KindWord::Instrument),
+    ("midi_out", KindWord::MidiOut),
+];
+
+/// A pad's kind: `kind = sample`, or `kind = instrument` with `kind.engine`
+/// and `kind.note`, or `kind = midi_out` with `kind.port`, `kind.channel`
+/// and `kind.note`. A pad saved before kinds is a Sample pad. A note past
+/// 127 or a channel outside 1 to 16 reads as the nearest that is.
+fn visit_kind<F: Fields>(f: &mut F, kind: &mut PadKind) {
+    let (mut word, mut engine, mut port, mut channel, mut note) = match kind {
+        PadKind::Sample => (KindWord::Sample, String::new(), String::new(), 1u8, 60u8),
+        PadKind::Instrument { engine, note } => (
+            KindWord::Instrument,
+            engine.clone(),
+            String::new(),
+            1,
+            *note,
+        ),
+        PadKind::MidiOut {
+            port,
+            channel,
+            note,
+        } => (
+            KindWord::MidiOut,
+            String::new(),
+            port.clone(),
+            *channel,
+            *note,
+        ),
+    };
+    f.word("kind", &mut word, KINDS);
+    match word {
+        KindWord::Sample => {}
+        KindWord::Instrument => f.scope("kind", |f| {
+            f.text_field("engine", &mut engine);
+            f.num("note", &mut note);
+        }),
+        KindWord::MidiOut => f.scope("kind", |f| {
+            f.text_field("port", &mut port);
+            f.num("channel", &mut channel);
+            f.num("note", &mut note);
+        }),
+    }
+    let note = note.min(127);
+    *kind = match word {
+        KindWord::Sample => PadKind::Sample,
+        KindWord::Instrument => PadKind::Instrument { engine, note },
+        KindWord::MidiOut => PadKind::MidiOut {
+            port,
+            channel: channel.clamp(1, 16),
+            note,
+        },
+    };
 }

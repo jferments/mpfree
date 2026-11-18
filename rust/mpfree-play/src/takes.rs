@@ -291,6 +291,9 @@ pub struct Takes {
     captures: u32,
     /// Edits so far, to number them.
     edits: u32,
+    /// Captures join this one while it is the latest take
+    /// ([`Takes::joining`]).
+    joining: Option<u32>,
 }
 
 impl Default for Takes {
@@ -309,6 +312,7 @@ impl Takes {
             limit: limit.max(1),
             captures: 0,
             edits: 0,
+            joining: None,
         }
     }
 
@@ -1210,8 +1214,29 @@ impl Takes {
         })
     }
 
-    /// A new capture, which ends redo.
+    /// Run `f`, whose captures join capture `number` while it is the
+    /// latest take and nothing is undone since: CAPTURE of several tracks'
+    /// notes is one take, which one UNDO takes back. A capture that can't
+    /// join is a take of its own, as outside `f`.
+    pub fn joining<R>(&mut self, number: u32, f: impl FnOnce(&mut Takes) -> R) -> R {
+        let was = self.joining.replace(number);
+        let r = f(self);
+        self.joining = was;
+        r
+    }
+
+    /// A new capture, which ends redo, or the one being joined.
     fn next_capture(&mut self) -> &mut Take {
+        let join = self.joining.filter(|&n| {
+            self.undone.is_empty()
+                && self
+                    .done
+                    .last()
+                    .is_some_and(|t| t.captured && t.number == n)
+        });
+        if join.is_some() {
+            return self.done.last_mut().expect("checked");
+        }
         self.captures += 1;
         self.push(Take {
             number: self.captures,
@@ -1615,6 +1640,36 @@ mod tests {
         p.tracks[0].slots[0] = Some(Clip::new("new", 3840));
         t.undo(&mut p);
         assert_eq!(p.clip(0, 0).unwrap().name, "new");
+    }
+
+    #[test]
+    fn captures_joining_one_are_one_take_that_one_undo_takes_back() {
+        let mut p = project();
+        p.tracks.push(Track::new("u", 1));
+        let mut t = Takes::default();
+        let c = |name: &str| Clip::new(name, 3840);
+        let first = t.capture_clip(&mut p, 0, 1, c("Capture 1")).unwrap();
+        let joined = t.joining(first, |t| t.capture_clip(&mut p, 1, 0, c("Capture 1")));
+        assert_eq!(joined, Ok(first));
+        assert_eq!(t.captures(), 1);
+        assert_eq!(t.done().len(), 1);
+        assert_eq!(t.done()[0].made.len(), 2);
+        // Outside it, a capture is a take of its own again.
+        assert_eq!(t.capture_clip(&mut p, 0, 2, c("Capture 2")), Ok(2));
+        assert_eq!(t.undo(&mut p), Some(2));
+        // One UNDO takes both tracks' clips away, one REDO puts them back.
+        assert_eq!(t.undo(&mut p), Some(1));
+        assert!(p.clip(0, 1).is_none() && p.clip(1, 0).is_none());
+        assert_eq!(t.redo(&mut p), Some(1));
+        assert!(p.clip(0, 1).is_some() && p.clip(1, 0).is_some());
+        // A capture can't join one that isn't the latest take.
+        t.add(&mut p, &taken(0, 7)).unwrap();
+        let alone = t.joining(1, |t| t.capture_clip(&mut p, 1, 1, c("Capture 3")));
+        assert_eq!(alone, Ok(3));
+        // Nor one with a take undone since.
+        assert_eq!(t.undo(&mut p), Some(3));
+        let alone = t.joining(1, |t| t.capture_clip(&mut p, 1, 1, c("Capture 4")));
+        assert_eq!(alone, Ok(4));
     }
 
     #[test]

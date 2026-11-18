@@ -23,7 +23,7 @@
 
 use std::time::{Duration, Instant};
 
-use mpfree_capture::{keep, moves_for_clip, Capture, Now, Pending};
+use mpfree_capture::{keep, moves_for_clip, Capture, KeepError, Kept, Now, Pending};
 use mpfree_notefx::{Chain, TrackFx, MAX_FX};
 use mpfree_perform::{Perform, SceneMorph, SongRecorder, When};
 use mpfree_play::Replaced;
@@ -593,6 +593,9 @@ impl TimeControl {
         while let Some(m) = self.rx.recv() {
             match m {
                 ToControl::Played(offset, event) => self.capture.input(offset, event),
+                ToControl::PlayedOn(track, offset, event) => {
+                    self.capture.input_on(track, offset, event);
+                }
                 ToControl::Moved(offset, input) => self.move_log.input(offset, input),
                 ToControl::Started(st) => self.started.push(st),
                 ToControl::MuteLanded(l) => self.landed.push(l),
@@ -990,6 +993,16 @@ impl TimeControl {
         Ok(match self.ready_to_record()? {
             Some(line) => format!("rec: the take started with the clock, {line}"),
             None => "rec: the take started with the clock".to_string(),
+        })
+    }
+
+    /// A note started the song with a take ready (the looper's Starts:
+    /// When I play, [`super::TimeHost::start_at`]): the clip it records
+    /// into, as for the leader's start. A line for the log.
+    pub(super) fn take_started_on_note(&mut self) -> Result<String, String> {
+        Ok(match self.ready_to_record()? {
+            Some(line) => format!("rec: the take started on your note, {line}"),
+            None => "rec: the take started on your note".to_string(),
         })
     }
 
@@ -3031,10 +3044,13 @@ impl TimeControl {
         self.song_rec.morph(at, self.morph.pos, rows);
     }
 
-    /// CAPTURE: keep the last phrase in the armed track (track 1 if none
-    /// is armed): into its playing clip when it was played in time over
-    /// it, else as a new clip in its first empty slot that plays on in its
-    /// place. A line for the log.
+    /// CAPTURE: keep the last phrase: the pads' notes in the armed track
+    /// (track 1 if none is armed), and the keys a route played on other
+    /// tracks each in its own track, all one take that one UNDO takes
+    /// back. Each track's notes go into its playing clip when they were
+    /// played in time over it, else into a new clip in its first empty
+    /// slot that plays on in its place. A track they can't go into is left
+    /// out and said. A line for the log.
     fn keep(&mut self) -> Result<String, String> {
         if self.capture.pending().is_none() {
             return Ok("capture: nothing new to keep".into());
@@ -3047,46 +3063,84 @@ impl TimeControl {
             meter: t.meter,
             loop_range: t.playing_loop(),
         };
-        let track = self.armed.unwrap_or(0);
+        let armed = self.armed.unwrap_or(0);
         let name = format!("Capture {}", self.takes.captures() + 1);
-        let k = keep(
-            &phrase,
-            &mut self.project,
-            &self.launches,
-            &mut self.takes,
-            track,
-            now,
-            &name,
-        )
-        .map_err(|e| format!("capture: {e:?}"))?;
-        // The moves made over a phrase played in time go with it.
-        let origin = k.launch.map(|l| l.origin).or_else(|| {
-            self.launches
-                .iter()
-                .find(|l| l.track == track && l.slot == k.slot)
-                .map(|l| l.origin)
-        });
-        let mut moves = 0;
-        if let (Some(s), Some(origin)) = (phrase.song_start, origin) {
-            if let Some(clip) = self.project.clip(track, k.slot) {
-                let list = moves_for_clip(
-                    &self.move_log.phrase(),
-                    s as f64,
-                    (s + phrase.length) as f64,
-                    clip,
-                    origin,
-                    track as u8,
-                );
-                if !list.is_empty() {
-                    moves = self
-                        .takes
-                        .capture_moves(&mut self.project, track, k.slot, k.take, &list)
-                        .unwrap_or(0);
+        let mut kept: Vec<Kept> = Vec::new();
+        let mut left: Vec<String> = Vec::new();
+        let mut first_error = None;
+        for (track, part) in phrase.split(armed) {
+            let r = match kept.first().map(|k| k.take) {
+                None => keep(
+                    &part,
+                    &mut self.project,
+                    &self.launches,
+                    &mut self.takes,
+                    track,
+                    now,
+                    &name,
+                ),
+                // The other tracks join the first one's take.
+                Some(n) => self.takes.joining(n, |takes| {
+                    keep(
+                        &part,
+                        &mut self.project,
+                        &self.launches,
+                        takes,
+                        track,
+                        now,
+                        &name,
+                    )
+                }),
+            };
+            match r {
+                Ok(k) => kept.push(k),
+                Err(e) => {
+                    left.push(self.left_out(track, e));
+                    first_error.get_or_insert(e);
                 }
             }
-            self.move_log.forget();
         }
-        if let Some(l) = k.launch {
+        if kept.is_empty() {
+            let e = first_error.ok_or("capture: nothing played")?;
+            return Err(format!("capture: {e:?}"));
+        }
+        // The moves made over a phrase played in time go with the armed
+        // track's notes (their addresses are the armed track's); with none
+        // of those kept, they stay out, and the line says so.
+        let mut moves = 0;
+        let mut moves_out = 0;
+        if let Some(s) = phrase.song_start {
+            let (from, to) = (s as f64, (s + phrase.length) as f64);
+            match kept.iter().find(|k| k.track == armed) {
+                Some(k) => {
+                    let origin = k.launch.map(|l| l.origin).or_else(|| {
+                        self.launches
+                            .iter()
+                            .find(|l| l.track == armed && l.slot == k.slot)
+                            .map(|l| l.origin)
+                    });
+                    if let (Some(origin), Some(clip)) = (origin, self.project.clip(armed, k.slot)) {
+                        let list = moves_for_clip(
+                            &self.move_log.phrase(),
+                            from,
+                            to,
+                            clip,
+                            origin,
+                            armed as u8,
+                        );
+                        if !list.is_empty() {
+                            moves = self
+                                .takes
+                                .capture_moves(&mut self.project, armed, k.slot, k.take, &list)
+                                .unwrap_or(0);
+                        }
+                    }
+                    self.move_log.forget();
+                }
+                None => moves_out = moves_over(&self.move_log.phrase(), from, to),
+            }
+        }
+        for l in kept.iter().filter_map(|k| k.launch) {
             self.launches.retain(|x| x.track != l.track);
             self.cues.retain(|x| x.track != l.track);
             self.launches.push(l);
@@ -3094,11 +3148,6 @@ impl TimeControl {
         self.capture.mark_kept(phrase.id);
         self.pending = self.capture.pending();
         self.compile()?;
-        let into = if k.launch.is_some() {
-            "new clip in"
-        } else {
-            "into the clip in"
-        };
         let moved = match moves {
             0 => String::new(),
             1 => " and 1 move".into(),
@@ -3106,28 +3155,67 @@ impl TimeControl {
         };
         // Pressure left off is counted with the recorder's (the status
         // line), and said here.
-        self.touch_lost += k.touch_lost as u64;
-        let mut pressure = String::new();
-        if k.touch > 0 {
-            pressure = format!(" with {} pressure values", k.touch);
-        }
-        if k.touch_lost > 0 {
-            pressure += &format!(
-                "; {} pressure values left off, the clip has no room for them",
-                k.touch_lost
+        let mut parts = Vec::with_capacity(kept.len());
+        for (i, k) in kept.iter().enumerate() {
+            self.touch_lost += k.touch_lost as u64;
+            let into = if k.launch.is_some() {
+                "new clip in"
+            } else {
+                "into the clip in"
+            };
+            let mut pressure = String::new();
+            if k.touch > 0 {
+                pressure = format!(" with {} pressure values", k.touch);
+            }
+            if k.touch_lost > 0 {
+                pressure += &format!(
+                    "; {} pressure values left off, the clip has no room for them",
+                    k.touch_lost
+                );
+            }
+            if phrase.touch_cut && k.touch > 0 {
+                pressure += "; the first notes' pressure was older than the history keeps";
+            }
+            let where_to = format!(
+                "{into} slot {} of {}",
+                k.slot + 1,
+                self.project.tracks[k.track].name
             );
+            parts.push(if i == 0 {
+                format!(
+                    "capture {}: {} notes{moved}{pressure}, {}, {where_to}",
+                    k.take,
+                    k.notes,
+                    bars_label(k.bars)
+                )
+            } else {
+                format!("{} notes{pressure}, {where_to}", k.notes)
+            });
         }
-        if phrase.touch_cut && k.touch > 0 {
-            pressure += "; the first notes' pressure was older than the history keeps";
+        parts.extend(left);
+        match moves_out {
+            0 => {}
+            1 => parts.push("1 move left out: it goes with the armed track's notes".into()),
+            n => parts.push(format!(
+                "{n} moves left out: they go with the armed track's notes"
+            )),
         }
-        Ok(format!(
-            "capture {}: {} notes{moved}{pressure}, {}, {into} slot {} of {}",
-            k.take,
-            k.notes,
-            bars_label(k.bars),
-            k.slot + 1,
-            self.project.tracks[track].name
-        ))
+        Ok(parts.join("; "))
+    }
+
+    /// Why CAPTURE left `track`'s notes out, in words.
+    fn left_out(&self, track: usize, e: KeepError) -> String {
+        let name = self
+            .project
+            .tracks
+            .get(track)
+            .map_or_else(|| format!("track {}", track + 1), |t| t.name.clone());
+        match e {
+            KeepError::NoTrack(_) => format!("{name} left out: there is no such track"),
+            KeepError::NoSlot(_) => format!("{name} left out: every slot holds a clip"),
+            KeepError::Nothing => format!("{name} left out: nothing played"),
+            KeepError::Model(m) => format!("{name} left out: {m:?}"),
+        }
     }
 
     /// A clip made elsewhere (the Sample page's chop to a phrase) into the
@@ -4156,4 +4244,16 @@ fn steps_text(steps: &[usize]) -> String {
     } else {
         format!("steps {}", list.join(", "))
     }
+}
+
+/// How many of `gestures` (a move log's phrase) overlap song ticks
+/// `from..to`, as `moves_for_clip` takes them.
+fn moves_over(gestures: &[mpfree_seq::mpfree_moves::Gesture], from: f64, to: f64) -> usize {
+    gestures
+        .iter()
+        .filter(|g| match (g.points.first(), g.points.last()) {
+            (Some(a), Some(b)) => g.song + (b.0 - a.0) >= from && g.song < to,
+            _ => false,
+        })
+        .count()
 }

@@ -156,13 +156,18 @@ pub fn monitored(mut m: IoModel) -> IoModel {
     fed(keys, Dir::In, 0.59, &[0xB0, 1, 30], learns);
     fed(keys, Dir::In, 0.63, &[0xB0, 74, 60], learned);
     fed(keys, Dir::In, 0.67, &[0xB0, 74, 72], learned);
-    // The drum machine: pad 1's note, then one no pad of the kit has.
+    // The drum machine: pad A1's note, then H2's (each of a kit's 128
+    // pads has a note of its own).
     let pad1 = To::Track {
         track: 0,
         pad: Some(0),
     };
+    let h2 = To::Track {
+        track: 0,
+        pad: Some(113),
+    };
     fed(DIN, Dir::In, 0.70, &[0x99, 37, 100], pad1);
-    fed(DIN, Dir::In, 0.74, &[0x99, 20, 90], To::NoPad { track: 0 });
+    fed(DIN, Dir::In, 0.74, &[0x99, 20, 90], h2);
     fed(DIN, Dir::Out, 0.78, &[0x91, 36, 110], bass);
     fed(keys, Dir::In, 0.82, &[0xE0, 0x00, 0x50], learns);
     fed(DIN, Dir::In, 0.86, &[0x89, 37, 0], pad1);

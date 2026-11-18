@@ -2921,7 +2921,8 @@ mod tests {
                 meters: vec![(0, 4, 4)],
                 tracks: vec![SmfTrack {
                     name: "MPC drums".into(),
-                    // C#2 is pad 1, C2 pad 2, and E3 no pad.
+                    // C#2 is pad A1, C2 A2, and E3 (52) B5: each note
+                    // lands on the kit pad that sends it, in any bank.
                     events: vec![
                         (0, on(37)),
                         (240, off(37)),
@@ -2970,13 +2971,13 @@ mod tests {
             let line = lines[0].clone();
             assert_eq!(
                 line,
-                "MIDI file Beat.mid: 1 clip with 2 notes, from slot 1 of Track 1 \
-                 (UNDO takes them away); its tempo 90 BPM; left out: 1 note no pad plays"
+                "MIDI file Beat.mid: 1 clip with 3 notes, from slot 1 of Track 1 \
+                 (UNDO takes them away); its tempo 90 BPM"
             );
             let clip = s.time.project().tracks[0].slots[0].clone().expect("a clip");
             assert_eq!(clip.name, "MPC drums");
             let pads: Vec<(i64, u8)> = clip.notes.iter().map(|n| (n.tick, n.note)).collect();
-            assert_eq!(pads, [(0, 0), (960, 1)]);
+            assert_eq!(pads, [(0, 0), (960, 1), (1920, 20)]);
             assert_eq!(clip.length, 3840);
             s.button("BROWSE");
             s.press("header", "tab", "Arrange");
