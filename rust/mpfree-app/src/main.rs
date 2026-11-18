@@ -4756,20 +4756,32 @@ fn time_action(
         | TimeAction::SaveScene(_) => time.morph(a, &mut mix.modu, &mix.mixer),
         _ => time.act(a),
     };
+    // The note editor opened or closed: the Sequencer's Notes view follows.
+    let fx = app.set_notes_open(time.editing());
     if let (Ok(line), Some(leader)) = (&r, waiting) {
         out.note(&format!("time: {line}"));
-        return vec![app::Effect::Tell(format!(
+        let mut fx = fx;
+        fx.push(app::Effect::Tell(format!(
             "Waiting for clock: PLAY starts when {leader} starts"
-        ))];
+        )));
+        return fx;
     }
     match r {
-        Ok(line) | Err(line) if erase => return vec![app::Effect::Tell(line)],
-        Ok(line) | Err(line) if undo => return vec![app::Effect::Tell(undo_said(&line))],
+        Ok(line) | Err(line) if erase => {
+            let mut fx = fx;
+            fx.push(app::Effect::Tell(line));
+            return fx;
+        }
+        Ok(line) | Err(line) if undo => {
+            let mut fx = fx;
+            fx.push(app::Effect::Tell(undo_said(&line)));
+            return fx;
+        }
         Ok(line) if !line.is_empty() => out.note(&format!("time: {line}")),
         Ok(_) => {}
         Err(e) => out.note(&format!("time: {e}")),
     }
-    Vec::new()
+    fx
 }
 
 /// The time engine's "undo: take 3 · Drums / 1" as the screen says it:
@@ -5953,6 +5965,8 @@ fn player_session(
                         // on the screen thread.
                         o.time = Some(t);
                         out.show(gui::ToUi::Time(Box::new(time.state())));
+                        // A project opens without the note editor.
+                        fx.extend(app.set_notes_open(time.editing()));
                     }
                     if let Some(s) = o.swing {
                         fx.push(app::Effect::Time(TimeAction::Transport(Command::SetSwing(
@@ -6877,7 +6891,11 @@ fn player_session(
                         app.qlink(knob as usize, delta as i32, public.then(|| m.bytes[2]))
                     {
                         fx.extend(e);
-                    } else if matches!(page, app::View::Play | app::View::Arrange) && knob < 4 {
+                    } else if matches!(
+                        page,
+                        app::View::Play | app::View::Sequencer | app::View::Arrange
+                    ) && knob < 4
+                    {
                         // The Play page decides what each knob turns there (its view, the step picked);
                         // Arrange has the same column and knobs (layout spec section 4c).
                         let k = knob as usize;

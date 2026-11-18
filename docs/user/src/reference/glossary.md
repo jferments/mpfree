@@ -102,6 +102,8 @@ checked: 2026-11-14 b76c3c7
 
 **Send** — How much of a sound goes to one of the four shared effects (send returns A to D).
 
+**Sequencer** — The tab after Pads: the armed track's clip as steps (**Steps**) or as notes in the note editor (**Notes**). **STEP SEQ** opens it.
+
 **Skip back** — Keep what came into the Rec page in the last seconds or bars, without having pressed Record.
 
 **Song** — Clips laid out on a timeline on the Arrange tab, one lane per track, with the audio tracks under them.
@@ -122,7 +124,7 @@ checked: 2026-11-14 b76c3c7
 
 **Velocity** — How hard a pad is hit, from 1 (softest) to 127 (hardest).
 
-**View** — One of the Play page's three layouts: All, Beats and Loop.
+**View** — One of a page's layouts: the Play page's All and Loop, or the Sequencer tab's Steps and Notes.
 
 **Warp** — Playing a sample in time with the project's tempo: Stretch keeps its pitch, Repitch changes it like a record.
 

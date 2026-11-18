@@ -84,6 +84,12 @@ pub enum View {
     /// the pad's settings (Pad), whose "Browse for" opens the full browser;
     /// the sampler's pad screens (`mpfree_sampler_ui::pads_tab`).
     Pads,
+    /// The Sequencer (the Play, Pads and Sequencer redesign, Jay's go
+    /// 18 Nov 00:30Z): the armed track's clip as steps (Steps: the step
+    /// grid, its inspector and timing strip, which were Play's Beats view)
+    /// or as notes (Notes: the note editor, which was Arrange's). STEP SEQ
+    /// opens it.
+    Sequencer,
     /// Arrange: the time engine's launch grid, record settings and takes
     /// (the Clips tab until Jay renamed it, 12:55Z).
     Arrange,
@@ -148,6 +154,7 @@ pub fn tabs(dev: bool) -> Vec<View> {
     let mut t = vec![
         View::Play,
         View::Pads,
+        View::Sequencer,
         View::Arrange,
         View::Synth,
         View::Looper,
@@ -255,6 +262,7 @@ impl View {
         match self {
             View::Play => "Play",
             View::Pads => "Pads",
+            View::Sequencer => "Sequencer",
             View::Arrange => "Arrange",
             View::Synth => "Synth",
             View::Looper => "Looper",
@@ -965,12 +973,14 @@ pub enum Nav {
 }
 
 /// The pages where the wheel moves an outline between controls ([`Nav`]).
-/// The pages with rows (Arrange, Synth, Sample, Pads), the menus, the Arp
-/// panel, the workspace and the Dev tab keep the wheel's own jobs there.
+/// The pages with rows (Arrange, Synth, Sample, Pads, the Sequencer's
+/// Notes), the menus, the Arp panel, the workspace and the Dev tab keep
+/// the wheel's own jobs there. The Sequencer is named for its Steps view;
+/// its Notes view has rows, which come first.
 pub fn outlined(v: View) -> bool {
     matches!(
         v,
-        View::Play | View::Looper | View::Mixer | View::Chain | View::Macros
+        View::Play | View::Sequencer | View::Looper | View::Mixer | View::Chain | View::Macros
     )
 }
 
@@ -1244,6 +1254,9 @@ pub struct App {
     track_count: usize,
     /// The 16 Levels panel shows on Play: the wheel picks its kind.
     levels_open: bool,
+    /// The note editor is open: the Sequencer shows its Notes view, whose
+    /// wheel picks and changes the Edit options as Arrange's rows.
+    notes_open: bool,
     /// 16 Levels are on (the screen says, with the panel).
     levels_on: bool,
     /// 16 Levels' kind is Transpose: the pads move the armed track
@@ -1476,6 +1489,7 @@ impl App {
             kit_held: [None; 16],
             track_count: 0,
             levels_open: false,
+            notes_open: false,
             levels_on: false,
             levels_transpose: false,
             step_seq: step_pads::StepSeq::default(),
@@ -2500,7 +2514,7 @@ impl App {
                 fx
             }
         } else if is(m.main) {
-            // MAIN: Play; on Play, the next view (All, Beats, Loop).
+            // MAIN: Play; on Play, the next view (All, Loop).
             if self.view == View::Play {
                 vec![Effect::PlayView(None)]
             } else {
@@ -2533,7 +2547,12 @@ impl App {
             // loop's knobs.
             if matches!(
                 self.view,
-                View::Play | View::Arrange | View::Chain | View::Macros | View::Looper
+                View::Play
+                    | View::Sequencer
+                    | View::Arrange
+                    | View::Chain
+                    | View::Macros
+                    | View::Looper
             ) {
                 vec![Effect::QLinkBank]
             } else {
@@ -2633,6 +2652,28 @@ impl App {
             fx.push(Effect::Light(note, if on { LIGHT_ON } else { LIGHT_OFF }));
         }
         fx
+    }
+
+    /// The note editor opened or closed (the time engine says so after
+    /// each of its actions: Arrange's Edit row, the Sequencer's Notes, ‹
+    /// Steps). Opened, the Sequencer shows it (its Notes view); closed, a
+    /// row the wheel was changing closes with it.
+    pub fn set_notes_open(&mut self, open: bool) -> Vec<Effect> {
+        let was = std::mem::replace(&mut self.notes_open, open);
+        if open && !was && self.view != View::Sequencer && self.view != View::Guide {
+            return self.show(View::Sequencer);
+        }
+        if was && !open && self.view == View::Sequencer && self.page_editing {
+            self.page_editing = false;
+            return vec![Effect::Rows(RowKey::Editing(false))];
+        }
+        Vec::new()
+    }
+
+    /// The note editor is open (the Sequencer's Notes view).
+    #[cfg(test)]
+    pub fn notes_open(&self) -> bool {
+        self.notes_open
     }
 
     /// A page from a mode button: shown, unless it shows already.
@@ -2787,6 +2828,24 @@ impl App {
             View::Play if !self.shift && !self.repeat_held && !self.levels_open => {
                 vec![Effect::Nav(Nav::Turn(delta))]
             }
+            // The Sequencer's Notes view keeps Arrange's wheel (the Edit
+            // options; SHIFT scrolls the notes), its Steps view Play's.
+            View::Sequencer if self.notes_open && !self.repeat_held && self.shift => {
+                vec![Effect::ClipsWheel {
+                    delta,
+                    scroll: true,
+                }]
+            }
+            View::Sequencer if self.notes_open && !self.repeat_held => {
+                vec![Effect::Rows(if self.page_editing {
+                    RowKey::Step(delta)
+                } else {
+                    RowKey::Pick(delta)
+                })]
+            }
+            View::Sequencer if !self.shift && !self.repeat_held => {
+                vec![Effect::Nav(Nav::Turn(delta))]
+            }
             View::Looper if !self.shift && !self.repeat_held => {
                 vec![Effect::Nav(Nav::Turn(delta))]
             }
@@ -2842,7 +2901,7 @@ impl App {
                     RowKey::Pick(delta)
                 })]
             }
-            View::Play if self.shift => vec![Effect::Octave(delta.signum())],
+            View::Play | View::Sequencer if self.shift => vec![Effect::Octave(delta.signum())],
             _ => Vec::new(),
         }
     }
@@ -2866,6 +2925,7 @@ impl App {
                 self.view,
                 View::Play
                     | View::Pads
+                    | View::Sequencer
                     | View::Arrange
                     | View::Synth
                     | View::Looper
@@ -3080,10 +3140,10 @@ impl App {
     /// Arrange. Not while NOTE REPEAT holds the wheel for the arp.
     fn has_rows(&self) -> bool {
         !self.repeat_held
-            && matches!(
+            && (matches!(
                 self.view,
                 View::Sample | View::Synth | View::Arrange | View::Pads
-            )
+            ) || (self.view == View::Sequencer && self.notes_open))
     }
 
     pub fn open_tab(&mut self, v: View) -> Vec<Effect> {
@@ -4434,6 +4494,62 @@ mod tests {
         let mut fx = app.button(note, true, 0.0);
         fx.extend(app.button(note, false, 0.0));
         fx
+    }
+
+    /// The Sequencer tab (the Play, Pads and Sequencer redesign): its
+    /// Steps keep Play's wheel (the outline); the note editor opening
+    /// (Arrange's Edit row, or Notes) shows the Sequencer, whose Notes
+    /// view has Arrange's rows; STEP SEQ goes back to Steps, closing the
+    /// editor (‹ Steps), and a row the wheel was changing closes with it.
+    #[test]
+    fn the_sequencer_shows_steps_or_the_note_editor() {
+        use mpfree_time_ui::editor::EditAction;
+        let mut app = ready();
+        app.open_tab(View::Sequencer);
+        assert_eq!(app.view(), View::Sequencer);
+        assert_eq!(app.wheel(1), [Effect::Nav(Nav::Turn(1))]);
+        assert_eq!(app.wheel_push(), [Effect::Nav(Nav::Push)]);
+        // Arrange's Edit row: the editor opens on the Sequencer.
+        app.open_tab(View::Arrange);
+        let fx = app.set_notes_open(true);
+        assert!(fx.contains(&Effect::Show(View::Sequencer)), "{fx:?}");
+        assert!(app.notes_open());
+        assert_eq!(app.set_notes_open(true), [], "already open");
+        assert_eq!(app.wheel(2), [Effect::Rows(RowKey::Pick(2))]);
+        assert_eq!(app.wheel_push(), [Effect::Rows(RowKey::Editing(true))]);
+        assert_eq!(app.wheel(-1), [Effect::Rows(RowKey::Step(-1))]);
+        let fx = held(&mut app, button::SHIFT, |a| a.wheel(3));
+        assert_eq!(
+            fx,
+            [Effect::ClipsWheel {
+                delta: 3,
+                scroll: true
+            }]
+        );
+        // Another tab and back: the editor stays open there.
+        app.open_tab(View::Synth);
+        app.open_tab(View::Sequencer);
+        assert_eq!(app.wheel(1), [Effect::Rows(RowKey::Pick(1))]);
+        // STEP SEQ: Steps again, the editor closed by its ‹ Steps.
+        assert_eq!(app.wheel_push(), [Effect::Rows(RowKey::Editing(true))]);
+        let fx = click(&mut app, button::STEP_SEQ);
+        assert!(
+            fx.contains(&Effect::Time(TimeAction::Edit(EditAction::Button(0)))),
+            "{fx:?}"
+        );
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Show(_))), "{fx:?}");
+        assert_eq!(
+            app.set_notes_open(false),
+            [Effect::Rows(RowKey::Editing(false))]
+        );
+        assert_eq!(app.wheel(1), [Effect::Nav(Nav::Turn(1))]);
+        // Closed elsewhere, nothing moves.
+        app.open_tab(View::Arrange);
+        app.set_notes_open(true);
+        assert_eq!(app.view(), View::Sequencer);
+        app.open_tab(View::Mixer);
+        assert_eq!(app.set_notes_open(false), []);
+        assert_eq!(app.view(), View::Mixer);
     }
 
     #[test]
@@ -5864,13 +5980,13 @@ mod tests {
         let mut app = ready();
         app.map.learn(crate::app::mapper::Job::TrackMix, Some(70));
         app.open_tab(View::Arrange);
-        assert_eq!(View::Mixer.tab_index(false), Some(6));
+        assert_eq!(View::Mixer.tab_index(false), Some(7));
         assert_eq!(View::Chain.tab_view(), Some(View::Mixer));
         assert_eq!(
-            app.tab(6),
+            app.tab(7),
             vec![Effect::MixerLast, Effect::Show(View::Mixer)]
         );
-        assert_eq!(app.tab(6), vec![], "a second tap changes nothing");
+        assert_eq!(app.tab(7), vec![], "a second tap changes nothing");
         // An effect's chain opened from the mixer is still the Mix tab.
         app.open_chain();
         assert_eq!(app.view(), View::Chain);
@@ -5904,6 +6020,7 @@ mod tests {
             vec![
                 View::Play,
                 View::Pads,
+                View::Sequencer,
                 View::Arrange,
                 View::Synth,
                 View::Looper,
@@ -5911,8 +6028,8 @@ mod tests {
                 View::Mixer
             ]
         );
-        assert_eq!(View::Sample.tab_index(true), Some(5));
-        assert_eq!(app.tab(5), vec![Effect::Show(View::Sample)]);
+        assert_eq!(View::Sample.tab_index(true), Some(6));
+        assert_eq!(app.tab(6), vec![Effect::Show(View::Sample)]);
         assert_eq!(app.view(), View::Sample);
         // The wheel picks a row (RowKey); SHIFT + wheel picks the pad.
         assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
@@ -5988,7 +6105,7 @@ mod tests {
         app.map.browse = Some(120);
         app.map.erase = Some(121);
         app.map.data_push = Some(111);
-        app.tab(2);
+        app.tab(3);
         assert_eq!(app.view(), View::Arrange);
         assert_eq!(press(&mut app, 120), vec![Effect::Show(View::Browser)]);
         assert_eq!(View::Browser.tab_index(false), None);
@@ -6084,6 +6201,7 @@ mod tests {
             vec![
                 View::Play,
                 View::Pads,
+                View::Sequencer,
                 View::Arrange,
                 View::Synth,
                 View::Looper,
@@ -6093,9 +6211,9 @@ mod tests {
         );
         // The same names, in the same order, as the bar every preview draws.
         let names: Vec<&str> = tabs(true).iter().map(|v| v.name()).collect();
-        assert_eq!(names[..7], mpfree_ui::widgets::APP_TABS[..]);
-        assert_eq!(names[7], mpfree_ui::widgets::DEV_TAB);
-        assert_eq!(app.tab(7), vec![]);
+        assert_eq!(names[..8], mpfree_ui::widgets::APP_TABS[..]);
+        assert_eq!(names[8], mpfree_ui::widgets::DEV_TAB);
+        assert_eq!(app.tab(8), vec![]);
         app.open_tab(View::Prefs);
         let row = app
             .items()
@@ -6175,8 +6293,8 @@ mod tests {
         );
         app.button(button::SHIFT, false, 0.0);
         // Debug mode adds the Debug tab, whose pages SHIFT + wheel steps through.
-        assert_eq!(tabs(true)[7], View::Debug);
-        app.tab(7);
+        assert_eq!(tabs(true)[8], View::Debug);
+        app.tab(8);
         assert_eq!(app.view(), View::Debug);
         app.button(button::SHIFT, true, 0.0);
         app.wheel(1);
@@ -7470,13 +7588,14 @@ mod tests {
         held(&mut app, SHIFT, |a| press(a, SAMPLER));
         assert!(app.pads_are_loop_keys());
         assert_eq!(app.mute_keys(), MuteKeys::Off);
-        // STEP SEQ takes them too (and opens Play's Beats, as always).
+        // STEP SEQ takes them too (and opens the Sequencer's Steps, as
+        // always).
         click(&mut app, STEP_SEQ);
         assert!(app.pads_are_steps());
         assert!(!app.pads_are_loop_keys());
-        assert_eq!(app.view(), View::Play);
-        // SHIFT + SAMPLER on Play opens the Looper tab; again there, the
-        // loop keys.
+        assert_eq!(app.view(), View::Sequencer);
+        // SHIFT + SAMPLER on the Sequencer opens the Looper tab; again
+        // there, the loop keys.
         held(&mut app, SHIFT, |a| press(a, SAMPLER));
         assert_eq!(app.view(), View::Looper);
         assert!(!app.pads_are_loop_keys());
@@ -7860,7 +7979,6 @@ mod tests {
     /// control map (Jay, 20:40Z), once Map controls has found them.
     #[test]
     fn the_mode_buttons_go_to_the_page_with_the_same_job() {
-        use crate::play_page::PlayView;
         use crate::sample_page::Editor;
         use mapper::Job;
         const SHIFT: u8 = button::SHIFT;
@@ -7891,18 +8009,17 @@ mod tests {
         // MAIN: Play, and on Play the next view.
         assert!(press(&mut app, 61).contains(&Effect::Show(View::Play)));
         assert_eq!(press(&mut app, 61), [Effect::PlayView(None)]);
-        // STEP SEQ: the pads become steps and Play shows Beats (on the
-        // release); NEXT SEQ: Arrange.
+        // STEP SEQ: the pads become steps and the Sequencer shows its
+        // Steps (on the release); NEXT SEQ: Arrange.
         let fx = click(&mut app, 64);
-        assert!(fx.contains(&Effect::PlayView(Some(PlayView::Beats))));
+        assert!(fx.contains(&Effect::Show(View::Sequencer)), "{fx:?}");
         assert!(app.pads_are_steps());
         assert!(press(&mut app, 63).contains(&Effect::Show(View::Arrange)));
         let fx = click(&mut app, 64);
         assert!(!app.pads_are_steps(), "STEP SEQ again gives the pads back");
         assert!(!fx.iter().any(|e| matches!(e, Effect::Show(_))), "{fx:?}");
         let fx = click(&mut app, 64);
-        assert!(fx.contains(&Effect::Show(View::Play)));
-        assert!(fx.contains(&Effect::PlayView(Some(PlayView::Beats))));
+        assert!(fx.contains(&Effect::Show(View::Sequencer)));
         click(&mut app, 64);
         // SAMPLE EDIT: the Wave editor; PROG EDIT: the audio loop decides.
         let fx = press(&mut app, 66);
@@ -8055,7 +8172,6 @@ mod tests {
     /// page; one pad mode at a time with TRACK MUTE and 16 LEVEL.
     #[test]
     fn step_seq_turns_the_pads_into_steps_until_pressed_again() {
-        use crate::play_page::PlayView;
         use crate::time::StepAction;
         const SHIFT: u8 = button::SHIFT;
         const STEP_SEQ: u8 = button::STEP_SEQ;
@@ -8066,11 +8182,11 @@ mod tests {
         app.pad_down(4, 100);
         app.pad_up(4);
         app.open_tab(View::Looper);
-        // A quick press: the pad played last (pad 5), page 1, on Beats.
+        // A quick press: the pad played last (pad 5), page 1, on the
+        // Sequencer's Steps.
         let fx = click(&mut app, STEP_SEQ);
         assert!(fx.contains(&Effect::Light(STEP_SEQ, LIGHT_ON)), "{fx:?}");
-        assert!(fx.contains(&Effect::Show(View::Play)));
-        assert!(fx.contains(&Effect::PlayView(Some(PlayView::Beats))));
+        assert!(fx.contains(&Effect::Show(View::Sequencer)));
         assert!(fx.contains(&Effect::BankLights));
         assert!(app.pads_are_steps());
         assert_eq!(

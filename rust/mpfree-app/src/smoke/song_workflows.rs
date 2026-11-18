@@ -381,7 +381,7 @@ mod tests {
                 assert!(tempo > song.tempo, "{}: Tempo › raised it", song.name);
                 // A step on Play's Beats (track 1's first clip).
                 s.press("header", "tab", "Play");
-                s.press("play-transport", "view", "Beats");
+                s.play_view("Beats");
                 let before = s.time.project().clone();
                 // The first row's step 2 (the row reads the pad's sound
                 // name, or "Pad 1" with no kit loaded).

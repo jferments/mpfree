@@ -253,7 +253,7 @@ pub struct TimeControl {
     /// The take the pass recording now (or last) recorded into.
     pass_take: Option<u32>,
     scene_morph: SceneMorph,
-    /// The note editor on the Arrange page, while it is open.
+    /// The note editor (the Sequencer tab's Notes view), while it is open.
     editor: Option<Editor>,
     pub(super) armed: Option<usize>,
     takes: Takes,
@@ -454,6 +454,14 @@ impl TimeControl {
     /// follow), if any.
     pub fn armed(&self) -> Option<usize> {
         self.armed
+    }
+
+    /// The note editor is open on a clip that is still there (as the
+    /// screen's [`TimeState::edit`] has it).
+    pub fn editing(&self) -> bool {
+        self.editor
+            .as_ref()
+            .is_some_and(|ed| self.project.clip(ed.track, ed.slot).is_some())
     }
 
     /// The Loop cell armed on the grid while it is still an empty cell of
