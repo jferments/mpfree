@@ -257,6 +257,30 @@ impl Marker {
     }
 }
 
+/// Follows the line through `points` (x, y), in order of x, from `x`:
+/// between two points along the line joining them, before the first and
+/// after the last one to one. No points: `x` itself.
+pub fn bend_through(points: &[(f64, f64)], x: f64) -> f64 {
+    let (Some(first), Some(last)) = (points.first(), points.last()) else {
+        return x;
+    };
+    if x <= first.0 {
+        return first.1 + (x - first.0);
+    }
+    if x >= last.0 {
+        return last.1 + (x - last.0);
+    }
+    let i = points
+        .partition_point(|p| p.0 <= x)
+        .clamp(1, points.len() - 1);
+    let (a, b) = (points[i - 1], points[i]);
+    if b.0 - a.0 <= 0.0 {
+        a.1
+    } else {
+        a.1 + (x - a.0) * (b.1 - a.1) / (b.0 - a.0)
+    }
+}
+
 /// A grain window over the wave ([`Waveform::set_window`]): where grains
 /// start (`at`), how long each reads (`len` frames), and the band the
 /// spray scatters their starts over round `at` (`spray` frames wide,
@@ -270,13 +294,15 @@ pub struct GrainSpan {
     pub color: Color,
 }
 
-/// Bar lines: the frame of the first downbeat, frames per beat and beats
-/// per bar.
+/// Bar lines: the frame of the first downbeat, frames per beat, beats per
+/// bar, and grid lines a beat (1: none between the beats), drawn faint once
+/// zoomed in far enough to tell them apart.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Beats {
     pub first: f64,
     pub frames_per_beat: f64,
     pub per_bar: u32,
+    pub per_beat: u32,
 }
 
 /// The strip of marker tabs along the top.
@@ -321,6 +347,11 @@ pub struct Waveform {
     window: Option<GrainSpan>,
     fades: (u64, u64),
     beats: Option<Beats>,
+    /// The wave drawn as it plays ([`Waveform::set_bend`]).
+    bend: Vec<(f64, f64)>,
+    /// Hits found in the sound, ticks along the wave's foot, and whether
+    /// they are lit.
+    ticks: (Vec<u64>, bool),
     playheads: Vec<u64>,
     /// Fingers on the wave, by id, with their x.
     fingers: Vec<(u64, i32)>,
@@ -361,6 +392,8 @@ impl Waveform {
             window: None,
             fades: (0, 0),
             beats: None,
+            bend: Vec::new(),
+            ticks: (Vec::new(), false),
             playheads: Vec::new(),
             fingers: Vec::new(),
             grab: None,
@@ -451,6 +484,37 @@ impl Waveform {
         self.beats = beats
             .filter(|b| b.frames_per_beat.is_finite() && b.frames_per_beat > 0.0 && b.per_bar > 0);
         self.changed();
+    }
+
+    /// The wave drawn as it plays: `points` are (frame as drawn, source
+    /// frame) in order, and between two the sound is drawn stretched to
+    /// fit (a warped region pinned to the beat, so its hits sit on the bar
+    /// lines). Before the first and after the last, one to one. Empty: the
+    /// sound as it is. Every other frame the widget is given or gives back
+    /// (markers, the region, the loop, playheads, taps) is a frame as
+    /// drawn.
+    pub fn set_bend(&mut self, points: Vec<(f64, f64)>) {
+        if self.bend != points {
+            self.bend = points;
+            self.changed();
+        }
+    }
+
+    pub fn bend(&self) -> &[(f64, f64)] {
+        &self.bend
+    }
+
+    /// The hits found in the sound (frames as drawn), as ticks along the
+    /// wave's foot; `lit` with the tool that pins them.
+    pub fn set_ticks(&mut self, ticks: Vec<u64>, lit: bool) {
+        if self.ticks.0 != ticks || self.ticks.1 != lit {
+            self.ticks = (ticks, lit);
+            self.changed();
+        }
+    }
+
+    pub fn ticks(&self) -> &[u64] {
+        &self.ticks.0
     }
 
     /// Where the playing voices are. Only this changing redraws only the
@@ -600,6 +664,21 @@ impl Widget for Waveform {
             } else {
                 i64::from(b.per_bar)
             };
+            // The grid between the beats, under them.
+            let sub = b.per_beat.max(1);
+            if sub > 1 && px_per_beat / f64::from(sub) >= 12.0 && (last - first) <= 400 {
+                let faint = t.outline.mix(t.surface, 0.5);
+                for beat in first..last {
+                    for k in 1..sub {
+                        let f = b.first
+                            + (beat as f64 + f64::from(k) / f64::from(sub)) * b.frames_per_beat;
+                        let x = self.x_in(wave, f).round() as i32;
+                        if x >= wave.x && x < wave.right() {
+                            cx.canvas.fill_rect(Rect::new(x, wave.y, 1, wave.h), faint);
+                        }
+                    }
+                }
+            }
             if (last - first) / every <= 400 {
                 for beat in first..=last {
                     if beat.rem_euclid(every) != 0 {
@@ -646,7 +725,12 @@ impl Widget for Waveform {
                     .fill_rect(Rect::new(x0, mid, (x1 - x0).max(0), 1), t.outline);
                 for x in x0..x1 {
                     let f0 = self.view.frame_at(f64::from(x - wave.x));
-                    let c = p.column(ch, f0, f0 + fpp);
+                    // As drawn; the sound's own frames through the bend.
+                    let (s0, s1) = (
+                        bend_through(&self.bend, f0),
+                        bend_through(&self.bend, f0 + fpp),
+                    );
+                    let c = p.column(ch, s0, s1.max(s0));
                     if c.max < c.min {
                         continue;
                     }
@@ -692,6 +776,20 @@ impl Widget for Waveform {
             }
             if fo > 0 {
                 curve(cx, re - fo as f64, re, false);
+            }
+        }
+
+        // The hits: ticks along the wave's foot.
+        let tick = if self.ticks.1 {
+            t.text_dim
+        } else {
+            t.text_faint
+        };
+        for &f in &self.ticks.0 {
+            let x = self.x_in(wave, f as f64).round() as i32;
+            if x >= x0 && x < x1 {
+                cx.canvas
+                    .fill_rect(Rect::new(x - 1, wave.bottom() - 8, 2, 8), tick);
             }
         }
 

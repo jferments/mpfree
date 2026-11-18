@@ -104,7 +104,7 @@ pub const LAYOUT: &str = "col(header:60, row(smp-chop-bar:*, smp-send:330):60, \
                           col(smp-chop-q1, smp-chop-q2, smp-chop-q3, smp-chop-q4):128):*, hint:26)";
 
 /// The tab's place in [`TABS`].
-pub const TAB: usize = 2;
+pub const TAB: usize = 1;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Tap a slice to pick and hear it · drag a marker to move a cut · Split, Merge, then Chop to pads (UNDO takes \
@@ -1096,6 +1096,7 @@ impl ChopTab {
                 first: 0.0,
                 frames_per_beat: fpb,
                 per_bar: 4,
+                per_beat: 1,
             }));
         }
         if let Some(o) = ui.get_mut::<WaveOverview>(OVERVIEW) {
