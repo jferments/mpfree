@@ -1453,6 +1453,50 @@ mod track_mute {
 }
 
 #[cfg(test)]
+mod track_kits {
+    //! A kit per track as tracks come and go (the sampler review's
+    //! decision 1, and BROWSE's New track with this kit).
+
+    use super::super::{on_big_stack, Session};
+    use crate::gui::FromUi;
+    use mpfree_time_ui::TimeAction;
+
+    /// A new track given a kit of its own (as + Kit track and BROWSE's New
+    /// track with this kit give it one), UNDO, + Track: the new track
+    /// plays kit 1, not the kit the track UNDO took away had.
+    #[test]
+    fn a_track_undo_takes_away_gives_its_kit_back() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.run_for(0.1);
+            assert!(s.kits() > 1, "a second kit to give");
+            let n = s.time.track_count();
+            s.route(FromUi::Time(TimeAction::AddTrack));
+            s.run_periods(4);
+            assert_eq!(s.time.track_count(), n + 1);
+            assert_eq!(s.time.armed(), Some(n));
+            // Once it is armed, the screen gives it its kit.
+            s.route(FromUi::Kit(1));
+            s.run_periods(4);
+            assert_eq!(s.track_kits.entry(n), 1);
+            assert_eq!(s.kit, 1, "the pads play it");
+            // UNDO takes the track away, and its place plays kit 1 again.
+            s.route(FromUi::Time(TimeAction::Undo));
+            s.run_periods(4);
+            assert_eq!(s.time.track_count(), n);
+            assert_eq!(s.track_kits.entry(n), 0);
+            // + Track: the new track plays kit 1, and the pads with it.
+            s.route(FromUi::Time(TimeAction::AddTrack));
+            s.run_periods(4);
+            assert_eq!(s.time.track_count(), n + 1);
+            assert_eq!(s.time.armed(), Some(n));
+            assert_eq!(s.track_kits.entry(n), 0);
+            assert_eq!(s.kit, 0, "the pads play kit 1");
+        });
+    }
+}
+
+#[cfg(test)]
 mod step_seq {
     //! STEP SEQ: the pads as steps (sequencer decision 2, Jay 16 Nov).
 

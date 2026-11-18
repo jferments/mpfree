@@ -969,6 +969,11 @@ impl Session {
             self.out.note(&format!("time: {line}"));
         }
         self.app.set_track_count(self.time.track_count());
+        // A track UNDO took away gives its kit back (as player_session).
+        if self.track_kits.forget_past(self.time.track_count()) {
+            self.out
+                .show(ToUi::TrackKits(Box::new(self.track_kits.clone())));
+        }
         let (loop_rec, loop_dub) = self.looper.recording();
         let info = self.time.info();
         let lights = self.app.transport_lights(
