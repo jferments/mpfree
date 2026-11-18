@@ -2226,6 +2226,47 @@ impl Project {
         Ok(self.chop_sets.len() - 1)
     }
 
+    /// As [`Project::chop_to_pads`], into a kit that hasn't the chop's
+    /// sound yet (Chop to a new kit, sampler R4.6): `s`, the chop's sound,
+    /// is added with the slices, all as one undo step (UNDO takes the
+    /// sound out again with them). Returns the chop set's index.
+    pub fn chop_to_pads_of(
+        &mut self,
+        s: &Source,
+        c: ChopSet,
+        first: usize,
+        count: usize,
+        to_pad: usize,
+        template: Option<&Pad>,
+    ) -> Result<usize, ModelError> {
+        let id = s.id();
+        if c.source != id {
+            return Err(ModelError::UnknownSource);
+        }
+        let added = self.source(id).is_none();
+        if added {
+            self.sources.push(s.clone());
+        }
+        let pads = match self.slice_pads(&c, first, count, to_pad, template, 1) {
+            Ok(p) => p,
+            Err(e) => {
+                if added {
+                    self.sources.pop();
+                }
+                return Err(e);
+            }
+        };
+        self.chop_sets.push(c);
+        let mut steps = Vec::new();
+        if added {
+            steps.push(Undo::AddSource { id });
+        }
+        steps.push(Undo::AddChop { set: None });
+        steps.extend(self.place_pads(pads, to_pad));
+        self.push_undo(Undo::Group(steps));
+        Ok(self.chop_sets.len() - 1)
+    }
+
     /// The pads for slices `first..first+count`, each checked, so a failure
     /// changes nothing.
     fn slice_pads(
