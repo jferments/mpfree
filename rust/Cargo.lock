@@ -971,6 +971,7 @@ version = "0.1.0"
 name = "mpfree-fx"
 version = "0.1.0"
 dependencies = [
+ "mpfree-grain",
  "mpfree-lanes",
  "mpfree-node",
  "mpfree-prof",

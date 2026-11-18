@@ -4,10 +4,10 @@
 //! Each native effect names its pages and picks its four Q-Links: what a
 //! player reaches for while the music plays (the delay's feedback and mix,
 //! the reverb's decay), not whatever comes first in the parameter list.
-//! Any other node (a hosted plugin, the sampler's grains) gets the Synth
-//! tab's pages from its parameter groups.
+//! Any other node (a hosted plugin) gets the Synth tab's pages from its
+//! parameter groups.
 
-use mpfree_fx::ids::{autowah, channel_strip as strip, granulator as grains, talkbox, width};
+use mpfree_fx::ids::{autowah, channel_strip as strip, grains, granulator, talkbox, width};
 use mpfree_fx::ids::{
     character, chorus, cloud, comb, compressor as comp, crush, delay, dj_filter as dj, drive,
     ducker, eq, filter, flanger, harmonizer as harm, lofi, master, perform, phaser, pitch,
@@ -213,7 +213,48 @@ fn known(info: &NodeInfo, count: u16) -> Option<Vec<Plan>> {
             talkbox::MIX,
         ]),
         "mpfree.fx.width" => one(&[width::WIDTH, width::LOW, width::HIGH, width::DELAY]),
-        "mpfree.fx.granulator" => one(&[grains::SIZE, grains::DENSITY, grains::PITCH, grains::MIX]),
+        "mpfree.fx.granulator" => one(&[
+            granulator::SIZE,
+            granulator::DENSITY,
+            granulator::PITCH,
+            granulator::MIX,
+        ]),
+        "mpfree.grains" => Some(vec![
+            pg(
+                "Grains",
+                &[
+                    grains::POSITION,
+                    grains::SIZE,
+                    grains::DENSITY,
+                    grains::SPRAY,
+                    grains::PITCH,
+                    grains::PITCH_SPRAY,
+                    grains::REVERSE,
+                    grains::FEEDBACK,
+                    grains::FREEZE,
+                    grains::MIX,
+                    grains::SPREAD,
+                    grains::GRAINS,
+                ],
+                &[grains::SIZE, grains::DENSITY, grains::FEEDBACK, grains::MIX],
+            ),
+            pg(
+                "Texture",
+                &[
+                    grains::TIMING,
+                    grains::SHAPE,
+                    grains::SIZE_SPRAY,
+                    grains::LEVEL_SPRAY,
+                    grains::PEAKED,
+                ],
+                &[
+                    grains::TIMING,
+                    grains::SHAPE,
+                    grains::SIZE_SPRAY,
+                    grains::LEVEL_SPRAY,
+                ],
+            ),
+        ]),
         "mpfree.fx.channel_strip" => Some(vec![
             pg(
                 "Gate",

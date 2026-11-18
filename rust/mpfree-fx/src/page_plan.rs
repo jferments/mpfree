@@ -1592,6 +1592,65 @@ pub static PLANS: &[Plan] = &[
         )],
         dims: &[sync_dim(&["Delay"], "Sync")],
     },
+    // The grain engine as an effect: where the grains read, how big and
+    // how many on Main, with the pitch beside them and what holds the
+    // sound under them; how each grain is shaped and varied on Texture.
+    Plan {
+        id: "mpfree.grains",
+        qlinks: &["Size", "Density", "Feedback", "Mix"],
+        pages: &[
+            page(
+                "col(row(grains:520, pitch):*, row(hold:400, output):270)",
+                &[
+                    Section {
+                        hero: &["Size", "Density"],
+                        meters: &["Grains"],
+                        link: Some("Texture"),
+                        ..s(
+                            "grains",
+                            "Grains",
+                            Source,
+                            &["Position", "Size", "Density", "Spray"],
+                        )
+                    },
+                    s(
+                        "pitch",
+                        "Pitch",
+                        Source,
+                        &["Pitch", "Pitch spray", "Reverse"],
+                    ),
+                    Section {
+                        rows: &["Freeze"],
+                        ..s("hold", "Hold", Motion, &["Feedback", "Freeze"])
+                    },
+                    Section {
+                        trim: &["Spread"],
+                        ..s("output", "Output", Voice, &["Mix", "Spread"])
+                    },
+                ],
+            ),
+            Page {
+                name: "Texture",
+                spec: "row(texture)",
+                sections: &[Section {
+                    rows: &["Peaked spray"],
+                    ..s(
+                        "texture",
+                        "Texture",
+                        Tone,
+                        &[
+                            "Timing",
+                            "Shape",
+                            "Size spray",
+                            "Level spray",
+                            "Peaked spray",
+                        ],
+                    )
+                }],
+            },
+        ],
+        dims: &[],
+    },
     // Pitch and vocal.
     Plan {
         id: "mpfree.fx.pitch",
