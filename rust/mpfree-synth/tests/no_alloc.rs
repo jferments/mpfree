@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use mpfree_synth::wavetable::table::{Table, FRAME};
 use mpfree_synth::{
-    Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable, PARAMS,
+    Analog, Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable, PARAMS,
 };
 
 struct Counting;
@@ -273,6 +273,32 @@ fn strings_process_never_allocates() {
             exercise(&mut s, params, 48_000),
             0,
             "Strings::process (swell {swell}) allocated"
+        );
+    }
+}
+
+#[test]
+fn bass_process_never_allocates() {
+    use mpfree_synth::bass_params::*;
+    for (body, wave, sub, hard) in [
+        (SYNTH, PULSE, SUB_PULSE2, 0.0),
+        (B808, TRIANGLE, SUB_SINE1, 1.0),
+        (REESE, SAW, SUB_SINE0, 0.0),
+    ] {
+        let mut s = Bass::new(48_000);
+        s.set_param(BODY, body);
+        s.set_param(WAVE, wave);
+        s.set_param(SUB_MODE, sub);
+        s.set_param(DRIVE_MODE, hard);
+        s.set_param(FIFTH, 40.0);
+        s.set_param(NOISE, 20.0);
+        s.set_param(DROP, 12.0);
+        s.set_param(PRESS_TO, PRESS_VIBRATO);
+        let params = s.params();
+        assert_eq!(
+            exercise(&mut s, params, 48_000),
+            0,
+            "Bass::process (body {body}) allocated"
         );
     }
 }

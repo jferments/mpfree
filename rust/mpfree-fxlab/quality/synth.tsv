@@ -79,6 +79,294 @@ synth/Analog[Worn Cards]/key_spread_db	4.5605
 synth/Analog[Worn Cards]/mono_loss_db	0
 synth/Analog[Worn Cards]/vel_curve_err_db	0.1192
 synth/Analog[Worn Cards]/vel_tone_oct	0
+synth/Bass[808 Kick Bass]/chord8_peak_dbfs	-15.7407
+synth/Bass[808 Kick Bass]/dc_dbfs	-140
+synth/Bass[808 Kick Bass]/key_spread_db	1.4729
+synth/Bass[808 Kick Bass]/low_correlation	1
+synth/Bass[808 Kick Bass]/mono_loss_db	0
+synth/Bass[808 Kick Bass]/small_speaker_db	-60.3541
+synth/Bass[808 Kick Bass]/start_step_dbfs	-74.8771
+synth/Bass[808 Kick Bass]/vel_curve_err_db	0.2502
+synth/Bass[808 Kick Bass]/vel_tone_oct	0.0113
+synth/Bass[808 Slide]/chord8_peak_dbfs	-11.4294
+synth/Bass[808 Slide]/dc_dbfs	-140
+synth/Bass[808 Slide]/key_spread_db	1.6845
+synth/Bass[808 Slide]/low_correlation	1
+synth/Bass[808 Slide]/mono_loss_db	0
+synth/Bass[808 Slide]/small_speaker_db	-36.6563
+synth/Bass[808 Slide]/start_step_dbfs	-88.2679
+synth/Bass[808 Slide]/vel_curve_err_db	0.2929
+synth/Bass[808 Slide]/vel_tone_oct	0.0271
+synth/Bass[808 Vibrato]/chord8_peak_dbfs	-12.5851
+synth/Bass[808 Vibrato]/dc_dbfs	-140
+synth/Bass[808 Vibrato]/key_spread_db	1.6831
+synth/Bass[808 Vibrato]/low_correlation	1
+synth/Bass[808 Vibrato]/mono_loss_db	0
+synth/Bass[808 Vibrato]/small_speaker_db	-39.9915
+synth/Bass[808 Vibrato]/start_step_dbfs	-87.6073
+synth/Bass[808 Vibrato]/vel_curve_err_db	0.2173
+synth/Bass[808 Vibrato]/vel_tone_oct	0.0212
+synth/Bass[808]/chord8_peak_dbfs	-13.0797
+synth/Bass[808]/dc_dbfs	-140
+synth/Bass[808]/key_spread_db	1.6813
+synth/Bass[808]/low_correlation	1
+synth/Bass[808]/mono_loss_db	0
+synth/Bass[808]/small_speaker_db	-36.6564
+synth/Bass[808]/start_step_dbfs	-84.2221
+synth/Bass[808]/vel_curve_err_db	0.2926
+synth/Bass[808]/vel_tone_oct	0.0271
+synth/Bass[Dark Reese]/chord8_peak_dbfs	-10.4958
+synth/Bass[Dark Reese]/dc_dbfs	-140
+synth/Bass[Dark Reese]/key_spread_db	0.8517
+synth/Bass[Dark Reese]/low_correlation	1
+synth/Bass[Dark Reese]/mono_loss_db	0
+synth/Bass[Dark Reese]/small_speaker_db	-8.3486
+synth/Bass[Dark Reese]/start_step_dbfs	-129.3344
+synth/Bass[Dark Reese]/vel_curve_err_db	0.0517
+synth/Bass[Dark Reese]/vel_tone_oct	0.2385
+synth/Bass[Distorted 808]/chord8_peak_dbfs	-14.2482
+synth/Bass[Distorted 808]/dc_dbfs	-140
+synth/Bass[Distorted 808]/key_spread_db	1.8555
+synth/Bass[Distorted 808]/low_correlation	1
+synth/Bass[Distorted 808]/mono_loss_db	0
+synth/Bass[Distorted 808]/small_speaker_db	-16.6587
+synth/Bass[Distorted 808]/start_step_dbfs	-80.3842
+synth/Bass[Distorted 808]/vel_curve_err_db	0.2449
+synth/Bass[Distorted 808]/vel_tone_oct	0.3219
+synth/Bass[Fat Saw]/chord8_peak_dbfs	-5.0073
+synth/Bass[Fat Saw]/dc_dbfs	-140
+synth/Bass[Fat Saw]/key_spread_db	1.2675
+synth/Bass[Fat Saw]/low_correlation	1
+synth/Bass[Fat Saw]/mono_loss_db	0
+synth/Bass[Fat Saw]/small_speaker_db	-7.4215
+synth/Bass[Fat Saw]/start_step_dbfs	-136.7197
+synth/Bass[Fat Saw]/vel_curve_err_db	0.2193
+synth/Bass[Fat Saw]/vel_tone_oct	0.1397
+synth/Bass[Funk Bass]/chord8_peak_dbfs	-6.8528
+synth/Bass[Funk Bass]/dc_dbfs	-140
+synth/Bass[Funk Bass]/key_spread_db	1.6608
+synth/Bass[Funk Bass]/low_correlation	1
+synth/Bass[Funk Bass]/mono_loss_db	0
+synth/Bass[Funk Bass]/small_speaker_db	-2.8585
+synth/Bass[Funk Bass]/start_step_dbfs	-126.0927
+synth/Bass[Funk Bass]/vel_curve_err_db	0.0383
+synth/Bass[Funk Bass]/vel_tone_oct	0.3168
+synth/Bass[Glide Bass]/chord8_peak_dbfs	-4.6733
+synth/Bass[Glide Bass]/dc_dbfs	-140
+synth/Bass[Glide Bass]/key_spread_db	0.6729
+synth/Bass[Glide Bass]/low_correlation	1
+synth/Bass[Glide Bass]/mono_loss_db	0
+synth/Bass[Glide Bass]/small_speaker_db	-7.1848
+synth/Bass[Glide Bass]/start_step_dbfs	-127.8209
+synth/Bass[Glide Bass]/vel_curve_err_db	0.0511
+synth/Bass[Glide Bass]/vel_tone_oct	0.1682
+synth/Bass[Growl Press]/chord8_peak_dbfs	-6.2078
+synth/Bass[Growl Press]/dc_dbfs	-140
+synth/Bass[Growl Press]/key_spread_db	0.6975
+synth/Bass[Growl Press]/low_correlation	1
+synth/Bass[Growl Press]/mono_loss_db	0
+synth/Bass[Growl Press]/small_speaker_db	-7.2044
+synth/Bass[Growl Press]/start_step_dbfs	-134.4409
+synth/Bass[Growl Press]/vel_curve_err_db	0.1028
+synth/Bass[Growl Press]/vel_tone_oct	0.1748
+synth/Bass[Growl Reese]/chord8_peak_dbfs	-7.8532
+synth/Bass[Growl Reese]/dc_dbfs	-140
+synth/Bass[Growl Reese]/key_spread_db	0.8077
+synth/Bass[Growl Reese]/low_correlation	1
+synth/Bass[Growl Reese]/mono_loss_db	0
+synth/Bass[Growl Reese]/small_speaker_db	-7.4901
+synth/Bass[Growl Reese]/start_step_dbfs	-127.0046
+synth/Bass[Growl Reese]/vel_curve_err_db	0.2942
+synth/Bass[Growl Reese]/vel_tone_oct	0.1568
+synth/Bass[Init]/chord8_peak_dbfs	-6.5348
+synth/Bass[Init]/dc_dbfs	-140
+synth/Bass[Init]/key_spread_db	0.6598
+synth/Bass[Init]/low_correlation	1
+synth/Bass[Init]/mono_loss_db	0
+synth/Bass[Init]/small_speaker_db	-7.1523
+synth/Bass[Init]/start_step_dbfs	-133.8619
+synth/Bass[Init]/vel_curve_err_db	0.0514
+synth/Bass[Init]/vel_tone_oct	0.1886
+synth/Bass[Long 808]/chord8_peak_dbfs	-12.7759
+synth/Bass[Long 808]/dc_dbfs	-140
+synth/Bass[Long 808]/key_spread_db	1.6782
+synth/Bass[Long 808]/low_correlation	1
+synth/Bass[Long 808]/mono_loss_db	0
+synth/Bass[Long 808]/small_speaker_db	-39.9916
+synth/Bass[Long 808]/start_step_dbfs	-87.6075
+synth/Bass[Long 808]/vel_curve_err_db	0.2173
+synth/Bass[Long 808]/vel_tone_oct	0.0212
+synth/Bass[Low Note Lines]/chord8_peak_dbfs	-2.5244
+synth/Bass[Low Note Lines]/dc_dbfs	-140
+synth/Bass[Low Note Lines]/key_spread_db	0.911
+synth/Bass[Low Note Lines]/low_correlation	1
+synth/Bass[Low Note Lines]/mono_loss_db	0
+synth/Bass[Low Note Lines]/small_speaker_db	-7.3579
+synth/Bass[Low Note Lines]/start_step_dbfs	-133.4037
+synth/Bass[Low Note Lines]/vel_curve_err_db	0.051
+synth/Bass[Low Note Lines]/vel_tone_oct	0.2181
+synth/Bass[Noisy Bass]/chord8_peak_dbfs	-6.0829
+synth/Bass[Noisy Bass]/dc_dbfs	-140
+synth/Bass[Noisy Bass]/key_spread_db	0.6777
+synth/Bass[Noisy Bass]/low_correlation	1
+synth/Bass[Noisy Bass]/mono_loss_db	0
+synth/Bass[Noisy Bass]/small_speaker_db	-6.6796
+synth/Bass[Noisy Bass]/start_step_dbfs	-130.1362
+synth/Bass[Noisy Bass]/vel_curve_err_db	0.0537
+synth/Bass[Noisy Bass]/vel_tone_oct	0.193
+synth/Bass[Pluck Bass]/chord8_peak_dbfs	-7.6647
+synth/Bass[Pluck Bass]/dc_dbfs	-140
+synth/Bass[Pluck Bass]/key_spread_db	0.9719
+synth/Bass[Pluck Bass]/low_correlation	1
+synth/Bass[Pluck Bass]/mono_loss_db	0
+synth/Bass[Pluck Bass]/small_speaker_db	-7.1052
+synth/Bass[Pluck Bass]/start_step_dbfs	-133.8154
+synth/Bass[Pluck Bass]/vel_curve_err_db	0.0406
+synth/Bass[Pluck Bass]/vel_tone_oct	0.2669
+synth/Bass[Power Bass]/chord8_peak_dbfs	-6.841
+synth/Bass[Power Bass]/dc_dbfs	-140
+synth/Bass[Power Bass]/key_spread_db	0.8233
+synth/Bass[Power Bass]/low_correlation	1
+synth/Bass[Power Bass]/mono_loss_db	0
+synth/Bass[Power Bass]/small_speaker_db	-7.0477
+synth/Bass[Power Bass]/start_step_dbfs	-122.3374
+synth/Bass[Power Bass]/vel_curve_err_db	0.1968
+synth/Bass[Power Bass]/vel_tone_oct	0.1232
+synth/Bass[Press Wah]/chord8_peak_dbfs	-6.9427
+synth/Bass[Press Wah]/dc_dbfs	-140
+synth/Bass[Press Wah]/key_spread_db	1.0103
+synth/Bass[Press Wah]/low_correlation	1
+synth/Bass[Press Wah]/mono_loss_db	0
+synth/Bass[Press Wah]/small_speaker_db	-3.2556
+synth/Bass[Press Wah]/start_step_dbfs	-136.5258
+synth/Bass[Press Wah]/vel_curve_err_db	0.1264
+synth/Bass[Press Wah]/vel_tone_oct	0.3741
+synth/Bass[Reese Sweep]/chord8_peak_dbfs	-10.7766
+synth/Bass[Reese Sweep]/dc_dbfs	-140
+synth/Bass[Reese Sweep]/key_spread_db	0.6226
+synth/Bass[Reese Sweep]/low_correlation	1
+synth/Bass[Reese Sweep]/mono_loss_db	0
+synth/Bass[Reese Sweep]/small_speaker_db	-4.9096
+synth/Bass[Reese Sweep]/start_step_dbfs	-123.8429
+synth/Bass[Reese Sweep]/vel_curve_err_db	0.2849
+synth/Bass[Reese Sweep]/vel_tone_oct	0.275
+synth/Bass[Reese]/chord8_peak_dbfs	-6.9163
+synth/Bass[Reese]/dc_dbfs	-140
+synth/Bass[Reese]/key_spread_db	0.8897
+synth/Bass[Reese]/low_correlation	1
+synth/Bass[Reese]/mono_loss_db	0
+synth/Bass[Reese]/small_speaker_db	-7.2822
+synth/Bass[Reese]/start_step_dbfs	-125.497
+synth/Bass[Reese]/vel_curve_err_db	0.0624
+synth/Bass[Reese]/vel_tone_oct	0.2119
+synth/Bass[Resonant Sweep]/chord8_peak_dbfs	-5.9845
+synth/Bass[Resonant Sweep]/dc_dbfs	-140
+synth/Bass[Resonant Sweep]/key_spread_db	1.3573
+synth/Bass[Resonant Sweep]/low_correlation	1
+synth/Bass[Resonant Sweep]/mono_loss_db	0
+synth/Bass[Resonant Sweep]/small_speaker_db	-1.1893
+synth/Bass[Resonant Sweep]/start_step_dbfs	-130.585
+synth/Bass[Resonant Sweep]/vel_curve_err_db	0.4011
+synth/Bass[Resonant Sweep]/vel_tone_oct	0.3535
+synth/Bass[Round Mono]/chord8_peak_dbfs	-6.9293
+synth/Bass[Round Mono]/dc_dbfs	-140
+synth/Bass[Round Mono]/key_spread_db	0.8989
+synth/Bass[Round Mono]/low_correlation	1
+synth/Bass[Round Mono]/mono_loss_db	0
+synth/Bass[Round Mono]/small_speaker_db	-7.7993
+synth/Bass[Round Mono]/start_step_dbfs	-137.3486
+synth/Bass[Round Mono]/vel_curve_err_db	0.0581
+synth/Bass[Round Mono]/vel_tone_oct	0.1948
+synth/Bass[Rubber Bass]/chord8_peak_dbfs	-6.0708
+synth/Bass[Rubber Bass]/dc_dbfs	-140
+synth/Bass[Rubber Bass]/key_spread_db	1.1805
+synth/Bass[Rubber Bass]/low_correlation	1
+synth/Bass[Rubber Bass]/mono_loss_db	0
+synth/Bass[Rubber Bass]/small_speaker_db	-5.5889
+synth/Bass[Rubber Bass]/start_step_dbfs	-135.9901
+synth/Bass[Rubber Bass]/vel_curve_err_db	0.112
+synth/Bass[Rubber Bass]/vel_tone_oct	0.2655
+synth/Bass[Short 808]/chord8_peak_dbfs	-14.1696
+synth/Bass[Short 808]/dc_dbfs	-140
+synth/Bass[Short 808]/key_spread_db	1.4052
+synth/Bass[Short 808]/low_correlation	1
+synth/Bass[Short 808]/mono_loss_db	0
+synth/Bass[Short 808]/small_speaker_db	-79.5169
+synth/Bass[Short 808]/start_step_dbfs	-84.5239
+synth/Bass[Short 808]/vel_curve_err_db	0.1395
+synth/Bass[Short 808]/vel_tone_oct	0.0028
+synth/Bass[Soft Reese]/chord8_peak_dbfs	-11.9119
+synth/Bass[Soft Reese]/dc_dbfs	-140
+synth/Bass[Soft Reese]/key_spread_db	2.8394
+synth/Bass[Soft Reese]/low_correlation	1
+synth/Bass[Soft Reese]/mono_loss_db	0
+synth/Bass[Soft Reese]/small_speaker_db	-22.7614
+synth/Bass[Soft Reese]/start_step_dbfs	-140
+synth/Bass[Soft Reese]/vel_curve_err_db	0.0919
+synth/Bass[Soft Reese]/vel_tone_oct	0.0069
+synth/Bass[Soft Triangle]/chord8_peak_dbfs	-10.8376
+synth/Bass[Soft Triangle]/dc_dbfs	-140
+synth/Bass[Soft Triangle]/key_spread_db	2.8896
+synth/Bass[Soft Triangle]/low_correlation	1
+synth/Bass[Soft Triangle]/mono_loss_db	0
+synth/Bass[Soft Triangle]/small_speaker_db	-26.4321
+synth/Bass[Soft Triangle]/start_step_dbfs	-140
+synth/Bass[Soft Triangle]/vel_curve_err_db	0.0271
+synth/Bass[Soft Triangle]/vel_tone_oct	0.0022
+synth/Bass[Square Sub]/chord8_peak_dbfs	-7.3638
+synth/Bass[Square Sub]/dc_dbfs	-140
+synth/Bass[Square Sub]/key_spread_db	1.1586
+synth/Bass[Square Sub]/low_correlation	1
+synth/Bass[Square Sub]/mono_loss_db	0
+synth/Bass[Square Sub]/small_speaker_db	-10.6548
+synth/Bass[Square Sub]/start_step_dbfs	-125.761
+synth/Bass[Square Sub]/vel_curve_err_db	0.077
+synth/Bass[Square Sub]/vel_tone_oct	0.168
+synth/Bass[Sub Sine]/chord8_peak_dbfs	-15.2339
+synth/Bass[Sub Sine]/dc_dbfs	-140
+synth/Bass[Sub Sine]/key_spread_db	1.6593
+synth/Bass[Sub Sine]/low_correlation	1
+synth/Bass[Sub Sine]/mono_loss_db	0
+synth/Bass[Sub Sine]/small_speaker_db	-104.1449
+synth/Bass[Sub Sine]/start_step_dbfs	-86.1519
+synth/Bass[Sub Sine]/vel_curve_err_db	0.0001
+synth/Bass[Sub Sine]/vel_tone_oct	0
+synth/Bass[Sub Triangle]/chord8_peak_dbfs	-16.1856
+synth/Bass[Sub Triangle]/dc_dbfs	-140
+synth/Bass[Sub Triangle]/key_spread_db	1.6906
+synth/Bass[Sub Triangle]/low_correlation	1
+synth/Bass[Sub Triangle]/mono_loss_db	0
+synth/Bass[Sub Triangle]/small_speaker_db	-26.3674
+synth/Bass[Sub Triangle]/start_step_dbfs	-90.0724
+synth/Bass[Sub Triangle]/vel_curve_err_db	0.0001
+synth/Bass[Sub Triangle]/vel_tone_oct	0.0001
+synth/Bass[Synth Pop]/chord8_peak_dbfs	-6.61
+synth/Bass[Synth Pop]/dc_dbfs	-140
+synth/Bass[Synth Pop]/key_spread_db	1.4075
+synth/Bass[Synth Pop]/low_correlation	1
+synth/Bass[Synth Pop]/mono_loss_db	0
+synth/Bass[Synth Pop]/small_speaker_db	-7.1279
+synth/Bass[Synth Pop]/start_step_dbfs	-135.6411
+synth/Bass[Synth Pop]/vel_curve_err_db	0.0626
+synth/Bass[Synth Pop]/vel_tone_oct	0.1627
+synth/Bass[Thin Pulse]/chord8_peak_dbfs	-10.3666
+synth/Bass[Thin Pulse]/dc_dbfs	-140
+synth/Bass[Thin Pulse]/key_spread_db	1.1546
+synth/Bass[Thin Pulse]/low_correlation	1
+synth/Bass[Thin Pulse]/mono_loss_db	0
+synth/Bass[Thin Pulse]/small_speaker_db	-9.2074
+synth/Bass[Thin Pulse]/start_step_dbfs	-119.4804
+synth/Bass[Thin Pulse]/vel_curve_err_db	0.1492
+synth/Bass[Thin Pulse]/vel_tone_oct	0.1688
+synth/Bass[Wide Detune]/chord8_peak_dbfs	-6.2315
+synth/Bass[Wide Detune]/dc_dbfs	-140
+synth/Bass[Wide Detune]/key_spread_db	0.982
+synth/Bass[Wide Detune]/low_correlation	1
+synth/Bass[Wide Detune]/mono_loss_db	0
+synth/Bass[Wide Detune]/small_speaker_db	-4.9942
+synth/Bass[Wide Detune]/start_step_dbfs	-123.6074
+synth/Bass[Wide Detune]/vel_curve_err_db	0.0472
+synth/Bass[Wide Detune]/vel_tone_oct	0.2399
 synth/Drawbar[Ballad]/chord6_vs_power_db	1.8669
 synth/Drawbar[Ballad]/chord8_peak_dbfs	-1.1276
 synth/Drawbar[Ballad]/dc_dbfs	-118.3727
@@ -1009,6 +1297,15 @@ synth/alias[Analog saw, C7]/worst_alias_db	-41.8279
 synth/alias[Analog saw, drive 100, C5]/worst_alias_db	-53.2081
 synth/alias[Analog saw, drive 100, C6]/worst_alias_db	-47.6714
 synth/alias[Analog saw, drive 100, C7]/worst_alias_db	-41.3
+synth/alias[Bass pulse, C5]/worst_alias_db	-92.6884
+synth/alias[Bass pulse, C6]/worst_alias_db	-87.1358
+synth/alias[Bass pulse, C7]/worst_alias_db	-81.4379
+synth/alias[Bass saw, C5]/worst_alias_db	-92.6872
+synth/alias[Bass saw, C6]/worst_alias_db	-87.1093
+synth/alias[Bass saw, C7]/worst_alias_db	-80.3619
+synth/alias[Bass saw, drive 100, C5]/worst_alias_db	-63.7368
+synth/alias[Bass saw, drive 100, C6]/worst_alias_db	-58.8032
+synth/alias[Bass saw, drive 100, C7]/worst_alias_db	-53.9799
 synth/alias[FM feedback 7, C5]/worst_alias_db	-17.2883
 synth/alias[FM feedback 7, C6]/worst_alias_db	-15.7111
 synth/alias[FM feedback 7, C7]/worst_alias_db	-12.5776
@@ -1045,6 +1342,9 @@ synth/alias[Wavetable Init, C7]/worst_alias_db	-71.5456
 synth/alias[Wavetable position 100, C5]/worst_alias_db	-65.3551
 synth/alias[Wavetable position 100, C6]/worst_alias_db	-60.1726
 synth/alias[Wavetable position 100, C7]/worst_alias_db	-54.0125
+synth/drop[Bass 808, C4, 12 semitones over 200 ms]/amount_err_pct	1.9177
+synth/drop[Bass 808, C4, 12 semitones over 200 ms]/settle_cents	0.0005
+synth/drop[Bass 808, C4, 12 semitones over 200 ms]/time_err_pct	0
 synth/env[Poly amp, attack 100 ms]/time_err_pct	-68.6168
 synth/env[Poly amp, decay 200 ms]/time_err_pct	0.4989
 synth/env[Poly amp, release 300 ms]/time_err_pct	-14.7543
@@ -1058,6 +1358,8 @@ synth/fm[feedback 7 against 0]/level_db	3.5016
 synth/fm[pair 1:4, level 60]/bessel_err_db	0.0096
 synth/fm[pair 1:4, level 75]/bessel_err_db	0.0042
 synth/fm[pair 1:4, level 90]/bessel_err_db	0.0102
+synth/glide[Bass rate, an octave in 300 ms]/land_cents	0.0016
+synth/glide[Bass rate, an octave in 300 ms]/time_err_pct	-0.2934
 synth/glide[Poly legato, 200 ms]/land_cents	0.0387
 synth/glide[Poly legato, 200 ms]/time_err_pct	-1.2204
 synth/swell[Strings per key, crescendo 1500 ms]/time_err_pct	-2.325
@@ -1069,6 +1371,9 @@ synth/swell[Strings shared, crescendo 400 ms]/time_err_pct	-2.2336
 synth/swell[Strings shared, sustain 1500 ms]/time_err_pct	0.0605
 synth/swell[Strings shared, sustain 300 ms]/time_err_pct	0.2116
 synth/tune[Analog]/worst_cents	0.0302
+synth/tune[Bass 808, C0 to C3]/worst_cents	0.0484
+synth/tune[Bass synth, C0 to C3]/worst_cents	0.0718
+synth/tune[Bass]/worst_cents	0.0037
 synth/tune[Drawbar]/worst_cents	0.5768
 synth/tune[FM]/worst_cents	0.0004
 synth/tune[Keys]/worst_cents	0.5495
