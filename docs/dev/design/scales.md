@@ -57,6 +57,12 @@ For a synth on the pads, as the owner decided on 2026-11-11 (09:55Z). `layout(&P
 
 `PadLayout::toggled` is the one quick switch between Chromatic and In key; which button or touch does it is the Hello MPC thread's proposal. `DEFAULT_BANKS`: A Chromatic, B In key, C Chord pads, D In key an octave up, E to H copies of A to D (approved for now, to be discussed again). With no scale every layout is plain Chromatic.
 
+## A live shift (`mpfree_scale::shift`)
+
+The sequencer's live transpose (S4, Jay's card of 17 Nov; [make-perform.md](make-perform.md#live-transpose-as-built-the-ninth-part)). `Shift { by, key }` moves a note `by` semitones, or with a key `by` notes of that scale going up, in either direction (a transposition doesn't depend on the way it goes, so a melodic minor moves as it rises). A note outside the key moves with the key note below it, keeping its distance: in C major F# up one is G#. Seven notes of a seven-note scale are an octave. `apply` gives None for a note that leaves the keyboard (below 0 or above 127), which the caller leaves out. Within `MAX_SHIFT` 24 either way.
+
+`Held` keeps what each note started by number became, counted, so the note's end and its pressure go where it went even when the shift changes while it sounds; a note started again while it sounds plays where it went the first time. 256 bytes, cleared by a panic. Nothing in the module allocates.
+
 ## The arp on a pad layout (proposed hook, 2026-11-11)
 
 Without a layout the arp is fed pad slots 0..15 (a kit, or the plain chromatic synth pads: slot 0 counts as C), as before. When the synth is on the pads, the audio loop calls `App::set_pad_layout(Some(layout(&setup)))`, again on PAD BANK or any layout change, and `set_pad_layout(None)` when a kit goes back on the pads. Then:
