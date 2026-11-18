@@ -100,6 +100,22 @@ fn thru_field(m: &IoModel, from: &str) -> (String, Option<usize>) {
 /// A track's "Plays on" choices in order: inside, then each output port's
 /// 16 channels, or one choice for MPE gear (its zone's master channel),
 /// whose notes each take a channel of their own.
+/// Why nothing sent to the port named `port` would leave, in the Plays on
+/// row's words ("sends nothing: MIDI out is off", "sends nothing: Volca
+/// Kick is not plugged in"); None when it would go out. For whatever else
+/// names a port of its own, such as a kit pad's MIDI out on the Pads tab,
+/// so it says so in place as a track does.
+pub fn sends_nothing(m: &IoModel, port: &str) -> Option<String> {
+    let shown = m.setup.shown(port);
+    match m.live.port(port) {
+        None => Some(format!("sends nothing: {shown} is not plugged in")),
+        Some(_) if !m.live.built.notes_out => Some("sends nothing: MIDI out is off".to_string()),
+        Some(l) if !l.has_out => Some(format!("sends nothing: {shown} has no output")),
+        Some(l) if !l.sending => Some("sends nothing: its output didn't open".to_string()),
+        Some(_) => None,
+    }
+}
+
 fn plays_on_list(m: &IoModel) -> Vec<Option<TrackOut>> {
     let mut v = vec![None];
     for (p, _) in out_ports(m) {
@@ -245,27 +261,10 @@ impl Form for Midi {
                         .field(Field::choice("Program", "—", 0, 129).off(false));
                 }
                 Some(o) => {
-                    let live = m.live.port(&o.port);
-                    let plugged = live.is_some();
-                    row = match live {
-                        None => row.note(
-                            format!(
-                                "sends nothing: {} is not plugged in",
-                                m.setup.shown(&o.port)
-                            ),
-                            Tone::Warn,
-                        ),
-                        Some(_) if !built.notes_out => {
-                            row.note("sends nothing: MIDI out is off", Tone::Warn)
-                        }
-                        Some(l) if !l.has_out => row.note(
-                            format!("sends nothing: {} has no output", m.setup.shown(&o.port)),
-                            Tone::Warn,
-                        ),
-                        Some(l) if !l.sending => {
-                            row.note("sends nothing: its output didn't open", Tone::Warn)
-                        }
-                        Some(_) => match mpe_zone(m, &o.port) {
+                    let plugged = m.live.port(&o.port).is_some();
+                    row = match sends_nothing(m, &o.port) {
+                        Some(why) => row.note(why, Tone::Warn),
+                        None => match mpe_zone(m, &o.port) {
                             Some(z) => row.note(
                                 format!(
                                     "plays out of {}: each note on its own channel, {}",
@@ -582,6 +581,32 @@ mod tests {
         let r = rows(&s);
         assert_eq!(row(&r, "track:2").note, "plays out of MIDI");
         assert!(Midi.banner(&s.lock().unwrap()).is_none());
+    }
+
+    /// Whatever else names a port (a kit pad's MIDI out) gets the same
+    /// words as a track's Plays on.
+    #[test]
+    fn a_port_that_would_send_nothing_says_why_in_plays_ons_words() {
+        let s = model();
+        let why = |port: &str| sends_nothing(&s.lock().unwrap(), port);
+        assert_eq!(
+            why("Volca Kick").as_deref(),
+            Some("sends nothing: Volca Kick is not plugged in")
+        );
+        assert_eq!(
+            why(DIN_NAME).as_deref(),
+            Some("sends nothing: MIDI out is off")
+        );
+        s.lock().unwrap().live.built = Built {
+            notes_out: true,
+            ..Built::default()
+        };
+        assert_eq!(
+            why(DIN_NAME).as_deref(),
+            Some("sends nothing: its output didn't open")
+        );
+        s.lock().unwrap().live.ports[0].sending = true;
+        assert_eq!(why(DIN_NAME), None);
     }
 
     /// A USB device plays its tracks once MIDI out sends to it; one with

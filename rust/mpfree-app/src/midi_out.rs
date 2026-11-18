@@ -774,6 +774,10 @@ pub struct MidiOut {
     gear: Gear,
     /// The tracks' controllers, bend and pressure out.
     controls: Controls,
+    /// Where each kit pad that plays a port of its own sent its note
+    /// ([`MidiOut::pad_to`]), per track and pad, so its end and pressure
+    /// follow it there.
+    pad_out: Box<[Option<(OutRoute, u8)>]>,
 }
 
 /// The port page's test note: C4, held half a second.
@@ -824,6 +828,7 @@ impl MidiOut {
             sent_back: 0,
             gear: Gear::new(),
             controls: Controls::new(),
+            pad_out: vec![None; MAX_TRACKS * PADS].into_boxed_slice(),
         }
     }
 
@@ -1341,6 +1346,106 @@ impl MidiOut {
         true
     }
 
+    /// A kit pad that plays other gear (the Pads tab's MIDI out pad): pad
+    /// `o.event`'s note of track `o.track` goes out as `note` on `channel`
+    /// (0 to 15) of the port named `port`, not by the track's Plays on,
+    /// which needn't be set. Its note-off and pressure (as poly pressure)
+    /// go where its note-on went, whatever the pad says by then; a pad
+    /// pressed again while its note is on ends that note first. True when
+    /// the note went out (or ended); false when nothing can send it:
+    /// MIDI out is off, the port isn't plugged in, or the track is past
+    /// the 16 MIDI out serves (`mpfree_midi_ui::sends_nothing` says why
+    /// in words). The notes end with the track's pads
+    /// ([`MidiOut::end_pads`]), the port, and a panic. Never allocates.
+    // The Pads tab's MIDI out pad (the redesign's step 6b) calls it; until
+    // then only tests do.
+    #[allow(dead_code)]
+    pub fn pad_to(&mut self, o: &Out, port: &str, channel: u8, note: u8) -> bool {
+        let t = usize::from(o.track);
+        let pad = match o.event {
+            Event::NoteOn { note, .. } | Event::NoteOff { note } | Event::Pressure { note, .. } => {
+                usize::from(note)
+            }
+            _ => return false,
+        };
+        if t >= MAX_TRACKS || pad >= PADS {
+            return false;
+        }
+        let key = t * PADS + pad;
+        let (router, queue) = (&mut self.router, &mut self.queue);
+        let mut send = |to, m| router.send_to(t as u8, to, m, o.offset, queue);
+        let end = |(to, n): (OutRoute, u8), send: &mut dyn FnMut(OutRoute, Msg)| {
+            send(
+                to,
+                Msg::NoteOff {
+                    ch: 0,
+                    note: n,
+                    vel: 64,
+                },
+            );
+        };
+        match o.event {
+            Event::NoteOn { velocity, .. } if velocity > 0 => {
+                let here = self.ports.iter().position(|p| p.here && p.name == port);
+                let Some(i) = here.filter(|_| self.sending) else {
+                    return false;
+                };
+                if let Some(was) = self.pad_out[key].take() {
+                    end(was, &mut send);
+                }
+                let to = OutRoute {
+                    port: PortId(i as u8),
+                    channel: channel & 0x0F,
+                };
+                let n = note & 0x7F;
+                send(
+                    to,
+                    Msg::NoteOn {
+                        ch: 0,
+                        note: n,
+                        vel: velocity.min(127),
+                    },
+                );
+                self.pad_out[key] = Some((to, n));
+                true
+            }
+            Event::NoteOn { .. } | Event::NoteOff { .. } => match self.pad_out[key].take() {
+                Some(was) => {
+                    end(was, &mut send);
+                    true
+                }
+                None => false,
+            },
+            Event::Pressure { value, .. } => match self.pad_out[key] {
+                Some((to, n)) => {
+                    send(
+                        to,
+                        Msg::PolyPressure {
+                            ch: 0,
+                            note: n,
+                            value: value.min(127),
+                        },
+                    );
+                    true
+                }
+                None => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// Ends the notes track `track`'s pads have on ports of their own
+    /// ([`MidiOut::pad_to`]), at `offset`: its mute, its clip's stop.
+    /// A change of the track's Plays on leaves them alone.
+    #[allow(dead_code)]
+    pub fn end_pads(&mut self, track: usize, offset: u32) {
+        if track >= MAX_TRACKS {
+            return;
+        }
+        self.pad_out[track * PADS..(track + 1) * PADS].fill(None);
+        self.router.pads_off(track as u8, offset, &mut self.queue);
+    }
+
     /// A message thru passes on from the input `from` to the output `to`
     /// ([`crate::midi_in::Passed`]), at the start of this period. False
     /// when nothing can send it: MIDI out is off, or `to` isn't plugged in
@@ -1465,6 +1570,7 @@ impl MidiOut {
     /// note-offs. A gear bent or pressed by the keys goes back to rest.
     pub fn all_off(&mut self, offset: u32) {
         self.chords.clear();
+        self.pad_out.fill(None);
         // Bend and pressure back to rest, where they aren't.
         for t in 0..MAX_TRACKS {
             self.release_expression(t, offset);
@@ -2059,6 +2165,46 @@ mod tests {
             [
                 0x92, 36, 100, 0x99, 40, 90, 0x99, b5, 80, 0x82, 36, 64, 0x99, 37, 70, 0x89, 37,
                 64, 0x89, 40, 64, 0x89, b5, 64
+            ]
+        );
+    }
+
+    /// A kit pad on a port of its own (the Pads tab's MIDI out pad) plays
+    /// its note there whether its track has a Plays on or not; its
+    /// pressure and end follow it, a change of the track's Plays on leaves
+    /// it on, and the track's pads' end and closing end it.
+    #[test]
+    fn a_pad_on_a_port_of_its_own_plays_there_and_ends_there() {
+        let (mut mo, sink) = open(Duration::ZERO);
+        let m = model(&[(1, TrackOut::new(DIN_NAME, 9))]);
+        mo.sync(&m, false);
+        let pressure = |pad, value| Event::Pressure { note: pad, value };
+        // Track 2's pad 13 plays 36 on channel 3; track 3, with no Plays
+        // on, plays 40 on channel 1.
+        assert!(mo.pad_to(&ev(1, 0, on(12, 100)), DIN_NAME, 2, 36));
+        assert!(mo.pad_to(&ev(2, 0, on(0, 90)), DIN_NAME, 0, 40));
+        assert!(mo.pad_to(&ev(1, 1, pressure(12, 50)), DIN_NAME, 2, 36));
+        // Pressed again while on: the note ends first.
+        assert!(mo.pad_to(&ev(1, 2, on(12, 80)), DIN_NAME, 2, 36));
+        // Its end goes where its on went, even if the pad changed since.
+        assert!(mo.pad_to(&ev(1, 3, Event::NoteOff { note: 12 }), DIN_NAME, 5, 99));
+        assert!(!mo.pad_to(&ev(1, 3, Event::NoteOff { note: 12 }), DIN_NAME, 2, 36));
+        // A port not plugged in sends nothing.
+        assert!(!mo.pad_to(&ev(1, 4, on(3, 100)), "Volca Kick", 9, 36));
+        // Track 3's pads end.
+        mo.end_pads(2, 5);
+        // Track 2's Plays on changes: its pad's note stays on until closing.
+        assert!(mo.pad_to(&ev(1, 6, on(5, 70)), DIN_NAME, 2, 38));
+        m.lock().unwrap().setup.tracks[1] = Some(TrackOut::new(DIN_NAME, 0));
+        m.lock().unwrap().gen += 1;
+        mo.sync(&m, false);
+        mo.period_end(PERIOD, Instant::now());
+        assert!(mo.close());
+        assert_eq!(
+            sink.bytes(),
+            [
+                0x92, 36, 100, 0x90, 40, 90, 0xA2, 36, 50, 0x82, 36, 64, 0x92, 36, 80, 0x82, 36,
+                64, 0x80, 40, 64, 0x92, 38, 70, 0x82, 38, 64
             ]
         );
     }
