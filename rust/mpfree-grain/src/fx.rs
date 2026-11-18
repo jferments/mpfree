@@ -18,6 +18,15 @@
 //! frames (1.5 ms at 44.1 kHz) before it can be granulated. Freeze is the
 //! exception to the chunking: it takes in whatever is waiting first, so the
 //! cloud holds everything up to the frame it was pressed on.
+//!
+//! Feedback ([`GrainFx::set_feedback`]) writes the grains back into the
+//! buffer with the input, so they play again in later grains: trails that
+//! build, and at full an endless, self-renewing cloud. In the loop the
+//! grains pass a high-pass (40 Hz, so nothing builds up at the bottom) and
+//! a soft saturation, straight up to a quarter of full scale and bending
+//! to at most half, so the loop can't run away: what goes back is never
+//! more than half of full scale on top of the input. Loud trails grit up,
+//! on purpose (the granular plan's decision 4: grit in the engine).
 
 use crate::buffer::LiveBuffer;
 use crate::voice::{Budget, GrainView, GrainVoice, Params, Stats};
@@ -46,6 +55,39 @@ pub struct GrainFx {
     ramp_left: u32,
     ramp_frames: u32,
     frozen: bool,
+    /// Feedback: the gain now, where it glides to, its step and the frames
+    /// left of the glide.
+    fb: f32,
+    fb_to: f32,
+    fb_step: f32,
+    fb_left: u32,
+    /// The loop's high-pass: its coefficient, and each channel's last input
+    /// and output.
+    hp_a: f32,
+    hp_x: [f32; 2],
+    hp_y: [f32; 2],
+}
+
+/// Feedback's high-pass corner, Hz.
+const FEEDBACK_HP_HZ: f32 = 40.0;
+
+/// Where the feedback loop's saturation starts to bend, and the most it
+/// lets back.
+const KNEE: f32 = 0.25;
+const CEILING: f32 = 0.5;
+
+/// The feedback loop's soft saturation: straight up to [`KNEE`], then
+/// bending smoothly towards [`CEILING`], never past it.
+#[inline]
+fn saturate(x: f32) -> f32 {
+    let a = x.abs();
+    if a <= KNEE {
+        return x;
+    }
+    // tanh's rational fit (exact at 0, within 2 % below 3, 1 past it).
+    let y = ((a - KNEE) / (CEILING - KNEE)).min(3.0);
+    let t = y * (27.0 + y * y) / (27.0 + 9.0 * y * y);
+    (KNEE + (CEILING - KNEE) * t).copysign(x)
 }
 
 /// Dry and wet gains for a mix from 0 (dry) to 1 (wet), equal power, exact
@@ -93,6 +135,13 @@ impl GrainFx {
             ramp_left: 0,
             ramp_frames: (rate / 100).max(1), // 10 ms
             frozen: false,
+            fb: 0.0,
+            fb_to: 0.0,
+            fb_step: 0.0,
+            fb_left: 0,
+            hp_a: (-std::f32::consts::TAU * FEEDBACK_HP_HZ / rate as f32).exp(),
+            hp_x: [0.0; 2],
+            hp_y: [0.0; 2],
         })
     }
 
@@ -142,6 +191,27 @@ impl GrainFx {
         self.frozen
     }
 
+    pub fn feedback(&self) -> f32 {
+        self.fb_to
+    }
+
+    /// How much of the grains goes back into the buffer, 0 (none: the
+    /// buffer holds the input exactly) to 1 (an endless cloud). Glides
+    /// there over 10 ms.
+    pub fn set_feedback(&mut self, feedback: f32) {
+        let f = if feedback.is_finite() {
+            feedback.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        if f == self.fb_to {
+            return;
+        }
+        self.fb_to = f;
+        self.fb_step = (f - self.fb) / self.ramp_frames as f32;
+        self.fb_left = if self.fb == f { 0 } else { self.ramp_frames };
+    }
+
     /// Freeze on: the buffer keeps what it holds now (including audio
     /// waiting for the next chunk), and grains keep playing from it.
     /// Freeze off: new audio comes in again.
@@ -171,6 +241,8 @@ impl GrainFx {
         self.staged = 0;
         (self.dry, self.wet) = (self.dry_to, self.wet_to);
         self.ramp_left = 0;
+        (self.fb, self.fb_left) = (self.fb_to, 0);
+        (self.hp_x, self.hp_y) = ([0.0; 2], [0.0; 2]);
     }
 
     /// The buffer the grains read, for drawing it.
@@ -227,9 +299,28 @@ impl GrainFx {
             }
             for i in 0..k {
                 let (x, y) = (left[at + i], right[at + i]);
+                if self.fb_left > 0 {
+                    self.fb_left -= 1;
+                    self.fb = if self.fb_left == 0 {
+                        self.fb_to
+                    } else {
+                        self.fb + self.fb_step
+                    };
+                }
                 if !self.frozen {
-                    self.stage[2 * self.staged] = x;
-                    self.stage[2 * self.staged + 1] = y;
+                    let (mut bx, mut by) = (x, y);
+                    if self.fb > 0.0 {
+                        let w = [self.wet_l[i], self.wet_r[i]];
+                        for c in 0..2 {
+                            // y[n] = a (y[n-1] + x[n] - x[n-1])
+                            self.hp_y[c] = self.hp_a * (self.hp_y[c] + w[c] - self.hp_x[c]);
+                            self.hp_x[c] = w[c];
+                        }
+                        bx += self.fb * saturate(self.hp_y[0]);
+                        by += self.fb * saturate(self.hp_y[1]);
+                    }
+                    self.stage[2 * self.staged] = bx;
+                    self.stage[2 * self.staged + 1] = by;
                     self.staged += 1;
                 }
                 if self.ramp_left > 0 {

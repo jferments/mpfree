@@ -50,10 +50,13 @@ pub mod param {
     pub const LEVEL_SPRAY: u16 = 14;
     /// Spray peaked at the position (on) or even across its range (off).
     pub const PEAKED: u16 = 15;
+    /// How much of the grains goes back into the memory, per cent: trails
+    /// that build, and at 100 an endless cloud ([`crate::GrainFx::set_feedback`]).
+    pub const FEEDBACK: u16 = 16;
 }
 
 /// Parameters, counting the meter's id.
-const COUNT: usize = 16;
+const COUNT: usize = 17;
 
 #[allow(clippy::too_many_arguments)]
 const fn p(
@@ -230,6 +233,16 @@ static PARAMS: [ParamInfo; COUNT] = [
         Unit::Percent,
         Curve::Linear,
     ),
+    p(
+        param::FEEDBACK,
+        "Feedback",
+        "Mix",
+        0.0,
+        100.0,
+        0.0,
+        Unit::Percent,
+        Curve::Linear,
+    ),
     ParamInfo {
         id: param::GRAINS,
         name: "Grains",
@@ -320,14 +333,16 @@ impl GrainNode {
     /// Hands every setting to the effect.
     fn apply_all(&mut self) {
         let p = self.grain_params();
-        let (mix, frozen) = (
+        let (mix, frozen, feedback) = (
             self.values[usize::from(param::MIX)] / 100.0,
             self.values[usize::from(param::FREEZE)] >= 0.5,
+            self.values[usize::from(param::FEEDBACK)] / 100.0,
         );
         if let Some(fx) = &mut self.fx {
             fx.set_params(p);
             fx.set_mix(mix);
             fx.set_frozen(frozen);
+            fx.set_feedback(feedback);
         }
     }
 }
@@ -355,6 +370,7 @@ impl Node for GrainNode {
         match id {
             param::MIX => fx.set_mix(v / 100.0),
             param::FREEZE => fx.set_frozen(v >= 0.5),
+            param::FEEDBACK => fx.set_feedback(v / 100.0),
             _ => fx.set_params(p),
         }
     }
@@ -417,17 +433,27 @@ impl Node for GrainNode {
         }
     }
 
-    /// Frozen, it plays on for as long as it is called; otherwise its grains
-    /// can reach back the whole memory, plus one grain. Fully dry, nothing.
+    /// Frozen, or with feedback of 99 % or more, it plays on for as long as
+    /// it is called; otherwise its grains can reach back the whole memory,
+    /// plus one grain, once for each time round the feedback loop it takes
+    /// to fall 60 dB. Fully dry, nothing.
     fn tail_frames(&self) -> u32 {
         let Some(fx) = &self.fx else { return 0 };
+        let feedback = self.values[usize::from(param::FEEDBACK)] / 100.0;
         if self.values[usize::from(param::MIX)] <= 0.0 {
             0
-        } else if fx.frozen() {
+        } else if fx.frozen() || feedback >= 0.99 {
             u32::MAX
         } else {
-            let s = Self::MEMORY_S + self.values[usize::from(param::SIZE)] / 1000.0;
-            (s * self.rate as f32).ceil() as u32
+            let once = Self::MEMORY_S + self.values[usize::from(param::SIZE)] / 1000.0;
+            let rounds = if feedback > 0.0 {
+                1.0 + 3.0 / -feedback.log10()
+            } else {
+                1.0
+            };
+            (once * rounds * self.rate as f32)
+                .min(u32::MAX as f32 - 1.0)
+                .ceil() as u32
         }
     }
 }
