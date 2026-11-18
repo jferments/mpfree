@@ -289,8 +289,8 @@ there. Jay (12 Nov): keep one core for interrupts.
   period; `Instruments::settle`, right after the write, takes them back, and
   the next period waits for them only if they are still out (counted). The
   Dev page has a row for each lane ("Track instruments lane (core N)") and
-  one for the counts ("Track instruments on lanes · late · waited ·
-  moves"); the late ones are in the log within a second and in the 30 s
+  one for the counts ("Track instruments on lanes": periods, late, waited,
+  moves); the late ones are in the log within a second and in the 30 s
   status.
 
 - **When.** The audio thread pins itself and splits the sampler just before
