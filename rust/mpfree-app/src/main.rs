@@ -3830,6 +3830,9 @@ struct SeqPads<'a> {
     /// Tracks with their own instrument play it (instruments.rs), not the
     /// pads.
     own: &'a mut instruments::Instruments,
+    /// The mod engine, read: whether something besides a clip moves a
+    /// track's MIDI out control (S5's controls ahead).
+    modu: &'a modmix::ModMix,
     /// While an export runs, every event goes to its MIDI file too, as
     /// MIDI Out would send it (export.rs).
     tap: &'a mut export::Tap,
@@ -4643,6 +4646,9 @@ impl time::Pads for SeqPads<'_> {
         if self.quiet(o) {
             return false;
         }
+        if mpfree_play::is_gear_control(o) {
+            return self.control_ahead(o);
+        }
         let shift = self.shift(o.track);
         let mut buf = [0; MAX_PAD_NOTES];
         let is = shifted_is(
@@ -4700,6 +4706,35 @@ fn synth_seen<'s>(
 }
 
 impl SeqPads<'_> {
+    /// A clip's lock or lane on the track's own MIDI out control, from a
+    /// track that plays ahead: MIDI out sends it, ahead or (missed by the
+    /// forecast) on its frame, unless something else moves the control
+    /// (a macro, an LFO row, the morph, a hand, or a lock the mod engine
+    /// still holds): then it goes to the mod engine a period at a time,
+    /// as before. An unlock sends the control's own value, the engine's.
+    fn control_ahead(&mut self, o: &mpfree_play::Out) -> bool {
+        use mpfree_play::Event;
+        let (addr, value, lane) = match o.event {
+            Event::Lock { addr, value } => (addr, Some(value), false),
+            Event::Lane { addr, value } => (addr, Some(value), true),
+            Event::Unlock { addr } => (addr, None, false),
+            _ => return false,
+        };
+        // A control the mod engine can't hold either (the pressure, which
+        // has no own value to go back to) is left to it, as before.
+        let Some((_, default)) = modmix::midi_param(addr) else {
+            return false;
+        };
+        let e = self.modu.engine();
+        if e.is_moved(addr) || e.is_touched(addr) || e.is_locked(addr) {
+            self.midi.release_ahead(addr);
+            return false;
+        }
+        let v = value.unwrap_or_else(|| e.base(addr).unwrap_or(default));
+        self.midi
+            .control_ahead(o.offset, addr, v, value.is_some(), lane)
+    }
+
     /// A note-on that went out elsewhere (MIDI out, a track's own
     /// instrument) still flashes its pad.
     fn flash(&mut self, o: &mpfree_play::Out) {
@@ -8535,6 +8570,7 @@ fn player_session(
             midi: &mut midi_out,
             cv: &mut cv_out,
             own: &mut mix.instruments,
+            modu: &mix.modu,
             only: export.only(),
             tap: &mut export.tap,
             shifts: time.transposes(),

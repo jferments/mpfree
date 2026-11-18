@@ -574,6 +574,12 @@ impl ModEngine {
             .is_some_and(|i| self.targets[i].lock.is_some())
     }
 
+    /// A macro, a matrix row or the morph moves it (not a lock, a lane
+    /// or a hand).
+    pub fn is_moved(&self, addr: ParamAddr) -> bool {
+        self.find(addr).is_some_and(|i| self.targets[i].moving())
+    }
+
     /// A hand holds it ([`ModEvent::Touch`] without its `Untouch` yet).
     pub fn is_touched(&self, addr: ParamAddr) -> bool {
         self.find(addr)
