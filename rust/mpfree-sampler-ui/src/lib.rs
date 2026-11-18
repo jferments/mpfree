@@ -33,6 +33,9 @@
 //!   grain cloud the engine plays over it, a touch pad for position and
 //!   size, and every grain setting, each change a [`GrainAction`]. Its
 //!   pictures are in [`grain_widgets`].
+//! - [`fx_tab`]: the pad editor's FX tab: the effects on the pad's own
+//!   mixer channel as a pedal board, each with its switch and first three
+//!   knobs, the picked one on the Q-Links ([`FxAction`]).
 //! - [`rec_tab`]: the pad editor's Rec tab: the line input's meters and
 //!   its last half minute, takes that start now, over a threshold or on the
 //!   next bar and end on a press, silence or a length, and Skip back over
@@ -54,6 +57,7 @@
 pub mod auto_tab;
 pub mod auto_widgets;
 pub mod chop_tab;
+pub mod fx_tab;
 pub mod grain_tab;
 pub mod grain_widgets;
 pub mod keys_widgets;
@@ -74,6 +78,7 @@ pub mod widgets;
 
 pub use auto_tab::{AutoAction, AutoState, AutoTab};
 pub use chop_tab::{ChopAction, ChopState, ChopTab};
+pub use fx_tab::{FxAction, FxState, FxTab};
 pub use grain_tab::{GrainAction, GrainState, GrainTab};
 pub use mpfree_analysis::note_name;
 pub use pads_tab::{PadsAction, PadsState, PadsTab};

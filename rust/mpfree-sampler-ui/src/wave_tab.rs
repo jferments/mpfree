@@ -1312,8 +1312,11 @@ fn markers_order(r: &Region) -> Vec<Mark> {
         .collect()
 }
 
+/// The region's markers ([`markers_order`]), then a sliced region's cuts
+/// (R4), each at the start of its slice and numbered from 2, fixed: they
+/// move on the Chop tab.
 fn markers(r: &Region) -> Vec<Marker> {
-    markers_order(r)
+    let mut all: Vec<Marker> = markers_order(r)
         .into_iter()
         .filter_map(|m| {
             let kind = if m.is_loop() {
@@ -1323,7 +1326,13 @@ fn markers(r: &Region) -> Vec<Marker> {
             };
             m.frame(r).map(|f| Marker::new(f, m.tab(), kind))
         })
-        .collect()
+        .collect();
+    all.extend(
+        r.cuts()
+            .enumerate()
+            .map(|(k, f)| Marker::new(f, &(k + 2).to_string(), MarkerKind::Slice).fixed()),
+    );
+    all
 }
 
 /// A pad's colour on the screen, by its place in the bank (the pads' own
