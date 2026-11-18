@@ -84,6 +84,17 @@ use std::time::{Duration, Instant};
 
 use mpfree_grain::{Budget, GrainFx, GrainSource, GrainVoice};
 pub use mpfree_grain::{GrainView, MAX_GRAINS};
+
+/// A layer's cloud as it plays now ([`Engine::cloud_of`]), for drawing it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CloudState {
+    /// The spray its grains start in, 0 to 1 of the region: its setting as
+    /// movement and pressure have moved it.
+    pub spray: f32,
+    /// More grains wanted at once than a voice keeps
+    /// ([`mpfree_grain::MAX_GRAINS`]): the voice spaces them out to fit.
+    pub thinned: bool,
+}
 /// The lane types [`Engine::split`] takes and reports, so callers need no
 /// dependency of their own on `mpfree-lanes`.
 pub use mpfree_lanes::{Config as LaneConfig, Setup as LaneSetup, Stats as LaneStats};
@@ -2076,6 +2087,36 @@ impl Engine {
             }
         }
         n
+    }
+
+    /// How layer `layer` of pad `pad` plays as grains now, beyond its
+    /// grains ([`Engine::grains_of`]): the spray its first voice's grains
+    /// start in (as its movement and pressure move it), and whether any of
+    /// its voices is thinning its grains to fit (a cloud wanting more at
+    /// once than a voice keeps). None while no voice plays it. Never
+    /// allocates.
+    pub fn cloud_of(&self, pad: u8, layer: u8) -> Option<CloudState> {
+        self.kit_cloud_of(0, pad, layer)
+    }
+
+    /// [`Engine::cloud_of`] for kit `kit`'s pad.
+    pub fn kit_cloud_of(&self, kit: usize, pad: u8, layer: u8) -> Option<CloudState> {
+        let mut out: Option<CloudState> = None;
+        for (v, g) in self.pool.iter() {
+            if v.active
+                && usize::from(v.kit) == kit
+                && v.granular
+                && v.pad == pad
+                && v.layer == layer
+            {
+                let c = out.get_or_insert(CloudState {
+                    spray: g.moved_params().spray,
+                    thinned: false,
+                });
+                c.thinned |= g.stats().thinned;
+            }
+        }
+        out
     }
 
     /// Queues an event `offset` frames into the next render (later renders if
