@@ -208,7 +208,7 @@ PR 3's auto wah costs 2.1 % more than after PR W (the ramps of the coefficients 
 - PR 2 (17 Nov): the rotary's ramp, coast, opposite rotation, treble beam, level and oversampled drive: 148 of 171.
 - PR 3 (17 Nov): the auto wah's level by Q, gliding coefficients, Resonance, Low and High, and glided Filter and Source changes: 158 of 171.
 - PR 4 (18 Nov): the ring mod's Triangle and Square band-limited across four frames at twice the rate, its waves at one level and a glided Wave; the shifter's twelve-coefficient network, fine phasor, glided Mode and band-limited feedback: 171 of 171, every movement target met.
-- Next: round 5's voice effects are on [fx-voice.md](fx-voice.md) (the talk box done, a new vocoder to come); the pitch effects are done ([fx-pitch.md](fx-pitch.md)). Not measured, so not targets: the Sine's own fold-back at the top of the band (its products above Nyquist; reported), and Triangle's and Square's cost while heard.
+- Next: round 5's voice effects are on [fx-voice.md](fx-voice.md) (the talk box and a new vocoder, done); the pitch effects are done ([fx-pitch.md](fx-pitch.md)). Not measured, so not targets: the Sine's own fold-back at the top of the band (its products above Nyquist; reported), and Triangle's and Square's cost while heard.
 
 ## 11. Sources
 

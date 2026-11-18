@@ -6,8 +6,9 @@
 //! `FX_BENCH_BLOCKS` sets the block count, so the ARMv7 instruction count
 //! in docs/dev/design/fx.md works the same way: build for
 //! `armv7-unknown-linux-gnueabihf`, run under `qemu-arm` with
-//! `-one-insn-per-tb -d exec,nochain`, count the `Trace` lines with 10
-//! blocks and with 0, and divide the difference by 10.
+//! `-one-insn-per-tb -d exec,nochain`, count the `Trace` lines with 130
+//! blocks and with 30, and divide the difference by 100 (the first blocks,
+//! while look-aheads, trackers and grains fill, cost less or more).
 
 use std::time::Instant;
 
@@ -89,6 +90,17 @@ fn main() {
             "Talk box",
             "mpfree.fx.talkbox",
             &[(ids::talkbox::LFO_DEPTH, 60.0)],
+        ),
+        ("Vocoder", "mpfree.fx.vocoder", &[]),
+        (
+            "Vocoder (40 bands)",
+            "mpfree.fx.vocoder",
+            &[(ids::vocoder::BANDS, 40.0)],
+        ),
+        (
+            "Vocoder (Input)",
+            "mpfree.fx.vocoder",
+            &[(ids::vocoder::CARRIER, 2.0)],
         ),
         ("Freq shifter", "mpfree.fx.freqshift", &[]),
         (

@@ -873,6 +873,11 @@ jobs:
         # report against rust/mpfree-fxlab/quality/ratchet.tsv. An improvement
         # is recorded with MPFREE_QUALITY_BLESS=1 (docs/dev/design/fx-quality.md).
         run: cargo test --manifest-path rust/Cargo.toml --release --locked -p mpfree-fxlab --test quality
+      - name: Synth quality ratchet (no synth number gets worse)
+        # Release only, about 21 s of renders: every engine and factory preset
+        # against rust/mpfree-fxlab/quality/synth.tsv. An improvement is
+        # recorded with MPFREE_QUALITY_BLESS=1 (docs/dev/design/synth-quality.md).
+        run: cargo test --manifest-path rust/Cargo.toml --release --locked -p mpfree-fxlab --test synth
       - name: Test host-native Rust MPC userspace coexistence self-test
         run: |
           cargo run --manifest-path rust/Cargo.toml --release --locked \

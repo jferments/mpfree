@@ -1512,3 +1512,51 @@ voice/talkbox[Robot choir]/lu_pink	0.0878
 voice/talkbox[Small mouth]/lu_pink	0.1328
 voice/talkbox[Wow wow]/lu_pink	-0.7602
 voice/talkbox[Yeah]/lu_pink	0.3297
+voice/vocoder/click_db_attack	-84.3892
+voice/vocoder/click_db_bands	-64.8369
+voice/vocoder/click_db_bandwidth	-71.8618
+voice/vocoder/click_db_formant	-89.6381
+voice/vocoder/click_db_gate	-84.4985
+voice/vocoder/click_db_high	-89.9018
+voice/vocoder/click_db_low	-83.121
+voice/vocoder/click_db_mix	-97.3352
+voice/vocoder/click_db_pitch	-84.4985
+voice/vocoder/click_db_release	-84.5435
+voice/vocoder/click_db_spread	-84.5073
+voice/vocoder/click_db_unvoiced	-84.4851
+voice/vocoder/f1_error_bands_ae	0
+voice/vocoder/f1_error_bands_ah	0.5277
+voice/vocoder/f1_error_bands_aw	0.6241
+voice/vocoder/f1_error_bands_ee	0
+voice/vocoder/f1_error_bands_eh	0
+voice/vocoder/f1_error_bands_ih	0
+voice/vocoder/f1_error_bands_oo	0
+voice/vocoder/f1_error_bands_ou	0
+voice/vocoder/f1_error_bands_uh	0
+voice/vocoder/f2_error_bands_ae	0.2075
+voice/vocoder/f2_error_bands_ah	0.3607
+voice/vocoder/f2_error_bands_aw	0.4571
+voice/vocoder/f2_error_bands_ee	0.3263
+voice/vocoder/f2_error_bands_eh	0.4032
+voice/vocoder/f2_error_bands_ih	0
+voice/vocoder/f2_error_bands_oo	0.4571
+voice/vocoder/f2_error_bands_ou	0.3607
+voice/vocoder/f2_error_bands_uh	0.7638
+voice/vocoder/latency_frames	0
+voice/vocoder/lu_carrier_ae	-1.4722
+voice/vocoder/lu_carrier_ah	-0.6626
+voice/vocoder/lu_carrier_aw	-0.0954
+voice/vocoder/lu_carrier_ee	1.4207
+voice/vocoder/lu_carrier_eh	0.2811
+voice/vocoder/lu_carrier_ih	0.4753
+voice/vocoder/lu_carrier_oo	1.1929
+voice/vocoder/lu_carrier_ou	-0.1534
+voice/vocoder/lu_carrier_uh	-1.1198
+voice/vocoder/lu_pink	-0.5045
+voice/vocoder/s_level_db	-3.0122
+voice/vocoder/s_level_db_keyed	-2.9451
+voice/vocoder[Deep robot]/lu_pink	-1.1299
+voice/vocoder[Robot voice]/lu_pink	-0.6504
+voice/vocoder[Vintage bands]/lu_pink	-0.2376
+voice/vocoder[Whisper]/lu_pink	1.0405
+voice/vocoder[Wide choir]/lu_pink	-1.1153
