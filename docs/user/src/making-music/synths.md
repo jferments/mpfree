@@ -6,7 +6,7 @@ checked: 2026-11-14 b76c3c7
 
 # Synths
 
-MPFree has ten synths built in. Put one on the pads and they become a keyboard: bass lines, chords, leads and pads, played by hand, through the arpeggiator or into a pattern.
+MPFree has eleven synths built in. Put one on the pads and they become a keyboard: bass lines, chords, leads and pads, played by hand, through the arpeggiator or into a pattern.
 
 ## Put a synth on the pads
 
@@ -17,9 +17,9 @@ Each track plays a kit or a synth, and the pads play what the selected track pla
 
 Opening the **Synth** tab changes nothing that plays: it shows the synth, and if the selected track plays a kit, the line at the bottom of the screen says how to put the synth on it. To go back to drums, tap the chip (it names the synth now) and pick a kit, or set the track's instrument back to **Kit**. While the selected track plays the synth, **PAD BANK** changes the pads' layout and **SHIFT** + the wheel their octave, not the kit.
 
-## The ten synths
+## The eleven synths
 
-Any of the ten can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.
+Any of the eleven can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.
 
 | Synth | What it is | Good for | Presets |
 |---|---|---|---|
@@ -33,6 +33,7 @@ Any of the ten can be a track's own instrument (see [A synth for each track](#a-
 | **Squelch** | A mono acid bass: one oscillator into a squelchy resonant filter, with accent and slide | Acid lines, rubbery basses, screaming leads | Acid Line, Deep Bass, Square Acid, Distorted, Rubber, Plucky, Acid Lead, Screamer |
 | **Analog** | A vintage analog poly: voices that each sound a little different, poly-mod and a chorus | Brass, warm pads, string ensembles, sync leads, clangy bells | Poly Brass, Warm Pad, Sync Lead, Chorus Strings, Square Keys, Clang Bell, Unison Bass, Slow Sweep, Hollow Pulse, Worn Cards |
 | **Strings** | A string machine, like the string ensembles of the 1970s: every key you hold sounds, through violin, viola, cello, contrabass, horn and trumpet sounds, with its own swirling ensemble | Lush string pads and chords, disco and synth-pop strings, slow swells, brassy stabs | Classic Strings, Bright Strings, Cello and Viola, Full Ensemble, Orchestra, Brass Ensemble, Slow Swell, Staccato Strings, Swirl Strings, Dark Strings, High Strings, Low Strings, Paraphonic 70s, Disco Strings, Ballad Pad, Lo-fi Strings, Wide Strings, Mono Ensemble, Dry Divider, Bowed, Horn Section, Brassy Lead, Vox Strings |
+| **Bass** | A bass synth that plays one note at a time, with three bodies: a synth bass with a sub locked under it, an 808 that drops onto the note, and a reese of two oscillators beating against each other | Synth and funk bass lines, 808s for trap and hip-hop, drum and bass reeses, gliding lines | Round Mono, Pluck Bass, Resonant Sweep, Square Sub, Rubber Bass, Funk Bass, Synth Pop, Power Bass, Fat Saw, Thin Pulse, Soft Triangle, Noisy Bass, Glide Bass, Low Note Lines, Growl Press, Press Wah, Sub Sine, Sub Triangle, 808, Long 808, Distorted 808, 808 Slide, 808 Kick Bass, Short 808, 808 Vibrato, Reese, Dark Reese, Wide Detune, Soft Reese, Growl Reese, Reese Sweep |
 
 Each synth also has an **Init** preset (Init Kit on Drums): a plain starting point to build your own sound.
 
@@ -42,7 +43,7 @@ Every track can play its own instrument: Poly on one, FM on another, a plugin sy
 
 1. Select the track.
 2. Press **MENU** on the Synth tab. The top row is named after the track: **Track 2 instrument**.
-3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Wavetable**, **Keys**, **Drawbar**, **Squelch**, **Analog** and **Strings**, then any plugin synths you have put in `files/plugins/` on the stick: CLAP synths and MPC plugin instruments (see [Effects](effects.md#plugins) for where to put them).
+3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Wavetable**, **Keys**, **Drawbar**, **Squelch**, **Analog**, **Strings** and **Bass**, then any plugin synths you have put in `files/plugins/` on the stick: CLAP synths and MPC plugin instruments (see [Effects](effects.md#plugins) for where to put them).
 
 {{shot: synth-instrument | Track 2's instrument set to a plugin synth, with the row's help on the right.}}
 
@@ -144,6 +145,22 @@ The Q-Links take the pulse widths and detune on the Osc page, the filter's four 
 The Q-Links take four registers on the Registers page (Violin, Viola, Cello and Contrabass), Brightness, Crescendo, Sustain and Bow noise on the Tone page, Amount, Depth, Slow rate and Width on the Ensemble page, and Transpose, Fine, Bend range and Level on the Voice page. A Strings track with no keys held stops working after a tenth of a second, so it takes almost none of the MPC's power until you play it.
 
 Coming: the sustain and soft pedals, the mod wheel (vibrato) and a foot pedal (volume) from a keyboard on MIDI in. Strings already answers them; the MIDI in side is still to come.
+
+**Bass** plays one note at a time, for bass lines. **Body** on the Source page picks one of three sounds:
+
+- **Synth:** an oscillator with a sub an octave or two under it, into a resonant filter: the classic synth bass, from round and soft to rubbery and biting.
+- **808:** a deep sine (or a triangle) that starts high and drops onto the note, with no filter: the long, booming bass of trap and hip-hop. Drive makes it growl and lets it be heard on small speakers.
+- **Reese:** two oscillators tuned a little apart, so they beat against each other, over a clean sub: the moving, growling bass of drum and bass.
+
+How you play shapes it. Press a new pad before you let go of the last and the pitch glides there without starting the note again (**Retrigger** on starts it again). Hit harder and a note is louder and a little brighter. Low notes are lifted a little, so a line sounds even from the bottom of the keyboard up. It has five pages:
+
+- **Source:** **Body**, **Wave** (**Saw**, **Pulse**, **Triangle** or **Sine**; the 808 plays a sine unless you pick Triangle), **Pulse width** (on the pulse only) and **Reese detune** (how far apart the reese's two oscillators are: more beats faster). Under the note: **Sub** (how much), **Sub mode** (a square one or two octaves down, a narrow pulse two down, or a sine one octave down or on the note; it stays locked to the note, so it never thins out), **Fifth** (a fifth above, for a fuller, more synthy tone) and **Noise**. **Octave** moves the whole sound down two octaves or up one. **Start** makes every note begin its wave at the same point (**0°**, the default, so every note hits the same way; or **180°**), or carry on from where the last one left it (**Free**). The picture is the wave with its sub and fifth.
+- **Filter:** **Cutoff** and **Resonance**; the filter envelope's **Amount** (how far each note opens the filter; below 0 it closes it) and **Decay** (how fast it closes again); **Key track** (how far the filter follows the note) and **Drive in** (how hard the oscillators push the filter: grit, not volume). The 808 has no filter, so these are drawn faint when it is picked. The picture is the filter's curve where it rests; the dashed line is where each note opens it.
+- **Shape:** **Drop** (how many semitones above the note each note starts) and **Drop time** (how long it takes to land exactly on the note), **Punch** (a quick jump up in pitch for the first few milliseconds, for a sharper hit), the volume's attack, decay, sustain and release, **Velocity to level** (how much quieter a soft hit is) and **Velocity to tone** (how much darker). The picture is the pitch falling onto the note.
+- **Play:** **Glide** (how long a glide takes; with **Mode** set to **Rate** it is how long an octave takes, so small steps are quicker), **When** it glides (**Legato**: only to a pad pressed while another is held; **Always**: from whatever note played last), **Priority** (with several pads held, which one sounds: the **Last** pressed, the **Low**est or the **High**est), **Retrigger**, transpose, fine tuning, bend range, and pad pressure: **Moves** picks what pressing harder on a held pad does (opens the **Cutoff**, adds **Drive**, or a **Vibrato**) and **Amount** how much.
+- **Output:** **Drive** (distortion after the filter: **Soft** adds warmth and the overtones that let a bass be heard on phone and laptop speakers, **Hard** squares it off into a harsher growl), **Tone** (takes the fizz off the top), **High-pass** (takes away rumble under the notes) and **Level**. The picture shows a wave through the Drive against the clean wave (dashed).
+
+The Q-Links take Sub, Fifth, Reese detune and Pulse width on the Source page; Cutoff, Resonance, Amount and Decay on the Filter page; Drop, Drop time, Decay and Release on the Shape page; Glide, Fine, Bend range and the pressure's Amount on the Play page; and Drive, Tone, High-pass and Level on the Output page. A Bass track stops working a tenth of a second after its last note has died away, so it takes almost none of the MPC's power until you play it.
 
 The Synth tab takes its colours from the theme picked in **Prefs > Appearance**, like the rest of MPFree: the sections' colours, the curves and the boxes in the pictures all change with it. The Q-Links keep their own four colours under every theme.
 

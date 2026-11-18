@@ -30,7 +30,8 @@ use std::f64::consts::{PI, TAU};
 
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_synth::{
-    drum_params, Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Strings, Wavetable,
+    bass_params as bp, drum_params, Analog, Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset,
+    Squelch, Strings, Wavetable,
 };
 
 use crate::fft::{hann_f64, power_spectrum};
@@ -62,10 +63,11 @@ pub enum Engine {
     Drawbar,
     Pluck,
     Strings,
+    Bass,
 }
 
 impl Engine {
-    pub const ALL: [Engine; 9] = [
+    pub const ALL: [Engine; 10] = [
         Engine::Poly,
         Engine::Analog,
         Engine::Squelch,
@@ -75,6 +77,7 @@ impl Engine {
         Engine::Drawbar,
         Engine::Pluck,
         Engine::Strings,
+        Engine::Bass,
     ];
 
     pub fn name(self) -> &'static str {
@@ -88,6 +91,7 @@ impl Engine {
             Engine::Drawbar => "Drawbar",
             Engine::Pluck => "Pluck",
             Engine::Strings => "Strings",
+            Engine::Bass => "Bass",
         }
     }
 
@@ -106,6 +110,7 @@ impl Engine {
             Engine::Drawbar => names(Drawbar::presets()),
             Engine::Pluck => names(Pluck::presets()),
             Engine::Strings => names(Strings::presets()),
+            Engine::Bass => names(Bass::presets()),
         }
     }
 
@@ -155,6 +160,11 @@ impl Engine {
             Engine::Strings => {
                 let mut n = Strings::new(rate);
                 n.load_preset(&Strings::presets()[preset]);
+                Box::new(n)
+            }
+            Engine::Bass => {
+                let mut n = Bass::new(rate);
+                n.load_preset(&Bass::presets()[preset]);
                 Box::new(n)
             }
         }
@@ -212,6 +222,17 @@ impl Engine {
                 (23, 0.0),
                 (30, 0.0),
             ],
+            // The saw alone, the filter open and still, no drive or
+            // velocity.
+            Engine::Bass => &[
+                (bp::SUB, 0.0),
+                (bp::CUTOFF, 12_000.0),
+                (bp::RESONANCE, 0.0),
+                (bp::ENV_AMOUNT, 0.0),
+                (bp::FILTER_DRIVE, 0.0),
+                (bp::DRIVE, 0.0),
+                (bp::VELOCITY, 0.0),
+            ],
             Engine::Fm | Engine::Keys | Engine::Pluck => &[],
         };
         for &(id, v) in set {
@@ -223,7 +244,7 @@ impl Engine {
     /// Whether `node` plays one note at a time (a mono, legato or unison
     /// mode, or an engine that has no other).
     fn mono(self, node: &dyn Node) -> bool {
-        if self == Engine::Squelch {
+        if self == Engine::Squelch || self == Engine::Bass {
             return true;
         }
         node.params()
@@ -236,7 +257,7 @@ impl Engine {
 /// Whether a preset is a bass: its name says so, or the engine is the
 /// acid bass line.
 fn is_bass(engine: Engine, name: &str) -> bool {
-    engine == Engine::Squelch || name.contains("Bass")
+    engine == Engine::Squelch || engine == Engine::Bass || name.contains("Bass")
 }
 
 // ---------------------------------------------------------------------------
@@ -777,6 +798,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     fm(&mut rows, rate);
     drums(&mut rows, rate);
     strings(&mut rows, rate);
+    bass(&mut rows, rate);
     rows
 }
 
@@ -1365,6 +1387,13 @@ fn alias_cases() -> Vec<AliasCase> {
         ("Squelch saw", Engine::Squelch, vec![]),
         ("Squelch square", Engine::Squelch, vec![(0, 1.0)]),
         ("Squelch saw, drive 100", Engine::Squelch, vec![(30, 100.0)]),
+        ("Bass saw", Engine::Bass, vec![]),
+        ("Bass pulse", Engine::Bass, vec![(bp::WAVE, bp::PULSE)]),
+        (
+            "Bass saw, drive 100",
+            Engine::Bass,
+            vec![(bp::DRIVE, 100.0)],
+        ),
         ("Wavetable Init", Engine::Wavetable, vec![]),
         (
             "Wavetable position 100",
@@ -2010,6 +2039,173 @@ fn strings(rows: &mut Vec<Row>, rate: u32) {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Bass.
+
+/// B1: held notes in tune 100 ms in, C0 to C3, the synth body (its plain
+/// saw) and the 808 (its preset, the drop and punch over by then). B3: the
+/// 808's drop against its curve and its time. V7: glide by rate.
+fn bass(rows: &mut Vec<Row>, rate: u32) {
+    let b808 = Bass::presets()
+        .iter()
+        .position(|p| p.name == "808")
+        .unwrap_or(0);
+    for (what, make) in [
+        (
+            "synth",
+            Box::new(|| Engine::Bass.plain(rate)) as Box<dyn Fn() -> Box<dyn Node>>,
+        ),
+        ("808", Box::new(move || Engine::Bass.make(b808, rate))),
+    ] {
+        let mut worst = (0.0f64, 0u8);
+        for k in [12u8, 24, 36, 48] {
+            let s = note(make().as_mut(), rate, k, 100, 2.5, 2.5);
+            let c = freq_near(&s.mid(), rate, hz(k), frames(0.1, rate))
+                .map_or(100.0, |f| cents(f, hz(k)));
+            if c.abs() > worst.0.abs() {
+                worst = (c, k);
+            }
+        }
+        let subject = format!("tune[Bass {what}, C0 to C3]");
+        put(
+            rows,
+            "B1",
+            &subject,
+            "worst_cents",
+            worst.0.abs(),
+            Better::Lower,
+            Some(3.0),
+            0.1,
+        );
+    }
+
+    // B3: the 808 at C4 with its drop alone, 12 semitones over 200 ms
+    // (long enough for each cycle to see the curve), no drive. Each
+    // cycle's pitch is the mean of the curve over that cycle.
+    let (key, drop, drop_ms) = (60u8, 12.0f64, 200.0f64);
+    let mut n = Engine::Bass.make(b808, rate);
+    n.set_param(bp::PUNCH, 0.0);
+    n.set_param(bp::DRIVE, 0.0);
+    n.set_param(bp::DROP, drop as f32);
+    n.set_param(bp::DROP_TIME, drop_ms as f32);
+    let s = note(n.as_mut(), rate, key, 100, 0.6, 0.6);
+    let track = pitch_track(&s.mid(), rate);
+    let t_drop = drop_ms / 1000.0;
+    let semis = |f: f64| 12.0 * (f / hz(key)).log2();
+    let curve = |t: f64| {
+        if (0.0..t_drop).contains(&t) {
+            drop * (1.0 - t / t_drop).powi(3)
+        } else {
+            0.0
+        }
+    };
+    // The curve's mean pitch over the cycle centred on `t` at `f`.
+    let expect = |t: f64, f: f64| {
+        let (a, b) = (t - 0.5 / f, t + 0.5 / f);
+        let n = 64;
+        let mean = (0..n)
+            .map(|i| (curve(a + (b - a) * (i as f64 + 0.5) / n as f64) / 12.0).exp2())
+            .sum::<f64>()
+            / n as f64;
+        12.0 * mean.log2()
+    };
+    let ratios: Vec<f64> = track
+        .iter()
+        .filter(|(t, _)| *t < 0.5 * t_drop)
+        .map(|(t, f)| semis(*f) / expect(*t, *f))
+        .collect();
+    let amount = ratios.iter().sum::<f64>() / ratios.len().max(1) as f64;
+    // When the pitch comes within 17 cents of the note, against when the
+    // curve does.
+    let near = 0.17f64;
+    let reached = track
+        .iter()
+        .find(|(_, f)| semis(*f) < near)
+        .map_or(0.6, |p| p.0);
+    let due = track
+        .iter()
+        .find(|(t, f)| expect(*t, *f) < near)
+        .map_or(t_drop, |p| p.0);
+    let subject = "drop[Bass 808, C4, 12 semitones over 200 ms]";
+    put(
+        rows,
+        "B3",
+        subject,
+        "amount_err_pct",
+        (amount - 1.0) * 100.0,
+        Better::Near(0.0),
+        Some(5.0),
+        1.0,
+    );
+    put(
+        rows,
+        "B3",
+        subject,
+        "time_err_pct",
+        (reached - due) / due * 100.0,
+        Better::Near(0.0),
+        Some(5.0),
+        1.0,
+    );
+    let settled: Vec<f64> = track
+        .iter()
+        .filter(|(t, _)| (0.3..0.55).contains(t))
+        .map(|(_, f)| cents(*f, hz(key)))
+        .collect();
+    put(
+        rows,
+        "B3",
+        subject,
+        "settle_cents",
+        (settled.iter().sum::<f64>() / settled.len().max(1) as f64).abs(),
+        Better::Lower,
+        Some(3.0),
+        0.1,
+    );
+
+    // V7: a sine, legato C2 to C3, gliding at an octave in 300 ms.
+    let mut n = Engine::Bass.plain(rate);
+    n.set_param(bp::WAVE, bp::SINE);
+    n.set_param(bp::GLIDE_MODE, 1.0);
+    n.set_param(bp::GLIDE, 300.0);
+    let s = score(rate, &[(36, 100, 0.0, 1.5), (48, 100, 0.5, 1.0)]);
+    let out = render(n.as_mut(), rate, frames(1.5, rate), &s);
+    let track = pitch_track(&out.mid(), rate);
+    let target = hz(48);
+    let land: Vec<f64> = track
+        .iter()
+        .filter(|(t, _)| (1.0..1.3).contains(t))
+        .map(|(_, f)| cents(*f, target))
+        .collect();
+    let land = land.iter().sum::<f64>() / land.len().max(1) as f64;
+    let arrived = track
+        .iter()
+        .rposition(|(t, f)| *t < 1.4 && cents(*f, target).abs() > 12.0)
+        .map_or(0.5, |i| track[i].0);
+    let subject = "glide[Bass rate, an octave in 300 ms]";
+    put(
+        rows,
+        "V7",
+        subject,
+        "land_cents",
+        land.abs(),
+        Better::Lower,
+        Some(2.0),
+        0.2,
+    );
+    // Within 12 cents of an octave's 1,200 is 99 % of the way.
+    put(
+        rows,
+        "V7",
+        subject,
+        "time_err_pct",
+        ((arrived - 0.5) - 0.3 * 0.99) / (0.3 * 0.99) * 100.0,
+        Better::Near(0.0),
+        Some(10.0),
+        1.0,
+    );
 }
 
 #[cfg(test)]
