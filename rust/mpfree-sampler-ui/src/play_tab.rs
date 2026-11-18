@@ -2621,9 +2621,7 @@ pub fn control_of(st: &PlayState, layer: usize, slice: usize, row: Row) -> Contr
         Row::SlicePick => Look::Stepper,
         Row::SliceTune => knob(48, true),
         Row::SliceLevel => knob(level, false),
-        Row::SliceReverse => {
-            Look::Toggle(slice_on(p, slice).is_some_and(|s| s.reverse))
-        }
+        Row::SliceReverse => Look::Toggle(slice_on(p, slice).is_some_and(|s| s.reverse)),
         Row::SliceCutoff => knob(30, false),
         Row::SliceFade => knob(SLICE_FADES.len() as u32, false),
         Row::SliceTo => Look::Choice {
@@ -2643,9 +2641,7 @@ pub fn control_of(st: &PlayState, layer: usize, slice: usize, row: Row) -> Contr
         | Row::LfoWave => Look::Chip,
     };
     let why = match row {
-        Row::AddLayer if n >= MAX_LAYERS => {
-            Some(format!("{MAX_LAYERS} layers at most"))
-        }
+        Row::AddLayer if n >= MAX_LAYERS => Some(format!("{MAX_LAYERS} layers at most")),
         Row::RemoveLayer if n < 2 => Some("A pad keeps one layer at least".into()),
         Row::Sound if !st.kit_sounds.iter().any(|s| Some(s.id) != source) => {
             Some("The kit has no other sound".into())
