@@ -28257,6 +28257,49 @@ mod tests {
     }
 
     #[test]
+    fn the_sample_pages_tools_open_the_pages_not_on_it_yet() {
+        use mpfree_sampler_ui::wave_tab::{self, Tool};
+        let mut p = sample_sampler(Fonts::embedded());
+        assert_eq!(p.page(), sample_page::PAGE);
+        // Slice, Warp and Grain aren't on the page yet: each opens its old
+        // page, and the pad bar's first tab comes back to Trim.
+        for (i, page) in [
+            (1, sample_page::CHOP_PAGE),
+            (2, sample_page::WARP_PAGE),
+            (3, sample_page::GRAIN_PAGE),
+        ] {
+            p.on_event(UiEvent {
+                widget: wave_tab::TOOLS.into(),
+                kind: EventKind::Tab(i),
+            });
+            assert_eq!(p.page(), page, "{:?}", Tool::ALL[i]);
+            let bar = match page {
+                sample_page::CHOP_PAGE => "smp-chop-bar",
+                sample_page::WARP_PAGE => "smp-warp-bar",
+                _ => "smp-grain-bar",
+            };
+            p.on_event(UiEvent {
+                widget: bar.into(),
+                kind: EventKind::Tab(wave_tab::TAB),
+            });
+            assert_eq!(p.page(), sample_page::PAGE);
+        }
+        // While a take records the tools are faint and a tap says why.
+        let strip =
+            p.ui.get_mut::<mpfree_sampler_ui::widgets::ToolStrip>(wave_tab::TOOLS)
+                .unwrap();
+        strip.enabled = false;
+        strip.why = wave_tab::TOOLS_WAIT.to_string();
+        p.on_event(UiEvent {
+            widget: wave_tab::TOOLS.into(),
+            kind: EventKind::Select(1),
+        });
+        assert_eq!(p.page(), sample_page::PAGE);
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains(wave_tab::TOOLS_WAIT), "{hint}");
+    }
+
+    #[test]
     fn send_to_pad_copies_the_pad_onto_the_next_hit_and_chop_to_pads_opens_the_chop_tab() {
         use mpfree_sampler_ui::send;
         use mpfree_sampler_ui::widgets::ButtonRow;
