@@ -1768,6 +1768,27 @@ mod tests {
         );
     }
 
+    /// A summary passes over a choice that is Off, and its value is then
+    /// the choice's own: an EQ with no low cut names band 1's shelf and its
+    /// frequency, not the cut's; Grains with nothing switched on shows its
+    /// first two values, and with a filter on, the filter and its cutoff.
+    #[test]
+    fn a_summary_passes_over_a_choice_that_is_off() {
+        use mpfree_fx::registry;
+        let eq = registry::make(crate::state::EQ_ID).unwrap();
+        assert_eq!(crate::state::summary(&*eq), "Low shelf · 100 Hz");
+        let mut grains = registry::make("mpfree.grains").unwrap();
+        let plain = crate::state::summary(&*grains);
+        assert!(!plain.contains("Off"), "{plain}");
+        // Filter (`mpfree_grain::node::param::FILTER`) to Low pass.
+        grains.set_param(18, 1.0);
+        assert!(
+            crate::state::summary(&*grains).starts_with("Low pass · "),
+            "{}",
+            crate::state::summary(&*grains)
+        );
+    }
+
     /// The Grains effect's Hold heading says Capture ›, and a tap on it
     /// asks for the insert's memory on a pad.
     #[test]

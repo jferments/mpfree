@@ -451,21 +451,31 @@ pub fn source_name(s: Source) -> String {
 /// A one-line summary of a node's settings: its first choice of sound
 /// (not a Mix curve or a Quality, which [`mpfree_fx::page_keeps`] says are
 /// not the sound, nor a choice that is Off, such as Grains' Repeat) and
-/// its first two continuous parameters ("Tube · +9.5 dB · 3.2 kHz").
-fn summary(n: &dyn Node) -> String {
+/// its first two continuous parameters ("Tube · +9.5 dB · 3.2 kHz"). When
+/// a choice that is Off was passed over, the continuous parameter is the
+/// first after the choice shown, so the two go together (an EQ with its
+/// low cut off: "Low shelf · 100 Hz", band 1's, not the cut's).
+pub(crate) fn summary(n: &dyn Node) -> String {
     let ps = n.params();
     let mut parts: Vec<String> = Vec::new();
-    if let Some(text) = ps
-        .iter()
-        .filter(|p| {
-            matches!(p.curve, Curve::Choice(_)) && !p.readonly && !mpfree_fx::page_keeps(p.name)
-        })
-        .map(|p| value_text(p, n.param(p.id)))
-        .find(|t| t != "Off")
-    {
+    let mut passed_off = false;
+    let mut from = 0;
+    for (i, p) in ps.iter().enumerate() {
+        if !matches!(p.curve, Curve::Choice(_)) || p.readonly || mpfree_fx::page_keeps(p.name) {
+            continue;
+        }
+        let text = value_text(p, n.param(p.id));
+        if text == "Off" {
+            passed_off = true;
+            continue;
+        }
+        if passed_off {
+            from = i + 1;
+        }
         parts.push(text);
+        break;
     }
-    for p in ps
+    for p in ps[from..]
         .iter()
         .filter(|p| !p.readonly && matches!(p.curve, Curve::Linear | Curve::Log))
         .take(2 - parts.len().min(1))
