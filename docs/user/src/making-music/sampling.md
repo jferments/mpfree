@@ -40,7 +40,7 @@ Pick a place on the left (**Samples**, **Kits** or **Recordings**, say, or **Rec
 
 - **Load on A5** puts it on the pad picked (so does a second tap on it). Hit another pad and the button names that pad instead: browse, hit a pad, load, hit the next pad, load again.
 - **Next pad hit** puts it on the next pad you hit.
-- **The kit's pads**, under the sound, show what each pad of the kit holds, a bank at a time, with the pad picked outlined. Put a finger on one to pick it and hear what is on it, as a hit on the MPC's pad does; **Load on** then names it. The arrows show the kit's other banks.
+- **The kit's pads**, under the sound, show what each pad of the kit holds, a bank at a time, with the pad picked outlined. Put a finger on one to pick it, as a hit on the MPC's pad does, and hear what is on it until you lift your finger; **Load on** then names it. The map opens on the bank of the pad picked, and **‹** and **›** beside its heading show the kit's other banks.
 - **Audition**, or **PLAY**, lets you hear it first, at the level Q-Link 3 sets.
 - The **star** at the right end of each row adds it to Favourites; tap it again to take it out.
 
