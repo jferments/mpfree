@@ -146,6 +146,7 @@ pub fn plan(info: &NodeInfo, params: &[ParamInfo], page: &str) -> Option<Arrange
         "mpfree.squelch" => squelch(page)?,
         "mpfree.analog" => analog(page)?,
         "mpfree.strings" => strings(page)?,
+        "mpfree.bass" => bass(page)?,
         _ => return None,
     };
     Some(build(params, spec, list))
@@ -1019,6 +1020,98 @@ fn strings(page: &str) -> Option<Plan> {
             vec![
                 s("tuning", "Tuning", Voice, &[TRANSPOSE, FINE, BEND_RANGE]),
                 s("output", "Output", Voice, &[LEVEL, METER_KEYS]),
+            ],
+        ),
+        _ => return None,
+    })
+}
+
+fn bass(page: &str) -> Option<Plan> {
+    use mpfree_synth::bass_params::*;
+    Some(match page {
+        "Source" => (
+            "row(body:*, col(mix:*, pitch:220):*)",
+            vec![
+                s("body", "Body", Source, &[BODY, WAVE, PW, DETUNE])
+                    .labels(&[(DETUNE, "Reese detune")])
+                    .draw("Wave"),
+                s(
+                    "mix",
+                    "Under the note",
+                    Source,
+                    &[SUB, SUB_MODE, FIFTH, NOISE],
+                )
+                .faders(&[SUB, FIFTH, NOISE])
+                .note("locked to the oscillator"),
+                s("pitch", "Octave and start", Voice, &[OCTAVE, START]),
+            ],
+        ),
+        "Filter" => (
+            "row(filter:520, col(fenv:*, feel:*):*)",
+            vec![
+                s("filter", "Filter", Tone, &[CUTOFF, RESONANCE])
+                    .hero(&[CUTOFF, RESONANCE])
+                    .draw("Filter"),
+                s(
+                    "fenv",
+                    "Filter envelope",
+                    Shape,
+                    &[ENV_AMOUNT, FILTER_DECAY],
+                )
+                .labels(&[(ENV_AMOUNT, "Amount"), (FILTER_DECAY, "Decay")])
+                .note("each note opens it, then it falls"),
+                s("feel", "Key and drive", Tone, &[KEY_TRACK, FILTER_DRIVE])
+                    .labels(&[(FILTER_DRIVE, "Drive in")])
+                    .note("grit, not volume"),
+            ],
+        ),
+        "Shape" => {
+            let a = [ATTACK, DECAY, SUSTAIN, RELEASE];
+            (
+                "row(pitch:*, amp:*)",
+                vec![
+                    s("pitch", "Pitch drop", Shape, &[DROP, DROP_TIME, PUNCH])
+                        .hero(&[DROP])
+                        .draw("Drop")
+                        .note("where each note starts"),
+                    s(
+                        "amp",
+                        "Amp",
+                        Shape,
+                        &[ATTACK, DECAY, SUSTAIN, RELEASE, VELOCITY, VEL_TONE],
+                    )
+                    .faders(&a)
+                    .labels(&adsr_labels(a))
+                    .labels(&[
+                        (VELOCITY, "Velocity to level"),
+                        (VEL_TONE, "Velocity to tone"),
+                    ]),
+                ],
+            )
+        }
+        "Play" => (
+            "col(row(glide:*, keys:*):*, row(tuning:*, pressure:*):*)",
+            vec![
+                s("glide", "Glide", Motion, &[GLIDE, GLIDE_MODE, GLIDE_ON]).labels(&[
+                    (GLIDE, "Time"),
+                    (GLIDE_MODE, "Mode"),
+                    (GLIDE_ON, "When"),
+                ]),
+                s("keys", "Keys", Voice, &[PRIORITY, RETRIGGER]).note("one note at a time"),
+                s("tuning", "Tuning", Voice, &[TRANSPOSE, FINE, BEND_RANGE]),
+                s("pressure", "Pressure", Motion, &[PRESS_TO, PRESSURE])
+                    .labels(&[(PRESS_TO, "Moves"), (PRESSURE, "Amount")]),
+            ],
+        ),
+        "Output" => (
+            "row(drive:*, out:*)",
+            vec![
+                s("drive", "Drive", Tone, &[DRIVE, DRIVE_MODE])
+                    .hero(&[DRIVE])
+                    .labels(&[(DRIVE_MODE, "Mode")])
+                    .draw("Drive")
+                    .note("heard on small speakers"),
+                s("out", "Tone and level", Voice, &[TONE, HIGH_PASS, LEVEL]),
             ],
         ),
         _ => return None,
