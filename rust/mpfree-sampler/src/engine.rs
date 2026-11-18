@@ -475,6 +475,10 @@ pub struct ViewPad {
     vel_to_pitch: f32,
     /// Mono, Legato and Glide for its keys (sampler R5.5).
     mono: Mono,
+    /// A live hit waits for the launch line ([`crate::model::Pad::on_launch`]):
+    /// the host waits, the engine only says so
+    /// ([`Engine::kit_starts_on_line`]).
+    on_launch: bool,
 }
 
 impl ViewPad {
@@ -500,6 +504,19 @@ pub struct EngineView {
 }
 
 impl EngineView {
+    /// Whether a live hit on pad `i` waits for the launch line while the
+    /// transport plays (sampler R5.3b): a pad with a sound that has
+    /// [`crate::model::Pad::on_launch`], while the pads play pads (not
+    /// notes, not 16 Levels).
+    pub fn starts_on_line(&self, i: usize) -> bool {
+        matches!(self.pads_play, PadsPlay::Pads)
+            && self
+                .pads
+                .get(i)
+                .and_then(Option::as_ref)
+                .is_some_and(|p| p.on_launch && !p.layers.is_empty())
+    }
+
     /// Whether a hit on pad `i` plays something.
     pub fn has_pad(&self, i: usize) -> bool {
         let sounds = |p: &Option<ViewPad>| p.as_ref().is_some_and(|p| !p.layers.is_empty());
@@ -753,6 +770,7 @@ impl EngineView {
                         .filter(|&l| l < PADS && l != i)
                         .collect(),
                     latch: p.latch,
+                    on_launch: p.on_launch,
                     amp: p.amp,
                     filter: p.filter,
                     filter_env: p.filter_env,
@@ -2154,6 +2172,12 @@ impl Engine {
     /// How many kits the engine plays ([`Engine::with_kits`]).
     pub fn kits(&self) -> usize {
         self.views.len()
+    }
+
+    /// Whether a live hit on kit `kit`'s pad `pad` waits for the launch
+    /// line ([`EngineView::starts_on_line`]). Never allocates.
+    pub fn kit_starts_on_line(&self, kit: usize, pad: usize) -> bool {
+        self.views.get(kit).is_some_and(|v| v.starts_on_line(pad))
     }
 
     /// Frames rendered so far. Synced grains start on frames of this

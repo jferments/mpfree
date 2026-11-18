@@ -3590,4 +3590,118 @@ mod tests {
             s.press("rec-list", "close", "Close").settle();
         });
     }
+
+    /// Sampler R5.3b: a Loop pad hit while the song plays starts on the
+    /// next bar line (the project's Launch, 1 bar), as a tapped clip does,
+    /// not when it was hit; another pad plays at once; with the song
+    /// stopped the Loop pad plays at once too.
+    #[test]
+    fn a_loop_pad_hit_mid_bar_starts_on_the_next_bar_line() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            // Pad A1 starts on the line, as the Pads tab's Loop sets it.
+            let sounds = s.sounds.as_mut().expect("a sounding kit");
+            let mut projects = sounds.take_projects();
+            let project = &mut projects[0];
+            let mut pad = project.pad(0).cloned().expect("pad A1 has a sound");
+            pad.on_launch = true;
+            project.set_pad(0, Some(pad), None).unwrap();
+            let mut swap = crate::sampler::ViewSwap {
+                kit: 0,
+                view: Some(mpfree_sampler::engine::EngineView::build(
+                    project,
+                    crate::RATE,
+                )),
+                routes: crate::sampler::pad_routes(project),
+            };
+            assert!(sounds.swap_view(&mut swap));
+            let ons = |s: &Session, note: u8| -> Vec<f64> {
+                let p = s.hits.played.iter().filter(|p| p.note == note);
+                p.map(|p| p.at).collect()
+            };
+            // Stopped: at once.
+            let t = s.t();
+            s.pad(0, 100, 0.05);
+            assert!(
+                ons(&s, 0).iter().any(|&a| (a - t).abs() < 0.01),
+                "{:?} from {t}",
+                ons(&s, 0)
+            );
+            s.run_for(0.2);
+            // Playing (2 s bars at 120 BPM): hit a quarter into bar 1.
+            s.button("PLAY");
+            // The song starts on a period's top: its first frame, exactly.
+            let period = super::super::session::PERIOD_S;
+            let info = s.time.info();
+            let start = s.t() - info.position as f64 / (2.0 * 960.0);
+            let start = (start / period).round() * period;
+            s.run_for(0.5 - (s.t() - start));
+            let (a1, a2) = (ons(&s, 0).len(), ons(&s, 1).len());
+            let hit = s.t();
+            s.pad(0, 100, 0.05);
+            s.pad(1, 100, 0.05);
+            let a2_at = ons(&s, 1)[a2..].to_vec();
+            assert!(
+                a2_at.len() == 1 && a2_at[0] - hit < 0.2,
+                "pad A2 plays at once: {a2_at:?} from {hit}"
+            );
+            assert_eq!(ons(&s, 0).len(), a1, "A1 waits for the line");
+            s.run_for(2.0);
+            let a1_at = ons(&s, 0)[a1..].to_vec();
+            assert!(
+                a1_at.len() == 1 && (a1_at[0] - (start + 2.0)).abs() < 0.5 / f64::from(crate::RATE),
+                "A1 starts on bar 2's line, to the frame: {a1_at:?}, the song from {start}"
+            );
+            let waiting = |s: &Session| {
+                s.screen
+                    .ui
+                    .get::<crate::play_widgets::MiniPads>(crate::play_page::PADS)
+                    .map(|m| m.waiting)
+            };
+            // Hit A1 and turn to bank B before the line: A1 starts on the
+            // line, not B1, and the screen's outline goes with bank A.
+            let (a1, b1) = (ons(&s, 0).len(), ons(&s, 16).len());
+            s.pad_edge(0, 100, true);
+            s.run_periods(2);
+            assert_eq!(waiting(&s), Some(1));
+            s.button("PAD BANK B/F");
+            s.run_periods(4);
+            assert_eq!(waiting(&s), Some(0), "bank B shows: no outline");
+            s.pad_edge(0, 0, false);
+            s.run_for(2.0);
+            assert_eq!(ons(&s, 0).len(), a1 + 1, "A1 started on the line");
+            assert_eq!(ons(&s, 16).len(), b1, "B1 didn't");
+            // It holds A1 until its let-go, made after the turn, lets go of
+            // A1 on the line after.
+            assert_eq!(s.app.held_kit_pads(), [0]);
+            s.run_for(2.0);
+            assert!(s.app.held_kit_pads().is_empty());
+            s.button("PAD BANK A/E");
+            // Hit again and held: the screen outlines the pad while its hit
+            // waits. STOP before the line drops it, says so in the log, and
+            // its let-go plays nothing.
+            let (a1, from) = (ons(&s, 0).len(), s.lines.len());
+            s.pad_edge(0, 100, true);
+            s.run_periods(4);
+            assert_eq!(waiting(&s), Some(1));
+            s.button("STOP");
+            s.run_periods(4);
+            s.pad_edge(0, 0, false);
+            s.run_for(2.0);
+            assert_eq!(ons(&s, 0).len(), a1, "STOP dropped the hit");
+            assert_eq!(waiting(&s), Some(0));
+            let said =
+                "pads: STOP dropped 1 Loop pad hit(s) still waiting for the launch line (1 so far)";
+            assert!(
+                s.lines[from..].iter().any(|l| l == said),
+                "{:?}",
+                &s.lines[from..]
+            );
+            // Stopped, a hit plays at once again.
+            let t = s.t();
+            s.pad(0, 100, 0.05);
+            assert!(ons(&s, 0)[a1..].iter().any(|&a| (a - t).abs() < 0.01));
+        });
+    }
 }

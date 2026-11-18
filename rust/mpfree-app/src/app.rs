@@ -1968,12 +1968,20 @@ impl App {
 
     /// A pad pressed: it plays, and writes a step while recording a pattern.
     pub fn pad_down(&mut self, slot: usize, velocity: u8) -> Vec<Effect> {
+        self.pad_down_on(slot, None, velocity)
+    }
+
+    /// [`App::pad_down`], on a kit's pad `on` (bank × 16 + place) in place
+    /// of the page's: a Loop pad's hit that waited for the launch line
+    /// plays the pad it was made on, though the bank turned since, and
+    /// its let-go ([`App::pad_up`]) lets go of that one (sampler R5.3b).
+    pub fn pad_down_on(&mut self, slot: usize, on: Option<u8>, velocity: u8) -> Vec<Effect> {
         self.step_pad_played(slot);
-        let pad = self.kit_pad(slot) as u8;
+        let pad = on.unwrap_or(self.kit_pad(slot) as u8);
         if !self.free_time_recording() {
             // In Free time the pads only write steps; the pattern keeps
             // playing the latched notes.
-            self.press_pad(slot, velocity.max(1));
+            self.press_pad_on(slot, on, velocity.max(1));
         }
         self.record_press(pad, velocity)
     }
@@ -2014,6 +2022,13 @@ impl App {
         } else {
             mpfree_play::Event::NoteOff { note }
         })
+    }
+
+    /// The pad hits and let-gos made before the next period land `offset`
+    /// frames into it on the armed track's arp, not at its top: a hit
+    /// that waited for the launch line plays on the line (sampler R5.3b).
+    pub fn pads_at(&mut self, offset: u32) {
+        self.arps.engine_at_mut(self.track).set_at(offset);
     }
 
     pub fn pad_up(&mut self, slot: usize) -> Vec<Effect> {
