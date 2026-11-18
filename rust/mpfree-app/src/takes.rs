@@ -6,7 +6,9 @@
 //!
 //! - **The loop.** A track's own instrument takes the clip playing on its
 //!   track. A pad channel, Drums and Synth take the tracks that play on
-//!   the pads (those without an instrument of their own): the longest
+//!   the pads (those without an instrument of their own), and Drums track
+//!   1 too, whatever it plays (its own instrument plays there, sampler R3
+//!   part 4b): the longest
 //!   clip playing there, which every other clip there must fit into a
 //!   whole number of times, so the sum repeats with it (a 1-bar and a
 //!   4-bar clip freeze as 4 bars; 3 and 4 bars don't freeze). The looper
@@ -69,6 +71,10 @@ pub enum Feed {
     Track(usize),
     /// The tracks that play on the pads (no instrument of their own).
     Pads,
+    /// The Drums strip: the tracks on the pads, and track 1 whatever it
+    /// plays (its own instrument plays into Drums, sampler R3 part 4b; a
+    /// change of it thaws a freeze, as a track's own does).
+    Drums,
     /// Any track: a print of a strip that follows no clip of its own.
     All,
 }
@@ -76,8 +82,12 @@ pub enum Feed {
 /// The feed strip `s` follows.
 pub fn feed(s: StripId) -> Feed {
     match s {
-        StripId::Track(t) if t >= TRACKS => Feed::Track(t - TRACKS),
-        StripId::Track(t) if t == DRUMS || t == SYNTH => Feed::Pads,
+        // The own channel that was track 1's is no track's now (but for an
+        // old project's: `MixHost::old_first`).
+        StripId::Track(TRACKS) => Feed::Track(0),
+        StripId::Track(t) if t > TRACKS => Feed::Track(t - TRACKS),
+        StripId::Track(DRUMS) => Feed::Drums,
+        StripId::Track(SYNTH) => Feed::Pads,
         StripId::Pad(_) => Feed::Pads,
         _ => Feed::All,
     }
@@ -109,6 +119,7 @@ impl Song<'_> {
         match feed {
             Feed::Track(k) => t == k,
             Feed::Pads => t < 128 && self.own & (1 << t) == 0,
+            Feed::Drums => t == 0 || (t < 128 && self.own & (1 << t) == 0),
             Feed::All => true,
         }
     }
@@ -137,8 +148,10 @@ impl Song<'_> {
                 h.add(u64::from(c.is_on(slot)));
             }
         }
-        if let Feed::Track(k) = feed {
-            h.add((self.instrument)(k));
+        match feed {
+            Feed::Track(k) => h.add((self.instrument)(k)),
+            Feed::Drums => h.add((self.instrument)(0)),
+            Feed::Pads | Feed::All => {}
         }
         for (t, n) in self.playing(feed) {
             h.add(t as u64);
@@ -188,7 +201,9 @@ impl Song<'_> {
                 Feed::Track(_) => {
                     format!("{name}: nothing plays on its track; launch a clip first")
                 }
-                Feed::Pads => format!("{name}: nothing plays on the pads; launch a clip first"),
+                Feed::Pads | Feed::Drums => {
+                    format!("{name}: nothing plays on the pads; launch a clip first")
+                }
                 Feed::All => format!("{name}: no clip plays; launch one first"),
             });
         };
@@ -914,9 +929,11 @@ mod tests {
     #[test]
     fn a_tracks_own_instrument_rests_while_frozen_and_goes_quiet_while_muted() {
         let mut r = Rig::new();
-        let strip = StripId::Track(TRACKS);
+        // Track 2's own instrument, on its own channel (track 1's plays
+        // into Drums: R3 part 4b).
+        let strip = StripId::Track(crate::mixing::track_channel(1));
         let job = crate::control::InstrumentJob {
-            track: 0,
+            track: 1,
             id: "mpfree.poly",
             extras: Vec::new(),
             values: crate::synth::engine_node("mpfree.poly", RATE)
@@ -931,41 +948,44 @@ mod tests {
         assert!(r.mix.build_instrument(job));
         assert!(matches!(
             r.mix.poll_instruments(),
-            Some(crate::mixing::Landed::Playing { track: 0, .. })
+            Some(crate::mixing::Landed::Playing { track: 1, .. })
         ));
         assert!(r
             .mix
             .mixer
             .set_capture(WATCH, Some((strip, CapturePoint::BeforeFader))));
-        r.feed = Some(TRACKS);
-        r.launch(0, 0);
+        r.feed = Some(crate::mixing::track_channel(1));
+        r.launch(1, 0);
         r.time.command(Command::Play);
         r.period();
         // The pads' tracks don't include it, and it takes its own clip.
         let line = r.ask(MixAction::Freeze(strip));
-        assert!(line.contains("Track 1: freezing its 4-beat loop"), "{line}");
-        let done = r.until("frozen", 8.0);
+        assert!(
+            line.contains("Track 2: freezing its 12-beat loop"),
+            "{line}"
+        );
+        let done = r.until("frozen", 24.0);
         assert_eq!(
             done,
-            "Track 1: frozen; its effects and instrument rest until you thaw it"
+            "Track 2: frozen; its effects and instrument rest until you thaw it"
         );
         for _ in 0..50 {
             r.period();
         }
         assert!(
-            r.mix.instruments.stats(0).rested >= 40,
+            r.mix.instruments.stats(1).rested >= 40,
             "the instrument rests"
         );
         let loud = |b: &[f32]| b.iter().fold(0f32, |m, v| m.max(v.abs()));
         // Its track muted: the take goes quiet, still frozen.
-        r.time.toggle_mute(0).unwrap();
+        r.time.toggle_mute(1).unwrap();
         for _ in 0..40 {
             r.period();
         }
         assert_eq!(loud(&r.period()), 0.0);
         assert!(r.mix.mixer.frozen(strip).is_some());
         // Unmuted: it plays again, in step.
-        r.time.toggle_mute(0).unwrap();
+        r.time.toggle_mute(1).unwrap();
         let mut peak = 0f32;
         for _ in 0..200 {
             peak = peak.max(loud(&r.period()));
@@ -983,7 +1003,7 @@ mod tests {
             }
         }
         let line = r.until("thawed", 1.0);
-        assert_eq!(line, "Track 1: thawed, what it plays changed");
+        assert_eq!(line, "Track 2: thawed, what it plays changed");
     }
 
     #[test]
@@ -1128,6 +1148,25 @@ mod tests {
             song.loop_of(Feed::Pads, Kind::Freeze, "Drums").map(|l| l.1),
             Ok(16.0)
         );
+        // Track 1's own instrument plays into Drums (R3 part 4b): a
+        // freeze of Drums takes its clip with the pads' tracks', and a
+        // change of its instrument thaws it.
+        let song = Song { own: 0b01, ..song };
+        assert!(song.feeds(Feed::Drums, 0) && !song.feeds(Feed::Pads, 0));
+        assert!(song.feeds(Feed::Drums, 1));
+        let other = Song {
+            instrument: &|_| 2,
+            ..song
+        };
+        let drums = StripId::Track(DRUMS);
+        assert_ne!(
+            song.sig(drums, Feed::Drums, &r.mix.mixer),
+            other.sig(drums, Feed::Drums, &r.mix.mixer)
+        );
+        assert_eq!(
+            song.sig(drums, Feed::Pads, &r.mix.mixer),
+            other.sig(drums, Feed::Pads, &r.mix.mixer)
+        );
     }
 
     /// A clip in random order (S6) has no loop to freeze, but prints; a
@@ -1178,7 +1217,8 @@ mod tests {
     #[test]
     fn feeds_and_what_freezes() {
         assert_eq!(feed(StripId::Track(TRACKS + 2)), Feed::Track(2));
-        assert_eq!(feed(StripId::Track(DRUMS)), Feed::Pads);
+        assert_eq!(feed(StripId::Track(DRUMS)), Feed::Drums);
+        assert_eq!(feed(StripId::Track(SYNTH)), Feed::Pads);
         assert_eq!(feed(StripId::Pad(7)), Feed::Pads);
         assert_eq!(feed(StripId::Track(LOOP)), Feed::All);
         assert!(!freezable(StripId::Master));

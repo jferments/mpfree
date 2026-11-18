@@ -3799,7 +3799,13 @@ impl Player {
             .ui
             .get::<mpfree_mixer_ui::MixerView>(mpfree_mixer_ui::MIXER)
             .map(|m| m.state());
-        let strip = state.and_then(|s| s.strip(StripId::Track(self.play.steps.track)));
+        // The knobs lock "this track's strip": Drums for track 1, its own
+        // for the rest (R3 part 4b).
+        let strip = state.and_then(|s| {
+            s.strip(StripId::Track(crate::mixing::track_channel(
+                self.play.steps.track,
+            )))
+        });
         let info = |id: u16| {
             mpfree_fx::strip_params()
                 .iter()
@@ -15388,8 +15394,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     own.apply(ToUi::Show(View::Synth));
     out.push(("synth-track", own));
-    // The mixer with two tracks playing their own instruments (Poly on
-    // track 1, FM on track 2): their channels after Drums, Synth, Loop and Audio.
+    // The mixer with two tracks playing their own instruments: Poly on
+    // track 1 in the Drums strip, named "Track 1" for it, and FM on track 2
+    // in its own channel after Synth, Loop and Audio.
     let mut mixer = sample_player(fonts());
     mixer.apply(ToUi::Show(View::Mixer));
     mixer.apply(ToUi::Mixer(Box::new(sample_instrument_mixer(&fm))));
