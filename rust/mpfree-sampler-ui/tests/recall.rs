@@ -340,6 +340,23 @@ fn from_reads_the_master_or_what_the_recorders_source_kept() {
     );
     let list = ui.get::<SettingList>(LIST).unwrap();
     assert_eq!(list.rows[from].value, "Line in");
+    // Every section's note fits beside its title with Line in picked, on
+    // the screen's 1280 px (panel.rs: 12 px in from a section's edge, 8 px
+    // between the title and the note).
+    let rect = ui.rect_of(LIST).unwrap();
+    let panel = list.panel.as_ref().unwrap();
+    let mut fonts = mpfree_ui::Fonts::embedded();
+    for (s, sr) in panel.sections.iter().zip(panel.section_rects(rect)) {
+        let used = fonts.measure(mpfree_ui::FontId::Bold, 12.0, &s.title.to_uppercase())
+            + 8
+            + fonts.measure(mpfree_ui::FontId::Sans, 12.0, &s.note);
+        assert!(
+            s.note.is_empty() || used <= sr.w - 2 * 12,
+            "{}: {used} px of {}",
+            s.title,
+            sr.w - 2 * 12
+        );
+    }
     // The wheel's push on From goes back to the master.
     assert_eq!(
         p.step(&mut ui, &line, from, 0),
