@@ -17,10 +17,14 @@
 //! same track ends the old one first, on the same frame.
 //!
 //! **Replace recording.** The first time in a take that the transport
-//! records with overdub off, the armed track's notes are erased as the
-//! playhead reaches them, for one pass of its clip: until the clip wraps,
-//! the transport jumps, recording stops or overdub turns on. Then the take
-//! goes on as overdub. Erased notes are not played; [`Player::erased`]
+//! records with overdub off, each armed track's notes are erased as the
+//! playhead reaches them, for one pass of its own clip: until that clip
+//! wraps or switches, the transport jumps, recording stops or overdub turns
+//! on. Then the take goes on as overdub on that track. The armed tracks are
+//! the view's armed one and its others ([`PlayView::set_also`], several
+//! tracks recording one take), each with a pass of its own, so a track
+//! whose clip is half a bar long goes on as overdub while a two-bar clip's
+//! pass still erases. Erased notes are not played; [`Player::erased`]
 //! names them for the control thread to remove (`Clip::remove_note`).
 //! The pass's parameter locks are erased the same way
 //! ([`Player::erased_locks`]), trigless ones too, so the new take does not
@@ -83,8 +87,8 @@
 //! first bar line the playhead plays: the clip so far plays the ticks
 //! before it, its notes still sounding end on it, and the cued clip plays
 //! from it. [`Player::started`] names each switch for the control thread.
-//! A switch on the armed track ends a replace pass (the take goes on as
-//! overdub).
+//! A switch on an armed track ends its replace pass (the take goes on as
+//! overdub there).
 //!
 //! **Parameter locks** (the Elektron way). A clip's lock plays on its
 //! tick as [`Event::Lock`], before any note-on on the same frame (and
@@ -506,13 +510,18 @@ pub struct Player {
     n_erased: usize,
     erased_locks: [ErasedLock; MAX_ERASED],
     n_erased_locks: usize,
-    /// Replace recording: the armed clip's pass being replaced.
-    replacing: Option<i64>,
+    /// Replace recording: the armed tracks in their pass being replaced
+    /// (a bit each), and each one's pass in [`Player::passes`].
+    replacing: u128,
+    /// The pass of each armed track's clip being replaced, while its bit
+    /// in `replacing` is set.
+    passes: [i64; MAX_TRACKS],
     /// Live erase: the sounds (a bit each, by note) whose notes on the
     /// armed track are erased while the transport records.
     erasing: u128,
-    /// This take (since the last record-on) has had its replace pass.
-    replaced: bool,
+    /// The armed tracks that have had their replace pass in this take
+    /// (since the last record-on), a bit each.
+    replaced: u128,
     /// Record-ons so far: the number of the latest take.
     take: u32,
     /// Cues started that the view does not show yet.
@@ -684,8 +693,9 @@ impl Player {
             n_erased: 0,
             erased_locks: [NO_ERASED_LOCK; MAX_ERASED],
             n_erased_locks: 0,
-            replacing: None,
-            replaced: false,
+            replacing: 0,
+            passes: [0; MAX_TRACKS],
+            replaced: 0,
             erasing: 0,
             take: 0,
             switches: Switches::new(),
@@ -772,6 +782,7 @@ impl Player {
             erased_locks,
             n_erased_locks,
             replacing,
+            passes,
             erasing,
             replaced,
             take,
@@ -823,6 +834,13 @@ impl Player {
         self.seq = *seq;
         self.stats = *stats;
         self.replacing = *replacing;
+        // Only the passes in use.
+        let mut bits = *replacing;
+        while bits != 0 {
+            let i = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            self.passes[i] = passes[i];
+        }
         self.erasing = *erasing;
         self.replaced = *replaced;
         self.take = *take;
@@ -1000,18 +1018,18 @@ impl Player {
         }
         match m.mark {
             Mark::RecordOn { .. } => {
-                self.replacing = None;
-                self.replaced = false;
+                self.replacing = 0;
+                self.replaced = 0;
                 self.take = self.take.wrapping_add(1);
             }
-            Mark::RecordOff { .. } => self.replacing = None,
+            Mark::RecordOff { .. } => self.replacing = 0,
             _ => {}
         }
         if matches!(
             m.mark,
             Mark::Looped { .. } | Mark::Located { .. } | Mark::Stopped { .. }
         ) {
-            self.replacing = None;
+            self.replacing = 0;
         }
         match m.mark {
             Mark::Looped { .. } | Mark::Located { .. } | Mark::Stopped { .. } => {
@@ -1233,6 +1251,26 @@ impl Player {
         self.advance(view, ticks.end - 1, true, first, span, out);
     }
 
+    /// What track `i` erases in `span`: an armed track's replace pass (the
+    /// armed one's or another's, [`PlayView::set_also`]), and the armed
+    /// one's live erase while recording; nothing for a track not armed.
+    #[inline(never)]
+    fn erase_of(&self, view: &PlayView, span: &Span, i: usize) -> Erase {
+        let bit = 1u128.checked_shl(i as u32).unwrap_or(0);
+        if view.armed_set() & bit == 0 {
+            return NO_ERASE;
+        }
+        Erase {
+            pass: (self.replacing & bit != 0).then(|| self.passes[i]),
+            // Live erase is the armed track's alone.
+            notes: if span.state == State::Recording && view.armed == Some(i) {
+                self.erasing
+            } else {
+                0
+            },
+        }
+    }
+
     /// Track `i`'s part of a span, playing `ticks` (the whole span, or
     /// the part before or after a mute cue's line).
     fn play_track(&mut self, view: &PlayView, span: &Span, i: usize, ticks: Range<Tick>) {
@@ -1240,15 +1278,9 @@ impl Player {
         let bar = span.meter.bar_ticks();
         // A scene's mute switches with its cue, before the view shows it.
         let muted = self.muted(view, i);
-        let erase = if view.armed == Some(i) {
-            Erase {
-                pass: self.replacing,
-                notes: if span.state == State::Recording {
-                    self.erasing
-                } else {
-                    0
-                },
-            }
+        // What it erases, if armed (worked out apart: most tracks aren't).
+        let erase = if view.armed == Some(i) || view.also != 0 {
+            self.erase_of(view, span, i)
         } else {
             NO_ERASE
         };
@@ -1367,8 +1399,9 @@ impl Player {
         if let Some(seen) = self.seen.get_mut(i) {
             *seen = key;
         }
-        if view.armed == Some(i) {
-            self.replacing = None;
+        // A switch ends that track's replace pass.
+        if let Some(bit) = 1u128.checked_shl(i as u32) {
+            self.replacing &= !bit;
         }
         if let (Some((clip, origin, start)), false) = (playing, self.muted(view, i)) {
             self.collect(
@@ -2057,20 +2090,24 @@ impl Player {
         });
     }
 
-    /// Start or end the replace pass for this span.
+    /// Start or end the replace pass for this span: each armed track's
+    /// over one pass of its own playing clip.
     fn replace_state(&mut self, view: &PlayView, span: &Span, ticks: &Range<Tick>) {
         if span.state != State::Recording || span.overdub {
-            self.replacing = None;
+            self.replacing = 0;
             return;
         }
-        if self.replaced {
-            return;
-        }
-        let clip = view.armed.and_then(|t| self.switches.playing(view, t));
-        if let Some((clip, origin)) = clip.filter(|(c, o)| c.song_len > 0.0 && ticks.end > *o) {
-            let from = (ticks.start - origin).max(0) as f64;
-            self.replacing = Some((from / clip.song_len).floor() as i64);
-            self.replaced = true;
+        let mut bits = view.armed_set() & !self.replaced;
+        while bits != 0 {
+            let t = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let clip = self.switches.playing(view, t);
+            if let Some((clip, origin)) = clip.filter(|(c, o)| c.song_len > 0.0 && ticks.end > *o) {
+                let from = (ticks.start - origin).max(0) as f64;
+                self.passes[t] = (from / clip.song_len).floor() as i64;
+                self.replacing |= 1 << t;
+                self.replaced |= 1 << t;
+            }
         }
     }
 

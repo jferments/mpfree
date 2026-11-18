@@ -364,8 +364,56 @@ impl Desk<'_> {
                 fx.extend(arm(app, time, looper, out, t, crate::rec_arm::Mover::Tap))
             }
             // SHIFT + Arm: REC records both, or lets go of one of the two.
+            // A track's row of the target list: that track alone, as
+            // picking it does (refused while a take records).
+            gui::FromUi::ArmTrack(t) => {
+                let now = rec_now(time, looper);
+                if now.taking() {
+                    fx.extend(rec_effects(vec![app.rec.busy(&now)], time, looper));
+                    return None;
+                }
+                if time.armed() != Some(t) {
+                    fx.extend(crate::time_action(
+                        out,
+                        time,
+                        tracks,
+                        looper,
+                        app,
+                        mix,
+                        mpfree_time_ui::TimeAction::Arm(Some(t)),
+                    ));
+                }
+                fx.extend(arm(
+                    app,
+                    time,
+                    looper,
+                    out,
+                    crate::rec_arm::Target::Notes,
+                    crate::rec_arm::Mover::Tap,
+                ));
+            }
+            // SHIFT + a track's row: REC records it too, or lets go of it.
+            gui::FromUi::ArmTrackAdd(t) => {
+                let now = rec_now(time, looper);
+                app.rec.also = time.also();
+                let name = time
+                    .project()
+                    .tracks
+                    .get(t)
+                    .map_or_else(|| format!("Track {}", t + 1), |tr| tr.name.clone());
+                if time.project().tracks.get(t).is_none_or(|tr| tr.is_loops()) {
+                    fx.push(app::Effect::Tell(format!(
+                        "{name} plays loops: the Looper row records them"
+                    )));
+                    return None;
+                }
+                let done = app.rec.add_track(t, &name, time.armed(), &now);
+                out.show(gui::ToUi::Rec(app.rec));
+                fx.extend(rec_effects(done, time, looper));
+            }
             gui::FromUi::ArmAdd(t) => {
                 let now = rec_now(time, looper);
+                app.rec.also = time.also();
                 let was = app.rec;
                 let done = app.rec.add(t, &now);
                 if app.rec != was && !app.rec.both {
@@ -829,6 +877,7 @@ fn arm(
     by: crate::rec_arm::Mover,
 ) -> Vec<app::Effect> {
     let now = rec_now(time, looper);
+    app.rec.also = time.also();
     let was = app.rec;
     let done = app.rec.move_to(t, by, &now);
     if app.rec != was {
@@ -1350,6 +1399,7 @@ fn rec_effects(
             Do::StopWaiting => fx.push(app::Effect::Looper(looping::LoopAction::StopWaiting)),
             Do::ThrowTake => fx.push(app::Effect::Time(mpfree_time_ui::TimeAction::ThrowTake)),
             Do::Pad(d) => fx.push(app::Effect::PadTake(d)),
+            Do::Tracks(b) => fx.push(app::Effect::Time(mpfree_time_ui::TimeAction::ArmAlso(b))),
             Do::Tell(s) => fx.push(app::Effect::Tell(s)),
             Do::Note(s) => fx.push(app::Effect::Note(s)),
         }

@@ -301,6 +301,53 @@ impl Controls {
     }
 }
 
+/// A lane's value waiting for the end of the period it was handed over
+/// in ([`MidiOut::control_ahead`]): track, control id, offset, raw value.
+type Pending = (u8, u16, u32, i16);
+/// Lane values one period can hold back.
+const MAX_PENDING: usize = 64;
+
+/// The controls of tracks that play ahead (sequencer S5), sent with their
+/// notes from the look-ahead ([`MidiOut::control_ahead`]), not by the mod
+/// engine.
+struct AheadControls {
+    /// Held by a lock or a lane sent ahead, until its end is: the mod
+    /// engine's values on them aren't sent (a turn under a lock, as the
+    /// engine itself keeps it).
+    held: [[u64; CTL_WORDS]; MAX_TRACKS],
+    /// A lane's value went ahead this period: the next waits
+    /// (`pending`), so a control sends at most two a period, as the mod
+    /// engine's do.
+    sent: [[u64; CTL_WORDS]; MAX_TRACKS],
+    /// Tracks with a bit in `sent`.
+    touched: u128,
+    /// The last lane value of each control that sent one this period,
+    /// sent on its own frame at the period's end.
+    pending: [Pending; MAX_PENDING],
+    n_pending: usize,
+    /// Messages sent ahead.
+    messages: u64,
+    /// The mod engine's values not sent under a lock or lane sent ahead.
+    held_back: u64,
+    /// Lane values sent at once because `pending` was full.
+    unthinned: u64,
+}
+
+impl AheadControls {
+    fn new() -> AheadControls {
+        AheadControls {
+            held: [[0; CTL_WORDS]; MAX_TRACKS],
+            sent: [[0; CTL_WORDS]; MAX_TRACKS],
+            touched: 0,
+            pending: [(0, 0, 0, 0); MAX_PENDING],
+            n_pending: 0,
+            messages: 0,
+            held_back: 0,
+            unthinned: 0,
+        }
+    }
+}
+
 /// A control gliding to its value (CC smooth).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Glide {
@@ -835,6 +882,8 @@ pub struct MidiOut {
     gear: Gear,
     /// The tracks' controllers, bend and pressure out.
     controls: Controls,
+    /// The controls of tracks that play ahead, sent from the look-ahead.
+    ahead_ctl: Box<AheadControls>,
     /// Each track's MIDI effects as they are now (the mod engine's values
     /// on them too), for its CC scale and CC smooth
     /// ([`MidiOut::set_note_fx`]).
@@ -902,6 +951,7 @@ impl MidiOut {
             sent_back: 0,
             gear: Gear::new(),
             controls: Controls::new(),
+            ahead_ctl: Box::new(AheadControls::new()),
             note_fx: Box::new([TrackFx::default(); MAX_TRACKS]),
             period: (rate / 375).max(1),
             pad_out: vec![None; MAX_TRACKS * PADS].into_boxed_slice(),
@@ -1073,16 +1123,28 @@ impl MidiOut {
     /// leave the whole delay early. Never allocates.
     pub fn ahead(&self) -> [u32; MAX_TRACKS] {
         let mut out = [0; MAX_TRACKS];
-        for (a, applied) in out.iter_mut().zip(self.tracks.iter()) {
-            let Some(p) = applied.and_then(|t| self.ports.get(usize::from(t.port.0))) else {
-                continue;
-            };
-            if p.writer.is_some() {
-                let more = p.early.saturating_sub(self.lead);
-                *a = (more.as_secs_f64() * f64::from(self.rate)).ceil() as u32;
-            }
+        for (t, a) in out.iter_mut().enumerate() {
+            *a = self.ahead_of(t);
         }
         out
+    }
+
+    /// Track `t`'s ahead ([`MidiOut::ahead`]).
+    fn ahead_of(&self, t: usize) -> u32 {
+        let Some(p) = self
+            .tracks
+            .get(t)
+            .copied()
+            .flatten()
+            .and_then(|a| self.ports.get(usize::from(a.port.0)))
+        else {
+            return 0;
+        };
+        if p.writer.is_none() {
+            return 0;
+        }
+        let more = p.early.saturating_sub(self.lead);
+        (more.as_secs_f64() * f64::from(self.rate)).ceil() as u32
     }
 
     /// Once a period, before the notes: takes the project's track outputs
@@ -1362,11 +1424,17 @@ impl MidiOut {
         if t >= MAX_TRACKS || !value.is_finite() {
             return;
         }
+        // Held by a lock or a lane sent ahead (S5): the gear has that, as
+        // a lock held in the engine would keep it.
+        let (w, bit) = (id / 64, 1u64 << (id % 64));
+        if self.ahead_ctl.held[t][w] & bit != 0 && self.ahead_of(t) > 0 {
+            self.ahead_ctl.held_back += 1;
+            return;
+        }
         self.controls.value[t][id] = (value.round() as i32).clamp(lo.into(), hi.into()) as i16;
         if !self.takes(t as u16) {
             return;
         }
-        let (w, bit) = (id / 64, 1u64 << (id % 64));
         self.controls.touched |= 1 << t;
         if self.controls.sent[t][w] & bit != 0 || !self.ctl_free(t, id) {
             self.controls.waiting[t][w] |= bit;
@@ -1410,6 +1478,120 @@ impl MidiOut {
         if self.queue[port].len() > before {
             self.queue[port].lift_last_before_notes();
             self.controls.messages += 1;
+        }
+    }
+
+    /// A lock (`hold`), a lane's value (`hold` and `lane`) or their end
+    /// (the control's own value) on track `t`'s controller, bend or
+    /// pressure (`addr`, `Owner::Midi`), from a track that plays ahead
+    /// (sequencer S5): sent with the track's notes, `offset` frames from
+    /// this period's start (past its end when it goes ahead), put before
+    /// a note on its frame. The mod engine then doesn't send the control
+    /// while the lock or lane holds it. A lane sends at most its first
+    /// value of a period at once and its last at the period's end, as
+    /// the engine's values do. False, and nothing sent, when MIDI out
+    /// doesn't take the track or the track's CC smooth glides the
+    /// control (gliding goes a period at a time): the caller sends it to
+    /// the mod engine as before. Never allocates.
+    pub fn control_ahead(
+        &mut self,
+        offset: u32,
+        addr: ParamAddr,
+        value: f32,
+        hold: bool,
+        lane: bool,
+    ) -> bool {
+        let Owner::Midi(t) = addr.owner else {
+            return false;
+        };
+        let (t, id) = (usize::from(t), usize::from(addr.param));
+        let Some((lo, hi)) = ctl::range(addr.param) else {
+            return false;
+        };
+        if t >= MAX_TRACKS || !value.is_finite() || !self.takes(t as u16) {
+            return false;
+        }
+        let raw = (value.round() as i32).clamp(lo.into(), hi.into()) as i16;
+        let (w, bit) = (id / 64, 1u64 << (id % 64));
+        if self.shaped(t, id, raw).1.is_some() {
+            self.ahead_ctl.held[t][w] &= !bit;
+            return false;
+        }
+        if hold {
+            self.ahead_ctl.held[t][w] |= bit;
+        } else {
+            self.ahead_ctl.held[t][w] &= !bit;
+        }
+        self.controls.value[t][id] = raw;
+        let a = &mut *self.ahead_ctl;
+        let mine = |p: &Pending| usize::from(p.0) == t && usize::from(p.1) == id;
+        if lane && a.sent[t][w] & bit != 0 {
+            if let Some(p) = a.pending[..a.n_pending].iter_mut().find(|p| mine(p)) {
+                *p = (t as u8, id as u16, offset, raw);
+                return true;
+            }
+            if let Some(p) = a.pending.get_mut(a.n_pending) {
+                *p = (t as u8, id as u16, offset, raw);
+                a.n_pending += 1;
+                return true;
+            }
+            a.unthinned += 1;
+        }
+        // A lock or an end replaces a lane's value held back before it.
+        if let Some(i) = a.pending[..a.n_pending].iter().position(mine) {
+            a.pending.copy_within(i + 1..a.n_pending, i);
+            a.n_pending -= 1;
+        }
+        a.sent[t][w] |= bit;
+        a.touched |= 1 << t;
+        self.send_ahead(t, id, offset, raw);
+        true
+    }
+
+    /// Control `id` of track `t` at raw value `v`, ahead, at `offset`.
+    fn send_ahead(&mut self, t: usize, id: usize, offset: u32, v: i16) {
+        let (to, _) = self.shaped(t, id, v);
+        self.controls.glide[t][id] = Glide::IDLE;
+        if let Some(m) = Controls::msg(id, to) {
+            self.controls.out[t][id] = to;
+            let before = self.controls.messages;
+            self.ctl_msg(t, m, offset);
+            self.ahead_ctl.messages += self.controls.messages - before;
+        }
+    }
+
+    /// The lane values held back this period go out on their frames, and
+    /// each control may send ahead again.
+    fn ahead_period_end(&mut self) {
+        for i in 0..self.ahead_ctl.n_pending {
+            let (t, id, offset, v) = self.ahead_ctl.pending[i];
+            let (t, id) = (usize::from(t), usize::from(id));
+            if self.takes(t as u16) {
+                self.send_ahead(t, id, offset, v);
+            }
+        }
+        self.ahead_ctl.n_pending = 0;
+        let mut tracks = std::mem::take(&mut self.ahead_ctl.touched);
+        while tracks != 0 {
+            let t = tracks.trailing_zeros() as usize;
+            tracks &= tracks - 1;
+            self.ahead_ctl.sent[t] = [0; CTL_WORDS];
+        }
+    }
+
+    /// Control `addr` no longer goes ahead (something else moves it now:
+    /// a macro, an LFO row, the morph, a hand): the mod engine's values
+    /// on it are sent again.
+    pub fn release_ahead(&mut self, addr: ParamAddr) {
+        let Owner::Midi(t) = addr.owner else { return };
+        let (t, id) = (usize::from(t), usize::from(addr.param));
+        if let Some(h) = self
+            .ahead_ctl
+            .held
+            .get_mut(t)
+            .and_then(|h| h.get_mut(id / 64))
+        {
+            *h &= !(1u64 << (id % 64));
         }
     }
 
@@ -1457,6 +1639,9 @@ impl MidiOut {
             return;
         }
         self.applied_gen = Some(m.gen);
+        // A route or a delay may have changed: what a lock sent ahead held
+        // is the mod engine's to send again.
+        self.ahead_ctl.held = [[0; CTL_WORDS]; MAX_TRACKS];
         for p in self.ports.iter_mut().filter(|p| p.here) {
             // Found in place: `MidiSetup::port` would make a copy.
             let s = m.setup.ports.iter().find(|s| s.name == p.name);
@@ -2076,6 +2261,7 @@ impl MidiOut {
     /// was given.
     pub fn period_end(&mut self, frames: u32, t0: Instant) {
         self.period = frames.max(1);
+        self.ahead_period_end();
         self.gear_period();
         let at = t0 + self.lead;
         let rate = f64::from(self.rate);
@@ -2343,6 +2529,15 @@ impl MidiOut {
             lines.push(format!(
                 "Tracks' controllers, bend and pressure (locks, lanes, macros): {} messages sent",
                 self.controls.messages
+            ));
+        }
+        let a = &self.ahead_ctl;
+        if a.messages + a.held_back + a.unthinned > 0 {
+            lines.push(format!(
+                "Controls ahead for slow gear: {} messages sent ahead with their notes, {} of the \
+                 mod engine's values not sent under a lock or lane sent ahead, {} lane values \
+                 sent without waiting (no room to wait)",
+                a.messages, a.held_back, a.unthinned
             ));
         }
         let g = &self.gear;
