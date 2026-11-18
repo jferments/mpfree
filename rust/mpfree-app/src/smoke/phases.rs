@@ -37,6 +37,27 @@ mod looper {
         assert_eq!(status(s).phase, want, "after {seconds} s");
     }
 
+    /// Runs until the loop's speed and ticks are `want`, for up to 20 s
+    /// of wall time: a speed change goes through the looper's thread and
+    /// can take longer than a fixed stretch of the music's time on a busy
+    /// runner.
+    fn until_speed(s: &mut Session, want: (i8, mpfree_transport::time::Tick)) {
+        let start = std::time::Instant::now();
+        loop {
+            let st = status(s);
+            if (st.speed, st.ticks) == want {
+                return;
+            }
+            assert!(
+                start.elapsed().as_secs() < 20,
+                "speed and ticks {:?}, not {want:?}",
+                (st.speed, st.ticks)
+            );
+            s.run_periods(1);
+            std::thread::sleep(std::time::Duration::from_micros(100));
+        }
+    }
+
     /// A loop recorded on the Looper tab with PLAY and REC, from the next
     /// bar line, two bars long, then it plays: free length (the default),
     /// closed by REC again a bar and a half in, on the bar line; or a set
@@ -815,21 +836,25 @@ mod looper {
         on_big_stack(|| {
             let mut s = two_layers();
             let (ticks, frames) = (status(&s).ticks, status(&s).frames);
-            s.press("leditor", "speed", "Speed ½×").run_for(0.2);
+            s.press("leditor", "speed", "Speed ½×");
+            until_speed(&mut s, (-1, 2 * ticks));
             let st = status(&s);
             assert_eq!((st.speed, st.rate, st.ticks), (-1, -1, 2 * ticks));
-            assert!(s
-                .said()
-                .iter()
-                .any(|l| l
-                    == "looper: speed ½×: an octave down, twice the bars (Undo takes it back)"));
-            // The strip's ½× is the one lit (so it takes no tap).
-            let half = at(&mut s, "leditor", "speed", 0);
-            assert!(!half.enabled, "½× is the speed now");
-            s.button("UNDO").run_for(0.3);
-            assert_eq!((status(&s).speed, status(&s).ticks), (0, ticks));
-            s.button_with("SHIFT", "UNDO").run_for(0.3);
-            assert_eq!((status(&s).speed, status(&s).ticks), (-1, 2 * ticks));
+            assert!(s.until_said(
+                "looper: speed ½×: an octave down, twice the bars (Undo takes it back)",
+                2.0
+            ));
+            // The strip's ½× is the one lit (so it takes no tap), once the
+            // screen has the looper's status.
+            let start = std::time::Instant::now();
+            while at(&mut s, "leditor", "speed", 0).enabled {
+                assert!(start.elapsed().as_secs() < 20, "½× is the speed now");
+                s.run_periods(1);
+            }
+            s.button("UNDO");
+            until_speed(&mut s, (0, ticks));
+            s.button_with("SHIFT", "UNDO");
+            until_speed(&mut s, (-1, 2 * ticks));
             // OVERDUB waits for the print, which the worker makes, then
             // the loop is fitted to it and the overdub records.
             s.button("OVERDUB");
@@ -848,9 +873,9 @@ mod looper {
             s.button("UNDO").run_for(0.4);
             assert_eq!(status(&s).layers, 1);
             // 1× again: the fitted audio an octave up, the loop's own bars.
-            s.press("leditor", "speed", "Speed 1×").run_for(0.2);
-            let st = status(&s);
-            assert_eq!((st.speed, st.rate, st.ticks), (0, 1, ticks));
+            s.press("leditor", "speed", "Speed 1×");
+            until_speed(&mut s, (0, ticks));
+            assert_eq!(status(&s).rate, 1);
             s.button("STOP");
         });
     }
