@@ -14,6 +14,15 @@
 //!   compile by [`Perform::dress`]). A track with nothing playing or cued
 //!   and an empty cell gets no cue, and its mute is set at once, which
 //!   sounds the same. With the transport stopped it all happens at once.
+//! - A scene's program changes (sequencer S5,
+//!   [`mpfree_seq::Scene::programs`]) go out on the same line, every track
+//!   with one, cued or not, so a track whose gear plays its own patterns
+//!   switches with the scene too ([`mpfree_play::SceneProgram`], set on
+//!   every compile by [`Perform::dress`]). Where the clip a track plays
+//!   then has a program change of its own, the clip's goes out instead. A
+//!   scene launched while stopped sends them where the music starts; after
+//!   a stop or a jump they go out again, as a clip's do. The next launch
+//!   replaces them, and Stop all forgets them.
 //! - [`Perform::started`]: the host passes each [`Started`] the player
 //!   reports, before applying it. A scene's mute becomes the track's
 //!   `mute`, and the scene's first start is where its follow counts from.
@@ -56,7 +65,7 @@ pub mod song;
 pub use morph::{save_scene, Loaded, SceneMorph};
 pub use song::{Recorded, SongRecorder};
 
-use mpfree_play::{anchored, Cue, Launch, PlayView, Started};
+use mpfree_play::{anchored, Cue, Launch, PlayView, SceneProgram, Started};
 use mpfree_seq::arrange::scene_length;
 use mpfree_seq::scenes::follow_target;
 use mpfree_seq::{Clip, Follow, FollowAction, LaunchGrid, Project, MAX_TRACKS, SCENES, SLOTS};
@@ -142,6 +151,11 @@ pub struct Perform {
     /// quantise (S4): a scene's cues land together on the project's, and a
     /// follow's on the next bar line, its point.
     cue_lines: [Option<LaunchGrid>; MAX_TRACKS],
+    /// Each track's program change from the scene launched last (S5), for
+    /// [`Perform::dress`].
+    programs: [Option<SceneProgram>; MAX_TRACKS],
+    /// The id of the last launch's program changes.
+    program_id: u32,
     clips: [Option<ClipCount>; MAX_TRACKS],
     /// The song list, while it plays.
     list: Option<ListPlaying>,
@@ -162,6 +176,8 @@ impl Perform {
             cued: None,
             cue_mutes: [None; MAX_TRACKS],
             cue_lines: [None; MAX_TRACKS],
+            programs: [None; MAX_TRACKS],
+            program_id: 0,
             clips: [None; MAX_TRACKS],
             list: None,
             rng: seed | 1,
@@ -311,6 +327,19 @@ impl Perform {
                 mute[t] = v;
             }
         }
+        // Its program changes, on the same line (stopped: where the music
+        // starts), with a new id.
+        self.program_id = self.program_id.wrapping_add(1);
+        let scene = project.scene(row);
+        for (t, p) in self.programs.iter_mut().enumerate() {
+            *p = scene
+                .and_then(|s| s.program(t))
+                .map(|program| SceneProgram {
+                    program,
+                    line: matches!(when, When::Cued).then_some(line),
+                    id: self.program_id,
+                });
+        }
         for (t, track) in project.tracks.iter_mut().enumerate() {
             let slot = track.slots[row].as_ref().map(|c| (row, c.length, c.speed));
             let busy = launches.iter().any(|l| l.track == t) || cues.iter().any(|c| c.track == t);
@@ -390,9 +419,25 @@ impl Perform {
         }
         self.cue_mutes = [None; MAX_TRACKS];
         self.cue_lines = [None; MAX_TRACKS];
+        self.programs = [None; MAX_TRACKS];
         self.cued = None;
         self.playing = None;
         self.list = None;
+    }
+
+    /// The program change the scene launched last sends `track` (S5).
+    pub fn program(&self, track: usize) -> Option<SceneProgram> {
+        self.programs.get(track).copied().flatten()
+    }
+
+    /// The program changes still waiting for their line land on `line`
+    /// (a follow's or the song list's point).
+    fn programs_on(&mut self, line: LaunchGrid) {
+        for p in self.programs.iter_mut().flatten() {
+            if p.line.is_some() {
+                p.line = Some(line);
+            }
+        }
     }
 
     /// The mute a scene's cue on `track` sets when it starts, if any.
@@ -430,7 +475,8 @@ impl Perform {
         }
     }
 
-    /// Take back what is cued on `track` (the host removed its cue).
+    /// Take back what is cued on `track` (the host removed its cue), with
+    /// the scene's program change for it.
     pub fn uncue(&mut self, track: usize) {
         if let Some(m) = self.cue_mutes.get_mut(track) {
             *m = None;
@@ -438,10 +484,14 @@ impl Perform {
         if let Some(g) = self.cue_lines.get_mut(track) {
             *g = None;
         }
+        if let Some(p) = self.programs.get_mut(track) {
+            *p = None;
+        }
     }
 
-    /// Set each cued track's scene mute, and the line a scene's or a
-    /// follow's cue lands on, on a freshly compiled view.
+    /// Set each cued track's scene mute, the line a scene's or a follow's
+    /// cue lands on, and the scene's program changes, on a freshly
+    /// compiled view.
     pub fn dress(&self, view: &mut PlayView) {
         for (t, m) in self.cue_mutes.iter().enumerate() {
             if m.is_some() {
@@ -451,6 +501,11 @@ impl Perform {
         for (t, g) in self.cue_lines.iter().enumerate() {
             if let Some(g) = g {
                 view.set_cue_line(t, *g);
+            }
+        }
+        for (t, p) in self.programs.iter().enumerate() {
+            if p.is_some() {
+                view.set_scene_program(t, *p);
             }
         }
     }
@@ -545,6 +600,7 @@ impl Perform {
                                 *g = Some(LaunchGrid::Bars(1));
                             }
                         }
+                        self.programs_on(LaunchGrid::Bars(1));
                     }
                 }
             }
@@ -687,6 +743,7 @@ impl Perform {
                 *g = Some(LaunchGrid::Bars(1));
             }
         }
+        self.programs_on(LaunchGrid::Bars(1));
     }
 
     /// `f.action` with a chance of `f.chance` %, else `f.other`.
@@ -741,6 +798,71 @@ mod tests {
         }
         p.tracks[0].slots[2] = Some(Clip::new("c", BAR));
         p
+    }
+
+    /// A launch's program changes: on the project's launch line while
+    /// rolling, with none while stopped; the next launch's replace them
+    /// with a new id; a follow's land on the next bar line; Stop all and
+    /// an uncue forget them.
+    #[test]
+    fn a_scenes_program_changes_go_with_its_launch() {
+        let mut p = project();
+        let pc = |program| {
+            Some(mpfree_seq::ClipProgram {
+                program,
+                bank: None,
+            })
+        };
+        p.scene_mut(1).unwrap().set_program(1, pc(7)).unwrap();
+        p.scene_mut(1).unwrap().set_program(5, pc(9)).unwrap();
+        p.scene_mut(1).unwrap().follow = Some(Follow::after(1, FollowAction::Next));
+        p.scene_mut(2).unwrap().set_program(0, pc(3)).unwrap();
+        p.launch = LaunchGrid::Bars(2);
+        let mut perf = Perform::default();
+        let (mut launches, mut cues) = (vec![], vec![]);
+        assert!(perf.launch_scene(&mut p, 1, When::Now(0), &mut launches, &mut cues));
+        let now = perf.program(1).unwrap();
+        assert_eq!((now.program, now.line), (pc(7).unwrap(), None));
+        assert_eq!(
+            perf.program(5).map(|x| x.program),
+            pc(9),
+            "past the tracks too"
+        );
+        assert_eq!(perf.program(0), None);
+        assert!(perf.launch_scene(&mut p, 1, When::Cued, &mut launches, &mut cues));
+        let cued = perf.program(1).unwrap();
+        assert_eq!(cued.line, Some(LaunchGrid::Bars(2)));
+        assert!(cued.id > now.id);
+        // The view of a track that exists gets it.
+        let mut v = PlayView::compile_cued(&p, &launches, &cues).unwrap();
+        perf.dress(&mut v);
+        assert_eq!(v.scene_program(1), Some(cued));
+        assert_eq!(v.scene_program(0), None);
+        // Scene 1's follow launches scene 2 on the next bar line.
+        let st = Started {
+            track: 0,
+            slot: Some(1),
+            at: 2 * BAR,
+            origin: 2 * BAR,
+            mute: None,
+            from: 2 * BAR,
+        };
+        perf.started(&mut p, &st);
+        st.apply(&mut launches, &mut cues);
+        let fired = perf.due(&mut p, &mut launches, &mut cues, 3 * BAR - 10, BAR);
+        assert_eq!(fired.scene, Some(Some(2)));
+        assert_eq!(perf.program(1), None, "scene 2 has none for track 1");
+        let f = perf.program(0).unwrap();
+        assert_eq!(
+            (f.program, f.line),
+            (pc(3).unwrap(), Some(LaunchGrid::Bars(1)))
+        );
+        perf.uncue(0);
+        assert_eq!(perf.program(0), None);
+        assert!(perf.launch_scene(&mut p, 2, When::Cued, &mut launches, &mut cues));
+        assert!(perf.program(0).is_some());
+        perf.stop_all(When::Cued, &mut launches, &mut cues);
+        assert_eq!(perf.program(0), None);
     }
 
     #[test]
