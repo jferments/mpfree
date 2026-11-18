@@ -488,6 +488,9 @@ impl TrackView {
 pub struct PlayView {
     pub(crate) tracks: Vec<TrackView>,
     pub(crate) armed: Option<usize>,
+    /// The other armed tracks, a bit each (never the armed one): each
+    /// records its own notes in the same take ([`PlayView::set_also`]).
+    pub(crate) also: u128,
     /// Song mode: a track with no clip launched plays its placements.
     pub(crate) song: bool,
     /// The song's own lanes (the morph), played in song mode.
@@ -508,6 +511,7 @@ impl PartialEq for PlayView {
         (
             &self.tracks,
             self.armed,
+            self.also,
             self.song,
             &self.song_lanes,
             &self.tempo,
@@ -515,6 +519,7 @@ impl PartialEq for PlayView {
         ) == (
             &other.tracks,
             other.armed,
+            other.also,
             other.song,
             &other.song_lanes,
             &other.tempo,
@@ -588,6 +593,7 @@ impl PlayView {
         Ok(PlayView {
             tracks,
             armed: None,
+            also: 0,
             song: false,
             song_lanes: None,
             includes: None,
@@ -716,6 +722,59 @@ impl PlayView {
         self.armed
     }
 
+    /// Arm these tracks too (a bit each, track 0 the lowest), for one take
+    /// over several tracks (the MPC's SHIFT + a track's arm): each records
+    /// the notes its MIDI input sends it into its own playing clip, with
+    /// its own recorder ([`crate::Recorder::also`]), and replace recording
+    /// erases each one's old notes over a pass of its own clip. The armed
+    /// track ([`PlayView::set_armed`]) is left out of the set, as are
+    /// tracks past the view's. Set it before swapping the view in.
+    pub fn set_also(&mut self, tracks: u128) {
+        self.also = tracks;
+    }
+
+    /// The other armed tracks, a bit each: never the armed one, nor a
+    /// track the view doesn't have.
+    pub fn also(&self) -> u128 {
+        let n = self.tracks.len().min(128);
+        let have = if n == 128 {
+            u128::MAX
+        } else {
+            (1u128 << n) - 1
+        };
+        let main = self
+            .armed
+            .and_then(|t| 1u128.checked_shl(t as u32))
+            .unwrap_or(0);
+        self.also & have & !main
+    }
+
+    /// Every armed track, a bit each: the armed one and the others.
+    pub fn armed_set(&self) -> u128 {
+        let main = self
+            .armed
+            .and_then(|t| 1u128.checked_shl(t as u32))
+            .unwrap_or(0);
+        self.also() | main
+    }
+
+    /// The `k`th of the other armed tracks, counted from the lowest.
+    pub fn also_track(&self, k: usize) -> Option<usize> {
+        let mut bits = self.also();
+        for _ in 0..k {
+            bits &= bits.wrapping_sub(1);
+        }
+        (bits != 0).then(|| bits.trailing_zeros() as usize)
+    }
+
+    /// Which of the other armed tracks `track` is, counted from the
+    /// lowest ([`PlayView::also_track`]), if it is one.
+    pub fn also_rank(&self, track: usize) -> Option<usize> {
+        let bits = self.also();
+        let bit = 1u128.checked_shl(track as u32)?;
+        (bits & bit != 0).then(|| (bits & (bit - 1)).count_ones() as usize)
+    }
+
     /// Say what this view includes: the recorded changes made to the
     /// project it was compiled from, and the cues started on each track
     /// that it shows as launches (see [`crate::recorded`]). Call it on the
@@ -781,22 +840,28 @@ impl PlayView {
             .sum()
     }
 
-    /// Room for `notes` more notes and `locks` more locks in the armed
-    /// track's clips (the one playing and the one cued), so that recording
+    /// Room for `notes` more notes and `locks` more locks in every armed
+    /// track's clips (the one playing and the one cued: the armed track's
+    /// and [`PlayView::set_also`]'s), so that recording
     /// can put them in with [`PlayView::add_note`] and
     /// [`PlayView::add_lock`] without allocating, and room in each of
     /// their lanes for [`crate::record::MOVE_ROOM`] more points, for
     /// [`PlayView::put_move`]. Call it on the control thread, after
     /// compiling.
     pub fn make_room(&mut self, notes: usize, locks: usize) {
-        let Some(t) = self.armed.and_then(|t| self.tracks.get_mut(t)) else {
-            return;
-        };
-        if let Some(c) = t.clip.as_mut() {
-            c.make_room(notes, locks);
-        }
-        if let Some(c) = t.cue.as_mut().and_then(|c| c.clip.as_mut()) {
-            c.make_room(notes, locks);
+        let mut bits = self.armed_set();
+        while bits != 0 {
+            let i = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let Some(t) = self.tracks.get_mut(i) else {
+                continue;
+            };
+            if let Some(c) = t.clip.as_mut() {
+                c.make_room(notes, locks);
+            }
+            if let Some(c) = t.cue.as_mut().and_then(|c| c.clip.as_mut()) {
+                c.make_room(notes, locks);
+            }
         }
     }
 
