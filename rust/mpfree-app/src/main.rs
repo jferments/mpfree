@@ -9159,7 +9159,12 @@ fn player_session(
         for t in 0..mpfree_midi::output::MAX_TRACKS {
             midi_out.set_note_fx(t, &time.note_fx_now(t));
         }
+        // An export's MIDI file takes them too, as the lanes give them.
+        let period_frame = time.block().start_frame;
         for (offset, addr, value) in mix.modu.take_midi_values() {
+            export
+                .tap
+                .control(period_frame + u64::from(offset), addr, value);
             midi_out.control(offset, addr, value);
         }
         midi_out.period_end(PERIOD as u32, t_read);

@@ -317,8 +317,11 @@ impl Rig {
             left,
             right,
         );
-        // The tracks' controllers out, as the loop sends them.
+        // The tracks' controllers out, as the loop sends them, and into
+        // an export's MIDI file.
+        let period_frame = time.block().start_frame;
         for (offset, addr, value) in mix.modu.take_midi_values() {
+            tap.control(period_frame + u64::from(offset), addr, value);
             midi.control(offset, addr, value);
         }
         midi.period_end(PERIOD as u32, std::time::Instant::now());
