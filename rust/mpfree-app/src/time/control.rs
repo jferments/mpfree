@@ -3854,6 +3854,19 @@ impl TimeControl {
         self.project.tracks.get(t).map(|tr| tr.mute)
     }
 
+    /// The tracks that are silent now, bit `t` for track `t`: muted, or
+    /// not soloed while another track is. Never allocates.
+    pub fn silenced(&self) -> u128 {
+        let tracks = &self.project.tracks;
+        let solo = tracks.iter().any(|t| t.solo);
+        tracks
+            .iter()
+            .take(128)
+            .enumerate()
+            .filter(|(_, t)| t.mute || (solo && !t.solo))
+            .fold(0, |bits, (i, _)| bits | 1 << i)
+    }
+
     /// The tracks muted and soloed as they will be once the mute queue
     /// lands, bit `t` for track `t`: where MIDI Learn reads a learned mute
     /// or solo, so a key flips it from there.

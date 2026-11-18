@@ -29,21 +29,36 @@
 //!   each pad at its sound's own note (from its keygroup, its name or the
 //!   pitch heard, worked out by the app), reaching halfway to its
 //!   neighbours, and the pads then play notes; one undo step.
-//! - The **Pad** list holds the settings a pad is set up with: its sound,
-//!   play mode, voices, mute group, level, pan and tune. Stepping Sound puts
-//!   the kit's next or previous sound on the pad.
+//! - **What A5 is** ([`TYPE`], the Play, Pads and Sequencer redesign's
+//!   step 6, board 6) switches what the pad picked is ([`PadType`]):
+//!   **Sample** plays its sound; **Loop** is a sample set up to loop in
+//!   time (latched, a forward loop over the whole sound, warped, and
+//!   started on the launch line: [`as_loop`]); **Instrument** plays one
+//!   voice of a Synth tab engine at a note; **MIDI out** sends a note on a
+//!   channel to a port of its own. A pad keeps its sound whatever it is,
+//!   so going back to Sample loses nothing. Each switch is one undo step.
+//! - The **Pad** list holds the settings a pad is set up with, the ones
+//!   its type has ([`PadType::rows`]): a sample's sound, play mode,
+//!   voices, mute group, level, pan and tune (a loop's tempo in place of
+//!   its mode and voices); an instrument's engine and note; a MIDI out
+//!   pad's port, channel and note, with where the note goes or why it
+//!   would send nothing said under them. Stepping Sound puts the kit's
+//!   next or previous sound on the pad.
 //! - The **sounds** list holds every sound in the kit, with the pads that
 //!   use it; **Put on** puts the sound picked on the pad picked.
-//! - **Q-Links 1 to 4** turn level, pan, tune and voices; the **wheel**
-//!   steps the row picked.
+//! - **Q-Links 1 to 4** turn the type's main settings
+//!   ([`PadType::qlinks`]: a sample's level, pan, tune and voices); the
+//!   **wheel** steps the row picked.
 //!
 //! The app makes a [`PadsState`] for the kit on show, calls
 //! [`PadsTab::update`] when the project changes, and applies the
 //! [`PadsAction`]s it gets back.
 
+use mpfree_analysis::note_name;
+use mpfree_midi::profile::{PadOut, KIT_NOTES};
 use mpfree_sampler::model::{
-    ChannelPick, Fade, GrainKeys, GrainMode, GrainParams, Layer, ModelError, Pad, PlayMode,
-    Project, Region, SourceId, PADS,
+    ChannelPick, Fade, GrainKeys, GrainMode, GrainParams, Layer, Loop, LoopMode, ModelError, Pad,
+    PadKind, PlayMode, Project, Region, SourceId, Warp, PADS, WARP_BPM,
 };
 use mpfree_ui::widgets::{ListItem, ListView};
 use mpfree_ui::{EventKind, Ui, UiEvent};
@@ -51,13 +66,18 @@ use mpfree_ui::{EventKind, Ui, UiEvent};
 use crate::chop_tab::{bank_of, pad_text, BANK};
 use crate::play_tab::{self, stepped, value_text};
 use crate::wave_tab::{default_loop, duration_text, mode_label, pad_color};
-use crate::widgets::{ButtonRow, KitTracks, PadBar, PadCell, PadMap, Setting, SettingList};
+use crate::widgets::{
+    ButtonRow, KitTracks, PadBar, PadCell, PadMap, SectionChip, SectionChips, Setting, SettingList,
+};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
 pub const BAR: &str = "smp-pads-bar";
 pub const MAP: &str = "smp-pads-map";
 pub const BUTTONS: &str = "smp-pads-buttons";
 pub const LIST: &str = "smp-pads-list";
+/// What the pad picked is: Sample, Loop, Instrument or MIDI out
+/// ([`PadType`]); a tap on chip `i` is [`EventKind::Tab`]`(i)`.
+pub const TYPE: &str = "smp-pads-type";
 pub const SOUNDS: &str = "smp-pads-sounds";
 pub const PUT: &str = "smp-pads-put";
 /// The bar's Kit button: a tap is [`EventKind::Tab`] with this on
@@ -71,13 +91,14 @@ pub const KITS: &str = "smp-pads-kits";
 /// The tab's page: the pad map with its buttons, the Pad list, and the
 /// kit's sounds with the button that puts one on the pad.
 pub const LAYOUT: &str = "col(header:60, smp-pads-bar:60, smp-pads-kits:52, \
-                          row(col(smp-pads-map:*, smp-pads-buttons:64):440, smp-pads-list:*, \
+                          row(col(smp-pads-map:*, smp-pads-buttons:64):440, \
+                          col(smp-pads-type:64, smp-pads-list:*):*, \
                           col(smp-pads-sounds:*, smp-pads-put:64):340):*, hint:26)";
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str =
-    "Tap a pad to pick it, again to hear it · Browse for: a sound for it · pick a sound, then Put it on \
-                        the pad · Effects: the pad's chain in Mix · Q-Links: level, pan, tune, voices";
+    "Tap a pad to pick it, again to hear it · a type: what the pad plays · Browse for: a sound for it · \
+                        pick a sound, then Put it on the pad · Effects: the pad's chain in Mix";
 
 /// Gesture ids the tab hands out start here, clear of other screens'.
 const GESTURE_BASE: u64 = 0x5041_4453_0000_0000;
@@ -95,6 +116,17 @@ pub enum Row {
     /// The pad's insert effects on its mixer strip: a button that opens
     /// its chain in the Mix tab.
     Effects,
+    /// A loop's tempo: the one its sound was played at, which sets how
+    /// many bars it lasts.
+    Tempo,
+    /// The Synth tab engine an Instrument pad plays a voice of.
+    Engine,
+    /// The note an Instrument or MIDI out pad plays.
+    Note,
+    /// The port a MIDI out pad sends to.
+    Port,
+    /// The channel a MIDI out pad sends on, 1 to 16.
+    Channel,
 }
 
 impl Row {
@@ -119,6 +151,11 @@ impl Row {
             Row::Pan => "Pan",
             Row::Tune => "Tune",
             Row::Effects => "Effects",
+            Row::Tempo => "Tempo",
+            Row::Engine => "Engine",
+            Row::Note => "Note",
+            Row::Port => "Port",
+            Row::Channel => "Channel",
         }
     }
 
@@ -130,17 +167,177 @@ impl Row {
             Row::Level => Some(play_tab::Row::Level),
             Row::Pan => Some(play_tab::Row::Pan),
             Row::Tune => Some(play_tab::Row::Tune),
-            Row::Sound | Row::Mode | Row::Effects => None,
+            Row::Sound
+            | Row::Mode
+            | Row::Effects
+            | Row::Tempo
+            | Row::Engine
+            | Row::Note
+            | Row::Port
+            | Row::Channel => None,
         }
-    }
-
-    fn index(self) -> usize {
-        Row::ALL.iter().position(|r| *r == self).unwrap_or(0)
     }
 }
 
-/// The rows the Q-Links turn, in knob order.
+/// The rows the Q-Links turn on a Sample pad, in knob order.
 pub const QLINK_ROWS: [Row; 4] = [Row::Level, Row::Pan, Row::Tune, Row::Polyphony];
+
+/// What a kit pad is, as the type switch shows it (the Play, Pads and
+/// Sequencer redesign's step 6, board 6). Loop isn't a kind of its own in
+/// the model: it is a Sample pad set up by [`as_loop`], told apart by its
+/// `on_launch`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PadType {
+    Sample,
+    Loop,
+    Instrument,
+    MidiOut,
+}
+
+impl PadType {
+    /// In the switch's order.
+    pub const ALL: [PadType; 4] = [
+        PadType::Sample,
+        PadType::Loop,
+        PadType::Instrument,
+        PadType::MidiOut,
+    ];
+
+    /// What `p` is.
+    pub fn of(p: &Pad) -> PadType {
+        match &p.kind {
+            PadKind::Instrument { .. } => PadType::Instrument,
+            PadKind::MidiOut { .. } => PadType::MidiOut,
+            PadKind::Sample if p.on_launch => PadType::Loop,
+            PadKind::Sample => PadType::Sample,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PadType::Sample => "Sample",
+            PadType::Loop => "Loop",
+            PadType::Instrument => "Instrument",
+            PadType::MidiOut => "MIDI out",
+        }
+    }
+
+    /// The switch's line under the type's name.
+    fn sub(self) -> &'static str {
+        match self {
+            PadType::Sample => "its sound",
+            PadType::Loop => "in time",
+            PadType::Instrument => "a synth voice",
+            PadType::MidiOut => "to your gear",
+        }
+    }
+
+    /// The Pad list's rows for a pad of this type, in order.
+    pub fn rows(self) -> &'static [Row] {
+        match self {
+            PadType::Sample => &Row::ALL,
+            PadType::Loop => &[
+                Row::Sound,
+                Row::Tempo,
+                Row::MuteGroup,
+                Row::Level,
+                Row::Pan,
+                Row::Tune,
+                Row::Effects,
+            ],
+            PadType::Instrument => &[Row::Engine, Row::Note],
+            PadType::MidiOut => &[Row::Port, Row::Channel, Row::Note],
+        }
+    }
+
+    /// The rows Q-Links 1 to 4 turn on a pad of this type.
+    pub fn qlinks(self) -> [Option<Row>; 4] {
+        match self {
+            PadType::Sample => QLINK_ROWS.map(Some),
+            PadType::Loop => [
+                Some(Row::Level),
+                Some(Row::Pan),
+                Some(Row::Tune),
+                Some(Row::Tempo),
+            ],
+            PadType::Instrument => [Some(Row::Note), Some(Row::Engine), None, None],
+            PadType::MidiOut => [Some(Row::Note), Some(Row::Channel), Some(Row::Port), None],
+        }
+    }
+
+    /// Row `row`'s place in this type's list, if it has it.
+    fn index_of(self, row: Row) -> Option<usize> {
+        self.rows().iter().position(|r| *r == row)
+    }
+}
+
+/// A MIDI output a MIDI out pad can send to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutPort {
+    /// The port's own name, as a pad saves it.
+    pub name: String,
+    /// The name it shows by (the musician's, if they named it).
+    pub shown: String,
+    /// Why a note sent to it would go nowhere now ("sends nothing: Volca
+    /// Kick is not plugged in"), or None.
+    pub why: Option<String>,
+    /// The kit pads its device profile gives a note (`pad.A1 = 36 ch 10`),
+    /// pad 0 (A1) up, as [`mpfree_midi::profile::Profile::pad`] says.
+    pub pads: Vec<(u8, PadOut)>,
+}
+
+/// The channel (1-16) and note a new MIDI out pad on kit pad `pad` sends
+/// on `port`: what the port's profile has the pad play, as a kit on that
+/// port would (its channel, else 10), else the pad's own note,
+/// [`KIT_NOTES`] (A1 is 37, as the MPC sends it) on channel 10.
+fn first_out(port: Option<&OutPort>, pad: usize) -> (u8, u8) {
+    let profile = port.and_then(|o| o.pads.iter().find(|(p, _)| usize::from(*p) == pad));
+    match profile {
+        Some((_, o)) => (o.channel.map_or(FIRST_CHANNEL, |c| c + 1), o.note),
+        None => (FIRST_CHANNEL, KIT_NOTES[pad % KIT_NOTES.len()]),
+    }
+}
+
+/// The channel a new MIDI out pad sends on (drums, on most gear).
+const FIRST_CHANNEL: u8 = 10;
+
+/// The note a new Instrument pad plays (C4).
+const FIRST_KEY: u8 = 60;
+
+/// `p` set up as a loop (the type switch's Loop): latched (a hit starts
+/// it, the next stops it), every layer looping forward over its whole
+/// sound, warped (at `bpm`, the project's tempo, where it had no tempo of
+/// its own) so it plays in time, and started on the launch line
+/// (`on_launch`). It plays its sound ([`PadKind::Sample`]).
+pub fn as_loop(p: &Pad, bpm: f64) -> Pad {
+    let mut p = p.clone();
+    p.kind = PadKind::Sample;
+    p.latch = true;
+    p.on_launch = true;
+    for l in &mut p.layers {
+        let r = &mut l.region;
+        r.mode = PlayMode::Loop;
+        r.sustain_loop = Some(Loop {
+            start: r.start,
+            end: r.end,
+            crossfade: 0,
+            mode: LoopMode::Forward,
+        });
+        if r.warp.is_none() {
+            r.warp = Some(Warp::new(
+                (bpm as f32).clamp(*WARP_BPM.start(), *WARP_BPM.end()),
+            ));
+        }
+    }
+    p
+}
+
+/// A pad with no sound, named `name`, for a type that needs none.
+fn blank_pad(name: &str) -> Pad {
+    let mut p = Pad::new(name, Layer::new(sound_region(None, SourceId(0), 0)));
+    p.layers.clear();
+    p
+}
 
 const MODES: [PlayMode; 5] = [
     PlayMode::OneShot,
@@ -197,9 +394,28 @@ pub struct PadsState {
     /// pad with no strip of its own yet (its + FX lends it one). None
     /// until the app has heard from the mixer.
     pub effects: Option<Vec<String>>,
-    /// Each of the kit's banks A to H: its pads with a sound, pad 1 of the
+    /// Each of the kit's banks A to H: its pads in use, pad 1 of the
     /// bank the lowest bit.
     pub banks: Vec<u16>,
+    /// The project's tempo: a pad made a loop with no tempo of its own is
+    /// warped to it.
+    pub bpm: f64,
+    /// The Synth tab's engines an Instrument pad can play, by name ("Poly",
+    /// "FM"): its saved id is the name in small letters. The app fills it.
+    pub engines: Vec<String>,
+    /// The MIDI outputs a MIDI out pad can send to. The app fills it.
+    pub ports: Vec<OutPort>,
+}
+
+/// Pad `p` plays a sound of its own: what Map to keys maps.
+fn sounding(p: &Pad) -> bool {
+    !p.layers.is_empty() && p.kind.sounds()
+}
+
+/// Pad `p` is in use: it has a sound, or plays something else (an engine's
+/// voice, a note out to gear).
+pub fn in_use(p: &Pad) -> bool {
+    !p.layers.is_empty() || !p.kind.sounds()
 }
 
 impl PadsState {
@@ -208,7 +424,7 @@ impl PadsState {
         let bank = bank_of(pad);
         let pads = bank
             .clone()
-            .map(|i| p.pad(i).filter(|pd| !pd.layers.is_empty()).cloned())
+            .map(|i| p.pad(i).filter(|pd| in_use(pd)).cloned())
             .collect();
         let sounds = p
             .sources()
@@ -224,7 +440,7 @@ impl PadsState {
         let banks = (0..PADS.div_ceil(BANK))
             .map(|b| {
                 (0..BANK).fold(0u16, |m, i| {
-                    let on = p.pad(b * BANK + i).is_some_and(|pd| !pd.layers.is_empty());
+                    let on = p.pad(b * BANK + i).is_some_and(in_use);
                     m | (u16::from(on) << i)
                 })
             })
@@ -237,10 +453,18 @@ impl PadsState {
             clips: vec![None; bank.len()],
             effects: None,
             banks,
+            bpm: 120.0,
+            engines: Vec::new(),
+            ports: Vec::new(),
         }
     }
 
-    /// The pad picked, if it has a sound.
+    /// What the pad picked is (an empty pad is a Sample pad with no sound).
+    pub fn picked_type(&self) -> PadType {
+        self.picked().map_or(PadType::Sample, PadType::of)
+    }
+
+    /// The pad picked, if it is in use ([`in_use`]).
     pub fn picked(&self) -> Option<&Pad> {
         self.pads
             .get(self.pad - self.first)
@@ -268,7 +492,7 @@ pub enum PadsAction {
         after: Option<Box<Pad>>,
         gesture: Option<u64>,
     },
-    /// Map to keys: the app makes `pads` (the bank's pads with a sound) a
+    /// Map to keys: the app makes `pads` (the bank's pads that play a sound) a
     /// keygroup instrument at their sounds' notes
     /// ([`mpfree_sampler::keymap`], `Project::map_to_keys`).
     MapToKeys { pads: Vec<usize> },
@@ -299,15 +523,21 @@ impl PadsAction {
 
 /// `pad` (or a new pad) playing `sound` from start to end on its first
 /// layer. Its other settings, and the old sound's gain, tune, channels and
-/// play mode, stay; it takes the sound's name.
+/// play mode, stay; it takes the sound's name. A pad of another kind (an
+/// instrument's, a MIDI out pad) becomes a Sample pad: the sound is there
+/// to be heard, as `Pad::replacing` has it.
 pub fn with_sound(pad: Option<&Pad>, sound: &Sound) -> Pad {
     match pad {
         Some(p) => {
             let mut p = p.clone();
-            if let Some(l) = p.layers.first_mut() {
-                l.region = sound_region(Some(&l.region), sound.id, sound.frames);
+            match p.layers.first_mut() {
+                Some(l) => l.region = sound_region(Some(&l.region), sound.id, sound.frames),
+                None => p
+                    .layers
+                    .push(Layer::new(sound_region(None, sound.id, sound.frames))),
             }
             p.name = sound.name.clone();
+            p.kind = PadKind::Sample;
             p
         }
         None => Pad::new(
@@ -379,6 +609,11 @@ enum Key {
     Row(Row),
 }
 
+/// Steps `i` of `n` by `delta`, round and round.
+fn wrap(i: usize, delta: i32, n: usize) -> usize {
+    (i as i32 + delta).rem_euclid(n.max(1) as i32) as usize
+}
+
 /// The Pads tab's widgets and what their touches mean. It keeps the pad
 /// copied, the sound picked and the undo step being made.
 pub struct PadsTab {
@@ -412,6 +647,7 @@ impl PadsTab {
             BUTTONS,
             ButtonRow::new(&["Copy", "Paste", "Clear", "Map to keys"]),
         );
+        ui.add(TYPE, SectionChips::new(&PadType::ALL.map(PadType::label)));
         ui.add(LIST, SettingList::new("Pad"));
         let mut sounds = ListView::new("Sounds in the kit");
         // A tap picks the sound for Put on; it loads nothing itself.
@@ -437,11 +673,33 @@ impl PadsTab {
         Ok(tab)
     }
 
-    /// The row picked in the Pad list.
-    pub fn row(&self, ui: &Ui) -> Row {
+    /// The row picked in the Pad list of a pad of type `t`.
+    pub fn row_of(&self, ui: &Ui, t: PadType) -> Row {
+        let rows = t.rows();
         ui.get::<SettingList>(LIST)
-            .and_then(|l| Row::ALL.get(l.selected).copied())
-            .unwrap_or(Row::Sound)
+            .and_then(|l| rows.get(l.selected).copied())
+            .unwrap_or(rows[0])
+    }
+
+    /// The row picked in the Pad list of a Sample pad.
+    pub fn row(&self, ui: &Ui) -> Row {
+        self.row_of(ui, PadType::Sample)
+    }
+
+    /// What Q-Links 1 to 4 turn on the pad picked, for the hint line
+    /// ("level, pan, tune, voices").
+    pub fn qlinks_text(st: &PadsState) -> String {
+        let t = st.picked_type();
+        let names: Vec<String> = t
+            .qlinks()
+            .iter()
+            .flatten()
+            .map(|r| match r {
+                Row::Polyphony => "voices".to_string(),
+                r => r.label().to_lowercase(),
+            })
+            .collect();
+        names.join(", ")
     }
 
     /// The sound picked in the sounds list.
@@ -492,7 +750,7 @@ impl PadsTab {
             let used = st.pads.iter().filter(|p| p.is_some()).count();
             let n = st.sounds.len();
             bar.subtitle = format!(
-                "{used} of {} pads with a sound · {n} {} in the kit",
+                "{used} of {} pads in use · {n} {} in the kit",
                 st.pads.len(),
                 if n == 1 { "sound" } else { "sounds" }
             );
@@ -504,9 +762,10 @@ impl PadsTab {
             .map(|(i, p)| PadCell {
                 label: pad_text(self.bank, st.first + i),
                 name: p.as_ref().map_or_else(String::new, |p| p.name.clone()),
-                detail: p.as_ref().map_or_else(String::new, pad_detail),
+                detail: p.as_ref().map_or_else(String::new, |p| pad_detail(p, st)),
                 clip: st.clips.get(i).cloned().flatten(),
                 color: pad_color(st.first + i),
+                badge: p.as_ref().and_then(type_tag).map(str::to_string),
             })
             .collect();
         let kit = self.kit.clone();
@@ -530,7 +789,7 @@ impl PadsTab {
             .map(|(from, _)| format!("Paste {}", pad_text(self.bank, *from)));
         if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
             b.labels[1] = paste.unwrap_or_else(|| "Paste".into());
-            let sounds = st.pads.iter().any(Option::is_some);
+            let sounds = st.pads.iter().flatten().any(sounding);
             b.enabled = vec![
                 picked.is_some(),
                 self.copied.is_some(),
@@ -545,7 +804,19 @@ impl PadsTab {
                 "No pad in this bank has a sound".to_string(),
             ];
         }
-        let rows = Row::ALL
+        let kind = st.picked_type();
+        if let Some(c) = ui.get_mut::<SectionChips>(TYPE) {
+            c.chips = PadType::ALL
+                .iter()
+                .map(|t| SectionChip {
+                    name: t.label().to_string(),
+                    sub: t.sub().to_string(),
+                })
+                .collect();
+            c.selected = PadType::ALL.iter().position(|t| *t == kind).unwrap_or(0);
+        }
+        let rows = kind
+            .rows()
             .iter()
             .map(|r| Setting {
                 name: r.label().into(),
@@ -553,15 +824,17 @@ impl PadsTab {
             })
             .collect();
         let clip = st.clips.get(st.pad - st.first).cloned().flatten();
+        let footer = picked.and_then(|p| footer(p, st));
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.title = format!("Pad {here}");
             list.right = format!("clip: {}", clip.as_deref().unwrap_or("none"));
             list.rows = rows;
-            list.buttons = if st.effects.is_some() {
-                vec![Row::Effects.index()]
-            } else {
-                Vec::new()
+            list.selected = list.selected.min(kind.rows().len() - 1);
+            list.buttons = match kind.index_of(Row::Effects) {
+                Some(k) if st.effects.is_some() => vec![k],
+                _ => Vec::new(),
             };
+            list.footer = footer;
         }
         let items = st
             .sounds
@@ -603,10 +876,11 @@ impl PadsTab {
                 down: *down,
             }),
             (BUTTONS, EventKind::Tab(i)) => self.press(ui, st, *Button::ALL.get(*i)?),
+            (TYPE, EventKind::Tab(i)) => self.set_type(st, *PadType::ALL.get(*i)?),
             (LIST, EventKind::Step { index, delta }) => {
-                self.step(st, *Row::ALL.get(*index)?, *delta)
+                self.step(st, *st.picked_type().rows().get(*index)?, *delta)
             }
-            (LIST, EventKind::Tab(k)) if Row::ALL.get(*k) == Some(&Row::Effects) => {
+            (LIST, EventKind::Tab(k)) if st.picked_type().rows().get(*k) == Some(&Row::Effects) => {
                 st.effects.as_ref()?;
                 Some(PadsAction::Effects(st.pad))
             }
@@ -643,6 +917,74 @@ impl PadsTab {
         }
     }
 
+    /// The type switch: makes the pad picked a pad of type `to`, one undo
+    /// step. It keeps its sound (and its name, unless it had none), so
+    /// going back loses nothing; an instrument or MIDI out pad with no
+    /// sound made a Sample pad again is cleared. Loop needs a sound.
+    pub fn set_type(&mut self, st: &PadsState, to: PadType) -> Option<PadsAction> {
+        let here = pad_text(self.bank, st.pad);
+        let picked = st.picked();
+        if st.picked_type() == to {
+            return None;
+        }
+        let after = match to {
+            PadType::Sample => {
+                let p = picked?;
+                (!p.layers.is_empty()).then(|| {
+                    let mut p = p.clone();
+                    p.kind = PadKind::Sample;
+                    // Not a loop any more: hits play at once.
+                    p.on_launch = false;
+                    p
+                })
+            }
+            PadType::Loop => {
+                let Some(p) = picked.filter(|p| !p.layers.is_empty()) else {
+                    self.note = Some(format!("{here} has no sound to loop: Browse for one"));
+                    return None;
+                };
+                Some(as_loop(p, st.bpm))
+            }
+            PadType::Instrument => {
+                let engine = st
+                    .engines
+                    .first()
+                    .map_or_else(|| "poly".to_string(), |e| e.to_ascii_lowercase());
+                let name = st.engines.first().map_or("Synth", String::as_str);
+                let mut p = picked.cloned().unwrap_or_else(|| blank_pad(name));
+                p.kind = PadKind::Instrument {
+                    engine,
+                    note: FIRST_KEY,
+                };
+                p.on_launch = false;
+                Some(p)
+            }
+            PadType::MidiOut => {
+                let port = st.ports.first();
+                let name = port.map_or("MIDI out", |o| o.shown.as_str());
+                let mut p = picked.cloned().unwrap_or_else(|| blank_pad(name));
+                let (channel, note) = first_out(port, st.pad);
+                p.kind = PadKind::MidiOut {
+                    port: port.map_or_else(String::new, |o| o.name.clone()),
+                    channel,
+                    note,
+                };
+                p.on_launch = false;
+                Some(p)
+            }
+        };
+        self.lift();
+        self.note = Some(match &after {
+            Some(_) => format!("{here} is a {} pad now", to.label()),
+            None => format!("{here} is empty now: it had no sound"),
+        });
+        Some(PadsAction::Set {
+            pad: st.pad,
+            after: after.map(Box::new),
+            gesture: None,
+        })
+    }
+
     /// What the last touch did, or why it did nothing, when nothing else
     /// on the tab shows it; once.
     pub fn take_note(&mut self) -> Option<String> {
@@ -676,7 +1018,7 @@ impl PadsTab {
             }
             Button::MapToKeys => {
                 let pads: Vec<usize> = (0..st.pads.len())
-                    .filter(|&k| st.pads[k].is_some())
+                    .filter(|&k| st.pads[k].as_ref().is_some_and(sounding))
                     .map(|k| st.first + k)
                     .collect();
                 (!pads.is_empty()).then_some(PadsAction::MapToKeys { pads })
@@ -693,16 +1035,17 @@ impl PadsTab {
         knob: usize,
         delta: i32,
     ) -> Option<PadsAction> {
-        let row = *QLINK_ROWS.get(knob)?;
-        if let Some(list) = ui.get_mut::<SettingList>(LIST) {
-            list.selected = row.index();
+        let t = st.picked_type();
+        let row = (*t.qlinks().get(knob)?)?;
+        if let (Some(list), Some(k)) = (ui.get_mut::<SettingList>(LIST), t.index_of(row)) {
+            list.selected = k;
         }
         self.step(st, row, delta)
     }
 
     /// The data wheel: steps the row picked.
     pub fn wheel(&mut self, ui: &mut Ui, st: &PadsState, delta: i32) -> Option<PadsAction> {
-        let row = self.row(ui);
+        let row = self.row_of(ui, st.picked_type());
         self.step(st, row, delta)
     }
 
@@ -745,6 +1088,79 @@ impl PadsTab {
                     MODES[(i + delta).rem_euclid(MODES.len() as i32) as usize],
                 )
             }
+            Row::Tempo => {
+                let mut p = picked?.clone();
+                for l in &mut p.layers {
+                    let r = &mut l.region;
+                    let Some(w) = r.warp.as_mut() else {
+                        continue;
+                    };
+                    let bpm = (f64::from(w.bpm) * 10.0).round() + f64::from(delta);
+                    w.bpm = ((bpm / 10.0) as f32).clamp(*WARP_BPM.start(), *WARP_BPM.end());
+                    if let Some(rate) = st.sounds.iter().find(|s| s.id == r.source).map(|s| s.rate)
+                    {
+                        w.fit(r.start, r.end, rate);
+                    }
+                }
+                p
+            }
+            Row::Engine => {
+                let p = picked?;
+                let PadKind::Instrument { engine, note } = &p.kind else {
+                    return None;
+                };
+                if st.engines.is_empty() {
+                    return None;
+                }
+                let at = st
+                    .engines
+                    .iter()
+                    .position(|e| e.eq_ignore_ascii_case(engine));
+                let k = match at {
+                    Some(i) => wrap(i, delta, st.engines.len()),
+                    None => 0,
+                };
+                let mut p = p.clone();
+                p.kind = PadKind::Instrument {
+                    engine: st.engines[k].to_ascii_lowercase(),
+                    note: *note,
+                };
+                p
+            }
+            Row::Note => {
+                let mut p = picked?.clone();
+                match &mut p.kind {
+                    PadKind::Instrument { note, .. } | PadKind::MidiOut { note, .. } => {
+                        *note = (i32::from(*note) + delta).clamp(0, 127) as u8;
+                    }
+                    PadKind::Sample => return None,
+                }
+                p
+            }
+            Row::Channel => {
+                let mut p = picked?.clone();
+                let PadKind::MidiOut { channel, .. } = &mut p.kind else {
+                    return None;
+                };
+                *channel = (i32::from(*channel) + delta).clamp(1, 16) as u8;
+                p
+            }
+            Row::Port => {
+                let mut p = picked?.clone();
+                let PadKind::MidiOut { port, .. } = &mut p.kind else {
+                    return None;
+                };
+                if st.ports.is_empty() {
+                    self.note = Some("No MIDI output to pick: plug one in".to_string());
+                    return None;
+                }
+                let k = match st.ports.iter().position(|o| o.name == *port) {
+                    Some(i) => wrap(i, delta, st.ports.len()),
+                    None => 0,
+                };
+                *port = st.ports[k].name.clone();
+                p
+            }
             r => stepped(picked?, r.play_row()?, delta, false),
         };
         if Some(&after) == picked {
@@ -768,8 +1184,23 @@ impl PadsTab {
 }
 
 /// "3 layers · Loop", for the map; a sliced pad's slices first ("16
-/// slices · One shot").
-fn pad_detail(p: &Pad) -> String {
+/// slices · One shot"). A pad of another type says what it plays: "2
+/// bars" (a loop), "Poly C1" (an instrument), "ch 10 · 36" (MIDI out).
+fn pad_detail(p: &Pad, st: &PadsState) -> String {
+    match (&p.kind, PadType::of(p)) {
+        (PadKind::Instrument { engine, note }, _) => {
+            return format!("{} {}", engine_name(st, engine), note_name(*note));
+        }
+        (PadKind::MidiOut { channel, note, .. }, _) => {
+            return format!("ch {channel} · {note}");
+        }
+        (_, PadType::Loop) => {
+            if let Some(len) = loop_length(p, st) {
+                return len;
+            }
+        }
+        _ => {}
+    }
     let mode = p.layers.first().map_or("", |l| mode_label(l.region.mode));
     let mode = match crate::play_tab::slices(p) {
         0 | 1 => mode.to_string(),
@@ -778,6 +1209,183 @@ fn pad_detail(p: &Pad) -> String {
     match p.layers.len() {
         1 => mode,
         n => format!("{n} layers · {mode}"),
+    }
+}
+
+/// The map's word for a pad of type `t`: none for a plain sample.
+fn badge(t: PadType) -> Option<&'static str> {
+    match t {
+        PadType::Sample => None,
+        PadType::Loop => Some("LOOP"),
+        PadType::Instrument => Some("SYNTH"),
+        PadType::MidiOut => Some("MIDI"),
+    }
+}
+
+/// What a change of pad type, or of a type's own settings, did, for the
+/// app's log: "type Sample -> MIDI out (Volca Kick, ch 10, note 49)",
+/// "note 49 -> 50", "tempo 92.0 -> 92.1 BPM". Empty when neither changed.
+pub fn describe_type(before: &Pad, after: &Pad) -> String {
+    let (b, a) = (PadType::of(before), PadType::of(after));
+    if b != a {
+        return match kind_text(&after.kind) {
+            Some(k) => format!("type {} -> {} ({k})", b.label(), a.label()),
+            None => format!("type {} -> {}", b.label(), a.label()),
+        };
+    }
+    let mut out = Vec::new();
+    let mut moved = |what: &str, x: String, y: String| {
+        if x != y {
+            out.push(format!("{what} {x} -> {y}"));
+        }
+    };
+    match (&before.kind, &after.kind) {
+        (
+            PadKind::Instrument { engine, note },
+            PadKind::Instrument {
+                engine: engine_to,
+                note: note_to,
+            },
+        ) => {
+            moved("engine", engine.clone(), engine_to.clone());
+            moved("note", note_name(*note), note_name(*note_to));
+        }
+        (
+            PadKind::MidiOut {
+                port,
+                channel,
+                note,
+            },
+            PadKind::MidiOut {
+                port: port_to,
+                channel: channel_to,
+                note: note_to,
+            },
+        ) => {
+            moved("port", port.clone(), port_to.clone());
+            moved("channel", channel.to_string(), channel_to.to_string());
+            moved("note", note.to_string(), note_to.to_string());
+        }
+        _ => {}
+    }
+    if a == PadType::Loop {
+        let bpm = |p: &Pad| {
+            p.layers
+                .first()
+                .and_then(|l| l.region.warp.as_ref())
+                .map(|w| format!("{:.1}", w.bpm))
+        };
+        if let (Some(x), Some(y)) = (bpm(before), bpm(after)) {
+            if x != y {
+                out.push(format!("tempo {x} -> {y} BPM"));
+            }
+        }
+    }
+    out.join(", ")
+}
+
+/// A pad's kind in a few words for the log ("poly at C4", "Volca Kick,
+/// ch 10, note 49"), or None for a sample.
+pub fn kind_text(k: &PadKind) -> Option<String> {
+    match k {
+        PadKind::Sample => None,
+        PadKind::Instrument { engine, note } => Some(format!("{engine} at {}", note_name(*note))),
+        PadKind::MidiOut {
+            port,
+            channel,
+            note,
+        } => Some(format!("{port}, ch {channel}, note {note}")),
+    }
+}
+
+/// The small tag that names pad `p`'s type where it shows ("LOOP",
+/// "SYNTH", "MIDI"): on its cell here and on Play's rows. None for a
+/// sample, the type a pad has unless told otherwise.
+pub fn type_tag(p: &Pad) -> Option<&'static str> {
+    badge(PadType::of(p))
+}
+
+/// Engine `id`'s name among `st.engines` ("poly" is "Poly"), or the id as
+/// saved when it isn't one of them.
+fn engine_name<'a>(st: &'a PadsState, id: &'a str) -> &'a str {
+    st.engines
+        .iter()
+        .find(|e| e.eq_ignore_ascii_case(id))
+        .map_or(id, String::as_str)
+}
+
+/// How long a loop pad's first layer lasts at its tempo: "2 bars", "3
+/// beats", "1.50 bars"; None when it has no tempo or its sound isn't
+/// known.
+fn loop_length(p: &Pad, st: &PadsState) -> Option<String> {
+    let r = &p.layers.first()?.region;
+    let w = r.warp.as_ref()?;
+    let rate = st.sounds.iter().find(|s| s.id == r.source)?.rate;
+    let beats = w.beats(r.frames(), rate);
+    let whole = |x: f64| (x - x.round()).abs() < 0.02 && x.round() >= 1.0;
+    let bars = beats / 4.0;
+    Some(if whole(bars) {
+        let n = bars.round();
+        format!("{n} bar{}", if n == 1.0 { "" } else { "s" })
+    } else if whole(beats) {
+        let n = beats.round();
+        format!("{n} beat{}", if n == 1.0 { "" } else { "s" })
+    } else {
+        format!("{bars:.2} bars")
+    })
+}
+
+/// What the Pad list says under its rows about pad `p`, and whether it
+/// warns: where an instrument's or a MIDI out pad's hit goes, or why it
+/// would send nothing; how a loop plays. None for a plain sample.
+fn footer(p: &Pad, st: &PadsState) -> Option<(String, bool)> {
+    match &p.kind {
+        PadKind::Instrument { engine, note } => Some(
+            match st
+                .engines
+                .iter()
+                .find(|e| e.eq_ignore_ascii_case(engine))
+            {
+                Some(name) => (
+                    format!(
+                        "A hit plays the Synth tab's {name} sound at {}, through the Synth strip on Mix",
+                        note_name(*note)
+                    ),
+                    false,
+                ),
+                None if st.engines.is_empty() => return None,
+                None => (format!("plays nothing: there is no engine called {engine}"), true),
+            },
+        ),
+        PadKind::MidiOut {
+            port,
+            channel,
+            note,
+        } => {
+            if port.is_empty() {
+                return Some(if st.ports.is_empty() {
+                    ("sends nothing: no MIDI output is plugged in".to_string(), true)
+                } else {
+                    ("sends nothing: pick a port".to_string(), true)
+                });
+            }
+            Some(match st.ports.iter().find(|o| o.name == *port) {
+                Some(OutPort { why: Some(why), .. }) => (why.clone(), true),
+                Some(o) => (
+                    format!(
+                        "A hit sends note {note} on channel {channel} to {}",
+                        o.shown
+                    ),
+                    false,
+                ),
+                None => (format!("sends nothing: {port} is not plugged in"), true),
+            })
+        }
+        PadKind::Sample if p.on_launch => Some((
+            "Loops in time with the song: a hit starts it, the next hit stops it".to_string(),
+            false,
+        )),
+        PadKind::Sample => None,
     }
 }
 
@@ -821,6 +1429,37 @@ fn row_text(p: Option<&Pad>, st: &PadsState, row: Row) -> String {
             .layers
             .first()
             .map_or("—".into(), |l| mode_label(l.region.mode).to_string()),
+        Row::Tempo => {
+            let Some(w) = p.layers.first().and_then(|l| l.region.warp.as_ref()) else {
+                return "—".into();
+            };
+            match loop_length(p, st) {
+                Some(len) => format!("{:.1} BPM · {len}", w.bpm),
+                None => format!("{:.1} BPM", w.bpm),
+            }
+        }
+        Row::Engine => match &p.kind {
+            PadKind::Instrument { engine, .. } => engine_name(st, engine).to_string(),
+            _ => "—".into(),
+        },
+        Row::Note => match &p.kind {
+            PadKind::Instrument { note, .. } => note_name(*note),
+            PadKind::MidiOut { note, .. } => format!("{note} · {}", note_name(*note)),
+            PadKind::Sample => "—".into(),
+        },
+        Row::Channel => match &p.kind {
+            PadKind::MidiOut { channel, .. } => channel.to_string(),
+            _ => "—".into(),
+        },
+        Row::Port => match &p.kind {
+            PadKind::MidiOut { port, .. } if port.is_empty() => "none".into(),
+            PadKind::MidiOut { port, .. } => st
+                .ports
+                .iter()
+                .find(|o| o.name == *port)
+                .map_or_else(|| port.clone(), |o| o.shown.clone()),
+            _ => "—".into(),
+        },
         r => r
             .play_row()
             .map_or_else(String::new, |pr| value_text(p, pr)),

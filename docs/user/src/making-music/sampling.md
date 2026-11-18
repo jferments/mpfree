@@ -30,6 +30,23 @@ Beside the pads are the settings of the pad picked:
 
 Q-Links 1 to 4 turn level, pan, tune and voices. **Put on** places the sound picked on the right onto the pad, the whole of it; the hint line says when the pad plays all of it already.
 
+### What a pad plays: Sample, Loop, Instrument, MIDI out
+
+Over the pad's settings, four tabs set what a hit on the pad does. Each switch is one step: **UNDO** takes it back.
+
+- **Sample** ("its sound") plays the pad's sound with the settings above. Every pad starts as one.
+- **Loop** ("in time") plays the pad's sound as a loop at the project's tempo: a hit starts it and the next hit stops it. MPFree loops the whole sound and warps it to the tempo. A sound that has no tempo of its own yet is taken to be at the project's tempo, so set **Tempo** to the tempo it was played at: a step is a tenth of a BPM, and the row shows how many bars that makes ("92.0 BPM · 2 bars"). Its other settings are the sound, mute group, level, pan, tune and effects, and Q-Links 1 to 4 turn level, pan, tune and tempo. A pad needs a sound to loop: on an empty pad the hint line says to Browse for one first. Back on **Sample**, the pad keeps its loop and its **Mode**, for you to change there.
+- **Instrument** ("a synth voice") plays one note of a synth when you hit the pad: pick the **Engine** (one of the [nine synths](synths.md#the-nine-synths), Poly at first) and the **Note** (C4 at first). The pad plays that engine's sound as the Synth tab has it now, at the pad's velocity, and the note lasts as long as you hold the pad (or as the step's length on the Sequencer). It sounds through the Synth strip on the Mix tab, not through the pad's own channel. Q-Links 1 and 2 turn the note and the engine.
+- **MIDI out** ("to your gear") sends a note to a synth or drum machine plugged into MPFree: pick the **Port**, the **Channel** and the **Note**. A new MIDI out pad starts on the note and channel a kit on that port would send for it: what the port's [device profile](midi-and-cv.md#device-profiles) gives the pad, else the pad's own note (A1 is 37, as the MPC sends it; see [A kit on a drum machine](midi-and-cv.md#a-kit-on-a-drum-machine)) on channel 10, the drum channel on most gear. A hit sends the note at the pad's velocity, and letting go ends it. Q-Links 1 to 3 turn the note, the channel and the port. MIDI out pads play from tracks 1 to 16.
+
+Under the settings a line says what a hit does: "A hit sends note 49 on channel 10 to Volca Kick". When it would play or send nothing, the line is in the warning colour and says why: the port isn't plugged in, MIDI out is off, or there is no engine of that name. An Instrument or MIDI out pad needs no sound, and an empty pad you make one takes the engine's or the port's name. Muting its track, or soloing another, ends its notes.
+
+The pads show their type in the corner (**LOOP**, **SYNTH**, **MIDI**) and what they play under their name ("ch 10 · 49", "Poly C4", "2 bars"). On Play's rows the type shows under the pad's name too.
+
+{{shot: pads-types | A pad of each type: A5 loops Break 92, A11 plays the Poly synth at C4, and A13, picked, sends note 49 on channel 10 to a Volca Kick.}}
+
+On a track whose **Plays on** is a port (see [A kit on a drum machine](midi-and-cv.md#a-kit-on-a-drum-machine)), every pad goes to that port as a note, whatever its type.
+
 ### Finding sounds: Browse for
 
 **Browse for A5** at the top right of the Pads tab (it names the pad picked) opens the browser over the page. **BROWSE**, and the folder at the right end of the top bar, open the same browser from any page. **BROWSE**, the folder or a tab closes it again.

@@ -1602,9 +1602,6 @@ impl MidiOut {
     /// the 16 MIDI out serves (`mpfree_midi_ui::sends_nothing` says why
     /// in words). The notes end with the track's pads
     /// ([`MidiOut::end_pads`]), the port, and a panic. Never allocates.
-    // The Pads tab's MIDI out pad (the redesign's step 6b) calls it; until
-    // then only tests do.
-    #[allow(dead_code)]
     pub fn pad_to(&mut self, o: &Out, port: &str, channel: u8, note: u8) -> bool {
         let t = usize::from(o.track);
         let pad = match o.event {
@@ -1682,7 +1679,6 @@ impl MidiOut {
     /// Ends the notes track `track`'s pads have on ports of their own
     /// ([`MidiOut::pad_to`]), at `offset`: its mute, its clip's stop.
     /// A change of the track's Plays on leaves them alone.
-    #[allow(dead_code)]
     pub fn end_pads(&mut self, track: usize, offset: u32) {
         if track >= MAX_TRACKS {
             return;

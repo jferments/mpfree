@@ -1066,6 +1066,13 @@ impl TimeHost {
         self.control.muted(t)
     }
 
+    /// The tracks silent now, muted or left out by a solo, a bit a track
+    /// ([`TimeControl::silenced`]): a track gone silent ends what its kit's
+    /// Instrument and MIDI out pads hold, which no strip of its mutes.
+    pub fn silenced(&self) -> u128 {
+        self.control.silenced()
+    }
+
     /// The tracks muted and soloed once the mute queue lands, a bit a
     /// track ([`TimeControl::mute_bits`]), for MIDI Learn.
     pub fn mute_bits(&self) -> (u128, u128) {
@@ -3944,6 +3951,11 @@ mod tests {
             (h.muted(1), h.muted(0), h.muted(TRACKS)),
             (Some(true), Some(false), None)
         );
+        // Silent now: track 2. A solo on track 1 leaves every other out.
+        assert_eq!(h.silenced(), 0b10);
+        h.control.project.tracks[0].solo = true;
+        assert_eq!(h.silenced(), (1u128 << TRACKS) - 2);
+        h.control.project.tracks[0].solo = false;
         assert!(h.launched(1) && !h.launched(2));
         assert!(h.state().tracks[1].mute);
         run(&mut h, &mut pads, 2 * BAR - 1000, &[]);

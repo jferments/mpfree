@@ -446,6 +446,26 @@ pub struct Synth {
     /// The values under the clips' locks on the engines' parameters
     /// ([`Synth::lock`]).
     locks: crate::locks::Under,
+    /// The note each kit pad of the Instrument type holds (the Pads tab's
+    /// Instrument pads: [`Synth::pad_voice_on`]), by track and pad, and its
+    /// engine: so its end and pressure reach that note whatever the pad
+    /// says by then.
+    pad_voices: Box<[Option<(Engine, u8)>]>,
+    /// How many of those hold each engine's note: a note two pads hold
+    /// ends with the last of them, and with the pads' own notes when the
+    /// engine is the one on the pads.
+    pad_holders: [[u8; 128]; ENGINES],
+}
+
+/// The tracks an Instrument pad can be on, and the pads of a kit.
+const VOICE_TRACKS: usize = mpfree_seq::MAX_TRACKS;
+const VOICE_PADS: usize = 128;
+
+/// Where pad `pad` of track `track` keeps its voice in
+/// [`Synth::pad_voices`]; None past the tracks or the kit's pads.
+fn voice_key(track: u16, pad: usize) -> Option<usize> {
+    let t = usize::from(track);
+    (t < VOICE_TRACKS && pad < VOICE_PADS).then_some(t * VOICE_PADS + pad)
 }
 
 /// The key of engine `e`'s parameter `id` in [`Synth`]'s lock table.
@@ -532,6 +552,13 @@ impl Synth {
     #[cfg(test)]
     pub(crate) fn queued(&self) -> Vec<NodeEvent> {
         let k = self.engine().index();
+        self.events[k][..self.len[k]].iter().map(|t| t.ev).collect()
+    }
+
+    /// The events queued for engine `e`, not yet rendered (tests).
+    #[cfg(test)]
+    pub(crate) fn queued_on(&self, e: Engine) -> Vec<NodeEvent> {
+        let k = e.index();
         self.events[k][..self.len[k]].iter().map(|t| t.ev).collect()
     }
 
@@ -643,6 +670,8 @@ impl Synth {
             audition: None,
             tuning_files: Vec::new(),
             locks: crate::locks::Under::new(),
+            pad_voices: vec![None; VOICE_TRACKS * VOICE_PADS].into_boxed_slice(),
+            pad_holders: [[0; 128]; ENGINES],
         }
     }
 
@@ -1049,6 +1078,7 @@ impl Synth {
             pitches: self.pad_pitches(),
             user: false,
             key: self.transpose_key().map(|s| scale_name(&s)),
+            tags: Vec::new(),
         }
     }
 
@@ -1112,11 +1142,12 @@ impl Synth {
     /// no other pad holds it.
     fn release_pad(&mut self, pad: usize, offset: u32) {
         let held = std::mem::take(&mut self.playing[pad]);
+        let e = self.settings.engine;
         for &note in held.notes() {
             let h = &mut self.holders[usize::from(note)];
             *h = h.saturating_sub(1);
-            if *h == 0 {
-                self.push(self.settings.engine, offset, NodeEvent::NoteOff { note });
+            if *h == 0 && self.pad_holders[e.index()][usize::from(note)] == 0 {
+                self.push(e, offset, NodeEvent::NoteOff { note });
             }
         }
     }
@@ -1229,8 +1260,96 @@ impl Synth {
             return;
         }
         *h -= 1;
+        let e = self.settings.engine;
+        if *h == 0 && self.pad_holders[e.index()][usize::from(note)] == 0 {
+            self.push(e, offset, NodeEvent::NoteOff { note });
+        }
+    }
+
+    /// A hit on a kit pad of the Instrument type (the Pads tab's: pad
+    /// `pad` of track `track`'s kit): one voice of `engine` at `note`,
+    /// whichever engine is on the pads, `offset` frames into the next
+    /// render. A pad still holding a note ends it first. Never allocates.
+    pub fn pad_voice_on(
+        &mut self,
+        track: u16,
+        pad: usize,
+        (engine, note): (Engine, u8),
+        velocity: u8,
+        offset: u32,
+    ) {
+        let Some(k) = voice_key(track, pad) else {
+            return;
+        };
+        if let Some(was) = self.pad_voices[k].take() {
+            self.end_pad_voice(was, offset);
+        }
+        if note > 127 || velocity == 0 {
+            return;
+        }
+        self.push(
+            engine,
+            offset,
+            NodeEvent::NoteOn {
+                note,
+                velocity: velocity.min(127),
+            },
+        );
+        let h = &mut self.pad_holders[engine.index()][usize::from(note)];
+        *h = h.saturating_add(1);
+        self.pad_voices[k] = Some((engine, note));
+        self.notes += 1;
+    }
+
+    /// That pad let go: its note ends once nothing else holds it.
+    pub fn pad_voice_off(&mut self, track: u16, pad: usize, offset: u32) {
+        if let Some(was) = voice_key(track, pad).and_then(|k| self.pad_voices[k].take()) {
+            self.end_pad_voice(was, offset);
+        }
+    }
+
+    /// Pressure, 0 to 127, on the note that pad holds, if any.
+    pub fn pad_voice_pressure(&mut self, track: u16, pad: usize, value: u8, offset: u32) {
+        if let Some((engine, note)) = voice_key(track, pad).and_then(|k| self.pad_voices[k]) {
+            self.push(
+                engine,
+                offset,
+                NodeEvent::Pressure {
+                    note,
+                    value: value.min(127),
+                },
+            );
+        }
+    }
+
+    /// Ends every note track `track`'s Instrument pads hold (its mute).
+    pub fn end_pad_voices(&mut self, track: u16, offset: u32) {
+        let Some(first) = voice_key(track, 0) else {
+            return;
+        };
+        for k in first..first + VOICE_PADS {
+            if let Some(was) = self.pad_voices[k].take() {
+                self.end_pad_voice(was, offset);
+            }
+        }
+    }
+
+    /// Whether an Instrument pad holds a note now.
+    #[cfg(test)]
+    pub fn pad_voices_held(&self) -> usize {
+        self.pad_voices.iter().flatten().count()
+    }
+
+    fn end_pad_voice(&mut self, (engine, note): (Engine, u8), offset: u32) {
+        let n = usize::from(note);
+        let h = &mut self.pad_holders[engine.index()][n];
         if *h == 0 {
-            self.push(self.settings.engine, offset, NodeEvent::NoteOff { note });
+            return;
+        }
+        *h -= 1;
+        // The pads' own notes on the same engine hold it too.
+        if *h == 0 && !(engine == self.settings.engine && self.holders[n] > 0) {
+            self.push(engine, offset, NodeEvent::NoteOff { note });
         }
     }
 
@@ -1281,6 +1400,14 @@ impl Synth {
         self.playing = [Held::default(); PADS];
         self.holders = [0; 128];
         self.press = [0; PADS];
+        // The Instrument pads' notes on the other engines end too.
+        for e in Engine::ALL {
+            if e != self.settings.engine && self.pad_holders[e.index()].iter().any(|&h| h > 0) {
+                self.push(e, 0, NodeEvent::AllOff);
+            }
+        }
+        self.pad_voices.fill(None);
+        self.pad_holders = [[0; 128]; ENGINES];
     }
 
     /// STOP: fade out over 10 ms, then reset, so nothing rings on.
@@ -2037,6 +2164,45 @@ mod tests {
     /// track's shift, and the pad's note-off and pressure reach the notes
     /// it started. In key, a pad keeps to the scale; the Drums engine's
     /// pads never move.
+    /// Instrument pads (the Pads tab's): a pad's voice is of its own
+    /// engine, whichever is on the pads; a note two pads hold, or a pad
+    /// and the pads' own notes on the same engine, ends with the last of
+    /// them; a pad hit again ends its note first; a panic ends them all.
+    #[test]
+    fn an_instrument_pads_note_ends_with_the_last_that_holds_it() {
+        let mut s = Synth::new(44_100);
+        let on = |note, velocity| NodeEvent::NoteOn { note, velocity };
+        let off = |note| NodeEvent::NoteOff { note };
+        // Two pads (of two tracks) hold Poly's C4; one holds FM's D4.
+        s.pad_voice_on(0, 5, (Engine::Poly, 60), 100, 0);
+        s.pad_voice_on(3, 9, (Engine::Poly, 60), 80, 0);
+        s.pad_voice_on(0, 6, (Engine::Fm, 62), 70, 0);
+        assert_eq!(s.pad_voices_held(), 3);
+        s.pad_voice_off(0, 5, 0);
+        assert!(!queued(&s).contains(&off(60)), "the other pad holds it");
+        // Poly is on the pads: a pad layout's C4 holds it too.
+        s.note_on_note(60, 90, 0);
+        s.pad_voice_off(3, 9, 0);
+        assert!(!queued(&s).contains(&off(60)));
+        s.note_off_note(60, 0);
+        assert_eq!(
+            queued(&s),
+            [on(60, 100), on(60, 80), on(60, 90), off(60)],
+            "one note-off, from the last"
+        );
+        // FM's pad hit again: its note ends first.
+        s.pad_voice_on(0, 6, (Engine::Fm, 64), 70, 0);
+        assert_eq!(s.queued_on(Engine::Fm), [on(62, 70), off(62), on(64, 70)]);
+        // A panic.
+        s.all_off();
+        assert_eq!(s.pad_voices_held(), 0);
+        assert_eq!(s.queued_on(Engine::Fm).last(), Some(&NodeEvent::AllOff));
+        // A pad past the tracks or the kit plays nothing.
+        s.pad_voice_on(mpfree_seq::MAX_TRACKS as u16, 0, (Engine::Fm, 60), 70, 0);
+        s.pad_voice_on(0, 128, (Engine::Fm, 60), 70, 0);
+        assert_eq!(s.pad_voices_held(), 0);
+    }
+
     #[test]
     fn a_shifted_pad_starts_its_notes_moved_and_ends_them() {
         let mut s = Synth::new(44_100);

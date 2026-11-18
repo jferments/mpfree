@@ -2,11 +2,18 @@
 //! copy, paste and clear, the Pad list, and putting the kit's sounds on
 //! pads, each change one undo step in a real project.
 
+use mpfree_midi::profile::PadOut;
 use mpfree_sampler::engine::{Engine, EngineView, Event};
-use mpfree_sampler::model::PlayMode;
-use mpfree_sampler_ui::pads_tab::{self, Button, PadsAction, PadsState, Row};
-use mpfree_sampler_ui::sample::{self, pads_sample, pads_samples, PadsSample, PAD, RATE};
-use mpfree_sampler_ui::widgets::{ButtonRow, KitTrack, KitTracks, PadBar, PadMap, SettingList};
+use mpfree_sampler::model::{LoopMode, PadKind, PlayMode};
+use mpfree_sampler_ui::pads_tab::{
+    self, Button, OutPort, PadType, PadsAction, PadsState, PadsTab, Row,
+};
+use mpfree_sampler_ui::sample::{
+    self, pad_outs, pads_sample, pads_samples, pads_types, PadsSample, PAD, RATE,
+};
+use mpfree_sampler_ui::widgets::{
+    ButtonRow, KitTrack, KitTracks, PadBar, PadMap, SectionChips, SettingList,
+};
 use mpfree_ui::widgets::ListView;
 use mpfree_ui::{EventKind, Fonts, SoftCanvas, Touch, UiEvent};
 
@@ -18,9 +25,13 @@ fn pads(pad: usize) -> PadsSample {
     s
 }
 
-/// Picks pad `pad`, as the app does for [`PadsAction::Pick`].
+/// Picks pad `pad`, as the app does for [`PadsAction::Pick`] (with the
+/// project's tempo, the engines and the ports as it gives them).
 fn pick(s: &mut PadsSample, pad: usize) {
+    let ports = s.state.ports.clone();
     s.state = PadsState::from_project(&s.project, pad);
+    pad_outs(&mut s.state);
+    s.state.ports = ports;
     let st = s.state.clone();
     s.tab.update(&mut s.ui, &st);
 }
@@ -66,10 +77,7 @@ fn the_map_shows_the_banks_pads_and_the_list_the_kits_sounds() {
     let s = pads(PAD);
     let bar = s.ui.get::<PadBar>(pads_tab::BAR).unwrap();
     assert_eq!(bar.title, "Pad A5 · Break 92");
-    assert_eq!(
-        bar.subtitle,
-        "6 of 16 pads with a sound · 3 sounds in the kit"
-    );
+    assert_eq!(bar.subtitle, "6 of 16 pads in use · 3 sounds in the kit");
     // No Browse | Pad switch: a button that opens the browser for A5.
     assert!(bar.tabs.is_empty());
     assert_eq!(bar.button.as_deref(), Some("Browse for A5"));
@@ -531,4 +539,333 @@ fn a_sliced_pad_says_its_slices_on_the_map() {
     pick(&mut s, PAD);
     let map = s.ui.get::<PadMap>(pads_tab::MAP).unwrap();
     assert_eq!(map.cells[PAD].detail, "16 slices · Loop");
+}
+
+/// The Pad list's rows as shown: names and values.
+fn rows(s: &PadsSample) -> Vec<(String, String)> {
+    s.ui.get::<SettingList>(pads_tab::LIST)
+        .unwrap()
+        .rows
+        .iter()
+        .map(|r| (r.name.clone(), r.value.clone()))
+        .collect()
+}
+
+/// Steps row `row` of the pad picked's type.
+fn step_typed(s: &mut PadsSample, row: Row, delta: i32) -> Option<PadsAction> {
+    let index = s
+        .state
+        .picked_type()
+        .rows()
+        .iter()
+        .position(|r| *r == row)?;
+    act(s, pads_tab::LIST, EventKind::Step { index, delta })
+}
+
+fn switch(s: &mut PadsSample, t: PadType) -> Option<PadsAction> {
+    let i = PadType::ALL.iter().position(|x| *x == t).unwrap();
+    act(s, pads_tab::TYPE, EventKind::Tab(i))
+}
+
+fn footer(s: &PadsSample) -> Option<(String, bool)> {
+    s.ui.get::<SettingList>(pads_tab::LIST)
+        .unwrap()
+        .footer
+        .clone()
+}
+
+#[test]
+fn the_type_switch_makes_a_sample_a_loop_and_back_one_undo_step_each() {
+    let mut s = pads(PAD);
+    pick(&mut s, PAD);
+    let chips = s.ui.get::<SectionChips>(pads_tab::TYPE).unwrap();
+    let names: Vec<&str> = chips.chips.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["Sample", "Loop", "Instrument", "MIDI out"]);
+    assert_eq!(chips.selected, 0);
+    let before = s.project.pad(PAD).cloned().unwrap();
+    // Loop: latched, a forward loop over the whole sound, warped, on the
+    // launch line; still a Sample pad underneath.
+    let a = switch(&mut s, PadType::Loop).unwrap();
+    assert!(matches!(a, PadsAction::Set { gesture: None, .. }));
+    apply(&mut s, &a);
+    let p = s.project.pad(PAD).unwrap();
+    assert_eq!(PadType::of(p), PadType::Loop);
+    assert!(p.latch && p.on_launch && p.kind == PadKind::Sample);
+    let r = &p.layers[0].region;
+    assert_eq!(r.mode, PlayMode::Loop);
+    let l = r.sustain_loop.unwrap();
+    assert_eq!(
+        (l.start, l.end, l.mode),
+        (r.start, r.end, LoopMode::Forward)
+    );
+    assert!(r.warp.is_some());
+    assert_eq!(
+        s.ui.get::<SectionChips>(pads_tab::TYPE).unwrap().selected,
+        1
+    );
+    let shown: Vec<String> = rows(&s).into_iter().map(|r| r.0).collect();
+    assert_eq!(
+        shown,
+        [
+            "Sound",
+            "Tempo",
+            "Mute group",
+            "Level",
+            "Pan",
+            "Tune",
+            "Effects"
+        ]
+    );
+    assert!(rows(&s)[1].1.ends_with(" BPM") || rows(&s)[1].1.contains(" BPM · "));
+    assert!(footer(&s).unwrap().0.starts_with("Loops in time"));
+    let map = s.ui.get::<PadMap>(pads_tab::MAP).unwrap();
+    assert_eq!(map.cells[PAD].badge.as_deref(), Some("LOOP"));
+    // The tempo row: a tenth of a BPM a detent; Q-Link 4 turns it.
+    let bpm = |s: &PadsSample| {
+        s.project.pad(PAD).unwrap().layers[0]
+            .region
+            .warp
+            .as_ref()
+            .unwrap()
+            .bpm
+    };
+    let was = bpm(&s);
+    let looped = s.project.pad(PAD).cloned().unwrap();
+    assert!(
+        pads_tab::describe_type(&before, &looped).starts_with("type Sample -> Loop"),
+        "the log names the switch"
+    );
+    let st = s.state.clone();
+    let a = s.tab.qlink(&mut s.ui, &st, 3, 5).unwrap();
+    apply(&mut s, &a);
+    assert!((bpm(&s) - was - 0.5).abs() < 1e-3, "{} {was}", bpm(&s));
+    assert_eq!(
+        pads_tab::describe_type(&looped, s.project.pad(PAD).unwrap()),
+        format!("tempo {was:.1} -> {:.1} BPM", bpm(&s))
+    );
+    s.tab.lift();
+    // Back to Sample: not on the launch line any more, the rest kept.
+    let a = switch(&mut s, PadType::Sample).unwrap();
+    apply(&mut s, &a);
+    let p = s.project.pad(PAD).unwrap();
+    assert_eq!(PadType::of(p), PadType::Sample);
+    assert!(!p.on_launch);
+    assert_eq!(rows(&s).len(), Row::ALL.len());
+    // Each is one undo step: three undos give the pad back as it was.
+    for _ in 0..3 {
+        assert!(s.project.undo());
+    }
+    assert_eq!(s.project.pad(PAD), Some(&before));
+    // An empty pad has no sound to loop: it says so and does nothing.
+    pick(&mut s, 10);
+    assert_eq!(switch(&mut s, PadType::Loop), None);
+    assert_eq!(
+        s.tab.take_note().as_deref(),
+        Some("A11 has no sound to loop: Browse for one")
+    );
+}
+
+#[test]
+fn an_instrument_pad_picks_its_engine_and_note() {
+    let mut s = pads(PAD);
+    pick(&mut s, 10);
+    let a = switch(&mut s, PadType::Instrument).unwrap();
+    apply(&mut s, &a);
+    let p = s.project.pad(10).unwrap();
+    assert_eq!(p.name, "Poly", "an empty pad takes the engine's name");
+    assert!(p.layers.is_empty());
+    assert_eq!(
+        p.kind,
+        PadKind::Instrument {
+            engine: "poly".into(),
+            note: 60
+        }
+    );
+    assert_eq!(
+        rows(&s),
+        [
+            ("Engine".to_string(), "Poly".to_string()),
+            ("Note".to_string(), "C4".to_string())
+        ]
+    );
+    // The engine steps round the Synth tab's engines; the note by
+    // semitones (Q-Link 1).
+    let a = step_typed(&mut s, Row::Engine, 1).unwrap();
+    apply(&mut s, &a);
+    let st = s.state.clone();
+    let a = s.tab.qlink(&mut s.ui, &st, 0, -24).unwrap();
+    apply(&mut s, &a);
+    assert_eq!(
+        s.project.pad(10).unwrap().kind,
+        PadKind::Instrument {
+            engine: "fm".into(),
+            note: 36
+        }
+    );
+    assert_eq!(rows(&s)[0].1, "FM");
+    assert_eq!(
+        footer(&s),
+        Some((
+            "A hit plays the Synth tab's FM sound at C2, through the Synth strip on Mix".into(),
+            false
+        ))
+    );
+    let map = s.ui.get::<PadMap>(pads_tab::MAP).unwrap();
+    assert_eq!(
+        (
+            map.cells[10].detail.as_str(),
+            map.cells[10].badge.as_deref()
+        ),
+        ("FM C2", Some("SYNTH"))
+    );
+    assert_eq!(PadsTab::qlinks_text(&s.state), "note, engine");
+    // Back to Sample with no sound: the pad is empty again.
+    s.tab.lift();
+    let a = switch(&mut s, PadType::Sample).unwrap();
+    assert_eq!(
+        a,
+        PadsAction::Set {
+            pad: 10,
+            after: None,
+            gesture: None
+        }
+    );
+    // A pad with a sound keeps it as an instrument, and gets it back.
+    pick(&mut s, 0);
+    let a = switch(&mut s, PadType::Instrument).unwrap();
+    apply(&mut s, &a);
+    let p = s.project.pad(0).unwrap();
+    assert_eq!((p.name.as_str(), p.layers.len()), ("Kick 58", 1));
+    let a = switch(&mut s, PadType::Sample).unwrap();
+    apply(&mut s, &a);
+    assert_eq!(s.project.pad(0).unwrap().kind, PadKind::Sample);
+}
+
+#[test]
+fn a_midi_out_pad_sends_to_its_own_port_and_says_when_it_would_send_nothing() {
+    let mut s = pads(PAD);
+    s.state.ports.push(OutPort {
+        name: "USB MIDI 2".into(),
+        shown: "Synth rack".into(),
+        why: Some("sends nothing: Synth rack has no output".into()),
+        pads: Vec::new(),
+    });
+    pick(&mut s, 12);
+    let a = switch(&mut s, PadType::MidiOut).unwrap();
+    apply(&mut s, &a);
+    let p = s.project.pad(12).unwrap();
+    // A13's own note, as a kit on a port sends it (the MPC's pad 13).
+    assert_eq!(p.name, "Volca Kick", "an empty pad takes the port's name");
+    assert_eq!(
+        p.kind,
+        PadKind::MidiOut {
+            port: "Volca Kick".into(),
+            channel: 10,
+            note: 49
+        }
+    );
+    assert_eq!(
+        rows(&s),
+        [
+            ("Port".to_string(), "Volca Kick".to_string()),
+            ("Channel".to_string(), "10".to_string()),
+            ("Note".to_string(), "49 · C#3".to_string())
+        ]
+    );
+    assert_eq!(
+        footer(&s),
+        Some((
+            "A hit sends note 49 on channel 10 to Volca Kick".into(),
+            false
+        ))
+    );
+    // Channel stops at 16; the port steps to the next, which says why it
+    // would send nothing, in place.
+    let a = step_typed(&mut s, Row::Channel, 20).unwrap();
+    apply(&mut s, &a);
+    assert_eq!(rows(&s)[1].1, "16");
+    let a = step_typed(&mut s, Row::Port, 1).unwrap();
+    apply(&mut s, &a);
+    assert_eq!(rows(&s)[0].1, "Synth rack");
+    assert_eq!(
+        footer(&s),
+        Some(("sends nothing: Synth rack has no output".into(), true))
+    );
+    // A port that isn't plugged in now keeps its name and says so.
+    s.state.ports.clear();
+    pick(&mut s, 12);
+    assert_eq!(rows(&s)[0].1, "USB MIDI 2");
+    assert_eq!(
+        footer(&s),
+        Some(("sends nothing: USB MIDI 2 is not plugged in".into(), true))
+    );
+    assert_eq!(step_typed(&mut s, Row::Port, 1), None);
+    assert_eq!(
+        s.tab.take_note().as_deref(),
+        Some("No MIDI output to pick: plug one in")
+    );
+    let map = s.ui.get::<PadMap>(pads_tab::MAP).unwrap();
+    assert_eq!(
+        (
+            map.cells[12].detail.as_str(),
+            map.cells[12].badge.as_deref()
+        ),
+        ("ch 16 · 49", Some("MIDI"))
+    );
+    // A port whose profile gives the pad a note and channel: the new pad
+    // starts on them, as a kit on that port would play it.
+    s.state.ports.push(OutPort {
+        name: "Volca Kick".into(),
+        shown: "Volca Kick".into(),
+        why: None,
+        pads: vec![(
+            13,
+            PadOut {
+                note: 36,
+                channel: Some(1),
+            },
+        )],
+    });
+    pick(&mut s, 13);
+    let a = switch(&mut s, PadType::MidiOut).unwrap();
+    apply(&mut s, &a);
+    assert_eq!(
+        s.project.pad(13).unwrap().kind,
+        PadKind::MidiOut {
+            port: "Volca Kick".into(),
+            channel: 2,
+            note: 36
+        }
+    );
+    pick(&mut s, 12);
+    // A sound put on it makes it a Sample pad again.
+    let st = s.state.clone();
+    s.tab.action(
+        &mut s.ui,
+        &UiEvent {
+            widget: pads_tab::SOUNDS.into(),
+            kind: EventKind::Select(2),
+        },
+        &st,
+    );
+    let a = act(&mut s, pads_tab::PUT, EventKind::Tab(0)).unwrap();
+    apply(&mut s, &a);
+    let p = s.project.pad(12).unwrap();
+    assert_eq!((p.kind.clone(), p.layers.len()), (PadKind::Sample, 1));
+}
+
+#[test]
+fn the_types_sample_screen_shows_a_pad_of_each_type() {
+    let s = pads_types(Fonts::embedded()).unwrap();
+    let map = s.ui.get::<PadMap>(pads_tab::MAP).unwrap();
+    let badges: Vec<Option<&str>> = [PAD, 10, 12]
+        .iter()
+        .map(|&i| map.cells[i].badge.as_deref())
+        .collect();
+    assert_eq!(badges, [Some("LOOP"), Some("SYNTH"), Some("MIDI")]);
+    assert_eq!(map.cells[0].badge, None, "a plain sample has none");
+    assert_eq!(
+        s.ui.get::<SectionChips>(pads_tab::TYPE).unwrap().selected,
+        3
+    );
 }
