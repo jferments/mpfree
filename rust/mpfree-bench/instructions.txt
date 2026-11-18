@@ -92,7 +92,7 @@
 107805	Phaser (12 stages)
 66460	Phaser (4 stages)
 60128	Pitch correct
-58972	Pitch shifter
+71972	Pitch shifter
 155797	Plate reverb
 307019	Pluck Bell, 16 voices
 249183	Pluck Harp, 16 voices

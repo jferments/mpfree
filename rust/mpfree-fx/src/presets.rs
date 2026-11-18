@@ -887,7 +887,7 @@ pub static TRANSIENT: &[Preset] = &[
 pub static PITCH: &[Preset] = &[
     Preset {
         name: "Octave down",
-        values: &[(pitch::PITCH, -12.0), (pitch::WINDOW, 80.0)],
+        values: &[(pitch::PITCH, -12.0), (pitch::WINDOW, 50.0)],
     },
     Preset {
         name: "Fifth up",
