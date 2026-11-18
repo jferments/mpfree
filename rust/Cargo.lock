@@ -1398,6 +1398,7 @@ name = "mpfree-track"
 version = "0.1.0"
 dependencies = [
  "mpfree-fx",
+ "mpfree-lanes",
  "mpfree-node",
  "mpfree-play",
  "mpfree-prof",
