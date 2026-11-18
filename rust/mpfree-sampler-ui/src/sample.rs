@@ -1193,7 +1193,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     on.settings.start = crate::rec_tab::StartAt::Threshold;
     on.recording = true;
     on.status = "0:05.1 · onto A2".into();
-    on.keep.line = "after this take".into();
+    on.keep.line = "finish the take first".into();
     on.keep.ready = false;
     s.tab.set_recorder(&mut s.ui, on, &s.state.clone());
     s.tab.meter(&mut s.ui, [0.5, 0.4], 0.0);

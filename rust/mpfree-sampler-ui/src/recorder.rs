@@ -56,7 +56,7 @@ pub const INPUT_ROWS: [Row; 5] = [
 
 /// What the Q-Links turn while REC is on (the plan's step 2a): Q-Link 2
 /// the Threshold, Q-Link 3 the Pre-roll. Q-Links 1 and 4 are faint until
-/// the recorder has a Gain and a Monitor level (step 2c).
+/// the recorder has a Gain and a Monitor level (step 2d).
 pub const QLINK_ROWS: [Option<Row>; 4] = [None, Some(Row::Threshold), Some(Row::PreRoll), None];
 
 /// Why Q-Links 1 and 4 are faint while REC is on.
@@ -68,7 +68,7 @@ pub struct KeepView {
     /// "Keep last 4 bars", "Keep last 10 s".
     pub title: String,
     /// "what just played, as a new take", "what just played, onto A6",
-    /// or why a tap keeps nothing now ("after this take").
+    /// or why a tap keeps nothing now ("finish the take first").
     pub line: String,
     /// A tap keeps it now (else the card is faint and says why).
     pub ready: bool,
