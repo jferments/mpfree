@@ -204,7 +204,7 @@ touchscreen, using the list of controls each widget gives
   macro; steps tapped on Beats playing in time; REC and Undo; mutes from
   the Play page, the pad mixer and TRACK MUTE; the synth staying on the pads;
   the tempo tapped; the master level from both ends; the kit from the
-  wheel and from the kit chip; Full level turned off from its chip. A new
+  wheel and from the list of kits; Full level turned off from its chip. A new
   feature a musician uses gets a workflow here.
 - **Song workflows** (`smoke/song_workflows.rs`) do the same with three
   whole demo songs written in code (`smoke/songs.rs`), saved into a

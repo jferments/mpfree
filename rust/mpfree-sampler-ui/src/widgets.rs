@@ -27,6 +27,10 @@ pub struct PadBar {
     /// drawn raised with a folder at its left, always on; a tap gives
     /// [`EventKind::Tab`] 0. Used when `tabs` is empty.
     pub button: Option<String>,
+    /// The kit's name on a button left of `button` ("Kit Boom Bap", with
+    /// a chevron: the Pads tab's Kit, which opens the list of kits); a tap
+    /// gives [`EventKind::Tab`] 1. Only beside `button`.
+    pub kit: Option<String>,
 }
 
 const SEG_H: i32 = 40;
@@ -34,6 +38,10 @@ const SEG_PAD: i32 = 4;
 const SEG_TAB_W: i32 = 84;
 /// The width of the bar's button ([`PadBar::button`]).
 const BUTTON_W: i32 = 220;
+/// The width of the kit's button ([`PadBar::kit`]) and the room before
+/// the bar's button.
+const KIT_W: i32 = 220;
+const KIT_GAP: i32 = 10;
 
 impl PadBar {
     pub fn new(tabs: &[&str]) -> PadBar {
@@ -46,13 +54,21 @@ impl PadBar {
             enabled: vec![true; tabs.len()],
             nameable: false,
             button: None,
+            kit: None,
         }
     }
 
     /// The part a tap names the pad in: the swatch, title and subtitle.
     pub fn name_rect(&self, r: Rect) -> Rect {
-        let tabs = self.tabs_rect(r);
-        Rect::new(r.x, r.y, (tabs.x - r.x - 10).max(0), r.h)
+        let right = self.kit_rect(r).unwrap_or_else(|| self.tabs_rect(r)).x;
+        Rect::new(r.x, r.y, (right - r.x - 10).max(0), r.h)
+    }
+
+    /// The kit's button, when it has one (beside the bar's button).
+    pub fn kit_rect(&self, r: Rect) -> Option<Rect> {
+        self.kit.as_ref()?;
+        let b = self.button_rect(r)?;
+        Some(Rect::new(b.x - KIT_GAP - KIT_W, b.y, KIT_W, b.h))
     }
 
     /// The bar's button, when it has one (and no tabs).
@@ -91,7 +107,7 @@ impl Widget for PadBar {
         let sq = 36.min(r.h - 16).max(8);
         let swatch = Rect::new(r.x + t.pad, r.y + (r.h - sq) / 2, sq, sq);
         cx.canvas.fill_round_rect(swatch, 8, self.color);
-        let tabs = self.tabs_rect(r);
+        let tabs = self.kit_rect(r).unwrap_or_else(|| self.tabs_rect(r));
         let text = Rect::new(
             swatch.right() + 14,
             r.y + 6,
@@ -127,6 +143,42 @@ impl Widget for PadBar {
             t.text_dim,
             &self.subtitle,
         );
+        if let (Some(k), Some(name)) = (self.kit_rect(r), self.kit.as_ref()) {
+            // The kit's button: raised, "Kit" faint before the name, a
+            // chevron at its right (it opens a list).
+            cx.canvas.fill_round_rect(k, 12, t.raised);
+            let x = k.x + 16;
+            let kw = cx.text(
+                FontId::Bold,
+                t.size_body,
+                Rect::new(x, k.y, 60, k.h),
+                Align::Left,
+                t.text_dim,
+                "Kit",
+            );
+            let chev = 14;
+            cx.text(
+                FontId::Bold,
+                t.size_body,
+                Rect::new(
+                    x + kw + 8,
+                    k.y,
+                    k.right() - 16 - chev - 8 - (x + kw + 8),
+                    k.h,
+                ),
+                Align::Left,
+                t.text,
+                name,
+            );
+            // The chevron: two strokes meeting at the bottom.
+            let (cx0, cy0) = (k.right() - 16 - chev, k.y + k.h / 2 - 3);
+            for i in 0..chev / 2 {
+                let y = cy0 + i * 6 / (chev / 2);
+                cx.canvas.fill_rect(Rect::new(cx0 + i, y, 2, 2), t.text_dim);
+                cx.canvas
+                    .fill_rect(Rect::new(cx0 + chev - 2 - i, y, 2, 2), t.text_dim);
+            }
+        }
         if let (Some(b), Some(label)) = (self.button_rect(r), self.button.as_ref()) {
             // The button: raised, a folder at its left, the label after it.
             cx.canvas.fill_round_rect(b, 12, t.raised);
@@ -187,6 +239,9 @@ impl Widget for PadBar {
         if let (Some(b), Some(label)) = (self.button_rect(r), self.button.as_ref()) {
             out.push(Target::tap("button", 0, label.clone(), b));
         }
+        if let (Some(k), Some(name)) = (self.kit_rect(r), self.kit.as_ref()) {
+            out.push(Target::tap("kit", 0, format!("Kit {name}"), k));
+        }
         out
     }
 
@@ -199,6 +254,9 @@ impl Widget for PadBar {
         }
         if self.button_rect(r).is_some_and(|b| b.contains(x, y)) {
             return Some(EventKind::Tab(0));
+        }
+        if self.kit_rect(r).is_some_and(|k| k.contains(x, y)) {
+            return Some(EventKind::Tab(1));
         }
         let i = (0..self.tabs.len()).find(|&i| self.tab_rect(r, i).contains(x, y))?;
         self.enabled

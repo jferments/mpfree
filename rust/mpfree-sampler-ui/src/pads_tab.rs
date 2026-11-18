@@ -4,8 +4,11 @@
 //! centerpiece of the MPC, and deserve their own top menu"); until then it
 //! was a sub-page of the Sample tab.
 //!
-//! - The **bar** over everything shows the pad picked and a **Browse for
-//!   A5** button, which gives [`PadsAction::Browse`]: the app opens its
+//! - The **bar** over everything shows the pad picked, the kit's **Kit**
+//!   button (a tap is [`KIT_BUTTON`]'s: the app opens its list of kits,
+//!   which the top bar's kit chip opened until the Play, Pads and
+//!   Sequencer redesign's step 4) and a **Browse for A5** button, which
+//!   gives [`PadsAction::Browse`]: the app opens its
 //!   full-screen browser, whose Load puts a sound on the pad picked. The
 //!   tab has one page ([`LAYOUT`]): the pads, the pad's settings and the
 //!   kit's sounds. (It had a Browse view, the browser in a narrow form
@@ -57,6 +60,10 @@ pub const BUTTONS: &str = "smp-pads-buttons";
 pub const LIST: &str = "smp-pads-list";
 pub const SOUNDS: &str = "smp-pads-sounds";
 pub const PUT: &str = "smp-pads-put";
+/// The bar's Kit button: a tap is [`EventKind::Tab`] with this on
+/// [`BAR`], which the app answers (it opens its list of kits); the tab
+/// gives no action for it.
+pub const KIT_BUTTON: usize = 1;
 /// The "Kit of" row: the tracks that play kits and + Kit track
 /// ([`KitTracks`]). The app fills it and answers its taps.
 pub const KITS: &str = "smp-pads-kits";
@@ -374,6 +381,8 @@ pub struct PadsTab {
     pub bank: Option<char>,
     /// A kit name for the map's title, such as "Kit 1 · Breaks".
     pub kit: String,
+    /// The kit's name on the bar's Kit button ("Boom Bap").
+    pub kit_name: String,
     copied: Option<(usize, Pad)>,
     sound: usize,
     shown_pad: Option<usize>,
@@ -409,6 +418,7 @@ impl PadsTab {
             name: name.to_string(),
             bank: None,
             kit: String::new(),
+            kit_name: String::new(),
             copied: None,
             sound: 0,
             shown_pad: None,
@@ -467,6 +477,7 @@ impl PadsTab {
         if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
             bar.color = pad_color(st.pad);
             bar.button = Some(format!("Browse for {here}"));
+            bar.kit = (!self.kit_name.is_empty()).then(|| self.kit_name.clone());
             bar.title = match picked {
                 Some(p) => format!("Pad {here} · {}", p.name),
                 None => format!("Pad {here} · no sound"),

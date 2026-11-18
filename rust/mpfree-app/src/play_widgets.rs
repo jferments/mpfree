@@ -48,6 +48,30 @@ pub struct TransportLook {
     pub view: usize,
     /// The REC chip: what REC records ([`crate::rec_arm`]).
     pub rec: Option<RecChip>,
+    /// What the pads play, on Play's card only.
+    pub pads: Option<PadsPlay>,
+}
+
+/// What the pads play, on Play's transport card: the armed track, its kit
+/// and the bank on the pads, "Drums · Boom Bap · A" (the Play, Pads and
+/// Sequencer redesign, step 4: it took the top bar's kit chip's place, and
+/// names the bank since the PAD BANK lights can't show E to H). A tap
+/// gives [`TAP_PADS`]: the app opens the list of kits.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PadsPlay {
+    /// "Drums": the track, left out first when the line is too long.
+    pub track: String,
+    /// "Boom Bap · A": the kit and the bank, or the synth's line.
+    pub what: String,
+    /// The track's colour, for the dot before the text.
+    pub color: Color,
+}
+
+impl PadsPlay {
+    /// The whole line: "Drums · Boom Bap · A".
+    pub fn text(&self) -> String {
+        format!("{} · {}", self.track, self.what)
+    }
 }
 
 /// Where a take stands, for the REC chip; ordered by how far along it is.
@@ -270,6 +294,51 @@ pub fn paint_rec_chip(cx: &mut PaintCx, r: Rect, c: &RecChip) {
     );
 }
 
+/// What the pads play ([`PadsPlay`]), raised as a button: "PADS PLAY"
+/// over the track's dot and the text.
+fn paint_pads_play(cx: &mut PaintCx, r: Rect, p: &PadsPlay) {
+    let t = cx.theme.clone();
+    cx.canvas.fill_round_rect(r, 10, t.raised);
+    let half = r.h / 2;
+    cx.text(
+        FontId::Bold,
+        11.0,
+        Rect::new(r.x + 12, r.y + 4, r.w - 22, half - 2),
+        Align::Left,
+        t.text_dim,
+        "PADS PLAY",
+    );
+    let line = Rect::new(r.x + 12, r.y + half - 2, r.w - 22, half);
+    cx.canvas.fill_round_rect(
+        Rect::new(line.x, line.y + (line.h - 8) / 2, 8, 8),
+        4,
+        p.color,
+    );
+    let text = Rect::new(line.x + 14, line.y, line.w - 14, line.h);
+    // Too long: the track goes first (Play's rows name it), then the
+    // kit's name is cut, but the bank at its end stays.
+    let mut s = p.text();
+    if cx.measure(FontId::Bold, 14.0, &s) > text.w {
+        s.clone_from(&p.what);
+    }
+    if cx.measure(FontId::Bold, 14.0, &s) > text.w {
+        if let Some((kit, bank)) = s.rsplit_once(" · ") {
+            let tail = format!(" · {bank}");
+            let room = text.w - cx.measure(FontId::Bold, 14.0, &tail);
+            let mut cut = String::new();
+            for c in kit.chars() {
+                let next = format!("{cut}{c}…");
+                if cx.measure(FontId::Bold, 14.0, &next) > room {
+                    break;
+                }
+                cut.push(c);
+            }
+            s = format!("{}…{tail}", cut.trim_end());
+        }
+    }
+    cx.text(FontId::Bold, 14.0, text, Align::Left, t.text, &s);
+}
+
 impl Default for TransportLook {
     fn default() -> Self {
         TransportLook {
@@ -283,6 +352,7 @@ impl Default for TransportLook {
             views: &PLAY_SWITCH,
             view: 0,
             rec: None,
+            pads: None,
         }
     }
 }
@@ -296,6 +366,8 @@ struct TransportAreas {
     bpm: Rect,
     /// The REC chip, if it was drawn.
     rec: Rect,
+    /// What the pads play, if it was drawn.
+    pads: Rect,
 }
 
 /// [`PlayTransport`]'s event for a tap on the tempo
@@ -305,6 +377,9 @@ pub const TAP_BPM: usize = 0;
 /// [`PlayTransport`]'s event for a tap on the REC chip: what REC records
 /// and how to change it is said.
 pub const TAP_REC: usize = 1;
+/// [`PlayTransport`]'s event for a tap on what the pads play
+/// ([`PadsPlay`]): the app opens the list of kits.
+pub const TAP_PADS: usize = 2;
 
 /// The transport card. A tap on the switch gives `Tab(view)`.
 #[derive(Default)]
@@ -314,6 +389,9 @@ pub struct PlayTransport {
 }
 
 const SWITCH_SEG_W: i32 = 70;
+/// What the pads play: as wide as its text, within these.
+const PADS_MIN_W: i32 = 132;
+const PADS_MAX_W: i32 = 224;
 const SWITCH_SEG_H: i32 = 44;
 
 impl PlayTransport {
@@ -422,7 +500,7 @@ impl Widget for PlayTransport {
         if self.look.pos != old.pos {
             parts.push(areas.pos);
         }
-        if self.look.step != old.step || self.look.bar != old.bar {
+        if (self.look.step != old.step || self.look.bar != old.bar) && !areas.dots.is_empty() {
             parts.push(areas.dots);
         }
         Some(parts)
@@ -483,12 +561,29 @@ impl Widget for PlayTransport {
         );
         // The view switch at the right end: one tap each.
         let (b, segs) = PlayTransport::switch(r, self.look.views.len());
-        // The REC chip between the tempo and where the bar is.
-        let gw = 16 * DOT_CELL + 3 * 6;
+        // What the pads play, before the switch (Play's card only).
+        let mut pads = Rect::default();
+        let mut end = b.x - DOTS_GAP;
+        if let Some(p) = &self.look.pads {
+            let tw = cx.measure(FontId::Bold, 14.0, &p.text()) + 12 + 14 + 12;
+            let w = tw.clamp(PADS_MIN_W, PADS_MAX_W);
+            let h = REC_CHIP_H.min(inner.h);
+            pads = Rect::new(b.x - 12 - w, inner.y + (inner.h - h) / 2, w, h);
+            paint_pads_play(cx, pads, p);
+            end = pads.x - 12;
+        }
+        // The REC chip between the tempo and where the bar is. On Play,
+        // what the pads play takes the dots' room (the mockup had no view
+        // switch): the position and Play's rows say where the bar is.
+        let left = x + bw + 6 + bpm_word + 14;
+        let gw = if self.look.pads.is_some() {
+            0
+        } else {
+            16 * DOT_CELL + 3 * 6
+        };
         let mut rec = Rect::default();
         if let Some(c) = &self.look.rec {
-            let left = x + bw + 6 + bpm_word + 14;
-            let right = b.x - DOTS_GAP - gw - 14;
+            let right = if gw == 0 { end } else { end - gw - 14 };
             if right - left >= 96 {
                 let h = REC_CHIP_H.min(inner.h);
                 let cr = Rect::new(left, inner.y + (inner.h - h) / 2, right - left, h);
@@ -512,8 +607,13 @@ impl Widget for PlayTransport {
             );
         }
         // Where the bar is: the loop's bars above, the 16ths of this bar below.
-        let dots = Rect::new(b.x - DOTS_GAP - gw, inner.y + 6, gw, 18 + 26);
-        self.paint_dots(cx, dots);
+        let dots = if gw == 0 {
+            Rect::default()
+        } else {
+            let dots = Rect::new(end - gw, inner.y + 6, gw, 18 + 26);
+            self.paint_dots(cx, dots);
+            dots
+        };
         // The tempo's tap area: its number and "BPM", the card's full height
         // (at least 64 px wide for a finger).
         let bpm = Rect::new(x - 8, r.y, (bw + 52).max(64), r.h);
@@ -525,6 +625,7 @@ impl Widget for PlayTransport {
                 dots,
                 bpm,
                 rec,
+                pads,
             },
         ));
     }
@@ -551,6 +652,9 @@ impl Widget for PlayTransport {
             if let (true, false, Some(c)) = (*pr == r, a.rec.is_empty(), &self.look.rec) {
                 out.push(Target::tap("rec", 0, c.line(), a.rec));
             }
+            if let (true, false, Some(p)) = (*pr == r, a.pads.is_empty(), &self.look.pads) {
+                out.push(Target::tap("pads", 0, p.text(), a.pads));
+            }
         }
         out
     }
@@ -572,6 +676,8 @@ impl Widget for PlayTransport {
             Some(EventKind::Select(TAP_BPM))
         } else if !a.rec.is_empty() && a.rec.contains(x, y) {
             Some(EventKind::Select(TAP_REC))
+        } else if !a.pads.is_empty() && a.pads.contains(x, y) {
+            Some(EventKind::Select(TAP_PADS))
         } else {
             None
         }
