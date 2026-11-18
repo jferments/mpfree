@@ -2515,6 +2515,7 @@ impl PlayPage {
                 PLAY_VIEWS.iter().position(|&v| v == self.view).unwrap_or(0)
             },
             rec: None,
+            pads: None,
         }
     }
 }

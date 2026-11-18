@@ -103,7 +103,7 @@ pub struct Player {
 }
 
 /// What each track plays when it has no instrument of its own: an entry
-/// of the kit chip's list, a kit (the Grains kit among them) or the synth
+/// of the list of kits, a kit (the Grains kit among them) or the synth
 /// after them. Every track plays kit 1 until a pick changes it; then the
 /// pads play the armed track's entry, and each track's clips play its own
 /// (a kit per track, the sampler review's decision 1).
@@ -334,7 +334,7 @@ pub const POOL_VOICES: usize = 64;
 pub const KIT_POLYPHONY: u8 = 4;
 
 /// Empty kit slots the app keeps after the kits and Grains (sampler R3
-/// part 3): the kit chip's **New kit** puts the next one on the armed
+/// part 3): the list of kits' **New kit** puts the next one on the armed
 /// track, and a kit loaded onto a kit other tracks play goes into one, so
 /// loading never changes another track's sound. A slot is only arrays
 /// until sounds go on it; the slots are fixed, so the kits' places (and
