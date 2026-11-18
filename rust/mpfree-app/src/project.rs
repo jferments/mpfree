@@ -1656,6 +1656,40 @@ mod tests {
         assert!(track_kits_parse(&format!("{TRACK_KITS_FORMAT}\ntrack 0 kit 1\n")).is_err());
     }
 
+    /// Looper redesign step 4c: a tempo a free first loop set is any
+    /// number, and the loop is its length only at that tempo. A project
+    /// keeps it exactly through its text and opens the song at it.
+    #[test]
+    fn a_tempo_from_a_loop_comes_back_exactly() {
+        let bar = 4 * mpfree_transport::time::PPQ as i64;
+        let (_, from_loop) = mpfree_looper::free_tempo(123_457, 44_100, bar).unwrap();
+        for tempo in [117.3456, from_loop] {
+            let c = Collected {
+                tempo,
+                swing: mpfree_transport::time::Swing::new(240, 50).unwrap(),
+                clips: mpfree_seq::Project::default(),
+                mixer: String::new(),
+                modu: String::new(),
+                synth: String::new(),
+                arp: String::new(),
+                instruments: format!("{INSTRUMENTS_FORMAT}\n"),
+                track_kits: String::new(),
+                loops: None,
+                audio: None,
+            };
+            let snap = snapshot(&c, Vec::new());
+            let text = snap.meta.to_text();
+            let back = Snapshot {
+                meta: mpfree_library::Meta::parse(&text).unwrap(),
+                parts: snap.parts.clone(),
+            };
+            let o = opening(&back, 44_100, "a test", &crate::plugins::Plugins::none());
+            assert_eq!(o.tempo, Some(tempo), "{text}");
+            let time = o.time.expect("the clips");
+            assert_eq!(time.info().bpm, tempo);
+        }
+    }
+
     /// A project saved before the instruments part, or with no track's
     /// own instrument, has none: every track plays the kit.
     #[test]

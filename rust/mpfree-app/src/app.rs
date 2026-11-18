@@ -687,6 +687,10 @@ pub struct Settings {
     pub loop_latency: u32,
     pub loop_latency_set: bool,
     pub loop_level_db: f32,
+    /// The looper's options "Tempo from the first loop": with the song
+    /// stopped, a first loop recorded on Free length sets the tempo (and
+    /// starts the song) when it closes. Off by default; kept in Prefs.
+    pub loop_tempo: bool,
     /// Prefs > Appearance: the theme in use, a built-in name (see
     /// [`THEMES`]); `--theme` can also set a theme file for one run.
     pub theme: String,
@@ -766,6 +770,7 @@ impl Default for Settings {
             loop_latency: crate::looping::estimated_latency(3),
             loop_latency_set: false,
             loop_level_db: 0.0,
+            loop_tempo: false,
             theme: "default".to_string(),
             sound_cores: SoundCores::Shared,
             loop_memory: LoopMemory::default(),
@@ -852,6 +857,8 @@ pub enum Item {
     LoopBars,
     LoopLatency,
     LoopLevel,
+    /// The looper's options: tempo from the first loop, on or off.
+    LoopTempo,
     /// Prefs and the looper's options: the looper's size from the next
     /// start.
     LoopMemory,
@@ -3476,6 +3483,7 @@ impl App {
                 Item::LoopBars,
                 Item::LoopLatency,
                 Item::LoopLevel,
+                Item::LoopTempo,
                 Item::LoopMemory,
             ],
             (_, View::Debug | View::Perf | View::Engines | View::Procs | View::Map) => {
@@ -3638,6 +3646,10 @@ impl App {
                 ),
             ),
             Item::LoopLevel => ("Loop level", format!("{:+.0} dB", s.loop_level_db)),
+            Item::LoopTempo => (
+                "Tempo from the first loop",
+                if s.loop_tempo { "On" } else { "Off" }.to_string(),
+            ),
             Item::LoopMemory => (
                 "Loop memory",
                 if s.loop_memory == self.loop_memory_now {
@@ -3866,6 +3878,15 @@ impl App {
             Item::LoopLevel => vec![
                 "The loop's playback level, -24 to +6 dB.",
                 "0 dB plays it as it was recorded.",
+            ],
+            Item::LoopTempo => vec![
+                "On: with the song stopped, the first loop",
+                "on Free length records in your own time, and",
+                "its length sets the tempo when REC closes it:",
+                "the bars that make 80 to 160 BPM. The song",
+                "starts at that tempo as the loop comes round.",
+                "Not while another device's clock leads, the",
+                "song has more than one tempo, or an export runs.",
             ],
             Item::LoopMemory => vec![
                 "How much sound the loops can hold, all",
@@ -4338,6 +4359,7 @@ impl App {
                     LoopCommand::SetLatency(s.loop_latency_now()),
                 )));
             }
+            Item::LoopTempo => s.loop_tempo = d > 0,
             Item::LoopLevel => {
                 s.loop_level_db = (s.loop_level_db + d as f32).clamp(-24.0, 6.0);
                 fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetLevel(
@@ -5140,6 +5162,41 @@ mod tests {
             notes.iter().any(|n| n.contains("sound-cores = four")),
             "{notes:?}"
         );
+    }
+
+    /// Looper redesign step 4c: the Looper tab's options turn Tempo from
+    /// the first loop on and off (off at first), kept between starts.
+    #[test]
+    fn tempo_from_the_first_loop_is_in_the_looper_options_and_kept() {
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.open_tab(View::Looper);
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Options);
+        let at = row(&app, Item::LoopTempo);
+        assert_eq!(at, row(&app, Item::LoopLevel) + 1, "before Loop memory");
+        assert_eq!(
+            app.item_text(Item::LoopTempo),
+            ("Tempo from the first loop", "Off".to_string())
+        );
+        assert!(!app.settings.loop_tempo);
+        let fx = app.step_item(at, 1);
+        assert!(app.settings.loop_tempo);
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Settings(s) if s.loop_tempo)));
+        assert_eq!(app.item_text(Item::LoopTempo).1, "On");
+        let kept = app.app_settings();
+        assert_eq!(kept.get_bool("loop-tempo"), Some(true));
+        let mut next = App::new(44_100, false);
+        let notes = next.restore(&kept, &mpfree_store::Settings::default());
+        assert!(next.settings.loop_tempo);
+        assert!(
+            notes[0].contains(", tempo from the first loop on,"),
+            "{notes:?}"
+        );
+        app.step_item(at, -1);
+        assert!(!app.settings.loop_tempo);
     }
 
     /// Live test 2: a minute of loops was too little. Prefs (and the
