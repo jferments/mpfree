@@ -158,7 +158,7 @@ Each track of the file becomes a clip in the first empty slot of a track: the fi
 
 **Its notes go on the pads that play them.** A clip holds pads, as a recording does, so each note goes on the pad of its track that plays that note:
 
-- **On a kit**, by the MPC's pad notes: C#2 is pad 1, C2 pad 2 and so on, as the MPC sends and receives them. So a drum track exported from an MPC comes back on the same pads, and so does a drum part from a computer that uses those notes.
+- **On a kit**, each note on the pad that sends it (see [A kit on a drum machine](midi-and-cv.md#a-kit-on-a-drum-machine)): C#2 is A1, C2 A2 and so on through bank A, as the MPC sends and receives them, and the other notes on banks B to H. So a drum track exported from an MPC comes back on bank A's pads, a drum part from a computer that uses those notes does too, and MPFree's own export of a kit comes back on the pads that played it, in every bank.
 - **On a synth** or a track's own instrument, by its pad layout: a note goes on the pad that plays that note. Set the layout to cover the notes first (a scale, the right octave), then load the file.
 
 A note no pad plays is left out, and counted. A melody that goes past what the 16 pads reach comes in as far as they reach.

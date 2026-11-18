@@ -514,7 +514,7 @@ pub struct MusicIn {
     pub feed: Feed,
     /// The armed track (from 0), and whether keys play it by note (a
     /// synth's pad layout) or as the kit pad each note plays.
-    armed: (u8, bool),
+    armed: (u8, KeysPlay),
     /// The Monitor asked for MIDI Out's note-offs ([`MusicIn::take_note_offs`]).
     note_offs: bool,
     /// Per port: what its page says about it ("USB · port 2 of 4 on
@@ -582,7 +582,7 @@ impl MusicIn {
             leader_sp: 0,
             leader_dropped: 0,
             feed: Feed::new(),
-            armed: (0, true),
+            armed: (0, KeysPlay::Notes),
             note_offs: false,
             about: vec![String::new(); MAX_PORTS],
             routed: Vec::with_capacity(ROUTED_KEYS),
@@ -683,11 +683,10 @@ impl MusicIn {
     }
 
     /// Once a period, before the bytes: the track keys play (from 0), and
-    /// whether they play it by note (`true`) or as the pad each note plays
-    /// (`mpc_one::pad_index`). It only names where the monitor says a key
-    /// went; the app plays the keys itself.
-    pub fn set_armed(&mut self, track: u8, by_note: bool) {
-        self.armed = (track, by_note);
+    /// how ([`KeysPlay`]). It only names where the monitor says a key went;
+    /// the app plays the keys itself.
+    pub fn set_armed(&mut self, track: u8, play: KeysPlay) {
+        self.armed = (track, play);
     }
 
     /// Once a period, before the transport runs: what following another
@@ -1422,7 +1421,7 @@ impl MusicIn {
                         // its note, which they may come with).
                         if let (false, In::Track { msg, .. }) = (learn_only, other) {
                             match mpe.msg(msg, &mut |e| keys.push(expr_key(e))) {
-                                Took::Expr if armed.1 => {
+                                Took::Expr if armed.1 == KeysPlay::Notes => {
                                     to = To::Track {
                                         track: armed.0,
                                         pad: None,
@@ -1617,13 +1616,30 @@ fn key_note(e: &In) -> Option<u8> {
     }
 }
 
+/// How keys play the armed track (main.rs's `keys_play`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KeysPlay {
+    /// By note: the synth's pad layout is on the pads.
+    #[default]
+    Notes,
+    /// A kit: each note its kit pad, A1 to H16
+    /// (`mpfree_midi::profile::kit_pad_of_note`).
+    KitPads,
+    /// As the pad (1 to 16) the MPC gives each note
+    /// (`mpc_one::pad_index`): the synth or a track's own instrument
+    /// without a pad layout.
+    Pads,
+}
+
 /// Where a key went, for the monitor: the armed track, by note or as the
 /// pad its note plays.
-fn armed_to((track, by_note): (u8, bool), note: u8) -> To {
-    if by_note {
-        return To::Track { track, pad: None };
-    }
-    match mpfree_controller::mpc_one::pad_index(note) {
+fn armed_to((track, play): (u8, KeysPlay), note: u8) -> To {
+    let pad = match play {
+        KeysPlay::Notes => return To::Track { track, pad: None },
+        KeysPlay::KitPads => Some(mpfree_midi::profile::kit_pad_of_note(note) as u8),
+        KeysPlay::Pads => mpfree_controller::mpc_one::pad_index(note),
+    };
+    match pad {
         Some(pad) => To::Track {
             track,
             pad: Some(pad),
@@ -2567,11 +2583,15 @@ mod tests {
             .monitor
             .shown_ports()
             .any(|p| p.name == "Keystep 37"));
-        // A kit on track 3: a key plays the pad its note plays, or none.
-        m.set_armed(2, false);
+        // A kit on track 3: a key plays the kit pad that sends its note,
+        // in any bank (20 is H2, 113). On the synth without a pad layout,
+        // the pad the MPC gives it, or none.
+        m.set_armed(2, KeysPlay::KitPads);
         run(&mut m, usb, &[0x99, 37, 100, 0x99, 20, 90]);
+        m.set_armed(2, KeysPlay::Pads);
+        run(&mut m, usb, &[0x99, 20, 90]);
         // A synth on track 2: by note, and its wheel.
-        m.set_armed(1, true);
+        m.set_armed(1, KeysPlay::Notes);
         run(&mut m, usb, &[0x90, 60, 96, 0xE0, 0, 0x50]);
         // Learn: armed, a knob takes the parameter; then it moves it.
         m.arm(cutoff());
@@ -2594,6 +2614,13 @@ mod tests {
                     To::Track {
                         track: 2,
                         pad: Some(0)
+                    }
+                ),
+                (
+                    usb,
+                    To::Track {
+                        track: 2,
+                        pad: Some(113)
                     }
                 ),
                 (usb, To::NoPad { track: 2 }),

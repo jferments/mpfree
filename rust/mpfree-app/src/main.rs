@@ -161,7 +161,7 @@ use mpfree_controller::midi::{Message, Parser};
 use mpfree_controller::mpc_one::{self, ControlEvent, OBSERVED_KEEPALIVE_TOKEN};
 use mpfree_core::{float_to_s32, ClickConfig, ClickEngine};
 use mpfree_midi::monitor::{Dir, Event, Mpc, To};
-use mpfree_midi::profile::KIT_PADS;
+use mpfree_midi::profile::{self, KIT_PADS};
 use mpfree_screen_log::Rotation;
 use mpfree_synth_ui::{SynthAction, SynthState};
 use mpfree_time_ui::view::AudioAction;
@@ -2008,6 +2008,20 @@ fn pad_note_names() -> String {
         .join(", ")
 }
 
+/// How keys play the armed track: by note while the pads play notes (a
+/// synth pad layout, `key_notes`), the kit's own pads while it plays a kit
+/// (not the synth, nor an instrument of its own), else as the pad (1 to
+/// 16) the MPC gives each note.
+fn keys_play(synth_on: bool, key_notes: bool, own: bool) -> midi_in::KeysPlay {
+    if key_notes {
+        midi_in::KeysPlay::Notes
+    } else if !synth_on && !own {
+        midi_in::KeysPlay::KitPads
+    } else {
+        midi_in::KeysPlay::Pads
+    }
+}
+
 /// Controller mode as the screen shows it, while it is on: the header's
 /// chip ("Controller → Juno-X · ch 3 · A", or why nothing goes) and the
 /// Q-Link column's cards.
@@ -3571,8 +3585,9 @@ struct SeqPads<'a> {
 
 /// A key a route sends to a track that isn't armed (the I/O view's
 /// Routing): played at once where the track's clips play, on MIDI out, its
-/// own instrument, or what it plays (its kit's pad by the MPC's pad notes,
-/// or the synth by note: `synth` if the track plays it, else `kit`), and
+/// own instrument, or what it plays (its kit's pad that sends the note,
+/// `profile::kit_pad_of_note`, or the synth by note: `synth` if the track
+/// plays it, else `kit`), and
 /// on CV out if it follows the track. It goes through no arp, and nothing
 /// records it: REC records the armed track.
 // What a track plays comes in pieces the sound loop holds apart.
@@ -3667,20 +3682,15 @@ fn play_routed(
         (Some(s), Event::NoteOn { note, velocity }) => s.note_on_note(note, velocity, 0),
         (Some(s), Event::NoteOff { note }) => s.note_off_note(note, 0),
         (Some(s), Event::Pressure { note, value }) => s.pressure_note(note, value),
+        // A kit: the pad that sends the note, in any bank.
         (None, Event::NoteOn { note, velocity }) => {
-            if let Some(pad) = mpc_one::pad_index(note) {
-                player.hit_kit_at(kit, usize::from(pad), velocity, 0);
-            }
+            player.hit_kit_at(kit, profile::kit_pad_of_note(note), velocity, 0);
         }
         (None, Event::NoteOff { note }) => {
-            if let Some(pad) = mpc_one::pad_index(note) {
-                player.release_kit_at(kit, usize::from(pad), 0);
-            }
+            player.release_kit_at(kit, profile::kit_pad_of_note(note), 0);
         }
         (None, Event::Pressure { note, value }) => {
-            if let Some(pad) = mpc_one::pad_index(note) {
-                player.pressure_kit_at(kit, usize::from(pad), value, 0);
-            }
+            player.pressure_kit_at(kit, profile::kit_pad_of_note(note), value, 0);
         }
         _ => {}
     }
@@ -6300,7 +6310,14 @@ fn player_session(
         ports.show_pressure = app.settings.show_pressure;
         // The MIDI monitor: where keys go, and the debug sources while the
         // developer tools are on.
-        music.set_armed(app.track() as u8, synth_on && app.arp_plays_notes());
+        music.set_armed(
+            app.track() as u8,
+            keys_play(
+                synth_on,
+                synth_on && app.arp_plays_notes(),
+                mix.instruments.holds(app.track()),
+            ),
+        );
         music.feed.debug = app.settings.debug_mode;
         // Prefs' "Send MIDI and CV out" turned on or off (and its kept
         // value at the first period).
@@ -6618,8 +6635,12 @@ fn player_session(
             }
         }
         // Keys play the armed track: by note while the pads play notes (a
-        // synth pad layout), else as the pad the MPC gives that note.
+        // synth pad layout); on a kit, each note the kit pad that sends it
+        // (`profile::kit_pad_of_note`, A1 to H16 whatever bank the pads
+        // show); else as the pad the MPC gives that note.
         let key_notes = synth_on && app.arp_plays_notes();
+        let kit_keys = keys_play(synth_on, key_notes, mix.instruments.holds(armed))
+            == midi_in::KeysPlay::KitPads;
         if armed != expr_track {
             midi_out.rest_expression(expr_track);
             cv_out.rest_expression(expr_track);
@@ -6678,6 +6699,32 @@ fn player_session(
                     }
                     None
                 }
+                // A kit: the key plays its kit pad through the track's arp
+                // (and records), as a pad would, but in any bank and never
+                // as STEP SEQ's, TRACK MUTE's or the loop keys' pads.
+                midi_in::Key::Down { note, velocity } if kit_keys => {
+                    let pad = profile::kit_pad_of_note(note) as u8;
+                    if let Some(ev) = app.pressed_pad_event(pad, velocity, true) {
+                        time.pad_pressed(0, ev);
+                    }
+                    fx.extend(app.kit_key_down(pad, velocity));
+                    None
+                }
+                midi_in::Key::Up { note } if kit_keys => {
+                    let pad = profile::kit_pad_of_note(note) as u8;
+                    if let Some(ev) = app.pressed_pad_event(pad, 0, false) {
+                        time.pad_pressed(0, ev);
+                    }
+                    fx.extend(app.kit_key_up(pad));
+                    None
+                }
+                midi_in::Key::Pressure { note, value } if kit_keys => {
+                    let pad = profile::kit_pad_of_note(note) as u8;
+                    time.pad_pressure(0, pad, value);
+                    app.kit_key_pressure(pad, value);
+                    player.pressure(usize::from(pad), value);
+                    None
+                }
                 midi_in::Key::Down { note, velocity } => {
                     mpc_one::pad_index(note).map(|pad| ControlEvent::PadDown { pad, velocity })
                 }
@@ -6700,11 +6747,11 @@ fn player_session(
                     event: Some(event),
                     music: true,
                 }),
-                None if !key_notes && matches!(k, midi_in::Key::Down { .. }) => {
+                None if !key_notes && !kit_keys && matches!(k, midi_in::Key::Down { .. }) => {
                     key_misses += 1;
                     if key_misses == 1 {
                         out.midi(&format!(
-                            "+{mt:.3} s a key with no pad: with a kit, keys play the pads by the MPC's pad notes ({}); \
+                            "+{mt:.3} s a key with no pad: on 16 pads (no pad layout), keys play the pads by the MPC's pad notes ({}); \
                              other notes are counted",
                             pad_note_names()
                         ));

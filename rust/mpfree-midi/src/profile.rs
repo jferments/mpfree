@@ -114,6 +114,29 @@ pub fn kit_note(pad: usize) -> Option<u8> {
     KIT_NOTES.get(pad).copied()
 }
 
+/// The kit pad each note plays coming in ([`KIT_NOTES`] turned round):
+/// [`KIT_NOTES`] gives the 128 pads the 128 notes once each, so every note
+/// has one pad, and a kit's notes sent out come back on the pads that sent
+/// them.
+pub const KIT_PAD_OF_NOTE: [u8; 128] = kit_pads();
+
+const fn kit_pads() -> [u8; 128] {
+    let mut out = [0u8; 128];
+    let mut pad = 0;
+    while pad < KIT_PADS {
+        out[KIT_NOTES[pad] as usize] = pad as u8;
+        pad += 1;
+    }
+    out
+}
+
+/// The kit pad (0 is A1, up to 127, H16) that note `note` plays: the pad
+/// whose note it is on MIDI out ([`KIT_NOTES`]), whatever bank the pads
+/// show. C#2 (37) is A1, B1 (35) is B1.
+pub fn kit_pad_of_note(note: u8) -> usize {
+    usize::from(KIT_PAD_OF_NOTE[usize::from(note & 0x7F)])
+}
+
 /// A pad's name on screen: A1 to H16.
 pub fn pad_name(pad: usize) -> String {
     let bank = (b'A' + (pad / BANK_PADS).min(7) as u8) as char;
@@ -908,6 +931,22 @@ mod tests {
         assert_eq!(
             (pad_name(0), pad_name(16), pad_name(127)),
             ("A1".into(), "B1".into(), "H16".into())
+        );
+    }
+
+    /// Coming in, every note plays the one pad that sends it going out.
+    #[test]
+    fn every_note_plays_the_kit_pad_that_sends_it() {
+        for pad in 0..KIT_PADS {
+            assert_eq!(kit_pad_of_note(KIT_NOTES[pad]), pad);
+        }
+        for note in 0..128u8 {
+            assert_eq!(kit_note(kit_pad_of_note(note)), Some(note));
+        }
+        // C#2 is A1, C2 A2, B1 (35) the first of bank B, 34 the last pad.
+        assert_eq!(
+            [37, 36, 35, 39, 34].map(kit_pad_of_note),
+            [0, 1, 16, 17, 127]
         );
     }
 
