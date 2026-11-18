@@ -89,7 +89,7 @@ Blocks belong to the song and are saved with it, with their routes.
 
 ## Playing a synth from a track
 
-A track can play a synth or drum machine through **MIDI OUT**, or a USB synth or interface plugged into the **USB** port, instead of a sound inside MPFree. It has one setting for where it plays, **Plays on** in the I/O view's MIDI section: the port and the MIDI channel together. Every port with an output is in the list, the USB ones under the names the devices give them. A track can also send a program change (**Program**), so the synth switches to the right sound when the song starts. A clip can send its own as it starts, with a bank select too, so a verse and a chorus can play different sounds on the same synth: see the clip's **Program** and **Bank** in [Clip settings](clips.md#clip-settings).
+A track can play a synth or drum machine through **MIDI OUT**, or a USB synth or interface plugged into the **USB** port, instead of a sound inside MPFree. It has one setting for where it plays, **Plays on** in the I/O view's MIDI section: the port and the MIDI channel together. Every port with an output is in the list, the USB ones under the names the devices give them. A track can also send a program change (**Program**), so the synth switches to the right sound when the song starts. A clip can send its own as it starts, with a bank select too, so a verse and a chorus can play different sounds on the same synth: see the clip's **Program** and **Bank** in [Clip settings](clips.md#clip-settings). A scene can send each track one as it starts, even a track with no clip in the scene: see [Setting up a scene](arranging.md#setting-up-a-scene).
 
 If a track would send nothing, it says why under the track's name: no port is picked, the device is unplugged or has no output, **Send MIDI and CV out** is off in Prefs, or the port's output didn't open (the log says why; turn **Send MIDI and CV out** off and on, or plug the device in again, to try again). A track that sends nothing plays its own sound inside MPFree instead. If you unplug a USB synth while it plays, MPFree can't send it the ends of its notes; switch it off and on, or send it **All notes off** once it is back.
 
@@ -294,7 +294,14 @@ A pad, key or button on your controller can do what a tap on the Clips grid does
 
 Launches land where a tap's would: on the next **Launch** line (the Record tab's, or the clip's own). While MIDI Learn waits, the line under the screen says what for, then what the control launches; SHIFT and the same tap again cancels. SHIFT and a drag still copies a clip or a row, and SHIFT + **+ Track** still adds a Loop track.
 
-The Learn section lists them by where they are: **Launch Bass · row 2**, **Scene 3 · Verse**, **Arm Bass**, **Stop all**. They're kept with the song (**Project**); set **Kept in** to **Rig** to keep a grid controller's layout in every project. Still to come: a **Clips and scenes** card in the Learn section for a track's mute, solo and stop. A key on a track's mute flips it on each press, and in Perform it waits for the launch line, as TRACK MUTE's pads do.
+The Learn section lists them by where they are: **Launch Bass · row 2**, **Scene 3 · Verse**, **Arm Bass**, **Stop all**. They're kept with the song (**Project**); set **Kept in** to **Rig** to keep a grid controller's layout in every project.
+
+A track's mute, solo and stop aren't on the grid, so they're learned in the Learn section: tap **Clips and scenes** by the section's heading (the button is lit while its card shows; tap it again, a row or **Back** to go back). On the card:
+
+- Pick the track with **–** and **+** beside its name (or the MPC's **-** and **+**).
+- Tap **Mute**, **Solo** or **Stop** for that track, or **Stop all** or **Back to song**, then press the pad, key or button on your controller.
+
+They're kept with the song, as the grid's are. A key on a track's mute or solo flips it on each press, and in Perform it waits for the launch line, as TRACK MUTE's pads do. **Stop** stops the clip the track plays, as a tap on that clip does.
 
 ## MIDI files
 

@@ -54,7 +54,7 @@ use mpfree_fx::ids::mixer::{self as mx, monitor, source};
 use mpfree_fx::ids::{delay, dj_filter};
 use mpfree_fx::{Delay, DjFilter, Edit, Insert, Mixer, MixerConfig, StripId, CAPTURES};
 use mpfree_mixer_ui::{default_name, MixAction, MixState, MixView};
-use mpfree_node::{Ctx, Node, NodeEvent, Timed};
+use mpfree_node::{Ctx, Held, HeldStep, Node, NodeEvent, Timed};
 use mpfree_play::mpfree_param::{Owner, ParamAddr};
 use mpfree_sampler::engine::PadOut;
 
@@ -449,6 +449,51 @@ pub struct MixHost {
     pub takes: crate::takes::Takes,
     /// A take's memory made without a builder (the tests).
     here: crate::takes::Here,
+    /// An insert's memory on its way to a pad ([`MixHost::capture`]), and
+    /// one that is done and not yet sent back.
+    capturing: Option<Capturing>,
+    captured: Option<(Box<Held>, Captured)>,
+}
+
+/// An insert's memory being copied out, a piece a period
+/// ([`CAPTURE_STEP`] frames), so a long one never costs a period much.
+struct Capturing {
+    strip: StripId,
+    uid: u16,
+    held: Box<Held>,
+}
+
+/// Frames of an insert's memory copied a period: 8,192 stereo frames are
+/// 64 KB, a small part of a period's time, and 8 s of Grains memory takes
+/// 44 periods (about 130 ms).
+pub const CAPTURE_STEP: usize = 8192;
+
+/// How a capture of an insert's memory ended ([`MixHost::capture`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Captured {
+    /// All of it is in the box.
+    Done,
+    /// The effect holds nothing yet.
+    Nothing,
+    /// Its memory was cleared or overwritten while it was copied.
+    Lost,
+    /// The effect was taken out, or moved off its strip.
+    Gone,
+    /// Another capture is on its way.
+    Busy,
+}
+
+impl Captured {
+    /// Why a capture made nothing, for the hint line.
+    pub fn why(self) -> &'static str {
+        match self {
+            Captured::Done => "done",
+            Captured::Nothing => "the effect hasn't heard anything yet",
+            Captured::Lost => "its memory changed while it was copied; try again",
+            Captured::Gone => "the effect was taken out",
+            Captured::Busy => "another capture is on its way",
+        }
+    }
 }
 
 /// The take host's memory: made and dropped on the builder thread, or
@@ -601,6 +646,8 @@ impl MixHost {
             modes: crate::fxmodes::Modes::default(),
             takes: crate::takes::Takes::new(rate),
             here: crate::takes::Here::default(),
+            capturing: None,
+            captured: None,
         }
     }
 
@@ -1680,6 +1727,7 @@ impl MixHost {
         }
         self.modu.process(ctx, PERIOD, &mut self.mixer);
         self.mixer.process(ctx, left, right);
+        self.step_capture();
         let peak = left
             .iter()
             .chain(right.iter())
@@ -1688,6 +1736,69 @@ impl MixHost {
         let caught = overs != self.overs;
         self.overs = overs;
         (peak, caught)
+    }
+
+    /// Starts copying what insert `slot` of `strip` holds (the Grains
+    /// effect's memory) into `held`, made off the audio thread, a piece
+    /// each period from now on; [`MixHost::take_captured`] gives it back
+    /// when done. The box may have held another copy (it is emptied
+    /// first). While another is on its way, or with no insert there, the
+    /// box comes straight back with why.
+    pub fn capture(
+        &mut self,
+        strip: StripId,
+        slot: usize,
+        held: Box<Held>,
+    ) -> Result<(), (Box<Held>, Captured)> {
+        if self.capturing.is_some() || self.captured.is_some() {
+            return Err((held, Captured::Busy));
+        }
+        let Some(uid) = self.mixer.chain(strip).and_then(|c| c.uid(slot)) else {
+            return Err((held, Captured::Gone));
+        };
+        let mut held = held;
+        held.clear();
+        self.capturing = Some(Capturing { strip, uid, held });
+        Ok(())
+    }
+
+    /// The period's piece of the capture: the insert found again by its
+    /// id (a move keeps it), its memory copied on. Never allocates.
+    fn step_capture(&mut self) {
+        let Some(c) = self.capturing.as_mut() else {
+            return;
+        };
+        let node = self
+            .mixer
+            .chain_mut(c.strip)
+            .and_then(|ch| ch.slot_of(c.uid).and_then(|i| ch.node_mut(i)));
+        let end = match node {
+            None => Captured::Gone,
+            Some(n) => match n.copy_held(&mut c.held, CAPTURE_STEP) {
+                HeldStep::More => return,
+                HeldStep::Done => {
+                    c.held.keep_values(&*n);
+                    Captured::Done
+                }
+                HeldStep::Nothing => Captured::Nothing,
+                HeldStep::Lost => Captured::Lost,
+            },
+        };
+        if let Some(c) = self.capturing.take() {
+            self.captured = Some((c.held, end));
+        }
+    }
+
+    /// A capture that has ended, to send to the screen thread (which frees
+    /// it). Give it back with [`MixHost::keep_captured`] if it found no
+    /// room, so the audio thread never frees it.
+    pub fn take_captured(&mut self) -> Option<(Box<Held>, Captured)> {
+        self.captured.take()
+    }
+
+    /// A capture [`MixHost::take_captured`] gave that couldn't be sent yet.
+    pub fn keep_captured(&mut self, held: Box<Held>, end: Captured) {
+        self.captured = Some((held, end));
     }
 
     /// The mixer panel opened on `view`, or closed (`None`).
@@ -2702,6 +2813,70 @@ mod tests {
             h.mixer.edit(Edit::Remove { strip, at: base }).ok().unwrap();
             assert_eq!(until_chain(h, base), base, "remove {round}");
         }
+    }
+
+    /// The chain editor's Capture: the Grains effect's memory comes out a
+    /// piece a period, whole, with its settings; one at a time; and an
+    /// effect taken out on the way says so.
+    #[test]
+    fn an_effects_memory_is_captured_a_piece_a_period() {
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        let strip = StripId::Pad(0);
+        let base = h.mixer.chain(strip).unwrap().len();
+        h.add_insert(strip, "mpfree.grains").unwrap();
+        for _ in 0..20 {
+            assert_eq!(h.poll_built(), None);
+            run(&mut h, 1, 0.5, 0.0);
+        }
+        assert_eq!(h.mixer.chain(strip).unwrap().len(), base + 1);
+        // Two seconds of the pad's tone into its memory.
+        run(&mut h, 690, 0.5, 0.0);
+        let held = Box::new(Held::new(2, RATE as usize * 8));
+        h.capture(strip, base, held).unwrap();
+        assert!(h.capturing.is_some());
+        let busy = h.capture(strip, base, Box::new(Held::new(2, 10)));
+        assert_eq!(busy.err().map(|(_, e)| e), Some(Captured::Busy));
+        let mut periods = 0;
+        let (held, end) = loop {
+            run(&mut h, 1, 0.5, 0.0);
+            periods += 1;
+            if let Some(done) = h.take_captured() {
+                break done;
+            }
+            assert!(periods < 100, "never done");
+        };
+        assert_eq!(end, Captured::Done);
+        assert!(h.capturing.is_none());
+        // Not frozen: all but the oldest quarter of what it heard, which
+        // is under its 8 s, so everything from the start.
+        let frames = held.frames();
+        assert!(frames > RATE as usize * 2, "{frames} frames");
+        assert_eq!(periods, frames.div_ceil(CAPTURE_STEP));
+        assert!(held.data().iter().any(|&x| x.abs() > 0.1), "the tone");
+        let size = held
+            .values()
+            .iter()
+            .find(|(id, _)| *id == mpfree_fx::ids::grains::SIZE)
+            .map(|v| v.1);
+        assert!(size.is_some(), "the settings came too");
+        // Taken out on the way: Gone, and the box still comes back.
+        h.capture(strip, base, held).unwrap();
+        h.mixer.edit(Edit::Remove { strip, at: base }).ok().unwrap();
+        let mut end = None;
+        for _ in 0..100 {
+            run(&mut h, 1, 0.0, 0.0);
+            if let Some((_, e)) = h.take_captured() {
+                end = Some(e);
+                break;
+            }
+        }
+        assert_eq!(end, Some(Captured::Gone));
+        let none = h.capture(strip, base, Box::new(Held::new(2, 10)));
+        assert_eq!(
+            none.err().map(|(_, e)| e),
+            Some(Captured::Gone),
+            "no insert there"
+        );
     }
 
     #[test]
