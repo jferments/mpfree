@@ -83,6 +83,13 @@
 //!   sample peak, and how far its level rises from seconds 8-12 to 16-20
 //!   (none, if the loop holds). Half feedback: how fast the trail falls,
 //!   dB a second over seconds 6 to 16, shown.
+//! - **G16, repeat keeps the level and joins smoothly (step C2):** the
+//!   Grains effect fully dry on pink at 120 BPM, repeating a quarter note
+//!   and a sixteenth from 2 s: the level from half a second on against the
+//!   stretch of pink it repeats; and on a 110 Hz tone at -20 dBFS, the
+//!   biggest step from one sample to the next within 10 ms of each join
+//!   (where one repeat fades into the next) against the tone's own (a
+//!   cut with no fade jumps up to 140 times as far).
 //!
 //! Cost is the bench's (`mpfree-bench`'s "Sampler grains (per grain)"
 //! scaling case, on CI by the instruction gate and on the MPC in the
@@ -133,6 +140,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     movement(&mut rows, &lab);
     presets(&mut rows, &lab);
     feedback(&mut rows, &lab);
+    repeat(&mut rows, &lab);
     rows
 }
 
@@ -1305,4 +1313,77 @@ fn feedback(rows: &mut Vec<Row>, lab: &Lab) {
         None,
         0.0,
     );
+}
+
+// ---------------------------------------------------------------------------
+// G16: the Grains effect's repeat (step C2).
+
+/// The Grains effect fully dry on up to 6 s of `src`, at 120 BPM,
+/// repeating `beats` beats from 2 s: its left side, and that frame.
+fn repeated(src: &[f32], rate: u32, beats: f64) -> (Vec<f64>, usize) {
+    let mut fx = GrainFx::new(rate, 2.0, 16).expect("a lab effect");
+    fx.set_tempo(0.5 * f64::from(rate));
+    let mut budget = Budget::new(64);
+    let n = src.len().min(6 * rate as usize);
+    let (mut l, mut r) = (src[..n].to_vec(), src[..n].to_vec());
+    let t0 = 2 * rate as usize;
+    fx.process(&mut budget, 0, &mut l[..t0], &mut r[..t0]);
+    fx.start_repeat(beats);
+    for s in (t0..n).step_by(128) {
+        let e = (s + 128).min(n);
+        fx.process(&mut budget, s as u64, &mut l[s..e], &mut r[s..e]);
+    }
+    (l.into_iter().map(f64::from).collect(), t0)
+}
+
+fn repeat(rows: &mut Vec<Row>, lab: &Lab) {
+    let rate = lab.rate as usize;
+    // A low tone at -20 dBFS: a join that clicks jumps far more in a
+    // sample than the tone ever does.
+    let tone: Vec<f32> = sine(110.0, 0.1, 6 * rate, lab.rate)
+        .into_iter()
+        .map(|v| v as f32)
+        .collect();
+    let step = |x: &[f64]| {
+        x.windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f64::max)
+    };
+    for (name, beats) in [("1/4", 1.0), ("1/16", 0.25)] {
+        let len = beats * 0.5 * f64::from(lab.rate);
+        // The level: the repeats, from half a second on, against the
+        // stretch of pink they repeat.
+        let (out, t0) = repeated(&lab.pink, lab.rate, beats);
+        put(
+            rows,
+            "G16",
+            format!("repeat[pink, {name}]"),
+            "level_change_db",
+            db(rms(&out[t0 + rate / 2..])) - db(rms(&out[t0 - len as usize..t0])),
+            Better::Near(0.0),
+            Some(0.5),
+            0.1,
+        );
+        // The joins: the biggest step from one sample to the next within
+        // 10 ms of where each repeat starts, against the tone's own.
+        let (out, t0) = repeated(&tone, lab.rate, beats);
+        let mut worst = 0.0f64;
+        for k in 1.. {
+            let at = t0 + (k as f64 * len).round() as usize;
+            if at + rate / 100 >= out.len() {
+                break;
+            }
+            worst = worst.max(step(&out[at - rate / 100..at + rate / 100]));
+        }
+        put(
+            rows,
+            "G16",
+            format!("repeat[tone 110 Hz, {name}]"),
+            "join_step_ratio",
+            worst / step(&out[..t0]),
+            Better::Lower,
+            Some(1.5),
+            0.05,
+        );
+    }
 }

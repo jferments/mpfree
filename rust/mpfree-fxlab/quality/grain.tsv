@@ -68,6 +68,10 @@ grain/preset[pink, Stutter 1/16]/level_change_lu	-4.4319
 grain/preset[pink, Sub drone]/level_change_lu	-1.2707
 grain/preset[pink, Swarm]/level_change_lu	-0.8313
 grain/preset[pink, Tape stretch]/level_change_lu	-1.2813
+grain/repeat[pink, 1/16]/level_change_db	-0.0521
+grain/repeat[pink, 1/4]/level_change_db	-0.0202
+grain/repeat[tone 110 Hz, 1/16]/join_step_ratio	1.3958
+grain/repeat[tone 110 Hz, 1/4]/join_step_ratio	1
 grain/smooth[Hann, overlap 2]/modulation_db	-83.1461
 grain/smooth[Hann, overlap 2]/ripple_db	0.0055
 grain/smooth[Tukey 0.5, overlap 2]/modulation_db	-84.6457
