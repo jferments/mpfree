@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_synth::params::*;
-use mpfree_synth::{Poly, PRESETS};
+use mpfree_synth::Poly;
 
 const RATE: u32 = 44_100;
 const BLOCK: usize = 128;
@@ -24,7 +24,10 @@ fn main() {
         if only.as_deref().is_some_and(|o| o != name) {
             continue;
         }
-        let preset = PRESETS.iter().find(|p| name.starts_with(p.name)).unwrap();
+        let preset = Poly::presets()
+            .iter()
+            .find(|p| name.starts_with(p.name))
+            .unwrap();
         let mut s = Poly::new(RATE);
         for &(id, v) in preset.values {
             s.set_param(id, v);
@@ -44,7 +47,7 @@ fn main() {
 
 fn cases() -> Vec<(&'static str, &'static [(u16, f32)])> {
     let mut v: Vec<(&'static str, &'static [(u16, f32)])> =
-        PRESETS.iter().map(|p| (p.name, &[][..])).collect();
+        Poly::presets().iter().map(|p| (p.name, &[][..])).collect();
     v.push(("Init unison 4", &[(UNISON, 4.0)]));
     v.push((
         "Init unison 3 drive",

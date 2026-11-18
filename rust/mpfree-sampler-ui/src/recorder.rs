@@ -1,12 +1,14 @@
 //! The one Sample page's recorder row (one-page step 2a, Jay's mockup of
 //! 18 Nov): **REC**, the **Source** with its meter, how a take **Starts**
-//! and how it **Ends**, along the Wave page's top, with a line saying where
-//! a take goes. It sets and records with the Rec page's own settings
+//! and how it **Ends**, and **Keep last 4 bars** (step 2c), along the Wave
+//! page's top. It sets and records with the Rec page's own settings
 //! ([`RecSettings`]), so the two agree while both exist; the app holds
 //! them and makes the take as the Rec page's Record does.
 //!
 //! - **REC** starts a take; while one records (or waits for its start)
-//!   it is lit and a press stops it, keeping what came in.
+//!   it is lit and a press stops it, keeping what came in. Its second
+//!   line says where the next take goes, how long the one recording has
+//!   run, what it waits for, or why REC can't start one.
 //! - **Source**, **Starts** and **Ends** step with a tap on their left
 //!   half (back) or right half (on): Source among the line input and the
 //!   points in the mix, Starts among Now, On input (the threshold) and
@@ -16,14 +18,23 @@
 //!   where the take goes when it stops (Onto: Stay here, the default,
 //!   keeps it on the page; one-page step 2b), the threshold and the
 //!   pre-roll.
+//! - **Keep last 4 bars** (step 2c, the plan's decision 4) is Sample
+//!   Recall in one tap: what just played (the master, as Recall keeps
+//!   it) becomes a new take, where Onto says, as REC's would. A tap keeps;
+//!   a hold opens Sample Recall over the page, to pick another length.
+//!   It says what a tap keeps now ([`KeepView`]): 4 bars while the music
+//!   plays (fewer early on), 10 s while it is stopped.
 
 use std::cell::RefCell;
 
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
+use mpfree_ui::Shape;
+
 use crate::panel::{Control, Item, Look, Panel, Section};
 use crate::rec_tab::{self, EndAt, RecSettings, Row, StartAt};
 use crate::rec_widgets::{db, FLOOR_DB, REC_COLOR};
+use crate::recall::{Length, OPEN_BARS};
 use crate::widgets::Setting;
 
 /// The widget's name on the Wave page.
@@ -45,11 +56,36 @@ pub const INPUT_ROWS: [Row; 5] = [
 
 /// What the Q-Links turn while REC is on (the plan's step 2a): Q-Link 2
 /// the Threshold, Q-Link 3 the Pre-roll. Q-Links 1 and 4 are faint until
-/// the recorder has a Gain and a Monitor level (step 2c).
+/// the recorder has a Gain and a Monitor level (step 2d).
 pub const QLINK_ROWS: [Option<Row>; 4] = [None, Some(Row::Threshold), Some(Row::PreRoll), None];
 
 /// Why Q-Links 1 and 4 are faint while REC is on.
 pub const QLINK_IDLE: &str = "While REC is on, Q-Links 2 and 3 turn Threshold and Pre-roll";
+
+/// What the Keep card says: what a tap keeps now, and where it goes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeepView {
+    /// "Keep last 4 bars", "Keep last 10 s".
+    pub title: String,
+    /// "what just played, as a new take", "what just played, onto A6",
+    /// or why a tap keeps nothing now ("finish the take first").
+    pub line: String,
+    /// A tap keeps it now (else the card is faint and says why).
+    pub ready: bool,
+}
+
+impl Default for KeepView {
+    fn default() -> Self {
+        KeepView {
+            title: Length::Bars(OPEN_BARS).keep_text(),
+            line: KEEP_NOT_YET.to_string(),
+            ready: false,
+        }
+    }
+}
+
+/// Why the Keep card keeps nothing before the master is kept.
+pub const KEEP_NOT_YET: &str = "the master isn't kept yet";
 
 /// What the row shows: the settings, the sources and the take.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -63,10 +99,14 @@ pub struct RecorderView {
     /// the next bar line).
     pub waiting: bool,
     /// Why REC can't start a take now (the line input off, no empty pad
-    /// left), said on the row; None when it can.
+    /// left), said under REC; None when it can.
     pub cannot: Option<String>,
-    /// Where a take goes, or how the one recording is going, in a line.
+    /// REC's second line: where the next take goes ("next take stays
+    /// here"), how long the one recording has run ("0:05.1 · onto A6"),
+    /// or what it waits for ("for -30 dB · stays here").
     pub status: String,
+    /// The Keep card.
+    pub keep: KeepView,
 }
 
 /// What the row asks for. The app does it.
@@ -78,6 +118,9 @@ pub enum RecorderAction {
     Stop,
     /// Step setting `row` by `delta`.
     Step(Row, i32),
+    /// A finger came down on the Keep card: the app keeps the last bars
+    /// when it lifts, or opens Sample Recall when it stays.
+    Keep,
 }
 
 /// What the Starts card says.
@@ -134,9 +177,15 @@ pub fn input_list(v: &RecorderView) -> (Vec<Setting>, Vec<Control>, Panel) {
 }
 
 const GAP: i32 = 10;
-const REC_W: i32 = 120;
-const CARD_W: [i32; 3] = [260, 200, 180];
+/// REC, with its second line.
+const REC_W: i32 = 210;
+/// How wide REC's second line is (12.5 px Inter): a longer line is cut.
+pub const REC_LINE_W: i32 = REC_W - 28;
+const CARD_W: [i32; 3] = [250, 196, 166];
 const METER_W: i32 = 44;
+/// The Keep card's icon and its padding.
+const KEEP_ICON: i32 = 20;
+const KEEP_PAD: i32 = 14;
 
 /// The recorder row.
 pub struct Recorder {
@@ -205,10 +254,11 @@ impl Recorder {
         mid.take_right(METER_W + 14).0
     }
 
-    /// Where the status line goes: the rest of the row.
-    fn status_rect(r: Rect) -> Rect {
+    /// The Keep card's place: the rest of the row.
+    pub fn keep_rect(r: Rect) -> Rect {
         let last = Recorder::card_rect(r, 2);
-        let x = last.right() + 2 * GAP;
+        let x = last.right() + GAP;
+        let r = r.inset_xy(0, 4);
         Rect::new(x, r.y, (r.right() - x).max(0), r.h)
     }
 
@@ -266,19 +316,30 @@ impl Widget for Recorder {
         if v.waiting {
             cx.canvas.stroke_round_rect(b, 10, 2, red);
         }
+        // "● REC" over the second line: where the take goes, how long it
+        // has run, what it waits for, or why REC can't start one.
         let label = if v.waiting { "Waits" } else { "REC" };
+        let inner = b.inset_xy(14, 7);
+        let (top, bottom) = inner.take_top(inner.h / 2 + 2);
         let tw = cx.measure(FontId::Bold, 17.0, label);
-        let x = b.x + (b.w - tw - 22) / 2;
-        let d = Rect::new(x, b.y + b.h / 2 - 7, 14, 14);
+        let d = Rect::new(top.x, top.y + top.h / 2 - 7, 14, 14);
         cx.canvas.fill_round_rect(d, 7, dot);
         cx.text(
             FontId::Bold,
             17.0,
-            Rect::new(d.right() + 8, b.y, tw + 4, b.h),
+            Rect::new(d.right() + 8, top.y, tw + 4, top.h),
             Align::Left,
             ink,
             label,
         );
+        let lit = v.recording && !v.waiting;
+        let (line, line_ink) = match v.cannot.as_ref().filter(|_| !v.recording) {
+            Some(why) => (why.as_str(), t.warn),
+            None if lit => (v.status.as_str(), t.bg),
+            None if self.can_press() => (v.status.as_str(), t.text_dim),
+            None => (v.status.as_str(), t.text_faint),
+        };
+        cx.text(FontId::Sans, 12.5, bottom, Align::Left, line_ink, line);
         // The three cards: ‹ name over value ›.
         for (k, (name, value)) in self.values().iter().enumerate() {
             let c = Recorder::card_rect(r, k);
@@ -300,21 +361,8 @@ impl Widget for Recorder {
             cx.text(FontId::Sans, 12.5, top, Align::Left, t.text_dim, name);
             cx.text(FontId::Bold, 16.0, bottom, Align::Left, ink, value);
         }
+        self.paint_keep(cx, r);
         *self.painted.borrow_mut() = Some((r, self.view.clone(), self.level));
-        // Where a take goes, or why REC can't start one.
-        let s = Recorder::status_rect(r).inset_xy(0, 8);
-        let (top, bottom) = s.take_top(s.h / 2);
-        cx.text(FontId::Sans, 13.5, top, Align::Left, t.text, &v.status);
-        if let Some(why) = v.cannot.as_ref().filter(|_| !v.recording) {
-            cx.text(FontId::Sans, 12.5, bottom, Align::Left, t.warn, why);
-        } else {
-            let how = if v.recording {
-                "REC again or STOP keeps the take"
-            } else {
-                "Tap a card's ‹ or › half to step it"
-            };
-            cx.text(FontId::Sans, 12.5, bottom, Align::Left, t.text_dim, how);
-        }
     }
 
     fn changed_parts(&self, r: Rect) -> Option<Vec<Rect>> {
@@ -345,6 +393,19 @@ impl Widget for Recorder {
             out.push(Target::tap("less", k, format!("{name} ‹"), left).disabled_if(busy));
             out.push(Target::tap("more", k, format!("{name} ›"), right).disabled_if(busy));
         }
+        // Keep: a tap keeps the last bars, a hold opens Sample Recall.
+        let keep = &self.view.keep;
+        let at = Recorder::keep_rect(r);
+        out.push(Target::tap("keep", 0, keep.title.clone(), at).disabled_if(!keep.ready));
+        out.push(
+            Target::hold(
+                "keep-recall",
+                0,
+                format!("{}: hold for Sample Recall", keep.title),
+                at,
+            )
+            .disabled_if(!keep.ready),
+        );
         out
     }
 
@@ -354,6 +415,9 @@ impl Widget for Recorder {
         }
         if Recorder::rec_rect(r).contains(x, y) {
             return Some(EventKind::Tab(0));
+        }
+        if Recorder::keep_rect(r).contains(x, y) {
+            return Some(EventKind::Tab(1));
         }
         (0..STEPS.len()).find_map(|k| {
             let c = Recorder::card_rect(r, k);
@@ -366,6 +430,28 @@ impl Widget for Recorder {
 }
 
 impl Recorder {
+    /// The Keep card: the icon (a turn back round a clock), what a tap
+    /// keeps, and where it goes or why it keeps nothing now.
+    fn paint_keep(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        let k = &self.view.keep;
+        let c = Recorder::keep_rect(r);
+        if c.w <= 0 {
+            return;
+        }
+        cx.canvas.fill_round_rect(c, 10, t.raised);
+        let (ink, dim, icon) = if k.ready {
+            (t.text, t.text_dim, t.warn)
+        } else {
+            (t.text_faint, t.text_faint, t.text_faint)
+        };
+        let (left, rest) = c.inset_xy(KEEP_PAD, 0).take_left(KEEP_ICON + 10);
+        keep_icon(cx, left.x, left.y + left.h / 2 - KEEP_ICON / 2, icon);
+        let (top, bottom) = rest.inset_xy(0, 8).take_top(22);
+        cx.text(FontId::Bold, 16.0, top, Align::Left, ink, &k.title);
+        cx.text(FontId::Sans, 12.0, bottom, Align::Left, dim, &k.line);
+    }
+
     /// The meter alone (a redraw of its part paints only this).
     fn paint_meter(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
@@ -390,12 +476,32 @@ impl Recorder {
     }
 }
 
+/// The Keep card's icon, `KEEP_ICON` square at (`x`, `y`): an arrow
+/// turning back round a clock's hands, as the mockup draws it.
+fn keep_icon(cx: &mut PaintCx, x: i32, y: i32, c: Color) {
+    use std::f32::consts::PI;
+    let s = KEEP_ICON as f32 / 24.0;
+    let (ox, oy) = (x as f32, y as f32);
+    let p = |px: f32, py: f32| (ox + px * s, oy + py * s);
+    let w = 2.0 * s;
+    let mut m = Shape::new(Rect::new(x - 2, y - 2, KEEP_ICON + 4, KEEP_ICON + 4));
+    // From the top left round clockwise to the left (the gap between
+    // is where the arrow turns back).
+    let (cxp, cyp) = p(12.0, 12.0);
+    m.arc(cxp, cyp, 9.0 * s, PI * 1.27, PI * 3.0, w);
+    // The arrowhead at the arc's start, and the hands.
+    m.polyline(&[p(3.0, 4.0), p(3.0, 9.0), p(8.0, 9.0)], w);
+    m.polyline(&[p(12.0, 8.0), p(12.0, 12.0), p(15.0, 14.0)], w);
+    m.draw(cx.canvas, c);
+}
+
 /// What a touch on the row asks for: REC records or stops, a card steps
-/// its setting.
+/// its setting, Keep keeps the last bars (or opens Sample Recall).
 pub fn action(v: &RecorderView, kind: &EventKind) -> Option<RecorderAction> {
     match kind {
         EventKind::Tab(0) if v.recording => Some(RecorderAction::Stop),
         EventKind::Tab(0) => Some(RecorderAction::Record),
+        EventKind::Tab(1) => Some(RecorderAction::Keep),
         EventKind::Step { index, delta } => Some(RecorderAction::Step(*STEPS.get(*index)?, *delta)),
         _ => None,
     }
@@ -445,12 +551,43 @@ mod tests {
             assert_eq!(action(&w.view, &back), Some(RecorderAction::Step(*row, -1)));
             assert_eq!(action(&w.view, &on), Some(RecorderAction::Step(*row, 1)));
         }
-        // Nothing past the cards answers but the status line, which is
-        // only words.
-        assert_eq!(tap(&mut w, r.right() - 4, r.y + 30), None);
-        // The cards don't overlap REC or each other, and fit the row.
+        // Past the cards, the Keep card: a finger on it asks the app,
+        // which keeps on the lift or opens Sample Recall on a hold.
+        let keep = tap(&mut w, r.right() - 4, r.y + 30).unwrap();
+        assert_eq!(action(&w.view, &keep), Some(RecorderAction::Keep));
+        // The cards don't overlap REC or each other, and Keep fits the
+        // rest of a 1116 px row with its icon and its longest line.
         assert!(Recorder::card_rect(r, 0).x > rec.right());
-        assert!(Recorder::card_rect(r, 2).right() < r.right() - 300);
+        let k = Recorder::keep_rect(r);
+        assert!(k.x > Recorder::card_rect(r, 2).right());
+        assert_eq!(k.right(), r.right());
+        let narrow = Rect::new(12, 120, 1116, 64);
+        assert!(Recorder::keep_rect(narrow).w >= 2 * KEEP_PAD + KEEP_ICON + 10 + 180);
+    }
+
+    #[test]
+    fn keep_is_faint_and_says_why_until_a_tap_keeps_something() {
+        let mut w = Recorder::new();
+        let keep = |w: &Recorder| {
+            w.targets(row())
+                .into_iter()
+                .filter(|t| t.id.starts_with("keep"))
+                .map(|t| (t.id, t.gesture, t.enabled))
+                .collect::<Vec<_>>()
+        };
+        use mpfree_ui::Gesture::{Hold, Tap};
+        assert_eq!(w.view.keep.title, "Keep last 4 bars");
+        assert_eq!(w.view.keep.line, KEEP_NOT_YET);
+        assert_eq!(
+            keep(&w),
+            [("keep", Tap, false), ("keep-recall", Hold, false)]
+        );
+        w.view.keep = KeepView {
+            title: "Keep last 10 s".into(),
+            line: "what just played, as a new take".into(),
+            ready: true,
+        };
+        assert_eq!(keep(&w), [("keep", Tap, true), ("keep-recall", Hold, true)]);
     }
 
     #[test]

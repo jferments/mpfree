@@ -146,6 +146,33 @@ fn stopped_it_opens_on_the_last_ten_seconds_and_the_rest_steps() {
     assert_eq!(r.step(Row::Keep, 0, &i), Ask::Keep);
 }
 
+/// The Sample page's Keep card (one-page step 2c) keeps what Recall opens
+/// on, in one tap: the last 4 bars playing (fewer early on), the last 10 s
+/// stopped, and says which.
+#[test]
+fn the_keep_card_keeps_what_recall_opens_on_and_says_how_much() {
+    let (mut f, i) = input();
+    // 6 s in: bar lines at bars 1 to 3, two whole bars behind the latest.
+    feed(&mut f, 6.0, true);
+    let r = Recall::last(&i, 4, 10, 0, 0, 128);
+    assert_eq!(r.length, Length::Bars(2), "as many as have passed");
+    assert_eq!(r.length.keep_text(), "Keep last 2 bars");
+    assert!(r.warps());
+    feed(&mut f, 44.0, true);
+    let r = Recall::last(&i, 4, 10, 0, 0, 128);
+    assert_eq!(r, Recall::open(&i, 0, 0, 128));
+    assert_eq!(r.length.keep_text(), "Keep last 4 bars");
+    assert_eq!(Recall::last(&i, 8, 10, 0, 0, 128).length, Length::Bars(8));
+    // Stopped: seconds, as played.
+    let (mut f, i) = input();
+    feed(&mut f, 30.0, false);
+    let r = Recall::last(&i, 4, 10, 0, 0, 128);
+    assert_eq!((r.length, r.warps()), (Length::Free(10), false));
+    assert_eq!(r.length.keep_text(), "Keep last 10 s");
+    assert_eq!(Length::Bars(1).keep_text(), "Keep last bar");
+    assert_eq!(Length::Free(120).keep_text(), "Keep last 2:00");
+}
+
 #[test]
 fn the_page_shows_the_bracket_the_panel_and_the_cards() {
     use mpfree_sampler_ui::recall::{RecallView, LIST, QLINKS, VIEW};

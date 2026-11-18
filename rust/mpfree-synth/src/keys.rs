@@ -841,7 +841,7 @@ impl Keys {
     }
 
     pub fn presets() -> &'static [Preset] {
-        PRESETS
+        crate::factory::presets!("keys.presets", &INFO, PARAMS)
     }
 
     /// Voices sounding or fading.

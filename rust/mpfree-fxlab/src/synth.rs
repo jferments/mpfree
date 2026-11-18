@@ -28,6 +28,8 @@
 
 use std::f64::consts::{PI, TAU};
 
+use mpfree_instruments::sound::has_design;
+use mpfree_instruments::{Design, Sound};
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_synth::{
     bass_params as bp, drum_params, Analog, Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset,
@@ -114,8 +116,43 @@ impl Engine {
         }
     }
 
-    /// A fresh engine at `rate` with factory preset `preset` loaded.
+    /// A fresh engine at `rate` with factory preset `preset` loaded: a
+    /// sound with its own effects and macros where the preset brings them
+    /// (`mpfree_instruments::Sound`), so the lab measures what the pads
+    /// play.
     pub fn make(self, preset: usize, rate: u32) -> Box<dyn Node> {
+        let node = self.engine_with(preset, rate);
+        let Some(text) = self.text(preset).filter(|t| has_design(t)) else {
+            return node;
+        };
+        let mut s = Sound::new(node, &Design::default()).expect("a plain sound builds");
+        s.prepare_effects(rate, mpfree_node::MAX_BLOCK);
+        s.load_text(text)
+            .expect("every factory sound loads (mpfree-instruments' tests)");
+        Box::new(s)
+    }
+
+    /// Factory preset `preset`'s text (None for FM, whose presets are
+    /// built in code).
+    fn text(self, preset: usize) -> Option<&'static str> {
+        let p = match self {
+            Engine::Poly => Poly::presets(),
+            Engine::Analog => Analog::presets(),
+            Engine::Squelch => Squelch::presets(),
+            Engine::Fm => return None,
+            Engine::Wavetable => Wavetable::presets(),
+            Engine::Keys => Keys::presets(),
+            Engine::Drawbar => Drawbar::presets(),
+            Engine::Pluck => Pluck::presets(),
+            Engine::Strings => Strings::presets(),
+            Engine::Bass => Bass::presets(),
+        };
+        Some(p[preset].text)
+    }
+
+    /// A fresh engine at `rate` with factory preset `preset`'s engine
+    /// settings loaded, and no effects.
+    fn engine_with(self, preset: usize, rate: u32) -> Box<dyn Node> {
         match self {
             Engine::Poly => {
                 let mut n = Poly::new(rate);
@@ -1156,7 +1193,11 @@ fn preset_rows(rows: &mut Vec<Row>, e: Engine, i: usize, name: &str, rate: u32) 
         bass_rows(rows, &subject, &mut single, &ph, rate);
     }
     if matches!(e, Engine::Keys | Engine::Pluck) {
-        keys_rows(rows, e, &subject, make, &by_vel, rate);
+        // The K rows measure the engine's own voicing (decay against its
+        // label, the release drop, the pickups, the tremolo), so they play
+        // the engine alone: a sound's echo or reverb lengthens a decay by
+        // design.
+        keys_rows(rows, e, &subject, || e.engine_with(i, rate), &by_vel, rate);
     }
 }
 
