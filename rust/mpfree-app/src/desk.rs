@@ -375,6 +375,9 @@ impl Desk<'_> {
             gui::FromUi::PerformPad { page, pad, action } => {
                 fx.extend(app.set_perform_pad(page, pad, action))
             }
+            gui::FromUi::PerformName { page, name } => {
+                fx.extend(app.set_perform_name(page, &name))
+            }
             gui::FromUi::LoopCapture => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Capture))
             }
@@ -735,16 +738,23 @@ pub fn perform_pad_on(
         PadAction::None => return (fx, String::new()),
         PadAction::Throw(t) => match app.perform_throw(t, true) {
             Some(on) => {
-                let i = usize::from(t.index);
-                fx.extend(crate::perform_pads::throw_fx(i, on, drums).map(app::Effect::PlayFx));
+                fx.extend(crate::perform_pads::pad_throw_fx(t, on, drums).map(app::Effect::PlayFx));
                 match (t.hold, on) {
                     (Hold::WhileHeld, _) => format!("perform: {}", t.name()),
+                    (Hold::Bar, _) => format!("perform: {} for a bar", t.name()),
                     (Hold::Latch, true) => format!("perform: {} latched", t.name()),
                     (Hold::Latch, false) => format!("perform: {} let go", t.name()),
                 }
             }
             None => String::new(),
         },
+        PadAction::Macro { card, value } => {
+            app.perform_macro(card, true);
+            fx.push(app::Effect::PlayFx(crate::perform_pads::macro_fx(
+                card, value, true,
+            )));
+            format!("perform: Macro {} at {value} %", u16::from(card) + 1)
+        }
         PadAction::Mute(t) => {
             fx.push(app::Effect::TrackMute {
                 track: usize::from(t),
@@ -826,7 +836,8 @@ pub fn perform_pad_on(
 }
 
 /// A Perform pad let go (`action`, what it pressed): a held throw lets
-/// go. Latched throws, keys, mutes and scenes do nothing on the lift.
+/// go (a bar's plays its bar out), a macro goes back to where it was.
+/// Latched throws, keys, mutes and scenes do nothing on the lift.
 pub fn perform_pad_up(
     app: &mut app::App,
     action: crate::perform_pads::PadAction,
@@ -835,10 +846,16 @@ pub fn perform_pad_up(
     match action {
         PadAction::Throw(t) => app
             .perform_throw(t, false)
-            .and_then(|on| crate::perform_pads::throw_fx(usize::from(t.index), on, 0))
+            .and_then(|on| crate::perform_pads::pad_throw_fx(t, on, 0))
             .map(app::Effect::PlayFx)
             .into_iter()
             .collect(),
+        PadAction::Macro { card, value } => {
+            app.perform_macro(card, false);
+            vec![app::Effect::PlayFx(crate::perform_pads::macro_fx(
+                card, value, false,
+            ))]
+        }
         _ => Vec::new(),
     }
 }

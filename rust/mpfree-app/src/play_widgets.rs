@@ -738,12 +738,16 @@ pub struct MiniPads {
     /// The kit's name, on the right.
     pub right: String,
     pub synth: Option<SynthPads>,
+    /// The pads whose hit waits for the launch line (bit `i` for pad
+    /// `i`, sampler R5.3b): an amber outline until it sounds.
+    pub waiting: u16,
     fingers: Vec<(u64, usize)>,
     painted: RefCell<Option<PaintedPads>>,
 }
 
-/// What [`MiniPads`] last drew: where, the pads, its heading and switch.
-type PaintedPads = (Rect, Vec<Pad>, String, String, Option<SynthPads>);
+/// What [`MiniPads`] last drew: where, the pads, its heading, switch and
+/// the pads waiting.
+type PaintedPads = (Rect, Vec<Pad>, String, String, Option<SynthPads>, u16);
 
 impl Default for MiniPads {
     fn default() -> Self {
@@ -752,6 +756,7 @@ impl Default for MiniPads {
             title: "Pads".into(),
             right: String::new(),
             synth: None,
+            waiting: 0,
             fingers: Vec::new(),
             painted: RefCell::new(None),
         }
@@ -855,13 +860,17 @@ impl MiniPads {
         } else {
             cx.text(FontId::Sans, 12.0, ir, Align::Left, ink, &pad.label);
         }
+        // Its hit waits for the launch line: outlined as a cued clip is.
+        if self.waiting & (1 << i) != 0 {
+            cx.canvas.stroke_round_rect(cr.inset(-3), 10, 2, t.warn);
+        }
     }
 }
 
 impl Widget for MiniPads {
     fn changed_parts(&self, r: Rect) -> Option<Vec<Rect>> {
         let painted = self.painted.borrow();
-        let (at, old, title, right, synth) = painted.as_ref()?;
+        let (at, old, title, right, synth, waiting) = painted.as_ref()?;
         if *at != r
             || *title != self.title
             || *right != self.right
@@ -873,7 +882,9 @@ impl Widget for MiniPads {
         let (_, _, body) = self.parts(r);
         Some(
             (0..self.grid.pads.len())
-                .filter(|&i| old[i] != self.grid.pads[i])
+                .filter(|&i| {
+                    old[i] != self.grid.pads[i] || (waiting ^ self.waiting) & (1 << i) != 0
+                })
                 .map(|i| MiniPads::cell(body, i).inset(-4))
                 .collect(),
         )
@@ -950,6 +961,7 @@ impl Widget for MiniPads {
             self.title.clone(),
             self.right.clone(),
             self.synth,
+            self.waiting,
         ));
     }
 

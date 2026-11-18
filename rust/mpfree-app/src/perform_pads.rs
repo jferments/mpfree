@@ -16,6 +16,7 @@
 
 use crate::looper_deck::RingState;
 use mpfree_looper::MAX_LOOPS;
+use mpfree_mod::MACROS;
 
 /// Pads on a page.
 pub const PADS: usize = 16;
@@ -45,20 +46,71 @@ pub enum Hold {
     WhileHeld,
     /// A hit starts it and the next hit lets it go.
     Latch,
+    /// A hit plays it for a bar (four beats) from its start, however
+    /// briefly the pad is held; a hit while it plays starts it again.
+    Bar,
+}
+
+/// When a throw pad's effect starts after the hit, while the transport
+/// plays (stopped, it starts at once).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Starts {
+    AtOnce,
+    /// On the next 1/16. (Play's throw cards start on the Perform FX's
+    /// own Punch in, 1/16 unless it is changed.)
+    #[default]
+    Sixteenth,
+    Beat,
+}
+
+/// What a throw's echo repeats or reverb tail do when it lets go.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LetGo {
+    /// They carry on, as Play's throw cards.
+    #[default]
+    RingOut,
+    /// They fade out at once (the Perform FX's Fade, a few ms).
+    Cut,
 }
 
 /// A throw on a Perform pad: Play's throw at `index` in
-/// [`crate::play_page::THROW_LIST`]. (Where it acts, when it starts and
-/// how it lets go, board 7's On, Starts and Let go, need the mixer's
-/// throws to take them first: they play on the master, at once, and ring
-/// out, as Play's do.)
+/// [`crate::play_page::THROW_LIST`], how it holds, when it starts and how
+/// it lets go. (Where it acts, board 7's On, waits for the mixer to take
+/// a throw on a bus or a track: it plays on the master, as Play's do.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Throw {
     pub index: u8,
     pub hold: Hold,
+    pub starts: Starts,
+    pub let_go: LetGo,
 }
 
 impl Throw {
+    /// Throw `index`, held as `hold`, starting on the next 1/16 and
+    /// ringing out (as Play's cards).
+    pub const fn new(index: u8, hold: Hold) -> Throw {
+        Throw {
+            index,
+            hold,
+            starts: Starts::Sixteenth,
+            let_go: LetGo::RingOut,
+        }
+    }
+
+    /// How the mixer plays it: the Perform FX pad's Starts, Let go and
+    /// Plays for the hit.
+    pub fn how(self) -> crate::mixing::ThrowHow {
+        crate::mixing::ThrowHow {
+            starts: match self.starts {
+                Starts::AtOnce => 1,
+                Starts::Sixteenth => 2,
+                Starts::Beat => 3,
+            },
+            cut: self.let_go == LetGo::Cut,
+            bar: self.hold == Hold::Bar,
+        }
+    }
+
     /// Its name on Play's card ("Reverb wash").
     pub fn name(self) -> &'static str {
         crate::play_page::THROW_LIST
@@ -90,6 +142,10 @@ pub enum PadAction {
     /// Scene row `n` (0 is Scene 1): a hit launches it, as the grid's
     /// scene button.
     Scene(u8),
+    /// Macro `card` (0 is Macro 1, of the mod engine's eight) held at
+    /// `value` (0 to 100 %) while the pad is, then back where it was: one
+    /// pad moves every knob on the macro.
+    Macro { card: u8, value: u8 },
 }
 
 /// A page of Perform pads: its name, and what each pad does, pad 1 (bottom
@@ -125,10 +181,7 @@ impl PerformPage {
     pub fn throws() -> PerformPage {
         let mut pads = [PadAction::None; PADS];
         for (i, p) in pads.iter_mut().take(THROW_SLUGS.len()).enumerate() {
-            *p = PadAction::Throw(Throw {
-                index: i as u8,
-                hold: Hold::WhileHeld,
-            });
+            *p = PadAction::Throw(Throw::new(i as u8, Hold::WhileHeld));
         }
         PerformPage {
             name: "Throws".to_string(),
@@ -199,10 +252,11 @@ impl PerformSet {
 
     /// The `perform` part: its format line, then each page's name and
     /// each pad with an action, a line each. Numbers are as the screen
-    /// shows them, from 1 (loop 1, track 1, scene 1); a throw goes by its
-    /// slug, then its settings as `key=value` (`hold=held` or
-    /// `hold=latch`; where it plays, when it starts and how it lets go
-    /// join them as the mixer takes them).
+    /// shows them, from 1 (loop 1, track 1, scene 1, macro 1); a throw
+    /// goes by its slug, then its settings as `key=value`: `hold=held`,
+    /// `hold=latch` or `hold=bar`, then `start=now` or `start=beat` and
+    /// `end=cut` when they aren't the default (the next 1/16, ringing
+    /// out). Where it plays joins them when the mixer takes it.
     ///
     /// ```text
     /// mpfree-perform 1
@@ -212,6 +266,8 @@ impl PerformSet {
     /// page B = Throws
     /// pad B2 = throw reverb-wash hold=held
     /// pad B8 = throw vinyl-brake hold=latch
+    /// pad B9 = throw delay-throw hold=bar start=beat end=cut
+    /// pad B7 = macro 3 value=100
     /// pad C1 = mute 3
     /// pad C5 = scene 2
     /// ```
@@ -234,13 +290,29 @@ impl PerformSet {
                         let Some(slug) = THROW_SLUGS.get(usize::from(t.index)) else {
                             continue;
                         };
-                        match t.hold {
-                            Hold::WhileHeld => format!("throw {slug} hold=held"),
-                            Hold::Latch => format!("throw {slug} hold=latch"),
+                        let mut line = format!(
+                            "throw {slug} hold={}",
+                            match t.hold {
+                                Hold::WhileHeld => "held",
+                                Hold::Latch => "latch",
+                                Hold::Bar => "bar",
+                            }
+                        );
+                        match t.starts {
+                            Starts::AtOnce => line.push_str(" start=now"),
+                            Starts::Sixteenth => {}
+                            Starts::Beat => line.push_str(" start=beat"),
                         }
+                        if t.let_go == LetGo::Cut {
+                            line.push_str(" end=cut");
+                        }
+                        line
                     }
                     PadAction::Mute(t) => format!("mute {}", u16::from(t) + 1),
                     PadAction::Scene(n) => format!("scene {}", u16::from(n) + 1),
+                    PadAction::Macro { card, value } => {
+                        format!("macro {} value={value}", u16::from(card) + 1)
+                    }
                 };
                 out.push_str(&format!("pad {} = {what}\n", pad_label(k, i)));
             }
@@ -301,20 +373,37 @@ fn parse_line(set: &mut PerformSet, line: &str) -> Option<()> {
                 "throw" => {
                     let slug = words.next()?;
                     let index = THROW_SLUGS.iter().position(|&s| s == slug)? as u8;
-                    let mut hold = Hold::WhileHeld;
+                    let mut t = Throw::new(index, Hold::WhileHeld);
                     for w in words.by_ref() {
                         match w.split_once('=')? {
-                            ("hold", "held") => hold = Hold::WhileHeld,
-                            ("hold", "latch") => hold = Hold::Latch,
+                            ("hold", "held") => t.hold = Hold::WhileHeld,
+                            ("hold", "latch") => t.hold = Hold::Latch,
+                            ("hold", "bar") => t.hold = Hold::Bar,
+                            ("start", "now") => t.starts = Starts::AtOnce,
+                            ("start", "1/16") => t.starts = Starts::Sixteenth,
+                            ("start", "beat") => t.starts = Starts::Beat,
+                            ("end", "ring") => t.let_go = LetGo::RingOut,
+                            ("end", "cut") => t.let_go = LetGo::Cut,
                             // The only place a throw plays yet.
                             ("on", "master") => {}
                             _ => return None,
                         }
                     }
-                    PadAction::Throw(Throw { index, hold })
+                    PadAction::Throw(t)
                 }
                 "mute" => PadAction::Mute(number(words.next(), 256)?),
                 "scene" => PadAction::Scene(number(words.next(), 256)?),
+                "macro" => {
+                    let card = number(words.next(), MACROS as u16)?;
+                    let mut value = 100;
+                    for w in words.by_ref() {
+                        match w.split_once('=')? {
+                            ("value", v) => value = v.parse::<u8>().ok().filter(|v| *v <= 100)?,
+                            _ => return None,
+                        }
+                    }
+                    PadAction::Macro { card, value }
+                }
                 _ => return None,
             };
             set.pages[page].pads[pad] = action;
@@ -331,9 +420,37 @@ pub fn throw_fx(index: usize, down: bool, drums: u16) -> Option<crate::mixing::P
     use crate::mixing::PlayFx;
     let def = crate::play_page::THROW_LIST.get(index)?;
     Some(match def.fx {
-        Some(fx) => PlayFx::Throw { fx, down },
+        Some(fx) => PlayFx::Throw {
+            fx,
+            down,
+            how: None,
+        },
         None => PlayFx::Drop(if down { drums } else { 0 }),
     })
+}
+
+/// A Perform pad's throw `t` held (`down`) or let go, for the mixer: as
+/// [`throw_fx`], played as the pad says (when it starts, how it lets go,
+/// for a bar).
+pub fn pad_throw_fx(t: Throw, down: bool, drums: u16) -> Option<crate::mixing::PlayFx> {
+    use crate::mixing::PlayFx;
+    Some(match throw_fx(usize::from(t.index), down, drums)? {
+        PlayFx::Throw { fx, down, .. } => PlayFx::Throw {
+            fx,
+            down,
+            how: Some(t.how()),
+        },
+        other => other,
+    })
+}
+
+/// A macro pad held (`down`) or let go, for the mixer: macro `card` held
+/// at `value` %, then let go back to where it was.
+pub fn macro_fx(card: u8, value: u8, down: bool) -> crate::mixing::PlayFx {
+    crate::mixing::PlayFx::Macro {
+        card,
+        value: down.then(|| f32::from(value.min(100)) / 100.0),
+    }
 }
 
 /// The drum pads Drop drums mutes among a kit's first 16 (`names`: each
@@ -471,15 +588,19 @@ fn pad_rgb(c: [u8; 3], f: f32) -> [u8; 3] {
 
 /// What the pads that aren't loop keys light by: the throws playing (a
 /// bit for each place in [`crate::play_page::THROW_LIST`]: held or
-/// latched) and the tracks muted (a bit each, Track 1 the lowest).
+/// latched), the tracks muted (a bit each, Track 1 the lowest) and the
+/// macros a pad holds (a bit each, Macro 1 the lowest).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Lit {
     pub throws: u8,
     pub muted: u128,
+    pub macros: u8,
 }
 
 /// A scene pad's green, dim: a hit launches the row.
 const SCENE: [u8; 3] = [0x30, 0xD0, 0x60];
+/// A macro pad's violet: dim, full while held.
+const MACRO: [u8; 3] = [0xB0, 0x80, 0xF0];
 /// A track mute pad's colour while its track plays.
 const TRACK: [u8; 3] = [0xE0, 0xE0, 0xE0];
 
@@ -531,6 +652,10 @@ pub fn colours(page: &PerformPage, loops: &[LoopLight], lit: &Lit, blink: bool) 
             PadAction::Mute(t) if lit.muted & (1u128 << (t & 127)) != 0 => RED,
             PadAction::Mute(_) => pad_rgb(TRACK, 0.12),
             PadAction::Scene(_) => pad_rgb(SCENE, 0.2),
+            PadAction::Macro { card, .. } if lit.macros & (1 << (card & 7)) != 0 => {
+                pad_rgb(MACRO, 1.0)
+            }
+            PadAction::Macro { .. } => pad_rgb(MACRO, 0.2),
         }
     })
 }
@@ -669,10 +794,7 @@ mod tests {
     #[test]
     fn the_set_saves_as_text_and_reads_back() {
         let mut set = PerformSet::default();
-        set.pages[1].pads[7] = PadAction::Throw(Throw {
-            index: 7,
-            hold: Hold::Latch,
-        });
+        set.pages[1].pads[7] = PadAction::Throw(Throw::new(7, Hold::Latch));
         set.pages[2].name = "Live".to_string();
         set.pages[2].pads[0] = PadAction::Mute(2);
         set.pages[2].pads[4] = PadAction::Scene(1);
@@ -702,6 +824,132 @@ mod tests {
         assert_eq!(back, PerformSet::default());
         let (empty, _) = PerformSet::parse("");
         assert!(empty.pages.iter().all(|p| *p == PerformPage::empty()));
+    }
+
+    #[test]
+    fn a_throws_bar_start_and_cut_and_a_macro_pad_save_and_read_back() {
+        let mut set = PerformSet::default();
+        set.pages[1].pads[8] = PadAction::Throw(Throw {
+            starts: Starts::Beat,
+            let_go: LetGo::Cut,
+            ..Throw::new(0, Hold::Bar)
+        });
+        set.pages[1].pads[9] = PadAction::Throw(Throw {
+            starts: Starts::AtOnce,
+            ..Throw::new(1, Hold::WhileHeld)
+        });
+        set.pages[1].pads[6] = PadAction::Macro {
+            card: 2,
+            value: 100,
+        };
+        set.pages[2].pads[0] = PadAction::Macro { card: 7, value: 35 };
+        let text = set.text();
+        for line in [
+            "pad B9 = throw delay-throw hold=bar start=beat end=cut",
+            "pad B10 = throw reverb-wash hold=held start=now",
+            "pad B7 = macro 3 value=100",
+            "pad C1 = macro 8 value=35",
+            // The defaults write nothing more than before.
+            "pad B2 = throw reverb-wash hold=held",
+        ] {
+            assert!(text.lines().any(|l| l == line), "{line:?} in\n{text}");
+        }
+        let (back, skipped) = PerformSet::parse(&text);
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(back, set);
+        // Written out in full, and a macro with no value (all the way).
+        let (set, skipped) = PerformSet::parse(
+            "pad A1 = throw stutter start=1/16 end=ring hold=latch\n\
+             pad A2 = macro 1\n\
+             pad A3 = macro 9 value=10\n\
+             pad A4 = macro 2 value=101\n\
+             pad A5 = throw stutter start=soon\n",
+        );
+        assert_eq!(
+            set.page(0).action(0),
+            PadAction::Throw(Throw::new(2, Hold::Latch))
+        );
+        assert_eq!(
+            set.page(0).action(1),
+            PadAction::Macro {
+                card: 0,
+                value: 100
+            }
+        );
+        assert_eq!(skipped.len(), 3, "{skipped:?}");
+    }
+
+    #[test]
+    fn a_pads_throw_tells_the_mixer_how_it_plays() {
+        use crate::mixing::{PlayFx, ThrowFx, ThrowHow};
+        let t = Throw {
+            starts: Starts::Beat,
+            let_go: LetGo::Cut,
+            ..Throw::new(1, Hold::Bar)
+        };
+        assert_eq!(
+            t.how(),
+            ThrowHow {
+                starts: 3,
+                cut: true,
+                bar: true
+            }
+        );
+        assert_eq!(
+            Throw::new(1, Hold::Latch).how(),
+            ThrowHow {
+                starts: 2,
+                cut: false,
+                bar: false
+            }
+        );
+        assert_eq!(
+            pad_throw_fx(t, true, 0),
+            Some(PlayFx::Throw {
+                fx: ThrowFx::Reverb,
+                down: true,
+                how: Some(t.how()),
+            })
+        );
+        // Play's cards keep the Perform FX pad's own settings; Drop drums
+        // has none.
+        assert_eq!(
+            throw_fx(1, true, 0),
+            Some(PlayFx::Throw {
+                fx: ThrowFx::Reverb,
+                down: true,
+                how: None,
+            })
+        );
+        assert_eq!(
+            pad_throw_fx(Throw::new(6, Hold::Bar), true, 0b101),
+            Some(PlayFx::Drop(0b101))
+        );
+        assert_eq!(
+            macro_fx(2, 50, true),
+            PlayFx::Macro {
+                card: 2,
+                value: Some(0.5)
+            }
+        );
+        assert_eq!(
+            macro_fx(2, 50, false),
+            PlayFx::Macro {
+                card: 2,
+                value: None
+            }
+        );
+        // A macro pad lights violet, full while it is held.
+        let mut page = PerformPage::empty();
+        page.pads[0] = PadAction::Macro { card: 3, value: 80 };
+        let dim = colours(&page, &[], &Lit::default(), true)[0];
+        let held = Lit {
+            macros: 1 << 3,
+            ..Lit::default()
+        };
+        let full = colours(&page, &[], &held, true)[0];
+        assert_eq!(full, pad_rgb(MACRO, 1.0));
+        assert_eq!(dim, pad_rgb(MACRO, 0.2));
     }
 
     #[test]
@@ -744,14 +992,11 @@ mod tests {
             assert_eq!(set.page(0).action(pad), PadAction::None);
         }
         // A throw's settings in any order; with none it is held.
-        let stutter = |hold| PadAction::Throw(Throw { index: 2, hold });
+        let stutter = |hold| PadAction::Throw(Throw::new(2, hold));
         assert_eq!(set.page(0).action(8), stutter(Hold::Latch));
         assert_eq!(
             set.page(0).action(9),
-            PadAction::Throw(Throw {
-                index: 3,
-                hold: Hold::WhileHeld
-            })
+            PadAction::Throw(Throw::new(3, Hold::WhileHeld))
         );
     }
 
@@ -764,6 +1009,7 @@ mod tests {
         let lit = Lit {
             throws: 0b10,
             muted: 0b10,
+            macros: 0,
         };
         let c = colours(&page, &[], &lit, true);
         // Reverb wash plays: its card's colour full; Delay throw dim.
@@ -810,10 +1056,7 @@ mod tests {
     #[test]
     fn a_held_pad_keeps_what_it_pressed() {
         let mut h = Held::default();
-        let reverb = PadAction::Throw(Throw {
-            index: 1,
-            hold: Hold::WhileHeld,
-        });
+        let reverb = PadAction::Throw(Throw::new(1, Hold::WhileHeld));
         h.press_action(1, 0.0, reverb);
         assert_eq!(h.action(1), Some(reverb));
         assert_eq!(h.action(2), None);
