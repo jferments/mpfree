@@ -2143,10 +2143,10 @@ mod device_log {
     /// transport: Record, `, `^Undid take `, `^rec: the loop armed$`,
     /// `^looper: Record: armed`), as the `rec-arm` check has them done: on
     /// the home view REC readies the notes and PLAY records them, played
-    /// back on PLAY, UNDO takes the take, and the Loop view arms the loop
-    /// for REC.
-    /// The loop-tracks check (`app_checks.py`): a loop recorded on Play's
-    /// Loop view lands on Loops A, row 2's number stops it on its bar line,
+    /// back on PLAY, UNDO takes the take, and the loop row's Arm arms the
+    /// loop for REC.
+    /// The loop-tracks check (`app_checks.py`): a loop recorded from Play's
+    /// loop row lands on Loops A, row 2's number stops it on its bar line,
     /// and its cell brings it back on one.
     #[test]
     fn loop_tracks_write_their_lines() {
@@ -2154,7 +2154,7 @@ mod device_log {
         on_big_stack(|| {
             let mut s = Session::new();
             s.run_for(0.1);
-            s.play_view("Loop").settle();
+            s.arm_loop().settle();
             let n = s.lines.len();
             s.button("REC").button("PLAY");
             s.run_for(0.5);
@@ -2216,7 +2216,7 @@ mod device_log {
         on_big_stack(|| {
             let mut s = Session::new();
             s.run_for(0.1);
-            s.play_view("Loop").settle();
+            s.arm_loop().settle();
             s.button("REC").button("PLAY");
             s.run_for(0.5);
             s.pad(0, 100, 0.05);
@@ -2294,7 +2294,7 @@ mod device_log {
             s.button("STOP");
             s.run_for(0.2);
             let n = s.lines.len();
-            s.play_view("Loop").settle();
+            s.arm_loop().settle();
             s.button("REC");
             s.run_for(0.2);
             assert_eq!(

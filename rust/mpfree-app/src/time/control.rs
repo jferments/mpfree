@@ -2075,7 +2075,7 @@ impl TimeControl {
                 if self.project.tracks.get(track).is_some_and(|t| t.is_loops()) =>
             {
                 Err(format!(
-                    "{} is a Loop track: record a loop on Play's Loop view or the Looper tab, \
+                    "{} is a Loop track: record a loop on Play's loop row or the Looper tab, \
                      and it lands here",
                     self.project.tracks[track].name
                 ))

@@ -369,7 +369,7 @@ pub fn capture_icon(cx: &mut PaintCx, b: Rect, c: Color) {
     s.draw(cx.canvas, c);
 }
 
-fn paint_ring(cx: &mut PaintCx, b: Rect, ch: &Channel, clearing: Option<f32>) {
+pub(crate) fn paint_ring(cx: &mut PaintCx, b: Rect, ch: &Channel, clearing: Option<f32>) {
     let t = cx.theme.clone();
     let c = b.w.min(b.h) as f32 / 2.0;
     let (ox, oy) = (b.x as f32 + b.w as f32 / 2.0, b.y as f32 + b.h as f32 / 2.0);
