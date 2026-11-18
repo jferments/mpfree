@@ -130,7 +130,7 @@
 64328	Squelch Square Acid, a line
 30240	Talk box
 87944	Tape delay
-8130	Time with trig conditions and ratchets, 8 clips, arp
+8572	Time with trig conditions and ratchets, 8 clips, arp
 8882	Time: transport, 8 clips, arp
 53727	Track host alone, 16 tracks, 8 events each per block
 406148	Track host, 4 Poly tracks of 4 voices
