@@ -22,6 +22,7 @@ The grid has a column per **track** and a row per **slot**. Each track plays one
 - **UNDO** takes back any drop, and the Takes list names it ("Move 7 · Drums / 2, to Bass / 4").
 - **Tap a track's name** to **arm** it: the pads record into that track. The track arms when you lift your finger.
 - **Hold ERASE and tap a clip** to delete it. **UNDO** brings it back. A clip the song uses stays until you delete its blocks in the song.
+- **Hold SHIFT and tap a clip**, a row's number or a track's name, then press a pad or key on a MIDI controller: from then on that control launches it, as a tap would. See [Launching clips and scenes from your controller](midi-and-cv.md#launching-clips-and-scenes-from-your-controller).
 - **Hold COPY and tap a clip** to copy it. Then **hold COPY and tap an empty slot**, on any track and any page, and a copy goes there; tap more empty slots for more copies. **UNDO** takes a copy away. It's handy for a variation: copy the verse, then change the copy.
 - **Under each name** is what the track plays: **Kit**, or its own instrument (FM, Poly, a plugin synth). Tap that line to change it: the track is armed, and the Synth tab opens its MENU on the track's instrument row (see [A synth for each track](synths.md#a-synth-for-each-track)).
 
@@ -109,10 +110,14 @@ The Record panel has three tabs at its top: **Record**, the record settings, **C
 - **After:** after how many bars, counted from where the clip started. Turning **Follow** on starts it at one pass of the clip.
 - **Launch:** **project** starts this clip on the Record tab's **Launch** line. Or give it its own, from **at once** to **8 bars**: a fill on **1/4** comes in on the next beat while the rest of the set changes on the bar.
 - **Mode:** **Restart** starts the clip from its top. **Legato** takes over from the clip the track is playing at the same place in its pass, so a variation slides in mid-phrase: with **Verse A** two bars long, a legato **Verse B** that starts on the bar line halfway through it plays on from its own second bar. With nothing playing, it starts from its top. **Once** makes it a one-shot: it plays one pass and then its track stops, right where the pass ends, whatever the Launch line (in song mode the song carries on). A fill of three beats stops after three beats. From its last bar its cell says where it stops ("stops 3.4"). A **Follow** set on it waits.
+- **Program:** the program change the clip sends to outside gear as it starts, **1** to **128**, or **off** for none. It goes on the clip's first tick, after the clip before it ends its notes and before this clip's first note, so a synth on a MIDI Out track changes sound with the clip. Only a track that plays on MIDI Out sends it (its **Plays on** port and channel, with **Send MIDI and CV out** on in Prefs); on the pads it does nothing. It goes again each time the clip is launched, as each song placement of it starts, and when the music starts, but not on every loop.
+- **Bank:** the bank select sent just before the program, shown as the two numbers sent (CC 0 / CC 32), **0/0** to **127/127**, or **off** to send none. Your synth's manual says which bank numbers it uses. Hold **SHIFT** as you tap its arrows to step the first number (a whole CC 0).
 
 Tap a row's arrows, or turn the data wheel to pick a row and press **–** or **+**, as on the Record tab. Hold **SHIFT** as you tap **Length**'s arrows to **double** the clip (its notes play again in the new half) or **halve** it, and **Speed**'s to play it twice as fast or half as fast. Each change plays at once. A row you change is one take ("Settings 4 · Bass / 2"), however far you turn it, so **UNDO** puts it back in one go.
 
 A Loop track's cell plays its loop as you recorded it, so only **Follow**, **After** and **Launch** apply to it.
+
+A MIDI file you export from the song keeps each clip's program change at its start.
 
 ### Save state and Reload
 

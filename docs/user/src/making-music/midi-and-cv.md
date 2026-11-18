@@ -89,7 +89,7 @@ Blocks belong to the song and are saved with it, with their routes.
 
 ## Playing a synth from a track
 
-A track can play a synth or drum machine through **MIDI OUT**, or a USB synth or interface plugged into the **USB** port, instead of a sound inside MPFree. It has one setting for where it plays, **Plays on** in the I/O view's MIDI section: the port and the MIDI channel together. Every port with an output is in the list, the USB ones under the names the devices give them. A track can also send a program change (**Program**), so the synth switches to the right sound when the song starts.
+A track can play a synth or drum machine through **MIDI OUT**, or a USB synth or interface plugged into the **USB** port, instead of a sound inside MPFree. It has one setting for where it plays, **Plays on** in the I/O view's MIDI section: the port and the MIDI channel together. Every port with an output is in the list, the USB ones under the names the devices give them. A track can also send a program change (**Program**), so the synth switches to the right sound when the song starts. A clip can send its own as it starts, with a bank select too, so a verse and a chorus can play different sounds on the same synth: see the clip's **Program** and **Bank** in [Clip settings](clips.md#clip-settings).
 
 If a track would send nothing, it says why under the track's name: no port is picked, the device is unplugged or has no output, **Send MIDI and CV out** is off in Prefs, or the port's output didn't open (the log says why; turn **Send MIDI and CV out** off and on, or plug the device in again, to try again). A track that sends nothing plays its own sound inside MPFree instead. If you unplug a USB synth while it plays, MPFree can't send it the ends of its notes; switch it off and on, or send it **All notes off** once it is back.
 
@@ -196,8 +196,9 @@ A port's profile names what comes in from it and what goes out to it. Only its *
 MPFree can follow another device's MIDI clock. In the mixer's I/O view, under **Sync**, set **Tempo from** to the port the device is plugged into:
 
 - Its tempo becomes MPFree's and moves when it moves. The top bar shows a tempo chip such as **120.0 from MIDI In**, with a green dot, until its clock stops.
-- With **Start and stop** on, its Start and Stop start and stop MPFree.
-- With **Position** on, MPFree plays from the same bar as the device, and goes back in step if it drifts away.
+- With **Start and stop** on, its Start and Stop start and stop MPFree. While the device is stopped, **PLAY** waits for it and says *Waiting for clock: PLAY starts when MIDI In starts*: press PLAY (or PLAY START, for bar 1) to get the pattern ready, then start the device.
+- To record from the device's start, press **REC** (or OVERDUB) while both are stopped. The take records from the device's first beat, with no count-in, since the device counts. PLAY keeps the take ready and says so; STOP lets go of it.
+- With **Position** on, MPFree plays from the same bar as the device, and goes back in step if it drifts away. The device owns the song's timeline, so MPFree's own loop is off while Position is on: the Record tab's **Loop** row reads *off while following*, and what you set there comes back when you turn Position off. Clips and scenes you launch still land on the bar line, which is the device's bar line too.
 - If its clock stops arriving, MPFree keeps playing at the last tempo.
 
 MPFree can also send its own clock from **MIDI OUT**, or to a USB device, so a drum machine or an arpeggiator plays in time with it. Each port's **Clock out** is **Off**, **While playing** or **Always**, and each port with a delay gets its clock that much early. On a port's page, **Divide** slows the clock one port gets and **Nudge** moves it a little later or earlier than its notes (see [A port's page](#a-ports-page)).
@@ -246,7 +247,7 @@ Tap a row, or turn the data wheel, to pick it. The card under the list sets it:
 - **Learn again**: the next control you move takes this one's place, with the same range, takeover and **Kept in**. The banner at the top says what it waits for; **Cancel** stops it and keeps the old control.
 - **Remove** takes the control off.
 
-Learned controls kept in **Project** are saved with the song; those kept in **Rig** stay when you open another project and come back at the next start (with a data folder on the stick). Still to come: learning the values on the Play page, the Pads and Sample tabs, the arpeggiator and a plugin's own page; recording a learned synth knob's moves into a clip; and launching clips and scenes from a controller.
+Learned controls kept in **Project** are saved with the song; those kept in **Rig** stay when you open another project and come back at the next start (with a data folder on the stick). Still to come: learning the values on the Play page, the Pads and Sample tabs, the arpeggiator and a plugin's own page; and recording a learned synth knob's moves into a clip.
 
 ### Playing and stopping from your controller
 
@@ -277,6 +278,19 @@ The line under them says what it does now, or why it waits (*Keystep 37 isn't pl
 - The controller's keys still play the armed track, as any keyboard's do, and its other controls do what they did. A control you taught with MIDI Learn keeps its job: Learn wins over Follow.
 - MIDI Follow is kept with the rig, so it stays when you open another project.
 - Values go back only while **Send values back** is on and **Send MIDI and CV out** is on in Prefs, and only to a controller with an output. Each goes on the CC and channel its knob sends.
+
+### Launching clips and scenes from your controller
+
+A pad, key or button on your controller can do what a tap on the Clips grid does, so a grid controller can launch your song. On the **Arrange** tab's Clips grid, hold **SHIFT** and tap one of these, then press the pad, key or button:
+
+- **A clip** (or an empty cell): the control does what a tap there does at that moment. It launches the clip, stops it while it plays, takes back a launch that is waiting, or in an empty cell makes a clip and starts recording into it. The control belongs to the cell, not to the clip: whatever clip you put in that track's row later, the same pad launches it.
+- **A row's number**: the control launches that whole row as a scene.
+- **Stop all** or **Back to song**.
+- **A track's name**: the control arms the track, as a tap on its name does (pressed again, it lets go).
+
+Launches land where a tap's would: on the next **Launch** line (the Record tab's, or the clip's own). While MIDI Learn waits, the line under the screen says what for, then what the control launches; SHIFT and the same tap again cancels. SHIFT and a drag still copies a clip or a row, and SHIFT + **+ Track** still adds a Loop track.
+
+The Learn section lists them by where they are: **Launch Bass · row 2**, **Scene 3 · Verse**, **Arm Bass**, **Stop all**. They're kept with the song (**Project**); set **Kept in** to **Rig** to keep a grid controller's layout in every project. Still to come: a **Clips and scenes** card in the Learn section for a track's mute, solo and stop. A key on a track's mute flips it on each press, and in Perform it waits for the launch line, as TRACK MUTE's pads do.
 
 ## MIDI files
 

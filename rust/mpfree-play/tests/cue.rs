@@ -11,7 +11,7 @@
 use mpfree_play::{
     anchored, Cue, Erased, Event, Launch, Out, PlayView, Player, Recorder, Sink, Started, Taken,
 };
-use mpfree_seq::{Clip, Note, Project, Speed, Track};
+use mpfree_seq::{Clip, ClipProgram, Note, Project, Speed, Track};
 use mpfree_transport::{Block, Command, Transport};
 
 const BAR: i64 = 3840;
@@ -686,4 +686,86 @@ fn a_cue_lands_on_its_launch_quantise_and_legato_keeps_the_place() {
         );
         assert_eq!(ons(&r)[2], (at, 20), "period {period}");
     }
+}
+
+/// A clip's program change (sequencer S5) goes out once as the clip
+/// starts: with the music, and on the bar line a cue lands on, after the
+/// old clip's held note ends there and before the new clip's first note.
+/// The loops after it send none; a stop and a start send it again.
+#[test]
+fn a_clips_program_goes_out_once_as_it_starts() {
+    let mut s = session(at(5 * BAR));
+    let a = s.project.tracks[0].slots[0].as_mut().unwrap();
+    a.program = Some(ClipProgram {
+        program: 4,
+        bank: None,
+    });
+    a.notes = vec![note(0, 100, 1), note(2000, 6000, 7)];
+    s.project.tracks[0].slots[1].as_mut().unwrap().program = Some(ClipProgram {
+        program: 9,
+        bank: Some(130),
+    });
+    s.cues = vec![(
+        at(1500),
+        Cue {
+            track: 0,
+            slot: Some(1),
+        },
+    )];
+    let pa = Event::Program {
+        program: 4,
+        bank: None,
+    };
+    let pb = Event::Program {
+        program: 9,
+        bank: Some(130),
+    };
+    let programs = |r: &Run| -> Vec<(u64, Event)> {
+        r.played
+            .iter()
+            .filter(|e| matches!(e.2, Event::Program { .. }))
+            .map(|&(f, _, e)| (f, e))
+            .collect()
+    };
+    let on = |r: &Run, frame: u64| -> Vec<Event> {
+        r.played
+            .iter()
+            .filter(|e| e.0 == frame)
+            .map(|e| e.2)
+            .collect()
+    };
+    let r = same_everywhere(&s);
+    assert_eq!(programs(&r), vec![(0, pa), (at(BAR), pb)]);
+    assert_eq!(
+        on(&r, 0),
+        vec![
+            pa,
+            Event::NoteOn {
+                note: 1,
+                velocity: 100
+            }
+        ]
+    );
+    assert_eq!(
+        on(&r, at(BAR)),
+        vec![
+            Event::NoteOff { note: 7 },
+            pb,
+            Event::NoteOn {
+                note: 20,
+                velocity: 100
+            }
+        ]
+    );
+    // Stopped on bar 2 and started again there: B's program again, as
+    // the music starts.
+    s.cues.clear();
+    s.commands.push((at(BAR + 200), Command::Stop));
+    s.commands.push((at(2 * BAR), Command::Play));
+    let r = same_everywhere(&s);
+    let back = programs(&r);
+    assert_eq!(back.len(), 2, "{back:?}");
+    assert_eq!(back[0], (0, pa));
+    assert_eq!(back[1].1, pa);
+    assert!(back[1].0 >= at(2 * BAR), "{back:?}");
 }

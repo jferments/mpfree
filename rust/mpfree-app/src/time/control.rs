@@ -69,6 +69,29 @@ struct Landed<'a> {
     soloing: bool,
 }
 
+/// The kit's pads (kit 1's, which have the mixer's pad strips).
+pub const PADS: usize = 16;
+
+/// A kit pad tapped as a mute key ([`TimeControl::pad_mute_or_solo`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PadTap {
+    /// It waits in the mute queue (or its change was taken back): the
+    /// line for the log.
+    Waits(String),
+    /// At once: the pad's mute and solo now, for the mixer.
+    Now { mute: bool, solo: bool },
+}
+
+/// What a pad's change does, for the log: "solo" (a solo plays the pad
+/// whatever its mute), "muted" or "plays".
+fn pad_words(mute: bool, solo: bool) -> &'static str {
+    match (solo, mute) {
+        (true, _) => "solo",
+        (false, true) => "muted",
+        (false, false) => "plays",
+    }
+}
+
 fn queue_landed<'a>(project: &'a Project, q: &'a MuteWait) -> Landed<'a> {
     let mut l = Landed {
         project,
@@ -253,6 +276,9 @@ pub struct TimeControl {
     counts: Counts,
     /// What following another device's clock put right or lost.
     follow: FollowCounts,
+    /// Following another device's Start and Stop while it is stopped:
+    /// PLAY waits for its Start (set by the host before each action).
+    pub(super) clock_waits: bool,
     /// The current period's spans, copied from the audio half's.
     block: Box<Block>,
     /// The next span starts a new period's copy.
@@ -266,6 +292,9 @@ pub struct TimeControl {
     mute_ids: u32,
     /// The current period's landed mute cues.
     landed: Vec<MuteLanded>,
+    /// The kit's pads whose change in the mute queue came due this period
+    /// (their mute and solo), for the mixer ([`TimeControl::take_pad_landings`]).
+    pad_landings: [Option<(bool, bool)>; PADS],
     /// Clips' saved states (Save state, sequencer S4), as (track, slot,
     /// the clip as it was): Reload clip puts one back. Kept while the
     /// project is open, not saved with it.
@@ -382,6 +411,7 @@ impl TimeControl {
             info,
             counts: Counts::default(),
             follow: FollowCounts::default(),
+            clock_waits: false,
             block: Box::new(Block::new()),
             fresh: true,
             spans_lost: 0,
@@ -389,6 +419,7 @@ impl TimeControl {
             mute_queue: None,
             mute_ids: 0,
             landed: Vec::with_capacity(MAX_TRACKS),
+            pad_landings: [None; PADS],
             saved: Vec::new(),
             reloads: Vec::new(),
             rate,
@@ -655,7 +686,7 @@ impl TimeControl {
                 }
             }
             if self.mute_queue.as_ref().is_some_and(|(id, _)| *id == l.id) {
-                let line = self.landed_line(l.at);
+                let line = self.queue_lines(l.at);
                 self.land_queue_now();
                 self.note_later(line);
                 compile = true;
@@ -664,11 +695,15 @@ impl TimeControl {
         self.landed.clear();
         // STOP lands whatever waits.
         if self.mute_queue.is_some() && !self.info.state.rolling() {
-            let line = self.landed_line(self.info.position);
+            let line = self.queue_lines(self.info.position);
             self.land_queue_now();
             self.note_later(format!("{line} (STOP)"));
             compile = true;
         }
+        // The kit's pads in the queue land in the period before their
+        // line: the mixer takes them before it mixes the period that holds
+        // it.
+        self.pads_due(end.frames);
         // Reloads land just before their line: the next period, which
         // holds the line, plays the saved state from its start.
         if !self.reloads.is_empty() {
@@ -940,6 +975,15 @@ impl TimeControl {
     /// new clip goes in its first empty slot, as a tap on an empty slot on
     /// Arrange does. Without it the recorder had no clip and REC kept
     /// nothing. Returns what it did, if anything.
+    /// The leader's start began a take (follow.rs): the clip it records
+    /// into, as REC's punch-in readies it. A line for the log.
+    pub(super) fn take_started(&mut self) -> Result<String, String> {
+        Ok(match self.ready_to_record()? {
+            Some(line) => format!("rec: the take started with the clock, {line}"),
+            None => "rec: the take started with the clock".to_string(),
+        })
+    }
+
     fn ready_to_record(&mut self) -> Result<Option<String>, String> {
         let Some(track) = self.armed else {
             return Ok(None);
@@ -1518,6 +1562,17 @@ impl TimeControl {
     pub fn act(&mut self, a: TimeAction) -> Result<String, String> {
         let info = self.info;
         match a {
+            // Waiting for another device's Start, a take records from it
+            // (REC readies it, follow.rs starts it): not now.
+            TimeAction::Transport(Command::Record)
+                if self.clock_waits && info.state == State::Stopped =>
+            {
+                Err(
+                    "transport: the take waits for the clock: REC readies it, and it \
+                     records from the leader's Start"
+                        .into(),
+                )
+            }
             TimeAction::Transport(Command::Record)
                 if !matches!(info.state, State::Recording | State::CountIn) =>
             {
@@ -1534,6 +1589,17 @@ impl TimeControl {
                 if !info.state.rolling() =>
             {
                 let launched = self.ready_to_play()?;
+                // Following another device's Start and Stop, its Start
+                // plays what is ready (from bar 1 after PLAY START).
+                if self.clock_waits {
+                    if cmd == Command::PlayStart && !self.command(Command::Locate(0)) {
+                        return Err("transport: command queue full".into());
+                    }
+                    return Ok(match launched {
+                        Some(line) => format!("transport: {cmd:?} waits for the clock, {line}"),
+                        None => format!("transport: {cmd:?} waits for the clock"),
+                    });
+                }
                 if !self.command(cmd) {
                     return Err("transport: command queue full".into());
                 }
@@ -2950,7 +3016,7 @@ impl TimeControl {
             position: t.position,
             rolling: t.state.rolling(),
             meter: t.meter,
-            loop_range: t.loop_range,
+            loop_range: t.playing_loop(),
         };
         let track = self.armed.unwrap_or(0);
         let name = format!("Capture {}", self.takes.captures() + 1);
@@ -3152,15 +3218,11 @@ impl TimeControl {
                 let ids = &mut self.mute_ids;
                 let (_, q) = self.mute_queue.get_or_insert_with(|| {
                     *ids += 1;
-                    (*ids, MuteWait { line, want: vec![] })
+                    (*ids, MuteWait::new(line))
                 });
                 q.want.push((t, m, s));
             }
-            if self
-                .mute_queue
-                .as_ref()
-                .is_some_and(|(_, q)| q.want.is_empty())
-            {
+            if self.mute_queue.as_ref().is_some_and(|(_, q)| q.is_empty()) {
                 self.mute_queue = None;
             }
             if let Err(e) = self.compile() {
@@ -3173,11 +3235,7 @@ impl TimeControl {
                 format!("track mute: {name} {what} {}", line_words(line))
             });
         }
-        if self
-            .mute_queue
-            .as_ref()
-            .is_some_and(|(_, q)| q.want.is_empty())
-        {
+        if self.mute_queue.as_ref().is_some_and(|(_, q)| q.is_empty()) {
             self.mute_queue = None;
         }
         // At once.
@@ -3425,7 +3483,156 @@ impl TimeControl {
                 (tr.mute, tr.solo) = (m, s);
             }
         }
+        for (p, m, s) in q.pads {
+            if let Some(l) = self.pad_landings.get_mut(p) {
+                *l = Some((m, s));
+            }
+        }
         true
+    }
+
+    /// The kit's pads waiting in the mute queue land once their line is
+    /// within the next period (`frames` long), or at once with the
+    /// transport stopped: they go to [`TimeControl::take_pad_landings`]
+    /// for the mixer, and the log says so.
+    fn pads_due(&mut self, frames: u32) {
+        let Some((_, q)) = &self.mute_queue else {
+            return;
+        };
+        if q.pads.is_empty() {
+            return;
+        }
+        let pos = self.info.position;
+        let line = q.line.next(pos, self.info.meter.bar_ticks());
+        let rolling = self.info.state.rolling();
+        if rolling && line > pos + self.period_ticks(frames) {
+            return;
+        }
+        let words = self.pads_line(if rolling { line } else { pos });
+        if let Some((_, q)) = &mut self.mute_queue {
+            for &(p, m, s) in &q.pads {
+                if let Some(l) = self.pad_landings.get_mut(p) {
+                    *l = Some((m, s));
+                }
+            }
+            q.pads.clear();
+            if q.is_empty() {
+                self.mute_queue = None;
+            }
+        }
+        self.changed = true;
+        self.note_later(if rolling {
+            words
+        } else {
+            format!("{words} (STOP)")
+        });
+    }
+
+    /// The log's lines for the mute queue landing on `at`: its tracks'
+    /// ([`TimeControl::landed_line`]) and its pads' ([`TimeControl::pads_line`]),
+    /// each if it has any.
+    fn queue_lines(&self, at: Tick) -> String {
+        let Some((_, q)) = &self.mute_queue else {
+            return String::new();
+        };
+        match (q.want.is_empty(), q.pads.is_empty()) {
+            (false, true) => self.landed_line(at),
+            (true, false) => self.pads_line(at),
+            (false, false) => format!("{}; {}", self.landed_line(at), self.pads_line(at)),
+            (true, true) => String::new(),
+        }
+    }
+
+    /// The log's line for the kit's pads in the queue landing on `at`:
+    /// "pad mute: at 5.1, pad 3 muted, pad 1 solo".
+    fn pads_line(&self, at: Tick) -> String {
+        let p = self.info.meter.position(at);
+        let mut line = format!("pad mute: at {}.{}", p.bar, p.beat);
+        if let Some((_, q)) = &self.mute_queue {
+            for &(pad, m, s) in &q.pads {
+                line.push_str(&format!(", pad {} {}", pad + 1, pad_words(m, s)));
+            }
+        }
+        line
+    }
+
+    /// The kit's pads whose change in the mute queue came due, each with
+    /// its mute and solo: the mixer takes them before its next period.
+    /// Allocates nothing.
+    pub fn take_pad_landings(&mut self) -> [Option<(bool, bool)>; PADS] {
+        std::mem::take(&mut self.pad_landings)
+    }
+
+    /// A pad of the kit tapped as a mute key (SHIFT + TRACK MUTE, kit 1's
+    /// pads): its mute toggled, or its solo with `solo`, from `now` (the
+    /// mixer's mute and solo for it) or from what waits for it. With
+    /// `wait` (Perform), the transport rolling and Launch not at once it
+    /// joins the mute queue and lands with it ([`PadTap::Waits`]); a tap
+    /// on a pad waiting takes its change back. Otherwise it acts at once
+    /// ([`PadTap::Now`]: the mixer sets it).
+    pub fn pad_mute_or_solo(
+        &mut self,
+        pad: usize,
+        now: (bool, bool),
+        wait: bool,
+        solo: bool,
+    ) -> PadTap {
+        let queued = self
+            .mute_queue
+            .as_ref()
+            .and_then(|(_, q)| q.pads.iter().find(|w| w.0 == pad))
+            .map(|w| (w.1, w.2));
+        let (mut m, mut s) = queued.unwrap_or(now);
+        if solo {
+            s = !s;
+        } else {
+            m = !m;
+        }
+        let line = self
+            .mute_queue
+            .as_ref()
+            .map_or(self.project.launch, |(_, q)| q.line);
+        if let Some((_, q)) = &mut self.mute_queue {
+            q.pads.retain(|w| w.0 != pad);
+        }
+        let waits = wait && self.info.state.rolling() && line != LaunchGrid::Now;
+        if waits && (m, s) != now {
+            let ids = &mut self.mute_ids;
+            let (_, q) = self.mute_queue.get_or_insert_with(|| {
+                *ids += 1;
+                (*ids, MuteWait::new(line))
+            });
+            q.pads.push((pad, m, s));
+        }
+        if self.mute_queue.as_ref().is_some_and(|(_, q)| q.is_empty()) {
+            self.mute_queue = None;
+        }
+        self.changed = true;
+        match (waits, (m, s) == now) {
+            (true, true) => {
+                PadTap::Waits(format!("pad mute: pad {}: its change taken back", pad + 1))
+            }
+            (true, false) => PadTap::Waits(format!(
+                "pad mute: pad {} {} {}",
+                pad + 1,
+                match (solo, m, s) {
+                    (true, _, true) => "solo",
+                    (true, _, false) => "solo off",
+                    (false, true, _) => "muted",
+                    (false, false, _) => "plays",
+                },
+                line_words(line)
+            )),
+            (false, _) => PadTap::Now { mute: m, solo: s },
+        }
+    }
+
+    /// Whether a change waits for the kit's pad `pad` in the mute queue,
+    /// for its light.
+    pub fn pad_waiting(&self, pad: usize) -> bool {
+        self.mute_queue
+            .as_ref()
+            .is_some_and(|(_, q)| q.pads.iter().any(|w| w.0 == pad))
     }
 
     /// The mute queue waiting, for the screens.
@@ -3437,6 +3644,26 @@ impl TimeControl {
     /// pad lights.
     pub fn muted(&self, t: usize) -> Option<bool> {
         self.project.tracks.get(t).map(|tr| tr.mute)
+    }
+
+    /// The tracks muted and soloed as they will be once the mute queue
+    /// lands, bit `t` for track `t`: where MIDI Learn reads a learned mute
+    /// or solo, so a key flips it from there.
+    pub fn mute_bits(&self) -> (u128, u128) {
+        let queue = self
+            .mute_queue
+            .as_ref()
+            .map_or(&[][..], |(_, q)| &q.want[..]);
+        let mut bits = (0u128, 0u128);
+        for (t, tr) in self.project.tracks.iter().enumerate().take(128) {
+            let (m, s) = queue
+                .iter()
+                .find(|w| w.0 == t)
+                .map_or((tr.mute, tr.solo), |w| (w.1, w.2));
+            bits.0 |= u128::from(m) << t;
+            bits.1 |= u128::from(s) << t;
+        }
+        bits
     }
 
     /// What TRACK MUTE's pad for track `t` shows (None: no such track).

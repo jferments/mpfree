@@ -2019,14 +2019,20 @@ impl App {
     /// once and in Perform it waits for the launch line; SHIFT gives the
     /// other timing. With TRACK MUTE held the tap solos its track: the
     /// pads show the tracks while it is held, and letting go leaves the
-    /// mode as it was before the press (the effects say so).
+    /// mode as it was before the press (the effects say so). Over the
+    /// kit's pad mutes (SHIFT + TRACK MUTE) the hold solos a pad of the
+    /// kit instead, and the pads stay the kit's.
     pub fn mute_tap(&mut self) -> (MuteTap, Vec<Effect>) {
         let mut fx = Vec::new();
         let solo = self.mute_hold.is_some();
         if let Some(h) = &mut self.mute_hold {
             h.used = true;
-            if self.mute_keys != MuteKeys::Tracks {
-                fx.extend(self.set_mute_keys(MuteKeys::Tracks));
+            let keys = match h.before {
+                MuteKeys::Pads => MuteKeys::Pads,
+                _ => MuteKeys::Tracks,
+            };
+            if self.mute_keys != keys {
+                fx.extend(self.set_mute_keys(keys));
             }
         }
         let tap = MuteTap {
@@ -7541,6 +7547,19 @@ mod tests {
         assert!(!app.mute_tap().0.solo);
         app.button(TRACK_MUTE, false, 0.0);
         assert_eq!(app.mute_keys(), MuteKeys::Pads);
+        // Over the kit's pad mutes, TRACK MUTE held solos a pad of the kit:
+        // the press shows the tracks, the tap brings the kit's pads back,
+        // and letting go leaves them.
+        app.button(TRACK_MUTE, true, 0.0);
+        assert_eq!(app.mute_keys(), MuteKeys::Tracks);
+        let (tap, fx) = app.mute_tap();
+        assert!(tap.solo && tap.keys == MuteKeys::Pads, "{tap:?}");
+        assert!(fx.contains(&Effect::BankLights), "{fx:?}");
+        assert_eq!(app.mute_keys(), MuteKeys::Pads);
+        assert!(app.mute_tap().0.wait, "in Perform it waits");
+        app.button(TRACK_MUTE, false, 0.0);
+        assert_eq!(app.mute_keys(), MuteKeys::Pads);
+        assert!(!app.mute_tap().0.solo);
     }
 
     /// TRACK MUTE with more than 16 tracks (up to 128, Jay 14 Nov): PAD

@@ -252,8 +252,10 @@ impl Chords {
     /// The note messages (on channel 0) one note event of track `t` makes,
     /// in order, to `f`. A pad hit again ends its earlier notes first, as
     /// the synth does. Velocity 0 sounds as 1, so a note-on is never read
-    /// as a note-off. Other events make none. A kit's pads play their own
-    /// notes ([`kit_notes`]).
+    /// as a note-off. A clip's program change (S5) makes its bank select,
+    /// CC 0 then CC 32, when it has a bank, then the program change, as
+    /// the track's own program goes (`MidiOut::program`). Other events
+    /// make none. A kit's pads play their own notes ([`kit_notes`]).
     pub fn messages(&mut self, t: usize, event: Event, is: NoteIs, mut f: impl FnMut(Msg)) {
         self.messages_on(t, event, is, |_| None, |m, _| f(m));
     }
@@ -355,6 +357,20 @@ impl Chords {
                         );
                     }
                 }
+            }
+            (Event::Program { program, bank }, _) => {
+                if let Some(b) = bank {
+                    for (cc, value) in [(0, (b >> 7) as u8 & 0x7F), (32, (b & 0x7F) as u8)] {
+                        f(Msg::Cc { ch: 0, cc, value }, None);
+                    }
+                }
+                f(
+                    Msg::Program {
+                        ch: 0,
+                        program: program & 0x7F,
+                    },
+                    None,
+                );
             }
             _ => {}
         }
@@ -2259,6 +2275,28 @@ mod tests {
         let mut want = program.to_vec();
         want.extend(program);
         want.extend([0x92, 0x25, 100, 0x82, 0x25, 64]);
+        assert_eq!(sink.bytes(), want);
+    }
+
+    /// A clip's program change (S5) goes after the track's own at the
+    /// song's start, on the track's channel: bank select when it has one,
+    /// then the program; a track on the pads leaves it to them.
+    #[test]
+    fn a_clips_program_goes_after_the_tracks_own() {
+        let (mut mo, sink) = open(Duration::ZERO);
+        let mut o = TrackOut::new(DIN_NAME, 2);
+        o.program = Some(4);
+        let m = model(&[(0, o)]);
+        mo.sync(&m, true);
+        let clip = |bank| Event::Program { program: 9, bank };
+        assert!(mo.send(&ev(0, 0, clip(Some(258))), NoteIs::Pad(&[])));
+        assert!(mo.send(&ev(0, 0, on(0, 100)), NoteIs::Pad(kit_notes(0))));
+        assert!(mo.send(&ev(0, 10, clip(None)), NoteIs::Note));
+        assert!(!mo.send(&ev(1, 0, clip(None)), NoteIs::Note), "on the pads");
+        mo.period_end(PERIOD, Instant::now());
+        assert!(mo.close());
+        let mut want = vec![0xC2, 4, 0xB2, 0, 2, 0xB2, 32, 2, 0xC2, 9];
+        want.extend([0x92, 0x25, 100, 0xC2, 9, 0x82, 0x25, 64]);
         assert_eq!(sink.bytes(), want);
     }
 

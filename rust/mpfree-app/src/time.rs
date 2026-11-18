@@ -79,7 +79,7 @@ use mpfree_transport::{Block, Command, Transport};
 use std::f32::consts::TAU;
 
 pub use audio::TimeAudio;
-pub use control::{MuteLight, TimeControl};
+pub use control::{MuteLight, PadTap, TimeControl};
 pub use follow::Follow;
 use link::Tracks;
 
@@ -318,7 +318,10 @@ pub trait Pads {
                 self.pressure_at(o.track, usize::from(note), value, o.offset);
                 None
             }
-            Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => None,
+            Event::Lock { .. }
+            | Event::Lane { .. }
+            | Event::Unlock { .. }
+            | Event::Program { .. } => None,
         }
     }
 }
@@ -464,6 +467,8 @@ pub struct TimeHost {
     pub metronome: bool,
     /// The click's level, as a gain ([`click_gain`]).
     pub click_gain: f32,
+    /// The device the transport follows, for what is said while it waits.
+    leader: Option<String>,
 }
 
 /// A step's parameter lock (`value`) or its end (`None`), `offset` frames
@@ -511,6 +516,7 @@ impl TimeHost {
             audio,
             metronome: false,
             click_gain: click_gain(CLICK_DB),
+            leader: None,
         };
         host.audio.receive();
         Ok(host)
@@ -727,9 +733,53 @@ impl TimeHost {
     /// [`TimeHost::advance`], with `frame` = [`TimeHost::next_frame`]
     /// (or earlier, when the bytes have their own time). Anything but
     /// clock, Start, Continue, Stop and Song Position is skipped; the
-    /// options given to [`TimeHost::follow`] say what follows.
-    pub fn clock_in(&mut self, frame: u64, bytes: &[u8]) {
+    /// options given to [`TimeHost::follow`] say what follows. When the
+    /// leader's start began a ready take, the clip it records into is
+    /// made: a line for the log.
+    pub fn clock_in(&mut self, frame: u64, bytes: &[u8]) -> Option<String> {
         self.audio.clock_in(frame, bytes);
+        if !self.audio.took() {
+            return None;
+        }
+        let r = self.control.take_started();
+        // No clip to record into (no empty slot): it plays without
+        // recording, the punch-in taken back on its frame.
+        if r.is_err() {
+            self.control.command(Command::Record);
+        }
+        Some(
+            self.sent(r)
+                .unwrap_or_else(|e| format!("rec: {e}, so it only plays")),
+        )
+    }
+
+    /// Following another device's Start and Stop while it is stopped:
+    /// PLAY waits for its Start, and a ready take records from it.
+    pub fn clock_waits(&self) -> bool {
+        self.audio.clock_waits()
+    }
+
+    /// A take the app has ready (REC pressed while stopped), adding (true)
+    /// or replacing, every period before [`TimeHost::clock_in`]: while
+    /// [`TimeHost::clock_waits`], the leader's start records it.
+    pub fn take_waits(&mut self, take: Option<bool>) {
+        self.audio.take_waits(take);
+    }
+
+    /// The device the transport follows, by name, for what is said while
+    /// it waits (None: "the leader"). Cheap to call every period.
+    pub fn set_leader(&mut self, name: Option<&str>) {
+        if self.leader.as_deref() != name {
+            self.leader = name.map(str::to_string);
+        }
+    }
+
+    /// While PLAY waits for another device's Start
+    /// ([`TimeHost::clock_waits`]): that device's name, for what is said
+    /// ("the leader" when it isn't known).
+    pub fn waiting_for(&self) -> Option<&str> {
+        self.clock_waits()
+            .then(|| self.leader.as_deref().unwrap_or("the leader"))
     }
 
     /// The first frame of the coming period on the transport's frame
@@ -748,6 +798,7 @@ impl TimeHost {
     /// Carry out a touch on the time engine's screens. Returns a line for
     /// the log.
     pub fn act(&mut self, a: TimeAction) -> Result<String, String> {
+        self.control.clock_waits = self.audio.clock_waits();
         let r = self.control.act(a);
         self.sent(r)
     }
@@ -906,10 +957,39 @@ impl TimeHost {
         self.sent(r)
     }
 
+    /// A pad of the kit tapped as a mute key: at once, or waiting in the
+    /// mute queue ([`TimeControl::pad_mute_or_solo`]).
+    pub fn pad_mute_or_solo(
+        &mut self,
+        pad: usize,
+        now: (bool, bool),
+        wait: bool,
+        solo: bool,
+    ) -> PadTap {
+        self.control.pad_mute_or_solo(pad, now, wait, solo)
+    }
+
+    /// The kit's pads whose change in the mute queue came due, for the
+    /// mixer before its next period ([`TimeControl::take_pad_landings`]).
+    pub fn take_pad_landings(&mut self) -> [Option<(bool, bool)>; control::PADS] {
+        self.control.take_pad_landings()
+    }
+
+    /// Whether a change waits for the kit's pad `pad`, for its light.
+    pub fn pad_waiting(&self, pad: usize) -> bool {
+        self.control.pad_waiting(pad)
+    }
+
     /// Whether track `t` is muted (None: no such track).
     #[allow(dead_code)]
     pub fn muted(&self, t: usize) -> Option<bool> {
         self.control.muted(t)
+    }
+
+    /// The tracks muted and soloed once the mute queue lands, a bit a
+    /// track ([`TimeControl::mute_bits`]), for MIDI Learn.
+    pub fn mute_bits(&self) -> (u128, u128) {
+        self.control.mute_bits()
     }
 
     /// What TRACK MUTE's pad for track `t` shows (None: no such track).
@@ -1957,6 +2037,8 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         hits: Vec<(u64, usize, u8)>,
+        /// (absolute frame, pad) of each release.
+        releases: Vec<(u64, usize)>,
         frame: u64,
         stops: usize,
         /// (absolute frame, pad, value)
@@ -1977,7 +2059,9 @@ mod tests {
                 .push((self.frame + u64::from(offset), pad, velocity));
             true
         }
-        fn release_at(&mut self, _track: u16, _pad: usize, _offset: u32) {}
+        fn release_at(&mut self, _track: u16, pad: usize, offset: u32) {
+            self.releases.push((self.frame + u64::from(offset), pad));
+        }
         fn stop_all(&mut self) {
             self.stops += 1;
         }
@@ -2740,6 +2824,50 @@ mod tests {
             Some(4),
             "nothing held now"
         );
+        assert_eq!((h.dropped(), arps.dropped()), (0, 0));
+    }
+
+    /// A track going silent on its line ends what its MIDI effects have
+    /// on there: a pad held through the track's chain lets go on the bar
+    /// line the mute waited for, not when the finger lifts.
+    #[test]
+    fn a_mute_landing_ends_what_the_tracks_midi_effects_hold() {
+        use mpfree_notefx::{Fx, Slot};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut arps = TrackArps::new(RATE, 120.0);
+        h.control.project.tracks[1].note_fx.slots[0] = Some(Slot {
+            fx: Fx::Transpose { semitones: 2 },
+            on: true,
+        });
+        let period = |h: &mut TimeHost, pads: &mut Fake, arps: &mut TrackArps| {
+            h.period_arps(PERIOD, pads, arps);
+            pads.frame += u64::from(PERIOD);
+        };
+        assert!(h.command(Command::Play));
+        period(&mut h, &mut pads, &mut arps);
+        arps.pad(
+            1,
+            0,
+            Event::NoteOn {
+                note: 4,
+                velocity: 100,
+            },
+        );
+        while pads.frame < BAR / 2 {
+            period(&mut h, &mut pads, &mut arps);
+        }
+        assert_eq!(pads.hits.last().map(|&(_, pad, _)| pad), Some(6));
+        assert!(pads.releases.is_empty());
+        h.mute_or_solo(1, true, false).unwrap();
+        while pads.frame < BAR + BAR / 2 {
+            period(&mut h, &mut pads, &mut arps);
+        }
+        assert_eq!(h.muted(1), Some(true));
+        let off: Vec<(u64, usize)> = pads.releases.clone();
+        assert_eq!(off.len(), 1, "{off:?}");
+        assert_eq!(off[0].1, 6);
+        assert!(off[0].0.abs_diff(BAR) <= 1, "{off:?} at the bar, {BAR}");
         assert_eq!((h.dropped(), arps.dropped()), (0, 0));
     }
 
@@ -3679,6 +3807,8 @@ mod tests {
         );
         let l = h.mute_light(1).unwrap();
         assert!(l.waiting && !l.silent, "it plays until the line");
+        // MIDI Learn reads a mute as it will land (sequencer S5).
+        assert_eq!(h.mute_bits(), (1 << 1, 0));
         assert!(!h.mute_light(0).unwrap().waiting);
         let st = h.state();
         assert_eq!(st.mute_wait.as_ref().unwrap().want, vec![(1, true, false)]);
@@ -3695,6 +3825,7 @@ mod tests {
             h.mute_or_solo(2, true, true).unwrap(),
             "track mute: Track 3 solo on the next bar"
         );
+        assert_eq!(h.mute_bits(), (1 << 1, 1 << 2));
         run(&mut h, &mut pads, 2 * BAR + BAR / 2 - 1000, &[]);
         assert!(h.mute_light(0).unwrap().silent && h.mute_light(2).unwrap().solo);
         // Its solo off waits, and STOP lands it.
@@ -3727,6 +3858,84 @@ mod tests {
             "track mute: Track 2 plays"
         );
         assert_eq!(h.dropped(), 0);
+    }
+
+    /// The kit's pads in the mute queue (SHIFT + TRACK MUTE in Perform):
+    /// a tap waits with the tracks' taps, a second takes it back, and a
+    /// solo waits too. Each comes due in the period before its line, so
+    /// the mixer has it from the period that holds the line; STOP lands
+    /// what waits, and stopped a tap acts at once.
+    #[test]
+    fn the_kits_pad_mutes_wait_for_the_line_and_come_due_just_before_it() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut c = Clip::new("beat", 3840);
+        c.notes = vec![mpfree_seq::Note::new(0, 100, 4, 100)];
+        h.control.project.tracks[0].slots[0] = Some(c);
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let plays = (false, false);
+        let waits = |s: &str| PadTap::Waits(s.to_string());
+        assert_eq!(
+            h.pad_mute_or_solo(2, plays, true, false),
+            waits("pad mute: pad 3 muted on the next bar")
+        );
+        assert_eq!(
+            h.pad_mute_or_solo(5, plays, true, false),
+            waits("pad mute: pad 6 muted on the next bar")
+        );
+        assert_eq!(
+            h.pad_mute_or_solo(5, plays, true, false),
+            waits("pad mute: pad 6: its change taken back")
+        );
+        assert!(h.pad_waiting(2) && !h.pad_waiting(5));
+        // A track joins the same line.
+        h.mute_or_solo(0, true, false).unwrap();
+        assert_eq!(
+            h.state().waiting_reading().as_deref(),
+            Some("Track 1, Pad 3 at 2.1")
+        );
+        let mut due = None;
+        while pads.frame < BAR + BAR / 2 {
+            let to = pads.frame + u64::from(PERIOD);
+            run(&mut h, &mut pads, to, &[]);
+            let l = h.take_pad_landings();
+            if l.iter().any(Option::is_some) {
+                assert!(due.is_none(), "once");
+                due = Some((pads.frame, l));
+            }
+        }
+        let (at, l) = due.unwrap();
+        // The mixer has it from `at`: never after bar 2, and at most a
+        // period and a tick before it (the period's ticks round up).
+        let tick = BAR.div_ceil(3840);
+        assert!(at <= BAR && BAR - at <= u64::from(PERIOD) + tick, "{at}");
+        assert_eq!(l[2], Some((true, false)));
+        assert_eq!(l.iter().flatten().count(), 1);
+        assert!(!h.pad_waiting(2) && h.mute_wait().is_none());
+        assert_eq!(h.muted(0), Some(true), "the track landed on the line");
+        let note = h.take_later_note().unwrap();
+        assert!(note.starts_with("pad mute: at 2.1, pad 3 muted"), "{note}");
+        // A solo waits, and STOP lands it.
+        assert_eq!(
+            h.pad_mute_or_solo(0, plays, true, true),
+            waits("pad mute: pad 1 solo on the next bar")
+        );
+        h.command(Command::Stop);
+        let to = pads.frame + 4 * u64::from(PERIOD);
+        run(&mut h, &mut pads, to, &[]);
+        assert_eq!(h.take_pad_landings()[0], Some((false, true)));
+        assert!(h.take_later_note().unwrap().ends_with("pad 1 solo (STOP)"));
+        // Stopped, at once: the mixer sets it.
+        assert_eq!(
+            h.pad_mute_or_solo(2, (true, false), true, false),
+            PadTap::Now {
+                mute: false,
+                solo: false
+            }
+        );
+        assert!(h.mute_wait().is_none());
     }
 
     /// Two one-bar rows become a song (Scenes → song), which plays in song
@@ -4575,6 +4784,7 @@ mod tests {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
         let mut pads = Fake {
             hits: Vec::with_capacity(100_000),
+            releases: Vec::with_capacity(100_000),
             ..Fake::default()
         };
         h.command(Command::SetLoop(Some((0, 2 * 3840))));
@@ -5069,6 +5279,69 @@ mod tests {
         assert_eq!(h.dropped(), 0);
     }
 
+    /// The clip card's Program row (sequencer S5): one take, saved with
+    /// the clip, and its program change offered first to a track that
+    /// plays elsewhere as the clip starts, before its first note, once
+    /// while it loops; on the pads it changes nothing.
+    #[test]
+    fn the_clip_cards_program_goes_out_as_the_clip_starts() {
+        use mpfree_seq::{ClipProgram, ClipSettings};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for (t, note) in [(0, 4), (1, 9)] {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            h.control.project.tracks[t].slots[0] = Some(c);
+            h.act(TimeAction::Launch { track: t, slot: 0 }).unwrap();
+        }
+        let program = Some(ClipProgram {
+            program: 4,
+            bank: Some(2),
+        });
+        for track in [0, 1] {
+            let was = h.state().clip(track, 0).unwrap().settings;
+            let said = h
+                .act(TimeAction::ClipSettings {
+                    track,
+                    slot: 0,
+                    row: 9,
+                    settings: ClipSettings { program, ..was },
+                })
+                .unwrap();
+            assert!(said.contains("beat · Program 5"), "{said}");
+        }
+        assert_eq!(h.state().clip(1, 0).unwrap().settings.program, program);
+        let saved = mpfree_seq::save::to_text(&h.control.project);
+        assert!(saved.contains("program 4 bank 2\n"), "{saved}");
+        let mut r = Routed {
+            track: 1,
+            ..Routed::default()
+        };
+        h.command(Command::Play);
+        while r.pads.frame < 2 * BAR - 1000 {
+            h.period(PERIOD, &mut r);
+            r.pads.frame += u64::from(PERIOD);
+        }
+        let on = Event::NoteOn {
+            note: 9,
+            velocity: 100,
+        };
+        let sent = Event::Program {
+            program: 4,
+            bank: Some(2),
+        };
+        let starts: Vec<(u64, Event)> = r
+            .taken
+            .iter()
+            .copied()
+            .filter(|(_, e)| !matches!(e, Event::NoteOff { .. }))
+            .collect();
+        assert_eq!(starts, vec![(0, sent), (0, on), (BAR, on)]);
+        // The pads' track: its notes as before, nothing from its program.
+        let hits: Vec<(u64, usize)> = r.pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+        assert_eq!(hits, vec![(0, 4), (BAR, 4)]);
+        assert_eq!(h.dropped(), 0);
+    }
+
     /// The arps' notes (the live pads through the armed track's arp) are
     /// not offered to `out`, even on a track that plays elsewhere: they go
     /// to `Pads::live`, which sees the whole event and says what the
@@ -5163,6 +5436,7 @@ mod tests {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
         let mut pads = Fake {
             hits: Vec::with_capacity(1000),
+            releases: Vec::with_capacity(1000),
             ..Fake::default()
         };
         let mut c = Clip::new("Beats", 3840);
@@ -5235,29 +5509,44 @@ mod tests {
         assert!((bpm - 100.0).abs() < 0.1, "{bpm}");
         assert_eq!(h.info().bpm, bpm);
         assert!(!h.describe().contains("following"), "{}", h.describe());
-        // A loop of its own takes the transport away from the leader's
-        // position as it wraps: it jumps back, and the status line says so.
-        // (Twice: the leader's pulse is on the loop's end, so the first
-        // jump lands there and wraps again.)
+        // The leader owns the timeline: a loop set while following its
+        // position is held for later, so nothing wraps or jumps (a jump is
+        // counted by follow.rs's tests), and the screens see it held.
         let bar = h.info().position / 3840 * 3840;
         h.command(Command::SetLoop(Some((bar, bar + 3840))));
         while pads.frame < beat(40) {
             period(&mut h, &mut pads);
         }
-        assert!(
-            h.describe()
-                .contains("following a clock: 2 jumps to its position, 0 times"),
-            "{}",
-            h.describe()
+        assert!(!h.describe().contains("following"), "{}", h.describe());
+        let info = h.info();
+        assert_eq!(
+            (info.loop_range, info.follows_position, info.playing_loop()),
+            (Some((bar, bar + 3840)), true, None)
         );
-        // Not following: the app's tempo applies again.
-        // (Playing, it takes effect on the next sixteenth line.)
+        // A note a beat on and on, none pulled back by a loop.
+        let a_beat = (24.0 * pulse).round() as i64;
+        let gaps: Vec<i64> = pads.hits[31..]
+            .windows(2)
+            .map(|w| w[1].0 as i64 - w[0].0 as i64)
+            .collect();
+        assert!(gaps.len() >= 8, "{gaps:?}");
+        assert!(
+            gaps.iter().all(|g| (g - a_beat).abs() <= 64),
+            "{gaps:?}, a beat {a_beat}"
+        );
+        // Not following: the app's tempo applies again (playing, on the
+        // next sixteenth line), and the loop comes back.
         h.follow(None);
         assert_eq!(h.followed_bpm(), None);
         for _ in 0..100 {
             period(&mut h, &mut pads);
         }
-        assert_eq!(h.info().bpm, 120.0);
+        let info = h.info();
+        assert_eq!(info.bpm, 120.0);
+        assert_eq!(
+            (info.follows_position, info.playing_loop()),
+            (false, Some((bar, bar + 3840)))
+        );
     }
 
     /// A project's clips, saved and read back, make an engine that plays

@@ -2031,6 +2031,51 @@ mod tests {
     /// the notes are armed, REC makes them ready and PLAY records them; a
     /// take that records keeps the arm where it is; the Loop view arms the
     /// loop, and the ready goes with the arm when it moves.
+    /// Following another device's Start and Stop (sequencer S5): PLAY
+    /// waits while the leader is stopped and says so; REC readies a take
+    /// and PLAY keeps it ready; the leader's Start records it from its
+    /// first pulse, and its Stop stops.
+    #[test]
+    fn following_a_clock_play_waits_and_a_ready_take_records_from_its_start() {
+        use mpfree_midi_clock::{CLOCK, START, STOP};
+        use mpfree_transport::State;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let all = Some(crate::time::Follow {
+                start_stop: true,
+                position: true,
+            });
+            s.clock(all, &[CLOCK]).settle();
+            s.button("PLAY").settle();
+            assert_eq!(s.time.info().state, State::Stopped);
+            assert_eq!(
+                s.lines.last().map(String::as_str),
+                Some("Waiting for clock: PLAY starts when the leader starts")
+            );
+            s.button("REC").button("PLAY").settle();
+            assert!(s.app.rec.ready.is_some());
+            let said = s.lines.last().cloned().unwrap_or_default();
+            assert!(
+                said.starts_with("Waiting for clock: ")
+                    && said.ends_with(" records when the leader starts"),
+                "{said}"
+            );
+            assert_eq!(s.time.info().state, State::Stopped);
+            s.clock(all, &[START, CLOCK]).run_periods(2);
+            assert_eq!(s.time.info().state, State::Recording);
+            assert_eq!(s.app.rec.ready, None);
+            assert!(
+                s.lines
+                    .iter()
+                    .any(|l| l.starts_with("rec: the take started with the clock")),
+                "{:?}",
+                s.lines
+            );
+            s.clock(all, &[CLOCK, STOP]).run_periods(2);
+            assert_eq!(s.time.info().state, State::Stopped);
+        });
+    }
+
     #[test]
     fn rec_records_what_is_armed_and_play_starts_a_ready_take() {
         use crate::play_widgets::{PlayTransport, RecChip, RecState};
@@ -3126,6 +3171,66 @@ mod tests {
             assert!(s.time.mute_light(0).unwrap().waiting);
             s.button("STOP").run_for(0.1);
             assert_eq!(s.time.muted(0), Some(false), "STOP landed it");
+            assert!(s.time.mute_wait().is_none());
+            s.button("TRACK MUTE");
+        });
+    }
+
+    /// The kit's pad mutes in Perform (sequencer S4): SHIFT + TRACK MUTE's
+    /// pads wait for the bar line as the tracks' do, and land in the mixer
+    /// there; held TRACK MUTE over them solos a pad of the kit (waiting
+    /// too) and leaves the pads the kit's; STOP lands a change that waits.
+    #[test]
+    fn in_perform_a_kit_pad_mute_waits_for_the_bar_and_held_it_solos() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.button("PLAY").run_for(0.3);
+            s.button_with("SHIFT", "MAIN").run_for(0.2);
+            assert!(s.time.project().perform);
+            s.button_with("SHIFT", "TRACK MUTE");
+            assert_eq!(s.app.mute_keys(), crate::app::MuteKeys::Pads);
+            s.pad(0, 100, 0.05);
+            assert!(s.time.pad_waiting(0), "it waits");
+            assert_eq!(s.mix.pad_mutes(), 0);
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l == "pad mute: pad 1 muted on the next bar"),
+                "{:?}",
+                s.said()
+            );
+            s.run_for(0.1);
+            let reading = s.screen.time.waiting_reading();
+            assert_eq!(reading.as_deref(), Some("Pad 1 at 2.1"));
+            s.run_for(2.0);
+            assert_eq!(s.mix.pad_mutes(), 1, "landed on bar 2");
+            assert!(!s.time.pad_waiting(0) && s.time.mute_wait().is_none());
+            assert!(
+                s.said()
+                    .iter()
+                    .any(|l| l.contains("pad mute: at 2.1, pad 1 muted")),
+                "{:?}",
+                s.said()
+            );
+            // Held TRACK MUTE + pad 3: its solo waits, and the pads stay the
+            // kit's once TRACK MUTE is let go.
+            s.button_edge("TRACK MUTE", true);
+            s.pad(2, 100, 0.05);
+            s.button_edge("TRACK MUTE", false);
+            assert_eq!(s.app.mute_keys(), crate::app::MuteKeys::Pads);
+            assert!(s.time.pad_waiting(2));
+            s.run_for(2.0);
+            assert_eq!(s.mix.pad_solos(), 1 << 2, "soloed on bar 3");
+            assert_eq!(s.mix.solo_silent() & 1, 1, "the kick is silent by it");
+            // STOP lands a change that waits.
+            s.pad(0, 100, 0.05);
+            assert!(s.time.pad_waiting(0));
+            s.button("STOP").run_for(0.1);
+            assert_eq!(s.mix.pad_mutes(), 0, "STOP landed it");
             assert!(s.time.mute_wait().is_none());
             s.button("TRACK MUTE");
         });
