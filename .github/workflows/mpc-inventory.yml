@@ -3,7 +3,10 @@ name: MPC read-only inventory checks
 on:
   # No path filters: CI is a required check on main, and a skipped workflow
   # would leave a docs-only pull request waiting for it forever.
+  # ready_for_review: a draft's jobs skip (below), so its CI runs in full
+  # when it is marked ready.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
   workflow_dispatch:
@@ -27,9 +30,15 @@ concurrency:
   group: mpc-inventory-${{ github.ref }}
   cancel-in-progress: false
 
+# Draft pull requests skip every job. A PR handed to the merge desk is marked
+# draft: its commits run in the desk's train, so its own runs would only hold
+# the four runners while the train waits (18 Nov 2026, Jay). Mark it ready
+# (or push to a ready PR) to run CI on it.
+
 jobs:
   syntax:
     name: Shell syntax and static no-write checks
+    if: github.event.pull_request.draft != true
     # Self-hosted since GitHub-hosted minutes ran out (2026-11-11): two mpfree-ci
     # runners in jferments/ci-infrastructure's project-after-ci (docs/mpfree-runner.md).
     runs-on: [self-hosted, linux, x64, mpfree-ci]
@@ -530,6 +539,7 @@ jobs:
 
   core:
     name: Deterministic core build, tests and offline WAV
+    if: github.event.pull_request.draft != true
     # Self-hosted since GitHub-hosted minutes ran out (2026-11-11): two mpfree-ci
     # runners in jferments/ci-infrastructure's project-after-ci (docs/mpfree-runner.md).
     runs-on: [self-hosted, linux, x64, mpfree-ci]
@@ -569,6 +579,7 @@ jobs:
 
   lint:
     name: Clippy (warnings are errors)
+    if: github.event.pull_request.draft != true
     # Self-hosted since GitHub-hosted minutes ran out (2026-11-11): two mpfree-ci
     # runners in jferments/ci-infrastructure's project-after-ci (docs/mpfree-runner.md).
     runs-on: [self-hosted, linux, x64, mpfree-ci]
@@ -635,6 +646,7 @@ jobs:
 
   instructions:
     name: Instructions per bench case (fails on a rise over 5 %)
+    if: github.event.pull_request.draft != true
     # Times on shared runners drift; instruction counts under callgrind don't.
     # Each mpfree-bench case is counted per 128-frame block and compared with
     # rust/mpfree-bench/instructions.txt (docs/dev/design/profiling.md, "Instruction counts").
@@ -796,6 +808,10 @@ jobs:
 
   rust:
     name: Rust host parity and ARMv7 hard-float cross-build
+    if: github.event.pull_request.draft != true
+    # After the instruction gate (about 2 minutes): a rise over 5 % fails the
+    # run before the long jobs take two runners for 15 to 45 minutes.
+    needs: instructions
     # The name is kept so required checks still match; the ARMv7 steps run in
     # rust-arm beside this job since 17 Nov 2026.
     # Self-hosted since GitHub-hosted minutes ran out (2026-11-11): two mpfree-ci
@@ -1058,6 +1074,10 @@ jobs:
             --rust rust/target/release/mpfree-render
   rust-arm:
     name: ARMv7 hard-float cross-builds and the plugin sandbox under qemu (do not deploy)
+    if: github.event.pull_request.draft != true
+    # After the instruction gate (about 2 minutes): a rise over 5 % fails the
+    # run before the long jobs take two runners for 15 to 45 minutes.
+    needs: instructions
     # Split from the rust job (17 Nov 2026, Jay: make the builds go faster): these
     # cross-builds need nothing the host tests make, so the two run side by side
     # on two runners instead of one after the other (host tests ~12 min, this ~9).
@@ -1434,6 +1454,7 @@ jobs:
           echo "PASS: title fonts under qemu"
   splash-gl:
     name: SDL3/GLES startup screen (desktop build, headless render)
+    if: github.event.pull_request.draft != true
     # Self-hosted since GitHub-hosted minutes ran out (2026-11-11): two mpfree-ci
     # runners in jferments/ci-infrastructure's project-after-ci (docs/mpfree-runner.md).
     runs-on: [self-hosted, linux, x64, mpfree-ci]
@@ -1513,6 +1534,7 @@ jobs:
 
   gpu:
     name: GPU renderer (OpenGL ES through EGL, Mesa's software GPU)
+    if: github.event.pull_request.draft != true
     # Self-hosted like splash-gl: the mpfree-ci runners have Mesa.
     runs-on: [self-hosted, linux, x64, mpfree-ci]
     timeout-minutes: 60
