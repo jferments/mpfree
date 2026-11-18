@@ -8,7 +8,7 @@ use mpfree_library::audio::duration;
 use mpfree_library::worker::Lane;
 use mpfree_library::{
     valid_name, AudioFormat, AudioInfo, Done, Entry, Job, Kind, Library, Loc, Meta, NewSample,
-    Outcome, Place, Snapshot, TrashItem, Version, Worker,
+    Outcome, Place, PresetSave, Snapshot, TrashItem, Version, Worker,
 };
 use std::path::PathBuf;
 
@@ -76,10 +76,20 @@ pub enum Pick {
 }
 
 impl Pick {
-    /// The places it offers, top to bottom (indices into [`SOURCES`]).
+    /// The places it offers, top to bottom (indices into [`SOURCES`]). A
+    /// preset picker has the engine's own presets first (Factory), then the
+    /// musician's (Yours: the engine's folder under Instruments).
     pub fn sources(&self) -> Vec<usize> {
         let places: &[Place] = match self {
-            Pick::Preset { .. } => &[Place::Instruments],
+            Pick::Preset { .. } => {
+                let at = |s: Source| SOURCES.iter().position(|x| *x == s).expect("a place");
+                return vec![
+                    at(Source::Factory),
+                    at(Source::Place(Place::Instruments)),
+                    at(Source::Recent),
+                    at(Source::Favourites),
+                ];
+            }
             Pick::Sample => &[Place::Samples, Place::Recordings],
             Pick::Project => &[Place::Projects],
         };
@@ -118,6 +128,10 @@ impl Pick {
 
     /// Whether a row belongs in it.
     fn shows(&self, r: &Row) -> bool {
+        if let (Pick::Preset { .. }, None, Some(_)) = (self, &r.loc, r.factory) {
+            // One of the engine's own presets (the Factory place).
+            return r.kind == Kind::Preset;
+        }
         let Some(loc) = &r.loc else { return false };
         match self {
             Pick::Preset { engine } => {
@@ -137,7 +151,38 @@ impl Pick {
         matches!(
             b,
             Button::Load | Button::Open | Button::Audition | Button::Favourite | Button::Cancel
-        )
+        ) || (b == Button::SavePreset && matches!(self, Pick::Preset { .. }))
+    }
+
+    /// A place's name in it: a preset picker calls the engine's folder
+    /// under Instruments "Yours".
+    pub fn place_label(&self, s: Source) -> &'static str {
+        match (self, s) {
+            (Pick::Preset { .. }, Source::Place(Place::Instruments)) => "Yours",
+            _ => s.label(),
+        }
+    }
+}
+
+/// The sound a preset picker opens over, from the app: the side list's
+/// preset, or one of the musician's, and whether its knobs have turned
+/// since it was loaded. Cancel puts it back as it is.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PresetNow {
+    pub name: String,
+    /// Its index among the engine's own presets, if it is one of them.
+    pub factory: Option<usize>,
+    pub changed: bool,
+}
+
+impl PresetNow {
+    /// "Reed Bite", "Reed Bite (edited)".
+    pub fn label(&self) -> String {
+        if self.changed {
+            format!("{} (edited)", self.name)
+        } else {
+            self.name.clone()
+        }
     }
 }
 
@@ -223,6 +268,9 @@ pub enum Button {
     Export,
     /// Saves the kit the pads play as a kit folder here (Kits place).
     SaveKit,
+    /// A preset picker's: names the sound the synth has now and saves it
+    /// among the musician's presets for the engine (Yours).
+    SavePreset,
     /// A kit: a new track (as + Track adds one, armed) that plays it, in
     /// an empty kit of its own.
     NewTrack,
@@ -251,6 +299,7 @@ impl Button {
             Button::NewProject => "New project",
             Button::Export => "Export",
             Button::SaveKit => "Save kit",
+            Button::SavePreset => "Save preset",
             Button::NewTrack => "New track with this kit",
         }
     }
@@ -386,6 +435,32 @@ pub enum BrowseAction {
     /// The preset picker was cancelled after trying presets: put back the
     /// sound the track had when it opened.
     RevertPreset,
+    /// The preset picker moved to one of the engine's own presets (the
+    /// Factory place), `index` as the Synth tab lists them: try it, as
+    /// [`BrowseAction::TryPreset`].
+    TryFactoryPreset {
+        engine: String,
+        index: usize,
+    },
+    /// Load on one of the engine's own presets: the side list's preset
+    /// `index`, as a tap on it there loads it.
+    LoadFactoryPreset {
+        engine: String,
+        index: usize,
+    },
+    /// Save preset was named: call [`Browser::save_preset`] with the
+    /// synth's sound now as preset text for `engine`.
+    SavePresetRequested {
+        engine: String,
+        name: String,
+    },
+    /// A preset was saved among the musician's (`name` without its
+    /// `.preset`): the sound the synth has is that preset now.
+    PresetSaved {
+        loc: Loc,
+        engine: String,
+        name: String,
+    },
     /// A picker closed (`loaded`: by loading or opening something, else
     /// by Cancel). The app hides the overlay.
     PickerClosed {
@@ -460,6 +535,13 @@ pub enum Confirm {
     OpenVersion(Loc, String),
     /// Start a new, empty project over unsaved changes.
     NewProject,
+    /// Save a preset over one of the musician's of the same name (the old
+    /// one goes to the Trash).
+    ReplacePreset {
+        engine: String,
+        name: String,
+        text: String,
+    },
 }
 
 /// What the keyboard is typing.
@@ -473,6 +555,8 @@ pub enum Purpose {
     Search,
     /// Text to look for among the plugins.
     PluginSearch,
+    /// A name for the synth's sound, saved as a preset of the engine's.
+    SavePreset(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -588,6 +672,15 @@ pub struct Screen {
 }
 
 impl Screen {
+    /// The name of place `i` (an index into [`SOURCES`]) as it shows: a
+    /// preset picker calls the engine's folder "Yours".
+    pub fn place_label(&self, i: usize) -> &'static str {
+        let src = SOURCES[i];
+        self.pick
+            .as_ref()
+            .map_or_else(|| src.label(), |p| p.place_label(src))
+    }
+
     /// Nothing to show (before the browser has listed anything).
     pub fn empty() -> Screen {
         Screen {
@@ -695,6 +788,14 @@ pub struct Browser {
     before_pick: Option<(usize, Loc, Filter)>,
     /// A preset was tried since the preset picker opened.
     tried: bool,
+    /// The engine's own presets, for a preset picker's Factory place, as
+    /// the app gave them with [`Browser::open_preset_picker`].
+    presets: Vec<String>,
+    /// The sound the preset picker opened over (Cancel puts it back).
+    preset_now: PresetNow,
+    /// A preset being saved (engine, name, text), until the library says
+    /// how it went: a name already there asks before replacing it.
+    saving_preset: Option<(String, String, String)>,
     /// The work in progress changed since it was last saved or opened.
     unsaved: bool,
     /// An open of autosave's project is under way: still unsaved once it
@@ -772,6 +873,9 @@ impl Browser {
             pick: None,
             before_pick: None,
             tried: false,
+            presets: Vec::new(),
+            preset_now: PresetNow::default(),
+            saving_preset: None,
             unsaved: false,
             recovering: false,
             mode: Mode::Folder,
@@ -853,12 +957,18 @@ impl Browser {
     fn apply(&mut self, d: Done) {
         match d.result {
             Err(e) => {
+                if let Some((_, name, _)) = self.saving_preset.take() {
+                    self.status = Some((format!("{name} wasn't saved: {e}"), true));
+                    return;
+                }
                 // A preset picker for an engine with no presets saved yet:
                 // its folder isn't there, which is not a fault.
                 if let Some(Pick::Preset { engine }) = &self.pick {
                     if self.at_pick_root() && self.rows.is_empty() {
                         self.status = Some((
-                            format!("No {engine} presets yet: save one from the Synth page"),
+                            format!(
+                                "No {engine} presets of yours yet: Save preset keeps the sound you have"
+                            ),
                             false,
                         ));
                         return;
@@ -919,6 +1029,46 @@ impl Browser {
                 }
                 self.remember(loc);
                 self.refresh();
+            }
+            Ok(Outcome::Preset(PresetSave::Taken(_))) => {
+                if let Some((engine, name, text)) = self.saving_preset.take() {
+                    self.status = None;
+                    self.modal = Modal::Confirm {
+                        text: format!(
+                            "You already have a preset called \u{201c}{name}\u{201d}. Replace it? The old one goes to the Trash"
+                        ),
+                        what: Confirm::ReplacePreset { engine, name, text },
+                    };
+                }
+            }
+            Ok(Outcome::Preset(PresetSave::Saved(loc))) => {
+                self.saving_preset = None;
+                let name = mpfree_library::preset_name(loc.name()).to_string();
+                let engine = loc
+                    .parent()
+                    .map(|p| p.name().to_string())
+                    .unwrap_or_default();
+                self.status = Some((format!("Saved {name} in Yours"), false));
+                self.preset_now = PresetNow {
+                    name: name.clone(),
+                    factory: None,
+                    changed: false,
+                };
+                // The saved sound is the one to come back to now: Cancel
+                // keeps it, and only a try after it is taken back.
+                self.tried = false;
+                self.remember(loc.clone());
+                self.actions.push(BrowseAction::PresetSaved {
+                    loc: loc.clone(),
+                    engine,
+                    name: name.clone(),
+                });
+                match (&self.pick, loc.parent()) {
+                    (Some(Pick::Preset { .. }), Some(folder)) => {
+                        self.go_folder_select(folder, Some(name))
+                    }
+                    _ => self.refresh(),
+                }
             }
             Ok(Outcome::Trash(items)) => {
                 if self.current() == Source::Place(Place::Trash) {
@@ -1168,6 +1318,23 @@ impl Browser {
                         .collect()
                 }
                 Source::Plugins => Vec::new(),
+                // A preset picker's Factory: the engine's own presets.
+                Source::Factory if matches!(self.pick, Some(Pick::Preset { .. })) => self
+                    .presets
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| Row {
+                        name: n.clone(),
+                        kind: Kind::Preset,
+                        detail: String::new(),
+                        favourite: false,
+                        loc: None,
+                        trash_id: None,
+                        factory: Some(i),
+                        version: None,
+                        modified: 0,
+                    })
+                    .collect(),
                 Source::Factory => self
                     .factory
                     .iter()
@@ -1198,6 +1365,12 @@ impl Browser {
         rows.retain(|r| self.filter.shows(r.kind));
         if let Some(p) = &self.pick {
             rows.retain(|r| p.shows(r));
+            if matches!(p, Pick::Preset { .. }) {
+                // Presets by their names, as the Synth tab lists them.
+                for r in rows.iter_mut().filter(|r| r.kind == Kind::Preset) {
+                    r.name = mpfree_library::preset_name(&r.name).to_string();
+                }
+            }
         }
         self.rows = rows;
         self.selected = keep
@@ -1226,6 +1399,16 @@ impl Browser {
         let Some(row) = self.selected_row().cloned() else {
             return;
         };
+        if let (Some(index), Some(Pick::Preset { engine }), Kind::Preset, true) =
+            (row.factory, &self.pick, row.kind, by_hand)
+        {
+            self.tried = true;
+            self.actions.push(BrowseAction::TryFactoryPreset {
+                engine: engine.clone(),
+                index,
+            });
+            return;
+        }
         let Some(loc) = row.loc.clone() else {
             return;
         };
@@ -1428,13 +1611,18 @@ impl Browser {
     }
 
     fn go_folder(&mut self, folder: Loc) {
+        self.go_folder_select(folder, None);
+    }
+
+    /// Into `folder`, picking the row named `select` once it is listed.
+    fn go_folder_select(&mut self, folder: Loc, select: Option<String>) {
         if let Some(i) = SOURCES
             .iter()
             .position(|s| *s == Source::Place(folder.place))
         {
             self.source = i;
         }
-        self.select_name = None;
+        self.select_name = select;
         self.mode = Mode::Folder;
         self.folder = folder;
         self.top = 0;
@@ -1463,6 +1651,11 @@ impl Browser {
             self.status = None;
             return self.refresh();
         }
+        // The preset picker's places are lists of presets: at the top of
+        // one, - goes to the place before it (Factory, Yours ...).
+        if self.preset_pick() && (self.at_pick_root() || !self.current_source().is_place()) {
+            return self.dial_places(-1);
+        }
         if self.at_pick_root() {
             return;
         }
@@ -1480,14 +1673,25 @@ impl Browser {
         if self.send_plugins(PluginInput::Enter) {
             return;
         }
-        if let Some(r) = self.selected_row().cloned() {
+        let row = self.selected_row().cloned();
+        if let Some(r) = &row {
             // A kit is a folder too: + shows its sounds one by one.
             if matches!(r.kind, Kind::Folder | Kind::Kit) && r.trash_id.is_none() {
-                if let Some(l) = r.loc {
+                if let Some(l) = r.loc.clone() {
                     self.go_folder(l);
                 }
+                return;
             }
         }
+        // In the preset picker, + on a preset goes to the next place.
+        if self.preset_pick() {
+            self.dial_places(1);
+        }
+    }
+
+    /// The preset picker shows.
+    fn preset_pick(&self) -> bool {
+        matches!(self.pick, Some(Pick::Preset { .. }))
     }
 
     /// The data dial: moves the selection.
@@ -1553,6 +1757,67 @@ impl Browser {
         self.modal = Modal::None;
         self.status = None;
         self.go_folder(root);
+    }
+
+    /// Opens the preset picker for `engine` (its folder under
+    /// Instruments). Factory lists `factory`, the engine's own presets as
+    /// the Synth tab lists them; Yours the musician's. It opens where `now`
+    /// is, picked: on Factory for one of the engine's own, else on Yours.
+    /// Turning tries each preset ([`BrowseAction::TryFactoryPreset`],
+    /// [`BrowseAction::TryPreset`]); Cancel puts `now` back.
+    pub fn open_preset_picker(&mut self, engine: &str, factory: Vec<String>, now: PresetNow) {
+        let p = Pick::Preset {
+            engine: engine.to_string(),
+        };
+        if self.pick.is_none() {
+            self.before_pick = Some((self.source, self.folder.clone(), self.filter));
+        }
+        let root = p.root();
+        self.pick = Some(p);
+        self.tried = false;
+        self.filter = Filter::All;
+        self.modal = Modal::None;
+        self.status = None;
+        self.presets = factory;
+        let at = now.factory.filter(|i| *i < self.presets.len());
+        let name = now.name.clone();
+        self.preset_now = now;
+        match at {
+            Some(i) => {
+                // Yours opens on the engine's folder from here.
+                self.folder = root;
+                let factory = SOURCES
+                    .iter()
+                    .position(|s| *s == Source::Factory)
+                    .expect("Factory is a place");
+                self.go_source(factory);
+                self.selected = Some(i);
+                self.keep_in_view();
+            }
+            None => self.go_folder_select(root, Some(name)),
+        }
+    }
+
+    /// The answer to [`BrowseAction::SavePresetRequested`]: saves `text`
+    /// (the synth's sound as preset text for `engine`) as `name` among the
+    /// musician's presets. A name already there asks before replacing it.
+    pub fn save_preset(&mut self, engine: &str, name: &str, text: String) {
+        self.send_preset(engine.to_string(), name.to_string(), text, false);
+    }
+
+    fn send_preset(&mut self, engine: String, name: String, text: String, replace: bool) {
+        self.saving_preset = Some((engine.clone(), name.clone(), text.clone()));
+        self.send(Job::SavePreset {
+            engine,
+            name,
+            text,
+            replace,
+        });
+    }
+
+    /// The synth's sound couldn't be had for saving (why).
+    pub fn preset_not_saved(&mut self, why: &str) {
+        self.status = Some((format!("The preset wasn't saved: {why}"), true));
     }
 
     /// The picker open, if any.
@@ -1838,6 +2103,16 @@ impl Browser {
                 }
             }
             Button::Export => self.actions.push(BrowseAction::ExportAsked),
+            Button::SavePreset => {
+                if let Some(Pick::Preset { engine }) = &self.pick {
+                    self.modal = Modal::Keyboard {
+                        title: format!("Save preset \u{b7} it goes in Yours, for {engine}"),
+                        purpose: Purpose::SavePreset(engine.clone()),
+                        text: self.preset_now.name.clone(),
+                        shift: false,
+                    };
+                }
+            }
             Button::SaveAs => self.save_as(now_utc()),
             Button::NewProject => {
                 if self.unsaved {
@@ -1867,6 +2142,17 @@ impl Browser {
                 let Some(r) = row else {
                     return self.pick_first(b);
                 };
+                if let (Some(index), Some(Pick::Preset { engine }), Kind::Preset) =
+                    (r.factory, &self.pick, r.kind)
+                {
+                    self.actions.push(BrowseAction::LoadFactoryPreset {
+                        engine: engine.clone(),
+                        index,
+                    });
+                    self.status = Some((format!("Loaded {}", r.name), false));
+                    self.close_pick(true);
+                    return;
+                }
                 if let Some(index) = r.factory {
                     self.actions
                         .push(BrowseAction::LoadFactoryKit { index, to_pad });
@@ -2099,8 +2385,16 @@ impl Browser {
     }
 
     fn confirm(&mut self, yes: bool) {
-        let m = std::mem::replace(&mut self.modal, Modal::None);
-        if let (true, Modal::Confirm { what, .. }) = (yes, m) {
+        let Modal::Confirm { what, .. } = std::mem::replace(&mut self.modal, Modal::None) else {
+            return;
+        };
+        if let (false, Confirm::ReplacePreset { name, .. }) = (yes, &what) {
+            self.status = Some((
+                format!("{name} wasn't saved: Save preset again with another name"),
+                false,
+            ));
+        }
+        if yes {
             match what {
                 Confirm::Delete(loc) => {
                     if self.clip.as_ref().is_some_and(|c| match c {
@@ -2114,6 +2408,9 @@ impl Browser {
                 Confirm::Open(loc) => self.send(Job::OpenProject(loc)),
                 Confirm::OpenVersion(loc, id) => self.send(Job::OpenVersion(loc, id)),
                 Confirm::NewProject => self.start_new_project(),
+                Confirm::ReplacePreset { engine, name, text } => {
+                    self.send_preset(engine, name, text, true)
+                }
             }
         }
     }
@@ -2187,6 +2484,11 @@ impl Browser {
                             self.project = Some(loc);
                             self.actions.push(BrowseAction::SaveRequested);
                         }
+                    }
+                    Purpose::SavePreset(engine) => {
+                        self.status = Some((format!("Saving {name}\u{2026}"), false));
+                        self.actions
+                            .push(BrowseAction::SavePresetRequested { engine, name });
                     }
                     Purpose::Search | Purpose::PluginSearch => {}
                 }
@@ -2494,17 +2796,34 @@ impl Browser {
         std::mem::take(&mut self.actions)
     }
 
+    /// The list's title: where it is.
+    fn path_text(&self, src: Source) -> String {
+        match (&self.mode, src) {
+            (Mode::Versions(l, _), _) => format!("{} / Earlier saves", l.name()),
+            (Mode::Found(q, _), _) => format!("Search: \u{201c}{q}\u{201d}"),
+            (_, Source::Place(Place::Trash)) => "Trash".into(),
+            (_, Source::Place(_)) => self.folder.display(),
+            (_, s) => s.label().into(),
+        }
+    }
+
     /// What the widget draws.
     pub fn screen(&self) -> Screen {
         let src = self.current();
         Screen {
             source: self.source,
-            path: match (&self.mode, src) {
-                (Mode::Versions(l, _), _) => format!("{} / Earlier saves", l.name()),
-                (Mode::Found(q, _), _) => format!("Search: \u{201c}{q}\u{201d}"),
-                (_, Source::Place(Place::Trash)) => "Trash".into(),
-                (_, Source::Place(_)) => self.folder.display(),
-                (_, s) => s.label().into(),
+            path: match (&self.mode, src, &self.pick) {
+                (Mode::Folder, Source::Factory, Some(Pick::Preset { engine })) => {
+                    format!("Factory \u{b7} {engine}")
+                }
+                (Mode::Folder, Source::Place(Place::Instruments), Some(Pick::Preset { .. })) => {
+                    let shown = self.folder.display();
+                    format!(
+                        "Yours \u{b7} {}",
+                        shown.strip_prefix("Instruments / ").unwrap_or(&shown)
+                    )
+                }
+                _ => self.path_text(src),
             },
             can_go_back: self.mode != Mode::Folder
                 || (src != Source::Place(Place::Trash)
@@ -2517,6 +2836,9 @@ impl Browser {
             filter: self.filter,
             detail: self.detail(),
             list_buttons: match src {
+                _ if matches!(self.pick, Some(Pick::Preset { .. })) => {
+                    vec![Button::SavePreset, Button::Cancel]
+                }
                 _ if self.pick.is_some() => vec![Button::Cancel],
                 // Nothing to make or paste in a search or a project's saves.
                 _ if self.mode != Mode::Folder => Vec::new(),
@@ -2659,9 +2981,20 @@ impl Browser {
                 }
                 Mode::Folder => {}
             }
+            let preset_pick = matches!(self.pick, Some(Pick::Preset { .. }));
             return Detail {
-                title: self.current().label().into(),
+                title: self
+                    .pick
+                    .as_ref()
+                    .map_or_else(|| self.current().label(), |p| p.place_label(self.current()))
+                    .into(),
                 kind: match self.current() {
+                    Source::Factory if preset_pick => {
+                        "This engine has no presets of its own".into()
+                    }
+                    Source::Place(Place::Instruments) if preset_pick => {
+                        "None saved yet: Save preset keeps the sound you have".into()
+                    }
                     Source::Place(Place::Trash) => "The Trash is empty".into(),
                     Source::Factory => "No factory kits on this stick".into(),
                     Source::Recent => "Nothing loaded or saved yet".into(),
@@ -2688,6 +3021,29 @@ impl Browser {
             d.lines
                 .push(("Kept".into(), format!("The last {KEEP_VERSIONS} saves")));
             d.lines.push(("".into(), "Tap it again to open it".into()));
+            return d;
+        }
+        if let (Some(Pick::Preset { engine }), Kind::Preset) = (&self.pick, r.kind) {
+            let own = r.factory.is_some();
+            d.kind = if own {
+                "Comes with the engine".into()
+            } else {
+                "Your preset".into()
+            };
+            d.lines.push(("Engine".into(), engine.clone()));
+            d.lines
+                .push(("From".into(), if own { "Factory" } else { "Yours" }.into()));
+            if let Some(i) = r.factory {
+                d.lines.push((
+                    "In the list".into(),
+                    format!("{} of {}", i + 1, self.presets.len()),
+                ));
+            }
+            if !self.preset_now.name.is_empty() {
+                d.lines.push(("You had".into(), self.preset_now.label()));
+            }
+            // The row's star stars one of the musician's.
+            d.buttons = vec![Button::Load];
             return d;
         }
         if r.factory.is_some() {

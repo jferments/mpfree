@@ -31,12 +31,14 @@
 pub mod audio;
 pub mod kit;
 pub mod name;
+pub mod preset;
 pub mod project;
 pub mod worker;
 
 pub use audio::{read_info, AudioFormat, AudioInfo};
 pub use kit::KIT_FILE;
 pub use name::{clean_name, natural_cmp, unique_folder_name, unique_name, valid_name};
+pub use preset::{preset_name, PresetSave, MAX_PRESET_TEXT, PRESET_EXT};
 pub use project::{Meta, NewSample, Part, SampleData, Snapshot, Version};
 pub use worker::{Done, Job, Outcome, Worker};
 

@@ -469,10 +469,13 @@ pub struct Synth {
     /// macros) changed: the synth-voice pads' copies of an engine
     /// (`pad_synths.rs`) are made again when it moves.
     designs: [u32; ENGINES],
-    /// The sound from before the preset picker's first try (as preset
-    /// text, with its design), to put back if the picker is cancelled
-    /// ([`Synth::try_preset`]).
-    audition: Option<String>,
+    /// The sound from before the preset picker's first try, to put back if
+    /// the picker is cancelled ([`Synth::try_preset`]).
+    audition: Option<Tried>,
+    /// The musician's preset each engine plays, by its name, when it came
+    /// from Yours (a preset file) and not the engine's own list; shown as
+    /// the Synth tab's title.
+    own: [Option<String>; ENGINES],
     /// The tuning files offered after the built-in tunings.
     tuning_files: Vec<TuningFile>,
     /// The values under the clips' locks on the engines' parameters
@@ -754,6 +757,7 @@ impl Synth {
             meters,
             designs: [0; ENGINES],
             audition: None,
+            own: Default::default(),
             tuning_files: Vec::new(),
             locks: crate::locks::Under::new(),
             pad_voices: vec![None; VOICE_TRACKS * VOICE_PADS].into_boxed_slice(),
@@ -1817,6 +1821,8 @@ impl Synth {
             let p = self.fm_presets.get(i)?;
             self.fm.load_preset(p);
             self.presets[e.index()] = i;
+            self.own[e.index()] = None;
+            self.audition = None;
             return Some(&p.name);
         }
         let p = static_presets(e).get(i)?;
@@ -1826,6 +1832,8 @@ impl Synth {
             // load each one), so this never fails.
             self.put_text(p.text).ok()?;
             self.presets[e.index()] = i;
+            self.own[e.index()] = None;
+            self.audition = None;
             return Some(p.name);
         }
         self.make_plain(e);
@@ -1846,6 +1854,8 @@ impl Synth {
             Engine::Poly | Engine::Fm => self.poly.load_preset(p),
         }
         self.presets[e.index()] = i;
+        self.own[e.index()] = None;
+        self.audition = None;
         self.preset_under_locks();
         Some(p.name)
     }
@@ -1898,10 +1908,17 @@ impl Synth {
     }
 }
 
-/// User presets: files in the library's Instruments place, for the
-/// browser's preset picker. Nothing calls these yet; the app wires the
-/// picker in with the browser page.
-#[allow(dead_code)]
+/// The sound from before the preset picker's first try: the engine's sound
+/// as preset text (with its design), and which preset it was.
+#[derive(Clone, Debug)]
+struct Tried {
+    text: String,
+    preset: usize,
+    own: Option<String>,
+}
+
+/// User presets: files in the library's Instruments place, and the
+/// browser's preset picker (opened from the Synth tab's title).
 impl Synth {
     /// Whether a `.preset` file from `folder` under the library's
     /// Instruments place (where the folder is the engine's name) may play
@@ -1935,42 +1952,145 @@ impl Synth {
         Ok(p.name)
     }
 
-    /// The preset picker turned to a preset (`BrowseAction::TryPreset`):
-    /// plays it on the engine on the pads. The sound from before the first
-    /// try is kept, for [`Synth::revert_preset`]. Returns the preset's
-    /// name. A file for another engine, or one this build can't read,
-    /// changes nothing.
-    pub fn try_preset(&mut self, folder: &str, text: &str) -> Result<String, SoundError> {
+    /// The preset picker turned to the musician's preset `name` (its
+    /// file's name, `BrowseAction::TryPreset`): plays it on the engine on
+    /// the pads, named so on the Synth tab. The sound from before the
+    /// first try is kept, for [`Synth::revert_preset`]. Returns the name
+    /// inside the preset. A file for another engine, or one this build
+    /// can't read, changes nothing.
+    pub fn try_preset(
+        &mut self,
+        folder: &str,
+        name: &str,
+        text: &str,
+    ) -> Result<String, SoundError> {
         self.check_folder(folder, text)?;
-        let before = self
-            .audition
-            .is_none()
-            .then(|| self.sound(self.settings.engine).to_text("", &[], &[]));
-        let name = self.put_text(text)?;
+        let before = self.audition.is_none().then(|| self.tried());
+        let inside = self.put_text(text)?;
         if before.is_some() {
             self.audition = before;
         }
-        Ok(name)
+        self.own[self.settings.engine.index()] = Some(name.to_string());
+        Ok(inside)
+    }
+
+    /// The preset picker turned to the engine's own preset `i`
+    /// (`BrowseAction::TryFactoryPreset`): plays it, keeping the sound from
+    /// before the first try as [`Synth::try_preset`] does. Returns its
+    /// name; None (nothing changes) past the end of the list.
+    pub fn try_factory(&mut self, i: usize) -> Option<String> {
+        let kept = self.audition.take().unwrap_or_else(|| self.tried());
+        let name = self.load_preset(i).map(str::to_string);
+        self.audition = Some(kept);
+        name
+    }
+
+    /// What the engine on the pads plays now, to come back to.
+    fn tried(&self) -> Tried {
+        let e = self.settings.engine;
+        Tried {
+            text: self.sound(e).to_text("", &[], &[]),
+            preset: self.presets[e.index()],
+            own: self.own[e.index()].clone(),
+        }
     }
 
     /// The preset picker was cancelled (`BrowseAction::RevertPreset`): the
     /// sound from before its first try comes back, every setting as it
-    /// was. Nothing happens if nothing was tried.
+    /// was, and the name it had. Nothing happens if nothing was tried.
     pub fn revert_preset(&mut self) {
-        if let Some(text) = self.audition.take() {
+        if let Some(t) = self.audition.take() {
             // The capture is this engine's, so it always loads.
-            let _ = self.put_text(&text);
+            let _ = self.put_text(&t.text);
+            let e = self.settings.engine.index();
+            self.presets[e] = t.preset;
+            self.own[e] = t.own;
         }
     }
 
     /// Loads a user preset (`BrowseAction::LoadPreset`, or the picker's
-    /// Load after trying): the engine on the pads plays it from now on, and
-    /// the sound from before any try is forgotten. Returns its name.
-    pub fn load_preset_file(&mut self, folder: &str, text: &str) -> Result<String, SoundError> {
+    /// Load after trying): the engine on the pads plays it from now on,
+    /// named `name` (its file's name) on the Synth tab, and the sound from
+    /// before any try is forgotten. Returns the name inside the preset.
+    pub fn load_preset_file(
+        &mut self,
+        folder: &str,
+        name: &str,
+        text: &str,
+    ) -> Result<String, SoundError> {
         self.check_folder(folder, text)?;
-        let name = self.put_text(text)?;
+        let inside = self.put_text(text)?;
         self.audition = None;
-        Ok(name)
+        self.own[self.settings.engine.index()] = Some(name.to_string());
+        Ok(inside)
+    }
+
+    /// The sound on the pads was just saved as the musician's preset
+    /// `name`: it is that preset now, so the Synth tab names it, and a try
+    /// before the save is kept (Cancel no longer takes it back).
+    pub fn saved_as(&mut self, name: &str) {
+        self.own[self.settings.engine.index()] = Some(name.to_string());
+        self.audition = None;
+    }
+
+    /// The musician's preset the engine on the pads plays, if it came from
+    /// Yours.
+    #[cfg(test)]
+    pub fn own_name(&self) -> Option<&str> {
+        self.own[self.settings.engine.index()].as_deref()
+    }
+
+    /// Preset `text` from `folder` as a track's own copy of `engine` takes
+    /// it ([`fresh_node`]): its name, design lines and values, read into a
+    /// scratch sound so this synth is left alone. Another engine's preset
+    /// is refused, as on the pads. Allocates.
+    pub fn text_sound(
+        &self,
+        engine: Engine,
+        folder: &str,
+        text: &str,
+    ) -> Result<PresetSound, SoundError> {
+        let wrong = || {
+            SoundError::Preset(PresetError::WrongEngine {
+                file: engine_of(text).unwrap_or(folder).to_string(),
+                node: engine.node_id().to_string(),
+            })
+        };
+        if Engine::from_folder(folder).is_some_and(|f| f != engine) {
+            return Err(wrong());
+        }
+        let node = engine_node(engine.node_id(), self.rate).ok_or_else(wrong)?;
+        let mut s = Sound::new(node, &Design::default())?;
+        let p = s.load_text(text)?;
+        let values = s.params().iter().map(|q| s.param(q.id)).collect();
+        Ok((p.name, s.save_extras(), values))
+    }
+
+    /// A track's own copy of `engine`, its design lines and values (as
+    /// [`fresh_node`] takes them), as preset text named `name` for the
+    /// engine's folder. None if they don't make that engine's sound.
+    pub fn copy_text(
+        &self,
+        engine: Engine,
+        extras: &[(String, String)],
+        values: &[f32],
+        name: &str,
+    ) -> Option<(&'static str, String)> {
+        let node = engine_node(engine.node_id(), self.rate)?;
+        let mut s = Sound::new(node, &Design::default()).ok()?;
+        if extras.iter().any(|(k, _)| is_design_key(k)) {
+            s.set_design_lines(extras).ok()?;
+        }
+        let params = s.params();
+        if params.len() != values.len() {
+            return None;
+        }
+        for (p, v) in params.iter().zip(values) {
+            if !p.readonly {
+                s.set_param(p.id, *v);
+            }
+        }
+        Some((engine.name(), s.to_text(name, &[], &[])))
     }
 
     /// Whether the preset picker is trying presets (a sound is kept to go
@@ -2033,13 +2153,15 @@ impl Synth {
                 .collect(),
         };
         let preset = Some(self.presets[self.settings.engine.index()]);
-        SynthState::from_node(
+        let mut st = SynthState::from_node(
             self.node(),
             "Pads",
             Color::from_pad(PAD_WHITE),
             presets,
             preset,
-        )
+        );
+        st.own = self.own[self.settings.engine.index()].clone();
+        st
     }
 
     pub fn param_info(&self, id: u16) -> Option<&'static ParamInfo> {
@@ -2821,7 +2943,10 @@ mod tests {
         let plain = sound(&s);
         let n = s.node().params().len();
         let text = space_keys(rate);
-        assert_eq!(s.try_preset("Keys", &text).as_deref(), Ok("Space Keys"));
+        assert_eq!(
+            s.try_preset("Keys", "Mine", &text).as_deref(),
+            Ok("Space Keys")
+        );
         assert_eq!(s.value(MACRO_BASE), 60.0);
         assert_eq!(s.state().params[0].name, "Space", "the macros first");
         assert!(s.node().params().len() > n, "the Ensemble's settings");
@@ -2840,7 +2965,7 @@ mod tests {
         s.revert_preset();
         assert_eq!(sound(&s), plain, "Cancel: the plain sound, to the bit");
         // Loaded, saved with the project and put back.
-        s.load_preset_file("Keys", &text).unwrap();
+        s.load_preset_file("Keys", "Space Keys", &text).unwrap();
         let saved = s.sounds();
         let want = sound(&s);
         let mut t = on_engine(Engine::Keys);
@@ -2859,7 +2984,8 @@ mod tests {
         let rate = 48_000;
         let mut s = Synth::new(rate);
         with(&mut s, |p| p.engine = Engine::Keys);
-        s.load_preset_file("Keys", &space_keys(rate)).unwrap();
+        s.load_preset_file("Keys", "Space Keys", &space_keys(rate))
+            .unwrap();
         let st = s.state();
         let mut copy = fresh_node(st.info.id, &st.extras, &st.values, rate).unwrap();
         for (p, v) in st.params.iter().zip(&st.values) {
@@ -2932,19 +3058,24 @@ mod tests {
         assert_ne!(sound(&other), want);
         // Turning the dial plays each; the sound from before the first try
         // is kept.
-        assert_eq!(s.try_preset("Poly", &mine).as_deref(), Ok("Mine"));
+        assert_eq!(s.try_preset("Poly", "Mine", &mine).as_deref(), Ok("Mine"));
         assert!(s.trying_preset());
         assert_eq!(sound(&s), want);
-        assert_eq!(s.try_preset("poly", &two).as_deref(), Ok("Two"));
+        assert_eq!(s.try_preset("poly", "Two", &two).as_deref(), Ok("Two"));
+        assert_eq!(s.own_name(), Some("Two"), "named by its file");
         // Cancel puts the first sound back, every setting to the bit.
         s.revert_preset();
         assert!(!s.trying_preset());
         assert_eq!(sound(&s), before);
+        assert_eq!(s.own_name(), None);
         s.revert_preset();
         assert_eq!(sound(&s), before, "nothing tried, nothing to put back");
         // Load after trying keeps what was tried.
-        s.try_preset("Poly", &two).unwrap();
-        assert_eq!(s.load_preset_file("Poly", &mine).as_deref(), Ok("Mine"));
+        s.try_preset("Poly", "Mine", &two).unwrap();
+        assert_eq!(
+            s.load_preset_file("Poly", "Mine", &mine).as_deref(),
+            Ok("Mine")
+        );
         assert!(!s.trying_preset());
         s.revert_preset();
         assert_eq!(sound(&s), want);
@@ -2953,19 +3084,19 @@ mod tests {
         let (fm_folder, bell) = on_engine(Engine::Fm).save_preset("Bell", &[], &[]);
         assert_eq!(fm_folder, "FM");
         assert!(matches!(
-            s.try_preset("FM", &bell),
+            s.try_preset("FM", "Mine", &bell),
             Err(SoundError::Preset(PresetError::WrongEngine { .. }))
         ));
-        assert!(s.try_preset("", &bell).is_err(), "FM's engine line");
+        assert!(s.try_preset("", "Mine", &bell).is_err(), "FM's engine line");
         assert!(
-            s.try_preset("FM", &mine).is_err(),
+            s.try_preset("FM", "Mine", &mine).is_err(),
             "a Poly file in FM's folder"
         );
-        assert!(s.try_preset("Poly", "not a preset").is_err());
+        assert!(s.try_preset("Poly", "Mine", "not a preset").is_err());
         assert!(!s.trying_preset());
         assert_eq!(sound(&s), want);
         // A file straight in Instruments goes by its engine line.
-        assert!(s.try_preset("", &two).is_ok());
+        assert!(s.try_preset("", "Mine", &two).is_ok());
         s.revert_preset();
         assert_eq!(sound(&s), want);
         // Folders are engines' names, in any case; the Q-Link sets ride
@@ -2977,6 +3108,74 @@ mod tests {
         let qset = [("qset".to_string(), "31 32 - 33 Tone".to_string())];
         let (_, text) = s.save_preset("Q", &[], &qset);
         assert!(text.contains("\nqset = 31 32 - 33 Tone\n"), "{text}");
+    }
+
+    /// The picker's Factory place tries the engine's own presets: Cancel
+    /// puts back the sound and the preset it had, Load keeps one. A file
+    /// of the musician's is named on the Synth tab by its file's name.
+    #[test]
+    fn the_picker_tries_the_engines_own_presets_and_names_the_musicians() {
+        let mut s = Synth::new(44_100);
+        s.load_preset(2);
+        let p = *s.node().params().iter().find(|p| !p.readonly).unwrap();
+        s.set(p.id, p.from_unit(0.9));
+        let before = sound(&s);
+        let names = s.preset_names(Engine::Poly);
+        assert_eq!(s.try_factory(4).as_deref(), Some(names[4].as_str()));
+        assert!(s.trying_preset());
+        assert_eq!(s.state().preset, Some(4));
+        assert_ne!(sound(&s), before);
+        s.try_factory(5);
+        s.revert_preset();
+        assert!(!s.trying_preset());
+        assert_eq!(sound(&s), before, "the edited sound, to the bit");
+        assert_eq!(s.state().preset, Some(2));
+        // Past the end of the list nothing changes.
+        assert_eq!(s.try_factory(names.len()), None);
+        s.revert_preset();
+        assert_eq!(sound(&s), before);
+        // Load after a try keeps the one loaded.
+        s.try_factory(4);
+        s.load_preset(5);
+        assert!(!s.trying_preset());
+        assert_eq!(s.state().preset, Some(5));
+        // One of the musician's: named by its file, back after a try, gone
+        // with a preset of the list; a save names the sound.
+        let mut other = Synth::new(44_100);
+        other.load_preset(3);
+        let want = sound(&other);
+        let (_, mine) = other.save_preset("Inside", &[], &[]);
+        assert_eq!(
+            s.load_preset_file("Poly", "On disk", &mine).as_deref(),
+            Ok("Inside")
+        );
+        assert_eq!(s.own_name(), Some("On disk"));
+        assert_eq!(s.state().own.as_deref(), Some("On disk"));
+        s.try_factory(1);
+        assert_eq!(s.own_name(), None);
+        s.revert_preset();
+        assert_eq!(s.own_name(), Some("On disk"));
+        assert_eq!(sound(&s), want);
+        s.load_preset(0);
+        assert_eq!(s.state().own, None);
+        s.saved_as("Kept");
+        assert_eq!(s.own_name(), Some("Kept"));
+        // A track's own copy takes a file as the pads do, and its sound
+        // saves as a file that plays the same.
+        let (name, extras, values) = s.text_sound(Engine::Poly, "Poly", &mine).unwrap();
+        assert_eq!(name, "Inside");
+        let (_, _, theirs) = other.sound_of(Engine::Poly);
+        assert_eq!(values, theirs);
+        let (folder, text) = s.copy_text(Engine::Poly, &extras, &values, "Back").unwrap();
+        assert_eq!(folder, "Poly");
+        let mut t = Synth::new(44_100);
+        t.load_preset_file("Poly", "Back", &text).unwrap();
+        assert_eq!(sound(&t), want);
+        assert!(s.text_sound(Engine::Keys, "Poly", &mine).is_err());
+        assert!(s.text_sound(Engine::Keys, "", &mine).is_err());
+        assert!(s
+            .copy_text(Engine::Poly, &extras, &values[1..], "Short")
+            .is_none());
     }
 
     #[test]
@@ -2995,7 +3194,7 @@ mod tests {
         other.load_preset(kit);
         let (folder, text) = other.save_preset("Kit", &[], &[]);
         assert_eq!(folder, "Drums");
-        s.try_preset("Drums", &text).unwrap();
+        s.try_preset("Drums", "Mine", &text).unwrap();
         assert_eq!(s.drum_names(), other.drum_names());
         assert!(s.take_pads_changed(), "the pads follow the kit tried");
         s.revert_preset();

@@ -132,6 +132,7 @@ mod plugin_store;
 mod plugins;
 mod port_writer;
 mod power;
+mod presets;
 mod preview;
 mod project;
 mod qlink_touch;
@@ -4409,19 +4410,22 @@ fn pad_is(synth: Option<&synth::Synth>, pad: usize) -> midi_out::NoteIs<'_> {
 }
 
 /// What the Synth tab shows: the selected track's own synth when it has
-/// one (instruments.rs), else the shared synth. A plugin synth lists its
-/// own presets once they're listed ([`mixing::MixHost::plugin_presets`]).
+/// one (instruments.rs), named by the preset it plays (`presets`), else the
+/// shared synth. A plugin synth lists its own presets once they're listed
+/// ([`mixing::MixHost::plugin_presets`]).
 fn synth_tab(
     synth: &synth::Synth,
     mix: &mixing::MixHost,
     track: usize,
-    preset: Option<usize>,
+    presets: &presets::TrackPresets,
 ) -> SynthState {
     let own = &mix.instruments;
     match (own.held(track), own.node(track)) {
         (Some(h), Some(node)) => {
             let engine = synth::Engine::from_node_id(h.id);
-            let mut st = synth.state_of(node, engine, &format!("Track {}", track + 1), preset);
+            let label = format!("Track {}", track + 1);
+            let mut st = synth.state_of(node, engine, &label, presets.index(track));
+            st.own = presets.own(track).map(str::to_string);
             if engine.is_none() {
                 st.presets = mix
                     .plugin_presets(h.id)
@@ -5802,7 +5806,7 @@ fn player_session(
     // plays (as a pick would, but nothing changes what a track plays).
     let mut kit_follow: Option<usize> = None;
     // Each track's own instrument's preset, as last picked (instruments.rs).
-    let mut track_presets: [Option<usize>; instruments::TRACKS] = [None; instruments::TRACKS];
+    let mut track_presets = presets::TrackPresets::default();
     // When the Synth tab looks again at a track whose plugin just loaded a
     // preset (its values may come later).
     let mut preset_looks: Vec<(usize, Instant)> = Vec::with_capacity(8);
@@ -6626,7 +6630,7 @@ fn player_session(
                         &synth,
                         &mix,
                         track,
-                        track_presets.get(track).copied().flatten(),
+                        &track_presets,
                     )));
                 }
                 gui::FromUi::TrackInstrument(track) => {
@@ -6840,7 +6844,7 @@ fn player_session(
                             .position(|l| l.as_ref().is_some_and(|l| l.track == track))
                     };
                     for track in 0..instruments::TRACKS {
-                        track_presets[track] = None;
+                        track_presets.set_index(track, None);
                         if loaded_for(&o, track).is_some() || !mix.instruments.holds(track) {
                             continue;
                         }
@@ -6927,7 +6931,12 @@ fn player_session(
                     }
                     if changed > 0 {
                         ask_plugin_presets(&mut mix);
-                        out.show(gui::ToUi::Synth(synth_tab(&synth, &mix, app.track(), None)));
+                        out.show(gui::ToUi::Synth(synth_tab(
+                            &synth,
+                            &mix,
+                            app.track(),
+                            &track_presets,
+                        )));
                     }
                     // The arps: the project's, or every one at its default.
                     let (notes, arp_fx) = app.open_arp(o.arp.as_deref());
@@ -7030,6 +7039,19 @@ fn player_session(
                         out.note("sample: two grain clouds on the audio thread; one freed here");
                     }
                 }
+                // The preset picker the Synth tab's title opens (presets.rs):
+                // the selected track's own synth, else the synth on the
+                // pads.
+                gui::FromUi::Preset(ask) => {
+                    if !mix.instruments.holds(app.track()) && ask.changes_sound() {
+                        if let Some(line) = param_log.flush(&synth) {
+                            out.note(&line);
+                        }
+                        // The turns were of the old sound.
+                        synth_turns.clear();
+                    }
+                    track_presets.act(ask, app.track(), &mut synth, &mut mix, out);
+                }
                 // A plugin synth's own preset: loaded into the running
                 // plugin on the builder thread (the plugin's own code
                 // reads the file); the news comes back below.
@@ -7048,8 +7070,12 @@ fn player_session(
                         );
                         out.note(&s);
                         out.show(gui::ToUi::Tell(s));
-                        let preset = track_presets.get(track).copied().flatten();
-                        out.show(gui::ToUi::Synth(synth_tab(&synth, &mix, track, preset)));
+                        out.show(gui::ToUi::Synth(synth_tab(
+                            &synth,
+                            &mix,
+                            track,
+                            &track_presets,
+                        )));
                     }
                 }
                 // A preset on a track's own synth: a new copy with the
@@ -7064,9 +7090,7 @@ fn player_session(
                         (Some(h), Some((name, extras, values))) => {
                             let job = instrument_job(&synth, track, h.id, Some((extras, values)));
                             if mix.build_instrument(job) {
-                                if let Some(p) = track_presets.get_mut(track) {
-                                    *p = Some(k);
-                                }
+                                track_presets.set_index(track, Some(k));
                                 out.note(&format!("track {}: preset {name}", track + 1));
                             }
                         }
@@ -8342,10 +8366,13 @@ fn player_session(
                             }
                         }
                         app.set_track_sound(track, mix.instruments.held(track));
-                        if let Some(p) = track_presets.get_mut(track) {
-                            *p = None;
-                        }
-                        out.show(gui::ToUi::Synth(synth_tab(&synth, &mix, track, None)));
+                        track_presets.set_index(track, None);
+                        out.show(gui::ToUi::Synth(synth_tab(
+                            &synth,
+                            &mix,
+                            track,
+                            &track_presets,
+                        )));
                     }
                     // Not made at all while every place is taken.
                     Some(id) if !mix.instruments.has_room(track) => {
@@ -8364,6 +8391,10 @@ fn player_session(
                             out.note(&s);
                             out.show(gui::ToUi::Tell(s));
                             app.set_track_sound(track, mix.instruments.held(track));
+                        } else {
+                            // A copy of the pads' sound: no preset of the
+                            // musician's, and a try on the old one is over.
+                            track_presets.new_sound(track);
                         }
                     }
                 },
@@ -8700,8 +8731,12 @@ fn player_session(
             kit_follow = Some(track_kits.entry(armed));
             // The Synth tab follows the selected track's own synth.
             if mix.instruments.holds(armed) || mix.instruments.holds(before) {
-                let preset = track_presets.get(armed).copied().flatten();
-                out.show(gui::ToUi::Synth(synth_tab(&synth, &mix, armed, preset)));
+                out.show(gui::ToUi::Synth(synth_tab(
+                    &synth,
+                    &mix,
+                    armed,
+                    &track_presets,
+                )));
             }
         }
         if let Some(app::Effect::Arp(v)) = app.arp_poll() {
@@ -8716,8 +8751,12 @@ fn player_session(
                     out.note(&format!("track {}: plays {name}", track + 1));
                     ask_plugin_presets(&mut mix);
                     if track == app.track() {
-                        let preset = track_presets.get(track).copied().flatten();
-                        out.show(gui::ToUi::Synth(synth_tab(&synth, &mix, track, preset)));
+                        out.show(gui::ToUi::Synth(synth_tab(
+                            &synth,
+                            &mix,
+                            track,
+                            &track_presets,
+                        )));
                     }
                 }
                 mixing::Landed::Failed { track, id } => {
@@ -8751,6 +8790,8 @@ fn player_session(
             plan_pad_synths(&player, &synth, &mut mix, out);
         }
         mix.pad_synths.follow(&synth);
+        // A preset the preset picker tried while the builder was busy.
+        track_presets.poll(&synth, &mut mix);
         // A plugin synth's presets listed, or one loaded, on the builder
         // thread. A plugin may load in the background and send its new
         // values over the next blocks, so the Synth tab looks again a
@@ -8779,9 +8820,7 @@ fn player_session(
                         .is_some_and(|h| h.instance == instance);
                     match result {
                         Ok(()) if same => {
-                            if let Some(p) = track_presets.get_mut(track) {
-                                *p = Some(index);
-                            }
+                            track_presets.set_index(track, Some(index));
                             out.note(&format!("track {}: preset {name}", track + 1));
                             preset_looks.retain(|(t, _)| *t != track);
                             preset_looks.push((track, t_read + Duration::from_secs(1)));
@@ -8827,8 +8866,12 @@ fn player_session(
                 }
             };
             if let Some(track) = shown {
-                let preset = track_presets.get(track).copied().flatten();
-                out.show(gui::ToUi::Synth(synth_tab(&synth, &mix, track, preset)));
+                out.show(gui::ToUi::Synth(synth_tab(
+                    &synth,
+                    &mix,
+                    track,
+                    &track_presets,
+                )));
             }
         }
         if preset_looks.iter().any(|(_, at)| *at <= t_read) {
@@ -8837,8 +8880,12 @@ fn player_session(
                 .iter()
                 .any(|(t, at)| *t == track && *at <= t_read)
             {
-                let preset = track_presets.get(track).copied().flatten();
-                out.show(gui::ToUi::Synth(synth_tab(&synth, &mix, track, preset)));
+                out.show(gui::ToUi::Synth(synth_tab(
+                    &synth,
+                    &mix,
+                    track,
+                    &track_presets,
+                )));
             }
             preset_looks.retain(|(_, at)| *at > t_read);
         }
@@ -10791,7 +10838,7 @@ mod tests {
         let synth = synth::Synth::new(RATE);
         let mix = mixing::MixHost::new(RATE, -6.0, -6.0);
         assert_eq!(
-            synth_tab(&synth, &mix, 0, None).presets,
+            synth_tab(&synth, &mix, 0, &presets::TrackPresets::default()).presets,
             synth.state().presets
         );
     }
