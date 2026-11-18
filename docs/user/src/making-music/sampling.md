@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/recall.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/sound_panel.rs rust/mpfree-sampler-ui/src/warp_tab.rs rust/mpfree-sampler-ui/src/chop_tab.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
+covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/recall.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/grain_tool.rs rust/mpfree-sampler-ui/src/sound_panel.rs rust/mpfree-sampler-ui/src/warp_tab.rs rust/mpfree-sampler-ui/src/chop_tab.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
 checked: 2026-11-18 ec8cb82
 -->
 
@@ -11,7 +11,7 @@ checked: 2026-11-18 ec8cb82
 Two tabs share the work:
 
 - The **Pads** tab, next to Play, shows the whole bank of 16 pads beside the settings of the pad picked: which sound is on which pad, and how it plays. **Browse for** at its top right opens the browser to find a sound for that pad, and **Kit** beside it opens the list of kits, to put another kit on the selected track.
-- The **Sample** tab works on one pad at a time. **Hit a pad** to pick it; its name and sound are at the top left of the page. Along the top are a page for each job: **Wave**, **Warp**, **Chop**, **Play**, **Grain** and **Rec**. Beside them, **Send to pad** and **Chop to pads** work from any page (see [below](#send-to-pad-and-chop-to-pads)). The four **Q-Link** cards are down the right-hand side, as on every other page: each says what its knob turns here, and you can drag a card up or down to turn it from the screen.
+- The **Sample** tab works on one pad at a time. **Hit a pad** to pick it; its name and sound are at the top left of the page. Along the top are a page for each job: **Wave**, **Warp**, **Chop**, **Play** and **Rec**. Beside them, **Send to pad** and **Chop to pads** work from any page (see [below](#send-to-pad-and-chop-to-pads)). The four **Q-Link** cards are down the right-hand side, as on every other page: each says what its knob turns here, and you can drag a card up or down to turn it from the screen.
 
 ## The Pads tab: sounds onto pads
 
@@ -230,14 +230,14 @@ The pad's name at the top left of every Sample page has a dotted line under it: 
 
 The **Wave** page shows the sample across the screen. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links, or rest a finger on a marker's tab and turn the data wheel: it moves a screen pixel a turn, or one frame at a time with **SHIFT** (next build; see [Hold and turn](../getting-started/the-screen.md#hold-and-turn)). Hold **SHIFT** and press **+** to zoom in, **SHIFT + –** to zoom out (the Warp and Chop pages too); the card beside the strip at the top says how far in you are. Tap the wave to hear it.
 
-**The tools.** At the left of the strip over the wave are four tools: **Trim**, **Slice**, **Warp** and **Grain**. The tool you pick decides what a finger on the wave moves and what the Q-Links turn. **Trim** is what this page does now: Start, End, the loop and the fades. The other three are moving onto this page one at a time; until each one has, its button opens its own page (**Slice** opens [Chop](#chop-slice-across-the-pads), **Warp** opens [Warp](#warp-put-the-hits-on-the-beat), **Grain** opens [Grain](shaping-a-pad.md#grain-stretch-and-smear)), and **Wave** at the top right brings you back. While a take records the tools are grey: they wait for the take.
+**The tools.** At the left of the strip over the wave are four tools: **Trim**, **Slice**, **Warp** and **Grain**. The tool you pick decides what a finger on the wave moves, what the section under it holds and what the Q-Links turn. Every tool's marks stay on the wave, but only the tool you pick has tabs along the top: the other tools' marks are grey lines with no tab, and you move them by picking their tool. **Trim** is Start, End, the loop and the fades. **Grain** is the grain window, where the grains start and how long they are, with the Grain section under the wave (see [Grain](shaping-a-pad.md#grain-stretch-and-smear)). The other two are moving onto this page one at a time; until each one has, its button opens its own page (**Slice** opens [Chop](#chop-slice-across-the-pads), **Warp** opens [Warp](#warp-put-the-hits-on-the-beat)), and **Wave** at the top right brings you back. While a take records the tools are grey: they wait for the take.
 
-Under the wave, the region's settings are laid out like an instrument's panel, in three sections, with the pad's **Sound** beside them:
+Under the wave, with Trim picked, the region's settings are laid out like an instrument's panel, in three sections, with the pad's **Sound** beside them:
 
 - **Mode:** how a hit plays (**One shot**, **Gate**, **Toggle**, **Loop** or **Granular**), the **Loop** (**Off**, **Forward** or **Ping-pong**) and its **Crossfade**, which smooths a forward loop's seam. Tap a button to pick it.
 - **Gain and fades:** the **Gain**, **Fade in** and **Fade out** knobs, and **Normalize to 0 dB**.
 - **Options:** **Reverse**, how markers **Snap** (off, to a zero crossing, or to 16ths) and which **Channels** play.
-- **Sound:** how the pad plays its sound, four controls at a time. Tap **Amp** for its envelope (**Attack**, **Decay**, **Sustain**, **Release**), **Filter** for the filter (its type, **Cutoff**, **Resonance** and **Env depth**), **Pitch** for **Tune**, **Wow & flutter**, **Vel → pitch** (harder hits play higher) and **Vintage**, or **Movement** for what the LFO moves (**LFO to**), its **LFO rate** and **LFO depth**, and the **Pitch env**. These are the Play page's own controls (see [Shaping how a pad plays](shaping-a-pad.md)): a change here shows there, and the other way round. Turning **Tune** here tunes the whole pad.
+- **Sound:** how the pad plays its sound, four controls at a time. Tap **Amp** for its envelope (**Attack**, **Decay**, **Sustain**, **Release**), **Filter** for the filter (its type, **Cutoff**, **Resonance** and **Env depth**), **Pitch** for **Tune**, **Wow & flutter**, **Vel → pitch** (harder hits play higher) and **Vintage**, or **Movement** for what the LFO moves (**LFO to**), its **LFO rate** and **LFO depth**, and the **Pitch env**. **Grain** shows the grain cloud's **Position**, **Size**, **Density** and **Pitch** (grey until the pad's Mode is Granular). The first four are the Play page's own controls (see [Shaping how a pad plays](shaping-a-pad.md)): a change here shows there, and the other way round. Turning **Tune** here tunes the whole pad.
 
 Drag a knob up to turn it up and down to turn it down; one drag is one **UNDO**. Tap ‹ › or − + to step a setting. Touching a control also gives it the wheel and **–** / **+**, and an outline shows which one has it; turn the wheel to pick the next control along. Or rest a finger on any control with a value and turn the wheel: it turns that control until you lift (see [Hold and turn](../getting-started/the-screen.md#hold-and-turn)). A grey control has nothing to do yet, such as Crossfade without a forward loop, or the filter's controls while the filter is off; tap it and the hint line says why.
 
@@ -299,7 +299,7 @@ With **Put on** at **New kit**, the slices don't touch the kit you chopped. They
 - **Pads** and Q-Link 4 have nothing to move: a new kit's slices always start on A1.
 - New kit is faint, and a tap says why, when no empty kit is left, when the song already has 128 tracks, or for the moment while the last new track is on its way.
 
-A sliced pad shows its slices everywhere: numbered lines on the **Wave** page (move them on the Chop page), "15 slices" under its name on the **Pads** tab, and the **Chop** page opens on its own slices, so you can move a cut and chop it again.
+A sliced pad shows its slices everywhere: grey lines on the **Wave** page (move them on the Chop page), "15 slices" under its name on the **Pads** tab, and the **Chop** page opens on its own slices, so you can move a cut and chop it again.
 
 #### Each slice its own sound
 
