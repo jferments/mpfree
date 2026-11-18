@@ -84,6 +84,19 @@ The picture shows the source's level on two meters, and the last 30 seconds of i
 
 The Rec page is always listening while its source is on. **Skip back** keeps what has already come in, without your having pressed Record: the last 10 seconds to begin with, or whatever the selector beside the **Skip back** button says (5 seconds to a minute, or 1 to 8 whole bars cut on the bar lines). The blue span on the picture shows what it would keep. It is the sampler's version of [Capture](clips.md#capture-keep-what-you-just-played): play something good, then keep it.
 
+### Hold an empty pad and press REC: one take, from any page
+
+You don't have to open the Rec page to record onto a pad. **Hold a pad that has no sound and press REC**, on any page: the Rec page's recorder is armed onto that pad for one take, with the Rec page's settings (its Source, Start and End). The REC chip on the transport bar says so, **REC → Pad A5 · Line in**, and pages without a transport bar show it at the top. Let go of the pad; the take waits.
+
+- It starts when the sound crosses the threshold, if the Rec page's **Start** is **Threshold**. Otherwise it starts with the music: press **PLAY**, or, if the music is already playing, it starts at once (**Next bar**: on the next bar line). While it records the chip reads **● REC → Pad A5 · Line in**.
+- **REC** again, or **STOP**, ends it and the take lands on the pad, ready to play. STOP ends the take but leaves the music playing; press STOP again to stop.
+- **UNDO** while it records throws the take away.
+- Pressed before the take starts, REC or STOP calls it off. So does a tap on an Arm pill or a row of the REC chip's list, which then arms what you tapped.
+
+It is one take only. When it ends, REC goes straight back to what it recorded before, the notes or a loop, so in the middle of a set REC never stays pointed at a pad. A pad that already has a sound is played as usual: holding it while you press REC is plain REC. It works while the pads play a kit, not while they are steps (STEP SEQ), mute keys (TRACK MUTE), 16 Levels or the loop keys, and not while another take counts in or records.
+
+The rule to remember: **a pad + REC records from now**; SHIFT + REC keeps what you just played ([Capture](clips.md#capture-keep-what-you-just-played)).
+
 ### How a take starts and ends
 
 The panel under the picture sets up the take, in five sections: **Input** (Source and Channels), **Start**, **End**, **Take** (Record, Skip back and Onto) and **Resample** (Flatten and Auto-sample). Tap a choice's button to pick it, drag a knob up or down, or tap a selector's arrows; the data wheel and **–** / **+** change the control you touched last, and a finger resting on a control lets the wheel turn it.

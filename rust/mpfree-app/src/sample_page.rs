@@ -623,6 +623,8 @@ pub struct SamplePage {
     play_turn: Option<(usize, PadKnob, u64)>,
     shown_heads: Vec<u64>,
     lines: Vec<String>,
+    /// What the pad take ([`SamplePage::pad_take`]) tells the arm next.
+    pad_said: Option<crate::rec_arm::PadNow>,
     /// Refused edits, for the screen to say in place.
     told: Vec<String>,
     /// Edits applied, and views sent to the audio thread.
@@ -799,6 +801,7 @@ impl SamplePage {
             play_turn: None,
             shown_heads: Vec::new(),
             lines: Vec::new(),
+            pad_said: None,
             told: Vec::new(),
             edits: 0,
             views_sent: 0,
@@ -3977,7 +3980,7 @@ impl SamplePage {
     }
 
     /// The source's name, as the Source row shows it.
-    fn source_name(&self) -> String {
+    pub(crate) fn source_name(&self) -> String {
         self.rec_sources
             .iter()
             .find(|(_, s)| *s == self.source)
@@ -6434,6 +6437,32 @@ fn read_kit_file(
         let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
         wav::read(f, &bytes)
     })
+}
+
+// ------------------------------------------------------------ pad take
+
+/// The pad take's recorder (sampler R5.7): an empty kit pad held + REC
+/// ([`crate::rec_arm::RecArm::arm_pad`]). The sampler thread writes the
+/// recorder's side (a take onto the pad with the Rec tab's settings, its
+/// go, keep, call off and throw); until then a pad take ends at once and
+/// says so, and REC records what it did before.
+impl SamplePage {
+    /// What the arm asks of the recorder.
+    pub fn pad_take(&mut self, _ui: &mut Ui, d: crate::rec_arm::PadDo) {
+        if let crate::rec_arm::PadDo::Arm { pad, .. } = d {
+            self.lines.push(format!(
+                "sample: no take on {}: the recorder's pad takes aren't built yet",
+                crate::app::kit_pad_name(pad)
+            ));
+            self.pad_said = Some(crate::rec_arm::PadNow::Ended);
+        }
+    }
+
+    /// What the recorder has to say about the pad take since last asked:
+    /// it records, or it ended.
+    pub fn take_pad_now(&mut self) -> Option<crate::rec_arm::PadNow> {
+        self.pad_said.take()
+    }
 }
 
 #[cfg(test)]

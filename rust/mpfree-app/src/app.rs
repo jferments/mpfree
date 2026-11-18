@@ -1101,6 +1101,20 @@ pub enum Effect {
     /// armed ([`crate::rec_arm`], sequencer decision 1). The desk finds the
     /// transport and the looper as they are and carries it out.
     Rec(crate::rec_arm::Press),
+    /// REC (without SHIFT) while kit pads are held (the kit's pads, in
+    /// pad order): the audio loop, which knows which pads have a sound,
+    /// gives [`Effect::PadArm`] for the first empty one (sampler R5.7), or
+    /// [`Effect::Rec`] as for REC alone.
+    PadRec(Vec<usize>),
+    /// Arm a pad take onto pad `pad` of the sampler's kit `kit`
+    /// ([`crate::rec_arm::RecArm::arm_pad`]).
+    PadArm {
+        kit: usize,
+        pad: usize,
+    },
+    /// To the Sample tab's recorder, for the pad take
+    /// ([`crate::rec_arm::PadDo`]).
+    PadTake(crate::rec_arm::PadDo),
     /// What the arp screens show: the panel, the quick band and the chip.
     Arp(ArpView),
     /// The arp's pattern list (names and patterns), when it changes.
@@ -1967,6 +1981,26 @@ impl App {
         self.mute_keys != MuteKeys::Off || self.mute_hold.is_some()
     }
 
+    /// The kit pads held now, in pad order, while the pads play the kit
+    /// (not the synth's layouts, STEP SEQ, TRACK MUTE, 16 Levels or the
+    /// loop keys): REC with an empty one held arms a pad take (sampler
+    /// R5.7).
+    pub fn held_kit_pads(&self) -> Vec<usize> {
+        if self.pad_layout.is_some()
+            || self.pads_are_steps()
+            || self.pads_mute()
+            || self.levels_on
+            || self.pads_are_loop_keys()
+        {
+            return Vec::new();
+        }
+        self.kit_held
+            .iter()
+            .flatten()
+            .map(|&k| usize::from(k))
+            .collect()
+    }
+
     /// The pads transpose the armed track (16 Levels' Transpose kind,
     /// sequencer S4): pad 9 plays as written, each pad either side one
     /// step more, -8 to +7.
@@ -2256,8 +2290,13 @@ impl App {
             fx.extend(self.set_pad_level(level));
         } else if note == button::STOP {
             fx.extend(self.fill_off());
-            if self.rec.ready.is_some() {
+            if self.rec.ready.is_some() || self.rec.pad.is_some() {
                 fx.push(Effect::Rec(crate::rec_arm::Press::Stop));
+            }
+            if self.rec.pad.is_some_and(|p| p.recording) {
+                // STOP keeps a pad take; the music plays on (sampler
+                // R5.7, as Sample Recall).
+                return fx;
             }
             if self.timed {
                 fx.push(Effect::Quit);
@@ -2347,10 +2386,21 @@ impl App {
             fx.push(Effect::Time(TimeAction::Capture));
         } else if Some(note) == self.map.rec {
             // REC records what is armed, on every page (sequencer
-            // decision 1).
-            fx.push(Effect::Rec(crate::rec_arm::Press::Rec));
+            // decision 1); with an empty kit pad held, one take onto it
+            // (sampler R5.7).
+            let held = self.held_kit_pads();
+            fx.push(if held.is_empty() {
+                Effect::Rec(crate::rec_arm::Press::Rec)
+            } else {
+                Effect::PadRec(held)
+            });
         } else if Some(note) == self.map.overdub {
             fx.push(Effect::Rec(crate::rec_arm::Press::Overdub));
+        } else if !shift && Some(note) == self.map.undo && self.rec.pad.is_some_and(|p| p.recording)
+        {
+            // UNDO while a pad take records throws it away, on every page.
+            fx.push(Effect::Undo { redo: false });
+            fx.push(Effect::UndoButton(true));
         } else if self.view == View::Looper && Some(note) == self.map.undo {
             fx.extend(self.looper_tap(if shift {
                 crate::looper_page::B_REDO
@@ -7759,6 +7809,58 @@ mod tests {
     /// their real numbers (the bug Jay hit three times: the tests gave them
     /// made-up numbers, the MPC had none). Every light sent for them is one
     /// main.rs lets through to the controller (`akai::app_lights`).
+    /// Sampler R5.7: REC with kit pads held asks the audio loop for a pad
+    /// take (it knows which are empty); STOP while one records keeps it
+    /// with the music playing on, and UNDO throws it on every page.
+    #[test]
+    fn rec_with_kit_pads_held_asks_for_a_pad_take() {
+        use crate::rec_arm::{PadTake, Press};
+        let mut app = App::new(44_100, false);
+        app.start();
+        app.set_pad_page(1);
+        app.pad_down(4, 100);
+        app.pad_down(1, 100);
+        assert_eq!(app.held_kit_pads(), [17, 20]);
+        assert_eq!(press(&mut app, button::REC), [Effect::PadRec(vec![17, 20])]);
+        // SHIFT + REC is still Capture.
+        app.button(button::SHIFT, true, 0.0);
+        assert_eq!(
+            press(&mut app, button::REC),
+            [Effect::Time(TimeAction::Capture)]
+        );
+        app.button(button::SHIFT, false, 0.0);
+        // 16 Levels has the pads: REC as alone.
+        app.levels_on = true;
+        assert_eq!(press(&mut app, button::REC), [Effect::Rec(Press::Rec)]);
+        app.levels_on = false;
+        app.pad_up(4);
+        app.pad_up(1);
+        assert_eq!(press(&mut app, button::REC), [Effect::Rec(Press::Rec)]);
+        // A pad take armed: STOP calls it off and stops as usual; while it
+        // records, STOP keeps it and the transport plays on.
+        app.set_rolling(true);
+        app.rec.pad = Some(PadTake {
+            kit: 0,
+            pad: 4,
+            started: true,
+            recording: false,
+        });
+        let fx = press(&mut app, button::STOP);
+        assert_eq!(fx[0], Effect::Rec(Press::Stop));
+        assert!(fx.contains(&Effect::Time(TimeAction::Transport(Command::Stop))));
+        app.rec.pad = app.rec.pad.map(|p| PadTake {
+            recording: true,
+            ..p
+        });
+        assert_eq!(press(&mut app, button::STOP), [Effect::Rec(Press::Stop)]);
+        // UNDO throws it, on the Sample tab too (not the kit's undo).
+        app.open_tab(View::Sample);
+        assert_eq!(
+            press(&mut app, button::UNDO),
+            [Effect::Undo { redo: false }, Effect::UndoButton(true)]
+        );
+    }
+
     #[test]
     fn a_fresh_mpfree_knows_rec_overdub_undo_and_play_start() {
         let mut app = App::new(44_100, false);
