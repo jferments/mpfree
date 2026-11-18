@@ -5,8 +5,11 @@
 //!   its attack and release, as the MPC's Auto Wah), by an LFO (free or in
 //!   time with the tempo), or by hand (a pedal on a Q-Link). The sweep is
 //!   even in pitch. Its Wah shape is the band-pass with some low end
-//!   leaking through, as a pedal's does; the plain band-pass is
-//!   normalised so a sharper peak doesn't jump in level.
+//!   leaking through, as a pedal's does. The band's gain rises with the
+//!   square root of its Q, so a sharper peak keeps the effect's level and
+//!   the defaults go in at the dry's. Resonance, Low and High glide, a
+//!   Filter change crossfades the shapes and a Source change glides the
+//!   sweep from where it was, so nothing clicks.
 //! - The talk box is the MPC's AIR Talk Box idea: three formant filters
 //!   tuned to a vowel (average adult formants from Peterson and Barney,
 //!   1952), so the sound seems to say "ah" or "ee". The envelope and the
@@ -17,7 +20,9 @@
 //!
 //! Both are trapezoidal state-variable filters (Simper), retuned every
 //! [`CTRL`] frames from a smoothed position, so a sweep costs a few
-//! tangents a block rather than one a frame.
+//! tangents a block rather than one a frame; the auto wah's coefficients
+//! glide from one retune to the next, so a fast sweep doesn't buzz at the
+//! retune rate.
 
 use std::f32::consts::PI;
 
@@ -31,25 +36,52 @@ use crate::{defaults, fast_db_to_gain, fast_exp2, fast_log2, flush, lerp, Preset
 /// Frames between retunes.
 pub(crate) const CTRL: usize = 16;
 
-/// One stereo trapezoidal state-variable stage, tuned by [`Sv::tune`].
+/// One stereo trapezoidal state-variable stage, tuned by [`Sv::tune`], or
+/// gliding to a tuning a frame at a time ([`Sv::glide_to`], [`Sv::advance`]).
 #[derive(Clone, Copy, Debug, Default)]
 struct Sv {
     k: f32,
     a1: f32,
     a2: f32,
     a3: f32,
+    /// The coefficients' steps a frame while gliding.
+    d: [f32; 3],
     ic1: [f32; 2],
     ic2: [f32; 2],
 }
 
 impl Sv {
-    fn tune(&mut self, hz: f32, q: f32, rate: u32) {
+    /// `k`, `a1`, `a2` and `a3` for a peak at `hz` of sharpness `q`.
+    fn coefs(hz: f32, q: f32, rate: u32) -> [f32; 4] {
         let fs = rate as f32;
         let g = (PI * hz.clamp(10.0, 0.45 * fs) / fs).tan();
-        self.k = 1.0 / q.max(0.1);
-        self.a1 = 1.0 / (1.0 + g * (g + self.k));
-        self.a2 = g * self.a1;
-        self.a3 = g * self.a2;
+        let k = 1.0 / q.max(0.1);
+        let a1 = 1.0 / (1.0 + g * (g + k));
+        let a2 = g * a1;
+        [k, a1, a2, g * a2]
+    }
+    fn tune(&mut self, hz: f32, q: f32, rate: u32) {
+        [self.k, self.a1, self.a2, self.a3] = Sv::coefs(hz, q, rate);
+        self.d = [0.0; 3];
+    }
+    /// Glides the coefficients to the tuning over `frames` calls of
+    /// [`Sv::advance`], so a sweep has no steps to buzz with (FX quality
+    /// W18). `k` is set at once; the caller ramps what it scales.
+    fn glide_to(&mut self, hz: f32, q: f32, rate: u32, frames: usize) {
+        let [k, a1, a2, a3] = Sv::coefs(hz, q, rate);
+        let per = 1.0 / frames as f32;
+        self.k = k;
+        self.d = [
+            (a1 - self.a1) * per,
+            (a2 - self.a2) * per,
+            (a3 - self.a3) * per,
+        ];
+    }
+    #[inline]
+    fn advance(&mut self) {
+        self.a1 += self.d[0];
+        self.a2 += self.d[1];
+        self.a3 += self.d[2];
     }
     /// `(low, band)` for one sample of channel `ch`.
     #[inline]
@@ -103,6 +135,22 @@ const SOURCES: &[&str] = &["Envelope", "LFO", "Pedal"];
 const FILTERS: &[&str] = &["Wah", "Band-pass", "Low-pass", "High-pass"];
 /// How much low end the Wah shape lets through (about -9 dB).
 const LEAK: f32 = 0.35;
+/// The band's gain is this times the square root of its Q: a band-pass
+/// passes about 1/Q of a broad sound's power, so the effect keeps its
+/// level as Resonance sharpens the peak (FX quality W17), and the defaults
+/// go in at the dry's level on pink noise (W16).
+const BAND_GAIN: f32 = 1.95;
+/// How long Resonance, Low and High glide, and the Filter shapes
+/// crossfade, in ms (FX quality W18).
+const GLIDE_MS: f32 = 20.0;
+/// How long the sweep glides to where a new Source puts it, in ms.
+const SOURCE_MS: f32 = 30.0;
+
+/// The filter's Q at Resonance `res` (0 to 1).
+#[inline]
+fn wah_q(res: f32) -> f32 {
+    0.7 + res * res * 11.3
+}
 
 static AUTOWAH_INFO: NodeInfo = NodeInfo {
     id: "mpfree.fx.autowah",
@@ -190,6 +238,35 @@ pub struct AutoWah {
     filter: Sv,
     /// The sweep position, 0 to 1 (glides between retunes).
     pos: Smooth,
+    /// Resonance (0 to 1), and Low and High as log2 Hz, gliding a retune
+    /// at a time.
+    res: Smooth,
+    lo: Smooth,
+    hi: Smooth,
+    /// The band's output gain (`k` times [`BAND_GAIN`]·√Q) and the
+    /// high-pass's `k`, each with its step a frame, so they ramp from one
+    /// retune to the next instead of stepping.
+    band: f32,
+    band_step: f32,
+    k: f32,
+    k_step: f32,
+    /// The Filter shape, and while it changes, how much of each shape is
+    /// heard: each share glides toward 1 for the shape and 0 for the rest
+    /// through two one-poles (`pull`, then `shares`), so they always add
+    /// up to 1, start and stop gently, and a change mid-way glides on from
+    /// where it is.
+    shape: usize,
+    fading: bool,
+    pull: [f32; 4],
+    shares: [f32; 4],
+    share_k: f32,
+    /// The Source in use; after a change, the gap between where the old
+    /// one had the sweep and where the new one has it, faded out over
+    /// [`SOURCE_MS`] (retunes left of how many).
+    source: usize,
+    jump: f32,
+    jump_left: u32,
+    jump_len: u32,
     mix: Smooth,
     /// Frames until the next retune.
     ctrl: usize,
@@ -213,12 +290,29 @@ impl AutoWah {
             env: Follower::default(),
             filter: Sv::default(),
             pos: Smooth::new(v[1] / 100.0),
+            res: Smooth::new(v[10] / 100.0),
+            lo: Smooth::new(v[8].log2()),
+            hi: Smooth::new(v[9].log2()),
+            band: 0.0,
+            band_step: 0.0,
+            k: 1.0,
+            k_step: 0.0,
+            shape: v[11] as usize,
+            fading: false,
+            pull: [0.0; 4],
+            shares: [0.0; 4],
+            share_k: 1.0,
+            source: v[0] as usize,
+            jump: 0.0,
+            jump_left: 0,
+            jump_len: 1,
             mix: Smooth::new(v[12] / 100.0),
             ctrl: 0,
             sens: 1.0,
             lfo_now: 0.0,
         };
         w.setup(48_000);
+        w.clear();
         w
     }
     fn apply(&mut self, id: u16, v: f32) {
@@ -228,53 +322,127 @@ impl AutoWah {
                 self.env.set(self.v[4], self.v[5], self.rate);
             }
             autowah::MIX => self.mix.target = v / 100.0,
+            autowah::RESONANCE => self.res.target = v / 100.0,
+            autowah::LOW => self.lo.target = v.log2(),
+            autowah::HIGH => self.hi.target = v.log2(),
+            autowah::FILTER => {
+                let shape = (v as usize).min(FILTERS.len() - 1);
+                if shape != self.shape {
+                    self.shape = shape;
+                    self.fading = true;
+                }
+            }
+            autowah::SOURCE => {
+                // The sweep glides from where the old Source had it.
+                let source = (v as usize).min(SOURCES.len() - 1);
+                if source != self.source {
+                    self.source = source;
+                    self.jump = self.pos.target - self.target();
+                    self.jump_left = self.jump_len;
+                }
+            }
             _ => {}
         }
     }
     fn begin(&mut self, _ctx: &Ctx) {}
     /// The position the controls and the modulation ask for, 0 to 1.
     fn target(&self) -> f32 {
-        let m = match self.v[0] as usize {
+        let m = match self.source {
             0 => env_amount(self.env.env),
             1 => 0.5 + 0.5 * self.lfo_now,
             _ => 0.0,
         };
         (self.v[1] / 100.0 + self.v[2] / 100.0 * m).clamp(0.0, 1.0)
     }
+    /// Every [`CTRL`] frames: glide the controls a step, move the sweep
+    /// and retune, and set the gains' ramps to land on the new ones.
+    fn retune(&mut self) {
+        let [m] = self.lfo.read([0.0]);
+        self.lfo_now = m;
+        let mut to = self.target();
+        if self.jump_left > 0 {
+            // A raised cosine from the whole gap down to none.
+            let w = 0.5 - 0.5 * kit::cosine(0.5 * self.jump_left as f32 / self.jump_len as f32);
+            to = (to + self.jump * w).clamp(0.0, 1.0);
+            self.jump_left -= 1;
+        }
+        self.pos.target = to;
+        let (lo, hi) = (self.lo.glide(), self.hi.glide());
+        let q = wah_q(self.res.glide());
+        let hz = fast_exp2(lo + (hi - lo) * self.pos.glide());
+        self.filter.glide_to(hz, q, self.rate, CTRL);
+        let per = 1.0 / CTRL as f32;
+        self.band_step = (self.filter.k * BAND_GAIN * q.sqrt() - self.band) * per;
+        self.k_step = (self.filter.k - self.k) * per;
+    }
+    /// The output of filter shape `shape` from the input and the filter's
+    /// low and band.
+    #[inline(always)]
+    fn shaped(&self, shape: usize, x: f32, low: f32, band: f32) -> f32 {
+        match shape {
+            1 => self.band * band,
+            2 => low,
+            3 => x - self.k * band - low,
+            _ => self.band * band + LEAK * low,
+        }
+    }
+    /// A frame of a Filter change: each shape's share a step toward where
+    /// it is going, until the new shape is all there is.
+    #[cold]
+    #[inline(never)]
+    fn fade_shares(&mut self) {
+        let c = self.share_k;
+        for (k, (p, w)) in self.pull.iter_mut().zip(&mut self.shares).enumerate() {
+            let to = if k == self.shape { 1.0 } else { 0.0 };
+            *p += (to - *p) * c;
+            *w += (*p - *w) * c;
+        }
+        if 1.0 - self.shares[self.shape] < 1e-5 {
+            self.settle_shares();
+        }
+    }
+    fn settle_shares(&mut self) {
+        self.shares = [0.0; 4];
+        self.shares[self.shape] = 1.0;
+        self.pull = self.shares;
+        self.fading = false;
+    }
     fn run(&mut self, ctx: &Ctx, from: usize, l: &mut [f32], r: &mut [f32]) {
         self.lfo.follow(ctx, from, self.v[7] as usize);
         self.lfo.set(self.v[6], self.v[7] as usize, self.rate);
-        let (lo, hi) = (self.v[8].log2(), self.v[9].log2());
-        let res = self.v[10] / 100.0;
-        let q = 0.7 + res * res * 11.3;
-        let mode = self.v[11] as usize;
-        // A sharper band-pass gets a little more level back.
-        let bp_gain = 1.0 + res;
         for i in 0..l.len() {
             self.lfo.tick();
             self.env.run(0.5 * (l[i].abs() + r[i].abs()) * self.sens);
             if self.ctrl == 0 {
                 self.ctrl = CTRL;
-                let [m] = self.lfo.read([0.0]);
-                self.lfo_now = m;
-                self.pos.target = self.target();
-                let hz = fast_exp2(lo + (hi - lo) * self.pos.glide());
-                self.filter.tune(hz, q, self.rate);
+                self.retune();
             } else {
                 self.pos.glide();
             }
             self.ctrl -= 1;
+            self.filter.advance();
+            self.band += self.band_step;
+            self.k += self.k_step;
             let mix = self.mix.glide();
-            for (ch, s) in [&mut l[i], &mut r[i]].into_iter().enumerate() {
-                let x = *s;
-                let (low, band) = self.filter.run(ch, x);
-                let y = match mode {
-                    1 => self.filter.k * band * bp_gain,
-                    2 => low,
-                    3 => x - self.filter.k * band - low,
-                    _ => self.filter.k * band * bp_gain + LEAK * low,
-                };
-                *s = lerp(x, y, mix);
+            let shape = self.shape;
+            if self.fading {
+                self.fade_shares();
+                let w = self.shares;
+                for (ch, s) in [&mut l[i], &mut r[i]].into_iter().enumerate() {
+                    let x = *s;
+                    let (low, band) = self.filter.run(ch, x);
+                    let mut y = 0.0;
+                    for (k, w) in w.iter().enumerate() {
+                        y += w * self.shaped(k, x, low, band);
+                    }
+                    *s = lerp(x, y, mix);
+                }
+            } else {
+                for (ch, s) in [&mut l[i], &mut r[i]].into_iter().enumerate() {
+                    let x = *s;
+                    let (low, band) = self.filter.run(ch, x);
+                    *s = lerp(x, self.shaped(shape, x, low, band), mix);
+                }
             }
         }
     }
@@ -284,6 +452,14 @@ impl AutoWah {
         // sets the pace, this only smooths the steps.
         self.pos.set_time(rate, 4.0);
         self.mix.set_time(rate, 20.0);
+        let retunes = (rate / CTRL as u32).max(1);
+        self.res.set_time(retunes, GLIDE_MS);
+        self.lo.set_time(retunes, GLIDE_MS);
+        self.hi.set_time(retunes, GLIDE_MS);
+        // Each one-pole an eighth of the glide time: half way in about
+        // half of it, and within 1e-5 of the new shape in under twice it.
+        self.share_k = 1.0 - (-8.0 / (GLIDE_MS * 0.001 * rate as f32).max(1.0)).exp();
+        self.jump_len = ((SOURCE_MS * 0.001 * retunes as f32) as u32).max(1);
         self.env.set(self.v[4], self.v[5], rate);
         self.sens = fast_db_to_gain(self.v[3] / 100.0 * SENS_DB);
     }
@@ -293,8 +469,22 @@ impl AutoWah {
         self.filter.reset();
         self.ctrl = 0;
         self.lfo_now = 0.0;
+        self.jump_left = 0;
+        self.settle_shares();
         self.pos.snap(self.target());
+        self.res.snap(self.res.target);
+        self.lo.snap(self.lo.target);
+        self.hi.snap(self.hi.target);
         self.mix.snap(self.mix.target);
+        // The filter and the gains start where the first retune puts them.
+        let q = wah_q(self.res.value);
+        let (lo, hi) = (self.lo.value, self.hi.value);
+        let hz = fast_exp2(lo + (hi - lo) * self.pos.value);
+        self.filter.tune(hz, q, self.rate);
+        self.k = 1.0 / q;
+        self.band = self.k * BAND_GAIN * q.sqrt();
+        self.band_step = 0.0;
+        self.k_step = 0.0;
     }
     fn tail(&self) -> u32 {
         // The filter rings for a few periods of its lowest note.
@@ -645,6 +835,127 @@ mod tests {
         let quiet = sine_level(&mut w, 2000.0, 0.003);
         let loud = sine_level(&mut w, 2000.0, 0.5);
         assert!(loud > 2.0 * quiet, "{quiet} {loud}");
+    }
+
+    /// The output's RMS against the input's on white noise, after half a
+    /// second.
+    fn noise_level(fx: &mut dyn Node) -> f32 {
+        fx.prepare(48_000, 128);
+        fx.reset();
+        let n = 48_000;
+        let mut seed = 0x9e37_79b9u32;
+        let input: Vec<f32> = (0..n)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                0.1 * (seed as f32 / u32::MAX as f32 * 2.0 - 1.0)
+            })
+            .collect();
+        let (mut l, mut r) = (input.clone(), input.clone());
+        let ctx = Ctx::new(48_000, 0);
+        for k in (0..n).step_by(128) {
+            fx.process(&ctx, &[], &mut l[k..k + 128], &mut r[k..k + 128]);
+        }
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        rms(&l[n / 2..]) / rms(&input[n / 2..])
+    }
+
+    #[test]
+    fn a_sharper_band_pass_keeps_its_level() {
+        // FX quality W17: on noise, the band-pass at Resonance 0 and 100
+        // is within 3 dB of its level at 60.
+        let level = |res: f32| {
+            let mut w = AutoWah::new();
+            w.set_param(autowah::SOURCE, 2.0);
+            w.set_param(autowah::CENTER, 50.0);
+            w.set_param(autowah::FILTER, 1.0);
+            w.set_param(autowah::RESONANCE, res);
+            20.0 * noise_level(&mut w).log10()
+        };
+        let mid = level(60.0);
+        for res in [0.0, 100.0] {
+            let db = level(res) - mid;
+            assert!(db.abs() < 3.0, "Resonance {res}: {db} dB");
+        }
+    }
+
+    /// The largest frame-to-frame change of the output on a 997 Hz tone,
+    /// steady (before and well after) and around a change of `id` to `to`
+    /// half a second in.
+    fn steps_around(w: &mut AutoWah, id: u16, to: f32) -> (f32, f32) {
+        use mpfree_node::{NodeEvent, Timed};
+        w.prepare(48_000, 128);
+        w.reset();
+        let n = 48_000;
+        let tone = |i: usize| 0.25 * (i as f32 * 997.0 / 48_000.0 * std::f32::consts::TAU).sin();
+        let mut l: Vec<f32> = (0..n).map(tone).collect();
+        let mut r = l.clone();
+        let ctx = Ctx::new(48_000, 0);
+        let at = n / 2;
+        for k in (0..n).step_by(128) {
+            let ev = if (k..k + 128).contains(&at) {
+                vec![Timed {
+                    offset: (at - k) as u32,
+                    ev: NodeEvent::Param { id, value: to },
+                }]
+            } else {
+                Vec::new()
+            };
+            w.process(&ctx, &ev, &mut l[k..k + 128], &mut r[k..k + 128]);
+        }
+        let step = |a: usize, b: usize| {
+            l[a..b]
+                .windows(2)
+                .map(|p| (p[1] - p[0]).abs())
+                .fold(0.0f32, f32::max)
+        };
+        let steady = step(at - 4_800, at).max(step(at + 9_600, n));
+        (steady, step(at, at + 9_600))
+    }
+
+    #[test]
+    fn a_filter_change_glides() {
+        // FX quality W18: from the Wah shape to each other, the output
+        // moves no faster than the tone does on its own either side.
+        for to in [1.0, 2.0, 3.0] {
+            let (steady, around) = steps_around(&mut AutoWah::new(), autowah::FILTER, to);
+            assert!(
+                around < 1.25 * steady,
+                "Filter to {to}: {around} against {steady}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_source_change_glides_the_sweep() {
+        // FX quality W18: from the envelope to the pedal at its lowest,
+        // the sweep takes at least 10 ms to get half way (the position's
+        // own glide alone would take 3) and is there within 60 ms.
+        let mut w = AutoWah::new();
+        w.prepare(48_000, 128);
+        w.reset();
+        let ctx = Ctx::new(48_000, 0);
+        let tone = |i: usize| 0.25 * (i as f32 * 997.0 / 48_000.0 * std::f32::consts::TAU).sin();
+        let (mut l, mut r) = ([0.0f32; 1], [0.0f32; 1]);
+        for i in 0..24_000 {
+            (l[0], r[0]) = (tone(i), tone(i));
+            w.process(&ctx, &[], &mut l, &mut r);
+        }
+        let from = w.pos.value;
+        assert!(from > 0.2, "{from}");
+        w.set_param(autowah::SOURCE, 2.0);
+        let mut half = None;
+        for i in 0..2_880 {
+            (l[0], r[0]) = (tone(i), tone(i));
+            w.process(&ctx, &[], &mut l, &mut r);
+            if half.is_none() && w.pos.value < 0.5 * from {
+                half = Some(i);
+            }
+        }
+        let half = half.expect("never got half way");
+        assert!(half >= 480, "half way in {half} frames");
+        assert!(w.pos.value < 0.01 * from, "{} after 60 ms", w.pos.value);
     }
 
     #[test]

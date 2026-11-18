@@ -267,7 +267,7 @@ const SINC_CUTOFF: f64 = 0.47;
 const KAISER_BETA: f64 = 4.0;
 
 /// `sin(x)`, plain arithmetic (the table is built at compile time).
-const fn const_sin(x: f64) -> f64 {
+pub(crate) const fn const_sin(x: f64) -> f64 {
     let tau = 2.0 * std::f64::consts::PI;
     // Into -pi to pi.
     let mut x = x - tau * ((x / tau + 0.5) as i64 as f64);
@@ -288,7 +288,7 @@ const fn const_sin(x: f64) -> f64 {
 }
 
 /// The zeroth-order modified Bessel function, for the Kaiser window.
-const fn const_i0(x: f64) -> f64 {
+pub(crate) const fn const_i0(x: f64) -> f64 {
     let mut term = 1.0;
     let mut sum = 1.0;
     let mut k = 1;
@@ -302,7 +302,7 @@ const fn const_i0(x: f64) -> f64 {
 }
 
 /// `sqrt(x)` for 0 to 1, by Newton's method.
-const fn const_sqrt(x: f64) -> f64 {
+pub(crate) const fn const_sqrt(x: f64) -> f64 {
     if x <= 0.0 {
         return 0.0;
     }
