@@ -12,13 +12,24 @@ The **Play** page is MPFree's home: the place for finger drumming, making beats 
 
 | View | Made for | What's on it |
 |---|---|---|
-| **All** | Everything at once (the home view) | The loop, the pattern across the page, the throws and the XY pad |
+| **All** | Everything at once (the home view) | The loop, the armed track's pads as rows of steps, the throws and the XY pad |
 | **Steps**, on the **Sequencer** tab | Programming patterns and practising finger drumming | The whole pattern, your timing under it, and all eight throws |
 | **Loop** | Live looping | The loop, large, with its buttons; the throws and the XY pad |
 
 There are no pads on the Play page: you play the real ones, and the room goes to the pattern, the loop and the effects. The pads' own settings and sounds are on the Pads tab, next to Play.
 
 {{shot: play | The All view.}}
+
+## The pads as rows of steps
+
+The All view is a simple step sequencer, as on a Digitakt: one row for each pad of the track the pads play, in the bank on the pads (**A1** to **A16** on bank A). Each row has the sound's name, the pad's name on the right ("A1") and a speaker; an empty pad keeps its row, dashed, so a pad is always in the same place. A tap on a step puts a note there, and another tap takes it off. Six rows fit at a time: swipe up or down on the rows to see the others (the rail on the right shows where you are).
+
+The heading over the rows:
+
+- **‹ Track 1 ›**: the track the pads play. Tap its right half for the next track and its left half for the one before; that track gets armed and the pads play its kit. Loop tracks are skipped, since they have no pads.
+- **A** to **H**: the kit's banks. Tap one, or press **PAD BANK**, and the pads and the rows go to that bank.
+- **‹ 1–16 of 32 ›**: the steps shown, for a pattern longer than a bar. **Follow** turns the page as the pattern plays; turning a page yourself turns it off.
+- **Sequencer tab ›** opens the Sequencer, where the pattern's length, the step inspector and your timing are.
 
 ## Throws
 
