@@ -514,6 +514,15 @@ fn warp_at(bpm: Option<f64>) -> (Option<Warp>, String) {
     (warp, warped)
 }
 
+/// Pad `pad` of `project` is taken: it has a sound, or is of another kind
+/// (an engine's voice, a note out). A take or a recall going onto the next
+/// empty pad passes it by.
+fn taken(project: &Project, pad: usize) -> bool {
+    project
+        .pad(pad)
+        .is_some_and(|p| !p.layers.is_empty() || !p.kind.sounds())
+}
+
 /// Sample Recall's Fade in frames at `rate`.
 fn recall_fade(r: &mpfree_sampler_ui::recall::Recall, rate: u32) -> u32 {
     (u64::from(r.fade_ms) * u64::from(rate) / 1000) as u32
@@ -3889,16 +3898,17 @@ impl SamplePage {
     /// a take would go.
     fn rec_state_now(&self) -> RecState {
         let project = self.projects.get(self.kit);
+        // A pad the sampler plays (another kind plays nothing to flatten).
         let sound = |p: usize| {
             project
                 .and_then(|pr| pr.pad(p))
-                .filter(|pd| !pd.layers.is_empty())
+                .filter(|pd| !pd.layers.is_empty() && pd.kind.sounds())
         };
         let onto = self
             .rec
             .as_ref()
             .map_or(rec_tab::Onto::NextEmpty, |t| t.settings.onto);
-        let target = project.and_then(|_| rec_tab::target(self.pad, onto, |p| sound(p).is_some()));
+        let target = project.and_then(|pr| rec_tab::target(self.pad, onto, |p| taken(pr, p)));
         let can_flatten = self.flatten.is_none()
             && self.take.is_none()
             && self.pad < crate::mixing::PADS
@@ -5499,9 +5509,7 @@ impl SamplePage {
     /// sound. None while no kit is in.
     pub fn recall_pads(&self, pad: usize) -> Option<(usize, Vec<bool>)> {
         let p = self.projects.get(self.kit)?;
-        let filled: Vec<bool> = (0..PADS)
-            .map(|i| p.pad(i).is_some_and(|pd| !pd.layers.is_empty()))
-            .collect();
+        let filled: Vec<bool> = (0..PADS).map(|i| taken(p, i)).collect();
         let has = |i: usize| filled.get(i).copied().unwrap_or(false);
         let onto = rec_tab::target(pad.min(PADS - 1), rec_tab::Onto::NextEmpty, has).unwrap_or(pad);
         Some((onto, filled))

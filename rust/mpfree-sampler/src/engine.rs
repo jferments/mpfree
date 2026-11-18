@@ -513,7 +513,10 @@ impl EngineView {
     fn resolve(project: &Project, rate: u32, mut warps: Option<&mut Warps>) -> EngineView {
         let mut pads = Vec::with_capacity(PADS);
         for i in 0..PADS {
-            pads.push(project.pad(i).map(|p| {
+            // A pad of another kind (an engine's voice, a note out) plays
+            // nothing here: the app sends its hits where they go.
+            let pad = project.pad(i).filter(|p| p.kind.sounds());
+            pads.push(pad.map(|p| {
                 let pad_gain = db_to_gain(p.level_db);
                 let layers = p
                     .layers
