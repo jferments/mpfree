@@ -1458,6 +1458,20 @@ pub enum LearnValue {
     Synth(u16),
 }
 
+/// A track asked of the time engine for a kit: by "+ Kit track", or by a
+/// chop to a new kit on the Sample tab (sampler R4.6). Once the new track
+/// is there and armed it plays the kit ([`Player::kit_track_armed`]).
+struct KitTrackAsk {
+    /// How many tracks there were: the new track is this one.
+    tracks: usize,
+    /// When it was asked: a track that never comes is given up.
+    at: Instant,
+    /// The kit it plays: None for the first empty kit (+ Kit track).
+    kit: Option<usize>,
+    /// A chop's phrase, for the new track's first empty slot.
+    phrase: Option<Box<mpfree_seq::Clip>>,
+}
+
 pub struct Player {
     pub ui: Ui,
     /// The project save handed to the library's worker: when, with how many
@@ -1628,9 +1642,9 @@ pub struct Player {
     kit_list: bool,
     /// The list of kits' rows: each a kit (or the synth), None for New kit.
     kit_rows: Vec<Option<usize>>,
-    /// The "+ Kit track" ask for a track: how many tracks there were, and
-    /// when. Once the new track is armed it gets an empty kit.
-    kit_track: Option<(usize, Instant)>,
+    /// A track asked of the time engine for a kit ("+ Kit track", or a
+    /// chop to a new kit): once the new track is armed it gets its kit.
+    kit_track: Option<KitTrackAsk>,
     /// What each header chip that only shows (CPU, RAM, session, time
     /// left) says when tapped, by its place; empty for the others.
     chip_why: Vec<String>,
@@ -2139,6 +2153,7 @@ impl Player {
                 w.can_add = can_add;
             }
         }
+        self.refresh_new_kit();
     }
 
     /// The "+ Kit track" button: a new track (as Arrange's + Track adds
@@ -2152,9 +2167,49 @@ impl Player {
             );
             return None;
         }
-        self.kit_track = Some((self.time.tracks.len(), Instant::now()));
+        self.kit_track = Some(KitTrackAsk {
+            tracks: self.time.tracks.len(),
+            at: Instant::now(),
+            kit: None,
+            phrase: None,
+        });
         self.refresh_kit_tracks();
         Some(FromUi::Time(TimeAction::AddTrack))
+    }
+
+    /// A chop to a new kit on the Sample tab (sampler R4.6) filled kit
+    /// `kit`: a new track (as + Kit track adds one), which plays it, and
+    /// the chop's phrase in its first empty slot, once the time engine has
+    /// armed it.
+    fn add_chop_track(&mut self, kit: usize, phrase: Option<Box<mpfree_seq::Clip>>) {
+        self.kit_track = Some(KitTrackAsk {
+            tracks: self.time.tracks.len(),
+            at: Instant::now(),
+            kit: Some(kit),
+            phrase,
+        });
+        self.refresh_kit_tracks();
+        self.outbox.push(FromUi::Time(TimeAction::AddTrack));
+    }
+
+    /// What the Chop tab's Put on New kit would do now (sampler R4.6): the
+    /// first empty kit, for a new track, or why not.
+    fn refresh_new_kit(&mut self) {
+        let new_kit = if self.kit_track.is_some() {
+            Err("A new track is on its way: a moment".to_string())
+        } else if self.time.tracks.len() >= mpfree_seq::MAX_TRACKS {
+            Err(format!(
+                "The song has {} tracks, the most it can: no room for a new one",
+                mpfree_seq::MAX_TRACKS
+            ))
+        } else {
+            (0..self.kits.len())
+                .find(|&k| self.spare_kit(k) && self.sample.has_kit(k))
+                .ok_or_else(|| {
+                    "No empty kit is left for a new track: chop to this kit's pads".to_string()
+                })
+        };
+        self.sample.set_new_kit(&mut self.ui, new_kit);
     }
 
     /// The time engine's news after + Kit track: once the new track is
@@ -2162,19 +2217,44 @@ impl Player {
     /// came (128 tracks already: the time engine says why) is given up
     /// after a few seconds.
     fn kit_track_armed(&mut self) {
-        let Some((n, at)) = self.kit_track else {
+        let Some(ask) = self.kit_track.as_ref() else {
             return;
         };
+        let n = ask.tracks;
         if self.time.tracks.len() > n {
-            self.kit_track = None;
+            let Some(ask) = self.kit_track.take() else {
+                return;
+            };
+            let kit = ask
+                .kit
+                .or_else(|| (0..self.kits.len()).find(|&k| self.spare_kit(k)));
             if self.time.armed == Some(n) {
-                if let Some(u) = (0..self.kits.len()).find(|&k| self.spare_kit(k)) {
+                if let Some(u) = kit {
                     self.outbox.push(FromUi::Kit(u));
                 }
+                if let Some(clip) = ask.phrase {
+                    self.outbox.push(FromUi::SamplePhrase(clip));
+                }
+            } else if let Some(u) = ask.kit {
+                self.chop_track_missed(u, "another track was armed first");
             }
-        } else if at.elapsed() > Duration::from_secs(3) {
-            self.kit_track = None;
+        } else if ask.at.elapsed() > Duration::from_secs(3) {
+            if let Some(u) = self.kit_track.take().and_then(|a| a.kit) {
+                self.chop_track_missed(u, "the song took no new track");
+            }
         }
+    }
+
+    /// A chop to a new kit whose track didn't come: the slices stay on
+    /// the kit, for a track to pick.
+    fn chop_track_missed(&mut self, kit: usize, why: &str) {
+        let name = self
+            .kits
+            .get(kit)
+            .map_or_else(|| format!("Kit {}", kit + 1), |k| k.name.clone());
+        self.tell(&format!(
+            "The slices are on {name}, but no new track plays it ({why}): pick {name} for a track from the list of kits"
+        ));
     }
 
     /// The list of kits again: its rows, and the kit on the pads picked
@@ -6227,6 +6307,8 @@ impl Player {
             ToUi::SampleKits { projects, rate } => {
                 self.project_rate = rate;
                 self.sample.set_kits(&mut self.ui, projects, rate);
+                // The kits' sounds are in: an empty one can take a chop.
+                self.refresh_new_kit();
                 self.sample_changed();
             }
             ToUi::SampleViewBack(swap) => self.sample.view_back(swap),
@@ -6690,6 +6772,9 @@ impl Player {
     /// names of pads a chop filled.
     fn sample_after(&mut self, before: &str) {
         self.sample_names();
+        if let Some(t) = self.sample.take_new_kit_track() {
+            self.add_chop_track(t.kit, t.phrase);
+        }
         if self.sample.page() != before {
             self.sample_changed();
         }
@@ -11414,6 +11499,50 @@ pub fn sample_sampler(fonts: Fonts) -> Player {
     p
 }
 
+/// [`sample_sampler`] with an empty user kit after the six (before the
+/// synth's), its sounds on the Sample page too, so Chop can put slices on
+/// a new kit (sampler R4.6). Returns the player and the empty kit.
+pub fn sample_sampler_with_empty_kit(fonts: Fonts) -> (Player, usize) {
+    let mut p = sample_player(fonts);
+    let (project, _) = mpfree_sampler_ui::sample::project();
+    let pad = mpfree_sampler_ui::sample::PAD;
+    let synth = crate::synth::Synth::new(44_100);
+    let mut kits: Vec<KitView> = p
+        .kits
+        .iter()
+        .filter(|k| k.synth.is_none())
+        .cloned()
+        .collect();
+    kits[0].name = "Breaks".to_string();
+    kits[0].pads = (0..16)
+        .map(|i| (i == pad).then(|| "Break 92".to_string()))
+        .collect();
+    let u = kits.len();
+    kits.push(KitView {
+        name: format!("Kit {}", u + 1),
+        pads: vec![None; 128],
+        colour: [0x10, 0x10, 0x10],
+        chip: None,
+        synth: None,
+        pitches: Vec::new(),
+        user: true,
+        key: None,
+    });
+    kits.push(synth.kit_view());
+    p.apply(ToUi::Kits(kits));
+    let mut projects = vec![project];
+    projects.resize_with(u + 1, mpfree_sampler::model::Project::new);
+    p.apply(ToUi::SampleKits {
+        projects,
+        rate: mpfree_sampler_ui::sample::RATE,
+    });
+    p.apply(ToUi::PadDown { pad, velocity: 100 });
+    p.apply(ToUi::PadUp(pad));
+    p.apply(ToUi::Show(View::Sample));
+    settle_views(&mut p);
+    (p, u)
+}
+
 /// How long the screens and tests wait for the Sample tab's worker threads
 /// (the analysis, a load, a process). Under a second on its own, but a
 /// coverage build on a busy CI runner took over 10 s for one sound's
@@ -13598,6 +13727,34 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         one.take_actions();
         out.push(("sample-chop-one-pad", one));
+    }
+    // The Chop tab putting every eighth on a new kit, for a new track,
+    // with its phrase (R4.6).
+    {
+        use mpfree_sampler_ui::chop_tab::{Row, LIST};
+        let (mut new, _) = sample_sampler_with_empty_kit(fonts());
+        sample_pattern(&mut new, 0);
+        new.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
+        });
+        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
+        for (row, delta) in [
+            (Row::Method, 1),
+            (Row::Amount, -1),
+            (Row::Phrase, 1),
+            (Row::Put, 3i32),
+        ] {
+            new.on_event(UiEvent {
+                widget: LIST.into(),
+                kind: EventKind::Step {
+                    index: index(row),
+                    delta,
+                },
+            });
+        }
+        new.take_actions();
+        out.push(("sample-chop-new-kit", new));
     }
     // Live chop on the same pad: Start pressed, the break playing halfway,
     // and four pads hit so far.
@@ -21491,6 +21648,131 @@ mod tests {
             time.put_clip((**clip).clone()).unwrap(),
             "phrase: 15 notes in slot 1 of Track 1"
         );
+    }
+
+    #[test]
+    fn chop_to_a_new_kit_adds_a_track_playing_it_with_the_phrase_and_undo_takes_the_pads_back() {
+        use crate::sampler::TrackKits;
+        use mpfree_sampler_ui::chop_tab::{self, Row};
+        use mpfree_sampler_ui::widgets::{PadBar, SettingList};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        // The Sample tab on Break 92 (kit 1, Breaks), with an empty user
+        // kit after the six.
+        let (mut p, u) = sample_sampler_with_empty_kit(Fonts::embedded());
+        sample_pattern(&mut p, 0);
+        let tap = |p: &mut Player, widget: &str, i: usize| {
+            let r = p.ui.rect_of(widget).unwrap();
+            let t = match widget {
+                chop_tab::LIST => {
+                    p.ui.get::<SettingList>(widget)
+                        .unwrap()
+                        .control_rect(r, i)
+                        .unwrap()
+                }
+                _ => p.ui.get::<PadBar>(widget).unwrap().tab_rect(r, i),
+            };
+            assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
+            p.touch(9, Touch::Up, t.x + 5, t.y + 5);
+        };
+        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
+        assert_eq!(p.page(), sample_page::CHOP_PAGE);
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            let index = Row::ALL.iter().position(|r| *r == row).unwrap();
+            p.on_event(UiEvent {
+                widget: chop_tab::LIST.into(),
+                kind: EventKind::Step { index, delta },
+            });
+        };
+        fn list(p: &Player) -> &SettingList {
+            p.ui.get::<SettingList>(chop_tab::LIST).unwrap()
+        }
+        // Put on: Pads, One pad, Keys, New kit.
+        for _ in 0..3 {
+            step(&mut p, Row::Put, 1);
+        }
+        assert_eq!(list(&p).rows[Row::Put.index()].value, "New kit");
+        assert_eq!(list(&p).right, "on a new track");
+        // Every eighth of the beat grid, with a phrase.
+        step(&mut p, Row::Method, 1);
+        step(&mut p, Row::Amount, -1);
+        step(&mut p, Row::Phrase, 1);
+        assert_eq!(list(&p).rows[Row::Chop.index()].value, "Phrase to new kit");
+        let n = p.sample.chop().unwrap().0.slices();
+        assert!(n > 1);
+        p.take_actions();
+        let tracks = p.time.tracks.len();
+        tap(&mut p, chop_tab::LIST, Row::Chop.index());
+        // The new kit's pads go to the audio thread, and a track is asked
+        // for; the phrase waits for it.
+        let (sent, rest) = views(p.take_actions());
+        assert_eq!(sent.iter().map(|v| v.kit).collect::<Vec<_>>(), [u]);
+        assert_eq!(rest, [FromUi::Time(TimeAction::AddTrack)]);
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        let last = crate::app::kit_pad_name(n - 1);
+        assert!(
+            events_log(&p).iter().any(|l| l.ends_with(&format!(
+                "into {n} slices (Beat) on kit {} (Break 92 chops) pads A1 to {last}, for a new track",
+                u + 1
+            ))),
+            "{:?}",
+            events_log(&p)
+        );
+        assert_eq!(p.kits[u].name, "Break 92 chops");
+        assert_eq!(p.kits[u].pads.iter().flatten().count(), n);
+        assert_eq!(p.kits[u].pads[0].as_deref(), Some("Break 92 1"));
+        let breaks = p.sample.project(0).unwrap();
+        assert!(
+            breaks.pad(pad).is_some() && breaks.pad(0).is_none() && breaks.chop_sets.is_empty(),
+            "kit 1 stays as it was"
+        );
+        // Not two at once: New kit waits for the track.
+        assert!(!list(&p).controls[Row::Chop.index()].why.is_empty());
+        // The track comes back armed: it plays the new kit and the phrase
+        // goes in its first empty slot.
+        let mut st = p.time.clone();
+        let mut added = st.tracks[0].clone();
+        added.name = format!("Track {}", tracks + 1);
+        added.slots.iter_mut().for_each(|s| *s = None);
+        st.tracks.push(added);
+        st.armed = Some(tracks);
+        p.apply(ToUi::Time(Box::new(st)));
+        let acts = p.take_actions();
+        let [FromUi::Kit(k), FromUi::SamplePhrase(clip)] = &acts[..] else {
+            panic!("{acts:?}")
+        };
+        assert_eq!(*k, u);
+        assert_eq!(clip.name, "Break 92 phrase");
+        assert_eq!(clip.notes.len(), n);
+        assert_eq!(
+            (clip.notes[0].note, clip.notes[n - 1].note),
+            (0, (n - 1) as u8)
+        );
+        // The audio loop switches the pads to it: the Sample tab shows its
+        // first slice, and no empty kit is left for another.
+        let mut tk = TrackKits::new(u + 1);
+        assert!(tk.set(tracks, u));
+        p.apply(ToUi::TrackKits(Box::new(tk)));
+        p.apply(ToUi::Kit(u));
+        settle_views(&mut p);
+        assert_eq!(p.sample.chop().unwrap().1.pad, 0);
+        assert_eq!(
+            p.ui.get::<PadBar>(chop_tab::BAR).unwrap().title,
+            "Pad A1 · Break 92 1"
+        );
+        assert_eq!(list(&p).right, "not now");
+        assert_eq!(
+            list(&p).controls[Row::Chop.index()].why,
+            "No empty kit is left for a new track: chop to this kit's pads"
+        );
+        // One UNDO takes the pads and the sound back off the new kit; the
+        // track stays.
+        p.apply(ToUi::SampleUndo(false));
+        let new = p.sample.project(u).unwrap();
+        assert!(new.pad(0).is_none() && new.chop_sets.is_empty());
+        assert!(p.kits[u].pads.iter().all(Option::is_none));
+        let (sent, rest) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        assert!(rest.is_empty(), "{rest:?}");
     }
 
     #[test]
