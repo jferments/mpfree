@@ -11,10 +11,10 @@
 //!   its Start, End and loop markers, the region's settings and the Q-Links.
 //!   It turns touches, Q-Link turns and the wheel into [`WaveAction`]s for
 //!   the app to apply to the project, each drag or turn one undo step.
-//! - [`warp_tab`]: the pad editor's Warp tab: the layer's region drawn in
-//!   its beats, with hits pinned to beats by a tap, a drag or Pin hits (a
-//!   loop played loosely made tight), each change a [`WaveAction`]. Its
-//!   picture is in [`warp_widgets`].
+//! - [`warp_tool`]: the Sample page's Warp tool: the wave drawn as a
+//!   warped layer plays, with hits pinned to beats by a tap, a drag or Pin
+//!   hits (a loop played loosely made tight), and the Warp section, each
+//!   change a [`WaveAction`] (the Warp page went on 18 Nov 2026).
 //! - [`panel`]: the Sample tab's control panel: a settings list drawn as
 //!   labelled sections of knobs, buttons, selectors and switches under the
 //!   wave.
@@ -77,8 +77,7 @@ pub mod sample;
 pub mod send;
 pub mod sound_panel;
 pub mod source;
-pub mod warp_tab;
-pub mod warp_widgets;
+pub mod warp_tool;
 pub mod wave_tab;
 pub mod widgets;
 
@@ -89,5 +88,4 @@ pub use pads_tab::{PadsAction, PadsState, PadsTab};
 pub use play_tab::{PlayAction, PlayState, PlayTab};
 pub use rec_tab::{RecAction, RecSettings, RecState, RecTab};
 pub use source::{PyramidPeaks, SourceView};
-pub use warp_tab::WarpTab;
 pub use wave_tab::{Mark, Snap, WaveAction, WaveState, WaveTab};

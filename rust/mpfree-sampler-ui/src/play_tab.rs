@@ -135,7 +135,7 @@ pub fn layout(s: Section, keys: bool) -> String {
 pub const KEY_VELOCITY: u8 = 100;
 
 /// The tab's place in [`TABS`].
-pub const TAB: usize = 3;
+pub const TAB: usize = 2;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Tap a section for its controls · drag a layer's edges for its velocities · drag the envelope's points and the \

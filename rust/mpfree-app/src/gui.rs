@@ -1760,7 +1760,7 @@ pub struct Player {
     menu_editing: bool,
     /// The Sample page's Play tab showed its keyboard, a row that pad hits
     /// edit, and the Wave page's REC on (each changes its hint).
-    sample_keys: (bool, bool, bool, bool, bool),
+    sample_keys: (bool, bool, bool, bool, (bool, bool)),
     /// What the REC chip last called the Wave page's REC take.
     here_chip: Option<String>,
     /// What the Play page's Q-Links turn, as its hint names them.
@@ -2296,7 +2296,7 @@ impl Player {
             screen_row: ("-".to_string(), Tone::Dim),
             timed,
             menu_editing: false,
-            sample_keys: (false, false, false, false, false),
+            sample_keys: (false, false, false, false, (false, false)),
             here_chip: None,
             sample_qlinks: String::new(),
             sample_live: false,
@@ -5635,6 +5635,10 @@ impl Player {
                 }
                 // The Grain tool (one Sample page step 5): the grain window
                 // on the wave, the Grain section's parts.
+                View::Sample if self.sample.warp_tool() => {
+                    format!("Tap a hit: pin it to the grid   ·   Q-Links 1-4: pin, its beat, warp tempo, scroll   ·   \
+                     {ROWS_HINT}   ·   SHIFT + - / +: zoom")
+                }
                 View::Sample if self.sample.grain_tool() => {
                     format!("Drag GRAIN: where grains start, SIZE: how long   ·   Q-Links 1-4: position, size, \
                      density, pitch (SHIFT: sprays, finer)   ·   {ROWS_HINT}   ·   SHIFT + - / +: zoom")
@@ -5642,10 +5646,6 @@ impl Player {
                 View::Sample if self.sample.page() == sample_page::PAGE => {
                     format!("Hit a pad to edit it   ·   Q-Links 1-4: Start, End, loop   ·   {ROWS_HINT}   ·   \
                      SHIFT + - / +: zoom")
-                }
-                View::Sample if self.sample.page() == sample_page::WARP_PAGE => {
-                    format!("Tap a hit: pin it to the grid   ·   Q-Links 1-4: pin, its beat, warp tempo, scroll   ·   \
-                     {ROWS_HINT}   ·   SHIFT + - / +: zoom")
                 }
                 View::Sample if self.sample.chop_live_method() => {
                     "Start plays the sound: hit pads in time to drop cuts   ·   Pull to hits: each onto the nearest hit   ·   \
@@ -8332,13 +8332,13 @@ impl Player {
         // edit was picked, another section (with its own Q-Links) opened,
         // the Chop tab went live, the Wave page's REC went on or off, a
         // take kept on the page came or went on the Wave page, or its
-        // Grain tool was picked or put down: its hint with it.
+        // Warp or Grain tool was picked or put down: its hint with it.
         let keys = (
             self.sample.play_keys_shown(),
             self.sample.play_takes_pads(&self.ui),
             self.sample.recorder_on(),
             self.sample.take_shown().is_some(),
-            self.sample.grain_tool(),
+            (self.sample.warp_tool(), self.sample.grain_tool()),
         );
         // The Wave page's REC take is named on the REC chip by where it
         // goes, which its Onto can change while it records.
@@ -15799,24 +15799,29 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     chop.apply(ToUi::SampleQLink(0, 2));
     chop.take_actions();
     out.push(("sample-chop", chop));
-    // The Warp tab on the same pad: warped to stretch, its hits pinned to
+    // The Warp tool on the same pad: warped to stretch, its hits pinned to
     // the sixteenths, the fourth pin picked.
     let mut warp = sample_sampler(fonts());
+    if let Some(i) = mpfree_sampler_ui::wave_tab::Tool::ALL
+        .iter()
+        .position(|t| *t == mpfree_sampler_ui::wave_tab::Tool::Warp)
+    {
+        warp.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::TOOLS.into(),
+            kind: EventKind::Tab(i),
+        });
+    }
     warp.on_event(UiEvent {
-        widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-        kind: EventKind::Tab(mpfree_sampler_ui::warp_tab::TAB),
-    });
-    warp.on_event(UiEvent {
-        widget: mpfree_sampler_ui::warp_tab::LIST.into(),
+        widget: mpfree_sampler_ui::wave_tab::REGION.into(),
         kind: EventKind::Step {
-            index: mpfree_sampler_ui::warp_tab::Row::Warp.index(),
+            index: mpfree_sampler_ui::warp_tool::Row::Warp.index(),
             delta: 1,
         },
     });
     warp.apply(ToUi::SampleLift);
     warp.on_event(UiEvent {
-        widget: mpfree_sampler_ui::warp_tab::LIST.into(),
-        kind: EventKind::Tab(mpfree_sampler_ui::warp_tab::Row::PinHits.index()),
+        widget: mpfree_sampler_ui::wave_tab::REGION.into(),
+        kind: EventKind::Tab(mpfree_sampler_ui::warp_tool::Row::PinHits.index()),
     });
     warp.apply(ToUi::SampleQLink(0, 4));
     warp.take_actions();
@@ -18075,7 +18080,8 @@ mod tests {
     /// step.
     #[test]
     fn a_held_sample_row_turns_and_its_lift_opens_no_number_pad() {
-        use mpfree_sampler_ui::warp_tab::{Row, LIST};
+        use mpfree_sampler_ui::warp_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
         let mut p = sample_sampler(Fonts::embedded());
         warp_page(&mut p);
         p.on_event(UiEvent {
@@ -18102,7 +18108,7 @@ mod tests {
         p.touch(5, Touch::Down, at.0, at.1);
         assert_eq!(
             p.page(),
-            sample_page::WARP_PAGE,
+            sample_page::PAGE,
             "no pad while the finger is down"
         );
         for _ in 0..3 {
@@ -18114,18 +18120,14 @@ mod tests {
         let turned = bpm(&p);
         assert!(turned > before, "{before} to {turned}");
         p.touch(5, Touch::Up, at.0, at.1);
-        assert_eq!(
-            p.page(),
-            sample_page::WARP_PAGE,
-            "a turned hold opens no pad"
-        );
+        assert_eq!(p.page(), sample_page::PAGE, "a turned hold opens no pad");
         assert_eq!(bpm(&p), turned);
         p.apply(ToUi::SampleUndo(false));
         assert_eq!(bpm(&p), before, "one undo step takes the whole hold back");
         // A tap still opens the pad, on its lift.
         let at = mid(&mut p);
         p.touch(6, Touch::Down, at.0, at.1);
-        assert_eq!(p.page(), sample_page::WARP_PAGE, "not before the lift");
+        assert_eq!(p.page(), sample_page::PAGE, "not before the lift");
         p.touch(6, Touch::Up, at.0, at.1);
         assert_eq!(p.page(), NUMPAD_PAGE);
     }
@@ -21193,7 +21195,8 @@ mod tests {
     #[test]
     fn the_warp_tempo_can_be_typed_on_the_number_pad() {
         use crate::app::RowKey;
-        use mpfree_sampler_ui::warp_tab::{Row, LIST};
+        use mpfree_sampler_ui::warp_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
         use mpfree_sampler_ui::widgets::SettingList;
         use mpfree_ui::numpad::{NumPad, KEY_CANCEL, KEY_ENTER, KEY_POINT};
         let mut p = sample_sampler(Fonts::embedded());
@@ -21246,7 +21249,7 @@ mod tests {
             key(&mut p, k);
         }
         assert_eq!(key(&mut p, KEY_ENTER), None);
-        assert_eq!(p.page(), sample_page::WARP_PAGE);
+        assert_eq!(p.page(), sample_page::PAGE);
         assert_eq!(bpm(&p), 128.5);
         // One undo step takes it back.
         p.apply(ToUi::SampleUndo(false));
@@ -21263,13 +21266,13 @@ mod tests {
             "Warp tempo: type 20 to 999 BPM"
         );
         key(&mut p, KEY_CANCEL);
-        assert_eq!((p.page(), bpm(&p)), (sample_page::WARP_PAGE, before));
+        assert_eq!((p.page(), bpm(&p)), (sample_page::PAGE, before));
         // The wheel steps from the tempo now (a tenth a detent here) and
         // its push is Enter.
         open(&mut p);
         p.apply(ToUi::SampleWheel(3));
         p.apply(ToUi::Rows(RowKey::Editing(true)));
-        assert_eq!(p.page(), sample_page::WARP_PAGE);
+        assert_eq!(p.page(), sample_page::PAGE);
         assert!((bpm(&p) - (before + 0.3)).abs() < 0.001, "{}", bpm(&p));
     }
 
@@ -22676,12 +22679,10 @@ mod tests {
 
     /// The Sample tab's Warp page open (its Warp and Warp tempo rows were
     /// the Wave page's until the one Sample page, 18 Nov).
+    /// Picks the Sample page's Warp tool.
     fn warp_page(p: &mut Player) {
-        p.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(mpfree_sampler_ui::warp_tab::TAB),
-        });
-        assert_eq!(p.page(), sample_page::WARP_PAGE);
+        pick_tool(p, mpfree_sampler_ui::wave_tab::Tool::Warp);
+        assert!(p.sample.warp_tool());
         p.take_actions();
     }
 
@@ -22700,7 +22701,8 @@ mod tests {
 
     #[test]
     fn a_warped_pad_follows_the_tempo_and_plays_its_stretched_copy_when_ready() {
-        use mpfree_sampler_ui::warp_tab::{Row, LIST};
+        use mpfree_sampler_ui::warp_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         warp_page(&mut p);
@@ -22774,7 +22776,8 @@ mod tests {
     /// and that is said once, until the tempo changes.
     #[test]
     fn a_stretched_copy_that_would_leave_too_little_memory_is_not_made_and_the_pad_repitches() {
-        use mpfree_sampler_ui::warp_tab::{Row, LIST};
+        use mpfree_sampler_ui::warp_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         p.sample.set_mem_free(|| Some(crate::memory::FLOOR));
@@ -22914,22 +22917,21 @@ mod tests {
     }
 
     #[test]
-    fn the_warp_tab_pins_the_hits_and_the_copy_goes_through_them() {
-        use mpfree_sampler_ui::warp_tab::{self, Row};
-        use mpfree_sampler_ui::widgets::PadBar;
+    fn the_warp_tool_pins_the_hits_and_the_copy_goes_through_them() {
+        use mpfree_sampler_ui::warp_tool::Row;
+        use mpfree_sampler_ui::wave_tab::{Tool, REGION as LIST, TOOLS};
+        use mpfree_sampler_ui::widgets::ToolStrip;
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
-        // The pad bar's Warp tab, after Wave.
-        let r = p.ui.rect_of(mpfree_sampler_ui::wave_tab::BAR).unwrap();
-        let t =
-            p.ui.get::<PadBar>(mpfree_sampler_ui::wave_tab::BAR)
-                .unwrap()
-                .tab_rect(r, warp_tab::TAB);
+        // The tools strip's Warp, after Trim and Slice.
+        let r = p.ui.rect_of(TOOLS).unwrap();
+        let i = Tool::ALL.iter().position(|t| *t == Tool::Warp).unwrap();
+        let t = p.ui.get::<ToolStrip>(TOOLS).unwrap().tool_rect(r, i);
         assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
         p.touch(9, Touch::Up, t.x + 5, t.y + 5);
         assert_eq!(
-            (p.page(), p.sample.editor()),
-            (sample_page::WARP_PAGE, sample_page::Editor::Warp)
+            (p.page(), p.sample.editor(), p.sample.tool()),
+            (sample_page::PAGE, sample_page::Editor::Wave, Tool::Warp)
         );
         assert!(p
             .ui
@@ -22939,7 +22941,7 @@ mod tests {
             .contains("Tap a hit: pin it to the grid"));
         // Warp on (Stretch), then Pin hits.
         p.on_event(UiEvent {
-            widget: warp_tab::LIST.into(),
+            widget: LIST.into(),
             kind: EventKind::Step {
                 index: Row::Warp.index(),
                 delta: 1,
@@ -22949,7 +22951,7 @@ mod tests {
         p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
         p.apply(ToUi::SampleLift);
         p.on_event(UiEvent {
-            widget: warp_tab::LIST.into(),
+            widget: LIST.into(),
             kind: EventKind::Tab(Row::PinHits.index()),
         });
         let w = p.sample.state().unwrap().region.warp.clone().unwrap();
@@ -22961,7 +22963,7 @@ mod tests {
             use crate::app::RowKey;
             use mpfree_sampler_ui::widgets::SettingList;
             let list = |p: &Player| {
-                let l = p.ui.get::<SettingList>(warp_tab::LIST).unwrap();
+                let l = p.ui.get::<SettingList>(LIST).unwrap();
                 (
                     l.selected,
                     l.editing,
@@ -23013,7 +23015,7 @@ mod tests {
         p.apply(ToUi::SampleUndo(false));
         let w = p.sample.state().unwrap().region.warp.clone().unwrap();
         assert!(w.pins.is_empty());
-        assert_eq!(p.page(), sample_page::WARP_PAGE);
+        assert_eq!(p.page(), sample_page::PAGE);
     }
 
     fn events_log(p: &Player) -> Vec<String> {
@@ -24180,14 +24182,12 @@ mod tests {
     #[test]
     fn process_makes_a_new_sound_on_a_worker_in_one_undo_step_and_can_be_stopped() {
         use mpfree_sampler::model::WarpMethod;
-        use mpfree_sampler_ui::warp_tab::{self, Row, LIST};
+        use mpfree_sampler_ui::warp_tool::{self, Row};
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
         use mpfree_sampler_ui::widgets::SettingList;
         let mut p = sample_sampler(Fonts::embedded());
-        p.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(warp_tab::TAB),
-        });
-        assert_eq!(p.page(), crate::sample_page::WARP_PAGE);
+        warp_page(&mut p);
+        assert_eq!(p.page(), crate::sample_page::PAGE);
         let ev = |p: &mut Player, kind: EventKind| {
             p.on_event(UiEvent {
                 widget: LIST.into(),
@@ -24211,11 +24211,11 @@ mod tests {
                 .clone()
         };
         let before = p.sample.state().unwrap().region.clone();
-        // Not warped and no Shift: it would come out the same.
+        // Not warped and the new sound's pitch 0: it would come out the same.
         process(&mut p);
         assert!(events_log(&p).iter().any(|l| l
-            == "sample: pad A5 not processed (it would come out the same: set Shift, or turn Warp on)"));
-        assert_eq!(value(&p, Row::Process), warp_tab::PROCESS_TEXT);
+            == "sample: pad A5 not processed (it would come out the same: set New sound's pitch, or turn Warp on)"));
+        assert_eq!(value(&p, Row::Process), warp_tool::PROCESS_TEXT);
         // Three semitones up: the same length, a new sound.
         for _ in 0..3 {
             step(&mut p, Row::Shift, 1);
@@ -24230,7 +24230,7 @@ mod tests {
                 l.starts_with("sample: pad A5 processed into a new sound, 3 semitones higher: ")
             })
         });
-        assert_eq!(value(&p, Row::Process), warp_tab::PROCESS_TEXT);
+        assert_eq!(value(&p, Row::Process), warp_tool::PROCESS_TEXT);
         let after = p.sample.state().unwrap().region.clone();
         let kit = p.sample.project(0).unwrap();
         let made = kit.source(after.source).unwrap();
@@ -24289,7 +24289,7 @@ mod tests {
                 .any(|l| l == "sample: pad A5 not processed (stopped)")
         });
         assert_eq!(p.sample.state().unwrap().region, now);
-        assert_eq!(value(&p, Row::Process), warp_tab::PROCESS_TEXT);
+        assert_eq!(value(&p, Row::Process), warp_tool::PROCESS_TEXT);
     }
 
     /// The Play, Pads and Sequencer redesign (Jay, 18 Nov): the browser's
@@ -29616,31 +29616,27 @@ mod tests {
         use mpfree_sampler_ui::wave_tab::{self, Tool};
         let mut p = sample_sampler(Fonts::embedded());
         assert_eq!(p.page(), sample_page::PAGE);
-        // Slice and Warp aren't on the page yet: each opens its old page,
-        // and the pad bar's first tab comes back to Trim.
-        for (i, page) in [(1, sample_page::CHOP_PAGE), (2, sample_page::WARP_PAGE)] {
-            p.on_event(UiEvent {
-                widget: wave_tab::TOOLS.into(),
-                kind: EventKind::Tab(i),
-            });
-            assert_eq!(p.page(), page, "{:?}", Tool::ALL[i]);
-            let bar = match page {
-                sample_page::CHOP_PAGE => "smp-chop-bar",
-                _ => "smp-warp-bar",
-            };
-            p.on_event(UiEvent {
-                widget: bar.into(),
-                kind: EventKind::Tab(wave_tab::TAB),
-            });
-            assert_eq!(p.page(), sample_page::PAGE);
-            assert_eq!(p.sample.tool(), Tool::Trim);
-        }
-        // Grain is: it stays on the page, with its hint.
-        pick_tool(&mut p, Tool::Grain);
+        // Slice isn't on the page yet: it opens its old page, and the pad
+        // bar's first tab comes back to Trim.
+        pick_tool(&mut p, Tool::Slice);
+        assert_eq!(p.page(), sample_page::CHOP_PAGE);
+        p.on_event(UiEvent {
+            widget: "smp-chop-bar".into(),
+            kind: EventKind::Tab(wave_tab::TAB),
+        });
         assert_eq!(p.page(), sample_page::PAGE);
-        assert_eq!(p.sample.tool(), Tool::Grain);
-        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
-        assert!(hint.starts_with("Drag GRAIN"), "{hint}");
+        assert_eq!(p.sample.tool(), Tool::Trim);
+        // Warp and Grain are: each stays on the page, with its hint.
+        for (tool, starts) in [
+            (Tool::Warp, "Tap a hit: pin it"),
+            (Tool::Grain, "Drag GRAIN"),
+        ] {
+            pick_tool(&mut p, tool);
+            assert_eq!(p.page(), sample_page::PAGE);
+            assert_eq!(p.sample.tool(), tool);
+            let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+            assert!(hint.starts_with(starts), "{hint}");
+        }
         pick_tool(&mut p, Tool::Trim);
         // While a take records the tools are faint and a tap says why.
         let strip =

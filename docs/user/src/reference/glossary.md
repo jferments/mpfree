@@ -82,7 +82,7 @@ checked: 2026-11-14 b76c3c7
 
 **Pattern** — A clip shown as a grid of steps on the Play page.
 
-**Pin** — A hit in a warped sound fixed to a beat on the Warp page; the sound between pins stretches to fit.
+**Pin** — A hit in a warped sound fixed to a beat with the Warp tool; the sound between pins stretches to fit.
 
 **Plugin** — An effect or synth made by someone else, in the CLAP format, that MPFree can load from its stick.
 

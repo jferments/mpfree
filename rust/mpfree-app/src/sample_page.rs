@@ -99,7 +99,6 @@ use mpfree_sampler_ui::recorder::{
 };
 use mpfree_sampler_ui::send;
 use mpfree_sampler_ui::source::{cache_file, SourceView};
-use mpfree_sampler_ui::warp_tab::{self, WarpTab};
 use mpfree_sampler_ui::wave_tab::{
     self, duration_text, mode_label, Tool, WaveAction, WaveState, WaveTab,
 };
@@ -125,8 +124,6 @@ pub const PLAY_PAGE: &str = "Sample · Play";
 pub const PADS_PAGE: &str = "Pads · Pad";
 /// The Rec tab's page.
 pub const REC_PAGE: &str = "Sample · Rec";
-/// The Warp tab's page.
-pub const WARP_PAGE: &str = "Sample · Warp";
 /// The Rec tab's Auto-sample mode's page.
 pub const AUTO_PAGE: &str = "Sample · Auto-sample";
 /// The line input the sampler keeps while it is on: enough for the
@@ -153,7 +150,7 @@ pub const EMPTY_LAYOUT: &str = "col(header:60, sample-empty:*, hint:26)";
 /// `smp-chop-`, the Play tab's with `smp-play-`).
 pub const PREFIX: &str = "smp-";
 /// The editors whose pad bar's title names the pad and its sound.
-const NAMED_BARS: [&str; 4] = [wave_tab::BAR, warp_tab::BAR, chop_tab::BAR, play_tab::BAR];
+const NAMED_BARS: [&str; 3] = [wave_tab::BAR, chop_tab::BAR, play_tab::BAR];
 /// The text keyboard's keys for a pad's name and its sound's.
 pub const NAME_PAD: &str = "pad";
 pub const NAME_SOUND: &str = "sound";
@@ -164,7 +161,6 @@ const CHOP_PREFIX: &str = "smp-chop-";
 const PLAY_PREFIX: &str = "smp-play-";
 const PADS_PREFIX: &str = "smp-pads-";
 const REC_PREFIX: &str = "smp-rec-";
-const WARP_PREFIX: &str = "smp-warp-";
 const AUTO_PREFIX: &str = "smp-auto-";
 /// A Q-Link resting this long ends its turn: the next one is a new undo step.
 const TURN_REST: Duration = Duration::from_secs(1);
@@ -207,7 +203,6 @@ pub enum Editor {
     /// one of the Sample tab's.
     Pads,
     Wave,
-    Warp,
     Chop,
     Play,
     Rec,
@@ -389,7 +384,7 @@ fn take_what(rec: &Recording) -> String {
     }
 }
 
-/// A Process under way (the Warp tab's Process button): the stretch on a
+/// A Process under way (the Warp tool's Process button): the stretch on a
 /// thread of its own, how far it has got, and how to stop it.
 struct Processing {
     kit: usize,
@@ -790,9 +785,6 @@ pub struct SamplePage {
     /// The memory free for new loads ([`crate::memory::free_bytes`]; a
     /// test gives its own).
     mem_free: fn() -> Option<u64>,
-    /// The Warp tab, added the first time it is opened. It shows the Wave
-    /// tab's state.
-    warp: Option<WarpTab>,
     /// The Rec tab, added the first time it is opened.
     rec: Option<RecTab>,
     rec_state: Option<RecState>,
@@ -862,7 +854,7 @@ pub struct SamplePage {
     /// ([`SamplePage::take_text_ask`]).
     text_ask: Option<Vec<mpfree_ui::textpad::TextAsk>>,
     auto_job: Option<AutoJob>,
-    /// The Warp tab's Process, while one runs.
+    /// The Warp tool's Process, while one runs.
     processing: Option<Processing>,
     /// The last instrument made, or why not, in a line.
     auto_last: String,
@@ -991,7 +983,6 @@ impl SamplePage {
             stretching: Vec::new(),
             unstretched: Vec::new(),
             mem_free: crate::memory::free_bytes,
-            warp: None,
             rec: None,
             rec_state: None,
             rec_settings: rec_tab::RecSettings::default(),
@@ -1479,6 +1470,11 @@ impl SamplePage {
         self.tab.as_ref().map_or(Tool::Trim, WaveTab::tool)
     }
 
+    /// The Wave page shows with the Warp tool.
+    pub fn warp_tool(&self) -> bool {
+        self.page() == PAGE && self.tool() == Tool::Warp
+    }
+
     /// The Wave page shows with the Grain tool.
     pub fn grain_tool(&self) -> bool {
         self.page() == PAGE && self.tool() == Tool::Grain
@@ -1503,7 +1499,6 @@ impl SamplePage {
             Editor::Rec if self.rec_state.is_some() && self.rec.is_some() => REC_PAGE,
             Editor::Auto if self.auto_state.is_some() && self.auto.is_some() => AUTO_PAGE,
             Editor::Wave if self.state.is_some() && self.tab.is_some() => PAGE,
-            Editor::Warp if self.state.is_some() && self.warp.is_some() => WARP_PAGE,
             _ => EMPTY_PAGE,
         }
     }
@@ -1524,7 +1519,6 @@ impl SamplePage {
     fn list(&self) -> Option<&'static str> {
         Some(match self.page() {
             PAGE => wave_tab::REGION,
-            WARP_PAGE => warp_tab::LIST,
             CHOP_PAGE => chop_tab::LIST,
             PLAY_PAGE => play_tab::LIST,
             REC_PAGE => rec_tab::LIST,
@@ -1569,7 +1563,7 @@ impl SamplePage {
     /// their rows step here.
     pub fn step_row(&mut self, ui: &mut Ui, delta: i32) -> Option<UiEvent> {
         let name = match self.page() {
-            PAGE | WARP_PAGE | CHOP_PAGE => self.list()?,
+            PAGE | CHOP_PAGE => self.list()?,
             _ => return None,
         };
         let index = ui.get::<SettingList>(name)?.selected;
@@ -1662,9 +1656,6 @@ impl SamplePage {
             }
             _ => {}
         }
-        if self.editor == Editor::Warp {
-            self.refresh_warp(ui, bank);
-        }
         self.rec_state = None;
         if self.editor == Editor::Rec {
             self.refresh_rec(ui, bank);
@@ -1707,30 +1698,6 @@ impl SamplePage {
         }
         if let Some(tab) = self.chop.as_ref() {
             tab.set_playheads(ui, &[]);
-        }
-        if let Some(tab) = self.warp.as_ref() {
-            tab.set_playheads(ui, &[]);
-        }
-    }
-
-    /// Shows the Warp tab (the Wave tab's state), adding it the first time.
-    fn refresh_warp(&mut self, ui: &mut Ui, bank: Option<char>) {
-        let Some(st) = self.state.as_ref() else {
-            return;
-        };
-        match self.warp.as_mut() {
-            Some(tab) => {
-                tab.bank = bank;
-                tab.update(ui, st);
-            }
-            None => match WarpTab::add(ui, WARP_PAGE, st) {
-                Ok(mut tab) => {
-                    tab.bank = bank;
-                    tab.update(ui, st);
-                    self.warp = Some(tab);
-                }
-                Err(e) => self.lines.push(format!("sample: no Warp page ({e})")),
-            },
         }
     }
 
@@ -2200,16 +2167,6 @@ impl SamplePage {
             }
             return;
         }
-        if ev.widget.starts_with(WARP_PREFIX) {
-            let (Some(tab), Some(st)) = (self.warp.as_mut(), self.state.as_ref()) else {
-                return;
-            };
-            let a = tab.action(ui, ev, st);
-            if let Some(a) = self.took(a) {
-                self.act(ui, a, out);
-            }
-            return;
-        }
         if ev.widget.starts_with(PADS_PREFIX) {
             let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_ref()) else {
                 return;
@@ -2313,7 +2270,6 @@ impl SamplePage {
     fn open(&mut self, ui: &mut Ui, i: usize) {
         let editor = match i {
             wave_tab::TAB => Editor::Wave,
-            warp_tab::TAB => Editor::Warp,
             chop_tab::TAB => Editor::Chop,
             play_tab::TAB => Editor::Play,
             rec_tab::TAB => Editor::Rec,
@@ -2980,15 +2936,6 @@ impl SamplePage {
             self.keep_chop();
             return;
         }
-        if self.editor == Editor::Warp {
-            let (Some(tab), Some(st)) = (self.warp.as_mut(), self.state.as_ref()) else {
-                return;
-            };
-            if let Some(a) = tab.qlink(ui, st, knob, ticks, fine) {
-                self.act(ui, a, &mut Vec::new());
-            }
-            return;
-        }
         let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) else {
             return;
         };
@@ -3253,11 +3200,6 @@ impl SamplePage {
             }
             Editor::Wave => {
                 if let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) {
-                    tab.wheel(ui, st, delta);
-                }
-            }
-            Editor::Warp => {
-                if let (Some(tab), Some(st)) = (self.warp.as_mut(), self.state.as_ref()) {
                     tab.wheel(ui, st, delta);
                 }
             }
@@ -3861,7 +3803,7 @@ impl SamplePage {
         let Some(text) = text else {
             say_not(
                 self,
-                "it would come out the same: set Shift, or turn Warp on".to_string(),
+                "it would come out the same: set New sound's pitch, or turn Warp on".to_string(),
             );
             return;
         };
@@ -3922,7 +3864,7 @@ impl SamplePage {
                     done,
                     shown: 0.0,
                 });
-                if let (Some(tab), Some(st)) = (self.warp.as_mut(), self.state.as_ref()) {
+                if let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) {
                     tab.set_processing(ui, st, Some(0.0));
                 }
             }
@@ -3931,10 +3873,11 @@ impl SamplePage {
         self.refresh(ui);
     }
 
-    /// The Process under way: its progress on the Warp tab while it shows,
+    /// The Process under way: its progress on the Warp section while it shows,
     /// and once it is done, the new sound in the region's place (one undo
     /// step), or why not.
     fn poll_process(&mut self, ui: &mut Ui, showing: bool) {
+        let warp_shows = showing && self.editor == Editor::Wave && self.tool() == Tool::Warp;
         let Some(p) = self.processing.as_mut() else {
             return;
         };
@@ -3942,10 +3885,10 @@ impl SamplePage {
             Ok(r) => r,
             Err(TryRecvError::Empty) => {
                 let done = f32::from_bits(p.done.load(Ordering::Relaxed));
-                // Each per cent, while the Warp tab shows.
-                if showing && self.editor == Editor::Warp && (done - p.shown).abs() >= 0.01 {
+                // Each per cent, while the Warp tool shows.
+                if warp_shows && (done - p.shown).abs() >= 0.01 {
                     p.shown = done;
-                    if let (Some(tab), Some(st)) = (self.warp.as_mut(), self.state.as_ref()) {
+                    if let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) {
                         tab.set_processing(ui, st, Some(done));
                     }
                 }
@@ -3987,7 +3930,7 @@ impl SamplePage {
                 .lines
                 .push(format!("sample: pad {} not processed ({why})", p.at)),
         }
-        if let (Some(tab), Some(st)) = (self.warp.as_mut(), self.state.as_ref()) {
+        if let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) {
             tab.set_processing(ui, st, None);
         }
         self.refresh(ui);
@@ -4119,10 +4062,9 @@ impl SamplePage {
         let Some(st) = self.state.as_ref() else {
             return;
         };
-        // Only the Warp page has typed rows (the Wave page's went with its
-        // Warp rows).
+        // Only the Warp tool has a typed row (the Warp tempo).
         let a = match self.editor {
-            Editor::Warp => self.warp.as_mut().and_then(|t| t.typed(st, key, value)),
+            Editor::Wave => self.tab.as_mut().and_then(|t| t.typed(st, key, value)),
             _ => None,
         };
         if let Some(a) = a {
@@ -4155,9 +4097,6 @@ impl SamplePage {
     /// so the next edit is a new undo step. Writes its log line.
     pub fn lift(&mut self) {
         if let Some(tab) = self.tab.as_mut() {
-            tab.lift();
-        }
-        if let Some(tab) = self.warp.as_mut() {
             tab.lift();
         }
         if let Some(tab) = self.play.as_mut() {
@@ -6698,11 +6637,6 @@ impl SamplePage {
             }
             Editor::Chop => {
                 if let Some(tab) = self.chop.as_ref() {
-                    tab.set_playheads(ui, &frames);
-                }
-            }
-            Editor::Warp => {
-                if let Some(tab) = self.warp.as_ref() {
                     tab.set_playheads(ui, &frames);
                 }
             }
