@@ -222,7 +222,7 @@ MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controll
 - the tempo on the Play page;
 - the [chain editor](effects.md#adding-an-effect-the-chain-editor): an effect's knobs, faders, sliders and drawbars;
 - the macros panel: a macro's knob;
-- the Synth tab: the synth's knobs, faders, sliders and drawbars, for the track it shows (the track's own instrument, or the synth on the pads).
+- the Synth tab: the synth's knobs, faders, sliders and drawbars, for the track it shows (the track's own instrument, or the synth on the pads), and an MPC plugin's own screen (its skin): its knobs, sliders and buttons.
 
 Anywhere else SHIFT + a touch keeps its own job, such as SHIFT + drag on an audio region.
 
