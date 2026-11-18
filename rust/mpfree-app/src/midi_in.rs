@@ -2275,6 +2275,66 @@ mod tests {
         assert_eq!(r.event(200, down(60), |_| Some(1)), None);
     }
 
+    /// A routed key held when its keyboard is unplugged, or when its route
+    /// is taken away, ends in CAPTURE's history too: the key's end comes
+    /// from the router, through `RoutedHeld` and `RoutedPads`, as the
+    /// end of the pad its note went to, so no routed note is left held.
+    #[test]
+    fn a_routed_key_let_go_by_an_unplug_or_a_route_change_ends_for_capture() {
+        use mpfree_midi::setup::TrackRoute;
+        let mut m = MusicIn::new();
+        let io = model();
+        let keystep = m.plugged("Keystep 37").unwrap();
+        {
+            let mut v = io.lock().unwrap();
+            v.setup.routes = vec![TrackRoute {
+                port: "Keystep 37".to_string(),
+                channel: None,
+                track: 2,
+                blocks: mpfree_midi::blocks::Blocks::NONE,
+            }];
+            v.gen += 1;
+        }
+        m.sync(&io, 0.5);
+        let mut held = RoutedHeld::new();
+        let mut pads = RoutedPads::new();
+        // What the app gives CAPTURE for the routed keys so far (track 3
+        // isn't armed; note n plays pad n - 60).
+        let mut capture = |m: &mut MusicIn| -> Vec<(u8, Event)> {
+            let routed: Vec<_> = m.take_routed().collect();
+            routed
+                .into_iter()
+                .filter(|&(t, k)| held.direct(t, k, false))
+                .filter_map(|(t, k)| Some((t, pads.event(t, k, |n| n.checked_sub(60))?)))
+                .collect()
+        };
+        run(&mut m, keystep, &[0x90, 64, 90]);
+        assert_eq!(
+            capture(&mut m),
+            vec![(
+                2,
+                Event::NoteOn {
+                    note: 4,
+                    velocity: 90
+                }
+            )]
+        );
+        m.unplugged(keystep, &mut Vec::new());
+        assert_eq!(capture(&mut m), vec![(2, Event::NoteOff { note: 4 })]);
+        // Back in, a key held, and the route taken away.
+        let keystep = m.plugged("Keystep 37").unwrap();
+        m.sync(&io, 1.0);
+        run(&mut m, keystep, &[0x90, 67, 90]);
+        assert_eq!(capture(&mut m).len(), 1);
+        {
+            let mut v = io.lock().unwrap();
+            v.setup.routes.clear();
+            v.gen += 1;
+        }
+        m.sync(&io, 1.5);
+        assert_eq!(capture(&mut m), vec![(2, Event::NoteOff { note: 7 })]);
+    }
+
     #[test]
     fn a_busy_screen_skips_the_update_and_counts_it() {
         let mut m = MusicIn::new();

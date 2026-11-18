@@ -3069,38 +3069,45 @@ impl TimeControl {
                 }
             }
         }
-        let Some(&k) = kept.first() else {
+        if kept.is_empty() {
             let e = first_error.ok_or("capture: nothing played")?;
             return Err(format!("capture: {e:?}"));
-        };
-        // The moves made over a phrase played in time go with the first
-        // track's notes (the armed track's, when the pads played).
-        let track = k.track;
-        let origin = k.launch.map(|l| l.origin).or_else(|| {
-            self.launches
-                .iter()
-                .find(|l| l.track == track && l.slot == k.slot)
-                .map(|l| l.origin)
-        });
+        }
+        // The moves made over a phrase played in time go with the armed
+        // track's notes (their addresses are the armed track's); with none
+        // of those kept, they stay out, and the line says so.
         let mut moves = 0;
-        if let (Some(s), Some(origin)) = (phrase.song_start, origin) {
-            if let Some(clip) = self.project.clip(track, k.slot) {
-                let list = moves_for_clip(
-                    &self.move_log.phrase(),
-                    s as f64,
-                    (s + phrase.length) as f64,
-                    clip,
-                    origin,
-                    track as u8,
-                );
-                if !list.is_empty() {
-                    moves = self
-                        .takes
-                        .capture_moves(&mut self.project, track, k.slot, k.take, &list)
-                        .unwrap_or(0);
+        let mut moves_out = 0;
+        if let Some(s) = phrase.song_start {
+            let (from, to) = (s as f64, (s + phrase.length) as f64);
+            match kept.iter().find(|k| k.track == armed) {
+                Some(k) => {
+                    let origin = k.launch.map(|l| l.origin).or_else(|| {
+                        self.launches
+                            .iter()
+                            .find(|l| l.track == armed && l.slot == k.slot)
+                            .map(|l| l.origin)
+                    });
+                    if let (Some(origin), Some(clip)) = (origin, self.project.clip(armed, k.slot)) {
+                        let list = moves_for_clip(
+                            &self.move_log.phrase(),
+                            from,
+                            to,
+                            clip,
+                            origin,
+                            armed as u8,
+                        );
+                        if !list.is_empty() {
+                            moves = self
+                                .takes
+                                .capture_moves(&mut self.project, armed, k.slot, k.take, &list)
+                                .unwrap_or(0);
+                        }
+                    }
+                    self.move_log.forget();
                 }
+                None => moves_out = moves_over(&self.move_log.phrase(), from, to),
             }
-            self.move_log.forget();
         }
         for l in kept.iter().filter_map(|k| k.launch) {
             self.launches.retain(|x| x.track != l.track);
@@ -3155,6 +3162,13 @@ impl TimeControl {
             });
         }
         parts.extend(left);
+        match moves_out {
+            0 => {}
+            1 => parts.push("1 move left out: it goes with the armed track's notes".into()),
+            n => parts.push(format!(
+                "{n} moves left out: they go with the armed track's notes"
+            )),
+        }
         Ok(parts.join("; "))
     }
 
@@ -4111,4 +4125,16 @@ fn steps_text(steps: &[usize]) -> String {
     } else {
         format!("steps {}", list.join(", "))
     }
+}
+
+/// How many of `gestures` (a move log's phrase) overlap song ticks
+/// `from..to`, as `moves_for_clip` takes them.
+fn moves_over(gestures: &[mpfree_seq::mpfree_moves::Gesture], from: f64, to: f64) -> usize {
+    gestures
+        .iter()
+        .filter(|g| match (g.points.first(), g.points.last()) {
+            (Some(a), Some(b)) => g.song + (b.0 - a.0) >= from && g.song < to,
+            _ => false,
+        })
+        .count()
 }
