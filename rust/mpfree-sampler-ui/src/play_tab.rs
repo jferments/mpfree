@@ -789,6 +789,9 @@ pub struct PlayState {
     /// The project's tempo, for an LFO synced to it (the app sets it; 120
     /// until then).
     pub bpm: f64,
+    /// A take kept on the page, by name (its pad is
+    /// [`crate::wave_tab::TAKE`]): the Wave page's Sound section edits it.
+    pub take: Option<String>,
 }
 
 impl PlayState {
@@ -797,9 +800,32 @@ impl PlayState {
     pub fn from_project(
         p: &Project,
         pad: usize,
+        view: impl FnMut(&Source) -> Arc<SourceView>,
+    ) -> Option<PlayState> {
+        Self::of_settings(p, pad, p.pad(pad)?.clone(), view)
+    }
+
+    /// Take `index` kept on the page (one-page step 2b), as
+    /// [`PlayState::from_project`] shows a pad; its pad is
+    /// [`crate::wave_tab::TAKE`].
+    pub fn of_take(
+        p: &Project,
+        index: usize,
+        view: impl FnMut(&Source) -> Arc<SourceView>,
+    ) -> Option<PlayState> {
+        let t = p.take(index)?.clone();
+        let name = t.name.clone();
+        let mut st = Self::of_settings(p, crate::wave_tab::TAKE, t, view)?;
+        st.take = Some(name);
+        Some(st)
+    }
+
+    fn of_settings(
+        p: &Project,
+        pad: usize,
+        settings: Pad,
         mut view: impl FnMut(&Source) -> Arc<SourceView>,
     ) -> Option<PlayState> {
-        let settings = p.pad(pad)?.clone();
         if settings.layers.is_empty() {
             return None;
         }
@@ -845,6 +871,7 @@ impl PlayState {
                 })
                 .collect(),
             bpm: 120.0,
+            take: None,
         })
     }
 
@@ -1059,19 +1086,26 @@ impl PlayAction {
             | PlayAction::Scene(_) => return Ok(()),
         };
         let now = p.pad(*pad).ok_or(ModelError::BadPad)?;
-        if now.layers.len() != after.layers.len() {
-            return Err(ModelError::BadPad);
-        }
-        let mut next = (**after).clone();
-        for (l, n) in next.layers.iter_mut().zip(&now.layers) {
-            // A sliced region's slices' own settings are the tab's (R4
-            // part 5); the rest of a region is the other tabs'.
-            let sets = std::mem::take(&mut l.region.slice_sets);
-            l.region = n.region.clone();
-            l.region.slice_sets = sets;
-        }
+        let next = with_regions_of(after, now)?;
         p.set_pad(*pad, Some(next), Some(*gesture))
     }
+}
+
+/// `after` (the tab's change to a pad) with `now`'s layer regions: the
+/// other tabs' part of a region stays as the pad has it, a sliced
+/// region's slices' own settings are the tab's (R4 part 5). Refused when
+/// the layers differ in number.
+pub fn with_regions_of(after: &Pad, now: &Pad) -> Result<Pad, ModelError> {
+    if now.layers.len() != after.layers.len() {
+        return Err(ModelError::BadPad);
+    }
+    let mut next = after.clone();
+    for (l, n) in next.layers.iter_mut().zip(&now.layers) {
+        let sets = std::mem::take(&mut l.region.slice_sets);
+        l.region = n.region.clone();
+        l.region.slice_sets = sets;
+    }
+    Ok(next)
 }
 
 /// `p` with a copy of layer `after` just after it, the copy taking the

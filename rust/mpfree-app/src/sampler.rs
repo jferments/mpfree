@@ -810,6 +810,18 @@ impl Player {
         self.release_kit_at(self.kit, pad, offset);
     }
 
+    /// Plays kit `kit`'s take kept on the Sample page (the one its view
+    /// holds, `EngineView::build_with_take`) at full velocity (`down`), or
+    /// lets it go, `offset` frames into the next render.
+    pub fn take_at(&mut self, kit: usize, down: bool, offset: u32) {
+        let ev = if down {
+            Event::TakeOn { velocity: 127 }
+        } else {
+            Event::TakeOff
+        };
+        self.engine.schedule_for(kit, offset, ev);
+    }
+
     /// [`Player::release_at`] on kit `kit`.
     pub fn release_kit_at(&mut self, kit: usize, pad: usize, offset: u32) {
         if pad < PADS {

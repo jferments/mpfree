@@ -1210,6 +1210,11 @@ pub enum ToUi {
     /// them (`mixing::throw_strips`): with the set, and when the Perform
     /// view shows.
     ThrowStrips(Vec<(String, mpfree_fx::StripId)>),
+    /// Each throw of the Perform set as its strip's Perform FX has it
+    /// (`MixHost::throw_knobs`): what the Perform view's Q-Links show and
+    /// turn. With the set, when the view shows, and when a Perform FX goes
+    /// on or comes off.
+    ThrowKnobs(Vec<crate::mixing::ThrowKnobs>),
 }
 
 /// Not `Clone`: [`FromUi::SampleInput`] carries the one writer of the
@@ -1407,6 +1412,13 @@ pub enum FromUi {
         velocity: u8,
         down: bool,
     },
+    /// A tap on the Wave page's wave with a take kept on the page shown
+    /// (one-page step 2b): kit `kit`'s take plays at full velocity, or is
+    /// let go (`mpfree_sampler::engine::Event::TakeOn`).
+    SampleTake {
+        kit: usize,
+        down: bool,
+    },
     /// The scene crossfader's values for kit `kit`'s pads (`pad`, field,
     /// value; NaN back to the pad's own), while that kit is the one
     /// playing (`mpfree_sampler::scene`).
@@ -1488,6 +1500,24 @@ pub enum FromUi {
     PerformName {
         page: usize,
         name: String,
+    },
+    /// A Q-Link on the Perform view turned a throw's setting on its
+    /// strip's Perform FX (`ThrowKnobs::addr`), or its UNDO put it back:
+    /// set as the chain editor's knobs set theirs, so a turn while the
+    /// transport records records too.
+    ThrowKnob {
+        addr: ParamAddr,
+        value: f32,
+    },
+    /// The finger left that Q-Link: the mod engine lets go of the
+    /// parameter (after a recorded move).
+    ThrowKnobLift(ParamAddr),
+    /// The Perform view's Edit the effect: throw `fx`'s Perform FX pad on
+    /// strip `on`, in the Mix tab's chain editor, with ‹ back to the
+    /// Pads tab.
+    ThrowEffect {
+        on: mpfree_fx::StripId,
+        fx: crate::mixing::ThrowFx,
     },
     /// Capture: the last bars heard become a loop (the deck's Capture,
     /// What you played's button).
@@ -1638,7 +1668,9 @@ pub struct Player {
     menu_editing: bool,
     /// The Sample page's Play tab showed its keyboard, a row that pad hits
     /// edit, and the Wave page's REC on (each changes its hint).
-    sample_keys: (bool, bool, bool),
+    sample_keys: (bool, bool, bool, bool),
+    /// What the REC chip last called the Wave page's REC take.
+    here_chip: Option<String>,
     /// What the Play page's Q-Links turn, as its hint names them.
     sample_qlinks: String,
     /// The Chop tab chopped live (its hint says how).
@@ -2169,7 +2201,8 @@ impl Player {
             screen_row: ("-".to_string(), Tone::Dim),
             timed,
             menu_editing: false,
-            sample_keys: (false, false, false),
+            sample_keys: (false, false, false, false),
+            here_chip: None,
             sample_qlinks: String::new(),
             sample_live: false,
             mix_view: None,
@@ -2403,7 +2436,18 @@ impl Player {
         if self.perform_showing() && self.ready {
             let names = self.perform_names();
             self.perform.show(&mut self.ui, &names);
+            self.refresh_qlinks();
+            self.refresh_hint();
         }
+    }
+
+    /// Q-Link `k` turned `ticks` on the Perform view: the picked throw's
+    /// setting on its strip's Perform FX (SHIFT: finer), or why not.
+    fn perform_qlink(&mut self, k: usize, ticks: i32) {
+        let names = self.perform_names();
+        let acts = self.perform.qlink(k, ticks, self.status.shift, &names);
+        self.perform_acts(acts);
+        self.refresh_history();
     }
 
     /// The Pads tab shows the Perform set (`on`) or the kit's pads: the
@@ -3189,6 +3233,11 @@ impl Player {
             });
             held_title = format!("Q-Links · Controller {}", c.bank_words());
             (held_title.as_str(), cards)
+        } else if self.perform_showing() {
+            // The Perform view: the picked throw's own settings on its
+            // strip's Perform FX (Q3 and Q4 faint).
+            let names = self.perform_names();
+            ("Q-Links · Perform", self.perform.qlink_cards(&names))
         } else if let Some((title, cards)) = &chain {
             (title.as_str(), cards.clone())
         } else if let Some(knobs) = self
@@ -4425,15 +4474,24 @@ impl Player {
     fn rec_chip(&self) -> play_widgets::RecChip {
         use crate::rec_arm::Target;
         // A pad take (sampler R5.7): "REC → Pad A5 · Line in" while it
-        // waits, "● REC → Pad A5 · Line in" while it records.
+        // waits, "● REC → Pad A5 · Line in" while it records. The Wave
+        // page's REC names the take it makes ("Take 4") or the pad it
+        // lands on, as Onto says (one-page step 2b).
         if let Some(p) = self.rec.pad {
+            let name = if p.here {
+                self.sample
+                    .here_take_name(p.kit)
+                    .unwrap_or_else(|| p.name())
+            } else {
+                p.name()
+            };
             return play_widgets::RecChip {
                 state: if p.recording {
                     play_widgets::RecState::Recording
                 } else {
                     play_widgets::RecState::Armed
                 },
-                what: format!("{} · {}", p.name(), self.sample.source_name()),
+                what: format!("{name} · {}", self.sample.source_name()),
                 add: false,
                 pinned: false,
             };
@@ -5445,6 +5503,12 @@ impl Player {
                     format!("Tap REC: stop, keep the take   ·   Q-Links 2-3: Threshold, Pre-roll   ·   {ROWS_HINT}   ·   \
                      SHIFT + - / +: zoom")
                 }
+                // A take kept on the page (one-page step 2b): it stays until
+                // it goes onto a pad.
+                View::Sample if self.sample.page() == sample_page::PAGE && self.sample.take_shown().is_some() => {
+                    format!("Tap the wave: hear the take   ·   Send to pad, then hit a pad: put it there   ·   \
+                     SHIFT + wheel: another sound   ·   Q-Links 1-4: Start, End, loop   ·   {ROWS_HINT}")
+                }
                 View::Sample if self.sample.page() == sample_page::PAGE => {
                     format!("Hit a pad to edit it   ·   Q-Links 1-4: Start, End, loop   ·   {ROWS_HINT}   ·   \
                      SHIFT + - / +: zoom")
@@ -5462,7 +5526,8 @@ impl Player {
                      {ROWS_HINT}   ·   SHIFT + - / +: zoom")
                 }
                 View::Pads if self.perform.shown && self.ui.page() == crate::perform_tab::PAGE => {
-                    crate::perform_tab::HINT.to_string()
+                    let names = self.perform_names();
+                    crate::perform_tab::hint(self.perform.qlink_hint(&names))
                 }
                 View::Pads if self.sample.page() == sample_page::PADS_PAGE => {
                     format!("Hit or tap a pad to pick it, again to hear it   ·   A-H: the kit's banks   ·   \
@@ -5487,7 +5552,8 @@ impl Player {
                      (SHIFT: sprays, finer)   ·   {ROWS_HINT}")
                 }
                 View::Sample if self.sample.page() == sample_page::REC_PAGE => {
-                    format!("Record or Skip back onto the pad named   ·   {ROWS_HINT}   ·   UNDO: take a take off")
+                    format!("Record or Skip back: the Onto row says where the take goes   ·   {ROWS_HINT}   ·   \
+                     UNDO: take a take off")
                 }
                 View::Sample if self.sample.page() == sample_page::AUTO_PAGE => {
                     format!("Start samples the Synth tab's patch or your gear onto the pads named   ·   {ROWS_HINT}")
@@ -7058,7 +7124,12 @@ impl Player {
                 }
             }
             ToUi::QLinkTouch(k, on) => {
-                if !on && self.chain_page.drives(self.view) {
+                if !on && self.perform_showing() {
+                    // A run of turns ends: one UNDO step.
+                    let names = self.perform_names();
+                    let acts = self.perform.qlink_lift(k, &names);
+                    self.perform_acts(acts);
+                } else if !on && self.chain_page.drives(self.view) {
                     // A knob of the effect lets go after a recorded move.
                     if let Some(Turned::Chain(a)) = self.chain_page.released(k) {
                         self.outbox.push(FromUi::Chain(a));
@@ -7527,8 +7598,8 @@ impl Player {
                 self.sample_changed();
             }
             ToUi::SampleViewBack(swap) => self.sample.view_back(swap),
-            // The Perform view has no Q-Links: nothing turns behind it.
-            ToUi::SampleQLink(..) if self.perform_showing() => {}
+            // The Perform view's Q-Links: the picked throw's settings.
+            ToUi::SampleQLink(k, ticks) if self.perform_showing() => self.perform_qlink(k, ticks),
             ToUi::SampleQLink(k, ticks) => {
                 if self.browsing() {
                     self.browser_qlink(k, ticks);
@@ -7817,6 +7888,12 @@ impl Player {
                     self.refresh_perform();
                 }
             }
+            ToUi::ThrowKnobs(knobs) => {
+                if self.perform.knobs != knobs {
+                    self.perform.knobs = knobs;
+                    self.refresh_perform();
+                }
+            }
         }
         self.print_sample_lines();
     }
@@ -8070,13 +8147,24 @@ impl Player {
         }
         // The keyboard came or went on the Play tab, a row that pad hits
         // edit was picked, another section (with its own Q-Links) opened,
-        // the Chop tab went live, or the Wave page's REC went on or off:
-        // its hint with it.
+        // the Chop tab went live, the Wave page's REC went on or off, or a
+        // take kept on the page came or went on the Wave page: its hint
+        // with it.
         let keys = (
             self.sample.play_keys_shown(),
             self.sample.play_takes_pads(&self.ui),
             self.sample.recorder_on(),
+            self.sample.take_shown().is_some(),
         );
+        // The Wave page's REC take is named on the REC chip by where it
+        // goes, which its Onto can change while it records.
+        if let Some(t) = self.rec.pad.filter(|t| t.here) {
+            let name = self.sample.here_take_name(t.kit);
+            if name != self.here_chip {
+                self.here_chip = name;
+                self.refresh_rec_chip();
+            }
+        }
         let qlinks = self.sample.play_qlinks_text();
         let live = self.sample.chop_live_method();
         if keys != self.sample_keys || live != self.sample_live || qlinks != self.sample_qlinks {
@@ -9742,6 +9830,11 @@ impl Player {
     }
 
     fn show_view(&mut self, v: View) {
+        if v == View::Pads && self.view != View::Pads && self.perform.shown {
+            // Back on the Perform view: the app sends its throws' settings
+            // again (the Mix tab may have turned them).
+            self.outbox.push(FromUi::PerformShown(true));
+        }
         self.close_touch_page();
         // Any page change closes the list of kits; another tab or the
         // note editor, the REC chip's target list (Play's and the
@@ -10701,6 +10794,11 @@ impl Player {
             (play_page::TRANSPORT, EventKind::Tab(_)) => None,
             (play_page::MASTER, EventKind::Value(v)) => {
                 Some(FromUi::LevelDb(mpfree_ui::draw::meter_db(v)))
+            }
+            // The Perform view's cards: a faint one says why itself.
+            (play_page::QLINKS, EventKind::Step { index, delta }) if self.perform_showing() => {
+                self.perform_qlink(index, delta);
+                None
             }
             // A blank card has nothing to move here: say why in place.
             (play_page::QLINKS, EventKind::Step { index, .. }) if self.qlink_blank(index) => {
@@ -13088,6 +13186,7 @@ fn pads_perform(fonts: Fonts) -> Player {
             .collect();
     strips.extend((0..8).map(|b| (format!("Sub {}", b + 1), mpfree_fx::StripId::Bus(b))));
     p.apply(ToUi::ThrowStrips(strips));
+    p.apply(ToUi::ThrowKnobs(sample_throw_knobs(&p.perform.set)));
     p.on_event(UiEvent {
         widget: mpfree_sampler_ui::pads_tab::KITS.into(),
         kind: EventKind::Tab(1),
@@ -13099,6 +13198,48 @@ fn pads_perform(fonts: Fonts) -> Player {
         widget: crate::perform_tab::MAP.into(),
         kind: EventKind::Select(1),
     });
+    let _ = p.take_actions();
+    p
+}
+
+/// Each throw of `set` with the Perform FX's own settings for it (its
+/// default bank), as the app sends them once the strips have their Perform
+/// FX.
+fn sample_throw_knobs(set: &crate::perform_pads::PerformSet) -> Vec<crate::mixing::ThrowKnobs> {
+    use crate::perform_pads::PadAction;
+    use mpfree_fx::ids::perform as pf;
+    use mpfree_node::Node;
+    let node = mpfree_fx::Perform::new();
+    let mut out: Vec<crate::mixing::ThrowKnobs> = Vec::new();
+    for a in set.pages.iter().flat_map(|p| p.pads.iter()) {
+        let PadAction::Throw(t) = *a else { continue };
+        let Some(fx) = t.fx() else { continue };
+        if out.iter().any(|k| k.on == t.on && k.fx == fx) {
+            continue;
+        }
+        let v = |o: u16| node.param(pf::slot(fx.pad()) + o);
+        out.push(crate::mixing::ThrowKnobs {
+            on: t.on,
+            fx,
+            uid: Some(1),
+            effect: v(pf::EFFECT) as u8,
+            length: v(pf::LENGTH),
+            amount: v(pf::AMOUNT),
+        });
+    }
+    out
+}
+
+/// The Perform view on B13, the Delay throw on Drums: Q1 and Q2 its Time
+/// and Feedback on the Drums track's Perform FX, Q2 turned.
+fn pads_perform_knobs(fonts: Fonts) -> Player {
+    let mut p = pads_perform(fonts);
+    p.on_event(UiEvent {
+        widget: crate::perform_tab::MAP.into(),
+        kind: EventKind::Select(12),
+    });
+    p.apply(ToUi::SampleQLink(1, 7));
+    p.apply(ToUi::QLinkTouch(1, true));
     let _ = p.take_actions();
     p
 }
@@ -13776,6 +13917,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         pad: Some(crate::rec_arm::PadTake {
             kit: 0,
             pad: 20,
+            id: 1,
             started: true,
             recording: true,
             here: false,
@@ -15202,6 +15344,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // The Perform view: page B of the project's Perform set, B2 picked
     // (board 7).
     out.push(("pads-perform", pads_perform(fonts())));
+    out.push(("pads-perform-knobs", pads_perform_knobs(fonts())));
     // The browser from the Pads tab's Browse for A5, over a scratch
     // library: Samples / Drums with Kick 01 selected, Load on A5.
     match browser_samples(fonts()) {
@@ -25665,7 +25808,20 @@ mod tests {
             .get::<Label>("hint")
             .unwrap()
             .text
-            .starts_with("Record or Skip back onto the pad named"));
+            .starts_with("Record or Skip back: the Onto row says where the take goes"));
+        assert_eq!(
+            p.ui.get::<PadBar>(rec_tab::BAR).unwrap().title,
+            rec_tab::STAYS_TITLE
+        );
+        // Onto steps from Stay here to Next empty: takes land on pads.
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Step {
+                index: rec_tab::Row::Onto.index(),
+                delta: 1,
+            },
+        );
         assert_eq!(
             p.ui.get::<PadBar>(rec_tab::BAR).unwrap().title,
             "Record onto pad A6"
@@ -25723,7 +25879,7 @@ mod tests {
         let log = events_log(&p);
         assert!(
             log.iter()
-                .any(|l| l == "sample: take armed for pad A6: start now, end stop, left + right"),
+                .any(|l| l == "sample: take armed (onto A6): start now, end stop, left + right"),
             "{log:?}"
         );
         assert!(
@@ -25849,7 +26005,7 @@ mod tests {
         p.tick(0.033);
         let v = row(&p);
         assert_eq!(v.cannot, None);
-        assert_eq!(v.status, "Next take onto A6");
+        assert_eq!(v.status, "Next take stays here");
         let level = p.ui.get::<Recorder>(recorder::RECORDER).unwrap().level();
         assert!(level[0] > 0.5, "{level:?}");
         // REC: a pad take through the arm (the sequencer thread's line,
@@ -25872,11 +26028,27 @@ mod tests {
         let v = row(&p);
         assert!(v.recording && !v.waiting, "{v:?}");
         assert!(
-            v.status.starts_with("Recording onto A6 · 0:01."),
+            v.status.starts_with("Recording · 0:01.") && v.status.ends_with(" · stays here"),
             "{}",
             v.status
         );
-        assert_eq!(panel(&p), ["Source", "Channels", "Threshold", "Pre-roll"]);
+        assert_eq!(
+            panel(&p),
+            ["Source", "Channels", "Threshold", "Pre-roll", "Onto"]
+        );
+        // The panel's Onto steps to Next empty while it records: the take
+        // will land on A6.
+        ev(
+            &mut p,
+            wave_tab::REGION,
+            EventKind::Step { index: 4, delta: 1 },
+        );
+        assert_eq!(p.sample.rec_settings_now().onto, rec_tab::Onto::NextEmpty);
+        assert!(
+            row(&p).status.starts_with("Recording onto A6 · 0:01."),
+            "{}",
+            row(&p).status
+        );
         let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
         assert!(
             hint(&p).starts_with("REC again or STOP: stop and keep the take")
@@ -25908,7 +26080,7 @@ mod tests {
         let log = events_log(&p);
         assert!(
             log.iter().any(|l| l
-                == "sample: take armed for pad A6 (one take, from the Wave page's REC): \
+                == "sample: take armed (one take, from the Wave page's REC; stays here): \
                     start now, end stop, left + right"),
             "{log:?}"
         );
@@ -25940,6 +26112,7 @@ mod tests {
                 p.apply(ToUi::PadTake(d));
             }
         }
+        let held = arm.pad.unwrap().id;
         p.tick(0.033);
         assert_eq!(row(&p).status, "Onto B5 · waits for PLAY");
         assert!(row(&p).recording && row(&p).waiting);
@@ -25955,7 +26128,7 @@ mod tests {
         feed_input(&mut feed.0, 1.0, 0.4, true);
         p.tick(0.033);
         rec_desk(&mut p, &mut arm, &stopped);
-        assert!(!arm.pad_now(crate::rec_arm::PadNow::Ended { kit: 0, pad: 20 }));
+        assert!(!arm.pad_now(crate::rec_arm::PadNow::Ended { id: held }));
         assert!(
             arm.pad.is_some_and(|t| t.here && t.pad == 6 && t.recording),
             "{arm:?}"
@@ -26059,6 +26232,173 @@ mod tests {
         }
     }
 
+    /// One-page step 2b (decision 1 of Jay's mockup, 18 Nov): with Onto on
+    /// Stay here, the Wave page's REC keeps its take on the page ("Take 1
+    /// · new") and fills no pad; the REC chip names it. A tap on the wave
+    /// plays it on its own voice, the Q-Links edit it with undo, SHIFT +
+    /// the wheel steps from it to the pads and back, and Send to pad then
+    /// a hit puts it on that pad in one undo step.
+    #[test]
+    fn a_take_that_stays_is_kept_on_the_wave_page_until_send_to_pad_puts_it_on_one() {
+        use crate::play_widgets::RecState;
+        use mpfree_sampler::model::PADS;
+        use mpfree_sampler_ui::recorder::{self, Recorder};
+        use mpfree_sampler_ui::sample::feed_input;
+        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        use mpfree_sampler_ui::{send, wave_tab};
+        let mut p = sample_sampler(Fonts::embedded());
+        open_sample(&mut p, sample_page::Editor::Wave);
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let take = |p: &mut Player| {
+            let (sent, rest) = views(p.take_actions());
+            let with_take = sent
+                .iter()
+                .any(|v| v.view.as_ref().is_some_and(|v| v.has_take()));
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+            (with_take, rest)
+        };
+        let status = |p: &Player| {
+            p.ui.get::<Recorder>(recorder::RECORDER)
+                .unwrap()
+                .view
+                .status
+                .clone()
+        };
+        let pads = |p: &Player| -> Vec<Option<String>> {
+            let kit = p.sample.project(0).unwrap();
+            (0..PADS)
+                .map(|i| kit.pad(i).map(|pd| pd.name.clone()))
+                .collect()
+        };
+        let takes = |p: &Player| p.sample.project(0).unwrap().takes().len();
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let mut s = p.settings.clone();
+        s.line_input = true;
+        p.apply(ToUi::Settings(s));
+        let Some(FromUi::SampleInput(Some(mut feed))) = take(&mut p).1.pop() else {
+            panic!("the input's writer");
+        };
+        feed_input(&mut feed.0, 2.0, 0.4, true);
+        p.tick(0.033);
+        assert_eq!(status(&p), "Next take stays here");
+        let before = pads(&p);
+        // REC: the take goes at once; the chip names the take it makes.
+        let stopped = rec_now_in(mpfree_transport::State::Stopped);
+        let mut arm = crate::rec_arm::RecArm::default();
+        ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        feed_input(&mut feed.0, 1.5, 0.4, true);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert!(arm.pad.is_some_and(|t| t.here && t.recording), "{arm:?}");
+        p.apply(ToUi::Rec(arm));
+        let chip = p.rec_chip();
+        assert_eq!(
+            (chip.state, chip.what.as_str()),
+            (RecState::Recording, "Take 1 · Line in")
+        );
+        assert!(status(&p).ends_with(" · stays here"), "{}", status(&p));
+        // REC again: kept on the page, no pad filled; the Wave page shows
+        // it and the kit's view plays it.
+        ev(&mut p, recorder::RECORDER, EventKind::Tab(0));
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        p.tick(0.033);
+        rec_desk(&mut p, &mut arm, &stopped);
+        assert_eq!(arm.pad, None);
+        p.apply(ToUi::Rec(arm));
+        let log = events_log(&p);
+        assert!(
+            log.iter()
+                .any(|l| l.starts_with("sample: recorded: Take 1, 1.5")
+                    && l.ends_with(" stereo stays on the Sample page")),
+            "{log:?}"
+        );
+        assert_eq!(pads(&p), before, "no pad filled");
+        assert_eq!(takes(&p), 1);
+        assert_eq!(p.sample.take_shown().as_deref(), Some("Take 1"));
+        let bar = p.ui.get::<PadBar>(wave_tab::BAR).unwrap();
+        assert_eq!(bar.title, "Take 1 · new");
+        assert!(
+            bar.subtitle.ends_with(" · stereo · 1.50 s"),
+            "one take: no count; {}",
+            bar.subtitle
+        );
+        assert_eq!(status(&p), "Next take stays here");
+        assert!(
+            hint(&p).starts_with("Tap the wave: hear the take"),
+            "{}",
+            hint(&p)
+        );
+        assert_eq!(
+            p.ui.get::<ButtonRow>(send::SEND).unwrap().enabled,
+            [true, false],
+            "a take goes onto a pad before it is chopped"
+        );
+        // A tap on the wave plays it on its own voice.
+        ev(&mut p, wave_tab::WAVE, EventKind::Frame(0));
+        let (_, acts) = take(&mut p);
+        assert!(
+            acts.contains(&FromUi::SampleTake { kit: 0, down: true }),
+            "{acts:?}"
+        );
+        // Q-Link 1 moves its Start: one undo step, on the take.
+        let start = |p: &Player| {
+            p.sample.project(0).unwrap().take(0).unwrap().layers[0]
+                .region
+                .start
+        };
+        let was = start(&p);
+        p.apply(ToUi::SampleQLink(0, 5));
+        p.apply(ToUi::SampleLift);
+        assert!(start(&p) > was, "{} after {was}", start(&p));
+        assert_eq!(pads(&p), before);
+        p.tick(0.033);
+        let (with_take, _) = take(&mut p);
+        assert!(with_take, "the kit's view carries the take as edited");
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(start(&p), was);
+        assert_eq!(p.sample.take_shown().as_deref(), Some("Take 1"));
+        // SHIFT + the wheel: on to A5, the pad with a sound, and back.
+        p.apply(ToUi::SamplePad(1));
+        assert_eq!(p.sample.take_shown(), None);
+        assert_eq!(p.sample.pad(), mpfree_sampler_ui::sample::PAD);
+        p.apply(ToUi::SamplePad(-1));
+        assert_eq!(p.sample.take_shown().as_deref(), Some("Take 1"));
+        // Send to pad, then a hit on A10: the take is on A10 and leaves
+        // the page; the page shows A10.
+        ev(&mut p, send::SEND, EventKind::Tab(send::SEND_TO_PAD));
+        assert_eq!(
+            p.ui.get::<ButtonRow>(send::SEND).unwrap().labels[0],
+            send::SENDING
+        );
+        p.apply(ToUi::PadDown {
+            pad: 9,
+            velocity: 90,
+        });
+        p.apply(ToUi::PadUp(9));
+        assert_eq!(pads(&p)[9].as_deref(), Some("Take 1"));
+        assert_eq!(takes(&p), 0);
+        assert_eq!(p.sample.take_shown(), None);
+        assert_eq!(p.sample.pad(), 9);
+        assert_eq!(p.kits[0].pads[9].as_deref(), Some("Take 1"));
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: Take 1 put on pad A10"));
+        // One undo step puts it back on the page, A10 empty again.
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(pads(&p), before);
+        assert_eq!(takes(&p), 1);
+    }
+
     #[test]
     fn a_pad_take_records_onto_its_pad_and_says_when_it_records_and_ends() {
         use crate::rec_arm::{PadDo, PadNow};
@@ -26085,8 +26425,12 @@ mod tests {
         };
         let has_sound = |p: &Player, pad: usize| p.sample.project(0).unwrap().pad(pad).is_some();
         // No line input: it ends at once, saying why.
-        p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
-        assert_eq!(told(&mut p), [PadNow::Ended { kit: 0, pad: 20 }]);
+        p.apply(ToUi::PadTake(PadDo::Arm {
+            kit: 0,
+            pad: 20,
+            id: 1,
+        }));
+        assert_eq!(told(&mut p), [PadNow::Ended { id: 1 }]);
         said(&p, "sample: no take on Pad B5: the line input is off");
         // The line input on, 2 s in.
         let mut s = p.settings.clone();
@@ -26101,18 +26445,26 @@ mod tests {
         };
         feed_input(&mut feed.0, 2.0, 0.4, true);
         // A pad with a sound is refused.
-        p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 4 }));
-        assert_eq!(told(&mut p), [PadNow::Ended { kit: 0, pad: 4 }]);
+        p.apply(ToUi::PadTake(PadDo::Arm {
+            kit: 0,
+            pad: 4,
+            id: 2,
+        }));
+        assert_eq!(told(&mut p), [PadNow::Ended { id: 2 }]);
         said(&p, "sample: no take on Pad A5: it has a sound");
         // Armed, then ended before the music played: called off.
-        p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
+        p.apply(ToUi::PadTake(PadDo::Arm {
+            kit: 0,
+            pad: 20,
+            id: 3,
+        }));
         assert_eq!(told(&mut p), []);
         said(
             &p,
             "sample: take armed for pad B5 (one take, from REC): start now, end stop, left + right",
         );
         p.apply(ToUi::PadTake(PadDo::End));
-        assert_eq!(told(&mut p), [PadNow::Ended { kit: 0, pad: 20 }]);
+        assert_eq!(told(&mut p), [PadNow::Ended { id: 3 }]);
         said(
             &p,
             "sample: no take on Pad B5: called off before it started",
@@ -26120,23 +26472,31 @@ mod tests {
         assert!(!has_sound(&p, 20));
         // Armed, the go, a second in: it records (said once); UNDO throws
         // it away and the pad stays empty.
-        p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
+        p.apply(ToUi::PadTake(PadDo::Arm {
+            kit: 0,
+            pad: 20,
+            id: 4,
+        }));
         p.apply(ToUi::PadTake(PadDo::Start));
         feed_input(&mut feed.0, 1.0, 0.4, true);
-        assert_eq!(told(&mut p), [PadNow::Recording { kit: 0, pad: 20 }]);
+        assert_eq!(told(&mut p), [PadNow::Recording { id: 4 }]);
         feed_input(&mut feed.0, 0.5, 0.4, true);
         assert_eq!(told(&mut p), [], "said once");
         p.apply(ToUi::PadTake(PadDo::Throw));
-        assert_eq!(told(&mut p), [PadNow::Ended { kit: 0, pad: 20 }]);
+        assert_eq!(told(&mut p), [PadNow::Ended { id: 4 }]);
         said(&p, "sample: no take on Pad B5: thrown away");
         assert!(!has_sound(&p, 20));
         // Again, and REC: 1.5 s lands on B5 as a Rec tab take does.
-        p.apply(ToUi::PadTake(PadDo::Arm { kit: 0, pad: 20 }));
+        p.apply(ToUi::PadTake(PadDo::Arm {
+            kit: 0,
+            pad: 20,
+            id: 5,
+        }));
         p.apply(ToUi::PadTake(PadDo::Start));
         feed_input(&mut feed.0, 1.5, 0.4, true);
-        assert_eq!(told(&mut p), [PadNow::Recording { kit: 0, pad: 20 }]);
+        assert_eq!(told(&mut p), [PadNow::Recording { id: 5 }]);
         p.apply(ToUi::PadTake(PadDo::End));
-        assert_eq!(told(&mut p), [PadNow::Ended { kit: 0, pad: 20 }]);
+        assert_eq!(told(&mut p), [PadNow::Ended { id: 5 }]);
         let pad = p.sample.project(0).unwrap().pad(20).cloned().unwrap();
         assert_eq!(pad.name, "Take 1");
         said(&p, "stereo on pad B5");
@@ -26219,7 +26579,8 @@ mod tests {
         assert!(
             events_log(&p)
                 .iter()
-                .any(|l| l == "sample: skip back 10 s: Master take 1, 10.00 s stereo on pad A6"),
+                .any(|l| l
+                    == "sample: skip back 10 s: Master take 1, 10.00 s stereo stays on the Sample page"),
             "{:?}",
             events_log(&p)
         );
@@ -26403,7 +26764,8 @@ mod tests {
         assert!(
             events_log(&p)
                 .iter()
-                .any(|l| l == "sample: skip back 10 s: Master take 1, 10.00 s stereo on pad A6"),
+                .any(|l| l
+                    == "sample: skip back 10 s: Master take 1, 10.00 s stereo stays on the Sample page"),
             "{:?}",
             events_log(&p)
         );
@@ -26464,6 +26826,7 @@ mod tests {
         step(&mut p, Row::End, 2);
         step(&mut p, Row::Length, -2);
         step(&mut p, Row::Tail, 2);
+        step(&mut p, Row::Onto, 1);
         let tab = p.sample.rec_settings().unwrap();
         assert_eq!((tab.bars, tab.tail), (1, TailAt::Loop));
         feed_input(&mut feed.0, 2.0, 0.4, true);
@@ -26477,8 +26840,10 @@ mod tests {
         p.tick(0.033);
         let log = events_log(&p);
         assert!(
-            log.iter().any(|l| l
-                == "sample: take armed for pad A6: start next bar, end 1 bar then loop, left + right"),
+            log.iter().any(|l| {
+                l
+                == "sample: take armed (onto A6): start next bar, end 1 bar then loop, left + right"
+            }),
             "{log:?}"
         );
         // The drums were already playing: their ringing is in its start,
@@ -26622,10 +26987,11 @@ mod tests {
         let mut acts = take(&mut p);
         assert!(matches!(acts.pop(), Some(FromUi::SampleInput(None))));
         p.apply(ToUi::SampleInputBack(feed));
+        assert_eq!(p.sample.pad(), PAD + 1, "the pad picked is the new one");
         assert_eq!(
             p.ui.get::<PadBar>(rec_tab::BAR).unwrap().title,
-            "Record onto pad A7",
-            "the pad picked is the new one"
+            rec_tab::STAYS_TITLE,
+            "flatten keeps its take on a pad, and Onto stays on Stay here"
         );
     }
 

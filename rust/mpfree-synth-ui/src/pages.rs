@@ -284,8 +284,8 @@ const PLUCK: &[PlanPage] = &[
 
 use mpfree_synth::keys_params as ek;
 
-/// Keys: the model and the strike, the pickup's tone, the amp (tremolo,
-/// drive, key noise), and the voice.
+/// Keys: the model and the strike, the pickup's tone, the clav's own
+/// switches, the amp (tremolo, drive, key noise), and the voice.
 const KEYS: &[PlanPage] = &[
     pg_with(
         "Strike",
@@ -297,6 +297,11 @@ const KEYS: &[PlanPage] = &[
         "Tone",
         &["Tone"],
         &[ek::VOICING, ek::BARK, ek::TONE, ek::VEL_TONE],
+    ),
+    pg(
+        "Clav",
+        &["Clav"],
+        &[ek::PICKUP, ek::CLAV_TONE, ek::MUTE, ek::DROP],
     ),
     pg(
         "Amp",
@@ -802,7 +807,7 @@ mod tests {
         let params = s.params();
         let pages = plan(s.info(), params);
         let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["Strike", "Tone", "Amp", "Voice"]);
+        assert_eq!(names, ["Strike", "Tone", "Clav", "Amp", "Voice"]);
         every_param_once(&pages, params.len());
         let names =
             |page: &Page| -> Vec<&str> { page.params.iter().map(|&i| params[i].name).collect() };
@@ -820,6 +825,10 @@ mod tests {
             .map(|&i| params[i].name)
             .collect();
         assert_eq!(q, ["Voicing", "Bark", "Tone", "Vel > tone"]);
+        assert_eq!(
+            names(&pages[2]),
+            ["Pickup", "Clav tone", "Mute", "Release drop"]
+        );
         for p in &pages {
             for &i in &p.params {
                 assert!(tile_label(&p.name, &params[i]).len() <= 20);

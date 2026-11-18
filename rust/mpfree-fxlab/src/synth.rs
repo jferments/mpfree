@@ -1235,8 +1235,13 @@ fn keys_rows(
     by_vel: &[(u8, Stereo)],
     rate: u32,
 ) {
-    // K1: the second harmonic against the first at C4, velocity 40 to 127.
-    if e == Engine::Keys {
+    let node = make();
+    let clav = e == Engine::Keys && node.param(0).round() == 2.0;
+    // K1: the second harmonic against the first at C4, velocity 40 to 127,
+    // on the tine and reed: the pickup's growl. The clav has no such
+    // growl (a harder hit brightens the whole string), so its velocity
+    // shows in L5.
+    if e == Engine::Keys && !clav {
         let w = blackman_harris(8_192);
         let from = frames(0.05, rate);
         let h2 = |s: &Stereo| {
@@ -1255,8 +1260,11 @@ fn keys_rows(
         );
     }
     // K3: decay against the Decay label at C4, and its law across C2 to C6.
-    let node = make();
-    let label = f64::from(node.param(1)) * 0.001;
+    // The clav's Mute shortens it by up to 85 %, as its label says.
+    let mut label = f64::from(node.param(1)) * 0.001;
+    if clav {
+        label *= 1.0 - 0.85 * f64::from(node.param(5)) / 100.0;
+    }
     let law = if e == Engine::Keys { -0.75 } else { -0.5 };
     let mut pts = Vec::new();
     let mut at_c4 = 0.0;
@@ -1288,6 +1296,67 @@ fn keys_rows(
         Some(0.15),
         0.02,
     );
+    // K4: the clav's release drop, on clav presets: C5 held half a
+    // second, then let go with Release at 400 ms so it rings long enough
+    // to read; its pitch 10 to 50 ms later against Release drop.
+    if clav {
+        let label = f64::from(node.param(6));
+        let mut n = make();
+        n.set_param(2, 400.0);
+        let s = note(n.as_mut(), rate, 72, 100, 0.5, 0.6);
+        let (from, len) = (frames(0.51, rate), frames(0.04, rate));
+        let x = &s.mid()[from..from + len];
+        let w = blackman_harris(len);
+        let want = hz(72) * 2f64.powf(-label / 12.0);
+        let at = |c: f64| amp_at(x, &w, want * 2f64.powf(c / 1200.0), rate);
+        let best = (-100..=100)
+            .map(f64::from)
+            .max_by(|&a, &b| at(a).total_cmp(&at(b)))
+            .unwrap_or(0.0);
+        let (a, b, c) = (at(best - 1.0), at(best), at(best + 1.0));
+        let d = a - 2.0 * b + c;
+        let off = if d.abs() > 1e-30 {
+            (0.5 * (a - c) / d).clamp(-0.5, 0.5)
+        } else {
+            0.0
+        };
+        put(
+            rows,
+            "K4",
+            subject,
+            "release_drop_err_st",
+            -(best + off) / 100.0,
+            Better::Near(0.0),
+            Some(0.5),
+            0.05,
+        );
+    }
+    // K7: the clav's pickup notches, on clav presets with one pickup: the
+    // partial over that pickup's node (the 5th for the neck, the 14th for
+    // the bridge) against its neighbours, C2.
+    if clav && node.param(3).round() <= 1.0 {
+        let k = if node.param(3).round() == 0.0 {
+            5.0
+        } else {
+            14.0
+        };
+        let s = note(make().as_mut(), rate, 36, 50, 1.0, 1.0);
+        let n = 16_384;
+        let from = frames(0.1, rate);
+        let x = &s.mid()[from..from + n];
+        let w = blackman_harris(n);
+        let lvl = |k: f64| db20(amp_at(x, &w, k * hz(36), rate));
+        put(
+            rows,
+            "K7",
+            subject,
+            "pickup_notch_db",
+            lvl(k) - 0.5 * (lvl(k - 1.0) + lvl(k + 1.0)),
+            Better::Lower,
+            Some(-15.0),
+            0.5,
+        );
+    }
     // K9: tremolo rate, when the preset has tremolo.
     if e == Engine::Keys && node.param(20) > 0.0 {
         let rate_label = f64::from(node.param(21));

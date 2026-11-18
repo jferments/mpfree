@@ -55,9 +55,9 @@ New analyses in `rust/mpfree-fxlab/src/synth.rs`, each tested on signals with kn
 
 ## Where today's synths stand (2026-11-18)
 
-Met against rows with a target: L2 66 of 83, L3 75/83, L5 32/71, L6 81/83, L8 83/83, L11 25/83, L12 65/65; B4 16/16, B5 9/16, B7 16/16; K1 11/12, K3 48/48, K9 3/3; T1 7/7; A1 9/36; B2 2/2; P6 1/3; B9 3/3, P5 2/2; F1 3/3, F5 0/1, F7 0/1; D3 19/80, D5 70/80.
+Met against rows with a target (with Strings, Bass and the Keys clav): L2 142 of 159, L3 155/159, L5 90/147, L6 158/159, L8 159/159, L11 113/159, L12 109/109; B1 2/2, B3 3/3, B4 48/48, B5 30/48, B7 48/48; K1 22/22, K3 88/88, K4 10/10, K7 4/4, K9 8/8; S7 8/8; V7 2/2; T1 9/9; A1 22/51; B2 2/2; P6 1/3; B9 3/3, P5 2/2; F1 3/3, F5 0/1, F7 0/1; D3 19/80, D5 70/80.
 
-- **In tune and true to theory.** Every engine's plain patch is within 0.03 cents from C1 to C7, except Keys (0.55 cents at C2) and the organ (0.58 cents, its gear ratios). FM's sidebands match the Bessel functions within 0.01 dB (operator level 60, 75 and 90 give an index of 0.43, 1.57 and 5.76). Poly's LP24 is within 0.16 dB of its 4-pole prototype and LP12 within 0.8 dB, the cutoff where the label says, the resonance peak within 5.3 cents. Glide lands within 0.04 cents in 1.2 % of its time. Keys' and Pluck's decays follow their labels and laws (all 48 K3 rows), and the tremolo rates are within 0.4 %.
+- **In tune and true to theory.** Every engine's plain patch is within 0.03 cents from C1 to C7, except Keys (0.55 cents at C2) and the organ (0.58 cents, its gear ratios). FM's sidebands match the Bessel functions within 0.01 dB (operator level 60, 75 and 90 give an index of 0.43, 1.57 and 5.76). Poly's LP24 is within 0.16 dB of its 4-pole prototype and LP12 within 0.8 dB, the cutoff where the label says, the resonance peak within 5.3 cents. Glide lands within 0.04 cents in 1.2 % of its time. Keys' and Pluck's decays follow their labels and laws (all 88 K3 rows), and the tremolo rates are within 0.4 %.
 - **Aliasing is the biggest gap.** Poly's saw and pulse (PolyBLEP) alias at −49 dB at C5, −44 at C6 and −37 at C7 (the saw's 13th harmonic folds to 16.9 kHz); drive and distortion make it −30 and −27 at C7. Analog: −54, −48, −42. Squelch's saw meets −60 to C6, its square doesn't (−27 at C7). Wavetable's mips work: Init −72 at C7, position 100 −54. FM feedback 7 sits 13 to 17 dB under its harmonics with what is off them (aliasing or the feedback's noise; the row can't tell which).
 - **Velocity is narrow.** From velocity 20 to 127 Poly's level moves 7 to 8 dB, Analog's 2 to 8, Pluck's 6 to 10 and Keys' 12 to 22, against the 30 to 40 dB the research proposes; the curve's shape is fine (81 of 83 within 2 dB of a square law). Tone follows velocity on 32 of 71 presets; on the drums only snares, claps and FM perc brighten (19 of 80 pads).
 - **Levels.** 17 presets clip an 8-note chord at full velocity (up to +3.2 dB: Pluck's mallets and Steel Drum, Poly Init +2.0, FM Init +1.9). Single notes across the keys stay within 3 dB on only 25 of 83 presets (Pluck's strings up to 9 dB). DC is above −60 dBFS on 8 presets: FM's 1:1 pairs (Glass Keys −38.5 dBFS: a 1:1 pair puts a sideband at 0 Hz), the reeds (Reed Bite −45.6) and Poly Lead (−45.1). Every preset keeps its loudness within 3 dB in mono.
@@ -106,14 +106,14 @@ The bar each wave 1 pull request is judged by ([Architecture and roadmap](synth-
 
 | Id | Measure | Target | Today |
 |---|---|---|---|
-| K1 | Second harmonic, velocity 127 against 40, C4 | At least 12 dB more | 11 of 12 |
-| K2 | Level against velocity | V1 and V2, range 30 to 40 dB | 12 to 22 dB |
-| K3 | Decay against pitch | T60 within 20 % of the label; slope within 0.15 of the engine's law | 48 of 48 |
-| K4 | The end of a note | The clav drops 3 ± 0.5 semitones at release; any damper sound is under the note's level | No clav |
+| K1 | Second harmonic, velocity 127 against 40, C4 (tine and reed: the clav's velocity brightens the whole string, which L5 reads) | At least 12 dB more | 22 of 22 (12.7 to 18.3 dB) |
+| K2 | Level against velocity | V1 and V2, range 30 to 40 dB | Velocity sets the range, 32 dB from velocity 1 to 127 by default; 14 to 24 dB from 20 to 127 as measured (L6), every preset within 1.9 dB of the square law |
+| K3 | Decay against pitch | T60 within 20 % of the label (the clav's shortened by its Mute, as labelled); slope within 0.15 of the engine's law | 64 of 64 |
+| K4 | The end of a note | The clav drops by its Release drop (3 by default) ± 0.5 semitones at release; any damper sound is under the note's level | 10 of 10 clav presets, within 0.01 semitone (C5, read 10 to 50 ms after the release) |
 | K5 | Sustain pedal | V5 | No pedal |
-| K6 | Level across the keys | Loudness spread under 3 dB, C1 to C7 | 0 of 12 (4.4 to 12.8 dB) |
-| K7 | Clav pickups | Notches where the pickup's place predicts, within 5 % | No clav |
-| K9 | Tremolo | Rate within 5 % of its label | 3 of 3 |
+| K6 | Level across the keys | Loudness spread under 3 dB, C1 to C7 | 32 of 32 (0.7 to 3.0 dB, L11) |
+| K7 | Clav pickups | Notches where the pickup's place predicts, within 5 %: the partial over the node at least 15 dB under its neighbours, C2 | 4 of 4 clav presets on one pickup (−19.6 to −34.2 dB) |
+| K9 | Tremolo | Rate within 5 % of its label | 8 of 8 |
 | K10 | Cost | 16 tine voices and 10 clav voices under the synth line on the MPC | Device round |
 
 **Strings (S)**, on the Strings engine and the Ensemble effect:
@@ -134,7 +134,7 @@ The Ensemble effect also meets the FX method's own rows: no dip as Mix goes up (
 
 ## Not measured yet
 
-Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), drift (P10), the 808 kick and metal bank against their papers (D1, D2, D9), chokes and retriggers (D6), sustain-pedal behaviour (K5: there is no pedal event yet), clav and piano partials (K7, K8), FM envelope rates and banks (F4, F6), organs, winds and choirs (O: no engines yet), and cost on the MPC. Each joins the report when stage 3 or 4 builds or changes what it measures.
+Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), drift (P10), the 808 kick and metal bank against their papers (D1, D2, D9), chokes and retriggers (D6), sustain-pedal behaviour (K5: there is no pedal event yet), piano partials (K8), FM envelope rates and banks (F4, F6), organs, winds and choirs (O: no engines yet), and cost on the MPC. Each joins the report when stage 3 or 4 builds or changes what it measures.
 
 ## Running it
 

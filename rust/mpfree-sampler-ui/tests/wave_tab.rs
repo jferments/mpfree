@@ -986,6 +986,35 @@ fn the_sound_section_turns_the_pad_as_the_play_page_does() {
 /// a take and its cards step the Rec settings; while REC is on, the panel
 /// under the wave is Input, whose steps are the recorder's, and the
 /// region's settings come back when it stops.
+/// One-page step 2b: a take kept on the page shows as a new take ("Take 3 ·
+/// new", which of how many), with no pad of its own, and only Send to pad
+/// is lit (a take goes onto a pad before it is chopped).
+#[test]
+fn a_take_kept_on_the_page_shows_as_new_with_only_send_to_pad() {
+    use mpfree_sampler_ui::send;
+    use mpfree_sampler_ui::widgets::ButtonRow;
+    let mut s = sample();
+    let mut take = s.project.pad(PAD).unwrap().clone();
+    take.name = "Take 2".into();
+    s.project.add_take(take.clone()).unwrap();
+    take.name = "Take 3".into();
+    s.project.add_take(take).unwrap();
+    let st = WaveState::of_take(&s.project, 1, 0, s.state.source.clone()).unwrap();
+    assert_eq!(st.pad, wave_tab::TAKE, "no pad of its own");
+    assert_eq!(st.take.map(|t| (t.index, t.of)), Some((1, 2)));
+    s.tab.update(&mut s.ui, &st);
+    let bar = s.ui.get::<PadBar>(wave_tab::BAR).unwrap();
+    assert_eq!(bar.title, "Take 3 · new");
+    assert!(bar.subtitle.ends_with(" · take 2 of 2"), "{}", bar.subtitle);
+    send::show_take(&mut s.ui, false);
+    let b = s.ui.get::<ButtonRow>(send::SEND).unwrap();
+    assert_eq!(b.enabled, [true, false]);
+    assert_eq!(b.why[1], send::TAKE_FIRST);
+    send::show_take(&mut s.ui, true);
+    let b = s.ui.get::<ButtonRow>(send::SEND).unwrap();
+    assert_eq!(b.labels[0], send::SENDING);
+}
+
 #[test]
 fn the_recorder_row_records_and_the_panel_is_input_while_rec_is_on() {
     use mpfree_sampler_ui::recorder::{self, Recorder, RecorderAction, RecorderView};
@@ -1024,7 +1053,10 @@ fn the_recorder_row_records_and_the_panel_is_input_while_rec_is_on() {
     s.tab.set_recorder(&mut s.ui, on, &st);
     let list = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
     let names: Vec<&str> = list.rows.iter().map(|r| r.name.as_str()).collect();
-    assert_eq!(names, ["Source", "Channels", "Threshold", "Pre-roll"]);
+    assert_eq!(
+        names,
+        ["Source", "Channels", "Threshold", "Pre-roll", "Onto"]
+    );
     let ev = UiEvent {
         widget: wave_tab::REGION.into(),
         kind: EventKind::Step { index: 2, delta: 1 },
@@ -1035,6 +1067,15 @@ fn the_recorder_row_records_and_the_panel_is_input_while_rec_is_on() {
             rec_tab::Row::Threshold,
             1
         )))
+    );
+    // Onto (step 2b) steps where the take goes when it stops.
+    let ev = UiEvent {
+        widget: wave_tab::REGION.into(),
+        kind: EventKind::Step { index: 4, delta: 1 },
+    };
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(WaveAction::Rec(RecorderAction::Step(rec_tab::Row::Onto, 1)))
     );
     // And the Q-Links: 2 turns the Threshold, 3 the Pre-roll; 1 and 4 are
     // faint and say why.

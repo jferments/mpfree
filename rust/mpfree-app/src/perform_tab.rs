@@ -30,12 +30,14 @@
 //! [`FromUi::PerformPad`], which saves it with the project.
 
 use crate::gui::FromUi;
+use crate::mixing::{ThrowFx, ThrowKnobs};
 use crate::perform_pads::{Hold, LetGo, PadAction, PerformSet, Starts, Throw, PADS, PAGES};
 use crate::play_page::THROW_LIST;
 use mpfree_fx::StripId;
 use mpfree_sampler_ui::widgets::{
     ButtonRow, KitTracks, PadBar, PadCell, PadMap, SectionChip, SectionChips, Setting, SettingList,
 };
+use mpfree_ui::qlink::QLinkCard;
 use mpfree_ui::{Color, EventKind, Ui, UiEvent};
 
 /// The view's page.
@@ -51,25 +53,142 @@ pub const TYPE: &str = "prf-type";
 pub const PICK_A: &str = "prf-pick-a";
 pub const PICK_B: &str = "prf-pick-b";
 pub const LIST: &str = "prf-list";
+/// The buttons under the Pad list: Edit the effect › and Hear it.
+pub const ACTS: &str = "prf-acts";
 /// The Pads of row, the kit view's ([`mpfree_sampler_ui::pads_tab::KITS`]).
 pub const KITS: &str = mpfree_sampler_ui::pads_tab::KITS;
 
 /// The view's page: the pads with their buttons as the kit view has them,
 /// and what the pad picked does over the rest of the width.
+/// The Q-Link column is Play's and the Mix tab's (`qlinks`, 128 px). The
+/// chip rows and the buttons under the list are 52 px, so a throw's four
+/// rows and what a hit does fit above them.
 pub const LAYOUT: &str = "col(header:60, prf-bar:60, smp-pads-kits:52, \
                           row(col(prf-map:*, prf-buttons:64):440, \
-                          col(prf-type:64, prf-pick-a:64, prf-pick-b:64, prf-list:*):*):*, \
+                          col(prf-type:52, prf-pick-a:52, prf-pick-b:52, prf-list:*, prf-acts:52):*, \
+                          qlinks:128):*, \
                           hint:26)";
 
-/// The hint line under the view.
-pub const HINT: &str = "Perform pads: one set for the project   ·   A-H: its pages (A is the looper's loop keys)   ·   \
-                        a type: what the pad does   ·   hit a throw to hear it   ·   no kit changes";
+/// The hint line under the view: what it is, then what the Q-Links turn
+/// with the pad picked ([`PerformTab::qlink_hint`]), in the place of what
+/// the kind chips and the map say.
+pub fn hint(qlinks: Option<String>) -> String {
+    match qlinks {
+        Some(q) => format!(
+            "Perform pads: one set for the project   ·   A-H: its pages (A is the looper's loop keys)   ·   \
+             Q-Links: {q}"
+        ),
+        None => "Perform pads: one set for the project   ·   A-H: its pages (A is the looper's loop keys)   ·   \
+                 a type: what the pad does   ·   hit a throw to hear it   ·   Q-Links: a throw pad's effect"
+            .to_string(),
+    }
+}
 
 /// The buttons under the map.
 const COPY: usize = 0;
 const PASTE: usize = 1;
 const CLEAR: usize = 2;
 const NAME: usize = 3;
+/// The buttons under the Pad list.
+const EDIT_FX: usize = 0;
+const HEAR: usize = 1;
+
+/// What a Perform FX pad's Length and Amount do for each effect, in
+/// `mpfree_fx::PERFORM_EFFECTS` order, as the Q-Links name them (Q1 and
+/// Q2): no Length where the effect has no use for it (a wash rings for
+/// its Decay; a crush holds no time). From `mpfree_fx`'s perform.rs.
+const KNOB_NAMES: [(Option<&str>, &str); 15] = [
+    (None, ""),
+    (Some("Length"), "Mix"),
+    (Some("Length"), "Mix"),
+    (Some("Length"), "Mix"),
+    (Some("Length"), "Mix"),
+    (Some("Length"), "Mix"),
+    (Some("Length"), "Mix"),
+    (Some("Length"), "Depth"),
+    (Some("Rate"), "Depth"),
+    (Some("Sweep"), "Depth"),
+    (Some("Sweep"), "Depth"),
+    (None, "Crush"),
+    (Some("Time"), "Feedback"),
+    (Some("Rise"), "Level"),
+    (None, "Decay"),
+];
+
+/// Q-Link `q`'s name for a Perform FX pad playing `effect`: Q1 its
+/// Length's, Q2 its Amount's; none where it has nothing to turn.
+fn knob_name(effect: u8, q: usize) -> Option<&'static str> {
+    let (len, amount) = KNOB_NAMES.get(usize::from(effect)).copied()?;
+    match q {
+        0 => len,
+        1 => Some(amount).filter(|a| !a.is_empty()),
+        _ => None,
+    }
+}
+
+/// The Perform FX parameter Q-Link `q` turns (inside the pad's four).
+fn knob_param(q: usize) -> u16 {
+    use mpfree_fx::ids::perform as pf;
+    if q == 0 {
+        pf::LENGTH
+    } else {
+        pf::AMOUNT
+    }
+}
+
+/// The last Length choice.
+fn last_length() -> f32 {
+    (mpfree_fx::PERFORM_LENGTHS.len() - 1) as f32
+}
+
+/// Q-Link `q`'s value `v` as its card shows it ("1/8D", "55 %").
+fn knob_text(q: usize, v: f32) -> String {
+    if q == 0 {
+        let i = (v.round().max(0.0) as usize).min(mpfree_fx::PERFORM_LENGTHS.len() - 1);
+        mpfree_fx::PERFORM_LENGTHS[i].to_string()
+    } else {
+        format!("{} %", v.round() as i32)
+    }
+}
+
+/// Q-Link `q`'s value `v` as far round the ring as it goes, 0 to 1.
+fn knob_pos(q: usize, v: f32) -> f32 {
+    let full = if q == 0 { last_length() } else { 100.0 };
+    (v / full).clamp(0.0, 1.0)
+}
+
+/// Q-Link `q`'s value `v` turned `detents`: a Length choice a detent, an
+/// Amount 1 % a detent (0.1 % with SHIFT, `fine`).
+fn knob_turned(q: usize, v: f32, detents: i32, fine: bool) -> f32 {
+    if q == 0 {
+        (v.round() + detents as f32).clamp(0.0, last_length())
+    } else {
+        let per = if fine { 0.1 } else { 1.0 };
+        (v + detents as f32 * per).clamp(0.0, 100.0)
+    }
+}
+
+/// A Q-Link edit as the history and the log say it: "Delay throw on
+/// Drums: Feedback 62 %". (Not a Q-Link edit: empty.)
+fn knob_row(e: &Edit, names: &Names) -> String {
+    match e {
+        Edit::Knob {
+            on,
+            fx,
+            effect,
+            q,
+            after,
+            ..
+        } => format!(
+            "{} on {}: {} {}",
+            throw_name(*fx),
+            names.strip(*on).0,
+            knob_name(*effect, *q).unwrap_or("setting"),
+            knob_text(*q, *after)
+        ),
+        _ => String::new(),
+    }
+}
 
 /// The most characters a page's name may have.
 pub const MAX_PAGE_NAME: usize = 24;
@@ -272,6 +391,16 @@ enum Edit {
         before: String,
         after: String,
     },
+    /// A run of turns of Q-Link `q` (0: the Length, 1: the Amount) on
+    /// throw `fx`'s pad of strip `on`'s Perform FX, playing `effect`.
+    Knob {
+        on: StripId,
+        fx: ThrowFx,
+        effect: u8,
+        q: usize,
+        before: f32,
+        after: f32,
+    },
 }
 
 /// What the view asks of the screen.
@@ -308,6 +437,17 @@ pub struct PerformTab {
     hearing: Option<PadAction>,
     done: Vec<Edit>,
     undone: Vec<Edit>,
+    /// Each throw of the set as its strip's Perform FX has it, as the app
+    /// last sent them, with this view's turns since.
+    pub knobs: Vec<ThrowKnobs>,
+    /// The Q-Link turned last, while its run of turns goes on (one UNDO
+    /// step), and the parameter it moves (let go when the finger lifts).
+    run: Option<(
+        StripId,
+        ThrowFx,
+        usize,
+        mpfree_play::mpfree_param::ParamAddr,
+    )>,
 }
 
 /// Pad `pad` of page `page` by name ("B2").
@@ -562,6 +702,7 @@ impl PerformTab {
         ui.add(PICK_A, SectionChips::new(&[]));
         ui.add(PICK_B, SectionChips::new(&[]));
         ui.add(LIST, SettingList::new("Pad"));
+        ui.add(ACTS, ButtonRow::new(&["Edit the effect ›", "Hear it"]));
         ui.add_page(PAGE, LAYOUT)?;
         self.built = true;
         Ok(())
@@ -740,6 +881,25 @@ impl PerformTab {
                 String::new(),
             ];
         }
+        if let Some(b) = ui.get_mut::<ButtonRow>(ACTS) {
+            let throw = match a {
+                PadAction::Throw(t) => t.fx().map(|fx| (t, fx)),
+                _ => None,
+            };
+            let why = match a {
+                PadAction::None => format!("{label} has nothing on it"),
+                PadAction::Throw(_) => {
+                    format!("{label}'s Drop drums mutes the drums: it has no effect")
+                }
+                PadAction::Macro { .. } => {
+                    format!("{label} holds a macro: hold the pad on the map to hear it")
+                }
+                _ => format!("{label} plays on Play and the Looper tab with the set on the pads"),
+            };
+            b.labels = vec!["Edit the effect ›".to_string(), "Hear it".to_string()];
+            b.enabled = vec![throw.is_some(), throw.is_some()];
+            b.why = vec![why.clone(), why];
+        }
         if let Some(c) = ui.get_mut::<SectionChips>(TYPE) {
             c.chips = Kind::ALL
                 .iter()
@@ -789,6 +949,195 @@ impl PerformTab {
         }
     }
 
+    /// The picked pad's throw, its effect, and that effect's settings on
+    /// its strip (`None` while the app hasn't sent them).
+    fn picked_knobs(&self) -> Option<(Throw, ThrowFx, Option<&ThrowKnobs>)> {
+        let PadAction::Throw(t) = self.picked() else {
+            return None;
+        };
+        let fx = t.fx()?;
+        let k = self.knobs.iter().find(|k| k.on == t.on && k.fx == fx);
+        Some((t, fx, k))
+    }
+
+    /// Throw `fx`'s setting `q` on strip `on` is `v` now (a turn or its
+    /// UNDO): its address for the app, while the strip has its Perform
+    /// FX.
+    fn set_knob(
+        &mut self,
+        on: StripId,
+        fx: ThrowFx,
+        q: usize,
+        v: f32,
+    ) -> Option<mpfree_play::mpfree_param::ParamAddr> {
+        let k = self
+            .knobs
+            .iter_mut()
+            .find(|k| k.on == on && k.fx == fx && k.uid.is_some())?;
+        if q == 0 {
+            k.length = v;
+        } else {
+            k.amount = v;
+        }
+        k.addr(knob_param(q))
+    }
+
+    /// The Q-Link column on this view: the picked throw's Length and
+    /// Amount (Q1 and Q2, named for its effect) on the Perform FX of the
+    /// strip its On picks. Q3 and Q4, and both while that strip has no
+    /// Perform FX or the pad is no throw, are faint ([`Self::qlink_why`]).
+    pub fn qlink_cards(&self, names: &Names) -> [QLinkCard; 4] {
+        let mut cards: [QLinkCard; 4] = Default::default();
+        let Some((t, _, Some(k))) = self.picked_knobs() else {
+            return cards;
+        };
+        if k.uid.is_none() {
+            return cards;
+        }
+        // Not drawn (Jay, 17 Nov: the cards name the knob alone); the
+        // hint says it.
+        let scope = format!("{} · every {} there", names.strip(t.on).0, t.name());
+        for (q, card) in cards.iter_mut().enumerate().take(2) {
+            if let Some(name) = knob_name(k.effect, q) {
+                let v = if q == 0 { k.length } else { k.amount };
+                *card = QLinkCard::new(name, &scope, &knob_text(q, v), knob_pos(q, v));
+            }
+        }
+        cards
+    }
+
+    /// Why Q-Link `q` turns nothing on this view now, for the hint; `None`
+    /// when it turns the picked throw's setting.
+    pub fn qlink_why(&self, q: usize, names: &Names) -> Option<String> {
+        let label = pad_label(self.page, self.pad);
+        let a = self.picked();
+        let Some((t, _, k)) = self.picked_knobs() else {
+            return Some(match a {
+                PadAction::None => {
+                    format!("{label} has nothing on it: the Q-Links turn a throw pad's effect")
+                }
+                PadAction::Throw(_) => {
+                    format!("{label}'s Drop drums mutes the drums: it has no effect to turn")
+                }
+                PadAction::Macro { .. } => format!(
+                    "{label} holds a macro: its Value is in the Pad list, and the Q-Links \
+                     turn a throw pad's effect"
+                ),
+                _ => format!("The Q-Links turn a throw pad's effect: {label} is no throw"),
+            });
+        };
+        let k = match k {
+            Some(k) if k.uid.is_some() => k,
+            _ => {
+                // The words a hit says (`MixHost::throw_waits`).
+                return Some(format!(
+                    "{} has no Perform FX for the throw: pick the pad's On again",
+                    names.strip(t.on).0
+                ));
+            }
+        };
+        if q >= 2 {
+            return Some(format!(
+                "A throw has two settings, on Q1 and Q2: {} has no others here",
+                t.name()
+            ));
+        }
+        if knob_name(k.effect, q).is_some() {
+            return None;
+        }
+        let effect = mpfree_fx::PERFORM_EFFECTS
+            .get(usize::from(k.effect))
+            .copied()
+            .unwrap_or("Off");
+        Some(match knob_name(k.effect, 1) {
+            Some(other) => format!("{effect} has no length: Q2 turns its {other}"),
+            None => format!("{label}'s Perform FX pad is Off: Edit the effect picks one"),
+        })
+    }
+
+    /// What the hint says the Q-Links do with the pad picked, if it is a
+    /// throw on a strip with its Perform FX: "Q1 Time, Q2 Feedback: every
+    /// Delay throw on Drums".
+    pub fn qlink_hint(&self, names: &Names) -> Option<String> {
+        let (t, _, Some(k)) = self.picked_knobs()? else {
+            return None;
+        };
+        k.uid?;
+        let knobs: Vec<String> = (0..2)
+            .filter_map(|q| knob_name(k.effect, q).map(|n| format!("Q{} {n}", q + 1)))
+            .collect();
+        (!knobs.is_empty()).then(|| {
+            format!(
+                "{}: every {} on {}",
+                knobs.join(", "),
+                t.name(),
+                names.on_words(t.on)
+            )
+        })
+    }
+
+    /// Q-Link `q` turned `detents` (`fine`: SHIFT held): the picked
+    /// throw's setting on its strip's Perform FX, for the app. A run of
+    /// turns of one knob is one UNDO step; it ends when the finger lifts
+    /// ([`Self::qlink_lift`]) or another edit comes.
+    pub fn qlink(&mut self, q: usize, detents: i32, fine: bool, names: &Names) -> Vec<Act> {
+        if detents == 0 {
+            return Vec::new();
+        }
+        if let Some(why) = self.qlink_why(q, names) {
+            return vec![Act::Tell(why)];
+        }
+        let Some((t, fx, Some(k))) = self.picked_knobs() else {
+            return Vec::new();
+        };
+        let (on, effect) = (t.on, k.effect);
+        let before = if q == 0 { k.length } else { k.amount };
+        let after = knob_turned(q, before, detents, fine);
+        if after == before {
+            return Vec::new();
+        }
+        let Some(addr) = self.set_knob(on, fx, q, after) else {
+            return Vec::new();
+        };
+        let same_run = self
+            .run
+            .is_some_and(|(o, f, k, _)| (o, f, k) == (on, fx, q));
+        match self.done.last_mut() {
+            Some(Edit::Knob { after: a, .. }) if same_run => *a = after,
+            _ => {
+                self.done.push(Edit::Knob {
+                    on,
+                    fx,
+                    effect,
+                    q,
+                    before,
+                    after,
+                });
+                self.undone.clear();
+            }
+        }
+        self.run = Some((on, fx, q, addr));
+        vec![Act::Send(FromUi::ThrowKnob { addr, value: after })]
+    }
+
+    /// A finger left Q-Link `q`: the run of turns ends (the next turn is
+    /// another UNDO step), the app lets go of the parameter, and the log
+    /// says where the run left it ("Perform pads: Delay throw on Drums:
+    /// Feedback 62 %").
+    pub fn qlink_lift(&mut self, q: usize, names: &Names) -> Vec<Act> {
+        match self.run {
+            Some((_, _, k, addr)) if k == q => {
+                self.run = None;
+                let mut out = vec![Act::Send(FromUi::ThrowKnobLift(addr))];
+                if let Some(e @ Edit::Knob { .. }) = self.done.last() {
+                    out.push(Act::Tell(format!("Perform pads: {}", knob_row(e, names))));
+                }
+                out
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// Pad `pad` (0 is pad 1) hit on the hardware: picked.
     pub fn hit(&mut self, pad: usize) {
         if pad < PADS {
@@ -819,6 +1168,7 @@ impl PerformTab {
             after,
         });
         self.undone.clear();
+        self.run = None;
         self.apply(page, pad, after);
         let label = pad_label(page, pad);
         let line = match after {
@@ -846,6 +1196,7 @@ impl PerformTab {
             return Vec::new();
         }
         let before = std::mem::replace(&mut p.name, after.clone());
+        self.run = None;
         self.done.push(Edit::Name {
             page,
             before,
@@ -890,16 +1241,47 @@ impl PerformTab {
             })];
         };
         to.push(e.clone());
+        self.run = None;
         let how = if redo { "Redo" } else { "Undo" };
         let mut out = Vec::new();
         let page = match &e {
-            Edit::Pad { page, .. } | Edit::Name { page, .. } => *page,
+            Edit::Pad { page, .. } | Edit::Name { page, .. } => Some(*page),
+            Edit::Knob { .. } => None,
         };
-        if page != self.page {
+        if let Some(page) = page.filter(|&p| p != self.page) {
             self.page = page;
             out.push(Act::Send(FromUi::PerformPage(page)));
         }
         match e {
+            Edit::Knob {
+                on,
+                fx,
+                effect,
+                q,
+                before,
+                after,
+            } => {
+                let v = if redo { after } else { before };
+                let what = format!(
+                    "{}'s {} on {}",
+                    throw_name(fx),
+                    knob_name(effect, q).unwrap_or("setting"),
+                    names.on_words(on)
+                );
+                match self.set_knob(on, fx, q, v) {
+                    Some(addr) => {
+                        out.push(Act::Send(FromUi::ThrowKnob { addr, value: v }));
+                        out.push(Act::Tell(format!(
+                            "{how}: {what} back to {}",
+                            knob_text(q, v)
+                        )));
+                    }
+                    None => out.push(Act::Tell(format!(
+                        "{how}: {} has no Perform FX now, so {what} can't go back",
+                        names.strip(on).0
+                    ))),
+                }
+            }
             Edit::Pad {
                 page,
                 pad,
@@ -964,6 +1346,7 @@ impl PerformTab {
             Edit::Name { page, after, .. } => {
                 format!("Page {} named {after}", (b'A' + *page as u8) as char)
             }
+            e @ Edit::Knob { .. } => knob_row(e, names),
         };
         let mut rows = vec!["Start: the set as it was".to_string()];
         rows.extend(self.done.iter().map(row));
@@ -1146,6 +1529,38 @@ impl PerformTab {
                 .and_then(|b| b.why_faint(*i))
                 .map(|w| vec![Act::Tell(w.to_string())])
                 .unwrap_or_default(),
+            (ACTS, EventKind::Tab(EDIT_FX)) => match self.picked() {
+                PadAction::Throw(t) => match t.fx() {
+                    Some(fx) => vec![Act::Send(FromUi::ThrowEffect { on: t.on, fx })],
+                    None => Vec::new(),
+                },
+                _ => Vec::new(),
+            },
+            (ACTS, EventKind::Tab(HEAR)) => match self.picked() {
+                // A bar of it, as a pad set to 1 bar plays: a tap has no
+                // let go. Its Starts and its strip are the pad's.
+                PadAction::Throw(t) if t.fx().is_some() => {
+                    let a = PadAction::Throw(Throw {
+                        hold: Hold::Bar,
+                        ..t
+                    });
+                    vec![
+                        Act::Hear(a, true),
+                        Act::Hear(a, false),
+                        Act::Tell(format!(
+                            "{label}: {} for a bar, on {}",
+                            t.name(),
+                            names.on_words(t.on)
+                        )),
+                    ]
+                }
+                _ => Vec::new(),
+            },
+            (ACTS, EventKind::Select(i)) => ui
+                .get::<ButtonRow>(ACTS)
+                .and_then(|b| b.why_faint(*i))
+                .map(|w| vec![Act::Tell(w.to_string())])
+                .unwrap_or_default(),
             (TYPE, EventKind::Tab(i)) => match Kind::ALL.get(*i) {
                 Some(k) => {
                     let after = k.action(self.picked());
@@ -1159,6 +1574,14 @@ impl PerformTab {
             _ => Vec::new(),
         }
     }
+}
+
+/// Throw `fx` as Play's card names it ("Delay throw").
+fn throw_name(fx: ThrowFx) -> &'static str {
+    THROW_LIST
+        .iter()
+        .find(|t| t.fx == Some(fx))
+        .map_or("Throw", |t| t.name)
 }
 
 /// `a` for the log ("Reverb wash, latched", "Loop 2's key").
@@ -1618,5 +2041,207 @@ mod tests {
         tab.set_set(other, true);
         assert_eq!(tab.history_rows(&n).0.len(), 1);
         assert_eq!(tab.set.page(2).action(0), PadAction::Scene(3));
+    }
+
+    /// The Delay throw (B1 of the default set) moved to Drums, with the
+    /// Drums track's Perform FX (slot id 3) as the app sends it.
+    fn delay_on_drums() -> (PerformTab, mpfree_play::mpfree_param::ParamAddr) {
+        use mpfree_play::mpfree_param::{Owner, ParamAddr, Strip};
+        let mut tab = PerformTab {
+            page: 1,
+            pad: 0,
+            ..PerformTab::default()
+        };
+        let t = Throw {
+            on: StripId::Track(0),
+            ..Throw::new(0, Hold::WhileHeld)
+        };
+        tab.apply(1, 0, PadAction::Throw(t));
+        tab.knobs = vec![ThrowKnobs {
+            on: StripId::Track(0),
+            fx: ThrowFx::Delay,
+            uid: Some(3),
+            effect: 12,
+            length: 8.0,
+            amount: 55.0,
+        }];
+        let amount = ParamAddr::new(
+            Owner::Insert(Strip::Track(0), 3),
+            mpfree_fx::ids::perform::slot(ThrowFx::Delay.pad()) + mpfree_fx::ids::perform::AMOUNT,
+        );
+        (tab, amount)
+    }
+
+    #[test]
+    fn the_q_links_turn_a_throws_own_settings_on_its_strip_one_undo_a_run() {
+        let n = names();
+        let (mut tab, amount) = delay_on_drums();
+        let cards = tab.qlink_cards(&n);
+        assert_eq!(
+            cards
+                .each_ref()
+                .map(|c| (c.name.as_str(), c.value.as_str())),
+            [("Time", "1/8D"), ("Feedback", "55 %"), ("", ""), ("", "")]
+        );
+        assert_eq!(cards[1].scope, "Drums · every Delay throw there");
+        assert_eq!(
+            tab.qlink_hint(&n).as_deref(),
+            Some("Q1 Time, Q2 Feedback: every Delay throw on Drums")
+        );
+        // A run of turns: the mixer told each time, one UNDO step.
+        assert_eq!(
+            tab.qlink(1, 5, false, &n),
+            vec![Act::Send(FromUi::ThrowKnob {
+                addr: amount,
+                value: 60.0
+            })]
+        );
+        tab.qlink(1, 2, false, &n);
+        assert_eq!(tab.qlink_cards(&n)[1].value, "62 %");
+        assert_eq!(tab.history_rows(&n).0.len(), 2);
+        // The finger lifts: the mod engine lets go; the next turn is a
+        // step of its own.
+        assert_eq!(
+            tab.qlink_lift(1, &n),
+            vec![
+                Act::Send(FromUi::ThrowKnobLift(amount)),
+                Act::Tell("Perform pads: Delay throw on Drums: Feedback 62 %".into())
+            ]
+        );
+        assert!(tab.qlink_lift(1, &n).is_empty());
+        tab.qlink(1, -10, true, &n);
+        assert_eq!(tab.qlink_cards(&n)[1].value, "61 %");
+        assert_eq!(
+            tab.history_rows(&n).0,
+            vec![
+                "Start: the set as it was",
+                "Delay throw on Drums: Feedback 62 %",
+                "Delay throw on Drums: Feedback 61 %",
+            ]
+        );
+        // Q1 steps the Time a length at a time, and stops at the ends.
+        tab.qlink(0, 1, false, &n);
+        assert_eq!(tab.qlink_cards(&n)[0].value, "1/4");
+        tab.qlink(0, 100, false, &n);
+        assert_eq!(tab.qlink_cards(&n)[0].value, "4 bars");
+        assert!(tab.qlink(0, 1, false, &n).is_empty());
+        // UNDO takes the runs back, the Feedback to where it was.
+        let acts = tab.undo(false, &n);
+        assert!(acts.contains(&Act::Tell(
+            "Undo: Delay throw's Time on Drums back to 1/8D".into()
+        )));
+        tab.undo(false, &n);
+        let acts = tab.undo(false, &n);
+        assert_eq!(
+            sends(&acts),
+            vec![&FromUi::ThrowKnob {
+                addr: amount,
+                value: 55.0
+            }]
+        );
+        assert_eq!(tab.qlink_cards(&n)[1].value, "55 %");
+        let acts = tab.undo(true, &n);
+        assert!(acts.contains(&Act::Tell(
+            "Redo: Delay throw's Feedback on Drums back to 62 %".into()
+        )));
+    }
+
+    #[test]
+    fn a_q_link_with_nothing_to_turn_says_why() {
+        let n = names();
+        let (mut tab, _) = delay_on_drums();
+        assert_eq!(
+            tab.qlink(2, 1, false, &n),
+            vec![Act::Tell(
+                "A throw has two settings, on Q1 and Q2: Delay throw has no others here".into()
+            )]
+        );
+        // A wash rings for its Decay: no Length.
+        tab.knobs[0].effect = 14;
+        let cards = tab.qlink_cards(&n);
+        assert_eq!(
+            (cards[0].name.as_str(), cards[1].name.as_str()),
+            ("", "Decay")
+        );
+        assert_eq!(
+            tab.qlink_why(0, &n).as_deref(),
+            Some("Wash throw has no length: Q2 turns its Decay")
+        );
+        // The strip's Perform FX taken off on the Mix tab: the words a hit
+        // says, and nothing turns.
+        tab.knobs[0].uid = None;
+        assert!(tab.qlink_cards(&n).iter().all(|c| c.name.is_empty()));
+        assert_eq!(
+            tab.qlink(1, 1, false, &n),
+            vec![Act::Tell(
+                "Drums has no Perform FX for the throw: pick the pad's On again".into()
+            )]
+        );
+        assert_eq!(tab.qlink_hint(&n), None);
+        // A macro pad, and an empty one.
+        tab.pad = 6;
+        tab.apply(
+            1,
+            6,
+            PadAction::Macro {
+                card: 0,
+                value: 100,
+            },
+        );
+        assert!(tab
+            .qlink_why(0, &n)
+            .is_some_and(|w| w.starts_with("B7 holds a macro")));
+        tab.pad = 15;
+        assert_eq!(
+            tab.qlink_why(0, &n).as_deref(),
+            Some("B16 has nothing on it: the Q-Links turn a throw pad's effect")
+        );
+    }
+
+    #[test]
+    fn edit_the_effect_opens_the_throws_strip_and_hear_it_plays_a_bar() {
+        let n = names();
+        let (mut tab, _) = delay_on_drums();
+        let mut ui = Ui::new(
+            mpfree_ui::Theme::dark(),
+            mpfree_ui::Fonts::embedded(),
+            1280,
+            800,
+        );
+        let tap = |i| UiEvent {
+            widget: ACTS.into(),
+            kind: EventKind::Tab(i),
+        };
+        assert_eq!(
+            tab.event(&mut ui, &tap(EDIT_FX), &n),
+            vec![Act::Send(FromUi::ThrowEffect {
+                on: StripId::Track(0),
+                fx: ThrowFx::Delay
+            })]
+        );
+        let bar = PadAction::Throw(Throw {
+            hold: Hold::Bar,
+            on: StripId::Track(0),
+            ..Throw::new(0, Hold::WhileHeld)
+        });
+        assert_eq!(
+            tab.event(&mut ui, &tap(HEAR), &n),
+            vec![
+                Act::Hear(bar, true),
+                Act::Hear(bar, false),
+                Act::Tell("B1: Delay throw for a bar, on Drums".into()),
+            ]
+        );
+        // Nothing to hear or edit on a macro pad.
+        tab.pad = 6;
+        tab.apply(
+            1,
+            6,
+            PadAction::Macro {
+                card: 0,
+                value: 100,
+            },
+        );
+        assert!(tab.event(&mut ui, &tap(HEAR), &n).is_empty());
     }
 }
