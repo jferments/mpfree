@@ -465,6 +465,10 @@ pub struct Synth {
     resets: u64,
     /// Indices of the read-only parameters (meters), per engine.
     meters: [Vec<usize>; ENGINES],
+    /// How many times each engine's design (its preset's effects and
+    /// macros) changed: the synth-voice pads' copies of an engine
+    /// (`pad_synths.rs`) are made again when it moves.
+    designs: [u32; ENGINES],
     /// The sound from before the preset picker's first try (as preset
     /// text, with its design), to put back if the picker is cancelled
     /// ([`Synth::try_preset`]).
@@ -748,6 +752,7 @@ impl Synth {
             peak_voices: 0,
             resets: 0,
             meters,
+            designs: [0; ENGINES],
             audition: None,
             tuning_files: Vec::new(),
             locks: crate::locks::Under::new(),
@@ -799,8 +804,23 @@ impl Synth {
 
     /// Engine `e`'s design changed: its settings' list did, so the meters
     /// are found again.
-    fn redesigned(&mut self, e: Engine) {
+    pub(crate) fn redesigned(&mut self, e: Engine) {
         self.meters[e.index()] = meters_of(self.sound(e));
+        let d = &mut self.designs[e.index()];
+        *d = d.wrapping_add(1);
+    }
+
+    /// Engine `e`'s design count ([`Synth::sound_of`]'s design lines move
+    /// it): a copy made at another count has other effects or macros.
+    pub fn design_of(&self, e: Engine) -> u32 {
+        self.designs[e.index()]
+    }
+
+    /// Parameter `id` of engine `e`'s sound as the Synth tab has it now,
+    /// whichever engine is on the pads (what a synth-voice pad's copy
+    /// follows, `pad_synths.rs`). Never allocates.
+    pub fn value_of(&self, e: Engine, id: u16) -> f32 {
+        self.node_of(e).param(id)
     }
 
     /// Engine `e` plays a plain preset (a factory one with no effects or

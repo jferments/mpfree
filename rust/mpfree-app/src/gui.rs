@@ -988,6 +988,10 @@ pub enum ToUi {
     /// channel of its own, by kit and pad): the Pads tab's Effects row
     /// names them.
     PadFx(Vec<crate::modpanels::PadFx>),
+    /// The synth-voice pads that play through the Synth channel (past the
+    /// sixteen with a synth of their own, or whose own couldn't be made),
+    /// by kit and pad: the Pads tab says so under the pad.
+    PadsOnSynth(Vec<(u8, u8)>),
     /// While the mixer's I/O view shows: the data wheel, - or +, for the
     /// section showing.
     IoInput(mpfree_mixer_ui::IoInput),
@@ -7296,6 +7300,7 @@ impl Player {
             }
             ToUi::MixerQLink(k, d) => self.mixer_qlink(k, d),
             ToUi::PadFx(fx) => self.sample.set_pad_fx(&mut self.ui, fx),
+            ToUi::PadsOnSynth(on) => self.sample.set_pads_on_synth(&mut self.ui, on),
             ToUi::MixerFaders => {
                 mpfree_mixer_ui::set_look(&mut self.ui, mpfree_mixer_ui::Look::Faders);
                 self.sync_mix_pick();
