@@ -487,6 +487,10 @@ pub enum SoundKind {
     /// The slice a sliced pad's hit plays (the sampler's R4), from 0, on
     /// a pad cut in this many; shown from 1.
     Slice(u8),
+    /// A control the track sends its outside gear (`OnTrack::Midi`, this
+    /// parameter): a controller or pressure, 0 to 127, or the pitch bend,
+    /// -8192 to 8191 (`mpfree_param::midi`).
+    Midi(u16),
     /// An instrument's parameter, as its node describes it.
     Param(ParamInfo),
 }
@@ -555,6 +559,17 @@ impl SoundKind {
                 let v = v.round().clamp(0.0, last);
                 (format!("{}", v as usize + 1), v / last, false)
             }
+            SoundKind::Midi(id) => {
+                let (lo, hi) = mpfree_play::mpfree_param::midi::range(id).unwrap_or((0, 127));
+                let (lo, hi) = (f32::from(lo), f32::from(hi));
+                let v = v.round().clamp(lo, hi);
+                let text = if lo < 0.0 {
+                    format!("{:+}", v as i32)
+                } else {
+                    format!("{}", v as i32)
+                };
+                (text, (v - lo) / (hi - lo), lo < 0.0)
+            }
             SoundKind::Param(p) => (
                 mpfree_synth_ui::format::value_line(&p, v),
                 p.to_unit(v),
@@ -584,6 +599,18 @@ impl SoundKind {
             }
             // A slice a detent, fine or not.
             SoundKind::Slice(n) => (v.round() + d).clamp(0.0, f32::from(n.max(1) - 1)),
+            // A controller 4 a detent (1 with SHIFT), so a drag sweeps it;
+            // the bend 256 (16).
+            SoundKind::Midi(id) => {
+                let (lo, hi) = mpfree_play::mpfree_param::midi::range(id).unwrap_or((0, 127));
+                let step = match (lo < 0, fine) {
+                    (true, false) => 256.0,
+                    (true, true) => 16.0,
+                    (false, false) => 4.0,
+                    (false, true) => 1.0,
+                };
+                (v.round() + d * step).clamp(f32::from(lo), f32::from(hi))
+            }
             SoundKind::Param(p) => match p.curve {
                 Curve::Stepped | Curve::Choice(_) | Curve::Toggle => p.clamp(v + d),
                 _ => {
@@ -798,6 +825,9 @@ pub struct PlayPage {
     added_lanes: Vec<(usize, usize, LockLane)>,
     /// The Sequencer's Steps with lock lanes: the first row shown.
     pub steps_top: usize,
+    /// The outside gear the Sequencer's track plays on (its MIDI out
+    /// profile's name, or its port and channel), for the Lanes list.
+    pub gear: Option<String>,
 }
 
 /// The track Play's rows are, for their head: its name, "Track 1" under
@@ -951,6 +981,7 @@ impl Default for PlayPage {
             lock_knobs: Vec::new(),
             added_lanes: Vec::new(),
             steps_top: 0,
+            gear: None,
         }
     }
 }
@@ -1433,6 +1464,11 @@ impl PlayPage {
                 p => (format!("Pad setting {p}"), format!("{v:.2}")),
             },
             OnTrack::Inst => (format!("Synth {}", addr.param), format!("{v:.2}")),
+            OnTrack::Midi => (
+                mpfree_play::mpfree_param::midi::name(addr.param)
+                    .unwrap_or_else(|| format!("{addr}")),
+                SoundKind::Midi(addr.param).read(v).0,
+            ),
             _ => (format!("{addr}"), format!("{v:.2}")),
         }
     }
@@ -2218,7 +2254,12 @@ impl PlayPage {
         let mut wanted: Vec<usize> = on_pads.into_iter().collect();
         if self.pitched() {
             wanted.extend(self.note_rows());
-            return wanted.into_iter().map(|p| self.lane(p)).collect();
+            // The lock lanes go under the scale rows (board 4).
+            return wanted
+                .into_iter()
+                .map(|p| self.lane(p))
+                .chain(self.lock_lanes_shown())
+                .collect();
         }
         // Any of a kit's 128 pads (the synth's 16); the empty ones of the
         // page on the pads last.
@@ -2240,19 +2281,22 @@ impl PlayPage {
         let mut lanes: Vec<Lane> = order.into_iter().map(|p| self.lane(p)).collect();
         // The Sequencer's lock lanes, after the sounds (the grid puts each
         // under its sound).
-        lanes.extend(
-            self.lock_lanes()
-                .into_iter()
-                .enumerate()
-                .map(|(id, l)| self.lock_lane(id, l)),
-        );
+        lanes.extend(self.lock_lanes_shown());
         lanes
     }
 
-    /// The Sequencer's lock lanes on a kit's sounds, in order: every
-    /// setting the clip locks, and the lanes added, by row and setting.
+    /// The Sequencer's lock lanes as the Steps show them.
+    fn lock_lanes_shown(&self) -> impl Iterator<Item = Lane> + '_ {
+        self.lock_lanes()
+            .into_iter()
+            .enumerate()
+            .map(|(id, l)| self.lock_lane(id, l))
+    }
+
+    /// The Sequencer's lock lanes, in order: every setting the clip
+    /// locks, and the lanes added, by row and setting.
     pub fn lock_lanes(&self) -> Vec<LockLane> {
-        if !self.sequencer || self.pitched() {
+        if !self.sequencer {
             return Vec::new();
         }
         let Some(c) = self.steps.clip.as_ref() else {
@@ -2298,17 +2342,26 @@ impl PlayPage {
 
     /// What of the track a track lock sets: its mix (volume and pan),
     /// its FX (a send or an insert), or the whole step.
-    fn track_part(addr: RelAddr) -> &'static str {
+    fn track_part(addr: RelAddr) -> String {
+        use mpfree_play::mpfree_param::midi::{self, Midi};
         use mpfree_play::mpfree_param::OnTrack;
         match addr.on {
             OnTrack::Strip
                 if addr.param == mpfree_fx::ids::mixer::VOLUME
                     || addr.param == mpfree_fx::ids::mixer::PAN =>
             {
-                "track mix"
+                "track mix".to_string()
             }
-            OnTrack::Strip | OnTrack::Insert(_) => "track FX",
-            _ => "whole step",
+            OnTrack::Strip | OnTrack::Insert(_) => "track FX".to_string(),
+            OnTrack::Inst => "the synth".to_string(),
+            // Outside gear's controls (the MIDI out lanes, board 4).
+            OnTrack::Midi => match midi::of(addr.param) {
+                Some(Midi::Cc(n)) => format!("CC {n}"),
+                Some(Midi::Bend) => "pitch bend".to_string(),
+                Some(Midi::Pressure) => "pressure".to_string(),
+                None => "MIDI out".to_string(),
+            },
+            _ => "whole step".to_string(),
         }
     }
 
@@ -2320,6 +2373,9 @@ impl PlayPage {
         // sound it hangs under).
         let sub = if l.row != LINE {
             format!("lock · {}", self.pad_name(usize::from(l.row)))
+        } else if l.addr.on == mpfree_play::mpfree_param::OnTrack::Midi {
+            // A gear's control says what it sends (board 4: "CC 43").
+            Self::track_part(l.addr)
         } else {
             format!("lock · {}", Self::track_part(l.addr))
         };
@@ -2523,7 +2579,11 @@ impl PlayPage {
         let mut v: Vec<(LockLane, String, String, bool)> = Vec::new();
         for k in &self.lock_knobs {
             let l = LockLane::of(k.addr);
-            let on = if l.row == LINE {
+            let on = if k.addr.on == mpfree_play::mpfree_param::OnTrack::Midi {
+                // The gear the track plays on, and what goes to it.
+                let gear = self.gear.as_deref().unwrap_or("MIDI out");
+                format!("{gear} · {}", Self::track_part(k.addr))
+            } else if l.row == LINE {
                 format!("{track} · {}", Self::track_part(k.addr))
             } else if usize::from(l.row) == pad {
                 format!("{} · the pad hit last", self.pad_name(pad))
@@ -2683,7 +2743,7 @@ impl PlayPage {
         if g.top != self.steps_top {
             g.top = self.steps_top;
         }
-        let add_lane = self.sequencer && !self.pitched();
+        let add_lane = self.sequencer;
         if g.add_lane != add_lane {
             g.add_lane = add_lane;
         }
@@ -3412,6 +3472,28 @@ mod tests {
         assert_eq!(k.turn(2.0, 1, true), 3.0);
         assert_eq!(k.turn(6.0, 5, false), 7.0);
         assert_eq!(k.turn(1.0, -4, false), 0.0);
+    }
+
+    /// Step 5b: a gear's controller reads 0 to 127 and turns 4 a detent
+    /// (1 with SHIFT); the bend reads with its sign, lit both ways, and
+    /// turns 256 (16); both stop at their ends.
+    #[test]
+    fn a_gear_lock_reads_its_midi_value_and_turns_a_detent() {
+        use mpfree_play::mpfree_param::midi;
+        let cc = SoundKind::Midi(74);
+        assert_eq!(cc.read(64.0), ("64".to_string(), 64.0 / 127.0, false));
+        assert_eq!(cc.turn(64.0, 2, false), 72.0);
+        assert_eq!(cc.turn(64.0, 2, true), 66.0);
+        assert_eq!(cc.turn(126.0, 3, false), 127.0);
+        let bend = SoundKind::Midi(midi::BEND);
+        assert_eq!(bend.read(-4096.0).0, "-4096");
+        assert_eq!(bend.read(512.0).0, "+512");
+        assert!(bend.read(0.0).2, "lit both ways from the middle");
+        assert_eq!(bend.turn(0.0, -1, false), -256.0);
+        assert_eq!(bend.turn(0.0, 1, true), 16.0);
+        assert_eq!(bend.turn(8000.0, 4, false), 8191.0);
+        let pressure = SoundKind::Midi(midi::PRESSURE);
+        assert_eq!(pressure.turn(0.0, -1, false), 0.0);
     }
 
     /// The redesign's step 3b: a tap never takes a step's settings away.
