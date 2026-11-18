@@ -1,4 +1,4 @@
-//! Poly's, FM's, Drums' and Pluck's `process` must not allocate or free. A counting global allocator
+//! No synth engine's `process` may allocate or free. A counting global allocator
 //! watches a busy session: chords past the voice limit, mono and legato,
 //! glide, bend, pressure, per-note slides, tones and release velocities,
 //! tuning changes, automation of every parameter, AllOff, reset.
@@ -11,11 +11,13 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use mpfree_node::{Ctx, Expr, Node, NodeEvent, Timed, Tuning};
+use mpfree_node::{Ctl, Ctx, Expr, Node, NodeEvent, Timed, Tuning};
 use std::sync::Arc;
 
 use mpfree_synth::wavetable::table::{Table, FRAME};
-use mpfree_synth::{Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Wavetable, PARAMS};
+use mpfree_synth::{
+    Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable, PARAMS,
+};
 
 struct Counting;
 thread_local! {
@@ -51,7 +53,8 @@ unsafe impl GlobalAlloc for Counting {
 static GLOBAL: Counting = Counting;
 
 /// A busy session for any instrument: random notes, pressure, bend,
-/// automation of every parameter, AllOff, and a reset half way.
+/// pedals and controllers, automation of every parameter, AllOff, and a
+/// reset half way.
 fn exercise(s: &mut dyn Node, params: &[mpfree_node::ParamInfo], rate: u32) -> usize {
     let mut l = vec![0.0f32; 128];
     let mut r = vec![0.0f32; 128];
@@ -77,7 +80,7 @@ fn exercise(s: &mut dyn Node, params: &[mpfree_node::ParamInfo], rate: u32) -> u
         for _ in 0..rnd() % 6 {
             let off = rnd() % 128;
             let note = 24 + (rnd() % 80) as u8;
-            let ev = match rnd() % 10 {
+            let ev = match rnd() % 11 {
                 0..=2 => NodeEvent::NoteOn {
                     note,
                     velocity: 1 + (rnd() % 127) as u8,
@@ -101,6 +104,10 @@ fn exercise(s: &mut dyn Node, params: &[mpfree_node::ParamInfo], rate: u32) -> u
                     note,
                     kind: [Expr::Slide, Expr::Tone, Expr::Release][rnd() as usize % 3],
                     value: (rnd() % 200) as f32 / 10.0 - 10.0,
+                },
+                9 => NodeEvent::Control {
+                    ctl: Ctl::ALL[rnd() as usize % Ctl::ALL.len()],
+                    value: (rnd() % 128) as f32 / 127.0,
                 },
                 _ => NodeEvent::AllOff,
             };
@@ -249,6 +256,23 @@ fn squelch_process_never_allocates() {
             exercise(&mut s, params, 48_000),
             0,
             "Squelch::process (wave {wave}) allocated"
+        );
+    }
+}
+
+#[test]
+fn strings_process_never_allocates() {
+    use mpfree_synth::strings_params::*;
+    for (swell, lines) in [(0.0, 3.0), (1.0, 4.0)] {
+        let mut s = Strings::new(48_000);
+        s.set_param(SWELL, swell);
+        s.set_param(LINES, lines);
+        s.set_param(NOISE, 60.0);
+        let params = s.params();
+        assert_eq!(
+            exercise(&mut s, params, 48_000),
+            0,
+            "Strings::process (swell {swell}) allocated"
         );
     }
 }

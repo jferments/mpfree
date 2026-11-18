@@ -782,6 +782,14 @@ impl Player {
         self.hit_kit_at(kit, pad, velocity, offset)
     }
 
+    /// Whether a live hit on kit `kit`'s pad `pad` waits for the launch
+    /// line while the transport plays (a Loop pad, sampler R5.3b): never
+    /// while live chop takes cuts on that kit, where a hit marks a cut at
+    /// once. Never allocates.
+    pub fn starts_on_line(&self, kit: usize, pad: usize) -> bool {
+        !self.marking(kit) && self.engine.kit_starts_on_line(kit, pad)
+    }
+
     /// Kit `kit`'s pad let go live: nothing while live chop takes cuts on
     /// that kit (the hit played nothing), else [`Player::release_kit_at`].
     pub fn live_release_at(&mut self, kit: usize, pad: usize, offset: u32) {
@@ -1653,6 +1661,31 @@ mod tests {
         };
         assert!(player.swap_view(&mut swap));
         assert!(!player.hit_at(empty, 100, 0));
+    }
+
+    /// Sampler R5.3b: a pad set to start on the launch line (a Loop pad)
+    /// says so on the audio thread once its kit's view comes; a pad with
+    /// no sound and another kit's pad don't.
+    #[test]
+    fn a_loop_pad_starts_on_the_line() {
+        let mut kits = kits();
+        let mut player = Player::new(&mut kits, &NOTES, 44_100).unwrap();
+        let mut projects = player.take_projects();
+        let pad = (0..16).find(|&p| player.has_sound(0, p)).unwrap();
+        let empty = (0..16).find(|&p| !player.has_sound(0, p)).unwrap();
+        assert!(!player.starts_on_line(0, pad));
+        let project = &mut projects[0];
+        let mut d = project.pad(pad).cloned().unwrap();
+        d.on_launch = true;
+        project.set_pad(pad, Some(d), None).unwrap();
+        let mut swap = ViewSwap {
+            kit: 0,
+            view: Some(EngineView::build(project, 44_100)),
+            routes: pad_routes(project),
+        };
+        assert!(player.swap_view(&mut swap));
+        assert!(player.starts_on_line(0, pad));
+        assert!(!player.starts_on_line(0, empty) && !player.starts_on_line(1, pad));
     }
 
     /// R3 part 2b: a kit's pads past 16 (PAD BANK B to H) hold and play

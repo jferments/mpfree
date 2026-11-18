@@ -262,7 +262,7 @@ Tap a row, or turn the data wheel, to pick it. The card under the list sets it:
   - **Jump**: the value goes straight to where the knob is.
   - **Pick up**: the value waits until the knob passes it, so nothing jumps.
   - **Scale**: the value moves at once, but in step with the knob, so the two meet at the end the knob turns to.
-- **Kept in**: **Project** keeps it with this song; **Rig** keeps it for every project, like a controller's tempo fader or a drum machine's mute key. A control learned on the transport or the tempo starts in **Rig**, anything else in **Project**. While a song has its own mapping for the same control, the song's wins.
+- **Kept in**: **Project** keeps it with this song; **Rig** keeps it for every project, like a controller's tempo fader or a drum machine's mute key. A control learned on the transport, the tempo or the looper starts in **Rig**, anything else in **Project**. While a song has its own mapping for the same control, the song's wins.
 - **Learn again**: the next control you move takes this one's place, with the same range, takeover and **Kept in**. The banner at the top says what it waits for; **Cancel** stops it and keeps the old control.
 - **Remove** takes the control off.
 
@@ -279,6 +279,21 @@ A button, pad, key or footswitch on your controller can press MPFree's transport
 For the tempo the quick way works too: hold **SHIFT** and touch the tempo on the Play page. To mute a track from a controller, hold **SHIFT** and touch its **M** in the mixer, then press a key: each press mutes or unmutes it.
 
 Transport controls are kept in **Rig**, so they work in every project. Nothing here sends anything to your controller.
+
+### Playing the looper from a footswitch
+
+{{shot: mixer-io-learn-looper | The Learn section's Looper card: the Loop stepper on the picked loop with its Key and Mute, then Next loop, Undo, Redo, Capture and Clear.}}
+
+A footswitch leaves both hands on your instrument while you loop. Any control that sends MIDI can play the [looper](looping.md): a footswitch, a pedalboard, a button, a pad or a key. The MPC One has no footswitch jack, so plug the footswitch into a MIDI controller or a MIDI pedal that has one, and connect that to the MPC's USB or 5-pin MIDI in.
+
+In the Learn section, tap **Looper** by the heading, tap one, then press the footswitch:
+
+- **Loop** (– and +) picks which loop **Key** and **Mute** are for: **Picked loop**, whichever loop is picked when you press, or one loop from **Loop 1** to **Loop 8**.
+- **Key**: what the loop's pad does as a [loop key](looping.md#the-pads-as-loop-keys). Press to record from the next bar line, again to end the first pass, then to overdub and to play on; a muted loop plays again. Hold it for a second to clear the loop (UNDO brings it back).
+- **Mute**: mutes the loop, and lets it play again. A key or a pad flips it on each press; a footswitch or a fader mutes from halfway up and lets it play below that.
+- **Next loop** picks the next loop (after Loop 8, Loop 1). **Undo**, **Redo** and **Clear** are the Looper tab's buttons, on the picked loop. **Capture** keeps the bars you just played as a loop.
+
+These work on every page, whatever the pads are doing. A **Key** or a press starts as **Button: while held**, so a footswitch goes down and comes up as a pad does; leave it so. The Learn section lists each one by what it plays: **Looper · Loop 3 key**, **Looper · picked loop's key**, **Looper · Next loop**. Looper controls are kept in **Rig**, so your pedalboard works in every project.
 
 ### MIDI Follow: your controller's knobs on the Q-Links
 

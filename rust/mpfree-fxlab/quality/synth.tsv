@@ -771,6 +771,174 @@ synth/Squelch[Square Acid]/small_speaker_db	-13.9922
 synth/Squelch[Square Acid]/start_step_dbfs	-131.5858
 synth/Squelch[Square Acid]/vel_curve_err_db	2.0585
 synth/Squelch[Square Acid]/vel_tone_oct	0.1234
+synth/Strings[Ballad Pad]/chord6_vs_power_db	0.3417
+synth/Strings[Ballad Pad]/chord8_peak_dbfs	-4.4153
+synth/Strings[Ballad Pad]/dc_dbfs	-137.154
+synth/Strings[Ballad Pad]/key_spread_db	0.3109
+synth/Strings[Ballad Pad]/mono_loss_db	1.2989
+synth/Strings[Ballad Pad]/vel_curve_err_db	0.124
+synth/Strings[Ballad Pad]/vel_tone_oct	0.2383
+synth/Strings[Bowed]/chord6_vs_power_db	0.0295
+synth/Strings[Bowed]/chord8_peak_dbfs	-5.6755
+synth/Strings[Bowed]/dc_dbfs	-134.6204
+synth/Strings[Bowed]/key_spread_db	2.2142
+synth/Strings[Bowed]/mono_loss_db	1.3068
+synth/Strings[Bowed]/vel_curve_err_db	0.1051
+synth/Strings[Bowed]/vel_tone_oct	0.2388
+synth/Strings[Brass Ensemble]/chord6_vs_power_db	0.5772
+synth/Strings[Brass Ensemble]/chord8_peak_dbfs	-5.6289
+synth/Strings[Brass Ensemble]/dc_dbfs	-140
+synth/Strings[Brass Ensemble]/key_spread_db	2.4189
+synth/Strings[Brass Ensemble]/mono_loss_db	0.8595
+synth/Strings[Brass Ensemble]/vel_curve_err_db	0.1267
+synth/Strings[Brass Ensemble]/vel_tone_oct	0.2732
+synth/Strings[Brassy Lead]/chord6_vs_power_db	1.6094
+synth/Strings[Brassy Lead]/chord8_peak_dbfs	-5.4291
+synth/Strings[Brassy Lead]/dc_dbfs	-140
+synth/Strings[Brassy Lead]/key_spread_db	1.7087
+synth/Strings[Brassy Lead]/mono_loss_db	0.441
+synth/Strings[Brassy Lead]/vel_curve_err_db	0.0816
+synth/Strings[Brassy Lead]/vel_tone_oct	0.1173
+synth/Strings[Bright Strings]/chord6_vs_power_db	0.0584
+synth/Strings[Bright Strings]/chord8_peak_dbfs	-6.438
+synth/Strings[Bright Strings]/dc_dbfs	-134.9005
+synth/Strings[Bright Strings]/key_spread_db	1.7826
+synth/Strings[Bright Strings]/mono_loss_db	1.3117
+synth/Strings[Bright Strings]/vel_curve_err_db	0.0643
+synth/Strings[Bright Strings]/vel_tone_oct	0.1642
+synth/Strings[Cello and Viola]/chord6_vs_power_db	0.1159
+synth/Strings[Cello and Viola]/chord8_peak_dbfs	-5.582
+synth/Strings[Cello and Viola]/dc_dbfs	-135.2804
+synth/Strings[Cello and Viola]/key_spread_db	1.2358
+synth/Strings[Cello and Viola]/mono_loss_db	1.3019
+synth/Strings[Cello and Viola]/vel_curve_err_db	0.1534
+synth/Strings[Cello and Viola]/vel_tone_oct	0.2478
+synth/Strings[Classic Strings]/chord6_vs_power_db	-0.2359
+synth/Strings[Classic Strings]/chord8_peak_dbfs	-5.3355
+synth/Strings[Classic Strings]/dc_dbfs	-134.6452
+synth/Strings[Classic Strings]/key_spread_db	1.0206
+synth/Strings[Classic Strings]/mono_loss_db	1.3224
+synth/Strings[Classic Strings]/vel_curve_err_db	0.111
+synth/Strings[Classic Strings]/vel_tone_oct	0.2453
+synth/Strings[Dark Strings]/chord6_vs_power_db	-0.3578
+synth/Strings[Dark Strings]/chord8_peak_dbfs	-4.4517
+synth/Strings[Dark Strings]/dc_dbfs	-131.6174
+synth/Strings[Dark Strings]/key_spread_db	1.424
+synth/Strings[Dark Strings]/mono_loss_db	1.2985
+synth/Strings[Dark Strings]/vel_curve_err_db	0.2608
+synth/Strings[Dark Strings]/vel_tone_oct	0.2875
+synth/Strings[Disco Strings]/chord6_vs_power_db	-0.0981
+synth/Strings[Disco Strings]/chord8_peak_dbfs	-5.9057
+synth/Strings[Disco Strings]/dc_dbfs	-140
+synth/Strings[Disco Strings]/key_spread_db	1.5298
+synth/Strings[Disco Strings]/mono_loss_db	1.3183
+synth/Strings[Disco Strings]/vel_curve_err_db	0.1054
+synth/Strings[Disco Strings]/vel_tone_oct	0.201
+synth/Strings[Dry Divider]/chord6_vs_power_db	-0.2065
+synth/Strings[Dry Divider]/chord8_peak_dbfs	-7.3053
+synth/Strings[Dry Divider]/dc_dbfs	-140
+synth/Strings[Dry Divider]/key_spread_db	1.155
+synth/Strings[Dry Divider]/mono_loss_db	0
+synth/Strings[Dry Divider]/vel_curve_err_db	0.1097
+synth/Strings[Dry Divider]/vel_tone_oct	0.2693
+synth/Strings[Full Ensemble]/chord6_vs_power_db	0.1281
+synth/Strings[Full Ensemble]/chord8_peak_dbfs	-4.9735
+synth/Strings[Full Ensemble]/dc_dbfs	-128.9595
+synth/Strings[Full Ensemble]/key_spread_db	1.3589
+synth/Strings[Full Ensemble]/mono_loss_db	1.1091
+synth/Strings[Full Ensemble]/vel_curve_err_db	0.0964
+synth/Strings[Full Ensemble]/vel_tone_oct	0.2644
+synth/Strings[High Strings]/chord6_vs_power_db	0.0767
+synth/Strings[High Strings]/chord8_peak_dbfs	-7.3352
+synth/Strings[High Strings]/dc_dbfs	-140
+synth/Strings[High Strings]/key_spread_db	0.9974
+synth/Strings[High Strings]/mono_loss_db	1.2638
+synth/Strings[High Strings]/vel_curve_err_db	0.1913
+synth/Strings[High Strings]/vel_tone_oct	0.2386
+synth/Strings[Horn Section]/chord6_vs_power_db	0.5489
+synth/Strings[Horn Section]/chord8_peak_dbfs	-4.8339
+synth/Strings[Horn Section]/dc_dbfs	-136.7406
+synth/Strings[Horn Section]/key_spread_db	2.0465
+synth/Strings[Horn Section]/mono_loss_db	1.1987
+synth/Strings[Horn Section]/vel_curve_err_db	0.0884
+synth/Strings[Horn Section]/vel_tone_oct	0.2313
+synth/Strings[Init]/chord6_vs_power_db	-0.3537
+synth/Strings[Init]/chord8_peak_dbfs	-6.1404
+synth/Strings[Init]/dc_dbfs	-135.1935
+synth/Strings[Init]/key_spread_db	1.5376
+synth/Strings[Init]/mono_loss_db	1.327
+synth/Strings[Init]/vel_curve_err_db	0.0958
+synth/Strings[Init]/vel_tone_oct	0.2402
+synth/Strings[Lo-fi Strings]/chord6_vs_power_db	-0.2054
+synth/Strings[Lo-fi Strings]/chord8_peak_dbfs	-6.6837
+synth/Strings[Lo-fi Strings]/dc_dbfs	-140
+synth/Strings[Lo-fi Strings]/key_spread_db	2.3683
+synth/Strings[Lo-fi Strings]/mono_loss_db	0.6985
+synth/Strings[Lo-fi Strings]/vel_curve_err_db	0.1301
+synth/Strings[Lo-fi Strings]/vel_tone_oct	0.3072
+synth/Strings[Low Strings]/chord6_vs_power_db	0.5905
+synth/Strings[Low Strings]/chord8_peak_dbfs	-5.4436
+synth/Strings[Low Strings]/dc_dbfs	-139.93
+synth/Strings[Low Strings]/key_spread_db	2.525
+synth/Strings[Low Strings]/mono_loss_db	1.3657
+synth/Strings[Low Strings]/vel_curve_err_db	0.0938
+synth/Strings[Low Strings]/vel_tone_oct	0.22
+synth/Strings[Mono Ensemble]/chord6_vs_power_db	-0.4846
+synth/Strings[Mono Ensemble]/chord8_peak_dbfs	-6.1824
+synth/Strings[Mono Ensemble]/dc_dbfs	-133.988
+synth/Strings[Mono Ensemble]/key_spread_db	2.1202
+synth/Strings[Mono Ensemble]/mono_loss_db	0
+synth/Strings[Mono Ensemble]/vel_curve_err_db	0.0978
+synth/Strings[Mono Ensemble]/vel_tone_oct	0.2362
+synth/Strings[Orchestra]/chord6_vs_power_db	0.182
+synth/Strings[Orchestra]/chord8_peak_dbfs	-4.8208
+synth/Strings[Orchestra]/dc_dbfs	-136.1499
+synth/Strings[Orchestra]/key_spread_db	0.4329
+synth/Strings[Orchestra]/mono_loss_db	1.3156
+synth/Strings[Orchestra]/vel_curve_err_db	0.1495
+synth/Strings[Orchestra]/vel_tone_oct	0.2778
+synth/Strings[Paraphonic 70s]/chord6_vs_power_db	-0.5461
+synth/Strings[Paraphonic 70s]/chord8_peak_dbfs	-6.1042
+synth/Strings[Paraphonic 70s]/dc_dbfs	-134.6136
+synth/Strings[Paraphonic 70s]/key_spread_db	1.5991
+synth/Strings[Paraphonic 70s]/mono_loss_db	1.3
+synth/Strings[Paraphonic 70s]/vel_curve_err_db	0.0972
+synth/Strings[Paraphonic 70s]/vel_tone_oct	0.2382
+synth/Strings[Slow Swell]/chord6_vs_power_db	-0.4392
+synth/Strings[Slow Swell]/chord8_peak_dbfs	-10.5899
+synth/Strings[Slow Swell]/dc_dbfs	-138.8774
+synth/Strings[Slow Swell]/key_spread_db	1.0898
+synth/Strings[Slow Swell]/mono_loss_db	1.3275
+synth/Strings[Slow Swell]/vel_curve_err_db	0.1162
+synth/Strings[Slow Swell]/vel_tone_oct	0.2411
+synth/Strings[Staccato Strings]/chord6_vs_power_db	-0.1228
+synth/Strings[Staccato Strings]/chord8_peak_dbfs	-5.7246
+synth/Strings[Staccato Strings]/dc_dbfs	-133.7817
+synth/Strings[Staccato Strings]/key_spread_db	0.8691
+synth/Strings[Staccato Strings]/mono_loss_db	1.319
+synth/Strings[Staccato Strings]/vel_curve_err_db	0.0894
+synth/Strings[Staccato Strings]/vel_tone_oct	0.2515
+synth/Strings[Swirl Strings]/chord6_vs_power_db	-0.2003
+synth/Strings[Swirl Strings]/chord8_peak_dbfs	-6.4702
+synth/Strings[Swirl Strings]/dc_dbfs	-139.7963
+synth/Strings[Swirl Strings]/key_spread_db	1.1301
+synth/Strings[Swirl Strings]/mono_loss_db	1.0769
+synth/Strings[Swirl Strings]/vel_curve_err_db	0.0833
+synth/Strings[Swirl Strings]/vel_tone_oct	0.2417
+synth/Strings[Vox Strings]/chord6_vs_power_db	-0.1669
+synth/Strings[Vox Strings]/chord8_peak_dbfs	-4.1008
+synth/Strings[Vox Strings]/dc_dbfs	-135.1813
+synth/Strings[Vox Strings]/key_spread_db	1.0478
+synth/Strings[Vox Strings]/mono_loss_db	1.1979
+synth/Strings[Vox Strings]/vel_curve_err_db	0.3263
+synth/Strings[Vox Strings]/vel_tone_oct	0.2764
+synth/Strings[Wide Strings]/chord6_vs_power_db	-0.3913
+synth/Strings[Wide Strings]/chord8_peak_dbfs	-6.6414
+synth/Strings[Wide Strings]/dc_dbfs	-140
+synth/Strings[Wide Strings]/key_spread_db	1.0173
+synth/Strings[Wide Strings]/mono_loss_db	1.5677
+synth/Strings[Wide Strings]/vel_curve_err_db	0.1038
+synth/Strings[Wide Strings]/vel_tone_oct	0.2632
 synth/Wavetable[Digital Bell]/chord6_vs_power_db	-0.0189
 synth/Wavetable[Digital Bell]/chord8_peak_dbfs	1.677
 synth/Wavetable[Digital Bell]/dc_dbfs	-82.3106
@@ -865,6 +1033,12 @@ synth/alias[Squelch saw, drive 100, C7]/worst_alias_db	-55.157
 synth/alias[Squelch square, C5]/worst_alias_db	-48.4185
 synth/alias[Squelch square, C6]/worst_alias_db	-39.218
 synth/alias[Squelch square, C7]/worst_alias_db	-27.0794
+synth/alias[Strings viola, C5]/worst_alias_db	-81.4609
+synth/alias[Strings viola, C6]/worst_alias_db	-75.8656
+synth/alias[Strings viola, C7]/worst_alias_db	-69.4059
+synth/alias[Strings violin, C5]/worst_alias_db	-72.8439
+synth/alias[Strings violin, C6]/worst_alias_db	-67.2942
+synth/alias[Strings violin, C7]/worst_alias_db	-65.4522
 synth/alias[Wavetable Init, C5]/worst_alias_db	-94.3786
 synth/alias[Wavetable Init, C6]/worst_alias_db	-84.3218
 synth/alias[Wavetable Init, C7]/worst_alias_db	-71.5456
@@ -886,6 +1060,14 @@ synth/fm[pair 1:4, level 75]/bessel_err_db	0.0042
 synth/fm[pair 1:4, level 90]/bessel_err_db	0.0102
 synth/glide[Poly legato, 200 ms]/land_cents	0.0387
 synth/glide[Poly legato, 200 ms]/time_err_pct	-1.2204
+synth/swell[Strings per key, crescendo 1500 ms]/time_err_pct	-2.325
+synth/swell[Strings per key, crescendo 400 ms]/time_err_pct	-2.2336
+synth/swell[Strings per key, sustain 1500 ms]/time_err_pct	0.0605
+synth/swell[Strings per key, sustain 300 ms]/time_err_pct	0.2116
+synth/swell[Strings shared, crescendo 1500 ms]/time_err_pct	-2.325
+synth/swell[Strings shared, crescendo 400 ms]/time_err_pct	-2.2336
+synth/swell[Strings shared, sustain 1500 ms]/time_err_pct	0.0605
+synth/swell[Strings shared, sustain 300 ms]/time_err_pct	0.2116
 synth/tune[Analog]/worst_cents	0.0302
 synth/tune[Drawbar]/worst_cents	0.5768
 synth/tune[FM]/worst_cents	0.0004
@@ -893,4 +1075,5 @@ synth/tune[Keys]/worst_cents	0.5495
 synth/tune[Pluck]/worst_cents	0.0129
 synth/tune[Poly]/worst_cents	0.0301
 synth/tune[Squelch]/worst_cents	0.0323
+synth/tune[Strings]/worst_cents	0.0006
 synth/tune[Wavetable]/worst_cents	0.0302

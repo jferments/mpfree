@@ -4,7 +4,7 @@
 
 use mpfree_instruments::preset::{engine_of, Preset};
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
-use mpfree_synth::{Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Wavetable};
+use mpfree_synth::{Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable};
 
 const RATE: u32 = 48_000;
 const BLOCK: usize = 128;
@@ -17,7 +17,7 @@ struct Engine {
     factory: fn(usize) -> Box<dyn Node>,
 }
 
-const ENGINES: [Engine; 9] = [
+const ENGINES: [Engine; 10] = [
     Engine {
         name: "Poly",
         sounds: || Poly::presets().len(),
@@ -95,6 +95,16 @@ const ENGINES: [Engine; 9] = [
         factory: |i| {
             let mut s = Analog::new(RATE);
             s.load_preset(&Analog::presets()[i]);
+            Box::new(s)
+        },
+    },
+    Engine {
+        name: "Strings",
+        sounds: || Strings::presets().len(),
+        fresh: || Box::new(Strings::new(RATE)),
+        factory: |i| {
+            let mut s = Strings::new(RATE);
+            s.load_preset(&Strings::presets()[i]);
             Box::new(s)
         },
     },
