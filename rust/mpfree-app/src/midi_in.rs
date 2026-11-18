@@ -281,16 +281,31 @@ pub enum Learning {
 
 /// Whether a key learned on `target` flips it on each press (as the MPC's
 /// TRACK MUTE pads do) rather than holding it while held: PLAY and STOP,
-/// a mixer strip's mute and solo, and a track's mute and solo on the Clips
-/// grid. Works as changes it on the Learn section.
+/// a mixer strip's mute and solo, a track's mute and solo on the Clips
+/// grid, and a loop's mute. Works as changes it on the Learn section.
 pub fn key_toggles(target: ParamAddr) -> bool {
     use mpfree_fx::ids::mixer as mx;
     match target.owner {
         Owner::Transport => target.param == transport::PLAYING,
         Owner::Clips => mpfree_play::mpfree_param::clips::is_value(target.param),
+        Owner::Looper => mpfree_play::mpfree_param::looper::is_value(target.param),
         Owner::Strip(_) => matches!(target.param, mx::MUTE | mx::SOLO),
         _ => false,
     }
+}
+
+/// How a control learned on `target` from `source` works, where it isn't
+/// Learn's own choice (a key: while held; anything else: a knob or
+/// fader): a key on a switch you flip flips it ([`key_toggles`]), and
+/// the looper's presses (a loop's key, Next loop, Undo ...) work while
+/// held whatever sends them, so a footswitch's CC goes down and lets go
+/// as a pad does.
+pub fn learned_mode(source: &Source, target: ParamAddr) -> Option<Mode> {
+    use mpfree_play::mpfree_param::looper;
+    if matches!(source, Source::Note(_)) && key_toggles(target) {
+        return Some(Mode::Toggle);
+    }
+    (target.owner == Owner::Looper && !looper::is_value(target.param)).then_some(Mode::Momentary)
 }
 
 /// Clock counted as "stopped" this long after its last tick.
@@ -554,6 +569,10 @@ pub struct MusicIn {
     moved: Vec<crate::fxmodes::Landed>,
     /// Learned controls the project couldn't keep (past its limit).
     unkept: u64,
+    /// A port went away since the app last asked
+    /// ([`MusicIn::take_unplugged`]): a learned control on it never sends
+    /// its let-go.
+    unplugged: bool,
     /// What learned controls last set (room for every learned control,
     /// so the sound loop never grows it).
     learn_sets: Vec<LearnedSet>,
@@ -636,6 +655,7 @@ impl MusicIn {
             armed_by: ArmedBy::Chain,
             moved: Vec::new(),
             unkept: 0,
+            unplugged: false,
             // The song's and the rig's.
             learn_sets: Vec::with_capacity(2 * mpfree_midi::setup::MAX_LEARNED),
             next_look: 0.0,
@@ -944,9 +964,9 @@ impl MusicIn {
         };
         if !self.unsaved.is_empty() {
             for mut l in self.unsaved.drain(..) {
-                // The transport and the tempo work in every song; the rest
-                // belongs to this one.
-                let mut kept = if l.target.owner == Owner::Transport {
+                // The transport, the tempo and the looper's footswitch
+                // work in every song; the rest belongs to this one.
+                let mut kept = if matches!(l.target.owner, Owner::Transport | Owner::Looper) {
                     Kept::Rig
                 } else {
                     Kept::Project
@@ -1279,6 +1299,7 @@ impl MusicIn {
         }
         self.ports.unplugged(port);
         self.ports_changed = true;
+        self.unplugged = true;
         if let Some(c) = self.clock.get_mut(usize::from(port.0)) {
             *c = ClockIn::new(CLOCK_RATE);
         }
@@ -1287,6 +1308,13 @@ impl MusicIn {
             s.sysex = None;
         }
         u16::try_from(ended).unwrap_or(u16::MAX)
+    }
+
+    /// Whether a port went away since the last call: a learned control
+    /// held down on it (a footswitch on the looper) will never come up,
+    /// so the app lets go of what it holds (`remote::Remote::let_go`).
+    pub fn take_unplugged(&mut self) -> bool {
+        std::mem::take(&mut self.unplugged)
     }
 
     /// Bytes that came in on `port` at `t` seconds: the keys they play go
@@ -1540,13 +1568,15 @@ impl MusicIn {
                 self.feed.to(to);
             }
             // A key learned on a switch you flip (PLAY and STOP, a mute,
-            // a solo) flips it on each press, before the key comes up.
+            // a solo) flips it on each press, before the key comes up; a
+            // looper press works while held ([`learned_mode`]).
             if let Some(i) = learned {
-                let flips = self.learn.get(i).is_some_and(|m| {
-                    matches!(m.control.source, Source::Note(_)) && key_toggles(m.target)
-                });
-                if flips {
-                    self.learn.set_mode(i, Mode::Toggle);
+                let mode = self
+                    .learn
+                    .get(i)
+                    .and_then(|m| learned_mode(&m.control.source, m.target));
+                if let Some(mode) = mode {
+                    self.learn.set_mode(i, mode);
                 }
             }
             if let Some(m) = learned.and_then(|i| self.learn.get(i).copied()) {
@@ -2191,6 +2221,10 @@ mod tests {
         // Unplugged while held: the key is let go on its track.
         let mut keys = Vec::new();
         assert_eq!(m.unplugged(keystep, &mut keys), 1);
+        // The app hears of it once, so a learned footswitch held on it
+        // lets go (remote::Remote::let_go).
+        assert!(m.take_unplugged());
+        assert!(!m.take_unplugged());
         assert_eq!(
             m.take_routed().collect::<Vec<_>>(),
             vec![(2, Key::Up { note: 64 })]
