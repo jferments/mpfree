@@ -198,7 +198,7 @@ impl Reach {
 /// It walks out from the read position both ways at once, frame `i - m`
 /// and frame `i + 1 + m` together, each into sums of its own, so the two
 /// halves' arithmetic overlaps.
-#[inline]
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub fn read2<S: Sample>(
     k: &Kernel,
