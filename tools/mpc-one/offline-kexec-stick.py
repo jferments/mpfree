@@ -1711,8 +1711,23 @@ def own_kernel_input(args):
     said = next((line.split(":", 1)[1].strip() for line in info.splitlines() if line.startswith("modules: ")), None)
     if modules == 0 or said != str(modules):
         raise Stop(f"--own-kernel: {tar_name} holds {modules} modules, build-info.txt says {said}")
-    return {"path": top, "release": release, "zimage": zimage, "build_info": info,
+    return {"path": top, "release": release, "zimage": zimage, "build_info": info, "config_sha256": sums["config"],
             "dirs": sorted(folders, key=lambda d: (d.count("/"), d)), "files": sorted(files), "modules": modules}
+
+
+def own_settings_note(own):
+    """Whether the kernel was built from this checkout's tools/kernel/mpfree.config (a note, never a stop:
+    the folder's own hashes and rules were checked already)."""
+    fragment = os.path.join(REPO_ROOT, "tools", "kernel", "mpfree.config")
+    built = re.search(r"tools/kernel/mpfree\.config sha256 ([0-9a-f]{64})", own["build_info"])
+    if not built:
+        return "build-info.txt does not give the sha256 of the mpfree.config it was built from"
+    if not os.path.isfile(fragment):
+        return f"this checkout has no {fragment} to compare with"
+    if sha256(fragment) == built.group(1):
+        return "built from this checkout's tools/kernel/mpfree.config (the same sha256)"
+    return ("built from another tools/kernel/mpfree.config than this checkout's (sha256 "
+            f"{sha256(fragment)}): fetch the kernel CI built from this branch, or check out the one it was built from")
 
 
 def own_kernel_bytes(own):
@@ -2476,6 +2491,8 @@ def main(argv):
             raise Stop(f"expected one /boot/zImage-<release> in the image, found {len(kernels)}")
         release = kernels[0][len("zImage-"):]
         OUT.say(f"its kernel release: {release}")
+        if own:
+            OUT.say(f"its own kernel release: {own['release']} (--own-kernel: the chain's second kernel)")
 
         live = dtb.load(live_path)
         board = dtb.compatible(live)
@@ -2621,6 +2638,9 @@ def main(argv):
                     for line in own["build_info"].splitlines():
                         if line.split(":", 1)[0] in ("linux", "rt", "compiler", "config", "source commit"):
                             OUT.say(f"  --own-kernel: {line}")
+                    OUT.say(f"  --own-kernel: {own_settings_note(own)}")
+                    OUT.say(f"  --own-kernel: its whole config sha256 {own['config_sha256']} (on the MPC: "
+                            "/proc/config.gz, the drivers survey's `sha256 of the whole config`)")
         else:
             OUT.say("  route: soft-reboot only (no --kexec-file)")
         root_note, stubbed, absent, links, written = build_rootfs(img, scratch, pubkey, host_key, log_uuid,

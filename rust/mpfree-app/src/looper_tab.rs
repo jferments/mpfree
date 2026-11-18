@@ -99,6 +99,8 @@ pub enum LoopAct {
     Clear(usize),
     /// Loop `n`'s level, 0 to 2.
     Level(usize, f32),
+    /// The deck's Pads switch: the pads as loop keys, or playing again.
+    PadKeys,
     /// Show layer `k` (play order) on the Q-Links: it is picked.
     Layer(usize),
     /// A control of layer `k` (play order).

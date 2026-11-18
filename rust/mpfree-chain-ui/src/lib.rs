@@ -27,6 +27,9 @@
 //!   effect page's drawings, modulation rings and macro badges) and the
 //!   Modulate row under it (macro, learn to a Q-Link, + LFO, + Follower,
 //!   the matrix rows over the page).
+//! - [`notes`]: a note track's Notes stage above its sound (layout spec
+//!   4b, board 7): its MIDI effects and its arp, the Plays on row, and the
+//!   selected one's page ([`NotesState`], [`NoteAction`]).
 //! - [`macros`]: the macros and morph panel ([`MacrosView`]), with the
 //!   target editor (range, curve, flip, remove).
 //! - [`sample`]: sample screens for the workstation preview
@@ -49,6 +52,7 @@
 
 pub mod eq_page;
 pub mod macros;
+pub mod notes;
 pub mod picker;
 pub mod sample;
 pub mod sections;
@@ -56,6 +60,7 @@ pub mod state;
 pub mod view;
 
 pub use macros::{MacroAction, MacrosView};
+pub use notes::{NoteAction, NotesState};
 pub use state::{
     macro_color, picks, picture, strip_id, strip_of, ChainState, MacrosState, ParamView, Pick,
     SlotView, StripList, StripPick, TargetView, STRIP_GROUPS,
@@ -80,6 +85,10 @@ pub const MACROS_LAYOUT: &str = "col(header:60, row(macros:*, qlinks:128):*, hin
 pub const QLINK_PAGE: &str = "chain";
 /// The hint lines: what the buttons do on the page.
 pub const CHAIN_HINT: &str = "Q-Links: the effect's four, on every page  ·  SHIFT + Q-Link: fine  ·  drag an effect: move it  ·  touch a control: macro, Learn, + LFO  ·  strip button: other strips";
+/// The hint line while a row of a note track's Notes group shows its page.
+pub const NOTES_HINT: &str = "Notes run top to bottom before the sound  ·  tap a chip or a button, or turn the Q-Links  ·  Up and Down move it, the arp too  ·  ‹: back";
+/// The hint line while the MIDI effect picker is up.
+pub const NOTES_PICKER_HINT: &str = "Tap a MIDI effect: it goes above the arp  ·  up to 8 on a track  ·  Cancel or ‹: keep the list as it is";
 /// The hint line on the EQ's page.
 pub const EQ_HINT: &str = "Drag a dot: frequency and gain  ·  wheel or two fingers: its Q  ·  tap the graph twice: add a band  ·  Q-Links: the band  ·  ‹: back";
 /// The hint line on the EQ's page while Solo band is on.
@@ -181,7 +190,17 @@ pub fn chain_hint(ui: &Ui) -> &'static str {
         return CHAIN_HINT;
     };
     let st = v.state();
-    if st.picking {
+    if let Some(ns) = st
+        .notes
+        .as_ref()
+        .filter(|n| n.picking || n.selected.is_some())
+    {
+        if ns.picking {
+            NOTES_PICKER_HINT
+        } else {
+            NOTES_HINT
+        }
+    } else if st.picking {
         PICKER_HINT
     } else if st.list.is_some() {
         STRIPS_HINT

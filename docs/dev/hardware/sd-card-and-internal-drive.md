@@ -1,6 +1,6 @@
 # The SD card and the MPC's internal drive in MPFree (plan)
 
-**As of 2026-11-17** · **Status:** plan, nothing built. The owner chose how the card is shared on 2026-11-17: **a folder on the card as it is** (layout A). · **Asked for by** the owner, 2026-11-17 00:10Z: "eventually I would like for MPFree to be able to utilize the SD card to store samples, etc. and I would like to be able to have read-only access to the eMMC as needed. So these should be something that our kernel has the capability to turn on/off. We need to come up with a plan to safely partition / use the SD card and share it with Akai factory OS."
+**As of 2026-11-18** · **Status:** plan; step S0's read-only survey is built and on `main` (`collect-over-ssh.sh --sd-card`), waiting for the owner's run ([block S0.1](#step-s0-block-for-the-owner)). The owner chose how the card is shared on 2026-11-17: **a folder on the card as it is** (layout A). · **Asked for by** the owner, 2026-11-17 00:10Z: "eventually I would like for MPFree to be able to utilize the SD card to store samples, etc. and I would like to be able to have read-only access to the eMMC as needed. So these should be something that our kernel has the capability to turn on/off. We need to come up with a plan to safely partition / use the SD card and share it with Akai factory OS."
 
 ## Goal
 
@@ -67,13 +67,27 @@ Mounting Akai's ext4 even read-only can write to it: the kernel replays an unfin
 
 Each step is its own PR with owner blocks, verified before the owner gets them. Each passes only with the boot-area hashes unchanged and 0 sectors written to the eMMC, as every round so far.
 
-0. **Survey (read-only).** With the owner's card in, on Akai's system: how `edisksd` mounts an SD card and with which options, which filesystems Akai's kernel has, whether `fsck.exfat` and `fsck.vfat` are on Akai's system, what it does with a partition it can't read, and what Akai keeps on a card (top-level folder names only, in the report on the owner's computer). From the device tree (block K1.1): the SD node's card-detect and write-protect settings. Small additions to `--drivers` and a new read-only `--sd-card` mode.
+0. **Survey (read-only).** With the owner's card in, on Akai's system: how `edisksd` mounts an SD card and with which options, which filesystems Akai's kernel has, whether `fsck.exfat` and `fsck.vfat` are on Akai's system, what it does with a partition it can't read (as far as its unit files, udev rules and journal say), and what Akai keeps on a card (the names in the card's top folder, in the report on the owner's computer only). Also the SD node's card-detect and write-protect settings and the bus speed the card runs at, which our kernel's settings start from. **Built 2026-11-17** as [`collect-over-ssh.sh --sd-card`](../guides/survey-tools.md) ([`read-only-sd-card.sh`](../../../tools/mpc-one/read-only-sd-card.sh)): it reads procfs, sysfs, the device tree and udev's records, and never runs `blkid`, `fsck`, `mkfs` or `tune2fs`, opens a block device or mounts. It lists the card's top folder only when the card is FAT or exFAT, whose top folder keeps no dates.
 1. **SD card, read-only, on Akai's kernel (soft-reboot route).** The Browser gets an "SD card" place. Opening it binds the SD controller alone and mounts the card read-only; leaving it or shutting down unmounts and unbinds. Passes when the card's write counter stays at 0 and the owner loads a sample from it.
 2. **SD card, saving to `MPFree/`.** Layout A's rules above. Passes when Akai's system shows MPFree's files afterwards and the card checks clean on a computer. This step changes the [storage spec](../design/storage-spec.md)'s rule zero ("the SD card is never written") and is merged only on the owner's go.
 3. **The internal drive, read-only, on Akai's kernel.** The backup's window plus MPFree's ext4 reader; an "MPC internal drive (read-only)" place. Passes with the write and discard counters unchanged and the boot hashes unchanged.
 4. **Our own kernel.** The same three on the chain, with the modules held at start and the read-only patch (own-kernel step 2 builds the modules; this step adds the patch and the holds).
 
 Steps 1 to 3 don't wait for our kernel: the soft-reboot route is the default, and the backup already proves the read-only window there. Until step 4 a `--chain` stick keeps both controllers out of its device tree.
+
+## Step S0: block for the owner
+
+**Read-only** on the MPC: it reads files over SSH and changes nothing, on the MPC or on the card. Put your SD card in the MPC's slot and switch the MPC on **without the stick**, on Akai's 3.10.1 with developer mode on and its host key recorded, as for [block K1.2](own-kernel.md#step-1-blocks-for-the-owner). It runs from `main`.
+
+**Block S0.1: update, check, the SD card survey, then the zip.**
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && git fetch origin main:refs/remotes/origin/main && git switch --no-track -C sd-card origin/main && git log --oneline -1 && python3 tools/mpc-one/results.py run local-checks -- bash -c 'MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_sd_card.py && echo LOCAL-CHECKS-OK' && python3 tools/mpc-one/results.py run sd-card -- env MPC_PORT=22 bash tools/mpc-one/collect-over-ssh.sh --sd-card ; python3 tools/mpc-one/results.py zip
+```
+
+It must say `LOCAL-CHECKS-OK`, then end with `SUCCESS: …mpc-one-sd-card-….txt`. Send the zip; it holds the names in your card's top folder, so it goes to this project only. There is nothing to undo; `git switch main` puts the clone back.
+
+**Passes when** the report ends with `END OF SD CARD SURVEY` and has a `card: mmcblk…` line. If it says `nothing from the card is mounted`, Akai's system did not mount the card, which is an answer too.
 
 ## Related pages
 

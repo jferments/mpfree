@@ -124,6 +124,196 @@ fn the_ducker_pumps_on_the_beat() {
 }
 
 #[test]
+fn the_tempo_duck_is_down_when_the_beat_lands() {
+    // 120 BPM quarters, a 10 ms attack: the duck is down by Depth at each
+    // beat and halfway down 5 ms before it (FX quality round 4, decision
+    // 11.3), playing and stopped alike.
+    let frames = 2 * RATE as usize;
+    let x = vec![0.5f32; frames];
+    let ms = RATE as usize / 1000;
+    for playing in [true, false] {
+        let mut d = set_up(
+            Ducker::new(),
+            &[
+                (ducker::SOURCE, 1.0),
+                (ducker::DEPTH, 24.0),
+                (ducker::ATTACK, 10.0),
+                (ducker::HOLD, 0.0),
+                (ducker::RELEASE, 100.0),
+            ],
+        );
+        let y = run(&mut d, &x, None, 120.0, playing);
+        let db = |i: usize| 20.0 * (y[i] / 0.5).log10();
+        for beat in 1..4 {
+            let at = beat * 500 * ms;
+            assert!(
+                (db(at) + 24.0).abs() < 0.1,
+                "down on beat {beat}: {}",
+                db(at)
+            );
+            let half = db(at - 5 * ms);
+            assert!((half + 12.0).abs() < 0.1, "halfway 5 ms before: {half}");
+            assert!(db(at - 11 * ms).abs() < 0.01, "untouched before the attack");
+        }
+    }
+}
+
+#[test]
+fn the_tempo_duck_plays_its_drawing_when_the_release_outlasts_the_step() {
+    // 1/16 at 120 BPM is 125 ms; a 300 ms release never finishes, and the
+    // next attack takes over from it, as drawn.
+    let frames = RATE as usize;
+    let x = vec![0.5f32; frames];
+    let mut d = set_up(
+        Ducker::new(),
+        &[
+            (ducker::SOURCE, 1.0),
+            (ducker::RATE, 0.0),
+            (ducker::DEPTH, 24.0),
+            (ducker::ATTACK, 5.0),
+            (ducker::HOLD, 10.0),
+            (ducker::RELEASE, 300.0),
+            (ducker::SHAPE, 0.0),
+        ],
+    );
+    let drawn = d.curve(125.0, 126);
+    let y = run(&mut d, &x, None, 120.0, true);
+    let ms = RATE as usize / 1000;
+    for step in 2..7 {
+        for (k, want) in drawn.iter().enumerate().take(125) {
+            let i = (step * 125 + k) * ms;
+            let got = -20.0 * (y[i] / 0.5).log10() / 24.0;
+            assert!(
+                (got - want).abs() < 0.01,
+                "step {step}, {k} ms: {got} against {want}"
+            );
+        }
+    }
+    // It never comes all the way back.
+    assert!(drawn.iter().all(|&v| v > 0.3), "{drawn:?}");
+}
+
+#[test]
+fn dotted_and_triplet_rates_and_nudge_place_the_duck() {
+    let ms = RATE as usize / 1000;
+    let frames = 3 * RATE as usize;
+    let x = vec![0.5f32; frames];
+    // Where the duck is fully down, from the second step on, ms.
+    let downs = |values: &[(u16, f32)]| {
+        let mut base = vec![
+            (ducker::SOURCE, 1.0),
+            (ducker::ATTACK, 2.0),
+            (ducker::HOLD, 0.0),
+            (ducker::RELEASE, 40.0),
+        ];
+        base.extend_from_slice(values);
+        let mut d = set_up(Ducker::new(), &base);
+        let y = run(&mut d, &x, None, 120.0, true);
+        let full = 0.5 * 10f32.powf(-18.0 / 20.0) * 1.001;
+        let mut at = Vec::new();
+        let mut i = 300 * ms;
+        while i < frames {
+            if y[i] <= full {
+                at.push(i / ms);
+                i += 50 * ms;
+            } else {
+                i += 1;
+            }
+        }
+        at
+    };
+    // 1/8D at 120 BPM: 375 ms apart, on the song's grid.
+    let d = downs(&[(ducker::RATE, 6.0)]);
+    assert_eq!(&d[..3], &[375, 750, 1125], "1/8D");
+    // 1/4T: 333 ms apart.
+    let t = downs(&[(ducker::RATE, 7.0)]);
+    assert_eq!(&t[..3], &[333, 666, 1000], "1/4T");
+    // Nudge 10 ms: every duck 10 ms later; -10 ms, earlier.
+    let late = downs(&[(ducker::RATE, 2.0), (ducker::NUDGE, 10.0)]);
+    assert_eq!(&late[..2], &[510, 1010], "nudged later");
+    let early = downs(&[(ducker::RATE, 2.0), (ducker::NUDGE, -10.0)]);
+    assert_eq!(&early[..2], &[490, 990], "nudged earlier");
+}
+
+#[test]
+fn the_key_filters_duck_on_the_kick_and_not_the_hats() {
+    let frames = RATE as usize;
+    let x = sine(1000.0, 0.5, frames);
+    // A bright hat (8 kHz) at 100 ms, a 50 Hz kick at 500 ms.
+    let key: Vec<f32> = (0..frames)
+        .map(|i| {
+            let t = i as f32 / RATE as f32;
+            let hat = if (4800..6240).contains(&i) {
+                0.7 * (2.0 * PI * 8000.0 * t).sin()
+            } else {
+                0.0
+            };
+            let kick = if (24_000..33_600).contains(&i) {
+                0.7 * (2.0 * PI * 50.0 * (t - 0.5)).sin()
+            } else {
+                0.0
+            };
+            hat + kick
+        })
+        .collect();
+    let mut d = set_up(Ducker::new(), &[(ducker::KEY_LP, 150.0)]);
+    let y = run(&mut d, &x, Some(&key), 120.0, false);
+    assert!(gain_db(&y, 0.5, 105).abs() < 0.1, "the hat passes");
+    assert!(gain_db(&y, 0.5, 530) < -17.0, "the kick ducks");
+    // Without the filter the hat ducks too.
+    let mut d = set_up(Ducker::new(), &[]);
+    let y = run(&mut d, &x, Some(&key), 120.0, false);
+    assert!(gain_db(&y, 0.5, 105) < -17.0, "unfiltered, the hat ducks");
+}
+
+#[test]
+fn switching_the_source_glides_from_where_the_duck_is() {
+    // Down on a tempo duck, switch to Sidechain with no key: it lets go
+    // over the release from where it was, with no step.
+    let frames = RATE as usize;
+    let x = vec![0.5f32; frames];
+    let mut d = set_up(
+        Ducker::new(),
+        &[
+            (ducker::SOURCE, 1.0),
+            (ducker::HOLD, 300.0),
+            (ducker::RELEASE, 100.0),
+        ],
+    );
+    let (mut l, mut r) = (x.clone(), x.clone());
+    let half = frames / 2;
+    let blk = 256;
+    let mut at = 0;
+    while at < frames {
+        if at == 24_064 {
+            d.set_param(ducker::SOURCE, 0.0);
+        }
+        let len = blk.min(frames - at);
+        let ctx = Ctx {
+            bpm: 120.0,
+            beats: at as f64 * 2.0 / RATE as f64,
+            playing: true,
+            ..Ctx::new(RATE, at as u64)
+        };
+        d.process(&ctx, &[], &mut l[at..at + len], &mut r[at..at + len]);
+        at += len;
+    }
+    let worst = l[24_000..]
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0, f32::max);
+    assert!(worst < 0.002, "a step of {worst}");
+    assert!(
+        (l[24_000] / 0.5 - 10f32.powf(-0.9)).abs() < 1e-3,
+        "down before"
+    );
+    assert!(
+        (l[half + 4_800 + 1_000] - 0.5).abs() < 1e-4,
+        "back after the release"
+    );
+}
+
+#[test]
 fn the_ducker_curve_draws_attack_hold_and_release() {
     let d = set_up(
         Ducker::new(),
@@ -184,6 +374,35 @@ fn the_transient_shaper_lifts_and_softens_the_front() {
     let y = run(&mut sh, &s, None, 120.0, false);
     let g = gain_db(&y, 0.3, 800);
     assert!(g.abs() < 0.3, "steady tone untouched: {g} dB");
+}
+
+#[test]
+fn the_transient_shaper_lifts_a_quiet_hit_as_much_as_a_loud_one() {
+    // The same plucks at 0, -12, -24 and -36 dB: the front's gain (out
+    // against in, over its first 5 ms) is the same at every level, since
+    // the gap a hit opens no longer depends on how far it is above a
+    // fixed floor (FX quality round 4, T1).
+    let frames = RATE as usize;
+    let front = |y: &[f32]| rms(&y[12_000..12_000 + 240]);
+    for attack in [50.0, 100.0] {
+        let gains: Vec<f32> = [0.0f32, -12.0, -24.0, -36.0]
+            .iter()
+            .map(|db| {
+                let g = 10f32.powf(db / 20.0);
+                let x: Vec<f32> = hits(frames).iter().map(|v| v * g).collect();
+                let mut t = set_up(TransientShaper::new(), &[(transient::ATTACK, attack)]);
+                let y = run(&mut t, &x, None, 120.0, false);
+                20.0 * (front(&y) / front(&x)).log10()
+            })
+            .collect();
+        let most = gains.iter().cloned().fold(f32::MIN, f32::max);
+        let least = gains.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(
+            most - least < 1.0,
+            "Attack {attack}: fronts {gains:?} dB by level"
+        );
+        assert!(least > 3.0, "Attack {attack} lifts the front: {gains:?}");
+    }
 }
 
 /// The tone's frequency from its zero crossings over `y`.

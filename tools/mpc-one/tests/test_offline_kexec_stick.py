@@ -24,6 +24,7 @@ from test_offline_dtb import board_tree, cells, dtb, node, s as dt_strings  # no
 
 TOOLS = os.path.dirname(HERE)
 TOOL = os.path.join(TOOLS, "offline-kexec-stick.py")
+FRAGMENT = os.path.join(os.path.dirname(os.path.dirname(TOOLS)), "tools", "kernel", "mpfree.config")
 NEW, OLD = "9.9-fake-new", "8.8-fake-old"
 SERIAL = "FAKE-SERIAL-4455"
 MAC = bytes.fromhex("020000ddeeff")
@@ -669,7 +670,7 @@ class KexecStickTests(unittest.TestCase):
         write(os.path.join(folder, "build-info.txt"), info if info is not None else (
             f"release: {release}\nlinux: linux-6.18.57.tar.xz sha256 {'1' * 64} (pinned)\n"
             f"rt: patch-6.18.57-rt9.patch.xz sha256 {'2' * 64} (pinned)\n"
-            "config: multi_v7_defconfig + tools/kernel/mpfree.config sha256 abc; check-config: CONFIG-OK\n"
+            f"config: multi_v7_defconfig + tools/kernel/mpfree.config sha256 {sha(FRAGMENT)}; check-config: CONFIG-OK\n"
             f"modules: {modules}\nzImage: {len(zimage)} bytes\npinned: yes\n"))
         names = ("zImage", f"modules-{release}.tar.xz", "config", "System.map", "build-info.txt")
         with open(os.path.join(folder, "SHA256SUMS"), "w") as fh:
@@ -694,6 +695,17 @@ class KexecStickTests(unittest.TestCase):
         self.assertRegex(res.stdout, r"the root filesystem grew by \d+ MiB for them\n")
         self.assertIn(f"  --own-kernel: rt: patch-6.18.57-rt9.patch.xz sha256 {'2' * 64} (pinned)\n", res.stdout)
         self.assertIn("  --own-kernel: config: multi_v7_defconfig + tools/kernel/mpfree.config", res.stdout)
+        # Which release the chain's second kernel runs (the pad player's checks take it), the hash its
+        # /proc/config.gz has (the drivers survey prints it), and whether this checkout's settings built it.
+        self.assertIn(f"\nits kernel release: {NEW}\nits own kernel release: {self.OWN} (--own-kernel: the chain's "
+                      "second kernel)\n", res.stdout)
+        self.assertIn(f"  --own-kernel: its whole config sha256 {sha(os.path.join(folder, 'config'))} (on the MPC: "
+                      "/proc/config.gz, the drivers survey's `sha256 of the whole config`)\n", res.stdout)
+        self.assertIn("  --own-kernel: built from this checkout's tools/kernel/mpfree.config (the same sha256)\n",
+                      res.stdout)
+        self.assertIn("built from another tools/kernel/mpfree.config than this checkout's",
+                      mod.own_settings_note({"build_info": f"config: x tools/kernel/mpfree.config sha256 {'0' * 64}"}))
+        self.assertIn("does not give the sha256", mod.own_settings_note({"build_info": "config: x\n"}))
         [out] = self.outputs()
         out = os.path.join(self.work, out)
         root_img = os.path.join(self.tmp, "p1.img")

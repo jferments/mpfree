@@ -33,13 +33,14 @@
 //! | bus 2, the insert with slot id 7, parameter 4 | `bus2.fx7.4` |
 //! | input 0 / pad channel 9 / return 1 / master strip | `in0.mix.0` / `ps9.mix.0` / `ret1.mix.0` / `master.mix.0` |
 //! | track 3's arpeggiator / sequencer settings | `t3.arp.1` / `t3.seq.0` |
+//! | track 3's MIDI effect with id 2, setting 4 | `t3.nfx2.4` |
 //! | macro 2's value | `macro2.0` |
 //! | mod source 4's parameter 1 (an LFO's rate) | `mod4.1` |
 //! | morph 0's position | `morph0.0` |
 //! | the transport's tempo (MIDI Learn) | `transport.7` |
 //!
 //! A [`RelAddr`] leaves the track out: `inst.12`, `pad5.2`, `mix.0`,
-//! `fx7.4`, `arp.1`, `seq.0`.
+//! `fx7.4`, `arp.1`, `seq.0`, `nfx2.4`.
 #![forbid(unsafe_code)]
 
 use std::fmt;
@@ -76,6 +77,12 @@ pub enum Owner {
     Insert(Strip, u16),
     /// A track's arpeggiator settings.
     Arp(u8),
+    /// A setting of one of a track's MIDI effects (its Notes stage),
+    /// named by the effect's id on the track (`mpfree_notefx::TrackFx::ids`),
+    /// which it keeps when it moves, so a binding follows the effect as an
+    /// insert's slot id does. The parameter is the setting's place in the
+    /// effect's list (`mpfree_notefx::Fx::settings`).
+    NoteFx(u8, u16),
     /// A track's sequencer settings (swing, length ...).
     Seq(u8),
     /// A macro knob. Parameter 0 is its value, 0 to 1.
@@ -145,6 +152,8 @@ pub enum OnTrack {
     Insert(u16),
     Arp,
     Seq,
+    /// One of the track's MIDI effects, by its id.
+    NoteFx(u16),
 }
 
 impl OnTrack {
@@ -157,6 +166,7 @@ impl OnTrack {
             OnTrack::Insert(uid) => Owner::Insert(Strip::Track(t), uid),
             OnTrack::Arp => Owner::Arp(t),
             OnTrack::Seq => Owner::Seq(t),
+            OnTrack::NoteFx(id) => Owner::NoteFx(t, id),
         }
     }
 }
@@ -172,6 +182,7 @@ impl Owner {
             Owner::Insert(Strip::Track(t), uid) => Some((t, OnTrack::Insert(uid))),
             Owner::Arp(t) => Some((t, OnTrack::Arp)),
             Owner::Seq(t) => Some((t, OnTrack::Seq)),
+            Owner::NoteFx(t, id) => Some((t, OnTrack::NoteFx(id))),
             _ => None,
         }
     }
@@ -289,6 +300,7 @@ impl fmt::Display for OnTrack {
             OnTrack::Insert(uid) => write!(f, "fx{uid}"),
             OnTrack::Arp => f.write_str("arp"),
             OnTrack::Seq => f.write_str("seq"),
+            OnTrack::NoteFx(id) => write!(f, "nfx{id}"),
         }
     }
 }
@@ -372,7 +384,8 @@ fn on_track(word: &str) -> Option<OnTrack> {
         "seq" => Some(OnTrack::Seq),
         _ => num(word, "pad")
             .map(OnTrack::Pad)
-            .or_else(|| num(word, "fx").map(OnTrack::Insert)),
+            .or_else(|| num(word, "fx").map(OnTrack::Insert))
+            .or_else(|| num(word, "nfx").map(OnTrack::NoteFx)),
     }
 }
 
@@ -393,7 +406,8 @@ fn owner(words: &[&str]) -> Option<Owner> {
             if let Some(uid) = num(what, "fx") {
                 return Some(Owner::Insert(s, uid));
             }
-            // Instrument, sampler pad, arp and sequencer: tracks only.
+            // Instrument, sampler pad, arp, sequencer and MIDI effects:
+            // tracks only.
             let Strip::Track(t) = s else { return None };
             Some(on_track(what)?.on(t))
         }
@@ -446,6 +460,8 @@ mod tests {
             Owner::Pad(3, 5),
             Owner::Arp(1),
             Owner::Seq(2),
+            Owner::NoteFx(3, 2),
+            Owner::NoteFx(0, u16::MAX),
             Owner::Macro(7),
             Owner::Mod(4),
             Owner::Morph(0),
@@ -489,6 +505,7 @@ mod tests {
                 "ret1.fx3.0",
             ),
             (ParamAddr::new(Owner::Arp(3), 1), "t3.arp.1"),
+            (ParamAddr::new(Owner::NoteFx(3, 2), 4), "t3.nfx2.4"),
             (ParamAddr::macro_value(2), "macro2.0"),
             (ParamAddr::new(Owner::Mod(4), 1), "mod4.1"),
             (ParamAddr::morph_pos(0), "morph0.0"),
@@ -528,6 +545,8 @@ mod tests {
             "bus2.inst.1",
             "master.pad1.0",
             "t3.fx.1",
+            "t3.nfx.1",
+            "bus2.nfx1.0",
             "macro.0",
             "foo.1",
             "t3.mix.0.1",
