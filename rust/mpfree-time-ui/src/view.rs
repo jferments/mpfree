@@ -47,6 +47,8 @@ use crate::widgets::{
 };
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{Input, Monitor};
+use mpfree_play::mpfree_param::clips::{self, Clips};
+use mpfree_play::mpfree_param::{Owner, ParamAddr};
 use mpfree_play::{anchored, ClipDrop, Cue, Launch, SongChange, Take, Takes};
 use mpfree_seq::scenes::MAX_FOLLOW_BARS;
 use mpfree_seq::{
@@ -1362,6 +1364,85 @@ pub fn launches_after(launches: &[Launch], action: &TimeAction, t: &TransportInf
 }
 
 /// What a touch means, given what the screen shows.
+/// A tap on a track's name on the Clips grid: it arms the track, or lets
+/// go of the arm when it has it.
+pub fn name_tap(st: &TimeState, track: usize) -> TimeAction {
+    TimeAction::Arm(if st.armed == Some(track) {
+        None
+    } else {
+        Some(track)
+    })
+}
+
+/// A tap on the Clips grid's cell at (`track`, `slot`): launch its clip,
+/// stop it while it plays, take back a launch or stop waiting, make a
+/// clip in an empty slot, or arm an empty Loop cell. None past the
+/// tracks.
+pub fn cell_tap(st: &TimeState, track: usize, slot: usize) -> Option<TimeAction> {
+    if track >= st.tracks.len() || slot >= SLOTS {
+        None
+    } else if st.clip(track, slot).is_none() && st.tracks[track].loops.is_some() {
+        // An empty Loop cell arms (again: lets go of) a loop there.
+        let cell = (track, slot);
+        Some(TimeAction::LoopCell(
+            (st.loop_cell != Some(cell)).then_some(cell),
+        ))
+    } else if st.clip(track, slot).is_none() {
+        Some(TimeAction::NewClip { track, slot })
+    } else if st.cue(track).is_some_and(|c| {
+        c.slot == Some(slot)
+            || (c.slot.is_none() && st.launch(track).is_some_and(|l| l.slot == slot))
+    }) {
+        // Tapping what is cued takes it back.
+        Some(TimeAction::Uncue(track))
+    } else if st.launch(track).is_some_and(|l| l.slot == slot) {
+        Some(TimeAction::StopClip(track))
+    } else {
+        Some(TimeAction::Launch { track, slot })
+    }
+}
+
+/// SHIFT + a tap on the Clips grid (sequencer S5, Jay's card of 18 Nov
+/// 2026): what MIDI Learn waits to give a control. A clip's cell (its
+/// tap, whatever the cell holds), a row's scene button, Stop all, Back to
+/// song, or a track's name (its arm). None for anything else on the grid,
+/// where SHIFT keeps its job (a drag copies, "+ Track" adds a Loop track).
+pub fn learn_target(ev: &UiEvent, st: &TimeState) -> Option<ParamAddr> {
+    if ev.widget != CLIPS {
+        return None;
+    }
+    let id = match ev.kind {
+        EventKind::Select(i) if i / SLOTS < st.tracks.len() => {
+            clips::clip((i / SLOTS) as u8, (i % SLOTS) as u8)
+        }
+        EventKind::Toggle(r) if r < SLOTS => clips::scene(r as u8),
+        EventKind::Toggle(SLOTS) => clips::STOP_ALL,
+        EventKind::Toggle(r) if r == SLOTS + BACK_TO_SONG => clips::BACK_TO_SONG,
+        EventKind::Tab(t) if t < st.tracks.len() => clips::arm(t as u8),
+        _ => return None,
+    };
+    Some(ParamAddr::new(Owner::Clips, id))
+}
+
+/// A learned control's press on [`Owner::Clips`] parameter `c` (MIDI
+/// Learn's remote control): what a tap on the grid does now. None for a
+/// track or row that isn't there, and for mutes and solos, which take a
+/// value and go through the app's mute queue.
+pub fn clips_press(st: &TimeState, c: Clips) -> Option<TimeAction> {
+    let track = |t: u8| Some(usize::from(t)).filter(|&t| t < st.tracks.len());
+    match c {
+        Clips::StopAll => Some(TimeAction::StopAll),
+        Clips::BackToSong => Some(TimeAction::BackToSong),
+        Clips::Scene(r) => Some(usize::from(r))
+            .filter(|&r| r < SLOTS)
+            .map(TimeAction::LaunchScene),
+        Clips::Clip(t, r) => cell_tap(st, usize::from(t), usize::from(r)),
+        Clips::Stop(t) => track(t).map(TimeAction::StopClip),
+        Clips::Arm(t) => track(t).map(|t| name_tap(st, t)),
+        Clips::Mute(_) | Clips::Solo(_) => None,
+    }
+}
+
 pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
     let t = &st.transport;
     match (ev.widget.as_str(), &ev.kind) {
@@ -1596,35 +1677,8 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         // The sound line (`SOUND_TAP + track`) is the app's: the
         // track's instrument.
         (CLIPS, EventKind::Tab(track)) if *track >= crate::widgets::SOUND_TAP => None,
-        (CLIPS, EventKind::Tab(track)) => Some(TimeAction::Arm(if st.armed == Some(*track) {
-            None
-        } else {
-            Some(*track)
-        })),
-        (CLIPS, EventKind::Select(i)) => {
-            let (track, slot) = (i / SLOTS, i % SLOTS);
-            if track >= st.tracks.len() {
-                None
-            } else if st.clip(track, slot).is_none() && st.tracks[track].loops.is_some() {
-                // An empty Loop cell arms (again: lets go of) a loop there.
-                let cell = (track, slot);
-                Some(TimeAction::LoopCell(
-                    (st.loop_cell != Some(cell)).then_some(cell),
-                ))
-            } else if st.clip(track, slot).is_none() {
-                Some(TimeAction::NewClip { track, slot })
-            } else if st.cue(track).is_some_and(|c| {
-                c.slot == Some(slot)
-                    || (c.slot.is_none() && st.launch(track).is_some_and(|l| l.slot == slot))
-            }) {
-                // Tapping what is cued takes it back.
-                Some(TimeAction::Uncue(track))
-            } else if st.launch(track).is_some_and(|l| l.slot == slot) {
-                Some(TimeAction::StopClip(track))
-            } else {
-                Some(TimeAction::Launch { track, slot })
-            }
-        }
+        (CLIPS, EventKind::Tab(track)) => Some(name_tap(st, *track)),
+        (CLIPS, EventKind::Select(i)) => cell_tap(st, i / SLOTS, i % SLOTS),
         (RECORD, EventKind::Step { index, delta }) => {
             let d = (*delta).signum();
             match *index {
@@ -4334,6 +4388,67 @@ mod tests {
             action(&ev(CLIPS, EventKind::Toggle(SLOTS)), &st),
             Some(TimeAction::StopAll)
         );
+    }
+
+    /// MIDI Learn on the Clips grid (sequencer S5, Jay's card of 18 Nov):
+    /// SHIFT + a tap names a cell, a scene, Stop all, Back to song or a
+    /// track's arm, and a learned press later does what that tap does then.
+    #[test]
+    fn a_learned_press_does_what_a_tap_on_the_grid_does() {
+        let st = state();
+        let learn = |kind| learn_target(&ev(CLIPS, kind), &st).map(|a| (a.owner, a.param));
+        let c = |id| Some((Owner::Clips, id));
+        assert_eq!(learn(EventKind::Select(SLOTS + 2)), c(clips::clip(1, 2)));
+        assert_eq!(
+            learn(EventKind::Select(2 * SLOTS + 5)),
+            c(clips::clip(2, 5)),
+            "empty"
+        );
+        assert_eq!(learn(EventKind::Select(3 * SLOTS)), None, "no such track");
+        assert_eq!(learn(EventKind::Toggle(4)), c(clips::scene(4)));
+        assert_eq!(learn(EventKind::Toggle(SLOTS)), c(clips::STOP_ALL));
+        assert_eq!(
+            learn(EventKind::Toggle(SLOTS + BACK_TO_SONG)),
+            c(clips::BACK_TO_SONG)
+        );
+        assert_eq!(learn(EventKind::Tab(1)), c(clips::arm(1)));
+        // SHIFT keeps its job elsewhere: + Track, the pager, the sound line.
+        assert_eq!(learn(EventKind::Toggle(SLOTS + ADD_TRACK)), None);
+        assert_eq!(learn(EventKind::Toggle(SLOTS + PAGE_ON)), None);
+        assert_eq!(learn(EventKind::Tab(crate::widgets::SOUND_TAP + 1)), None);
+        assert_eq!(
+            learn_target(&ev(RECORD, EventKind::Tab(1)), &st),
+            None,
+            "only the grid"
+        );
+        // Each press is the tap now, wherever the cell's clip stands.
+        let tap = |track: usize, slot: usize| {
+            action(&ev(CLIPS, EventKind::Select(track * SLOTS + slot)), &st)
+        };
+        for (t, r) in [(0, 0), (0, 1), (1, 1), (2, 5)] {
+            assert_eq!(clips_press(&st, Clips::Clip(t as u8, r as u8)), tap(t, r));
+        }
+        assert_eq!(clips_press(&st, Clips::Clip(3, 0)), None);
+        assert_eq!(
+            clips_press(&st, Clips::Scene(4)),
+            Some(TimeAction::LaunchScene(4))
+        );
+        assert_eq!(clips_press(&st, Clips::StopAll), Some(TimeAction::StopAll));
+        assert_eq!(
+            clips_press(&st, Clips::BackToSong),
+            Some(TimeAction::BackToSong)
+        );
+        assert_eq!(
+            clips_press(&st, Clips::Stop(1)),
+            Some(TimeAction::StopClip(1))
+        );
+        assert_eq!(
+            clips_press(&st, Clips::Arm(1)),
+            action(&ev(CLIPS, EventKind::Tab(1)), &st)
+        );
+        assert_eq!(clips_press(&st, Clips::Arm(3)), None);
+        assert_eq!(clips_press(&st, Clips::Mute(0)), None, "the app's");
+        assert_eq!(clips_press(&st, Clips::Solo(0)), None, "the app's");
     }
 
     /// More than 8 tracks (up to 128, Jay 14 Nov): the grid follows the

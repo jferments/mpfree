@@ -37,6 +37,7 @@
 //! | mod source 4's parameter 1 (an LFO's rate) | `mod4.1` |
 //! | morph 0's position | `morph0.0` |
 //! | the transport's tempo (MIDI Learn) | `transport.7` |
+//! | launch scene 3 (MIDI Learn) | `clips.258` |
 //!
 //! A [`RelAddr`] leaves the track out: `inst.12`, `pad5.2`, `mix.0`,
 //! `fx7.4`, `arp.1`, `seq.0`.
@@ -90,6 +91,108 @@ pub enum Owner {
     /// sets the tempo. Its parameter ids are in [`transport`]. Locks,
     /// macros and the mod matrix never target it.
     Transport,
+    /// The Clips grid, for MIDI Learn's remote control (sequencer S5,
+    /// "being driven"): a learned button launches a clip or a scene, stops
+    /// a track or all of them, goes back to the song or arms a track, as a
+    /// tap on the grid does; a learned key or fader mutes or solos a
+    /// track. Its parameter ids are in [`clips`]. Locks, macros and the
+    /// mod matrix never target it.
+    Clips,
+}
+
+/// [`Owner::Clips`]' parameters. A clip, a scene and a track are named by
+/// where they are (a clip by its track and row, from 0), so a controller's
+/// grid keeps its place whatever the clips are called.
+pub mod clips {
+    /// Stop every track (the grid's Stop all).
+    pub const STOP_ALL: u16 = 0;
+    /// Every track back to the arrangement (the grid's Back to song).
+    pub const BACK_TO_SONG: u16 = 1;
+    /// The tracks the ids below count to (`mpfree_seq::MAX_TRACKS`).
+    pub const TRACKS: u16 = 128;
+    /// The rows of the grid (`mpfree_seq::SLOTS`).
+    pub const ROWS: u16 = 16;
+    const SCENE: u16 = 0x100;
+    const STOP: u16 = 0x200;
+    const MUTE: u16 = 0x300;
+    const SOLO: u16 = 0x400;
+    const ARM: u16 = 0x500;
+    const CLIP: u16 = 0x1000;
+
+    /// What a [`Owner::Clips`](super::Owner::Clips) parameter does.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub enum Clips {
+        StopAll,
+        BackToSong,
+        /// Launch row `row` as a scene (the row's button).
+        Scene(u8),
+        /// The cell at `(track, row)`, as a tap on it: launch its clip,
+        /// stop it while it plays, take back a launch waiting.
+        Clip(u8, u8),
+        /// Stop the track's clip.
+        Stop(u8),
+        /// Mute the track (on) or let it play (off), as TRACK MUTE does.
+        Mute(u8),
+        /// Solo the track (on) or let go of its solo.
+        Solo(u8),
+        /// Arm the track, as a tap on its name does.
+        Arm(u8),
+    }
+
+    /// Launch row `row` as a scene.
+    pub const fn scene(row: u8) -> u16 {
+        SCENE + row as u16
+    }
+    /// The cell of track `track`, row `row`.
+    pub const fn clip(track: u8, row: u8) -> u16 {
+        CLIP + track as u16 * ROWS + row as u16
+    }
+    pub const fn stop(track: u8) -> u16 {
+        STOP + track as u16
+    }
+    pub const fn mute(track: u8) -> u16 {
+        MUTE + track as u16
+    }
+    pub const fn solo(track: u8) -> u16 {
+        SOLO + track as u16
+    }
+    pub const fn arm(track: u8) -> u16 {
+        ARM + track as u16
+    }
+
+    /// What parameter `id` does, if it is one.
+    pub fn of(id: u16) -> Option<Clips> {
+        if id >= CLIP {
+            let i = id - CLIP;
+            let (track, row) = ((i / ROWS) as u8, (i % ROWS) as u8);
+            return (i < TRACKS * ROWS).then_some(Clips::Clip(track, row));
+        }
+        let (kind, n) = (id & !0xFF, id & 0xFF);
+        match kind {
+            0 => match id {
+                STOP_ALL => Some(Clips::StopAll),
+                BACK_TO_SONG => Some(Clips::BackToSong),
+                _ => None,
+            },
+            SCENE => (n < ROWS).then_some(Clips::Scene(n as u8)),
+            STOP | MUTE | SOLO | ARM if n < TRACKS => {
+                let t = n as u8;
+                Some(match kind {
+                    STOP => Clips::Stop(t),
+                    MUTE => Clips::Mute(t),
+                    SOLO => Clips::Solo(t),
+                    _ => Clips::Arm(t),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `id` takes a value (a mute or a solo, on or off) rather
+    /// than a press.
+    pub fn is_value(id: u16) -> bool {
+        matches!(of(id), Some(Clips::Mute(_) | Clips::Solo(_)))
+    }
 }
 
 /// [`Owner::Transport`]'s parameters.
@@ -302,6 +405,7 @@ impl fmt::Display for Owner {
             Owner::Mod(n) => write!(f, "mod{n}"),
             Owner::Morph(n) => write!(f, "morph{n}"),
             Owner::Transport => f.write_str("transport"),
+            Owner::Clips => f.write_str("clips"),
             o => {
                 let (t, on) = o.split().expect("every other owner is on a track");
                 write!(f, "t{t}.{on}")
@@ -381,6 +485,7 @@ fn on_track(word: &str) -> Option<OnTrack> {
 fn owner(words: &[&str]) -> Option<Owner> {
     match *words {
         ["transport"] => Some(Owner::Transport),
+        ["clips"] => Some(Owner::Clips),
         [w] => num(w, "macro")
             .map(Owner::Macro)
             .or_else(|| num(w, "mod").map(Owner::Mod))
@@ -450,6 +555,7 @@ mod tests {
             Owner::Mod(4),
             Owner::Morph(0),
             Owner::Transport,
+            Owner::Clips,
         ];
         for s in strips {
             v.push(Owner::Strip(s));
@@ -496,6 +602,7 @@ mod tests {
                 ParamAddr::new(Owner::Transport, transport::TEMPO),
                 "transport.7",
             ),
+            (ParamAddr::new(Owner::Clips, clips::scene(2)), "clips.258"),
         ];
         for (a, s) in cases {
             assert_eq!(a.to_string(), s);
@@ -511,6 +618,36 @@ mod tests {
                 assert_eq!(a.to_string().parse::<ParamAddr>(), Ok(a), "{a}");
             }
         }
+    }
+
+    #[test]
+    fn the_clips_ids_say_what_they_do() {
+        use clips::Clips;
+        assert_eq!(clips::of(clips::STOP_ALL), Some(Clips::StopAll));
+        assert_eq!(clips::of(clips::BACK_TO_SONG), Some(Clips::BackToSong));
+        assert_eq!(clips::of(clips::scene(15)), Some(Clips::Scene(15)));
+        assert_eq!(clips::of(clips::scene(16)), None, "16 rows");
+        assert_eq!(clips::of(clips::clip(0, 0)), Some(Clips::Clip(0, 0)));
+        assert_eq!(clips::of(clips::clip(127, 15)), Some(Clips::Clip(127, 15)));
+        assert_eq!(clips::of(clips::clip(127, 15) + 1), None);
+        for t in [0u8, 7, 127] {
+            assert_eq!(clips::of(clips::stop(t)), Some(Clips::Stop(t)));
+            assert_eq!(clips::of(clips::mute(t)), Some(Clips::Mute(t)));
+            assert_eq!(clips::of(clips::solo(t)), Some(Clips::Solo(t)));
+            assert_eq!(clips::of(clips::arm(t)), Some(Clips::Arm(t)));
+            assert!(clips::is_value(clips::mute(t)) && clips::is_value(clips::solo(t)));
+            assert!(!clips::is_value(clips::arm(t)) && !clips::is_value(clips::stop(t)));
+        }
+        assert_eq!(clips::of(clips::mute(127) + 1), None, "128 tracks");
+        assert_eq!(clips::of(2), None);
+        // No two say the same.
+        let mut seen = std::collections::HashSet::new();
+        for id in 0..=u16::MAX {
+            if let Some(c) = clips::of(id) {
+                assert!(seen.insert(c), "{id}");
+            }
+        }
+        assert_eq!(seen.len(), 2 + 16 + 4 * 128 + 128 * 16);
     }
 
     #[test]

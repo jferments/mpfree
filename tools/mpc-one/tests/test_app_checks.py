@@ -352,6 +352,16 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(got["the program change went out of MIDI OUT"])
         self.assertTrue(got["the clip's Program was set to 5"])
 
+    def test_clip_learn_needs_the_key_learned_on_the_grid_and_its_stop_and_launch(self):
+        """clip-learn passes on Learn taking a key for a clip's cell, then the clip stopped and launched again; with
+        only the learning it fails."""
+        took = "+3.200 s Keystep 37: MIDI Learn: note C3 \u00b7 Keystep 37 takes clips.4096"
+        stop, launch = "time: clips: StopClip(0)", "time: clips: Launch { track: 0, slot: 0 }"
+        self.assertTrue(all(ok for ok, _ in self.judge("clip-learn", checks.Window(lines(took, stop, launch)))))
+        got = dict((what, ok) for ok, what in self.judge("clip-learn", checks.Window(lines(took))))
+        self.assertTrue(got["Learn took the key for the clip"])
+        self.assertFalse(got["the key stopped the clip and launched it again"])
+
     def test_first_start_reads_the_setup_since_power_on(self):
         start = [(6.0, "first start: setup, try 1 of 3"),
                  (6.1, "first start: asked for the backup (/run/mpfree-app/setup-backup.request)"),

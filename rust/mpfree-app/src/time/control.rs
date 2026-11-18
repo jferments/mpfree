@@ -3589,6 +3589,26 @@ impl TimeControl {
         self.project.tracks.get(t).map(|tr| tr.mute)
     }
 
+    /// The tracks muted and soloed as they will be once the mute queue
+    /// lands, bit `t` for track `t`: where MIDI Learn reads a learned mute
+    /// or solo, so a key flips it from there.
+    pub fn mute_bits(&self) -> (u128, u128) {
+        let queue = self
+            .mute_queue
+            .as_ref()
+            .map_or(&[][..], |(_, q)| &q.want[..]);
+        let mut bits = (0u128, 0u128);
+        for (t, tr) in self.project.tracks.iter().enumerate().take(128) {
+            let (m, s) = queue
+                .iter()
+                .find(|w| w.0 == t)
+                .map_or((tr.mute, tr.solo), |w| (w.1, w.2));
+            bits.0 |= u128::from(m) << t;
+            bits.1 |= u128::from(s) << t;
+        }
+        bits
+    }
+
     /// What TRACK MUTE's pad for track `t` shows (None: no such track).
     pub fn mute_light(&self, t: usize) -> Option<MuteLight> {
         let tr = self.project.tracks.get(t)?;

@@ -22,6 +22,7 @@ The grid has a column per **track** and a row per **slot**. Each track plays one
 - **UNDO** takes back any drop, and the Takes list names it ("Move 7 · Drums / 2, to Bass / 4").
 - **Tap a track's name** to **arm** it: the pads record into that track. The track arms when you lift your finger.
 - **Hold ERASE and tap a clip** to delete it. **UNDO** brings it back. A clip the song uses stays until you delete its blocks in the song.
+- **Hold SHIFT and tap a clip**, a row's number or a track's name, then press a pad or key on a MIDI controller: from then on that control launches it, as a tap would. See [Launching clips and scenes from your controller](midi-and-cv.md#launching-clips-and-scenes-from-your-controller).
 - **Hold COPY and tap a clip** to copy it. Then **hold COPY and tap an empty slot**, on any track and any page, and a copy goes there; tap more empty slots for more copies. **UNDO** takes a copy away. It's handy for a variation: copy the verse, then change the copy.
 - **Under each name** is what the track plays: **Kit**, or its own instrument (FM, Poly, a plugin synth). Tap that line to change it: the track is armed, and the Synth tab opens its MENU on the track's instrument row (see [A synth for each track](synths.md#a-synth-for-each-track)).
 
