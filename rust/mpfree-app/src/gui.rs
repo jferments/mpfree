@@ -26746,7 +26746,9 @@ mod tests {
         use mpfree_sampler_ui::recorder::{self, Recorder, RecorderView};
         use mpfree_sampler_ui::sample::feed_input;
         use mpfree_sampler_ui::wave_tab;
+        use mpfree_sampler_ui::widgets::PadBar;
         use mpfree_sampler_ui::widgets::SettingList;
+        use mpfree_ui::wave::Waveform;
         let mut p = sample_sampler(Fonts::embedded());
         open_sample(&mut p, sample_page::Editor::Wave);
         let ev = |p: &mut Player, widget: &str, kind: EventKind| {
@@ -26838,6 +26840,27 @@ mod tests {
             "{}",
             v.status
         );
+        // The take draws into the wave as it comes in (step 2f, part 3):
+        // its 1.5 s bright from the left of a 10 s span (stopped: no bar
+        // lines), the head where it has got to, nothing to drag.
+        let wave = |p: &Player| {
+            let w = p.ui.get::<Waveform>(wave_tab::WAVE).unwrap();
+            (
+                w.frames(),
+                w.region(),
+                w.playheads().to_vec(),
+                w.markers().len(),
+            )
+        };
+        let (span, region, heads, marks) = wave(&p);
+        let (_, end) = region.unwrap();
+        assert!(
+            (0.14..0.16).contains(&(end as f64 / span as f64)),
+            "{end} of {span}"
+        );
+        assert_eq!((heads, marks), (vec![end], 0));
+        let bar = |p: &Player| p.ui.get::<PadBar>(wave_tab::BAR).unwrap().title.clone();
+        assert_eq!(bar(&p), "Take 1 · recording");
         assert_eq!(
             panel(&p),
             [
@@ -26917,6 +26940,10 @@ mod tests {
         assert_eq!(name.as_deref(), Some("Take 1"));
         assert!(!row(&p).recording);
         assert_eq!(panel(&p).len(), wave_tab::Row::ALL.len());
+        // The wave is the page's sound's again, with its marks.
+        let (_, _, heads, marks) = wave(&p);
+        assert!(heads.is_empty() && marks > 0, "{heads:?} {marks}");
+        assert!(!bar(&p).ends_with(" · recording"), "{}", bar(&p));
         assert!(
             hint(&p).contains("Q-Links 1-4: Start, End, loop"),
             "{}",

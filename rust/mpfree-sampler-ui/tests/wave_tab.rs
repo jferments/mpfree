@@ -1285,3 +1285,79 @@ fn the_tools_strip_sits_over_the_wave_and_picks_a_tool_or_opens_its_old_page() {
     s.tab.set_recorder(&mut s.ui, RecorderView::default(), &st);
     assert!(s.ui.get::<ToolStrip>(wave_tab::TOOLS).unwrap().enabled);
 }
+
+#[test]
+fn a_take_recording_draws_into_the_wave_and_the_wave_is_the_sounds_again_after() {
+    use mpfree_sampler_ui::live_take::LiveTake;
+    let mut s = sample();
+    let st = s.state.clone();
+    let marks =
+        s.ui.get::<Waveform>(wave_tab::WAVE)
+            .unwrap()
+            .markers()
+            .len();
+    assert!(marks > 0);
+    // Two seconds of a take, in a 4 s span.
+    let mut take = LiveTake::new();
+    take.update(&vec![0.5f32; 2 * 2 * RATE as usize]);
+    s.tab.show_live(
+        &mut s.ui,
+        &take,
+        4 * u64::from(RATE),
+        None,
+        "Take 1 · recording",
+        "0:02.0 so far · stays here",
+    );
+    let w = s.ui.get::<Waveform>(wave_tab::WAVE).unwrap();
+    let two = 2 * u64::from(RATE);
+    assert_eq!(w.frames(), 2 * two);
+    assert_eq!(w.view().start, 0.0, "the whole span");
+    assert_eq!(w.region(), Some((0, two)));
+    assert_eq!(w.playheads(), &[two]);
+    assert!(w.markers().is_empty(), "nothing to drag");
+    let bar = s.ui.get::<PadBar>(wave_tab::BAR).unwrap();
+    assert_eq!(bar.title, "Take 1 · recording");
+    assert_eq!(s.tab.live(), Some((two, 2 * two)));
+    // A tap on the wave says why it plays nothing; a voice's playhead and
+    // the page's own redraw leave the take as it is.
+    let tap = UiEvent {
+        widget: wave_tab::WAVE.into(),
+        kind: EventKind::Frame(100),
+    };
+    assert_eq!(
+        s.tab.action(&mut s.ui, &tap, &st),
+        Some(WaveAction::Say(wave_tab::LIVE_WHY.to_string()))
+    );
+    s.tab.set_playheads(&mut s.ui, &[5]);
+    s.tab.update(&mut s.ui, &st);
+    let w = s.ui.get::<Waveform>(wave_tab::WAVE).unwrap();
+    assert_eq!((w.frames(), w.playheads()), (2 * two, &[two][..]));
+    // Past the span, it doubles.
+    take.update(&vec![0.5f32; 2 * 5 * RATE as usize]);
+    s.tab.show_live(
+        &mut s.ui,
+        &take,
+        4 * u64::from(RATE),
+        None,
+        "Take 1 · recording",
+        "",
+    );
+    assert_eq!(
+        s.tab.live(),
+        Some((5 * u64::from(RATE), 8 * u64::from(RATE)))
+    );
+    // It ends: the sound again, with its marks.
+    s.tab.end_live(&mut s.ui);
+    s.tab.update(&mut s.ui, &st);
+    let w = s.ui.get::<Waveform>(wave_tab::WAVE).unwrap();
+    assert_eq!(w.frames(), st.frames);
+    assert_eq!(w.markers().len(), marks);
+    assert!(w.playheads().is_empty());
+    assert_eq!(s.tab.live(), None);
+    assert!(s
+        .ui
+        .get::<PadBar>(wave_tab::BAR)
+        .unwrap()
+        .title
+        .starts_with("Pad "));
+}

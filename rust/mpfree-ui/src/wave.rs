@@ -412,6 +412,16 @@ impl Waveform {
         }
     }
 
+    /// The frames drawn bright ([`Waveform::set_region`]).
+    pub fn region(&self) -> Option<(u64, u64)> {
+        self.region
+    }
+
+    /// Where the playheads are ([`Waveform::set_playheads`]).
+    pub fn playheads(&self) -> &[u64] {
+        &self.playheads
+    }
+
     /// Frames outside `start..end` are dimmed.
     pub fn set_region(&mut self, region: Option<(u64, u64)>) {
         self.region = region;
