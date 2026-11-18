@@ -4,7 +4,7 @@ checked: 2026-11-17 1c113480
 -->
 # Dynamics: design
 
-**Status:** 2026-11-17, FX quality round 4's Limiter and Master safety PR. This page covers the dynamics effects other than the Compressor ([fx-compressor.md](fx-compressor.md)): the **Limiter**, **Master safety**, the **Gate**, the **De-esser**, the **Multiband comp**, the **Ducker**, the **Transient shaper** and the **Channel strip**. Round 4 improves them one pull request at a time, in the order of the plan (jferments/mpfree-claude `fx/quality/plan-4.md`, with research-dynamics.md and baseline-dynamics-2026-11-17.md): the Limiter and Master safety first (this one), then the Multiband, the De-esser, the Gate with the Channel strip, the Ducker and the Transient shaper. The sections on the effects not yet reworked say what they are today and what their pull request is planned to change. Their short entries are in [fx.md](fx.md); their measured targets are in [fx-quality.md](fx-quality.md) (ids P, N, S, X, U, T and C).
+**Status:** 2026-11-17, FX quality round 4's Multiband PR (after the Limiter and Master safety PR). This page covers the dynamics effects other than the Compressor ([fx-compressor.md](fx-compressor.md)): the **Limiter**, **Master safety**, the **Gate**, the **De-esser**, the **Multiband comp**, the **Ducker**, the **Transient shaper** and the **Channel strip**. Round 4 improves them one pull request at a time, in the order of the plan (jferments/mpfree-claude `fx/quality/plan-4.md`, with research-dynamics.md and baseline-dynamics-2026-11-17.md): the Limiter and Master safety first, then the Multiband (this one), the De-esser, the Gate with the Channel strip, the Ducker and the Transient shaper. The sections on the effects not yet reworked say what they are today and what their pull request is planned to change. Their short entries are in [fx.md](fx.md); their measured targets are in [fx-quality.md](fx-quality.md) (ids P, N, S, X, U, T and C).
 
 ## 1. What they are for
 
@@ -88,7 +88,7 @@ Every stage takes the gain at most down to what is needed, never up past it, so 
 
 The soft clip's delay (the half-bands' 2.02 frames at low frequencies and ADAA's 2) is matched in the other modes by a 4-frame pad, so the latency is the core's plus 4 in every mode: 85 frames at 44.1 kHz, 91 at 48 kHz. A mode change glides over 10 ms: the soft clip's share of what the core hears and the core's share of the output each move in a straight line, both paths running meanwhile, and the soft clip starts from a clean state when it fades in from nothing. The meters count overs (frames that came in above the ceiling), frames that leave above 0 dBFS (only Raw can make them) and the limiting.
 
-### Gate (round 4's Gate PR is next but two)
+### Gate (round 4's fourth PR)
 
 Today: open and close thresholds apart (hysteresis), Range, Attack, Hold, Release, a 1 ms look-ahead, key filters and the strip's side-chain as the key. Its fronts are kept exactly and the fade means its label, but with Hold 0 it rides 40 and 60 Hz, it shuts only 0.2 to 1.1 dB under the threshold under 1 kHz, and a Range move while it is shut waits until it opens. Planned (plan-4 section 5): a detector that holds each peak for at least 20 ms, Range that follows while shut, an expander mode and Key listen.
 
@@ -96,9 +96,16 @@ Today: open and close thresholds apart (hysteresis), Range, Attack, Hold, Releas
 
 Today: listens above Freq; Relative detection compares that band with the whole sound, so its threshold works at any level; Split turns down only the band (a complementary split), Wide the whole sound; Listen plays the band. Split lifts the band under Freq by up to 1.8 dB and falls short of Range above it. Planned (plan-4 section 6): a split that never lifts (a Linkwitz-Riley split or a matched shelf, whichever measures better), linked detection, and look-ahead (decision 11.2).
 
-### Multiband comp (round 4's second PR)
+### Multiband comp
 
-Today: two LR4 crossovers make three bands that sum flat at Mix 100, each with threshold, ratio and gain. Mix 50 notches 19.7 dB at a crossover (the dry and the bands' phase disagree), and the band detectors are not the compressor's. Planned (plan-4 section 7): the dry through the same all-passes so any Mix adds in phase, the compressor's detector in every band, and auto makeup.
+Two LR4 crossovers (Low | mid, 40 Hz to 1 kHz, 200 Hz; Mid | high, 1 to 12 kHz, 2.5 kHz, kept at least an octave over the lower) split the sound into three bands. The low band passes the upper crossover's all-pass, so the three sum to the input through both crossovers' all-passes: flat in level (within 0.06 dB), the phase turned around each crossover. The crossovers glide over 30 ms, re-tuned every 16 frames and landing on the frame the glide ends.
+
+- **Mix in phase.** The dry is the bands' sum at unity, not the input, so each band's weight is `1 - Mix + Mix × gain` and any Mix adds two signals in phase. It used to add the input to the all-passed bands, which notched 19.7 dB at each crossover at Mix 50. Taking the dry from the bands needs no second set of all-passes. A band soloed out keeps only the dry's share.
+- **The Compressor's detector in each band** ([fx-compressor.md](fx-compressor.md)): the louder side's peak in dB, the soft-knee curve (a 6 dB knee) for the reduction it asks for, a hold that jumps up at once and lets go at a release solved through the attack (`comp::release_tau`), then the attack's one-pole. Attack and Release are shared and mean their labels (63 %), and the curve is the one drawn. The old detector, a linear follower before the curve, fell 0.57 dB short of it and took 1.7 to 2.1 times Attack.
+- **Thresholds and ratios glide** over 20 ms (the ratio as the curve's slope, 1 - 1/ratio), so turning them doesn't zipper.
+- **Auto makeup** (new, id 19; off by default as the Compressor's, on in every preset): each band gets back what its curve takes at its share of a mix-level sound, pink noise at -18 dBFS RMS, read at -11 dBFS (about where the detector reads pink's peaks) less the band's share of the octaves from 20 Hz to 20 kHz (about a third each at the defaults, so near -15.8 dBFS). Gain adds on top. -11 is a dB under the Compressor's reference: at -10, Drum crush's 8:1 came out 1.7 LU loud.
+
+What it can't do: at Attack 1 ms the mid band reaches 63 % in 1.44 ms of a step at 1 kHz. The band itself takes a few tenths of a millisecond to build up through the crossovers, and the detector can only act on what has arrived; only a look-ahead would hide it, and the multiband has no latency.
 
 ### Ducker (round 4's fifth PR)
 
@@ -125,11 +132,15 @@ Today: MPFree's Gate, Compressor (Clean) and EQ in one insert, with Order and Ou
 | True peak | Off, On (Off) | The points between samples as a 4x meter reads them |
 | Reduction | 0 to 30 dB, read only | The meter |
 
+**Multiband comp** (ids unchanged, Auto makeup new): Low | mid (40 Hz to 1 kHz, 200; log, 30 ms glide), Mid | high (1 to 12 kHz, 2.5k; as Low | mid), per band Threshold (-60 to 0 dB, -18; 20 ms glide), Ratio (1 to 20, 2; log, its slope glides 20 ms) and Gain (-24 to +24 dB, 0; 20 ms glide), Attack (0.1 to 100 ms, 10; log), Release (10 ms to 1 s, 150; log), Solo (Off, Low, Mid, High), Mix (0 to 100 %, 100; 20 ms glide), Output (-24 to +24 dB, 0; 20 ms glide), Auto makeup (Off, On; Off), and the three bands' reduction meters.
+
 **Master safety** (ids unchanged): Mode (Safe limiter, Soft clip, Raw; Safe limiter; a 10 ms glide between modes), Trim (-24 to +12 dB, 0; 20 ms glide), Ceiling (-6 to 0 dB, -0.3; 20 ms glide, new), Release (10 ms to 1 s, 80; log, as the Limiter's), and the meters Limiting, Overs and Clipped.
 
 ## 6. Defaults and presets
 
 The Limiter's defaults (Gain 0, Ceiling -0.3, Release 80, Auto release on, True peak off) catch stray peaks without touching anything under the ceiling. Its presets: **Safe peaks** (Ceiling -1), **Loud master** (Gain 6, Ceiling -1, True peak on) and **Drum smash** (Gain 12, Release 25, Auto release off). Master safety's defaults (Safe limiter at -0.3 dB) are what every output ends in; it has no presets.
+
+The Multiband's defaults (200 Hz and 2.5 kHz, every band at -18 dB and 2:1, Attack 10 ms, Release 150 ms) are gentle glue. Its presets now all turn Auto makeup on: **Master glue**, **Tight low end** (keeps its +2 dB on the low band, a tilt), **Vocal smooth** and **Drum crush**, which drops the +6 dB it gave each band for Auto makeup (it was 5.6 LU quieter than the dry on pink, now 0.8 louder).
 
 ## 7. Measuring quality
 
@@ -148,6 +159,22 @@ The Limiter's defaults (Gain 0, Ceiling -0.3, Release 80, Auto release on, True 
 
 The quick gates (`mpfree-fxlab/tests/gates.rs`) assert P1 and P2 on pink pushed 12 dB for the Limiter and for both of Master safety's limiting modes, P4 on the Limiter's defaults, and P7 across settings and modes; `mpfree-fx`'s unit tests check the detector's phases against a sine and the folded form against the full one, that a quiet window can skip the points between samples, that the far taps never take a point past the room the near taps leave (on random windows and on the worst signs), that a quiet block comes out bit for bit as its frames would, and that a mode switch steps no further than the sine it plays.
 
+### Multiband
+
+`fxlab quality --class multiband` measures the X targets ([fx-quality.md](fx-quality.md#multiband-compressor-x)). After the Multiband PR 31 of 32 are met (15 of 27 before; X7's five Auto makeup rows are new targets):
+
+| | Before | After |
+|---|---|---|
+| Ratio 1 at Mix 25, 50 and 75: worst error | 5.9, 19.7, 5.9 dB | 0.06 dB |
+| Mid band's curve at 1 kHz | 0.57 dB | 0.12 dB |
+| Attack at 1, 10 and 30 ms, 63 % against the label | 2.08, 1.69, 1.69 | 1.44 (not met), 0.97, 0.94 |
+| Release at 60, 150 and 500 ms | 0.85, 0.81, 0.81 | 1.00, 1.00, 1.00 |
+| 50 Hz THD 12 dB over the low band's threshold | -50.0 dB | -61.7 dB |
+| Zipper: mid Threshold, mid Ratio | 10.6, 6.8 dB | 0.05, 0.03 dB |
+| Pink at -18 dBFS with Auto makeup: defaults, presets | | -0.3 LU; -0.3 to +0.8 LU |
+
+The quick gates assert X2 at Mix 25, 50 and 75, and X7 at the defaults and at Drum crush's settings.
+
 ## 8. Cost
 
 The instruction gate (rustc 1.97.0, a 128-frame block at 44.1 kHz), before and after:
@@ -161,8 +188,9 @@ The instruction gate (rustc 1.97.0, a 128-frame block at 44.1 kHz), before and a
 | Mixer, 12 tracks and 8 pads, routing only | 210.8k | 308.5k (+46.3 %) |
 | Mixer, 16 tracks and 32 pads, routing only | 370.8k | 461.7k (+24.5 %) |
 | Mixer cases with a song's inserts | 1.02M to 1.54M | +5 to +7 % |
+| Multiband compressor (defaults) | 141.5k | 149.9k (+6.0 %) |
 
-The rises are the true peaks: Master safety now always catches them (decision 11.1). In the routing-only mixer cases a dozen loud tracks keep the master limiting nearly all the time, so the detector works out every point between samples for both channels on almost every frame. A mix that isn't pushing the master costs less than before (quiet blocks), and one near the ceiling pays for the near taps on most frames. The x86 host vectorises these sums poorly, so the numbers are a rough guide; on the MPC's ARM, which does floats one at a time, the folding and the near taps cut the detector's multiplies to 18 or 48 a channel from 96. Soft clip costs more than Safe limiter (the half-bands and four ADAA steps a frame); it isn't in the gate.
+The rises are the true peaks: Master safety now always catches them (decision 11.1). In the routing-only mixer cases a dozen loud tracks keep the master limiting nearly all the time, so the detector works out every point between samples for both channels on almost every frame. A mix that isn't pushing the master costs less than before (quiet blocks), and one near the ceiling pays for the near taps on most frames. The x86 host vectorises these sums poorly, so the numbers are a rough guide; on the MPC's ARM, which does floats one at a time, the folding and the near taps cut the detector's multiplies to 18 or 48 a channel from 96. Soft clip costs more than Safe limiter (the half-bands and four ADAA steps a frame); it isn't in the gate. The Multiband's rise is the detector in decibels and the six new glides; taking the dry from the bands kept the Mix fix free (a second pair of all-passes cost 22 %).
 
 ## 9. Pitfalls and how the design avoids them
 
@@ -177,11 +205,15 @@ The rises are the true peaks: Master safety now always catches them (decision 11
 | A latency that moves with a setting | The detector's lag and the soft clip's pad are there in every mode and setting |
 | Clicks on a mode change | A 10 ms glide with both paths running |
 | Denormals in the half-bands | Their states are flushed every 32 frames, on a grid from the stream's start |
+| A parallel Mix that notches a multiband's crossovers | The dry is the bands' own sum, in phase with them |
+| Zipper from a band's threshold or ratio | Both glide; the curve takes the slope, so the ratio glides evenly |
+| Auto makeup stacked on a preset's own makeup | The presets that turn it on drop their makeup gains |
 
 ## 10. History and next
 
 - Before round 4: the Limiter's true-peak detector was a 12-tap Hann sinc at three phases (+0.48 dB over a 4x meter), its Auto release never acted, its release was a linear one-pole (63 % in dB at 0.8 of its label); Master safety had no true-peak detection (+0.81 dBTP out on pink pushed 12 dB) and a base-rate soft clip.
 - This PR: the shared core, true peaks always caught in Master safety, the hold, release in dB, an Auto release that acts, the soft clip at 2x with ADAA, the mode glide, the Ceiling glide in Master safety.
+- The Multiband PR: Mix in phase, the Compressor's detector in each band, gliding thresholds and ratios, Auto makeup (on in every preset).
 - Next, from plan-4 section 4.2: styles in the spirit of Pro-L 2's (Transparent, Punchy with a shorter hold, Safe with a longer one) and a channel link amount, if the device round shows the cost allows. Then the rest of round 4 as section 4 says.
 
 ## 11. Sources

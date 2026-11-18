@@ -1,6 +1,6 @@
 # MIDI effects per track (`rust/mpfree-notefx`)
 
-**Status:** the engine, built and tested on the workstation, 17 Nov 2026 (the MIDI powerhouse thread, plan item 3.1). Nothing plays through it yet: putting it on a track and its screen come next (below). Nothing here has run on the MPC.
+**Status:** the engine and each track's effects around its arp, saved with the project, built and tested on the workstation, 17 Nov 2026 (the MIDI powerhouse thread, plan item 3.1). No screen sets them yet: the Notes stage on screen comes next (below). Nothing here has run on the MPC.
 
 The owner picked MIDI effects per track as what follows the MIDI powerhouse plan's phase 2 (card, 17 Nov 2026 18:35Z). The plan puts them in a **Notes** stage at the head of each track's chain, before its sound: board 7 of the [MIDI mockups](https://claude.ai/artifact/9W8R9NDy4KJUcScN9DoTh6), approved for direction on 16 Nov. The research behind the list of effects (Bitwig's Note FX, Logic's MIDI plug-ins, the Hapax, Midihub, the OXI One) is in the [plan](https://claude.ai/artifact/L5XFouNLEEP66wJ2tPALFv).
 
@@ -53,14 +53,35 @@ Humanize and Chance draw from one small seeded generator per chain (`Chain::rese
 
 Each effect is one line of words: on or off, the effect, then its settings as `name=value` (`on chord shape=m7 voicing=drop2 inv=0 below=- vel=90 strum=8 scale=-`; a scale is `root:up:down`, the notes as bits; a time is `120ms` or `480t`, in ticks). A setting a build doesn't know is skipped and one left out keeps the effect's first value, so a newer build's file still opens; a number out of its range is refused (`Slot::to_words`, `Slot::from_words`).
 
+## On a track
+
+Each track's effects are `Track::note_fx` (`mpfree-seq`), saved in the project's clips part after the track's `arp` and `rectouch` lines, one `notefx <place> <id> <words>` line an effect (its place, its id on the track, its words) and `notearp <n>`:
+
+```text
+track Keys
+dest 2
+mute 0
+arp 1
+rectouch 1
+notefx 0 1 on scale scale=0:2741:2741 snap=down
+notefx 1 2 on chord shape=m7 voicing=close inv=0 below=- vel=90 strum=0 scale=-
+notefx 2 3 off humanize ms=6 vel=8
+notearp 2
+```
+
+A place past the last, an effect twice in one place, an id of 0 or one another effect on the track has, or a number out of range refuses the part, as a bad line of a clip does; a setting the build doesn't know is skipped.
+
+`TrackArps` (`mpfree-play`, [playback.md](playback.md#one-arp-per-track-trackarps)) runs a track's chain around its arp: `Chain::process_range` over the places above the arp on the notes going into it (the live pads, and the clips when "Clips through the arp" is on), the arp, then the places below it on what the arp played. So a part is never put through them twice: with the switch off a clip plays as recorded, and recording keeps what the effects and the arp played; with it on a clip goes through them again, and recording keeps the pads as pressed. Notes go out on MIDI ports (a track's Plays on, Routing) after them.
+
+The chain is made off the sound loop: the time engine's control half sends one the first time a track has an effect (`ToAudio::Chain`), and its effects one place a message ([time-threads.md](time-threads.md)). A chained track runs every period, so its echoes leave on time while nothing is played. A panic, or the track's switch changing, cuts its chain where it lands; `TrackArps::cut` does the same for the sequencer's mute to call where it lands (sequencer S4).
+
 ## Tests
 
-`cargo test -p mpfree-notefx`: each effect (board 7's C3 m7 becomes C3 Eb3 G3 Bb3 with the added notes at 90 %; voicings, inversions, Keep below and In key; strum; velocity curves; note length; echo with climbing repeats cut at the top of the keyboard; humanize's range and its notes' lengths; chance's share), the order of effects, an effect changed or taken out while a key is down, a key played twice while held, the period size, a flood, a mute's cut (what waits is dropped, what sounds ends at the cut, a note after it plays), every effect's words read back as written, and a run of random parts with effects changed and cuts between periods in which every note that starts ends. `tests/no_alloc.rs` checks the sound loop never allocates.
+`cargo test -p mpfree-notefx`: each effect (board 7's C3 m7 becomes C3 Eb3 G3 Bb3 with the added notes at 90 %; voicings, inversions, Keep below and In key; strum; velocity curves; note length; echo with climbing repeats cut at the top of the keyboard; humanize's range and its notes' lengths; chance's share), the order of effects, an effect changed or taken out while a key is down, a key played twice while held, the period size, a flood, a mute's cut (what waits is dropped, what sounds ends at the cut, a note after it plays), every effect's words read back as written, and a run of random parts with effects changed and cuts between periods in which every note that starts ends. `tests/no_alloc.rs` checks the sound loop never allocates. On a track: `mpfree-play`'s `tests/arps.rs` (effects above the arp change what it plays and those below what it played; a drum track's clip skips them while its pads go through; a track without a chain plays as it is; a mute cuts what waits and a panic ends what the effects added; the same notes for any period size, without allocating), `mpfree-seq`'s save tests (board 7's list reads back with its ids; a bad place, a doubled one, a missing or doubled id, a number out of range or an effect this build lacks refuse the part) and the app's `a_tracks_midi_effects_reach_the_pads_from_the_project` (the project's effects and chain cross to the sound loop, and an edit follows).
 
 ## Next
 
 In this order, each its own pull request:
 
-1. **On a track.** Each track's chain beside its arp in `TrackArps` (`mpfree-play`), so live keys and, with the track's "Clips through the arp" switch, its clips go through it; the arp becomes a place in the chain. The chains are saved with the project. Agreed with the sequencer thread, which owns the time engine.
-2. **The Notes stage on screen.** Board 7: the chain editor's Notes list above the sound's effects, + MIDI effect, each effect's page with what goes in and what comes out, and the Q-Links. Agreed with the FX thread, which owns the chain editor, and proposed for the [layout spec](layout-spec.md).
-3. **More effects** from the plan: Strum and Latch on their own, Randomize (pitch and length), Harmonize to a track, Split, and the controller effects (LFO to CC, CC smooth and scale, Channel map) for MIDI out.
+1. **The Notes stage on screen.** Board 7: the chain editor's Notes list above the sound's effects, + MIDI effect, each effect's page with what goes in and what comes out, and the Q-Links. Agreed with the FX thread, which owns the chain editor, and proposed for the [layout spec](layout-spec.md).
+2. **More effects** from the plan: Strum and Latch on their own, Randomize (pitch and length), Harmonize to a track, Split, and the controller effects (LFO to CC, CC smooth and scale, Channel map) for MIDI out.

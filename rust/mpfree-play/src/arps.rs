@@ -34,8 +34,22 @@
 //! that period (`Engine::skip`), so idle tracks cost next to nothing. An
 //! engine a period doesn't visit has never been given anything, so it is
 //! as a new one: its first sync lines it up with the transport.
+//!
+//! **MIDI effects** (`mpfree-notefx`, docs/dev/design/note-fx.md). A
+//! track with any gets a [`Chain`] around its arp: the effects above the
+//! arp's place ([`TrackFx::arp_at`]) change the notes going into it, the
+//! rest what it plays, so whatever reaches the arp reaches them (the live
+//! pads, and the clips with "Clips through the arp" on) and the rule above
+//! holds for them too: what was recorded after them never goes through
+//! them again. A chain is about 400 KB, so the host makes it off the sound
+//! loop ([`TrackArps::give_chain`]); [`TrackArps::set_notes`] only sets
+//! what it runs. A panic, or the switch changing, cuts the chain where it
+//! lands ([`Chain::cut`]): what it has on ends there, and nothing waiting
+//! (an echo, a strummed note) plays after it. So does a mute
+//! ([`TrackArps::cut`]).
 
 use mpfree_arp::{Engine, EventKind};
+use mpfree_notefx::{Chain, Ev, Kind, Notes, Period, TrackFx, MAX_FX};
 use mpfree_seq::{DestId, MAX_TRACKS};
 use mpfree_transport::Block;
 
@@ -65,6 +79,16 @@ pub struct TrackArps {
     from_arp: [bool; MAX_OUT],
     n_out: usize,
     dropped: u64,
+    rate: u32,
+    /// Each track's MIDI effects, once the host has given it a chain.
+    chains: Vec<Option<Box<Chain>>>,
+    /// Where each track's arp sits among its effects ([`TrackFx::arp_at`]).
+    arp_at: [u8; MAX_TRACKS],
+    /// A mute landing in the coming period, per track: its offset.
+    cuts: [Option<u32>; MAX_TRACKS],
+    /// A chained track's notes in a period: into its chain, then what its
+    /// arp played.
+    lists: Box<[Notes; 2]>,
 }
 
 impl TrackArps {
@@ -91,6 +115,64 @@ impl TrackArps {
             from_arp: [false; MAX_OUT],
             n_out: 0,
             dropped: 0,
+            rate: sample_rate,
+            chains: (0..MAX_TRACKS).map(|_| None).collect(),
+            arp_at: [0; MAX_TRACKS],
+            cuts: [None; MAX_TRACKS],
+            lists: Box::new([Notes::new(), Notes::new()]),
+        }
+    }
+
+    /// Track `track`'s MIDI effects and where its arp sits among them,
+    /// between periods. Never allocates: a track with no chain plays as
+    /// it is until the host gives it one ([`TrackArps::give_chain`]);
+    /// call this again after.
+    pub fn set_notes(&mut self, track: usize, fx: &TrackFx) {
+        let Some(at) = self.arp_at.get_mut(track) else {
+            return;
+        };
+        *at = fx.arp_place() as u8;
+        if let Some(c) = self.chains[track].as_deref_mut() {
+            c.apply(fx);
+        }
+        if !fx.is_empty() {
+            self.ask(track);
+        }
+    }
+
+    /// Whether `track` has a chain for its MIDI effects.
+    pub fn has_chain(&self, track: usize) -> bool {
+        self.chains.get(track).is_some_and(Option::is_some)
+    }
+
+    /// Track `track`'s chain, to read.
+    pub fn chain(&self, track: usize) -> Option<&Chain> {
+        self.chains.get(track).and_then(|c| c.as_deref())
+    }
+
+    /// A chain for `track`'s MIDI effects, made off the sound loop
+    /// ([`Chain::new`] allocates). It runs once [`TrackArps::set_notes`]
+    /// gives it its effects. One the track has already is kept, and the
+    /// new one handed back to be freed where it was made.
+    pub fn give_chain(&mut self, track: usize, mut chain: Box<Chain>) -> Option<Box<Chain>> {
+        match self.chains.get_mut(track) {
+            Some(slot @ None) => {
+                chain.reseed(RESEED);
+                *slot = Some(chain);
+                self.ask(track);
+                None
+            }
+            _ => Some(chain),
+        }
+    }
+
+    /// A mute landing on `track` `offset` frames into the coming period:
+    /// nothing waiting in its MIDI effects plays from there, and what they
+    /// have on ends there ([`Chain::cut`]). Before [`TrackArps::finish`].
+    pub fn cut(&mut self, track: usize, offset: u32) {
+        if self.has_chain(track) {
+            let c = &mut self.cuts[track];
+            *c = Some(c.map_or(offset, |o| o.min(offset)));
         }
     }
 
@@ -144,6 +226,9 @@ impl TrackArps {
     pub fn reseed(&mut self) {
         for a in &mut self.arps {
             a.engine.set_seed(RESEED);
+        }
+        for c in self.chains.iter_mut().flatten() {
+            c.reseed(RESEED);
         }
     }
 
@@ -202,7 +287,15 @@ impl TrackArps {
     /// Notes lost so far: the arps' own and notes that did not fit in one
     /// period's output. It should stay 0.
     pub fn dropped(&self) -> u64 {
-        self.dropped + self.arps.iter().map(ArpHost::dropped).sum::<u64>()
+        self.dropped
+            + self.arps.iter().map(ArpHost::dropped).sum::<u64>()
+            + self
+                .chains
+                .iter()
+                .flatten()
+                .map(|c| c.dropped())
+                .sum::<u64>()
+            + self.lists.iter().map(|l| l.dropped).sum::<u64>()
     }
 
     /// The [`Sink`] to hand the player this period.
@@ -224,6 +317,10 @@ impl TrackArps {
         let player_notes = self.n_out;
         self.from_arp[..player_notes].fill(false);
         for t in 0..self.used {
+            if self.chains[t].is_some() {
+                self.run_chained(t, block);
+                continue;
+            }
             if !std::mem::take(&mut self.fed[t]) && self.arps[t].engine.idle() {
                 self.arps[t].engine.skip(block.frames);
                 continue;
@@ -275,6 +372,88 @@ impl TrackArps {
             f(o, a);
         }
         self.n_out = 0;
+    }
+}
+
+impl TrackArps {
+    /// One period of a track with MIDI effects: its notes through the
+    /// effects above its arp, the arp, then the effects below it. Runs
+    /// every period, so notes its effects hold back (an echo, a strum)
+    /// leave on time.
+    fn run_chained(&mut self, t: usize, block: &Block) {
+        let start = block.start_frame;
+        let p = Period {
+            start,
+            frames: block.frames,
+            rate: self.rate,
+            bpm: block.spans().first().map_or(120.0, |s| s.bpm),
+        };
+        let (track, dest) = (t as u16, self.dest[t]);
+        let at = usize::from(self.arp_at[t]).min(MAX_FX);
+        let (arp, chain) = (&mut self.arps[t], self.chains[t].as_deref_mut());
+        let Some(chain) = chain else {
+            return;
+        };
+        let [notes, played] = &mut *self.lists;
+        // A panic (or the switch changing) and a mute cut where they land.
+        let cut = [arp.first_all_off(), self.cuts[t].take()]
+            .into_iter()
+            .flatten()
+            .min();
+        if let Some(offset) = cut {
+            chain.cut(start + u64::from(offset));
+        }
+        notes.clear();
+        arp.take_notes(start, notes);
+        played.clear();
+        chain.process_range(0, at, &p, notes.as_slice(), played);
+        for e in played.as_slice() {
+            arp.input(offset_in(e, start), event_of(e.kind));
+        }
+        notes.clear();
+        let fed = std::mem::take(&mut self.fed[t]) || !played.is_empty();
+        if !fed && arp.engine.idle() {
+            arp.engine.skip(block.frames);
+        } else {
+            arp.process(block, &mut |offset, kind| {
+                let at = start + u64::from(offset);
+                notes.push(match kind {
+                    EventKind::On { note, velocity } => Ev::on(at, note, velocity),
+                    EventKind::Off { note } => Ev::off(at, note),
+                });
+            });
+        }
+        played.clear();
+        chain.process_range(at, MAX_FX, &p, notes.as_slice(), played);
+        for e in played.as_slice() {
+            if self.n_out < MAX_OUT {
+                self.from_arp[self.n_out] = true;
+            }
+            push(
+                &mut self.out,
+                &mut self.n_out,
+                &mut self.dropped,
+                Out {
+                    offset: offset_in(e, start),
+                    frame: e.at,
+                    track,
+                    dest,
+                    event: event_of(e.kind),
+                },
+            );
+        }
+    }
+}
+
+/// `e`'s offset in the period starting at frame `start`.
+fn offset_in(e: &Ev, start: u64) -> u32 {
+    e.at.saturating_sub(start).min(u64::from(u32::MAX)) as u32
+}
+
+fn event_of(k: Kind) -> Event {
+    match k {
+        Kind::On { note, velocity } => Event::NoteOn { note, velocity },
+        Kind::Off { note } => Event::NoteOff { note },
     }
 }
 

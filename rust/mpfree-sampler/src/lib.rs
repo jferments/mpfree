@@ -6,6 +6,8 @@
 //!   built from the model.
 //! - [`chop`]: chop modes (transient, beat, silence) from the analysers.
 //! - [`dsp`]: interpolation, envelopes, the filter.
+//! - [`grain_clip`]: a region of a sound as grains read it, with the
+//!   clean pitching of [`bandlimit`].
 //! - [`node`]: the sampler as an instrument node any track can hold.
 //! - [`record`]: the rolling "skip back" buffers and takes.
 //! - [`autosample`]: plays an instrument note by note, records each note
@@ -31,6 +33,7 @@ pub mod chop;
 pub mod dsp;
 pub mod engine;
 pub mod export;
+pub mod grain_clip;
 pub mod keymap;
 pub mod model;
 pub mod node;
