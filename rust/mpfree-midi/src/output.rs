@@ -54,7 +54,12 @@ const SAMPLER: u8 = 0xFD;
 /// [`Timed`]'s track when thru passed it on: this bit, with the input
 /// port's number below it (tracks are below [`MAX_TRACKS`]).
 const THRU: u8 = 0x80;
-const _: () = assert!(MAX_TRACKS <= THRU as usize && MAX_PORTS <= 0x7D);
+/// The input thru's bookkeeping names for controller mode's notes (the
+/// MPC's own pads), so [`Timed`]'s track reads `THRU | CONTROLLER_FROM`.
+const CONTROLLER_FROM: u8 = 0x7C;
+/// [`Timed`]'s track when controller mode sent it.
+const CONTROLLER: u8 = THRU | CONTROLLER_FROM;
+const _: () = assert!(MAX_TRACKS <= THRU as usize && MAX_PORTS < CONTROLLER_FROM as usize);
 
 impl Timed {
     pub fn msg(offset: u32, m: Msg) -> Timed {
@@ -105,8 +110,13 @@ impl Timed {
 
     /// The input port thru passed it on from, if it did.
     pub fn thru_from(&self) -> Option<PortId> {
-        (self.track >= THRU && ![NO_TRACK, PAGE, SAMPLER].contains(&self.track))
+        (self.track >= THRU && ![NO_TRACK, PAGE, SAMPLER, CONTROLLER].contains(&self.track))
             .then_some(PortId(self.track & 0x7F))
+    }
+
+    /// Controller mode sent it (the MPC's pads and Q-Links).
+    pub fn is_from_controller(&self) -> bool {
+        self.track == CONTROLLER
     }
 
     /// A port's page sent it.
@@ -504,6 +514,13 @@ impl OutputRouter {
             _ => {}
         }
         q.push(Timed::msg(offset, msg).thru(from));
+    }
+
+    /// A message controller mode sends to the output port `to` (the MPC's
+    /// pads and Q-Links), at `offset`. Its notes are kept as thru's are,
+    /// so a panic or the port's All notes off ends them.
+    pub fn controller(&mut self, to: PortId, msg: Msg, offset: u32, queues: &mut [OutQueue]) {
+        self.thru(PortId(CONTROLLER_FROM), to, msg, offset, queues);
     }
 
     /// Ends thru's notes on port `p`, at `offset`.

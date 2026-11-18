@@ -1,8 +1,8 @@
-//! mpfree-midi-preview: WORKSTATION ONLY. Draws the MIDI, Routing, Sync,
-//! CV and Monitor sections inside the mixer's real I/O view as PNG files, with a sample
-//! rig (the 5-pin jacks, a USB keyboard, a drum machine the project names
-//! but that isn't plugged in), so the screens can be looked at before they
-//! go on the MPC. Opens no device.
+//! mpfree-midi-preview: WORKSTATION ONLY. Draws the MIDI, Routing, Learn,
+//! Controller, Sync, CV and Monitor sections inside the mixer's real I/O
+//! view as PNG files, with a sample rig (the 5-pin jacks, a USB keyboard,
+//! a drum machine the project names but that isn't plugged in), so the
+//! screens can be looked at before they go on the MPC. Opens no device.
 //!
 //! Options: `--out DIR` (default `~/mpfree-work/midi-preview-<UTC>`; must be
 //! a new or empty folder).
@@ -251,7 +251,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "io-sync",
             about: "Sync: tempo from the 5-pin jacks with clock arriving, following, and clock out per port; following not built yet",
-            section: 4,
+            section: 5,
             model: rig.clone(),
             wheel: 0,
             taps: vec![],
@@ -262,7 +262,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "io-cv",
             about: "CV: the eight outputs with job, track and main setting; CV out not built yet",
-            section: 5,
+            section: 6,
             model: rig,
             wheel: 0,
             taps: vec![],
@@ -315,9 +315,31 @@ fn shots() -> Vec<Shot> {
             pick: Some("Keystep 37 CC 16"),
         },
         Shot {
+            name: "io-controller",
+            about: "Controller (powerhouse 3.10): controller mode on, the pads and Q-Links playing a Juno-X on the 5-pin jacks' channel 3, its kit notes and poly pressure, the first bank's CCs named by its profile",
+            section: 4,
+            model: sample::controlling(sample::rig()),
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: None,
+            pick: None,
+        },
+        Shot {
+            name: "io-controller-off",
+            about: "Controller with controller mode off and nothing picked; MIDI out is off, so the banner says it would send nothing",
+            section: 4,
+            model: sample::rig(),
+            wheel: 0,
+            taps: vec![],
+            at: 1,
+            open: None,
+            pick: None,
+        },
+        Shot {
             name: "io-cv-built",
             about: "CV once CV out is built: each output's volts now",
-            section: 5,
+            section: 6,
             model: built.clone(),
             wheel: 0,
             taps: vec![],
@@ -328,7 +350,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "io-cv-moving",
             about: "CV with an envelope of the Bass track's keys on CV 2 and two LFOs: a Drift on the song's bar snapped to A minor pentatonic, and a free sine",
-            section: 5,
+            section: 6,
             model: moving,
             wheel: 3,
             taps: vec![],
@@ -339,7 +361,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "io-monitor",
             about: "Monitor: a keyboard's chord and mod wheel coming in, the Bass track playing out of the 5-pin jacks, clock arriving with its tempo, each line with where it went; lights per port and channel, in on top and out below",
-            section: 6,
+            section: 7,
             model: sample::monitored(built.clone()),
             wheel: 0,
             taps: vec![],
@@ -350,7 +372,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "io-monitor-channel",
             about: "Monitor after a tap on the keyboard's channel 1 light: only what came in on it",
-            section: 6,
+            section: 7,
             model: sample::monitored(built.clone()),
             wheel: 0,
             // y -1: the keyboard's channel 1 light, in.
@@ -362,7 +384,7 @@ fn shots() -> Vec<Shot> {
         Shot {
             name: "io-monitor-now",
             about: "Monitor, Now view, 45 s into a session: the keyboard's chord held with E4 pressed harder, the controls that moved (the learned knob says what it moves), program and bank, the clock from the 5-pin jacks with a pulse lost, bend and pressure, and the Bass track's C2 stuck on MIDI out",
-            section: 6,
+            section: 7,
             model: sample::held_now(built),
             wheel: 0,
             // y -2: the Now half of List | Now.

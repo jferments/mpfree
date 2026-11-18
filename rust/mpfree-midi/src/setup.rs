@@ -604,6 +604,101 @@ impl FollowSetup {
     }
 }
 
+/// The Q-Links controller mode sends: four banks of the MPC's four.
+pub const CONTROLLER_KNOBS: usize = 16;
+/// The CCs they send until set: 16 to 31 (general purpose and undefined
+/// in the MIDI spec, so they move nothing a synth fixes).
+pub const CONTROLLER_CCS: [u8; CONTROLLER_KNOBS] = [
+    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+];
+
+/// The notes controller mode's pads play.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PadNotes {
+    /// A kit's notes: the port's profile's pad lines, else MPFree's own
+    /// ([`crate::profile::kit_note`]: bank A the MPC's pad notes).
+    #[default]
+    Kit,
+    /// One note after another from this one: A1 plays it, A2 the next,
+    /// on through the banks (notes past 127 play nothing).
+    From(u8),
+}
+
+/// What controller mode sends for a pad's pressure.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PadPressure {
+    #[default]
+    Off,
+    /// Polyphonic aftertouch, on the pad's note.
+    Poly,
+    /// Channel pressure: the hardest pad held.
+    Channel,
+}
+
+impl PadPressure {
+    pub const ALL: [PadPressure; 3] = [PadPressure::Off, PadPressure::Poly, PadPressure::Channel];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            PadPressure::Off => "off",
+            PadPressure::Poly => "poly",
+            PadPressure::Channel => "channel",
+        }
+    }
+}
+
+/// Controller mode (powerhouse 3.10, Jay's card 18 Nov 01:21Z: a
+/// Controller switch in I/O): the MPC's pads send notes and its Q-Links
+/// CCs out of one port, and MPFree's sounds don't take the pads while it
+/// is on. The rig's: the gear is on the desk, whatever the song. `on` is
+/// never saved, so MPFree always starts with the pads its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ControllerSetup {
+    pub on: bool,
+    /// The output, by its own name; empty: none picked yet.
+    pub port: String,
+    pub channel: Channel,
+    pub pads: PadNotes,
+    pub pressure: PadPressure,
+    /// The CC each Q-Link sends, bank by bank (Q-Links 1 to 4, then 5 to
+    /// 8 ...).
+    pub ccs: [u8; CONTROLLER_KNOBS],
+}
+
+impl Default for ControllerSetup {
+    fn default() -> Self {
+        ControllerSetup {
+            on: false,
+            port: String::new(),
+            channel: 0,
+            pads: PadNotes::Kit,
+            pressure: PadPressure::Off,
+            ccs: CONTROLLER_CCS,
+        }
+    }
+}
+
+impl ControllerSetup {
+    /// What pad `pad` (0 is A1, to 127) sends: its note and channel, by
+    /// the port's `profile` for a kit's notes. None past the notes.
+    pub fn pad_out(
+        &self,
+        pad: usize,
+        profile: Option<&crate::profile::Profile>,
+    ) -> Option<(u8, Channel)> {
+        match self.pads {
+            PadNotes::Kit => match profile.and_then(|p| p.pad(pad)) {
+                Some(o) => Some((o.note, o.channel.unwrap_or(self.channel))),
+                None => crate::profile::kit_note(pad).map(|n| (n, self.channel)),
+            },
+            PadNotes::From(n) => u8::try_from(usize::from(n) + pad)
+                .ok()
+                .filter(|n| *n <= 127)
+                .map(|n| (n, self.channel)),
+        }
+    }
+}
+
 /// A project's MIDI, sync and CV settings.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MidiSetup {
@@ -634,6 +729,8 @@ pub struct MidiSetup {
     pub rig_learn: Vec<Saved>,
     /// MIDI Follow: the rig's.
     pub follow: FollowSetup,
+    /// Controller mode: the rig's.
+    pub controller: ControllerSetup,
 }
 
 impl Default for MidiSetup {
@@ -650,6 +747,7 @@ impl Default for MidiSetup {
             learn: Vec::new(),
             rig_learn: Vec::new(),
             follow: FollowSetup::default(),
+            controller: ControllerSetup::default(),
         }
     }
 }
@@ -861,6 +959,7 @@ impl MidiSetup {
         let mut m = self.clone();
         m.rig_learn.clear();
         m.follow = FollowSetup::default();
+        m.controller = ControllerSetup::default();
         for name in self
             .ports
             .iter()
@@ -888,6 +987,7 @@ impl MidiSetup {
         let mut m = MidiSetup {
             rig_learn: self.rig_learn.clone(),
             follow: self.follow.clone(),
+            controller: self.controller.clone(),
             ..MidiSetup::default()
         };
         for p in &self.ports {
@@ -917,6 +1017,7 @@ impl MidiSetup {
     pub fn set_rig(&mut self, rig: &MidiSetup) {
         self.rig_learn = rig.rig_learn.clone();
         self.follow = rig.follow.clone();
+        self.controller = rig.controller.clone();
         let names: Vec<String> = self
             .ports
             .iter()
@@ -1052,6 +1153,26 @@ impl MidiSetup {
             let k: Vec<String> = f.knobs.iter().map(u8::to_string).collect();
             line(&mut s, "midi-follow.knobs", &k.join(" "));
         }
+        // Controller mode, but never its switch: MPFree starts with the
+        // pads its own.
+        let c = &self.controller;
+        let d = ControllerSetup::default();
+        if !c.port.is_empty() {
+            line(&mut s, "controller.port", &c.port);
+        }
+        if c.channel != d.channel {
+            line(&mut s, "controller.channel", &(c.channel + 1).to_string());
+        }
+        if let PadNotes::From(n) = c.pads {
+            line(&mut s, "controller.pads", &format!("from {n}"));
+        }
+        if c.pressure != d.pressure {
+            line(&mut s, "controller.pressure", c.pressure.word());
+        }
+        if c.ccs != d.ccs {
+            let k: Vec<String> = c.ccs.iter().map(u8::to_string).collect();
+            line(&mut s, "controller.qlinks", &k.join(" "));
+        }
         s
     }
 
@@ -1147,6 +1268,22 @@ impl MidiSetup {
             ["midi-follow"] => self.follow.on = parse_on(v)?,
             ["midi-follow", "port"] => self.follow.port = v.to_string(),
             ["midi-follow", "knobs"] => self.follow.knobs = parse_knobs(v)?,
+            ["controller", "port"] => self.controller.port = v.to_string(),
+            ["controller", "channel"] => self.controller.channel = number(v, 1, 16)? as u8 - 1,
+            ["controller", "pads"] => {
+                self.controller.pads = match v.split_whitespace().collect::<Vec<_>>()[..] {
+                    ["kit"] => PadNotes::Kit,
+                    ["from", n] => PadNotes::From(crate::profile::note_number(n)?),
+                    _ => return Err(format!("expected kit or from a note, found \"{v}\"")),
+                }
+            }
+            ["controller", "pressure"] => {
+                self.controller.pressure = PadPressure::ALL
+                    .into_iter()
+                    .find(|p| p.word() == v)
+                    .ok_or(format!("expected off, poly or channel, found \"{v}\""))?
+            }
+            ["controller", "qlinks"] => self.controller.ccs = parse_qlinks(v)?,
             ["port", i, rest @ ..] => {
                 let i = index(i, MAX_PORT_LINES)?;
                 let p = match ports.iter().position(|p| p.0 == i) {
@@ -1277,6 +1414,26 @@ pub fn parse_knobs(v: &str) -> Result<Vec<u8>, String> {
             return Err(format!("more than {FOLLOW_KNOBS} knobs"));
         }
         k.push(cc);
+    }
+    Ok(k)
+}
+
+/// [`CONTROLLER_KNOBS`] CC numbers (0 to 119) apart by spaces; the same
+/// CC may come twice (two Q-Links on one control).
+fn parse_qlinks(v: &str) -> Result<[u8; CONTROLLER_KNOBS], String> {
+    let mut k = [0; CONTROLLER_KNOBS];
+    let mut n = 0;
+    for w in v.split_whitespace() {
+        if n == CONTROLLER_KNOBS {
+            return Err(format!("more than {CONTROLLER_KNOBS} CCs"));
+        }
+        k[n] = number(w, 0, 119)? as u8;
+        n += 1;
+    }
+    if n < CONTROLLER_KNOBS {
+        return Err(format!(
+            "{n} CCs: one for each of the {CONTROLLER_KNOBS} Q-Links"
+        ));
     }
     Ok(k)
 }
@@ -2292,6 +2449,72 @@ mod tests {
         assert_eq!(ClockOut::default().label(), "Off");
         let names: Vec<_> = PortInput::ALL.iter().map(|p| p.label()).collect();
         assert_eq!(names, ["Plays tracks", "Learn only", "Both"]);
+    }
+
+    /// Controller mode is the rig's, but its switch is never saved; a
+    /// kit's pads send the profile's notes and channels, else MPFree's;
+    /// From counts up through the banks.
+    #[test]
+    fn controller_mode_is_the_rigs_and_starts_off() {
+        let mut c = ControllerSetup {
+            on: true,
+            port: "Juno-X".into(),
+            channel: 2,
+            pads: PadNotes::From(36),
+            pressure: PadPressure::Channel,
+            ..ControllerSetup::default()
+        };
+        c.ccs[0] = 74;
+        c.ccs[15] = 74;
+        let m = MidiSetup {
+            controller: c.clone(),
+            ..MidiSetup::default()
+        };
+        let rig = m.rig_text();
+        assert!(
+            rig.ends_with(
+                "controller.port = Juno-X\ncontroller.channel = 3\ncontroller.pads = from 36\n\
+                 controller.pressure = channel\ncontroller.qlinks = 74 17 18 19 20 21 22 23 24 \
+                 25 26 27 28 29 30 74\n"
+            ),
+            "{rig}"
+        );
+        assert!(!m.project_text().contains("controller"));
+        let (back, warn) = MidiSetup::parse(&rig);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(back.controller, ControllerSetup { on: false, ..c });
+        // A project opened keeps the rig's, switch and all.
+        let mut now = m.clone();
+        now.set_project(&MidiSetup::default());
+        assert!(now.controller.on);
+        assert!(!MidiSetup::default().rig_text().contains("controller"));
+        // Notes: from 36 up; 128 pads from 36 run out at 127.
+        let from = &back.controller;
+        assert_eq!(from.pad_out(0, None), Some((36, 2)));
+        assert_eq!(from.pad_out(91, None), Some((127, 2)));
+        assert_eq!(from.pad_out(92, None), None);
+        // A kit: the profile's pad lines, else MPFree's pad notes.
+        let kit = ControllerSetup::default();
+        let (p, _) =
+            crate::profile::Profile::parse("mpfree-profile 1\nname = TR\npad.A1 = 36 ch 10\n")
+                .unwrap();
+        assert_eq!(kit.pad_out(0, Some(&p)), Some((36, 9)));
+        assert_eq!(
+            kit.pad_out(1, Some(&p)),
+            kit.pad_out(1, None),
+            "A2 has no line"
+        );
+        assert_eq!(kit.pad_out(0, None), Some((37, 0)));
+        // Bad lines say why.
+        let (_, warn) = MidiSetup::parse(
+            "mpfree-midi 1\ncontroller.channel = 17\ncontroller.pads = from H#2\n\
+             controller.pressure = hard\ncontroller.qlinks = 1 2 3\n",
+        );
+        assert_eq!(warn.len(), 4, "{warn:?}");
+        assert!(
+            warn[3].contains("3 CCs: one for each of the 16 Q-Links"),
+            "{warn:?}"
+        );
     }
 
     /// MIDI Follow is the rig's: its controller, its knobs, on or off.

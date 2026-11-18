@@ -88,6 +88,7 @@ mod bundled;
 mod calibrate_page;
 mod chain_page;
 mod control;
+mod controller_out;
 mod cores;
 mod crash;
 mod cv_out;
@@ -2004,6 +2005,39 @@ fn pad_note_names() -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
+
+/// Controller mode as the screen shows it, while it is on: the header's
+/// chip ("Controller → Juno-X · ch 3 · A", or why nothing goes) and the
+/// Q-Link column's cards.
+fn controller_show(c: &controller_out::Controller, sending: bool) -> Option<gui::ControllerShow> {
+    let p = c.plan()?;
+    let bank = (b'A' + c.pad_bank() as u8) as char;
+    let chip = if p.setup.port.is_empty() {
+        "Controller: pick its port on I/O".to_string()
+    } else if p.to.is_none() {
+        format!("Controller → {}: not plugged in", p.shown)
+    } else if !sending {
+        "Controller: MIDI out is off in Prefs".to_string()
+    } else {
+        format!(
+            "Controller → {} · ch {} · {bank}",
+            p.shown,
+            p.setup.channel + 1
+        )
+    };
+    let knobs = c
+        .knobs()
+        .map(|(cc, name, v)| (name.unwrap_or_else(|| format!("CC {cc}")), cc, v));
+    Some(gui::ControllerShow {
+        chip,
+        bank: c.bank(),
+        knobs,
+    })
+}
+
+/// A pad that sends a note in controller mode: blue, the Routing
+/// section's colour for "sends out" (bright while held).
+const CONTROLLER_PAD: [u8; 3] = [0x00, 0x16, 0x3F];
 
 fn pad_colours(colours: &[[u8; 3]; 16]) -> Vec<[u8; 12]> {
     (0..16u8)
@@ -5176,6 +5210,11 @@ fn player_session(
     let mut step_keys = step_keys::StepKeys::default();
     let mut step_view: Option<time::StepsData> = None;
     let mut pages_shown: Option<[u8; 4]> = None;
+    // Controller mode (controller_out.rs): the pads and Q-Links as a MIDI
+    // controller out of one port, while the I/O view's Controller section
+    // has it on.
+    let mut controller = controller_out::Controller::new();
+    let mut controller_sending = false;
     // Buttons whose light is never sent, noted once each.
     let mut unlit = [false; 128];
     // Repeats per second, for the log (the paced Latch check reads these).
@@ -5280,6 +5319,29 @@ fn player_session(
         // Hits are timed only when they sound at once (not on the arp's grid).
         let direct = !app.generating();
         while let Ok(a) = from_ui.try_recv() {
+            // Controller mode: a drag on a Q-Link card and the screen's
+            // pads are the controller's too.
+            if controller.on() {
+                let mut send = |to, msg| {
+                    midi_out.controller(to, msg);
+                };
+                match a {
+                    gui::FromUi::QLink { knob, delta } => {
+                        controller.turn(knob, delta, &mut send);
+                        continue;
+                    }
+                    gui::FromUi::Pad { pad, down: true } => {
+                        let v = app.velocity(app.settings.screen_velocity);
+                        controller.pad_down(pad, v, &mut send);
+                        continue;
+                    }
+                    gui::FromUi::Pad { pad, down: false } => {
+                        controller.pad_up(pad, &mut send);
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
             let (t_item, item) = (Instant::now(), parts::Name::of(&a));
             let mix_turn = mixturns::before_ui(&a, &mix, app.view() == app::View::Mixer);
             // The app, the mixer, the time engine, the looper and the chain
@@ -5312,6 +5374,14 @@ fn player_session(
                 continue;
             };
             match a {
+                // The Controller chip: controller mode off (its section's
+                // switch, in the I/O model, which MusicIn::sync hands back).
+                gui::FromUi::ControllerOff => {
+                    if let Ok(mut m) = io_model.lock() {
+                        m.setup.controller.on = false;
+                        m.gen += 1;
+                    }
+                }
                 gui::FromUi::Pad { pad, down: true } if pad < 16 && app.pads_are_steps() => {
                     let v = app.velocity(app.settings.screen_velocity);
                     let rolling = time.info().state.rolling();
@@ -5985,6 +6055,31 @@ fn player_session(
             out.show(gui::ToUi::Gear(g));
         }
         music.sync(&io_model, mt);
+        // Controller mode on the screen: its chip and Q-Link cards, when
+        // they change (or MIDI out goes on or off).
+        if controller.take_changed() || controller_sending != midi_out.sending() {
+            controller_sending = midi_out.sending();
+            out.show(gui::ToUi::Controller(controller_show(
+                &controller,
+                controller_sending,
+            )));
+        }
+        if let Some(plan) = music.take_controller() {
+            let was = controller.on();
+            controller.set(plan, &mut |to, m| {
+                midi_out.controller(to, m);
+            });
+            if controller.on() != was {
+                // The PAD BANK lights: the controller's bank, or the kit's
+                // again.
+                bank_lights = true;
+                out.midi(if controller.on() {
+                    "controller mode on: the pads and Q-Links play outside gear"
+                } else {
+                    "controller mode off: the pads and Q-Links are MPFree's again"
+                });
+            }
+        }
         // The Monitor's "Send note-offs to MIDI out": only the notes MPFree
         // left on there, as STOP's panic sends them.
         if music.take_note_offs() {
@@ -6277,7 +6372,40 @@ fn player_session(
                     }
                 }
             }
+            let mut send = |to, msg| {
+                midi_out.controller(to, msg);
+            };
             match m.event {
+                // Controller mode: the pads, the Q-Links, Q-LINK and PAD
+                // BANK are the controller's.
+                Some(ControlEvent::PadDown { pad, velocity }) if controller.on() => {
+                    controller.pad_down(pad as usize, app.velocity(velocity), &mut send);
+                }
+                Some(ControlEvent::PadUp { pad }) if controller.on() => {
+                    controller.pad_up(pad as usize, &mut send);
+                }
+                Some(ControlEvent::PadPressure { pad, pressure }) if controller.on() => {
+                    controller.pressure(pad as usize, pressure, &mut send);
+                }
+                Some(ControlEvent::QLinkTurn { knob, delta }) if controller.on() => {
+                    controller.turn(knob as usize, delta as i32, &mut send);
+                }
+                Some(ControlEvent::Button {
+                    note,
+                    pressed: true,
+                }) if controller.on() && Some(note) == app.map.q_link => {
+                    controller.next_bank();
+                }
+                Some(ControlEvent::Button {
+                    note,
+                    pressed: true,
+                }) if controller.on() && app.map.bank_of(note).is_some() => {
+                    let b = app.map.bank_of(note).unwrap_or(0);
+                    controller.pad_bank_button(b, app.shift_held());
+                }
+                Some(ControlEvent::Button { note, .. })
+                    if controller.on()
+                        && (Some(note) == app.map.q_link || app.map.bank_of(note).is_some()) => {}
                 Some(ControlEvent::PadDown { pad, velocity })
                     if (pad as usize) < 16 && app.pads_are_steps() =>
                 {
@@ -6809,8 +6937,9 @@ fn player_session(
         }
         // The PAD BANK buttons found so far: the bank playing is lit, or
         // TRACK MUTE's bank while the pads mute tracks.
-        if bank_lights && app.pads_are_steps() {
-            // STEP SEQ's pages: sent with the step pads' lights below.
+        if bank_lights && (app.pads_are_steps() || controller.on()) {
+            // STEP SEQ's pages, or controller mode's banks: sent with the
+            // pads' lights below.
             pages_shown = None;
         } else if bank_lights {
             let bank = Some(if app.mute_keys() == app::MuteKeys::Tracks {
@@ -7091,6 +7220,8 @@ fn player_session(
                 To::PortPage
             } else if m.is_from_sampler() {
                 To::Sampler
+            } else if m.is_from_controller() {
+                To::Controller
             } else if let Some(from) = m.thru_from() {
                 To::ThruFrom(from)
             } else {
@@ -7222,7 +7353,38 @@ fn player_session(
             // Off: fetched again when they come back.
             step_view = None;
         }
-        if let Some(s) = step_pads {
+        if controller.on() {
+            // Controller mode: the pads that send a note in the bank
+            // showing are blue, bright while held; PAD BANK shows the bank.
+            let want: [[u8; 3]; 16] =
+                std::array::from_fn(|pad| match (controller.plays(pad), controller.held(pad)) {
+                    (false, _) => [0; 3],
+                    (true, false) => CONTROLLER_PAD,
+                    (true, true) => akai::hit_colour(CONTROLLER_PAD),
+                });
+            for pad in 0..16 {
+                if mute_shown.is_none_or(|s| s[pad] != want[pad]) {
+                    ports.send(false, &akai::pad_colour(pad as u8, want[pad]))?;
+                }
+            }
+            mute_shown = Some(want);
+            let pages = step_keys::bank_lights(controller.pad_bank(), None, false);
+            if pages_shown != Some(pages) {
+                for (b, note) in app.map.bank.iter().enumerate() {
+                    let Some(note) = *note else { continue };
+                    if pages_shown.is_some_and(|w| w[b] == pages[b]) || !akai::app_lights(note) {
+                        continue;
+                    }
+                    let light = akai::button_light(note, pages[b]);
+                    if cv_out.light(&light) {
+                        ports.tap(true, &light);
+                    } else {
+                        ports.send(true, &light)?;
+                    }
+                }
+                pages_shown = Some(pages);
+            }
+        } else if let Some(s) = step_pads {
             let steps = step_view.get_or_insert_with(|| time.steps());
             let playing = step_keys::playing(steps, time.info().position);
             if let Some(p) = playing.filter(|_| s.follow) {

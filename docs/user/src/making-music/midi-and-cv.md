@@ -105,6 +105,35 @@ A track that plays a kit sends each pad as a note, so the kit can play a drum ma
 
 If your drum machine listens for other notes, or has a channel per drum (as many do), give it a [device profile](#device-profiles) with a **pad** line for each pad you use, and pick the profile on its port's page: `pad.A1 = 36 ch 1`, `pad.A2 = 38 ch 2`, and so on. Every kit on that port then plays those notes and channels. A note always ends where it started, even if you change the profile while it sounds. The port's page says how many pads its profile covers.
 
+## Controller mode: the pads and Q-Links play your gear
+
+Controller mode makes the MPC's pads and Q-Links a controller for a synth, a drum machine or a computer on **MIDI OUT** or the **USB** port. While it is on, the pads and the Q-Links play your gear and not MPFree. Everything else carries on as before: the transport, the screen and the tracks that are playing.
+
+{{shot: mixer-io-controller | The I/O view's Controller section with controller mode on: the pads and Q-Links play a Juno-X on MIDI OUT, channel 3, with kit notes and poly pressure, and its device profile names the first four Q-Links' controls.}}
+
+Its settings are in the mixer's I/O view, in the **Controller** section:
+
+- **Controller mode**: **Off** or **On**. The line under it says what it does now, or why it sends nothing.
+- **Sends to**: the port and the MIDI channel. Every port with an output is in the list. A port that isn't plugged in is kept until it is.
+- **Pads send**: **Kit notes** sends the notes a kit sends to a drum machine (see [A kit on a drum machine](#a-kit-on-a-drum-machine)). Bank A's pads send the MPC's own pad notes. If the port's [device profile](#device-profiles) has **pad** lines, each pad sends the note and channel its line gives. **One by one** sends a run of notes upwards from **From**: A1 sends the note picked, A2 the next, and so on through the banks. A pad past note 127 sends nothing. The line under it says what A1 and A16 send.
+- **Pad pressure**: **Off**, **Poly** (each pad held sends its own pressure on its note) or **Channel** (one pressure for the channel: the hardest pad held).
+- **Q-Links 1-4** to **13-16**: the control change (CC) each Q-Link sends, four banks of four. Each field shows what the CC moves on your gear: the name in the port's device profile, else the control's common name (**Cutoff**), else its number. The line under each row gives the numbers. They start as CCs 16 to 31.
+
+While it is on:
+
+- The pads light blue, brighter while held. **PAD BANK** picks their bank: A to D, and SHIFT or a second press for E to H.
+- **Q-LINK** steps the Q-Links to the next four: 1-4, 5-8, 9-12, 13-16, then 1-4 again.
+- The Q-Links send their CCs on every page, and the Q-Link column shows them: the name of what each moves and the value it sent last. A Q-Link turned up or down moves its value from 0 to 127. Each starts at 0, because MPFree can't know where your gear's control is.
+- **FULL LEVEL** and **HALF LEVEL** still set how hard the pads play.
+- STEP SEQ, TRACK MUTE and 16 LEVEL wait: the pads are the controller's.
+- In the top bar, a chip takes the kit chip's place: *Controller → Juno-X · ch 3 · A* (the port, the channel and the pads' bank), or why nothing goes (*Controller: MIDI out is off in Prefs*). A tap on the chip turns controller mode off.
+
+{{shot: play-controller | Play with controller mode on: the Controller chip in the top bar, and the Q-Link column showing the four CCs the Q-Links send to the Juno-X, the first two turned.}}
+
+Turning controller mode off, or changing its port or channel, ends any notes still held. Its settings are kept for every project. The switch itself isn't kept, so MPFree always starts with the pads its own. Like everything MPFree sends, controller mode sends nothing while **Send MIDI and CV out** is off in Prefs.
+
+Controller mode plays gear on **MIDI OUT** or the **USB** port where USB synths plug in. Playing a computer through the MPC's own USB port, the one a computer plugs into, isn't built yet.
+
 ## A port's page
 
 Each port's row in the MIDI section has **Open ›** at its right; it, or a tap on the port's name, opens the port's page. **‹ MIDI** or **BACK** closes it.
