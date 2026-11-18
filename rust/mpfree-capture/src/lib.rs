@@ -463,12 +463,13 @@ impl Capture {
             velocity: 0,
         };
         match event {
-            // CAPTURE keeps the notes played, not parameter locks; pressure
-            // has its own queue.
+            // CAPTURE keeps the notes played, not parameter locks or a
+            // clip's program change; pressure has its own queue.
             Event::Lock { .. }
             | Event::Lane { .. }
             | Event::Unlock { .. }
-            | Event::Pressure { .. } => return,
+            | Event::Pressure { .. }
+            | Event::Program { .. } => return,
             // A MIDI-style note-on at velocity 0 is a release.
             Event::NoteOn { note, velocity: 0 } | Event::NoteOff { note } => {
                 let n = usize::from(note & 127);

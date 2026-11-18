@@ -414,7 +414,10 @@ impl Sink for Route<'_> {
                 Event::AllOff => SEvent::AllOff,
                 Event::Pressure { note, value } => SEvent::Pressure { pad: note, value },
                 // The demo's beat has no parameter locks.
-                Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => return,
+                Event::Lock { .. }
+                | Event::Lane { .. }
+                | Event::Unlock { .. }
+                | Event::Program { .. } => return,
             };
             e.schedule(o.offset, ev);
         }

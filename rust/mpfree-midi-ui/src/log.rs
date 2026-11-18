@@ -65,7 +65,7 @@ pub fn line(m: &IoModel, n: u64, s: &Seen) -> LogLine {
         dir: s.dir,
         channel: s.what.channel().map(|c| c + 1),
         kind: kind_name(s.what.kind()),
-        words: line_words(mon, s),
+        words: line_words(m, s),
         went: went_to(m, s.to).0,
         bytes: bytes_text(&s.what),
     }

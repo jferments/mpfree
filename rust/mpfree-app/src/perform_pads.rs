@@ -82,6 +82,8 @@ pub struct LoopLight {
     /// The loop is in its first beat: a playing loop's key flashes, so
     /// the hands can see where it comes round.
     pub downbeat: bool,
+    /// Soloed: its mute pad lights blue.
+    pub solo: bool,
 }
 
 impl Default for LoopLight {
@@ -90,6 +92,7 @@ impl Default for LoopLight {
             state: RingState::Empty,
             colour: [0; 3],
             downbeat: false,
+            solo: false,
         }
     }
 }
@@ -111,6 +114,7 @@ pub fn lights(looper: &crate::looping::LoopHost) -> [LoopLight; MAX_LOOPS] {
             state: RingState::of(&l, None),
             colour: [c.r, c.g, c.b],
             downbeat: beats > 0.0 && f64::from(l.position) * beats < 1.0,
+            solo: l.solo && l.phase != mpfree_looper::Phase::Empty,
         }
     })
 }
@@ -155,6 +159,8 @@ impl Held {
 pub const RED: [u8; 3] = [0x7F, 0x00, 0x00];
 /// Amber: overdubbing.
 pub const AMBER: [u8; 3] = [0x7F, 0x44, 0x00];
+/// Blue: a soloed loop's mute pad (SHIFT + the pad).
+pub const SOLO: [u8; 3] = [0x00, 0x38, 0x7F];
 const DARK: [u8; 3] = [0; 3];
 
 /// A colour at `f` of its brightness, in the pads' 0 to 127.
@@ -166,9 +172,10 @@ fn pad_rgb(c: [u8; 3], f: f32) -> [u8; 3] {
 /// so the pads can be played without looking at the screen. A key: dark
 /// when its loop is empty, red blinking while it waits for its bar, red
 /// recording, its colour playing (full on the loop's first beat, softer
-/// after), amber overdubbing, its colour dim when muted or off. A mute
-/// pad: dark for an empty loop, red while muted, its colour dim while it
-/// plays. `blink`: the half of the blink that is lit.
+/// after), amber overdubbing, its colour dim when muted, off or quiet
+/// for another loop's solo. A mute pad: dark for an empty loop, red while
+/// muted, blue while soloed, its colour dim while it plays. `blink`: the
+/// half of the blink that is lit.
 pub fn colours(page: &PerformPage, loops: &[LoopLight], blink: bool) -> [[u8; 3]; PADS] {
     std::array::from_fn(|pad| {
         let light = |n: u8| loops.get(usize::from(n)).copied().unwrap_or_default();
@@ -192,6 +199,7 @@ pub fn colours(page: &PerformPage, loops: &[LoopLight], blink: bool) -> [[u8; 3]
                 match l.state {
                     RingState::Empty | RingState::Waiting(_) => DARK,
                     RingState::Muted => RED,
+                    _ if l.solo => SOLO,
                     _ => pad_rgb(l.colour, 0.2),
                 }
             }
@@ -252,6 +260,7 @@ mod tests {
             state: RingState::Playing,
             colour: blue,
             downbeat: false,
+            solo: false,
         };
         loops[1].state = RingState::Recording;
         loops[2].state = RingState::Waiting(Some(5));
@@ -260,6 +269,7 @@ mod tests {
             state: RingState::Muted,
             colour: blue,
             downbeat: false,
+            solo: false,
         };
         let on = colours(&p, &loops, true);
         let off = colours(&p, &loops, false);
@@ -280,6 +290,17 @@ mod tests {
         // Empty loops: dark keys and mutes.
         assert_eq!(on[11], [0; 3]);
         assert_eq!(on[3], [0; 3]);
+        // Loop 1 soloed: its mute blue; a loop quiet for it is off, dim.
+        loops[0].solo = true;
+        loops[5] = LoopLight {
+            state: RingState::Off,
+            colour: blue,
+            downbeat: false,
+            solo: false,
+        };
+        let solo = colours(&p, &loops, true);
+        assert_eq!(solo[4], SOLO);
+        assert_eq!(solo[9], [0x07, 0x0A, 0x0F]);
         // Every value is in the pads' 0 to 127.
         assert!(on.iter().flatten().all(|&v| v <= 0x7F));
     }

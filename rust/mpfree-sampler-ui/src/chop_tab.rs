@@ -11,8 +11,12 @@
 //!   **Transient**
 //!   (where the hits start, at a sensitivity), **Beat** (on the source's
 //!   beat grid, a slice every 16th, 8th, beat, two beats or bar), **Grid**
-//!   (equal slices), **Silence** (one slice per sound, below a threshold)
-//!   and **Manual** (the cuts as they are), and **Live**: **Start** plays
+//!   (equal slices), **Silence** (one slice per sound, below a threshold),
+//!   **Pitch** (where the note changes by a number of semitones or more,
+//!   or starts after a rest: a sung line or a bass part, note by note; the
+//!   sound's pitch is followed the first time Pitch is picked on it, off
+//!   the screen thread: [`ChopTab::wants_pitch`], [`SourceView::pitch`]) and
+//!   **Manual** (the cuts as they are), and **Live**: **Start** plays
 //!   the region once and every pad played meanwhile drops a cut where the
 //!   sound is (the sampler marks it to the frame, [`ChopAction::Live`]),
 //!   moved onto the nearest hit within the **Pull to hits** window; Stop,
@@ -27,15 +31,22 @@
 //!   kit as one undo step: the first empty run after the chopped pad, on
 //!   past a bank's last pad (B1 after A16), or from the First pad picked.
 //!   Each new pad is the chopped pad (level, envelopes, filter, its
-//!   sound's gain, tune and channels) playing one slice once. The button names the pads it fills; the list says how many
-//!   of them have a sound already. With **Put on** at Keys, the button
-//!   reads **To keys** and also makes each slice a keygroup of one note,
-//!   from C2 up, and the kit's pads then play those notes, so the slices
-//!   are on the pads and on a keyboard. With **Pads + phrase** (offered
-//!   for a sound with a tempo) the button reads **Phrase on** and the app
-//!   also makes a clip of the slices in time, from the first one, at the
-//!   sound's tempo ([`ChopAction::phrase`]): played from a Clips slot, the
-//!   loop comes back whole at any tempo, every hit a note to move or swap.
+//!   sound's gain, tune and channels) playing one slice once. The button
+//!   names the pads it fills; the list says how many of them have a sound
+//!   already. With **Put on** at One pad (R4), the button reads **Slices
+//!   on** and puts every slice on one pad instead, the chopped pad itself
+//!   unless a First pad is picked: one region sliced at the cuts, a hit
+//!   playing its Slice (slice 1 at first; a step lock picks another), and
+//!   on keys from C2 up each note playing a slice of its own. With Keys,
+//!   the button reads **To keys** and also makes each slice a keygroup of
+//!   one note, from C2 up, and the kit's pads then play those notes, so
+//!   the slices are on the pads and on a keyboard. With **Phrase** on
+//!   (offered for a sound with a tempo, on Pads and One pad) the button
+//!   reads **Phrase on** and the app also makes a clip of the slices in
+//!   time, from the first one, at the sound's tempo
+//!   ([`ChopAction::phrase`]): played from a Clips slot, the loop comes
+//!   back whole at any tempo, every hit a note to move or swap (on one
+//!   pad, every hit a note on that pad with a Slice lock).
 //!   With **Files** (offered where the app can write files) the button
 //!   reads **Export** and gives the pad as files: its sounds with the
 //!   slice points in them, a sidecar that brings the pad back, and each
@@ -62,7 +73,8 @@ use mpfree_analysis::{
     nearest_zero_crossing, note_name, previous_zero_crossing, sound_spans, SilenceSettings,
 };
 use mpfree_sampler::model::{
-    ChopMode, ChopSet, ModelError, Project, Region, SourceId, PADS, SLICE_KEYS_FROM,
+    ChopMode, ChopSet, ModelError, Project, Region, SourceId, KEPT_CHOP, MAX_SLICES, PADS,
+    SLICE_KEYS_FROM,
 };
 use mpfree_sampler::phrase::{self, Phrase};
 use mpfree_ui::layout;
@@ -100,8 +112,9 @@ pub const HINT: &str = "Tap a slice to pick and hear it · drag a marker to move
 
 /// Pads in a bank: PAD BANK A to H each play 16 of a kit's pads.
 pub const BANK: usize = 16;
-/// The most slices the tab cuts.
-pub const MAX_CUT_SLICES: usize = 64;
+/// The most slices the tab cuts: as many as a kit has pads, and as one
+/// sliced pad holds (R4).
+pub const MAX_CUT_SLICES: usize = MAX_SLICES;
 /// Cuts a method makes are at least this far apart (and from the region's
 /// ends), so no slice is a sliver.
 const MIN_SLICE_MS: f64 = 10.0;
@@ -126,6 +139,11 @@ const THRESHOLD_STEP_DB: i32 = 3;
 const HIT_WINDOWS_MS: [u16; 5] = [0, 10, 20, 40, 80];
 /// Live: the sensitivity the hits it snaps to are found at.
 const LIVE_HITS_SENSITIVITY: f32 = 0.6;
+/// Pitch: the change in semitones that makes a cut, 1 to an octave.
+const PITCH_CHANGES: (u8, u8) = (1, 12);
+/// Pitch: the shortest note that counts, ms; shorter ones (a slide's
+/// passing notes, a scoop into a note) don't make a cut.
+const PITCH_MIN_NOTE_MS: u64 = 50;
 
 /// How the tab cuts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -135,17 +153,20 @@ pub enum Method {
     Beat,
     Grid,
     Silence,
+    /// Where the note changes (R4.7).
+    Pitch,
     Manual,
     /// Cuts dropped by hitting pads while the sound plays.
     Live,
 }
 
 impl Method {
-    pub const ALL: [Method; 6] = [
+    pub const ALL: [Method; 7] = [
         Method::Transient,
         Method::Beat,
         Method::Grid,
         Method::Silence,
+        Method::Pitch,
         Method::Manual,
         Method::Live,
     ];
@@ -156,6 +177,7 @@ impl Method {
             Method::Beat => "Beat",
             Method::Grid => "Grid",
             Method::Silence => "Silence",
+            Method::Pitch => "Pitch",
             Method::Manual => "Manual",
             Method::Live => "Live",
         }
@@ -168,6 +190,7 @@ impl Method {
             Method::Beat => ChopMode::Beat,
             Method::Grid => ChopMode::Grid,
             Method::Silence => ChopMode::Silence,
+            Method::Pitch => ChopMode::Pitch,
             Method::Manual | Method::Live => ChopMode::Manual,
         }
     }
@@ -179,6 +202,7 @@ impl Method {
             ChopMode::Beat => Method::Beat,
             ChopMode::Grid => Method::Grid,
             ChopMode::Silence => Method::Silence,
+            ChopMode::Pitch => Method::Pitch,
             ChopMode::Manual => Method::Manual,
         }
     }
@@ -197,8 +221,11 @@ pub enum Row {
     Split,
     Merge,
     Pads,
-    /// The slices go on the pads, on notes as well, or on the pads with a
-    /// phrase that plays them in time.
+    /// A phrase of the slices in time as well (for a sound with a tempo,
+    /// with Put on at Pads or One pad).
+    Phrase,
+    /// The slices go on the pads, on one sliced pad, on notes as well, or
+    /// into files.
     Put,
     Chop,
 }
@@ -207,11 +234,11 @@ pub enum Row {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Put {
     Pads,
+    /// One pad holding every slice (R4): a hit plays the pad's Slice, and
+    /// on keys from [`SLICE_KEYS_FROM`] each note plays a slice.
+    OnePad,
     /// Keygroups of one note each from [`SLICE_KEYS_FROM`].
     Keys,
-    /// The pads, and a clip of the slices in time (only for a sound with
-    /// a tempo).
-    Phrase,
     /// Files: the pad's sounds, its sidecar and each slice
     /// ([`ChopAction::Export`]; only where the app can write them).
     Files,
@@ -219,7 +246,7 @@ enum Put {
 
 impl Row {
     /// The panel's order, which the wheel walks.
-    pub const ALL: [Row; 9] = [
+    pub const ALL: [Row; 10] = [
         Row::Method,
         Row::Amount,
         Row::Snap,
@@ -227,6 +254,7 @@ impl Row {
         Row::Split,
         Row::Merge,
         Row::Pads,
+        Row::Phrase,
         Row::Put,
         Row::Chop,
     ];
@@ -304,6 +332,13 @@ impl ChopState {
         let pd = p.pad(pad)?;
         let region = pd.layers.get(layer)?.region.clone();
         let s = p.source(region.source)?;
+        // A sliced pad's own slices (R4) when the sound has no chop kept:
+        // the tab opens on them.
+        let kept = p.kept_chop(s.id()).cloned().or_else(|| {
+            (region.slice_count() > 1)
+                .then(|| ChopSet::from_markers(KEPT_CHOP, s, ChopMode::Manual, region.cuts()).ok())
+                .flatten()
+        });
         (s.id() == source.id).then(|| ChopState {
             pad,
             layer,
@@ -316,7 +351,7 @@ impl ChopState {
             source,
             used: (0..PADS).map(|i| p.pad(i).is_some()).collect(),
             files: false,
-            kept: p.kept_chop(s.id()).cloned(),
+            kept,
         })
     }
 
@@ -365,6 +400,9 @@ pub enum ChopAction {
         /// As keygroups of one note each from this note, the pads then
         /// playing notes ([`Project::chop_to_keys`]).
         keys_from: Option<u8>,
+        /// All on pad `to_pad` as one sliced pad
+        /// ([`Project::chop_to_one_pad`]).
+        one_pad: bool,
         /// Also a phrase of the slices in time, at this many frames a beat
         /// (the sound's tempo): [`ChopAction::phrase`].
         phrase: Option<f64>,
@@ -412,6 +450,7 @@ impl ChopAction {
             layer,
             to_pad,
             keys_from,
+            one_pad,
             ..
         } = self
         else {
@@ -424,6 +463,10 @@ impl ChopAction {
         // The chopped layer's settings carry over: make it the first.
         template.layers.swap(0, *layer);
         let (c, first, count) = self.slices(p)?;
+        if *one_pad {
+            p.chop_to_one_pad(c, first, count, *to_pad, Some(&template))?;
+            return Ok(*to_pad..*to_pad + 1);
+        }
         match keys_from {
             Some(from) => p.chop_to_keys(c, first, count, *to_pad, *from, Some(&template))?,
             None => p.chop_to_pads(c, first, count, *to_pad, Some(&template))?,
@@ -432,8 +475,8 @@ impl ChopAction {
     }
 
     /// The phrase a [`ChopAction::ToPads`] asks for: its slices as hits in
-    /// beats of the sound's tempo, the first slice on the first pad. None
-    /// when it asks for none.
+    /// beats of the sound's tempo, the first slice on the first pad (or,
+    /// on one pad, slice 1 of it). None when it asks for none.
     pub fn phrase(&self, p: &Project) -> Result<Option<Phrase>, ModelError> {
         let ChopAction::ToPads {
             phrase: Some(frames_per_beat),
@@ -502,6 +545,12 @@ pub struct ChopTab {
     threshold_db: i32,
     /// Live: an index into [`HIT_WINDOWS_MS`].
     hit_window: usize,
+    /// Pitch: the change in semitones that makes a cut.
+    semitones: u8,
+    /// Pitch chopped before the sound's pitch was followed: the cuts come
+    /// when it is ([`ChopTab::update`]), and until then there is nothing
+    /// to keep.
+    pitch_pending: bool,
     /// Live chop is on: the hits its cuts snap to.
     live: Option<Vec<u64>>,
     /// Live chop was stopped by a change here: the app hears of it with
@@ -509,7 +558,8 @@ pub struct ChopTab {
     stop_due: bool,
     /// Why the last touch changed nothing, once ([`ChopTab::take_note`]).
     note: Option<String>,
-    /// Snap cuts made by hand, and by Beat and Grid, to zero crossings.
+    /// Snap cuts made by hand, and by Beat, Grid and Pitch, to zero
+    /// crossings.
     snap: bool,
     /// Slice starts strictly inside the region, sorted.
     cuts: Vec<u64>,
@@ -519,10 +569,13 @@ pub struct ChopTab {
     /// again replaces those slices); otherwise the first run of empty pads
     /// after the chopped one.
     first_pad: Option<(usize, usize)>,
-    /// The Put row: the pads; also notes from [`SLICE_KEYS_FROM`], as
-    /// keygroups of a note each, the pads then playing those notes; or the
-    /// pads and a phrase of them in time.
+    /// The Put row: the pads; one sliced pad; also notes from
+    /// [`SLICE_KEYS_FROM`], as keygroups of a note each, the pads then
+    /// playing those notes; or files.
     put: Put,
+    /// The Phrase row: a phrase of the slices in time as well, where one
+    /// can be made ([`ChopTab::phrase_on`]).
+    phrase: bool,
     /// The source and region the cuts were made for, and whether the
     /// source's hits and tempo were worked out then: another pad, a moved
     /// Start or End, or the analysis coming in chops again.
@@ -577,6 +630,8 @@ impl ChopTab {
             grid: 8,
             threshold_db: SilenceSettings::default().threshold_db as i32,
             hit_window: 3,
+            semitones: PITCH_CHANGES.0,
+            pitch_pending: false,
             live: None,
             stop_due: false,
             note: None,
@@ -585,6 +640,7 @@ impl ChopTab {
             selected: 0,
             first_pad: None,
             put: Put::Pads,
+            phrase: false,
             made_for: None,
             told: None,
             heard: None,
@@ -604,10 +660,9 @@ impl ChopTab {
         self.selected
     }
 
-    /// Where the slices go: a phrase only while the sound has a tempo.
+    /// Where the slices go: files only where the app writes them.
     fn put(&self, st: &ChopState) -> Put {
         match self.put {
-            Put::Phrase if st.frames_per_beat().is_none() => Put::Pads,
             Put::Files if !st.files => Put::Pads,
             p => p,
         }
@@ -617,23 +672,43 @@ impl ChopTab {
     pub fn put_text(&self) -> &'static str {
         match self.put {
             Put::Pads => "Pads",
+            Put::OnePad => "One pad",
             Put::Keys => "Keys",
-            Put::Phrase => "Pads + phrase",
             Put::Files => "Files",
         }
     }
 
-    /// The Put on choices for `st`: Pads + phrase with a tempo, Files
-    /// where the app writes them.
+    /// The Put on choices for `st`: Files where the app writes them.
     fn puts(st: &ChopState) -> Vec<Put> {
-        let mut all = vec![Put::Pads, Put::Keys];
-        if st.frames_per_beat().is_some() {
-            all.push(Put::Phrase);
-        }
+        let mut all = vec![Put::Pads, Put::OnePad, Put::Keys];
         if st.files {
             all.push(Put::Files);
         }
         all
+    }
+
+    /// Whether a phrase can go with the slices: the sound has a tempo and
+    /// they go on pads or on one pad (keygroups would need a track that
+    /// plays notes).
+    fn phrase_can(&self, st: &ChopState) -> bool {
+        self.phrase_why(st).is_none()
+    }
+
+    /// Why no phrase can go with the slices now, or None when one can.
+    fn phrase_why(&self, st: &ChopState) -> Option<&'static str> {
+        if st.frames_per_beat().is_none() {
+            Some("A phrase needs a beat: no tempo was found in this sound")
+        } else if !matches!(self.put(st), Put::Pads | Put::OnePad) {
+            Some("A phrase goes with Pads or One pad, not keys or files")
+        } else {
+            None
+        }
+    }
+
+    /// Whether Chop to makes a phrase too: the Phrase row on, where one
+    /// can be made.
+    pub fn phrase_on(&self, st: &ChopState) -> bool {
+        self.phrase && self.phrase_can(st)
     }
 
     /// Where the slices start and end: the region's start, the cuts, its end.
@@ -654,9 +729,19 @@ impl ChopTab {
     /// the first run of empty pads long enough (into the next banks: B1
     /// after A16); with none, right after the chopped pad, or as late as
     /// they fit.
+    ///
+    /// With Put on at One pad, the one pad: the chopped pad itself (it
+    /// becomes sliced), or the First pad picked.
     pub fn pads(&self, st: &ChopState) -> Option<Range<usize>> {
         let n = self.slices();
         let room = st.room();
+        if self.put(st) == Put::OnePad {
+            let at = self
+                .first_pad
+                .filter(|&(pad, _)| pad == st.pad)
+                .map_or(st.pad, |(_, f)| f.clamp(room.start, room.end - 1));
+            return (n <= MAX_SLICES).then_some(at..at + 1);
+        }
         if n > room.len() {
             return None;
         }
@@ -783,6 +868,7 @@ impl ChopTab {
                 // The slices as the tab last left them on this sound.
                 self.method = Method::of_mode(mode);
                 self.cuts = cuts;
+                self.pitch_pending = false;
             } else if matches!(self.method, Method::Manual | Method::Live) && same_source {
                 // Keep the hand-made cuts that are still inside.
                 self.cuts = ChopTab::inside(st, &self.cuts);
@@ -807,10 +893,15 @@ impl ChopTab {
                     self.method = Method::of_mode(mode);
                 }
                 self.cuts = cuts;
+                self.pitch_pending = false;
                 self.told = Some((key.0, self.method.mode(), self.cuts.clone()));
             }
         }
         self.heard = heard;
+        if self.pitch_pending && self.method == Method::Pitch && st.source.pitch.is_some() {
+            // The sound's pitch came in: the chop Pitch was waiting for.
+            self.rechop(st);
+        }
         self.selected = self.selected.min(self.cuts.len());
         self.show(ui, st);
     }
@@ -822,6 +913,10 @@ impl ChopTab {
     /// are there when the tab comes back to the sound, and in the saved
     /// project.
     pub fn take_kept(&mut self, st: &ChopState) -> Option<(ChopMode, Vec<u64>)> {
+        if self.pitch_pending {
+            // Nothing to keep until the sound's pitch is followed.
+            return None;
+        }
         let now = (st.source.id, self.method.mode(), self.cuts.clone());
         if self.told.as_ref() == Some(&now) {
             return None;
@@ -847,7 +942,8 @@ impl ChopTab {
     }
 
     /// The cuts the method makes in the region.
-    fn chop(&self, st: &ChopState) -> Vec<u64> {
+    fn chop(&mut self, st: &ChopState) -> Vec<u64> {
+        self.pitch_pending = false;
         let (rs, re) = (st.region.start, st.region.end);
         let raw: Vec<u64> = match self.method {
             Method::Manual | Method::Live => return self.cuts.clone(),
@@ -881,6 +977,19 @@ impl ChopTab {
                 sound_spans(&st.source.mono, 1, st.rate, settings)
                     .map_or_else(|_| Vec::new(), |s| s.iter().map(|s| s.0).collect())
             }
+            Method::Pitch => {
+                let Some(track) = st.source.pitch.clone() else {
+                    self.pitch_pending = true;
+                    return Vec::new();
+                };
+                let min = u64::from(st.rate) * PITCH_MIN_NOTE_MS / 1000;
+                track
+                    .changes(f32::from(self.semitones), min)
+                    .into_iter()
+                    .filter(|c| (rs..re).contains(c))
+                    .map(|c| self.snapped(st, c, 0, None))
+                    .collect()
+            }
         };
         // Inside the region, apart, and no more than the tab cuts.
         let gap = st.min_slice();
@@ -892,6 +1001,14 @@ impl ChopTab {
         }
         cuts.truncate(MAX_CUT_SLICES - 1);
         cuts
+    }
+
+    /// Whether the tab waits for the sound's pitch to be followed: Pitch
+    /// is the method and the sound has a mono mix but no pitch yet. The
+    /// app then follows it off the screen thread
+    /// ([`SourceView::follow_pitch`]) and shows the tab the view with it.
+    pub fn wants_pitch(&self, st: &ChopState) -> bool {
+        self.method == Method::Pitch && st.source.pitch.is_none() && !st.source.mono.is_empty()
     }
 
     fn show(&self, ui: &mut Ui, st: &ChopState) {
@@ -976,9 +1093,13 @@ impl ChopTab {
             Button::ToPads => match (self.pads(st).map(|p| self.range_text(&p)), self.put(st)) {
                 (_, Put::Files) if n == 1 => "Export the pad".to_string(),
                 (_, Put::Files) => format!("Export {n} slices"),
+                (None, Put::OnePad) => format!("Max {MAX_SLICES} slices"),
                 (None, _) => format!("Max {PADS} slices"),
+                (Some(t), Put::Pads | Put::OnePad) if self.phrase_on(st) => {
+                    format!("Phrase on {t}")
+                }
                 (Some(t), Put::Pads) => format!("Chop to {t}"),
-                (Some(t), Put::Phrase) => format!("Phrase on {t}"),
+                (Some(t), Put::OnePad) => format!("Slices on {t}"),
                 (Some(_), Put::Keys) => {
                     let k = SLICE_KEYS_FROM;
                     format!(
@@ -1023,6 +1144,7 @@ impl ChopTab {
             Method::Silence => {
                 ((THRESHOLD_RANGE_DB.1 - THRESHOLD_RANGE_DB.0) / THRESHOLD_STEP_DB) as u32
             }
+            Method::Pitch => u32::from(PITCH_CHANGES.1 - PITCH_CHANGES.0),
             Method::Manual => 1,
             Method::Live => HIT_WINDOWS_MS.len() as u32 - 1,
         };
@@ -1043,14 +1165,16 @@ impl ChopTab {
                 })
                 .faint_if(self.method == Method::Manual),
                 Row::Snap | Row::Slice | Row::Pads => Control::new(Look::Chip),
+                Row::Phrase => Control::new(Look::Chip)
+                    .faint_because(!self.phrase_can(st), self.phrase_why(st).unwrap_or("")),
                 Row::Put => Control::new(Look::Choice {
                     options: puts
                         .iter()
                         .map(|p| {
                             match p {
                                 Put::Pads => "Pads",
+                                Put::OnePad => "1 pad",
                                 Put::Keys => "Keys",
-                                Put::Phrase => "Phrase",
                                 Put::Files => "Files",
                             }
                             .to_string()
@@ -1101,7 +1225,7 @@ impl ChopTab {
                 .note("find the slices"),
                 Section::new(
                     "Slice",
-                    230,
+                    200,
                     vec![
                         vec![it(Row::Slice).labelled()],
                         vec![it(Row::Split), it(Row::Merge)],
@@ -1110,9 +1234,12 @@ impl ChopTab {
                 .note(&format!("{} of {}", self.selected + 1, self.slices())),
                 Section::new(
                     "Pads",
-                    240,
+                    270,
                     vec![
-                        vec![it(Row::Pads).labelled()],
+                        vec![
+                            it(Row::Pads).labelled(),
+                            it(Row::Phrase).wide(90).labelled(),
+                        ],
                         vec![it(Row::Put).labelled()],
                     ],
                 ),
@@ -1165,6 +1292,18 @@ impl ChopTab {
                     (self.threshold_db - lo) as f32 / (hi - lo) as f32,
                 )
             }
+            Method::Pitch => {
+                let (lo, hi) = PITCH_CHANGES;
+                (
+                    "Change",
+                    match self.semitones {
+                        1 => "1 semi".into(),
+                        12 => "Octave".into(),
+                        n => format!("{n} semis"),
+                    },
+                    f32::from(self.semitones - lo) / f32::from(hi - lo),
+                )
+            }
             Method::Manual => ("Setting", "—".into(), 0.0),
             Method::Live => (
                 "Pull to hits",
@@ -1201,7 +1340,7 @@ impl ChopTab {
                 Row::Pads => Setting {
                     name: "Pads".into(),
                     value: match self.pads(st) {
-                        _ if self.put(st) == Put::Files => "None (files)".into(),
+                        _ if self.put(st) == Put::Files => "None".into(),
                         Some(p) => self.range_text(&p),
                         None => "Too many".into(),
                     },
@@ -1215,12 +1354,16 @@ impl ChopTab {
                     .into(),
                     value: self.button_text(st, row.button().unwrap_or(Button::Split)),
                 },
+                Row::Phrase => Setting {
+                    name: "Phrase".into(),
+                    value: if self.phrase_on(st) { "On" } else { "Off" }.into(),
+                },
                 Row::Put => Setting {
                     name: "Put on".into(),
                     value: match self.put(st) {
                         Put::Pads => "Pads".into(),
+                        Put::OnePad => "One pad".into(),
                         Put::Keys => format!("Keys from {}", note_name(SLICE_KEYS_FROM)),
-                        Put::Phrase => "Pads + phrase".into(),
                         Put::Files => "Files".into(),
                     },
                 },
@@ -1444,7 +1587,8 @@ impl ChopTab {
                     bounds,
                     to_pad: pads.start,
                     keys_from: (self.put(st) == Put::Keys).then_some(SLICE_KEYS_FROM),
-                    phrase: st.frames_per_beat().filter(|_| self.put(st) == Put::Phrase),
+                    one_pad: self.put(st) == Put::OnePad,
+                    phrase: st.frames_per_beat().filter(|_| self.phrase_on(st)),
                 })
             }
         }
@@ -1495,7 +1639,7 @@ impl ChopTab {
             Row::Amount => self.turn_amount(st, d),
             Row::Snap => {
                 self.snap ^= d % 2 != 0;
-                if matches!(self.method, Method::Beat | Method::Grid) {
+                if matches!(self.method, Method::Beat | Method::Grid | Method::Pitch) {
                     self.rechop(st);
                 }
             }
@@ -1503,6 +1647,10 @@ impl ChopTab {
                 self.selected = (self.selected as i32 + d).clamp(0, self.cuts.len() as i32) as usize
             }
             Row::Pads => self.turn_first_pad(st, d),
+            Row::Phrase => match self.phrase_why(st) {
+                None => self.phrase ^= d % 2 != 0,
+                Some(why) => self.note = Some(why.into()),
+            },
             Row::Put => {
                 let all = Self::puts(st);
                 let i = all.iter().position(|p| *p == self.put(st)).unwrap_or(0) as i32;
@@ -1535,6 +1683,11 @@ impl ChopTab {
             Method::Silence => {
                 let (lo, hi) = THRESHOLD_RANGE_DB;
                 self.threshold_db = (self.threshold_db + delta * THRESHOLD_STEP_DB).clamp(lo, hi);
+            }
+            Method::Pitch => {
+                let (lo, hi) = PITCH_CHANGES;
+                let n = i32::from(self.semitones) + delta;
+                self.semitones = n.clamp(i32::from(lo), i32::from(hi)) as u8;
             }
             Method::Manual => return,
             Method::Live => {

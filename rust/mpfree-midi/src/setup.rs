@@ -27,7 +27,9 @@
 //!   returns, for the app to log and show: a project never fails to open
 //!   over its MIDI part, and nothing is dropped silently.
 
+use crate::blocks::Blocks;
 use crate::cv::{CvAssign, Priority, Scale, CV_OUTS};
+use crate::cv_mod::{self, Env, Lfo, Notes, Rate, Shape};
 use crate::learn::Saved;
 use crate::msg::{Channel, Msg};
 use crate::output::MAX_TRACKS;
@@ -244,6 +246,14 @@ pub const MAX_DELAY_TENTHS: u16 = 1000;
 /// The port page's - and + step, in tenths of a ms.
 pub const DELAY_STEP_TENTHS: u16 = 5;
 
+/// The most a port's clock can be divided by ([`PortSetup::clock_divide`]).
+pub const MAX_CLOCK_DIVIDE: u8 = 8;
+/// The most a port's clock is nudged either way, in tenths of a ms
+/// (20 ms).
+pub const MAX_NUDGE_TENTHS: i16 = 200;
+/// The port page's - and + step for the nudge, in tenths of a ms.
+pub const NUDGE_STEP_TENTHS: i16 = 5;
+
 /// The most characters a port's shown name ([`PortSetup::shown`]) has.
 pub const MAX_SHOWN: usize = 24;
 
@@ -255,6 +265,13 @@ pub struct PortSetup {
     pub name: String,
     pub input: PortInput,
     pub clock_out: ClockOut,
+    /// Its clock runs this many times slower (1 to [`MAX_CLOCK_DIVIDE`]):
+    /// 2 plays the gear at half the tempo. The song's, as `clock_out`.
+    pub clock_divide: u8,
+    /// Its clock leaves this much later (or earlier, below 0), in tenths
+    /// of a ms, on top of `delay_tenths`: for gear whose clock input lags
+    /// or leads its notes. The rig's, as the delay.
+    pub clock_nudge_tenths: i16,
     /// What its input ignores.
     pub ignore: IgnoreSet,
     /// How late the gear on this port sounds after a message leaves, in
@@ -267,6 +284,51 @@ pub struct PortSetup {
     /// tracks and learned controls use, so a renamed port keeps them. The
     /// rig's: the same in every project.
     pub shown: String,
+    /// Which device profile names its controls (board 6's Profile): the
+    /// rig's.
+    pub profile: ProfilePick,
+    /// What its messages go through on their way to the tracks (the
+    /// Routing section's Armed track square, board 5): the song's, as the
+    /// routes' blocks.
+    pub blocks: Blocks,
+}
+
+/// A port's device profile ([`crate::profile`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ProfilePick {
+    /// The first profile made for the name the port calls itself, if any.
+    #[default]
+    Auto,
+    /// None: only the controllers most gear agrees on are named.
+    Off,
+    /// The profile with this name (none while there is no such profile).
+    Named(String),
+}
+
+impl ProfilePick {
+    /// The word saved for it: `auto`, `none` or the profile's name.
+    pub fn word(&self) -> &str {
+        match self {
+            ProfilePick::Auto => "auto",
+            ProfilePick::Off => "none",
+            ProfilePick::Named(n) => n,
+        }
+    }
+
+    /// Reads [`ProfilePick::word`] back. A name too long for a profile is
+    /// refused.
+    pub fn from_word(v: &str) -> Result<ProfilePick, String> {
+        if v.eq_ignore_ascii_case("auto") {
+            return Ok(ProfilePick::Auto);
+        }
+        if v.eq_ignore_ascii_case("none") {
+            return Ok(ProfilePick::Off);
+        }
+        if v.is_empty() || v.chars().count() > crate::profile::MAX_NAME {
+            return Err(format!("\"{v}\" is not a profile's name"));
+        }
+        Ok(ProfilePick::Named(v.to_string()))
+    }
 }
 
 impl PortSetup {
@@ -275,15 +337,24 @@ impl PortSetup {
             name: name.to_string(),
             input: PortInput::default(),
             clock_out: ClockOut::default(),
+            clock_divide: 1,
+            clock_nudge_tenths: 0,
             ignore: IgnoreSet::NONE,
             delay_tenths: 0,
             shown: String::new(),
+            profile: ProfilePick::Auto,
+            blocks: Blocks::NONE,
         }
     }
 
     /// The delay in ms.
     pub fn delay_ms(&self) -> f32 {
         f32::from(self.delay_tenths) / 10.0
+    }
+
+    /// The clock's nudge in ms (later above 0).
+    pub fn nudge_ms(&self) -> f32 {
+        f32::from(self.clock_nudge_tenths) / 10.0
     }
 
     fn is_default(&self) -> bool {
@@ -345,6 +416,9 @@ pub struct TrackRoute {
     pub channel: Option<Channel>,
     /// The track, from 0, below [`ROUTE_TRACKS`].
     pub track: u8,
+    /// What it does to what it takes, in order (board 5), saved on the
+    /// line after it as `route.blocks = transpose -12; velocity soft 20 127`.
+    pub blocks: Blocks,
 }
 
 impl TrackRoute {
@@ -370,6 +444,11 @@ impl TrackRoute {
         format!("track {} < {}", u16::from(self.track) + 1, self.source())
     }
 
+    /// The same port, channel and track (whatever its blocks).
+    pub fn same_route(&self, other: &TrackRoute) -> bool {
+        self.port == other.port && self.channel == other.channel && self.track == other.track
+    }
+
     fn parse(v: &str) -> Result<TrackRoute, String> {
         let shape = || "not \"track N < port · ch N\"".to_string();
         let (t, from) = v.split_once(" < ").ok_or_else(shape)?;
@@ -390,6 +469,7 @@ impl TrackRoute {
             port: port.to_string(),
             channel,
             track,
+            blocks: Blocks::NONE,
         })
     }
 }
@@ -413,6 +493,9 @@ pub struct ThruRoute {
     pub channel: Option<Channel>,
     /// The port it leaves by, by name.
     pub to: String,
+    /// What it does to what it sends, in order (board 5), saved on the
+    /// line after it as `thru.blocks = channel 2`.
+    pub blocks: Blocks,
 }
 
 impl ThruRoute {
@@ -438,6 +521,11 @@ impl ThruRoute {
         format!("{} < {}", self.to, self.source())
     }
 
+    /// The same ports and channel (whatever its blocks).
+    pub fn same_route(&self, other: &ThruRoute) -> bool {
+        self.from == other.from && self.channel == other.channel && self.to == other.to
+    }
+
     fn parse(v: &str) -> Result<ThruRoute, String> {
         let shape = || "not \"port < port · ch N\"".to_string();
         let (to, from) = v.split_once(" < ").ok_or_else(shape)?;
@@ -456,6 +544,7 @@ impl ThruRoute {
             from: from.to_string(),
             channel,
             to: to.to_string(),
+            blocks: Blocks::NONE,
         };
         r.check()?;
         Ok(r)
@@ -477,6 +566,141 @@ impl ThruRoute {
 /// Whether a thru from `from` to `to` can be set ([`ThruRoute::check`]).
 pub fn thru_allowed(from: &str, to: &str) -> bool {
     from != to || from == DIN_NAME
+}
+
+/// The most knobs MIDI Follow turns: the MPC's four Q-Links.
+pub const FOLLOW_KNOBS: usize = 4;
+
+/// MIDI Follow (board 8 of the MIDI mockups): one controller's knobs turn
+/// what the MPC's Q-Links turn on the screen showing, as a Q-Link turned
+/// by as much as the knob moved. Its keys play the armed track as any
+/// port's do, and a control learned with MIDI Learn wins over it. The
+/// rig's: the controller is on the desk, whatever the song.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FollowSetup {
+    pub on: bool,
+    /// The controller's port, by its own name; empty: none picked yet.
+    pub port: String,
+    /// The CCs its knobs send, in Q-Link order (at most
+    /// [`FOLLOW_KNOBS`]); empty: its profile's `knobs`.
+    pub knobs: Vec<u8>,
+    /// Send values back (plan item 3.5, board 8): each knob's CC goes
+    /// back to the controller with where its Q-Link's value is, so its
+    /// lights or motor faders follow the screen. Off unless asked for.
+    pub send_back: bool,
+}
+
+impl FollowSetup {
+    /// The CCs that turn the Q-Links: its own, else `profile`'s (the
+    /// controller port's profile), at most [`FOLLOW_KNOBS`].
+    pub fn knobs_of(&self, profile: Option<&crate::profile::Profile>) -> Vec<u8> {
+        let k = if self.knobs.is_empty() {
+            profile.map_or(&[][..], |p| p.knobs.as_slice())
+        } else {
+            &self.knobs
+        };
+        k.iter().take(FOLLOW_KNOBS).copied().collect()
+    }
+
+    /// Whether `port` (its own name) is the controller it follows now.
+    pub fn follows(&self, port: &str) -> bool {
+        self.on && !self.port.is_empty() && self.port == port
+    }
+}
+
+/// The Q-Links controller mode sends: four banks of the MPC's four.
+pub const CONTROLLER_KNOBS: usize = 16;
+/// The CCs they send until set: 16 to 31 (general purpose and undefined
+/// in the MIDI spec, so they move nothing a synth fixes).
+pub const CONTROLLER_CCS: [u8; CONTROLLER_KNOBS] = [
+    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+];
+
+/// The notes controller mode's pads play.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PadNotes {
+    /// A kit's notes: the port's profile's pad lines, else MPFree's own
+    /// ([`crate::profile::kit_note`]: bank A the MPC's pad notes).
+    #[default]
+    Kit,
+    /// One note after another from this one: A1 plays it, A2 the next,
+    /// on through the banks (notes past 127 play nothing).
+    From(u8),
+}
+
+/// What controller mode sends for a pad's pressure.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PadPressure {
+    #[default]
+    Off,
+    /// Polyphonic aftertouch, on the pad's note.
+    Poly,
+    /// Channel pressure: the hardest pad held.
+    Channel,
+}
+
+impl PadPressure {
+    pub const ALL: [PadPressure; 3] = [PadPressure::Off, PadPressure::Poly, PadPressure::Channel];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            PadPressure::Off => "off",
+            PadPressure::Poly => "poly",
+            PadPressure::Channel => "channel",
+        }
+    }
+}
+
+/// Controller mode (powerhouse 3.10, Jay's card 18 Nov 01:21Z: a
+/// Controller switch in I/O): the MPC's pads send notes and its Q-Links
+/// CCs out of one port, and MPFree's sounds don't take the pads while it
+/// is on. The rig's: the gear is on the desk, whatever the song. `on` is
+/// never saved, so MPFree always starts with the pads its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ControllerSetup {
+    pub on: bool,
+    /// The output, by its own name; empty: none picked yet.
+    pub port: String,
+    pub channel: Channel,
+    pub pads: PadNotes,
+    pub pressure: PadPressure,
+    /// The CC each Q-Link sends, bank by bank (Q-Links 1 to 4, then 5 to
+    /// 8 ...).
+    pub ccs: [u8; CONTROLLER_KNOBS],
+}
+
+impl Default for ControllerSetup {
+    fn default() -> Self {
+        ControllerSetup {
+            on: false,
+            port: String::new(),
+            channel: 0,
+            pads: PadNotes::Kit,
+            pressure: PadPressure::Off,
+            ccs: CONTROLLER_CCS,
+        }
+    }
+}
+
+impl ControllerSetup {
+    /// What pad `pad` (0 is A1, to 127) sends: its note and channel, by
+    /// the port's `profile` for a kit's notes. None past the notes.
+    pub fn pad_out(
+        &self,
+        pad: usize,
+        profile: Option<&crate::profile::Profile>,
+    ) -> Option<(u8, Channel)> {
+        match self.pads {
+            PadNotes::Kit => match profile.and_then(|p| p.pad(pad)) {
+                Some(o) => Some((o.note, o.channel.unwrap_or(self.channel))),
+                None => crate::profile::kit_note(pad).map(|n| (n, self.channel)),
+            },
+            PadNotes::From(n) => u8::try_from(usize::from(n) + pad)
+                .ok()
+                .filter(|n| *n <= 127)
+                .map(|n| (n, self.channel)),
+        }
+    }
 }
 
 /// A project's MIDI, sync and CV settings.
@@ -507,6 +731,10 @@ pub struct MidiSetup {
     /// input is): a controller's transport keys or a tempo fader. The
     /// song's own mapping for the same control wins ([`MidiSetup::in_use`]).
     pub rig_learn: Vec<Saved>,
+    /// MIDI Follow: the rig's.
+    pub follow: FollowSetup,
+    /// Controller mode: the rig's.
+    pub controller: ControllerSetup,
 }
 
 impl Default for MidiSetup {
@@ -522,6 +750,8 @@ impl Default for MidiSetup {
             cv: [CvAssign::Off; CV_OUTS],
             learn: Vec::new(),
             rig_learn: Vec::new(),
+            follow: FollowSetup::default(),
+            controller: ControllerSetup::default(),
         }
     }
 }
@@ -726,11 +956,14 @@ impl MidiSetup {
     /// The settings that belong to the song, saved in the project's `midi`
     /// part: tracks' outputs, the routes to tracks and thru, Tempo from and
     /// following, each port's clock out, the CV jobs and learned controls.
-    /// Each port's input, what it ignores, its delay and its shown name are
-    /// the rig's ([`MidiSetup::rig`]) and are left at their defaults.
+    /// Each port's input, what it ignores, its delay, its shown name and
+    /// its profile are the rig's ([`MidiSetup::rig`]) and are left at
+    /// their defaults.
     pub fn project(&self) -> MidiSetup {
         let mut m = self.clone();
         m.rig_learn.clear();
+        m.follow = FollowSetup::default();
+        m.controller = ControllerSetup::default();
         for name in self
             .ports
             .iter()
@@ -741,7 +974,9 @@ impl MidiSetup {
                 p.input = PortInput::default();
                 p.ignore = IgnoreSet::NONE;
                 p.delay_tenths = 0;
+                p.clock_nudge_tenths = 0;
                 p.shown.clear();
+                p.profile = ProfilePick::Auto;
             });
         }
         m
@@ -750,11 +985,13 @@ impl MidiSetup {
     /// The settings that belong to the gear on the desk, kept for every
     /// project (owner, 13 Nov 2026: project settings apart from system-wide
     /// ones): each port's input (Plays tracks, Learn only, Both), what it
-    /// ignores coming in, its gear's delay and its shown name, and the
-    /// controls learned for every project.
+    /// ignores coming in, its gear's delay, its shown name and its
+    /// profile, and the controls learned for every project.
     pub fn rig(&self) -> MidiSetup {
         let mut m = MidiSetup {
             rig_learn: self.rig_learn.clone(),
+            follow: self.follow.clone(),
+            controller: self.controller.clone(),
             ..MidiSetup::default()
         };
         for p in &self.ports {
@@ -762,7 +999,9 @@ impl MidiSetup {
                 q.input = p.input;
                 q.ignore = p.ignore;
                 q.delay_tenths = p.delay_tenths;
+                q.clock_nudge_tenths = p.clock_nudge_tenths;
                 q.shown = p.shown.clone();
+                q.profile = p.profile.clone();
             });
         }
         m
@@ -776,10 +1015,13 @@ impl MidiSetup {
         self.set_rig(&rig);
     }
 
-    /// `rig`'s port settings (input, ignore, delay, shown name) and controls
-    /// learned for every project, this setup's song settings kept.
+    /// `rig`'s port settings (input, ignore, delay, shown name, profile)
+    /// and controls learned for every project, this setup's song settings
+    /// kept.
     pub fn set_rig(&mut self, rig: &MidiSetup) {
         self.rig_learn = rig.rig_learn.clone();
+        self.follow = rig.follow.clone();
+        self.controller = rig.controller.clone();
         let names: Vec<String> = self
             .ports
             .iter()
@@ -792,7 +1034,9 @@ impl MidiSetup {
                 p.input = want.input;
                 p.ignore = want.ignore;
                 p.delay_tenths = want.delay_tenths;
+                p.clock_nudge_tenths = want.clock_nudge_tenths;
                 p.shown = want.shown;
+                p.profile = want.profile;
             });
         }
     }
@@ -829,6 +1073,20 @@ impl MidiSetup {
             line(&mut s, &k, &p.name);
             line(&mut s, &format!("{k}.input"), p.input.word());
             line(&mut s, &format!("{k}.clock-out"), p.clock_out.word());
+            if p.clock_divide != 1 {
+                line(
+                    &mut s,
+                    &format!("{k}.clock-divide"),
+                    &p.clock_divide.to_string(),
+                );
+            }
+            if p.clock_nudge_tenths != 0 {
+                line(
+                    &mut s,
+                    &format!("{k}.clock-nudge-ms"),
+                    &format!("{:+.1}", p.nudge_ms()),
+                );
+            }
             if !p.ignore.is_empty() {
                 line(&mut s, &format!("{k}.ignore"), &p.ignore.text());
             }
@@ -841,6 +1099,12 @@ impl MidiSetup {
             }
             if !p.shown.is_empty() {
                 line(&mut s, &format!("{k}.shown"), &p.shown);
+            }
+            if p.profile != ProfilePick::Auto {
+                line(&mut s, &format!("{k}.profile"), p.profile.word());
+            }
+            if !p.blocks.is_empty() {
+                line(&mut s, &format!("{k}.blocks"), &p.blocks.to_text());
             }
         }
         for (i, t) in self.tracks.iter().enumerate() {
@@ -861,9 +1125,15 @@ impl MidiSetup {
         }
         for r in &self.routes {
             line(&mut s, "route", &r.text());
+            if !r.blocks.is_empty() {
+                line(&mut s, "route.blocks", &r.blocks.to_text());
+            }
         }
         for r in &self.thru {
             line(&mut s, "thru", &r.text());
+            if !r.blocks.is_empty() {
+                line(&mut s, "thru.blocks", &r.blocks.to_text());
+            }
         }
         for (i, a) in self.cv.iter().enumerate() {
             if *a != CvAssign::Off {
@@ -876,6 +1146,40 @@ impl MidiSetup {
         for l in &self.rig_learn {
             line(&mut s, "learn-rig", &l.text());
         }
+        let f = &self.follow;
+        if f.on {
+            line(&mut s, "midi-follow", "on");
+        }
+        if !f.port.is_empty() {
+            line(&mut s, "midi-follow.port", &f.port);
+        }
+        if !f.knobs.is_empty() {
+            let k: Vec<String> = f.knobs.iter().map(u8::to_string).collect();
+            line(&mut s, "midi-follow.knobs", &k.join(" "));
+        }
+        if f.send_back {
+            line(&mut s, "midi-follow.send-back", "on");
+        }
+        // Controller mode, but never its switch: MPFree starts with the
+        // pads its own.
+        let c = &self.controller;
+        let d = ControllerSetup::default();
+        if !c.port.is_empty() {
+            line(&mut s, "controller.port", &c.port);
+        }
+        if c.channel != d.channel {
+            line(&mut s, "controller.channel", &(c.channel + 1).to_string());
+        }
+        if let PadNotes::From(n) = c.pads {
+            line(&mut s, "controller.pads", &format!("from {n}"));
+        }
+        if c.pressure != d.pressure {
+            line(&mut s, "controller.pressure", c.pressure.word());
+        }
+        if c.ccs != d.ccs {
+            let k: Vec<String> = c.ccs.iter().map(u8::to_string).collect();
+            line(&mut s, "controller.qlinks", &k.join(" "));
+        }
         s
     }
 
@@ -887,6 +1191,8 @@ impl MidiSetup {
         // Ports by their number in the file, so a port's lines may come in
         // any order.
         let mut ports: Vec<(usize, PortSetup)> = Vec::new();
+        // The route or thru line read last, for its blocks' line.
+        let mut last: Option<&str> = None;
         let mut lines = text.lines().enumerate();
         match lines.next() {
             Some((_, h)) if h.trim() == HEADER => {}
@@ -907,8 +1213,25 @@ impl MidiSetup {
                 continue;
             };
             let (k, v) = (k.trim(), v.trim());
-            if let Err(e) = m.apply(k, v, &mut ports) {
-                warn.push(format!("line {n}: {k}: {e}"));
+            // Blocks belong to the route or thru line just before them:
+            // none when that line was refused.
+            let (owner, blocks) = match k {
+                "route" | "thru" => (Some(k), false),
+                "route.blocks" => (None, last != Some("route")),
+                "thru.blocks" => (None, last != Some("thru")),
+                _ => (None, false),
+            };
+            if blocks {
+                warn.push(format!("line {n}: {k}: not after its route: skipped"));
+                continue;
+            }
+            match m.apply(k, v, &mut ports) {
+                Err(e) => {
+                    warn.push(format!("line {n}: {k}: {e}"));
+                    last = None;
+                }
+                Ok(()) if owner.is_some() => last = owner,
+                Ok(()) => {}
             }
         }
         ports.sort_by_key(|p| p.0);
@@ -949,6 +1272,26 @@ impl MidiSetup {
             }
             ["follow", "start-stop"] => self.follow_start_stop = parse_on(v)?,
             ["follow", "position"] => self.follow_position = parse_on(v)?,
+            ["midi-follow"] => self.follow.on = parse_on(v)?,
+            ["midi-follow", "port"] => self.follow.port = v.to_string(),
+            ["midi-follow", "knobs"] => self.follow.knobs = parse_knobs(v)?,
+            ["midi-follow", "send-back"] => self.follow.send_back = parse_on(v)?,
+            ["controller", "port"] => self.controller.port = v.to_string(),
+            ["controller", "channel"] => self.controller.channel = number(v, 1, 16)? as u8 - 1,
+            ["controller", "pads"] => {
+                self.controller.pads = match v.split_whitespace().collect::<Vec<_>>()[..] {
+                    ["kit"] => PadNotes::Kit,
+                    ["from", n] => PadNotes::From(crate::profile::note_number(n)?),
+                    _ => return Err(format!("expected kit or from a note, found \"{v}\"")),
+                }
+            }
+            ["controller", "pressure"] => {
+                self.controller.pressure = PadPressure::ALL
+                    .into_iter()
+                    .find(|p| p.word() == v)
+                    .ok_or(format!("expected off, poly or channel, found \"{v}\""))?
+            }
+            ["controller", "qlinks"] => self.controller.ccs = parse_qlinks(v)?,
             ["port", i, rest @ ..] => {
                 let i = index(i, MAX_PORT_LINES)?;
                 let p = match ports.iter().position(|p| p.0 == i) {
@@ -975,7 +1318,13 @@ impl MidiSetup {
                     }
                     ["ignore"] => p.ignore = IgnoreSet::parse(v)?,
                     ["delay-ms"] => p.delay_tenths = parse_delay(v)?,
+                    ["clock-divide"] => {
+                        p.clock_divide = number(v, 1, u32::from(MAX_CLOCK_DIVIDE))? as u8
+                    }
+                    ["clock-nudge-ms"] => p.clock_nudge_tenths = parse_nudge(v)?,
                     ["shown"] => p.shown = parse_shown(v)?,
+                    ["profile"] => p.profile = ProfilePick::from_word(v)?,
+                    ["blocks"] => p.blocks = Blocks::parse(v)?,
                     _ => return Err("unknown key".into()),
                 }
             }
@@ -992,7 +1341,7 @@ impl MidiSetup {
             }
             ["route"] => {
                 let r = TrackRoute::parse(v)?;
-                if self.routes.contains(&r) {
+                if self.routes.iter().any(|x| x.same_route(&r)) {
                     return Err("the same route twice: the first kept".into());
                 }
                 if self.routes.len() >= MAX_TRACK_ROUTES {
@@ -1002,13 +1351,25 @@ impl MidiSetup {
             }
             ["thru"] => {
                 let r = ThruRoute::parse(v)?;
-                if self.thru.contains(&r) {
+                if self.thru.iter().any(|x| x.same_route(&r)) {
                     return Err("the same thru twice: the first kept".into());
                 }
                 if self.thru.len() >= MAX_THRU_ROUTES {
                     return Err(format!("more than {MAX_THRU_ROUTES} thru routes"));
                 }
                 self.thru.push(r);
+            }
+            // A route's or a thru's blocks, on the line after it
+            // ([`MidiSetup::parse`] skips them when that line was refused).
+            ["route", "blocks"] => {
+                let b = Blocks::parse(v)?;
+                let r = self.routes.last_mut().ok_or("no route before it")?;
+                r.blocks = b;
+            }
+            ["thru", "blocks"] => {
+                let b = Blocks::parse(v)?;
+                let r = self.thru.last_mut().ok_or("no thru before it")?;
+                r.blocks = b;
             }
             ["cv", i] => {
                 let i = index(i, CV_OUTS)?;
@@ -1048,6 +1409,43 @@ fn on_off(b: bool) -> &'static str {
 }
 
 /// "6.5" (ms) as tenths of a ms, 0 to [`MAX_DELAY_TENTHS`].
+/// Up to [`FOLLOW_KNOBS`] CC numbers apart by spaces ("74 71 76 77"),
+/// none twice.
+pub fn parse_knobs(v: &str) -> Result<Vec<u8>, String> {
+    let mut k = Vec::new();
+    for w in v.split_whitespace() {
+        let cc = number(w, 0, 119)? as u8;
+        if k.contains(&cc) {
+            return Err(format!("CC {cc} twice"));
+        }
+        if k.len() == FOLLOW_KNOBS {
+            return Err(format!("more than {FOLLOW_KNOBS} knobs"));
+        }
+        k.push(cc);
+    }
+    Ok(k)
+}
+
+/// [`CONTROLLER_KNOBS`] CC numbers (0 to 119) apart by spaces; the same
+/// CC may come twice (two Q-Links on one control).
+fn parse_qlinks(v: &str) -> Result<[u8; CONTROLLER_KNOBS], String> {
+    let mut k = [0; CONTROLLER_KNOBS];
+    let mut n = 0;
+    for w in v.split_whitespace() {
+        if n == CONTROLLER_KNOBS {
+            return Err(format!("more than {CONTROLLER_KNOBS} CCs"));
+        }
+        k[n] = number(w, 0, 119)? as u8;
+        n += 1;
+    }
+    if n < CONTROLLER_KNOBS {
+        return Err(format!(
+            "{n} CCs: one for each of the {CONTROLLER_KNOBS} Q-Links"
+        ));
+    }
+    Ok(k)
+}
+
 fn parse_shown(v: &str) -> Result<String, String> {
     if v.chars().count() > MAX_SHOWN {
         return Err(format!("longer than {MAX_SHOWN} characters"));
@@ -1064,6 +1462,17 @@ fn parse_delay(v: &str) -> Result<u16, String> {
         return Err(format!("{ms} ms is outside 0 to {max} ms"));
     }
     Ok((ms * 10.0).round() as u16)
+}
+
+fn parse_nudge(v: &str) -> Result<i16, String> {
+    let ms: f32 = v
+        .parse()
+        .map_err(|_| format!("\"{v}\" is not a number of ms"))?;
+    let max = f32::from(MAX_NUDGE_TENTHS) / 10.0;
+    if !(-max..=max).contains(&ms) {
+        return Err(format!("{ms} ms is outside -{max} to +{max} ms"));
+    }
+    Ok((ms * 10.0).round() as i16)
 }
 
 fn parse_on(v: &str) -> Result<bool, String> {
@@ -1151,6 +1560,9 @@ fn cv_text(a: &CvAssign) -> String {
         CvAssign::Velocity { track, max_volts } => {
             format!("velocity track={} max-volts={}", track + 1, f(max_volts))
         }
+        CvAssign::Pressure { track, max_volts } => {
+            format!("pressure track={} max-volts={}", track + 1, f(max_volts))
+        }
         CvAssign::Cc {
             track,
             cc,
@@ -1165,6 +1577,37 @@ fn cv_text(a: &CvAssign) -> String {
         CvAssign::Clock { ppqn, volts, ms } => {
             format!("clock ppqn={ppqn} volts={} ms={}", f(volts), f(ms))
         }
+        CvAssign::Lfo(l) => {
+            let rate = match l.rate {
+                Rate::Hz(hz) => format!("hz={}", f(hz)),
+                Rate::Beats(b) => format!("beats={}", f(b)),
+            };
+            let restart = l
+                .restart
+                .map(|t| format!(" restart={}", t + 1))
+                .unwrap_or_default();
+            let notes = if l.notes.is_off() {
+                String::new()
+            } else {
+                format!(" notes={:03x} root={}", l.notes.mask & 0xFFF, l.notes.root)
+            };
+            format!(
+                "lfo shape={} {rate} low={} high={}{restart}{notes}",
+                l.shape.word(),
+                f(l.low_volts),
+                f(l.high_volts)
+            )
+        }
+        CvAssign::Envelope(e) => format!(
+            "envelope track={} attack-ms={} decay-ms={} sustain={} release-ms={} volts={} velocity={}",
+            e.track + 1,
+            f(e.attack_ms),
+            f(e.decay_ms),
+            f(e.sustain),
+            f(e.release_ms),
+            f(e.volts),
+            if e.velocity { "on" } else { "off" }
+        ),
         CvAssign::Run { volts } => format!("run volts={}", f(volts)),
         CvAssign::Reset { volts, ms } => format!("reset volts={} ms={}", f(volts), f(ms)),
         CvAssign::Fixed { volts } => format!("fixed volts={}", f(volts)),
@@ -1210,17 +1653,37 @@ fn parse_cv(v: &str) -> Result<CvAssign, String> {
         }
     };
     let byte = |k: &str| -> Result<u8, String> { Ok(number(need(k)?, 0, 127)? as u8) };
+    let float = |k: &str, lo: f32, hi: f32, unit: &str| -> Result<f32, String> {
+        let x: f32 = need(k)?.parse().map_err(|_| format!("{k}: not a number"))?;
+        if (lo..=hi).contains(&x) {
+            Ok(x)
+        } else {
+            Err(format!("{k}: {x} is outside {lo} to {hi}{unit}"))
+        }
+    };
     for (k, _) in &kv {
         let known: &[&str] = match kind {
             "pitch" => &["track", "zero", "bend", "priority", "v/oct", "hz/v"],
             "gate" => &["track", "volts", "retrigger-ms"],
             "trigger" => &["track", "note", "volts", "ms"],
-            "velocity" => &["track", "max-volts"],
+            "velocity" | "pressure" => &["track", "max-volts"],
             "cc" => &["track", "cc", "min-volts", "max-volts"],
             "clock" => &["ppqn", "volts", "ms"],
             "run" => &["volts"],
             "reset" => &["volts", "ms"],
             "fixed" => &["volts"],
+            "lfo" => &[
+                "shape", "hz", "beats", "low", "high", "restart", "notes", "root",
+            ],
+            "envelope" => &[
+                "track",
+                "attack-ms",
+                "decay-ms",
+                "sustain",
+                "release-ms",
+                "volts",
+                "velocity",
+            ],
             _ => &[],
         };
         if !known.contains(k) && kind != "off" {
@@ -1284,6 +1747,10 @@ fn parse_cv(v: &str) -> Result<CvAssign, String> {
             track: track()?,
             max_volts: volts("max-volts")?,
         },
+        "pressure" => CvAssign::Pressure {
+            track: track()?,
+            max_volts: volts("max-volts")?,
+        },
         "cc" => CvAssign::Cc {
             track: track()?,
             cc: byte("cc")?,
@@ -1305,6 +1772,58 @@ fn parse_cv(v: &str) -> Result<CvAssign, String> {
         "fixed" => CvAssign::Fixed {
             volts: volts("volts")?,
         },
+        "lfo" => {
+            let shape = need("shape")?;
+            let shape = Shape::from_word(shape).ok_or(format!("lfo: unknown shape \"{shape}\""))?;
+            let rate = match (get("hz"), get("beats")) {
+                (Some(_), None) => {
+                    Rate::Hz(float("hz", cv_mod::LFO_MIN_HZ, cv_mod::LFO_MAX_HZ, " Hz")?)
+                }
+                (None, Some(_)) => Rate::Beats(float(
+                    "beats",
+                    cv_mod::LFO_MIN_BEATS,
+                    cv_mod::LFO_MAX_BEATS,
+                    " beats",
+                )?),
+                _ => return Err("lfo: one of hz or beats".into()),
+            };
+            let notes = match get("notes") {
+                None => Notes::OFF,
+                Some(n) => Notes {
+                    mask: u16::from_str_radix(n, 16)
+                        .ok()
+                        .filter(|m| *m <= 0xFFF)
+                        .ok_or(format!("notes: \"{n}\" is not 12 notes in hex"))?,
+                    root: number(need("root")?, 0, 11)? as u8,
+                },
+            };
+            CvAssign::Lfo(Lfo {
+                shape,
+                rate,
+                low_volts: volts("low")?,
+                high_volts: volts("high")?,
+                restart: get("restart")
+                    .map(|t| index(t, MAX_TRACKS).map(|t| t as u8))
+                    .transpose()?,
+                notes,
+            })
+        }
+        "envelope" => {
+            let ms = |k: &str| float(k, 0.0, cv_mod::ENV_MAX_MS, " ms");
+            CvAssign::Envelope(Env {
+                track: track()?,
+                attack_ms: ms("attack-ms")?,
+                decay_ms: ms("decay-ms")?,
+                sustain: float("sustain", 0.0, 1.0, "")?,
+                release_ms: ms("release-ms")?,
+                volts: volts("volts")?,
+                velocity: match need("velocity")? {
+                    "on" => true,
+                    "off" => false,
+                    v => return Err(format!("velocity: \"{v}\" is not on or off")),
+                },
+            })
+        }
         k => return Err(format!("unknown job \"{k}\"")),
     })
 }
@@ -1319,17 +1838,24 @@ mod tests {
                     port: DIN_NAME.to_string(),
                     channel: Some(9),
                     track: 0,
+                    blocks: Blocks::parse("transpose -12; velocity soft 20 127").unwrap(),
                 },
                 TrackRoute {
                     port: "Keystep 37".to_string(),
                     channel: None,
                     track: 127,
+                    blocks: Blocks::NONE,
                 },
             ],
             ..MidiSetup::default()
         };
         let text = m.to_text();
-        assert!(text.contains("route = track 1 < MIDI · ch 10\n"), "{text}");
+        assert!(
+            text.contains(
+                "route = track 1 < MIDI · ch 10\nroute.blocks = transpose -12; velocity soft 20 127\n"
+            ),
+            "{text}"
+        );
         assert!(
             text.contains("route = track 128 < Keystep 37 · all channels\n"),
             "{text}"
@@ -1353,6 +1879,56 @@ mod tests {
         assert!(warn[3].contains("the same route twice"), "{warn:?}");
     }
 
+    /// A route's, a thru's and a port's blocks read back with the song; a
+    /// blocks line after a refused route (or none) is skipped, never given
+    /// to the route before it.
+    #[test]
+    fn blocks_belong_to_their_route_and_the_song() {
+        let mut m = MidiSetup::default();
+        m.set_port("Keystep 37", |p| {
+            p.blocks = Blocks::parse("filter program; velocity hard 1 127").unwrap();
+            p.input = PortInput::Both;
+        });
+        m.thru.push(ThruRoute {
+            from: "Keystep 37".to_string(),
+            channel: None,
+            to: DIN_NAME.to_string(),
+            blocks: Blocks::parse("channel 2").unwrap(),
+        });
+        let text = m.to_text();
+        assert!(text.contains("thru.blocks = channel 2\n"), "{text}");
+        assert!(
+            text.contains(".blocks = filter program; velocity hard 1 127\n"),
+            "{text}"
+        );
+        let (back, warn) = MidiSetup::parse(&text);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(back, m);
+        // The song's, not the rig's.
+        assert_eq!(
+            m.project().port("Keystep 37").blocks,
+            m.port("Keystep 37").blocks
+        );
+        assert!(m.rig().port("Keystep 37").blocks.is_empty());
+        let mut kept = m.clone();
+        kept.set_rig(&MidiSetup::default());
+        assert_eq!(kept.port("Keystep 37").blocks, m.port("Keystep 37").blocks);
+        let (back, warn) = MidiSetup::parse(
+            "mpfree-midi 1\nroute.blocks = transpose 1\nroute = track 1 < MIDI · ch 1\n\
+             route = track 1 < MIDI · ch 1\nroute.blocks = transpose 2\n\
+             route = track 2 < MIDI · ch 2\nroute.blocks = transpose 99\n",
+        );
+        assert_eq!(back.routes.len(), 2);
+        assert!(
+            back.routes.iter().all(|r| r.blocks.is_empty()),
+            "{:?}",
+            back.routes
+        );
+        assert_eq!(warn.len(), 4, "{warn:?}");
+        assert!(warn[0].contains("not after its route"), "{warn:?}");
+        assert!(warn[2].contains("not after its route"), "{warn:?}");
+    }
+
     #[test]
     fn thru_reads_back_belongs_to_the_song_and_an_old_port_switch_is_dropped() {
         let m = MidiSetup {
@@ -1361,11 +1937,13 @@ mod tests {
                     from: "Keystep 37".to_string(),
                     channel: Some(9),
                     to: DIN_NAME.to_string(),
+                    blocks: Blocks::NONE,
                 },
                 ThruRoute {
                     from: DIN_NAME.to_string(),
                     channel: None,
                     to: DIN_NAME.to_string(),
+                    blocks: Blocks::NONE,
                 },
             ],
             ..MidiSetup::default()
@@ -1468,6 +2046,8 @@ mod tests {
         m.set_port(DIN_NAME, |p| {
             p.input = PortInput::LearnOnly;
             p.clock_out = ClockOut::Always;
+            p.clock_divide = 2;
+            p.clock_nudge_tenths = -15;
         });
         m.set_port("Keystep 37", |p| {
             p.input = PortInput::PlaysTracks;
@@ -1483,6 +2063,11 @@ mod tests {
         // The song keeps the clock out, not the input, what a port ignores
         // or its gear's delay.
         assert_eq!(project.port(DIN_NAME).clock_out, ClockOut::Always);
+        // Its clock's divide is the song's; its nudge, the gear's.
+        assert_eq!(project.port(DIN_NAME).clock_divide, 2);
+        assert_eq!(project.port(DIN_NAME).clock_nudge_tenths, 0);
+        assert_eq!(rig.port(DIN_NAME).clock_divide, 1);
+        assert_eq!(rig.port(DIN_NAME).clock_nudge_tenths, -15);
         assert_eq!(project.port(DIN_NAME).input, PortInput::default());
         assert!(project.ports.iter().all(|p| p.name != "Keystep 37"));
         assert!(project.ports.iter().all(|p| p.name != "Digitone"));
@@ -1795,6 +2380,74 @@ mod tests {
     }
 
     #[test]
+    fn lfos_and_envelopes_read_back_and_bad_ones_say_why() {
+        let mut m = MidiSetup::default();
+        m.cv[0] = CvAssign::Lfo(Lfo {
+            shape: Shape::Drift,
+            rate: Rate::Beats(2.0 / 3.0),
+            low_volts: 0.5,
+            high_volts: 2.5,
+            restart: Some(3),
+            notes: Notes {
+                mask: 0xAB5,
+                root: 7,
+            },
+        });
+        m.cv[1] = CvAssign::Lfo(Lfo {
+            rate: Rate::Hz(0.25),
+            ..Lfo::default()
+        });
+        m.cv[2] = CvAssign::Envelope(Env {
+            velocity: true,
+            sustain: 0.35,
+            ..Env::new(9)
+        });
+        m.cv[3] = CvAssign::Pressure {
+            track: 1,
+            max_volts: 5.0,
+        };
+        let text = m.to_text();
+        assert!(
+            text.contains("cv.4 = pressure track=2 max-volts=5\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("cv.2 = lfo shape=sine hz=0.25 low=0 high=5\n"),
+            "{text}"
+        );
+        assert!(text.contains(
+            "cv.1 = lfo shape=drift beats=0.6666667 low=0.5 high=2.5 restart=4 notes=ab5 root=7\n"
+        ));
+        assert!(text.contains(
+            "cv.3 = envelope track=10 attack-ms=5 decay-ms=200 sustain=0.35 release-ms=300 volts=5 velocity=on\n"
+        ));
+        let (back, warn) = MidiSetup::parse(&text);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(back.cv, m.cv);
+
+        let text = "mpfree-midi 1\n\
+                    cv.1 = lfo shape=wobble hz=1 low=0 high=5\n\
+                    cv.2 = lfo shape=sine hz=50 low=0 high=5\n\
+                    cv.3 = lfo shape=sine low=0 high=5\n\
+                    cv.4 = lfo shape=sine beats=1 low=0 high=5 notes=fff1 root=0\n\
+                    cv.5 = envelope track=1 attack-ms=20000 decay-ms=1 sustain=1 release-ms=1 volts=5 velocity=off\n\
+                    cv.6 = envelope track=1 attack-ms=1 decay-ms=1 sustain=1 release-ms=1 volts=5 velocity=maybe\n";
+        let (m, w) = MidiSetup::parse(text);
+        assert!(m.cv.iter().all(|a| *a == CvAssign::Off));
+        let all = w.join("\n");
+        for want in [
+            "line 2: cv.1: lfo: unknown shape \"wobble\"",
+            "line 3: cv.2: hz: 50 is outside 0.01 to 20 Hz",
+            "line 4: cv.3: lfo: one of hz or beats",
+            "line 5: cv.4: notes: \"fff1\" is not 12 notes in hex",
+            "line 6: cv.5: attack-ms: 20000 is outside 0 to 10000 ms",
+            "line 7: cv.6: velocity: \"maybe\" is not on or off",
+        ] {
+            assert!(all.contains(want), "missing {want:?} in\n{all}");
+        }
+    }
+
+    #[test]
     fn a_wrong_header_is_named_but_the_rest_is_read() {
         let (m, w) = MidiSetup::parse("mpfree-midi 2\ntrack.1.port = MIDI\ntrack.1.channel = 1\n");
         assert_eq!(m.tracks[0], Some(TrackOut::new(DIN_NAME, 0)));
@@ -1819,5 +2472,149 @@ mod tests {
         assert_eq!(ClockOut::default().label(), "Off");
         let names: Vec<_> = PortInput::ALL.iter().map(|p| p.label()).collect();
         assert_eq!(names, ["Plays tracks", "Learn only", "Both"]);
+    }
+
+    /// Controller mode is the rig's, but its switch is never saved; a
+    /// kit's pads send the profile's notes and channels, else MPFree's;
+    /// From counts up through the banks.
+    #[test]
+    fn controller_mode_is_the_rigs_and_starts_off() {
+        let mut c = ControllerSetup {
+            on: true,
+            port: "Juno-X".into(),
+            channel: 2,
+            pads: PadNotes::From(36),
+            pressure: PadPressure::Channel,
+            ..ControllerSetup::default()
+        };
+        c.ccs[0] = 74;
+        c.ccs[15] = 74;
+        let m = MidiSetup {
+            controller: c.clone(),
+            ..MidiSetup::default()
+        };
+        let rig = m.rig_text();
+        assert!(
+            rig.ends_with(
+                "controller.port = Juno-X\ncontroller.channel = 3\ncontroller.pads = from 36\n\
+                 controller.pressure = channel\ncontroller.qlinks = 74 17 18 19 20 21 22 23 24 \
+                 25 26 27 28 29 30 74\n"
+            ),
+            "{rig}"
+        );
+        assert!(!m.project_text().contains("controller"));
+        let (back, warn) = MidiSetup::parse(&rig);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(back.controller, ControllerSetup { on: false, ..c });
+        // A project opened keeps the rig's, switch and all.
+        let mut now = m.clone();
+        now.set_project(&MidiSetup::default());
+        assert!(now.controller.on);
+        assert!(!MidiSetup::default().rig_text().contains("controller"));
+        // Notes: from 36 up; 128 pads from 36 run out at 127.
+        let from = &back.controller;
+        assert_eq!(from.pad_out(0, None), Some((36, 2)));
+        assert_eq!(from.pad_out(91, None), Some((127, 2)));
+        assert_eq!(from.pad_out(92, None), None);
+        // A kit: the profile's pad lines, else MPFree's pad notes.
+        let kit = ControllerSetup::default();
+        let (p, _) =
+            crate::profile::Profile::parse("mpfree-profile 1\nname = TR\npad.A1 = 36 ch 10\n")
+                .unwrap();
+        assert_eq!(kit.pad_out(0, Some(&p)), Some((36, 9)));
+        assert_eq!(
+            kit.pad_out(1, Some(&p)),
+            kit.pad_out(1, None),
+            "A2 has no line"
+        );
+        assert_eq!(kit.pad_out(0, None), Some((37, 0)));
+        // Bad lines say why.
+        let (_, warn) = MidiSetup::parse(
+            "mpfree-midi 1\ncontroller.channel = 17\ncontroller.pads = from H#2\n\
+             controller.pressure = hard\ncontroller.qlinks = 1 2 3\n",
+        );
+        assert_eq!(warn.len(), 4, "{warn:?}");
+        assert!(
+            warn[3].contains("3 CCs: one for each of the 16 Q-Links"),
+            "{warn:?}"
+        );
+    }
+
+    /// MIDI Follow is the rig's: its controller, its knobs, on or off.
+    #[test]
+    fn midi_follow_is_the_rigs() {
+        let m = MidiSetup {
+            follow: FollowSetup {
+                on: true,
+                port: "Keystep 37".into(),
+                knobs: vec![74, 71, 76, 77],
+                send_back: true,
+            },
+            ..MidiSetup::default()
+        };
+        let rig = m.rig_text();
+        assert!(
+            rig.ends_with(
+                "midi-follow = on\nmidi-follow.port = Keystep 37\nmidi-follow.knobs = 74 71 76 77\n\
+                 midi-follow.send-back = on\n"
+            ),
+            "{rig}"
+        );
+        assert!(!m.project_text().contains("midi-follow"));
+        let (back, warn) = MidiSetup::parse(&rig);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(back.follow, m.follow);
+        assert!(back.follow.follows("Keystep 37") && !back.follow.follows("Juno"));
+        let mut other = MidiSetup::default();
+        other.set_rig(&back);
+        assert_eq!(other.follow, m.follow);
+        // Its own knobs, else its profile's; four at most.
+        let (p, _) = crate::profile::Profile::parse("name = KS\nknobs = 1 2 3 4 5\n").unwrap();
+        assert_eq!(m.follow.knobs_of(Some(&p)), [74, 71, 76, 77]);
+        let bare = FollowSetup::default();
+        assert_eq!(bare.knobs_of(Some(&p)), [1, 2, 3, 4]);
+        assert!(bare.knobs_of(None).is_empty());
+        assert!(!bare.follows(""));
+        // Knobs: CCs 0 to 119, none twice, four at most.
+        assert_eq!(parse_knobs(" 1  2 "), Ok(vec![1, 2]));
+        assert!(parse_knobs("1 1").is_err());
+        assert!(parse_knobs("120").is_err());
+        assert!(parse_knobs("1 2 3 4 5").is_err());
+    }
+
+    /// A port's profile is the rig's: saved with it (Auto, the default,
+    /// isn't written), left out of the project, read back as picked.
+    #[test]
+    fn a_ports_profile_is_the_rigs() {
+        let mut m = MidiSetup::default();
+        m.set_port("Juno-X", |p| {
+            p.profile = ProfilePick::Named("Juno-X".into())
+        });
+        m.set_port(DIN_NAME, |p| p.profile = ProfilePick::Off);
+        let rig = m.rig_text();
+        assert!(rig.contains("port.1.profile = Juno-X\n"), "{rig}");
+        assert!(rig.contains("port.2.profile = none\n"), "{rig}");
+        assert!(!m.project_text().contains("profile"));
+        let (back, warn) = MidiSetup::parse(&rig);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(
+            back.port("Juno-X").profile,
+            ProfilePick::Named("Juno-X".into())
+        );
+        assert_eq!(back.port(DIN_NAME).profile, ProfilePick::Off);
+        assert_eq!(back.port("Keystep").profile, ProfilePick::Auto);
+        // Another project keeps the rig's picks; Auto again drops the port.
+        let mut other = MidiSetup::default();
+        other.set_rig(&back);
+        assert_eq!(other.port(DIN_NAME).profile, ProfilePick::Off);
+        other.set_port(DIN_NAME, |p| p.profile = ProfilePick::Auto);
+        other.set_port("Juno-X", |p| p.profile = ProfilePick::Auto);
+        assert!(other.ports.is_empty());
+        // Words: the two the page uses, any capitals; a name too long isn't one.
+        assert_eq!(ProfilePick::from_word("AUTO"), Ok(ProfilePick::Auto));
+        assert_eq!(ProfilePick::from_word("None"), Ok(ProfilePick::Off));
+        assert!(ProfilePick::from_word(&"x".repeat(40)).is_err());
+        let (_, warn) = MidiSetup::parse(&format!("{HEADER}\nport.1 = A\nport.1.profile =\n"));
+        assert_eq!(warn.len(), 1, "{warn:?}");
     }
 }
