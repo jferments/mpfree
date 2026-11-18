@@ -1088,7 +1088,10 @@ impl App {
             .position(|p| p.notes().contains(&note))
     }
 
-    pub(crate) fn press_pad(&mut self, slot: usize, velocity: u8) {
+    /// With a kit, `on` (bank × 16 + place) in place of the page's pad:
+    /// a Loop pad's hit that waited for the launch line plays the pad it
+    /// was made on, though the bank turned since (sampler R5.3b).
+    pub(crate) fn press_pad_on(&mut self, slot: usize, on: Option<u8>, velocity: u8) {
         let Some(layout) = &self.pad_layout else {
             // A kit: the pad of the page, kept until it is let go (a pad
             // pressed again first lets go of what it pressed).
@@ -1096,7 +1099,7 @@ impl App {
                 return;
             }
             self.release_pad(slot);
-            let pad = self.kit_pad(slot) as u8;
+            let pad = on.unwrap_or(self.kit_pad(slot) as u8);
             self.kit_held[slot] = Some(pad);
             self.kit_last = Some(slot);
             self.hold_kit_pad(pad, velocity);

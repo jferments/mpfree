@@ -225,6 +225,13 @@ pub struct Session {
     /// The pads pressed as TRACK MUTE's keys, so their release is theirs
     /// too.
     mute_pressed: [bool; 16],
+    /// Loop pads' hits waiting for the launch line (sampler R5.3b), as
+    /// player_session keeps them: the pads pressed but not yet sounded,
+    /// how many found the table full, and how many STOP dropped.
+    awaiting: [bool; 16],
+    waits_full: u64,
+    stop_dropped: usize,
+    waiting_shown: u16,
     /// The loop keys held (SHIFT + SAMPLER on the Looper tab).
     keys_held: crate::perform_pads::Held,
     out: Out,
@@ -337,6 +344,10 @@ impl Session {
             kits: n,
             step_keys: crate::step_keys::StepKeys::default(),
             mute_pressed: [false; 16],
+            awaiting: [false; 16],
+            waits_full: 0,
+            stop_dropped: 0,
+            waiting_shown: 0,
             keys_held: crate::perform_pads::Held::default(),
             loop_tempo: None,
             out,
@@ -913,6 +924,20 @@ impl Session {
             let said = crate::pad_starts_loop(&mut self.looper, &mut self.time, take, exporting);
             self.out.loop_start(said);
         }
+        // A Loop pad's hit waits for the launch line (sampler R5.3b), as
+        // player_session: the sounding kit says which pads start on it.
+        if let Some(p) = self.sounds.as_ref() {
+            let w = time::PadWait {
+                from: time::PadFrom::Pad(pad as u8),
+                down,
+                velocity,
+                kit_pad: self.app.kit_pad(pad) as u8,
+            };
+            let (so, full) = (self.synth_on, &mut self.waits_full);
+            if crate::waits_for_line(&mut self.time, p, &self.app, so, w, full, &mut self.out) {
+                return;
+            }
+        }
         if let Some(ev) = self.app.pressed_event(pad, velocity, down) {
             self.time.pad_pressed(0, ev);
         }
@@ -1060,6 +1085,27 @@ impl Session {
         }
         if let Some(Effect::Arp(v)) = self.app.arp_poll() {
             self.out.show(ToUi::Arp(Box::new(v)));
+        }
+        // The Loop pads' hits that waited play on their line (STOP drops
+        // those still waiting), and the screen outlines those waiting.
+        let mut due = time::DuePads::default();
+        let dropped = self.time.due_pads(&mut due);
+        crate::note_stop_dropped(dropped, &mut self.stop_dropped, &mut self.out);
+        let waiting = self.time.hits_waiting(self.app.pad_page());
+        if self.waiting_shown != waiting {
+            self.waiting_shown = waiting;
+            self.out.show(ToUi::PadsWaiting(waiting));
+        }
+        for &(w, offset) in due.as_slice() {
+            let fx = crate::play_waited(
+                &mut self.app,
+                &mut self.time,
+                &mut self.awaiting,
+                w,
+                offset,
+                &mut self.out,
+            );
+            self.fx.extend(fx);
         }
         self.hits.base = t;
         self.hits.only = self.export.only();
