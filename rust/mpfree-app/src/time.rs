@@ -4500,6 +4500,81 @@ mod tests {
         assert_eq!(h.dropped(), 0);
     }
 
+    /// Mutate and Restore (sequencer S6) on the clip card: a variation at
+    /// once while the clip plays, each a take UNDO takes back; a second
+    /// Mutate varies the original; Restore brings it back; the Takes list
+    /// names them.
+    #[test]
+    fn mutate_varies_the_clip_and_restore_brings_it_back() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut c = Clip::new("hats", 3840);
+        c.notes = (0..16)
+            .map(|s| mpfree_seq::Note::new(s * 240, 120, 42, 90))
+            .collect();
+        let plain = c.clone();
+        h.control.project.tracks[0].slots[0] = Some(c);
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let mutate = |more| TimeAction::Mutate {
+            track: 0,
+            slot: 0,
+            more,
+            melodic: false,
+        };
+        let restore = || TimeAction::Restore { track: 0, slot: 0 };
+        let clip = |h: &TimeHost| h.control.project.clip(0, 0).unwrap().clone();
+        assert!(h
+            .act(restore())
+            .unwrap_err()
+            .contains("hats plays its original: Mutate it first"));
+        assert_eq!(
+            h.act(mutate(false)).unwrap(),
+            "mutate: hats · variant 1 (‹ on Mutate restores; UNDO takes it back)"
+        );
+        let v1 = clip(&h);
+        assert_ne!(v1.notes, plain.notes);
+        assert_eq!(v1.variation(), Some(1));
+        assert_eq!(h.state().clip(0, 0).unwrap().variation, Some(1));
+        // Edited since, then mutated again: from the original.
+        h.control.project.tracks[0].slots[0]
+            .as_mut()
+            .unwrap()
+            .notes
+            .truncate(2);
+        h.act(mutate(true)).unwrap();
+        let v2 = clip(&h);
+        assert_eq!((v2.notes.len(), v2.variation()), (16, Some(2)));
+        assert_ne!(v2.notes, v1.notes, "a new variation");
+        let st = h.state();
+        let row = st.done.last().unwrap();
+        assert_eq!(row.short(), "mutate 2");
+        assert_eq!(
+            h.act(restore()).unwrap(),
+            "restore: hats is back as it was before Mutate (UNDO takes it back)"
+        );
+        assert_eq!(clip(&h), plain);
+        assert_eq!(h.state().done.last().unwrap().short(), "restore 3");
+        // UNDO: the variation again, its original kept.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(clip(&h), v2);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(clip(&h).variation(), Some(1));
+        // It plays on, nothing dropped.
+        run(&mut h, &mut pads, 2 * BAR, &[]);
+        assert!(!pads.hits.is_empty());
+        assert_eq!(h.dropped(), 0);
+        // Not while recording.
+        h.act(TimeAction::Transport(Command::Record)).unwrap();
+        run(&mut h, &mut pads, 2 * BAR + BAR / 4, &[]);
+        assert_eq!(h.info().state, State::Recording);
+        assert!(h
+            .act(mutate(false))
+            .unwrap_err()
+            .contains("not while recording"));
+    }
+
     /// Perform's Rec song with REC (sequencer S4): a take turns Rec song
     /// on for its length and what it played goes into the song when it
     /// ends; "+ Rec song" taken off skips one take; Rec song off during

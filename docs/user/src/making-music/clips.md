@@ -113,6 +113,7 @@ The Record panel has three tabs at its top: **Record**, the record settings, **C
 - **Program:** the program change the clip sends to outside gear as it starts, **1** to **128**, or **off** for none. It goes on the clip's first tick, after the clip before it ends its notes and before this clip's first note, so a synth on a MIDI Out track changes sound with the clip. Only a track that plays on MIDI Out sends it (its **Plays on** port and channel, with **Send MIDI and CV out** on in Prefs); on the pads it does nothing. It goes again each time the clip is launched, as each song placement of it starts, and when the music starts, but not on every loop.
 - **Bank:** the bank select sent just before the program, shown as the two numbers sent (CC 0 / CC 32), **0/0** to **127/127**, or **off** to send none. Your synth's manual says which bank numbers it uses. Hold **SHIFT** as you tap its arrows to step the first number (a whole CC 0).
 - **Direction:** the order the clip plays its steps of a sixteenth in. **Forward** plays it as written. **Reverse** plays the last step first. **Ping pong** plays forward to the end, then back to the start, and on, the end steps once each turn, so it turns wherever it reached when the clip starts its next pass. **Random** plays every step once a pass in an order of its own, a new order each pass; each pass plays the same every time you play the song, so an export sounds as you heard it. Each step's notes and locks go with it, and a note played a little early or late keeps that place around its step. The clip's knob moves still play forward. A clip that isn't two whole steps or more plays forward and the row shows **—**: a tap puts it back to **Forward**.
+- **Mutate:** a new variation of the clip's notes, and back. **›** mutates it; **‹** restores the original. See [Mutate and Restore](#mutate-and-restore) below.
 
 {{shot: clips-card-direction | The Clip tab's Direction row: Clip 1 plays its steps in reverse.}}
 
@@ -130,7 +131,24 @@ Under the rows, **Save state** keeps the clip as it is now: its notes, locks, kn
 
 A clip keeps one saved state, and a new Save state replaces it. Saved states last while the project is open; they are not saved with it. Deleting, moving or copying a clip, or moving a row, forgets the saved states of the slots it touches. A Loop track's cell has no Save state: the Looper's **UNDO** takes layers back.
 
-Coming: the clip's name and colour, its step size, and playing it backwards.
+### Mutate and Restore
+
+When a pattern has gone stale, let the clip vary itself. On the Clip tab's **Mutate** row, tap **›** (or pick the row with the data wheel and press **+**): some of the clip's notes change, about one in four, at once, while it plays. Each changed note gets one of these:
+
+- a softer or harder hit;
+- a chance: a note that always played now plays half or three quarters of the time, and one with a chance plays every time again;
+- a ratchet: a single hit becomes two or three quick ones, or a ratchet becomes a single hit;
+- on a track that plays notes (a synth or outside gear, not a kit), the next pitch up or down among the notes the clip already plays, so the tune stays in its key. A kit's pads never change sound.
+
+Hold **SHIFT** as you tap **›** for a bolder variation, about half the notes. Steps that are off stay off, and tied and slid notes keep their pitch so the tie still holds.
+
+{{shot: clips-card-mutate | The Clip tab's Mutate row: Clip 1 plays a variant, its original kept.}}
+
+The row says **original** until you mutate, then **variant**. The clip keeps its original beside it, so tap **›** again for another variation of the original (not of the variation), as many times as you like. Tap **‹** (or press **–**) to **restore** the original: its notes, locks, length and knob moves come back as they were before the first Mutate, whatever you changed since. The clip's settings (speed, direction and the rest) stay as they are now.
+
+Each Mutate and Restore is a take ("Mutate 4 · variant 2", "Restore 5 · the original"), so **UNDO** steps back through them. The original is saved with the project, so Restore still works after you open it again. Mutate waits until a recording is done, and a clip with no notes, or a Loop track's cell, has nothing to mutate.
+
+Coming: the clip's name and colour, and its step size.
 
 ## Takes
 

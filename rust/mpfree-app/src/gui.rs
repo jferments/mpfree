@@ -12586,7 +12586,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         song: None,
         settings: false,
         pasted: false,
-        reloaded: false,
+        replaced: None,
+        variant: None,
         scene: None,
     };
     st.done = vec![
@@ -12841,12 +12842,28 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                     c.settings.direction = mpfree_seq::Direction::Reverse;
                 }
                 p.time_page.clip_card = true;
-                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Time(Box::new(st.clone())));
                 p.apply(ToUi::Show(View::Arrange));
                 if let Some(l) = p.ui.get_mut::<OptionList>(time_view::CLIP_CARD) {
                     l.selected = time_view::CLIP_DIRECTION;
                 }
                 out.push(("clips-card-direction", p));
+            }
+            // Mutated (S6): it plays a variant, its original kept for ‹.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                if let Some(c) = st
+                    .focus()
+                    .and_then(|(t, s)| st.tracks.get_mut(t)?.slots.get_mut(s)?.as_mut())
+                {
+                    c.variation = Some(2);
+                }
+                p.time_page.clip_card = true;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                if let Some(l) = p.ui.get_mut::<OptionList>(time_view::CLIP_CARD) {
+                    l.selected = time_view::CLIP_MUTATE;
+                }
+                out.push(("clips-card-mutate", p));
             }
         }
         Err(e) => eprintln!("clips-card sample: {e}"),
@@ -16077,7 +16094,8 @@ mod tests {
             song: None,
             settings: false,
             pasted: false,
-            reloaded: false,
+            replaced: None,
+            variant: None,
             scene: None,
         };
         let mut st = p.time.clone();
@@ -16420,7 +16438,8 @@ mod tests {
             song: None,
             settings: false,
             pasted: false,
-            reloaded: false,
+            replaced: None,
+            variant: None,
             scene: None,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));

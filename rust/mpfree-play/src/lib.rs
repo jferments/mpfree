@@ -44,7 +44,8 @@ pub use record::{
 };
 pub use recorded::{Behind, Includes, Rec, Recent, RECENT};
 pub use takes::{
-    ClipDrop, MovePut, MoveWrite, Recorded, SceneEdit, SongChange, SongEdit, Take, Takes, TAKE_ROOM,
+    ClipDrop, MovePut, MoveWrite, Recorded, Replaced, SceneEdit, SongChange, SongEdit, Take, Takes,
+    TAKE_ROOM,
 };
 pub use view::{
     anchored, CompileError, Cue, Launch, MuteCue, MuteLanded, NowPlaying, PlayView, SceneProgram,
