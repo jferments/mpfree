@@ -856,6 +856,7 @@ dependencies = [
  "mpfree-audiotracks",
  "mpfree-fx",
  "mpfree-grain",
+ "mpfree-instruments",
  "mpfree-lanes",
  "mpfree-looper",
  "mpfree-mod",
@@ -1030,6 +1031,8 @@ dependencies = [
 name = "mpfree-instruments"
 version = "0.1.0"
 dependencies = [
+ "mpfree-fx",
+ "mpfree-mod",
  "mpfree-node",
  "mpfree-synth",
 ]
@@ -1358,6 +1361,7 @@ dependencies = [
 name = "mpfree-synth-ui"
 version = "0.1.0"
 dependencies = [
+ "mpfree-instruments",
  "mpfree-mod",
  "mpfree-node",
  "mpfree-param",

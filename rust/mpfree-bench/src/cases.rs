@@ -1043,6 +1043,42 @@ pub fn all(rate: u32) -> Vec<Case> {
             )
         }));
     }
+    // A sound: the Keys engine with its own Ensemble and a macro moving a
+    // setting of each (what the wrapper and its effect add to the engine).
+    v.push(measured(|| {
+        use mpfree_instruments::sound::FX_BASE;
+        use mpfree_instruments::{Design, Macro, MacroMap, Sound};
+        let design = Design {
+            fx: vec!["mpfree.fx.ensemble".into()],
+            macros: vec![Macro {
+                name: "Space".into(),
+                maps: vec![
+                    MacroMap {
+                        target: mpfree_synth::keys_params::TONE,
+                        from: -20.0,
+                        to: 20.0,
+                        curve: mpfree_mod::MapCurve::Linear,
+                    },
+                    MacroMap {
+                        target: FX_BASE + ids::ensemble::MIX,
+                        from: 0.0,
+                        to: 60.0,
+                        curve: mpfree_mod::MapCurve::Linear,
+                    },
+                ],
+            }],
+        };
+        let sound = Sound::new(Box::new(Keys::new(rate)), &design).expect("the sound");
+        let space = mpfree_instruments::sound::MACRO_BASE;
+        chords(
+            "Sound Keys Init with Ensemble, 8 voices".to_string(),
+            rate,
+            Box::new(sound),
+            &[(space, 50.0)],
+            Some(mpfree_synth::keys_params::POLYPHONY),
+            8,
+        )
+    }));
     // Drawbar: the default three drawbars, all nine with leakage, chorus
     // and the fast rotary, and the rotary off.
     for (name, keys) in [
