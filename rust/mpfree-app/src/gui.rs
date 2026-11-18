@@ -23517,7 +23517,7 @@ mod tests {
         assert_eq!(p.controller_chip, None);
         assert!(!column(&p).0.contains("Controller"));
         let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
-        assert!(hint.contains("PAD BANK: kit"), "{hint}");
+        assert!(hint.contains("PAD BANK: bank"), "{hint}");
     }
 
     #[test]
