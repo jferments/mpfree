@@ -68,7 +68,7 @@ use mpfree_midi::port::{PortId, Ports, MAX_PORTS};
 use mpfree_midi::setup::{Ignored, Kept, PortInput, TempoSource, FOLLOW_KNOBS};
 use mpfree_midi_clock::ClockIn;
 use mpfree_midi_ui::{PortLive, Shared};
-use mpfree_node::ParamInfo;
+use mpfree_node::{Ctl, ParamInfo};
 use mpfree_play::mpfree_param::{transport, Owner, ParamAddr};
 use mpfree_play::Event;
 
@@ -103,6 +103,13 @@ pub enum Key {
         kind: mpfree_node::Expr,
         value: f32,
     },
+    /// A pedal (sustain, sostenuto, soft), the mod wheel, a breath or a
+    /// foot controller: CC 64, 66, 67, 1, 2 or 11, 0 to 1, for the whole
+    /// track ([`Ctl`]). Other CCs are MIDI Learn's.
+    Control {
+        ctl: Ctl,
+        value: f32,
+    },
 }
 
 impl Key {
@@ -126,7 +133,9 @@ impl Key {
                 kind: mpfree_node::Expr::Tone,
                 value,
             } => In::Tone { note, value },
-            Key::Expr { .. } => return None,
+            // Gear takes its pedals and wheels as they came
+            // (`MidiOut::keys_control`), not through expression out.
+            Key::Expr { .. } | Key::Control { .. } => return None,
         })
     }
 }
@@ -201,8 +210,9 @@ impl RoutedHeld {
                 was || !armed
             }
             Key::Pressure { note, .. } | Key::Expr { note, .. } => *held & bit(note) != 0 || !armed,
-            // The wheel bends the track it is routed to, as it is now.
-            Key::Bend { .. } => !armed,
+            // The wheels and pedals move the track they are routed to, as
+            // it is now.
+            Key::Bend { .. } | Key::Control { .. } => !armed,
         }
     }
 }
@@ -265,7 +275,7 @@ impl RoutedPads {
                 let pad = self.pads[at(note)];
                 (pad != NO_PAD).then_some(Event::Pressure { note: pad, value })
             }
-            Key::Bend { .. } | Key::Expr { .. } => None,
+            Key::Bend { .. } | Key::Expr { .. } | Key::Control { .. } => None,
         }
     }
 }
@@ -606,6 +616,9 @@ pub struct MusicIn {
     /// Keys a route sends to its track, whichever track is armed, until
     /// the app takes them ([`MusicIn::take_routed`]).
     routed: Vec<(u8, Key)>,
+    /// The pedals each port holds down and where they went, so that
+    /// unplugging it lets them up there.
+    pedals: Vec<PedalDown>,
     /// What thru passes on, until the app takes it
     /// ([`MusicIn::take_thru`]), and how many were dropped for want of
     /// room.
@@ -670,6 +683,7 @@ impl MusicIn {
             note_offs: false,
             about: vec![String::new(); MAX_PORTS],
             routed: Vec::with_capacity(ROUTED_KEYS),
+            pedals: Vec::new(),
             thru: Vec::with_capacity(THRU_MSGS),
             thru_dropped: 0,
             knobs: Knobs::new(),
@@ -1268,8 +1282,8 @@ impl MusicIn {
         })
     }
 
-    /// A USB keyboard went away: every key it held is let go. Returns how
-    /// many were.
+    /// A USB keyboard went away: every key it held is let go, and every
+    /// pedal it held comes up. Returns how many keys were let go.
     pub fn unplugged(&mut self, port: PortId, keys: &mut Vec<Key>) -> u16 {
         let held = keys.len();
         let routed = &mut self.routed;
@@ -1289,7 +1303,8 @@ impl MusicIn {
             .filter(|k| matches!(k, Key::Up { .. }))
             .count()
             + routed_ended;
-        // Its wheel let go too.
+        // Its wheel let go too, and its pedals come up where they went
+        // down.
         if self
             .mpe
             .get_mut(usize::from(port.0))
@@ -1297,6 +1312,18 @@ impl MusicIn {
         {
             keys.push(Key::Bend { value: 0.0 });
         }
+        let routed = &mut self.routed;
+        self.pedals.retain(|&(p, to, ctl)| {
+            if p != port {
+                return true;
+            }
+            let up = Key::Control { ctl, value: 0.0 };
+            match to {
+                None => keys.push(up),
+                Some(track) => routed.push((track, up)),
+            }
+            false
+        });
         self.ports.unplugged(port);
         self.ports_changed = true;
         self.unplugged = true;
@@ -1349,6 +1376,7 @@ impl MusicIn {
         let learns = self.input[p] != PortInput::PlaysTracks;
         let frame = (t.max(0.0) * f64::from(CLOCK_RATE)) as u64;
         let armed = self.armed;
+        let (keys_at, routed_at) = (keys.len(), self.routed.len());
         // What following this port takes: its clock, and its Start, Stop
         // and Song Position as the project says.
         let led = self
@@ -1482,8 +1510,9 @@ impl MusicIn {
                         passed(other, thru, dropped);
                         return;
                     }
-                    // A route plays its track, whatever the port's input.
-                    // Its other messages (a knob, a bend) nothing takes yet.
+                    // A route plays its track, whatever the port's input:
+                    // its notes, pedals and wheels. Its other CCs (a knob)
+                    // nothing takes yet.
                     if let In::Routed { track, msg, .. } = other {
                         to = if key(msg).is_some() {
                             To::Routed { track }
@@ -1506,6 +1535,11 @@ impl MusicIn {
                         if !learn_only {
                             if let Some(note) = key_note(&other) {
                                 to = armed_to(armed, note);
+                            } else if moves_track(&other) && armed.1 == KeysPlay::Notes {
+                                to = To::Track {
+                                    track: armed.0,
+                                    pad: None,
+                                };
                             }
                         }
                         key_of(other, keys);
@@ -1618,6 +1652,13 @@ impl MusicIn {
                 ));
             }
         }
+        // The pedals it holds down now, and where they went.
+        for &k in &keys[keys_at..] {
+            hold_pedal(&mut self.pedals, port, None, k);
+        }
+        for &(track, k) in &self.routed[routed_at..] {
+            hold_pedal(&mut self.pedals, port, Some(track), k);
+        }
     }
 
     /// Once in a while: say when a port's clock stopped arriving.
@@ -1699,6 +1740,12 @@ pub fn io_model() -> Shared {
 }
 
 /// The note a key message plays (note on, note off, pressure).
+/// Whether `e` is a pedal, the mod wheel, breath or a foot controller for
+/// the armed track ([`Key::Control`]).
+fn moves_track(e: &In) -> bool {
+    matches!(e, In::Track { msg: Msg::Cc { cc, .. }, .. } if Ctl::from_cc(*cc).is_some())
+}
+
 fn key_note(e: &In) -> Option<u8> {
     match e {
         In::Track {
@@ -1753,17 +1800,24 @@ fn follows(yes: bool) -> To {
 
 /// A note-on or pressure: what a "Learn only" port doesn't play.
 fn starts_or_presses(e: &In) -> bool {
-    matches!(
-        e,
+    match e {
         In::Track {
             msg: Msg::NoteOn { .. } | Msg::PolyPressure { .. },
             ..
-        }
-    )
+        } => true,
+        // A pedal coming up still lets go of what it held; anything else
+        // a controller moves plays.
+        In::Track {
+            msg: Msg::Cc { cc, value, .. },
+            ..
+        } => !Ctl::from_cc(*cc).is_some_and(|c| c.is_pedal() && *value < 64),
+        _ => false,
+    }
 }
 
-/// The router's notes as keys; CCs, bends and program changes wait for
-/// MIDI Learn and the track settings.
+/// The router's notes, pedals, mod wheel, breath and foot controller as
+/// keys; other CCs and program changes wait for MIDI Learn and the track
+/// settings, and bends and pressure go through MPE ([`MpeIn`]).
 fn key_of(e: In, keys: &mut Vec<Key>) {
     let In::Track { msg, .. } = e else {
         return;
@@ -1786,7 +1840,7 @@ fn passed(e: In, thru: &mut Vec<Passed>, dropped: &mut u64) {
     }
 }
 
-/// A route's notes as keys, with the track they play.
+/// A route's notes and controllers as keys, with the track they play.
 fn routed_key(e: In, routed: &mut Vec<(u8, Key)>) {
     let In::Routed { track, msg, .. } = e else {
         return;
@@ -1804,8 +1858,65 @@ fn key(msg: Msg) -> Option<Key> {
         },
         Msg::NoteOff { note, .. } => Key::Up { note },
         Msg::PolyPressure { note, value, .. } => Key::Pressure { note, value },
+        Msg::Cc { cc, value, .. } => Key::Control {
+            ctl: Ctl::from_cc(cc)?,
+            value: f32::from(value) / 127.0,
+        },
         _ => return None,
     })
+}
+
+/// Where a pedal a port holds down went: the armed track's keys (None)
+/// or a route's track.
+type PedalDown = (PortId, Option<u8>, Ctl);
+
+/// Keeps the pedals each port holds down, and where they went, from a key
+/// that port played.
+fn hold_pedal(down: &mut Vec<PedalDown>, port: PortId, to: Option<u8>, key: Key) {
+    let Key::Control { ctl, value } = key else {
+        return;
+    };
+    if !ctl.is_pedal() {
+        return;
+    }
+    let at = (port, to, ctl);
+    match (Ctl::down(value), down.iter().position(|d| *d == at)) {
+        (true, None) => down.push(at),
+        (false, Some(i)) => {
+            down.swap_remove(i);
+        }
+        _ => {}
+    }
+}
+
+/// The pedals down on the armed track from the keys, so that they come up
+/// there when another track is armed and nothing they hold hangs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PedalsDown(u8);
+
+impl PedalsDown {
+    /// A pedal (or another controller, which it ignores) went to the
+    /// armed track.
+    pub fn key(&mut self, ctl: Ctl, value: f32) {
+        let Some(i) = Ctl::ALL.iter().position(|&c| c == ctl && c.is_pedal()) else {
+            return;
+        };
+        if Ctl::down(value) {
+            self.0 |= 1 << i;
+        } else {
+            self.0 &= !(1 << i);
+        }
+    }
+
+    /// The pedals that were down, now up.
+    pub fn lift(&mut self) -> impl Iterator<Item = Ctl> {
+        let down = std::mem::take(&mut self.0);
+        Ctl::ALL
+            .into_iter()
+            .enumerate()
+            .filter(move |(i, _)| down & (1 << i) != 0)
+            .map(|(_, c)| c)
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -2739,6 +2850,111 @@ mod tests {
         assert!(matches!(routed[0], (5, Key::Bend { value }) if value > 0.99));
     }
 
+    /// A keyboard's sustain pedal, mod wheel, breath and foot controller
+    /// reach the armed track as keys, and a route's its own track; other
+    /// CCs don't. A pedal held when the keyboard is unplugged comes up
+    /// where it went down; one let go first doesn't come up again.
+    #[test]
+    fn pedals_and_the_mod_wheel_reach_the_tracks_and_come_up_on_an_unplug() {
+        use mpfree_midi::setup::TrackRoute;
+        let mut m = MusicIn::new();
+        let io = model();
+        let usb = m.plugged("Keystep 37").unwrap();
+        let (keys, _) = run(
+            &mut m,
+            usb,
+            &[
+                0xB0, 64, 127, 0xB0, 1, 127, 0xB0, 2, 0, 0xB0, 11, 127, 0xB0, 74, 9, 0xB0, 66, 127,
+            ],
+        );
+        let ctl = |ctl, value| Key::Control { ctl, value };
+        assert_eq!(
+            keys,
+            [
+                ctl(Ctl::Sustain, 1.0),
+                ctl(Ctl::ModWheel, 1.0),
+                ctl(Ctl::Breath, 0.0),
+                ctl(Ctl::Foot, 1.0),
+                ctl(Ctl::Sostenuto, 1.0),
+            ]
+        );
+        // Sostenuto lets go; a route on channel 4 holds its own track's
+        // sustain.
+        {
+            let mut v = io.lock().unwrap();
+            v.setup.routes = vec![TrackRoute {
+                port: "Keystep 37".to_string(),
+                channel: Some(3),
+                track: 5,
+                blocks: Default::default(),
+            }];
+            v.gen += 1;
+        }
+        m.sync(&io, 1.0);
+        let (keys, _) = run(&mut m, usb, &[0xB0, 66, 0, 0xB3, 64, 100, 0xB3, 1, 64]);
+        assert_eq!(keys, [ctl(Ctl::Sostenuto, 0.0)]);
+        let routed: Vec<_> = m.take_routed().collect();
+        assert_eq!(
+            routed,
+            [
+                (5, ctl(Ctl::Sustain, 100.0 / 127.0)),
+                (5, ctl(Ctl::ModWheel, 64.0 / 127.0))
+            ]
+        );
+        // Unplugged: the armed track's sustain and the route's come up;
+        // the wheels stay where they are, as a real wheel does.
+        let mut keys = Vec::new();
+        assert_eq!(m.unplugged(usb, &mut keys), 0, "no key was held");
+        assert_eq!(keys, [ctl(Ctl::Sustain, 0.0)]);
+        let routed: Vec<_> = m.take_routed().collect();
+        assert_eq!(routed, [(5, ctl(Ctl::Sustain, 0.0))]);
+        // Nothing is left to come up.
+        m.plugged("Keystep 37").unwrap();
+        let mut keys = Vec::new();
+        m.unplugged(usb, &mut keys);
+        assert!(keys.is_empty(), "{keys:?}");
+    }
+
+    /// On a "Learn only" port a pedal going down plays nothing, but one
+    /// coming up still lets go of what it held.
+    #[test]
+    fn a_learn_only_port_lets_a_pedal_up() {
+        let mut m = MusicIn::new();
+        let io = model();
+        let (keys, _) = run(&mut m, DIN, &[0xB0, 64, 127]);
+        assert_eq!(keys.len(), 1);
+        {
+            let mut v = io.lock().unwrap();
+            v.setup.set_port(mpfree_midi::setup::DIN_NAME, |p| {
+                p.input = PortInput::LearnOnly
+            });
+            v.gen += 1;
+        }
+        m.sync(&io, 1.0);
+        let (keys, _) = run(&mut m, DIN, &[0xB0, 66, 127, 0xB0, 1, 30, 0xB0, 64, 0]);
+        assert_eq!(
+            keys,
+            [Key::Control {
+                ctl: Ctl::Sustain,
+                value: 0.0
+            }]
+        );
+    }
+
+    /// The pedals down on the armed track come up when another is armed;
+    /// the wheels aren't pedals.
+    #[test]
+    fn the_armed_tracks_pedals_come_up_once() {
+        let mut d = PedalsDown::default();
+        d.key(Ctl::Sustain, 1.0);
+        d.key(Ctl::ModWheel, 1.0);
+        d.key(Ctl::Soft, 0.6);
+        d.key(Ctl::Sostenuto, 1.0);
+        d.key(Ctl::Sostenuto, 0.2);
+        assert_eq!(d.lift().collect::<Vec<_>>(), [Ctl::Sustain, Ctl::Soft]);
+        assert_eq!(d.lift().count(), 0);
+    }
+
     /// An MPE controller that says its zone (RPN 6 on channel 1) is heard
     /// as one, and the log says so.
     #[test]
@@ -3113,8 +3329,16 @@ mod tests {
         assert!(keys.is_empty());
         assert_eq!(turns(&mut m), [(0, 6), (1, 127), (0, -10)]);
         assert!(turns(&mut m).is_empty());
+        // The mod wheel isn't a knob: it reaches the track, as the key does.
         let (keys, _) = run(&mut m, usb, &[0xB0, 1, 5, 0x90, 60, 90]);
-        assert_eq!(keys.len(), 1);
+        assert_eq!(keys.len(), 2);
+        assert!(matches!(
+            keys[0],
+            Key::Control {
+                ctl: Ctl::ModWheel,
+                ..
+            }
+        ));
         run(&mut m, DIN, &[0xB0, 74, 0, 0xB0, 74, 99]);
         assert!(turns(&mut m).is_empty());
         // A control learned on CC 71 moves its value, not Q-Link 2.
@@ -3639,8 +3863,18 @@ mod tests {
         s.lock().unwrap().gen += 1;
         m.sync(&s, 0.1);
         m.arm(cutoff());
-        let (keys, _) = run(&mut m, DIN, &[0xB0, 1, 64]);
+        let (keys, _) = run(&mut m, DIN, &[0xB0, 20, 64]);
         assert!(keys.is_empty());
         assert_eq!(m.armed(), Some(cutoff()), "nothing took it");
+        // The mod wheel plays the track instead.
+        let (keys, _) = run(&mut m, DIN, &[0xB0, 1, 127]);
+        assert_eq!(
+            keys,
+            [Key::Control {
+                ctl: Ctl::ModWheel,
+                value: 1.0
+            }]
+        );
+        assert_eq!(m.armed(), Some(cutoff()));
     }
 }

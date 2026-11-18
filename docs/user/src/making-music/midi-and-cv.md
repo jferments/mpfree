@@ -12,7 +12,7 @@ All of these settings are in one place: the mixer's [I/O view](mixing-and-effect
 
 ## Playing MPFree from a keyboard
 
-Plug a keyboard into **MIDI IN**, or a USB keyboard into the **USB** port, and it plays the armed track, just as the pads do (to play other tracks too, see [Playing several tracks from your keyboards](#playing-several-tracks-from-your-keyboards)). Its knobs, faders and pedals can turn effect knobs with [MIDI Learn](#midi-learn). It listens on every MIDI channel, and you can plug a USB keyboard in or out while MPFree runs. A USB interface with several MIDI ports shows each one as a port of its own, named as the device names it (up to 15 USB ports at once). If a keyboard sends **All notes off** (or **All sound off**), the keys it holds on that channel let go.
+Plug a keyboard into **MIDI IN**, or a USB keyboard into the **USB** port, and it plays the armed track, just as the pads do (to play other tracks too, see [Playing several tracks from your keyboards](#playing-several-tracks-from-your-keyboards)). Its sustain pedal and mod wheel play the sound ([Pedals and the mod wheel](#pedals-and-the-mod-wheel)), and its knobs, faders and other pedals can turn effect knobs with [MIDI Learn](#midi-learn). It listens on every MIDI channel, and you can plug a USB keyboard in or out while MPFree runs. A USB interface with several MIDI ports shows each one as a port of its own, named as the device names it (up to 15 USB ports at once). If a keyboard sends **All notes off** (or **All sound off**), the keys it holds on that channel let go.
 
 - **With a synth on the pads,** each key plays its own note, through the arpeggiator, so **NOTE REPEAT** and Latch work from the keyboard too. A note held on a key and a pad ends when both let go.
 - **With a drum kit,** every key hits one of the kit's 128 pads: the pad that sends that note to a drum machine with no [profile](#device-profiles) of its own (see [A kit on a drum machine](#a-kit-on-a-drum-machine)), whichever bank **PAD BANK** shows. C#2 is A1, C2 is A2 and so on through bank A, as the MPC sends its pads; B1 (35) is B1, D#2 (39) is B2 and so on through banks B to H. So a drum machine or another MPFree playing a kit's notes plays the same pads. The keys go through the arpeggiator, so **NOTE REPEAT** and Latch work from the keyboard, and a pad held on a key and on the MPC ends when both let go. Keys only play: in **STEP SEQ**, **TRACK MUTE** or 16 Levels they still play their pads, as keys on a synth do.
@@ -32,6 +32,16 @@ An **MPE** controller (an expressive keyboard that gives each finger its own cha
 Most MPE controllers say they are MPE when they start, and MPFree hears it: its log says *MPE lower zone, channels 2 to 16 (it said so)*. If yours doesn't, give its port a [profile](#device-profiles) with an **mpe** line.
 
 The wheel, pressure and MPE play MPFree's own sounds: the synth and a track's own instrument (a kit's pads take pressure only). They go into the arpeggiator's and the MIDI effects' notes only while those notes are the keys as they came: a note the MIDI effects moved, or one the arpeggiator plays, takes the wheel but not its key's slide or tone. A track that plays a synth through MIDI out sends them to that synth ([The wheel, pressure and MPE on a synth](#the-wheel-pressure-and-mpe-on-a-synth)), and its [CV outputs](#cv-and-gate) take them too. Recording them into a clip comes later.
+
+### Pedals and the mod wheel
+
+A **sustain pedal** on your keyboard holds the notes of the armed track's sound, as on a piano: a key you let go keeps sounding until the pedal comes up, and a key you play again under the pedal plays again. A **sostenuto pedal** (the middle pedal) holds only the keys that are down when you press it. Both work on the synth, on a track's own instrument and on plugins.
+
+The **mod wheel**, a **breath controller**, an **expression pedal** (the kind with a rocker, sending CC 11) and the **soft pedal** go to the sound too. Plugins get them as MIDI. MPFree's own synths don't use them yet; the new synths will.
+
+A track that plays a synth through MIDI out sends all of them to that synth as they came, on its channel.
+
+So that no note hangs, a pedal that is down comes up on the track it was holding when you arm another track or unplug the keyboard, and the notes it held end. The mod wheel stays where you left it. Keys that play a kit's pads take no pedal, and a route's track takes its port's pedals and mod wheel too. A pedal or wheel you gave to something with [MIDI Learn](#midi-learn) moves that instead of the sound.
 
 ## Playing several tracks from your keyboards
 
@@ -112,7 +122,7 @@ A track that plays a synth through MIDI out passes your keyboard's [pitch wheel,
 - **Pressure:** the hardest-pressed key's, as channel pressure (aftertouch). A synth that takes each note's own pressure (polyphonic aftertouch) gets each key's on its note instead when its profile says `pressure = poly`.
 - **Tone:** the tone of the key you played last, as CC 74, which most synths have on their filter cutoff.
 
-Each goes out only when it changes. When you let go of the last key, the bend goes back to the wheel's and the pressure to 0, and a stop, a panic or a new **Plays on** puts the synth back at rest. Keys that play a kit's pads send each pad's pressure on its notes, and no bend. To send a synth the keyboard's own messages as they came (an MPE synth's channels and all), use [Thru](#thru-a-keyboard-straight-to-a-synth) instead.
+Each goes out only when it changes. When you let go of the last key, the bend goes back to the wheel's and the pressure to 0, and a stop, a panic or a new **Plays on** puts the synth back at rest, with any [pedal](#pedals-and-the-mod-wheel) the keys put down back up. Keys that play a kit's pads send each pad's pressure on its notes, and no bend. To send a synth the keyboard's own messages as they came (an MPE synth's channels and all), use [Thru](#thru-a-keyboard-straight-to-a-synth) instead.
 
 **An MPE synth** (one that takes each note on its own channel: a hardware synth with an MPE mode, or a soft synth set to MPE) gets each note's expression on that note alone. Give the synth's port a [profile](#device-profiles) with an **mpe** line (`mpe = lower 15` for most), and every track that plays on that port plays MPE:
 
