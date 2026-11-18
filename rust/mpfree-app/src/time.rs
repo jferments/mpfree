@@ -734,9 +734,18 @@ impl TimeHost {
         self.audio.follow(follow);
     }
 
+    /// The bytes read from the followed port at the top of this period of
+    /// `period` frames, before [`TimeHost::advance`]: they came during the
+    /// period before, so they go to [`TimeHost::clock_in`] stamped half a
+    /// period earlier than [`TimeHost::next_frame`]
+    /// ([`follow::read_stamp`]), on average when they came.
+    pub fn clock_read(&mut self, period: u32, bytes: &[u8]) -> Option<String> {
+        self.clock_in(follow::read_stamp(self.next_frame(), period), bytes)
+    }
+
     /// Every byte read from the followed port this period, before
-    /// [`TimeHost::advance`], with `frame` = [`TimeHost::next_frame`]
-    /// (or earlier, when the bytes have their own time). Anything but
+    /// [`TimeHost::advance`], with `frame` when they came, at most
+    /// [`TimeHost::next_frame`]. Anything but
     /// clock, Start, Continue, Stop and Song Position is skipped; the
     /// options given to [`TimeHost::follow`] say what follows. When the
     /// leader's start began a ready take, the clip it records into is
@@ -5468,14 +5477,14 @@ mod tests {
         }
     }
 
-    /// Following another device's clock as the app will (the MIDI
+    /// Following another device's clock as the app does (the MIDI
     /// thread's M4): each period, the leader port's bytes read at its top
-    /// go to `clock_in` at `next_frame`, and the app's tempo to
-    /// `follow_tempo`. The leader runs at 100 BPM, the transport at 120.
-    /// A one-bar clip with a note on every beat plays on the leader's
-    /// beats from the third bar on, about half a period after them (bytes
-    /// read once a period come up to a period late); the app's tempo is ignored while
-    /// the clock arrives; the screens and `followed_bpm` show the leader's;
+    /// go to `clock_read`, which stamps them half a period earlier, and the
+    /// app's tempo to `follow_tempo`. The leader runs at 100 BPM, the
+    /// transport at 120. A one-bar clip with a note on every beat plays on
+    /// the leader's beats from the third bar on, within half a period of
+    /// them (bytes read once a period come up to a period after they
+    /// did); the app's tempo is ignored while the clock arrives; the screens and `followed_bpm` show the leader's;
     /// the status line has nothing to add; and following allocates
     /// nothing.
     #[test]
@@ -5521,7 +5530,7 @@ mod tests {
         let mut period = |h: &mut TimeHost, pads: &mut Fake| {
             let p = h.next_frame();
             let n = leader.bytes(p, &mut buf);
-            h.clock_in(p, &buf[..n]);
+            h.clock_read(PERIOD, &buf[..n]);
             h.follow_tempo(120.0);
             h.period(PERIOD, pads);
             pads.frame += u64::from(PERIOD);
@@ -5547,13 +5556,22 @@ mod tests {
                 hit as i64 - b as i64
             })
             .collect();
-        assert_eq!(pads.hits.len(), 32, "a note a beat, from the first");
-        // About half a period late: the bytes are read up to a period
-        // after they came (58 to 72 frames when written).
+        // A note a beat, from the first (beat 32's may have played too, a
+        // little early, in the last period run).
+        let mid = (beat(31) + beat(32)) / 2;
+        let played = pads.hits.iter().filter(|h| h.0 < mid).count();
+        assert_eq!(played, 32, "a note a beat, from the first");
+        // On the beats, within half a period: the bytes are read up to a
+        // period after they came, and stamped half a period back.
         let half = i64::from(PERIOD) / 2;
         assert!(
-            late.iter().all(|&d| (half - 32..=half + 32).contains(&d)),
+            late.iter().all(|&d| (-half..=half).contains(&d)),
             "frames after the leader's beats: {late:?}"
+        );
+        let mean = late.iter().sum::<i64>() / late.len() as i64;
+        assert!(
+            mean.abs() <= 16,
+            "{mean} frames after the beats on average: {late:?}"
         );
         let bpm = h.followed_bpm().unwrap();
         assert!((bpm - 100.0).abs() < 0.1, "{bpm}");

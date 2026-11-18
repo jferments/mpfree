@@ -7474,16 +7474,16 @@ fn player_session(
         }
         // Another device's clock, when the project's tempo is from a port
         // (M4): the leader's bytes read this period go to the follower
-        // before the transport runs, as read at the period's top. A take
-        // ready now records from the leader's Start (sequencer S5).
+        // before the transport runs, stamped half a period before its top
+        // (they came during the period before). A take ready now records
+        // from the leader's Start (sequencer S5).
         time.set_leader(music.leader_name());
         time.take_waits(app.rec.ready.map(|take| take == rec_arm::Take::Add));
         let mut took = None;
         music.leader_clock(|follow, bytes| {
             time.follow(follow);
             if !bytes.is_empty() {
-                let frame = time.next_frame();
-                took = time.clock_in(frame, bytes);
+                took = time.clock_read(PERIOD as u32, bytes);
             }
         });
         if let Some(line) = took {
