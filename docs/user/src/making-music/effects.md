@@ -133,7 +133,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Pitch shifter** | Moves the sound up to two octaves up or down without changing its speed. It joins the sound where it lines up, so every note comes out clean, steady and on pitch, and chords hold together. Window sets how far behind the dry it plays: about 11 ms at the default 30 ms, tight enough to layer an octave under a bass. Spread detunes left and right for a wide double; feedback makes rising or falling stairs. |
 | **Pitch correct** | Tunes a voice to the notes of a key. Pick the **Key** and **Scale**; **Speed** sets how quickly it pulls a note in (0 snaps straight to it, for the hard, stepped sound; 50 ms or more keeps slides and vibrato natural) and **Amount** how far. **Flex-Tune** leaves notes you sing well away from the note alone, so slides and deliberate bends stay yours, and **Humanize** lets a long held note keep its vibrato while quick notes still snap in (both 0 by default, on the Voice page). The **Note** and **Correction** readouts show the note it hears and how far it is moving it. |
 | **Harmonizer** | Sings along with you: up to two extra voices a 3rd, 4th, 5th, 6th or octave above or below each note you sing, that stay in the key (a 3rd is major or minor as the key has it), each with its own level and pan. **Glide** smooths a voice into its next note, and **Dry** is your own voice. The voices stay clean and in tune with you, without a buzz. |
-| **Talk box** | Makes a sound say vowels, from "oo" to "ee". The vowel moves with how loud you play or in time with the music; **Formant** makes the mouth smaller or bigger. Best on rich sounds: synth chords, organs, guitars. |
+| **Talk box** | Makes a sound say vowels, from "oo" to "ee". The vowel moves with how loud you play or in time with the music; **Formant** makes the mouth smaller or bigger. Best on rich sounds: synth chords, organs, guitars (see [The Talk box](#the-talk-box)). |
 | **Perform FX** | The throws, stutters, beat repeats, tape stops and the XY pad, as an effect you can put on any strip. On the master it is what the Play page's throws play (see [Playing live](playing-live.md#throws)); on a pad, its 16 slots play stutters and repeats on that pad alone. |
 | **XY FX** | One effect at a time played from two controls at once, X and Y: see [XY FX](#xy-fx). |
 | **Tuner** | Tunes a guitar, a bass, a voice or a synth: put it on the strip the instrument comes in on (an input, usually) and play one note at a time. It shows the note, how many cents sharp or flat (the needle is green when you're within 3 cents) and the frequency. **Reference** sets the pitch of A, 440 Hz unless your band tunes to something else; **Mute** silences the strip while you tune. It doesn't change the sound and adds no delay. |
@@ -290,6 +290,15 @@ The **Natural** preset is a gentle pull for singing: notes you mean land in tune
 
 > [!NOTE]
 > Projects saved before this change sound a little different through Pitch correct and the Harmonizer: a note held in tune comes out exactly as it went in, a corrected note is smoother and steadier, and the harmony voices are cleaner. Speed now takes as long as it says, so a saved Speed pulls in a little more slowly. Flex-Tune and Humanize start at 0, so a saved Pitch correct corrects as it did.
+
+### The Talk box
+
+The Talk box shapes a sound into a vowel, the way your mouth does when you sing "ah" or "ee". Pick the **Vowel** it rests on; **Env depth** moves it along the row (OO, OU, AW, AH, UH, AE, EH, IH, EE) as you play louder, and **LFO depth** moves it in time or at its own rate, so it talks. **Formant** makes the mouth smaller (up) or bigger (down), and **Resonance** makes the vowels sharper and more nasal or softer. Every vowel sounds about as loud as the sound going in, so sweeping through them doesn't pump, and turning any control while it plays glides instead of clicking.
+
+It works best on sounds with plenty of harmonics: a saw lead, a synth chord, an organ, a distorted guitar. A pure sine has little for the vowels to shape.
+
+> [!NOTE]
+> Projects saved before this change sound different through the Talk box: it goes in at the level of the sound going in, about 6 dB louder than it was (5 to 8 dB in the presets), and the vowels are fuller and clearer, with no hollow dip between their formants. A Formant shift now makes the vowels a little wider or narrower along with the mouth.
 
 ### Lo-fi
 
