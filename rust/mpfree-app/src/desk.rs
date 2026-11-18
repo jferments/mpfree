@@ -120,6 +120,15 @@ impl Desk<'_> {
                     out.show(m)
                 }))
             }
+            // The chain editor's Capture: the copy starts on the mixer and
+            // its box comes back when it ends. One refused at once goes
+            // straight back (a full channel, the screen stalled, would free
+            // it here, between periods, as edits do).
+            gui::FromUi::Capture { slot, held } => {
+                if let Err((held, end)) = panels.capture(mix, slot, held) {
+                    let _ = out.try_show(gui::ToUi::Captured(held, end));
+                }
+            }
             gui::FromUi::ChainLearned => {
                 panels.learned();
                 music.disarm();

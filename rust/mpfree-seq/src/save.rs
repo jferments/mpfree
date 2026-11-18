@@ -43,6 +43,7 @@
 //! scene 0 Verse
 //! mutes 5
 //! value t1.mix.0 -3
+//! program 1 12 bank 0
 //! place 0 0 7680 0 slot 0
 //! marker 0 Intro
 //! morph 0 0 1
@@ -55,6 +56,10 @@
 //! only when set (sequencer S6): `off` (the step is off), `ramp:<n>` (its
 //! ratchet's velocity ramp), `tie` or `slide` ([`crate::Join`]). An older
 //! build reads the note and skips them.
+//!
+//! A scene's `program <track> <program>[ bank <bank>]` lines are the
+//! program changes it sends as it starts (sequencer S5), one a track, in
+//! order of track; an older build skips them.
 //!
 //! Reading is careful: every number is checked, every clip and the whole
 //! project go through [`Project::check`]-level checks, and a part that
@@ -146,6 +151,9 @@ pub fn to_text(p: &Project) -> String {
         for (a, v) in &sc.values {
             let _ = writeln!(s, "value {a} {v}");
         }
+        for tp in &sc.programs {
+            let _ = writeln!(s, "program {} {}", tp.track, program_text(tp.program));
+        }
     }
     let a = &p.arrangement;
     for pl in &a.placements {
@@ -209,11 +217,7 @@ fn clip_body(s: &mut String, c: &Clip) {
         s.push_str("once\n");
     }
     if let Some(p) = c.program {
-        let _ = write!(s, "program {}", p.program);
-        if let Some(b) = p.bank {
-            let _ = write!(s, " bank {b}");
-        }
-        s.push('\n');
+        let _ = writeln!(s, "program {}", program_text(p));
     }
     // Pressure first: the notes name runs of it.
     for chunk in c.touch.chunks(TOUCH_PER_LINE) {
@@ -357,7 +361,8 @@ fn launch<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<LaunchGrid> {
 }
 
 /// `program 4`, or `program 4 bank 2`: the rest of a clip's `program`
-/// line, in range ([`crate::ClipProgram::ok`]).
+/// line (after the track on a scene's), in range
+/// ([`crate::ClipProgram::ok`]).
 fn program<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<crate::ClipProgram> {
     let program = num(w.next())?;
     let bank = match w.next() {
@@ -367,6 +372,14 @@ fn program<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<crate::ClipProgr
     };
     let p = crate::ClipProgram { program, bank };
     p.ok().then_some(p)
+}
+
+/// The words after `program` (and a scene's track): `4`, or `4 bank 2`.
+fn program_text(p: crate::ClipProgram) -> String {
+    match p.bank {
+        Some(b) => format!("{} bank {b}", p.program),
+        None => p.program.to_string(),
+    }
 }
 
 fn follow_text(f: Follow) -> String {
@@ -663,6 +676,16 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 last_scene(&mut p)
                     .set_value(a, v)
                     .map_err(|e| bad(&format!("{e:?}")))?;
+            }
+            ("program", At::Scene) => {
+                let track: usize = num(w.next()).ok_or_else(|| bad("program"))?;
+                let to = program(&mut w).ok_or_else(|| bad("program"))?;
+                let sc = last_scene(&mut p);
+                if sc.program(track).is_some() {
+                    return Err(bad("program"));
+                }
+                sc.set_program(track, Some(to))
+                    .map_err(|_| bad("program"))?;
             }
             ("place", At::Top | At::Track | At::Scene) => {
                 let track: usize = num(w.next()).ok_or_else(|| bad("track"))?;
@@ -964,6 +987,10 @@ mod tests {
         sc.mutes = Some(5);
         sc.follow = Some(Follow::after(8, FollowAction::First));
         sc.set_value("t1.mix.0".parse().unwrap(), -3.0).unwrap();
+        // Program changes it sends as it starts (S5), one with a bank.
+        let pc = |program, bank| Some(crate::ClipProgram { program, bank });
+        sc.set_program(2, pc(5, None)).unwrap();
+        sc.set_program(0, pc(12, Some(3))).unwrap();
         p.arrangement
             .placements
             .push(Placement::linked(0, 0, 0, 7680));
@@ -1151,6 +1178,44 @@ mod tests {
             let t = text.replace("program 4 bank 300", bad);
             assert!(from_text(&t).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_scenes_programs_read_back_in_order_and_bad_ones_refuse_the_part() {
+        let text = to_text(&full());
+        assert!(
+            text.contains("value t1.mix.0 -3\nprogram 0 12 bank 3\nprogram 2 5\n"),
+            "{text}"
+        );
+        let sc = &from_text(&text).unwrap().scenes[2];
+        assert_eq!(
+            sc.program(0).map(|p| (p.program, p.bank)),
+            Some((12, Some(3)))
+        );
+        assert_eq!(sc.program(2).map(|p| (p.program, p.bank)), Some((5, None)));
+        assert_eq!(sc.program(1), None);
+        // Written out of order, they still read back in order of track.
+        let swapped = text.replace(
+            "program 0 12 bank 3\nprogram 2 5\n",
+            "program 2 5\nprogram 0 12 bank 3\n",
+        );
+        assert_eq!(from_text(&swapped).unwrap(), full());
+        // A track twice, past the last track, a program out of range, junk.
+        for bad in [
+            "program 0 12 bank 3\nprogram 0 7",
+            "program 128 12 bank 3",
+            "program 0 128 bank 3",
+            "program 0 12 bank 16384",
+            "program 0 12 3",
+            "program 0",
+            "program x 12",
+        ] {
+            let t = text.replace("program 0 12 bank 3", bad);
+            assert!(from_text(&t).is_err(), "{bad}");
+        }
+        // Before any scene a `program` line is a stray one, as before.
+        let stray = text.replacen("mpfree-clips 1\n", "mpfree-clips 1\nprogram 0 4\n", 1);
+        assert_eq!(from_text(&stray).unwrap(), full());
     }
 
     #[test]

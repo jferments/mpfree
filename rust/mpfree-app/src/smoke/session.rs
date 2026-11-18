@@ -1162,6 +1162,12 @@ impl Session {
         if let Some(h) = self.heard.as_mut() {
             h.extend(l.iter().zip(&r).flat_map(|(a, b)| [*a, *b]));
         }
+        // A capture of an effect's memory that has ended, as in main.rs.
+        if let Some((held, end)) = self.mix.take_captured() {
+            if let Err(ToUi::Captured(held, end)) = self.out.try_show(ToUi::Captured(held, end)) {
+                self.mix.keep_captured(held, end);
+            }
+        }
         // An export takes this period's capture points and notes, as in
         // main.rs; a fast one waits for its files' room in place of the
         // card's write.

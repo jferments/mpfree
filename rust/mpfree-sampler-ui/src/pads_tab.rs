@@ -42,8 +42,8 @@
 //! [`PadsAction`]s it gets back.
 
 use mpfree_sampler::model::{
-    ChannelPick, Fade, GrainMode, GrainParams, Layer, ModelError, Pad, PlayMode, Project, Region,
-    SourceId, PADS,
+    ChannelPick, Fade, GrainKeys, GrainMode, GrainParams, Layer, ModelError, Pad, PlayMode,
+    Project, Region, SourceId, PADS,
 };
 use mpfree_ui::widgets::{ListItem, ListView};
 use mpfree_ui::{EventKind, Ui, UiEvent};
@@ -346,6 +346,8 @@ pub fn sound_region(old: Option<&Region>, id: SourceId, frames: u64) -> Region {
             mode: PlayMode::OneShot,
             grain: GrainParams::default(),
             grain_mode: GrainMode::Cloud,
+            grain_keys: GrainKeys::default(),
+            grain_glide_ms: 0.0,
             warp: None,
             slices: Vec::new(),
             slice_sets: Vec::new(),

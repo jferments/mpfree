@@ -46,6 +46,6 @@ pub use takes::{
     ClipDrop, MovePut, MoveWrite, Recorded, SceneEdit, SongChange, SongEdit, Take, Takes, TAKE_ROOM,
 };
 pub use view::{
-    anchored, CompileError, Cue, Launch, MuteCue, MuteLanded, NowPlaying, PlayView, Started,
-    EARLIEST,
+    anchored, CompileError, Cue, Launch, MuteCue, MuteLanded, NowPlaying, PlayView, SceneProgram,
+    Started, EARLIEST,
 };
