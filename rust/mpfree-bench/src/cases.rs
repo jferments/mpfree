@@ -1755,6 +1755,7 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| time(rate, 8, false)));
     v.push(measured(|| time(rate, 8, true)));
     v.push(measured(|| time_ahead(rate, 8, 4)));
+    v.push(measured(|| time_record(rate, 8, 3)));
     v.push(measured(|| live_arps(rate, 4)));
     v.push(measured(|| live_arps(rate, 16)));
     v.push(measured(|| looper(rate, 60)));
@@ -2777,6 +2778,85 @@ fn time_ahead(rate: u32, tracks: usize, ahead: usize) -> Case {
             l.fill(0.0);
             r.fill(0.0);
             l[0] = sent as f32;
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// Several armed tracks recording one take (SHIFT + a track's row): the
+/// Time case's song without arps, the transport recording (a replace pass,
+/// then overdub as each clip comes round), `armed` tracks armed (track 0
+/// with its recorder, the others with notes-only ones,
+/// `mpfree_play::Recorder::also`), and a keyboard on each playing a chord
+/// of 3 a beat, held half a beat. What they record is handed over but not
+/// put back in the view (the app's control half does that).
+fn time_record(rate: u32, tracks: usize, armed: usize) -> Case {
+    use mpfree_play::{Event, Recorder};
+    let ppq = i64::from(PPQ);
+    let (song, launches) = time_song(tracks, false);
+    let mut view = PlayView::compile(&song, &launches).expect("view");
+    view.set_armed(Some(0));
+    view.set_also(((1u128 << armed) - 1) & !1);
+    let mut t = Transport::new(rate, 128.0).expect("transport");
+    t.command(0, T::SetLoop(Some((0, 16 * ppq))));
+    t.command(0, T::Record);
+    let mut player = Player::new();
+    let mut block = TBlock::new();
+    let mut sink = TimeSink { notes: 0 };
+    let mut main = Box::new(Recorder::new());
+    let mut others: Vec<Recorder> = (0..armed.saturating_sub(1)).map(Recorder::also).collect();
+    // A beat at 128 BPM, in frames (even, so half a beat is whole).
+    let beat = u64::from(rate) * 60 / 128 / 2 * 2;
+    let mut taken = 0u64;
+    Case {
+        name: format!("Time: recording {armed} armed tracks, {tracks} clips"),
+        module: "time",
+        what: "one take over several armed tracks: a recorder each, a replace pass each",
+        block: Box::new(move |_, l, r| {
+            let n = l.len() as u32;
+            let f0 = t.frame();
+            t.process(n, &mut block);
+            player.process(&view, &block, &mut sink);
+            // Each track's keys: a chord on each beat, let go half a beat on.
+            let half = beat / 2;
+            let keys = |rec: &mut Recorder, base: u8| {
+                let mut h = f0.div_ceil(half);
+                while h * half < f0 + u64::from(n) {
+                    let at = (h * half - f0) as u32;
+                    let down = h % 2 == 0;
+                    h += 1;
+                    if down {
+                        for k in 0..3 {
+                            rec.input(
+                                at,
+                                Event::NoteOn {
+                                    note: base + 4 * k,
+                                    velocity: 100,
+                                },
+                            );
+                        }
+                    } else {
+                        for k in 0..3 {
+                            rec.input(at, Event::NoteOff { note: base + 4 * k });
+                        }
+                    }
+                }
+            };
+            keys(&mut main, 36);
+            for (i, o) in others.iter_mut().enumerate() {
+                keys(o, 48 + 2 * i as u8);
+            }
+            let take = main.take();
+            main.process(&view, &block);
+            taken += main.taken().len() as u64;
+            for o in &mut others {
+                o.set_take(take);
+                o.process(&view, &block);
+                taken += o.taken().len() as u64;
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            l[0] = (sink.notes + taken) as f32;
         }),
         mem_bytes: 0,
     }
