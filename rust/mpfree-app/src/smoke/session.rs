@@ -195,6 +195,10 @@ pub struct Session {
     pub sent_lights: [u8; 128],
     /// The notes the time engine played.
     pub hits: Hits,
+    /// Following another device's clock ([`Session::clock`]), and its
+    /// bytes for the next period.
+    follow: Option<time::Follow>,
+    clock_bytes: Vec<u8>,
     /// A kit that sounds, when a test asks for one ([`Session::make_sounds`]):
     /// the pads then play into the mixer, as main.rs's sampler plays them.
     pub sounds: Option<crate::sampler::Player>,
@@ -309,6 +313,8 @@ impl Session {
             level_db,
             lines: Vec::new(),
             sent: Vec::new(),
+            follow: None,
+            clock_bytes: Vec::new(),
             lights: [0; 128],
             sent_lights: [0; 128],
             hits: Hits::default(),
@@ -395,7 +401,11 @@ impl Session {
     pub fn defaults(&self) -> crate::project::Defaults {
         crate::project::Defaults {
             tempo: self.app.settings.bpm,
-            mixer: crate::project::mixer_text(&self.mix.mixer, self.mix.pad_mutes()),
+            mixer: crate::project::mixer_text(
+                &self.mix.mixer,
+                self.mix.pad_mutes(),
+                self.mix.pad_solos(),
+            ),
             modu: self.mix.modu.save(),
             synth: crate::project::synth_text(&self.app.synth_settings(), &self.synth.sounds()),
         }
@@ -566,6 +576,15 @@ impl Session {
         let mut kits = crate::kit::parse_kits(&file).expect("the tones kit");
         self.sounds = Some(crate::sampler::Player::new(&mut kits, &notes, RATE).expect("a player"));
         self
+    }
+
+    /// Follows another device's clock with these options (None: not), as
+    /// the project's Tempo from does, and hands the time engine `bytes`
+    /// from it at the next period's top.
+    pub fn clock(&mut self, follow: Option<time::Follow>, bytes: &[u8]) -> &mut Session {
+        self.follow = follow;
+        self.clock_bytes.extend_from_slice(bytes);
+        self.run_periods(1)
     }
 
     /// Runs the session until the screen says a line starting with
@@ -914,8 +933,30 @@ impl Session {
             t,
         );
         self.fx.extend(lights);
+        // Another device's clock, as main.rs gives it to the time engine.
+        self.time.set_leader(self.music.leader_name());
+        self.time.take_waits(
+            self.app
+                .rec
+                .ready
+                .map(|take| take == crate::rec_arm::Take::Add),
+        );
+        self.time.follow(self.follow);
+        if !self.clock_bytes.is_empty() {
+            let bytes = std::mem::take(&mut self.clock_bytes);
+            let frame = self.time.next_frame();
+            if let Some(line) = self.time.clock_in(frame, &bytes) {
+                self.out.note(&line);
+            }
+        }
         self.time.follow_tempo(self.app.settings.bpm);
         self.time.advance(PERIOD as u32);
+        if self.app.rec.ready.is_some()
+            && self.time.info().state == mpfree_transport::State::Recording
+        {
+            self.app.rec.ready = None;
+            self.out.show(ToUi::Rec(self.app.rec));
+        }
         let armed = self.time.armed().unwrap_or(0);
         if armed != self.app.track() {
             let fx = self.app.set_track(armed);
@@ -1081,6 +1122,8 @@ impl Session {
             &mut l,
             &mut r,
         );
+        // The kit's pads whose mute or solo came due, as main.rs lands them.
+        crate::land_pads(&mut self.time, &mut self.mix);
         if let Some(h) = self.heard.as_mut() {
             h.extend(l.iter().zip(&r).flat_map(|(a, b)| [*a, *b]));
         }
@@ -1202,7 +1245,11 @@ impl Session {
             tempo: self.app.settings.bpm,
             swing: self.time.info().swing,
             clips: self.time.project().clone(),
-            mixer: crate::project::mixer_text(&self.mix.mixer, self.mix.pad_mutes()),
+            mixer: crate::project::mixer_text(
+                &self.mix.mixer,
+                self.mix.pad_mutes(),
+                self.mix.pad_solos(),
+            ),
             modu: self.mix.modu.save(),
             synth: crate::project::synth_text(&self.app.synth_settings(), &self.synth.sounds()),
             arp: self.app.arp_part(),
