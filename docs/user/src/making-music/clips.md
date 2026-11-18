@@ -135,13 +135,14 @@ Every recording is a **take**, listed under Takes. **UNDO** takes back the newes
 
 You weren't recording, but you just played something great. Tap the **Capture** button under Takes (it says how many bars it would keep), or press **SHIFT + REC**, and MPFree keeps it. (On the Looper tab, SHIFT + REC keeps the sound instead, as a loop: see [Recording loops](looping.md#capture-keep-what-you-just-played).)
 
-MPFree is always listening to the pads. Capture keeps your **last phrase**: everything since the last bar of silence, up to 32 bars, cut to whole bars and with your exact timing.
+MPFree is always listening to the pads, and to keyboards a route plays on other tracks (see [Playing several tracks from your keyboards](midi-and-cv.md#playing-several-tracks-from-your-keyboards)). Capture keeps your **last phrase**: everything since the last bar of silence, up to 32 bars, cut to whole bars and with your exact timing.
 
 - If you played it in time over a clip that was playing, the notes go into that clip.
 - Otherwise it becomes a new clip, named "Capture 1", "Capture 2" and so on, and starts playing in time.
 - It keeps how hard you pressed the pads as you held them, as recording does (see [Pad pressure](#pad-pressure)), unless the track's **Pressure** setting is **Off**.
+- The pads' notes go into the armed track. What a keyboard played on another track through a route goes into that track, so a jam of drums on the pads and bass on a keyboard comes back as two clips that play together. Each key goes in as the pad that plays its note on that track; a note no pad plays there isn't kept.
 
-UNDO takes a capture back like any other take.
+UNDO takes a capture back like any other take, every track's part of it at once.
 
 > [!MPC]
 > Capture is like the MPC's Retro Rec, but it keeps whole bars, works whether the music was playing or stopped, and can add to the clip that's playing instead of always making a new one.

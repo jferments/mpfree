@@ -70,6 +70,7 @@ use mpfree_midi_clock::ClockIn;
 use mpfree_midi_ui::{PortLive, Shared};
 use mpfree_node::ParamInfo;
 use mpfree_play::mpfree_param::{transport, Owner, ParamAddr};
+use mpfree_play::Event;
 
 use crate::time::Follow;
 
@@ -202,6 +203,69 @@ impl RoutedHeld {
             Key::Pressure { note, .. } | Key::Expr { note, .. } => *held & bit(note) != 0 || !armed,
             // The wheel bends the track it is routed to, as it is now.
             Key::Bend { .. } => !armed,
+        }
+    }
+}
+
+/// No pad: the key's note plays no pad alone on its track.
+const NO_PAD: u8 = u8::MAX;
+
+/// The pad each key a route played on a track (not the armed one) went to,
+/// for CAPTURE: the key's end and pressure go to the pad its note went to,
+/// even if the track's pads changed while it was held.
+pub struct RoutedPads {
+    /// Per track a pad per note, [`NO_PAD`] for none.
+    pads: Box<[u8]>,
+}
+
+impl Default for RoutedPads {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RoutedPads {
+    pub fn new() -> RoutedPads {
+        RoutedPads {
+            pads: vec![NO_PAD; ROUTE_TRACKS * 128].into_boxed_slice(),
+        }
+    }
+
+    /// What CAPTURE keeps of `key`, routed to `track`: its note as the pad
+    /// `pad_of` says plays it there (`midi_file::pad_on_track`), and its
+    /// end and pressure on that pad. None for the wheel, an MPE note's own
+    /// slide and tone, a note no pad plays alone (as the armed track's
+    /// keys, it plays but isn't kept), and an end or pressure whose note
+    /// went to no pad. Allocates nothing.
+    pub fn event(
+        &mut self,
+        track: u8,
+        key: Key,
+        pad_of: impl FnOnce(u8) -> Option<u8>,
+    ) -> Option<Event> {
+        let t = usize::from(track);
+        if t >= ROUTE_TRACKS {
+            return None;
+        }
+        let at = |note: u8| t * 128 + usize::from(note & 0x7F);
+        match key {
+            Key::Down { note, velocity } => {
+                let pad = pad_of(note).filter(|&p| p < 128);
+                self.pads[at(note)] = pad.unwrap_or(NO_PAD);
+                pad.map(|note| Event::NoteOn {
+                    note,
+                    velocity: velocity.max(1),
+                })
+            }
+            Key::Up { note } => {
+                let pad = std::mem::replace(&mut self.pads[at(note)], NO_PAD);
+                (pad != NO_PAD).then_some(Event::NoteOff { note: pad })
+            }
+            Key::Pressure { note, value } => {
+                let pad = self.pads[at(note)];
+                (pad != NO_PAD).then_some(Event::Pressure { note: pad, value })
+            }
+            Key::Bend { .. } | Key::Expr { .. } => None,
         }
     }
 }
@@ -2169,6 +2233,46 @@ mod tests {
         assert!(h.direct(5, up, false));
         // A track past the most a route names goes with the armed keys.
         assert!(!h.direct(200, down, false));
+    }
+
+    #[test]
+    fn capture_keeps_a_routed_key_on_the_pad_its_note_went_to() {
+        let mut r = RoutedPads::new();
+        let down = |note| Key::Down { note, velocity: 0 };
+        // Note 60 plays pad 3 on track 5, then the pads change while it is
+        // held: its pressure and end still go to pad 3.
+        let ev = r.event(5, down(60), |n| (n == 60).then_some(3));
+        assert_eq!(
+            ev,
+            Some(Event::NoteOn {
+                note: 3,
+                velocity: 1
+            })
+        );
+        let pressure = Key::Pressure {
+            note: 60,
+            value: 70,
+        };
+        assert_eq!(
+            r.event(5, pressure, |_| Some(9)),
+            Some(Event::Pressure { note: 3, value: 70 })
+        );
+        assert_eq!(
+            r.event(5, Key::Up { note: 60 }, |_| Some(9)),
+            Some(Event::NoteOff { note: 3 })
+        );
+        // Ended: nothing more for it.
+        assert_eq!(r.event(5, Key::Up { note: 60 }, |_| Some(9)), None);
+        assert_eq!(r.event(5, pressure, |_| Some(9)), None);
+        // The same note on another track is its own.
+        assert!(r.event(6, down(60), |_| Some(4)).is_some());
+        assert_eq!(r.event(5, Key::Up { note: 60 }, |_| None), None);
+        // A note no pad plays alone isn't kept, nor its end; nor the wheel,
+        // nor a track past the most a route names.
+        assert_eq!(r.event(5, down(61), |_| None), None);
+        assert_eq!(r.event(5, Key::Up { note: 61 }, |_| Some(1)), None);
+        assert_eq!(r.event(5, Key::Bend { value: 0.5 }, |_| Some(1)), None);
+        assert_eq!(r.event(200, down(60), |_| Some(1)), None);
     }
 
     #[test]

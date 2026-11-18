@@ -873,6 +873,14 @@ impl TimeHost {
         self.audio.pad(offset, event);
     }
 
+    /// A key a route played on `track`, which isn't armed (the I/O view's
+    /// Routing), in the coming period at `offset`: the pad that plays its
+    /// note there, its end or its pressure. CAPTURE's history keeps it,
+    /// and CAPTURE puts it in that track; nothing records it.
+    pub fn routed_played(&mut self, track: u8, offset: u32, event: Event) {
+        self.audio.routed(track, offset, event);
+    }
+
     /// Pad `pad`'s pressure (0 to 127, raw) in the coming period, at
     /// `offset`: recorded onto the pad's held note while the armed track
     /// records and records pressure (`Track::record_touch`), and kept on
@@ -4745,6 +4753,80 @@ mod tests {
             h.act(TimeAction::Redo).unwrap(),
             "redo: capture 1 · Track 1 / 1"
         );
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Keys a route plays on tracks that aren't armed go into CAPTURE's
+    /// phrase with the pads' notes. CAPTURE puts each track's notes in a
+    /// clip of its own, all one take that one UNDO takes back, and says
+    /// which track it left out.
+    #[test]
+    fn capture_keeps_routed_keys_in_their_own_tracks_as_one_take() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let on = |note| Event::NoteOn { note, velocity: 90 };
+        // (frame, track, event): Track 3 in bars 2 and 3, Track 2 in bar
+        // 2, and a track there isn't.
+        let keys = [
+            (BAR + 2000, 2, on(5)),
+            (BAR + 6000, 2, Event::NoteOff { note: 5 }),
+            (2 * BAR + 100, 2, on(6)),
+            (2 * BAR + 4000, 2, Event::NoteOff { note: 6 }),
+            (BAR + 3000, 1, on(7)),
+            (BAR + 9000, 1, Event::NoteOff { note: 7 }),
+            (BAR + 4000, 40, on(1)),
+            (BAR + 5000, 40, Event::NoteOff { note: 1 }),
+        ];
+        let pressed = [(BAR + 1000, 4, 100, 2000)];
+        while pads.frame < 3 * BAR + BAR / 2 {
+            let end = pads.frame + u64::from(PERIOD);
+            for &(at, track, ev) in &keys {
+                if (pads.frame..end).contains(&at) {
+                    h.routed_played(track, (at - pads.frame) as u32, ev);
+                }
+            }
+            let start = pads.frame;
+            run(&mut h, &mut pads, end, &pressed);
+            assert_eq!(pads.frame, end, "one period from {start}");
+        }
+        assert_eq!(h.state().capture.as_deref(), Some("2 bars"));
+        assert!(h.state().done.is_empty(), "nothing was recorded");
+        assert_eq!(
+            h.act(TimeAction::Capture).unwrap(),
+            "capture 1: 1 notes, 2 bars, new clip in slot 1 of Track 1; \
+             1 notes, new clip in slot 1 of Track 2; \
+             2 notes, new clip in slot 1 of Track 3; \
+             track 41 left out: there is no such track"
+        );
+        let st = h.state();
+        for (t, n) in [(0, 1), (1, 1), (2, 2)] {
+            assert_eq!(
+                (
+                    st.clip(t, 0).map(|c| (c.name.as_str(), c.notes)),
+                    st.launch(t).is_some()
+                ),
+                (Some(("Capture 1", n)), true),
+                "track {}",
+                t + 1
+            );
+        }
+        assert_eq!(st.done.len(), 1, "one take");
+        assert_eq!(
+            h.act(TimeAction::Undo).unwrap(),
+            "undo: capture 1 · Track 1 / 1"
+        );
+        let st = h.state();
+        assert!((0..3).all(|t| st.clip(t, 0).is_none() && st.launch(t).is_none()));
+        assert_eq!(
+            st.capture.as_deref(),
+            Some("2 bars"),
+            "it can be kept again"
+        );
+        h.act(TimeAction::Redo).unwrap();
+        let st = h.state();
+        assert!((0..3).all(|t| st.clip(t, 0).is_some()));
         assert_eq!(h.dropped(), 0);
     }
 

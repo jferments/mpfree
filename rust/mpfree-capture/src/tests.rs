@@ -19,6 +19,9 @@ struct Rig {
     /// (frame, event), in frame order.
     notes: Vec<(u64, Event)>,
     next: usize,
+    /// Routed tracks' notes: (frame, track, event), in frame order.
+    routed: Vec<(u64, u8, Event)>,
+    next_routed: usize,
 }
 
 impl Rig {
@@ -30,7 +33,24 @@ impl Rig {
             period,
             notes: Vec::new(),
             next: 0,
+            routed: Vec::new(),
+            next_routed: 0,
         }
+    }
+
+    /// A note a route plays on `track` at `frame`, `len` frames long.
+    fn note_on(&mut self, track: u8, frame: u64, len: u64, note: u8, velocity: u8) {
+        self.routed
+            .push((frame, track, Event::NoteOn { note, velocity }));
+        self.routed
+            .push((frame + len, track, Event::NoteOff { note }));
+        self.routed.sort_by_key(|n| n.0);
+    }
+
+    /// An event a route plays on `track` at `frame`.
+    fn event_on(&mut self, track: u8, frame: u64, event: Event) {
+        self.routed.push((frame, track, event));
+        self.routed.sort_by_key(|n| n.0);
     }
 
     /// A note at `frame`, `len` frames long.
@@ -65,6 +85,14 @@ impl Rig {
                 let (f, ev) = self.notes[self.next];
                 self.capture.input(f.saturating_sub(start) as u32, ev);
                 self.next += 1;
+            }
+            while self.next_routed < self.routed.len()
+                && self.routed[self.next_routed].0 < start + u64::from(n)
+            {
+                let (f, track, ev) = self.routed[self.next_routed];
+                self.capture
+                    .input_on(track, f.saturating_sub(start) as u32, ev);
+                self.next_routed += 1;
             }
             assert!(self.transport.process(n, &mut self.block));
             self.capture.process(&self.block);
@@ -454,6 +482,7 @@ fn timed(notes: &[(Tick, f64)], length: Tick, song_start: Tick) -> Phrase {
                 join: mpfree_seq::Join::Attack,
             },
             song: Some(song),
+            track: ARMED,
         })
         .collect();
     Phrase {
@@ -541,6 +570,7 @@ fn kept_free_a_new_clip_starts_on_the_next_bar() {
                 join: mpfree_seq::Join::Attack,
             },
             song: None,
+            track: ARMED,
         }],
         touch: Vec::new(),
         touch_cut: false,
@@ -707,4 +737,196 @@ fn keep_refuses_and_changes_nothing() {
     );
     assert_eq!(p, before);
     assert!(takes.done().is_empty());
+}
+
+/// (track, tick, len, note) of each note, in the order played.
+fn on_tracks(p: &Phrase) -> Vec<(u8, Tick, Tick, u8)> {
+    p.played
+        .iter()
+        .map(|x| (x.track, x.note.tick, x.note.len, x.note.note))
+        .collect()
+}
+
+/// Keys a route plays on other tracks go into the same phrase, each held
+/// apart by its track (the same note on two tracks is two notes), and the
+/// phrase parts by track: the armed track's first, then the others in
+/// track order, every part as long as the phrase and on its bar.
+#[test]
+fn routed_tracks_notes_are_held_apart_and_part_by_track() {
+    let mut r = Rig::new(128);
+    r.command(0, Command::Play);
+    let f = |t: Tick| t as u64 * TICK;
+    // Bar 2: the pads and track 3 both play note 1; track 3's is longer.
+    r.at_tick(BAR + BEAT, 240, 1);
+    r.note_on(2, f(BAR + BEAT), f(960), 1, 80);
+    // Track 1 joins in bar 3; a key routed to the armed track (2) itself.
+    r.note_on(0, f(2 * BAR), f(100), 5, 70);
+    r.note_on(1, f(2 * BAR + BEAT), f(100), 6, 60);
+    r.run_to(f(5 * BAR));
+    let p = r.capture.phrase().unwrap();
+    assert_eq!(
+        on_tracks(&p),
+        vec![
+            (ARMED, BEAT, 240, 1),
+            (2, BEAT, 960, 1),
+            (0, BAR, 100, 5),
+            (1, BAR + BEAT, 100, 6),
+        ]
+    );
+    assert_eq!((p.length, p.song_start), (2 * BAR, Some(BAR)));
+    assert_eq!(r.capture.pending().map(|x| x.bars), Some(2));
+    let parts = p.split(1);
+    let tracks: Vec<usize> = parts.iter().map(|x| x.0).collect();
+    assert_eq!(tracks, vec![1, 0, 2]);
+    assert_eq!(
+        ticks(&parts[0].1),
+        vec![(BEAT, 240, 1), (BAR + BEAT, 100, 6)]
+    );
+    assert_eq!(ticks(&parts[1].1), vec![(BAR, 100, 5)]);
+    assert_eq!(ticks(&parts[2].1), vec![(BEAT, 960, 1)]);
+    for (_, x) in &parts {
+        assert_eq!(
+            (x.length, x.bar, x.song_start, x.id),
+            (p.length, p.bar, p.song_start, p.id)
+        );
+    }
+    // Only the pads played: one part, the armed track's.
+    let mut r = Rig::new(64);
+    r.at_tick(0, 100, 3);
+    r.run_to(f(BAR));
+    let parts = r.capture.phrase().unwrap().split(4);
+    assert_eq!(parts.len(), 1);
+    assert_eq!(parts[0].0, 4);
+    assert_eq!(r.capture.dropped(), 0);
+}
+
+/// A phrase goes on while any track holds a note, and a bar of silence on
+/// them all ends it.
+#[test]
+fn a_phrase_ends_on_a_bar_of_silence_on_every_track() {
+    let mut r = Rig::new(128);
+    let f = |t: Tick| t as u64 * TICK;
+    r.command(0, Command::Play);
+    r.at_tick(0, 100, 1);
+    // Track 6 holds a note across bars 1 to 3, the pads play in bar 4.
+    r.note_on(5, f(BEAT), f(2 * BAR), 2, 90);
+    r.at_tick(3 * BAR, 100, 3);
+    // Then two bars of silence, and track 6 starts a phrase of its own.
+    r.note_on(5, f(6 * BAR), f(100), 4, 90);
+    r.run_to(f(4 * BAR));
+    let p = r.capture.phrase().unwrap();
+    assert_eq!(p.played.len(), 3);
+    assert_eq!(p.bars(), 4);
+    r.run_to(f(8 * BAR));
+    let p = r.capture.phrase().unwrap();
+    assert_eq!(on_tracks(&p), vec![(5, 0, 100, 4)]);
+    assert_eq!(p.song_start, Some(6 * BAR));
+}
+
+/// A track's All off ends its own notes, not another track's.
+#[test]
+fn a_tracks_all_off_ends_only_its_own_notes() {
+    let mut r = Rig::new(128);
+    let f = |t: Tick| t as u64 * TICK;
+    r.command(0, Command::Play);
+    r.notes.push((
+        0,
+        Event::NoteOn {
+            note: 1,
+            velocity: 100,
+        },
+    ));
+    r.event_on(
+        3,
+        0,
+        Event::NoteOn {
+            note: 1,
+            velocity: 100,
+        },
+    );
+    r.event_on(
+        7,
+        0,
+        Event::NoteOn {
+            note: 2,
+            velocity: 100,
+        },
+    );
+    r.notes.push((f(100), Event::AllOff));
+    r.event_on(3, f(200), Event::AllOff);
+    r.event_on(7, f(300), Event::NoteOff { note: 2 });
+    r.run_to(f(BAR));
+    let p = r.capture.phrase().unwrap();
+    assert_eq!(
+        on_tracks(&p),
+        vec![(ARMED, 0, 100, 1), (3, 0, 200, 1), (7, 0, 300, 2)]
+    );
+}
+
+/// A key's pressure goes on its own track's note, and stays with it when
+/// the phrase parts.
+#[test]
+fn routed_pressure_goes_on_its_own_tracks_note() {
+    let mut r = Rig::new(128);
+    let f = |t: Tick| t as u64 * TICK;
+    r.note(0, f(BEAT), 3, 100);
+    r.note_on(4, 0, f(BEAT), 3, 100);
+    r.press(f(10), 3, 40);
+    r.event_on(4, f(20), Event::Pressure { note: 3, value: 90 });
+    // A track holding nothing takes none.
+    r.event_on(5, f(30), Event::Pressure { note: 3, value: 50 });
+    r.run_to(f(BAR));
+    let p = r.capture.phrase().unwrap();
+    assert_eq!(runs(&p), vec![vec![(10, 40)], vec![(20, 90)]]);
+    let parts = p.split(0);
+    assert_eq!(parts.iter().map(|x| x.0).collect::<Vec<_>>(), vec![0, 4]);
+    assert_eq!(runs(&parts[0].1), vec![vec![(10, 40)]]);
+    assert_eq!(runs(&parts[1].1), vec![vec![(20, 90)]]);
+    assert_eq!(parts[1].1.touch.len(), 1);
+    assert_eq!(parts[1].1.played[0].note.touch.first, 0);
+}
+
+/// Up to MAX_VOICES - 1 routed tracks hold notes at once; a note on one
+/// more is left out and counted, until a track lets go of its notes.
+#[test]
+fn a_note_past_the_tracks_that_can_hold_is_left_out() {
+    let mut r = Rig::new(128);
+    let f = |t: Tick| t as u64 * TICK;
+    let routed = (MAX_VOICES - 1) as u8;
+    for t in 0..routed {
+        r.note_on(t, 0, f(BEAT), 1, 100);
+    }
+    r.at_tick(0, BEAT, 1);
+    // One track too many while they all hold; after they let go, it plays.
+    r.note_on(routed, f(10), f(10), 2, 100);
+    r.note_on(routed, f(2 * BEAT), f(10), 3, 100);
+    r.run_to(f(BAR));
+    assert_eq!(r.capture.dropped(), 1);
+    let p = r.capture.phrase().unwrap();
+    assert_eq!(p.played.len(), MAX_VOICES + 1);
+    assert_eq!(on_tracks(&p).last(), Some(&(routed, 2 * BEAT, 10, 3)));
+}
+
+/// The parts kept with `Takes::joining` go into their own tracks as one
+/// take: one UNDO takes every track's clip back.
+#[test]
+fn parts_kept_into_their_tracks_are_one_take() {
+    let mut p = project();
+    let mut takes = Takes::default();
+    let mut phrase = timed(&[(0, 0.0), (BEAT, BEAT as f64)], BAR, 0);
+    phrase.played[1].track = 2;
+    let parts = phrase.split(0);
+    let (t0, first) = &parts[0];
+    let k = keep(first, &mut p, &[], &mut takes, *t0, now(BAR), "Capture 1").unwrap();
+    let (t1, second) = &parts[1];
+    let k2 = takes
+        .joining(k.take, |takes| {
+            keep(second, &mut p, &[], takes, *t1, now(BAR), "Capture 1")
+        })
+        .unwrap();
+    assert_eq!((k.track, k2.track, k2.take), (0, 2, k.take));
+    assert_eq!(takes.done().len(), 1);
+    assert!(p.clip(0, 0).is_some() && p.clip(2, 0).is_some());
+    assert_eq!(takes.undo(&mut p), Some(1));
+    assert!(p.clip(0, 0).is_none() && p.clip(2, 0).is_none());
 }
