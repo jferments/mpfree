@@ -10457,11 +10457,17 @@ impl Player {
                     !(matches!(a, ChainAction::Notes(mpfree_chain_ui::NoteAction::PlaysOn))
                         && self.open_io_section(mpfree_midi_ui::MIDI))
                 });
-                if acts
-                    .iter()
-                    .any(|a| matches!(a, ChainAction::Strips(_) | ChainAction::OpenStrip(_)))
-                {
-                    // The strip list opened or shut: its hint.
+                if acts.iter().any(|a| {
+                    matches!(
+                        a,
+                        ChainAction::Strips(_)
+                            | ChainAction::OpenStrip(_)
+                            | ChainAction::SidechainList(_)
+                            | ChainAction::SetSidechain { .. }
+                    )
+                }) {
+                    // The strip list (or the sidechain list) opened or
+                    // shut: its hint.
                     self.refresh_hint();
                 }
                 let mut acts = acts.into_iter().map(chain_msg);
@@ -12674,6 +12680,22 @@ fn sample_panels(p: &mut Player, view: View) {
     p.apply(ToUi::Macros(Box::new(song.macros_state(0))));
 }
 
+/// The chain editor on the keys' Compressor, listening to the kick pad
+/// (layout spec 4b, "Sidechain"), with `list` the sidechain list over it,
+/// as the app sends them.
+fn sample_sidechain(p: &mut Player, list: bool) -> Result<(), String> {
+    let (song, st) = mpfree_chain_ui::sample::sidechain_example(list)?;
+    p.apply(ToUi::Show(View::Chain));
+    let fx = st
+        .selected
+        .and_then(|slot| song.keys.node(slot))
+        .map(|n| Box::new(FxState::from_node(n, "", Color::rgb(0), 120.0, 44_100)));
+    p.apply(ToUi::Chain(Box::new(st)));
+    p.apply(ToUi::ChainFx(fx));
+    p.apply(ToUi::Macros(Box::new(song.macros_state(0))));
+    Ok(())
+}
+
 /// The chain editor on a note track (layout spec 4b, board 7): NOTES above
 /// SOUND, the Chord picked, its settings on the Q-Links, as the app sends
 /// them (`ChainHost::dress_notes`).
@@ -13305,6 +13327,15 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         let mut p = sample_player(fonts());
         sample_panels(&mut p, view);
         out.push((name, p));
+    }
+    // The sidechain (layout spec 4b): the keys' Compressor listening to the
+    // kick pad, and the sidechain list over it.
+    for (name, list) in [("chain-sidechain", false), ("chain-sidechain-list", true)] {
+        let mut p = sample_player(fonts());
+        match sample_sidechain(&mut p, list) {
+            Ok(()) => out.push((name, p)),
+            Err(e) => eprintln!("{name}: not drawn ({e})"),
+        }
     }
     // A note track's chain with its Notes stage (board 7): the Chord's page.
     let mut notes = sample_player(fonts());

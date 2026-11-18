@@ -577,6 +577,57 @@ fn a_muted_kick_keys_a_compressor_on_another_track() {
     assert!(peak(&out) < 0.2, "the muted kick is not heard");
 }
 
+/// The sidechain list greys a strip for the same reasons `set_key`
+/// refuses it, and says which.
+#[test]
+fn the_sidechain_refusals_match_what_set_key_refuses() {
+    use mpfree_fx::sidechain::Refusal;
+    let mut m = mixer(small());
+    for t in [0, 1, 2] {
+        m.chain_mut(StripId::Track(t))
+            .unwrap()
+            .push(Box::new(Compressor::new()));
+    }
+    for b in [0, 1] {
+        m.chain_mut(StripId::Bus(b))
+            .unwrap()
+            .push(Box::new(Compressor::new()));
+    }
+    let (t0, t1, t2) = (StripId::Track(0), StripId::Track(1), StripId::Track(2));
+    assert_eq!(m.sidechain_refusal(t0, t0), Some(Refusal::Itself));
+    assert_eq!(
+        m.sidechain_refusal(t0, StripId::Bus(0)),
+        Some(Refusal::Later)
+    );
+    assert_eq!(
+        m.sidechain_refusal(t0, StripId::Master),
+        Some(Refusal::Later)
+    );
+    assert_eq!(
+        m.sidechain_refusal(StripId::Bus(0), StripId::Bus(1)),
+        Some(Refusal::HigherSubmix)
+    );
+    assert_eq!(m.sidechain_refusal(StripId::Bus(1), StripId::Bus(0)), None);
+    assert_eq!(m.sidechain_refusal(t0, StripId::Pad(0)), None);
+    assert_eq!(m.sidechain_refusal(t0, StripId::Input(0)), None);
+    // Track 1 hears track 0, and track 2 hears track 1: track 0 can hear
+    // neither of them (a loop through one or two strips), but track 2
+    // still can hear track 0.
+    assert_eq!(m.sidechain_refusal(t1, t0), None);
+    assert!(m.set_key(t1, 0, Some(t0)));
+    assert!(m.set_key(t2, 0, Some(t1)));
+    assert_eq!(m.sidechain_refusal(t0, t1), Some(Refusal::Loop));
+    assert_eq!(m.sidechain_refusal(t0, t2), Some(Refusal::Loop));
+    assert!(!m.set_key(t0, 0, Some(t1)));
+    assert!(!m.set_key(t0, 0, Some(t2)));
+    assert_eq!(m.sidechain_refusal(t2, t0), None);
+    for (s, k) in [(t0, StripId::Bus(0)), (StripId::Bus(0), StripId::Bus(1))] {
+        assert!(m.sidechain_refusal(s, k).is_some());
+        assert!(!m.set_key(s, 0, Some(k)));
+    }
+    assert_eq!(Refusal::Loop.text(), "it listens to this one");
+}
+
 #[test]
 fn capture_points_take_what_they_say() {
     let n = 4096;
