@@ -124,6 +124,9 @@ pub struct StepClip {
     pub song_step: f64,
     /// Where it was launched, while it plays (for the playhead).
     pub origin: Option<Tick>,
+    /// The order its play direction plays its steps in, while it plays
+    /// with one (sequencer S6): the playhead lights the step heard.
+    pub order: Option<mpfree_play::StepOrder>,
     /// Every pad (0 to 15), and any other note the clip holds, with its
     /// steps (None: empty); and [`LINE`], the whole line, each step's
     /// notes as one.
@@ -161,11 +164,17 @@ impl StepClip {
             .map_or(&[], |(_, r)| r.as_slice())
     }
 
-    /// The step playing at song position `pos`, while the clip plays.
+    /// The step playing at song position `pos`, while the clip plays: with
+    /// a play direction, the step its order plays there, from its line to
+    /// the next.
     pub fn playing(&self, pos: Tick) -> Option<usize> {
         let origin = self.origin?;
         if self.song_length <= 0.0 || self.song_step <= 0.0 || pos < origin {
             return None;
+        }
+        if let Some(order) = self.order {
+            let big = ((pos - origin) as f64 / self.song_step).floor() as i64;
+            return Some(order.step(big).min(self.steps.saturating_sub(1)));
         }
         let at = ((pos - origin) as f64).rem_euclid(self.song_length);
         Some(((at / self.song_step) as usize).min(self.steps.saturating_sub(1)))
@@ -1605,6 +1614,71 @@ mod tests {
         h.act(TimeAction::Undo).unwrap();
         assert_eq!(lock(&h), None, "UNDO: the whole turn");
         assert_eq!(h.steps().clip.unwrap().row(2).iter().flatten().count(), 2);
+    }
+
+    /// With a play direction (S6) the step playhead lights the step heard,
+    /// as the player plays it: a reversed bar from its last step, ping
+    /// pong turning at the end and running on into the next pass. Forward
+    /// is as before.
+    #[test]
+    fn the_step_playhead_follows_the_play_direction() {
+        use mpfree_seq::Direction;
+        use mpfree_time_ui::view::CLIP_DIRECTION;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.step_action(StepAction::Tap {
+            pad: 2,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        let track = h.control.armed().expect("an armed track");
+        let slot = h.steps().clip.expect("a clip").slot;
+        let direct = |h: &mut TimeHost, d: Direction| {
+            let mut settings = h.control.project.clip(track, slot).unwrap().settings();
+            settings.direction = d;
+            h.act(TimeAction::ClipSettings {
+                track,
+                slot,
+                row: CLIP_DIRECTION as u8,
+                settings,
+            })
+            .unwrap();
+        };
+        h.command(Command::Play);
+        // Into step 3 (a step is 5,512.5 frames at 120 BPM).
+        run(&mut h, &mut pads, 2 * 5_512 + 2_000, &[]);
+        let clip = h.steps().clip.expect("the clip");
+        let origin = clip.origin.expect("it plays");
+        let pos = h.info().position;
+        assert_eq!(clip.playing(pos), Some(2), "forward: step 3");
+        assert_eq!(clip.playing(origin + 5 * 240), Some(5));
+        direct(&mut h, Direction::Reverse);
+        let clip = h.steps().clip.expect("the clip");
+        assert_eq!(clip.playing(pos), Some(13), "reverse: step 14");
+        // Passes count from the one the launch started in (its origin is
+        // a bar line long before, as for any clip launched while stopped).
+        let start = h.control.launches[0].start;
+        assert_eq!((start - origin).rem_euclid(3840), 0);
+        let at = |k: i64| start + k * 240;
+        let lit: Vec<_> = [0, 1, 15, 16].map(|k| clip.playing(at(k))).into();
+        assert_eq!(lit, [Some(15), Some(14), Some(0), Some(15)]);
+        // The light moves on the step's line, not half a step before.
+        assert_eq!(clip.playing(at(1) - 1), Some(15));
+        direct(&mut h, Direction::PingPong);
+        let clip = h.steps().clip.expect("the clip");
+        let lit: Vec<_> = [0, 15, 16, 29, 30, 31].map(|k| clip.playing(at(k))).into();
+        assert_eq!(
+            lit,
+            [Some(0), Some(15), Some(14), Some(1), Some(0), Some(1)]
+        );
+        // Random: every step once a pass, as the player plays them.
+        direct(&mut h, Direction::Random);
+        let clip = h.steps().clip.expect("the clip");
+        let mut pass: Vec<usize> = (0..16).filter_map(|k| clip.playing(at(k))).collect();
+        assert_ne!(pass, (0..16).collect::<Vec<_>>(), "shuffled");
+        pass.sort_unstable();
+        assert_eq!(pass, (0..16).collect::<Vec<_>>());
     }
 
     /// Taps, turns and locks on the pattern playing go into the view the
@@ -4567,6 +4641,81 @@ mod tests {
         h.act(TimeAction::DeleteClip { track: 0, slot: 0 }).unwrap();
         assert!(h.state().saved.is_empty());
         assert_eq!(h.dropped(), 0);
+    }
+
+    /// Mutate and Restore (sequencer S6) on the clip card: a variation at
+    /// once while the clip plays, each a take UNDO takes back; a second
+    /// Mutate varies the original; Restore brings it back; the Takes list
+    /// names them.
+    #[test]
+    fn mutate_varies_the_clip_and_restore_brings_it_back() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut c = Clip::new("hats", 3840);
+        c.notes = (0..16)
+            .map(|s| mpfree_seq::Note::new(s * 240, 120, 42, 90))
+            .collect();
+        let plain = c.clone();
+        h.control.project.tracks[0].slots[0] = Some(c);
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let mutate = |more| TimeAction::Mutate {
+            track: 0,
+            slot: 0,
+            more,
+            melodic: false,
+        };
+        let restore = || TimeAction::Restore { track: 0, slot: 0 };
+        let clip = |h: &TimeHost| h.control.project.clip(0, 0).unwrap().clone();
+        assert!(h
+            .act(restore())
+            .unwrap_err()
+            .contains("hats plays its original: Mutate it first"));
+        assert_eq!(
+            h.act(mutate(false)).unwrap(),
+            "mutate: hats · variant 1 (‹ on Mutate restores; UNDO takes it back)"
+        );
+        let v1 = clip(&h);
+        assert_ne!(v1.notes, plain.notes);
+        assert_eq!(v1.variation(), Some(1));
+        assert_eq!(h.state().clip(0, 0).unwrap().variation, Some(1));
+        // Edited since, then mutated again: from the original.
+        h.control.project.tracks[0].slots[0]
+            .as_mut()
+            .unwrap()
+            .notes
+            .truncate(2);
+        h.act(mutate(true)).unwrap();
+        let v2 = clip(&h);
+        assert_eq!((v2.notes.len(), v2.variation()), (16, Some(2)));
+        assert_ne!(v2.notes, v1.notes, "a new variation");
+        let st = h.state();
+        let row = st.done.last().unwrap();
+        assert_eq!(row.short(), "mutate 2");
+        assert_eq!(
+            h.act(restore()).unwrap(),
+            "restore: hats is back as it was before Mutate (UNDO takes it back)"
+        );
+        assert_eq!(clip(&h), plain);
+        assert_eq!(h.state().done.last().unwrap().short(), "restore 3");
+        // UNDO: the variation again, its original kept.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(clip(&h), v2);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(clip(&h).variation(), Some(1));
+        // It plays on, nothing dropped.
+        run(&mut h, &mut pads, 2 * BAR, &[]);
+        assert!(!pads.hits.is_empty());
+        assert_eq!(h.dropped(), 0);
+        // Not while recording.
+        h.act(TimeAction::Transport(Command::Record)).unwrap();
+        run(&mut h, &mut pads, 2 * BAR + BAR / 4, &[]);
+        assert_eq!(h.info().state, State::Recording);
+        assert!(h
+            .act(mutate(false))
+            .unwrap_err()
+            .contains("not while recording"));
     }
 
     /// Perform's Rec song with REC (sequencer S4): a take turns Rec song

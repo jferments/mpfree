@@ -49,12 +49,12 @@ use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{Input, Monitor};
 use mpfree_play::mpfree_param::clips::{self, Clips};
 use mpfree_play::mpfree_param::{Owner, ParamAddr};
-use mpfree_play::{anchored, ClipDrop, Cue, Launch, SongChange, Take, Takes};
+use mpfree_play::{anchored, ClipDrop, Cue, Launch, Replaced, SongChange, Take, Takes};
 use mpfree_seq::scenes::MAX_FOLLOW_BARS;
 use mpfree_seq::{
-    Clip, ClipProgram, ClipSettings, Follow, FollowAction, LaunchGrid, Project, Quantise,
-    SceneSettings, Source, Speed, TrackProgram, Transpose, LAUNCH_GRIDS, MAX_CLIP_TICKS,
-    MAX_TRACKS, MAX_TRANSPOSE, SLOTS,
+    direction_steps, Clip, ClipProgram, ClipSettings, Direction, Follow, FollowAction, LaunchGrid,
+    Project, Quantise, SceneSettings, Source, Speed, TrackProgram, Transpose, LAUNCH_GRIDS,
+    MAX_CLIP_TICKS, MAX_TRACKS, MAX_TRANSPOSE, SLOTS,
 };
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
@@ -228,10 +228,36 @@ pub const OTHERS: [FollowAction; 9] = [
     FollowAction::Stop,
 ];
 /// The clip settings card's rows, top to bottom.
-pub const CLIP_ROWS: [&str; 11] = [
-    "Length", "Speed", "Swing", "Quantise", "Strength", "Follow", "After", "Launch", "Mode",
-    "Program", "Bank",
+pub const CLIP_ROWS: [&str; 13] = [
+    "Length",
+    "Speed",
+    "Swing",
+    "Quantise",
+    "Strength",
+    "Follow",
+    "After",
+    "Launch",
+    "Mode",
+    "Program",
+    "Bank",
+    "Direction",
+    "Mutate",
 ];
+/// The clip card's Direction row (S6).
+pub const CLIP_DIRECTION: usize = 11;
+/// The clip card's Mutate row (S6): › a new variation of the clip's
+/// notes, SHIFT + › a bolder one, ‹ the original back.
+pub const CLIP_MUTATE: usize = 12;
+
+/// A play direction (S6) as the clip card names it.
+pub fn direction_name(d: Direction) -> &'static str {
+    match d {
+        Direction::Forward => "Forward",
+        Direction::Reverse => "Reverse",
+        Direction::PingPong => "Ping pong",
+        Direction::Random => "Random",
+    }
+}
 /// The clip card's Mode row: Restart, Legato (takes over the playing
 /// clip's place), Once (a one-shot: one pass, then the track stops).
 pub const MODES: [&str; 3] = ["Restart", "Legato", "Once"];
@@ -382,6 +408,9 @@ pub struct ClipInfo {
     /// Its speed, swing, quantise and follow action, for the clip
     /// settings card.
     pub settings: ClipSettings,
+    /// The variation of its notes it plays, kept beside its original
+    /// (`Clip::variation`, S6's Mutate); None when it keeps none.
+    pub variation: Option<u32>,
 }
 
 /// What the looper says of a loop, for its cells on the Clips grid: the
@@ -471,8 +500,11 @@ pub struct TakeRow {
     pub settings: bool,
     /// COPY + an empty slot pasted a clip there.
     pub pasted: bool,
-    /// Reload clip put a clip's saved state back (sequencer S4).
-    pub reloaded: bool,
+    /// A whole clip went in place of the clip there, and why: Reload
+    /// clip (sequencer S4), Mutate or Restore (S6).
+    pub replaced: Option<Replaced>,
+    /// The variation a Mutate made ("variant 3").
+    pub variant: Option<u32>,
     /// The scene editor changed this row's scene (its name, mutes or
     /// follow action).
     pub scene: Option<usize>,
@@ -513,13 +545,14 @@ impl TakeRow {
             song: t.song.as_ref().map(|e| e.change),
             settings: t.settings.is_some(),
             pasted: t.pasted,
-            reloaded: t.reloaded,
+            replaced: t.replaced,
+            variant: t.made.first().and_then(|(_, _, c)| c.variation()),
             scene: t.scene.as_ref().map(|e| e.row),
         }
     }
 
     /// What it is: "take", "capture", "edit", "delete", "paste",
-    /// "settings", "reload", for a drop "move",
+    /// "settings", "reload", "mutate", "restore", for a drop "move",
     /// "swap" or "copy", and for a Song view edit "move", "copy",
     /// "length", "delete", "unique" or "scenes", "list" for the song
     /// list and "scene" for the scene editor.
@@ -544,8 +577,12 @@ impl TakeRow {
         }
         if self.scene.is_some() {
             "scene"
-        } else if self.reloaded {
-            "reload"
+        } else if let Some(r) = self.replaced {
+            match r {
+                Replaced::Reload => "reload",
+                Replaced::Mutate => "mutate",
+                Replaced::Restore => "restore",
+            }
         } else if self.deleted {
             "delete"
         } else if self.pasted {
@@ -795,6 +832,7 @@ impl TimeState {
                             notes: c.notes.len(),
                             looped: c.looped,
                             settings: c.settings(),
+                            variation: c.variation(),
                         })
                     })
                     .collect(),
@@ -1043,6 +1081,24 @@ pub enum TimeAction {
     /// (at once otherwise), as an edit UNDO takes back. Asked again while
     /// it waits, the reload is taken back.
     Reload {
+        track: usize,
+        slot: usize,
+    },
+    /// Mutate (sequencer S6, `mpfree_seq::mutate`): a new variation of
+    /// the clip's notes, made from the clip as it was before its first
+    /// Mutate, which it keeps for Restore; at once, as an edit UNDO takes
+    /// back. `more` (SHIFT) varies about half the notes, else a quarter;
+    /// `melodic` (its track plays notes, not pads) lets a note move to the
+    /// next pitch the clip plays.
+    Mutate {
+        track: usize,
+        slot: usize,
+        more: bool,
+        melodic: bool,
+    },
+    /// Restore (S6): the clip as it was before its first Mutate, at once,
+    /// as an edit UNDO takes back.
+    Restore {
         track: usize,
         slot: usize,
     },
@@ -2315,8 +2371,26 @@ fn bank_next(p: ClipProgram, delta: i32, by: i32) -> Result<Option<u16>, String>
 /// The clip settings card's rows, for the focused clip; none without one.
 pub fn clip_rows(st: &TimeState) -> Vec<OptionRow> {
     match st.focus().and_then(|(t, s)| st.clip(t, s)) {
-        Some(c) => card_rows(c.length, c.settings),
+        Some(c) => {
+            let mut rows = card_rows(c.length, c.settings);
+            rows.push(OptionRow {
+                name: CLIP_ROWS[CLIP_MUTATE].to_string(),
+                value: mutate_value(c),
+            });
+            rows
+        }
         None => Vec::new(),
+    }
+}
+
+/// The clip card's Mutate row's value (S6): "original" until the clip is
+/// mutated, then "variant" (the hint line and the Takes list number it);
+/// "—" on a clip with no notes or a loop's cell.
+pub fn mutate_value(c: &ClipInfo) -> String {
+    match c.variation {
+        _ if c.looped.is_some() || (c.notes == 0 && c.variation.is_none()) => "—".to_string(),
+        Some(_) => "variant".to_string(),
+        None => "original".to_string(),
     }
 }
 
@@ -2407,9 +2481,18 @@ pub fn card_rows(length: Tick, s: ClipSettings) -> Vec<OptionRow> {
         row(
             10,
             match s.program {
-                None => dash,
+                None => dash.clone(),
                 Some(ClipProgram { bank: None, .. }) => "off".to_string(),
                 Some(ClipProgram { bank: Some(b), .. }) => bank_name(b),
+            },
+        ),
+        // The order it plays its steps in (S6); "—" on a clip it can't
+        // move (not two whole 1/16 steps or more), which plays forward.
+        row(
+            CLIP_DIRECTION,
+            match s.direction {
+                d if d != Direction::Forward && direction_steps(d, length).is_none() => dash,
+                d => direction_name(d).to_string(),
             },
         ),
     ]
@@ -2433,6 +2516,23 @@ pub fn card_action(
 ) -> Result<TimeAction, String> {
     if shift && index == 10 {
         return bank_step(st, delta, 128);
+    }
+    // SHIFT + › on Mutate: a bolder variation.
+    if shift && index == CLIP_MUTATE && delta > 0 {
+        return match card_step(st, index, delta)? {
+            TimeAction::Mutate {
+                track,
+                slot,
+                melodic,
+                ..
+            } => Ok(TimeAction::Mutate {
+                track,
+                slot,
+                more: true,
+                melodic,
+            }),
+            a => Ok(a),
+        };
     }
     if !shift || index > 1 {
         return card_step(st, index, delta);
@@ -2743,6 +2843,46 @@ fn card_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, Str
             }
         }
         10 => bank_step(st, delta, 1),
+        // Forward, Reverse, Ping-pong, Random (S6). On a clip it can't
+        // move, back to Forward, then why not.
+        CLIP_DIRECTION if direction_steps(Direction::Reverse, c.length).is_none() => {
+            if s.direction == Direction::Forward {
+                return Err("Direction moves the clip's 1/16 steps: it needs a clip of 2 whole steps or more, so this one plays forward".into());
+            }
+            s.direction = Direction::Forward;
+            set(s)
+        }
+        CLIP_DIRECTION => {
+            let now = Direction::ALL
+                .iter()
+                .position(|&x| x == s.direction)
+                .unwrap_or(0);
+            match step(now, Direction::ALL.len()) {
+                Some(k) => {
+                    s.direction = Direction::ALL[k];
+                    set(s)
+                }
+                None => end(
+                    "Direction is at its first, Forward".into(),
+                    "Direction is at its last, Random".into(),
+                ),
+            }
+        }
+        // › a new variation (SHIFT: a bolder one, `card_action`), ‹ the
+        // original back (S6).
+        CLIP_MUTATE if d > 0 && c.notes == 0 && c.variation.is_none() => {
+            Err("Mutate varies the clip's notes: this clip has none yet".into())
+        }
+        CLIP_MUTATE if d > 0 => Ok(TimeAction::Mutate {
+            track,
+            slot,
+            more: false,
+            melodic: st.tracks.get(track).is_some_and(|t| t.melodic),
+        }),
+        CLIP_MUTATE if c.variation.is_some() => Ok(TimeAction::Restore { track, slot }),
+        CLIP_MUTATE => {
+            Err("The clip plays its original: › mutates it, and ‹ then brings this back".into())
+        }
         _ => Err(String::new()),
     }
 }
@@ -2920,8 +3060,12 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
     if row.scene.is_some() {
         return "scene settings".into();
     }
-    if row.reloaded {
-        return "saved state".into();
+    match (row.replaced, row.variant) {
+        (Some(Replaced::Reload), _) => return "saved state".into(),
+        (Some(Replaced::Mutate), Some(n)) => return format!("variant {n}"),
+        (Some(Replaced::Mutate), None) => return "a variation".into(),
+        (Some(Replaced::Restore), _) => return "the original".into(),
+        (None, _) => {}
     }
     if row.deleted {
         return "clip".into();
@@ -4301,7 +4445,10 @@ mod tests {
                 program: 127,
                 bank: Some(ClipProgram::MAX_BANK),
             }),
+            // Its longest word.
+            direction: Direction::PingPong,
         };
+        values.extend(card_rows(CARD_STEP, card).into_iter().map(|r| r.value));
         values.extend(card_rows(MAX_CLIP_TICKS, card).into_iter().map(|r| r.value));
         values.extend(
             card_rows(999 * CARD_STEP, card)
@@ -4331,6 +4478,8 @@ mod tests {
             card.launch = Some(g);
             values.extend(card_rows(CARD_STEP, card).into_iter().map(|r| r.value));
         }
+        // The Mutate row (S6) at its longest.
+        values.extend(["original", "variant", "—"].map(String::from));
         for name in RECORD_ROWS
             .iter()
             .chain(crate::editor::EDIT_ROWS.iter())
@@ -5402,7 +5551,8 @@ mod tests {
             song: None,
             settings: false,
             pasted: false,
-            reloaded: false,
+            replaced: None,
+            variant: None,
             scene: None,
         };
         let mut st = st;
@@ -5665,7 +5815,9 @@ mod tests {
                 "Launch project",
                 "Mode Restart",
                 "Program off",
-                "Bank —"
+                "Bank —",
+                "Direction Forward",
+                "Mutate —"
             ]
         );
         let step = |st: &TimeState, index: usize, delta: i32| {
@@ -5947,6 +6099,102 @@ mod tests {
 
     /// SHIFT + the card's arrows: Length doubles with its notes repeated or
     /// halves, Speed doubles or halves; the other rows step as without it.
+    /// The Direction row (S6) steps Forward, Reverse, Ping-pong and
+    /// Random, but moves only a clip of two whole 1/16 steps or more.
+    #[test]
+    fn the_clip_cards_direction_row_steps_the_play_direction() {
+        let mut st = state();
+        st.armed = Some(1);
+        let step = |st: &TimeState, delta| match card_step(st, CLIP_DIRECTION, delta) {
+            Ok(TimeAction::ClipSettings { row, settings, .. }) => {
+                assert_eq!(usize::from(row), CLIP_DIRECTION);
+                Ok(settings.direction)
+            }
+            other => Err(format!("{other:?}")),
+        };
+        let set = |st: &mut TimeState, d| {
+            st.tracks[1].slots[1].as_mut().unwrap().settings.direction = d;
+        };
+        assert_eq!(step(&st, 1), Ok(Direction::Reverse));
+        assert!(step(&st, -1).unwrap_err().contains("its first, Forward"));
+        set(&mut st, Direction::PingPong);
+        assert_eq!(step(&st, 1), Ok(Direction::Random));
+        assert_eq!(step(&st, -1), Ok(Direction::Reverse));
+        set(&mut st, Direction::Random);
+        assert!(step(&st, 1).unwrap_err().contains("its last, Random"));
+        let shown = |st: &TimeState| clip_rows(st)[CLIP_DIRECTION].value.clone();
+        assert_eq!(shown(&st), "Random");
+        // A clip of one step plays forward: the row says "—", a step
+        // puts it back to Forward, and then says why it can't move.
+        st.tracks[1].slots[1].as_mut().unwrap().length = CARD_STEP;
+        assert_eq!(shown(&st), "—");
+        assert_eq!(step(&st, 1), Ok(Direction::Forward));
+        set(&mut st, Direction::Forward);
+        assert_eq!(shown(&st), "Forward");
+        assert_eq!(
+            step(&st, 1),
+            Err(format!("{:?}", Err::<(), _>("Direction moves the clip's 1/16 steps: it needs a clip of 2 whole steps or more, so this one plays forward")))
+        );
+        // A loop cell plays its loop as recorded.
+        st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
+        assert!(step(&st, 1).unwrap_err().contains("loop cell"));
+    }
+
+    /// The card's Mutate row (S6): › a variation (SHIFT + › a bolder one),
+    /// the pitch free to move on a melodic track; ‹ the original back once
+    /// there is one. It reads "original", then "variant"; "—" with no
+    /// notes or on a loop's cell.
+    #[test]
+    fn the_clip_cards_mutate_row_mutates_and_restores() {
+        let mut st = state();
+        st.armed = Some(1);
+        st.tracks[1].slots[1].as_mut().unwrap().notes = 4;
+        let shown = |st: &TimeState| clip_rows(st)[CLIP_MUTATE].value.clone();
+        assert_eq!(clip_rows(&st).len(), CLIP_ROWS.len());
+        assert_eq!(clip_rows(&st)[CLIP_MUTATE].name, "Mutate");
+        assert_eq!(shown(&st), "original");
+        let mutate = |more, melodic| {
+            Ok(TimeAction::Mutate {
+                track: 1,
+                slot: 1,
+                more,
+                melodic,
+            })
+        };
+        assert_eq!(
+            card_action(&st, CLIP_MUTATE, 1, false),
+            mutate(false, false)
+        );
+        assert_eq!(card_action(&st, CLIP_MUTATE, 1, true), mutate(true, false));
+        st.tracks[1].melodic = true;
+        assert_eq!(card_action(&st, CLIP_MUTATE, 1, true), mutate(true, true));
+        assert!(card_action(&st, CLIP_MUTATE, -1, false)
+            .unwrap_err()
+            .contains("plays its original"));
+        let c = st.tracks[1].slots[1].as_mut().unwrap();
+        c.variation = Some(3);
+        assert_eq!(shown(&st), "variant");
+        assert_eq!(
+            card_action(&st, CLIP_MUTATE, -1, true),
+            Ok(TimeAction::Restore { track: 1, slot: 1 })
+        );
+        assert_eq!(card_action(&st, CLIP_MUTATE, 1, false), mutate(false, true));
+        // No notes: nothing to vary, unless a variation is there to undo.
+        st.tracks[1].slots[1].as_mut().unwrap().notes = 0;
+        assert_eq!(shown(&st), "variant");
+        st.tracks[1].slots[1].as_mut().unwrap().variation = None;
+        assert_eq!(shown(&st), "—");
+        assert!(card_action(&st, CLIP_MUTATE, 1, false)
+            .unwrap_err()
+            .contains("none yet"));
+        // A loop cell plays its loop as recorded.
+        st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
+        assert_eq!(shown(&st), "—");
+        assert!(card_action(&st, CLIP_MUTATE, 1, false)
+            .unwrap_err()
+            .contains("loop cell"));
+    }
+
     #[test]
     fn shift_doubles_or_halves_the_cards_length_and_speed() {
         let mut st = state();
@@ -6763,7 +7011,8 @@ mod tests {
             song: None,
             settings: false,
             pasted: false,
-            reloaded: false,
+            replaced: None,
+            variant: None,
             scene: None,
         };
         st.done = vec![row(1), row(2)];
@@ -6799,7 +7048,8 @@ mod tests {
             song: None,
             settings: false,
             pasted: false,
-            reloaded: false,
+            replaced: None,
+            variant: None,
             scene: None,
         };
         let (items, _) = take_items(&st);
@@ -6825,7 +7075,8 @@ mod tests {
             song: None,
             settings: false,
             pasted: false,
-            reloaded: false,
+            replaced: None,
+            variant: None,
             scene: None,
         };
         assert_eq!(take_items(&st).0[2].title, "Edit 5 · Bass / 1");
