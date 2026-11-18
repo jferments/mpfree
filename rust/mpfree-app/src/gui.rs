@@ -902,9 +902,13 @@ pub enum ToUi {
     MixerQLink(usize, i32),
     /// TRACK MIX opened the Mix tab: it shows Faders.
     MixerFaders,
-    /// The effects on the mixer's pad channels changed, by pad: the Pads
-    /// tab's Effects row names them.
-    PadFx(Vec<Vec<String>>),
+    /// The effects on the mixer's pad channels changed (each pad with a
+    /// channel of its own, by kit and pad): the Pads tab's Effects row
+    /// names them.
+    PadFx(Vec<crate::modpanels::PadFx>),
+    /// The effects on a kit's pad's channel as pedals, while the Sample
+    /// tab's FX tab shows it ([`FromUi::SamplePedals`]).
+    Pedals(crate::sample_page::PadPedals),
     /// While the mixer's I/O view shows: the data wheel, - or +, for the
     /// section showing.
     IoInput(mpfree_mixer_ui::IoInput),
@@ -1402,16 +1406,25 @@ pub enum FromUi {
     /// the mix (the Rec tab's Source). The audio thread points the mixer's
     /// sampler capture point at it and starts the buffer afresh.
     SampleSource(crate::sampler::RecSource),
-    /// The Sample tab's FX tab on the playing kit's pad `pad`: the chain
-    /// editor on its channel, then the Drums track
-    /// ([`crate::modpanels::Panels::open_pad`]).
+    /// The Sample tab's FX tab's Whole chain (or, with `add`, its + Add
+    /// effect) on kit `kit`'s pad `pad`: the chain editor on its channel
+    /// (lent one if it has none), then its kit's track, with the picker up
+    /// for `add` ([`crate::modpanels::Panels::open_pad`]).
     SampleFx {
+        kit: usize,
         pad: usize,
+        add: bool,
     },
-    /// The Pads tab's Effects row on pad `pad`: its chain in the Mix tab,
-    /// with ‹ back to the Pads tab
-    /// ([`crate::modpanels::Panels::open_pad_mix`]).
+    /// The Sample tab's FX tab shows a kit's pad, as (kit, pad) (None: no
+    /// longer): its channel's effects come as [`ToUi::Pedals`], and its
+    /// pedals' [`FromUi::Chain`] touches reach that channel
+    /// ([`crate::modpanels::Panels::show_pedals`]).
+    SamplePedals(Option<(usize, usize)>),
+    /// The Pads tab's Effects row on kit `kit`'s pad `pad`: its chain in
+    /// the Mix tab (lent a channel if it has none), with ‹ back to the
+    /// Pads tab ([`crate::modpanels::Panels::open_pad_mix`]).
     PadEffects {
+        kit: usize,
         pad: usize,
     },
     /// A phrase chopped on the Sample page, for the armed track's first
@@ -4268,6 +4281,10 @@ impl Player {
                     format!("Hit the pad to see its grains   ·   Q-Links 1-4: position, size, density, pitch (SHIFT: sprays, \
                      finer)   ·   {ROWS_HINT}")
                 }
+                View::Sample if self.sample.page() == sample_page::FX_PAGE => {
+                    format!("Touch an effect: its knobs on the Q-Links   ·   + Add effect: pick one   ·   \
+                     Whole chain: every control   ·   {ROWS_HINT}")
+                }
                 View::Sample if self.sample.page() == sample_page::REC_PAGE => {
                     format!("Record or Skip back onto the pad named   ·   {ROWS_HINT}   ·   UNDO: take a take off")
                 }
@@ -5695,6 +5712,12 @@ impl Player {
             }
             ToUi::MixerQLink(k, d) => self.mixer_qlink(k, d),
             ToUi::PadFx(fx) => self.sample.set_pad_fx(&mut self.ui, fx),
+            ToUi::Pedals(pedals) => {
+                self.sample.set_pedals(&mut self.ui, pedals);
+                if self.view == View::Sample {
+                    self.refresh_hint();
+                }
+            }
             ToUi::MixerFaders => {
                 mpfree_mixer_ui::set_look(&mut self.ui, mpfree_mixer_ui::Look::Faders);
                 self.sync_mix_pick();
@@ -8034,6 +8057,9 @@ impl Player {
                 self.outbox.push(a);
             }
         }
+        // The FX tab's pad, and its pedals' turns.
+        let fx = self.sample.take_fx(self.view == View::Sample);
+        self.outbox.extend(fx);
         // A stretched copy coming in says so.
         self.print_sample_lines();
         let out: Vec<FromUi> = std::mem::take(&mut self.outbox)
@@ -8089,6 +8115,8 @@ impl Player {
                 | FromUi::UndoReady(_)
                 | FromUi::UndoHistory(_)
                 | FromUi::Overlay(_)
+                | FromUi::SampleFx { .. }
+                | FromUi::SamplePedals(_)
         );
         if edit {
             self.mark_unsaved();
@@ -12670,11 +12698,12 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     pads.apply(ToUi::PadFx(
         (0..crate::mixing::PADS)
             .map(|i| {
-                if i == mpfree_sampler_ui::sample::PAD {
+                let fx = if i == mpfree_sampler_ui::sample::PAD {
                     vec!["Compressor".to_string()]
                 } else {
                     Vec::new()
-                }
+                };
+                (0, i, fx)
             })
             .collect(),
     ));
@@ -12895,6 +12924,29 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         rec.take_actions();
     }
     out.push(("sample-rec", rec));
+    // The FX tab: pad A5's channel with Filter, Drive, Compressor and an
+    // EQ switched off, Drive picked (its knobs on the Q-Links).
+    let mut fx = sample_sampler(fonts());
+    fx.on_event(UiEvent {
+        widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+        kind: EventKind::Tab(mpfree_sampler_ui::fx_tab::TAB),
+    });
+    fx.take_actions();
+    fx.apply(ToUi::Pedals(crate::sample_page::PadPedals {
+        kit: 0,
+        pad: mpfree_sampler_ui::sample::PAD,
+        list: mpfree_chain_ui::sample::Song::new().pedals(),
+        own: true,
+        spare: true,
+        into: "Drums".into(),
+        room: crate::mixing::SLOTS,
+    }));
+    fx.on_event(UiEvent {
+        widget: mpfree_sampler_ui::fx_tab::LIST.into(),
+        kind: EventKind::Select(4),
+    });
+    fx.take_actions();
+    out.push(("sample-fx", fx));
     // The Rec tab's Auto-sample mode on the Synth tab's patch: every 5
     // semitones, 10 notes onto the empty pads after the break.
     let mut auto = sample_sampler(fonts());
@@ -13070,6 +13122,50 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         links.take_actions();
         out.push(("sample-play-links", links));
     }
+    // The Play tab's Slices on a pad sliced in 8 (R4 part 5): slice 3
+    // picked, up 5 semitones and filtered.
+    {
+        use mpfree_sampler::model::SliceSet;
+        use mpfree_sampler_ui::play_tab::{self, Section};
+        let mut sliced = sample_sampler(fonts());
+        let (mut project, _) = mpfree_sampler_ui::sample::project();
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let _ = project.edit_pad(pad, None, |p| {
+            let r = &mut p.layers[0].region;
+            let (a, b) = (r.start, r.end);
+            r.slices = (1..8).map(|k| a + (b - a) * k / 8).collect();
+            r.set_slice_set(
+                2,
+                SliceSet {
+                    tune_st: 5,
+                    cutoff_hz: Some(2400.0),
+                    ..SliceSet::DEFAULT
+                },
+            );
+        });
+        sliced.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        sliced.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(play_tab::TAB),
+        });
+        let i = Section::ALL
+            .iter()
+            .position(|s| *s == Section::Slices)
+            .unwrap_or(0);
+        sliced.on_event(UiEvent {
+            widget: play_tab::SECTIONS.into(),
+            kind: EventKind::Tab(i),
+        });
+        sliced.on_event(UiEvent {
+            widget: play_tab::SLICES.into(),
+            kind: EventKind::Marker { index: 2, frame: 0 },
+        });
+        sliced.take_actions();
+        out.push(("sample-play-slices", sliced));
+    }
     // The Play tab with the pads playing 16 Levels of the pad, by tune.
     {
         use mpfree_sampler_ui::play_tab::{Row, LIST};
@@ -13123,7 +13219,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             (Row::Method, 1),
             (Row::Method, 1),
             (Row::Amount, -4),
-            (Row::Put, 1i32),
+            (Row::Put, 2i32),
         ] {
             for _ in 0..delta.abs() {
                 keys.on_event(UiEvent {
@@ -13148,7 +13244,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
         });
         let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
-        for (row, delta) in [(Row::Method, 1), (Row::Amount, -1), (Row::Put, -1i32)] {
+        for (row, delta) in [(Row::Method, 1), (Row::Amount, -1), (Row::Phrase, 1i32)] {
             phrase.on_event(UiEvent {
                 widget: LIST.into(),
                 kind: EventKind::Step {
@@ -13159,14 +13255,35 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         phrase.apply(ToUi::SampleQLink(3, -16));
         if let Some(list) = phrase.ui.get_mut::<SettingList>(LIST) {
-            list.selected = index(Row::Put);
+            list.selected = index(Row::Phrase);
         }
         phrase.on_event(UiEvent {
             widget: LIST.into(),
-            kind: EventKind::Select(index(Row::Put)),
+            kind: EventKind::Select(index(Row::Phrase)),
         });
         phrase.take_actions();
         out.push(("sample-chop-phrase", phrase));
+    }
+    // The Chop tab putting every eighth on one pad, the pad chopped (R4).
+    {
+        use mpfree_sampler_ui::chop_tab::{Row, LIST};
+        let mut one = sample_sampler(fonts());
+        one.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
+        });
+        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
+        for (row, delta) in [(Row::Method, 1), (Row::Amount, -1), (Row::Put, 1i32)] {
+            one.on_event(UiEvent {
+                widget: LIST.into(),
+                kind: EventKind::Step {
+                    index: index(row),
+                    delta,
+                },
+            });
+        }
+        one.take_actions();
+        out.push(("sample-chop-one-pad", one));
     }
     // Live chop on the same pad: Start pressed, the break playing halfway,
     // and four pads hit so far.
@@ -13212,6 +13329,37 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         live.take_actions();
         out.push(("sample-chop-live", live));
+    }
+    // The Chop tab cutting a sung line where its notes change (R4.7).
+    {
+        use mpfree_sampler_ui::chop_tab::{Row, LIST};
+        let mut sung = sample_sampler(fonts());
+        let (project, _) = mpfree_sampler_ui::sample::melody_project();
+        let mut kits = sung.kits.clone();
+        kits[0].name = "Vocals".to_string();
+        kits[0].pads[mpfree_sampler_ui::sample::PAD] = Some("Sung line".to_string());
+        sung.apply(ToUi::Kits(kits));
+        sung.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        settle_views(&mut sung);
+        sung.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
+        });
+        // Back from Transient past Live and Manual: Pitch.
+        sung.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Step {
+                index: Row::ALL.iter().position(|r| *r == Row::Method).unwrap_or(0),
+                delta: -3,
+            },
+        });
+        // Its pitch followed on the worker, and the chop made.
+        settle_views(&mut sung);
+        sung.take_actions();
+        out.push(("sample-chop-pitch", sung));
     }
     let mut lab = sample_player(fonts());
     lab.apply(ToUi::Show(View::Prefs));
@@ -20524,6 +20672,51 @@ mod tests {
     }
 
     #[test]
+    fn pitch_chop_waits_for_the_sounds_pitch_from_the_worker_then_chops_and_keeps_it() {
+        use mpfree_sampler::model::ChopMode;
+        use mpfree_sampler_ui::chop_tab::{self, Method, Row};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let (project, _) = mpfree_sampler_ui::sample::melody_project();
+        p.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        p.apply(ToUi::PadDown { pad, velocity: 100 });
+        settle_views(&mut p);
+        p.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(chop_tab::TAB),
+        });
+        let source = p.sample.project(0).unwrap().pad(pad).unwrap().layers[0]
+            .region
+            .source;
+        assert!(p.sample.chop().unwrap().1.source.pitch.is_none());
+        // Pitch picked: the worker follows the sound's pitch; till then
+        // there are no cuts and nothing is kept.
+        p.on_event(UiEvent {
+            widget: chop_tab::LIST.into(),
+            kind: EventKind::Step {
+                index: Row::ALL.iter().position(|r| *r == Row::Method).unwrap(),
+                delta: -3,
+            },
+        });
+        let (tab, _) = p.sample.chop().unwrap();
+        assert_eq!(tab.method(), Method::Pitch);
+        assert!(p.sample.analysing(), "the pitch is being followed");
+        settle_views(&mut p);
+        // In: a slice a note, kept for the sound as a Pitch chop.
+        let (tab, st) = p.sample.chop().unwrap();
+        assert!(st.source.pitch.is_some());
+        assert_eq!((tab.method(), tab.slices()), (Method::Pitch, 5));
+        let bounds = tab.bounds(st);
+        let kept = p.sample.project(0).unwrap().kept_chop(source).unwrap();
+        assert_eq!(kept.mode, ChopMode::Pitch);
+        assert_eq!(kept.markers(), &bounds[1..5]);
+        assert!(p.sample.take_unsaved());
+    }
+
+    #[test]
     fn live_chop_drops_cuts_where_the_sampler_marked_them_and_ends_with_the_sound() {
         use mpfree_sampler_ui::chop_tab::{self, Method, Row};
         use mpfree_sampler_ui::widgets::{PadBar, SettingList};
@@ -20635,6 +20828,68 @@ mod tests {
             .any(|l| l == "sample: live chop stopped on pad A5: 0 cuts made"));
     }
 
+    /// Chop to one pad (sampler R4): the chopped pad becomes one sliced
+    /// pad, nothing else changes, the log says how it plays, and with
+    /// Phrase on the clip's hits are all on it, each with a Slice lock.
+    #[test]
+    fn one_pad_slices_the_chopped_pad_and_its_phrase_locks_each_slice() {
+        use mpfree_sampler::model::{PadsPlay, PADS};
+        use mpfree_sampler_ui::chop_tab::{self, Row};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        p.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(chop_tab::TAB),
+        });
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            let index = Row::ALL.iter().position(|r| *r == row).unwrap();
+            p.on_event(UiEvent {
+                widget: chop_tab::LIST.into(),
+                kind: EventKind::Step { index, delta },
+            });
+        };
+        // Every eighth of the loop's beat grid, on A5 itself, with a phrase.
+        step(&mut p, Row::Method, 1);
+        step(&mut p, Row::Amount, -1);
+        step(&mut p, Row::Put, 1);
+        step(&mut p, Row::Phrase, 1);
+        let used: Vec<bool> = (0..PADS)
+            .map(|i| p.sample.project(0).unwrap().pad(i).is_some())
+            .collect();
+        p.take_actions();
+        p.on_event(UiEvent {
+            widget: chop_tab::LIST.into(),
+            kind: EventKind::Tab(Row::Chop.index()),
+        });
+        let kit = p.sample.project(0).unwrap();
+        let sliced = kit.pad(pad).unwrap();
+        assert_eq!(sliced.layers[0].region.slice_count(), 15);
+        assert_eq!(sliced.keys.map(|k| (k.lo, k.hi)), Some((36, 50)));
+        let now: Vec<bool> = (0..PADS).map(|i| kit.pad(i).is_some()).collect();
+        assert_eq!(now, used, "no other pad changes");
+        assert_eq!(kit.pads_play(), PadsPlay::Pads);
+        assert!(
+            events_log(&p).iter().any(|l| l.starts_with("sample: kit 1 (Breaks) pad A5 Break 92: chopped ")
+                && l.ends_with("into 15 slices (Beat) on pad A5, sliced: a hit plays slice 1, keys C2 to D3 a slice each")),
+            "{:?}",
+            events_log(&p)
+        );
+        let (sent, rest) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        let [FromUi::SamplePhrase(clip)] = &rest[..] else {
+            panic!("{rest:?}")
+        };
+        assert_eq!(clip.notes.len(), 15);
+        assert!(clip.notes.iter().all(|n| usize::from(n.note) == pad));
+        let values: Vec<f32> = clip.locks.iter().map(|l| l.value).collect();
+        assert_eq!(values, (0..15).map(|k| k as f32).collect::<Vec<_>>());
+        assert!(clip
+            .locks
+            .iter()
+            .zip(&clip.notes)
+            .all(|(l, n)| l.tick == n.tick && l.sound == Some(n.note)));
+    }
+
     #[test]
     fn to_keys_puts_slices_on_notes_and_the_play_tab_turns_the_pads_back() {
         use mpfree_sampler::model::{Keys, PadsPlay};
@@ -20672,7 +20927,7 @@ mod tests {
             step(&mut p, Row::Amount, -1);
         }
         p.apply(ToUi::SampleQLink(3, -16));
-        step(&mut p, Row::Put, 1);
+        step(&mut p, Row::Put, 2);
         p.take_actions();
         tap(&mut p, chop_tab::LIST, Row::Chop.index());
         let kit = p.sample.project(0).unwrap();
@@ -20721,7 +20976,7 @@ mod tests {
     }
 
     #[test]
-    fn pads_and_phrase_sends_a_clip_that_lands_in_the_armed_tracks_first_empty_slot() {
+    fn phrase_on_sends_a_clip_that_lands_in_the_armed_tracks_first_empty_slot() {
         use mpfree_sampler_ui::chop_tab::{self, Row};
         use mpfree_sampler_ui::widgets::{PadBar, SettingList};
         let mut p = sample_sampler(Fonts::embedded());
@@ -20751,7 +21006,7 @@ mod tests {
         step(&mut p, Row::Method, 1);
         step(&mut p, Row::Amount, -1);
         p.apply(ToUi::SampleQLink(3, -16));
-        step(&mut p, Row::Put, -1);
+        step(&mut p, Row::Phrase, 1);
         p.take_actions();
         tap(&mut p, chop_tab::LIST, Row::Chop.index());
         let (sent, rest) = views(p.take_actions());
@@ -22146,10 +22401,17 @@ mod tests {
         assert!(take(&mut p).is_empty());
     }
 
+    /// The FX tab (P4 of the Sample tab as an instrument): pad A5's channel
+    /// as pedals, a switch and a knob reaching that channel, the picked
+    /// effect's four on the Q-Links, and + Add effect and Whole chain
+    /// opening the chain editor.
     #[test]
-    fn the_fx_tab_asks_for_the_chain_editor_on_the_pads_channel() {
+    fn the_fx_tab_shows_the_pads_effects_as_pedals_and_turns_them() {
+        use mpfree_chain_ui::ChainAction;
+        use mpfree_sampler_ui::fx_tab::{self, FxSound};
         use mpfree_sampler_ui::wave_tab::{BAR, FX_TAB};
-        use mpfree_sampler_ui::widgets::PadBar;
+        use mpfree_sampler_ui::widgets::{PadBar, SettingList};
+        use mpfree_ui::qlink::QLinkColumn;
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         p.take_actions();
@@ -22157,18 +22419,187 @@ mod tests {
             p.ui.get::<PadBar>(BAR).unwrap().enabled[FX_TAB],
             "FX is built"
         );
-        let (page, editor) = (p.page().to_string(), p.sample.editor());
         p.on_event(UiEvent {
             widget: BAR.into(),
             kind: EventKind::Tab(FX_TAB),
         });
+        assert_eq!(p.page(), sample_page::FX_PAGE);
+        // The tab asks for the pad's effects, once.
         let (_, rest) = views(p.take_actions());
-        assert_eq!(rest, [FromUi::SampleFx { pad }]);
-        // The sampler's own page stays under the editor, for Back.
-        assert_eq!((p.page(), p.sample.editor()), (page.as_str(), editor));
-        assert!(events_log(&p)
-            .iter()
-            .any(|l| l == "sample: pad A5's effects: its own channel, then the Drums track"));
+        assert_eq!(rest, [FromUi::SamplePedals(Some((0, pad)))]);
+        assert!(views(p.take_actions()).1.is_empty());
+        let song = mpfree_chain_ui::sample::Song::new();
+        let pedals = song.pedals();
+        p.apply(ToUi::Pedals(pad_pedals(0, pad, pedals.clone(), true, true)));
+        let (_, st) = p.sample.fx().unwrap();
+        let shown = st.pedals.as_ref().unwrap();
+        assert_eq!(shown.len(), 4);
+        assert!(!shown[3].on, "the EQ is off");
+        let way = p.ui.get::<FxSound>(fx_tab::SOUND).unwrap().way();
+        assert_eq!(way.first().map(|w| w.0.as_str()), Some("Sound"));
+        assert_eq!(way.last().map(|w| w.0.as_str()), Some("Drums"));
+        // The first effect is picked: its knobs on the Q-Links.
+        let q = p.ui.get::<QLinkColumn>(fx_tab::QLINKS).unwrap();
+        assert_eq!(q.cards[0].name, pedals[0].knobs[0].label);
+        // A tap on the second effect's switch turns it off on the channel.
+        let rows = |p: &Player| p.ui.get::<SettingList>(fx_tab::LIST).unwrap().rows.clone();
+        let on_row = |p: &Player, n: usize| {
+            rows(p)
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.name == "On")
+                .nth(n)
+                .map(|(i, _)| i)
+                .unwrap()
+        };
+        let index = on_row(&p, 1);
+        p.on_event(UiEvent {
+            widget: fx_tab::LIST.into(),
+            kind: EventKind::Step { index, delta: 1 },
+        });
+        let (_, rest) = views(p.take_actions());
+        assert_eq!(
+            rest,
+            [FromUi::Chain(ChainAction::SetOn { slot: 1, on: false })]
+        );
+        assert!(!p.sample.fx().unwrap().1.pedals.as_ref().unwrap()[1].on);
+        // ... and picks it: Q-Link 1 turns its first knob, let go on a lift.
+        let q = p.ui.get::<QLinkColumn>(fx_tab::QLINKS).unwrap();
+        assert_eq!(q.cards[0].name, pedals[1].knobs[0].label);
+        let k = &pedals[1].knobs[0];
+        p.apply(ToUi::SampleQLink(0, 5));
+        p.apply(ToUi::SampleLift);
+        let (_, rest) = views(p.take_actions());
+        let want = k.nudged(5, false);
+        assert_eq!(
+            rest,
+            [
+                FromUi::Chain(ChainAction::Set {
+                    addr: k.addr,
+                    value: want
+                }),
+                FromUi::Chain(ChainAction::Release(k.addr)),
+            ]
+        );
+        let shown = &p.sample.fx().unwrap().1.pedals.as_ref().unwrap()[1].knobs[0];
+        assert_eq!(shown.text, value_text_of(k, want), "shown at once");
+        // Whole chain and + Add effect: the chain editor on the channel.
+        let buttons =
+            p.ui.get::<SettingList>(fx_tab::LIST)
+                .unwrap()
+                .buttons
+                .clone();
+        assert_eq!(buttons.len(), 2);
+        for (i, add) in [(buttons[1], false), (buttons[0], true)] {
+            p.on_event(UiEvent {
+                widget: fx_tab::LIST.into(),
+                kind: EventKind::Tab(i),
+            });
+            let (_, rest) = views(p.take_actions());
+            assert_eq!(rest, [FromUi::SampleFx { kit: 0, pad, add }]);
+        }
+        // Off the tab, the mixer stops sending.
+        p.on_event(UiEvent {
+            widget: fx_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::wave_tab::TAB),
+        });
+        let (_, rest) = views(p.take_actions());
+        assert_eq!(rest, [FromUi::SamplePedals(None)]);
+    }
+
+    /// The mixer's word on kit `kit`'s pad `pad`'s channel, into Drums.
+    fn pad_pedals(
+        kit: usize,
+        pad: usize,
+        list: Vec<mpfree_chain_ui::state::Pedal>,
+        own: bool,
+        spare: bool,
+    ) -> sample_page::PadPedals {
+        sample_page::PadPedals {
+            kit,
+            pad,
+            list,
+            own,
+            spare,
+            into: "Drums".into(),
+            room: crate::mixing::SLOTS,
+        }
+    }
+
+    fn value_text_of(k: &mpfree_chain_ui::state::ParamView, v: f32) -> String {
+        mpfree_chain_ui::state::ParamView {
+            value: v,
+            ..k.clone()
+        }
+        .text()
+    }
+
+    /// A pad past A16 has no channel of its own until it is given an
+    /// effect (R3 part 4a): the FX tab asks the mixer for it all the same,
+    /// shows no effects yet, and + Add effect asks for one (the mixer lends
+    /// it a channel). With every channel lent, the tab says why and its
+    /// buttons are faint.
+    #[test]
+    fn the_fx_tab_on_a_pad_with_no_channel_lends_one_or_says_why_not() {
+        use mpfree_sampler_ui::fx_tab;
+        use mpfree_sampler_ui::wave_tab::{BAR, FX_TAB};
+        use mpfree_sampler_ui::widgets::{PadBar, SettingList};
+        let mut p = sample_sampler(Fonts::embedded());
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let (mut project, _) = mpfree_sampler_ui::sample::project();
+        let b5 = project.pad(pad).unwrap().clone();
+        project.set_pad(16 + pad, Some(b5), None).unwrap();
+        p.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        p.apply(ToUi::PadPage(1));
+        p.apply(ToUi::PadDown { pad, velocity: 100 });
+        p.apply(ToUi::PadUp(pad));
+        let b5 = 16 + pad;
+        assert_eq!(p.sample.pad(), b5);
+        p.take_actions();
+        p.on_event(UiEvent {
+            widget: BAR.into(),
+            kind: EventKind::Tab(FX_TAB),
+        });
+        assert_eq!(p.page(), sample_page::FX_PAGE);
+        let (_, rest) = views(p.take_actions());
+        assert_eq!(rest, [FromUi::SamplePedals(Some((0, b5)))]);
+        // No channel yet, one free: no effects yet, + Add effect lends one.
+        p.apply(ToUi::Pedals(pad_pedals(0, b5, Vec::new(), false, true)));
+        let bar = p.ui.get::<PadBar>(fx_tab::BAR).unwrap();
+        assert_eq!(bar.subtitle, "No effects yet · into Drums");
+        let list = p.ui.get::<SettingList>(fx_tab::LIST).unwrap();
+        let buttons = list.buttons.clone();
+        assert!(buttons.iter().all(|&b| !list.controls[b].faint));
+        p.on_event(UiEvent {
+            widget: fx_tab::LIST.into(),
+            kind: EventKind::Tab(buttons[0]),
+        });
+        let (_, rest) = views(p.take_actions());
+        assert_eq!(
+            rest,
+            [FromUi::SampleFx {
+                kit: 0,
+                pad: b5,
+                add: true
+            }]
+        );
+        // Every channel lent: it says why, and its buttons are faint.
+        p.apply(ToUi::Pedals(pad_pedals(0, b5, Vec::new(), false, false)));
+        let bar = p.ui.get::<PadBar>(fx_tab::BAR).unwrap();
+        assert!(
+            bar.subtitle.starts_with("No channel free"),
+            "{}",
+            bar.subtitle
+        );
+        let list = p.ui.get::<SettingList>(fx_tab::LIST).unwrap();
+        assert!(list.buttons.iter().all(|&b| list.controls[b].faint));
+        // Another kit's pad's word is not this pad's.
+        p.apply(ToUi::Pedals(pad_pedals(1, b5, Vec::new(), true, true)));
+        let bar = p.ui.get::<PadBar>(fx_tab::BAR).unwrap();
+        assert_eq!(bar.subtitle, "Reading its channel");
     }
 
     #[test]

@@ -8110,7 +8110,7 @@ fn player_session(
                 tempo: app.settings.bpm,
                 swing: time.info().swing,
                 clips: time.project().clone(),
-                mixer: project::mixer_text(&mix.mixer, mix.pad_mutes(), mix.pad_solos()),
+                mixer: mix.mixer_text(),
                 modu: mix.modu.save(),
                 synth: project::synth_text(&app.synth_settings(), &synth.sounds()),
                 arp: app.arp_part(),

@@ -1277,6 +1277,45 @@ mod tests {
         assert!(h.put_clip(clip).unwrap_err().contains("no empty slot"));
     }
 
+    /// A phrase chopped to one sliced pad (sampler R4): played, each hit
+    /// on the pad has its Slice lock just before it, so each plays its
+    /// own slice.
+    #[test]
+    fn a_phrase_on_one_pad_plays_each_hit_with_its_slice_lock_first() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_sampler::engine::PadField;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let slice = RelAddr::new(OnTrack::Pad(4), PadField::Slice as u16);
+        let mut clip = Clip::new("Break 92 phrase", 3840);
+        for k in 0..4u8 {
+            let at = i64::from(k) * 960;
+            clip.add_note(mpfree_seq::Note::new(at, 480, 4, 127))
+                .unwrap();
+            clip.add_lock(mpfree_seq::Lock::new(at, Some(4), slice, f32::from(k)))
+                .unwrap();
+        }
+        assert!(h.put_clip(clip).unwrap().ends_with("slot 1 of Track 1"));
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        let mut pads = Fake::default();
+        run(&mut h, &mut pads, BAR - 1000, &[]);
+        let hits: Vec<_> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+        assert_eq!(hits.len(), 4, "{hits:?}");
+        assert!(hits.iter().all(|&(_, p)| p == 4));
+        let at = slice.on(0);
+        let locks: Vec<_> = pads.locks.iter().filter(|l| l.2 == at).collect();
+        assert_eq!(locks.len(), 4, "{:?}", pads.locks);
+        for (k, l) in locks.iter().enumerate() {
+            assert_eq!(
+                (l.0, l.1, l.3),
+                (hits[k].0, k, Some(k as f32)),
+                "slice {} reaches the pad before hit {}",
+                k + 1,
+                k + 1
+            );
+        }
+    }
+
     #[test]
     fn clips_for_several_tracks_go_in_as_one_take_or_not_at_all() {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();

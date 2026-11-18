@@ -472,6 +472,48 @@ mod tests {
         });
     }
 
+    /// A pad past A16 has no channel of its own (R3 part 4a): its + FX
+    /// lends it one, named by its pad and kit; an effect on it keeps it
+    /// (the Pads row names the effect); taken off again, ‹ gives the
+    /// channel back.
+    #[test]
+    fn a_pad_past_a16_is_lent_a_channel_and_gives_it_back_plain() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Pads");
+            s.press(mpfree_sampler_ui::pads_tab::MAP, "bank", "Bank B")
+                .run_for(0.3);
+            s.pad(4, 100, 0.05);
+            s.run_for(0.2);
+            assert_eq!(s.screen.sample.pad(), 20, "B5");
+            assert_eq!(s.mix.pad_channels.channel(0, 20), None, "none yet");
+            s.press("smp-pads-list", "row-button", "+ FX").run_for(0.2);
+            assert_eq!(s.view(), View::Chain);
+            let lent = s.mix.pad_channels.channel(0, 20);
+            assert_eq!(lent, Some(StripId::Pad(crate::mixing::PADS)));
+            let t = engine(&mut s);
+            assert!(t.picking);
+            assert_eq!(t.title, "B5 · Kit 1 FX");
+            s.press("chain", "pick", "Compressor").run_for(0.2);
+            s.press("chain", "back", "").run_for(0.3);
+            assert_eq!(s.view(), View::Pads);
+            assert_eq!(s.mix.pad_channels.channel(0, 20), lent, "kept");
+            assert!(
+                s.control("smp-pads-list", "row-button", "Compressor")
+                    .is_some(),
+                "the row names the pad's effect"
+            );
+            // Taken off: plain again, and ‹ gives the channel back.
+            s.press("smp-pads-list", "row-button", "Compressor")
+                .run_for(0.2);
+            assert_eq!(s.view(), View::Chain);
+            s.press("chain", "remove", "Remove").run_for(0.3);
+            s.press("chain", "back", "").run_for(0.3);
+            assert_eq!(s.mix.pad_channels.channel(0, 20), None, "given back");
+            assert!(s.control("smp-pads-list", "row-button", "+ FX").is_some());
+        });
+    }
+
     #[test]
     fn an_insert_added_on_the_mixer_is_turned_bypassed_moved_and_removed() {
         on_big_stack(|| {
@@ -659,16 +701,19 @@ mod tests {
         });
     }
 
-    /// Sample > FX: the pad's chain first, then a tap on the track's scope
-    /// shows the drum track's chain (its DJ filter); an effect added there
-    /// is on the Drums strip in the mixer. The header's Sample tab goes
-    /// back to the sound editor.
+    /// Sample > FX shows the pad's effects as pedals; its Whole chain opens
+    /// the pad's chain first, then a tap on the track's scope shows the
+    /// drum track's chain (its DJ filter); an effect added there is on the
+    /// Drums strip in the mixer. The header's Sample tab goes back to the
+    /// FX page.
     #[test]
     fn the_sample_tabs_fx_shows_the_pad_then_the_track() {
         on_big_stack(|| {
             let mut s = Session::new();
             s.press("header", "tab", "Sample");
-            s.press("smp-bar", "tab", "FX");
+            s.press("smp-bar", "tab", "FX").run_for(0.1);
+            assert_eq!(s.view(), View::Sample, "the pedals, on the Sample tab");
+            s.press("smp-fx-list", "button", "Whole chain").run_for(0.1);
             assert_eq!(s.view(), View::Chain);
             let t = engine(&mut s);
             assert_eq!(t.title, "Pad 5 FX", "the pad's chain first");
@@ -695,8 +740,8 @@ mod tests {
             s.press("header", "tab", "Sample");
             assert_eq!(s.view(), View::Sample);
             assert!(
-                s.control("smp-bar", "tab", "FX").is_some(),
-                "the sound editor's bar"
+                s.control("smp-fx-bar", "tab", "FX").is_some(),
+                "back on the FX page's pedals"
             );
 
             s.press("header", "tab", "Mix").run_for(0.1);

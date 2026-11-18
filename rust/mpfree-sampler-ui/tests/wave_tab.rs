@@ -807,3 +807,39 @@ fn a_finger_resting_on_a_panel_control_puts_it_under_the_wheel() {
     assert!(!s.ui.holding());
     s.ui.touch(9, Touch::Cancel, x, y);
 }
+
+/// A sliced region (R4) shows a line at each cut, numbered from 2, after
+/// the region's own markers; they stay put (they move on the Chop tab),
+/// and Start and End still move.
+#[test]
+fn a_sliced_region_shows_its_slice_lines_fixed() {
+    let mut s = sample();
+    let r = region(&s);
+    let cuts: Vec<u64> = (1..4)
+        .map(|k| r.start + (r.end - r.start) * k / 4)
+        .collect();
+    s.project
+        .edit_pad(PAD, None, |p| p.layers[0].region.slices = cuts.clone())
+        .unwrap();
+    s.state = WaveState::from_project(&s.project, PAD, 0, s.state.source.clone()).unwrap();
+    s.tab.update(&mut s.ui, &s.state);
+    let w = s.ui.get::<Waveform>(wave_tab::WAVE).unwrap();
+    let labels: Vec<&str> = w.markers().iter().map(|m| m.label.as_str()).collect();
+    assert_eq!(labels, ["START", "END", "LOOP", "LOOP END", "2", "3", "4"]);
+    let lines: Vec<(u64, bool)> = w.markers()[4..]
+        .iter()
+        .map(|m| (m.frame, m.fixed))
+        .collect();
+    assert_eq!(lines, cuts.iter().map(|&c| (c, true)).collect::<Vec<_>>());
+    // A touch on a slice line changes nothing.
+    let ev = UiEvent {
+        widget: wave_tab::WAVE.into(),
+        kind: EventKind::Marker {
+            index: 5,
+            frame: cuts[1] + 100,
+        },
+    };
+    let st = s.state.clone();
+    assert_eq!(s.tab.action(&mut s.ui, &ev, &st), None);
+    assert_eq!(region(&s).slices, cuts);
+}
