@@ -60,6 +60,8 @@ struct Rig {
     cv: cv_out::CvOut,
     /// Export's note tap (export.rs), on as if an export ran.
     tap: crate::export::Tap,
+    /// Sample Recall's master, kept every period (sampler R5 part 1).
+    recall: sampler::RecFeed,
 }
 
 fn tone(frames: usize, f: f32) -> Vec<i16> {
@@ -118,6 +120,9 @@ impl Rig {
             io: midi_in::io_model(),
             cv: cv_out::CvOut::new(RATE, std::time::Duration::ZERO),
             tap: crate::export::Tap::on(),
+            recall: sampler::RecFeed(
+                mpfree_sampler::record::input16(crate::sample_page::RECALL_SECONDS, RATE).0,
+            ),
         }
     }
 
@@ -169,6 +174,7 @@ impl Rig {
             io,
             cv,
             tap,
+            recall,
             ..
         } = self;
         let synth_on = *synth_on;
@@ -320,6 +326,7 @@ impl Rig {
         let n_tracks = time.project().tracks.len();
         let said = mix.takes_period(&ctx, n_tracks, &|t| time.now_playing(t));
         assert!(said.is_none(), "period {i}: a take said something");
+        recall.period(time.block(), &left[..], &right[..], mix.mixer.latency());
         let p = p.max(time.mix_click(left, right));
         self.peak = self.peak.max(p);
         // After the write, in the loop.
@@ -394,6 +401,8 @@ fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
     );
     assert!(rig.peak > 0.01, "silent: peak {}", rig.peak);
     assert!(rig.peak.is_finite());
+    // Sample Recall kept every period of the master.
+    assert_eq!(rig.recall.written(), i * PERIOD as u64);
     // On two cores the lane took its half of the voices; on three the synth
     // played every period on its lane. (Late parts are allowed here: under
     // qemu or a busy machine a lane can be slow, and a late part allocates

@@ -112,7 +112,7 @@ A take that starts on the bar line and lasts whole bars lands warped to the proj
 Use it to free up a busy pad, or to chop a sound you have already shaped.
 
 > [!TIP]
-> Resampling is the classic MPC trick: play the loop, the synth or the whole mix into a pad, then chop it and play it again. Pick **Master** as the Source and use **Skip back** after a jam you liked.
+> Resampling is the classic MPC trick: play the loop, the synth or the whole mix into a pad, then chop it and play it again. Pick **Master** as the Source and use **Skip back** after a jam you liked. MPFree always keeps the last two minutes of what you hear, so Skip back on **Master** reaches back to before you picked it.
 
 ## Send to pad and Chop to pads
 

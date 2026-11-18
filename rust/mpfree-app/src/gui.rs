@@ -1050,6 +1050,9 @@ pub enum ToUi {
     /// ([`FromUi::Capture`]), and how that ended: for the Sample page to
     /// put on a pad, then free.
     Captured(Box<Held>, crate::mixing::Captured),
+    /// The reading end of the master's last two minutes, which the audio
+    /// thread keeps from start (Sample Recall, sampler decision 3).
+    SampleRecall(Box<mpfree_sampler::record::Input>),
     /// One kit's entry changed: its name, pad labels and chip (the synth,
     /// after an octave, engine or pad layout change).
     KitChanged {
@@ -6472,6 +6475,10 @@ impl Player {
             }
             ToUi::Captured(held, end) => {
                 self.sample.captured(&mut self.ui, *held, end);
+                self.print_sample_lines();
+            }
+            ToUi::SampleRecall(r) => {
+                self.sample.set_recall(&mut self.ui, *r);
                 self.print_sample_lines();
             }
             ToUi::KitChanged { kit, view } => {
@@ -23040,6 +23047,99 @@ mod tests {
             p.ui.get::<InputView>(rec_tab::VIEW).unwrap().note,
             rec_tab::OFF_NOTE
         );
+    }
+
+    #[test]
+    fn the_rec_tabs_master_reads_what_sample_recall_keeps_with_no_buffer_of_its_own() {
+        use crate::sample_page::{master_source, RECALL_SECONDS};
+        use crate::sampler::RecSource;
+        use mpfree_sampler_ui::rec_tab::{self, Row};
+        use mpfree_sampler_ui::sample::{feed_input, RATE};
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let take = |p: &mut Player| {
+            let (sent, rest) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+            rest
+        };
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(rec_tab::TAB),
+        );
+        let source = Row::ALL.iter().position(|r| *r == Row::Source).unwrap();
+        let step = |p: &mut Player, delta: i32| {
+            p.on_event(UiEvent {
+                widget: rec_tab::LIST.into(),
+                kind: EventKind::Step {
+                    index: source,
+                    delta,
+                },
+            })
+        };
+        // Before the recall's reading end comes, Master gets a buffer of its
+        // own, as before.
+        step(&mut p, 1);
+        take(&mut p);
+        let mut acts = take(&mut p);
+        let Some(FromUi::SampleInput(Some(own))) = acts.pop() else {
+            panic!("the input's writer");
+        };
+        // The audio thread's buffer of the master comes: Master reads it,
+        // and its own buffer is asked back to be freed.
+        let (mut recall, input) = mpfree_sampler::record::input16(RECALL_SECONDS, RATE);
+        p.apply(ToUi::SampleRecall(Box::new(input)));
+        let log = events_log(&p);
+        assert!(
+            log.iter()
+                .any(|l| l == "sample: Sample Recall keeps the master's last 2:00 (21.2 MB)")
+                && log.iter().any(|l| l
+                    == "sample: the sampler resamples the master from what Sample Recall keeps \
+                        (nothing more held)"),
+            "{log:?}"
+        );
+        let mut acts = take(&mut p);
+        assert!(matches!(acts.pop(), Some(FromUi::SampleInput(None))));
+        p.apply(ToUi::SampleInputBack(own));
+        let m = p.sample.memory();
+        assert_eq!((m.input, m.recall), (0, 21_168_000));
+        // What the master played before it was picked is there too: Skip
+        // back keeps the last 10 s of it.
+        feed_input(&mut recall, 12.0, 0.4, true);
+        p.tick(0.033);
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Tab(Row::BUTTONS[1].index()),
+        );
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == "sample: skip back 10 s: Master take 1, 10.00 s stereo on pad A6"),
+            "{:?}",
+            events_log(&p)
+        );
+        // To the line input (off) and back: nothing to hand back or send.
+        step(&mut p, -1);
+        assert!(matches!(
+            take(&mut p).as_slice(),
+            [FromUi::SampleSource(RecSource::Line)]
+        ));
+        assert!(take(&mut p).is_empty(), "the master's buffer stays");
+        step(&mut p, 1);
+        assert!(matches!(
+            take(&mut p).as_slice(),
+            [FromUi::SampleSource(s)] if *s == master_source()
+        ));
+        assert!(take(&mut p).is_empty(), "no buffer of its own");
+        assert_eq!(p.sample.memory().input, 0);
     }
 
     #[test]
