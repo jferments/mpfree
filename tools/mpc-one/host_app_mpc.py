@@ -836,7 +836,7 @@ LINE_PHASES = (
      ["Turn the MPC's volume knob down first. Have a source ready (a phone or a synth, not too loud) on a",
       "mono cable. Tap the Looper tab. Under Recording and input, tap the Line input row: it turns on, or the",
       "log says why it stays off. Plug the source into the LEFT line input only and play it:",
-      "watch the Input peak row and Play's Loop view meter. Then move the plug to the RIGHT line input only and",
+      "watch the Input peak row move. Then move the plug to the RIGHT line input only and",
       "play again. (Round 7 only checked the left jack.) A stereo cable in both is fine after that."],
      "Did Line input turn on? Did the meter move with the plug in the left jack, and in the right jack?"),
     ("Loop the line input",

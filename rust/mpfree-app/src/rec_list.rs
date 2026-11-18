@@ -58,10 +58,10 @@ struct Hits {
 
 /// What moves the arm, as the right-hand panel lists it.
 pub const MOVES: [&str; 8] = [
-    "A tap on Arm: the loop strip, the pattern, here",
+    "A tap on Arm: the loop row, the pattern, here",
     "SHIFT + Arm: both, in one pass",
-    "The Beats view: the notes",
-    "The Loop view and the Looper tab: the loop",
+    "The Sequencer tab: the notes",
+    "The Looper tab: the loop",
     "Picking a track: its notes",
     "The home view, Mix, Synth and Pads leave it",
     "Nothing moves it while a take records",

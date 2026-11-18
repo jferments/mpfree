@@ -103,6 +103,7 @@ mod imagecopy;
 mod instruments;
 mod kit;
 mod locks;
+mod loop_row;
 mod looper_deck;
 mod looper_page;
 mod looper_tab;
@@ -3681,7 +3682,7 @@ fn io_shown(mix: &mixing::MixHost) -> bool {
 }
 
 /// Whether `view` shows the loop's playhead: the Looper tab, or the Play
-/// page with its loop strip.
+/// page with its loop row.
 fn strip_shown(view: app::View) -> bool {
     matches!(view, app::View::Looper | app::View::Play)
 }
@@ -8811,7 +8812,7 @@ fn player_session(
         if let Some(wave) = loop_wave {
             out.show(gui::ToUi::LoopWave(wave));
         }
-        // The Looper tab and the Play page's strip follow the loop as often
+        // The Looper tab and Play's loop row follow the loops as often
         // as the transport card, so the playhead moves smoothly; elsewhere
         // four times a second is enough.
         if strip_shown(app.view()) && loop_shown_at.elapsed() >= TRANSPORT_EVERY {
