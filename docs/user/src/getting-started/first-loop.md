@@ -46,7 +46,7 @@ The looper can record the **INPUTS** on the back of the MPC instead: a synth, a 
 2. Press **SHIFT + MENU** to open Prefs, pick **Line input** and switch it **On**. Press **MENU** to close Prefs.
 3. The loop's heading now says it records from the line input. Record as before.
 
-The **Looper** tab (**SHIFT + SAMPLER**) plays the looper as an instrument: all eight loops side by side, each recorded, overdubbed or muted with one tap on its ring, and the picked loop laid out underneath with a lane per layer, its level and pan, and its recording settings. See [Recording loops](../making-music/looping.md).
+The **Looper** tab (**SHIFT + SAMPLER**) plays the looper as an instrument: all eight loops side by side, each recorded, overdubbed or muted with one tap on its ring, and the picked loop laid out underneath with a lane per layer, its level and pan, and its recording settings. Press **SHIFT + SAMPLER** again there and the pads play the loops instead of the kit. See [Recording loops](../making-music/looping.md).
 
 > [!MPC]
 > On the MPC the Looper is a separate screen with one loop, which can run free of the transport (Sync off) and start when the input passes a threshold. In MPFree loops always follow the song's tempo and bar lines, sit on the Play page next to your pattern, and can record MPFree's own pads and synth as well as the inputs. Up to eight loops can play at once.

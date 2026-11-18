@@ -422,7 +422,7 @@ pub static PLANS: &[Plan] = &[
                         "trigger",
                         "Trigger",
                         Shape,
-                        &["Source", "Rate", "Threshold"],
+                        &["Source", "Rate", "Threshold", "Nudge", "Key HP", "Key LP"],
                     )
                 },
                 s("output", "Output", Voice, &["Mix"]),
@@ -430,14 +430,14 @@ pub static PLANS: &[Plan] = &[
         )],
         dims: &[
             Dim {
-                controls: &["Threshold"],
+                controls: &["Threshold", "Key HP", "Key LP"],
                 by: "Source",
                 when: When::Is(&[1.0]),
                 reason: "Tempo ducks on the beat",
                 swap: false,
             },
             Dim {
-                controls: &["Rate"],
+                controls: &["Rate", "Nudge"],
                 by: "Source",
                 when: When::Is(&[0.0]),
                 reason: "the sidechain sets it",
@@ -490,18 +490,27 @@ pub static PLANS: &[Plan] = &[
             &[
                 Section {
                     hero: &["Threshold"],
+                    rows: &["Mode"],
                     meters: &["Gain"],
                     ..s(
                         "gate",
                         "Gate",
                         Shape,
-                        &["Threshold", "Range", "Attack", "Hold", "Release"],
+                        &[
+                            "Threshold",
+                            "Range",
+                            "Attack",
+                            "Hold",
+                            "Release",
+                            "Mode",
+                            "Ratio",
+                        ],
                     )
                 },
                 Section {
-                    rows: &["Key"],
+                    rows: &["Key", "Listen"],
                     note: Some("what opens it"),
-                    ..s("key", "Key", Tone, &["Key", "Key HP", "Key LP"])
+                    ..s("key", "Key", Tone, &["Key", "Key HP", "Key LP", "Listen"])
                 },
             ],
         )],
@@ -672,6 +681,7 @@ pub static PLANS: &[Plan] = &[
                         ("Comp attack", "Attack"),
                         ("Comp release", "Release"),
                     ],
+                    rows: &["Style", "Auto makeup"],
                     drawings: &["Curve"],
                     meters: &["Reduction"],
                     ..s(
@@ -684,6 +694,8 @@ pub static PLANS: &[Plan] = &[
                             "Comp attack",
                             "Comp release",
                             "Makeup",
+                            "Style",
+                            "Auto makeup",
                         ],
                     )
                 }],

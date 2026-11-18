@@ -2546,8 +2546,7 @@ impl LoopHost {
         self.looper.status().phase
     }
 
-    /// Loop `n` as the looper has it.
-    #[cfg(test)]
+    /// Loop `n` as the looper has it (the loop keys' lights and steps).
     pub fn loop_status(&self, n: usize) -> Option<Status> {
         self.looper.loop_status(n)
     }
