@@ -193,7 +193,7 @@ The preset that is on stays lit, and the line at the top right says what it does
 
 ## Effects on one pad, or on the whole kit
 
-A pad's effects are on its own channel in the mixer. The **Effects** row of the [Pads tab](sampling.md#the-pads-tab-sounds-onto-pads) names them (**+ FX** when there are none): tap it, or push the wheel on it, to open the pad's chain in the Mix tab (see [Mixing and effects](effects.md#adding-an-effect-the-chain-editor)), and **‹** brings you back to the Pads tab.
+A pad's effects are on its own channel in the mixer. The **Effects** row of the [Pads tab](pads.md#the-page) names them (**+ FX** when there are none): tap it, or push the wheel on it, to open the pad's chain in the Mix tab (see [Mixing and effects](effects.md#adding-an-effect-the-chain-editor)), and **‹** brings you back to the Pads tab.
 
 - **The pad's own effects.** An effect on the pad's channel plays on that pad alone. Add **Perform FX** for stutters, beat repeats, tape stops and reverse on just that pad, in time with the tempo. Each of its 16 slots (**Slot 1** to **Slot 16**) is a page in the editor, with its effect, its length and a **Hold** switch: Hold on plays it, off lets it go.
 - **The whole kit's effects.** The track the kit plays into (**Drums** for kit 1) has a chain of its own in the Mix tab, so an effect there plays on the whole kit, like a bus effect on the SP-404. To make it a one-knob effect, put its knobs on a macro (see [Macros](effects.md#macros)), and that macro's Q-Link plays them all at once.
