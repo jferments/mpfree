@@ -30,6 +30,8 @@ The original MPC One is an RK3288-based embedded Linux computer. The documents h
 
 **[Device checks: targeted rounds on the MPC](device-checks.md)** is how a device round asks only about what it tests. A round names its checks (`tools/mpc-one/app_checks.py`); each shows a few steps, judges them from the app's log, and asks at most one question about what only a person can see or hear. Everything the software can check is left to the app's own tests and UI smoke workflows, which a round runs once on the workstation.
 
+**[The automated device suite](device-suite.md)** is how a round tests the software with its hands off the MPC: workflow scripts (a beat from scratch, loops, every synth, effects, the demo songs, the Sample page, a heavy load) that the app plays on the MPC by itself, judged from its log, with the benchmark and one report page at the end. CI plays the same files in its session on every pull request.
+
 **[The targeted app run on the soft-boot stick](app-targeted-run.md)** is the runbook for the device checks that have a reason to run: what merged since live test 3 (TRACK MUTE's banks, the wheel, drag and drop, the transport buttons) and what it never reached, with the app's own tests for the rest. Switching on with the stick in starts MPFree; there is no kexec step.
 
 **[The power button: clean shut down and restart](power-button.md)** explains how a short press opens MPFree's power card, how the pad player hands a shut down or restart to a root path unit on the stick, and what a restart starts with and without the stick.

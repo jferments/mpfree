@@ -32,8 +32,9 @@ use mpfree_instruments::sound::has_design;
 use mpfree_instruments::{Design, Sound};
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_synth::{
-    analog_params as an, bass_params as bp, drum_params, params as pp, wind_params as wp, Analog,
-    Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Strings, Wavetable, Wind,
+    analog_params as an, bass_params as bp, choir_params as chp, drum_params, params as pp,
+    wind_params as wp, Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch,
+    Strings, Wavetable, Wind,
 };
 
 use crate::fft::{hann_f64, power_spectrum};
@@ -67,10 +68,11 @@ pub enum Engine {
     Strings,
     Bass,
     Wind,
+    Choir,
 }
 
 impl Engine {
-    pub const ALL: [Engine; 11] = [
+    pub const ALL: [Engine; 12] = [
         Engine::Poly,
         Engine::Analog,
         Engine::Squelch,
@@ -82,6 +84,7 @@ impl Engine {
         Engine::Strings,
         Engine::Bass,
         Engine::Wind,
+        Engine::Choir,
     ];
 
     pub fn name(self) -> &'static str {
@@ -97,6 +100,7 @@ impl Engine {
             Engine::Strings => "Strings",
             Engine::Bass => "Bass",
             Engine::Wind => "Wind",
+            Engine::Choir => "Choir",
         }
     }
 
@@ -117,6 +121,7 @@ impl Engine {
             Engine::Strings => names(Strings::presets()),
             Engine::Bass => names(Bass::presets()),
             Engine::Wind => names(Wind::presets()),
+            Engine::Choir => names(Choir::presets()),
         }
     }
 
@@ -151,6 +156,7 @@ impl Engine {
             Engine::Strings => Strings::presets(),
             Engine::Bass => Bass::presets(),
             Engine::Wind => Wind::presets(),
+            Engine::Choir => Choir::presets(),
         };
         Some(p[preset].text)
     }
@@ -212,6 +218,11 @@ impl Engine {
             Engine::Wind => {
                 let mut n = Wind::new(rate);
                 n.load_preset(&Wind::presets()[preset]);
+                Box::new(n)
+            }
+            Engine::Choir => {
+                let mut n = Choir::new(rate);
+                n.load_preset(&Choir::presets()[preset]);
                 Box::new(n)
             }
         }
@@ -282,6 +293,9 @@ impl Engine {
             ],
             // The clarinet with no vibrato, breath noise or growl.
             Engine::Wind => &[(wp::VIB_DEPTH, 0.0), (wp::NOISE, 0.0), (wp::GROWL, 0.0)],
+            // One singer, steady and dry: no detune, vibrato, wavering,
+            // breath, ensemble or velocity colour.
+            Engine::Choir => &CHOIR_PLAIN,
             Engine::Fm | Engine::Keys | Engine::Pluck => &[],
         };
         for &(id, v) in set {
@@ -305,6 +319,18 @@ impl Engine {
             .is_some_and(|p| node.param(p.id) >= 0.5)
     }
 }
+
+/// The Choir's plain patch on its Init: one singer, steady and dry.
+const CHOIR_PLAIN: [(u16, f32); 8] = [
+    (chp::SINGERS, 1.0),
+    (chp::DETUNE, 0.0),
+    (chp::BREATH, 0.0),
+    (chp::VIBRATO, 0.0),
+    (chp::DRIFT, 0.0),
+    (chp::ENSEMBLE, 0.0),
+    (chp::VEL_TONE, 0.0),
+    (chp::ATTACK, 5.0),
+];
 
 /// Whether a preset is a bass: its name says so, or the engine is the
 /// acid bass line.
@@ -856,6 +882,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     combo(&mut rows, rate);
     bass(&mut rows, rate);
     wind(&mut rows, rate);
+    choir(&mut rows, rate);
     rows
 }
 
@@ -1574,6 +1601,8 @@ fn alias_cases() -> Vec<AliasCase> {
             vec![(wp::MODEL, wp::FLUTE), (wp::EDGE, 100.0), (wp::TONE, 100.0)],
         ),
         ("Strings viola", Engine::Strings, vec![]),
+        ("Choir aah", Engine::Choir, vec![(chp::VOWEL, 50.0)]),
+        ("Choir ee", Engine::Choir, vec![(chp::VOWEL, 100.0)]),
         // The Violin's 4' over its 8'.
         (
             "Strings violin",
@@ -3009,6 +3038,249 @@ fn wind(rows: &mut Vec<Row>, rate: u32) {
             0.0,
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Choir.
+
+/// O1: each section's formants, as its filters run, against the vowel
+/// table at C2 (the note far under every formant, so the table is sung as
+/// it is): the worst peak and width errors over its five vowels, and the
+/// worst level error. O2: the vowel swept from "ooh" to "ee" and back by
+/// the knob and by Morph, the loudest sound off the note's harmonics
+/// against the loudest harmonic. O8: the singers' wavering against each
+/// other, and the stereo correlation of a chord on the Init sound.
+fn choir(rows: &mut Vec<Row>, rate: u32) {
+    use mpfree_synth::choir::FORMANTS;
+
+    let plain = || {
+        let mut c = Choir::new(rate);
+        for &(id, v) in &CHOIR_PLAIN {
+            c.set_param(id, v);
+        }
+        c
+    };
+    for (section, name) in chp::SECTIONS.iter().take(5).enumerate() {
+        let (mut peak, mut width, mut level) = (0.0f64, 0.0f64, 0.0f64);
+        for vowel in 0..5 {
+            let mut c = plain();
+            c.set_param(chp::SECTION, section as f32);
+            c.set_param(chp::VOWEL, 25.0 * vowel as f32);
+            render(&mut c, rate, 512, &score(rate, &[(36, 100, 0.0, 1.0)]));
+            let Some(s) = c.busy_slots().next() else {
+                continue;
+            };
+            for k in 0..FORMANTS {
+                let (fc, db, bw) = chp::TABLE[section][vowel][k];
+                let (fc, bw) = (f64::from(fc), f64::from(bw));
+                let g = |f: f64| f64::from(c.formant_gain(s, k, f as f32).unwrap_or(0.0));
+                let (mut top, mut at) = (0.0f64, fc);
+                let mut f = fc * 0.8;
+                while f < fc * 1.2 {
+                    if g(f) > top {
+                        top = g(f);
+                        at = f;
+                    }
+                    f *= 1.0005;
+                }
+                let half = top * std::f64::consts::FRAC_1_SQRT_2;
+                let (mut lo, mut hi) = (at, at);
+                while g(lo) > half && lo > 1.0 {
+                    lo /= 1.0002;
+                }
+                while g(hi) > half && hi < f64::from(rate) / 2.0 {
+                    hi *= 1.0002;
+                }
+                peak = peak.max((at / fc - 1.0).abs() * 100.0);
+                width = width.max(((hi - lo) / bw - 1.0).abs() * 100.0);
+                level = level.max((db20(top) - f64::from(db)).abs());
+            }
+        }
+        let subject = format!("formants[Choir {name}]");
+        put(
+            rows,
+            "O1",
+            &subject,
+            "peak_err_pct",
+            peak,
+            Better::Lower,
+            Some(5.0),
+            0.2,
+        );
+        put(
+            rows,
+            "O1",
+            &subject,
+            "width_err_pct",
+            width,
+            Better::Lower,
+            Some(20.0),
+            1.0,
+        );
+        put(
+            rows,
+            "O1",
+            &subject,
+            "level_err_db",
+            level,
+            Better::Lower,
+            None,
+            0.05,
+        );
+    }
+
+    // O2: the vowel moving from "ooh" to "ee" and back over three
+    // seconds, smoothly, by the knob (a change every 32 frames) and by
+    // Morph as Vowel Pad sets it, and at rest on "aah"; the note tuned so
+    // the formants' control steps (every 16 frames) would sound halfway
+    // between its harmonics (and the knob's, every 32, a quarter of the
+    // way), near B4 so the gaps are wide: the loudest sound in the middle
+    // 60 % of any gap against the loudest harmonic.
+    const N: usize = 131_072;
+    let from = frames(0.3, rate);
+    let ctrl = f64::from(rate) / 16.0;
+    let f0 = ctrl / ((ctrl / hz(71) - 0.5).round() + 0.5);
+    let key = 71u8;
+    let fine = cents(f0, hz(key));
+    let mut morph_case = |what: &str, set: &[(u16, f32)], sweep: bool| {
+        let mut c = plain();
+        c.set_param(chp::SECTION, chp::MIXED);
+        c.set_param(chp::FINE, fine as f32);
+        for &(id, v) in set {
+            c.set_param(id, v);
+        }
+        let mut ev = score(rate, &[(key, 100, 0.0, 4.0)]);
+        if sweep {
+            for i in (0..N).step_by(32) {
+                let t = i as f64 / N as f64;
+                let v = 50.0 - 50.0 * (TAU * t).cos();
+                ev.push((
+                    from + i,
+                    NodeEvent::Param {
+                        id: chp::VOWEL,
+                        value: v as f32,
+                    },
+                ));
+            }
+            ev.sort_by_key(|(f, _)| *f);
+        }
+        let s = render(&mut c, rate, from + N, &ev);
+        let x = s.mid();
+        let ps = windowed_power(&x[from..from + N], &blackman_harris(N));
+        let bin = f64::from(rate) / N as f64;
+        let (mut harm, mut gap) = (0.0f64, 0.0f64);
+        for (k, &p) in ps.iter().enumerate() {
+            let f = k as f64 * bin;
+            if !(20.0..=20_000.0).contains(&f) {
+                continue;
+            }
+            let off = (f / f0 - (f / f0).round()).abs();
+            if off * f0 <= 8.0 * bin {
+                harm = harm.max(p);
+            } else if off >= 0.2 {
+                gap = gap.max(p);
+            }
+        }
+        put(
+            rows,
+            "O2",
+            &format!("morph[Choir {what}, B4]"),
+            "step_db",
+            floor(db10(gap / harm.max(1e-300))),
+            Better::Lower,
+            Some(-60.0),
+            1.0,
+        );
+    };
+    morph_case("at rest", &[(chp::VOWEL, 50.0)], false);
+    morph_case("vowel knob ooh to ee and back", &[(chp::VOWEL, 0.0)], true);
+    morph_case(
+        "Morph 60 at 0.15 Hz",
+        &[
+            (chp::VOWEL, 50.0),
+            (chp::MORPH, 60.0),
+            (chp::MORPH_RATE, 0.15),
+        ],
+        false,
+    );
+
+    // O8: eight singers on one note with vibrato and drift and no detune,
+    // each singer's pitch in cents every 128 frames for 2 s: the mean of
+    // the pairs' correlations, size alone.
+    let mut c = Choir::new(rate);
+    c.set_param(chp::SINGERS, 8.0);
+    c.set_param(chp::DETUNE, 0.0);
+    c.set_param(chp::VIBRATO, 30.0);
+    c.set_param(chp::VIB_DELAY, 0.0);
+    let ev = score(rate, &[(60, 100, 0.0, 10.0)]);
+    let warm = frames(0.2, rate) / BLOCK * BLOCK;
+    render(&mut c, rate, warm, &ev);
+    let slot = c.busy_slots().next();
+    let blocks = frames(2.0, rate) / BLOCK;
+    let mut tracks: Vec<Vec<f64>> = (0..8).map(|_| Vec::with_capacity(blocks)).collect();
+    let (mut bl, mut br) = ([0.0f32; BLOCK], [0.0f32; BLOCK]);
+    for b in 0..blocks {
+        let at = (SETTLE_BLOCKS * BLOCK + warm + b * BLOCK) as u64;
+        c.process(&Ctx::new(rate, at), &[], &mut bl, &mut br);
+        for (i, t) in tracks.iter_mut().enumerate() {
+            let v = slot.and_then(|s| c.singer_cents(s, i)).unwrap_or(0.0);
+            t.push(f64::from(v));
+        }
+    }
+    let corr = |a: &[f64], b: &[f64]| {
+        let n = a.len() as f64;
+        let (ma, mb) = (a.iter().sum::<f64>() / n, b.iter().sum::<f64>() / n);
+        let (mut ab, mut aa, mut bb) = (0.0, 0.0, 0.0);
+        for (x, y) in a.iter().zip(b) {
+            ab += (x - ma) * (y - mb);
+            aa += (x - ma) * (x - ma);
+            bb += (y - mb) * (y - mb);
+        }
+        if aa <= 0.0 || bb <= 0.0 {
+            1.0
+        } else {
+            ab / (aa * bb).sqrt()
+        }
+    };
+    let (mut sum, mut pairs) = (0.0, 0);
+    for i in 0..8 {
+        for j in i + 1..8 {
+            sum += corr(&tracks[i], &tracks[j]).abs();
+            pairs += 1;
+        }
+    }
+    put(
+        rows,
+        "O8",
+        "singers[Choir, 8 singers, vibrato 30 cents]",
+        "mean_abs_corr",
+        sum / f64::from(pairs),
+        Better::Lower,
+        Some(0.5),
+        0.05,
+    );
+    // The Init sound (Ensemble 75 %) holding C major across two octaves.
+    let chord: Vec<(u8, u8, f64, f64)> = [48u8, 55, 60, 64, 67]
+        .iter()
+        .map(|&k| (k, 100, 0.0, 3.0))
+        .collect();
+    let s = render(
+        Engine::Choir.make(0, rate).as_mut(),
+        rate,
+        frames(3.0, rate),
+        &score(rate, &chord),
+    );
+    let a = frames(1.0, rate);
+    put(
+        rows,
+        "O8",
+        "ensemble[Choir Init, C major chord]",
+        "correlation",
+        correlation(&s.left[a..], &s.right[a..]),
+        Better::Near(0.4),
+        Some(0.2),
+        0.05,
+    );
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Instructions per 128-frame block for Keys, Drawbar, Strings, Squelch and
-Analog as ARMv7 code (the MPC One's), counted under qemu.
+"""Instructions per 128-frame block for Keys, Drawbar, Strings, Choir,
+Squelch and Analog as ARMv7 code (the MPC One's), counted under qemu.
 
     python3 tools/inst_arm_cost.py [--blocks N] [--jobs J] [--no-build] [--plain] [CASE ...]
 

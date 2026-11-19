@@ -1364,6 +1364,7 @@ version = "0.1.0"
 dependencies = [
  "mpfree-analysis",
  "mpfree-fx",
+ "mpfree-lanes",
  "mpfree-node",
  "mpfree-simd",
  "mpfree-tuning",

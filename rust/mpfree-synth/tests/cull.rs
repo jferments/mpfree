@@ -5,7 +5,7 @@
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_synth::params::{AMP_R, VEL_AMP};
 use mpfree_synth::{
-    Analog, Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable, Wind,
+    Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable, Wind,
 };
 
 const RATE: u32 = 48_000;
@@ -25,6 +25,7 @@ fn engines() -> Vec<(&'static str, Box<dyn Node>)> {
             w.set_param(mpfree_synth::wind_params::VOICES, 8.0);
             Box::new(w)
         }),
+        ("Choir", Box::new(Choir::new(RATE))),
     ]
 }
 
