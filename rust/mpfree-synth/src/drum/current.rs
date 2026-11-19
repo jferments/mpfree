@@ -978,6 +978,12 @@ impl Voice {
             self.click_x = n;
             out += self.click_y * self.click * self.click_lvl;
             self.click *= self.click_mul;
+            if self.click <= SILENT {
+                // Done: off the hit's count of what still sounds too, or
+                // a click louder than 1 (a hard hit, Click near 100)
+                // kept the hit alive for ever.
+                self.click = 0.0;
+            }
         }
         match self.drive {
             0 => {}

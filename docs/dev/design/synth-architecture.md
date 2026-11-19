@@ -222,6 +222,8 @@ Drums' own knobs, effects per drum, accent and variation, the shared 808 body; P
 
 **The drums' voices are built** (19 Nov, [Synths](synths.md#drums-mpfree-synth-drums)): each drum its own knobs and Q-Links, the 808 kick on Bass's body, the 808 cymbal's six squares band-limited, toms, congas, woodblocks and bells on Pluck's modal bank, velocity and accent to tone, per-hit variation, gated pads, 5 ms chokes; the factory kits revoiced, and old kits play their first voices to the bit. D1 to D9 met, or said why not ([Synth quality](synth-quality.md#wave-3-targets-drums)); D10, 32 hits at once, is not met yet, as it wasn't with the first voices.
 
+**The expressive leads are built** (19 Nov, [Synths](synths.md#poly-mpfree-synth), [targets E1 to E4](synth-quality.md#wave-3-targets-expressive-leads-stage-7)): **Priority** (Last, Low, High) and glide by **Rate** on Poly's Mono and Legato; Priority and **Legato** in Analog's Unison, with pad pressure (to the cutoff or a vibrato) and the mod wheel's vibrato; each note's slide and tone on Analog and Bass; ten lead presets. Every older sound renders as it did.
+
 **The CPU work, alongside the waves**
 
 | # | Pull request | When |

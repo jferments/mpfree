@@ -117,9 +117,9 @@ fn params_and_presets_are_valid() {
     assert_eq!(b.info().id, "mpfree.bass");
     let names: Vec<_> = Bass::presets().iter().map(|p| p.name).collect();
     assert_eq!(names[0], "Init");
-    // 32 engine presets and two sounds with their own effects (Amp Bass,
-    // Tube 808).
-    assert_eq!(names.len(), 34);
+    // 34 engine presets (two of them leads: Rate Glide Bass, High Note
+    // Lead) and two sounds with their own effects (Amp Bass, Tube 808).
+    assert_eq!(names.len(), 36);
     for (i, a) in names.iter().enumerate() {
         assert!(!names[..i].contains(a), "{a} twice");
     }
@@ -514,4 +514,33 @@ fn a_note_held_at_no_level_ends_in_exact_zeros_not_denormals() {
         assert!(peak(&x[..RATE as usize / 100]) > 0.01, "{name} plays");
         assert!(x[x.len() - 512..].iter().all(|&v| v == 0.0), "{name}");
     }
+}
+
+#[test]
+fn the_playing_keys_slide_and_tone_move_the_voice() {
+    let mut b = sine();
+    b.set_param(CUTOFF, 400.0);
+    b.set_param(ENV_AMOUNT, 0.0);
+    b.set_param(KEY_TRACK, 0.0);
+    render(&mut b, 4800, &[(0, on(36, 100))]);
+    let (hz0, cut0) = (b.osc_hz(), b.cutoff_hz());
+    // Another key's values wait for it; the playing key's move the voice.
+    let ex = |note, kind, value| NodeEvent::Expression { note, kind, value };
+    render(
+        &mut b,
+        9600,
+        &[
+            (0, ex(40, mpfree_node::Expr::Slide, 5.0)),
+            (0, ex(36, mpfree_node::Expr::Slide, -2.0)),
+            (0, ex(36, mpfree_node::Expr::Tone, 0.5)),
+        ],
+    );
+    let slid = 1200.0 * (b.osc_hz() / hz0).log2();
+    assert!((slid + 200.0).abs() < 0.5, "slid {slid} cents");
+    let oct = (b.cutoff_hz() / cut0).log2();
+    assert!((oct - 1.0).abs() < 0.01, "tone 0.5 opens {oct} octaves");
+    // Letting go puts the key back to neutral for its next note.
+    render(&mut b, 48_000, &[(0, off(36))]);
+    render(&mut b, 4800, &[(0, on(36, 100))]);
+    assert!((b.osc_hz() / hz0 - 1.0).abs() < 1e-4);
 }
