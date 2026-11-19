@@ -1,8 +1,8 @@
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.fm
 name = Init
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.fm
 name = Glass Keys
 fx.1 = mpfree.fx.plate
@@ -139,7 +139,7 @@ pressure.depth-1 = 20
 fx-1.decay = 1800
 fx-1.mix = 10
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.fm
 name = Bell Tower
 fx.1 = mpfree.fx.plate
@@ -264,7 +264,7 @@ fx-1.pre-delay = 20
 fx-1.decay = 3500
 fx-1.mix = 15
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.fm
 name = Rubber Bass
 macro.1 = Brightness
@@ -345,7 +345,7 @@ op-4.velocity = 2
 pressure.to-1 = Brightness
 pressure.depth-1 = 33
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.fm
 name = Drawbars
 fx.1 = mpfree.fx.rotary
@@ -459,7 +459,7 @@ pressure.depth-1 = 50
 # FX 1: rotary
 fx-1.balance = 30
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.fm
 name = Brass Section
 fx.1 = mpfree.fx.plate
@@ -599,7 +599,7 @@ pressure.depth-2 = 35
 fx-1.decay = 1500
 fx-1.mix = 10
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.fm
 name = Log Drum
 fx.1 = mpfree.fx.room
@@ -685,7 +685,7 @@ fx-1.size = 30
 fx-1.decay = 600
 fx-1.mix = 15
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.fm
 name = Silk Pad
 fx.1 = mpfree.fx.plate
@@ -815,7 +815,7 @@ pressure.depth-2 = 30
 fx-1.decay = 4000
 fx-1.mix = 12
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.fm
 name = Steel Pluck
 fx.1 = mpfree.fx.plate
@@ -936,7 +936,7 @@ pressure.to-1 = Off
 fx-1.decay = 1500
 fx-1.mix = 10
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.fm
 name = Reed Lead
 fx.1 = mpfree.fx.plate
