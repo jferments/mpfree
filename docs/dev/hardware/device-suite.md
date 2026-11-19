@@ -48,7 +48,7 @@ expect-on-mpc track 1: plays FM     as expect, checked on the MPC only (see belo
 
 A tap, an expect, a mark or the title may quote the app's own characters (`Speed 2×`, `‹ Back`, `TRACK MUTE · bank A`); everything else is ASCII. A script is at most 30 minutes long, and CI keeps each workflow at 10 minutes or less.
 
-**What an expect sees.** In CI an expect sees the control side's lines and what the screen said (`Player::say` and the Sample page's lines) since the last mark. On the MPC, [`devtest_report.py`](../../../tools/mpc-one/devtest_report.py) checks each expect against the run's log from its mark to the next mark, because the app's threads write their lines a little after the step that caused them. The text is matched anywhere in a line, so `expect : End ` matches `sample: kit 1 (…) pad A5 …: End 4.891 s -> 4.868 s` whatever sound the kit has.
+**What an expect sees.** In CI an expect sees the control side's lines and what the screen said (`Player::say` and the Sample page's lines) since the last mark. On the MPC, [`devtest_report.py`](../../../tools/mpc-one/devtest_report.py) checks each expect against the run's log from its mark to the next mark, because the app's threads write their lines a little after the step that caused them. It leaves out the `status:` block each mark prints, as CI's session never has it: its totals say `0 underruns`, so `expect-not underrun` would always be seen there. The report counts each part's underruns from those totals instead. The text is matched anywhere in a line, so `expect : End ` matches `sample: kit 1 (…) pad A5 …: End 4.891 s -> 4.868 s` whatever sound the kit has.
 
 **What CI's session doesn't do,** so a workflow checks these with `expect-on-mpc` (or not at all):
 
