@@ -62,12 +62,12 @@ Every engine re-implements parts of the same voice. The core is a set of plain p
 | **LFOs** | Free or synced, a delay and fade-in, key retrigger, one per engine and two per voice | One per engine |
 | **Velocity** | A square-law curve over a range in dB set per preset (Dannenberg; 30 to 40 dB for keys, less for pads), and routes to tone | Fixed 7 to 8 dB on Poly |
 | **Play routes** | Eight routes a sound: a source (velocity, pressure, per-note tone, mod wheel, breath, foot controller, key, random per note) to a target from the engine's list, with a depth. Pressure's four slots become routes with pressure as their source; old presets load into them | Pressure only, four slots |
-| **Oscillators** | Band-limited tables with levels half an octave apart (Wavetable's), including the classic waves, a pulse of any width as two saws, and the supersaw; PolyBLEP kept where it is cheaper and good enough (sub, drums) | PolyBLEP in Poly and Analog; tables in Wavetable |
-| **Filters and drive** | The ladder, state-variable, OTA and diode filters as they are; the drive's curve with antiderivative antialiasing, or run at twice the rate, by measurement | Drive at the base rate |
+| **Oscillators** | Band-limited tables with levels half an octave apart (Wavetable's), including the classic waves, a pulse of any width as two saws, and the supersaw; PolyBLEP kept where it is cheaper and good enough (sub, drums) | Built 19 Nov (`osc.rs`) and used by Poly; PolyBLEP in Analog; tables in Wavetable |
+| **Filters and drive** | The ladder, state-variable, OTA and diode filters as they are; the drive's curve with antiderivative antialiasing, or run at twice the rate, by measurement | Poly's drive and distortion antialiased (first order, `dsp::DriveAa`, 19 Nov), still at the base rate |
 | **Output** | A DC blocker, the level correction for drive, the 3 ms end fade | DC passes through on some presets |
 | **Character** | Seeded per-voice offsets and drift (Analog's voice cards), wow and flutter, labelled amounts; at zero, bit-exact | Analog only |
 
-**Part 1 is built** (`mpfree-synth/src/voice.rs`, 22 unit tests): the note stack with priority, voices and stealing, glide by time or rate, the envelope whose times mean what they say, LFOs (free or synced, delay and fade-in, retrigger), the velocity curve, the play routes and the DC blocker. The pedals live in `mpfree-node` (`pedal::Pedals`), because the hosts use them too. No engine uses part 1 yet; Strings and Bass are the first. The oscillator tables, the drive and Character are part 2, with the engines that need them.
+**Part 1 is built** (`mpfree-synth/src/voice.rs`, 22 unit tests): the note stack with priority, voices and stealing, glide by time or rate, the envelope whose times mean what they say, LFOs (free or synced, delay and fade-in, retrigger), the velocity curve, the play routes and the DC blocker. The pedals live in `mpfree-node` (`pedal::Pedals`), because the hosts use them too. No engine uses part 1 yet; Strings and Bass are the first. The oscillator tables, the drive and Character are part 2, with the engines that need them. **Part 2's oscillators and drive are built** (19 Nov, wave 2's first pull request): `osc.rs` reads the saw, triangle and sine from tables at 17 half-octave levels with a 32-bit phase (no float-to-integer conversion), the pulse as two saws and the supersaw as seven, and `dsp::DriveAa` antialiases the `tanh` stage. Poly is the first to use them: its worst alias at C7 went from -37 to -90 dB at about the same cost ([Synths](synths.md#poly-mpfree-synth)).
 
 Rules every part keeps, as the node interface asks: no allocation, lock or panic while sounding; the same output for any block size; control work on absolute frames every 16 frames, as today.
 
@@ -203,6 +203,8 @@ Three waves, each finished end to end: engine work, then presets, then the check
 | 10 | Wave 1 listening and device asks | Blind A/B pages; the device round's cost asks |
 
 **Wave 2: Poly with tables, FM, organ, wind and choir** (next week)
+
+Started 19 Nov with Poly's oscillators from the tables, the supersaw (a wave of either oscillator, with Saw detune and Side saws; four presets) and the antialiased drive. Unison moved to Poly's Voice page to make room on the Osc page. Order from here: Poly on the voice core (envelopes, velocity, a second LFO, play routes), FM's fixes, another pass on the Keys tines (from wave 1's listening), Drawbar's combo model, Wind, Choir, Character, then Wavetable folded into Poly.
 
 Poly and Wavetable merged with classic waves from tables (the aliasing fix), the supersaw, a second LFO and routes; FM's macros, shapes, DC and level fixes and less feedback aliasing; Drawbar's combo model; the Wind and Choir engines; Character; their presets.
 
