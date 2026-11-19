@@ -195,7 +195,6 @@ const TABLE_EDITS: &[(u16, f32)] = &[
 ];
 
 /// Every sample screen.
-
 pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let scenes = [
         Scene {
