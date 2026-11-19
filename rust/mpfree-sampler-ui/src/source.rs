@@ -75,7 +75,7 @@ pub struct SourceView {
     /// Where its hits start, for chopping by transients (None if it
     /// couldn't be analysed, or isn't yet).
     pub onsets: Option<Arc<OnsetAnalysis>>,
-    /// Its pitch over time, for the Chop tab's Pitch method (R4.7): only
+    /// Its pitch over time, for the Slice tool's Pitch method (R4.7): only
     /// followed when that asks for it ([`SourceView::follow_pitch`]; in the
     /// app, off the screen thread), so None until then.
     pub pitch: Option<Arc<PitchTrack>>,

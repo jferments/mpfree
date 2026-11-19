@@ -6,6 +6,8 @@ For people who build MPFree: how it is designed, why, how to build and test it, 
 
 Every design page opens with a **Status** line (proposal, approved, built, on main, ran on the device) and a date. Trust the code and the tests over a page whose status is old. When a pull request changes how something works, it updates its page here in the same PR ([how docs stay current](../agents/docs-system.md)).
 
+**Older names in the code and the design pages:** *Beats* (`play_page.rs`, `PlayPage`) is the Sequencer tab's **Steps** view, which was a view of the Play page until the Play, Pads and Sequencer redesign (18 Nov 2026); Play now has one view (`PlayView::All`). *Hello MPC* (and the crate `mpfree-hello`) was the app's early name; the app is **mpfree**.
+
 ## Start here
 
 - [Project README](../../README.md): what MPFree is, where it stands, how to build and test.
@@ -93,6 +95,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 ### Performance
 
 - [Profiling and performance budgets](design/profiling.md): the shared profiling API, the ARM cost model, per-engine budgets and the bench; the 14 Nov stability review, what it built and what is left; load shedding, the memory floor, the screen's cost and the CI gates, the soak among them (`rust/mpfree-prof`, `rust/mpfree-bench`).
+- [NEON kernels](design/simd.md): `rust/mpfree-simd`, the only unsafe code the synths reach: hand-written NEON assembly kernels for the MPC's ARMv7 cores, each with a plain Rust twin that is its reference, checked bit for bit under qemu-arm, counted as ARMv7 instructions and timed by the bench; the first is the supersaw's saws, and a kernel stays only if the device round says it wins (2026-11-19).
 - [The time engine on two threads](design/time-threads.md): the time engine's edits and compiles off the audio thread: a control half and an audio half with bounded queues, how recording and cues stay exact, and the tests with the control half late (halves built behind one facade, 2026-11-12; the control thread is next).
 - [Concurrency](design/concurrency.md): using every core of the MPC One: where threads run today, the core plan, and lanes, which run part of each audio period on another core with a deadline (`rust/mpfree-lanes`, 2026-11-11).
 - [Offload](design/offload.md): render partitions on another computer over UDP, answered L periods later with the MPC as the only clock: the datagram, the server, the client, `mpfree-offload measure`, and the offloaded node that falls back to a local Eco stand-in when the link drops (`rust/mpfree-offload`, desktop prototype, 2026-11-12).

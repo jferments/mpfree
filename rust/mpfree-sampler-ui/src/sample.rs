@@ -15,7 +15,6 @@ use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Fonts, Theme, Tone, Ui};
 
 use crate::auto_tab::{self, AutoSettings, AutoState, AutoTab, Onto, Running};
-use crate::chop_tab::{self, ChopState, ChopTab};
 use crate::grain_tab::{self, CloudNow};
 use crate::grain_tool::GrainPart;
 use crate::pads_tab::{self, PadsState, PadsTab};
@@ -29,9 +28,8 @@ pub const SCREEN: (i32, i32) = (1280, 800);
 /// layout spec, approved by Jay on 2026-11-11).
 pub use mpfree_ui::widgets::APP_TABS;
 pub const EDITOR_TAB: usize = 3;
-/// The page names the samples add the Wave, Chop and Play tabs under.
+/// The page names the samples add the Wave and Play tabs under.
 pub const PAGE: &str = "Sample · Wave";
-pub const CHOP_PAGE: &str = "Sample · Chop";
 pub const PLAY_PAGE: &str = "Sample · Play";
 pub const PADS_PAGE: &str = "Pads · Pad";
 pub const AUTO_PAGE: &str = "Sample · Auto-sample";
@@ -278,16 +276,6 @@ pub struct Sample {
     pub state: WaveState,
 }
 
-/// One sample screen of the Chop tab.
-pub struct ChopSample {
-    pub name: &'static str,
-    pub about: &'static str,
-    pub ui: Ui,
-    pub tab: ChopTab,
-    pub project: Project,
-    pub state: ChopState,
-}
-
 /// One sample screen of the Play tab.
 pub struct PlaySample {
     pub name: &'static str,
@@ -529,16 +517,20 @@ fn recorder_idle() -> crate::recorder::RecorderView {
     }
 }
 
-/// The Chop tab on the sample project's pad, chopped by transients.
-pub fn chop_sample(fonts: Fonts) -> Result<ChopSample, String> {
+/// The Sample page with the Slice tool on the sample project's pad,
+/// chopped by transients.
+pub fn slice_sample(fonts: Fonts) -> Result<Sample, String> {
     let (project, view) = project();
-    let state = ChopState::from_project(&project, PAD, 0, view).ok_or("no pad")?;
-    let mut ui = app_ui_with(fonts, &project, chop_tab::HINT);
-    let tab = ChopTab::add(&mut ui, CHOP_PAGE, &state)?;
-    ui.show(CHOP_PAGE)?;
-    Ok(ChopSample {
-        name: "chop",
-        about: "The pad's region chopped at its hits (Transient, 50 %)",
+    let state = WaveState::from_project(&project, PAD, 0, view.clone()).ok_or("no pad")?;
+    let mut ui = app_ui_with(fonts, &project, crate::slice_tool::HINT);
+    let mut tab = WaveTab::add(&mut ui, PAGE, &state)?;
+    tab.set_sound(&mut ui, sound_state(&project, &view));
+    tab.set_recorder(&mut ui, recorder_idle(), &state);
+    tab.set_tool(&mut ui, &state, crate::wave_tab::Tool::Slice);
+    ui.show(PAGE)?;
+    Ok(Sample {
+        name: "slice",
+        about: "The Slice tool: the pad's region chopped at its hits (Transient, 50 %)",
         ui,
         tab,
         project,
@@ -912,77 +904,80 @@ pub fn pads_types(fonts: Fonts) -> Result<PadsSample, String> {
     Ok(s)
 }
 
-/// The Chop tab's sample screens.
-pub fn chop_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<ChopSample>, String> {
-    use crate::chop_tab::{Button, Row};
-    let step = |s: &mut ChopSample, row: Row, delta: i32| {
-        let index = Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
-        let ev = mpfree_ui::UiEvent {
-            widget: chop_tab::LIST.into(),
-            kind: mpfree_ui::EventKind::Step { index, delta },
-        };
-        let st = s.state.clone();
-        s.tab.action(&mut s.ui, &ev, &st);
+/// The Slice tool's sample screens.
+pub fn slice_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
+    use crate::slice_tool::{Button, Row};
+    use crate::wave_tab::REGION;
+    let step = |s: &mut Sample, row: Row, delta: i32| {
+        s.event(
+            REGION,
+            mpfree_ui::EventKind::Step {
+                index: row.index(),
+                delta,
+            },
+        )
     };
-    let mut out = vec![chop_sample(fonts())?];
+    let mut out = vec![slice_sample(fonts())?];
 
     // Beat, a slice every 8th, the third slice picked and zoomed round.
-    let mut s = chop_sample(fonts())?;
+    let mut s = slice_sample(fonts())?;
     (s.name, s.about) = (
-        "chop-beat",
-        "Beat: a slice every 8th note, slice 3 picked (Q-Link 1), zoomed round it (wheel)",
+        "slice-beat",
+        "Beat: a slice every 8th note, slice 3 picked (Q-Link 2), zoomed round it (wheel)",
     );
-    step(&mut s, Row::Method, 1);
-    step(&mut s, Row::Amount, -1);
+    step(&mut s, Row::Method, 1)?;
+    step(&mut s, Row::Amount, -1)?;
     let st = s.state.clone();
-    s.tab.qlink(&mut s.ui, &st, 0, 2, false);
+    s.tab.qlink(&mut s.ui, &st, 1, 2, false);
     for _ in 0..4 {
         s.tab.wheel(&mut s.ui, &st, 1);
     }
     out.push(s);
 
     // Grid of 4 put on pads, then slice 2 split by hand: Manual.
-    let mut s = chop_sample(fonts())?;
+    let mut s = slice_sample(fonts())?;
     (s.name, s.about) = (
-        "chop-manual",
+        "slice-manual",
         "Grid of 4 put on pads A6-A9, then slice 2 split by hand (the method turns to Manual)",
     );
-    step(&mut s, Row::Method, 1);
-    step(&mut s, Row::Method, 1);
+    step(&mut s, Row::Method, 1)?;
+    step(&mut s, Row::Method, 1)?;
     for _ in 0..4 {
-        step(&mut s, Row::Amount, -1);
+        step(&mut s, Row::Amount, -1)?;
     }
     let st = s.state.clone();
-    if let Some(a) = s.tab.press(&mut s.ui, &st, Button::ToPads) {
+    if let Some(crate::wave_tab::WaveAction::Chop(a)) =
+        s.tab.press_slice(&mut s.ui, &st, Button::ToPads)
+    {
         a.apply(&mut s.project).map_err(|e| format!("{e:?}"))?;
-        s.state = ChopState::from_project(&s.project, PAD, 0, st.source.clone()).ok_or("no pad")?;
+        s.state = WaveState::from_project(&s.project, PAD, 0, st.source.clone()).ok_or("no pad")?;
         let st = s.state.clone();
         s.tab.update(&mut s.ui, &st);
     }
     let st = s.state.clone();
-    s.tab.qlink(&mut s.ui, &st, 0, 1, false);
-    s.tab.press(&mut s.ui, &st, Button::Split);
+    s.tab.qlink(&mut s.ui, &st, 1, 1, false);
+    s.tab.press_slice(&mut s.ui, &st, Button::Split);
     out.push(s);
 
     // A sung line chopped where its notes change (R4.7).
-    let mut s = chop_sample(fonts())?;
+    let mut s = slice_sample(fonts())?;
     (s.name, s.about) = (
-        "chop-pitch",
+        "slice-pitch",
         "Pitch: a sung line cut where each note changes by a semitone or more, and after its rest",
     );
     let (project, view) = melody_project();
     s.project = project;
-    s.state = ChopState::from_project(&s.project, PAD, 0, view).ok_or("no pad")?;
+    s.state = WaveState::from_project(&s.project, PAD, 0, view).ok_or("no pad")?;
     let st = s.state.clone();
     s.tab.update(&mut s.ui, &st);
-    while s.tab.method() != chop_tab::Method::Pitch {
-        step(&mut s, Row::Method, 1);
+    while s.tab.slice().method() != crate::slice_tool::Method::Pitch {
+        step(&mut s, Row::Method, 1)?;
     }
     out.push(s);
     Ok(out)
 }
 
-/// A sung line for the Chop tab's Pitch method (R4.7): C3, E3, G3, a
+/// A sung line for the Slice tool's Pitch method (R4.7): C3, E3, G3, a
 /// rest, G3 again and C4, each a tone of four harmonics with a soft start
 /// and end, mono at [`RATE`]; and where each note starts, frames.
 pub fn melody() -> (Vec<f32>, Vec<u64>) {

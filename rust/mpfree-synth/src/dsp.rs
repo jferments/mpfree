@@ -542,6 +542,106 @@ pub fn drive_run_level(buf: &mut [f32], k: f32, n: f32, amount: f32, level: &mut
     level.sum_out = so;
 }
 
+/// The drive's memory for antialiasing its curve (first-order
+/// antiderivative antialiasing: Parker, Zavalishin and Le Bivic, "Reducing
+/// the aliasing of nonlinear waveshaping using continuous-time
+/// convolution", DAFx 2016). Each sample gives the curve's average between
+/// the last input and this one, worked out from its antiderivative, so the
+/// sharp corners a hard drive makes fold back far less. It costs an `exp`
+/// and a `ln_1p` a sample where the plain drive has a `tanh`, and delays
+/// the driven sound by half a sample.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DriveAa {
+    /// The last input to the curve, and `ln cosh` of it.
+    u: f32,
+    f: f32,
+    /// Set by the first sample after a [`DriveAa::clear`].
+    on: bool,
+}
+
+impl DriveAa {
+    /// Forget the last sample (a fresh note, or the drive turned off).
+    pub fn clear(&mut self) {
+        *self = DriveAa::default();
+    }
+
+    /// True when both hold exactly the same numbers.
+    #[inline]
+    pub fn same_as(&self, other: &DriveAa) -> bool {
+        self.u.to_bits() == other.u.to_bits()
+            && self.f.to_bits() == other.f.to_bits()
+            && self.on == other.on
+    }
+}
+
+/// `ln cosh u`, the antiderivative of `tanh`, with no overflow.
+#[inline]
+fn ln_cosh(u: f32) -> f32 {
+    let a = u.abs();
+    a + (-2.0 * a).exp().ln_1p() - std::f32::consts::LN_2
+}
+
+/// `tanh` averaged from the last input to `u` ([`DriveAa`]). Inputs too
+/// close for the division to be accurate take `tanh` of their midpoint.
+#[inline]
+fn tanh_aa(u: f32, st: &mut DriveAa) -> f32 {
+    let f = ln_cosh(u);
+    let d = u - st.u;
+    let y = if d.abs() > 1e-3 {
+        (f - st.f) / d
+    } else {
+        (0.5 * (u + st.u)).tanh()
+    };
+    st.u = u;
+    st.f = f;
+    y
+}
+
+/// [`drive_run_n`] with the curve antialiased ([`DriveAa`]).
+#[inline]
+pub fn drive_run_aa(buf: &mut [f32], k: f32, n: f32, amount: f32, st: &mut DriveAa) {
+    if amount <= 0.0 || buf.is_empty() {
+        return;
+    }
+    if !st.on {
+        st.u = buf[0] * k;
+        st.f = ln_cosh(st.u);
+        st.on = true;
+    }
+    for x in buf {
+        *x = *x + (tanh_aa(*x * k, st) * n - *x) * amount;
+    }
+}
+
+/// [`drive_run_level`] with the curve antialiased ([`DriveAa`]).
+#[inline]
+pub fn drive_run_level_aa(
+    buf: &mut [f32],
+    k: f32,
+    n: f32,
+    amount: f32,
+    level: &mut DriveLevel,
+    st: &mut DriveAa,
+) {
+    if amount <= 0.0 || buf.is_empty() {
+        return;
+    }
+    if !st.on {
+        st.u = buf[0] * k;
+        st.f = ln_cosh(st.u);
+        st.on = true;
+    }
+    let (mut si, mut so) = (level.sum_in, level.sum_out);
+    for x in buf {
+        let y = *x + (tanh_aa(*x * k, st) * n - *x) * amount;
+        si += *x * *x;
+        so += y * y;
+        *x = y;
+    }
+    level.sum_in = si;
+    level.sum_out = so;
+}
+
 /// The drum voices' drive (until live test 2, every engine's): a `tanh`
 /// stage divided by the gain's square root `sq`. A drum hit comes into it
 /// well under full level, where this lifts it by up to the square root of

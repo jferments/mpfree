@@ -1487,8 +1487,9 @@ pub enum FromUi {
     /// The Grain tab asks for a pad's grains: the audio thread fills the box
     /// and sends it back.
     SampleGrains(Box<Cloud>),
-    /// A tap on a slice on the Chop page: play source frames `start..end`
+    /// A tap on a slice with the Slice tool: play source frames `start..end`
     /// of pad `pad`'s layer `layer` once, if kit `kit` is still playing.
+    /// Pad [`mpfree_sampler_ui::wave_tab::TAKE`] is the take shown.
     Slice {
         kit: usize,
         pad: usize,
@@ -1496,7 +1497,7 @@ pub enum FromUi {
         start: u64,
         end: u64,
     },
-    /// Live chop on the Sample page's Chop tab: pad `pad`'s layer `layer`
+    /// Live chop with the Sample page's Slice tool: pad `pad`'s layer `layer`
     /// plays source frames `start..end` once and the pads played live mark
     /// cuts in it (`on`), or that stops.
     SampleLiveChop {
@@ -1783,12 +1784,12 @@ pub struct Player {
     menu_editing: bool,
     /// The Sample page's Play tab showed its keyboard, a row that pad hits
     /// edit, and the Wave page's REC on (each changes its hint).
-    sample_keys: (bool, bool, bool, bool, (bool, bool)),
+    sample_keys: (bool, bool, bool, bool, (bool, bool, bool)),
     /// What the REC chip last called the Wave page's REC take.
     here_chip: Option<String>,
     /// What the Play page's Q-Links turn, as its hint names them.
     sample_qlinks: String,
-    /// The Chop tab chopped live (its hint says how).
+    /// The Slice tool chopped live (its hint says how).
     sample_live: bool,
     /// The view the mixer last said it shows (its state), if it ever did.
     mix_view: Option<mpfree_mixer_ui::MixView>,
@@ -2321,7 +2322,7 @@ impl Player {
             screen_row: ("-".to_string(), Tone::Dim),
             timed,
             menu_editing: false,
-            sample_keys: (false, false, false, false, (false, false)),
+            sample_keys: (false, false, false, false, (false, false, false)),
             here_chip: None,
             sample_qlinks: String::new(),
             sample_live: false,
@@ -2740,7 +2741,7 @@ impl Player {
         self.outbox.push(FromUi::Time(TimeAction::AddTrack));
     }
 
-    /// What the Chop tab's Put on New kit would do now (sampler R4.6): the
+    /// What the Slice tool's Put on New kit would do now (sampler R4.6): the
     /// first empty kit, for a new track, or why not.
     fn refresh_new_kit(&mut self) {
         let new_kit = if self.kit_track.is_some() {
@@ -5804,6 +5805,12 @@ impl Player {
                     format!("Tap REC: stop, keep the take   ·   Q-Links 1-4: Gain, Threshold, Pre-roll, Monitor   ·   {ROWS_HINT}   ·   \
                      SHIFT + - / +: zoom")
                 }
+                // The Slice tool on a take kept on the page (step 3): its
+                // slices are heard; they go on pads once the take is on one.
+                View::Sample if self.sample.slice_tool() && self.sample.take_shown().is_some() => {
+                    format!("Tap a slice: hear it   ·   Send to pad, then hit a pad: chop it there   ·   \
+                     Q-Links 1-4: setting, slice, its start, first pad   ·   {ROWS_HINT}")
+                }
                 // A take kept on the page (one-page step 2b): it stays until
                 // it goes onto a pad.
                 View::Sample if self.sample.page() == sample_page::PAGE && self.sample.take_shown().is_some() => {
@@ -5820,17 +5827,18 @@ impl Player {
                     format!("Drag GRAIN: where grains start, SIZE: how long   ·   Q-Links 1-4: position, size, \
                      density, pitch (SHIFT: sprays, finer)   ·   {ROWS_HINT}   ·   SHIFT + - / +: zoom")
                 }
+                // The Slice tool (one Sample page step 3), live or not.
+                View::Sample if self.sample.chop_live_method() => {
+                    "Start plays the sound: hit pads in time to drop cuts   ·   Pull to hits: each onto the nearest hit   ·   \
+                     Stop ends the take   ·   then Chop to pads".to_string()
+                }
+                View::Sample if self.sample.slice_tool() => {
+                    format!("Hit a pad to chop it   ·   tap a slice: hear it   ·   Q-Links 1-4: setting, slice, its start, first pad   ·   \
+                     {ROWS_HINT}   ·   SHIFT + - / +: zoom")
+                }
                 View::Sample if self.sample.page() == sample_page::PAGE => {
                     format!("Hit a pad to edit it   ·   Q-Links 1-4: Start, End, loop   ·   {ROWS_HINT}   ·   \
                      SHIFT + - / +: zoom")
-                }
-                View::Sample if self.sample.chop_live_method() => {
-                    "Start plays the sound: hit pads in time to drop cuts   ·   Pull to hits: each onto the nearest hit   ·   \
-                     Stop ends the take   ·   then Chop to: onto the pads".to_string()
-                }
-                View::Sample if self.sample.page() == sample_page::CHOP_PAGE => {
-                    format!("Hit a pad to chop it   ·   tap a slice: hear it   ·   Q-Links 1-4: slice, its start, setting, first pad   ·   \
-                     {ROWS_HINT}   ·   SHIFT + - / +: zoom")
                 }
                 View::Pads if self.perform.shown && self.ui.page() == crate::perform_tab::PAGE => {
                     let names = self.perform_names();
@@ -8515,7 +8523,7 @@ impl Player {
     }
 
     /// After an edit on the Sample page: show the page again if it changed
-    /// (Wave to Chop, or a pad without a sound), and give the Play page the
+    /// (Wave to Play, or a pad without a sound), and give the Play page the
     /// names of pads a chop filled.
     fn sample_after(&mut self, before: &str) {
         self.sample_names();
@@ -8527,15 +8535,20 @@ impl Player {
         }
         // The keyboard came or went on the Play tab, a row that pad hits
         // edit was picked, another section (with its own Q-Links) opened,
-        // the Chop tab went live, the Wave page's REC went on or off, a
+        // the Slice tool went live, the Wave page's REC went on or off, a
         // take kept on the page came or went on the Wave page, or its
-        // Warp or Grain tool was picked or put down: its hint with it.
+        // Slice, Warp or Grain tool was picked or put down: its hint with
+        // it.
         let keys = (
             self.sample.play_keys_shown(),
             self.sample.play_takes_pads(&self.ui),
             self.sample.recorder_on(),
             self.sample.take_shown().is_some(),
-            (self.sample.warp_tool(), self.sample.grain_tool()),
+            (
+                self.sample.warp_tool(),
+                self.sample.grain_tool(),
+                self.sample.slice_tool(),
+            ),
         );
         // The Wave page's REC take is named on the REC chip by where it
         // goes, which its Onto can change while it records.
@@ -8622,7 +8635,7 @@ impl Player {
     pub(crate) fn set_browser(&mut self, mut b: mpfree_browser_ui::Browser, lists: &str) {
         b.load_lists(lists);
         self.browser = Some(Box::new(b));
-        // Exported pads have somewhere to go: the Chop page offers Files.
+        // Exported pads have somewhere to go: the Slice tool offers Files.
         self.sample.set_files(&mut self.ui, true);
         // The start's own news (the empty song, the first states) is not
         // an edit.
@@ -9581,7 +9594,7 @@ impl Player {
         }
     }
 
-    /// Pads the Sample tab's Chop page exported (Put on Files): each
+    /// Pads the Sample tab's Slice tool exported (Put on Files): each
     /// written into a folder of its own in Samples / Exports on a thread of
     /// its own (a long sound's files are many megabytes).
     fn save_pad_exports(&mut self) {
@@ -14253,6 +14266,55 @@ fn sample_panels(p: &mut Player, view: View) {
     p.apply(ToUi::Macros(Box::new(song.macros_state(0))));
 }
 
+/// The chain editor on the drum bus's EQ, shaped as on the approved
+/// mockups (a low cut, a low bump, a mud cut on band 2, presence and a
+/// high cut), band 2 picked, as the app sends it.
+fn sample_eq_page(p: &mut Player) -> Result<(), String> {
+    use mpfree_chain_ui::sample::{Song, DRUMS};
+    use mpfree_fx::ids::eq as q;
+    use mpfree_play::mpfree_param::Owner;
+    let mut song = Song::new();
+    {
+        let e = song.drums.node_mut(3).ok_or("the drum bus EQ")?;
+        for (id, v) in [
+            (q::LOW_CUT, 35.0),
+            (q::LOW_SLOPE, 1.0),
+            (q::HIGH_CUT, 9_000.0),
+            (q::HIGH_SLOPE, 1.0),
+            (q::band_type(0), 0.0),
+            (q::freq(0), 90.0),
+            (q::gain(0), 3.0),
+            (q::q(0), 1.0),
+            (q::band_type(1), 0.0),
+            (q::freq(1), 320.0),
+            (q::gain(1), -3.5),
+            (q::q(1), 1.4),
+            (q::band_type(2), 0.0),
+            (q::freq(2), 1_200.0),
+            (q::gain(2), 2.0),
+            (q::q(2), 2.0),
+            (q::band_use(3), q::USE_UNUSED),
+        ] {
+            e.set_param(id, v);
+        }
+    }
+    let uid = song.drums.uid(3).ok_or("the drum bus EQ")?;
+    let mud = ParamAddr::new(Owner::Insert(DRUMS, uid), q::gain(1));
+    p.apply(ToUi::Show(View::Chain));
+    let mut st = song.chain_state(DRUMS, 3, 0, Some(mud));
+    st.back = Some("Mixer".into());
+    st.strip_name = st.title.trim_end_matches(" FX").to_string();
+    st.strip_kind = "Track 1".into();
+    let fx = song
+        .chain(DRUMS)
+        .node(3)
+        .map(|n| Box::new(FxState::from_node(n, "", Color::rgb(0), 120.0, 44_100)));
+    p.apply(ToUi::Chain(Box::new(st)));
+    p.apply(ToUi::ChainFx(fx));
+    p.apply(ToUi::Macros(Box::new(song.macros_state(0))));
+    Ok(())
+}
+
 /// The chain editor on the keys' Compressor, listening to the kick pad
 /// (layout spec 4b, "Sidechain"), with `list` the sidechain list over it,
 /// as the app sends them.
@@ -14878,6 +14940,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut effects = sample_player(fonts());
     effects.apply(ToUi::Show(View::Mixer));
     effects.apply(ToUi::Mixer(Box::new(st.clone())));
+    // The EQ look's strips: the same song with its EQs shaped.
+    let mut me = mpfree_mixer_ui::sample::song_mixer();
+    mpfree_mixer_ui::sample::shape_eqs(&mut me);
+    mpfree_mixer_ui::sample::play(&mut me, 40);
+    let mut eq_state = mpfree_mixer_ui::MixState::from_mixer(
+        &mut me,
+        mpfree_mixer_ui::MixView::Tracks,
+        &mpfree_mixer_ui::sample::name,
+    );
+    eq_state.selected = Some(mpfree_fx::StripId::Track(3));
+    eq_state.cost_pct = eq_state.cost_pct.map(|_| 18.0);
     mixer.apply(ToUi::Show(View::Mixer));
     mixer.apply(ToUi::Mixer(Box::new(st)));
     out.push(("mixer", mixer));
@@ -14890,6 +14963,21 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         let _ = effects.take_actions();
     }
     out.push(("mixer-effects", effects));
+    // The Mix tab's EQ look on the same strips (layout spec 3a, Jay's
+    // approval 15 Nov): a tap on the toggle's EQ. The manual's mixing
+    // chapter shows it.
+    let mut eq_look = sample_player(fonts());
+    eq_look.apply(ToUi::Show(View::Mixer));
+    eq_look.apply(ToUi::Mixer(Box::new(eq_state)));
+    if let Some(t) = eq_look.ui.targets().into_iter().find(|t| {
+        t.widget == mpfree_mixer_ui::MIXER && t.target.id == "look" && t.target.label == "EQ"
+    }) {
+        let (x, y) = t.target.centre();
+        eq_look.touch(1, Touch::Down, x, y);
+        eq_look.touch(1, Touch::Up, x, y);
+        let _ = eq_look.take_actions();
+    }
+    out.push(("mixer-eq", eq_look));
     // The mixer's I/O view (the I/O icon lit), while the tempo follows a
     // clock on MIDI In: the tempo chip with its green dot.
     let mut io = sample_player(fonts());
@@ -15101,6 +15189,13 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             Ok(()) => out.push((name, p)),
             Err(e) => eprintln!("{name}: not drawn ({e})"),
         }
+    }
+    // The EQ's page in the chain editor: the drum bus EQ, band 2 picked
+    // (the manual's effects chapter shows it).
+    let mut eq = sample_player(fonts());
+    match sample_eq_page(&mut eq) {
+        Ok(()) => out.push(("chain-eq", eq)),
+        Err(e) => eprintln!("chain-eq: not drawn ({e})"),
     }
     // A note track's chain with its Notes stage (board 7): the Chord's page.
     let mut notes = sample_player(fonts());
@@ -15948,7 +16043,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         play_synth.apply(ToUi::PadDown { pad, velocity: v });
     }
     out.push(("play-synth", play_synth));
-    for (name, page, qlink) in [("synth", 0, (2, 12)), ("synth-filter", 1, (0, -20))] {
+    for (name, page, qlink) in [
+        ("synth", 0, (2, 12)),
+        ("synth-filter", 1, (0, -20)),
+        ("synth-voice", 4, (1, 10)),
+    ] {
         let mut p = sample_player(fonts());
         p.apply(ToUi::Kit(synth_kit));
         p.apply(ToUi::Show(View::Synth));
@@ -16062,7 +16161,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // The Sample page: the loop on kit 1's pad 5, the music playing for
     // 40 s so the recorder row's Keep card keeps the last 4 bars
     // (one-page step 2c); then zoomed round the loop start after a Q-Link
-    // 3 turn, then a pad without a sound, then the Chop tab.
+    // 3 turn, then a pad without a sound, then the Slice tool.
     let mut sample = sample_sampler(fonts());
     {
         use crate::sample_page::SCREEN_RECALL_SECONDS;
@@ -16187,13 +16286,14 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Ok(plugins) => out.push(("browser-plugins", plugins)),
         Err(e) => eprintln!("browser-plugins: not drawn ({e})"),
     }
-    // The Chop tab on the same pad: chopped at its hits, slice 3 picked.
+    // The Slice tool on the same pad: chopped at its hits, slice 3 picked
+    // (Q-Link 2).
     let mut chop = sample_sampler(fonts());
     chop.on_event(UiEvent {
-        widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-        kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
+        widget: mpfree_sampler_ui::wave_tab::TOOLS.into(),
+        kind: EventKind::Tab(mpfree_sampler_ui::wave_tab::Tool::Slice.index()),
     });
-    chop.apply(ToUi::SampleQLink(0, 2));
+    chop.apply(ToUi::SampleQLink(1, 2));
     chop.take_actions();
     out.push(("sample-chop", chop));
     // The Warp tool on the same pad: warped to stretch, its hits pinned to
@@ -16851,13 +16951,14 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         levels.take_actions();
         out.push(("play-16-levels", levels));
     }
-    // The Chop tab putting four slices on keys.
+    // The Slice tool putting four slices on keys.
     {
-        use mpfree_sampler_ui::chop_tab::{Row, LIST};
+        use mpfree_sampler_ui::slice_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
         let mut keys = sample_sampler(fonts());
         keys.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
+            widget: mpfree_sampler_ui::wave_tab::TOOLS.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::wave_tab::Tool::Slice.index()),
         });
         let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
         for (row, delta) in [
@@ -16879,14 +16980,15 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         keys.take_actions();
         out.push(("sample-chop-keys", keys));
     }
-    // The Chop tab putting every eighth on pads with a phrase.
+    // The Slice tool putting every eighth on pads with a phrase.
     {
-        use mpfree_sampler_ui::chop_tab::{Row, LIST};
+        use mpfree_sampler_ui::slice_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
         use mpfree_sampler_ui::widgets::SettingList;
         let mut phrase = sample_sampler(fonts());
         phrase.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
+            widget: mpfree_sampler_ui::wave_tab::TOOLS.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::wave_tab::Tool::Slice.index()),
         });
         let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
         for (row, delta) in [(Row::Method, 1), (Row::Amount, -1), (Row::Phrase, 1i32)] {
@@ -16909,13 +17011,14 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         phrase.take_actions();
         out.push(("sample-chop-phrase", phrase));
     }
-    // The Chop tab putting every eighth on one pad, the pad chopped (R4).
+    // The Slice tool putting every eighth on one pad, the pad chopped (R4).
     {
-        use mpfree_sampler_ui::chop_tab::{Row, LIST};
+        use mpfree_sampler_ui::slice_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
         let mut one = sample_sampler(fonts());
         one.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
+            widget: mpfree_sampler_ui::wave_tab::TOOLS.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::wave_tab::Tool::Slice.index()),
         });
         let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
         for (row, delta) in [(Row::Method, 1), (Row::Amount, -1), (Row::Put, 1i32)] {
@@ -16930,15 +17033,16 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         one.take_actions();
         out.push(("sample-chop-one-pad", one));
     }
-    // The Chop tab putting every eighth on a new kit, for a new track,
+    // The Slice tool putting every eighth on a new kit, for a new track,
     // with its phrase (R4.6).
     {
-        use mpfree_sampler_ui::chop_tab::{Row, LIST};
+        use mpfree_sampler_ui::slice_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
         let (mut new, _) = sample_sampler_with_empty_kit(fonts());
         sample_pattern(&mut new, 0);
         new.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
+            widget: mpfree_sampler_ui::wave_tab::TOOLS.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::wave_tab::Tool::Slice.index()),
         });
         let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
         for (row, delta) in [
@@ -16961,11 +17065,12 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // Live chop on the same pad: Start pressed, the break playing halfway,
     // and four pads hit so far.
     {
-        use mpfree_sampler_ui::chop_tab::{Row, LIST};
+        use mpfree_sampler_ui::slice_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
         let mut live = sample_sampler(fonts());
         live.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
+            widget: mpfree_sampler_ui::wave_tab::TOOLS.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::wave_tab::Tool::Slice.index()),
         });
         live.on_event(UiEvent {
             widget: LIST.into(),
@@ -17003,9 +17108,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         live.take_actions();
         out.push(("sample-chop-live", live));
     }
-    // The Chop tab cutting a sung line where its notes change (R4.7).
+    // The Slice tool cutting a sung line where its notes change (R4.7).
     {
-        use mpfree_sampler_ui::chop_tab::{Row, LIST};
+        use mpfree_sampler_ui::slice_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
         let mut sung = sample_sampler(fonts());
         let (project, _) = mpfree_sampler_ui::sample::melody_project();
         let mut kits = sung.kits.clone();
@@ -17018,8 +17124,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         });
         settle_views(&mut sung);
         sung.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
+            widget: mpfree_sampler_ui::wave_tab::TOOLS.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::wave_tab::Tool::Slice.index()),
         });
         // Back from Transient past Live and Manual: Pitch.
         sung.on_event(UiEvent {
@@ -17848,8 +17954,8 @@ mod tests {
         assert_eq!(p.play_view(), PlayView::All, "one view: nothing to step");
         let mut p = sample_sampler(Fonts::embedded());
         assert_eq!(p.page(), sample_page::PAGE);
-        p.apply(ToUi::SampleEditor(sample_page::Editor::Chop));
-        assert_eq!(p.page(), sample_page::CHOP_PAGE, "the page follows at once");
+        p.apply(ToUi::SampleEditor(sample_page::Editor::Play));
+        assert_eq!(p.page(), sample_page::PLAY_PAGE, "the page follows at once");
         p.apply(ToUi::SampleEditor(sample_page::Editor::Wave));
         assert_eq!(p.page(), sample_page::PAGE);
         // PROG EDIT, as the audio loop sends it with a kit on the pads.
@@ -24399,24 +24505,21 @@ mod tests {
     #[test]
     fn an_exported_pad_goes_to_samples_exports_and_loads_back_with_its_settings_and_slices() {
         use mpfree_library::{Loc, Place};
-        use mpfree_sampler_ui::chop_tab::{self, Row};
+        use mpfree_sampler_ui::slice_tool::Row;
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         let put_on = |p: &mut Player, delta: i32| {
             let index = Row::ALL.iter().position(|r| *r == Row::Put).unwrap();
             p.on_event(UiEvent {
-                widget: chop_tab::LIST.into(),
+                widget: mpfree_sampler_ui::wave_tab::REGION.into(),
                 kind: EventKind::Step { index, delta },
             });
         };
-        p.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(chop_tab::TAB),
-        });
+        pick_tool(&mut p, mpfree_sampler_ui::wave_tab::Tool::Slice);
         // Files is offered only once the app has a library to write them
         // in.
         put_on(&mut p, -1);
-        assert_ne!(p.sample.chop().unwrap().0.put_text(), "Files");
+        assert_ne!(p.sample.slice().unwrap().0.put_text(), "Files");
         put_on(&mut p, 1);
         let root = std::env::temp_dir().join(format!("mpfree-export-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -24425,12 +24528,12 @@ mod tests {
         p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
         p.take_actions();
         put_on(&mut p, -1);
-        assert_eq!(p.sample.chop().unwrap().0.put_text(), "Files");
-        let n = p.sample.chop().unwrap().0.slices();
+        assert_eq!(p.sample.slice().unwrap().0.put_text(), "Files");
+        let n = p.sample.slice().unwrap().0.slices();
         let export = |p: &mut Player| {
             p.on_event(UiEvent {
-                widget: chop_tab::LIST.into(),
-                kind: EventKind::Tab(chop_tab::Row::Chop.index()),
+                widget: mpfree_sampler_ui::wave_tab::REGION.into(),
+                kind: EventKind::Tab(Row::Chop.index()),
             })
         };
         export(&mut p);
@@ -24957,8 +25060,8 @@ mod tests {
 
     #[test]
     fn the_sample_tabs_q_links_sit_in_the_right_hand_column_and_a_drag_turns_one() {
+        use mpfree_sampler_ui::wave_tab;
         use mpfree_sampler_ui::widgets::KnobCard;
-        use mpfree_sampler_ui::{chop_tab, wave_tab};
         let mut p = sample_sampler(Fonts::embedded());
         let (w, _) = p.ui.size();
         // The four cards down the right, as on every page, Q-Link 1 at the top.
@@ -24994,18 +25097,17 @@ mod tests {
         assert_eq!(turned.sample.state().unwrap().region.end, moved);
         p.apply(ToUi::SampleUndo(false));
         assert_eq!(p.sample.state().unwrap().region.end, end);
-        // The Chop tab's cards are in the same place.
-        let r = p.ui.rect_of(wave_tab::BAR).unwrap();
-        let t =
-            p.ui.get::<mpfree_sampler_ui::widgets::PadBar>(wave_tab::BAR)
-                .unwrap()
-                .tab_rect(r, chop_tab::TAB);
-        p.touch(9, Touch::Down, t.x + 5, t.y + 5);
-        p.touch(9, Touch::Up, t.x + 5, t.y + 5);
-        assert_eq!(p.page(), sample_page::CHOP_PAGE);
-        for (k, q) in chop_tab::QLINKS.iter().enumerate() {
+        // The Slice tool's cards are the same cards, with its own jobs.
+        pick_tool(&mut p, wave_tab::Tool::Slice);
+        assert!(p.sample.slice_tool());
+        for (k, q) in wave_tab::QLINKS.iter().enumerate() {
             assert_eq!(p.ui.rect_of(q).unwrap(), cards[k], "{q}");
         }
+        let jobs: Vec<String> = wave_tab::QLINKS
+            .iter()
+            .map(|q| p.ui.get::<KnobCard>(q).unwrap().job().to_string())
+            .collect();
+        assert_eq!(jobs[..2], ["Sensitivity", "Slice"]);
     }
 
     /// The sampler review's R1, names: a tap on the pad bar's title opens
@@ -25477,15 +25579,15 @@ mod tests {
     }
 
     #[test]
-    fn the_chop_tab_puts_slices_on_the_kits_pads_and_undo_takes_them_back() {
-        use mpfree_sampler_ui::chop_tab::{self, Row};
+    fn the_slice_tool_puts_slices_on_the_kits_pads_and_undo_takes_them_back() {
+        use mpfree_sampler_ui::slice_tool::Row;
         use mpfree_sampler_ui::widgets::{PadBar, SettingList};
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         let tap = |p: &mut Player, widget: &str, i: usize| {
             let r = p.ui.rect_of(widget).unwrap();
             let t = match widget {
-                chop_tab::LIST => {
+                mpfree_sampler_ui::wave_tab::REGION => {
                     p.ui.get::<SettingList>(widget)
                         .unwrap()
                         .control_rect(r, i)
@@ -25496,12 +25598,13 @@ mod tests {
             assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
             p.touch(9, Touch::Up, t.x + 5, t.y + 5);
         };
-        // The pad bar's Chop tab opens the Chop page on the same pad.
-        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
+        // The tools strip's Slice tool chops the same pad on the Wave page.
+        pick_tool(&mut p, mpfree_sampler_ui::wave_tab::Tool::Slice);
         assert_eq!(
             (p.page(), p.sample.editor()),
-            (sample_page::CHOP_PAGE, sample_page::Editor::Chop)
+            (sample_page::PAGE, sample_page::Editor::Wave)
         );
+        assert!(p.sample.slice_tool());
         assert!(p
             .ui
             .get::<Label>("hint")
@@ -25509,14 +25612,16 @@ mod tests {
             .text
             .contains("Hit a pad to chop it"));
         assert_eq!(
-            p.ui.get::<PadBar>(chop_tab::BAR).unwrap().title,
+            p.ui.get::<PadBar>(mpfree_sampler_ui::wave_tab::BAR)
+                .unwrap()
+                .title,
             "Pad A5 · Break 92"
         );
         // Grid of 4 from the list, then Q-Link 4 to A1: the slices go on A1-A4.
         let step = |p: &mut Player, row: Row, delta: i32| {
             let index = Row::ALL.iter().position(|r| *r == row).unwrap();
             p.on_event(UiEvent {
-                widget: chop_tab::LIST.into(),
+                widget: mpfree_sampler_ui::wave_tab::REGION.into(),
                 kind: EventKind::Step { index, delta },
             });
         };
@@ -25526,11 +25631,14 @@ mod tests {
             step(&mut p, Row::Amount, -1);
         }
         p.apply(ToUi::SampleQLink(3, -16));
-        let (tab, st) = p.sample.chop().unwrap();
+        let (tab, st) = p.sample.slice().unwrap();
         assert_eq!((tab.slices(), tab.pads(st)), (4, Some(0..4)));
         let bounds = tab.bounds(st);
         assert_eq!(
-            p.ui.get::<SettingList>(chop_tab::LIST).unwrap().rows[Row::Chop.index()].value,
+            p.ui.get::<SettingList>(mpfree_sampler_ui::wave_tab::REGION)
+                .unwrap()
+                .rows[Row::Chop.index()]
+            .value,
             "Chop to A1–A4"
         );
         assert!(
@@ -25545,7 +25653,7 @@ mod tests {
             .contains("tap a slice: hear it"));
         // A tap on the wave plays the slice under it, once.
         p.on_event(UiEvent {
-            widget: chop_tab::WAVE.into(),
+            widget: mpfree_sampler_ui::wave_tab::WAVE.into(),
             kind: EventKind::Frame(bounds[1] + 5),
         });
         assert_eq!(
@@ -25558,7 +25666,11 @@ mod tests {
                 end: bounds[2]
             }]
         );
-        tap(&mut p, chop_tab::LIST, Row::Chop.index());
+        tap(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::REGION,
+            Row::Chop.index(),
+        );
         let kit = p.sample.project(0).unwrap();
         assert_eq!(kit.pad(2).unwrap().name, "Break 92 3");
         assert_eq!(kit.pad(2).unwrap().layers[0].region.start, bounds[2]);
@@ -25594,24 +25706,119 @@ mod tests {
         assert_eq!(p.kits[0].pads[0], None);
         let (sent, _) = views(p.take_actions());
         assert!(!sent[0].view.as_ref().unwrap().has_pad(0));
-        assert_eq!(p.page(), sample_page::CHOP_PAGE);
-        // The Wave tab goes back to Wave; another pad stays on the tab open.
-        tap(&mut p, chop_tab::BAR, mpfree_sampler_ui::wave_tab::TAB);
+        assert!(p.sample.slice_tool());
+        // Trim goes back to Trim; another pad keeps the tool picked.
+        pick_tool(&mut p, mpfree_sampler_ui::wave_tab::Tool::Trim);
         assert_eq!(p.page(), sample_page::PAGE);
-        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
+        assert!(!p.sample.slice_tool());
+        pick_tool(&mut p, mpfree_sampler_ui::wave_tab::Tool::Slice);
         p.apply(ToUi::PadDown {
             pad: 7,
             velocity: 100,
         });
         assert_eq!(p.page(), sample_page::EMPTY_PAGE, "A8 has no sound");
         p.apply(ToUi::PadDown { pad, velocity: 100 });
-        assert_eq!(p.page(), sample_page::CHOP_PAGE);
+        assert!(p.sample.slice_tool());
+    }
+
+    /// The Slice tool on a take kept on the page (one Sample page step 3):
+    /// it cuts the take, keeps the cuts for its sound and plays a slice
+    /// from the take; Chop to pads waits until the take is on a pad, where
+    /// the cuts come with it.
+    #[test]
+    fn the_slice_tool_cuts_a_take_kept_on_the_page_and_chops_it_once_on_a_pad() {
+        use mpfree_sampler_ui::slice_tool::Row;
+        use mpfree_sampler_ui::{send, wave_tab};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let (mut project, _) = mpfree_sampler_ui::sample::project();
+        let mut take = project.pad(pad).unwrap().clone();
+        take.name = "Take 1".to_string();
+        project.add_take(take).unwrap();
+        p.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        p.apply(ToUi::PadDown { pad, velocity: 100 });
+        p.apply(ToUi::PadUp(pad));
+        settle_views(&mut p);
+        p.apply(ToUi::SamplePad(1));
+        assert_eq!(p.sample.take_shown().as_deref(), Some("Take 1"));
+        pick_tool(&mut p, wave_tab::Tool::Slice);
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.starts_with("Tap a slice: hear it"), "{hint}");
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            let index = Row::ALL.iter().position(|r| *r == row).unwrap();
+            p.on_event(UiEvent {
+                widget: wave_tab::REGION.into(),
+                kind: EventKind::Step { index, delta },
+            });
+        };
+        // A Grid of 4 on the take, kept for its sound.
+        step(&mut p, Row::Method, 1);
+        step(&mut p, Row::Method, 1);
+        for _ in 0..4 {
+            step(&mut p, Row::Amount, -1);
+        }
+        let (tab, st) = p.sample.slice().unwrap();
+        assert_eq!((st.pad, tab.slices()), (wave_tab::TAKE, 4));
+        let (bounds, source) = (tab.bounds(st), st.source.id);
+        let kept = p.sample.project(0).unwrap().kept_chop(source).unwrap();
+        assert_eq!(kept.markers(), &bounds[1..4]);
+        p.take_actions();
+        // A tap on a slice plays it from the take.
+        p.on_event(UiEvent {
+            widget: wave_tab::WAVE.into(),
+            kind: EventKind::Frame(bounds[1] + 5),
+        });
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Slice {
+                kit: 0,
+                pad: wave_tab::TAKE,
+                layer: 0,
+                start: bounds[1],
+                end: bounds[2]
+            }]
+        );
+        // Chop to pads waits for the take to be on a pad, and says so.
+        let before = p.sample.project(0).unwrap().pad(pad + 1).is_some();
+        p.on_event(UiEvent {
+            widget: send::SEND.into(),
+            kind: EventKind::Tab(send::CHOP_TO_PADS),
+        });
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains(send::TAKE_FIRST), "{hint}");
+        assert_eq!(p.sample.project(0).unwrap().pad(pad + 1).is_some(), before);
+        // Sent to A8, its cuts come with its sound, and Chop to pads puts
+        // the four slices on the empty pads after it.
+        p.on_event(UiEvent {
+            widget: send::SEND.into(),
+            kind: EventKind::Tab(send::SEND_TO_PAD),
+        });
+        p.apply(ToUi::PadDown {
+            pad: 7,
+            velocity: 90,
+        });
+        p.apply(ToUi::PadUp(7));
+        assert_eq!(p.sample.take_shown(), None);
+        let (tab, st) = p.sample.slice().unwrap();
+        assert_eq!((st.pad, tab.bounds(st)), (7, bounds.clone()));
+        p.on_event(UiEvent {
+            widget: send::SEND.into(),
+            kind: EventKind::Tab(send::CHOP_TO_PADS),
+        });
+        let kit = p.sample.project(0).unwrap();
+        assert!(
+            (8..12).all(|i| kit.pad(i).is_some()) && kit.pad(12).is_none(),
+            "chopped onto A9 to A12"
+        );
     }
 
     #[test]
     fn a_chop_is_kept_for_its_sound_and_shown_again_when_the_pad_comes_back() {
         use mpfree_sampler::model::{ChopMode, KEPT_CHOP};
-        use mpfree_sampler_ui::chop_tab::{self, Method, Row};
+        use mpfree_sampler_ui::slice_tool::{Method, Row};
         use mpfree_sampler_ui::widgets::{PadBar, SettingList};
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
@@ -25621,7 +25828,7 @@ mod tests {
         let tap = |p: &mut Player, widget: &str, i: usize| {
             let r = p.ui.rect_of(widget).unwrap();
             let t = match widget {
-                chop_tab::LIST => {
+                mpfree_sampler_ui::wave_tab::REGION => {
                     p.ui.get::<SettingList>(widget)
                         .unwrap()
                         .control_rect(r, i)
@@ -25635,11 +25842,11 @@ mod tests {
         let step = |p: &mut Player, row: Row, delta: i32| {
             let index = Row::ALL.iter().position(|r| *r == row).unwrap();
             p.on_event(UiEvent {
-                widget: chop_tab::LIST.into(),
+                widget: mpfree_sampler_ui::wave_tab::REGION.into(),
                 kind: EventKind::Step { index, delta },
             });
         };
-        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
+        pick_tool(&mut p, mpfree_sampler_ui::wave_tab::Tool::Slice);
         assert!(
             p.sample.project(0).unwrap().kept_chop(source).is_none(),
             "the tab's first chop of a sound is its own"
@@ -25652,7 +25859,7 @@ mod tests {
         for _ in 0..4 {
             step(&mut p, Row::Amount, -1);
         }
-        let (tab, st) = p.sample.chop().unwrap();
+        let (tab, st) = p.sample.slice().unwrap();
         assert_eq!((tab.method(), tab.slices()), (Method::Grid, 4));
         let bounds = tab.bounds(st);
         let kept = p.sample.project(0).unwrap().kept_chop(source).unwrap();
@@ -25662,18 +25869,24 @@ mod tests {
         assert!(views(p.take_actions()).0.is_empty());
         // On A6-A9; A6 plays the first slice, which the kept chop doesn't
         // cut, so the tab chops it afresh and keeps nothing.
-        tap(&mut p, chop_tab::LIST, Row::Chop.index());
+        tap(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::REGION,
+            Row::Chop.index(),
+        );
         p.take_actions();
         p.apply(ToUi::PadDown {
             pad: pad + 1,
             velocity: 100,
         });
-        assert_eq!(p.page(), sample_page::CHOP_PAGE);
+        assert!(p.sample.slice_tool());
         assert_eq!(
-            p.ui.get::<PadBar>(chop_tab::BAR).unwrap().title,
+            p.ui.get::<PadBar>(mpfree_sampler_ui::wave_tab::BAR)
+                .unwrap()
+                .title,
             "Pad A6 · Break 92 1"
         );
-        let (tab, st) = p.sample.chop().unwrap();
+        let (tab, st) = p.sample.slice().unwrap();
         assert_eq!(tab.bounds(st)[0], bounds[0]);
         assert_eq!(*tab.bounds(st).last().unwrap(), bounds[1]);
         assert!(!p.sample.take_unsaved());
@@ -25689,14 +25902,14 @@ mod tests {
         // Back on A5, its four slices are there again, and UNDO of the
         // chop to pads leaves them kept.
         p.apply(ToUi::PadDown { pad, velocity: 100 });
-        let (tab, st) = p.sample.chop().unwrap();
+        let (tab, st) = p.sample.slice().unwrap();
         assert_eq!(
             (tab.method(), tab.bounds(st)),
             (Method::Grid, bounds.clone())
         );
         p.apply(ToUi::SampleUndo(false));
         assert!(p.sample.project(0).unwrap().pad(pad + 1).is_none());
-        let (tab, st) = p.sample.chop().unwrap();
+        let (tab, st) = p.sample.slice().unwrap();
         assert_eq!(tab.bounds(st), bounds);
         assert!(p.sample.project(0).unwrap().kept_chop(source).is_some());
     }
@@ -25704,7 +25917,7 @@ mod tests {
     #[test]
     fn pitch_chop_waits_for_the_sounds_pitch_from_the_worker_then_chops_and_keeps_it() {
         use mpfree_sampler::model::ChopMode;
-        use mpfree_sampler_ui::chop_tab::{self, Method, Row};
+        use mpfree_sampler_ui::slice_tool::{Method, Row};
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         let (project, _) = mpfree_sampler_ui::sample::melody_project();
@@ -25714,29 +25927,26 @@ mod tests {
         });
         p.apply(ToUi::PadDown { pad, velocity: 100 });
         settle_views(&mut p);
-        p.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(chop_tab::TAB),
-        });
+        pick_tool(&mut p, mpfree_sampler_ui::wave_tab::Tool::Slice);
         let source = p.sample.project(0).unwrap().pad(pad).unwrap().layers[0]
             .region
             .source;
-        assert!(p.sample.chop().unwrap().1.source.pitch.is_none());
+        assert!(p.sample.slice().unwrap().1.source.pitch.is_none());
         // Pitch picked: the worker follows the sound's pitch; till then
         // there are no cuts and nothing is kept.
         p.on_event(UiEvent {
-            widget: chop_tab::LIST.into(),
+            widget: mpfree_sampler_ui::wave_tab::REGION.into(),
             kind: EventKind::Step {
                 index: Row::ALL.iter().position(|r| *r == Row::Method).unwrap(),
                 delta: -3,
             },
         });
-        let (tab, _) = p.sample.chop().unwrap();
+        let (tab, _) = p.sample.slice().unwrap();
         assert_eq!(tab.method(), Method::Pitch);
         assert!(p.sample.analysing(), "the pitch is being followed");
         settle_views(&mut p);
         // In: a slice a note, kept for the sound as a Pitch chop.
-        let (tab, st) = p.sample.chop().unwrap();
+        let (tab, st) = p.sample.slice().unwrap();
         assert!(st.source.pitch.is_some());
         assert_eq!((tab.method(), tab.slices()), (Method::Pitch, 5));
         let bounds = tab.bounds(st);
@@ -25748,14 +25958,14 @@ mod tests {
 
     #[test]
     fn live_chop_drops_cuts_where_the_sampler_marked_them_and_ends_with_the_sound() {
-        use mpfree_sampler_ui::chop_tab::{self, Method, Row};
+        use mpfree_sampler_ui::slice_tool::{Method, Row};
         use mpfree_sampler_ui::widgets::{PadBar, SettingList};
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         let tap = |p: &mut Player, widget: &str, i: usize| {
             let r = p.ui.rect_of(widget).unwrap();
             let t = match widget {
-                chop_tab::LIST => {
+                mpfree_sampler_ui::wave_tab::REGION => {
                     p.ui.get::<SettingList>(widget)
                         .unwrap()
                         .control_rect(r, i)
@@ -25767,27 +25977,33 @@ mod tests {
             p.touch(9, Touch::Up, t.x + 5, t.y + 5);
         };
         let label = |p: &Player| {
-            p.ui.get::<SettingList>(chop_tab::LIST).unwrap().rows[Row::Split.index()]
-                .value
-                .clone()
+            p.ui.get::<SettingList>(mpfree_sampler_ui::wave_tab::REGION)
+                .unwrap()
+                .rows[Row::Split.index()]
+            .value
+            .clone()
         };
-        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
+        pick_tool(&mut p, mpfree_sampler_ui::wave_tab::Tool::Slice);
         // Transient steps back round to Live, and the hint says how it goes.
         let index = Row::ALL.iter().position(|r| *r == Row::Method).unwrap();
         p.on_event(UiEvent {
-            widget: chop_tab::LIST.into(),
+            widget: mpfree_sampler_ui::wave_tab::REGION.into(),
             kind: EventKind::Step { index, delta: -1 },
         });
-        assert_eq!(p.sample.chop().unwrap().0.method(), Method::Live);
+        assert_eq!(p.sample.slice().unwrap().0.method(), Method::Live);
         assert!(p.sample.chop_live_method());
         let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
         assert!(hint.contains("hit pads in time to drop cuts"), "{hint}");
         p.take_actions();
         // Start: the pad's region plays, marking.
         assert_eq!(label(&p), "Start");
-        tap(&mut p, chop_tab::LIST, Row::Split.index());
+        tap(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::REGION,
+            Row::Split.index(),
+        );
         let (start, end) = {
-            let (tab, st) = p.sample.chop().unwrap();
+            let (tab, st) = p.sample.slice().unwrap();
             assert!(tab.live());
             assert_eq!(tab.slices(), 1, "a take starts bare");
             (st.region.start, st.region.end)
@@ -25811,8 +26027,8 @@ mod tests {
             velocity: 100,
         });
         p.apply(ToUi::PadUp(0));
-        assert_eq!(p.page(), sample_page::CHOP_PAGE);
-        assert!(p.sample.chop().unwrap().0.live());
+        assert!(p.sample.slice_tool());
+        assert!(p.sample.slice().unwrap().0.live());
         // Two pads hit: the sampler's marks come back with the playheads
         // and become cuts.
         let len = end - start;
@@ -25825,13 +26041,13 @@ mod tests {
         heads.marks[0] = (start + len / 4) as u32;
         heads.marks[1] = (start + len * 3 / 4) as u32;
         p.apply(ToUi::SamplePlayheads(heads));
-        assert_eq!(p.sample.chop().unwrap().0.slices(), 3);
+        assert_eq!(p.sample.slice().unwrap().0.slices(), 3);
         // The same marks again add nothing; the sound over ends the take.
         p.apply(ToUi::SamplePlayheads(heads));
-        assert_eq!(p.sample.chop().unwrap().0.slices(), 3);
+        assert_eq!(p.sample.slice().unwrap().0.slices(), 3);
         heads.marking = false;
         p.apply(ToUi::SamplePlayheads(heads));
-        assert!(!p.sample.chop().unwrap().0.live());
+        assert!(!p.sample.slice().unwrap().0.live());
         assert_eq!(label(&p), "Start");
         assert!(matches!(
             p.take_actions()[..],
@@ -25844,11 +26060,15 @@ mod tests {
             "{:?}",
             events_log(&p)
         );
-        // A new take, then the Wave tab: it stops, and the cuts it made stay
-        // for Chop to.
-        tap(&mut p, chop_tab::LIST, Row::Split.index());
+        // A new take, then the Trim tool: it stops, and the cuts it made
+        // stay for Chop to pads.
+        tap(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::REGION,
+            Row::Split.index(),
+        );
         p.take_actions();
-        tap(&mut p, chop_tab::BAR, mpfree_sampler_ui::wave_tab::TAB);
+        pick_tool(&mut p, mpfree_sampler_ui::wave_tab::Tool::Trim);
         assert!(matches!(
             p.take_actions()[..],
             [FromUi::SampleLiveChop { on: false, .. }]
@@ -25864,17 +26084,14 @@ mod tests {
     #[test]
     fn one_pad_slices_the_chopped_pad_and_its_phrase_locks_each_slice() {
         use mpfree_sampler::model::{PadsPlay, PADS};
-        use mpfree_sampler_ui::chop_tab::{self, Row};
+        use mpfree_sampler_ui::slice_tool::Row;
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
-        p.on_event(UiEvent {
-            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
-            kind: EventKind::Tab(chop_tab::TAB),
-        });
+        pick_tool(&mut p, mpfree_sampler_ui::wave_tab::Tool::Slice);
         let step = |p: &mut Player, row: Row, delta: i32| {
             let index = Row::ALL.iter().position(|r| *r == row).unwrap();
             p.on_event(UiEvent {
-                widget: chop_tab::LIST.into(),
+                widget: mpfree_sampler_ui::wave_tab::REGION.into(),
                 kind: EventKind::Step { index, delta },
             });
         };
@@ -25888,7 +26105,7 @@ mod tests {
             .collect();
         p.take_actions();
         p.on_event(UiEvent {
-            widget: chop_tab::LIST.into(),
+            widget: mpfree_sampler_ui::wave_tab::REGION.into(),
             kind: EventKind::Tab(Row::Chop.index()),
         });
         let kit = p.sample.project(0).unwrap();
@@ -25923,15 +26140,15 @@ mod tests {
     #[test]
     fn to_keys_puts_slices_on_notes_and_the_play_tab_turns_the_pads_back() {
         use mpfree_sampler::model::{Keys, PadsPlay};
-        use mpfree_sampler_ui::chop_tab::{self, Row};
         use mpfree_sampler_ui::play_tab;
+        use mpfree_sampler_ui::slice_tool::Row;
         use mpfree_sampler_ui::widgets::{PadBar, SettingList};
         let pad = mpfree_sampler_ui::sample::PAD;
         let mut p = sample_sampler(Fonts::embedded());
         let tap = |p: &mut Player, widget: &str, i: usize| {
             let r = p.ui.rect_of(widget).unwrap();
             let t = match widget {
-                chop_tab::LIST => {
+                mpfree_sampler_ui::wave_tab::REGION => {
                     p.ui.get::<SettingList>(widget)
                         .unwrap()
                         .control_rect(r, i)
@@ -25942,12 +26159,12 @@ mod tests {
             assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
             p.touch(9, Touch::Up, t.x + 5, t.y + 5);
         };
-        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
+        pick_tool(&mut p, mpfree_sampler_ui::wave_tab::Tool::Slice);
         // Grid of 4 on A1-A4, as keys from C2.
         let step = |p: &mut Player, row: Row, delta: i32| {
             let index = Row::ALL.iter().position(|r| *r == row).unwrap();
             p.on_event(UiEvent {
-                widget: chop_tab::LIST.into(),
+                widget: mpfree_sampler_ui::wave_tab::REGION.into(),
                 kind: EventKind::Step { index, delta },
             });
         };
@@ -25959,7 +26176,11 @@ mod tests {
         p.apply(ToUi::SampleQLink(3, -16));
         step(&mut p, Row::Put, 2);
         p.take_actions();
-        tap(&mut p, chop_tab::LIST, Row::Chop.index());
+        tap(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::REGION,
+            Row::Chop.index(),
+        );
         let kit = p.sample.project(0).unwrap();
         assert_eq!(kit.pad(1).unwrap().keys, Some(Keys::one(37)));
         assert_eq!(kit.pads_play(), PadsPlay::Keys { from: 36 });
@@ -25975,7 +26196,7 @@ mod tests {
         assert!((0..4).all(|i| view.has_pad(i)) && !view.has_pad(pad));
         p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
         // On Play, A2 is picked by its hit; Pads play turns the pads back to their sounds.
-        tap(&mut p, chop_tab::BAR, play_tab::TAB);
+        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, play_tab::TAB);
         p.apply(ToUi::PadDown {
             pad: 1,
             velocity: 100,
@@ -26007,13 +26228,13 @@ mod tests {
 
     #[test]
     fn phrase_on_sends_a_clip_that_lands_in_the_armed_tracks_first_empty_slot() {
-        use mpfree_sampler_ui::chop_tab::{self, Row};
+        use mpfree_sampler_ui::slice_tool::Row;
         use mpfree_sampler_ui::widgets::{PadBar, SettingList};
         let mut p = sample_sampler(Fonts::embedded());
         let tap = |p: &mut Player, widget: &str, i: usize| {
             let r = p.ui.rect_of(widget).unwrap();
             let t = match widget {
-                chop_tab::LIST => {
+                mpfree_sampler_ui::wave_tab::REGION => {
                     p.ui.get::<SettingList>(widget)
                         .unwrap()
                         .control_rect(r, i)
@@ -26024,11 +26245,11 @@ mod tests {
             assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
             p.touch(9, Touch::Up, t.x + 5, t.y + 5);
         };
-        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
+        pick_tool(&mut p, mpfree_sampler_ui::wave_tab::Tool::Slice);
         let step = |p: &mut Player, row: Row, delta: i32| {
             let index = Row::ALL.iter().position(|r| *r == row).unwrap();
             p.on_event(UiEvent {
-                widget: chop_tab::LIST.into(),
+                widget: mpfree_sampler_ui::wave_tab::REGION.into(),
                 kind: EventKind::Step { index, delta },
             });
         };
@@ -26038,7 +26259,11 @@ mod tests {
         p.apply(ToUi::SampleQLink(3, -16));
         step(&mut p, Row::Phrase, 1);
         p.take_actions();
-        tap(&mut p, chop_tab::LIST, Row::Chop.index());
+        tap(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::REGION,
+            Row::Chop.index(),
+        );
         let (sent, rest) = views(p.take_actions());
         assert_eq!(sent.len(), 1, "the pads go to the audio thread as ever");
         let [FromUi::SamplePhrase(clip)] = &rest[..] else {
@@ -26069,7 +26294,7 @@ mod tests {
     #[test]
     fn chop_to_a_new_kit_adds_a_track_playing_it_with_the_phrase_and_undo_takes_the_pads_back() {
         use crate::sampler::TrackKits;
-        use mpfree_sampler_ui::chop_tab::{self, Row};
+        use mpfree_sampler_ui::slice_tool::Row;
         use mpfree_sampler_ui::widgets::{PadBar, SettingList};
         let pad = mpfree_sampler_ui::sample::PAD;
         // The Sample tab on Break 92 (kit 1, Breaks), with an empty user
@@ -26079,7 +26304,7 @@ mod tests {
         let tap = |p: &mut Player, widget: &str, i: usize| {
             let r = p.ui.rect_of(widget).unwrap();
             let t = match widget {
-                chop_tab::LIST => {
+                mpfree_sampler_ui::wave_tab::REGION => {
                     p.ui.get::<SettingList>(widget)
                         .unwrap()
                         .control_rect(r, i)
@@ -26090,17 +26315,18 @@ mod tests {
             assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
             p.touch(9, Touch::Up, t.x + 5, t.y + 5);
         };
-        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
-        assert_eq!(p.page(), sample_page::CHOP_PAGE);
+        pick_tool(&mut p, mpfree_sampler_ui::wave_tab::Tool::Slice);
+        assert!(p.sample.slice_tool());
         let step = |p: &mut Player, row: Row, delta: i32| {
             let index = Row::ALL.iter().position(|r| *r == row).unwrap();
             p.on_event(UiEvent {
-                widget: chop_tab::LIST.into(),
+                widget: mpfree_sampler_ui::wave_tab::REGION.into(),
                 kind: EventKind::Step { index, delta },
             });
         };
         fn list(p: &Player) -> &SettingList {
-            p.ui.get::<SettingList>(chop_tab::LIST).unwrap()
+            p.ui.get::<SettingList>(mpfree_sampler_ui::wave_tab::REGION)
+                .unwrap()
         }
         // Put on: Pads, One pad, Keys, New kit.
         for _ in 0..3 {
@@ -26113,11 +26339,15 @@ mod tests {
         step(&mut p, Row::Amount, -1);
         step(&mut p, Row::Phrase, 1);
         assert_eq!(list(&p).rows[Row::Chop.index()].value, "Phrase to new kit");
-        let n = p.sample.chop().unwrap().0.slices();
+        let n = p.sample.slice().unwrap().0.slices();
         assert!(n > 1);
         p.take_actions();
         let tracks = p.time.tracks.len();
-        tap(&mut p, chop_tab::LIST, Row::Chop.index());
+        tap(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::REGION,
+            Row::Chop.index(),
+        );
         // The new kit's pads go to the audio thread, and a track is asked
         // for; the phrase waits for it.
         let (sent, rest) = views(p.take_actions());
@@ -26170,9 +26400,11 @@ mod tests {
         p.apply(ToUi::TrackKits(Box::new(tk)));
         p.apply(ToUi::Kit(u));
         settle_views(&mut p);
-        assert_eq!(p.sample.chop().unwrap().1.pad, 0);
+        assert_eq!(p.sample.slice().unwrap().1.pad, 0);
         assert_eq!(
-            p.ui.get::<PadBar>(chop_tab::BAR).unwrap().title,
+            p.ui.get::<PadBar>(mpfree_sampler_ui::wave_tab::BAR)
+                .unwrap()
+                .title,
             "Pad A1 · Break 92 1"
         );
         assert_eq!(list(&p).right, "not now");
@@ -29870,22 +30102,14 @@ mod tests {
     }
 
     #[test]
-    fn the_sample_pages_tools_open_the_pages_not_on_it_yet() {
+    fn the_sample_pages_tools_stay_on_the_page_each_with_its_hint() {
         use mpfree_sampler_ui::wave_tab::{self, Tool};
         let mut p = sample_sampler(Fonts::embedded());
         assert_eq!(p.page(), sample_page::PAGE);
-        // Slice isn't on the page yet: it opens its old page, and the pad
-        // bar's first tab comes back to Trim.
-        pick_tool(&mut p, Tool::Slice);
-        assert_eq!(p.page(), sample_page::CHOP_PAGE);
-        p.on_event(UiEvent {
-            widget: "smp-chop-bar".into(),
-            kind: EventKind::Tab(wave_tab::TAB),
-        });
-        assert_eq!(p.page(), sample_page::PAGE);
-        assert_eq!(p.sample.tool(), Tool::Trim);
-        // Warp and Grain are: each stays on the page, with its hint.
+        // Slice, Warp and Grain each stay on the page, with its hint (step
+        // 3 put Slice there: no Chop page).
         for (tool, starts) in [
+            (Tool::Slice, "Hit a pad to chop it"),
             (Tool::Warp, "Tap a hit: pin it"),
             (Tool::Grain, "Drag GRAIN"),
         ] {
@@ -29912,7 +30136,7 @@ mod tests {
     }
 
     #[test]
-    fn send_to_pad_copies_the_pad_onto_the_next_hit_and_chop_to_pads_opens_the_chop_tab() {
+    fn send_to_pad_copies_the_pad_onto_the_next_hit_and_chop_to_pads_picks_the_slice_tool() {
         use mpfree_sampler_ui::send;
         use mpfree_sampler_ui::widgets::ButtonRow;
         let pad = mpfree_sampler_ui::sample::PAD;
@@ -29959,11 +30183,12 @@ mod tests {
         // One undo step takes it back.
         p.apply(ToUi::SampleUndo(false));
         assert!(p.sample.project(0).unwrap().pad(1).is_none());
-        // Chop to pads opens the Chop tab; there, it chops.
+        // Chop to pads picks the Slice tool; with it, it chops.
         p.apply(ToUi::PadDown { pad, velocity: 90 });
         p.apply(ToUi::PadUp(pad));
         press(&mut p, send::CHOP_TO_PADS);
-        assert_eq!(p.page(), sample_page::CHOP_PAGE);
+        assert_eq!(p.page(), sample_page::PAGE);
+        assert!(p.sample.slice_tool());
         assert!(
             p.sample.project(0).unwrap().pad(5).is_none(),
             "nothing chopped yet"

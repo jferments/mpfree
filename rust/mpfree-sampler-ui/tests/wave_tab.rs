@@ -11,7 +11,7 @@ use mpfree_sampler_ui::wave_tab::{
     self, moved, position_text, Mark, Row, Snap, WaveAction, WaveState,
 };
 use mpfree_sampler_ui::widgets::{KnobCard, PadBar, SettingList};
-use mpfree_sampler_ui::{chop_tab, play_tab, rec_tab};
+use mpfree_sampler_ui::{play_tab, rec_tab, slice_tool};
 use mpfree_sampler_ui::{PyramidPeaks, SourceView};
 use mpfree_ui::wave::{Peaks, RawPeaks, Waveform};
 use mpfree_ui::{EventKind, Fonts, SoftCanvas, Touch, UiEvent};
@@ -480,31 +480,24 @@ fn tabs_taps_and_the_sample_screens() {
     let mut s = sample();
     let bar = s.ui.rect_of(wave_tab::BAR).unwrap();
     let pb = s.ui.get::<PadBar>(wave_tab::BAR).unwrap();
-    let (chop_tab_r, play_tab_r) = (
-        pb.tab_rect(bar, chop_tab::TAB),
-        pb.tab_rect(bar, play_tab::TAB),
-    );
+    let play_tab_r = pb.tab_rect(bar, play_tab::TAB);
     assert_eq!(pb.active, wave_tab::TAB);
     assert_eq!(
         pb.tabs,
-        ["Wave", "Chop", "Play"],
-        "the pads are the app's Pads tab, a pad's effects are in Mix (no FX tab), Grain and \
-         Warp are tools on the page (no Grain or Warp tab) and recording is the recorder \
-         row's (no Rec tab)"
+        ["Wave", "Play"],
+        "the pads are the app's Pads tab, a pad's effects are in Mix (no FX tab), Slice, \
+         Grain and Warp are tools on the page (no Chop, Grain or Warp tab) and recording is \
+         the recorder row's (no Rec tab)"
     );
     let st = s.state.clone();
-    for (id, r, tab, what) in [
-        (2, chop_tab_r, chop_tab::TAB, "Chop opens"),
-        (4, play_tab_r, play_tab::TAB, "Play opens"),
-    ] {
-        let ev = s.ui.touch(id, Touch::Down, r.x + 5, r.y + 5).unwrap();
-        assert_eq!(
-            s.tab.action(&mut s.ui, &ev, &st),
-            Some(WaveAction::Tab(tab)),
-            "{what}"
-        );
-        s.ui.touch(id, Touch::Up, 0, 0);
-    }
+    // Play opens.
+    let r = play_tab_r;
+    let ev = s.ui.touch(4, Touch::Down, r.x + 5, r.y + 5).unwrap();
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(WaveAction::Tab(play_tab::TAB))
+    );
+    s.ui.touch(4, Touch::Up, 0, 0);
     // A tap on the wave plays the pad.
     let w = Waveform::wave_rect(s.ui.rect_of(wave_tab::WAVE).unwrap());
     s.ui.touch(3, Touch::Down, w.x + 300, w.y + 100);
@@ -1177,7 +1170,7 @@ fn the_recorder_row_records_and_the_panel_is_input_while_rec_is_on() {
 }
 
 #[test]
-fn the_tools_strip_sits_over_the_wave_and_picks_a_tool_or_opens_its_old_page() {
+fn the_tools_strip_sits_over_the_wave_and_picks_a_tool() {
     use mpfree_sampler_ui::recorder::RecorderView;
     use mpfree_sampler_ui::wave_tab::Tool;
     use mpfree_sampler_ui::widgets::ToolStrip;
@@ -1195,9 +1188,8 @@ fn the_tools_strip_sits_over_the_wave_and_picks_a_tool_or_opens_its_old_page() {
     assert_eq!(w.tools, ["Trim", "Slice", "Warp", "Grain"]);
     assert_eq!((w.active, w.enabled), (0, true));
     assert_eq!(s.tab.tool(), Tool::Trim);
-    // Trim is in use: a tap on it changes nothing. Slice isn't on the page
-    // yet, so it opens its old page, the Chop page. Grain and Warp are: a
-    // tap picks one.
+    // Trim is in use: a tap on it changes nothing; a tap on another picks
+    // it.
     let tap = |s: &mut Sample, i: usize| {
         let st = s.state.clone();
         let w = s.ui.get::<ToolStrip>(wave_tab::TOOLS).unwrap();
@@ -1209,8 +1201,7 @@ fn the_tools_strip_sits_over_the_wave_and_picks_a_tool_or_opens_its_old_page() {
         got
     };
     assert_eq!(tap(&mut s, 0), None);
-    assert_eq!(tap(&mut s, 1), Some(WaveAction::Tab(chop_tab::TAB)));
-    assert_eq!(s.tab.tool(), Tool::Trim, "the page stays on Trim");
+    assert_eq!(s.tab.tool(), Tool::Trim);
     let labels = |s: &Sample| -> Vec<(String, bool)> {
         let w = s.ui.get::<Waveform>(wave_tab::WAVE).unwrap();
         w.markers()
@@ -1264,6 +1255,30 @@ fn the_tools_strip_sits_over_the_wave_and_picks_a_tool_or_opens_its_old_page() {
     assert_eq!(s.tab.hint(), wave_tab::WARP_HINT);
     assert!(labels(&s)[..trim.len()].iter().all(|(_, tab)| !tab));
     assert_eq!(card(&s, 0), "Q-Link 1 · Pin");
+    assert_eq!(tap(&mut s, 0), None);
+    assert_eq!(labels(&s), trim);
+    // Slice: the cuts in place of Trim's marks, slice 1 at Start and END
+    // at End (fixed), the panel the Slice and Put on sections, the
+    // Q-Links the method's setting, the slice, its start and the pads.
+    assert_eq!(tap(&mut s, 1), None);
+    assert_eq!(s.tab.tool(), Tool::Slice);
+    assert_eq!(s.tab.hint(), slice_tool::HINT);
+    let cuts = labels(&s);
+    assert_eq!(cuts.first().map(|c| c.0.as_str()), Some("1"));
+    assert_eq!(cuts.last().map(|c| c.0.as_str()), Some("END"));
+    let titles: Vec<String> =
+        s.ui.get::<SettingList>(wave_tab::REGION)
+            .unwrap()
+            .panel
+            .as_ref()
+            .unwrap()
+            .sections
+            .iter()
+            .map(|x| x.title.clone())
+            .collect();
+    assert_eq!(titles, ["Slice", "Put on"]);
+    assert_eq!(card(&s, 0), "Q-Link 1 · Sensitivity");
+    assert_eq!(card(&s, 1), "Q-Link 2 · Slice");
     assert_eq!(tap(&mut s, 0), None);
     assert_eq!(labels(&s), trim);
     // Each tool is a target the device checks can find by its name.

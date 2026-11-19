@@ -1,8 +1,8 @@
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.poly
 name = Init
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.poly
 name = Grit Bass
 
@@ -32,7 +32,7 @@ filter-env.sustain = 10
 # Amp env
 amp-env.decay = 400
 amp-env.sustain = 70
-amp-env.release = 90
+amp-env.release = 88.4
 
 # Voice
 voice.mode = Legato
@@ -45,7 +45,7 @@ output.level = 6
 pressure.to-1 = Distortion
 pressure.depth-1 = 25
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.poly
 name = Acid
 
@@ -68,7 +68,7 @@ filter-env.sustain = 0
 
 # Amp env
 amp-env.sustain = 90
-amp-env.release = 40
+amp-env.release = 39.3
 
 # Voice
 voice.mode = Legato
@@ -82,7 +82,7 @@ pressure.depth-1 = 50
 pressure.to-2 = Resonance
 pressure.depth-2 = 20
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.poly
 name = Supersaw
 
@@ -103,13 +103,13 @@ filter.resonance = 10
 filter.env-amount = 0.8
 
 # Amp env
-amp-env.attack = 5
-amp-env.release = 500
+amp-env.attack = 1.59
+amp-env.release = 491
 
 # Output
 output.level = -3
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.poly
 name = Dust Pad
 
@@ -134,16 +134,16 @@ filter.resonance = 25
 filter.env-amount = 1.2
 
 # Filter env
-filter-env.attack = 900
+filter-env.attack = 287
 filter-env.decay = 2000
 filter-env.sustain = 50
-filter-env.release = 1500
+filter-env.release = 1470
 
 # Amp env
-amp-env.attack = 700
+amp-env.attack = 223
 amp-env.decay = 1500
 amp-env.sustain = 85
-amp-env.release = 1800
+amp-env.release = 1770
 
 # LFO
 lfo.shape = Triangle
@@ -160,7 +160,7 @@ pressure.depth-1 = 25
 pressure.to-2 = Vibrato
 pressure.depth-2 = 30
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.poly
 name = Pluck
 
@@ -178,17 +178,17 @@ filter.velocity = 1.5
 # Filter env
 filter-env.decay = 160
 filter-env.sustain = 0
-filter-env.release = 160
+filter-env.release = 157
 
 # Amp env
 amp-env.decay = 450
 amp-env.sustain = 0
-amp-env.release = 300
+amp-env.release = 295
 
 # Pressure
 pressure.to-1 = Off
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.poly
 name = Brass
 
@@ -202,12 +202,12 @@ filter.resonance = 10
 filter.env-amount = 2.5
 
 # Filter env
-filter-env.attack = 60
+filter-env.attack = 19.1
 filter-env.decay = 500
 filter-env.sustain = 50
 
 # Amp env
-amp-env.attack = 30
+amp-env.attack = 9.56
 amp-env.sustain = 90
 
 # LFO
@@ -220,7 +220,7 @@ pressure.depth-1 = 37.5
 pressure.to-2 = Cutoff
 pressure.depth-2 = 37.5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.poly
 name = Sub Bass
 
@@ -241,7 +241,7 @@ filter.env-amount = 0
 
 # Amp env
 amp-env.sustain = 100
-amp-env.release = 120
+amp-env.release = 118
 
 # Voice
 voice.mode = Mono
@@ -251,7 +251,7 @@ voice.glide = 25
 pressure.to-1 = Drive
 pressure.depth-1 = 25
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.poly
 name = Lead
 
@@ -290,3 +290,172 @@ pressure.to-1 = Vibrato
 pressure.depth-1 = 50
 pressure.to-2 = Cutoff
 pressure.depth-2 = 25
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Super Lead
+
+# Osc 1
+osc-1.wave = Supersaw
+
+# Osc 2
+osc-2.level = 0
+
+# Supersaw
+supersaw.detune = 35
+supersaw.mix = 45
+
+# Filter
+filter.cutoff = 4500
+filter.resonance = 15
+filter.env-amount = 1
+filter.key-track = 40
+
+# Filter env
+filter-env.decay = 600
+filter-env.sustain = 45
+
+# Amp env
+amp-env.attack = 0.956
+amp-env.release = 246
+
+# LFO
+lfo.rate = 5.5
+lfo.to-pitch = 0.1
+
+# Voice
+voice.mode = Legato
+voice.glide = 60
+voice.bend-range = 12
+
+# Pressure
+pressure.to-1 = Vibrato
+pressure.depth-1 = 40
+pressure.to-2 = Cutoff
+pressure.depth-2 = 25
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Super Pad
+
+# Osc 1
+osc-1.wave = Supersaw
+
+# Osc 2
+osc-2.octave = -1
+osc-2.fine = 0
+osc-2.level = 40
+
+# Supersaw
+supersaw.detune = 60
+supersaw.mix = 70
+
+# Filter
+filter.type = LP 12
+filter.cutoff = 1600
+filter.resonance = 10
+filter.env-amount = 1.4
+
+# Filter env
+filter-env.attack = 478
+filter-env.decay = 2500
+filter-env.sustain = 55
+filter-env.release = 1470
+
+# Amp env
+amp-env.attack = 223
+amp-env.release = 1570
+
+# Output
+output.level = -2
+
+# Pressure
+pressure.to-1 = Cutoff
+pressure.depth-1 = 30
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Super Stab
+
+# Osc 1
+osc-1.wave = Supersaw
+
+# Osc 2
+osc-2.wave = Pulse
+osc-2.octave = 1
+osc-2.fine = 0
+osc-2.level = 30
+
+# Supersaw
+supersaw.detune = 50
+supersaw.mix = 55
+
+# Filter
+filter.resonance = 20
+filter.cutoff = 900
+filter.env-amount = 3.5
+
+# Filter env
+filter-env.decay = 260
+filter-env.sustain = 0
+
+# Amp env
+amp-env.decay = 380
+amp-env.sustain = 0
+amp-env.release = 177
+
+mpfree-preset = 2
+engine = mpfree.poly
+name = Super Stack
+fx.1 = mpfree.fx.ensemble
+fx.2 = mpfree.fx.delay
+macro.1 = Detune
+macro.1.map = supersaw.detune 20 80
+macro.2 = Mix
+macro.2.map = supersaw.mix 20 80
+macro.3 = Octave
+macro.3.map = osc-2.level 0 70
+macro.4 = Effects
+macro.4.map = fx-1.mix 0 70
+macro.4.map = fx-2.mix 0 30
+
+# Macros
+macros.detune = 50
+macros.mix = 50
+macros.octave = 50
+macros.effects = 50
+
+# Osc 1
+osc-1.wave = Supersaw
+
+# Osc 2
+osc-2.wave = Supersaw
+osc-2.octave = 1
+osc-2.fine = 0
+osc-2.level = 35
+
+# Supersaw
+supersaw.detune = 50
+supersaw.mix = 50
+
+# Filter
+filter.type = LP 12
+filter.cutoff = 7000
+filter.resonance = 10
+filter.env-amount = 0.6
+
+# Amp env
+amp-env.attack = 1.59
+amp-env.release = 491
+
+# Output
+output.level = -3
+
+# FX 1: the ensemble's width
+fx-1.mix = 35
+
+# FX 2: a dotted eighth, bouncing
+fx-2.sync = 1/8D
+fx-2.feedback = 30
+fx-2.ping-pong = 1
+fx-2.mix = 15

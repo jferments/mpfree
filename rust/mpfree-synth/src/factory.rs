@@ -4,7 +4,7 @@
 //! ([`mpfree_node::preset`]), one after the other:
 //!
 //! ```text
-//! mpfree-preset = 1
+//! mpfree-preset = 2
 //! engine = mpfree.keys
 //! name = Soft Tines
 //!
@@ -19,7 +19,9 @@
 //! [`Preset::text`] for whatever hosts it. The files are written,
 //! reviewed and checked like any other file; the engines' tests read every
 //! preset ([`read`] reports a block that doesn't read, and the tests fail
-//! on it), and the lab measures them.
+//! on it), and the lab measures them. Every block is in the preset format
+//! this build writes, so a factory sound never needs converting: a block
+//! in an older one is reported too.
 
 use mpfree_node::preset::Preset as Text;
 use mpfree_node::{NodeInfo, ParamInfo};
@@ -42,6 +44,13 @@ pub fn read(
     let mut errors = Vec::new();
     for (n, block) in blocks(text).into_iter().enumerate() {
         match Text::parse(block, info, params) {
+            Ok(t) if t.format < mpfree_node::preset::VERSION => errors.push(format!(
+                "{} preset {}: written in preset format {}, not {}",
+                info.name,
+                n + 1,
+                t.format,
+                mpfree_node::preset::VERSION
+            )),
             Ok(t) => presets.push(Preset {
                 name: Box::leak(t.name.into_boxed_str()),
                 values: Box::leak(t.values.into_boxed_slice()),
@@ -168,17 +177,22 @@ mod tests {
     fn a_block_that_does_not_read_is_left_out_and_said() {
         let r = 48_000;
         let k = crate::Keys::new(r);
-        let text: &'static str = "mpfree-preset = 1\nengine = mpfree.keys\nname = One\n\n\
-             mpfree-preset = 1\nengine = mpfree.poly\nname = Two\n\n\
-             mpfree-preset = 1\nengine = mpfree.keys\nname = Three\ntone.bark = 10\n";
+        let text: &'static str = "mpfree-preset = 2\nengine = mpfree.keys\nname = One\n\n\
+             mpfree-preset = 2\nengine = mpfree.poly\nname = Two\n\n\
+             mpfree-preset = 2\nengine = mpfree.keys\nname = Three\ntone.bark = 10\n\n\
+             mpfree-preset = 1\nengine = mpfree.keys\nname = Four\n";
         let (presets, errors) = read(text, k.info(), k.params());
         let names: Vec<&str> = presets.iter().map(|p| p.name).collect();
         assert_eq!(names, ["One", "Three"]);
-        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors.len(), 2, "{errors:?}");
         assert!(errors[0].contains("preset 2"), "{errors:?}");
+        assert!(
+            errors[1].contains("preset 4") && errors[1].contains("format 1"),
+            "a factory sound is never converted: {errors:?}"
+        );
         assert!(presets[1]
             .text
-            .starts_with("mpfree-preset = 1\nengine = mpfree.keys\nname = Three"));
+            .starts_with("mpfree-preset = 2\nengine = mpfree.keys\nname = Three"));
         assert_eq!(presets[1].values, &[(crate::keys_params::BARK, 10.0)]);
     }
 }

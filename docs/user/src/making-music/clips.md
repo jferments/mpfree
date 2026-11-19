@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-seq rust/mpfree-play rust/mpfree-capture rust/mpfree-time-ui/src/view.rs rust/mpfree-time-ui/src/widgets.rs rust/mpfree-transport
-checked: 2026-11-14 b76c3c7
+checked: 2026-11-19 79fc6f63
 -->
 
 # Clips and patterns
@@ -36,7 +36,7 @@ The grid shows 8 tracks at a time. With more than 8, the title line shows which 
 
 {{shot: clips-tracks | A project of 24 tracks: the grid shows tracks 9 to 16 because Vox chop is armed, and the pager says so.}}
 
-Tracks past 16 play the kit for now. They have no MIDI out of their own and can't have an instrument of their own yet.
+Every track can have a kit of its own (see [A kit for each track](pads.md#a-kit-for-each-track)) and its own MIDI out to your gear (see [Playing a synth from a track](midi-and-cv.md#playing-a-synth-from-a-track)). Any track can also have an instrument of its own, up to 16 tracks at once (see [A synth for each track](synths.md#a-synth-for-each-track)).
 
 ### Loop tracks
 
