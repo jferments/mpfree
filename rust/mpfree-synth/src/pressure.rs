@@ -33,6 +33,8 @@ pub const POLY_TARGETS: &[&str] = &[
     "LFO 1 amount",
     "LFO 2 amount",
     "Pan",
+    "Position",
+    "Warp",
 ];
 /// FM's targets, by slot target index.
 pub const FM_TARGETS: &[&str] = &[
@@ -75,8 +77,8 @@ pub const WIND_TARGETS: &[&str] = &[
 ///   own sends are set to gets through, as a swell: with a positive depth
 ///   none at rest and all of it at full; with a negative depth pressing
 ///   takes it away ([`lfo_gate`]). Pan: from the middle to one side.
-/// - Position (Wavetable): the whole table. Warp (Wavetable): the whole
-///   warp amount.
+/// - Position (Poly's Table wave, Wavetable): the whole table, on both
+///   oscillators. Warp (the same): the whole warp amount.
 /// - Brightness (FM): 24 output-level steps (18 dB) on every modulator.
 ///   Tremolo (FM) 100 % amplitude dip. Feedback (FM) 7 steps.
 /// - Breath (Wind): the whole breath, added to what the note blows. Tone
@@ -141,11 +143,14 @@ pub struct Slot {
     pub depth: f32,
 }
 
+/// The most targets an engine has.
+pub const MAX_TARGETS: usize = 17;
+
 /// The four slots summed by target index, so an engine adds one number per
 /// target (two slots on one target add up).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Depths {
-    pub by_target: [f32; 16],
+    pub by_target: [f32; MAX_TARGETS],
     /// Any slot sends pressure somewhere.
     pub any: bool,
 }
@@ -183,7 +188,9 @@ mod tests {
         {
             assert!(full_scale(t).is_some(), "{t}");
         }
-        assert!(POLY_TARGETS.len() <= 16 && FM_TARGETS.len() <= 16 && WT_TARGETS.len() <= 16);
+        for t in [POLY_TARGETS, FM_TARGETS, WT_TARGETS] {
+            assert!(t.len() <= MAX_TARGETS);
+        }
         assert_eq!(amount("Cutoff", 37.5), Some((1.5, Unit::Octaves)));
         assert!((depth_for("Level", 9.0) - 37.5).abs() < 1e-4);
     }
