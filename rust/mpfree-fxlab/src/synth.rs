@@ -1646,8 +1646,11 @@ fn sine_amp(x: &[f64], f: f64, rate: u32, hop: usize) -> Vec<(f64, f64)> {
 }
 
 fn envelopes(rows: &mut Vec<Row>, rate: u32) {
-    // P6: amp envelope times against their labels ("about 99 % of a
-    // segment"), on a sine at C6.
+    // P6: amp envelope times against their labels, on a sine at C6. Since
+    // Poly moved onto the voice core (preset format 2) a time means what
+    // it says: the attack reaches full level in its time (99 % here, which
+    // it reaches 2 % early), the decay covers 99 % of the way to the
+    // sustain, the release falls 60 dB.
     let key = 84;
     let run = |set: &[(u16, f32)], held: f64| {
         let mut n = poly_sine(rate);
@@ -1703,12 +1706,12 @@ fn envelopes(rows: &mut Vec<Row>, rate: u32) {
         Some(10.0),
         1.0,
     );
-    // Release 300 ms from full.
+    // Release 300 ms from full: the time to fall 60 dB.
     let r = run(&[(52, 100.0), (53, 300.0)], 0.5);
     let held = mean(&r, 0.3, 0.45);
     let t = r
         .iter()
-        .find(|p| p.0 > 0.5 && p.1 <= 0.01 * held)
+        .find(|p| p.0 > 0.5 && p.1 <= 0.001 * held)
         .map_or(1.1, |p| p.0);
     put(
         rows,

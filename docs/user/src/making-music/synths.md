@@ -99,6 +99,8 @@ The level stays about the same whatever you set. **Super Lead**, **Super Pad**, 
 
 {{shot: synth-voice | Poly's Voice page: how it plays (Poly, Mono or Legato, the number of voices and the glide), Unison (copies of each note, their detune and spread), the tuning and the output.}}
 
+**Poly's envelopes** (on the Env page, and the filter's on the Filter page) have times that mean what they say: an **Attack** of 100 ms reaches full level at 100 ms, and a **Release** of 1 s fades 60 dB in 1 s and stops. **Velocity to level** is how much quieter your softest hit is than your hardest, in dB (8 dB by default; 0 dB plays every hit as loud, and keys-like sounds want 30 dB or more). Presets and projects saved before 19 November 2026 load with their times and velocity converted, so they sound as they did.
+
 **Unison** is on Poly's **Voice** page: **Copies** plays up to four copies of every note, **Detune** spreads them in pitch and **Spread** across the speakers. It thickens any wave, the supersaw too, but each copy costs as much as a note.
 
 **Drive** and **Distortion**, on the Filter page of Poly and Wavetable (Q-Links 3 and 4 there), both add grit. **Drive** pushes the sound into the filter, as on an analog synth: warm, and the filter smooths what it adds, so with the filter nearly closed you hear little of it. **Distortion** comes after the filter, so you hear its grit even with the filter almost closed (Grit Bass uses it). Both keep the sound at about the same level as you turn them up (within about 2 dB on every preset), so they add grit and thickness, not volume; turn up the synth's level for that. Pad pressure can push either one.
