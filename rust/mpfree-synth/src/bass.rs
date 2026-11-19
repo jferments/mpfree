@@ -52,10 +52,11 @@
 
 use std::f32::consts::{PI, TAU};
 
-use mpfree_node::{Ctl, Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Tuning};
+use mpfree_node::{Ctl, Ctx, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Tuning};
 
 use crate::bass_params::*;
 use crate::dsp::Rng;
+use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::params::Preset;
 use crate::voice::{velocity_gain, Adsr, Glide, NoteStack, Priority};
 
@@ -379,7 +380,16 @@ pub struct Bass {
     /// runs until the next note.
     quiet: u32,
     idle: bool,
+    /// Each key's slide and tone for its next note, and the voice's own
+    /// (per-note expression), gliding at `expr_c` a control step.
+    exprs: NoteExprs,
+    ex: VoiceExpr,
+    expr_c: f32,
 }
+
+/// A note's own tone (per-note expression, 0 to 1) at 1 opens the cutoff
+/// and the Tone low-pass this many octaves.
+const TONE_EXPR_OCT: f32 = 2.0;
 
 impl Bass {
     pub fn new(rate: u32) -> Bass {
@@ -438,6 +448,9 @@ impl Bass {
             frame: Frame::default(),
             quiet: 0,
             idle: true,
+            exprs: NoteExprs::new(),
+            ex: VoiceExpr::default(),
+            expr_c: 1.0,
         };
         b.prepare(rate, 0);
         b
@@ -570,6 +583,7 @@ impl Bass {
             + self.envelope_semis(steps)
             + self.bend * self.v(BEND_RANGE)
             + vib_depth * sin_turns(self.vib_phase)
+            + self.ex.slide
     }
 
     /// Sets the oscillators' steps for the pitch now, at once.
@@ -631,6 +645,7 @@ impl Bass {
         // A fresh note: the envelopes start, and it glides only on Always.
         let glides = self.played && self.v(GLIDE_ON) == ALWAYS;
         self.note = pick;
+        self.ex.start(self.exprs.on(pick));
         self.velocity = velocity;
         self.vel_gain = velocity_gain(velocity, self.v(VELOCITY));
         if !glides {
@@ -658,6 +673,7 @@ impl Bass {
     /// envelopes again only with Retrigger.
     fn move_to(&mut self, note: u8, velocity: u8) {
         self.note = note;
+        self.ex.retarget(self.exprs.on(note));
         self.press = f32::from(self.pressure[usize::from(note & 0x7F)]) / 127.0;
         if self.v(RETRIGGER) >= 0.5 {
             self.velocity = velocity;
@@ -673,6 +689,7 @@ impl Bass {
         if !self.stack.remove(note) {
             return;
         }
+        self.exprs.off(note);
         match self.stack.pick(Priority::from_index(self.v(PRIORITY))) {
             Some(next) if next != self.note => self.move_to(next, self.velocity),
             Some(_) => {}
@@ -685,6 +702,7 @@ impl Bass {
 
     fn all_off(&mut self) {
         self.stack.clear();
+        self.exprs.clear();
         self.amp.gate_off();
         self.fenv.gate_off();
     }
@@ -714,7 +732,18 @@ impl Bass {
             }
             NodeEvent::AllOff => self.all_off(),
             NodeEvent::Param { id, value } => self.set_param(id, value),
-            NodeEvent::Expression { .. } => {}
+            NodeEvent::Expression { note, kind, value } => {
+                // The playing key's own slide and tone move the voice; any
+                // key's are kept for its next note.
+                if let Some(v) = self.exprs.set(note, kind, value) {
+                    if kind != Expr::Release
+                        && note & 0x7F == self.note
+                        && self.stack.contains(self.note)
+                    {
+                        self.ex.aim(kind, v);
+                    }
+                }
+            }
         }
     }
 
@@ -730,6 +759,7 @@ impl Bass {
         self.glide.step(&mut pitch, target);
         self.pitch = pitch;
         self.since = self.since.saturating_add(1);
+        self.ex.step(self.expr_c);
         self.vib_phase += VIB_HZ / self.steps_per_sec();
         self.vib_phase -= self.vib_phase.floor();
         let p = self.pitch_now(self.since);
@@ -753,9 +783,10 @@ impl Bass {
             };
         let soft =
             self.v(VEL_TONE) * 0.01 * VEL_TONE_OCT * (1.0 - f32::from(self.velocity) / 127.0);
-        let oct = oct - soft;
+        let bright = TONE_EXPR_OCT * self.ex.tone;
+        let oct = oct - soft + bright;
         let fc = (self.v(CUTOFF) * oct.exp2()).clamp(10.0, 0.45 * fs);
-        let tone = (self.v(TONE) * (-soft).exp2()).clamp(20.0, 0.45 * fs);
+        let tone = (self.v(TONE) * (bright - soft).exp2()).clamp(20.0, 0.45 * fs);
         if tone != self.tone_hz {
             self.tone_hz = tone;
             self.tone.set(tone, fs);
@@ -1166,11 +1197,14 @@ impl Node for Bass {
         self.os = if self.rate < 64_000 { 2 } else { 1 };
         self.update_times();
         self.update_filters();
+        self.expr_c = expr_coef(self.steps_per_sec());
         self.reset();
     }
 
     fn reset(&mut self) {
         self.stack.clear();
+        self.exprs.clear();
+        self.ex = VoiceExpr::default();
         self.played = false;
         self.since = 0;
         self.bend = 0.0;
