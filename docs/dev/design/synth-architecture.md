@@ -33,7 +33,7 @@ Twelve engines when the three waves are done, five of them new or merged, and tw
 | Poly and wavetable | **Poly** (Wavetable folded in) | Per oscillator: Classic (from tables), Table (today's Wavetable) or Supersaw (seven saws on the detune curve and mix); the ladder and state-variable filters as today; a second LFO | | 2 |
 | Vintage poly | Analog (as built) | Voice cards that differ and drift, the OTA filter, the bucket-brigade chorus | | |
 | FM | FM (fixed) | As built, plus macros, a few operator shapes besides the sine, DC blocking, level matching across algorithms, and feedback that aliases less at high notes | | 2 |
-| Organ | Drawbar (+ a Combo model) | Tonewheel (built); combo organ from the Strings bank with flute and reed voice filters | Pipe organ later | 2 |
+| Organ | Drawbar (+ a Combo model, built 19 Nov: [synths.md](synths.md#drawbar-mpfree-synth-drawbar)) | Tonewheel (built); combo organ from the Strings bank (now `bank.rs`) with flute and reed voices: a near-sine flute, a saw or square reed through fixed filters, keyboard level scaling, a vibrato even in cents, 8 presets; O6 met | Pipe organ later | 2 |
 | Wind | **Wind** (new) | A waveguide bore excited by a reed or jet curve, driven by breath (pressure or the breath controller) | FM and subtractive winds as FM and Poly presets | 2 |
 | Choir | **Choir** (new) | A buzzy source through five formant filters per voice, morphing between vowels, through the Ensemble | Wavetable's Vowels table as Poly presets | 2 |
 | Tape character | **Character** (shared part) | Per-voice offsets and slow drift, wow and flutter, a note time limit, hiss; off and bit-exact at zero | | 2 |
@@ -44,7 +44,7 @@ Twelve engines when the three waves are done, five of them new or merged, and tw
 Why these choices (our reading of the research pages):
 
 - **Bass is its own engine**, not Poly in mono: its parts (a dividing sub, the Fifth, note priority, a glide at a constant rate, the 808 body, a low-pass after the drive) are what make it a bass, and it costs one voice. It is built from the shared voice core, so it is mostly assembly.
-- **Strings is the cheapest rich sound in the library.** Every key can sound, as on the string machines. Planned as a bank whose cost is flat with keys held; as built (18 Nov) it renders only the notes heard, so its cost grows with the notes, but slowly: the filters run on shared buses, not per key, and on the workstation one key costs 154k instructions a block (most of it the Ensemble) and 49 keys about 2.5 times that. A track at rest stops running. The same bank later gives the combo organ.
+- **Strings is the cheapest rich sound in the library.** Every key can sound, as on the string machines. Planned as a bank whose cost is flat with keys held; as built (18 Nov) it renders only the notes heard, so its cost grows with the notes, but slowly: the filters run on shared buses, not per key, and on the workstation one key costs 154k instructions a block (most of it the Ensemble) and 49 keys about 2.5 times that. A track at rest stops running. The same bank gives Drawbar's combo organ (19 Nov; it moved to `bank.rs`, Strings the same to the bit).
 - **Tunings and the bank.** Locking keeps octaves exact, so in any tuning whose octaves are pure (12-TET at any A4, Just, Pythagorean, meantone, a 12-note Scala file) each octave is locked to the one below and keys an octave apart never beat. In any other tuning (24-TET, a scale of another size, a stretched octave) each note runs free at its own pitch, at the same cost, so every key is still in tune (the research's S6). As built, nothing on the Synth tab needs to say which.
 - **The Ensemble is an effect**, so any track can use it: a Poly pad or a choir through it is half of the string-machine sound.
 - **Keys gets the clav, not a piano.** A full modelled grand is the heaviest instrument in the research and doesn't fit the budget (Bank et al.); FM pianos stay in FM, and a light electric grand comes after wave 3 if the device numbers leave room.
@@ -204,7 +204,7 @@ Three waves, each finished end to end: engine work, then presets, then the check
 
 **Wave 2: Poly with tables, FM, organ, wind and choir** (next week)
 
-Poly and Wavetable merged with classic waves from tables (the aliasing fix), the supersaw, a second LFO and routes; FM's macros, shapes, DC and level fixes and less feedback aliasing; Drawbar's combo model; the Wind and Choir engines; Character; their presets.
+Poly and Wavetable merged with classic waves from tables (the aliasing fix), the supersaw, a second LFO and routes; FM's macros, shapes, DC and level fixes and less feedback aliasing; Drawbar's combo model (built 19 Nov); the Wind and Choir engines; Character; their presets.
 
 **Wave 3: drums, plucks and leads**
 

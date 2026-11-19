@@ -895,8 +895,7 @@ impl Strings {
                 }
                 if used[f] && (0..NOTES as i32).contains(&o) && self.bank.sounds(o as usize) {
                     let o = o as usize;
-                    self.bank.add(2 * f, o, gd * fold, frame);
-                    self.bank.add(2 * f + 1, o, gb * fold, frame);
+                    self.bank.add_pair(2 * f, o, gd * fold, gb * fold, frame);
                 }
             }
             i += 1;
