@@ -1288,8 +1288,8 @@ jobs:
           [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends qemu-user
           cargo test --manifest-path rust/Cargo.toml --release --locked \
             --target armv7-unknown-linux-gnueabihf -p mpfree-simd
-          # Poly's supersaw presets, Strings and the combo organ with the kernels on and off: the
-          # same samples, end to end.
+          # Poly's supersaw presets, Strings, the combo organ and the Choir with the kernels on
+          # and off: the same samples, end to end (about a minute under qemu).
           cargo test --manifest-path rust/Cargo.toml --release --locked \
             --target armv7-unknown-linux-gnueabihf -p mpfree-synth --test simd
           # About 30 s: eight traced runs side by side (two kernels' workloads, each path).
