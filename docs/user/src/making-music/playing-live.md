@@ -1,28 +1,27 @@
 <!--
 status: changing
 covers: rust/mpfree-sampler-ui/src/levels_panel.rs rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/play_widgets.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
-checked: 2026-11-16 d7c844c
+checked: 2026-11-19 a6fb29b2
 -->
 
 # Playing live
 
-The **Play** page is MPFree's home: the place for finger drumming, making beats and live looping. It has two **views**, each arranged for a different way of playing. Tap **All** or **Loop** on the right of the transport bar to switch, or press **MAIN** on Play; the page remembers your view while you visit other tabs. The pattern on its own, with your timing under it, is the **Sequencer** tab's **Steps** view, next to Pads (see [Your first beat](../getting-started/first-beat.md)).
+The **Play** page is MPFree's home: the place for finger drumming, making beats and live looping. Everything for a jam is on one page, so you never have to leave it while you play: press **MAIN** from anywhere to come back.
 
-## The views
+{{shot: play-all-loop | The Play page in a jam: Loop 1 playing three layers along the top, the armed track's pads as rows of steps in the middle (a hat switched off shows "off"), Stutter held among the throws, the XY pad playing filter and echo, and swing, tune, filter and delay on the Q-Links.}}
 
-| View | Made for | What's on it |
-|---|---|---|
-| **All** | Everything at once (the home view) | The loop, the armed track's pads as rows of steps, the throws and the XY pad |
-| **Steps**, on the **Sequencer** tab | Programming patterns and practising finger drumming | The whole pattern, your timing under it, and all eight throws |
-| **Loop** | Live looping | The loop, large, with its buttons; the throws and the XY pad |
+From top to bottom:
 
-There are no pads on the Play page: you play the real ones, and the room goes to the pattern, the loop and the effects. The pads' own settings and sounds are on the Pads tab, next to Play.
+- **The transport bar**: stopped or playing, the position, the tempo, what **REC** records, and **PADS PLAY**, what the pads play (see [The transport bar](../getting-started/the-screen.md#the-transport-bar)).
+- **The loop row**: all eight loops of the looper, a card each, with **Arm**, **Capture** and **Pads: loop keys** (see [Your first loop](../getting-started/first-loop.md#the-loops-on-the-play-page)).
+- **The rows**: the armed track's pads as rows of steps, a simple step sequencer (below).
+- **The throws** and **the XY pad**: effects you play by holding them (below).
 
-{{shot: play | The All view.}}
+There are no pads on the Play page: you play the real ones, and the room goes to the pattern, the loops and the effects. The pads' own settings and sounds are on the [Pads tab](pads.md), and the whole pattern, with your timing and each step's settings, is on the [Sequencer](sequencer.md) tab.
 
 ## The pads as rows of steps
 
-The All view is a simple step sequencer, as on a Digitakt: one row for each pad of the track the pads play, in the bank on the pads (**A1** to **A16** on bank A). Each row has the sound's name, the pad's name on the right ("A1") and a speaker; an empty pad keeps its row, dashed, so a pad is always in the same place. A pad that loops, plays a synth voice or sends MIDI out says so under its name (**LOOP**, **SYNTH**, **MIDI**; see [What a pad plays](sampling.md#what-a-pad-plays-sample-loop-instrument-midi-out)). A tap on an empty step puts a note there. A tap on a lit step switches it off but keeps it: it shows as an outline with **off** in it, and the next tap brings it back as it was, with its velocity, length, condition and locks (set them on the [Sequencer tab](../getting-started/first-beat.md#program-a-pattern)), so you can drop a hit out of the beat and back in without losing anything. To take a step out for good, hold **ERASE** and tap it (**UNDO** brings it back). Six rows fit at a time: swipe up or down on the rows to see the others (the rail on the right shows where you are).
+The rows are a simple step sequencer, as on a Digitakt: one row for each pad of the track the pads play, in the bank on the pads (**A1** to **A16** on bank A). Each row has the sound's name, the pad's name on the right ("A1") and a speaker; an empty pad keeps its row, dashed, so a pad is always in the same place. A pad that loops, plays a synth voice or sends MIDI out says so under its name (**LOOP**, **SYNTH**, **MIDI**; see [What a pad plays](pads.md#what-a-pad-plays-sample-loop-instrument-midi-out)). A tap on an empty step puts a note there. A tap on a lit step switches it off but keeps it: it shows as an outline with **off** in it, and the next tap brings it back as it was, with its velocity, length, condition and locks (set them on the [Sequencer tab](sequencer.md#a-steps-settings)), so you can drop a hit out of the beat and back in without losing anything. To take a step out for good, hold **ERASE** and tap it (**UNDO** brings it back). Six rows fit at a time: swipe up or down on the rows to see the others (the rail on the right shows where you are).
 
 The heading over the rows:
 
@@ -30,11 +29,11 @@ The heading over the rows:
 - **A** to **H**: the kit's banks. Tap one, or press **PAD BANK**, and the pads and the rows go to that bank.
 - **‹ 1–16 of 32 ›**: the steps shown, for a pattern longer than a bar. **Follow** turns the page as the pattern plays; turning a page yourself turns it off.
 
-The pattern's length, the step inspector and your timing are on the **Sequencer** tab, next to Play in the top bar.
+The pattern's length, the step inspector and your timing are on the [Sequencer](sequencer.md) tab, next to Play in the top bar.
 
 ## Throws
 
-**Throws** are effects you play like an instrument: hold one and the effect comes in, let go and it stops. They are **Delay throw** (a dotted echo), **Reverb wash**, **Stutter**, **Tape stop**, **Filter dip** (a low-pass sweep), **Beat repeat**, **Drop drums** and **Vinyl brake**. Each tile shows its timing or length. While the music plays, a throw starts on the next sixteenth note, so it lands in time even if you press a little early. Hold one at the end of a phrase and let go on the next downbeat. The pads can play them too: page B of the [Perform set](looping.md#more-pages-the-perform-set) has the eight throws on pads 1 to 8.
+**Throws** are effects you play like an instrument: hold one and the effect comes in, let go and it stops. There are eight: **Delay throw** (a dotted echo), **Reverb wash**, **Stutter**, **Tape stop**, **Filter dip** (a low-pass sweep), **Beat repeat**, **Drop drums** and **Vinyl brake**. The Play page has room for the first six; the Sequencer's Steps view shows all eight while no step is picked, and page B of the [Perform set](looping.md#more-pages-the-perform-set) has the eight on pads 1 to 8. Each tile shows its timing or length. While the music plays, a throw starts on the next sixteenth note, so it lands in time even if you press a little early. Hold one at the end of a phrase and let go on the next downbeat. The data wheel's push holds the outlined throw on until you push again (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)).
 
 **Drop drums** mutes the kick, snare and hi-hats while you hold it: the classic breakdown move.
 
@@ -47,6 +46,8 @@ The **XY pad** plays an effect on the whole mix under one finger. The chip at it
 **Filter + echo** (what it plays at first) is a filter and an echo together. Left of the middle is a low-pass filter (darker), right of it a high-pass filter (thinner), and the middle is no filter at all. Higher up adds more echo. When you lift your finger the pad glides back to the middle and the bottom, so the sound comes back clean. Its label says where it is, for example "HP 173 Hz · echo 62 %".
 
 **To play something else,** tap the chip. A list takes the place of the pattern: Filter + echo, then the nine effects of [XY FX](effects.md#xy-fx) (Filter, Echo, Dub echo, Wash, Crush, Flanger, Phaser, Ring mod and Gate), each saying what across and up do. Tap one and the pad plays it from then on; **Close** or the chip again leaves it as it was. With one of the nine, the effect opens when your finger lands and lets go when it lifts (an echo or the wash rings out), and the dot stays where you lifted it. The pad's label names both settings, for example "Decay 2.4 s · Amount 40 %". MPFree remembers your pick, like the other settings in Prefs.
+
+{{shot: play-xy-list | The list the XY chip opens: Filter + echo and the nine XY FX, each saying what across and up do. Wash is the pick here.}}
 
 ## Fills
 
@@ -96,11 +97,7 @@ The last kind in the column, **Transpose**, moves a playing line instead of a so
 
 ## Your timing
 
-The **Sequencer** tab's **Steps** view has a **Your timing** strip under the pattern: it reads the last two bars you played against the sixteenth-note grid. **Average** says how early or late you play on average, **Spread** how consistent you are, and **Velocity** how hard you hit; the bars on the right show how your hits spread, from 30 ms early to 30 ms late, with the green bar on the grid.
-
-The strip takes a little room from the pattern. To give the pattern more rows, press **MENU** there and set **Timing strip** to **Off**; set it back to **On** to see your timing again. MPFree remembers the choice.
-
-{{shot: sequencer-steps | The Sequencer tab's Steps: the pattern, your timing (7 ms early on average) and the throws.}}
+The **Sequencer** tab's Steps view has a **Your timing** strip under the pattern that reads how early or late, how even and how hard you play the pads. Play along with a pattern there to practise: see [Your timing](sequencer.md#your-timing).
 
 ## Make and Perform
 
@@ -122,11 +119,10 @@ What Perform changes today:
 
 Clips and scenes start on the line the Record panel's **Launch** sets, in Make and Perform alike (see [Recording a clip](clips.md#recording-a-clip)), and the transport bar shows it.
 
-Two more things help on a stage, in Make and Perform alike:
+More things help on a stage, in Make and Perform alike:
 
 - **Back to song.** With **Song on**, a clip you launch takes its track over from the song. While any clip plays over the song, **Back to song** shows on the grid's title line: tap it and every clip stops on the next Launch line, and the song plays every track from there, on the beat (see [The song](arranging.md#the-song)).
 - **Reload a clip.** Before you take a pattern apart live, tap **Save state** on the Clip tab (see [Clip settings](clips.md#clip-settings)). Add steps, change its speed, erase half of it; then tap **Reload clip** on the morph bar, and the pattern comes back as you saved it on the next Launch line, so it lands on the beat. In Perform, NEXT says when ("Verse B reloads in 2 beats"). Tap Reload clip again before then to take it back, and **UNDO** puts the wrecked version back if you liked it after all.
-
 - **Live transpose.** Move a playing bass line or arp to another key from the pads, with 16 Levels' **Transpose** (see [Transpose](#transpose)): a progression from one loop, a lift for the last chorus, an octave jump for a build.
 - **The song list.** Line your scenes up in the order they play, each so many times ("Intro × 2, Verse × 4, Drop × 4"), and let the list play them on the bar while your hands are free (see [The song list](arranging.md#the-song-list)).
 
@@ -134,17 +130,16 @@ Two more things help on a stage, in Make and Perform alike:
 
 ## The Q-Links on the Play page
 
-The four knobs change with the view:
-
-| View | Q-Link 1 | Q-Link 2 | Q-Link 3 | Q-Link 4 |
+| | Q-Link 1 | Q-Link 2 | Q-Link 3 | Q-Link 4 |
 |---|---|---|---|---|
-| All, and the Sequencer's Steps | Swing | Tune (last pad played) | Drums' filter | Drums' delay send |
-| All and Steps, with 16 Levels on Transpose | Swing | Transpose (the armed track) | Drums' filter | Drums' delay send |
-| Steps, with a step picked | Velocity | Length | Nudge | Chance |
+| The Play page | Swing | Tune (the pad played last) | The kit's filter | The kit's delay send |
+| With 16 Levels on Transpose | Swing | Transpose (the armed track) | The kit's filter | The kit's delay send |
+
+The Sequencer's Steps view has the same four while no step is picked, and the picked step's settings while one is (see [Throws and the Q-Links](sequencer.md#throws-and-the-q-links)). Press **Q-LINK** on Play to step through your [macros](effects.md#macros) instead.
 
 Swing reads **off** at 50 %, which is straight time, as it does in the transport bar. Turn it up for a shuffle.
 
 While you hold **NOTE REPEAT**, or the Arp panel is open, the knobs control the repeat instead: rate, gate, swing and octaves. See [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md).
 
 > [!MPC]
-> The MPC's XYFX mode and Pad Perform are full-screen modes, and Track Mute opens a page of its own. In MPFree, the XY pad and the throws sit on the Play page next to your pattern and loop, and TRACK MUTE only changes what the pads do, so you can perform without leaving the page you are on.
+> The MPC's XYFX mode and Pad Perform are full-screen modes, and Track Mute opens a page of its own. In MPFree, the XY pad and the throws sit on the Play page next to your pattern and loops, and TRACK MUTE only changes what the pads do, so you can perform without leaving the page you are on.
