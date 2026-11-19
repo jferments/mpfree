@@ -291,6 +291,58 @@ fn poly(page: &str) -> Option<Plan> {
                 ]),
             ],
         ),
+        // Each note's own LFO. Its sends are named as LFO 1's are, on a
+        // page of their own, so no screen shows two of one name.
+        "LFO 2" => (
+            "row(lfo-2:*, sends-2:*)",
+            vec![
+                s(
+                    "lfo-2",
+                    "LFO 2",
+                    Motion,
+                    &[LFO2_SHAPE, LFO2_SYNC, LFO2_RETRIG, LFO2_RATE, LFO2_FADE],
+                )
+                .hero(&[LFO2_RATE])
+                .draw("LFO 2")
+                .note("each note's own"),
+                s(
+                    "sends-2",
+                    "Sends to",
+                    Motion,
+                    &[LFO2_PITCH, LFO2_CUTOFF, LFO2_PW, LFO2_AMP],
+                )
+                .main(&[LFO2_PITCH, LFO2_CUTOFF, LFO2_PW, LFO2_AMP])
+                .labels(&[
+                    (LFO2_PITCH, "Pitch"),
+                    (LFO2_CUTOFF, "Cutoff"),
+                    (LFO2_PW, "Pulse width"),
+                    (LFO2_AMP, "Level"),
+                ]),
+            ],
+        ),
+        // A box per route: where it comes from, what it moves, how far.
+        "Routes" => (
+            "col(row(route-1:*, route-2:*):*, row(route-3:*, route-4:*):*)",
+            (0..ROUTES)
+                .map(|n| {
+                    const KEYS: [&str; ROUTES] = ["route-1", "route-2", "route-3", "route-4"];
+                    const NAMES: [&str; ROUTES] = ["Route 1", "Route 2", "Route 3", "Route 4"];
+                    let id = |f: u16| route_id(n, f);
+                    let sec = s(
+                        KEYS[n],
+                        NAMES[n],
+                        Motion,
+                        &[id(route::SOURCE), id(route::TARGET), id(route::DEPTH)],
+                    )
+                    .main(&[id(route::DEPTH)]);
+                    if n == 0 {
+                        sec.note("wheel, breath, foot, velocity, key, tone, random")
+                    } else {
+                        sec
+                    }
+                })
+                .collect(),
+        ),
         "Voice" => (
             "row(col(voices:*, unison:*):55*, col(tuning:*, output:*):45*)",
             vec![

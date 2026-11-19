@@ -182,3 +182,49 @@ fn a_warped_take_wants_its_stretched_copy() {
     let pin_free = Warps::spec(&p, &wanted[0]);
     assert!(pin_free.is_ok());
 }
+
+#[test]
+fn a_takes_slices_go_on_pads_and_the_take_leaves_the_page_in_one_undo_step() {
+    let a = sound(8_000, 3, "Take 1");
+    let mut p = Project::new();
+    p.add_source(a.clone());
+    p.set_pad(2, Some(take_of(&a, "Snare")), None).unwrap();
+    let mut t = take_of(&a, "Take 1");
+    t.amp.attack_ms = 12.0;
+    p.add_take(t).unwrap();
+    let steps = p.history().0.len();
+    let c = ChopSet::from_markers("Take 1", &a, ChopMode::Grid, [2_000, 4_000, 6_000]).unwrap();
+    // The take is each slice's template, and goes from the page.
+    let chop = p
+        .chop_take(0, |p, take| p.chop_to_pads(c.clone(), 0, 4, 0, Some(take)))
+        .unwrap();
+    assert_eq!(p.chop_sets.get(chop).map(|c| c.slices()), Some(4));
+    assert!(p.takes().is_empty());
+    for k in 0..4 {
+        let pad = p.pad(k).unwrap();
+        assert_eq!(pad.name, format!("Take 1 {}", k + 1));
+        assert_eq!(pad.amp.attack_ms, 12.0);
+        let r = &pad.layers[0].region;
+        assert_eq!((r.start, r.end), (k as u64 * 2_000, (k as u64 + 1) * 2_000));
+    }
+    // One step: undo takes the slices off (pad 3 had Snare) and brings
+    // the take back.
+    assert_eq!(p.history().0.len(), steps + 1);
+    assert!(p.undo());
+    assert_eq!(p.takes().len(), 1);
+    assert_eq!(p.take(0).unwrap().name, "Take 1");
+    assert!(p.pad(0).is_none() && p.pad(1).is_none() && p.pad(3).is_none());
+    assert_eq!(p.pad(2).unwrap().name, "Snare");
+    assert!(p.redo());
+    assert!(p.takes().is_empty());
+    assert_eq!(p.pad(2).unwrap().name, "Take 1 3");
+    // A put that fails changes nothing, and the take stays.
+    assert!(p.undo());
+    let before = p.history().0.len();
+    let bad = p.chop_take(0, |p, take| {
+        p.chop_to_pads(c.clone(), 0, 4, PADS - 2, Some(take))
+    });
+    assert_eq!(bad, Err(ModelError::BadSlice));
+    assert_eq!((p.takes().len(), p.history().0.len()), (1, before));
+    assert_eq!(p.chop_take(5, |_, _| Ok(())), Err(ModelError::BadTake));
+}

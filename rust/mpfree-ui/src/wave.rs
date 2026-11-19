@@ -305,8 +305,25 @@ pub struct Beats {
     pub per_beat: u32,
 }
 
+/// One cell of the lane along the wave's foot ([`Waveform::set_lane`]):
+/// frames `start..end` as drawn, what it says (the pad a slice lands on),
+/// in `color`; `lit` drawn stronger (the pad plays it already), `picked`
+/// outlined.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LaneCell {
+    pub start: u64,
+    pub end: u64,
+    pub text: String,
+    pub color: Color,
+    pub lit: bool,
+    pub picked: bool,
+}
+
 /// The strip of marker tabs along the top.
 const TABS_H: i32 = 30;
+/// The lane along the foot, with the gap over it.
+const LANE_H: i32 = 30;
+const LANE_GAP: i32 = 2;
 /// A touch that moves less than this is a tap.
 const TAP_SLOP: i32 = 8;
 /// Width of the strip redrawn round a playhead.
@@ -352,6 +369,8 @@ pub struct Waveform {
     /// Hits found in the sound, ticks along the wave's foot, and whether
     /// they are lit.
     ticks: (Vec<u64>, bool),
+    /// The lane under the wave (where each slice lands); none: no lane.
+    lane: Vec<LaneCell>,
     playheads: Vec<u64>,
     /// Fingers on the wave, by id, with their x.
     fingers: Vec<(u64, i32)>,
@@ -394,6 +413,7 @@ impl Waveform {
             beats: None,
             bend: Vec::new(),
             ticks: (Vec::new(), false),
+            lane: Vec::new(),
             playheads: Vec::new(),
             fingers: Vec::new(),
             grab: None,
@@ -527,6 +547,39 @@ impl Waveform {
         &self.ticks.0
     }
 
+    /// A lane along the wave's foot, under it, of cells over the frames
+    /// they name (the Sample page's Slice tool: where each slice lands);
+    /// empty: no lane, and the wave fills the room. A tap on the lane is a
+    /// tap on the wave above it.
+    pub fn set_lane(&mut self, cells: Vec<LaneCell>) {
+        if self.lane != cells {
+            self.lane = cells;
+            self.changed();
+        }
+    }
+
+    pub fn lane(&self) -> &[LaneCell] {
+        &self.lane
+    }
+
+    /// The part of `r` the wave is drawn in: [`Waveform::wave_rect`], less
+    /// the lane along its foot when there is one.
+    fn area(&self, r: Rect) -> Rect {
+        let w = Self::wave_rect(r);
+        if self.lane.is_empty() {
+            w
+        } else {
+            w.take_bottom(LANE_H).1
+        }
+    }
+
+    /// The lane's strip under the wave in `r`.
+    fn lane_rect(&self, r: Rect) -> Rect {
+        let w = Self::wave_rect(r);
+        let lane = w.take_bottom(LANE_H).0;
+        Rect::new(lane.x, lane.y + LANE_GAP, lane.w, lane.h - LANE_GAP)
+    }
+
     /// Where the playing voices are. Only this changing redraws only the
     /// playheads' strips.
     pub fn set_playheads(&mut self, frames: &[u64]) {
@@ -613,7 +666,7 @@ impl Widget for Waveform {
         cx.canvas
             .fill_round_rect(r, t.radius, t.raised.with_alpha(110));
         cx.canvas.set_clip(clip);
-        let wave = Self::wave_rect(r);
+        let wave = self.area(r);
         let frames = self.frames() as f64;
         let fpp = self.view.frames_per_px;
         let (x0, x1) = (clip.x.max(wave.x), clip.right().min(wave.right()));
@@ -822,6 +875,28 @@ impl Widget for Waveform {
             tabs.push(tab);
         }
 
+        // The lane under the wave: each cell over its frames, its text
+        // where it fits.
+        if !self.lane.is_empty() {
+            let lane = self.lane_rect(r);
+            for c in &self.lane {
+                let xa = (self.x_in(wave, c.start as f64).round() as i32).max(lane.x);
+                let xb = (self.x_in(wave, c.end as f64).round() as i32).min(lane.right());
+                if xb - xa < 4 || xb < clip.x || xa > clip.right() {
+                    continue;
+                }
+                let cell = Rect::new(xa + 1, lane.y, xb - xa - 2, lane.h);
+                let fill = c.color.with_alpha(if c.lit { 84 } else { 46 });
+                cx.canvas.fill_round_rect(cell, 6, fill);
+                if c.picked {
+                    cx.canvas.stroke_round_rect(cell, 6, 1, c.color);
+                }
+                if cx.measure(FontId::Bold, 13.0, &c.text) + 6 <= cell.w {
+                    cx.text(FontId::Bold, 13.0, cell, Align::Center, c.color, &c.text);
+                }
+            }
+        }
+
         // Playheads last, on top.
         let mut painted = self.painted.borrow_mut();
         if clip.intersect(strip) == strip {
@@ -844,7 +919,7 @@ impl Widget for Waveform {
         if !painted.only_playheads {
             return None;
         }
-        let wave = Self::wave_rect(r);
+        let wave = self.area(r);
         let mut xs: Vec<i32> = painted.xs.clone();
         for &f in &self.playheads {
             let x = self.x_in(wave, f as f64).round() as i32;

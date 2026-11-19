@@ -1571,6 +1571,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-simd"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "mpfree-stick"
 version = "0.1.0"
 dependencies = [
@@ -1593,6 +1600,7 @@ dependencies = [
  "mpfree-analysis",
  "mpfree-fx",
  "mpfree-node",
+ "mpfree-simd",
 ]
 
 [[package]]
