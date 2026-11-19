@@ -155,6 +155,7 @@
 385402	Strings Init, 49 keys
 221035	Strings Init, 6 keys
 283218	Strings Orchestra, 6 keys
+133524	Supersaw saws: 8 voices, plain
 31342	Talk box
 111176	Vocoder
 87944	Tape delay

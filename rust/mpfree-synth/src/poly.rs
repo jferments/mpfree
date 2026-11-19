@@ -3,8 +3,15 @@
 //! ([`crate::osc`]), with up to four unison stacks, a sub oscillator and
 //! noise, a drive stage
 //! into a ladder or state-variable filter and a distortion stage after it,
-//! two ADSR envelopes, a tempo-syncable LFO, poly, mono and legato modes
-//! with glide.
+//! two ADSR envelopes from the voice core ([`crate::voice::Adsr`]: an
+//! attack of 100 ms reaches full level at 100 ms, a release of 1 s falls
+//! 60 dB in 1 s and ends, with the analog curve Poly always had), the
+//! voice core's velocity curve (a range in dB), a
+//! tempo-syncable LFO, poly, mono and legato modes with glide.
+//!
+//! Before preset format 2 the envelopes' attack reached full level at a
+//! third of its label and the velocity was a percentage; [`upgrade`]
+//! converts a sound saved then so it plays as it did.
 //!
 //! Pad pressure goes through the shared shaper ([`mpfree_node::pressure`])
 //! into four slots ([`crate::pressure::POLY_TARGETS`]): cutoff, resonance,
@@ -27,6 +34,7 @@ use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::osc::{self, Classic, Shape, Super, SAWS};
 use crate::params::*;
 use crate::pressure::{swell_gain, Depths, Slot};
+use crate::voice::{Adsr, VelCurve};
 
 /// Frames per control step.
 pub const CTRL: u64 = 16;
@@ -90,8 +98,8 @@ struct Voice {
     pan_r: [f32; UNISON_MAX],
     pw1: f32,
     pw2: f32,
-    amp: Env,
-    fenv: Env,
+    amp: Adsr,
+    fenv: Adsr,
     coefs: FilterCoefs,
     filt: [Filter; 2],
     /// Gain from velocity, the LFO and pressure, ramped across each control
@@ -155,8 +163,8 @@ impl Voice {
             pan_r: [1.0; UNISON_MAX],
             pw1: 0.5,
             pw2: 0.5,
-            amp: Env::default(),
-            fenv: Env::default(),
+            amp: Adsr::analog_release(),
+            fenv: Adsr::analog_release(),
             coefs: FilterCoefs::default(),
             filt: [Filter::default(); 2],
             gain: 0.0,
@@ -235,6 +243,8 @@ pub struct Poly {
     tables: &'static Classic,
     /// The supersaw's ratios and gains, from its two knobs.
     sup: Super,
+    /// The velocity curve, from Velocity to level's range.
+    vel: VelCurve,
     voices: [Voice; POOL],
     sm: Smoothed,
     sh: Shared,
@@ -313,6 +323,7 @@ impl Poly {
             values,
             tables: osc::classic(),
             sup: Super::new(v(SUPER_DETUNE) / 100.0, v(SUPER_MIX) / 100.0),
+            vel: VelCurve::new(v(VEL_AMP)),
             voices: [Voice::new(); POOL],
             sm,
             sh: Shared::default(),
@@ -922,7 +933,7 @@ impl Poly {
             self.sh.noise,
         );
         let (sh_dist_gain, sh_dist_amt) = (self.sh.dist_gain, self.sh.dist_amt);
-        let vel_amp = self.v(VEL_AMP) / 100.0;
+        let vel = self.vel;
         let trem = 1.0 - self.v(LFO_AMP) / 100.0 * (0.5 - 0.5 * lfo);
         let cutoff = self.sm.cutoff.value;
         let res = self.sm.res.value;
@@ -1031,7 +1042,7 @@ impl Poly {
         }
         v.sub = (sh_sub + p * d.get(target::SUB)).clamp(0.0, 1.0);
         v.noise = (sh_noise + p * d.get(target::NOISE)).clamp(0.0, 1.0);
-        let vg = (1.0 - vel_amp) + vel_amp * v.vel * v.vel;
+        let vg = vel.gain(v.vel * 127.0);
         let swell = swell_gain(d.get(target::LEVEL).clamp(-1.0, 1.0), p);
         // The drive's and the distortion's level corrections, from the
         // step just rendered.
@@ -1256,6 +1267,42 @@ fn mix_stack(first: bool, side: &mut [f32], a: &[f32], pan: f32) {
     }
 }
 
+/// What an attack's label was, as a share of the time its old envelope
+/// took to reach full level: it aimed at 1.3 with a coefficient covering
+/// 99 % of the way in the label (`dsp::seg_coef`), so it arrived at
+/// ln(1.3 / 0.3) / 4.6 of it. The new attack aims the same way and
+/// arrives at its label, so the curve is the same.
+pub const OLD_ATTACK: f32 = 0.318_769;
+/// The release's: the old one aimed at -0.01 with the same coefficient,
+/// as the new one does ([`Adsr::analog_release`]), and fell 60 dB at
+/// ln(1.01 / 0.011) / 4.6 of its label; the new one falls 60 dB at its
+/// label, so the curve is the same.
+pub const OLD_RELEASE: f32 = 0.982_567;
+
+/// Setting `id`'s `value` as a sound saved in preset format `format` had
+/// it, in this build's meaning ([`Node::upgrade`]). Format 1's envelope
+/// times: an attack reached full level at [`OLD_ATTACK`] of its label, a
+/// release fell 60 dB at [`OLD_RELEASE`] of it. Its
+/// velocity to level was a share: a note at velocity 1 played at
+/// `1 - share` (plus a square law), now a range in dB down to velocity 1.
+/// Decay is unchanged (the old one covered 98.99 % of the way in its
+/// time, the new one 99 %).
+pub fn upgrade(format: u32, id: u16, value: f32) -> f32 {
+    if format >= 2 {
+        return value;
+    }
+    match id {
+        AMP_A | FENV_A => value * OLD_ATTACK,
+        AMP_R | FENV_R => value * OLD_RELEASE,
+        VEL_AMP => {
+            let share = (value / 100.0).clamp(0.0, 1.0);
+            let softest = (1.0 - share) + share / (127.0 * 127.0);
+            -20.0 * softest.log10()
+        }
+        _ => value,
+    }
+}
+
 impl Node for Poly {
     fn info(&self) -> &'static NodeInfo {
         &INFO
@@ -1282,6 +1329,9 @@ impl Node for Poly {
         }
         if id == SUPER_DETUNE || id == SUPER_MIX {
             self.sup = Super::new(self.v(SUPER_DETUNE) / 100.0, self.v(SUPER_MIX) / 100.0);
+        }
+        if id == VEL_AMP {
+            self.vel = VelCurve::new(self.v(VEL_AMP));
         }
         if id == VOICE_MODE {
             self.all_off();
@@ -1354,8 +1404,13 @@ impl Node for Poly {
     }
 
     fn tail_frames(&self) -> u32 {
+        // The release reaches silence at 1.02 times its label.
         let ms = self.v(AMP_R).max(KILL_MS);
         (ms * 0.001 * self.rate as f32 * 1.5) as u32
+    }
+
+    fn upgrade(&self, format: u32, id: u16, value: f32) -> f32 {
+        upgrade(format, id, value)
     }
 
     fn set_tuning(&mut self, tuning: &Tuning) {
