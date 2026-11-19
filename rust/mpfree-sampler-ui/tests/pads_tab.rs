@@ -493,7 +493,12 @@ fn the_effects_row_names_the_pads_effects_and_opens_its_chain() {
     assert_eq!(row_value(&s, Row::Effects), "Compressor");
     let index = Row::ALL.iter().position(|r| *r == Row::Effects).unwrap();
     let list = s.ui.get::<SettingList>(pads_tab::LIST).unwrap();
-    assert_eq!(list.buttons, [index], "a button, not a setting to step");
+    let edit = Row::ALL.iter().position(|r| *r == Row::EditPad).unwrap();
+    assert_eq!(
+        list.buttons,
+        [index, edit],
+        "a button, not a setting to step (and Edit pad's)"
+    );
     assert_eq!(
         act(&mut s, pads_tab::LIST, EventKind::Tab(index)),
         Some(PadsAction::Effects(PAD))
@@ -516,12 +521,12 @@ fn the_effects_row_names_the_pads_effects_and_opens_its_chain() {
     let st = e.state.clone();
     e.tab.update(&mut e.ui, &st);
     assert_eq!(row_value(&e, Row::Effects), "—");
-    assert!(e
+    assert!(!e
         .ui
         .get::<SettingList>(pads_tab::LIST)
         .unwrap()
         .buttons
-        .is_empty());
+        .contains(&index));
     assert_eq!(act(&mut e, pads_tab::LIST, EventKind::Tab(index)), None);
 }
 
@@ -613,7 +618,8 @@ fn the_type_switch_makes_a_sample_a_loop_and_back_one_undo_step_each() {
             "Level",
             "Pan",
             "Tune",
-            "Effects"
+            "Effects",
+            "Edit pad"
         ]
     );
     assert!(rows(&s)[1].1.ends_with(" BPM") || rows(&s)[1].1.contains(" BPM · "));
@@ -665,6 +671,77 @@ fn the_type_switch_makes_a_sample_a_loop_and_back_one_undo_step_each() {
     );
 }
 
+/// Edit pad: the list's last row on every type opens the page with the
+/// pad's layers, keys, scenes and slices (the one Sample page's step 6b);
+/// on a pad with no layers it is faint and says why.
+#[test]
+fn the_edit_pad_row_opens_edit_pad_and_is_faint_on_a_pad_with_no_layers() {
+    let mut s = pads(PAD);
+    for t in PadType::ALL {
+        assert_eq!(t.rows().last(), Some(&Row::EditPad), "{t:?}");
+    }
+    let edit = |s: &PadsSample| {
+        s.state
+            .picked_type()
+            .rows()
+            .iter()
+            .position(|r| *r == Row::EditPad)
+            .unwrap()
+    };
+    let k = edit(&s);
+    assert_eq!(
+        row_value(&s, Row::EditPad),
+        "layers, keys, scenes, slices ›"
+    );
+    let list = s.ui.get::<SettingList>(pads_tab::LIST).unwrap();
+    assert!(list.buttons.contains(&k) && list.why_faint(k).is_none());
+    // A tap on its button, as a finger gives it, in view under the rest.
+    let r = s.ui.rect_of(pads_tab::LIST).unwrap();
+    let (_, button) = list.row_rects(r, k).expect("Edit pad is in view");
+    assert_eq!(
+        act(&mut s, pads_tab::LIST, EventKind::Tab(k)),
+        Some(PadsAction::EditPad)
+    );
+    assert_eq!(pads_tab::edit_pad_why(None, &s.state), None);
+    let (x, y) = (button.x + button.w / 2, button.y + button.h / 2);
+    let ev = s.ui.touch(1, Touch::Down, x, y).unwrap();
+    s.ui.touch(1, Touch::Up, x, y);
+    assert_eq!(ev.kind, EventKind::Tab(k));
+    // An empty pad, an Instrument pad and a MIDI out pad have no layers:
+    // faint, saying why, and a tap opens nothing.
+    pick(&mut s, 10);
+    let why = "A11 has no sound yet: Browse for one or Put one on, then edit it";
+    assert_eq!(pads_tab::edit_pad_why(None, &s.state).as_deref(), Some(why));
+    let a = switch(&mut s, PadType::Instrument).unwrap();
+    apply(&mut s, &a);
+    let k = edit(&s);
+    let why = "A11 is an Instrument pad: it plays a synth voice, and has no layers to edit";
+    let list = s.ui.get::<SettingList>(pads_tab::LIST).unwrap();
+    assert_eq!(list.why_faint(k), Some(why));
+    let (_, button) = list.row_rects(r, k).unwrap();
+    let (x, y) = (button.x + button.w / 2, button.y + button.h / 2);
+    let ev = s.ui.touch(2, Touch::Down, x, y).unwrap();
+    s.ui.touch(2, Touch::Up, x, y);
+    assert_eq!(
+        ev.kind,
+        EventKind::Select(k),
+        "a faint button only says why"
+    );
+    assert_eq!(act(&mut s, pads_tab::LIST, EventKind::Tab(k)), None);
+    assert_eq!(s.tab.take_note().as_deref(), Some(why));
+    let a = switch(&mut s, PadType::MidiOut).unwrap();
+    apply(&mut s, &a);
+    let k = edit(&s);
+    assert!(s
+        .ui
+        .get::<SettingList>(pads_tab::LIST)
+        .unwrap()
+        .why_faint(k)
+        .is_some_and(|w| w.starts_with("A11 is a MIDI out pad")));
+    let mut c = SoftCanvas::new(sample::SCREEN.0, sample::SCREEN.1);
+    s.ui.paint(&mut c);
+}
+
 #[test]
 fn an_instrument_pad_picks_its_engine_and_note() {
     let mut s = pads(PAD);
@@ -685,7 +762,8 @@ fn an_instrument_pad_picks_its_engine_and_note() {
         rows(&s),
         [
             ("Engine".to_string(), "Poly".to_string()),
-            ("Note".to_string(), "C4".to_string())
+            ("Note".to_string(), "C4".to_string()),
+            ("Edit pad".to_string(), pads_tab::EDIT_PAD_TEXT.to_string())
         ]
     );
     // The engine steps round the Synth tab's engines; the note by
@@ -783,7 +861,8 @@ fn a_midi_out_pad_sends_to_its_own_port_and_says_when_it_would_send_nothing() {
         [
             ("Port".to_string(), "Volca Kick".to_string()),
             ("Channel".to_string(), "10".to_string()),
-            ("Note".to_string(), "49 · C#3".to_string())
+            ("Note".to_string(), "49 · C#3".to_string()),
+            ("Edit pad".to_string(), pads_tab::EDIT_PAD_TEXT.to_string())
         ]
     );
     assert_eq!(

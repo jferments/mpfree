@@ -26,8 +26,9 @@
 //! - [`Drawbar`]: a tonewheel organ, 91 free-running wheels tuned from the
 //!   organ's gears, nine drawbars with foldback, uneven key contacts (the
 //!   click), leakage, single-trigger percussion, the scanner vibrato and
-//!   chorus, drive, and a rotary speaker with horn and drum, with factory
-//!   presets.
+//!   chorus, drive, and a rotary speaker with horn and drum; and a 1960s
+//!   transistor combo organ on the Strings divide-down bank, its drawbars
+//!   sent to a near-sine flute and a bright reed; with factory presets.
 //! - [`Squelch`]: a mono acid bass, a sawtooth or its shaped square into a
 //!   four-pole diode ladder solved with zero-delay feedback, accent (louder,
 //!   and a filter sweep that builds up) and slide, with factory presets.
@@ -46,6 +47,11 @@
 //!   the note, a saturating four-pole ladder, drive with a low-pass after
 //!   it, note priority and glide by time or rate, with factory presets.
 //!
+//! - [`Wind`]: a wind instrument, a waveguide bore (a clarinet's
+//!   cylinder, a sax's cone or a flute's open pipe) excited by a reed or
+//!   an air jet and driven by breath (velocity, pad pressure or a breath
+//!   controller), with vibrato, growl, tonguing and factory presets.
+//!
 //! - [`pressure`]: what pad pressure drives in each engine. Both run it
 //!   through the shared shaper in [`mpfree_node::pressure`].
 //! - [`voice`]: the shared voice core the new engines are built on (held
@@ -62,6 +68,7 @@
 
 pub mod analog;
 pub mod analog_params;
+pub mod bank;
 pub mod bass;
 pub mod bass_params;
 pub mod drawbar;
@@ -88,6 +95,8 @@ pub mod strings;
 pub mod strings_params;
 pub mod voice;
 pub mod wavetable;
+pub mod wind;
+pub mod wind_params;
 
 pub use analog::Analog;
 pub use bass::Bass;
@@ -101,3 +110,4 @@ pub use poly::Poly;
 pub use squelch::Squelch;
 pub use strings::Strings;
 pub use wavetable::Wavetable;
+pub use wind::Wind;

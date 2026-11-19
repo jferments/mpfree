@@ -6,7 +6,7 @@ checked: 2026-11-19 95c1134d
 
 # Synths
 
-MPFree has eleven synths built in. Put one on the pads and they become a keyboard: bass lines, chords, leads and pads, played by hand, through the arpeggiator or into a pattern.
+MPFree has twelve synths built in. Put one on the pads and they become a keyboard: bass lines, chords, leads and pads, played by hand, through the arpeggiator or into a pattern.
 
 ## Put a synth on the pads
 
@@ -17,9 +17,9 @@ Each track plays a kit or a synth, and the pads play what the selected track pla
 
 Opening the **Synth** tab changes nothing that plays: it shows the synth, and if the selected track plays a kit, the line at the bottom of the screen says how to put the synth on it. To go back to drums, tap the chip (it names the synth now) and pick a kit, or set the track's instrument back to **Kit**. While the selected track plays the synth, **PAD BANK** changes the pads' layout and **SHIFT** + the wheel their octave, not the kit.
 
-## The eleven synths
+## The twelve synths
 
-Any of the eleven can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.
+Any of the twelve can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.
 
 | Synth | What it is | Good for | Presets |
 |---|---|---|---|
@@ -29,15 +29,16 @@ Any of the eleven can be a track's own instrument (see [A synth for each track](
 | **Pluck** | Physically modelled strings and mallets | Guitars, harps, marimbas, bells | Nylon, Steel String, Harp, Koto, Muted Bass, Marimba, Vibes, Bell, Glass, Kalimba, Steel Drum |
 | **Wavetable** | Two oscillators that sweep through stacks of waveforms | Evolving pads, vocal leads, growling basses | Morph Pad, Vowel Lead, Sync Sweep, Digital Bell, Growl Bass, Organ, Harmonic Pluck, FM Keys |
 | **Keys** | A physically modelled electric piano and clav: struck steel tines or reeds in front of their pickups, or a struck string over two pickups | Soul and jazz chords, ballads, barking stabs, tremolo keys, funk clav lines | Soft Tines, Bright Tines, Barking Tines, Bell Keys, Stage Tines, Lo-fi Tines, Phase Tines, Reed, Reed Bite, Dirty Reed, Clav, Funk Clav, Wah Clav, Muted Clav, Stab Clav and 18 more |
-| **Drawbar** | A tonewheel organ with drawbars, percussion, scanner vibrato and a rotating speaker | Jazz and gospel comping, rock riffs, church chords, soft pads | Jazz Perc, Gospel, Full Organ, Rock Drive, Ballad, Flute, Church, Reedy, Bright Perc, Hollow, Soft Bass |
+| **Drawbar** | A tonewheel organ with drawbars, percussion, scanner vibrato and a rotating speaker, and a 1960s combo organ | Jazz and gospel comping, rock riffs, church chords, soft pads; garage, ska and new wave stabs | Jazz Perc, Gospel, Full Organ, Rock Drive, Ballad, Flute, Church, Reedy, Bright Perc, Hollow, Soft Bass, Combo, Combo Flute, Combo Reed, Combo Square, Combo Vibrato, Combo Garage, Combo Rotary, Combo Perc |
 | **Squelch** | A mono acid bass: one oscillator into a squelchy resonant filter, with accent and slide | Acid lines, rubbery basses, screaming leads | Acid Line, Deep Bass, Square Acid, Distorted, Rubber, Plucky, Acid Lead, Screamer |
 | **Analog** | A vintage analog poly: voices that each sound a little different, poly-mod and a chorus | Brass, warm pads, string ensembles, sync leads, clangy bells | Poly Brass, Warm Pad, Sync Lead, Chorus Strings, Square Keys, Clang Bell, Unison Bass, Slow Sweep, Hollow Pulse, Worn Cards |
 | **Strings** | A string machine, like the string ensembles of the 1970s: every key you hold sounds, through violin, viola, cello, contrabass, horn and trumpet sounds, with its own swirling ensemble | Lush string pads and chords, disco and synth-pop strings, slow swells, brassy stabs | Classic Strings, Bright Strings, Cello and Viola, Full Ensemble, Orchestra, Brass Ensemble, Slow Swell, Staccato Strings, Swirl Strings, Dark Strings, High Strings, Low Strings, Paraphonic 70s, Disco Strings, Ballad Pad, Lo-fi Strings, Wide Strings, Mono Ensemble, Dry Divider, Bowed, Horn Section, Brassy Lead, Vox Strings, Hall Strings, Space Strings |
 | **Bass** | A bass synth that plays one note at a time, with three bodies: a synth bass with a sub locked under it, an 808 that drops onto the note, and a reese of two oscillators beating against each other | Synth and funk bass lines, 808s for trap and hip-hop, drum and bass reeses, gliding lines | Round Mono, Pluck Bass, Resonant Sweep, Square Sub, Rubber Bass, Funk Bass, Synth Pop, Power Bass, Fat Saw, Thin Pulse, Soft Triangle, Noisy Bass, Glide Bass, Low Note Lines, Growl Press, Press Wah, Sub Sine, Sub Triangle, 808, Long 808, Distorted 808, 808 Slide, 808 Kick Bass, Short 808, 808 Vibrato, Reese, Dark Reese, Wide Detune, Soft Reese, Growl Reese, Reese Sweep, Amp Bass, Tube 808 |
+| **Wind** | A blown instrument played by the breath: a clarinet, a sax or a flute, each a tube that a reed or a stream of air sets ringing | Sax and clarinet lines, breathy flute melodies, soft reed and flute sections, playing from a breath controller | Warm Clarinet, Jazz Clarinet, Dark Clarinet, Tenor Sax, Breathy Sax, Growl Sax, Soprano Sax, Concert Flute, Breathy Flute, Pan Pipes, Recorder, Ocarina, Bamboo Flute, Reed Section, Flute Choir, Wind Controller Sax, Pressure Swell, Hall Flute, Smoky Sax |
 
 Each synth also has an **Init** preset (Init Kit on Drums): a plain starting point to build your own sound.
 
-A few presets come with **effects and macros of their own**: Phase Tines and Wah Clav on Keys, Hall Strings and Space Strings on Strings, and Amp Bass and Tube 808 on Bass. See [Presets with their own effects](#presets-with-their-own-effects).
+A few presets come with **effects and macros of their own**: Phase Tines and Wah Clav on Keys, Hall Strings and Space Strings on Strings, Amp Bass and Tube 808 on Bass, and Hall Flute and Smoky Sax on Wind. See [Presets with their own effects](#presets-with-their-own-effects).
 
 ## A synth for each track
 
@@ -45,7 +46,7 @@ Every track can play its own instrument: Poly on one, FM on another, a plugin sy
 
 1. Select the track.
 2. Press **MENU** on the Synth tab. The top row is named after the track: **Track 2 instrument**.
-3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Wavetable**, **Keys**, **Drawbar**, **Squelch**, **Analog**, **Strings** and **Bass**, then any plugin synths you have put in `files/plugins/` on the stick: CLAP synths and MPC plugin instruments (see [Effects](effects.md#plugins) for where to put them).
+3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Wavetable**, **Keys**, **Drawbar**, **Squelch**, **Analog**, **Strings**, **Bass** and **Wind**, then any plugin synths you have put in `files/plugins/` on the stick: CLAP synths and MPC plugin instruments (see [Effects](effects.md#plugins) for where to put them).
 
 {{shot: synth-instrument | Track 2's instrument set to a plugin synth, with the row's help on the right.}}
 
@@ -124,7 +125,7 @@ The level stays about the same whatever you set. **Super Lead**, **Super Pad**, 
 
 **Drive** and **Distortion**, on the Filter page of Poly and Wavetable (Q-Links 3 and 4 there), both add grit. **Drive** pushes the sound into the filter, as on an analog synth: warm, and the filter smooths what it adds, so with the filter nearly closed you hear little of it. **Distortion** comes after the filter, so you hear its grit even with the filter almost closed (Grit Bass uses it). Both keep the sound at about the same level as you turn them up (within about 2 dB on every preset), so they add grit and thickness, not volume; turn up the synth's level for that. Pad pressure can push either one.
 
-Each synth has its own pages. FM has Algo, Mod and Pressure, a page for each of its six operators and three keyboard-scaling pages; Drums has a page for each of its 16 pads plus a Kit page. Poly, FM and Wavetable have a **Pressure** page (see [Pad pressure](#pad-pressure)).
+Each synth has its own pages. FM has Algo, Mod and Pressure, a page for each of its six operators and three keyboard-scaling pages; Drums has a page for each of its 16 pads plus a Kit page. Poly, FM, Wavetable and Wind have a **Pressure** page (see [Pad pressure](#pad-pressure)).
 
 **FM** builds its sound from six **operators**. Each is a simple wave at its own pitch, and each either plays out loud (a **carrier**) or bends another operator's wave (a **modulator**), which adds overtones: the louder the modulator, the brighter and more metallic the sound. **Algorithm** picks which operators bend which (the picture shows it: the bottom row plays out loud), and **Feedback** lets one operator bend itself, from a little edge to a rough buzz. Its pages:
 
@@ -167,14 +168,16 @@ The Clav page's controls are faint unless Model is Clav, and Bell and Voicing ar
 
 Its pictures, all for middle C: the **Hammer** (a soft hit and a full one; a harder hammer is shorter; on the clav, the tangent), how long C2, C4 and C6 ring (**Decay**), the **Pickup**'s curve with the stretch a hit swings across (the dot is where the tine or reed rests: turn Voicing and watch it move), and the **Tremolo**. With the clav, the Clav page shows the **Pickups** (which of a low note's harmonics the pickups and the tone switch let through: each pickup leaves out the one over its place on the string) and the **Mute** (how long each harmonic rings: turn Mute and watch the top ones fall first).
 
-**Drawbar** plays like an organ: every note is as loud as the next however hard you hit the pad, and a note sounds for as long as you hold it. It has four pages:
+**Drawbar** plays like an organ: every note is as loud as the next however hard you hit the pad, and a note sounds for as long as you hold it. **Model** picks which organ: **Tonewheel**, the spinning-wheel organ of jazz, gospel and rock, or **Combo**, the thin, cutting transistor organ of 1960s garage bands, ska and new wave. Switching while you play crosses from one to the other in a hundredth of a second, so it can be part of a song. It has four pages:
 
-- **Drawbars:** the nine drawbars, 0 (in) to 8 (all the way out), written by organists as nine digits from the left: Init is 888000000. The first two (16' and 5 1/3') are below the note, the 8' is the note itself, and the rest are its harmonics, brighter the further right. The Q-Links pull the four upper drawbars, since the first three usually stay out.
-- **Percussion:** **Percussion** adds a short "ping" of the 4' (**Perc harm** Second) or the 2 2/3' (Third) at the start of a note, **Fast** or **Slow**, **Normal** or **Soft**. As on the organ, it only fires when no other key is held, so play detached to hear it on every chord and legato to leave it out; while it is on, the 1' drawbar is silent and Normal makes the drawbars a little quieter. **Vibrato** is **V1** to **V3** (pitch wobble, deeper with each) or **C1** to **C3** (chorus: the same mixed with the plain sound), at the speed **Scanner** sets.
-- **Rotary:** the rotating speaker. **Speed** is **Slow** (a gentle swirl), **Fast** (a quick tremolo) or **Stop**; switching it is part of playing, and the treble horn speeds up and slows down quickly while the bass drum takes a few seconds. **Spread** is how wide the speaker sounds (0 is mono), and **Rotary** Off takes the speaker out. The tone controls are here too: **Click** is the spit of the key contacts at the start of each note, **Leakage** the faint bleed of other tonewheels, **Drive** the growl of a pushed amplifier, **Tone** darker or brighter, and **Wheels** **Gears** (the organ's own slightly uneven tuning) or **Exact**.
+- **Drawbars:** the nine drawbars, 0 (in) to 8 (all the way out), written by organists as nine digits from the left: Init is 888000000. The first two (16' and 5 1/3') are below the note, the 8' is the note itself, and the rest are its harmonics, brighter the further right. The Q-Links pull the four upper drawbars, since the first three usually stay out. Beside them, **Model** and the combo's **Voices**: **Flute** (a soft, round tone, close to a pure note) and **Reed** (bright and buzzy), two more drawbars from 0 to 8 that mix into every drawbar you pull, and **Reed wave**: **Saw** (bright and full) or **Square** (hollower and rougher). With both voices at 0 the combo is silent, as on the real thing. The voices are faint on the tonewheel ("combo only").
+- **Percussion:** **Percussion** adds a short "ping" of the 4' (**Perc harm** Second) or the 2 2/3' (Third) at the start of a note, **Fast** or **Slow**, **Normal** or **Soft**. As on the organ, it only fires when no other key is held, so play detached to hear it on every chord and legato to leave it out; while it is on, the 1' drawbar is silent and Normal makes the drawbars a little quieter. On the combo it pings through the flute. **Vibrato** is **V1** to **V3** (pitch wobble, deeper with each) or **C1** to **C3** (chorus: the same mixed with the plain sound), at the speed **Rate** sets. On the combo the wobble is an even swing of the pitch, the same on every note (10, 20 or 30 cents either way); the original combos had vibrato only, so the chorus settings are an extra.
+- **Rotary:** the rotating speaker (both models can play through it). **Speed** is **Slow** (a gentle swirl), **Fast** (a quick tremolo) or **Stop**; switching it is part of playing, and the treble horn speeds up and slows down quickly while the bass drum takes a few seconds. **Spread** is how wide the speaker sounds (0 is mono), and **Rotary** Off takes the speaker out. The tone controls are here too: **Click** is the spit of the key contacts at the start of each note, **Leakage** the faint bleed of other tonewheels, **Drive** the growl of a pushed amplifier, **Tone** darker or brighter, and **Wheels** **Gears** (the organ's own slightly uneven tuning) or **Exact**. Leakage and Wheels are faint on the combo ("tonewheel only"): its notes are always exactly in tune with the project's tuning, and every octave is exact.
 - **Voice:** transpose, fine tuning, level and pan, and how many keys are held.
 
-The drawbars themselves are coloured as on the organ: the two below the note in the section's colour, white the note and its octaves, grey the other harmonics. Its pictures: the **Wave** they add up to, how the **Percussion** fades, and how fast the horn and the drum turn after you switch Speed (**Rotor**).
+The drawbars themselves are coloured as on the organ: the two below the note in the section's colour, white the note and its octaves, grey the other harmonics. Its pictures: the **Wave** they add up to (on the combo, its flute and reed), how the **Percussion** fades, and how fast the horn and the drum turn after you switch Speed (**Rotor**).
+
+The combo presets start from the classic settings: 16', 8' and 4' with flute and reed and a light vibrato (**Combo**), the flute alone (**Combo Flute**), the reed on every drawbar for a bright buzz (**Combo Reed**), the square reed with a deep, fast vibrato (**Combo Square**), a slow, deep vibrato (**Combo Vibrato**), the reed through a pushed amplifier (**Combo Garage**), the rotating speaker with chorus (**Combo Rotary**), and percussion on the flute (**Combo Perc**). The Q-Link set **Combo** turns Flute, Reed, 8' and 4'.
 
 **Squelch** is a mono acid bass: it plays one note at a time, and a new pad takes over from the last. Two things in how you play shape it, as on the bass line machines it learns from:
 
@@ -227,6 +230,34 @@ How you play shapes it. Press a new pad before you let go of the last and the pi
 - **Output:** **Drive** (distortion after the filter: **Soft** adds warmth and the overtones that let a bass be heard on phone and laptop speakers, **Hard** squares it off into a harsher growl), **Tone** (takes the fizz off the top), **High-pass** (takes away rumble under the notes) and **Level**. The picture shows a wave through the Drive against the clean wave (dashed).
 
 The Q-Links take Sub, Fifth, Reese detune and Pulse width on the Source page; Cutoff, Resonance, Amount and Decay on the Filter page; Drop, Drop time, Decay and Release on the Shape page; Glide, Fine, Bend range and the pressure's Amount on the Play page; and Drive, Tone, High-pass and Level on the Output page. A Bass track stops working a tenth of a second after its last note has died away, so it takes almost none of the MPC's power until you play it.
+
+**Wind** is a blown instrument: a clarinet, a sax or a flute, played by your breath. As on the real thing, the breath makes the note: blow harder and it gets louder and brighter, blow softly and it gets darker and airier, and with no breath it is silent. **Model** on the Instrument page picks the instrument:
+
+- **Clarinet:** a straight tube with a reed. Hollow and woody, and dark in its low notes.
+- **Sax:** a cone with a reed. Fuller and buzzier, and it growls when you push it.
+- **Flute:** a pipe you blow across, with no reed. Soft and airy, pure on a gentle breath.
+
+**From** on the Breath page says where the breath comes from:
+
+- **Velocity** (the default): how hard you hit the pad is how hard you blow. Keep pressing on a held pad and you blow harder still, so the note swells and opens under your finger (pressure's first slot, set to Breath; see [Pad pressure](#pad-pressure)).
+- **Breath ctrl:** a breath controller or wind controller on MIDI in.
+- **Mod wheel:** the mod wheel of a keyboard on MIDI in.
+- **Foot pedal:** an expression pedal on MIDI in.
+
+Until the controller moves, velocity plays the notes, so a preset set to a breath controller still plays from the pads.
+
+It plays one note at a time, as a wind player does. Press a new pad before you let go of the last and the note moves there without stopping: the breath carries on and only the fingers change. How hard you hit the new pad is how hard you blow from there, so a legato line can swell or ease without starting a note again. Set **Voices** up to 8 to play chords, as **Reed Section** and **Flute Choir** do. Every note plays about as loud as the next across the keyboard, and in tune. It has four pages:
+
+- **Instrument:** **Model**; **Breath**, how hard the player blows (every source of breath is scaled by it); **Reed**, from a soft reed (speaks easily and buzzes early) to a hard one (needs more breath, rounder), on the clarinet and sax only; and **Edge**, where the flute's air hits the edge of its mouth hole: centred is hollow and pure, off centre brings in the octave above and brightens it, on the flute only. Then **Tone** (dark to bright, the same on every note), **Noise** (the air rushing past the reed or across the edge) and **Growl** (a rough flutter, as when a player hums into the horn). **Vibrato** has its **Depth**, **Rate** and **Delay** (how long into a note before it starts; it fades in over the same time again); the mod wheel adds more, unless the mod wheel is the breath. On the flute the vibrato is mostly in the breath, on the sax mostly in the pitch.
+- **Breath:** **From**; **Soft to hard** (how much quieter the softest breath is than the hardest, up to 40 dB); **Tongue** (how much each note starts with a puff of air and a "t", as a player tonguing it); and **Breath now**, which shows the breath as you play. **Over a note** is the breath's **Attack**, **Decay**, **Sustain** and **Release** as faders: how it swells in, settles, and dies away when you let go.
+- **Play:** **Voices**; **Over a held key**, what a pad pressed while another is held does (**Slur**: only the pitch moves; **Tongue**: the note starts again); **Priority** (with several pads held, the **Last** pressed, the **Low**est or the **High**est sounds); the glide's **Time** and **Mode** (**Time**: every glide takes that long; **Rate**: an octave takes that long, so small steps are quicker); transpose, fine tuning and bend range; **Level** and **Spread** (with several voices, they alternate left and right).
+- **Pressure:** what pressing harder on a held pad does: blow harder (**Breath**, the default), more **Vibrato**, a brighter **Tone**, more **Growl** or **Noise**, or bend the **Pitch** (see [Pad pressure](#pad-pressure)).
+
+Controls that do nothing for the sound as it is are drawn faint: Reed on the flute, Edge on the clarinet and sax, Over a held key, Priority and the glide with more than one voice, the glide's Mode with the glide at 0, Spread with one voice, and Decay with Sustain at 100.
+
+Its pictures: the **Mouthpiece** (how much air gets through the reed as the player blows harder: it rises, then the reed shuts it off; the dot is where a full breath plays it. On the flute, how much of the air goes into the pipe, moved by Edge), the **Tone** (which part of middle C's sound comes through at a full breath, dashed for a soft one), the **Level** (how loud the note is for each breath, on Soft to hard's curve) and the **Breath** over a note.
+
+The Q-Links take Breath, Vibrato, Tone and Noise on the Instrument page; Tongue, Attack, Sustain and Release on the Breath page; and Glide, Bend range, Level and Spread on the Play page. **Hall Flute** and **Smoky Sax** add a hall and four macros: Breath, Vibrato, Tone and Noise. A Wind track stops working a tenth of a second after its last note has died away, so it takes almost none of the MPC's power until you play it.
 
 The Synth tab takes its colours from the theme picked in **Prefs > Appearance**, like the rest of MPFree: the sections' colours, the curves and the boxes in the pictures all change with it. The Q-Links keep their own four colours under every theme.
 
@@ -362,7 +393,7 @@ MPFree reads Scala tuning files, the format thousands of published tunings come 
 
 ## Pad pressure
 
-The MPC's pads sense how hard you keep pressing after the hit. On Poly, FM and Wavetable the **Pressure** page sets what that does; on Bass it is **Moves** and **Amount** on the Play page, and Squelch, Keys, Drawbar, Strings, Analog, Pluck and Drums don't answer it. By default on Poly, pressing harder opens the filter, so a held chord brightens as you lean into it. You choose up to four things for pressure to change, how much, and how hard you must press before it starts. On Poly, pressure can also bring in either LFO (**LFO 1 amount**, **LFO 2 amount**) or move each note across the speakers (**Pan**).
+The MPC's pads sense how hard you keep pressing after the hit. On Poly, FM, Wavetable and Wind the **Pressure** page sets what that does; on Bass it is **Moves** and **Amount** on the Play page, and Squelch, Keys, Drawbar, Strings, Analog, Pluck and Drums don't answer it. By default on Poly, pressing harder opens the filter, so a held chord brightens as you lean into it; on Wind it blows harder, so a held note swells and opens. You choose up to four things for pressure to change, how much, and how hard you must press before it starts. On Poly, pressure can also bring in either LFO (**LFO 1 amount**, **LFO 2 amount**) or move each note across the speakers (**Pan**).
 
 Clips record pad pressure too, so a recorded part plays back with the same swells: see [Pad pressure](clips.md#pad-pressure) in Clips and patterns.
 
@@ -373,4 +404,4 @@ How hard you hit a pad sets how loud the note plays, as with drums. **FULL LEVEL
 Note Repeat, Latch and the arpeggiator all play the synth too: see [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md).
 
 > [!MPC]
-> The MPC's plugin instruments (such as its bass and electric-piano plugins) and expansions are not in MPFree. MPFree has its own eleven synths instead, with their controls on one tab and the Q-Links following each preset, and it can host CLAP plugin synths and the MPC plugin instruments people share, such as those in the Open MPC catalog. As on the MPC, where each track plays a program, each track can play its own instrument; a track without one plays its kit (see [A kit for each track](pads.md#a-kit-for-each-track)). The scales and chords of the MPC's Pad Perform mode are replaced by the scale settings and the per-bank pad layouts here: switch layouts with the PAD BANK buttons without leaving the page you are on.
+> The MPC's plugin instruments (such as its bass and electric-piano plugins) and expansions are not in MPFree. MPFree has its own twelve synths instead, with their controls on one tab and the Q-Links following each preset, and it can host CLAP plugin synths and the MPC plugin instruments people share, such as those in the Open MPC catalog. As on the MPC, where each track plays a program, each track can play its own instrument; a track without one plays its kit (see [A kit for each track](pads.md#a-kit-for-each-track)). The scales and chords of the MPC's Pad Perform mode are replaced by the scale settings and the per-bank pad layouts here: switch layouts with the PAD BANK buttons without leaving the page you are on.

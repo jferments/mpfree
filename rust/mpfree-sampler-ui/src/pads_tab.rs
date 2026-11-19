@@ -21,7 +21,7 @@
 //!   with a new empty kit).
 //! - The **pad map** shows the bank's 16 pads as on the MPC (pad 1 bottom
 //!   left): name, layers and play mode, and the clip a pad launches. A tap
-//!   picks a pad for every tab (Wave, Chop and Play edit it next); a tap on
+//!   picks a pad for every tab (the Sample tab and Edit pad edit it next); a tap on
 //!   the pad picked plays it while the finger is down. Pads held on the
 //!   hardware light up.
 //! - **Copy**, **Paste** and **Clear** work on the pad picked, each one undo
@@ -43,7 +43,13 @@
 //!   its mode and voices); an instrument's engine and note; a MIDI out
 //!   pad's port, channel and note, with where the note goes or why it
 //!   would send nothing said under them. Stepping Sound puts the kit's
-//!   next or previous sound on the pad.
+//!   next or previous sound on the pad. The last row, **Edit pad**
+//!   ([`Row::EditPad`]), opens the pad's deep settings
+//!   ([`PadsAction::EditPad`]): the page with its layers, keygroups,
+//!   scenes and slices ([`crate::play_tab`], the Sample tab's Play
+//!   sub-page until the one Sample page's step 6b, as the MPC's PROG
+//!   EDIT opens its Track Edit). It is faint, saying why, on a pad with no
+//!   layers ([`edit_pad_why`]).
 //! - The **sounds** list holds every sound in the kit, with the pads that
 //!   use it; **Put on** puts the sound picked on the pad picked.
 //! - **Q-Links 1 to 4** turn the type's main settings
@@ -128,10 +134,18 @@ pub enum Row {
     Port,
     /// The channel a MIDI out pad sends on, 1 to 16.
     Channel,
+    /// The list's last row, on every type: a button that opens Edit pad,
+    /// the page with the pad's layers, keygroups, scenes and slices (the
+    /// Sample tab's Play sub-page until the one Sample page's step 6b).
+    /// Faint, saying why, on a pad with no layers ([`edit_pad_why`]).
+    EditPad,
 }
 
+/// The Edit pad row's button: what the page holds.
+pub const EDIT_PAD_TEXT: &str = "layers, keys, scenes, slices ›";
+
 impl Row {
-    pub const ALL: [Row; 8] = [
+    pub const ALL: [Row; 9] = [
         Row::Sound,
         Row::Mode,
         Row::Polyphony,
@@ -140,6 +154,7 @@ impl Row {
         Row::Pan,
         Row::Tune,
         Row::Effects,
+        Row::EditPad,
     ];
 
     pub fn label(self) -> &'static str {
@@ -157,6 +172,7 @@ impl Row {
             Row::Note => "Note",
             Row::Port => "Port",
             Row::Channel => "Channel",
+            Row::EditPad => "Edit pad",
         }
     }
 
@@ -190,7 +206,8 @@ impl Row {
             | Row::Engine
             | Row::Note
             | Row::Port
-            | Row::Channel => None,
+            | Row::Channel
+            | Row::EditPad => None,
         }
     }
 }
@@ -260,9 +277,10 @@ impl PadType {
                 Row::Pan,
                 Row::Tune,
                 Row::Effects,
+                Row::EditPad,
             ],
-            PadType::Instrument => &[Row::Engine, Row::Note],
-            PadType::MidiOut => &[Row::Port, Row::Channel, Row::Note],
+            PadType::Instrument => &[Row::Engine, Row::Note, Row::EditPad],
+            PadType::MidiOut => &[Row::Port, Row::Channel, Row::Note, Row::EditPad],
         }
     }
 
@@ -525,6 +543,8 @@ pub enum PadsAction {
     Bank(usize),
     /// The Effects row: open pad `pad`'s chain in the Mix tab.
     Effects(usize),
+    /// The Edit pad row: the app opens Edit pad on the pad picked.
+    EditPad,
 }
 
 impl PadsAction {
@@ -855,6 +875,9 @@ impl PadsTab {
                 Some(k) if st.effects.is_some() => vec![k],
                 _ => Vec::new(),
             };
+            let edit = kind.index_of(Row::EditPad);
+            list.buttons.extend(edit);
+            list.faint = edit.zip(edit_pad_why(self.bank, st)).into_iter().collect();
             list.footer = footer;
         }
         let items = st
@@ -904,6 +927,13 @@ impl PadsTab {
             (LIST, EventKind::Tab(k)) if st.picked_type().rows().get(*k) == Some(&Row::Effects) => {
                 st.effects.as_ref()?;
                 Some(PadsAction::Effects(st.pad))
+            }
+            (LIST, EventKind::Tab(k)) if st.picked_type().rows().get(*k) == Some(&Row::EditPad) => {
+                if let Some(why) = edit_pad_why(self.bank, st) {
+                    self.note = Some(why);
+                    return None;
+                }
+                Some(PadsAction::EditPad)
             }
             (SOUNDS, EventKind::Select(k)) => {
                 self.sound = *k;
@@ -1417,7 +1447,34 @@ fn footer(p: &Pad, st: &PadsState) -> Option<(String, bool)> {
     }
 }
 
+/// Why Edit pad can't open on the pad picked, if it can't: an Instrument
+/// or MIDI out pad has no layers, nor has a pad with no sound. `bank`
+/// names the pad as the tab does.
+pub fn edit_pad_why(bank: Option<char>, st: &PadsState) -> Option<String> {
+    let here = pad_text(bank, st.pad);
+    match st.picked() {
+        Some(p) => match PadType::of(p) {
+            PadType::Instrument => Some(format!(
+                "{here} is an Instrument pad: it plays a synth voice, and has no layers to edit"
+            )),
+            PadType::MidiOut => Some(format!(
+                "{here} is a MIDI out pad: it sends a note to your gear, and has no layers to edit"
+            )),
+            _ if p.layers.is_empty() => Some(format!(
+                "{here} has no sound yet: Browse for one or Put one on, then edit it"
+            )),
+            _ => None,
+        },
+        None => Some(format!(
+            "{here} has no sound yet: Browse for one or Put one on, then edit it"
+        )),
+    }
+}
+
 fn row_text(p: Option<&Pad>, st: &PadsState, row: Row) -> String {
+    if row == Row::EditPad {
+        return EDIT_PAD_TEXT.into();
+    }
     if row == Row::Effects {
         // The strip's effects whether or not the pad has a sound: they're
         // the strip's, not the sound's.

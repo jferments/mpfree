@@ -459,6 +459,133 @@ pub fn big_playing(armed: usize) -> Result<Session, String> {
     Ok(s)
 }
 
+/// A full Arrange page for the announcement screens (Jay, 19 Nov
+/// 02:45Z: more clips, in more states, with some slots left empty): seven
+/// note tracks and a Loop track, most rows filled, a few holes and the
+/// last rows free.
+pub fn busy_project() -> Project {
+    use mpfree_seq::{LoopInput, TrackKind};
+    let mut p = Project::new();
+    type Clips<'a> = &'a [(usize, &'a str, Tick, u8, Tick)];
+    // (track, [(slot, name, length, pad, a note every)])
+    let tracks: [(&str, Clips); 7] = [
+        (
+            "Drums",
+            &[
+                (0, "Intro beat", 2 * BAR, 0, BEAT),
+                (2, "Half time", 4 * BAR, 0, 2 * BEAT),
+                (3, "Fill", BAR, 1, SIXTEENTH),
+                (4, "Break", 2 * BAR, 0, 480),
+                (6, "Outro", 2 * BAR, 0, BEAT),
+            ],
+        ),
+        (
+            "Hats",
+            &[
+                (0, "Hats 16", BAR, 2, SIXTEENTH),
+                (1, "Shaker", 2 * BAR, 3, 480),
+                (2, "Open hats", BAR, 2, 480),
+                (4, "Ride", 2 * BAR, 3, BEAT),
+            ],
+        ),
+        (
+            "Bass",
+            &[
+                (0, "Sub line", 2 * BAR, 4, 1280),
+                (1, "Bass B", 4 * BAR, 4, 1280),
+                (2, "Walk", 2 * BAR, 4, BEAT),
+                (3, "Drop", 2 * BAR, 4, BAR),
+                (5, "Slide", BAR, 4, 480),
+            ],
+        ),
+        (
+            "Keys",
+            &[
+                (0, "Rhodes", 4 * BAR, 6, 2 * BEAT),
+                (1, "Rhodes B", 4 * BAR, 6, 2 * BEAT),
+                (3, "Stabs", BAR, 6, 720),
+            ],
+        ),
+        (
+            "Lead",
+            &[
+                (1, "Hook", 2 * BAR, 7, 480),
+                (2, "Hook B", 2 * BAR, 7, 480),
+                (4, "Solo", 8 * BAR, 7, 480),
+            ],
+        ),
+        (
+            "Chords",
+            &[
+                (0, "Arp chords", 4 * BAR, 8, 2 * BEAT),
+                (2, "Pad", 8 * BAR, 8, 2 * BAR),
+                (3, "Swell", 4 * BAR, 8, BAR),
+            ],
+        ),
+        (
+            "Vox chop",
+            &[
+                (0, "Chop A", BAR, 9, BEAT),
+                (1, "Chop B", BAR, 9, 720),
+                (5, "Vox FX", 2 * BAR, 9, BAR),
+            ],
+        ),
+    ];
+    for (name, clips) in tracks {
+        let mut t = Track::new(name, p.tracks.len() as u16);
+        for &(slot, clip_name, length, pad, step) in clips {
+            let notes = if pad == 0 && step == BEAT {
+                beat(length / BAR)
+            } else {
+                every(step, length, pad, 96)
+            };
+            t.slots[slot] = Some(clip(clip_name, length, &notes));
+        }
+        p.tracks.push(t);
+    }
+    let mut t = Track::new_loops("Loops A", p.tracks.len() as u16);
+    t.kind = TrackKind::Loops(LoopInput::Pads);
+    for (slot, n, ticks) in [
+        (0usize, 0u8, 4 * BAR),
+        (1, 1, 2 * BAR),
+        (2, 3, BAR),
+        (4, 4, 2 * BAR),
+    ] {
+        t.slots[slot] = Some(Clip::new_loop(n, ticks));
+    }
+    p.tracks.push(t);
+    p
+}
+
+/// [`busy_project`] in the middle of a jam, at 3.4: Drums, Hats, Bass,
+/// Keys, Chords and Loops A play from bar 1; Vox chop records over Chop B
+/// from bar 3 (red); Lead's Hook and the Drums' Fill wait for bar 4
+/// (amber); Vox chop is armed.
+pub fn busy_playing() -> Result<Session, String> {
+    const VOX: usize = 6;
+    let launches = [(0, 0), (1, 0), (2, 1), (3, 0), (5, 0), (VOX, 1), (7, 0)]
+        .iter()
+        .map(|&(track, slot)| Launch {
+            track,
+            slot,
+            origin: 0,
+            start: 0,
+        })
+        .collect();
+    let mut s = Session::new(busy_project(), launches, Some(VOX))?;
+    s.command_at(0, Command::Play)?;
+    s.run_to(2 * BAR - BEAT)?;
+    s.command_at(2 * BAR, Command::Record)?;
+    for (i, h) in [0, 720, 1440, 2400, 3120].iter().enumerate() {
+        s.pad(2 * BAR + h, SIXTEENTH, 9, 100 + 5 * (i as u8 % 4));
+    }
+    s.run_to(3 * BAR - BEAT)?;
+    s.act(TimeAction::Launch { track: 4, slot: 1 })?;
+    s.act(TimeAction::Launch { track: 0, slot: 3 })?;
+    s.run_to(3 * BAR - BEAT + SIXTEENTH)?;
+    Ok(s)
+}
+
 /// Loop tracks (loop-tracks.md): Drums, Hats and Bass, then Loops A
 /// (Pads + synth: Loop 1 in rows 1 and 2, Loop 4 in row 4), Loops B (Line
 /// in: Loop 2 in row 2, Loop 3 in row 3) and an empty Loops C (Resample),
@@ -713,6 +840,34 @@ pub fn song_state() -> Result<TimeState, String> {
     state.song_on = true;
     state.song_rec = true;
     state.selected = Some(2);
+    Ok(state)
+}
+
+/// The Song view of [`busy_project`]: its seven filled rows made into a
+/// song, named as a song's parts, song mode on and Rec song armed, the
+/// Keys' second block picked; playing at 5.3.
+pub fn busy_song_state() -> Result<TimeState, String> {
+    let mut s = Session::new(busy_project(), Vec::new(), Some(0))?;
+    let rows: Vec<(usize, Tick)> = (0..7)
+        .filter(|&r| s.project.row_filled(r))
+        .map(|r| (r, scene_length(&s.project, r, BAR)))
+        .collect();
+    let names = [
+        "Intro", "Verse", "Build", "Drop", "Break", "Bridge", "Outro",
+    ];
+    for (i, &(r, _)) in rows.iter().enumerate() {
+        if let Some(sc) = s.project.scene_mut(r) {
+            sc.name = names[i % names.len()].into();
+        }
+    }
+    s.project.arrangement = scenes_to_song(&s.project, &rows, 0).map_err(|e| format!("{e:?}"))?;
+    s.command_at(0, Command::Play)?;
+    s.run_to(4 * BAR + 2 * BEAT)?;
+    let mut state = s.state();
+    state.song_view = true;
+    state.song_on = true;
+    state.song_rec = true;
+    state.selected = Some(4);
     Ok(state)
 }
 

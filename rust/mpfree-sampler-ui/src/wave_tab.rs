@@ -81,21 +81,17 @@ pub const LAYOUT: &str = "col(header:60, row(smp-bar:*, smp-send:330):60, \
                           row(smp-region:*, smp-sound:340):242):*, \
                           col(smp-q1, smp-q2, smp-q3, smp-q4):128):*, hint:26)";
 
-/// The pad editor's tabs: the editors for the pad picked. The kit's pads
-/// (to pick one and set it up) are the app's own Pads tab since 12 Nov
-/// 2026 ([`crate::pads_tab`]).
-/// FX left them on 18 Nov 2026 (Jay: a pad's effects are in Mix, which
-/// the Pads tab's Effects row opens).
-/// Grain left them on 18 Nov 2026 too: it is a tool on this page
-/// ([`Tool::Grain`]), and so did Warp ([`Tool::Warp`]). So did Rec (the one
-/// Sample page's step 2f, part 4): its controls are the recorder row's, its
-/// Input section's and Sample Recall's. So did Chop (step 3): it is the
-/// Slice tool ([`Tool::Slice`]).
-pub const TABS: [&str; 2] = ["Wave", "Play"];
-/// The tabs built so far; the others are drawn faint.
-pub const BUILT: [&str; 2] = ["Wave", "Play"];
-/// The Wave tab's place in [`TABS`].
-pub const TAB: usize = 0;
+// The pad editor had tabs over its pages, the editors for the pad picked;
+// the one Sample page has none, so its pad bar has no switch. The kit's
+// pads (to pick one and set it up) went to the app's own Pads tab on 12
+// Nov 2026 ([`crate::pads_tab`]). FX left on 18 Nov 2026 (Jay: a pad's
+// effects are in Mix, which the Pads tab's Effects row opens). Grain left
+// on 18 Nov 2026 too: it is a tool on this page ([`Tool::Grain`]), and so
+// did Warp ([`Tool::Warp`]). So did Rec (the one Sample page's step 2f,
+// part 4): its controls are the recorder row's, its Input section's and
+// Sample Recall's. So did Chop (step 3): it is the Slice tool
+// ([`Tool::Slice`]). And so did Play (step 6b): it is the Pads tab's Edit
+// pad ([`crate::play_tab`]), opened from the pad's settings.
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Drag markers by their tabs · drag to scroll, pinch or SHIFT + - / + to zoom · tap the wave to \
@@ -384,8 +380,6 @@ pub enum WaveAction {
     },
     /// Play the pad, as a hit at full velocity would.
     Audition { pad: usize },
-    /// Open the editor's tab `i` of [`TABS`].
-    Tab(usize),
     /// Ask for a number to be typed (the Warp tempo's value tapped); the
     /// number comes back through the tab's `typed`.
     Ask(NumberAsk),
@@ -733,10 +727,7 @@ impl WaveTab {
     /// and `hint` first) and shows `st`.
     pub fn add(ui: &mut Ui, name: &str, st: &WaveState) -> Result<WaveTab, String> {
         crate::send::add(ui);
-        let mut bar = PadBar::new(&TABS);
-        bar.enabled = TABS.iter().map(|t| BUILT.contains(t)).collect();
-        bar.active = TAB;
-        ui.add(BAR, bar);
+        ui.add(BAR, PadBar::new(&[]));
         ui.add(OVERVIEW, WaveOverview::new());
         ui.add(WAVE, Waveform::new());
         ui.add(REGION, SettingList::new("Region"));
@@ -1736,7 +1727,6 @@ impl WaveTab {
             };
         }
         match (ev.widget.as_str(), &ev.kind) {
-            (BAR, EventKind::Tab(i)) => Some(WaveAction::Tab(*i)),
             (TOOLS, EventKind::Tab(i)) => {
                 let tool = *Tool::ALL.get(*i)?;
                 self.set_tool(ui, st, tool);

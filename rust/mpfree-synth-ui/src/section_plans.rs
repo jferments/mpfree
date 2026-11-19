@@ -147,6 +147,7 @@ pub fn plan(info: &NodeInfo, params: &[ParamInfo], page: &str) -> Option<Arrange
         "mpfree.analog" => analog(page)?,
         "mpfree.strings" => strings(page)?,
         "mpfree.bass" => bass(page)?,
+        "mpfree.wind" => wind(page)?,
         _ => return None,
     };
     Some(build(params, spec, list))
@@ -829,8 +830,13 @@ fn drawbar(page: &str) -> Option<Plan> {
     ];
     Some(match page {
         "Drawbars" => (
-            "row(bars:66*, col(wave:200, perc:*, rotary:*):34*)",
+            "row(bars:*, col(model:150, voices:*):206, col(wave:190, perc:*, rotary:*):282)",
             vec![
+                s("model", "Model", Source, &[MODEL]),
+                s("voices", "Voices", Tone, &[FLUTE, REED, REED_WAVE])
+                    .faders(&[FLUTE, REED])
+                    .drawbars()
+                    .labels(&[(REED_WAVE, "Reed wave")]),
                 s("bars", "Drawbars", Source, &bars)
                     .faders(&bars)
                     .drawbars()
@@ -860,7 +866,8 @@ fn drawbar(page: &str) -> Option<Plan> {
                     (PERC_VOL, "Volume"),
                 ])
                 .draw("Percussion"),
-                s("vib", "Vibrato and chorus", Motion, &[VIBRATO, SCANNER]),
+                s("vib", "Vibrato and chorus", Motion, &[VIBRATO, SCANNER])
+                    .labels(&[(SCANNER, "Rate")]),
             ],
         ),
         "Rotary" => (
@@ -869,12 +876,7 @@ fn drawbar(page: &str) -> Option<Plan> {
                 s("rotary", "Rotary speaker", Motion, &[ROTARY, SPEED, SPREAD])
                     .labels(&[(ROTARY, "On")])
                     .draw("Rotor"),
-                s(
-                    "tone",
-                    "Tone wheels",
-                    Tone,
-                    &[WHEELS, DRIVE, TONE, CLICK, LEAKAGE],
-                ),
+                s("tone", "Tone", Tone, &[WHEELS, DRIVE, TONE, CLICK, LEAKAGE]),
             ],
         ),
         "Voice" => (
@@ -1209,6 +1211,61 @@ fn bass(page: &str) -> Option<Plan> {
                 s("out", "Tone and level", Voice, &[TONE, HIGH_PASS, LEVEL]),
             ],
         ),
+        _ => return None,
+    })
+}
+
+fn wind(page: &str) -> Option<Plan> {
+    use mpfree_synth::wind_params::*;
+    Some(match page {
+        "Instrument" => (
+            "row(horn:*, col(colour:*, vib:*):*)",
+            vec![
+                s("horn", "Instrument", Source, &[MODEL, BREATH, REED, EDGE])
+                    .hero(&[BREATH])
+                    .draw("Mouthpiece")
+                    .note("how hard the player blows"),
+                s("colour", "Tone", Tone, &[TONE, NOISE, GROWL])
+                    .hero(&[TONE])
+                    .draw("Tone"),
+                s("vib", "Vibrato", Motion, &[VIB_DEPTH, VIB_RATE, VIB_DELAY])
+                    .labels(&[(VIB_DEPTH, "Depth")])
+                    .note("the mod wheel adds more"),
+            ],
+        ),
+        "Breath" => {
+            let a = [ATTACK, DECAY, SUSTAIN, RELEASE];
+            (
+                "row(source:*, shape:*)",
+                vec![
+                    s(
+                        "source",
+                        "Breath",
+                        Source,
+                        &[BREATH_FROM, VELOCITY, TONGUE, METER_BREATH],
+                    )
+                    .labels(&[(BREATH_FROM, "From"), (VELOCITY, "Soft to hard")])
+                    .draw("Level"),
+                    s("shape", "Over a note", Shape, &a)
+                        .faders(&a)
+                        .labels(&adsr_labels(a))
+                        .draw("Breath")
+                        .note("the breath, held and let go"),
+                ],
+            )
+        }
+        "Play" => (
+            "col(row(keys:*, glide:*):*, row(tuning:*, out:*):*)",
+            vec![
+                s("keys", "Keys", Voice, &[VOICES, LEGATO, PRIORITY])
+                    .labels(&[(LEGATO, "Over a held key")]),
+                s("glide", "Glide", Motion, &[GLIDE, GLIDE_MODE])
+                    .labels(&[(GLIDE, "Time"), (GLIDE_MODE, "Mode")]),
+                s("tuning", "Tuning", Voice, &[TRANSPOSE, FINE, BEND_RANGE]),
+                s("out", "Output", Voice, &[LEVEL, SPREAD]),
+            ],
+        ),
+        "Pressure" => pressure(PRESS_BASE),
         _ => return None,
     })
 }

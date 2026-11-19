@@ -1,5 +1,5 @@
-//! Behaviour tests for the tonewheel organ (Drawbar) through the
-//! mpfree-node interface.
+//! Behaviour tests for the organ (Drawbar: its tonewheel and combo
+//! models) through the mpfree-node interface.
 
 use mpfree_node::{check_params, Ctx, Node, NodeEvent, Timed, Tuning, MAX_BLOCK};
 use mpfree_synth::drawbar::{bar_level, gear_hz, wheel_for, N_WHEELS};
@@ -909,4 +909,335 @@ fn print_preset_levels() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The combo model.
+
+/// The combo organ with nothing on top of its bank, the drawbars as given
+/// and the flute and reed at these positions.
+fn combo(bars: &[u8; 9], flute: f32, reed: f32) -> Drawbar {
+    let mut s = bare(bars);
+    s.set_param(MODEL, COMBO);
+    s.set_param(FLUTE, flute);
+    s.set_param(REED, reed);
+    s.reset();
+    s
+}
+
+#[test]
+fn the_combo_plays_equal_tempered_notes() {
+    // A divide-down organ's footages are notes of the scale, not the
+    // pure harmonics a tonewheel's gears come close to: the 2 2/3' of A4
+    // is E6 (1318.5 Hz), not 1320.
+    use mpfree_synth::drawbar::combo_note;
+    for (bar, want) in [(2usize, 440.0f32), (3, 880.0), (4, hz(88.0))] {
+        assert_eq!(combo_note(69, bar), 69 + DRAWBARS[bar].2 as usize);
+        let mut bars = *b"000000000";
+        bars[bar] = b'8';
+        let mut s = combo(&bars, 8.0, 0.0);
+        let (l, _) = render(&mut s, 48_000, &[(0, on(69))], |_| 128);
+        let got = pitch_near(&l[4800..], want);
+        let c = 1200.0 * (got / want).log2();
+        assert!(
+            c.abs() < 0.2,
+            "{}: {got} Hz against {want} ({c} cents)",
+            DRAWBARS[bar].1
+        );
+    }
+    // Past the top octave of dividers the footages break back an octave.
+    assert_eq!(combo_note(100, 8), 100 + 36 - 36);
+    assert_eq!(combo_note(80, 8), 116 - 12);
+}
+
+#[test]
+fn the_combo_follows_the_project_tuning_at_any_rate() {
+    for rate in [44_100u32, 48_000, 96_000] {
+        let mut s = Drawbar::new(rate);
+        for (i, &(id, _, _)) in DRAWBARS.iter().enumerate() {
+            s.set_param(id, if i == 2 { 8.0 } else { 0.0 });
+        }
+        s.set_param(MODEL, COMBO);
+        s.set_param(REED, 0.0);
+        s.set_param(ROTARY, 0.0);
+        s.set_param(VIBRATO, 0.0);
+        s.set_tuning(&Tuning::equal(24, 440.0));
+        s.reset();
+        // In 24-TET one key up is a quarter tone.
+        assert!((s.bank_hz(70) - 440.0 * (1.0f64 / 24.0).exp2()).abs() < 1e-3);
+        assert!(
+            !s.bank_locked(81),
+            "24-TET's octaves are tuned note by note"
+        );
+        let n = rate as usize / 2;
+        let mut l = vec![0.0f32; n];
+        let mut r = vec![0.0f32; n];
+        let mut at = 0;
+        while at < n {
+            let len = 128.min(n - at);
+            let ev = if at == 0 {
+                vec![Timed::new(0, on(70))]
+            } else {
+                vec![]
+            };
+            s.process(
+                &Ctx::new(rate, at as u64),
+                &ev,
+                &mut l[at..at + len],
+                &mut r[at..at + len],
+            );
+            at += len;
+        }
+        let x = &l[n / 5..];
+        let mut cross = Vec::new();
+        for i in 1..x.len() {
+            if x[i - 1] < 0.0 && x[i] >= 0.0 {
+                cross.push(i as f32 - x[i] / (x[i] - x[i - 1]));
+            }
+        }
+        let cycles = (cross.len() - 1) as f32;
+        let got = rate as f32 * cycles / (cross[cross.len() - 1] - cross[0]);
+        let want = 440.0 * (1.0f32 / 24.0).exp2();
+        assert!((got - want).abs() < 0.1, "{rate}: {got} against {want}");
+    }
+    // In 12-TET the octaves are locked, as when one top octave is divided
+    // down.
+    let s = combo(b"008000000", 8.0, 8.0);
+    assert!(s.bank_locked(81) && s.bank_locked(127));
+}
+
+#[test]
+fn the_flute_is_nearly_a_sine_and_the_reed_is_bright() {
+    let level = |flute: f32, reed: f32, wave: f32, k: f32| {
+        let mut s = combo(b"008000000", flute, reed);
+        s.set_param(REED_WAVE, wave);
+        let (l, _) = render(&mut s, 24_000, &[(0, on(57))], |_| 128);
+        db(tone(&l[4800..], k * 220.0))
+    };
+    // The flute: the second harmonic about 18 dB down, the third 29.
+    let f1 = level(8.0, 0.0, SAW, 1.0);
+    assert!(level(8.0, 0.0, SAW, 2.0) < f1 - 15.0);
+    assert!(level(8.0, 0.0, SAW, 3.0) < f1 - 25.0);
+    // The saw reed: thinned below and lifted in the middle, so brighter
+    // than a plain saw (whose second and fourth are 6 and 12 dB down).
+    let r1 = level(0.0, 8.0, SAW, 1.0);
+    let r2 = level(0.0, 8.0, SAW, 2.0);
+    let r4 = level(0.0, 8.0, SAW, 4.0);
+    assert!(r2 > r1 - 5.0 && r4 > r1 - 10.0, "{r1} {r2} {r4}");
+    // The square reed: odd harmonics only.
+    let s2 = level(0.0, 8.0, SQUARE, 2.0);
+    let s3 = level(0.0, 8.0, SQUARE, 3.0);
+    assert!(s2 < s3 - 30.0, "{s2} {s3}");
+}
+
+#[test]
+fn both_voices_in_is_silence() {
+    let mut s = combo(b"888888888", 0.0, 0.0);
+    let (l, r) = render(
+        &mut s,
+        9600,
+        &[(0, on(48)), (0, on(60)), (0, on(67))],
+        |_| 128,
+    );
+    assert!(l.iter().chain(&r).all(|&v| v == 0.0));
+    assert_eq!(s.bank_notes_heard(), 0);
+}
+
+#[test]
+fn one_note_sounds_about_as_loud_across_the_keys() {
+    // The keyboard level scaling: each voice alone, C2 to C6 within 3 dB.
+    for (flute, reed, wave) in [(8.0, 0.0, SAW), (0.0, 8.0, SAW), (0.0, 8.0, SQUARE)] {
+        let lv: Vec<f32> = [36u8, 48, 60, 72, 84]
+            .iter()
+            .map(|&k| {
+                let mut s = combo(b"008000000", flute, reed);
+                s.set_param(REED_WAVE, wave);
+                let (l, _) = render(&mut s, 24_000, &[(0, on(k))], |_| 128);
+                db(rms(&l[4800..]))
+            })
+            .collect();
+        let hi = lv.iter().copied().fold(f32::MIN, f32::max);
+        let lo = lv.iter().copied().fold(f32::MAX, f32::min);
+        assert!(
+            hi - lo < 4.0,
+            "flute {flute} reed {reed} wave {wave}: {lv:?}"
+        );
+    }
+}
+
+#[test]
+fn switching_model_crosses_over_in_10_ms() {
+    let ev = |switch: bool| {
+        let mut e = vec![(0u64, on(57)), (0, on(64))];
+        if switch {
+            e.push((9_600, set(MODEL, COMBO)));
+        }
+        e
+    };
+    let play = |model: f32, switch: bool| {
+        let mut s = bare(b"008000000");
+        s.set_param(MODEL, model);
+        s.set_param(FLUTE, 0.0);
+        s.reset();
+        render(&mut s, 19_200, &ev(switch), |_| 128).0
+    };
+    let wheels = play(TONEWHEEL, false);
+    let bank = play(COMBO, false);
+    let both = play(TONEWHEEL, true);
+    // Before the switch, the tonewheel's own bits.
+    assert!(both[..9_600] == wheels[..9_600]);
+    // Within 10 ms, the combo: then within a hair of an organ that was
+    // the combo all along.
+    let tail = 9_600 + 960;
+    let diff: Vec<f32> = (tail..19_200).map(|i| both[i] - bank[i]).collect();
+    assert!(
+        rms(&diff) < 0.02 * rms(&bank[tail..]),
+        "{} against {}",
+        rms(&diff),
+        rms(&bank[tail..])
+    );
+    // And no step on the way: the largest move between frames is the
+    // largest either model makes.
+    let jump = |x: &[f32]| x.windows(2).fold(0.0f32, |m, w| m.max((w[1] - w[0]).abs()));
+    let most = jump(&wheels[4800..]).max(jump(&bank[4800..]));
+    assert!(
+        jump(&both[9_500..tail]) <= most * 1.1,
+        "{} {most}",
+        jump(&both[9_500..tail])
+    );
+}
+
+#[test]
+fn the_combo_vibrato_bends_every_note_by_the_same_cents() {
+    // A delay swung by a sine: the same swing in cents low and high.
+    let swing = |mode: f32, note: u8| {
+        let mut s = combo(b"008000000", 8.0, 0.0);
+        s.set_param(VIBRATO, mode);
+        let (l, _) = render(&mut s, 48_000, &[(0, on(note))], |_| 128);
+        let f = hz(f32::from(note));
+        let x = &l[4800..];
+        let mut cross = Vec::new();
+        for i in 1..x.len() {
+            if x[i - 1] < 0.0 && x[i] >= 0.0 {
+                cross.push(i as f32 - x[i] / (x[i] - x[i - 1]));
+            }
+        }
+        // The pitch over a fifth of the vibrato's cycle at most.
+        let span = (f / 6.9 / 5.0).max(1.0) as usize;
+        let (mut lo, mut hi) = (f32::MAX, 0.0f32);
+        for w in cross.windows(span + 1) {
+            let p = RATE as f32 * span as f32 / (w[span] - w[0]);
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        (1200.0 * (hi / f).log2(), 1200.0 * (lo / f).log2())
+    };
+    let (up0, down0) = swing(0.0, 69);
+    assert!(up0 < 0.5 && down0 > -0.5, "{up0} {down0}");
+    for (mode, cents) in [(V1, COMBO_VIB_CENTS_1), (V3, COMBO_VIB_CENTS_3)] {
+        for note in [57u8, 81] {
+            let (up, down) = swing(mode, note);
+            assert!(
+                (up - cents).abs() < 0.25 * cents && (down + cents).abs() < 0.25 * cents,
+                "mode {mode} note {note}: {up} {down} against ±{cents}"
+            );
+        }
+    }
+}
+
+const COMBO_VIB_CENTS_1: f32 = mpfree_synth::drawbar::COMBO_VIB_CENTS[0];
+const COMBO_VIB_CENTS_3: f32 = mpfree_synth::drawbar::COMBO_VIB_CENTS[2];
+
+#[test]
+fn the_combo_has_percussion_on_its_flute() {
+    let play = |perc: f32| {
+        let mut s = combo(b"008000000", 8.0, 0.0);
+        s.set_param(PERC, perc);
+        s.set_param(PERC_HARM, SECOND);
+        // Soft, which leaves the drawbars where they are.
+        s.set_param(PERC_VOL, SOFT);
+        render(&mut s, 48_000, &[(0, on(60))], |_| 128).0
+    };
+    let (with, without) = (play(1.0), play(0.0));
+    // The percussion alone: what it adds, an octave up (C5).
+    let perc: Vec<f32> = with.iter().zip(&without).map(|(a, b)| a - b).collect();
+    let c5 = hz(72.0);
+    let (a, b) = (tone(&perc[2400..7200], c5), tone(&perc[26_400..31_200], c5));
+    // Fast: 1 s to -60 dB, so 30 dB down 0.5 s on.
+    assert!((db(a) - db(b) - 30.0).abs() < 2.0, "{} dB", db(a) - db(b));
+    // Soft, 6 dB under a drawbar at 8, and 0.1 s into its fall: still
+    // over the flute's own second harmonic (18 dB under its first).
+    let own = tone(&without[2400..7200], c5);
+    assert!(db(a) > db(own) + 4.0, "{} against {}", db(a), db(own));
+}
+
+#[test]
+fn the_combo_renders_the_same_for_any_block_size() {
+    let ev = vec![
+        (0, set(MODEL, COMBO)),
+        (0, on(48)),
+        (5, on(55)),
+        (7, on(60)),
+        (2_000, set(VIBRATO, V2)),
+        (3_001, set(REED_WAVE, SQUARE)),
+        (4_000, set(FLUTE, 3.0)),
+        (6_000, off(55)),
+        (7_000, set(VIBRATO, C2)),
+        (8_000, set(MODEL, TONEWHEEL)),
+        (9_000, on(48)),
+        (9_100, off(48)),
+        (10_000, set(MODEL, COMBO)),
+        (10_003, set(SCANNER, 5.0)),
+        (12_000, set(PERC, 1.0)),
+        (12_100, off(60)),
+        (12_100, off(48)),
+        (12_500, on(96)),
+        (12_500, on(103)),
+        (13_000, set(DB_1, 8.0)),
+        (14_000, set(ROTARY, 0.0)),
+        (16_000, set(REED, 0.0)),
+        (18_000, NodeEvent::AllOff),
+        (19_000, on(36)),
+    ];
+    let mut a = Drawbar::new(RATE);
+    let want = render(&mut a, 24_000, &ev, |_| 128);
+    assert!(peak(&want.0) > 0.01);
+    for cut in [1usize, 3, 16, 17, 64, 100] {
+        let mut b = Drawbar::new(RATE);
+        let got = render(&mut b, 24_000, &ev, |_| cut);
+        assert!(got == want, "blocks of {cut} differ");
+    }
+}
+
+#[test]
+fn the_combo_lets_go_into_exact_silence_and_resets_at_once() {
+    for name in ["Combo", "Combo Garage", "Combo Rotary", "Combo Perc"] {
+        let mut s = preset(name);
+        let tail = s.tail_frames() as usize;
+        let (l, r) = render(
+            &mut s,
+            96_000,
+            &[
+                (0, on(60)),
+                (0, on(64)),
+                (0, on(67)),
+                (24_000, NodeEvent::AllOff),
+            ],
+            |_| 128,
+        );
+        assert_eq!(s.active_voices(), 0, "{name}: still counted");
+        assert_eq!(s.bank_notes_heard(), 0, "{name}: the bank still plays");
+        let after = 24_000 + tail;
+        assert!(
+            peak(&l[after..]) < 1e-4 && peak(&r[after..]) < 1e-4,
+            "{name}: {} after the tail",
+            peak(&l[after..])
+        );
+        assert!(l[72_000..].iter().all(|&v| v == 0.0), "{name}: not silent");
+    }
+    let mut s = preset("Combo Vibrato");
+    render(&mut s, 4800, &[(0, on(60)), (0, on(67))], |_| 128);
+    s.reset();
+    let (l, r) = render(&mut s, 4800, &[], |_| 128);
+    assert!(l.iter().chain(&r).all(|&v| v == 0.0));
 }

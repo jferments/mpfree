@@ -46,7 +46,7 @@ The MPC's own **REC**, **OVERDUB** and **UNDO** work the picked loop while the l
 
 The **Looper** tab is the looper as an instrument: every loop in sight, one touch to record, overdub or mute any of them, and the loop you picked laid out underneath with a lane per layer. Press **SHIFT + SAMPLER** to open it.
 
-{{shot: looper | The Looper tab: the eight loops across the top as rings, the picked loop under them with a lane per layer and the controls a loop that plays needs, and the loops' levels on the Q-Links.}}
+{{shot: looper | The Looper tab mid-jam: the eight loops across the top as rings (three playing, two turned off, Loop 6 recording, two empty), the picked loop under them with a lane per layer and the controls a loop that plays needs, and the loops' levels on the Q-Links.}}
 
 ### The loops
 

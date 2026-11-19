@@ -32,8 +32,8 @@ use mpfree_instruments::sound::has_design;
 use mpfree_instruments::{Design, Sound};
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_synth::{
-    bass_params as bp, drum_params, fm_params, Analog, Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly,
-    Preset, Squelch, Strings, Wavetable,
+    bass_params as bp, drum_params, fm_params, wind_params as wp, Analog, Bass, Drawbar, Drums, Fm,
+    Keys, Pluck, Poly, Preset, Squelch, Strings, Wavetable, Wind,
 };
 
 use crate::fft::{hann_f64, power_spectrum};
@@ -66,10 +66,11 @@ pub enum Engine {
     Pluck,
     Strings,
     Bass,
+    Wind,
 }
 
 impl Engine {
-    pub const ALL: [Engine; 10] = [
+    pub const ALL: [Engine; 11] = [
         Engine::Poly,
         Engine::Analog,
         Engine::Squelch,
@@ -80,6 +81,7 @@ impl Engine {
         Engine::Pluck,
         Engine::Strings,
         Engine::Bass,
+        Engine::Wind,
     ];
 
     pub fn name(self) -> &'static str {
@@ -94,6 +96,7 @@ impl Engine {
             Engine::Pluck => "Pluck",
             Engine::Strings => "Strings",
             Engine::Bass => "Bass",
+            Engine::Wind => "Wind",
         }
     }
 
@@ -113,6 +116,7 @@ impl Engine {
             Engine::Pluck => names(Pluck::presets()),
             Engine::Strings => names(Strings::presets()),
             Engine::Bass => names(Bass::presets()),
+            Engine::Wind => names(Wind::presets()),
         }
     }
 
@@ -145,6 +149,7 @@ impl Engine {
             Engine::Pluck => Pluck::presets(),
             Engine::Strings => Strings::presets(),
             Engine::Bass => Bass::presets(),
+            Engine::Wind => Wind::presets(),
         };
         Some(p[preset].text)
     }
@@ -201,6 +206,11 @@ impl Engine {
             Engine::Bass => {
                 let mut n = Bass::new(rate);
                 n.load_preset(&Bass::presets()[preset]);
+                Box::new(n)
+            }
+            Engine::Wind => {
+                let mut n = Wind::new(rate);
+                n.load_preset(&Wind::presets()[preset]);
                 Box::new(n)
             }
         }
@@ -269,6 +279,8 @@ impl Engine {
                 (bp::DRIVE, 0.0),
                 (bp::VELOCITY, 0.0),
             ],
+            // The clarinet with no vibrato, breath noise or growl.
+            Engine::Wind => &[(wp::VIB_DEPTH, 0.0), (wp::NOISE, 0.0), (wp::GROWL, 0.0)],
             Engine::Fm | Engine::Keys | Engine::Pluck => &[],
         };
         for &(id, v) in set {
@@ -282,6 +294,9 @@ impl Engine {
     fn mono(self, node: &dyn Node) -> bool {
         if self == Engine::Squelch || self == Engine::Bass {
             return true;
+        }
+        if self == Engine::Wind {
+            return node.param(wp::VOICES) <= 1.0;
         }
         node.params()
             .iter()
@@ -835,7 +850,9 @@ pub fn report(rate: u32) -> Vec<Row> {
     fm(&mut rows, rate);
     drums(&mut rows, rate);
     strings(&mut rows, rate);
+    combo(&mut rows, rate);
     bass(&mut rows, rate);
+    wind(&mut rows, rate);
     rows
 }
 
@@ -1511,12 +1528,46 @@ fn alias_cases() -> Vec<AliasCase> {
             Engine::Wavetable,
             vec![(1, 100.0)],
         ),
+        // The bores at their brightest: the reeds' and the jet's curves
+        // make harmonics past the inner rate's Nyquist.
+        (
+            "Wind clarinet, tone 100",
+            Engine::Wind,
+            vec![(wp::TONE, 100.0)],
+        ),
+        (
+            "Wind sax, reed and tone 100",
+            Engine::Wind,
+            vec![(wp::MODEL, wp::SAX), (wp::REED, 100.0), (wp::TONE, 100.0)],
+        ),
+        (
+            "Wind flute, edge and tone 100",
+            Engine::Wind,
+            vec![(wp::MODEL, wp::FLUTE), (wp::EDGE, 100.0), (wp::TONE, 100.0)],
+        ),
         ("Strings viola", Engine::Strings, vec![]),
         // The Violin's 4' over its 8'.
         (
             "Strings violin",
             Engine::Strings,
             vec![(0, 100.0), (1, 0.0)],
+        ),
+        // Drawbar's combo model on its 8': the flute alone, then the reed
+        // alone as a saw and as a square.
+        (
+            "Drawbar combo flute",
+            Engine::Drawbar,
+            vec![(80, 1.0), (82, 0.0)],
+        ),
+        (
+            "Drawbar combo reed saw",
+            Engine::Drawbar,
+            vec![(80, 1.0), (81, 0.0)],
+        ),
+        (
+            "Drawbar combo reed square",
+            Engine::Drawbar,
+            vec![(80, 1.0), (81, 0.0), (83, 1.0)],
         ),
         // Algorithm 32, operator 6 alone with full feedback: at full level
         // the loop is rough and noisy (as on the DX7), so most of what this
@@ -2336,6 +2387,89 @@ fn strings(rows: &mut Vec<Row>, rate: u32) {
 }
 
 // ---------------------------------------------------------------------------
+// Drawbar's combo model.
+
+/// Drawbar's plain patch as the combo, its flute alone on the drawbars
+/// given (`(drawbar id, position)`; the plain patch's 8' unless set).
+fn combo_flute(rate: u32, bars: &[(u16, f32)]) -> Box<dyn Node> {
+    let mut n = Engine::Drawbar.plain(rate);
+    n.set_param(80, 1.0);
+    n.set_param(82, 0.0);
+    for &(id, v) in bars {
+        n.set_param(id, v);
+    }
+    n
+}
+
+/// T1 for the combo (its notes are the project's tuning, not gears), and
+/// O6: each octave footage of C4 (16', 4', 2' and 1') against its 8', the
+/// worst error in cents from an exact octave, as one divided-down top
+/// octave makes them.
+fn combo(rows: &mut Vec<Row>, rate: u32) {
+    let mut worst = (0.0f64, 0u8);
+    for k in [24u8, 36, 60, 84, 96] {
+        let s = note(combo_flute(rate, &[]).as_mut(), rate, k, 100, 2.0, 2.0);
+        let c =
+            freq_near(&s.mid(), rate, hz(k), frames(0.4, rate)).map_or(100.0, |f| cents(f, hz(k)));
+        if c.abs() > worst.0.abs() {
+            worst = (c, k);
+        }
+    }
+    put(
+        rows,
+        "T1",
+        "tune[Drawbar combo]",
+        "worst_cents",
+        worst.0.abs(),
+        Better::Lower,
+        Some(1.0),
+        0.05,
+    );
+    put(
+        rows,
+        "T1",
+        "tune[Drawbar combo]",
+        "worst_note",
+        f64::from(worst.1),
+        Better::Info,
+        None,
+        0.0,
+    );
+    let key = 60u8;
+    // The drawbars' ids: 16' 0, 8' 2, 4' 3, 2' 5, 1' 8.
+    let alone = |bar: u16, octaves: i32| {
+        let mut set = vec![(2u16, 0.0f32)];
+        set.push((bar, 8.0));
+        let s = note(combo_flute(rate, &set).as_mut(), rate, key, 100, 2.0, 2.0);
+        let want = hz(key) * 2f64.powi(octaves);
+        freq_near(&s.mid(), rate, want, frames(0.4, rate)).unwrap_or(0.0)
+    };
+    let eight = alone(2, 0);
+    let mut err = 0.0f64;
+    for (bar, octaves) in [(0u16, -1i32), (3, 1), (5, 2), (8, 3)] {
+        let f = alone(bar, octaves);
+        let c = if f > 0.0 && eight > 0.0 {
+            cents(f, eight * 2f64.powi(octaves))
+        } else {
+            100.0
+        };
+        if c.abs() > err.abs() {
+            err = c;
+        }
+    }
+    put(
+        rows,
+        "O6",
+        "footage[Drawbar combo, C4]",
+        "worst_octave_cents",
+        err.abs(),
+        Better::Lower,
+        Some(0.1),
+        0.01,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Bass.
 
 /// B1: held notes in tune 100 ms in, C0 to C3, the synth body (its plain
@@ -2500,6 +2634,165 @@ fn bass(rows: &mut Vec<Row>, rate: u32) {
         Some(10.0),
         1.0,
     );
+}
+
+// Wind.
+
+/// O3 and O4 on each bore (the plain patch with the model set):
+///
+/// - O3: breath from a breath controller held at 1/8, 2/8 ... 1 on C4: the
+///   level (RMS, 0.8 to 1.2 s) and the brightness (spectral centroid) must
+///   rise at every step (the steps that don't are counted), with the range
+///   and the brightness gained shown; and how soon a note at full velocity
+///   speaks with the default Attack (30 ms): the first 5 ms window within
+///   3 dB of where it settles.
+/// - O4: in tune from C2 to C6 at velocities 30, 100 and 127 (the bore's
+///   pull on the pitch changes with the breath and is taken out).
+fn wind(rows: &mut Vec<Row>, rate: u32) {
+    for (what, model) in [
+        ("clarinet", wp::CLARINET),
+        ("sax", wp::SAX),
+        ("flute", wp::FLUTE),
+    ] {
+        let make = || {
+            let mut n = Engine::Wind.plain(rate);
+            n.set_param(wp::MODEL, model);
+            n
+        };
+        let breaths: Vec<f32> = (1..=8).map(|i| i as f32 / 8.0).collect();
+        let (mut levels, mut tones) = (Vec::new(), Vec::new());
+        for &b in &breaths {
+            let mut n = make();
+            n.set_param(wp::BREATH_FROM, wp::FROM_BREATH);
+            n.set_param(wp::ATTACK, 1.0);
+            n.set_param(wp::SUSTAIN, 100.0);
+            let ev = [
+                (
+                    0,
+                    NodeEvent::Control {
+                        ctl: mpfree_node::Ctl::Breath,
+                        value: b,
+                    },
+                ),
+                (
+                    0,
+                    NodeEvent::NoteOn {
+                        note: 60,
+                        velocity: 100,
+                    },
+                ),
+            ];
+            let s = render(n.as_mut(), rate, frames(1.5, rate), &ev).mid();
+            let seg = &s[frames(0.8, rate)..frames(1.2, rate)];
+            let rms = (seg.iter().map(|v| v * v).sum::<f64>() / seg.len() as f64).sqrt();
+            levels.push(db20(rms));
+            tones.push(centroid(
+                &s[frames(0.8, rate)..frames(0.8, rate) + 16_384],
+                rate,
+            ));
+        }
+        let dips = |v: &[f64], by: f64| v.windows(2).filter(|w| w[1] < w[0] + by).count() as f64;
+        let subject = format!("breath[Wind {what}, C4, breath 1/8 to 1]");
+        put(
+            rows,
+            "O3",
+            &subject,
+            "level_steps_not_rising",
+            dips(&levels, 0.05),
+            Better::Lower,
+            Some(0.0),
+            0.0,
+        );
+        put(
+            rows,
+            "O3",
+            &subject,
+            "level_range_db",
+            levels[levels.len() - 1] - levels[0],
+            Better::Info,
+            None,
+            0.0,
+        );
+        put(
+            rows,
+            "O3",
+            &subject,
+            "tone_steps_not_rising",
+            dips(&tones, 0.0),
+            Better::Lower,
+            Some(0.0),
+            0.0,
+        );
+        let oct = if tones[0] > 0.0 {
+            (tones[tones.len() - 1] / tones[0]).log2()
+        } else {
+            0.0
+        };
+        put(
+            rows,
+            "O3",
+            &subject,
+            "tone_oct",
+            oct,
+            Better::Higher,
+            Some(0.1),
+            0.03,
+        );
+
+        let s = note(make().as_mut(), rate, 60, 127, 1.5, 1.5).mid();
+        let e = env_db(&s, rate, 5.0, 1.0);
+        let settled = {
+            let seg = &s[frames(0.8, rate)..frames(1.2, rate)];
+            db10(seg.iter().map(|v| v * v).sum::<f64>() / seg.len() as f64)
+        };
+        let speak = e
+            .iter()
+            .position(|&v| v >= settled - 3.0)
+            .unwrap_or(e.len()) as f64;
+        put(
+            rows,
+            "O3",
+            &format!("speak[Wind {what}, C4, velocity 127]"),
+            "speak_ms",
+            speak,
+            Better::Lower,
+            Some(30.0),
+            1.0,
+        );
+
+        let mut worst = (0.0f64, 0u8, 0u8);
+        for k in [36u8, 48, 60, 72, 84] {
+            for v in [30u8, 100, 127] {
+                let s = note(make().as_mut(), rate, k, v, 2.0, 2.0);
+                let c = freq_near(&s.mid(), rate, hz(k), frames(0.5, rate))
+                    .map_or(100.0, |f| cents(f, hz(k)));
+                if c.abs() > worst.0.abs() {
+                    worst = (c, k, v);
+                }
+            }
+        }
+        let subject = format!("tune[Wind {what}, C2 to C6, velocity 30 to 127]");
+        put(
+            rows,
+            "O4",
+            &subject,
+            "worst_cents",
+            worst.0.abs(),
+            Better::Lower,
+            Some(3.0),
+            0.05,
+        );
+        put(
+            rows,
+            "O4",
+            &subject,
+            "worst_note",
+            f64::from(worst.1),
+            Better::Info,
+            None,
+            0.0,
+        );
+    }
 }
 
 #[cfg(test)]

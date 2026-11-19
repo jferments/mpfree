@@ -33,13 +33,16 @@
 //!   **First pad** picked), One pad (every slice on one sliced pad, R4: a
 //!   hit plays its Slice, keys from C2 a slice each), Keys (also keygroups
 //!   of one note each from C2, the pads playing them), New kit (an empty
-//!   kit's pads from A1 on a new track, R4.6, where the app offers it) or
-//!   Files (the pad as files, where the app can write them:
-//!   [`ChopAction::Export`]). **Phrase** (for a sound with a tempo, on
+//!   kit's pads from A1 on a new track, R4.6, where the app offers it),
+//!   Audio track (the slices in a row on an audio track, a region each,
+//!   from the playhead's bar, where the app has audio tracks: step 6,
+//!   [`ChopAction::ToAudio`]) or Library (the pad saved as files in the
+//!   library, where the app can write them: [`ChopAction::Export`]). **Phrase** (for a sound with a tempo, on
 //!   Pads, One pad or New kit) also makes a clip of the slices in time
 //!   ([`ChopAction::phrase`]). The main button names what it does ("Chop
 //!   to A6–A13", "Slices on A6", "To keys C2–G2", "Phrase on A6–A13",
-//!   "Export 8 slices"); the section's note says which pads it replaces.
+//!   "To audio track", "Save 8 slices"); the section's note says which
+//!   pads it replaces.
 //! - **Q-Link 1** turns the method's setting, **2** picks a slice, **3**
 //!   moves its start (one pixel of the current zoom per detent, snapped in
 //!   the direction of the turn; with SHIFT one frame) and **4** the first
@@ -87,6 +90,9 @@ const BANKS: usize = PADS / BANK;
 /// The most slices the tool cuts: as many as a kit has pads, and as one
 /// sliced pad holds (R4).
 pub const MAX_CUT_SLICES: usize = MAX_SLICES;
+
+/// Why the pad map and First pad do nothing with Put on Audio track.
+const AUDIO_NO_PAD: &str = "An audio track plays the slices in a row: no pad";
 /// The hint line the app shows under the page with the Slice tool.
 pub const HINT: &str =
     "Tap a slice to pick and hear it · drag a cut's tab to move it · Split, Merge, then Chop to \
@@ -266,12 +272,18 @@ pub enum Put {
     OnePad,
     /// Keygroups of one note each from [`SLICE_KEYS_FROM`].
     Keys,
-    /// Files: the pad's sounds, its sidecar and each slice
-    /// ([`ChopAction::Export`]; only where the app can write them).
-    Files,
+    /// Library: the pad's sounds, its sidecar and each slice saved in the
+    /// library, under Samples › Exports ([`ChopAction::Export`]; only
+    /// where the app can write them; the one Sample page's step 6c named
+    /// it as drawn, before that it was Files).
+    Library,
     /// An empty kit's pads from A1, the kit on a new track (sampler R4.6;
     /// where the app offers it, [`ChopState::new_kit`]).
     NewKit,
+    /// An audio track: the slices in a row, a region each, from the
+    /// playhead's bar (the one Sample page's step 6; where the app has
+    /// audio tracks, [`ChopState::audio`]): [`ChopAction::ToAudio`].
+    Audio,
 }
 
 impl Put {
@@ -281,8 +293,9 @@ impl Put {
             Put::Pads => "Pads",
             Put::OnePad => "1 pad",
             Put::Keys => "Keys",
-            Put::Files => "Files",
+            Put::Library => "Library",
             Put::NewKit => "New kit",
+            Put::Audio => "Audio track",
         }
     }
 }
@@ -331,7 +344,7 @@ pub struct ChopState {
     pub source: Arc<SourceView>,
     /// Which of the kit's pads have a sound, by pad.
     pub used: Vec<bool>,
-    /// The app can write files (Put on Files is offered).
+    /// The app can write files (Put on Library is offered).
     pub files: bool,
     /// The chop kept for the sound ([`Project::kept_chop`]): the slices
     /// as the tool last left them, shown again in place of a fresh chop.
@@ -340,6 +353,8 @@ pub struct ChopState {
     /// empty kit and a new track can take the slices, or Err saying why
     /// not now (no empty kit left, no room for a track).
     pub new_kit: Option<Result<(), String>>,
+    /// The app has audio tracks (Put on Audio track is offered).
+    pub audio: bool,
     /// What each of the kit's pads plays of the chopped sound, by pad
     /// (None: another sound, or none): so the tool knows a slice that is
     /// on a pad already ([`SliceTool::slice_pad`]).
@@ -421,6 +436,7 @@ impl ChopState {
             files: false,
             kept,
             new_kit: None,
+            audio: false,
             plays: (0..PADS)
                 .map(|i| {
                     let pd = p.pad(i)?;
@@ -508,6 +524,17 @@ pub enum ChopAction {
         pad: usize,
         layer: usize,
         cuts: Vec<u64>,
+    },
+    /// Put the slices between `bounds` (the region's start, the cuts, its
+    /// end; source frames of pad `pad`'s layer `layer`) on an audio track
+    /// in a row, a region each, from the playhead's bar: one undo step
+    /// there (the one Sample page's step 6). The app copies the sound out
+    /// and the audio tracks place it.
+    ToAudio {
+        pad: usize,
+        layer: usize,
+        name: String,
+        bounds: Vec<u64>,
     },
     /// Live chop: play source frames `start..end` of pad `pad`'s layer
     /// `layer` once, and let the pads played meanwhile mark cuts in it
@@ -791,11 +818,13 @@ impl SliceTool {
     }
 
     /// Where the slices go: files only where the app writes them, a new
-    /// kit only where it offers one.
+    /// kit only where it offers one, an audio track only where it has
+    /// them.
     pub fn put(&self, st: &ChopState) -> Put {
         match self.put {
-            Put::Files if !st.files => Put::Pads,
+            Put::Library if !st.files => Put::Pads,
             Put::NewKit if st.new_kit.is_none() => Put::Pads,
+            Put::Audio if !st.audio => Put::Pads,
             p => p,
         }
     }
@@ -806,20 +835,25 @@ impl SliceTool {
             Put::Pads => "Pads",
             Put::OnePad => "One pad",
             Put::Keys => "Keys",
-            Put::Files => "Files",
+            Put::Library => "Library",
             Put::NewKit => "New kit",
+            Put::Audio => "Audio track",
         }
     }
 
-    /// The Put on choices for `st`: New kit where the app offers it, and
-    /// Files where it writes them.
+    /// The Put on choices for `st`, in the mockup's order: New kit where
+    /// the app offers it, Audio track where it has them, and Library where
+    /// it writes them.
     fn puts(st: &ChopState) -> Vec<Put> {
         let mut all = vec![Put::Pads, Put::OnePad, Put::Keys];
         if st.new_kit.is_some() {
             all.push(Put::NewKit);
         }
+        if st.audio {
+            all.push(Put::Audio);
+        }
         if st.files {
-            all.push(Put::Files);
+            all.push(Put::Library);
         }
         all
     }
@@ -837,6 +871,8 @@ impl SliceTool {
             Some("A phrase needs a beat: no tempo was found in this sound")
         } else if matches!(self.put(st), Put::Pads | Put::OnePad | Put::NewKit) {
             None
+        } else if self.put(st) == Put::Audio {
+            Some("Phrase is for pads: on an audio track the slices already play one after another")
         } else if st.new_kit.is_some() {
             Some("A phrase goes with Pads, One pad or New kit, not keys or files")
         } else {
@@ -916,7 +952,7 @@ impl SliceTool {
     /// or Keys, the pad it lands on when that pad plays just the slice (a
     /// keygroup for Keys); on One pad, that pad when it plays these slices.
     /// None before the slices are put on, once they are cut again, and on
-    /// New kit or Files (not this kit's pads). The Sound section follows
+    /// New kit or Library (not this kit's pads). The Sound section follows
     /// it (the one Sample page's step 3b).
     pub fn slice_pad(&self, st: &ChopState, k: usize) -> Option<usize> {
         let b = self.bounds(st);
@@ -940,7 +976,7 @@ impl SliceTool {
             Put::OnePad => plays(r.start)
                 .filter(|p| (p.start, p.end) == (b[0], b[n]) && p.cuts[..] == b[1..n])
                 .map(|_| r.start),
-            Put::NewKit | Put::Files => None,
+            Put::NewKit | Put::Library | Put::Audio => None,
         }
     }
 
@@ -954,9 +990,9 @@ impl SliceTool {
     /// Where each slice lands, for the lane under the wave: its pad ("A3";
     /// on One pad, the pad and the slice's number, "A5 · 3"; on a new kit,
     /// its pads from A1), and whether that pad plays it already. Empty when
-    /// they go into files or don't fit.
+    /// they go into files or onto an audio track, or don't fit.
     pub fn lands(&self, st: &ChopState) -> Vec<Land> {
-        let Some(r) = self.pads(st).filter(|_| self.put(st) != Put::Files) else {
+        let Some(r) = self.pads(st).filter(|_| self.on_pads(st)) else {
             return Vec::new();
         };
         let b = self.bounds(st);
@@ -987,11 +1023,18 @@ impl SliceTool {
             .map_or(own, |(_, b)| b.min(BANKS - 1))
     }
 
+    /// Whether the slices go on pads (of this kit or a new one): not into
+    /// files or onto an audio track.
+    fn on_pads(&self, st: &ChopState) -> bool {
+        !matches!(self.put(st), Put::Library | Put::Audio)
+    }
+
     /// Why the pad map does nothing now, or None.
     fn map_why(&self, st: &ChopState) -> Option<&'static str> {
         match self.put(st) {
             Put::NewKit => Some("On a new kit the slices start on A1"),
-            Put::Files => Some("Files go on no pad"),
+            Put::Library => Some("Library: the slices go on no pad"),
+            Put::Audio => Some(AUDIO_NO_PAD),
             _ if self.pads(st).is_none() => Some("The slices don't fit on the pads: fewer slices"),
             _ => None,
         }
@@ -1004,7 +1047,7 @@ impl SliceTool {
     pub fn map_cells(&self, st: &ChopState) -> Vec<PadCell> {
         let first = self.bank_shown(st) * BANK;
         let new_kit = self.put(st) == Put::NewKit;
-        let lands = self.pads(st).filter(|_| self.put(st) != Put::Files);
+        let lands = self.pads(st).filter(|_| self.on_pads(st));
         let n = self.slices();
         let used = |pad: usize| !new_kit && st.used(pad);
         (first..first + BANK)
@@ -1041,7 +1084,7 @@ impl SliceTool {
 
     /// The pads Chop to pads fills that have a sound already.
     pub fn replaced(&self, st: &ChopState) -> Vec<usize> {
-        if self.put(st) == Put::NewKit {
+        if !self.on_pads(st) || self.put(st) == Put::NewKit {
             return Vec::new();
         }
         self.pads(st)
@@ -1328,8 +1371,9 @@ impl SliceTool {
             Button::Merge => "Merge".into(),
             Button::Clear => "Clear".into(),
             Button::ToPads => match (self.pads(st).map(|p| self.range_text(&p)), self.put(st)) {
-                (_, Put::Files) if n == 1 => "Export the pad".to_string(),
-                (_, Put::Files) => format!("Export {n} slices"),
+                (_, Put::Library) if n == 1 => "Save the pad".to_string(),
+                (_, Put::Library) => format!("Save {n} slices"),
+                (_, Put::Audio) => "To audio track".to_string(),
                 (None, Put::OnePad) => format!("Max {MAX_SLICES} slices"),
                 (None, _) => format!("Max {PADS} slices"),
                 (Some(_), Put::NewKit) if self.phrase_on(st) => "Phrase to new kit".to_string(),
@@ -1382,7 +1426,7 @@ impl SliceTool {
                 (_, None) => Some(format!("A kit has {PADS} pads: fewer slices")),
                 _ => None,
             },
-            Button::ToPads if self.pads(st).is_some() || self.put(st) == Put::Files => None,
+            Button::ToPads if self.pads(st).is_some() || !self.on_pads(st) => None,
             Button::ToPads => Some(
                 "The slices don't fit on the pads from the first pad: fewer slices, or an earlier First pad"
                     .to_string(),
@@ -1405,7 +1449,8 @@ impl SliceTool {
                 Some(Ok(())) => "on a new track".into(),
                 _ => "not now".into(),
             },
-            _ if self.put(st) == Put::Files => "as files".into(),
+            _ if self.put(st) == Put::Library => "into Samples › Exports".into(),
+            _ if self.put(st) == Put::Audio => "a region each, from the playhead's bar".into(),
             _ if self.all_on(st) => "on their pads".into(),
             (false, _) => format!("{} slices: more than the kit's {PADS} pads", self.slices()),
             (true, 0) => "no pad replaced".into(),
@@ -1619,8 +1664,9 @@ impl SliceTool {
                         Put::Keys => format!("Keys from {}", note_name(SLICE_KEYS_FROM)),
                         p => match p {
                             Put::OnePad => "One pad",
-                            Put::Files => "Files",
+                            Put::Library => "Library",
                             Put::NewKit => "New kit",
+                            Put::Audio => "Audio track",
                             _ => "Pads",
                         }
                         .into(),
@@ -1629,7 +1675,7 @@ impl SliceTool {
                 Row::Pads => row(
                     "Pads",
                     match self.pads(st) {
-                        _ if self.put(st) == Put::Files => "None".into(),
+                        _ if !self.on_pads(st) => "None".into(),
                         Some(p) => self.range_text(&p),
                         None => "Too many".into(),
                     },
@@ -1692,6 +1738,10 @@ impl SliceTool {
             _ if self.put(st) == Put::NewKit => {
                 first.enabled = false;
                 first.why = "On a new kit the slices start on A1".to_string();
+            }
+            _ if self.put(st) == Put::Audio => {
+                first.enabled = false;
+                first.why = AUDIO_NO_PAD.to_string();
             }
             Some(p) => {
                 first.value = pad_text(self.bank, p.start);
@@ -1811,10 +1861,16 @@ impl SliceTool {
                 self.hand_edited();
                 self.take_stop(st)
             }
-            Button::ToPads if self.put(st) == Put::Files => Some(ChopAction::Export {
+            Button::ToPads if self.put(st) == Put::Library => Some(ChopAction::Export {
                 pad: st.pad,
                 layer: st.layer,
                 cuts: self.cuts.clone(),
+            }),
+            Button::ToPads if self.put(st) == Put::Audio => Some(ChopAction::ToAudio {
+                pad: st.pad,
+                layer: st.layer,
+                name: st.pad_name.clone(),
+                bounds,
             }),
             Button::ToPads => {
                 let pads = self.pads(st)?;
@@ -1954,8 +2010,8 @@ impl SliceTool {
     }
 
     fn turn_first_pad(&mut self, st: &ChopState, delta: i32) {
-        if self.put(st) == Put::NewKit {
-            // A new kit's slices start on A1.
+        if matches!(self.put(st), Put::NewKit | Put::Audio) {
+            // A new kit's slices start on A1; an audio track has no pads.
             return;
         }
         let Some(p) = self.pads(st) else { return };

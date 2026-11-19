@@ -3,11 +3,12 @@
 //! asked for while recording waits for the recording to end; a fit to a
 //! new tempo is read, stretched on the worker, loaded and swapped in; a
 //! cancelled save or waveform never comes; cleared tracks take a part
-//! back under its own take ids (a project opening).
+//! back under its own take ids (a project opening); a sound brought in
+//! plays from its bar, a region a slice, as one undo step.
 
 use std::time::{Duration, Instant};
 
-use mpfree_audiotracks::host::AudioHost;
+use mpfree_audiotracks::host::{AudioHost, ImportRefused};
 use mpfree_audiotracks::Command as A;
 use mpfree_transport::{Block, Command as T, Transport};
 
@@ -358,4 +359,68 @@ fn a_cancelled_waveform_never_comes() {
         w.is_some()
     });
     assert_eq!(w.unwrap().id, 0);
+}
+
+/// The one Sample page's step 6 (Put on Audio track): a sound brought in
+/// is a take of its own on the track asked; it copies in, then plays from
+/// the bar asked to its end, a region a slice, as one undo step. A second
+/// waits for the first, and one bigger than the memory is refused.
+#[test]
+fn a_sound_brought_in_plays_from_its_bar_as_one_undo_step() {
+    let mut r = Rig::new();
+    r.live = false;
+    // Half a bar of the tone, stereo, onto track 3 at bar 2.
+    let half = (BAR / 2) as usize;
+    let audio: Vec<f32> = (0..half)
+        .flat_map(|g| {
+            let s = tone(g as u64);
+            [s, s]
+        })
+        .collect();
+    // Two slices: cut a quarter of a bar in (a cut past the end is left
+    // out).
+    let cuts = vec![half as u64 / 2, 10 * BAR];
+    let id =
+        r.h.import(2, BAR_TICKS, 2, audio.clone(), cuts, 240.0)
+            .unwrap();
+    assert_eq!(r.h.importing(), Some(id));
+    assert_eq!(
+        r.h.import(3, 0, 2, audio, Vec::new(), 0.0),
+        Err(ImportRefused::Busy)
+    );
+    r.run_until(|r| r.h.importing().is_none());
+    assert_eq!(r.h.imports, 1);
+    let take = r.h.tracks.take(id).unwrap();
+    assert_eq!(
+        (take.track, take.channels, take.frames, take.bpm),
+        (2, 2, half, 240.0)
+    );
+    let regs = r.h.tracks.regions(2);
+    let q = BAR_TICKS / 4;
+    assert_eq!(regs.len(), 2, "{regs:?}");
+    assert_eq!(
+        (regs[0].take, regs[0].start, regs[0].src),
+        (id, BAR_TICKS, 0)
+    );
+    assert!((regs[0].end - (BAR_TICKS + q)).abs() <= 1, "{regs:?}");
+    assert_eq!((regs[1].take, regs[1].start), (id, regs[0].end));
+    assert!((regs[1].src - half as i64 / 2).abs() <= 1, "{regs:?}");
+    assert!((regs[1].end - (BAR_TICKS + 2 * q)).abs() <= 1, "{regs:?}");
+    // It plays in bar 2, across the cut too, and nothing before.
+    let out = r.play(2 * BAR);
+    assert_eq!(rms(&out, 1000, BAR - 1000), 0.0);
+    assert!(rms(&out, BAR + 1000, BAR + half as u64 - 1000) > 0.2);
+    let cut = BAR + half as u64 / 2;
+    assert!(rms(&out, cut - 200, cut + 200) > 0.2);
+    // One undo takes both slices off.
+    assert!(r.h.command(A::Undo));
+    r.run_to(r.frame + 10);
+    assert!(r.h.tracks.regions(2).is_empty());
+    // Bigger than the memory (20 s): refused, and nothing waits.
+    let big = vec![0.0; 2 * RATE as usize * 30];
+    assert_eq!(
+        r.h.import(1, 0, 2, big, Vec::new(), 0.0),
+        Err(ImportRefused::NoRoom)
+    );
+    assert_eq!(r.h.importing(), None);
 }

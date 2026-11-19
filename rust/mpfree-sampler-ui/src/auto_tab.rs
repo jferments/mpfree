@@ -37,7 +37,7 @@ use mpfree_ui::{EventKind, Ui, UiEvent};
 
 use crate::auto_widgets::{KeyMapView, LayerBand};
 use crate::slice_tool::pad_text;
-use crate::wave_tab::{self, pad_color, TABS};
+use crate::wave_tab::pad_color;
 use crate::widgets::{ButtonRow, InfoCard, PadBar, Setting, SettingList};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
@@ -398,8 +398,6 @@ pub enum AutoAction {
     Cancel,
     /// Back to the Rec tab's recording.
     Back,
-    /// Open the editor's tab `i` of [`TABS`].
-    Tab(usize),
 }
 
 /// Where an instrument of `n` pads goes on a kit of `pads` pads: the
@@ -452,10 +450,6 @@ pub struct AutoTab {
     synth: Option<String>,
     gear: Option<String>,
     running: bool,
-    /// The tab its second button goes back to, by its place in [`TABS`]:
-    /// the Wave page's, whose recorder opens it (the one Sample page's
-    /// step 2e; the Rec tab went in step 2f, part 4). The pad bar lights it.
-    pub back: usize,
 }
 
 impl AutoTab {
@@ -463,10 +457,7 @@ impl AutoTab {
     /// and `hint` first) and shows `st`.
     pub fn add(ui: &mut Ui, name: &str, st: &AutoState) -> Result<AutoTab, String> {
         crate::send::add(ui);
-        let mut bar = PadBar::new(&TABS);
-        bar.enabled = TABS.iter().map(|t| wave_tab::BUILT.contains(t)).collect();
-        bar.active = wave_tab::TAB;
-        ui.add(BAR, bar);
+        ui.add(BAR, PadBar::new(&[]));
         ui.add(VIEW, KeyMapView::new("Auto-sample"));
         let mut list = SettingList::new("Auto-sample");
         list.selected = Row::Lowest.index();
@@ -484,7 +475,6 @@ impl AutoTab {
             synth: st.synth.clone(),
             gear: st.gear.clone(),
             running: false,
-            back: wave_tab::TAB,
         };
         tab.update(ui, st);
         Ok(tab)
@@ -528,7 +518,6 @@ impl AutoTab {
         };
         if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
             bar.color = pad_color(st.target.unwrap_or(st.pad));
-            bar.active = self.back;
             bar.title = match (&source, &pads) {
                 (None, _) if s.gear.is_some() => {
                     "Auto-sample: no MIDI out for the gear".to_string()
@@ -634,7 +623,9 @@ impl AutoTab {
         if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
             b.labels = vec![
                 if self.running { "Cancel" } else { "Start" }.to_string(),
-                TABS.get(self.back).copied().unwrap_or("Wave").to_string(),
+                // Back to the Wave page, whose recorder opens it (the one
+                // Sample page's step 2e).
+                "Wave".to_string(),
             ];
             b.enabled = vec![self.running || can, !self.running];
             let start = match (&source, &fault) {
@@ -673,7 +664,6 @@ impl AutoTab {
     /// What a touch on one of the page's widgets asks for.
     pub fn action(&mut self, ui: &mut Ui, ev: &UiEvent, st: &AutoState) -> Option<AutoAction> {
         match (ev.widget.as_str(), &ev.kind) {
-            (BAR, EventKind::Tab(i)) => Some(AutoAction::Tab(*i)),
             (BUTTONS, EventKind::Tab(0)) if self.running => Some(AutoAction::Cancel),
             (BUTTONS, EventKind::Tab(0)) => {
                 st.target?;
