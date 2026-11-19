@@ -1093,6 +1093,12 @@ pub enum ToUi {
     /// units, set on the kit as the Play tab's knob sets it
     /// ([`sample_page::SamplePage::learned`]).
     PadsLearned(Vec<(usize, u8, mpfree_sampler::engine::PadField, f32)>),
+    /// Save preset's answer (`presets::Ask::Text`): the Synth tab's sound
+    /// as preset text and the engine's folder it goes in, or why not.
+    PresetText {
+        name: String,
+        made: Result<(String, String), String>,
+    },
     /// The synth's meters, by parameter index.
     SynthMeters(Vec<(usize, f32)>),
     /// Each sounding voice's pressure, 0 to 1, for the Pressure page's
@@ -1372,6 +1378,13 @@ pub enum FromUi {
     /// The Pads tab's Browse for: open the browser, whose Load puts a
     /// sound on the pad picked.
     PadsBrowse,
+    /// The Synth tab's title asked for the engine's presets: the browser
+    /// opens over the page for the preset picker (true), or goes back to
+    /// the page once the picker closes (false) (presets.rs).
+    PresetPicker(bool),
+    /// The preset picker on the Synth tab's sound: try, load, put back or
+    /// save a preset (presets.rs).
+    Preset(crate::presets::Ask),
     /// The browser's preview: hear this sound once (it replaces one
     /// playing).
     Preview(Box<crate::preview::Preview>),
@@ -1882,6 +1895,8 @@ pub struct Player {
     preview_load: Option<std::sync::mpsc::Receiver<sample_page::Loaded>>,
     /// A MIDI file BROWSE loaded, being read ([`crate::midi_file`]).
     midi_load: Option<std::sync::mpsc::Receiver<Result<crate::midi_file::MidiImport, String>>>,
+    /// The preset picker the Synth tab's title opens (presets.rs).
+    preset_picker: crate::presets::Picker,
     /// MPFree's own kits being written into the library (bundled.rs), and
     /// whether this run has looked whether they need to be.
     bundling: Option<std::sync::mpsc::Receiver<Result<usize, String>>>,
@@ -2354,6 +2369,7 @@ impl Player {
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
             midi_load: None,
+            preset_picker: crate::presets::Picker::default(),
             bundling: None,
             bundle_looked: false,
             arp_panel,
@@ -5863,6 +5879,7 @@ impl Player {
                                       MENU: options   ·   NOTE REPEAT + MENU: close"),
                 View::Pattern => self.workspace.hint().to_string(),
                 View::Browser if self.browser.is_none() => NO_LIBRARY_HINT.to_string(),
+                View::Browser if self.preset_picker.open => self.preset_picker.hint(),
                 View::Browser
                     if self
                         .browser
@@ -7805,9 +7822,20 @@ impl Player {
                     .add("syslog", LogPanel::new("Console", true, CONSOLE_BACKLOG));
                 self.console_backlog.clear();
             }
-            ToUi::Synth(state) => {
+            ToUi::Synth(mut state) => {
                 match self.synth.as_mut() {
                     Some(p) => {
+                        // The same sound named again (a try put back, a
+                        // track's copy made): it stays "edited".
+                        let st = &p.state;
+                        if st.edited
+                            && st.info.id == state.info.id
+                            && st.track == state.track
+                            && st.preset == state.preset
+                            && st.own == state.own
+                        {
+                            state.edited = true;
+                        }
                         let _ = p.load(&mut self.ui, state);
                     }
                     None => match SynthPanel::add(&mut self.ui, "Synth", state) {
@@ -7846,6 +7874,17 @@ impl Player {
             ToUi::PadsLearned(sets) => {
                 for (kit, pad, field, value) in sets {
                     self.sample.learned(kit, usize::from(pad), field, value);
+                }
+            }
+            ToUi::PresetText { name, made } => {
+                if let Some(b) = self.browser.as_mut() {
+                    match made {
+                        Ok((folder, text)) => b.save_preset(&folder, &name, text),
+                        Err(why) => b.preset_not_saved(&why),
+                    }
+                    if self.view == View::Browser {
+                        mpfree_browser_ui::show(&mut self.ui, b);
+                    }
                 }
             }
             ToUi::SynthValues(values) => {
@@ -8694,7 +8733,64 @@ impl Player {
             A::LoadMidi { path, .. } => {
                 self.midi_load = Some(crate::midi_file::read_in_thread(path));
             }
-            A::PickerClosed { .. } => {}
+            // The preset picker the Synth tab's title opened (presets.rs).
+            A::TryFactoryPreset { index, .. } => {
+                self.outbox
+                    .push(FromUi::Preset(crate::presets::Ask::TryFactory(index)));
+            }
+            A::LoadFactoryPreset { index, .. } => {
+                // As a tap on the side list's preset loads it.
+                if let Some(p) = self.synth.as_mut() {
+                    p.state.preset = Some(index);
+                    p.state.own = None;
+                    p.state.edited = false;
+                    p.refresh(&mut self.ui);
+                }
+                self.outbox.push(FromUi::Synth(SynthAction::Preset(index)));
+            }
+            A::TryPreset { loc, path, engine } => {
+                let name = mpfree_library::preset_name(loc.name()).to_string();
+                self.preset_picker.read(path, engine, name, false);
+            }
+            // Also BROWSE's Load on a preset in Instruments: onto the Synth
+            // tab's sound, if it is that engine's.
+            A::LoadPreset { loc, path, engine } => {
+                let name = mpfree_library::preset_name(loc.name()).to_string();
+                self.preset_picker.read(path, engine, name, true);
+            }
+            A::RevertPreset => {
+                self.preset_picker.revert();
+                if let (Some((preset, own, edited)), Some(p)) =
+                    (self.preset_picker.before().cloned(), self.synth.as_mut())
+                {
+                    p.state.preset = preset;
+                    p.state.own = own;
+                    p.state.edited = edited;
+                    p.refresh(&mut self.ui);
+                }
+                self.outbox
+                    .push(FromUi::Preset(crate::presets::Ask::Revert));
+            }
+            A::SavePresetRequested { name, .. } => {
+                self.outbox
+                    .push(FromUi::Preset(crate::presets::Ask::Text(name)));
+            }
+            A::PresetSaved { name, .. } => {
+                if let Some(p) = self.synth.as_mut() {
+                    p.state.edited = false;
+                    self.preset_picker.saved(&name, p.state.preset);
+                }
+                self.refresh_hint();
+                self.say(format!("browser: saved the preset {name}"));
+                self.outbox
+                    .push(FromUi::Preset(crate::presets::Ask::Saved(name)));
+            }
+            A::PickerClosed { .. } => {
+                if self.preset_picker.closed() {
+                    self.outbox.push(FromUi::PresetPicker(false));
+                }
+                self.refresh_hint();
+            }
             // Kit files (mpfree_library::kit): a kit loads in place of the
             // kit the pads play; Save kit saves that kit as a kit folder.
             // A kit other tracks play too: a spare user kit takes it, for
@@ -8770,7 +8866,6 @@ impl Player {
                 "browser: {} is not wired yet",
                 match other {
                     A::LoadFactoryKit { .. } => "a factory kit",
-                    A::LoadPreset { .. } | A::TryPreset { .. } | A::RevertPreset => "a preset",
                     _ => "a project",
                 }
             )),
@@ -8868,6 +8963,49 @@ impl Player {
         }
         if self.plugin_page.take_changed() {
             self.outbox.push(FromUi::PluginsChanged);
+        }
+    }
+
+    /// The Synth tab's title: the browser opens on the engine's presets
+    /// (presets.rs), or the screen says why not.
+    fn open_presets(&mut self) -> Option<FromUi> {
+        let st = &self.synth.as_ref()?.state;
+        match self.preset_picker.ask(st, self.browser.is_some()) {
+            Ok(()) => Some(FromUi::PresetPicker(true)),
+            Err(why) => {
+                self.tell(&why);
+                None
+            }
+        }
+    }
+
+    /// Another page shows: a preset picker asked for is dropped, and one
+    /// open is cancelled (BROWSE puts back the sound from before the first
+    /// try, as Cancel does).
+    fn leave_preset_picker(&mut self) {
+        self.preset_picker.left();
+        if !self.preset_picker.open {
+            return;
+        }
+        let Some(b) = self.browser.as_mut() else {
+            return;
+        };
+        b.cancel_picker();
+        for a in b.take_actions() {
+            self.browse_action(a);
+        }
+    }
+
+    /// A preset file the picker (or BROWSE's Load) read: to the sound
+    /// loop, or why it can't be.
+    fn poll_preset_file(&mut self) {
+        match self.preset_picker.poll() {
+            Some(Ok(ask)) => self.outbox.push(FromUi::Preset(ask)),
+            Some(Err(line)) => {
+                self.tell(&line);
+                self.say(format!("browser: {line}"));
+            }
+            None => {}
         }
     }
 
@@ -10115,6 +10253,12 @@ impl Player {
             }
             return;
         }
+        if let FromUi::Preset(p) = a {
+            if p.edits() {
+                self.mark_unsaved();
+            }
+            return;
+        }
         if let FromUi::SampleView(_) = a {
             if self.sample.edits != self.sample_edits {
                 self.sample_edits = self.sample.edits;
@@ -10128,6 +10272,7 @@ impl Player {
                 | FromUi::Audition { .. }
                 | FromUi::PadBank(_)
                 | FromUi::PadsBrowse
+                | FromUi::PresetPicker(_)
                 | FromUi::Preview(_)
                 | FromUi::PreviewStop
                 | FromUi::SaveBrowserLists(_)
@@ -10164,6 +10309,9 @@ impl Player {
     }
 
     fn show_view(&mut self, v: View) {
+        if v != View::Browser {
+            self.leave_preset_picker();
+        }
         if v == View::Pads && self.view != View::Pads && self.perform.shown {
             // Back on the Perform view: the app sends its throws' settings
             // again (the Mix tab may have turned them).
@@ -10245,12 +10393,14 @@ impl Player {
             View::Pattern => self.workspace.page().to_string(),
             View::Browser => {
                 // The whole library, Projects with New, Save and Save as;
-                // a picker left open is put away.
+                // a picker left open is put away. The Synth tab's title
+                // opens the preset picker in it.
                 if let Some(b) = self.browser.as_mut() {
                     if b.picking().is_some() {
                         b.cancel_picker();
                         b.take_actions();
                     }
+                    self.preset_picker.opened(b);
                 } else {
                     self.say("browser: no library (the app was started without --data); nothing can be saved or opened".to_string());
                 }
@@ -10940,10 +11090,13 @@ impl Player {
         .contains(&ev.widget.as_str());
         if synth_widget {
             let p = self.synth.as_mut()?;
-            let a = p.event(&mut self.ui, &ev).map(FromUi::Synth);
+            let a = p.event(&mut self.ui, &ev);
             // The page or a value changed: the Q-Link column follows.
             self.refresh_qlinks();
-            return a;
+            if a == Some(SynthAction::OpenPresets) {
+                return self.open_presets();
+            }
+            return a.map(FromUi::Synth);
         }
         // The Pads tab's Kit: the list of kits over the page.
         if ev.widget == mpfree_sampler_ui::pads_tab::BAR
@@ -12059,6 +12212,7 @@ impl Player {
         self.poll_saves();
         self.poll_plugins();
         self.poll_preview();
+        self.poll_preset_file();
         self.poll_midi();
         self.poll_loops();
         self.poll_audio();
@@ -14165,6 +14319,49 @@ fn browser_samples(fonts: Fonts) -> Result<Player, String> {
     built
 }
 
+/// The preset picker from the Synth tab's title (layout spec 4g): Poly's
+/// own presets under Factory, the third one tried while the sound it
+/// opened on, edited, waits for Cancel; Save preset at the top. Over a
+/// library filled in a scratch folder (removed again once the browser has
+/// read what it shows). For the manual's Synth chapter.
+fn browser_presets(fonts: Fonts) -> Result<Player, String> {
+    use mpfree_browser_ui::sample::fill;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "mpfree-browser-presets-{}-{nanos}",
+        std::process::id()
+    ));
+    let built = (|| {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let lib = fill(&dir)?;
+        let mut p = sample_player(fonts);
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib), "");
+        p.apply(ToUi::Kit(sample_kits().len()));
+        p.apply(ToUi::Show(View::Synth));
+        // A turn makes the sound "edited"; then the name is tapped.
+        p.apply(ToUi::SynthQLink(2, 12));
+        p.take_actions();
+        let asked = p.on_event(UiEvent {
+            widget: synth_view::TITLE.into(),
+            kind: EventKind::Select(0),
+        });
+        if asked != Some(FromUi::PresetPicker(true)) {
+            return Err(format!("the title asked for {asked:?}"));
+        }
+        p.apply(ToUi::Show(View::Browser));
+        let b = p.browser.as_mut().ok_or("no browser")?;
+        b.dial(2);
+        p.step_browser();
+        p.take_actions();
+        Ok(p)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    built
+}
+
 /// The whole browser (BROWSE) in Kits with the Boom bap kit picked: Load
 /// on Drums (the armed track) and New track with this kit. Over a library
 /// filled in a scratch folder (removed again once the browser has read
@@ -15960,6 +16157,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     match browser_samples(fonts()) {
         Ok(browse) => out.push(("browser-samples", browse)),
         Err(e) => eprintln!("browser-samples: not drawn ({e})"),
+    }
+    // The preset picker the Synth tab's title opens, a preset tried.
+    match browser_presets(fonts()) {
+        Ok(presets) => out.push(("browser-presets", presets)),
+        Err(e) => eprintln!("browser-presets: not drawn ({e})"),
     }
     // The whole browser in Kits, Boom bap picked: New track with this kit.
     match browser_kits(fonts()) {
@@ -22247,6 +22449,7 @@ mod tests {
             color: Color::rgb(0xFF_8800),
             presets: Vec::new(),
             preset: None,
+            own: None,
             edited: false,
             pressures: Vec::new(),
         };

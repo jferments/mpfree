@@ -7,7 +7,7 @@
 //! or turning the dial over a long list queues one listing and one header
 //! read that matter, not one for every step.
 
-use crate::{AudioInfo, Entry, Library, Loc, NewSample, Snapshot, TrashItem, Version};
+use crate::{AudioInfo, Entry, Library, Loc, NewSample, PresetSave, Snapshot, TrashItem, Version};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -86,6 +86,13 @@ pub enum Job {
     OpenVersion(Loc, String),
     /// Names holding this text, anywhere in the library, at most this many.
     Search(String, usize),
+    /// A preset the musician saves ([`Library::save_preset`]).
+    SavePreset {
+        engine: String,
+        name: String,
+        text: String,
+        replace: bool,
+    },
     /// A whole new file (a recording, a kit), off the UI thread.
     WriteNew {
         folder: Loc,
@@ -123,6 +130,8 @@ pub enum Outcome {
     Found(String, Vec<(Loc, Entry)>),
     /// The Trash emptied: bytes freed.
     Emptied(u64),
+    /// A preset saved, or its name found taken.
+    Preset(PresetSave),
 }
 
 /// A job's number and what came of it (or why it failed, in words).
@@ -266,6 +275,12 @@ pub fn run(lib: &Library, job: Job) -> std::io::Result<Outcome> {
             name,
             bytes,
         } => Outcome::At(lib.write_new(&folder, &name, &bytes)?),
+        Job::SavePreset {
+            engine,
+            name,
+            text,
+            replace,
+        } => Outcome::Preset(lib.save_preset(&engine, &name, &text, replace)?),
     })
 }
 

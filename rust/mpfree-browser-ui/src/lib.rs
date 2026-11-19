@@ -53,8 +53,8 @@ pub use plugins::{
     Tone,
 };
 pub use state::{
-    BrowseAction, Browser, Button, Filter, Input, MapCell, MapShown, PadMap, Pick, Screen, Sort,
-    Source,
+    BrowseAction, Browser, Button, Filter, Input, MapCell, MapShown, PadMap, Pick, PresetNow,
+    Screen, Sort, Source,
 };
 pub use view::BrowserView;
 

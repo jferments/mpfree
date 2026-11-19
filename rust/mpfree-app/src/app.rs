@@ -3555,6 +3555,16 @@ impl App {
         self.show(View::Browser)
     }
 
+    /// The Synth tab's preset picker is done (Load or Cancel): back to the
+    /// page the browser opened over. Nothing if the browser no longer
+    /// shows (BROWSE closed it first).
+    pub fn close_browser(&mut self) -> Vec<Effect> {
+        if self.view != View::Browser {
+            return Vec::new();
+        }
+        self.toggle(View::Browser)
+    }
+
     /// The tempo chip: the mixer's I/O view, whatever shows (the app picks
     /// the Sync section). It never closes it.
     pub fn open_io(&mut self) -> Vec<Effect> {
