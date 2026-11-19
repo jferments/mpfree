@@ -861,71 +861,78 @@ synth/Drums[Tight Kit, pad 8 Tom]/decay_err_pct	0.5
 synth/Drums[Tight Kit, pad 8 Tom]/vel_tone_oct	0.0081
 synth/Drums[Tight Kit, pad 9 Rim]/decay_err_pct	-2.5
 synth/Drums[Tight Kit, pad 9 Rim]/vel_tone_oct	0.004
-synth/FM[Bell Tower]/chord6_vs_power_db	0.3979
-synth/FM[Bell Tower]/chord8_peak_dbfs	-0.6335
-synth/FM[Bell Tower]/dc_dbfs	-95.4665
-synth/FM[Bell Tower]/key_spread_db	2.5375
-synth/FM[Bell Tower]/mono_loss_db	0
-synth/FM[Bell Tower]/vel_curve_err_db	0.9089
-synth/FM[Bell Tower]/vel_tone_oct	2.1698
-synth/FM[Brass Section]/chord6_vs_power_db	0.3431
-synth/FM[Brass Section]/chord8_peak_dbfs	-11.584
-synth/FM[Brass Section]/dc_dbfs	-46.8223
-synth/FM[Brass Section]/key_spread_db	3.0302
-synth/FM[Brass Section]/mono_loss_db	0
-synth/FM[Brass Section]/vel_curve_err_db	0.6043
-synth/FM[Brass Section]/vel_tone_oct	1.4647
-synth/FM[Drawbars]/chord6_vs_power_db	1.5392
-synth/FM[Drawbars]/chord8_peak_dbfs	-1.264
-synth/FM[Drawbars]/dc_dbfs	-85.4056
-synth/FM[Drawbars]/key_spread_db	4.0951
-synth/FM[Drawbars]/mono_loss_db	0
+synth/FM[Bell Tower]/chord6_vs_power_db	0.2175
+synth/FM[Bell Tower]/chord8_peak_dbfs	-5.7045
+synth/FM[Bell Tower]/dc_dbfs	-140
+synth/FM[Bell Tower]/key_spread_db	2.3874
+synth/FM[Bell Tower]/mono_loss_db	0.0884
+synth/FM[Bell Tower]/vel_curve_err_db	0.9291
+synth/FM[Bell Tower]/vel_tone_oct	2.1077
+synth/FM[Brass Section]/chord6_vs_power_db	0.3828
+synth/FM[Brass Section]/chord8_peak_dbfs	-6.359
+synth/FM[Brass Section]/dc_dbfs	-92.1911
+synth/FM[Brass Section]/key_spread_db	2.8471
+synth/FM[Brass Section]/mono_loss_db	0.0502
+synth/FM[Brass Section]/vel_curve_err_db	0.6059
+synth/FM[Brass Section]/vel_tone_oct	1.5667
+synth/FM[Drawbars]/chord6_vs_power_db	1.5991
+synth/FM[Drawbars]/chord8_peak_dbfs	-1.1968
+synth/FM[Drawbars]/dc_dbfs	-100.1754
+synth/FM[Drawbars]/key_spread_db	1.0768
+synth/FM[Drawbars]/mono_loss_db	0.2636
 synth/FM[Drawbars]/vel_curve_err_db	0
 synth/FM[Drawbars]/vel_tone_oct	0
-synth/FM[Glass Keys]/chord6_vs_power_db	0.0938
-synth/FM[Glass Keys]/chord8_peak_dbfs	1.1648
-synth/FM[Glass Keys]/dc_dbfs	-38.5066
-synth/FM[Glass Keys]/key_spread_db	3.816
-synth/FM[Glass Keys]/mono_loss_db	0
-synth/FM[Glass Keys]/vel_curve_err_db	1.915
-synth/FM[Glass Keys]/vel_tone_oct	0.3666
+synth/FM[Glass Keys]/chord6_vs_power_db	0.0052
+synth/FM[Glass Keys]/chord8_peak_dbfs	-1.6051
+synth/FM[Glass Keys]/dc_dbfs	-140
+synth/FM[Glass Keys]/key_spread_db	2.1393
+synth/FM[Glass Keys]/mono_loss_db	0.0436
+synth/FM[Glass Keys]/vel_curve_err_db	1.5407
+synth/FM[Glass Keys]/vel_tone_oct	0.3011
 synth/FM[Init]/chord6_vs_power_db	-0.0082
-synth/FM[Init]/chord8_peak_dbfs	1.8526
-synth/FM[Init]/dc_dbfs	-79.0386
-synth/FM[Init]/key_spread_db	3.2983
+synth/FM[Init]/chord8_peak_dbfs	-4.081
+synth/FM[Init]/dc_dbfs	-101.8785
+synth/FM[Init]/key_spread_db	3.3234
 synth/FM[Init]/mono_loss_db	0
 synth/FM[Init]/vel_curve_err_db	0
 synth/FM[Init]/vel_tone_oct	0
-synth/FM[Log Drum]/chord6_vs_power_db	-0.3624
-synth/FM[Log Drum]/chord8_peak_dbfs	0.3588
-synth/FM[Log Drum]/dc_dbfs	-86.1416
-synth/FM[Log Drum]/key_spread_db	2.1898
-synth/FM[Log Drum]/mono_loss_db	0
-synth/FM[Log Drum]/vel_curve_err_db	1.0118
-synth/FM[Log Drum]/vel_tone_oct	0
-synth/FM[Rubber Bass]/chord8_peak_dbfs	-8.4864
-synth/FM[Rubber Bass]/dc_dbfs	-82.8708
-synth/FM[Rubber Bass]/key_spread_db	7.5735
+synth/FM[Log Drum]/chord6_vs_power_db	-0.1028
+synth/FM[Log Drum]/chord8_peak_dbfs	-1.9756
+synth/FM[Log Drum]/dc_dbfs	-140
+synth/FM[Log Drum]/key_spread_db	2.2047
+synth/FM[Log Drum]/mono_loss_db	0.1066
+synth/FM[Log Drum]/vel_curve_err_db	1.5899
+synth/FM[Log Drum]/vel_tone_oct	0.2857
+synth/FM[Reed Lead]/chord6_vs_power_db	0.5041
+synth/FM[Reed Lead]/chord8_peak_dbfs	-2.3057
+synth/FM[Reed Lead]/dc_dbfs	-140
+synth/FM[Reed Lead]/key_spread_db	2.4234
+synth/FM[Reed Lead]/mono_loss_db	0.0189
+synth/FM[Reed Lead]/vel_curve_err_db	0.9402
+synth/FM[Reed Lead]/vel_tone_oct	0.275
+synth/FM[Rubber Bass]/chord8_peak_dbfs	-6.3879
+synth/FM[Rubber Bass]/dc_dbfs	-140
+synth/FM[Rubber Bass]/key_spread_db	2.5439
 synth/FM[Rubber Bass]/low_correlation	1
 synth/FM[Rubber Bass]/mono_loss_db	0
-synth/FM[Rubber Bass]/small_speaker_db	-85.4479
-synth/FM[Rubber Bass]/start_step_dbfs	-56.7487
-synth/FM[Rubber Bass]/vel_curve_err_db	1.0269
-synth/FM[Rubber Bass]/vel_tone_oct	0.0034
-synth/FM[Silk Pad]/chord6_vs_power_db	0.0355
-synth/FM[Silk Pad]/chord8_peak_dbfs	-7.7169
-synth/FM[Silk Pad]/dc_dbfs	-56.4557
-synth/FM[Silk Pad]/key_spread_db	2.9764
-synth/FM[Silk Pad]/mono_loss_db	0
-synth/FM[Silk Pad]/vel_curve_err_db	0.7606
-synth/FM[Silk Pad]/vel_tone_oct	0.1116
-synth/FM[Steel Pluck]/chord6_vs_power_db	1.2792
-synth/FM[Steel Pluck]/chord8_peak_dbfs	0.5015
-synth/FM[Steel Pluck]/dc_dbfs	-89.3394
-synth/FM[Steel Pluck]/key_spread_db	2.3721
-synth/FM[Steel Pluck]/mono_loss_db	0
-synth/FM[Steel Pluck]/vel_curve_err_db	0.7034
-synth/FM[Steel Pluck]/vel_tone_oct	0.0021
+synth/FM[Rubber Bass]/small_speaker_db	-7.4918
+synth/FM[Rubber Bass]/start_step_dbfs	-50.1653
+synth/FM[Rubber Bass]/vel_curve_err_db	1.9543
+synth/FM[Rubber Bass]/vel_tone_oct	1.9091
+synth/FM[Silk Pad]/chord6_vs_power_db	-0.0038
+synth/FM[Silk Pad]/chord8_peak_dbfs	-10.0685
+synth/FM[Silk Pad]/dc_dbfs	-140
+synth/FM[Silk Pad]/key_spread_db	2.3063
+synth/FM[Silk Pad]/mono_loss_db	-0.0185
+synth/FM[Silk Pad]/vel_curve_err_db	0.7281
+synth/FM[Silk Pad]/vel_tone_oct	0.1298
+synth/FM[Steel Pluck]/chord6_vs_power_db	1.5656
+synth/FM[Steel Pluck]/chord8_peak_dbfs	-1.2643
+synth/FM[Steel Pluck]/dc_dbfs	-140
+synth/FM[Steel Pluck]/key_spread_db	2.6442
+synth/FM[Steel Pluck]/mono_loss_db	0.0428
+synth/FM[Steel Pluck]/vel_curve_err_db	1.0758
+synth/FM[Steel Pluck]/vel_tone_oct	0.2464
 synth/Keys[Ballad]/chord6_vs_power_db	-1.2094
 synth/Keys[Ballad]/chord8_peak_dbfs	-4.5791
 synth/Keys[Ballad]/dc_dbfs	-140
@@ -2045,9 +2052,18 @@ synth/alias[Drawbar combo reed saw, C7]/worst_alias_db	-78.717
 synth/alias[Drawbar combo reed square, C5]/worst_alias_db	-87.4857
 synth/alias[Drawbar combo reed square, C6]/worst_alias_db	-84.3494
 synth/alias[Drawbar combo reed square, C7]/worst_alias_db	-79.9651
-synth/alias[FM feedback 7, C5]/worst_alias_db	-17.2883
-synth/alias[FM feedback 7, C6]/worst_alias_db	-15.7111
+synth/alias[FM feedback 5, C5]/worst_alias_db	-65.1586
+synth/alias[FM feedback 5, C6]/worst_alias_db	-64.8946
+synth/alias[FM feedback 5, C7]/worst_alias_db	-62.073
+synth/alias[FM feedback 7, C5]/worst_alias_db	-17.3183
+synth/alias[FM feedback 7, C6]/worst_alias_db	-15.7131
 synth/alias[FM feedback 7, C7]/worst_alias_db	-12.5776
+synth/alias[FM saw by a sine, C5]/worst_alias_db	-96.1816
+synth/alias[FM saw by a sine, C6]/worst_alias_db	-94.871
+synth/alias[FM saw by a sine, C7]/worst_alias_db	-65.5712
+synth/alias[FM sine by a square, C5]/worst_alias_db	-88.5775
+synth/alias[FM sine by a square, C6]/worst_alias_db	-89.5631
+synth/alias[FM sine by a square, C7]/worst_alias_db	-91.764
 synth/alias[Poly pulse, C5]/worst_alias_db	-78.5125
 synth/alias[Poly pulse, C6]/worst_alias_db	-84.5023
 synth/alias[Poly pulse, C7]/worst_alias_db	-90.8965
@@ -2128,11 +2144,37 @@ synth/filter[Poly LP12, 1 kHz]/response_err_db	0.8007
 synth/filter[Poly LP24, 1 kHz]/cutoff_oct	-0.0001
 synth/filter[Poly LP24, 1 kHz]/response_err_db	0.1628
 synth/filter[Poly LP24, full resonance]/peak_worst_cents	5.31
-synth/fm[Glass Keys, algorithms 1 to 32]/level_spread_db	6.378
-synth/fm[feedback 7 against 0]/level_db	3.5016
-synth/fm[pair 1:4, level 60]/bessel_err_db	0.0096
-synth/fm[pair 1:4, level 75]/bessel_err_db	0.0042
-synth/fm[pair 1:4, level 90]/bessel_err_db	0.0102
+synth/fm[Bell Tower]/vel_tone_min_step_oct	0.3086
+synth/fm[Brass Section, C6]/worst_alias_db	-99.3602
+synth/fm[Brass Section, C7]/worst_alias_db	-94.8555
+synth/fm[Brass Section]/vel_tone_min_step_oct	0.1133
+synth/fm[Drawbars, C6]/worst_alias_db	-97.8267
+synth/fm[Drawbars, C7]/worst_alias_db	-92.5215
+synth/fm[Glass Keys, C6]/worst_alias_db	-99.3548
+synth/fm[Glass Keys, C7]/worst_alias_db	-66.8758
+synth/fm[Glass Keys, algorithms 1 to 32]/level_spread_db	2.6235
+synth/fm[Glass Keys]/vel_tone_min_step_oct	0.0069
+synth/fm[Init, C6]/worst_alias_db	-99.3436
+synth/fm[Init, C7]/worst_alias_db	-94.8553
+synth/fm[Log Drum, C6]/worst_alias_db	-79.9951
+synth/fm[Log Drum, C7]/worst_alias_db	-82.0012
+synth/fm[Log Drum]/vel_tone_min_step_oct	0.0038
+synth/fm[Reed Lead, C6]/worst_alias_db	-99.3477
+synth/fm[Reed Lead, C7]/worst_alias_db	-94.8541
+synth/fm[Reed Lead]/vel_tone_min_step_oct	0.0091
+synth/fm[Rubber Bass, C6]/worst_alias_db	-99.3462
+synth/fm[Rubber Bass, C7]/worst_alias_db	-54.4279
+synth/fm[Rubber Bass]/vel_tone_min_step_oct	0.0692
+synth/fm[Silk Pad, C6]/worst_alias_db	-96.7269
+synth/fm[Silk Pad, C7]/worst_alias_db	-94.4996
+synth/fm[Silk Pad]/vel_tone_min_step_oct	0.0184
+synth/fm[Steel Pluck, C6]/worst_alias_db	-65.8544
+synth/fm[Steel Pluck, C7]/worst_alias_db	-81.4887
+synth/fm[Steel Pluck]/vel_tone_min_step_oct	0.0066
+synth/fm[feedback 7 against 0]/level_db	3.5027
+synth/fm[pair 1:4, level 60]/bessel_err_db	0.0111
+synth/fm[pair 1:4, level 75]/bessel_err_db	0.0038
+synth/fm[pair 1:4, level 90]/bessel_err_db	0.0117
 synth/footage[Drawbar combo, C4]/worst_octave_cents	0
 synth/formants[Choir Alto]/level_err_db	0.0263
 synth/formants[Choir Alto]/peak_err_pct	0.6179

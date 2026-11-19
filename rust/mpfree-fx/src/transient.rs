@@ -136,40 +136,50 @@ static PARAMS: [ParamInfo; 6] = [
 ];
 
 /// The most the shaper turns up or down, in dB.
-const LIMIT: f32 = 15.0;
+pub const LIMIT: f32 = 15.0;
 /// How many dB of gain a 1 dB envelope gap makes at 100 %.
-const SENS: f32 = 0.6;
+pub const SENS: f32 = 0.6;
 /// The detector's floor, in dBFS: quieter than this counts as this.
-const FLOOR: f32 = -80.0;
+pub const FLOOR: f32 = -80.0;
 /// The widest gap either pair opens, in dB: each slow follower is kept
 /// within this of its fast one, so a hit out of silence (or a decay into
 /// it) opens this much whatever its level, and Attack or Sustain at 100 %
 /// reaches the 15 dB limit (25 × 0.6) on it.
-const GAP: f32 = 25.0;
+pub const GAP: f32 = 25.0;
 
 /// A one-pole follower in dB with separate rise and fall coefficients.
 #[derive(Clone, Copy, Debug)]
-struct Follow {
+pub struct Follow {
     up: f32,
     down: f32,
-    y: f32,
+    /// The level now, in dB.
+    pub y: f32,
+}
+
+impl Default for Follow {
+    fn default() -> Follow {
+        Follow::new()
+    }
 }
 
 impl Follow {
-    fn new() -> Follow {
+    /// A follower resting on the detector's floor.
+    pub fn new() -> Follow {
         Follow {
             up: 0.0,
             down: 0.0,
             y: FLOOR,
         }
     }
-    fn set(&mut self, rate: f32, up_ms: f32, down_ms: f32) {
+    /// Sets the rise and fall times, in ms, at `rate`.
+    pub fn set(&mut self, rate: f32, up_ms: f32, down_ms: f32) {
         let k = |ms: f32| (-1.0 / (ms * 0.001 * rate).max(1.0)).exp();
         self.up = k(up_ms);
         self.down = k(down_ms);
     }
+    /// Follows `x` (dB) one frame.
     #[inline]
-    fn next(&mut self, x: f32) -> f32 {
+    pub fn next(&mut self, x: f32) -> f32 {
         let k = if x > self.y { self.up } else { self.down };
         self.y = x + k * (self.y - x);
         self.y

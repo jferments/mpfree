@@ -50,7 +50,6 @@ use mpfree_instruments::{Design, Designed, Sound, SoundError};
 use mpfree_node::pedal::Pedals;
 use mpfree_node::{Ctl, Ctx, Cull, Node, NodeEvent, ParamInfo, Timed};
 use mpfree_synth::drum_params;
-use mpfree_synth::fm_params::FmPreset;
 use mpfree_synth::{
     Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Strings,
     Wavetable, Wind,
@@ -524,7 +523,6 @@ pub struct Synth {
     bass: Sound<Bass>,
     wind: Sound<Wind>,
     choir: Sound<Choir>,
-    fm_presets: Vec<FmPreset>,
     rate: u32,
     /// Note events for each engine (in [`Engine::ALL`]'s order) this period.
     events: [[Timed; MAX_EVENTS]; ENGINES],
@@ -601,7 +599,7 @@ fn lock_key(e: Engine, id: u16) -> u32 {
     (e.index() as u32) << 16 | u32::from(id)
 }
 
-/// The factory presets of an engine other than FM (whose list is built).
+/// An engine's factory presets.
 fn static_presets(engine: Engine) -> &'static [Preset] {
     match engine {
         Engine::Drums => Drums::presets(),
@@ -614,7 +612,8 @@ fn static_presets(engine: Engine) -> &'static [Preset] {
         Engine::Bass => Bass::presets(),
         Engine::Wind => Wind::presets(),
         Engine::Choir => Choir::presets(),
-        Engine::Poly | Engine::Fm => Poly::presets(),
+        Engine::Fm => Fm::presets(),
+        Engine::Poly => Poly::presets(),
     }
 }
 
@@ -789,12 +788,8 @@ impl Synth {
             choir.load_preset(p);
         }
         let mut fm = Fm::new(rate);
-        let fm_presets = Fm::presets();
-        let fm_preset = fm_presets
-            .iter()
-            .position(|p| p.name == FM_START_PRESET)
-            .unwrap_or(0);
-        if let Some(p) = fm_presets.get(fm_preset) {
+        let fm_preset = start_preset(Fm::presets(), FM_START_PRESET);
+        if let Some(p) = Fm::presets().get(fm_preset) {
             fm.load_preset(p);
         }
         let meters = [
@@ -812,7 +807,7 @@ impl Synth {
             meters_of(&choir),
         ];
         let settings = PadSettings::default();
-        Synth {
+        let mut s = Synth {
             poly: plain(poly, rate),
             fm: plain(fm, rate),
             drums: plain(drums, rate),
@@ -825,7 +820,6 @@ impl Synth {
             bass: plain(bass, rate),
             wind: plain(wind, rate),
             choir: plain(choir, rate),
-            fm_presets,
             rate,
             events: [[Timed::new(0, NodeEvent::AllOff); MAX_EVENTS]; ENGINES],
             len: [0; ENGINES],
@@ -867,7 +861,16 @@ impl Synth {
             locks: crate::locks::Under::new(),
             pad_voices: vec![None; VOICE_TRACKS * VOICE_PADS].into_boxed_slice(),
             pad_holders: [[0; 128]; ENGINES],
+        };
+        // A start preset that is a factory sound brings its effects and
+        // macros, as picking it does.
+        for e in Engine::ALL {
+            let p = &static_presets(e)[s.presets[e.index()]];
+            if has_design(p.text) && s.sound_mut(e).load_text(p.text).is_ok() {
+                s.redesigned(e);
+            }
         }
+        s
     }
 
     fn node(&self) -> &dyn Node {
@@ -991,15 +994,9 @@ impl Synth {
         Engine::ALL
             .iter()
             .map(|&e| {
-                let name = match e {
-                    Engine::Fm => self
-                        .fm_presets
-                        .get(self.presets[e.index()])
-                        .map_or("", |p| p.name.as_str()),
-                    _ => static_presets(e)
-                        .get(self.presets[e.index()])
-                        .map_or("", |p| p.name),
-                };
+                let name = static_presets(e)
+                    .get(self.presets[e.index()])
+                    .map_or("", |p| p.name);
                 (e, self.sound(e).to_text(name, &[], &[]))
             })
             .collect()
@@ -1027,10 +1024,7 @@ impl Synth {
                 self.drums_moved(names);
             }
             // The preset list shows the saved name when it is a factory one.
-            let at = match e {
-                Engine::Fm => self.fm_presets.iter().position(|x| x.name == p.name),
-                _ => static_presets(*e).iter().position(|x| x.name == p.name),
-            };
+            let at = static_presets(*e).iter().position(|x| x.name == p.name);
             if let Some(i) = at {
                 self.presets[e.index()] = i;
             }
@@ -1912,10 +1906,7 @@ impl Synth {
 
     /// How many presets the engine on the pads has.
     pub fn preset_count(&self) -> usize {
-        match self.settings.engine {
-            Engine::Fm => self.fm_presets.len(),
-            e => static_presets(e).len(),
-        }
+        static_presets(self.settings.engine).len()
     }
 
     /// Loads preset `i` of the engine on the pads; returns its name, or None
@@ -1923,22 +1914,6 @@ impl Synth {
     /// preset's. A Drums kit can move or rename the pads.
     pub fn load_preset(&mut self, i: usize) -> Option<&str> {
         let e = self.settings.engine;
-        let count = match e {
-            Engine::Fm => self.fm_presets.len(),
-            _ => static_presets(e).len(),
-        };
-        if i >= count {
-            return None;
-        }
-        if e == Engine::Fm {
-            self.make_plain(e);
-            let p = self.fm_presets.get(i)?;
-            self.fm.load_preset(p);
-            self.presets[e.index()] = i;
-            self.own[e.index()] = None;
-            self.audition = None;
-            return Some(&p.name);
-        }
         let p = static_presets(e).get(i)?;
         if has_design(p.text) {
             // A factory sound with its own effects and macros loads as a
@@ -1966,7 +1941,8 @@ impl Synth {
             Engine::Bass => self.bass.load_preset(p),
             Engine::Wind => self.wind.load_preset(p),
             Engine::Choir => self.choir.load_preset(p),
-            Engine::Poly | Engine::Fm => self.poly.load_preset(p),
+            Engine::Fm => self.fm.load_preset(p),
+            Engine::Poly => self.poly.load_preset(p),
         }
         self.presets[e.index()] = i;
         self.own[e.index()] = None;
@@ -2237,10 +2213,9 @@ impl Synth {
 
     pub fn preset_name(&self) -> &str {
         let i = self.presets[self.settings.engine.index()];
-        match self.settings.engine {
-            Engine::Fm => self.fm_presets.get(i).map_or("", |p| p.name.as_str()),
-            e => static_presets(e).get(i).map_or("", |p| p.name),
-        }
+        static_presets(self.settings.engine)
+            .get(i)
+            .map_or("", |p| p.name)
     }
 
     /// Every value, in the node's parameter order (for the Synth tab).
@@ -2261,13 +2236,10 @@ impl Synth {
 
     /// What the Synth tab shows.
     pub fn state(&self) -> SynthState {
-        let presets = match self.settings.engine {
-            Engine::Fm => self.fm_presets.iter().map(|p| p.name.clone()).collect(),
-            e => static_presets(e)
-                .iter()
-                .map(|p| p.name.to_string())
-                .collect(),
-        };
+        let presets = static_presets(self.settings.engine)
+            .iter()
+            .map(|p| p.name.to_string())
+            .collect();
         let preset = Some(self.presets[self.settings.engine.index()]);
         let mut st = SynthState::from_node(
             self.node(),
@@ -2286,13 +2258,10 @@ impl Synth {
 
     /// Engine `engine`'s factory presets' names.
     pub fn preset_names(&self, engine: Engine) -> Vec<String> {
-        match engine {
-            Engine::Fm => self.fm_presets.iter().map(|p| p.name.clone()).collect(),
-            e => static_presets(e)
-                .iter()
-                .map(|p| p.name.to_string())
-                .collect(),
-        }
+        static_presets(engine)
+            .iter()
+            .map(|p| p.name.to_string())
+            .collect()
     }
 
     /// Preset `i` of engine `engine` as a track's own copy of the engine
@@ -2304,12 +2273,6 @@ impl Synth {
             n.params().iter().map(|p| n.param(p.id)).collect()
         }
         let rate = self.rate;
-        if engine == Engine::Fm {
-            let p = self.fm_presets.get(i)?;
-            let mut n = Fm::new(rate);
-            n.load_preset(p);
-            return Some((p.name.clone(), Vec::new(), values(&n)));
-        }
         let p = static_presets(engine).get(i)?;
         if has_design(p.text) {
             let mut s =
@@ -2368,7 +2331,12 @@ impl Synth {
                 n.load_preset(p);
                 values(&n)
             }
-            Engine::Poly | Engine::Fm => {
+            Engine::Fm => {
+                let mut n = Fm::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
+            Engine::Poly => {
                 let mut n = Poly::new(rate);
                 n.load_preset(p);
                 values(&n)
@@ -2996,7 +2964,11 @@ mod tests {
             s.note_off(0, 0);
             run(&mut s, &mut frame, 2000, 128);
             assert_eq!(s.active_voices(), 0, "{engine:?}");
-            assert!(peak(&run(&mut s, &mut frame, 2, 128)) == 0.0);
+            let tail = peak(&run(&mut s, &mut frame, 2, 128));
+            assert!(
+                tail == 0.0,
+                "{engine:?}: silent once its voices end, not {tail}"
+            );
             assert_eq!(
                 s.counters(),
                 Counters {
