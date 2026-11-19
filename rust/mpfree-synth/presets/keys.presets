@@ -1,8 +1,8 @@
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Init
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Soft Tines
 
@@ -13,7 +13,7 @@ tone.voicing = 65
 tone.bark = 25
 tone.tone = -25
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Bright Tines
 
@@ -26,7 +26,7 @@ tone.tone = 20
 # Output
 output.level = -1.5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Barking Tines
 
@@ -43,7 +43,7 @@ amp.drive = 25
 # Output
 output.level = -5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Bell Keys
 
@@ -60,7 +60,7 @@ tone.tone = 5
 # Output
 output.level = -2.5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Hollow Tines
 
@@ -73,7 +73,7 @@ tone.tone = -10
 # Output
 output.level = 0
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Pan Tines
 
@@ -88,7 +88,7 @@ amp.trem-rate = 4
 # Output
 output.level = 0
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Ballad
 
@@ -109,7 +109,7 @@ amp.key-noise = 10
 # Output
 output.level = -2.5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Dusty Keys
 
@@ -130,7 +130,7 @@ amp.key-noise = 45
 # Output
 output.level = -6.5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Reed
 
@@ -139,7 +139,7 @@ model.model = Reed
 model.decay = 3500
 model.release = 90
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Reed Bite
 
@@ -160,7 +160,7 @@ amp.drive = 30
 # Output
 output.level = 2
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Trem Reed
 
@@ -180,7 +180,7 @@ amp.trem-mode = Amp
 # Output
 output.level = 2.5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Mellow Tines
 
@@ -195,7 +195,7 @@ tone.vel-tone = 40
 # Output
 output.level = -0.5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Hard Tines
 
@@ -209,7 +209,7 @@ tone.vel-tone = 90
 # Output
 output.level = -2.5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Long Tines
 
@@ -225,7 +225,7 @@ tone.tone = -15
 # Output
 output.level = -2
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Lo-fi Tines
 
@@ -243,7 +243,7 @@ amp.key-noise = 60
 # Output
 output.level = -7.5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Stage Tines
 
@@ -260,7 +260,7 @@ amp.trem-rate = 5
 # Output
 output.level = 0
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Soft Reed
 
@@ -277,7 +277,7 @@ tone.tone = -15
 # Output
 output.level = -0.5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Dirty Reed
 
@@ -294,7 +294,7 @@ tone.bark = 85
 # Amp
 amp.drive = 28
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Bright Reed
 
@@ -308,7 +308,7 @@ tone.hardness = 70
 tone.bell = 70
 tone.tone = 30
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Pan Reed
 
@@ -324,7 +324,7 @@ amp.trem-rate = 4.5
 # Output
 output.level = 2
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Mellow Reed
 
@@ -342,7 +342,7 @@ tone.tone = -15
 # Output
 output.level = -1.5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Clav
 
@@ -357,7 +357,7 @@ tone.hardness = 60
 # Output
 output.level = -2
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Funk Clav
 
@@ -377,7 +377,7 @@ clav.clav-tone = Treble
 # Output
 output.level = -0.5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Muted Clav
 
@@ -396,7 +396,7 @@ clav.mute = 55
 # Output
 output.level = 0.5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Soft Clav
 
@@ -415,7 +415,7 @@ clav.clav-tone = Soft
 # Output
 output.level = -4
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Thin Clav
 
@@ -434,7 +434,7 @@ clav.clav-tone = Treble
 # Output
 output.level = -2.5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Brilliant Clav
 
@@ -453,7 +453,7 @@ clav.clav-tone = Brilliant
 # Output
 output.level = -1.5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Driven Clav
 
@@ -475,7 +475,7 @@ amp.drive = 25
 # Output
 output.level = -7
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Stab Clav
 
@@ -494,7 +494,7 @@ clav.release-drop = 5
 # Output
 output.level = 0.5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Trem Clav
 
@@ -514,7 +514,7 @@ amp.trem-mode = Amp
 # Output
 output.level = 1
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Pan Clav
 
@@ -533,7 +533,7 @@ amp.trem-rate = 3.5
 # Output
 output.level = 1.5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Phase Tines
 fx.1 = mpfree.fx.phaser
@@ -576,7 +576,7 @@ fx-2.decay = 1800
 fx-2.low-cut = 150
 fx-2.mix = 26
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.keys
 name = Wah Clav
 fx.1 = mpfree.fx.autowah

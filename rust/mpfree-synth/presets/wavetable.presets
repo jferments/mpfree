@@ -1,8 +1,8 @@
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.wavetable
 name = Init
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.wavetable
 name = Morph Pad
 
@@ -49,7 +49,7 @@ pressure.depth-1 = 40
 pressure.to-2 = Level
 pressure.depth-2 = 25
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.wavetable
 name = Vowel Lead
 
@@ -85,7 +85,7 @@ pressure.depth-1 = 60
 pressure.to-2 = Vibrato
 pressure.depth-2 = 40
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.wavetable
 name = Sync Sweep
 
@@ -113,7 +113,7 @@ amp-env.decay = 600
 amp-env.sustain = 60
 amp-env.release = 200
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.wavetable
 name = Digital Bell
 
@@ -147,7 +147,7 @@ pressure.to-1 = Warp
 pressure.depth-1 = 30
 pressure.to-2 = Off
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.wavetable
 name = Growl Bass
 
@@ -188,7 +188,7 @@ pressure.depth-1 = 50
 pressure.to-2 = Cutoff
 pressure.depth-2 = 25
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.wavetable
 name = Organ
 
@@ -217,7 +217,7 @@ pressure.to-1 = Position
 pressure.depth-1 = 55
 pressure.to-2 = Off
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.wavetable
 name = Harmonic Pluck
 
@@ -246,7 +246,7 @@ amp-env.release = 400
 pressure.to-1 = Off
 pressure.to-2 = Off
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.wavetable
 name = FM Keys
 

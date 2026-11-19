@@ -58,9 +58,9 @@ Every engine re-implements parts of the same voice. The core is a set of plain p
 | **Notes** | The note stack and play mode: poly, mono, legato, and (Strings, organ) every key. Note priority: last, low or high. Sustain and sostenuto: a note let go while the pedal is down keeps sounding until the pedal comes up; a key struck again under the pedal restarts its voice | Each engine has its own stack; no priority choice; no pedal |
 | **Voices** | Which voice a note gets: a free one, the same note's own, then a stolen one, taking released voices first and the quietest of those, then the oldest held. A stolen voice fades over 3 ms in a spare slot. Counts what it steals | Poly, FM and Wavetable each have a copy; the 3 ms fade is shared by habit |
 | **Glide** | Constant time or constant rate (semitones a second), on legato only or always | One glide time; constant time only |
-| **Envelopes** | Exponential segments that retrigger from where they are; **a time means the time to get there** (an attack of 100 ms reaches full level at 100 ms) | `dsp::Env`: Attack aims past full level and reaches it at 31 % of its label |
+| **Envelopes** | Exponential segments that retrigger from where they are; **a time means the time to get there** (an attack of 100 ms reaches full level at 100 ms) | `dsp::Env` (FM, Wavetable, Analog...): Attack aims past full level and reaches it at 31 % of its label. Poly moved to `voice::Adsr` 19 Nov, with the analog release (aiming at -0.01, so a voice ends with its release) |
 | **LFOs** | Free or synced, a delay and fade-in, key retrigger, one per engine and two per voice | One per engine |
-| **Velocity** | A square-law curve over a range in dB set per preset (Dannenberg; 30 to 40 dB for keys, less for pads), and routes to tone | Fixed 7 to 8 dB on Poly |
+| **Velocity** | A square-law curve over a range in dB set per preset (Dannenberg; 30 to 40 dB for keys, less for pads), and routes to tone | Poly's Velocity to level is a range in dB since 19 Nov (8 dB by default, as before) |
 | **Play routes** | Eight routes a sound: a source (velocity, pressure, per-note tone, mod wheel, breath, foot controller, key, random per note) to a target from the engine's list, with a depth. Pressure's four slots become routes with pressure as their source; old presets load into them | Pressure only, four slots |
 | **Oscillators** | Band-limited tables with levels half an octave apart (Wavetable's), including the classic waves, a pulse of any width as two saws, and the supersaw; PolyBLEP kept where it is cheaper and good enough (sub, drums) | Built 19 Nov (`osc.rs`) and used by Poly; PolyBLEP in Analog; tables in Wavetable |
 | **Filters and drive** | The ladder, state-variable, OTA and diode filters as they are; the drive's curve with antiderivative antialiasing, or run at twice the rate, by measurement | Poly's drive and distortion antialiased (first order, `dsp::DriveAa`, 19 Nov), still at the base rate |
@@ -73,7 +73,7 @@ Rules every part keeps, as the node interface asks: no allocation, lock or panic
 
 **Laid out for speed.** In new engines, the values the inner loops touch are kept in rows across voices, four at a time, rather than one record per voice, so a NEON kernel can later replace a loop without changing the engine ([section 4](#4-voices-the-cpu-and-the-cores)). Existing engines change layout only when they move onto a part.
 
-**Envelope times that mean what they say.** Changing Poly's attack curve would make every saved attack sound different. So the factory presets' times are rescaled in the same pull request so they sound the same, the setting gets a new name in preset files, and a preset or project saved with the old name is converted on load (the preset format's alias rule, [Presets](presets.md)). The listening gate checks that nothing changed.
+**Envelope times that mean what they say.** Changing Poly's attack curve would make every saved attack sound different. So the factory presets' times are rescaled in the same pull request so they sound the same, and a preset or project saved before is converted on load. As built (19 Nov, wave 2's second pull request): the preset format went to version 2 rather than renaming the settings, so the knobs keep their names, ids, locks and Q-Links; an engine converts a value saved in an older format (`Node::upgrade`, Poly's `poly::upgrade`), presets through `Preset::upgrade` and `Sound::load_text` (a macro's range too), projects through the instruments part's version (`mpfree-instruments 2`). Every factory file is in format 2, and `factory::read` reports a block that isn't. A step lock saved before keeps its number, so a lock on Poly's attack plays at the new meaning (about three times slower): the sequencer's locks don't carry their engine's format, so they are not converted. The listening gate checks that nothing changed.
 
 ## 4. Voices, the CPU and the cores
 
@@ -131,6 +131,8 @@ Stable Rust can't get float NEON code on the MPC from the compiler: LLVM vectori
 | Whole numbers (phase counters as `u32`) | LLVM does vectorise whole-number loops; dividers and phase counters are whole numbers anyway | Only part of the work |
 
 **Decision:** inline assembly kernels with plain twins, plus whole-number phase counters, **once a bench shows the gain**. The first candidates are the supersaw's seven saws, the Strings bank's oscillators (one per note heard) and the Choir's five formants a voice. The bench runs the kernel and its twin under qemu-arm, checks they agree, and the device round times both. `mpfree-synth` keeps `#![forbid(unsafe_code)]`; only `mpfree-simd` holds unsafe code.
+
+**Built 19 Nov (C3, first part)** ([NEON kernels](simd.md)): the `mpfree-simd` crate with its first kernel, `table_sum` (several oscillators reading one band-limited table: the supersaw's saws), in `global_asm!` with `.fpu neon`, and its plain twin. NEON is chosen at run time (`getauxval`, an ARMv7 build, and a switch to turn it off). Under qemu-arm the kernel gives its twin's samples bit for bit (3,000 random calls, every saw level, denormals with flush-to-zero on), and the bench's eight voices of supersaw saws take 58,361 ARMv7 instructions a block against the twin's 134,455 (43 %). The bench times both ("Supersaw saws: 8 voices, plain" and "..., NEON"); the device round decides whether it stays. Poly's supersaw moves onto it once `osc.rs` (#652) is on main.
 
 ### Cheap by design (lever 7)
 
@@ -204,7 +206,7 @@ Three waves, each finished end to end: engine work, then presets, then the check
 
 **Wave 2: Poly with tables, FM, organ, wind and choir** (next week)
 
-Started 19 Nov with Poly's oscillators from the tables, the supersaw (a wave of either oscillator, with Saw detune and Side saws; four presets) and the antialiased drive. Unison moved to Poly's Voice page to make room on the Osc page. Order from here: Poly on the voice core (envelopes, velocity, a second LFO, play routes), FM's fixes, another pass on the Keys tines (from wave 1's listening), Drawbar's combo model, Wind, Choir, Character, then Wavetable folded into Poly.
+Started 19 Nov with Poly's oscillators from the tables, the supersaw (a wave of either oscillator, with Saw detune and Side saws; four presets) and the antialiased drive. Unison moved to Poly's Voice page to make room on the Osc page. Then Poly's envelopes and velocity moved onto the voice core (preset format 2, old sounds converted on load). Order from here: Poly's play routes and second LFO, FM's fixes, another pass on the Keys tines (from wave 1's listening), Drawbar's combo model, Wind, Choir, Character, then Wavetable folded into Poly.
 
 Poly and Wavetable merged with classic waves from tables (the aliasing fix), the supersaw, a second LFO and routes; FM's macros, shapes, DC and level fixes and less feedback aliasing; Drawbar's combo model; the Wind and Choir engines; Character; their presets.
 
@@ -218,7 +220,7 @@ Drums' own knobs, effects per drum, accent and variation, the shared 808 body; P
 |---|---|---|
 | C1 | Synth tracks on the sound cores (groups, placement by cost, per-core counts), off by default behind the Sound cores modes, with a `--lanes` bench of eight synth tracks (built 18 Nov) | Wave 1; on by default only after the device round and Jay's pick |
 | C2 | Flush-to-zero on the audio threads (built 18 Nov), the note-start bench, spreading start work | Wave 1 |
-| C3 | `mpfree-simd`: one kernel (the supersaw's saws) and its twin, checked under qemu-arm; kept only if it wins | Wave 2 |
+| C3 | `mpfree-simd`: one kernel (the supersaw's saws) and its twin, checked under qemu-arm; kept only if it wins. The crate, the kernel, the qemu check and the bench cases are built (19 Nov, [NEON kernels](simd.md)); Poly moves onto it after #652 | Wave 2 |
 | C4 | A heavy synth split across two cores | If the device asks for it |
 | C5 | Rendering ahead | If the device asks for it |
 
