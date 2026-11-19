@@ -108,11 +108,17 @@ pub fn keys_pickup(v: &impl Values) -> (Pts, Pts, f32) {
             0.0,
             keys::clav_swing(v.get(kp::BARK), v.get(kp::PICKUP), KEYS_VEL),
         )
-    } else {
-        let (rest, scale) = keys::pickup_shape(reed, v.get(kp::VOICING), v.get(kp::BARK), 0.0);
+    } else if reed {
+        let (rest, scale) = keys::pickup_shape(true, v.get(kp::VOICING), v.get(kp::BARK), 0.0);
         (
             rest,
             scale * keys::strike_amp(KEYS_VEL) * keys::register_swing(KEYS_HZ),
+        )
+    } else {
+        let (rest, scale) = keys::pickup_shape(false, v.get(kp::VOICING), v.get(kp::BARK), 0.0);
+        (
+            rest,
+            scale * tine_drive(v, KEYS_VEL) * keys::tine_register(KEYS_HZ),
         )
     };
     // The clav's curve folds over at 2.5: drawn a little past the furthest
@@ -139,7 +145,7 @@ pub fn keys_pickup(v: &impl Values) -> (Pts, Pts, f32) {
         (curve(hi), curve(0.0))
     };
     let y = |u: f32| 0.05 + 0.9 * ((curve(u) - c_lo) / (c_hi - c_lo)).clamp(0.0, 1.0);
-    let x = |u: f32| (u - lo) / (hi - lo);
+    let x = |u: f32| ((u - lo) / (hi - lo)).clamp(0.0, 1.0);
     let full = (0..=POINTS)
         .map(|i| {
             let u = lo + (hi - lo) * i as f32 / POINTS as f32;
@@ -154,6 +160,12 @@ pub fn keys_pickup(v: &impl Values) -> (Pts, Pts, f32) {
         })
         .collect();
     (full, hit, x(rest.clamp(lo, hi)))
+}
+
+/// How hard a tine hit at `vel` (0 to 1) drives the pickup, 1 at full
+/// velocity (`keys::tine_drive`, with Vel > tone).
+fn tine_drive(v: &impl Values, vel: f32) -> f32 {
+    keys::tine_drive((vel * 127.0).round() as u8, v.get(kp::VEL_TONE))
 }
 
 /// How long a hit at `vel` (0 to 1) touches middle C: the hammer's
@@ -173,7 +185,11 @@ fn keys_touch(v: &impl Values, vel: f32) -> f32 {
 pub fn keys_hammer(v: &impl Values) -> [Pts; 2] {
     let pulse = |vel: f32| -> Pts {
         let len = keys_touch(v, vel);
-        let amp = keys::strike_amp(vel) / keys::strike_amp(1.0);
+        let amp = if keys_reed(v) || keys_clav(v) {
+            keys::strike_amp(vel) / keys::strike_amp(1.0)
+        } else {
+            tine_drive(v, vel)
+        };
         let n = POINTS / 2;
         let mut pts: Pts = (0..=n)
             .map(|i| {

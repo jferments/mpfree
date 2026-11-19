@@ -846,6 +846,7 @@ pub fn report(rate: u32) -> Vec<Row> {
     aliasing(&mut rows, rate);
     glide(&mut rows, rate);
     envelopes(&mut rows, rate);
+    routes(&mut rows, rate);
     filters(&mut rows, rate);
     fm(&mut rows, rate);
     drums(&mut rows, rate);
@@ -1754,6 +1755,65 @@ fn envelopes(rows: &mut Vec<Row>, rate: u32) {
         err(t - 0.5, 300.0),
         Better::Near(0.0),
         Some(10.0),
+        1.0,
+    );
+}
+
+fn routes(rows: &mut Vec<Row>, rate: u32) {
+    // P12: a play route reaches as far as its depth says (the reach of a
+    // pressure slot's on the same target). With the mod wheel at the top,
+    // Pitch at 100 % is an octave up, and the default route, the wheel on
+    // Vibrato at 50 %, is half a semitone each way at Vib rate.
+    use mpfree_node::Ctl;
+    use mpfree_synth::params::{route, route_id, target};
+    let key = 69;
+    let wheel = |set: &[(u16, f32)]| {
+        let mut n = poly_sine(rate);
+        for &(id, v) in set {
+            n.set_param(id, v);
+        }
+        let mut s = vec![(
+            0,
+            NodeEvent::Control {
+                ctl: Ctl::ModWheel,
+                value: 1.0,
+            },
+        )];
+        // Long enough for the frequency read (two windows a second apart).
+        s.extend(score(rate, &[(key, 100, 0.0, 2.5)]));
+        render(n.as_mut(), rate, frames(2.5, rate), &s).mid()
+    };
+    let x = wheel(&[
+        (route_id(0, route::TARGET), f32::from(target::PITCH)),
+        (route_id(0, route::DEPTH), 100.0),
+    ]);
+    let f = freq_near(&x, rate, hz(key + 12), frames(0.4, rate)).unwrap_or(hz(key));
+    put(
+        rows,
+        "P12",
+        "route[Poly, wheel to pitch 100 %]",
+        "pitch_err_cents",
+        cents(f, hz(key + 12)).abs(),
+        Better::Lower,
+        Some(1.0),
+        0.1,
+    );
+    let x = wheel(&[]);
+    let semis: Vec<f64> = pitch_track(&x, rate)
+        .iter()
+        .filter(|(t, _)| (0.5..1.4).contains(t))
+        .map(|(_, f)| cents(*f, hz(key)) / 100.0)
+        .collect();
+    let hi = semis.iter().copied().fold(f64::MIN, f64::max);
+    let lo = semis.iter().copied().fold(f64::MAX, f64::min);
+    put(
+        rows,
+        "P12",
+        "route[Poly, wheel to vibrato 50 %]",
+        "depth_err_pct",
+        ((hi - lo) / 2.0 - 0.5) / 0.5 * 100.0,
+        Better::Near(0.0),
+        Some(5.0),
         1.0,
     );
 }

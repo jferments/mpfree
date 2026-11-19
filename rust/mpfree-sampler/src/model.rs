@@ -2493,6 +2493,40 @@ impl Project {
         Ok(())
     }
 
+    /// Puts take `index`'s slices on pads straight from the page (the one
+    /// Sample page's step 3b): `put` places them (a chop such as
+    /// [`Project::chop_to_pads`], with the take given to it as the slices'
+    /// template, one undo step), and the take then goes from the page as
+    /// part of that same step, as [`Project::put_take_on`] lets a take go.
+    /// One undo brings the take back and takes the slices off. When `put`
+    /// fails nothing changes and the take stays.
+    pub fn chop_take<R>(
+        &mut self,
+        index: usize,
+        put: impl FnOnce(&mut Project, &Pad) -> Result<R, ModelError>,
+    ) -> Result<R, ModelError> {
+        let take = self.take(index).cloned().ok_or(ModelError::BadTake)?;
+        let steps = self.undo.len();
+        let made = put(self, &take)?;
+        let before = self.takes.clone();
+        self.takes.remove(index);
+        // What `put` pushed, with the take's going after it.
+        let mut group: Vec<Undo> = self
+            .undo
+            .drain(steps.min(self.undo.len())..)
+            .flat_map(|u| match u {
+                Undo::Group(s) => s,
+                u => vec![u],
+            })
+            .collect();
+        group.push(Undo::Takes {
+            before,
+            gesture: None,
+        });
+        self.push_undo(Undo::Group(group));
+        Ok(made)
+    }
+
     /// Lets take `index` go from the page (one undo step); its sound stays
     /// in the project until saved without it.
     pub fn remove_take(&mut self, index: usize) -> Result<(), ModelError> {

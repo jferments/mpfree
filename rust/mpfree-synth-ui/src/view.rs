@@ -223,11 +223,24 @@ fn press_targets(info: &NodeInfo) -> &'static [&'static str] {
     }
 }
 
-/// A parameter's value text and unit. A pressure slot's depth reads in its
-/// target's unit (Cutoff 37.5 % reads +1.5 oct).
+/// A parameter's value text and unit. A pressure slot's depth, and a
+/// Poly route's, reads in its target's unit (Cutoff 37.5 % reads +1.5 oct).
 fn param_text(st: &SynthState, i: usize) -> (String, String) {
     let p = &st.params[i];
     let v = st.values[i];
+    if st.info.id == "mpfree.poly" {
+        if let Some((n, pp::route::DEPTH)) = pp::route_of(p.id) {
+            let target = sp::POLY_TARGETS
+                .get(st.value(pp::route_id(n, pp::route::TARGET)) as usize)
+                .copied()
+                .unwrap_or("Off");
+            if let Some((a, unit)) = sp::amount(target, v) {
+                let (t, u) = amount_text(target, a, unit);
+                return (t, u.to_string());
+            }
+            return ("—".to_string(), String::new());
+        }
+    }
     if let Some(base) = press_base(st.info) {
         let off = p.id.wrapping_sub(base);
         if (field::depth(0)..FIELDS as u16).contains(&off)
@@ -912,6 +925,21 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
                     Some("one voice")
                 }
                 pp::LFO_RATE if v(pp::LFO_SYNC) >= 0.5 => Some("synced to tempo"),
+                pp::LFO2_RATE if poly && v(pp::LFO2_SYNC) >= 0.5 => Some("synced to tempo"),
+                _ if poly
+                    && pp::route_of(id).is_some_and(|(n, f)| {
+                        f != pp::route::SOURCE && v(pp::route_id(n, pp::route::SOURCE)) < 0.5
+                    }) =>
+                {
+                    Some("no source")
+                }
+                _ if poly
+                    && pp::route_of(id).is_some_and(|(n, f)| {
+                        f == pp::route::DEPTH && v(pp::route_id(n, pp::route::TARGET)) < 0.5
+                    }) =>
+                {
+                    Some("no target")
+                }
                 pp::AMP_D if v(pp::AMP_S) >= 100.0 => Some("sustain is full"),
                 pp::FENV_D if poly && v(pp::FENV_S) >= 100.0 => Some("sustain is full"),
                 wp::MENV_D if !poly && v(wp::MENV_S) >= 100.0 => Some("sustain is full"),
@@ -1175,13 +1203,25 @@ fn poly_cards(st: &SynthState, page: &str) -> Strip {
             active: page == "Env",
             ..Card::default()
         },
-        Card {
-            title: "LFO".into(),
-            caption: visual::lfo_caption(&v),
-            traces: vec![trace(visual::lfo(&v), amber, false, false)],
-            midline: true,
-            active: page == "LFO",
-            ..Card::default()
+        // The LFO card shows LFO 2 on LFO 2's page.
+        if page == "LFO 2" {
+            Card {
+                title: "LFO 2".into(),
+                caption: visual::lfo2_caption(&v),
+                traces: vec![trace(visual::lfo2(&v), amber, false, false)],
+                midline: true,
+                active: true,
+                ..Card::default()
+            }
+        } else {
+            Card {
+                title: "LFO".into(),
+                caption: visual::lfo_caption(&v),
+                traces: vec![trace(visual::lfo(&v), amber, false, false)],
+                midline: true,
+                active: page == "LFO",
+                ..Card::default()
+            }
         },
     ];
     let mut s = Strip::new();

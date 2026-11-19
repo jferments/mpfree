@@ -30,6 +30,9 @@
 //! - [`table_sum`]: several oscillators reading one band-limited table, each
 //!   at its own rate and gain, added into a buffer: the supersaw's seven
 //!   saws (`mpfree_synth::osc::Classic::supersaw`).
+//! - [`formants4`]: five band-pass formant filters (zero-delay state
+//!   variable filters) for four voices at once, summed: the Choir's
+//!   formants, one voice a lane.
 //!
 //! # Choosing the code that runs
 //!
@@ -92,6 +95,15 @@ pub fn enabled() -> bool {
 /// Asked of Linux once (`getauxval(AT_HWCAP)`); false on anything but an
 /// ARMv7 Linux build.
 pub fn neon_available() -> bool {
+    // Elsewhere this is false at compile time, so the dispatch folds away
+    // and an engine's loop is the twin's alone.
+    if !cfg!(all(
+        target_arch = "arm",
+        target_endian = "little",
+        target_os = "linux"
+    )) {
+        return false;
+    }
     // 0: not asked yet, 1: no, 2: yes.
     static NEON: AtomicU8 = AtomicU8::new(0);
     match NEON.load(Ordering::Relaxed) {
@@ -207,6 +219,58 @@ pub fn table_sum_on<const ADD: bool>(
     }
     let _ = want;
     plain::table_sum::<ADD>(table, shift, buf, ph, inc, gain);
+    Path::Plain
+}
+
+/// Formant filters per voice in [`formants4`].
+pub const FORMANTS: usize = 5;
+
+/// Four voices' formant filters, one voice a lane: each field is
+/// `[formant][lane]`. A filter is Simper's zero-delay state-variable
+/// band-pass: `s1` and `s2` its state, `a1`, `a2` and `a3` its
+/// coefficients (`a1 = 1 / (1 + g (g + k))`, `a2 = g a1`, `a3 = g a2`), and
+/// `g` the signed gain its band-pass output is summed with. The layout is
+/// the kernel's: `#[repr(C)]`, the fields in this order.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Formants4 {
+    pub s1: [[f32; 4]; FORMANTS],
+    pub s2: [[f32; 4]; FORMANTS],
+    pub a1: [[f32; 4]; FORMANTS],
+    pub a2: [[f32; 4]; FORMANTS],
+    pub a3: [[f32; 4]; FORMANTS],
+    pub g: [[f32; 4]; FORMANTS],
+}
+
+/// Runs four voices' source through their five formant filters: `out[n]`
+/// gets, lane by lane, the sum of each filter's band-pass output times its
+/// gain, from `src[n]`. Frame by frame, formant 0 first, each lane:
+///
+/// ```text
+/// v3 = e - s2
+/// v1 = a1 * s1 + a2 * v3          (the band-pass output)
+/// v2 = s2 + a2 * s1 + a3 * v3
+/// s1 = 2 * v1 - s1,  s2 = 2 * v2 - s2
+/// y  = 0 + g0 * v1, then y + g * v1 for formants 1 to 4
+/// ```
+///
+/// As many frames as the shorter of `src` and `out`; the rest of `out` is
+/// left alone. The NEON kernel does the same operations in the same order,
+/// four lanes at a time and a formant at a time, so the samples are the
+/// same on either path.
+pub fn formants4(src: &[[f32; 4]], out: &mut [[f32; 4]], f: &mut Formants4) {
+    formants4_on(path(), src, out, f);
+}
+
+/// [`formants4`] on a chosen path (NEON only where [`neon_available`]);
+/// returns the path that ran.
+pub fn formants4_on(want: Path, src: &[[f32; 4]], out: &mut [[f32; 4]], f: &mut Formants4) -> Path {
+    #[cfg(all(target_arch = "arm", target_endian = "little", target_os = "linux"))]
+    if want == Path::Neon && neon_available() && neon::formants4(src, out, f) {
+        return Path::Neon;
+    }
+    let _ = want;
+    plain::formants4(src, out, f);
     Path::Plain
 }
 
