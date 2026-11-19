@@ -1812,13 +1812,12 @@ impl MusicIn {
     }
 }
 
-/// The model the mixer's I/O view and [`MusicIn::sync`] share, with the
-/// project's 16 tracks named as the time engine names them.
+/// The model the mixer's I/O view and [`MusicIn::sync`] share, with 16
+/// tracks named as the time engine names a new project's until the
+/// screen names the project's own (`Gui::name_io_tracks`, up to 128).
 pub fn io_model() -> Shared {
     let mut m = mpfree_midi_ui::IoModel::default();
-    m.live.tracks = (1..=mpfree_midi::output::MAX_TRACKS)
-        .map(|i| format!("Track {i}"))
-        .collect();
+    m.live.tracks = (1..=16).map(|i| format!("Track {i}")).collect();
     std::sync::Arc::new(std::sync::Mutex::new(m))
 }
 

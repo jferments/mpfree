@@ -27,7 +27,7 @@ pub struct OutRoute {
 }
 
 /// MIDI tracks (the same as `mpfree_seq::MAX_TRACKS`).
-pub const MAX_TRACKS: usize = 16;
+pub const MAX_TRACKS: usize = 128;
 /// Messages one port can take in one period.
 pub const QUEUE: usize = 256;
 

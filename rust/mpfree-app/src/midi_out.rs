@@ -847,8 +847,11 @@ pub struct MidiOut {
     /// The app's start, for the writers' log times.
     started: Instant,
     tracks: [Option<Applied>; MAX_TRACKS],
-    /// Bank and program to send before this period's notes.
-    program_due: [bool; MAX_TRACKS],
+    /// The tracks with a port and channel in `tracks`, a bit each, so a
+    /// period's work skips the rest of the 128.
+    routed: u128,
+    /// Bank and program to send before this period's notes, a bit a track.
+    program_due: u128,
     chords: Chords,
     /// Each track's keys' expression for its gear, made one bend, pressure
     /// and CC 74 ([`MidiOut::expression`]).
@@ -933,7 +936,8 @@ impl MidiOut {
             sending: false,
             started: Instant::now(),
             tracks: [None; MAX_TRACKS],
-            program_due: [false; MAX_TRACKS],
+            routed: 0,
+            program_due: 0,
             chords: Chords::new(),
             expr: vec![ExprOut::new(); MAX_TRACKS].into_boxed_slice(),
             mpe: vec![MpeOut::new(); MAX_TRACKS].into_boxed_slice(),
@@ -1116,6 +1120,13 @@ impl MidiOut {
             .is_some_and(|a| self.ports[usize::from(a.port.0)].writer.is_some())
     }
 
+    /// The tracks with a port and channel set (whether or not the port is
+    /// plugged in), a bit each: the ones whose MIDI effects
+    /// ([`MidiOut::set_note_fx`]) can shape what goes out.
+    pub fn routed(&self) -> u128 {
+        self.routed
+    }
+
     /// Each track's ahead for the sequencer's look-ahead (S5), in frames:
     /// how much more than the sound's lead its port's gear delay is, for a
     /// track MIDI out takes now; 0 for the rest. Its clips' notes reach
@@ -1159,18 +1170,15 @@ impl MidiOut {
             Err(TryLockError::WouldBlock) => self.busy += 1,
         }
         if rolling && !self.rolling {
-            for t in 0..MAX_TRACKS {
-                self.program_due[t] |= self.tracks[t].is_some();
-                if self.tracks[t].is_some() {
-                    self.controls.due |= 1 << t;
-                }
-            }
+            self.program_due |= self.routed;
+            self.controls.due |= self.routed;
         }
         self.rolling = rolling;
-        for t in 0..MAX_TRACKS {
-            if std::mem::take(&mut self.program_due[t]) {
-                self.program(t);
-            }
+        let mut due = std::mem::take(&mut self.program_due);
+        while due != 0 {
+            let t = due.trailing_zeros() as usize;
+            due &= due - 1;
+            self.program(t);
         }
         self.controls_due();
     }
@@ -1702,9 +1710,13 @@ impl MidiOut {
                 }
             }
             self.tracks[t] = want;
+            self.routed &= !(1 << t);
+            self.routed |= u128::from(want.is_some()) << t;
             // MPE gear gets its zone with the program.
-            self.program_due[t] =
+            self.program_due &= !(1 << t);
+            let program =
                 want.is_some_and(|a| a.program.is_some() || a.bank.is_some() || a.mpe != Zone::Off);
+            self.program_due |= u128::from(program) << t;
         }
     }
 
@@ -3353,6 +3365,38 @@ mod tests {
         want.extend(program);
         want.extend([0x92, 0x25, 100, 0x82, 0x25, 64]);
         assert_eq!(sink.bytes(), want);
+    }
+
+    /// Every one of the 128 tracks reaches gear, not only the first 16:
+    /// the last track's program goes at the start and its notes and
+    /// controllers on its channel; only the tracks with a port and channel
+    /// are routed, so a period's work skips the rest.
+    #[test]
+    fn the_last_of_128_tracks_plays_its_gear() {
+        let last = MAX_TRACKS - 1;
+        assert_eq!(MAX_TRACKS, 128);
+        let (mut mo, sink) = open(Duration::ZERO);
+        let mut o = TrackOut::new(DIN_NAME, 3);
+        o.program = Some(7);
+        let m = model(&[(20, TrackOut::new(DIN_NAME, 1)), (last, o)]);
+        mo.sync(&m, true);
+        assert!(mo.takes(last as u16) && mo.takes(20) && !mo.takes(0));
+        assert_eq!(mo.routed(), 1 << last | 1 << 20);
+        assert!(mo.send(&ev(last as u16, 10, on(0, 100)), NoteIs::Pad(kit_notes(0))));
+        mo.control(10, ctl(last as u8, 74), 50.0);
+        mo.period_end(PERIOD, Instant::now());
+        // Its route taken away: it isn't routed, and its note ends.
+        m.lock().unwrap().setup.tracks[last] = None;
+        m.lock().unwrap().gen += 1;
+        mo.sync(&m, true);
+        assert_eq!(mo.routed(), 1 << 20);
+        assert!(!mo.takes(last as u16));
+        mo.period_end(PERIOD, Instant::now());
+        assert!(mo.close());
+        assert_eq!(
+            sink.bytes(),
+            [0xC3, 7, 0xB3, 74, 50, 0x93, 0x25, 100, 0x83, 0x25, 64]
+        );
     }
 
     /// A clip's program change (S5) goes after the track's own at the
