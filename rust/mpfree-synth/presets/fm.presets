@@ -1,0 +1,636 @@
+mpfree-preset = 1
+engine = mpfree.fm
+name = Init
+
+mpfree-preset = 1
+engine = mpfree.fm
+name = Glass Keys
+
+# Algo
+algo.algorithm = 5
+algo.feedback = 4
+
+# Output
+output.level = -4
+
+# Op 1
+op-1.rate-1 = 96
+op-1.rate-2 = 25
+op-1.rate-3 = 25
+op-1.rate-4 = 67
+op-1.level-2 = 75
+op-1.level-3 = 0
+op-1.detune = 2
+op-1.velocity = 2
+
+# Op 1 kbd
+op-1-kbd.rate = 3
+
+# Op 2
+op-2.rate-1 = 95
+op-2.rate-2 = 50
+op-2.rate-3 = 35
+op-2.rate-4 = 78
+op-2.level-2 = 75
+op-2.level-3 = 0
+op-2.output = 58
+op-2.coarse = 14
+op-2.velocity = 7
+
+# Op 2 kbd
+op-2-kbd.rate = 3
+
+# Op 3
+op-3.rate-1 = 95
+op-3.rate-2 = 20
+op-3.rate-3 = 20
+op-3.rate-4 = 50
+op-3.level-2 = 95
+op-3.level-3 = 0
+op-3.output = 95
+op-3.detune = -2
+op-3.velocity = 2
+
+# Op 3 kbd
+op-3-kbd.rate = 3
+
+# Op 4
+op-4.rate-1 = 95
+op-4.rate-2 = 29
+op-4.rate-3 = 20
+op-4.rate-4 = 50
+op-4.level-2 = 95
+op-4.level-3 = 0
+op-4.output = 72
+op-4.velocity = 6
+
+# Op 4 kbd
+op-4-kbd.rate = 3
+
+# Op 5
+op-5.rate-1 = 95
+op-5.rate-2 = 20
+op-5.rate-3 = 20
+op-5.rate-4 = 50
+op-5.level-2 = 95
+op-5.level-3 = 0
+op-5.output = 86
+op-5.detune = 3
+op-5.velocity = 2
+
+# Op 5 kbd
+op-5-kbd.rate = 3
+
+# Op 6
+op-6.rate-1 = 95
+op-6.rate-2 = 29
+op-6.rate-3 = 20
+op-6.rate-4 = 50
+op-6.level-2 = 95
+op-6.level-3 = 0
+op-6.output = 70
+op-6.detune = -3
+op-6.velocity = 6
+
+# Op 6 kbd
+op-6-kbd.rate = 3
+
+# Pressure
+pressure.depth-1 = 20
+
+mpfree-preset = 1
+engine = mpfree.fm
+name = Bell Tower
+
+# Algo
+algo.algorithm = 5
+
+# Op 1
+op-1.rate-2 = 18
+op-1.rate-3 = 15
+op-1.rate-4 = 40
+op-1.level-2 = 70
+op-1.level-3 = 0
+op-1.velocity = 2
+
+# Op 1 kbd
+op-1-kbd.rate = 2
+
+# Op 2
+op-2.rate-2 = 20
+op-2.rate-3 = 15
+op-2.rate-4 = 40
+op-2.level-2 = 60
+op-2.level-3 = 0
+op-2.output = 78
+op-2.coarse = 3
+op-2.fine = 50
+op-2.detune = 1
+op-2.velocity = 3
+
+# Op 2 kbd
+op-2-kbd.rate = 2
+
+# Op 3
+op-3.rate-2 = 22
+op-3.rate-3 = 15
+op-3.rate-4 = 40
+op-3.level-2 = 65
+op-3.level-3 = 0
+op-3.output = 90
+op-3.coarse = 2
+op-3.detune = -1
+op-3.velocity = 2
+
+# Op 3 kbd
+op-3-kbd.rate = 2
+
+# Op 4
+op-4.rate-2 = 25
+op-4.rate-3 = 15
+op-4.rate-4 = 40
+op-4.level-2 = 55
+op-4.level-3 = 0
+op-4.output = 70
+op-4.fine = 41
+op-4.velocity = 3
+
+# Op 4 kbd
+op-4-kbd.rate = 2
+
+# Op 5
+op-5.rate-2 = 15
+op-5.rate-3 = 10
+op-5.rate-4 = 40
+op-5.level-2 = 60
+op-5.level-3 = 0
+op-5.output = 82
+op-5.coarse = 0
+op-5.detune = 2
+op-5.velocity = 2
+
+# Op 5 kbd
+op-5-kbd.rate = 2
+
+# Op 6
+op-6.rate-2 = 30
+op-6.rate-3 = 20
+op-6.rate-4 = 40
+op-6.level-2 = 50
+op-6.level-3 = 0
+op-6.output = 60
+op-6.coarse = 7
+op-6.velocity = 2
+
+# Op 6 kbd
+op-6-kbd.rate = 2
+
+# Pressure
+pressure.depth-1 = 20
+
+mpfree-preset = 1
+engine = mpfree.fm
+name = Rubber Bass
+
+# Algo
+algo.algorithm = 3
+algo.feedback = 6
+
+# Voice
+voice.mode = Mono
+
+# Output
+output.level = 2
+
+# Op 1
+op-1.rate-2 = 50
+op-1.rate-3 = 30
+op-1.rate-4 = 70
+op-1.level-2 = 90
+op-1.level-3 = 80
+op-1.velocity = 2
+
+# Op 2
+op-2.rate-2 = 70
+op-2.rate-3 = 40
+op-2.rate-4 = 70
+op-2.level-2 = 60
+op-2.level-3 = 40
+op-2.output = 82
+op-2.velocity = 5
+
+# Op 3
+op-3.rate-2 = 85
+op-3.rate-3 = 50
+op-3.rate-4 = 70
+op-3.level-2 = 70
+op-3.level-3 = 30
+op-3.output = 70
+op-3.velocity = 3
+
+# Op 4
+op-4.rate-2 = 40
+op-4.rate-3 = 30
+op-4.rate-4 = 70
+op-4.level-2 = 90
+op-4.level-3 = 85
+op-4.output = 92
+op-4.coarse = 0
+op-4.velocity = 2
+
+# Pressure
+pressure.to-1 = Brightness
+pressure.depth-1 = 33
+
+mpfree-preset = 1
+engine = mpfree.fm
+name = Drawbars
+
+# Algo
+algo.algorithm = 32
+algo.feedback = 3
+
+# LFO
+lfo.wave = Sine
+lfo.speed = 33
+lfo.pitch-depth = 6
+
+# Output
+output.level = 2
+
+# Op 1
+op-1.rate-4 = 85
+op-1.output = 92
+
+# Op 2
+op-2.rate-4 = 85
+op-2.output = 88
+op-2.coarse = 0
+op-2.detune = 1
+
+# Op 3
+op-3.rate-4 = 85
+op-3.output = 84
+op-3.coarse = 2
+op-3.detune = -1
+
+# Op 4
+op-4.rate-4 = 85
+op-4.output = 76
+op-4.coarse = 3
+
+# Op 5
+op-5.rate-4 = 85
+op-5.output = 74
+op-5.coarse = 4
+op-5.detune = 1
+
+# Op 6
+op-6.rate-4 = 85
+op-6.output = 68
+op-6.coarse = 8
+
+# Pressure
+pressure.to-1 = LFO rate
+pressure.depth-1 = 50
+
+mpfree-preset = 1
+engine = mpfree.fm
+name = Brass Section
+
+# Algo
+algo.algorithm = 22
+algo.feedback = 7
+
+# Pitch env
+pitch-env.rate-1 = 84
+pitch-env.rate-2 = 95
+pitch-env.level-1 = 47
+
+# LFO
+lfo.delay = 40
+lfo.pitch-depth = 4
+
+# Output
+output.level = -8
+
+# Op 1
+op-1.rate-1 = 72
+op-1.rate-2 = 76
+op-1.rate-4 = 71
+op-1.level-2 = 88
+op-1.level-3 = 96
+op-1.output = 98
+op-1.velocity = 1
+
+# Op 1 kbd
+op-1-kbd.rate = 2
+
+# Op 2
+op-2.rate-1 = 62
+op-2.rate-2 = 51
+op-2.rate-3 = 29
+op-2.rate-4 = 71
+op-2.level-1 = 82
+op-2.level-2 = 95
+op-2.level-3 = 96
+op-2.output = 80
+op-2.velocity = 3
+
+# Op 2 kbd
+op-2-kbd.rate = 2
+
+# Op 3
+op-3.rate-1 = 72
+op-3.rate-2 = 76
+op-3.rate-4 = 71
+op-3.level-2 = 88
+op-3.level-3 = 96
+op-3.output = 96
+op-3.detune = 3
+op-3.velocity = 1
+
+# Op 3 kbd
+op-3-kbd.rate = 2
+
+# Op 4
+op-4.rate-1 = 72
+op-4.rate-2 = 76
+op-4.rate-4 = 71
+op-4.level-2 = 88
+op-4.level-3 = 96
+op-4.output = 94
+op-4.detune = -3
+op-4.velocity = 1
+
+# Op 4 kbd
+op-4-kbd.rate = 2
+
+# Op 5
+op-5.rate-1 = 72
+op-5.rate-2 = 76
+op-5.rate-4 = 71
+op-5.level-2 = 88
+op-5.level-3 = 96
+op-5.output = 90
+op-5.detune = 1
+op-5.velocity = 1
+
+# Op 5 kbd
+op-5-kbd.rate = 2
+
+# Op 6
+op-6.rate-1 = 62
+op-6.rate-2 = 51
+op-6.rate-3 = 29
+op-6.rate-4 = 71
+op-6.level-1 = 82
+op-6.level-2 = 95
+op-6.level-3 = 96
+op-6.output = 76
+op-6.velocity = 3
+
+# Op 6 kbd
+op-6-kbd.rate = 2
+
+# Pressure
+pressure.to-1 = Level
+pressure.depth-1 = 37.5
+pressure.to-2 = Brightness
+pressure.depth-2 = 50
+
+mpfree-preset = 1
+engine = mpfree.fm
+name = Log Drum
+
+# Algo
+algo.algorithm = 5
+
+# Op 1
+op-1.rate-2 = 45
+op-1.rate-3 = 30
+op-1.rate-4 = 50
+op-1.level-2 = 0
+op-1.level-3 = 0
+op-1.velocity = 3
+
+# Op 1 kbd
+op-1-kbd.rate = 4
+
+# Op 2
+op-2.rate-2 = 70
+op-2.rate-3 = 40
+op-2.rate-4 = 50
+op-2.level-2 = 0
+op-2.level-3 = 0
+op-2.output = 74
+op-2.coarse = 4
+op-2.velocity = 5
+
+# Op 2 kbd
+op-2-kbd.rate = 4
+
+# Op 3
+op-3.rate-2 = 40
+op-3.rate-3 = 30
+op-3.rate-4 = 50
+op-3.level-2 = 0
+op-3.level-3 = 0
+op-3.output = 90
+op-3.detune = 2
+op-3.velocity = 3
+
+# Op 3 kbd
+op-3-kbd.rate = 4
+
+# Op 4
+op-4.rate-2 = 65
+op-4.rate-3 = 40
+op-4.rate-4 = 50
+op-4.level-2 = 0
+op-4.level-3 = 0
+op-4.output = 66
+op-4.coarse = 3
+op-4.velocity = 5
+
+# Op 4 kbd
+op-4-kbd.rate = 4
+
+# Pressure
+pressure.to-1 = Off
+
+mpfree-preset = 1
+engine = mpfree.fm
+name = Silk Pad
+
+# Algo
+algo.algorithm = 5
+algo.feedback = 2
+
+# LFO
+lfo.wave = Sine
+lfo.speed = 30
+lfo.delay = 30
+lfo.pitch-depth = 5
+
+# Output
+output.level = 0
+
+# Op 1
+op-1.rate-1 = 40
+op-1.rate-2 = 30
+op-1.rate-3 = 25
+op-1.rate-4 = 35
+op-1.level-2 = 95
+op-1.level-3 = 90
+op-1.output = 92
+op-1.detune = 4
+op-1.velocity = 1
+
+# Op 2
+op-2.rate-1 = 35
+op-2.rate-2 = 25
+op-2.rate-3 = 20
+op-2.rate-4 = 35
+op-2.level-2 = 90
+op-2.level-3 = 80
+op-2.output = 60
+op-2.coarse = 2
+op-2.velocity = 2
+
+# Op 3
+op-3.rate-1 = 40
+op-3.rate-2 = 30
+op-3.rate-3 = 25
+op-3.rate-4 = 35
+op-3.level-2 = 95
+op-3.level-3 = 90
+op-3.output = 92
+op-3.detune = -4
+op-3.velocity = 1
+
+# Op 4
+op-4.rate-1 = 35
+op-4.rate-2 = 25
+op-4.rate-3 = 20
+op-4.rate-4 = 35
+op-4.level-2 = 90
+op-4.level-3 = 80
+op-4.output = 58
+op-4.velocity = 2
+
+# Op 5
+op-5.rate-1 = 38
+op-5.rate-2 = 30
+op-5.rate-3 = 25
+op-5.rate-4 = 35
+op-5.level-2 = 95
+op-5.level-3 = 90
+op-5.output = 86
+op-5.coarse = 0
+op-5.detune = 2
+op-5.velocity = 1
+
+# Op 6
+op-6.rate-1 = 30
+op-6.rate-2 = 25
+op-6.rate-3 = 20
+op-6.rate-4 = 35
+op-6.level-2 = 85
+op-6.level-3 = 75
+op-6.output = 55
+op-6.coarse = 3
+op-6.velocity = 2
+
+# Pressure
+pressure.to-1 = Level
+pressure.depth-1 = 25
+pressure.to-2 = Vibrato
+pressure.depth-2 = 30
+
+mpfree-preset = 1
+engine = mpfree.fm
+name = Steel Pluck
+
+# Algo
+algo.feedback = 5
+
+# Op 1
+op-1.rate-2 = 55
+op-1.rate-3 = 35
+op-1.rate-4 = 60
+op-1.level-2 = 0
+op-1.level-3 = 0
+op-1.velocity = 3
+
+# Op 1 kbd
+op-1-kbd.rate = 3
+
+# Op 2
+op-2.rate-2 = 70
+op-2.rate-3 = 40
+op-2.rate-4 = 60
+op-2.level-2 = 0
+op-2.level-3 = 0
+op-2.output = 76
+op-2.coarse = 3
+op-2.velocity = 6
+
+# Op 2 kbd
+op-2-kbd.rate = 3
+
+# Op 3
+op-3.rate-2 = 50
+op-3.rate-3 = 35
+op-3.rate-4 = 60
+op-3.level-2 = 0
+op-3.level-3 = 0
+op-3.output = 88
+op-3.coarse = 2
+op-3.detune = 1
+op-3.velocity = 3
+
+# Op 3 kbd
+op-3-kbd.rate = 3
+
+# Op 4
+op-4.rate-2 = 75
+op-4.rate-3 = 40
+op-4.rate-4 = 60
+op-4.level-2 = 0
+op-4.level-3 = 0
+op-4.output = 70
+op-4.coarse = 5
+op-4.velocity = 6
+
+# Op 4 kbd
+op-4-kbd.rate = 3
+
+# Op 5
+op-5.rate-2 = 80
+op-5.rate-3 = 45
+op-5.rate-4 = 60
+op-5.level-2 = 0
+op-5.level-3 = 0
+op-5.output = 64
+op-5.coarse = 7
+op-5.velocity = 6
+
+# Op 5 kbd
+op-5-kbd.rate = 3
+
+# Op 6
+op-6.rate-2 = 85
+op-6.rate-3 = 50
+op-6.rate-4 = 60
+op-6.level-2 = 0
+op-6.level-3 = 0
+op-6.output = 58
+op-6.coarse = 9
+op-6.velocity = 6
+
+# Op 6 kbd
+op-6-kbd.rate = 3
+
+# Pressure
+pressure.to-1 = Off

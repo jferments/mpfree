@@ -93,7 +93,7 @@ fn poly_peaks(p: &pp::Preset, edit: impl Fn(&mut Poly)) -> (f32, f32) {
     (run(None), run(Some(127)))
 }
 
-fn fm_peaks(p: &fp::FmPreset, edit: impl Fn(&mut Fm)) -> (f32, f32) {
+fn fm_peaks(p: &pp::Preset, edit: impl Fn(&mut Fm)) -> (f32, f32) {
     let run = |value| {
         let mut s = Fm::new(RATE);
         s.load_preset(p);
@@ -122,7 +122,7 @@ fn every_preset_stays_in_range_at_full_pressure() {
         );
     }
     for p in Fm::presets() {
-        let (rest, full) = fm_peaks(&p, |_| {});
+        let (rest, full) = fm_peaks(p, |_| {});
         assert!(
             (-30.0..=-1.0).contains(&rest) && (-30.0..=-1.0).contains(&full),
             "FM {}: {rest:.1} / {full:.1} dBFS",
@@ -168,8 +168,8 @@ fn a_level_slot_is_a_swell_never_a_boost() {
             if t as u8 != fp::target::LEVEL {
                 continue;
             }
-            let (_, with) = fm_peaks(&p, |_| {});
-            let (_, without) = fm_peaks(&p, |s| s.set_param(fp::press_target(n), 0.0));
+            let (_, with) = fm_peaks(p, |_| {});
+            let (_, without) = fm_peaks(p, |s| s.set_param(fp::press_target(n), 0.0));
             assert!(
                 with <= without + 0.05,
                 "FM {}: {with:.2} with the swell, {without:.2} without",

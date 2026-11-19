@@ -18,7 +18,6 @@
 
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_synth::dx7;
-use mpfree_synth::fm_params::FmPreset;
 use mpfree_synth::Fm;
 
 const RATE: u32 = 48_000;
@@ -45,16 +44,24 @@ struct Part {
     right: Vec<f32>,
 }
 
-fn preset(name: &str) -> FmPreset {
+/// A factory preset as a DX7 voice (its name and values).
+fn preset(name: &str) -> dx7::Dx7Voice {
     Fm::presets()
-        .into_iter()
+        .iter()
         .find(|p| p.name == name)
+        .map(dx7::Dx7Voice::from_preset)
         .unwrap_or_else(|| panic!("no preset {name}"))
 }
 
-fn part_from(name: &'static str, p: &FmPreset, gain: f32, pan: f32, bars: (u32, u32)) -> Part {
+fn part_from(
+    name: &'static str,
+    p: &dx7::Dx7Voice,
+    gain: f32,
+    pan: f32,
+    bars: (u32, u32),
+) -> Part {
     let mut synth = Fm::new(RATE);
-    synth.load_preset(p);
+    synth.load_voice(p);
     Part {
         name,
         synth,
@@ -215,8 +222,7 @@ fn main() {
         "Steel Pluc",
         "the bank keeps the preset order"
     );
-    let from_bank = voices[k].preset();
-    let mut pluck = part_from("Steel Pluck", &from_bank, 1.6, -0.35, (7, 8));
+    let mut pluck = part_from("Steel Pluck", &voices[k], 1.6, -0.35, (7, 8));
     for bar in 0..2 {
         for (i, &n) in [64u8, 71, 76, 71, 67, 74, 79, 74].iter().enumerate() {
             note(

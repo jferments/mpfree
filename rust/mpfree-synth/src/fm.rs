@@ -35,7 +35,9 @@ use mpfree_node::{
 use crate::dsp::{same_key, Rng};
 use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::fm_params::*;
+use crate::params::Preset;
 use crate::pressure::{swell_gain, Depths, Slot};
+use crate::voice::DcBlock;
 
 /// Frames per control step.
 pub const CTRL: u64 = 16;
@@ -44,10 +46,13 @@ pub const MAX_POLY: usize = 16;
 /// Voice slots: the notes plus room for stolen voices to fade out.
 pub const POOL: usize = MAX_POLY + 4;
 const KILL_MS: f32 = 3.0;
-/// Output of one carrier at full level, about -12 dBFS. A voice with more
-/// carriers is scaled by 1/sqrt(carriers), so its loudness stays about the
-/// same when the algorithm changes.
+/// Output of one carrier at full level, about -12 dBFS (before the Level
+/// setting, -3 dB by default). A voice with more carriers is brought back to
+/// its loudest carrier's power ([`carrier_trim`]), so its loudness stays
+/// about the same when the algorithm changes.
 const VOICE_GAIN: f32 = 0.25;
+/// The DC blocker's corner: the feedback and 1:1 pairs make DC.
+const DC_HZ: f32 = 5.0;
 /// The DX7's envelope rates are defined at this sample rate.
 const EG_RATE: f32 = 44_100.0;
 
@@ -307,6 +312,90 @@ fn interp(pts: &[(f32, f32)], x: f32) -> f32 {
         }
     }
     pts[pts.len() - 1].1
+}
+
+// ---------------------------------------------------------------- level and feedback
+
+/// How loud an operator can get, 1.0 at full: its output level with its
+/// envelope at its highest level, before keyboard and velocity scaling.
+/// 0 for an operator switched off or at output 0.
+fn op_weight(o: &OpParams) -> f32 {
+    if !o.on || o.out == 0 {
+        return 0.0;
+    }
+    let peak = o.levels.iter().copied().max().unwrap_or(0);
+    let env = ((scale_level(peak) >> 1) << 6) as f32;
+    let out = (scale_level(o.out) << 5) as f32;
+    DxEnv::gain((env + out - 4256.0).max(FLOOR))
+}
+
+/// The level match across algorithms: the gain that brings the carriers'
+/// summed power back to the loudest carrier's. One carrier, or several at
+/// the same level, play as before (1, or 1/sqrt(carriers)); carriers at
+/// different levels no longer drop the voice by the ones that add little.
+/// So the loudest carrier sets the voice's level and the others its
+/// balance, whichever algorithm makes them carriers.
+pub fn carrier_trim(weights: &[f32; 6], carriers: u8) -> f32 {
+    let (mut sum, mut top) = (0.0f32, 0.0f32);
+    for (j, &w) in weights.iter().enumerate() {
+        if carriers & (1 << j) != 0 {
+            sum += w * w;
+            top = top.max(w);
+        }
+    }
+    if sum > 0.0 {
+        top / sum.sqrt()
+    } else {
+        1.0
+    }
+}
+
+/// The feedback amount (feedback scale times the operator's gain) at
+/// feedback 5 with the operator at full level: the strongest feedback
+/// that is still a steady, saw-like tone. Above it (feedback 6 and 7
+/// near full level) the loop turns rough and noisy, as on the DX7.
+const FB_CLEAN: f32 = 0.125;
+/// The operator frequency (a fraction of the rate) up to which feedback
+/// is left as it is: about C5 at 48 kHz for a ratio-1 operator.
+const FB_X0: f32 = 0.011;
+/// How much of the feedback is kept, at half-octave steps of the operator's
+/// frequency from [`FB_X0`]: at feedback 5 and full level, the most whose
+/// harmonics past Nyquist fold back at least 63 dB under the loudest, as
+/// measured on the loop itself (`docs/dev/design/synths.md`, FM). Past the
+/// last step nothing stays clean.
+const FB_KEEP: [f32; 12] = [
+    1.0, 0.9696, 0.8984, 0.7936, 0.6904, 0.5528, 0.392, 0.2448, 0.1584, 0.068, 0.0016, 0.0,
+];
+
+/// The share of [`FB_CLEAN`] that stays clean for a loop whose highest
+/// operator runs at `x` of the rate.
+pub fn fb_keep(x: f32) -> f32 {
+    if x <= FB_X0 {
+        return 1.0;
+    }
+    let t = 2.0 * (x / FB_X0).log2();
+    let i = t as usize;
+    if i + 1 >= FB_KEEP.len() {
+        return 0.0;
+    }
+    let f = t - i as f32;
+    FB_KEEP[i] + (FB_KEEP[i + 1] - FB_KEEP[i]) * f
+}
+
+/// The feedback amount for a loop at `x` of the rate, from the amount
+/// `p` the settings ask for: as asked up to C5, then, at higher notes, no
+/// more than stays clean ([`fb_keep`]). A rough setting (above
+/// [`FB_CLEAN`]) is eased by the same share, so it stays rough rather
+/// than turning into a clean saw.
+pub fn fb_amount(p: f32, x: f32) -> f32 {
+    let keep = fb_keep(x);
+    if keep >= 1.0 {
+        p
+    } else if p >= FB_CLEAN {
+        p * keep
+    } else {
+        p.min(FB_CLEAN * keep)
+    }
 }
 
 // ---------------------------------------------------------------- envelopes
@@ -643,6 +732,10 @@ pub struct Fm {
     chord: PressureChord,
     bend: Smooth,
     out: Smooth,
+    /// The output's DC blocker (FM is mono: one for both sides) and its
+    /// last output.
+    dc: DcBlock,
+    dc_last: f32,
     stack: [u8; MAX_POLY],
     stack_len: usize,
     clock: u64,
@@ -717,6 +810,8 @@ impl Fm {
             chord: PressureChord::default(),
             bend: Smooth::new(0.0),
             out: Smooth::new(1.0),
+            dc: DcBlock::new(rate, DC_HZ),
+            dc_last: 0.0,
             stack: [0; MAX_POLY],
             stack_len: 0,
             clock: 0,
@@ -731,9 +826,15 @@ impl Fm {
         s
     }
 
-    /// Loads a preset: defaults, then its values. Sounding notes carry on.
-    pub fn load_preset(&mut self, preset: &FmPreset) {
-        self.load_values(&preset.values);
+    /// Loads a factory preset: defaults, then its values. Sounding notes
+    /// carry on.
+    pub fn load_preset(&mut self, preset: &Preset) {
+        self.load_values(preset.values);
+    }
+
+    /// Loads a DX7 voice ([`crate::dx7`]) the same way.
+    pub fn load_voice(&mut self, voice: &crate::dx7::Dx7Voice) {
+        self.load_values(&voice.values);
     }
 
     /// Defaults, then `values` (a DX7 voice, a preset).
@@ -753,8 +854,9 @@ impl Fm {
         self.read_patch();
     }
 
-    pub fn presets() -> Vec<FmPreset> {
-        presets()
+    /// The factory presets, read once from `presets/fm.presets`.
+    pub fn presets() -> &'static [Preset] {
+        crate::factory::presets!("fm.presets", &INFO, &PARAMS)
     }
 
     /// Voices sounding or fading.
@@ -841,7 +943,7 @@ impl Fm {
         }
         let lvl = self.v(LEVEL);
         let route = Route::new(self.v(ALGORITHM) as usize);
-        let trim = 1.0 / (route.carriers.count_ones().max(1) as f32).sqrt();
+        let trim = carrier_trim(&ops.map(|o| op_weight(&o)), route.carriers);
         self.out.target = if lvl <= -60.0 {
             0.0
         } else {
@@ -1103,6 +1205,12 @@ impl Fm {
     // ---- control rate ----
 
     fn control(&mut self) {
+        // Once every voice has ended and the blocker's tail is under
+        // -120 dB, it lets go, so a silent engine puts out exact zeros.
+        if self.dc_last.abs() < 1e-6 && self.voices.iter().all(|v| v.state == State::Free) {
+            self.dc.reset();
+            self.dc_last = 0.0;
+        }
         let secs = CTRL as f32 / self.rate as f32;
         self.bend.next();
         self.out.next();
@@ -1215,6 +1323,8 @@ impl Fm {
         let fb = (f32::from(p.fb.min(7)) + press * d.get(target::FEEDBACK) * 7.0).clamp(0.0, 7.0);
         v.fb_scale = if fb <= 0.0 { 0.0 } else { (fb - 8.0).exp2() };
         let mut carriers_done = true;
+        // Each operator's gain at the end of this step.
+        let mut ends = [0.0f32; 6];
         let mut bent = pitch + bend;
         if v.ex.slide != 0.0 {
             bent += v.ex.slide;
@@ -1264,9 +1374,23 @@ impl Fm {
                 0.0
             };
             o.gstep = (target - o.g) / CTRL as f32;
+            ends[j] = target;
             // A carrier is done once it is near silent (-80 dB) and not climbing.
             if carrier && q.on && (target > 1e-4 || !o.env.falling()) {
                 carriers_done = false;
+            }
+        }
+        // Feedback eases off at high notes, where its harmonics would fold
+        // back past Nyquist ([`fb_amount`]): judged on the loop's highest
+        // operator and the feedback operator's gain.
+        if v.fb_scale > 0.0 {
+            let r = p.route;
+            let (lo, hi) = (r.fb_from.min(r.fb_to), r.fb_from.max(r.fb_to));
+            let top = v.ops[lo..=hi].iter().map(|o| o.dphase).max().unwrap_or(0);
+            let x = top as f32 * (1.0 / 4_294_967_296.0);
+            let g = ends[r.fb_from];
+            if g > 0.0 && x > FB_X0 {
+                v.fb_scale = fb_amount(v.fb_scale * g, x) / g;
             }
         }
         if v.state == State::Release && carriers_done {
@@ -1291,10 +1415,15 @@ impl Fm {
         a + (tab[i + 1] - a) * f
     }
 
+    /// Renders frames `from` to `to` (at most one control step) and adds
+    /// them, through the DC blocker, to `left` and `right`.
     fn render(&mut self, from: usize, to: usize, left: &mut [f32], right: &mut [f32]) {
         let r = self.patch.route;
         let gain = VOICE_GAIN * self.out.value;
         let tab = &*self.sine;
+        let n = to - from;
+        debug_assert!(n <= CTRL as usize);
+        let mut buf = [0.0f32; CTRL as usize];
         for v in &mut self.voices {
             if v.state == State::Free {
                 continue;
@@ -1314,7 +1443,7 @@ impl Fm {
                     Live::Check
                 };
             }
-            for k in from..to {
+            for x in &mut buf[..n] {
                 let mut m = [0f32; 6];
                 let mut out = 0.0;
                 let fb_in = (v.fb[0] + v.fb[1]) * v.fb_scale;
@@ -1361,12 +1490,17 @@ impl Fm {
                     }
                     g *= v.kill_gain;
                 }
-                left[k] += out * g;
-                right[k] += out * g;
+                *x += out * g;
                 if v.state == State::Free {
                     break;
                 }
             }
+        }
+        for (k, &x) in buf[..n].iter().enumerate() {
+            let y = self.dc.tick(x);
+            left[from + k] += y;
+            right[from + k] += y;
+            self.dc_last = y;
         }
     }
 }
@@ -1409,7 +1543,11 @@ impl Node for Fm {
     }
 
     fn prepare(&mut self, rate: u32, _max_block: usize) {
+        let old = self.rate;
         self.rate = rate.max(8_000);
+        if self.rate != old {
+            self.dc = DcBlock::new(self.rate, DC_HZ);
+        }
         let cr = self.rate / CTRL as u32;
         self.bend.set_time(cr, 4.0);
         self.expr_c = expr_coef(cr as f32);
@@ -1429,6 +1567,8 @@ impl Node for Fm {
         self.chord.clear();
         self.meter_voices = 0.0;
         self.bend.snap(0.0);
+        self.dc.reset();
+        self.dc_last = 0.0;
         let rate = self.rate;
         self.prepare(rate, mpfree_node::MAX_BLOCK);
     }
