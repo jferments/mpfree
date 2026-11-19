@@ -117,7 +117,7 @@ A folder with thousands of sounds lists straight away; the sizes fill in a momen
 
 Moving onto a sound plays it once, so you can audition as you scroll. Delete always asks first and moves things to the Trash, which you empty yourself (that asks again).
 
-**Load on A5** puts a sound on the pad picked, named on the button: hit another pad and the button follows it. **Next pad hit** puts it on the next pad you hit. WAV, AIFF and FLAC files load, mono or stereo, at 8 to 192 kHz, whatever their name says. A file that was cut short, by a recorder that lost power say, loads the part it has. A FLAC file with a damaged part doesn't load at all, rather than play it as noise. A pad you exported from the Sample tab loads with its settings: load its sound, and the settings file beside it brings back its trim, loop, layers and slices (see [Exporting a pad as files](sampling.md#exporting-a-pad-as-files)).
+**Load on A5** puts a sound on the pad picked, named on the button: hit another pad and the button follows it. **Next pad hit** puts it on the next pad you hit. WAV, AIFF and FLAC files load, mono or stereo, at 8 to 192 kHz, whatever their name says. A file that was cut short, by a recorder that lost power say, loads the part it has. A FLAC file with a damaged part doesn't load at all, rather than play it as noise. A pad you exported from the Sample tab loads with its settings: load its sound, and the settings file beside it brings back its trim, loop, layers and slices (see [Library: saving the pad and its slices](sampling.md#library-saving-the-pad-and-its-slices)).
 
 The data wheel moves through the list and its push opens or loads; the other buttons are in [Buttons and controls](../reference/controls.md#the-browser).
 
