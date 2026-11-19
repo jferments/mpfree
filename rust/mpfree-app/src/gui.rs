@@ -13035,6 +13035,138 @@ fn recorded_loop() -> &'static (Arc<LoopWave>, LooperView) {
     })
 }
 
+/// A jam's worth of loops for the screens that show the whole looper
+/// (Jay, 19 Nov 02:45Z: three playing, two muted, one recording and two
+/// empty): loop 1 is [`recorded_loop`]'s three layers, and loops 2 to 6
+/// are recorded by the looper on a transport of their own, each from the
+/// pads: 2 bars of hats and 4 of bass (playing), a bar of shaker and 2 of
+/// keys (muted), and 4 bars of a lead caught recording its second bar.
+/// Loops 7 and 8 stay empty. Recorded once and kept.
+fn busy_loops() -> &'static LooperView {
+    use crate::looping::{LoopHost, PERIOD};
+    use mpfree_looper::{Command as L, Phase};
+    use mpfree_transport::{Block, Command as T, Transport};
+    use std::f32::consts::TAU;
+    use std::sync::OnceLock;
+    static LOOPS: OnceLock<LooperView> = OnceLock::new();
+    LOOPS.get_or_init(|| {
+        const RATE: u32 = 44_100;
+        const BPM: f64 = 92.0;
+        let beat = (f64::from(RATE) * 60.0 / BPM) as u64;
+        let bar = 4 * beat;
+        let mut h = LoopHost::new(RATE, 60);
+        let mut t = Transport::new(RATE, BPM).expect("a transport");
+        let mut b = Block::new();
+        h.command(L::SetLatency(0));
+        t.command(0, T::Play);
+        let noise = |n: u64| ((n.wrapping_mul(2_654_435_761) >> 7) % 2000) as f32 / 1000.0 - 1.0;
+        // What the pads play into loop `k` at frame `n`.
+        let sound = |k: usize, n: u64| -> f32 {
+            let in_beat = (n % beat) as f32 / RATE as f32;
+            let in_half = (n % (beat / 2)) as f32 / RATE as f32;
+            let in_quarter = (n % (beat / 4)) as f32 / RATE as f32;
+            let beat_no = (n % bar) / beat;
+            match k {
+                // Hats on the eighths, the off-beats open.
+                1 => {
+                    let open = (n % beat) >= beat / 2;
+                    noise(n) * (-in_half * if open { 14.0 } else { 60.0 }).exp() * 0.28
+                }
+                // A bass line, a note a beat.
+                2 => {
+                    let note = [41.2, 41.2, 49.0, 36.7][(beat_no % 4) as usize];
+                    0.32 * (TAU * note * in_beat).sin()
+                        * (in_beat * 60.0).min(1.0)
+                        * (-in_beat * 1.5).exp()
+                }
+                // A shaker on the sixteenths.
+                3 => noise(n + 3) * (-in_quarter * 40.0).exp() * 0.18,
+                // Keys: a chord on 1 and the and of 2.
+                4 => {
+                    let at = (n % bar) as f32 / RATE as f32;
+                    let hit = if at < 1.0 { at } else { (at - 0.98).max(0.0) };
+                    [220.0, 261.6, 329.6]
+                        .iter()
+                        .map(|f| (TAU * f * hit).sin())
+                        .sum::<f32>()
+                        * 0.09
+                        * (-hit * 2.5).exp()
+                }
+                // A lead phrase.
+                _ => {
+                    let note = [440.0, 392.0, 523.3, 493.9][((n / (beat / 2)) % 4) as usize];
+                    0.2 * (TAU * note * in_half).sin() * (-in_half * 3.0).exp()
+                }
+            }
+        };
+        let mut period = 0u64;
+        let mut run = |h: &mut LoopHost, k: usize, until: &dyn Fn(&mut LoopHost) -> bool| {
+            for _ in 0..40_000 {
+                if until(h) {
+                    return;
+                }
+                let start = period * PERIOD as u64;
+                let _ = t.process(PERIOD as u32, &mut b);
+                let (mut l, mut r) = ([0.0f32; PERIOD], [0.0f32; PERIOD]);
+                for f in 0..PERIOD {
+                    let v = sound(k, start + f as u64).clamp(-1.0, 1.0);
+                    (l[f], r[f]) = (v, v);
+                }
+                h.take_pads(&l, &r);
+                h.period(&b, &mut l, &mut r);
+                h.changes(String::new);
+                let _ = h.wave_step(period, 64);
+                period += 1;
+            }
+        };
+        let playing = |n: usize| {
+            move |h: &mut LoopHost| h.loop_status(n).is_some_and(|s| s.phase == Phase::Playing)
+        };
+        for (n, bars) in [(1usize, 2u32), (2, 4), (3, 1), (4, 2)] {
+            h.select(n);
+            h.command(L::SetBars(Some(bars)));
+            h.command(L::Record);
+            run(&mut h, n, &playing(n));
+            if n >= 3 {
+                h.command(L::Mute(true));
+            }
+        }
+        // Their waves round the rings, before the lead's first pass
+        // (whose live wave takes the budget while it records).
+        run(&mut h, 0, &|h: &mut LoopHost| {
+            let v = h.view(BPM);
+            (1..=4).all(|n| v.ring_waves[n].iter().any(|&x| x > 0))
+        });
+        h.select(5);
+        h.command(L::SetBars(Some(4)));
+        h.command(L::Record);
+        let into = (bar + bar / 3) as usize;
+        run(&mut h, 5, &move |h: &mut LoopHost| {
+            h.loop_status(5)
+                .is_some_and(|s| s.phase == Phase::Recording && s.recorded >= into)
+        });
+        let theirs = h.view(BPM);
+        let mut v = recorded_loop().1.clone();
+        for n in 1..=5 {
+            v.loops[n] = theirs.loops[n];
+            v.ring_waves[n] = theirs.ring_waves[n];
+            v.cell_waves[n] = theirs.cell_waves[n];
+        }
+        v.memory.used += theirs.memory.used;
+        v.memory.capacity =
+            crate::looping::LoopMemory::default().seconds() as usize * RATE as usize;
+        v
+    })
+}
+
+/// Play's loop row with [`busy_loops`]: loop 1 picked, with its layers.
+pub fn sample_busy_loops(p: &mut Player) {
+    let (wave, _) = recorded_loop();
+    p.apply(ToUi::Looper(Box::new(busy_loops().clone())));
+    p.looper_page.set_names(&["Drums", "Bass", "Chop"]);
+    p.apply(ToUi::LoopWave(Arc::clone(wave)));
+}
+
 /// The recorded loop on the Play page and the Looper tab.
 pub fn sample_loop(p: &mut Player) {
     let (wave, view) = recorded_loop();
@@ -13334,7 +13466,10 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         erase: false,
         copy: false,
     }));
-    sample_loop(&mut p);
+    match v {
+        PlayView::All => sample_busy_loops(&mut p),
+        PlayView::Beats => sample_loop(&mut p),
+    }
     let at = match v {
         PlayView::All => 1,
         PlayView::Beats => 6,
@@ -13767,6 +13902,39 @@ pub fn sample_clips(fonts: Fonts) -> Result<Player, String> {
     p.apply(ToUi::Time(Box::new(host.state())));
     p.apply(ToUi::Show(View::Arrange));
     Ok(p)
+}
+
+/// The Arrange page in the middle of a jam (Jay, 19 Nov 02:45Z: more
+/// clips, in more states, some slots empty): the time UI's busy session
+/// (six tracks playing, Vox chop recording, two launches waiting for the
+/// bar), Keys on Poly, Lead on FM and Chords on Strings, and Loops A's
+/// cells drawn from the busy looper's own loops.
+pub fn sample_clips_busy(fonts: Fonts) -> Result<Player, String> {
+    let s = mpfree_time_ui::sample::busy_playing()?;
+    let mut p = quiet_player(fonts);
+    busy_sounds(&mut p);
+    p.apply(ToUi::Time(Box::new(s.state())));
+    p.apply(ToUi::Show(View::Arrange));
+    Ok(p)
+}
+
+/// The busy jam's loops and synths: the looper's six loops, and Keys,
+/// Lead and Chords (tracks 4-6) on Poly, FM and Strings.
+fn busy_sounds(p: &mut Player) {
+    p.apply(ToUi::Looper(Box::new(busy_loops().clone())));
+    let mut sounds: TrackSounds = [None; crate::instruments::TRACKS];
+    for (t, id, name) in [
+        (3, "mpfree.poly", "Poly"),
+        (4, "mpfree.fm", "FM"),
+        (5, "mpfree.strings", "Strings"),
+    ] {
+        sounds[t] = Some(crate::instruments::Held {
+            id,
+            name,
+            instance: 0,
+        });
+    }
+    p.apply(ToUi::TrackSounds(Box::new(sounds)));
 }
 
 /// The pad player on the Sample page: kit 1's pad 5 holds the sampler UI's
@@ -14206,9 +14374,16 @@ fn sample_looper_picking(fonts: Fonts, picked: usize) -> Result<Player, String> 
     }
     // Loop 1 and its layers, as the Play page's previews have them.
     let (wave, view) = recorded_loop();
-    let mut v = view.clone();
-    v.loops[1] = second.loops[1];
-    v.memory.used += second.memory.used;
+    // Loop 1 picked: the whole jam (three playing, two muted, one
+    // recording, two empty).
+    let mut v = if picked == 0 {
+        busy_loops().clone()
+    } else {
+        let mut v = view.clone();
+        v.loops[1] = second.loops[1];
+        v.memory.used += second.memory.used;
+        v
+    };
     // The memory the app gives the loops (Prefs "Loop memory" as it starts).
     v.memory.capacity = crate::looping::LoopMemory::default().seconds() as usize * RATE as usize;
     v.meter_db = [-6.5, -6.5];
@@ -14228,6 +14403,15 @@ fn sample_looper_picking(fonts: Fonts, picked: usize) -> Result<Player, String> 
         v.status = v.loops[picked];
         v.layers = [None; mpfree_looper::MAX_LAYERS];
         v.capture_into = Some((picked, 2));
+    }
+    if picked == 0 {
+        // The jam is running: bar 9 at the Play page's 92 BPM.
+        p.apply(ToUi::Transport(TransportInfo {
+            state: mpfree_transport::State::Playing,
+            position: 8 * mpfree_transport::time::PPQ as i64 * 4,
+            bpm: 92.0,
+            ..TransportInfo::default()
+        }));
     }
     p.apply(ToUi::Looper(Box::new(v)));
     p.looper_page.set_names(&["Drums", "Bass", "Chop"]);
@@ -14309,6 +14493,58 @@ fn sample_eq_page(p: &mut Player) -> Result<(), String> {
         .chain(DRUMS)
         .node(3)
         .map(|n| Box::new(FxState::from_node(n, "", Color::rgb(0), 120.0, 44_100)));
+    p.apply(ToUi::Chain(Box::new(st)));
+    p.apply(ToUi::ChainFx(fx));
+    p.apply(ToUi::Macros(Box::new(song.macros_state(0))));
+    Ok(())
+}
+
+/// The Compressor's page in the chain editor: the drum bus's slot 3 glueing
+/// the kit (Bus style, 4:1, RMS, auto makeup), Ratio touched. Its
+/// Reduction meter reads what a bar of drums at this setting takes,
+/// as the engine's meter would mid-bar (no audio runs in a preview).
+fn sample_comp_page(p: &mut Player) -> Result<(), String> {
+    use mpfree_chain_ui::sample::{Song, DRUMS};
+    use mpfree_fx::ids::compressor as c;
+    use mpfree_play::mpfree_param::Owner;
+    const SLOT: usize = 2;
+    let mut song = Song::new();
+    {
+        let e = song.drums.node_mut(SLOT).ok_or("the drum bus Compressor")?;
+        for (id, v) in [
+            (c::STYLE, c::BUS),
+            (c::THRESHOLD, -22.0),
+            (c::RATIO, 4.0),
+            (c::ATTACK, 10.0),
+            (c::RELEASE, 120.0),
+            (c::KNEE, 6.0),
+            (c::DETECT, 1.0),
+            (c::AUTO_MAKEUP, 1.0),
+            (c::SC_FILTER, 90.0),
+            (c::MIX, 80.0),
+        ] {
+            e.set_param(id, v);
+        }
+    }
+    let uid = song.drums.uid(SLOT).ok_or("the drum bus Compressor")?;
+    let ratio = ParamAddr::new(Owner::Insert(DRUMS, uid), c::RATIO);
+    p.apply(ToUi::Show(View::Chain));
+    let mut st = song.chain_state(DRUMS, SLOT, 0, Some(ratio));
+    st.back = Some("Mixer".into());
+    st.strip_name = st.title.trim_end_matches(" FX").to_string();
+    st.strip_kind = "Track 1".into();
+    for v in st
+        .params
+        .iter_mut()
+        .filter(|v| v.addr.param == c::REDUCTION)
+    {
+        v.value = -4.5;
+        v.pos = (v.value - v.info.min) / (v.info.max - v.info.min);
+    }
+    let fx = song
+        .chain(DRUMS)
+        .node(SLOT)
+        .map(|n| Box::new(FxState::from_node(n, "", Color::rgb(0), 92.0, 44_100)));
     p.apply(ToUi::Chain(Box::new(st)));
     p.apply(ToUi::ChainFx(fx));
     p.apply(ToUi::Macros(Box::new(song.macros_state(0))));
@@ -15161,6 +15397,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             mpfree_midi_ui::CV,
         ),
     ));
+    // The Monitor section: a keyboard's chord and mod wheel coming in,
+    // the Bass track playing out of the 5-pin jacks, clock arriving, each
+    // line with where it went.
+    out.push((
+        "mixer-io-monitor",
+        io_section_screen(
+            fonts(),
+            &io_state,
+            mpfree_midi_ui::sample::monitored(mpfree_midi_ui::sample::rig()),
+            mpfree_midi_ui::MONITOR,
+        ),
+    ));
     // The Controller section (powerhouse 3.10): controller mode on, the
     // pads and Q-Links playing a Juno-X on the 5-pin jacks' channel 3,
     // its profile naming the first bank's four CCs.
@@ -15189,6 +15437,13 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             Ok(()) => out.push((name, p)),
             Err(e) => eprintln!("{name}: not drawn ({e})"),
         }
+    }
+    // The Compressor's page in the chain editor: the drum bus glue, Ratio
+    // touched (the manual's effects chapter shows it).
+    let mut comp = sample_player(fonts());
+    match sample_comp_page(&mut comp) {
+        Ok(()) => out.push(("chain-comp", comp)),
+        Err(e) => eprintln!("chain-comp: not drawn ({e})"),
     }
     // The EQ's page in the chain editor: the drum bus EQ, band 2 picked
     // (the manual's effects chapter shows it).
@@ -15552,7 +15807,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     system.apply(ToUi::Show(View::System));
     system.set_system(crate::sysinfo::sample());
     out.push(("system-info", system));
-    match sample_clips(fonts()) {
+    match sample_clips_busy(fonts()) {
         Ok(p) => out.push(("clips", p)),
         Err(e) => eprintln!("clips sample: {e}"),
     }
@@ -15849,9 +16104,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     // The Arrange page's Song view: rows made into a song, song mode on,
     // Rec song armed.
-    match mpfree_time_ui::sample::song_state() {
+    match mpfree_time_ui::sample::busy_song_state() {
         Ok(state) => {
             let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
             p.apply(ToUi::Time(Box::new(state)));
             p.apply(ToUi::Show(View::Arrange));
             out.push(("arrange-song", p));
