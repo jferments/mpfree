@@ -12,4 +12,5 @@ mpfree-analysis = { path = "../mpfree-analysis" }
 mpfree-simd = { path = "../mpfree-simd" }
 
 [dev-dependencies]
+mpfree-lanes = { path = "../mpfree-lanes" }
 mpfree-tuning = { path = "../mpfree-tuning" }
