@@ -1,7 +1,8 @@
 //! The Wavetable synth's drawn visuals: each oscillator's table as a 3D
 //! stack of frames with the frame its Position knob reads drawn bright (and
 //! bent by its warp), plus the filter and envelopes, which share Poly's
-//! drawings (the ids line up: see the test).
+//! drawings (the ids line up: see the test). Poly's Table wave draws with
+//! the same pieces ([`Ids::poly`]).
 //!
 //! Like [`crate::visual`], everything comes from parameter values, so it
 //! moves the moment a knob turns. A user table isn't in the node's values,
@@ -27,10 +28,47 @@ const DEPTH_Y: f32 = 0.38;
 /// A frame's height in the box (it peaks at half of this above its line).
 const AMP: f32 = 0.3;
 
-/// The table oscillator `o` plays, by its Table choice.
-fn table(v: &impl Values, o: usize) -> &'static Table {
+/// Where one oscillator's table settings are: the Wavetable synth's or
+/// Poly's.
+#[derive(Clone, Copy, Debug)]
+pub struct Ids {
+    pub table: u16,
+    pub pos: u16,
+    pub mode: u16,
+    pub warp: u16,
+    pub level: u16,
+}
+
+impl Ids {
+    /// The Wavetable synth's oscillator `o` (0 is A).
+    pub fn wavetable(o: usize) -> Ids {
+        Ids {
+            table: osc_id(o, wp::TABLE),
+            pos: osc_id(o, wp::POSITION),
+            mode: osc_id(o, wp::WARP_MODE),
+            warp: osc_id(o, wp::WARP),
+            level: osc_id(o, wp::OSC_LEVEL),
+        }
+    }
+
+    /// Poly's oscillator `o` (0 is Osc 1), for its Table wave.
+    pub fn poly(o: usize) -> Ids {
+        use mpfree_synth::params as pp;
+        let [table, pos, mode, warp] = pp::TABLE_IDS[o];
+        Ids {
+            table,
+            pos,
+            mode,
+            warp,
+            level: [pp::OSC1_LEVEL, pp::OSC2_LEVEL][o],
+        }
+    }
+}
+
+/// The table an oscillator plays, by its Table choice.
+fn table(v: &impl Values, o: Ids) -> &'static Table {
     let f = factory();
-    let i = v.get(osc_id(o, wp::TABLE));
+    let i = v.get(o.table);
     if i >= wp::USER_TABLE {
         &f[0]
     } else {
@@ -39,8 +77,8 @@ fn table(v: &impl Values, o: usize) -> &'static Table {
 }
 
 /// The frame position (0 to frames - 1) the Position knob reads.
-fn position(v: &impl Values, o: usize, t: &Table) -> f32 {
-    (v.get(osc_id(o, wp::POSITION)) / 100.0).clamp(0.0, 1.0) * (t.frames() - 1) as f32
+fn position(v: &impl Values, o: Ids, t: &Table) -> f32 {
+    (v.get(o.pos) / 100.0).clamp(0.0, 1.0) * (t.frames() - 1) as f32
 }
 
 /// Frame `pos` (crossfaded) at phase `ph`, from the table's preview points.
@@ -94,10 +132,20 @@ fn layered(d: f32, f: impl Fn(f32) -> f32) -> Vec<(f32, f32)> {
         .collect()
 }
 
-/// Oscillator `o`'s stack: ghost frames back to front, then the frame the
+/// The frame an oscillator's knobs read, warped, as a wave over one
+/// cycle (-1 to 1).
+pub fn shape(v: &impl Values, o: Ids) -> impl Fn(f32) -> f32 {
+    let t = table(v, o);
+    let pos = position(v, o, t);
+    let mode = v.get(o.mode) as usize;
+    let amt = v.get(o.warp) / 100.0;
+    move |x| sample(t, pos, warp(mode, amt, x.rem_euclid(1.0)))
+}
+
+/// An oscillator's stack: ghost frames back to front, then the frame the
 /// knob reads, warped. Empty if the oscillator is silent.
-pub fn stack(v: &impl Values, o: usize) -> (Vec<Curve>, Curve) {
-    if v.get(osc_id(o, wp::OSC_LEVEL)) <= 0.0 {
+pub fn stack(v: &impl Values, o: Ids) -> (Vec<Curve>, Curve) {
+    if v.get(o.level) <= 0.0 {
         return (Vec::new(), Vec::new());
     }
     let t = table(v, o);
@@ -111,25 +159,30 @@ pub fn stack(v: &impl Values, o: usize) -> (Vec<Curve>, Curve) {
         .collect();
     let pos = position(v, o, t);
     let d = if last > 0.0 { pos / last } else { 0.0 };
-    let mode = v.get(osc_id(o, wp::WARP_MODE)) as usize;
-    let amt = v.get(osc_id(o, wp::WARP)) / 100.0;
-    (ghosts, layered(d, |x| sample(t, pos, warp(mode, amt, x))))
+    (ghosts, layered(d, shape(v, o)))
 }
 
 /// "Vowels · 6/16", or with a warp "6/16 · Bend 30 %" (the card is narrow;
 /// the Table tile names the table).
-pub fn osc_caption(v: &impl Values, o: usize) -> String {
-    if v.get(osc_id(o, wp::OSC_LEVEL)) <= 0.0 {
+pub fn osc_caption(v: &impl Values, o: Ids) -> String {
+    if v.get(o.level) <= 0.0 {
         return "off".into();
     }
     let t = table(v, o);
-    let user = v.get(osc_id(o, wp::TABLE)) >= wp::USER_TABLE;
-    let name = if user { "user table" } else { t.name.as_str() };
     let frame = format!("{}/{}", position(v, o, t).round() as usize + 1, t.frames());
-    let mode = v.get(osc_id(o, wp::WARP_MODE)) as usize;
+    let mode = v.get(o.mode) as usize;
     match wp::WARP_MODES.get(mode) {
-        Some(m) if mode > 0 => format!("{frame} · {m} {:.0} %", v.get(osc_id(o, wp::WARP))),
-        _ => format!("{name} · {frame}"),
+        Some(m) if mode > 0 => format!("{frame} · {m} {:.0} %", v.get(o.warp)),
+        _ => format!("{} · {frame}", table_name(v, o)),
+    }
+}
+
+/// The table's name as a caption says it: "Vowels", or "user table".
+pub fn table_name(v: &impl Values, o: Ids) -> String {
+    if v.get(o.table) >= wp::USER_TABLE {
+        "user table".into()
+    } else {
+        table(v, o).name.clone()
     }
 }
 
@@ -146,7 +199,7 @@ pub fn cards(v: &impl Values, page: &str) -> Vec<Card> {
         dashed,
     };
     let osc = |o: usize, color: Color| {
-        let (ghosts, front) = stack(v, o);
+        let (ghosts, front) = stack(v, Ids::wavetable(o));
         let title = if o == 0 { "Osc A" } else { "Osc B" };
         let mut traces: Vec<Trace> = ghosts
             .into_iter()
@@ -157,7 +210,7 @@ pub fn cards(v: &impl Values, page: &str) -> Vec<Card> {
         }
         Card {
             title: title.into(),
-            caption: osc_caption(v, o),
+            caption: osc_caption(v, Ids::wavetable(o)),
             traces,
             active: page == title,
             ..Card::default()
@@ -239,7 +292,7 @@ mod tests {
         let mut s = Wavetable::new(48_000);
         let read = |s: &Wavetable| {
             let v = |id: u16| s.param(id);
-            stack(&v, 0)
+            stack(&v, Ids::wavetable(0))
         };
         let (ghosts, sine) = read(&s);
         assert_eq!(ghosts.len(), GHOSTS);
@@ -259,10 +312,10 @@ mod tests {
         s.set_param(osc_id(0, wp::WARP_MODE), 2.0);
         s.set_param(osc_id(0, wp::WARP), 100.0);
         let v = |id: u16| s.param(id);
-        assert!(osc_caption(&v, 0).contains("Sync 100 %"));
+        assert!(osc_caption(&v, Ids::wavetable(0)).contains("Sync 100 %"));
         // Osc B is silent at the defaults.
-        assert!(stack(&v, 1).1.is_empty());
-        assert_eq!(osc_caption(&v, 1), "off");
+        assert!(stack(&v, Ids::wavetable(1)).1.is_empty());
+        assert_eq!(osc_caption(&v, Ids::wavetable(1)), "off");
         assert_eq!(cards(&v, "Osc A").len(), 4);
     }
 }

@@ -51,12 +51,18 @@
 //!   cylinder, a sax's cone or a flute's open pipe) excited by a reed or
 //!   an air jet and driven by breath (velocity, pad pressure or a breath
 //!   controller), with vibrato, growl, tonguing and factory presets.
+//! - [`Choir`]: sung vowels, up to eight singers a note, each with their
+//!   own pitch, vibrato and drift, through five formants per voice that
+//!   morph between "oo", "oh", "ah", "eh" and "ee", and the Ensemble,
+//!   with factory presets.
 //!
 //! - [`pressure`]: what pad pressure drives in each engine. Both run it
 //!   through the shared shaper in [`mpfree_node::pressure`].
 //! - [`voice`]: the shared voice core the new engines are built on (held
 //!   notes and priority, voice stealing, glide by time or rate, envelopes
 //!   whose times mean what they say, velocity, play routes, a DC blocker).
+//! - [`modal`]: the modal bank (struck bars, bells and drums as decaying
+//!   modes) and the mallet pulse, shared by Pluck and the drums.
 //! - [`osc`]: its oscillators, the classic waves read from band-limited
 //!   tables (nothing folds back at any pitch), the pulse as two saws and
 //!   the supersaw.
@@ -72,6 +78,8 @@ pub mod bank;
 pub mod bass;
 pub mod bass_params;
 pub mod character;
+pub mod choir;
+pub mod choir_params;
 pub mod drawbar;
 pub mod drawbar_params;
 pub mod drum;
@@ -85,6 +93,7 @@ pub mod fm;
 pub mod fm_params;
 pub mod keys;
 pub mod keys_params;
+pub mod modal;
 pub mod osc;
 pub mod params;
 pub mod pluck;
@@ -95,6 +104,7 @@ pub mod squelch;
 pub mod squelch_params;
 pub mod strings;
 pub mod strings_params;
+pub(crate) mod table_osc;
 pub mod voice;
 pub mod wavetable;
 pub mod wind;
@@ -102,6 +112,7 @@ pub mod wind_params;
 
 pub use analog::Analog;
 pub use bass::Bass;
+pub use choir::Choir;
 pub use drawbar::Drawbar;
 pub use drum::Drums;
 pub use fm::Fm;

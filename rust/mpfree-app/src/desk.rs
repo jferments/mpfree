@@ -592,6 +592,7 @@ impl Desk<'_> {
             | gui::FromUi::Preview(_)
             | gui::FromUi::PreviewStop
             | gui::FromUi::SaveBrowserLists(_)
+            | gui::FromUi::ScreenPicture(_)
             | gui::FromUi::PluginsChanged
             | gui::FromUi::SampleView(_)
             | gui::FromUi::SampleInput(_)
@@ -632,6 +633,7 @@ impl Desk<'_> {
             app,
             mix,
             time,
+            panels,
             looper,
             tracks,
             card,
@@ -671,6 +673,29 @@ impl Desk<'_> {
                 out.note(&format!("time: {line}"));
                 out.show(gui::ToUi::Tell(line));
             }
+            app::Effect::PlayBack => {
+                let line = time
+                    .play_back()
+                    .unwrap_or_else(|e| format!("SHIFT + PLAY: {e}"));
+                out.note(&format!("time: {line}"));
+                out.show(gui::ToUi::Tell(line));
+            }
+            app::Effect::CountInToggle => {
+                let line = time
+                    .toggle_count_in()
+                    .unwrap_or_else(|e| format!("SHIFT + OVERDUB: {e}"));
+                out.note(&format!("time: {line}"));
+                out.show(gui::ToUi::Tell(line));
+            }
+            app::Effect::MacrosPanel => later.extend(panels.toggle_macros(app, mix)),
+            app::Effect::PadPick { slot } => out.show(gui::ToUi::PadPick(usize::from(slot))),
+            app::Effect::TypeTempo => out.show(gui::ToUi::TypeTempo),
+            app::Effect::ControllerSettings => {
+                out.show(gui::ToUi::OpenIoSection(mpfree_midi_ui::CONTROLLER))
+            }
+            app::Effect::ScreenPicture => out.show(gui::ToUi::ScreenPicture),
+            app::Effect::XyFull => out.show(gui::ToUi::XyFull),
+            app::Effect::Reset => out.show(gui::ToUi::Reset),
             app::Effect::SynthPage(d) => out.show(gui::ToUi::SynthPage(d)),
             app::Effect::SampleWheel(d) => out.show(gui::ToUi::SampleWheel(d)),
             app::Effect::Rows(k) => out.show(gui::ToUi::Rows(k)),

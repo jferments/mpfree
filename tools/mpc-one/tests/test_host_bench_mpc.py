@@ -44,6 +44,9 @@ case "$1" in
   --json) echo "Poly Init, 8 voices   400.0"; echo "{\"schema\": \"mpfree-bench/1\", \"build\": \"$build\"}" > "$2"
           echo "Wrote $2"; exit "$FAKE_BENCH_RC" ;;
   --afford) echo "Poly Supersaw  18.4  7.40  16+ (75)" ;;
+  --starts) echo "Keys Tines  120.0  10.0  12.0  6.88  130.0  12.0  over the synth budget" ;;
+  --plain) [ "$2" = --json ] || { echo "STOP: plain args $*"; exit 1; }
+           echo "{\"schema\": \"mpfree-bench/1\", \"build\": \"$build plain\"}" > "$3"; echo "Wrote $3" ;;
   --lanes) [ "$*" = "--lanes --lane-cores 3,2" ] || { echo "STOP: lanes args $*"; exit 1; }
            echo "This thread: pinned to core 3."; echo "Lanes: a worker thread each; worker core: pinned to 2" ;;
 esac
@@ -120,10 +123,13 @@ class BenchTests(unittest.TestCase):
                      "a17: copied; its hash on the MPC matches", "biquad 9000.0", "Poly Init, 8 voices",
                      "----- default.json -----", "Poly Supersaw  18.4  7.40  16+ (75)", '{"schema": "mpfree-bench/1", "build": "a17"}',
                      "This thread: pinned to core 3.", "Lanes: a worker thread each; worker core: pinned to 2",
+                     "Keys Tines  120.0  10.0  12.0  6.88  130.0  12.0  over the synth budget",
+                     "----- default-plain.json -----", '{"schema": "mpfree-bench/1", "build": "default plain"}',
                      "RESULT: both builds ran"):
             self.assertIn(text, res.stdout)
         self.assertEqual(self.lines("bench: "), ["default --calibrate", "default --json default.json", "default --afford",
-                                                 "default --lanes --lane-cores 3,2",
+                                                 "default --lanes --lane-cores 3,2", "default --starts",
+                                                 "default --plain --json default-plain.json",
                                                  "a17 --calibrate", "a17 --json a17.json", "a17 --afford",
                                                  "a17 --lanes --lane-cores 3,2"])
         # Services: only our own pad player is stopped for the runs and started again after; Akai's are only read.
@@ -151,7 +157,7 @@ class BenchTests(unittest.TestCase):
                      "[6/6] The earlier builds, 11347cb0, c0c9bce4", "----- c0c9bce4.json -----",
                      '{"schema": "mpfree-bench/1", "build": "11347cb0"}', "RESULT: both builds ran"):
             self.assertIn(text, res.stdout)
-        self.assertEqual(self.lines("bench: ")[8:], ["11347cb0 --calibrate", "11347cb0 --json 11347cb0.json",
+        self.assertEqual(self.lines("bench: ")[10:], ["11347cb0 --calibrate", "11347cb0 --json 11347cb0.json",
                                                      "c0c9bce4 --calibrate", "c0c9bce4 --json c0c9bce4.json"])
         for name, path in old.items():
             with open(path, "rb") as a, open(f"{self.root}/run/mpfree-bench/{name}", "rb") as b:
@@ -160,7 +166,7 @@ class BenchTests(unittest.TestCase):
         # s at the last step skips the earlier builds; the two have run.
         res = self.run_helper(answers="\n" * 3 + "s\n", before=before)
         self.assertEqual(res.returncode, 0, res.stdout)
-        self.assertEqual([ln for ln in self.lines("bench: ")[12:] if not ln.startswith(("default ", "a17 "))], [])
+        self.assertEqual([ln for ln in self.lines("bench: ")[14:] if not ln.startswith(("default ", "a17 "))], [])
         # The copy starts afresh: the last run's JSON of an earlier build went before it was copied again.
         self.assertNotIn("11347cb0.json", os.listdir(f"{self.root}/run/mpfree-bench"))
         self.assertIn("11347cb0", os.listdir(f"{self.root}/run/mpfree-bench"))

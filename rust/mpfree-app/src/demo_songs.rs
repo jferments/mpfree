@@ -1,7 +1,10 @@
 //! Three demo songs, each in several sections, made to be played,
 //! performed, edited, saved and opened again by the workflow tests in
-//! `song_workflows.rs` (Jay, 14 Nov: the Phase 3 gate asks for "a multi-section
-//! composition that would be awkward in a conventional MPC workflow").
+//! `smoke/song_workflows.rs` (Jay, 14 Nov: the Phase 3 gate asks for "a multi-section
+//! composition that would be awkward in a conventional MPC workflow"), and
+//! by the device round's scripted runs (`needs demo-songs` in a workflow
+//! script, script.rs: the app puts them in its data folder's library
+//! before the steps open one).
 //!
 //! Each one leans on what an MPC can't do the same way:
 //!
@@ -72,6 +75,8 @@ pub struct Song {
     pub clips: Project,
 }
 
+// The tests read a song by its parts; the app only puts it in a library.
+#[cfg(test)]
 impl Song {
     /// The scenes' names, in row order (the song's sections).
     pub fn sections(&self) -> Vec<&str> {
@@ -673,12 +678,13 @@ pub fn tidal_suite() -> Song {
 // ------------------------------------------------------------- the library
 
 /// `song` put in `lib` as a saved project, its other parts as `defaults`
-/// (a new project's): what a test opens through BROWSE.
+/// (a new project's): what a test, or a scripted run's steps, open through
+/// BROWSE.
 pub fn put(
     lib: &mpfree_library::Library,
     song: &Song,
     defaults: &crate::project::Defaults,
-) -> mpfree_library::Loc {
+) -> Result<mpfree_library::Loc, String> {
     let mut snap = crate::project::new_snapshot(defaults);
     snap.meta.name = song.name.to_string();
     snap.meta.tempo = song.tempo;
@@ -702,10 +708,10 @@ pub fn put(
     ));
     let loc = mpfree_library::Loc::top(mpfree_library::Place::Projects)
         .join(song.name)
-        .expect("a project name");
+        .map_err(|e| format!("{}: {e:?}", song.name))?;
     lib.save_project(&loc, &snap, 10)
-        .expect("the song is saved");
-    loc
+        .map_err(|e| format!("{}: {e:?}", song.name))?;
+    Ok(loc)
 }
 
 #[cfg(test)]
