@@ -389,6 +389,44 @@ mod tests {
         out
     }
 
+    /// The screen picture's packed PNG (mpfree-ui's `encode_rgb_small`,
+    /// all four PAD BANK buttons) decodes to the same pixels: flat panels,
+    /// a gradient, noise, rows repeated and odd widths; and a screen of
+    /// flat panels packs to a small part of its size.
+    #[test]
+    fn the_screen_pictures_packed_png_decodes_to_its_pixels() {
+        for (w, h) in [(1u32, 1u32), (7, 3), (320, 200), (1280, 16)] {
+            let mut rgb = Vec::new();
+            let mut seed = 12_345u32;
+            for y in 0..h {
+                for x in 0..w {
+                    seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                    let px = match (x * 4 / w.max(1), y % 7) {
+                        (0, _) => [20, 24, 30],
+                        (1, _) => [(x % 256) as u8, (y % 256) as u8, 128],
+                        (2, 0..=2) => [(seed >> 8) as u8, (seed >> 16) as u8, (seed >> 24) as u8],
+                        _ => [200, 200, 210],
+                    };
+                    rgb.extend_from_slice(&px);
+                }
+            }
+            let png = mpfree_ui::png::encode_rgb_small(w, h, &rgb);
+            let pic = decode(&png).unwrap();
+            assert_eq!((pic.w, pic.h), (w, h));
+            let want: Vec<u32> = rgb
+                .chunks(3)
+                .map(|c| {
+                    0xFF00_0000 | u32::from(c[0]) << 16 | u32::from(c[1]) << 8 | u32::from(c[2])
+                })
+                .collect();
+            assert_eq!(pic.px, want, "{w}x{h}");
+        }
+        let flat = vec![30u8; 1280 * 800 * 3];
+        let png = mpfree_ui::png::encode_rgb_small(1280, 800, &flat);
+        assert!(png.len() < 40_000, "{} bytes", png.len());
+        assert_eq!(decode(&png).unwrap().px[0], 0xFF1E_1E1E);
+    }
+
     #[test]
     fn rgba_with_every_filter() {
         // 2x5 RGBA, one row per filter type, each decoding to the same two
