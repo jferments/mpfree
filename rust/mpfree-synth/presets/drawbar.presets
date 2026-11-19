@@ -1,4 +1,4 @@
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.drawbar
 name = Init
 
@@ -13,7 +13,7 @@ drawbars.1-3-5 = 0
 drawbars.1-1-3 = 0
 drawbars.1 = 0
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.drawbar
 name = Jazz Perc
 
@@ -42,7 +42,7 @@ tone.click = 60
 # Output
 output.level = 2
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.drawbar
 name = Gospel
 
@@ -70,7 +70,7 @@ rotary.speed = Fast
 # Output
 output.level = -1
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.drawbar
 name = Full Organ
 
@@ -94,7 +94,7 @@ tone.drive = 20
 # Output
 output.level = -6
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.drawbar
 name = Rock Drive
 
@@ -120,7 +120,7 @@ tone.tone = 15
 # Output
 output.level = -8
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.drawbar
 name = Ballad
 
@@ -145,7 +145,7 @@ tone.tone = -20
 # Output
 output.level = 3
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.drawbar
 name = Flute
 
@@ -170,7 +170,7 @@ tone.tone = -30
 # Output
 output.level = 5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.drawbar
 name = Church
 
@@ -197,7 +197,7 @@ rotary.rotary = Off
 # Output
 output.level = -5
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.drawbar
 name = Reedy
 
@@ -221,7 +221,7 @@ tone.click = 40
 # Output
 output.level = 2
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.drawbar
 name = Bright Perc
 
@@ -247,7 +247,7 @@ tone.click = 70
 # Output
 output.level = 1
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.drawbar
 name = Hollow
 
@@ -274,7 +274,7 @@ rotary.speed = Stop
 # Output
 output.level = 2
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.drawbar
 name = Soft Bass
 
