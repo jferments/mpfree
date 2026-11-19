@@ -13,9 +13,9 @@ macro_rules! ids {
 
 ids! {
     OSC1_WAVE = 0, OSC1_OCT = 1, OSC1_PW = 2, OSC1_LEVEL = 3,
-    OSC1_TABLE = 4, OSC1_POS = 5, OSC1_WARP_MODE = 6, OSC1_WARP = 7,
+    OSC1_TABLE = 4, OSC1_POS = 5, OSC1_WARP_MODE = 6, OSC1_WARP = 7, OSC1_SEMI = 8, OSC1_FINE = 9,
     OSC2_WAVE = 10, OSC2_OCT = 11, OSC2_SEMI = 12, OSC2_FINE = 13, OSC2_PW = 14, OSC2_LEVEL = 15,
-    SUB_LEVEL = 16, NOISE_LEVEL = 17,
+    SUB_LEVEL = 16, NOISE_LEVEL = 17, SUB_WAVE = 18,
     UNISON = 20, UNISON_DETUNE = 21, UNISON_SPREAD = 22,
     SUPER_DETUNE = 24, SUPER_MIX = 25,
     OSC2_TABLE = 26, OSC2_POS = 27, OSC2_WARP_MODE = 28, OSC2_WARP = 29,
@@ -114,6 +114,9 @@ pub const WAVES: &[&str] = &["Saw", "Pulse", "Triangle", "Sine", "Supersaw", "Ta
 /// The Wave menu's Table: the oscillator reads a wavetable (Wavetable's
 /// tables, [`crate::wavetable::factory`], or one loaded into it).
 pub const WAVE_TABLE: u8 = 5;
+
+/// The sub oscillator's waves ([`SUB_WAVE`]).
+pub const SUB_WAVES: &[&str] = &["Square", "Sine"];
 pub const FILTER_MODES: &[&str] = &["LP 24", "LP 12", "BP 12", "HP 12"];
 pub const LFO_SHAPES: &[&str] = &["Sine", "Triangle", "Saw", "Square", "S&H"];
 /// Tempo sync: off, or a cycle length in beats.
@@ -191,6 +194,26 @@ const BASE: &[ParamInfo] = &[
         0.0,
         Unit::None,
         Stepped,
+    ),
+    p(
+        OSC1_SEMI,
+        "Semi",
+        "Osc 1",
+        -12.0,
+        12.0,
+        0.0,
+        Unit::Semitones,
+        Stepped,
+    ),
+    p(
+        OSC1_FINE,
+        "Fine",
+        "Osc 1",
+        -100.0,
+        100.0,
+        0.0,
+        Unit::Cents,
+        Linear,
     ),
     p(
         OSC1_PW,
@@ -329,6 +352,8 @@ const BASE: &[ParamInfo] = &[
         Unit::Percent,
         Linear,
     ),
+    // The sub's wave: a square, or a sine (the Wavetable synth's sub).
+    choice(SUB_WAVE, "Sub wave", "Mix", SUB_WAVES, 0.0),
     p(
         UNISON,
         "Unison",

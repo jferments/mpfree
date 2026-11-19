@@ -290,6 +290,8 @@ struct Shared {
     /// the FM warp (the other oscillator moves its phase).
     table: [bool; 2],
     fm: [bool; 2],
+    /// The sub is a sine (else a square).
+    sub_sine: bool,
 }
 
 pub struct Poly {
@@ -1185,6 +1187,7 @@ impl Poly {
         });
         s.unison = (self.values[UNISON as usize] as usize).clamp(1, UNISON_MAX);
         s.table = [s.wave1 == WAVE_TABLE, s.wave2 == WAVE_TABLE];
+        s.sub_sine = self.values[SUB_WAVE as usize] >= 0.5;
         // The positions and warps glide only while a Table wave plays.
         if s.table[0] || s.table[1] {
             s.fm = std::array::from_fn(|o| {
@@ -1361,7 +1364,7 @@ impl Poly {
         } else {
             1.0
         };
-        let o1 = self.v(OSC1_OCT) * 12.0;
+        let o1 = self.v(OSC1_OCT) * 12.0 + self.v(OSC1_SEMI) + self.v(OSC1_FINE) / 100.0;
         let o2 = self.v(OSC2_OCT) * 12.0 + self.v(OSC2_SEMI) + self.v(OSC2_FINE) / 100.0;
         let vib = lfo * self.v(LFO_PITCH);
         let pwm = lfo * self.v(LFO_PW) / 100.0;
@@ -1771,7 +1774,8 @@ impl Poly {
             let use_sub = v.sub != 0.0;
             let use_noise = v.noise != 0.0;
             if use_sub {
-                osc_set(Wave::Pulse, c, &mut v.ph_sub, v.dt_sub, 0.5, v.sub);
+                let w = if s.sub_sine { Wave::Sine } else { Wave::Pulse };
+                osc_set(w, c, &mut v.ph_sub, v.dt_sub, 0.5, v.sub);
             }
             if use_noise {
                 for cj in c.iter_mut() {
