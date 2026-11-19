@@ -79,7 +79,7 @@ fn half_sine() -> &'static Waveset {
         let raw = |k: usize| -> (f64, f64) {
             match k {
                 1 => (0.5, 0.0),
-                _ if k % 2 == 0 => (0.0, -2.0 / (PI * (k * k - 1) as f64)),
+                _ if k.is_multiple_of(2) => (0.0, -2.0 / (PI * (k * k - 1) as f64)),
                 _ => (0.0, 0.0),
             }
         };
@@ -2004,7 +2004,8 @@ mod tests {
         let start = FRAC_1_PI.asin() / TAU;
         // Each wave's plain shape, and where it steps (left out of the
         // comparison: the tables smooth a step over a few samples).
-        let shapes: [(fn(f32) -> f32, &[f32]); 5] = [
+        type Shape = (fn(f32) -> f32, &'static [f32]);
+        let shapes: [Shape; 5] = [
             (|p| (TAU * p).sin(), &[]),
             (
                 |p| {

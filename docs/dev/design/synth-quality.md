@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-fxlab/src/synth.rs rust/mpfree-fxlab/tests/synth.rs rust/mpfree-fxlab/quality/synth.tsv rust/mpfree-bench/src/cases.rs
-checked: 2026-11-18 dd1645f
+checked: 2026-11-19 95c1134d
 -->
 # Synth quality: the baseline, the measures and the ratchet
 
