@@ -5,13 +5,42 @@ name = Init
 mpfree-preset = 1
 engine = mpfree.fm
 name = Glass Keys
+fx.1 = mpfree.fx.plate
+macro.1 = Brightness
+macro.1.map = op-2.output 46 70
+macro.1.map = op-4.output 60 84
+macro.1.map = op-6.output 58 82
+macro.2 = Detune
+macro.2.map = op-1.detune 0 4
+macro.2.map = op-3.detune 0 -4
+macro.2.map = op-5.detune 0 6
+macro.3 = Attack
+macro.3.map = op-1.rate-1 99 69
+macro.3.map = op-3.rate-1 99 59
+macro.3.map = op-5.rate-1 99 59
+macro.3.map = op-2.rate-1 99 59
+macro.3.map = op-4.rate-1 99 59
+macro.3.map = op-6.rate-1 99 59
+macro.4 = Decay
+macro.4.map = op-1.rate-2 45 5
+macro.4.map = op-3.rate-2 40 0
+macro.4.map = op-5.rate-2 40 0
+macro.4.map = op-1.rate-3 45 5
+macro.4.map = op-3.rate-3 40 0
+macro.4.map = op-5.rate-3 40 0
+
+# Macros
+macros.brightness = 50
+macros.detune = 50
+macros.attack = 10
+macros.decay = 50
 
 # Algo
 algo.algorithm = 5
 algo.feedback = 4
 
 # Output
-output.level = -4
+output.level = -11
 
 # Op 1
 op-1.rate-1 = 96
@@ -25,6 +54,9 @@ op-1.velocity = 2
 
 # Op 1 kbd
 op-1-kbd.rate = 3
+op-1-kbd.break = 30
+op-1-kbd.r-depth = 15
+op-1-kbd.r-curve = +Lin
 
 # Op 2
 op-2.rate-1 = 95
@@ -53,6 +85,9 @@ op-3.velocity = 2
 
 # Op 3 kbd
 op-3-kbd.rate = 3
+op-3-kbd.break = 30
+op-3-kbd.r-depth = 15
+op-3-kbd.r-curve = +Lin
 
 # Op 4
 op-4.rate-1 = 95
@@ -80,6 +115,9 @@ op-5.velocity = 2
 
 # Op 5 kbd
 op-5-kbd.rate = 3
+op-5-kbd.break = 30
+op-5-kbd.r-depth = 15
+op-5-kbd.r-curve = +Lin
 
 # Op 6
 op-6.rate-1 = 95
@@ -97,13 +135,47 @@ op-6-kbd.rate = 3
 
 # Pressure
 pressure.depth-1 = 20
+# FX 1: plate
+fx-1.decay = 1800
+fx-1.mix = 10
 
 mpfree-preset = 1
 engine = mpfree.fm
 name = Bell Tower
+fx.1 = mpfree.fx.plate
+macro.1 = Brightness
+macro.1.map = op-2.output 66 90
+macro.1.map = op-4.output 58 82
+macro.1.map = op-6.output 48 72
+macro.2 = Detune
+macro.2.map = op-3.detune 0 -2
+macro.2.map = op-5.detune 0 4
+macro.3 = Attack
+macro.3.map = op-1.rate-1 99 50
+macro.3.map = op-2.rate-1 99 50
+macro.3.map = op-3.rate-1 99 50
+macro.3.map = op-4.rate-1 99 50
+macro.3.map = op-5.rate-1 99 50
+macro.3.map = op-6.rate-1 99 50
+macro.4 = Decay
+macro.4.map = op-1.rate-2 36 0
+macro.4.map = op-3.rate-2 44 0
+macro.4.map = op-5.rate-2 30 0
+macro.4.map = op-1.rate-3 30 0
+macro.4.map = op-3.rate-3 30 0
+macro.4.map = op-5.rate-3 20 0
+
+# Macros
+macros.brightness = 50
+macros.detune = 50
+macros.attack = 0
+macros.decay = 50
 
 # Algo
 algo.algorithm = 5
+
+# Output
+output.level = -12
 
 # Op 1
 op-1.rate-2 = 18
@@ -187,10 +259,34 @@ op-6-kbd.rate = 2
 
 # Pressure
 pressure.depth-1 = 20
+# FX 1: plate
+fx-1.pre-delay = 20
+fx-1.decay = 3500
+fx-1.mix = 15
 
 mpfree-preset = 1
 engine = mpfree.fm
 name = Rubber Bass
+macro.1 = Brightness
+macro.1.map = op-2.output 81 99
+macro.1.map = op-3.output 58 82
+macro.2 = Detune
+macro.2.map = op-1.detune 0 -4
+macro.2.map = op-4.detune 0 4
+macro.3 = Attack
+macro.3.map = op-1.rate-1 99 60
+macro.3.map = op-2.rate-1 99 60
+macro.3.map = op-3.rate-1 99 60
+macro.3.map = op-4.rate-1 99 60
+macro.4 = Decay
+macro.4.map = op-2.rate-2 90 50
+macro.4.map = op-3.rate-2 99 71
+
+# Macros
+macros.brightness = 50
+macros.detune = 0
+macros.attack = 0
+macros.decay = 50
 
 # Algo
 algo.algorithm = 3
@@ -200,7 +296,7 @@ algo.feedback = 6
 voice.mode = Mono
 
 # Output
-output.level = 2
+output.level = 3
 
 # Op 1
 op-1.rate-2 = 50
@@ -214,9 +310,9 @@ op-1.velocity = 2
 op-2.rate-2 = 70
 op-2.rate-3 = 40
 op-2.rate-4 = 70
-op-2.level-2 = 60
-op-2.level-3 = 40
-op-2.output = 82
+op-2.level-2 = 95
+op-2.level-3 = 90
+op-2.output = 90
 op-2.velocity = 5
 
 # Op 3
@@ -234,8 +330,7 @@ op-4.rate-3 = 30
 op-4.rate-4 = 70
 op-4.level-2 = 90
 op-4.level-3 = 85
-op-4.output = 92
-op-4.coarse = 0
+op-4.output = 80
 op-4.velocity = 2
 
 # Pressure
@@ -245,6 +340,36 @@ pressure.depth-1 = 33
 mpfree-preset = 1
 engine = mpfree.fm
 name = Drawbars
+fx.1 = mpfree.fx.rotary
+macro.1 = Brightness
+macro.1.map = algo.feedback 0 6
+macro.1.map = op-4.output 64 88
+macro.1.map = op-5.output 62 86
+macro.1.map = op-6.output 56 80
+macro.2 = Detune
+macro.2.map = op-2.detune 0 2
+macro.2.map = op-3.detune 0 -2
+macro.2.map = op-5.detune 0 2
+macro.3 = Attack
+macro.3.map = op-1.rate-1 99 70
+macro.3.map = op-2.rate-1 99 70
+macro.3.map = op-3.rate-1 99 70
+macro.3.map = op-4.rate-1 99 70
+macro.3.map = op-5.rate-1 99 70
+macro.3.map = op-6.rate-1 99 70
+macro.4 = Decay
+macro.4.map = op-1.rate-4 99 71
+macro.4.map = op-2.rate-4 99 71
+macro.4.map = op-3.rate-4 99 71
+macro.4.map = op-4.rate-4 99 71
+macro.4.map = op-5.rate-4 99 71
+macro.4.map = op-6.rate-4 99 71
+
+# Macros
+macros.brightness = 50
+macros.detune = 50
+macros.attack = 0
+macros.decay = 50
 
 # Algo
 algo.algorithm = 32
@@ -256,11 +381,16 @@ lfo.speed = 33
 lfo.pitch-depth = 6
 
 # Output
-output.level = 2
+output.level = -4.5
 
 # Op 1
 op-1.rate-4 = 85
 op-1.output = 92
+
+# Op 1 kbd
+op-1-kbd.l-depth = 5
+op-1-kbd.r-depth = 5
+op-1-kbd.l-curve = +Lin
 
 # Op 2
 op-2.rate-4 = 85
@@ -268,16 +398,31 @@ op-2.output = 88
 op-2.coarse = 0
 op-2.detune = 1
 
+# Op 2 kbd
+op-2-kbd.l-depth = 5
+op-2-kbd.r-depth = 5
+op-2-kbd.l-curve = +Lin
+
 # Op 3
 op-3.rate-4 = 85
 op-3.output = 84
 op-3.coarse = 2
 op-3.detune = -1
 
+# Op 3 kbd
+op-3-kbd.l-depth = 5
+op-3-kbd.r-depth = 5
+op-3-kbd.l-curve = +Lin
+
 # Op 4
 op-4.rate-4 = 85
 op-4.output = 76
 op-4.coarse = 3
+
+# Op 4 kbd
+op-4-kbd.l-depth = 5
+op-4-kbd.r-depth = 5
+op-4-kbd.l-curve = +Lin
 
 # Op 5
 op-5.rate-4 = 85
@@ -285,18 +430,58 @@ op-5.output = 74
 op-5.coarse = 4
 op-5.detune = 1
 
+# Op 5 kbd
+op-5-kbd.l-depth = 5
+op-5-kbd.r-depth = 5
+op-5-kbd.l-curve = +Lin
+
 # Op 6
 op-6.rate-4 = 85
 op-6.output = 68
 op-6.coarse = 8
 
+# Op 6 kbd
+op-6-kbd.l-depth = 5
+op-6-kbd.r-depth = 5
+op-6-kbd.l-curve = +Lin
+
 # Pressure
 pressure.to-1 = LFO rate
 pressure.depth-1 = 50
+# FX 1: rotary
+fx-1.balance = 30
 
 mpfree-preset = 1
 engine = mpfree.fm
 name = Brass Section
+fx.1 = mpfree.fx.plate
+macro.1 = Brightness
+macro.1.map = op-2.output 68 92
+macro.1.map = op-6.output 64 88
+macro.2 = Detune
+macro.2.map = op-3.detune 0 6
+macro.2.map = op-4.detune 0 -6
+macro.2.map = op-5.detune 0 2
+macro.3 = Attack
+macro.3.map = op-1.rate-1 90 54
+macro.3.map = op-3.rate-1 90 54
+macro.3.map = op-4.rate-1 90 54
+macro.3.map = op-5.rate-1 90 54
+macro.3.map = op-2.rate-1 80 44
+macro.3.map = op-6.rate-1 80 44
+macro.4 = Decay
+macro.4.map = op-1.rate-4 85 57
+macro.4.map = op-2.rate-4 85 57
+macro.4.map = op-3.rate-4 85 57
+macro.4.map = op-4.rate-4 85 57
+macro.4.map = op-5.rate-4 85 57
+macro.4.map = op-6.rate-4 85 57
+
+# Macros
+macros.brightness = 50
+macros.detune = 50
+macros.attack = 50
+macros.decay = 50
 
 # Algo
 algo.algorithm = 22
@@ -312,7 +497,7 @@ lfo.delay = 40
 lfo.pitch-depth = 4
 
 # Output
-output.level = -8
+output.level = -4.5
 
 # Op 1
 op-1.rate-1 = 72
@@ -325,6 +510,7 @@ op-1.velocity = 1
 
 # Op 1 kbd
 op-1-kbd.rate = 2
+op-1-kbd.l-depth = 5
 
 # Op 2
 op-2.rate-1 = 62
@@ -352,6 +538,7 @@ op-3.velocity = 1
 
 # Op 3 kbd
 op-3-kbd.rate = 2
+op-3-kbd.l-depth = 5
 
 # Op 4
 op-4.rate-1 = 72
@@ -365,6 +552,7 @@ op-4.velocity = 1
 
 # Op 4 kbd
 op-4-kbd.rate = 2
+op-4-kbd.l-depth = 5
 
 # Op 5
 op-5.rate-1 = 72
@@ -378,6 +566,7 @@ op-5.velocity = 1
 
 # Op 5 kbd
 op-5-kbd.rate = 2
+op-5-kbd.l-depth = 5
 
 # Op 6
 op-6.rate-1 = 62
@@ -397,17 +586,42 @@ op-6-kbd.rate = 2
 pressure.to-1 = Level
 pressure.depth-1 = 37.5
 pressure.to-2 = Brightness
-pressure.depth-2 = 50
+pressure.depth-2 = 35
+# FX 1: plate
+fx-1.decay = 1500
+fx-1.mix = 10
 
 mpfree-preset = 1
 engine = mpfree.fm
 name = Log Drum
+fx.1 = mpfree.fx.room
+macro.1 = Brightness
+macro.1.map = op-2.output 62 86
+macro.1.map = op-4.output 54 78
+macro.2 = Detune
+macro.2.map = op-3.detune 0 4
+macro.3 = Attack
+macro.3.map = op-1.rate-1 99 70
+macro.3.map = op-2.rate-1 99 70
+macro.3.map = op-3.rate-1 99 70
+macro.3.map = op-4.rate-1 99 70
+macro.4 = Decay
+macro.4.map = op-1.rate-2 60 20
+macro.4.map = op-3.rate-2 56 16
+macro.4.map = op-2.rate-2 65 25
+macro.4.map = op-4.rate-2 62 22
+
+# Macros
+macros.brightness = 50
+macros.detune = 50
+macros.attack = 0
+macros.decay = 50
 
 # Algo
 algo.algorithm = 5
 
 # Op 1
-op-1.rate-2 = 45
+op-1.rate-2 = 40
 op-1.rate-3 = 30
 op-1.rate-4 = 50
 op-1.level-2 = 0
@@ -418,7 +632,7 @@ op-1.velocity = 3
 op-1-kbd.rate = 4
 
 # Op 2
-op-2.rate-2 = 70
+op-2.rate-2 = 45
 op-2.rate-3 = 40
 op-2.rate-4 = 50
 op-2.level-2 = 0
@@ -431,7 +645,7 @@ op-2.velocity = 5
 op-2-kbd.rate = 4
 
 # Op 3
-op-3.rate-2 = 40
+op-3.rate-2 = 36
 op-3.rate-3 = 30
 op-3.rate-4 = 50
 op-3.level-2 = 0
@@ -444,7 +658,7 @@ op-3.velocity = 3
 op-3-kbd.rate = 4
 
 # Op 4
-op-4.rate-2 = 65
+op-4.rate-2 = 42
 op-4.rate-3 = 40
 op-4.rate-4 = 50
 op-4.level-2 = 0
@@ -458,10 +672,43 @@ op-4-kbd.rate = 4
 
 # Pressure
 pressure.to-1 = Off
+# FX 1: room
+fx-1.size = 30
+fx-1.decay = 600
+fx-1.mix = 15
 
 mpfree-preset = 1
 engine = mpfree.fm
 name = Silk Pad
+fx.1 = mpfree.fx.plate
+macro.1 = Brightness
+macro.1.map = op-2.output 48 72
+macro.1.map = op-4.output 46 70
+macro.1.map = op-6.output 43 67
+macro.2 = Detune
+macro.2.map = op-1.detune 1 7
+macro.2.map = op-3.detune -1 -7
+macro.2.map = op-5.detune 0 4
+macro.3 = Attack
+macro.3.map = op-1.rate-1 60 20
+macro.3.map = op-2.rate-1 55 15
+macro.3.map = op-3.rate-1 60 20
+macro.3.map = op-4.rate-1 55 15
+macro.3.map = op-5.rate-1 58 18
+macro.3.map = op-6.rate-1 50 10
+macro.4 = Decay
+macro.4.map = op-1.rate-4 55 15
+macro.4.map = op-2.rate-4 55 15
+macro.4.map = op-3.rate-4 55 15
+macro.4.map = op-4.rate-4 55 15
+macro.4.map = op-5.rate-4 55 15
+macro.4.map = op-6.rate-4 55 15
+
+# Macros
+macros.brightness = 50
+macros.detune = 50
+macros.attack = 50
+macros.decay = 50
 
 # Algo
 algo.algorithm = 5
@@ -474,7 +721,7 @@ lfo.delay = 30
 lfo.pitch-depth = 5
 
 # Output
-output.level = 0
+output.level = -2
 
 # Op 1
 op-1.rate-1 = 40
@@ -486,6 +733,9 @@ op-1.level-3 = 90
 op-1.output = 92
 op-1.detune = 4
 op-1.velocity = 1
+
+# Op 1 kbd
+op-1-kbd.r-depth = 8
 
 # Op 2
 op-2.rate-1 = 35
@@ -509,6 +759,9 @@ op-3.output = 92
 op-3.detune = -4
 op-3.velocity = 1
 
+# Op 3 kbd
+op-3-kbd.r-depth = 8
+
 # Op 4
 op-4.rate-1 = 35
 op-4.rate-2 = 25
@@ -531,6 +784,9 @@ op-5.coarse = 0
 op-5.detune = 2
 op-5.velocity = 1
 
+# Op 5 kbd
+op-5-kbd.r-depth = 8
+
 # Op 6
 op-6.rate-1 = 30
 op-6.rate-2 = 25
@@ -547,16 +803,50 @@ pressure.to-1 = Level
 pressure.depth-1 = 25
 pressure.to-2 = Vibrato
 pressure.depth-2 = 30
+# FX 1: plate
+fx-1.decay = 4000
+fx-1.mix = 12
 
 mpfree-preset = 1
 engine = mpfree.fm
 name = Steel Pluck
+fx.1 = mpfree.fx.plate
+macro.1 = Brightness
+macro.1.map = op-2.output 64 88
+macro.1.map = op-4.output 58 82
+macro.1.map = op-5.output 52 76
+macro.1.map = op-6.output 46 70
+macro.2 = Detune
+macro.2.map = op-3.detune 0 2
+macro.3 = Attack
+macro.3.map = op-1.rate-1 99 70
+macro.3.map = op-2.rate-1 99 70
+macro.3.map = op-3.rate-1 99 70
+macro.3.map = op-4.rate-1 99 70
+macro.3.map = op-5.rate-1 99 70
+macro.3.map = op-6.rate-1 99 70
+macro.4 = Decay
+macro.4.map = op-1.rate-2 50 10
+macro.4.map = op-3.rate-2 48 8
+macro.4.map = op-2.rate-2 70 30
+macro.4.map = op-4.rate-2 95 55
+macro.4.map = op-5.rate-2 99 61
+macro.4.map = op-6.rate-2 99 71
+
+# Macros
+macros.brightness = 50
+macros.detune = 50
+macros.attack = 0
+macros.decay = 50
 
 # Algo
 algo.feedback = 5
 
+# Output
+output.level = -9.5
+
 # Op 1
-op-1.rate-2 = 55
+op-1.rate-2 = 30
 op-1.rate-3 = 35
 op-1.rate-4 = 60
 op-1.level-2 = 0
@@ -567,7 +857,7 @@ op-1.velocity = 3
 op-1-kbd.rate = 3
 
 # Op 2
-op-2.rate-2 = 70
+op-2.rate-2 = 50
 op-2.rate-3 = 40
 op-2.rate-4 = 60
 op-2.level-2 = 0
@@ -580,7 +870,7 @@ op-2.velocity = 6
 op-2-kbd.rate = 3
 
 # Op 3
-op-3.rate-2 = 50
+op-3.rate-2 = 28
 op-3.rate-3 = 35
 op-3.rate-4 = 60
 op-3.level-2 = 0
@@ -634,3 +924,6 @@ op-6-kbd.rate = 3
 
 # Pressure
 pressure.to-1 = Off
+# FX 1: plate
+fx-1.decay = 1500
+fx-1.mix = 10

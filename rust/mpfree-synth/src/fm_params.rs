@@ -175,14 +175,16 @@ const GLOBALS: [ParamInfo; 24] = [
         curve: Stepped,
         readonly: false,
     },
-    // -3 dB leaves an 8-note chord of one full-level sine under 0 dBFS.
+    // -9 dB: one full-level sine (Init, and a DX7 voice's loudest carrier)
+    // plays about as loud as the other synths' Init sounds, and an 8-note
+    // chord of it at full velocity stays under 0 dBFS.
     ParamInfo {
         id: LEVEL,
         name: "Level",
         group: "Output",
         min: -60.0,
         max: 6.0,
-        default: -3.0,
+        default: -9.0,
         unit: Unit::Db,
         curve: Curve::Linear,
         readonly: false,
