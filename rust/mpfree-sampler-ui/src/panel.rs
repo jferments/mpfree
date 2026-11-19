@@ -112,6 +112,13 @@ pub struct Item {
     /// A knob's name on two lines where one is too narrow for it ("Size /
     /// spray"), so every name reads whole; the knob sits a line lower.
     pub tall: bool,
+    /// Under the item before it in the line, in the same slot: a column of
+    /// controls side by side with the line's others (the Slice section's
+    /// Method over Snap to zero, beside its knob).
+    pub under: bool,
+    /// The control's height in pixels in place of its look's own (a main
+    /// button that leaves room for the lines over it); 0: its look's.
+    pub height: i32,
 }
 
 impl Item {
@@ -121,6 +128,8 @@ impl Item {
             width: 0,
             label: false,
             tall: false,
+            under: false,
+            height: 0,
         }
     }
 
@@ -137,6 +146,18 @@ impl Item {
     /// A knob with room for its name on two lines ([`Item::tall`]).
     pub fn two_lines(mut self) -> Item {
         self.tall = true;
+        self
+    }
+
+    /// Under the item before it, in its slot ([`Item::under`]).
+    pub fn under(mut self) -> Item {
+        self.under = true;
+        self
+    }
+
+    /// The control `h` pixels high ([`Item::height`]).
+    pub fn high(mut self, h: i32) -> Item {
+        self.height = h;
         self
     }
 }
@@ -200,6 +221,10 @@ const PAD: i32 = 12;
 const HEAD_H: i32 = 16;
 const HEAD_GAP: i32 = 10;
 const LINE_GAP: i32 = 12;
+/// The least the lines close up to when a section is full.
+const MIN_LINE_GAP: i32 = 4;
+/// Between the items of one slot ([`Item::under`]).
+const STACK_GAP: i32 = 6;
 const ITEM_GAP: i32 = 12;
 /// A row's name over its control.
 const LABEL_H: i32 = 16;
@@ -290,13 +315,27 @@ impl Placed {
     }
 }
 
-fn item_h(look: &Look, label: bool, tall: bool) -> i32 {
+fn item_h(look: &Look, it: &Item) -> i32 {
+    let name = if it.label { LABEL_H + LABEL_GAP } else { 0 };
     match look {
-        Look::Knob { .. } => KNOB_H + if tall { LABEL_H } else { 0 },
+        Look::Knob { .. } => KNOB_H + if it.tall { LABEL_H } else { 0 },
         Look::Toggle(_) => SWITCH_H,
-        Look::Primary(_) => PRIMARY_H + if label { LABEL_H + LABEL_GAP } else { 0 },
-        _ => CTRL_H + if label { LABEL_H + LABEL_GAP } else { 0 },
+        _ if it.height > 0 => it.height + name,
+        Look::Primary(_) => PRIMARY_H + name,
+        _ => CTRL_H + name,
     }
+}
+
+/// A line's items in slots: each item with those [`Item::under`] it.
+fn slots(line: &[Item]) -> Vec<Vec<Item>> {
+    let mut out: Vec<Vec<Item>> = Vec::new();
+    for it in line {
+        match out.last_mut() {
+            Some(slot) if it.under => slot.push(*it),
+            _ => out.push(vec![*it]),
+        }
+    }
+    out
 }
 
 /// About how wide `s` is on a choice's button, without the fonts: wide
@@ -378,26 +417,48 @@ impl Panel {
             let inner = sr.inset(PAD);
             let body = inner.take_top(HEAD_H + HEAD_GAP).1;
             let look = |row: usize| controls.get(row).map(|c| &c.look);
-            let heights: Vec<i32> = s
+            // Each line's slots, with the items that have a control.
+            let lines: Vec<Vec<Vec<(Item, &Look)>>> = s
                 .lines
                 .iter()
                 .map(|line| {
-                    line.iter()
-                        .filter_map(|it| look(it.row).map(|l| item_h(l, it.label, it.tall)))
-                        .max()
-                        .unwrap_or(0)
+                    slots(line)
+                        .into_iter()
+                        .map(|slot| {
+                            slot.into_iter()
+                                .filter_map(|it| look(it.row).map(|l| (it, l)))
+                                .collect::<Vec<_>>()
+                        })
+                        .filter(|slot| !slot.is_empty())
+                        .collect()
                 })
                 .collect();
-            let total = heights.iter().sum::<i32>() + LINE_GAP * (heights.len() as i32 - 1).max(0);
+            let slot_h = |slot: &[(Item, &Look)]| {
+                slot.iter().map(|(it, l)| item_h(l, it)).sum::<i32>()
+                    + STACK_GAP * (slot.len() as i32 - 1).max(0)
+            };
+            let heights: Vec<i32> = lines
+                .iter()
+                .map(|line| line.iter().map(|slot| slot_h(slot)).max().unwrap_or(0))
+                .collect();
+            // A full section closes its lines up, down to MIN_LINE_GAP.
+            let n_gaps = (heights.len() as i32 - 1).max(0);
+            let sum = heights.iter().sum::<i32>();
+            let gap = if n_gaps > 0 && sum + LINE_GAP * n_gaps > body.h {
+                ((body.h - sum) / n_gaps).clamp(MIN_LINE_GAP, LINE_GAP)
+            } else {
+                LINE_GAP
+            };
+            let total = sum + gap * n_gaps;
             let mut y = if s.from_top {
                 body.y
             } else {
                 body.y + ((body.h - total) / 2).max(0)
             };
-            for (line, h) in s.lines.iter().zip(&heights) {
+            for (line, h) in lines.iter().zip(&heights) {
                 let k = line.len() as i32;
-                let fixed: i32 = line.iter().map(|it| it.width).sum();
-                let shared = line.iter().filter(|it| it.width == 0).count() as i32;
+                let fixed: i32 = line.iter().map(|slot| slot[0].0.width).sum();
+                let shared = line.iter().filter(|slot| slot[0].0.width == 0).count() as i32;
                 let gaps = ITEM_GAP * (k - 1).max(0);
                 let left = (body.w - fixed - gaps).max(0);
                 // Fixed items alone spread out evenly across the line.
@@ -410,30 +471,36 @@ impl Panel {
                         ITEM_GAP + left / k.max(1),
                     )
                 };
-                for it in line {
-                    let Some(l) = look(it.row) else { continue };
-                    let w = if it.width > 0 { it.width } else { each };
-                    let ih = item_h(l, it.label, it.tall);
-                    let rect = Rect::new(x, y + (h - ih) / 2, w, ih);
-                    let control = match l {
-                        Look::Knob { .. } | Look::Toggle(_) => rect,
-                        _ if it.label => rect.take_top(LABEL_H + LABEL_GAP).1,
-                        _ => rect,
+                for slot in line {
+                    let w = match slot[0].0.width {
+                        0 => each,
+                        w => w,
                     };
-                    let options = match l {
-                        Look::Choice { options, .. } => option_rects(control, options),
-                        _ => Vec::new(),
-                    };
-                    out.push(Placed {
-                        row: it.row,
-                        rect,
-                        tall: it.tall && matches!(l, Look::Knob { .. }),
-                        control,
-                        options,
-                    });
+                    let mut iy = y + (h - slot_h(slot)) / 2;
+                    for &(it, l) in slot {
+                        let ih = item_h(l, &it);
+                        let rect = Rect::new(x, iy, w, ih);
+                        iy += ih + STACK_GAP;
+                        let control = match l {
+                            Look::Knob { .. } | Look::Toggle(_) => rect,
+                            _ if it.label => rect.take_top(LABEL_H + LABEL_GAP).1,
+                            _ => rect,
+                        };
+                        let options = match l {
+                            Look::Choice { options, .. } => option_rects(control, options),
+                            _ => Vec::new(),
+                        };
+                        out.push(Placed {
+                            row: it.row,
+                            rect,
+                            tall: it.tall && matches!(l, Look::Knob { .. }),
+                            control,
+                            options,
+                        });
+                    }
                     x += w + spread;
                 }
-                y += h + LINE_GAP;
+                y += h + gap;
             }
         }
         out

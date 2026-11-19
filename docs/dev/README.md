@@ -6,6 +6,8 @@ For people who build MPFree: how it is designed, why, how to build and test it, 
 
 Every design page opens with a **Status** line (proposal, approved, built, on main, ran on the device) and a date. Trust the code and the tests over a page whose status is old. When a pull request changes how something works, it updates its page here in the same PR ([how docs stay current](../agents/docs-system.md)).
 
+**Older names in the code and the design pages:** *Beats* (`play_page.rs`, `PlayPage`) is the Sequencer tab's **Steps** view, which was a view of the Play page until the Play, Pads and Sequencer redesign (18 Nov 2026); Play now has one view (`PlayView::All`). *Hello MPC* (and the crate `mpfree-hello`) was the app's early name; the app is **mpfree**.
+
 ## Start here
 
 - [Project README](../../README.md): what MPFree is, where it stands, how to build and test.

@@ -948,10 +948,11 @@ pub enum Event {
     /// Plays source frames `start..end` of layer `layer` of pad `pad` once,
     /// forward from its first frame, with the pad's settings (level, pan,
     /// tune, channels, envelopes, filter, pressure), as a pad made from
-    /// that slice plays it: the Chop tab's audition of a slice. The pad's
-    /// own playing voices fade out first; mute groups and chokes are left
-    /// alone. `velocity` as for [`Event::NoteOn`]. The frames are clipped to
-    /// the source; nothing plays if none are left.
+    /// that slice plays it: the Slice tool's audition of a slice. Pad
+    /// [`TAKE_PAD`] is the take the view holds, with its settings. The
+    /// pad's own playing voices fade out first; mute groups and chokes are
+    /// left alone. `velocity` as for [`Event::NoteOn`]. The frames are
+    /// clipped to the source; nothing plays if none are left.
     Audition {
         pad: u8,
         layer: u8,
@@ -3150,7 +3151,14 @@ impl Engine {
         let velocity = self.fixed_velocity.unwrap_or(velocity.min(127));
         let p = usize::from(pad);
         let at = self.at;
-        let Some(Some(vp)) = self.views[at].pads.get(p) else {
+        // A slice of the take the Sample page shows ([`TAKE_PAD`]) plays
+        // from the take, on its own voice, as a pad's slice does.
+        let vp = if pad == TAKE_PAD {
+            self.views[at].take.as_ref()
+        } else {
+            self.views[at].pads.get(p).and_then(Option::as_ref)
+        };
+        let Some(vp) = vp else {
             return;
         };
         let li = usize::from(layer);
