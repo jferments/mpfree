@@ -345,10 +345,41 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         "synth-drums-kit",
         "Drums · Electro Kit, Kit page: the kit as the pads lie, pad 1's hit, every pad's level",
         "Electro Kit",
-        16,
+        crate::pages::DRUM_KIT_PAGE,
         &[],
         fonts(),
     )?);
+    {
+        use mpfree_synth::drum_fx::{field as x, fx_id};
+        let snare = |f: u16, v: f32| (fx_id(1, f), v);
+        out.push(drum_scene(
+            "synth-drums-effects",
+            "Drums · Init Kit, Effects for pad 2: the snare with Punch, a little Distortion, \
+             a mid lift, the Compressor and some reverb",
+            "Init Kit",
+            crate::pages::drum_fx_page(1),
+            &[
+                snare(x::PUNCH, 40.0),
+                snare(x::DISTORTION, 9.0),
+                snare(x::DIST_TONE, -30.0),
+                snare(x::MID, 4.0),
+                snare(x::MID_FREQ, 2000.0),
+                snare(x::RATIO, 4.0),
+                snare(x::THRESHOLD, -24.0),
+                snare(x::OUTPUT, 3.0),
+                snare(x::REVERB_SEND, 25.0),
+            ],
+            fonts(),
+        )?);
+        out.push(drum_scene(
+            "synth-drums-sends",
+            "Drums · Init Kit, Sends: the kit's delay and reverb, fed by the snare and the hat",
+            "Init Kit",
+            crate::pages::drum_fx_page(15) + 1,
+            &[snare(x::REVERB_SEND, 25.0), (fx_id(2, x::DELAY_SEND), 20.0)],
+            fonts(),
+        )?);
+    }
     out.push(pluck_scene(
         "synth-pluck-string",
         "Pluck · Steel String, String page: Karplus-Strong decay, brightness, pick and position",
@@ -552,7 +583,7 @@ fn fm_scene(
     for &(id, v) in edits {
         node.set_param(id, v);
     }
-    let names = presets.iter().map(|p| p.name.clone()).collect();
+    let names = presets.iter().map(|p| p.name.to_string()).collect();
     let mut st = SynthState::from_node(&node, "Keys", Color::rgb(0x6EA8FE), names, Some(i));
     st.edited = !edits.is_empty();
     if page == "Pressure" {
@@ -581,12 +612,14 @@ fn fm_scene(
 
 const DRUM_HINT: &str = "Drag a control to turn it · tap one, then the wheel · SHIFT + wheel: pad page · pads play the kit";
 
-/// The drum synth with a factory kit, on pad `pad`'s page (16: the Kit page).
+/// The drum synth with a factory kit, on page `page`: pad `page`'s own
+/// page for 0 to 15, then the Kit page, the pads' effects
+/// ([`crate::pages::drum_fx_page`]) and the Sends.
 fn drum_scene(
     name: &'static str,
     about: &'static str,
     kit: &str,
-    pad: usize,
+    page: usize,
     edits: &[(u16, f32)],
     fonts: Fonts,
 ) -> Result<Sample, String> {
@@ -605,12 +638,6 @@ fn drum_scene(
     st.edited = !edits.is_empty();
     let mut ui = app_ui(fonts, DRUM_HINT);
     let mut panel = SynthPanel::add(&mut ui, PAGE, st)?;
-    // Past the last pad: the Kit page, after the pads' pages.
-    let page = if pad < 16 {
-        crate::pages::drum_page(pad)
-    } else {
-        16
-    };
     panel.show_page(&mut ui, page);
     fill_qlinks(&mut ui, &panel);
     ui.show(PAGE)?;

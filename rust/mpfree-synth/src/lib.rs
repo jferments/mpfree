@@ -83,6 +83,7 @@ pub mod choir_params;
 pub mod drawbar;
 pub mod drawbar_params;
 pub mod drum;
+pub mod drum_fx;
 pub mod drum_params;
 pub mod dsp;
 pub mod dx7;
