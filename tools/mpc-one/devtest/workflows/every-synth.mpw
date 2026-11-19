@@ -1,0 +1,534 @@
+title Every synth: each engine on Track 1, eight notes held, then a run, and the arp latched on Poly
+covers load, note-repeat
+# Track 1's instrument steps through every engine in the Synth options'
+# Instrument row. On the MPC each engine's window measures what eight
+# voices cost (the report's per-engine rows); the tests' session builds no
+# instruments, so it checks the steps and leaves the sound to the MPC.
+wait 1
+tap header tab Synth
+mark poly
+button MENU
+button +
+button MENU
+wait 1
+expect-on-mpc track 1: plays Poly
+pad-down 1 100
+pad-down 5 100
+pad-down 8 100
+pad-down 10 100
+pad-down 13 100
+pad-down 15 100
+pad-down 16 100
+pad-down 12 100
+wait 3
+pad-up 1
+pad-up 5
+pad-up 8
+pad-up 10
+pad-up 13
+pad-up 15
+pad-up 16
+pad-up 12
+wait 0.5
+pad 1 63 0.1
+pad 2 66 0.1
+pad 3 69 0.1
+pad 4 72 0.1
+pad 5 75 0.1
+pad 6 78 0.1
+pad 7 81 0.1
+pad 8 84 0.1
+pad 9 87 0.1
+pad 10 90 0.1
+pad 11 93 0.1
+pad 12 96 0.1
+pad 13 99 0.1
+pad 14 102 0.1
+pad 15 105 0.1
+pad 16 108 0.1
+wait 1
+mark arp
+button SHIFT + NOTE REPEAT
+expect Latch on
+pad-down 1 100
+pad-down 5 100
+pad-down 8 100
+wait 0.5
+pad-up 1
+pad-up 5
+pad-up 8
+button PLAY
+wait 4
+button SHIFT + NOTE REPEAT
+expect Latch off
+button STOP
+wait 1
+mark fm
+button MENU
+button +
+button MENU
+wait 1
+expect-on-mpc track 1: plays FM
+pad-down 1 100
+pad-down 5 100
+pad-down 8 100
+pad-down 10 100
+pad-down 13 100
+pad-down 15 100
+pad-down 16 100
+pad-down 12 100
+wait 3
+pad-up 1
+pad-up 5
+pad-up 8
+pad-up 10
+pad-up 13
+pad-up 15
+pad-up 16
+pad-up 12
+wait 0.5
+pad 1 63 0.1
+pad 2 66 0.1
+pad 3 69 0.1
+pad 4 72 0.1
+pad 5 75 0.1
+pad 6 78 0.1
+pad 7 81 0.1
+pad 8 84 0.1
+pad 9 87 0.1
+pad 10 90 0.1
+pad 11 93 0.1
+pad 12 96 0.1
+pad 13 99 0.1
+pad 14 102 0.1
+pad 15 105 0.1
+pad 16 108 0.1
+wait 1
+mark drums
+button MENU
+button +
+button MENU
+wait 1
+expect-on-mpc track 1: plays Drums
+pad-down 1 100
+pad-down 5 100
+pad-down 8 100
+pad-down 10 100
+pad-down 13 100
+pad-down 15 100
+pad-down 16 100
+pad-down 12 100
+wait 3
+pad-up 1
+pad-up 5
+pad-up 8
+pad-up 10
+pad-up 13
+pad-up 15
+pad-up 16
+pad-up 12
+wait 0.5
+pad 1 63 0.1
+pad 2 66 0.1
+pad 3 69 0.1
+pad 4 72 0.1
+pad 5 75 0.1
+pad 6 78 0.1
+pad 7 81 0.1
+pad 8 84 0.1
+pad 9 87 0.1
+pad 10 90 0.1
+pad 11 93 0.1
+pad 12 96 0.1
+pad 13 99 0.1
+pad 14 102 0.1
+pad 15 105 0.1
+pad 16 108 0.1
+wait 1
+mark pluck
+button MENU
+button +
+button MENU
+wait 1
+expect-on-mpc track 1: plays Pluck
+pad-down 1 100
+pad-down 5 100
+pad-down 8 100
+pad-down 10 100
+pad-down 13 100
+pad-down 15 100
+pad-down 16 100
+pad-down 12 100
+wait 3
+pad-up 1
+pad-up 5
+pad-up 8
+pad-up 10
+pad-up 13
+pad-up 15
+pad-up 16
+pad-up 12
+wait 0.5
+pad 1 63 0.1
+pad 2 66 0.1
+pad 3 69 0.1
+pad 4 72 0.1
+pad 5 75 0.1
+pad 6 78 0.1
+pad 7 81 0.1
+pad 8 84 0.1
+pad 9 87 0.1
+pad 10 90 0.1
+pad 11 93 0.1
+pad 12 96 0.1
+pad 13 99 0.1
+pad 14 102 0.1
+pad 15 105 0.1
+pad 16 108 0.1
+wait 1
+mark wavetable
+button MENU
+button +
+button MENU
+wait 1
+expect-on-mpc track 1: plays Wavetable
+pad-down 1 100
+pad-down 5 100
+pad-down 8 100
+pad-down 10 100
+pad-down 13 100
+pad-down 15 100
+pad-down 16 100
+pad-down 12 100
+wait 3
+pad-up 1
+pad-up 5
+pad-up 8
+pad-up 10
+pad-up 13
+pad-up 15
+pad-up 16
+pad-up 12
+wait 0.5
+pad 1 63 0.1
+pad 2 66 0.1
+pad 3 69 0.1
+pad 4 72 0.1
+pad 5 75 0.1
+pad 6 78 0.1
+pad 7 81 0.1
+pad 8 84 0.1
+pad 9 87 0.1
+pad 10 90 0.1
+pad 11 93 0.1
+pad 12 96 0.1
+pad 13 99 0.1
+pad 14 102 0.1
+pad 15 105 0.1
+pad 16 108 0.1
+wait 1
+mark keys
+button MENU
+button +
+button MENU
+wait 1
+expect-on-mpc track 1: plays Keys
+pad-down 1 100
+pad-down 5 100
+pad-down 8 100
+pad-down 10 100
+pad-down 13 100
+pad-down 15 100
+pad-down 16 100
+pad-down 12 100
+wait 3
+pad-up 1
+pad-up 5
+pad-up 8
+pad-up 10
+pad-up 13
+pad-up 15
+pad-up 16
+pad-up 12
+wait 0.5
+pad 1 63 0.1
+pad 2 66 0.1
+pad 3 69 0.1
+pad 4 72 0.1
+pad 5 75 0.1
+pad 6 78 0.1
+pad 7 81 0.1
+pad 8 84 0.1
+pad 9 87 0.1
+pad 10 90 0.1
+pad 11 93 0.1
+pad 12 96 0.1
+pad 13 99 0.1
+pad 14 102 0.1
+pad 15 105 0.1
+pad 16 108 0.1
+wait 1
+mark drawbar
+button MENU
+button +
+button MENU
+wait 1
+expect-on-mpc track 1: plays Drawbar
+pad-down 1 100
+pad-down 5 100
+pad-down 8 100
+pad-down 10 100
+pad-down 13 100
+pad-down 15 100
+pad-down 16 100
+pad-down 12 100
+wait 3
+pad-up 1
+pad-up 5
+pad-up 8
+pad-up 10
+pad-up 13
+pad-up 15
+pad-up 16
+pad-up 12
+wait 0.5
+pad 1 63 0.1
+pad 2 66 0.1
+pad 3 69 0.1
+pad 4 72 0.1
+pad 5 75 0.1
+pad 6 78 0.1
+pad 7 81 0.1
+pad 8 84 0.1
+pad 9 87 0.1
+pad 10 90 0.1
+pad 11 93 0.1
+pad 12 96 0.1
+pad 13 99 0.1
+pad 14 102 0.1
+pad 15 105 0.1
+pad 16 108 0.1
+wait 1
+mark squelch
+button MENU
+button +
+button MENU
+wait 1
+expect-on-mpc track 1: plays Squelch
+pad-down 1 100
+pad-down 5 100
+pad-down 8 100
+pad-down 10 100
+pad-down 13 100
+pad-down 15 100
+pad-down 16 100
+pad-down 12 100
+wait 3
+pad-up 1
+pad-up 5
+pad-up 8
+pad-up 10
+pad-up 13
+pad-up 15
+pad-up 16
+pad-up 12
+wait 0.5
+pad 1 63 0.1
+pad 2 66 0.1
+pad 3 69 0.1
+pad 4 72 0.1
+pad 5 75 0.1
+pad 6 78 0.1
+pad 7 81 0.1
+pad 8 84 0.1
+pad 9 87 0.1
+pad 10 90 0.1
+pad 11 93 0.1
+pad 12 96 0.1
+pad 13 99 0.1
+pad 14 102 0.1
+pad 15 105 0.1
+pad 16 108 0.1
+wait 1
+mark analog
+button MENU
+button +
+button MENU
+wait 1
+expect-on-mpc track 1: plays Analog
+pad-down 1 100
+pad-down 5 100
+pad-down 8 100
+pad-down 10 100
+pad-down 13 100
+pad-down 15 100
+pad-down 16 100
+pad-down 12 100
+wait 3
+pad-up 1
+pad-up 5
+pad-up 8
+pad-up 10
+pad-up 13
+pad-up 15
+pad-up 16
+pad-up 12
+wait 0.5
+pad 1 63 0.1
+pad 2 66 0.1
+pad 3 69 0.1
+pad 4 72 0.1
+pad 5 75 0.1
+pad 6 78 0.1
+pad 7 81 0.1
+pad 8 84 0.1
+pad 9 87 0.1
+pad 10 90 0.1
+pad 11 93 0.1
+pad 12 96 0.1
+pad 13 99 0.1
+pad 14 102 0.1
+pad 15 105 0.1
+pad 16 108 0.1
+wait 1
+mark strings
+button MENU
+button +
+button MENU
+wait 1
+expect-on-mpc track 1: plays Strings
+pad-down 1 100
+pad-down 5 100
+pad-down 8 100
+pad-down 10 100
+pad-down 13 100
+pad-down 15 100
+pad-down 16 100
+pad-down 12 100
+wait 3
+pad-up 1
+pad-up 5
+pad-up 8
+pad-up 10
+pad-up 13
+pad-up 15
+pad-up 16
+pad-up 12
+wait 0.5
+pad 1 63 0.1
+pad 2 66 0.1
+pad 3 69 0.1
+pad 4 72 0.1
+pad 5 75 0.1
+pad 6 78 0.1
+pad 7 81 0.1
+pad 8 84 0.1
+pad 9 87 0.1
+pad 10 90 0.1
+pad 11 93 0.1
+pad 12 96 0.1
+pad 13 99 0.1
+pad 14 102 0.1
+pad 15 105 0.1
+pad 16 108 0.1
+wait 1
+mark bass
+button MENU
+button +
+button MENU
+wait 1
+expect-on-mpc track 1: plays Bass
+pad-down 1 100
+pad-down 5 100
+pad-down 8 100
+pad-down 10 100
+pad-down 13 100
+pad-down 15 100
+pad-down 16 100
+pad-down 12 100
+wait 3
+pad-up 1
+pad-up 5
+pad-up 8
+pad-up 10
+pad-up 13
+pad-up 15
+pad-up 16
+pad-up 12
+wait 0.5
+pad 1 63 0.1
+pad 2 66 0.1
+pad 3 69 0.1
+pad 4 72 0.1
+pad 5 75 0.1
+pad 6 78 0.1
+pad 7 81 0.1
+pad 8 84 0.1
+pad 9 87 0.1
+pad 10 90 0.1
+pad 11 93 0.1
+pad 12 96 0.1
+pad 13 99 0.1
+pad 14 102 0.1
+pad 15 105 0.1
+pad 16 108 0.1
+wait 1
+mark wind
+button MENU
+button +
+button MENU
+wait 1
+expect-on-mpc track 1: plays Wind
+pad-down 1 100
+pad-down 5 100
+pad-down 8 100
+pad-down 10 100
+pad-down 13 100
+pad-down 15 100
+pad-down 16 100
+pad-down 12 100
+wait 3
+pad-up 1
+pad-up 5
+pad-up 8
+pad-up 10
+pad-up 13
+pad-up 15
+pad-up 16
+pad-up 12
+wait 0.5
+pad 1 63 0.1
+pad 2 66 0.1
+pad 3 69 0.1
+pad 4 72 0.1
+pad 5 75 0.1
+pad 6 78 0.1
+pad 7 81 0.1
+pad 8 84 0.1
+pad 9 87 0.1
+pad 10 90 0.1
+pad 11 93 0.1
+pad 12 96 0.1
+pad 13 99 0.1
+pad 14 102 0.1
+pad 15 105 0.1
+pad 16 108 0.1
+wait 1
+mark kit
+wait 1
+button MENU
+button -
+button -
+button -
+button -
+button -
+button -
+button -
+button -
+button -
+button -
+button -
+button -
+button MENU
+wait 1
+expect-on-mpc track 1: plays the kit

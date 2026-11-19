@@ -21,9 +21,10 @@ use mpfree_ui::{Fonts, Gesture, PageTarget, SoftCanvas, Touch};
 mod catalogue;
 mod eq_sound;
 mod phases;
+mod scripts;
 mod session;
 mod song_workflows;
-pub mod songs;
+pub use crate::demo_songs as songs;
 pub mod walk;
 mod workflows;
 
