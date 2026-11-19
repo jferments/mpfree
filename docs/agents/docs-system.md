@@ -62,7 +62,7 @@ For pages marked `changing`:
 ## 6. The checks
 
 ```sh
-python3 docs/tools/check_docs.py            # links, headers, indexes, terms, screenshot names
+python3 docs/tools/check_docs.py            # links (and the manual's heading anchors), headers, indexes, terms, screenshot names
 python3 docs/tools/doc_drift.py --base origin/main   # pages whose covered code changed
 python3 docs/tools/build_manual.py          # the manual as a website and a PDF (needs mdbook, typst)
 ```
