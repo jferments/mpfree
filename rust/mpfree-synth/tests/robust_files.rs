@@ -52,7 +52,7 @@ fn check_voice(case: usize, fm: &mut Fm, v: &Dx7Voice) {
         );
         assert!(x.is_finite(), "case {case}: {}: id {id} = {x}", v.name);
     }
-    fm.load_preset(&v.preset());
+    fm.load_voice(v);
     for p in PARAMS.iter().filter(|p| !p.readonly) {
         let x = fm.param(p.id);
         assert!(

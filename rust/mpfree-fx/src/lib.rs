@@ -235,6 +235,16 @@ pub mod ids {
     pub use mpfree_grain::node::param as grains;
 }
 
+/// The parts the effects are built from, for an instrument that runs its own
+/// processing on its sounds (Drums' per-drum effects, `mpfree_synth::drum_fx`)
+/// and so sounds and measures like the effects without running whole stereo
+/// units on every drum.
+pub mod parts {
+    pub use crate::comp::{reduction, release_tau, AUTO_REF_PEAK};
+    pub use crate::transient::{Follow, FLOOR, GAP, LIMIT, SENS};
+    pub use crate::{fast_db_to_gain, fast_exp2, fast_level_db, fast_log2, fast_tanh, flush, soft};
+}
+
 /// A factory preset: a name and the parameter values that differ from the
 /// node's defaults (the same shape as `mpfree_synth::Preset`).
 #[derive(Clone, Copy, Debug)]
@@ -282,7 +292,7 @@ pub fn gain_to_db(g: f32) -> f32 {
 /// Flushes values too small to hear to zero, so feedback paths never sit in
 /// slow denormal arithmetic on ARM.
 #[inline]
-pub(crate) fn flush(x: f32) -> f32 {
+pub fn flush(x: f32) -> f32 {
     if x.abs() < 1e-20 {
         0.0
     } else {
@@ -293,7 +303,7 @@ pub(crate) fn flush(x: f32) -> f32 {
 /// A cheap, smooth saturator: about `x` for small `x`, exactly 1 in size
 /// from |x| = 3 up, with no corner.
 #[inline]
-pub(crate) fn soft(x: f32) -> f32 {
+pub fn soft(x: f32) -> f32 {
     if x >= 3.0 {
         1.0
     } else if x <= -3.0 {
@@ -308,7 +318,7 @@ pub(crate) fn soft(x: f32) -> f32 {
 /// `ptanh`), never past ±1 and exactly ±1 from |x| = 7.9 up. Several times cheaper than
 /// `f32::tanh`, which calls the C library on the MPC's ARM.
 #[inline]
-pub(crate) fn fast_tanh(x: f32) -> f32 {
+pub fn fast_tanh(x: f32) -> f32 {
     const CLAMP: f32 = 7.905_311;
     let x = x.clamp(-CLAMP, CLAMP);
     let x2 = x * x;
@@ -331,7 +341,7 @@ pub(crate) fn fast_tanh(x: f32) -> f32 {
 /// garbage). On the MPC's Cortex-A17 `log10f` and `powf` cost hundreds of
 /// cycles each; on a desktop the library is as quick as this.
 #[inline]
-pub(crate) fn fast_log2(x: f32) -> f32 {
+pub fn fast_log2(x: f32) -> f32 {
     let bits = x.to_bits();
     let mut e = ((bits >> 23) & 0xff) as i32 - 127;
     let mut m = f32::from_bits((bits & 0x007f_ffff) | 0x3f80_0000);
@@ -350,7 +360,7 @@ pub(crate) fn fast_log2(x: f32) -> f32 {
 /// Cephes' `exp2f` fit on the fraction, the power of two from the bits.
 /// `x` is clamped to [-126, 126]; `fast_exp2(0.0)` is exactly 1.
 #[inline]
-pub(crate) fn fast_exp2(x: f32) -> f32 {
+pub fn fast_exp2(x: f32) -> f32 {
     let x = x.clamp(-126.0, 126.0);
     // Round to nearest with a truncating cast (no library call on ARMv7).
     let n = (x + 126.5) as i32 - 126;
@@ -365,14 +375,14 @@ pub(crate) fn fast_exp2(x: f32) -> f32 {
 
 /// [`db_to_gain`] through [`fast_exp2`] (per-sample gains).
 #[inline]
-pub(crate) fn fast_db_to_gain(db: f32) -> f32 {
+pub fn fast_db_to_gain(db: f32) -> f32 {
     fast_exp2(db * 0.166_096_4)
 }
 
 /// A level in dB for a detector, through [`fast_log2`]: -120 dB at and
 /// below 1e-6 (and for NaN), 120 dB at and above 1e6.
 #[inline]
-pub(crate) fn fast_level_db(x: f32) -> f32 {
+pub fn fast_level_db(x: f32) -> f32 {
     if x > 1e-6 {
         6.020_6 * fast_log2(x.min(1e6))
     } else {

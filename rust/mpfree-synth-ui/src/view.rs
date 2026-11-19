@@ -174,6 +174,9 @@ pub struct SynthPanel {
     /// The page each `Tab(n)` from the sections opens (a section's
     /// "Open ›", a box of a drawing).
     links: Vec<String>,
+    /// The pad of the page about a pad shown last (Drums), for a tab that
+    /// several pages share ([`crate::pages::shared_tab`]: a drum's effects).
+    pad: usize,
     pub state: SynthState,
     /// Changes the page's layout before it is added, for an app that puts
     /// widgets of its own on the page (the pad player's pads heading).
@@ -292,6 +295,7 @@ impl SynthPanel {
             focus: None,
             editing: false,
             links: Vec::new(),
+            pad: 0,
             state,
             wrap: None,
         };
@@ -320,6 +324,7 @@ impl SynthPanel {
         if !same {
             self.page = 0;
             self.focus = None;
+            self.pad = 0;
         }
         self.page = self.page.min(self.pages.len().saturating_sub(1));
         self.state = state;
@@ -395,12 +400,58 @@ impl SynthPanel {
             return;
         }
         let i = i % self.pages.len();
+        if let Some(pad) = crate::pages::page_pad(&self.pages[i].name) {
+            self.pad = pad;
+        }
         if i != self.page {
             self.page = i;
             self.focus = None;
             self.arrange();
         }
         self.refresh(ui);
+    }
+
+    /// The title bar's tabs: each with its name and the page it shows.
+    /// Pages that share a tab (a drum's effects) show as one, for the pad
+    /// shown last. Many tabs (the drum synth's one per pad) are short:
+    /// "Pad 12" becomes "12".
+    pub fn tabs(&self) -> Vec<(String, usize)> {
+        let mut tabs: Vec<(String, usize)> = Vec::new();
+        for (i, p) in self.pages.iter().enumerate() {
+            match crate::pages::shared_tab(&p.name) {
+                Some((tab, pad)) => match tabs.iter_mut().find(|t| t.0 == tab) {
+                    Some(t) => {
+                        if pad == self.pad {
+                            t.1 = i;
+                        }
+                    }
+                    None => tabs.push((tab.to_string(), i)),
+                },
+                None => tabs.push((p.name.clone(), i)),
+            }
+        }
+        if tabs.len() > 8 {
+            for t in &mut tabs {
+                if let Some(n) = t.0.strip_prefix("Pad ") {
+                    t.0 = n.to_string();
+                }
+            }
+        }
+        tabs
+    }
+
+    /// The tab of the page shown.
+    fn active_tab(&self, tabs: &[(String, usize)]) -> usize {
+        let shared = self
+            .pages
+            .get(self.page)
+            .and_then(|p| crate::pages::shared_tab(&p.name));
+        tabs.iter()
+            .position(|t| match shared {
+                Some((tab, _)) => t.0 == tab,
+                None => t.1 == self.page,
+            })
+            .unwrap_or(0)
     }
 
     /// Shows the page called `name`, if there is one.
@@ -414,11 +465,13 @@ impl SynthPanel {
         }
     }
 
-    /// SHIFT + wheel: the next or previous page.
+    /// SHIFT + wheel: the next or previous tab's page.
     pub fn step_page(&mut self, ui: &mut Ui, delta: i32) {
-        let n = self.pages.len() as i32;
+        let tabs = self.tabs();
+        let n = tabs.len() as i32;
         if n > 0 {
-            self.show_page(ui, (self.page as i32 + delta).rem_euclid(n) as usize);
+            let at = self.active_tab(&tabs) as i32;
+            self.show_page(ui, tabs[(at + delta).rem_euclid(n) as usize].1);
         }
     }
 
@@ -542,7 +595,8 @@ impl SynthPanel {
         let known = |s: &SynthPanel, i: usize| (i < s.state.params.len()).then_some(i);
         match (ev.widget.as_str(), &ev.kind) {
             (TITLE, EventKind::Tab(i)) => {
-                self.show_page(ui, *i);
+                let page = self.tabs().get(*i)?.1;
+                self.show_page(ui, page);
                 None
             }
             (TITLE, EventKind::Select(_)) => Some(SynthAction::OpenPresets),
@@ -638,18 +692,9 @@ impl SynthPanel {
                     format!("{}{edited}", kind_name(st)),
                 ),
             };
-            // Many pages (the drum synth's one per pad) show short tabs:
-            // "Pad 12" becomes "12".
-            let many = self.pages.len() > 8;
-            w.tabs = self
-                .pages
-                .iter()
-                .map(|p| match p.name.strip_prefix("Pad ") {
-                    Some(n) if many => n.to_string(),
-                    _ => p.name.clone(),
-                })
-                .collect();
-            w.active = self.page;
+            let tabs = self.tabs();
+            w.active = self.active_tab(&tabs);
+            w.tabs = tabs.into_iter().map(|t| t.0).collect();
         }
         if let Some(w) = ui.get_mut::<InstCard>(INST) {
             w.swatch = st.color;
@@ -1027,6 +1072,43 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
             (id != fp::op_id(op, fp::op::ON) && v(fp::op_id(op, fp::op::ON)) < 0.5)
                 .then_some("operator is off")
         }
+        "mpfree.drums" => {
+            use mpfree_synth::drum_fx::{field as x, fx_id, kit as k, owns, BASE, KIT, STRIDE};
+            use mpfree_synth::drum_params::PADS;
+            if !owns(id) {
+                return None;
+            }
+            let sends = |f: u16| (0..PADS).any(|p| v(fx_id(p, f)) > 0.0);
+            if id >= KIT {
+                return match id {
+                    k::DELAY_TIME | k::DELAY_FEEDBACK | k::DELAY_TONE | k::DELAY_LEVEL
+                        if !sends(x::DELAY_SEND) =>
+                    {
+                        Some("no drum sends to it")
+                    }
+                    k::REVERB_SIZE
+                    | k::REVERB_DECAY
+                    | k::REVERB_TONE
+                    | k::REVERB_GATE
+                    | k::REVERB_LEVEL
+                        if !sends(x::REVERB_SEND) =>
+                    {
+                        Some("no drum sends to it")
+                    }
+                    _ => None,
+                };
+            }
+            let pad = usize::from((id - BASE) / STRIDE);
+            let pv = |f: u16| v(fx_id(pad, f));
+            match (id - BASE) % STRIDE {
+                x::DIST_TONE | x::DIST_MIX if pv(x::DISTORTION) <= 0.0 => Some("distortion is off"),
+                x::MID_FREQ if pv(x::MID) == 0.0 => Some("mid is flat"),
+                x::THRESHOLD | x::COMP_ATTACK | x::COMP_RELEASE if pv(x::RATIO) <= 1.0 => {
+                    Some("ratio is 1:1")
+                }
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -1336,11 +1418,10 @@ const FAMILY: [Color; 3] = [QLINK_COLORS[1], QLINK_COLORS[2], QLINK_COLORS[0]];
 fn drum_cards(st: &SynthState, page: &str) -> Strip {
     use mpfree_synth::drum_params::{pad_id, BASE_NOTE, LEVEL, PADS};
     let v = |id: u16| st.value(id);
-    let pad = page
-        .strip_prefix("Pad ")
-        .and_then(|n| n.parse::<usize>().ok())
-        .filter(|n| (1..=PADS).contains(n))
-        .map(|n| n - 1);
+    // A pad's own page or its effects; on its effects, a tap on another
+    // pad opens that pad's effects.
+    let pad = crate::pages::page_pad(page);
+    let effects = crate::pages::shared_tab(page).is_some();
     let shown = pad.unwrap_or(0);
     let shape = kv::pad_hit(&v, shown);
     let pad_page = format!("Pad {}", shown + 1);
@@ -1361,7 +1442,13 @@ fn drum_cards(st: &SynthState, page: &str) -> Strip {
             }
         })
         .collect();
-    s.node_pages.extend((1..=PADS).map(|n| format!("Pad {n}")));
+    s.node_pages.extend((1..=PADS).map(|n| {
+        if effects {
+            format!("Pad {n} effects")
+        } else {
+            format!("Pad {n}")
+        }
+    }));
     s.push(
         Card {
             title: "Kit".into(),
@@ -1663,8 +1750,13 @@ fn fm_cards(st: &SynthState, page: &str) -> Strip {
             let l = fv::algorithm_layout(st.value(fp::ALGORITHM) as usize);
             let carrier = l.carriers & (1 << (n - 1)) != 0;
             let caption = if fv::op_sounds(&v, n) {
+                // A wave other than the sine is named: "modulates 1 · saw".
+                let wave = match fp::OP_WAVES.get(v(fp::op_id(n, fp::op::WAVE)) as usize) {
+                    Some(w) if *w != fp::OP_WAVES[0] => format!(" · {}", w.to_lowercase()),
+                    _ => String::new(),
+                };
                 format!(
-                    "{} · output {}",
+                    "{}{wave} · output {}",
                     fv::op_role(&l, n),
                     v(fp::op_id(n, fp::op::LEVEL)).round()
                 )
