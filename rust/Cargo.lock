@@ -812,6 +812,7 @@ dependencies = [
  "mpfree-sampler-ui",
  "mpfree-screen-log",
  "mpfree-seq",
+ "mpfree-simd",
  "mpfree-store",
  "mpfree-synth",
  "mpfree-synth-ui",
@@ -1364,6 +1365,7 @@ dependencies = [
  "mpfree-analysis",
  "mpfree-fx",
  "mpfree-node",
+ "mpfree-simd",
  "mpfree-tuning",
 ]
 
