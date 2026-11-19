@@ -169,10 +169,8 @@ fn the_default_plan_fills_a_new_kit_and_start_asks_for_it() {
     );
     assert_eq!(plan, s.tab.settings.plan(AUTO_SYNTH, RATE));
     assert_eq!(press(&mut s, 1), Some(AutoAction::Back));
-    assert_eq!(
-        act(&mut s, auto_tab::BAR, EventKind::Tab(1)),
-        Some(AutoAction::Tab(1))
-    );
+    // The pad bar has no switch (the one Sample page has no sub-tabs).
+    assert_eq!(act(&mut s, auto_tab::BAR, EventKind::Tab(1)), None);
 }
 
 #[test]

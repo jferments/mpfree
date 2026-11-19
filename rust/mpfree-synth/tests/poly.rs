@@ -923,3 +923,25 @@ fn the_wheel_on_pitch_at_100_percent_is_an_octave_up() {
     let mean = p.iter().sum::<f32>() / p.len() as f32;
     assert!((mean - 12.0).abs() < 0.01, "{mean}");
 }
+
+/// Drive and distortion make DC from an uneven wave (Lead's 40 % pulse
+/// into 9 dB of drive put it at -44 dBFS). The output's blocker takes it
+/// out while a driven voice sounds, then lets go once every voice has
+/// ended, so the silence after is exact.
+#[test]
+fn a_driven_sound_puts_out_no_dc_and_ends_in_exact_silence() {
+    let lead = Poly::presets().iter().find(|p| p.name == "Lead").unwrap();
+    let mut s = Poly::new(RATE);
+    s.load_preset(lead);
+    let held = 3 * RATE as usize;
+    let ev = [(0, on(57, 100)), (held as u64, off(57))];
+    let (l, r) = render(&mut s, held + 4 * RATE as usize, &ev, |_| 128);
+    let dc = |x: &[f32]| {
+        let x = &x[RATE as usize..held];
+        let mean = x.iter().map(|&v| f64::from(v)).sum::<f64>() / x.len() as f64;
+        20.0 * mean.abs().max(1e-12).log10()
+    };
+    assert!(dc(&l) < -60.0 && dc(&r) < -60.0, "DC {:.1} dBFS", dc(&l));
+    let tail = held + 3 * RATE as usize;
+    assert!(l[tail..].iter().chain(&r[tail..]).all(|&v| v == 0.0));
+}

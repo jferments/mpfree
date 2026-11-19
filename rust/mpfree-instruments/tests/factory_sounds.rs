@@ -9,6 +9,7 @@ use mpfree_instruments::{Design, Designed, Sound};
 use mpfree_node::Node;
 use mpfree_synth::{
     Analog, Bass, Choir, Drawbar, Drums, Keys, Pluck, Poly, Preset, Squelch, Strings, Wavetable,
+    Wind,
 };
 
 const RATE: u32 = 48_000;
@@ -95,6 +96,7 @@ fn every_factory_preset_loads_as_a_sound_to_the_engines_own_values() {
     check_engine!("Analog", Analog);
     check_engine!("Strings", Strings);
     check_engine!("Bass", Bass);
+    check_engine!("Wind", Wind);
     check_engine!("Choir", Choir);
 }
 

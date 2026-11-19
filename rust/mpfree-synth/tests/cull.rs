@@ -5,7 +5,7 @@
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_synth::params::{AMP_R, VEL_AMP};
 use mpfree_synth::{
-    Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable,
+    Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable, Wind,
 };
 
 const RATE: u32 = 48_000;
@@ -20,21 +20,27 @@ fn engines() -> Vec<(&'static str, Box<dyn Node>)> {
         ("Keys", Box::new(Keys::new(RATE))),
         ("Drums", Box::new(Drums::new(RATE))),
         ("Analog", Box::new(Analog::new(RATE))),
+        ("Wind, 8 voices", {
+            let mut w = Wind::new(RATE);
+            w.set_param(mpfree_synth::wind_params::VOICES, 8.0);
+            Box::new(w)
+        }),
         ("Choir", Box::new(Choir::new(RATE))),
     ]
 }
 
 /// The organ (its wheels turn whatever the keys do, so a key given up
 /// saves little), the string machine (a key shares its notes with the
-/// keys an octave away, and the Ensemble costs the same either way) and
-/// the mono basses offer no voice.
+/// keys an octave away, and the Ensemble costs the same either way), the
+/// mono basses and Wind with one voice and its key held offer no voice.
 #[test]
 fn drawbar_strings_and_the_basses_offer_no_voice() {
-    let mut engines: [(&str, Box<dyn Node>); 4] = [
+    let mut engines: [(&str, Box<dyn Node>); 5] = [
         ("Drawbar", Box::new(Drawbar::new(RATE))),
         ("Strings", Box::new(Strings::new(RATE))),
         ("Squelch", Box::new(Squelch::new(RATE))),
         ("Bass", Box::new(Bass::new(RATE))),
+        ("Wind", Box::new(Wind::new(RATE))),
     ];
     for (name, n) in engines.iter_mut() {
         let mut t = 0;

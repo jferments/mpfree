@@ -7,7 +7,7 @@ Where a point comes from a source it is linked; where it is our own reading, ari
 ## 1. What makes a great one
 
 - **Tonewheel organ** (built, see [Tonewheel organs](tonewheel-organ.md)): wheels always turning, drawbars, key click, percussion, scanner vibrato, overdrive and the rotating speaker.
-- **Combo organ: cutting and thin, on purpose.** The Vox Continental used 12 transistor oscillators for the top octave, each divided by two for every octave below; six drawbars (16', 8', 4' and a higher "IV" mixture on the left, flute and reed voices on the right; 5 1/3' on the upper manual of the two-manual model) and one vibrato with one speed and one depth. Players describe a "drier, thinner, more cutting sound" ([Vox Continental, Wikipedia](https://en.wikipedia.org/wiki/Vox_Continental)). That is the string machine's divide-down bank with different filters (see [String machines](string-machine.md#3-algorithms)).
+- **Combo organ: cutting and thin, on purpose.** The Vox Continental used 12 transistor oscillators for the top octave, each divided by two for every octave below; six drawbars (16', 8', 4' and a higher "IV" mixture on the left, flute and reed voices on the right; 5 1/3' on the upper manual of the two-manual model) and one vibrato with one speed and one depth. Players describe a "drier, thinner, more cutting sound" ([Vox Continental, Wikipedia](https://en.wikipedia.org/wiki/Vox_Continental)). A restorer's notes on the single-manual model say the flute voice ("~") is close to a sine, the reed voice ("M") close to a sawtooth, and pulling both all the way in gives no sound at all; each divider's own filter makes a saw, and one filter for the whole keyboard rounds the flute toward a sine; the vibrato has one fixed speed; there is no percussion and no sustain ([Vox Continental, combo-organ.com](https://combo-organ.com/Vox/Single/index.htm)). The Farfisa Compact starts instead from a pulse about two thirds high, filtered toward a sine, with a booster that adds back a brighter, high-passed pulse ([Farfisa Compact, combo-organ.com](https://combo-organ.com/Farfisa/Compact/index.htm)). That is the string machine's divide-down bank with different filters (see [String machines](string-machine.md#3-algorithms)).
 - **Pipe organ: ranks, wind and a room.** Stops are ranks of pipes at fixed footages; tuning in historical temperaments; a long church reverb. Aeolus synthesises one rather than sampling it: three manuals and a pedal, five temperaments, variable tuning, and "a large church reverb" ([Aeolus, Linux audio wiki](https://wiki.linuxaudio.org/apps/all/aeolus)). Its licence must be checked before reading its code.
 - **Winds: the breath is the instrument.** A wind model plays from a continuous breath pressure, with reed stiffness, breath noise and vibrato as its other controls (the STK clarinet by Perry Cook and Gary Scavone, as [Csound's STKClarinet](https://csound.com/manual/STKClarinet.html) exposes it). Without continuous control a wind model is an organ with a slow attack (our reading).
 - **Choirs: vowels and many singers.** A sung vowel is a set of formants, each a frequency, bandwidth and amplitude; for a bass singing "a": 600, 1040, 2250, 2450 and 2750 Hz, bandwidths 60 to 130 Hz, amplitudes 1, 0.45, 0.35, 0.35 and 0.1 ([Csound's vowel tables via `vowelsdb`](https://csound-plugins.github.io/csound-plugins/opcodes/vowelsdb.html)). IRCAM's CHANT adds rules that move the formants with the sung pitch and the dynamics (AUTOBEND, CSLOPE) ([OM-Chant, formants](https://support.ircam.fr/docs/om-libraries/om-chant/co/Formants.html)). A choir is many such voices, each with its own small detune and vibrato, which is the ensemble problem again (our reading).
@@ -89,14 +89,16 @@ A first canon of 32 (our reading): gospel organ, jazz organ, rock organ with dri
 
 ## What MPFree has today
 
-- **Drawbar** (12 presets): tonewheel organ and rotary speaker, never played on the MPC.
+- **Drawbar** (20 presets): tonewheel organ and rotary speaker, and since 19 Nov a **Combo** model on the Strings bank with flute and reed voices and 8 combo presets (see [Drawbar](../design/synths.md#drawbar-mpfree-synth-drawbar)); never played on the MPC.
 - **Wavetable:** the Vowels factory table and the Vowel Lead preset; **FM:** Drawbars and Brass Section; **Pluck:** a waveguide string engine that a wind model could share code with.
 - **Choir** (25 presets, 19 Nov): a buzzy source through five formant filters per voice, morphing between vowels, through the Ensemble ([Synths](../design/synths.md#choir-mpfree-synth-choir)); never played on the MPC.
-- **Missing:** combo and pipe organs, a wind engine, tape character, a breath event reaching instruments.
+- **Missing:** the pipe organ, the combo's bass section, a wind engine, tape character, a breath event reaching instruments.
 
 ## Sources
 
 - Vox Continental, Wikipedia: https://en.wikipedia.org/wiki/Vox_Continental
+- Vox Continental (single manual), combo-organ.com: https://combo-organ.com/Vox/Single/index.htm
+- Farfisa Compact, combo-organ.com: https://combo-organ.com/Farfisa/Compact/index.htm
 - Aeolus, Linux audio wiki: https://wiki.linuxaudio.org/apps/all/aeolus
 - Csound, STKClarinet (from the STK by P. R. Cook and G. P. Scavone): https://csound.com/manual/STKClarinet.html
 - csound-plugins, `vowelsdb` (Csound manual's formant tables and others): https://csound-plugins.github.io/csound-plugins/opcodes/vowelsdb.html

@@ -501,6 +501,13 @@ impl Desk<'_> {
             gui::FromUi::SamplePhrase(clip) => match time.put_clip(*clip) {
                 Ok(line) | Err(line) => out.note(&format!("time: {line}")),
             },
+            // Put on Audio track (the one Sample page's step 6): where it
+            // went, or why not, said in place of the hint.
+            gui::FromUi::SampleToAudio(s) => {
+                let (Ok(line) | Err(line)) = tracks.bring(*s, &time.info());
+                out.note(&format!("audio tracks: {line}"));
+                out.show(gui::ToUi::Tell(line));
+            }
             gui::FromUi::LoopLayer { id, command } => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Layer(id, command)))
             }
@@ -748,6 +755,7 @@ impl Desk<'_> {
             app::Effect::PlayView(v) => out.show(gui::ToUi::PlayView(v)),
             app::Effect::ArrangeView(v) => out.show(gui::ToUi::ArrangeView(v)),
             app::Effect::SampleEditor(e) => out.show(gui::ToUi::SampleEditor(e)),
+            app::Effect::EditPad => out.show(gui::ToUi::EditPad),
             app::Effect::Browse(k) => out.show(gui::ToUi::Browse(k)),
             app::Effect::Fill(on) => time.set_fill(on, 0),
             app::Effect::Metronome { on, db } => {

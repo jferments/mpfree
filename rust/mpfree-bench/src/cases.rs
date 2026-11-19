@@ -32,7 +32,7 @@ use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
 use mpfree_synth::wavetable::params as wt;
 use mpfree_synth::{
-    Analog, Bass, Choir, Drawbar, Drums, Keys, Pluck, Poly, Squelch, Strings, Wavetable,
+    Analog, Bass, Choir, Drawbar, Drums, Keys, Pluck, Poly, Squelch, Strings, Wavetable, Wind,
 };
 use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
@@ -1091,12 +1091,16 @@ pub fn all(rate: u32) -> Vec<Case> {
         )
     }));
     // Drawbar: the default three drawbars, all nine with leakage, chorus
-    // and the fast rotary, and the rotary off.
+    // and the fast rotary, and the rotary off; then the combo model (its
+    // divide-down bank renders only the notes heard): three footages with
+    // both voices and the vibrato, and the reed on seven footages.
     for (name, keys) in [
         ("Init", 8),
         ("Full Organ", 8),
         ("Gospel", 16),
         ("Church", 8),
+        ("Combo", 8),
+        ("Combo Reed", 8),
     ] {
         v.push(measured(|| {
             let p = Drawbar::presets()
@@ -1181,6 +1185,37 @@ pub fn all(rate: u32) -> Vec<Case> {
             )
         }));
     }
+    // Wind: each bore playing a line (the clarinet's Init, the sax with its
+    // growl and noise, the flute with vibrato), and the sax section's
+    // chords on six voices.
+    for name in ["Init", "Growl Sax", "Concert Flute"] {
+        v.push(measured(|| {
+            let p = Wind::presets()
+                .iter()
+                .find(|p| p.name == name)
+                .unwrap_or_else(|| panic!("wind preset {name}"));
+            line(
+                format!("Wind {name}, a line"),
+                rate,
+                Box::new(Wind::new(rate)),
+                p.values,
+            )
+        }));
+    }
+    v.push(measured(|| {
+        let p = Wind::presets()
+            .iter()
+            .find(|p| p.name == "Reed Section")
+            .expect("wind preset Reed Section");
+        chords(
+            "Wind Reed Section, 6 voices".to_string(),
+            rate,
+            Box::new(Wind::new(rate)),
+            p.values,
+            Some(mpfree_synth::wind_params::VOICES),
+            6,
+        )
+    }));
     // Analog: the plain init, the pad with the chorus, and the brass on
     // the two-pole; Worn Cards adds Age's drift on every oscillator.
     for (name, voices) in [
@@ -1934,6 +1969,18 @@ fn engine_presets(rate: u32) -> Vec<Preset> {
             p.values,
             None,
             true,
+        ));
+    }
+    for p in Wind::presets() {
+        use mpfree_synth::wind_params::VOICES;
+        let mono = !p.values.iter().any(|&(id, x)| id == VOICES && x > 1.0);
+        v.push(Preset::new(
+            format!("Wind {}", p.name),
+            rate,
+            Wind::new,
+            p.values,
+            Some(VOICES),
+            mono,
         ));
     }
     for p in Fm::presets() {
