@@ -119,8 +119,10 @@ use mpfree_fx::{CapturePoint, StripId};
 
 /// The Wave tab's page.
 pub const PAGE: &str = "Sample";
-/// The Play tab's page.
-pub const PLAY_PAGE: &str = "Sample · Play";
+/// Edit pad's page: the Pads tab's page with the pad's layers, keygroups,
+/// scenes and slices (the Sample tab's Play sub-page until the one Sample
+/// page's step 6b).
+pub const PLAY_PAGE: &str = "Pads · Edit pad";
 /// The Pads tab: the pads, the pad's settings and the kit's sounds.
 pub const PADS_PAGE: &str = "Pads · Pad";
 /// Auto-sample's page, which the recorder's REC opens.
@@ -194,16 +196,28 @@ pub enum PadKnob {
     Decay,
 }
 
-/// The pad editor's tab on show.
+/// The sampler's page on show: one of the Pads tab's (the pads, or Edit
+/// pad) or one of the Sample tab's (the page, or Auto-sample over it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Editor {
-    /// The Pads tab (a top-level tab of its own since 12 Nov 2026), not
-    /// one of the Sample tab's.
+    /// The Pads tab's pads (a top-level tab of its own since 12 Nov 2026).
     Pads,
+    /// The one Sample page.
     Wave,
+    /// Edit pad, the Pads tab's page for the pad picked
+    /// ([`mpfree_sampler_ui::play_tab`]; the Sample tab's Play sub-page
+    /// until the one Sample page's step 6b).
     Play,
     /// The recorder's Auto-sample mode (its Source, REC opening it).
     Auto,
+}
+
+impl Editor {
+    /// Whether it is one of the Pads tab's pages (the pads, Edit pad)
+    /// rather than the Sample tab's.
+    pub fn on_pads_tab(self) -> bool {
+        matches!(self, Editor::Pads | Editor::Play)
+    }
 }
 
 /// Live chop under way: the pad whose sound plays, the cuts read so far,
@@ -667,6 +681,12 @@ pub struct SamplePage {
     editor: Editor,
     /// The Sample tab's editor, kept while the Pads tab shows.
     sample_editor: Editor,
+    /// The Pads tab's page (the pads, or Edit pad), kept while the Sample
+    /// tab shows.
+    pads_editor: Editor,
+    /// Edit pad's Chop to pads asked for the Sample tab, with the Slice
+    /// tool: the GUI asks the app for it ([`SamplePage::take_to_sample_tab`]).
+    to_sample_tab: bool,
     /// The Play tab, added the first time it is opened.
     play: Option<PlayTab>,
     play_state: Option<PlayState>,
@@ -870,7 +890,7 @@ pub struct SamplePage {
     sending_take: Option<(usize, usize)>,
     /// A tap on the wave holds the take shown (Gate, Loop, Granular).
     take_held: Option<usize>,
-    /// The app can write files (Put on Files with the Slice tool).
+    /// The app can write files (Put on Library with the Slice tool).
     files: bool,
     /// Pads exported, for the app to write.
     exports: Vec<export::Export>,
@@ -926,6 +946,8 @@ impl SamplePage {
             state: None,
             editor: Editor::Wave,
             sample_editor: Editor::Wave,
+            pads_editor: Editor::Pads,
+            to_sample_tab: false,
             play: None,
             play_state: None,
             velocity: None,
@@ -1568,9 +1590,14 @@ impl SamplePage {
     pub fn button_row(&self, ui: &Ui) -> Option<UiEvent> {
         let name = self.list()?;
         let l = ui.get::<SettingList>(name)?;
+        // A faint button (Edit pad on a pad with no layers) says why.
+        let kind = match l.why_faint(l.selected) {
+            Some(_) => EventKind::Select(l.selected),
+            None => EventKind::Tab(l.selected),
+        };
         l.buttons.contains(&l.selected).then(|| UiEvent {
             widget: name.to_string(),
-            kind: EventKind::Tab(l.selected),
+            kind,
         })
     }
 
@@ -1852,7 +1879,7 @@ impl SamplePage {
         }?;
         // A grain size synced to the tempo is the project's.
         st.bpm = self.warps.tempo();
-        // Put on Files and New kit, as the app offers them, and Audio
+        // Put on Library and New kit, as the app offers them, and Audio
         // track: the app has audio tracks.
         if let Some(cs) = st.chop.as_mut() {
             let cs = Arc::make_mut(cs);
@@ -2008,7 +2035,11 @@ impl SamplePage {
                     "Hit a pad with a sound to edit it,",
                     "or turn SHIFT + wheel or press - / + for the next one.",
                     "",
-                    "To give this pad a sound: the Pads tab, Browse, then Load.",
+                    if self.editor == Editor::Play {
+                        "To give this pad a sound: ‹ Pads or PROG EDIT, then Browse for."
+                    } else {
+                        "To give this pad a sound: the Pads tab, Browse, then Load."
+                    },
                 ],
             )
         };
@@ -2229,14 +2260,28 @@ impl SamplePage {
 
     /// Chop to pads beside the bar: with the Slice tool on the Wave page,
     /// its own Chop to pads; otherwise the Wave page with the Slice tool,
-    /// where the slices are cut first.
+    /// where the slices are cut first. On Edit pad, the Sample tab with
+    /// the Slice tool (the GUI asks the app for the tab), chopping nothing
+    /// unseen.
     fn chop_to_pads(&mut self, ui: &mut Ui, out: &mut Vec<FromUi>) {
-        if self.editor != Editor::Wave {
+        let elsewhere = self.editor.on_pads_tab();
+        if elsewhere {
+            self.lift();
+            self.sample_editor = Editor::Wave;
+            self.to_sample_tab = true;
+        } else if self.editor != Editor::Wave {
             self.open_editor(ui, Editor::Wave);
         }
         let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) else {
             return;
         };
+        if elsewhere {
+            if tab.tool() != Tool::Slice {
+                tab.set_tool(ui, st, Tool::Slice);
+                self.keep_chop();
+            }
+            return;
+        }
         if tab.tool() != Tool::Slice {
             tab.set_tool(ui, st, Tool::Slice);
             self.keep_chop();
@@ -2250,37 +2295,64 @@ impl SamplePage {
         }
     }
 
-    /// Opens the editor's tab `i` (Wave or Play).
-    fn open(&mut self, ui: &mut Ui, i: usize) {
-        let editor = match i {
-            wave_tab::TAB => Editor::Wave,
-            play_tab::TAB => Editor::Play,
-            _ => return,
-        };
-        self.open_editor(ui, editor);
+    /// Edit pad's Chop to pads asked for the Sample tab since the last
+    /// call: the GUI asks the app to show it.
+    pub fn take_to_sample_tab(&mut self) -> bool {
+        std::mem::take(&mut self.to_sample_tab)
     }
 
-    /// The Pads tab shows: the pad picked's bank on its view (the Sample
-    /// tab's editor is kept for when it shows again).
+    /// The Pads tab shows: its page as it was left, the pads (the pad
+    /// picked's bank) or Edit pad; the Sample tab's editor is kept for
+    /// when it shows again.
     pub fn show_pads(&mut self, ui: &mut Ui) {
-        if self.editor != Editor::Pads {
+        if !self.editor.on_pads_tab() {
             self.lift();
             self.sample_editor = self.editor;
-            self.editor = Editor::Pads;
+            self.editor = self.pads_editor;
             self.stale = true;
         }
         self.refresh_if_stale(ui);
     }
 
     /// The Sample tab shows: its editor again, if the Pads tab had the
-    /// page.
+    /// page (the Pads tab's page is kept for when it shows again).
     pub fn show_sample(&mut self, ui: &mut Ui) {
-        if self.editor == Editor::Pads {
+        if self.editor.on_pads_tab() {
             self.lift();
+            self.pads_editor = self.editor;
             self.editor = self.sample_editor;
             self.stale = true;
         }
         self.refresh_if_stale(ui);
+    }
+
+    /// Whether Edit pad shows (or would, on the Pads tab).
+    pub fn edit_pad_on(&self) -> bool {
+        self.editor == Editor::Play
+    }
+
+    /// PROG EDIT on the Pads tab: Edit pad on the pad picked, or from Edit
+    /// pad back to the pads. Err says why Edit pad can't open (the pad has
+    /// no layers), for the hint line.
+    pub fn toggle_edit_pad(&mut self, ui: &mut Ui) -> Result<(), String> {
+        if self.editor == Editor::Play {
+            self.open_editor(ui, Editor::Pads);
+            return Ok(());
+        }
+        if let Some(why) = self.edit_pad_why() {
+            return Err(why);
+        }
+        self.open_editor(ui, Editor::Play);
+        Ok(())
+    }
+
+    /// Why Edit pad can't open on the pad picked, if it can't
+    /// ([`pads_tab::edit_pad_why`]).
+    fn edit_pad_why(&self) -> Option<String> {
+        match self.pads_state.as_ref() {
+            Some(st) => pads_tab::edit_pad_why(self.pads.as_ref().and_then(|t| t.bank), st),
+            None => Some("No pad to edit: pick a drum kit on Play to see its pads".to_string()),
+        }
     }
 
     /// The effects on the mixer's pad channels changed (each pad with a
@@ -2347,8 +2419,18 @@ impl SamplePage {
         )
     }
 
-    /// Opens `editor` (SAMPLE EDIT: Wave).
+    /// Opens `editor` (SAMPLE EDIT: Wave). One of the other tab's pages
+    /// (Edit pad while the Sample tab shows, or the page while the Pads
+    /// tab does) is kept for when that tab shows.
     pub fn open_editor(&mut self, ui: &mut Ui, editor: Editor) {
+        if editor.on_pads_tab() != self.editor.on_pads_tab() {
+            if editor.on_pads_tab() {
+                self.pads_editor = editor;
+            } else {
+                self.sample_editor = editor;
+            }
+            return;
+        }
         if editor != self.editor {
             self.lift();
             self.editor = editor;
@@ -2777,7 +2859,7 @@ impl SamplePage {
         std::mem::take(&mut self.exports)
     }
 
-    /// The app can write files: the Slice tool offers Put on Files. Off until
+    /// The app can write files: the Slice tool offers Put on Library. Off until
     /// it says so (the app has a library), so nothing is exported that
     /// would go nowhere.
     pub fn set_files(&mut self, ui: &mut Ui, on: bool) {
@@ -2835,6 +2917,8 @@ impl SamplePage {
                 kit: self.kit,
                 pad: *pad,
             }),
+            // The Edit pad row: Edit pad on the pad picked.
+            PadsAction::EditPad => self.open_editor(ui, Editor::Play),
             PadsAction::Audition { pad, down } => out.push(self.pad_press(*pad, *down).0),
             // The strip over the pads: the app turns the pads' bank, and
             // the tabs follow it (`set_pad_page`).
@@ -2891,7 +2975,8 @@ impl SamplePage {
 
     fn act_play(&mut self, ui: &mut Ui, a: PlayAction, out: &mut Vec<FromUi>) {
         match &a {
-            PlayAction::Tab(i) => self.open(ui, *i),
+            // Edit pad's ‹ Pads: back to the pads.
+            PlayAction::Pads => self.open_editor(ui, Editor::Pads),
             PlayAction::Pick(pad) => {
                 self.pick(*pad);
                 self.refresh(ui);
@@ -3423,7 +3508,6 @@ impl SamplePage {
             WaveAction::Audition { pad } => self.audition(pad, out),
             // The Sound section: the Play page's change.
             WaveAction::Play(a) => self.act_play(ui, a, out),
-            WaveAction::Tab(i) => self.open(ui, i),
             WaveAction::Ask(ask) => self.number_ask = Some(ask),
             WaveAction::Normalize { pad, layer } => self.normalize(ui, pad, layer),
             WaveAction::Process {
@@ -5622,18 +5706,14 @@ impl SamplePage {
 
     fn refresh_auto(&mut self, ui: &mut Ui, bank: Option<char>) {
         let st = self.auto_state_now();
-        // Back to the page that opened it.
-        let back = mpfree_sampler_ui::wave_tab::TAB;
         match self.auto.as_mut() {
             Some(tab) => {
                 tab.bank = bank;
-                tab.back = back;
                 tab.update(ui, &st);
             }
             None => match AutoTab::add(ui, AUTO_PAGE, &st) {
                 Ok(mut tab) => {
                     tab.bank = bank;
-                    tab.back = back;
                     tab.update(ui, &st);
                     self.auto = Some(tab);
                 }
@@ -5662,7 +5742,6 @@ impl SamplePage {
 
     fn act_auto(&mut self, ui: &mut Ui, a: AutoAction) {
         match a {
-            AutoAction::Tab(i) => self.open(ui, i),
             AutoAction::Back => {
                 self.editor = Editor::Wave;
                 self.refresh(ui);
@@ -7579,7 +7658,6 @@ impl SamplePage {
                 self.refresh(ui);
                 None
             }
-            WaveAction::Play(PlayAction::Tab(t)) => Some(WaveAction::Tab(t)),
             a @ WaveAction::Play(PlayAction::Pad { .. }) => Some(a),
             WaveAction::Play(_) | WaveAction::Process { .. } => {
                 self.told.push(TAKE_ON_A_PAD_FIRST.to_string());
@@ -7615,8 +7693,7 @@ impl SamplePage {
                 self.told.push(TAKE_ON_A_PAD_FIRST.to_string());
                 None
             }
-            a @ (WaveAction::Tab(_)
-            | WaveAction::Ask(_)
+            a @ (WaveAction::Ask(_)
             | WaveAction::StopProcess
             | WaveAction::Rec(_)
             | WaveAction::Say(_)) => Some(a),

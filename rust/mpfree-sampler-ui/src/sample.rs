@@ -28,9 +28,9 @@ pub const SCREEN: (i32, i32) = (1280, 800);
 /// layout spec, approved by Jay on 2026-11-11).
 pub use mpfree_ui::widgets::APP_TABS;
 pub const EDITOR_TAB: usize = 3;
-/// The page names the samples add the Wave and Play tabs under.
+/// The page names the samples add the Sample page and Edit pad under.
 pub const PAGE: &str = "Sample · Wave";
-pub const PLAY_PAGE: &str = "Sample · Play";
+pub const PLAY_PAGE: &str = "Pads · Edit pad";
 pub const PADS_PAGE: &str = "Pads · Pad";
 pub const AUTO_PAGE: &str = "Sample · Auto-sample";
 pub const RATE: u32 = 44_100;
@@ -589,7 +589,7 @@ pub fn layered_project() -> (Project, Arc<SourceView>) {
     (p, view)
 }
 
-/// The Play tab on `project`'s pad A5, shown.
+/// Edit pad (the Play page) on `project`'s pad A5, shown.
 fn play_on(fonts: Fonts, project: Project, view: Arc<SourceView>) -> Result<PlaySample, String> {
     let state = PlayState::from_project(&project, PAD, |_| view.clone()).ok_or("no pad")?;
     let mut ui = app_ui_with(fonts, &project, play_tab::HINT);
