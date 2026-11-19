@@ -74,7 +74,7 @@ Coming:
 
 {{shot: synth | The Synth tab with Poly playing its Pluck preset: the presets on the left, the Osc page's sections in the middle (both oscillators with their waves drawn, the mix as faders, unison), and the Q-Links on the right.}}
 
-- **The title** shows the preset. The tabs beside it are the synth's **pages**: for Poly, Osc, Filter, Env, LFO, Voice and Pressure. Tap a tab, or hold **SHIFT** and turn the data wheel, to change page.
+- **The title** shows the preset, with **edited** under it once you change anything. Tap the preset's name to open the synth's presets in the browser (see [Trying and saving presets](#trying-and-saving-presets)). The tabs beside it are the synth's **pages**: for Poly, Osc, Filter, Env, LFO, Voice and Pressure. Tap a tab, or hold **SHIFT** and turn the data wheel, to change page.
 - **The sections.** Each page is split into boxes, one for each job, with the job's name at the top: **Osc 1**, **Mix**, **Filter**, **Filter envelope**, **Output** and so on. The colour says what kind of job it is, the same on every synth and effect:
   - **cyan**: what makes the sound (oscillators, wavetables, strings, drawbars)
   - **coral**: what shapes its tone (filter, drive)
@@ -87,7 +87,7 @@ Coming:
 - **A control that does nothing** with the sound as it is, such as a pulse width while the wave is a saw, is drawn faint, and the section's heading says why ("Pulse width · pulse waves only").
 - **The Q-Links** turn the four controls marked **Q1** to **Q4**. The column on the right shows what each one turns on this page and its value. Drag a card there to turn it from the screen. Each Q-Link keeps its colour on its badge and its card, the same as on the Play tab.
 - **Locking a step.** With **STEP SEQ** on, hold a step pad of a track this synth plays and turn a knob here: the knob is locked on that step only, and the sound stays as it was for the other steps. While you hold the step the tab shows its locks; let go and it shows the sound's own values again. See [Your first beat](../getting-started/first-beat.md#program-a-pattern-on-the-pads).
-- **The presets** are listed on the left, under the synth's name. Tap one to load it. Once you change anything, the preset is marked **edited**.
+- **The presets** are listed on the left, under the synth's name. Tap one to load it. Once you change anything, the preset is marked **edited**. The ones you saved yourself are in the browser, under **Yours**.
 - **UNDO** takes back the last knob you turned on this tab (a run of turns of one knob is one UNDO), and **SHIFT + UNDO** puts it back. Loading a preset starts the list again.
 
 **Drive** and **Distortion**, on the Filter page of Poly and Wavetable (Q-Links 3 and 4 there), both add grit. **Drive** pushes the sound into the filter, as on an analog synth: warm, and the filter smooths what it adds, so with the filter nearly closed you hear little of it. **Distortion** comes after the filter, so you hear its grit even with the filter almost closed (Grit Bass uses it). Both keep the sound at about the same level as you turn them up (within about 2 dB on every preset), so they add grit and thickness, not volume; turn up the synth's level for that. Pad pressure can push either one.
@@ -172,7 +172,23 @@ The Synth tab takes its colours from the theme picked in **Prefs > Appearance**,
 {{shot: synth-fm | The FM synth: the algorithm diagram shows which operators modulate which, and the levels show the six operators.}}
 
 > [!NOTE]
-> Each synth's sound, edits and all, is saved with the project (see [Saving your work](saving.md#projects)). Saving an edited sound as a preset of its own comes later.
+> Each synth's sound, edits and all, is saved with the project (see [Saving your work](saving.md#projects)). To keep a sound for other projects, save it as a preset of your own (below).
+
+### Trying and saving presets
+
+Tap the preset's name above the page (it has a small ▾ beside it) and the browser opens on that synth's presets.
+
+{{shot: browser-presets | The browser opened from the Synth tab's title on Poly's presets: Factory picked, Sub Bass being tried, and Pluck (edited) waiting for Cancel. Save preset is at the top.}}
+
+- **Factory** lists the presets that come with the synth, the same as the list on the Synth tab. **Yours** lists the ones you saved. **Recent** and **Favourites** show only this synth's presets. Press **–** or **+** to move between them, or tap one on the left.
+- **Turn the data wheel** and each preset plays as you reach it: play the pads to hear it.
+- **Push the wheel**, or tap **Load**, to keep the preset you're on. You're back on the Synth tab with it.
+- **Cancel** or **BROWSE** puts back the sound you had when you opened the browser, with your changes, and takes you back to the Synth tab.
+- **Save preset** saves the sound you have now in **Yours**. The keyboard opens with the preset's name in it: change it, then tap **Done**. If you already have a preset with that name, MPFree asks before replacing it, and the old one goes to the Trash. The presets that come with the synth are never changed. The title then shows the name you saved it as.
+
+A preset keeps the whole sound: every setting, and the effects and macros it brings. It plays on the synth it was made on. Load a Poly preset while the track plays FM and the line along the bottom says it doesn't play there.
+
+When the track has its own copy of a synth (see above), the browser tries, loads and saves that track's sound. A plugin synth's presets stay in its list on the Synth tab: tapping its name doesn't open the browser.
 
 ### Presets with their own effects
 

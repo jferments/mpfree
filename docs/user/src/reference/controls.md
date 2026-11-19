@@ -80,6 +80,8 @@ While the browser shows (**BROWSE**, the folder at the right end of the top bar,
 | **ERASE** | Moves the item picked to the Trash (asks first). | Works |
 | **Q-Link knobs 1–4** | 1: moves through the list. 2: the filter. 3: the level you hear sounds at. 4: the places. | Works |
 
+When the browser is open on a synth's presets (a tap on the preset's name on the Synth tab), the data wheel plays each preset as it reaches it, its push keeps the one you're on and goes back to the Synth tab, **–** and **+** move between Factory, Yours, Recent and Favourites, and **BROWSE** puts back the sound you had, as **Cancel** does. See [Trying and saving presets](../making-music/synths.md#trying-and-saving-presets).
+
 In the **Plugins** place, the data wheel moves through the plugins and its push shows the next picture; **+** installs the one picked (or updates it, or installs its zip), **–** takes back a Remove you tapped or clears a search, and Q-Link 2 changes the All, Instruments and Effects chips. See [Getting plugins](../making-music/plugins.md).
 
 While the Export panel shows, the data wheel sets the number of bars, its push presses **Start** (and **Close** once the export is over), and **–** closes the panel. See [Exporting your music](../making-music/exporting.md).

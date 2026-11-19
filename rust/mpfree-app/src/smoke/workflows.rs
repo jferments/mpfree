@@ -3828,4 +3828,124 @@ mod tests {
             assert!(ons(&s, 0)[a1..].iter().any(|&a| (a - t).abs() < 0.01));
         });
     }
+
+    /// The Synth tab's preset picker (layout spec 4g, Jay's pick A of 18
+    /// Nov): a tap on the preset's name above the page opens the browser on
+    /// the engine's presets. Turning plays each; Cancel puts the sound back
+    /// and comes back to the Synth tab. Save preset keeps the sound in
+    /// Yours and the title names it; the picker then opens on it there, and
+    /// Load from Yours plays the file.
+    #[test]
+    fn the_synth_tabs_name_opens_its_presets_to_try_save_and_load() {
+        use mpfree_synth_ui::view as synth_view;
+        on_big_stack(|| {
+            let dir =
+                std::env::temp_dir().join(format!("mpfree-synth-presets-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a scratch folder");
+            let mut s = Session::with_library(&dir);
+            s.press("header", "tab", "Synth");
+            assert_eq!(s.view(), View::Synth);
+            let before = s.synth.values();
+            let open = |s: &mut Session| {
+                let name = s
+                    .control(synth_view::TITLE, "name", "")
+                    .expect("the preset's name opens the engine's presets")
+                    .target;
+                s.press_target(&name);
+                assert_eq!(s.app.view(), View::Browser);
+                assert_eq!(s.view(), View::Browser);
+            };
+            open(&mut s);
+            assert!(s.control("browser", "place", "Factory").is_some());
+            assert!(s.control("browser", "place", "Yours").is_some());
+            assert!(s.control("browser", "button", "Save preset").is_some());
+            // The wheel tries the next of the engine's own presets.
+            s.wheel(1);
+            assert!(s.synth.trying_preset());
+            assert_ne!(s.synth.values(), before);
+            // Cancel: the sound from before, and back on the Synth tab.
+            s.press("browser", "button", "Cancel");
+            assert!(!s.synth.trying_preset());
+            assert_eq!(s.synth.values(), before);
+            assert_eq!(s.app.view(), View::Synth);
+            assert_eq!(s.view(), View::Synth);
+            // BROWSE does what Cancel does.
+            open(&mut s);
+            s.wheel(1);
+            assert!(s.synth.trying_preset());
+            s.button("BROWSE");
+            assert!(!s.synth.trying_preset());
+            assert_eq!(s.synth.values(), before);
+            assert_eq!(s.app.view(), View::Synth);
+            assert_eq!(s.view(), View::Synth);
+
+            // Save preset: named on the keyboard (it starts on the
+            // preset's name), kept in Yours, and the title names it.
+            open(&mut s);
+            s.wheel(2);
+            let tried = s.synth.values();
+            s.press("browser", "button", "Save preset");
+            s.press("browser", "key", "Backspace");
+            s.press("browser", "key", "Char('x')");
+            s.press("browser", "key", "Done");
+            s.run_for(0.2);
+            let saved = s.synth.state().own.expect("the sound is named by the save");
+            assert!(saved.ends_with('x'), "{saved}");
+            let file = s
+                .library
+                .as_ref()
+                .expect("a library")
+                .root()
+                .join("Instruments")
+                .join("Poly")
+                .join(format!("{saved}.preset"));
+            assert!(file.is_file(), "{}", file.display());
+            assert!(s
+                .said()
+                .iter()
+                .any(|l| l.contains(&format!("saved the preset {saved}"))));
+            // Saving kept the tried sound: Cancel now goes back to it.
+            s.press("browser", "button", "Cancel");
+            assert_eq!(s.view(), View::Synth);
+            assert_eq!(s.synth.values(), tried);
+            let title = s
+                .control(synth_view::TITLE, "name", "")
+                .unwrap()
+                .target
+                .label;
+            assert_eq!(title, format!("{saved} presets"));
+
+            // After a preset of the list the picker opens on Factory; in
+            // Yours, Load reads the file and plays it, and the Synth tab
+            // shows again.
+            let first = s
+                .control(synth_view::PRESETS, "row", "")
+                .expect("the side list's first preset")
+                .target;
+            s.press_target(&first);
+            assert_ne!(s.synth.values(), tried);
+            assert_eq!(s.synth.state().own, None);
+            open(&mut s);
+            assert!(s.control("browser", "row", &saved).is_none(), "on Factory");
+            s.press("browser", "place", "Yours");
+            // A tap on the row picks it (and tries it), or loads it when it
+            // is picked already.
+            s.press("browser", "row", &saved);
+            if s.view() == View::Browser {
+                s.press("browser", "button", "Load");
+            }
+            let wall = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let loaded = format!("synth: preset {saved}");
+            while !s.lines.contains(&loaded) && std::time::Instant::now() < wall {
+                s.run_for(0.05);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            assert!(s.lines.contains(&loaded), "{:?}", s.lines);
+            assert_eq!(s.synth.values(), tried);
+            assert_eq!(s.synth.state().own.as_deref(), Some(saved.as_str()));
+            assert_eq!(s.view(), View::Synth);
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
 }

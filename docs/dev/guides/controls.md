@@ -253,6 +253,7 @@ Opened over any page by holding a kit pad and pressing SHIFT + REC (sampler R5 p
 
 ## Synth tab
 
+- **`synth-title/name`**: the preset's name above the page (MPFree's own engines only): opens the browser on the engine's presets, to try, load and save them (layout spec 4g, `mpfree-app/src/presets.rs`). *Test:* `the_synth_tabs_name_opens_its_presets_to_try_save_and_load`.
 - **`synth-title/tab`**: the synth's pages (Osc, Filter, Env, LFO, ...). The lit one is showing. *Test:* `the_synth_page_shows_poly_and_sends_its_changes`.
 - **`synth-tiles/knob`**: a knob in a section (a level, a time, a cutoff): drag up or down to turn it (320 px is the whole range); tap it, then the wheel. The big ones matter most on the page. *Test:* `dragging_a_knob_up_turns_it_up_on_the_node`.
 - **`synth-tiles/fader`**, **`synth-tiles/drawbar`**, **`synth-tiles/slider`**: an envelope's or mixer's fader (drag up), an organ drawbar (drag down to add it, as on an organ), a routing row's slider (drag sideways). Each drags over its own track. *Test:* `a_fader_drags_over_its_own_track`.
