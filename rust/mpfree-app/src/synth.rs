@@ -266,6 +266,9 @@ pub fn as_poly(node: Box<dyn Node>) -> Result<Box<dyn Node>, SoundError> {
     Ok(Box::new(s))
 }
 
+/// A preset's `key = value` lines other than its settings.
+type Lines = Vec<(String, String)>;
+
 /// The Wavetable sound `wt` as a Poly sound, and its `extra` lines (other
 /// than its design) with the Q-Link sets on Poly's settings.
 fn as_poly_sound(
@@ -273,7 +276,7 @@ fn as_poly_sound(
     name: &str,
     tags: &[&str],
     extra: &[(String, String)],
-) -> Result<(Sound<Poly>, Vec<(String, String)>), SoundError> {
+) -> Result<(Sound<Poly>, Lines), SoundError> {
     let mut p = mpfree_node::preset::Preset::capture(wt, name, tags);
     p.extra = wt.save_extras();
     p.extra.extend(extra.iter().cloned());

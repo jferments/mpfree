@@ -1230,6 +1230,13 @@ synth/Poly[Brass]/key_spread_db	2.2952
 synth/Poly[Brass]/mono_loss_db	0
 synth/Poly[Brass]/vel_curve_err_db	0.0173
 synth/Poly[Brass]/vel_tone_oct	0.2549
+synth/Poly[Digital Bell]/chord6_vs_power_db	-0.0195
+synth/Poly[Digital Bell]/chord8_peak_dbfs	1.6398
+synth/Poly[Digital Bell]/dc_dbfs	-81.5032
+synth/Poly[Digital Bell]/key_spread_db	3.4236
+synth/Poly[Digital Bell]/mono_loss_db	0
+synth/Poly[Digital Bell]/vel_curve_err_db	0.0895
+synth/Poly[Digital Bell]/vel_tone_oct	0.7963
 synth/Poly[Drift Pad]/chord6_vs_power_db	-0.2021
 synth/Poly[Drift Pad]/chord8_peak_dbfs	-3.9702
 synth/Poly[Drift Pad]/dc_dbfs	-129.495
@@ -1244,6 +1251,13 @@ synth/Poly[Dust Pad]/key_spread_db	4.2076
 synth/Poly[Dust Pad]/mono_loss_db	0.4605
 synth/Poly[Dust Pad]/vel_curve_err_db	0.018
 synth/Poly[Dust Pad]/vel_tone_oct	0.2553
+synth/Poly[FM Keys]/chord6_vs_power_db	-0.0222
+synth/Poly[FM Keys]/chord8_peak_dbfs	0.4156
+synth/Poly[FM Keys]/dc_dbfs	-80.9173
+synth/Poly[FM Keys]/key_spread_db	3.0957
+synth/Poly[FM Keys]/mono_loss_db	0
+synth/Poly[FM Keys]/vel_curve_err_db	0.0003
+synth/Poly[FM Keys]/vel_tone_oct	-0.0003
 synth/Poly[Grit Bass]/chord8_peak_dbfs	-9.8052
 synth/Poly[Grit Bass]/dc_dbfs	-140
 synth/Poly[Grit Bass]/key_spread_db	9.4381
@@ -1253,6 +1267,22 @@ synth/Poly[Grit Bass]/small_speaker_db	-5.9065
 synth/Poly[Grit Bass]/start_step_dbfs	-48.1688
 synth/Poly[Grit Bass]/vel_curve_err_db	0.0343
 synth/Poly[Grit Bass]/vel_tone_oct	0.3581
+synth/Poly[Growl Bass]/chord8_peak_dbfs	-14.0042
+synth/Poly[Growl Bass]/dc_dbfs	-140
+synth/Poly[Growl Bass]/key_spread_db	3.7571
+synth/Poly[Growl Bass]/low_correlation	1
+synth/Poly[Growl Bass]/mono_loss_db	0
+synth/Poly[Growl Bass]/small_speaker_db	1.6002
+synth/Poly[Growl Bass]/start_step_dbfs	-88.6281
+synth/Poly[Growl Bass]/vel_curve_err_db	0.0122
+synth/Poly[Growl Bass]/vel_tone_oct	0.0105
+synth/Poly[Harmonic Pluck]/chord6_vs_power_db	1.8891
+synth/Poly[Harmonic Pluck]/chord8_peak_dbfs	-3.8479
+synth/Poly[Harmonic Pluck]/dc_dbfs	-86.141
+synth/Poly[Harmonic Pluck]/key_spread_db	3.4155
+synth/Poly[Harmonic Pluck]/mono_loss_db	0
+synth/Poly[Harmonic Pluck]/vel_curve_err_db	0.0923
+synth/Poly[Harmonic Pluck]/vel_tone_oct	-0.0196
 synth/Poly[Init]/chord6_vs_power_db	1.7918
 synth/Poly[Init]/chord8_peak_dbfs	2.1611
 synth/Poly[Init]/dc_dbfs	-80.5333
@@ -1266,6 +1296,20 @@ synth/Poly[Lead]/key_spread_db	3.0324
 synth/Poly[Lead]/mono_loss_db	0
 synth/Poly[Lead]/vel_curve_err_db	0.021
 synth/Poly[Lead]/vel_tone_oct	0.1584
+synth/Poly[Morph Pad]/chord6_vs_power_db	0.1213
+synth/Poly[Morph Pad]/chord8_peak_dbfs	-15.837
+synth/Poly[Morph Pad]/dc_dbfs	-135.4022
+synth/Poly[Morph Pad]/key_spread_db	3.6751
+synth/Poly[Morph Pad]/mono_loss_db	0.6099
+synth/Poly[Morph Pad]/vel_curve_err_db	0.0041
+synth/Poly[Morph Pad]/vel_tone_oct	0.1581
+synth/Poly[Organ]/chord6_vs_power_db	1.8496
+synth/Poly[Organ]/chord8_peak_dbfs	-6.2087
+synth/Poly[Organ]/dc_dbfs	-94.8276
+synth/Poly[Organ]/key_spread_db	3.8413
+synth/Poly[Organ]/mono_loss_db	0
+synth/Poly[Organ]/vel_curve_err_db	0.0011
+synth/Poly[Organ]/vel_tone_oct	-0.0003
 synth/Poly[Pluck]/chord6_vs_power_db	0.1013
 synth/Poly[Pluck]/chord8_peak_dbfs	-5.1967
 synth/Poly[Pluck]/dc_dbfs	-87.5501
@@ -1322,6 +1366,26 @@ synth/Poly[Supersaw]/key_spread_db	3.4424
 synth/Poly[Supersaw]/mono_loss_db	0.7037
 synth/Poly[Supersaw]/vel_curve_err_db	0.0084
 synth/Poly[Supersaw]/vel_tone_oct	0.2118
+synth/Poly[Sync Sweep]/chord6_vs_power_db	1.4472
+synth/Poly[Sync Sweep]/chord8_peak_dbfs	-0.4455
+synth/Poly[Sync Sweep]/dc_dbfs	-140
+synth/Poly[Sync Sweep]/key_spread_db	3.5566
+synth/Poly[Sync Sweep]/mono_loss_db	0
+synth/Poly[Sync Sweep]/vel_curve_err_db	0.1473
+synth/Poly[Sync Sweep]/vel_tone_oct	0.5515
+synth/Poly[Table Init]/chord6_vs_power_db	-0.006
+synth/Poly[Table Init]/chord8_peak_dbfs	-0.1545
+synth/Poly[Table Init]/dc_dbfs	-82.2018
+synth/Poly[Table Init]/key_spread_db	3.2942
+synth/Poly[Table Init]/mono_loss_db	0
+synth/Poly[Table Init]/vel_curve_err_db	0.0044
+synth/Poly[Table Init]/vel_tone_oct	0
+synth/Poly[Vowel Lead]/chord8_peak_dbfs	-15.375
+synth/Poly[Vowel Lead]/dc_dbfs	-91.0162
+synth/Poly[Vowel Lead]/key_spread_db	3.8497
+synth/Poly[Vowel Lead]/mono_loss_db	0
+synth/Poly[Vowel Lead]/vel_curve_err_db	0.018
+synth/Poly[Vowel Lead]/vel_tone_oct	0.162
 synth/Poly[Worn Brass]/chord6_vs_power_db	0.5684
 synth/Poly[Worn Brass]/chord8_peak_dbfs	-4.3642
 synth/Poly[Worn Brass]/dc_dbfs	-110.1087
