@@ -57,6 +57,8 @@
 //! - [`voice`]: the shared voice core the new engines are built on (held
 //!   notes and priority, voice stealing, glide by time or rate, envelopes
 //!   whose times mean what they say, velocity, play routes, a DC blocker).
+//! - [`modal`]: the modal bank (struck bars, bells and drums as decaying
+//!   modes) and the mallet pulse, shared by Pluck and the drums.
 //! - [`osc`]: its oscillators, the classic waves read from band-limited
 //!   tables (nothing folds back at any pitch), the pulse as two saws and
 //!   the supersaw.
@@ -71,6 +73,7 @@ pub mod analog_params;
 pub mod bank;
 pub mod bass;
 pub mod bass_params;
+pub mod body808;
 pub mod character;
 pub mod drawbar;
 pub mod drawbar_params;
@@ -84,6 +87,7 @@ pub mod fm;
 pub mod fm_params;
 pub mod keys;
 pub mod keys_params;
+pub mod modal;
 pub mod osc;
 pub mod params;
 pub mod pluck;

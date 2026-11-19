@@ -50,11 +50,13 @@
 //! on how the host cuts blocks. A tenth of a second after the release ends
 //! nothing runs until the next note. Nothing allocates.
 
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::PI;
 
 use mpfree_node::{Ctl, Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Tuning};
 
 use crate::bass_params::*;
+pub use crate::body808::{drive_gains, drive_shape, sin_turns};
+use crate::body808::{drive, pitch_semis, triangle_turns, PUNCH_S, PUNCH_SEMIS};
 use crate::dsp::Rng;
 use crate::params::Preset;
 use crate::voice::{velocity_gain, Adsr, Glide, NoteStack, Priority};
@@ -94,9 +96,6 @@ const K_MAX: f32 = 4.1;
 /// Filter drive: the oscillators into the ladder at 0 and at 100.
 const IN_MIN: f32 = 0.35;
 const IN_MAX: f32 = 4.0;
-/// The punch: its length and its shift at 100, semitones.
-const PUNCH_S: f32 = 0.006;
-const PUNCH_SEMIS: f32 = 12.0;
 /// The reese's pair: each one's level, and the high-pass under them.
 const PAIR_LEVEL: f32 = 0.7;
 /// The pair's high-pass: twice the note, so their beating fundamental
@@ -106,11 +105,6 @@ const PAIR_HP_LO: f32 = 20.0;
 const PAIR_HP_HI: f32 = 400.0;
 /// The noise's level at Noise 100.
 const NOISE_LEVEL: f32 = 0.5;
-/// Drive: its gain at 100 (dB), the curve's rest point (off centre, so it
-/// adds even harmonics), and the level it keeps.
-const DRIVE_DB: f32 = 30.0;
-const DRIVE_BIAS: f32 = 0.3;
-const DRIVE_REF: f32 = 0.25;
 /// The level into the drive (a full oscillator peaks near [`DRIVE_REF`]
 /// there), and the output after it: one note of Init at velocity 100
 /// peaks near -12 dBFS.
@@ -134,23 +128,6 @@ const SUB_TABLES: [[f32; 4]; 3] = [
     [1.0, 1.0, -1.0, -1.0],
     [1.5, -0.5, -0.5, -0.5],
 ];
-
-/// `sin(2 pi t)` for `t` in turns (0 to 1): an odd polynomial on the
-/// folded quarter, within 1e-4 (a ninth-order Taylor series).
-#[inline(always)]
-pub fn sin_turns(t: f32) -> f32 {
-    // Fold to -0.25..0.25 turns.
-    let mut x = t - (t + 0.5).floor();
-    if x > 0.25 {
-        x = 0.5 - x;
-    } else if x < -0.25 {
-        x = -0.5 - x;
-    }
-    let r = x * TAU;
-    let r2 = r * r;
-    r * (1.0
-        + r2 * (-1.0 / 6.0 + r2 * (1.0 / 120.0 + r2 * (-1.0 / 5_040.0 + r2 * (1.0 / 362_880.0)))))
-}
 
 /// The step correction (polyBLEP) for a step at the phase's wrap: `t` the
 /// phase in turns, `dt` its step, `rdt` the step's reciprocal. A step of
@@ -178,12 +155,8 @@ fn wave_at(wave: u8, t: f32, dt: f32, rdt: f32, pw: f32) -> f32 {
             let u = if t < pw { t - pw + 1.0 } else { t - pw };
             (2.0 * u - blep(u, dt, rdt)) - (2.0 * t - blep(t, dt, rdt))
         }
-        2 => {
-            // Rising from zero at t = 0, peak at a quarter.
-            let u = t - 0.25;
-            let u = u - u.floor();
-            4.0 * (u - 0.5).abs() - 1.0
-        }
+        // Rising from zero at t = 0, peak at a quarter.
+        2 => triangle_turns(t),
         _ => sin_turns(t),
     }
 }
@@ -199,12 +172,6 @@ fn stage_share(g: f32, d: f32) -> f32 {
     } else {
         g / (d.abs() + g)
     }
-}
-
-/// The drive's curve: smooth everywhere.
-#[inline(always)]
-fn drive_curve(u: f32) -> f32 {
-    u / (1.0 + u * u).sqrt()
 }
 
 /// The ladder's small-signal gain at `hz` for **Cutoff** `cutoff` and
@@ -529,18 +496,13 @@ impl Bass {
     fn envelope_semis(&self, steps: u32) -> f32 {
         // In ms, so a drop of whole milliseconds lands on its step exactly.
         let t = steps as f32 * (CTRL * 1000) as f32 / self.rate as f32;
-        let mut semis = 0.0;
-        let drop_t = self.v(DROP_TIME);
-        if t < drop_t {
-            let x = 1.0 - t / drop_t;
-            semis += self.v(DROP) * x * x * x;
-        }
-        let punch_t = PUNCH_S * 1000.0;
-        if t < punch_t {
-            let x = 1.0 - t / punch_t;
-            semis += self.v(PUNCH) * 0.01 * PUNCH_SEMIS * x * x;
-        }
-        semis
+        pitch_semis(
+            t,
+            self.v(DROP),
+            self.v(DROP_TIME),
+            self.v(PUNCH) * 0.01 * PUNCH_SEMIS,
+            PUNCH_S * 1000.0,
+        )
     }
 
     /// The target pitch for the note sounding, before glide.
@@ -973,13 +935,7 @@ impl Bass {
         let norm = self.drive_n;
         self.drive_k += self.ddrive_k;
         self.drive_n += self.ddrive_n;
-        let y = if k <= 0.0 {
-            y
-        } else if f.hard {
-            norm * tanh_pade(k * y)
-        } else {
-            norm * (drive_curve(k * y + DRIVE_BIAS) - drive_curve(DRIVE_BIAS))
-        };
+        let y = drive(y, k, norm, f.hard);
         let out = self.out;
         self.out += self.dout;
         self.tone.run::<false>(y) * out
@@ -1012,51 +968,6 @@ impl Bass {
     }
 }
 
-/// The drive's input gain and output scale at `drive` (0 to 100), soft
-/// or `hard`: a signal peaking at [`DRIVE_REF`] comes out peaking there
-/// too. 0 is off.
-pub fn drive_gains(drive: f32, hard: bool) -> (f32, f32) {
-    if drive <= 0.0 {
-        return (0.0, 1.0);
-    }
-    let k = 10f32.powf(drive * 0.01 * DRIVE_DB / 20.0);
-    let peak = if hard {
-        tanh_pade(k * DRIVE_REF)
-    } else {
-        drive_curve(k * DRIVE_REF + DRIVE_BIAS) - drive_curve(DRIVE_BIAS)
-    };
-    (k, DRIVE_REF / peak)
-}
-
-/// One cycle of a sine peaking at [`DRIVE_REF`] through the drive at
-/// `drive` (0 to 100), soft or `hard`, scaled so the reference peak is 1,
-/// `points` points: for the Synth tab's picture.
-pub fn drive_shape(drive: f32, hard: bool, points: usize) -> Vec<f32> {
-    let n = points.max(2);
-    let (k, norm) = drive_gains(drive, hard);
-    (0..n)
-        .map(|i| {
-            let x = DRIVE_REF * sin_turns(i as f32 / (n - 1) as f32 * 0.999_999);
-            let y = if k <= 0.0 {
-                x
-            } else if hard {
-                norm * tanh_pade(k * x)
-            } else {
-                norm * (drive_curve(k * x + DRIVE_BIAS) - drive_curve(DRIVE_BIAS))
-            };
-            y / DRIVE_REF
-        })
-        .collect()
-}
-
-/// `tanh(x)` by its [3/2] Padé form, exact at 0 and reaching 1 at ±3.
-#[inline(always)]
-fn tanh_pade(x: f32) -> f32 {
-    let x = x.clamp(-3.0, 3.0);
-    let x2 = x * x;
-    x * (27.0 + x2) / (27.0 + 9.0 * x2)
-}
-
 /// The pitch envelope over its first `secs` seconds, in semitones above
 /// the note, `points` points: for the Synth tab's picture.
 pub fn drop_curve(v: impl Fn(u16) -> f32, secs: f32, points: usize) -> Vec<f32> {
@@ -1064,17 +975,13 @@ pub fn drop_curve(v: impl Fn(u16) -> f32, secs: f32, points: usize) -> Vec<f32> 
     (0..n)
         .map(|i| {
             let t = secs * i as f32 / (n - 1) as f32;
-            let mut semis = 0.0;
-            let drop_t = v(DROP_TIME) * 0.001;
-            if t < drop_t {
-                let x = 1.0 - t / drop_t;
-                semis += v(DROP) * x * x * x;
-            }
-            if t < PUNCH_S {
-                let x = 1.0 - t / PUNCH_S;
-                semis += v(PUNCH) * 0.01 * PUNCH_SEMIS * x * x;
-            }
-            semis
+            pitch_semis(
+                t,
+                v(DROP),
+                v(DROP_TIME) * 0.001,
+                v(PUNCH) * 0.01 * PUNCH_SEMIS,
+                PUNCH_S,
+            )
         })
         .collect()
 }
@@ -1246,17 +1153,9 @@ impl Node for Bass {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::body808::{drive_curve, tanh_pade, DRIVE_BIAS, DRIVE_REF};
 
     const RATE: u32 = 48_000;
-
-    #[test]
-    fn sin_turns_is_close() {
-        for i in 0..1000 {
-            let t = i as f32 / 1000.0;
-            let want = (TAU * t).sin();
-            assert!((sin_turns(t) - want).abs() < 2e-4, "{t}");
-        }
-    }
 
     #[test]
     fn subs_have_no_dc() {
