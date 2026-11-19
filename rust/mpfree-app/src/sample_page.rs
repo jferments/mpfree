@@ -2258,6 +2258,59 @@ impl SamplePage {
         ));
     }
 
+    /// COPY held and pads hit on the MPC (the MPC's COPY): a copy of pad
+    /// `from` of the kit shown (its sound and every edit) onto pad `to`,
+    /// one undo step, as Send to pad does. What the screen says.
+    pub fn copy_pad(&mut self, ui: &mut Ui, from: usize, to: usize) -> String {
+        let kit = self.kit;
+        let (a, b) = (self.pad_text(kit, from), self.pad_text(kit, to));
+        if from == to || to >= PADS {
+            return format!("COPY: pad {a} is the one being copied   ·   hit another pad");
+        }
+        let Some(copy) = self.projects.get(kit).and_then(|p| p.pad(from)).cloned() else {
+            return format!(
+                "COPY: pad {a} has no sound to copy   ·   let go of COPY and pick another"
+            );
+        };
+        let mut none = Vec::new();
+        self.act_pads(
+            ui,
+            PadsAction::Set {
+                pad: to,
+                after: Some(Box::new(copy)),
+                gesture: None,
+            },
+            &mut none,
+        );
+        self.lines
+            .push(format!("sample: COPY, pad {a} copied onto pad {b}"));
+        format!("COPY: pad {a} copied onto pad {b}   ·   UNDO takes it back")
+    }
+
+    /// SHIFT + COPY held and a pad hit on the MPC (the MPC's Delete): pad
+    /// `pad` of the kit shown is emptied, one undo step, as the Pads tab's
+    /// Clear. What the screen says.
+    pub fn clear_pad(&mut self, ui: &mut Ui, pad: usize) -> String {
+        let kit = self.kit;
+        let name = self.pad_text(kit, pad);
+        if self.projects.get(kit).and_then(|p| p.pad(pad)).is_none() {
+            return format!("Pad {name} is empty already");
+        }
+        let mut none = Vec::new();
+        self.act_pads(
+            ui,
+            PadsAction::Set {
+                pad,
+                after: None,
+                gesture: None,
+            },
+            &mut none,
+        );
+        self.lines
+            .push(format!("sample: SHIFT + COPY, pad {name} emptied"));
+        format!("Pad {name} emptied   ·   UNDO brings it back")
+    }
+
     /// Chop to pads beside the bar: with the Slice tool on the Wave page,
     /// its own Chop to pads; otherwise the Wave page with the Slice tool,
     /// where the slices are cut first. On Edit pad, the Sample tab with
