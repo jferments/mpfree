@@ -1,4 +1,9 @@
-//! The pad editor's Play tab: how a pad plays its sound.
+//! Edit pad: how a pad plays its sound. A page of the Pads tab, opened
+//! from the pad's settings (its Edit pad row, or PROG EDIT there), as the
+//! MPC's PROG EDIT opens its Track Edit; it was the Sample tab's Play
+//! sub-page until the one Sample page's step 6b. The pad bar's **‹ Pads**
+//! chip, in the place the Wave | Play switch had, goes back to the pads
+//! ([`PlayAction::Pads`]).
 //!
 //! - **Section chips** (Layers, Amp, Filter, Pitch, Mod, Pad, Slices,
 //!   [`Section`])
@@ -86,7 +91,7 @@ use crate::panel::{self, Control, Item, Look, Panel};
 use crate::play_widgets::{EnvelopeView, FilterCurve, LayerBar, LayerMap, MotionView};
 use crate::slice_tool::pad_text;
 use crate::source::SourceView;
-use crate::wave_tab::{self, duration_text, mode_label, pad_color, TABS};
+use crate::wave_tab::{duration_text, mode_label, pad_color};
 use crate::widgets::{KnobCard, PadBar, SectionChip, SectionChips, Setting, SettingList};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
@@ -134,8 +139,8 @@ pub fn layout(s: Section, keys: bool) -> String {
 /// The velocity a key pressed on the keyboard plays at.
 pub const KEY_VELOCITY: u8 = 100;
 
-/// The tab's place in [`TABS`].
-pub const TAB: usize = 1;
+/// The pad bar's chip that goes back to the pads ([`PlayAction::Pads`]).
+pub const BACK: &str = "‹ Pads";
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Tap a section for its controls · drag a layer's edges for its velocities · drag the envelope's points and the \
@@ -1054,8 +1059,8 @@ pub enum PlayAction {
     /// The scene strip: see [`SceneAction`]. The app keeps the scenes in
     /// the kit and sends the crossfader's values to the sampler.
     Scene(SceneAction),
-    /// Open the editor's tab `i` of [`TABS`].
-    Tab(usize),
+    /// The pad bar's ‹ Pads: back to the Pads tab's pads.
+    Pads,
     /// A layer added to pad `pad` just after layer `after`: a copy of it
     /// that takes the upper half of its velocities (one undo step).
     AddLayer { pad: usize, after: usize },
@@ -1120,7 +1125,7 @@ impl PlayAction {
                 l.region = sound_region(Some(&l.region), *source, frames);
                 return p.set_pad(*pad, Some(next), None);
             }
-            PlayAction::Tab(_)
+            PlayAction::Pads
             | PlayAction::Pick(_)
             | PlayAction::Note { .. }
             | PlayAction::Scene(_) => return Ok(()),
@@ -1187,7 +1192,7 @@ enum Key {
 pub struct PlayTab {
     /// The page name the tab's layout is added under.
     pub name: String,
-    /// The bank letter shown in pad names, as [`wave_tab::WaveTab::bank`].
+    /// The bank letter shown in pad names, as [`crate::wave_tab::WaveTab::bank`].
     pub bank: Option<char>,
     layer: usize,
     last_velocity: Option<u8>,
@@ -1221,9 +1226,8 @@ impl PlayTab {
     /// and `hint` first) and shows `st`.
     pub fn add(ui: &mut Ui, name: &str, st: &PlayState) -> Result<PlayTab, String> {
         crate::send::add(ui);
-        let mut bar = PadBar::new(&TABS);
-        bar.enabled = TABS.iter().map(|t| wave_tab::BUILT.contains(t)).collect();
-        bar.active = TAB;
+        let mut bar = PadBar::new(&[]);
+        bar.back = Some(BACK.to_string());
         ui.add(BAR, bar);
         let mut map = LayerMap::new("Layers");
         map.right = "drag edges to set ranges".into();
@@ -1500,7 +1504,6 @@ impl PlayTab {
         let n = p.layers.len();
         if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
             bar.color = pad_color(st.pad);
-            bar.active = TAB;
             bar.title = format!("Pad {} · {}", pad_text(self.bank, st.pad), p.name);
             let first = &p.layers[0].region;
             let mut about = vec![
@@ -2075,7 +2078,7 @@ impl PlayTab {
     /// that only change what the tab shows.
     pub fn action(&mut self, ui: &mut Ui, ev: &UiEvent, st: &PlayState) -> Option<PlayAction> {
         match (ev.widget.as_str(), &ev.kind) {
-            (BAR, EventKind::Tab(i)) => Some(PlayAction::Tab(*i)),
+            (BAR, EventKind::Tab(0)) => Some(PlayAction::Pads),
             (SCENES, EventKind::Tab(i @ (0 | 1))) => {
                 Some(PlayAction::Scene(SceneAction::Store(*i)))
             }
