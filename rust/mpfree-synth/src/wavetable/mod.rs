@@ -69,6 +69,9 @@ enum State {
     Kill,
 }
 
+/// The highest phase a warp reads from.
+const UNDER_ONE: f32 = 0.999_999;
+
 /// How an oscillator bends its phase this control step.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum Warp {
@@ -124,7 +127,10 @@ impl Warp {
     }
 
     /// The phase read from, given the running phase and the other
-    /// oscillator's last sample (for FM).
+    /// oscillator's last sample (for FM): under 1, always. The bend's end
+    /// and FM a hair under a whole cycle round up to 1 in floats, and a
+    /// read there would pass its frame (and the table, on its last frame),
+    /// so those two are held just under it, as the mirror always was.
     #[inline]
     fn apply(self, p: f32, other: f32) -> f32 {
         match self {
@@ -133,17 +139,17 @@ impl Warp {
                 if p < k {
                     p * a
                 } else {
-                    0.5 + (p - k) * b
+                    (0.5 + (p - k) * b).min(UNDER_ONE)
                 }
             }
             Warp::Sync { ratio } => (p * ratio).fract(),
             Warp::Mirror { amt } => {
                 let m = 1.0 - (1.0 - 2.0 * p).abs();
-                (p + (m - p) * amt).clamp(0.0, 0.999_999)
+                (p + (m - p) * amt).clamp(0.0, UNDER_ONE)
             }
             Warp::Fm { index } => {
                 let x = p + index * other;
-                x - x.floor()
+                (x - x.floor()).min(UNDER_ONE)
             }
         }
     }
@@ -1422,5 +1428,12 @@ mod tests {
             }
         }
         assert_eq!(Warp::new(1, 0.0).apply(0.3, 0.0), 0.3);
+        // Where floats round up to a whole cycle: the bend's end, and FM
+        // pulling a phase of 0 a hair below it.
+        let end = 1.0 - f32::EPSILON / 2.0;
+        for amt in [0.0, 0.5, 1.0] {
+            assert!(Warp::new(1, amt).apply(end, 0.0) < 1.0, "bend {amt}");
+        }
+        assert!(Warp::new(4, 1.0).apply(0.0, -1e-9) < 1.0);
     }
 }
