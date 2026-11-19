@@ -86,6 +86,18 @@ def bench_report():
     return lines
 
 
+def effects():
+    """effects.mpw's busy part: a mark (which prints the status block, "0 underruns" in it), then expect-not."""
+    body = ['    script: "Effects", 4 steps, 14.0 s', "    script: line 16 at 1.000 s: mark busy"]
+    body += status(0, 344, 300, 200)
+    body += ["    script: line 38 at 11.000 s: expect-not underrun",
+             "    script: line 39 at 11.000 s: mark remove"]
+    body += status(0, 3790, 310, 200)
+    body += ["    script: done"]
+    body += status(0, 4134, 310, 200)
+    return body
+
+
 class ReportTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="mpfree-devtest-report-")
@@ -105,6 +117,13 @@ class ReportTests(unittest.TestCase):
         res = subprocess.run([sys.executable, "-I", TOOL, *paths, "--out", out], text=True,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
         return res
+
+    def test_an_expect_not_is_not_met_by_the_status_block_a_mark_prints(self):
+        devtest = ["MPFree device round workflows on the test build"] + run("effects", "default", effects())
+        res = self.report(self.write("05-devtest.log", devtest))
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("| effects | 0 | yes | 1 of 1 | 0 | 0 | 0 | 0 |", res.stdout)
+        self.assertNotIn("was seen", res.stdout)
 
     def test_workflows_their_parts_checks_and_the_sound_core_pick(self):
         devtest = (["MPFree device round workflows on the test build"] + run("beat", "default", beat())
