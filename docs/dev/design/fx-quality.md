@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-fxlab
-checked: 2026-11-18 dd1645f
+checked: 2026-11-19 01723ef1
 -->
 # FX quality: targets, the report and the ratchet
 

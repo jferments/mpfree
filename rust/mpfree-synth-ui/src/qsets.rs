@@ -102,6 +102,12 @@ const POLY: &[Curated] = &[
         "Osc",
         [pp::OSC2_SEMI, pp::OSC2_FINE, pp::OSC1_PW, pp::OSC2_PW],
     ),
+    // The Table wave's: each oscillator's position and warp (the Wavetable
+    // synth's first set, last here so Poly's others keep their places).
+    set(
+        "Tables",
+        [pp::OSC1_POS, pp::OSC2_POS, pp::OSC1_WARP, pp::OSC2_WARP],
+    ),
 ];
 
 use mpfree_synth::fm_params::{self as fp, op, op_id};
@@ -719,7 +725,18 @@ mod tests {
         let p = Poly::new(48_000);
         let sets = factory(p.info(), p.params());
         let names: Vec<&str> = sets.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["Tone", "Env", "Filter env", "Motion", "Mix", "Osc"]);
+        assert_eq!(
+            names,
+            [
+                "Tone",
+                "Env",
+                "Filter env",
+                "Motion",
+                "Mix",
+                "Osc",
+                "Tables"
+            ]
+        );
         assert_eq!(
             sets[0].params,
             [pp::CUTOFF, pp::RESONANCE, pp::FENV_AMOUNT, pp::DRIVE].map(Some)
