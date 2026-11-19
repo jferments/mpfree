@@ -910,3 +910,35 @@ fn replays_alone_make_their_stems() {
     assert!(kick[100].abs() > 0.01);
     std::fs::remove_dir_all(&folder).unwrap();
 }
+
+/// What the sound loop counted for the MIDI file is in the summary: notes
+/// past its room, and controller values brought into MIDI's range.
+#[test]
+fn the_summary_says_what_the_midi_file_left_out_or_brought_into_range() {
+    let d = Done {
+        folder: PathBuf::from("/x/Night drive 1"),
+        wavs: Vec::new(),
+        silent: Vec::new(),
+        midi: Some(PathBuf::from("/x/Night drive 1/Night drive.mid")),
+        frames: 2 * u64::from(RATE),
+        rate: RATE,
+        format: WavFormat::i24(RATE),
+        notes_dropped: 2,
+        out_of_range: 3,
+    };
+    assert_eq!(
+        Outcome::Done(d.clone()).words(),
+        "Exported 0:02 to Night drive 1: a MIDI file (2 notes or moves were left out of the MIDI \
+         file; 3 controller values were outside what MIDI can hold, so the file has the nearest)"
+    );
+    let one = Done {
+        notes_dropped: 0,
+        out_of_range: 1,
+        ..d
+    };
+    assert_eq!(
+        Outcome::Done(one).words(),
+        "Exported 0:02 to Night drive 1: a MIDI file (1 controller value was outside what MIDI \
+         can hold, so the file has the nearest)"
+    );
+}
