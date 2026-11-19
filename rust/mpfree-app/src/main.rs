@@ -93,6 +93,7 @@ mod cores;
 mod crash;
 mod cv_out;
 mod debug_page;
+pub mod demo_songs;
 mod desk;
 mod drawing;
 mod engines;
@@ -144,6 +145,8 @@ mod rt_safety;
 mod sample_page;
 mod sampler;
 mod screen_cost;
+mod screen_picture;
+mod script;
 mod setup;
 mod shed;
 mod skin_page;
@@ -235,6 +238,11 @@ struct Options {
     /// for the system to act on (the stick's root path unit). Without it
     /// the button is not read.
     power_request: Option<PathBuf>,
+    /// A workflow script (`play` only; script.rs): the app plays its steps
+    /// by itself, as the device round's scripted runs do, and the run lasts
+    /// as long as the script. Read in `main`, into `workflow`.
+    script: Option<PathBuf>,
+    workflow: Option<script::Script>,
 }
 
 /// The loudest the drums and click checks play (`--gain-db` there): their
@@ -284,6 +292,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         sound_cores: None,
         gpu_screen: None,
         power_request: None,
+        script: None,
+        workflow: None,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -328,6 +338,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--data" => o.data = Some(PathBuf::from(value()?)),
             "--gpu-screen" => o.gpu_screen = Some(PathBuf::from(value()?)),
             "--power-request" => o.power_request = Some(PathBuf::from(value()?)),
+            "--script" => o.script = Some(PathBuf::from(value()?)),
             "--sound-cores" => {
                 o.sound_cores =
                     Some(cores::SoundCores::parse(&value()?).ok_or_else(|| {
@@ -348,7 +359,14 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     } else {
         MAX_SECONDS
     };
-    if o.command == "app" {
+    if o.script.is_some() {
+        if o.command != "play" {
+            return Err("--script goes with play".to_string());
+        }
+        if args.iter().any(|a| a == "--seconds") {
+            return Err("a script sets its own length; --script takes no --seconds".to_string());
+        }
+    } else if o.command == "app" {
         if args.iter().any(|a| a == "--seconds") {
             return Err("app runs until the power goes off; it takes no --seconds".to_string());
         }
@@ -373,8 +391,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     if o.power_request.is_some() && o.command != "app" {
         return Err("--power-request goes with app".to_string());
     }
-    if o.data.is_some() && o.command != "app" {
-        return Err("--data goes with app".to_string());
+    if o.data.is_some() && o.command != "app" && o.script.is_none() {
+        return Err("--data goes with app, or with play and --script".to_string());
     }
     if args.iter().any(|a| a == "--sound-cores") && o.command != "app" && o.command != "play" {
         return Err("--sound-cores goes with app or play".to_string());
@@ -2891,15 +2909,22 @@ fn loop_sets_tempo(
 
 /// Live erase (sequencer roadmap S1, the MPC's way): whether a pad
 /// pressed now erases in place of playing: ERASE is held while the
-/// transport records.
+/// transport records, or while it only plays with the kit on the pads (the
+/// button combos of 19 Nov).
 fn live_erase_starts(app: &app::App, time: &time::TimeHost) -> bool {
-    app.erase_held() && time.info().state == mpfree_transport::State::Recording
+    use mpfree_transport::State;
+    app.erase_held()
+        && match time.info().state {
+            State::Recording => true,
+            State::Playing => app.pads_play_kit(),
+            State::Stopped | State::CountIn => false,
+        }
 }
 
-/// Live erase: pad `pad` pressed with ERASE held while recording. Its
-/// notes on the armed track come out as the playhead reaches them, until
-/// the pad or ERASE is let go; it neither sounds nor records. What to
-/// tell.
+/// Live erase: pad `pad` pressed with ERASE held while the transport
+/// records or plays. Its notes on the armed track come out as the
+/// playhead reaches them, until the pad or ERASE is let go; it neither
+/// sounds nor records. What to tell.
 fn live_erase(time: &mut time::TimeHost, pad: usize) -> Option<app::Effect> {
     let note = u8::try_from(pad).ok()?;
     let first = !time.erasing();
@@ -2909,6 +2934,26 @@ fn live_erase(time: &mut time::TimeHost, pad: usize) -> Option<app::Effect> {
             "ERASE: pad {}'s notes come out of the armed track's clip as the playhead passes them; UNDO brings them back",
             app::kit_pad_name(pad)
         ))
+    })
+}
+
+/// ERASE + kit pad `pad` while the transport is stopped (the button
+/// combos of 19 Nov): every note of that pad comes out of the armed
+/// track's clip at once, one take UNDO brings back, as ERASE + a lane's
+/// name on Play. What to tell.
+fn erase_pad_notes(time: &mut time::TimeHost, pad: usize) -> app::Effect {
+    let name = app::kit_pad_name(pad);
+    let Ok(pad) = u8::try_from(pad) else {
+        return app::Effect::Tell(format!("ERASE: pad {name} has no notes to erase"));
+    };
+    app::Effect::Tell(match time.step_action(time::StepAction::ClearPad { pad }) {
+        Ok(line) if line.is_empty() => {
+            format!("ERASE: the armed track's clip has no notes on pad {name}")
+        }
+        Ok(_) => format!(
+            "ERASE: pad {name}'s notes came out of the armed track's clip   ·   UNDO brings them back"
+        ),
+        Err(e) => format!("ERASE: {e}"),
     })
 }
 
@@ -3577,7 +3622,9 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
         println!("touchscreen: {path} ({name}); read-only, not grabbed");
         Ok(t)
     });
-    let mut player = gui::Player::new(fonts, size, timed, backdrop);
+    // A scripted run is the app as a musician has it (STOP stops, it
+    // doesn't end the run); only its length is the script's.
+    let mut player = gui::Player::new(fonts, size, timed && o.workflow.is_none(), backdrop);
     if last_run != crash::LastRun::Fine {
         player.safe_start();
     }
@@ -5895,6 +5942,8 @@ fn player_session(
     let mut preview: Option<Box<preview::Preview>> = None;
     let mut preview_back: Option<Box<preview::Preview>> = None;
     let mut views_swapped = 0u64;
+    // All four PAD BANK buttons: the screen pictures' names this run.
+    let mut picture_names = screen_picture::Names::default();
     let mut recolour = false;
     let (mut shown_heads, mut heads_at) = (sampler::Playheads::default(), Instant::now());
     // The Grain tab's cloud box, while the audio thread holds it: filled and
@@ -5983,7 +6032,7 @@ fn player_session(
     }
     // 6. Sound.
     progress(out, 6, "Starting the sound", "Opening the sound card", 0.9);
-    let mut app = app::App::new(RATE, timed);
+    let mut app = app::App::new(RATE, timed && o.workflow.is_none());
     // Prefs > Backup and Akai kits: what the first start did or left out.
     app.set_setup(setup_prefs(o, &store));
     // Saved settings and found buttons, read now from the store (opened
@@ -6049,6 +6098,19 @@ fn player_session(
         &store.settings(app::saved::MAP),
     ) {
         out.say(&line);
+    }
+    // A scripted run presses every button by name: the ones Map controls
+    // hasn't found get numbers of their own for this run (as the smoke
+    // session's), never saved to the stick.
+    if let Some(w) = &o.workflow {
+        out.say(&script::map_unmapped(&mut app));
+        out.say(&format!(
+            "script: {:?}, {} steps, {:.1} s; stands in for {}",
+            w.title,
+            w.lines.len(),
+            w.seconds(),
+            w.covers.join(", ")
+        ));
     }
     // Touch tuning (the Dev tab's Touch page), kept as the "touch" settings.
     let touch = store.settings(app::saved::TOUCH);
@@ -6293,7 +6355,21 @@ fn player_session(
     // The Q-Links' touch sensors chatter: a release counts after 150 ms off.
     let mut touch_hold = qlink_touch::TouchHold::default();
     let started = Instant::now();
-    let mut stopped_by = "time";
+    let mut stopped_by = if o.workflow.is_some() {
+        "script"
+    } else {
+        "time"
+    };
+    // A scripted run's steps, handed out as their periods come; a mark
+    // asks for the 30 s status lines at once, so the tools can read each
+    // stretch's totals.
+    let mut script_run = o.workflow.as_ref().map(script::Runner::new);
+    let script_end = o
+        .workflow
+        .as_ref()
+        .map_or(u64::MAX, |w| w.periods + script::periods_in(1.0));
+    let mut status_now = false;
+    let mut songs_put = false;
     // Pads held (on the controller or the screen), pressed but not yet sounded
     // (Note Repeat starts a pad on the next step of its grid), and lit.
     let mut held = [false; 16];
@@ -7051,6 +7127,13 @@ fn player_session(
                         found_plugins.entries().len()
                     ));
                 }
+                // All four PAD BANK buttons: the picture of the screen goes to
+                // the store (files/screens/).
+                gui::FromUi::ScreenPicture(png) => {
+                    let line = screen_picture::save(&store, &mut picture_names, png);
+                    out.note(&line);
+                    out.show(gui::ToUi::Tell(line));
+                }
                 gui::FromUi::SaveBrowserLists(text) => {
                     if !store.saves() {
                         out.note("browser: Recent and Favourites not kept (no data folder)");
@@ -7243,6 +7326,77 @@ fn player_session(
         }
         ports.tap_on = app.settings.debug_mode;
         let mut got = ports.poll(out, &mut buf)?;
+        // A scripted run's steps go in beside what the controller and MIDI
+        // In sent (script.rs): from here on, the app's own code.
+        if let Some(run) = script_run.as_mut() {
+            for step in run.due(i) {
+                out.note(&script::said(step));
+                let event = match &step.act {
+                    script::Act::Button { name, down } => match script::button_note(&app, name) {
+                        Some(note) => Some(ControlEvent::Button {
+                            note,
+                            pressed: *down,
+                        }),
+                        None => {
+                            out.note(&format!(
+                                "script: line {}: {name} has no button number; not pressed",
+                                step.line
+                            ));
+                            None
+                        }
+                    },
+                    script::Act::Pad {
+                        pad,
+                        velocity,
+                        down: true,
+                    } => Some(ControlEvent::PadDown {
+                        pad: *pad,
+                        velocity: *velocity,
+                    }),
+                    script::Act::Pad { pad, .. } => Some(ControlEvent::PadUp { pad: *pad }),
+                    script::Act::QLink { knob, delta } => Some(ControlEvent::QLinkTurn {
+                        knob: *knob,
+                        delta: *delta,
+                    }),
+                    script::Act::Wheel { delta } => Some(ControlEvent::DataWheel { delta: *delta }),
+                    script::Act::Gear(bytes) => {
+                        got.push(Incoming {
+                            port: MUSIC_CABLE as usize,
+                            bytes: bytes.clone(),
+                            event: None,
+                            music: true,
+                        });
+                        None
+                    }
+                    script::Act::Tap { widget, id, label } => {
+                        out.show(gui::ToUi::ScriptTap(gui::ScriptTap {
+                            widget: widget.clone(),
+                            id: id.clone(),
+                            label: label.clone(),
+                            line: step.line,
+                        }));
+                        None
+                    }
+                    script::Act::Mark(_) => {
+                        status_now = true;
+                        None
+                    }
+                    script::Act::Expect { .. } => None,
+                };
+                if let Some(event) = event {
+                    got.push(Incoming {
+                        port: MUSIC_CABLE as usize,
+                        bytes: Vec::new(),
+                        event: Some(event),
+                        music: false,
+                    });
+                }
+            }
+        }
+        if i == script_end {
+            out.note("script: done");
+            status_now = true;
+        }
         let mt = ports.t();
         got.retain(|m| {
             if m.music {
@@ -8091,6 +8245,30 @@ fn player_session(
                     if (pad as usize) < 16 && live_erase_starts(&app, &time) =>
                 {
                     fx.extend(live_erase(&mut time, app.kit_pad(pad as usize)));
+                }
+                // ERASE + a kit pad while stopped: its notes out of the
+                // armed track's clip at once; it plays nothing.
+                Some(ControlEvent::PadDown { pad, .. })
+                    if (pad as usize) < 16
+                        && app.erase_held()
+                        && app.pads_play_kit()
+                        && !time.info().state.rolling() =>
+                {
+                    mute_pressed[pad as usize] = true;
+                    fx.push(erase_pad_notes(&mut time, app.kit_pad(pad as usize)));
+                }
+                // SHIFT + a kit pad: picked, not played (the MPC's way to
+                // pick a pad in the middle of a song).
+                Some(ControlEvent::PadDown { pad, .. })
+                    if (pad as usize) < 16
+                        && app.shift_held()
+                        && !app.erase_held()
+                        && app.pads_play_kit() =>
+                {
+                    mute_pressed[pad as usize] = true;
+                    if let Some(more) = app.pick_pad_quietly(pad as usize) {
+                        fx.extend(more);
+                    }
                 }
                 Some(ControlEvent::PadUp { pad })
                     if (pad as usize) < 16 && time.erases(app.kit_pad(pad as usize) as u8) =>
@@ -9577,13 +9755,22 @@ fn player_session(
         // once, before anything can have been played).
         // A screen too busy to take them gets them made again next period.
         if !defaults_sent && mix.mixer.edits_pending() == 0 && mix.inserts_building() == 0 {
+            let defaults = project::Defaults {
+                tempo: app.settings.bpm,
+                mixer: project::mixer_text(&mix.mixer, mix.pad_mutes(), mix.pad_solos()),
+                modu: mix.modu.save(),
+                synth: project::synth_text(&app.synth_settings(), &synth.sounds()),
+            };
+            // A scripted run that needs the demo songs: put in the data
+            // folder's library with these parts, on a thread of its own.
+            if let (Some(w), Some(dir), false) = (&o.workflow, &o.data, songs_put) {
+                if w.needs.iter().any(|n| n == script::DEMO_SONGS) {
+                    songs_put = true;
+                    script::put_demo_songs(dir.clone(), defaults.clone(), out.sink.clone());
+                }
+            }
             defaults_sent = out
-                .try_show(gui::ToUi::ProjectDefaults(Box::new(project::Defaults {
-                    tempo: app.settings.bpm,
-                    mixer: project::mixer_text(&mix.mixer, mix.pad_mutes(), mix.pad_solos()),
-                    modu: mix.modu.save(),
-                    synth: project::synth_text(&app.synth_settings(), &synth.sounds()),
-                })))
+                .try_show(gui::ToUi::ProjectDefaults(Box::new(defaults)))
                 .is_ok();
         }
         // A save: what the engines hold, copied for the screen thread,
@@ -10004,8 +10191,9 @@ fn player_session(
         }
         // Every 30 s, the totals so far, for the system log (the app runs until the power goes off, so it
         // never prints a final summary; the workstation's paced check reads these).
-        if last_status.elapsed() >= Duration::from_secs(30) {
+        if status_now || last_status.elapsed() >= Duration::from_secs(30) {
             last_status = Instant::now();
+            status_now = false;
             out.note(&format!("status: {hits} hits ({screen_hits} from the screen), {repeats} repeats, {} underruns \
                                in {} periods, at most {voices} sounds at once, peak {:.1} dBFS, {clipped} periods \
                                clipped; pad to sound {}; note engine dropped {} events, overflow {}; {}; {}",
@@ -10748,6 +10936,21 @@ fn display_lists(o: &Options) -> Result<(), String> {
     Ok(())
 }
 
+/// `--script FILE`: the workflow, read and checked before anything starts,
+/// and the run's length from it (a few seconds more, for the last status
+/// lines and the sounds' tails).
+fn read_script(mut o: Options) -> Result<Options, String> {
+    let Some(path) = &o.script else {
+        return Ok(o);
+    };
+    let text = fs::read_to_string(path).map_err(|e| format!("--script {}: {e}", path.display()))?;
+    let w =
+        script::Script::parse(&text).map_err(|e| format!("--script {}: {e}", path.display()))?;
+    o.seconds = w.seconds().ceil() as u64 + script::TAIL_S;
+    o.workflow = Some(w);
+    Ok(o)
+}
+
 fn main() {
     // `mpfree plughost ...`: this program serving as one plugin's process
     // for the plugin sandbox (plugins.rs), before anything else starts.
@@ -10766,7 +10969,7 @@ fn main() {
         Path::new(REPORT_DIR).join(crash::RUNNING),
     );
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let result = parse_args(&args).and_then(|o| {
+    let result = parse_args(&args).and_then(read_script).and_then(|o| {
         // Both draw every sample screen, whose one frame needs more stack
         // than the main thread has in a debug build (gui::SCREENS_STACK).
         if o.preview.is_some() {
@@ -10881,6 +11084,41 @@ mod tests {
     }
 
     /// UNDO on the takes says what it took back, in place of the hint.
+    /// ERASE + a kit pad while stopped: that pad's notes come out of the
+    /// armed track's clip at once, one take UNDO brings back; a pad with
+    /// no notes says so. Live erase starts while recording, or while only
+    /// playing with the kit on the pads, never while stopped.
+    #[test]
+    fn erase_and_a_pad_takes_its_notes_out_while_stopped() {
+        use mpfree_seq::{Clip, Note};
+        let mut time = time::TimeHost::new(RATE, 120.0).unwrap();
+        let mut beat = Clip::new("beat", 3840);
+        beat.notes = vec![
+            Note::new(0, 100, 0, 100),
+            Note::new(960, 100, 2, 100),
+            Note::new(1920, 100, 0, 90),
+        ];
+        time.put_clip(beat).unwrap();
+        time.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        let told = |e: app::Effect| match e {
+            app::Effect::Tell(t) => t,
+            e => panic!("{e:?}"),
+        };
+        let line = told(erase_pad_notes(&mut time, 0));
+        assert!(line.contains("pad A1's notes came out"), "{line}");
+        let line = told(erase_pad_notes(&mut time, 0));
+        assert!(line.contains("no notes on pad A1"), "{line}");
+        let undo = time.act(TimeAction::Undo).unwrap();
+        assert!(undo.starts_with("undo: edit"), "{undo}");
+        assert!(told(erase_pad_notes(&mut time, 0)).contains("came out"));
+        // When live erase starts.
+        let mut app = app::App::new(RATE, false);
+        app.start();
+        assert!(!live_erase_starts(&app, &time), "ERASE isn't held");
+        app.button(app.map.erase.unwrap(), true, 0.0);
+        assert!(!live_erase_starts(&app, &time), "stopped");
+    }
+
     #[test]
     fn undo_and_redo_say_what_they_did() {
         assert_eq!(

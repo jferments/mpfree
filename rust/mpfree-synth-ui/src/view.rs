@@ -39,7 +39,9 @@ use crate::pages::{plan, qlink_targets, Page};
 use crate::section_view::{Control, Kind, SectionBox, SectionView};
 use crate::sections::{arrange, Arrangement, Section};
 use crate::visual;
-use crate::widgets::{Card, CardNode, TitleBar, Trace, ON_FILL, QLINK_COLORS, TEXT, TEXT_DIM};
+use crate::widgets::{
+    Card, CardNode, TitleBar, Trace, ON_FILL, QLINK_COLORS, TEXT, TEXT_DIM, TEXT_FAINT,
+};
 use mpfree_node::pressure::{field, FIELDS};
 use mpfree_node::{Curve, Node, NodeInfo, ParamInfo};
 use mpfree_synth::params as pp;
@@ -923,6 +925,25 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
                 _ => None,
             }
         }
+        "mpfree.choir" => {
+            use mpfree_synth::choir_params as cp;
+            let mono = v(cp::MODE) >= 0.5;
+            match id {
+                cp::LINES | cp::SLOW_RATE | cp::FAST_RATE | cp::DEPTH | cp::WIDTH
+                    if v(cp::ENSEMBLE) <= 0.0 =>
+                {
+                    Some("ensemble is off")
+                }
+                cp::DETUNE if v(cp::SINGERS).round() <= 1.0 => Some("one singer"),
+                cp::START_TIME if v(cp::START) == 0.0 => Some("Start is 0"),
+                cp::MORPH_RATE if v(cp::MORPH) <= 0.0 => Some("morph is off"),
+                cp::VIB_RATE | cp::VIB_DELAY if v(cp::VIBRATO) <= 0.0 => Some("vibrato is off"),
+                cp::GLIDE if !mono => Some("Mono and Legato only"),
+                cp::VOICES if mono => Some("one voice in Mono"),
+                cp::DECAY if v(cp::SUSTAIN) >= 100.0 => Some("sustain is full"),
+                _ => None,
+            }
+        }
         "mpfree.strings" => {
             use mpfree_synth::strings_params as sp;
             match id {
@@ -966,6 +987,7 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
                 {
                     Some("Supersaw only")
                 }
+                _ if poly && table_note(&v, id).is_some() => table_note(&v, id),
                 wp::UNISON_DETUNE | wp::UNISON_SPREAD if !poly && v(wp::UNISON) <= 1.0 => {
                     Some("one voice")
                 }
@@ -1080,6 +1102,30 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
                 _ => None,
             }
         }
+        _ => None,
+    }
+}
+
+/// Why one of Poly's Table settings does nothing: its oscillator's wave
+/// isn't Table, or its warp is off.
+fn table_note(v: &impl Fn(u16) -> f32, id: u16) -> Option<&'static str> {
+    use mpfree_synth::params as pp;
+    let table = |o: usize| v([pp::OSC1_WAVE, pp::OSC2_WAVE][o]).round() as u8 == pp::WAVE_TABLE;
+    let warps = |o: usize| table(o) && v(pp::TABLE_IDS[o][2]) >= 0.5;
+    for o in 0..2 {
+        let [tab, pos, mode, amt] = pp::TABLE_IDS[o];
+        if [tab, pos, mode, amt].contains(&id) && !table(o) {
+            return Some("Table wave only");
+        }
+        if id == amt && !warps(o) {
+            return Some("warp is off");
+        }
+    }
+    match id {
+        pp::FENV_POS1 | pp::LFO_POS1 if !table(0) => Some("osc 1 isn't Table"),
+        pp::FENV_POS2 | pp::LFO_POS2 if !table(1) => Some("osc 2 isn't Table"),
+        pp::VEL_POS if !table(0) && !table(1) => Some("no Table wave"),
+        pp::FENV_WARP if !warps(0) && !warps(1) => Some("no warp on"),
         _ => None,
     }
 }
@@ -1314,7 +1360,46 @@ fn poly_cards(st: &SynthState, page: &str) -> Strip {
         let title = c.title.clone();
         s.push(c, &title);
     }
+    // Each oscillator's table, for the Table page's boxes.
+    if page == "Table" {
+        for o in 0..2 {
+            s.push(table_card(&v, o), "Table");
+        }
+    }
     s
+}
+
+/// Poly's table card for oscillator `o` ("Table 1"): its table as a stack
+/// of frames with the one it plays bright ([`crate::wt_visual`]).
+fn table_card(v: &impl visual::Values, o: usize) -> Card {
+    use crate::wt_visual::{osc_caption, stack, Ids};
+    let line = |pts, color, width| Trace {
+        pts,
+        color,
+        width,
+        fill: false,
+        dashed: false,
+    };
+    let (ghosts, front) = stack(v, Ids::poly(o));
+    let mut traces: Vec<Trace> = ghosts
+        .into_iter()
+        .map(|g| line(g, TEXT_FAINT, 1.0))
+        .collect();
+    // Grey while the oscillator plays another wave.
+    let on = v.get([pp::OSC1_WAVE, pp::OSC2_WAVE][o]).round() as u8 == pp::WAVE_TABLE;
+    if !front.is_empty() {
+        traces.push(line(
+            front,
+            if on { QLINK_COLORS[o] } else { TEXT_DIM },
+            2.5,
+        ));
+    }
+    Card {
+        title: format!("Table {}", o + 1),
+        caption: osc_caption(v, Ids::poly(o)),
+        traces,
+        ..Card::default()
+    }
 }
 
 /// Drums' families' colours: a tuned body, noise over a body, metal.

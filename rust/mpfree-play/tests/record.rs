@@ -8,7 +8,7 @@
 
 use mpfree_play::{
     Erased, ErasedLock, Event, Launch, Out, PlayView, Player, Recorder, Sink, Taken, TakenLock,
-    Takes,
+    Takes, ERASE_TAKES,
 };
 use mpfree_seq::mpfree_param::{OnTrack, ParamAddr, RelAddr};
 use mpfree_seq::{Clip, Lock, Note, Project, Quantise, Speed, Track};
@@ -435,8 +435,9 @@ fn record_quantise_puts_the_notes_on_the_grid_as_they_are_recorded() {
 /// Live erase (ERASE held on a pad while recording): the armed track's
 /// notes of that sound are erased as the playhead reaches them, on every
 /// pass, and not played; the other sounds play on. They go in the take,
-/// so its undo brings them back. Playing without recording erases
-/// nothing.
+/// so its undo brings them back. Playing without recording erases them
+/// too (the button combos of 19 Nov), each hold of ERASE a take of its
+/// own numbered from `ERASE_TAKES`, which one undo brings back.
 #[test]
 fn live_erase_takes_a_sounds_notes_out_as_the_playhead_reaches_them() {
     let mut s = four_beats_overdub();
@@ -461,11 +462,34 @@ fn live_erase_takes_a_sounds_notes_out_as_the_playhead_reaches_them() {
     // Through both passes: one erase, the note is gone after the first.
     s.erasing = vec![(0, 1 << 11)];
     assert_eq!(run(&s, || 128).erased.len(), 1);
-    // Only playing: nothing is erased and every note plays.
+    // Only playing: erased the same way, in live erase's own take.
     s.commands = vec![(0, Command::Play)];
-    let r = run(&s, || 128);
-    assert!(r.erased.is_empty());
-    assert_eq!(ons(&r.played).len(), 8);
+    s.erasing = vec![(0, 1 << 11), (88_200, 0)];
+    let mut r = run(&s, || 128);
+    let erased: Vec<(i64, u8, u32)> = r
+        .erased
+        .iter()
+        .map(|e| (e.note.tick, e.note.note, e.take))
+        .collect();
+    assert_eq!(erased, vec![(960, 11, ERASE_TAKES + 1)]);
+    let played: Vec<u8> = ons(&r.played).iter().map(|o| o.1).collect();
+    assert_eq!(played, [10, 12, 13, 10, 12, 13], "11 never plays");
+    assert_eq!(r.takes.undo(&mut r.project), Some(ERASE_TAKES + 1));
+    assert_eq!(
+        clip_notes(&r),
+        vec![(0, 10), (960, 11), (1920, 12), (2880, 13)],
+        "UNDO brings it back"
+    );
+    // Two holds while playing: two takes, one undo each.
+    s.erasing = vec![(0, 1 << 11), (44_100, 0), (88_200, 1 << 12)];
+    let mut r = run(&s, || 128);
+    let takes: Vec<u32> = r.erased.iter().map(|e| e.take).collect();
+    assert_eq!(takes, vec![ERASE_TAKES + 1, ERASE_TAKES + 2]);
+    assert_eq!(r.takes.undo(&mut r.project), Some(ERASE_TAKES + 2));
+    assert_eq!(clip_notes(&r), vec![(0, 10), (1920, 12), (2880, 13)]);
+    // Stopped: nothing is erased.
+    s.commands = vec![];
+    assert!(run(&s, || 128).erased.is_empty());
 }
 
 #[test]

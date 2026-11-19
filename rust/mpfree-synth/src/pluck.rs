@@ -7,9 +7,10 @@
 //!   cents. A pluck fills the line with a burst of noise shaped by the pick
 //!   (its brightness) and the pick position (a comb that hollows the
 //!   tone). Decay sets the ring at middle C; higher notes ring shorter.
-//! - **Mallet** is a modal bank: up to eight two-pole resonators per voice
-//!   at a material's mode ratios (marimba, vibes, bell, glass, kalimba,
-//!   steel drum), struck by a half-sine mallet pulse. A harder mallet is a
+//! - **Mallet** is a modal bank ([`crate::modal`], shared with the drums):
+//!   up to eight two-pole resonators per voice at a material's mode ratios
+//!   (marimba, vibes, bell, glass, kalimba, steel drum), struck by a
+//!   half-sine mallet pulse. A harder mallet is a
 //!   shorter pulse, so it reaches higher modes. Strike position, a stretch
 //!   of the ratios and a high-mode damping shape the tone.
 //!
@@ -27,6 +28,10 @@ use mpfree_node::{Ctx, Cull, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth,
 
 use crate::dsp::{note_hz, Rng};
 use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
+use crate::modal::{
+    mode_share, mode_t60, pulse_len, pulse_spectrum, stretched, strike_place, ModalBank, Modes,
+    Pulse,
+};
 use crate::params::Preset;
 use crate::pluck_params::*;
 
@@ -50,57 +55,19 @@ static INFO: NodeInfo = NodeInfo {
     kind: Kind::Instrument,
 };
 
-/// A material's modes: (frequency ratio, level, decay ratio).
-type Modes = &'static [(f32, f32, f32)];
+/// The materials' modes, in the Material setting's order.
 const MATERIAL_MODES: [Modes; 6] = [
-    // Marimba: bars tuned 1 : 4 : 10.
-    &[(1.0, 1.0, 1.0), (3.99, 0.35, 0.45), (9.95, 0.15, 0.25)],
-    // Vibes: like the marimba, longer and with less of the upper modes.
-    &[(1.0, 1.0, 1.0), (4.0, 0.25, 0.6), (10.0, 0.08, 0.3)],
-    // A church bell's partials: hum, prime, minor third, fifth, nominal ...
-    &[
-        (0.5, 0.6, 1.3),
-        (1.0, 1.0, 1.0),
-        (1.183, 0.7, 0.9),
-        (1.506, 0.5, 0.8),
-        (2.0, 0.6, 0.7),
-        (2.514, 0.35, 0.6),
-        (2.662, 0.3, 0.5),
-        (3.011, 0.25, 0.45),
-    ],
-    // A wine glass.
-    &[
-        (1.0, 1.0, 1.0),
-        (2.32, 0.6, 0.8),
-        (4.25, 0.4, 0.6),
-        (6.63, 0.25, 0.45),
-        (9.38, 0.15, 0.35),
-    ],
-    // Kalimba tine.
-    &[
-        (1.0, 1.0, 1.0),
-        (2.0, 0.08, 0.6),
-        (5.4, 0.25, 0.3),
-        (13.2, 0.1, 0.15),
-    ],
-    // Steel drum: nearly harmonic.
-    &[
-        (1.0, 1.0, 1.0),
-        (2.0, 0.7, 0.8),
-        (3.0, 0.4, 0.6),
-        (4.02, 0.25, 0.5),
-        (5.03, 0.15, 0.4),
-    ],
+    crate::modal::MARIMBA,
+    crate::modal::VIBES,
+    crate::modal::BELL,
+    crate::modal::GLASS,
+    crate::modal::KALIMBA,
+    crate::modal::STEEL_DRUM,
 ];
 
 /// A material's modes, from the Material value.
 fn material(value: f32) -> Modes {
     MATERIAL_MODES[(value as usize).min(MATERIAL_MODES.len() - 1)]
-}
-
-/// Materials with many modes would be louder: they share 1.5 among them.
-fn mode_share(modes: Modes) -> f32 {
-    1.5 / modes.iter().map(|m| m.1).sum::<f32>()
 }
 
 /// Decay (T60, seconds) at `hz` for a Decay of `decay_ms`: that at middle
@@ -130,37 +97,6 @@ fn pick_coef(pick: f32, bright: f32) -> f32 {
 /// long.
 fn pick_offset(position: f32, period: usize) -> usize {
     ((position / 100.0) * period as f32).round().max(1.0) as usize
-}
-
-/// A mode's ratio with the Stretch (as a share, 0 to 1) applied.
-fn stretched(ratio: f32, stretch: f32) -> f32 {
-    1.0 + (ratio - 1.0) * (1.0 + stretch)
-}
-
-/// A mode's T60 from the note's decay, its decay ratio and High damp (as
-/// a share, 0 to 1).
-fn mode_t60(base: f32, dr: f32, damp: f32) -> f32 {
-    (base * dr.powf(0.5 + 1.5 * damp)).max(0.005)
-}
-
-/// How much mode `k` (0 first) is struck at strike position `pos` (0 to 1).
-fn strike_place(k: usize, pos: f32) -> f32 {
-    0.3 + 0.7
-        * (std::f32::consts::PI * (k + 1) as f32 * pos.max(0.02))
-            .sin()
-            .abs()
-}
-
-/// The mallet pulse's length in frames, from Hardness (0 to 100), the
-/// velocity's brightness and the note's frequency. A soft mallet is a long
-/// pulse, but never longer than a third of the note's period, so high notes
-/// still sound.
-fn pulse_len(hardness: f32, bright: f32, hz: f32, rate: f32) -> f32 {
-    let hard = (hardness / 100.0 * bright).clamp(0.0, 1.0);
-    let period = rate / hz.max(1.0);
-    (rate * (0.0002 + 0.006 * (1.0 - hard) * (1.0 - hard)))
-        .min(period / 3.0)
-        .max(2.0)
 }
 
 /// How long the mallet's pulse lasts on a full-velocity note `note`, in
@@ -200,7 +136,7 @@ pub const HARMONICS: usize = 16;
 /// A partial at or over the engine's top frequency has level 0. Writes into
 /// `out` and returns how many it wrote.
 pub fn partials(value: impl Fn(u16) -> f32, note: u8, rate: u32, out: &mut [Partial]) -> usize {
-    use std::f32::consts::{PI, TAU};
+    use std::f32::consts::TAU;
     let rate = rate as f32;
     let pitch = f32::from(note) + value(TRANSPOSE) + value(FINE) / 100.0;
     let mut n = 0;
@@ -251,14 +187,7 @@ pub fn partials(value: impl Fn(u16) -> f32, note: u8, rate: u32, out: &mut [Part
         let share = mode_share(modes);
         // The half-sine pulse's spectrum, 1 at 0 Hz.
         let t = pulse_len(value(HARDNESS), 1.0, f0, rate) / rate;
-        let pulse = |f: f32| {
-            let d = 1.0 - (2.0 * f * t).powi(2);
-            if d.abs() < 1e-4 {
-                PI / 4.0
-            } else {
-                ((PI * f * t).cos() / d).abs()
-            }
-        };
+        let pulse = |f: f32| pulse_spectrum(f, t);
         for (k, (&(ratio, level, dr), p)) in modes.iter().zip(out.iter_mut()).enumerate() {
             let r = stretched(ratio, stretch);
             let hz = f0 * r;
@@ -325,16 +254,8 @@ struct Voice {
     dc_x: f32,
     dc_y: f32,
     // Mallet.
-    n_modes: usize,
-    y1: [f32; MODES],
-    y2: [f32; MODES],
-    c1: [f32; MODES],
-    c2: [f32; MODES],
-    b0: [f32; MODES],
-    /// Frames left of the mallet pulse, and its length.
-    pulse_at: u32,
-    pulse_len: u32,
-    pulse_amp: f32,
+    bank: ModalBank<MODES>,
+    pulse: Pulse,
 }
 
 /// The pluck synth. See the module docs.
@@ -487,22 +408,14 @@ impl Pluck {
             let pos = self.v(STRIKE) / 100.0;
             let f0 = self.tuning.hz(pitch);
             let base = self.decay_at(f0, held);
-            v.n_modes = modes.len().min(MODES);
+            v.bank.set_len(modes.len().min(MODES));
             let share = mode_share(modes);
             for (k, &(ratio, level, dr)) in modes.iter().take(MODES).enumerate() {
                 let hz = f0 * stretched(ratio, stretch);
-                if hz >= 0.45 * rate || hz <= 10.0 {
-                    v.b0[k] = 0.0;
-                    v.c1[k] = 0.0;
-                    v.c2[k] = 0.0;
-                    continue;
-                }
-                let w = std::f32::consts::TAU * hz / rate;
                 let t60 = mode_t60(base, dr, damp);
-                let rr = 10f32.powf(-3.0 / (t60 * rate));
-                v.c1[k] = 2.0 * rr * w.cos();
-                v.c2[k] = rr * rr;
-                v.b0[k] = w.sin() * level * strike_place(k, pos) * share;
+                v.bank.set_with(k, hz, t60, rate, |s| {
+                    s * level * strike_place(k, pos) * share
+                });
             }
         }
         v.tuned = pitch;
@@ -593,10 +506,9 @@ impl Pluck {
         if self.mallet() {
             let hz = self.tuning.hz(pitch);
             let len = pulse_len(self.v(HARDNESS), bright, hz, self.rate as f32);
-            v.pulse_len = len as u32;
-            v.pulse_at = 0;
             // Unit area, so the low modes sound the same at any hardness.
-            v.pulse_amp = amp * std::f32::consts::FRAC_PI_2 / len * 0.42;
+            v.pulse
+                .start(len as u32, amp * std::f32::consts::FRAC_PI_2 / len * 0.42);
         } else {
             self.pluck(slot, &v, amp, bright);
         }
@@ -674,8 +586,8 @@ impl Pluck {
             };
             // A mallet still in its pulse has not rung up yet: count it
             // as loud as it will be.
-            let level = if v.pulse_at < v.pulse_len {
-                v.pulse_amp.max(v.follow).max(1.0)
+            let level = if v.pulse.active() {
+                v.pulse.amp.max(v.follow).max(1.0)
             } else {
                 v.follow
             };
@@ -761,21 +673,8 @@ impl Pluck {
                     continue;
                 }
                 let mut y = if mallet {
-                    let x = if v.pulse_at < v.pulse_len {
-                        let t = (v.pulse_at as f32 + 0.5) / v.pulse_len as f32;
-                        v.pulse_at += 1;
-                        v.pulse_amp * (std::f32::consts::PI * t).sin()
-                    } else {
-                        0.0
-                    };
-                    let mut s = 0.0;
-                    for k in 0..v.n_modes {
-                        let y = v.b0[k] * x + v.c1[k] * v.y1[k] - v.c2[k] * v.y2[k];
-                        v.y2[k] = v.y1[k];
-                        v.y1[k] = y;
-                        s += y;
-                    }
-                    s
+                    let x = v.pulse.next();
+                    v.bank.tick(x)
                 } else {
                     let buf = &mut self.lines[vi * line..(vi + 1) * line];
                     // The whole frames of delay, then the allpass for the
@@ -806,7 +705,7 @@ impl Pluck {
                 let a = y.abs();
                 v.follow = if a > v.follow { a } else { v.follow * 0.9995 };
                 v.frames = v.frames.saturating_add(1);
-                if v.follow < SILENT && v.frames > 256 && v.pulse_at >= v.pulse_len {
+                if v.follow < SILENT && v.frames > 256 && !v.pulse.active() {
                     v.state = State::Free;
                 }
                 left[i] += y * v.gain_l * gl;

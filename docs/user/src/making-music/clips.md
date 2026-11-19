@@ -59,7 +59,7 @@ Set up the recording in the Record panel, beside the grid:
 
 - **Armed:** the track that records.
 - **Mode:** **Replace** records over what's there; **Overdub** adds to it. The **OVERDUB** button switches this too.
-- **Count-in:** a count before recording starts, so you can come in on time.
+- **Count-in:** a count before recording starts, so you can come in on time. **SHIFT + OVERDUB** turns it off and back on from any page.
 - **Loop:** plays the same bars round and round while you record, so you can keep trying a part. It counts in bars from bar 1.
 - **Tempo:** the song's tempo, in BPM.
 - **Pressure:** whether the armed track records how hard you press the pads while they're held (**Recorded**, the setting for a new track, or **Off**).
@@ -77,6 +77,8 @@ Then press **REC** and **PLAY**, play, and press **STOP**. The new notes go into
 ### Erasing while you record
 
 Hit a wrong note? Keep recording, hold **ERASE** and hold that pad: its hits come out of the clip as the playhead passes them, on every pass, and the pad makes no sound while you hold it. The other pads play on. Let go of the pad, or of **ERASE**, and it stops. It erases on the armed track only, and the hits it took out are part of the take, so **UNDO** brings them back with it. With **STEP SEQ** on, **ERASE** and a pad clears that step instead.
+
+It works the same while the music only plays, without recording: hold **ERASE** and the pad for as long as you want its hits gone. Each time you hold **ERASE** is one **UNDO** step ("Erase 1"). With the music stopped, **ERASE** and a pad takes all of that pad's notes out of the clip at once, also one **UNDO** step.
 
 ### Knob moves while you record
 

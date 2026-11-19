@@ -1,5 +1,5 @@
-//! Runs the bench's Keys, Drawbar, Strings, Squelch and Analog cases (and
-//! Poly Init with 8 voices, for scale) on their own,
+//! Runs the bench's Keys, Drawbar, Strings, Choir, Squelch and Analog
+//! cases (and Poly Init with 8 voices, for scale) on their own,
 //! for counting their instructions as ARMv7 code under qemu, where the
 //! whole bench (with Wavetable's start-up tables) would take hours.
 //!
@@ -22,7 +22,8 @@
 
 use mpfree_node::{Ctx, Node, NodeEvent, Timed, MAX_BLOCK};
 use mpfree_synth::{
-    analog_params, keys_params, params, Analog, Drawbar, Keys, Poly, Squelch, Strings,
+    analog_params, choir_params, keys_params, params, Analog, Choir, Drawbar, Keys, Poly, Squelch,
+    Strings,
 };
 
 const RATE: u32 = 44_100;
@@ -145,6 +146,23 @@ fn cases() -> Vec<(String, Box<dyn Fn() -> Case>)> {
                     Box::new(Strings::new(RATE)),
                     values(Strings::presets(), name),
                     None,
+                    Play::Chords(keys),
+                )
+            }),
+        ));
+    }
+    // The Choir: its formants run on the NEON kernel where it runs.
+    for (name, keys) in [("Init", 1), ("Init", 6), ("Big Choir", 8)] {
+        let label = format!("Choir {name}, {keys} keys");
+        let l = label.clone();
+        v.push((
+            label,
+            Box::new(move || {
+                case(
+                    l.clone(),
+                    Box::new(Choir::new(RATE)),
+                    values(Choir::presets(), name),
+                    Some(choir_params::VOICES),
                     Play::Chords(keys),
                 )
             }),
