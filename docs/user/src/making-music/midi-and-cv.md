@@ -154,7 +154,7 @@ Controller mode makes the MPC's pads and Q-Links a controller for a synth, a dru
 
 {{shot: mixer-io-controller | The I/O view's Controller section with controller mode on: the pads and Q-Links play a Juno-X on MIDI OUT, channel 3, with kit notes and poly pressure, and its device profile names the first four Q-Links' controls.}}
 
-Its settings are in the mixer's I/O view, in the **Controller** section:
+Its settings are in the mixer's I/O view, in the **Controller** section (**SHIFT + PROG EDIT** opens it from any page):
 
 - **Controller mode**: **Off** or **On**. The line under it says what it does now, or why it sends nothing.
 - **Sends to**: the port and the MIDI channel. Every port with an output is in the list. A port that isn't plugged in is kept until it is.

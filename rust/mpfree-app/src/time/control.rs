@@ -4620,7 +4620,7 @@ fn next_filled(filled: &[usize], row: usize, delta: i32) -> Option<usize> {
     }
 }
 
-fn bar_beat(t: Tick, meter: mpfree_transport::time::Meter) -> String {
+pub(super) fn bar_beat(t: Tick, meter: mpfree_transport::time::Meter) -> String {
     let bar = meter.bar_ticks().max(1);
     let beat = meter.beat_ticks().max(1);
     let n = t.div_euclid(bar) + 1;

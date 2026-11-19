@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-app/src/time.rs rust/mpfree-app/src/time/link.rs rust/mpfree-app/src/time/audio.rs rust/mpfree-app/src/time/control.rs rust/mpfree-play/src/view.rs rust/mpfree-play/src/player.rs rust/mpfree-play/src/recorded.rs
-checked: 2026-11-17 4ad54d3
+checked: 2026-11-19 f0b39161
 -->
 
 # The time engine on two threads
@@ -46,7 +46,7 @@ The pad player's audio loop calls the audio half directly for what it hands the 
 
 ### Where time matters
 
-**Recording.** The audio half writes recorded and erased notes, locks and gestures into its view in place, numbers each one and keeps the last 1024 with their points (`Recent`), then sends it on. The control half makes them to the project and the takes in the same order. Each view it compiles says the last number it includes. When the audio half swaps in a view older than its last number, it first makes the newer ones to it in place. If the ring has run over, or the view has no room, it plays on with the view it has (which holds everything), counts it, and asks for a compile. Nothing recorded is lost or doubled.
+**Recording.** The audio half writes recorded and erased notes, locks and gestures into its view in place, numbers each one and keeps the last 1024 with their points (`Recent`), then sends it on. The control half makes them to the project and the takes in the same order. Each view it compiles says the last number it includes. When the audio half swaps in a view older than its last number, it first makes the newer ones to it in place. If the ring has run over, or the view has no room, it plays on with the view it has (which holds everything), counts it, and asks for a compile. Nothing recorded is lost or doubled. Live erase while only playing (ERASE + a pad, the button combos of 19 Nov) goes the same way: the player erases into the view, and the control half makes it to the clip as a take of its own, numbered from `mpfree_play::ERASE_TAKES` ("erase 1" in the takes list), so UNDO brings it back.
 
 **Cues and follow actions.** A launch made while the music plays already waits for the next bar line, and the player carries a switch itself until a view with it arrives. Each view says how many switches it includes. A view compiled before a switch that has since happened gets the switch put in by the audio half before it plays, the same way as recorded notes. Follow actions are cued for their bar line as soon as their clip or scene starts, a bar or more before they are due (`Perform::due` cues one within the bar before its point), so the control half has that long to compile.
 
