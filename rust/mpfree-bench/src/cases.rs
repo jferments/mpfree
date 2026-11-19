@@ -488,6 +488,48 @@ fn drums(name: &str, rate: u32, kit: &str, every: u64) -> Case {
     }
 }
 
+/// The drum synth's per-drum effects (`mpfree_synth::drum_fx`, D10): every
+/// pad of the Init Kit ringing 2 s, one pad hit each block in turn so all
+/// 16 sound at once (with the retriggers fading), each pad with `fx` (its
+/// effects' fields and values) and, with `sends`, both kit sends.
+fn drums_fx(name: &str, rate: u32, fx: &[(u16, f32)], sends: bool) -> Case {
+    use mpfree_synth::drum_fx::{field as f, fx_id};
+    use mpfree_synth::drum_params::{field as df, pad_id};
+    let mut d = Drums::new(rate);
+    d.prepare(rate, MAX_BLOCK);
+    for pad in 0..16 {
+        d.set_param(pad_id(pad, df::DECAY), 2000.0);
+        for &(field, v) in fx {
+            d.set_param(fx_id(pad, field), v);
+        }
+        if sends {
+            d.set_param(fx_id(pad, f::DELAY_SEND), 20.0);
+            d.set_param(fx_id(pad, f::REVERB_SEND), 30.0);
+        }
+    }
+    let mut seed = Lcg(23);
+    let mut events: Vec<Timed> = Vec::with_capacity(1);
+    Case {
+        name: name.to_string(),
+        module: "synth",
+        what: "16 pads ringing, one hit a block",
+        block: Box::new(move |b, l, r| {
+            events.clear();
+            events.push(Timed::new(
+                0,
+                NodeEvent::NoteOn {
+                    note: 36 + (b % 16) as u8,
+                    velocity: 60 + (seed.next() >> 25) as u8 % 68,
+                },
+            ));
+            l.fill(0.0);
+            r.fill(0.0);
+            d.process(&Ctx::new(rate, b * l.len() as u64), &events, l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
 /// The pluck synth with a preset, `voices`-note chords changing every half
 /// second (re-plucks, releases and steals all in the numbers).
 fn pluck(preset: &str, rate: u32, voices: usize) -> Case {
@@ -1023,6 +1065,46 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| {
         drums("Drums Boom Kit, a hit every block", rate, "Boom Kit", 1)
     }));
+    {
+        use mpfree_synth::drum_fx::field as f;
+        let two = [(f::PUNCH, 40.0), (f::RATIO, 4.0), (f::THRESHOLD, -30.0)];
+        let four = [
+            (f::PUNCH, 40.0),
+            (f::DISTORTION, 18.0),
+            (f::LOW, 3.0),
+            (f::MID, -4.0),
+            (f::HIGH, 3.0),
+            (f::RATIO, 4.0),
+            (f::THRESHOLD, -30.0),
+        ];
+        v.push(measured(|| {
+            drums_fx("Drums, 16 pads ringing, no effects", rate, &[], false)
+        }));
+        v.push(measured(|| {
+            drums_fx(
+                "Drums, 16 pads ringing, Punch and Compressor on each",
+                rate,
+                &two,
+                false,
+            )
+        }));
+        v.push(measured(|| {
+            drums_fx(
+                "Drums, 16 pads ringing, all four effects on each",
+                rate,
+                &four,
+                false,
+            )
+        }));
+        v.push(measured(|| {
+            drums_fx(
+                "Drums, 16 pads ringing, all four effects and both sends",
+                rate,
+                &four,
+                true,
+            )
+        }));
+    }
     for (name, voices) in [
         ("Steel String", 8),
         ("Harp", 16),
