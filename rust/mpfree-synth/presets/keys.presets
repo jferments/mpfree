@@ -8,10 +8,13 @@ name = Soft Tines
 
 # Tone
 tone.hardness = 30
-tone.bell = 25
-tone.voicing = 65
-tone.bark = 25
-tone.tone = -25
+tone.bell = 30
+tone.voicing = 60
+tone.bark = 35
+tone.tone = -20
+
+# Output
+output.level = -0.5
 
 mpfree-preset = 1
 engine = mpfree.keys
@@ -19,12 +22,13 @@ name = Bright Tines
 
 # Tone
 tone.hardness = 70
-tone.bell = 60
+tone.bell = 50
 tone.voicing = 50
-tone.tone = 20
+tone.tone = 15
+tone.vel-tone = 65
 
 # Output
-output.level = -1.5
+output.level = -2
 
 mpfree-preset = 1
 engine = mpfree.keys
@@ -34,14 +38,14 @@ name = Barking Tines
 tone.hardness = 75
 tone.bell = 45
 tone.voicing = 60
-tone.bark = 90
+tone.bark = 58
 tone.vel-tone = 80
 
 # Amp
 amp.drive = 25
 
 # Output
-output.level = -5
+output.level = -6.5
 
 mpfree-preset = 1
 engine = mpfree.keys
@@ -52,13 +56,13 @@ model.decay = 10000
 
 # Tone
 tone.hardness = 85
-tone.bell = 95
+tone.bell = 75
 tone.voicing = 75
-tone.bark = 15
+tone.bark = 25
 tone.tone = 5
 
 # Output
-output.level = -2.5
+output.level = -2
 
 mpfree-preset = 1
 engine = mpfree.keys
@@ -67,11 +71,11 @@ name = Hollow Tines
 # Tone
 tone.bell = 30
 tone.voicing = 25
-tone.bark = 40
+tone.bark = 30
 tone.tone = -10
 
 # Output
-output.level = 0
+output.level = -0.5
 
 mpfree-preset = 1
 engine = mpfree.keys
@@ -97,17 +101,17 @@ model.decay = 12000
 model.release = 350
 
 # Tone
-tone.hardness = 25
-tone.bell = 20
-tone.voicing = 70
-tone.bark = 15
-tone.tone = -35
+tone.hardness = 40
+tone.bell = 35
+tone.voicing = 60
+tone.bark = 40
+tone.tone = -20
 
 # Amp
 amp.key-noise = 10
 
 # Output
-output.level = -2.5
+output.level = -1
 
 mpfree-preset = 1
 engine = mpfree.keys
@@ -186,14 +190,14 @@ name = Mellow Tines
 
 # Tone
 tone.hardness = 20
-tone.bell = 15
-tone.voicing = 80
-tone.bark = 10
+tone.bell = 25
+tone.voicing = 70
+tone.bark = 30
 tone.tone = -20
 tone.vel-tone = 40
 
 # Output
-output.level = -0.5
+output.level = -1.5
 
 mpfree-preset = 1
 engine = mpfree.keys
@@ -203,11 +207,11 @@ name = Hard Tines
 tone.hardness = 90
 tone.bell = 50
 tone.voicing = 50
-tone.bark = 70
-tone.vel-tone = 90
+tone.bark = 52
+tone.vel-tone = 85
 
 # Output
-output.level = -2.5
+output.level = -3.5
 
 mpfree-preset = 1
 engine = mpfree.keys
@@ -223,7 +227,7 @@ tone.bell = 35
 tone.tone = -15
 
 # Output
-output.level = -2
+output.level = -0.5
 
 mpfree-preset = 1
 engine = mpfree.keys
@@ -241,7 +245,7 @@ amp.drive = 30
 amp.key-noise = 60
 
 # Output
-output.level = -7.5
+output.level = -7
 
 mpfree-preset = 1
 engine = mpfree.keys
@@ -250,7 +254,7 @@ name = Stage Tines
 # Tone
 tone.hardness = 60
 tone.bell = 50
-tone.bark = 60
+tone.bark = 52
 tone.tone = 10
 
 # Amp
@@ -258,7 +262,7 @@ amp.tremolo = 40
 amp.trem-rate = 5
 
 # Output
-output.level = 0
+output.level = -0.5
 
 mpfree-preset = 1
 engine = mpfree.keys
@@ -542,7 +546,7 @@ macro.1 = Tone
 macro.1.map = tone.tone -50 50
 macro.1.map = tone.hardness 35 85
 macro.2 = Bark
-macro.2.map = tone.bark 10 90
+macro.2.map = tone.bark 0 80
 macro.3 = Tremolo
 macro.3.map = amp.tremolo 0 80
 macro.4 = Effects
@@ -558,7 +562,7 @@ macros.effects = 60
 # Tone
 tone.hardness = 65
 tone.bell = 50
-tone.bark = 58
+tone.bark = 48
 tone.tone = 10
 
 # Amp
@@ -575,6 +579,9 @@ fx-2.pre-delay = 15
 fx-2.decay = 1800
 fx-2.low-cut = 150
 fx-2.mix = 26
+
+# Output
+output.level = -0.5
 
 mpfree-preset = 1
 engine = mpfree.keys

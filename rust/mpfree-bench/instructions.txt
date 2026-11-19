@@ -67,12 +67,12 @@
 491230	Grains FX (dense, lo-fi)
 501065	Grains FX (dense, tape)
 99325	Harmonizer
-245877	Keys Clav, 16 voices
-165581	Keys Clav, 8 voices
-188538	Keys Dusty Keys, 16 voices
-169967	Keys Init, 16 voices
-117314	Keys Init, 8 voices
-219542	Keys Reed, 16 voices
+250970	Keys Clav, 16 voices
+169233	Keys Clav, 8 voices
+196388	Keys Dusty Keys, 16 voices
+177172	Keys Init, 16 voices
+121020	Keys Init, 8 voices
+197769	Keys Reed, 16 voices
 44852	Limiter
 98264	Limiter (true peak)
 221974	Lo-fi
@@ -139,7 +139,7 @@
 823688	Sampler, the 16 sample pads alone
 630801	Sampler, the 4 granular pads alone
 4085464	Song: sampler, 2 synths, mixer+FX, time, looper
-254066	Sound Keys Init with Ensemble, 8 voices
+261927	Sound Keys Init with Ensemble, 8 voices
 137967	Spring reverb
 59214	Squelch Acid Line, a line
 61774	Squelch Distorted, a line
