@@ -132,6 +132,8 @@ Stable Rust can't get float NEON code on the MPC from the compiler: LLVM vectori
 
 **Decision:** inline assembly kernels with plain twins, plus whole-number phase counters, **once a bench shows the gain**. The first candidates are the supersaw's seven saws, the Strings bank's oscillators (one per note heard) and the Choir's five formants a voice. The bench runs the kernel and its twin under qemu-arm, checks they agree, and the device round times both. `mpfree-synth` keeps `#![forbid(unsafe_code)]`; only `mpfree-simd` holds unsafe code.
 
+**Built 19 Nov (C3, first part)** ([NEON kernels](simd.md)): the `mpfree-simd` crate with its first kernel, `table_sum` (several oscillators reading one band-limited table: the supersaw's saws), in `global_asm!` with `.fpu neon`, and its plain twin. NEON is chosen at run time (`getauxval`, an ARMv7 build, and a switch to turn it off). Under qemu-arm the kernel gives its twin's samples bit for bit (3,000 random calls, every saw level, denormals with flush-to-zero on), and the bench's eight voices of supersaw saws take 58,361 ARMv7 instructions a block against the twin's 134,455 (43 %). The bench times both ("Supersaw saws: 8 voices, plain" and "..., NEON"); the device round decides whether it stays. Poly's supersaw moves onto it once `osc.rs` (#652) is on main.
+
 ### Cheap by design (lever 7)
 
 Each new engine is chosen for its cost: the Strings bank's filters and the Ensemble cost the same for one key or sixty, and only its oscillators grow with the notes heard; modulation runs every 16 frames; unison voices sit side by side for the kernels; modal banks keep few modes; silent voices are skipped; load shedding stays the safety net, never the budget.
@@ -216,7 +218,7 @@ Drums' own knobs, effects per drum, accent and variation, the shared 808 body; P
 |---|---|---|
 | C1 | Synth tracks on the sound cores (groups, placement by cost, per-core counts), off by default behind the Sound cores modes, with a `--lanes` bench of eight synth tracks (built 18 Nov) | Wave 1; on by default only after the device round and Jay's pick |
 | C2 | Flush-to-zero on the audio threads (built 18 Nov), the note-start bench, spreading start work | Wave 1 |
-| C3 | `mpfree-simd`: one kernel (the supersaw's saws) and its twin, checked under qemu-arm; kept only if it wins | Wave 2 |
+| C3 | `mpfree-simd`: one kernel (the supersaw's saws) and its twin, checked under qemu-arm; kept only if it wins. The crate, the kernel, the qemu check and the bench cases are built (19 Nov, [NEON kernels](simd.md)); Poly moves onto it after #652 | Wave 2 |
 | C4 | A heavy synth split across two cores | If the device asks for it |
 | C5 | Rendering ahead | If the device asks for it |
 
