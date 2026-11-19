@@ -186,6 +186,7 @@ impl Rig {
         app.set_rolling(time.info().state.rolling());
         time.follow_tempo(app.settings.bpm);
         time.advance(PERIOD as u32);
+        tap.period(time.block().start_frame);
         midi.sync(io, time.info().state.rolling());
         midi.clock(time.block());
         time.set_ahead(&midi.ahead());

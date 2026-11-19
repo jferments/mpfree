@@ -885,7 +885,7 @@ impl Widget for BrowserView {
                 text.inset_xy(8, 0),
                 Align::Left,
                 if on { t.text } else { t.text_dim },
-                src.label(),
+                s.place_label(i),
             );
         }
         if let Some(p) = &s.plugins {
@@ -926,7 +926,7 @@ impl Widget for BrowserView {
         let g = Geo::new(r, s);
         let mut out = Vec::new();
         for (k, pr) in g.place_rows.iter().enumerate() {
-            let label = s.sources.get(k).map_or("", |&i| SOURCES[i].label());
+            let label = s.sources.get(k).map_or("", |&i| s.place_label(i));
             out.push(Target::tap("place", k, label, *pr));
         }
         if let Some(p) = &s.plugins {
@@ -1641,6 +1641,7 @@ fn paint_over(cx: &mut PaintCx, r: Rect, s: &Screen) {
                 crate::state::Confirm::EmptyTrash => "Delete for good",
                 crate::state::Confirm::Open(_) | crate::state::Confirm::OpenVersion(..) => "Open",
                 crate::state::Confirm::NewProject => "New project",
+                crate::state::Confirm::ReplacePreset { .. } => "Replace",
             };
             button(cx, a.yes, yes, false, true);
         }

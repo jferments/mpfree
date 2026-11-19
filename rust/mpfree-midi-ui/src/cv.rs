@@ -311,6 +311,13 @@ fn step_setting(a: &mut CvAssign, d: i32) {
     }
 }
 
+/// The tracks a job's Track steps through: the project's (up to
+/// [`MAX_TRACKS`], all of which reach the jacks), and the one it has.
+fn tracks(m: &IoModel, has: Option<u8>) -> usize {
+    let has = has.map_or(0, |t| usize::from(t) + 1);
+    m.live.tracks.len().max(has).clamp(1, MAX_TRACKS)
+}
+
 fn track_name(m: &IoModel, t: u8) -> String {
     m.live
         .tracks
@@ -529,15 +536,16 @@ impl Form for Cv {
                 row.note(format!("{v:.2} V now"), Tone::Normal)
             };
             row = row.field(Field::choice("Job", JOBS[job(a)], job(a), JOBS.len()));
+            let n = tracks(m, track(a));
             row = row.field(match (a, track(a)) {
                 (CvAssign::Lfo(_), t) => Field::choice(
                     "Restart",
                     t.map_or("Runs free".to_string(), |t| track_name(m, t)),
                     t.map_or(0, |t| t as usize + 1),
-                    MAX_TRACKS + 1,
+                    n + 1,
                 ),
-                (_, Some(t)) => Field::choice("Track", track_name(m, t), t as usize, MAX_TRACKS),
-                (_, None) => Field::choice("Track", "—", 0, MAX_TRACKS).off(false),
+                (_, Some(t)) => Field::choice("Track", track_name(m, t), t as usize, n),
+                (_, None) => Field::choice("Track", "—", 0, n).off(false),
             });
             row = row.field(match setting(a) {
                 Some((text, knob, at, n)) => Field::choice(knob, text, at, n),
@@ -558,6 +566,7 @@ impl Form for Cv {
             return false;
         };
         let before = m.setup.cv[i];
+        let n = tracks(m, track(&before));
         let a = &mut m.setup.cv[i];
         if more > 0 {
             step_more(a, more, col, delta);
@@ -570,16 +579,12 @@ impl Form for Cv {
             }
             1 => match a {
                 CvAssign::Lfo(l) => {
-                    let to = clamp_step(
-                        l.restart.map_or(0, |t| t as usize + 1),
-                        delta,
-                        MAX_TRACKS + 1,
-                    );
+                    let to = clamp_step(l.restart.map_or(0, |t| t as usize + 1), delta, n + 1);
                     l.restart = (to > 0).then(|| (to - 1) as u8);
                 }
                 _ => {
                     if let Some(t) = track(a) {
-                        set_track(a, clamp_step(t as usize, delta, MAX_TRACKS) as u8);
+                        set_track(a, clamp_step(t as usize, delta, n) as u8);
                     }
                 }
             },
@@ -606,12 +611,36 @@ mod tests {
     use mpfree_mixer_ui::{IoInput, IoReply, IoSection};
     use std::sync::{Arc, Mutex};
 
+    /// A project of 16 tracks, named as a new one's are.
     fn model() -> crate::Shared {
         Arc::new(Mutex::new(IoModel {
             setup: MidiSetup::default(),
-            live: Live::default(),
+            live: Live {
+                tracks: (1..=16).map(|i| format!("Track {i}")).collect(),
+                ..Live::default()
+            },
             ..IoModel::default()
         }))
+    }
+
+    /// A job's Track steps through the project's tracks, all 128 of a full
+    /// one, and no further.
+    #[test]
+    fn a_jobs_track_steps_through_the_projects_tracks() {
+        let s = model();
+        s.lock().unwrap().live.tracks = (1..=MAX_TRACKS).map(|i| format!("T{i}")).collect();
+        s.lock().unwrap().setup.cv[0] = fresh(1, 0);
+        let mut sec = FormSection::new(Cv, s.clone());
+        let _ = paint(&sec);
+        sec.qlink_turn(1, 200, false);
+        let rows = Cv.rows(&s.lock().unwrap(), Duration::ZERO);
+        assert_eq!(rows[1].fields[1].text, "T128");
+        // A project of 3: no further than its last.
+        s.lock().unwrap().live.tracks.truncate(3);
+        s.lock().unwrap().setup.cv[0] = fresh(1, 0);
+        sec.qlink_turn(1, 200, false);
+        let rows = Cv.rows(&s.lock().unwrap(), Duration::ZERO);
+        assert_eq!(rows[1].fields[1].text, "T3");
     }
 
     #[test]

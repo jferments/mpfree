@@ -266,6 +266,9 @@ pub struct Session {
     /// UNDO on the Synth tab and the mixer: their turns, as the audio loop
     /// keeps them, and whether each had something to undo when last told.
     synth_turns: undo::Turns<u16>,
+    /// The presets the tracks' own synths play, and the preset picker's
+    /// try (presets.rs), as main.rs keeps them.
+    presets: crate::presets::TrackPresets,
     mix_turns: crate::mixturns::MixTurns,
     turns_told: (bool, bool),
     /// The library the browser saves projects into (`with_library`).
@@ -378,6 +381,7 @@ impl Session {
             t0: Instant::now(),
             canvas: mpfree_ui::SoftCanvas::new(gui::SCREEN.0, gui::SCREEN.1),
             synth_turns: undo::Turns::default(),
+            presets: crate::presets::TrackPresets::default(),
             mix_turns: undo::Turns::default(),
             turns_told: (false, false),
             library: None,
@@ -1706,6 +1710,15 @@ impl Session {
                 let to = self.synth.value(id);
                 self.synth_turns.turned(id, from, to, now);
             }
+            // The Synth tab's preset picker, as main.rs.
+            FromUi::Preset(ask) => {
+                let track = self.app.track();
+                if !self.mix.instruments.holds(track) && ask.changes_sound() {
+                    self.synth_turns.clear();
+                }
+                self.presets
+                    .act(ask, track, &mut self.synth, &mut self.mix, &mut self.out);
+            }
             FromUi::Synth(mpfree_synth_ui::SynthAction::Preset(k)) => {
                 self.synth_turns.clear();
                 if let Some(name) = self.synth.load_preset(k).map(str::to_string) {
@@ -1753,7 +1766,7 @@ impl Session {
                 }
                 let e = self.app.open_track_instrument(track);
                 self.fx.extend(e);
-                let tab = crate::synth_tab(&self.synth, &self.mix, track, None);
+                let tab = crate::synth_tab(&self.synth, &self.mix, track, &self.presets);
                 self.out.show(ToUi::Synth(tab));
             }
             FromUi::TrackInstrument(track) => {

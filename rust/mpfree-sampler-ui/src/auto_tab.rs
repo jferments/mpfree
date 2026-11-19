@@ -37,7 +37,6 @@ use mpfree_ui::{EventKind, Ui, UiEvent};
 
 use crate::auto_widgets::{KeyMapView, LayerBand};
 use crate::chop_tab::pad_text;
-use crate::rec_tab;
 use crate::wave_tab::{self, pad_color, TABS};
 use crate::widgets::{ButtonRow, InfoCard, PadBar, Setting, SettingList};
 
@@ -454,8 +453,8 @@ pub struct AutoTab {
     gear: Option<String>,
     running: bool,
     /// The tab its second button goes back to, by its place in [`TABS`]:
-    /// the Rec tab's, or the Wave page's when its recorder opened it (the
-    /// one Sample page's step 2e). The pad bar lights it.
+    /// the Wave page's, whose recorder opens it (the one Sample page's
+    /// step 2e; the Rec tab went in step 2f, part 4). The pad bar lights it.
     pub back: usize,
 }
 
@@ -466,13 +465,13 @@ impl AutoTab {
         crate::send::add(ui);
         let mut bar = PadBar::new(&TABS);
         bar.enabled = TABS.iter().map(|t| wave_tab::BUILT.contains(t)).collect();
-        bar.active = rec_tab::TAB;
+        bar.active = wave_tab::TAB;
         ui.add(BAR, bar);
         ui.add(VIEW, KeyMapView::new("Auto-sample"));
         let mut list = SettingList::new("Auto-sample");
         list.selected = Row::Lowest.index();
         ui.add(LIST, list);
-        let mut buttons = ButtonRow::new(&["Start", "Rec"]);
+        let mut buttons = ButtonRow::new(&["Start", "Wave"]);
         buttons.primary = Some(0);
         ui.add(BUTTONS, buttons);
         ui.add(WHEEL, InfoCard::new("The row picked"));
@@ -485,7 +484,7 @@ impl AutoTab {
             synth: st.synth.clone(),
             gear: st.gear.clone(),
             running: false,
-            back: rec_tab::TAB,
+            back: wave_tab::TAB,
         };
         tab.update(ui, st);
         Ok(tab)
@@ -635,7 +634,7 @@ impl AutoTab {
         if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
             b.labels = vec![
                 if self.running { "Cancel" } else { "Start" }.to_string(),
-                TABS.get(self.back).copied().unwrap_or("Rec").to_string(),
+                TABS.get(self.back).copied().unwrap_or("Wave").to_string(),
             ];
             b.enabled = vec![self.running || can, !self.running];
             let start = match (&source, &fault) {

@@ -168,8 +168,12 @@ pub struct Done {
     pub rate: u32,
     /// The WAV files' format.
     pub format: WavFormat,
-    /// Notes past the MIDI file's room, left out.
+    /// Notes and controller moves left out of the MIDI file (past its
+    /// room, or not a number).
     pub notes_dropped: u64,
+    /// Controller, bend and pressure values outside what MIDI carries:
+    /// the file has the nearest it can.
+    pub out_of_range: u64,
 }
 
 /// How an export ended.
@@ -209,11 +213,27 @@ impl Outcome {
                     1 => line += &format!(" ({} was silent, so left out)", d.silent[0]),
                     n => line += &format!(" ({n} silent tracks left out)"),
                 }
-                if d.notes_dropped > 0 {
-                    line += &format!(
-                        " ({} notes past the MIDI file's room were left out)",
-                        d.notes_dropped
-                    );
+                // What the MIDI file couldn't hold, in one bracket.
+                let left_out = match d.notes_dropped {
+                    0 => None,
+                    1 => Some("1 note or move was left out of the MIDI file".to_string()),
+                    n => Some(format!("{n} notes or moves were left out of the MIDI file")),
+                };
+                let nearest = match d.out_of_range {
+                    0 => None,
+                    1 => Some(
+                        "1 controller value was outside what MIDI can hold, so the file has \
+                         the nearest"
+                            .to_string(),
+                    ),
+                    n => Some(format!(
+                        "{n} controller values were outside what MIDI can hold, so the file \
+                         has the nearest"
+                    )),
+                };
+                let midi: Vec<String> = left_out.into_iter().chain(nearest).collect();
+                if !midi.is_empty() {
+                    line += &format!(" ({})", midi.join("; "));
                 }
                 line
             }
@@ -603,9 +623,10 @@ impl Job {
             .map(|i| self.wavs[i].clone())
             .collect();
         let mut midi = None;
-        let mut notes_dropped = 0;
+        let (mut notes_dropped, mut out_of_range) = (0, 0);
         if let (Some(m), Some(notes)) = (&self.midi, &self.notes) {
             notes_dropped = notes.dropped;
+            out_of_range = notes.out_of_range;
             if !notes.is_empty() {
                 let smf = notes.smf(&self.song, &m.tracks, &m.tempos, &m.meters, m.end);
                 let p = self.folder.join(format!("{}.mid", safe_name(&self.song)));
@@ -629,6 +650,7 @@ impl Job {
             rate: self.rate,
             format: self.format,
             notes_dropped,
+            out_of_range,
         })
     }
 }

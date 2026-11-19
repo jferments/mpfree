@@ -125,11 +125,11 @@ The data wheel moves through the list and its push opens or loads; the other but
 
 Where you need one kind of file, a narrower **picker** shows the same browser with only what fits. A picker only loads; renaming and deleting are in the full browser.
 
-The Pads tab's **Browse for** opens the full browser, not a picker: see [Sampling](sampling.md#finding-sounds-browse-for). A preset picker on the Synth tab (each turn of the wheel lets you play the next preset on the pads before you choose it) comes later.
+The Pads tab's **Browse for** opens the full browser, not a picker: see [Sampling](sampling.md#finding-sounds-browse-for). Tapping the preset's name on the Synth tab opens a preset picker, where each turn of the wheel plays the next preset: see [Trying and saving presets](synths.md#trying-and-saving-presets).
 
 ### Your own synth presets
 
-Synth presets you save go in **Instruments**, in a folder for each synth, and show up in that synth's preset list and picker.
+Synth presets you save (**Save preset** in the preset picker) go in **Instruments**, in a folder for each synth, and show up under **Yours** when you open that synth's presets. Loading one from **Instruments** in the full browser puts it on the Synth tab's sound, if it was made on the same synth.
 
 ## Getting files on and off the stick
 

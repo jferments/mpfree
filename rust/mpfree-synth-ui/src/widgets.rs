@@ -106,7 +106,8 @@ pub fn knob(
 // ---------------------------------------------------------------- title bar
 
 /// The instrument's name and swatch, a line about it, and its page tabs on
-/// the right. A tap on tab `i` gives `Tab(i)`.
+/// the right. A tap on tab `i` gives `Tab(i)`; with [`TitleBar::opens`], a
+/// tap on the name gives `Select(0)`.
 pub struct TitleBar {
     pub swatch: Color,
     /// Draw the swatch (the Synth tab's page title leaves it to the
@@ -116,10 +117,17 @@ pub struct TitleBar {
     pub subtitle: String,
     pub tabs: Vec<String>,
     pub active: usize,
+    /// The name is a button that opens the presets (Jay, 18 Nov: the
+    /// preset's name opens the engine's presets, as an effect's does):
+    /// drawn raised, outlined, with a down arrow.
+    pub opens: bool,
 }
 
 /// Width of one page tab.
 pub const TAB_W: i32 = 92;
+
+/// Room inside the name's button before its words.
+const NAME_PAD: i32 = 12;
 
 /// Below this width a tab gets a smaller font and a width by its name.
 const NARROW_TAB: i32 = 70;
@@ -133,7 +141,41 @@ impl TitleBar {
             subtitle: String::new(),
             tabs: Vec::new(),
             active: 0,
+            opens: false,
         }
+    }
+
+    /// Where the swatch ends and the name starts, and the name's room up
+    /// to the tabs.
+    fn text_rect(&self, r: Rect) -> Rect {
+        let inner = r.inset_xy(PAD, 10);
+        let (sw, gap) = if self.show_swatch {
+            (inner.h.min(40), 14)
+        } else {
+            (0, 4)
+        };
+        let pill = if self.tabs.is_empty() {
+            Rect::new(r.right(), r.y, 0, 0)
+        } else {
+            self.tabs_rect(r)
+        };
+        Rect::new(
+            inner.x + sw + gap,
+            inner.y,
+            pill.x - inner.x - sw - gap - 14,
+            inner.h,
+        )
+    }
+
+    /// The name's button, with [`TitleBar::opens`]: as wide as the longer
+    /// of its two lines (by an average letter's width, so a tap's target is
+    /// known without the fonts), never past the tabs.
+    pub fn name_rect(&self, r: Rect) -> Rect {
+        let text = self.text_rect(r);
+        let letters = |s: &str, w: i32| s.chars().count() as i32 * w;
+        let want = letters(&self.title, 12).max(letters(&self.subtitle, 7)) + NAME_PAD * 2 + 30;
+        let x = text.x - NAME_PAD + 4;
+        Rect::new(x, r.y + 4, want.clamp(140, text.right() - x), r.h - 8)
     }
 
     /// The pill that holds the tabs, at the right of the bar.
@@ -185,11 +227,7 @@ impl Widget for TitleBar {
         let t = cx.theme.clone();
         cx.panel(r);
         let inner = r.inset_xy(PAD, 10);
-        let (sw, gap) = if self.show_swatch {
-            (inner.h.min(40), 14)
-        } else {
-            (0, 4)
-        };
+        let sw = if self.show_swatch { inner.h.min(40) } else { 0 };
         if self.show_swatch {
             cx.canvas.fill_round_rect(
                 Rect::new(inner.x, inner.y + (inner.h - sw) / 2, sw, sw),
@@ -202,12 +240,22 @@ impl Widget for TitleBar {
         } else {
             self.tabs_rect(r)
         };
-        let text = Rect::new(
-            inner.x + sw + gap,
-            inner.y,
-            pill.x - inner.x - sw - gap - 14,
-            inner.h,
-        );
+        let mut text = self.text_rect(r);
+        if self.opens {
+            // A button: raised, outlined, with a down arrow at its end.
+            let b = self.name_rect(r);
+            cx.canvas.fill_round_rect(b, 10, t.raised);
+            cx.canvas.stroke_round_rect(b, 10, 1, t.outline);
+            let (ax, ay) = ((b.right() - 22) as f32, (b.y + b.h / 2) as f32);
+            crate::draw::stroke(
+                cx.canvas,
+                Rect::new(b.right() - 32, b.y, 24, b.h),
+                &[(ax - 6.0, ay - 3.0), (ax, ay + 3.0), (ax + 6.0, ay - 3.0)],
+                2.0,
+                t.accent,
+            );
+            text = Rect::new(b.x + NAME_PAD, text.y, b.w - NAME_PAD - 34, text.h);
+        }
         let (top, bottom) = text.take_top(text.h * 3 / 5);
         cx.text(
             FontId::Bold,
@@ -256,18 +304,32 @@ impl Widget for TitleBar {
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
-        (0..self.tabs.len())
-            // The page shown: a tap shows nothing new.
-            .map(|i| {
-                Target::tap("tab", i, self.tabs[i].clone(), self.tab_rect(r, i))
-                    .disabled_if(i == self.active)
-            })
+        let name = self.opens.then(|| {
+            Target::tap(
+                "name",
+                0,
+                format!("{} presets", self.title),
+                self.name_rect(r),
+            )
+        });
+        name.into_iter()
+            .chain(
+                (0..self.tabs.len())
+                    // The page shown: a tap shows nothing new.
+                    .map(|i| {
+                        Target::tap("tab", i, self.tabs[i].clone(), self.tab_rect(r, i))
+                            .disabled_if(i == self.active)
+                    }),
+            )
             .collect()
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
+        }
+        if self.opens && self.name_rect(r).contains(x, y) {
+            return Some(EventKind::Select(0));
         }
         let i = (0..self.tabs.len()).find(|&i| self.tab_rect(r, i).contains(x, y))?;
         self.active = i;
