@@ -1,0 +1,564 @@
+mpfree-preset = 2
+engine = mpfree.choir
+name = Init
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Aah Choir
+
+# Choir
+choir.section = Mixed
+choir.singers = 5
+choir.detune = 12
+
+# Swell
+swell.attack = 300
+swell.release = 1200
+
+# Ensemble
+ensemble.ensemble = 75
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Ooh Choir
+
+# Choir
+choir.vowel = 0
+choir.section = Mixed
+choir.singers = 5
+choir.breath = 15
+choir.brightness = 40
+
+# Swell
+swell.attack = 400
+swell.release = 1400
+
+# Ensemble
+ensemble.ensemble = 70
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Oh Choir
+
+# Choir
+choir.vowel = 25
+choir.section = Mixed
+choir.singers = 5
+
+# Swell
+swell.attack = 350
+swell.release = 1300
+
+# Ensemble
+ensemble.ensemble = 75
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Eh Pad
+
+# Choir
+choir.vowel = 75
+choir.section = Mixed
+choir.singers = 6
+choir.detune = 14
+
+# Swell
+swell.attack = 600
+swell.release = 1800
+
+# Ensemble
+ensemble.ensemble = 80
+ensemble.depth = 90
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Soft Oohs
+
+# Choir
+choir.vowel = 0
+choir.section = Mixed
+choir.singers = 6
+choir.breath = 20
+choir.brightness = 30
+
+# Swell
+swell.attack = 700
+swell.release = 1600
+swell.velocity = 24
+swell.vel-tone = 70
+
+# Vibrato
+vibrato.vibrato = 10
+
+# Ensemble
+ensemble.ensemble = 70
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Bright Aahs
+
+# Choir
+choir.vowel = 60
+choir.section = Mixed
+choir.singers = 5
+choir.brightness = 75
+
+# Swell
+swell.attack = 200
+swell.vel-tone = 30
+
+# Ensemble
+ensemble.ensemble = 70
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Men's Choir
+
+# Choir
+choir.vowel = 40
+choir.section = Bass
+choir.singers = 6
+choir.detune = 10
+
+# Swell
+swell.attack = 350
+swell.release = 1200
+
+# Vibrato
+vibrato.vibrato = 12
+vibrato.vib-rate = 5
+
+# Ensemble
+ensemble.ensemble = 70
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Sopranos
+
+# Choir
+choir.section = Soprano
+choir.singers = 5
+choir.detune = 9
+
+# Swell
+swell.attack = 300
+swell.release = 1300
+
+# Vibrato
+vibrato.vibrato = 20
+vibrato.vib-rate = 5.4
+
+# Ensemble
+ensemble.ensemble = 70
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Straight Trebles
+
+# Choir
+choir.vowel = 15
+choir.section = Soprano
+choir.singers = 6
+choir.detune = 6
+choir.brightness = 55
+
+# Swell
+swell.attack = 250
+swell.release = 1500
+
+# Vibrato
+vibrato.vibrato = 4
+vibrato.drift = 25
+
+# Ensemble
+ensemble.ensemble = 60
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Low Chant
+
+# Choir
+choir.vowel = 25
+choir.section = Bass
+choir.singers = 8
+choir.detune = 6
+choir.breath = 18
+choir.octave = -1
+
+# Swell
+swell.attack = 500
+swell.release = 2000
+
+# Vibrato
+vibrato.vibrato = 4
+vibrato.drift = 20
+
+# Ensemble
+ensemble.ensemble = 60
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Choir Swell
+
+# Choir
+choir.section = Mixed
+choir.singers = 6
+
+# Swell
+swell.attack = 2000
+swell.release = 2500
+
+# Ensemble
+ensemble.ensemble = 75
+
+# Output
+output.level = 3
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Vowel Pad
+
+# Choir
+choir.section = Mixed
+choir.singers = 6
+choir.detune = 14
+
+# Vowel move
+vowel-move.morph = 60
+vowel-move.morph-rate = 0.15
+
+# Swell
+swell.attack = 800
+swell.release = 2000
+
+# Ensemble
+ensemble.ensemble = 80
+ensemble.depth = 90
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Wah Voices
+
+# Choir
+choir.vowel = 40
+choir.section = Mixed
+choir.singers = 4
+
+# Vowel move
+vowel-move.morph = 80
+vowel-move.morph-rate = 2
+
+# Swell
+swell.attack = 60
+swell.release = 600
+
+# Ensemble
+ensemble.ensemble = 65
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Ooh to Aah
+
+# Choir
+choir.section = Mixed
+choir.singers = 5
+
+# Vowel move
+vowel-move.start = -50
+vowel-move.start-time = 600
+
+# Swell
+swell.attack = 250
+swell.release = 1200
+
+# Ensemble
+ensemble.ensemble = 75
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Aah to Ee
+
+# Choir
+choir.vowel = 100
+choir.section = Mixed
+choir.singers = 5
+
+# Vowel move
+vowel-move.start = -50
+vowel-move.start-time = 900
+
+# Swell
+swell.attack = 300
+swell.release = 1200
+
+# Ensemble
+ensemble.ensemble = 60
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Pressure Vowels
+
+# Choir
+choir.vowel = 20
+choir.section = Mixed
+choir.singers = 5
+
+# Swell
+swell.attack = 150
+swell.release = 1000
+
+# Ensemble
+ensemble.ensemble = 70
+
+# Pressure
+pressure.press-swell = 50
+pressure.press-vowel = 60
+
+# Output
+output.level = 3
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Choir Stab
+
+# Choir
+choir.section = Mixed
+choir.singers = 8
+choir.detune = 14
+
+# Swell
+swell.attack = 5
+swell.decay = 400
+swell.sustain = 0
+swell.release = 300
+
+# Vibrato
+vibrato.vibrato = 0
+
+# Ensemble
+ensemble.ensemble = 55
+
+# Output
+output.level = 6
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Whisper Choir
+
+# Choir
+choir.vowel = 25
+choir.section = Mixed
+choir.singers = 6
+choir.breath = 100
+choir.brightness = 35
+
+# Swell
+swell.attack = 500
+swell.release = 1500
+
+# Vibrato
+vibrato.vibrato = 0
+
+# Ensemble
+ensemble.ensemble = 70
+
+# Output
+output.level = -4
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Big Choir
+
+# Choir
+choir.section = Mixed
+choir.singers = 8
+choir.detune = 18
+
+# Swell
+swell.attack = 400
+swell.release = 1800
+
+# Ensemble
+ensemble.ensemble = 80
+ensemble.width = 100
+
+# Voice
+voice.voices = 16
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Dry Choir
+
+# Choir
+choir.section = Mixed
+choir.singers = 4
+
+# Swell
+swell.attack = 200
+swell.release = 800
+
+# Ensemble
+ensemble.ensemble = 0
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Solo Voice
+
+# Choir
+choir.section = Alto
+choir.singers = 1
+choir.breath = 15
+choir.brightness = 75
+
+# Swell
+swell.attack = 120
+swell.release = 500
+swell.vel-tone = 100
+
+# Vibrato
+vibrato.vibrato = 35
+vibrato.vib-rate = 5.4
+vibrato.vib-delay = 300
+vibrato.drift = 30
+
+# Ensemble
+ensemble.ensemble = 0
+
+# Voice
+voice.mode = Legato
+voice.glide = 80
+
+# Output
+output.level = 5
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Vowel Lead
+
+# Choir
+choir.vowel = 30
+choir.section = Tenor
+choir.singers = 2
+choir.detune = 6
+
+# Swell
+swell.attack = 40
+swell.release = 400
+
+# Vibrato
+vibrato.vibrato = 25
+vibrato.vib-delay = 250
+
+# Ensemble
+ensemble.ensemble = 30
+
+# Voice
+voice.mode = Mono
+voice.glide = 60
+
+# Pressure
+pressure.press-vowel = 70
+
+# Output
+output.level = 4
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Hall Choir
+fx.1 = mpfree.fx.room
+macro.1 = Vowel
+macro.1.map = choir.vowel 0 100
+macro.2 = Detune
+macro.2.map = choir.detune 4 24
+macro.2.map = ensemble.width 60 100
+macro.3 = Swell
+macro.3.map = swell.attack 30 3000
+macro.3.map = swell.release 400 5000
+macro.4 = Space
+macro.4.map = fx-1.mix 0 50
+
+# Macros
+macros.vowel = 50
+macros.detune = 40
+macros.swell = 50
+macros.space = 60
+
+# Choir
+choir.vowel = 50
+choir.section = Mixed
+choir.singers = 6
+choir.detune = 12
+choir.breath = 10
+
+# Swell
+swell.attack = 300
+swell.release = 1414
+
+# Ensemble
+ensemble.ensemble = 60
+ensemble.width = 76
+
+# FX 1: a large room
+fx-1.pre-delay = 25
+fx-1.size = 85
+fx-1.decay = 2800
+fx-1.early = 50
+fx-1.low-cut = 150
+fx-1.mix = 30
+
+mpfree-preset = 2
+engine = mpfree.choir
+name = Space Choir
+fx.1 = mpfree.fx.tape_delay
+fx.2 = mpfree.fx.plate
+macro.1 = Vowel
+macro.1.map = choir.vowel 0 100
+macro.2 = Morph
+macro.2.map = vowel-move.morph 0 100
+macro.3 = Swell
+macro.3.map = swell.attack 100 6000
+macro.3.map = swell.release 800 10000
+macro.4 = Space
+macro.4.map = fx-1.mix 0 40
+macro.4.map = fx-2.mix 10 60
+
+# Macros
+macros.vowel = 25
+macros.morph = 40
+macros.swell = 70
+macros.space = 50
+
+# Choir
+choir.vowel = 25
+choir.section = Mixed
+choir.singers = 6
+choir.detune = 14
+choir.breath = 15
+choir.brightness = 40
+
+# Vowel move
+vowel-move.morph = 40
+vowel-move.morph-rate = 0.1
+
+# Swell
+swell.attack = 1757
+swell.release = 4687
+
+# Ensemble
+ensemble.ensemble = 75
+ensemble.depth = 100
+
+# FX 1: a worn tape echo
+fx-1.time = 450
+fx-1.feedback = 40
+fx-1.wow = 30
+fx-1.flutter = 15
+fx-1.tone = 3500
+fx-1.mix = 20
+
+# FX 2: a long plate
+fx-2.pre-delay = 30
+fx-2.size = 120
+fx-2.decay = 4500
+fx-2.low-cut = 200
+fx-2.mix = 35

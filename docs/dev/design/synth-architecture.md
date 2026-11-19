@@ -1,6 +1,6 @@
 # Synth library: architecture and roadmap
 
-**Status:** design, 2026-11-18 (synth library stage 3), now being built: the voice core's part 1 and the controller event (PR #579), the Ensemble (PR #591), Strings and Bass (wave 1) are in; the roadmap at the end names the pull request each other part comes in. It rests on the research pages ([What every type shares](../research/synth-topics.md) and the type pages it links) and on the measured baseline ([Synth quality](synth-quality.md)). Plan: "Synth library: stock-take and research plan" (https://claude.ai/artifact/36gY5Lf3qTVZp21RM9pzUp). **Nothing here has run on the MPC**: every cost is the workstation's or an estimate, and voice counts wait for the device round asked for in the project files (`synth-library/device-round-asks.md`).
+**Status:** design, 2026-11-18 (synth library stage 3), now being built: the voice core's part 1 and the controller event (PR #579), the Ensemble (PR #591), Strings and Bass (wave 1) and the Choir (wave 2) are in; the roadmap at the end names the pull request each other part comes in. It rests on the research pages ([What every type shares](../research/synth-topics.md) and the type pages it links) and on the measured baseline ([Synth quality](synth-quality.md)). Plan: "Synth library: stock-take and research plan" (https://claude.ai/artifact/36gY5Lf3qTVZp21RM9pzUp). **Nothing here has run on the MPC**: every cost is the workstation's or an estimate, and voice counts wait for the device round asked for in the project files (`synth-library/device-round-asks.md`).
 
 Where a point is our own reading or estimate, it says so. Changes to the shared screen layout are only proposals here ([layout spec](layout-spec.md)); this page needs none for wave 1.
 
@@ -213,6 +213,8 @@ Poly and Wavetable merged with classic waves from tables (the aliasing fix), the
 - **Wind**, built 19 Nov ([synths.md](synths.md#wind-mpfree-synth-wind), [research](../research/wind.md)): the clarinet, sax and flute bores, breath from velocity, pressure or a controller, 20 presets (two of them sounds with the Room and macros), its own Synth tab pages. O4, T1, A1, L2, L3, L5, L6, L8, L11 and L12 met on every row; O3 on 11 of 12 (the sax's brightness at its softest breaths; [Synth quality](synth-quality.md#wave-2-targets-wind-stage-4)). Brass is left for later.
 
 Keys' tines, from wave 1's listening (no side picked on the two tine cases): rebuilt 19 Nov against recordings of a real tine piano ([synths.md](synths.md#keys-mpfree-synth-keys)): the measured bell and tick, the pickup driven by velocity over the measured range, notes ringing as long as measured, a phase rotator for loud chords, the tine presets retuned and the key curve refitted. Its blind A/B renders go on the wave 2 listening page.
+
+**The Choir is built** (19 Nov, [Synths](synths.md#choir-mpfree-synth-choir)): a buzzy source through five formant filters per voice, run four voices at a time with a plain twin of the NEON kernel `mpfree-simd` will hold, morphing between vowels, through the Ensemble; 8 voices by default, 25 presets with Hall Choir and Space Choir among them, and its own Synth tab pages. O1, O2 and O8 met, L11 on 19 of 25 presets ([Synth quality](synth-quality.md#wave-2-targets-choir)); O10, its cost, waits on the device round.
 
 **Wave 3: drums, plucks and leads**
 

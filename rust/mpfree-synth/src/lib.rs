@@ -51,6 +51,10 @@
 //!   cylinder, a sax's cone or a flute's open pipe) excited by a reed or
 //!   an air jet and driven by breath (velocity, pad pressure or a breath
 //!   controller), with vibrato, growl, tonguing and factory presets.
+//! - [`Choir`]: sung vowels, up to eight singers a note, each with their
+//!   own pitch, vibrato and drift, through five formants per voice that
+//!   morph between "oo", "oh", "ah", "eh" and "ee", and the Ensemble,
+//!   with factory presets.
 //!
 //! - [`pressure`]: what pad pressure drives in each engine. Both run it
 //!   through the shared shaper in [`mpfree_node::pressure`].
@@ -72,6 +76,8 @@ pub mod bank;
 pub mod bass;
 pub mod bass_params;
 pub mod character;
+pub mod choir;
+pub mod choir_params;
 pub mod drawbar;
 pub mod drawbar_params;
 pub mod drum;
@@ -102,6 +108,7 @@ pub mod wind_params;
 
 pub use analog::Analog;
 pub use bass::Bass;
+pub use choir::Choir;
 pub use drawbar::Drawbar;
 pub use drum::Drums;
 pub use fm::Fm;

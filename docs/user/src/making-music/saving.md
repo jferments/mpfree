@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-store rust/mpfree-library rust/mpfree-browser-ui rust/mpfree-app/src/app/saved.rs rust/mpfree-app/src/project.rs rust/mpfree-app/src/app/arp/part.rs
-checked: 2026-11-16 d653b57
+checked: 2026-11-19 f0b39161
 -->
 
 # Saving your work
@@ -134,6 +134,8 @@ Synth presets you save (**Save preset** in the preset picker) go in **Instrument
 ## Getting files on and off the stick
 
 Later versions will share MPFree's library over the network cable and by USB, so you can copy samples in and projects out from a computer. Until then, the files are on a Linux-format part of the stick that Windows and macOS can't open without extra software.
+
+Pictures of the screen go there too: hold all four **PAD BANK** buttons together and MPFree saves what the screen shows in `files/screens/`, named by the date and time.
 
 > [!MPC]
 > On the MPC, projects are saved to the internal drive, an SD card or a USB drive, with the samples in a folder beside the project file. MPFree saves only to its own stick, keeps every sample inside the project folder, and keeps the last ten versions of each project. MPFree doesn't open MPC projects (`.xpj`): bring your kits and patterns across as [Moving your beats from the MPC](moving-from-the-mpc.md) says.
