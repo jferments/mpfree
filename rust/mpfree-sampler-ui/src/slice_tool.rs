@@ -93,6 +93,8 @@ pub const LIVE_TAKE: &str =
 /// Cuts a method makes are at least this far apart (and from the region's
 /// ends), so no slice is a sliver.
 const MIN_SLICE_MS: f64 = 10.0;
+/// The main button's height in Put on, as drawn.
+const PUT_BUTTON_H: i32 = 44;
 /// How far a dragged tab looks for a zero crossing: this many frames, or
 /// eight pixels of the current zoom if that is more.
 const ZERO_RADIUS: u64 = 256;
@@ -1253,12 +1255,18 @@ impl SliceTool {
         );
         Panel {
             sections: vec![
+                // As drawn: Method over Snap to zero beside the setting's
+                // knob, then the slice picked and the buttons.
                 Section::new(
                     "Slice",
                     330,
                     vec![
-                        vec![it(Row::Method).labelled(), it(Row::Snap).labelled()],
-                        vec![it(Row::Amount).wide(90), it(Row::Slice).labelled()],
+                        vec![
+                            it(Row::Method).labelled(),
+                            it(Row::Snap).under(),
+                            it(Row::Amount).wide(92),
+                        ],
+                        vec![it(Row::Slice)],
                         vec![it(Row::Split), it(Row::Merge), it(Row::Clear)],
                     ],
                 )
@@ -1267,9 +1275,9 @@ impl SliceTool {
                     "Put on",
                     420,
                     vec![
-                        vec![it(Row::Put).labelled()],
+                        vec![it(Row::Put)],
                         vec![it(Row::Pads).labelled(), it(Row::Phrase).labelled()],
-                        vec![it(Row::Chop)],
+                        vec![it(Row::Chop).high(PUT_BUTTON_H)],
                     ],
                 )
                 .note(&self.put_note(st)),
@@ -1359,9 +1367,10 @@ impl SliceTool {
                 Row::Method => row("Method", self.method.label().into()),
                 Row::Snap => row("Snap to zero", if self.snap { "On" } else { "Off" }.into()),
                 Row::Amount => row(amount, value.clone()),
+                // Drawn with no name over it: the value says it.
                 Row::Slice => row(
                     "Slice",
-                    format!("{} of {}", self.selected + 1, self.slices()),
+                    format!("Slice {} of {}", self.selected + 1, self.slices()),
                 ),
                 Row::Split => row("Split", self.button_text(st, Button::Split)),
                 Row::Merge => row("Merge", self.button_text(st, Button::Merge)),
