@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-synth rust/mpfree-synth-ui rust/mpfree-scale rust/mpfree-app/src/synth.rs rust/mpfree-app/src/app/synth_pads.rs rust/mpfree-app/src/instruments.rs rust/mpfree-mpchost rust/mpfree-mpcskin rust/mpfree-app/src/skin_page.rs
-checked: 2026-11-19 79fc6f63
+checked: 2026-11-19 95c1134d
 -->
 
 # Synths
@@ -24,7 +24,7 @@ Any of the twelve can be a track's own instrument (see [A synth for each track](
 | Synth | What it is | Good for | Presets |
 |---|---|---|---|
 | **Poly** | A classic two-oscillator subtractive synth, with a sub oscillator, noise, unison, a seven-saw supersaw, tables of waves to sweep through and a resonant filter | Basses, leads, pads, brass, big trance-style stacks, evolving pads, vocal leads, growling basses | Grit Bass, Acid, Supersaw, Dust Pad, Pluck, Brass, Sub Bass, Lead, Singing Lead, Drift Pad, Super Lead, Super Pad, Super Stab, Super Stack, Worn Brass, Morph Pad, Vowel Lead, Sync Sweep, Digital Bell, Growl Bass, Organ, Harmonic Pluck, FM Keys, Portamento Lead, Low Note Lead, Breath Lead, Slide Lead, Unison Lead |
-| **FM** | Six-operator FM, in the tradition of the 1980s digital synths | Electric pianos, bells, glassy keys, punchy basses | Glass Keys, Bell Tower, Rubber Bass, Drawbars, Brass Section, Log Drum, Silk Pad, Steel Pluck |
+| **FM** | Six-operator FM, in the tradition of the 1980s digital synths | Electric pianos, bells, glassy keys, punchy basses, reedy leads | Glass Keys, Bell Tower, Rubber Bass, Drawbars, Brass Section, Log Drum, Silk Pad, Steel Pluck, Reed Lead |
 | **Drums** | A drum synth: a different synthesised drum on each pad | Electronic kits built from scratch | Boom Kit, Tight Kit, Grit Kit, Electro Kit |
 | **Pluck** | Physically modelled strings and mallets | Guitars, harps, marimbas, bells | Nylon, Steel String, Harp, Koto, Muted Bass, Marimba, Vibes, Bell, Glass, Kalimba, Steel Drum |
 | **Keys** | A physically modelled electric piano and clav: struck steel tines or reeds in front of their pickups, or a struck string over two pickups | Soul and jazz chords, ballads, barking stabs, tremolo keys, funk clav lines | Soft Tines, Bright Tines, Barking Tines, Bell Keys, Stage Tines, Lo-fi Tines, Phase Tines, Reed, Reed Bite, Dirty Reed, Clav, Funk Clav, Wah Clav, Muted Clav, Stab Clav and 18 more |
@@ -142,7 +142,29 @@ A setting that does nothing says so in place: "Table wave only" while its oscill
 
 **Drive** and **Distortion**, on Poly's Filter page (Q-Links 3 and 4 there), both add grit. **Drive** pushes the sound into the filter, as on an analog synth: warm, and the filter smooths what it adds, so with the filter nearly closed you hear little of it. **Distortion** comes after the filter, so you hear its grit even with the filter almost closed (Grit Bass uses it). Both keep the sound at about the same level as you turn them up (within about 2 dB on every preset), so they add grit and thickness, not volume; turn up the synth's level for that. Pad pressure can push either one.
 
-Each synth has its own pages. FM has Algo, Mod and Pressure, a page for each of its six operators and three keyboard-scaling pages; Drums has a page for each of its 16 pads plus a Kit page. Poly, FM and Wind have a **Pressure** page (see [Pad pressure](#pad-pressure)).
+Each synth has its own pages. FM has Algo, Mod and Pressure, a page for each of its six operators and three keyboard-scaling pages; Drums has a page for each of its 16 pads, a **Kit** page, **Effects** and **Sends** (below). Poly, FM and Wind have a **Pressure** page (see [Pad pressure](#pad-pressure)).
+
+**Drums' effects.** Every drum in the kit has the same four effects of its own, each off until you turn it up, and its own sends to the kit's delay and reverb. The **Effects** tab shows the effects of the pad you hit or looked at last (the kit's picture rings it); hit another pad, or tap it in the picture, to see that drum's. The Q-Links turn **Punch**, **Distortion** and the two sends.
+
+- **Punch:** **Punch** makes the front of each hit harder (or softer, below 0) and **Sustain** brings up (or down) what rings after it. It works the same on a quiet hit as on a loud one.
+- **Distortion:** grit that doesn't make the drum louder: a hit keeps its peak. **Tone** below 0 makes the grit darker, above 0 makes the highs bite; **Mix** blends it with the clean drum. Kicks and snares stay clean however hard you push them; a high, ringing drum pushed hard gets a fizz of its own.
+- **EQ:** **Low** (100 Hz), **Mid** at **Mid freq**, and **High** (8 kHz), each up to 15 dB up or down.
+- **Compressor:** off until **Ratio** is above 1:1. **Threshold** is where it starts to act, **Attack** and **Release** how fast it acts and lets go. It holds the hit's peak down so its tail comes up against it; it doesn't make the drum louder by itself, so turn up **Output** after it.
+- **Output and sends:** **Output** is the drum's level after its effects (up to 24 dB up or down). **Delay** and **Reverb** send it to the kit's delay and reverb.
+
+The **Sends** page sets those two for the whole kit. The delay: **Time** in beats of the project's tempo, **Feedback** (how many echoes), **Tone** (darker echoes lower) and **Delay level**; its echoes bounce from left to right. The reverb is a room: **Size**, **Decay**, **Tone** (brighter higher), **Gate** (cuts the tail off after that long, for a gated drum) and **Reverb level**. The Q-Links turn the delay's Feedback and level and the reverb's Decay and level.
+
+A control that does nothing as the kit is set is faint and says why: the compressor's other controls at a ratio of 1:1, the distortion's Tone and Mix with no distortion, Mid freq with Mid at 0, and the delay or the reverb while no drum sends to it. Effects on a few drums cost the MPC very little; all four on every drum with both sends take more than the drums themselves, so use them where they count. The kit's effects are saved with it.
+
+**FM** builds its sound from six **operators**. Each is a simple wave at its own pitch, and each either plays out loud (a **carrier**) or bends another operator's wave (a **modulator**), which adds overtones: the louder the modulator, the brighter and more metallic the sound. **Algorithm** picks which operators bend which (the picture shows it: the bottom row plays out loud), and **Feedback** lets one operator bend itself, from a little edge to a rough buzz. Its pages:
+
+- **Algo:** **Algorithm**, **Feedback** and **Osc key sync** (every note starts its waves from the same point), the six switches **Op 1 on** to **Op 6 on** (switch one off to hear what it adds), and the voice: Poly or Mono, voices, transpose, bend range and **Level** (-9 dB unless the preset sets it).
+- **Mod:** the LFO (its wave, speed and delay, how much it wobbles the pitch and the level) and the pitch envelope.
+- **Pressure:** see [Pad pressure](#pad-pressure).
+- **Op 1** to **Op 6:** the operator's envelope (four rates and four levels, as on the classic FM synths); the **Oscillator**: its **Wave** (**Sine**, the classic FM sound, or **Triangle**, **Saw**, **Square** or **Half sine**, which bring overtones of their own; each plays as loud as the sine) and its pitch (a **Ratio** to the note or a **Fixed** frequency, **Coarse**, **Fine** and **Detune**); and its **Output**, **Velocity** (how much harder hits make it louder, or a modulator brighter) and **Amp mod** (how much the LFO wobbles its level).
+- **Kbd 1-2**, **Kbd 3-4** and **Kbd 5-6:** keyboard scaling, two operators to a page: how an operator gets quieter or louder above and below a **Break** key, and **Rate scale**, how much faster its envelope runs up the keys.
+
+FM keeps itself clean up the keyboard: on the top notes a bright modulator and the feedback ease off just enough that their overtones don't fold back into a harsh fizz, and a Saw or Square that bends another operator hard drops its top overtones first. Changing the algorithm keeps the sound at about the same level. Every factory preset but Init comes with four macros, **Brightness**, **Detune**, **Attack** and **Decay**, and most bring a touch of reverb (Drawbars brings the rotary speaker instead, and Rubber Bass stays dry); Reed Lead plays the Triangle, Saw and Square waves. The Q-Links take Algorithm, Feedback, Transpose and Level on the Algo page; Speed, Pitch depth, Amp depth and Delay on the Mod page; and Output, Coarse, Fine and Velocity on each operator's page.
 
 **Pluck** is a plucked string or a struck bar, picked by **Model** on the String page:
 

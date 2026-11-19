@@ -37,7 +37,7 @@ fn poly(name: &str) -> Box<dyn Node> {
 
 fn fm(name: &str) -> Box<dyn Node> {
     let mut s = Fm::new(RATE);
-    s.load_preset(&Fm::presets().into_iter().find(|p| p.name == name).unwrap());
+    s.load_preset(Fm::presets().iter().find(|p| p.name == name).unwrap());
     Box::new(s)
 }
 

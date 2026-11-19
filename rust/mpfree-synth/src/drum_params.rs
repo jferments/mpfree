@@ -258,7 +258,9 @@ const fn pad_param(pad: usize, f: u16) -> ParamInfo {
     }
 }
 
-const N_PARAMS: usize = PADS * field::COUNT + KIT.len();
+/// How many parameters the voices have (the effects' come after them in
+/// [`crate::drum_fx::ALL`]).
+pub const N_PARAMS: usize = PADS * field::COUNT + KIT.len();
 
 const fn build() -> [ParamInfo; N_PARAMS] {
     let mut out = [KIT[0]; N_PARAMS];
@@ -275,5 +277,10 @@ const fn build() -> [ParamInfo; N_PARAMS] {
     out
 }
 
-/// Every parameter: Pad 1 to Pad 16, then Kit.
-pub static PARAMS: [ParamInfo; N_PARAMS] = build();
+/// Every voice parameter, as a constant ([`crate::drum_fx::ALL`] adds the
+/// effects' after it).
+pub(crate) const TABLE: [ParamInfo; N_PARAMS] = build();
+
+/// Every voice parameter: Pad 1 to Pad 16, then Kit. [`crate::Drums`] has
+/// the effects' too ([`crate::drum_fx::ALL`]).
+pub static PARAMS: [ParamInfo; N_PARAMS] = TABLE;
