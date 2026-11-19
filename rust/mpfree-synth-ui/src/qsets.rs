@@ -296,6 +296,25 @@ const BASS: &[Curated] = &[
     ),
 ];
 
+use mpfree_synth::wind_params as ewn;
+
+/// Wind: the breath and its colour for a held line, the attack for a
+/// tongued one, and the vibrato and growl for a lead.
+const WIND: &[Curated] = &[
+    set(
+        "Breath",
+        [ewn::BREATH, ewn::VIB_DEPTH, ewn::TONE, ewn::NOISE],
+    ),
+    set(
+        "Attack",
+        [ewn::TONGUE, ewn::ATTACK, ewn::RELEASE, ewn::REED],
+    ),
+    set(
+        "Lead",
+        [ewn::VIB_DEPTH, ewn::VIB_RATE, ewn::GROWL, ewn::GLIDE],
+    ),
+];
+
 use mpfree_synth::drum_params::{field as df, pad_id, PADS, STRIDE};
 
 /// Drums, on pad 1 ([`on_pad`] moves them): the hit, its body, its mix.
@@ -343,6 +362,7 @@ fn curated(id: &str) -> Option<&'static [Curated]> {
         "mpfree.analog" => Some(ANALOG),
         "mpfree.strings" => Some(STRINGS),
         "mpfree.bass" => Some(BASS),
+        "mpfree.wind" => Some(WIND),
         DRUMS_ID => Some(DRUMS),
         _ => None,
     }
@@ -539,7 +559,7 @@ mod tests {
     use mpfree_mod::Bindings;
     use mpfree_node::{Curve, Kind, Node, Unit};
     use mpfree_synth::{
-        Analog, Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable,
+        Analog, Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Strings, Wavetable, Wind,
     };
 
     fn engines() -> Vec<Box<dyn Node>> {
@@ -547,6 +567,7 @@ mod tests {
             Box::new(Analog::new(48_000)),
             Box::new(Strings::new(48_000)),
             Box::new(Bass::new(48_000)),
+            Box::new(Wind::new(48_000)),
             Box::new(Squelch::new(48_000)),
             Box::new(Drawbar::new(48_000)),
             Box::new(Keys::new(48_000)),

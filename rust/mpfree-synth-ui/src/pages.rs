@@ -491,6 +491,43 @@ const BASS: &[PlanPage] = &[
     ),
 ];
 
+use mpfree_node::pressure::field as pf;
+use mpfree_synth::wind_params as wn;
+
+/// Wind: the instrument with its vibrato, the breath (where it comes from,
+/// the tongue and its shape over a note), the playing (voices, glide,
+/// tuning, level) and the pressure. The Q-Links take what a player rides
+/// on a held note: the breath, the vibrato, the tone and the air noise;
+/// the tongue and the breath's shape; the glide, the bend, the level and
+/// the spread; and the pressure's feel and first two sends.
+const WIND: &[PlanPage] = &[
+    pg(
+        "Instrument",
+        &["Instrument", "Vibrato"],
+        &[wn::BREATH, wn::VIB_DEPTH, wn::TONE, wn::NOISE],
+    ),
+    pg(
+        "Breath",
+        &["Breath"],
+        &[wn::TONGUE, wn::ATTACK, wn::SUSTAIN, wn::RELEASE],
+    ),
+    pg(
+        "Play",
+        &["Play"],
+        &[wn::GLIDE, wn::BEND_RANGE, wn::LEVEL, wn::SPREAD],
+    ),
+    pg(
+        "Pressure",
+        &["Pressure"],
+        &[
+            wn::press(pf::THRESHOLD),
+            wn::press(pf::FULL_AT),
+            wn::press_depth(0),
+            wn::press_depth(1),
+        ],
+    ),
+];
+
 fn known(id: &str) -> Option<&'static [PlanPage]> {
     match id {
         "mpfree.poly" => Some(POLY),
@@ -504,6 +541,7 @@ fn known(id: &str) -> Option<&'static [PlanPage]> {
         "mpfree.analog" => Some(ANALOG),
         "mpfree.strings" => Some(STRINGS),
         "mpfree.bass" => Some(BASS),
+        "mpfree.wind" => Some(WIND),
         _ => None,
     }
 }
@@ -867,6 +905,26 @@ mod tests {
             .map(|&i| params[i].name)
             .collect();
         assert_eq!(q, ["Sub", "Fifth", "Detune", "Pulse width"]);
+    }
+
+    #[test]
+    fn wind_has_its_own_pages() {
+        use mpfree_node::Node;
+        let w = mpfree_synth::Wind::new(48_000);
+        let params = w.params();
+        let pages = plan(w.info(), params);
+        let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Instrument", "Breath", "Play", "Pressure"]);
+        every_param_once(&pages, params.len());
+        let q = |page: usize| -> Vec<&str> {
+            qlink_targets(&pages[page], params)
+                .iter()
+                .map(|&i| params[i].name)
+                .collect()
+        };
+        assert_eq!(q(0), ["Breath", "Vibrato", "Tone", "Noise"]);
+        assert_eq!(q(1), ["Tongue", "Attack", "Sustain", "Release"]);
+        assert!(pages.iter().all(|p| p.params.len() <= MAX_TILES));
     }
 
     #[test]
