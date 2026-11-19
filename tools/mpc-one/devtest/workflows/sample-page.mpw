@@ -1,0 +1,83 @@
+title The Sample page: a loop's end moved while it sounds, Slice, Warp and Grain on one sound, and Sample Recall
+covers sample-live-loop, sample-warp, grain-movement, grain-cloud-view, grain-presets
+# Plays whatever sound the kit has on the pad the Sample page opens on (the
+# stick's kits differ), so the checks name no sound. Every edit stays in the
+# run's RAM-only library; UNDO takes the edits back at the end.
+wait 1
+mark sounds
+pad 1 100 0.5
+pad 2 100 0.5
+pad 3 100 0.5
+button PLAY
+pad 1 100
+wait 0.5
+pad 3 100
+wait 0.5
+pad 1 100
+wait 0.5
+pad 3 100
+wait 2
+mark loop
+tap header tab Sample
+tap smp-region choice Mode: Loop
+tap smp-region choice Loop: Forward
+pad-down 1 100
+wait 0.5
+qlink 2 -5
+qlink 2 -5
+wait 0.5
+qlink 2 +10
+wait 0.5
+pad-up 1
+tap smp-region choice Loop: Ping-pong
+pad 1 100 1.5
+tap smp-region choice Loop: Off
+# A turn's line is written as the next edit starts.
+expect : End 
+tap smp-region choice Mode: One shot
+mark slice
+tap smp-tools tool Slice
+tap smp-region more Method ›
+tap smp-region more Slice ›
+pad 1 100 0.5
+tap smp-region less Method ‹
+mark warp
+tap smp-tools tool Warp
+tap smp-region choice Warp: Stretch
+pad 1 100 1.5
+tap smp-region more Warp tempo ›
+pad 1 100 1.5
+expect sample: stretched
+tap smp-region choice Warp: Repitch
+pad 1 100 1.5
+tap smp-region choice Warp: Off
+mark grain
+tap smp-tools tool Grain
+tap smp-region choice Grain: Grains
+pad-down 1 100
+qlink 1 +8
+wait 1
+qlink 4 +4
+wait 1
+qlink 4 -4
+wait 1
+pad-up 1
+tap smp-region choice Grain: Grain LFO
+expect : pitch +0 st -> +4 st
+pad 1 100 2
+tap smp-region choice Grain: Presets
+pad 1 100 2
+mark recall
+# The last bars the master played become a new sound: on the MPC this keeps
+# what the pads just played; the tests' session keeps no master and says so.
+tap smp-recorder keep Keep last 4 bars
+wait 2
+mark undo
+button UNDO
+button UNDO
+button UNDO
+button UNDO
+expect sample: undo in kit
+button STOP
+button STOP
+expect STOP: transport stopped

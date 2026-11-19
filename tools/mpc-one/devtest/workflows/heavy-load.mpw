@@ -1,0 +1,71 @@
+title Heavy load: a full song playing while a loop records over it, pads roll and an effect chain grows
+covers load, fx-busy, hour
+needs demo-songs
+# The round plays this once on each sound-core setting (shared, core3, two,
+# three) to pick the default from the numbers: the same steps every time,
+# so the windows compare like for like.
+wait 2
+mark open
+button BROWSE
+tap browser place Projects
+tap browser row Glass Garden
+tap browser row Glass Garden
+wait 1
+expect project: Glass Garden is in
+mark song
+tap header tab Arrange
+tap clips scene Scene 2
+tap transport play Play
+expect time: scene 2
+wait 15
+mark song-and-loop
+tap header tab Play
+tap play-loop arm Arm
+button REC
+wait 4
+button REC
+wait 4
+expect looper: loop of
+mark song-loop-pads
+pad 1 120 0.1
+pad 2 110 0.1
+pad 3 100 0.1
+pad 4 90 0.1
+pad 5 120 0.1
+pad 6 110 0.1
+pad 7 100 0.1
+pad 8 90 0.1
+pad 9 120 0.1
+pad 10 110 0.1
+pad 11 100 0.1
+pad 12 90 0.1
+pad 13 120 0.1
+pad 14 110 0.1
+pad 15 100 0.1
+pad 16 90 0.1
+pad 1 120 0.1
+pad 5 120 0.1
+pad 9 120 0.1
+pad 13 120 0.1
+wait 6
+mark song-loop-fx
+tap header tab Mix
+tap mixer look Effects
+tap mixer fx-add Drums + FX
+tap chain section Delay and reverb
+tap chain pick Reverb
+tap chain add + Add effect
+tap chain section Delay and reverb
+tap chain pick Delay
+tap chain add + Add effect
+tap chain section Modulation
+tap chain pick Chorus
+wait 15
+mark steady
+# Everything at once for half a minute: the window the report reads the
+# setting's worst period and underruns from.
+wait 30
+mark stop
+button STOP
+button STOP
+expect STOP: all sounds stopped
