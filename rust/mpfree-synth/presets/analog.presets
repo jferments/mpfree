@@ -264,3 +264,112 @@ envelopes.a-release = 700
 
 # Voice
 voice.age = 100
+
+mpfree-preset = 2
+engine = mpfree.analog
+name = Solo Lead
+
+# Osc
+osc.osc-2-wave = Pulse
+osc.osc-2 = 50
+osc.osc-2-fine = 6
+osc.osc-2-pw = 40
+
+# Filter
+filter.cutoff = 1800
+filter.resonance = 30
+filter.env-amount = 35
+filter.key-track = 50
+filter.vel-filter = 60
+
+# Envelopes
+envelopes.f-decay = 500
+envelopes.f-sustain = 35
+envelopes.a-release = 180
+
+# Mod
+mod.press-to = Vibrato
+mod.pressure = 60
+
+# Voice
+voice.mode = Unison
+voice.voices = 2
+voice.detune = 12
+voice.glide = 70
+voice.priority = Low
+voice.legato = on
+
+# Output
+output.level = 0
+
+mpfree-preset = 2
+engine = mpfree.analog
+name = Glide Lead
+
+# Osc
+osc.osc-1-wave = Pulse
+osc.osc-1-pw = 35
+osc.osc-2 = 40
+osc.osc-2-oct = 1
+
+# Filter
+filter.cutoff = 2400
+filter.resonance = 20
+filter.env-amount = 20
+filter.key-track = 50
+filter.vel-filter = 85
+
+# Envelopes
+envelopes.f-decay = 700
+envelopes.f-sustain = 50
+envelopes.a-release = 200
+
+# Mod
+mod.lfo-delay = 500
+mod.vibrato = 12
+mod.press-to = Cutoff
+mod.pressure = 50
+
+# Voice
+voice.mode = Unison
+voice.voices = 1
+voice.glide = 180
+voice.legato = on
+
+# Output
+output.level = 0
+
+mpfree-preset = 2
+engine = mpfree.analog
+name = Fat Lead
+
+# Osc
+osc.osc-2 = 60
+osc.osc-2-fine = -8
+
+# Filter
+filter.cutoff = 3200
+filter.resonance = 15
+filter.env-amount = 20
+filter.key-track = 40
+filter.vel-filter = 85
+
+# Envelopes
+envelopes.f-decay = 900
+envelopes.f-sustain = 50
+envelopes.a-release = 220
+
+# Mod
+mod.press-to = Vibrato
+mod.pressure = 40
+
+# Voice
+voice.mode = Unison
+voice.voices = 6
+voice.detune = 45
+voice.glide = 25
+voice.priority = High
+voice.chorus = Slow
+
+# Output
+output.level = -4
