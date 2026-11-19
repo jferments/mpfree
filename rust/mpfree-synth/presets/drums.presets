@@ -1,8 +1,8 @@
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.drums
 name = Init Kit
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.drums
 name = Boom Kit
 
@@ -45,7 +45,7 @@ pad-14.tune = -7
 pad-14.decay = 3000
 pad-14.drive = 45
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.drums
 name = Tight Kit
 
@@ -92,7 +92,7 @@ pad-9.decay = 40
 pad-11.decay = 1200
 pad-11.tone = 80
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.drums
 name = Grit Kit
 
@@ -135,7 +135,7 @@ pad-14.drive = 90
 # Kit
 kit.level = -3
 
-mpfree-preset = 1
+mpfree-preset = 2
 engine = mpfree.drums
 name = Electro Kit
 

@@ -491,6 +491,15 @@ pub trait Node: Send {
     fn save_extras(&self) -> Vec<(String, String)> {
         Vec::new()
     }
+    /// Setting `id`'s `value` as a file saved in preset format `format`
+    /// had it ([`preset::VERSION`]), in this build's meaning. An engine
+    /// whose setting changed meaning in a later format converts the old
+    /// value so a saved sound plays as it did (Poly's envelope times in
+    /// format 2). Off the audio thread. The default: unchanged.
+    fn upgrade(&self, format: u32, id: u16, value: f32) -> f32 {
+        let _ = (format, id);
+        value
+    }
     /// Whether the node handles controller `ctl` itself. For the pedals
     /// it decides who holds the notes: a node that says no gets its
     /// note-offs held by the host while the pedal is down

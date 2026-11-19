@@ -29,12 +29,17 @@ qset = 31 32 34 33 Tone
 - **Values.** Choices are written by name (`Saw`) and switches as `on` or `off`; a number works for either. Numbers are the shortest text that reads back to the same `f32`, so a sound loads to the bit. Meters are not saved.
 - **Old and new presets load.** A setting the file doesn't name, such as one added to the engine after the file was saved, takes its default. A value out of range is clamped. A line this build doesn't read is kept as it is and written back on the next save; that is how other owners' lines ride along, such as the Q-Link sets (`qset`, see the Synth tab in [Synths](synths.md)). Blank lines and lines starting with `#` are skipped.
 - Renaming a setting would orphan its old key, so a rename needs an alias here when it happens.
+- **When a setting changes meaning**, the format's version goes up (`mpfree-preset = 2`) and the engine converts a value saved in an older one (`Node::upgrade`), so an old sound plays as it did; the knob keeps its name, key and id. A preset read from an older format keeps its old values (and writes its own version back) until `Preset::upgrade` or `Preset::apply` puts them in this build's meaning, so nothing is read twice in two meanings. A newer format is refused, as before. The versions:
+  - 1: the first.
+  - 2 (19 Nov 2026): Poly's envelopes moved onto the voice core, whose times mean what they say, and its velocity became a range in dB. Poly converts format 1's attacks (times 0.319), releases (times 0.983) and Velocity to level (a share to dB: 60 % is 8.0 dB). The other engines' settings are the same in both.
+- **Factory presets** are written in the current format: `factory::read` reports a block in an older one, so a factory sound never needs converting.
 
 ## The code
 
 - `Preset::capture(node, name, tags)` takes the node's sound now.
 - `Preset::to_text(params)` writes it; `Preset::parse(text, info, params)` reads it, checking the format and the engine.
-- `Preset::apply(node)` sets every setting: the preset's value, or the default when it has none, clamped. Sounding notes carry on, as with a factory preset. A preset for another engine changes nothing.
+- `Preset::apply(node)` sets every setting: the preset's value (converted from an older format by the node), or the default when it has none, clamped. Sounding notes carry on, as with a factory preset. A preset for another engine changes nothing.
+- `Preset::upgrade(node)` puts an older format's values in this build's meaning once (`Preset::format` says which they are in). `Sound::load_text` does it, a macro's range on a converted setting too, and `Sound::set_design_lines_from(lines, format)` takes a project's design lines saved in an older format.
 - **On the pads** (`mpfree-app`, `synth.rs`), the app's synth holds each engine as a sound (`Sound<Poly>` and so on), so a preset that brings effects and macros plays them, and it reads and plays user presets for the browser's preset picker (`Pick::Preset`). The picker names a file's engine by its folder under Instruments, the engine's name (`Poly`, `FM`, `Wavetable`, `Pluck`, `Drums`); `Engine::from_folder` maps it back, and a file straight in Instruments goes by its `engine` line.
   - `try_preset(folder, text)` (the picker's `TryPreset`, one per dial turn) plays the file on the engine on the pads, effects and macros too, and keeps the sound from before the first try (as text, with its design).
   - `revert_preset()` (`RevertPreset`, on Cancel or BROWSE) puts that sound back, every setting to the bit.
