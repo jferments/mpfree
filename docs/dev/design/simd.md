@@ -1,10 +1,10 @@
 <!--
 covers: rust/mpfree-simd tools/simd_arm_cost.py
-checked: 2026-11-19 f0b39161
+checked: 2026-11-19 65b24e8d
 -->
 # NEON kernels (`mpfree-simd`)
 
-**Status:** built 2026-11-19 (the synth architecture's CPU work C3): the crate, its first kernel (the supersaw's saws) with its plain Rust twin, the bit-for-bit check under qemu-arm, the ARMv7 instruction count and the bench cases that time both (PR #658); Poly's supersaw runs on it, the bench's `--plain` turns the kernels off, the Dev page says which code runs, a second kernel does the Choir's formant filters, four voices at once, ready for the Choir engine (#663); and two more render the divide-down bank of Strings and the combo organ four notes at a time (#686).  **Nothing here has run on the MPC**: whether the kernel stays is the device round's call.
+**Status:** built 2026-11-19 (the synth architecture's CPU work C3): the crate, its first kernel (the supersaw's saws) with its plain Rust twin, the bit-for-bit check under qemu-arm, the ARMv7 instruction count and the bench cases that time both (PR #658); Poly's supersaw runs on it, the bench's `--plain` turns the kernels off, the Dev page says which code runs, a second kernel does the Choir's formant filters, four voices at once (#663), and the Choir engine runs on it (#696); and two more render the divide-down bank of Strings and the combo organ four notes at a time (#686).  **Nothing here has run on the MPC**: whether the kernel stays is the device round's call.
 
 The decision this builds is in [Synth architecture, NEON (lever 6)](synth-architecture.md#neon-lever-6-the-decision), and why the compiler can't do it for us in [Profiling, NEON](profiling.md#neon).
 
@@ -75,7 +75,7 @@ The bank (`mpfree_synth::bank::Bank`, shared by Strings and Drawbar's combo orga
 - A table whose length isn't a power of two runs the twin and is counted.
 - The formant kernel: 3,000 random calls on both paths (0 to 16 frames, the Choir's steps, and now and then 17 to 116), filters from 50 Hz to 0.45 of the rate with Q from 0.5 to 50, ringing state, signed gains, silent lanes and gains of -0: samples, state and the untouched rest of `out` the same to the bit; a voice dying away for 4,000 steps of silence with flush-to-zero on; and the Choir workload for 200 blocks.
 - The bank's kernels: `waves4` against its twin for 2,000 random sets of four oscillators (steps from 0 to past a quarter of a cycle, phases about to wrap or cross half) on all three shapes, waves and flags to the bit; `mix4` for 3,000 random calls (1 to 8 buses, 0 to 16 frames, notes heard or not, buses and levels at -0); and tiny levels with flush-to-zero on.
-- Poly end to end (`mpfree-synth/tests/simd.rs`, run as ARMv7 in the same CI step): every Super preset, and both oscillators on Supersaw with three unison copies (so the second oscillator adds to the first), played for two seconds in uneven blocks with the kernels on and then off: the same samples, and no call fell back. `osc.rs`'s own test checks `Classic::supersaw` against its old loop. The same test plays all 26 Strings presets and the eight Combo presets with the kernels on and off: the same samples. `bank.rs`'s own test runs four notes at a time against one at a time (on the kernels or their twins) for 300 steps of chords of 1 to 40 notes, steps of 1 to 16 frames, on Strings' six saw buses and on mixed shapes: the same samples, phases and levels.
+- Poly end to end (`mpfree-synth/tests/simd.rs`, run as ARMv7 in the same CI step): every Super preset, and both oscillators on Supersaw with three unison copies (so the second oscillator adds to the first), played for two seconds in uneven blocks with the kernels on and then off: the same samples, and no call fell back. `osc.rs`'s own test checks `Classic::supersaw` against its old loop. The same test plays all 26 Strings presets and the eight Combo presets with the kernels on and off, and all 25 Choir presets with the formant kernel on and off (flush-to-zero on, as on the sound threads): the same samples. The Choir's golden renders in the bench didn't move when it went onto `mpfree_simd::formants4`. `bank.rs`'s own test runs four notes at a time against one at a time (on the kernels or their twins) for 300 steps of chords of 1 to 40 notes, steps of 1 to 16 frames, on Strings' six saw buses and on mixed shapes: the same samples, phases and levels.
 
 To be sure the check bites, the kernel was changed by one instruction (a fused `VFMA` in place of the `VMLA` that reads the table, a difference of one rounding): four of the tests failed. The formant kernel was changed three ways (a fused `VFMA` for the sum, its two multiply-adds swapped, and `g v1` in place of `0 + g v1`): each made two to four tests fail. The bank's kernels were changed six ways (one skip mask dropped, two notes added out of order, a level stepped before its first use, skipped levels not put back, the saw's flag edge moved, the cubic multiplied in another order): each made one or two tests fail.
 
@@ -91,6 +91,8 @@ The twins' own tests run on the workstation too: the saws' twin reads each table
 | ARMv7 instructions a 128-frame block, 8 Choir voices' formants with their source and mixing, under qemu | 126,280 | 40,486 (32 %) |
 | x86-64 instructions a block, the same case | 39,041 | (not on x86) |
 | Time on the MPC ("Choir formants: 8 voices, plain" against "..., NEON") | device round | device round |
+| ARMv7 instructions a block, the Choir engine: Init with 1 and 6 keys (three singers each), Big Choir with 8 (eight singers), under qemu, with the kernel off and on (`tools/inst_arm_cost.py --plain`, then without) | 249.1k, 445.2k, 748.8k | 206.3k (83 %), 359.5k (81 %), 663.2k (89 %) |
+| x86-64 instructions a block, those cases (`instr_gate.py`) | unchanged (the twin is the engine's old loop) | (not on x86) |
 | ARMv7 instructions a block, Strings Init with 1, 6 and 49 keys, under qemu, with the kernels off and on (`tools/inst_arm_cost.py --plain`, then without) | 130.6k, 186.1k, 327.4k | 130.7k (flat), 161.8k (87 %), 247.9k (76 %) |
 | The same, Strings Orchestra with 6 keys, Drawbar Combo and Combo Reed with 8 | 237.2k, 193.8k, 207.4k | 198.8k (84 %), 138.3k (71 %), 151.4k (73 %) |
 | x86-64 instructions a block, those cases (`instr_gate.py`) | unchanged (the note-at-a-time loop runs) | (not on x86) |
@@ -102,7 +104,7 @@ The bench's workloads play what an engine gives a kernel in a busy song. `mpfree
 
 ## The rule: a kernel stays only if it wins
 
-The device round runs `mpfree-bench` on the MPC as it does today; the two "Supersaw saws" cases and the two "Choir formants" cases are its A/Bs. Each kernel stays if its p99 block is under its twin's; if not, it is removed and the twin stays (`synth-quality.md`, rows N3 and N7). The same round runs the bench again with `--plain` and compares the Supersaw presets' cases (`--compare`), the whole of Poly with the kernel and without, and the Strings and Combo cases, the bank's A/B (row N10): the bank's kernels stay only if those are faster with them. The ask is Ask 5 in the synth library's device asks (project files, `synth-library/device-round-asks.md`).
+The device round runs `mpfree-bench` on the MPC as it does today; the two "Supersaw saws" cases and the two "Choir formants" cases are its A/Bs. Each kernel stays if its p99 block is under its twin's; if not, it is removed and the twin stays (`synth-quality.md`, rows N3 and N7). The same round runs the bench again with `--plain` and compares the Supersaw presets' cases (`--compare`), the whole of Poly with the kernel and without, the Strings and Combo cases, the bank's A/B (row N10): the bank's kernels stay only if those are faster with them, and the three Choir cases, the formant kernel inside the whole engine (row N7). The ask is Ask 5 in the synth library's device asks (project files, `synth-library/device-round-asks.md`).
 
 If the kernel wins by little, the next things to try are two groups of four frames a round (so the loads of one overlap the arithmetic of the other) and working the addresses out in core registers beside the NEON work.
 
@@ -113,7 +115,5 @@ If the kernel wins by little, the next things to try are two groups of four fram
 3. Give it a safe wrapper that checks every bound the assembly relies on and returns what it didn't do, for the twin.
 4. Test it against the twin under qemu: random shapes, the engine's real sizes, the bench workload, denormals with flush-to-zero on.
 5. Add its workload, a case in `examples/simd_cost.rs` and `tools/simd_arm_cost.py`, and the bench's two cases; add its timing to the device asks.
-
-**Wiring the Choir:** the Choir engine (not on main yet) keeps its own copy of `formants4` until it lands; then it calls `mpfree_simd::formants4` instead, and its golden renders show that no bit moved.
 
 **Next:** the Ensemble (`mpfree_fx::Ensemble`) is now the largest part of Strings as ARMv7 code; it isn't a synth engine's loop and is outside this crate's brief so far.

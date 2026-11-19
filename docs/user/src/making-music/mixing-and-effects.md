@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx/src/mixer.rs rust/mpfree-fx/src/master.rs rust/mpfree-mixer-ui rust/mpfree-app/src/mixing.rs rust/mpfree-app/src/takes.rs
-checked: 2026-11-19 79fc6f63
+checked: 2026-11-19 ea21a9b1
 -->
 
 # Mixing
@@ -97,7 +97,7 @@ A setting for a device that isn't plugged in, or for a part of MPFree that doesn
 
 ## Using the Q-Links in the mixer
 
-Tap a strip's name to select it. The four Q-Links then turn its **Volume**, **Pan**, **Send A** and **Send B** (on Effects, until you pick an effect). Until you tap the strips, the data wheel turns the selected strip's volume too; after a tap it moves the outline from control to control, and a push on a fader, a pan or a send lets the wheel turn it (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)). The I/O view keeps its wheel for its list.
+Tap a strip's name to select it. The four Q-Links then turn its **Volume**, **Pan**, **Send A** and **Send B** (on Effects, until you pick an effect). Until you tap the strips, the data wheel turns the selected strip's volume too; after a tap it moves the outline from control to control, and a push on a fader, a pan or a send lets the wheel turn it (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)). **SHIFT + push** puts the outlined fader back to 0 dB, a pan to the middle or a send off, and **SHIFT + – / +** step it in small steps. The I/O view keeps its wheel for its list.
 
 ## Freezing and printing a strip
 

@@ -9,7 +9,7 @@ use mpfree_synth::params as pp;
 use mpfree_synth::params::Preset;
 use mpfree_synth::wavetable::params as wtp;
 use mpfree_synth::Wavetable;
-use mpfree_synth::{Analog, Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Wind};
+use mpfree_synth::{Analog, Bass, Choir, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Wind};
 use mpfree_ui::qlink::QLinkColumn;
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
@@ -186,6 +186,14 @@ const ROUTE_EDITS: &[(u16, f32)] = &[
     (pp::route_id(2, pp::route::DEPTH), 40.0),
 ];
 
+/// Poly's Table scene: osc 1 on Vowels, the filter envelope scanning it.
+const TABLE_EDITS: &[(u16, f32)] = &[
+    (pp::OSC1_WAVE, pp::WAVE_TABLE as f32),
+    (pp::OSC1_TABLE, 4.0),
+    (pp::OSC1_POS, 33.0),
+    (pp::FENV_POS1, 50.0),
+];
+
 /// Every sample screen.
 pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let scenes = [
@@ -238,6 +246,15 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
             ],
             page: "LFO 2",
             focus: Some(pp::LFO2_FADE),
+        },
+        Scene {
+            name: "synth-table",
+            about: "Poly · Init, Table page, edited: osc 1 on the Vowels table a \
+                    third through, the filter envelope scanning half of it",
+            preset: preset("Init"),
+            edits: TABLE_EDITS,
+            page: "Table",
+            focus: Some(pp::OSC1_POS),
         },
         Scene {
             name: "synth-voice",
@@ -375,6 +392,10 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
          "wind", "Tenor Sax", "Instrument"),
         ("synth-wind-flute", "Wind · Concert Flute, Breath page: where the breath comes from, and its shape over a note",
          "wind", "Concert Flute", "Breath"),
+        ("synth-choir", "Choir · Vowel Pad, Choir page: the vowel's five formants, the singers and the vowel moving",
+         "choir", "Vowel Pad", "Choir"),
+        ("synth-choir-shape", "Choir · Solo Voice, Shape page: the swell, and the singer's vibrato coming in late",
+         "choir", "Solo Voice", "Shape"),
     ] {
         out.push(inst_scene(name, about, engine, preset, page, fonts())?);
     }
@@ -402,8 +423,8 @@ fn loaded<N: Node + 'static>(
     Ok((Box::new(node), names, i))
 }
 
-/// Keys, Drawbar, Squelch or Analog with a factory preset, on one of its
-/// pages.
+/// Keys, Drawbar, Squelch, Analog, Bass or Choir with a factory preset,
+/// on one of its pages.
 fn inst_scene(
     name: &'static str,
     about: &'static str,
@@ -435,6 +456,12 @@ fn inst_scene(
         )?,
         "bass" => loaded(Bass::new(RATE), Bass::presets(), Bass::load_preset, preset)?,
         "wind" => loaded(Wind::new(RATE), Wind::presets(), Wind::load_preset, preset)?,
+        "choir" => loaded(
+            Choir::new(RATE),
+            Choir::presets(),
+            Choir::load_preset,
+            preset,
+        )?,
         _ => return Err(format!("no engine {engine}")),
     };
     let st = SynthState::from_node(node.as_ref(), "Keys", Color::rgb(0x3DDC97), names, Some(i));
