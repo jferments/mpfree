@@ -47,7 +47,7 @@ use mpfree_sampler::model::{
 use mpfree_ui::layout;
 use mpfree_ui::numpad::NumberAsk;
 use mpfree_ui::wave::{
-    Beats, GrainSpan, Marker, MarkerKind, Peaks, WaveOverview, WaveView, Waveform,
+    Beats, GrainSpan, LaneCell, Marker, MarkerKind, Peaks, WaveOverview, WaveView, Waveform,
 };
 use mpfree_ui::{Color, EventKind, Rect, Ui, UiEvent};
 
@@ -838,6 +838,21 @@ impl WaveTab {
         self.slice.take_kept(cs)
     }
 
+    /// The slice picked and the pad that plays it, when the Slice tool is
+    /// picked and that slice is on a pad already
+    /// ([`SliceTool::slice_pad`]): the Sound section follows it there, so
+    /// its knobs set what that pad plays (the app gives it that pad's
+    /// [`PlayState`], with [`PlayState::slice`]). None: the Sound section
+    /// is the page's sound, which each slice's pad will take.
+    pub fn sound_follows(&self, st: &WaveState) -> Option<(usize, usize)> {
+        if self.tool != Tool::Slice || self.rec.recording {
+            return None;
+        }
+        let cs = st.chop.as_deref()?;
+        let k = self.slice.selected();
+        Some((k, self.slice.slice_pad(cs, k)?))
+    }
+
     /// Whether the Slice tool waits for the sound's pitch to be followed
     /// ([`SliceTool::wants_pitch`]).
     pub fn wants_pitch(&self, st: &WaveState) -> bool {
@@ -1056,6 +1071,7 @@ impl WaveTab {
             // The take is drawn as it came in: no Warp pins, bend or hits.
             w.set_bend(Vec::new());
             w.set_ticks(Vec::new(), false);
+            w.set_lane(Vec::new());
             w.set_markers(Vec::new());
             w.set_window(None);
             w.set_region(Some((0, frames)));
@@ -1238,12 +1254,42 @@ impl WaveTab {
             all.extend(grain_tool::markers(s));
         }
         // The Slice tool's cuts in place of the region's marks: slice 1
-        // starts at Start and the last ends at END.
-        let chop = st.chop.as_deref().filter(|_| self.tool == Tool::Slice);
-        if let Some(cs) = chop {
-            all = self.slice.markers(cs);
-        }
+        // starts at Start and the last ends at END, and each cut is in its
+        // slice's colour, as the lane under the wave is.
         let t = ui.theme.clone();
+        let tint = |k: usize| t.track[k % t.track.len()];
+        let chop = st.chop.as_deref().filter(|_| self.tool == Tool::Slice);
+        let mut lane = Vec::new();
+        if let Some(cs) = chop {
+            let marks = self.slice.markers(cs);
+            let last = marks.len() - 1;
+            all = marks
+                .into_iter()
+                .enumerate()
+                .map(|(k, m)| {
+                    if k > 0 && k < last {
+                        m.colored(tint(k))
+                    } else {
+                        m
+                    }
+                })
+                .collect();
+            let picked = self.slice.selected();
+            lane = self
+                .slice
+                .lands(cs)
+                .into_iter()
+                .enumerate()
+                .map(|(k, l)| LaneCell {
+                    start: l.start,
+                    end: l.end,
+                    text: l.text,
+                    color: tint(k),
+                    lit: l.on,
+                    picked: k == picked,
+                })
+                .collect();
+        }
         all.extend(self.warp.markers(st, bend, warp, t.warn, t.text));
         let hits: Vec<u64> = self.warp.hits_of(st).iter().map(|&h| drawn(h)).collect();
         let beats = if warp {
@@ -1258,6 +1304,7 @@ impl WaveTab {
         };
         if let Some(w) = ui.get_mut::<Waveform>(WAVE) {
             w.set_bend(self.bend.clone());
+            w.set_lane(lane);
             w.set_markers(all);
             w.set_window(span);
             w.set_ticks(hits, warp);
@@ -1716,6 +1763,12 @@ impl WaveTab {
                 let row = *slice_tool::Row::ALL.get(*index)?;
                 let stop = self.slice.step(&cs, row, *delta);
                 self.slice_done(ui, st, stop)
+            }
+            // A pad of Put on's map tapped: the slices start there.
+            (REGION, EventKind::Cell { col, .. }) if self.tool == Tool::Slice => {
+                let cs = st.chop.clone()?;
+                self.slice.cell(&cs, *col);
+                self.slice_done(ui, st, None)
             }
             (REGION, EventKind::Tab(index)) if self.tool == Tool::Slice => {
                 let b = slice_tool::Row::ALL.get(*index)?.button()?;
