@@ -1958,8 +1958,23 @@ synth/glide[Bass rate, an octave in 300 ms]/land_cents	0.0016
 synth/glide[Bass rate, an octave in 300 ms]/time_err_pct	-0.2934
 synth/glide[Poly legato, 200 ms]/land_cents	0.0367
 synth/glide[Poly legato, 200 ms]/time_err_pct	-1.2201
+synth/glide[Poly rate, a fifth: an octave in 300 ms]/land_cents	0.0001
+synth/glide[Poly rate, a fifth: an octave in 300 ms]/time_err_pct	-1.6386
+synth/glide[Poly rate, an octave: an octave in 300 ms]/land_cents	0.0001
+synth/glide[Poly rate, an octave: an octave in 300 ms]/time_err_pct	-0.9977
+synth/priority[Analog unison, High]/pitch_err_cents	0.0051
+synth/priority[Analog unison, Low]/pitch_err_cents	0.0033
+synth/priority[Bass, High]/pitch_err_cents	0.0016
+synth/priority[Bass, Low]/pitch_err_cents	0.0005
+synth/priority[Poly mono, High]/pitch_err_cents	0.0001
+synth/priority[Poly mono, Low]/pitch_err_cents	0.0001
 synth/route[Poly, wheel to pitch 100 %]/pitch_err_cents	0.0001
 synth/route[Poly, wheel to vibrato 50 %]/depth_err_pct	-0.0636
+synth/slide[Analog, C4 up 2]/pitch_err_cents	0.0029
+synth/slide[Analog, G4 left be]/pitch_err_cents	0.0007
+synth/slide[Bass, C4 up 2]/pitch_err_cents	0.0021
+synth/slide[Poly, C4 up 2]/pitch_err_cents	0
+synth/slide[Poly, G4 left be]/pitch_err_cents	0.0001
 synth/speak[Wind clarinet, C4, velocity 127]/speak_ms	21
 synth/speak[Wind flute, C4, velocity 127]/speak_ms	30
 synth/speak[Wind sax, C4, velocity 127]/speak_ms	25
@@ -1988,3 +2003,5 @@ synth/tune[Wind clarinet, C2 to C6, velocity 30 to 127]/worst_cents	0.0896
 synth/tune[Wind flute, C2 to C6, velocity 30 to 127]/worst_cents	0.1686
 synth/tune[Wind sax, C2 to C6, velocity 30 to 127]/worst_cents	0.0347
 synth/tune[Wind]/worst_cents	0.1273
+synth/vibrato[Analog, full pressure, Pressure 100]/depth_err_pct	-1.1482
+synth/vibrato[Analog, the wheel at the top]/depth_err_pct	-1.1482
