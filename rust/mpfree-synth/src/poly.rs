@@ -1,7 +1,9 @@
 //! Poly: a subtractive synth. Two oscillators per voice, saw, pulse,
 //! triangle, sine or a seven-saw supersaw read from band-limited tables
-//! ([`crate::osc`]), with up to four unison stacks, a sub oscillator and
-//! noise, a drive stage
+//! ([`crate::osc`]), or a wavetable (the Table wave: one of Wavetable's
+//! tables or one loaded into the oscillator, read at a position through
+//! its frames and bent by a warp, [`crate::table_osc`]), with up to eight
+//! unison stacks, a sub oscillator and noise, a drive stage
 //! into a ladder or state-variable filter and a distortion stage after it,
 //! two ADSR envelopes from the voice core ([`crate::voice::Adsr`]: an
 //! attack of 100 ms reaches full level at 100 ms, a release of 1 s falls
@@ -30,6 +32,8 @@
 //! absolute frame, so the output does not depend on how the host cuts
 //! blocks. Each voice's gain is ramped across a control step.
 
+use std::sync::Arc;
+
 use mpfree_node::{
     Ctx, Cull, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Pressure, PressureChord,
     PressureCoefs, PressureMode, PressureShape, Smooth, Timed, Tuning,
@@ -42,8 +46,12 @@ use crate::dsp::*;
 use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::osc::{self, Classic, Shape, Super, SAWS};
 use crate::params::*;
-use crate::pressure::{lfo_gate, swell_gain, Depths, Slot};
+use crate::pressure::{lfo_gate, swell_gain, Depths, Slot, MAX_TARGETS};
+use crate::table_osc::{self, Run, Warp, WARP_FM};
 use crate::voice::{routed, Adsr, Channel, DcBlock, Inputs, Lfo, Route, Source, VelCurve};
+use crate::wavetable::factory;
+use crate::wavetable::params::USER_TABLE;
+use crate::wavetable::table::Table;
 
 /// Frames per control step.
 pub const CTRL: u64 = 16;
@@ -57,7 +65,7 @@ const SEG: usize = CTRL as usize;
 pub const MAX_POLY: usize = 16;
 /// Voice slots: the notes plus room for stolen voices to fade out.
 pub const POOL: usize = MAX_POLY + 4;
-const UNISON_MAX: usize = 4;
+const UNISON_MAX: usize = 8;
 /// A stolen voice fades out over this long.
 const KILL_MS: f32 = 3.0;
 /// Peak of one full-velocity note at the defaults, about -12 dBFS.
@@ -146,6 +154,17 @@ struct Voice {
     lfo2: Lfo,
     /// The voice card its note took ([`crate::character`]).
     card: u8,
+    /// The Table wave, each oscillator: its level of the table, where it
+    /// reads through the frames (at the end of this control step), the
+    /// run it reads this step and its warp; oscillator 1's last sample
+    /// each stack (when both move each other by FM); and whether the next
+    /// step jumps to its position (a new note) instead of gliding.
+    tlv: [u8; 2],
+    tpos: [f32; 2],
+    run: [Run; 2],
+    warp: [Warp; 2],
+    last: [f32; UNISON_MAX],
+    tsnap: bool,
     kill_gain: f32,
     kill_step: f32,
     /// The inputs the phase increments and the filter coefficients were
@@ -206,6 +225,12 @@ impl Voice {
             inp: Inputs::default(),
             lfo2: Lfo::new(0x1F02_0000 + i as u64),
             card: 0,
+            tlv: [0; 2],
+            tpos: [0.0; 2],
+            run: [Run::default(); 2],
+            warp: [Warp::Off; 2],
+            last: [0.0; UNISON_MAX],
+            tsnap: true,
             kill_gain: 1.0,
             kill_step: 0.0,
             pitch_key: [NO_KEY; 8],
@@ -227,6 +252,9 @@ struct Smoothed {
     noise: Smooth,
     pw1: Smooth,
     pw2: Smooth,
+    /// The Table wave's position and warp amount, each oscillator (0 to 1).
+    pos: [Smooth; 2],
+    warp: [Smooth; 2],
     /// Cutoff in octaves (log2 Hz).
     cutoff: Smooth,
     res: Smooth,
@@ -258,6 +286,10 @@ struct Shared {
     /// Each oscillator's highest saw against the note: the supersaw's top
     /// ratio on Supersaw, else 1 ([`osc::level_for`]).
     tops: [f32; 2],
+    /// Which oscillators are on the Table wave, and which of those have
+    /// the FM warp (the other oscillator moves its phase).
+    table: [bool; 2],
+    fm: [bool; 2],
 }
 
 pub struct Poly {
@@ -265,6 +297,10 @@ pub struct Poly {
     values: [f32; ID_SPACE],
     /// The oscillators' tables, built before the first note.
     tables: &'static Classic,
+    /// The wavetable each oscillator's Table wave reads, and the tables
+    /// loaded into them ([`Poly::set_user_table`]).
+    wt: [Arc<Table>; 2],
+    wt_user: [Option<Arc<Table>>; 2],
     /// The supersaw's ratios and gains, from its two knobs.
     sup: Super,
     /// The velocity curve, from Velocity to level's range.
@@ -357,6 +393,8 @@ struct Scratch {
     left: [f32; SEG],
     right: [f32; SEG],
     extra: [f32; SEG],
+    /// The oscillator an FM warp reads, one stack's worth.
+    fm: [f32; SEG],
     /// What the output held before the voices added to it, while the DC
     /// blocker runs.
     mix_l: [f32; SEG],
@@ -383,6 +421,14 @@ impl Poly {
             noise: Smooth::new(v(NOISE_LEVEL) / 100.0),
             pw1: Smooth::new(v(OSC1_PW) / 100.0),
             pw2: Smooth::new(v(OSC2_PW) / 100.0),
+            pos: [
+                Smooth::new(v(OSC1_POS) / 100.0),
+                Smooth::new(v(OSC2_POS) / 100.0),
+            ],
+            warp: [
+                Smooth::new(v(OSC1_WARP) / 100.0),
+                Smooth::new(v(OSC2_WARP) / 100.0),
+            ],
             cutoff: Smooth::new(v(CUTOFF).log2()),
             res: Smooth::new(v(RESONANCE) / 100.0),
             drive: Smooth::new(v(DRIVE)),
@@ -393,10 +439,15 @@ impl Poly {
         };
         let (cards, mut start) = Cards::draw();
         let drift = Drift::new(&mut start);
+        // Wavetable's tables: built on the first call in the process, here
+        // on the control thread, never on the audio thread.
+        let f = factory();
         let mut s = Poly {
             rate,
             values,
             tables: osc::classic(),
+            wt: [f[0].clone(), f[0].clone()],
+            wt_user: [None, None],
             sup: Super::new(v(SUPER_DETUNE) / 100.0, v(SUPER_MIX) / 100.0),
             vel: VelCurve::new(v(VEL_AMP)),
             voices: std::array::from_fn(Voice::new),
@@ -439,6 +490,7 @@ impl Poly {
                 left: [0.0; SEG],
                 right: [0.0; SEG],
                 extra: [0.0; SEG],
+                fm: [0.0; SEG],
                 mix_l: [0.0; SEG],
                 mix_r: [0.0; SEG],
             },
@@ -453,8 +505,73 @@ impl Poly {
             age: 0.0,
             dropped: 0,
         };
+        s.pick_tables();
         s.prepare(rate, mpfree_node::MAX_BLOCK);
         s
+    }
+
+    /// Loads a table into oscillator `o` (0 or 1): its Table wave plays it
+    /// when its Table is User. Returns the table it replaces, which the
+    /// caller must drop off the audio thread. Never allocates or frees.
+    pub fn set_user_table(&mut self, o: usize, table: Arc<Table>) -> Option<Arc<Table>> {
+        let o = o.min(1);
+        let old = self.wt_user[o].replace(table);
+        self.pick_tables();
+        old
+    }
+
+    /// The table oscillator `o`'s Table wave reads now.
+    pub fn table(&self, o: usize) -> &Arc<Table> {
+        &self.wt[o.min(1)]
+    }
+
+    /// The table loaded into oscillator `o`, if any.
+    pub fn user_table(&self, o: usize) -> Option<&Arc<Table>> {
+        self.wt_user[o.min(1)].as_ref()
+    }
+
+    /// Where each oscillator's Table wave reads now, 0 to 1 through its
+    /// table: the newest sounding voice's, else the knob's. For drawing.
+    pub fn live_positions(&self) -> [f32; 2] {
+        let newest = self
+            .voices
+            .iter()
+            .filter(|v| v.sounding())
+            .max_by_key(|v| v.age);
+        std::array::from_fn(|o| {
+            let frames = self.wt[o].frames();
+            match newest {
+                Some(v) if frames > 1 && self.sh.table[o] => v.tpos[o] / (frames - 1) as f32,
+                _ => self.v(TABLE_IDS[o][1]) / 100.0,
+            }
+        })
+    }
+
+    /// Points each oscillator's Table wave at its chosen table. Clones an
+    /// `Arc` (no allocation); the old one is still held by the factory or
+    /// `wt_user`. "User" with nothing loaded plays Basic.
+    fn pick_tables(&mut self) {
+        let f = factory();
+        for o in 0..2 {
+            let i = self.v(TABLE_IDS[o][0]);
+            let t = match &self.wt_user[o] {
+                Some(u) if i >= USER_TABLE => u,
+                _ if i >= USER_TABLE => &f[0],
+                _ => &f[(i as usize).min(f.len() - 1)],
+            };
+            if Arc::ptr_eq(t, &self.wt[o]) {
+                continue;
+            }
+            self.wt[o] = t.clone();
+            // Sounding voices carry on in the new table where they were.
+            let tab = &self.wt[o];
+            let last = (tab.frames() - 1) as f32;
+            for v in self.voices.iter_mut().filter(|v| v.state != State::Free) {
+                v.tlv[o] = v.tlv[o].min(tab.levels().len() as u8 - 1);
+                v.tpos[o] = v.tpos[o].min(last);
+                v.run[o] = Run::new(tab, usize::from(v.tlv[o]), v.tpos[o], v.tpos[o]);
+            }
+        }
     }
 
     /// Loads a factory preset: defaults, then the preset's values. Voices
@@ -608,6 +725,10 @@ impl Poly {
         self.sm.noise.target = self.v(NOISE_LEVEL) / 100.0;
         self.sm.pw1.target = self.v(OSC1_PW) / 100.0;
         self.sm.pw2.target = self.v(OSC2_PW) / 100.0;
+        for o in 0..2 {
+            self.sm.pos[o].target = self.v(TABLE_IDS[o][1]) / 100.0;
+            self.sm.warp[o].target = self.v(TABLE_IDS[o][3]) / 100.0;
+        }
         self.sm.cutoff.target = self.v(CUTOFF).log2();
         self.sm.res.target = self.v(RESONANCE) / 100.0;
         self.sm.drive.target = self.v(DRIVE);
@@ -665,6 +786,8 @@ impl Poly {
         self.update_targets();
         let cr = self.rate / CTRL as u32;
         let sm = &mut self.sm;
+        let [p0, p1] = &mut sm.pos;
+        let [w0, w1] = &mut sm.warp;
         for s in [
             &mut sm.lvl1,
             &mut sm.lvl2,
@@ -672,6 +795,10 @@ impl Poly {
             &mut sm.noise,
             &mut sm.pw1,
             &mut sm.pw2,
+            p0,
+            p1,
+            w0,
+            w1,
             &mut sm.res,
             &mut sm.drive,
             &mut sm.dist,
@@ -855,6 +982,8 @@ impl Poly {
     fn fresh(v: &mut Voice) {
         v.ph1 = [0; UNISON_MAX];
         v.ph2 = [0; UNISON_MAX];
+        v.last = [0.0; UNISON_MAX];
+        v.tsnap = true;
         v.ph_sub = 0.0;
         v.amp.clear();
         v.fenv.clear();
@@ -1055,6 +1184,19 @@ impl Poly {
             }
         });
         s.unison = (self.values[UNISON as usize] as usize).clamp(1, UNISON_MAX);
+        s.table = [s.wave1 == WAVE_TABLE, s.wave2 == WAVE_TABLE];
+        // The positions and warps glide only while a Table wave plays.
+        if s.table[0] || s.table[1] {
+            s.fm = std::array::from_fn(|o| {
+                s.table[o] && self.values[TABLE_IDS[o][2] as usize] as u8 == WARP_FM
+            });
+            for k in &mut sm.pos {
+                k.next();
+            }
+            for k in &mut sm.warp {
+                k.next();
+            }
+        }
 
         // Pressure: the chord (Highest mode) aims before the voices step.
         let c = &self.press_c;
@@ -1309,6 +1451,7 @@ impl Poly {
         let tuning = &self.tuning;
         // A supersaw's level is set by its highest saw.
         let tops = self.sh.tops;
+        let tables = self.sh.table;
 
         let v = &mut self.voices[i];
         let p = v.pv;
@@ -1417,6 +1560,20 @@ impl Poly {
             v.coefs = FilterCoefs::new(exp2(oct), res, rate);
             v.coef_key = coef_key;
         }
+        if tables[0] || tables[1] {
+            let tin = TableIn::read(&self.values, &self.sm, tables);
+            table_control(
+                v,
+                &self.wt,
+                &tin,
+                fe,
+                lfo,
+                m.as_ref(),
+                p * d.get(target::POSITION),
+                p * d.get(target::WARP),
+                unison,
+            );
+        }
         // Drive and distortion: shared unless pressure or a route moves
         // them on this voice.
         let (md, me) = m.as_ref().map_or((0.0, 0.0), |m| (m.drive, m.dist));
@@ -1493,6 +1650,8 @@ impl Poly {
         let w1 = Shape::from_index(f32::from(s.wave1));
         let w2 = Shape::from_index(f32::from(s.wave2));
         let (tab, sup) = (self.tables, &self.sup);
+        let wt = &self.wt;
+        let any_table = s.table[0] || s.table[1];
         let mode = FilterMode::from_index(f32::from(s.mode));
         // Silent sources are skipped (their phases wait).
         let (use1, use2) = (s.lvl1 != 0.0, s.lvl2 != 0.0);
@@ -1505,6 +1664,7 @@ impl Poly {
             left: l,
             right: r,
             extra: c,
+            fm: mb,
             mix_l: ml,
             mix_r: mr,
         } = &mut self.scratch;
@@ -1543,12 +1703,13 @@ impl Poly {
                     break;
                 }
             }
-            let (g, a, l, r, c) = (
+            let (g, a, l, r, c, mb) = (
                 &g[..end],
                 &mut a[..end],
                 &mut l[..end],
                 &mut r[..end],
                 &mut c[..end],
+                &mut mb[..end],
             );
             // A centred voice (one stack, or no spread) has the same left
             // and right; with the same filter state both sides stay equal,
@@ -1568,8 +1729,11 @@ impl Poly {
                 l.fill(0.0);
                 r.fill(0.0);
             }
+            if any_table && (use1 || use2) {
+                table_stacks(v, &s, [w1, w2], (tab, sup), wt, a, mb, (l, r), mono);
+            }
             for u in 0..s.unison {
-                if !use1 && !use2 {
+                if any_table || (!use1 && !use2) {
                     break;
                 }
                 let (l1, l2) = (usize::from(v.lv1[u]), usize::from(v.lv2[u]));
@@ -1681,6 +1845,189 @@ impl Poly {
     }
 }
 
+/// Every stack of a voice with a Table wave on either oscillator, each
+/// into `a` ([`table_stack`]) and from there into the sides, as the plain
+/// path mixes them. Every stack reads the same runs, so each starts from
+/// where their crossfades stand and the runs move on once, after them.
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn table_stacks(
+    v: &mut Voice,
+    s: &Shared,
+    shapes: [Shape; 2],
+    (tab, sup): (&Classic, &Super),
+    wt: &[Arc<Table>; 2],
+    a: &mut [f32],
+    mb: &mut [f32],
+    (l, r): (&mut [f32], &mut [f32]),
+    mono: bool,
+) {
+    let data: [&[f32]; 2] = std::array::from_fn(|o| {
+        if s.table[o] {
+            wt[o].levels()[usize::from(v.tlv[o])].data()
+        } else {
+            &[]
+        }
+    });
+    let t0 = [v.run[0].t, v.run[1].t];
+    let mut t_end = t0;
+    for u in 0..s.unison {
+        t_end = table_stack(v, u, s, shapes, tab, sup, data, t0, a, mb);
+        let (pl, pr) = (v.pan_l[u], v.pan_r[u]);
+        mix_stack(u == 0, l, a, pl);
+        if !mono {
+            mix_stack(u == 0, r, a, pr);
+        }
+    }
+    for o in 0..2 {
+        if s.table[o] {
+            v.run[o].t = t_end[o];
+        }
+    }
+}
+
+/// One stack of a voice with a Table wave on either oscillator, into `a`
+/// as `0 + osc1 * level1 + osc2 * level2` (the plain path's order). An
+/// FM warp reads the other oscillator: it is worked out first, into `mb`
+/// at full level (heard or not), and the FM one reads it frame by frame;
+/// with both on FM each moves the other ([`table_osc::render_fm_pair`]).
+/// Returns each Table wave's crossfade after the frames (the same for
+/// every stack; an oscillator not on Table keeps `t0`'s).
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn table_stack(
+    v: &mut Voice,
+    u: usize,
+    s: &Shared,
+    shapes: [Shape; 2],
+    tab: &Classic,
+    sup: &Super,
+    data: [&[f32]; 2],
+    t0: [f32; 2],
+    a: &mut [f32],
+    mb: &mut [f32],
+) -> [f32; 2] {
+    let (use1, use2) = (s.lvl1 != 0.0, s.lvl2 != 0.0);
+    let mut t = t0;
+    let one =
+        |add: bool, v: &mut Voice, o: usize, fm: &[f32], buf: &mut [f32], level: f32| -> f32 {
+            if add {
+                osc_into::<true>(
+                    v, o, u, s, shapes[o], tab, sup, data[o], t0[o], fm, buf, level,
+                )
+            } else {
+                osc_into::<false>(
+                    v, o, u, s, shapes[o], tab, sup, data[o], t0[o], fm, buf, level,
+                )
+            }
+        };
+    match (s.fm[0], s.fm[1]) {
+        (false, false) => {
+            if use1 {
+                t[0] = one(false, v, 0, &[], a, s.lvl1);
+            }
+            if use2 {
+                t[1] = one(use1, v, 1, &[], a, s.lvl2);
+            }
+        }
+        (true, false) => {
+            if use1 {
+                t[1] = one(false, v, 1, &[], mb, 1.0);
+                t[0] = one(false, v, 0, mb, a, s.lvl1);
+                if use2 {
+                    for (x, y) in a.iter_mut().zip(mb.iter()) {
+                        *x += y * s.lvl2;
+                    }
+                }
+            } else {
+                t[1] = one(false, v, 1, &[], a, s.lvl2);
+            }
+        }
+        (false, true) => {
+            if use2 {
+                t[0] = one(false, v, 0, &[], mb, 1.0);
+                if use1 {
+                    for (x, y) in a.iter_mut().zip(mb.iter()) {
+                        *x = 0.0 + y * s.lvl1;
+                    }
+                }
+                t[1] = one(use1, v, 1, mb, a, s.lvl2);
+            } else {
+                t[0] = one(false, v, 0, &[], a, s.lvl1);
+            }
+        }
+        (true, true) => {
+            let index = |w: Warp| match w {
+                Warp::Fm { index } => index,
+                _ => 0.0,
+            };
+            t = table_osc::render_fm_pair(
+                [&v.run[0], &v.run[1]],
+                t0,
+                data,
+                [index(v.warp[0]), index(v.warp[1])],
+                a,
+                [&mut v.ph1[u], &mut v.ph2[u]],
+                [v.di1[u], v.di2[u]],
+                [s.lvl1, s.lvl2],
+                &mut v.last[u],
+            );
+        }
+    }
+    t
+}
+
+/// Oscillator `o` of stack `u` into `buf`, written (`ADD` false) or
+/// added, times `level`: its Table wave (from crossfade `t`, reading `fm`
+/// if its warp is FM; returns the crossfade after), else its classic wave
+/// as the plain path plays it (returns `t`).
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn osc_into<const ADD: bool>(
+    v: &mut Voice,
+    o: usize,
+    u: usize,
+    s: &Shared,
+    shape: Shape,
+    tab: &Classic,
+    sup: &Super,
+    d: &[f32],
+    t: f32,
+    fm: &[f32],
+    buf: &mut [f32],
+    level: f32,
+) -> f32 {
+    let (ph, ss, di, dt, lv, pw) = if o == 0 {
+        (
+            &mut v.ph1[u],
+            &mut v.ss1[u],
+            v.di1[u],
+            v.dt1[u],
+            v.lv1[u],
+            v.pw1,
+        )
+    } else {
+        (
+            &mut v.ph2[u],
+            &mut v.ss2[u],
+            v.di2[u],
+            v.dt2[u],
+            v.lv2[u],
+            v.pw2,
+        )
+    };
+    if s.table[o] {
+        return table_osc::render::<ADD>(&v.run[o], t, d, v.warp[o], fm, buf, ph, di, level);
+    }
+    let lv = usize::from(lv);
+    if shape == Shape::Supersaw {
+        tab.supersaw::<ADD>(sup, lv, buf, ss, dt, level);
+    } else {
+        tab.run::<ADD>(shape, lv, buf, ph, di, pw, level);
+    }
+    t
+}
+
 /// What the play routes, LFO 2, pressure's newer targets (LFO 1 and 2
 /// amount, Pan) and Age do to one voice this control step, beside what
 /// Poly did before them.
@@ -1708,6 +2055,96 @@ struct More {
     /// (added on oscillator 1, taken off 2).
     osc: Option<[f32; 2]>,
     skew: f32,
+    /// On the Table waves' positions and warps (0 to 1 of the whole), and
+    /// how much of LFO 1's sweep of the positions gets through.
+    pos: f32,
+    warp: f32,
+    lfo1_gate: f32,
+}
+
+/// The Table wave's settings for one control step ([`WAVE_TABLE`]).
+#[derive(Clone, Copy, Debug)]
+struct TableIn {
+    /// Which oscillators are on it.
+    on: [bool; 2],
+    /// Each oscillator's position and warp amount (0 to 1, smoothed) and
+    /// warp mode.
+    pos: [f32; 2],
+    warp: [f32; 2],
+    modes: [u8; 2],
+    /// The filter envelope to each position and to both warps, velocity
+    /// to both positions, LFO 1 to each position (-1 to 1).
+    env_pos: [f32; 2],
+    env_warp: f32,
+    vel_pos: f32,
+    lfo_pos: [f32; 2],
+}
+
+impl TableIn {
+    fn read(values: &[f32; ID_SPACE], sm: &Smoothed, on: [bool; 2]) -> TableIn {
+        let v = |id: u16| values[id as usize];
+        TableIn {
+            on,
+            pos: [sm.pos[0].value, sm.pos[1].value],
+            warp: [sm.warp[0].value, sm.warp[1].value],
+            modes: [v(OSC1_WARP_MODE) as u8, v(OSC2_WARP_MODE) as u8],
+            env_pos: [v(FENV_POS1) / 100.0, v(FENV_POS2) / 100.0],
+            env_warp: v(FENV_WARP) / 100.0,
+            vel_pos: v(VEL_POS) / 100.0,
+            lfo_pos: [v(LFO_POS1) / 100.0, v(LFO_POS2) / 100.0],
+        }
+    }
+}
+
+/// Where each Table wave of voice `v` reads this control step: the knob,
+/// the filter envelope (`fe`), LFO 1 (`lfo`, a sweep up from the knob),
+/// velocity, pressure (`p_pos`, `p_warp`: already through its slots), the
+/// routes and, with Age up, the voice card (one way on each oscillator,
+/// as the card's width offset). The run glides there across the step; a
+/// new note starts there. Out of line, so a sound without a Table wave
+/// pays only for the test that skips it.
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn table_control(
+    v: &mut Voice,
+    wt: &[Arc<Table>; 2],
+    t: &TableIn,
+    fe: f32,
+    lfo: f32,
+    m: Option<&More>,
+    p_pos: f32,
+    p_warp: f32,
+    unison: usize,
+) {
+    let (lfo_u, m_pos, m_warp, skew) = match m {
+        Some(m) => ((0.5 + 0.5 * lfo) * m.lfo1_gate, m.pos, m.warp, m.skew),
+        None => (0.5 + 0.5 * lfo, 0.0, 0.0, 0.0),
+    };
+    for o in 0..2 {
+        if !t.on[o] {
+            continue;
+        }
+        let tab = &*wt[o];
+        let pos = t.pos[o]
+            + fe * t.env_pos[o]
+            + lfo_u * t.lfo_pos[o]
+            + (v.vel - 0.5) * t.vel_pos
+            + p_pos
+            + m_pos
+            + if o == 0 { skew } else { -skew };
+        let at = pos.clamp(0.0, 1.0) * (tab.frames() - 1) as f32;
+        let from = if v.tsnap { at } else { v.tpos[o] };
+        v.tpos[o] = at;
+        let warp = Warp::new(t.modes[o], t.warp[o] + fe * t.env_warp + p_warp + m_warp);
+        v.warp[o] = warp;
+        // The level for the fastest stack, sped up by the warp.
+        let dts = if o == 0 { &v.dt1 } else { &v.dt2 };
+        let top = dts[..unison].iter().fold(0.0f32, |a, &x| a.max(x)) * warp.speed();
+        let lv = tab.level_for(top);
+        v.tlv[o] = lv as u8;
+        v.run[o] = Run::new(tab, lv, from, at);
+    }
+    v.tsnap = false;
 }
 
 /// One voice's card offsets at the current Age, its drift in its tuning.
@@ -1747,7 +2184,7 @@ struct MoreIn {
 /// swells as gains), each LFO through its amount, and LFO 2's sends.
 fn more(v: &mut Voice, m: &MoreIn) -> More {
     let p = v.pv;
-    let mut ra = [0.0f32; 16];
+    let mut ra = [0.0f32; MAX_TARGETS];
     let (mut level, mut gate) = (1.0f32, [1.0f32; 2]);
     if m.routes_live {
         v.inp.pressure = p;
@@ -1792,6 +2229,9 @@ fn more(v: &mut Voice, m: &MoreIn) -> More {
         gain: level,
         osc: None,
         skew: 0.0,
+        pos: at(target::POSITION),
+        warp: at(target::WARP),
+        lfo1_gate: g1,
     };
     if let Some([to_pitch, to_width, to_cut, to_level]) = m.lfo2 {
         if let Some(b) = m.follow2 {
@@ -1892,6 +2332,9 @@ impl Node for Poly {
         }
         if route_of(id).is_some() {
             self.update_routes();
+        }
+        if id == OSC1_TABLE || id == OSC2_TABLE {
+            self.pick_tables();
         }
         if id == SUPER_DETUNE || id == SUPER_MIX {
             self.sup = Super::new(self.v(SUPER_DETUNE) / 100.0, self.v(SUPER_MIX) / 100.0);
