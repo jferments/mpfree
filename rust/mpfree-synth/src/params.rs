@@ -25,7 +25,8 @@ ids! {
     AMP_A = 50, AMP_D = 51, AMP_S = 52, AMP_R = 53, VEL_AMP = 54,
     LFO_SHAPE = 60, LFO_RATE = 61, LFO_SYNC = 62, LFO_PITCH = 63, LFO_CUTOFF = 64, LFO_PW = 65, LFO_AMP = 66, LFO_RETRIG = 67,
     LFO_POS1 = 68, LFO_POS2 = 69,
-    VOICE_MODE = 70, POLYPHONY = 71, GLIDE = 72, BEND_RANGE = 73, PRESS_VIB_RATE = 75, AGE = 76,
+    VOICE_MODE = 70, POLYPHONY = 71, GLIDE = 72, BEND_RANGE = 73, PRIORITY = 74, PRESS_VIB_RATE = 75, AGE = 76,
+    GLIDE_MODE = 77,
     LEVEL = 80, PAN = 81,
     METER_VOICES = 90,
     PRESS_BASE = 100,
@@ -137,6 +138,13 @@ pub const LFO_SYNC_BEATS: [f64; 11] = [
     1.0 / 6.0,
 ];
 pub const VOICE_MODES: &[&str] = &["Poly", "Mono", "Legato"];
+/// Which held key Mono and Legato play: the last pressed, the lowest or
+/// the highest ([`crate::voice::Priority`]).
+pub const PRIORITIES: &[&str] = crate::voice::Priority::NAMES;
+/// How a glide moves: every interval in the glide's time, or at a fixed
+/// speed, Glide then being how long an octave takes
+/// ([`crate::voice::GlideMode`]).
+pub const GLIDE_MODES: &[&str] = crate::voice::GlideMode::NAMES;
 
 #[allow(clippy::too_many_arguments)]
 const fn p(
@@ -752,6 +760,8 @@ const BASE: &[ParamInfo] = &[
         Stepped,
     ),
     p(GLIDE, "Glide", "Voice", 0.0, 2_000.0, 0.0, Unit::Ms, Linear),
+    choice(GLIDE_MODE, "Glide mode", "Voice", GLIDE_MODES, 0.0),
+    choice(PRIORITY, "Priority", "Voice", PRIORITIES, 0.0),
     p(
         BEND_RANGE,
         "Bend range",

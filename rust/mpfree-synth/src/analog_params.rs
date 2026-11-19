@@ -22,10 +22,11 @@ ids! {
     VOICE_MODE = 60, POLYPHONY = 61, UNI_DETUNE = 62, GLIDE = 63, AGE = 64, CHORUS = 65,
     TRANSPOSE = 66, FINE = 67, BEND_RANGE = 68,
     LEVEL = 70, PAN = 71,
+    PRIORITY = 72, LEGATO = 73, PRESS_TO = 74, PRESSURE = 75, WHEEL_VIB = 76,
 }
 
 /// The highest id plus one: values live in an array indexed by id.
-pub const ID_SPACE: usize = 72;
+pub const ID_SPACE: usize = 77;
 
 /// An oscillator's wave: a sawtooth, a pulse (its width set apart), both
 /// sounding together, or a triangle.
@@ -51,6 +52,17 @@ pub const LFO_WAVES: &[&str] = &["Sine", "Triangle", "Saw", "Square", "S&H"];
 pub const VOICE_MODES: &[&str] = &["Poly", "Unison"];
 pub const POLY: f32 = 0.0;
 pub const UNISON: f32 = 1.0;
+
+/// Which held key Unison plays: the last pressed, the lowest or the
+/// highest ([`crate::voice::Priority`]).
+pub const PRIORITIES: &[&str] = crate::voice::Priority::NAMES;
+
+/// What a note's pressure moves: nothing, its cutoff (2 octaves up at
+/// full pressure and Pressure 100), or its pitch by the LFO (50 cents).
+pub const PRESS_TOS: &[&str] = &["Off", "Cutoff", "Vibrato"];
+pub const PRESS_OFF: f32 = 0.0;
+pub const PRESS_CUTOFF: f32 = 1.0;
+pub const PRESS_VIBRATO: f32 = 2.0;
 
 /// The chorus: off, a slow deep sweep, a faster one, or a quick shallow
 /// vibrato.
@@ -301,6 +313,21 @@ pub static PARAMS: &[ParamInfo] = &[
     toggle(PM_PITCH, "PMod > pitch", "Mod", 1.0),
     toggle(PM_PW, "PMod > PW", "Mod", 0.0),
     toggle(PM_CUTOFF, "PMod > cutoff", "Mod", 0.0),
+    // Pressure, each note its own: off, to the cutoff or to vibrato.
+    choice(PRESS_TO, "Press to", "Mod", PRESS_TOS, PRESS_OFF),
+    pct(PRESSURE, "Pressure", "Mod", 50.0),
+    // The mod wheel at the top adds this much of the LFO to the pitch, on
+    // top of Vibrato (the LFO's own amount, there without the wheel).
+    p(
+        WHEEL_VIB,
+        "Wheel vibrato",
+        "Mod",
+        0.0,
+        100.0,
+        50.0,
+        Unit::Cents,
+        Linear,
+    ),
     choice(VOICE_MODE, "Mode", "Voice", VOICE_MODES, POLY),
     p(
         POLYPHONY,
@@ -316,6 +343,10 @@ pub static PARAMS: &[ParamInfo] = &[
     pct(UNI_DETUNE, "Detune", "Voice", 30.0),
     // Each voice glides from its last note (three time constants).
     p(GLIDE, "Glide", "Voice", 0.0, 2000.0, 0.0, Unit::Ms, Linear),
+    // Unison only: which held key sounds, and whether a key played over a
+    // held one glides there without starting the envelopes again.
+    choice(PRIORITY, "Priority", "Voice", PRIORITIES, 0.0),
+    toggle(LEGATO, "Legato", "Voice", 0.0),
     // How far the voices differ and drift: 0 is a perfect instrument,
     // 100 a tired one.
     pct(AGE, "Age", "Voice", 30.0),

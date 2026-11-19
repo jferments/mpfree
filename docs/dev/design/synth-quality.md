@@ -253,6 +253,19 @@ The bar for the [Drums engine's](synths.md#drums-mpfree-synth-drums) Current voi
 | D9 | The metal bank's worst alias between 20 Hz and 20 kHz at 1×, against its strongest harmonic | Under −60 dB | Met: −62.4 dB, with each square's edges smoothed over four samples and a one-pole at 10 kHz on their sum. Plain squares at 1× are at −34.7 dB, and at 4× oversampling (the paper's way) −49.8 dB |
 | D10 | 32 hits sounding: every pad hit each block, so 16 hits start while the 16 before fade (bench case "Drums Init Kit, every pad each block") | Under 50 % of the synth budget (10 % of a period) | Not met. 1.40 M instructions a block (the Classic voices on the same pattern: 1.17 M); from the workstation's time and the MPC calibration, about 30 % of a period. The everyday patterns cost 7 % (Init Kit, a hit every 4 blocks) and 22 % (Boom Kit, a hit every block) more instructions than Classic. No one part dominates the voice: the next step is running four hits at once on NEON, then the device round's numbers |
 
+## Wave 3 targets: expressive leads (stage 7)
+
+What a lead line needs from the engines that play one note at a time (Poly in Mono and Legato, Analog in Unison, Bass): the right held key sounding, a glide timed as labelled, and each note's own expression. Measured by `leads()` in the lab. The ten lead presets (Portamento Lead, Low Note Lead, Breath Lead, Slide Lead and Unison Lead on Poly; Solo Lead, Glide Lead and Fat Lead on Analog; Rate Glide Bass and High Note Lead on Bass) also meet L2, L3, L5, L6 and L8, and L11 on two of them (the other eight spread 3.3 to 5.2 dB across the keys, as most leads do).
+
+| Id | Measure | Target | Today |
+|---|---|---|---|
+| E1 | Priority: hold C3 and add G3 300 ms later; at 0.6 s, Low still plays C3 and High has moved to G3 | Within 1 cent | Met on Poly mono, Analog unison and Bass, both ways (0.005 cents at worst) |
+| E2 | Poly's glide by **Rate** at 300 ms an octave: an octave and a fifth up from C3 land, and take 12/12 and 7/12 of 300 ms | Land within 2 cents; time within 10 % | Met: both land exactly, 1.0 % and 1.6 % quick |
+| E3 | A note's slide: C4 slid up 2 semitones plays D4, and a G4 held beside it doesn't move | Within 1 cent | Met on Poly, Analog and Bass (0.003 cents at worst; Bass plays one note, so it has no G4 row) |
+| E4 | Analog's vibrato: the mod wheel at the top, and full pad pressure with Press to on Vibrato and Pressure 100, swing the pitch as far as labelled (50 cents) | Within 5 % | Met: both 1.1 % under |
+
+`cargo run --release -p mpfree-synth --example lead_demo [DIR]` renders the ten leads on one phrase that shows each of these (a legato line, a long note with pressure, its own slide and tone and the mod wheel, a two-octave leap, then two keys played over a held one), a WAV each.
+
 ## Not measured yet
 
 Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), Analog's own spread at each Age (P10 measures Poly's, with the same cards and drift), sustain-pedal behaviour (K5: there is no pedal event yet), piano partials (K8), FM envelope rates and banks (F4, F6), tape (O7: no engine yet; Wind's O3 and O4 and the Choir's O1, O2 and O8 are in the report), attack noises (O9), the Choir's cost on the MPC (O10), the drums' cost on the MPC (D10: the workstation's numbers are in [Wave 3 targets](#wave-3-targets-drums)), and cost on the MPC. Each joins the report when stage 3 or 4 builds or changes what it measures.
