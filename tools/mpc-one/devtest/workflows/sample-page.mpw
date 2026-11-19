@@ -1,5 +1,5 @@
-title The Sample page: a loop's end moved while it sounds, Slice, Warp and Grain on one sound, and Sample Recall
-covers sample-live-loop, sample-warp, grain-movement, grain-cloud-view, grain-presets
+title The Sample page: a loop's end moved while it sounds, Slice, Warp and Grain on one sound, Sample Recall, and Edit pad
+covers sample-live-loop, sample-warp, grain-movement, grain-cloud-view, grain-presets, sample-edit-pad
 # Plays whatever sound the kit has on the pad the Sample page opens on (the
 # stick's kits differ), so the checks name no sound. Every edit stays in the
 # run's RAM-only library; UNDO takes the edits back at the end.
@@ -78,6 +78,22 @@ button UNDO
 button UNDO
 button UNDO
 expect sample: undo in kit
+mark edit-pad
+# The pad's own page (the MPC's PROG EDIT) is on the Pads tab: from its row,
+# then from PROG EDIT, back to the pads each time.
+tap header tab Pads
+tap smp-pads-list row-button layers, keys, scenes, slices ›
+expect sample: Edit pad on pad
+tap smp-play-bar back ‹ Pads
+expect sample: Edit pad closed: the pads again
+mark prog-edit
+button PROG EDIT
+wait 0.5
+button PROG EDIT
+wait 0.5
+expect sample: Edit pad on pad
+expect sample: Edit pad closed: the pads again
+tap header tab Play
 button STOP
 button STOP
 expect STOP: transport stopped
