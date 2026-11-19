@@ -36,7 +36,7 @@ use mpfree_sampler::model::{LoopMode, MAX_LAYERS, PADS};
 use mpfree_ui::{EventKind, Ui, UiEvent};
 
 use crate::auto_widgets::{KeyMapView, LayerBand};
-use crate::chop_tab::pad_text;
+use crate::slice_tool::pad_text;
 use crate::wave_tab::{self, pad_color, TABS};
 use crate::widgets::{ButtonRow, InfoCard, PadBar, Setting, SettingList};
 

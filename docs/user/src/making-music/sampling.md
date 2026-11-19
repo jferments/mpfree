@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/recall.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/grain_tool.rs rust/mpfree-sampler-ui/src/sound_panel.rs rust/mpfree-sampler-ui/src/warp_tool.rs rust/mpfree-sampler-ui/src/chop_tab.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
+covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/recall.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/grain_tool.rs rust/mpfree-sampler-ui/src/sound_panel.rs rust/mpfree-sampler-ui/src/warp_tool.rs rust/mpfree-sampler-ui/src/slice_tool.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
 checked: 2026-11-18 ec8cb82
 -->
 
@@ -11,7 +11,7 @@ checked: 2026-11-18 ec8cb82
 Two tabs share the work:
 
 - The **Pads** tab, next to Play, shows the whole bank of 16 pads beside the settings of the pad picked: which sound is on which pad, and how it plays. **Browse for** at its top right opens the browser to find a sound for that pad, and **Kit** beside it opens the list of kits, to put another kit on the selected track.
-- The **Sample** tab works on one pad at a time. **Hit a pad** to pick it; its name and sound are at the top left of the page. Along the top are a page for each job: **Wave** (with the recorder), **Chop** and **Play**. Beside them, **Send to pad** and **Chop to pads** work from any page (see [below](#send-to-pad-and-chop-to-pads)). The four **Q-Link** cards are down the right-hand side, as on every other page: each says what its knob turns here, and you can drag a card up or down to turn it from the screen.
+- The **Sample** tab works on one pad at a time. **Hit a pad** to pick it; its name and sound are at the top left of the page. Along the top are two pages: **Wave** (with the recorder, and the tools that trim, slice, warp and grain the sound) and **Play**. Beside them, **Send to pad** and **Chop to pads** work from any page (see [below](#send-to-pad-and-chop-to-pads)). The four **Q-Link** cards are down the right-hand side, as on every other page: each says what its knob turns here, and you can drag a card up or down to turn it from the screen.
 
 ## The Pads tab: sounds onto pads
 
@@ -118,7 +118,7 @@ A take that stays is kept with the kit, on no pad, until you put it somewhere. T
 
 - **Send to pad**, then hit a pad: the take goes on that pad, replacing any sound there, and leaves the page; the page shows the pad. One **UNDO** puts it back on the page.
 - **SHIFT + the wheel** steps through the takes on the page, then the pads with a sound (**SHIFT + –** / **+** still zooms).
-- **Chop to pads**, the other pages and the Warp tool's **New sound** work on pads, so put the take on a pad first; they say so if you try.
+- The **Slice** tool cuts a take and plays its slices, but **Chop to pads**, the Play page and the Warp tool's **New sound** work on pads, so put the take on a pad first; they say so if you try.
 - A take on the page is part of the kit, so you never lose one without being asked: saving the project keeps it, autosave keeps it too, and opening another project or **New project** asks first, as for any change you haven't saved. The page keeps up to 32 takes.
 
 ### Keep what just came in
@@ -201,7 +201,7 @@ The Q-Links turn **Length** (through the bars, then Free's seconds up to two min
 The two buttons at the top right of every Sample page:
 
 - **Send to pad** copies the pad you are editing, its sound and every edit, onto the next pad you hit. The button says **Hit a pad** while it waits; press it again to call it off. One UNDO takes the copy back.
-- **Chop to pads** opens the Chop page, so you can check the cuts first. Press it again there (or the Chop page's own button) to put the slices on the pads.
+- **Chop to pads** picks the **Slice** tool on the Wave page, so you can check the cuts first. Press it again (or the Put on section's own **Chop to** button) to put the slices on the pads.
 
 Both buttons are faint while the pad picked has no sound.
 
@@ -219,9 +219,9 @@ The pad's name at the top left of every Sample page has a dotted line under it: 
 
 {{shot: sample | The Wave page: the recorder row at the top (REC, Source, Starts and Ends), the tools (Trim, Slice, Warp and Grain) beside the whole sample under it, the zoomed region across the page, the region's knobs, buttons and switches under it in three sections with the pad's Sound beside them, and the four Q-Links (Start, End, Loop start, Loop end) down the right. Send to pad and Chop to pads are at the top right.}}
 
-The **Wave** page shows the sample across the screen. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links, or rest a finger on a marker's tab and turn the data wheel: it moves a screen pixel a turn, or one frame at a time with **SHIFT** (next build; see [Hold and turn](../getting-started/the-screen.md#hold-and-turn)). Hold **SHIFT** and press **+** to zoom in, **SHIFT + –** to zoom out (the Chop page too); the card beside the strip at the top says how far in you are. Tap the wave to hear it.
+The **Wave** page shows the sample across the screen. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links, or rest a finger on a marker's tab and turn the data wheel: it moves a screen pixel a turn, or one frame at a time with **SHIFT** (next build; see [Hold and turn](../getting-started/the-screen.md#hold-and-turn)). Hold **SHIFT** and press **+** to zoom in, **SHIFT + –** to zoom out (with every tool); the card beside the strip at the top says how far in you are. Tap the wave to hear it.
 
-**The tools.** At the left of the strip over the wave are four tools: **Trim**, **Slice**, **Warp** and **Grain**. The tool you pick decides what a finger on the wave moves, what the section under it holds and what the Q-Links turn. Every tool's marks stay on the wave, but only the tool you pick has tabs along the top: the other tools' marks are grey lines with no tab, and you move them by picking their tool. **Trim** is Start, End, the loop and the fades. **Warp** is the pins that put the sound's hits on the beat, with the Warp section under the wave (see [Warp](#warp-put-the-hits-on-the-beat)). **Grain** is the grain window, where the grains start and how long they are, with the Grain section under the wave (see [Grain](shaping-a-pad.md#grain-stretch-and-smear)). **Slice** is moving onto this page next; until it has, its button opens the [Chop](#chop-slice-across-the-pads) page, and **Wave** at the top right brings you back. While a take records the tools are grey: they wait for the take.
+**The tools.** At the left of the strip over the wave are four tools: **Trim**, **Slice**, **Warp** and **Grain**. The tool you pick decides what a finger on the wave moves, what the section under it holds and what the Q-Links turn. Every tool's marks stay on the wave, but only the tool you pick has tabs along the top: the other tools' marks are grey lines with no tab, and you move them by picking their tool. **Trim** is Start, End, the loop and the fades. **Warp** is the pins that put the sound's hits on the beat, with the Warp section under the wave (see [Warp](#warp-put-the-hits-on-the-beat)). **Grain** is the grain window, where the grains start and how long they are, with the Grain section under the wave (see [Grain](shaping-a-pad.md#grain-stretch-and-smear)). **Slice** is the cuts that make slices, with the Slice and Put on sections under the wave (see [Slice](#slice-cut-across-the-pads)). While a take records the tools are grey: they wait for the take.
 
 Under the wave, with Trim picked, the region's settings are laid out like an instrument's panel, in three sections, with the pad's **Sound** beside them:
 
@@ -234,7 +234,7 @@ Drag a knob up to turn it up and down to turn it down; one drag is one **UNDO**.
 
 **Normalize to 0 dB** (under the Gain and fades knobs) turns the gain so the loudest moment between Start and End plays at full level, 0 dB, and never over. Tap it, or push the wheel on it. It only sets the gain, so after moving Start or End you can tap it again for the new part; **UNDO** takes it back. A silent part is left as it is.
 
-MPFree finds each sound's hits, tempo and note (for Chop, Warp, the 16ths snap and Map to keys) while you work, never holding up the screen. A long sound shows as a flat line for a moment, then its wave, then its hits and tempo a little later: a minute-long sound takes a second or two on the MPC. The pages fill in as soon as each is found, and a sound already looked at is ready at once. A saved project keeps what was found beside each sound, so when you open it again its sounds are ready at once too.
+MPFree finds each sound's hits, tempo and note (for Slice, Warp, the 16ths snap and Map to keys) while you work, never holding up the screen. A long sound shows as a flat line for a moment, then its wave, then its hits and tempo a little later: a minute-long sound takes a second or two on the MPC. The pages fill in as soon as each is found, and a sound already looked at is ready at once. A saved project keeps what was found beside each sound, so when you open it again its sounds are ready at once too.
 
 **Edits you hear while it plays.** Hold a looping pad (or tap the wave in Loop mode, so it keeps sounding) and move its loop: the loop that is playing moves too. Moved behind the sound, it jumps into the new loop without a click; moved ahead, you hear it when the sound gets there. The pad's level, pan, tune, gain, filter cutoff and resonance, and a grain cloud's settings change on a sound still playing too, smoothly. The start, end, fades, reverse, mode, envelope and filter type, and a new sound on the pad, are heard from the next hit.
 
@@ -255,24 +255,26 @@ Pins only work while the sound is stretched. With Warp on Repitch, the sound pla
 
 **Typing a number.** A value with a dotted line under it, such as **Warp tempo**, can be typed: tap the value and a number pad opens. Tap the number and **Enter**; the pad shows the range it takes and the value now, and says so if the number is out of range. **Cancel** leaves the value as it was. The data wheel and **–** / **+** step the number too, and pushing the wheel is Enter. **UNDO** takes a typed value back.
 
-## Chop: slice across the pads
+## Slice: cut across the pads
 
-{{shot: sample-chop | The Chop page: the break cut into 15 slices at its hits, with the method, the slice, the pads and the Chop button in the panel under it, ready to put on pads A6 to B4.}}
+{{shot: sample-chop | The Slice tool: the break cut into 15 slices at its hits, slice 3 picked, with the Slice section (Method, its setting, the slice, Split, Merge and Clear) and the Put on section (where they go, the pads, Phrase and the Chop button) under it, ready to put on pads A6 to B4.}}
 
-**Chopping** cuts a sample into slices, one per pad, so you can replay a drum break in a new order or pick out single hits.
+**Chopping** cuts a sample into slices, one per pad, so you can replay a drum break in a new order or pick out single hits. Tap **Slice** in the tools strip over the wave (or **Chop to pads** at the top right). The slices show on the wave, numbered, and the panel under it has two sections: **Slice**, how the sound is cut, and **Put on**, where the slices go.
 
-1. Under the wave, tap a **Method**: **Transient** cuts at each hit, **Beat** on the beats, **Grid** into equal pieces, **Silence** at the gaps, **Pitch** where the note changes (below), **Manual** leaves the cuts to you, and **Live** cuts where you play (below).
-2. Drag the **Sensitivity** knob up for more slices, down for fewer (on Beat, Grid, Silence and Pitch the knob sets the slice length, the number of slices, the threshold or the change).
-3. Tap a slice to hear it. **Split** and **Merge** add or remove a cut by hand; drag a cut's tab, or turn the Q-Links, to move it. The first marker and **END** are the pad's own start and end, so they stay put here: move them on the Wave page.
-4. Tap the big **Chop to** button to put the slices on the pads. They go on the first empty pads after the one you chopped, running on past A16 into bank B (and so on, up to H16), so the pad itself and the sounds around it stay; the button names the pads ("Chop to A6–B4"), and **PAD BANK B** plays the ones on bank B. To start somewhere else, turn **Pads** (or Q-Link 4); the list says which pads already have a sound. Chop the same pad again and the new slices replace the ones you just made. **Put on** picks where they go: the **Pads**, **1 pad** (every slice on one pad, below), the pads and **Keys**, a **New kit** on a new track (below), or **Files**. Turn **Phrase** on to get a clip that plays the slices in time as well (for a sound with a beat, on Pads, 1 pad or New kit).
+1. Step **Method** with its ‹ ›: **Transient** cuts at each hit, **Beat** on the beats, **Grid** into equal pieces, **Silence** at the gaps, **Pitch** where the note changes (below), **Manual** leaves the cuts to you, and **Live** cuts where you play (below).
+2. Drag the **Sensitivity** knob (or turn Q-Link 1) up for more slices, down for fewer (on Beat, Grid, Silence and Pitch the knob sets the slice length, the number of slices, the threshold or the change).
+3. Tap a slice to hear it; **Slice** (or Q-Link 2) picks one too, and the wheel zooms round it. **Split** and **Merge** add or remove a cut by hand, and **Clear** takes every cut away. Drag a cut's tab, or turn Q-Link 3, to move the picked slice's start (with **SHIFT**, one frame at a time). The first marker and **END** are the pad's own start and end, so they stay put here: move them with **Trim**.
+4. In the Put on section, tap the big **Chop to** button to put the slices on the pads. They go on the first empty pads after the one you chopped, running on past A16 into bank B (and so on, up to H16), so the pad itself and the sounds around it stay; the button names the pads ("Chop to A6–B4"), and **PAD BANK B** plays the ones on bank B. To start somewhere else, step **Pads** (or turn Q-Link 4); the section's note says whether any pad with a sound would be replaced ("replaces A5"). Chop the same pad again and the new slices replace the ones you just made. **Put on** picks where they go: the **Pads**, **1 pad** (every slice on one pad, below), the pads and **Keys**, a **New kit** on a new track (below), or **Files**. Turn **Phrase** on to get a clip that plays the slices in time as well (for a sound with a beat, on Pads, 1 pad or New kit).
 
-**Your chop stays with the sound.** Once you change the cuts (a method, a split, a cut moved, a live take), MPFree keeps them for that sound: pick another pad and come back, or open the project tomorrow, and the Chop page shows your slices as you left them, not a fresh chop. Keeping them isn't an edit, so **UNDO** leaves them be; they go on pads only when you tap **Chop to**.
+**Your chop stays with the sound.** Once you change the cuts (a method, a split, a cut moved, a live take), MPFree keeps them for that sound: pick another pad or tool and come back, or open the project tomorrow, and the Slice tool shows your slices as you left them, not a fresh chop. Keeping them isn't an edit, so **UNDO** leaves them be; they go on pads only when you tap **Chop to**.
+
+**A take on the page** can be sliced too: tap its slices to hear them. The slices go on pads once the take itself is on one: tap **Send to pad**, hit a pad, and chop it there.
 
 ### One pad: a whole break on one pad
 
-{{shot: sample-chop-one-pad | The Chop page with Put on at 1 pad: the break's 15 slices are ready to go on pad A5 itself, and the button reads Slices on A5.}}
+{{shot: sample-chop-one-pad | The Slice tool with Put on at 1 pad: the break's 15 slices are ready to go on pad A5 itself, and the button reads Slices on A5.}}
 
-With **Put on** at **1 pad**, every slice goes on one pad instead of a pad each, so a whole break plays from one pad and one track. The button reads **Slices on A5**: the pad you chopped becomes the sliced pad (turn **Pads** or Q-Link 4 to put it on another pad), and no other pad changes. Up to 128 slices fit on one pad.
+With **Put on** at **1 pad**, every slice goes on one pad instead of a pad each, so a whole break plays from one pad and one track. The button reads **Slices on A5**: the pad you chopped becomes the sliced pad (step **Pads** or turn Q-Link 4 to put it on another pad), and no other pad changes. Up to 128 slices fit on one pad.
 
 - A **hit** on the pad plays slice 1, or the one **Slice** picks on the Play page's **Pad** section ("3 of 15").
 - A **step lock** picks the slice that step plays: lock **Slice** on a step and that hit plays that slice. With **Phrase** on, the clip already has a Slice lock on every hit, so it plays the break back slice by slice, and you can move, mute or re-lock any hit.
@@ -282,7 +284,7 @@ Each slice plays as it would on a pad of its own: from its cut to the next, with
 
 ### New kit: the slices on a track of their own
 
-{{shot: sample-chop-new-kit | The Chop page with Put on at New kit and Phrase on: the break's 15 slices are ready to go on an empty kit from A1, for a new track, and the button reads Phrase to new kit.}}
+{{shot: sample-chop-new-kit | The Slice tool with Put on at New kit and Phrase on: the break's 15 slices are ready to go on an empty kit from A1, for a new track, and the button reads Phrase to new kit.}}
 
 With **Put on** at **New kit**, the slices don't touch the kit you chopped. They go on an empty kit from pad A1 (up to 128 slices, running on through banks B to H), MPFree adds a new track at the end of the song, arms it and gives it that kit, named after the pad ("Break 92 chops"). The button reads **Chop to new kit**, or **Phrase to new kit** with **Phrase** on, and then the phrase goes in the new track's first slot, ready to launch. The pads play the new kit straight away, and the Sample tab shows its first slice.
 
@@ -290,7 +292,7 @@ With **Put on** at **New kit**, the slices don't touch the kit you chopped. They
 - **Pads** and Q-Link 4 have nothing to move: a new kit's slices always start on A1.
 - New kit is faint, and a tap says why, when no empty kit is left, when the song already has 128 tracks, or for the moment while the last new track is on its way.
 
-A sliced pad shows its slices everywhere: grey lines on the **Wave** page (move them on the Chop page), "15 slices" under its name on the **Pads** tab, and the **Chop** page opens on its own slices, so you can move a cut and chop it again.
+A sliced pad shows its slices everywhere: grey lines on the **Wave** page with the other tools (pick **Slice** to move them), "15 slices" under its name on the **Pads** tab, and the **Slice** tool opens on its own slices, so you can move a cut and chop it again.
 
 #### Each slice its own sound
 
@@ -329,9 +331,9 @@ The first time you pick Pitch on a sound, MPFree listens through it in the backg
 1. Pick **Live** as the **Method**. The **Split** button becomes **Start**.
 2. Tap **Start**. The sound plays from its start, and any cuts already there are cleared.
 3. Hit any pad in time with the sound wherever a slice should begin. While live chop runs, the pads drop cuts instead of playing their own sounds.
-4. The take ends when the sound ends, or when you tap **Stop**. Then tap **Chop to** as usual, or **Start** again for a new take.
+4. The take ends when the sound ends, or when you tap **Stop**; picking another tool, pad or page stops it too. Then tap **Chop to** as usual, or **Start** again for a new take.
 
-**Pull to hits** (where **Sensitivity** is for the other methods) moves each cut onto the nearest drum hit within that many milliseconds, so a slightly early or late pad still cuts right on the hit; **Off** keeps each cut where you played it. With **Snap** on **Zero crossing**, a cut with no hit near it moves to the nearest point where the wave crosses zero, so its slice starts without a click. Nothing reaches the pads until you tap **Chop to**, so a take you don't like costs nothing: tap **Start** again (the page keeps your last take for the sound).
+**Pull to hits** (where **Sensitivity** is for the other methods) moves each cut onto the nearest drum hit within that many milliseconds, so a slightly early or late pad still cuts right on the hit; **Off** keeps each cut where you played it. With **Snap** on **Zero crossing**, a cut with no hit near it moves to the nearest point where the wave crosses zero, so its slice starts without a click. Nothing reaches the pads until you tap **Chop to**, so a take you don't like costs nothing: tap **Start** again (the page keeps your last take for the sound). Live plays a pad, so a take kept on the page goes on a pad first.
 
 > [!TIP]
 > Live chop is quickest with a sound you know well: hit the pads where you would clap along, then fix any stray cut with **Split** and **Merge**.
