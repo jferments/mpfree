@@ -33,7 +33,8 @@ mod tests {
         let s = Session::with_library(&dir);
         let d = s.defaults();
         for song in songs::all() {
-            songs::put(s.library.as_ref().expect("a library"), &song, &d);
+            songs::put(s.library.as_ref().expect("a library"), &song, &d)
+                .expect("the song is saved");
         }
         Lab { s, dir }
     }

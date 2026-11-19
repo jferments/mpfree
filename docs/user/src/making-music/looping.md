@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/loop_row.rs rust/mpfree-app/src/looper_deck.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs rust/mpfree-seq/src/loops.rs
-checked: 2026-11-19 f0b39161
+checked: 2026-11-19 ea21a9b1
 -->
 
 # Recording loops
@@ -71,7 +71,7 @@ The ring you tap also picks that loop. To pick a loop without starting anything,
 
 **Hold a ring** for a second to clear the loop, every layer and the first pass: the arc drains in red while you hold, and letting go sooner leaves the loop as it was. Hold **ERASE** and tap a ring (or a loop's name) to clear it at once. Either way **UNDO** brings it back: the empty ring says **Cleared · UNDO** until you record into it.
 
-The **speaker** under a ring mutes the loop without picking it: it is kept and keeps its place in the song, but stays silent, through STOP and PLAY too, until you tap it again. The **S** beside it **solos** the loop: while any loop is soloed only the soloed loops play, and the others stay silent in their places (their rings go dim and say **by solo**). Tap S again to let go; clearing a soloed loop lets go of its solo too. The **level bar** beside the ring sets how loud the loop plays (-24 to +6 dB, with a meter of what it plays now): drag it, or rest a finger on it and turn the data wheel (half a decibel a click, SHIFT for a tenth).
+The **speaker** under a ring mutes the loop without picking it: it is kept and keeps its place in the song, but stays silent, through STOP and PLAY too, until you tap it again. The **S** beside it **solos** the loop: while any loop is soloed only the soloed loops play, and the others stay silent in their places (their rings go dim and say **by solo**). Tap S again to let go; clearing a soloed loop lets go of its solo too. The **level bar** beside the ring sets how loud the loop plays (-24 to +6 dB, with a meter of what it plays now): drag it, or rest a finger on it and turn the data wheel (half a decibel a click, SHIFT for a tenth); SHIFT + the wheel's push puts it back to 0 dB.
 
 Every loop plays at once, in time with the song, but only one records at a time: starting to record in one loop ends the recording in the others. The pads can do all of this too: see [The pads as loop keys](#the-pads-as-loop-keys).
 

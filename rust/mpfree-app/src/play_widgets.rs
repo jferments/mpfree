@@ -3557,8 +3557,12 @@ impl Widget for XyPad {
             .fill_rect(Rect::new(px, pad.y + 4, 1, pad.h - 8), line);
         cx.canvas
             .fill_rect(Rect::new(pad.x + 4, py, pad.w - 8, 1), line);
-        dot(cx, px, py, 20, ring_a);
-        dot(cx, px, py, 12, body_c);
+        // The knob grows with the pad (full screen: SHIFT + NEXT SEQ), so
+        // it stays a fingertip's size there.
+        let k = (pad.w.min(pad.h) / 120).clamp(1, 2);
+        let ring = 20 * k;
+        dot(cx, px, py, ring, ring_a);
+        dot(cx, px, py, 12 * k, body_c);
         cx.text(
             FontId::Sans,
             11.5,
@@ -3579,10 +3583,11 @@ impl Widget for XyPad {
             let lw = cx.measure(FontId::Bold, 12.0, &self.label) + 4;
             // Beside the knob on the side with more room (the mockups: on
             // its left once past the middle).
-            let lx = if px < pad.x + pad.w / 2 || px - 24 - lw < pad.x + 6 {
-                px + 24
+            let gap = ring + 4;
+            let lx = if px < pad.x + pad.w / 2 || px - gap - lw < pad.x + 6 {
+                px + gap
             } else {
-                px - 24 - lw
+                px - gap - lw
             };
             let ly = (py - 9).clamp(pad.y + 4, pad.bottom() - 22);
             cx.text(
