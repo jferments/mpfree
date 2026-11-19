@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-store rust/mpfree-library rust/mpfree-browser-ui rust/mpfree-app/src/app/saved.rs rust/mpfree-app/src/project.rs rust/mpfree-app/src/app/arp/part.rs
-checked: 2026-11-16 d653b57
+checked: 2026-11-19 f0b39161
 -->
 
 # Saving your work
@@ -117,7 +117,7 @@ A folder with thousands of sounds lists straight away; the sizes fill in a momen
 
 Moving onto a sound plays it once, so you can audition as you scroll. Delete always asks first and moves things to the Trash, which you empty yourself (that asks again).
 
-**Load on A5** puts a sound on the pad picked, named on the button: hit another pad and the button follows it. **Next pad hit** puts it on the next pad you hit. WAV, AIFF and FLAC files load, mono or stereo, at 8 to 192 kHz, whatever their name says. A file that was cut short, by a recorder that lost power say, loads the part it has. A FLAC file with a damaged part doesn't load at all, rather than play it as noise. A pad you exported from the Sample tab loads with its settings: load its sound, and the settings file beside it brings back its trim, loop, layers and slices (see [Exporting a pad as files](sampling.md#exporting-a-pad-as-files)).
+**Load on A5** puts a sound on the pad picked, named on the button: hit another pad and the button follows it. **Next pad hit** puts it on the next pad you hit. WAV, AIFF and FLAC files load, mono or stereo, at 8 to 192 kHz, whatever their name says. A file that was cut short, by a recorder that lost power say, loads the part it has. A FLAC file with a damaged part doesn't load at all, rather than play it as noise. A pad you exported from the Sample tab loads with its settings: load its sound, and the settings file beside it brings back its trim, loop, layers and slices (see [Library: saving the pad and its slices](sampling.md#library-saving-the-pad-and-its-slices)).
 
 The data wheel moves through the list and its push opens or loads; the other buttons are in [Buttons and controls](../reference/controls.md#the-browser).
 
@@ -134,6 +134,8 @@ Synth presets you save (**Save preset** in the preset picker) go in **Instrument
 ## Getting files on and off the stick
 
 Later versions will share MPFree's library over the network cable and by USB, so you can copy samples in and projects out from a computer. Until then, the files are on a Linux-format part of the stick that Windows and macOS can't open without extra software.
+
+Pictures of the screen go there too: hold all four **PAD BANK** buttons together and MPFree saves what the screen shows in `files/screens/`, named by the date and time.
 
 > [!MPC]
 > On the MPC, projects are saved to the internal drive, an SD card or a USB drive, with the samples in a folder beside the project file. MPFree saves only to its own stick, keeps every sample inside the project folder, and keeps the last ten versions of each project. MPFree doesn't open MPC projects (`.xpj`): bring your kits and patterns across as [Moving your beats from the MPC](moving-from-the-mpc.md) says.

@@ -144,6 +144,7 @@ mod rt_safety;
 mod sample_page;
 mod sampler;
 mod screen_cost;
+mod screen_picture;
 mod setup;
 mod shed;
 mod skin_page;
@@ -2400,6 +2401,23 @@ fn mute_colours(
     })
 }
 
+/// MAIN held (the MPC's hold MAIN): the pads as the 16 tracks of a bank,
+/// `track(p)` None past the last. The picked track (`picked`, its pad in
+/// the bank) is white, a track playing a clip bright green, the others dim
+/// green, and pads with no track dark.
+fn track_pick_colours(
+    picked: Option<usize>,
+    track: impl Fn(usize) -> Option<time::MuteLight>,
+) -> [[u8; 3]; 16] {
+    let green = akai::KIT_COLOURS[3];
+    std::array::from_fn(|p| match track(p) {
+        _ if picked == Some(p) => step_keys::PLAYHEAD,
+        Some(l) if l.launched => akai::hit_colour(green),
+        Some(_) => green,
+        None => [0; 3],
+    })
+}
+
 /// 16 LEVEL with the Drums engine on the pads: its pads are sounds with no
 /// kit levels, and nothing to transpose.
 const DRUMS_NO_LEVELS: &str =
@@ -2874,15 +2892,22 @@ fn loop_sets_tempo(
 
 /// Live erase (sequencer roadmap S1, the MPC's way): whether a pad
 /// pressed now erases in place of playing: ERASE is held while the
-/// transport records.
+/// transport records, or while it only plays with the kit on the pads (the
+/// button combos of 19 Nov).
 fn live_erase_starts(app: &app::App, time: &time::TimeHost) -> bool {
-    app.erase_held() && time.info().state == mpfree_transport::State::Recording
+    use mpfree_transport::State;
+    app.erase_held()
+        && match time.info().state {
+            State::Recording => true,
+            State::Playing => app.pads_play_kit(),
+            State::Stopped | State::CountIn => false,
+        }
 }
 
-/// Live erase: pad `pad` pressed with ERASE held while recording. Its
-/// notes on the armed track come out as the playhead reaches them, until
-/// the pad or ERASE is let go; it neither sounds nor records. What to
-/// tell.
+/// Live erase: pad `pad` pressed with ERASE held while the transport
+/// records or plays. Its notes on the armed track come out as the
+/// playhead reaches them, until the pad or ERASE is let go; it neither
+/// sounds nor records. What to tell.
 fn live_erase(time: &mut time::TimeHost, pad: usize) -> Option<app::Effect> {
     let note = u8::try_from(pad).ok()?;
     let first = !time.erasing();
@@ -2892,6 +2917,26 @@ fn live_erase(time: &mut time::TimeHost, pad: usize) -> Option<app::Effect> {
             "ERASE: pad {}'s notes come out of the armed track's clip as the playhead passes them; UNDO brings them back",
             app::kit_pad_name(pad)
         ))
+    })
+}
+
+/// ERASE + kit pad `pad` while the transport is stopped (the button
+/// combos of 19 Nov): every note of that pad comes out of the armed
+/// track's clip at once, one take UNDO brings back, as ERASE + a lane's
+/// name on Play. What to tell.
+fn erase_pad_notes(time: &mut time::TimeHost, pad: usize) -> app::Effect {
+    let name = app::kit_pad_name(pad);
+    let Ok(pad) = u8::try_from(pad) else {
+        return app::Effect::Tell(format!("ERASE: pad {name} has no notes to erase"));
+    };
+    app::Effect::Tell(match time.step_action(time::StepAction::ClearPad { pad }) {
+        Ok(line) if line.is_empty() => {
+            format!("ERASE: the armed track's clip has no notes on pad {name}")
+        }
+        Ok(_) => format!(
+            "ERASE: pad {name}'s notes came out of the armed track's clip   ·   UNDO brings them back"
+        ),
+        Err(e) => format!("ERASE: {e}"),
     })
 }
 
@@ -5878,6 +5923,8 @@ fn player_session(
     let mut preview: Option<Box<preview::Preview>> = None;
     let mut preview_back: Option<Box<preview::Preview>> = None;
     let mut views_swapped = 0u64;
+    // All four PAD BANK buttons: the screen pictures' names this run.
+    let mut picture_names = screen_picture::Names::default();
     let mut recolour = false;
     let (mut shown_heads, mut heads_at) = (sampler::Playheads::default(), Instant::now());
     // The Grain tab's cloud box, while the audio thread holds it: filled and
@@ -7034,6 +7081,13 @@ fn player_session(
                         found_plugins.entries().len()
                     ));
                 }
+                // All four PAD BANK buttons: the picture of the screen goes to
+                // the store (files/screens/).
+                gui::FromUi::ScreenPicture(png) => {
+                    let line = screen_picture::save(&store, &mut picture_names, png);
+                    out.note(&line);
+                    out.show(gui::ToUi::Tell(line));
+                }
                 gui::FromUi::SaveBrowserLists(text) => {
                     if !store.saves() {
                         out.note("browser: Recent and Favourites not kept (no data folder)");
@@ -7947,7 +8001,11 @@ fn player_session(
                     note,
                     pressed: true,
                 }) if controller.on() && Some(note) == app.map.q_link => {
-                    controller.next_bank();
+                    if app.shift_held() {
+                        controller.prev_bank();
+                    } else {
+                        controller.next_bank();
+                    }
                 }
                 Some(ControlEvent::Button {
                     note,
@@ -7959,6 +8017,25 @@ fn player_session(
                 Some(ControlEvent::Button { note, .. })
                     if controller.on()
                         && (Some(note) == app.map.q_link || app.map.bank_of(note).is_some()) => {}
+                // MAIN held (the MPC's hold MAIN): a pad picks that track;
+                // it plays nothing.
+                Some(ControlEvent::PadDown { pad, .. })
+                    if (pad as usize) < 16 && app.main_held().is_some() =>
+                {
+                    mute_pressed[pad as usize] = true;
+                    fx.extend(app.main_pick(pad as usize));
+                }
+                // COPY held over the kit's pads (the MPC's COPY, and with
+                // SHIFT its Delete): the first pad is copied onto the next
+                // ones, or each pad is emptied; they play nothing.
+                Some(ControlEvent::PadDown { pad, .. })
+                    if (pad as usize) < 16 && app.copy_held() && app.pads_play_kit() =>
+                {
+                    mute_pressed[pad as usize] = true;
+                    if let Some(more) = app.copy_pad(pad as usize) {
+                        fx.extend(more);
+                    }
+                }
                 // The Pads tab's Perform view: a pad picks the set's pad
                 // there; a throw plays while held (or its bar), so it can
                 // be heard (held even when the pad latches, so nothing keeps
@@ -8052,6 +8129,30 @@ fn player_session(
                 {
                     fx.extend(live_erase(&mut time, app.kit_pad(pad as usize)));
                 }
+                // ERASE + a kit pad while stopped: its notes out of the
+                // armed track's clip at once; it plays nothing.
+                Some(ControlEvent::PadDown { pad, .. })
+                    if (pad as usize) < 16
+                        && app.erase_held()
+                        && app.pads_play_kit()
+                        && !time.info().state.rolling() =>
+                {
+                    mute_pressed[pad as usize] = true;
+                    fx.push(erase_pad_notes(&mut time, app.kit_pad(pad as usize)));
+                }
+                // SHIFT + a kit pad: picked, not played (the MPC's way to
+                // pick a pad in the middle of a song).
+                Some(ControlEvent::PadDown { pad, .. })
+                    if (pad as usize) < 16
+                        && app.shift_held()
+                        && !app.erase_held()
+                        && app.pads_play_kit() =>
+                {
+                    mute_pressed[pad as usize] = true;
+                    if let Some(more) = app.pick_pad_quietly(pad as usize) {
+                        fx.extend(more);
+                    }
+                }
                 Some(ControlEvent::PadUp { pad })
                     if (pad as usize) < 16 && time.erases(app.kit_pad(pad as usize) as u8) =>
                 {
@@ -8060,6 +8161,9 @@ fn player_session(
                 }
                 Some(ControlEvent::PadDown { pad, velocity }) if (pad as usize) < 16 => {
                     let pad = pad as usize;
+                    // FULL LEVEL held: this hit sets the level every hit
+                    // plays at, this one first.
+                    fx.extend(app.full_level_hit(velocity));
                     let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
                     out.loop_start(pad_starts_loop(
                         &mut looper,
@@ -8646,12 +8750,15 @@ fn player_session(
         }
         // The PAD BANK buttons found so far: the bank playing is lit, or
         // TRACK MUTE's bank while the pads mute tracks.
-        if bank_lights && (app.pads_are_steps() || controller.on()) {
+        if bank_lights && ((app.pads_are_steps() && app.main_held().is_none()) || controller.on()) {
             // STEP SEQ's pages, or controller mode's banks: sent with the
             // pads' lights below.
             pages_shown = None;
         } else if bank_lights {
-            let bank = Some(if app.mute_keys() == app::MuteKeys::Tracks {
+            let bank = Some(if let Some(b) = app.main_held() {
+                // MAIN held: which 16 tracks the pads pick from.
+                b % 4
+            } else if app.mute_keys() == app::MuteKeys::Tracks {
                 app.mute_bank() % 4
             } else if app.pads_are_perform() {
                 // The Perform set's page.
@@ -9185,6 +9292,19 @@ fn player_session(
                 }
                 pages_shown = Some(pages);
             }
+        } else if let Some(bank) = app.main_held() {
+            // MAIN held: the pads are tracks, the one picked white.
+            pages_shown = None;
+            let first = bank * 16;
+            let want = track_pick_colours(time.armed().map(|a| a.wrapping_sub(first)), |p| {
+                time.mute_light(first + p)
+            });
+            for pad in 0..16 {
+                if mute_shown.is_none_or(|s| s[pad] != want[pad]) {
+                    ports.send(false, &akai::pad_colour(pad as u8, want[pad]))?;
+                }
+            }
+            mute_shown = Some(want);
         } else if let Some(s) = step_pads {
             let steps = step_view.get_or_insert_with(|| time.steps());
             let playing = step_keys::playing(steps, time.info().position);
@@ -10822,6 +10942,41 @@ mod tests {
     }
 
     /// UNDO on the takes says what it took back, in place of the hint.
+    /// ERASE + a kit pad while stopped: that pad's notes come out of the
+    /// armed track's clip at once, one take UNDO brings back; a pad with
+    /// no notes says so. Live erase starts while recording, or while only
+    /// playing with the kit on the pads, never while stopped.
+    #[test]
+    fn erase_and_a_pad_takes_its_notes_out_while_stopped() {
+        use mpfree_seq::{Clip, Note};
+        let mut time = time::TimeHost::new(RATE, 120.0).unwrap();
+        let mut beat = Clip::new("beat", 3840);
+        beat.notes = vec![
+            Note::new(0, 100, 0, 100),
+            Note::new(960, 100, 2, 100),
+            Note::new(1920, 100, 0, 90),
+        ];
+        time.put_clip(beat).unwrap();
+        time.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        let told = |e: app::Effect| match e {
+            app::Effect::Tell(t) => t,
+            e => panic!("{e:?}"),
+        };
+        let line = told(erase_pad_notes(&mut time, 0));
+        assert!(line.contains("pad A1's notes came out"), "{line}");
+        let line = told(erase_pad_notes(&mut time, 0));
+        assert!(line.contains("no notes on pad A1"), "{line}");
+        let undo = time.act(TimeAction::Undo).unwrap();
+        assert!(undo.starts_with("undo: edit"), "{undo}");
+        assert!(told(erase_pad_notes(&mut time, 0)).contains("came out"));
+        // When live erase starts.
+        let mut app = app::App::new(RATE, false);
+        app.start();
+        assert!(!live_erase_starts(&app, &time), "ERASE isn't held");
+        app.button(app.map.erase.unwrap(), true, 0.0);
+        assert!(!live_erase_starts(&app, &time), "stopped");
+    }
+
     #[test]
     fn undo_and_redo_say_what_they_did() {
         assert_eq!(
@@ -11029,6 +11184,22 @@ mod tests {
             "pad mute: pads B1-B16 have no mixer strips of their own yet (A1-A16 have): mute the track"
         );
         assert_eq!(mix.pad_mutes(), 0);
+
+        // MAIN held: the picked track white, a track playing bright green,
+        // the others dim green, no track dark.
+        let lights = |t: usize| {
+            (t < 6).then_some(time::MuteLight {
+                launched: t == 1,
+                ..time::MuteLight::default()
+            })
+        };
+        let c = track_pick_colours(Some(2), lights);
+        let green = akai::KIT_COLOURS[3];
+        assert_eq!(
+            (c[1], c[2], c[3], c[6]),
+            (akai::hit_colour(green), step_keys::PLAYHEAD, green, [0; 3])
+        );
+        assert_eq!(track_pick_colours(None, lights)[2], green);
 
         let kit = sound_colours(std::array::from_fn(|p| p < 12), 1);
         let [amber, blue, _, green, red, ..] = akai::KIT_COLOURS;

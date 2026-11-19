@@ -93,11 +93,11 @@ const POLY: &[PlanPage] = &[
         ],
     ),
     // Voice: unison moved here when the supersaw's knobs filled the Osc
-    // page (16 a page, one per Q-Link).
+    // page (16 a page, one per Q-Link). Age beside Glide, as on Analog's.
     pg(
         "Voice",
         &["Voice", "Unison", "Output"],
-        &[pp::GLIDE, pp::UNISON_DETUNE, pp::LEVEL, pp::PAN],
+        &[pp::GLIDE, pp::AGE, pp::UNISON_DETUNE, pp::LEVEL],
     ),
     // Routes: what the mod wheel, breath, foot, velocity and the rest move.
     // The depths are what a player tunes.
@@ -541,6 +541,36 @@ const WIND: &[PlanPage] = &[
     ),
 ];
 
+use mpfree_synth::choir_params as ch;
+
+/// Choir: the singers and the vowel (with how it moves), the swell with
+/// the vibrato, the ensemble, then the playing. The Q-Links take what
+/// players ride: the vowel, how many singers and how far apart, the
+/// brightness; the swell's ends, the vibrato and drift; the ensemble's
+/// amount, depth, sweep and width; the glide, pressure and level.
+const CHOIR: &[PlanPage] = &[
+    pg(
+        "Choir",
+        &["Choir", "Vowel move"],
+        &[ch::VOWEL, ch::SINGERS, ch::DETUNE, ch::BRIGHTNESS],
+    ),
+    pg(
+        "Shape",
+        &["Swell", "Vibrato"],
+        &[ch::ATTACK, ch::RELEASE, ch::VIBRATO, ch::DRIFT],
+    ),
+    pg(
+        "Ensemble",
+        &["Ensemble"],
+        &[ch::ENSEMBLE, ch::DEPTH, ch::SLOW_RATE, ch::WIDTH],
+    ),
+    pg(
+        "Play",
+        &["Voice", "Pressure", "Output"],
+        &[ch::GLIDE, ch::PRESS_SWELL, ch::PRESS_VOWEL, ch::LEVEL],
+    ),
+];
+
 fn known(id: &str) -> Option<&'static [PlanPage]> {
     match id {
         "mpfree.poly" => Some(POLY),
@@ -555,6 +585,7 @@ fn known(id: &str) -> Option<&'static [PlanPage]> {
         "mpfree.strings" => Some(STRINGS),
         "mpfree.bass" => Some(BASS),
         "mpfree.wind" => Some(WIND),
+        "mpfree.choir" => Some(CHOIR),
         _ => None,
     }
 }

@@ -503,6 +503,15 @@ pub struct TimeHost {
     pub click_gain: f32,
     /// The device the transport follows, for what is said while it waits.
     leader: Option<String>,
+    /// Each track's Quantise grid before SHIFT + TC turned it off (0:
+    /// none yet), so SHIFT + TC turns the same one back on.
+    quantise_was: Vec<u32>,
+    /// Where PLAY (bar 1 for PLAY START) last started the transport from
+    /// stopped, for SHIFT + PLAY to play from again. None until then.
+    play_from: Option<Tick>,
+    /// The count-in's bars before SHIFT + OVERDUB turned it off (0: none
+    /// yet), so SHIFT + OVERDUB gives the same back.
+    count_in_was: u8,
 }
 
 /// A step's parameter lock (`value`) or its end (`None`), `offset` frames
@@ -512,6 +521,9 @@ pub type LockOut = (u32, mpfree_play::mpfree_param::ParamAddr, Option<f32>);
 /// A move lane's value, `offset` frames into the period (a lane's end
 /// comes as a [`LockOut`] unlock).
 pub type LaneOut = (u32, mpfree_play::mpfree_param::ParamAddr, f32);
+
+/// The grid SHIFT + TC turns Quantise on at the first time: 1/16.
+pub const QUANTISE_ON: u32 = 240;
 
 /// Locks kept for the mixer in one period (more are dropped).
 const MAX_LOCKS: usize = 256;
@@ -551,6 +563,9 @@ impl TimeHost {
             metronome: false,
             click_gain: click_gain(CLICK_DB),
             leader: None,
+            quantise_was: vec![0; mpfree_seq::MAX_TRACKS],
+            play_from: None,
+            count_in_was: 0,
         };
         host.audio.receive();
         Ok(host)
@@ -590,6 +605,90 @@ impl TimeHost {
     /// follow), if any.
     pub fn armed(&self) -> Option<usize> {
         self.control.armed()
+    }
+
+    /// SHIFT + TC (the MPC's TC On/Off): the armed track's Quantise while
+    /// recording turns off, or back on at the grid it had (1/16 the first
+    /// time), as the Record tab's Quantise row sets it. What to say.
+    pub fn toggle_record_quantise(&mut self) -> Result<String, String> {
+        let t = self.armed().ok_or("pick a track first")?;
+        let track = self
+            .control
+            .project
+            .tracks
+            .get(t)
+            .ok_or_else(|| format!("no track {}", t + 1))?;
+        let name = track.name.clone();
+        let grid = match track.record_quantise {
+            Some(g) => {
+                if let Some(w) = self.quantise_was.get_mut(t) {
+                    *w = g;
+                }
+                None
+            }
+            None => Some(
+                self.quantise_was
+                    .get(t)
+                    .copied()
+                    .filter(|&g| g > 0)
+                    .unwrap_or(QUANTISE_ON),
+            ),
+        };
+        self.act(TimeAction::RecordQuantise { track: t, grid })?;
+        Ok(match grid {
+            Some(g) => format!(
+                "Quantise on: {name} records each note on the nearest {}   ·   SHIFT + TC: off",
+                mpfree_time_ui::view::grid_name(g)
+            ),
+            None => {
+                format!("Quantise off: {name} records the notes as played   ·   SHIFT + TC: on")
+            }
+        })
+    }
+
+    /// SHIFT + PLAY (the MPC's play from the last start): the transport
+    /// plays from where PLAY last started it; while playing, the playhead
+    /// jumps back there. Before PLAY has started anything, it plays from
+    /// where it is, as PLAY does. What to say.
+    pub fn play_back(&mut self) -> Result<String, String> {
+        let info = self.info();
+        let Some(at) = self.play_from else {
+            self.act(TimeAction::Transport(Command::Play))?;
+            return Ok("SHIFT + PLAY: playing from here (PLAY hasn't started anything yet)".into());
+        };
+        let place = control::bar_beat(at, info.meter);
+        if !self.command(Command::Locate(at)) {
+            return Err("transport: command queue full".into());
+        }
+        if info.state.rolling() {
+            return Ok(format!("SHIFT + PLAY: back to {place}, where PLAY started"));
+        }
+        if !self.command(Command::Play) {
+            return Err("transport: command queue full".into());
+        }
+        Ok(format!(
+            "SHIFT + PLAY: playing from {place}, where PLAY last started"
+        ))
+    }
+
+    /// SHIFT + OVERDUB (the MPC's Count In on or off): the count-in off,
+    /// or back to the bars it had (1 bar the first time). What to say.
+    pub fn toggle_count_in(&mut self) -> Result<String, String> {
+        let now = self.info().count_in;
+        let bars = if now > 0 {
+            self.count_in_was = now;
+            0
+        } else {
+            self.count_in_was.max(1)
+        };
+        if !self.command(Command::SetCountIn(bars)) {
+            return Err("transport: command queue full".into());
+        }
+        Ok(match bars {
+            0 => "Count-in off: REC starts recording at once   ·   SHIFT + OVERDUB: on".into(),
+            1 => "Count-in on: 1 bar before recording   ·   SHIFT + OVERDUB: off".into(),
+            n => format!("Count-in on: {n} bars before recording   ·   SHIFT + OVERDUB: off"),
+        })
     }
 
     /// The other armed tracks, a bit each, without the armed one
@@ -920,6 +1019,15 @@ impl TimeHost {
     /// Carry out a touch on the time engine's screens. Returns a line for
     /// the log.
     pub fn act(&mut self, a: TimeAction) -> Result<String, String> {
+        // Where PLAY starts from, for SHIFT + PLAY ([`TimeHost::play_back`]).
+        let info = self.info();
+        if info.state == mpfree_transport::State::Stopped {
+            match a {
+                TimeAction::Transport(Command::Play) => self.play_from = Some(info.position),
+                TimeAction::Transport(Command::PlayStart) => self.play_from = Some(0),
+                _ => {}
+            }
+        }
         self.control.clock_waits = self.audio.clock_waits();
         let r = self.control.act(a);
         self.sent(r)
@@ -1049,11 +1157,13 @@ impl TimeHost {
         self.audio.touch_dropped() + self.control.touch_lost()
     }
 
-    /// Live erase (ERASE held on a pad while recording, the MPC's way):
-    /// from the coming period, while the transport records, the armed
-    /// track's notes of sound `note` (a pad's number) are erased as the
-    /// playhead reaches them, with that sound's locks, into the take being
-    /// recorded, so UNDO brings them back; `on` false stops it.
+    /// Live erase (ERASE held on a pad while the transport plays, the
+    /// MPC's way): from the coming period, while the transport records or
+    /// plays, the armed track's notes of sound `note` (a pad's number) are
+    /// erased as the playhead reaches them, with that sound's locks, into
+    /// the take being recorded, or while only playing a take of their own
+    /// for the hold (`mpfree_play::ERASE_TAKES`), so UNDO brings them back;
+    /// `on` false stops it.
     pub fn erase_sound(&mut self, note: u8, on: bool) {
         self.audio.erase_sound(note, on);
     }
@@ -2804,6 +2914,51 @@ mod tests {
         h.erase_none();
         run(&mut h, &mut pads, 3 * BAR - 1000, &[]);
         assert_eq!(pads_in(&h), [6], "let go: nothing more");
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Live erase while only playing (the button combos of 19 Nov): with no
+    /// take recording, the hold is a take of its own, "erase 1", which UNDO
+    /// brings back, leaving the recorded take as it was.
+    #[test]
+    fn live_erase_while_only_playing_is_a_take_of_its_own() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::SetLoop(Some((0, 3840))));
+        h.act(TimeAction::NewClip { track: 0, slot: 0 }).unwrap();
+        run(
+            &mut h,
+            &mut pads,
+            BAR - 1000,
+            &[(22_969, 5, 100, 2000), (26_414, 6, 100, 2000)],
+        );
+        let pads_in = |h: &TimeHost| {
+            let mut n: Vec<u8> = h
+                .control
+                .project
+                .clip(0, 0)
+                .unwrap()
+                .notes
+                .iter()
+                .map(|n| n.note)
+                .collect();
+            n.sort();
+            n
+        };
+        assert_eq!(pads_in(&h), [5, 6]);
+        // Punch out: it plays on.
+        h.command(Command::Record);
+        run(&mut h, &mut pads, BAR + 1000, &[]);
+        assert_eq!(h.info().state, State::Playing);
+        h.erase_sound(5, true);
+        run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+        h.erase_sound(5, false);
+        assert_eq!(pads_in(&h), [6], "pad 5's note came out while playing");
+        let said = h.act(TimeAction::Undo).unwrap();
+        assert!(said.starts_with("undo: erase 1"), "{said}");
+        assert_eq!(pads_in(&h), [5, 6], "UNDO brought it back");
+        let said = h.act(TimeAction::Undo).unwrap();
+        assert!(said.starts_with("undo: take 1"), "{said}");
         assert_eq!(h.dropped(), 0);
     }
 
@@ -5356,6 +5511,98 @@ mod tests {
         let at = |frames: u64| frames as f64 * 960.0 * 2.0 / f64::from(RATE);
         assert!((lane.value_at(at(BAR)).unwrap() - 0.5).abs() < 1e-3);
         assert!((lane.value_at(at(2 * BAR - 1500)).unwrap() - 1.0).abs() < 1e-3);
+    }
+
+    /// SHIFT + TC (the MPC's TC On/Off): the armed track's Quantise while
+    /// recording turns on at 1/16, off, and back on at the grid it had.
+    #[test]
+    fn shift_tc_turns_the_armed_tracks_quantise_off_and_back_on() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let line = h.toggle_record_quantise().unwrap();
+        assert!(line.starts_with("Quantise on: Track 1"), "{line}");
+        assert_eq!(h.state().tracks[0].record_quantise, Some(QUANTISE_ON));
+        h.act(TimeAction::RecordQuantise {
+            track: 0,
+            grid: Some(120),
+        })
+        .unwrap();
+        let line = h.toggle_record_quantise().unwrap();
+        assert!(line.starts_with("Quantise off: Track 1"), "{line}");
+        assert_eq!(h.state().tracks[0].record_quantise, None);
+        h.toggle_record_quantise().unwrap();
+        assert_eq!(
+            h.state().tracks[0].record_quantise,
+            Some(120),
+            "the grid it had"
+        );
+    }
+
+    /// SHIFT + PLAY: before PLAY has started anything it plays from where
+    /// it is; then it plays again from where PLAY last started, and while
+    /// playing jumps back there. SHIFT + OVERDUB: the count-in off, and
+    /// back to the bars it had (1 the first time).
+    #[test]
+    fn shift_play_goes_back_to_where_play_started_and_shift_overdub_toggles_the_count_in() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let run = |h: &mut TimeHost, pads: &mut Fake, frames: u64| {
+            let to = pads.frame + frames;
+            while pads.frame < to {
+                h.period(PERIOD, pads);
+                pads.frame += u64::from(PERIOD);
+            }
+        };
+        let bar = 4 * mpfree_transport::PPQ as i64;
+        let line = h.play_back().unwrap();
+        assert!(line.contains("playing from here"), "{line}");
+        run(&mut h, &mut pads, 4096);
+        assert_eq!(h.info().state, State::Playing);
+        assert!(h.command(Command::StopAndRewind));
+        run(&mut h, &mut pads, 4096);
+        // PLAY from bar 3, on into bar 4.
+        assert!(h.command(Command::Locate(2 * bar)));
+        run(&mut h, &mut pads, 4096);
+        h.act(TimeAction::Transport(Command::Play)).unwrap();
+        run(&mut h, &mut pads, 100_000);
+        assert!(h.info().position > 3 * bar);
+        assert_eq!(
+            h.play_back().unwrap(),
+            "SHIFT + PLAY: back to bar 3, where PLAY started"
+        );
+        run(&mut h, &mut pads, 4096);
+        let at = h.info().position;
+        assert!((2 * bar..2 * bar + 960).contains(&at), "{at}");
+        // Stopped: from bar 3 again, playing.
+        assert!(h.command(Command::Stop));
+        run(&mut h, &mut pads, 50_000);
+        assert_eq!(h.info().state, State::Stopped);
+        assert_eq!(
+            h.play_back().unwrap(),
+            "SHIFT + PLAY: playing from bar 3, where PLAY last started"
+        );
+        run(&mut h, &mut pads, 4096);
+        assert_eq!(h.info().state, State::Playing);
+        assert!((2 * bar..2 * bar + 960).contains(&h.info().position));
+
+        // The count-in.
+        assert_eq!(h.info().count_in, 0);
+        assert_eq!(
+            h.toggle_count_in().unwrap(),
+            "Count-in on: 1 bar before recording   ·   SHIFT + OVERDUB: off"
+        );
+        run(&mut h, &mut pads, 4096);
+        assert_eq!(h.info().count_in, 1);
+        assert!(h.command(Command::SetCountIn(2)));
+        run(&mut h, &mut pads, 4096);
+        assert!(h.toggle_count_in().unwrap().starts_with("Count-in off"));
+        run(&mut h, &mut pads, 4096);
+        assert_eq!(h.info().count_in, 0);
+        assert!(h
+            .toggle_count_in()
+            .unwrap()
+            .starts_with("Count-in on: 2 bars"));
+        run(&mut h, &mut pads, 4096);
+        assert_eq!(h.info().count_in, 2, "the bars it had");
     }
 
     /// The note editor on the focused clip: Edit opens it; Timing Correct

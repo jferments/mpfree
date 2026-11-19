@@ -1063,6 +1063,7 @@ impl App {
     pub fn live_map(&self) -> LiveMap {
         LiveMap {
             pad_level: self.pad_level,
+            half: self.settings.half_level,
             curve: self.settings.curve,
             layout: self.pad_layout,
         }
@@ -1486,6 +1487,7 @@ pub fn arp_info(id: u16) -> Option<ParamInfo> {
 #[derive(Clone, Copy, Debug)]
 pub struct LiveMap {
     pad_level: super::PadLevel,
+    half: u8,
     curve: super::Curve,
     layout: Option<[PadNotes; 16]>,
 }
@@ -1496,7 +1498,7 @@ impl LiveMap {
     pub fn velocity(&self, v: u8) -> u8 {
         match self.pad_level {
             super::PadLevel::Full => 127,
-            super::PadLevel::Half => 64,
+            super::PadLevel::Half => self.half,
             super::PadLevel::Off => self.curve.apply(v),
         }
     }

@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/app.rs rust/mpfree-controller
-checked: 2026-11-19 a6fb29b2
+checked: 2026-11-19 f0b39161
 -->
 
 # A tour of the MPC One
@@ -16,7 +16,7 @@ The pads are numbered 1 to 16, starting at the bottom left and going across, row
 
 **Pad banks.** Sixteen sounds are not always enough, so the four **PAD BANK** buttons (A, B, C, D) switch the pads to another set of 16. Hold **SHIFT** while pressing one, or press it twice, to reach banks E to H. A kit has a pad for every one of them, 128 in all, so it can have a different sound on every pad in every bank.
 
-**Full Level.** Press **FULL LEVEL** when you want every hit at full volume, however you play; press it again to go back. **SHIFT + FULL LEVEL** does the same at half volume.
+**Full Level.** Press **FULL LEVEL** when you want every hit at full volume, however you play; press it again to go back. **SHIFT + FULL LEVEL** does the same at half volume. To pick your own level, hold **FULL LEVEL** and hit a pad as hard as every hit should play (see [Buttons and controls](../reference/controls.md#everywhere)).
 
 ## The screen
 
@@ -41,7 +41,7 @@ Along the bottom right are the buttons that control time, like the buttons on a 
 - **STOP** stops. Press it again to silence every sound still ringing.
 - **REC** records what you play.
 - **OVERDUB** records on top of what is already there, without erasing it.
-- **TAP TEMPO**: tap it in time with the music to set the tempo.
+- **TAP TEMPO**: tap it in time with the music to set the tempo. Hold it and turn the data wheel to change the tempo a BPM at a time.
 
 ## The mode buttons
 

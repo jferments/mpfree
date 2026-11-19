@@ -1,10 +1,10 @@
 <!--
 covers: rust/mpfree-simd tools/simd_arm_cost.py
-checked: 2026-11-19 79fc6f63
+checked: 2026-11-19 f0b39161
 -->
 # NEON kernels (`mpfree-simd`)
 
-**Status:** built 2026-11-19 (the synth architecture's CPU work C3): the crate, its first kernel (the supersaw's saws) with its plain Rust twin, the bit-for-bit check under qemu-arm, the ARMv7 instruction count and the bench cases that time both (PR #658); Poly's supersaw runs on it, the bench's `--plain` turns the kernels off, the Dev page says which code runs, and a second kernel does the Choir's formant filters, four voices at once, ready for the Choir engine (the next pull request). **Nothing here has run on the MPC**: whether the kernel stays is the device round's call.
+**Status:** built 2026-11-19 (the synth architecture's CPU work C3): the crate, its first kernel (the supersaw's saws) with its plain Rust twin, the bit-for-bit check under qemu-arm, the ARMv7 instruction count and the bench cases that time both (PR #658); Poly's supersaw runs on it, the bench's `--plain` turns the kernels off, the Dev page says which code runs, a second kernel does the Choir's formant filters, four voices at once, ready for the Choir engine (#663); and two more render the divide-down bank of Strings and the combo organ four notes at a time (#686).  **Nothing here has run on the MPC**: whether the kernel stays is the device round's call.
 
 The decision this builds is in [Synth architecture, NEON (lever 6)](synth-architecture.md#neon-lever-6-the-decision), and why the compiler can't do it for us in [Profiling, NEON](profiling.md#neon).
 
@@ -18,13 +18,13 @@ The MPC One's Cortex-A17 cores have NEON, four `f32` lanes an instruction, and t
 
 ## Which code runs
 
-`table_sum` and `formants4` (and each later kernel) take the NEON kernel when all three hold, and the twin otherwise:
+Each kernel (`table_sum`, `formants4`, `waves4`, `mix4`) takes NEON when all three hold, and the twin otherwise:
 
 1. the program is an ARMv7 Linux build;
 2. the processor has NEON, asked of Linux once with `getauxval(AT_HWCAP)` (bit 12, `HWCAP_NEON`); the MPC's cores and qemu-arm both say yes;
 3. the kernels are on: `mpfree_simd::set_enabled` (on by default), for the device A/B and as a way out if a kernel ever misbehaves.
 
-`path()` says which runs now and `status()` says why in a few words ("NEON", "plain Rust: NEON turned off", "plain Rust: this processor has no NEON", "plain Rust: not an ARMv7 build"). The Dev page's **NEON kernels** row shows it, as the audio thread starts (with the Denormals row), green for NEON and amber for an ARM build without it; `mpfree-bench` prints it at the top of its run, and `mpfree-bench --plain` turns the kernels off for the whole run (any mode), for the device A/B. `table_sum_on` and `formants4_on` run a chosen path and say which ran, for the bench and the tests. A call that asked for NEON on a processor with it but ran the twin because its table didn't fit is counted (`fallbacks()`), so a fallback is never silent; it stays 0 unless a caller is wrong.
+`path()` says which runs now and `status()` says why in a few words ("NEON", "plain Rust: NEON turned off", "plain Rust: this processor has no NEON", "plain Rust: not an ARMv7 build"). The Dev page's **NEON kernels** row shows it, as the audio thread starts (with the Denormals row), green for NEON and amber for an ARM build without it; `mpfree-bench` prints it at the top of its run, and `mpfree-bench --plain` turns the kernels off for the whole run (any mode), for the device A/B. `table_sum_on`, `formants4_on`, `waves4_on` and `mix4_on` run a chosen path and say which ran, for the bench and the tests. A call that asked for NEON on a processor with it but ran the twin because its table didn't fit is counted (`fallbacks()`), so a fallback is never silent; it stays 0 unless a caller is wrong.
 
 ## The first kernel: several oscillators reading one table
 
@@ -55,6 +55,15 @@ The frames after the last whole group of four, and calls with fewer than four, g
 
 **Bit for bit.** The kernel does the twin's arithmetic in the twin's order. ARMv7's `VMLA.F32` rounds the product before it adds (it isn't fused, unlike `VFMA`), as Rust's `a + b * c` does; `VCVT.F32.U32` rounds to nearest, as `as f32` does, and the values it converts are below 2^24 and so exact anyway. NEON always flushes denormals to zero; the app's sound threads turn flush-to-zero on for the scalar unit too ([Synth architecture, Denormals](synth-architecture.md#flatter-worst-periods-lever-5)), so there both paths flush the same values, and away from denormals they agree whatever the mode.
 
+## The third and fourth kernels: the divide-down bank, four notes at a time
+
+The bank (`mpfree_synth::bank::Bank`, shared by Strings and Drawbar's combo organ) renders every note some key uses: one band-limited oscillator a note, its wave added into the buses (Strings' six footage halves, the combo's flute and reed) along each bus's level ramp across the 16-frame control step. As ARMv7 code its waves and that mixing were about 28 % of Strings with 6 keys (profiled under qemu by source line on 19 Nov: the Ensemble is another 37 %, the registers' filters 10 %). A note's wave is a recurrence only in its phase, and its level on a bus a recurrence across frames, so the lanes go across notes, four at a time:
+
+- **`waves4(shape, osc, out, flags)`**: four oscillators' waves (`Osc4`: each lane's phase, step and step as a share of a cycle), `out[frame][lane]`, without the four-point step correction: the saw `t + t - 1`, the square ±1, the cubic `t (t - 1/2) (1 - t)` times its scale. The step correction has five branches and a division, which NEON can't do to the bit, so the kernel flags instead: `flags[frame]` has bit `lane` set where the correction may not be zero (`dt >= 0.25`, or `t` within `2 dt` of the step, or for the square `t` or `h`, half a cycle on). The bank then works those samples out again in full with `dsp::poly_blep4`, exactly as before; most frames have no flag.
+- **`mix4(waves, amp, damp, buses)`**: for each bus and frame, the four oscillators add `wave × level` in lane order, the level stepping on after each frame; an oscillator whose level and step are both zero on a bus is skipped there. The kernel works bus by bus, four frames a round: the four frames' products, then the 4 × 4 block turned over (two `VTRN`, two `VSWP`) so the four notes add into the four frames as vectors, still note by note. A skipped note's products become -0 (adding -0 leaves any sum as it is, as skipping does), and its level is put back as it was.
+
+`Bank::render` runs this where NEON runs (`render4`): four notes at a time in the order they are heard, so each bus gets the notes in the same order as before and the samples are the same to the bit; the one to three notes left over go one at a time. Everywhere else, and with the kernels off, it keeps its note-at-a-time loop (`render1`), the reference: the workstation's cost is unchanged (CI's instruction gate) and `mpfree-bench --plain` on the MPC times the bank exactly as before. With fewer than four notes heard it stays on that loop, which costs less there. `render4` is built only for ARM (and for the tests, which run it everywhere): on the workstation its mere presence, though never called, changed how the compiler inlined `render1` and cost the combo organ 1.2 %, and without it the workstation builds exactly the old loop.
+
 ## How it's checked
 
 `cargo test --target armv7-unknown-linux-gnueabihf -p mpfree-simd` under qemu-arm (CI's `rust-arm` job, "NEON kernels against their plain twins"):
@@ -65,11 +74,12 @@ The frames after the last whole group of four, and calls with fewer than four, g
 - Values so small that their products are denormal, at the smallest and largest tables and with gains near zero, with flush-to-zero on: the same samples. With it off, that test fails, as it should.
 - A table whose length isn't a power of two runs the twin and is counted.
 - The formant kernel: 3,000 random calls on both paths (0 to 16 frames, the Choir's steps, and now and then 17 to 116), filters from 50 Hz to 0.45 of the rate with Q from 0.5 to 50, ringing state, signed gains, silent lanes and gains of -0: samples, state and the untouched rest of `out` the same to the bit; a voice dying away for 4,000 steps of silence with flush-to-zero on; and the Choir workload for 200 blocks.
-- Poly end to end (`mpfree-synth/tests/simd.rs`, run as ARMv7 in the same CI step): every Super preset, and both oscillators on Supersaw with three unison copies (so the second oscillator adds to the first), played for two seconds in uneven blocks with the kernels on and then off: the same samples, and no call fell back. `osc.rs`'s own test checks `Classic::supersaw` against its old loop.
+- The bank's kernels: `waves4` against its twin for 2,000 random sets of four oscillators (steps from 0 to past a quarter of a cycle, phases about to wrap or cross half) on all three shapes, waves and flags to the bit; `mix4` for 3,000 random calls (1 to 8 buses, 0 to 16 frames, notes heard or not, buses and levels at -0); and tiny levels with flush-to-zero on.
+- Poly end to end (`mpfree-synth/tests/simd.rs`, run as ARMv7 in the same CI step): every Super preset, and both oscillators on Supersaw with three unison copies (so the second oscillator adds to the first), played for two seconds in uneven blocks with the kernels on and then off: the same samples, and no call fell back. `osc.rs`'s own test checks `Classic::supersaw` against its old loop. The same test plays all 26 Strings presets and the eight Combo presets with the kernels on and off: the same samples. `bank.rs`'s own test runs four notes at a time against one at a time (on the kernels or their twins) for 300 steps of chords of 1 to 40 notes, steps of 1 to 16 frames, on Strings' six saw buses and on mixed shapes: the same samples, phases and levels.
 
-To be sure the check bites, the kernel was changed by one instruction (a fused `VFMA` in place of the `VMLA` that reads the table, a difference of one rounding): four of the tests failed. The formant kernel was changed three ways (a fused `VFMA` for the sum, its two multiply-adds swapped, and `g v1` in place of `0 + g v1`): each made two to four tests fail.
+To be sure the check bites, the kernel was changed by one instruction (a fused `VFMA` in place of the `VMLA` that reads the table, a difference of one rounding): four of the tests failed. The formant kernel was changed three ways (a fused `VFMA` for the sum, its two multiply-adds swapped, and `g v1` in place of `0 + g v1`): each made two to four tests fail. The bank's kernels were changed six ways (one skip mask dropped, two notes added out of order, a level stepped before its first use, skipped levels not put back, the saw's flag edge moved, the cubic multiplied in another order): each made one or two tests fail.
 
-The twins' own tests run on the workstation too: the saws' twin reads each table linearly and sums in order (against an f64 sum), writes from +0 and adds to what's there, gives the same samples for any block size, and leaves an empty call alone; the formants' twin is five band-passes summed (against the filter written out in f64), passes a sine at a formant's centre at its level and one three octaves up at under 3 %, gives the same samples in any block size, and plays as many frames as the shorter slice.
+The twins' own tests run on the workstation too: the saws' twin reads each table linearly and sums in order (against an f64 sum), writes from +0 and adds to what's there, gives the same samples for any block size, and leaves an empty call alone; the waves' twin flags every frame the step correction touches (for 400 random sets on all three shapes, its wave plus the correction where flagged is the bank's old formula to the bit); the mix's twin is the bank's note-by-note loop to the bit; the formants' twin is five band-passes summed (against the filter written out in f64), passes a sine at a formant's centre at its level and one three octaves up at under 3 %, gives the same samples in any block size, and plays as many frames as the shorter slice.
 
 ## What it costs
 
@@ -81,6 +91,10 @@ The twins' own tests run on the workstation too: the saws' twin reads each table
 | ARMv7 instructions a 128-frame block, 8 Choir voices' formants with their source and mixing, under qemu | 126,280 | 40,486 (32 %) |
 | x86-64 instructions a block, the same case | 39,041 | (not on x86) |
 | Time on the MPC ("Choir formants: 8 voices, plain" against "..., NEON") | device round | device round |
+| ARMv7 instructions a block, Strings Init with 1, 6 and 49 keys, under qemu, with the kernels off and on (`tools/inst_arm_cost.py --plain`, then without) | 130.6k, 186.1k, 327.4k | 130.7k (flat), 161.8k (87 %), 247.9k (76 %) |
+| The same, Strings Orchestra with 6 keys, Drawbar Combo and Combo Reed with 8 | 237.2k, 193.8k, 207.4k | 198.8k (84 %), 138.3k (71 %), 151.4k (73 %) |
+| x86-64 instructions a block, those cases (`instr_gate.py`) | unchanged (the note-at-a-time loop runs) | (not on x86) |
+| Time on the MPC (those cases with and without `mpfree-bench --plain`) | device round | device round |
 
 The twin's ARMv7 loop takes about 16 instructions a saw a frame (two loads, the index and its bounds check, the conversion, two multiply-adds, a load and a store of the frame, and values reloaded from the stack); the kernel takes about 20 for four frames. **Fewer instructions don't prove it is faster**: NEON's lane moves to core registers, its loads and `VUZP` take more cycles each than a plain add, and the A17 runs NEON and VFP in one pipeline. The device round decides; see below.
 
@@ -88,13 +102,13 @@ The bench's workloads play what an engine gives a kernel in a busy song. `mpfree
 
 ## The rule: a kernel stays only if it wins
 
-The device round runs `mpfree-bench` on the MPC as it does today; the two "Supersaw saws" cases and the two "Choir formants" cases are its A/Bs. Each kernel stays if its p99 block is under its twin's; if not, it is removed and the twin stays (`synth-quality.md`, rows N3 and N7). The same round runs the bench again with `--plain` and compares the Supersaw presets' cases (`--compare`), the whole of Poly with the kernel and without. The ask is Ask 5 in the synth library's device asks (project files, `synth-library/device-round-asks.md`).
+The device round runs `mpfree-bench` on the MPC as it does today; the two "Supersaw saws" cases and the two "Choir formants" cases are its A/Bs. Each kernel stays if its p99 block is under its twin's; if not, it is removed and the twin stays (`synth-quality.md`, rows N3 and N7). The same round runs the bench again with `--plain` and compares the Supersaw presets' cases (`--compare`), the whole of Poly with the kernel and without, and the Strings and Combo cases, the bank's A/B (row N10): the bank's kernels stay only if those are faster with them. The ask is Ask 5 in the synth library's device asks (project files, `synth-library/device-round-asks.md`).
 
 If the kernel wins by little, the next things to try are two groups of four frames a round (so the loads of one overlap the arithmetic of the other) and working the addresses out in core registers beside the NEON work.
 
 ## Adding a kernel
 
-1. Write the twin in `plain.rs` the way the engine's loop is now, and move the engine onto it (the sound and the workstation's cost don't change).
+1. Write the twin in `plain.rs` the way the engine's loop is now, and move the engine onto it (the sound and the workstation's cost don't change). Where the kernel needs the loop laid out differently and that would cost the workstation more, keep the engine's loop as the reference and run the new layout only where NEON runs, as the bank does (`render1` and `render4`), build the new layout for ARM and the tests only (`#[cfg(any(target_arch = "arm", test))]`) so the workstation's loop compiles as before, and test the two against each other.
 2. Write the kernel in `neon.rs` doing the twin's operations in the twin's order, lanes across frames; never a fused multiply-add, never a reordered sum.
 3. Give it a safe wrapper that checks every bound the assembly relies on and returns what it didn't do, for the twin.
 4. Test it against the twin under qemu: random shapes, the engine's real sizes, the bench workload, denormals with flush-to-zero on.
@@ -102,4 +116,4 @@ If the kernel wins by little, the next things to try are two groups of four fram
 
 **Wiring the Choir:** the Choir engine (not on main yet) keeps its own copy of `formants4` until it lands; then it calls `mpfree_simd::formants4` instead, and its golden renders show that no bit moved.
 
-**Next kernel:** the shared divide-down bank's oscillators (`Bank::render`, as the combo organ's pull request moves Strings' bank into `mpfree-synth/src/bank.rs`).
+**Next:** the Ensemble (`mpfree_fx::Ensemble`) is now the largest part of Strings as ARMv7 code; it isn't a synth engine's loop and is outside this crate's brief so far.
