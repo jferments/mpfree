@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-fxlab tools/fxprobe
-checked: 2026-11-18 dd1645f
+checked: 2026-11-19 01723ef1
 -->
 # fxlab and FXProbe: measuring our effects against the MPC's
 
@@ -106,6 +106,7 @@ cd rust && cargo build --release -p mpfree-fxlab
 ./target/release/fxlab cards --presets --out /tmp/cards        # every engine and preset
 ./target/release/fxlab quality --out /tmp/quality               # the FX quality report (fx-quality.md)
 ./target/release/fxlab synth --renders --out /tmp/synth         # the synth baseline and renders (synth-quality.md)
+./target/release/fxlab synth --engine Pluck --out /tmp/pluck    # one engine's presets and its own rows
 ./target/release/fxlab plan --effect mpfree.fx.flanger --gains 0,-12 --out /tmp/plan
 ./target/release/fxlab sweep --effect mpfree.fx.drive --out /tmp/sweep
 ./target/release/fxlab programme --short --out /tmp/prog         # short.wav + short.tsv
