@@ -110,10 +110,12 @@ impl InputRow {
     }
 }
 
-/// The rows of the Input section the panel shows while REC is on, in its
-/// order (the [`EventKind::Step`] index on the panel): the chips, then
-/// the knobs and Monitor's switch.
-pub const INPUT_ROWS: [InputRow; 7] = [
+/// The rows of the Input section the panel shows while REC is on (the
+/// [`EventKind::Step`] index on the panel): the chips, the knobs and
+/// Monitor's switch, then Tail and Silence for (one-page step 2f: the Rec
+/// page's last settings, given a home by the Ends they belong to). The
+/// panel puts Tail with the chips and Silence for with the knobs.
+pub const INPUT_ROWS: [InputRow; 9] = [
     InputRow::Set(Row::Source),
     InputRow::Set(Row::Input),
     InputRow::Set(Row::Onto),
@@ -121,7 +123,17 @@ pub const INPUT_ROWS: [InputRow; 7] = [
     InputRow::Set(Row::Threshold),
     InputRow::Set(Row::PreRoll),
     InputRow::Monitor,
+    InputRow::Set(Row::Tail),
+    InputRow::Set(Row::Silence),
 ];
+
+/// Why Tail is faint: it says what comes after a length.
+pub const TAIL_LENGTH_ONLY: &str = "Tail is for Ends After a number of bars";
+/// Why Silence for is faint: it times a silence that ends something.
+pub const SILENCE_FOR_WHY: &str =
+    "Silence for is for Ends On silence, or a Tail that rings out or loops";
+/// Why Tail is faint while Flatten is the Source.
+pub const FLATTEN_ENDS: &str = "Flatten ends when the pad goes quiet: Silence for says how long";
 
 /// What a Q-Link turns while REC is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -321,11 +333,22 @@ pub fn input_list(v: &RecorderView) -> (Vec<Setting>, Vec<Control>, Panel) {
     let busy = "Stop the take first";
     let line_only = v.line_only.as_deref();
     let pad = v.plays == Plays::Pad;
+    let length = s.end == EndAt::Length;
+    let silence = pad || s.end == EndAt::Silence || (length && s.tail != rec_tab::TailAt::Cut);
     let controls = INPUT_ROWS
         .iter()
         .map(|r| match r {
             InputRow::Set(row @ (Row::Threshold | Row::PreRoll)) => {
                 rec_tab::knob(s, *row).faint_because(pad, FLATTEN_STARTS)
+            }
+            InputRow::Set(Row::Tail) if pad => {
+                Control::new(Look::Chip).faint_because(true, FLATTEN_ENDS)
+            }
+            InputRow::Set(Row::Tail) => {
+                Control::new(Look::Chip).faint_because(!length, TAIL_LENGTH_ONLY)
+            }
+            InputRow::Set(Row::Silence) => {
+                rec_tab::knob(s, Row::Silence).faint_because(!silence, SILENCE_FOR_WHY)
             }
             InputRow::Set(Row::Gain) => rec_tab::knob(s, Row::Gain)
                 .faint_because(line_only.is_some(), line_only.unwrap_or("")),
@@ -342,8 +365,13 @@ pub fn input_list(v: &RecorderView) -> (Vec<Setting>, Vec<Control>, Panel) {
             "Input",
             1,
             vec![
-                vec![it(0).labelled(), it(1).labelled(), it(2).labelled()],
-                vec![it(3), it(4), it(5), it(6)],
+                vec![
+                    it(0).labelled(),
+                    it(1).labelled(),
+                    it(2).labelled(),
+                    it(7).labelled(),
+                ],
+                vec![it(3), it(4), it(5), it(8), it(6)],
             ],
         )
         .note("while REC is on")],
@@ -765,6 +793,37 @@ mod tests {
         );
     }
 
+    /// The Ends card reaches every length (step 2f, part 4: the Rec
+    /// page's Length row went): On STOP, On silence, After 1 bar to After
+    /// 32 bars, stopping at each end.
+    #[test]
+    fn the_ends_card_steps_through_every_length() {
+        let mut s = RecSettings::default();
+        let mut seen = vec![ends_text(&s)];
+        for _ in 0..8 {
+            s = rec_tab::stepped(&s, Row::End, 1, 1);
+            seen.push(ends_text(&s));
+        }
+        assert_eq!(
+            seen,
+            [
+                "On STOP",
+                "On silence",
+                "After 1 bar",
+                "After 2 bars",
+                "After 4 bars",
+                "After 8 bars",
+                "After 16 bars",
+                "After 32 bars",
+                "After 32 bars"
+            ]
+        );
+        s = rec_tab::stepped(&s, Row::End, -6, 1);
+        assert_eq!(ends_text(&s), "On silence");
+        s = rec_tab::stepped(&s, Row::End, -5, 1);
+        assert_eq!(ends_text(&s), "On STOP");
+    }
+
     #[test]
     fn rec_records_or_stops_and_a_cards_halves_step_it() {
         let mut w = Recorder::new();
@@ -866,7 +925,9 @@ mod tests {
                 "Gain",
                 "Threshold",
                 "Pre-roll",
-                "Monitor"
+                "Monitor",
+                "Tail",
+                "Silence for"
             ]
         );
         assert_eq!(rows[2].value, "Stay here", "a take stays on the page");
@@ -875,6 +936,19 @@ mod tests {
         assert_eq!(rows[4].value, "-30 dB");
         assert_eq!(rows[6].value, "Off");
         assert!(controls[0].faint, "a take keeps its source");
+        // Tail with the chips, Silence for with the knobs.
+        let lines: Vec<Vec<usize>> = panel.sections[0]
+            .lines
+            .iter()
+            .map(|l| l.iter().map(|it| it.row).collect())
+            .collect();
+        assert_eq!(lines, [vec![0, 1, 2, 7], vec![3, 4, 5, 8, 6]]);
+        assert_eq!(
+            (rows[7].value.as_str(), rows[8].value.as_str()),
+            ("Cut", "1 s")
+        );
+        assert!(matches!(controls[7].look, Look::Chip));
+        assert!(matches!(controls[8].look, Look::Knob { .. }));
         assert!(matches!(
             controls[3].look,
             Look::Knob { bipolar: true, pos, .. } if (pos - 0.5).abs() < 1e-6
@@ -896,6 +970,36 @@ mod tests {
         assert_eq!(rows[6].value, "0.0 dB");
         assert!(controls[3].faint && controls[6].faint);
         assert_eq!(controls[6].why, LINE_ONLY);
+        // Tail is for a length; Silence for for On silence, or a tail
+        // that rings out or loops.
+        assert_eq!(
+            (controls[7].why.as_str(), controls[8].why.as_str()),
+            (TAIL_LENGTH_ONLY, SILENCE_FOR_WHY)
+        );
+        assert!(controls[7].faint && controls[8].faint, "Ends On STOP");
+        v.settings.end = EndAt::Silence;
+        let (_, controls, _) = input_list(&v);
+        assert!(controls[7].faint && !controls[8].faint);
+        v.settings.end = EndAt::Length;
+        let (_, controls, _) = input_list(&v);
+        assert!(
+            !controls[7].faint && controls[8].faint,
+            "a cut has no silence"
+        );
+        v.settings.tail = rec_tab::TailAt::Ring;
+        let (_, controls, _) = input_list(&v);
+        assert!(!controls[7].faint && !controls[8].faint);
+        assert_eq!(input_action(7, 1), Some(RecorderAction::Step(Row::Tail, 1)));
+        assert_eq!(
+            input_action(8, -1),
+            Some(RecorderAction::Step(Row::Silence, -1))
+        );
+        // Flatten: it ends on the pad's silence.
+        v.plays = Plays::Pad;
+        v.settings.end = EndAt::Press;
+        let (_, controls, _) = input_list(&v);
+        assert!(controls[7].faint && !controls[8].faint);
+        assert_eq!(controls[7].why, FLATTEN_ENDS);
     }
 
     #[test]

@@ -116,6 +116,8 @@ impl Rig {
         match a {
             SynthAction::Set { id, value } => self.node.set_param(*id, *value),
             SynthAction::Preset(i) => self.node.load_preset(&Poly::presets()[*i]),
+            // The app opens the browser's preset picker; nothing changes here.
+            SynthAction::OpenPresets => {}
         }
     }
 
@@ -265,6 +267,21 @@ fn choices_and_switches_change_on_a_tap() {
         r.tap(centre(g.parts[0])).is_empty(),
         "already at the first choice"
     );
+}
+
+/// A tap on the preset's name above the page asks for the engine's
+/// presets (layout spec 4g); the page tabs beside it still change page.
+#[test]
+fn a_tap_on_the_presets_name_opens_the_engines_presets() {
+    let mut r = rig("Pluck");
+    let rect = r.ui.rect_of(TITLE).unwrap();
+    let bar = r.ui.get::<TitleBar>(TITLE).unwrap();
+    assert!(bar.opens, "an engine's name opens its presets");
+    assert_eq!(bar.title, "Pluck");
+    let name = bar.name_rect(rect);
+    assert!(name.right() <= bar.tab_rect(rect, 0).x, "clear of the tabs");
+    assert_eq!(r.tap(centre(name)), vec![SynthAction::OpenPresets]);
+    r.page("Filter");
 }
 
 #[test]

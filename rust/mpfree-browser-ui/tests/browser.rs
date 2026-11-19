@@ -386,11 +386,8 @@ fn every_sample_screen_draws() {
 }
 
 fn place_labels(b: &Browser) -> Vec<&'static str> {
-    b.screen()
-        .sources
-        .iter()
-        .map(|i| SOURCES[*i].label())
-        .collect()
+    let s = b.screen();
+    s.sources.iter().map(|i| s.place_label(*i)).collect()
 }
 
 #[test]
@@ -401,21 +398,21 @@ fn the_preset_picker_tries_each_preset_and_cancel_puts_the_old_one_back() {
     });
     let s = b.screen();
     assert_eq!(s.title, "FM presets");
-    assert_eq!(place_labels(&b), ["Instruments", "Recent", "Favourites"]);
-    assert!(s.filters.is_empty());
-    assert_eq!(s.list_buttons, [Button::Cancel]);
-    assert!(!s.can_go_back);
     assert_eq!(
-        names(&b),
-        ["Glass bell.preset", "Metal bass.preset", "Soft keys.preset"]
+        place_labels(&b),
+        ["Factory", "Yours", "Recent", "Favourites"]
     );
+    assert!(s.filters.is_empty());
+    assert_eq!(s.list_buttons, [Button::SavePreset, Button::Cancel]);
+    assert!(!s.can_go_back);
+    assert_eq!(s.path, "Yours \u{b7} FM");
+    assert_eq!(names(&b), ["Glass bell", "Metal bass", "Soft keys"]);
     // Only loading: nothing is renamed or deleted (the row's star stars it).
     assert_eq!(s.detail.buttons, [Button::Load]);
     b.erase();
-    b.back();
     b.go_source(src("Samples"));
     assert_eq!(b.screen().modal, Modal::None);
-    assert_eq!(b.screen().path, "Instruments / FM");
+    assert_eq!(b.screen().path, "Yours \u{b7} FM");
     // Turning the dial puts each preset on the track to play.
     b.take_actions();
     b.dial(1);
@@ -458,7 +455,7 @@ fn loading_from_the_preset_picker_closes_it() {
     let s = b.screen();
     assert!(s.rows.is_empty());
     let (msg, err) = s.status.unwrap();
-    assert!(msg.contains("No Wavetable presets yet"), "{msg}");
+    assert!(msg.contains("No Wavetable presets of yours yet"), "{msg}");
     assert!(!err);
     // Recent in a preset picker shows only that engine's presets.
     b.go_source(src("Recent"));
@@ -468,7 +465,7 @@ fn loading_from_the_preset_picker_closes_it() {
         engine: "FM".into(),
     });
     b.go_source(src("Recent"));
-    assert_eq!(names(&b), ["Glass bell.preset"]);
+    assert_eq!(names(&b), ["Glass bell"]);
 }
 
 #[test]
@@ -1297,4 +1294,172 @@ fn the_pad_map_picks_a_pad_and_plays_it_while_held() {
     // A kit selected, or no kit on the pads: no map.
     b.set_pad_map(None);
     assert!(b.screen().pad_map.is_none());
+}
+
+fn keys_now(name: &str, factory: Option<usize>) -> mpfree_browser_ui::PresetNow {
+    mpfree_browser_ui::PresetNow {
+        name: name.into(),
+        factory,
+        changed: true,
+    }
+}
+
+#[test]
+fn the_preset_picker_opens_on_the_engines_own_presets_and_tries_them() {
+    let (mut b, _) = browser();
+    let own: Vec<String> = ["Init", "Soft Tines", "Bright Tines", "Reed Bite"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    b.open_preset_picker("Keys", own.clone(), keys_now("Reed Bite", Some(3)));
+    let s = b.screen();
+    assert_eq!(s.title, "Keys presets");
+    assert_eq!(
+        place_labels(&b),
+        ["Factory", "Yours", "Recent", "Favourites"]
+    );
+    assert_eq!(SOURCES[s.source].label(), "Factory");
+    assert_eq!(s.path, "Factory \u{b7} Keys");
+    assert_eq!(names(&b), own);
+    assert_eq!(s.selected, Some(3));
+    assert_eq!(s.list_buttons, [Button::SavePreset, Button::Cancel]);
+    assert_eq!(s.detail.title, "Reed Bite");
+    assert_eq!(s.detail.kind, "Comes with the engine");
+    assert!(s
+        .detail
+        .lines
+        .contains(&("You had".into(), "Reed Bite (edited)".into())));
+    assert_eq!(s.detail.buttons, [Button::Load]);
+    // Opening asks for nothing: the sound only changes when it turns.
+    assert!(b.take_actions().is_empty());
+    b.dial(-1);
+    assert_eq!(
+        b.take_actions(),
+        [BrowseAction::TryFactoryPreset {
+            engine: "Keys".into(),
+            index: 2
+        }]
+    );
+    b.input(Input::Button(Button::Cancel));
+    assert_eq!(
+        b.take_actions(),
+        [
+            BrowseAction::RevertPreset,
+            BrowseAction::PickerClosed { loaded: false }
+        ]
+    );
+    // Load (the push) keeps the one picked, as the side list's tap does.
+    b.open_preset_picker("Keys", own.clone(), keys_now("Reed Bite", Some(3)));
+    b.dial(-2);
+    b.take_actions();
+    b.push();
+    assert_eq!(
+        b.take_actions(),
+        [
+            BrowseAction::LoadFactoryPreset {
+                engine: "Keys".into(),
+                index: 1
+            },
+            BrowseAction::PickerClosed { loaded: true }
+        ]
+    );
+    // One of the musician's opens on Yours, picked; the places tap across.
+    b.open_preset_picker("FM", vec!["Init".into()], keys_now("Metal bass", None));
+    let s = b.screen();
+    assert_eq!(SOURCES[s.source].label(), "Instruments");
+    assert_eq!(s.detail.title, "Metal bass");
+    assert_eq!(s.detail.kind, "Your preset");
+    b.input(Input::Source(src("Factory")));
+    assert_eq!(names(&b), ["Init"]);
+    b.input(Input::Source(src("Instruments")));
+    assert_eq!(names(&b), ["Glass bell", "Metal bass", "Soft keys"]);
+    // - and + step between the places, as the hint line says: + on a
+    // preset goes on to the next place, - at the top of one goes back.
+    let place = |b: &Browser| SOURCES[b.screen().source].label();
+    b.back();
+    assert_eq!(place(&b), "Factory");
+    b.enter();
+    assert_eq!(place(&b), "Instruments");
+    b.enter();
+    assert_eq!(place(&b), "Recent");
+    b.back();
+    assert_eq!(place(&b), "Instruments");
+    assert!(b.take_actions().is_empty(), "stepping places tries nothing");
+    // An engine with no presets of its own says so.
+    b.cancel_picker();
+    b.open_preset_picker("Plugin", Vec::new(), keys_now("", Some(0)));
+    b.input(Input::Source(src("Factory")));
+    assert!(b.screen().detail.kind.contains("no presets of its own"));
+}
+
+#[test]
+fn save_preset_names_the_sound_and_asks_before_replacing_one_of_yours() {
+    let (mut b, lib) = browser();
+    let file = |engine: &str, name: &str| {
+        lib.root()
+            .join("Instruments")
+            .join(engine)
+            .join(format!("{name}.preset"))
+    };
+    b.open_preset_picker("FM", vec!["Init".into()], keys_now("Glass bell", None));
+    b.take_actions();
+    b.input(Input::Button(Button::SavePreset));
+    match b.screen().modal {
+        Modal::Keyboard { title, text, .. } => {
+            assert!(title.contains("Yours, for FM"), "{title}");
+            assert_eq!(text, "Glass bell");
+        }
+        m => panic!("{m:?}"),
+    }
+    b.input(Input::Key(Key::Done));
+    assert_eq!(
+        b.take_actions(),
+        [BrowseAction::SavePresetRequested {
+            engine: "FM".into(),
+            name: "Glass bell".into()
+        }]
+    );
+    // The name is one of the musician's: it asks, and No leaves it.
+    let before = std::fs::read(file("FM", "Glass bell")).unwrap();
+    b.save_preset("FM", "Glass bell", "new text\n".into());
+    assert!(matches!(b.screen().modal, Modal::Confirm { .. }));
+    b.input(Input::ConfirmNo);
+    assert_eq!(std::fs::read(file("FM", "Glass bell")).unwrap(), before);
+    assert!(b.screen().status.unwrap().0.contains("wasn't saved"));
+    assert!(b.take_actions().is_empty());
+    // Yes replaces it; the old one is in the Trash.
+    b.save_preset("FM", "Glass bell", "new text\n".into());
+    b.input(Input::ConfirmYes);
+    assert_eq!(
+        std::fs::read_to_string(file("FM", "Glass bell")).unwrap(),
+        "new text\n"
+    );
+    assert_eq!(lib.trash().unwrap()[0].name, "Glass bell.preset");
+    let a = b.take_actions();
+    assert!(a.iter().any(
+        |x| matches!(x, BrowseAction::PresetSaved { engine, name, .. }
+        if engine == "FM" && name == "Glass bell")
+    ));
+    let s = b.screen();
+    assert_eq!(s.status.unwrap().0, "Saved Glass bell in Yours");
+    assert_eq!(s.detail.title, "Glass bell");
+    assert!(s
+        .detail
+        .lines
+        .contains(&("You had".into(), "Glass bell".into())));
+    // A first preset for an engine makes its folder, and shows on Yours.
+    b.cancel_picker();
+    b.open_preset_picker("Keys", vec!["Init".into()], keys_now("Init", Some(0)));
+    b.save_preset("Keys", "Night Tines", "keys text\n".into());
+    assert_eq!(
+        std::fs::read_to_string(file("Keys", "Night Tines")).unwrap(),
+        "keys text\n"
+    );
+    let s = b.screen();
+    assert_eq!(SOURCES[s.source].label(), "Instruments");
+    assert_eq!(names(&b), ["Night Tines"]);
+    assert_eq!(s.selected, Some(0));
+    // The app couldn't give the sound: said, nothing written.
+    b.preset_not_saved("the synth is busy");
+    assert!(b.screen().status.unwrap().1);
 }

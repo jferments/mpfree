@@ -6,8 +6,9 @@
 //! wave and every grain setting), the Chop tab (slices by transients,
 //! beats, a grid, silence or by hand, put on the kit's pads) and the Play
 //! tab (the layers' velocities, the amp envelope, the filter, voices, mute
-//! group, pressure) and the Rec tab (the line input onto a pad). The pad
-//! bar's tabs switch between them.
+//! group, pressure). The Wave page's recorder row records (one-page step
+//! 2; the Rec tab went in step 2f, part 4). The pad bar's tabs switch
+//! between them.
 //!
 //! - The screen thread owns every kit's project, handed over by
 //!   `sampler::Player::take_projects` when the kits are loaded.
@@ -34,14 +35,15 @@
 //!   one boxed [`Cloud`] goes there, is filled and comes back about 25
 //!   times a second, only while the tool shows
 //!   ([`SamplePage::take_cloud`], [`SamplePage::cloud_back`]).
-//! - The Rec tab records the line input onto a pad. While the line input
+//! - The recorder row records its Source (the line input, a point in the
+//!   mix, the page's pad) onto the page or a pad. While the line input
 //!   is on, the page keeps the sampler's input (the last 75 s, about
 //!   26 MB) and sends its writing end to the audio thread
 //!   ([`SamplePage::take_input`]); turned off, the writer comes back and
 //!   the buffer is freed here ([`SamplePage::input_back`]). A take keeps
 //!   recording while other pages show ([`SamplePage::tick`]), and lands on
 //!   its pad as one undo step.
-//! - The Rec tab's Auto-sample button opens its Auto-sample mode: it plays
+//! - The recorder's REC with Auto-sample its Source opens Auto-sample: it plays
 //!   a copy of the Synth tab's patch note by note on a worker thread
 //!   ([`mpfree_sampler::autosample::Job`]), offline and many times faster
 //!   than real time, and makes a keygroup instrument of it on the kit's
@@ -91,7 +93,7 @@ use mpfree_sampler_ui::chop_tab::{self, ChopAction, ChopState, ChopTab};
 use mpfree_sampler_ui::grain_tab::{self, CloudNow};
 use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
 use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab, SceneAction};
-use mpfree_sampler_ui::rec_tab::{self, RecAction, RecState, RecTab, Skip};
+use mpfree_sampler_ui::rec_tab;
 use mpfree_sampler_ui::rec_widgets::Strip;
 use mpfree_sampler_ui::recall::RecallFrom;
 use mpfree_sampler_ui::recorder::{
@@ -122,12 +124,11 @@ pub const CHOP_PAGE: &str = "Sample · Chop";
 pub const PLAY_PAGE: &str = "Sample · Play";
 /// The Pads tab: the pads, the pad's settings and the kit's sounds.
 pub const PADS_PAGE: &str = "Pads · Pad";
-/// The Rec tab's page.
-pub const REC_PAGE: &str = "Sample · Rec";
-/// The Rec tab's Auto-sample mode's page.
+/// Auto-sample's page, which the recorder's REC opens.
 pub const AUTO_PAGE: &str = "Sample · Auto-sample";
 /// The line input the sampler keeps while it is on: enough for the
-/// longest Skip back (a minute, or 8 bars down to 60 BPM) and more.
+/// longest Sample Recall of the Source (a minute, or 8 bars down to
+/// 60 BPM) and more.
 pub const INPUT_SECONDS: u32 = 75;
 /// The master as heard, which Sample Recall always keeps (sampler
 /// decision 3, 16 Nov 2026): the last two minutes, as 16-bit samples
@@ -160,7 +161,6 @@ pub const NAME_MAX: usize = 32;
 const CHOP_PREFIX: &str = "smp-chop-";
 const PLAY_PREFIX: &str = "smp-play-";
 const PADS_PREFIX: &str = "smp-pads-";
-const REC_PREFIX: &str = "smp-rec-";
 const AUTO_PREFIX: &str = "smp-auto-";
 /// A Q-Link resting this long ends its turn: the next one is a new undo step.
 const TURN_REST: Duration = Duration::from_secs(1);
@@ -205,8 +205,7 @@ pub enum Editor {
     Wave,
     Chop,
     Play,
-    Rec,
-    /// The Rec tab's Auto-sample mode.
+    /// The recorder's Auto-sample mode (its Source, REC opening it).
     Auto,
 }
 
@@ -229,17 +228,16 @@ struct Take {
     pick: record::Pick,
     /// Whole bars at the tempo: it lands warped at the project tempo.
     bars: bool,
-    /// A pad take's (sampler R5.7), not the Rec tab's own.
+    /// A pad take's (sampler R5.7), through the arm.
     pad_take: bool,
-    /// The recorder's own take (the Rec tab's Record, the Wave page's
-    /// REC): it lands where the Rec settings' Onto says when it stops, on
+    /// The recorder's own take (the Wave page's REC): it lands where the Rec settings' Onto says when it stops, on
     /// the page ([`rec_tab::Onto::Stay`]) or a pad, and `pad` only names
     /// it. A held pad's take lands on its pad.
     chooses: bool,
 }
 
 /// A pad take (sampler R5.7: an empty kit pad held + REC): the pad it
-/// lands on and the Rec tab's settings as they were when it was armed,
+/// lands on and the recorder's settings as they were when it was armed,
 /// waiting for its go, then recording in [`SamplePage::take`].
 #[derive(Clone, Copy, Debug)]
 struct PadRun {
@@ -261,8 +259,7 @@ struct PadRun {
     flatten: bool,
 }
 
-/// A Flatten running (the Rec tab's third button, or the recorder's REC
-/// with the pad as its Source): the pad's own mixer channel recorded
+/// A Flatten running (the recorder's REC with the pad as its Source): the pad's own mixer channel recorded
 /// while the pad plays once, then kept on `target`, or on the page as a
 /// take (None: Onto on Stay here, one-page step 2e).
 struct Flatten {
@@ -274,7 +271,7 @@ struct Flatten {
     hold: f32,
     /// A Toggle pad is let go by a second hit.
     toggle: bool,
-    /// The Rec tab's own source, put back when it ends.
+    /// The recorder's own source, put back when it ends.
     was: RecSource,
     /// The arm's pad take (the Wave page's REC): its take is a pad take,
     /// so REC on the MPC, STOP and UNDO end it or throw it away.
@@ -323,8 +320,7 @@ fn flatten_point(pad: usize, target: Option<usize>) -> CapturePoint {
     }
 }
 
-/// Why the recorder row's REC can't take while the line input is off
-/// (the Rec page's [`rec_tab::OFF_NOTE`], as short as the row needs).
+/// Why the recorder row's REC can't take while the line input is off.
 pub const RECORDER_OFF: &str = "Line in off: Looper tab, MENU";
 
 /// Why Sample Recall's From offers no second choice while the recorder
@@ -556,7 +552,7 @@ fn recall_fade(r: &mpfree_sampler_ui::recall::Recall, rate: u32) -> u32 {
     (u64::from(r.fade_ms) * u64::from(rate) / 1000) as u32
 }
 
-/// The Rec tab's Master source: the master as heard, after Master safety.
+/// The recorder's Master source: the master as heard, after Master safety.
 pub fn master_source() -> RecSource {
     RecSource::Mix(StripId::Master, CapturePoint::AfterSafety)
 }
@@ -590,7 +586,7 @@ pub const FLATTEN_SYNTH: &str = "The pads play the synth";
 pub const FLATTEN_HELD: &str =
     "A held pad records an input: set the Sample page's Source to Line in or a point in the mix";
 
-/// What the Rec tab's Source row offers, by name: the line input, the mix
+/// What the recorder's Source offers, by name: the line input, the mix
 /// as heard (the master after Master safety), the page's pad (Flatten,
 /// named after the pad as the page shows it) and Auto-sample (step 2e),
 /// then each track, the delay's return and the playing kit's 16 pad
@@ -624,12 +620,15 @@ pub struct SampleMemory {
     pub count: usize,
     /// The stretched copies warped pads play.
     pub copies: usize,
-    /// The Rec tab's input buffer, while it is held (not while it reads
+    /// The recorder's input buffer, while it is held (not while it reads
     /// the master Sample Recall keeps).
     pub input: usize,
     /// The master Sample Recall always keeps.
     pub recall: usize,
 }
+
+/// How often the take recording is drawn into the wave, in seconds.
+const LIVE_EVERY: f32 = 0.1;
 
 /// The sampler's input buffer's size: stereo `f32`.
 pub fn input_bytes(rate: u32) -> u64 {
@@ -785,18 +784,14 @@ pub struct SamplePage {
     /// The memory free for new loads ([`crate::memory::free_bytes`]; a
     /// test gives its own).
     mem_free: fn() -> Option<u64>,
-    /// The Rec tab, added the first time it is opened.
-    rec: Option<RecTab>,
-    rec_state: Option<RecState>,
-    /// The Rec settings until the Rec tab is added (then the tab's own:
-    /// [`SamplePage::rec_settings_now`]); the Wave page's recorder row
-    /// sets them too (one-page step 2a).
+    /// The recorder's settings ([`SamplePage::rec_settings_now`]): the
+    /// Wave page's recorder row and its Input section set them.
     rec_settings: rec_tab::RecSettings,
     /// The source's peaks for the recorder row's meter, a few columns.
     meter: Strip,
     /// The line input is on (its row on the Looper tab's MENU).
     line_on: bool,
-    /// What the Rec tab can record from (its Source row), by name: the
+    /// What the recorder can record from (its Source), by name: the
     /// line input first, then points in the mix (resampling).
     rec_sources: Vec<(String, RecFrom)>,
     /// The source picked, and the one the audio thread was last told of.
@@ -813,6 +808,10 @@ pub struct SamplePage {
     /// Times Sample Recall read the Source and its buffer went, so it read
     /// the master again (a fallback: counted, logged and shown).
     recall_fallbacks: u32,
+    /// The take recording as the wave draws it (one-page step 2f, part 3),
+    /// and the time to its next redraw.
+    drawn: Option<mpfree_sampler_ui::live_take::LiveTake>,
+    drawn_in: f32,
     /// The master's last two minutes, always kept (Sample Recall), once
     /// the audio thread has sent its reading end.
     recall: Option<Input>,
@@ -821,9 +820,6 @@ pub struct SamplePage {
     want_back: bool,
     take: Option<Take>,
     flatten: Option<Flatten>,
-    /// The page Auto-sample's back button goes to: the Rec tab's, or the
-    /// Wave page's, when its REC opened it (one-page step 2e).
-    auto_back: Editor,
     /// Hits and lifts for the audio thread (Flatten), and live chop's
     /// stop.
     hits: Vec<FromUi>,
@@ -983,8 +979,6 @@ impl SamplePage {
             stretching: Vec::new(),
             unstretched: Vec::new(),
             mem_free: crate::memory::free_bytes,
-            rec: None,
-            rec_state: None,
             rec_settings: rec_tab::RecSettings::default(),
             // A sixtieth of a second a column at 44.1 kHz.
             meter: Strip::new(735, 4),
@@ -997,12 +991,13 @@ impl SamplePage {
             feed: None,
             input_shared: false,
             recall_fallbacks: 0,
+            drawn: None,
+            drawn_in: 0.0,
             recall: None,
             feeding: false,
             want_back: false,
             take: None,
             flatten: None,
-            auto_back: Editor::Rec,
             hits: Vec::new(),
             live: None,
             marks_seen: 0,
@@ -1496,7 +1491,6 @@ impl SamplePage {
             },
             Editor::Chop if self.chop_state.is_some() && self.chop.is_some() => CHOP_PAGE,
             Editor::Play if self.play_state.is_some() && self.play.is_some() => PLAY_PAGE,
-            Editor::Rec if self.rec_state.is_some() && self.rec.is_some() => REC_PAGE,
             Editor::Auto if self.auto_state.is_some() && self.auto.is_some() => AUTO_PAGE,
             Editor::Wave if self.state.is_some() && self.tab.is_some() => PAGE,
             _ => EMPTY_PAGE,
@@ -1521,7 +1515,6 @@ impl SamplePage {
             PAGE => wave_tab::REGION,
             CHOP_PAGE => chop_tab::LIST,
             PLAY_PAGE => play_tab::LIST,
-            REC_PAGE => rec_tab::LIST,
             AUTO_PAGE => auto_tab::LIST,
             PADS_PAGE => pads_tab::LIST,
             _ => return None,
@@ -1655,10 +1648,6 @@ impl SamplePage {
                 }
             }
             _ => {}
-        }
-        self.rec_state = None;
-        if self.editor == Editor::Rec {
-            self.refresh_rec(ui, bank);
         }
         self.auto_state = None;
         if self.editor == Editor::Auto {
@@ -2142,19 +2131,6 @@ impl SamplePage {
             }
             return;
         }
-        if ev.widget.starts_with(REC_PREFIX) {
-            let (Some(tab), Some(st)) = (self.rec.as_mut(), self.rec_state.as_ref()) else {
-                return;
-            };
-            let a = tab.action(ui, ev, st);
-            if let Some(note) = tab.take_note() {
-                self.told.push(note);
-            }
-            if let Some(a) = self.took(a) {
-                self.act_rec(ui, a);
-            }
-            return;
-        }
         if ev.widget.starts_with(AUTO_PREFIX) {
             let (Some(tab), Some(st)) = (self.auto.as_mut(), self.auto_state.as_ref()) else {
                 return;
@@ -2266,13 +2242,12 @@ impl SamplePage {
         ));
     }
 
-    /// Opens the editor's tab `i` (Wave, Warp, Chop, Play or Rec).
+    /// Opens the editor's tab `i` (Wave, Chop or Play).
     fn open(&mut self, ui: &mut Ui, i: usize) {
         let editor = match i {
             wave_tab::TAB => Editor::Wave,
             chop_tab::TAB => Editor::Chop,
             play_tab::TAB => Editor::Play,
-            rec_tab::TAB => Editor::Rec,
             _ => return,
         };
         self.open_editor(ui, editor);
@@ -3203,20 +3178,6 @@ impl SamplePage {
                     tab.wheel(ui, st, delta);
                 }
             }
-            Editor::Rec => {
-                let mut source = None;
-                if let (Some(tab), Some(st)) = (self.rec.as_mut(), self.rec_state.as_ref()) {
-                    source = tab.wheel(ui, st, delta);
-                    if let Some(note) = tab.take_note() {
-                        self.told.push(note);
-                    }
-                }
-                if let Some(a) = source {
-                    self.act_rec(ui, a);
-                }
-                // The target pad follows the Onto row.
-                self.refresh_rec_state(ui);
-            }
             Editor::Auto => {
                 if let (Some(tab), Some(st)) = (self.auto.as_mut(), self.auto_state.as_ref()) {
                     tab.wheel(ui, st, delta);
@@ -3294,13 +3255,14 @@ impl SamplePage {
                 }
             }
             WaveAction::Rec(a) => self.act_recorder(ui, a),
-            // A faint mark touched: which tool moves it.
+            // A faint mark touched (which tool moves it), or the wave
+            // while a take draws into it.
             WaveAction::Say(text) => self.told.push(text),
         }
     }
 
-    /// The recorder row (one-page step 2a): REC and STOP are the Rec tab's
-    /// Record and Stop; a card or the Input section steps a setting.
+    /// The recorder row (one-page step 2a): REC and STOP start and end a
+    /// take; a card or the Input section steps a setting.
     fn act_recorder(&mut self, ui: &mut Ui, a: RecorderAction) {
         match a {
             // The row's REC is a pad take through the arm (the sequencer
@@ -3313,7 +3275,7 @@ impl SamplePage {
                 self.here_no = None;
                 self.lines
                     .push("sample: REC opens Auto-sample over the Wave page".to_string());
-                self.open_auto(ui, Editor::Wave);
+                self.open_auto(ui);
                 return;
             }
             RecorderAction::Record => {
@@ -3322,7 +3284,7 @@ impl SamplePage {
                 // A take that stays on the page has no pad: the pad picked
                 // names it for the arm.
                 let stays = self.rec_settings_now().onto == rec_tab::Onto::Stay;
-                let pad = self.rec_state_now().target.or(stays.then_some(self.pad));
+                let pad = self.rec_target().or(stays.then_some(self.pad));
                 match (pad, why) {
                     (Some(pad), None)
                         if self.take.is_none()
@@ -3344,12 +3306,12 @@ impl SamplePage {
                 }
             }
             // REC lit: the pad take ends through the arm (what recorded is
-            // kept); a take the Rec page started stops here.
+            // kept); a Flatten stops here.
             RecorderAction::Stop => match self.pad_run {
                 Some(run) => self.rec_here = Some((run.kit, run.pad)),
                 // A Flatten whose sound has begun keeps what it recorded,
                 // as REC's take does; one still waiting for it is called
-                // off (the Rec page's Stop).
+                // off.
                 None if self.flatten.is_some()
                     && self
                         .take
@@ -3361,7 +3323,7 @@ impl SamplePage {
                     }
                     self.tick(ui, 0.0, true);
                 }
-                None => self.act_rec(ui, RecAction::Stop),
+                None => self.stop_take(ui),
             },
             RecorderAction::Step(row, delta) => {
                 use rec_tab::Row;
@@ -3392,9 +3354,6 @@ impl SamplePage {
                     return;
                 }
                 self.rec_settings = s;
-                if let Some(t) = self.rec.as_mut() {
-                    t.settings = s;
-                }
                 if s.source != before.source {
                     self.set_source(ui, s.source);
                 }
@@ -3417,7 +3376,12 @@ impl SamplePage {
                         }
                     }
                 }
-                self.refresh_rec_state(ui);
+                // Silence for and Tail (one-page step 2f) reach the take
+                // running, until it has ended or is past its length; a
+                // Flatten's take ends on the pad's silence.
+                if matches!(row, Row::Silence | Row::Tail) {
+                    self.take_hears_ending(&s, row);
+                }
             }
             // The line input's one monitor (step 2d): the Looper's switch,
             // and the Input 1 strip's fader.
@@ -3530,7 +3494,7 @@ impl SamplePage {
     /// What the recorder row shows now.
     fn recorder_view(&self) -> RecorderView {
         let settings = self.rec_settings_now();
-        let st = self.rec_state_now();
+        let target = self.rec_target();
         let take = self.take.as_ref();
         let started = take.and_then(|t| t.rec.started_at());
         let from = self.source_from();
@@ -3545,7 +3509,7 @@ impl SamplePage {
             Some(RECORDER_OFF.to_string())
         } else if self.flatten.is_some() {
             Some("Wait for Flatten to finish".to_string())
-        } else if settings.onto != rec_tab::Onto::Stay && st.target.is_none() {
+        } else if settings.onto != rec_tab::Onto::Stay && target.is_none() {
             Some("No empty pad left in this bank".to_string())
         } else {
             None
@@ -3606,7 +3570,7 @@ impl SamplePage {
                     .unwrap_or((self.kit, 0, false));
                 format!("for PLAY · {}", onto(kit, lands(kit, pad, here)))
             }
-            (None, _) => match (settings.onto, st.target) {
+            (None, _) => match (settings.onto, target) {
                 (rec_tab::Onto::Stay, _) => "next take stays here".to_string(),
                 (_, Some(p)) => format!("next take onto {}", self.pad_text(self.kit, p)),
                 (_, None) => "no pad for a take".to_string(),
@@ -3615,7 +3579,7 @@ impl SamplePage {
         let recording = take.is_some() || self.pad_run.is_some() || self.flatten.is_some();
         RecorderView {
             settings,
-            sources: st.sources,
+            sources: self.source_names(),
             recording,
             waiting: recording && started.is_none(),
             cannot,
@@ -3708,11 +3672,100 @@ impl SamplePage {
             }
             None => [0.0; 2],
         };
+        self.feed_live(ui, dt);
         let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) else {
             return;
         };
         tab.set_recorder(ui, view, st);
         tab.meter(ui, peak, dt);
+    }
+
+    /// Whether a take is recording now (past its wait for a sound or a
+    /// bar line).
+    fn take_recording(&self) -> bool {
+        self.take
+            .as_ref()
+            .is_some_and(|t| matches!(t.rec.progress(), Progress::Recording { .. }))
+    }
+
+    /// The take drawn into the wave has ended (kept, thrown away or lost):
+    /// the wave shows the page's sound again, the take kept when it stays
+    /// on the page.
+    fn end_live(&mut self, ui: &mut Ui) {
+        if self.drawn.take().is_some() {
+            if let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) {
+                tab.end_live(ui);
+                tab.update(ui, st);
+            }
+        }
+    }
+
+    /// The take recording, drawn into the wave as it comes in (one-page
+    /// step 2f, part 3: the Rec page's half-minute view goes), every
+    /// [`LIVE_EVERY`] s; once it has ended, or before its sound starts,
+    /// the wave is the page's sound's.
+    fn feed_live(&mut self, ui: &mut Ui, dt: f32) {
+        if !self.take_recording() {
+            self.end_live(ui);
+            return;
+        }
+        let Some(t) = self.take.as_ref() else {
+            return;
+        };
+        self.drawn_in -= dt.max(0.0);
+        if self.drawn.is_some() && self.drawn_in > 0.0 {
+            return;
+        }
+        self.drawn_in = LIVE_EVERY;
+        let rate = f64::from(self.rate);
+        let bars = self.input.as_ref().map(|i| &i.bars);
+        let bar = bars.and_then(|b| b.bar_frames());
+        // Its planned length, or four bars (ten seconds stopped).
+        let first = match t.rec.end() {
+            record::End::Frames(n) => n,
+            record::End::Bars(n) => bar.map_or(10.0 * rate, |b| b * f64::from(n)) as u64,
+            _ => bar.map_or(10.0 * rate, |b| 4.0 * b) as u64,
+        };
+        let beats = match (bar, t.rec.started_at(), bars.and_then(|b| b.back(0))) {
+            (Some(b), Some(start), Some(line)) => Some(mpfree_ui::wave::Beats {
+                first: (line as f64 - start as f64).rem_euclid(b),
+                frames_per_beat: b / 4.0,
+                per_bar: 4,
+                per_beat: 1,
+            }),
+            _ => None,
+        };
+        let (name, lands) = if t.chooses {
+            (
+                self.here_take_name(t.kit)
+                    .unwrap_or_else(|| self.next_take_name()),
+                self.lands_text(t.kit),
+            )
+        } else {
+            (
+                crate::rec_arm::pad_name(t.pad),
+                format!("onto {}", self.pad_text(t.kit, t.pad)),
+            )
+        };
+        let fresh = self.drawn.is_none();
+        let live = self.drawn.get_or_insert_with(Default::default);
+        let before = live.frames();
+        live.update(t.rec.data());
+        // Nothing new (the input has stopped coming): nothing to redraw.
+        if !fresh && live.frames() == before {
+            return;
+        }
+        let so_far = take_time(live.frames(), self.rate);
+        if let Some(tab) = self.tab.as_mut() {
+            tab.show_live(
+                ui,
+                live,
+                first,
+                beats,
+                &format!("{name} · recording"),
+                &format!("{so_far} so far · {lands}"),
+            );
+        }
     }
 
     /// Normalize: layer `layer` of pad `pad` gets the gain that brings its
@@ -4284,41 +4337,13 @@ impl SamplePage {
 
     // ------------------------------------------------------------ rec
 
-    /// What the Rec tab shows besides the input: the pad picked and where
-    /// a take would go.
-    fn rec_state_now(&self) -> RecState {
-        let project = self.projects.get(self.kit);
-        // A pad the sampler plays (another kind plays nothing to flatten).
-        let sound = |p: usize| {
-            project
-                .and_then(|pr| pr.pad(p))
-                .filter(|pd| !pd.layers.is_empty() && pd.kind.sounds())
-        };
-        let onto = self.rec_settings_now().onto;
-        let target = project.and_then(|pr| rec_tab::target(self.pad, onto, |p| taken(pr, p)));
-        let can_flatten = self.flatten.is_none()
-            && self.take.is_none()
-            && self.pad < crate::mixing::PADS
-            && sound(self.pad).is_some()
-            && project.is_some_and(|p| p.pads_play() == PadsPlay::Pads)
-            && target.is_some();
-        RecState {
-            pad: self.pad,
-            pad_name: sound(self.pad).map(|pd| pd.name.clone()),
-            target,
-            sources: self.source_names(),
-            live: self.input_wanted(),
-            last: self.last_take.clone(),
-            can_flatten,
-            flattening: self.flatten.as_ref().map(|f| match f.target {
-                Some(t) => format!(
-                    "Flattening {} onto {}",
-                    self.pad_text(f.kit, f.pad),
-                    self.pad_text(f.kit, t)
-                ),
-                None => format!("Flattening {} to stay here", self.pad_text(f.kit, f.pad)),
-            }),
-        }
+    /// The pad a take goes onto now by Onto (None: no empty pad left in
+    /// the bank; with Stay here, where a Flatten would go).
+    fn rec_target(&self) -> Option<usize> {
+        let project = self.projects.get(self.kit)?;
+        rec_tab::target(self.pad, self.rec_settings_now().onto, |p| {
+            taken(project, p)
+        })
     }
 
     /// The sources by name, as the Source row and card show them (the
@@ -4333,90 +4358,21 @@ impl SamplePage {
             .collect()
     }
 
-    fn refresh_rec(&mut self, ui: &mut Ui, bank: Option<char>) {
-        let st = self.rec_state_now();
-        match self.rec.as_mut() {
-            Some(tab) => {
-                tab.bank = bank;
-                tab.update(ui, &st);
-            }
-            None => match RecTab::add(ui, REC_PAGE, &st, self.rate) {
-                Ok(mut tab) => {
-                    tab.bank = bank;
-                    // What the Wave page's recorder row set.
-                    tab.settings = self.rec_settings;
-                    tab.update(ui, &st);
-                    self.rec = Some(tab);
-                }
-                Err(e) => {
-                    self.lines.push(format!("sample: no Rec page ({e})"));
-                    return;
-                }
-            },
-        }
-        self.rec_state = Some(st);
-        self.feed_rec(ui, 0.0);
-    }
-
-    /// The Rec tab's state again: the target follows the Onto row and the
-    /// pads.
-    fn refresh_rec_state(&mut self, ui: &mut Ui) {
-        if self.rec_state.is_none() {
+    /// STOP on the recorder row with no pad take running: the take (or a
+    /// Flatten) stops, and one that was recording lands at once.
+    fn stop_take(&mut self, ui: &mut Ui) {
+        if self.flatten.is_some() {
+            self.end_flatten(ui, "stopped: nothing kept");
             return;
         }
-        let st = self.rec_state_now();
-        if let Some(tab) = self.rec.as_mut() {
-            tab.update(ui, &st);
+        if let (Some(t), Some(input)) = (self.take.as_mut(), self.input.as_ref()) {
+            t.rec.stop(input);
         }
-        self.rec_state = Some(st);
+        self.tick(ui, 0.0, true);
     }
 
-    /// The Rec tab's picture: what came in over the last `dt` seconds.
-    fn feed_rec(&mut self, ui: &mut Ui, dt: f32) {
-        let live = self.input_wanted();
-        let Some(tab) = self.rec.as_mut() else {
-            return;
-        };
-        match self.input.as_ref() {
-            Some(input) => tab.feed(ui, input, self.take.as_ref().map(|t| &t.rec), live, dt),
-            None => tab.idle(ui, live),
-        }
-    }
-
-    fn act_rec(&mut self, ui: &mut Ui, a: RecAction) {
-        match a {
-            RecAction::Tab(i) => self.open(ui, i),
-            // The page's pad flattens it; Auto-sample opens its page.
-            RecAction::Record => match self.source_from() {
-                RecFrom::Pad => self.flatten_here(ui),
-                RecFrom::Notes => self.open_auto(ui, Editor::Rec),
-                RecFrom::Feed(_) => self.start_take(ui),
-            },
-            RecAction::Stop if self.flatten.is_some() => {
-                self.end_flatten(ui, "stopped: nothing kept");
-            }
-            RecAction::Stop => {
-                if let (Some(t), Some(input)) = (self.take.as_mut(), self.input.as_ref()) {
-                    t.rec.stop(input);
-                }
-                // A take that was recording ends here and lands at once.
-                self.tick(ui, 0.0, true);
-            }
-            RecAction::Flatten => {
-                let st = self.rec_state_now();
-                if let (true, Some(target)) = (st.can_flatten, st.target) {
-                    self.start_flatten(ui, Some(target));
-                }
-            }
-            RecAction::SkipBack => self.skip_back(ui),
-            RecAction::Source(i) => self.set_source(ui, i),
-            RecAction::Auto => self.open_auto(ui, Editor::Rec),
-        }
-    }
-
-    /// Auto-sample's page, its back button going to `back`.
-    fn open_auto(&mut self, ui: &mut Ui, back: Editor) {
-        self.auto_back = back;
+    /// Auto-sample's page, its back button going to the Wave page.
+    fn open_auto(&mut self, ui: &mut Ui) {
         self.editor = Editor::Auto;
         self.refresh(ui);
     }
@@ -4485,24 +4441,6 @@ impl SamplePage {
         None
     }
 
-    /// REC with the page's pad as the Source: the pad plays once and is
-    /// recorded until it goes quiet, kept where Onto says (on the page,
-    /// or the pad Next empty or This pad finds).
-    fn flatten_here(&mut self, ui: &mut Ui) {
-        let why = if self.take.is_some() || self.flatten.is_some() || self.pad_run.is_some() {
-            Some("The take is still going".to_string())
-        } else {
-            self.flatten_why()
-        };
-        if let Some(why) = why {
-            self.lines.push(format!("sample: no flatten: {why}"));
-            self.told.push(why);
-            return;
-        }
-        let lands = self.lands_now(self.kit);
-        self.start_flatten(ui, lands);
-    }
-
     /// The sampler's input while the Source is the page's pad: the pad's
     /// channel, where its Flatten will listen (None: no pad to flatten).
     fn pad_feed(&self) -> Option<RecSource> {
@@ -4564,14 +4502,13 @@ impl SamplePage {
             }
         };
         if src == self.source {
-            self.refresh_rec_state(ui);
             return;
         }
         self.source = src;
         if let RecFrom::Feed(src) = from {
             self.lines.push(match src {
-                RecSource::Line => "sample: the Rec tab records the line input".to_string(),
-                RecSource::Mix(..) => format!("sample: the Rec tab resamples {name}"),
+                RecSource::Line => "sample: the recorder records the line input".to_string(),
+                RecSource::Mix(..) => format!("sample: the recorder resamples {name}"),
             });
         }
         self.sync_input(ui);
@@ -4611,90 +4548,11 @@ impl SamplePage {
             .unwrap_or_else(|| 4.0 * 60.0 / self.tempo().max(1.0) * f64::from(self.rate))
     }
 
-    fn start_take(&mut self, ui: &mut Ui) {
-        if self.take.is_some() || self.flatten.is_some() {
-            return;
-        }
-        if let Some(run) = self.pad_run {
-            self.lines.push(format!(
-                "sample: no take: {} is armed for one take (REC or STOP ends it)",
-                crate::rec_arm::pad_name(run.pad)
-            ));
-            return;
-        }
-        let st = self.rec_state_now();
-        let settings = self.rec_settings_now();
-        let Some(input) = self.input.as_ref() else {
-            self.lines
-                .push("sample: no take: the line input is off".to_string());
-            return;
-        };
-        let stays = settings.onto == rec_tab::Onto::Stay;
-        // A take that stays has no pad: the pad picked names it.
-        let Some(pad) = st.target.or(stays.then_some(self.pad)) else {
-            self.lines
-                .push("sample: no take: no empty pad in this bank".to_string());
-            return;
-        };
-        let rec = settings.recording(input, self.bar_frames(input));
-        self.lines.push(format!(
-            "sample: take armed ({}): {}",
-            self.lands_text(self.kit),
-            take_plan(&settings, &st.sources)
-        ));
-        if self.source != RecSource::Line {
-            self.lines
-                .push(format!("sample: the take resamples {}", self.source_name()));
-        }
-        self.take = Some(Take {
-            rec,
-            kit: self.kit,
-            pad,
-            pick: settings.pick,
-            bars: settings.in_bars(),
-            pad_take: false,
-            chooses: true,
-        });
-        self.feed_rec(ui, 0.0);
-    }
-
-    fn skip_back(&mut self, ui: &mut Ui) {
-        if self.take.is_some() || self.flatten.is_some() {
-            return;
-        }
-        let settings = self.rec_settings_now();
-        let lands = self.lands_now(self.kit);
-        let Some(input) = self.input.as_ref() else {
-            return;
-        };
-        if lands.is_none() && settings.onto != rec_tab::Onto::Stay {
-            self.lines
-                .push("sample: no skip back: no empty pad in this bank".to_string());
-            return;
-        }
-        let data = match settings.skip {
-            Skip::Seconds(n) => input.last_frames(u64::from(n) * u64::from(input.rate)),
-            Skip::Bars(n) => input.last_bars(n as usize),
-        };
-        let what = format!("skip back {}", settings.skip.label());
-        let rate = input.rate;
-        let name = self.take_name();
-        // Whole bars follow the project tempo.
-        let bpm = matches!(settings.skip, Skip::Bars(_)).then(|| self.tempo());
-        match data.and_then(|d| settings.pick.source(&name, rate, d)) {
-            Ok(src) => match lands {
-                Some(pad) => self.keep_warped(ui, self.kit, pad, src, &what, bpm),
-                None => self.keep_take(ui, self.kit, src, &what, bpm),
-            },
-            Err(e) => self.lines.push(format!("sample: {what} not kept ({e:?})")),
-        }
-    }
-
     /// An effect's memory came back from the audio thread (the chain
     /// editor's Capture on the Grains effect, step C3): it goes where a
     /// recording would land (the pad picked if it is empty, else the
     /// bank's next empty pad, or the pad picked whatever it holds when
-    /// the Rec tab's Onto says so), playing as grains with the settings
+    /// the recorder's Onto says so), playing as grains with the settings
     /// the effect had. One undo step; the buffer is freed here.
     pub fn captured(&mut self, ui: &mut Ui, held: Held, end: Captured) {
         if end != Captured::Done {
@@ -4703,7 +4561,7 @@ impl SamplePage {
             self.told.push(format!("Nothing captured: {}", end.why()));
             return;
         }
-        let Some(pad) = self.rec_state_now().target else {
+        let Some(pad) = self.rec_target() else {
             self.lines
                 .push("sample: nothing captured: no empty pad in this bank".to_string());
             self.told
@@ -5329,14 +5187,14 @@ impl SamplePage {
 
     // ------------------------------------------------------------ flatten
 
-    /// Flatten: the Rec tab's input turns to the pad picked's own channel
+    /// Flatten: the recorder's input turns to the pad picked's own channel
     /// (after its insert effects, before its fader: onto the pad itself,
     /// before its inserts, as they will play again), and once the audio
     /// thread has it, the pad plays once at the Flatten velocity and is
     /// let go after the Flatten hold. The sound is kept from its first
     /// frame over -60 dB until it has been under it for the Silence time,
     /// as a pad of its own on `target` (one undo step), or as a take on
-    /// the page (None); the Rec tab's source comes back after.
+    /// the page (None); the recorder's source comes back after.
     fn start_flatten(&mut self, ui: &mut Ui, target: Option<usize>) {
         let settings = self.rec_settings_now();
         let (kit, pad) = (self.kit, self.pad);
@@ -5439,7 +5297,6 @@ impl SamplePage {
                 if let Some(f) = self.flatten.as_mut() {
                     f.played = Some(0.0);
                 }
-                self.refresh_rec_state(ui);
             }
             Some(t) => {
                 let t = t + dt;
@@ -5527,7 +5384,7 @@ impl SamplePage {
     }
 
     /// Ends the Flatten (`how` goes in its log line): the pad is let go if
-    /// it is still held, a take still going is dropped, and the Rec tab's
+    /// it is still held, a take still going is dropped, and the recorder's
     /// own source comes back.
     fn end_flatten(&mut self, ui: &mut Ui, how: &str) {
         let Some(f) = self.flatten.take() else {
@@ -5582,10 +5439,7 @@ impl SamplePage {
     fn refresh_auto(&mut self, ui: &mut Ui, bank: Option<char>) {
         let st = self.auto_state_now();
         // Back to the page that opened it.
-        let back = match self.auto_back {
-            Editor::Wave => mpfree_sampler_ui::wave_tab::TAB,
-            _ => rec_tab::TAB,
-        };
+        let back = mpfree_sampler_ui::wave_tab::TAB;
         match self.auto.as_mut() {
             Some(tab) => {
                 tab.bank = bank;
@@ -5626,7 +5480,7 @@ impl SamplePage {
         match a {
             AutoAction::Tab(i) => self.open(ui, i),
             AutoAction::Back => {
-                self.editor = self.auto_back;
+                self.editor = Editor::Wave;
                 self.refresh(ui);
             }
             AutoAction::Start(plan) => {
@@ -5705,7 +5559,7 @@ impl SamplePage {
         let why = match (&self.gear_out, &self.input) {
             (None, _) => Some("there is no MIDI out for the gear".to_string()),
             _ if self.source != RecSource::Line => Some(format!(
-                "the Rec tab records {}, not the line input",
+                "the recorder records {}, not the line input",
                 self.source_name()
             )),
             (_, None) => Some("the line input is off".to_string()),
@@ -5953,8 +5807,7 @@ impl SamplePage {
     }
 
     /// About 30 times a second: polls the take (when it ends it lands on
-    /// its pad) and, while the Rec tab `showing`, moves its picture `dt`
-    /// seconds on.
+    /// its pad) and, while the page is `showing`, draws it into the wave.
     pub fn tick(&mut self, ui: &mut Ui, dt: f32, showing: bool) {
         self.poll_take(ui);
         self.watch_pad_run();
@@ -5966,9 +5819,6 @@ impl SamplePage {
         }
         self.poll_flatten(ui, dt);
         self.follow_pad(ui);
-        if showing && self.editor == Editor::Rec && self.rec_state.is_some() {
-            self.feed_rec(ui, dt);
-        }
         if showing && self.editor == Editor::Wave && self.state.is_some() {
             self.feed_recorder(ui, dt);
         }
@@ -6033,6 +5883,9 @@ impl SamplePage {
                 }
             }
         }
+        if self.drawn.is_some() && !self.take_recording() {
+            self.end_live(ui);
+        }
     }
 
     /// Whether a sound's view (its peaks, hits, tempo or note) is still
@@ -6043,7 +5896,7 @@ impl SamplePage {
     }
 
     /// The line input turned on or off (its row on the Looper tab's MENU).
-    /// While the Rec tab records the line input: on, the sampler's input is
+    /// While the recorder records the line input: on, the sampler's input is
     /// made (once) for the audio thread; off, a take still recording ends
     /// and is kept, and the input is freed.
     pub fn set_line_input(&mut self, ui: &mut Ui, on: bool) {
@@ -6089,8 +5942,6 @@ impl SamplePage {
                 ));
             }
         }
-        self.refresh_rec_state(ui);
-        self.feed_rec(ui, 0.0);
     }
 
     /// The input goes: a take still recording ends there and is kept, and
@@ -6113,8 +5964,8 @@ impl SamplePage {
     }
 
     /// The reading end of the master's last two minutes, which the audio
-    /// thread keeps from start (Sample Recall). The Rec tab's Master source
-    /// reads it from now on.
+    /// thread keeps from start (Sample Recall). The recorder's Master
+    /// source reads it from now on.
     pub fn set_recall(&mut self, ui: &mut Ui, input: Input) {
         let seconds = input.audio.capacity() / u64::from(input.rate.max(1));
         self.lines.push(format!(
@@ -6133,13 +5984,55 @@ impl SamplePage {
     }
 
     /// What Sample Recall reads `from` (one-page step 2f): the master's
-    /// last two minutes, or what the sampler's Source has kept (the Rec
-    /// page's Skip back), while it has a buffer of its own.
+    /// last two minutes, or what the sampler's Source has kept (what the
+    /// Rec page's Skip back kept), while it has a buffer of its own.
     pub fn recall_from(&self, from: RecallFrom) -> Option<&Input> {
         match from {
             RecallFrom::Master => self.recall.as_ref(),
             RecallFrom::Source => self.input.as_ref().filter(|_| !self.input_shared),
         }
+    }
+
+    /// Silence for or Tail turned while a take runs: the take hears it, or
+    /// the log says it is for the next one.
+    fn take_hears_ending(&mut self, s: &rec_tab::RecSettings, row: rec_tab::Row) {
+        let rate = self.rate;
+        let Some(t) = self.take.as_mut() else {
+            return;
+        };
+        let silence = s.silence_frames(rate);
+        let heard = match row {
+            rec_tab::Row::Silence => {
+                // On silence (a Flatten too), or the quiet a tail waits for.
+                let ended = t.rec.set_silence(silence);
+                let rang = matches!(
+                    t.rec.tail(),
+                    record::Tail::Ring(_) | record::Tail::Loop { .. }
+                ) && t.rec.set_tail(s.tail_as(rate));
+                (ended || rang).then(|| {
+                    format!(
+                        "ends after {} of silence",
+                        rec_tab::value_text(s, rec_tab::Row::Silence, &[])
+                    )
+                })
+            }
+            _ if self.flatten.is_some() => None,
+            _ => t.rec.set_tail(s.tail_as(rate)).then(|| {
+                match s.tail {
+                    rec_tab::TailAt::Cut => "ends on its length",
+                    rec_tab::TailAt::Ring => "rings out after its length",
+                    rec_tab::TailAt::Loop => "becomes a loop of its length",
+                }
+                .to_string()
+            }),
+        };
+        self.lines.push(match heard {
+            Some(what) => format!("sample: the take now {what}"),
+            None => format!(
+                "sample: {} is for the next take: this one has gone past where it applies",
+                row.label()
+            ),
+        });
     }
 
     /// Sample Recall read the Source and its buffer went, so it reads the
@@ -6173,7 +6066,7 @@ impl SamplePage {
 
     /// Sample Recall opened on pad `pad` of the kit the pads play: the pad
     /// it lands on (the held pad when it has no sound, else the next empty
-    /// one in its bank, as the Rec tab's Next empty; in a full bank the
+    /// one in its bank, as the recorder's Next empty; in a full bank the
     /// held pad, replacing its sound) and which of the kit's pads have a
     /// sound. None while no kit is in.
     pub fn recall_pads(&self, pad: usize) -> Option<(usize, Vec<bool>)> {
@@ -6368,22 +6261,23 @@ impl SamplePage {
         self.warps.tempo()
     }
 
-    /// The Rec tab's settings, once it has been opened.
-    #[cfg(test)]
-    pub fn rec_settings(&self) -> Option<rec_tab::RecSettings> {
-        self.rec.as_ref().map(|t| t.settings)
-    }
-
     /// The Wave page's recorder row shows a take recording or waiting
     /// for its start (REC lit): the hint says what the Q-Links turn.
     pub fn recorder_on(&self) -> bool {
         self.tab.as_ref().is_some_and(|t| t.recorder().recording)
     }
 
-    /// The Rec settings now: the Rec tab's once it is added, else those
-    /// the recorder row set (the defaults at first).
+    /// The recorder's settings now (the recorder row's and its Input
+    /// section's; the defaults at first).
+    /// Sets the recorder's settings at once (tests: what the Input
+    /// section sets while a take records).
+    #[cfg(test)]
+    pub(crate) fn set_rec_settings(&mut self, s: rec_tab::RecSettings) {
+        self.rec_settings = s;
+    }
+
     pub(crate) fn rec_settings_now(&self) -> rec_tab::RecSettings {
-        self.rec.as_ref().map_or(self.rec_settings, |t| t.settings)
+        self.rec_settings
     }
 
     /// Whether kit `kit` has a warped pad.
@@ -6640,8 +6534,8 @@ impl SamplePage {
                     tab.set_playheads(ui, &frames);
                 }
             }
-            // The Play, Pads and Rec tabs (and Auto-sample) draw no playheads.
-            Editor::Play | Editor::Pads | Editor::Rec | Editor::Auto => {}
+            // The Play and Pads tabs (and Auto-sample) draw no playheads.
+            Editor::Play | Editor::Pads | Editor::Auto => {}
         }
         self.shown_heads = frames;
     }
@@ -7852,9 +7746,9 @@ impl SamplePage {
 
 /// The pad take's recorder (sampler R5.7): an empty kit pad held + REC
 /// ([`crate::rec_arm::RecArm::arm_pad`]) records one take onto that pad
-/// with the Rec tab's settings (its source, start, end and channels), and
-/// it lands there as a Rec tab take does. It is the Rec tab's take while it
-/// runs: the tab shows it, and its Stop ends it too.
+/// with the recorder's settings (its source, start, end and channels), and
+/// it lands there as the recorder's take does. It is the recorder's take
+/// while it runs: the row shows it, and its STOP ends it too.
 impl SamplePage {
     /// What the arm asks of the recorder.
     pub fn pad_take(&mut self, ui: &mut Ui, d: crate::rec_arm::PadDo) {
@@ -7926,7 +7820,7 @@ impl SamplePage {
             .get(kit)
             .map(|p| p.pad(pad).is_some_and(|pd| !pd.layers.is_empty()));
         let why = if busy {
-            Some("the Rec tab is recording")
+            Some("a take is still going")
         } else if has_sound.is_none() || pad >= mpfree_sampler::model::PADS {
             Some("no such pad")
         } else if has_sound == Some(true) && !here {
@@ -7991,13 +7885,13 @@ impl SamplePage {
     }
 
     /// The pad take's go: its take begins (at once, on the next bar line
-    /// or on the threshold, as the Rec tab's Start says).
+    /// or on the threshold, as the recorder's Starts says).
     fn begin_pad_take(&mut self, ui: &mut Ui) {
         let Some(run) = self.pad_run.filter(|r| !r.begun) else {
             return;
         };
         if self.take.is_some() || self.flatten.is_some() {
-            self.no_pad_take(run.id, run.pad, "the Rec tab is recording");
+            self.no_pad_take(run.id, run.pad, "a take is still going");
             return;
         }
         // The go plays the page's pad: a Flatten, kept where Onto says.
@@ -8008,8 +7902,6 @@ impl SamplePage {
             if self.flatten.is_none() {
                 self.no_pad_take(run.id, run.pad, "the pad couldn't be flattened");
             }
-            self.refresh_rec_state(ui);
-            self.feed_rec(ui, 0.0);
             return;
         }
         let Some(input) = self.input.as_ref() else {
@@ -8033,8 +7925,6 @@ impl SamplePage {
         }
         self.poll_take(ui);
         self.watch_pad_run();
-        self.refresh_rec_state(ui);
-        self.feed_rec(ui, 0.0);
     }
 
     /// REC or STOP: what recorded lands on the pad; a take that hasn't
@@ -8063,8 +7953,6 @@ impl SamplePage {
         }
         self.poll_take(ui);
         self.watch_pad_run();
-        self.refresh_rec_state(ui);
-        self.feed_rec(ui, 0.0);
     }
 
     /// UNDO while it records: the take goes, and the pad stays empty.
@@ -8080,8 +7968,6 @@ impl SamplePage {
             self.take = None;
         }
         self.no_pad_take(run.id, run.pad, "thrown away");
-        self.refresh_rec_state(ui);
-        self.feed_rec(ui, 0.0);
     }
 
     /// After a poll: the arm hears once that the pad take records, and

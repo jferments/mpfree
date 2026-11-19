@@ -296,6 +296,18 @@ impl Pass {
         }
     }
 
+    /// What the sound loop counted for the MIDI file as the pass ends:
+    /// messages past its own room (`left_out`), and controller, bend and
+    /// pressure values outside what MIDI carries (`out_of_range`, in the
+    /// file as the nearest it can). Both go in the summary
+    /// ([`crate::Done`]).
+    pub fn counted(&mut self, left_out: u64, out_of_range: u64) {
+        if let Some(n) = self.notes.as_mut() {
+            n.dropped += left_out;
+            n.out_of_range += out_of_range;
+        }
+    }
+
     /// Frees the export's capture points. Call it once [`Pass::period`]
     /// says the pass is over, then send the pass back to
     /// [`crate::Job::finish`].

@@ -765,7 +765,9 @@ impl Cores {
     /// `two` and `three`: the synth-voice pads' own synths (`pad_synths.rs`)
     /// share the sound's cores as the tracks' instruments do, with lanes
     /// of their own on the same cores. They render right after the
-    /// tracks' instruments, so the two never run at once. Call it right
+    /// tracks' instruments, so the two don't run at once unless the
+    /// tracks' lane was late (the pads then usually go late too, counted).
+    /// Call it right
     /// after [`Cores::start_tracks`], before the loop: it allocates and
     /// starts the lanes' threads.
     pub fn start_pads(&mut self, pads: &mut PadSynths) {

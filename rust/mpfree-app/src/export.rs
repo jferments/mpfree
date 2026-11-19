@@ -43,6 +43,8 @@ pub const TAP_ROOM: usize = 1024;
 const CONTROL_TRACKS: usize = mpfree_export::mpfree_midi::output::MAX_TRACKS;
 /// A control no value has gone in the file for yet.
 const UNTAKEN: i16 = i16::MIN;
+/// Words of a track's control bits (`midi::COUNT` controls).
+const CTL_WORDS: usize = (midi::COUNT as usize).div_ceil(64);
 /// Periods the transport may take to start before the export gives up
 /// (about a second).
 const START_PERIODS: u32 = 400;
@@ -578,17 +580,37 @@ impl PartialEq for Run {
 
 /// The notes the player sends in a period, as MIDI Out would send them,
 /// for the MIDI file: filled from `SeqPads` while an export runs, handed
-/// to the pass after the period. Fixed room; never allocates once made.
+/// to the pass after the period. A track's controllers, bend and pressure
+/// join them from the mod engine ([`Tap::control`]), thinned as MIDI Out
+/// thins them. Fixed room; never allocates once made.
 pub struct Tap {
     on: bool,
     chords: Box<Chords>,
     notes: Vec<(u64, u16, Msg)>,
-    /// Each track's controllers, bend and pressure (`Owner::Midi`) as last
-    /// put in the file, so a value goes in only when it changes:
-    /// `CONTROL_TRACKS` × `midi::COUNT`, [`UNTAKEN`] before the first.
-    controls: Box<[i16]>,
-    /// Messages past [`TAP_ROOM`] in a period, left out.
+    /// This period's controls for the file: (frame, track, control,
+    /// value), the value in its control's range.
+    controls: Vec<(u64, u16, u16, i16)>,
+    /// What the file has of each control (`CONTROL_TRACKS` ×
+    /// `midi::COUNT`, [`UNTAKEN`] before the first), so a value goes in
+    /// only when it changes; kept by [`Host::notes`], which puts them in.
+    in_file: Box<[i16]>,
+    /// Each control's value given again after its period's first: it
+    /// goes at the next period's start ([`Tap::period`]).
+    given: Box<[i16]>,
+    /// Bits by track ([`CTL_WORDS`] words each): a control had its value
+    /// this period, and one waits for the next.
+    sent: Box<[u64]>,
+    waiting: Box<[u64]>,
+    /// Every control with a value as the export starts (track, control,
+    /// value): MIDI Out sends them again at the song's start, so the file
+    /// has them at the range's start.
+    at_start: Vec<(u16, u16, i16)>,
+    /// Messages past [`TAP_ROOM`] in a period, and controller values that
+    /// weren't a number, left out (since the export started).
     pub dropped: u64,
+    /// Controller, bend and pressure values outside their range, put in
+    /// the file as the nearest (since the export started).
+    pub out_of_range: u64,
 }
 
 impl Default for Tap {
@@ -599,12 +621,19 @@ impl Default for Tap {
 
 impl Tap {
     pub fn new() -> Tap {
+        let all = CONTROL_TRACKS * usize::from(midi::COUNT);
         Tap {
             on: false,
             chords: Box::default(),
             notes: Vec::with_capacity(TAP_ROOM),
-            controls: vec![UNTAKEN; CONTROL_TRACKS * usize::from(midi::COUNT)].into_boxed_slice(),
+            controls: Vec::with_capacity(TAP_ROOM),
+            in_file: vec![UNTAKEN; all].into_boxed_slice(),
+            given: vec![UNTAKEN; all].into_boxed_slice(),
+            sent: vec![0; CONTROL_TRACKS * CTL_WORDS].into_boxed_slice(),
+            waiting: vec![0; CONTROL_TRACKS * CTL_WORDS].into_boxed_slice(),
+            at_start: Vec::with_capacity(all),
             dropped: 0,
+            out_of_range: 0,
         }
     }
 
@@ -625,46 +654,119 @@ impl Tap {
             });
     }
 
+    /// At each period's start, before [`Tap::control`]: each control may
+    /// have a value again, and the values that waited from the last
+    /// period go in on `frame`, the period's first (as MIDI Out sends
+    /// them). Never allocates.
+    pub fn period(&mut self, frame: u64) {
+        if !self.on {
+            return;
+        }
+        for i in 0..self.sent.len() {
+            let mut bits = std::mem::take(&mut self.waiting[i]);
+            // A waiting value counts as this period's.
+            self.sent[i] = bits;
+            while bits != 0 {
+                let b = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let (t, id) = (i / CTL_WORDS, (i % CTL_WORDS) * 64 + b);
+                let k = t * usize::from(midi::COUNT) + id;
+                self.put(frame, t as u16, id as u16, self.given[k]);
+            }
+        }
+    }
+
     /// A track's controller, bend or pressure as the mod engine moved it
-    /// (`Owner::Midi`: a step's lock, a lane, an LFO, a macro, a learned
-    /// knob; `ModMix::take_midi_values`), at `frame`, before CC scale and
-    /// CC smooth shape it for the gear. Only while an export runs, and
-    /// only when its value changes (the 7-bit value for a controller), on
-    /// channel 1 as the notes are. Never allocates.
+    /// (`Owner::Midi`: a step's lock, a lane, a song lane, an LFO, a
+    /// macro, a learned knob; `ModMix::take_midi_values`), at `frame`,
+    /// before CC scale and CC smooth shape it for the gear. Only while an
+    /// export runs. Thinned as `MidiOut::control` thins them: a control's
+    /// first value in a period goes on its frame, a later one waits for
+    /// the next period's start (the last given), and only a change goes in
+    /// the file (the 7-bit value for a controller), on channel 1 as the
+    /// notes are. A value outside the control's range goes in as the
+    /// nearest and is counted. Never allocates.
     pub fn control(&mut self, frame: u64, addr: ParamAddr, value: f32) {
-        use mpfree_play::mpfree_param::midi::Midi;
         let Owner::Midi(t) = addr.owner else { return };
-        if !self.on || !value.is_finite() {
+        if !self.on {
             return;
         }
-        let (Some((lo, hi)), Some(kind)) = (midi::range(addr.param), midi::of(addr.param)) else {
+        let Some((lo, hi)) = midi::range(addr.param) else {
             return;
         };
-        let k = usize::from(t) * usize::from(midi::COUNT) + usize::from(addr.param);
-        let Some(last) = self.controls.get_mut(k) else {
-            return;
-        };
-        let v = (value.round() as i32).clamp(lo.into(), hi.into()) as i16;
-        if *last == v {
+        let (t, id) = (usize::from(t), usize::from(addr.param));
+        if t >= CONTROL_TRACKS {
             return;
         }
-        *last = v;
-        let m = match kind {
-            Midi::Cc(cc) => Msg::Cc {
-                ch: 0,
-                cc,
-                value: v as u8,
-            },
-            Midi::Bend => Msg::PitchBend { ch: 0, value: v },
-            Midi::Pressure => Msg::ChanPressure {
-                ch: 0,
-                value: v as u8,
-            },
+        if !value.is_finite() {
+            self.dropped += 1;
+            return;
+        }
+        let r = value.round();
+        if r < f32::from(lo) || r > f32::from(hi) {
+            self.out_of_range += 1;
+        }
+        let v = (r as i32).clamp(lo.into(), hi.into()) as i16;
+        let (w, bit) = (t * CTL_WORDS + id / 64, 1u64 << (id % 64));
+        if self.sent[w] & bit != 0 {
+            self.given[t * usize::from(midi::COUNT) + id] = v;
+            self.waiting[w] |= bit;
+            return;
+        }
+        self.sent[w] |= bit;
+        self.put(frame, t as u16, id as u16, v);
+    }
+
+    /// A clip's lock, lane value or their end on its track's own MIDI out
+    /// control (`mpfree_play::is_gear_control`) that MIDI out sent ahead
+    /// for slow gear (sequencer S5, `SeqPads::control_ahead`), in its own
+    /// period: it never reaches the mod engine, so the file takes it here,
+    /// on its frame, through [`Tap::control`]. An unlock is the control's
+    /// own value, as it went out: `base` (the mod engine's), else the
+    /// control's default. Never allocates.
+    pub fn gear_control(&mut self, o: &Out, base: impl FnOnce(ParamAddr) -> Option<f32>) {
+        let (addr, value) = match o.event {
+            Event::Lock { addr, value } | Event::Lane { addr, value } => (addr, Some(value)),
+            Event::Unlock { addr } => (addr, None),
+            _ => return,
         };
-        if self.notes.len() < TAP_ROOM {
-            self.notes.push((frame, u16::from(t), m));
+        if !self.on {
+            return;
+        }
+        let Some(own) = value
+            .or_else(|| base(addr))
+            .or_else(|| midi::default(addr.param).map(f32::from))
+        else {
+            return;
+        };
+        self.control(o.frame, addr, own);
+    }
+
+    /// A control's value for the file, unless the file has it already.
+    fn put(&mut self, frame: u64, t: u16, id: u16, v: i16) {
+        let k = usize::from(t) * usize::from(midi::COUNT) + usize::from(id);
+        if self.in_file.get(k) == Some(&v) {
+            return;
+        }
+        if self.controls.len() < TAP_ROOM {
+            self.controls.push((frame, t, id, v));
         } else {
             self.dropped += 1;
+        }
+    }
+
+    /// Control `id` of track `t` has `value` as the export starts (MIDI
+    /// Out's, `MidiOut::value`): the file has it at the range's start.
+    /// Call after [`Host::begin`].
+    pub fn at_start(&mut self, t: u16, id: u16, value: i16) {
+        let Some((lo, hi)) = midi::range(id) else {
+            return;
+        };
+        if self.on
+            && usize::from(t) < CONTROL_TRACKS
+            && self.at_start.len() < self.at_start.capacity()
+        {
+            self.at_start.push((t, id, value.clamp(lo, hi)));
         }
     }
 
@@ -676,12 +778,13 @@ impl Tap {
         t
     }
 
-    /// The notes taken this period, then empty (the real-time safety
-    /// tests: what [`Host::notes`] hands the pass).
+    /// The notes and controls taken this period, then empty (the
+    /// real-time safety tests: what [`Host::notes`] hands the pass).
     #[cfg(test)]
     pub fn take(&mut self) -> usize {
-        let n = self.notes.len();
+        let n = self.notes.len() + self.controls.len();
         self.notes.clear();
+        self.controls.clear();
         n
     }
 
@@ -689,13 +792,41 @@ impl Tap {
         self.on = true;
         self.chords.clear();
         self.notes.clear();
-        self.controls.fill(UNTAKEN);
+        self.controls.clear();
+        self.in_file.fill(UNTAKEN);
+        self.sent.fill(0);
+        self.waiting.fill(0);
+        self.at_start.clear();
+        self.dropped = 0;
+        self.out_of_range = 0;
     }
 
     fn stop(&mut self) {
         self.on = false;
         self.notes.clear();
+        self.controls.clear();
     }
+}
+
+/// Control `id` at `v` as a message on channel 1 (the file puts each
+/// track on its own).
+fn control_msg(id: u16, v: i16) -> Option<Msg> {
+    use mpfree_play::mpfree_param::midi::Midi;
+    Some(match midi::of(id)? {
+        Midi::Cc(cc) => Msg::Cc {
+            ch: 0,
+            cc,
+            value: v.clamp(0, 127) as u8,
+        },
+        Midi::Bend => Msg::PitchBend {
+            ch: 0,
+            value: v.clamp(-8192, 8191),
+        },
+        Midi::Pressure => Msg::ChanPressure {
+            ch: 0,
+            value: v.clamp(0, 127) as u8,
+        },
+    })
 }
 
 /// What the transport was before the export moved it.
@@ -718,6 +849,8 @@ struct Running {
     /// clips don't play on into the tail.
     stopping: bool,
     waited: u32,
+    /// The controls the tracks had as the export started are in the file.
+    started: bool,
 }
 
 /// The sound loop's side (see the module docs).
@@ -827,31 +960,66 @@ impl Host {
             ended: false,
             stopping: false,
             waited: 0,
+            started: false,
         });
         Ok(())
     }
 
-    /// After the clips and arps played this period: their notes go to
-    /// the MIDI file, at their ticks from the range's start.
+    /// After the clips and arps played this period, and the mixer: their
+    /// notes and the tracks' controls go to the MIDI file, at their ticks
+    /// from the range's start. The controls every track had as the export
+    /// started go first, at the range's start; after that a control goes
+    /// in while the song rolls, and only when it changes.
     pub fn notes(&mut self, block: &Block) {
         let Some(r) = self.now.as_mut() else {
             return;
         };
         r.see_roll(block);
+        let tap = &mut self.tap;
         if r.rolled {
+            let count = usize::from(midi::COUNT);
+            if !r.started {
+                r.started = true;
+                for &(t, id, v) in &tap.at_start {
+                    if let Some(m) = control_msg(id, v) {
+                        tap.in_file[usize::from(t) * count + usize::from(id)] = v;
+                        r.run.pass.note(0, t, m);
+                    }
+                }
+            }
             let start = r.run.range.start as f64;
-            for &(frame, track, msg) in &self.tap.notes {
-                let span = block
+            let span_of = |frame: u64| {
+                block
                     .spans()
                     .iter()
-                    .find(|s| frame >= s.frame && frame < s.frame + u64::from(s.len));
-                if let Some(s) = span {
+                    .find(|s| frame >= s.frame && frame < s.frame + u64::from(s.len))
+            };
+            for &(frame, track, msg) in &tap.notes {
+                if let Some(s) = span_of(frame) {
                     let tick = (s.tick_at(frame) - start).round().max(0.0) as u64;
                     r.run.pass.note(tick, track, msg);
                 }
             }
+            for &(frame, t, id, v) in &tap.controls {
+                // Before the song rolls and after it stops (an LFO in the
+                // tail), nothing: the file ends with the range.
+                let Some(s) = span_of(frame).filter(|s| s.state.rolling()) else {
+                    continue;
+                };
+                let k = usize::from(t) * count + usize::from(id);
+                let (Some(m), Some(had)) = (control_msg(id, v), tap.in_file.get_mut(k)) else {
+                    continue;
+                };
+                if *had == v {
+                    continue;
+                }
+                *had = v;
+                let tick = (s.tick_at(frame) - start).round().max(0.0) as u64;
+                r.run.pass.note(tick, t, m);
+            }
         }
-        self.tap.notes.clear();
+        tap.notes.clear();
+        tap.controls.clear();
     }
 
     /// After the mixer: the pass takes this period's capture points. When
@@ -912,6 +1080,8 @@ impl Host {
             mut run, before, ..
         } = self.now.take()?;
         run.pass.detach(mixer);
+        // What the file left out or brought into range, for the summary.
+        run.pass.counted(self.tap.dropped, self.tap.out_of_range);
         self.tap.stop();
         time.anchor_dice(false);
         if time.info().state.rolling() {
@@ -1028,53 +1198,59 @@ mod tests {
         }
     }
 
-    /// A track's controllers, bend and pressure go in the MIDI file as the
-    /// lanes give them, only when they change, and only while an export
-    /// runs; anything not a track's MIDI out is left out.
+    /// A track's controllers, bend and pressure go to the MIDI file as
+    /// MIDI Out thins them: a control's first value in a period on its
+    /// frame, a later one at the next period's start (the last given,
+    /// which counts as that period's), only while an export runs; a value
+    /// out of range goes in as the nearest and is counted, one that isn't
+    /// a number is left out and counted; anything not a track's MIDI out
+    /// is left alone.
     #[test]
-    fn the_tap_takes_a_tracks_controls_when_they_change() {
+    fn the_tap_thins_a_tracks_controls_as_midi_out_does() {
         use mpfree_play::mpfree_param::Strip;
         let cc74 = ParamAddr::new(Owner::Midi(2), 74);
         let bend = ParamAddr::new(Owner::Midi(2), midi::BEND);
         let mut t = Tap::new();
+        t.period(0);
         t.control(0, cc74, 64.0);
-        assert!(t.notes.is_empty(), "no export running");
+        assert!(t.controls.is_empty(), "no export running");
         t.start();
-        for (frame, v) in [(10, 64.0), (20, 64.2), (30, 65.0), (40, 300.0)] {
+        t.period(0);
+        // Three values in one period: the first goes, the last waits.
+        for (frame, v) in [(10, 64.0), (20, 64.2), (30, 65.0)] {
             t.control(frame, cc74, v);
         }
-        t.control(50, bend, -8192.0);
-        t.control(60, bend, -8192.4);
-        t.control(70, ParamAddr::new(Owner::Midi(1), midi::PRESSURE), 40.0);
-        t.control(80, ParamAddr::new(Owner::Strip(Strip::Track(2)), 0), 0.5);
-        t.control(90, cc74, f32::NAN);
-        let cc = |value| Msg::Cc {
-            ch: 0,
-            cc: 74,
-            value,
-        };
+        t.control(50, bend, -9000.0);
+        t.control(60, ParamAddr::new(Owner::Midi(1), midi::PRESSURE), 40.0);
+        t.control(70, ParamAddr::new(Owner::Strip(Strip::Track(2)), 0), 0.5);
+        t.control(80, ParamAddr::new(Owner::Midi(1), 74), f32::NAN);
         assert_eq!(
-            t.notes,
+            t.controls,
             [
-                (10, 2, cc(64)),
-                (30, 2, cc(65)),
-                (40, 2, cc(127)),
-                (
-                    50,
-                    2,
-                    Msg::PitchBend {
-                        ch: 0,
-                        value: -8192
-                    }
-                ),
-                (70, 1, Msg::ChanPressure { ch: 0, value: 40 }),
+                (10, 2, 74, 64),
+                (50, 2, midi::BEND, -8192),
+                (60, 1, midi::PRESSURE, 40)
             ]
         );
-        // A new export starts afresh: the first value goes in again.
+        assert_eq!((t.out_of_range, t.dropped), (1, 1));
+        t.controls.clear();
+        // The next period: the waiting 65 on its first frame, and as it
+        // counts as this period's, a new value waits again.
+        t.period(128);
+        t.control(140, cc74, 300.0);
+        t.control(150, bend, 0.0);
+        assert_eq!(t.controls, [(128, 2, 74, 65), (150, 2, midi::BEND, 0)]);
+        t.controls.clear();
+        t.period(256);
+        assert_eq!(t.controls, [(256, 2, 74, 127)]);
+        assert_eq!(t.out_of_range, 2);
+        // A new export starts afresh.
         t.stop();
         t.start();
+        assert_eq!((t.out_of_range, t.dropped), (0, 0));
+        t.period(0);
         t.control(5, cc74, 127.0);
-        assert_eq!(t.notes, [(5, 2, cc(127))]);
+        assert_eq!(t.controls, [(5, 2, 74, 127)]);
     }
 
     #[test]
@@ -1230,6 +1406,32 @@ mod tests {
         fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
     }
 
+    /// The pads for a track on slow gear (sequencer S5): MIDI out takes
+    /// the track's own gear controls ahead, and in their own period they
+    /// reach the tap as `SeqPads::out_sent` hands them on.
+    struct SlowGear<'a> {
+        tap: &'a mut Tap,
+        modu: &'a crate::modmix::ModMix,
+        track: u16,
+    }
+    impl crate::time::Pads for SlowGear<'_> {
+        fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+            true
+        }
+        fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+        fn stop_all(&mut self) {}
+        fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        fn out_ahead(&mut self, o: &Out) -> bool {
+            o.track == self.track && mpfree_play::is_gear_control(o)
+        }
+        fn out_sent(&mut self, o: &Out) {
+            if mpfree_play::is_gear_control(o) {
+                self.tap
+                    .gear_control(o, |addr| self.modu.engine().base(addr));
+            }
+        }
+    }
+
     struct Loop {
         time: crate::time::TimeHost,
         mix: crate::mixing::MixHost,
@@ -1243,18 +1445,25 @@ mod tests {
         two: bool,
         /// Frames rolled in this pass: the tones start with the range.
         rolled: usize,
+        /// A track on slow gear, and its ahead in frames.
+        slow: Option<(u16, u32)>,
     }
 
     impl Loop {
         fn new() -> Loop {
+            Loop::with(crate::time::TimeHost::new(crate::RATE, 120.0).unwrap())
+        }
+
+        fn with(time: crate::time::TimeHost) -> Loop {
             let mut l = Loop {
-                time: crate::time::TimeHost::new(crate::RATE, 120.0).unwrap(),
+                time,
                 mix: crate::mixing::MixHost::new(crate::RATE, 0.0, 0.0),
                 host: Host::new(),
                 i: 0,
                 inject: Vec::new(),
                 two: false,
                 rolled: 0,
+                slow: None,
             };
             // The app's mixer has always played before an export starts.
             l.period(false);
@@ -1282,8 +1491,22 @@ mod tests {
         /// plays a tone while the transport rolls (`tone`).
         fn period(&mut self, tone: bool) -> Option<Box<Run>> {
             self.time.advance(PERIOD as u32);
-            self.time.period(PERIOD as u32, &mut Quiet);
             let first = self.time.block().start_frame;
+            self.host.tap.period(first);
+            match self.slow {
+                Some((track, ahead)) => {
+                    let mut ahead_of = [0u32; mpfree_seq::MAX_TRACKS];
+                    ahead_of[usize::from(track)] = ahead;
+                    self.time.set_ahead(&ahead_of);
+                    let mut pads = SlowGear {
+                        tap: &mut self.host.tap,
+                        modu: &self.mix.modu,
+                        track,
+                    };
+                    self.time.period(PERIOD as u32, &mut pads);
+                }
+                None => self.time.period(PERIOD as u32, &mut Quiet),
+            }
             for &(i, offset, event) in &self.inject {
                 if i == self.i {
                     let o = Out {
@@ -1296,6 +1519,15 @@ mod tests {
                     self.host.tap.send(&o, NoteIs::Note);
                 }
             }
+            // The clips' locks and lanes to the mod engine, as main.rs
+            // hands them on.
+            for &(offset, addr, value) in self.time.locks() {
+                self.mix.lock(offset, addr, value);
+            }
+            for &(offset, addr, value) in self.time.lanes() {
+                self.mix.lane(offset, addr, value);
+            }
+            self.time.clear_locks();
             let rolling = self.time.block().spans().iter().any(|s| s.state.rolling());
             let at = self.i as usize * PERIOD;
             let only = self.host.only();
@@ -1340,6 +1572,12 @@ mod tests {
                 &mut l,
                 &mut r,
             );
+            // The tracks' controls the mod engine moved, into the tap.
+            for (offset, addr, value) in self.mix.modu.take_midi_values() {
+                self.host
+                    .tap
+                    .control(first + u64::from(offset), addr, value);
+            }
             self.i += 1;
             if self.host.running() {
                 // The sound card paces a real-time pass; this loop runs
@@ -1478,6 +1716,208 @@ mod tests {
             ]
         );
         std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    /// A MIDI file track's events, as [`read_smf`] gives them.
+    type SmfEvents = Vec<(u64, Vec<u8>)>;
+
+    /// The export of [`the_midi_file_has_a_tracks_locks_and_lanes_at_their_ticks`]'s
+    /// song, with Juno on gear `slow` frames slow: the MIDI file's tracks
+    /// (each as (tick, bytes)) and the outcome.
+    fn export_gear(slow: Option<u32>, name: &str) -> (Vec<SmfEvents>, mpfree_export::Outcome) {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::arrange::Placement;
+        use mpfree_seq::mpfree_moves::{Kind, Map, Steps, Target};
+        use mpfree_seq::{Clip, Lock, Note};
+        const BAR: Tick = 3840;
+        let map = |lo: f32, hi: f32| Map {
+            min: lo,
+            max: hi,
+            log: false,
+            steps: Steps::Whole,
+        };
+        let mut p = crate::time::TimeHost::new(crate::RATE, 120.0)
+            .unwrap()
+            .project()
+            .clone();
+        let mut clip = Clip::new("Gear", BAR);
+        // Step 5's note (a 1/16 is 240 ticks) and its lock on CC 74.
+        clip.notes.push(Note::new(960, 120, 60, 100));
+        clip.locks
+            .push(Lock::new(960, None, RelAddr::new(OnTrack::Midi, 74), 100.0));
+        // The bend in the middle (8192 of its 16383 steps up), then all
+        // the way up at the half bar.
+        let bend = Target::Track(RelAddr::new(OnTrack::Midi, midi::BEND));
+        clip.moves
+            .put(
+                bend,
+                map(-8192.0, 8191.0),
+                &[
+                    (0.0, 8192.0 / 16383.0, Kind::Step),
+                    (1920.0, 1.0, Kind::Step),
+                ],
+                BAR as u32,
+            )
+            .unwrap();
+        // No pressure, then 64 from the second 1/8.
+        let pressure = Target::Track(RelAddr::new(OnTrack::Midi, midi::PRESSURE));
+        clip.moves
+            .put(
+                pressure,
+                map(0.0, 127.0),
+                &[(0.0, 0.0, Kind::Step), (480.0, 64.0 / 127.0, Kind::Step)],
+                BAR as u32,
+            )
+            .unwrap();
+        p.tracks[1].slots[0] = Some(clip);
+        p.arrangement.placements = vec![Placement::linked(1, 0, 0, BAR)];
+        // The song's own lane, on track 3's volume (CC 7): full, then off
+        // at the half bar.
+        let volume = ParamAddr::new(Owner::Midi(2), 7);
+        p.arrangement
+            .lanes
+            .put(
+                Target::Fixed(volume),
+                map(0.0, 127.0),
+                &[(0.0, 1.0, Kind::Step), (1920.0, 0.0, Kind::Step)],
+                mpfree_seq::arrange::SONG_LANE_LEN,
+            )
+            .unwrap();
+        let time = crate::time::TimeHost::with_project(crate::RATE, 120.0, p).unwrap();
+        let mut l = Loop::with(time);
+        // Juno on gear that needs `slow` frames more than the sound's lead.
+        l.slow = slow.map(|frames| (1, frames));
+        let mut f = l.facts();
+        f.arrangement_end = BAR;
+        f.tracks = vec!["Kick".into(), "Juno".into(), "Strings".into()];
+        let c = mpfree_browser_ui::ExportChoice {
+            mixdown: true,
+            stems: false,
+            midi: true,
+            by: StemsBy::Track,
+            range: ExportRange::Arrangement,
+            format: panel_format(mpfree_fx::Bits::I24, crate::RATE),
+        };
+        let folder = scratch(name);
+        let (plan, range) = f.plan(&c, &folder, "Gear", Mode::Fast);
+        assert_eq!((range.start, range.end, range.song), (0, BAR, Some(true)));
+        let (pass, job) = mpfree_export::start(plan).unwrap();
+        let run = Box::new(Run {
+            pass,
+            range,
+            said: None,
+        });
+        l.host.begin(run, &mut l.mix.mixer, &mut l.time).unwrap();
+        // Kick's pan and Strings' volume, set by hand before the export.
+        l.host.tap.at_start(0, 10, 30);
+        l.host.tap.at_start(2, 7, 127);
+        // A value out of CC 74's range before the song rolls: counted for
+        // the summary, and not in the file (the song hadn't started).
+        l.host.tap.period(0);
+        l.host
+            .tap
+            .control(0, ParamAddr::new(Owner::Midi(0), 74), 500.0);
+        let mut n = 0;
+        let run = loop {
+            n += 1;
+            assert!(n < 4000, "the pass ends");
+            if let Some(run) = l.period(false) {
+                break run;
+            }
+        };
+        assert_eq!(run.said, None);
+        let o = job.finish(run.pass);
+        let mpfree_export::Outcome::Done(d) = &o else {
+            panic!("{o:?}");
+        };
+        assert_eq!((d.notes_dropped, d.out_of_range), (0, 1), "{o:?}");
+        assert!(
+            o.words().ends_with(
+                "a MIDI file (1 controller value was outside what MIDI can hold, so the file has the nearest)"
+            ),
+            "{}",
+            o.words()
+        );
+        let tracks = read_smf(&std::fs::read(d.midi.as_ref().unwrap()).unwrap());
+        std::fs::remove_dir_all(&folder).unwrap();
+        (tracks, o)
+    }
+
+    /// The brief's case (sequencer split A): a clip with a CC 74 lock on
+    /// its 5th step, a pitch bend lane and a pressure lane, and a song
+    /// lane on another track's volume, exported from the arrangement. The
+    /// MIDI file has each on its track at its tick (the lock on its step's,
+    /// where the file puts a control before a note), only what changes,
+    /// nothing after the range; and a control a track had as the export
+    /// started at the range's start. (This loop's player sends the pads
+    /// nothing, so the clip's note isn't in the file.)
+    #[test]
+    fn the_midi_file_has_a_tracks_locks_and_lanes_at_their_ticks() {
+        let (tracks, _) = export_gear(None, "controls");
+        let events = |k: usize| -> Vec<(u64, Vec<u8>)> {
+            tracks[k]
+                .iter()
+                .filter(|(_, b)| b[0] & 0xF0 != 0xF0)
+                .cloned()
+                .collect()
+        };
+        assert_eq!(tracks.len(), 4, "the conductor and three tracks");
+        assert_eq!(events(1), [(0, vec![0xB0, 10, 30])], "Kick's pan");
+        // The bend's 14 bits (LSB, MSB): 8191 is 0x3FFF.
+        let juno = events(2);
+        let at = |tick: u64| -> Vec<Vec<u8>> {
+            juno.iter()
+                .filter(|(t, _)| *t == tick)
+                .map(|(_, b)| b.clone())
+                .collect()
+        };
+        // The bend in the middle and no pressure are where the controls
+        // start (General MIDI's), so the engine moves neither and nothing
+        // goes, in the file as to the gear.
+        assert_eq!(at(0), Vec::<Vec<u8>>::new(), "{juno:?}");
+        assert_eq!(at(480), [vec![0xD0, 64]], "{juno:?}");
+        assert_eq!(at(960), [vec![0xB0, 74, 100]], "the lock: {juno:?}");
+        assert_eq!(at(1920), [vec![0xE0, 0x7F, 0x7F]], "{juno:?}");
+        assert_eq!(
+            juno.len(),
+            3,
+            "only the changes, none past the range: {juno:?}"
+        );
+        // The song lane on its track; its first value is what Strings had
+        // as the export started, so it goes in once.
+        assert_eq!(
+            events(3),
+            [(0, vec![0xB0, 7, 127]), (1920, vec![0xB0, 7, 0])],
+            "the song lane on its track"
+        );
+    }
+
+    /// Juno on slow gear (sequencer S5, 90 ms ahead): its locks and lanes
+    /// go to MIDI out ahead and never reach the mod engine, and the file
+    /// still has them on their ticks, as `SeqPads::out_sent` taps them.
+    /// Its lanes' first values go in too (the bend in the middle, no
+    /// pressure): they reach MIDI out straight, not through the engine,
+    /// which moves nothing to the value it already has. The rest is as on
+    /// gear that isn't slow.
+    #[test]
+    fn the_midi_file_has_a_slow_gear_tracks_locks_and_lanes_too() {
+        let (normal, _) = export_gear(None, "controls-normal");
+        let (slow, o) = export_gear(Some(crate::RATE * 90 / 1000), "controls-slow");
+        let events = |t: &[(u64, Vec<u8>)], first: bool| -> Vec<(u64, Vec<u8>)> {
+            t.iter()
+                .filter(|(tick, b)| b[0] & 0xF0 != 0xF0 && (*tick == 0) == first)
+                .cloned()
+                .collect()
+        };
+        assert_eq!(
+            events(&slow[2], true),
+            [(0, vec![0xE0, 0x00, 0x40]), (0, vec![0xD0, 0])],
+            "{o:?}"
+        );
+        assert_eq!(events(&slow[2], false), events(&normal[2], false));
+        assert_eq!(events(&normal[2], true), []);
+        assert_eq!(slow[1], normal[1]);
+        assert_eq!(slow[3], normal[3]);
     }
 
     #[test]

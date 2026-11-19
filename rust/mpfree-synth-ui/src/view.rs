@@ -88,6 +88,9 @@ pub struct SynthState {
     /// The preset loaded, and whether it was changed since.
     pub preset: Option<usize>,
     pub edited: bool,
+    /// The musician's own preset loaded (from Yours, by its name), which
+    /// the title names in place of the list's preset.
+    pub own: Option<String>,
     /// Each sounding voice's pressure now, 0 to 1 (empty when the app has
     /// none to show), for the Pressure page's live bars.
     pub pressures: Vec<f32>,
@@ -113,6 +116,7 @@ impl SynthState {
             presets,
             preset,
             edited: false,
+            own: None,
             pressures: Vec::new(),
         }
     }
@@ -148,6 +152,10 @@ pub enum SynthAction {
     Set { id: u16, value: f32 },
     /// Load preset `i` of [`SynthState::presets`].
     Preset(usize),
+    /// The preset's name above the page was tapped: open the engine's
+    /// presets (the app opens the browser's preset picker; nothing goes to
+    /// the synth).
+    OpenPresets,
 }
 
 pub struct SynthPanel {
@@ -520,6 +528,7 @@ impl SynthPanel {
                 self.show_page(ui, *i);
                 None
             }
+            (TITLE, EventKind::Select(_)) => Some(SynthAction::OpenPresets),
             (TILES, EventKind::Tab(n)) => {
                 let want = self.links.get(*n)?.clone();
                 self.show_page_named(ui, &want);
@@ -543,6 +552,7 @@ impl SynthPanel {
             }
             (PRESETS, EventKind::Select(i)) if *i < self.state.presets.len() => {
                 self.state.preset = Some(*i);
+                self.state.own = None;
                 self.state.edited = false;
                 self.refresh(ui);
                 Some(SynthAction::Preset(*i))
@@ -593,9 +603,15 @@ impl SynthPanel {
         let drawings = self.drawings(&page.name);
         let st = &self.state;
         let qtargets = qlink_targets(&page, st.params);
-        let preset = st.preset.and_then(|i| st.presets.get(i)).cloned();
+        let preset = st
+            .own
+            .clone()
+            .or_else(|| st.preset.and_then(|i| st.presets.get(i)).cloned());
         if let Some(w) = ui.get_mut::<TitleBar>(TITLE) {
             w.show_swatch = false;
+            // The name opens the engine's presets (Jay, 18 Nov); a plugin
+            // lists its own in the side list.
+            w.opens = is_engine(st.info.id);
             w.swatch = st.color;
             let edited = if st.edited { " · edited" } else { "" };
             (w.title, w.subtitle) = match &preset {
@@ -703,7 +719,7 @@ impl SynthPanel {
                 .enumerate()
                 .map(|(k, name)| ListItem {
                     text: name.clone(),
-                    detail: if st.preset == Some(k) && st.edited {
+                    detail: if st.own.is_none() && st.preset == Some(k) && st.edited {
                         "edited".to_string()
                     } else {
                         String::new()
@@ -717,6 +733,12 @@ impl SynthPanel {
                 .min(st.presets.len().saturating_sub(1));
         }
     }
+}
+
+/// One of the app's own instruments (whose presets the browser keeps), not
+/// a plugin or an effect.
+fn is_engine(id: &str) -> bool {
+    id.starts_with("mpfree.") && !id.starts_with("mpfree.fx.")
 }
 
 /// "Native" for the app's own engines, "Plugin" for a hosted one.
