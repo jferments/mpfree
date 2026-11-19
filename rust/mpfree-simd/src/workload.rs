@@ -1,11 +1,12 @@
 //! The kernels' bench workloads: the work an engine gives a kernel in a
 //! busy song, built here once so the bench (`mpfree-bench`'s "Supersaw
-//! saws" cases), the ARMv7 instruction count (`examples/simd_cost.rs`,
-//! `tools/simd_arm_cost.py`) and the tests all play the same thing.
+//! saws" and "Choir formants" cases), the ARMv7 instruction count
+//! (`examples/simd_cost.rs`, `tools/simd_arm_cost.py`) and the tests all
+//! play the same thing.
 //!
 //! Building one allocates; playing a block doesn't.
 
-use crate::{table_sum_on, Path};
+use crate::{formants4_on, table_sum_on, Formants4, Path, FORMANTS};
 
 /// Levels of the saw, half an octave of bandwidth apart, as
 /// `mpfree_synth::osc` keeps them: the harmonics each level holds.
@@ -192,6 +193,144 @@ impl Supersaw {
                 {
                     *l += x * v.pan.0;
                     *r += x * v.pan.1;
+                }
+            }
+            at += len;
+        }
+        took
+    }
+}
+
+/// A vowel: each formant's centre (Hz), bandwidth (Hz) and level (dB).
+struct Vowel([(f64, f64, f64); FORMANTS]);
+
+/// A soprano's "ah" and an alto's "oh" (the usual published formant
+/// tables): the two groups of the Choir workload.
+const VOWELS: [Vowel; 2] = [
+    Vowel([
+        (800.0, 80.0, 0.0),
+        (1150.0, 90.0, -6.0),
+        (2900.0, 120.0, -32.0),
+        (3900.0, 130.0, -20.0),
+        (4950.0, 140.0, -50.0),
+    ]),
+    Vowel([
+        (450.0, 70.0, 0.0),
+        (800.0, 80.0, -9.0),
+        (2830.0, 100.0, -16.0),
+        (3500.0, 130.0, -28.0),
+        (4950.0, 135.0, -55.0),
+    ]),
+];
+
+/// One group of four voices: their filters, their buzz phases and pans.
+struct Group {
+    f: Formants4,
+    ph: [f32; 4],
+    dt: [f32; 4],
+    pan: [(f32, f32); 4],
+}
+
+/// Choir voices as the Choir engine plays them: four voices a group, one
+/// voice a lane, each a buzzy source (a plain saw) through its vowel's
+/// five formant filters, one `formants4` call a group for each 16-frame
+/// control step. The coefficients are set once here; the engine's own
+/// control-rate work is the same on both paths and stays out of the
+/// count.
+pub struct Formants {
+    groups: Vec<Group>,
+    src: [[f32; 4]; STEP],
+    out: [[f32; 4]; STEP],
+}
+
+impl Formants {
+    /// `voices` voices (a multiple of four plays every lane; the rest of
+    /// the last group is silent) of a chord from C3, at `rate`, half of
+    /// the groups singing "ah" and half "oh".
+    pub fn new(voices: usize, rate: u32) -> Formants {
+        const NOTES: [u8; 8] = [48, 55, 60, 64, 67, 72, 76, 79];
+        let fs = f64::from(rate);
+        let gain = 0.5 / (voices.max(1) as f64).sqrt();
+        let groups = (0..voices.div_ceil(4))
+            .map(|gi| {
+                let vowel = &VOWELS[gi % VOWELS.len()];
+                let mut f = Formants4::default();
+                for (k, &(fc, bw, db)) in vowel.0.iter().enumerate() {
+                    // Simper's SVF: g = tan(pi fc / fs), k = 1 / Q.
+                    let g = (std::f64::consts::PI * fc.min(0.45 * fs) / fs).tan();
+                    let kk = bw / fc;
+                    let a1 = 1.0 / (1.0 + g * (g + kk));
+                    let a2 = g * a1;
+                    let a3 = g * a2;
+                    // The band-pass output peaks at 1 / k: scale it to the
+                    // formant's level.
+                    let level = 10f64.powf(db / 20.0) * kk;
+                    for lane in 0..4 {
+                        let on = gi * 4 + lane < voices;
+                        f.a1[k][lane] = a1 as f32;
+                        f.a2[k][lane] = a2 as f32;
+                        f.a3[k][lane] = a3 as f32;
+                        f.g[k][lane] = if on { (level * gain) as f32 } else { 0.0 };
+                    }
+                }
+                let dt = std::array::from_fn(|lane| {
+                    let v = gi * 4 + lane;
+                    if v >= voices {
+                        return 0.0;
+                    }
+                    let note = NOTES[v % NOTES.len()] + 12 * (v / NOTES.len()) as u8;
+                    (440.0 * 2f64.powf((f64::from(note) - 69.0) / 12.0) / fs) as f32
+                });
+                let pan = std::array::from_fn(|lane| {
+                    let x = (gi * 4 + lane) as f32 / voices.max(2) as f32;
+                    (1.0 - 0.5 * x, 0.5 + 0.5 * x)
+                });
+                Group {
+                    f,
+                    ph: std::array::from_fn(|lane| lane as f32 * 0.23),
+                    dt,
+                    pan,
+                }
+            })
+            .collect();
+        Formants {
+            groups,
+            src: [[0.0; 4]; STEP],
+            out: [[0.0; 4]; STEP],
+        }
+    }
+
+    /// Plays one block into `left` and `right` (written, not added) on
+    /// `path`, in 16-frame steps. Returns the path the last call took.
+    pub fn block(&mut self, path: Path, left: &mut [f32], right: &mut [f32]) -> Path {
+        let mut took = path;
+        left.fill(0.0);
+        right.fill(0.0);
+        let n = left.len().min(right.len());
+        let mut at = 0;
+        while at < n {
+            let len = (n - at).min(STEP);
+            for g in &mut self.groups {
+                for row in &mut self.src[..len] {
+                    for lane in 0..4 {
+                        let mut p = g.ph[lane] + g.dt[lane];
+                        if p >= 1.0 {
+                            p -= 1.0;
+                        }
+                        g.ph[lane] = p;
+                        row[lane] = 2.0 * p - 1.0;
+                    }
+                }
+                took = formants4_on(path, &self.src[..len], &mut self.out[..len], &mut g.f);
+                for ((l, r), y) in left[at..at + len]
+                    .iter_mut()
+                    .zip(&mut right[at..at + len])
+                    .zip(&self.out[..len])
+                {
+                    for lane in 0..4 {
+                        *l += y[lane] * g.pan[lane].0;
+                        *r += y[lane] * g.pan[lane].1;
+                    }
                 }
             }
             at += len;
