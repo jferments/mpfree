@@ -12,8 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use mpfree_sampler_ui::sample::{
-    auto_samples, chop_samples, grain_samples, pads_samples, play_samples, rec_samples, samples,
-    warp_samples,
+    auto_samples, chop_samples, grain_samples, pads_samples, play_samples, samples, warp_samples,
 };
 use mpfree_ui::{Fonts, SoftCanvas};
 
@@ -70,11 +69,6 @@ fn run() -> Result<(), String> {
     );
     screens.extend(
         grain_samples(Fonts::embedded)?
-            .into_iter()
-            .map(|s| (s.name, s.about, s.ui)),
-    );
-    screens.extend(
-        rec_samples(Fonts::embedded)?
             .into_iter()
             .map(|s| (s.name, s.about, s.ui)),
     );
