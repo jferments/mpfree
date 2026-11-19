@@ -55,7 +55,7 @@ New analyses in `rust/mpfree-fxlab/src/synth.rs`, each tested on signals with kn
 
 ## Where today's synths stand (2026-11-18)
 
-Met against rows with a target (with Strings, Bass, the Keys clav and the first six factory sounds): L2 148 of 165, L3 161/165, L5 95/153, L6 164/165, L8 165/165, L11 119/165, L12 113/113; B1 2/2, B3 3/3, B4 50/50, B5 31/50, B7 50/50; K1 23/23, K3 92/92, K4 11/11, K7 5/5, K9 8/8; S7 8/8; V7 2/2; T1 9/9; A1 22/51; B2 2/2; P6 1/3; B9 3/3, P5 2/2; F1 3/3, F5 0/1, F7 0/1; D3 19/80, D5 70/80.
+Met against rows with a target (with Strings, Bass, the Keys clav and the first six factory sounds): L2 148 of 165, L3 161/165, L5 101/153 (the six tine presets that missed it meet it since the tine's rebuild, 19 Nov), L6 164/165, L8 165/165, L11 119/165, L12 113/113; B1 2/2, B3 3/3, B4 50/50, B5 31/50, B7 50/50; K1 23/23, K3 92/92, K4 11/11, K7 5/5, K9 8/8; S7 8/8; V7 2/2; T1 9/9; A1 22/51; B2 2/2; P6 1/3; B9 3/3, P5 2/2; F1 3/3, F5 0/1, F7 0/1; D3 19/80, D5 70/80.
 
 - **In tune and true to theory.** Every engine's plain patch is within 0.03 cents from C1 to C7, except Keys (0.55 cents at C2) and the organ (0.58 cents, its gear ratios). FM's sidebands match the Bessel functions within 0.01 dB (operator level 60, 75 and 90 give an index of 0.43, 1.57 and 5.76). Poly's LP24 is within 0.16 dB of its 4-pole prototype and LP12 within 0.8 dB, the cutoff where the label says, the resonance peak within 5.3 cents. Glide lands within 0.04 cents in 1.2 % of its time. Keys' and Pluck's decays follow their labels and laws (all 88 K3 rows), and the tremolo rates are within 0.4 %.
 - **Aliasing is the biggest gap.** Poly's saw and pulse (PolyBLEP) alias at −49 dB at C5, −44 at C6 and −37 at C7 (the saw's 13th harmonic folds to 16.9 kHz); drive and distortion make it −30 and −27 at C7. Analog: −54, −48, −42. Squelch's saw meets −60 to C6, its square doesn't (−27 at C7). Wavetable's mips work: Init −72 at C7, position 100 −54. FM feedback 7 sits 13 to 17 dB under its harmonics with what is off them (aliasing or the feedback's noise; the row can't tell which).
@@ -106,15 +106,16 @@ The bar each wave 1 pull request is judged by ([Architecture and roadmap](synth-
 
 | Id | Measure | Target | Today |
 |---|---|---|---|
-| K1 | Second harmonic, velocity 127 against 40, C4 (tine and reed: the clav's velocity brightens the whole string, which L5 reads) | At least 12 dB more | 23 of 23 (12.7 to 18.3 dB) |
+| K1 | Second harmonic, velocity 127 against 40, C4 (tine and reed: the clav's velocity brightens the whole string, which L5 reads) | At least 12 dB more | 23 of 23 (12.8 to 27.1 dB; the tines 18.8 to 27.1 since their rebuild, 19 Nov, against 12.7 to 18.3) |
 | K2 | Level against velocity | V1 and V2, range 30 to 40 dB | Velocity sets the range, 32 dB from velocity 1 to 127 by default; 14 to 24 dB from 20 to 127 as measured (L6), every preset within 1.9 dB of the square law |
 | K3 | Decay against pitch | T60 within 20 % of the label (the clav's shortened by its Mute, as labelled); slope within 0.15 of the engine's law | 68 of 68 |
 | K4 | The end of a note | The clav drops by its Release drop (3 by default) ± 0.5 semitones at release; any damper sound is under the note's level | 11 of 11 clav presets, within 0.01 semitone (C5, read 10 to 50 ms after the release) |
 | K5 | Sustain pedal | V5 | No pedal |
-| K6 | Level across the keys | Loudness spread under 3 dB, C1 to C7 | 34 of 34 (0.7 to 3.0 dB, L11) |
+| K6 | Level across the keys | Loudness spread under 3 dB, C1 to C7 | 34 of 34 (0.7 to 3.0 dB, L11; the tines 0.7 to 2.3) |
 | K7 | Clav pickups | Notches where the pickup's place predicts, within 5 %: the partial over the node at least 15 dB under its neighbours, C2 | 5 of 5 clav presets on one pickup (−19.6 to −34.2 dB) |
 | K9 | Tremolo | Rate within 5 % of its label | 8 of 8 |
 | K10 | Cost | 16 tine voices and 10 clav voices under the synth line on the MPC | Device round |
+| K11 | The tine against a real tine piano | Harmonics 2 to 8 against the note, 50 and 300 ms in, over recordings of 15 keys at five velocities, rms dB: no worse than the recordings' own scatter from key to key (about 9 dB) | Init 9.1 dB, no bias (23.7 before the rebuild). Measured outside the lab, as the recordings are not ours to commit ([Electric pianos](../research/electric-piano.md#measured-tine-piano-19-nov)) |
 
 **Strings (S)**, on the Strings engine and the Ensemble effect:
 
