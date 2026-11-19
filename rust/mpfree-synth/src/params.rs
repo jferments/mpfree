@@ -4,6 +4,7 @@
 use mpfree_node::{pressure as np, Curve, ParamInfo, Unit};
 
 use crate::pressure::POLY_TARGETS;
+use crate::voice::Source;
 
 macro_rules! ids {
     ($($name:ident = $v:expr),* $(,)?) => { $(pub const $name: u16 = $v;)* };
@@ -23,6 +24,32 @@ ids! {
     LEVEL = 80, PAN = 81,
     METER_VOICES = 90,
     PRESS_BASE = 100,
+    LFO2_SHAPE = 120, LFO2_RATE = 121, LFO2_SYNC = 122, LFO2_FADE = 123, LFO2_RETRIG = 124,
+    LFO2_PITCH = 125, LFO2_CUTOFF = 126, LFO2_PW = 127, LFO2_AMP = 128,
+    ROUTE_BASE = 130,
+}
+
+/// Play routes: each takes a source ([`Source`]: the mod wheel, breath, a
+/// foot controller, velocity, the key, the note's pressure or tone, or a
+/// random value per note) to one of [`POLY_TARGETS`] with a depth of -100
+/// to 100 %, reaching as far as a pressure slot's
+/// ([`crate::pressure::full_scale`]). With the four pressure slots, a
+/// sound has eight routes.
+pub const ROUTES: usize = 4;
+/// What each route's three settings are, as offsets in its run of ids.
+pub mod route {
+    pub const SOURCE: u16 = 0;
+    pub const TARGET: u16 = 1;
+    pub const DEPTH: u16 = 2;
+}
+/// Route `n`'s (0 to 3) setting `field` ([`route`]).
+pub const fn route_id(n: usize, field: u16) -> u16 {
+    ROUTE_BASE + 3 * n as u16 + field
+}
+/// Which route and setting `id` is, if it is one.
+pub fn route_of(id: u16) -> Option<(usize, u16)> {
+    let off = id.checked_sub(ROUTE_BASE)?;
+    (off < 3 * ROUTES as u16).then(|| (usize::from(off / 3), off % 3))
 }
 
 /// Pressure settings and slots: [`mpfree_node::pressure::field`] offsets
@@ -61,10 +88,13 @@ pub mod target {
     pub const SUB: u8 = 9;
     pub const NOISE: u8 = 10;
     pub const DIST: u8 = 11;
+    pub const LFO1_AMOUNT: u8 = 12;
+    pub const LFO2_AMOUNT: u8 = 13;
+    pub const PAN: u8 = 14;
 }
 
 /// The highest id plus one: values live in an array indexed by id.
-pub const ID_SPACE: usize = PRESS_BASE as usize + np::FIELDS;
+pub const ID_SPACE: usize = ROUTE_BASE as usize + 3 * ROUTES;
 
 pub const WAVES: &[&str] = &["Saw", "Pulse", "Triangle", "Sine", "Supersaw"];
 pub const FILTER_MODES: &[&str] = &["LP 24", "LP 12", "BP 12", "HP 12"];
@@ -495,6 +525,71 @@ const BASE: &[ParamInfo] = &[
         Unit::None,
         Toggle,
     ),
+    // The second LFO is each voice's own: it starts with each note (or
+    // somewhere of its own when Retrigger is off) and fades in.
+    choice(LFO2_SHAPE, "Shape", "LFO 2", LFO_SHAPES, 0.0),
+    p(LFO2_RATE, "Rate", "LFO 2", 0.05, 30.0, 5.0, Unit::Hz, Log),
+    choice(LFO2_SYNC, "Sync", "LFO 2", LFO_SYNCS, 0.0),
+    p(
+        LFO2_FADE,
+        "Fade in",
+        "LFO 2",
+        1.0,
+        10_000.0,
+        1.0,
+        Unit::Ms,
+        Log,
+    ),
+    p(
+        LFO2_RETRIG,
+        "Retrigger",
+        "LFO 2",
+        0.0,
+        1.0,
+        1.0,
+        Unit::None,
+        Toggle,
+    ),
+    p(
+        LFO2_PITCH,
+        "To pitch",
+        "LFO 2",
+        0.0,
+        12.0,
+        0.0,
+        Unit::Semitones,
+        Linear,
+    ),
+    p(
+        LFO2_CUTOFF,
+        "To cutoff",
+        "LFO 2",
+        0.0,
+        5.0,
+        0.0,
+        Unit::Octaves,
+        Linear,
+    ),
+    p(
+        LFO2_PW,
+        "To width",
+        "LFO 2",
+        0.0,
+        45.0,
+        0.0,
+        Unit::Percent,
+        Linear,
+    ),
+    p(
+        LFO2_AMP,
+        "To level",
+        "LFO 2",
+        0.0,
+        100.0,
+        0.0,
+        Unit::Percent,
+        Linear,
+    ),
     choice(VOICE_MODE, "Mode", "Voice", VOICE_MODES, 0.0),
     p(
         POLYPHONY,
@@ -565,7 +660,51 @@ const PRESS: [ParamInfo; np::FIELDS] = np::params(
     ],
 );
 
-const N_PARAMS: usize = BASE.len() + np::FIELDS;
+const ROUTE_FROM: [&str; ROUTES] = ["From 1", "From 2", "From 3", "From 4"];
+const ROUTE_TO: [&str; ROUTES] = ["To 1", "To 2", "To 3", "To 4"];
+const ROUTE_DEPTH: [&str; ROUTES] = ["Depth 1", "Depth 2", "Depth 3", "Depth 4"];
+
+/// The routes: the first sends the mod wheel to vibrato (half a semitone at
+/// the top), as most keyboards expect; the rest are off.
+const ROUTE_PARAMS: [ParamInfo; 3 * ROUTES] = {
+    let mut out = [BASE[0]; 3 * ROUTES];
+    let mut n = 0;
+    while n < ROUTES {
+        let (from, to, depth) = if n == 0 {
+            (Source::ModWheel as u8 as f32, target::VIBRATO as f32, 50.0)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+        out[3 * n] = choice(
+            route_id(n, route::SOURCE),
+            ROUTE_FROM[n],
+            "Routes",
+            Source::NAMES,
+            from,
+        );
+        out[3 * n + 1] = choice(
+            route_id(n, route::TARGET),
+            ROUTE_TO[n],
+            "Routes",
+            POLY_TARGETS,
+            to,
+        );
+        out[3 * n + 2] = p(
+            route_id(n, route::DEPTH),
+            ROUTE_DEPTH[n],
+            "Routes",
+            -100.0,
+            100.0,
+            depth,
+            Unit::Percent,
+            Linear,
+        );
+        n += 1;
+    }
+    out
+};
+
+const N_PARAMS: usize = BASE.len() + np::FIELDS + 3 * ROUTES;
 
 const fn all() -> [ParamInfo; N_PARAMS] {
     let mut out = [BASE[0]; N_PARAMS];
@@ -574,8 +713,12 @@ const fn all() -> [ParamInfo; N_PARAMS] {
         out[i] = BASE[i];
         i += 1;
     }
-    while i < N_PARAMS {
+    while i < BASE.len() + np::FIELDS {
         out[i] = PRESS[i - BASE.len()];
+        i += 1;
+    }
+    while i < N_PARAMS {
+        out[i] = ROUTE_PARAMS[i - BASE.len() - np::FIELDS];
         i += 1;
     }
     out

@@ -33,8 +33,8 @@ use crate::dsp::*;
 use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::osc::{self, Classic, Shape, Super, SAWS};
 use crate::params::*;
-use crate::pressure::{swell_gain, Depths, Slot};
-use crate::voice::{Adsr, VelCurve};
+use crate::pressure::{lfo_gate, swell_gain, Depths, Slot};
+use crate::voice::{routed, Adsr, Channel, Inputs, Lfo, Route, Source, VelCurve};
 
 /// Frames per control step.
 pub const CTRL: u64 = 16;
@@ -126,6 +126,11 @@ struct Voice {
     pv: f32,
     /// Its note's own slide and tone.
     ex: VoiceExpr,
+    /// What its play routes read: velocity, key and a random value from
+    /// its start, pressure and tone as they move.
+    inp: Inputs,
+    /// Its own LFO (LFO 2).
+    lfo2: Lfo,
     kill_gain: f32,
     kill_step: f32,
     /// The inputs the phase increments and the filter coefficients were
@@ -139,7 +144,8 @@ struct Voice {
 const NO_KEY: u32 = u32::MAX;
 
 impl Voice {
-    fn new() -> Voice {
+    /// Slot `i`'s voice: its LFO's sample and hold has a seed of its own.
+    fn new(i: usize) -> Voice {
         Voice {
             state: State::Free,
             note: 0,
@@ -182,6 +188,8 @@ impl Voice {
             press: Pressure::new(),
             pv: 0.0,
             ex: VoiceExpr::default(),
+            inp: Inputs::default(),
+            lfo2: Lfo::new(0x1F02_0000 + i as u64),
             kill_gain: 1.0,
             kill_step: 0.0,
             pitch_key: [NO_KEY; 8],
@@ -272,9 +280,37 @@ pub struct Poly {
     /// How notes become frequencies.
     tuning: Tuning,
     /// Each note's slide and tone for its next note-on, and the voices'
-    /// smoothing coefficient.
+    /// smoothing coefficient (the controllers glide with it too).
     exprs: NoteExprs,
     expr_c: f32,
+    /// The play routes; whether one always does something (from a note's
+    /// own source, or on a swell, which dips at rest); which controllers
+    /// (wheel, breath, foot) have a route that does something once they
+    /// leave their rest; and whether any does something now, worked out
+    /// each control step, so a sound whose routes rest costs what it did
+    /// without them.
+    routes: [Route; ROUTES],
+    routes_always: bool,
+    routes_ctl: [bool; 3],
+    routes_live: bool,
+    /// A pressure slot on a target only the routes had before (LFO 1 or 2
+    /// amount, Pan).
+    press_more: bool,
+    /// Whether a route moves the LFO's rate.
+    route_rate: bool,
+    /// The mod wheel, breath and foot controller as they came, and as the
+    /// routes read them (gliding over a few milliseconds, so a wheel's
+    /// steps never zip).
+    chan: Channel,
+    chan_s: Channel,
+    /// Each note's random value and a free LFO 2's starting place.
+    route_rng: Rng,
+    /// Whether LFO 2 sends anything, and the tempo its sync was set for.
+    lfo2_on: bool,
+    lfo2_bpm: f64,
+    /// The song's position at this control step while it plays, for a
+    /// synced LFO 2 that doesn't retrigger.
+    step_beats: Option<f64>,
     /// Work buffers for one render pass (each frame written before read).
     scratch: Scratch,
     /// Notes that did not fit anywhere (should stay 0).
@@ -324,7 +360,7 @@ impl Poly {
             tables: osc::classic(),
             sup: Super::new(v(SUPER_DETUNE) / 100.0, v(SUPER_MIX) / 100.0),
             vel: VelCurve::new(v(VEL_AMP)),
-            voices: [Voice::new(); POOL],
+            voices: std::array::from_fn(Voice::new),
             sm,
             sh: Shared::default(),
             rng: Rng::new(0x005E_ED0F_901F),
@@ -346,6 +382,18 @@ impl Poly {
             tuning: Tuning::standard(),
             exprs: NoteExprs::new(),
             expr_c: 1.0,
+            routes: [Route::default(); ROUTES],
+            routes_always: false,
+            routes_ctl: [false; 3],
+            routes_live: false,
+            press_more: false,
+            route_rate: false,
+            chan: Channel::default(),
+            chan_s: Channel::default(),
+            route_rng: Rng::new(0x0207_E5EE_D5A1),
+            lfo2_on: false,
+            lfo2_bpm: 120.0,
+            step_beats: None,
             scratch: Scratch {
                 gain: [0.0; SEG],
                 stack: [0.0; SEG],
@@ -418,6 +466,75 @@ impl Poly {
         } else {
             Depths::from_slots(&slots)
         };
+        self.press_more = [target::LFO1_AMOUNT, target::LFO2_AMOUNT, target::PAN]
+            .iter()
+            .any(|&t| self.depths.get(t) != 0.0);
+    }
+
+    /// Reads the play routes from the values.
+    fn update_routes(&mut self) {
+        let v = |n: usize, f: u16| self.values[usize::from(route_id(n, f))];
+        self.routes = std::array::from_fn(|n| Route {
+            source: Source::from_index(v(n, route::SOURCE)),
+            target: v(n, route::TARGET) as u8,
+            depth: v(n, route::DEPTH) / 100.0,
+        });
+        let live = |r: &Route| r.source != Source::Off && r.target != 0 && r.depth != 0.0;
+        const CTLS: [Source; 3] = [Source::ModWheel, Source::Breath, Source::Foot];
+        self.routes_always = self.routes.iter().any(|r| {
+            let swell = matches!(
+                r.target,
+                target::LEVEL | target::LFO1_AMOUNT | target::LFO2_AMOUNT
+            );
+            live(r) && (swell || !CTLS.contains(&r.source))
+        });
+        self.routes_ctl = CTLS.map(|s| self.routes.iter().any(|r| live(r) && r.source == s));
+        self.route_rate = self
+            .routes
+            .iter()
+            .any(|r| live(r) && r.target == target::LFO_RATE);
+    }
+
+    /// Sets every voice's LFO 2 from the values (and the tempo, when it is
+    /// synced).
+    fn update_lfo2(&mut self) {
+        let shape = LfoShape::from_index(self.v(LFO2_SHAPE));
+        let sync = (self.v(LFO2_SYNC) as usize).min(LFO_SYNC_BEATS.len() - 1);
+        let hz = self.v(LFO2_RATE);
+        // The lowest setting, 1 ms, is no fade.
+        let fade = self.v(LFO2_FADE);
+        let fade = if fade <= 1.0 { 0.0 } else { fade };
+        let (cr, bpm) = (self.ctrl_rate(), self.lfo2_bpm);
+        for v in &mut self.voices {
+            if sync > 0 {
+                v.lfo2
+                    .set_synced(shape, LFO_SYNC_BEATS[sync] as f32, bpm, cr);
+            } else {
+                v.lfo2.set_free(shape, hz, cr);
+            }
+            v.lfo2.set_delay(0.0, fade, cr);
+        }
+        self.lfo2_on = [LFO2_PITCH, LFO2_CUTOFF, LFO2_PW, LFO2_AMP]
+            .iter()
+            .any(|&id| self.v(id) != 0.0);
+    }
+
+    /// A note starts on a voice: its LFO 2 goes back to its start and
+    /// fades in again. One that doesn't retrigger starts somewhere of its
+    /// own, or, synced while the song plays, where the song is.
+    fn key_lfo2(v: &mut Voice, free: Option<bool>, rng: &mut Rng) {
+        let start = match free {
+            Some(false) => rng.unit(),
+            _ => 0.0,
+        };
+        v.lfo2.set_retrigger(true, start);
+        v.lfo2.key();
+    }
+
+    /// LFO 2's start on a new note: `None` when it retriggers, else
+    /// whether it is synced (`Some(true)`: the song places it).
+    fn lfo2_free(&self) -> Option<bool> {
+        (self.v(LFO2_RETRIG) < 0.5).then(|| self.v(LFO2_SYNC) >= 1.0)
     }
 
     fn ctrl_rate(&self) -> f32 {
@@ -522,6 +639,8 @@ impl Poly {
                 self.last_pitch
             };
             let ex = self.exprs.on(note);
+            let random = self.route_rng.bipolar();
+            let free2 = self.lfo2_free();
             let v = &mut self.voices[0];
             let fresh = v.state == State::Free || v.state == State::Kill;
             if fresh {
@@ -530,8 +649,11 @@ impl Poly {
             v.press.start();
             if legato {
                 v.ex.retarget(ex);
+                v.inp.key = Inputs::key_of(note);
             } else {
                 v.ex.start(ex);
+                v.inp = Inputs::at_start(velocity, note, random);
+                Self::key_lfo2(v, free2, &mut self.route_rng);
             }
             v.note = note;
             v.target = f32::from(note);
@@ -590,6 +712,8 @@ impl Poly {
         };
         let unison = (self.v(UNISON) as usize).clamp(1, UNISON_MAX);
         let ex = self.exprs.on(note);
+        let random = self.route_rng.bipolar();
+        let free2 = self.lfo2_free();
         let v = &mut self.voices[slot];
         let fresh = !v.sounding();
         if fresh {
@@ -597,6 +721,8 @@ impl Poly {
         }
         v.press.start();
         v.ex.start(ex);
+        v.inp = Inputs::at_start(velocity, note, random);
+        Self::key_lfo2(v, free2, &mut self.route_rng);
         v.note = note;
         v.vel = vel;
         v.target = f32::from(note);
@@ -724,6 +850,7 @@ impl Poly {
                 // Back to the newest note still held, without a retrigger.
                 let back = self.stack[self.stack_len - 1];
                 v.ex.retarget(self.exprs.on(back));
+                v.inp.key = Inputs::key_of(back);
                 v.note = back;
                 v.target = f32::from(back);
                 if !glide {
@@ -794,8 +921,10 @@ impl Poly {
             NodeEvent::AllOff => self.all_off(),
             NodeEvent::Param { id, value } => self.set_param(id, value),
             NodeEvent::Expression { note, kind, value } => self.expression(note, kind, value),
-            // The pedals are held by the host for this engine (`Node::hears`).
-            NodeEvent::Control { .. } => {}
+            // The mod wheel, breath and foot controller reach the routes.
+            // The pedals are held by the host for this engine
+            // (`Node::hears`), so the channel ignores them.
+            NodeEvent::Control { ctl, value } => self.chan.set(ctl, value),
         }
     }
 
@@ -868,13 +997,49 @@ impl Poly {
         self.vib_phase = (self.vib_phase + vib_hz * CTRL as f32 / self.rate as f32).fract();
         self.vib = (std::f32::consts::TAU * self.vib_phase).sin();
 
+        // The controllers glide to where they were sent.
+        if self.chan_s != self.chan {
+            let c = self.expr_c;
+            let (to, at) = (self.chan, &mut self.chan_s);
+            for (x, t) in [
+                (&mut at.mod_wheel, to.mod_wheel),
+                (&mut at.breath, to.breath),
+                (&mut at.foot, to.foot),
+            ] {
+                *x += (t - *x) * c;
+                if (t - *x).abs() < 1e-5 {
+                    *x = t;
+                }
+            }
+        }
+        // Whether a route does anything this step: one from a note's own
+        // source always does; one from a controller only while it is off
+        // its rest, or on a swell (which dips at rest).
+        let (c, ctl) = (self.chan_s, self.routes_ctl);
+        self.routes_live = self.routes_always
+            || (ctl[0] && c.mod_wheel != 0.0)
+            || (ctl[1] && c.breath != 0.0)
+            || (ctl[2] && c.foot != 0.0);
+
+        // The song's position while it plays, for the synced LFOs; a new
+        // tempo resets LFO 2's synced rate.
+        self.step_beats = ctx
+            .playing
+            .then(|| ctx.beats + offset as f64 * ctx.bpm / 60.0 / f64::from(ctx.rate));
+        if self.lfo2_on && ctx.bpm != self.lfo2_bpm {
+            self.lfo2_bpm = ctx.bpm;
+            if self.v(LFO2_SYNC) >= 1.0 {
+                self.update_lfo2();
+            }
+        }
+
         // LFO: free-running, or locked to the transport's beat. Pressure on
-        // LFO rate follows the highest pressure (the LFO is shared).
+        // LFO rate follows the highest pressure (the LFO is shared), and a
+        // route from a note's own source follows the highest note's.
         let shape = LfoShape::from_index(self.v(LFO_SHAPE));
         let sync = (self.v(LFO_SYNC) as usize).min(LFO_SYNC_BEATS.len() - 1);
         let prev = self.lfo_phase;
-        if sync > 0 && ctx.playing {
-            let beats = ctx.beats + offset as f64 * ctx.bpm / 60.0 / f64::from(ctx.rate);
+        if let (true, Some(beats)) = (sync > 0, self.step_beats) {
             self.lfo_phase = (beats / LFO_SYNC_BEATS[sync]).rem_euclid(1.0);
         } else {
             let hz = if sync > 0 {
@@ -882,7 +1047,11 @@ impl Poly {
             } else {
                 f64::from(self.v(LFO_RATE))
             };
-            let hz = hz * f64::from(exp2(self.depths.get(target::LFO_RATE) * 2.0 * top));
+            let mut oct = self.depths.get(target::LFO_RATE) * 2.0 * top;
+            if self.route_rate {
+                oct += self.rate_route() * 2.0;
+            }
+            let hz = hz * f64::from(exp2(oct));
             self.lfo_phase =
                 (self.lfo_phase + hz * CTRL as f64 / f64::from(self.rate)).rem_euclid(1.0);
         }
@@ -898,8 +1067,32 @@ impl Poly {
         }
     }
 
+    /// The routes' amount on the LFO's rate (-1 to 1, 2 octaves at 1):
+    /// the highest of the sounding notes', or the controllers' alone when
+    /// none sounds.
+    fn rate_route(&self) -> f32 {
+        let (routes, c) = (&self.routes, &self.chan_s);
+        self.voices
+            .iter()
+            .filter(|v| v.sounding())
+            .map(|v| routed(routes, target::LFO_RATE, &v.inp, c))
+            .reduce(f32::max)
+            .unwrap_or_else(|| routed(routes, target::LFO_RATE, &Inputs::default(), c))
+    }
+
     /// Pitch, filter and gains for one voice from the current control values.
     fn voice_control(&mut self, i: usize) {
+        if self.routes_live || self.press_more || self.lfo2_on {
+            self.voice_control_as::<true>(i);
+        } else {
+            self.voice_control_as::<false>(i);
+        }
+    }
+
+    /// `voice_control`, with (`MORE`) or without the play routes, LFO 2 and
+    /// pressure's newer targets: without them it is Poly's plain path, and
+    /// costs what it did before they came.
+    fn voice_control_as<const MORE: bool>(&mut self, i: usize) {
         let rate = self.rate as f32;
         let lfo = self.sh.lfo;
         let unison = (self.values[UNISON as usize] as usize).clamp(1, UNISON_MAX);
@@ -935,6 +1128,35 @@ impl Poly {
         let (sh_dist_gain, sh_dist_amt) = (self.sh.dist_gain, self.sh.dist_amt);
         let vel = self.vel;
         let trem = 1.0 - self.v(LFO_AMP) / 100.0 * (0.5 - 0.5 * lfo);
+        // The routes, LFO 2 and pressure's newer targets, only while one of
+        // them does something.
+        let more_in = MORE.then(|| MoreIn {
+            routes: self.routes,
+            routes_live: self.routes_live,
+            chan: self.chan_s,
+            depths: self.depths,
+            lfo,
+            vib: self.vib,
+            lfo1: [
+                self.v(LFO_PITCH),
+                self.v(LFO_PW) / 100.0,
+                self.v(LFO_CUTOFF),
+                self.v(LFO_AMP) / 100.0,
+            ],
+            lfo2: self.lfo2_on.then(|| {
+                [
+                    self.v(LFO2_PITCH),
+                    self.v(LFO2_PW) / 100.0,
+                    self.v(LFO2_CUTOFF),
+                    self.v(LFO2_AMP) / 100.0,
+                ]
+            }),
+            follow2: if self.v(LFO2_SYNC) >= 1.0 && self.v(LFO2_RETRIG) < 0.5 {
+                self.step_beats
+            } else {
+                None
+            },
+        });
         let cutoff = self.sm.cutoff.value;
         let res = self.sm.res.value;
         let norm = VOICE_GAIN / (unison as f32).sqrt();
@@ -966,12 +1188,20 @@ impl Poly {
             v.pitch = v.target;
         }
         v.ex.step(expr_c);
+        let m = if MORE {
+            more_in.as_ref().map(|mi| more(v, mi))
+        } else {
+            None
+        };
         let mut base = v.pitch + bend + vib;
         if v.ex.slide != 0.0 {
             base += v.ex.slide;
         }
         if d.any {
             base += p * (d.get(target::PITCH) * 12.0 + d.get(target::VIBRATO) * vib_p);
+        }
+        if let Some(m) = &m {
+            base += m.pitch;
         }
         let pitch_key = [
             base.to_bits(),
@@ -1001,47 +1231,90 @@ impl Poly {
             v.dt_sub = (tuning.hz(base + o1 - 12.0) / rate).min(0.45);
             v.pitch_key = pitch_key;
         }
-        for (u, &(l, r)) in pans[..unison].iter().enumerate() {
-            v.pan_l[u] = l;
-            v.pan_r[u] = r;
+        match &m {
+            // A route or pressure on Pan moves the whole voice, its unison
+            // copies with it.
+            Some(m) if m.pan != 0.0 => {
+                for u in 0..unison {
+                    let pos = if unison > 1 {
+                        u as f32 / (unison - 1) as f32 * 2.0 - 1.0
+                    } else {
+                        0.0
+                    };
+                    let q = (pos * spread + m.pan).clamp(-1.0, 1.0);
+                    v.pan_l[u] = (1.0 - q).sqrt();
+                    v.pan_r[u] = (1.0 + q).sqrt();
+                }
+            }
+            _ => {
+                for (u, &(l, r)) in pans[..unison].iter().enumerate() {
+                    v.pan_l[u] = l;
+                    v.pan_r[u] = r;
+                }
+            }
         }
-        let pw_p = p * d.get(target::WIDTH) * 0.45;
+        let mut pw_p = p * d.get(target::WIDTH) * 0.45;
+        if let Some(m) = &m {
+            pw_p += m.width;
+        }
         v.pw1 = (pw1 + pw_p).clamp(0.05, 0.95);
         v.pw2 = (pw2 + pw_p).clamp(0.05, 0.95);
         let fe = v.fenv.next();
-        let oct = cutoff
+        let mut oct = cutoff
             + fe * fenv_amt
             + (f32::from(v.note) - 60.0) / 12.0 * key
             + v.vel * vel_cut
             + lfo_cut
             + p * d.get(target::CUTOFF) * 4.0;
-        let res = (res + p * d.get(target::RESONANCE)).clamp(0.0, 1.0);
+        let mut res = res + p * d.get(target::RESONANCE);
+        if let Some(m) = &m {
+            oct += m.oct;
+            res += m.res;
+        }
+        let res = res.clamp(0.0, 1.0);
         let coef_key = [oct.to_bits(), res.to_bits(), rate_bits];
         if !same_key(&v.coef_key, &coef_key) {
             v.coefs = FilterCoefs::new(exp2(oct), res, rate);
             v.coef_key = coef_key;
         }
+        // Drive and distortion: shared unless pressure or a route moves
+        // them on this voice.
+        let (md, me) = m.as_ref().map_or((0.0, 0.0), |m| (m.drive, m.dist));
         let dd = d.get(target::DRIVE);
-        if dd == 0.0 {
+        if dd == 0.0 && md == 0.0 {
             v.drive_gain = sh_drive_gain;
             v.drive_amt = sh_drive_amt;
         } else {
-            let db = (drive_db + p * dd * 24.0).clamp(0.0, 48.0);
+            let mut db = drive_db + p * dd * 24.0;
+            if md != 0.0 {
+                db += md * 24.0;
+            }
+            let db = db.clamp(0.0, 48.0);
             v.drive_gain = exp2(db * (1.0 / 6.020_6));
             v.drive_amt = (db / 3.0).min(1.0);
         }
         let de = d.get(target::DIST);
         let dist_was = v.dist_amt;
-        if de == 0.0 {
+        if de == 0.0 && me == 0.0 {
             v.dist_gain = sh_dist_gain;
             v.dist_amt = sh_dist_amt;
         } else {
-            let db = (dist_db + p * de * 24.0).clamp(0.0, 48.0);
+            let mut db = dist_db + p * de * 24.0;
+            if me != 0.0 {
+                db += me * 24.0;
+            }
+            let db = db.clamp(0.0, 48.0);
             v.dist_gain = exp2(db * (1.0 / 6.020_6));
             v.dist_amt = (db / 3.0).min(1.0);
         }
-        v.sub = (sh_sub + p * d.get(target::SUB)).clamp(0.0, 1.0);
-        v.noise = (sh_noise + p * d.get(target::NOISE)).clamp(0.0, 1.0);
+        let mut sub = sh_sub + p * d.get(target::SUB);
+        let mut noise = sh_noise + p * d.get(target::NOISE);
+        if let Some(m) = &m {
+            sub += m.sub;
+            noise += m.noise;
+        }
+        v.sub = sub.clamp(0.0, 1.0);
+        v.noise = noise.clamp(0.0, 1.0);
         let vg = vel.gain(v.vel * 127.0);
         let swell = swell_gain(d.get(target::LEVEL).clamp(-1.0, 1.0), p);
         // The drive's and the distortion's level corrections, from the
@@ -1060,7 +1333,10 @@ impl Poly {
             v.dist_level.clear();
             v.dist_aa = [DriveAa::default(); 2];
         }
-        let gain = norm * vg * trem * swell * level;
+        let gain = match &m {
+            Some(m) => norm * vg * m.trem * swell * level * m.gain,
+            None => norm * vg * trem * swell * level,
+        };
         v.gain_inc = (gain - v.gain) / CTRL as f32;
     }
 
@@ -1252,6 +1528,111 @@ impl Poly {
     }
 }
 
+/// What the play routes, LFO 2 and pressure's newer targets (LFO 1 and 2
+/// amount, Pan) do to one voice this control step, beside what Poly did
+/// before them.
+#[derive(Clone, Copy, Debug)]
+struct More {
+    /// Semitones on the pitch.
+    pitch: f32,
+    /// On both pulse widths (0 to 1).
+    width: f32,
+    /// Octaves on the cutoff.
+    oct: f32,
+    res: f32,
+    /// -1 to 1, 24 dB at 1, on the drive and the distortion.
+    drive: f32,
+    dist: f32,
+    sub: f32,
+    noise: f32,
+    /// The voice's place across the speakers, -1 to 1.
+    pan: f32,
+    /// LFO 1's tremolo through its amount (in place of the plain one).
+    trem: f32,
+    /// A gain: the routes' swells and LFO 2's tremolo.
+    gain: f32,
+}
+
+/// What [`more`] reads that every voice shares.
+#[derive(Clone, Copy, Debug)]
+struct MoreIn {
+    routes: [Route; ROUTES],
+    /// Whether any route does something now.
+    routes_live: bool,
+    chan: Channel,
+    depths: Depths,
+    /// LFO 1's value and the pressure vibrato's, -1 to 1.
+    lfo: f32,
+    vib: f32,
+    /// LFO 1's and LFO 2's sends: pitch (semitones), width (0 to 1),
+    /// cutoff (octaves), level (0 to 1). LFO 2's only while it sends.
+    lfo1: [f32; 4],
+    lfo2: Option<[f32; 4]>,
+    /// The song's position, for a synced LFO 2 that doesn't retrigger.
+    follow2: Option<f64>,
+}
+
+/// One voice's [`More`]: the routes' amounts on each target (their
+/// swells as gains), each LFO through its amount, and LFO 2's sends.
+fn more(v: &mut Voice, m: &MoreIn) -> More {
+    let p = v.pv;
+    let mut ra = [0.0f32; 16];
+    let (mut level, mut gate) = (1.0f32, [1.0f32; 2]);
+    if m.routes_live {
+        v.inp.pressure = p;
+        v.inp.tone = v.ex.tone;
+        for r in m.routes.iter().filter(|r| r.source != Source::Off) {
+            match r.target {
+                target::OFF => {}
+                target::LEVEL => {
+                    level *= swell_gain(r.depth, r.source.read_unit(&v.inp, &m.chan));
+                }
+                target::LFO1_AMOUNT | target::LFO2_AMOUNT => {
+                    let k = usize::from(r.target - target::LFO1_AMOUNT);
+                    gate[k] *= lfo_gate(r.depth, r.source.read_unit(&v.inp, &m.chan));
+                }
+                t => {
+                    if let Some(x) = ra.get_mut(usize::from(t)) {
+                        *x += r.amount(&v.inp, &m.chan);
+                    }
+                }
+            }
+        }
+    }
+    let d = &m.depths;
+    let at = |t: u8| ra[usize::from(t)];
+    let g1 = lfo_gate(d.get(target::LFO1_AMOUNT), p) * gate[0];
+    let g2 = lfo_gate(d.get(target::LFO2_AMOUNT), p) * gate[1];
+    // The plain path adds all of LFO 1; this takes back what its amount
+    // holds back.
+    let [l1_pitch, l1_width, l1_cut, l1_level] = m.lfo1;
+    let held = (g1 - 1.0) * m.lfo;
+    let mut out = More {
+        pitch: at(target::PITCH) * 12.0 + at(target::VIBRATO) * m.vib + held * l1_pitch,
+        width: at(target::WIDTH) * 0.45 + held * l1_width,
+        oct: at(target::CUTOFF) * 4.0 + held * l1_cut,
+        res: at(target::RESONANCE),
+        drive: at(target::DRIVE),
+        dist: at(target::DIST),
+        sub: at(target::SUB),
+        noise: at(target::NOISE),
+        pan: (p * d.get(target::PAN) + at(target::PAN)).clamp(-1.0, 1.0),
+        trem: 1.0 - l1_level * (0.5 - 0.5 * m.lfo) * g1,
+        gain: level,
+    };
+    if let Some([to_pitch, to_width, to_cut, to_level]) = m.lfo2 {
+        if let Some(b) = m.follow2 {
+            v.lfo2.follow(b);
+        }
+        let x = v.lfo2.next() * g2;
+        out.pitch += x * to_pitch;
+        out.width += x * to_width;
+        out.oct += x * to_cut;
+        out.gain *= 1.0 - to_level * (0.5 - 0.5 * x);
+    }
+    out
+}
+
 /// One stack into a side: `side = 0 + a * pan` for the first stack (so the
 /// side needs no clearing), `side += a * pan` after.
 #[inline]
@@ -1324,8 +1705,14 @@ impl Node for Poly {
         ) {
             self.update_envs();
         }
-        if id >= PRESS_BASE {
+        if (PRESS_BASE..PRESS_BASE + mpfree_node::pressure::FIELDS as u16).contains(&id) {
             self.update_pressure();
+        }
+        if (LFO2_SHAPE..=LFO2_AMP).contains(&id) {
+            self.update_lfo2();
+        }
+        if route_of(id).is_some() {
+            self.update_routes();
         }
         if id == SUPER_DETUNE || id == SUPER_MIX {
             self.sup = Super::new(self.v(SUPER_DETUNE) / 100.0, self.v(SUPER_MIX) / 100.0);
@@ -1350,16 +1737,21 @@ impl Node for Poly {
         self.rate = rate.max(8_000);
         self.update_envs();
         self.update_pressure();
+        self.update_routes();
+        self.update_lfo2();
         self.reset_smoothers();
         self.control(&Ctx::new(self.rate, 0), 0);
     }
 
     fn reset(&mut self) {
-        for v in &mut self.voices {
-            *v = Voice::new();
+        for (i, v) in self.voices.iter_mut().enumerate() {
+            *v = Voice::new(i);
         }
         self.update_envs();
+        self.update_lfo2();
         self.reset_smoothers();
+        self.chan = Channel::default();
+        self.chan_s = Channel::default();
         self.stack_len = 0;
         self.exprs.clear();
         self.lfo_phase = 0.0;

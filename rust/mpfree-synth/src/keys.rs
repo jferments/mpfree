@@ -122,6 +122,8 @@ const CLAV_TOP_HZ: f32 = 6_000.0;
 /// The phase rotator's corners on the clav bus, Hz: first-order all-pass
 /// stages in pairs.
 const ROTATOR_HZ: [f32; 6] = [100.0, 100.0, 300.0, 300.0, 900.0, 900.0];
+/// The phase rotator's corners on the tine bus, Hz.
+const TINE_ROTATOR_HZ: [f32; 6] = [100.0, 100.0, 300.0, 300.0, 900.0, 900.0];
 
 /// The two combs together with weights `w`, at partial `k`.
 fn combs(w: [f32; 2], k: f32) -> f32 {
@@ -392,6 +394,40 @@ fn voice_out(v: &mut Voice, y: f32, d: f32, out: &mut f32) -> bool {
     v.state == State::Free
 }
 
+/// A tine voice across `out`: its three modes (the fundamental under the
+/// hammer, the bending modes ringing on their own) and the magnet. True
+/// once it is free.
+#[inline(always)]
+fn tine_run(v: &mut Voice, out: &mut [f32]) -> bool {
+    for o in out.iter_mut() {
+        let x = strike(v);
+        let y0 = v.b0[0] * x + v.c1[0] * v.y1[0] - v.c2[0] * v.y2[0];
+        let y1 = v.c1[1] * v.y1[1] - v.c2[1] * v.y2[1];
+        let y2 = v.c1[2] * v.y1[2] - v.c2[2] * v.y2[2];
+        v.y2[0] = v.y1[0];
+        v.y2[1] = v.y1[1];
+        v.y2[2] = v.y1[2];
+        v.y1[0] = y0;
+        v.y1[1] = y1;
+        v.y1[2] = y2;
+        let d = y0 + y1 + y2;
+        // The flux's change since the last frame, without taking two
+        // nearly equal values apart (a soft note barely moves the curve):
+        // with p where it was,
+        // 1/(1+u^2) - 1/(1+p^2) = -(u-p)(u+p) / ((1+u^2)(1+p^2)).
+        let du = v.swing * (d - v.last);
+        let u = v.rest + v.swing * d;
+        let den = 1.0 + u * u;
+        let y = -du * (2.0 * u - du) / (den * v.last_den) * v.norm;
+        v.last = d;
+        v.last_den = den;
+        if voice_out(v, y, d * v.fol, o) {
+            return true;
+        }
+    }
+    false
+}
+
 #[inline]
 fn clav_tick(v: &mut Voice, string: &mut [f32; STRING_LEN], x: f32, leak: f32) -> (f32, f32) {
     let w = v.sw;
@@ -448,13 +484,16 @@ const fn m(ratio: f32, level: f32, decay: f32, bell: bool) -> Mode {
 }
 
 /// A tine: the fundamental, which rings for seconds, then the
-/// cantilever's second and third bending modes at 7.11 and 20.25 times it
-/// (the ratios measured on a tine, sharp of a free bar's 6.27 and 17.55
-/// because of the tuning spring's mass), heard only in the attack.
+/// cantilever's second and third bending modes (about 7.35 and 19 times
+/// it at middle C, sharp of a free bar's 6.27 and 17.55 because of the
+/// tuning spring's mass), heard mostly in the attack. The engine sets the
+/// bending modes' ratios, levels and decays for each note from the
+/// measurements ([`tine_ratio`], [`tine_bell_db`], [`tine_mode_t60`]); the
+/// values here are middle C's at Bell 40, for the Synth tab's pictures.
 pub const TINE: [Mode; MODES] = [
     m(1.0, 1.0, 1.0, false),
-    m(7.11, 0.7, 0.03, true),
-    m(20.25, 0.35, 0.01, true),
+    m(7.35, 0.022, 0.08, true),
+    m(19.0, 0.003, 0.02, true),
     m(0.0, 0.0, 0.0, false),
     m(0.0, 0.0, 0.0, false),
 ];
@@ -476,10 +515,185 @@ pub fn decay_for(decay_ms: f32, hz: f32) -> f32 {
     decay_ms * 0.001 * (261.63 / hz.max(1.0)).powf(0.75)
 }
 
-/// How far a full-velocity hit moves a tine or reed at `hz`, against
-/// middle C's: low notes swing wider, so they bark sooner.
+/// How far a full-velocity hit moves a reed at `hz`, against middle C's:
+/// low notes swing wider, so they bark sooner.
 pub fn register_swing(hz: f32) -> f32 {
     (261.63 / hz.max(1.0)).sqrt().clamp(0.5, 1.6)
+}
+
+/// Where the tine's swing starts to fall with pitch, Hz (see
+/// [`tine_register`]).
+const TINE_KNEE_HZ: f32 = 280.0;
+/// The swing a full-velocity hit on middle C takes across the tine's
+/// pickup, in the field's widths, at Bark 0 and Bark 100 (an exponential
+/// between): from 0.4 of the field (nearly clean, but for a little growl
+/// in the bass) to eight fields (a snarl). The tine piano measured for
+/// this pass swung about 1.5 fields on middle C at full velocity: Bark 45,
+/// the default, which with Voicing near 55 to 85 matches its harmonics.
+const TINE_SWING: (f32, f32) = (0.4, 8.0);
+/// The range of the tine's pickup drive from the softest velocity to the
+/// hardest at Vel > tone 100, dB (40 dB at the default 60: the measured
+/// tine piano's softest hits swung about an eighth as far as its hardest).
+const TINE_TONE_DB: f32 = 66.0;
+
+/// How far a full-velocity hit swings a tine across its pickup at `hz`,
+/// against middle C's. Fitted to a tine piano's recordings (single notes
+/// F1 to C7, five velocities: the swing that gives each note's harmonics
+/// through [`flux`]): about 1.8 times middle C's in the bass, falling as
+/// the square of the frequency above about 280 Hz, so the top two octaves
+/// stay nearly pure while the bass growls.
+pub fn tine_register(hz: f32) -> f32 {
+    let k = |f: f32| 1.0 / (1.0 + (f / TINE_KNEE_HZ) * (f / TINE_KNEE_HZ));
+    k(hz.max(1.0)) / k(261.63)
+}
+
+/// The swing a full-velocity hit on middle C takes across the tine's
+/// pickup, in the field's widths, for **Bark** `bark` (0 to 100): see
+/// [`TINE_SWING`].
+pub fn tine_bark(bark: f32) -> f32 {
+    let b = (bark / 100.0).clamp(0.0, 1.0);
+    TINE_SWING.0 * (TINE_SWING.1 / TINE_SWING.0).powf(b)
+}
+
+/// How hard a hit at `velocity` (1 to 127) drives a tine across its
+/// pickup against a full-velocity hit, for **Vel > tone** `vel_tone` (0 to
+/// 100): the voice core's square law over up to [`TINE_TONE_DB`]. At 0
+/// every hit drives it as hard as a full one.
+pub fn tine_drive(velocity: u8, vel_tone: f32) -> f32 {
+    velocity_gain(velocity, TINE_TONE_DB * (vel_tone / 100.0).clamp(0.0, 1.0)).max(1e-3)
+}
+
+/// The tine pickup's gain for a swing of `a` field widths around the rest
+/// point `u0` on a note at `hz`: how strong the flux's change over a cycle
+/// of the note is against a plain sine's, plain (RMS) and as the loudness
+/// meter hears it (BS.1770's weighting, against the note's own
+/// fundamental). Small swings give the curve's slope at the rest point; a
+/// wide swing spends most of its cycle where the field is flat and puts
+/// its power into harmonics, which the ear weighs more in the bass and
+/// over 2 kHz. The voice divides by it ([`Keys`]' `tune_tine`), so each
+/// note plays at its velocity's level however hard it drives the pickup
+/// and Bark changes the colour, not the level. As a hit dies down the gain
+/// comes back up, so a hard note's sustain is held up: the pickup
+/// compresses it, as on the instrument.
+pub fn tine_pickup_gain(u0: f32, a: f32, hz: f32) -> (f32, f32) {
+    const N: usize = 96;
+    let mut s = [0.0f32; N];
+    let (mut re, mut im, mut all) = (0.0f32, 0.0f32, 0.0f32);
+    // Round the cycle by turning a unit vector (half a step in).
+    let (ds, dc) = (std::f32::consts::TAU / N as f32).sin_cos();
+    let (mut sin, mut cos) = (std::f32::consts::PI / N as f32).sin_cos();
+    for si in s.iter_mut() {
+        let d = flux_slope(u0 + a * sin) * cos;
+        *si = d;
+        re += d * cos;
+        im += d * sin;
+        all += d * d;
+        (sin, cos) = (sin * dc + cos * ds, cos * dc - sin * ds);
+    }
+    // Power (per unit of a plain sine's) in the fundamental, in the rest,
+    // and the rest's mean squared harmonic number, from the waveform's
+    // slope across the cycle.
+    let n = N as f32;
+    let p1 = 2.0 * (re * re + im * im) / (n * n);
+    let p = all / n;
+    let mut slope = 0.0f32;
+    for i in 0..N {
+        let ds = s[(i + 1) % N] - s[(i + N - 1) % N];
+        slope += ds * ds;
+    }
+    let k2 = slope / n * (n / (2.0 * std::f32::consts::TAU)).powi(2);
+    let ph = (p - p1).max(0.0);
+    let kh = if ph > 1e-12 {
+        ((k2 - p1) / ph).max(4.0).sqrt()
+    } else {
+        2.0
+    };
+    let hz = hz.max(1.0);
+    let heard = p1 + ph * loudness_weight(kh * hz) / loudness_weight(hz);
+    ((2.0 * p).sqrt().max(1e-4), (2.0 * heard).sqrt().max(1e-4))
+}
+
+/// How much a tine note's resonator rings shorter (under 1) or longer
+/// than Decay says, so middle C is heard ringing as labelled. The pickup
+/// compresses a wide swing (its gain comes back up as the note dies down,
+/// so the sound falls slower than the tine), or near the field's axis
+/// expands it; over the note's first 40 dB (from 10 dB down, where a ring
+/// time is read) its level falls `1 + s` times as fast as the tine's, `s`
+/// the slope of the pickup's plain gain against the swing, on log scales.
+/// For the swing `a` of a hit around the rest point `u0` at `hz`, between
+/// 0.5 and 2.
+pub fn tine_decay_comp(u0: f32, a: f32, hz: f32) -> f32 {
+    let (hi, _) = tine_pickup_gain(u0, a * 0.316, hz);
+    let (lo, _) = tine_pickup_gain(u0, a * 0.01, hz);
+    let s = (hi / lo).ln() / (0.316f32 / 0.01).ln();
+    (1.0 + s).clamp(0.5, 2.0)
+}
+
+/// How loud the ear (the loudness meter) finds a partial at `hz` against
+/// one at 1 kHz, in power: BS.1770's high shelf ([`ear_weight`]) and its
+/// low cut (two poles at 38 Hz), near enough.
+fn loudness_weight(hz: f32) -> f32 {
+    let f2 = hz * hz;
+    let hp = f2 / (f2 + 38.0 * 38.0);
+    ear_weight(hz) * hp * hp
+}
+
+/// The tine's bending modes as measured on a tine piano's recordings, at
+/// C1, C2 ... C7 (a straight line between): the second mode's ratio to
+/// the note (7.1 in the bass, 7.3 to 7.4 through the middle, falling to
+/// about 6.3 at the top, where the tuning spring sits nearer the tip) and
+/// the third's (20.6 in the bass down to about 17.5 at C5).
+const TINE_RATIOS: [[f32; 7]; 2] = [
+    [7.15, 7.15, 7.25, 7.35, 7.38, 6.6, 6.3],
+    [20.6, 20.6, 20.3, 19.0, 17.5, 17.5, 17.5],
+];
+
+/// The tine's third bending mode against its bell, as heard: measured 15
+/// to 20 dB under it.
+const MODE3_SHARE: f32 = 0.14;
+
+/// The tine's third bending mode against its bell for **Hardness**
+/// `hardness` (0 to 100): [`MODE3_SHARE`] at 50, up to 10 dB more with a
+/// hard hammer and 10 dB less with a soft one. A hammer's tip filters what
+/// it strikes the more the higher it is, so its hardness shows most in the
+/// tine's highest mode: the tick of the attack.
+pub fn tine_tick(hardness: f32) -> f32 {
+    MODE3_SHARE * 10f32.powf((hardness.clamp(0.0, 100.0) - 50.0) / 100.0)
+}
+
+/// A tine's bending mode `k` (1 or 2) at `hz`: its ratio to the note, from
+/// [`TINE_RATIOS`].
+pub fn tine_ratio(k: usize, hz: f32) -> f32 {
+    let c = &TINE_RATIOS[(k.max(1) - 1).min(1)];
+    let x = ((hz.max(1.0) / 32.703).log2()).clamp(0.0, 6.0);
+    let i = (x as usize).min(5);
+    c[i] + (c[i + 1] - c[i]) * (x - i as f32)
+}
+
+/// The tine's bell (its second bending mode) as heard against the note on
+/// a full-velocity hit, dB, for **Bell** `bell` and **Hardness**
+/// `hardness` (0 to 100) at `hz`; a softer hit rings it less, as the
+/// fourth root of its drive. The measured tine piano's bell sat about 33
+/// dB under the note on its softest hits from F1 to F4 and about 26 dB
+/// under on hard ones (Bell 40 here: -30 and -36 dB), and fell away over
+/// C6 (-46 dB at G6); a harder hammer rings it more (up to 6 dB either
+/// way). Bell 100 rings it as loud as the note.
+pub fn tine_bell_db(bell: f32, hardness: f32, hz: f32) -> f32 {
+    let top = 20.0 * (hz.max(1.0) / 1046.5).log2().max(0.0);
+    -50.0 + 0.5 * bell + 0.12 * (hardness - 50.0) - top
+}
+
+/// How long the tine's bending modes ring at `hz`, seconds to fall 60 dB:
+/// the bell (k 1) about 0.65 s at D4 (measured 0.55 to 2 s through the
+/// middle), shorter as `hz^-0.9` (0.15 s at D6), at most 1.5 s; the third
+/// mode a quarter of that.
+pub fn tine_mode_t60(k: usize, hz: f32) -> f32 {
+    let t = (0.65 * (293.66 / hz.max(1.0)).powf(0.9)).min(1.5);
+    if k >= 2 {
+        0.25 * t
+    } else {
+        t
+    }
 }
 
 /// The magnetic pickup's flux against the tine's position `u` (in the
@@ -494,13 +708,6 @@ pub fn flux(u: f32) -> f32 {
 fn flux_slope(u: f32) -> f32 {
     let d = 1.0 + u * u;
     -2.0 * u / (d * d)
-}
-
-/// [`flux`]'s curvature.
-#[inline]
-fn flux_bend(u: f32) -> f32 {
-    let d = 1.0 + u * u;
-    (6.0 * u * u - 2.0) / (d * d * d)
 }
 
 /// The reed's limit: it never reaches the plate.
@@ -526,7 +733,8 @@ fn capacitance_slope(y: f32) -> f32 {
 
 /// Where a voice rests on its pickup's curve and how far a displacement
 /// of 1 moves it there, for a model, Voicing and Bark (0 to 100) and a
-/// key's own small difference `key` (-1 to 1).
+/// key's own small difference `key` (-1 to 1). For a tine, a displacement
+/// of 1 is a full-velocity hit on middle C ([`tine_bark`]).
 pub fn pickup_shape(reed: bool, voicing: f32, bark: f32, key: f32) -> (f32, f32) {
     let v = (voicing / 100.0 + 0.04 * key).clamp(0.0, 1.0);
     let b = bark / 100.0;
@@ -535,7 +743,7 @@ pub fn pickup_shape(reed: bool, voicing: f32, bark: f32, key: f32) -> (f32, f32)
     } else {
         // From the axis (0) to the flux curve's inflection, 1/sqrt(3),
         // where it is straightest.
-        (0.6 * v, 0.2 + 0.9 * b * b)
+        (0.6 * v, tine_bark(bark))
     }
 }
 
@@ -585,7 +793,7 @@ pub fn strike_amp(vel: f32) -> f32 {
 /// plays evenly. Fitted to the factory sounds' loudness (velocity 100,
 /// held 1.5 s), so each note sounds about as loud as middle C's octave.
 const KEY_CURVE: [[f32; 7]; 3] = [
-    [3.85, 0.25, -0.45, 0.45, 2.65, 3.55, 3.35],
+    [3.3, -1.8, -2.6, -0.75, 1.2, 2.8, 2.35],
     [6.65, 2.85, -0.05, 0.05, 1.45, 2.05, -0.05],
     [-3.59, -2.71, -0.9, 0.9, 3.07, 3.76, 3.64],
 ];
@@ -655,6 +863,26 @@ struct Voice {
     /// The output gain: the velocity's level (over the strike's own) and
     /// the key's.
     gain: f32,
+    /// A tine: how hard its last hit drives the pickup ([`tine_drive`]),
+    /// the bell's share from the drive ([`tine_bell_db`]),
+    /// the pickup's gain at that swing ([`tine_pickup_gain`]) and the
+    /// swings it was found for (the hit's and velocity 100's), the
+    /// curve's denominator `1 + u^2` a frame ago (`last` holds the
+    /// displacement a frame ago), each bending mode's kick at a hit and
+    /// the frames until it lands (0 once it has).
+    drive: f32,
+    bellv: f32,
+    pg: f32,
+    pg_at: f32,
+    pg_ref: f32,
+    /// A tine's decay against Decay's, so it is heard as labelled
+    /// ([`tine_decay_comp`]).
+    comp: f32,
+    last_den: f32,
+    kick: [f32; MODES],
+    kick_in: u32,
+    /// A tine's level follower's scale: its displacement to its level.
+    fol: f32,
     /// The clav string: the loop's read delay now (samples), where it is
     /// going and how far it moves a control step (the release drop), its
     /// whole part and Lagrange weights, the loop's gain and low-pass, and
@@ -681,6 +909,8 @@ struct Voice {
     sint: f32,
     /// [`clav_voicing`] for this note.
     voicing: f32,
+    /// Whether this voice is a tine (set when it is struck, like `clav`).
+    tine: bool,
 }
 
 /// The electric piano. See the module docs.
@@ -748,6 +978,11 @@ pub struct Keys {
     rot_a: [f32; 6],
     rot_x: [f32; 6],
     rot_y: [f32; 6],
+    /// The tine bus's phase rotator, the same way, and whether it runs.
+    trot_a: [f32; 6],
+    trot_x: [f32; 6],
+    trot_y: [f32; 6],
+    tine_bus: bool,
 }
 
 /// The reed preamp's rest point on its curve: transistors are not
@@ -820,6 +1055,10 @@ impl Keys {
             rot_a: [0.0; 6],
             rot_x: [0.0; 6],
             rot_y: [0.0; 6],
+            trot_a: [0.0; 6],
+            trot_x: [0.0; 6],
+            trot_y: [0.0; 6],
+            tine_bus: false,
             dc_r: 1.0,
             dc_x: 0.0,
             dc_y: 0.0,
@@ -868,6 +1107,11 @@ impl Keys {
     /// Whether any clav string still sounds.
     fn clav_alive(&self) -> bool {
         self.voices.iter().any(|v| v.clav && v.state != State::Free)
+    }
+
+    /// Whether any tine still sounds.
+    fn tine_alive(&self) -> bool {
+        self.voices.iter().any(|v| v.tine && v.state != State::Free)
     }
 
     fn update_out(&mut self) {
@@ -935,15 +1179,18 @@ impl Keys {
             self.tune_clav(v, pitch);
             return;
         }
+        if v.tine {
+            self.tune_tine(v, pitch);
+            return;
+        }
+        // A reed.
         let rate = self.rate as f32;
         let held = v.state == State::On;
-        let reed = self.reed();
-        let modes = if reed { &REED } else { &TINE };
         let bell = self.v(BELL) / 100.0;
         let f0 = self.tuning.hz(pitch).clamp(10.0, rate * 0.45);
         let base = decay_for(self.v(DECAY), f0);
         let release = self.v(RELEASE) * 0.001;
-        for (k, md) in modes.iter().enumerate() {
+        for (k, md) in REED.iter().enumerate() {
             let hz = f0 * md.ratio * v.jit_ratio[k];
             if hz >= 0.45 * rate || hz <= 10.0 || md.level == 0.0 {
                 v.b0[k] = 0.0;
@@ -958,44 +1205,133 @@ impl Keys {
             }
             let r = 10f32.powf(-3.0 / (t60 * rate));
             // The pickup hears velocity, which favours a mode by its
-            // ratio: levels are set as heard, so the tine's motion in each
+            // ratio: levels are set as heard, so the reed's motion in each
             // mode is the level over the ratio.
             let mut lvl = md.level * v.jit_level[k] / md.ratio;
             if md.bell {
-                lvl *= if reed { 0.3 + 0.7 * bell } else { bell };
+                lvl *= 0.3 + 0.7 * bell;
             }
             v.c1[k] = 2.0 * r * w.cos();
             v.c2[k] = r * r;
             v.b0[k] = w.sin() * lvl;
         }
         // The pickup: its rest point and swing, and the scale that brings
-        // its output back to the tine's level. It hears the curve's change
-        // (Faraday's law; a capacitor's current), so its output grows with
-        // the note's frequency: that is divided out, and what stays is the
-        // harmonics' tilt up.
-        let (rest, g) = pickup_shape(reed, self.v(VOICING), self.v(BARK), key_spread(v.note));
+        // its output back to the reed's level. It hears the curve's change
+        // (a capacitor's current), so its output grows with the note's
+        // frequency: that is divided out, and what stays is the harmonics'
+        // tilt up.
+        let (rest, g) = pickup_shape(true, self.v(VOICING), self.v(BARK), key_spread(v.note));
         let swing = g * register_swing(f0);
         let w0 = std::f32::consts::TAU * f0 / rate;
-        let slope = if reed {
-            capacitance_slope(rest)
-        } else {
-            // Near the axis the slope vanishes and the curve's bend makes
-            // the octave instead: the pickup's gain is the two together.
-            flux_slope(rest)
-                .hypot(0.5 * flux_bend(rest) * swing)
-                .max(0.05)
-        };
+        let slope = capacitance_slope(rest);
         if v.rest != rest || v.swing != swing {
             let x = v.y1.iter().sum::<f32>();
-            v.last = if reed {
-                capacitance(rest + swing * x)
-            } else {
-                flux(rest + swing * x)
-            };
+            v.last = capacitance(rest + swing * x);
         }
         v.rest = rest;
         v.swing = swing;
         v.norm = 1.0 / (swing * w0 * slope);
+        v.tuned = pitch;
+    }
+
+    /// Sets a tine voice's resonators and pickup for its pitch and gate:
+    /// the fundamental (Decay's law, heard: see [`tine_decay_comp`]),
+    /// driven by the hammer; the two bending modes at the measured ratios,
+    /// levels and decays for the note ([`tine_ratio`], [`tine_bell_db`],
+    /// [`tine_mode_t60`]), which the hit kicks at once ([`Voice::kick`]):
+    /// the measured bell is there whatever the hammer, which a smooth push
+    /// of a millisecond or more would filter away over 1 kHz. The pickup's
+    /// swing is the hit's drive across Bark's swing and the register's
+    /// ([`tine_register`]), its output divided by its gain at that swing
+    /// ([`tine_pickup_gain`]).
+    fn tune_tine(&self, v: &mut Voice, pitch: f32) {
+        let rate = self.rate as f32;
+        let held = v.state == State::On;
+        let f0 = self.tuning.hz(pitch).clamp(10.0, rate * 0.45);
+        // The pickup first: the fundamental's decay depends on it.
+        let (rest, g) = pickup_shape(false, self.v(VOICING), self.v(BARK), key_spread(v.note));
+        let swing = g * tine_register(f0);
+        let a = swing * v.drive;
+        // Plain across the velocities (Velocity's square law is a level's)
+        // and as heard across the keys, at velocity 100 (each key as loud
+        // as the next). Found again only when the swing moves by 2 %
+        // (a bend moves the register's): the level moves by under 1 %.
+        let a_ref = swing * tine_drive(100, self.v(VEL_TONE));
+        let moved = |x: f32, at: f32| (x - at).abs() > 0.02 * x;
+        if v.rest != rest || moved(a, v.pg_at) || moved(a_ref, v.pg_ref) {
+            let (plain, _) = tine_pickup_gain(rest, a, f0);
+            let (plain_ref, heard_ref) = tine_pickup_gain(rest, a_ref, f0);
+            v.pg = plain * heard_ref / plain_ref;
+            // Middle C at this hit rings as labelled (the preset's own
+            // rest point, without the key's offset); every key gets the
+            // same, so the keys keep Decay's law.
+            let rest0 = pickup_shape(false, self.v(VOICING), self.v(BARK), 0.0).0;
+            v.comp = tine_decay_comp(rest0, g * v.drive, 261.63);
+            v.pg_at = a;
+            v.pg_ref = a_ref;
+        }
+        if v.rest != rest || v.swing != swing {
+            // Where the curve was a frame ago, for the new rest and swing.
+            let u = rest + swing * v.last;
+            v.last_den = 1.0 + u * u;
+        }
+        v.rest = rest;
+        v.swing = swing;
+        let w0 = std::f32::consts::TAU * f0 / rate;
+        v.norm = 1.0 / (a * w0 * v.pg);
+
+        let base = decay_for(self.v(DECAY), f0);
+        let release = self.v(RELEASE) * 0.001;
+        let bell = if self.v(BELL) > 0.0 {
+            10f32.powf(tine_bell_db(self.v(BELL), self.v(HARDNESS), f0) / 20.0) * v.bellv
+        } else {
+            0.0
+        };
+        // Each key's tuning spring sits a little differently: its bending
+        // modes are its own, by up to 1.5 %.
+        let spread = 1.0 + 0.015 * key_spread(v.note.wrapping_add(53));
+        for k in 0..MODES {
+            let (ratio, heard, t60) = match k {
+                0 => (1.0, 1.0, base * v.comp),
+                1 | 2 => (
+                    tine_ratio(k, f0) * spread,
+                    if k == 1 {
+                        bell
+                    } else {
+                        bell * tine_tick(self.v(HARDNESS))
+                    },
+                    tine_mode_t60(k, f0).min(0.5 * base),
+                ),
+                _ => (0.0, 0.0, 0.0),
+            };
+            let hz = f0 * ratio * v.jit_ratio[k];
+            if hz >= 0.45 * rate || hz <= 10.0 || heard == 0.0 {
+                v.b0[k] = 0.0;
+                v.c1[k] = 0.0;
+                v.c2[k] = 0.0;
+                v.kick[k] = 0.0;
+                continue;
+            }
+            let w = std::f32::consts::TAU * hz / rate;
+            let mut t = t60.max(0.004);
+            if !held {
+                t = t.min(release);
+            }
+            let r = 10f32.powf(-3.0 / (t * rate));
+            // The pickup hears velocity, which favours a mode by its
+            // ratio: levels are set as heard, so the tine's motion in each
+            // mode is the level over the ratio.
+            let lvl = heard * v.jit_level[k] / ratio;
+            v.c1[k] = 2.0 * r * w.cos();
+            v.c2[k] = r * r;
+            if k == 0 {
+                v.b0[k] = w.sin() * lvl;
+                v.kick[k] = 0.0;
+            } else {
+                v.b0[k] = 0.0;
+                v.kick[k] = w.sin() * lvl * v.drive;
+            }
+        }
         v.tuned = pitch;
     }
 
@@ -1141,6 +1477,8 @@ impl Keys {
             self.strings[slot].fill(0.0);
         }
         v.clav = clav;
+        v.tine = !clav && !self.reed();
+        self.tine_bus |= v.tine;
         v.state = State::On;
         v.note = note;
         v.age = self.clock;
@@ -1155,11 +1493,19 @@ impl Keys {
         }
         v.ex.start(self.exprs.on(note));
         let pitch = self.voice_pitch(note, &v.ex);
-        self.tune(&mut v, pitch);
         // Velocity: a softer hit is a longer contact (Vel > tone sets how
-        // much), so it reaches fewer upper modes.
+        // much), so it reaches fewer upper modes; on a tine it also drives
+        // the pickup less, so it barks less.
         let vt = self.v(VEL_TONE) / 100.0;
         let tone_vel = 1.0 - vt * (1.0 - vel);
+        let tine = v.tine;
+        if tine {
+            v.drive = tine_drive(velocity, self.v(VEL_TONE));
+            // A hard hit rings the bell more against the note: about 6 dB
+            // from the softest hits to the hardest, as measured.
+            v.bellv = v.drive.powf(0.25);
+        }
+        self.tune(&mut v, pitch);
         let hz = self.tuning.hz(pitch);
         let rate = self.rate as f32;
         let secs = if clav {
@@ -1179,6 +1525,10 @@ impl Keys {
             // fundamental is brought down by the register.
             let period = rate / hz.max(1.0);
             amp * clav_register(hz) * std::f32::consts::PI * period / (4.0 * len)
+        } else if tine {
+            // Unit area times the drive: the tine swings as far as the
+            // hit drives it, whatever the hammer.
+            v.drive * std::f32::consts::FRAC_PI_2 / len
         } else {
             // Unit area: the fundamental rings at the strike's level
             // whatever the hammer.
@@ -1186,7 +1536,22 @@ impl Keys {
         };
         // The level follows Velocity's range; the strike's own level only
         // sets how hard the pickup is driven.
-        v.gain = velocity_gain(velocity, self.v(VELOCITY)) / amp * key_level(self.v(MODEL), pitch);
+        if tine {
+            v.gain = velocity_gain(velocity, self.v(VELOCITY)) * key_level(self.v(MODEL), pitch);
+            // The hit kicks the bending modes somewhere in its contact (at
+            // least a millisecond's span): a chord's bells then start out
+            // of step, as no hand lands its fingers together, rather than
+            // all in phase on one frame.
+            let span = len.max(0.001 * rate);
+            v.kick_in = 1 + (self.rng.unit() * span) as u32;
+            // The level follower reads the displacement as the note's
+            // level, and as it dies down the pickup's gain comes back up
+            // to its slope at the rest point.
+            v.fol = v.gain / v.drive * (flux_slope(v.rest).abs() / v.pg).max(1.0);
+        } else {
+            v.gain =
+                velocity_gain(velocity, self.v(VELOCITY)) / amp * key_level(self.v(MODEL), pitch);
+        }
         self.voices[slot] = v;
         self.thump += self.v(KEY_NOISE) / 100.0 * (0.3 + 0.7 * vel) * 0.05;
     }
@@ -1340,6 +1705,14 @@ impl Keys {
             self.rot_x = [0.0; 6];
             self.rot_y = [0.0; 6];
         }
+        // The tines' rotator runs from a tine's strike to the first
+        // control step with none left (decided here, at fixed frames, so
+        // the output is the same for any block size).
+        self.tine_bus = self.tine_alive();
+        if !self.tine_bus {
+            self.trot_x = [0.0; 6];
+            self.trot_y = [0.0; 6];
+        }
         for x in [
             &mut self.dc_x,
             &mut self.dc_y,
@@ -1363,7 +1736,8 @@ impl Keys {
 
     fn render(&mut self, from: usize, to: usize, left: &mut [f32], right: &mut [f32]) {
         let reed = self.reed();
-        let n_modes = if reed { 5 } else { 3 };
+        // A driven tine's output coupling (below).
+        let tine_coupled = !reed && !self.clav() && self.drive_amt > 0.0;
         let amp_trem = self.v(TREM_MODE) >= 0.5;
         let clav_on = self.clav_alive();
         let len = to - from;
@@ -1372,6 +1746,8 @@ impl Keys {
         // bus, the clav strings into theirs, summed in the voices' order.
         let mut buses = [0.0f32; CTRL as usize];
         let mut clavs = [0.0f32; CTRL as usize];
+        let mut tines = [0.0f32; CTRL as usize];
+        let tine_on = self.tine_bus;
         let leak = self.clav_leak;
         for (v, string) in self.voices.iter_mut().zip(self.strings.iter_mut()) {
             if v.state == State::Free {
@@ -1385,29 +1761,60 @@ impl Keys {
                         break;
                     }
                 }
-            } else {
+            } else if !v.tine {
+                // A reed: five modes and the capacitor.
                 for o in buses[..len].iter_mut() {
                     let x = strike(v);
                     let mut d = 0.0;
-                    for k in 0..n_modes {
+                    for k in 0..MODES {
                         let y = v.b0[k] * x + v.c1[k] * v.y1[k] - v.c2[k] * v.y2[k];
                         v.y2[k] = v.y1[k];
                         v.y1[k] = y;
                         d += y;
                     }
                     let u = v.rest + v.swing * d;
-                    let c = if reed { capacitance(u) } else { flux(u) };
+                    let c = capacitance(u);
                     let y = (c - v.last) * v.norm;
                     v.last = c;
                     if voice_out(v, y, d, o) {
                         break;
                     }
                 }
+            } else {
+                // A tine: the stretch split where the bending modes' kick
+                // lands, if it does.
+                let out = &mut tines[..len];
+                let at = (v.kick_in as usize).wrapping_sub(1);
+                if at < len {
+                    let (pre, post) = out.split_at_mut(at);
+                    if !tine_run(v, pre) {
+                        v.y1[1] += v.kick[1];
+                        v.y1[2] += v.kick[2];
+                        v.kick_in = 0;
+                        tine_run(v, post);
+                    }
+                } else {
+                    v.kick_in = v.kick_in.saturating_sub(len as u32);
+                    tine_run(v, out);
+                }
             }
         }
         for (j, i) in (from..to).enumerate() {
             let mut bus = buses[j];
             let clav_bus = clavs[j];
+            if tine_on {
+                // The tines' phase rotator: a hard hit's pickup pulses
+                // spread in time, the spectrum untouched, so a loud chord
+                // peaks lower for the same loudness.
+                let mut c = tines[j];
+                for k in 0..6 {
+                    let y = self.trot_a[k] * (c - self.trot_y[k]) + self.trot_x[k];
+                    self.trot_x[k] = c;
+                    self.trot_y[k] = y;
+                    c = y;
+                }
+                bus += c;
+            }
             if clav_on {
                 // The clav's tone switch, then a phase rotator (as
                 // broadcast processors use): it spreads the string's sharp
@@ -1470,6 +1877,13 @@ impl Keys {
                 // The reed piano's preamp makes up the electrostatic
                 // pickup's lower output.
                 y = hp * REED_GAIN;
+            } else if tine_coupled {
+                // The same coupling after the tine's Drive: a hard hit's
+                // lopsided pulses leave an offset once driven.
+                let hp = y - self.dc_x + self.dc_r * self.dc_y;
+                self.dc_x = y;
+                self.dc_y = hp;
+                y = hp;
             }
             left[i] += y * tl * self.out_l.next();
             right[i] += y * tr * self.out_r.next();
@@ -1509,7 +1923,17 @@ impl Node for Keys {
         }
         if matches!(
             id,
-            MODEL | DECAY | RELEASE | BELL | VOICING | BARK | PICKUP | CLAV_TONE | MUTE | DROP
+            MODEL
+                | DECAY
+                | RELEASE
+                | HARDNESS
+                | BELL
+                | VOICING
+                | BARK
+                | PICKUP
+                | CLAV_TONE
+                | MUTE
+                | DROP
         ) {
             for v in self.voices.iter_mut() {
                 v.tuned = f32::NAN;
@@ -1546,10 +1970,12 @@ impl Node for Keys {
         self.thump_fall = (-1.0 / (0.012 * r)).exp();
         self.clav_leak = (-std::f32::consts::TAU * CLAV_LEAK_HZ / r).exp();
         self.dc_r = (-std::f32::consts::TAU * REED_COUPLING_HZ / r).exp();
-        self.rot_a = ROTATOR_HZ.map(|hz| {
+        let allpass = |hz: f32| {
             let t = (std::f32::consts::PI * hz / r).tan();
             (t - 1.0) / (t + 1.0)
-        });
+        };
+        self.rot_a = ROTATOR_HZ.map(allpass);
+        self.trot_a = TINE_ROTATOR_HZ.map(allpass);
         self.reset();
     }
 
@@ -1586,6 +2012,9 @@ impl Node for Keys {
         self.clav_lp.clear();
         self.rot_x = [0.0; 6];
         self.rot_y = [0.0; 6];
+        self.trot_x = [0.0; 6];
+        self.trot_y = [0.0; 6];
+        self.tine_bus = false;
         self.dc_x = 0.0;
         self.dc_y = 0.0;
     }
