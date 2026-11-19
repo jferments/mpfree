@@ -8,7 +8,7 @@ checked: 2026-11-19 79fc6f63
 
 A **clip** is a piece of music you recorded or programmed: a drum pattern, a bass line, a chord part. The pattern on the Play page is a clip. Clips live on **tracks**, and the **Arrange** tab shows them all as a grid so you can record new ones, keep the best takes and switch between them while the music plays.
 
-{{shot: clips | The Arrange tab: tracks across the top, clip slots down, the record settings and the takes beside them, and the Q-Links down the right edge.}}
+{{shot: clips | The Arrange tab mid-jam: tracks across the top, clip slots down (playing, waiting, recording and empty), the record settings and the takes beside them, and the Q-Links down the right edge.}}
 
 ## Tracks and slots
 
