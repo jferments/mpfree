@@ -204,7 +204,7 @@ Pins only work while the sound is stretched. With Warp on Repitch, the sound pla
 
 {{shot: sample-chop-one-pad | The Slice tool with Put on at 1 pad: the break's 15 slices are ready to go on pad A5 itself, and the button reads Slices on A5.}}
 
-With **Put on** at **1 pad**, every slice goes on one pad instead of a pad each, so a whole break plays from one pad and one track. The button reads **Slices on A5**: the pad you chopped becomes the sliced pad (step **Pads** or turn Q-Link 4 to put it on another pad), and no other pad changes. Up to 128 slices fit on one pad.
+With **Put on** at **1 pad**, every slice goes on one pad instead of a pad each, so a whole break plays from one pad and one track. The button reads **Slices on A5**: the pad you chopped becomes the sliced pad (tap another pad on the map, or turn Q-Link 4, to put it there), and no other pad changes. Up to 128 slices fit on one pad.
 
 - A **hit** on the pad plays slice 1, or the one **Slice** picks on the Play page's **Pad** section ("3 of 15").
 - A **step lock** picks the slice that step plays: lock **Slice** on a step and that hit plays that slice. With **Phrase** on, the clip already has a Slice lock on every hit, so it plays the break back slice by slice, and you can move, mute or re-lock any hit.
