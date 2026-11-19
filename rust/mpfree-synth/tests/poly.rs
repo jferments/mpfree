@@ -481,3 +481,45 @@ fn grit_bass_distortion_is_heard_through_its_low_cutoff() {
     let change = 20.0 * (rms(&wet) / rms(&dry)).log10();
     assert!(change.abs() < 1.0, "level {change:+.1} dB");
 }
+
+/// The supersaw (either oscillator on wave 4): the same for any block
+/// size, about as loud as one saw, and its Saw detune heard as beating.
+#[test]
+fn the_supersaw_plays_as_loud_as_a_saw_and_its_detune_beats() {
+    let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+    let setup = |wave: f32, detune: f32| {
+        let mut s = Poly::new(RATE);
+        s.set_param(OSC1_WAVE, wave);
+        s.set_param(OSC2_LEVEL, 0.0);
+        s.set_param(CUTOFF, 20_000.0);
+        s.set_param(SUPER_DETUNE, detune);
+        s
+    };
+    let ev = [(0, on(57, 110)), (30_000, on(64, 90)), (40_000, off(57))];
+    let (whole, _) = render(&mut setup(4.0, 60.0), 48_000, &ev, |_| 128);
+    for size in [1usize, 17, 1000] {
+        let (l, _) = render(&mut setup(4.0, 60.0), 48_000, &ev, |_| size);
+        assert!(l == whole, "block size {size} differs");
+    }
+    let one = &[(0, on(57, 110))];
+    let (saw, _) = render(&mut setup(0.0, 60.0), 24_000, one, |_| 256);
+    let (sup, _) = render(&mut setup(4.0, 60.0), 24_000, one, |_| 256);
+    let db = 20.0 * (rms(&sup[4800..]) / rms(&saw[4800..])).log10();
+    assert!(db.abs() < 2.0, "supersaw {db} dB against a saw");
+    // Detuned, the stack's level moves as its saws drift through each
+    // other; at no detune it barely moves.
+    let wobble = |x: &[f32]| {
+        let w: Vec<f32> = x[4800..].chunks(960).map(rms).collect();
+        let (lo, hi) = w
+            .iter()
+            .fold((f32::MAX, 0f32), |(a, b), &v| (a.min(v), b.max(v)));
+        20.0 * (hi / lo).log10()
+    };
+    let (still, _) = render(&mut setup(4.0, 0.0), 24_000, one, |_| 256);
+    assert!(
+        wobble(&sup) > 2.0 * wobble(&still),
+        "{} vs {}",
+        wobble(&sup),
+        wobble(&still)
+    );
+}
