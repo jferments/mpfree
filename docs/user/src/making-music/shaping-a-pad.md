@@ -65,7 +65,7 @@ The **Filter** selector steps through the types:
 A pad can hold up to 16 sounds, its **layers**: soft and hard hits of a snare, a kick with a click on top, round robins that take turns.
 
 - **Add layer**, in the Layers section's panel, adds a copy of the picked layer just after it. The copy takes the upper half of its velocities, so a soft hit plays the first and a hard hit the new one. Change its sound with the **Sound** selector: it steps through the kit's sounds, and the new sound plays from start to end, keeping the layer's play mode.
-- **Tap a layer** on the map to pick it. The Layers section's controls then set that layer alone: **Sound**, **Vel low** and **Vel high** (the velocities it plays; dragging its edges on the map does the same), and its own **Level**, **Pan** and **Tune**, on top of the pad's. The **Wave**, **Warp**, **Chop** and **Grain** pages then work on that layer too: its trim, loop, warp, slices and grains.
+- **Tap a layer** on the map to pick it. The Layers section's controls then set that layer alone: **Sound**, **Vel low** and **Vel high** (the velocities it plays; dragging its edges on the map does the same), and its own **Level**, **Pan** and **Tune**, on top of the pad's. The **Wave** page and its tools (**Trim**, **Slice**, **Warp** and **Grain**) then work on that layer too: its trim, loop, slices, warp and grains.
 - **Remove layer** takes the picked layer out. A pad keeps one layer at least.
 - The **Layers** buttons say how the layers that match a hit play: all together (**Stacked**), in turn (**Cycle**), or one at random (**Random**).
 
@@ -189,7 +189,7 @@ The preset that is on stays lit, and the line at the top right says what it does
 
 **Stereo spread** places each grain somewhere between left and right. At 100 % the cloud is wide, yet it keeps its level and still sounds full when played in mono.
 
-**Every layer its own cloud.** The Grain tool (and the rest of the Wave page, and the Chop page) works on the layer picked on the Play page's layer map, and the top line says which ("· layer 2"). So a pad can play its sound plainly on soft hits and as a cloud on hard ones.
+**Every layer its own cloud.** The Grain tool (and the rest of the Wave page, with every tool) works on the layer picked on the Play page's layer map, and the top line says which ("· layer 2"). So a pad can play its sound plainly on soft hits and as a cloud on hard ones.
 
 ## Effects on one pad, or on the whole kit
 

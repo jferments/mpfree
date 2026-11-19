@@ -94,7 +94,7 @@ While the Export panel shows, the data wheel sets the number of bars, its push p
 | **–** and **+** | Change the row or tile picked. | Works |
 | **The data wheel's push** | Opens the row or tile picked: the wheel changes it until you push again. | Works |
 | **SHIFT + data wheel** | Sample: the previous or next pad with a sound. Synth: the previous or next page. | Works |
-| **SHIFT + –** and **SHIFT + +** | Wave and Chop pages: zoom out and in. Synth: the previous or next page. | Works |
+| **SHIFT + –** and **SHIFT + +** | Wave page (every tool): zoom out and in. Synth: the previous or next page. | Works |
 
 ## Mode buttons
 
