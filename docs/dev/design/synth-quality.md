@@ -132,6 +132,16 @@ The bar each wave 1 pull request is judged by ([Architecture and roadmap](synth-
 
 The Ensemble effect also meets the FX method's own rows: no dip as Mix goes up (within −1 to +1.5 LU of the dry), no zipper over 3 dB on any control, and no cut-off tail ([FX quality](fx-quality.md#delay), D6, D7 and D12). Built 18 Nov: in the `modulation` class it meets all of them (mix dip -0.33 LU, no bump; every control's click at least 60 dB under the tone; on insert within ±0.4 LU at the defaults and every preset).
 
+## The NEON kernels (C3)
+
+The bar for each kernel in `mpfree-simd` ([NEON kernels](simd.md)), first the supersaw's saws (`table_sum`). N1 and N2 run on CI in the ARMv7 job; N3 is the device round's.
+
+| Id | Measure | Target | Today |
+|---|---|---|---|
+| N1 | The kernel against its plain twin under qemu-arm | The same samples and phases to the bit: random calls (8 to 4,096 entries, 1 to 9 oscillators, 0 to 69 frames, writing and adding), every saw level at Poly's sizes, the bench workload, and denormals with flush-to-zero on | Met: 13 tests, 3,000 random calls |
+| N2 | ARMv7 instructions a block, eight voices' supersaw saws with their mixing (`tools/simd_arm_cost.py`) | NEON fewer than the twin | Met: 58,361 against 134,455 (43 %) |
+| N3 | Time on the MPC, the same case (`mpfree-bench`, "Supersaw saws: 8 voices, plain" and "..., NEON") | NEON's p99 block under the twin's, or the kernel is removed | Device round |
+
 ## Not measured yet
 
 Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), drift (P10), the 808 kick and metal bank against their papers (D1, D2, D9), chokes and retriggers (D6), sustain-pedal behaviour (K5: there is no pedal event yet), piano partials (K8), FM envelope rates and banks (F4, F6), organs, winds and choirs (O: no engines yet), and cost on the MPC. Each joins the report when stage 3 or 4 builds or changes what it measures.
