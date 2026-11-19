@@ -920,6 +920,8 @@ pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
                 pp::OSC1_PW if poly && v(pp::OSC1_WAVE).round() != 1.0 => Some("pulse only"),
                 pp::OSC2_PW if poly && v(pp::OSC2_WAVE).round() != 1.0 => Some("pulse only"),
                 pp::SUB_WAVE if poly && v(pp::SUB_LEVEL) <= 0.0 => Some("sub is off"),
+                pp::PRIORITY if poly && v(pp::VOICE_MODE) < 0.5 => Some("Mono and Legato only"),
+                pp::GLIDE_MODE if poly && v(pp::GLIDE) <= 0.0 => Some("glide is off"),
                 pp::UNISON_DETUNE | pp::UNISON_SPREAD if poly && v(pp::UNISON) <= 1.0 => {
                     Some("one copy")
                 }
