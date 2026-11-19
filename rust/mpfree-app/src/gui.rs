@@ -15948,7 +15948,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         play_synth.apply(ToUi::PadDown { pad, velocity: v });
     }
     out.push(("play-synth", play_synth));
-    for (name, page, qlink) in [("synth", 0, (2, 12)), ("synth-filter", 1, (0, -20))] {
+    for (name, page, qlink) in [
+        ("synth", 0, (2, 12)),
+        ("synth-filter", 1, (0, -20)),
+        ("synth-voice", 4, (1, 10)),
+    ] {
         let mut p = sample_player(fonts());
         p.apply(ToUi::Kit(synth_kit));
         p.apply(ToUi::Show(View::Synth));

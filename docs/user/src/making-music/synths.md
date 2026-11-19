@@ -23,7 +23,7 @@ Any of the eleven can be a track's own instrument (see [A synth for each track](
 
 | Synth | What it is | Good for | Presets |
 |---|---|---|---|
-| **Poly** | A classic two-oscillator subtractive synth, with a sub oscillator, noise, unison and a resonant filter | Basses, leads, pads, brass | Grit Bass, Acid, Supersaw, Dust Pad, Pluck, Brass, Sub Bass, Lead |
+| **Poly** | A classic two-oscillator subtractive synth, with a sub oscillator, noise, unison, a seven-saw supersaw and a resonant filter | Basses, leads, pads, brass, big trance-style stacks | Grit Bass, Acid, Supersaw, Dust Pad, Pluck, Brass, Sub Bass, Lead, Super Lead, Super Pad, Super Stab, Super Stack |
 | **FM** | Six-operator FM, in the tradition of the 1980s digital synths | Electric pianos, bells, glassy keys, punchy basses | Glass Keys, Bell Tower, Rubber Bass, Drawbars, Brass Section, Log Drum, Silk Pad, Steel Pluck |
 | **Drums** | A drum synth: a different synthesised drum on each pad | Electronic kits built from scratch | Boom Kit, Tight Kit, Grit Kit, Electro Kit |
 | **Pluck** | Physically modelled strings and mallets | Guitars, harps, marimbas, bells | Nylon, Steel String, Harp, Koto, Muted Bass, Marimba, Vibes, Bell, Glass, Kalimba, Steel Drum |
@@ -72,7 +72,7 @@ Coming:
 
 ## The Synth tab
 
-{{shot: synth | The Synth tab with Poly playing its Pluck preset: the presets on the left, the Osc page's sections in the middle (both oscillators with their waves drawn, the mix as faders, unison), and the Q-Links on the right.}}
+{{shot: synth | The Synth tab with Poly playing its Pluck preset: the presets on the left, the Osc page's sections in the middle (both oscillators with their waves drawn, the mix as faders, the supersaw's two knobs), and the Q-Links on the right.}}
 
 - **The title** shows the preset, with **edited** under it once you change anything. Tap the preset's name to open the synth's presets in the browser (see [Trying and saving presets](#trying-and-saving-presets)). The tabs beside it are the synth's **pages**: for Poly, Osc, Filter, Env, LFO, Voice and Pressure. Tap a tab, or hold **SHIFT** and turn the data wheel, to change page.
 - **The sections.** Each page is split into boxes, one for each job, with the job's name at the top: **Osc 1**, **Mix**, **Filter**, **Filter envelope**, **Output** and so on. The colour says what kind of job it is, the same on every synth and effect:
@@ -89,6 +89,17 @@ Coming:
 - **Locking a step.** With **STEP SEQ** on, hold a step pad of a track this synth plays and turn a knob here: the knob is locked on that step only, and the sound stays as it was for the other steps. While you hold the step the tab shows its locks; let go and it shows the sound's own values again. See [Your first beat](../getting-started/first-beat.md#program-a-pattern-on-the-pads).
 - **The presets** are listed on the left, under the synth's name. Tap one to load it. Once you change anything, the preset is marked **edited**. The ones you saved yourself are in the browser, under **Yours**.
 - **UNDO** takes back the last knob you turned on this tab (a run of turns of one knob is one UNDO), and **SHIFT + UNDO** puts it back. Loading a preset starts the list again.
+
+**Poly's waves.** Each oscillator plays a **Saw**, **Pulse**, **Triangle**, **Sine** or **Supersaw**. They stay clean all the way up the keyboard: high notes have no harsh, out-of-tune whistle under them. **Supersaw** is seven saws a little apart in pitch, the big, shimmering sound of trance leads and pads. Two knobs in the **Supersaw** box on the Osc page shape it, for either oscillator set to Supersaw:
+
+- **Saw detune** is how far apart the seven saws drift. Low settings move slowly and gently; the top of the knob gets wide and wild.
+- **Side saws** is how loud the six outer saws are against the middle one. Turned down, you mostly hear one saw; turned up, the stack.
+
+The level stays about the same whatever you set. **Super Lead**, **Super Pad**, **Super Stab** and **Super Stack** use it. Super Stack adds a wide ensemble and a bouncing delay, with its four macros on Detune, Mix, Octave and Effects.
+
+{{shot: synth-voice | Poly's Voice page: how it plays (Poly, Mono or Legato, the number of voices and the glide), Unison (copies of each note, their detune and spread), the tuning and the output.}}
+
+**Unison** is on Poly's **Voice** page: **Copies** plays up to four copies of every note, **Detune** spreads them in pitch and **Spread** across the speakers. It thickens any wave, the supersaw too, but each copy costs as much as a note.
 
 **Drive** and **Distortion**, on the Filter page of Poly and Wavetable (Q-Links 3 and 4 there), both add grit. **Drive** pushes the sound into the filter, as on an analog synth: warm, and the filter smooths what it adds, so with the filter nearly closed you hear little of it. **Distortion** comes after the filter, so you hear its grit even with the filter almost closed (Grit Bass uses it). Both keep the sound at about the same level as you turn them up (within about 2 dB on every preset), so they add grit and thickness, not volume; turn up the synth's level for that. Pad pressure can push either one.
 
