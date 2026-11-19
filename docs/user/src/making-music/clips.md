@@ -72,7 +72,7 @@ Set up the recording in the Record panel, beside the grid:
 
 Tap a row's arrows, or the left or right of its value, to change it. Or turn the data wheel to pick a row and press **–** or **+**. Push the wheel and turning it changes the row picked; push again to go back to picking rows.
 
-Then press **REC** and **PLAY**, play, and press **STOP**. The new notes go into the armed track's clip. Picking a track arms its notes, and the REC chip at the right of the transport bar names the clip REC records into (see [What REC records](../getting-started/first-beat.md#what-rec-records)).
+Then press **REC** and **PLAY**, play, and press **STOP**. The new notes go into the armed track's clip. Picking a track arms its notes, and the REC chip at the right of the transport bar names the clip REC records into (see [What REC records](sequencer.md#what-rec-records)).
 
 ### Erasing while you record
 
@@ -80,7 +80,7 @@ Hit a wrong note? Keep recording, hold **ERASE** and hold that pad: its hits com
 
 ### Knob moves while you record
 
-Turn a knob while you record and the move goes into the clip as a **lock** on the step you're playing: a knob of the armed track's synth on the Synth tab (or a Q-Link turning it), its mixer strip's fader, pan or sends, or an effect's knob on its strip. Hold a pad and turn, and the lock goes on that pad's note; turn just after a hit and it goes on that hit; otherwise it lands on the nearest step with no note of its own. A turn is one lock, however far you turn it, and it plays back on every pass (see [Locks](../getting-started/first-beat.md#program-a-pattern-on-the-pads) for what a lock does). The take's **UNDO** takes the locks back with its notes. Only the armed track's knobs record. A knob on your own controller that you taught with [MIDI Learn](midi-and-cv.md#recording-a-learned-control) records the same way. Coming: the Play page's Q-Links and a kit pad's sound knobs on the screen.
+Turn a knob while you record and the move goes into the clip as a **lock** on the step you're playing: a knob of the armed track's synth on the Synth tab (or a Q-Link turning it), its mixer strip's fader, pan or sends, or an effect's knob on its strip. Hold a pad and turn, and the lock goes on that pad's note; turn just after a hit and it goes on that hit; otherwise it lands on the nearest step with no note of its own. A turn is one lock, however far you turn it, and it plays back on every pass (see [Locks](sequencer.md#the-pads-as-steps-step-seq) for what a lock does). The take's **UNDO** takes the locks back with its notes. Only the armed track's knobs record. A knob on your own controller that you taught with [MIDI Learn](midi-and-cv.md#recording-a-learned-control) records the same way. Coming: the Play page's Q-Links and a kit pad's sound knobs on the screen.
 
 ### Pad pressure
 
@@ -194,7 +194,7 @@ A note no pad plays is left out, and counted. A melody that goes past what the 1
 
 ## Steps
 
-The pattern on the **Sequencer** tab's **Steps** view is a clip shown as a grid of steps, 16 to a page. Each step can have its own **velocity**, **length**, **nudge** (early or late) and **chance** (how often it plays). The **+** and **–** at the top right of the pattern double or halve its steps (16, 32, 64 or 128), and **‹** and **›** turn its pages. Under a sound, a **lock lane** sets one of its settings (or one of the track's, such as a send) step by step: **+ Lane** adds one. See [Your first beat](../getting-started/first-beat.md#program-a-pattern). **STEP SEQ** puts one sound's steps on the pads, a page of 16 at a time, where you hold a step to change it or lock its sound on the Q-Links, hold one and hit a later one for a longer note, and copy steps with **COPY**: see [Program a pattern on the pads](../getting-started/first-beat.md#program-a-pattern-on-the-pads).
+The pattern on the **Sequencer** tab's **Steps** view is a clip shown as a grid of steps, 16 to a page. Each step can have its own **velocity**, **length**, **nudge** (early or late) and **chance** (how often it plays). The **+** and **–** at the top right of the pattern double or halve its steps (16, 32, 64 or 128), and **‹** and **›** turn its pages. Under a sound, a **lock lane** sets one of its settings (or one of the track's, such as a send) step by step: **+ Lane** adds one. See [Your first beat](sequencer.md#the-pattern). **STEP SEQ** puts one sound's steps on the pads, a page of 16 at a time, where you hold a step to change it or lock its sound on the Q-Links, hold one and hit a later one for a longer note, and copy steps with **COPY**: see [Program a pattern on the pads](sequencer.md#the-pads-as-steps-step-seq).
 
 ## Editing notes
 

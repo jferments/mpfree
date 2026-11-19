@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-arp rust/mpfree-arp-ui rust/mpfree-scale rust/mpfree-app/src/app/arp.rs
-checked: 2026-11-14 b76c3c7
+checked: 2026-11-19 a6fb29b2
 -->
 
 # Note Repeat, Latch and the arpeggiator
@@ -17,7 +17,7 @@ All of this works on drum kits and on the synth alike. Everything it plays is in
 3. Hit the pad harder or softer as you hold it: each repeat plays at the pressure you are pressing with now, so you can swell a roll up or fade it out.
 4. Let go of NOTE REPEAT and the pads play normally again.
 
-While NOTE REPEAT is held, a slim **quick band** appears on the Play page with the mode and the rate, and the controls change job:
+While NOTE REPEAT is held, a slim **quick band** appears on the Play page, between the loops and the rows, with the mode, the rate and **LATCH**, and the controls change job:
 
 | Control | While NOTE REPEAT is held |
 |---|---|
@@ -52,7 +52,7 @@ For a sound that should simply keep playing after you let go (a loop, a drone, a
 
 ## The Arp panel
 
-The **Arp panel** opens on the Play page, in place of the view under the transport bar, with **NOTE REPEAT + MENU**, or by tapping the arp chip in the top bar. The same again closes it. While it is open, the pads play through the arp in the mode its tabs pick, and you don't need to hold NOTE REPEAT.
+The **Arp panel** opens on the Play page, in place of the loops, the rows and the throws, with **NOTE REPEAT + MENU**, or by tapping the arp chip in the top bar (such as **Arp: Up 1/16, latched · 120 BPM**, which shows while the arp, a repeat or a latch is on). The same again closes it. While it is open, the pads play through the arp in the mode its tabs pick, and you don't need to hold NOTE REPEAT.
 
 {{shot: arp-panel | The Arp panel in Arp mode: the order (Up), the four Q-Link settings as sliders, and the notes being played along the bottom, here 1-3-5 and the same an octave up.}}
 
@@ -71,7 +71,7 @@ To turn rate, gate, swing or octaves from a knob on your keyboard or controller,
 
 ### Orders
 
-In Arp mode the data wheel picks the **order** the held notes play in:
+In Arp mode the data wheel picks the **order** the held notes play in, from eleven:
 
 | Order | Plays |
 |---|---|
@@ -166,4 +166,4 @@ Drag a cell up or down, or select it and turn the data wheel, to change it. **Ro
 > Saved patterns are kept on the MPFree stick, so they are still there after you switch off. Each track's arp, with its pattern as you left it, is saved in your project too, and comes back when you open it. See [Saving your work](saving.md).
 
 > [!MPC]
-> On the MPC, Note Repeat and the Arpeggiator are separate, and the arpeggiator is a full-screen editor. In MPFree they are one engine: NOTE REPEAT's – and + switch between repeat, arp and pattern while you play, and the Arp panel takes the Play page's view while the transport bar, the master bar and the Q-Links stay on screen. Latch is a double press of NOTE REPEAT. MPFree's patterns (steps with ratchets, chance, ties and octave jumps) have no equivalent on the MPC.
+> On the MPC, Note Repeat and the Arpeggiator are separate, and the arpeggiator is a full-screen editor. In MPFree they are one engine: NOTE REPEAT's – and + switch between repeat, arp and pattern while you play, and the Arp panel takes the middle of the Play page while the transport bar, the master bar and the Q-Links stay on screen. Latch is a double press of NOTE REPEAT. MPFree's patterns (steps with ratchets, chance, ties and octave jumps) have no equivalent on the MPC.

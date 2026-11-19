@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/app.rs rust/mpfree-controller
-checked: 2026-11-14 b76c3c7
+checked: 2026-11-19 a6fb29b2
 -->
 
 # A tour of the MPC One
@@ -45,10 +45,18 @@ Along the bottom right are the buttons that control time, like the buttons on a 
 
 ## The mode buttons
 
-The buttons above the screen, such as **MENU**, **MAIN**, **STEP SEQ**, **SAMPLER** and **TRACK MIX**, jump to a part of MPFree. Two you will use all the time:
+The buttons above the screen jump to a part of MPFree:
 
-- **MENU** opens the options for the page you are on.
-- **SHIFT + MENU** opens **Prefs**, MPFree's settings.
+| Button | Goes to |
+|---|---|
+| **MAIN** | The Play page, MPFree's home. |
+| **STEP SEQ** | The Sequencer tab, with the pads as the steps of a sound. |
+| **SAMPLER** | The Sample tab. **SHIFT + SAMPLER** goes to the Looper tab. |
+| **NEXT SEQ** | The Arrange tab. |
+| **TRACK MIX** | The Mix tab, on the tracks (**SHIFT + TRACK MIX**: on the pads). Pressed again, back to where you were. |
+| **PROG EDIT** | What the pads play: the Synth tab while the synth is on the pads, otherwise the Pads tab. |
+| **BROWSE** | The browser, over the page. **SHIFT + BROWSE** saves the project. |
+| **MENU** | The options for the page you are on. **SHIFT + MENU** opens **Prefs**, MPFree's settings. |
 
 Some mode buttons change what the pads are instead, over whatever page you are on: **STEP SEQ** makes them the steps of a pattern, **TRACK MUTE** makes them mute buttons, and **16 LEVEL** plays one sound at 16 levels. Only one of them has the pads at a time, and its button is lit; press it again to play the pads as usual.
 
@@ -64,7 +72,7 @@ On the back:
 
 - **OUTPUTS**: two 6.35 mm (1/4") jacks for speakers, a mixer or an audio interface. The **MASTER VOL** knob sets their volume and the headphones'.
 - **INPUTS**: two 6.35 mm jacks to record from a synth, a turntable or another instrument. The **REC VOL** knob sets how loud they come in. In MPFree the inputs are off until you turn them on in Prefs (Line input).
-- **MIDI IN** and the **USB** ports: a keyboard plugged into either plays MPFree, as the pads do, and its knobs can turn effect knobs with MIDI Learn. **MIDI OUT** and the **CV/Gate** outputs are built but stay off until they've been checked on an MPC One, and the **Link** (Ethernet) port isn't used for music yet. [Playing other gear](../making-music/midi-and-cv.md) covers the keyboard, MIDI Learn and what is coming for MIDI, sync and CV.
+- **MIDI IN** and the **USB** ports: a keyboard plugged into either plays MPFree, as the pads do, and its knobs can turn MPFree's knobs with MIDI Learn. A synth or drum machine on **MIDI OUT** or USB can be played by a track. **MIDI OUT** and the **CV/Gate** outputs are built but haven't been checked on an MPC One yet, so they stay silent until you turn on **Send MIDI and CV out** in [Prefs](../reference/prefs.md). The **Link** (Ethernet) port isn't used for music yet. [Playing other gear](../making-music/midi-and-cv.md) covers keyboards, MIDI out, sync and CV.
 
 > [!MPC]
-> The hardware is the same, but a few buttons do different jobs in MPFree. **MAIN** goes to the Play page and, pressed again, switches its view. **SHIFT + MENU** opens MPFree's Prefs. The Q-Links always follow the page you are on, so there is no Q-Link Edit mode. See [Buttons and controls](../reference/controls.md) for every difference.
+> The hardware is the same, but a few buttons do different jobs in MPFree. **MAIN** goes to the Play page (in Perform, the Arrange tab's grid). **SHIFT + MENU** opens MPFree's Prefs. The Q-Links always follow the page you are on, so there is no Q-Link Edit mode. See [Buttons and controls](../reference/controls.md) for every difference.

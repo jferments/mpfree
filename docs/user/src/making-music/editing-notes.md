@@ -1,14 +1,27 @@
 <!--
 status: changing
 covers: rust/mpfree-time-ui/src/editor.rs rust/mpfree-seq/src/notes.rs rust/mpfree-app/src/time.rs
-checked: 2026-11-14 b76c3c7
+checked: 2026-11-19 a6fb29b2
 -->
 
 # Editing notes
 
-The note editor shows a clip's notes so you can fix what you played: pull notes into time, move them, change how hard they hit, draw new ones and erase others. It is the **Sequencer** tab's **Notes** view: tap **Notes** on the right of the Sequencer's transport bar, or **Edit ›** above the clip grid on Arrange, which takes you there. It opens the clip the Sequencer's Steps show, which is the armed track's playing clip, or its first clip.
+The note editor shows a clip's notes so you can fix what you played: pull notes into time, move them, change how hard they hit, draw new ones and erase others. It is the **Sequencer** tab's **Notes** view: tap **Notes** at the right end of the Sequencer's transport bar, or **Edit ›** over the clip grid on Arrange, which takes you there. It opens the clip the Sequencer's Steps show, which is the armed track's playing clip, or its first clip.
 
 {{shot: sequencer-notes | The note editor's piano roll, with the melody picked and the Edit options beside it. Two long melody notes show the pressure they were played with.}}
+
+The Notes view has the Arrange tab's transport bar along the top (**Stop**, **Play** and **Rec**, the record mode, the position, the tempo, the time signature, the launch line, **Undo** and the REC chip), the roll in the middle, the **Edit** options on the right with the clip's **Takes** under them, and a row of buttons under the roll:
+
+| Button | What it does |
+|---|---|
+| **‹ Steps** | Back to the Steps view (so does **STEP SEQ**). |
+| **Grid** | Which view shows: Grid, List or Tracker. Tap it for the next. |
+| **Select** | The tool: Select, Draw or Erase. Tap it for the next. |
+| **Snap 1/16** | The grid that moves and new notes land on. |
+| **All** or **None** | Picks every note, or lets them go. |
+| **Duplicate** | Copies the picked notes to just after them. |
+| **Delete** | Takes the picked notes out (in Perform, hold it). |
+| **TC sel.** or **TC all** | Timing Correct: pulls the picked notes (or, with none picked, every note) toward the grid. |
 
 ## The piano roll
 
@@ -40,7 +53,7 @@ With the snap off, or finer than 1/32, the tracker uses 1/16 steps, and its titl
 
 ## Timing Correct
 
-Timing Correct pulls notes toward the beat, so a part played a little loose sits in time. Tap **TC** and it corrects the picked notes, or every note if none are picked. Its settings are the first rows of the Edit options beside the roll. Tap a row and turn the data wheel to change it:
+Timing Correct pulls notes toward the beat, so a part played a little loose sits in time. Tap **TC sel.** and it corrects the picked notes; with none picked the button reads **TC all** and corrects every note. Its settings are the first rows of the Edit options beside the roll. Tap a row and turn the data wheel to change it:
 
 - **Correct**: what moves. **Start** moves each note's start onto the grid. **End** moves its end. **Length** makes its length a whole number of grid steps. **Legato** holds each note until the next one starts.
 - **Division**: the grid, from a whole bar to 1/64, with triplets.
