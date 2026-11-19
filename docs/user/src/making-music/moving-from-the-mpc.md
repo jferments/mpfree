@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-mpc-import
-checked: 2026-11-17 acfc234
+checked: 2026-11-19 79fc6f63
 -->
 
 # Moving your beats from the MPC

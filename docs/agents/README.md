@@ -1,6 +1,6 @@
 # Working on MPFree as an AI agent
 
-**Status:** 2026-11-11. Read this before changing anything in the repository. `CLAUDE.md` at the root points here.
+**Status:** 2026-11-19. Read this before changing anything in the repository. `CLAUDE.md` at the root points here.
 
 MPFree is built by one owner with many AI agent sessions working in parallel, each on one feature. These are the rules every session follows. Humans can read them too; nothing here is secret. Private working notes (thread handoffs, project memory, device logs) live in the private `jferments/mpfree-claude` repository, not here.
 
@@ -23,9 +23,10 @@ A mistake can brick an MPC One. For anything that touches a device:
 ## 2. How work is split
 
 - **One thread per feature.** Each owns its crates and the inside of its own tab or panel.
-- **The app's shared layout has one owner** (the Hello MPC thread): the top bar and tab set, the Play page, the right-hand column, Prefs, and what every hardware button does. The [layout spec](../dev/design/layout-spec.md) is approved by the owner; changing it needs the owner's approval again. Other threads propose layout changes to the layout owner.
+- **The app's shared layout follows one spec:** the top bar and tab set, the Play page, the right-hand column, Prefs, and what every hardware button does are set by the [layout spec](../dev/design/layout-spec.md), which the owner approves. Changing it needs the owner's approval again: propose the change, and once it is approved it lands as its own docs pull request before (or with) the code. The app is called **mpfree** (never "Hello", its early test name).
 - **Performance is budgeted for the MPC One, not the workstation.** New audio code is profiled with `mpfree-prof` and must fit its budget ([profiling](../dev/design/profiling.md), [concurrency](../dev/design/concurrency.md)). Audio-thread code never allocates, locks or blocks.
-- **Code pull requests merge only on the owner's explicit go.** Docs-only pull requests follow the same review unless the owner says otherwise.
+- **Code pull requests merge only on the owner's explicit go,** and only the merge desk merges them: open the pull request as a draft and hand the desk its number, its 40-character head and the owner's go. The desk merges in trains, and the train's CI is the test. Leave the branch alone once it is with the desk.
+- **Docs-only pull requests** the agent that wrote them may merge once `check_docs.py` passes (the owner's standing rule), and then tells the merge desk.
 
 ## 3. Before you open a pull request
 
@@ -39,6 +40,8 @@ cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets --locked 
 python3 docs/tools/check_docs.py
 python3 docs/tools/doc_drift.py --base origin/main
 ```
+
+Full workspace test runs, long builds and anything over about ten minutes go on the project's self-hosted CI runners (push the branch and read its checks), not in a cloud session.
 
 [Testing and CI](../dev/guides/testing-and-ci.md) explains each job and the rules for tests: never skip or loosen a test to get green, new behaviour comes with tests, no test touches a device.
 

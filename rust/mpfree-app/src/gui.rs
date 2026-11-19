@@ -14266,6 +14266,55 @@ fn sample_panels(p: &mut Player, view: View) {
     p.apply(ToUi::Macros(Box::new(song.macros_state(0))));
 }
 
+/// The chain editor on the drum bus's EQ, shaped as on the approved
+/// mockups (a low cut, a low bump, a mud cut on band 2, presence and a
+/// high cut), band 2 picked, as the app sends it.
+fn sample_eq_page(p: &mut Player) -> Result<(), String> {
+    use mpfree_chain_ui::sample::{Song, DRUMS};
+    use mpfree_fx::ids::eq as q;
+    use mpfree_play::mpfree_param::Owner;
+    let mut song = Song::new();
+    {
+        let e = song.drums.node_mut(3).ok_or("the drum bus EQ")?;
+        for (id, v) in [
+            (q::LOW_CUT, 35.0),
+            (q::LOW_SLOPE, 1.0),
+            (q::HIGH_CUT, 9_000.0),
+            (q::HIGH_SLOPE, 1.0),
+            (q::band_type(0), 0.0),
+            (q::freq(0), 90.0),
+            (q::gain(0), 3.0),
+            (q::q(0), 1.0),
+            (q::band_type(1), 0.0),
+            (q::freq(1), 320.0),
+            (q::gain(1), -3.5),
+            (q::q(1), 1.4),
+            (q::band_type(2), 0.0),
+            (q::freq(2), 1_200.0),
+            (q::gain(2), 2.0),
+            (q::q(2), 2.0),
+            (q::band_use(3), q::USE_UNUSED),
+        ] {
+            e.set_param(id, v);
+        }
+    }
+    let uid = song.drums.uid(3).ok_or("the drum bus EQ")?;
+    let mud = ParamAddr::new(Owner::Insert(DRUMS, uid), q::gain(1));
+    p.apply(ToUi::Show(View::Chain));
+    let mut st = song.chain_state(DRUMS, 3, 0, Some(mud));
+    st.back = Some("Mixer".into());
+    st.strip_name = st.title.trim_end_matches(" FX").to_string();
+    st.strip_kind = "Track 1".into();
+    let fx = song
+        .chain(DRUMS)
+        .node(3)
+        .map(|n| Box::new(FxState::from_node(n, "", Color::rgb(0), 120.0, 44_100)));
+    p.apply(ToUi::Chain(Box::new(st)));
+    p.apply(ToUi::ChainFx(fx));
+    p.apply(ToUi::Macros(Box::new(song.macros_state(0))));
+    Ok(())
+}
+
 /// The chain editor on the keys' Compressor, listening to the kick pad
 /// (layout spec 4b, "Sidechain"), with `list` the sidechain list over it,
 /// as the app sends them.
@@ -14891,6 +14940,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut effects = sample_player(fonts());
     effects.apply(ToUi::Show(View::Mixer));
     effects.apply(ToUi::Mixer(Box::new(st.clone())));
+    // The EQ look's strips: the same song with its EQs shaped.
+    let mut me = mpfree_mixer_ui::sample::song_mixer();
+    mpfree_mixer_ui::sample::shape_eqs(&mut me);
+    mpfree_mixer_ui::sample::play(&mut me, 40);
+    let mut eq_state = mpfree_mixer_ui::MixState::from_mixer(
+        &mut me,
+        mpfree_mixer_ui::MixView::Tracks,
+        &mpfree_mixer_ui::sample::name,
+    );
+    eq_state.selected = Some(mpfree_fx::StripId::Track(3));
+    eq_state.cost_pct = eq_state.cost_pct.map(|_| 18.0);
     mixer.apply(ToUi::Show(View::Mixer));
     mixer.apply(ToUi::Mixer(Box::new(st)));
     out.push(("mixer", mixer));
@@ -14903,6 +14963,21 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         let _ = effects.take_actions();
     }
     out.push(("mixer-effects", effects));
+    // The Mix tab's EQ look on the same strips (layout spec 3a, Jay's
+    // approval 15 Nov): a tap on the toggle's EQ. The manual's mixing
+    // chapter shows it.
+    let mut eq_look = sample_player(fonts());
+    eq_look.apply(ToUi::Show(View::Mixer));
+    eq_look.apply(ToUi::Mixer(Box::new(eq_state)));
+    if let Some(t) = eq_look.ui.targets().into_iter().find(|t| {
+        t.widget == mpfree_mixer_ui::MIXER && t.target.id == "look" && t.target.label == "EQ"
+    }) {
+        let (x, y) = t.target.centre();
+        eq_look.touch(1, Touch::Down, x, y);
+        eq_look.touch(1, Touch::Up, x, y);
+        let _ = eq_look.take_actions();
+    }
+    out.push(("mixer-eq", eq_look));
     // The mixer's I/O view (the I/O icon lit), while the tempo follows a
     // clock on MIDI In: the tempo chip with its green dot.
     let mut io = sample_player(fonts());
@@ -15114,6 +15189,13 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             Ok(()) => out.push((name, p)),
             Err(e) => eprintln!("{name}: not drawn ({e})"),
         }
+    }
+    // The EQ's page in the chain editor: the drum bus EQ, band 2 picked
+    // (the manual's effects chapter shows it).
+    let mut eq = sample_player(fonts());
+    match sample_eq_page(&mut eq) {
+        Ok(()) => out.push(("chain-eq", eq)),
+        Err(e) => eprintln!("chain-eq: not drawn ({e})"),
     }
     // A note track's chain with its Notes stage (board 7): the Chord's page.
     let mut notes = sample_player(fonts());
@@ -15961,7 +16043,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         play_synth.apply(ToUi::PadDown { pad, velocity: v });
     }
     out.push(("play-synth", play_synth));
-    for (name, page, qlink) in [("synth", 0, (2, 12)), ("synth-filter", 1, (0, -20))] {
+    for (name, page, qlink) in [
+        ("synth", 0, (2, 12)),
+        ("synth-filter", 1, (0, -20)),
+        ("synth-voice", 4, (1, 10)),
+    ] {
         let mut p = sample_player(fonts());
         p.apply(ToUi::Kit(synth_kit));
         p.apply(ToUi::Show(View::Synth));
