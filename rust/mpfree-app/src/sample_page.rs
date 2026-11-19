@@ -1852,10 +1852,12 @@ impl SamplePage {
         }?;
         // A grain size synced to the tempo is the project's.
         st.bpm = self.warps.tempo();
-        // Put on Files and New kit, as the app offers them.
+        // Put on Files and New kit, as the app offers them, and Audio
+        // track: the app has audio tracks.
         if let Some(cs) = st.chop.as_mut() {
             let cs = Arc::make_mut(cs);
             cs.files = self.files;
+            cs.audio = true;
             cs.new_kit = self
                 .new_kit
                 .as_ref()
@@ -2442,8 +2444,100 @@ impl SamplePage {
                 });
             }
             ChopAction::ToPads { .. } => self.put_slices(ui, &a, None, out),
+            ChopAction::ToAudio { .. } => self.send_to_audio(None, &a, out),
             ChopAction::Export { pad, layer, cuts } => self.export(*pad, *layer, cuts),
         }
+    }
+
+    /// Put on Audio track (the one Sample page's step 6): the sound the
+    /// slices span, of the pad chopped (or of take `take` kept on the
+    /// page), copied out at the tracks' rate and cut where the slices are,
+    /// for the sound loop to put on an audio track
+    /// ([`crate::audiotracks::TrackHost::bring`], which says where it
+    /// went). The sound as recorded: the pad's settings stay on the pad,
+    /// and the pads and the page stay as they are.
+    fn send_to_audio(&mut self, take: Option<usize>, a: &ChopAction, out: &mut Vec<FromUi>) {
+        let ChopAction::ToAudio {
+            pad,
+            layer,
+            name,
+            bounds,
+        } = a
+        else {
+            return;
+        };
+        let (Some(&start), Some(&end)) = (bounds.first(), bounds.last()) else {
+            return;
+        };
+        let Some(project) = self.projects.get(self.kit) else {
+            return;
+        };
+        let p = match take {
+            Some(i) => project.take(i),
+            None => project.pad(*pad),
+        };
+        let Some(s) = p
+            .and_then(|p| p.layers.get(*layer))
+            .and_then(|l| project.source(l.region.source))
+        else {
+            self.lines
+                .push("sample: not put on an audio track: the sound is missing".into());
+            return;
+        };
+        let ch = usize::from(s.channels());
+        let end = end.min(s.frames());
+        let span = (start < end && (1..=2).contains(&ch))
+            .then(|| s.data().f32s(start as usize * ch..end as usize * ch))
+            .flatten();
+        let Some(span) = span else {
+            self.lines.push(
+                "sample: not put on an audio track: no sound between the slices' ends".into(),
+            );
+            return;
+        };
+        let mut audio = span.into_owned();
+        let mut cuts: Vec<u64> = bounds[1..bounds.len() - 1]
+            .iter()
+            .filter(|&&c| start < c && c < end)
+            .map(|&c| c - start)
+            .collect();
+        // The tracks play at the app's rate: a sound at another is
+        // converted, its cuts moved with it.
+        if s.rate() != self.rate {
+            match Source::new(name, s.rate(), s.channels(), audio)
+                .and_then(|x| x.at_rate(self.rate))
+            {
+                Ok((x, r)) => {
+                    for c in &mut cuts {
+                        *c = (*c as f64 * r.ratio).round() as u64;
+                    }
+                    audio = x.data().to_vec();
+                }
+                Err(e) => {
+                    self.lines
+                        .push(format!("sample: not put on an audio track: {e}"));
+                    return;
+                }
+            }
+        }
+        // Its tempo, for the Song view's Fit to tempo.
+        let bpm = self
+            .sources
+            .get(s)
+            .tempo
+            .filter(|b| b.is_finite() && *b > 0.0)
+            .unwrap_or(0.0);
+        let name = match name.trim() {
+            "" => "The sound".to_string(),
+            n => n.to_string(),
+        };
+        out.push(FromUi::SampleToAudio(Box::new(crate::audiotracks::Sound {
+            name,
+            channels: ch,
+            audio,
+            cuts,
+            bpm,
+        })));
     }
 
     /// Put on's main button: the slices on the pads (on one pad, on keys
@@ -7514,6 +7608,12 @@ impl SamplePage {
             }
             WaveAction::Chop(ChopAction::Export { layer, cuts, .. }) => {
                 self.export_take(i, layer, &cuts);
+                None
+            }
+            // Put on Audio track: the take's sound on a track (step 6); the
+            // take stays on the page.
+            WaveAction::Chop(a @ ChopAction::ToAudio { .. }) => {
+                self.send_to_audio(Some(i), &a, out);
                 None
             }
             // Live chop plays a pad (the tool says so before it gets here).
