@@ -124,12 +124,18 @@
 163789	Pluck Steel String, 8 voices
 52446	Poly Acid, 8 voices
 210895	Poly Brass, 8 voices
+362523	Poly Digital Bell, 8 voices
 294239	Poly Drift Pad, 8 voices
 355569	Poly Dust Pad, 8 voices
+350506	Poly FM Keys, 8 voices
 62675	Poly Grit Bass, 8 voices
+71532	Poly Growl Bass, 8 voices
+246714	Poly Harmonic Pluck, 8 voices
 595812	Poly Init, 16 voices, unison 4
 193565	Poly Init, 8 voices
 58186	Poly Lead, 8 voices
+550307	Poly Morph Pad, 8 voices
+264543	Poly Organ, 8 voices
 208324	Poly Pluck, 8 voices
 68637	Poly Singing Lead, 8 voices
 31730	Poly Sub Bass, 8 voices
@@ -138,8 +144,11 @@
 327444	Poly Super Stab, 8 voices
 401599	Poly Super Stack, 8 voices
 335435	Poly Supersaw, 8 voices
+445278	Poly Sync Sweep, 8 voices
+246862	Poly Table Init, 8 voices
 1698302	Poly Table, 16 voices, both osc, unison 8
 664789	Poly Table, 8 voices, both osc, unison 4
+47197	Poly Vowel Lead, 8 voices
 246021	Poly Worn Brass, 8 voices
 12921	Ring mod
 145867	Room reverb

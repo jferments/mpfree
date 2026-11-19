@@ -119,14 +119,20 @@ tables, positions and warps ([Synths](synths.md#poly-mpfree-synth)). Both
 engines read through the voice core's table oscillator
 (`mpfree-synth/src/table_osc.rs`: the warps and the frame-by-frame read
 moved there from this module); Poly's read runs on its 32-bit phase and
-costs about a third less a block than this synth's. The Wavetable synth
-stays until its presets, tracks and user sounds load as Poly (part B of
-the fold), then goes.
+costs about a third less a block than this synth's.
+
+Part B (19 Nov) took the Wavetable synth out of the app: its nine
+factory sounds are Poly presets, and a track, the pads' sound or a
+preset file saved for it loads as Poly's, its effects, macros and
+Q-Link sets included (`wavetable::to_poly`; [Synths](synths.md#poly-mpfree-synth),
+"From the Wavetable synth"). The engine stays in `mpfree-synth` to read
+what was saved for it and as the reference the conversion is tested
+against; its own DSP can go once nothing needs that.
 
 ## Next
 
 - The Sample tab: "Make a wavetable" from a pad's sample, then pick it in
-  Osc A or B.
+  Poly's Osc 1 or 2 (`Poly::set_user_table`).
 - Load WAV tables from the USB stick's library (storage spec).
 - Pass the user table and live positions into the Synth tab so the visual
   draws them.
