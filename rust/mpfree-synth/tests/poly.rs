@@ -523,3 +523,129 @@ fn the_supersaw_plays_as_loud_as_a_saw_and_its_detune_beats() {
         wobble(&still)
     );
 }
+
+/// A sine voice with the filter open and nothing else on it, so the
+/// output's level is the amp envelope's times the velocity's gain.
+fn plain_sine() -> Poly {
+    let mut s = Poly::new(RATE);
+    s.prepare(RATE, MAX_BLOCK);
+    for (id, v) in [
+        (OSC1_WAVE, 3.0),
+        (OSC2_LEVEL, 0.0),
+        (FILTER_MODE, 0.0),
+        (CUTOFF, 20_000.0),
+        (RESONANCE, 0.0),
+        (FENV_AMOUNT, 0.0),
+        (KEY_TRACK, 0.0),
+        (VEL_CUTOFF, 0.0),
+        (AMP_D, 1.0),
+        (AMP_S, 100.0),
+        (VEL_AMP, 0.0),
+    ] {
+        s.set_param(id, v);
+    }
+    s
+}
+
+/// The peak of each 2 ms window, in dB below the loudest (for a note
+/// high enough to have a few cycles in each).
+fn level_db(x: &[f32]) -> Vec<f32> {
+    let w = RATE as usize / 500;
+    let peaks: Vec<f32> = x.chunks(w).map(peak).collect();
+    let top = peaks.iter().fold(0.0f32, |m, &p| m.max(p));
+    peaks
+        .iter()
+        .map(|&p| 20.0 * (p.max(1e-9) / top).log10())
+        .collect()
+}
+
+#[test]
+fn the_envelope_times_mean_what_they_say() {
+    // An attack of 100 ms reaches full level at 100 ms (the old envelope
+    // got there at 32 ms), and a release of 1 s falls 60 dB in 1 s and
+    // ends just after (the analog curve Poly always had).
+    let mut s = plain_sine();
+    s.set_param(AMP_A, 100.0);
+    s.set_param(AMP_R, 1_000.0);
+    let ms = |t: f32| (t * RATE as f32 / 1000.0) as u64;
+    let (l, _) = render(
+        &mut s,
+        ms(1_700.0) as usize,
+        &[(0, on(93, 127)), (ms(500.0), off(93))],
+        |_| 64,
+    );
+    let db = level_db(&l);
+    let at = |t: f32| db[(t / 2.0) as usize];
+    assert!(at(30.0) < -4.0, "not yet full at 30 ms: {:.1} dB", at(30.0));
+    assert!(at(80.0) < -0.3, "still rising at 80 ms: {:.2} dB", at(80.0));
+    assert!(at(102.0) > -0.2, "full at 100 ms: {:.2} dB", at(102.0));
+    // From the key's release at 500 ms: half way down by 500 ms more is
+    // about -20 dB, 1 s after it 60 dB down, and silent at 1.02 s.
+    assert!((at(1_000.0) + 20.4).abs() < 2.0, "{:.1} dB", at(1_000.0));
+    assert!((at(1_496.0) + 60.0).abs() < 4.0, "{:.1} dB", at(1_496.0));
+    assert!(peak(&l[ms(1_500.0) as usize..ms(1_512.0) as usize]) > 0.0);
+    assert!(peak(&l[ms(1_530.0) as usize..]) == 0.0);
+}
+
+#[test]
+fn a_sound_saved_before_format_2_plays_as_it_did() {
+    use mpfree_node::preset::Preset;
+    // Saved when an attack of 100 ms reached full level at 32 ms and the
+    // velocity was a share.
+    let old = "mpfree-preset = 1\nengine = mpfree.poly\nname = Old\n\
+               osc-1.wave = Sine\nosc-2.level = 0\nfilter.cutoff = 20000\nfilter.resonance = 0\n\
+               filter.env-amount = 0\nfilter.key-track = 0\nfilter.velocity = 0\n\
+               amp-env.attack = 100\namp-env.decay = 1\namp-env.sustain = 100\n\
+               amp-env.release = 1000\namp-env.velocity = 60\n\
+               filter-env.attack = 50\nfilter-env.release = 200\n";
+    let mut s = Poly::new(RATE);
+    s.prepare(RATE, MAX_BLOCK);
+    let p = Preset::parse(old, s.info(), s.params()).unwrap();
+    p.apply(&mut s).unwrap();
+    let near = |a: f32, b: f32| (a - b).abs() < 1e-3 * b.abs().max(1.0);
+    assert!(near(s.param(AMP_A), 31.876_9), "{}", s.param(AMP_A));
+    assert!(near(s.param(FENV_A), 15.938_5), "{}", s.param(FENV_A));
+    assert!(near(s.param(AMP_R), 982.567), "{}", s.param(AMP_R));
+    assert!(near(s.param(FENV_R), 196.513), "{}", s.param(FENV_R));
+    // 60 % put a velocity 1 note at 0.4 of full level: 8 dB down.
+    assert!(near(s.param(VEL_AMP), 7.957), "{}", s.param(VEL_AMP));
+    assert_eq!(s.param(AMP_D), 1.0, "decay keeps its meaning");
+    // It reaches full level at about 32 ms, as it did.
+    let ms = |t: f32| (t * RATE as f32 / 1000.0) as usize;
+    let (l, _) = render(&mut s, ms(200.0), &[(0, on(93, 127))], |_| 64);
+    let db = level_db(&l);
+    assert!(db[(20.0 / 2.0) as usize] < -1.0, "{:.2}", db[10]);
+    assert!(db[(34.0 / 2.0) as usize] > -0.2, "{:.2}", db[17]);
+    // The same text in format 2 is taken as it is.
+    let new = old.replace("mpfree-preset = 1", "mpfree-preset = 2");
+    Preset::parse(&new, s.info(), s.params())
+        .unwrap()
+        .apply(&mut s)
+        .unwrap();
+    assert_eq!(s.param(AMP_A), 100.0);
+    // Even a full share loads, at the most the range allows.
+    let full = old.replace("amp-env.velocity = 60", "amp-env.velocity = 100");
+    Preset::parse(&full, s.info(), s.params())
+        .unwrap()
+        .apply(&mut s)
+        .unwrap();
+    assert_eq!(s.param(VEL_AMP), 40.0);
+}
+
+#[test]
+fn the_softest_note_is_the_velocity_range_below_the_hardest() {
+    let level = |velocity: u8, range: f32| {
+        let mut s = plain_sine();
+        s.set_param(AMP_A, 0.1);
+        s.set_param(VEL_AMP, range);
+        let (l, _) = render(&mut s, 9_600, &[(0, on(93, velocity))], |_| 64);
+        20.0 * peak(&l[4_800..]).log10()
+    };
+    for range in [0.0, 8.0, 24.0, 40.0] {
+        let drop = level(127, range) - level(1, range);
+        assert!((drop - range).abs() < 0.2, "{range} dB: {drop:.2}");
+    }
+    // The square-law curve: half velocity is a third of the range down.
+    let half = level(127, 24.0) - level(64, 24.0);
+    assert!((half - 8.15).abs() < 0.2, "{half:.2}");
+}

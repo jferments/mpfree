@@ -24,3 +24,4 @@ mpfree-track = { path = "../mpfree-track" }
 mpfree-moves = { path = "../mpfree-moves" }
 mpfree-lanes = { path = "../mpfree-lanes" }
 mpfree-instruments = { path = "../mpfree-instruments" }
+mpfree-simd = { path = "../mpfree-simd" }
