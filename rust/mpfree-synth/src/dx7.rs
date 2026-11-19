@@ -20,17 +20,11 @@ pub struct Dx7Voice {
 }
 
 impl Dx7Voice {
-    pub fn preset(&self) -> FmPreset {
-        FmPreset {
-            name: self.name.clone(),
-            values: self.values.clone(),
-        }
-    }
-
-    pub fn from_preset(p: &FmPreset) -> Dx7Voice {
+    /// A factory preset as a voice (to write a bank of them).
+    pub fn from_preset(p: &crate::params::Preset) -> Dx7Voice {
         Dx7Voice {
-            name: p.name.clone(),
-            values: p.values.clone(),
+            name: p.name.to_string(),
+            values: p.values.to_vec(),
         }
     }
 
@@ -325,12 +319,12 @@ mod tests {
 
     #[test]
     fn presets_survive_a_bank_round_trip() {
-        let presets = presets();
+        let presets = crate::Fm::presets();
         let voices: Vec<Dx7Voice> = presets
             .iter()
             .map(|p| Dx7Voice {
                 name: p.name.to_uppercase(),
-                values: p.values.clone(),
+                values: p.values.to_vec(),
             })
             .collect();
         let file = bank(&voices);
@@ -357,7 +351,7 @@ mod tests {
 
     #[test]
     fn a_single_voice_parses() {
-        let p = &presets()[1];
+        let p = &crate::Fm::presets()[1];
         let u = to_unpacked(&Dx7Voice::from_preset(p));
         let mut file = vec![0xF0, 0x43, 0x00, 0x00, 0x01, 0x1B];
         file.extend_from_slice(&u);
@@ -400,7 +394,7 @@ mod tests {
             }
         }
         // In-range voices are unchanged (the round trip test covers them).
-        let glass = Dx7Voice::from_preset(&presets()[1]);
+        let glass = Dx7Voice::from_preset(&crate::Fm::presets()[1]);
         let back = from_unpacked(&to_unpacked(&glass));
         for &(id, value) in &back.values {
             assert_eq!(value, glass.value(id));

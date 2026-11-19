@@ -1830,7 +1830,12 @@ mod tests {
         let mut inst = Instruments::new(rate, PERIOD);
         assert_eq!(instruments_text(&inst), format!("{INSTRUMENTS_FORMAT}\n"));
         let (fm, extras, mut values) = synth.sound_of(Engine::Fm);
-        let params = crate::synth::engine_node(fm, rate).unwrap().params();
+        // The values are in the order of the sound's own settings: its
+        // engine's, then its effects' and macros' when its preset is a
+        // sound (FM's start preset is).
+        let params = crate::synth::fresh_node(fm, &extras, &values, rate)
+            .unwrap()
+            .params();
         let k = params
             .iter()
             .position(|p| !p.readonly && p.max > p.min)
