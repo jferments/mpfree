@@ -1198,6 +1198,18 @@ class AppTests(unittest.TestCase):
 
 
 class StaticTests(unittest.TestCase):
+    def test_a_program_past_16_mib_is_plausible_and_one_past_the_limit_is_not(self):
+        # The pad player's file passed 16 MiB with its symbols in Nov 2026; the host tools must still take it.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("host_app_mpc", HELPER)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertGreaterEqual(mod.PROGRAM_MAX, 32 << 20)
+        elf = arm_elf()
+        self.assertIsNone(mod.arm_static_problem(elf + bytes((17 << 20) - len(elf))))
+        self.assertIn("plausible size", mod.arm_static_problem(elf + bytes(mod.PROGRAM_MAX + 1 - len(elf))))
+        self.assertIn("dynamically linked", mod.arm_static_problem(arm_elf(interp=True) + bytes(17 << 20)))
+
     def test_remote_scripts_change_only_ram(self):
         import importlib.util
         spec = importlib.util.spec_from_file_location("host_app_mpc", HELPER)
