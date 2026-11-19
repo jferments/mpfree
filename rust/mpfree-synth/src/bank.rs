@@ -277,14 +277,35 @@ impl<const B: usize> Bank<B> {
 
     /// Adds the first `n` frames (one control step at most) of every
     /// oscillator heard into the buses, bus `b` taking `shapes[b]`.
+    ///
+    /// Where `mpfree_simd`'s NEON kernels run (the MPC), four notes at a
+    /// time instead (`render4`), with the same samples.
     pub fn render(&mut self, n: usize, bus: &mut [[f32; STEP]; B], shapes: &[Shape; B]) {
+        // `render4` is built for ARM only (and for the tests, which check
+        // it against `render1` everywhere). Elsewhere `path()` is Plain at
+        // compile time anyway, but merely having the second caller of
+        // `render1` in the build changed how the compiler inlined it and
+        // cost the x86 bench 1.2 % on the combo organ; without it, x86
+        // builds exactly the old loop.
+        #[cfg(target_arch = "arm")]
+        if mpfree_simd::path() == mpfree_simd::Path::Neon {
+            self.render4(n, bus, shapes);
+            return;
+        }
+        self.render1(0, n, bus, shapes);
+    }
+
+    /// [`render`](Self::render) a note at a time, for the notes heard from
+    /// the `from`th on: the reference, and what runs where the NEON kernels
+    /// don't.
+    fn render1(&mut self, from: usize, n: usize, bus: &mut [[f32; STEP]; B], shapes: &[Shape; B]) {
         if shapes.iter().all(|&s| s == shapes[0]) {
-            self.render_one(n, bus, shapes[0]);
+            self.render_one(from, n, bus, shapes[0]);
             return;
         }
         let mut waves = [[0.0f32; STEP]; 3];
         let index = shapes.map(Shape::index);
-        for i in 0..self.n_heard {
+        for i in from..self.n_heard {
             let o = usize::from(self.heard[i]);
             // The shapes some bus hears this step.
             let mut want = [false; 3];
@@ -309,9 +330,9 @@ impl<const B: usize> Bank<B> {
 
     /// [`render`](Self::render) when every bus takes one shape (Strings):
     /// one wave a note.
-    fn render_one(&mut self, n: usize, bus: &mut [[f32; STEP]; B], shape: Shape) {
+    fn render_one(&mut self, from: usize, n: usize, bus: &mut [[f32; STEP]; B], shape: Shape) {
         let mut wave = [0.0f32; STEP];
-        for i in 0..self.n_heard {
+        for i in from..self.n_heard {
             let o = usize::from(self.heard[i]);
             self.wave(o, shape, &mut wave, n);
             self.phase[o] = self.phase[o].wrapping_add(self.inc[o].wrapping_mul(n as u32));
@@ -375,6 +396,123 @@ impl<const B: usize> Bank<B> {
         }
         self.amp[b][o] = a;
     }
+
+    /// [`render`](Self::render) four notes at a time, one a lane, on
+    /// `mpfree_simd`'s NEON kernels ([`waves4`] and [`mix4`]): their
+    /// waves, the step correction added where `waves4` flags, then into
+    /// each bus along its level ramps, note by note in the order they are
+    /// heard, so the samples are those of one note at a time to the bit.
+    /// The one to three notes left after the last four go one at a time
+    /// ([`render1`](Self::render1)), still in their order.
+    ///
+    /// [`waves4`]: mpfree_simd::waves4
+    /// [`mix4`]: mpfree_simd::mix4
+    #[cfg(any(target_arch = "arm", test))]
+    fn render4(&mut self, n: usize, bus: &mut [[f32; STEP]; B], shapes: &[Shape; B]) {
+        if self.n_heard < 4 {
+            self.render1(0, n, bus, shapes);
+            return;
+        }
+        let step = n as u32;
+        let n = n.min(STEP);
+        let one = shapes.iter().all(|&s| s == shapes[0]);
+        let index = shapes.map(Shape::index);
+        let mut waves = [[[0.0f32; 4]; STEP]; 3];
+        let mut amp = [[0.0f32; 4]; B];
+        let mut damp = [[0.0f32; 4]; B];
+        let mut i = 0;
+        while i + 4 <= self.n_heard {
+            let notes: [usize; 4] =
+                std::array::from_fn(|lane| usize::from(self.heard[i + lane]) & (NOTES - 1));
+            let osc = mpfree_simd::Osc4 {
+                ph: notes.map(|o| self.phase[o]),
+                inc: notes.map(|o| self.inc[o]),
+                dt: notes.map(|o| self.dt[o]),
+            };
+            for b in 0..B {
+                amp[b] = notes.map(|o| self.amp[b][o]);
+                damp[b] = notes.map(|o| self.damp[b][o]);
+            }
+            for &o in &notes {
+                self.phase[o] = self.phase[o].wrapping_add(self.inc[o].wrapping_mul(step));
+            }
+            if one {
+                wave4(&osc, shapes[0], &mut waves[0], n);
+                mpfree_simd::mix4(&waves[0][..n], &mut amp, &damp, bus);
+            } else {
+                // The shapes some bus hears from one of these notes.
+                let mut want = [false; 3];
+                for b in 0..B {
+                    for lane in 0..4 {
+                        if amp[b][lane] != 0.0 || damp[b][lane] != 0.0 {
+                            want[index[b]] = true;
+                        }
+                    }
+                }
+                for (s, &shape) in [Shape::Saw, Shape::Square, Shape::Cubic].iter().enumerate() {
+                    if want[s] {
+                        wave4(&osc, shape, &mut waves[s], n);
+                    }
+                }
+                // Most notes feed few of the buses; a bus none of these
+                // notes is heard on is passed over.
+                for b in 0..B {
+                    mpfree_simd::mix4(
+                        &waves[index[b]][..n],
+                        &mut amp[b..b + 1],
+                        &damp[b..b + 1],
+                        &mut bus[b..b + 1],
+                    );
+                }
+            }
+            for b in 0..B {
+                for (lane, &o) in notes.iter().enumerate() {
+                    self.amp[b][o] = amp[b][lane];
+                }
+            }
+            i += 4;
+        }
+        if i < self.n_heard {
+            self.render1(i, step as usize, bus, shapes);
+        }
+    }
+}
+
+/// The first `n` frames of four oscillators as `shape`, one a lane: the
+/// wave from `mpfree_simd::waves4`, and where it flags a frame as near a
+/// step, the whole sample worked out again with the step correction.
+#[cfg(any(target_arch = "arm", test))]
+#[inline(always)]
+fn wave4(osc: &mpfree_simd::Osc4, shape: Shape, w: &mut [[f32; 4]; STEP], n: usize) {
+    let mut flags = [0u8; STEP];
+    let s4 = match shape {
+        Shape::Saw => mpfree_simd::Shape4::Saw,
+        Shape::Square => mpfree_simd::Shape4::Square,
+        Shape::Cubic => mpfree_simd::Shape4::Cubic,
+    };
+    mpfree_simd::waves4(s4, osc, &mut w[..n], &mut flags[..n]);
+    for (j, &f) in flags.iter().enumerate().take(n) {
+        if f == 0 {
+            continue;
+        }
+        for lane in 0..4 {
+            if f >> lane & 1 == 0 {
+                continue;
+            }
+            let p = osc.ph[lane].wrapping_add(osc.inc[lane].wrapping_mul(j as u32));
+            let dt = osc.dt[lane];
+            let t = (p >> 8) as f32 * INV_24;
+            w[j][lane] = match shape {
+                Shape::Saw => t + t - 1.0 - poly_blep4(t, dt),
+                Shape::Square => {
+                    let h = (p.wrapping_add(LOCK_OFFSET) >> 8) as f32 * INV_24;
+                    let down = if p < LOCK_OFFSET { -1.0 } else { 1.0 };
+                    down - poly_blep4(t, dt) + poly_blep4(h, dt)
+                }
+                Shape::Cubic => w[j][lane],
+            };
+        }
+    }
 }
 
 #[cfg(test)]
@@ -421,6 +559,76 @@ mod tests {
             im += f64::from(v) * (w * i as f64).sin();
         }
         2.0 * (re * re + im * im).sqrt() / len as f64
+    }
+
+    /// Four notes at a time (on the NEON kernels where they run, else
+    /// their twins) against a note at a time: the same samples and levels
+    /// to the bit, for Strings' six saw buses and the combo's two buses of
+    /// different shapes, chords of 1 to 40 notes coming and going, levels
+    /// ramping, steps of 1 to 16 frames, octaves locked (12-TET) and
+    /// every note free (24-TET).
+    #[test]
+    fn four_notes_at_a_time_give_one_at_a_times_samples() {
+        fn run<const B: usize>(shapes: [Shape; B], seed: u32, tuning: &Tuning) {
+            let mut x = seed;
+            let mut rnd = move |n: u32| {
+                x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (x >> 8) % n
+            };
+            let mut a = Bank::<B>::new();
+            a.new_phases(u64::from(seed));
+            a.retune(tuning, 0.0, RATE, 0);
+            let mut b = a.clone();
+            let mut frame = 0u64;
+            for step in 0..300 {
+                let n = if step % 7 == 3 {
+                    1 + rnd(15) as usize
+                } else {
+                    STEP
+                };
+                a.begin_step();
+                b.begin_step();
+                let notes = 1 + rnd(40);
+                for _ in 0..notes {
+                    let note = 12 + rnd(110) as usize;
+                    if !a.sounds(note) {
+                        continue;
+                    }
+                    let bus = rnd(B as u32) as usize;
+                    let gain = (rnd(1000) as f32 / 1000.0) * if rnd(4) == 0 { 0.0 } else { 1.0 };
+                    a.add(bus, note, gain, frame);
+                    b.add(bus, note, gain, frame);
+                }
+                a.end_step();
+                b.end_step();
+                let mut ba = [[0.0f32; STEP]; B];
+                let mut bb = [[0.0f32; STEP]; B];
+                a.render1(0, n, &mut ba, &shapes);
+                b.render4(n, &mut bb, &shapes);
+                let bits = |x: &[[f32; STEP]; B]| -> Vec<u32> {
+                    x.iter().flatten().map(|v| v.to_bits()).collect()
+                };
+                assert_eq!(bits(&ba), bits(&bb), "{shapes:?} step {step}");
+                assert_eq!(a.phase, b.phase, "step {step}");
+                for bus in 0..B {
+                    let la: Vec<u32> = a.amp[bus].iter().map(|v| v.to_bits()).collect();
+                    let lb: Vec<u32> = b.amp[bus].iter().map(|v| v.to_bits()).collect();
+                    assert_eq!(la, lb, "step {step} bus {bus}");
+                }
+                frame += n as u64;
+            }
+        }
+        for tuning in [Tuning::standard(), Tuning::equal(24, 440.0)] {
+            run([Shape::Saw; 6], 1, &tuning);
+            run([Shape::Cubic, Shape::Square], 2, &tuning);
+            run([Shape::Cubic, Shape::Saw], 3, &tuning);
+            run([Shape::Saw, Shape::Square, Shape::Cubic], 4, &tuning);
+        }
+    }
+
+    #[test]
+    fn the_cubic_scale_is_the_kernels() {
+        assert_eq!(CUBIC_SCALE.to_bits(), mpfree_simd::CUBIC_SCALE.to_bits());
     }
 
     #[test]

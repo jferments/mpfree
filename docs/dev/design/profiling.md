@@ -376,7 +376,10 @@ supersaw's saws, gives its twin's samples bit for bit under qemu-arm and
 runs 43 % of the twin's ARMv7 instructions on the bench's eight voices
 (`python3 tools/simd_arm_cost.py`, counted the way the next section's
 script counts the engines). Its second, the Choir's five formant filters
-for four voices at once, runs 32 % of its twin's on eight voices. The
+for four voices at once, runs 32 % of its twin's on eight voices; the
+divide-down bank's pair, four notes at a time, takes 13 % off Strings
+with 6 keys and 29 % off Combo with 8 (`tools/inst_arm_cost.py` with
+and without `--plain`). The
 bench's "Supersaw saws: 8 voices" and "Choir formants: 8 voices" cases,
 each plain and NEON, are the device round's A/Bs: a kernel stays only if
 it is faster on the MPC.

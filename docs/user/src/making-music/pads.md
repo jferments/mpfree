@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs rust/mpfree-app/src/perform_tab.rs rust/mpfree-app/src/perform_pads.rs rust/mpfree-app/src/pad_synths.rs rust/mpfree-app/src/kit.rs rust/mpfree-browser-ui
-checked: 2026-11-19 a6fb29b2
+checked: 2026-11-19 f0b39161
 -->
 
 # The Pads tab
@@ -30,7 +30,7 @@ A sound already in the kit can go on another pad without the browser: pick the p
 
 **The pads, on the left:** the 16 pads of the bank, laid out as on the MPC (pad 1 at the bottom left), each with its name, its sound and how it plays. Over them, the kit's banks **A** to **H** each show a dot for every pad that has a sound; tap a bank to show it and put it on the pads, as **PAD BANK** does. Tap a pad to pick it, and tap it again to hear it; a pad you hit lights up and is picked.
 
-**Under the pads:** **Copy** copies the pad picked, **Paste A5** puts the copy on the pad picked, **Clear** empties it, and **Map to keys** turns the bank into one keyboard instrument (see [Playing a kit on keys](shaping-a-pad.md#playing-a-kit-on-keys)). Each is one **UNDO** step.
+**Under the pads:** **Copy** copies the pad picked, **Paste A5** puts the copy on the pad picked, **Clear** empties it, and **Map to keys** turns the bank into one keyboard instrument (see [Playing a kit on keys](shaping-a-pad.md#playing-a-kit-on-keys)). Each is one **UNDO** step. On any page, the MPC's **COPY** does the same with the pads: hold it, hit the pad to copy, then the pads it goes to, or hold **SHIFT + COPY** and hit a pad to empty it (see [Buttons and controls](../reference/controls.md#mode-buttons)).
 
 **In the middle:** what the pad plays (four tabs: Sample, Loop, Instrument, MIDI out) and its settings.
 

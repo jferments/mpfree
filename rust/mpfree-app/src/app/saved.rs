@@ -93,6 +93,7 @@ impl App {
         out.set_i64("loop-memory", i64::from(s.loop_memory.minutes()));
         out.set_bool("metronome", s.metronome);
         out.set_i64("metronome-level", i64::from(s.metronome_db));
+        out.set_i64("half-level", i64::from(s.half_level));
         out.set_bool("timing-strip", s.timing_strip);
         out.set_str(
             "xy-pad",
@@ -195,6 +196,11 @@ impl App {
                     .get_i64(k)
                     .and_then(|n| super::METRONOME_DBS.iter().find(|&&d| i64::from(d) == n))
                     .map(|&d| s.metronome_db = d)
+                    .is_some(),
+                "half-level" => app
+                    .get_i64(k)
+                    .and_then(|n| u8::try_from(n).ok().filter(|v| (1..=127).contains(v)))
+                    .map(|v| s.half_level = v)
                     .is_some(),
                 "timing-strip" => app.get_bool(k).map(|b| s.timing_strip = b).is_some(),
                 "xy-pad" => crate::play_page::XY_CHOICES
