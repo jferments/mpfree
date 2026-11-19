@@ -159,7 +159,10 @@ def analyse(run):
         start = max([b for b, _ in marks if b < i], default=0)
         end = min([b for b, _ in marks if b > i] + [len(lines)])
         text = m.group(4) or ""
-        seen = any(text in x for x in lines[start:end] if not x.startswith("script: "))
+        # Not the script's own lines, and not the status block a mark prints: its totals say "0 underruns" and
+        # the like, so `expect-not underrun` would always be seen (the underruns column counts them instead).
+        # The smoke session checks the same lines: what the control side and the screen said.
+        seen = any(text in x for x in lines[start:end] if not x.startswith(("script: ", "status: ")))
         want = m.group(3) != "expect-not"
         checks.append((int(m.group(1)), m.group(3), text, seen == want))
     end = status_after(lines, done) or status_after(lines, 0)
