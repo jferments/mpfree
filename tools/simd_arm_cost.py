@@ -10,22 +10,24 @@ Rust twin, as ARMv7 code (the MPC One's), counted under qemu.
   `qemu-arm -L /usr/arm-linux-gnueabihf -one-insn-per-tb -d exec,nochain`,
   where every instruction run prints one `Trace` line. That is the method
   of tools/inst_arm_cost.py.
-- Each path (plain and NEON) is counted twice, with N blocks after the
-  warm-up and with none; the difference over N is its instructions per
-  block. The four runs go side by side.
-- Each run prints the path that ran and a hash of its last block. The two
-  paths must print the same hash (the kernel matches its twin bit for bit)
-  and the NEON run must say NEON, or the script fails.
-- With --gate it also fails when the NEON path doesn't take fewer
-  instructions than the plain one: a kernel that runs more instructions
+- Each case (the supersaw's saws and the Choir's formants) on each path
+  (plain and NEON) is counted twice, with N blocks after the warm-up and
+  with none; the difference over N is its instructions per block. The
+  eight runs go side by side.
+- Each run prints the path that ran and a hash of its last block. A
+  case's two paths must print the same hash (the kernel matches its twin
+  bit for bit) and its NEON run must say NEON, or the script fails.
+- With --gate it also fails when a NEON path doesn't take fewer
+  instructions than its plain one: a kernel that runs more instructions
   than its twin can't be winning. Fewer instructions don't prove it wins:
   NEON's loads and moves cost more cycles each, so the device round's
-  timing (mpfree-bench's "Supersaw saws" cases) decides whether it stays.
+  timing (mpfree-bench's "Supersaw saws" and "Choir formants" cases)
+  decides whether it stays.
 
 Needs qemu-user (qemu-arm), the arm-linux-gnueabihf cross toolchain and the
 Rust armv7-unknown-linux-gnueabihf target. It writes nothing outside
 rust/target. Under qemu's trace about 300k instructions run a second; 50
-blocks take about a minute.
+blocks take about two minutes.
 """
 
 import argparse
@@ -39,6 +41,8 @@ TARGET = "armv7-unknown-linux-gnueabihf"
 EXAMPLE = os.path.join(ROOT, "rust", "target", TARGET, "release", "examples", "simd_cost")
 QEMU = ["qemu-arm", "-L", "/usr/arm-linux-gnueabihf"]
 PATHS = ["plain", "neon"]
+# (SIMD_COST_CASE, the bench's name for it)
+CASES = [("supersaw", "Supersaw saws: 8 voices"), ("formants", "Choir formants: 8 voices")]
 
 
 def build():
@@ -51,10 +55,11 @@ def build():
         env=env, check=True)
 
 
-def trace(path, blocks):
-    """Instructions qemu ran for `path` with `blocks` measured blocks, and
-    the line the program printed."""
+def trace(case, path, blocks):
+    """Instructions qemu ran for `case` on `path` with `blocks` measured
+    blocks, and the line the program printed."""
     env = dict(os.environ)
+    env["SIMD_COST_CASE"] = case
     env["SIMD_COST_PATH"] = path
     env["SIMD_COST_BLOCKS"] = str(blocks)
     p = subprocess.Popen(QEMU + ["-one-insn-per-tb", "-d", "exec,nochain", EXAMPLE],
@@ -65,7 +70,7 @@ def trace(path, blocks):
         count += chunk.count(b"Trace ")
     out = p.stdout.read().decode().strip()
     if p.wait() != 0:
-        raise RuntimeError(f"{path}: qemu exited with {p.returncode}")
+        raise RuntimeError(f"{case} {path}: qemu exited with {p.returncode}")
     return count, out
 
 
@@ -80,33 +85,38 @@ def main():
         sys.exit("--blocks takes a number above 0")
     if not args.no_build:
         build()
-    runs = [(path, blocks) for path in PATHS for blocks in (0, args.blocks)]
+    runs = [(case, path, blocks) for case, _ in CASES for path in PATHS
+            for blocks in (0, args.blocks)]
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(runs)) as ex:
         got = dict(zip(runs, ex.map(lambda r: trace(*r), runs)))
-    per = {}
-    lines = {}
-    for path in PATHS:
-        (n0, _), (n1, line) = got[(path, 0)], got[(path, args.blocks)]
-        per[path] = (n1 - n0) / args.blocks
-        lines[path] = line
     print(f"ARMv7 instructions per 128-frame block, counted under qemu over {args.blocks} blocks:")
     print(f"  {'case':<36} {'plain':>10} {'NEON':>10} {'NEON/plain':>11}")
-    ratio = per["neon"] / per["plain"]
-    print(f"  {'Supersaw saws: 8 voices':<36} {per['plain']:>10.0f} {per['neon']:>10.0f}"
-          f" {ratio:>10.1%}")
-    hashes = {path: lines[path].rsplit(None, 1)[-1] for path in PATHS}
     failed = False
-    if " NEON " not in f" {lines['neon']} ":
-        print(f"FAIL: the NEON run ran the twin: {lines['neon']!r}")
-        failed = True
-    if hashes["plain"] != hashes["neon"]:
-        print(f"FAIL: the paths' samples differ: {lines['plain']!r} vs {lines['neon']!r}")
-        failed = True
-    else:
-        print(f"  same samples on both paths (hash {hashes['plain']})")
-    if args.gate and per["neon"] >= per["plain"]:
-        print("FAIL: the NEON kernel runs no fewer instructions than its twin")
-        failed = True
+    notes = []
+    for case, title in CASES:
+        per = {}
+        lines = {}
+        for path in PATHS:
+            (n0, _), (n1, line) = got[(case, path, 0)], got[(case, path, args.blocks)]
+            per[path] = (n1 - n0) / args.blocks
+            lines[path] = line
+        ratio = per["neon"] / per["plain"]
+        print(f"  {title:<36} {per['plain']:>10.0f} {per['neon']:>10.0f} {ratio:>10.1%}")
+        hashes = {path: lines[path].rsplit(None, 1)[-1] for path in PATHS}
+        if " NEON " not in f" {lines['neon']} ":
+            notes.append(f"FAIL: {title}: the NEON run ran the twin: {lines['neon']!r}")
+            failed = True
+        if hashes["plain"] != hashes["neon"]:
+            notes.append(f"FAIL: {title}: the paths' samples differ: "
+                         f"{lines['plain']!r} vs {lines['neon']!r}")
+            failed = True
+        else:
+            notes.append(f"  {title}: same samples on both paths (hash {hashes['plain']})")
+        if args.gate and per["neon"] >= per["plain"]:
+            notes.append(f"FAIL: {title}: the NEON kernel runs no fewer instructions than its twin")
+            failed = True
+    for n in notes:
+        print(n)
     sys.exit(1 if failed else 0)
 
 

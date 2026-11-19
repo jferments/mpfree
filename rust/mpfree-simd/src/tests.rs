@@ -1,5 +1,5 @@
 use super::*;
-use crate::workload::{saw_levels, Supersaw};
+use crate::workload::{saw_levels, Formants, Supersaw};
 
 /// A small deterministic random source.
 struct Rng(u32);
@@ -13,7 +13,6 @@ impl Rng {
     fn unit(&mut self) -> f32 {
         (self.next() >> 8) as f32 / (1u32 << 23) as f32 - 1.0
     }
-    #[cfg_attr(not(target_arch = "arm"), allow(dead_code))]
     fn below(&mut self, n: u32) -> u32 {
         self.next() % n
     }
@@ -185,6 +184,196 @@ fn the_workload_plays_a_saw_chord_at_a_sensible_level() {
     assert!(rms > 0.05 && rms < 1.0, "{rms}");
 }
 
+/// Random filters a real voice could have: every formant somewhere from
+/// 50 Hz to 0.45 of the rate with a Q from 0.5 to 50 (Simper's SVF, as
+/// the Choir sets them), signed gains (now and then 0), and state already
+/// ringing.
+fn formant_filters(rng: &mut Rng) -> Formants4 {
+    let mut f = Formants4::default();
+    for k in 0..FORMANTS {
+        for lane in 0..4 {
+            let fc = 50.0 + (rng.unit() as f64 * 0.5 + 0.5) * (0.45 * 44_100.0 - 50.0);
+            let q = 0.5 + (rng.unit() as f64 * 0.5 + 0.5) * 49.5;
+            let g = (std::f64::consts::PI * fc / 44_100.0).tan();
+            let a1 = 1.0 / (1.0 + g * (g + 1.0 / q));
+            f.a1[k][lane] = a1 as f32;
+            f.a2[k][lane] = (g * a1) as f32;
+            f.a3[k][lane] = (g * g * a1) as f32;
+            f.g[k][lane] = if rng.below(8) == 0 { 0.0 } else { rng.unit() };
+            f.s1[k][lane] = rng.unit() * 0.5;
+            f.s2[k][lane] = rng.unit() * 0.5;
+        }
+    }
+    f
+}
+
+fn rows(rng: &mut Rng, n: usize, scale: f32) -> Vec<[f32; 4]> {
+    (0..n)
+        .map(|_| std::array::from_fn(|_| rng.unit() * scale))
+        .collect()
+}
+
+fn row_bits(x: &[[f32; 4]]) -> Vec<u32> {
+    x.iter().flatten().map(|v| v.to_bits()).collect()
+}
+
+fn state_bits(f: &Formants4) -> Vec<u32> {
+    [f.s1, f.s2]
+        .iter()
+        .flatten()
+        .flatten()
+        .map(|v| v.to_bits())
+        .collect()
+}
+
+/// The twin against Simper's band-pass written out in f64, one lane and
+/// one frame at a time.
+#[test]
+fn the_formant_twin_is_five_band_passes_summed() {
+    let mut rng = Rng(21);
+    let mut f = formant_filters(&mut rng);
+    let start = f;
+    let src = rows(&mut rng, 64, 1.0);
+    let mut out = vec![[9.0f32; 4]; 64];
+    plain::formants4(&src, &mut out, &mut f);
+    for lane in 0..4 {
+        let mut s: Vec<(f64, f64)> = (0..FORMANTS)
+            .map(|k| (f64::from(start.s1[k][lane]), f64::from(start.s2[k][lane])))
+            .collect();
+        for (n, e) in src.iter().enumerate() {
+            let e = f64::from(e[lane]);
+            let mut want = 0.0f64;
+            for (k, (s1, s2)) in s.iter_mut().enumerate() {
+                let (a1, a2, a3) = (
+                    f64::from(start.a1[k][lane]),
+                    f64::from(start.a2[k][lane]),
+                    f64::from(start.a3[k][lane]),
+                );
+                let v3 = e - *s2;
+                let v1 = a1 * *s1 + a2 * v3;
+                let v2 = *s2 + a2 * *s1 + a3 * v3;
+                *s1 = 2.0 * v1 - *s1;
+                *s2 = 2.0 * v2 - *s2;
+                want += f64::from(start.g[k][lane]) * v1;
+            }
+            let y = f64::from(out[n][lane]);
+            assert!(
+                (y - want).abs() < 1e-4,
+                "lane {lane} frame {n}: {y} vs {want}"
+            );
+        }
+    }
+}
+
+/// One formant at unit peak gain (g = k): a sine at its centre comes out
+/// at about its own level, one three octaves up hardly at all.
+#[test]
+fn a_formant_passes_its_centre_and_little_else() {
+    let (fs, fc, q) = (44_100.0f64, 1_000.0f64, 10.0f64);
+    let g = (std::f64::consts::PI * fc / fs).tan();
+    let a1 = 1.0 / (1.0 + g * (g + 1.0 / q));
+    let level = |hz: f64| {
+        let mut f = Formants4::default();
+        for lane in 0..4 {
+            f.a1[0][lane] = a1 as f32;
+            f.a2[0][lane] = (g * a1) as f32;
+            f.a3[0][lane] = (g * g * a1) as f32;
+            f.g[0][lane] = (1.0 / q) as f32;
+        }
+        let n = 8_192;
+        let src: Vec<[f32; 4]> = (0..n)
+            .map(|i| [(std::f64::consts::TAU * hz * i as f64 / fs).sin() as f32; 4])
+            .collect();
+        let mut out = vec![[0.0f32; 4]; n];
+        plain::formants4(&src, &mut out, &mut f);
+        out[n / 2..]
+            .iter()
+            .map(|y| y[0].abs())
+            .fold(0.0f32, f32::max)
+    };
+    let (at, far) = (level(fc), level(8.0 * fc));
+    assert!((at - 1.0).abs() < 0.02, "{at}");
+    assert!(far < 0.03, "{far}");
+}
+
+#[test]
+fn the_formant_layout_is_the_kernels() {
+    use core::mem::{offset_of, size_of};
+    // The NEON kernel's offsets (neon.rs): s1 0, s2 80, a1 160, a2 240,
+    // a3 320, g 400.
+    assert_eq!(offset_of!(Formants4, s1), 0);
+    assert_eq!(offset_of!(Formants4, s2), 80);
+    assert_eq!(offset_of!(Formants4, a1), 160);
+    assert_eq!(offset_of!(Formants4, a2), 240);
+    assert_eq!(offset_of!(Formants4, a3), 320);
+    assert_eq!(offset_of!(Formants4, g), 400);
+    assert_eq!(size_of::<Formants4>(), 480);
+}
+
+#[test]
+fn formants_give_the_same_samples_in_any_block_size_on_either_path() {
+    let mut rng = Rng(8);
+    let start = formant_filters(&mut rng);
+    let src = rows(&mut rng, 160, 1.0);
+    let (whole, end) = {
+        let mut f = start;
+        let mut out = vec![[0.0f32; 4]; 160];
+        plain::formants4(&src, &mut out, &mut f);
+        (out, f)
+    };
+    for path in [Path::Plain, Path::Neon] {
+        let mut f = start;
+        let mut cut = vec![[0.0f32; 4]; 160];
+        let mut at = 0;
+        for n in [1, 16, 3, 0, 4, 5, 16, 2, 16, 16, 15, 16, 16, 14, 16, 4] {
+            formants4_on(path, &src[at..at + n], &mut cut[at..at + n], &mut f);
+            at += n;
+        }
+        assert_eq!(at, 160);
+        assert_eq!(row_bits(&whole), row_bits(&cut), "{path:?}");
+        assert_eq!(state_bits(&end), state_bits(&f), "{path:?}");
+    }
+}
+
+#[test]
+fn formants_play_as_many_frames_as_the_shorter_slice() {
+    let mut rng = Rng(13);
+    let start = formant_filters(&mut rng);
+    let src = rows(&mut rng, 12, 1.0);
+    for path in [Path::Plain, Path::Neon] {
+        let (mut fa, mut fb) = (start, start);
+        let mut a = vec![[7.0f32; 4]; 20];
+        let mut b = vec![[7.0f32; 4]; 12];
+        formants4_on(path, &src, &mut a, &mut fa);
+        formants4_on(path, &src, &mut b, &mut fb);
+        assert_eq!(row_bits(&a[..12]), row_bits(&b));
+        assert!(a[12..].iter().flatten().all(|&x| x == 7.0), "{path:?}");
+        assert_eq!(state_bits(&fa), state_bits(&fb));
+        // And no frame changes nothing.
+        let mut fc = start;
+        formants4_on(path, &src[..0], &mut a, &mut fc);
+        formants4_on(path, &src, &mut a[..0], &mut fc);
+        assert_eq!(fc, start);
+    }
+}
+
+#[test]
+fn the_choir_workload_sings_at_a_sensible_level() {
+    let mut s = Formants::new(8, 44_100);
+    let (mut l, mut r) = (vec![0.0f32; 128], vec![0.0f32; 128]);
+    let mut sum = 0.0f64;
+    for _ in 0..100 {
+        s.block(Path::Plain, &mut l, &mut r);
+        sum += l
+            .iter()
+            .chain(&r)
+            .map(|&x| f64::from(x).powi(2))
+            .sum::<f64>();
+    }
+    let rms = (sum / (100.0 * 256.0)).sqrt();
+    assert!(rms > 0.01 && rms < 1.0, "{rms}");
+}
+
 // The kernel against its twin: run on the ARMv7 build, under qemu-arm in
 // CI (`cargo test --target armv7-unknown-linux-gnueabihf -p mpfree-simd`).
 #[cfg(all(target_arch = "arm", target_endian = "little", target_os = "linux"))]
@@ -347,5 +536,90 @@ mod on_arm {
         assert_eq!(took, Path::Plain);
         assert_eq!(buf, [0.25; 8]);
         assert_eq!(fallbacks(), before + 1);
+    }
+
+    /// One random formant call on both paths: the samples, the state and
+    /// the untouched rest of `out` all the same.
+    fn check_formants(rng: &mut Rng, case: usize) {
+        let frames = if case.is_multiple_of(5) {
+            17 + rng.below(100) as usize
+        } else {
+            rng.below(17) as usize // the Choir's steps: 0 to 16 frames
+        };
+        let extra = rng.below(3) as usize;
+        let mut start = formant_filters(rng);
+        if case.is_multiple_of(3) {
+            // A silent lane (its gains +0) and one with gains of -0: the
+            // sum still starts from +0, as the twin's does.
+            for k in 0..FORMANTS {
+                start.g[k][1] = 0.0;
+                start.g[k][2] = -0.0;
+            }
+        }
+        let src = rows(rng, frames, if case.is_multiple_of(7) { 4.0 } else { 1.0 });
+        let fill = rows(rng, frames + extra, 3.0);
+        let (mut fa, mut fb) = (start, start);
+        let (mut a, mut b) = (fill.clone(), fill);
+        plain::formants4(&src, &mut a, &mut fa);
+        let took = formants4_on(Path::Neon, &src, &mut b, &mut fb);
+        assert_eq!(took == Path::Neon, frames > 0, "case {case}");
+        assert_eq!(row_bits(&a), row_bits(&b), "case {case}: frames {frames}");
+        assert_eq!(state_bits(&fa), state_bits(&fb), "case {case}: state");
+        assert_eq!(fa, fb, "case {case}: coefficients untouched");
+    }
+
+    #[test]
+    fn the_formant_kernel_matches_its_twin_bit_for_bit() {
+        let mut rng = Rng(0xf0f0);
+        for case in 0..3000 {
+            check_formants(&mut rng, case);
+        }
+    }
+
+    /// A voice dying away: its filters ring on at the edge of the
+    /// denormals for many steps of silence. NEON flushes the denormals;
+    /// with flush-to-zero on (as on the sound threads) so does the twin,
+    /// so the samples and the state stay the same throughout. Flushing
+    /// leaves some filters cycling at the smallest normal numbers (about
+    /// 1e-37, some 700 dB down) instead of reaching zero: the same bits on
+    /// both paths.
+    #[test]
+    fn with_flush_to_zero_on_a_dying_formant_matches_to_the_last_bit() {
+        assert!(mpfree_lanes::fpu::flush_to_zero());
+        let mut rng = Rng(77);
+        let mut f = formant_filters(&mut rng);
+        for k in 0..FORMANTS {
+            for lane in 0..4 {
+                f.s1[k][lane] *= 1e-36;
+                f.s2[k][lane] *= 1e-36;
+            }
+        }
+        let (mut fa, mut fb) = (f, f);
+        let silence = vec![[0.0f32; 4]; 16];
+        let (mut a, mut b) = (vec![[0.0f32; 4]; 16], vec![[0.0f32; 4]; 16]);
+        for step in 0..4000 {
+            plain::formants4(&silence, &mut a, &mut fa);
+            formants4_on(Path::Neon, &silence, &mut b, &mut fb);
+            assert_eq!(row_bits(&a), row_bits(&b), "step {step}");
+            assert_eq!(state_bits(&fa), state_bits(&fb), "step {step}");
+        }
+        // Some products flushed, and nothing grew.
+        assert!(a.iter().flatten().any(|&x| x == 0.0), "{a:?}");
+        let all = [fa.s1, fa.s2];
+        let mut tiny = a.iter().flatten().chain(all.iter().flatten().flatten());
+        assert!(tiny.all(|x| x.abs() < 1e-35), "{a:?} {fa:?}");
+    }
+
+    #[test]
+    fn the_choir_workload_sounds_the_same_on_both_paths() {
+        let (mut a, mut b) = (Formants::new(8, 44_100), Formants::new(8, 44_100));
+        let mut buf = [[0.0f32; 128]; 4];
+        for _ in 0..200 {
+            let [la, ra, lb, rb] = &mut buf;
+            assert_eq!(a.block(Path::Plain, la, ra), Path::Plain);
+            assert_eq!(b.block(Path::Neon, lb, rb), Path::Neon);
+            assert_eq!(bits(la), bits(lb));
+            assert_eq!(bits(ra), bits(rb));
+        }
     }
 }

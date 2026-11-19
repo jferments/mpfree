@@ -204,3 +204,121 @@ pub(crate) fn table_sum(
     unsafe { mpfree_simd_table_sum_neon(&args) };
     Some(frames)
 }
+
+extern "C" {
+    fn mpfree_simd_formants4_neon(
+        src: *const [f32; 4],
+        out: *mut [f32; 4],
+        frames: u32,
+        f: *mut crate::Formants4,
+    );
+}
+
+// Formant by formant: its state and coefficients stay in q8 to q13 while
+// every frame goes through it, four voices a vector; then its state is
+// stored. The first formant writes each frame's sum (0 + g v1), the rest
+// add to it. Per lane the operations are the twin's, in its order; and
+// formants don't share state, so going formant by formant instead of
+// frame by frame changes nothing.
+//
+// Formants4 offsets: s1 0, s2 80, a1 160, a2 240, a3 320, g 400 (each
+// field five rows of 16 bytes).
+global_asm!(
+    ".pushsection .text.mpfree_simd_formants4_neon,\"ax\",%progbits",
+    ".fpu neon",
+    ".arm",
+    ".p2align 4",
+    ".globl mpfree_simd_formants4_neon",
+    ".hidden mpfree_simd_formants4_neon",
+    ".type mpfree_simd_formants4_neon,%function",
+    "mpfree_simd_formants4_neon:",
+    // r0 src, r1 out, r2 frames (at least 1), r3 the filters.
+    "push {{r4-r6, lr}}",
+    "mov r4, #0", // the formant
+    "1:",
+    "add r5, r3, r4, lsl #4",    // its row of s1
+    "vld1.32 {{d16-d17}}, [r5]", // q8 = s1
+    "add r6, r5, #80",
+    "vld1.32 {{d18-d19}}, [r6]", // q9 = s2
+    "add r6, r5, #160",
+    "vld1.32 {{d20-d21}}, [r6]", // q10 = a1
+    "add r6, r5, #240",
+    "vld1.32 {{d22-d23}}, [r6]", // q11 = a2
+    "add r6, r5, #320",
+    "vld1.32 {{d24-d25}}, [r6]", // q12 = a3
+    "add r6, r5, #400",
+    "vld1.32 {{d26-d27}}, [r6]", // q13 = g
+    "mov r6, r0",
+    "mov r12, r1",
+    "mov lr, r2",
+    "cmp r4, #0",
+    "bne 3f",
+    // The first formant: y = 0 + g * v1.
+    "2:",
+    "vld1.32 {{d0-d1}}, [r6]!", // e
+    "vsub.f32 q1, q0, q9",      // v3 = e - s2
+    "vmul.f32 q2, q10, q8",     // a1 * s1
+    "vmla.f32 q2, q11, q1",     // v1 = a1 * s1 + a2 * v3
+    "vmov q3, q9",
+    "vmla.f32 q3, q11, q8", // s2 + a2 * s1
+    "vmla.f32 q3, q12, q1", // v2 = s2 + a2 * s1 + a3 * v3
+    "vadd.f32 q14, q2, q2",
+    "vsub.f32 q8, q14, q8", // s1 = 2 * v1 - s1
+    "vadd.f32 q15, q3, q3",
+    "vsub.f32 q9, q15, q9", // s2 = 2 * v2 - s2
+    "vmov.i32 q14, #0",
+    "vmla.f32 q14, q13, q2", // y = 0 + g * v1
+    "vst1.32 {{d28-d29}}, [r12]!",
+    "subs lr, lr, #1",
+    "bne 2b",
+    "b 4f",
+    // Formants 1 to 4: y = y + g * v1.
+    "3:",
+    "vld1.32 {{d0-d1}}, [r6]!",
+    "vsub.f32 q1, q0, q9",
+    "vmul.f32 q2, q10, q8",
+    "vmla.f32 q2, q11, q1",
+    "vmov q3, q9",
+    "vmla.f32 q3, q11, q8",
+    "vmla.f32 q3, q12, q1",
+    "vadd.f32 q14, q2, q2",
+    "vsub.f32 q8, q14, q8",
+    "vadd.f32 q15, q3, q3",
+    "vsub.f32 q9, q15, q9",
+    "vld1.32 {{d28-d29}}, [r12]",
+    "vmla.f32 q14, q13, q2", // y + g * v1
+    "vst1.32 {{d28-d29}}, [r12]!",
+    "subs lr, lr, #1",
+    "bne 3b",
+    "4:",
+    "vst1.32 {{d16-d17}}, [r5]", // the state, for the next block
+    "add r6, r5, #80",
+    "vst1.32 {{d18-d19}}, [r6]",
+    "add r4, r4, #1",
+    "cmp r4, #5",
+    "bne 1b",
+    "pop {{r4-r6, pc}}",
+    ".size mpfree_simd_formants4_neon, .-mpfree_simd_formants4_neon",
+    ".popsection",
+);
+
+/// [`crate::formants4`] in NEON. Returns false, having done nothing, when
+/// there is no frame to do (the caller's twin then does the same nothing).
+pub(crate) fn formants4(src: &[[f32; 4]], out: &mut [[f32; 4]], f: &mut crate::Formants4) -> bool {
+    const _: () = assert!(core::mem::size_of::<crate::Formants4>() == 480);
+    let frames = src.len().min(out.len());
+    let Ok(frames32) = u32::try_from(frames) else {
+        return false;
+    };
+    if frames == 0 {
+        return false;
+    }
+    // SAFETY: the kernel reads `frames` rows of 16 bytes from `src` and
+    // writes as many to `out` (frames <= both lengths), and reads and
+    // writes the 480 bytes of `f` (a #[repr(C)] block whose offsets the
+    // assembly names, checked by the size assertion above and the
+    // field-offset test). It keeps the registers the calling convention
+    // asks it to, and the borrows outlive the call.
+    unsafe { mpfree_simd_formants4_neon(src.as_ptr(), out.as_mut_ptr(), frames32, f) };
+    true
+}
