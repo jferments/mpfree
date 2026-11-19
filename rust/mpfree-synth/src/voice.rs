@@ -432,16 +432,20 @@ const ATTACK_AIM: f32 = 1.3;
 /// Where the release aims below zero, so it arrives at silence rather
 /// than approaching it forever.
 const RELEASE_AIM: f32 = -1e-4;
+/// The release aim of an analog-style envelope ([`Adsr::analog_release`]):
+/// it falls the first 40 dB more slowly, reaches -60 dB at its label and
+/// silence just after (1.02 times), so its voice ends with its label.
+pub const ANALOG_RELEASE_AIM: f32 = -0.01;
 /// The release's label: the time to fall 60 dB.
 const RELEASE_DROP: f32 = 1e-3;
 
 /// An ADSR envelope with exponential segments whose times mean what they
 /// say: Attack is the time from silence to full level, Decay the time to
 /// cover 99 % of the way to Sustain, Release the time to fall 60 dB from
-/// full level (it reaches silence at about 1.35 times that). A gate on
-/// starts the attack from wherever the level is, so a retrigger never
-/// clicks. Stepped once a control step; the voice ramps its gain between
-/// steps.
+/// full level (it reaches silence at about 1.35 times that, or 1.02 times
+/// with [`Adsr::analog_release`]). A gate on starts the attack from
+/// wherever the level is, so a retrigger never clicks. Stepped once a
+/// control step (or once a frame); the voice ramps its gain between steps.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Adsr {
     pub level: f32,
@@ -450,6 +454,8 @@ pub struct Adsr {
     cd: f32,
     cr: f32,
     sustain: f32,
+    /// Where the release aims.
+    raim: f32,
 }
 
 impl Default for Adsr {
@@ -461,6 +467,7 @@ impl Default for Adsr {
             cd: 1.0,
             cr: 1.0,
             sustain: 1.0,
+            raim: RELEASE_AIM,
         }
     }
 }
@@ -475,6 +482,18 @@ fn share(from: f32, to: f32, aim: f32, n: f32) -> f32 {
 }
 
 impl Adsr {
+    /// An envelope whose release aims at [`ANALOG_RELEASE_AIM`], as an
+    /// analog one's capacitor might: the same label (60 dB down in its
+    /// time), a slower start and silence just after its time, so a voice
+    /// lasts no longer than its release says. Poly's, which had this curve
+    /// before the voice core. Call [`Adsr::set`] after it.
+    pub fn analog_release() -> Adsr {
+        Adsr {
+            raim: ANALOG_RELEASE_AIM,
+            ..Adsr::default()
+        }
+    }
+
     /// Times in ms, `sustain` 0 to 1, at `steps_per_sec` control steps a
     /// second.
     pub fn set(&mut self, a_ms: f32, d_ms: f32, sustain: f32, r_ms: f32, steps_per_sec: f32) {
@@ -485,7 +504,7 @@ impl Adsr {
         } else {
             1.0 - 0.01f32.powf(1.0 / n(d_ms))
         };
-        self.cr = share(1.0, RELEASE_DROP, RELEASE_AIM, n(r_ms));
+        self.cr = share(1.0, RELEASE_DROP, self.raim, n(r_ms));
         self.sustain = sustain.clamp(0.0, 1.0);
     }
 
@@ -533,7 +552,7 @@ impl Adsr {
                 }
             }
             Stage::Release => {
-                self.level += (RELEASE_AIM - self.level) * self.cr;
+                self.level += (self.raim - self.level) * self.cr;
                 if self.level <= 0.0 {
                     self.level = 0.0;
                     self.stage = Stage::Idle;
@@ -680,15 +699,38 @@ impl Lfo {
 /// square root of the gain a straight line in velocity between. A range
 /// of 0 gives 1 for every velocity.
 pub fn velocity_gain(velocity: u8, range_db: f32) -> f32 {
-    if range_db <= 0.0 {
-        return 1.0; // No range: every velocity plays at full level.
+    VelCurve::new(range_db).gain(f32::from(velocity))
+}
+
+/// [`velocity_gain`]'s curve worked out once for a range, for an engine
+/// that asks for many notes' gains: `gain(v)` is `velocity_gain(v,
+/// range_db)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VelCurve {
+    m: f32,
+    b: f32,
+}
+
+impl VelCurve {
+    pub fn new(range_db: f32) -> VelCurve {
+        if range_db <= 0.0 {
+            // No range: every velocity plays at full level.
+            return VelCurve { m: 0.0, b: 1.0 };
+        }
+        let r = 10f32.powf(range_db / 20.0);
+        let b = 127.0 / (126.0 * r.sqrt()) - 1.0 / 126.0;
+        VelCurve {
+            m: (1.0 - b) / 127.0,
+            b,
+        }
     }
-    let v = f32::from(velocity.clamp(1, 127));
-    let r = 10f32.powf(range_db / 20.0);
-    let b = 127.0 / (126.0 * r.sqrt()) - 1.0 / 126.0;
-    let m = (1.0 - b) / 127.0;
-    let a = m * v + b;
-    a * a
+
+    /// The gain for a velocity from 1 to 127 (a fraction between is fine).
+    #[inline]
+    pub fn gain(&self, velocity: f32) -> f32 {
+        let a = self.m * velocity.clamp(1.0, 127.0) + self.b;
+        a * a
+    }
 }
 
 // ------------------------------------------------------------- play routes
@@ -1091,6 +1133,40 @@ mod tests {
             assert_eq!(e.level, 0.0);
             assert!(end > 0);
         }
+    }
+
+    #[test]
+    fn an_analog_release_has_the_same_label_and_ends_with_it() {
+        for ms in [50.0f32, 400.0, 3000.0] {
+            let mut e = Adsr::analog_release();
+            e.set(1.0, 1.0, 1.0, ms, STEPS);
+            e.gate_on();
+            steps_to(&mut e, |e| e.stage == Stage::Decay);
+            e.gate_off();
+            let n = steps_to(&mut e, |e| e.level <= 1e-3);
+            let got = n as f32 / STEPS * 1000.0;
+            assert!(
+                (got - ms).abs() <= (1000.0 / STEPS).max(ms * 0.02),
+                "{ms}: {got}"
+            );
+            // Silent within 3 % more; the default takes about 35 % more.
+            let end = n + steps_to(&mut e, |e| e.idle());
+            let at = end as f32 / STEPS * 1000.0;
+            assert!(at <= ms * 1.03 + 1000.0 / STEPS, "{ms}: silent at {at}");
+            assert_eq!(e.level, 0.0);
+        }
+        // Slower at first: at a third of the label it is louder.
+        let third = |mut e: Adsr| {
+            e.set(1.0, 1.0, 1.0, 900.0, STEPS);
+            e.gate_on();
+            steps_to(&mut e, |e| e.stage == Stage::Decay);
+            e.gate_off();
+            for _ in 0..(0.3 * STEPS) as usize {
+                e.next();
+            }
+            e.level
+        };
+        assert!(third(Adsr::analog_release()) > 1.5 * third(Adsr::default()));
     }
 
     #[test]
