@@ -10,7 +10,7 @@
 203488	Analog Poly Brass, 8 voices
 320632	Analog Warm Pad, 8 voices
 465556	Analog Worn Cards, 16 voices
-65498	Bass Distorted 808, a line
+60954	Bass Distorted 808, a line
 92689	Bass Init, a line
 128021	Bass Reese, a line
 9679	Arps: 16 latched arps at 32nds
@@ -54,8 +54,9 @@
 133926	Drawbar Init, 8 keys
 202619	Drive (Eco 2x)
 430284	Drive (HQ 4x)
-561921	Drums Boom Kit, a hit every block
-408994	Drums Init Kit, a hit every 4 blocks
+697460	Drums Boom Kit, a hit every block
+445971	Drums Init Kit, a hit every 4 blocks
+1395843	Drums Init Kit, every pad each block
 761965	Drums, 16 pads ringing, Punch and Compressor on each
 1284955	Drums, 16 pads ringing, all four effects and both sends
 1004174	Drums, 16 pads ringing, all four effects on each

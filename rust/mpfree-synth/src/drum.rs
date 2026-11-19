@@ -1,36 +1,61 @@
 //! Drums: a drum synth with a model per pad. Sixteen pads, each one of
-//! eleven models (kick, snare, clap, closed and open hat, tom, rim, cowbell,
-//! cymbal, zap, FM perc) with the same fourteen knobs: tune, decay, tone,
-//! snap, noise, pitch sweep and its time, drive, level, pan, velocity to
-//! tone and to level, and a choke group.
+//! sixteen models (kick, 808 kick, snare, clap, closed and open hat,
+//! cymbal, tom, conga, rim, cowbell, woodblock, bell, shaker, zap, FM
+//! perc), each with its own knobs ([`crate::drum_params::knobs`]) and the
+//! shared ones: level, pan, velocity to level and tone, accent, variation,
+//! choke group, and whether it plays as a one-shot or while held.
+//!
+//! **Voices.** A kit plays its pads with the Classic voices (`classic.rs`,
+//! the engine as first built, kept to the bit so old kits and projects
+//! sound as they did) or the Current ones (`current.rs`, every factory
+//! kit), by its Voices setting ([`crate::drum_params::VOICES`]). A model
+//! the first engine didn't have always plays its Current voice.
 //!
 //! Notes play pads: pad 1 is the Pad 1 note parameter (36 by default) and
-//! each pad after it a semitone higher. Other notes are ignored, and so are
-//! note-offs: every hit is a one-shot that rings for its decay. A new hit on
-//! a pad fades its last hit out over 3 ms, and a hit in a choke group fades
-//! out the group's other pads (an open hat closed by the closed hat).
+//! each pad after it a semitone higher. Other notes are ignored. A hit
+//! rings for its decay; a Current pad set to play While held fades out
+//! when its note is let go. A new hit on a pad fades its last hit out, and
+//! a hit in a choke group fades out the group's other pads (an open hat
+//! closed by the closed hat): over 3 ms in a straight line for Classic, as
+//! it was, and over [`CHOKE_MS`] on a smooth step for Current, which
+//! doesn't click.
 //!
 //! A hit takes its pad's settings when it starts, as drum machines do, so a
 //! knob turn changes the next hit. The kit Level moves at once (smoothed).
 //!
-//! Every part of a voice runs every frame, so the output does not depend on
-//! how the host cuts blocks. Nothing here allocates after `prepare`.
+//! Every part of a voice runs every frame, and anything that moves at a
+//! control rate moves on the hit's own frames, so the output does not
+//! depend on how the host cuts blocks. Nothing here allocates after
+//! `prepare`.
+
+mod classic;
+mod current;
 
 use mpfree_node::{Ctx, Cull, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed};
 
+pub use self::classic::sin_turns;
+use self::classic::State;
+pub use self::classic::METAL;
+pub use self::current::{
+    bessel_j, cymbal_bands, metal_bank, metal_hz, BP_HIGH, BP_LOW, CTRL, METAL_WIDTH,
+};
 use crate::drum_fx::{self, KitFx};
 use crate::drum_params::*;
-use crate::dsp::{drive_sq, osc, Rng, Wave};
+use crate::dsp::Rng;
 use crate::params::Preset;
 
 /// Hit slots: one per pad plus room for fading hits.
 pub const POOL: usize = 32;
-/// A replaced or choked hit fades out over this long.
+/// A replaced or choked Classic hit fades out over this long.
 const KILL_MS: f32 = 3.0;
+/// A replaced or choked Current hit fades out over this long, on a smooth
+/// step.
+pub const CHOKE_MS: f32 = 5.0;
+/// A Current hit that plays While held fades out over this long once let
+/// go.
+pub const RELEASE_MS: f32 = 50.0;
 /// AllOff fades every hit out over this long.
 const ALL_OFF_MS: f32 = 30.0;
-/// A hit ends when every envelope is below this (-80 dB).
-const SILENT: f32 = 1e-4;
 
 static INFO: NodeInfo = NodeInfo {
     id: "mpfree.drums",
@@ -38,445 +63,89 @@ static INFO: NodeInfo = NodeInfo {
     kind: Kind::Instrument,
 };
 
-/// The 808's six hat oscillators, in Hz at Tune 0.
-const METAL: [f32; 6] = [205.3, 304.4, 369.6, 522.7, 540.0, 800.0];
-/// Clap: the handclaps' starts after the hit, in seconds, then the tail.
-const CLAP_BURSTS: [f32; 4] = [0.0, 0.0105, 0.0215, 0.0305];
-
-/// A sine of `ph` turns (any value), within about 0.001.
-#[inline]
-pub fn sin_turns(ph: f32) -> f32 {
-    // sin(2 pi x) = -sin(pi s) with s = 2x - 1 in -1..1; a parabola for
-    // sin(pi s), refined.
-    let x = ph - floor(ph);
-    let s = 2.0 * x - 1.0;
-    let p = 4.0 * s * (1.0 - s.abs());
-    -(0.225 * (p * p.abs() - p) + p)
+/// One hit slot: a Classic or a Current voice. The pool is fixed, so the
+/// slots are as big as the bigger voice rather than boxed (no allocation).
+#[derive(Clone, Copy, Debug)]
+#[allow(clippy::large_enum_variant)]
+enum Slot {
+    Classic(classic::Voice),
+    Current(current::Voice),
 }
 
-/// `x.floor()`, the same value for every input: a positive value below
-/// 2^23 (every phase here in practice) truncates through an i32, which is
-/// its floor, instead of the library call `floorf` is on ARMv7.
-#[inline]
-fn floor(x: f32) -> f32 {
-    if x > 0.0 && x < 8_388_608.0 {
-        x as i32 as f32
-    } else {
-        x.floor()
+impl Default for Slot {
+    fn default() -> Slot {
+        Slot::Classic(classic::Voice::default())
     }
 }
 
-/// A per-frame multiplier that falls 60 dB in `secs`.
-#[inline]
-fn t60(secs: f32, rate: f32) -> f32 {
-    (-6.907_755 / (secs.max(1e-4) * rate)).exp()
-}
-
-/// A trapezoidal state-variable filter with every output (Simper).
-#[derive(Clone, Copy, Debug, Default)]
-struct Svf {
-    a1: f32,
-    a2: f32,
-    a3: f32,
-    k: f32,
-    ic1: f32,
-    ic2: f32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-enum Out {
-    #[default]
-    Off,
-    Lp,
-    Bp,
-    Hp,
-}
-
-impl Svf {
-    fn set(&mut self, fc: f32, q: f32, rate: f32) {
-        let fc = fc.clamp(20.0, 0.45 * rate);
-        let g = (std::f32::consts::PI * fc / rate).tan();
-        self.k = 1.0 / q.max(0.3);
-        self.a1 = 1.0 / (1.0 + g * (g + self.k));
-        self.a2 = g * self.a1;
-        self.a3 = g * self.a2;
-    }
-    #[inline]
-    fn run(&mut self, out: Out, x: f32) -> f32 {
-        if out == Out::Off {
-            return x;
-        }
-        let v3 = x - self.ic2;
-        let v1 = self.a1 * self.ic1 + self.a2 * v3;
-        let v2 = self.ic2 + self.a2 * self.ic1 + self.a3 * v3;
-        self.ic1 = 2.0 * v1 - self.ic1;
-        self.ic2 = 2.0 * v2 - self.ic2;
-        match out {
-            Out::Lp => v2,
-            Out::Bp => v1 * self.k,
-            _ => x - self.k * v1 - v2,
+impl Slot {
+    fn state(&self) -> State {
+        match self {
+            Slot::Classic(v) => v.state,
+            Slot::Current(v) => v.state,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-enum State {
-    #[default]
-    Free,
-    On,
-    /// Fading out (replaced, choked or AllOff), then free.
-    Kill,
-}
-
-/// One hit. Everything a model needs; a model leaves what it doesn't use
-/// at zero.
-#[derive(Clone, Copy, Debug, Default)]
-struct Voice {
-    state: State,
-    pad: u8,
-    choke: u8,
-    age: u64,
-    gain_l: f32,
-    gain_r: f32,
-    /// The hit's gain before pan (velocity and level), for a drum whose
-    /// hits go through its effects ([`drum_fx`]), panned after them.
-    gain: f32,
-    kill: f32,
-    kill_step: f32,
-    // Body: up to two sines with a pitch sweep, and FM.
-    f0: f32,
-    ph_a: f32,
-    ph_b: f32,
-    ratio_b: f32,
-    lvl_a: f32,
-    lvl_b: f32,
-    body: f32,
-    body_mul: f32,
-    sweep: f32,
-    pitch: f32,
-    pitch_mul: f32,
-    shape: f32,
-    fm_ph: f32,
-    fm_ratio: f32,
-    fm_index: f32,
-    // Metal: square oscillators.
-    n_metal: usize,
-    ph_m: [f32; 6],
-    dt_m: [f32; 6],
-    metal_lvl: f32,
-    // Noise and metal share the filters and the noise envelope.
-    rng: Rng,
-    noise_lvl: f32,
-    noise: f32,
-    noise_mul: f32,
-    f1: Svf,
-    o1: Out,
-    f2: Svf,
-    o2: Out,
-    // Clap: frames since the hit, the bursts, the tail.
-    clap: bool,
-    t: u32,
-    burst: f32,
-    burst_mul: f32,
-    next_burst: usize,
-    // Snap: a short noise click.
-    click: f32,
-    click_mul: f32,
-    click_lvl: f32,
-    drive: f32,
-    /// What the drive stage takes, from `drive`: the gain, its square root
-    /// and the amount.
-    drive_gain: f32,
-    drive_sq: f32,
-    drive_amt: f32,
-    /// Frames since the hit: the silence check runs every 64, so when a
-    /// hit ends doesn't depend on the block size.
-    frames: u32,
-}
-
-impl Voice {
-    // Always inlined: it runs in the plain loop and the effects' loop, and
-    // a call per frame cost the plain kit 8 % (35,000 instructions a block).
-    #[inline(always)]
-    fn tick(&mut self, rate: f32) -> f32 {
-        let inv = 1.0 / rate;
-        let mut out = 0.0;
-        if self.lvl_a > 0.0 {
-            // No sweep: exp2(0) is exactly 1, so the pitch is f0 as it is.
-            let hz = if self.sweep == 0.0 && self.pitch.is_finite() {
-                self.f0
-            } else {
-                self.f0 * (self.sweep * self.pitch * (1.0 / 12.0)).exp2()
-            };
-            self.pitch *= self.pitch_mul;
-            self.ph_a += hz * inv;
-            if self.ph_a >= 1.0 {
-                self.ph_a -= 1.0;
-            }
-            let mut s = if self.fm_index > 0.0 {
-                self.fm_ph += hz * self.fm_ratio * inv;
-                if self.fm_ph >= 1.0 {
-                    self.fm_ph -= floor(self.fm_ph);
-                }
-                let ix = self.fm_index * (0.15 + 0.85 * self.pitch);
-                sin_turns(self.ph_a + ix * sin_turns(self.fm_ph) * 0.159_155)
-            } else {
-                sin_turns(self.ph_a)
-            };
-            if self.shape > 0.0 {
-                s = s * (1.0 + self.shape) / (1.0 + self.shape * s.abs());
-            }
-            let mut b = self.lvl_a * s;
-            if self.lvl_b > 0.0 {
-                self.ph_b += hz * self.ratio_b * inv;
-                if self.ph_b >= 1.0 {
-                    self.ph_b -= floor(self.ph_b);
-                }
-                b += self.lvl_b * sin_turns(self.ph_b);
-            }
-            out += b * self.body;
-            self.body *= self.body_mul;
+    fn pad(&self) -> u8 {
+        match self {
+            Slot::Classic(v) => v.pad,
+            Slot::Current(v) => v.pad,
         }
-        if self.noise_lvl > 0.0 || self.n_metal > 0 {
-            let mut x = 0.0;
-            if self.n_metal > 0 {
-                let mut m = 0.0;
-                for k in 0..self.n_metal {
-                    m += osc(Wave::Pulse, &mut self.ph_m[k], self.dt_m[k], 0.5);
-                }
-                x += m * self.metal_lvl;
-            }
-            if self.noise_lvl > 0.0 {
-                x += self.rng.bipolar() * self.noise_lvl;
-            }
-            let mut env = self.noise;
-            self.noise *= self.noise_mul;
-            if self.clap {
-                if self.next_burst < CLAP_BURSTS.len()
-                    && self.t as f32 >= CLAP_BURSTS[self.next_burst] * rate
-                {
-                    self.burst = 1.0;
-                    self.next_burst += 1;
-                }
-                env = env * 0.35 + self.burst;
-                self.burst *= self.burst_mul;
-                self.t = self.t.saturating_add(1);
-            }
-            let y = self.f2.run(self.o2, self.f1.run(self.o1, x));
-            out += y * env;
-        }
-        if self.click > SILENT {
-            out += self.rng.bipolar() * self.click * self.click_lvl;
-            self.click *= self.click_mul;
-        }
-        if self.drive > 0.0 {
-            // drive(out, 1 + 9 drive, sqrt(drive)) with its square roots
-            // worked out at the hit.
-            out = drive_sq(out, self.drive_gain, self.drive_sq, self.drive_amt);
-        }
-        if self.state == State::Kill {
-            out *= self.kill;
-            self.kill -= self.kill_step;
-            if self.kill <= 0.0 {
-                self.state = State::Free;
-            }
-        }
-        self.frames = self.frames.wrapping_add(1);
-        if self.frames.is_multiple_of(64) && self.state == State::On && self.silent() {
-            self.state = State::Free;
-        }
-        out
     }
-
-    /// About how loud the hit is now: its parts' envelopes times their
-    /// levels and the hit's gain (velocity, level, pan).
+    fn choke(&self) -> u8 {
+        match self {
+            Slot::Classic(v) => v.choke,
+            Slot::Current(v) => v.choke,
+        }
+    }
+    fn age(&self) -> u64 {
+        match self {
+            Slot::Classic(v) => v.age,
+            Slot::Current(v) => v.age,
+        }
+    }
     fn level(&self) -> f32 {
-        let parts = self.body * self.lvl_a.max(self.lvl_b)
-            + self.noise * (self.noise_lvl + self.metal_lvl)
-            + self.click * self.click_lvl
-            + if self.clap { self.burst } else { 0.0 };
-        parts * self.gain_l.max(self.gain_r) * std::f32::consts::SQRT_2
+        match self {
+            Slot::Classic(v) => v.level(),
+            Slot::Current(v) => v.level(),
+        }
     }
-
-    fn silent(&self) -> bool {
-        self.body * self.lvl_a.max(self.lvl_b) < SILENT
-            && self.noise * (self.noise_lvl + self.metal_lvl) < SILENT
-            && self.click * self.click_lvl < SILENT
-            && (!self.clap || (self.next_burst >= CLAP_BURSTS.len() && self.burst < SILENT))
+    fn free(&mut self) {
+        match self {
+            Slot::Classic(v) => v.state = State::Free,
+            Slot::Current(v) => v.state = State::Free,
+        }
+    }
+    /// Fades the hit out: a Classic one in a straight line over
+    /// `classic_ms`, a Current one on a smooth step over `current_ms`.
+    fn fade_out(&mut self, classic_ms: f32, current_ms: f32, rate: f32) {
+        match self {
+            Slot::Classic(v) => {
+                v.state = State::Kill;
+                v.kill = 1.0;
+                v.kill_step = 1.0 / (classic_ms * 0.001 * rate).max(1.0);
+            }
+            Slot::Current(v) => v.fade_out(current_ms * 0.001 * rate),
+        }
     }
 }
 
-/// A hit of `pad` from its fields (`g` reads one field of the pad), at
-/// `rate`: what [`Drums`] plays and [`hit_shape`] draws.
-fn build(
-    g: impl Fn(u16) -> f32,
-    rate: f32,
-    pad: usize,
-    velocity: u8,
-    seed: u64,
-    clock: u64,
-) -> Voice {
-    use crate::drum_params::model::*;
-    let vel = f32::from(velocity.min(127)) / 127.0;
-    let model = g(field::MODEL) as u8;
-    let ratio = (g(field::TUNE) / 12.0).exp2();
-    let decay = g(field::DECAY) * 0.001;
-    let tone =
-        (g(field::TONE) / 100.0 - g(field::VEL_TONE) / 100.0 * (1.0 - vel) * 0.6).clamp(0.0, 1.0);
-    let snap = g(field::SNAP) / 100.0;
-    let nz = g(field::NOISE) / 100.0;
-    let vl = g(field::VEL_LEVEL) / 100.0;
-    let amp = (1.0 - vl + vl * vel * vel)
-        * if g(field::LEVEL) <= -60.0 {
-            0.0
-        } else {
-            10f32.powf(g(field::LEVEL) / 20.0)
-        };
-    let pan = g(field::PAN) / 100.0;
+/// A clap's handclaps, for drawing them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bursts {
+    /// When each starts after the hit, in seconds: the first `count`.
+    pub starts: [f32; 8],
+    pub count: usize,
+    /// The share of a burst left after each frame.
+    pub mul: f32,
+    /// The tail's level against a burst's.
+    pub tail: f32,
+}
 
-    let mut v = Voice {
-        state: State::On,
-        pad: pad as u8,
-        choke: g(field::CHOKE) as u8,
-        age: clock,
-        kill: 1.0,
-        rng: Rng::new(seed),
-        body: 1.0,
-        body_mul: t60(decay, rate),
-        noise: 1.0,
-        noise_mul: t60(decay, rate),
-        pitch: 1.0,
-        pitch_mul: (-4.6 / (g(field::SWEEP_TIME) * 0.001 * rate).max(1.0)).exp(),
-        sweep: g(field::SWEEP),
-        click: 1.0,
-        click_mul: t60(0.004, rate),
-        click_lvl: snap * 0.5,
-        drive: g(field::DRIVE) / 100.0,
-        ..Voice::default()
-    };
-    v.drive_gain = 1.0 + v.drive * 9.0;
-    v.drive_sq = v.drive_gain.sqrt();
-    v.drive_amt = v.drive.sqrt();
-    // How loud each model is at full velocity, so the defaults peak
-    // near -12 dBFS.
-    let norm;
-    match model {
-        KICK => {
-            v.f0 = 50.0 * ratio;
-            v.lvl_a = 1.0;
-            v.shape = tone * 4.0;
-            v.noise_lvl = nz * 0.3;
-            v.noise_mul = t60(decay * 0.3, rate);
-            v.f1.set(200.0 + tone * 4000.0, 0.7, rate);
-            v.o1 = Out::Lp;
-            v.click_lvl = snap * 0.6;
-            v.click_mul = t60(0.003, rate);
-            norm = 0.56;
-        }
-        SNARE => {
-            v.f0 = 185.0 * ratio;
-            v.lvl_a = 0.65 * (1.0 - nz * 0.4);
-            v.ratio_b = 1.56;
-            v.lvl_b = 0.45 * (1.0 - nz * 0.4);
-            v.body_mul = t60(decay * 0.6, rate);
-            v.noise_lvl = nz;
-            v.f1.set(1500.0 + tone * 6000.0, 0.6, rate);
-            v.o1 = Out::Bp;
-            v.f2.set(700.0, 0.7, rate);
-            v.o2 = Out::Hp;
-            norm = 0.38;
-        }
-        CLAP => {
-            v.clap = true;
-            v.noise_lvl = 1.0;
-            v.burst_mul = t60(0.004 + (1.0 - snap) * 0.012, rate);
-            v.f1.set(800.0 + tone * 2400.0, 1.2, rate);
-            v.o1 = Out::Bp;
-            v.f2.set(400.0, 0.7, rate);
-            v.o2 = Out::Hp;
-            v.click_lvl = 0.0;
-            norm = 0.75;
-        }
-        CLOSED_HAT | OPEN_HAT | CYMBAL => {
-            v.n_metal = 6;
-            for (k, hz) in METAL.iter().enumerate() {
-                v.dt_m[k] = hz * ratio / rate;
-                v.ph_m[k] = (k as f32 * 0.37) % 1.0;
-            }
-            v.metal_lvl = (1.0 - nz) / 3.0;
-            v.noise_lvl = nz * 0.6;
-            let (bp, hp) = if model == CYMBAL {
-                (5000.0 + tone * 5000.0, 3500.0)
-            } else {
-                (7000.0 + tone * 5000.0, 6000.0 + tone * 2000.0)
-            };
-            v.f1.set(bp * ratio.sqrt(), 0.9, rate);
-            v.o1 = Out::Bp;
-            v.f2.set(hp, 0.7, rate);
-            v.o2 = Out::Hp;
-            v.click_lvl = snap * 0.25;
-            norm = if model == CYMBAL { 0.9 } else { 1.6 };
-        }
-        TOM => {
-            v.f0 = 120.0 * ratio;
-            v.lvl_a = 1.0;
-            v.shape = tone * 1.5;
-            v.noise_lvl = nz * 0.5;
-            v.noise_mul = t60(decay * 0.25, rate);
-            v.f1.set(v.f0 * 3.0, 1.0, rate);
-            v.o1 = Out::Bp;
-            norm = 0.3;
-        }
-        RIM => {
-            v.f0 = 500.0 * ratio;
-            v.lvl_a = 0.6;
-            v.ratio_b = 3.3;
-            v.lvl_b = 0.4;
-            v.noise_lvl = nz * 0.8;
-            v.f1.set(2000.0 + tone * 3000.0, 2.0, rate);
-            v.o1 = Out::Bp;
-            v.click_lvl = snap * 0.8;
-            v.click_mul = t60(0.002, rate);
-            norm = 0.36;
-        }
-        COWBELL => {
-            v.n_metal = 2;
-            v.dt_m[0] = 540.0 * ratio / rate;
-            v.dt_m[1] = 800.0 * ratio / rate;
-            v.metal_lvl = 0.5;
-            v.noise_lvl = nz * 0.3;
-            v.f1.set(2640.0 * ratio * (0.7 + 0.6 * tone), 1.5, rate);
-            v.o1 = Out::Bp;
-            norm = 0.55;
-        }
-        ZAP => {
-            v.f0 = 90.0 * ratio;
-            v.lvl_a = 1.0;
-            v.shape = tone * 3.0;
-            v.noise_lvl = nz * 0.3;
-            v.f1.set(3000.0, 0.7, rate);
-            v.o1 = Out::Hp;
-            norm = 0.25;
-        }
-        _ => {
-            // FM perc: a sine modulated at an inharmonic ratio; Tone sets
-            // the index, which falls with the sweep time.
-            v.f0 = 220.0 * ratio;
-            v.lvl_a = 1.0;
-            v.fm_ratio = 1.41;
-            v.fm_index = 0.5 + tone * 8.0 + snap * 2.0;
-            v.click_lvl = 0.0;
-            v.noise_lvl = nz * 0.3;
-            v.f1.set(5000.0, 0.7, rate);
-            v.o1 = Out::Hp;
-            norm = 0.25;
-        }
+impl Bursts {
+    /// The bursts' starts, in seconds.
+    pub fn starts(&self) -> &[f32] {
+        &self.starts[..self.count.min(8)]
     }
-    let a = amp * norm;
-    v.gain = a;
-    v.gain_l = a * (1.0 - pan).max(0.0).sqrt() * std::f32::consts::FRAC_1_SQRT_2;
-    v.gain_r = a * (1.0 + pan).max(0.0).sqrt() * std::f32::consts::FRAC_1_SQRT_2;
-    v
 }
 
 /// What a full-velocity hit of one pad does over time, for drawing it
@@ -487,34 +156,50 @@ pub struct HitShape {
     /// The pad's model ("Kick").
     pub model: &'static str,
     /// The body's pitch once the sweep has settled, in Hz; 0 for a model
-    /// with no body (hats, clap, cowbell, cymbal).
+    /// with no body (hats, clap, cowbell, cymbal, shaker).
     pub hz: f32,
-    /// The body: the tuned sines (or FM).
+    /// The body: the tuned sines (or FM, or a drum's modes).
     pub body: (f32, f32),
     /// The noise and metal, through the pad's filters.
     pub noise: (f32, f32),
-    /// The snap's click.
+    /// The click.
     pub click: (f32, f32),
-    /// The pitch sweep: semitones above `hz` at the start, and the share
-    /// of it left after each frame.
+    /// The pitch sweep (or a drum head's bend): semitones above `hz` at
+    /// the start, and the share of it left after each frame.
     pub sweep: (f32, f32),
-    /// A clap: when each handclap starts, in seconds, and the share of a
-    /// burst left after each frame. The noise envelope carries the tail
-    /// at a third of the level.
-    pub bursts: Option<(&'static [f32], f32)>,
+    /// A clap's bursts. The noise envelope carries the tail.
+    pub bursts: Option<Bursts>,
     /// Drive, 0 to 1.
     pub drive: f32,
 }
 
 /// The shape of a full-velocity hit of `pad` (0 to 15) at `rate`, with the
-/// values `value` gives by parameter id. Built by the same code as the
-/// hits [`Drums`] plays.
+/// values `value` gives by parameter id (the kit's Voices among them).
+/// Built by the same code as the hits [`Drums`] plays, with no variation.
 pub fn hit_shape(value: impl Fn(u16) -> f32, pad: usize, rate: u32) -> HitShape {
     let pad = pad.min(PADS - 1);
     let get = |f: u16| value(pad_id(pad, f));
-    let model = MODELS[get(field::MODEL) as usize % MODELS.len()];
-    let v = build(get, rate as f32, pad, 127, 0, 0);
+    let current = value(VOICES) >= 0.5;
+    let m = model_of(get(field::MODEL));
+    if current || m >= model::FIRST {
+        let v = current::Voice::build(&current::Hit {
+            get: &get,
+            rate: rate as f32,
+            pad,
+            velocity: 127,
+            seed: 0,
+            clock: 0,
+            current,
+            signs: (1.0, 1.0),
+            vary: false,
+        });
+        return v.shape(rate as f32);
+    }
+    let model = MODELS[m as usize];
+    let v = classic::build(get, rate as f32, pad, 127, 0, 0);
     let body = v.lvl_a > 0.0;
+    let mut starts = [0.0; 8];
+    starts[..classic::CLAP_BURSTS.len()].copy_from_slice(&classic::CLAP_BURSTS);
     HitShape {
         model,
         hz: if body { v.f0 } else { 0.0 },
@@ -525,7 +210,12 @@ pub fn hit_shape(value: impl Fn(u16) -> f32, pad: usize, rate: u32) -> HitShape 
         ),
         click: (v.click_lvl, v.click_mul),
         sweep: (if body { v.sweep } else { 0.0 }, v.pitch_mul),
-        bursts: v.clap.then_some((&CLAP_BURSTS[..], v.burst_mul)),
+        bursts: v.clap.then_some(Bursts {
+            starts,
+            count: classic::CLAP_BURSTS.len(),
+            mul: v.burst_mul,
+            tail: 0.35,
+        }),
         drive: v.drive,
     }
 }
@@ -534,12 +224,14 @@ pub fn hit_shape(value: impl Fn(u16) -> f32, pad: usize, rate: u32) -> HitShape 
 pub struct Drums {
     rate: u32,
     values: [f32; ID_SPACE],
-    voices: [Voice; POOL],
+    voices: [Slot; POOL],
     clock: u64,
     rng: Rng,
     level: Smooth,
     gains: Vec<f32>,
     hits: u64,
+    /// Each pad's Current hits so far: the variation's signs alternate.
+    pad_hits: [u32; PADS],
     /// Each drum's effects and the kit's sends ([`drum_fx`]).
     fx: KitFx,
 }
@@ -553,12 +245,13 @@ impl Drums {
         let mut d = Drums {
             rate,
             values,
-            voices: [Voice::default(); POOL],
+            voices: [Slot::default(); POOL],
             clock: 0,
             rng: Rng::new(0x5EED_D2B1),
             level: Smooth::new(1.0),
             gains: Vec::new(),
             hits: 0,
+            pad_hits: [0; PADS],
             fx: KitFx::new(rate),
         };
         d.prepare(rate, mpfree_node::MAX_BLOCK);
@@ -585,19 +278,24 @@ impl Drums {
     pub fn active_voices(&self) -> usize {
         self.voices
             .iter()
-            .filter(|v| v.state != State::Free)
+            .filter(|v| v.state() != State::Free)
             .count()
     }
 
     /// The model name on pad `pad` (0 to 15), for pad labels.
     pub fn pad_name(&self, pad: usize) -> &'static str {
-        MODELS[self.v(pad_id(pad.min(PADS - 1), field::MODEL)) as usize % MODELS.len()]
+        MODELS[model_of(self.v(pad_id(pad.min(PADS - 1), field::MODEL))) as usize]
     }
 
     /// The pad a note plays, if any.
     pub fn pad_of(&self, note: u8) -> Option<usize> {
         let p = i32::from(note) - self.v(BASE_NOTE) as i32;
         (0..PADS as i32).contains(&p).then_some(p as usize)
+    }
+
+    /// Whether the kit plays the Current voices.
+    pub fn current(&self) -> bool {
+        self.v(VOICES) >= 0.5
     }
 
     #[inline]
@@ -617,24 +315,29 @@ impl Drums {
         }
     }
 
-    fn kill_where(&mut self, ms: f32, mut which: impl FnMut(&Voice) -> bool) {
-        let step = 1.0 / (ms * 0.001 * self.rate as f32).max(1.0);
+    /// Fades out every sounding hit `which` picks: Classic ones over
+    /// `classic_ms`, Current ones over `current_ms`.
+    fn kill_where(
+        &mut self,
+        classic_ms: f32,
+        current_ms: f32,
+        mut which: impl FnMut(&Slot) -> bool,
+    ) {
+        let rate = self.rate as f32;
         for v in self.voices.iter_mut() {
-            if v.state == State::On && which(v) {
-                v.state = State::Kill;
-                v.kill = 1.0;
-                v.kill_step = step;
+            if v.state() == State::On && which(v) {
+                v.fade_out(classic_ms, current_ms, rate);
             }
         }
     }
 
     /// The hit load shedding gives up first: the quietest one sounding. A
-    /// hit has no note-off, so none counts as releasing; its own decay
-    /// makes an old hit quiet. Hits already fading are left be.
+    /// hit let go is already fading, so none counts as releasing; its own
+    /// decay makes an old hit quiet. Hits already fading are left be.
     fn cull_pick(&self) -> Option<(usize, Cull)> {
         let mut best = None;
         for (i, v) in self.voices.iter().enumerate() {
-            if v.state != State::On {
+            if v.state() != State::On {
                 continue;
             }
             let c = Cull {
@@ -648,31 +351,33 @@ impl Drums {
 
     fn hit(&mut self, pad: usize, velocity: u8) {
         if velocity == 0 {
+            // A note-on at velocity 0 is a note-off.
+            self.release(pad);
             return;
         }
         let choke = self.pv(pad, field::CHOKE) as u8;
-        self.kill_where(KILL_MS, |v| {
-            v.pad as usize == pad || (choke > 0 && v.choke == choke)
+        self.kill_where(KILL_MS, CHOKE_MS, |v| {
+            v.pad() as usize == pad || (choke > 0 && v.choke() == choke)
         });
         self.clock += 1;
         self.hits += 1;
         let slot = self
             .voices
             .iter()
-            .position(|v| v.state == State::Free)
+            .position(|v| v.state() == State::Free)
             .or_else(|| {
                 self.voices
                     .iter()
                     .enumerate()
-                    .filter(|(_, v)| v.state == State::Kill)
-                    .min_by_key(|(_, v)| v.age)
+                    .filter(|(_, v)| v.state() == State::Kill)
+                    .min_by_key(|(_, v)| v.age())
                     .map(|(i, _)| i)
             })
             .unwrap_or_else(|| {
                 self.voices
                     .iter()
                     .enumerate()
-                    .min_by_key(|(_, v)| v.age)
+                    .min_by_key(|(_, v)| v.age())
                     .map_or(0, |(i, _)| i)
             });
         let seed = self.rng.next_u64();
@@ -681,16 +386,52 @@ impl Drums {
         self.fx.on_hit(pad, self.pv(pad, field::PAN) / 100.0);
     }
 
-    /// Builds a hit of `pad` from its settings.
-    fn setup(&self, pad: usize, velocity: u8, seed: u64) -> Voice {
-        build(
-            |f| self.pv(pad, f),
-            self.rate as f32,
+    /// Lets go of `pad`: its Current hits that play While held fade out.
+    fn release(&mut self, pad: usize) {
+        let frames = RELEASE_MS * 0.001 * self.rate as f32;
+        for s in self.voices.iter_mut() {
+            if let Slot::Current(v) = s {
+                if v.gated && v.state == State::On && usize::from(v.pad) == pad {
+                    v.fade_out(frames);
+                }
+            }
+        }
+    }
+
+    /// Builds a hit of `pad` from its settings: a Classic voice for one of
+    /// the first models in a Classic kit, else a Current one.
+    fn setup(&mut self, pad: usize, velocity: u8, seed: u64) -> Slot {
+        let rate = self.rate as f32;
+        let current = self.current();
+        let m = model_of(self.pv(pad, field::MODEL));
+        if !current && m < model::FIRST {
+            return Slot::Classic(classic::build(
+                |f| self.pv(pad, f),
+                rate,
+                pad,
+                velocity,
+                seed,
+                self.clock,
+            ));
+        }
+        let n = self.pad_hits[pad];
+        self.pad_hits[pad] = n.wrapping_add(1);
+        // Each hit moves the other way from the last: louder and a little
+        // sharper, then softer and flatter, as a drum head does.
+        let s = if n.is_multiple_of(2) { 1.0 } else { -1.0 };
+        let signs = (s, s);
+        let get = |f: u16| self.pv(pad, f);
+        Slot::Current(current::Voice::build(&current::Hit {
+            get: &get,
+            rate,
             pad,
             velocity,
             seed,
-            self.clock,
-        )
+            clock: self.clock,
+            current,
+            signs,
+            vary: true,
+        }))
     }
 
     fn apply(&mut self, ev: &NodeEvent) {
@@ -700,12 +441,14 @@ impl Drums {
                     self.hit(p, velocity);
                 }
             }
-            NodeEvent::AllOff => self.kill_where(ALL_OFF_MS, |_| true),
+            NodeEvent::NoteOff { note } => {
+                if let Some(p) = self.pad_of(note) {
+                    self.release(p);
+                }
+            }
+            NodeEvent::AllOff => self.kill_where(ALL_OFF_MS, ALL_OFF_MS, |_| true),
             NodeEvent::Param { id, value } => self.set_param(id, value),
-            NodeEvent::NoteOff { .. }
-            | NodeEvent::Pressure { .. }
-            | NodeEvent::Bend { .. }
-            | NodeEvent::Expression { .. } => {}
+            NodeEvent::Pressure { .. } | NodeEvent::Bend { .. } | NodeEvent::Expression { .. } => {}
             // The pedals are held by the host for this engine (`Node::hears`).
             NodeEvent::Control { .. } => {}
         }
@@ -719,16 +462,34 @@ impl Drums {
         for g in &mut self.gains[from..to] {
             *g = self.level.next();
         }
-        for v in self.voices.iter_mut() {
-            if v.state == State::Free {
-                continue;
-            }
-            for i in from..to {
-                let x = v.tick(rate) * self.gains[i];
-                left[i] += x * v.gain_l;
-                right[i] += x * v.gain_r;
-                if v.state == State::Free {
-                    break;
+        let gains = &self.gains;
+        for slot in self.voices.iter_mut() {
+            match slot {
+                Slot::Classic(v) => {
+                    if v.state == State::Free {
+                        continue;
+                    }
+                    for i in from..to {
+                        let x = v.tick(rate) * gains[i];
+                        left[i] += x * v.gain_l;
+                        right[i] += x * v.gain_r;
+                        if v.state == State::Free {
+                            break;
+                        }
+                    }
+                }
+                Slot::Current(v) => {
+                    if v.state == State::Free {
+                        continue;
+                    }
+                    for i in from..to {
+                        let x = v.tick(rate) * gains[i];
+                        left[i] += x * v.gain_l;
+                        right[i] += x * v.gain_r;
+                        if v.state == State::Free {
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -748,24 +509,50 @@ impl Drums {
                 *g = self.level.next();
             }
             self.fx.begin_chunk(end - at);
-            for v in self.voices.iter_mut() {
-                if v.state == State::Free {
-                    continue;
-                }
-                if let Some(bus) = self.fx.bus(v.pad as usize) {
-                    for i in at..end {
-                        bus[i - at] += v.tick(rate) * self.gains[i] * v.gain;
+            for slot in self.voices.iter_mut() {
+                match slot {
+                    Slot::Classic(v) => {
                         if v.state == State::Free {
-                            break;
+                            continue;
+                        }
+                        if let Some(bus) = self.fx.bus(v.pad as usize) {
+                            for i in at..end {
+                                bus[i - at] += v.tick(rate) * self.gains[i] * v.gain;
+                                if v.state == State::Free {
+                                    break;
+                                }
+                            }
+                        } else {
+                            for i in at..end {
+                                let x = v.tick(rate) * self.gains[i];
+                                left[i] += x * v.gain_l;
+                                right[i] += x * v.gain_r;
+                                if v.state == State::Free {
+                                    break;
+                                }
+                            }
                         }
                     }
-                } else {
-                    for i in at..end {
-                        let x = v.tick(rate) * self.gains[i];
-                        left[i] += x * v.gain_l;
-                        right[i] += x * v.gain_r;
+                    Slot::Current(v) => {
                         if v.state == State::Free {
-                            break;
+                            continue;
+                        }
+                        if let Some(bus) = self.fx.bus(v.pad as usize) {
+                            for i in at..end {
+                                bus[i - at] += v.tick(rate) * self.gains[i] * v.gain;
+                                if v.state == State::Free {
+                                    break;
+                                }
+                            }
+                        } else {
+                            for i in at..end {
+                                let x = v.tick(rate) * self.gains[i];
+                                left[i] += x * v.gain_l;
+                                right[i] += x * v.gain_r;
+                                if v.state == State::Free {
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -794,7 +581,7 @@ impl Node for Drums {
         if drum_fx::owns(id) {
             return self.fx.set_param(id, value);
         }
-        let Some(p) = PARAMS.iter().find(|p| p.id == id) else {
+        let Some(p) = param_info(id) else {
             return;
         };
         if p.readonly {
@@ -813,7 +600,7 @@ impl Node for Drums {
         if drum_fx::owns(id) {
             return self.fx.param(id);
         }
-        match PARAMS.iter().find(|p| p.id == id) {
+        match param_info(id) {
             Some(_) => self.values[id as usize],
             None => f32::NAN,
         }
@@ -830,8 +617,9 @@ impl Node for Drums {
 
     fn reset(&mut self) {
         for v in self.voices.iter_mut() {
-            v.state = State::Free;
+            v.free();
         }
+        self.pad_hits = [0; PADS];
         self.level.snap(self.level_target());
         self.fx.reset();
     }
@@ -875,18 +663,15 @@ impl Node for Drums {
         let Some((i, _)) = self.cull_pick() else {
             return false;
         };
-        let step = 1.0 / (KILL_MS * 0.001 * self.rate as f32).max(1.0);
-        let v = &mut self.voices[i];
-        v.state = State::Kill;
-        v.kill = 1.0;
-        v.kill_step = step;
+        let rate = self.rate as f32;
+        self.voices[i].fade_out(KILL_MS, CHOKE_MS, rate);
         true
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::floor;
+    use super::classic::floor;
 
     #[test]
     fn the_quick_floor_matches_floorf_for_every_input() {

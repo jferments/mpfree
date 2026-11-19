@@ -2,6 +2,58 @@ mpfree-preset = 2
 engine = mpfree.drums
 name = Init Kit
 
+# Toms: the head bends a little after a hard hit.
+pad-6.sweep = 2
+pad-6.sweep-time = 80
+pad-7.sweep = 2
+pad-7.sweep-time = 80
+pad-8.sweep = 2
+pad-8.sweep-time = 80
+
+# Pad 12
+pad-12.model = Conga
+pad-12.decay = 300
+pad-12.tone = 50
+pad-12.snap = 40
+pad-12.sweep = 1
+pad-12.sweep-time = 60
+pad-12.pan = 30
+
+# Pad 13
+pad-13.model = Woodblock
+pad-13.decay = 150
+pad-13.tone = 60
+pad-13.snap = 20
+pad-13.pan = -20
+
+# Pad 14
+pad-14.model = 808 kick
+pad-14.tune = 0
+pad-14.decay = 1500
+pad-14.tone = 30
+pad-14.snap = 50
+pad-14.sweep = 3.28
+pad-14.sweep-time = 300
+pad-14.drive = 25
+
+# Pad 15
+pad-15.model = Shaker
+pad-15.tune = 0
+pad-15.decay = 180
+pad-15.tone = 60
+pad-15.pan = 20
+
+# Pad 16
+pad-16.model = Bell
+pad-16.tune = 0
+pad-16.decay = 600
+pad-16.tone = 70
+pad-16.snap = 10
+pad-16.level = 0
+
+# Kit
+kit.voices = Current
+
 mpfree-preset = 2
 engine = mpfree.drums
 name = Boom Kit
@@ -40,10 +92,26 @@ pad-7.decay = 800
 # Pad 8
 pad-8.decay = 700
 
-# Pad 14
-pad-14.tune = -7
+# Toms: a slow bend after a hard hit.
+pad-6.sweep = 2
+pad-6.sweep-time = 100
+pad-7.sweep = 2
+pad-7.sweep-time = 100
+pad-8.sweep = 2
+pad-8.sweep-time = 100
+
+# Pad 14: the 808 kick, long, its sigh as the circuit's.
+pad-14.model = 808 kick
+pad-14.tune = -2
 pad-14.decay = 3000
+pad-14.tone = 25
+pad-14.snap = 40
+pad-14.sweep = 3.28
+pad-14.sweep-time = 300
 pad-14.drive = 45
+
+# Kit
+kit.voices = Current
 
 mpfree-preset = 2
 engine = mpfree.drums
@@ -92,6 +160,34 @@ pad-9.decay = 40
 pad-11.decay = 1200
 pad-11.tone = 80
 
+# Toms
+pad-6.sweep = 1.5
+pad-6.sweep-time = 60
+pad-7.sweep = 1.5
+pad-7.sweep-time = 60
+pad-8.sweep = 1.5
+pad-8.sweep-time = 60
+
+# Pad 12
+pad-12.model = Conga
+pad-12.tune = 3
+pad-12.decay = 220
+pad-12.tone = 60
+pad-12.snap = 50
+pad-12.sweep = 1
+pad-12.sweep-time = 50
+pad-12.pan = 30
+
+# Pad 13
+pad-13.model = Woodblock
+pad-13.decay = 100
+pad-13.tone = 70
+pad-13.snap = 30
+pad-13.pan = -20
+
+# Kit
+kit.voices = Current
+
 mpfree-preset = 2
 engine = mpfree.drums
 name = Grit Kit
@@ -113,6 +209,7 @@ pad-3.drive = 50
 # Pad 4
 pad-4.tone = 30
 pad-4.drive = 40
+pad-4.level = 0
 
 # Pad 5
 pad-5.tone = 30
@@ -127,12 +224,25 @@ pad-7.drive = 50
 # Pad 8
 pad-8.drive = 50
 
-# Pad 14
+# Toms
+pad-6.sweep = 3
+pad-6.sweep-time = 80
+pad-7.sweep = 3
+pad-7.sweep-time = 80
+pad-8.sweep = 3
+pad-8.sweep-time = 80
+
+# Pad 14: the 808 kick driven hard.
+pad-14.model = 808 kick
 pad-14.decay = 2200
-pad-14.tone = 70
+pad-14.tone = 50
+pad-14.snap = 60
+pad-14.sweep = 3.28
+pad-14.sweep-time = 300
 pad-14.drive = 90
 
 # Kit
+kit.voices = Current
 kit.level = -3
 
 mpfree-preset = 2
@@ -180,3 +290,14 @@ pad-15.model = FM perc
 pad-15.tune = -12
 pad-15.decay = 350
 pad-15.tone = 35
+
+# Pad 16
+pad-16.model = Shaker
+pad-16.tune = 0
+pad-16.decay = 120
+pad-16.tone = 70
+pad-16.level = 0
+pad-16.pan = 25
+
+# Kit
+kit.voices = Current
