@@ -1,17 +1,19 @@
-//! The pad player's synth: MPFree's Poly, FM, Drums, Pluck, Wavetable,
-//! Keys, Drawbar, Squelch, Analog, Strings, Bass or Wind (`mpfree-synth`) on the pads, edited on the
-//! Synth tab
-//! (`mpfree-synth-ui`).
+//! The pad player's synth: MPFree's Poly, FM, Drums, Pluck, Keys,
+//! Drawbar, Squelch, Analog, Strings, Bass or Wind (`mpfree-synth`) on the
+//! pads, edited on the Synth tab (`mpfree-synth-ui`). The Wavetable synth
+//! went into Poly on 19 Nov: its sounds, presets and tracks load as Poly's
+//! ([`poly_text`], [`as_poly`]).
 //!
 //! - The kit list ends with one more entry, "Synth: Poly" (or FM, Drums,
-//!   Pluck, Wavetable, Keys, Drawbar, Squelch, Analog, Strings, Bass, Wind). Picking it, or opening the Synth tab, makes the pads play the
+//!   Pluck, Keys, Drawbar, Squelch, Analog, Strings, Bass, Wind). Picking
+//!   it, or opening the Synth tab, makes the pads play the
 //!   synth. The Synth tab's options (MENU) pick the engine; a note still
 //!   ringing on another engine finishes its release.
 //! - Drums is a kit, not a keyboard: pad 1 plays the kit's Pad 1 note (a
 //!   Kit page knob, C2 by default) and each pad after it a semitone higher,
 //!   whatever the scale, layout, bank or octave. The pads are named by the
 //!   sound on them ("Kick", "Closed hat"), and the Synth tab shows the page
-//!   of the pad hit last. Pluck, Wavetable, Keys, Drawbar, Squelch,
+//!   of the pad hit last. Pluck, Keys, Drawbar, Squelch,
 //!   Analog, Strings, Bass and Wind play the pad layouts as Poly and FM do
 //!   (Squelch and Bass one note at a time, Wind one by default).
 //! - The pads are laid out by `mpfree_scale::pads` (owner, 2026-11-11):
@@ -66,7 +68,6 @@ pub const START_PRESET: &str = "Pluck";
 pub const FM_START_PRESET: &str = "Glass Keys";
 pub const DRUMS_START_PRESET: &str = "Init Kit";
 pub const PLUCK_START_PRESET: &str = "Steel String";
-pub const WT_START_PRESET: &str = "Harmonic Pluck";
 /// The electric piano's preset at the start.
 pub const KEYS_START_PRESET: &str = "Init";
 /// The tonewheel organ's preset at the start.
@@ -113,7 +114,7 @@ fn black(note: u8) -> bool {
 }
 
 /// How many engines there are.
-const ENGINES: usize = 12;
+const ENGINES: usize = 11;
 
 /// The synth engines the pads can play.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -127,8 +128,6 @@ pub enum Engine {
     Drums,
     /// Plucked strings and struck mallets.
     Pluck,
-    /// The wavetable synth: two oscillators scanning frame stacks.
-    Wavetable,
     /// The electric piano: struck tines and reeds.
     Keys,
     /// The tonewheel organ and its rotary speaker.
@@ -151,7 +150,6 @@ impl Engine {
         Engine::Fm,
         Engine::Drums,
         Engine::Pluck,
-        Engine::Wavetable,
         Engine::Keys,
         Engine::Drawbar,
         Engine::Squelch,
@@ -167,7 +165,6 @@ impl Engine {
             Engine::Fm => "FM",
             Engine::Drums => "Drums",
             Engine::Pluck => "Pluck",
-            Engine::Wavetable => "Wavetable",
             Engine::Keys => "Keys",
             Engine::Drawbar => "Drawbar",
             Engine::Squelch => "Squelch",
@@ -190,7 +187,6 @@ impl Engine {
             Engine::Fm => "mpfree.fm",
             Engine::Drums => "mpfree.drums",
             Engine::Pluck => "mpfree.pluck",
-            Engine::Wavetable => "mpfree.wavetable",
             Engine::Keys => "mpfree.keys",
             Engine::Drawbar => "mpfree.drawbar",
             Engine::Squelch => "mpfree.squelch",
@@ -208,12 +204,90 @@ impl Engine {
 
     /// The engine whose user presets live in `folder` under the library's
     /// Instruments place: the folder is the engine's name ("Poly", "FM"),
-    /// in any case.
+    /// in any case. The Wavetable synth's folder is Poly's: its sounds
+    /// load as Poly's ([`poly_text`]).
     pub fn from_folder(folder: &str) -> Option<Engine> {
+        Engine::from_name(folder)
+    }
+
+    /// The engine named `name` ("Poly", "FM"), in any case, as the
+    /// project's synth part and the Instrument pads name it; "Wavetable",
+    /// which went into Poly on 19 Nov, is Poly.
+    pub fn from_name(name: &str) -> Option<Engine> {
+        let name = name.trim();
+        if name.eq_ignore_ascii_case("Wavetable") {
+            return Some(Engine::Poly);
+        }
         Engine::ALL
             .into_iter()
-            .find(|e| e.name().eq_ignore_ascii_case(folder.trim()))
+            .find(|e| e.name().eq_ignore_ascii_case(name))
     }
+}
+
+/// The Wavetable synth's node id: it went into Poly on 19 Nov, and a
+/// sound saved for it loads as Poly's ([`poly_text`], [`as_poly`]).
+pub const WAVETABLE: &str = "mpfree.wavetable";
+
+/// Preset `text` saved for the Wavetable synth as Poly's: the same sound,
+/// with its effects, its macros (their maps on Poly's settings) and its
+/// Q-Link sets ([`mpfree_synth::wavetable::to_poly`]). Any other preset
+/// comes back as it is. Err: the Wavetable preset didn't read. Allocates.
+pub fn poly_text(text: &str) -> Result<std::borrow::Cow<'_, str>, SoundError> {
+    if engine_of(text) != Some(WAVETABLE) {
+        return Ok(std::borrow::Cow::Borrowed(text));
+    }
+    let mut wt = Sound::new(Box::new(Wavetable::new(48_000)), &Design::default())?;
+    let p = wt.load_text(text)?;
+    let tags: Vec<&str> = p.tags.iter().map(String::as_str).collect();
+    let (poly, extra) = as_poly_sound(&wt, &p.name, &tags, &p.extra)?;
+    Ok(std::borrow::Cow::Owned(
+        poly.to_text(&p.name, &tags, &extra),
+    ))
+}
+
+/// A Wavetable synth's sound (a bare engine, or one with effects and
+/// macros) as Poly's, as [`poly_text`] converts it: what a project's
+/// track saved for the Wavetable synth plays on Poly. A node of another
+/// engine comes back as it was. Allocates.
+pub fn as_poly(node: Box<dyn Node>) -> Result<Box<dyn Node>, SoundError> {
+    if node.info().id != WAVETABLE {
+        return Ok(node);
+    }
+    let (s, _) = as_poly_sound(&*node, "", &[], &[])?;
+    if s.design_lines().is_empty() {
+        let mut bare = Poly::new(48_000);
+        for p in s.params() {
+            if !p.readonly {
+                bare.set_param(p.id, s.param(p.id));
+            }
+        }
+        return Ok(Box::new(bare));
+    }
+    Ok(Box::new(s))
+}
+
+/// The Wavetable sound `wt` as a Poly sound, and its `extra` lines (other
+/// than its design) with the Q-Link sets on Poly's settings.
+fn as_poly_sound(
+    wt: &dyn Node,
+    name: &str,
+    tags: &[&str],
+    extra: &[(String, String)],
+) -> Result<(Sound<Poly>, Vec<(String, String)>), SoundError> {
+    let mut p = mpfree_node::preset::Preset::capture(wt, name, tags);
+    p.extra = wt.save_extras();
+    p.extra.extend(extra.iter().cloned());
+    let p = mpfree_synth::wavetable::to_poly::preset_to_poly(&p);
+    let (design, extra): (Vec<_>, Vec<_>) =
+        p.extra.into_iter().partition(|(k, _)| is_design_key(k));
+    let mut s = Sound::new(Box::new(Poly::new(48_000)), &Design::default())?;
+    if !design.is_empty() {
+        s.set_design_lines(&design)?;
+    }
+    for &(id, v) in &p.values {
+        s.set_param(id, v);
+    }
+    Ok((s, extra))
 }
 
 /// The lowest and highest A4 the Synth tab's options offer, in Hz.
@@ -431,7 +505,6 @@ pub struct Synth {
     fm: Sound<Fm>,
     drums: Sound<Drums>,
     pluck: Sound<Pluck>,
-    wt: Sound<Wavetable>,
     keys: Sound<Keys>,
     drawbar: Sound<Drawbar>,
     squelch: Sound<Squelch>,
@@ -521,7 +594,6 @@ fn static_presets(engine: Engine) -> &'static [Preset] {
     match engine {
         Engine::Drums => Drums::presets(),
         Engine::Pluck => Pluck::presets(),
-        Engine::Wavetable => Wavetable::presets(),
         Engine::Keys => Keys::presets(),
         Engine::Drawbar => Drawbar::presets(),
         Engine::Squelch => Squelch::presets(),
@@ -578,7 +650,9 @@ pub fn fresh_node(
 }
 
 /// A new instrument of the engine `id` at `rate`, at its defaults (Init).
-/// None for an id that isn't one of the engines.
+/// None for an id that isn't one of the engines. The Wavetable synth is
+/// still made, only for a project's track to read its settings into
+/// before it turns into Poly ([`as_poly`]).
 pub fn engine_node(id: &str, rate: u32) -> Option<Box<dyn Node>> {
     Some(match id {
         "mpfree.poly" => Box::new(Poly::new(rate)),
@@ -660,12 +734,6 @@ impl Synth {
         if let Some(p) = Pluck::presets().get(pluck_preset) {
             pluck.load_preset(p);
         }
-        // Builds the factory wavetables the first time (control thread).
-        let mut wt = Wavetable::new(rate);
-        let wt_preset = start_preset(Wavetable::presets(), WT_START_PRESET);
-        if let Some(p) = Wavetable::presets().get(wt_preset) {
-            wt.load_preset(p);
-        }
         let mut keys = Keys::new(rate);
         let keys_preset = start_preset(Keys::presets(), KEYS_START_PRESET);
         if let Some(p) = Keys::presets().get(keys_preset) {
@@ -715,7 +783,6 @@ impl Synth {
             meters_of(&fm),
             meters_of(&drums),
             meters_of(&pluck),
-            meters_of(&wt),
             meters_of(&keys),
             meters_of(&drawbar),
             meters_of(&squelch),
@@ -730,7 +797,6 @@ impl Synth {
             fm: plain(fm, rate),
             drums: plain(drums, rate),
             pluck: plain(pluck, rate),
-            wt: plain(wt, rate),
             keys: plain(keys, rate),
             drawbar: plain(drawbar, rate),
             squelch: plain(squelch, rate),
@@ -757,7 +823,6 @@ impl Synth {
                 fm_preset,
                 drums_preset,
                 pluck_preset,
-                wt_preset,
                 keys_preset,
                 drawbar_preset,
                 squelch_preset,
@@ -798,7 +863,6 @@ impl Synth {
             Engine::Fm => &self.fm,
             Engine::Drums => &self.drums,
             Engine::Pluck => &self.pluck,
-            Engine::Wavetable => &self.wt,
             Engine::Keys => &self.keys,
             Engine::Drawbar => &self.drawbar,
             Engine::Squelch => &self.squelch,
@@ -815,7 +879,6 @@ impl Synth {
             Engine::Fm => &mut self.fm,
             Engine::Drums => &mut self.drums,
             Engine::Pluck => &mut self.pluck,
-            Engine::Wavetable => &mut self.wt,
             Engine::Keys => &mut self.keys,
             Engine::Drawbar => &mut self.drawbar,
             Engine::Squelch => &mut self.squelch,
@@ -925,7 +988,7 @@ impl Synth {
         let mut notes = Vec::new();
         for (e, text) in sounds {
             let names = self.drum_names();
-            let p = match self.sound_mut(*e).load_text(text) {
+            let p = match poly_text(text).and_then(|t| self.sound_mut(*e).load_text(&t)) {
                 Ok(p) => p,
                 Err(err) => {
                     notes.push(format!(
@@ -958,7 +1021,6 @@ impl Synth {
             Engine::Fm => self.fm.active_voices(),
             Engine::Drums => self.drums.active_voices(),
             Engine::Pluck => self.pluck.active_voices(),
-            Engine::Wavetable => self.wt.active_voices(),
             Engine::Keys => self.keys.active_voices(),
             Engine::Drawbar => self.drawbar.active_voices(),
             Engine::Squelch => self.squelch.active_voices(),
@@ -1075,7 +1137,6 @@ impl Synth {
         self.strings.set_tuning(&t);
         self.bass.set_tuning(&t);
         self.wind.set_tuning(&t);
-        self.wt.set_tuning(&t);
     }
 
     /// Works the pads' notes out again: Drums' kit notes, or the layout.
@@ -1646,7 +1707,6 @@ impl Synth {
                     Engine::Fm => &mut self.fm,
                     Engine::Drums => &mut self.drums,
                     Engine::Pluck => &mut self.pluck,
-                    Engine::Wavetable => &mut self.wt,
                     Engine::Keys => &mut self.keys,
                     Engine::Drawbar => &mut self.drawbar,
                     Engine::Squelch => &mut self.squelch,
@@ -1717,7 +1777,6 @@ impl Synth {
             Engine::Fm => self.fm.cull(),
             Engine::Drums => self.drums.cull(),
             Engine::Pluck => self.pluck.cull(),
-            Engine::Wavetable => self.wt.cull(),
             Engine::Keys => self.keys.cull(),
             // The organ's wheels turn whatever the keys do, so a key given
             // up saves little; the string machine's keys share its notes;
@@ -1736,7 +1795,7 @@ impl Synth {
         Counters {
             notes: self.notes,
             peak_voices: self.peak_voices,
-            dropped: self.dropped_events + self.poly.dropped + self.fm.dropped + self.wt.dropped,
+            dropped: self.dropped_events + self.poly.dropped + self.fm.dropped,
             resets: self.resets,
         }
     }
@@ -1749,7 +1808,6 @@ impl Synth {
             Engine::Fm => self.fm.param(mpfree_synth::fm_params::POLYPHONY),
             Engine::Drums => mpfree_synth::drum::POOL as f32,
             Engine::Pluck => self.pluck.param(mpfree_synth::pluck_params::POLYPHONY),
-            Engine::Wavetable => self.wt.param(mpfree_synth::wavetable::params::POLYPHONY),
             Engine::Keys => self.keys.param(mpfree_synth::keys_params::POLYPHONY),
             // Every key plays, as on the organ.
             Engine::Drawbar => mpfree_synth::drawbar::MAX_KEYS as f32,
@@ -1770,7 +1828,6 @@ impl Synth {
         match self.settings.engine {
             Engine::Poly => self.poly.pressures(out),
             Engine::Fm => self.fm.pressures(out),
-            Engine::Wavetable => self.wt.pressures(out),
             Engine::Wind => self.wind.pressures(out),
             Engine::Drums
             | Engine::Pluck
@@ -1871,7 +1928,6 @@ impl Synth {
                 self.drums_moved(names);
             }
             Engine::Pluck => self.pluck.load_preset(p),
-            Engine::Wavetable => self.wt.load_preset(p),
             Engine::Keys => self.keys.load_preset(p),
             Engine::Drawbar => self.drawbar.load_preset(p),
             Engine::Squelch => self.squelch.load_preset(p),
@@ -1971,7 +2027,8 @@ impl Synth {
     fn put_text(&mut self, text: &str) -> Result<String, SoundError> {
         let e = self.settings.engine;
         let names = self.drum_names();
-        let p = self.sound_mut(e).load_text(text)?;
+        let text = poly_text(text)?;
+        let p = self.sound_mut(e).load_text(&text)?;
         self.redesigned(e);
         if e == Engine::Drums {
             self.drums_moved(names);
@@ -2089,7 +2146,7 @@ impl Synth {
         }
         let node = engine_node(engine.node_id(), self.rate).ok_or_else(wrong)?;
         let mut s = Sound::new(node, &Design::default())?;
-        let p = s.load_text(text)?;
+        let p = s.load_text(&poly_text(text)?)?;
         let values = s.params().iter().map(|q| s.param(q.id)).collect();
         Ok((p.name, s.save_extras(), values))
     }
@@ -2237,11 +2294,6 @@ impl Synth {
             }
             Engine::Pluck => {
                 let mut n = Pluck::new(rate);
-                n.load_preset(p);
-                values(&n)
-            }
-            Engine::Wavetable => {
-                let mut n = Wavetable::new(rate);
                 n.load_preset(p);
                 values(&n)
             }
@@ -2467,7 +2519,6 @@ mod tests {
             Engine::Fm,
             Engine::Drums,
             Engine::Pluck,
-            Engine::Wavetable,
             Engine::Keys,
             Engine::Drawbar,
             Engine::Squelch,
@@ -3133,9 +3184,9 @@ mod tests {
         assert!(s.try_preset("", "Mine", &two).is_ok());
         s.revert_preset();
         assert_eq!(sound(&s), want);
-        // Folders are engines' names, in any case; the Q-Link sets ride
-        // along in a saved preset.
-        assert_eq!(Engine::from_folder("wavetable"), Some(Engine::Wavetable));
+        // Folders are engines' names, in any case (the Wavetable synth's is
+        // Poly's now); the Q-Link sets ride along in a saved preset.
+        assert_eq!(Engine::from_folder("wavetable"), Some(Engine::Poly));
         assert_eq!(Engine::from_folder("Strings"), Some(Engine::Strings));
         assert_eq!(Engine::from_folder("bass"), Some(Engine::Bass));
         assert_eq!(Engine::from_folder("Wind"), Some(Engine::Wind));
@@ -3148,6 +3199,62 @@ mod tests {
     /// The picker's Factory place tries the engine's own presets: Cancel
     /// puts back the sound and the preset it had, Load keeps one. A file
     /// of the musician's is named on the Synth tab by its file's name.
+    /// A preset saved for the Wavetable synth (gone into Poly on 19 Nov)
+    /// plays on Poly, from its old folder or straight in Instruments, with
+    /// its effects and macros; a track's copy takes it the same way.
+    #[test]
+    fn a_wavetable_preset_file_plays_on_poly() {
+        use mpfree_node::preset::key_of;
+        use mpfree_synth::wavetable::params as wp;
+        use mpfree_synth::wavetable::to_poly::node_to_poly;
+        let mut wt = Wavetable::new(48_000);
+        wt.load_preset(&Wavetable::presets()[1]);
+        let mut text =
+            mpfree_node::preset::Preset::capture(&wt, "Old Morph", &[]).to_text(wt.params());
+        let map = format!("{} 0 90", key_of(wt.params(), wp::POSITION).unwrap());
+        text.push_str(&format!(
+            "fx.1 = mpfree.fx.ensemble\nmacro.1 = Sweep\nmacro.1.map = {map}\n"
+        ));
+        let mut s = Synth::new(48_000);
+        assert_eq!(
+            s.try_preset("Wavetable", "Mine", &text).unwrap(),
+            "Old Morph"
+        );
+        // (The macro, at 0, sets osc 1's position.)
+        for (id, v) in node_to_poly(&wt).values {
+            if id == pp::OSC1_POS {
+                assert_eq!(s.value(id), 0.0);
+                continue;
+            }
+            assert!(
+                (s.value(id) - v).abs() <= 1e-4 * v.abs().max(1.0),
+                "{id}: {} != {v}",
+                s.value(id)
+            );
+        }
+        let lines = s.poly.design_lines();
+        let poly_map = format!("{} 0 90 linear", key_of(pp::PARAMS, pp::OSC1_POS).unwrap());
+        for want in [
+            ("fx.1", "mpfree.fx.ensemble"),
+            ("macro.1", "Sweep"),
+            ("macro.1.map", poly_map.as_str()),
+        ] {
+            assert!(
+                lines.iter().any(|(k, v)| k == want.0 && v == want.1),
+                "{want:?} in {lines:?}"
+            );
+        }
+        s.revert_preset();
+        assert!(s.try_preset("", "Mine", &text).is_ok(), "its engine line");
+        let (name, extras, values) = s.text_sound(Engine::Poly, "Wavetable", &text).unwrap();
+        assert_eq!(name, "Old Morph");
+        assert!(extras.iter().any(|(k, _)| k == "fx.1"));
+        assert!(fresh_node("mpfree.poly", &extras, &values, 48_000).is_some());
+        // Another engine on the pads doesn't take it.
+        with(&mut s, |p| p.engine = Engine::Fm);
+        assert!(s.try_preset("Wavetable", "Mine", &text).is_err());
+    }
+
     #[test]
     fn the_picker_tries_the_engines_own_presets_and_names_the_musicians() {
         let mut s = Synth::new(44_100);
@@ -3751,21 +3858,13 @@ mod tests {
     }
 
     #[test]
-    fn pluck_and_wavetable_play_the_pad_layouts_as_poly_does() {
-        let cases = [
-            (
-                Engine::Pluck,
-                "Pluck",
-                PLUCK_START_PRESET,
-                mpfree_synth::pluck_params::POLYPHONY,
-            ),
-            (
-                Engine::Wavetable,
-                "Wavetable",
-                WT_START_PRESET,
-                mpfree_synth::wavetable::params::POLYPHONY,
-            ),
-        ];
+    fn pluck_plays_the_pad_layouts_as_poly_does() {
+        let cases = [(
+            Engine::Pluck,
+            "Pluck",
+            PLUCK_START_PRESET,
+            mpfree_synth::pluck_params::POLYPHONY,
+        )];
         for (engine, name, start, polyphony) in cases {
             let mut poly = Synth::new(44_100);
             let mut other = Synth::new(44_100);
