@@ -12,6 +12,7 @@ ids! {
     DECAY = 1, BRIGHTNESS = 2, PICK = 3, POSITION = 4,
     MATERIAL = 10, HARDNESS = 12, STRIKE = 13, STRETCH = 14, HIGH_DAMP = 15,
     VEL_TONE = 20, TRANSPOSE = 21, FINE = 22, POLYPHONY = 23, BEND_RANGE = 24, RELEASE = 25,
+    VELOCITY = 26,
     LEVEL = 30, PAN = 31, SPREAD = 32,
     METER_VOICES = 40,
 }
@@ -20,7 +21,17 @@ ids! {
 pub const ID_SPACE: usize = 41;
 
 pub const MODELS: &[&str] = &["String", "Mallet"];
-pub const MATERIALS: &[&str] = &["Marimba", "Vibes", "Bell", "Glass", "Kalimba", "Steel drum"];
+pub const MATERIALS: &[&str] = &[
+    "Marimba",
+    "Vibes",
+    "Bell",
+    "Glass",
+    "Kalimba",
+    "Steel drum",
+    "Glockenspiel",
+    "Xylophone",
+    "Chimes",
+];
 
 #[allow(clippy::too_many_arguments)]
 const fn p(
@@ -170,6 +181,18 @@ pub static PARAMS: &[ParamInfo] = &[
         100.0,
         50.0,
         Unit::Percent,
+        Linear,
+    ),
+    // How much quieter the softest note is than the hardest (a square
+    // law, as the voice core's).
+    p(
+        VELOCITY,
+        "Velocity",
+        "Voice",
+        0.0,
+        48.0,
+        30.0,
+        Unit::Db,
         Linear,
     ),
     p(
