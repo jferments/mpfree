@@ -843,6 +843,20 @@ impl Widget for LoopDeck {
         self.held_step(t, delta, false, r)
     }
 
+    /// SHIFT + the wheel's push: the loop's level back to 0 dB.
+    fn reset(&mut self, t: &Target, _r: Rect) -> Option<EventKind> {
+        if t.id != "loop-level" {
+            return None;
+        }
+        let ch = self.channels.get_mut(t.index)?;
+        if (ch.level - 1.0).abs() < 1e-6 {
+            return None;
+        }
+        ch.level = 1.0;
+        self.acts.push(LoopAct::Level(t.index, 1.0));
+        Some(EventKind::Value(1.0))
+    }
+
     fn held_step(&mut self, t: &Target, delta: i32, fine: bool, _r: Rect) -> Option<EventKind> {
         if t.id != "loop-level" {
             return None;
@@ -1088,5 +1102,9 @@ mod tests {
         };
         assert!((db(&acts[0]) + 1.0).abs() < 1e-3, "{acts:?}");
         assert!((db(&acts[1]) + 0.9).abs() < 1e-3, "{acts:?}");
+        // SHIFT + the wheel's push: back to 0 dB, then nothing to do.
+        assert_eq!(d.reset(&t, r), Some(EventKind::Value(1.0)));
+        assert_eq!(d.take(), [LoopAct::Level(1, 1.0)]);
+        assert_eq!(d.reset(&t, r), None);
     }
 }

@@ -1052,6 +1052,9 @@ pub enum Nav {
     Push,
     /// - or +: step the outlined value, or move the outline.
     Step(i32),
+    /// SHIFT + - or +: as [`Nav::Step`], in the finer steps SHIFT gives
+    /// the wheel where the control has them (the button combos of 19 Nov).
+    Fine(i32),
 }
 
 /// The pages where the wheel moves an outline between controls ([`Nav`]).
@@ -1178,6 +1181,13 @@ pub enum Effect {
     /// All four PAD BANK buttons held (the MPC's screenshot): a picture of
     /// the screen, saved in the data folder.
     ScreenPicture,
+    /// SHIFT + NEXT SEQ (the MPC's XYFX): the XY pad full screen on Play,
+    /// or back to Play's view from it.
+    XyFull,
+    /// SHIFT + the wheel's push: the control a finger rests on, or else
+    /// the outlined one, back to its default (0 dB, the pan in the middle,
+    /// an effect setting's own default).
+    Reset,
     /// SHIFT + wheel, or SHIFT + - / +, on the Synth page: the next or
     /// previous page.
     SynthPage(i32),
@@ -3324,13 +3334,23 @@ impl App {
         } else if let Some(k) = self.map.bank_of(note) {
             fx.push(Effect::Bank { button: k, shift });
         } else if Some(note) == self.map.data_push && self.wheel_to_held() {
-            // A finger on a control: the push does nothing.
+            // A finger on a control: the push does nothing, so a thumb that
+            // slips presses nothing; with SHIFT, the control goes back to
+            // its default.
+            if shift {
+                fx.push(Effect::Reset);
+            }
         } else if (Some(note) == self.map.minus || Some(note) == self.map.plus)
             && self.wheel_to_held()
         {
-            // A finger on a control: - / + step it, one detent each.
+            // A finger on a control: - / + step it, one detent each (SHIFT:
+            // the finer steps SHIFT gives the wheel).
             let delta = if Some(note) == self.map.plus { 1 } else { -1 };
-            fx.push(Effect::Held { delta, fine: false });
+            fx.push(Effect::Held { delta, fine: shift });
+        } else if Some(note) == self.map.data_push && shift && self.resets_outlined() {
+            // SHIFT + the wheel's push: the outlined value back to its
+            // default (the button combos of 19 Nov).
+            fx.push(Effect::Reset);
         } else if Some(note) == self.map.data_push && self.browsing() {
             fx.push(Effect::Browse(BrowseKey::Push));
         } else if Some(note) == self.map.data_push {
@@ -3383,8 +3403,9 @@ impl App {
                 // The I/O view's row; on the strips the outline.
                 fx.push(Effect::MixerStep(d));
             } else if outlined(self.view) {
-                // The outlined value, or the outline (no longer the kit).
-                fx.push(Effect::Nav(Nav::Step(d)));
+                // The outlined value, or the outline (no longer the kit);
+                // with SHIFT, the value in finer steps.
+                fx.push(Effect::Nav(if shift { Nav::Fine(d) } else { Nav::Step(d) }));
             }
         }
         fx
@@ -3426,6 +3447,12 @@ impl App {
             // STEP SEQ: the pads as steps, on the release (held, a pad
             // tapped picks the sound); SHIFT + STEP SEQ: Follow.
             self.step_seq_down(shift)
+        } else if is(m.next_seq) && shift {
+            // SHIFT + NEXT SEQ: the XY pad full screen on Play, as the
+            // MPC's XYFX (the button combos of 19 Nov), or back from it.
+            let mut fx = self.go(View::Play);
+            fx.push(Effect::XyFull);
+            fx
         } else if is(m.next_seq) {
             self.go(View::Arrange)
         } else if is(m.sampler) {
@@ -4980,6 +5007,17 @@ impl App {
         vec![self.menu_view()]
     }
 
+    /// SHIFT + the wheel's push goes to the outlined control: a page with
+    /// the outline, with no list, menu or rows over it.
+    fn resets_outlined(&self) -> bool {
+        outlined(self.view)
+            && !self.overlay
+            && !self.in_menu()
+            && !self.browsing()
+            && !self.has_rows()
+            && !self.repeat_held
+    }
+
     /// The data dial's push. In a menu, on a row with a value: the wheel
     /// now changes that value (as it turns), and the next push sets it and
     /// gives the wheel back to the rows. On a row that opens something
@@ -5846,6 +5884,16 @@ mod tests {
             shifted(&mut app, button::PROG_EDIT),
             [Effect::ControllerSettings]
         );
+        // SHIFT + NEXT SEQ: the XY pad full screen, from Play or from
+        // another tab (Play first); NEXT SEQ alone still goes to Arrange.
+        app.open_tab(View::Play);
+        assert_eq!(shifted(&mut app, button::NEXT_SEQ), [Effect::XyFull]);
+        app.open_tab(View::Mixer);
+        let fx = shifted(&mut app, button::NEXT_SEQ);
+        assert_eq!(fx.last(), Some(&Effect::XyFull));
+        assert_eq!(app.view, View::Play);
+        press(&mut app, button::NEXT_SEQ);
+        assert_eq!(app.view, View::Arrange);
     }
 
     /// TAP TEMPO held: the wheel turns the tempo 1 BPM a detent (SHIFT:
@@ -6161,6 +6209,10 @@ mod tests {
             );
             app.button(button::SHIFT, true, 0.0);
             assert_eq!(app.wheel(-3), held(-3, true), "{v:?}: SHIFT is finer");
+            // The button combos of 19 Nov: SHIFT + - / + finer too, and
+            // SHIFT + the push back to the default.
+            assert_eq!(press(&mut app, button::PLUS), held(1, true), "{v:?}");
+            assert_eq!(press(&mut app, button::DATA_PUSH), [Effect::Reset], "{v:?}");
             app.button(button::SHIFT, false, 0.0);
             app.set_held(false);
             assert_eq!(app.wheel(1), before, "{v:?}: let go, the page's own job");
@@ -6169,6 +6221,41 @@ mod tests {
         app.set_held(true);
         app.set_overlay(true);
         assert_eq!(app.wheel(1), vec![Effect::Rows(RowKey::Pick(1))]);
+    }
+
+    /// The button combos of 19 Nov: on a page with the wheel's outline,
+    /// SHIFT + the push puts the outlined value back to its default and
+    /// SHIFT + - / + step it finer; on a page with rows or a list over the
+    /// page they do as without SHIFT.
+    #[test]
+    fn shift_push_resets_and_shift_minus_plus_step_finer_on_the_outline() {
+        let mut app = ready();
+        let shifted = |app: &mut App, note: u8| held(app, button::SHIFT, |a| press(a, note));
+        for v in [View::Mixer, View::Play, View::Looper] {
+            app.open_tab(v);
+            app.set_outline(true);
+            assert_eq!(
+                shifted(&mut app, button::DATA_PUSH),
+                [Effect::Reset],
+                "{v:?}"
+            );
+            assert_eq!(
+                shifted(&mut app, button::MINUS),
+                [Effect::Nav(Nav::Fine(-1))],
+                "{v:?}"
+            );
+            assert_eq!(
+                press(&mut app, button::PLUS),
+                [Effect::Nav(Nav::Step(1))],
+                "{v:?}"
+            );
+        }
+        app.set_overlay(true);
+        assert_eq!(
+            shifted(&mut app, button::DATA_PUSH),
+            [Effect::Rows(RowKey::Editing(true))],
+            "a list over the page keeps the push"
+        );
     }
 
     /// Jay, 12 Nov 08:11Z: in Prefs, a push of the wheel opens a row, the
