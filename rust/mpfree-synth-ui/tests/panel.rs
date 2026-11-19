@@ -365,7 +365,7 @@ fn the_qlink_column_shows_what_the_qlinks_turn() {
     r.page("Osc");
     let cards = r.panel.qlink_cards();
     let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
-    assert_eq!(names, ["Fine", "Osc 2", "Sub", "Saw detune"]);
+    assert_eq!(names, ["Fine", "Osc 2", "Sub", "Noise"]);
     // Each card names the section its control sits in.
     for c in &cards {
         assert!(
