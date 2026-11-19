@@ -7356,14 +7356,15 @@ impl Player {
                 // The kit's pad on the page (the synth's pad as it is).
                 let pad = self.kit_pad(cell);
                 // With Drums on the pads, the Synth tab shows the page of
-                // the pad hit last, as the Sample page edits it.
+                // the pad hit last, as the Sample page edits it (its
+                // effects while a drum's effects show).
                 let synth_plays = self.kits.get(self.kit).is_some_and(|k| k.synth.is_some());
                 if let Some(p) = self
                     .synth
                     .as_mut()
                     .filter(|p| synth_plays && p.state.info.id == "mpfree.drums")
                 {
-                    let page = mpfree_synth_ui::pages::drum_page(pad);
+                    let page = mpfree_synth_ui::pages::drum_follow(p.page(), pad);
                     if p.page() != page {
                         p.show_page(&mut self.ui, page);
                     }

@@ -506,6 +506,92 @@ fn a_section_opens_the_page_it_links_to() {
     assert_eq!(page_name(&r.panel), "Pressure");
 }
 
+/// Taps the title bar's tab called `name`.
+fn tap_tab(ui: &mut Ui, panel: &mut SynthPanel, name: &str) {
+    let bar = ui.get::<TitleBar>(TITLE).unwrap();
+    let i = bar
+        .tabs
+        .iter()
+        .position(|t| t == name)
+        .unwrap_or_else(|| panic!("no tab {name} in {:?}", bar.tabs));
+    let r = ui.rect_of(TITLE).unwrap();
+    let at = centre(bar.tab_rect(r, i));
+    tap_panel(ui, panel, at);
+}
+
+fn active_tab(ui: &Ui) -> String {
+    let bar = ui.get::<TitleBar>(TITLE).unwrap();
+    bar.tabs[bar.active].clone()
+}
+
+#[test]
+fn drums_show_one_effects_tab_for_the_pad_shown_last() {
+    use mpfree_synth::drum_fx::{field as x, fx_id};
+    let mut s = sample("synth-drums-effects");
+    assert_eq!(page_name(&s.panel), "Pad 2 effects");
+    let tabs = s.ui.get::<TitleBar>(TITLE).unwrap().tabs.clone();
+    let mut want: Vec<String> = (1..=16).map(|n| n.to_string()).collect();
+    want.extend(["Kit", "Effects", "Sends"].map(String::from));
+    assert_eq!(tabs, want, "sixteen effects pages share one tab");
+    assert_eq!(active_tab(&s.ui), "Effects");
+    // The kit's picture rings the pad whose effects show and names it.
+    let (kit, g) = section(&s.ui, "kit");
+    let card = kit.cards[0].clone();
+    assert!(card.caption.starts_with("Pad 2 · "), "{}", card.caption);
+    let ringed: Vec<usize> = (0..16).filter(|&p| card.nodes[p].ring.is_some()).collect();
+    assert_eq!(ringed, [1]);
+    // A tap on pad 5's box opens pad 5's effects.
+    let d = g.drawing.unwrap();
+    let plot = plot_rect(wells(d, 1)[0]);
+    let at = centre(node_rect(plot, &card.nodes[4]));
+    tap_panel(&mut s.ui, &mut s.panel, at);
+    assert_eq!(page_name(&s.panel), "Pad 5 effects");
+    assert_eq!(active_tab(&s.ui), "Effects");
+    let i = s.panel.state.index(fx_id(4, x::PUNCH)).unwrap();
+    assert!(s.panel.pages()[s.panel.page()].params.contains(&i));
+    // Pad 9's own page, then the Effects tab: pad 9's effects.
+    tap_tab(&mut s.ui, &mut s.panel, "9");
+    assert_eq!(page_name(&s.panel), "Pad 9");
+    tap_tab(&mut s.ui, &mut s.panel, "Effects");
+    assert_eq!(page_name(&s.panel), "Pad 9 effects");
+    // The Kit page leaves the pad as it was.
+    tap_tab(&mut s.ui, &mut s.panel, "Kit");
+    tap_tab(&mut s.ui, &mut s.panel, "Effects");
+    assert_eq!(page_name(&s.panel), "Pad 9 effects");
+    // SHIFT + wheel steps through the tabs, not the sixteen pages.
+    s.panel.step_page(&mut s.ui, 1);
+    assert_eq!(page_name(&s.panel), "Sends");
+    s.panel.step_page(&mut s.ui, 1);
+    assert_eq!(page_name(&s.panel), "Pad 1");
+    s.panel.step_page(&mut s.ui, -1);
+    assert_eq!(page_name(&s.panel), "Sends");
+    s.panel.step_page(&mut s.ui, -1);
+    assert_eq!(page_name(&s.panel), "Pad 1 effects");
+    s.panel.step_page(&mut s.ui, -1);
+    assert_eq!(page_name(&s.panel), "Kit");
+    // Faint where it does nothing: the compressor's times at 1:1, the
+    // distortion's tone with no distortion, the sends with nothing sent.
+    let faint = |s: &sample::Sample, id: u16| {
+        mpfree_synth_ui::view::inactive(&s.panel.state, s.panel.state.index(id).unwrap())
+    };
+    assert_eq!(faint(&s, fx_id(0, x::COMP_ATTACK)), Some("ratio is 1:1"));
+    assert_eq!(faint(&s, fx_id(0, x::DIST_TONE)), Some("distortion is off"));
+    assert_eq!(faint(&s, fx_id(0, x::MID_FREQ)), Some("mid is flat"));
+    assert_eq!(
+        faint(&s, fx_id(1, x::COMP_ATTACK)),
+        None,
+        "pad 2 compresses"
+    );
+    assert_eq!(faint(&s, fx_id(1, x::DIST_TONE)), None);
+    use mpfree_synth::drum_fx::kit as k;
+    assert_eq!(
+        faint(&s, k::REVERB_DECAY),
+        None,
+        "pad 2 sends to the reverb"
+    );
+    assert_eq!(faint(&s, k::DELAY_FEEDBACK), Some("no drum sends to it"));
+}
+
 #[test]
 fn the_pressure_page_draws_the_curve_and_live_bars() {
     let mut r = rig("Brass");
