@@ -1408,7 +1408,7 @@ pub fn cloud_reports(project: &Project, seconds: f32) -> (Vec<GrainView>, CloudN
 fn show_played(s: &mut Sample, seconds: f32) {
     let (grains, now) = cloud_after(&s.project, seconds);
     let st = s.state.clone();
-    s.tab.set_cloud(&mut s.ui, &st, grains.len(), now);
+    s.tab.set_cloud(&mut s.ui, &st, &grains, now);
 }
 
 /// The Grain tab's sample screens.

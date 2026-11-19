@@ -181,10 +181,15 @@ impl App {
     /// COPY pressed or let go. While the pads are steps it is STEP SEQ's
     /// (the layout spec's section 6), and the screen says what it does;
     /// on Arrange, a tap on a clip copies it and one on an empty slot
-    /// pastes (sequencer S3): the status carries it either way.
+    /// pastes (sequencer S3): the status carries it either way. Over the
+    /// kit's pads, the first pad hit is copied and the pads hit after it
+    /// take the copy; with SHIFT as COPY goes down, each pad hit is
+    /// emptied (the MPC's COPY and Delete; [`App::copy_pad`]).
     pub(super) fn copy_button(&mut self, pressed: bool) -> Vec<Effect> {
         self.step_seq.copy_held = pressed;
         self.step_seq.copy_page = None;
+        self.copy_from = None;
+        self.copy_clears = pressed && self.shift;
         if !self.step_seq.on {
             return vec![self.status()];
         }

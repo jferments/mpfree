@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/loop_row.rs rust/mpfree-app/src/looper_deck.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs rust/mpfree-seq/src/loops.rs
-checked: 2026-11-19 79fc6f63
+checked: 2026-11-19 f0b39161
 -->
 
 # Recording loops
@@ -180,7 +180,7 @@ Capture needs room in the loop memory for the bars, as a recording does; when th
 | **Loops 5-8** | Loops 5 to 8's levels. |
 | **The picked loop** | **Feedback**, the picked layer's **level** and **pan**, and the **seam fade**: how smoothly the loop's end joins its start, from a hard cut to the looper's longest fade, a millisecond a click. |
 
-Press **Q-LINK** to step from one bank to the next; the line at the bottom names the bank.
+Press **Q-LINK** to step from one bank to the next, and **SHIFT + Q-LINK** to step back; the line at the bottom names the bank.
 
 ### The pads as loop keys
 

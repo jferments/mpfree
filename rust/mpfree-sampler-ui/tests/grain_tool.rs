@@ -445,7 +445,7 @@ fn the_grain_tool_shows_the_layers_grain_settings_and_its_window_on_the_wave() {
 }
 
 #[test]
-fn the_window_draws_the_spray_as_it_plays_and_the_note_says_when_it_is_thinned() {
+fn the_window_draws_the_spray_and_each_grain_as_it_plays_and_the_note_says_when_it_is_thinned() {
     let mut s = grain(true);
     let (grains, now) = sample::cloud_after(&s.project, 1.5);
     let state = now.state.expect("it plays");
@@ -463,15 +463,37 @@ fn the_window_draws_the_spray_as_it_plays_and_the_note_says_when_it_is_thinned()
         }),
         ..now
     };
-    s.tab.set_cloud(&mut s.ui, &st, grains.len(), moved);
+    s.tab.set_cloud(&mut s.ui, &st, &grains, moved);
     assert_eq!(window(&s).spray, (0.5 * len as f64).round() as u64);
     assert_eq!(
         note(&s),
         format!("{} grains playing · thinned to fit 64", grains.len())
     );
-    // The voice stops: the spray as set again, and the note says how to
-    // hear it.
-    s.tab.set_cloud(&mut s.ui, &st, 0, CloudNow::default());
+    // Each grain playing is a mark on the wave where it reads, with its
+    // window's level.
+    let drawn =
+        s.ui.get::<Waveform>(wave_tab::WAVE)
+            .unwrap()
+            .grains()
+            .to_vec();
+    let want: Vec<(u64, f32)> = grains
+        .iter()
+        .map(|g| {
+            let at = s.state.region.start + (f64::from(g.position) * len as f64) as u64;
+            (at, g.level)
+        })
+        .collect();
+    assert!(!want.is_empty());
+    assert_eq!(drawn, want);
+    // The voice stops: the spray as set again, no grains drawn, and the
+    // note says how to hear it.
+    s.tab.set_cloud(&mut s.ui, &st, &[], CloudNow::default());
+    assert!(s
+        .ui
+        .get::<Waveform>(wave_tab::WAVE)
+        .unwrap()
+        .grains()
+        .is_empty());
     assert_eq!(
         window(&s).spray,
         (f64::from(0.16f32) * len as f64).round() as u64
@@ -738,7 +760,7 @@ fn a_grain_mode_starts_from_its_own_settings_and_shows_its_rows() {
     // A stretch has no spray: the window is one grain wide (once the
     // engine plays it so).
     let st = s.state.clone();
-    s.tab.set_cloud(&mut s.ui, &st, 0, CloudNow::default());
+    s.tab.set_cloud(&mut s.ui, &st, &[], CloudNow::default());
     assert_eq!(window(&s).spray, 0);
     // A sound with a tempo (from the Warp page) stretches in time.
     let mut r = s.state.region.clone();

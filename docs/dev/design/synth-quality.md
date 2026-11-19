@@ -39,6 +39,7 @@ Every render plays 100 silent blocks first, so parameters a preset or patch sets
 | O6 | Drawbar's combo, its flute on one footage of C4 at a time | The 16', 4', 2' and 1' against the 8': the worst, cents from an exact octave | within 0.1 cent | O6 |
 | B2 | Poly, legato C3 to C4, Glide 200 ms | Landing pitch; time to within 12 cents (99 % of the octave) against the label | within 2 cents; within 10 % | B2 |
 | P6 | Poly's amp envelope on a sine | Attack to 99 % of full level, Decay to within 1 % of Sustain, Release to 60 dB under the held level, against the labels (since 19 Nov a time means what it says; before, 99 % of a segment and Release to 1 %) | within 10 % | P6 |
+| P10 | Poly's Age on a sine, 16 A4s in turn (one a card); the voice core's drift stepped every 0.1 s for 30 minutes | The notes' tuning spread at Age 100 against what the cards and the drift say; Age 50 against 100; Age 0; the drift's rms and how far it wanders | within 1.5 cents; a ratio within 0.15 of 0.5; under 0.01 cents; within 0.5 of 2 cents; under 10 cents | P10 |
 | P12 | Poly's play routes, the mod wheel at the top | A route on Pitch at 100 % against an octave up; the default route (the wheel on Vibrato at 50 %) against half a semitone each way | within 1 cent; within 5 % | P12 |
 | B9, P5 | Poly's LP24 and LP12 at 1 kHz | A C1 saw's harmonics filtered against the same saw with the filter open, against the analog prototype (`1/(1+s)^4`, `1/(1+s)^2`) where it is above −30 dB; where it is 3 dB a pole down against the label; full resonance on noise, where it peaks at 250 Hz, 1 kHz and 4 kHz | within 1 dB; within 0.1 octave; within 25 cents | B9, P5 |
 | F1 | FM, operator 2 at ratio 4 into operator 1 | Partials at 1 ± 4n of C4 against the Bessel functions |Jn(I)|, I fitted, at operator levels 60, 75 and 90 | within 0.5 dB | F1 |
@@ -57,7 +58,7 @@ New analyses in `rust/mpfree-fxlab/src/synth.rs`, each tested on signals with kn
 
 ## Where today's synths stand (2026-11-18)
 
-Wind (19 Nov) adds 20 presets that meet every shared row (L2, L3, L5, L6, L8, L11; [Wave 2 targets](#wave-2-targets-wind-stage-4)); the counts here are from before it. Met against rows with a target (with Strings, Bass, the Keys clav, the first six factory sounds and, 19 Nov, Poly's new presets and Drawbar's combo): L2 162 of 179, L3 175/179, L5 107/159 (the six tine presets that missed it meet it since the tine's rebuild, 19 Nov), L6 178/179, L8 179/179, L11 129/179, L12 125/125; B1 2/2, B3 3/3, B4 50/50, B5 31/50, B7 50/50; K1 23/23, K3 92/92, K4 11/11, K7 5/5, K9 8/8; S7 8/8; V7 2/2; T1 10/10; A1 40/63; O6 1/1; B2 2/2; P6 3/3; P12 2/2 (19 Nov: 0.0001 cents, 0.06 %); B9 3/3, P5 2/2; F1 3/3, F5 0/1, F7 0/1; D3 19/80, D5 70/80.
+Wind (19 Nov) adds 20 presets that meet every shared row (L2, L3, L5, L6, L8, L11; [Wave 2 targets](#wave-2-targets-wind-stage-4)); the counts here are from before it. Met against rows with a target (with Strings, Bass, the Keys clav, the first six factory sounds and, 19 Nov, Poly's new presets, Worn Brass among them, and Drawbar's combo): L2 163 of 180, L3 177/180, L5 108/160 (the six tine presets that missed it meet it since the tine's rebuild, 19 Nov), L6 179/180, L8 180/180, L11 130/180, L12 126/126; B1 2/2, B3 3/3, B4 50/50, B5 31/50, B7 50/50; K1 23/23, K3 92/92, K4 11/11, K7 5/5, K9 8/8; S7 8/8; V7 2/2; T1 10/10; A1 40/63; O6 1/1; B2 2/2; P6 3/3; P10 5/5 (19 Nov: 0.07 cents off its label, a ratio of 0.50, 0.0001 cents, 2.0 cents rms, 8.5 cents at most); P12 2/2 (19 Nov: 0.0001 cents, 0.06 %); B9 3/3, P5 2/2; F1 3/3, F5 0/1, F7 0/1; D3 19/80, D5 70/80.
 
 - **In tune and true to theory.** Every engine's plain patch is within 0.03 cents from C1 to C7, except Keys (0.55 cents at C2) and the tonewheel organ (0.58 cents, its gear ratios); Drawbar's combo is within 0.0006 cents, its octaves exact (O6). FM's sidebands match the Bessel functions within 0.01 dB (operator level 60, 75 and 90 give an index of 0.43, 1.57 and 5.76). Poly's LP24 is within 0.16 dB of its 4-pole prototype and LP12 within 0.8 dB, the cutoff where the label says, the resonance peak within 5.3 cents. Glide lands within 0.04 cents in 1.2 % of its time. Keys' and Pluck's decays follow their labels and laws (all 88 K3 rows), and the tremolo rates are within 0.4 %.
 - **Aliasing is the biggest gap.** Poly's saw and pulse (PolyBLEP) alias at −49 dB at C5, −44 at C6 and −37 at C7 (the saw's 13th harmonic folds to 16.9 kHz); drive and distortion make it −30 and −27 at C7. (Fixed for Poly 19 Nov, wave 2: from the voice core's tables its saw and pulse are at −78, −84 and −90 dB and its triangle −94 to −99; the antialiased drive is at −50, −45 and −38 and the distortion −45, −40 and −35, still short of −60.) Analog: −54, −48, −42. Squelch's saw meets −60 to C6, its square doesn't (−27 at C7). Wavetable's mips work: Init −72 at C7, position 100 −54. FM feedback 7 sits 13 to 17 dB under its harmonics with what is off them (aliasing or the feedback's noise; the row can't tell which).
@@ -149,7 +150,7 @@ The Ensemble effect also meets the FX method's own rows: no dip as Mix goes up (
 
 ## The NEON kernels (C3)
 
-The bar for each kernel in `mpfree-simd` ([NEON kernels](simd.md)): the supersaw's saws (`table_sum`, N1 to N4) and the Choir's formants (`formants4`, N5 to N7). N1, N2, N4, N5 and N6 run on CI in the ARMv7 job; N3 and N7 are the device round's.
+The bar for each kernel in `mpfree-simd` ([NEON kernels](simd.md)): the supersaw's saws (`table_sum`, N1 to N4), the Choir's formants (`formants4`, N5 to N7) and the divide-down bank (`waves4` and `mix4`, N8 to N10). N1, N2, N4, N5, N6 and N8 run on CI in the ARMv7 job; N9 is counted with `tools/inst_arm_cost.py`; N3, N7 and N10 are the device round's.
 
 | Id | Measure | Target | Today |
 |---|---|---|---|
@@ -160,6 +161,9 @@ The bar for each kernel in `mpfree-simd` ([NEON kernels](simd.md)): the supersaw
 | N5 | The formant kernel against its plain twin under qemu-arm | The same samples and state to the bit: random calls (0 to 116 frames, filters 50 Hz to 0.45 of the rate, Q 0.5 to 50, signed and -0 gains, silent lanes), a voice dying away with flush-to-zero on, and the Choir workload | Met: 3,000 random calls |
 | N6 | ARMv7 instructions a block, eight Choir voices' formants with their source and mixing | NEON fewer than the twin | Met: 40,486 against 126,280 (32 %) |
 | N7 | Time on the MPC, the same case ("Choir formants: 8 voices, plain" and "..., NEON") | NEON's p99 block under the twin's, or the kernel is removed | Device round |
+| N8 | The bank's kernels against their twins, and Strings and the combo organ with the kernels on and off, as ARMv7 under qemu | The same waves, flags, samples and levels to the bit: random calls, four notes at a time against one at a time (12-TET and 24-TET), all 26 Strings presets and the 8 Combo presets | Met |
+| N9 | ARMv7 instructions a block with the kernels on against off (`tools/inst_arm_cost.py`) | Fewer with 6 keys or more, no more with 1 | Met: Strings Init 6 keys 87 %, 49 keys 76 %, Orchestra 84 %, Combo 71 %, Combo Reed 73 %; 1 key flat |
+| N10 | Time on the MPC, the Strings and Combo cases with and without `mpfree-bench --plain` | Faster with the kernels, or they are removed | Device round |
 
 ## Wave 2 targets: Wind (stage 4)
 
@@ -173,7 +177,7 @@ The bar for the [Wind engine](synths.md#wind-mpfree-synth-wind), from [Organs, w
 
 ## Not measured yet
 
-Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), drift (P10), the 808 kick and metal bank against their papers (D1, D2, D9), chokes and retriggers (D6), sustain-pedal behaviour (K5: there is no pedal event yet), piano partials (K8), FM envelope rates and banks (F4, F6), choirs and tape (O1, O2, O7, O8 and O10: no engines yet; Wind's O3 and O4 are in the report), attack noises (O9), and cost on the MPC. Each joins the report when stage 3 or 4 builds or changes what it measures.
+Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), Analog's own spread at each Age (P10 measures Poly's, with the same cards and drift), the 808 kick and metal bank against their papers (D1, D2, D9), chokes and retriggers (D6), sustain-pedal behaviour (K5: there is no pedal event yet), piano partials (K8), FM envelope rates and banks (F4, F6), choirs and tape (O1, O2, O7, O8 and O10: no engines yet; Wind's O3 and O4 are in the report), attack noises (O9), and cost on the MPC. Each joins the report when stage 3 or 4 builds or changes what it measures.
 
 ## Running it
 

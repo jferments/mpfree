@@ -270,6 +270,17 @@ impl Controller {
         true
     }
 
+    /// SHIFT + Q-LINK: the bank of Q-Links before. True when it was the
+    /// controller's.
+    pub fn prev_bank(&mut self) -> bool {
+        if self.plan.is_none() {
+            return false;
+        }
+        self.bank = (self.bank + BANKS - 1) % BANKS;
+        self.changed = true;
+        true
+    }
+
     /// PAD BANK `button` (0 to 3), with SHIFT or not: the pads' bank, as
     /// for kits. True when it was the controller's.
     pub fn pad_bank_button(&mut self, button: u8, shift: bool) -> bool {

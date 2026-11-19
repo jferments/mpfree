@@ -60,6 +60,7 @@ use crate::sound_panel::{self, SoundPanel};
 use crate::source::SourceView;
 use crate::warp_tool::{self, Tapped, WarpTool};
 use crate::widgets::{InfoCard, KnobCard, PadBar, Setting, SettingList, ToolStrip};
+use mpfree_sampler::engine::GrainView;
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
 pub const BAR: &str = "smp-bar";
@@ -708,6 +709,9 @@ pub struct WaveTab {
     grain_part: GrainPart,
     /// What the engine last said of the cloud playing, and how many grains.
     cloud: (CloudNow, usize),
+    /// Those grains: where each reads, 0 to 1 across the region, and its
+    /// window's level.
+    grain_marks: Vec<(f32, f32)>,
     /// A take recording, drawn into the wave ([`WaveTab::show_live`]): its
     /// frames so far and the span shown. The wave and the overview are
     /// the take's until [`WaveTab::end_live`].
@@ -766,6 +770,7 @@ impl WaveTab {
             tool: Tool::default(),
             grain_part: GrainPart::default(),
             cloud: (CloudNow::default(), 0),
+            grain_marks: Vec::new(),
             live: None,
             warp: WarpTool::default(),
             bend: Vec::new(),
@@ -942,11 +947,14 @@ impl WaveTab {
     /// The grains the engine plays now for the sound shown, and what else
     /// it says of the cloud: the spray as it moves draws on the wave, and
     /// the Grain section's note says how many play and when it is thinned.
-    pub fn set_cloud(&mut self, ui: &mut Ui, st: &WaveState, grains: usize, now: CloudNow) {
-        if self.cloud == (now, grains) {
+    /// Each grain is drawn on the wave where it reads, as its window opens.
+    pub fn set_cloud(&mut self, ui: &mut Ui, st: &WaveState, grains: &[GrainView], now: CloudNow) {
+        let marks: Vec<(f32, f32)> = grains.iter().map(|g| (g.position, g.level)).collect();
+        if self.cloud == (now, grains.len()) && self.grain_marks == marks {
             return;
         }
-        self.cloud = (now, grains);
+        self.cloud = (now, grains.len());
+        self.grain_marks = marks;
         if self.tool == Tool::Grain {
             self.show_wave(ui, st);
             if !self.rec.recording {
@@ -1065,6 +1073,7 @@ impl WaveTab {
             w.set_lane(Vec::new());
             w.set_markers(Vec::new());
             w.set_window(None);
+            w.set_grains(Vec::new());
             w.set_region(Some((0, frames)));
             w.set_loop(None);
             w.set_fades(0, 0);
@@ -1288,6 +1297,16 @@ impl WaveTab {
         } else {
             st.beats()
         };
+        // The grains playing, with the Grain tool open.
+        let grain_marks: Vec<(u64, f32)> = if self.tool == Tool::Grain {
+            let len = r.frames() as f64;
+            self.grain_marks
+                .iter()
+                .map(|&(at, level)| (drawn(r.start + (f64::from(at) * len) as u64), level))
+                .collect()
+        } else {
+            Vec::new()
+        };
         // The slice picked is shaded where the loop is with the others.
         let lp = match chop {
             Some(cs) => Some(self.slice.picked(cs)),
@@ -1298,6 +1317,7 @@ impl WaveTab {
             w.set_lane(lane);
             w.set_markers(all);
             w.set_window(span);
+            w.set_grains(grain_marks);
             w.set_ticks(hits, warp);
             w.set_beats(beats);
             w.set_loop(lp);

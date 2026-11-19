@@ -199,15 +199,20 @@ impl ChainPage {
         }
     }
 
-    /// The Q-LINK button: the next bank. The macros panel shows Macros 1-4
-    /// and 5-8 only, and tells the panel which.
-    pub fn next_bank(&mut self, v: View) -> Option<Turned> {
+    /// The Q-LINK button: the next bank (SHIFT + Q-LINK, `back`: the one
+    /// before). The macros panel shows Macros 1-4 and 5-8 only, and tells
+    /// the panel which.
+    pub fn next_bank(&mut self, v: View, back: bool) -> Option<Turned> {
         if v == View::Macros {
             let b = if self.bind.shown() == 1 { 2 } else { 1 };
             self.bind.show(b);
             return Some(Turned::Macro(MacroAction::Bank(b - 1)));
         }
-        self.bind.next_bank();
+        if back {
+            self.bind.prev_bank();
+        } else {
+            self.bind.next_bank();
+        }
         None
     }
 
@@ -417,7 +422,7 @@ mod tests {
     fn the_q_link_button_steps_to_the_macro_banks_and_back() {
         let mut p = ChainPage::new();
         p.entered(View::Chain);
-        assert_eq!(p.next_bank(View::Chain), None);
+        assert_eq!(p.next_bank(View::Chain, false), None);
         let (title, cards) = p.cards(&Theme::dark());
         assert_eq!(title, "Q-Links · Macros 1-4");
         assert_eq!(cards[0].scope, "Macro 1");
@@ -433,9 +438,9 @@ mod tests {
         let (_, cards) = p.cards(&Theme::dark());
         assert_eq!(cards[0].name, Song::new().names[0]);
         assert_ne!(cards[0].name, "Macro 1");
-        p.next_bank(View::Chain);
+        p.next_bank(View::Chain, false);
         assert_eq!(p.cards(&Theme::dark()).0, "Q-Links · Macros 5-8");
-        p.next_bank(View::Chain);
+        p.next_bank(View::Chain, false);
         assert!(!p.macro_bank_shown());
     }
 
@@ -445,11 +450,11 @@ mod tests {
         p.entered(View::Macros);
         assert_eq!(p.bind.shown(), 1);
         assert_eq!(
-            p.next_bank(View::Macros),
+            p.next_bank(View::Macros, false),
             Some(Turned::Macro(MacroAction::Bank(1)))
         );
         assert_eq!(
-            p.next_bank(View::Macros),
+            p.next_bank(View::Macros, false),
             Some(Turned::Macro(MacroAction::Bank(0)))
         );
     }
@@ -462,7 +467,7 @@ mod tests {
             !p.drives(View::Play),
             "Play's own knobs are the Play page's"
         );
-        p.next_bank(View::Play);
+        p.next_bank(View::Play, false);
         assert!(p.drives(View::Play));
         assert_eq!(p.cards(&Theme::dark()).0, "Q-Links · Macros 1-4");
         // The chain editor starts on its own knobs and leaves Play's bank.
@@ -486,7 +491,7 @@ mod tests {
         let addr = st.params[2].addr;
         p.set_chain(&mut ui, st);
         p.entered(View::Chain);
-        p.next_bank(View::Chain);
+        p.next_bank(View::Chain, false);
         p.learn(addr);
         assert_eq!(p.cards(&Theme::dark()).1[3].value, "learn");
         assert_eq!(p.turn(3, 1, false), Some(Turned::Learned));
@@ -497,8 +502,8 @@ mod tests {
     fn a_long_press_on_a_macro_card_opens_its_bank_once() {
         let mut p = ChainPage::new();
         p.entered(View::Chain);
-        p.next_bank(View::Chain);
-        p.next_bank(View::Chain);
+        p.next_bank(View::Chain, false);
+        p.next_bank(View::Chain, false);
         p.press(7, Some(2), 300);
         assert_eq!(p.held(0.3), None);
         assert_eq!(p.held(0.3), Some(1));
@@ -512,7 +517,7 @@ mod tests {
         p.moved(8, 300 - DRAG_DETENT);
         assert_eq!(p.held(1.0), None);
         // The page's own knobs open nothing.
-        p.next_bank(View::Chain);
+        p.next_bank(View::Chain, false);
         p.press(9, Some(0), 300);
         assert_eq!(p.held(1.0), None);
     }
