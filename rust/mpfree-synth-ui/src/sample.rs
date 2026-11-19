@@ -9,7 +9,7 @@ use mpfree_synth::params as pp;
 use mpfree_synth::params::Preset;
 use mpfree_synth::wavetable::params as wtp;
 use mpfree_synth::Wavetable;
-use mpfree_synth::{Analog, Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch};
+use mpfree_synth::{Analog, Bass, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Wind};
 use mpfree_ui::qlink::QLinkColumn;
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
@@ -335,6 +335,10 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
          "bass", "Rubber Bass", "Source"),
         ("synth-bass-808", "Bass · Long 808, Shape page: the pitch drop landing on the note, and the amp",
          "bass", "Long 808", "Shape"),
+        ("synth-wind", "Wind · Tenor Sax, Instrument page: the air through the reed, the breath on its falling side, and the tone",
+         "wind", "Tenor Sax", "Instrument"),
+        ("synth-wind-flute", "Wind · Concert Flute, Breath page: where the breath comes from, and its shape over a note",
+         "wind", "Concert Flute", "Breath"),
     ] {
         out.push(inst_scene(name, about, engine, preset, page, fonts())?);
     }
@@ -394,6 +398,7 @@ fn inst_scene(
             preset,
         )?,
         "bass" => loaded(Bass::new(RATE), Bass::presets(), Bass::load_preset, preset)?,
+        "wind" => loaded(Wind::new(RATE), Wind::presets(), Wind::load_preset, preset)?,
         _ => return Err(format!("no engine {engine}")),
     };
     let st = SynthState::from_node(node.as_ref(), "Keys", Color::rgb(0x3DDC97), names, Some(i));

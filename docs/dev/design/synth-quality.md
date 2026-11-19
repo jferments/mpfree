@@ -55,7 +55,7 @@ New analyses in `rust/mpfree-fxlab/src/synth.rs`, each tested on signals with kn
 
 ## Where today's synths stand (2026-11-18)
 
-Met against rows with a target (with Strings, Bass, the Keys clav and the first six factory sounds): L2 148 of 165, L3 161/165, L5 95/153, L6 164/165, L8 165/165, L11 119/165, L12 113/113; B1 2/2, B3 3/3, B4 50/50, B5 31/50, B7 50/50; K1 23/23, K3 92/92, K4 11/11, K7 5/5, K9 8/8; S7 8/8; V7 2/2; T1 9/9; A1 22/51; B2 2/2; P6 3/3; B9 3/3, P5 2/2; F1 3/3, F5 0/1, F7 0/1; D3 19/80, D5 70/80.
+Wind (19 Nov) adds 20 presets that meet every shared row (L2, L3, L5, L6, L8, L11; [Wave 2 targets](#wave-2-targets-wind-stage-4)); the counts here are from before it. Met against rows with a target (with Strings, Bass, the Keys clav and the first six factory sounds): L2 148 of 165, L3 161/165, L5 95/153, L6 164/165, L8 165/165, L11 119/165, L12 113/113; B1 2/2, B3 3/3, B4 50/50, B5 31/50, B7 50/50; K1 23/23, K3 92/92, K4 11/11, K7 5/5, K9 8/8; S7 8/8; V7 2/2; T1 9/9; A1 22/51; B2 2/2; P6 3/3; B9 3/3, P5 2/2; F1 3/3, F5 0/1, F7 0/1; D3 19/80, D5 70/80.
 
 - **In tune and true to theory.** Every engine's plain patch is within 0.03 cents from C1 to C7, except Keys (0.55 cents at C2) and the organ (0.58 cents, its gear ratios). FM's sidebands match the Bessel functions within 0.01 dB (operator level 60, 75 and 90 give an index of 0.43, 1.57 and 5.76). Poly's LP24 is within 0.16 dB of its 4-pole prototype and LP12 within 0.8 dB, the cutoff where the label says, the resonance peak within 5.3 cents. Glide lands within 0.04 cents in 1.2 % of its time. Keys' and Pluck's decays follow their labels and laws (all 88 K3 rows), and the tremolo rates are within 0.4 %.
 - **Aliasing is the biggest gap.** Poly's saw and pulse (PolyBLEP) alias at −49 dB at C5, −44 at C6 and −37 at C7 (the saw's 13th harmonic folds to 16.9 kHz); drive and distortion make it −30 and −27 at C7. (Fixed for Poly 19 Nov, wave 2: from the voice core's tables its saw and pulse are at −78, −84 and −90 dB and its triangle −94 to −99; the antialiased drive is at −50, −45 and −38 and the distortion −45, −40 and −35, still short of −60.) Analog: −54, −48, −42. Squelch's saw meets −60 to C6, its square doesn't (−27 at C7). Wavetable's mips work: Init −72 at C7, position 100 −54. FM feedback 7 sits 13 to 17 dB under its harmonics with what is off them (aliasing or the feedback's noise; the row can't tell which).
@@ -142,9 +142,19 @@ The bar for each kernel in `mpfree-simd` ([NEON kernels](simd.md)), first the su
 | N2 | ARMv7 instructions a block, eight voices' supersaw saws with their mixing (`tools/simd_arm_cost.py`) | NEON fewer than the twin | Met: 58,361 against 134,455 (43 %) |
 | N3 | Time on the MPC, the same case (`mpfree-bench`, "Supersaw saws: 8 voices, plain" and "..., NEON") | NEON's p99 block under the twin's, or the kernel is removed | Device round |
 
+## Wave 2 targets: Wind (stage 4)
+
+The bar for the [Wind engine](synths.md#wind-mpfree-synth-wind), from [Organs, winds, choirs and tape](../research/organ-wind-choir.md#4-what-to-measure) and [Wind instruments](../research/wind.md#4-what-to-measure). Its 20 presets also meet the voice core's rows (V) and the shared rows: L2 (−8.2 to −1.1 dBFS), L3 (under −82 dBFS), L5 (0.10 to 0.74 octave), L6 (the square law within 0.76 dB), L8, L11 (1.0 to 2.0 dB), L12 (Reed Section and Flute Choir), T1 (0.13 cents at worst) and A1 (9 of 9: at C7 −83 dB for the clarinet at Tone 100, −64.5 for the sax at Reed and Tone 100, −70.7 for the flute at Edge and Tone 100). Built 19 Nov.
+
+| Id | Measure | Target | Today |
+|---|---|---|---|
+| O3 | Breath, at C4, from a breath controller at 1/8 to 1: the level and the brightness (the centroid) rise at every step, brightness at least 0.1 octave over the range; and the note speaks (within 3 dB of where it settles) within 30 ms at velocity 127 | No step down; 0.1 octave; 30 ms | 11 of 12. The level rises at every step on all three bores (17.2 to 17.4 dB over the range) and the brightness on the clarinet and flute (0.68 and 0.57 octave); the notes speak in 21 ms (clarinet), 25 (sax) and 30 (flute). Not met: the sax's brightness falls for two of seven steps from 1/8 to 3/8 before it rises (0.22 octave over the range): at the softest breaths the cone plays a narrow pulse whose strong second harmonic the breath first smooths. Lowering the sax's tone floor meets the row but leaves a dark, soft-reed sax silent until half breath |
+| O4 | Tuning, C2 to C6 at velocities 30, 100 and 127, each bore | Within 3 cents | Met: clarinet 0.09 cents, sax 0.03, flute 0.17 |
+| Cost | What a voice costs (no wind row in the survey; reported, as B11 is) | Reported | Workstation, a sixteenth-note line, instructions a block: Wind Init 121k, Growl Sax 144k, Concert Flute 143k; Reed Section, 6 voices on chords, 608k. MPC: device round |
+
 ## Not measured yet
 
-Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), drift (P10), the 808 kick and metal bank against their papers (D1, D2, D9), chokes and retriggers (D6), sustain-pedal behaviour (K5: there is no pedal event yet), piano partials (K8), FM envelope rates and banks (F4, F6), organs, winds and choirs (O: no engines yet), and cost on the MPC. Each joins the report when stage 3 or 4 builds or changes what it measures.
+Supersaw detune and phase (P2, P3), unison and table-morph steps (P4, P7), drift (P10), the 808 kick and metal bank against their papers (D1, D2, D9), chokes and retriggers (D6), sustain-pedal behaviour (K5: there is no pedal event yet), piano partials (K8), FM envelope rates and banks (F4, F6), organs and choirs (O: no engines yet; Wind's O3 and O4 are in the report), and cost on the MPC. Each joins the report when stage 3 or 4 builds or changes what it measures.
 
 ## Running it
 
