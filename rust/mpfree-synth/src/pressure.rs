@@ -59,6 +59,11 @@ pub const WT_TARGETS: &[&str] = &[
     "Pitch",
 ];
 
+/// The wind engine's targets, by slot target index.
+pub const WIND_TARGETS: &[&str] = &[
+    "Off", "Breath", "Vibrato", "Tone", "Growl", "Noise", "Pitch",
+];
+
 /// What a depth of 100 % means for a target, in that target's unit.
 ///
 /// - Cutoff 4 octaves, Resonance 100 %, Width (pulse width) 45 %, Sub and
@@ -74,6 +79,8 @@ pub const WT_TARGETS: &[&str] = &[
 ///   warp amount.
 /// - Brightness (FM): 24 output-level steps (18 dB) on every modulator.
 ///   Tremolo (FM) 100 % amplitude dip. Feedback (FM) 7 steps.
+/// - Breath (Wind): the whole breath, added to what the note blows. Tone
+///   (Wind): 2 octaves brighter. Growl (Wind): its whole amount.
 pub fn full_scale(target: &str) -> Option<(f32, Unit)> {
     Some(match target {
         "Cutoff" => (4.0, Unit::Octaves),
@@ -85,7 +92,8 @@ pub fn full_scale(target: &str) -> Option<(f32, Unit)> {
         "Drive" | "Distortion" => (24.0, Unit::Db),
         "Width" => (45.0, Unit::Percent),
         "Sub" | "Noise" | "Tremolo" | "Position" | "Warp" | "LFO 1 amount" | "LFO 2 amount"
-        | "Pan" => (100.0, Unit::Percent),
+        | "Pan" | "Breath" | "Growl" => (100.0, Unit::Percent),
+        "Tone" => (2.0, Unit::Octaves),
         "Brightness" => (24.0, Unit::None),
         "Feedback" => (7.0, Unit::None),
         _ => return None,

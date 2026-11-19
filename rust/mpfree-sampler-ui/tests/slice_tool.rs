@@ -185,8 +185,8 @@ fn transient_chop_cuts_the_pads_region_at_its_hits() {
     );
     let bar = s.ui.get::<PadBar>(wave_tab::BAR).unwrap();
     assert_eq!(
-        (bar.active, bar.title.as_str()),
-        (wave_tab::TAB, "Pad A5 · Break 92")
+        (bar.tabs.len(), bar.title.as_str()),
+        (0, "Pad A5 · Break 92")
     );
     let l = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
     let slice = &l.panel.as_ref().unwrap().sections[0];
@@ -865,20 +865,20 @@ fn put_on_files_exports_the_pad_and_its_slices_where_the_app_can_write() {
     // Without files: Pads, One pad, Keys and round again.
     for _ in 0..3 {
         step(&mut s, Row::Put, 1);
-        assert_ne!(value(&s, Row::Put), "Files");
+        assert_ne!(value(&s, Row::Put), "Library");
     }
     assert_eq!(value(&s, Row::Put), "Pads");
-    // With them, Files comes after Keys.
+    // With them, Library comes after Keys.
     with_chop(&mut s.state, |c| c.files = true);
     shown(&mut s);
     let st = s.state.clone();
     step(&mut s, Row::Put, -1);
-    assert_eq!(value(&s, Row::Put), "Files");
+    assert_eq!(value(&s, Row::Put), "Library");
     assert_eq!(value(&s, Row::Pads), "None");
     let n = s.tab.slice().slices();
     assert!(n > 1);
     let (labels, enabled) = buttons(&s);
-    assert_eq!(labels[3], format!("Export {n} slices"));
+    assert_eq!(labels[3], format!("Save {n} slices"));
     assert!(enabled[3]);
     let cuts = s.tab.slice().bounds(cs(&st))[1..n].to_vec();
     assert_eq!(
@@ -897,7 +897,7 @@ fn put_on_files_exports_the_pad_and_its_slices_where_the_app_can_write() {
     while s.tab.slice().slices() > 1 {
         press(&mut s, Button::Merge);
     }
-    assert_eq!(buttons(&s).0[3], "Export the pad");
+    assert_eq!(buttons(&s).0[3], "Save the pad");
     // The files gone again, Put on is back on Pads.
     with_chop(&mut s.state, |c| c.files = false);
     shown(&mut s);

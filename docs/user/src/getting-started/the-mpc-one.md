@@ -54,7 +54,7 @@ The buttons above the screen jump to a part of MPFree:
 | **SAMPLER** | The Sample tab. **SHIFT + SAMPLER** goes to the Looper tab. |
 | **NEXT SEQ** | The Arrange tab. |
 | **TRACK MIX** | The Mix tab, on the tracks (**SHIFT + TRACK MIX**: on the pads). Pressed again, back to where you were. |
-| **PROG EDIT** | What the pads play: the Synth tab while the synth is on the pads, otherwise the Pads tab. |
+| **PROG EDIT** | What the pads play: the Synth tab while the synth is on the pads, otherwise the Pads tab; there, Edit pad for the pad picked (press again: back to the pads). |
 | **BROWSE** | The browser, over the page. **SHIFT + BROWSE** saves the project. |
 | **MENU** | The options for the page you are on. **SHIFT + MENU** opens **Prefs**, MPFree's settings. |
 

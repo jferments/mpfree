@@ -122,8 +122,9 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
         bar.subtitle,
         "3 layers · Loop · stacked · 4 voices · 4.73 s long"
     );
-    assert_eq!(bar.active, play_tab::TAB);
-    assert_eq!(bar.enabled, vec![true; 2], "every tab is built");
+    // Edit pad, a page of the Pads tab: no switch, a way back to the pads.
+    assert!(bar.tabs.is_empty(), "no Wave | Play switch: {:?}", bar.tabs);
+    assert_eq!(bar.back.as_deref(), Some(play_tab::BACK));
     let map = s.ui.get::<LayerMap>(play_tab::LAYERS).unwrap();
     let ranges: Vec<(u8, u8)> = map.layers.iter().map(|l| (l.lo, l.hi)).collect();
     assert_eq!(ranges, vec![(1, 63), (64, 109), (110, 127)]);
@@ -924,7 +925,7 @@ fn a_keygroup_shows_the_kits_keyboard_to_drag_its_zone_pick_a_pad_and_play_notes
         root: 72,
     });
     s.project.set_pad(PAD + 1, Some(other), None).unwrap();
-    apply(&mut s, &PlayAction::Tab(play_tab::TAB));
+    apply(&mut s, &PlayAction::Pads);
     let (z, r) = keyboard(&s);
     assert_eq!(z.zones.len(), 2);
     assert_eq!(z.picked, Some(PAD));
@@ -1328,7 +1329,7 @@ fn a_layers_sound_steps_through_the_kits_sounds() {
     let data = vec![0.25f32; RATE as usize / 2];
     let tone = Source::new("Tone", RATE, 1, data).unwrap();
     let id = s.project.add_source(tone);
-    apply(&mut s, &PlayAction::Tab(play_tab::TAB));
+    apply(&mut s, &PlayAction::Pads);
     let a = step(&mut s, Row::Sound, 1).unwrap();
     assert_eq!(
         a,
